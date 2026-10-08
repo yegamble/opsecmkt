@@ -292,8 +292,12 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 		note = c.A.netTag() + " payout of " + label + " recorded as sent by an administrator after wallet reconciliation."
 		audit = "Marked payout " + strconv.FormatInt(id, 10) + " (" + label + ", was " + state + ") sent with transaction " + txid + " for order " + short
 		if state == "blocked" || heldForHand(state, payoutErr) {
-			note = c.A.netTag() + " payout of " + label + " recorded as sent by hand by an administrator: the recipient had saved no payout address. It will not be sent again."
-			audit += "; paid by hand (the recipient had no payout address); the market did not check the transaction on the chain"
+			why := "the recipient had saved no payout address"
+			if address != "" { // saved after the payout was held (A-489)
+				why = "the recipient had no payout address when it was held"
+			}
+			note = c.A.netTag() + " payout of " + label + " recorded as sent by hand by an administrator: " + why + ". It will not be sent again."
+			audit += "; paid by hand (" + why + "); the market did not check the transaction on the chain"
 		}
 	}
 	if err != nil {

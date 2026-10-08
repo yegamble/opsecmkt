@@ -229,7 +229,8 @@ func TestPooledHandSettleDoublePayWindow(t *testing.T) {
 	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE '%held by an administrator to be paid by hand%' AND note NOT LIKE '%PGP%'", order); n != 1 {
 		t.Fatalf("hold order note: %d", n)
 	}
-	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE '%recorded as sent by hand%'", order); n != 1 {
+	// The payout gained an address after the hold (A-489, NIT-1): the note says when it had none.
+	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE '%recorded as sent by hand by an administrator: the recipient had no payout address when it was held.%'", order); n != 1 {
 		t.Fatalf("record order note: %d", n)
 	}
 	if n := p.count("SELECT count(*) FROM audit_events WHERE action LIKE 'Held blocked payout "+id+" %to pay it by hand: '||$1||'%'", handNote); n != 1 {

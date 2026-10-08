@@ -411,3 +411,114 @@ func TestRestoreKeepsSuspensionHold(t *testing.T) {
 		t.Fatalf("order history for the release with both checks: %d", n)
 	}
 }
+
+// qcRelease, qcErr: QA445c's helpers (A-489).
+func (p *payEnv) qcRelease(id string, kv ...string) (int, string) {
+	p.t.Helper()
+	f := url.Values{"payout_id": {id}, "op": {"release"}, "password": {testPassword}}
+	for i := 0; i+1 < len(kv); i += 2 {
+		f.Set(kv[i], kv[i+1])
+	}
+	w := p.do("POST", "/admin/payout", p.adminSess, f)
+	return w.Code, w.Body.String()
+}
+
+func (p *payEnv) qcErr(id string) string {
+	p.t.Helper()
+	return p.str("SELECT state||'|'||address||'|'||error FROM payouts WHERE id=$1::bigint", id)
+}
+
+// qcNeedsEach: a release missing any one of confirm is refused with the payout unchanged and nothing sent; with all
+// of them it is accepted.
+func (p *payEnv) qcNeedsEach(t *testing.T, order, id, to string, confirm ...string) {
+	t.Helper()
+	before := p.qcErr(id)
+	for skip := range confirm {
+		var kv []string
+		for i, c := range confirm {
+			if i != skip {
+				kv = append(kv, c, "confirmed")
+			}
+		}
+		if code, body := p.qcRelease(id, kv...); code == 303 {
+			t.Fatalf("release without %s accepted: %s", confirm[skip], body)
+		}
+		p.poll()
+		if p.qcErr(id) != before || p.sendsTo(to) != 0 {
+			t.Fatalf("release without %s changed the payout (%s) or sent it (%d)", confirm[skip], p.qcErr(id), p.sendsTo(to))
+		}
+	}
+	var kv []string
+	for _, c := range confirm {
+		kv = append(kv, c, "confirmed")
+	}
+	if code, body := p.qcRelease(id, kv...); code != 303 {
+		t.Fatalf("release with %v: %d %s", confirm, code, body)
+	}
+}
+
+// A-489 (QA445c's TestQA445CRestoreThenSuspend): a hand hold restored from backup, then given an address by whoever has
+// the account's password, then suspended: the suspension adds its text after the restore's (the hand reason kept), the
+// admin row offers the address check, and the release needs the wallet check, the address check and the not-paid
+// confirmation, each one; a second restore keeps every marker.
+func TestRestoredHandHoldThenSuspendNeedsEveryCheck(t *testing.T) {
+	p := newPayEnv(t)
+	order, id := p.blockedRelease("qc-rs")
+	if code, body := p.holdPayout(p.adminSess, id, handNote); code != 303 {
+		t.Fatalf("hold: %d %s", code, body)
+	}
+	for _, q := range restorePayoutSQL {
+		agExec(p.testEnv, q)
+	}
+	p.check(p.do("POST", "/account/payout", p.vendorSess, url.Values{"currency": {"BTC"}, "address": {"fake-testnet-attacker"}, "password": {testPassword}}), 303)
+	p.check(p.do("POST", "/admin/suspend", p.adminSess, suspendForm("suspend", p.vendor.Handle)), 303)
+	e := p.str("SELECT error FROM payouts WHERE id=$1::bigint", id)
+	if !strings.HasPrefix(e, restoredHoldPrefix) || !strings.Contains(e, " "+handHoldPrefix+" "+handNote) || !strings.HasSuffix(e, " "+suspendedHold) {
+		t.Fatalf("hold text after restore and suspension: %q", e)
+	}
+	if !heldForSuspension("held", e) || !heldForHand("held", e) {
+		t.Fatalf("markers not recognised: suspension %v, hand %v", heldForSuspension("held", e), heldForHand("held", e))
+	}
+	mustContain(t, p.page("/admin", p.adminSess), `name="address_checked"`, `name="not_paid"`, `name="not_broadcast"`)
+	if code, body := p.qcRelease(id, "not_paid", "confirmed", "not_broadcast", "confirmed"); code != 409 || !strings.Contains(body, "account was suspended") {
+		t.Fatalf("release without the address check: %d %s", code, body)
+	}
+	// Lifting the suspension keeps the hold; a second suspension does not stack another text; a second restore keeps
+	// every marker.
+	p.check(p.do("POST", "/admin/suspend", p.adminSess, suspendForm("restore", p.vendor.Handle)), 303)
+	if again := p.str("SELECT error FROM payouts WHERE id=$1::bigint", id); again != e {
+		t.Fatalf("lifting the suspension changed it: %q", again)
+	}
+	p.check(p.do("POST", "/admin/suspend", p.adminSess, suspendForm("suspend", p.vendor.Handle)), 303)
+	if again := p.str("SELECT error FROM payouts WHERE id=$1::bigint", id); again != e {
+		t.Fatalf("second suspension changed it: %q", again)
+	}
+	for _, q := range restorePayoutSQL {
+		agExec(p.testEnv, q)
+	}
+	e2 := p.str("SELECT error FROM payouts WHERE id=$1::bigint", id)
+	if !heldForSuspension("held", e2) || !heldForHand("held", e2) || !strings.HasPrefix(e2, restoredHoldPrefix) {
+		t.Fatalf("a second restore lost a marker: %q", e2)
+	}
+	p.qcNeedsEach(t, order, id, "fake-testnet-attacker", "not_broadcast", "address_checked", "not_paid")
+}
+
+// A-489 (QA445c's TestQA445CRestoredBlockedThenSuspend, older than A-445): a plain blocked payout restored from
+// backup, then given an address, then suspended, needs the address check besides the wallet check.
+func TestRestoredBlockedThenSuspendNeedsAddressCheck(t *testing.T) {
+	p := newPayEnv(t)
+	order, id := p.blockedRelease("qc-rbs")
+	for _, q := range restorePayoutSQL {
+		agExec(p.testEnv, q)
+	}
+	p.check(p.do("POST", "/account/payout", p.vendorSess, url.Values{"currency": {"BTC"}, "address": {"fake-testnet-attacker"}, "password": {testPassword}}), 303)
+	p.check(p.do("POST", "/admin/suspend", p.adminSess, suspendForm("suspend", p.vendor.Handle)), 303)
+	if e := p.str("SELECT error FROM payouts WHERE id=$1::bigint", id); !strings.HasPrefix(e, restoredHoldPrefix) || !strings.HasSuffix(e, " "+suspendedHold) || heldForHand("held", e) {
+		t.Fatalf("hold text after restore and suspension: %q", e)
+	}
+	mustContain(t, p.page("/admin", p.adminSess), `name="address_checked"`, `name="not_broadcast"`)
+	if code, body := p.qcRelease(id, "not_broadcast", "confirmed"); code != 409 || !strings.Contains(body, "account was suspended") {
+		t.Fatalf("release without the address check: %d %s", code, body)
+	}
+	p.qcNeedsEach(t, order, id, "fake-testnet-attacker", "not_broadcast", "address_checked")
+}
