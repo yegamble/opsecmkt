@@ -232,8 +232,13 @@ func (a *App) transition(ctx context.Context, tx *sql.Tx, orderID, from, to stri
 	if d, ok := ctx.Value(noticeDetailKey{}).(noticeDetail); ok && d.orderID == orderID && d.to == to {
 		body = strings.TrimSuffix(body, ".") + ". " + d.text
 	}
+	// Draft cancellation is an abandoned checkout cleanup, not vendor work; notifying the vendor
+	// would let buyers bury incoming orders with repeated create/cancel cycles (A-165).
 	for _, uid := range []string{o.BuyerID, o.VendorID} {
 		if actor != nil && uid == actor.ID {
+			continue
+		}
+		if from == stateDraft && to == stateCancelled && uid == o.VendorID {
 			continue
 		}
 		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), uid, body); err != nil {

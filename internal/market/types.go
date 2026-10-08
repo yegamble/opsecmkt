@@ -193,10 +193,11 @@ type PageData struct {
 	Reviews       []Review
 	ReviewSummary *ReviewSummary
 	CanReview     bool
-	// IncomingOrders: vendor-dashboard orders on the viewer's own listings, every paid one first;
-	// NeedsAction counts all paid ones.
-	IncomingOrders []Order
-	NeedsAction    int
+	// IncomingOrders: all active orders and bounded terminal history on the viewer's own listings.
+	// NeedsAction counts all paid orders; VendorOpenDisputes counts open disputes on those listings.
+	IncomingOrders     []Order
+	NeedsAction        int
+	VendorOpenDisputes int
 	// DeadlineBanners: /orders, the viewer's escrow orders whose release deadline is less than 72 hours away
 	// (escrow_deadline.go, P2-R9).
 	DeadlineBanners []DeadlineBanner
@@ -212,8 +213,8 @@ type PageData struct {
 	// Overpaid: order page for its buyer or vendor, a paid, shipped or delivered order whose counted deposits
 	// exceed the price; nil otherwise.
 	Overpaid *OverpaidView
-	// HistoryLimit: non-zero when closed history (resolved disputes, or incoming orders not paid) was
-	// cut to this many most recent rows.
+	// HistoryLimit: non-zero when closed history (resolved disputes, or completed/resolved/funded-cancelled
+	// vendor orders) was cut to this many most recent rows.
 	HistoryLimit int
 	// DeliveryWithheld: order page viewed by a reviewer of a payment flag on an order never disputed.
 	DeliveryWithheld bool

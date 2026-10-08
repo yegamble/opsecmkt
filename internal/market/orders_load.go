@@ -703,25 +703,54 @@ func queryOrders(ctx context.Context, a *App, query string, args ...any) ([]Orde
 	return out, rows.Err()
 }
 
-// loadIncomingOrders lists orders on the viewer's own listings: every paid order first (the work queue,
-// oldest first; NeedsAction counts them), then the most recent other orders up to historyLimit.
+// loadIncomingOrders shows all current vendor work, newest change first, plus a bounded closed history.
+// Drafts and cancellations without an issued payment address are buyer-side abandoned checkout attempts.
 func loadIncomingOrders(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
 	if d.User == nil {
 		return nil
 	}
-	paid, err := queryOrders(ctx, a, orderQuery+" WHERE p.vendor_id=$1 AND o.state=$2 ORDER BY o.created,o.id", d.User.ID, statePaid)
+	ctxQ := `p.vendor_id=$1 AND (
+		o.state IN ('awaiting_payment','paid','shipped','delivered','disputed') OR
+		o.id IN (SELECT o2.id FROM orders o2 JOIN products p2 ON p2.id=o2.product_id WHERE p2.vendor_id=$1 AND (
+			o2.state IN ('completed','resolved') OR
+			(o2.state='cancelled' AND EXISTS(SELECT 1 FROM payment_addresses pa WHERE pa.order_id=o2.id))
+		) ORDER BY o2.updated DESC,o2.id DESC LIMIT $2)
+	)`
+	orders, err := queryOrders(ctx, a, orderQuery+" WHERE "+ctxQ+" ORDER BY o.updated DESC,o.id DESC", d.User.ID, historyLimit+1)
 	if err != nil {
 		return err
 	}
-	rest, err := queryOrders(ctx, a, orderQuery+" WHERE p.vendor_id=$1 AND o.state<>$2 ORDER BY o.created DESC,o.id DESC LIMIT $3", d.User.ID, statePaid, historyLimit+1)
-	if err != nil {
+	var terminalCount int
+	if err = a.db.QueryRowContext(ctx, `SELECT count(*) FROM orders o JOIN products p ON p.id=o.product_id
+		WHERE p.vendor_id=$1 AND (o.state IN ('completed','resolved') OR
+		(o.state='cancelled' AND EXISTS(SELECT 1 FROM payment_addresses pa WHERE pa.order_id=o.id)))`, d.User.ID).Scan(&terminalCount); err != nil {
 		return err
 	}
-	if len(rest) > historyLimit {
-		rest, d.HistoryLimit = rest[:historyLimit], historyLimit
+	if terminalCount > historyLimit {
+		d.HistoryLimit = historyLimit
 	}
-	d.IncomingOrders, d.NeedsAction = append(paid, rest...), len(paid)
-	return nil
+	if len(orders) > 0 && terminalCount > historyLimit {
+		// Keep all active work and only the newest historyLimit terminal rows. The SQL has
+		// fetched one extra terminal row so the count remains independent of active volume.
+		kept, terminal := make([]Order, 0, len(orders)), 0
+		for _, o := range orders {
+			switch o.State {
+			case stateCompleted, stateResolved, stateCancelled:
+				if terminal >= historyLimit {
+					continue
+				}
+				terminal++
+			}
+			kept = append(kept, o)
+		}
+		orders = kept
+	}
+	d.IncomingOrders = orders
+	if err = a.db.QueryRowContext(ctx, "SELECT count(*) FROM orders o JOIN products p ON p.id=o.product_id WHERE p.vendor_id=$1 AND o.state=$2", d.User.ID, statePaid).Scan(&d.NeedsAction); err != nil {
+		return err
+	}
+	return a.db.QueryRowContext(ctx, `SELECT count(*) FROM disputes d JOIN orders o ON o.id=d.order_id
+		JOIN products p ON p.id=o.product_id WHERE p.vendor_id=$1 AND d.status='Open'`, d.User.ID).Scan(&d.VendorOpenDisputes)
 }
 
 func queryDisputes(ctx context.Context, a *App, query string, args ...any) ([]Dispute, error) {

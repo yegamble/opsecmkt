@@ -4,7 +4,12 @@
 <strong>{{.NeedsAction}}</strong>
 <span>Paid orders awaiting shipment or delivery</span>
 </div>{{end}}
-{{define "vendor-orders"}}<h2 class="section-title">Incoming orders</h2>{{if .IncomingOrders}}<p class="help">Paid orders awaiting shipment or delivery are listed first, oldest first.{{if .HistoryLimit}} Showing every paid order and the {{.HistoryLimit}} most recent other orders.{{end}}</p>
+{{define "vendor-orders:disputes-stat"}}<div class="stat">
+<div class="eyebrow">Open disputes</div>
+<strong>{{.VendorOpenDisputes}}</strong>
+<span>Orders needing a dispute decision</span>
+</div>{{end}}
+{{define "vendor-orders"}}<h2 class="section-title">Incoming orders</h2>{{if .IncomingOrders}}<p class="help">All current work is listed by most recent change.{{if .HistoryLimit}} Showing the {{.HistoryLimit}} most recent completed, resolved or funded-cancelled orders as history.{{end}}</p>
 <div class="table-wrap">
 <table>
 <thead>
@@ -35,5 +40,5 @@
 </div>{{else}}<div class="empty">
 <span class="empty-icon">[ 0 ]</span>
 <h2>No orders on your listings yet</h2>
-<p>Orders buyers place on your listings appear here, including unfunded drafts.</p>
+<p>Current orders on your listings appear here. Unfunded drafts and cancelled drafts are kept in your order history but do not appear as incoming work.</p>
 </div>{{end}}{{end}}

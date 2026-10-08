@@ -1,6 +1,7 @@
 package market
 
 import (
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -87,42 +88,101 @@ func TestModeratorDeskListsEveryOpenDisputeFirst(t *testing.T) {
 	}
 }
 
-func TestVendorDeskCountsAndListsEveryPaidOrder(t *testing.T) {
+func TestVendorDeskListsEveryActiveOrderByLastChangeAndCapsOnlyTerminalHistory(t *testing.T) {
 	w := newOrderWorld(t)
 	product := w.e.product(w.vendorID, "physical")
 	paidOld := w.e.order(w.buyerID, product, "BTC", statePaid)
 	paidOlder := w.e.order(w.otherID, product, "BTC", statePaid)
-	shippedOld := w.e.order(w.buyerID, product, "XMR", stateShipped)
-	for _, id := range []string{paidOld, paidOlder, shippedOld} {
-		w.aged(id)
+	shippedNew := w.e.order(w.buyerID, product, "XMR", stateShipped)
+	shippedOld := w.e.order(w.buyerID, product, "BTC", stateShipped)
+	oldActive := w.e.order(w.otherID, product, "BTC", stateDelivered)
+	for _, item := range []struct{ id, age string }{{paidOld, "2 hours"}, {paidOlder, "90 minutes"}, {shippedNew, "1 minute"}, {oldActive, "3 hours"}, {shippedOld, "4 hours"}} {
+		if _, err := w.e.DB.Exec("UPDATE orders SET updated=now()-$2::interval WHERE id=$1", item.id, item.age); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if _, err := w.e.DB.Exec("UPDATE orders SET created=created-interval '1 day' WHERE id=$1", paidOlder); err != nil {
+	// The vendor's own purchase from someone else is not their work.
+	elsewhere := w.e.order(w.vendorID, w.e.product(w.otherID, "physical"), "BTC", statePaid)
+	openDispute := w.e.order(w.buyerID, product, "BTC", stateDisputed)
+	if _, err := w.e.DB.Exec("INSERT INTO disputes(id,order_id,reason) VALUES('vendor-open-dispute',$1,'The parcel did not arrive.')", openDispute); err != nil {
 		t.Fatal(err)
 	}
-	// The vendor's own paid purchase from someone else is not their work.
-	elsewhere := w.e.order(w.vendorID, w.e.product(w.otherID, "physical"), "BTC", statePaid)
+	if _, err := w.e.DB.Exec("UPDATE orders SET updated=now()-interval '30 seconds' WHERE id=$1", openDispute); err != nil {
+		t.Fatal(err)
+	}
+	w.bulkOrders("bulk-active-", w.buyerID, product, stateAwaitingPayment, 101)
 	w.bulkOrders("bulk-done-", w.buyerID, product, stateCompleted, 101)
 
 	body := w.page("/vendor-dashboard", w.vendor, 200)
-	if !strings.Contains(body, "To fulfil</div>\n<strong>2</strong>") {
-		t.Fatal("NeedsAction is not the true number of paid orders on the vendor's listings")
+	if !strings.Contains(body, "To fulfil</div>\n<strong>2</strong>") || !strings.Contains(body, "Open disputes</div>\n<strong>1</strong>") {
+		t.Fatal("vendor paid-order or open-dispute counts are incorrect")
 	}
-	olderAt, oldAt, bulkAt := strings.Index(body, paidOlder), strings.Index(body, paidOld), strings.Index(body, "bulk-done-101")
-	if olderAt < 0 || oldAt < 0 || bulkAt < 0 || !(olderAt < oldAt && oldAt < bulkAt) {
-		t.Fatalf("paid orders must be listed first, oldest first: older=%d old=%d bulk=%d", olderAt, oldAt, bulkAt)
+	shippedNewAt, disputeAt, paidNewAt, paidOldAt, oldAt, shippedOldAt := strings.Index(body, shippedNew), strings.Index(body, openDispute), strings.Index(body, paidOlder), strings.Index(body, paidOld), strings.Index(body, oldActive), strings.Index(body, shippedOld)
+	if shippedNewAt < 0 || disputeAt < 0 || paidNewAt < 0 || paidOldAt < 0 || oldAt < 0 || shippedOldAt < 0 || !(disputeAt < shippedNewAt && shippedNewAt < paidNewAt && paidNewAt < paidOldAt && paidOldAt < oldAt && oldAt < shippedOldAt) {
+		t.Fatalf("active orders should be uncapped and sorted by most recent change: dispute=%d shipped=%d paid-new=%d paid-old=%d old=%d shipped-old=%d", disputeAt, shippedNewAt, paidNewAt, paidOldAt, oldAt, shippedOldAt)
 	}
-	if strings.Contains(body, elsewhere) || strings.Contains(body, "bulk-done-001") || strings.Contains(body, shippedOld) {
-		t.Fatal("incoming orders include foreign orders or more than the capped history")
+	if strings.Contains(body, elsewhere) || strings.Contains(body, "bulk-done-001") || !strings.Contains(body, "bulk-done-101") || !strings.Contains(body, "bulk-done-002") || !strings.Contains(body, "bulk-active-001") || !strings.Contains(body, "bulk-active-101") {
+		t.Fatal("vendor desk leaked a foreign order or did not retain exactly the newest terminal history")
 	}
-	if !strings.Contains(body, "Showing every paid order and the 100 most recent other orders") {
+	if !strings.Contains(body, "Showing the 100 most recent completed, resolved or funded-cancelled orders as history") {
 		t.Fatal("truncated order history is not announced")
 	}
-
-	// The buyer can still open a dispute on an old shipped order behind 100 newer orders.
+	for _, session := range []string{w.other, w.vendor} {
+		if !strings.Contains(w.page("/order?id="+oldActive, session, 200), oldActive) {
+			t.Fatal("old active order became inaccessible")
+		}
+	}
 	if !strings.Contains(w.page("/disputes", w.buyer, 200), `<option value="`+shippedOld+`">`) {
-		t.Fatal("disputes page hides an old disputable order")
+		t.Fatal("old shipped order disappeared from the buyer's dispute choices")
 	}
 	if strings.Contains(w.page("/disputes", w.other, 200), `<option value="`+shippedOld+`">`) {
-		t.Fatal("disputes page offers another buyer's order")
+		t.Fatal("unrelated buyer sees another buyer's dispute choice")
+	}
+}
+
+func TestDraftCancelDoesNotNotifyVendor(t *testing.T) {
+	w := newOrderWorld(t)
+	product := w.e.product(w.vendorID, "physical")
+	draft := w.e.order(w.buyerID, product, "BTC", stateDraft)
+	page := w.page("/order?id="+draft, w.buyer, 200)
+	nonce := renderedFormNonce(t, page, "/orders/cancel")
+	before := w.count("SELECT count(*) FROM notifications WHERE user_id=$1", w.vendorID)
+	resp := w.post("/orders/cancel", w.buyer, url.Values{"order_id": {draft}, "from": {stateDraft}, formNonceField: {nonce}})
+	if resp.Code != 303 || w.state(draft) != stateCancelled {
+		t.Fatalf("draft cancellation failed: status=%d state=%s body=%q", resp.Code, w.state(draft), resp.Body.String())
+	}
+	if got := w.count("SELECT count(*) FROM notifications WHERE user_id=$1", w.vendorID); got != before {
+		t.Fatalf("draft cancellation notified vendor: before=%d after=%d", before, got)
+	}
+}
+
+func TestVendorRowsExcludeUnfundedDraftsButKeepBuyerHistory(t *testing.T) {
+	w := newOrderWorld(t)
+	product := w.e.product(w.vendorID, "physical")
+	draft := w.e.order(w.buyerID, product, "BTC", stateDraft)
+	cancelledDraft := w.e.order(w.buyerID, product, "XMR", stateCancelled)
+	fundedCancelled := w.e.order(w.otherID, product, "BTC", stateCancelled)
+	if _, err := w.e.DB.Exec("INSERT INTO payment_addresses(order_id,currency,address,provider) VALUES($1,'BTC','test-funded-cancelled','test')", fundedCancelled); err != nil {
+		t.Fatal(err)
+	}
+	w.bulkOrders("bulk-funded-cancel-", w.otherID, product, stateCancelled, 51)
+	if _, err := w.e.DB.Exec(`INSERT INTO payment_addresses(order_id,currency,address,provider)
+		SELECT id,'BTC','address-'||id,'test' FROM orders WHERE id LIKE 'bulk-funded-cancel-%'`); err != nil {
+		t.Fatal(err)
+	}
+	w.bulkOrders("bulk-unfunded-cancel-", w.otherID, product, stateCancelled, 51)
+	vendorOrders := w.page("/orders", w.vendor, 200)
+	if strings.Contains(vendorOrders, draft) || strings.Contains(vendorOrders, cancelledDraft) || strings.Contains(vendorOrders, "bulk-unfunded-cancel-") || !strings.Contains(vendorOrders, "Showing 1–50 of 52 orders") {
+		t.Fatal("vendor order history should hide drafts/unfunded cancellations and count all 52 funded orders")
+	}
+	buyerOrders := w.page("/orders", w.buyer, 200)
+	if !strings.Contains(buyerOrders, draft) || !strings.Contains(buyerOrders, cancelledDraft) || strings.Contains(buyerOrders, fundedCancelled) {
+		t.Fatal("buyer order history lost its own draft or cancelled draft")
+	}
+	if !strings.Contains(w.page("/orders?page=2", w.vendor, 200), fundedCancelled) {
+		t.Fatal("vendor order history did not page through funded cancelled orders")
+	}
+	if !strings.Contains(w.page("/vendor-dashboard", w.vendor, 200), fundedCancelled) {
+		t.Fatal("vendor terminal history lost a cancellation with an issued payment address")
 	}
 }

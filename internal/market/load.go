@@ -347,7 +347,10 @@ func (a *App) load(r *http.Request, d *PageData) error {
 		case "orders", "order", "disputes":
 			// No admin order list (A-127): staff see an order only while it is disputed or resolved, a payment on it
 			// is flagged (A-24, /canary#records) or it is an escrow order with an open staff alert (A-470).
-			query := orderQuery + " WHERE (o.buyer_id=$1 OR p.vendor_id=$1)"
+			// Buyers keep their full order history. Vendor-side activity excludes drafts and
+			// cancelled drafts that never received a payment address: those are not customer work.
+			const vendorOrderVisible = `(p.vendor_id=$1 AND o.state<>'draft' AND (o.state<>'cancelled' OR EXISTS(SELECT 1 FROM payment_addresses pa WHERE pa.order_id=o.id)))`
+			query := orderQuery + " WHERE (o.buyer_id=$1 OR " + vendorOrderVisible + ")"
 			args := []any{d.User.ID}
 			if d.Page == "order" {
 				// Moderators and administrators may also open disputed or resolved orders, orders with a payment
@@ -360,11 +363,13 @@ func (a *App) load(r *http.Request, d *PageData) error {
 				query += " AND o.state IN ('paid','shipped','delivered') ORDER BY o.created DESC"
 			} else if d.Page == "orders" {
 				var total int
-				if err = a.db.QueryRowContext(ctx, "SELECT count(*) FROM orders o JOIN products p ON p.id=o.product_id WHERE o.buyer_id=$1 OR p.vendor_id=$1", d.User.ID).Scan(&total); err != nil {
+				if err = a.db.QueryRowContext(ctx, "SELECT count(*) FROM orders o JOIN products p ON p.id=o.product_id WHERE o.buyer_id=$1 OR (p.vendor_id=$1 AND o.state<>'draft' AND (o.state<>'cancelled' OR EXISTS(SELECT 1 FROM payment_addresses pa WHERE pa.order_id=o.id)))", d.User.ID).Scan(&total); err != nil {
 					return err
 				}
 				d.ActivityPaging = activityPaging("/orders", total, r.URL.Query().Get("page"), nil)
-				query += " ORDER BY o.created DESC,o.id DESC LIMIT $2 OFFSET $3"
+				// Keep buyer history in its established creation order; vendor-side orders use
+				// last-change order so an active update surfaces in the vendor's activity list.
+				query += " ORDER BY CASE WHEN o.buyer_id=$1 THEN o.created ELSE o.updated END DESC,o.id DESC LIMIT $2 OFFSET $3"
 				args = append(args, activityPageSize, d.ActivityPaging.Offset())
 			} else {
 				query += " ORDER BY o.created DESC,o.id DESC LIMIT 1"
