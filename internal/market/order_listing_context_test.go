@@ -201,7 +201,7 @@ func TestDeskOrderRowsLinkTheirListing(t *testing.T) {
 	disputedOrder := e.order(w.buyerID, disputed, "BTC", stateShipped)
 	w.expect("/disputes", w.buyer, form("order_id", disputedOrder, "reason", "The parcel never arrived at the agreed place."), 303, "")
 	flaggedOrder := e.order(w.otherID, flagged, "BTC", stateCancelled)
-	if _, err := e.DB.Exec("INSERT INTO payment_addresses(order_id,currency,address,provider) VALUES($1,'BTC','a265-funded-cancel-address','test')", flaggedOrder); err != nil {
+	if _, err := e.DB.Exec("INSERT INTO payment_addresses(order_id,currency,address,provider) VALUES($1,'BTC','tb1qa265','test')", flaggedOrder); err != nil {
 		t.Fatal(err)
 	}
 	e.mustExec(`INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations,flagged,after_close) VALUES($1,'BTC','a265-flagged',0,'tb1qa265',1,1,true,true)`, flaggedOrder)
