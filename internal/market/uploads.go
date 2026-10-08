@@ -147,7 +147,7 @@ func (a *App) serveUpload(w http.ResponseWriter, r *http.Request, route uploadRo
 	if route.kind == uploadListing {
 		u.back = "/vendor-dashboard"
 	}
-	if msg := postOriginError(r); msg != "" {
+	if msg := postOriginError(r, a.secure); msg != "" {
 		u.refuse(http.StatusForbidden, msg)
 		return
 	}

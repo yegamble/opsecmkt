@@ -34,10 +34,9 @@ func TestRegisterAndSetupNeverSpendSignInBudget(t *testing.T) {
 	for range 10 {
 		agExpect(e, "/register", randomToken(), url.Values{"handle": {"lock_victim"}, "password": {"a-new-long-password"}}, 400, "Handle unavailable")
 	}
-	// Handles are unique case-sensitively, so a case variant of the victim's handle is free: registering it
-	// used to spend the victim's (case-insensitive) sign-in budget.
+	// Case variants are now taken too, before bcrypt or the separate registration budget.
 	for i := 1; i <= 10; i++ {
-		agExpect(e, "/register", randomToken(), url.Values{"handle": {caseVariant("lock_victim", i)}, "password": {"a-new-long-password"}}, 303, "")
+		agExpect(e, "/register", randomToken(), url.Values{"handle": {caseVariant("lock_victim", i)}, "password": {"a-new-long-password"}}, 400, "Handle unavailable")
 	}
 	// Setup after installation needs no CAPTCHA and is refused only after the limiter.
 	for range 10 {
@@ -52,11 +51,13 @@ func TestRegisterAndSetupNeverSpendSignInBudget(t *testing.T) {
 	if agUserSessions(e, id) != 2 {
 		t.Fatal("sign-in after registrations did not create a session")
 	}
-	// Registration keeps its own per-handle budget (10 per ten minutes, case-insensitive), separate from
-	// sign-in: the eleventh case variant is refused and nothing is created.
-	agExpect(e, "/register", randomToken(), url.Values{"handle": {caseVariant("lock_victim", 11)}, "password": {"a-new-long-password"}}, 429, "Too many attempts")
-	if n := agInt(e, "SELECT count(*) FROM users"); n != 11 {
-		t.Fatalf("users=%d, want 11", n)
+	// A taken handle never enters the registration limiter; it remains unavailable after repeated attempts.
+	agExpect(e, "/register", randomToken(), url.Values{"handle": {caseVariant("lock_victim", 11)}, "password": {"a-new-long-password"}}, 400, "Handle unavailable")
+	if n := agInt(e, "SELECT count(*) FROM users"); n != 1 {
+		t.Fatalf("users=%d, want 1", n)
+	}
+	if agLimited(e, "register:lock_victim") {
+		t.Fatal("taken-handle precheck spent registration budget")
 	}
 	agExpect(e, "/setup", randomToken(), url.Values{"handle": {"lock_victim"}, "password": {"a-new-long-password"}, "token": {"wrong-token"}}, 429, "Too many attempts")
 	w = e.do("POST", "/login", randomToken(), login)

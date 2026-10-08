@@ -157,7 +157,8 @@ func TestBootstrapAdminRejectsBadPasswordAndHandle(t *testing.T) {
 		{"has space", bootstrapPassword, "", "3–32 character handle"},
 		{" first_admin", bootstrapPassword, "", "3–32 character handle"}, // exact, as the operator will sign in with it
 		{"", bootstrapPassword, "", "3–32 character handle"},
-		{"first_admin", bootstrapPassword, strings.Repeat("n", 81), "at most 80 bytes"},
+		{"first_admin", bootstrapPassword, strings.Repeat("n", 81), "at most 80 characters"},
+		{"first_admin", bootstrapPassword, strings.Repeat("é", 81), "at most 80 characters"},
 	} {
 		err := BootstrapAdmin(ctx, e.DB, tc.handle, tc.password, tc.site)
 		if err == nil || !strings.Contains(err.Error(), tc.msg) {

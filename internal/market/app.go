@@ -409,6 +409,9 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+	if a.secure {
+		w.Header().Set("Strict-Transport-Security", "max-age=31536000")
+	}
 	if r.Method != "GET" && r.Method != "POST" && r.Method != "HEAD" {
 		w.Header().Set("Allow", "GET, HEAD, POST")
 		http.Error(w, "Method not allowed", 405)
@@ -552,7 +555,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, invalidFormText, 400)
 			return
 		}
-		if msg := postOriginError(r); msg != "" {
+		if msg := postOriginError(r, a.secure); msg != "" {
 			http.Error(w, msg, 403)
 			return
 		}
@@ -741,13 +744,13 @@ func formTextValid(form url.Values) bool {
 	return true
 }
 
-// postOriginError returns the refusal of a form post whose Origin names another host or whose Sec-Fetch-Site says
-// cross-site, or "" when neither does. Fixed copy naming no header value; the usual cause of a mismatch is a
-// reverse proxy rewriting Host (A-138).
-func postOriginError(r *http.Request) string {
+// postOriginError refuses a different Origin host, an HTTP Origin when secure cookies are required, or a
+// cross-site fetch. Forwarded headers do not weaken this check. The fixed copy names no header value; a
+// common host mismatch is a reverse proxy rewriting Host (A-138).
+func postOriginError(r *http.Request, secure bool) string {
 	if origin := r.Header.Get("Origin"); origin != "" {
 		u, e := url.Parse(origin)
-		if e != nil || u.Host != r.Host || (u.Scheme != "http" && u.Scheme != "https") {
+		if e != nil || u.Host != r.Host || (u.Scheme != "http" && u.Scheme != "https") || (secure && u.Scheme != "https") {
 			return "Origin does not match Host; if this market runs behind a reverse proxy, the proxy must forward the Host header."
 		}
 	}

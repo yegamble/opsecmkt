@@ -104,15 +104,16 @@ func TestSetupSiteNameLimit(t *testing.T) {
 		return url.Values{"token": {testSetupToken}, "handle": {"first_admin"}, "password": {testPassword}, "site_name": {name}}
 	}
 	agExpect(e, "/setup", randomToken(), setup(strings.Repeat("n", 81)), 400, "Site name too long")
+	agExpect(e, "/setup", randomToken(), setup(strings.Repeat("é", 81)), 400, "Site name too long")
 	// The admin row inserted before the check is rolled back with the rest of the transaction.
 	if agInt(e, "SELECT count(*) FROM users") != 0 || agInt(e, "SELECT count(*) FROM settings WHERE key='installed'") != 0 || agInt(e, "SELECT count(*) FROM audit_events") != 0 {
 		t.Fatal("refused setup left a partial installation")
 	}
 	agExpect(e, "/setup", randomToken(), url.Values{"token": {"wrong-token"}, "handle": {"first_admin"}, "password": {testPassword}}, 403, "token incorrect")
-	name := strings.Repeat("n", 80)
+	name := strings.Repeat("é", 80)
 	e.check(e.do("POST", "/setup", randomToken(), setup(name)), 303)
 	if agStr(e, "SELECT value FROM settings WHERE key='site_name'") != name || agStr(e, "SELECT role FROM users WHERE handle='first_admin'") != "admin" {
-		t.Fatal("80-character site name not accepted")
+		t.Fatal("80-character multibyte site name not accepted")
 	}
 }
 

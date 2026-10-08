@@ -11,7 +11,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -420,10 +422,10 @@ func authGate(c *actionCtx) (handle, password string, release func(), err error)
 		err = a.checkCaptcha(c) // P1: single-use image CAPTCHA unless an administrator turned it off
 	}
 	if err == nil && path == "/register" {
-		// A taken handle is refused before any bcrypt, slot or budget. The INSERT's unique key still
-		// refuses a handle registered concurrently after this check.
+		// A taken handle is refused before any bcrypt, slot or budget. Recheck under the creation
+		// advisory lock below, since this precheck alone cannot serialize case variants.
 		var taken bool
-		if qerr := a.db.QueryRowContext(c.Ctx(), "SELECT EXISTS(SELECT 1 FROM users WHERE handle=$1)", handle).Scan(&taken); qerr != nil {
+		if qerr := a.db.QueryRowContext(c.Ctx(), "SELECT EXISTS(SELECT 1 FROM users WHERE lower(handle)=lower($1))", handle).Scan(&taken); qerr != nil {
 			err = fail(503, "Service unavailable")
 		} else if taken {
 			err = fail(400, "Handle unavailable")
@@ -486,6 +488,28 @@ func authAction(c *actionCtx) (actionResult, error) {
 		var id, stored string
 		var suspended bool
 		err := a.db.QueryRowContext(ctx, "SELECT id,password_hash,suspended_at IS NOT NULL FROM users WHERE handle=$1", handle).Scan(&id, &stored, &suspended)
+		if errors.Is(err, sql.ErrNoRows) {
+			// Keep legacy exact handles usable even when a prior release allowed Alice and alice.
+			// A case-insensitive fallback is safe only if exactly one account matches.
+			rows, qerr := a.db.QueryContext(ctx, "SELECT id,password_hash,suspended_at IS NOT NULL FROM users WHERE lower(handle)=lower($1) LIMIT 2", handle)
+			if qerr == nil {
+				matches := 0
+				for rows.Next() {
+					matches++
+					if scanErr := rows.Scan(&id, &stored, &suspended); scanErr != nil {
+						qerr = scanErr
+						break
+					}
+				}
+				if rowErr := rows.Err(); rowErr != nil {
+					qerr = rowErr
+				}
+				rows.Close()
+				if qerr == nil && matches == 1 {
+					err = nil
+				}
+			}
+		}
 		hash := []byte(stored)
 		if err != nil {
 			hash = dummyHash()
@@ -525,9 +549,12 @@ func authAction(c *actionCtx) (actionResult, error) {
 		if _, err = tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(782493)"); err != nil {
 			return actionResult{}, fail(503, "Service unavailable")
 		}
+		if err = refuseTakenHandle(ctx, tx, handle); err != nil {
+			return actionResult{}, err
+		}
 		id = randomToken()
 		if _, err = tx.ExecContext(ctx, "INSERT INTO users(id,handle,password_hash,role) VALUES($1,$2,$3,'buyer')", id, handle, string(hash)); err != nil {
-			return actionResult{}, fail(400, "Handle unavailable")
+			return actionResult{}, accountInsertError(err)
 		}
 		if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", id, "Account created: buyer"); err != nil {
 			return actionResult{}, fail(500, "Audit failed")
@@ -552,13 +579,16 @@ var errPasswordChanged = fail(401, "Sign-in verification expired. Sign in again.
 var errSetupComplete = fail(403, "Setup already complete")
 
 // setupSiteName applies first-run setup's marketplace-name rule: surrounding space trimmed, "OPSMKT" when
-// blank, at most 80 bytes.
+// blank, at most 80 characters, matching the form's maxlength.
 func setupSiteName(raw string) (string, error) {
 	name := strings.TrimSpace(raw)
 	if name == "" {
 		name = "OPSMKT"
 	}
-	if len(name) > 80 {
+	if !utf8.ValidString(name) || strings.ContainsRune(name, 0) {
+		return "", fail(400, "Invalid site name")
+	}
+	if utf8.RuneCountInString(name) > 80 {
 		return "", fail(400, "Site name too long")
 	}
 	return name, nil
@@ -577,9 +607,12 @@ func installFirstAdmin(ctx context.Context, tx *sql.Tx, handle, hash, siteName s
 	if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM settings WHERE key='installed')").Scan(&installed); err != nil || installed {
 		return "", errSetupComplete
 	}
+	if err := refuseTakenHandle(ctx, tx, handle); err != nil {
+		return "", err
+	}
 	id := randomToken()
 	if _, err := tx.ExecContext(ctx, "INSERT INTO users(id,handle,password_hash,role) VALUES($1,$2,$3,'admin')", id, handle, hash); err != nil {
-		return "", fail(400, "Handle unavailable")
+		return "", accountInsertError(err)
 	}
 	name, err := setupSiteName(siteName)
 	if err != nil {
@@ -592,6 +625,28 @@ func installFirstAdmin(ctx context.Context, tx *sql.Tx, handle, hash, siteName s
 		return "", fail(500, "Audit failed")
 	}
 	return id, nil
+}
+
+// refuseTakenHandle runs under creation advisory lock 782493 for both HTTP and CLI account creation.
+// The index is deliberately non-unique: a legacy database may already contain case variants.
+func refuseTakenHandle(ctx context.Context, tx *sql.Tx, handle string) error {
+	var taken bool
+	if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM users WHERE lower(handle)=lower($1))", handle).Scan(&taken); err != nil {
+		return fail(503, "Service unavailable")
+	}
+	if taken {
+		return fail(400, "Handle unavailable")
+	}
+	return nil
+}
+
+// Only a uniqueness violation is a taken handle. Do not describe other database failures as a collision.
+func accountInsertError(err error) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		return fail(400, "Handle unavailable")
+	}
+	return fail(503, "Service unavailable")
 }
 
 // enrolledFactors lists the registered second factors the user has enrolled.
