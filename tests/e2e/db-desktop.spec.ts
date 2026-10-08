@@ -50,12 +50,12 @@ test('desktop: register, draft, profile persistence and sign-out', async ({ page
   await page.reload();
   await expect(page.getByLabel('XMPP address')).toHaveValue(`${handle}@example.test`);
   await fits(page);
-  await page.getByRole('button', { name: 'Sign out', exact: true }).click();
+  await submitAndLoad(page, page.getByRole('button', { name: 'Sign out', exact: true }));
   await page.goto('/account');
   await expect(page).toHaveURL(/\/login\?next=%2Faccount$/);
   await page.getByLabel('Handle', { exact: true }).fill(handle);
   await page.getByLabel('Password', { exact: true }).fill(password);
-  await page.getByRole('button', { name: 'Sign in' }).click();
+  await submitAndLoad(page, page.getByRole('button', { name: 'Sign in' }));
   await page.goto('/account');
   await expect(page.getByLabel('XMPP address')).toHaveValue(`${handle}@example.test`);
 });

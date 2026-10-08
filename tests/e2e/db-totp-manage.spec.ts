@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { uniqueHandle } from './db-fixtures';
-import { signedIn, submitStatus, totp } from './db-helpers';
+import { signedIn, submitAndLoad, submitStatus, totp } from './db-helpers';
 
 // TOTP management after enrollment: turning TOTP on needs the password, replacing recovery codes (password and a
 // current code) invalidates the old set, and turning TOTP off needs the password plus a current code; each change,
@@ -13,7 +13,7 @@ import { signedIn, submitStatus, totp } from './db-helpers';
 
 async function signOutAndChallenge(page: Page, handle: string, password: string) {
   await page.goto('/account');
-  await page.getByRole('button', { name: 'Sign out', exact: true }).click();
+  await submitAndLoad(page, page.getByRole('button', { name: 'Sign out', exact: true }));
   await page.goto('/login');
   await page.getByLabel('Handle', { exact: true }).fill(handle);
   await page.getByLabel('Password', { exact: true }).fill(password);
@@ -123,7 +123,7 @@ test('replacing recovery codes invalidates the old ones; TOTP turns off with pas
   await expect(activity).toContainText('Signed in with password and recovery code');
 
   // Sign-in is password-only again.
-  await page.getByRole('button', { name: 'Sign out', exact: true }).click();
+  await submitAndLoad(page, page.getByRole('button', { name: 'Sign out', exact: true }));
   await page.goto('/login');
   await page.getByLabel('Handle', { exact: true }).fill(handle);
   await page.getByLabel('Password', { exact: true }).fill(password);
@@ -175,7 +175,7 @@ test('a recovery code with "I lost my authenticator" turns TOTP off at sign-in',
   await expect(activity).toContainText('Signed in with password and recovery code');
 
   // The next sign-in is password only.
-  await page.getByRole('button', { name: 'Sign out', exact: true }).click();
+  await submitAndLoad(page, page.getByRole('button', { name: 'Sign out', exact: true }));
   await page.goto('/login');
   await page.getByLabel('Handle', { exact: true }).fill(handle);
   await page.getByLabel('Password', { exact: true }).fill(password);

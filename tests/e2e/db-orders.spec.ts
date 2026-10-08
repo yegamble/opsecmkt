@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { ADMIN, FIXTURE_LISTING, uniqueHandle } from './db-fixtures';
+import { submitAndLoad } from './db-helpers';
 import { waitForStyles } from './styles';
 
 // P3 order lifecycle against a real database with no payment provider configured.
@@ -59,7 +60,7 @@ test('draft cannot be paid without a wallet, cancellation is recorded, vendor se
 
   // The listing owner sees the order among incoming orders.
   await page.goto('/account');
-  await page.getByRole('button', { name: 'Sign out', exact: true }).click();
+  await submitAndLoad(page, page.getByRole('button', { name: 'Sign out', exact: true }));
   await page.goto('/login');
   await page.getByLabel('Handle', { exact: true }).fill(ADMIN.handle);
   await page.getByLabel('Password', { exact: true }).fill(ADMIN.password);
