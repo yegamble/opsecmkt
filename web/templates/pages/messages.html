@@ -42,7 +42,8 @@
 <time>{{.Created}}</time>
 </div>
 <p class="pgp-message-status">{{if .Encrypted}}{{if eq .RecipientMatch "yes"}}<span class="badge green">Encrypted (to recipient’s key)</span>{{else if eq .RecipientMatch "no"}}<span class="badge pgp-danger">Encrypted (NOT to recipient’s key)</span>{{else}}<span class="badge neutral">Encrypted (recipient unknown)</span>{{end}}{{if and .RecipientExtraKeysSet (gt .RecipientExtraKeys 0)}} <span class="badge pgp-danger">+ {{.RecipientExtraKeys}} other visible key(s)</span><span class="help">These additional visible keys may also be able to read this message; hidden recipients may also exist.</span>{{end}}{{else}}<span class="badge pgp-danger">Not encrypted (plaintext or invalid OpenPGP)</span>{{end}}</p>
-<label class="help">Encrypted message<textarea class="code-block" rows="9" readonly aria-label="Encrypted message from {{.Sender}} to {{.Recipient}}">{{.Body}}</textarea></label>
+<label class="help">Encrypted message<textarea class="code-block" rows="9" readonly aria-label="Encrypted message from {{.Sender}} to {{.Recipient}}">
+{{.Body}}</textarea></label>
 </article>{{else}}<div class="empty">
 <span class="empty-icon">[ ]</span>
 <h2>No messages yet</h2>

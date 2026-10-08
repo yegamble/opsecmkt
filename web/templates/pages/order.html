@@ -163,7 +163,8 @@
 <a class="button" href="/messages">Open messages</a>{{end}}</section>{{end}}<section class="panel" aria-labelledby="order-keys">
 <h2 id="order-keys">{{if eq $.OrderViewer "moderator"}}Parties’ PGP keys{{else}}{{if eq $.OrderViewer "buyer"}}Vendor{{else}}Buyer{{end}}’s PGP key{{end}}</h2>{{range $.Contacts}}{{template "contact-key" .}}{{end}}</section>{{template "dispute-contacts" $}}{{if or (eq .Kind "digital") $.Delivery}}<section class="panel" aria-labelledby="order-delivery">
 <h2 id="order-delivery">Digital delivery</h2>{{with $.Delivery}}<p class="help">Released {{.Created}} by the delivered step. Stored unencrypted on this server; visible to the buyer and vendor, and to moderators if the order is disputed.</p>
-<label class="help">Digital delivery<textarea class="code-block order-delivery" rows="9" readonly aria-label="Digital delivery">{{.Content}}</textarea></label>{{else}}{{if $.DeliveryWithheld}}<p class="muted">Delivery content is shown to moderators only if the order is disputed.</p>{{else}}<p class="muted">Nothing has been delivered. Content appears here only when the order moves to Delivered.</p>{{end}}{{end}}</section>{{end}}{{if or $.CanReview $.Reviews}}<section class="panel" aria-labelledby="order-review">
+<label class="help">Digital delivery<textarea class="code-block order-delivery" rows="9" readonly aria-label="Digital delivery">
+{{.Content}}</textarea></label>{{else}}{{if $.DeliveryWithheld}}<p class="muted">Delivery content is shown to moderators only if the order is disputed.</p>{{else}}<p class="muted">Nothing has been delivered. Content appears here only when the order moves to Delivered.</p>{{end}}{{end}}</section>{{end}}{{if or $.CanReview $.Reviews}}<section class="panel" aria-labelledby="order-review">
 <h2 id="order-review">Review</h2>{{range $.Reviews}}<div class="review">
 <div class="message-meta">
 <span class="badge green">Verified purchase</span>{{if .Hidden}}
