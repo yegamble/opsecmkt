@@ -248,7 +248,9 @@ class SetupScriptTest(NodeCase):
             state.write_text(json.dumps({'chain': chain, 'challenge': challenge, 'flag': flag, 'wallets': wallets or {}, 'calls': []}))
             work = Path(tmp, 'work')
             work.mkdir()
-            env = dict(os.environ, FAKE_CLI_STATE=str(state), HOME=str(work))
+            # macOS's system Python otherwise writes its stdlib bytecode cache under this temporary HOME.
+            # Keep the fake CLI from creating files so the assertion measures the operator script.
+            env = dict(os.environ, FAKE_CLI_STATE=str(state), HOME=str(work), PYTHONDONTWRITEBYTECODE='1')
             env.pop('ESCROW_BTC_RPC_URL', None)
             env.pop('BITCOIN_RPC_URL', None)
             env.update(env_extra or {})
