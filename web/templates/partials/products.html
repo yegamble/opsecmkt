@@ -31,6 +31,7 @@ broken-image icon in Chromium and WebKit); otherwise the CSS illustration. Thumb
 <a class="button" href="/listing-edit?id={{.ID}}" aria-label="Edit {{.Title}}">Edit</a>
 {{if not .TakedownReason}}<form method="post" action="{{if .Archived}}/listings/restore{{else}}/listings/archive{{end}}">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{if .Archived}}{{formNonce "/listings/restore"}}{{else}}{{formNonce "/listings/archive"}}{{end}}">
 <input type="hidden" name="id" value="{{.ID}}">
 <button type="submit" aria-label="{{if .Archived}}Restore{{else}}Archive{{end}} {{.Title}}">{{if .Archived}}Restore{{else}}Archive{{end}}</button>
 </form>{{end}}

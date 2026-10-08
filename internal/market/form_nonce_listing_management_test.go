@@ -106,7 +106,7 @@ func TestFormNonceArchiveAndRestoreReplayAndStaleForms(t *testing.T) {
 	ownerID, owner := e.user("nonce_archive_owner", "vendor")
 	product := e.product(ownerID, "digital")
 
-	activePage := e.do("GET", "/listing-edit?id="+product, owner, nil)
+	activePage := e.do("GET", "/vendor-dashboard", owner, nil)
 	e.check(activePage, 200)
 	archiveNonce := renderedFormNonce(t, activePage.Body.String(), "/listings/archive")
 	staleArchivePage := e.do("GET", "/listing-edit?id="+product, owner, nil)
@@ -127,7 +127,7 @@ func TestFormNonceArchiveAndRestoreReplayAndStaleForms(t *testing.T) {
 	// A distinct stale form still reaches the state-machine check and is refused.
 	e.check(e.do("POST", "/listings/archive", owner, url.Values{"id": {product}, formNonceField: {staleArchiveNonce}}), 409)
 
-	archivedPage := e.do("GET", "/listing-edit?id="+product, owner, nil)
+	archivedPage := e.do("GET", "/vendor-dashboard", owner, nil)
 	e.check(archivedPage, 200)
 	restoreNonce := renderedFormNonce(t, archivedPage.Body.String(), "/listings/restore")
 	staleRestorePage := e.do("GET", "/listing-edit?id="+product, owner, nil)

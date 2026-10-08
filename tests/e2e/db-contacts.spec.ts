@@ -38,6 +38,10 @@ test('vendor contact, unread notifications and demotion archive', async ({ brows
   await expect(vendorNav.getByRole('link', { name: 'Notifications', exact: true })).toBeVisible();
 
   await setRole(admin, vendorHandle, 'vendor');
+  await vendor.goto('/notifications');
+  await expect(vendor.locator('main')).toContainText('Your account role changed from buyer to vendor.');
+  await vendor.getByRole('button', { name: 'Mark all as read', exact: true }).click();
+  await expect(vendorNav.getByRole('link', { name: 'Notifications', exact: true })).toBeVisible();
   await vendor.goto('/vendor-dashboard');
   await vendor.getByText('+ Publish a new listing', { exact: true }).click();
   await vendor.getByLabel('Listing title').fill(title);
