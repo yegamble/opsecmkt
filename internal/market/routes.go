@@ -580,6 +580,8 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 				msg = "Payout outcome unknown: it may have been saved. Reload the admin page and check the payout state and audit trail before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
 			case "/resolve":
 				msg = "Resolution outcome unknown: it may have been saved. Check the dispute, order and payout state before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
+			case "/admin/suspend", "/admin/reset-factors":
+				msg = "Staff action outcome unknown: it may have been saved. Check the account's current state and audit trail before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
 			case "/totp/disable", "/totp/activate", "/totp/recovery":
 				msg = "Authenticator change outcome unknown: it may have been saved. Reload your authenticator settings and check their state before taking further action."
 			}

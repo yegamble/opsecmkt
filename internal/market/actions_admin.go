@@ -10,8 +10,10 @@ import (
 
 func init() {
 	registerAction("/admin", actionSpec{Roles: []string{"admin"}, OwnTx: true, Run: adminAction})
-	registerAction("/admin/reset-factors", actionSpec{Roles: []string{"admin"}, OwnTx: true, Run: adminResetFactorsAction})
-	registerAction("/admin/suspend", actionSpec{Roles: []string{"admin"}, OwnTx: true, Run: adminSuspendAction})
+	registerAction("/admin/reset-factors", actionSpec{Roles: []string{"admin"}, OwnTx: true,
+		ConfirmedFormNonce: true, ReceiptAuthorize: adminResetReceiptAuthorize, Run: adminResetFactorsAction})
+	registerAction("/admin/suspend", actionSpec{Roles: []string{"admin"}, OwnTx: true,
+		ConfirmedFormNonce: true, ReceiptAuthorize: adminSuspendReceiptAuthorize, Run: adminSuspendAction})
 	registerAction("/admin/review", actionSpec{Roles: []string{"admin"}, OwnTx: true, Run: adminReviewAction})
 	registerLoader("admin", factorAccountsLoader)
 	registerLoader("admin", suspendedAccountsLoader)
@@ -39,6 +41,40 @@ func suspendedAccountsLoader(ctx context.Context, a *App, r *http.Request, d *Pa
 	}
 	return rows.Err()
 }
+
+// The target must still be a different, non-administrator account before a
+// confirmed staff receipt can be replayed. A successful suspend/restore or
+// factor reset changes the very state their callbacks require on first use,
+// so this check intentionally does not require the former suspended/factor
+// state. It takes no target lock: replay changes nothing, while a first use
+// repeats all target checks under the callback's established lock order.
+func adminTargetReceiptAuthorize(c *actionCtx, reset bool) error {
+	handle := strings.TrimSpace(c.Form.Get("handle"))
+	var target, role string
+	err := c.Tx.QueryRowContext(c.Ctx(), "SELECT id,role FROM users WHERE handle=$1", handle).Scan(&target, &role)
+	if err == sql.ErrNoRows {
+		return fail(404, "Account not found")
+	}
+	if err != nil {
+		return err
+	}
+	if target == c.User.ID {
+		if reset {
+			return fail(400, "You cannot reset your own second factors here. Use your recovery codes, or follow the operator procedure for administrator lockout.")
+		}
+		return fail(400, "You cannot suspend your own account.")
+	}
+	if role == "admin" {
+		if reset {
+			return fail(403, "Administrator second factors cannot be reset here; administrator lockout is an operator procedure.")
+		}
+		return fail(403, "Administrator accounts cannot be suspended or restored here.")
+	}
+	return nil
+}
+
+func adminSuspendReceiptAuthorize(c *actionCtx) error { return adminTargetReceiptAuthorize(c, false) }
+func adminResetReceiptAuthorize(c *actionCtx) error   { return adminTargetReceiptAuthorize(c, true) }
 
 // adminSuspendAction suspends or restores a non-administrator account, looked up by handle. Suspending ends
 // the account's sessions and pending sign-ins and blocks sign-in (checked at the password step, when a
