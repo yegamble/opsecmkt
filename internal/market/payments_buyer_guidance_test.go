@@ -41,8 +41,16 @@ func TestBuyerPayoutAddressPromptIsCurrencySpecificAndPrivate(t *testing.T) {
 			buyerPage := p.page("/order?id="+order, p.buyerSess)
 			mustContain(t, buyerPage, want, "pooled refund or return", `href="/account#payout">your payout settings</a>`)
 			mustNotContain(t, p.page("/order?id="+order, p.vendorSess), want)
-			mustNotContain(t, p.page("/order?id="+order, p.adminSess), want)
+			adminPage := p.body("GET", "/order?id="+order, p.adminSess, nil, 404)
+			mustNotContain(t, adminPage, want)
 		}
+		// Issued orders still need a saved destination while their pooled wallet is unavailable.
+		offline, provider := addGuidanceOrder(t, p, currency, statePaid)
+		delete(p.A.payments, currency)
+		mustContain(t, p.page("/order?id="+offline, p.buyerSess), want, "Payment is not monitored")
+		mustNotContain(t, p.page("/order?id="+offline, p.vendorSess), want)
+		mustNotContain(t, p.body("GET", "/order?id="+offline, p.adminSess, nil, 404), want)
+		p.A.payments[currency] = provider
 		// A saved address for this currency suppresses the prompt, regardless of the other currency.
 		if _, err := p.DB.Exec("UPDATE users SET "+column+"='saved-for-this-currency' WHERE id=$1", p.buyer.ID); err != nil {
 			t.Fatal(err)
@@ -64,7 +72,8 @@ func TestAwaitingBuyerCopyExplainsReceivedAmountAndSubfloorExcess(t *testing.T) 
 		buyerPage := p.page("/order?id="+order, p.buyerSess)
 		mustContain(t, buyerPage, want)
 		mustNotContain(t, p.page("/order?id="+order, p.vendorSess), want)
-		mustNotContain(t, p.page("/order?id="+order, p.adminSess), want)
+		adminPage := p.body("GET", "/order?id="+order, p.adminSess, nil, 404)
+		mustNotContain(t, adminPage, want)
 	}
 	// A full but unconfirmed deposit leaves the order awaiting payment, but the buyer has nothing more to send.
 	fullSeen, fullSeenAddress := p.newOrder(stateAwaitingPayment)

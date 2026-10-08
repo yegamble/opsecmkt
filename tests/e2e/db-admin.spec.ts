@@ -52,7 +52,7 @@ test('promoting a buyer to vendor opens the vendor desk; the listing form shows 
   // Account column shows whose row each is.
   const auditRows = admin.locator('table').last().locator('tbody tr');
   await expect(auditRows.filter({ hasText: `Changed role of ${vendorHandle} from buyer to vendor` }).locator('td').first()).toHaveText(ADMIN.handle);
-  await expect(auditRows.filter({ hasText: 'Role changed from buyer to vendor by an administrator' }).filter({ hasText: vendorHandle }).locator('td').first()).toHaveText(vendorHandle);
+  await expect(auditRows.filter({ hasText: `Role changed from buyer to vendor by administrator ${ADMIN.handle}` }).filter({ hasText: vendorHandle }).locator('td').first()).toHaveText(vendorHandle);
   // Only roles the server can assign are offered; administrator remains setup-only.
   await expect(roleForm.getByLabel('Role').locator('option[value="admin"]')).toHaveCount(0);
 
