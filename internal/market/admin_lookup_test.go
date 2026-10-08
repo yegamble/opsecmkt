@@ -47,8 +47,8 @@ func TestAdminChangesRoleOfAnyAccountByHandle(t *testing.T) {
 		t.Fatal("oldest vendor not demoted by handle or listing not archived")
 	}
 	if !e.auditExact(adminID, "Changed role of lookup_old_vendor from vendor to buyer; archived 1 active listing(s)") ||
-		!e.auditExact(vendorID, "Role changed from vendor to buyer by an administrator") ||
-		!e.auditExact(vendorID, "Archived 1 active listing(s): role changed to buyer by an administrator") {
+		!e.auditExact(vendorID, "Role changed from vendor to buyer by administrator lookup_admin") ||
+		!e.auditExact(vendorID, "Archived 1 active listing(s): role changed to buyer by administrator lookup_admin") {
 		t.Fatal("role change audit rows changed")
 	}
 
