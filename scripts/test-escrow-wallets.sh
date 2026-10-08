@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Manual wallet-compatibility evidence for Bitcoin escrow (A-450, ruling P4-R12): a real local chain plus a real
-# Electrum, run by hand, never in CI. REGTEST ONLY: the node it starts has no network at all (--network none).
+# Electrum, run by hand, never in CI. REGTEST ONLY: the node has P2P networking disabled and its RPC is published
+# only to host loopback on a disposable Docker bridge.
 #
 # It downloads Electrum 4.8.2 over HTTPS, checks the tarball's sha256 against the pin below and its detached signature
 # against the pinned fingerprint of ThomasV's release key (fetched from the Electrum repository at the release tag, in
@@ -18,10 +19,12 @@
 #                        this run's files) accepts every Electrum signature and the Core one (A-456b relaxed its
 #                        derivation refusal, P4-R13; until then it refused the Electrum ones); the text is logged
 #   electrum-seed-type   Electrum's own seed type derives multisig keys at m/1h and keystore.from_seed takes no path
+#   electrum-market-journey  two real Electrum BIP39 parties register, practice-sign, fund two market orders, sign a
+#                        release and sibling refund, and the real escrow signer co-signs and broadcasts both
 #
 # Needs docker (the bitcoin/bitcoin:31.1 image), curl, gpg, python3 (with venv and a C compiler for libsecp256k1), go,
-# git, tar and sha256sum, the Go module cache (the Go leg runs with GOPROXY=off) and about 100 MB in the temporary
-# directory. No database.
+# git, tar, openssl and sha256sum, TEST_DATABASE_URL for a disposable local PostgreSQL database, the Go module cache
+# (the Go legs run with GOPROXY=off) and temporary disk space.
 #
 #   ./scripts/test-escrow-wallets.sh [--update-fixtures]
 #
@@ -46,7 +49,7 @@ ELECTRUM_KEY_URL="https://raw.githubusercontent.com/spesmilo/electrum/$ELECTRUM_
 SOURCE_PINS=(setuptools==80.9.0 electrum-ecc==0.0.8)
 WHEEL_PINS=(pycparser==2.23 cffi==2.0.0 cryptography==46.0.7)
 CORE_IMAGE=bitcoin/bitcoin:31.1
-LEGS=(core-shape-a electrum-shape-b es2-accepts-electrum electrum-seed-type)
+LEGS=(core-shape-a electrum-shape-b es2-accepts-electrum electrum-seed-type electrum-market-journey)
 
 cmdline="$*"
 update=0
@@ -56,13 +59,19 @@ for arg in "$@"; do
     *) echo "usage: $0 [--update-fixtures]" >&2; exit 2 ;;
   esac
 done
-for tool in docker curl gpg python3 go git tar sha256sum; do
+for tool in docker curl gpg python3 go git tar sha256sum openssl; do
   command -v "$tool" >/dev/null || { echo "$tool is required" >&2; exit 2; }
 done
+[[ -n "${TEST_DATABASE_URL:-}" ]] || { echo "TEST_DATABASE_URL must name a disposable local PostgreSQL database" >&2; exit 2; }
 container="${ESCROW_WALLETS_CONTAINER:-escrow-wallets-regtest}"
 [[ "$container" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]] || { echo "ESCROW_WALLETS_CONTAINER is not a container name" >&2; exit 2; }
+network="$container-internal"
 if docker container inspect "$container" >/dev/null 2>&1; then
   echo "Refusing: a container named $container exists; remove it or set ESCROW_WALLETS_CONTAINER." >&2
+  exit 2
+fi
+if docker network inspect "$network" >/dev/null 2>&1; then
+  echo "Refusing: a Docker network named $network exists; set ESCROW_WALLETS_CONTAINER." >&2
   exit 2
 fi
 
@@ -80,6 +89,7 @@ work="$(mktemp -d "${ESCROW_WALLETS_TMPDIR:-${TMPDIR:-/tmp}}/escrow-wallets.XXXX
 body="$work/body.log"
 : >"$body"
 started=0
+network_started=0
 electrum_line="Electrum $ELECTRUM_VERSION, Electrum-$ELECTRUM_VERSION.tar.gz sha256 $ELECTRUM_SHA256 (not verified: the run stopped before)"
 node_line="not started"
 
@@ -89,11 +99,14 @@ finish() {
   if [[ $started -eq 1 ]]; then
     docker rm -fv "$container" >/dev/null 2>&1 || true
   fi
+  if [[ $network_started -eq 1 ]]; then
+    docker network rm "$network" >/dev/null 2>&1 || true
+  fi
   local result=PASS out="$log"
   [[ "$out" == /* ]] || out="$repo/$log"
   [[ $status -eq 0 ]] || result="FAILED (exit $status)"
   {
-    echo "# scripts/test-escrow-wallets.sh (A-450): real local chain (Bitcoin Core regtest, --network none) plus a real Electrum, run by hand, not CI"
+    echo "# scripts/test-escrow-wallets.sh (A-450/A-457): real local chain (Bitcoin Core regtest, P2P disabled, loopback RPC) plus a real Electrum, run by hand, not CI"
     echo "# command: scripts/test-escrow-wallets.sh $(printf '%s' "$cmdline" | sed -E 's#://[^@ ]*@#://<redacted>@#g')"
     echo "# commit: $commit"
     echo "# $electrum_line"
@@ -177,10 +190,29 @@ while read -r line; do # one at a time: setuptools first, then electrum-ecc buil
   pip_install --no-binary :all: --no-build-isolation -r "$work/req-one.txt"
 done <"$work/req-source.txt"
 
-say "== Bitcoin Core regtest container $container (no network)"
+say "== Bitcoin Core regtest container $container (P2P disabled, loopback RPC)"
+whitelist=$(sed -n 's/^#  *-rpcwhitelist=opsecmkt-escrow:\([a-z,]*\)$/\1/p' scripts/test-escrow-regtest.sh)
+[[ -n "$whitelist" ]] || { say "FAILED: app RPC whitelist missing from scripts/test-escrow-regtest.sh"; exit 2; }
+rpcauth() {
+  local salt hash
+  salt=$(openssl rand -hex 16)
+  hash=$(printf %s "$2" | openssl dgst -sha256 -hmac "$salt" | sed 's/^.* //')
+  printf '%s:%s$%s' "$1" "$salt" "$hash"
+}
+operator_pass=$(openssl rand -hex 24)
+app_pass=$(openssl rand -hex 24)
+signer_pass=$(openssl rand -hex 24)
+docker network create "$network" >/dev/null
+network_started=1
 # create, then start: a failed create leaves nothing, so cleanup never removes a container this run did not make
-docker create --name "$container" --network none "$CORE_IMAGE" bitcoind -regtest -server=1 -fallbackfee=0.0002 \
-  -printtoconsole=0 >/dev/null
+docker create --name "$container" --network "$network" -p 127.0.0.1::18443 "$CORE_IMAGE" bitcoind \
+  -regtest -server=1 -networkactive=0 -dnsseed=0 -listen=0 -fallbackfee=0.0002 -printtoconsole=0 \
+  -rpcbind=0.0.0.0 -rpcallowip=0.0.0.0/0 -rpcport=18443 -rpcwhitelistdefault=0 \
+  "-rpcauth=$(rpcauth operator "$operator_pass")" \
+  "-rpcauth=$(rpcauth opsecmkt-escrow "$app_pass")" \
+  "-rpcauth=$(rpcauth opsecmkt-signer "$signer_pass")" \
+  "-rpcwhitelist=opsecmkt-escrow:$whitelist" \
+  -rpcwhitelist=opsecmkt-signer:decodepsbt,descriptorprocesspsbt,getdescriptorinfo >/dev/null
 started=1
 docker start "$container" >/dev/null
 cli() { docker exec -u bitcoin "$container" bitcoin-cli -regtest -datadir=/home/bitcoin/.bitcoin "$@"; }
@@ -193,7 +225,9 @@ if [[ "$chain" != regtest ]]; then
   say "Refusing: the node is not on regtest (or did not start)."
   exit 1
 fi
-node_line="$CORE_IMAGE ($(docker image inspect "$CORE_IMAGE" --format '{{index .RepoDigests 0}}' 2>/dev/null)), $(docker exec "$container" bitcoind -version | head -1), chain $chain, network none"
+rpcport=$(docker port "$container" 18443/tcp | sed -n 's/^127\.0\.0\.1:\([0-9]*\)$/\1/p')
+[[ "$rpcport" =~ ^[0-9]+$ ]] || { say "FAILED: regtest RPC is not published only on loopback"; exit 1; }
+node_line="$CORE_IMAGE ($(docker image inspect "$CORE_IMAGE" --format '{{index .RepoDigests 0}}' 2>/dev/null)), $(docker exec "$container" bitcoind -version | head -1), chain $chain, P2P disabled, loopback RPC"
 say "node: $node_line"
 
 say "== Wallet legs (scripts/escrow-wallets.py, offline)"
@@ -211,6 +245,23 @@ if [[ $gostatus -eq 0 ]] && grep -q -- '--- PASS: TestEscrowWalletFixtures ' "$b
   say "PASS: es2-accepts-electrum: the ES-2 check accepts every Electrum signature (text above) and the Core one"
 else
   say "FAIL: es2-accepts-electrum (go test exited $gostatus)"
+fi
+
+say "== electrum-market-journey (Go market, real Electrum bridge and isolated regtest)"
+set +e
+run env GOPROXY=off PIP_NO_INDEX=1 TMPDIR="$work/tmp" \
+  ESCROW_WALLETS_BRIDGE_PYTHON="$work/venv/bin/python" ESCROW_WALLETS_ELECTRUM_SRC="$src" \
+  ESCROW_WALLETS_ELECTRUM_VERSION="$ELECTRUM_VERSION" \
+  ESCROW_REGTEST_OPERATOR_RPC_URL="http://operator:$operator_pass@127.0.0.1:$rpcport" \
+  ESCROW_REGTEST_APP_RPC_URL="http://opsecmkt-escrow:$app_pass@127.0.0.1:$rpcport" \
+  ESCROW_REGTEST_SIGNER_RPC_URL="http://opsecmkt-signer:$signer_pass@127.0.0.1:$rpcport" \
+  go test -count=1 -run '^TestEscrowRegtestElectrumMarketJourney$' -v ./internal/market/
+journey=$?
+set -e
+if [[ $journey -eq 0 ]] && grep -q -- '--- PASS: TestEscrowRegtestElectrumMarketJourney ' "$body" && ! grep -q -- '--- SKIP: TestEscrowRegtestElectrumMarketJourney ' "$body"; then
+  say "PASS: electrum-market-journey: market practice, checkout, release, sibling refund, and mixed-pair refusal with Electrum party signatures and real escrow-signer"
+else
+  say "FAIL: electrum-market-journey (go test exited $journey)"
 fi
 
 if [[ $update -eq 1 && $py -eq 0 && $gostatus -eq 0 ]]; then
@@ -237,7 +288,7 @@ for leg in "${LEGS[@]}"; do
     failed=1
   fi
 done
-if [[ $failed -ne 0 || $py -ne 0 || $gostatus -ne 0 ]]; then
+if [[ $failed -ne 0 || $py -ne 0 || $gostatus -ne 0 || $journey -ne 0 ]]; then
   exit 1
 fi
 say "PASS: every wallet leg on regtest (real local chain plus a real Electrum $ELECTRUM_VERSION, run by hand, not CI)"

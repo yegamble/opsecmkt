@@ -121,7 +121,7 @@ descriptor in your wallet is what detects that.
   extended key. The first Bitcoin phase supports Bitcoin Core. Electrum and Sparrow support will be designed and
   decided before escrow runs on any public test network; hardware wallets have not been tested.
   `scripts/test-escrow-wallets.sh` repeats this check (real local chain plus a real Electrum, run by hand, not CI:
-  Bitcoin Core 31.1 on regtest with no network, Electrum 4.8.2 checked against its release signature and used
+  Bitcoin Core 31.1 on regtest with P2P disabled and RPC bound to host loopback, Electrum 4.8.2 checked against its release signature and used
   offline). A Bitcoin Core wallet signs the transaction the market serves today. An Electrum wallet restored from a
   BIP39 seed at a key path made for one order signs the per-order layout (shape (b)). Electrum adds a derivation entry
   for every key, the market's included, which the market's signature-paste check refused until A-456b dropped that
@@ -136,8 +136,11 @@ descriptor in your wallet is what detects that.
   takes no path for that seed type (`from_seed` in Electrum's `keystore.py`; the script's `electrum-seed-type`
   leg records it). On the development branch a user can register a per-order wallet key and sign its practice
   transaction ([A-455](#per-order-key-layout-registration-and-practice-a-455-shape-b)), and two such users get a
-  per-order escrow ([A-456b](#per-order-escrow-settlement-setup-and-upload-a-456b-shape-b)); no real Electrum or Sparrow
-  has signed one through the market yet (A-457, A-458).
+  per-order escrow ([A-456b](#per-order-escrow-settlement-setup-and-upload-a-456b-shape-b)). A-457's manual journey
+  (`TestEscrowRegtestElectrumMarketJourney`, `scripts/test-escrow-wallets.sh`) used two BIP39 Electrum 4.8.2 parties:
+  both registered and signed practice through the market; one signed a release and the other a sibling-deposit refund;
+  the real escrow signer co-signed both, and both were broadcast and confirmed on regtest. A mixed Core/per-order pair
+  was refused. The Electrum GUI menus, Sparrow, physical hardware, and public networks remain untested.
 
 ## Monero: one account per order
 
@@ -1229,8 +1232,8 @@ purchase in BTC, with that reason, and the readiness panel on `/admin` counts an
   cannot change layout. The page says plainly that Electrum's own seed type (Electrum's default, also on Tails) cannot
   make per-order wallets: a BIP39 seed in Electrum, or Sparrow, is needed. The registration copy says that a per-order
   key replaces the account's Bitcoin Core key, which (since A-456b, with any account whose key is not a per-order one too) stops Bitcoin escrow buying and, for a vendor under
-  escrow-only intake, Bitcoin escrow sales; the pages carry that the steps have not yet been tried with a real Electrum
-  or Sparrow wallet (A-457, A-458), and the practice page tells the owner never to send coins to the practice wallet's
+  escrow-only intake, Bitcoin escrow sales; the pages say that BIP39 Electrum signing has been tested on regtest while
+  Electrum GUI steps and Sparrow remain untested (A-457, A-458), and the practice page tells the owner never to send coins to the practice wallet's
   first receiving address. The database refuses an escrow key whose
   suffix has three or more steps (a per-order key, `/<i>/0/0`) starting with 0 or 1, for any party, and a buyer's or
   vendor's at the practice index 2^31-1; shape (a)'s two-step suffixes are not affected.
@@ -1257,7 +1260,8 @@ chain, Core 31.1 on regtest (`TestEscrowRegtestPerOrderPractice` in `scripts/tes
 wallet's seed standing in for a BIP39 seed and the practice page alone, the operator builds the per-order practice
 wallet as a private descriptor, Core derives the address shown and signs the PSBT, and the signature activates the key;
 the unsigned PSBT, the same seed's Core wallet holding the shape-(a) range and a SIGHASH_NONE signature are refused).
-Not tested: a real Electrum or Sparrow signing the practice (A-457 and A-458), hardware wallets, and any public network.
+The manual A-457 journey in `scripts/test-escrow-wallets.sh` confirms both BIP39 Electrum parties' practice signatures
+through the market. Not tested: Electrum GUI menus, Sparrow, physical hardware wallets, and any public network.
 
 ## Per-order escrow creation and watching (A-456a, shape (b))
 
@@ -1418,8 +1422,8 @@ is still refused.
   it cannot be read from the market's records. The copy says: pay only to the escrow address, never to another address the order
   wallet shows; Electrum can run with `--offline` (the order wallet only signs); delete the order wallet once the order's
   escrow has settled (the seed makes it again); a wallet or signing device cannot check the other party's key. The page
-  and the order page carry that no real Electrum or Sparrow wallet has been tried; no hardware wallet is claimed (A-458
-  records none).
+  and the order page say that BIP39 Electrum signed the release and sibling refund on regtest, while GUI menu steps,
+  Sparrow and physical hardware remain untested (A-458 records none).
 - **The PSBT file upload.** The settlement sign form is a `multipart/form-data` form, no JavaScript, with a file field
   beside the paste (fee bumps keep the paste). A binary PSBT file, as Electrum and Sparrow save one, is taken by its
   magic bytes; a text file (the market's own download, signed) is read as base64. Every text part and a text file must
@@ -1434,7 +1438,8 @@ is still refused.
   origin in either copy is the reader's own. The separate hardware file forms use the same authorization and signature
   checks as ordinary signing, keep only signatures, and accept at most 8 MiB of PSBT data (128 KiB per funding
   transaction; at most 50 inputs). Ordinary paste and file limits remain 64 KiB. These are simulated-node and form
-  checks; no physical hardware wallet has been tested (A-458).
+  checks. A-457's real Core journey checked that the vendor's release download carried the actual funding transaction
+  as verified `non_witness_utxo`; no physical hardware wallet has been tested (A-458).
 - **The ES-2 derivation refusal is relaxed (P4-R13).** A pasted or uploaded PSBT is no longer refused for a derivation
   entry under the market's key or from its fingerprint (Electrum and Sparrow write one for every key; A-450's Electrum
   fixtures are now accepted). Every signature rule stays: a signature under the market's key, another key's signature, a
@@ -1464,8 +1469,10 @@ sibling's own script, signed at the buyer's `/0/3` key, co-signed at the signer'
 order pages, downloaded and signed while the signer's socket is moved aside, signer-waiting with nothing rebuilt, then
 co-signed and confirmed once it is back; `TestEscrowRegtestShapeBBump`: the vendor's claim broadcast at 1 sat/vB, bumped
 to 5 sat/vB, the bump signed by the vendor's order wallet, co-signed by the signer, replacing the claim in the mempool
-and confirmed; no seed or tprv in the signer's log or the database). Not tested: a real Electrum, Sparrow or hardware wallet signing a
-per-order escrow (A-457, A-458), the Sparrow descriptor imported into Sparrow, and any public network.
+and confirmed; no seed or tprv in the signer's log or the database). A-457's `TestEscrowRegtestElectrumMarketJourney`
+adds a real BIP39 Electrum release and sibling refund through the market and real signer, each broadcast and confirmed
+on regtest, with a mixed pair refused. Not tested: Sparrow, a physical hardware wallet, Electrum GUI menus, the Sparrow
+descriptor imported into Sparrow, or any public network.
 
 Which chains escrow testing has used, all of them local and none public: Bitcoin regtest; a Bitcoin private signet
 (A-443: two Bitcoin Core nodes on one host with `signet_challenge` 51, private signet, not public); a local Monero
