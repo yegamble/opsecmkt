@@ -46,6 +46,12 @@ type shapeBChain struct {
 }
 
 func newShapeBChain(t *testing.T, label string) *shapeBChain {
+	return newShapeBChainWithPartyKeys(t, label, nil, nil)
+}
+
+// newShapeBChainWithPartyKeys lets the manual Electrum journey supply two real Electrum account keys and activate
+// them through the registration and practice forms. Existing Core-backed legs keep their original setup.
+func newShapeBChainWithPartyKeys(t *testing.T, label string, partyKeys map[string]string, activate func(*shapeBChain)) *shapeBChain {
 	appURL, opURL, signerURL := os.Getenv("ESCROW_REGTEST_APP_RPC_URL"), os.Getenv("ESCROW_REGTEST_OPERATOR_RPC_URL"), os.Getenv("ESCROW_REGTEST_SIGNER_RPC_URL")
 	if appURL == "" || opURL == "" || signerURL == "" {
 		t.Skip("set ESCROW_REGTEST_APP_RPC_URL, ESCROW_REGTEST_OPERATOR_RPC_URL and ESCROW_REGTEST_SIGNER_RPC_URL (scripts/test-escrow-regtest.sh) to run against bitcoind -regtest")
@@ -117,11 +123,26 @@ func newShapeBChain(t *testing.T, label string) *shapeBChain {
 		return root, key
 	}
 	var buyerKey, vendorKey string
-	c.buyerRoot, buyerKey = party(label + "-buyer-" + s)
-	c.vendorRoot, vendorKey = party(label + "-vendor-" + s)
+	if partyKeys == nil {
+		c.buyerRoot, buyerKey = party(label + "-buyer-" + s)
+		c.vendorRoot, vendorKey = party(label + "-vendor-" + s)
+	} else {
+		buyerKey, vendorKey = partyKeys[roleBuyer], partyKeys[roleVendor]
+		if _, err := parseEscrowKey(buyerKey); err != nil {
+			t.Fatalf("Electrum buyer account key: %v", err)
+		}
+		if _, err := parseEscrowKey(vendorKey); err != nil {
+			t.Fatalf("Electrum vendor account key: %v", err)
+		}
+	}
 
 	// The real escrow signer: built from this tree, a fresh seed, its own RPC user, a socket in a temporary directory.
-	dir := t.TempDir()
+	// macOS's unix-socket pathname limit is shorter than Go's nested t.TempDir path when the wallet harness sets TMPDIR.
+	dir, err := os.MkdirTemp("/tmp", "esb-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
 	bin := filepath.Join(dir, "escrow-signer")
 	if out, err := exec.Command("go", "build", "-o", bin, "opsecmkt/cmd/escrow-signer").CombinedOutput(); err != nil {
 		t.Fatalf("go build ./cmd/escrow-signer: %v\n%s", err, out)
@@ -177,14 +198,18 @@ func newShapeBChain(t *testing.T, label string) *shapeBChain {
 	}
 	c.buyer, c.buyerSess = c.e.user(label+"_b_"+s, "buyer")
 	c.vendor, c.vendorSess = c.e.user(label+"_v_"+s, "vendor")
-	for uid, key := range map[string]string{c.buyer: buyerKey, c.vendor: vendorKey} {
-		k := mustParseKey(t, key)
-		sealed, err := c.e.A.seal("escrow-xpub", k.XPub)
-		if err != nil {
-			t.Fatal(err)
+	if activate != nil {
+		activate(c)
+	} else {
+		for uid, key := range map[string]string{c.buyer: buyerKey, c.vendor: vendorKey} {
+			k := mustParseKey(t, key)
+			sealed, err := c.e.A.seal("escrow-xpub", k.XPub)
+			if err != nil {
+				t.Fatal(err)
+			}
+			agExec(c.e, `INSERT INTO user_escrow_keys(user_id,xpub_sealed,xpub_hmac,origin_fingerprint,origin_path,active_at,layout) VALUES($1,$2,$3,$4,$5,now(),'per_order')`,
+				uid, sealed, c.e.A.escrowKeyHMAC(k), k.Fingerprint, k.PathText)
 		}
-		agExec(c.e, `INSERT INTO user_escrow_keys(user_id,xpub_sealed,xpub_hmac,origin_fingerprint,origin_path,active_at,layout) VALUES($1,$2,$3,$4,$5,now(),'per_order')`,
-			uid, sealed, c.e.A.escrowKeyHMAC(k), k.Fingerprint, k.PathText)
 	}
 	c.product = c.e.product(c.vendor, "digital")
 	agExec(c.e, "UPDATE products SET delivery_content='licence key A456B-REAL-CHAIN' WHERE id=$1", c.product)

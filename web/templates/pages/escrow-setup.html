@@ -1,4 +1,4 @@
-{{/* A-456b (escrow_setup.go): a per-order Bitcoin escrow's order wallet setup, for one of the order's two parties only (rulings P4-R2, P4-R17). Exists only with ESCROW_BTC=on; staff, strangers and Bitcoin Core escrows get 404. Claims only what is verified: no real Electrum, Sparrow or hardware wallet has been tried (A-457, A-458). */}}
+{{/* A-456b (escrow_setup.go): a per-order Bitcoin escrow's order wallet setup, for one of the order's two parties only (rulings P4-R2, P4-R17). Exists only with ESCROW_BTC=on; staff, strangers and Bitcoin Core escrows get 404. Real BIP39 Electrum signing was checked on regtest (A-457); GUI steps, Sparrow and physical hardware remain untested (A-458). */}}
 {{define "page:escrow-setup"}}{{template "header" .}}{{with .EscrowSetup}}
 <div class="page-head">
 <div>
@@ -14,7 +14,7 @@
 <li>Add the two cosigner keys below as the other two keys (watch-only, or "xpub" cosigners). In Sparrow you can instead import the whole wallet from the descriptor below.</li>
 <li>Check that the wallet's first receiving address is the escrow address below. If it is not, stop: the wallet is not this escrow's.</li>
 </ol>
-<p class="help">These steps, and the menus they name, have not yet been tried with a real Electrum or Sparrow wallet: the wallet's menus may differ. Hardware wallets have not been tested with per-order escrows.</p>
+<p class="help">BIP39 Electrum signed a per-order release and sibling refund on regtest. The Electrum menu steps have not been checked, and Sparrow has not been tested. Hardware wallets have not been tested with per-order escrows.</p>
 </section>
 <section class="panel" aria-labelledby="setup-path-heading">
 <h2 id="setup-path-heading">Derivation path of your key</h2>

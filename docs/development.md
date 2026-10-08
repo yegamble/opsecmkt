@@ -232,7 +232,9 @@ transaction bytes but its own fake signatures, and plays each party's wallet. It
 regtest only and refuses mainnet and other-network addresses and keys. This is not chain
 evidence; real Bitcoin Core legs are `scripts/test-escrow-regtest.sh`, and
 `scripts/test-escrow-wallets.sh` checks which real wallets (Bitcoin Core, Electrum 4.8.2) sign the
-escrow transactions, by hand on a regtest node with no network.
+escrow transactions, by hand on a regtest node with P2P disabled and RPC bound to host loopback. With a disposable
+`TEST_DATABASE_URL`, its A-457 leg also runs both BIP39 Electrum parties through registration, practice, checkout,
+funding, release and sibling refund with the real escrow signer. It is not run in CI.
 
 ```sh
 docker exec opsecmkt-dev-db createdb -U opsecmkt opsecmkt_escrow_e2e

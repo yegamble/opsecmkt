@@ -159,8 +159,8 @@ var (
 	practicePath = regexp.MustCompile(`<pre class="code-block escrow-practice-path"[^>]*>([^<]+)</pre>`)
 )
 
-// untriedWallets is the phrase the pages carry until a real Electrum or Sparrow has signed the practice (A-457, A-458).
-const untriedWallets = "have not yet been tried with a real Electrum or Sparrow wallet"
+// untriedWallets keeps the remaining GUI/Sparrow limitation visible after A-457's real Electrum signing journey.
+const untriedWallets = "The Electrum menu steps have not been checked, and Sparrow has not been tested"
 
 // perOrderPractice reads the shape-(b) practice material of the viewer's page: the PSBT, the two cosigner keys, the
 // practice wallet's first address and the owner's path.
