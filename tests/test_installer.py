@@ -1371,13 +1371,28 @@ time.sleep(60)
         result = self.run_installer([good, good], arguments=['--local', '--admin', 'first_admin'])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((self.state / 'bootstrap-stdin').read_text(encoding='utf-8'), good + '\n')
-        # bash's read drops a NUL byte, so none reaches the server: it receives the password without it.
+        # Bash versions differ on a NUL in read input: some discard it, others stop at it. The installer must
+        # send only the value Bash actually read, and reject a shortened prefix before writing configuration.
+        nul_input = PASSWORD.replace(' ', ' \0', 1)
+        probe = subprocess.run(['/bin/bash', '-c', 'IFS= read -r -s -p x value; printf %s "$value"'],
+                               input=(nul_input + '\n').encode(), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               check=True).stdout
         (self.root / '.env').unlink()
         self.log.unlink()
         self.set_installed(False)
-        result = self.run_installer([PASSWORD.replace(' ', ' \0', 1)] * 2, arguments=['--local', '--admin', 'first_admin'])
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual((self.state / 'bootstrap-stdin').read_text(), PASSWORD + '\n')
+        (self.state / 'bootstrap-stdin').unlink(missing_ok=True)
+        result = self.run_installer([nul_input] * 2, arguments=['--local', '--admin', 'first_admin'])
+        if probe == PASSWORD.encode():
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((self.state / 'bootstrap-stdin').read_text(), PASSWORD + '\n')
+        elif probe == b'correct ':
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertIn('Use a password of 12-72 bytes', result.stderr)
+            self.assertEqual(self.calls(), PREFLIGHT)
+            self.assertFalse((self.root / '.env').exists())
+            self.assertFalse((self.state / 'bootstrap-stdin').exists())
+        else:
+            self.fail(f'unexpected Bash read behavior for NUL input: {len(probe)} bytes')
 
     def test_init_admin_failure_keeps_the_token_path(self):
         result = self.run_installer([PASSWORD, PASSWORD], arguments=['--local', '--admin', 'first_admin'],

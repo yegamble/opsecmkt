@@ -953,7 +953,9 @@ cmd_init() {
     printf '\n'
     [[ $password1 == "$password2" ]] || die 'The passwords do not match; nothing was written or started.'
     local bytes
-    bytes=$(LC_ALL=C; printf '%s' "${#password1}")
+    # Count bytes directly, regardless of Bash's multibyte locale handling. The password stays on stdin and is
+    # never exposed as a command argument.
+    bytes=$(printf '%s' "$password1" | LC_ALL=C wc -c)
     ((bytes >= 12 && bytes <= 72)) || die 'Use a password of 12-72 bytes; nothing was written or started.'
     # QA5W5B-7: -bootstrap-admin refuses a password that is not valid UTF-8 (typed in a terminal set to LATIN1, for one),
     # which the sign-in form could never send; refused here, before .env is written or anything started. The pattern is
