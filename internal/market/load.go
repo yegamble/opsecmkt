@@ -414,7 +414,7 @@ func (a *App) load(r *http.Request, d *PageData) error {
 				return err
 			}
 			d.ActivityPaging = activityPaging("/notifications", total, r.URL.Query().Get("page"), nil)
-			rows, err = a.db.QueryContext(ctx, `SELECT id,body,to_char(created,'YYYY-MM-DD HH24:MI "UTC"'),is_read FROM notifications WHERE user_id=$1 ORDER BY created DESC,id DESC LIMIT $2 OFFSET $3`, d.User.ID, activityPageSize, d.ActivityPaging.Offset())
+			rows, err = a.db.QueryContext(ctx, `SELECT id,body,to_char(created,'YYYY-MM-DD HH24:MI "UTC"'),is_read FROM notifications WHERE user_id=$1 ORDER BY is_read ASC,created DESC,id DESC LIMIT $2 OFFSET $3`, d.User.ID, activityPageSize, d.ActivityPaging.Offset())
 			if err != nil {
 				return err
 			}

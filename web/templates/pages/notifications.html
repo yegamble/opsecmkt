@@ -7,6 +7,11 @@
 <p>Updates about your orders and account.</p>
 </div>
 </div>
+{{if .UnreadNotifications}}<form class="notification-mark-all" method="post" action="/notifications">
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+<input type="hidden" name="mark_all" value="1">
+<button type="submit">Mark all as read</button>
+</form>{{end}}
 <div class="messages-list">{{range .Notifications}}<article class="message">
 <div class="message-meta">
 <time>{{.Created}}</time>

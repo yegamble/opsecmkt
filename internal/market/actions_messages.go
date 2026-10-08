@@ -5,6 +5,21 @@ import "strings"
 func init() {
 	registerAction("/messages", actionSpec{Run: messageAction})
 	registerAction("/notifications", actionSpec{Run: func(c *actionCtx) (actionResult, error) {
+		if c.Form.Get("mark_all") == "1" {
+			result, err := c.Tx.ExecContext(c.Ctx(), "UPDATE notifications SET is_read=true WHERE user_id=$1 AND NOT is_read", c.User.ID)
+			if err != nil {
+				return actionResult{}, err
+			}
+			changed, err := result.RowsAffected()
+			if err != nil {
+				return actionResult{}, err
+			}
+			audit := ""
+			if changed > 0 {
+				audit = "Marked all notifications read"
+			}
+			return actionResult{Redirect: "/notifications", Audit: audit}, nil
+		}
 		_, err := c.Tx.ExecContext(c.Ctx(), "UPDATE notifications SET is_read=true WHERE id=$1 AND user_id=$2", c.Form.Get("id"), c.User.ID)
 		return actionResult{Redirect: "/notifications", Audit: "Marked notification read"}, err
 	}})
