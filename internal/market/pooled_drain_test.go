@@ -543,3 +543,66 @@ func TestPooledDrainWatcherPredicateEquivalence(t *testing.T) {
 		t.Logf("tz %-20s: %d addresses, equal with no deposit; %d added by a pending deposit only", tz, n, added)
 	}
 }
+
+// SHOULD-2 (A-488): the pending rule is the watcher's inline pendingDepositSQL; migration 091 carries it verbatim in
+// pooled_drain_blockers, and pooled_pending_deposit (which only names the deposit in the detail) agrees with it on every
+// recorded state, another currency's row at the same address included.
+func TestPooledDrainPendingRuleShared(t *testing.T) {
+	b, err := fs.ReadFile(migrationFiles, "migrations/091_pooled_drain_blockers.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "     AND "+pendingDepositSQL) {
+		t.Fatal("migration 091's pending rule is not pendingDepositSQL: redefine pooled_drain_blockers in a new migration")
+	}
+	if strings.Contains(string(b), "pooled_pending_deposit(pa.currency, pa.address) IS NOT NULL") {
+		t.Fatal("migration 091 selects rows by the function call instead of the inline rule")
+	}
+	f := newDrainFixture(t)
+	type dep struct {
+		cur      string
+		confs    int64
+		credited bool
+		flagged  bool
+		locked   bool
+		pending  bool // the expected answer
+	}
+	cases := []dep{
+		{"BTC", 0, false, false, false, true}, {"BTC", 2, false, false, false, true}, {"BTC", -1, false, false, false, false},
+		{"BTC", -5, false, false, false, false}, {"BTC", 6, true, false, false, false}, {"BTC", 6, false, true, false, false},
+		{"BTC", 1, false, false, true, true}, {"XMR", 1, false, false, false, false},
+	}
+	for i, c := range cases {
+		order, addr := f.closedOrder("BTC", stateCompleted, "btc-regtest")
+		agExec(f.testEnv, "INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations,credited,flagged,locked) VALUES($1,$2,$3,0,$4,500,$5,$6,$7,$8)",
+			order, c.cur, fmt.Sprintf("rule-%d", i), addr, c.confs, c.credited, c.flagged, c.locked)
+		var fn, frag bool
+		if err := f.DB.QueryRow("SELECT pooled_pending_deposit(pa.currency,pa.address) IS NOT NULL, "+pendingDepositSQL+" FROM payment_addresses pa WHERE pa.order_id=$1", order).Scan(&fn, &frag); err != nil {
+			t.Fatal(err)
+		}
+		if fn != c.pending || frag != c.pending {
+			t.Fatalf("case %d %+v: function %v, inline rule %v, want %v", i, c, fn, frag, c.pending)
+		}
+		listed := agInt(f.testEnv, "SELECT count(*) FROM pooled_drain_blockers() WHERE kind='watched_address' AND ref=$1", addr)
+		if (listed == 1) != c.pending || listed > 1 {
+			t.Fatalf("case %d %+v: listed %d times", i, c, listed)
+		}
+	}
+}
+
+// NIT-5 (A-488): an address is listed under watched_address once, whether inside the horizon with a pending deposit or
+// past it; an open order's address is never listed there (it is an open order), pending deposit or not.
+func TestPooledDrainWatchedAddressListedOnce(t *testing.T) {
+	f := newDrainFixture(t)
+	inside, insideAddr := f.closedOrder("BTC", stateCompleted, "btc-regtest")
+	agExec(f.testEnv, "UPDATE orders SET updated=now()-interval '1 hour' WHERE id=$1", inside)
+	open := f.order(f.buyer, f.product, "BTC", statePaid)
+	openAddr := "fake-testnet-" + open[:12]
+	agExec(f.testEnv, "UPDATE orders SET updated=now()-interval '3 days' WHERE id=$1", open)
+	agExec(f.testEnv, "INSERT INTO payment_addresses(order_id,currency,address,provider,created) VALUES($1,'BTC',$2,'btc-regtest',now()-interval '40 days')", open, openAddr)
+	for i, a := range []struct{ order, addr string }{{inside, insideAddr}, {open, openAddr}} {
+		agExec(f.testEnv, "INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations) VALUES($1,'BTC',$2,0,$3,500,1)", a.order, fmt.Sprintf("once-%d", i), a.addr)
+	}
+	wantRows(t, "watched addresses", agStrings(t, f.testEnv, "SELECT ref FROM pooled_drain_blockers() WHERE kind='watched_address' ORDER BY 1"), insideAddr)
+	wantRows(t, "open orders", agStrings(t, f.testEnv, "SELECT ref FROM pooled_drain_blockers() WHERE kind='open_order' ORDER BY 1"), open)
+}

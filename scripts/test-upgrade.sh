@@ -306,8 +306,9 @@ stop_server
 # order, a blocked payout, an undisposed flagged deposit, an address inside the watch horizon, the restore gate, an
 # undismissed issued-address warning, mainnet history) it lists each, the address by the horizon's 24-hour clause alone;
 # with each cleared as staff or the operator clear it (closed and past the horizon, sent, disposed, gate cleared, warning
-# dismissed, test-network history) nothing again.
-[[ $(sql -c "SELECT string_agg(proname || ':' || provolatile::text, ',' ORDER BY proname) FROM pg_proc WHERE proname IN ('pooled_drain_blockers','pooled_watch_horizon')") == 'pooled_drain_blockers:s,pooled_watch_horizon:s' ]]
+# dismissed, test-network history) nothing again. Then a deposit recorded there but unconfirmed (A-486) keeps the
+# address listed past the horizon, naming it, until it is ended (negative confirmations, as when the wallet drops it).
+[[ $(sql -c "SELECT string_agg(proname || ':' || provolatile::text, ',' ORDER BY proname) FROM pg_proc WHERE proname IN ('pooled_drain_blockers','pooled_pending_deposit','pooled_watch_horizon')") == 'pooled_drain_blockers:s,pooled_pending_deposit:s,pooled_watch_horizon:s' ]]
 [[ $(sql -c 'SELECT count(*) FROM pooled_drain_blockers()') == 0 ]]
 drain=$(sql <<'SQL'
 BEGIN;
@@ -336,12 +337,19 @@ UPDATE payments SET disposition='no_action',disposition_note='Dust; nothing to r
 UPDATE settings SET value='false' WHERE key='payments_recovery_required';
 UPDATE payment_status SET address_collisions=0;
 SELECT count(*) FROM pooled_drain_blockers();
+INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations,after_close)
+  SELECT id,currency,repeat('e',64),1,'upgrade-drain-xmr',2000,1,true FROM orders WHERE currency='XMR' AND state='completed';
+SELECT kind||'='||ref||':'||split_part(detail,';',1) FROM pooled_drain_blockers();
+UPDATE payments SET confirmations=-1 WHERE txid=repeat('e',64);
+SELECT count(*) FROM pooled_drain_blockers();
 ROLLBACK;
 SQL
 )
 want_drain='address_collision,flagged_payment,mainnet_history,open_order,recovery_required,unsent_payout,watched_address
 address_collision=BTC:2 flagged_payment=payment:'"$(printf 'd%.0s' {1..64})"':0 mainnet_history=XMR:1 open_order=order:paid recovery_required=payments_recovery_required: unsent_payout=payout:release blocked
 upgrade-drain-xmr
+0
+watched_address=upgrade-drain-xmr:until recorded deposit '"$(printf 'e%.0s' {1..64})"':1 confirms (it is then flagged for review) or leaves the wallet
 0'
 [[ $drain == "$want_drain" ]] || { printf 'pooled_drain_blockers() after the upgrade:\n%s\nwant:\n%s\n' "$drain" "$want_drain" >&2; exit 1; }
 [[ $(sql -c 'SELECT count(*) FROM pooled_drain_blockers()') == 0 && $(sql -c 'SELECT count(*) FROM payouts') == 0 ]]

@@ -260,7 +260,7 @@ func TestPooledHandHoldRefusals(t *testing.T) {
 		t.Fatalf("wrong password: %d", code)
 	}
 	unchanged("a wrong password")
-	for _, note := range []string{"", "   ", "too short", strings.Repeat("n", 501)} {
+	for _, note := range []string{"", "   ", "too short", "   nine char   ", strings.Repeat("n", 501)} {
 		if code, body := p.holdPayout(p.adminSess, id, note); code != 400 || !strings.Contains(body, "10–500 characters") {
 			t.Fatalf("note %q: %d %s", note, code, body)
 		}
@@ -360,5 +360,98 @@ func TestPooledHandHoldReleaseNeedsConfirmation(t *testing.T) {
 	p.poll()
 	if st, _, _, _ := p.payout(order); st != "sent" || len(p.fake.Sends()) != 1 {
 		t.Fatalf("after the release and the address: %s sends=%d", st, len(p.fake.Sends()))
+	}
+}
+
+// REQUIRED-1 (A-488; QA445b's TestQA445BFailHandHoldSkipsSuspensionCheck): a payout held to be paid by hand is held
+// again by the recipient's suspension, keeping the hand-hold text after the suspension's, so releasing it needs both
+// the payout-address check (A-102) and the "nobody paid it by hand" confirmation; the watcher never sends it.
+func TestPooledHandHoldSurvivesSuspension(t *testing.T) {
+	p := newPayEnv(t)
+	order, id := p.blockedRelease("hold-suspend")
+	if code, body := p.holdPayout(p.adminSess, id, handNote); code != 303 {
+		t.Fatalf("hold: %d %s", code, body)
+	}
+	p.check(p.do("POST", "/account/payout", p.vendorSess, url.Values{"currency": {"BTC"}, "address": {"fake-testnet-attacker"}, "password": {testPassword}}), 303)
+	p.check(p.do("POST", "/admin/suspend", p.adminSess, suspendForm("suspend", p.vendor.Handle)), 303)
+	e := p.str("SELECT error FROM payouts WHERE id=$1::bigint", id)
+	if !strings.HasPrefix(e, suspendedHoldPrefix) || !strings.HasSuffix(e, " "+handHoldPrefix+" "+handNote) {
+		t.Fatalf("suspension's hold text %q", e)
+	}
+	mustContain(t, p.page("/admin", p.adminSess), "Held to be paid by hand and for an account suspension", `name="not_paid"`, `name="address_checked"`)
+	release := func(kv ...string) (int, string) {
+		f := url.Values{"payout_id": {id}, "op": {"release"}, "password": {testPassword}}
+		for i := 0; i+1 < len(kv); i += 2 {
+			f.Set(kv[i], kv[i+1])
+		}
+		w := p.do("POST", "/admin/payout", p.adminSess, f)
+		return w.Code, w.Body.String()
+	}
+	if code, body := release("not_paid", "confirmed"); code != 409 || !strings.Contains(body, "account was suspended") {
+		t.Fatalf("release with not_paid only: %d %s", code, body)
+	}
+	if code, body := release("address_checked", "confirmed"); code != 409 || !strings.Contains(body, "nobody paid it by hand") {
+		t.Fatalf("release with the address check only: %d %s", code, body)
+	}
+	p.poll()
+	if st, _, _, _ := p.payout(order); st != "held" || p.sendsTo("fake-testnet-attacker") != 0 {
+		t.Fatalf("after refused releases: %s, %d send(s)", st, p.sendsTo("fake-testnet-attacker"))
+	}
+	if code, body := release("not_paid", "confirmed", "address_checked", "confirmed"); code != 303 {
+		t.Fatalf("release with both: %d %s", code, body)
+	}
+}
+
+// SHOULD-1 (A-488; QA445b's TestQA445BFailRestoreDropsHandHold): scripts/restore.sh (and the manual SQL) keep the
+// hand-hold text after the restore's, so releasing a restored hand hold needs both the wallet check and the
+// "nobody paid it by hand" confirmation.
+func TestPooledHandHoldSurvivesRestore(t *testing.T) {
+	p := newPayEnv(t)
+	order, id := p.blockedRelease("hold-restore")
+	if code, body := p.holdPayout(p.adminSess, id, handNote); code != 303 {
+		t.Fatalf("hold: %d %s", code, body)
+	}
+	for _, q := range restorePayoutSQL {
+		agExec(p.testEnv, q)
+	}
+	e := p.str("SELECT error FROM payouts WHERE id=$1::bigint", id)
+	if !strings.HasPrefix(e, restoredHoldPrefix) || !strings.HasSuffix(e, " "+handHoldPrefix+" "+handNote) {
+		t.Fatalf("restored hold text %q", e)
+	}
+	mustContain(t, p.page("/admin", p.adminSess), "Held to be paid by hand, then restored from backup", `name="not_paid"`, `name="not_broadcast"`)
+	if code, body := p.payoutActionConfirmed(p.adminSess, id, "release", testPassword); code != 409 || !strings.Contains(body, "nobody paid it by hand") {
+		t.Fatalf("release with not_broadcast only: %d %s", code, body)
+	}
+	w := p.do("POST", "/admin/payout", p.adminSess, url.Values{"payout_id": {id}, "op": {"release"}, "password": {testPassword}, "not_paid": {"confirmed"}})
+	if w.Code != 400 || !strings.Contains(w.Body.String(), "restore from backup") {
+		t.Fatalf("release with not_paid only: %d %s", w.Code, w.Body.String())
+	}
+	if st, _, _, _ := p.payout(order); st != "held" {
+		t.Fatalf("refused releases changed it: %s", st)
+	}
+	w = p.do("POST", "/admin/payout", p.adminSess, url.Values{"payout_id": {id}, "op": {"release"}, "password": {testPassword}, "not_paid": {"confirmed"}, "not_broadcast": {"confirmed"}})
+	p.check(w, 303)
+}
+
+// NIT-2 and NIT-3 (A-488): a refusal names a hand hold as such, and the recipient's copy does not say that saving an
+// address releases it.
+func TestPooledHandHoldNamedInRefusalsAndToTheRecipient(t *testing.T) {
+	p := newPayEnv(t)
+	_, id := p.blockedRelease("hold-named")
+	if code, body := p.holdPayout(p.adminSess, id, handNote); code != 303 {
+		t.Fatalf("hold: %d %s", code, body)
+	}
+	if code, body := p.payoutActionConfirmed(p.adminSess, id, "requeue", testPassword); code != 409 || !strings.Contains(body, "This payout is Held to be paid by hand; that action does not apply") {
+		t.Fatalf("requeue of a hand hold: %d %s", code, body)
+	}
+	if code, body := p.holdPayout(p.adminSess, id, handNote); code != 409 || !strings.Contains(body, "this payout is Held to be paid by hand.") {
+		t.Fatalf("second hold: %d %s", code, body)
+	}
+	r := recipientPayout("order-1", "release", "BTC", "regtest", "0.001", "", "held", handHoldPrefix+" "+handNote, false, false, false)
+	if r.Status != "Held to be paid by hand" || strings.Contains(r.NextStep, "save one on your account page") || !strings.Contains(r.NextStep, "saving a payout address does not release it") {
+		t.Fatalf("recipient copy %+v", r)
+	}
+	if r := recipientPayout("order-1", "release", "BTC", "regtest", "0.001", "", "held", suspendedHold+" "+handHoldPrefix+" "+handNote, false, false, false); r.Status != "Held for a payout address check" {
+		t.Fatalf("suspended hand hold, recipient copy %+v", r)
 	}
 }

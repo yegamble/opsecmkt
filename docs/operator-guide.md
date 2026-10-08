@@ -2132,7 +2132,9 @@ ask the recipient to save a payout address: the market then sends it once. To pa
 1. **Hold it**: *Payouts* → *Resolve payout* → *Hold to pay by hand*, with a reason (10–500 characters, staff only:
    the payouts list and the audit log show it) and your password. The order history says it is held to be paid by hand.
    A held payout keeps its hold when the recipient saves an address afterwards, so the market cannot send it while you
-   pay it. Only a blocked payout can be held (409 otherwise, and on a repeat; nothing changed).
+   pay it. Only a blocked payout can be held (409 otherwise, and on a repeat; nothing changed). If the recipient's
+   account is suspended, or the database restored from backup, meanwhile, the payout is held again with that reason
+   first and the hand-hold reason kept, so releasing it needs both checks.
 2. **Pay it** from the pooled wallet, to an address the recipient gave you through a channel you trust.
 3. **Record it**: *Record sent by hand*, with the wallet's transaction ID and your password. The market stores the ID in
    lower case, sends the recipient a notification naming it, writes the order history (without the ID) and an audit row

@@ -64,10 +64,21 @@ func heldForSuspension(state, payoutErr string) bool {
 // the staff note follows it.
 const handHoldPrefix = "Held to be paid by hand:"
 
-// heldForHand reports a payout held to be paid by hand (handHoldPrefix). The watcher never lifts this hold, and
-// saving a payout address keeps it.
+// heldForHand reports a payout held to be paid by hand (handHoldPrefix), including one an account suspension or a
+// restore from backup held again: both keep the hand-hold text after their own (A-488), so releasing it still needs
+// the "nobody paid it by hand" confirmation besides theirs. The watcher never lifts this hold, and saving a payout
+// address keeps it.
 func heldForHand(state, payoutErr string) bool {
-	return state == "held" && strings.HasPrefix(payoutErr, handHoldPrefix)
+	return state == "held" && (strings.HasPrefix(payoutErr, handHoldPrefix) || strings.Contains(payoutErr, " "+handHoldPrefix))
+}
+
+// payoutRefusalLabel names a payout's state in a refusal: payoutStateLabel, but a payout held to be paid by hand says
+// so rather than the watcher's hold (A-488).
+func payoutRefusalLabel(state, payoutErr string) string {
+	if heldForHand(state, payoutErr) {
+		return "Held to be paid by hand"
+	}
+	return payoutStateLabel(state)
 }
 
 // repointable reports a payout an administrator may move to its recipient's current saved address (A-121): held
@@ -221,7 +232,7 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 		case (state == "held" || state == "failed") && !repointable(state, payoutErr, ambiguous):
 			return actionResult{}, fail(409, "This payout may already have been broadcast (its last send had no definite answer, or it was restored from backup), so it is never moved to another address: that could pay twice. Check the wallet, then release, requeue or mark it sent. Nothing was changed.")
 		case !repointable(state, payoutErr, ambiguous):
-			return actionResult{}, fail(409, "This payout is "+payoutStateLabel(state)+": only a held payout or one the wallet definitely rejected can be moved to the account's current address. Nothing was changed.")
+			return actionResult{}, fail(409, "This payout is "+payoutRefusalLabel(state, payoutErr)+": only a held payout or one the wallet definitely rejected can be moved to the account's current address. Nothing was changed.")
 		}
 		column := "payout_btc"
 		if cur == "XMR" {
@@ -258,7 +269,7 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 		// Only a blocked payout (no payout address, so the watcher cannot send it): the pending half of A-34 is not
 		// built. The compare-and-set repeats the state check made under the row lock.
 		if state != "blocked" {
-			return actionResult{}, fail(409, "Only a blocked payout (its recipient saved no payout address) can be held to be paid by hand; this payout is "+payoutStateLabel(state)+". Nothing was changed.")
+			return actionResult{}, fail(409, "Only a blocked payout (its recipient saved no payout address) can be held to be paid by hand; this payout is "+payoutRefusalLabel(state, payoutErr)+". Nothing was changed.")
 		}
 		staffNote := strings.TrimSpace(c.Form.Get("note"))
 		res, err = tx.ExecContext(ctx, `UPDATE payouts SET state='held',error=$2,updated=now() WHERE id=$1 AND state='blocked'`, id, handHoldPrefix+" "+staffNote)
@@ -289,7 +300,7 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 		return actionResult{}, err
 	}
 	if n, _ := res.RowsAffected(); n != 1 {
-		return actionResult{}, fail(409, "This payout is "+payoutStateLabel(state)+"; that action does not apply. Nothing was changed. Reload the admin page.")
+		return actionResult{}, fail(409, "This payout is "+payoutRefusalLabel(state, payoutErr)+"; that action does not apply. Nothing was changed. Reload the admin page.")
 	}
 	if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,$3,$4)", orderID, orderState, c.User.ID, note); err != nil {
 		return actionResult{}, err

@@ -178,7 +178,7 @@ UPDATE payouts SET send_ambiguous=true WHERE state='failed';
 WITH held AS (
   UPDATE payouts SET state='held', updated=now(),
     error='Restored from backup: verify in the wallet before releasing; this payout may already have been sent.'
-      || coalesce(' ' || substring(error from '(?:Suspended account:|Larger than the order price:).*'), '')
+      || coalesce(' ' || substring(error from '(?:Suspended account:|Larger than the order price:|Held to be paid by hand:).*'), '')
   WHERE state IN ('pending','sending','blocked','held') RETURNING 1),
 failed AS (
   UPDATE payouts SET updated=now(),
