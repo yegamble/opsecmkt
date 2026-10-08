@@ -55,6 +55,8 @@ func unsentRow(list, order string) string {
 func TestRecipientSeesEveryUnsentPayout(t *testing.T) {
 	p := newPayEnv(t)
 	p.setPayoutAddress(p.vendor, "fake-testnet-vendor-dest")
+	suspendedAdminID, _ := p.testEnv.user("suspended_payout_notice_admin", "admin")
+	agExec(p.testEnv, "UPDATE users SET suspended_at=now() WHERE id=$1", suspendedAdminID)
 	// Two real watcher failures, oldest: a definite wallet rejection and an ambiguous one.
 	definite, _ := p.failPayout("tx-r-def", &rpcError{Method: "fake RPC send", Code: -6, Message: "Insufficient funds RAW-WALLET-DEFINITE"})
 	ambiguous, _ := p.failPayout("tx-r-amb", errors.New("bitcoin RPC unreachable: RAW-WALLET-AMBIGUOUS"))
@@ -62,6 +64,9 @@ func TestRecipientSeesEveryUnsentPayout(t *testing.T) {
 	for _, order := range []string{definite, ambiguous} {
 		if n := p.count("SELECT count(*) FROM notifications n JOIN users u ON u.id=n.user_id WHERE u.role='admin' AND n.body LIKE $1", "Payout failed for order "+order[:8]+"%"); n != 1 {
 			t.Fatalf("administrator notifications for the failure of %s: %d", order[:8], n)
+		}
+		if n := p.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE $2", suspendedAdminID, "Payout failed for order "+order[:8]+"%"); n != 0 {
+			t.Fatalf("suspended administrator received %d failure notices", n)
 		}
 	}
 	v := p.vendor.ID

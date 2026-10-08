@@ -6,7 +6,7 @@ import (
 )
 
 // A-8: opening a dispute tells the staff who can resolve it; a dispute nobody independent can resolve is
-// still accepted, and administrators are told it needs a moderator who is not a party.
+// still accepted, and unsuspended administrators are told it needs an unsuspended moderator who is not a party.
 
 func (w *orderWorld) resolverNotices(uid string) int {
 	return w.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE 'Dispute opened on order%'", uid)
@@ -58,7 +58,7 @@ func TestDisputePartyModeratorIsNotAResolver(t *testing.T) {
 	if n := w.resolverNotices(adminID); n != 1 {
 		t.Fatalf("independent admin got %d resolver notices, want 1", n)
 	}
-	if n := w.count("SELECT count(*) FROM notifications WHERE body LIKE '%needs a moderator who is not a party%'"); n != 0 {
+	if n := w.count("SELECT count(*) FROM notifications WHERE body LIKE '%needs an unsuspended moderator who is not a party%'"); n != 0 {
 		t.Fatal("no-resolver notice sent although an independent administrator exists")
 	}
 }
@@ -76,12 +76,15 @@ func TestDisputeWithNoEligibleResolver(t *testing.T) {
 	if w.state(order) != stateDisputed || w.count("SELECT count(*) FROM disputes WHERE order_id=$1 AND status='Open'", order) != 1 {
 		t.Fatal("dispute refused although no independent resolver exists")
 	}
-	want := "Dispute opened on order " + shortID(order) + " needs a moderator who is not a party to the order. Every moderator and administrator is its buyer or vendor, so nobody can resolve it yet."
+	want := "Dispute opened on order " + shortID(order) + " needs an unsuspended moderator who is not a party to resolve it; no independent resolver was available when it opened."
 	if n := w.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body=$2", adminID, want); n != 1 {
 		t.Fatalf("admin no-resolver notices=%d, want 1", n)
 	}
 	if n := w.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND actor_id IS NULL AND from_state='disputed' AND to_state='disputed' AND note LIKE 'No independent resolver was available%'", order); n != 1 {
 		t.Fatalf("history notes=%d, want 1", n)
+	}
+	if note := agStr(e, "SELECT note FROM order_events WHERE order_id=$1 AND actor_id IS NULL AND note LIKE 'No independent resolver was available%'", order); !strings.Contains(note, "no unsuspended moderator or administrator who was not a party") {
+		t.Fatalf("no-resolver history note is inaccurate: %q", note)
 	}
 	if !strings.Contains(w.page("/order?id="+order, buyer, 200), "No independent resolver was available") {
 		t.Fatal("order history does not show the no-resolver note")
@@ -139,9 +142,15 @@ func TestDisputeIgnoresSuspendedStaff(t *testing.T) {
 	if w.state(order) != stateDisputed {
 		t.Fatal("dispute refused")
 	}
-	noResolver := "Dispute opened on order " + shortID(order) + " needs a moderator who is not a party to the order.%"
+	noResolver := "Dispute opened on order " + shortID(order) + " needs an unsuspended moderator who is not a party to resolve it;%"
 	if n := w.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE $2", adminID, noResolver); n != 1 {
 		t.Fatalf("admin no-resolver notices=%d, want 1", n)
+	}
+	if n := w.count("SELECT count(*) FROM notifications WHERE user_id=$1", lockedID); n != 0 {
+		t.Fatalf("suspended administrator received %d notifications", n)
+	}
+	if notification := agStr(e, "SELECT body FROM notifications WHERE user_id=$1 AND body LIKE 'Dispute opened on order %needs an unsuspended moderator%'", adminID); !strings.Contains(notification, "no independent resolver was available when it opened") {
+		t.Fatalf("admin no-resolver notice is inaccurate: %q", notification)
 	}
 	for _, uid := range []string{modID, lockedID} {
 		if n := w.resolverNotices(uid); n != 0 {
@@ -151,8 +160,19 @@ func TestDisputeIgnoresSuspendedStaff(t *testing.T) {
 	if n := w.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND actor_id IS NULL AND note LIKE 'No independent resolver was available%'", order); n != 1 {
 		t.Fatalf("history notes=%d, want 1", n)
 	}
+	if note := agStr(e, "SELECT note FROM order_events WHERE order_id=$1 AND actor_id IS NULL AND note LIKE 'No independent resolver was available%'", order); !strings.Contains(note, "no unsuspended moderator or administrator who was not a party") {
+		t.Fatalf("no-resolver history note is inaccurate: %q", note)
+	}
+	if notification := agStr(e, "SELECT body FROM notifications WHERE user_id=$1 AND body LIKE 'Dispute opened on order %needs an unsuspended moderator%'", adminID); !strings.Contains(notification, "no independent resolver was available when it opened") {
+		t.Fatalf("admin no-resolver notice is inaccurate: %q", notification)
+	}
 	const deskNote = "No eligible resolver."
-	mustContain(t, w.page("/moderator", admin, 200), deskNote)
+	moderatorPage := w.page("/moderator", admin, 200)
+	if !strings.Contains(moderatorPage, "No unsuspended moderator or administrator who is not a party is available.") {
+		t.Fatalf("moderator page lacks current no-resolver copy: %s", moderatorPage)
+	}
+	mustContain(t, moderatorPage, deskNote)
+	mustNotContain(t, moderatorPage, "Every moderator and administrator is a party")
 	body := w.page("/order?id="+order, buyer, 200)
 	mustContain(t, body, "Contact dispute staff", "No independent moderator or administrator is available to contact.")
 	mustNotContain(t, body, modHandle+" · ", lockedHandle)

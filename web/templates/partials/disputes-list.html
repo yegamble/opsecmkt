@@ -1,7 +1,7 @@
 {{/* P3 Orders owns. Dispute list used by disputes and moderator; resolve form for moderators who are not party to the order,
 each outcome stating its payout from DisputePayouts (A-161) and confirmed with the resolver's password, plus an authenticator code
 when Security says TOTP is on (A-32; adminConfirmLoader on the desk, resolveConfirmLoader on /disputes);
-administrators see a "No eligible resolver" note on an open dispute whose order has every staff account as a party.
+administrators see a "No eligible resolver" note on an open dispute with no unsuspended staff member who is not a party.
 Disputes holds every open dispute first (OpenDisputes of them, oldest first), then the most recent resolved ones.
 The resolve form's reply_seen says whether it showed the other party's reply (A-280: /resolve refuses a form that did
 not once a reply is on record). Whoever may open the order also gets its listing linked (A-265): the product page of
@@ -20,7 +20,7 @@ an archived listing opens by the order page's rule (A-164). */}}
 <p class="dispute-text">{{.Reply}}</p>{{end}}{{if .Resolution}}<p>
 <strong>Resolution:</strong></p>
 <p class="dispute-text">{{.Resolution}}</p>{{else}}{{if $.User}}{{if or (eq $.User.Role "moderator") (eq $.User.Role "admin")}}{{if and .NoResolver (eq $.User.Role "admin")}}<p class="order-unavailable" role="note">
-<strong>No eligible resolver.</strong> Every moderator and administrator is a party to this order. Assign a moderator who is not a party on the administration page so this dispute can be resolved.</p>{{end}}{{$ev := index $.DisputeEvidence .ID}}{{with $ev}}<div class="dispute-evidence" role="note">
+<strong>No eligible resolver.</strong> No unsuspended moderator or administrator who is not a party is available. An administrator can assign an unsuspended moderator who is not a party so it can be resolved.</p>{{end}}{{$ev := index $.DisputeEvidence .ID}}{{with $ev}}<div class="dispute-evidence" role="note">
 <p><strong>Encrypted evidence holders.</strong> Messages each party sent to a moderator or administrator since this dispute opened, counted from who sent them to whom and when; only the recipient can read them.</p>
 <ul>
 <li>Buyer → {{range $i, $h := .Buyer}}{{if $i}}, {{end}}{{$h.Handle}}{{if $h.Suspended}} (suspended){{end}}{{if $h.Former}} (no longer staff){{end}} ({{$h.Count}}, latest {{$h.Latest}}){{else}}none{{end}}</li>

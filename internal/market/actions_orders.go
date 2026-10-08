@@ -201,8 +201,8 @@ func disputeReplyAction(c *actionCtx) (actionResult, error) {
 }
 
 // notifyDisputeStaff tells every moderator and administrator who is not a party to the order that a dispute
-// opened. If every staff account is a party, the dispute still stands: the order history records that no
-// independent resolver was available and every administrator is told it needs a moderator who is not a party.
+// opened. If no unsuspended staff account is independent of the parties, the dispute still stands: the order
+// history records that no independent resolver was available and unsuspended administrators are told.
 // A suspended account cannot sign in, so it counts as neither a resolver nor a recipient (A-118).
 func notifyDisputeStaff(c *actionCtx, o *Order) error {
 	ctx, tx := c.Ctx(), c.Tx
@@ -218,7 +218,7 @@ func notifyDisputeStaff(c *actionCtx, o *Order) error {
 		if staff, err = collectStrings(ctx, tx, "SELECT id FROM users WHERE role='admin' AND suspended_at IS NULL"); err != nil {
 			return err
 		}
-		body = "Dispute opened on order " + shortID(o.ID) + " needs a moderator who is not a party to the order. Every moderator and administrator is its buyer or vendor, so nobody can resolve it yet."
+		body = "Dispute opened on order " + shortID(o.ID) + " needs an unsuspended moderator who is not a party to resolve it; no independent resolver was available when it opened."
 	}
 	for _, uid := range staff {
 		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), uid, body); err != nil {
@@ -228,7 +228,7 @@ func notifyDisputeStaff(c *actionCtx, o *Order) error {
 	return nil
 }
 
-const noResolverNote = "No independent resolver was available: every moderator and administrator is a party to this order. An administrator must assign a moderator who is not a party to resolve this dispute."
+const noResolverNote = "No independent resolver was available when this dispute opened: no unsuspended moderator or administrator who was not a party was available. An administrator must assign an unsuspended moderator who is not a party to resolve this dispute."
 
 var disputeOutcomes = map[string]string{"release": "Resolved — release to vendor", "refund": "Resolved — refund to buyer"}
 

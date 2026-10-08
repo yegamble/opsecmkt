@@ -772,8 +772,8 @@ func queryDisputes(ctx context.Context, a *App, query string, args ...any) ([]Di
 
 // loadDisputes lists the viewer's disputes (on their own orders, or all of them for moderators and
 // administrators): every open dispute first, oldest first, then the most recent resolved ones up to
-// historyLimit. Each dispute gets its order summary; an open one is marked NoResolver while every
-// moderator and administrator who is not suspended is a party to its order.
+// historyLimit. Each dispute gets its order summary; an open one is marked NoResolver when no unsuspended
+// moderator or administrator independent of the parties is available.
 func loadDisputes(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
 	d.DisputeOrders = map[string]Order{}
 	if d.User == nil {

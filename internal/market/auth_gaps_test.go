@@ -383,12 +383,15 @@ func TestRateLimitWritesPerUser(t *testing.T) {
 	if agStr(e, "SELECT is_read::text FROM notifications WHERE id=$1", mine) != "false" {
 		t.Fatal("limited write was applied")
 	}
-	if n := agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1 AND action='Marked notification read'", id); n != 100 {
-		t.Fatalf("audited writes=%d", n)
+	if n := agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1 AND action='Marked notification read'", id); n != 0 {
+		t.Fatalf("single-notification reads wrote %d audit rows", n)
 	}
 	e.check(e.do("POST", "/notifications", other, url.Values{"id": {theirs}}), 303)
 	if agStr(e, "SELECT is_read::text FROM notifications WHERE id=$1", theirs) != "true" {
 		t.Fatal("other user's write was refused")
+	}
+	if n := agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1 AND action='Marked notification read'", otherID); n != 0 {
+		t.Fatalf("owned notification read wrote %d audit rows", n)
 	}
 }
 
@@ -736,9 +739,15 @@ func TestNotificationMarkReadOnlyOwnRows(t *testing.T) {
 	if agStr(e, "SELECT is_read::text FROM notifications WHERE id=$1", na) != "false" {
 		t.Fatal("a user marked another user's notification read")
 	}
+	if n := agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1 AND action='Marked notification read'", bID); n != 0 {
+		t.Fatalf("foreign notification read wrote %d audit rows", n)
+	}
 	e.check(e.do("POST", "/notifications", b, url.Values{"id": {nb}}), 303)
 	if agStr(e, "SELECT is_read::text FROM notifications WHERE id=$1", nb) != "true" || agStr(e, "SELECT is_read::text FROM notifications WHERE id=$1", na) != "false" {
 		t.Fatal("mark-read touched the wrong rows")
+	}
+	if n := agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1 AND action='Marked notification read'", bID); n != 0 {
+		t.Fatalf("owned notification read wrote %d audit rows", n)
 	}
 }
 

@@ -267,6 +267,37 @@ func TestRecordsListPhotosAndAvatars(t *testing.T) {
 	}
 }
 
+func TestCanaryRecordsDescribeCurrentActivityAndTemporarySignInRetention(t *testing.T) {
+	tmpl, err := parseTemplates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := testHTTPApp(true)
+	a.templates = tmpl
+	w := httptest.NewRecorder()
+	a.ServeHTTP(w, httptest.NewRequest("GET", "/canary", nil))
+	if w.Code != 200 {
+		t.Fatalf("/canary: %d", w.Code)
+	}
+	body := oneSpace(html.UnescapeString(w.Body.String()))
+	for _, want := range []string{
+		"message sent",
+		"mark-all notification read",
+		"administrator check of a payout address when releasing a suspension-held payout",
+		"Message-send entries do not name the recipient",
+		"Marking all notifications read is recorded; reading one notification is not.",
+		"Temporary sign-in records",
+		"stop working within 12 hours and are deleted later",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("canary records copy lacks %q", want)
+		}
+	}
+	if strings.Contains(body, "expire within 12 hours") {
+		t.Fatal("temporary sign-in copy claims opportunistic deletion completes within 12 hours")
+	}
+}
+
 // uploadClaims returns the sentences of text that call an upload one of the words the war room banned for
 // uploads (A-191; the PR #28 review added "malware-free" and "harmless"): ClamAV checks uploads for known
 // malware only, so no page, document or message may promise more. kind is "doc" (Markdown), "template" (an HTML
@@ -457,6 +488,11 @@ func TestPreviewOrderSamplesUseRealIDShapes(t *testing.T) {
 	}
 	if strings.Contains(body, `class="payment-address"`) {
 		t.Error("preview paid sample shows a deposit address")
+	}
+	moderator := httptest.NewRecorder()
+	a.ServeHTTP(moderator, httptest.NewRequest("GET", "/moderator", nil))
+	if moderator.Code != 200 || !strings.Contains(moderator.Body.String(), "Order "+previewDisputedID) {
+		t.Fatalf("preview moderator row does not use its real-shaped order ID: status=%d", moderator.Code)
 	}
 }
 

@@ -1121,7 +1121,7 @@ func (a *App) recordPayout(ctx context.Context, id int64, orderID, recipient, st
 		return err
 	}
 	if state == "failed" {
-		staff, err := collectStrings(ctx, tx, "SELECT id FROM users WHERE role='admin'")
+		staff, err := collectStrings(ctx, tx, "SELECT id FROM users WHERE role='admin' AND suspended_at IS NULL")
 		if err != nil {
 			return err
 		}

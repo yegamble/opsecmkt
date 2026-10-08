@@ -21,7 +21,7 @@ func init() {
 			return actionResult{Redirect: "/notifications", Audit: audit}, nil
 		}
 		_, err := c.Tx.ExecContext(c.Ctx(), "UPDATE notifications SET is_read=true WHERE id=$1 AND user_id=$2", c.Form.Get("id"), c.User.ID)
-		return actionResult{Redirect: "/notifications", Audit: "Marked notification read"}, err
+		return actionResult{Redirect: "/notifications"}, err
 	}})
 }
 

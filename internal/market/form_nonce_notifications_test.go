@@ -1,6 +1,7 @@
 package market
 
 import (
+	"bytes"
 	"net/url"
 	"strings"
 	"testing"
@@ -35,6 +36,12 @@ func TestFormNonceNotificationMarkReadReplaysAndBindsActorSessionAndBody(t *test
 		('notification-own',$1,'for owner'),('notification-other',$2,'for other')`, ownerID, otherID); err != nil {
 		t.Fatal(err)
 	}
+	agExec(e, "INSERT INTO audit_events(user_id,action) VALUES($1,'Marked notification read')", ownerID)
+	upto := int64(agInt(e, "SELECT max(id) FROM audit_events"))
+	beforeExport, err := auditExport(t.Context(), e.DB, upto)
+	if err != nil {
+		t.Fatal(err)
+	}
 	w := e.do("GET", "/notifications", owner, nil)
 	e.check(w, 200)
 	nonces := renderedActionNonces(t, w.Body.String(), "/notifications")
@@ -54,7 +61,7 @@ func TestFormNonceNotificationMarkReadReplaysAndBindsActorSessionAndBody(t *test
 		t.Fatalf("owner row read state count = %d, want one", got)
 	}
 	if got := agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1 AND action='Marked notification read'", ownerID); got != 1 {
-		t.Fatalf("read audit count after replay = %d, want one", got)
+		t.Fatalf("read audit count after replay = %d, want only the pre-existing row", got)
 	}
 	if got := agInt(e, "SELECT count(*) FROM form_submissions WHERE nonce=$1", nonces[1]); got != 1 {
 		t.Fatalf("receipt count = %d, want one", got)
@@ -78,7 +85,14 @@ func TestFormNonceNotificationMarkReadReplaysAndBindsActorSessionAndBody(t *test
 		t.Fatalf("mismatched request changed other account's row: is_read=%s", got)
 	}
 	if got := agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1 AND action='Marked notification read'", ownerID); got != 1 {
-		t.Fatalf("mismatches wrote extra audit rows: %d", got)
+		t.Fatalf("mismatches changed the pre-existing read audit count: %d", got)
+	}
+	afterExport, err := auditExport(t.Context(), e.DB, upto)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(beforeExport, afterExport) {
+		t.Fatal("mark-read, replay or mismatch changed the earlier audit export bytes")
 	}
 }
 
@@ -122,47 +136,39 @@ func TestFormNonceNotificationMarkAllReplayDoesNotReadLaterRows(t *testing.T) {
 	}
 }
 
-func TestFormNonceNotificationReadRollbackCanRetrySameForm(t *testing.T) {
+func TestFormNonceNotificationReadDoesNotAuditAndSavesReceipt(t *testing.T) {
 	e := newTestApp(t)
 	uid, session := e.user("nonce_notification_rollback", "buyer")
 	if _, err := e.DB.Exec("INSERT INTO notifications(id,user_id,body) VALUES('notification-rollback',$1,'retry me')", uid); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.DB.Exec(`CREATE FUNCTION a130_reject_notification_audit() RETURNS trigger LANGUAGE plpgsql AS $$
-		BEGIN IF NEW.action='Marked notification read' THEN RAISE EXCEPTION 'test-only notification audit refusal'; END IF; RETURN NEW; END $$;
-		CREATE TRIGGER a130_reject_notification_audit BEFORE INSERT ON audit_events FOR EACH ROW EXECUTE FUNCTION a130_reject_notification_audit()`); err != nil {
+	if _, err := e.DB.Exec(`CREATE FUNCTION a89_reject_notification_read_audit() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN IF NEW.action='Marked notification read' THEN RAISE EXCEPTION 'single notification reads must not be audited'; END IF; RETURN NEW; END $$;
+		CREATE TRIGGER a89_reject_notification_read_audit BEFORE INSERT ON audit_events FOR EACH ROW EXECUTE FUNCTION a89_reject_notification_read_audit()`); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		_, _ = e.DB.Exec("DROP TRIGGER IF EXISTS a130_reject_notification_audit ON audit_events")
-		_, _ = e.DB.Exec("DROP FUNCTION IF EXISTS a130_reject_notification_audit()")
+		_, _ = e.DB.Exec("DROP TRIGGER IF EXISTS a89_reject_notification_read_audit ON audit_events")
+		_, _ = e.DB.Exec("DROP FUNCTION IF EXISTS a89_reject_notification_read_audit()")
 	})
 	form := url.Values{"id": {"notification-rollback"}, formNonceField: {randomToken()[:32]}}
-	failed := e.do("POST", "/notifications", session, form)
-	if failed.Code != 500 {
-		t.Fatalf("forced audit failure status = %d, want 500: %s", failed.Code, failed.Body.String())
-	}
-	if got := agStr(e, "SELECT is_read::text FROM notifications WHERE id='notification-rollback'"); got != "false" {
-		t.Fatalf("failed transaction left is_read=%s", got)
-	}
-	if got := submissionCount(t, e); got != 0 {
-		t.Fatalf("failed transaction retained %d receipts", got)
-	}
-	if _, err := e.DB.Exec("DROP TRIGGER a130_reject_notification_audit ON audit_events; DROP FUNCTION a130_reject_notification_audit()"); err != nil {
-		t.Fatal(err)
-	}
-	retry := e.do("POST", "/notifications", session, form)
-	e.check(retry, 303)
+	first := e.do("POST", "/notifications", session, form)
+	e.check(first, 303)
 	if got := agStr(e, "SELECT is_read::text FROM notifications WHERE id='notification-rollback'"); got != "true" {
-		t.Fatalf("retry did not mark notification read: is_read=%s", got)
+		t.Fatalf("read request left is_read=%s", got)
 	}
-	if got := agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1 AND action='Marked notification read'", uid); got != 1 {
-		t.Fatalf("retry wrote %d read audits, want one", got)
+	replay := e.do("POST", "/notifications", session, form)
+	e.check(replay, 303)
+	if got := agStr(e, "SELECT is_read::text FROM notifications WHERE id='notification-rollback'"); got != "true" {
+		t.Fatalf("replay changed notification state: is_read=%s", got)
+	}
+	if got := agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1 AND action='Marked notification read'", uid); got != 0 {
+		t.Fatalf("single-read action wrote %d read audits, want none", got)
 	}
 	if got := agInt(e, "SELECT count(*) FROM form_submissions WHERE nonce=$1", form.Get(formNonceField)); got != 1 {
 		t.Fatalf("retry stored %d receipts, want one", got)
 	}
-	if strings.Contains(failed.Body.String(), "test-only") {
-		t.Fatal("database failure detail leaked to response")
+	if strings.Contains(first.Body.String(), "single notification reads must not be audited") {
+		t.Fatal("read action attempted the forbidden audit insert")
 	}
 }
