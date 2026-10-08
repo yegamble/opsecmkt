@@ -492,6 +492,10 @@ func besideRoleChange(t *testing.T, e *testEnv, vendorID string, act func() *htt
 	if err = tx.QueryRowContext(ctx, "SELECT role FROM users WHERE id=$1 FOR UPDATE", vendorID).Scan(&role); err != nil {
 		t.Fatal(err)
 	}
+	var blockerPID int
+	if err = tx.QueryRowContext(ctx, "SELECT pg_backend_pid()").Scan(&blockerPID); err != nil {
+		t.Fatal(err)
+	}
 	done := make(chan *httptest.ResponseRecorder, 1)
 	go func() { done <- act() }()
 	// Until the action waits on a lock (or, if it needs none of the role change's, has finished).
@@ -502,8 +506,11 @@ func besideRoleChange(t *testing.T, e *testEnv, vendorID string, act func() *htt
 			continue
 		default:
 		}
+		// Scope the signal to this test's held row: other concurrently running tests
+		// may have unrelated lock waits in the same database.
 		var waiting int
-		e.DB.QueryRow(`SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock'`).Scan(&waiting)
+		e.DB.QueryRow(`SELECT count(*) FROM pg_stat_activity
+			WHERE datname=current_database() AND wait_event_type='Lock' AND $1=ANY(pg_blocking_pids(pid))`, blockerPID).Scan(&waiting)
 		if waiting > 0 {
 			break
 		}
