@@ -592,6 +592,7 @@ type RecipientPayout struct {
 	ID                                                   int64 // stable payout ID shown only on its recipient's account page
 	OrderID, OrderShort, Kind, Currency, Amount, Network string
 	Address, Status, NextStep                            string
+	NeedsStaffContact                                    bool // large or suspension hold: show A-119 contact beside the fixed next step
 }
 type PayoutRow struct {
 	ID                                               int64

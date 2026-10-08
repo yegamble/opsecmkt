@@ -116,13 +116,13 @@ func adminPayoutAction(c *actionCtx) (actionResult, error) {
 
 func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error) {
 	ctx, tx := c.Ctx(), c.Tx
-	var orderID, recipient, cur, state, orderState, payoutErr, address string
+	var orderID, buyerID, vendorID, recipient, cur, state, orderState, payoutErr, address string
 	var amt int64
 	var ambiguous, stuck bool
 	// stuck repeats stuckSending with the payout alias (orders also has state and updated).
-	err := tx.QueryRowContext(ctx, `SELECT p.order_id,p.user_id,p.currency,p.amount,p.state,o.state,p.send_ambiguous,
+	err := tx.QueryRowContext(ctx, `SELECT p.order_id,o.buyer_id,product.vendor_id,p.user_id,p.currency,p.amount,p.state,o.state,p.send_ambiguous,
 		(p.state='sending' AND p.updated < now()-interval '5 minutes'),p.error,p.address FROM payouts p JOIN orders o ON o.id=p.order_id
-		WHERE p.id=$1 FOR UPDATE OF p`, id).Scan(&orderID, &recipient, &cur, &amt, &state, &orderState, &ambiguous, &stuck, &payoutErr, &address)
+		JOIN products product ON product.id=o.product_id WHERE p.id=$1 FOR UPDATE OF p`, id).Scan(&orderID, &buyerID, &vendorID, &recipient, &cur, &amt, &state, &orderState, &ambiguous, &stuck, &payoutErr, &address)
 	if err == sql.ErrNoRows {
 		return actionResult{}, fail(404, "Payout not found")
 	}
@@ -140,6 +140,21 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 	const feeTaken = " The network fee is taken from it."
 	switch op {
 	case "release":
+		// A-219: a party administrator cannot review and release a large or suspension hold while another
+		// unsuspended administrator exists. confirmedTx locked this actor before the payout; this read takes no
+		// other account row locks, so it cannot reverse an administrator action's actor-before-target order.
+		large := heldLarge(state, payoutErr)
+		suspendedHeld := heldForSuspension(state, payoutErr)
+		partyReviewer := (large || suspendedHeld) && (c.User.ID == buyerID || c.User.ID == vendorID)
+		if partyReviewer {
+			var anotherAdmin bool
+			if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE role='admin' AND suspended_at IS NULL AND id<>$1)`, c.User.ID).Scan(&anotherAdmin); err != nil {
+				return actionResult{}, err
+			}
+			if anotherAdmin {
+				return actionResult{}, fail(409, "Another administrator is available to review this held payout. Ask them to review and release it. Nothing was changed.")
+			}
+		}
 		// A payout held by a restore may have been sent after the backup was taken: releasing it without checking
 		// the wallet could pay twice.
 		restored := state == "held" && strings.HasPrefix(payoutErr, restoredHoldPrefix)
@@ -148,7 +163,6 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 		}
 		// A payout held for an account suspension may be going to an address someone else saved with the
 		// account's password.
-		suspendedHeld := heldForSuspension(state, payoutErr)
 		if suspendedHeld && address == "" {
 			return actionResult{}, fail(409, "This payout was held when the recipient's account was suspended and has no payout address to check. It can be released after the recipient saves one. Nothing was changed.")
 		}
@@ -162,7 +176,6 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 			return actionResult{}, fail(409, "This payout was held so that an administrator could pay it by hand. Releasing it lets the market send it once the recipient has a payout address, so release it only if nobody paid it by hand (check the pooled wallet), and confirm that. If it was paid, record it as sent with the wallet's transaction ID instead. Nothing was changed.")
 		}
 		// A refund or return larger than the order price is held as a likely mistake (largeHold).
-		large := heldLarge(state, payoutErr)
 		if large && c.Form.Get("large_reviewed") != "confirmed" {
 			return actionResult{}, fail(409, "This payout is larger than the order price and was held as a likely mistake (refunds and returns up to the price are sent automatically, so this check does not stop swaps up to a listing's price). Review the order and its deposits, then confirm that you reviewed it to release the payout. Nothing was changed.")
 		}
@@ -202,6 +215,9 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 		if large {
 			note += " It is larger than the order price; an administrator reviewed it before releasing it."
 			audit += "; larger than the order price, administrator reviewed it"
+		}
+		if partyReviewer {
+			audit += "; released by a party to the order"
 		}
 	case "requeue":
 		// A send with no definite answer may be on the network: sending again without checking could pay twice.

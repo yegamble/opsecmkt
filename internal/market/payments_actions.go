@@ -442,12 +442,20 @@ func recipientPayout(orderID, kind, cur, network, amt, address, state, payoutErr
 		r.Status, r.NextStep = "Outcome unknown", "The send may have been broadcast; an administrator checks the wallet before any resend, so it is not paid twice."
 	case heldForSuspension(state, payoutErr):
 		r.Status, r.NextStep = "Held for a payout address check", "Held because your account was suspended; an administrator checks your payout address before releasing it."
+		r.NeedsStaffContact = true
+		r.NextStep += " If it is still held after a few days, message an administrator."
 	case state == "held" && restored:
 		r.Status, r.NextStep = "Held for a wallet check", "Held after the market restored its records from a backup; an administrator checks the market wallet before releasing it, so it is not paid twice."
 	case heldForHand(state, payoutErr):
 		r.Status, r.NextStep = "Held to be paid by hand", "An administrator holds it to pay it to you by hand from the market wallet, to an address agreed with you; saving a payout address does not release it. Contact the market staff if you were not asked about it."
 	case heldLarge(state, payoutErr):
 		r.Status, r.NextStep = "Held for review", "It is more than the order price, so an administrator reviews it before it is sent."
+		r.NeedsStaffContact = true
+		if address != "" {
+			r.NextStep += " Nothing is needed from you; if it is still held after a few days, message an administrator."
+		} else {
+			r.NextStep += " If it is still held after a few days, message an administrator."
+		}
 	case state == "held" && payoutErr == heldReason && conflicted:
 		r.Status, r.NextStep = "Held for review", "A deposit for this order is conflicted or missing from the market wallet, so this payout is held and market staff review it."
 	case state == "held" && payoutErr == heldReason:

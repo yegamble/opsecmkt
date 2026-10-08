@@ -396,6 +396,14 @@ func (a *App) queuePayout(ctx context.Context, tx *sql.Tx, o *Order, part payout
 	switch {
 	case part.large:
 		body = "Order " + short + ": the " + what + " is more than the order price, so it is held until an administrator checks it" + fee
+		if suspended {
+			body += " An administrator checks the payout address with you before releasing it; if it is still held after a few days, message an administrator."
+		} else if address != "" {
+			body += " Nothing is needed from you; if it is still held after a few days, message an administrator."
+		} else {
+			body += " Save a " + o.Currency + " payout address on your account page; if it is still held after a few days, message an administrator."
+		}
+		body += " Contact the market staff if you need help."
 	case address == "" && !suspended:
 		body = "Order " + short + ": add a " + o.Currency + " payout address on your account page to receive " + label + " (" + a.netTag() + "); the network fee is taken from it."
 	case part.kind == "return":
@@ -407,12 +415,17 @@ func (a *App) queuePayout(ctx context.Context, tx *sql.Tx, o *Order, part payout
 		}
 	}
 	if part.large {
-		admins, err := collectStrings(ctx, tx, "SELECT id FROM users WHERE role='admin' AND suspended_at IS NULL AND id<>$1", part.recipient)
+		admins, err := collectStrings(ctx, tx, "SELECT id FROM users WHERE role='admin' AND suspended_at IS NULL ORDER BY id")
 		if err != nil {
 			return err
 		}
 		body = "Payout review needed for order " + short + ": " + note + " Release it on the admin page after checking it."
 		for _, uid := range admins {
+			// Only a sole administrator may review their own order's hold (A-219). When another
+			// administrator exists, a buyer/vendor administrator receives only the party notice above.
+			if len(admins) > 1 && (uid == o.BuyerID || uid == o.VendorID) {
+				continue
+			}
 			if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), uid, body); err != nil {
 				return err
 			}
