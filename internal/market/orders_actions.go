@@ -24,7 +24,7 @@ func init() {
 	registerAction("/orders/ship", actionSpec{FormNonce: true, Run: shipAction})
 	registerAction("/orders/deliver", actionSpec{FormNonce: true, Run: deliverAction})
 	registerAction("/orders/complete", actionSpec{FormNonce: true, Run: completeAction})
-	registerAction("/reviews", actionSpec{Run: reviewAction})
+	registerAction("/reviews", actionSpec{FormNonce: true, Run: reviewAction})
 }
 
 // partyOrder loads an order the signed-in user buys or sells. Anyone else gets 404, as on GET /order,

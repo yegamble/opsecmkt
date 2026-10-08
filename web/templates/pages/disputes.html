@@ -11,6 +11,7 @@
 <section class="panel">
 <h2>Open a dispute</h2>{{$eligible := false}}{{range .Orders}}{{if or (eq .State "paid") (eq .State "shipped") (eq .State "delivered")}}{{$eligible = true}}{{end}}{{end}}{{if $eligible}}<form class="stack" method="post" action="/disputes">
 <input type="hidden" name="csrf" value="{{.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/disputes"}}">
 <label>Order<select name="order_id" required>{{range .Orders}}{{if or (eq .State "paid") (eq .State "shipped") (eq .State "delivered")}}<option value="{{.ID}}">{{.Title}} · {{.Status}} · {{.ID}}</option>{{end}}{{end}}</select>
 </label>
 <label>Describe the issue<textarea name="reason" required minlength="20" maxlength="5000" placeholder="Provide the details a moderator needs to review your issue." aria-describedby="dispute-reason-help">

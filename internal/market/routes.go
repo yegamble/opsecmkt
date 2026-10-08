@@ -606,7 +606,7 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 	if c.Tx != nil {
 		if err = c.Tx.Commit(); err != nil {
 			if spec.FormNonce {
-				serverError(w, r, 500, "Submission outcome unknown: it may have been saved. Check the resulting listing, message or order before starting a new form. If the original form is still open, resubmit it unchanged to retrieve the result.", errorCause(err))
+				serverError(w, r, 500, "Submission outcome unknown: it may have been saved. Check the result on the relevant page before starting a new form. If the original form is still open, resubmit it unchanged to retrieve the saved response.", errorCause(err))
 				return
 			}
 			serverError(w, r, 500, "Unable to save changes", errorCause(err))

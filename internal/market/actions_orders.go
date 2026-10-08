@@ -9,9 +9,9 @@ import (
 )
 
 func init() {
-	registerAction("/orders", actionSpec{Run: orderDraftAction})
-	registerAction("/disputes", actionSpec{Run: disputeAction})
-	registerAction("/disputes/reply", actionSpec{Run: disputeReplyAction})
+	registerAction("/orders", actionSpec{FormNonce: true, Run: orderDraftAction})
+	registerAction("/disputes", actionSpec{FormNonce: true, Run: disputeAction})
+	registerAction("/disputes/reply", actionSpec{FormNonce: true, Run: disputeReplyAction})
 	registerAction("/resolve", actionSpec{Roles: []string{"moderator", "admin"}, OwnTx: true, Run: resolveAction})
 	registerLoader("disputes", resolveConfirmLoader)
 }

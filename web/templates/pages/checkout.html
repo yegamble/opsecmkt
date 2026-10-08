@@ -36,6 +36,7 @@
 {{if or (and (not .BTCOrderUnavailable) (not (index $.PurchaseBlocked "BTC"))) (and (not .XMROrderUnavailable) (not (index $.PurchaseBlocked "XMR")))}}
 <form class="stack" method="post" action="/orders">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/orders"}}">
 <input type="hidden" name="product_id" value="{{.ID}}">
 <label>Pay with<select name="currency">{{if and (not .BTCOrderUnavailable) (not (index $.PurchaseBlocked "BTC"))}}
 <option value="BTC">{{.PriceBTC}} BTC{{if eq (index $.Settings "payment_intake_BTC") "false"}} — new payments paused{{else if eq (index $.Settings "payment_intake_BTC") "escrow"}} — escrow only{{end}}</option>{{end}}{{if and (not .XMROrderUnavailable) (not (index $.PurchaseBlocked "XMR"))}}

@@ -78,6 +78,7 @@
 <p class="help">{{.ReplyCreated}}</p>
 <p class="dispute-text">{{.Reply}}</p>{{else if and .Opener (eq .Status "Open") (eq $.Order.State "disputed")}}{{if eq $.OrderViewer .Responder}}{{$usable := false}}{{range $.StaffContacts}}{{if .Fingerprint}}{{$usable = true}}{{end}}{{end}}<form class="stack" method="post" action="/disputes/reply">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/disputes/reply"}}">
 <input type="hidden" name="order_id" value="{{$.Order.ID}}">
 <label>Your reply to the dispute<textarea name="reply" required minlength="20" maxlength="5000" aria-describedby="dispute-reply-help">
 </textarea>
@@ -160,6 +161,7 @@
 <span class="sr-only">Rated {{.Rating}} out of 5</span>
 </p>{{if .Body}}<p>{{.Body}}</p>{{end}}{{if .Hidden}}<p class="help">Hidden from the listing and vendor pages by an administrator. It does not count in the rating.</p>{{end}}</div>{{end}}{{if $.CanReview}}<form class="stack" method="post" action="/reviews">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/reviews"}}">
 <input type="hidden" name="order_id" value="{{.ID}}">
 <label>Rating<select name="rating" required>
 <option value="5">5 — excellent</option>

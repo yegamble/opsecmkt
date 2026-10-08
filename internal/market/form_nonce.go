@@ -11,8 +11,8 @@ import (
 	"time"
 )
 
-// A-130 starts with the normal-transaction forms whose second submission used to create a second listing or
-// message, or answer 409 after a successful order transition. Other forms are deliberately not opted in yet.
+// A-130 covers normal-transaction forms whose successful second submission must replay its original response
+// rather than create another record or refuse an already-completed action.
 var formNoncePattern = regexp.MustCompile(`^[0-9a-f]{32}$`)
 
 const formNonceField = "form_nonce"
