@@ -869,6 +869,7 @@ been done. Never switch it on for a market that takes real payments.
   the node. A database from before this check that already holds escrows is pinned to `regtest` at the first start
   when the node reports regtest, and refused on any other chain. Two regtest nodes cannot be told apart (both report
   `regtest`).
+- **Persisted node health (A-451).** `/admin` under *Payment providers* shows the current `ESCROW_BTC` configuration, whether the latest startup or watcher state enabled escrow, the last disabled reason class, the timestamp of the latest status update, the last successful watcher pass, and the last observed chain, height, pin result and keypool/index high-water marks. The row stores fixed reason classes and allowlisted chain names only; it never stores node error text, wallet names or RPC secrets. If `ESCROW_BTC=off`, startup makes no Bitcoin RPC call and records class `off`; the last successful pass and node measurements remain from the prior enabled run and are marked stale in the panel. Turning escrow on again refreshes them after startup checks and watcher passes. A same-fingerprint arbiter account-key substitution is shown as `arbiter_key_mismatch`.
 - `PAYMENT_CONFIRMATIONS_BTC` (default 3), `PAYMENT_EXPIRY` and `PAYMENT_POLL_INTERVAL` apply to escrows as to pooled
   Bitcoin payments. An escrow order that has received nothing when its payment window ends is cancelled. One that is
   underpaid (every deposit confirmed, short of the price, and no top-up for a whole window) is cancelled too, as a

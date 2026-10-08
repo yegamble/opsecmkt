@@ -81,3 +81,49 @@ func TestEscrowHealthTracksArbiterKeypoolHighWater(t *testing.T) {
 		t.Fatalf("keypool high-water %d and highest market index %d do not cover market index %d", highWater, highest, index)
 	}
 }
+
+func TestEscrowHealthPersistsConfiguredOffAcrossRestartWithoutRPC(t *testing.T) {
+	x := newEscrowEnv(t)
+	x.poll()
+	var lastPass sql.NullTime
+	var chain string
+	var height sql.NullInt64
+	var pin sql.NullBool
+	var keypool sql.NullInt64
+	if err := x.DB.QueryRow(`SELECT last_pass,chain,height,pin_match,keypool_high_water FROM bitcoin_escrow_health WHERE singleton`).
+		Scan(&lastPass, &chain, &height, &pin, &keypool); err != nil {
+		t.Fatal(err)
+	}
+	if !lastPass.Valid {
+		t.Fatal("fixture did not record a successful watcher pass")
+	}
+
+	beforeRPC := len(x.core.methods())
+	t.Setenv("ESCROW_BTC", "")
+	x.restart()
+	if x.A.escrowConfigured || x.A.escrow.Load() != nil || len(x.core.methods()) != beforeRPC {
+		t.Fatalf("off startup called the node or enabled escrow: calls %v -> %v", beforeRPC, len(x.core.methods()))
+	}
+	var enabled bool
+	var disabledClass string
+	var afterPass sql.NullTime
+	var afterChain string
+	var afterHeight sql.NullInt64
+	var afterPin sql.NullBool
+	var afterKeypool sql.NullInt64
+	if err := x.DB.QueryRow(`SELECT enabled,disabled_class,last_pass,chain,height,pin_match,keypool_high_water
+		FROM bitcoin_escrow_health WHERE singleton`).Scan(&enabled, &disabledClass, &afterPass, &afterChain, &afterHeight, &afterPin, &afterKeypool); err != nil {
+		t.Fatal(err)
+	}
+	if enabled || disabledClass != "off" || !afterPass.Valid || !afterPass.Time.Equal(lastPass.Time) ||
+		afterChain != chain || afterHeight != height || afterPin != pin || afterKeypool != keypool {
+		t.Fatalf("off startup lost retained health: enabled=%v class=%q pass=%v chain=%q height=%v pin=%v keypool=%v",
+			enabled, disabledClass, afterPass, afterChain, afterHeight, afterPin, afterKeypool)
+	}
+	page := x.adminPage()
+	for _, want := range []string{"id=\"escrow-health\"", "configuration off", "disabled", "<code>off</code>", "stale while <code>ESCROW_BTC=off</code>", "status updated"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("admin Payment providers lacks %q when escrow is configured off", want)
+		}
+	}
+}

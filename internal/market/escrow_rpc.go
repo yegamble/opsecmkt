@@ -225,6 +225,9 @@ func (a *App) initEscrow(ctx context.Context) error {
 		return err
 	}
 	if !cfg.on {
+		healthCtx, cancelHealth := escrowHealthContext(ctx)
+		a.saveEscrowHealthAttempt(healthCtx, false, "off")
+		cancelHealth()
 		a.notePinnedNet(ctx) // escrow orders' pages are shown with ESCROW_BTC off too, naming their chain (A-443)
 		return nil
 	}

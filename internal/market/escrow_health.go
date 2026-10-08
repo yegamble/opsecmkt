@@ -40,6 +40,8 @@ func (a *App) observeEscrowNode(node bitcoinNode, pinMatch *bool) {
 
 func escrowHealthDisabledClass(state string) string {
 	switch state {
+	case "off":
+		return "off"
 	case escrowLogUnchecked:
 		return "node_unreachable"
 	case escrowLogRefused, errEscrowChain.Error():
@@ -52,6 +54,8 @@ func escrowHealthDisabledClass(state string) string {
 		return "arbiter_wallet_unreadable"
 	case escrowLogFingerprint:
 		return "arbiter_fingerprint_mismatch"
+	case escrowLogArbiterKey:
+		return "arbiter_key_mismatch"
 	case escrowLogArbiterUse:
 		return "arbiter_wallet_not_dedicated"
 	case escrowLogArbiterRead, escrowLogArbiterWait:
@@ -142,8 +146,9 @@ func escrowHealthView(ctx context.Context, db *sql.DB) (*EscrowHealthView, error
 	var lastPass sql.NullTime
 	var height, keypool sql.NullInt64
 	var pinMatch sql.NullBool
-	err := db.QueryRowContext(ctx, `SELECT enabled,disabled_class,last_pass,chain,height,pin_match,keypool_high_water,highest_market_index
-		FROM bitcoin_escrow_health WHERE singleton`).Scan(&v.Enabled, &v.DisabledClass, &lastPass, &v.Chain, &height, &pinMatch, &keypool, &v.HighestMarketIndex)
+	var updatedAt time.Time
+	err := db.QueryRowContext(ctx, `SELECT enabled,disabled_class,last_pass,chain,height,pin_match,keypool_high_water,highest_market_index,updated_at
+		FROM bitcoin_escrow_health WHERE singleton`).Scan(&v.Enabled, &v.DisabledClass, &lastPass, &v.Chain, &height, &pinMatch, &keypool, &v.HighestMarketIndex, &updatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -154,6 +159,7 @@ func escrowHealthView(ctx context.Context, db *sql.DB) (*EscrowHealthView, error
 	if lastPass.Valid {
 		v.LastPass = lastPass.Time.UTC().Format("2006-01-02 15:04:05 UTC")
 	}
+	v.StatusUpdated = updatedAt.UTC().Format("2006-01-02 15:04:05 UTC")
 	if height.Valid {
 		v.Height = fmt.Sprint(height.Int64)
 	}

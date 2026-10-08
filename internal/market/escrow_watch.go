@@ -344,13 +344,19 @@ func (a *App) noteEscrowSync(why string) {
 // entries are not read (QA4W4A-1); in APP_MODE=tor why the
 // Tor-mode gate holds broadcasts; and the settlements queued or stuck (A-441, escrow_stall.go).
 func escrowNodeLoader(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
-	if !a.escrowConfigured || d.User == nil || d.User.Role != "admin" {
+	if d.User == nil || d.User.Role != "admin" {
 		return nil
 	}
-	v := &EscrowNodeView{Mismatch: a.escrowMismatch.Load(), StallN: escrowStallBlocks}
+	v := &EscrowNodeView{Configured: a.escrowConfigured, Mismatch: a.escrowMismatch.Load(), StallN: escrowStallBlocks}
 	var err error
 	if v.Health, err = escrowHealthView(ctx, a.db); err != nil {
 		return err
+	}
+	if !a.escrowConfigured {
+		if v.Health != nil {
+			d.EscrowNode = v
+		}
+		return nil
 	}
 	if class := a.escrowPooledKey.Load(); class != nil {
 		v.PooledKey, v.PooledWhitelist = *class, strings.Join(pooledRPCMethods, ",")
