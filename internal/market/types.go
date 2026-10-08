@@ -749,10 +749,10 @@ type EscrowStallView struct {
 
 // EscrowAlertView is an escrow order with an open staff alert on the moderation desk: its ID, its state's label, and
 // which alerts are open (a settlement queued or stuck, a release too few, a Monero deposit refused as another order's
-// escrow account with no disposition recorded, A-480).
+// escrow account with no disposition recorded, A-480, or a requested Monero settlement older than 24 hours).
 type EscrowAlertView struct {
-	ID, State              string
-	Stall, TooFew, Refused bool
+	ID, State                         string
+	Stall, TooFew, Refused, Requested bool
 }
 
 // XMRCollisionView is one record of a Monero escrow deposit refused as another order's escrow account (A-480), as staff
