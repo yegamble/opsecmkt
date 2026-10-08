@@ -28,7 +28,7 @@ func init() {
 	registerLoader("account", pgpLoader)
 	registerAction("/pgp/challenge", actionSpec{FormNonce: true, Run: pgpChallengeAction})
 	registerAction("/pgp/verify", actionSpec{FormNonce: true, Run: pgpVerifyAction})
-	registerAction("/pgp/2fa", actionSpec{OwnTx: true, Run: pgpTwoFactorAction})
+	registerAction("/pgp/2fa", actionSpec{Roles: []string{"buyer", "vendor", "moderator", "admin"}, OwnTx: true, ConfirmedFormNonce: true, Run: pgpTwoFactorAction})
 	registerPreview("pgp", previewPGP)
 	registerPreview("account", func(d *PageData) { d.PGP = &PGPView{} })
 }

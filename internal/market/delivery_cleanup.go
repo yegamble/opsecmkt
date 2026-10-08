@@ -2,6 +2,7 @@ package market
 
 import (
 	"context"
+	"database/sql"
 	"net/http"
 	"strings"
 )
@@ -20,7 +21,18 @@ func init() {
 	registerLoader("delivery-cleanup", accountSecurityLoader)
 	registerLoader("delivery-cleanup", deliveryCleanupLoader)
 	registerLoader("account", deliveryCleanupAccountLoader)
-	registerAction("/delivery-cleanup", actionSpec{Roles: []string{"buyer", "vendor", "moderator", "admin"}, OwnTx: true, Run: deliveryCleanupAction})
+	registerAction("/delivery-cleanup", actionSpec{Roles: []string{"buyer", "vendor", "moderator", "admin"}, OwnTx: true, ConfirmedFormNonce: true, ReceiptAuthorize: deliveryCleanupReceiptAuthorize, Run: deliveryCleanupAction})
+}
+
+// deliveryCleanupReceiptAuthorize retains the current owner check on a saved replay without
+// requiring the archived/template state changed by the original cleanup.
+func deliveryCleanupReceiptAuthorize(c *actionCtx) error {
+	var owner string
+	err := c.Tx.QueryRowContext(c.Ctx(), "SELECT vendor_id FROM products WHERE id=$1", strings.TrimSpace(c.Form.Get("id"))).Scan(&owner)
+	if err == sql.ErrNoRows || err == nil && owner != c.User.ID {
+		return fail(404, "Archived listing not found")
+	}
+	return err
 }
 
 func deliveryCleanupAccountLoader(ctx context.Context, a *App, _ *http.Request, d *PageData) error {

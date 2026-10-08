@@ -590,6 +590,10 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 				msg = "Admin setting outcome unknown: it may have been saved. Reload the admin page and check the setting and audit trail before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
 			case "/moderator/payment-review", "/moderator/xmr-collision":
 				msg = "Staff disposition outcome unknown: it may have been saved. Check the moderation desk and order record before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
+			case "/pgp/2fa":
+				msg = "PGP sign-in setting outcome unknown: it may have been saved. Reload PGP verification and check whether PGP sign-in is on or off before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
+			case "/delivery-cleanup":
+				msg = "Delivery cleanup outcome unknown: it may have been saved. Reload archived listing cleanup and check whether the stored delivery text is present before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
 			case "/escrow/claim", "/escrow/ship", "/escrow/recover", "/escrow/bump", "/escrow-xmr/claim", "/escrow-xmr/ship", "/escrow-xmr/confirm":
 				msg = "Escrow action outcome unknown: it may have been saved. Check the order and settlement state before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
 			case "/totp/disable", "/totp/activate", "/totp/recovery":
