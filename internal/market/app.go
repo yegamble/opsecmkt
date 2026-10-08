@@ -38,6 +38,7 @@ type bucket struct {
 	Until time.Time
 }
 type App struct {
+	startedAt    time.Time       // this process instance, never a persisted heartbeat
 	recentErrors serverErrorRing // A-143: last 20 referenced HTTP errors, in memory only
 
 	db               *sql.DB
@@ -108,7 +109,7 @@ func New(ctx context.Context, preview bool) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	a := &App{templates: t, preview: preview, mode: os.Getenv("APP_MODE"), limits: make(map[string]bucket), payments: map[string]PaymentProvider{}, unavailable: map[string]*unavailableProvider{}}
+	a := &App{startedAt: time.Now().UTC(), templates: t, preview: preview, mode: os.Getenv("APP_MODE"), limits: make(map[string]bucket), payments: map[string]PaymentProvider{}, unavailable: map[string]*unavailableProvider{}}
 	if a.mode == "" {
 		a.mode = "clearnet"
 	}

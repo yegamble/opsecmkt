@@ -106,6 +106,12 @@ type PaymentReview struct {
 type Event struct{ Handle, Action, Created string } // Handle: account the audit row is recorded on ("" = system)
 
 type PageData struct {
+	ServerStarted string
+	SchemaVersion int
+
+	StaffRoster       []StaffRosterEntry
+	StaffRosterPaging *ActivityPaging
+
 	RecentServerErrors []ServerErrorEntry // administrator-only, volatile, no request contents
 
 	Page, Title, CSRF, Error, Notice, Query, Category, Region, Currency, Mode string

@@ -1,0 +1,10 @@
+{{define "admin-staff-roster"}}
+<section class="panel" aria-labelledby="staff-roster">
+<h2 id="staff-roster">Staff roster</h2>
+<p class="help">All administrator and moderator accounts, including suspended and publicly hidden staff. This roster is visible only to administrators. Key status describes whether the saved public key can receive encrypted messages; it does not prove ownership or enable sign-in.</p>
+{{with .StaffRosterPaging}}<p class="help">Showing {{.First}}–{{.Last}} of {{.Total}} staff accounts.</p>{{end}}
+<div class="table-wrap" tabindex="0" role="region" aria-labelledby="staff-roster"><table><thead><tr><th scope="col">Handle</th><th scope="col">Role</th><th scope="col">Account</th><th scope="col">Public key</th></tr></thead><tbody>
+{{range .StaffRoster}}<tr><td>{{.Handle}}</td><td>{{.Role}}</td><td>{{if .Suspended}}Suspended {{.Suspended}}{{else}}Active{{end}}</td><td>{{.KeyStatus}}</td></tr>{{else}}<tr><td colspan="4">No staff accounts.</td></tr>{{end}}
+</tbody></table></div>
+{{with .StaffRosterPaging}}{{if gt .Pages 1}}<nav class="pagination" aria-label="Staff roster pages">{{if .PrevURL}}<a href="{{.PrevURL}}#staff-roster" rel="prev">← Previous</a>{{end}}<span aria-current="page">Page {{.Page}} of {{.Pages}}</span>{{if .NextURL}}<a href="{{.NextURL}}#staff-roster" rel="next">Next →</a>{{end}}</nav>{{end}}{{end}}
+</section>{{end}}

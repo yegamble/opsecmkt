@@ -8,6 +8,7 @@
 {{template "staff-attention-summary" .}}
 </div>
 <span class="badge">Administrator</span>
+<p class="help">Database schema version {{.SchemaVersion}}{{if .ServerStarted}} · This server started {{.ServerStarted}} (UTC){{end}}.</p>
 </div>
 <section class="panel" aria-labelledby="getting-started">
 <h2 id="getting-started">Get your marketplace ready</h2>
@@ -58,7 +59,7 @@
 {{with .AdminUsersPaging}}{{if gt .Pages 1}}<nav class="pagination" aria-label="Account picker pages">{{if .PrevURL}}<a href="{{.PrevURL}}" rel="prev" aria-label="Previous account page, page {{.PrevPage}} of {{.Pages}}">← Previous</a>{{end}}<span class="current" aria-current="page">Page {{.Page}} of {{.Pages}}</span>{{if .NextURL}}<a href="{{.NextURL}}" rel="next" aria-label="Next account page, page {{.NextPage}} of {{.Pages}}">Next →</a>{{end}}</nav>{{end}}{{end}}
 </details>{{end}}
 </section>
-</div>{{template "admin-auth" .}}{{template "admin-staff-contact" .}}{{template "admin-staff-list" .}}{{template "admin-payments" .}}{{template "admin-scanner" .}}{{template "admin-transparency" .}}
+</div>{{template "admin-auth" .}}{{template "admin-staff-contact" .}}{{template "admin-staff-list" .}}{{template "admin-staff-roster" .}}{{template "admin-payments" .}}{{template "admin-scanner" .}}{{template "admin-transparency" .}}
 <section class="panel" aria-labelledby="recent-server-errors">
 <h2 id="recent-server-errors">Recent server errors</h2>
 <p class="help">The last 20 responses carrying an error reference, newest first, from this server process. This list is kept in memory and cleared on restart. It keeps the time, registered route, status and reference, without request contents. Use the reference to find the error class in the server log; log throttling may suppress a line during a burst.</p>
