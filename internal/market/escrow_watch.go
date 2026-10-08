@@ -380,7 +380,7 @@ func (a *App) settleEscrow(ctx context.Context, orderID string, walletRead bool)
 		}
 		// A deposit first recorded after the order closed is never counted; it is flagged for payment review, the
 		// buyer and the staff told once per episode, as a pooled one is (A-211, QA31-3). It stays in the escrow.
-		if err = a.flagLateDeposits(ctx, tx, &o, threshold, false); err != nil {
+		if err = a.flagLateDeposits(ctx, tx, &o, threshold, false, true); err != nil {
 			return err
 		}
 		return tx.Commit()

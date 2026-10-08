@@ -621,8 +621,13 @@ func (a *App) settleOrder(ctx context.Context, p PaymentProvider, orderID string
 				return err
 			}
 		}
-		if err = a.flagLateDeposits(ctx, tx, &o, threshold, paidOut); err != nil {
+		if err = a.flagLateDeposits(ctx, tx, &o, threshold, paidOut, walletRead); err != nil {
 			return err
+		}
+		if walletRead && !o.Escrow {
+			if err = a.flagStalledPooledDeposits(ctx, tx, &o, threshold); err != nil {
+				return err
+			}
 		}
 	}
 	return tx.Commit()
@@ -643,27 +648,32 @@ func (a *App) settleOrder(ctx context.Context, p PaymentProvider, orderID string
 // and the staff were told of it, and the one stray refund returns a later deposit with it. Only this function flags a deposit after the close of
 // an escrow order before it confirms or is announced (xmrSettleWaits leaves such a deposit to it), so each is
 // announced once.
-func (a *App) flagLateDeposits(ctx context.Context, tx *sql.Tx, o *Order, threshold int64, paidOut bool) error {
+func (a *App) flagLateDeposits(ctx context.Context, tx *sql.Tx, o *Order, threshold int64, paidOut, walletRead bool) error {
 	var episode bool
 	if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM payments p WHERE p.order_id=$1 AND "+paymentFlagOpen("p")+" AND NOT p.credited AND NOT p.below_floor AND NOT p.locked AND NOT p.spent_outside)", o.ID).Scan(&episode); err != nil {
 		return err
 	}
 	rows, err := tx.QueryContext(ctx, `UPDATE payments SET flagged=true WHERE order_id=$1 AND NOT credited AND NOT flagged AND NOT locked
-		AND confirmations>=$2 AND ($3 OR after_close) RETURNING txid,amount,EXISTS(SELECT 1 FROM escrow_siblings s WHERE s.address=payments.address)`, o.ID, threshold, paidOut)
+		AND confirmations>=$2 AND ($3 OR after_close OR ($4 AND EXISTS(SELECT 1 FROM disputes d WHERE d.order_id=$1 AND d.outcome='')))
+		RETURNING txid,amount,after_close,EXISTS(SELECT 1 FROM escrow_siblings s WHERE s.address=payments.address)`, o.ID, threshold, paidOut, walletRead && o.State == stateResolved && !o.Escrow)
 	if err != nil {
 		return err
 	}
 	dec := currencyDecimals(o.Currency)
 	var deposits []string
 	var sum int64
+	legacyUnsettled := false
 	atSiblings := 0 // QA5W5A-6: a deposit to a per-order escrow's sibling address is not at its escrow address
 	for rows.Next() {
 		var txid string
 		var amt int64
-		var atSibling bool
-		if err = rows.Scan(&txid, &amt, &atSibling); err != nil {
+		var afterClose, atSibling bool
+		if err = rows.Scan(&txid, &amt, &afterClose, &atSibling); err != nil {
 			rows.Close()
 			return err
+		}
+		if o.State == stateResolved && !o.Escrow && !paidOut && !afterClose {
+			legacyUnsettled = true
 		}
 		deposits = append(deposits, "deposit "+truncate(txid, 20)+" ("+amount(amt, dec)+" "+o.Currency+")")
 		sum += amt
@@ -685,6 +695,10 @@ func (a *App) flagLateDeposits(ctx context.Context, tx *sql.Tx, o *Order, thresh
 	}
 	note := a.netTag() + " " + strings.Join(deposits, ", ") + " arrived after this order was " + closed + " and " + verb + " not paid out. Moderator review required."
 	body := "Order " + o.ID[:min(8, len(o.ID))] + ": " + amount(sum, dec) + " " + o.Currency + " (" + a.netTag() + ") arrived at this order's deposit address after the order closed and was not paid out; it is not refunded automatically. Market staff were notified and review it."
+	if legacyUnsettled {
+		note = a.netTag() + " " + strings.Join(deposits, ", ") + " " + verb + " confirmed but not paid out: this legacy resolved dispute has no settlement outcome. Moderator review required."
+		body = "Order " + o.ID[:min(8, len(o.ID))] + ": " + amount(sum, dec) + " " + o.Currency + " (" + a.netTag() + ") was confirmed at its deposit address but not paid out: this legacy resolved dispute has no settlement outcome. Market staff were notified and review it."
+	}
 	if o.Escrow {
 		// An escrow deposit is at the order's escrow address, never in a wallet staff could refund from (QA31-3).
 		net, how := a.escrowNetwork(), "the market builds a stray refund returning it to your refund address, which you or the vendor sign on the order page"
@@ -709,6 +723,62 @@ func (a *App) flagLateDeposits(ctx context.Context, tx *sql.Tx, o *Order, thresh
 		return err
 	}
 	_, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.BuyerID, body)
+	return err
+}
+
+// A-487: a pooled deposit recorded at a closed order's address can remain below the confirmation threshold
+// indefinitely. The watcher keeps reading it after the normal address horizon (A-486). Fourteen days beyond that
+// horizon and no sooner than 14 days after it was first recorded, staff can review it through the same disposition
+// as a confirmed late deposit. The flag stops the extra
+// watch, but never credits, refunds or releases the deposit. If the wallet drops it first, markMissing has already
+// given it negative confirmations and this query leaves it alone. The order lock in settleOrder serialises this
+// with a concurrent disposition, so repeated passes cannot create another review episode.
+func (a *App) flagStalledPooledDeposits(ctx context.Context, tx *sql.Tx, o *Order, threshold int64) error {
+	var episode bool
+	if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM payments p WHERE p.order_id=$1 AND "+paymentFlagOpen("p")+" AND NOT p.credited AND NOT p.below_floor AND NOT p.locked AND NOT p.spent_outside)", o.ID).Scan(&episode); err != nil {
+		return err
+	}
+	rows, err := tx.QueryContext(ctx, `UPDATE payments SET `+newFlagSQL+` WHERE order_id=$1 AND NOT credited AND NOT flagged AND NOT locked
+		AND confirmations>=0 AND confirmations<$2 AND EXISTS (
+			SELECT 1 FROM payment_addresses pa JOIN orders ord ON ord.id=pa.order_id
+			 WHERE pa.order_id=$1 AND pa.currency=payments.currency AND pa.address=payments.address
+			   AND GREATEST(ord.updated+interval '24 hours',pa.created+interval '30 days',payments.created) <= now()-interval '14 days')
+		RETURNING txid,idx,amount`, o.ID, threshold)
+	if err != nil {
+		return err
+	}
+	type deposit struct {
+		txid        string
+		idx, amount int64
+	}
+	var deposits []deposit
+	for rows.Next() {
+		var d deposit
+		if err = rows.Scan(&d.txid, &d.idx, &d.amount); err != nil {
+			rows.Close()
+			return err
+		}
+		deposits = append(deposits, d)
+	}
+	rows.Close()
+	if err = rows.Err(); err != nil {
+		return err
+	}
+	for i, d := range deposits {
+		note := fmt.Sprintf("%s pooled deposit %s:%d (%s %s) is still unconfirmed 14 days after its address watch horizon ended. It was not paid out; moderator review required.",
+			a.netTag(), truncate(d.txid, 20), d.idx, amount(d.amount, currencyDecimals(o.Currency)), o.Currency)
+		if i == 0 && !episode {
+			if err = a.flagOrder(ctx, tx, o, note, ""); err != nil {
+				return err
+			}
+		} else if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", o.ID, o.State, note); err != nil {
+			return err
+		}
+	}
+	if len(deposits) > 0 && !episode {
+		body := "Order " + o.ID[:min(8, len(o.ID))] + ": a " + o.Currency + " deposit at its pooled address is still unconfirmed 14 days after the watch horizon ended. It was not paid out. Market staff were notified and will review it."
+		_, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.BuyerID, body)
+	}
 	return err
 }
 

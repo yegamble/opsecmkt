@@ -47,7 +47,7 @@ func lateEpisodeOpen(t *testing.T, e *testEnv, order, cur, addr string, threshol
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = e.A.flagLateDeposits(ctx, tx, &o, threshold, false); err != nil {
+	if err = e.A.flagLateDeposits(ctx, tx, &o, threshold, false, true); err != nil {
 		t.Fatal(err)
 	}
 	if err = tx.Commit(); err != nil {

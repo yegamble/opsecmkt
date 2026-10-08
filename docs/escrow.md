@@ -1137,8 +1137,11 @@ dismissed (migration 071) and pooled history on mainnet, which always blocks bec
 horizon is `pooled_watch_horizon()`, which the pooled watcher itself now calls, so the gate and the watcher share one
 rule: a deposit inside it is recorded and blocks until its review is recorded; one after it is never read and never
 blocks. A deposit recorded inside it but still below the threshold when it ends keeps its address watched and listed
-until it confirms (it is then flagged for review) or the wallet stops reporting it (`pooled_pending_deposit()`, also
-shared; A-486). One that the wallet keeps reporting unconfirmed for ever has no exit yet (operator guide). The removal release's refusing migration is planned to read this function; this release refuses nothing.
+until it confirms (it is then flagged for review), the wallet stops reporting it, or 14 days pass after the later of
+the horizon and its first observation while it remains unconfirmed (then flagged for staff review through the existing
+disposition; A-486, A-487).
+`pooled_pending_deposit()` names the waiting deposit. The removal release's refusing migration is planned to read this
+function; this release refuses nothing.
 
 `/admin` shows the list read-only (*Pooled wallet drain*), with each pooled wallet's balance as advice (Bitcoin
 `getbalances`, now on the pooled RPC user's method list; Monero `get_balance`) and the note that the market never sweeps:

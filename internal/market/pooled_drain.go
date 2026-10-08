@@ -30,7 +30,7 @@ var drainKinds = []struct{ kind, title, resolve string }{
 	{"flagged_payment", "Flagged pooled payments without a recorded review",
 		"Record each review (no action with the reason, or refunded by hand) on the moderation desk; an escalated flag waits for an administrator who is not a party to its order."},
 	{"watched_address", "Pooled deposit addresses still watched",
-		"Nothing to do: the watcher reads each until 24 hours after its order closed or 30 days after it was issued, whichever is later, and after that while a deposit recorded there awaits confirmation: until it confirms (it is then flagged for review) or the wallet stops reporting it (dropped, replaced or reorganised out). A deposit the wallet keeps reporting unconfirmed has no other way out yet. A deposit sent after the watch ends is never read."},
+		"The watcher reads each until 24 hours after its order closed or 30 days after it was issued, whichever is later. After that it keeps reading a deposit recorded there until it confirms (then flagged for review), the wallet stops reporting it, or 14 days pass after both the horizon and the deposit's first observation while it remains unconfirmed (then flagged for staff review). Record the review on the moderation desk; a deposit sent after the watch ends is never read."},
 	{"recovery_required", "Restore reconciliation not finished",
 		"Payouts have been paused since a restore from backup. Reconcile the restored orders and payments with the wallets and clear the lock as the recovery runbook says (docs/testnet-runbook.md); nothing on this page clears it."},
 	{"address_collision", "Issued-address warnings not dismissed",

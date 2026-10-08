@@ -2129,7 +2129,7 @@ of each kind, each linked to where it is resolved:
 | Open pooled orders | an order without escrow is neither a draft nor cancelled, resolved or completed | its buyer and vendor, a dispute, or the watcher (an unpaid order expires) |
 | Payouts not sent | a payout is blocked, held, queued, sending or failed | the watcher, or *Payouts* on `/admin`: release, requeue, mark sent, or hold a blocked one, pay it by hand and record it sent (below) |
 | Flagged pooled payments without a recorded review | a pooled deposit's payment-review flag is open (the moderation desk's own rule) | recording the review on the moderation desk (no action, or refunded by hand); an escalated flag waits for an administrator |
-| Pooled deposit addresses still watched | the address of a closed pooled order is inside the watcher's horizon (24 hours after the order closed or 30 days after the address was issued, whichever is later), or past it while a deposit recorded there is pending: neither credited nor flagged, and still reported by the wallet | time, and for a pending deposit its confirmation (it is then flagged for review, the row above) or the wallet no longer reporting it (dropped, replaced or reorganised out, which the watcher records with negative confirmations); a deposit sent after the watch ends is never read |
+| Pooled deposit addresses still watched | the address of a closed pooled order is inside the watcher's horizon (24 hours after the order closed or 30 days after the address was issued, whichever is later), or past it while a deposit recorded there is pending: neither credited nor flagged, and still reported by the wallet | time, and for a pending deposit its confirmation, the wallet no longer reporting it (dropped, replaced or reorganised out), or staff review after it remains below the confirmation threshold for 14 days after both the horizon and its first observation; confirmation and the 14-day limit raise a payment-review flag, closed through the moderation desk; a deposit sent after the watch ends is never read |
 | Restore reconciliation not finished | `payments_recovery_required` is `true` (a restore from backup) | reconciling the restore as the [runbook](testnet-runbook.md#reconcile-a-restored-database-before-enabling-payouts) says |
 | Issued-address warnings not dismissed | a coin's wallet handed out already-issued addresses and the warning under *Payment providers* is not dismissed | "Restore the wallets" in the runbook, then dismissing the warning |
 | Pooled history on mainnet | the market issued pooled addresses on mainnet | nothing in this release: no release has mainnet escrow, so a mainnet market cannot drop its pooled wallet |
@@ -2137,8 +2137,13 @@ of each kind, each linked to where it is resolved:
 Dust sent to an old deposit address inside its horizon blocks the drain until staff record its review (*no action*
 with a reason, on the moderation desk); dust sent after the horizon is never read, so it never blocks. A deposit that
 was recorded inside the horizon but has not reached the confirmation threshold when the horizon ends keeps its address
-watched and listed, naming the deposit, until it confirms (it is then flagged for review like any late deposit) or the
-wallet stops reporting it (A-486). The same rule, `pooled_pending_deposit()` in migration 091, decides both.
+watched and listed, naming the deposit, until it confirms (it is then flagged for review like any late deposit), the
+wallet stops reporting it, or it remains below the confirmation threshold for 14 days past both the horizon and its
+first observation (A-486,
+A-487). At that point the watcher flags it for staff review without moving any funds. Staff can record a reasoned
+no-action outcome or a hand refund through the existing moderation-desk disposition. A no-action outcome closes the
+drain blocker; staff should account for any later wallet confirmation in their reason because the address is no longer
+polled after disposition. The same pending-deposit rule decides which addresses the watcher and drain panel include.
 
 Some blockers have no staff action on `/admin` today; each is listed, never hidden:
 
@@ -2146,10 +2151,6 @@ Some blockers have no staff action on `/admin` today; each is listed, never hidd
   configured: it waits for the restore reconciliation, or for the wallet to be configured again;
 - a payment-review flag escalated to an administrator when every administrator is a party to its order: the desk
   offers its form to no one (add or promote an administrator who is not a party);
-- a pending deposit the wallet keeps reporting unconfirmed for ever (a Bitcoin Core wallet can keep an unconfirmed
-  incoming transaction it no longer has in its mempool; not checked here on a real node): no exit yet. The smallest one
-  proposed is a review flag the watcher raises once such a deposit has stayed unconfirmed for a set time after the
-  horizon (for example Core's 14-day mempool expiry), closed through the existing disposition;
 - the restore gate, cleared only by the runbook's reconciliation;
 - mainnet history, by design.
 
