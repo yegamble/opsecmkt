@@ -58,7 +58,7 @@ test('draft cannot be paid without a wallet, cancellation is recorded, vendor se
   await expect(page.getByText('This order is closed.')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Cancel draft' })).toHaveCount(0);
 
-  // The listing owner sees the order among incoming orders.
+  // The listing owner can still read the cancelled draft, which stays off incoming work.
   await page.goto('/account');
   await submitAndLoad(page, page.getByRole('button', { name: 'Sign out', exact: true }));
   await page.goto('/login');
