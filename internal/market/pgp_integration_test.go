@@ -143,6 +143,7 @@ func TestPGPKeyOwnershipAndSecondFactor(t *testing.T) {
 	if _, _, twoFA := status(); !twoFA {
 		t.Fatal("2fa not enabled")
 	}
+	agEnableTOTP(e, uid)
 	if !strings.Contains(e.body("GET", "/account", s, nil, 200), "<dt>PGP sign-in verification</dt>\n<dd>Enabled</dd>") {
 		t.Fatal("account does not show PGP sign-in enabled")
 	}
@@ -154,9 +155,10 @@ func TestPGPKeyOwnershipAndSecondFactor(t *testing.T) {
 		t.Fatal("PGP-enrolled login skipped the challenge")
 	}
 	pc := &http.Cookie{Name: "pending", Value: pending}
-	if page = e.body("GET", "/challenge", anon, nil, 200, pc); !strings.Contains(page, "Create encrypted code") || strings.Contains(page, "BEGIN PGP MESSAGE") {
+	if page = e.body("GET", "/challenge", anon, nil, 200, pc); !strings.Contains(page, "Create encrypted code") || strings.Contains(page, "BEGIN PGP MESSAGE") || !strings.Contains(page, "Either your authenticator or your verified PGP key can complete sign-in") || !strings.Contains(page, `name="method" value="totp"`) {
 		t.Fatal("challenge page state")
 	}
+	agExec(e, "UPDATE users SET totp_enabled=false WHERE id=$1", uid)
 	e.check(e.do("POST", "/challenge", anon, url.Values{"method": {"pgp"}, "pgp_code": {"anything"}}, pc), 401) // no code yet
 	e.check(e.do("POST", "/challenge/pgp", anon, nil), 401)                                                     // no pending cookie
 	e.check(e.do("POST", "/challenge/pgp", anon, nil, pc), 303)

@@ -68,7 +68,7 @@ func TestAdminSuspendsAccount(t *testing.T) {
 		t.Fatal("suspended account not notified")
 	}
 	page = e.body("GET", "/admin", admin, nil, 200)
-	mustContain(t, page, "susp_vendor · vendor · suspended ")
+	mustContain(t, page, "susp_vendor · vendor · suspended ", "factors: none (password only)", "Restoring hands the account back to whoever has its password")
 	mustNotContain(t, page, "No account is suspended.")
 
 	// Password sign-in: a wrong password answers exactly as before (no handle oracle); the right one is refused
@@ -86,6 +86,10 @@ func TestAdminSuspendsAccount(t *testing.T) {
 	agExec(e, "UPDATE users SET totp_enabled=false WHERE id=$1", vendorID)
 	alice, alicePub := testPGPKey(t, "alice")
 	agEnablePGP(e, vendorID, alicePub)
+	agExec(e, "UPDATE users SET totp_enabled=true WHERE id=$1", vendorID)
+	page = e.body("GET", "/admin", admin, nil, 200)
+	mustContain(t, page, "susp_vendor · vendor · suspended ", "factors: TOTP and PGP sign-in")
+	agExec(e, "UPDATE users SET totp_enabled=false WHERE id=$1", vendorID)
 	pc := agPending(e, vendorID)
 	anon := randomToken()
 	e.check(e.do("POST", "/challenge/pgp", anon, nil, pc), 303)

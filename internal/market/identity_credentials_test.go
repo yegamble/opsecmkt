@@ -246,6 +246,7 @@ func TestAdminResetsSecondFactors(t *testing.T) {
 		return f
 	}
 	opts := resetOptions()
+	mustContain(t, e.body("GET", "/admin", admin, nil, 200), "sign a fresh message with the PGP key already verified", "verify that signature against the saved key")
 	mustContain(t, opts, "reset_target · TOTP and PGP sign-in", `name="password" required`)
 	mustNotContain(t, opts, "reset_admin2", "reset_plain", "reset_admin ", `name="code"`)
 

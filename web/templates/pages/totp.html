@@ -27,7 +27,9 @@
 </div>
 </dl>
 <p>After your password, every sign-in asks for a code from your authenticator or a recovery code.</p>
+<p class="help">If you lose your authenticator and all recovery codes, you cannot finish a TOTP sign-in. Ask market staff for a second-factor reset; it also turns off PGP sign-in if enabled, and the next sign-in uses your password only.</p>
 <h2>Replace recovery codes</h2>
+<p class="help">Recovery codes and any pending authenticator secret are visible to every signed-in session on this account. Sign out everywhere before replacing recovery codes.</p>
 <form class="stack" method="post" action="/totp/recovery">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 {{template "confirm-fields" true}}
@@ -64,7 +66,8 @@
 </dl>
 <p class="help">Setup URI</p>
 <p class="code-block totp-uri">{{.OTPAuthURI}}</p>
-<p class="help">Anyone who sees this key can generate your codes. The server stores it encrypted with a key derived from its setup token.</p>
+<p class="help">Anyone who sees this key can generate your codes. The server stores it encrypted with a key derived from its setup token. Some authenticator apps sync keys to a cloud account; someone who can access that account may also be able to generate your codes.</p>
+<p class="help">Every signed-in session on this account can view a pending authenticator secret. Sign out everywhere before replacing recovery codes.</p>
 </section>
 <section class="panel">
 <h2>2. Confirm a code</h2>
@@ -87,6 +90,7 @@
 <section class="panel">
 <h2>Not enrolled</h2>
 <p>Sign-in currently uses your password only. Enrolling generates a secret key for an authenticator app; TOTP turns on only after you confirm a code from it.</p>
+<p class="help">If you later lose your authenticator and all recovery codes, you cannot finish a TOTP sign-in. Ask market staff for a second-factor reset; it also turns off PGP sign-in if enabled, and the next sign-in uses your password only.</p>
 <form method="post" action="/totp/enroll">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="form_nonce" value="{{formNonce "/totp/enroll"}}">

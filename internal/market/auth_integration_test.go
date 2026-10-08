@@ -76,6 +76,12 @@ func (e *testEnv) pendingSignIn(handle string) (string, *http.Cookie) {
 	return anon, &http.Cookie{Name: "pending", Value: pending}
 }
 
+func TestRegistrationExplainsThereIsNoPasswordReset(t *testing.T) {
+	e := newTestApp(t)
+	page := e.body("GET", "/register", randomToken(), nil, 200)
+	mustContain(t, page, "There is no password reset.")
+}
+
 func TestTOTPEnrollmentChallengeAndRecovery(t *testing.T) {
 	e := newTestApp(t)
 	id, sess := e.user("totp_user", "buyer")
@@ -87,6 +93,7 @@ func TestTOTPEnrollmentChallengeAndRecovery(t *testing.T) {
 	if b := body("/account"); !strings.Contains(b, "Not enrolled") || strings.Contains(b, ">Enabled<") {
 		t.Fatal("account page must say Not enrolled before enrollment")
 	}
+	mustContain(t, body("/totp"), "If you lose your authenticator and all recovery codes", "second-factor reset")
 	e.check(e.do("POST", "/totp/activate", sess, url.Values{"code": {"123456"}, "password": {testPassword}}), 409)
 	w := e.do("POST", "/totp/enroll", sess, nil)
 	e.check(w, 303)
@@ -100,7 +107,7 @@ func TestTOTPEnrollmentChallengeAndRecovery(t *testing.T) {
 	if err != nil || enabled || strings.Contains(pending, secret) {
 		t.Fatalf("pending secret must be sealed and inactive: %v enabled=%v", err, enabled)
 	}
-	if b := body("/totp"); !strings.Contains(b, groupSecret(secret)) || !strings.Contains(b, "otpauth://totp/") || !strings.Contains(b, "No QR code") {
+	if b := body("/totp"); !strings.Contains(b, groupSecret(secret)) || !strings.Contains(b, "otpauth://totp/") || !strings.Contains(b, "No QR code") || !strings.Contains(b, "sync keys to a cloud account") || !strings.Contains(b, "Sign out everywhere before replacing recovery codes") {
 		t.Fatal("pending secret not shown for manual entry")
 	}
 	if !strings.Contains(body("/account"), "setup not confirmed") {
@@ -125,7 +132,7 @@ func TestTOTPEnrollmentChallengeAndRecovery(t *testing.T) {
 	}
 	page := body("/totp")
 	codes := recoveryCodePattern.FindAllStringSubmatch(page, -1)
-	if len(codes) != 10 || !strings.Contains(page, "Shown once") {
+	if len(codes) != 10 || !strings.Contains(page, "Shown once") || !strings.Contains(page, "Sign out everywhere before replacing recovery codes") {
 		t.Fatalf("recovery codes not shown once after activation: %d", len(codes))
 	}
 	stored := strings.Join(hashes, ",")
