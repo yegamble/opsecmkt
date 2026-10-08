@@ -297,7 +297,7 @@ func TestSignInReturnAfterWrongCaptcha(t *testing.T) {
 		id := e.captcha(form+"?next=%2Forders", anon)
 		w := e.do("POST", form, anon, url.Values{"handle": {handle}, "password": {testPassword}, "next": {"/orders"}, "captcha_id": {id}, "captcha": {"WRONG1"}})
 		e.check(w, 400)
-		retry := wrongCaptchaRetry(e, w, form, id)
+		retry := wrongCaptchaRetry(e, w, form, id, "/orders")
 		if b := w.Body.String(); !strings.Contains(b, `<input type="hidden" name="next" value="/orders">`) || !strings.Contains(b, carried) {
 			t.Fatalf("wrong CAPTCHA answer on %s dropped next:\n%s", form, b)
 		}

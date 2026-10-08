@@ -249,11 +249,17 @@ func (e *testEnv) captcha(page, session string) string {
 
 // wrongCaptchaRetry checks the page a wrong CAPTCHA answer to form gets: the error, a link to form, and a new
 // challenge other than spent. It returns the new challenge id; following the link issues another.
-func wrongCaptchaRetry(e *testEnv, w *httptest.ResponseRecorder, form, spent string) string {
+func wrongCaptchaRetry(e *testEnv, w *httptest.ResponseRecorder, form, spent string, next ...string) string {
 	e.t.Helper()
 	b := w.Body.String()
 	m := captchaField.FindStringSubmatch(b)
-	if !strings.Contains(b, "CAPTCHA answer incorrect") || !strings.Contains(b, `href="`+form+`"`) || !strings.Contains(b, `action="`+form+`"`) || m == nil || m[1] == spent {
+	link := form
+	if form == "/login" && len(next) != 0 {
+		link += "?next=" + url.QueryEscape(next[0])
+	}
+	// HTML's URL escaping may use either hex case; the destination must still be the expected one.
+	linkPresent := strings.Contains(b, `href="`+link+`"`) || strings.Contains(b, `href="`+strings.ReplaceAll(link, "%2F", "%2f")+`"`)
+	if !strings.Contains(b, "CAPTCHA answer incorrect") || !linkPresent || !strings.Contains(b, `action="`+form+`"`) || m == nil || m[1] == spent {
 		e.t.Fatalf("wrong CAPTCHA answer to %s: %s", form, b)
 	}
 	return m[1]

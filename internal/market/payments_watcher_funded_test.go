@@ -29,11 +29,12 @@ func TestWatcherAnnouncesDepositAfterFundingOnOldPaidOrder(t *testing.T) {
 	for _, u := range []struct {
 		id     string
 		before int
-	}{{p.buyer.ID, buyerBefore}, {p.vendor.ID, vendorBefore}} {
+		note   string
+	}{{p.buyer.ID, buyerBefore, note}, {p.vendor.ID, vendorBefore, "%" + pooledTxidHidden + ":1 of 0.00007 BTC received after this order was funded%"}} {
 		if n := p.count("SELECT count(*) FROM notifications WHERE user_id=$1", u.id); n != u.before+1 {
 			t.Fatalf("notifications for %s: %d, want %d", u.id[:8], n, u.before+1)
 		}
-		if n := p.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE $2", u.id, note); n != 1 {
+		if n := p.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE $2", u.id, u.note); n != 1 {
 			t.Fatalf("post-funding deposit notification missing for %s", u.id[:8])
 		}
 	}
