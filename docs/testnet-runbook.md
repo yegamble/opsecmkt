@@ -384,13 +384,14 @@ umask 077
 : "${AGE_RECIPIENT:?set the age public recipient}"
 command -v age >/dev/null
 wallet_backup="backups/bitcoin-wallet-$(date -u +%Y%m%dT%H%M%SZ).bak.age"
-node_tmp=/tmp/opsecmkt-wallet.bak
 mkdir -p backups
 test ! -e "$wallet_backup" || { echo "refusing to overwrite $wallet_backup" >&2; exit 1; }
 wallet_tmp=$(mktemp "${wallet_backup}.tmp.XXXXXX")
+node_tmp_dir=$(docker compose exec -T bitcoin mktemp -d /tmp/opsecmkt-wallet-backup.XXXXXX)
+node_tmp="$node_tmp_dir/wallet.bak"
 cleanup() {
   rm -f "$wallet_tmp"
-  docker compose exec -T bitcoin rm -f "$node_tmp" >/dev/null 2>&1 || true
+  docker compose exec -T bitcoin sh -c 'rm -f "$1/wallet.bak" && rmdir "$1"' sh "$node_tmp_dir" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 btc -rpcwallet=opsecmkt backupwallet "$node_tmp"
@@ -398,6 +399,7 @@ docker compose exec -T bitcoin chmod 600 "$node_tmp"
 docker compose exec -T bitcoin cat "$node_tmp" | age -r "$AGE_RECIPIENT" > "$wallet_tmp"
 mv "$wallet_tmp" "$wallet_backup"
 docker compose exec -T bitcoin rm "$node_tmp"
+docker compose exec -T bitcoin rmdir "$node_tmp_dir"
 trap - EXIT
 btc getblockcount                          # record this height with the encrypted wallet backup
 xmr query_key '{"key_type":"mnemonic"}'   # write the seed down offline, with the height from section 3
@@ -720,14 +722,16 @@ and rescan:
 set -euo pipefail
 : "${AGE_IDENTITY:?set the age private identity}"
 wallet_backup=backups/bitcoin-wallet-YYYYMMDDTHHMMSSZ.bak.age  # use the exact filename from section 6
-node_tmp=/tmp/opsecmkt-wallet.bak
-cleanup() { docker compose exec -T bitcoin rm -f "$node_tmp" >/dev/null 2>&1 || true; }
+node_tmp_dir=$(docker compose exec -T bitcoin mktemp -d /tmp/opsecmkt-wallet-restore.XXXXXX)
+node_tmp="$node_tmp_dir/wallet.bak"
+cleanup() { docker compose exec -T bitcoin sh -c 'rm -f "$1/wallet.bak" && rmdir "$1"' sh "$node_tmp_dir" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 btc listwalletdir                                    # "opsecmkt" listed: the wallet survived, go to the check
-age -d -i "$AGE_IDENTITY" "$wallet_backup" | docker compose exec -T bitcoin sh -c 'umask 077; cat > /tmp/opsecmkt-wallet.bak'
+age -d -i "$AGE_IDENTITY" "$wallet_backup" | docker compose exec -T bitcoin sh -c 'umask 077; cat > "$1/wallet.bak"' sh "$node_tmp_dir"
 docker compose exec -T bitcoin chown bitcoin:bitcoin "$node_tmp"
 btc restorewallet opsecmkt "$node_tmp" true   # true: load it again after a node restart
 docker compose exec -T bitcoin rm "$node_tmp"
+docker compose exec -T bitcoin rmdir "$node_tmp_dir"
 trap - EXIT
 n=$(db_sql -A -t -c "SELECT count(*) FROM payment_addresses WHERE currency='BTC'")
 for i in $(seq $((n + 100))); do btc -rpcwallet=opsecmkt getnewaddress restore-skip bech32 >/dev/null; done

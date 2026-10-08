@@ -2240,7 +2240,7 @@ AGE_RECIPIENT=age1YOUR_PUBLIC_RECIPIENT ./scripts/backup.sh backups/market.dump.
 
 For external databases also set `BACKUP_DATABASE_URL`, install Python 3 and PostgreSQL client tools matching or newer than the server. `./scripts/install.sh upgrade` backs up through this script too, so on an external database give it both: `BACKUP_DATABASE_URL=YOUR_EXTERNAL_DATABASE_URL AGE_RECIPIENT=age1YOUR_PUBLIC_RECIPIENT ./scripts/install.sh upgrade` (the value of `DATABASE_URL` in `.env` serves when this host can reach that server; quote it in single quotes); without `BACKUP_DATABASE_URL` it refuses before changing anything. The script streams a custom-format dump directly into encryption, uses restrictive file permissions, refuses overwrite and fails if either command fails. Record the `pg_dump --version` used for each backup; use a `pg_restore` version at least as new when inspecting or restoring it. The archive's table of contents also records the producing `pg_dump` version. Back up `.env`, deployment settings and the Tor identity separately in encrypted storage ([commands below](#secrets-env-and-onion-identities)). Database dumps do not include onion keys or blockchain volumes, and in particular **not the custodial payment wallets** (the `bitcoin_data`, `monero_wallet` and, with Monero escrow, `monero_escrow_wallet` volumes, or your external wallets): back those up on their own (see the [runbook](testnet-runbook.md#6-back-up-the-wallets)). Maintain offline copies and rehearse recovery.
 
-Run database backups on a schedule that matches your recovery-point needs. For example, a daily 02:15 UTC cron entry for the internal database can create a dated encrypted archive (replace the recipient and checkout path):
+Run database backups on a schedule that matches your recovery-point needs. For example, this cron entry runs daily at 02:15 in the cron daemon's local time and creates a dated archive whose filename uses UTC (replace the recipient and checkout path):
 
 ```cron
 15 2 * * * cd /srv/opsecmkt && AGE_RECIPIENT=age1YOUR_PUBLIC_RECIPIENT ./scripts/backup.sh "backups/market-$(date -u +\%Y\%m\%dT\%H\%M\%SZ).dump.age" >> backups/backup.log 2>&1
@@ -2271,7 +2271,8 @@ To verify an archive without touching the live database, restore it to a uniquel
 
 ```sh
 set -euo pipefail
-verify_db="opsecmkt_verify_$(date -u +%Y%m%dT%H%M%SZ)_$$"
+verify_db="opsecmkt_verify_$(date -u +%Y%m%dt%H%M%Sz)_$$"
+[[ $verify_db =~ ^opsecmkt_verify_[0-9]{8}t[0-9]{6}z_[0-9]+$ ]] || { echo "invalid generated database name" >&2; exit 1; }
 exists=$(docker compose exec -T db psql -X -At -v ON_ERROR_STOP=1 -U opsecmkt -d postgres \
   -c "SELECT count(*) FROM pg_database WHERE datname='$verify_db'")
 test "$exists" = 0 || { echo "refusing to reuse database $verify_db" >&2; exit 1; }
@@ -2283,7 +2284,7 @@ docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U opsecmkt -d "$verify_db"
   -c 'SELECT count(*) AS migration_count FROM schema_migrations'
 ```
 
-Keep the app stopped during this check. The trap removes only the generated `opsecmkt_verify_...` database; for an external PostgreSQL server, use a fresh explicitly named database there and its corresponding `dropdb` command after verification.
+The trap removes only the generated `opsecmkt_verify_...` database; this check does not point the application at it. For an external PostgreSQL server, use a fresh explicitly named database there and its corresponding `dropdb` command after verification.
 
 A database that does not exist yet is created next to the current one, which stays untouched. Point the app at it by changing the database name in `DATABASE_URL` in `.env` (for example `postgres://opsecmkt:PASSWORD@db:5432/opsecmkt_restored?sslmode=disable`); the script prints this exact line for the database it restored into. With payments configured, cut the site off from users before starting the app on it, as the [reconciliation procedure](testnet-runbook.md#reconcile-a-restored-database-before-enabling-payouts) describes; otherwise run `docker compose up -d`. Later `scripts/backup.sh` runs then dump `opsecmkt_restored`, not the abandoned `opsecmkt`. If the `postgres_data` volume itself was lost, `docker compose up -d --wait db` initializes an empty `opsecmkt` database and `RESTORE_INTERNAL_DATABASE=opsecmkt` restores into it with no `.env` change. For an external or otherwise host-reachable server, create an empty database there and restore with Python 3 and compatible PostgreSQL client tools:
 
