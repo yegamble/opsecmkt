@@ -83,8 +83,8 @@ func TestEscrowSignUploadRequiresExactFormNonce(t *testing.T) {
 			if w.Code != 400 {
 				t.Fatalf("missing/invalid nonce status = %d %s", w.Code, w.Body.String())
 			}
-			if got := submissionCount(t, x.testEnv); got != 0 {
-				t.Fatalf("refused nonce left %d receipts", got)
+			if got := escrowFormReceiptCount(t, x.testEnv, "/escrow/sign"); got != 0 {
+				t.Fatalf("refused signature nonce left %d signing receipts", got)
 			}
 			if got := agInt(x.testEnv, "SELECT count(*) FROM settlement_signatures"); got != 0 {
 				t.Fatalf("refused nonce stored %d signatures", got)

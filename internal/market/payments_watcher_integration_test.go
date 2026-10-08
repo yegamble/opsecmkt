@@ -299,12 +299,13 @@ func TestPayoutBlockedUntilAddressSaved(t *testing.T) {
 	if !strings.Contains(p.page("/account", p.vendorSess), "1 payout(s) are waiting for a payout address") {
 		t.Fatal("account page does not show the blocked payout")
 	}
+	nonce := accountPayoutNonceForCurrency(t, p.page("/account", p.vendorSess), "BTC")
 	for addr, code := range map[string]int{"bc1qmainnetaddress0000000000000000000": 400, "fake-testnet-" + strings.Repeat("x", 120): 400} {
-		p.check(p.do("POST", "/account/payout", p.vendorSess, url.Values{"currency": {"BTC"}, "address": {addr}}), code)
+		p.check(p.do("POST", "/account/payout", p.vendorSess, accountPayoutForm("BTC", addr, nonce)), code)
 	}
-	p.check(p.do("POST", "/account/payout", p.vendorSess, url.Values{"currency": {"XMR"}, "address": {"fake-testnet-x"}}), 409)
-	p.check(p.do("POST", "/account/payout", p.vendorSess, url.Values{"currency": {"DOGE"}, "address": {"x"}}), 400)
-	p.check(p.do("POST", "/account/payout", p.vendorSess, url.Values{"currency": {"BTC"}, "address": {" fake-testnet-vend "}, "password": {testPassword}}), 303)
+	p.check(p.do("POST", "/account/payout", p.vendorSess, accountPayoutForm("XMR", "fake-testnet-x", nonce)), 409)
+	p.check(p.do("POST", "/account/payout", p.vendorSess, accountPayoutForm("DOGE", "x", nonce)), 400)
+	p.check(p.do("POST", "/account/payout", p.vendorSess, accountPayoutForm("BTC", " fake-testnet-vend ", nonce)), 303)
 	st, _, addr, _ := p.payout(p.order)
 	if st != "pending" || addr != "fake-testnet-vend" {
 		t.Fatalf("unblocked payout %s %q", st, addr)
@@ -450,7 +451,10 @@ func TestPaymentLabelsFollowProviders(t *testing.T) {
 	if !strings.Contains(admin, "Not configured (BITCOIN_RPC_URL is blank)") || !strings.Contains(admin, "Not configured (MONERO_WALLET_RPC_URL is blank)") {
 		t.Fatal("admin page does not list disabled providers")
 	}
-	e.check(e.do("POST", "/account/payout", bs, url.Values{"currency": {"BTC"}, "address": {"fake-testnet-x"}}), 409)
+	// The disabled-provider refusal is behind the current account confirmation;
+	// no payout form is offered while the provider is absent, so use a valid
+	// unused nonce and the buyer's actual password to reach that guard.
+	e.check(e.do("POST", "/account/payout", bs, accountPayoutForm("BTC", "fake-testnet-x", randomToken()[:32])), 409)
 
 	fake := newFakeProvider("BTC", 2)
 	e.A.payments["BTC"] = fake
