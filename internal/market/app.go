@@ -504,6 +504,15 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if isMultipart(r) {
+			if isHardwarePSBTUpload(r.URL.Path) {
+				select {
+				case hardwarePSBTReadSlots <- struct{}{}:
+					defer func() { <-hardwarePSBTReadSlots }()
+				default:
+					http.Error(w, "Hardware PSBT uploads are busy. Try again shortly. Nothing was changed.", http.StatusServiceUnavailable)
+					return
+				}
+			}
 			// Its five known fields, bounded, become the form; every check below applies to them (psbt_upload.go).
 			form, code, msg := readPSBTUploadForm(w, r)
 			if form == nil {

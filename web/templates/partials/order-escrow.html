@@ -131,7 +131,8 @@
 <p class="help">{{if .PartiesOnly}}Both the vendor and the buyer must sign this release; the market never signs it before the order is completed. {{if eq $.OrderViewer "buyer"}}<strong>Signing it confirms that you received the goods</strong>: it pays the vendor, completes the order and ends your right to open a dispute. If the goods did not arrive, do not sign: open a dispute instead. {{end}}{{else if .SignToo}}The other party has signed it already, so the market co-signs it on its next pass. You may sign it too: with both your signatures the market does not sign it. {{end}}Your copy carries your own key's origin, so your wallet finds your key; the other two keys are bare. {{if $.Escrow.PerOrder}}Load it into this order's wallet (<a class="text-link" href="/escrow-setup?id={{$.Order.ID}}">set it up first</a>): in Electrum, Tools › Load transaction › From file; in Sparrow, File › Open Transaction. Sign it without broadcasting it. Check the outputs your wallet shows against the table above, then save the signed transaction as a PSBT file and upload it here, or paste it.{{else}}In Bitcoin Core, load it with File › Load PSBT from clipboard and press Sign, or run <code>walletprocesspsbt</code> with it, without finalizing, in the wallet that holds your escrow key. Check the outputs your wallet shows against the table above, then paste the signed PSBT here.{{end}}{{if not .PartiesOnly}} Either you or the other party can sign.{{end}} A signature is checked only when the market completes the transaction: one that does not verify is discarded then, and the settlement waits for a signature again.</p>
 <label>Your copy (PSBT)<textarea class="escrow-psbt" readonly rows="6" spellcheck="false">{{.PSBT}}</textarea>
 </label>
-<p><a class="button" href="/escrow-psbt?id={{$.Order.ID}}&amp;s={{.ID}}" download>Download your copy</a></p>
+<p><a class="button" href="/escrow-psbt?id={{$.Order.ID}}&amp;s={{.ID}}" download>Download your copy</a> <a class="button" href="/escrow-psbt?id={{$.Order.ID}}&amp;s={{.ID}}&amp;hardware=1" download>Download for a hardware wallet</a></p>
+<p class="help">The hardware copy includes the funding transactions some devices require. Check the same outputs above on your device. Hardware signing has not been tested with a physical device.</p>
 <form class="stack" method="post" action="/escrow/sign" enctype="multipart/form-data">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="order_id" value="{{$.Order.ID}}">
@@ -142,6 +143,14 @@
 </label>
 <span class="help" id="escrow-sign-file-help-{{.ID}}">Paste the signed PSBT or choose its file, not both: a PSBT file as your wallet saves it, or a text file of the PSBT, at most 64 KB.</span>
 <button class="primary" type="submit">Submit signature</button>
+</form>
+<form class="stack" method="post" action="/escrow/hardware-sign" enctype="multipart/form-data">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="order_id" value="{{$.Order.ID}}">
+<input type="hidden" name="settlement_id" value="{{.ID}}">
+<label>Upload a hardware signed PSBT<input type="file" name="psbt_file" required accept=".psbt,.txt" aria-describedby="hardware-sign-help-{{.ID}}"></label>
+<span class="help" id="hardware-sign-help-{{.ID}}">Use the PSBT signed by your hardware wallet, at most 8 MiB. Only your signatures are saved.</span>
+<button type="submit">Submit hardware signature</button>
 </form>{{end}}{{range .Bumps}}
 <section class="escrow-bump" id="escrow-bump-{{.ID}}" aria-labelledby="escrow-bump-heading-{{.ID}}">
 <h4 id="escrow-bump-heading-{{.ID}}">Fee bump {{.N}}: {{.FeeRate}} sat/vB</h4>
@@ -155,7 +164,7 @@
 <p class="help">{{if .SignToo}}The other party has signed it already, so the market co-signs it on its next pass. You may sign it too: with both your signatures the market does not sign it. {{end}}Sign your copy in your own wallet as you signed the settlement (in Bitcoin Core, <code>walletprocesspsbt</code> without finalizing), check its outputs against the list above and paste the signed PSBT here. A signature of the settlement does not count: this is another transaction.</p>
 <label>Your copy (PSBT)<textarea class="escrow-psbt" readonly rows="6" spellcheck="false">{{.PSBT}}</textarea>
 </label>
-<p><a class="button" href="/escrow-psbt?id={{$.Order.ID}}&amp;s={{.SettlementID}}&amp;b={{.ID}}" download>Download your copy</a></p>
+<p><a class="button" href="/escrow-psbt?id={{$.Order.ID}}&amp;s={{.SettlementID}}&amp;b={{.ID}}" download>Download your copy</a> <a class="button" href="/escrow-psbt?id={{$.Order.ID}}&amp;s={{.SettlementID}}&amp;b={{.ID}}&amp;hardware=1" download>Download for a hardware wallet</a></p>
 <form class="stack" method="post" action="/escrow/bump-sign">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="order_id" value="{{$.Order.ID}}">
@@ -163,6 +172,14 @@
 <label>Signed PSBT<textarea class="escrow-psbt" name="psbt" required maxlength="60000" rows="6" spellcheck="false" autocapitalize="off" placeholder="cHNidP8…"></textarea>
 </label>
 <button class="primary" type="submit">Submit signature</button>
+</form>
+<form class="stack" method="post" action="/escrow/hardware-bump-sign" enctype="multipart/form-data">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="order_id" value="{{$.Order.ID}}">
+<input type="hidden" name="bump_id" value="{{.ID}}">
+<label>Upload a hardware signed fee bump PSBT<input type="file" name="psbt_file" required accept=".psbt,.txt" aria-describedby="hardware-bump-help-{{.ID}}"></label>
+<span class="help" id="hardware-bump-help-{{.ID}}">Check the fee bump outputs above on your device. The signed PSBT file may be at most 8 MiB.</span>
+<button type="submit">Submit hardware fee bump signature</button>
 </form>{{end}}
 </section>{{end}}{{if .CanBump}}
 <form class="stack escrow-bump-form" id="escrow-bump-form-{{.ID}}" method="post" action="/escrow/bump">

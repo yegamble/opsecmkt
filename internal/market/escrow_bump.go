@@ -46,6 +46,7 @@ import (
 func init() {
 	registerAction("/escrow/bump", actionSpec{OwnTx: true, OneAtATime: true, Off: escrowOff, Run: escrowBumpAction})
 	registerAction("/escrow/bump-sign", actionSpec{Off: escrowOff, Run: escrowBumpSignAction})
+	registerAction("/escrow/hardware-bump-sign", actionSpec{Off: escrowOff, Run: escrowBumpSignAction})
 }
 
 // escrowBumpIncrement is BIP125's minimum fee increase per vB of the replacement (Bitcoin Core's default incremental
@@ -498,7 +499,16 @@ func escrowBumpSignAction(c *actionCtx) (actionResult, error) {
 	if sp, err := decodePSBT(stored); err != nil || sp.TxID() != txid {
 		return actionResult{}, errors.New("escrow: the stored fee bump PSBT does not match its txid")
 	}
-	sigs, err := checkSettlementPaste(c.Form.Get("psbt"), txid, keys[party], keys["market"])
+	pasted := c.Form.Get("psbt")
+	if c.R.URL.Path == "/escrow/hardware-bump-sign" {
+		if pasted != "" && c.Form.Get(psbtFileField) != "" {
+			return actionResult{}, errSettleBoth
+		}
+		if pasted == "" {
+			pasted = c.Form.Get(psbtFileField)
+		}
+	}
+	sigs, err := checkSettlementPasteLimit(pasted, txid, keys[party], keys["market"], c.R.URL.Path == "/escrow/hardware-bump-sign")
 	if err != nil {
 		return actionResult{}, err
 	}
