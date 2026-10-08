@@ -280,16 +280,11 @@ func escrowCheckoutAction(c *actionCtx) (actionResult, error) {
 	} else if sweep {
 		return actionResult{}, errEscrowSweep
 	}
-	if ok, err := sellerIsVendor(c, o.ProductID); err != nil {
+	if err = lockNewIntake(c, o.BuyerID, o.VendorID, false); err != nil {
 		return actionResult{}, err
-	} else if !ok {
-		return actionResult{}, fail(409, sellerNotVendor+" Cancel this draft.")
 	}
 	// The buyer's cap on orders awaiting payment, serialised on the buyer's row as in payAction.
 	var open int
-	if _, err = c.Tx.ExecContext(ctx, "SELECT 1 FROM users WHERE id=$1 FOR NO KEY UPDATE", c.User.ID); err != nil {
-		return actionResult{}, err
-	}
 	if err = c.Tx.QueryRowContext(ctx, "SELECT count(*) FROM orders WHERE buyer_id=$1 AND state='awaiting_payment'", c.User.ID).Scan(&open); err != nil {
 		return actionResult{}, err
 	}

@@ -369,7 +369,39 @@ func loadOrderDetail(ctx context.Context, a *App, r *http.Request, d *PageData) 
 		return err
 	}
 	vendorKeyGate(d)
-	return vendorKeyChangeGate(ctx, a, d)
+	if err := vendorKeyChangeGate(ctx, a, d); err != nil {
+		return err
+	}
+	return suspendedVendorOrderGate(ctx, a, d)
+}
+
+// A suspended vendor keeps every existing order and its history, but the buyer's stale draft can take no new
+// payment. Replace all three intake forms with one reason; cancellation remains available.
+func suspendedVendorOrderGate(ctx context.Context, a *App, d *PageData) error {
+	if d.Order == nil || d.Order.State != stateDraft || d.OrderViewer != roleBuyer {
+		return nil
+	}
+	var suspended bool
+	if err := a.db.QueryRowContext(ctx, "SELECT suspended_at IS NOT NULL FROM users WHERE id=$1", d.Order.VendorID).Scan(&suspended); err != nil {
+		return err
+	}
+	if !suspended {
+		return nil
+	}
+	d.VendorSuspensionReason = "Unavailable. " + sellerSuspended
+	for i := range d.Transitions {
+		if d.Transitions[i].To == stateAwaitingPayment {
+			d.Transitions[i].Action = ""
+			d.Transitions[i].Label = sellerSuspended + " You can cancel this draft."
+		}
+	}
+	if d.EscrowCheckout != nil {
+		d.EscrowCheckout.Reason = sellerSuspended
+	}
+	if d.XMREscrowCheckout != nil {
+		d.XMREscrowCheckout.Reason = sellerSuspended
+	}
+	return nil
 }
 
 // orderPayouts (A-122): on a paid, shipped or delivered order the complete and paid-cancel forms state the

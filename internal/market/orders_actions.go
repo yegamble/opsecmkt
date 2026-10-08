@@ -50,14 +50,6 @@ func partyOrderLocked(c *actionCtx, id string) (Order, error) {
 	return o, err
 }
 
-// sellerIsVendor reports whether a listing's owner is currently a vendor or administrator. Listings of a
-// demoted vendor accept no new drafts, payment requests or restores; existing orders continue.
-func sellerIsVendor(c *actionCtx, productID string) (bool, error) {
-	var ok bool
-	err := c.Tx.QueryRowContext(c.Ctx(), sellerIsVendorSQL, productID).Scan(&ok)
-	return ok, err
-}
-
 const sellerIsVendorSQL = "SELECT u.role IN ('vendor','admin') FROM products p JOIN users u ON u.id=p.vendor_id WHERE p.id=$1"
 
 // sellerIsVendorLocked is sellerIsVendor for a restore (A-70, A-163): it share-locks the owner's account row until
@@ -70,6 +62,49 @@ func sellerIsVendorLocked(c *actionCtx, productID string) (bool, error) {
 }
 
 const sellerNotVendor = "The seller of this listing is no longer a vendor, so it accepts no new orders."
+const sellerSuspended = "The seller of this listing is suspended, so it accepts no new orders. Existing orders continue."
+
+// lockNewIntake serializes a new draft or payment request with suspension and role changes. A suspension updates the
+// vendor's account under FOR NO KEY UPDATE, which conflicts with this FOR SHARE until the new intake commits. The
+// buyer's stronger lock serializes the awaiting-payment cap; acquire the two account rows in id order so reciprocal
+// vendor-to-vendor purchases cannot deadlock. Neither lock blocks foreign-key inserts referencing these users.
+func lockNewIntake(c *actionCtx, buyerID, vendorID string, draft bool) error {
+	lockBuyer := func() error {
+		var one int
+		return c.Tx.QueryRowContext(c.Ctx(), "SELECT 1 FROM users WHERE id=$1 FOR NO KEY UPDATE", buyerID).Scan(&one)
+	}
+	var role string
+	var suspended bool
+	lockVendor := func() error {
+		return c.Tx.QueryRowContext(c.Ctx(), "SELECT role,suspended_at IS NOT NULL FROM users WHERE id=$1 FOR SHARE", vendorID).Scan(&role, &suspended)
+	}
+	if buyerID != "" && buyerID < vendorID {
+		if err := lockBuyer(); err != nil {
+			return err
+		}
+	}
+	if err := lockVendor(); err != nil {
+		return err
+	}
+	if buyerID != "" && buyerID > vendorID {
+		if err := lockBuyer(); err != nil {
+			return err
+		}
+	}
+	if role != "vendor" && role != "admin" {
+		if draft {
+			return fail(400, sellerNotVendor)
+		}
+		return fail(409, sellerNotVendor+" Cancel this draft.")
+	}
+	if suspended {
+		if draft {
+			return fail(409, "Unavailable. "+sellerSuspended+" Nothing was changed.")
+		}
+		return fail(409, "Unavailable. "+sellerSuspended+" Cancel this draft.")
+	}
+	return nil
+}
 
 func shortID(id string) string { return id[:min(8, len(id))] }
 
@@ -139,21 +174,18 @@ func payAction(c *actionCtx) (actionResult, error) {
 	if err != nil {
 		return actionResult{}, err
 	}
-	if ok, err := sellerIsVendor(c, o.ProductID); err != nil {
-		return actionResult{}, err
-	} else if !ok && o.State == stateDraft {
-		return actionResult{}, fail(409, sellerNotVendor+" Cancel this draft.")
+	if o.State == stateDraft {
+		if err := lockNewIntake(c, o.BuyerID, o.VendorID, false); err != nil {
+			return actionResult{}, err
+		}
 	}
-	if o.BuyerID == c.User.ID {
+	if o.BuyerID == c.User.ID && o.State == stateDraft {
 		var open int
 		// The buyer row lock serialises concurrent requests so the cap cannot be raced. The count must be a
 		// separate statement: under READ COMMITTED it then takes its snapshot after the lock is held and sees
 		// the orders a concurrent request committed while this one waited. FOR NO KEY UPDATE, not FOR UPDATE:
 		// it is held while the wallet is asked for an address, and inserts that reference the buyer
 		// (notifications, messages, order events by anyone) take a key-share lock that FOR UPDATE would block.
-		if _, err = c.Tx.ExecContext(ctx, "SELECT 1 FROM users WHERE id=$1 FOR NO KEY UPDATE", c.User.ID); err != nil {
-			return actionResult{}, err
-		}
 		if err = c.Tx.QueryRowContext(ctx, "SELECT count(*) FROM orders WHERE buyer_id=$1 AND state='awaiting_payment'", c.User.ID).Scan(&open); err != nil {
 			return actionResult{}, err
 		}
