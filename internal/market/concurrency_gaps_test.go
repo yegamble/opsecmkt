@@ -95,11 +95,40 @@ func TestConcurrentPayRespectsPerBuyerCap(t *testing.T) {
 		products[i] = e.product(vendorID, "physical")
 		orders[i] = e.order(buyerID, products[i], "BTC", stateDraft)
 	}
+	retryAfter := make([]string, n)
 	rs := agRace(n, func(i int) (int, string) {
 		w := e.do("POST", "/orders/pay", buyer, url.Values{"order_id": {orders[i]}})
+		retryAfter[i] = w.Header().Get("Retry-After")
 		return w.Code, w.Body.String()
 	})
-	got := agTally(t, rs, 303, 409)
+	got := agTally(t, rs, 303, 409, 503)
+	for i, r := range rs {
+		if r.code != 503 {
+			continue
+		}
+		if retryAfter[i] != busyRetryAfter || !strings.HasPrefix(r.body, errBusyMsg) {
+			t.Fatalf("busy request %d: Retry-After=%q body=%q", i, retryAfter[i], r.body)
+		}
+		if agStr(e, "SELECT state FROM orders WHERE id=$1", orders[i]) != stateDraft ||
+			agInt(e, "SELECT stock FROM products WHERE id=$1", products[i]) != 5 ||
+			agInt(e, "SELECT count(*) FROM payment_addresses WHERE order_id=$1", orders[i]) != 0 {
+			t.Fatalf("busy request %d issued an address, held stock or moved its order", i)
+		}
+	}
+	// NOWAIT intentionally returns a retryable 503 when another payment holds the buyer's account row. After
+	// the concurrent wave has ended, retry those untouched drafts one at a time: the buyer cap must still allow
+	// exactly three addresses and refuse all further requests with the normal 409.
+	for i, r := range rs {
+		if r.code != 503 {
+			continue
+		}
+		w := e.do("POST", "/orders/pay", buyer, url.Values{"order_id": {orders[i]}})
+		if w.Code != 303 && w.Code != 409 {
+			t.Fatalf("retry %d: status=%d body=%q", i, w.Code, w.Body.String())
+		}
+		rs[i] = agResult{w.Code, w.Body.String()}
+	}
+	got = agTally(t, rs, 303, 409)
 	open := agInt(e, "SELECT count(*) FROM orders WHERE buyer_id=$1 AND state='awaiting_payment'", buyerID)
 	if got[303] != maxAwaitingPayment || open != maxAwaitingPayment {
 		t.Fatalf("%d payment requests succeeded, %d orders awaiting payment; cap is %d", got[303], open, maxAwaitingPayment)
