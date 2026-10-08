@@ -451,6 +451,7 @@ type PaymentView struct {
 	Issued                          bool // the provider returned a deposit address for this order
 	Monitored                       bool // Issued and the provider is still configured
 	Open                            bool // Monitored and the order still awaits payment (address shown)
+	BuyerNeedsPayoutAddress         bool // pooled order buyer has no payout address for this order's currency
 	Deposits                        []PaymentDeposit
 	Payouts                         []PayoutRow // release and return of any excess, or refund (ORDER BY id)
 	// PaymentURI and QR: while the order is open and something is still due, the wallet payment request for
