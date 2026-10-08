@@ -33,10 +33,11 @@ type payMoneroWallet struct {
 	tipAge              time.Duration
 	tipErr              bool // get_last_block_header fails (QA4W3-3)
 	// walletHeight: monero-wallet-rpc get_height (the tip Check reports; 0 = unknown)
-	walletHeight int64
-	transfers    map[string]any
-	nextIndex    int64
-	valid        map[string]string // address -> nettype
+	walletHeight  int64
+	transfers     map[string]any
+	nextIndex     int64
+	resolvedIndex int64             // get_address_index after a restart; 0 keeps the historical fixture's minor 7
+	valid         map[string]string // address -> nettype
 	// get_version: rpcVersion 0 answers as the verified monero-wallet-rpc (moneroVerifiedWalletRPC, a release
 	// build); devBuild answers release=false.
 	rpcVersion int64
@@ -79,7 +80,31 @@ func (m *payMoneroWallet) handle(path, method string, params json.RawMessage) (a
 		m.open = true
 		return map[string]any{}, 0, ""
 	case "get_address":
-		return map[string]any{"address": m.primary}, 0, ""
+		var p struct {
+			AddressIndex []int64 `json:"address_index"`
+		}
+		json.Unmarshal(params, &p)
+		if len(p.AddressIndex) == 0 {
+			return map[string]any{"address": m.primary}, 0, ""
+		}
+		resolved := m.resolvedIndex
+		if resolved == 0 {
+			resolved = 7
+		}
+		var addresses []map[string]any
+		for _, idx := range p.AddressIndex {
+			addr := ""
+			switch {
+			case idx == 0:
+				addr = m.primary
+			case idx == resolved || idx == m.nextIndex && m.nextIndex > 0:
+				addr = m.sub
+			default:
+				return nil, -10, "Address index out of bounds"
+			}
+			addresses = append(addresses, map[string]any{"address_index": idx, "address": addr})
+		}
+		return map[string]any{"address": m.primary, "addresses": addresses}, 0, ""
 	case "get_height":
 		return map[string]any{"height": m.walletHeight}, 0, ""
 	case "create_address":
@@ -89,7 +114,11 @@ func (m *payMoneroWallet) handle(path, method string, params json.RawMessage) (a
 		var p struct{ Address string }
 		json.Unmarshal(params, &p)
 		if p.Address == m.sub {
-			return map[string]any{"index": map[string]any{"major": 0, "minor": 7}}, 0, ""
+			minor := m.resolvedIndex
+			if minor == 0 {
+				minor = 7
+			}
+			return map[string]any{"index": map[string]any{"major": 0, "minor": minor}}, 0, ""
 		}
 		return nil, -2, "Address doesn't belong to the wallet"
 	case "get_transfers":
@@ -181,7 +210,11 @@ func TestMoneroHappyPath(t *testing.T) {
 			{"txid": "pool-1", "amount": json.Number("1000"), "subaddr_index": map[string]any{"major": 0, "minor": 1}},
 		},
 	}
-	in, err := p.Incoming(ctx, []string{addr, "7unknownaddress"})
+	if got, err := p.Incoming(ctx, []string{addr, "7unknownaddress"}); got != nil || err == nil ||
+		!strings.Contains(err.Error(), "issued payment address") {
+		t.Fatalf("unknown issued address was silently skipped: %+v %v", got, err)
+	}
+	in, err := p.Incoming(ctx, []string{addr})
 	if err != nil {
 		t.Fatal(err)
 	}

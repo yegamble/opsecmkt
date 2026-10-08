@@ -223,10 +223,11 @@ func TestGapAdapterIncomingErrorsMidRead(t *testing.T) {
 	if in, err := fresh.Incoming(ctx, []string{payStagenetSub}); in != nil || err == nil || !strings.Contains(err.Error(), "No wallet file") {
 		t.Fatalf("get_address_index wallet error treated as a foreign address: %+v %v", in, err)
 	}
-	// An address that does not belong to the wallet (WRONG_ADDRESS, -2) is skipped without an error.
+	// Incoming receives issued addresses from the watcher. A wallet that no longer
+	// recognizes one (-2) makes the pass unread, never an empty deposit set.
 	xov.clear()
-	if in, err := fresh.Incoming(ctx, []string{"7notours"}); in != nil || err != nil {
-		t.Fatalf("foreign address: %+v %v", in, err)
+	if in, err := fresh.Incoming(ctx, []string{"7notours"}); in != nil || err == nil || !strings.Contains(err.Error(), "no longer recognizes an issued payment address") {
+		t.Fatalf("disowned issued address: %+v %v", in, err)
 	}
 	if in, err := fresh.Incoming(ctx, []string{payStagenetSub}); err != nil || len(in) != 1 || in[0].Index != 7 {
 		t.Fatalf("recovered monero read: %+v %v", in, err)
@@ -450,14 +451,15 @@ func TestGapMonerodGetInfoWithoutNettype(t *testing.T) {
 		{"stagenet flag", map[string]any{"stagenet": true, "height": 10, "target_height": 0, "synchronized": true, "outgoing_connections_count": 8}, "", false},
 		{"stagenet flag syncing", map[string]any{"stagenet": true, "height": 10, "target_height": 20, "synchronized": true, "outgoing_connections_count": 8}, "", true},
 		{"stagenet flag, synchronized absent (A-449)", map[string]any{"stagenet": true, "height": 10, "target_height": 0, "outgoing_connections_count": 8}, "", true},
-		{"no height fields", map[string]any{"stagenet": true, "synchronized": true, "incoming_connections_count": 1}, "", false},
+		{"no height fields", map[string]any{"stagenet": true, "synchronized": true, "incoming_connections_count": 1}, "monero daemon height unreadable", false},
 		{"testnet flag vs stagenet wallet", map[string]any{"testnet": true}, "daemon is on testnet but the wallet is on stagenet", false},
 		{"no flags means mainnet", map[string]any{"height": 10}, `monero daemon network "mainnet" is not a test network`, false},
 		{"mainnet flag wins over nettype", map[string]any{"nettype": "stagenet", "mainnet": true}, `monero daemon network "mainnet" is not a test network`, false},
 		{"fakechain", map[string]any{"nettype": "fakechain"}, `monero daemon network "fakechain" is not a known network`, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, ov, s := newGapMonero(t)
+			w, ov, s := newGapMonero(t)
+			w.set(func(m *payMoneroWallet) { m.walletHeight = 10 })
 			ov.answer("get_info", func(string, string, json.RawMessage) (any, int, string) { return tc.info, 0, "" })
 			p, err := buildMoneroProvider(s.url(""), s.url(""), "", 1)
 			if err != nil {
@@ -471,7 +473,7 @@ func TestGapMonerodGetInfoWithoutNettype(t *testing.T) {
 				}
 				return
 			}
-			if err == nil || !isRefusal(err) || !strings.Contains(err.Error(), tc.refuse) {
+			if err == nil || (tc.name != "no height fields" && !isRefusal(err)) || !strings.Contains(err.Error(), tc.refuse) {
 				t.Fatalf("daemon %v: %v", tc.info, err)
 			}
 		})

@@ -187,7 +187,7 @@ func TestMoneroWalletReopenedAndDaemonSyncState(t *testing.T) {
 	if skip, _, _ := a.refreshProviders(ctx); skip["XMR"] != syncingReason {
 		t.Fatalf("syncing daemon not skipped: %v", skip)
 	}
-	w.set(func(m *payMoneroWallet) { m.target = 0 }) // monerod reports 0 once synchronized
+	w.set(func(m *payMoneroWallet) { m.target, m.walletHeight = 0, 100 }) // wallet catches up when monerod reports synchronized
 	if skip, _, _ := a.refreshProviders(ctx); len(skip) != 0 {
 		t.Fatalf("synced daemon skipped: %v", skip)
 	}
