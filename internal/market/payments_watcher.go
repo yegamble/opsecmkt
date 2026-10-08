@@ -535,7 +535,13 @@ func (a *App) settleOrder(ctx context.Context, p PaymentProvider, orderID string
 				return err
 			}
 			for _, uid := range []string{o.BuyerID, o.VendorID} {
-				if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), uid, "Order "+orderID[:min(8, len(orderID))]+": "+note); err != nil {
+				body := "Order " + orderID[:min(8, len(orderID))] + ": " + note
+				if uid == o.VendorID && !o.Escrow {
+					if err = hidePooledOrderIdentifiers(ctx, tx, o.ID, &body); err != nil {
+						return err
+					}
+				}
+				if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), uid, body); err != nil {
 					return err
 				}
 			}
@@ -851,7 +857,13 @@ func (a *App) flagOrder(ctx context.Context, tx *sql.Tx, o *Order, note, party s
 	if party != "" {
 		parties = []string{o.BuyerID, o.VendorID}
 		for _, uid := range parties {
-			if _, err := tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), uid, party); err != nil {
+			body := party
+			if uid == o.VendorID && !o.Escrow {
+				if err := hidePooledOrderIdentifiers(ctx, tx, o.ID, &body); err != nil {
+					return err
+				}
+			}
+			if _, err := tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), uid, body); err != nil {
 				return err
 			}
 		}
