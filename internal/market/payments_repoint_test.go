@@ -145,9 +145,11 @@ func TestAdminMovesHeldPayoutToCurrentAddress(t *testing.T) {
 	if len(p.fake.Sends()) != 0 {
 		t.Fatalf("the move sent a failed payout: %+v", p.fake.Sends())
 	}
-	if code, body := p.payoutAction(p.adminSess, failedID, "requeue", "", testPassword); code != 303 {
-		t.Fatalf("requeue after the move: %d %s", code, body)
+	// Repoint confirms the move; the historical suspension still requires a separate checked-address requeue.
+	if code, body := p.payoutAction(p.adminSess, failedID, "requeue", "", testPassword); code != 409 {
+		t.Fatalf("unchecked requeue after the move: %d %s", code, body)
 	}
+	p.check(p.do("POST", "/admin/payout", p.adminSess, url.Values{"payout_id": {failedID}, "op": {"requeue"}, "password": {testPassword}, "address_checked": {"confirmed"}}), 303)
 	p.check(p.do("POST", "/admin/payout", p.adminSess, url.Values{"payout_id": {heldID}, "op": {"release"}, "password": {testPassword}, "address_checked": {"confirmed"}}), 303)
 	p.poll()
 	p.poll()
