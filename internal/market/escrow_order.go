@@ -51,7 +51,8 @@ func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 	var refund, strayState string
 	var feeBps int64
 	var watched, shipByOpen, rechecked, tooFew bool
-	var windowFrom time.Time
+	var issued, windowFrom time.Time
+	var firstSeen sql.NullTime
 	var shipBy, releaseAt sql.NullTime
 	var releaseLeft sql.NullFloat64
 	// A-434: held is requestStray's rule (strayHeldSQL), so the deposit lines and the status say the coins a stray
@@ -61,12 +62,13 @@ func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 		rate = e.feeRate
 	}
 	if err := a.db.QueryRowContext(ctx, `SELECT es.address,es.refund_address,es.fee_bps,
-		GREATEST(es.created,(SELECT max(created) FROM payments WHERE order_id=es.order_id AND confirmations>=0 AND NOT locked)),
+		es.created,GREATEST(es.created,(SELECT max(created) FROM payments WHERE order_id=es.order_id AND confirmations>=0 AND NOT locked AND NOT after_close AND NOT escrow_left_out AND NOT spent_outside)),
+		(SELECT min(created) FROM payments WHERE order_id=es.order_id AND NOT locked AND NOT after_close),
 		`+escrowWatchedSQL+`,es.ship_by,COALESCE(es.ship_by<=now(),false),es.release_at,extract(epoch FROM es.release_at-now()),es.release_recheck,
 		o.state IN ('completed','cancelled','resolved') AND `+strayHeldSQL+`,
 		EXISTS(SELECT 1 FROM settlements s WHERE s.order_id=es.order_id AND s.kind='refund' AND s.state='failed' AND s.build_error=$3),
 		COALESCE((SELECT s.state FROM settlements s WHERE s.order_id=es.order_id AND s.kind='stray_refund' ORDER BY s.id DESC LIMIT 1),'')
-		FROM escrows es JOIN orders o ON o.id=es.order_id WHERE es.order_id=$1 AND es.coin='BTC'`, o.ID, v.Threshold, settleTooSmall, rate).Scan(&v.Address, &refund, &feeBps, &windowFrom, &watched,
+		FROM escrows es JOIN orders o ON o.id=es.order_id WHERE es.order_id=$1 AND es.coin='BTC'`, o.ID, v.Threshold, settleTooSmall, rate).Scan(&v.Address, &refund, &feeBps, &issued, &windowFrom, &firstSeen, &watched,
 		&shipBy, &shipByOpen, &releaseAt, &releaseLeft, &rechecked, &v.Held, &tooFew, &strayState); err != nil {
 		return err
 	}
@@ -173,12 +175,16 @@ func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 		}
 	}
 	if v.Open {
-		v.CancelAfter = windowFrom.Add(expiryWindow()).UTC().Truncate(time.Minute).Format("2006-01-02 15:04 UTC")
-		// QA4W1-5: past the window with no deposit waiting for confirmations, only a watcher pass that read the node
-		// cancels the order. While the watcher last found the node not synced (A-439's state) the page says the order
-		// stays open; in the usual gap before the next pass of a synced node it keeps the usual wording.
+		deadline := windowFrom.Add(expiryWindow())
+		if pending > 0 && firstSeen.Valid {
+			deadline = confirmationDeadline(issued, firstSeen.Time)
+			v.ConfirmationWait = true
+		}
+		v.CancelAfter = deadline.UTC().Truncate(time.Minute).Format("2006-01-02 15:04 UTC")
+		// A successful wallet read is required even after the deadline. A node still
+		// syncing leaves the order open rather than cancelling from stale data.
 		notSynced, _ := a.escrowSync.Load().(string)
-		v.WindowPassed = notSynced != "" && pending == 0 && time.Now().After(windowFrom.Add(expiryWindow()))
+		v.WindowPassed = notSynced != "" && time.Now().After(deadline)
 	}
 	switch {
 	case o.State == stateAwaitingPayment && len(v.Deposits) == 0:

@@ -250,12 +250,17 @@ func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 	if err = rows.Err(); err != nil {
 		return err
 	}
-	// windowFrom: the later of the address's issue time and the latest deposit that counts (not conflicted, not
-	// locked), the inputs of the watcher's expiry query (settleOrder); a deposit still confirming postpones it.
+	// windowFrom: the later of the address's issue time and latest active deposit, used for the ordinary
+	// unpaid/confirmed-underpaid window. A deposit still confirming uses the separate, fixed first-seen wait.
 	var addr string
-	var windowFrom time.Time
-	err = a.db.QueryRowContext(ctx, `SELECT pa.address,GREATEST(pa.created,(SELECT max(created) FROM payments WHERE order_id=$1 AND confirmations>=0 AND NOT locked))
-		FROM payment_addresses pa WHERE pa.order_id=$1`, o.ID).Scan(&addr, &windowFrom)
+	var issued, windowFrom time.Time
+	var firstSeen sql.NullTime
+	var confirming bool
+	err = a.db.QueryRowContext(ctx, `SELECT pa.address,pa.created,
+		GREATEST(pa.created,(SELECT max(created) FROM payments WHERE order_id=$1 AND confirmations>=0 AND NOT locked AND NOT after_close AND NOT escrow_left_out AND NOT spent_outside)),
+		(SELECT min(created) FROM payments WHERE order_id=$1 AND NOT locked AND NOT after_close),
+		EXISTS(SELECT 1 FROM payments WHERE order_id=$1 AND confirmations>=0 AND confirmations<$2 AND NOT locked AND NOT after_close AND NOT escrow_left_out AND NOT spent_outside)
+		FROM payment_addresses pa WHERE pa.order_id=$1`, o.ID, pv.Threshold).Scan(&addr, &issued, &windowFrom, &firstSeen, &confirming)
 	if err == sql.ErrNoRows {
 		return nil
 	}
@@ -290,7 +295,12 @@ func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 	}
 	if pv.Open {
 		// Truncated to the minute, so the stated time is never later than the watcher's (A-123).
-		pv.CancelAfter = windowFrom.Add(expiryWindow()).UTC().Truncate(time.Minute).Format("2006-01-02 15:04 UTC")
+		deadline := windowFrom.Add(expiryWindow())
+		if confirming && firstSeen.Valid {
+			deadline = confirmationDeadline(issued, firstSeen.Time)
+			pv.ConfirmationWait = true
+		}
+		pv.CancelAfter = deadline.UTC().Truncate(time.Minute).Format("2006-01-02 15:04 UTC")
 		pv.RefundFloor = amount(payoutFloor(o.Currency, "refund"), dec)
 	}
 	rows, err = a.db.QueryContext(ctx, `SELECT txid,idx,amount,confirmations,credited,locked,regress_notice,flagged,below_floor,

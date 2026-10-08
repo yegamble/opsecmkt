@@ -1082,21 +1082,35 @@ func (a *App) settleXMREscrow(ctx context.Context, orderID string, walletRead bo
 	if !walletRead {
 		return tx.Commit()
 	}
-	// The payment window, from the same inputs as a Bitcoin escrow's (settleEscrow).
-	var unpaid, underpaid bool
+	// The ordinary payment window and fixed first-recorded-deposit confirmation wait use the same inputs
+	// as a Bitcoin escrow's (settleEscrow).
+	var unpaid, underpaid, stalled bool
 	var received int64
-	if err = tx.QueryRowContext(ctx, `WITH d AS (SELECT amount,confirmations,created FROM payments WHERE order_id=$1 AND confirmations>=0 AND NOT locked)
+	if err = tx.QueryRowContext(ctx, `WITH d AS (SELECT amount,confirmations,created FROM payments WHERE order_id=$1 AND confirmations>=0 AND NOT locked AND NOT after_close AND NOT escrow_left_out AND NOT spent_outside),
+		h AS (SELECT min(created) AS first_seen FROM payments WHERE order_id=$1 AND NOT locked AND NOT after_close)
 		SELECT es.created < now()-make_interval(secs => $2) AND NOT EXISTS (SELECT 1 FROM d),
 			es.created < now()-make_interval(secs => $2) AND EXISTS (SELECT 1 FROM d) AND NOT EXISTS (SELECT 1 FROM d WHERE confirmations<$3)
 				AND (SELECT max(created) FROM d) < now()-make_interval(secs => $2),
+			EXISTS (SELECT 1 FROM d WHERE confirmations<$3) AND GREATEST(es.created+make_interval(secs => $2),
+				(SELECT first_seen FROM h)+make_interval(secs => $4)) <= now(),
 			(SELECT COALESCE(sum(amount),0) FROM d)
-		FROM escrows es WHERE es.order_id=$1 AND es.coin='XMR'`, orderID, expiryWindow().Seconds(), threshold).Scan(&unpaid, &underpaid, &received); err != nil {
+		FROM escrows es WHERE es.order_id=$1 AND es.coin='XMR'`, orderID, expiryWindow().Seconds(), threshold, confirmationWait().Seconds()).Scan(&unpaid, &underpaid, &stalled, &received); err != nil {
 		return err
 	}
 	switch {
 	case unpaid:
 		// Nothing received: cancelled as a pooled order is; the stock hook returns the unit, and nothing is refunded.
 		if _, err = a.transition(ctx, tx, orderID, stateAwaitingPayment, stateCancelled, nil, "payment window expired"); err != nil {
+			return err
+		}
+	case stalled:
+		// The Monero settlement may be requested, but its builder freezes any
+		// unconfirmed output and never sends it before the threshold.
+		if _, err = a.transition(ctx, tx, orderID, stateAwaitingPayment, stateCancelled, nil, "payment confirmation wait ended; unconfirmed deposits were not counted"); err != nil {
+			return err
+		}
+		body := "Order " + shortID(orderID) + ": the fixed confirmation wait ended, so the order was cancelled and its stock returned. Unconfirmed escrow deposits were not sent; deposits that confirm later follow the escrow refund or stray-recovery path shown on the order page."
+		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.BuyerID, body); err != nil {
 			return err
 		}
 	case underpaid:

@@ -25,16 +25,18 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 	var refund, strayState, strayWait string
 	var feeBps int64
 	var shipByOpen, tooFew bool
-	var windowFrom time.Time
+	var issued, windowFrom time.Time
+	var firstSeen sql.NullTime
 	var shipBy, destroyed sql.NullTime
 	// tooFew: the refund ended because its coins were too few, and they were left out for a stray refund (A-437).
 	if err := a.db.QueryRowContext(ctx, `SELECT es.address,es.refund_address,es.fee_bps,
-		GREATEST(es.created,(SELECT max(created) FROM payments WHERE order_id=es.order_id AND confirmations>=0 AND NOT locked)),
+		es.created,GREATEST(es.created,(SELECT max(created) FROM payments WHERE order_id=es.order_id AND confirmations>=0 AND NOT locked AND NOT after_close AND NOT escrow_left_out AND NOT spent_outside)),
+		(SELECT min(created) FROM payments WHERE order_id=es.order_id AND NOT locked AND NOT after_close),
 		es.ship_by,COALESCE(es.ship_by<=now(),false),w.destroyed_at,COALESCE(x.state,''),COALESCE(x.send_error,''),
 		EXISTS(SELECT 1 FROM xmr_settlements r WHERE r.order_id=es.order_id AND r.kind='refund' AND r.state='failed' AND r.send_error=$2)
 		FROM escrows es JOIN xmr_escrow_slots s ON s.id=es.xmr_slot_id JOIN xmr_escrow_wallets w ON w.id=s.wallet_id
 		LEFT JOIN LATERAL (SELECT x.state,x.send_error FROM xmr_settlements x WHERE x.order_id=es.order_id AND x.kind='stray_refund' ORDER BY x.id DESC LIMIT 1) x ON true
-		WHERE es.order_id=$1 AND es.coin='XMR'`, o.ID, xmrTooSmall).Scan(&v.Address, &refund, &feeBps, &windowFrom, &shipBy, &shipByOpen, &destroyed, &strayState, &strayWait, &tooFew); err != nil {
+		WHERE es.order_id=$1 AND es.coin='XMR'`, o.ID, xmrTooSmall).Scan(&v.Address, &refund, &feeBps, &issued, &windowFrom, &firstSeen, &shipBy, &shipByOpen, &destroyed, &strayState, &strayWait, &tooFew); err != nil {
 		return err
 	}
 	if destroyed.Valid {
@@ -112,11 +114,15 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 		}
 	}
 	if v.Open {
-		v.CancelAfter = windowFrom.Add(expiryWindow()).UTC().Truncate(time.Minute).Format("2006-01-02 15:04 UTC")
-		// Past the window with no deposit waiting for confirmations, only a watcher pass that read the daemon cancels
-		// the order; until then (the daemon not synced or not readable, A-449) the page says the order stays open, as
-		// the Bitcoin page does (QA4W1-5).
-		v.WindowPassed = pending == 0 && time.Now().After(windowFrom.Add(expiryWindow()))
+		deadline := windowFrom.Add(expiryWindow())
+		if pending > 0 && firstSeen.Valid {
+			deadline = confirmationDeadline(issued, firstSeen.Time)
+			v.ConfirmationWait = true
+		}
+		v.CancelAfter = deadline.UTC().Truncate(time.Minute).Format("2006-01-02 15:04 UTC")
+		// The watcher waits for a successful read after this time, even if the
+		// daemon is syncing or the wallet is unavailable (A-449).
+		v.WindowPassed = time.Now().After(deadline)
 	}
 	switch {
 	case o.State == stateAwaitingPayment && len(v.Deposits) == 0:

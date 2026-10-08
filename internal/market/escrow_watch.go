@@ -452,16 +452,19 @@ func (a *App) settleEscrow(ctx context.Context, orderID string, walletRead bool)
 	if !walletRead {
 		return tx.Commit()
 	}
-	// The payment window, from the same inputs as a pooled order's (settleOrder): the escrow's creation and the
-	// latest deposit that counts.
-	var unpaid, underpaid bool
+	// The ordinary payment window uses the escrow's creation and latest active deposit; a deposit still
+	// confirming uses the first recorded eligible deposit and the fixed confirmation wait.
+	var unpaid, underpaid, stalled bool
 	var received int64
-	if err = tx.QueryRowContext(ctx, `WITH d AS (SELECT amount,confirmations,created FROM payments WHERE order_id=$1 AND confirmations>=0 AND NOT locked AND NOT escrow_left_out)
+	if err = tx.QueryRowContext(ctx, `WITH d AS (SELECT amount,confirmations,created FROM payments WHERE order_id=$1 AND confirmations>=0 AND NOT locked AND NOT after_close AND NOT escrow_left_out AND NOT spent_outside),
+		h AS (SELECT min(created) AS first_seen FROM payments WHERE order_id=$1 AND NOT locked AND NOT after_close)
 		SELECT es.created < now()-make_interval(secs => $2) AND NOT EXISTS (SELECT 1 FROM d),
 			es.created < now()-make_interval(secs => $2) AND EXISTS (SELECT 1 FROM d) AND NOT EXISTS (SELECT 1 FROM d WHERE confirmations<$3)
 				AND (SELECT max(created) FROM d) < now()-make_interval(secs => $2),
+			EXISTS (SELECT 1 FROM d WHERE confirmations<$3) AND GREATEST(es.created+make_interval(secs => $2),
+				(SELECT first_seen FROM h)+make_interval(secs => $4)) <= now(),
 			(SELECT COALESCE(sum(amount),0) FROM d)
-		FROM escrows es WHERE es.order_id=$1 AND es.coin='BTC'`, orderID, expiryWindow().Seconds(), threshold).Scan(&unpaid, &underpaid, &received); err != nil {
+		FROM escrows es WHERE es.order_id=$1 AND es.coin='BTC'`, orderID, expiryWindow().Seconds(), threshold, confirmationWait().Seconds()).Scan(&unpaid, &underpaid, &stalled, &received); err != nil {
 		return err
 	}
 	switch {
@@ -469,6 +472,17 @@ func (a *App) settleEscrow(ctx context.Context, orderID string, walletRead bool)
 		// Nothing received: cancelled as a pooled order is; the stock hook returns the unit, and there is nothing to
 		// refund. Coins sent after this are a stray payment (recovered by a stray refund, P1-c2).
 		if _, err = a.transition(ctx, tx, orderID, stateAwaitingPayment, stateCancelled, nil, "payment window expired"); err != nil {
+			return err
+		}
+	case stalled:
+		// A deposit still below the threshold cannot keep stock reserved forever.
+		// The settlement is requested, but its builder never spends unconfirmed inputs;
+		// a later-confirming input that it left out is recovered by a stray refund.
+		if _, err = a.transition(ctx, tx, orderID, stateAwaitingPayment, stateCancelled, nil, "payment confirmation wait ended; unconfirmed deposits were not counted"); err != nil {
+			return err
+		}
+		body := "Order " + shortID(orderID) + ": the fixed confirmation wait ended, so the order was cancelled and its stock returned. Unconfirmed escrow deposits were not sent; the refund settlement waits for confirmations or leaves them out for later recovery. Check this order before signing any refund."
+		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.BuyerID, body); err != nil {
 			return err
 		}
 	case underpaid:

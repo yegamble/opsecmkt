@@ -462,26 +462,33 @@ func (a *App) settleOrder(ctx context.Context, p PaymentProvider, orderID string
 		}
 	}
 	// Unpaid past PAYMENT_EXPIRY with no deposit seen (a conflicted or locked one does not count): cancel as the
-	// system actor; the stock hook returns the reserved unit. A deposit still confirming keeps the order open.
+	// system actor; the stock hook returns the reserved unit. A deposit still confirming keeps the order open only
+	// through the fixed confirmation wait below.
 	// Underpaid: every deposit confirmed but short of the price, the address older than PAYMENT_EXPIRY and no
 	// deposit (top-up) seen for PAYMENT_EXPIRY either: cancel the same way, and the payout hook refunds the
 	// confirmed deposits to the buyer. Without this an underpaid order and its deposits would wait forever.
 	if o.State == stateAwaitingPayment && walletRead {
 		// The buyer's order page states the resulting time from the same inputs (paymentsOrderLoader, A-123).
 		expiry := expiryWindow()
-		var unpaid, underpaid bool
+		var unpaid, underpaid, stalled bool
 		var received int64
-		if err = tx.QueryRowContext(ctx, `WITH d AS (SELECT amount,confirmations,created FROM payments WHERE order_id=$1 AND confirmations>=0 AND NOT locked)
+		if err = tx.QueryRowContext(ctx, `WITH d AS (SELECT amount,confirmations,created FROM payments WHERE order_id=$1 AND confirmations>=0 AND NOT locked AND NOT after_close AND NOT escrow_left_out AND NOT spent_outside),
+			h AS (SELECT min(created) AS first_seen FROM payments WHERE order_id=$1 AND NOT locked AND NOT after_close)
 			SELECT pa.created < now()-make_interval(secs => $2) AND NOT EXISTS (SELECT 1 FROM d),
 				pa.created < now()-make_interval(secs => $2) AND EXISTS (SELECT 1 FROM d) AND NOT EXISTS (SELECT 1 FROM d WHERE confirmations<$3)
 					AND (SELECT max(created) FROM d) < now()-make_interval(secs => $2),
+				EXISTS (SELECT 1 FROM d WHERE confirmations<$3) AND GREATEST(pa.created+make_interval(secs => $2),
+					(SELECT first_seen FROM h)+make_interval(secs => $4)) <= now(),
 				(SELECT COALESCE(sum(amount),0) FROM d)
-			FROM payment_addresses pa WHERE pa.order_id=$1`, orderID, expiry.Seconds(), threshold).Scan(&unpaid, &underpaid, &received); err != nil {
+			FROM payment_addresses pa WHERE pa.order_id=$1`, orderID, expiry.Seconds(), threshold, confirmationWait().Seconds()).Scan(&unpaid, &underpaid, &stalled, &received); err != nil {
 			return err
 		}
-		if unpaid || underpaid {
+		if unpaid || underpaid || stalled {
 			note := "payment window expired"
-			if underpaid {
+			switch {
+			case stalled:
+				note = "payment confirmation wait ended: deposits still unconfirmed were not counted"
+			case underpaid:
 				note = fmt.Sprintf("payment window expired underpaid: %s of %s %s received", amount(received, dec), amount(total, dec), o.Currency)
 			}
 			next, err := a.transition(ctx, tx, orderID, stateAwaitingPayment, stateCancelled, nil, note)
@@ -489,6 +496,12 @@ func (a *App) settleOrder(ctx context.Context, p PaymentProvider, orderID string
 				return err
 			}
 			o = *next
+			if stalled {
+				body := "Order " + shortID(orderID) + ": the fixed confirmation wait ended, so the order was cancelled and its stock returned. Deposits still unconfirmed were not paid out. Any confirmed amount follows the usual refund rules shown on the order page; a deposit confirming later is refunded only if no payout was already queued, otherwise market staff review it."
+				if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.BuyerID, body); err != nil {
+					return err
+				}
+			}
 			if underpaid {
 				// The transition queued the refund (payout hook) or, below the floor, flagged the deposits instead:
 				// the notification says which (A-211).

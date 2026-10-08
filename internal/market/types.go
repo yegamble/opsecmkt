@@ -524,6 +524,7 @@ type PaymentView struct {
 	Monitored                       bool // Issued and the provider is still configured
 	Open                            bool // Monitored and the order still awaits payment (address shown)
 	BuyerNeedsPayoutAddress         bool // pooled order buyer has no payout address for this order's currency
+	ConfirmationWait                bool // an eligible deposit is below the confirmation threshold; CancelAfter is capped
 	Deposits                        []PaymentDeposit
 	Payouts                         []PayoutRow // release and return of any excess, or refund (ORDER BY id)
 	// PaymentURI and QR: while the order is open and something is still due, the wallet payment request for
@@ -721,7 +722,7 @@ type EscrowOrderView struct {
 	Address, Descriptor, Own, RefundAddress     string
 	Required, Confirmed, Unconfirmed, Remaining string
 	Threshold                                   int64
-	Open, NeedsTopUp                            bool
+	Open, NeedsTopUp, ConfirmationWait          bool
 	WindowPassed                                bool // Open, CancelAfter has passed, no deposit waits for confirmations and the escrow node is not synced: the watcher holds the order (QA4W1-5)
 	CancelAfter, Status, NextStep, Fee          string
 	Deposits                                    []PaymentDeposit
@@ -917,7 +918,7 @@ type XMREscrowOrderView struct {
 	Custody, Address, RefundAddress             string
 	Required, Confirmed, Unconfirmed, Remaining string
 	Threshold                                   int64
-	Open, NeedsTopUp                            bool
+	Open, NeedsTopUp, ConfirmationWait          bool
 	CancelAfter, Status, NextStep, Fee          string
 	Deposits                                    []PaymentDeposit
 	Unread                                      string // set when nothing is read at the address: shown for the Confirmed and Unconfirmed figures
