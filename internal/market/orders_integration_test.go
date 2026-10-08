@@ -338,7 +338,7 @@ func TestReviewsRequireACompletedOrder(t *testing.T) {
 	w.e.DB.QueryRow("SELECT handle FROM users WHERE id=$1", w.buyerID).Scan(&buyerHandle)
 	for _, path := range []string{"/product?id=" + product, "/vendor?id=" + w.vendorID} {
 		body := w.page(path, randomToken(), 200)
-		for _, s := range []string{"Verified purchase", "Arrived as described. &lt;b&gt;not bold&lt;/b&gt;", "<strong>4.0</strong> / 5 · 1 review", "Rated 4 out of 5"} {
+		for _, s := range []string{"Completed order (test network)", "Arrived as described. &lt;b&gt;not bold&lt;/b&gt;", "<strong>4.0</strong> / 5 · 1 review", "Rated 4 out of 5"} {
 			if !strings.Contains(body, s) {
 				t.Errorf("%s missing %q", path, s)
 			}

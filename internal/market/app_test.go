@@ -52,6 +52,27 @@ func TestOrderDeliveryTextareaPreservesLeadingNewlineAndEscapesMarkup(t *testing
 	}
 }
 
+func TestReviewBadgeNamesCompletedOrderAndMarketNetwork(t *testing.T) {
+	templates, err := parseTemplates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, live := range []bool{false, true} {
+		var rendered bytes.Buffer
+		d := PageData{Page: "product", LiveNetwork: live, Reviews: []Review{{Rating: 5, Body: "Review text"}}}
+		if err := templates.ExecuteTemplate(&rendered, "product-reviews", d); err != nil {
+			t.Fatal(err)
+		}
+		label := "Completed order (test network)"
+		if live {
+			label = "Completed order (main network)"
+		}
+		if !strings.Contains(rendered.String(), label) || strings.Contains(rendered.String(), "Verified purchase") {
+			t.Fatalf("incorrect review badge for live=%v", live)
+		}
+	}
+}
+
 func TestParseAmountExactAtomicUnits(t *testing.T) {
 	for _, tc := range []struct {
 		input    string

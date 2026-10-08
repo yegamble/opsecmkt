@@ -386,7 +386,7 @@ func completeAction(c *actionCtx) (actionResult, error) {
 	return actionResult{Redirect: orderPage(o.ID), Notice: "order-completed", Audit: "Completed order " + shortID(o.ID)}, nil
 }
 
-// reviewAction: one review per completed order, by its buyer. "Verified purchase" on public pages rests
+// reviewAction: one review per completed order, by its buyer. The completed-order badge on public pages rests
 // on this check and the UNIQUE(order_id) constraint.
 func reviewAction(c *actionCtx) (actionResult, error) {
 	rating, err := strconv.Atoi(c.Form.Get("rating"))

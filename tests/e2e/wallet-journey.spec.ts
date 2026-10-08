@@ -176,7 +176,7 @@ test('BTC and XMR: partial payment, intake pause, confirmation, fulfillment and 
     const publicPage = await publicContext.newPage();
     await publicPage.goto(productURL);
     await expect(publicPage.locator('main')).toContainText(`Verified ${currency} fixture purchase arrived as described.`);
-    await expect(publicPage.locator('main')).toContainText('Verified purchase');
+    await expect(publicPage.locator('main')).toContainText('Completed order (test network)');
     await expect(publicPage.locator('main')).not.toContainText('wallet_buyer');
     await expect(publicPage.locator('main')).not.toContainText(new URL(orderURL).searchParams.get('id')!);
     await publicContext.close();

@@ -172,7 +172,7 @@
 {{.Content}}</textarea></label>{{else}}{{if $.DeliveryWithheld}}<p class="muted">Delivery content is shown to moderators only if the order is disputed.</p>{{else}}<p class="muted">Nothing has been delivered. Content appears here only when the order moves to Delivered.</p>{{end}}{{end}}</section>{{end}}{{if or $.CanReview $.Reviews}}<section class="panel" aria-labelledby="order-review">
 <h2 id="order-review">Review</h2>{{range $.Reviews}}<div class="review">
 <div class="message-meta">
-<span class="badge green">Verified purchase</span>{{if .Hidden}}
+<span class="badge green">Completed order ({{if $.LiveNetwork}}main{{else}}test{{end}} network)</span>{{if .Hidden}}
 <span class="badge neutral">Hidden</span>{{end}}
 <span>{{.Created}}</span>
 </div>

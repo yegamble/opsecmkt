@@ -53,7 +53,7 @@ test('administrator hides a review from the public pages and restores it', async
     await expect(admin.getByRole('region', { name: 'Verified reviews' }).getByRole('status')).toHaveText('Review hidden.');
     await admin.reload();
     const hidden = admin.locator('article.review', { hasText: doxx });
-    await expect(hidden.locator('.badge')).toHaveText(['Verified purchase', 'Hidden by an administrator']);
+    await expect(hidden.locator('.badge')).toHaveText(['Completed order (test network)', 'Hidden by an administrator']);
     await expect(admin.getByText('1 hidden review is not shown to others or counted.')).toBeVisible();
     await expect(admin.locator('.review-summary')).toHaveText('5.0 / 5 · 1 review');
 

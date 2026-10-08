@@ -31,7 +31,7 @@ test('reviews are labelled verified purchases without reviewer handles', async (
   await page.goto('/product?id=encrypted-drive');
   const reviews = page.locator('.order-reviews');
   await expect(reviews.getByRole('heading', { name: 'Verified reviews' })).toBeVisible();
-  await expect(reviews.locator('.badge')).toHaveText('Verified purchase');
+  await expect(reviews.locator('.badge')).toHaveText('Completed order (test network)');
   await expect(reviews).toContainText('Rated 4 out of 5');
   await expect(reviews).not.toContainText('preview_user');
 });
