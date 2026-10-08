@@ -5,6 +5,8 @@ The bundled monero-wallet and monero-escrow-wallet services must never start wit
 out keeps working with neither set: compose.nodes.yaml is in every install's COMPOSE_FILE. The text checks need
 nothing; the resolved-configuration checks run `docker compose config` and are skipped without Docker Compose.
 """
+import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
@@ -32,7 +34,8 @@ class WalletPasswordTextTests(unittest.TestCase):
     def test_header_comment_states_the_refusal(self):
         header = NODES.read_text().split('\nservices:\n', 1)[0]
         flat = ' '.join(line.lstrip('# ') for line in header.splitlines())
-        self.assertIn('Compose refuses to create or start monero-wallet without MONERO_WALLET_RPC_PASSWORD', flat)
+        self.assertIn('Compose refuses a bitcoin-profile service with blank BITCOIN_RPC_AUTH', flat)
+        self.assertIn('Compose also refuses to create or start monero-wallet without MONERO_WALLET_RPC_PASSWORD', flat)
         self.assertIn('monero-escrow-wallet without ESCROW_XMR_WALLET_RPC_PASSWORD', flat)
         self.assertNotIn("monero-wallet-rpc gets --rpc-login ':'", flat)
 
@@ -56,6 +59,10 @@ class WalletPasswordConfigTests(unittest.TestCase):
                        if not key.startswith('COMPOSE_') and key not in ('MONERO_WALLET_RPC_PASSWORD',
                                                                        'ESCROW_XMR_WALLET_RPC_PASSWORD')}
         environment['DATABASE_URL'] = 'postgres://unused@db/unused'
+        # A local bitcoin profile also requires a verifier; this synthetic value is never used by a node.
+        salt, password = '0123456789abcdef0123456789abcdef', 'compose-only-password'
+        environment['BITCOIN_RPC_AUTH'] = 'marketplace:' + salt + '$' + hmac.new(
+            salt.encode(), password.encode(), hashlib.sha256).hexdigest()
         environment.update(values)
         return subprocess.run(arguments + ['config', '--format', 'json'], cwd=REPOSITORY, env=environment,
                               capture_output=True, text=True, check=False)

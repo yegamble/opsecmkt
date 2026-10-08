@@ -21,14 +21,7 @@ alpha1_app_image_ref="$project-alpha1-app"
 current_app_image_ref="$project-current-app"
 db_password=$(python3 -c 'import secrets; print(secrets.token_hex(24))')
 setup_token=$(python3 -c 'import secrets; print(secrets.token_hex(24))')
-app_port=$(python3 - <<'PY'
-import socket
-with socket.socket() as sock:
-    sock.bind(('127.0.0.1', 0))
-    print(sock.getsockname()[1])
-PY
-)
-base="http://127.0.0.1:$app_port"
+base=''
 seed="a144_$(python3 -c 'import secrets; print(secrets.token_hex(4))')"
 old_archive="$work/old.tar"
 current_archive="$work/current.tar"
@@ -143,20 +136,37 @@ tor_identity_hash() {
   compose exec -T tor sha256sum /var/lib/tor/marketplace/hs_ed25519_secret_key | awk '{print $1}'
 }
 
+refresh_base() {
+  local published
+  published=$(compose port app 8080)
+  app_port=$(printf '%s\n' "$published" | python3 -c 'import ipaddress,sys; line=sys.stdin.read().strip(); host,sep,port=line.rpartition(":"); assert sep and ipaddress.ip_address(host).is_loopback() and port.isdigit(), "Compose did not publish app on loopback"; print(port)')
+  base="http://127.0.0.1:$app_port"
+}
+
 wait_http() {
-  python3 - "$base" <<'PY'
+  echo "Waiting for app health at published loopback $base/healthz"
+  if ! python3 - "$base" <<'PY'
 import sys, time, urllib.request
 url = sys.argv[1] + '/healthz'
+opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+last = 'no response'
 for _ in range(180):
     try:
-        with urllib.request.urlopen(url, timeout=2) as response:
+        with opener.open(url, timeout=2) as response:
             if response.status == 200 and response.read() == b'ok':
                 raise SystemExit(0)
-    except OSError:
-        pass
+            last = f'HTTP {response.status}'
+    except Exception as error:
+        last = f'{type(error).__name__}: {error}'
     time.sleep(1)
-raise SystemExit('app did not become healthy on the loopback-only test port')
+raise SystemExit(f'app did not become healthy on the loopback-only test port ({last})')
 PY
+  then
+    # These service logs help distinguish a host-published-port problem from an app or database startup failure.
+    # Do not dump Compose config or the deployment environment, which contain credentials.
+    compose logs --tail 80 app db tor >&2 || true
+    return 1
+  fi
 }
 
 mkdir -p "$deploy"
@@ -168,7 +178,7 @@ services:
   app:
     image: ${A144_APP_IMAGE:?A144_APP_IMAGE must name this test project's app image}
     ports:
-      - "127.0.0.1:${A144_APP_PORT}:8080"
+      - "127.0.0.1::8080"
   tor:
     command: ["--DisableNetwork", "1"]
 networks:
@@ -181,8 +191,6 @@ COMPOSE_FILE=compose.yaml:compose.tor.yaml:compose.internal-db.yaml:compose.a144
 COMPOSE_PROFILES=internal-db
 A144_APP_IMAGE=$alpha1_app_image_ref
 APP_MODE=tor
-APP_PORT=$app_port
-A144_APP_PORT=$app_port
 COOKIE_SECURE=false
 DATABASE_URL=postgres://opsecmkt:$db_password@db:5432/opsecmkt?sslmode=disable
 POSTGRES_PASSWORD=$db_password
@@ -192,6 +200,7 @@ chmod 600 "$deploy/.env"
 
 echo "Starting alpha.1 Compose project $project with real Tor and offline test egress"
 compose up -d --build --wait --wait-timeout 300 app db tor
+refresh_base
 wait_http
 # The service hostname is generated locally. Tor egress is blocked and no circuit is asserted.
 for _ in {1..60}; do
@@ -212,7 +221,8 @@ password = 'a144 disposable upgrade password'
 
 class Client:
     def __init__(self):
-        self.opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+        self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}),
+                                                  urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
     def get(self, path):
         with self.opener.open(base + path, timeout=10) as response:
             return response.read().decode()
@@ -237,7 +247,9 @@ import http.cookiejar, os, re, urllib.parse, urllib.request
 base, seed = os.environ['A144_BASE'], os.environ['A144_SEED']
 password = 'a144 disposable upgrade password'
 class Client:
-    def __init__(self): self.opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+    def __init__(self):
+        self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}),
+                                                  urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
     def get(self, path): return self.opener.open(base + path, timeout=10).read().decode()
     def post(self, form_page, path, fields):
         token = re.search(r'name="csrf"\s+value="([^"]+)"', self.get(form_page))
@@ -256,7 +268,8 @@ A144_PRODUCT_ID=$(db_sql opsecmkt -c "SELECT id FROM products WHERE title='${see
 A144_BASE="$base" A144_SEED="$seed" A144_PRODUCT_ID="$A144_PRODUCT_ID" python3 - <<'PY'
 import http.cookiejar, os, re, urllib.parse, urllib.request
 base, seed = os.environ['A144_BASE'], os.environ['A144_SEED']
-opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+opener = urllib.request.build_opener(urllib.request.ProxyHandler({}),
+                                     urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
 login = opener.open(base + '/login', timeout=10).read().decode()
 csrf = re.search(r'name="csrf"\s+value="([^"]+)"', login)
 assert csrf, 'legacy login form did not render CSRF'
@@ -283,6 +296,7 @@ if ! (cd "$deploy" && AGE_RECIPIENT="$recipient" A144_APP_IMAGE="$current_app_im
   cat "$work/upgrade.log" >&2
   exit 1
 fi
+refresh_base
 wait_http
 upgraded_app_image_id=$(app_image_id)
 [[ $upgraded_app_image_id != "$alpha1_app_image_id" ]] || { echo 'The current app image did not change from alpha.1' >&2; exit 1; }
@@ -298,7 +312,8 @@ db_sql opsecmkt -c "UPDATE settings SET value='false' WHERE key='captcha_require
 A144_BASE="$base" A144_HANDLE="${seed}_buyer" A144_PASSWORD='a144 disposable upgrade password' A144_TITLE="${seed} alpha.1 item" python3 - <<'PY'
 import http.cookiejar, os, re, urllib.parse, urllib.request
 base = os.environ['A144_BASE']
-opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+opener = urllib.request.build_opener(urllib.request.ProxyHandler({}),
+                                     urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
 login = opener.open(base + '/login', timeout=10).read().decode()
 csrf = re.search(r'name="csrf"\s+value="([^"]+)"', login)
 assert csrf, 'upgraded login form has no CSRF token'
@@ -355,6 +370,7 @@ PY
 echo 'Swapping back to alpha.1 in the same Compose directory and serving the restored database'
 replace_source "$old_archive"
 compose up -d --wait --wait-timeout 300 app tor
+refresh_base
 wait_http
 rollback_app_image_id=$(app_image_id)
 [[ $rollback_app_image_id == "$alpha1_app_image_id" ]] || { echo 'Rollback did not restore the original alpha.1 app image' >&2; exit 1; }
@@ -364,7 +380,8 @@ rollback_app_image_id=$(app_image_id)
 A144_BASE="$base" A144_HANDLE="${seed}_buyer" A144_PASSWORD='a144 disposable upgrade password' A144_TITLE="${seed} alpha.1 item" python3 - <<'PY'
 import http.cookiejar, os, re, urllib.parse, urllib.request
 base = os.environ['A144_BASE']
-opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+opener = urllib.request.build_opener(urllib.request.ProxyHandler({}),
+                                     urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
 login = opener.open(base + '/login', timeout=10).read().decode()
 csrf = re.search(r'name="csrf"\s+value="([^"]+)"', login)
 assert csrf, 'restored alpha.1 login form has no CSRF token'

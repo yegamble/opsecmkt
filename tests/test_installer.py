@@ -1037,22 +1037,25 @@ time.sleep(60)
                        'escrow-xmr-seed-key.asc (the Monero escrow seed key it mounts) is missing')
 
     def test_secret_generation_failure_starts_nothing(self):
-        # openssl calls: 1 database password, 2 APP_SECRET_KEY, 3 setup token, 4 audit key, then one per local node.
+        # openssl calls: 1 database password, 2 APP_SECRET_KEY, 3 setup token, 4 audit key, then each local
+        # node's credentials. A local Bitcoin node needs an additional random salt for its RPC verifier.
         scenarios = [
-            (1, ['clearnet', '', '', 'disabled', 'disabled']),
-            (2, ['clearnet', '', '', 'disabled', 'disabled']),
-            (3, ['clearnet', '', '', 'disabled', 'disabled']),
-            (5, ['tor', '', 'local', 'reviewed-bitcoin:test', 'testnet4', '', 'disabled']),
-            (5, ['tor', '', 'disabled', 'local', 'reviewed-monero:test', 'stagenet', '', '']),
-            (6, ['tor', '', 'local', 'reviewed-bitcoin:test', 'testnet4', '',
-                 'local', 'reviewed-monero:test', 'stagenet', '', '']),
+            (1, 'random secret', ['clearnet', '', '', 'disabled', 'disabled']),
+            (2, 'random secret', ['clearnet', '', '', 'disabled', 'disabled']),
+            (3, 'random secret', ['clearnet', '', '', 'disabled', 'disabled']),
+            (5, 'random secret', ['tor', '', 'local', 'reviewed-bitcoin:test', 'testnet4', '', 'disabled']),
+            (5, 'random secret', ['tor', '', 'disabled', 'local', 'reviewed-monero:test', 'stagenet', '', '']),
+            (6, 'Bitcoin RPC verifier', ['tor', '', 'local', 'reviewed-bitcoin:test', 'testnet4', '',
+                                         'local', 'reviewed-monero:test', 'stagenet', '', '']),
+            (7, 'random secret', ['tor', '', 'local', 'reviewed-bitcoin:test', 'testnet4', '',
+                                  'local', 'reviewed-monero:test', 'stagenet', '', '']),
         ]
-        for call, answers in scenarios:
+        for call, message, answers in scenarios:
             with self.subTest(call=call, answers=answers):
                 self.log.unlink(missing_ok=True)
                 result = self.run_installer(answers, openssl_empty_call=call)
                 self.assertNotEqual(result.returncode, 0)
-                self.assertIn('Could not generate a random secret', result.stderr)
+                self.assertIn(message, result.stderr)
                 self.assertEqual(self.calls(), PREFLIGHT)
                 self.assertFalse((self.root / '.env').exists())
                 self.assertEqual(list(self.root.glob('.env.install.*')), [])

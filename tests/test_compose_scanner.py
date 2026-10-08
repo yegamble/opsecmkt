@@ -3,6 +3,8 @@
 The text checks need nothing; the resolved-configuration checks run `docker compose config` and are skipped
 without Docker Compose. scripts/test-scanner.sh runs the container itself.
 """
+import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
@@ -194,6 +196,11 @@ class ScannerComposeConfigTests(unittest.TestCase):
             arguments += ['--profile', profile]
         environment = {key: value for key, value in os.environ.items() if not key.startswith('COMPOSE_')}
         environment['DATABASE_URL'] = 'postgres://unused@db/unused'
+        # Compose requires the local Bitcoin verifier whenever the bitcoin profile is active.
+        # These config-only tests do not contact bitcoind, but provide a correctly shaped synthetic value.
+        salt, password = '0123456789abcdef0123456789abcdef', 'compose-only-password'
+        environment['BITCOIN_RPC_AUTH'] = 'marketplace:' + salt + '$' + hmac.new(
+            salt.encode(), password.encode(), hashlib.sha256).hexdigest()
         # Compose refuses the monero-wallet profile without its password (A-466).
         environment['MONERO_WALLET_RPC_PASSWORD'] = 'unused'
         result = subprocess.run(arguments + ['config', '--format', 'json'], cwd=REPOSITORY, env=environment,

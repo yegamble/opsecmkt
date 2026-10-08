@@ -299,6 +299,8 @@ jobs:
           NODES_TOR: ${{ matrix.nodes_tor }}
           DATABASE_URL: postgres://test:test@db/test
           SETUP_TOKEN: ci-validation-only-not-a-real-bootstrap-secret
+          # The bitcoin profile requires a verifier; this is a public synthetic value for config validation only.
+          BITCOIN_RPC_AUTH: marketplace:0123456789abcdef0123456789abcdef$f25a796e58dd70ff7eb5b96b54de079cc7e3d6f40eb8a0fa55fd05f26a53635e
           # Compose refuses either Monero wallet-rpc's profile with a blank password (A-466;
           # tests/test_compose_wallet_passwords.py checks the refusal).
           MONERO_WALLET_RPC_PASSWORD: ci-validation-only
