@@ -93,6 +93,35 @@ db_sql() {
   compose exec -T db psql -X -q -A -t -v ON_ERROR_STOP=1 -U opsecmkt -d "$database" "$@" </dev/null
 }
 
+# Hash every persistent table row and sequence state in public, in stable table/row order. This includes audit
+# history and migration records while ignoring connection-local state. No application writes run during either
+# measurement, so equality proves the side-by-side restore did not alter the upgraded database's contents.
+database_hash() {
+  local database=$1
+  compose exec -T db psql -X -q -A -t -F '' -v ON_ERROR_STOP=1 -U opsecmkt -d "$database" <<'SQL' |
+SELECT format(
+  'SELECT %L UNION ALL SELECT %L || chr(9) || row_to_json(t)::text FROM %I.%I AS t ORDER BY 1;',
+  'T:' || schemaname || '.' || tablename,
+  'R:' || schemaname || '.' || tablename,
+  schemaname, tablename
+)
+FROM pg_catalog.pg_tables
+WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
+ORDER BY schemaname, tablename
+\gexec
+SELECT format(
+  'SELECT %L || chr(9) || COALESCE(last_value::text, ''NULL'') || chr(9) || is_called::text FROM %I.%I;',
+  'S:' || schemaname || '.' || sequencename,
+  schemaname, sequencename
+)
+FROM pg_catalog.pg_sequences
+WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
+ORDER BY schemaname, sequencename
+\gexec
+SQL
+  python3 -c 'import hashlib,sys; h=hashlib.sha256(); [h.update(row) for row in sys.stdin.buffer]; print(h.hexdigest())'
+}
+
 wait_http() {
   python3 - "$base" <<'PY'
 import sys, time, urllib.request
@@ -230,6 +259,10 @@ wait_http
 [[ $(db_sql opsecmkt -c "SELECT count(*) FROM products WHERE title='${seed} alpha.1 item'") == 1 ]]
 [[ $(db_sql opsecmkt -c "SELECT count(*) FROM schema_migrations") -gt 0 ]]
 [[ $(db_sql opsecmkt -c "SELECT count(*) FROM orders o JOIN users u ON u.id=o.buyer_id WHERE u.handle='${seed}_buyer' AND o.state='draft'") == 1 ]]
+# Migration 010 enables CAPTCHA. Disable it as an operator would so the browser fixture can authenticate using
+# the actual login form without inventing a CAPTCHA-solving step.
+db_sql opsecmkt -c "UPDATE settings SET value='false' WHERE key='captcha_required'"
+[[ $(db_sql opsecmkt -c "SELECT value FROM settings WHERE key='captcha_required'") == false ]]
 A144_BASE="$base" A144_HANDLE="${seed}_buyer" A144_PASSWORD='a144 disposable upgrade password' A144_TITLE="${seed} alpha.1 item" python3 - <<'PY'
 import http.cookiejar, os, re, urllib.parse, urllib.request
 base = os.environ['A144_BASE']
@@ -248,7 +281,10 @@ backup_files=("$deploy"/backups/pre-upgrade-*.dump.age)
 [[ ${#backup_files[@]} == 1 ]] || { echo "Expected one encrypted pre-upgrade backup, found ${#backup_files[@]}" >&2; exit 1; }
 backup=${backup_files[0]}
 [[ -n $backup && -s $backup ]]
-upgraded_snapshot=$(db_sql opsecmkt -c "SELECT (SELECT count(*) FROM schema_migrations)||':'||(SELECT count(*) FROM orders)||':'||(SELECT count(*) FROM products)")
+echo 'Stopping app and Tor before restoring or changing DATABASE_URL'
+compose stop app tor
+upgraded_snapshot=$(database_hash opsecmkt)
+[[ $upgraded_snapshot =~ ^[[:xdigit:]]{64}$ ]]
 
 echo 'Restoring the encrypted alpha.1 backup into a new database beside the upgraded database'
 if ! (cd "$deploy" && printf 'RESTORE\n' | AGE_IDENTITY="$work/identity" RESTORE_INTERNAL_DATABASE=a144_rollback \
@@ -258,7 +294,7 @@ if ! (cd "$deploy" && printf 'RESTORE\n' | AGE_IDENTITY="$work/identity" RESTORE
 fi
 [[ $(db_sql a144_rollback -c "SELECT count(*) FROM information_schema.tables WHERE table_name='schema_migrations'") == 0 ]]
 [[ $(db_sql a144_rollback -c "SELECT count(*) FROM products WHERE title='${seed} alpha.1 item'") == 1 ]]
-[[ $(db_sql opsecmkt -c "SELECT (SELECT count(*) FROM schema_migrations)||':'||(SELECT count(*) FROM orders)||':'||(SELECT count(*) FROM products)") == "$upgraded_snapshot" ]]
+[[ $(database_hash opsecmkt) == "$upgraded_snapshot" ]]
 
 saved_env_files=("$deploy"/.env.pre-upgrade-*)
 [[ ${#saved_env_files[@]} == 1 ]] || { echo 'Expected one saved pre-upgrade .env' >&2; exit 1; }
@@ -302,5 +338,5 @@ orders = opener.open(base + '/orders', timeout=10).read().decode()
 assert os.environ['A144_TITLE'] in orders, 'alpha.1 did not serve its restored buyer order'
 PY
 [[ $(db_sql a144_rollback -c "SELECT count(*) FROM products WHERE title='${seed} alpha.1 item'") == 1 ]]
-[[ $(db_sql opsecmkt -c "SELECT (SELECT count(*) FROM schema_migrations)||':'||(SELECT count(*) FROM orders)||':'||(SELECT count(*) FROM products)") == "$upgraded_snapshot" ]]
+[[ $(database_hash opsecmkt) == "$upgraded_snapshot" ]]
 echo 'A-144 offline Tor deployment rehearsal passed; no Tor circuit was tested.'
