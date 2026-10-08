@@ -46,7 +46,7 @@ test('payments are visibly disabled without a provider', async ({ page }) => {
   const csrf = await removeBTC.locator('input[name="csrf"]').inputValue();
   const formNonce = await removeBTC.locator('input[name="form_nonce"]').inputValue();
   expect(formNonce).toMatch(/^[0-9a-f]{32}$/);
-  // Payout changes need the current password; with no provider the request is refused before that check.
+  // The current password and rendered nonce pass confirmation; with no provider the save then receives 409.
   const refused = await page.request.post('/account/payout', { form: {
     csrf, form_nonce: formNonce, currency: 'BTC', address: 'tb1qexampleaddress000000000000000000000',
     password: 'browser-payments-password-123',
