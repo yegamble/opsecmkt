@@ -110,7 +110,10 @@ test('vendor contact, unread notifications and demotion archive', async ({ brows
   await buyer.goto(orderURL);
   const listingRow = buyer.locator('.key-values > div', { has: buyer.getByText('Listing', { exact: true }) });
   await expect(listingRow).toContainText('Listing as it is now; it may have changed since purchase.');
-  await listingRow.getByRole('link', { name: title, exact: true }).click();
+  await expect(listingRow).toContainText('not recorded for this order');
+  const currentListing = listingRow.getByRole('link');
+  await expect(currentListing).toHaveAttribute('href', new URL(productURL).pathname + new URL(productURL).search);
+  await currentListing.click();
   await buyer.waitForURL(/\/product\?id=/);
   await expect(buyer.locator('.detail-copy .badge')).toHaveText('Archived');
   await expect(buyer.locator('main')).toContainText('This listing accepts no new orders.');

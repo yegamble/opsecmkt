@@ -870,6 +870,10 @@ func TestXMREscrowMigration084Upgrade(t *testing.T) {
 	}
 	before := dump()
 	runInTx(t, db, func(tx *sql.Tx) error { return applyMigrations(ctx, tx, list) })
+	var inventedSnapshots int
+	if err = db.QueryRow("SELECT count(*) FROM orders WHERE listing_title IS NOT NULL OR listing_description IS NOT NULL OR listing_kind IS NOT NULL").Scan(&inventedSnapshots); err != nil || inventedSnapshots != 0 {
+		t.Fatalf("historical listing terms were invented during upgrade: %d %v", inventedSnapshots, err)
+	}
 	if after := dump(); after != before {
 		t.Fatalf("migration 084 changed Phase 1 and 2 rows:\nbefore\n%s\nafter\n%s", before, after)
 	}

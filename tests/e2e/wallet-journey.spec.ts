@@ -238,7 +238,7 @@ test('funded dispute: encrypted moderator evidence, independent resolution and o
   await buyer.getByLabel('PGP encrypted message').fill(pgpFixture('message-to-recipient.asc'));
   await submitAndLoad(buyer, buyer.getByRole('button', { name: 'Send encrypted text ↗' }));
   await moderator.goto('/messages');
-  await expect(moderator.locator('article.message pre')).toHaveText(pgpFixture('message-to-recipient.asc').trim());
+  await expect(moderator.locator('article.message textarea[readonly]')).toHaveValue(pgpFixture('message-to-recipient.asc').trim());
   await expect(moderator.locator('.pgp-message-status')).toContainText('to recipient’s key');
   await admin.goto('/moderator');
   await expect(admin.getByRole('button', { name: 'Resolve dispute' })).toHaveCount(0);
