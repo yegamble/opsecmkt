@@ -71,11 +71,12 @@ func TestRecipientExtraKeyCount(t *testing.T) {
 		want int
 		ok   bool
 	}{
-		"recipient ids excluded and duplicate others deduplicated": {[]uint64{ids[0], ids[1], bob.PrimaryKey.KeyId, bob.PrimaryKey.KeyId, 99}, alice, 2, true},
-		"no additional recipients":                                 {ids, alice, 0, true},
-		"hidden recipient makes count incomplete":                  {[]uint64{ids[0], bob.PrimaryKey.KeyId, 0}, alice, 0, false},
-		"unknown recipient key makes count incomplete":             {[]uint64{bob.PrimaryKey.KeyId}, nil, 0, false},
-		"passphrase only has no count":                             {nil, alice, 0, false},
+		"recipient ids excluded and duplicate others deduplicated":     {[]uint64{ids[0], ids[1], bob.PrimaryKey.KeyId, bob.PrimaryKey.KeyId, 99}, alice, 2, true},
+		"no additional recipients":                                     {ids, alice, 0, true},
+		"visible additional key still counted beside hidden recipient": {[]uint64{ids[0], bob.PrimaryKey.KeyId, 0}, alice, 1, true},
+		"hidden-only message has no visible additional key":            {[]uint64{0}, alice, 0, true},
+		"unknown recipient key makes count incomplete":                 {[]uint64{bob.PrimaryKey.KeyId}, nil, 0, false},
+		"passphrase only has no count":                                 {nil, alice, 0, false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got, known := recipientExtraKeyCount(tc.ids, tc.key)

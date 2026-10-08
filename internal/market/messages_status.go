@@ -58,8 +58,7 @@ func messageStatus(body, recipientKey string) (encrypted bool, match string) {
 }
 
 // messageStatusDetails also counts distinct, visible public-key recipient IDs other than the recipient's saved
-// primary/subkey IDs. A hidden recipient or an unknown recipient key makes that count incomplete, so the page
-// does not claim a number in those cases.
+// primary/subkey IDs. Hidden-recipient packets are not counted, but do not hide visible additional recipients.
 func messageStatusDetails(body, recipientKey string) (encrypted bool, match string, extraKeys int, extraKeysKnown bool) {
 	ids, encrypted, err := inspectEncrypted(body)
 	if err != nil || !encrypted {
@@ -85,8 +84,8 @@ func recipientExtraKeyCount(ids []uint64, key *openpgp.Entity) (int, bool) {
 	}
 	others := make(map[uint64]struct{}, len(ids))
 	for _, id := range ids {
-		if id == 0 { // Hidden-recipient packets make the total unknowable.
-			return 0, false
+		if id == 0 { // Do not count a hidden recipient or let it suppress visible additional recipients.
+			continue
 		}
 		if _, recipient := own[id]; !recipient {
 			others[id] = struct{}{}

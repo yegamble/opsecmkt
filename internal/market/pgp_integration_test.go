@@ -352,7 +352,7 @@ func TestMessageEncryptionStatus(t *testing.T) {
 	if c := strings.Count(page, "badge green\">Encrypted"); c != 2 {
 		t.Errorf("green encrypted badges: %d", c)
 	}
-	if !strings.Contains(page, "+ 1 other key(s)") || !strings.Contains(page, "Other key holders can also read this message.") {
+	if !strings.Contains(page, "+ 1 other visible key(s)") || !strings.Contains(page, "hidden recipients may also exist") {
 		t.Fatal("additional recipients were not warned")
 	}
 	if !strings.Contains(page, `readonly aria-label="Encrypted message from msg_sender to msg_alice"`) {
@@ -361,7 +361,7 @@ func TestMessageEncryptionStatus(t *testing.T) {
 	// The extra-key count and match are historical send-time facts, not recomputed if the recipient changes keys.
 	e.check(e.do("POST", "/account", aliceSession, url.Values{"pgp": {bobPub}, "password": {testPassword}}), 303)
 	page = e.body("GET", "/messages", sender, nil, 200)
-	if !strings.Contains(page, "+ 1 other key(s)") {
+	if !strings.Contains(page, "+ 1 other visible key(s)") {
 		t.Fatal("recipient key change rewrote the send-time additional-key count")
 	}
 	// The recipient sees the same stored statuses.
