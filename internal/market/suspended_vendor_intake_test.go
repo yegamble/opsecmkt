@@ -2,11 +2,99 @@ package market
 
 import (
 	"context"
-	"net/url"
 	"strings"
 	"testing"
 	"time"
 )
+
+// The administrator owns the listing and suspends its buyer. confirmedTxWith first locks the administrator's
+// account row, then suspendAction locks the buyer's row. A simultaneous payment request must not wait on the
+// buyer and subsequently wait on the administrator, completing the cycle in the opposite order.
+func TestAdminSuspensionDoesNotDeadlockWithNewIntake(t *testing.T) {
+	w := newOrderWorld(t)
+	var adminID, admin string
+	for n := 0; n < 64; n++ {
+		adminID, admin = w.e.user("race_admin_"+randomToken()[:8], "admin")
+		if w.buyerID < adminID {
+			break
+		}
+	}
+	if w.buyerID >= adminID {
+		t.Fatal("could not arrange buyer-before-seller account order")
+	}
+	product := w.e.product(adminID, "digital")
+	order := w.e.order(w.buyerID, product, "BTC", stateDraft)
+	wallet := &stubProvider{currency: "BTC"}
+	w.e.A.payments["BTC"] = wallet
+	tx, err := w.e.DB.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec("SELECT 1 FROM users WHERE id=$1 FOR NO KEY UPDATE", w.buyerID); err != nil {
+		t.Fatal(err)
+	}
+	buyerHandle := agStr(w.e, "SELECT handle FROM users WHERE id=$1", w.buyerID)
+	intake := make(chan *intakeResponse, 1)
+	go func() {
+		r := w.e.do("POST", "/orders/pay", w.buyer, form("order_id", order))
+		intake <- &intakeResponse{r.Code, r.Body.String()}
+	}()
+	// Give intake the first attempt on the buyer row; with the old waiting lock, it queues here.
+	time.Sleep(100 * time.Millisecond)
+	suspension := make(chan *intakeResponse, 1)
+	go func() {
+		r := w.e.do("POST", "/admin/suspend", admin, suspendForm("suspend", buyerHandle))
+		suspension <- &intakeResponse{r.Code, r.Body.String()}
+	}()
+	actorLocked := false
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		var id string
+		err := w.e.DB.QueryRow("SELECT id FROM users WHERE id=$1 FOR NO KEY UPDATE NOWAIT", adminID).Scan(&id)
+		if pgCode(err) == "55P03" {
+			actorLocked = true
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	var early *intakeResponse
+	select {
+	case early = <-intake:
+	case <-time.After(200 * time.Millisecond):
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if !actorLocked {
+		t.Fatal("the real admin suspension never held its actor account row")
+	}
+	if early == nil {
+		select {
+		case early = <-intake:
+		case <-time.After(5 * time.Second):
+			t.Fatal("payment request remained stuck after releasing buyer row")
+		}
+		t.Fatalf("payment waited on buyer while the admin action held its actor row: %d %s", early.code, early.body)
+	}
+	if early.code != 503 || !strings.Contains(early.body, errBusyMsg) {
+		t.Fatalf("contended intake should return retryable busy: %d %s", early.code, early.body)
+	}
+	select {
+	case got := <-suspension:
+		if got.code != 303 {
+			t.Fatalf("administrator could not suspend buyer: %d %s", got.code, got.body)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("administrator was blocked by payment request")
+	}
+	if w.state(order) != stateDraft || w.stock(product) != 5 || len(wallet.created) != 0 || w.count("SELECT count(*) FROM users WHERE id=$1 AND suspended_at IS NOT NULL", w.buyerID) != 1 {
+		t.Fatal("race issued an address, held stock, or failed to suspend the buyer")
+	}
+}
 
 func TestSuspendedVendorRefusesNewDraftAndPooledPayment(t *testing.T) {
 	w := newOrderWorld(t)
@@ -111,7 +199,7 @@ func TestSuspendedVendorRefusesBothEscrowCheckouts(t *testing.T) {
 	})
 }
 
-func TestSuspensionCommitsBeforePooledAddressRequest(t *testing.T) {
+func TestSuspensionInProgressReturnsBusyBeforePooledAddressRequest(t *testing.T) {
 	w := newOrderWorld(t)
 	product := w.e.product(w.vendorID, "digital")
 	order := w.e.order(w.buyerID, product, "BTC", stateDraft)
@@ -127,25 +215,24 @@ func TestSuspensionCommitsBeforePooledAddressRequest(t *testing.T) {
 	}
 	result := make(chan *intakeResponse, 1)
 	go func() {
-		r := w.e.do("POST", "/orders/pay", w.buyer, url.Values{"order_id": {order}})
+		r := w.e.do("POST", "/orders/pay", w.buyer, form("order_id", order))
 		result <- &intakeResponse{r.Code, r.Body.String()}
 	}()
 	select {
 	case r := <-result:
+		if r.code != 503 || !strings.Contains(r.body, errBusyMsg) {
+			t.Fatalf("payment during suspension: %d %s", r.code, r.body)
+		}
+	case <-time.After(2 * time.Second):
 		tx.Rollback()
-		t.Fatalf("payment passed suspension's uncommitted account lock: %d %s", r.code, r.body)
-	case <-time.After(150 * time.Millisecond):
+		t.Fatal("payment waited on suspension's uncommitted account lock")
 	}
 	if err = tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case r := <-result:
-		if r.code != 409 || !strings.Contains(r.body, "Unavailable. "+sellerSuspended) {
-			t.Fatalf("payment after suspension: %d %s", r.code, r.body)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("payment did not resume after suspension committed")
+	r := w.e.do("POST", "/orders/pay", w.buyer, form("order_id", order))
+	if r.Code != 409 || !strings.Contains(r.Body.String(), "Unavailable. "+sellerSuspended) {
+		t.Fatalf("payment after suspension: %d %s", r.Code, r.Body.String())
 	}
 	if w.state(order) != stateDraft || len(wallet.created) != 0 || w.stock(product) != 5 {
 		t.Fatal("suspension race issued a wallet address or held stock")
