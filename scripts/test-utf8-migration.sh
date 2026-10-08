@@ -69,6 +69,8 @@ cleanup() {
 trap cleanup EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
+bash scripts/test-postgres-client-wrappers.sh
+
 sql() { local database=$1; shift; docker exec -i "$container" psql -X -q -A -t -v ON_ERROR_STOP=1 -U utf8 -d "$database" "$@"; }
 free_port() { python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'; }
 hex() { python3 -c 'import sys; print(sys.argv[1].encode("utf-8", "surrogateescape").hex())' "$1"; }
@@ -95,12 +97,7 @@ url() { printf 'postgres://utf8:utf8-test-only@127.0.0.1:%s/%s?sslmode=disable' 
 # `-f scripts/check-utf8.sql` reads it as printed.
 docker exec "$container" mkdir -p /rehearsal/scripts
 docker cp scripts/check-utf8.sql "$container:/rehearsal/scripts/check-utf8.sql"
-mkdir "$work/bin"
-for tool in pg_dump pg_restore psql; do
-  printf '#!/usr/bin/env bash\nexec docker exec -i -w /rehearsal -e PGUSER -e PGPASSWORD -e PGDATABASE -e PGSSLMODE -e TZ %q %q -h 127.0.0.1 -p 5432 "$@"\n' \
-    "$container" "$tool" > "$work/bin/$tool"
-  chmod 700 "$work/bin/$tool"
-done
+bash scripts/create-postgres-client-wrappers.sh "$container" "$work/bin"
 age-keygen -o "$work/identity" 2> /dev/null
 recipient=$(age-keygen -y "$work/identity")
 
