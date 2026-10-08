@@ -247,7 +247,8 @@ func (a *App) pollCurrency(ctx context.Context, p PaymentProvider) error {
 	// payout pending (sendPayouts sends only payouts of orders read and settled in this pass) or held are watched
 	// too: the watcher's own hold resumes once the deposit re-confirms, and the ledger of a hold an administrator
 	// must release (a watcher hold converted by a suspension or a restore from backup) stays current, so the
-	// release is not refused on stale confirmations. Other older addresses of closed orders are not polled.
+	// release is not refused on stale confirmations. So are closed orders' addresses with a recorded deposit still
+	// pending (A-486, pooledWatchSQL). Other older addresses of closed orders are not polled.
 	//
 	// Cost: the watch set is every open order plus every order whose address was issued in the last 30 days, so
 	// about 30 days of orders (3,000 addresses at 100 orders a day). recordIncoming reads them in chunks of 200.
