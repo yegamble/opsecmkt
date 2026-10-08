@@ -197,6 +197,58 @@ test('seeded catalog text remains readable and reflows at doubled text size', as
   }
 });
 
+test('named text and surface token pairs meet the 7:1 contrast target', async ({ page }) => {
+  await page.goto('/vendor-dashboard');
+  const pairs = await page.evaluate(() => {
+    const root = getComputedStyle(document.documentElement);
+    const tokenPairs = [
+      ['text', '--text', '--bg'], ['text', '--text', '--panel'], ['text', '--text', '--surface'],
+      ['muted', '--muted', '--bg'], ['muted', '--muted', '--panel'], ['muted', '--muted', '--surface'],
+      ['amber', '--amber', '--bg'], ['amber', '--amber', '--panel'], ['amber', '--amber', '--surface'],
+      ['green', '--green', '--bg'], ['green', '--green', '--panel'], ['green', '--green', '--surface'],
+    ] as const;
+    const computedRGB = (token: string) => {
+      const probe = document.createElement('span');
+      probe.style.color = root.getPropertyValue(token).trim();
+      document.body.append(probe);
+      const channels = getComputedStyle(probe).color.match(/[\d.]+/g)?.map(Number);
+      probe.remove();
+      if (!channels || channels.length < 3) throw new Error(`Cannot resolve color token ${token}`);
+      return channels.slice(0, 3);
+    };
+    const luminance = (channels: number[]) => channels.map(channel => {
+      const value = channel / 255;
+      return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+    }).reduce((sum, value, index) => sum + value * [0.2126, 0.7152, 0.0722][index], 0);
+    return tokenPairs.map(([name, foreground, background]) => {
+      const fg = luminance(computedRGB(foreground));
+      const bg = luminance(computedRGB(background));
+      return { name, foreground, background, ratio: (Math.max(fg, bg) + 0.05) / (Math.min(fg, bg) + 0.05) };
+    });
+  });
+  for (const pair of pairs) {
+    expect(pair.ratio, `${pair.name} text (${pair.foreground}) on ${pair.background}`).toBeGreaterThanOrEqual(7);
+  }
+
+  // Recorded exception: archived-card illustration art is dimmed with opacity:.45 and uses a gradient
+  // behind its label. It is intentionally outside this token-pair table; the withdrawn full-page node walk
+  // is not implied by this focused evidence.
+  const archivedArt = page.locator('.product-card.is-archived .product-art');
+  await expect(archivedArt).toHaveCount(1);
+  expect(await archivedArt.evaluate(element => getComputedStyle(element).opacity)).toBe('0.45');
+});
+
+test('reduced-motion emulation disables transitions and smooth scrolling', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await page.goto('/');
+  const card = page.locator('.product-card').first();
+  await expect(card).toHaveCSS('transition-property', 'border-color');
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  expect(await page.evaluate(() => matchMedia('(prefers-reduced-motion: reduce)').matches)).toBe(true);
+  await expect(card).toHaveCSS('transition-property', 'none');
+  await expect(page.locator('html')).toHaveCSS('scroll-behavior', 'auto');
+});
+
 // Sample effective foreground/background pairs, not a claim of a complete accessibility audit.
 async function contrast(element: Locator, property = 'color'): Promise<number> {
   return element.evaluate((node, prop) => {
