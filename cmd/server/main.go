@@ -58,6 +58,11 @@ func main() {
 	setRoleFlag := flag.String("set-role", "", "host-only: -set-role HANDLE ROLE changes that account's role to buyer, vendor, moderator or admin (the only way to add or remove an administrator; removing one ends its sessions) and exits (starts no server)")
 	resetFactors := flag.String("reset-admin-factors", "", "host-only break-glass: turn off this administrator's TOTP, recovery codes and PGP sign-in, end its sessions and exit (reads no stdin; starts no server)")
 	flag.Parse()
+	if (*healthcheckFlag || *statusFlag) && (flagGiven("reset-admin-factors") || flagGiven("set-role") ||
+		flagGiven("bootstrap-admin") || flagGiven("site-name") || flagGiven("reset-admin-password")) {
+		fmt.Fprintln(os.Stderr, "-status and -healthcheck cannot be combined with host commands")
+		os.Exit(2)
+	}
 	if *healthcheckFlag {
 		if err := healthcheck(os.Getenv("ADDR"), 4*time.Second); err != nil {
 			fmt.Fprintln(os.Stderr, "healthcheck:", err)
