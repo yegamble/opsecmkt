@@ -1101,6 +1101,16 @@ func TestCreditedDepositRegressionAnnouncedPerEpisode(t *testing.T) {
 			mustContain(t, p.page("/order?id="+p.order, modSess), "Moderator review (read-only)")
 			mustContain(t, p.page("/order?id="+p.order, p.vendorSess), "A credited deposit is conflicted or missing; unsent payouts wait until it confirms again; market staff have been notified")
 			desk("dropped", "Credited deposit conflicted or missing")
+			if closed {
+				admin := html.UnescapeString(p.page("/admin", p.adminSess))
+				mustContain(t, admin, "A conflicted or missing deposit that never recovers needs wallet reconciliation and manual review")
+				mustNotContain(t, admin, "and releases it by itself once the deposit confirms again")
+				code, body := p.payoutAction(p.adminSess, p.payoutID(p.order), "release", "", testPassword)
+				if code != 409 || !strings.Contains(body, "only after every credited deposit reaches the confirmation threshold again") {
+					t.Fatalf("release while the deposit is missing: %d %s", code, body)
+				}
+				held("missing release refused")
+			}
 
 			// Still episode 1: the transaction is back at depth 0 (reorged into the mempool).
 			p.fake.Deposit(p.addr, tx, 0, 100000, 0)
@@ -1121,7 +1131,7 @@ func TestCreditedDepositRegressionAnnouncedPerEpisode(t *testing.T) {
 				mustContain(t, rowHTML, tx+":0", "0 of 3 confirmations", p.addr, `href="/order?id=`+p.order+`"`)
 				mustNotContain(t, rowHTML, `value="release"`, "Release held payout")
 				code, body := p.payoutAction(p.adminSess, id, "release", "", testPassword)
-				if code != 409 || !strings.Contains(body, "releases it by itself once the deposit confirms again") || strings.Contains(body, "Review it with a moderator") {
+				if code != 409 || !strings.Contains(body, "only after every credited deposit reaches the confirmation threshold again") || strings.Contains(body, "Review it with a moderator") {
 					t.Fatalf("release while the deposit is below the threshold: %d %s", code, body)
 				}
 				held("release refused")

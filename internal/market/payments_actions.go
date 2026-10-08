@@ -677,6 +677,9 @@ func paymentsAdminLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 		if err = deps.Err(); err != nil {
 			return err
 		}
+		// Keep heldReason as the stored watcher-recognition key (including historical rows), but display
+		// conditional recovery guidance instead of its old promise that every conflicted deposit returns.
+		r.Error = "A credited deposit is conflicted or below the confirmation threshold; the payment watcher can resume this payout only after every credited deposit reaches the confirmation threshold again. A conflicted or missing deposit that never recovers needs wallet reconciliation and manual review."
 	}
 	return nil
 }

@@ -113,6 +113,8 @@ func TestStatusAndHealthcheckRefuseHostCommands(t *testing.T) {
 		{"-healthcheck", "-reset-admin-factors", "alice"},
 		{"-status", "-bootstrap-admin", "alice"},
 		{"-healthcheck", "-reset-admin-password", "alice"},
+		{"-status", "-site-name", "Example"},
+		{"-healthcheck", "-set-role="},
 	} {
 		t.Run(strings.Join(args, "_"), func(t *testing.T) {
 			stdout, stderr, code := runServer(t, nil, args...)

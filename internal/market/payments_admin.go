@@ -174,7 +174,7 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 		}
 		if unsettled && state == "held" {
 			if payoutErr == heldReason {
-				return actionResult{}, fail(409, "A credited deposit for this order is still conflicted or below the confirmation threshold, so this payout stays held; the payment watcher releases it by itself once the deposit confirms again. Nothing was changed.")
+				return actionResult{}, fail(409, "A credited deposit for this order is still conflicted or below the confirmation threshold, so this payout stays held; the payment watcher can resume it only after every credited deposit reaches the confirmation threshold again. A conflicted or missing deposit that never recovers needs wallet reconciliation and manual review. Nothing was changed.")
 			}
 			// A hold only an administrator lifts (restore, suspension): the watcher keeps its ledger current.
 			return actionResult{}, fail(409, "A credited deposit for this order is still conflicted or below the confirmation threshold, so this payout stays held. Release it after the deposit confirms again (the order page shows its confirmations). Nothing was changed.")

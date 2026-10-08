@@ -247,7 +247,7 @@ func TestPhysicalPayRefusedWithoutUsableVendorKey(t *testing.T) {
 }
 
 // TestPaidOrderVendorKeyStopsBeingUsable (A-83): once a physical order is paid, a vendor key that expires (or is
-// removed) replaces the send-address prompt with a "no usable key" state; the vendor's page is unchanged.
+// removed) replaces the buyer's send-address prompt and warns the vendor to save a usable key.
 func TestPaidOrderVendorKeyStopsBeingUsable(t *testing.T) {
 	p := newPayEnv(t)
 	order, _ := p.newOrder(statePaid)
@@ -267,7 +267,8 @@ func TestPaidOrderVendorKeyStopsBeingUsable(t *testing.T) {
 			t.Fatalf("%s: the order left Paid", variant)
 		}
 	}
-	p.setKey(p.vendor.ID, testPGPKey(t, p.vendor.Handle)[1])
+	_, usableArmor := testPGPKey(t, p.vendor.Handle)
+	p.setKey(p.vendor.ID, usableArmor)
 	vendorPage := html.UnescapeString(p.body("GET", "/order?id="+order, p.vendorSess, nil, 200))
 	mustContain(t, vendorPage, "The buyer sends their shipping address to you as an encrypted message.")
 	mustNotContain(t, vendorPage, "Buyers cannot encrypt their shipping address to your saved PGP key.")

@@ -455,7 +455,7 @@ func TestMoneroLockedTransfersAreNotCredited(t *testing.T) {
 	}
 	for _, state := range []string{statePaid, stateCancelled} {
 		closed := newPayEnv(t)
-		order, addr := closed.newOrder(state)
+		_, addr := closed.newOrder(state)
 		closed.fake.mu.Lock()
 		closed.fake.outputs = append(closed.fake.outputs, Incoming{Address: addr, TxID: "tx-locked-no-topup", Amount: 100000, Confirmations: 5, Locked: true})
 		closed.fake.mu.Unlock()
