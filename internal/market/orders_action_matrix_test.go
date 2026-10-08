@@ -277,6 +277,18 @@ func TestOrderGetStaffAccessAcrossStatesAndFlags(t *testing.T) {
 				tx.Rollback()
 				t.Fatal(err)
 			}
+			if state == stateDisputed {
+				if _, err = tx.Exec(`INSERT INTO disputes(id,order_id,reason) VALUES($1,$2,'The item was not as described; staff review requested.')`, randomToken(), orderID); err != nil {
+					tx.Rollback()
+					t.Fatal(err)
+				}
+			} else if state == stateResolved {
+				if _, err = tx.Exec(`INSERT INTO disputes(id,order_id,reason,status,outcome,resolution)
+					VALUES($1,$2,'The item was not as described; staff review requested.','Resolved — refund to buyer','refund','The evidence supports refunding the buyer.')`, randomToken(), orderID); err != nil {
+					tx.Rollback()
+					t.Fatal(err)
+				}
+			}
 			if flagged {
 				if _, err = tx.Exec(`INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations,flagged)
 					VALUES($1,'BTC',$2,0,'a167-flag-address',5000,3,true)`, orderID, txidOf("a167 flagged "+orderID)); err != nil {
@@ -297,6 +309,15 @@ func TestOrderGetStaffAccessAcrossStatesAndFlags(t *testing.T) {
 				response := e.do("GET", "/order?id="+orderID, actor.session, nil)
 				if response.Code != want {
 					t.Errorf("GET order as %s: state=%s flagged=%v got %d want %d", actor.name, state, flagged, response.Code, want)
+				}
+			}
+			if !flagged && (state == stateDisputed || state == stateResolved) {
+				// A state label alone is not a staff-read reason: A-166 requires the dispute record.
+				e.mustExec("DELETE FROM disputes WHERE order_id=$1", orderID)
+				for _, actor := range actors {
+					if response := e.do("GET", "/order?id="+orderID, actor.session, nil); response.Code != 404 {
+						t.Errorf("rowless order as %s: state=%s got %d want 404", actor.name, state, response.Code)
+					}
 				}
 			}
 		}

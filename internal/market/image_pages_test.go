@@ -289,6 +289,8 @@ func TestStaffAvatarVisibleToOrderPartiesOnOrderPage(t *testing.T) {
 	for _, ev := range [][4]string{{"paid", "shipped", vendorID, ""}, {"shipped", "disputed", buyerID, ""}, {"disputed", "resolved", modID, "Resolved — refund to buyer"}} {
 		e.mustExec("INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$3,$4,$5)", order, ev[0], ev[1], ev[2], ev[3])
 	}
+	e.mustExec(`INSERT INTO disputes(id,order_id,reason,status,outcome,resolution)
+		VALUES($1,$2,'The parcel did not arrive and the buyer requests a refund.','Resolved — refund to buyer','refund','The evidence supports refunding the buyer.')`, randomToken(), order)
 	img := `<img class="decision-avatar" src="/desk/img/` + avatar.id + `-t" alt="" width="64" height="64">`
 	for name, s := range map[string]string{"buyer": buyer, "vendor": vendor, "moderator": mod, "another moderator": otherMod, "administrator": admin} {
 		body := e.body("GET", "/order?id="+order, s, nil, 200)

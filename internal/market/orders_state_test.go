@@ -126,7 +126,8 @@ func TestTransitionRulesAndSideEffects(t *testing.T) {
 	var notes int
 	f.e.DB.QueryRow("SELECT o.state,e.actor_id,e.from_state FROM orders o JOIN order_events e ON e.order_id=o.id WHERE o.id=$1", f.order).Scan(&state, &actor, &from)
 	f.e.DB.QueryRow("SELECT count(*) FROM notifications WHERE user_id=$1", f.vendor.ID).Scan(&notes)
-	if state != stateCancelled || actor != f.buyer.ID || from != stateDraft || notes != 1 {
+	// A cancelled unfunded draft stays in the buyer history without notifying the vendor (A-165).
+	if state != stateCancelled || actor != f.buyer.ID || from != stateDraft || notes != 0 {
 		t.Fatalf("state=%s actor=%s from=%s vendor notifications=%d", state, actor, from, notes)
 	}
 	if err := f.try(stateCancelled, stateDraft, f.buyer); !errors.Is(err, errForbidden) {

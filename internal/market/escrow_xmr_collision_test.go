@@ -268,6 +268,8 @@ func TestXMREscrowCollisionStaffAlert(t *testing.T) {
 		t.Fatalf("after the disposition and another pass: %d notes, %d notices", notes, notices)
 	}
 	agExec(x.testEnv, "UPDATE orders SET state='disputed' WHERE id=$1", order)
+	// The collision alert is disposed; staff may now read this order only because a dispute record exists.
+	agExec(x.testEnv, "INSERT INTO disputes(id,order_id,reason) VALUES($1,$2,'The parties referred this order for staff review.')", randomToken(), order)
 	sec := refusedSection(x.page("/order?id="+order, admin))
 	mustContain(t, sec, tx, "Recorded", reason)
 	mustNotContain(t, sec, `method="post"`)
