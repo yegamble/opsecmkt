@@ -55,7 +55,7 @@ func TestLimiterFloodDoesNotLockOutUsers(t *testing.T) {
 	}
 
 	e := newTestApp(t)
-	_, sess := e.user("victim_user", "buyer")
+	e.user("victim_user", "buyer")
 	anon := randomToken()
 	for i := range 4100 {
 		pc := &http.Cookie{Name: "pending", Value: randomToken()}
