@@ -358,6 +358,9 @@ func (a *App) load(r *http.Request, d *PageData) error {
 			if err != nil {
 				return err
 			}
+			if err = hidePooledVendorNotifications(ctx, a.db, d.User.ID, d.Notifications); err != nil {
+				return err
+			}
 		}
 		if d.Page == "admin" {
 			rows, err = a.db.QueryContext(ctx, "SELECT id,handle,role,pgp,xmpp FROM users ORDER BY created DESC LIMIT 100")

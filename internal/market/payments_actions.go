@@ -158,6 +158,7 @@ func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 		return nil
 	}
 	o := d.Order
+	privatePooledDeposit := !o.Escrow && d.User != nil && d.User.ID == o.VendorID
 	p := a.provider(o.Currency)
 	pv := &PaymentView{Currency: o.Currency, Required: o.Amount, Testnet: !a.live, Available: p != nil}
 	if p == nil {
@@ -229,8 +230,10 @@ func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 		return nil
 	}
 	pv.Open = o.State == stateAwaitingPayment
-	if pv.Open {
+	if pv.Open && !privatePooledDeposit {
 		pv.Address = addr
+	}
+	if pv.Open {
 		// Truncated to the minute, so the stated time is never later than the watcher's (A-123).
 		pv.CancelAfter = windowFrom.Add(expiryWindow()).UTC().Truncate(time.Minute).Format("2006-01-02 15:04 UTC")
 		pv.RefundFloor = amount(payoutFloor(o.Currency, "refund"), dec)
@@ -263,6 +266,9 @@ func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 		if err = rows.Scan(&dep.TxID, &dep.Index, &amt, &dep.Confirmations, &credited, &locked, &notice, &flagged, &floor,
 			&disposition, &refundTxid, &refunded, &disposed); err != nil {
 			return err
+		}
+		if privatePooledDeposit {
+			dep.TxID = ""
 		}
 		reviewed := ""
 		switch disposition {
@@ -323,7 +329,7 @@ func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 	}
 	// The payment request and its QR code ask for exactly what is still due (deposits seen, confirmed or not,
 	// are already subtracted), and only while something is.
-	if pv.Open && pv.NeedsTopUp {
+	if pv.Open && pv.NeedsTopUp && !privatePooledDeposit {
 		pv.PaymentURI = paymentURI(o.Currency, pv.Address, remaining)
 		if pv.QR, err = qrSVG(pv.PaymentURI, "QR code: pay "+pv.Remaining+" "+o.Currency+" to the deposit address"); err != nil {
 			log.Printf("payments: payment QR code not rendered: %v", err)

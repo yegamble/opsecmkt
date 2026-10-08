@@ -352,6 +352,14 @@ func loadOrderDetail(ctx context.Context, a *App, r *http.Request, d *PageData) 
 		if err = hidePayoutTxids(ctx, a, o.ID, u.ID, texts...); err != nil {
 			return err
 		}
+		if d.OrderViewer == roleVendor && !o.Escrow {
+			if len(d.Disputes) == 1 {
+				texts = append(texts, &d.Disputes[0].Reason, &d.Disputes[0].Reply)
+			}
+			if err = hidePooledOrderIdentifiers(ctx, a.db, o.ID, texts...); err != nil {
+				return err
+			}
+		}
 	}
 	d.CanReview = u.ID == o.BuyerID && o.State == stateCompleted && len(d.Reviews) == 0
 	if d.OrderViewer != roleModerator { // reviewers resolve on the moderation desk; the order page is read-only for them
@@ -723,6 +731,12 @@ func loadDisputes(ctx context.Context, a *App, _ *http.Request, d *PageData) err
 		o := d.DisputeOrders[d.Disputes[i].OrderID]
 		if d.Disputes[i].Resolution != "" && (d.User.ID == o.BuyerID || d.User.ID == o.VendorID) {
 			if err = hidePayoutTxids(ctx, a, o.ID, d.User.ID, &d.Disputes[i].Resolution); err != nil {
+				return err
+			}
+		}
+		if d.User.ID == o.VendorID && !o.Escrow {
+			v := &d.Disputes[i]
+			if err = hidePooledOrderIdentifiers(ctx, a.db, o.ID, &v.Reason, &v.Reply, &v.Resolution); err != nil {
 				return err
 			}
 		}
