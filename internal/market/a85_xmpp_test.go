@@ -9,7 +9,7 @@ import (
 
 func TestA85RemovedXMPPProfileAndUpgradeClearsStoredValues(t *testing.T) {
 	e := newTestApp(t)
-	uid, session := e.user("xmpp_removed", "buyer")
+	uid, session := e.user("a85_buyer", "buyer")
 	if _, err := e.DB.Exec("UPDATE users SET xmpp=$1 WHERE id=$2", "legacy@example.test", uid); err != nil {
 		t.Fatal(err)
 	}
