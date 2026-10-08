@@ -2,13 +2,18 @@ package market
 
 import (
 	"context"
+	"errors"
 	"net/http"
+	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 )
 
 // P4 Inventory: the listing-edit page and vendor-dashboard inventory counts. Public product queries in
 // load.go exclude archived listings; the vendor dashboard lists the owner's archived listings with a badge.
+
+const inventoryPageSize = 50
 
 func init() {
 	registerPage("listing-edit", pageSpec{Protected: true, Roles: []string{"vendor", "admin"}})
@@ -41,7 +46,7 @@ func (a *App) autoDeliveryCurrencies() string {
 }
 
 func inventoryCounts(products []Product, auto string) *InventoryView {
-	v := &InventoryView{AutoDelivery: auto}
+	v := &InventoryView{AutoDelivery: auto, Filter: "all"}
 	for _, p := range products {
 		if p.Archived {
 			v.Archived++
@@ -49,11 +54,64 @@ func inventoryCounts(products []Product, auto string) *InventoryView {
 			v.Active++
 		}
 	}
+	v.Total = len(products)
 	return v
 }
 
+func inventoryFilter(raw string) string {
+	switch raw {
+	case "active", "archived":
+		return raw
+	default:
+		return "all"
+	}
+}
+
+func inventoryPaging(filter, currency string, total int, rawPage string) InventoryPaging {
+	p := InventoryPaging{Page: 1, Total: total, Pages: max(1, (total+inventoryPageSize-1)/inventoryPageSize)}
+	if n, err := strconv.Atoi(rawPage); err == nil && n > 1 {
+		p.Page = min(n, p.Pages)
+	} else if errors.Is(err, strconv.ErrRange) && !strings.HasPrefix(rawPage, "-") {
+		p.Page = p.Pages
+	}
+	if total > 0 {
+		p.First, p.Last = p.Offset()+1, min(p.Offset()+inventoryPageSize, total)
+	}
+	link := func(page int) string {
+		q := url.Values{"inventory": {filter}}
+		if currency == "XMR" {
+			q.Set("currency", "XMR")
+		}
+		if page > 1 {
+			q.Set("page", strconv.Itoa(page))
+		}
+		return "/vendor-dashboard?" + q.Encode()
+	}
+	if p.Page > 1 {
+		p.PrevURL = link(p.Page - 1)
+	}
+	if p.Page < p.Pages {
+		p.NextURL = link(p.Page + 1)
+	}
+	return p
+}
+
+func inventoryFilterURL(filter, currency string) string {
+	q := url.Values{"inventory": {filter}}
+	if currency == "XMR" {
+		q.Set("currency", "XMR")
+	}
+	return "/vendor-dashboard?" + q.Encode()
+}
+
 func loadInventory(_ context.Context, a *App, _ *http.Request, d *PageData) error {
-	d.Inventory = inventoryCounts(d.Products, a.autoDeliveryCurrencies())
+	if d.Inventory == nil {
+		d.Inventory = inventoryCounts(d.Products, "")
+	}
+	d.Inventory.AutoDelivery = a.autoDeliveryCurrencies()
+	d.Inventory.AllURL = inventoryFilterURL("all", d.Currency)
+	d.Inventory.ActiveURL = inventoryFilterURL("active", d.Currency)
+	d.Inventory.ArchivedURL = inventoryFilterURL("archived", d.Currency)
 	return nil
 }
 

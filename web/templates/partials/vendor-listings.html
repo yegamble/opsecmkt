@@ -54,4 +54,11 @@
 </form>
 </details>
 <h2 class="section-title">Your listings</h2>
-<p class="help">Archived listings stay here, hidden from the marketplace and closed to new orders. Existing orders are not changed.</p>{{template "products" .}}{{if not .Products}}<p class="muted">You have not published any listings yet.</p>{{end}}{{end}}
+<p class="help">Archived listings stay here, hidden from the marketplace and closed to new orders. Existing orders are not changed.</p>
+{{if .Inventory}}<nav class="pagination inventory-filters" aria-label="Filter your listings">
+<a href="{{.Inventory.AllURL}}"{{if eq .Inventory.Filter "all"}} aria-current="page"{{end}}>All ({{.Inventory.Total}})</a>
+<a href="{{.Inventory.ActiveURL}}"{{if eq .Inventory.Filter "active"}} aria-current="page"{{end}}>Active ({{.Inventory.Active}})</a>
+<a href="{{.Inventory.ArchivedURL}}"{{if eq .Inventory.Filter "archived"}} aria-current="page"{{end}}>Archived ({{.Inventory.Archived}})</a>
+</nav>{{end}}
+{{with .Inventory.Paging}}{{if gt .Pages 1}}<p class="help">Showing {{.First}}–{{.Last}} of {{.Total}} listings.</p><nav class="pagination" aria-label="Your listing pages">{{if .PrevURL}}<a href="{{.PrevURL}}" rel="prev" aria-label="Previous listing page, page {{.PrevPage}} of {{.Pages}}">← Previous</a>{{end}}<span class="current" aria-current="page">Page {{.Page}} of {{.Pages}}</span>{{if .NextURL}}<a href="{{.NextURL}}" rel="next" aria-label="Next listing page, page {{.NextPage}} of {{.Pages}}">Next →</a>{{end}}</nav>{{end}}{{end}}
+{{template "products" .}}{{if not .Products}}<p class="muted">{{if eq .Inventory.Filter "active"}}You have no active listings.{{else if eq .Inventory.Filter "archived"}}You have no archived listings.{{else}}You have not published any listings yet.{{end}}</p>{{end}}{{end}}

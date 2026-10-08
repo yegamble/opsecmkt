@@ -265,8 +265,17 @@ func (a *App) load(r *http.Request, d *PageData) error {
 			d.Paging = &paging
 			limit = " LIMIT " + strconv.Itoa(catalogPageSize) + " OFFSET " + strconv.Itoa(paging.Offset())
 		case "vendor-dashboard":
-			query += " AND p.vendor_id=$1"
-			args = append(args, d.User.ID)
+			filter := inventoryFilter(r.URL.Query().Get("inventory"))
+			var total, active, archived int
+			if err = a.db.QueryRowContext(ctx, `SELECT count(*) FILTER (WHERE $2='all' OR archived=($2='archived')),
+				count(*) FILTER (WHERE NOT archived),count(*) FILTER (WHERE archived) FROM products WHERE vendor_id=$1`, d.User.ID, filter).Scan(&total, &active, &archived); err != nil {
+				return err
+			}
+			paging := inventoryPaging(filter, d.Currency, total, r.URL.Query().Get("page"))
+			d.Inventory = &InventoryView{Active: active, Archived: archived, Total: active + archived, Filter: filter, Paging: &paging}
+			query += " AND p.vendor_id=$1 AND ($2='all' OR p.archived=($2='archived'))"
+			args = append(args, d.User.ID, filter, inventoryPageSize, paging.Offset())
+			limit = " LIMIT $3 OFFSET $4"
 		case "catalog":
 			// The term is matched literally (likePattern); the count and the page share one filter. E'\\' is one
 			// backslash whatever standard_conforming_strings an external database sets.

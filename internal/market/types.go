@@ -123,7 +123,7 @@ type PageData struct {
 	Settings                                                                  map[string]string
 	Preview                                                                   bool
 	AuditHandle                                                               string // /admin audit trail's exact-handle filter.
-	// Paging: catalog and vendor page, the page shown of the matching listings (A-181, A-189, load.go).
+	// Paging: catalog and public vendor page of the matching listings (A-181, A-189, load.go).
 	Paging *CatalogPaging
 	// ActivityPaging: signed-in user's orders, messages or notifications (A-16, load.go).
 	ActivityPaging *ActivityPaging
@@ -443,9 +443,21 @@ type ListingView struct {
 	DispatchDays        int    // a physical listing's dispatch window in days (P2-R5); the default shown when none is set
 }
 type InventoryView struct {
-	Active, Archived int
-	AutoDelivery     string
+	Active, Archived, Total        int
+	AutoDelivery                   string
+	Filter                         string
+	AllURL, ActiveURL, ArchivedURL string
+	Paging                         *InventoryPaging
 }
+
+type InventoryPaging struct {
+	Page, Pages, Total, First, Last int
+	PrevURL, NextURL                string
+}
+
+func (p InventoryPaging) Offset() int   { return (p.Page - 1) * inventoryPageSize }
+func (p InventoryPaging) PrevPage() int { return p.Page - 1 }
+func (p InventoryPaging) NextPage() int { return p.Page + 1 }
 
 // P5 Payments
 type PaymentView struct {
