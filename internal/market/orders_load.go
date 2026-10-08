@@ -150,6 +150,14 @@ func escrowStaffAlert(order string) string {
 		" OR EXISTS(SELECT 1 FROM xmr_settlements xs WHERE xs.order_id=" + order + " AND xs.state='requested' AND xs.created<now()-interval '24 hours'))"
 }
 
+// escrowStaffAlertCandidates bounds desk and badge scans to orders with a possible alert source; the detailed helper
+// decides whether any candidate is actually alerting now.
+func escrowStaffAlertCandidates(order string) string {
+	return "(" + order + " IN (SELECT order_id FROM settlements WHERE state IN ('broadcast','failed')) OR " +
+		order + " IN (SELECT order_id FROM xmr_escrow_collisions WHERE disposed_at IS NULL) OR " +
+		order + " IN (SELECT order_id FROM xmr_settlements WHERE state='requested' AND created<now()-interval '24 hours'))"
+}
+
 // xmrCollisionOpen is SQL that is true while the order whose id is the SQL expression order has an open record of a
 // refused Monero escrow deposit (A-480).
 func xmrCollisionOpen(order string) string {
@@ -181,9 +189,7 @@ func loadEscrowAlerts(ctx context.Context, a *App, _ *http.Request, d *PageData)
 		`+xmrCollisionOpen("o.id")+`,
 		EXISTS(SELECT 1 FROM xmr_settlements xs WHERE xs.order_id=o.id AND xs.state='requested' AND xs.created<now()-interval '24 hours'),
 		count(*) OVER ()
-		FROM orders o WHERE (o.id IN (SELECT order_id FROM settlements WHERE state IN ('broadcast','failed'))
-			OR o.id IN (SELECT order_id FROM xmr_escrow_collisions WHERE disposed_at IS NULL)
-			OR o.id IN (SELECT order_id FROM xmr_settlements WHERE state='requested' AND created<now()-interval '24 hours')) AND `+escrowStaffAlert("o.id")+`
+		FROM orders o WHERE `+escrowStaffAlertCandidates("o.id")+` AND `+escrowStaffAlert("o.id")+`
 		ORDER BY GREATEST((SELECT max(`+escrowStallOpenedSQL+`) FROM settlements s WHERE s.order_id=o.id AND s.state='broadcast' AND `+escrowStalledSQL+`),
 			(SELECT max(s.updated) FROM settlements s WHERE s.order_id=o.id AND s.kind='release' AND s.state='failed' AND s.build_error='`+settleTooSmall+`'),
 			(SELECT max(x.noted) FROM xmr_escrow_collisions x WHERE x.order_id=o.id AND x.disposed_at IS NULL),

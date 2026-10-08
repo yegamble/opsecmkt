@@ -137,6 +137,8 @@ type PageData struct {
 	// StaffContact: /canary, /challenge, /login, /register, /notifications, /vendor-dashboard and /listing-edit (a
 	// taken-down listing, A-279), the administrator's staff contact (A-119, staff_contact.go); nil while unset.
 	StaffContact *StaffContactView
+	// StaffAttention: uncapped actionable category totals in the shared navigation and staff desk summaries.
+	StaffAttention *StaffAttention
 	// A-190 (image_takedown.go). RecentImages: /moderator, the newest public photos and avatars (vendors' only for a moderator); AvatarTakedown:
 	// vendor page, the staff remove form for the vendor's avatar.
 	RecentImages   []RecentImage
