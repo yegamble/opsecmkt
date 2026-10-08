@@ -485,6 +485,8 @@ func TestAdminListingEditKeepsDeliveryContentHidden(t *testing.T) {
 
 	// A crafted administrator POST with other content (or none) does not change what buyers receive.
 	for _, dc := range []string{"ADMIN-SUBSTITUTED", ""} {
+		edit = p.page("/listing-edit?id="+digital, p.adminSess)
+		f.Set(formNonceField, renderedFormNonce(t, edit, "/listings/update"))
 		f.Set("delivery_content", dc)
 		p.check(p.do("POST", "/listings/update", p.adminSess, f), 303)
 		if _, got := stored(); got != secret {
@@ -493,6 +495,8 @@ func TestAdminListingEditKeepsDeliveryContentHidden(t *testing.T) {
 	}
 
 	// The administrator cannot make the listing physical while content they cannot remove is stored.
+	edit = p.page("/listing-edit?id="+digital, p.adminSess)
+	f.Set(formNonceField, renderedFormNonce(t, edit, "/listings/update"))
 	f.Del("delivery_content")
 	f.Set("kind", "physical")
 	w := p.do("POST", "/listings/update", p.adminSess, f)

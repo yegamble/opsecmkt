@@ -13,9 +13,9 @@ import (
 
 func init() {
 	managers := []string{"vendor", "admin"}
-	registerAction("/listings/update", actionSpec{Roles: managers, Run: listingUpdateAction})
-	registerAction("/listings/archive", actionSpec{Roles: managers, Run: func(c *actionCtx) (actionResult, error) { return listingArchiveAction(c, true) }})
-	registerAction("/listings/restore", actionSpec{Roles: managers, Run: func(c *actionCtx) (actionResult, error) { return listingArchiveAction(c, false) }})
+	registerAction("/listings/update", actionSpec{Roles: managers, FormNonce: true, Run: listingUpdateAction})
+	registerAction("/listings/archive", actionSpec{Roles: managers, FormNonce: true, Run: func(c *actionCtx) (actionResult, error) { return listingArchiveAction(c, true) }})
+	registerAction("/listings/restore", actionSpec{Roles: managers, FormNonce: true, Run: func(c *actionCtx) (actionResult, error) { return listingArchiveAction(c, false) }})
 	registerAction("/admin/listing", actionSpec{Roles: []string{"admin"}, OwnTx: true, Run: adminListingAction})
 }
 
