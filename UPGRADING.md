@@ -483,8 +483,20 @@ Migration 065 runs at startup and adds `payments.after_close`. From this release
 cancelled, completed or resolved order's deposit address until the address is 30 days old (before, only while a
 deposit was confirming or unhandled, or for 24 hours after the order changed), so each pass reads more addresses.
 A deposit first recorded after its order closed is never refunded or paid out automatically, even when the
-cancellation refunded nothing: it is flagged for payment review and the buyer is told once per order. Deposits
-recorded before the upgrade keep their earlier treatment. See
+cancellation refunded nothing: it is flagged for payment review and the buyer is told once per open late-deposit
+review episode. Deposits recorded before the upgrade keep their earlier treatment.
+
+**Legacy notice exception (A-239):** upgrading from a version that notified only staff of late deposits does not
+backfill buyer notifications. An existing open late-deposit flag (uncredited, not below the payout floor, not locked
+and not spent outside the market) holds its order's notice episode open even if the earlier version never told the
+buyer. Further late deposits are still flagged and dated in the order history, but do not produce another buyer or
+staff notice while that episode remains open. During upgrade reconciliation, review these existing late flags and
+confirm the buyer knows about the unpaid deposit. Record the actual disposition only after wallet reconciliation;
+do not close a flag merely to restart notifications. Once all eligible late flags have dispositions that close them,
+a later deposit starts a new episode and is announced normally. This is the documented legacy exception allowed by
+A-239; it does not change deposit credit, refunds or payouts.
+
+See
 [late deposits](docs/operator-guide.md#payments) and the
 [runbook](docs/testnet-runbook.md#handle-a-payment-review-flag).
 

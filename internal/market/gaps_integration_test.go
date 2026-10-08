@@ -194,12 +194,12 @@ func TestVendorDemotionArchivesListingsAndRefusesNewOrders(t *testing.T) {
 	draft := w.e.order(w.buyerID, b, "BTC", stateDraft)
 
 	// Promoting or keeping a vendor archives nothing.
-	w.expect("/admin", admin, form("action", "role", "role", "vendor", "handle", w.e.loadUser(w.vendorID).Handle), 303, "")
+	w.expect("/admin", admin, form("action", "role", "password", testPassword, "role", "vendor", "handle", w.e.loadUser(w.vendorID).Handle), 303, "")
 	if n := w.count("SELECT count(*) FROM products WHERE vendor_id=$1 AND NOT archived", w.vendorID); n != 2 {
 		t.Fatalf("active listings after vendor->vendor: %d", n)
 	}
 
-	w.expect("/admin", admin, form("action", "role", "role", "buyer", "handle", w.e.loadUser(w.vendorID).Handle), 303, "")
+	w.expect("/admin", admin, form("action", "role", "password", testPassword, "role", "buyer", "handle", w.e.loadUser(w.vendorID).Handle), 303, "")
 	if n := w.count("SELECT count(*) FROM products WHERE vendor_id=$1 AND NOT archived", w.vendorID); n != 0 {
 		t.Fatalf("listings still active after demotion: %d", n)
 	}
@@ -209,7 +209,7 @@ func TestVendorDemotionArchivesListingsAndRefusesNewOrders(t *testing.T) {
 	if !w.e.auditExact(w.vendorID, "Archived 2 active listing(s): role changed to buyer by administrator demotion_admin") {
 		t.Fatal("demoted user's audit event missing")
 	}
-	if w.count("SELECT count(*) FROM audit_events e JOIN users u ON u.id=e.user_id AND u.role='admin' WHERE e.action='Changed role of '||(SELECT handle FROM users WHERE id=$1)||' from vendor to buyer; archived 2 active listing(s)'", w.vendorID) != 1 {
+	if w.count("SELECT count(*) FROM audit_events e JOIN users u ON u.id=e.user_id AND u.role='admin' WHERE e.action='Changed role of '||(SELECT handle FROM users WHERE id=$1)||' from vendor to buyer; archived 2 active listing(s) (confirmed with password)'", w.vendorID) != 1 {
 		t.Fatal("administrator audit event missing")
 	}
 
@@ -235,9 +235,9 @@ func TestVendorDemotionArchivesListingsAndRefusesNewOrders(t *testing.T) {
 	}
 
 	// Demoting to moderator archives too (the new listing and the one reactivated above).
-	w.expect("/admin", admin, form("action", "role", "role", "vendor", "handle", w.e.loadUser(w.vendorID).Handle), 303, "")
+	w.expect("/admin", admin, form("action", "role", "password", testPassword, "role", "vendor", "handle", w.e.loadUser(w.vendorID).Handle), 303, "")
 	c := w.e.product(w.vendorID, "digital")
-	w.expect("/admin", admin, form("action", "role", "role", "moderator", "handle", w.e.loadUser(w.vendorID).Handle), 303, "")
+	w.expect("/admin", admin, form("action", "role", "password", testPassword, "role", "moderator", "handle", w.e.loadUser(w.vendorID).Handle), 303, "")
 	var archived bool
 	w.e.DB.QueryRow("SELECT archived FROM products WHERE id=$1", c).Scan(&archived)
 	if !archived || !w.e.auditExact(w.vendorID, "Archived 2 active listing(s): role changed to moderator by administrator demotion_admin") {

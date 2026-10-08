@@ -11,11 +11,13 @@
 <dd>Optional for each account</dd>
 </div>
 </dl>
-<form method="post" action="/admin/captcha">
+<form class="stack" method="post" action="/admin/captcha">
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{if $off}}
 <input type="hidden" name="captcha_required" value="true">
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
 <button type="submit">Turn CAPTCHA on</button>{{else}}
 <input type="hidden" name="captcha_required" value="false">
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
 <button type="submit">Turn CAPTCHA off</button>{{end}}
 </form>
 <p class="help">The CAPTCHA is an image only, with no audio alternative; first-run setup never asks for it. Changes are recorded in the audit trail.</p>

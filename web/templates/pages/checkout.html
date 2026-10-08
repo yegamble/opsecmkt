@@ -29,7 +29,7 @@
 {{template "payment-status:checkout" $}}
 </section>
 <section class="panel">
-<h2>Order summary</h2>{{if $.VendorKeyUnusable}}
+<h2>Order summary</h2>{{if eq .Kind "service"}}<p class="order-unavailable" role="note">This legacy service listing is no longer available for new orders. Existing orders and their history remain readable; ask the vendor to offer a supported physical or digital listing instead.</p>{{else}}{{if $.VendorKeyUnusable}}
 <p class="order-unavailable" role="note">
 <strong>No usable key.</strong> {{.Vendor}} has no usable encryption key, so you could not send a shipping address. You can save a draft, but payment stays unavailable until they add one.</p>{{end}}{{with $.VendorSuspensionReason}}<p class="order-unavailable" role="note">{{.}}</p>{{end}}{{template "purchase-blocks" $}}{{if not $.NoPurchase}}
 {{if .BTCOrderUnavailable}}<p class="order-unavailable" role="note">{{.BTCOrderUnavailable}}</p>{{end}}{{if .XMROrderUnavailable}}<p class="order-unavailable" role="note">{{.XMROrderUnavailable}}</p>{{end}}
@@ -46,7 +46,7 @@
 {{if or (eq (index $.Settings "payment_intake_BTC") "escrow") (eq (index $.Settings "payment_intake_XMR") "escrow")}}<p class="help">A currency marked escrow only is paid through escrow checkout on the order page, not a payment address from the market's wallet.</p>{{end}}
 {{if or (eq (index $.Settings "payment_intake_BTC") "false") (eq (index $.Settings "payment_intake_XMR") "false")}}<p class="help">Currencies marked paused can still be saved as unfunded drafts. New payment addresses are unavailable until the administrator enables them; existing deposits and payouts continue.</p>{{end}}
 <button class="primary" type="submit">Create unfunded draft <span class="action-icon">↗</span></button>
-</form>{{else}}<p class="order-unavailable" role="note">Neither BTC nor XMR is available for this listing. Review the currency and escrow reasons above.</p>{{end}}{{end}}
+</form>{{else}}<p class="order-unavailable" role="note">Neither BTC nor XMR is available for this listing. Review the currency and escrow reasons above.</p>{{end}}{{end}}{{end}}
 </section>
 </div>{{end}}
 {{template "footer" .}}{{end}}

@@ -272,7 +272,7 @@ func TestCaptchaOnRegisterAndLogin(t *testing.T) {
 	_, buyer := e.user("cap_buyer", "buyer")
 	e.check(e.do("POST", "/admin/captcha", buyer, url.Values{"captcha_required": {"true"}}), 403)
 	e.check(e.do("POST", "/admin/captcha", admin, url.Values{"captcha_required": {"maybe"}}), 400)
-	e.check(e.do("POST", "/admin/captcha", admin, url.Values{"captcha_required": {"true"}}), 303)
+	e.check(e.do("POST", "/admin/captcha", admin, url.Values{"captcha_required": {"true"}, "password": {testPassword}}), 303)
 	if !e.auditHas(adminID, "Turned on CAPTCHA") || !strings.Contains(e.do("GET", "/admin", admin, nil).Body.String(), "Turn CAPTCHA off") {
 		t.Fatal("captcha toggle not audited or not shown")
 	}
@@ -332,7 +332,7 @@ func TestCaptchaOnRegisterAndLogin(t *testing.T) {
 		t.Fatalf("replayed captcha on login: %d", c)
 	}
 
-	e.check(e.do("POST", "/admin/captcha", admin, url.Values{"captcha_required": {"false"}}), 303)
+	e.check(e.do("POST", "/admin/captcha", admin, url.Values{"captcha_required": {"false"}, "password": {testPassword}}), 303)
 	if !e.auditHas(adminID, "Turned off CAPTCHA") {
 		t.Fatal("turning the captcha off was not audited")
 	}

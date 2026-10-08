@@ -221,6 +221,19 @@ func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 		return err
 	}
 	pv.Issued = true
+	// Only a buyer viewing an issued pooled payment gets this prompt. Escrow orders do not issue
+	// payment_addresses, so this cannot imply that escrow funds are held or automatically paid.
+	if d.User != nil && d.User.ID == o.BuyerID && (o.State == stateAwaitingPayment || o.State == statePaid || o.State == stateShipped || o.State == stateDelivered) {
+		column := "payout_btc"
+		if o.Currency == "XMR" {
+			column = "payout_xmr"
+		}
+		var saved string
+		if err = a.db.QueryRowContext(ctx, "SELECT "+column+" FROM users WHERE id=$1", o.BuyerID).Scan(&saved); err != nil {
+			return err
+		}
+		pv.BuyerNeedsPayoutAddress = saved == ""
+	}
 	pv.Monitored = p != nil
 	if !pv.Monitored {
 		pv.Status = "Not monitored: " + o.Currency + " payments are not configured on this server."
