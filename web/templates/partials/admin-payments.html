@@ -264,6 +264,7 @@ Check the escrow node: its peers (<code>getconnectioncount</code>), and with <co
 {{range .Providers}}{{if .AddressCollisions}}<div class="alert" role="status"><p><strong>{{.Currency}} wallet handed out payment addresses this market had already issued: {{.AddressCollisions}} payment {{if eq .AddressCollisions 1}}request{{else}}requests{{end}} refused, last at {{.AddressCollisionLast}}.</strong> This happens when the wallet was restored from an older backup or seed without being advanced past the addresses the database issued. Buyers were told nothing was charged, and their orders stay drafts. The restored wallet may also miss deposits made after the backup until it rescans. Follow "Restore the wallets" in the test-network payments runbook, <code>docs/testnet-runbook.md#restore-the-wallets</code>, then dismiss this warning: it stays until an administrator dismisses it, and a later collision shows it again.</p>
 <form method="post" action="/admin/payment-address-collisions">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/admin/payment-address-collisions"}}">
 <input type="hidden" name="currency" value="{{.Currency}}">
 <input type="hidden" name="seen" value="{{.AddressCollisions}}">
 <button type="submit">Dismiss the {{.Currency}} warning</button>

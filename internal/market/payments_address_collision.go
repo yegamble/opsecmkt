@@ -22,7 +22,7 @@ import (
 // wallet closer to handing out fresh addresses rather than using any up.
 
 func init() {
-	registerAction("/admin/payment-address-collisions", actionSpec{Roles: []string{"admin"}, Run: dismissAddressCollisionsAction})
+	registerAction("/admin/payment-address-collisions", actionSpec{Roles: []string{"admin"}, FormNonce: true, Run: dismissAddressCollisionsAction})
 }
 
 // addressAlreadyIssued reports the unique violation on payment_addresses.address, and nothing else: any other
