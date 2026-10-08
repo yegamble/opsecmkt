@@ -106,6 +106,12 @@ the value to rotate, with the consequences below. An instance that ran with the 
 
 - Sessions stay signed in (they are stored as hashes in the database). A form or CAPTCHA that was open during
   the restart is refused once; reload it.
+- **Bitcoin escrow.** A new key root changes the immutable HMAC pin for the arbiter account key and, when configured,
+  the escrow signer's account key. Bitcoin escrow fails closed even if the same wallets are still present. Restore the
+  original `APP_SECRET_KEY` (or legacy `SETUP_TOKEN` root); never clear or replace these pins while escrows exist.
+  Party-key rows also use that root. If a party row still needs recovery, re-register it only after the original root is
+  restored and startup has verified the pinned node and, when configured, signer; the app checks the submitted key against existing
+  escrow children before activating it.
 - **alpha.1 has no TOTP**, so an alpha.1 instance that rotates at this upgrade loses nothing else.
 - On an instance that already ran this release with the placeholder, every stored TOTP secret, pending
   enrolment and not-yet-shown recovery-code list was encrypted under the old token and can no longer be read.
@@ -1667,9 +1673,11 @@ keys. Startup with escrow off records that state without contacting the node.
 
 The existing arbiter fingerprint pin gains an HMAC of the account key in `settings`. A fingerprint-only deployment
 records it on the first upgraded start only if the observed fingerprint matches. Later account-key changes disable
-escrow even when the fingerprint matches. Restore the original arbiter wallet and original `APP_SECRET_KEY` (or
-legacy `SETUP_TOKEN` key root), since changing the key root also changes the HMAC. Never remove these pins while
-escrows exist. No environment keys are added; see [the arbiter pin](docs/operator-guide.md#bitcoin-escrow-test-networks-only).
+escrow even when the fingerprint matches. The configured escrow signer's account key is pinned the same way. Restore
+the original arbiter/signer wallet keys and original `APP_SECRET_KEY` (or legacy `SETUP_TOKEN` key root): changing the
+root changes both HMACs and disables escrow. Never remove or replace these pins while escrows exist. Party-key rows
+can be re-registered only after the original root is restored and startup has verified the pinned node and, when configured, signer.
+No environment keys are added; see [the arbiter pin](docs/operator-guide.md#bitcoin-escrow-test-networks-only).
 
 ## Appendix: new keys by hand
 

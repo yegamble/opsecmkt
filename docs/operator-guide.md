@@ -1122,21 +1122,22 @@ keys, mainnet keys and single-signature (SLIP-132 `upub`/`vpub`) keys are refuse
 the same key cannot be registered on two accounts. The key stays inactive until its owner signs the page's
 practice transaction in Bitcoin Core and pastes it back; it spends a made-up output, so it can never be
 broadcast. The server keeps the key sealed with `APP_SECRET_KEY` (see
-[What the server keeps](implementation-status.md#what-the-server-keeps)); changing `APP_SECRET_KEY` makes
-registered keys unreadable ([Secrets](#secrets-env-and-onion-identities)): `/escrow-key` then says "Your escrow key
-can no longer be read on this market; register it again."
+[What the server keeps](implementation-status.md#what-the-server-keeps)). With a different `APP_SECRET_KEY` (or
+legacy `SETUP_TOKEN` key root), registered party-key rows cannot be opened. More importantly, the root also keys the
+immutable HMAC pin for the arbiter account key and, when configured, the escrow signer's account key. Changing it
+therefore disables Bitcoin escrow even when the same node and wallets are available. Restore the original key root;
+never clear or replace these pins while any escrow exists. See [Secrets](#secrets-env-and-onion-identities).
 
-A rotation never hides an escrow or changes the keys an escrow uses: escrows are attributed by account and key
-origin, not by the sealed key. A user whose key already has escrows registers the same key again; the app confirms
-with the node (`deriveaddresses`) that it derives the key the latest escrow holds, and the key is active again at
-once (practice signing is never offered for a key with escrows). Another key under that origin is refused. Once a key
-has escrows its origin cannot be changed: the same key registered with another fingerprint or path is refused with
-"This key has escrows, so its origin (fingerprint and path) cannot be changed …", with or without a rotation (the
-same key is recognised by its HMAC or, after a rotation, by the node deriving an escrow's child key from it), and
-its escrows keep the origin recorded with them. This build has no tool to change a recorded origin, and nothing
-about an existing escrow changes. Before a key has escrows, its owner can still correct its fingerprint or path and
-sign the practice transaction again. The check that stops two accounts registering the same key starts again after a
-rotation: a key registered before it is not recognised on another account until its owner registers it again.
+An unreadable party-key row can be re-registered only after the original key root is in use and startup has verified
+the pinned node and, when configured, signer. The app confirms with Core (`deriveaddresses`) or the pinned signer that
+the submitted key derives the child an existing escrow holds; it then activates that party key without changing any
+escrow row (practice signing is never offered for a key with escrows). Another key under that origin is refused. Once
+a key has escrows its origin cannot be changed: a same key registered with another fingerprint or path is refused with
+"This key has escrows, so its origin (fingerprint and path) cannot be changed …"; its escrows keep their recorded
+origin. This build has no tool to change a recorded origin. Before a key has escrows, its owner can still correct its
+fingerprint or path and sign the practice transaction again. Changing the key root also changes party-key HMACs, so
+the cross-account reuse check is not reliable until the original root is restored and each affected key is registered
+again.
 
 On the order page of a BTC draft on a digital listing with automatic delivery (or, with Phase 2 below, a physical listing with a dispatch window), the buyer is offered *Pay into an
 escrow* beside the pooled payment request, once both the buyer's and the vendor's escrow keys are active. The buyer
@@ -2281,7 +2282,7 @@ second checkout on the same host needs its own `COMPOSE_PROJECT_NAME` (for examp
 
 | Secret | Kept in | Backup | Rotation |
 | --- | --- | --- | --- |
-| `APP_SECRET_KEY` | `.env` | with `.env` | Derives the CSRF/CAPTCHA key and the key that encrypts TOTP secrets. Restore a database with the key in use when it was dumped; under another key its TOTP secrets cannot be read. Changing it refuses every open form once and makes enrolled TOTP secrets unreadable. On a market running [Bitcoin escrow](#bitcoin-escrow-test-networks-only) it also makes every registered escrow key unreadable (`/escrow-key` asks the user to register it again; existing escrows keep their keys, and the same key registered again is active at once) and restarts the check that stops two accounts registering the same key: a key registered before the change is not recognised until its owner registers it again. Rotate only when it is exposed, with the consequences [UPGRADING.md](../UPGRADING.md#replace-a-placeholder-setup_token) describes. An install that predates it has none: its keys still derive from `SETUP_TOKEN` (the startup log says `keys: derived from SETUP_TOKEN (legacy)`); to move to it, set `APP_SECRET_KEY` to exactly the current `SETUP_TOKEN` value, which `./scripts/install.sh upgrade` does ([UPGRADING.md](../UPGRADING.md#app_secret_key-and-stricter-startup-checks)). |
+| `APP_SECRET_KEY` | `.env` | with `.env` | Derives the CSRF/CAPTCHA key and the key that encrypts TOTP secrets. Restore a database with the key in use when it was dumped; under another key its TOTP secrets cannot be read. Changing it refuses every open form once and makes enrolled TOTP secrets unreadable. On a market running [Bitcoin escrow](#bitcoin-escrow-test-networks-only), it also changes the immutable HMAC pin for the arbiter account key and (when configured) the escrow signer account key, disabling escrow. Restore the original key root; never clear or replace these pins while any escrow exists. Party-key rows are sealed and HMACed under that root too. A row that remains unreadable can be re-registered only once the original root is in use and startup has verified the pinned node and, when configured, signer; the app confirms the key derives the existing escrow child before activating it. Rotate only when it is exposed, with the consequences [UPGRADING.md](../UPGRADING.md#replace-a-placeholder-setup_token) describes. An install that predates it has none: its keys still derive from `SETUP_TOKEN` (the startup log says `keys: derived from SETUP_TOKEN (legacy)`); to move to it, set `APP_SECRET_KEY` to exactly the current `SETUP_TOKEN` value, which `./scripts/install.sh upgrade` does ([UPGRADING.md](../UPGRADING.md#app_secret_key-and-stricter-startup-checks)). |
 | `SETUP_TOKEN` | `.env` | with `.env` | Authorizes the first-run `/setup` page only. The installer prints it once at the end of `init`; `./scripts/install.sh setup-token` shows it again (and `--new` reissues it) while setup is pending. The app refuses to start without it until setup is complete, and ignores it afterwards (while it is set, startup logs a hint); `/setup` then answers 403 whatever the token. Once `APP_SECRET_KEY` is set and setup is complete, `status`, `add-mirror` and `upgrade` remove it from `.env`. Without `APP_SECRET_KEY` it is also the legacy key root above: keep it, or copy it to `APP_SECRET_KEY` first; changing it then has every consequence listed for `APP_SECRET_KEY`, escrow keys included. |
 | `MONERO_WALLET_SECRET` (only with [Monero escrow](#monero-escrow-fakechain-or-stagenet)) | `.env` | with `.env` | Every escrow wallet's password derives from it (HMAC-SHA256 with the wallet's name), so no wallet password is stored. It must be its own secret, not `SETUP_TOKEN` or `APP_SECRET_KEY`, so rotating those never locks wallets. A verifier of it is pinned in the database on the first start; with another secret Monero escrow stays disabled and opens or creates no wallet. **No tool re-keys existing wallets**: restore the original secret. Never change it while wallets exist. The installer generates it with `--monero-escrow yes`. |
 | `ESCROW_XMR_WALLET_RPC_PASSWORD` (only with the `monero-escrow-wallet` service) | `.env` | with `.env` | The escrow wallet-rpc's `--rpc-login` password, the same as in `ESCROW_XMR_WALLET_RPC_URL`; generated by the installer. Rotating it means changing both and restarting the service and the app. |

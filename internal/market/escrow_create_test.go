@@ -530,28 +530,52 @@ func TestEscrowLeavesPooledOrdersUnchanged(t *testing.T) {
 	}
 }
 
-// rotatedSecretKey is the APP_SECRET_KEY a rotation test switches to: 64 hex digits derived from a fixed phrase, so
-// the source holds no key-shaped literal for secret scanners to flag (A-370).
+// rotatedSecretKey provides a deterministic foreign key root for unreadable-row fixtures: 64 hex digits derived from
+// a fixed phrase, so the source holds no key-shaped literal for secret scanners to flag (A-370).
 func rotatedSecretKey() string {
 	sum := sha256.Sum256([]byte("escrow test: rotated APP_SECRET_KEY"))
 	return hex.EncodeToString(sum[:])
 }
 
-// The chair's ruling (a) on QA25's carry-over: an APP_SECRET_KEY rotation never hides an existing escrow or changes
-// which key it uses. After a rotation the stored key is unreadable and its HMAC differs; the owner registers the same
-// key again: the escrow is still attributed to the account and its rows are untouched, the key is not offered
-// practice (it has escrows), Core confirms it derives the escrow's child key so it is active again, and the next
-// escrow takes the next child index. Reuse detection across the rotation is best-effort: the old HMAC no longer
-// matches (documented in the operator guide).
-func TestEscrowSurvivesSecretRotation(t *testing.T) {
+// makePartyEscrowKeyUnreadable simulates a party-key row sealed and HMACed under a different historical key root,
+// without rotating this app's root or changing the immutable arbiter/signer pins.
+func makePartyEscrowKeyUnreadable(t *testing.T, x *escrowEnv, uid, expression string) {
+	t.Helper()
+	key, err := parseEscrowKey(expression)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreignRoot := &App{keyRoot: rotatedSecretKey()}
+	sealed, err := foreignRoot.seal("escrow-xpub", key.XPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreignHMAC := foreignRoot.escrowKeyHMAC(key)
+	if foreignHMAC == x.A.escrowKeyHMAC(key) {
+		t.Fatal("foreign party-key fixture unexpectedly uses the running key root")
+	}
+	if _, err := x.DB.Exec("UPDATE user_escrow_keys SET xpub_sealed=$2,xpub_hmac=$3 WHERE user_id=$1", uid, sealed, foreignHMAC); err != nil {
+		t.Fatal(err)
+	}
+	// A real key-root change also makes each stored escrow-party HMAC differ from the one recomputed by this app.
+	if _, err := x.DB.Exec("UPDATE escrow_pubkeys SET key_hmac=$2 WHERE user_id=$1 AND party IN ('buyer','vendor')", uid, foreignHMAC); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A party-key row can be unreadable while the application key root and immutable node pins remain intact. Once the
+// verified node confirms the existing child derivation, the owner can re-register the same key; escrow rows remain
+// unchanged, practice is not offered for a key with escrows, and the next escrow uses the next child index.
+func TestEscrowSurvivesUnreadablePartyKeyRecovery(t *testing.T) {
 	x := newEscrowEnv(t)
 	x.mustCheckout(x.order, "bcrt1qbuyerrefund00000000000000000000001")
+	makePartyEscrowKeyUnreadable(t, x, x.buyer, x.buyerKey)
+	makePartyEscrowKeyUnreadable(t, x, x.vendor, x.vendorKey)
+	x.restart() // same key root: arbiter and signer pins remain valid and node verifies party-key recovery.
 	before := strings.Join(agStrings(t, x.testEnv, "SELECT p::text FROM escrow_pubkeys p ORDER BY pubkey"), "\n") + strings.Join(agStrings(t, x.testEnv, "SELECT e::text FROM escrows e"), "\n")
-	t.Setenv("APP_SECRET_KEY", rotatedSecretKey())
-	x.restart()
 	body := x.page("/escrow-key", x.buyerSess)
 	if !strings.Contains(body, "register it again") || !strings.Contains(body, "This key is used by escrows") || strings.Contains(body, "Show the practice transaction") {
-		t.Fatalf("after rotation: %s", body)
+		t.Fatalf("with unreadable party rows: %s", body)
 	}
 	calls := len(x.core.methods())
 	if code, body := registerKey(x.testEnv, x.buyerSess, x.buyerKey); code != 303 {
@@ -562,7 +586,7 @@ func TestEscrowSurvivesSecretRotation(t *testing.T) {
 	}
 	after := strings.Join(agStrings(t, x.testEnv, "SELECT p::text FROM escrow_pubkeys p ORDER BY pubkey"), "\n") + strings.Join(agStrings(t, x.testEnv, "SELECT e::text FROM escrows e"), "\n")
 	if after != before {
-		t.Fatalf("escrow rows changed by the rotation and re-registration:\n%s\n%s", before, after)
+		t.Fatalf("escrow rows changed by unreadable-party recovery:\n%s\n%s", before, after)
 	}
 	body = x.page("/escrow-key", x.buyerSess)
 	if !strings.Contains(body, "Active since") || !strings.Contains(body, "This key is used by escrows") || strings.Contains(body, "Show the practice transaction") {
@@ -583,15 +607,15 @@ func TestEscrowSurvivesSecretRotation(t *testing.T) {
 	order2 := x.draft()
 	x.mustCheckout(order2, "bcrt1qbuyerrefund00000000000000000000002")
 	if s := agStrings(t, x.testEnv, "SELECT party||derivation_suffix FROM escrow_pubkeys p JOIN escrows e ON e.id=p.escrow_id WHERE e.order_id=$1 AND party<>'market' ORDER BY party", order2); !slices.Equal(s, []string{"buyer/0/2", "vendor/0/2"}) {
-		t.Fatalf("after rotation, second escrow suffixes %v", s)
+		t.Fatalf("after party-key recovery, second escrow suffixes %v", s)
 	}
 }
 
 // A-314 (QA29-1): once a key has escrows, under any origin, its origin cannot be changed. The same key re-registered
 // with another fingerprint or path is refused with 409 and nothing changes, for the buyer's key and the vendor's
 // (whose key serves every buyer of its listings); practice is not offered again; the next checkout still works on
-// the recorded origin. The same key is recognised by its HMAC, and after an APP_SECRET_KEY rotation (the HMAC no
-// longer matches) by Core deriving the recorded child key, never by the origin.
+// the recorded origin. A normal key is recognized by its HMAC; an unreadable party row with stale HMAC metadata is
+// recognized by Core deriving the recorded child key, never by trusting a changed origin.
 func TestEscrowOriginLockedOnceKeyHasEscrows(t *testing.T) {
 	x := newEscrowEnv(t)
 	x.mustCheckout(x.order, "bcrt1qbuyerrefund00000000000000000000001")
@@ -617,7 +641,7 @@ func TestEscrowOriginLockedOnceKeyHasEscrows(t *testing.T) {
 		if got := keyRows(); got != before {
 			t.Fatalf("%s: key rows changed:\n%s\n%s", name, before, got)
 		}
-		if name != "after rotation" && len(x.core.methods()) != calls {
+		if name != "unreadable party key" && len(x.core.methods()) != calls {
 			t.Fatalf("%s: node called although the HMAC matched: %v", name, x.core.methods()[calls:])
 		}
 		if body := x.page("/escrow-key", sess); strings.Contains(body, "Show the practice transaction") || !strings.Contains(body, "Its origin (fingerprint and path) can no longer be changed.") {
@@ -658,11 +682,12 @@ func TestEscrowOriginLockedOnceKeyHasEscrows(t *testing.T) {
 		t.Fatalf("practice for a moved key row: %d %s", code, body)
 	}
 	x.activeKey(x.buyer, x.buyerKey)
-	// After an APP_SECRET_KEY rotation the stored HMACs no longer match; Core's derivation still recognises the key.
-	t.Setenv("APP_SECRET_KEY", rotatedSecretKey())
+	// This party row and its escrow HMAC metadata are stale under a different sealing/HMAC root, but this app keeps
+	// its original root and pins. Restart with the real node; Core derives the recorded child despite a changed origin.
+	makePartyEscrowKeyUnreadable(t, x, x.buyer, x.buyerKey)
 	x.restart()
 	before = keyRows()
-	refused("after rotation", x.buyerSess, moved(x.buyerKey, "0000beef/48h/1h/0h/2h"))
+	refused("unreadable party key", x.buyerSess, moved(x.buyerKey, "0000beef/48h/1h/0h/2h"))
 	// At its recorded origin the same key is restored, active at once.
 	if code, body := registerKey(x.testEnv, x.buyerSess, x.buyerKey); code != 303 {
 		t.Fatalf("restore at the recorded origin: %d %s", code, body)

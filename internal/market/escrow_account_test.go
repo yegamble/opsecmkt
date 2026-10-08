@@ -814,26 +814,26 @@ func TestEscrowStartupRefusesMainnetMarket(t *testing.T) {
 	}
 }
 
-// Rotating APP_SECRET_KEY (or a legacy SETUP_TOKEN) leaves a registered key unreadable: /escrow-key says so with a
-// fixed message instead of blaming the node, the practice check refuses the same way, and registering the key again
-// works (QA-P1a-5).
-func TestEscrowKeyUnreadableAfterRotation(t *testing.T) {
+// A party-key row sealed under another root is unreadable: /escrow-key says so with a fixed message instead of
+// blaming the node, the practice check refuses the same way, and registering the key again replaces that row.
+// The running app root and immutable arbiter/signer pins are unchanged.
+func TestEscrowKeyUnreadablePartyRowCanBeReRegistered(t *testing.T) {
 	logs := captureLog(t)
 	e, core, _ := escrowTestApp(t)
-	uid, sess := e.user("escrow_rotated_buyer", "buyer")
+	uid, sess := e.user("escrow_unreadable_buyer", "buyer")
 	if code, _ := registerKey(e, sess, testBIP48Key); code != 303 {
 		t.Fatal("register")
 	}
 	signed := fakeOwnerSign(t, practicePSBT(t, e, sess), "7450f935", 1)
-	t.Setenv("APP_SECRET_KEY", "a-rotated-app-secret-key-of-at-least-32-characters")
-	e.restart()
+	makePartyEscrowKeyUnreadable(t, &escrowEnv{testEnv: e, t: t, core: core}, uid, testBIP48Key)
+	e.restart() // same key root and pins; only this user's party-key row is unreadable.
 	calls := len(core.methods())
 	body := html.UnescapeString(e.do("GET", "/escrow-key?practice=1", sess, nil).Body.String())
 	if !strings.Contains(body, errEscrowKeyUnreadable) || strings.Contains(body, "did not answer") || strings.Contains(body, "escrow-psbt") {
-		t.Fatalf("page after rotation: %s", body)
+		t.Fatalf("page with unreadable party row: %s", body)
 	}
 	if code, body := submitPractice(e, sess, signed); code != 409 || !strings.Contains(body, errEscrowKeyUnreadable) {
-		t.Fatalf("practice after rotation: %d %s", code, body)
+		t.Fatalf("practice with unreadable party row: %d %s", code, body)
 	}
 	if n := len(core.methods()) - calls; n != 0 {
 		t.Fatalf("%d node calls for an unreadable key", n)
