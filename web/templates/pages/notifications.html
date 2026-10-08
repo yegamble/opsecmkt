@@ -22,4 +22,5 @@
 <h2>You’re all caught up</h2>
 <p>New account and order updates will appear here.</p>
 </div>{{end}}</div>
+{{with .ActivityPaging}}{{if gt .Pages 1}}<p class="help">Showing {{.First}}–{{.Last}} of {{.Total}} notifications.</p><nav class="pagination" aria-label="Notification pages">{{if .PrevURL}}<a href="{{.PrevURL}}" rel="prev" aria-label="Previous page, page {{.PrevPage}} of {{.Pages}}">← Previous</a>{{end}}<span class="current" aria-current="page">Page {{.Page}} of {{.Pages}}</span>{{if .NextURL}}<a href="{{.NextURL}}" rel="next" aria-label="Next page, page {{.NextPage}} of {{.Pages}}">Next →</a>{{end}}</nav>{{end}}{{end}}
 {{template "footer" .}}{{end}}
