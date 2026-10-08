@@ -163,9 +163,11 @@ func (a *App) pollOnce(ctx context.Context) error {
 	}()
 	var errs []error
 	ready := a.providers()
-	// A node whose tip is below the highest tip recorded for its currency (restarted from an older state, or a
-	// wallet rescanning after a restore) is treated as syncing: read now, deposits it has not caught up with would
-	// be recorded as missing or back below the threshold and announced as regressions.
+	// A node whose tip is below the highest tip recorded for its currency and network (restarted from an older
+	// state, or a wallet rescanning after a restore) is treated as syncing: deposits it has not caught up with
+	// would otherwise be recorded as missing or back below the threshold and announced as regressions. A
+	// different test network starts a new high-water mark; checkNetworkHistory already rejects a cross-class
+	// switch while deposit addresses exist.
 	for _, cur := range sortedCurrencies(ready) {
 		tip, reported := tips[cur]
 		if _, skipped := skip[cur]; skipped || !reported {
@@ -173,7 +175,10 @@ func (a *App) pollOnce(ctx context.Context) error {
 		}
 		var highest int64
 		if err := a.db.QueryRowContext(ctx, `INSERT INTO payment_status(currency,network,last_poll,last_error,tip_height) VALUES($1,$2,NULL,'',$3)
-			ON CONFLICT(currency) DO UPDATE SET tip_height=GREATEST(payment_status.tip_height,excluded.tip_height) RETURNING tip_height`, cur, ready[cur].Network(), tip).Scan(&highest); err != nil {
+			ON CONFLICT(currency) DO UPDATE SET network=excluded.network,
+			tip_height=CASE WHEN payment_status.network=excluded.network
+				THEN GREATEST(payment_status.tip_height,excluded.tip_height) ELSE excluded.tip_height END
+			RETURNING tip_height`, cur, ready[cur].Network(), tip).Scan(&highest); err != nil {
 			errs = append(errs, err)
 			skip[cur], why[cur] = "Could not compare the node tip with the highest tip recorded; watcher pass skipped (no deposits read, no expiry, no payouts).", "tip comparison failed"
 		} else if tip < highest {
@@ -209,7 +214,9 @@ func (a *App) pollOnce(ctx context.Context) error {
 				msg = truncate(err.Error(), 300)
 			}
 			if _, serr := a.db.ExecContext(ctx, `INSERT INTO payment_status(currency,network,last_poll,last_error) VALUES($1,$2,now(),$3)
-				ON CONFLICT(currency) DO UPDATE SET network=excluded.network,last_poll=now(),last_error=excluded.last_error`, cur, p.Network(), msg); serr != nil && err == nil {
+				ON CONFLICT(currency) DO UPDATE SET network=excluded.network,
+				tip_height=CASE WHEN payment_status.network=excluded.network THEN payment_status.tip_height ELSE NULL END,
+				last_poll=now(),last_error=excluded.last_error`, cur, p.Network(), msg); serr != nil && err == nil {
 				err = serr
 			}
 		}
