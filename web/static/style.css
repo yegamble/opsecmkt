@@ -64,7 +64,7 @@ button:disabled {
   opacity:.6;
   cursor:not-allowed
 }
-a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-visible {
+a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-visible,pre[tabindex]:focus-visible {
   outline:3px solid var(--amber);
   outline-offset:2px
 }
