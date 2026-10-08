@@ -122,6 +122,7 @@ type PageData struct {
 	Events                                                                    []Event
 	Settings                                                                  map[string]string
 	Preview                                                                   bool
+	AuditHandle                                                               string // /admin audit trail's exact-handle filter.
 	// Paging: catalog and vendor page, the page shown of the matching listings (A-181, A-189, load.go).
 	Paging *CatalogPaging
 	// ActivityPaging: signed-in user's orders, messages or notifications (A-16, load.go).

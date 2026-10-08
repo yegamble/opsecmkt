@@ -460,13 +460,21 @@ func (a *App) load(r *http.Request, d *PageData) error {
 			}
 		}
 		if d.Page == "account" || d.Page == "admin" {
-			// The admin audit trail lists every user's events; the account page shows only the viewer's recent ones.
+			// The admin audit trail lists the latest 100 events across accounts, or for one exact handle; the
+			// account page continues to show only the viewer's own recent events.
 			all, limit := d.Page == "admin" && d.User.Role == "admin", 100
+			filterHandle := ""
 			if d.Page == "account" {
 				limit = 15
+			} else if all {
+				filterHandle = r.URL.Query().Get("audit_handle")
+				if filterHandle != "" && !handlePattern.MatchString(filterHandle) {
+					return fail(400, "Enter an exact account handle of 3–32 letters, digits or underscores")
+				}
+				d.AuditHandle = filterHandle
 			}
 			rows, err = a.db.QueryContext(ctx, `SELECT COALESCE(u.handle,''),e.action,to_char(e.created,'YYYY-MM-DD HH24:MI "UTC"') FROM audit_events e LEFT JOIN users u ON u.id=e.user_id
-				WHERE e.user_id=$1 OR $2 ORDER BY e.created DESC,e.id DESC LIMIT $3`, d.User.ID, all, limit)
+				WHERE (e.user_id=$1 OR $2) AND ($4='' OR ($2 AND u.handle=$4)) ORDER BY e.created DESC,e.id DESC LIMIT $3`, d.User.ID, all, limit, filterHandle)
 			if err != nil {
 				return err
 			}
