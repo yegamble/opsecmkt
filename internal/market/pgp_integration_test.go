@@ -453,7 +453,7 @@ func TestMessagePlaintextInsideArmorRejected(t *testing.T) {
 	}
 	want := armorPackets(t, ct)
 	shown := 0
-	for _, m := range regexp.MustCompile(`(?s)<pre class="code-block">(.*?)</pre>`).FindAllStringSubmatch(page, -1) {
+	for _, m := range regexp.MustCompile(`(?s)<textarea[^>]*aria-label="Encrypted message from armor_buyer to armor_vendor"[^>]*>\n(.*?)</textarea>`).FindAllStringSubmatch(page, -1) {
 		if body := html.UnescapeString(m[1]); body == block {
 			if armorPackets(t, body) != want {
 				t.Fatal("displayed armor decodes to other packets")

@@ -46,7 +46,7 @@ func TestBootstrapAdminRefusesBadInvocation(t *testing.T) {
 		{handle: "", flags: []string{"bootstrap-admin"}, dsn: true, msg: "give the first administrator's handle"},
 		{handle: "first_admin", flags: []string{"bootstrap-admin"}, args: []string{bootstrapTestPassword}, dsn: true, msg: "never from the command line"},
 		{handle: "bad-handle", flags: []string{"bootstrap-admin"}, dsn: true, msg: "3–32 character handle"},
-		{handle: "first_admin", site: strings.Repeat("n", 81), flags: []string{"bootstrap-admin", "site-name"}, dsn: true, msg: "at most 80 bytes"},
+		{handle: "first_admin", site: strings.Repeat("n", 81), flags: []string{"bootstrap-admin", "site-name"}, dsn: true, msg: "at most 80 characters"},
 		{handle: "first_admin", flags: []string{"bootstrap-admin"}, msg: "DATABASE_URL required"},
 	} {
 		if !tc.dsn {

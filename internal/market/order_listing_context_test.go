@@ -201,6 +201,8 @@ func TestDeskOrderRowsLinkTheirListing(t *testing.T) {
 	disputedOrder := e.order(w.buyerID, disputed, "BTC", stateShipped)
 	w.expect("/disputes", w.buyer, form("order_id", disputedOrder, "reason", "The parcel never arrived at the agreed place."), 303, "")
 	flaggedOrder := e.order(w.otherID, flagged, "BTC", stateCancelled)
+	// This direct fixture represents a legacy cancelled order whose purchase-time listing terms were never recorded.
+	e.mustExec(`UPDATE orders SET listing_title=NULL,listing_description=NULL,listing_kind=NULL WHERE id=$1`, flaggedOrder)
 	if _, err := e.DB.Exec("INSERT INTO payment_addresses(order_id,currency,address,provider) VALUES($1,'BTC','tb1qa265','test')", flaggedOrder); err != nil {
 		t.Fatal(err)
 	}
@@ -230,7 +232,7 @@ func TestDeskOrderRowsLinkTheirListing(t *testing.T) {
 	desk := w.page("/moderator", w.mod, 200)
 	mustContain(t, segment(desk, `<article class="message">`, "Order "+disputedOrder+"<", "</article>"), disputeLink)
 	mustContain(t, segment(desk, `<tr class="payment-review-row">`, `href="/order?id=`+flaggedOrder+`"`, "</tr>"),
-		`<a class="text-link order-listing" href="/product?id=`+flagged+`">A265 flagged listing</a>`)
+		`<span class="order-listing">Listing terms were not recorded for this order</span> <a class="text-link" href="/product?id=`+flagged+`">View current listing</a>`)
 	opens(w.mod, disputed)
 	opens(w.mod, flagged)
 
@@ -240,7 +242,7 @@ func TestDeskOrderRowsLinkTheirListing(t *testing.T) {
 	}
 
 	vendorDesk := w.page("/vendor-dashboard", w.vendor, 200)
-	for id, c := range map[string]struct{ order, title string }{disputed: {disputedOrder, "A265 disputed listing"}, flagged: {flaggedOrder, "A265 flagged listing"}} {
+	for id, c := range map[string]struct{ order, title string }{disputed: {disputedOrder, "A265 disputed listing"}, flagged: {flaggedOrder, "Listing terms were not recorded for this order"}} {
 		mustContain(t, segment(vendorDesk, "<tr>", `href="/order?id=`+c.order+`"`, "</tr>"),
 			`<a class="text-link" href="/product?id=`+id+`">Listing<span class="sr-only">: `+c.title+`</span></a>`)
 		opens(w.vendor, id)
