@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { expectNotice, pgpFixture, setRole, signedIn } from './db-helpers';
+import { expectNotice, pgpFixture, setRole, signedIn, submitAndLoad } from './db-helpers';
 import { waitForStyles } from './styles';
 
 // Real server/PostgreSQL and production RPC adapters, deterministic simulated wallet responses.
@@ -63,7 +63,7 @@ test('BTC and XMR: partial payment, intake pause, confirmation, fulfillment and 
     await seller.getByLabel('Stock', { exact: true }).fill('3');
     await seller.getByLabel('Bitcoin reference price').fill('0.001');
     await seller.getByLabel('Monero reference price').fill('0.5');
-    await seller.getByRole('button', { name: 'Publish listing' }).click();
+    await submitAndLoad(seller, seller.getByRole('button', { name: 'Publish listing' }));
     await buyer.goto(`/?q=${encodeURIComponent(title)}`);
     await buyer.getByRole('link', { name: title, exact: true }).click();
     await buyer.waitForURL(/\/product\?id=/);
@@ -194,13 +194,13 @@ test('funded dispute: encrypted moderator evidence, independent resolution and o
   const profile = moderator.locator('form', { has: moderator.getByRole('button', { name: 'Save profile' }) });
   await profile.getByLabel('PGP public key', { exact: true }).fill(pgpFixture('recipient.pub.asc'));
   await profile.getByLabel('Current password', { exact: true }).fill('wallet-browser-moderator-password-123'); // A-152
-  await profile.getByRole('button', { name: 'Save profile' }).click();
+  await submitAndLoad(moderator, profile.getByRole('button', { name: 'Save profile' }));
   await buyer.goto('/account');
   const refundAddress = 'bcrt1qfixturebuyerrefund00000000';
   const addressForm = buyer.locator('form', { has: buyer.getByRole('button', { name: 'Save BTC address' }) });
   await addressForm.locator('input[name="address"]').fill(refundAddress);
   await addressForm.getByLabel('Current password', { exact: true }).fill('wallet-browser-buyer-password-123');
-  await addressForm.getByRole('button').click();
+  await submitAndLoad(buyer, addressForm.getByRole('button'));
   await buyer.goto('/?q=Wallet%20BTC%20journey');
   await buyer.getByRole('link', { name: 'Wallet BTC journey', exact: true }).click();
   await buyer.getByRole('link', { name: 'Review order draft' }).click();
@@ -220,7 +220,7 @@ test('funded dispute: encrypted moderator evidence, independent resolution and o
   await buyer.getByText('Open a dispute', { exact: true }).click();
   await expect(buyer.getByLabel('Describe the issue')).toHaveAccessibleDescription(/^Stored unencrypted\..*Never include an address, real name or tracking number.*Contact dispute staff/);
   await buyer.getByLabel('Describe the issue').fill('Please review the encrypted evidence sent to the independent moderator.');
-  await buyer.getByRole('button', { name: 'Submit dispute' }).click();
+  await submitAndLoad(buyer, buyer.getByRole('button', { name: 'Submit dispute' }));
   await buyer.goto(orderURL);
   await expect(buyer.locator('.page-head .badge')).toHaveText('Disputed');
   await fitsAt(buyer, 'disputed order');
@@ -235,7 +235,7 @@ test('funded dispute: encrypted moderator evidence, independent resolution and o
   await staff.getByRole('link', { name: 'Message wallet_moderator' }).click();
   await expect(buyer.getByLabel('Recipient handle', { exact: true })).toHaveValue('wallet_moderator');
   await buyer.getByLabel('PGP encrypted message').fill(pgpFixture('message-to-recipient.asc'));
-  await buyer.getByRole('button', { name: 'Send encrypted text ↗' }).click();
+  await submitAndLoad(buyer, buyer.getByRole('button', { name: 'Send encrypted text ↗' }));
   await moderator.goto('/messages');
   await expect(moderator.locator('article.message pre')).toHaveText(pgpFixture('message-to-recipient.asc').trim());
   await expect(moderator.locator('.pgp-message-status')).toContainText('to recipient’s key');
@@ -251,7 +251,7 @@ test('funded dispute: encrypted moderator evidence, independent resolution and o
   await moderator.getByRole('checkbox', { name: 'I checked the amount and who receives it for the outcome I chose. Resolving is final.' }).check();
   // A-32: resolving queues the payout, so it needs the moderator's current password.
   await moderator.locator('form[action="/resolve"]').getByLabel('Current password', { exact: true }).fill('wallet-browser-moderator-password-123');
-  await moderator.getByRole('button', { name: 'Resolve dispute' }).click();
+  await submitAndLoad(moderator, moderator.getByRole('button', { name: 'Resolve dispute' }));
   await buyer.goto(orderURL);
   await expect(buyer.locator('.page-head .badge')).toHaveText('Resolved');
   const refunds = async () => ((await (await request.get(`${rpc}/test/state`)).json()).payouts as any[]).filter(p => p.address === refundAddress);
@@ -384,7 +384,7 @@ test('automatic digital delivery and administrator recovery of a rejected payout
     await vendor.getByRole('link', { name: 'Edit Wallet XMR journey', exact: true }).click();
     const content = 'Private automatically delivered fixture download token';
     await vendor.getByLabel('Automatic delivery content').fill(content);
-    await vendor.getByRole('button', { name: 'Save changes' }).click();
+    await submitAndLoad(vendor, vendor.getByRole('button', { name: 'Save changes' }));
     await buyer.goto('/?q=Wallet%20XMR%20journey');
     await buyer.getByRole('link', { name: 'Wallet XMR journey', exact: true }).click();
     await expect(buyer.locator('main')).not.toContainText(content);

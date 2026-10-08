@@ -27,7 +27,7 @@ test('register, draft, profile persistence and session boundaries', async ({ pag
   await submitAndLoad(page, page.getByRole('button', { name: 'Save profile' }));
   await page.reload();
   await expect(page.getByLabel('XMPP address')).toHaveValue(`${handle}@example.test`);
-  await page.getByRole('button', { name: 'Sign out', exact: true }).click();
+  await submitAndLoad(page, page.getByRole('button', { name: 'Sign out', exact: true }));
   await page.goto('/account');
   await expect(page).toHaveURL(/\/login\?next=%2Faccount$/);
   await page.getByLabel('Handle', { exact: true }).fill(handle);
@@ -37,7 +37,7 @@ test('register, draft, profile persistence and session boundaries', async ({ pag
   await page.goto('/login');
   await page.getByLabel('Handle', { exact: true }).fill(handle);
   await page.getByLabel('Password', { exact: true }).fill(password);
-  await page.getByRole('button', { name: 'Sign in' }).click();
+  await submitAndLoad(page, page.getByRole('button', { name: 'Sign in' }));
   await page.goto('/account');
   await expect(page.getByLabel('XMPP address')).toHaveValue(`${handle}@example.test`);
   const activity = page.getByRole('region', { name: 'Recent activity' });
@@ -51,7 +51,7 @@ test('register, draft, profile persistence and session boundaries', async ({ pag
   await otherPage.goto('/login');
   await otherPage.getByLabel('Handle', { exact: true }).fill(handle);
   await otherPage.getByLabel('Password', { exact: true }).fill(password);
-  await otherPage.getByRole('button', { name: 'Sign in' }).click();
+  await submitAndLoad(otherPage, otherPage.getByRole('button', { name: 'Sign in' }));
   await otherPage.goto('/account');
   await expect(otherPage).toHaveURL(/\/account$/);
   // A-157: both sessions are listed with their start time; each browser sees its own marked.
