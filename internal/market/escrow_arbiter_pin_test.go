@@ -70,6 +70,15 @@ func TestEscrowArbiterAccountKeyPinUpgradeAndSubstitution(t *testing.T) {
 	if err != nil || a.escrow.Load() != nil || !strings.Contains(logs.String(), keyMismatchLog) {
 		t.Fatalf("same-fingerprint key substitution was not refused: err=%v logs=%s", err, logs.String())
 	}
+	var healthClass string
+	if err = a.db.QueryRow("SELECT disabled_class FROM bitcoin_escrow_health WHERE singleton").Scan(&healthClass); err != nil || healthClass != "arbiter_key_mismatch" {
+		t.Fatalf("same-fingerprint key substitution health class %q (err=%v)", healthClass, err)
+	}
+	e := &testEnv{t: t, A: a, DB: a.db}
+	_, adminSession := e.user("escrow_key_pin_admin", "admin")
+	if page := e.do("GET", "/admin", adminSession, nil).Body.String(); !strings.Contains(page, "arbiter_key_mismatch") {
+		t.Fatal("admin Payment providers did not show the safe arbiter-key mismatch health class")
+	}
 	if err = a.db.QueryRow("SELECT value FROM settings WHERE key=$1", arbiterKeyPin).Scan(&pin); err != nil || pin != want {
 		t.Fatalf("substitution changed key pin to %q (err=%v)", pin, err)
 	}

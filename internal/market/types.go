@@ -727,6 +727,7 @@ type EscrowChainMismatch struct {
 // pooled rpcwhitelist methods it should be restricted to; and (A-441, escrow_stall.go) why the Tor-mode gate holds
 // broadcasts and the settlements queued or stuck.
 type EscrowNodeView struct {
+	Configured      bool
 	NotSynced       string
 	NotReady        string // Monero escrow only: the state its startup checks left it in while not ready (escrowXMR.notReady), with Remedy
 	Remedy          string
@@ -743,11 +744,11 @@ type EscrowNodeView struct {
 
 // EscrowHealthView is the persisted, allowlisted Bitcoin escrow node summary shown under Payment providers (A-451).
 type EscrowHealthView struct {
-	Enabled                        bool
-	DisabledClass, LastPass, Chain string
-	Height, PinMatch               string
-	KeypoolHighWater               string
-	HighestMarketIndex             int64
+	Enabled                                       bool
+	DisabledClass, LastPass, StatusUpdated, Chain string
+	Height, PinMatch                              string
+	KeypoolHighWater                              string
+	HighestMarketIndex                            int64
 }
 
 // EscrowStallView is a broadcast settlement whose transaction the watch-only wallet has not seen (escrow_stall.go): the
