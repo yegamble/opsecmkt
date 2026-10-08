@@ -29,7 +29,7 @@
 {{template "payment-status:checkout" $}}
 </section>
 <section class="panel">
-<h2>Order summary</h2>{{if eq .Kind "service"}}<p class="order-unavailable" role="note">This legacy service listing is no longer available for new orders. Existing orders keep their recorded service history; ask the vendor to offer a supported physical or digital listing instead.</p>{{else}}{{if $.VendorKeyUnusable}}
+<h2>Order summary</h2>{{if eq .Kind "service"}}<p class="order-unavailable" role="note">This legacy service listing is no longer available for new orders. Existing orders and their history remain readable; ask the vendor to offer a supported physical or digital listing instead.</p>{{else}}{{if $.VendorKeyUnusable}}
 <p class="order-unavailable" role="note">
 <strong>No usable key.</strong> {{.Vendor}} has no usable encryption key, so you could not send a shipping address. You can save a draft, but payment stays unavailable until they add one.</p>{{end}}{{with $.VendorSuspensionReason}}<p class="order-unavailable" role="note">{{.}}</p>{{end}}{{template "purchase-blocks" $}}{{if not $.NoPurchase}}
 {{if .BTCOrderUnavailable}}<p class="order-unavailable" role="note">{{.BTCOrderUnavailable}}</p>{{end}}{{if .XMROrderUnavailable}}<p class="order-unavailable" role="note">{{.XMROrderUnavailable}}</p>{{end}}

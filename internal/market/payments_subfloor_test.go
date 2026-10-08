@@ -18,7 +18,7 @@ func TestLegacyServiceCannotBeOrderedOrFunded(t *testing.T) {
 	if _, err := p.DB.Exec("UPDATE products SET kind='service' WHERE id=$1", p.productID); err != nil {
 		t.Fatal(err)
 	}
-	const unavailable = "This legacy service listing is no longer available for new orders. Existing orders keep their recorded service history; ask the vendor to offer a supported physical or digital listing instead."
+	const unavailable = "This legacy service listing is no longer available for new orders. Existing orders and their history remain readable; ask the vendor to offer a supported physical or digital listing instead."
 	for _, path := range []string{"/product?id=" + p.productID, "/checkout?id=" + p.productID} {
 		page := p.page(path, p.buyerSess)
 		if !strings.Contains(page, unavailable) || strings.Contains(page, `action="/orders"`) || strings.Contains(page, `href="/checkout?id=`) {

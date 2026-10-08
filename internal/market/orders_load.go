@@ -87,7 +87,7 @@ func viewerTransitions(payments map[string]PaymentProvider, netAdj string, o *Or
 		t := Transition{To: to, Label: transitionLabel(o.State, to), Action: action}
 		if to == stateAwaitingPayment && o.Kind == "service" {
 			t.Action = ""
-			t.Label = "This legacy service order cannot request a new payment address. Existing service orders remain in history; cancel or dispute this order as appropriate."
+			t.Label = "This legacy service order cannot request a new payment address. Existing orders and their history remain readable; cancel or dispute this order as appropriate."
 		} else if to == stateAwaitingPayment && payments[o.Currency] == nil {
 			t.Action = ""
 			t.Label = "Payment unavailable for " + o.Currency + ": no " + o.Currency + " " + netAdj + " wallet is available on this server (not configured, or temporarily unreachable)."
