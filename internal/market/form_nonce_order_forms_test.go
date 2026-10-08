@@ -38,7 +38,11 @@ func TestFormNonceDraftDisputeReplyAndReviewFormsReplay(t *testing.T) {
 	disputeOrder := e.order(buyerID, product, "BTC", statePaid)
 	disputes := e.do("GET", "/disputes", buyer, nil)
 	e.check(disputes, 200)
-	disputeForm := url.Values{"order_id": {disputeOrder}, "reason": {"The delivered item does not match the listing."}, formNonceField: {renderedFormNonce(t, disputes.Body.String(), "/disputes")}}
+	// Both entry points must render a nonce; exercise the inline order form that the wallet journey uses.
+	renderedFormNonce(t, disputes.Body.String(), "/disputes")
+	inlineDispute := e.do("GET", orderPage(disputeOrder), buyer, nil)
+	e.check(inlineDispute, 200)
+	disputeForm := url.Values{"order_id": {disputeOrder}, "reason": {"The delivered item does not match the listing."}, formNonceField: {renderedFormNonce(t, inlineDispute.Body.String(), "/disputes")}}
 	if submissionCount(t, e) != 1 {
 		t.Fatal("rendering the disputes page wrote a form receipt")
 	}

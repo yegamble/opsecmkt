@@ -120,6 +120,7 @@
 <summary class="accent mono">{{.Label}}</summary>
 <form class="stack" method="post" action="{{.Action}}">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+{{with formNonce .Action}}<input type="hidden" name="form_nonce" value="{{.}}">{{end}}
 <input type="hidden" name="order_id" value="{{$o.ID}}">
 <label>Describe the issue<textarea name="reason" required minlength="20" maxlength="5000" aria-describedby="dispute-help">
 </textarea>
