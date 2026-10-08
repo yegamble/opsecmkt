@@ -127,6 +127,10 @@ func purchaseGateLoader(ctx context.Context, a *App, _ *http.Request, d *PageDat
 		d.NoPurchase = true
 		return nil
 	}
+	if d.Product.Kind == "service" {
+		d.NoPurchase = true
+		return nil
+	}
 	for _, coin := range []string{"BTC", "XMR"} {
 		if d.Settings[paymentIntakeKey(coin)] != intakeEscrow {
 			continue

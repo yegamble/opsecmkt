@@ -32,15 +32,18 @@ func orderDraftAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, fail(400, "Choose BTC or XMR")
 	}
 	var btc, xmr int64
-	var vendor string
+	var vendor, kind string
 	var stock int
 	var archived bool
-	err := tx.QueryRowContext(ctx, "SELECT btc,xmr,vendor_id,stock,archived FROM products WHERE id=$1", f.Get("product_id")).Scan(&btc, &xmr, &vendor, &stock, &archived)
+	err := tx.QueryRowContext(ctx, "SELECT btc,xmr,vendor_id,kind,stock,archived FROM products WHERE id=$1", f.Get("product_id")).Scan(&btc, &xmr, &vendor, &kind, &stock, &archived)
 	if err != nil || stock < 1 {
 		return actionResult{}, fail(400, "Product unavailable")
 	}
 	if archived {
 		return actionResult{}, fail(400, "This listing is archived and accepts no new orders.")
+	}
+	if kind == "service" {
+		return actionResult{}, fail(409, "This legacy service listing cannot accept new orders. Existing orders keep their recorded service history; ask the vendor to offer a supported physical or digital listing instead. Nothing was changed.")
 	}
 	if vendor == c.User.ID {
 		return actionResult{}, fail(400, "You cannot order your own listing")
@@ -50,6 +53,15 @@ func orderDraftAction(c *actionCtx) (actionResult, error) {
 	}
 	if err = lockNewIntake(c, "", vendor, true); err != nil {
 		return actionResult{}, err
+	}
+	// The listing editor takes the vendor account lock before changing the product. Recheck its kind after the same
+	// account lock and hold the row shared through the draft insert, so a concurrent legacy-service conversion cannot
+	// slip a new unsupported order through the initial read.
+	if err = tx.QueryRowContext(ctx, "SELECT kind FROM products WHERE id=$1 FOR SHARE", f.Get("product_id")).Scan(&kind); err != nil {
+		return actionResult{}, err
+	}
+	if kind == "service" {
+		return actionResult{}, fail(409, "This legacy service listing cannot accept new orders. Existing orders keep their recorded service history; ask the vendor to offer a supported physical or digital listing instead. Nothing was changed.")
 	}
 	// A-444: while the currency is escrow only, a listing that cannot use its escrow takes no draft in it.
 	if err = c.A.purchaseBlock(ctx, tx, f.Get("product_id"), currency); err != nil {

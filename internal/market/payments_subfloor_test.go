@@ -13,6 +13,51 @@ import (
 
 const subFloorPrice = 5000 // satoshi, below minPayoutBTC; the listing form refuses it, so only legacy rows have it
 
+func TestLegacyServiceCannotBeOrderedOrFunded(t *testing.T) {
+	p := newPayEnv(t)
+	if _, err := p.DB.Exec("UPDATE products SET kind='service' WHERE id=$1", p.productID); err != nil {
+		t.Fatal(err)
+	}
+	const unavailable = "This legacy service listing is no longer available for new orders. Existing orders keep their recorded service history; ask the vendor to offer a supported physical or digital listing instead."
+	for _, path := range []string{"/product?id=" + p.productID, "/checkout?id=" + p.productID} {
+		page := p.page(path, p.buyerSess)
+		if !strings.Contains(page, unavailable) || strings.Contains(page, `action="/orders"`) || strings.Contains(page, `href="/checkout?id=`) {
+			t.Fatalf("%s offers an unsupported service order:\n%s", path, page)
+		}
+	}
+	for _, currency := range []string{"BTC", "XMR"} {
+		w := p.do("POST", "/orders", p.buyerSess, url.Values{"product_id": {p.productID}, "currency": {currency}})
+		if w.Code != 409 || !strings.Contains(w.Body.String(), "cannot accept new orders") {
+			t.Fatalf("new %s service draft: %d %s", currency, w.Code, w.Body.String())
+		}
+		if n := p.count("SELECT count(*) FROM orders WHERE buyer_id=$1 AND product_id=$2 AND currency=$3 AND state='draft'", p.buyer.ID, p.productID, currency); n != 0 {
+			t.Fatalf("refused service listing created %d %s drafts", n, currency)
+		}
+	}
+	btcWallet := &countingWallet{fakeProvider: p.fake}
+	xmrWallet := &countingWallet{fakeProvider: newFakeProvider("XMR", 10)}
+	p.A.payments["BTC"], p.A.payments["XMR"] = btcWallet, xmrWallet
+	stock := p.count("SELECT stock FROM products WHERE id=$1", p.productID)
+	for _, currency := range []string{"BTC", "XMR"} {
+		legacyDraft := p.testEnv.order(p.buyer.ID, p.productID, currency, stateDraft)
+		orderPage := p.page("/order?id="+legacyDraft, p.buyerSess)
+		if !strings.Contains(orderPage, "legacy service order cannot request a new payment address") || strings.Contains(orderPage, `action="/orders/pay"`) {
+			t.Fatalf("legacy service draft offers payment:\n%s", orderPage)
+		}
+		w := p.do("POST", "/orders/pay", p.buyerSess, url.Values{"order_id": {legacyDraft}})
+		if w.Code != 409 || !strings.Contains(w.Body.String(), "legacy service order cannot request") {
+			t.Fatalf("legacy service %s payment request: %d %s", currency, w.Code, w.Body.String())
+		}
+		wallet := btcWallet
+		if currency == "XMR" {
+			wallet = xmrWallet
+		}
+		if wallet.addresses.Load() != 0 || p.count("SELECT count(*) FROM payment_addresses WHERE order_id=$1", legacyDraft) != 0 || p.state(legacyDraft) != stateDraft || p.count("SELECT stock FROM products WHERE id=$1", p.productID) != stock {
+			t.Fatalf("refused legacy service %s funding called the wallet, reserved stock, stored an address or moved the draft", currency)
+		}
+	}
+}
+
 // legacySubFloor prices the payEnv listing and its order at subFloorPrice, as a database from before A-99 may.
 func (p *payEnv) legacySubFloor() {
 	p.t.Helper()

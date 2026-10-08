@@ -222,6 +222,52 @@ func TestListingKindLockedWhileOrdersOpen(t *testing.T) {
 	e.check(e.do("POST", "/listings/update", s, inventoryForm(p, map[string]string{"kind": "digital"})), 303)
 }
 
+func TestLegacyServiceListingRequiresExplicitSupportedKind(t *testing.T) {
+	e := newTestApp(t)
+	owner, s := e.user("legacy_service_owner", "vendor")
+	buyer, _ := e.user("legacy_service_buyer", "buyer")
+	service := e.product(owner, "service")
+	edit := e.do("GET", "/listing-edit?id="+service, s, nil)
+	e.check(edit, 200)
+	body := edit.Body.String()
+	if !strings.Contains(body, `value="" selected disabled>Choose a supported fulfillment type`) || !strings.Contains(body, "Choose Physical or Digital explicitly to convert it") {
+		t.Fatalf("legacy service edit does not require an explicit supported type:\n%s", body)
+	}
+	for name, kind := range map[string]string{"omitted": "", "legacy service": "service", "unsupported": "weapon"} {
+		t.Run(name, func(t *testing.T) {
+			f := inventoryForm(service, map[string]string{"kind": kind})
+			if kind == "" {
+				f.Del("kind")
+			}
+			w := e.do("POST", "/listings/update", s, f)
+			if w.Code != 400 {
+				t.Fatalf("unsupported kind save: %d %s", w.Code, w.Body.String())
+			}
+			var got string
+			if err := e.DB.QueryRow("SELECT kind FROM products WHERE id=$1", service).Scan(&got); err != nil || got != "service" {
+				t.Fatalf("refused save changed legacy kind to %q: %v", got, err)
+			}
+		})
+	}
+	open := e.order(buyer, service, "BTC", statePaid)
+	w := e.do("POST", "/listings/update", s, inventoryForm(service, map[string]string{"kind": "physical"}))
+	if w.Code != 409 || !strings.Contains(w.Body.String(), "cannot change while this listing has open orders") {
+		t.Fatalf("conversion with open service order: %d %s", w.Code, w.Body.String())
+	}
+	if got := agStr(e, "SELECT kind FROM products WHERE id=$1", service); got != "service" {
+		t.Fatalf("open order allowed conversion to %q", got)
+	}
+	if got := agStr(e, "SELECT state FROM orders WHERE id=$1", open); got != statePaid {
+		t.Fatalf("open service order history changed to %q", got)
+	}
+	closed := e.product(owner, "service")
+	w = e.do("POST", "/listings/update", s, inventoryForm(closed, map[string]string{"kind": "digital"}))
+	e.check(w, 303)
+	if got := agStr(e, "SELECT kind FROM products WHERE id=$1", closed); got != "digital" {
+		t.Fatalf("explicit conversion stored kind %q", got)
+	}
+}
+
 func TestArchiveHidesListingAndRefusesDrafts(t *testing.T) {
 	e := newTestApp(t)
 	owner, s := e.user("inv_archive", "vendor")
