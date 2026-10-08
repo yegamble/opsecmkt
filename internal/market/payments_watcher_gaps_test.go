@@ -626,7 +626,7 @@ func TestEnqueuePayoutCreditsOnlyWhatItPays(t *testing.T) {
 	if amt != 107000 && !flagged {
 		t.Fatalf("confirmed deposit tx-extra lost: refund amount=%d, tx-extra credited=%v flagged=%v", amt, credited, flagged)
 	}
-	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE '%deposit tx-extra (%) arrived after this order was settled and was not paid out%'", p.order); amt != 107000 && n != 1 {
+	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE '%deposit tx-extra output 1 (0.00007 BTC) arrived after this order was settled and was not paid out%'", p.order); amt != 107000 && n != 1 {
 		t.Fatalf("not-paid-out flag events for tx-extra: %d", n)
 	}
 }

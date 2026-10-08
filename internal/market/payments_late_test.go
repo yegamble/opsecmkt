@@ -78,7 +78,7 @@ func TestLateTopUpAfterUnderpaidRefundIsDisclosed(t *testing.T) {
 	if n := p.count("SELECT count(*) FROM payouts WHERE order_id=$1", p.order); n != 1 || len(p.fake.Sends()) != 1 {
 		t.Fatalf("payouts %d sends %d", n, len(p.fake.Sends()))
 	}
-	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE '%deposit tx-topup (0.0006 BTC) arrived after this order was settled and was not paid out. Moderator review required.'", p.order); n != 1 {
+	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE '%deposit tx-topup output 0 (0.0006 BTC) arrived after this order was settled and was not paid out. Moderator review required.'", p.order); n != 1 {
 		t.Fatalf("flag notes %d", n)
 	}
 	// The catalog no longer promises that deposits after a cancellation are refunded.
@@ -202,6 +202,9 @@ func TestLateDepositFloodIsAnnouncedOnce(t *testing.T) {
 	if n := p.lateNotices(p.buyer.ID, p.order); n != 1 {
 		t.Fatalf("buyer notices %d", n)
 	}
+	if n := p.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE $2", p.buyer.ID, "Order "+p.order[:8]+": 0.0006 BTC (TESTNET) arrived at this order's deposit address after the order closed%"); n != 1 {
+		t.Fatalf("buyer notice for the three deposits that opened the episode: %d", n)
+	}
 	if n := p.allReviewNotices(p.order); n != 2 {
 		t.Fatalf("staff notices %d", n)
 	}
@@ -215,7 +218,7 @@ func TestLateDepositFloodIsAnnouncedOnce(t *testing.T) {
 	confirmedFigure(t, body, "0")
 	// Every flagged deposit is named in an order note, so the desk shows when it was flagged.
 	for _, tx := range []string{"tx-f1", "tx-f2", "tx-f3", "tx-f4", "tx-f5"} {
-		if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE $2", p.order, "%deposit "+tx+" (%Moderator review required."); n != 1 {
+		if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE $2", p.order, "%deposit "+tx+" output 0 (0.0002 BTC)%Moderator review required."); n != 1 {
 			t.Fatalf("flag notes for %s: %d", tx, n)
 		}
 	}
