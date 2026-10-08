@@ -17,6 +17,8 @@ work=$(mktemp -d "${TMPDIR:-/tmp}/opsecmkt-a144.XXXXXX")
 deploy="$work/deployment"
 runtime="$work/runtime"
 project="a144-$(python3 -c 'import secrets; print(secrets.token_hex(5))')"
+alpha1_app_image_ref="$project-alpha1-app"
+current_app_image_ref="$project-current-app"
 db_password=$(python3 -c 'import secrets; print(secrets.token_hex(24))')
 setup_token=$(python3 -c 'import secrets; print(secrets.token_hex(24))')
 app_port=$(python3 - <<'PY'
@@ -65,6 +67,9 @@ cleanup() {
         "${containers:-none}" "${volumes:-none}" "${networks:-none}" >&2
       cat "$cleanup_log" >&2 || true
     fi
+    for image in "$alpha1_app_image_ref" "$current_app_image_ref"; do
+      if docker image inspect "$image" >/dev/null 2>&1; then docker image rm "$image" >/dev/null || status=1; fi
+    done
   fi
   if [[ -z $containers$volumes$networks ]]; then rm -rf "$work"; else echo "Retained rehearsal files at $work" >&2; fi
   exit "$status"
@@ -95,7 +100,8 @@ db_sql() {
 
 # Hash every persistent table row and sequence state in public, in stable table/row order. This includes audit
 # history and migration records while ignoring connection-local state. No application writes run during either
-# measurement, so equality proves the side-by-side restore did not alter the upgraded database's contents.
+# measurement. The alpha.1 rollback server only points at the restored database, then is stopped before the
+# second measurement. Equality proves the side-by-side restore did not alter upgraded data or audit history.
 database_hash() {
   local database=$1
   compose exec -T db psql -X -q -A -t -F '' -v ON_ERROR_STOP=1 -U opsecmkt -d "$database" <<'SQL' |
@@ -106,7 +112,7 @@ SELECT format(
   schemaname, tablename
 )
 FROM pg_catalog.pg_tables
-WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
+WHERE schemaname = 'public'
 ORDER BY schemaname, tablename
 \gexec
 SELECT format(
@@ -115,11 +121,26 @@ SELECT format(
   schemaname, sequencename
 )
 FROM pg_catalog.pg_sequences
-WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
+WHERE schemaname = 'public'
 ORDER BY schemaname, sequencename
 \gexec
 SQL
   python3 -c 'import hashlib,sys; h=hashlib.sha256(); [h.update(row) for row in sys.stdin.buffer]; print(h.hexdigest())'
+}
+
+app_image_id() {
+  local container
+  container=$(compose ps -q app)
+  [[ -n $container ]] || { echo 'The app service has no running container' >&2; return 1; }
+  docker inspect --format '{{.Image}}' "$container"
+}
+
+tor_hostname() {
+  compose exec -T tor cat /var/lib/tor/marketplace/hostname | tr -d '\r\n'
+}
+
+tor_identity_hash() {
+  compose exec -T tor sha256sum /var/lib/tor/marketplace/hs_ed25519_secret_key | awk '{print $1}'
 }
 
 wait_http() {
@@ -145,6 +166,7 @@ tar -xf "$old_archive" -C "$deploy"
 cat > "$deploy/compose.a144-offline.yaml" <<'YAML'
 services:
   app:
+    image: ${A144_APP_IMAGE:?A144_APP_IMAGE must name this test project's app image}
     ports:
       - "127.0.0.1:${A144_APP_PORT}:8080"
   tor:
@@ -157,6 +179,7 @@ cat > "$deploy/.env" <<EOF
 COMPOSE_PROJECT_NAME=$project
 COMPOSE_FILE=compose.yaml:compose.tor.yaml:compose.internal-db.yaml:compose.a144-offline.yaml
 COMPOSE_PROFILES=internal-db
+A144_APP_IMAGE=$alpha1_app_image_ref
 APP_MODE=tor
 APP_PORT=$app_port
 A144_APP_PORT=$app_port
@@ -176,6 +199,10 @@ for _ in {1..60}; do
   sleep 1
 done
 compose exec -T tor test -s /var/lib/tor/marketplace/hostname
+alpha1_tor_hostname=$(tor_hostname)
+alpha1_tor_identity_hash=$(tor_identity_hash)
+[[ $alpha1_tor_hostname == *.onion && $alpha1_tor_identity_hash =~ ^[[:xdigit:]]{64}$ ]]
+alpha1_app_image_id=$(app_image_id)
 
 echo 'Seeding alpha.1 users, listing and order through the old HTTP forms'
 A144_BASE="$base" A144_SETUP_TOKEN="$setup_token" A144_SEED="$seed" python3 - <<'PY'
@@ -251,11 +278,16 @@ replace_source "$current_archive"
 age-keygen -o "$work/identity" >"$work/age-keygen.log" 2>&1
 chmod 600 "$work/identity"
 recipient=$(age-keygen -y "$work/identity")
-if ! (cd "$deploy" && AGE_RECIPIENT="$recipient" scripts/install.sh upgrade) >"$work/upgrade.log" 2>&1; then
+if ! (cd "$deploy" && AGE_RECIPIENT="$recipient" A144_APP_IMAGE="$current_app_image_ref" \
+  scripts/install.sh upgrade) >"$work/upgrade.log" 2>&1; then
   cat "$work/upgrade.log" >&2
   exit 1
 fi
 wait_http
+upgraded_app_image_id=$(app_image_id)
+[[ $upgraded_app_image_id != "$alpha1_app_image_id" ]] || { echo 'The current app image did not change from alpha.1' >&2; exit 1; }
+[[ $(tor_hostname) == "$alpha1_tor_hostname" ]] || { echo 'The Tor hostname changed during upgrade' >&2; exit 1; }
+[[ $(tor_identity_hash) == "$alpha1_tor_identity_hash" ]] || { echo 'The Tor identity key changed during upgrade' >&2; exit 1; }
 [[ $(db_sql opsecmkt -c "SELECT count(*) FROM products WHERE title='${seed} alpha.1 item'") == 1 ]]
 [[ $(db_sql opsecmkt -c "SELECT count(*) FROM schema_migrations") -gt 0 ]]
 [[ $(db_sql opsecmkt -c "SELECT count(*) FROM orders o JOIN users u ON u.id=o.buyer_id WHERE u.handle='${seed}_buyer' AND o.state='draft'") == 1 ]]
@@ -322,8 +354,13 @@ PY
 
 echo 'Swapping back to alpha.1 in the same Compose directory and serving the restored database'
 replace_source "$old_archive"
-compose up -d --build --wait --wait-timeout 300 app
+compose up -d --wait --wait-timeout 300 app tor
 wait_http
+rollback_app_image_id=$(app_image_id)
+[[ $rollback_app_image_id == "$alpha1_app_image_id" ]] || { echo 'Rollback did not restore the original alpha.1 app image' >&2; exit 1; }
+[[ $rollback_app_image_id != "$upgraded_app_image_id" ]] || { echo 'Rollback is still serving the current app image' >&2; exit 1; }
+[[ $(tor_hostname) == "$alpha1_tor_hostname" ]] || { echo 'The Tor hostname changed during rollback' >&2; exit 1; }
+[[ $(tor_identity_hash) == "$alpha1_tor_identity_hash" ]] || { echo 'The Tor identity key changed during rollback' >&2; exit 1; }
 A144_BASE="$base" A144_HANDLE="${seed}_buyer" A144_PASSWORD='a144 disposable upgrade password' A144_TITLE="${seed} alpha.1 item" python3 - <<'PY'
 import http.cookiejar, os, re, urllib.parse, urllib.request
 base = os.environ['A144_BASE']
@@ -337,6 +374,8 @@ opener.open(base + '/login', data=data, timeout=10).read()
 orders = opener.open(base + '/orders', timeout=10).read().decode()
 assert os.environ['A144_TITLE'] in orders, 'alpha.1 did not serve its restored buyer order'
 PY
+[[ $(db_sql a144_rollback -c "SELECT count(*) FROM orders o JOIN users u ON u.id=o.buyer_id JOIN products p ON p.id=o.product_id WHERE u.handle='${seed}_buyer' AND p.title='${seed} alpha.1 item' AND o.currency='BTC' AND o.status='Draft — payment unavailable'") == 1 ]]
 [[ $(db_sql a144_rollback -c "SELECT count(*) FROM products WHERE title='${seed} alpha.1 item'") == 1 ]]
+compose stop app tor
 [[ $(database_hash opsecmkt) == "$upgraded_snapshot" ]]
 echo 'A-144 offline Tor deployment rehearsal passed; no Tor circuit was tested.'
