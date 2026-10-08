@@ -54,7 +54,8 @@ const restoredHoldPrefix = "Restored from backup:"
 
 // heldForSuspension reports a payout held for an account suspension (suspendedHoldPrefix), including one a
 // restore from backup held again: the restore keeps the suspension text after its own prefix (A-112), so the
-// payout address check is not lost.
+// payout address check is not lost; and one a restore held first, which a later suspension marks by adding its text
+// after the restore's (A-489).
 func heldForSuspension(state, payoutErr string) bool {
 	return state == "held" && (strings.HasPrefix(payoutErr, suspendedHoldPrefix) ||
 		strings.HasPrefix(payoutErr, restoredHoldPrefix) && strings.Contains(payoutErr, " "+suspendedHoldPrefix))
@@ -292,8 +293,12 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 		note = c.A.netTag() + " payout of " + label + " recorded as sent by an administrator after wallet reconciliation."
 		audit = "Marked payout " + strconv.FormatInt(id, 10) + " (" + label + ", was " + state + ") sent with transaction " + txid + " for order " + short
 		if state == "blocked" || heldForHand(state, payoutErr) {
-			note = c.A.netTag() + " payout of " + label + " recorded as sent by hand by an administrator: the recipient had saved no payout address. It will not be sent again."
-			audit += "; paid by hand (the recipient had no payout address); the market did not check the transaction on the chain"
+			why := "the recipient had saved no payout address"
+			if address != "" { // saved after the payout was held (A-489)
+				why = "the recipient had no payout address when it was held"
+			}
+			note = c.A.netTag() + " payout of " + label + " recorded as sent by hand by an administrator: " + why + ". It will not be sent again."
+			audit += "; paid by hand (" + why + "); the market did not check the transaction on the chain"
 		}
 	}
 	if err != nil {

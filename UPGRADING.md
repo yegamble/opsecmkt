@@ -1617,6 +1617,12 @@ suspension and a restore from backup hold such a payout again and keep that reas
 then needs their check as well (the payout-address check, or the wallet check); `scripts/restore.sh` and the manual
 restore SQL above keep the reason too.
 
+An account suspension now also marks a payout held by a restore from backup (A-489; older releases did not, for any
+restored hold): its "Restored from backup:" text is kept first and the suspension's added after it, so releasing it
+needs the payout-address check besides the wallet check (and, for a hand hold, the not-paid confirmation). Before, a
+payout restored without an address, given one by whoever had the account's password, could be released after the
+suspension without the address check.
+
 Development databases only: migration 091 was changed before it was released (the pending-deposit rule was added),
 and a migration that is recorded as applied is never run again, so a development database that applied an earlier
 version of 091 lacks `pooled_pending_deposit` and its watcher query fails there; recreate it. No released database has

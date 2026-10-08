@@ -147,11 +147,16 @@ func adminSuspendAction(c *actionCtx) (actionResult, error) {
 		// the account was suspended for may have changed it (A-102). The watcher's own hold is replaced, since the
 		// watcher lifts that one by itself. A hold for a payout larger than the order price, or one an administrator
 		// made to pay the payout by hand (A-488), is kept after the suspension text, so releasing it still needs that
-		// review or confirmation too. Payouts queued later start held (enqueuePayout).
+		// review or confirmation too. A hold a restore from backup wrote (restoredHoldPrefix) keeps its text first and
+		// gains the suspension's after it, unless it already carries one (A-489): heldForSuspension then asks for the
+		// address check besides the wallet check, and a later restore keeps both. Payouts queued later start held
+		// (enqueuePayout).
 		heldRes, err := tx.ExecContext(ctx, `UPDATE payouts SET state='held',updated=now(),
-			error=CASE WHEN state='held' AND (error LIKE $4 || '%' OR error LIKE $5 || '%') THEN $2 || ' ' || error ELSE $2 END
-			WHERE user_id=$1 AND (state IN ('pending','blocked') OR (state='held' AND (error=$3 OR error LIKE $4 || '%' OR error LIKE $5 || '%')))`,
-			target, suspendedHold, heldReason, largeHoldPrefix, handHoldPrefix)
+			error=CASE WHEN state='held' AND error LIKE $6 || '%' THEN error || ' ' || $2
+				WHEN state='held' AND (error LIKE $4 || '%' OR error LIKE $5 || '%') THEN $2 || ' ' || error ELSE $2 END
+			WHERE user_id=$1 AND (state IN ('pending','blocked') OR (state='held' AND (error=$3 OR error LIKE $4 || '%' OR error LIKE $5 || '%'
+				OR (error LIKE $6 || '%' AND error NOT LIKE '% ' || $7 || '%'))))`,
+			target, suspendedHold, heldReason, largeHoldPrefix, handHoldPrefix, restoredHoldPrefix, suspendedHoldPrefix)
 		if err != nil {
 			return actionResult{}, err
 		}
