@@ -30,7 +30,10 @@ func TestPooledHandSettleBlockedPayout(t *testing.T) {
 	txid := strings.Repeat("Ab", 32)
 	// The admin page offers it, saying that the market does not check the transaction against the chain.
 	admin := p.page("/admin", p.adminSess)
-	mustContain(t, admin, `href="#resolve-payout-`+id+`"`, `id="resolve-payout-`+id+`"`, "Record sent by hand", "does not check the transaction ID against the chain")
+	mustContain(t, admin, `href="#resolve-payout-`+id+`"`, `id="resolve-payout-`+id+`"`, "Record sent by hand", "does not check the transaction ID against the chain",
+		// A-486 (R2): the safe order is offered and stated: hold, pay, record.
+		`<input type="hidden" name="op" value="hold">`, `<textarea name="note" required minlength="10" maxlength="500"`, `<button type="submit">Hold to pay by hand</button>`,
+		"first hold it here, then pay it from the pooled wallet to an address the recipient gave you through a channel you trust, then record it as sent")
 	before := p.count("SELECT count(*) FROM audit_events")
 	events := p.count("SELECT count(*) FROM order_events WHERE order_id=$1", order)
 	unchanged := func(what string) {
