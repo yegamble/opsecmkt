@@ -123,13 +123,22 @@ func actorRoles(o *Order, u *User) []string {
 }
 
 // orderQuery selects the columns scanOrder reads; append WHERE/ORDER clauses.
-const orderQuery = `SELECT o.id,p.id,p.title,b.handle,v.handle,o.currency,o.amount,o.state,to_char(o.created,'YYYY-MM-DD HH24:MI "UTC"'),p.kind,o.buyer_id,p.vendor_id,to_char(o.updated,'YYYY-MM-DD HH24:MI "UTC"'),EXISTS(SELECT 1 FROM escrows es WHERE es.order_id=o.id) FROM orders o JOIN products p ON p.id=o.product_id JOIN users b ON b.id=o.buyer_id JOIN users v ON v.id=p.vendor_id`
+const orderQuery = `SELECT o.id,p.id,
+	CASE WHEN o.state='draft' THEN p.title ELSE COALESCE(o.listing_title,'Listing terms were not recorded for this order') END,
+	b.handle,v.handle,o.currency,o.amount,o.state,to_char(o.created,'YYYY-MM-DD HH24:MI "UTC"'),
+	CASE WHEN o.state='draft' THEN p.kind ELSE COALESCE(o.listing_kind,p.kind) END,
+	o.buyer_id,p.vendor_id,to_char(o.updated,'YYYY-MM-DD HH24:MI "UTC"'),
+	EXISTS(SELECT 1 FROM escrows es WHERE es.order_id=o.id),
+	CASE WHEN o.state='draft' THEN p.kind ELSE COALESCE(o.listing_kind,'Not recorded') END,
+	CASE WHEN o.state='draft' THEN p.description ELSE COALESCE(o.listing_description,'') END,
+	o.listing_title IS NOT NULL
+	FROM orders o JOIN products p ON p.id=o.product_id JOIN users b ON b.id=o.buyer_id JOIN users v ON v.id=p.vendor_id`
 
 func scanOrder(s interface{ Scan(...any) error }) (Order, error) {
 	var o Order
 	var n int64
 	// Escrow: the order has an escrows row (escrow checkout, escrow_create.go); every other order is pooled.
-	err := s.Scan(&o.ID, &o.ProductID, &o.Title, &o.Buyer, &o.Vendor, &o.Currency, &n, &o.State, &o.Created, &o.Kind, &o.BuyerID, &o.VendorID, &o.Updated, &o.Escrow)
+	err := s.Scan(&o.ID, &o.ProductID, &o.Title, &o.Buyer, &o.Vendor, &o.Currency, &n, &o.State, &o.Created, &o.Kind, &o.BuyerID, &o.VendorID, &o.Updated, &o.Escrow, &o.KindDisplay, &o.Description, &o.ListingRecorded)
 	dec := 8
 	if o.Currency == "XMR" {
 		dec = 12

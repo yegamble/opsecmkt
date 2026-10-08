@@ -11,7 +11,7 @@ an archived listing opens by the order page's rule (A-164). */}}
 <div class="message-meta">{{if $readable}}<a class="text-link" href="/order?id={{.OrderID}}">Order {{.OrderID}}</a>{{else}}<span class="mono">Order {{.OrderID}}</span>{{end}}
 <span class="badge">{{.Status}}</span>
 </div>{{if $o.ID}}<p class="dispute-order">
-<strong>{{if $readable}}<a class="text-link" href="/product?id={{$o.ProductID}}">{{$o.Title}}</a>{{else}}{{$o.Title}}{{end}}</strong> · price {{$o.Amount}} {{$o.Currency}} · {{$o.Kind}}<br>
+<strong>{{if $readable}}<a class="text-link" href="/product?id={{$o.ProductID}}">{{$o.Title}}</a>{{else}}{{$o.Title}}{{end}}</strong> · price {{$o.Amount}} {{$o.Currency}} · {{if $o.KindDisplay}}{{$o.KindDisplay}}{{else}}{{$o.Kind}}{{end}}<br>
 <span class="muted">Buyer {{$o.Buyer}} · vendor {{$o.Vendor}} · order state</span> <span class="badge {{template "order-badge-class" $o.State}}">{{$o.Status}}</span>
 </p>{{end}}
 <p class="dispute-text">{{.Reason}}</p>

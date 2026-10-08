@@ -313,8 +313,16 @@ func (e *testEnv) product(vendorID, kind string) string {
 func (e *testEnv) order(buyerID, productID, currency, state string) string {
 	e.t.Helper()
 	id := randomToken()
-	if _, err := e.DB.Exec(`INSERT INTO orders(id,buyer_id,product_id,currency,amount,state) VALUES($1,$2,$3,$4,100000,$5)`, id, buyerID, productID, currency, state); err != nil {
+	res, err := e.DB.Exec(`INSERT INTO orders(id,buyer_id,product_id,currency,amount,state,listing_title,listing_description,listing_kind)
+		SELECT $1,$2,p.id,$3,100000,$4,
+		CASE WHEN $4='draft' THEN NULL ELSE p.title END,
+		CASE WHEN $4='draft' THEN NULL ELSE p.description END,
+		CASE WHEN $4='draft' THEN NULL ELSE p.kind END FROM products p WHERE p.id=$5`, id, buyerID, currency, state, productID)
+	if err != nil {
 		e.t.Fatal(err)
+	}
+	if n, err := res.RowsAffected(); err != nil || n != 1 {
+		e.t.Fatalf("insert order: %d rows: %v", n, err)
 	}
 	return id
 }

@@ -1026,7 +1026,7 @@ func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageDat
 	if d.User == nil || (d.User.Role != "moderator" && d.User.Role != "admin") {
 		return nil
 	}
-	rows, err := a.db.QueryContext(ctx, `WITH v AS (SELECT pm.id,pm.order_id,o.state,pr.id AS product_id,pr.title,pm.currency,pm.amount,pm.txid,pm.idx,pm.credited,pm.locked,pm.confirmations,
+	rows, err := a.db.QueryContext(ctx, `WITH v AS (SELECT pm.id,pm.order_id,o.state,pr.id AS product_id,CASE WHEN o.state='draft' THEN pr.title ELSE COALESCE(o.listing_title,'Listing terms were not recorded for this order') END AS title,pm.currency,pm.amount,pm.txid,pm.idx,pm.credited,pm.locked,pm.confirmations,
 			pm.regress_notice,pm.below_floor,`+paymentFlagOpen("pm")+` AS open,f.at,
 			pm.disposition='escalated' AS escalated,COALESCE(to_char(pm.disposed_at,'YYYY-MM-DD'),'') AS disposed,(o.buyer_id=$2 OR pr.vendor_id=$2) AS party,
 			c.escrow,pm.spent_outside,COALESCE(pm.spent_by,'') AS spent_by,c.counted,pm.escrow_left_out AND NOT pm.after_close AS left_out

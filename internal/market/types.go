@@ -37,6 +37,11 @@ type ProductPhoto struct {
 type Order struct {
 	ID, ProductID, Title, Buyer, Vendor, Currency, Amount, Status, Created string
 	State, Kind, BuyerID, VendorID, Updated                                string
+	// Listing snapshot is captured only when the draft first requests payment. Kind remains
+	// operational (live for earlier orders with no snapshot); KindDisplay never invents
+	// historical terms for those orders. Description is rendered only on an authorized order.
+	KindDisplay, Description string
+	ListingRecorded          bool
 	// Escrow: settled through a per-order escrow instead of the pooled wallet (settleTerminal, escrowOnly): the order
 	// has an escrows row (WR-escrow Phase 1, escrow_create.go), of either coin (btcEscrow).
 	Escrow bool

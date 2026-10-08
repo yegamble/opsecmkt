@@ -19,7 +19,11 @@
 <div>
 <dt>Listing</dt>
 <dd><a class="text-link" href="/product?id={{.ProductID}}">{{.Title}}</a>
-<span class="help">Listing as it is now; it may have changed since purchase.</span></dd>
+<span class="help">Listing as it is now; it may have changed since purchase. The title above is {{if eq .State "draft"}}current{{else if .ListingRecorded}}the one saved when payment was requested{{else}}not recorded for this order{{end}}.</span></dd>
+</div>
+<div>
+<dt>{{if eq .State "draft"}}Current description{{else}}Description at payment request{{end}}</dt>
+<dd class="dispute-text">{{if or .ListingRecorded (eq .State "draft")}}{{if .Description}}{{.Description}}{{else}}No description{{end}}{{else}}Not recorded{{end}}</dd>
 </div>
 <div>
 <dt>Created</dt>
@@ -39,7 +43,7 @@
 </div>
 <div>
 <dt>Fulfillment</dt>
-<dd>{{.Kind}}</dd>
+<dd>{{if .KindDisplay}}{{.KindDisplay}}{{else}}{{.Kind}}{{end}}</dd>
 </div>
 <div>
 <dt>Status</dt>

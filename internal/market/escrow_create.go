@@ -375,7 +375,7 @@ func escrowCheckoutAction(c *actionCtx) (actionResult, error) {
 	if _, err = c.Tx.ExecContext(ctx, "UPDATE orders o SET amount=p.btc FROM products p WHERE o.id=$1 AND o.state='draft' AND p.id=o.product_id", o.ID); err != nil {
 		return actionResult{}, err
 	}
-	moved, err := a.transition(context.WithValue(ctx, escrowCheckoutCtx{}, true), c.Tx, o.ID, stateDraft, stateAwaitingPayment, c.User, "Escrow address requested")
+	moved, err := a.transition(withCheckoutPrice(context.WithValue(ctx, escrowCheckoutCtx{}, true)), c.Tx, o.ID, stateDraft, stateAwaitingPayment, c.User, "Escrow address requested")
 	if err != nil {
 		return actionResult{}, err
 	}

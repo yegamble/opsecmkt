@@ -147,7 +147,7 @@ func xmrEscrowCheckoutAction(c *actionCtx) (actionResult, error) {
 	if _, err = c.Tx.ExecContext(ctx, "UPDATE orders o SET amount=p.xmr FROM products p WHERE o.id=$1 AND o.state='draft' AND p.id=o.product_id", o.ID); err != nil {
 		return actionResult{}, err
 	}
-	if _, err = a.transition(context.WithValue(ctx, escrowCheckoutCtx{}, true), c.Tx, o.ID, stateDraft, stateAwaitingPayment, c.User, "Monero escrow address requested"); err != nil {
+	if _, err = a.transition(withCheckoutPrice(context.WithValue(ctx, escrowCheckoutCtx{}, true)), c.Tx, o.ID, stateDraft, stateAwaitingPayment, c.User, "Monero escrow address requested"); err != nil {
 		return actionResult{}, err
 	}
 	// The claim: a free slot of the active wallet, by compare-and-set; a slot another checkout holds is skipped.

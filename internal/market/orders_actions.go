@@ -232,7 +232,7 @@ func payAction(c *actionCtx) (actionResult, error) {
 	if _, err = c.Tx.ExecContext(ctx, "UPDATE orders o SET amount=CASE WHEN o.currency='XMR' THEN p.xmr ELSE p.btc END FROM products p WHERE o.id=$1 AND o.state='draft' AND p.id=o.product_id", o.ID); err != nil {
 		return actionResult{}, err
 	}
-	if _, err = c.A.transition(ctx, c.Tx, o.ID, stateDraft, stateAwaitingPayment, c.User, "Payment address requested"); err != nil {
+	if _, err = c.A.transition(withCheckoutPrice(ctx), c.Tx, o.ID, stateDraft, stateAwaitingPayment, c.User, "Payment address requested"); err != nil {
 		return actionResult{}, err
 	}
 	p := c.A.provider(o.Currency)
