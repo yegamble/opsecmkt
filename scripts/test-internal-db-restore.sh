@@ -55,6 +55,25 @@ start_db() {
 }
 restore() { (cd "$root" && scripts/restore.sh "$@"); }
 backup() { (cd "$root" && scripts/backup.sh "$@"); }
+fake_bin="$work/fake-bin"
+mkdir -p "$fake_bin"
+cat > "$fake_bin/docker" <<'SH'
+#!/usr/bin/env sh
+# Model `docker compose exec` forwarding stdin to the command unless the caller disconnects it.
+cat >/dev/null
+printf 'pg_restore (PostgreSQL) 17.6\n'
+SH
+chmod 700 "$fake_bin/docker"
+sed -n '/^selected_pg_restore_version() {/,/^}/p' "$root/scripts/restore.sh" > "$work/selected-pg-restore-version.sh"
+probe=$(PATH="$fake_bin:$PATH" bash -c '
+  root_dir=$1
+  source "$2"
+  selected_pg_restore_version
+  IFS= read -r confirmation
+  printf "|%s" "$confirmation"
+' bash "$root" "$work/selected-pg-restore-version.sh" <<< RESTORE)
+[[ $probe == $'pg_restore (PostgreSQL) 17.6\n|RESTORE' ]] || {
+  echo 'The internal pg_restore version probe consumed the restore confirmation' >&2; exit 1; }
 # id:state:restore marker:send_ambiguous. A failed payout may have been requeued and sent after the backup,
 # so the restore marks it possibly sent.
 payouts="SELECT string_agg(id || ':' || state || ':' || (error LIKE 'Restored from backup:%') || ':' || send_ambiguous, ',' ORDER BY id) FROM payouts"
@@ -78,6 +97,9 @@ AGE_RECIPIENT=$(age-keygen -y "$work/identity")
 # backup.sh without BACKUP_DATABASE_URL dumps through `docker compose exec -T db`.
 AGE_RECIPIENT=$AGE_RECIPIENT backup "$work/backup.dump.age" > "$work/backup.log"
 grep -q 'of internal database opsecmkt saved to' "$work/backup.log"
+if grep -Eq '^[[:space:]]*[0-9]+[[:space:]]*$' "$work/backup.log"; then
+  echo 'backup.sh printed its free-space estimate as an extra output line' >&2; exit 1
+fi
 python3 - "$work/backup.dump.age" <<'PY'
 from pathlib import Path
 import stat, sys

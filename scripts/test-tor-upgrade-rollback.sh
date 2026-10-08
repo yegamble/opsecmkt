@@ -137,14 +137,41 @@ tor_identity_hash() {
 }
 
 refresh_base() {
-  local published
-  published=$(compose port app 8080)
-  app_port=$(printf '%s\n' "$published" | python3 -c 'import ipaddress,sys; line=sys.stdin.read().strip(); host,sep,port=line.rpartition(":"); assert sep and ipaddress.ip_address(host).is_loopback() and port.isdigit(), "Compose did not publish app on loopback"; print(port)')
-  base="http://127.0.0.1:$app_port"
+  local container bindings app_networks app_network_info app_ip network_id
+  container=$(compose ps -q app)
+  [[ -n $container ]] || { echo 'The app service has no running container' >&2; return 1; }
+  bindings=$(docker inspect --format '{{json .HostConfig.PortBindings}}' "$container")
+  [[ $bindings == null || $bindings == '{}' ]] || {
+    echo 'The offline rehearsal unexpectedly published an app port on the host' >&2; return 1; }
+  # Linux Docker hosts can route to a bridge container IP. Use that only in this CI rehearsal;
+  # publishing the app port would weaken the internal-network isolation being tested.
+  app_networks=$(docker inspect --format '{{json .NetworkSettings.Networks}}' "$container")
+  app_network_info=$(compose config --format json | python3 -c '
+import ipaddress, json, sys
+attached = json.loads(sys.argv[1])
+config = json.load(sys.stdin)
+service_networks = config["services"]["app"].get("networks", {})
+assert set(service_networks) == {"backend"}, "app must be attached only to the backend network"
+backend = config["networks"]["backend"]
+assert backend.get("internal") is True, "backend must remain internal"
+expected_name = backend.get("name") or "{}_backend".format(config["name"])
+assert list(attached) == [expected_name], "app runtime network must be the Compose backend network"
+network = attached[expected_name]
+address = ipaddress.ip_address(network["IPAddress"])
+assert address.version == 4 and address.is_private and not address.is_loopback and not address.is_unspecified and not address.is_multicast
+print("{}\t{}".format(address, network["NetworkID"]))
+' "$app_networks")
+  app_ip=${app_network_info%%$'\t'*}
+  network_id=${app_network_info#*$'\t'}
+  [[ -n $app_ip && -n $network_id && $network_id != "$app_network_info" ]] || {
+    echo 'Could not determine the app backend network address' >&2; return 1; }
+  [[ $(docker network inspect --format '{{.Internal}}' "$network_id") == true ]] || {
+    echo 'The app runtime backend network is not internal' >&2; return 1; }
+  base="http://$app_ip:8080"
 }
 
 wait_http() {
-  echo "Waiting for app health at published loopback $base/healthz"
+  echo "Waiting for app health at its internal backend address $base/healthz"
   if ! python3 - "$base" <<'PY'
 import sys, time, urllib.request
 url = sys.argv[1] + '/healthz'
@@ -159,7 +186,7 @@ for _ in range(180):
     except Exception as error:
         last = f'{type(error).__name__}: {error}'
     time.sleep(1)
-raise SystemExit(f'app did not become healthy on the loopback-only test port ({last})')
+raise SystemExit(f'app did not become healthy on the internal backend address ({last})')
 PY
   then
     # These service logs help distinguish a host-published-port problem from an app or database startup failure.
@@ -177,8 +204,6 @@ cat > "$deploy/compose.a144-offline.yaml" <<'YAML'
 services:
   app:
     image: ${A144_APP_IMAGE:?A144_APP_IMAGE must name this test project's app image}
-    ports:
-      - "127.0.0.1::8080"
   tor:
     command: ["--DisableNetwork", "1"]
 networks:

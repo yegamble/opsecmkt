@@ -55,7 +55,10 @@ selected_pg_restore_version() {
   if [[ -n ${RESTORE_DATABASE_URL:-} ]]; then
     python3 "$script_dir/postgres-tool.py" RESTORE_DATABASE_URL pg_restore --version
   else
-    (cd "$root_dir" && docker compose exec -T db pg_restore --version)
+    # This probe runs before the operator's typed confirmation. Keep it from consuming stdin
+    # when the caller provides that confirmation non-interactively (for example, in a recovery
+    # rehearsal using a here-string).
+    (cd "$root_dir" && docker compose exec -T db pg_restore --version </dev/null)
   fi
 }
 # QA5W4B-2, QA5W5B-1: the encoding the dump's text was written in, from the SET client_encoding its script starts with,

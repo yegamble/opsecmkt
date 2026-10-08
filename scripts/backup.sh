@@ -80,7 +80,7 @@ available_kib=$(df -PkP "$output_dir" | awk 'NR == 2 && $4 ~ /^[0-9]+$/ { print 
   echo 'Could not determine free space on the backup destination filesystem.' >&2; exit 1; }
 [[ $available_kib =~ ^[0-9]+$ ]] || {
   echo 'Could not determine free space on the backup destination filesystem.' >&2; exit 1; }
-if ! python3 scripts/postgres-policy.py space "$database_bytes" "$available_kib"; then
+if ! python3 scripts/postgres-policy.py space "$database_bytes" "$available_kib" >/dev/null; then
   echo 'Backup refused before writing an archive.' >&2
   exit 1
 fi
