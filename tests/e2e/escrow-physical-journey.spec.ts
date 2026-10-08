@@ -62,7 +62,7 @@ test('Bitcoin escrow physical order: shipped with a claim address, the vendor si
   await expect(vendor.getByLabel('Fulfillment type')).toHaveValue('physical');
   await expect(vendor.getByLabel('Dispatch within (days)')).toHaveValue('3');
   await tabTo(vendor, vendor.getByLabel('Stock', { exact: true }));
-  await vendor.keyboard.press('Control+A');
+  await vendor.keyboard.press('ControlOrMeta+A');
   await vendor.keyboard.type('20');
   await typeInto(vendor, vendor.getByLabel('Bitcoin reference price'), '0.001');
   await typeInto(vendor, vendor.getByLabel('Monero reference price'), '0.5');
@@ -394,7 +394,7 @@ test('Bitcoin escrow physical order: the administrator sets 7 days, a new order 
     const form = admin.locator('form', { has: admin.getByRole('button', { name: 'Save the release deadline' }) });
     const field = form.getByLabel(/^Release deadline \(whole days/);
     await tabTo(admin, field);
-    await admin.keyboard.press('Control+A');
+    await admin.keyboard.press('ControlOrMeta+A');
     await admin.keyboard.type(days);
     await typeInto(admin, form.getByLabel('Current password'), password);
     expect(await pressSubmit(admin, form.getByRole('button', { name: 'Save the release deadline' }))).toBe(303);
