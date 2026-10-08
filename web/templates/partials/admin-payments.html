@@ -316,6 +316,7 @@ payment reviews): in the Action cell they widened the scrolling table, so at 320
 {{else if or (eq .State "blocked") (eq .State "pending")}}{{if eq .State "pending"}}<p class="help">The market may start sending this queued payout at any moment. To pay it by hand, first hold it here and wait for the successful hold before paying. If the hold is refused because sending started, check the wallet; do not pay it by hand. A successful hold stops the market from sending it. Once you pay it, record it as sent with the wallet's transaction ID.</p>{{else}}<p class="help">The recipient has saved no {{.Currency}} payout address, so the market cannot send this payout. The simplest route is to ask the recipient to save one: the market then sends it once. To pay it by hand instead, first hold it here, then pay it from the pooled wallet to an address the recipient gave you through a channel you trust, then record it as sent with the wallet's transaction ID. A held payout is not sent even if the recipient saves an address meanwhile; an unheld one would be, and your payment would be a second one. Until it is sent or recorded, the pooled wallet cannot be drained.</p>{{end}}
 <form class="stack" method="post" action="/admin/payout">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/admin/payout"}}">
 <input type="hidden" name="payout_id" value="{{.ID}}">
 <input type="hidden" name="op" value="hold">
 <label>Reason for holding it (staff only)<textarea name="note" required minlength="10" maxlength="500" rows="2"></textarea>
@@ -325,6 +326,7 @@ payment reviews): in the Action cell they widened the scrolling table, so at 320
 </form>
 {{else if eq .State "held"}}<form class="stack" method="post" action="/admin/payout">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/admin/payout"}}">
 <input type="hidden" name="payout_id" value="{{.ID}}">
 <input type="hidden" name="op" value="release">
 {{if .AddressCheck}}<p class="help">This payout was held when the recipient's account was suspended: someone with the account's password may have changed its payout address. Payout address: <span class="mono">{{.Address}}</span>. Release only after checking this address with the account owner through a channel you trust. It will be sent once.</p>
@@ -342,6 +344,7 @@ payment reviews): in the Action cell they widened the scrolling table, so at 320
 <button type="submit">Release held payout</button>
 </form>{{else}}<form class="stack" method="post" action="/admin/payout">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/admin/payout"}}">
 <input type="hidden" name="payout_id" value="{{.ID}}">
 <input type="hidden" name="op" value="requeue">
 <p class="help">Requeue only if the wallet shows no transaction to {{.Address}} for this amount; it will be sent once more.</p>
@@ -351,6 +354,7 @@ payment reviews): in the Action cell they widened the scrolling table, so at 320
 </form>{{end}}
 {{if .Repoint}}<form class="stack" method="post" action="/admin/payout">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/admin/payout"}}">
 <input type="hidden" name="payout_id" value="{{.ID}}">
 <input type="hidden" name="op" value="repoint">
 <input type="hidden" name="from_address" value="{{.Address}}">
@@ -362,6 +366,7 @@ payment reviews): in the Action cell they widened the scrolling table, so at 320
 </form>{{end}}
 <form class="stack" method="post" action="/admin/payout">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/admin/payout"}}">
 <input type="hidden" name="payout_id" value="{{.ID}}">
 <input type="hidden" name="op" value="sent">
 <label>Wallet transaction ID<input name="txid" required minlength="64" maxlength="64" pattern="[0-9a-fA-F]{64}" title="Enter the 64-character hexadecimal transaction ID from the wallet." spellcheck="false" autocomplete="off">

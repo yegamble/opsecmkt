@@ -78,6 +78,9 @@ type actionCtx struct {
 	User  *User   // nil for anonymous Public actions
 	Token string  // raw request token: session, or pre-login anon when anonymous (also sessionToken(R))
 	Form  url.Values
+	// ConfirmedFormNonce is set only for an opted-in OwnTx action whose confirmedTx
+	// transaction owns both its mutation and the durable submission receipt.
+	ConfirmedFormNonce bool
 }
 
 func (c *actionCtx) Ctx() context.Context { return c.R.Context() }
@@ -91,10 +94,11 @@ type actionResult struct {
 }
 
 type actionSpec struct {
-	Public    bool     // allow anonymous; skips the write:<user> rate limit
-	Roles     []string // required user roles (implies signed in)
-	OwnTx     bool     // Run opens its own transactions (e.g. bcrypt before any tx); c.Tx is nil, Audit is written without a tx
-	FormNonce bool     // this normal-transaction form records a successful submission and replays its original 303
+	Public             bool     // allow anonymous; skips the write:<user> rate limit
+	Roles              []string // required user roles (implies signed in)
+	OwnTx              bool     // Run opens its own transactions (e.g. bcrypt before any tx); c.Tx is nil, Audit is written without a tx
+	FormNonce          bool     // this normal-transaction form records a successful submission and replays its original 303
+	ConfirmedFormNonce bool     // this confirmed OwnTx form records its receipt in confirmedTx's transaction
 	// Precheck, when set, runs in ServeHTTP after the CSRF check and before the session lookup and the post
 	// slot: a check of the form alone (no database), so a flood of posts it refuses holds no slot (A-178).
 	// Run must still make the same checks; it is also called without Precheck (tests call post directly).
@@ -143,6 +147,9 @@ func registerAction(path string, s actionSpec) {
 	}
 	if s.FormNonce && (s.OwnTx || s.Public) {
 		panic("form nonce requires an authenticated shared-transaction action: " + path)
+	}
+	if s.ConfirmedFormNonce && (!s.OwnTx || s.Public || s.FormNonce || len(s.Roles) == 0) {
+		panic("confirmed form nonce requires a role-gated authenticated OwnTx action: " + path)
 	}
 	actions[path] = s
 }
@@ -492,7 +499,7 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 		if !ok {
 			w.Header().Set("Retry-After", busyRetryAfter)
 			msg := "Your previous request is still being processed. Wait a few seconds, then reload the page to see its result."
-			if spec.FormNonce {
+			if spec.FormNonce || spec.ConfirmedFormNonce {
 				msg = "Your previous request is still being processed. Wait a few seconds, then check its result. If the original form is still open, resubmit it unchanged to retrieve the result."
 			}
 			http.Error(w, msg, http.StatusTooManyRequests)
@@ -508,7 +515,7 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 	}
 	defer release()
 	ctx := r.Context()
-	c := &actionCtx{A: a, W: w, R: r, User: u, Token: token, Form: r.PostForm}
+	c := &actionCtx{A: a, W: w, R: r, User: u, Token: token, Form: r.PostForm, ConfirmedFormNonce: spec.ConfirmedFormNonce}
 	if !spec.OwnTx {
 		tx, err := a.db.BeginTx(ctx, nil)
 		if err != nil {
@@ -561,7 +568,7 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 			msg := "Change outcome unknown: it may have been saved. Reload the relevant page and check the recorded state before taking further action."
 			switch r.URL.Path {
 			case "/admin/payout":
-				msg = "Payout outcome unknown: it may have been saved. Reload the admin page and check the payout state and audit trail before taking further action."
+				msg = "Payout outcome unknown: it may have been saved. Reload the admin page and check the payout state and audit trail before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
 			case "/totp/disable", "/totp/activate", "/totp/recovery":
 				msg = "Authenticator change outcome unknown: it may have been saved. Reload your authenticator settings and check their state before taking further action."
 			}

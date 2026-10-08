@@ -30,7 +30,7 @@ import (
 // hold needs an explicit confirmation that it was not paid by hand.
 
 func init() {
-	registerAction("/admin/payout", actionSpec{Roles: []string{"admin"}, OwnTx: true, Run: adminPayoutAction})
+	registerAction("/admin/payout", actionSpec{Roles: []string{"admin"}, OwnTx: true, ConfirmedFormNonce: true, Run: adminPayoutAction})
 	registerLoader("admin", adminConfirmLoader)
 }
 

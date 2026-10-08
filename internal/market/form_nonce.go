@@ -21,7 +21,7 @@ func init() { registerBackground(formSubmissionSweeper) }
 
 // formNonceFor is called once per opted-in form while rendering HTML. Issuing a nonce writes nothing on GET.
 func formNonceFor(path string) string {
-	if spec, ok := actions[path]; ok && spec.FormNonce {
+	if spec, ok := actions[path]; ok && (spec.FormNonce || spec.ConfirmedFormNonce) {
 		return randomToken()[:32]
 	}
 	return ""

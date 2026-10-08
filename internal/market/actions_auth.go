@@ -131,25 +131,33 @@ var errConfirmPaused = fail(429, "Too many failed password confirmations. Try ag
 // wrong password here, or a wrong code after the right password (confirmCode); a correct confirmation spends nothing.
 // Call it before opening a transaction.
 func (a *App) confirmPassword(ctx context.Context, userID, password string) error {
+	_, err := a.confirmPasswordHash(ctx, userID, password)
+	return err
+}
+
+// confirmPasswordHash returns the hash that bcrypt actually verified. A confirmed form receipt
+// compares it with the account's locked current hash before replaying or making a new change:
+// a password replacement between this read and the transaction must not authorize either.
+func (a *App) confirmPasswordHash(ctx context.Context, userID, password string) (string, error) {
 	if password == "" || len(password) > 72 {
-		return fail(400, "Enter your current password to confirm this change.")
+		return "", fail(400, "Enter your current password to confirm this change.")
 	}
 	// A spent budget is refused before a slot is taken, so it never runs bcrypt or keeps other checks waiting.
 	key := "confirm:" + userID
 	if a.limited(key, 10) {
-		return errConfirmPaused
+		return "", errConfirmPaused
 	}
 	// The slot is taken before the attempt is counted, so a busy refusal spends none of the user's budget.
 	select {
 	case passwordWork <- struct{}{}:
 	default:
-		return fail(503, "Authentication is busy. Try again shortly.")
+		return "", fail(503, "Authentication is busy. Try again shortly.")
 	}
 	defer func() { <-passwordWork }()
 	// One attempt is reserved before bcrypt and refunded when the password is correct, so only failures spend the
 	// budget and concurrent wrong passwords still cannot exceed it.
 	if !a.allow(key, 10) {
-		return errConfirmPaused
+		return "", errConfirmPaused
 	}
 	var hash string
 	err := a.db.QueryRowContext(ctx, "SELECT password_hash FROM users WHERE id=$1", userID).Scan(&hash)
@@ -157,10 +165,10 @@ func (a *App) confirmPassword(ctx context.Context, userID, password string) erro
 		err = bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
 	}
 	if err != nil {
-		return fail(401, "Password incorrect")
+		return "", fail(401, "Password incorrect")
 	}
 	a.refund(key)
-	return nil
+	return hash, nil
 }
 
 // confirmCode runs check, the authenticator or recovery code of a confirmation whose password was correct. A code is
@@ -227,9 +235,21 @@ func confirmedTx(c *actionCtx, confirm bool, run func(c *actionCtx) (actionResul
 // confirmedTxWith is confirmedTx with options; opts nil means no confirmation.
 func confirmedTxWith(c *actionCtx, opts *confirmation, run func(c *actionCtx) (actionResult, error)) (actionResult, error) {
 	a, ctx, uid := c.A, c.Ctx(), c.User.ID
+	// Only the plain password/TOTP flow may replay a confirmed receipt. In particular,
+	// recovery codes and Before hooks act before the account lock and cannot be skipped.
+	if c.ConfirmedFormNonce && (opts == nil || opts.Recovery || opts.Before != nil || opts.AfterPassword != nil) {
+		return actionResult{}, errors.New("unsupported confirmed form nonce options")
+	}
 	confirm := opts != nil
+	var verifiedHash string
 	if confirm {
-		if err := a.confirmPassword(ctx, uid, c.Form.Get("password")); err != nil {
+		var err error
+		if c.ConfirmedFormNonce {
+			verifiedHash, err = a.confirmPasswordHash(ctx, uid, c.Form.Get("password"))
+		} else {
+			err = a.confirmPassword(ctx, uid, c.Form.Get("password"))
+		}
+		if err != nil {
 			return actionResult{}, err
 		}
 		if opts.AfterPassword != nil {
@@ -268,12 +288,35 @@ func confirmedTxWith(c *actionCtx, opts *confirmation, run func(c *actionCtx) (a
 	// or suspension committed after this request's session was loaded refuses the change (A-156). Either one locks
 	// this row too, so it is waited for.
 	var totp, suspended bool
-	var role string
-	if err = tx.QueryRowContext(ctx, "SELECT totp_enabled,role,suspended_at IS NOT NULL FROM users WHERE id=$1 FOR NO KEY UPDATE", uid).Scan(&totp, &role, &suspended); err != nil {
+	var role, currentHash string
+	if err = tx.QueryRowContext(ctx, "SELECT totp_enabled,role,suspended_at IS NOT NULL,password_hash FROM users WHERE id=$1 FOR NO KEY UPDATE", uid).Scan(&totp, &role, &suspended, &currentHash); err != nil {
 		return actionResult{}, err
 	}
 	if role != c.User.Role || suspended {
 		return actionResult{}, errAccountChanged
+	}
+	if c.ConfirmedFormNonce {
+		if subtle.ConstantTimeCompare([]byte(verifiedHash), []byte(currentHash)) != 1 {
+			return actionResult{}, fail(401, "Password changed while this was being saved. Sign in again; nothing was changed.")
+		}
+		// Role/password changes lock the actor before deleting sessions. A live session
+		// must still exist in this transaction, and a concurrent revoke must serialize
+		// with this read. clock_timestamp prevents a long transaction extending expiry.
+		var live int
+		err = tx.QueryRowContext(ctx, `SELECT 1 FROM sessions WHERE token_hash=$1 AND user_id=$2
+			AND expires>clock_timestamp() FOR SHARE`, digest(c.Token), uid).Scan(&live)
+		if err == sql.ErrNoRows {
+			return actionResult{}, fail(401, "Sign in again; nothing was changed.")
+		}
+		if err != nil {
+			return actionResult{}, err
+		}
+		var repeated bool
+		var saved actionResult
+		saved, repeated, err = claimFormSubmission(c)
+		if err != nil || repeated {
+			return saved, err
+		}
 	}
 	if confirm && totp {
 		if recovery {
@@ -291,6 +334,9 @@ func confirmedTxWith(c *actionCtx, opts *confirmation, run func(c *actionCtx) (a
 	if err != nil {
 		return actionResult{}, err
 	}
+	if c.ConfirmedFormNonce && res.AfterCommit != nil {
+		return actionResult{}, errors.New("confirmed form nonce cannot replay an after-commit effect")
+	}
 	if res.Audit != "" {
 		if confirm {
 			res.Audit += " (confirmed with " + how + ")"
@@ -299,6 +345,14 @@ func confirmedTxWith(c *actionCtx, opts *confirmation, run func(c *actionCtx) (a
 			return actionResult{}, err
 		}
 		res.Audit = ""
+	}
+	if c.ConfirmedFormNonce {
+		if res.Redirect == "" {
+			res.Redirect = "/"
+		}
+		if err = finishFormSubmission(c, res); err != nil {
+			return actionResult{}, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		// A lost acknowledgement does not tell us whether PostgreSQL committed. Do not
