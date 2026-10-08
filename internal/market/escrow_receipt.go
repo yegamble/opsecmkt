@@ -30,7 +30,7 @@ func escrowPartyReceiptAuthorize(c *actionCtx, coin, party string) error {
 		return errConfirmOnlyBuyer
 	}
 	if party == "vendor" && c.User.ID != vendor {
-		if c.R.URL.Path == "/escrow-xmr/ship" {
+		if c.R.URL.Path == "/escrow-xmr/ship" || c.R.URL.Path == "/escrow/ship" {
 			return errShipOnlyVendor
 		}
 		return errClaimOnlyVendor
@@ -39,6 +39,9 @@ func escrowPartyReceiptAuthorize(c *actionCtx, coin, party string) error {
 }
 
 func btcClaimReceiptAuthorize(c *actionCtx) error {
+	return escrowPartyReceiptAuthorize(c, "BTC", "vendor")
+}
+func btcShipReceiptAuthorize(c *actionCtx) error {
 	return escrowPartyReceiptAuthorize(c, "BTC", "vendor")
 }
 func xmrClaimReceiptAuthorize(c *actionCtx) error {

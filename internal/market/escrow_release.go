@@ -34,7 +34,8 @@ import (
 //     (leaveOutTopUps, A-374).
 
 func init() {
-	registerAction("/escrow/ship", actionSpec{OwnTx: true, OneAtATime: true, Off: escrowOff, Run: escrowShipAction})
+	registerAction("/escrow/ship", actionSpec{Roles: escrowPartyRoles, OwnTx: true, OneAtATime: true, Off: escrowOff,
+		ConfirmedFormNonce: true, ReceiptAuthorize: btcShipReceiptAuthorize, Run: escrowShipAction})
 }
 
 var (
@@ -108,19 +109,19 @@ func insertRelease(c *actionCtx, orderID, dest string) error {
 
 // escrowShipAction: the vendor of a paid physical escrow order marks it shipped (step 1 of the file comment).
 func escrowShipAction(c *actionCtx) (actionResult, error) {
-	e := c.A.escrow.Load()
-	if e == nil {
-		return actionResult{}, errEscrowDown
-	}
-	note, err := formNote(c, "Marked shipped")
-	if err != nil {
-		return actionResult{}, err
-	}
-	dest, ok := escrowAddressForm(e.network, c.Form.Get("address"))
-	if !ok {
-		return actionResult{}, errClaimAddress(c.A.escrowNetwork())
-	}
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
+		e := c.A.escrow.Load()
+		if e == nil {
+			return actionResult{}, errEscrowDown
+		}
+		note, err := formNote(c, "Marked shipped")
+		if err != nil {
+			return actionResult{}, err
+		}
+		dest, ok := escrowAddressForm(e.network, c.Form.Get("address"))
+		if !ok {
+			return actionResult{}, errClaimAddress(c.A.escrowNetwork())
+		}
 		ctx := c.Ctx()
 		o, err := partyOrder(c, c.Form.Get("order_id"))
 		switch {
