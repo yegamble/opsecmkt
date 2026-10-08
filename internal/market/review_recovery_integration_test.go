@@ -18,7 +18,9 @@ func TestReviewRestoreGateBlocksNewPayoutsUntilReconciled(t *testing.T) {
 	if state, _, _, _ := p.payout(order); state != "pending" || len(p.fake.Sends()) != 0 {
 		t.Fatalf("new payout bypassed restore gate: state=%s sends=%d", state, len(p.fake.Sends()))
 	}
-	if !strings.Contains(p.page("/admin", p.adminSess), "Outbound payments paused for restore reconciliation.") {
+	admin := p.page("/admin", p.adminSess)
+	if !strings.Contains(admin, "Outbound payments paused for restore reconciliation.") ||
+		!strings.Contains(admin, `href="/moderator">moderation desk</a>`) {
 		t.Fatal("administrator cannot see the restore recovery lock")
 	}
 	// Reconciliation is an explicit operator action; clearing it permits one send.

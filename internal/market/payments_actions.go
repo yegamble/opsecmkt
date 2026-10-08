@@ -286,7 +286,7 @@ func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 				dep.State += ", transaction " + refundTxid
 			}
 		case locked:
-			dep.State = "Locked transfer — not counted" + reviewed
+			dep.State = "Locked transfer — not counted"
 		case dep.Confirmations < 0:
 			dep.State = "Conflicted or missing — not counted"
 			conflicted = conflicted || credited
@@ -298,7 +298,6 @@ func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 			if reviewed == "" {
 				reviewed = "; market staff notified"
 			}
-			dep.State += reviewed
 		case dep.Confirmations >= int64(pv.Threshold):
 			dep.State = "Confirmed"
 			received += amt
@@ -308,6 +307,7 @@ func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 			regressed = regressed || credited
 			notified = notified || (credited && notice)
 		}
+		dep.State += reviewed
 		if !locked && dep.Confirmations >= 0 && (minConfs < 0 || dep.Confirmations < minConfs) {
 			minConfs = dep.Confirmations
 		}

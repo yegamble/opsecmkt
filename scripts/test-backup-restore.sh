@@ -231,14 +231,18 @@ pg "$app_source_db" -q -c "
 INSERT INTO users(id,handle,password_hash,role) VALUES ('ops-admin','ops_admin','not-a-login','admin');
 UPDATE users SET payout_btc='tb1qopsrestorelatevendor' WHERE id='ops-vendor';
 INSERT INTO orders(id,buyer_id,product_id,currency,amount,state) VALUES
- ('ops-order-late','ops-buyer','ops-product','BTC',150000,'delivered'),('ops-order-disputed','ops-buyer','ops-product','XMR',250000000000,'disputed');
+ ('ops-order-late','ops-buyer','ops-product','BTC',150000,'delivered'),('ops-order-disputed','ops-buyer','ops-product','XMR',250000000000,'disputed'),
+ ('ops-order-recovery-dust','ops-buyer','ops-product','BTC',150000,'cancelled');
 INSERT INTO payment_addresses(order_id,currency,address,provider) VALUES
- ('ops-order-late','BTC','tb1qopsrestorelatedeposit','bitcoin'),('ops-order-disputed','XMR','ops-restore-disputed-deposit','monero');
+ ('ops-order-late','BTC','tb1qopsrestorelatedeposit','bitcoin'),('ops-order-disputed','XMR','ops-restore-disputed-deposit','monero'),
+ ('ops-order-recovery-dust','BTC','tb1qopsrestoredustdeposit','bitcoin');
 INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations,credited,locked) VALUES
  ('ops-order-late','BTC',repeat('11',32),0,'tb1qopsrestorelatedeposit',100000,6,true,false),
  ('ops-order-late','BTC',repeat('12',32),1,'tb1qopsrestorelatedeposit',50000,6,true,false),
  ('ops-order-disputed','XMR',repeat('21',32),0,'ops-restore-disputed-deposit',250000000000,12,false,false),
- ('ops-order-disputed','XMR',repeat('22',32),0,'ops-restore-disputed-deposit',1000000,12,false,true);
+ ('ops-order-disputed','XMR',repeat('22',32),0,'ops-restore-disputed-deposit',1000000,12,false,true),
+ ('ops-order-recovery-dust','BTC',repeat('17',32),0,'tb1qopsrestoredustdeposit',1000,6,false,false);
+UPDATE payments SET flagged=true,below_floor=true WHERE order_id='ops-order-recovery-dust';
 INSERT INTO disputes(id,order_id,reason) VALUES ('ops-dispute','ops-order-disputed','The parcel never arrived.');
 INSERT INTO audit_events(user_id,action) VALUES ('ops-admin','Restore drill: an audit row written before the backup');
 INSERT INTO images(id,owner_user_id,product_id,kind,\"full\",thumb,width,height) VALUES
@@ -301,6 +305,8 @@ app_backup="$work/app.dump.age"
 # pg_restore --list labels it with its own, so both scripts run those tools in UTC.
 backup_started=$(date -u +%s)
 TZ=Asia/Tokyo BACKUP_DATABASE_URL=$(connection_url "$app_source_db") scripts/backup.sh "$app_backup"
+# This hand refund was recorded after the backup: the restored database must again show the old, unresolved flag.
+pg "$app_source_db" -q -c "UPDATE payments SET disposition='refunded',disposition_note='Refunded by hand after backup',disposition_txid=repeat('18',32),disposition_amount=1000,disposed_at=now() WHERE order_id='ops-order-recovery-dust'"
 backup_finished=$(date -u +%s)
 TZ=America/New_York RESTORE_DATABASE_URL=$(connection_url "$app_target_db") scripts/restore.sh "$app_backup" <<< 'RESTORE' > "$work/app-restore.log"
 grep -q 'Held 2 restored payout(s)' "$work/app-restore.log"
@@ -360,12 +366,15 @@ restore_audit="-:Payout recovery gate set by scripts/restore.sh: held 2 restored
 [[ $(pg "$app_target_db" -Atq -c "$audit_all") == "$source_audit|$restore_audit" ]]
 [[ $(pg "$app_source_db" -Atq -c "SELECT string_agg(state || ':' || send_ambiguous, ',' ORDER BY order_id) FROM payouts WHERE order_id IN ('ops-order-failed','ops-order-queued')") == failed:false,pending:false ]]
 [[ $(pg "$app_target_db" -Atq -c "SELECT string_agg(version || ':' || name || '@' || applied, ',' ORDER BY version) FROM schema_migrations") == "$migrations" ]]
+[[ $(pg "$app_source_db" -Atq -c "SELECT disposition FROM payments WHERE order_id='ops-order-recovery-dust'") == refunded ]]
+[[ $(pg "$app_target_db" -Atq -c "SELECT flagged||':'||below_floor||':'||disposition FROM payments WHERE order_id='ops-order-recovery-dust'") == true:true: ]]
 # The server starts on the restored database, applies nothing again and leaves the held payout alone.
 start_app "$app_target_db"
 stop_app
 [[ $(pg "$app_target_db" -Atq -c "SELECT value FROM settings WHERE key='payments_recovery_required'") == true ]]
 [[ $(pg "$app_target_db" -Atq -c "SELECT string_agg(version || ':' || name || '@' || applied, ',' ORDER BY version) FROM schema_migrations") == "$migrations" ]]
 [[ $(pg "$app_target_db" -Atq -c "$payouts") == "$held" ]]
+[[ $(pg "$app_target_db" -Atq -c "SELECT count(*) FROM payouts WHERE order_id='ops-order-recovery-dust'") == 0 ]]
 
 # Payouts sent after the backup (docs/testnet-runbook.md, "Reconcile a restored database before enabling payouts").
 # The runbook's SQL runs verbatim: runbook_sql NAME [FILE] prints the psql here-document (or the sql block) that
@@ -526,6 +535,11 @@ for handle in ops_nobody ops_vendor; do
   [[ $(pg "$app_target_db" -Atq -c "$gate_value") == true ]]
   [[ $(pg "$app_target_db" -Atq -c "$audit_count") == "$audit_total" ]]
 done
+[[ $(clear_gate ops_admin) == $'BEGIN\nROLLBACK\nRefused; nothing was changed: open pooled payment reviews remain; reconcile them on /moderator before clearing the recovery gate' ]]
+[[ $(pg "$app_target_db" -Atq -c "$gate_value") == true ]]
+[[ $(pg "$app_target_db" -Atq -c "$audit_count") == "$audit_total" ]]
+# A staff hand-refund disposition removes the restored dust from payoutBasis; it may then be reconciled safely.
+pg "$app_target_db" -q -c "UPDATE payments SET disposition='refunded',disposition_note='Reconciled from the wallet after restore',disposition_txid=repeat('18',32),disposition_amount=1000,disposed_at=now() WHERE order_id='ops-order-recovery-dust'"
 [[ $(clear_gate ops_admin) == $'BEGIN\nINSERT 0 1\nCOMMIT\nCleared the payout recovery gate; committed.' ]]
 [[ $(pg "$app_target_db" -Atq -c "$gate_value") == false ]]
 [[ $(pg "$app_target_db" -Atq -c "SELECT user_id || ':' || action FROM audit_events WHERE id > (SELECT max(id) - 1 FROM audit_events)") == 'ops-admin:Payout recovery gate cleared by ops_admin after reconciling the restored database with the wallets' ]]
@@ -556,4 +570,4 @@ INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations,cre
 [[ $(tail -n 1 <<< "$(record ops-order-main release completed 150000 bc1qopsrestoremainvendor "$main_txid" ops_admin yes)") == 'Recorded the payout as sent; committed.' ]]
 [[ $(pg "$app_target_db" -Atq -c "SELECT note FROM order_events WHERE order_id='ops-order-main'") == "Reconciled after a restore from backup: the MAINNET release of 0.0015 BTC to the vendor was sent after the backup was taken. Recorded by an administrator from the wallet; nothing was sent now." ]]
 [[ $(pg "$app_target_db" -Atq -c "SELECT count(*) FROM order_events WHERE note LIKE 'Reconciled after a restore from backup: the TESTNET %'") == 3 ]]
-echo 'Encrypted backup/restore regressions passed (Unicode, overwrite refusal, wrong key, transaction rollback, payout hold, suspension hold kept, failed payouts marked possibly sent, Monero escrow held, its free accounts retired, its wallets closed and its sweep asked for, restore audit row, application schema restore and restart, manual UPGRADING.md protection after a plain pg_dump/pg_restore copy, runbook reconciliation of payouts sent after the backup with the network class from the deposit address, audited gate clear refusing unknown handles).'
+echo 'Encrypted backup/restore regressions passed (Unicode, overwrite refusal, wrong key, transaction rollback, payout hold, suspension hold kept, failed payouts marked possibly sent, Monero escrow held, its free accounts retired, its wallets closed and its sweep asked for, restore audit row, application schema restore and restart, manual UPGRADING.md protection after a plain pg_dump/pg_restore copy, runbook reconciliation of payouts sent after the backup with the network class from the deposit address, gate clear blocked by a post-backup missing payment disposition until staff reconciliation, audited gate clear refusing unknown handles).'

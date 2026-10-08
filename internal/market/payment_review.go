@@ -153,9 +153,9 @@ func recordPaymentReview(c *actionCtx, id int64, outcome, note, refundTxid strin
 	}
 	var txid, disposition string
 	var idx, deposit int64
-	var credited, open bool
-	if err = tx.QueryRowContext(ctx, "SELECT p.txid,p.idx,p.amount,p.credited,p.disposition,"+paymentFlagOpen("p")+" FROM payments p WHERE p.id=$1 AND p.order_id=$2 FOR UPDATE OF p", id, o.ID).
-		Scan(&txid, &idx, &deposit, &credited, &disposition, &open); err != nil {
+	var credited, regressNotice, open bool
+	if err = tx.QueryRowContext(ctx, "SELECT p.txid,p.idx,p.amount,p.credited,p.regress_notice,p.disposition,"+paymentFlagOpen("p")+" FROM payments p WHERE p.id=$1 AND p.order_id=$2 FOR UPDATE OF p", id, o.ID).
+		Scan(&txid, &idx, &deposit, &credited, &regressNotice, &disposition, &open); err != nil {
 		return actionResult{}, err
 	}
 	switch {
@@ -238,6 +238,14 @@ func recordPaymentReview(c *actionCtx, id int64, outcome, note, refundTxid strin
 	}
 	if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.BuyerID, body); err != nil {
 		return actionResult{}, err
+	}
+	if credited && regressNotice {
+		// Give the vendor an inbox signal without putting the deposit or refund transaction identity, amount, or staff
+		// note in that notification.
+		vendorBody := "Order " + short + ": market staff recorded a payment review (" + reviewOutcomes[outcome] + "). See the order history."
+		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.VendorID, vendorBody); err != nil {
+			return actionResult{}, err
+		}
 	}
 	for _, uid := range admins {
 		msg := "Payment review escalated for order " + short + ": " + dep + ". Record the outcome under Payment review on the moderation desk."

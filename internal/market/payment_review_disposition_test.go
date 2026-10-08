@@ -173,6 +173,31 @@ func TestPaymentReviewDisposition(t *testing.T) {
 		mustContain(t, p.page("/moderator", modSess), "1 open flag", longTxid("f2")+":0")
 	})
 
+	t.Run("credited regression label and vendor notice", func(t *testing.T) {
+		p := newPayEnv(t)
+		_, modSess := p.user("rmod_"+randomToken()[:6], "moderator")
+		txid := longTxid("f2")
+		p.paidByWatcher(p.order, p.addr, txid)
+		p.fake.SetConfirmations(txid, 1)
+		p.poll()
+		id := p.flagPaymentID(p.order, txid)
+		if n := p.count("SELECT count(*) FROM payments WHERE id=$1::bigint AND credited AND regress_notice AND flagged", id); n != 1 {
+			t.Fatalf("credited regression not flagged for review: %d", n)
+		}
+		vendorBefore := p.count("SELECT count(*) FROM notifications WHERE user_id=$1", p.vendor.ID)
+		if code, loc := p.dispose(modSess, id, "no_action", "note", "The wallet confirms the original credit remains valid."); code != 303 || loc != "/moderator#payment-review" {
+			t.Fatalf("recorded regression review: %d %s", code, loc)
+		}
+		order := p.page("/order?id="+p.order, p.vendorSess)
+		mustContain(t, order, "reviewed by market staff on "+p.disposedOn(id)+": no action")
+		if p.count("SELECT count(*) FROM notifications WHERE user_id=$1", p.vendor.ID) != vendorBefore+1 {
+			t.Fatal("vendor did not receive the disposition notice")
+		}
+		body := p.str("SELECT body FROM notifications WHERE user_id=$1 AND body LIKE $2 ORDER BY created DESC LIMIT 1", p.vendor.ID, "Order "+p.order[:8]+": market staff recorded a payment review%")
+		mustContain(t, body, "no action", "order history")
+		mustNotContain(t, body, txid, "transaction", "credited the deposit", "0.001")
+	})
+
 	t.Run("refunded by hand", func(t *testing.T) {
 		p := newPayEnv(t)
 		modID, modSess := p.user("rmod_"+randomToken()[:6], "moderator")

@@ -628,9 +628,11 @@ and no web action that clears the gate or records a lost payout.
    (`-d` names the database in `DATABASE_URL`.) A send with no payout row is either a refund sent by hand for a
    payment-review flag (see "Handle a payment-review flag"; leave it alone: those recorded on the desk are listed
    by `SELECT currency, disposition_txid, order_id FROM payments WHERE disposition_txid <> ''`, and one recorded
-   after the backup is missing from the restored database, so its flag is open again: record it again on the desk
-   once the market is open, with the same transaction ID; older ones were written notes with the transaction ID in
-   the audit row) or a **payout the restore lost**. Find
+   after the backup is missing from the restored database, so its flag is open again: while the market is still
+   private, record that disposition again on the moderation desk with the same transaction ID before clearing the
+   gate. The gate-clear SQL refuses while any pooled payment review remains open and points to that desk. Older
+   hand refunds were written notes with the transaction ID in the audit row. A send without a payout row is either
+   one of those refunds or a **payout the restore lost**. Find
    the order of each lost payout from the payout's amount and the address it went to, in step 6. The payout's
    amount is the destination amount **plus the fee**, because every payout on both coins has the fee taken
    from it (only a Monero release sent by a version before A-232 paid its fee on top: its destination amount
@@ -970,8 +972,9 @@ cleared: if you find a lost payout later, stop the app and set the gate again fi
 #### Clear the gate (step 8)
 
 Only after every step above, with the app stopped and the reconciled database backed up. Clearing the gate is
-your assertion that reconciliation is complete; it does not discover missing settlements or release individual
-holds. On a market running Bitcoin escrow it also lets escrow checkout run again, with only the address check
+your assertion that reconciliation is complete; it refuses while any pooled payment-review flag is still open and
+directs you to `/moderator` to reconcile it. It does not discover missing settlements or release individual holds.
+On a market running Bitcoin escrow it also lets escrow checkout run again, with only the address check
 described above under *Reconcile a restored database before enabling payouts*. Give your administrator handle: the SQL clears the gate and adds one audit row naming you ("Payout
 recovery gate cleared by ...") in one transaction, and changes nothing for a handle that is not an
 administrator or when the gate is not set.
@@ -983,6 +986,7 @@ BEGIN;
 SELECT c.problem, c.problem = 'none' AS ready FROM (SELECT CASE
   WHEN NOT EXISTS (SELECT 1 FROM users WHERE handle=:'handle' AND role='admin') THEN 'no administrator with that handle'
   WHEN NOT EXISTS (SELECT 1 FROM settings WHERE key='payments_recovery_required' AND value='true') THEN 'the recovery gate is not set'
+  WHEN EXISTS (SELECT 1 FROM pooled_drain_blockers() WHERE kind='flagged_payment') THEN 'open pooled payment reviews remain; reconcile them on /moderator before clearing the recovery gate'
   ELSE 'none' END AS problem) AS c
 \gset c_
 \if :c_ready
