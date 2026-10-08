@@ -657,6 +657,10 @@ func TestAdminPayoutsAttentionNeverHidden(t *testing.T) {
 		return order, id
 	}
 	failedOrder, failedID := insert("failed", stateResolved, "refund", "", "1 hour")
+	if _, err := p.DB.Exec(`INSERT INTO disputes(id,order_id,reason,status,outcome,resolution)
+		VALUES($1,$2,'The buyer requests a refund after the item did not arrive.','Resolved — refund to buyer','refund','The evidence supports refunding the buyer.')`, randomToken(), failedOrder); err != nil {
+		t.Fatal(err)
+	}
 	stuckOrder, stuckID := insert("sending", stateCompleted, "release", "", "10 minutes")
 	var sent []string // txids, oldest first
 	for i := range 60 {

@@ -27,6 +27,7 @@ func TestArchivedListingVisibleThroughOrder(t *testing.T) {
 	disputed, paid := e.titledListing(vendorID, "A164 disputed listing"), e.titledListing(vendorID, "A164 paid listing")
 	e.mustExec(`UPDATE products SET kind='digital',description='A164 full description of what was sold',delivery_content='A164-SECRET-DELIVERY' WHERE id=$1`, disputed)
 	disputedOrder := e.order(buyerID, disputed, "BTC", stateDisputed)
+	addOpenDisputeFixture(t, e, disputedOrder)
 	paidOrder := e.order(otherBuyerID, paid, "BTC", statePaid)
 
 	// The order page names the listing and links to it as it is now, for each viewer allowed to read the order.
@@ -130,7 +131,8 @@ func TestArchivedListingPhotosThroughOrder(t *testing.T) {
 	e.mustExec("UPDATE images SET created=created+interval '1 second' WHERE id=$1", second.id)
 	paidPhoto := e.image(vendorID, paid, "photo")
 	avatar := e.image(vendorID, "", "avatar")
-	e.order(buyerID, disputed, "BTC", stateDisputed)
+	disputedOrder := e.order(buyerID, disputed, "BTC", stateDisputed)
+	addOpenDisputeFixture(t, e, disputedOrder)
 	e.order(otherBuyerID, paid, "BTC", statePaid)
 
 	// Live: public route, public URLs on the page; the desk route adds nothing for the order's buyer or staff.
@@ -199,6 +201,9 @@ func TestDeskOrderRowsLinkTheirListing(t *testing.T) {
 	disputedOrder := e.order(w.buyerID, disputed, "BTC", stateShipped)
 	w.expect("/disputes", w.buyer, form("order_id", disputedOrder, "reason", "The parcel never arrived at the agreed place."), 303, "")
 	flaggedOrder := e.order(w.otherID, flagged, "BTC", stateCancelled)
+	if _, err := e.DB.Exec("INSERT INTO payment_addresses(order_id,currency,address,provider) VALUES($1,'BTC','a265-funded-cancel-address','test')", flaggedOrder); err != nil {
+		t.Fatal(err)
+	}
 	e.mustExec(`INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations,flagged,after_close) VALUES($1,'BTC','a265-flagged',0,'tb1qa265',1,1,true,true)`, flaggedOrder)
 	e.mustExec(`UPDATE products SET archived=true,archived_at=now() WHERE id=ANY($1::text[])`, "{"+disputed+","+flagged+"}")
 
@@ -240,4 +245,9 @@ func TestDeskOrderRowsLinkTheirListing(t *testing.T) {
 			`<a class="text-link" href="/product?id=`+id+`">Listing<span class="sr-only">: `+c.title+`</span></a>`)
 		opens(w.vendor, id)
 	}
+}
+
+func addOpenDisputeFixture(t *testing.T, e *testEnv, order string) {
+	t.Helper()
+	e.mustExec(`INSERT INTO disputes(id,order_id,reason) VALUES($1,$2,'The parcel never arrived; please review.')`, randomToken(), order)
 }

@@ -157,6 +157,10 @@ func TestOrderPageShowsPayoutNextStepToRecipientOnly(t *testing.T) {
 
 	// A resolved order (readable by staff) whose release to the vendor is held for a suspension.
 	release := p.insertPayout(stateResolved, "release", p.vendor.ID, "held", "fake-testnet-vendor-dest", suspendedHold, false, "")
+	if _, err := p.DB.Exec(`INSERT INTO disputes(id,order_id,reason,status,outcome,resolution)
+		VALUES($1,$2,'The buyer requests a refund after the item did not arrive.','Resolved — release to vendor','release','The evidence supports release to the vendor.')`, randomToken(), release); err != nil {
+		t.Fatal(err)
+	}
 	vendor = html.UnescapeString(p.page("/order?id="+release, p.vendorSess))
 	mustNotContain(t, vendor, "No further changes are possible", "deposit conflicted")
 	mustContain(t, vendor, "Your release of 0.001 BTC <span class=\"badge testnet\">TESTNET fake</span> has not been sent", "checks your payout address", "fake-testnet-vendor-dest", `href="/account#payout"`)
