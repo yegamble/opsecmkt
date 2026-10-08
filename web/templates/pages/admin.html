@@ -48,12 +48,13 @@
 {{template "confirm-fields" (and .Security .Security.TOTPEnabled)}}
 <button type="submit">Update role</button>
 </form>{{if .Users}}
-<details class="account-list">
+<details class="account-list"{{if and .AdminUsersPaging (gt .AdminUsersPaging.Page 1)}} open{{end}}>
 <summary>Newest accounts</summary>
-<p class="help">Shows at most the 100 newest accounts, newest first. Any other account can be changed by entering its handle above.</p>
+{{with .AdminUsersPaging}}<p class="help">Showing {{.First}}–{{.Last}} of {{.Total}} accounts, newest first. Any other account can be changed by entering its handle above.</p>{{end}}
 <ul>{{range .Users}}
 <li>{{.Handle}} · {{.Role}}</li>{{end}}
 </ul>
+{{with .AdminUsersPaging}}{{if gt .Pages 1}}<nav class="pagination" aria-label="Account picker pages">{{if .PrevURL}}<a href="{{.PrevURL}}" rel="prev" aria-label="Previous account page, page {{.PrevPage}} of {{.Pages}}">← Previous</a>{{end}}<span class="current" aria-current="page">Page {{.Page}} of {{.Pages}}</span>{{if .NextURL}}<a href="{{.NextURL}}" rel="next" aria-label="Next account page, page {{.NextPage}} of {{.Pages}}">Next →</a>{{end}}</nav>{{end}}{{end}}
 </details>{{end}}
 </section>
 </div>{{template "admin-auth" .}}{{template "admin-staff-contact" .}}{{template "admin-staff-list" .}}{{template "admin-payments" .}}{{template "admin-scanner" .}}{{template "admin-transparency" .}}

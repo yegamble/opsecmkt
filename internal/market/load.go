@@ -24,6 +24,10 @@ const (
 // activityPaging is the signed-in user's history position. The count and row query share the same visibility
 // predicate; links contain only this user's page and, for messages, the validated recipient prefill.
 func activityPaging(path string, total int, raw string, extra url.Values) *ActivityPaging {
+	return activityPagingWithKey(path, "page", total, raw, extra)
+}
+
+func activityPagingWithKey(path, pageKey string, total int, raw string, extra url.Values) *ActivityPaging {
 	p := &ActivityPaging{Page: 1, Total: total, Pages: max(1, (total+activityPageSize-1)/activityPageSize)}
 	if n, err := strconv.Atoi(raw); err == nil && n > 1 {
 		p.Page = min(n, p.Pages)
@@ -39,7 +43,7 @@ func activityPaging(path string, total int, raw string, extra url.Values) *Activ
 			v = url.Values{}
 		}
 		if n > 1 {
-			v.Set("page", strconv.Itoa(n))
+			v.Set(pageKey, strconv.Itoa(n))
 		}
 		if encoded := v.Encode(); encoded != "" {
 			return path + "?" + encoded
@@ -432,7 +436,12 @@ func (a *App) load(r *http.Request, d *PageData) error {
 			}
 		}
 		if d.Page == "admin" {
-			rows, err = a.db.QueryContext(ctx, "SELECT id,handle,role,pgp,xmpp FROM users ORDER BY created DESC LIMIT 100")
+			var total int
+			if err = a.db.QueryRowContext(ctx, "SELECT count(*) FROM users").Scan(&total); err != nil {
+				return err
+			}
+			d.AdminUsersPaging = activityPagingWithKey("/admin", "users_page", total, r.URL.Query().Get("users_page"), nil)
+			rows, err = a.db.QueryContext(ctx, "SELECT id,handle,role,pgp,xmpp FROM users ORDER BY created DESC,id DESC LIMIT $1 OFFSET $2", activityPageSize, d.AdminUsersPaging.Offset())
 			if err != nil {
 				return err
 			}
