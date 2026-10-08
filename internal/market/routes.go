@@ -459,6 +459,18 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 		return
 	}
 	if err != nil {
+		var unknown commitOutcomeUnknown
+		if errors.As(err, &unknown) {
+			msg := "Change outcome unknown: it may have been saved. Reload the relevant page and check the recorded state before taking further action."
+			switch r.URL.Path {
+			case "/admin/payout":
+				msg = "Payout outcome unknown: it may have been saved. Reload the admin page and check the payout state and audit trail before taking further action."
+			case "/totp/disable", "/totp/activate", "/totp/recovery":
+				msg = "Authenticator change outcome unknown: it may have been saved. Reload your authenticator settings and check their state before taking further action."
+			}
+			serverError(w, r, 500, msg, errorCause(err))
+			return
+		}
 		if dbBusy(err) {
 			serverError(w, r, 503, errBusyMsg, errorCause(err))
 			return

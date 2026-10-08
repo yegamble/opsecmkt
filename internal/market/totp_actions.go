@@ -202,7 +202,7 @@ func totpDisable(c *actionCtx) (actionResult, error) {
 		return actionResult{}, err
 	}
 	if err = tx.Commit(); err != nil {
-		return actionResult{}, err
+		return actionResult{}, commitOutcomeUnknown{err}
 	}
 	return actionResult{Redirect: "/totp"}, nil
 }
