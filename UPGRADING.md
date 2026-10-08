@@ -1691,6 +1691,10 @@ root changes both HMACs and disables escrow. Never remove or replace these pins 
 can be re-registered only after the original root is restored and startup has verified the pinned node and, when configured, signer.
 No environment keys are added; see [the arbiter pin](docs/operator-guide.md#bitcoin-escrow-test-networks-only).
 
+## 50. Removed XMPP profile values (migration 098)
+
+Migration 098 clears stored XMPP profile values from the live `users` rows. The application no longer reads, saves or renders this field; the database column remains for compatibility. A backup made before migration 098 can still contain the old values. If you restore one, upgrade it before use; deleting or rotating a live database does not erase separate backup files.
+
 ## Appendix: new keys by hand
 
 `./scripts/install.sh upgrade` writes these for you. To add them yourself, use your editor (values in single
