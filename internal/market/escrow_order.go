@@ -447,7 +447,7 @@ func escrowDescriptorDownload(a *App, w http.ResponseWriter, r *http.Request, u 
 		desc, err = escrowDescriptorFor(ctx, a.db, o.ID, reader)
 	}
 	if err != nil {
-		serverError(w, r, 503, "Service unavailable", errorCause(err))
+		writeEscrowDownloadFailure(w, r, err)
 		return
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")

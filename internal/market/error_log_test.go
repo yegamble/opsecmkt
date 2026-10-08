@@ -204,13 +204,14 @@ func TestDBBusyClasses(t *testing.T) {
 			t.Errorf("SQLSTATE %s is not busy", code)
 		}
 	}
-	for _, err := range []error{driver.ErrBadConn, sql.ErrConnDone, &pgconn.ConnectError{}, fmt.Errorf("x: %w", io.EOF), io.ErrUnexpectedEOF,
+	for _, err := range []error{driver.ErrBadConn, sql.ErrConnDone, fmt.Errorf("x: %w", io.EOF), io.ErrUnexpectedEOF,
 		&net.OpError{Op: "read", Err: errors.New("connection reset by peer")}} {
 		if !dbBusy(err) || errorCause(err) != "db-connection" {
 			t.Errorf("%#v: busy=%v cause=%q", err, dbBusy(err), errorCause(err))
 		}
 	}
 	for _, err := range []error{nil, sql.ErrNoRows, errors.New("x"), fail(500, "x"), context.Canceled, context.DeadlineExceeded,
+		&pgconn.ConnectError{},
 		&pgconn.PgError{Code: "23505"}, &pgconn.PgError{Code: "40001"}, &pgconn.PgError{Code: "53100"}, &pgconn.PgError{Code: "42P01"}, &pgconn.PgError{Code: "08P01"}, &pgconn.PgError{Code: "08007"}} {
 		if dbBusy(err) {
 			t.Errorf("%#v is busy", err)

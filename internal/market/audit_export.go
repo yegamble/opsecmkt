@@ -182,7 +182,7 @@ func auditExportHandler(a *App, w http.ResponseWriter, r *http.Request, u *User)
 	defer cancel()
 	settled, err := settledAuditMax(ctx, a.db)
 	if err != nil {
-		serverError(w, r, 503, "Service unavailable", errorCause(err))
+		writeDBFailureContext(ctx, w, r, err)
 		return
 	}
 	if upto > settled {
@@ -191,7 +191,7 @@ func auditExportHandler(a *App, w http.ResponseWriter, r *http.Request, u *User)
 	}
 	export, err := auditExport(ctx, a.db, upto)
 	if err != nil {
-		if dbBusy(err) {
+		if dbBusyForContext(ctx, err) {
 			serverError(w, r, 503, errBusyMsg, errorCause(err))
 			return
 		}

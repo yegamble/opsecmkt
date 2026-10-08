@@ -1419,7 +1419,7 @@ func escrowPSBTDownload(a *App, w http.ResponseWriter, r *http.Request, u *User)
 		return
 	}
 	if err != nil {
-		serverError(w, r, 503, "Service unavailable", errorCause(err))
+		writeEscrowDownloadFailure(w, r, err)
 		return
 	}
 	if hardware == "1" {

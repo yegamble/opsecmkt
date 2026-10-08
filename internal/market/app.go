@@ -441,7 +441,13 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if probe != nil {
 			if err := probe.PingContext(ctx); err != nil {
-				serverError(w, r, 503, "unavailable", errorCause(err))
+				var ce *pgconn.ConnectError
+				if errors.As(err, &ce) && !dbBusyForContext(ctx, err) {
+					// A persistent TLS/certificate fault is unhealthy but does not warrant Retry-After.
+					serverError(w, r, 500, "unavailable", errorCause(err))
+				} else {
+					serverError(w, r, 503, "unavailable", errorCause(err))
+				}
 				return
 			}
 		}
@@ -588,7 +594,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		u, err := a.sessionUser(ctx, session)
 		lookupDone()
 		if err != nil {
-			serverError(w, r, 503, "Service unavailable", errorCause(err))
+			writeDBFailure(w, r, err)
 			return
 		}
 		user = u
@@ -666,7 +672,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	var installed bool
 	if err := a.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM settings WHERE key='installed')").Scan(&installed); err != nil {
-		serverError(w, r, 503, "Service unavailable", errorCause(err))
+		writeDBFailure(w, r, err)
 		return
 	}
 	if !installed && page != "setup" {
@@ -696,7 +702,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case err == sql.ErrNoRows:
 			http.NotFound(w, r)
-		case dbBusy(err):
+		case dbBusyForContext(ctx, err):
 			serverError(w, r, 503, errBusyMsg, errorCause(err))
 		case !errors.As(err, &he):
 			serverError(w, r, 500, "Unable to load this page", errorCause(err))

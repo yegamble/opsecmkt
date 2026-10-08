@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	texttemplate "text/template"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -163,8 +164,8 @@ func fail(code int, msg string) error { return &httpError{Code: code, Msg: msg} 
 //
 // cause is a class from errorCause, never the error's text, and the line names nothing about the request or
 // its sender: no URL path or query, form value, cookie, header, address, handle or user id. At most 10 such
-// lines are written a second; the rest are counted in one "http 5xx suppressed=N" line (A-178). A 503 carries
-// Retry-After.
+// lines are written a second; the rest are counted in one "http 5xx suppressed=N" line (A-178).
+// Retryable 503 responses carry Retry-After.
 func serverErrorReference(r *http.Request, code int, cause string) string {
 	ref := randomToken()[:8]
 	kind, name := routeOf(r)
@@ -188,12 +189,37 @@ func writeHTTPError(w http.ResponseWriter, r *http.Request, err error) {
 		http.Error(w, he.Msg, he.Code)
 		return
 	}
+	writeDBFailure(w, r, err)
+}
+
+// writeDBFailure reserves Retry-After for transient database faults. A certificate or configuration failure
+// may need operator repair; repeatedly retrying the same request will not make it safe or successful.
+func writeDBFailure(w http.ResponseWriter, r *http.Request, err error) {
+	writeDBFailureContext(r.Context(), w, r, err)
+}
+
+func writeDBFailureContext(ctx context.Context, w http.ResponseWriter, r *http.Request, err error) {
+	if dbBusyForContext(ctx, err) {
+		serverError(w, r, 503, "Service unavailable", errorCause(err))
+		return
+	}
+	serverError(w, r, 500, "Unable to access database", errorCause(err))
+}
+
+// Raw escrow downloads depend on both the database and the wallet. Preserve their existing temporary
+// wallet-failure response while refusing to promise retries for a persistent database TLS configuration error.
+func writeEscrowDownloadFailure(w http.ResponseWriter, r *http.Request, err error) {
+	var ce *pgconn.ConnectError
+	if errors.As(err, &ce) && !dbBusyForContext(r.Context(), err) {
+		writeDBFailure(w, r, err)
+		return
+	}
 	serverError(w, r, 503, "Service unavailable", errorCause(err))
 }
 
 // dbBusy reports a statement cancelled by the application pool's statement_timeout or lock_timeout (A-177),
 // or a database that is unavailable (QA-178-2): shutting down or refusing connections (57P01-57P03, 53300),
-// or a lost or failed connection (08000, 08001, 08003, 08004, 08006 or dbConnLost; the other class 08 codes,
+// or a lost or failed transport (08000, 08001, 08003, 08004, 08006 or dbConnLost; the other class 08 codes,
 // such as 08P01 protocol_violation, point at configuration, which retrying does not fix). The database is
 // overloaded, restarting or a row is held too long, so the request is answered 503 (retry), not 500. A client
 // that went away or a request past its deadline is not.
@@ -206,7 +232,60 @@ func dbBusy(err error) bool {
 		}
 		return false
 	}
-	return !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) && dbConnLost(err)
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+	var ce *pgconn.ConnectError
+	if errors.As(err, &ce) {
+		// A failed handshake or certificate validation is a configuration problem even though pgx wraps it
+		// in ConnectError. Retry only identifiable transport failures from an attempted connection.
+		return dbConnectTransportFailure(err)
+	}
+	return !errors.Is(err, context.DeadlineExceeded) && dbConnLost(err)
+}
+
+// A configured pgx connect_timeout can surface as context.DeadlineExceeded inside ConnectError while the
+// HTTP request is still live. A caller whose own request has expired must not receive a retry promise.
+func dbBusyForContext(ctx context.Context, err error) bool {
+	return ctx.Err() == nil && dbBusy(err)
+}
+
+func dbConnectTransportFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	// A multi-host ConnectError joins every attempt. One permanent TLS/configuration failure must not
+	// become retryable merely because another host also refused a TCP connection.
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		children := joined.Unwrap()
+		if len(children) == 0 {
+			return false
+		}
+		for _, child := range children {
+			if !dbConnectTransportFailure(child) {
+				return false
+			}
+		}
+		return true
+	}
+	if op, ok := err.(*net.OpError); ok {
+		return dbConnectTransportFailure(op.Err) // a TLS handshake error can sit inside net.OpError
+	}
+	if dns, ok := err.(*net.DNSError); ok {
+		return dns.IsTimeout || dns.IsTemporary
+	}
+	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+		return dbConnectTransportFailure(wrapped.Unwrap())
+	}
+	for _, target := range []error{context.DeadlineExceeded, io.EOF, io.ErrUnexpectedEOF, net.ErrClosed, syscall.ECONNREFUSED,
+		syscall.ECONNRESET, syscall.ECONNABORTED, syscall.EPIPE, syscall.ETIMEDOUT,
+		syscall.EHOSTUNREACH, syscall.ENETUNREACH} {
+		if errors.Is(err, target) {
+			return true
+		}
+	}
+	var ne net.Error
+	return errors.As(err, &ne) && (ne.Timeout() || ne.Temporary())
 }
 
 // dbConnLost reports a failed or lost database connection: errorCause's db-connection class.
@@ -425,7 +504,7 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 	if !spec.OwnTx {
 		tx, err := a.db.BeginTx(ctx, nil)
 		if err != nil {
-			serverError(w, r, 503, "Service unavailable", errorCause(err))
+			writeDBFailure(w, r, err)
 			return
 		}
 		defer tx.Rollback()
@@ -477,7 +556,7 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 			serverError(w, r, 500, msg, errorCause(err))
 			return
 		}
-		if dbBusy(err) {
+		if dbBusyForContext(ctx, err) {
 			serverError(w, r, 503, errBusyMsg, errorCause(err))
 			return
 		}
@@ -499,7 +578,7 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 			// Inside the action's transaction nothing is committed yet, so a busy or lost database answers
 			// the retryable 503 like the action itself. An OwnTx action has already committed its change
 			// (the row is written in autocommit), so a retry could repeat it: that stays 500.
-			if c.Tx != nil && dbBusy(err) {
+			if c.Tx != nil && dbBusyForContext(ctx, err) {
 				serverError(w, r, 503, errBusyMsg, errorCause(err))
 				return
 			}

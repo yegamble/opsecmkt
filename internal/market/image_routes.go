@@ -184,7 +184,7 @@ func (a *App) serveDeskImage(w http.ResponseWriter, r *http.Request, rest string
 	}
 	u, err := a.sessionUser(r.Context(), c.Value)
 	if err != nil {
-		serverError(w, r, 503, "Service unavailable", errorCause(err))
+		writeDBFailure(w, r, err)
 		return
 	}
 	if u == nil {
@@ -230,11 +230,11 @@ func writeImage(w http.ResponseWriter, r *http.Request, n int64, b []byte, err e
 	case err == sql.ErrNoRows:
 		http.NotFound(w, r)
 		return
-	case dbBusy(err):
+	case dbBusyForContext(r.Context(), err):
 		serverError(w, r, 503, errBusyMsg, errorCause(err))
 		return
 	case err != nil:
-		serverError(w, r, 503, "Service unavailable", errorCause(err))
+		writeDBFailure(w, r, err)
 		return
 	}
 	h := w.Header()
