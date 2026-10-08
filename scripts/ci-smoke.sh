@@ -143,8 +143,36 @@ PY
   [[ $status == 303 ]] || fail "setup answered $status"
   [[ $(get /vendor-dashboard) == 200 ]] || fail 'the administrator has no vendor desk after setup'
   csrf=$(page_csrf) || fail '/vendor-dashboard has no CSRF token'
-  listing_nonce=$(grep -o 'name="form_nonce" value="[0-9a-f]*"' "$page" | sed -n '1s/.*value="\([0-9a-f]*\)"/\1/p')
-  [[ -n $listing_nonce ]] || fail '/vendor-dashboard /listings form has no submission nonce'
+  listing_nonce=$(python3 - "$page" <<'PY_NONCE'
+from html.parser import HTMLParser
+from pathlib import Path
+import sys
+
+class ListingNonce(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.in_listings_form = False
+        self.forms = 0
+        self.nonces = []
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == 'form':
+            self.in_listings_form = attrs.get('action') == '/listings'
+            if self.in_listings_form:
+                self.forms += 1
+        elif self.in_listings_form and tag == 'input' and attrs.get('name') == 'form_nonce':
+            self.nonces.append(attrs.get('value', ''))
+    def handle_endtag(self, tag):
+        if tag == 'form':
+            self.in_listings_form = False
+
+parser = ListingNonce()
+parser.feed(Path(sys.argv[1]).read_text())
+if parser.forms != 1 or len(parser.nonces) != 1 or not parser.nonces[0]:
+    raise SystemExit('expected exactly one /listings form with one rendered submission nonce')
+print(parser.nonces[0])
+PY_NONCE
+  ) || fail '/vendor-dashboard /listings form has no submission nonce'
   read -r status location < <(post /listings --data-urlencode "csrf=$csrf" --data-urlencode "form_nonce=$listing_nonce" --data-urlencode 'title=CI scanner listing' \
     --data-urlencode 'description=Listing for the malware scanner leg.' -d category=Hardware -d region=Worldwide -d kind=physical \
     -d stock=1 -d price_btc=0.001 -d price_xmr=0.5)
