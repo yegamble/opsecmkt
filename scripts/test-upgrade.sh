@@ -292,7 +292,14 @@ page = client.open(base + '/order?id=' + order).read().decode()
 assert 'Draft — unfunded' in page and 'Alpha era soldering kit' in page, 'migrated order is not shown as a draft'
 product = subprocess.run(['docker', 'exec', '-i', os.environ['UPGRADE_DB'], 'psql', '-X', '-q', '-A', '-t', '-U', 'upgrade', '-d', 'opsecmkt', '-c',
                           'SELECT product_id FROM orders WHERE id=' + "'" + order + "'"], check=True, capture_output=True, text=True).stdout.strip()
-again = client.open(base + '/orders', data=urllib.parse.urlencode({'csrf': csrf('/account'), 'product_id': product, 'currency': 'BTC'}).encode())
+checkout = client.open(base + '/checkout?' + urllib.parse.urlencode({'id': product})).read().decode()
+orders_forms = re.findall(r'<form\b(?=[^>]*\baction="/orders")[^>]*>(.*?)</form>', checkout, re.S)
+assert len(orders_forms) == 1, 'checkout must render one matching /orders form'
+csrf_match = re.search(r'name="csrf"\s+value="([^"]+)"', orders_forms[0])
+nonce_match = re.search(r'name="form_nonce"\s+value="([^"]+)"', orders_forms[0])
+assert csrf_match and nonce_match, 'rendered /orders form must supply its CSRF token and nonce'
+again = client.open(base + '/orders', data=urllib.parse.urlencode({'csrf': csrf_match[1], 'form_nonce': nonce_match[1],
+                                                                     'product_id': product, 'currency': 'BTC'}).encode())
 assert again.status == 200 and urllib.parse.parse_qs(urllib.parse.urlsplit(again.url).query).get('id') == [order], f'reorder did not return the migrated draft ({again.url})'
 print('Upgraded server: alpha.1 sign-in, migrated draft page and draft reuse passed')
 PY

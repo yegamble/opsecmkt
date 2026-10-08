@@ -95,7 +95,7 @@ scanner_prepare() {
 # drives it: curl with a cookie jar, the page's CSRF token, an Origin header, and multipart bodies with csrf as
 # the first part, like the listing's Photos form.
 scanner_leg() {
-  local base=http://127.0.0.1:18090 jar="$work/cookies" page="$work/page.html" status location csrf listing image reply
+  local base=http://127.0.0.1:18090 jar="$work/cookies" page="$work/page.html" status location csrf listing listing_nonce image reply
   local planted=CI-FIXTURE-TEXT-CHUNK marker=OPSECMKT-CLAMD-TEST-MARKER re
   get() { local path=$1; shift; curl -sS -o "$page" -w '%{http_code}' -b "$jar" -c "$jar" "$@" "$base$path"; }
   post() { local path=$1; shift; curl -sS -o "$page" -w '%{http_code} %{redirect_url}\n' -b "$jar" -c "$jar" -H "Origin: $base" "$@" "$base$path"; }
@@ -143,7 +143,9 @@ PY
   [[ $status == 303 ]] || fail "setup answered $status"
   [[ $(get /vendor-dashboard) == 200 ]] || fail 'the administrator has no vendor desk after setup'
   csrf=$(page_csrf) || fail '/vendor-dashboard has no CSRF token'
-  read -r status location < <(post /listings --data-urlencode "csrf=$csrf" --data-urlencode 'title=CI scanner listing' \
+  listing_nonce=$(grep -o 'name="form_nonce" value="[0-9a-f]*"' "$page" | sed -n '1s/.*value="\([0-9a-f]*\)"/\1/p')
+  [[ -n $listing_nonce ]] || fail '/vendor-dashboard /listings form has no submission nonce'
+  read -r status location < <(post /listings --data-urlencode "csrf=$csrf" --data-urlencode "form_nonce=$listing_nonce" --data-urlencode 'title=CI scanner listing' \
     --data-urlencode 'description=Listing for the malware scanner leg.' -d category=Hardware -d region=Worldwide -d kind=physical \
     -d stock=1 -d price_btc=0.001 -d price_xmr=0.5)
   re='/listing-edit\?id=([0-9a-f]{64})#photos$'
