@@ -16,7 +16,7 @@ func init() {
 	registerRaw("/captcha", captchaPNG)
 	registerLoader("login", captchaLoader)
 	registerLoader("register", captchaLoader)
-	registerAction("/admin/captcha", actionSpec{Roles: []string{"admin"}, OwnTx: true, Run: captchaToggle})
+	registerAction("/admin/captcha", actionSpec{Roles: []string{"admin"}, OwnTx: true, ConfirmedFormNonce: true, Run: captchaToggle})
 	registerBackground(captchaSpentSweeper)
 	for _, page := range []string{"login", "register"} {
 		registerPreview(page, func(d *PageData) { d.Captcha = &CaptchaView{ID: "preview"} })

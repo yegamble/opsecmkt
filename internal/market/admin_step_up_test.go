@@ -10,7 +10,7 @@ import (
 )
 
 func TestAdminStepUpRequiresPasswordAndTOTP(t *testing.T) {
-	for _, name := range []string{"role", "captcha", "operator key", "canary"} {
+	for _, name := range []string{"role", "captcha", "staff contact", "staff list", "operator key", "canary"} {
 		t.Run(name, func(t *testing.T) {
 			e := newTestApp(t)
 			adminID, admin := e.user("step_up_admin", "admin")
@@ -28,6 +28,12 @@ func TestAdminStepUpRequiresPasswordAndTOTP(t *testing.T) {
 			case "captcha":
 				path, form = "/admin/captcha", url.Values{"captcha_required": {"true"}}
 				unchanged, arg = "SELECT count(*) FROM settings WHERE key='captcha_required' AND value='true'", nil
+			case "staff contact":
+				path, form = "/admin/staff-contact", url.Values{"staff_contact": {"security@example.test"}}
+				unchanged, arg = "SELECT count(*) FROM settings WHERE key='staff_contact' AND value='security@example.test'", nil
+			case "staff list":
+				path, form = "/admin/staff-list", url.Values{"staff_list_public": {"true"}}
+				unchanged, arg = "SELECT count(*) FROM settings WHERE key='staff_list_public' AND value='true'", nil
 			case "operator key":
 				path, form = "/admin/operator-key", url.Values{"operator_key": {pub}}
 				unchanged, arg = "SELECT count(*) FROM settings WHERE key=$1", settingOperatorFingerprint
@@ -106,6 +112,8 @@ func TestAdminStepUpRefusesAccountChangeAfterAdmission(t *testing.T) {
 		{"role after demotion", "/admin", url.Values{"action": {"role"}, "handle": {"step_race_target"}, "role": {"vendor"}, "password": {testPassword}}, "UPDATE users SET role='buyer' WHERE id=$1", "SELECT count(*) FROM users WHERE handle='step_race_target' AND role='vendor'"},
 		{"operator key after suspension", "/admin/operator-key", url.Values{"password": {testPassword}}, "UPDATE users SET suspended_at=now() WHERE id=$1", "SELECT count(*) FROM settings WHERE key=$1"},
 		{"canary after demotion", "/admin/canary", url.Values{"password": {testPassword}}, "UPDATE users SET role='buyer' WHERE id=$1", "SELECT count(*) FROM canary"},
+		{"staff contact after demotion", "/admin/staff-contact", url.Values{"password": {testPassword}, "staff_contact": {"raced@example.test"}}, "UPDATE users SET role='buyer' WHERE id=$1", "SELECT count(*) FROM settings WHERE key='staff_contact' AND value='raced@example.test'"},
+		{"staff list after demotion", "/admin/staff-list", url.Values{"password": {testPassword}, "staff_list_public": {"true"}}, "UPDATE users SET role='buyer' WHERE id=$1", "SELECT count(*) FROM settings WHERE key='staff_list_public' AND value='true'"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newTestApp(t)

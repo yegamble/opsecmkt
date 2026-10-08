@@ -17,8 +17,8 @@ import (
 )
 
 func init() {
-	registerAction("/admin/operator-key", actionSpec{Roles: []string{"admin"}, OwnTx: true, Run: operatorKeyAction})
-	registerAction("/admin/canary", actionSpec{Roles: []string{"admin"}, OwnTx: true, Run: canaryAction})
+	registerAction("/admin/operator-key", actionSpec{Roles: []string{"admin"}, OwnTx: true, ConfirmedFormNonce: true, Run: operatorKeyAction})
+	registerAction("/admin/canary", actionSpec{Roles: []string{"admin"}, OwnTx: true, ConfirmedFormNonce: true, Run: canaryAction})
 	registerLoader("canary", func(ctx context.Context, a *App, r *http.Request, d *PageData) error {
 		v, err := loadCanary(ctx, a.db, d.Settings)
 		if err != nil {

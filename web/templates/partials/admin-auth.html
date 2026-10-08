@@ -12,7 +12,8 @@
 </div>
 </dl>
 <form class="stack" method="post" action="/admin/captcha">
-<input type="hidden" name="csrf" value="{{.CSRF}}">{{if $off}}
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/admin/captcha"}}">{{if $off}}
 <input type="hidden" name="captcha_required" value="true">
 {{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
 <button type="submit">Turn CAPTCHA on</button>{{else}}

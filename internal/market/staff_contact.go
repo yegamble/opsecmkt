@@ -28,7 +28,7 @@ const (
 )
 
 func init() {
-	registerAction("/admin/staff-contact", actionSpec{Roles: []string{"admin"}, OwnTx: true, Run: staffContactAction})
+	registerAction("/admin/staff-contact", actionSpec{Roles: []string{"admin"}, OwnTx: true, ConfirmedFormNonce: true, Run: staffContactAction})
 	for _, page := range []string{"canary", "challenge", "login", "register", "notifications", "vendor-dashboard", "listing-edit", "account", "order"} {
 		registerLoader(page, staffContactLoader)
 	}

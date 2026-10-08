@@ -35,7 +35,7 @@ func init() {
 	registerLoader("product", productPhotosLoader)
 	registerLoader("vendor", vendorAvatarLoader)
 	registerLoader("canary", staffListLoader)
-	registerAction("/admin/staff-list", actionSpec{Roles: []string{"admin"}, OwnTx: true, Run: staffListAction})
+	registerAction("/admin/staff-list", actionSpec{Roles: []string{"admin"}, OwnTx: true, ConfirmedFormNonce: true, Run: staffListAction})
 	for _, page := range []string{"catalog", "vendor", "product"} {
 		registerPreview(page, previewProductPhotos)
 	}

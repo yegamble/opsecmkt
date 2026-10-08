@@ -9,6 +9,7 @@
 <p>Fingerprint <span class="fingerprint mono">{{.Fingerprint}}</span></p>{{else}}<p><span class="badge neutral">Not configured</span></p>{{end}}{{else}}<p><span class="badge neutral">Not configured</span></p>{{end}}
 <form class="stack" method="post" action="/admin/operator-key">
 <input type="hidden" name="csrf" value="{{.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/admin/operator-key"}}">
 <label>Armored public key<textarea name="operator_key" rows="6" required spellcheck="false" placeholder="-----BEGIN PGP PUBLIC KEY BLOCK-----">{{with .Canary}}{{.OperatorKey}}{{end}}</textarea>
 </label>
 <p class="help">Public key only; the private key stays offline with the operator. Replacing the key makes any canary signed by the previous key show as invalid until a new one is posted.</p>
@@ -21,6 +22,7 @@
 {{with .Canary}}{{if .Verified}}<p><span class="badge green">Signature verified</span> Signed {{.SignedAt}}, posted {{.Posted}}.</p>{{else if .Error}}<p><span class="badge danger">INVALID</span> {{.Error}}</p>{{else}}<p><span class="badge neutral">No signed canary published</span></p>{{end}}{{end}}
 {{if and .Canary .Canary.Fingerprint}}<form class="stack" method="post" action="/admin/canary">
 <input type="hidden" name="csrf" value="{{.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/admin/canary"}}">
 <label>Clearsigned statement<textarea name="canary" rows="8" required spellcheck="false" placeholder="-----BEGIN PGP SIGNED MESSAGE-----"></textarea>
 </label>
 <p class="help">Write and sign the statement offline, for example with <span class="mono">gpg --clearsign canary.txt</span>, and paste the whole output. It is stored exactly as pasted (surrounding blank lines removed) and rejected with the reason if it does not verify against the operator key.</p>
