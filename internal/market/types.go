@@ -129,6 +129,10 @@ type PageData struct {
 	ActivityPaging *ActivityPaging
 	// AdminUsersPaging: the admin role form's newest-account picker (A-16, load.go).
 	AdminUsersPaging *ActivityPaging
+	// DeliveryCleanup lists only this account's archived listings that still hold automatic-delivery text; the text itself is never loaded.
+	DeliveryCleanup       []DeliveryCleanupListing
+	DeliveryCleanupPaging *ActivityPaging
+	DeliveryCleanupCount  int
 	// UploadBack and UploadBackLabel: the refusal page of an upload (A-186, uploads.go) links back here.
 	UploadBack, UploadBackLabel string
 	// ImageStorage: admin page, stored photos and avatars against IMAGE_STORAGE_LIMIT_MB (uploads.go).
