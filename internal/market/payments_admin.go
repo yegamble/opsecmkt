@@ -54,7 +54,8 @@ const restoredHoldPrefix = "Restored from backup:"
 
 // heldForSuspension reports a payout held for an account suspension (suspendedHoldPrefix), including one a
 // restore from backup held again: the restore keeps the suspension text after its own prefix (A-112), so the
-// payout address check is not lost.
+// payout address check is not lost; and one a restore held first, which a later suspension marks by adding its text
+// after the restore's (A-489).
 func heldForSuspension(state, payoutErr string) bool {
 	return state == "held" && (strings.HasPrefix(payoutErr, suspendedHoldPrefix) ||
 		strings.HasPrefix(payoutErr, restoredHoldPrefix) && strings.Contains(payoutErr, " "+suspendedHoldPrefix))
