@@ -45,7 +45,7 @@ import (
 
 func init() {
 	registerAction("/escrow/bump", actionSpec{OwnTx: true, OneAtATime: true, Off: escrowOff, Run: escrowBumpAction})
-	registerAction("/escrow/bump-sign", actionSpec{Off: escrowOff, Run: escrowBumpSignAction})
+	registerAction("/escrow/bump-sign", actionSpec{FormNonce: true, Off: escrowOff, Run: escrowBumpSignAction})
 	registerAction("/escrow/hardware-bump-sign", actionSpec{Off: escrowOff, Run: escrowBumpSignAction})
 }
 

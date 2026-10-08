@@ -167,6 +167,7 @@
 <p><a class="button" href="/escrow-psbt?id={{$.Order.ID}}&amp;s={{.SettlementID}}&amp;b={{.ID}}" download>Download your copy</a> <a class="button" href="/escrow-psbt?id={{$.Order.ID}}&amp;s={{.SettlementID}}&amp;b={{.ID}}&amp;hardware=1" download>Download for a hardware wallet</a></p>
 <form class="stack" method="post" action="/escrow/bump-sign">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/escrow/bump-sign"}}">
 <input type="hidden" name="order_id" value="{{$.Order.ID}}">
 <input type="hidden" name="bump_id" value="{{.ID}}">
 <label>Signed PSBT<textarea class="escrow-psbt" name="psbt" required maxlength="60000" rows="6" spellcheck="false" autocapitalize="off" placeholder="cHNidP8…"></textarea>
