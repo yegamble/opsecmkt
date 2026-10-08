@@ -182,6 +182,9 @@ func payAction(c *actionCtx) (actionResult, error) {
 		}
 	}
 	if o.BuyerID == c.User.ID && o.State == stateDraft {
+		if o.Kind == "service" {
+			return actionResult{}, fail(409, "This legacy service order cannot request a new payment address. Nothing was changed.")
+		}
 		var open int
 		// The buyer row lock serialises concurrent requests so the cap cannot be raced. The count must be a
 		// separate statement: under READ COMMITTED it then takes its snapshot after the lock is held and sees
