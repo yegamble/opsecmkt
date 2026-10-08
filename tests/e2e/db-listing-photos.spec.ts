@@ -172,8 +172,7 @@ test('oversized photo shows the limit without JS', { tag: '@firefox' }, async ({
   png(64, 48, PLANTED).copy(big);
   expect(await uploadPhoto(vendor, big)).toBe(413);
   await expect(vendor.getByRole('alert')).toHaveText('Photo not saved: the file is larger than 4 MB, the most accepted. Nothing was stored.');
-  // A refusal while the form is read links to the vendor desk, not the listing (uploads.go sets the listing link
-  // only once the whole form has been read).
+  // The validated listing ID is read before the oversized file, so the refusal returns to its Photos panel.
   await expect(vendor.getByRole('link', { name: 'Back to the listing' })).toHaveAttribute('href', `/listing-edit?id=${listing}#photos`);
   await vendor.goto(`/listing-edit?id=${listing}`);
   await expect(vendor.getByRole('region', { name: 'Photos' })).toContainText('0 of 4 photos');
