@@ -1421,6 +1421,14 @@ is still refused.
   form's is, is bounded to one PSBT of at most 64 KB and the small fields (QA5W5A-5; no legitimate form carries two) and
   so is each field; a paste and a file together are refused; then every ES-2 check applies as to a
   paste. Every other route still refuses a multipart body with a 415 page, unread.
+- **Hardware signing copy (A-459).** A buyer or vendor who may sign a settlement or its fee bump can download a separate
+  binary `.psbt` file. It adds `non_witness_utxo` from the watch-only wallet's `gettransaction` hex for each input, after
+  checking the funding transaction ID and spent output against the stored `witness_utxo`. A missing, malformed or
+  mismatched funding transaction refuses the download with 503; the ordinary copy remains available. The only key
+  origin in either copy is the reader's own. The separate hardware file forms use the same authorization and signature
+  checks as ordinary signing, keep only signatures, and accept at most 8 MiB of PSBT data (128 KiB per funding
+  transaction; at most 50 inputs). Ordinary paste and file limits remain 64 KiB. These are simulated-node and form
+  checks; no physical hardware wallet has been tested (A-458).
 - **The ES-2 derivation refusal is relaxed (P4-R13).** A pasted or uploaded PSBT is no longer refused for a derivation
   entry under the market's key or from its fingerprint (Electrum and Sparrow write one for every key; A-450's Electrum
   fixtures are now accepted). Every signature rule stays: a signature under the market's key, another key's signature, a

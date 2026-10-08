@@ -45,6 +45,7 @@ import (
 func init() {
 	registerAction("/escrow/claim", actionSpec{OwnTx: true, OneAtATime: true, Off: escrowOff, Run: escrowClaimAction})
 	registerAction("/escrow/sign", actionSpec{Off: escrowOff, Run: escrowSignAction})
+	registerAction("/escrow/hardware-sign", actionSpec{Off: escrowOff, Run: escrowSignAction})
 	registerRaw("/escrow-psbt", escrowPSBTDownload)
 }
 
@@ -1173,7 +1174,17 @@ func settlementCopy(stored string, k escrowKeyRow) (string, error) {
 // It returns the party's signature on each input; nothing else of the paste is kept, which is why a derivation entry
 // (under the market's key or any other) is not refused (P4-R13, relaxed by A-456b for per-order wallets).
 func checkSettlementPaste(pasted, txid string, party, market escrowKeyRow) ([]psbtSig, error) {
-	p, err := decodePSBT(pasted)
+	return checkSettlementPasteLimit(pasted, txid, party, market, false)
+}
+
+func checkSettlementPasteLimit(pasted, txid string, party, market escrowKeyRow, hardware bool) ([]psbtSig, error) {
+	var p *psbtPacket
+	var err error
+	if hardware {
+		p, err = decodeHardwarePSBT(pasted)
+	} else {
+		p, err = decodePSBT(pasted)
+	}
 	if err != nil {
 		var pe *psbtError
 		if errors.As(err, &pe) {
@@ -1278,7 +1289,7 @@ func escrowSignAction(c *actionCtx) (actionResult, error) {
 	if err != nil || sp.TxID() != txid {
 		return actionResult{}, errors.New("escrow: the stored settlement PSBT does not match its txid")
 	}
-	sigs, err := checkSettlementPaste(pasted, txid, keys[party], keys["market"])
+	sigs, err := checkSettlementPasteLimit(pasted, txid, keys[party], keys["market"], c.R.URL.Path == "/escrow/hardware-sign")
 	if err != nil {
 		return actionResult{}, err
 	}
@@ -1352,6 +1363,11 @@ func escrowPSBTDownload(a *App, w http.ResponseWriter, r *http.Request, u *User)
 		reader = roleBuyer
 	}
 	bump := r.URL.Query().Get("b")
+	hardware := r.URL.Query().Get("hardware")
+	if hardware != "" && hardware != "1" {
+		http.NotFound(w, r)
+		return
+	}
 	if err == nil && bump == "" {
 		// A copy is served while the settlement waits for a signature, and to the party who has not signed a
 		// party-signed one (A-340: it may sign too).
@@ -1378,7 +1394,22 @@ func escrowPSBTDownload(a *App, w http.ResponseWriter, r *http.Request, u *User)
 	if err == nil {
 		var keys map[string]escrowKeyRow
 		if keys, err = a.settlementKeys(ctx, a.db, o.ID, sid); err == nil {
-			copyText, err = settlementCopy(stored, keys[reader])
+			if hardware == "1" {
+				e := a.escrow.Load()
+				if e == nil {
+					err = errHardwareFunding
+				} else {
+					copyText, err = hardwarePSBTCopy(ctx, stored, keys[reader], func(ctx context.Context, txid string) (string, error) {
+						tx, e := e.walletTx(ctx, txid)
+						if e != nil || !tx.Found {
+							return "", errHardwareFunding
+						}
+						return tx.Hex, nil
+					})
+				}
+			} else {
+				copyText, err = settlementCopy(stored, keys[reader])
+			}
 		}
 	}
 	if errors.Is(err, errPerOrderXpub) {
@@ -1389,6 +1420,17 @@ func escrowPSBTDownload(a *App, w http.ResponseWriter, r *http.Request, u *User)
 	}
 	if err != nil {
 		serverError(w, r, 503, "Service unavailable", errorCause(err))
+		return
+	}
+	if hardware == "1" {
+		p, err := decodeHardwarePSBT(copyText)
+		if err != nil {
+			serverError(w, r, 503, "Service unavailable", errorCause(err))
+			return
+		}
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Disposition", `attachment; filename="escrow-hardware-`+file+shortID(o.ID)+`-`+reader+`.psbt"`)
+		w.Write(p.Raw)
 		return
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")

@@ -63,6 +63,7 @@ type psbtDerivation struct {
 }
 
 type psbtInput struct {
+	NonWitnessUTXO []byte // funding transaction, present on a hardware copy only
 	PartialSigs    []psbtSig
 	SighashType    uint32
 	HasSighashType bool
@@ -89,6 +90,14 @@ func (p *psbtPacket) TxID() string {
 
 // decodePSBT decodes a pasted base64 PSBT (surrounding whitespace and line breaks allowed) and parses it.
 func decodePSBT(s string) (*psbtPacket, error) {
+	return decodePSBTLimit(s, psbtMaxBytes)
+}
+
+func decodeHardwarePSBT(s string) (*psbtPacket, error) {
+	return decodePSBTLimit(s, hardwareMaxBytes)
+}
+
+func decodePSBTLimit(s string, limit int) (*psbtPacket, error) {
 	s = strings.Map(func(r rune) rune {
 		if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
 			return -1
@@ -98,14 +107,14 @@ func decodePSBT(s string) (*psbtPacket, error) {
 	if s == "" {
 		return nil, psbtErr("nothing was pasted")
 	}
-	if len(s) > psbtMaxBase64 {
+	if len(s) > (limit+2)/3*4 {
 		return nil, psbtErr("it is too large")
 	}
 	raw, err := base64.StdEncoding.DecodeString(s)
 	if err != nil {
 		return nil, psbtErr("it is not base64 text")
 	}
-	return parsePSBT(raw)
+	return parsePSBTLimit(raw, limit)
 }
 
 func encodePSBT(raw []byte) string { return base64.StdEncoding.EncodeToString(raw) }
@@ -195,7 +204,11 @@ func (r *psbtReader) readMap() (entries [][2][]byte, end int, err error) {
 
 // parsePSBT parses raw BIP 174 version 0 bytes (see the file comment).
 func parsePSBT(raw []byte) (*psbtPacket, error) {
-	if len(raw) > psbtMaxBytes {
+	return parsePSBTLimit(raw, psbtMaxBytes)
+}
+
+func parsePSBTLimit(raw []byte, limit int) (*psbtPacket, error) {
+	if len(raw) > limit {
 		return nil, psbtErr("it is too large")
 	}
 	if !bytes.HasPrefix(raw, []byte("psbt\xff")) {
@@ -258,6 +271,11 @@ func parsePSBTInput(entries [][2][]byte) (psbtInput, error) {
 	for _, e := range entries {
 		key, val := e[0], e[1]
 		switch key[0] {
+		case 0x00: // non-witness UTXO; validated against the outpoint when a hardware copy is made
+			if len(key) != 1 {
+				return in, psbtErr("a non-witness UTXO field is malformed")
+			}
+			in.NonWitnessUTXO = val
 		case 0x01: // witness UTXO
 			if len(key) != 1 {
 				return in, psbtErr("a witness UTXO field is malformed")
@@ -407,6 +425,10 @@ func readTxOut(r *psbtReader) (psbtTxOut, error) {
 // withInputField returns a copy of the PSBT with one field added to input i's map. It refuses a key the map
 // already has, so a field is never replaced.
 func (p *psbtPacket) withInputField(i int, key, value []byte) ([]byte, error) {
+	return p.withInputFieldLimit(i, key, value, psbtMaxBytes)
+}
+
+func (p *psbtPacket) withInputFieldLimit(i int, key, value []byte, limit int) ([]byte, error) {
 	if i < 0 || i >= len(p.inputEnds) || len(key) == 0 {
 		return nil, errors.New("psbt: no such input")
 	}
@@ -442,7 +464,7 @@ func (p *psbtPacket) withInputField(i int, key, value []byte) ([]byte, error) {
 	out = append(out, p.Raw[:end]...)
 	out = append(out, field...)
 	out = append(out, p.Raw[end:]...)
-	if len(out) > psbtMaxBytes {
+	if len(out) > limit {
 		return nil, errors.New("psbt: too large")
 	}
 	return out, nil

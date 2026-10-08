@@ -77,6 +77,7 @@ type fakeEscrowCore struct {
 	imports      []string            // descriptors imported into the watch wallet, in order
 	spk          map[string][]byte   // address -> scriptPubKey, for createpsbt outputs to escrow addresses
 	deposits     []fakeEscrowDeposit // what listreceivedbyaddress/gettransaction report
+	fundingHex   map[string]string   // optional serialized funding transactions for hardware-copy tests
 	txErr        int                 // JSON-RPC error for listreceivedbyaddress (0 = none)
 
 	// Escrow P1-c1: settlement builds. gettxout reports each deposit as unspent (with its confirmations, value and
@@ -851,7 +852,7 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 		if details == nil {
 			return nil, -5, "Invalid or non-wallet transaction id"
 		}
-		return map[string]any{"confirmations": confs, "details": details}, 0, ""
+		return map[string]any{"confirmations": confs, "details": details, "hex": c.fundingHex[txid]}, 0, ""
 	case "sendrawtransaction":
 		if c.beforeSend != nil {
 			c.mu.Unlock()
