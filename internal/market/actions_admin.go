@@ -14,7 +14,7 @@ func init() {
 		ConfirmedFormNonce: true, ReceiptAuthorize: adminResetReceiptAuthorize, Run: adminResetFactorsAction})
 	registerAction("/admin/suspend", actionSpec{Roles: []string{"admin"}, OwnTx: true,
 		ConfirmedFormNonce: true, ReceiptAuthorize: adminSuspendReceiptAuthorize, Run: adminSuspendAction})
-	registerAction("/admin/review", actionSpec{Roles: []string{"admin"}, OwnTx: true, Run: adminReviewAction})
+	registerAction("/admin/review", actionSpec{Roles: []string{"admin"}, OwnTx: true, ConfirmedFormNonce: true, Run: adminReviewAction})
 	registerLoader("admin", factorAccountsLoader)
 	registerLoader("admin", suspendedAccountsLoader)
 	registerPreview("admin", func(d *PageData) {

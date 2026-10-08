@@ -18,6 +18,7 @@ Administrators also see reviews they hid (A-125), labelled, and hide or restore 
 <summary>{{if .Hidden}}Restore this review{{else}}Hide this review{{end}}<span class="sr-only">: rated {{.Rating}} out of 5, {{.Created}}</span></summary>
 <form class="stack" method="post" action="/admin/review">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/admin/review"}}">
 <input type="hidden" name="review_id" value="{{.ID}}">
 <input type="hidden" name="action" value="{{if .Hidden}}restore{{else}}hide{{end}}">
 <input type="hidden" name="from" value="{{$.Page}}">
