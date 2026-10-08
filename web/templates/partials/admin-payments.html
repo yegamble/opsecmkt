@@ -23,6 +23,7 @@ Check the escrow node: its peers (<code>getconnectioncount</code>), and with <co
 <p>In force: <strong>{{.Bps}} basis points ({{.Percent}}% of the price)</strong>{{if .Address}}, paid to <span class="mono">{{.Address}}</span>{{end}}. Each escrow keeps the fee and destination in force at its checkout; a change applies only to later escrows. The fee is an output of the vendor's claim (below 0.0001 BTC it is added to the vendor's output). One fixed destination address is allowed only because escrow runs on test networks only: a mainnet market will need a watch-only descriptor that gives a fresh fee address for every settlement, which this release does not have.</p>{{if .Available}}
 <form class="stack" method="post" action="/admin/escrow-fee">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/admin/escrow-fee"}}">
 <label>Market fee (basis points, 0 to 10000; 250 = 2.5%)<input name="fee_bps" required inputmode="numeric" pattern="[0-9]{1,5}" title="Enter a whole number from 0 to 10000." maxlength="5" value="{{.Bps}}"></label>
 <label>Fee address (a {{template "btc-escrow-address" $.EscrowNet}} used only for the market fee; required above 0)<input name="fee_address" maxlength="90" autocomplete="off" autocapitalize="off" spellcheck="false" value="{{.Address}}"></label>
 {{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
