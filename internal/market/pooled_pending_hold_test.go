@@ -104,7 +104,7 @@ func TestPooledPendingHoldLosesToSendClaim(t *testing.T) {
 func TestPooledPendingHoldsNeverHidden(t *testing.T) {
 	p := newPayEnv(t)
 	var ids []string
-	for i := range 60 {
+	for range 60 {
 		o := p.testEnv.order(p.buyer.ID, p.productID, "BTC", stateCompleted)
 		var id string
 		if err := p.DB.QueryRow(`INSERT INTO payouts(order_id,kind,user_id,currency,amount,address,state)
