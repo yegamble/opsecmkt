@@ -27,7 +27,7 @@
 </div>
 </dl>
 <p>After your password, every sign-in asks for a code from your authenticator or a recovery code.</p>
-<p class="help">If you lose your authenticator and all recovery codes, you cannot finish a TOTP sign-in. Ask market staff for a second-factor reset; it also turns off PGP sign-in if enabled, and the next sign-in uses your password only.</p>
+<p class="help">If you lose your authenticator and all recovery codes, you cannot finish a TOTP sign-in. A market administrator can provide a second-factor reset for a non-administrator account; administrator accounts need the operator’s procedure on the server. A reset also turns off PGP sign-in if enabled, and the next sign-in uses your password only.</p>
 <h2>Replace recovery codes</h2>
 <p class="help">Recovery codes and any pending authenticator secret are visible to every signed-in session on this account. Sign out everywhere before replacing recovery codes.</p>
 <form class="stack" method="post" action="/totp/recovery">
@@ -90,7 +90,7 @@
 <section class="panel">
 <h2>Not enrolled</h2>
 <p>Sign-in currently uses your password only. Enrolling generates a secret key for an authenticator app; TOTP turns on only after you confirm a code from it.</p>
-<p class="help">If you later lose your authenticator and all recovery codes, you cannot finish a TOTP sign-in. Ask market staff for a second-factor reset; it also turns off PGP sign-in if enabled, and the next sign-in uses your password only.</p>
+<p class="help">If you later lose your authenticator and all recovery codes, you cannot finish a TOTP sign-in. A market administrator can provide a second-factor reset for a non-administrator account; administrator accounts need the operator’s procedure on the server. A reset also turns off PGP sign-in if enabled, and the next sign-in uses your password only.</p>
 <form method="post" action="/totp/enroll">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="form_nonce" value="{{formNonce "/totp/enroll"}}">

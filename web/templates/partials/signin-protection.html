@@ -1,7 +1,9 @@
 {{define "signin-protection"}}
-<h3>Handles with paused sign-in</h3>
+<section class="panel" aria-labelledby="paused-handles-heading">
+<h2 id="paused-handles-heading">Handles with paused sign-in</h2>
 <p class="help">This list applies to this application instance only. It is kept in memory and clears on restart. Entries can include handles without an account; a pause does not mean the account holder entered a wrong password.</p>
 {{if .SignInRefusals}}<ul class="stack">{{range .SignInRefusals}}
 <li><strong>{{.Handle}}</strong> — paused until {{.Until}}</li>
 {{end}}</ul>{{else}}<p>No handles are currently paused on this instance.</p>{{end}}
+</section>
 {{end}}

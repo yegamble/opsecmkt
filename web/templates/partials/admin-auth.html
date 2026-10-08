@@ -28,7 +28,7 @@
 <h2 id="reset-factors-heading">Reset a user's second factors</h2>{{with $.NoticeIn "reset-factors"}}
 <div class="alert" role="status">{{.}}</div>{{end}}
 <p>For a user who lost their authenticator and recovery codes, or their PGP private key. This turns off TOTP (deleting its secret and recovery codes) and PGP sign-in verification; their saved PGP key and its verification stay. They are signed out everywhere, notified, and sign in next with their password only.</p>
-<p class="help">Before resetting, ask the account holder to sign a fresh message with the PGP key already verified on their account, then verify that signature against the saved key. Do not trust a replacement key supplied with the reset request.</p>
+<p class="help">When the account holder can still use their verified PGP key, ask them to sign a fresh message and verify it against the key already saved on their account. Do not trust a replacement key supplied with the reset request. If they cannot use that key, follow the operator’s account-recovery procedure before resetting.</p>
 <form class="stack" method="post" action="/admin/reset-factors">
 <input type="hidden" name="csrf" value="{{.CSRF}}">
 <input type="hidden" name="form_nonce" value="{{formNonce "/admin/reset-factors"}}">

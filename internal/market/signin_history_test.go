@@ -11,7 +11,7 @@ func TestRecentSignInsRemainAccountScopedAndIndependentOfActivity(t *testing.T) 
 	uid, session := e.user("signin_history", "buyer")
 	other, _ := e.user("signin_outsider", "buyer")
 	for n := range 6 {
-		agExec(e, `INSERT INTO audit_events(user_id,action,created) VALUES($1,$2,'2026-10-01 00:00+00'::timestamptz + $3*interval '1 minute')`, uid, fmt.Sprintf("Signed in with test-method-%d", n), n)
+		agExec(e, `INSERT INTO audit_events(user_id,action,created) VALUES($1,$2,'2026-10-01 00:00+00'::timestamptz + $3::integer*interval '1 minute')`, uid, fmt.Sprintf("Signed in with test-method-%d", n), n)
 	}
 	// Preserve and include old rows without inventing a verification method.
 	agExec(e, `INSERT INTO audit_events(user_id,action,created) VALUES($1,'Signed in','2026-10-01 00:06+00')`, uid)

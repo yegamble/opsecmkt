@@ -78,6 +78,7 @@ func (e *testEnv) pendingSignIn(handle string) (string, *http.Cookie) {
 
 func TestRegistrationExplainsThereIsNoPasswordReset(t *testing.T) {
 	e := newTestApp(t)
+	e.user("registration_notice", "buyer") // registration is available only after first-run setup
 	page := e.body("GET", "/register", randomToken(), nil, 200)
 	mustContain(t, page, "There is no password reset.")
 }
@@ -93,7 +94,7 @@ func TestTOTPEnrollmentChallengeAndRecovery(t *testing.T) {
 	if b := body("/account"); !strings.Contains(b, "Not enrolled") || strings.Contains(b, ">Enabled<") {
 		t.Fatal("account page must say Not enrolled before enrollment")
 	}
-	mustContain(t, body("/totp"), "If you lose your authenticator and all recovery codes", "second-factor reset")
+	mustContain(t, body("/totp"), "your authenticator and all recovery codes", "second-factor reset")
 	e.check(e.do("POST", "/totp/activate", sess, url.Values{"code": {"123456"}, "password": {testPassword}}), 409)
 	w := e.do("POST", "/totp/enroll", sess, nil)
 	e.check(w, 303)
