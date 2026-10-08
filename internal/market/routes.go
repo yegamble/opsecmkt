@@ -576,6 +576,8 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 		if errors.As(err, &unknown) {
 			msg := "Change outcome unknown: it may have been saved. Reload the relevant page and check the recorded state before taking further action."
 			switch r.URL.Path {
+			case "/admin/escrow-xmr-destroyed":
+				msg = "Escrow wallet destruction outcome unknown: the confirmation may have been saved. Check the wallet record and sealed-seed status on the admin page, and verify the wallet files and backups before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
 			case "/account/payout":
 				msg = "Payout address outcome unknown: it may have been saved. Check the saved address and payout states on your account page before starting another form. If the original form is still open, resubmit it unchanged to retrieve the saved response."
 			case "/admin/review":

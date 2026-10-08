@@ -147,6 +147,7 @@ Check the escrow node: its peers (<code>getconnectioncount</code>), and with <co
 <td>{{.DestroyAfter}}</td>
 <td>{{if not $.XMREscrowRecovery.On}}Turn Monero escrow on to confirm{{else}}<form class="stack" method="post" action="/admin/escrow-xmr-destroyed">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/admin/escrow-xmr-destroyed"}}">
 <input type="hidden" name="wallet_id" value="{{.ID}}">
 <label class="check"><input type="checkbox" name="gone" value="confirmed" required> I checked the escrow wallet volume and its backups: this wallet's files are gone, and nothing in it is owed to anyone</label>
 {{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}

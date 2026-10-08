@@ -49,7 +49,8 @@ import (
 func init() {
 	registerAction("/admin/escrow-xmr-rebroadcast", actionSpec{Roles: []string{"admin"}, OwnTx: true, ConfirmedFormNonce: true,
 		ReceiptAuthorize: xmrRebroadcastReceiptAuthorize, Off: escrowXMROff, Run: xmrRebroadcastAction})
-	registerAction("/admin/escrow-xmr-destroyed", actionSpec{Roles: []string{"admin"}, OwnTx: true, Off: escrowXMROff, Run: xmrConfirmDestroyedAction})
+	registerAction("/admin/escrow-xmr-destroyed", actionSpec{Roles: []string{"admin"}, OwnTx: true, ConfirmedFormNonce: true,
+		ReceiptAuthorize: xmrDestroyedReceiptAuthorize, Off: escrowXMROff, Run: xmrConfirmDestroyedAction})
 	registerLoader("admin", xmrEscrowRecoveryLoader)
 }
 
