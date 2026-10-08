@@ -223,14 +223,22 @@ func (a *App) pollOnce(ctx context.Context) error {
 // deposit address watched, and a deposit first recorded there is announced once (payments.late_notice).
 const fundedOpenStates = "'paid','shipped','delivered','disputed'"
 
+// pendingDepositSQL is true while the pooled address pa has a recorded deposit still pending: neither credited nor
+// flagged, and not ended by the missing or conflict handling (negative confirmations; A-486). It is inline (an EXISTS
+// the planner can turn into a join; a function call per address cost seconds at 100,000 closed addresses, A-488), and
+// migration 091 carries the same text in pooled_drain_blockers, so the watcher and the drain gate share one rule:
+// TestPooledDrainPendingRuleShared pins the migration's copy and pooled_pending_deposit (which names the deposit in
+// the gate's detail) to it.
+const pendingDepositSQL = `EXISTS (SELECT 1 FROM payments pm WHERE pm.currency = pa.currency AND pm.address = pa.address AND NOT pm.credited AND NOT pm.flagged AND pm.confirmations >= 0)`
+
 // pooledWatchSQL is the pooled watcher's address rule, over payment_addresses pa JOIN orders o: an order awaiting
 // payment or funded and open; the time rule (24 hours after the order last changed state, 30 days after a closed
 // order's address was issued), pooled_watch_horizon (migration 091, A-445); a recorded deposit there still pending,
-// pooled_pending_deposit (A-486), so a deposit below the threshold when the horizon ends is still flagged once it
+// pendingDepositSQL (A-486), so a deposit below the threshold when the horizon ends is still flagged once it
 // confirms, or ended once the wallet drops it; or a payout pending or held. The drain gate, pooled_drain_blockers,
-// calls the same two functions. TestPooledDrainWatcherPredicateEquivalence pins the rest to the rule before them.
+// uses the same two rules. TestPooledDrainWatcherPredicateEquivalence pins the rest to the rule before them.
 const pooledWatchSQL = `(o.state IN ('awaiting_payment',` + fundedOpenStates + `) OR pooled_watch_horizon(o.state,o.updated,pa.created)
-			OR pooled_pending_deposit(pa.currency,pa.address) IS NOT NULL
+			OR ` + pendingDepositSQL + `
 			OR EXISTS (SELECT 1 FROM payouts po WHERE po.order_id=o.id AND po.state IN ('pending','held')))`
 
 type ledgerKey struct {

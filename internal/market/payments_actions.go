@@ -425,6 +425,8 @@ func recipientPayout(orderID, kind, cur, network, amt, address, state, payoutErr
 		r.Status, r.NextStep = "Held for a payout address check", "Held because your account was suspended; an administrator checks your payout address before releasing it."
 	case state == "held" && restored:
 		r.Status, r.NextStep = "Held for a wallet check", "Held after the market restored its records from a backup; an administrator checks the market wallet before releasing it, so it is not paid twice."
+	case heldForHand(state, payoutErr):
+		r.Status, r.NextStep = "Held to be paid by hand", "An administrator holds it to pay it to you by hand from the market wallet, to an address agreed with you; saving a payout address does not release it. Contact the market staff if you were not asked about it."
 	case heldLarge(state, payoutErr):
 		r.Status, r.NextStep = "Held for review", "It is more than the order price, so an administrator reviews it before it is sent."
 	case state == "held" && payoutErr == heldReason && conflicted:
@@ -438,7 +440,7 @@ func recipientPayout(orderID, kind, cur, network, amt, address, state, payoutErr
 	default:
 		r.Status, r.NextStep = "Queued", "The payment watcher sends it automatically, in a single attempt."
 	}
-	if address == "" && state == "held" {
+	if address == "" && state == "held" && !heldForHand(state, payoutErr) {
 		r.NextStep += " No " + cur + " payout address is saved yet: save one on your account page so it can be paid."
 	}
 	return r
@@ -623,6 +625,12 @@ func paymentsAdminLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 		}
 		if heldForHand(r.State, r.Error) {
 			r.StateLabel, r.HandHold = "Held to be paid by hand — record it sent once paid, or release it", true
+			switch {
+			case r.AddressCheck:
+				r.StateLabel = "Held to be paid by hand and for an account suspension — record it sent once paid, or check the payout address before releasing it"
+			case r.Ambiguous:
+				r.StateLabel = "Held to be paid by hand, then restored from backup — may already have been paid or sent; check the wallet before releasing it"
+			}
 		}
 		if heldLarge(r.State, r.Error) {
 			r.LargeCheck = true

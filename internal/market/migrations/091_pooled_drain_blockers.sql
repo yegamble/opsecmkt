@@ -20,7 +20,10 @@ $$;
 -- negative confirmations). NULL when there is none. The watcher keeps reading such an address after the horizon
 -- (A-486, ruling R1), so the deposit is flagged once it confirms (flagLateDeposits) and then closed through the review
 -- disposition, or ends with negative confirmations once the wallet drops, replaces or reorganises it out; the drain
--- gate lists the address meanwhile. Both call this function, so they share one definition.
+-- gate lists the address meanwhile. Which addresses have one is decided by an inline EXISTS, the watcher's
+-- pendingDepositSQL (payments_watcher.go) copied verbatim below (a function call per address was not inlined and cost
+-- seconds at 100,000 closed addresses, A-488); this function only names the deposit in the detail of a row already
+-- selected. TestPooledDrainPendingRuleShared pins the two to the same rule.
 CREATE FUNCTION pooled_pending_deposit(cur text, addr text) RETURNS text
   LANGUAGE sql STABLE PARALLEL SAFE AS $$
   SELECT pm.txid || ':' || pm.idx FROM payments pm
@@ -86,7 +89,7 @@ CREATE FUNCTION pooled_drain_blockers() RETURNS TABLE(kind text, ref text, order
     FROM payment_addresses pa JOIN orders o ON o.id = pa.order_id
    WHERE o.state IN ('cancelled','resolved','completed')
      AND NOT pooled_watch_horizon(o.state, o.updated, pa.created)
-     AND pooled_pending_deposit(pa.currency, pa.address) IS NOT NULL
+     AND EXISTS (SELECT 1 FROM payments pm WHERE pm.currency = pa.currency AND pm.address = pa.address AND NOT pm.credited AND NOT pm.flagged AND pm.confirmations >= 0)
   UNION ALL
   SELECT 'recovery_required', s.key, NULL, NULL, ''
     FROM settings s

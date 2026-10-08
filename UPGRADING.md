@@ -379,7 +379,7 @@ INSERT INTO settings(key,value) VALUES ('xmr_escrow_sweep_required','true')
 ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
 UPDATE payouts SET state='held', updated=now(),
   error='Restored from backup: verify in the wallet before releasing; this payout may already have been sent.'
-    || coalesce(' ' || substring(error from '(?:Suspended account:|Larger than the order price:).*'), '')
+    || coalesce(' ' || substring(error from '(?:Suspended account:|Larger than the order price:|Held to be paid by hand:).*'), '')
 WHERE state IN ('pending','sending','blocked','held');
 UPDATE payouts SET send_ambiguous=true WHERE state='failed';
 UPDATE payouts SET updated=now(),
@@ -1612,7 +1612,15 @@ case, and your password, audited with the payout and the transaction ID). The ma
 ID against the chain, and never sends a recorded payout. A queued payout, one being sent or one already sent is never
 marked sent: the refusal (409, nothing changed) says that the market queued, is sending or sent it itself, so a payment
 made by hand would be a second one. Releasing a hand hold needs the confirmation that nobody paid it by hand. No new
-payout state: a hold is `held` (its reason starts "Held to be paid by hand:"), a recorded payout `sent`.
+payout state: a hold is `held` (its reason starts "Held to be paid by hand:"), a recorded payout `sent`. An account
+suspension and a restore from backup hold such a payout again and keep that reason after their own, so releasing it
+then needs their check as well (the payout-address check, or the wallet check); `scripts/restore.sh` and the manual
+restore SQL above keep the reason too.
+
+Development databases only: migration 091 was changed before it was released (the pending-deposit rule was added),
+and a migration that is recorded as applied is never run again, so a development database that applied an earlier
+version of 091 lacks `pooled_pending_deposit` and its watcher query fails there; recreate it. No released database has
+an earlier version of 091.
 
 ## 47. Optional: local nodes over Tor (A-442)
 
