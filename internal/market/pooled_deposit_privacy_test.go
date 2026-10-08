@@ -83,6 +83,26 @@ func TestHistoricalPooledNotesAndNotificationsRedactedForVendor(t *testing.T) {
 	}
 }
 
+func TestPooledLegacyNotificationCandidatesNeedNoOrderPrefix(t *testing.T) {
+	p := newPayEnv(t)
+	full := strings.Repeat("1", 64)
+	short := strings.Repeat("2", 64)
+	for _, txid := range []string{full, short} {
+		agExec(p.testEnv, "INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations) VALUES($1,'BTC',$2,0,$3,10000,1)", p.order, txid, p.addr)
+	}
+	bodies := []string{"Old address " + p.addr, "Full identifier " + full, "Truncated identifier " + truncate(short, 20)}
+	for _, body := range bodies {
+		for _, uid := range []string{p.vendor.ID, p.buyer.ID} {
+			agExec(p.testEnv, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), uid, body)
+		}
+	}
+	vendor := p.page("/notifications", p.vendorSess)
+	mustNotContain(t, vendor, p.addr, full, truncate(short, 20))
+	mustContain(t, vendor, pooledAddressHidden, pooledTxidHidden)
+	buyer := p.page("/notifications", p.buyerSess)
+	mustContain(t, buyer, p.addr, full, truncate(short, 20))
+}
+
 func TestPooledRegressionNoticeKeepsVendorTxidPrivate(t *testing.T) {
 	p := newPayEnv(t)
 	txid := strings.Repeat("c", 64)
