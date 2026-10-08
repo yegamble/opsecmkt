@@ -201,7 +201,8 @@ func (a *App) escrowDisputePreview(ctx context.Context, o *Order) (PayoutPreview
 	}
 	var sum, left int64
 	if err := a.db.QueryRowContext(ctx, `SELECT COALESCE(sum(amount),0),COALESCE(sum(amount) FILTER (WHERE escrow_left_out),0) FROM payments
-		WHERE order_id=$1 AND confirmations>=0 AND NOT locked AND NOT after_close`, o.ID).Scan(&sum, &left); err != nil {
+		WHERE order_id=$1 AND confirmations>=0 AND NOT locked AND NOT after_close
+		AND NOT (escrow_left_out AND EXISTS (SELECT 1 FROM escrow_siblings s WHERE s.address=payments.address))`, o.ID).Scan(&sum, &left); err != nil {
 		return PayoutPreview{}, err
 	}
 	escrowed := a.escrowAmount(o, sum)

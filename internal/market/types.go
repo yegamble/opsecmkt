@@ -124,6 +124,8 @@ type PageData struct {
 	Messages                                                                  []Message
 	Notifications                                                             []Notification
 	Disputes                                                                  []Dispute
+	Concession                                                                *ConcessionPreview  // disputed order: current party's one final concession
+	DisputePartyCounts                                                        *DisputePartyCounts // /disputes: only this account's own orders
 	Users                                                                     []User
 	Events                                                                    []Event
 	Settings                                                                  map[string]string
@@ -416,6 +418,13 @@ type PayoutPreview struct {
 	Seen                             int64
 	Confirm, Release, Refund, Escrow string
 }
+
+type ConcessionPreview struct {
+	Seen                        int64
+	Outcome, Statement, Confirm string
+}
+
+type DisputePartyCounts struct{ Open, Closed, Withdrawn int }
 
 // OverpaidView says what completing an overpaid order does with the excess, from the split the complete form
 // states (splitPayout, A-215). Excess: "0.009 BTC". Kept: it goes to the vendor with the release, for Reason

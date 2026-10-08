@@ -613,7 +613,7 @@ func paymentsAdminLoader(ctx context.Context, a *App, r *http.Request, d *PageDa
 	}
 	rows, err = a.db.QueryContext(ctx, `WITH v AS (SELECT p.id,p.order_id,p.kind,u.handle,p.currency,p.amount,p.address,p.state,p.txid,p.error,to_char(p.updated,'YYYY-MM-DD HH24:MI "UTC"') AS updated,
 		`+payoutNeedsAttention("p")+` AS attention,p.send_ambiguous,
-		(o.buyer_id=$1 OR pr.vendor_id=$1 OR o.state IN ('disputed','resolved') OR EXISTS(SELECT 1 FROM payments pm WHERE pm.order_id=o.id AND pm.flagged)) AS order_link,
+		(o.buyer_id=$1 OR pr.vendor_id=$1 OR EXISTS(SELECT 1 FROM disputes d WHERE d.order_id=o.id) OR EXISTS(SELECT 1 FROM payments pm WHERE pm.order_id=o.id AND pm.flagged)) AS order_link,
 		CASE p.currency WHEN 'XMR' THEN u.payout_xmr ELSE u.payout_btc END AS current_address,
 		COALESCE(to_char(CASE p.currency WHEN 'XMR' THEN u.payout_xmr_changed ELSE u.payout_btc_changed END,'YYYY-MM-DD HH24:MI "UTC"'),'') AS current_changed
 		FROM payouts p JOIN users u ON u.id=p.user_id JOIN orders o ON o.id=p.order_id JOIN products pr ON pr.id=o.product_id)

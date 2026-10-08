@@ -36,9 +36,9 @@ var transitions = map[string]map[string][]string{
 	stateDraft:           {stateAwaitingPayment: {roleBuyer}, stateCancelled: {roleBuyer}},
 	stateAwaitingPayment: {statePaid: {roleSystem}, stateCancelled: {roleBuyer, roleVendor, roleSystem}}, // system: payment window expired
 	statePaid:            {stateShipped: {roleVendor}, stateDelivered: {roleVendor, roleSystem}, stateCancelled: {roleVendor, roleBuyer}, stateDisputed: {roleBuyer, roleVendor}},
-	stateShipped:         {stateCompleted: {roleBuyer, roleSystem}, stateDisputed: {roleBuyer, roleVendor}}, // system: escrowOnly
-	stateDelivered:       {stateCompleted: {roleBuyer, roleSystem}, stateDisputed: {roleBuyer, roleVendor}}, // system: escrowOnly
-	stateDisputed:        {stateResolved: {roleModerator}},
+	stateShipped:         {stateCompleted: {roleBuyer, roleSystem}, stateDisputed: {roleBuyer, roleVendor}},           // system: escrowOnly
+	stateDelivered:       {stateCompleted: {roleBuyer, roleSystem}, stateDisputed: {roleBuyer, roleVendor}},           // system: escrowOnly
+	stateDisputed:        {stateResolved: {roleModerator}, stateCompleted: {roleBuyer}, stateCancelled: {roleVendor}}, // A-166: party concessions use only /disputes/concede.
 	stateCompleted:       {},
 	stateResolved:        {},
 	stateCancelled:       {},
@@ -170,6 +170,12 @@ func (a *App) transition(ctx context.Context, tx *sql.Tx, orderID, from, to stri
 	}
 	if o.State != from {
 		return nil, errConflict
+	}
+	if from == stateDisputed && (to == stateCompleted || to == stateCancelled) {
+		concession, ok := ctx.Value(concessionTransitionKey{}).(concessionTransition)
+		if !ok || actor == nil || concession.orderID != orderID || concession.to != to || concession.actorID != actor.ID {
+			return nil, errForbidden
+		}
 	}
 	if o.Escrow && slices.ContainsFunc(actorRoles(&o, actor), func(r string) bool {
 		edge := [3]string{from, to, r}

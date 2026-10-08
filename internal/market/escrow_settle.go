@@ -330,10 +330,17 @@ func (a *App) escrowSettleTerminal(ctx context.Context, tx *sql.Tx, o *Order) er
 	var outcome string
 	switch o.State {
 	case stateCancelled:
-	case stateResolved:
+	case stateResolved, stateCompleted:
 		var err error
 		if outcome, err = escrowDisputeOutcome(ctx, tx, o.ID); err != nil {
 			return err
+		}
+		// Ordinary completed escrow orders already have their release path.
+		// A buyer's conceded dispute reaches completed with an explicit
+		// release outcome and still needs the amount check and settlement
+		// note used by a staff decision for the vendor.
+		if o.State == stateCompleted && outcome != "release" {
+			return nil
 		}
 	default:
 		return nil
@@ -345,7 +352,10 @@ func (a *App) escrowSettleTerminal(ctx context.Context, tx *sql.Tx, o *Order) er
 		AND NOT (escrow_left_out AND EXISTS (SELECT 1 FROM escrow_siblings s WHERE s.address=payments.address))`, o.ID).Scan(&sum, &n); err != nil {
 		return err
 	}
-	if n > 0 {
+	// Existing staff resolutions with no deposits keep their original behavior.
+	// A concession explicitly confirms even zero, so a deposit seen after its
+	// form was shown must refuse the transition before closing the dispute.
+	if concession, ok := ctx.Value(concessionTransitionKey{}).(concessionTransition); n > 0 || ok && concession.orderID == o.ID {
 		if err := checkPayoutSeen(ctx, o, sum); err != nil {
 			return err
 		}

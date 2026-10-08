@@ -21,6 +21,6 @@
 <button class="primary" type="submit">Submit dispute <span class="action-icon">↗</span></button>
 </form>{{else}}<p class="order-unavailable" role="note">
 <strong>Unavailable.</strong> None of your orders can be disputed. Only paid, shipped, or delivered orders qualify; drafts and orders awaiting payment hold no confirmed funds.</p>{{end}}</section>
-<section aria-label="Your disputes">{{template "disputes-list" .}}</section>
+<section aria-label="Your disputes">{{with .DisputePartyCounts}}<p class="help">Your orders' disputes: {{.Open}} open, {{.Closed}} closed (including {{.Withdrawn}} withdrawn by a party).</p>{{end}}{{template "disputes-list" .}}</section>
 </div>
 {{template "footer" .}}{{end}}

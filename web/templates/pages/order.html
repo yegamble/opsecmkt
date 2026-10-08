@@ -85,8 +85,20 @@
 </label>
 <span class="help" id="dispute-reply-help">{{if $usable}}Send evidence encrypted first: message an independent moderator or administrator listed under Contact dispute staff on this page. {{else}}No independent moderator or administrator has a usable PGP key yet, so evidence cannot be sent to staff encrypted. {{end}}The moderator who resolves this dispute reads your reply beside the {{.Opener}}’s reason. You can reply once, and a reply cannot be changed. <a class="text-link" href="/canary#records">Stored unencrypted.</a> The {{.Opener}} reads it on this order, as does every moderator and administrator, and the operator and anyone with a backup. Never include an address, real name or tracking number. Do not include passwords, private keys, or recovery phrases.</span>
 <button type="submit">Put reply on record</button>
-</form>{{else}}<p class="help">The {{.Responder}} may put one reply on record; it will be shown here.</p>{{end}}{{end}}{{if .Resolution}}<h3>Moderator decision</h3>
-<p class="dispute-text">{{.Resolution}}</p>{{end}}{{if eq $.OrderViewer "moderator"}}<p class="help">{{if and $.Order.Escrow (eq $.Order.State "disputed")}}You are viewing this order as market staff. {{template "staff-order-changes" $}}. Only an administrator decides this escrow dispute, from the <a class="text-link" href="/moderator">moderation desk</a>; a moderator cannot.{{else}}You are viewing this order as {{if eq $.User.Role "admin"}}an administrator{{else}}a moderator{{end}}. {{template "staff-order-changes" $}}{{if eq $.Order.State "disputed"}}; record the outcome on the <a class="text-link" href="/moderator">moderation desk</a>{{end}}.{{end}}</p>{{end}}</section>{{end}}
+</form>{{else}}<p class="help">The {{.Responder}} may put one reply on record; it will be shown here.</p>{{end}}{{end}}{{if .Resolution}}<h3>{{if or (eq .Status "Withdrawn — conceded by buyer") (eq .Status "Withdrawn — conceded by vendor")}}Concession{{else}}Moderator decision{{end}}</h3>
+<p class="dispute-text">{{.Resolution}}</p>{{end}}{{with $.Concession}}
+<h3>Concede this dispute</h3>
+<p class="help">{{.Statement}}. This closes the dispute and cannot be undone. The reserved listing unit is not returned to stock.</p>
+<form class="stack" method="post" action="/disputes/concede">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/disputes/concede"}}">
+<input type="hidden" name="id" value="{{(index $.Disputes 0).ID}}">
+<input type="hidden" name="outcome" value="{{.Outcome}}">
+<input type="hidden" name="amount_seen" value="{{.Seen}}">
+<label class="check"><input type="checkbox" name="payout_confirmed" value="confirmed" required> {{.Confirm}}</label>
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
+<button type="submit">{{if eq .Outcome "release"}}Concede and release to vendor{{else}}Concede and refund buyer{{end}}</button>
+</form>{{end}}{{if eq $.OrderViewer "moderator"}}<p class="help">{{if and $.Order.Escrow (eq $.Order.State "disputed")}}You are viewing this order as market staff. {{template "staff-order-changes" $}}. Only an administrator decides this escrow dispute, from the <a class="text-link" href="/moderator">moderation desk</a>; a moderator cannot.{{else}}You are viewing this order as {{if eq $.User.Role "admin"}}an administrator{{else}}a moderator{{end}}. {{template "staff-order-changes" $}}{{if eq $.Order.State "disputed"}}; record the outcome on the <a class="text-link" href="/moderator">moderation desk</a>{{end}}.{{end}}</p>{{end}}</section>{{end}}
 </div>
 <div>
 {{if $.Order.Escrow}}{{with $.Escrow}}<section class="panel">{{template "order-escrow" $}}</section>{{end}}{{with $.XMREscrow}}<section class="panel">{{template "order-xmr-escrow" $}}</section>{{end}}{{else}}<section class="panel">{{template "order-payment" $}}</section>{{end}}{{if and (eq $.OrderViewer "moderator") $.XMRCollisions}}

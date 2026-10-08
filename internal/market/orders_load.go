@@ -74,6 +74,9 @@ func viewerTransitions(payments map[string]PaymentProvider, netAdj string, o *Or
 	roles := actorRoles(o, u)
 	var out []Transition
 	for _, to := range orderStates {
+		if o.State == stateDisputed && (to == stateCompleted || to == stateCancelled) {
+			continue // A-166 uses the dedicated confirmed concession form, never the ordinary action.
+		}
 		allowed, ok := transitions[o.State][to]
 		action := transitionActions[to]
 		if !ok || action == "" || !slices.ContainsFunc(roles, func(r string) bool {
@@ -110,7 +113,7 @@ func eventActor(handle string, system bool, actorID string, o *Order) string {
 }
 
 // staffReviewer: a moderator or administrator who is not party to the order may read it (never act on it
-// from the order page) once it is disputed, keep reading it after resolution, read any order with a
+// from the order page) once it has a disputes row, keep reading it after a resolution or concession, read any order with a
 // payment flagged for review (payments.flagged, set by the watcher's flagOrder), and read an escrow order
 // while it has an open staff alert (escrowStaffAlert, A-470). orderReadable is the same rule in SQL.
 func staffReviewer(ctx context.Context, a *App, o *Order, u *User) (bool, error) {
@@ -121,7 +124,7 @@ func staffReviewer(ctx context.Context, a *App, o *Order, u *User) (bool, error)
 		return true, nil
 	}
 	var flagged bool
-	err := a.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM payments WHERE order_id=$1 AND flagged) OR "+escrowStaffAlert("$1"), o.ID).Scan(&flagged)
+	err := a.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM disputes WHERE order_id=$1) OR EXISTS(SELECT 1 FROM payments WHERE order_id=$1 AND flagged) OR "+escrowStaffAlert("$1"), o.ID).Scan(&flagged)
 	return flagged, err
 }
 
@@ -268,7 +271,13 @@ func loadOrderDetail(ctx context.Context, a *App, r *http.Request, d *PageData) 
 	default:
 		return sql.ErrNoRows
 	}
+	var staffDispute bool
 	if d.OrderViewer == roleModerator && !disputeVisible(o) {
+		if err = a.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM disputes WHERE order_id=$1)", o.ID).Scan(&staffDispute); err != nil {
+			return err
+		}
+	}
+	if d.OrderViewer == roleModerator && !disputeVisible(o) && !staffDispute {
 		// Staff read this order because a deposit is flagged or its escrow has an open staff alert. The help says which
 		// (QA5W1-1): a flag keeps the payment review text, and the alert alone names itself and links the desk's list.
 		var flagged, stall, tooFew, refused, requested bool
@@ -324,7 +333,7 @@ func loadOrderDetail(ctx context.Context, a *App, r *http.Request, d *PageData) 
 		return err
 	}
 	// A reviewer of a payment flag sees no delivery content unless the order is or was disputed.
-	d.DeliveryWithheld = d.OrderViewer == roleModerator && !disputeVisible(o)
+	d.DeliveryWithheld = d.OrderViewer == roleModerator && !disputeVisible(o) && !staffDispute
 	var dv DeliveryView
 	if !d.DeliveryWithheld {
 		err = a.db.QueryRowContext(ctx, "SELECT content,to_char(created,'YYYY-MM-DD HH24:MI \"UTC\"') FROM deliveries WHERE order_id=$1", o.ID).Scan(&dv.Content, &dv.Created)
@@ -349,6 +358,17 @@ func loadOrderDetail(ctx context.Context, a *App, r *http.Request, d *PageData) 
 		d.Disputes = []Dispute{disp}
 	} else if err != sql.ErrNoRows {
 		return err
+	}
+	if o.State == stateDisputed && len(d.Disputes) == 1 && disp.Status == "Open" &&
+		(o.BuyerID != o.VendorID) && (d.OrderViewer == roleBuyer || d.OrderViewer == roleVendor) {
+		if d.Concession, err = a.concessionPreview(ctx, o, d.OrderViewer); err != nil {
+			return err
+		}
+		if d.Security == nil {
+			if d.Security, _, _, err = a.securityView(ctx, u.ID); err != nil {
+				return err
+			}
+		}
 	}
 	if d.OrderViewer != roleModerator {
 		var texts []*string
@@ -778,6 +798,16 @@ func loadDisputes(ctx context.Context, a *App, _ *http.Request, d *PageData) err
 	d.DisputeOrders = map[string]Order{}
 	if d.User == nil {
 		return nil
+	}
+	if d.Page == "disputes" {
+		var counts DisputePartyCounts
+		if err := a.db.QueryRowContext(ctx, `SELECT count(*) FILTER (WHERE d.status='Open'),
+			count(*) FILTER (WHERE d.status<>'Open'),count(*) FILTER (WHERE d.status LIKE 'Withdrawn — conceded by %')
+			FROM disputes d JOIN orders o ON o.id=d.order_id JOIN products p ON p.id=o.product_id
+			WHERE o.buyer_id=$1 OR p.vendor_id=$1`, d.User.ID).Scan(&counts.Open, &counts.Closed, &counts.Withdrawn); err != nil {
+			return err
+		}
+		d.DisputePartyCounts = &counts
 	}
 	const scope = `SELECT d.id,d.order_id,d.reason,d.status,d.resolution,to_char(d.created,'YYYY-MM-DD HH24:MI "UTC"'),d.status='Open' AND NOT EXISTS(SELECT 1 FROM users s WHERE s.role IN ('moderator','admin') AND s.suspended_at IS NULL AND s.id<>o.buyer_id AND s.id<>p.vendor_id),` +
 		disputeRecordCols + ` FROM disputes d JOIN orders o ON o.id=d.order_id JOIN products p ON p.id=o.product_id` + disputeReplyJoin + ` WHERE (o.buyer_id=$1 OR p.vendor_id=$1 OR $2 IN ('admin','moderator'))`
