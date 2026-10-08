@@ -9,6 +9,7 @@
 </div>
 {{if .UnreadNotifications}}<form class="notification-mark-all" method="post" action="/notifications">
 <input type="hidden" name="csrf" value="{{.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/notifications"}}">
 <input type="hidden" name="mark_all" value="1">
 <button type="submit">Mark all as read</button>
 </form>{{end}}
@@ -20,6 +21,7 @@
 <p>{{.Body}}</p>{{if .AsksForStaff}}
 <p class="help staff-contact">{{template "staff-contact" $}}</p>{{end}}{{if not .Read}}<form method="post" action="/notifications">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/notifications"}}">
 <input type="hidden" name="id" value="{{.ID}}">
 <button type="submit">Mark as read</button>
 </form>{{end}}</article>{{else}}<div class="empty">

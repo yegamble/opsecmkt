@@ -4,7 +4,7 @@ import "strings"
 
 func init() {
 	registerAction("/messages", actionSpec{FormNonce: true, Run: messageAction})
-	registerAction("/notifications", actionSpec{Run: func(c *actionCtx) (actionResult, error) {
+	registerAction("/notifications", actionSpec{FormNonce: true, Run: func(c *actionCtx) (actionResult, error) {
 		if c.Form.Get("mark_all") == "1" {
 			result, err := c.Tx.ExecContext(c.Ctx(), "UPDATE notifications SET is_read=true WHERE user_id=$1 AND NOT is_read", c.User.ID)
 			if err != nil {
