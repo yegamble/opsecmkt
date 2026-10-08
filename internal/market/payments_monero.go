@@ -102,7 +102,8 @@ func newMoneroProvider(ctx context.Context, walletURL, daemonURL, wantNetwork st
 // connections on an unrestricted RPC), or a top block older than MONERO_MAX_TIP_AGE; get_last_block_header is read for
 // the last, and a failed one counts as not synced: the tip's age is unknown). Without MONERO_RPC_URL the sync state is not checked. The tip is the wallet's own height (get_height),
 // the height its transfer confirmations are counted from; it is lower while a restarted or restored wallet
-// rescans. A successful check ends by reading the wallet's version (readWalletVersion); a failed one leaves the
+// rescans. If it trails a configured daemon, the pooled pass waits instead of treating unseen deposits as gone.
+// A successful check ends by reading the wallet's version (readWalletVersion); a failed one leaves the
 // wallet unverified, never the version an earlier check read.
 func (p *moneroProvider) Check(ctx context.Context) (_ nodeStatus, err error) {
 	defer func() {
@@ -197,10 +198,13 @@ func (p *moneroProvider) Check(ctx context.Context) (_ nodeStatus, err error) {
 			return nodeStatus{}, refusef("monero daemon is on %s but the wallet is on %s", nt, network)
 		}
 		height, herr := info.Height.Int64()
+		if herr != nil || height < 0 {
+			return nodeStatus{}, errors.New("monero daemon height unreadable")
+		}
 		target, terr := info.TargetHeight.Int64()
-		node := moneroNode{NetType: nt, Synchronized: info.Synchronized, Offline: info.Offline, Restricted: info.Restricted, Connections: info.Outgoing + info.Incoming}
-		if herr == nil && terr == nil {
-			node.Height, node.TargetHeight = height, target
+		node := moneroNode{NetType: nt, Synchronized: info.Synchronized, Offline: info.Offline, Restricted: info.Restricted, Connections: info.Outgoing + info.Incoming, Height: height}
+		if terr == nil {
+			node.TargetHeight = target
 		}
 		var last struct {
 			Header struct {
@@ -212,12 +216,21 @@ func (p *moneroProvider) Check(ctx context.Context) (_ nodeStatus, err error) {
 			node.TipTime = last.Header.Timestamp
 		}
 		why = node.notSynced(time.Now(), moneroMaxTipAge())
+		if why == "" && tip < height {
+			why = "wallet height below daemon height"
+		}
+	}
+	p.mu.Lock() // the Monero escrow watcher may read primary meanwhile (pooledMonero, QA4W3-2)
+	if p.primary != "" && p.primary != addr.Address {
+		// A new wallet on the same network may reuse minor indices for different
+		// subaddresses. Resolve every issued address again before its next read.
+		p.index = map[string]int64{}
 	}
 	if p.network == "" { // first success, before the provider is published to request handlers
-		p.mu.Lock() // the Monero escrow watcher may read primary meanwhile (pooledMonero, QA4W3-2)
-		p.network, p.primary = network, addr.Address
-		p.mu.Unlock()
+		p.network = network // write once: Network and ValidAddress read it without p.mu
 	}
+	p.primary = addr.Address
+	p.mu.Unlock()
 	p.readWalletVersion(ctx)
 	return nodeStatus{Syncing: why != "", Why: why, Tip: tip}, nil
 }
@@ -320,13 +333,15 @@ func (p *moneroProvider) NewAddress(ctx context.Context, orderID string) (string
 	return r.Address, nil
 }
 
-// minorIndex resolves (and caches) a subaddress's minor index in account 0.
-func (p *moneroProvider) minorIndex(ctx context.Context, addr string) (int64, bool, error) {
+// minorIndex resolves (and caches) an issued subaddress's minor index in account 0.
+// Every address Incoming receives came from payment_addresses. A wallet that no longer
+// owns one cannot report it empty: the whole watcher chunk must remain unread.
+func (p *moneroProvider) minorIndex(ctx context.Context, addr string) (int64, error) {
 	p.mu.Lock()
 	idx, ok := p.index[addr]
 	p.mu.Unlock()
 	if ok {
-		return idx, true, nil
+		return idx, nil
 	}
 	var r struct {
 		Index struct {
@@ -337,20 +352,20 @@ func (p *moneroProvider) minorIndex(ctx context.Context, addr string) (int64, bo
 	if err := p.wallet.call(ctx, "/json_rpc", "get_address_index", map[string]any{"address": addr}, &r); err != nil {
 		var re *rpcError
 		if errors.As(err, &re) && re.Code == -2 { // WALLET_RPC_ERROR_CODE_WRONG_ADDRESS
-			return 0, false, nil // not an address of this wallet
+			return 0, errors.New("monero wallet no longer recognizes an issued payment address")
 		}
-		// Any other error (no wallet open, busy) is a failed read: the caller must not treat the address as empty.
-		return 0, false, err
+		// Any other error (no wallet open, busy) is a failed read too.
+		return 0, err
 	}
-	major, _ := r.Index.Major.Int64()
-	minor, err := r.Index.Minor.Int64()
-	if err != nil || major != 0 {
-		return 0, false, nil
+	major, majorErr := r.Index.Major.Int64()
+	minor, minorErr := r.Index.Minor.Int64()
+	if majorErr != nil || minorErr != nil || major != 0 || minor < 0 {
+		return 0, errors.New("monero wallet returned an invalid index for an issued payment address")
 	}
 	p.mu.Lock()
 	p.index[addr] = minor
 	p.mu.Unlock()
-	return minor, true, nil
+	return minor, nil
 }
 
 // Incoming uses get_transfers (in + pool) for the subaddresses; double_spend_seen reports -1 confirmations and
@@ -359,17 +374,50 @@ func (p *moneroProvider) Incoming(ctx context.Context, addresses []string) ([]In
 	byIndex := map[int64]string{}
 	var indices []int64
 	for _, a := range addresses {
-		idx, ok, err := p.minorIndex(ctx, a)
+		idx, err := p.minorIndex(ctx, a)
 		if err != nil {
 			return nil, err
 		}
-		if ok {
-			byIndex[idx] = a
-			indices = append(indices, idx)
+		if prior, duplicate := byIndex[idx]; duplicate && prior != a {
+			return nil, errors.New("monero wallet assigned one index to different issued payment addresses")
 		}
+		if byIndex[idx] == a {
+			continue
+		}
+		byIndex[idx] = a
+		indices = append(indices, idx)
 	}
 	if len(indices) == 0 {
 		return nil, nil
+	}
+	// A seed-restored wallet can keep the same primary address but forget the
+	// subaddresses it issued. Cached minor indices are therefore not evidence of
+	// ownership. One batched get_address per watcher chunk verifies every index
+	// before an empty get_transfers could mark any ledger row missing (A-105).
+	for _, idx := range indices {
+		if idx < 0 || idx > math.MaxUint32 {
+			return nil, errors.New("monero wallet returned an invalid index for an issued payment address")
+		}
+	}
+	var owned struct {
+		Addresses []struct {
+			Address string      `json:"address"`
+			Index   json.Number `json:"address_index"`
+		} `json:"addresses"`
+	}
+	if err := p.wallet.call(ctx, "/json_rpc", "get_address", map[string]any{"account_index": 0, "address_index": indices}, &owned); err != nil {
+		return nil, errors.New("monero wallet could not verify issued payment addresses")
+	}
+	if len(owned.Addresses) != len(byIndex) {
+		return nil, errors.New("monero wallet no longer recognizes an issued payment address")
+	}
+	verified := map[int64]bool{}
+	for _, entry := range owned.Addresses {
+		idx, err := entry.Index.Int64()
+		if err != nil || verified[idx] || byIndex[idx] == "" || byIndex[idx] != entry.Address {
+			return nil, errors.New("monero wallet no longer recognizes an issued payment address")
+		}
+		verified[idx] = true
 	}
 	type transfer struct {
 		TxID            string      `json:"txid"`

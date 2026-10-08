@@ -271,7 +271,8 @@ func (a *App) pollCurrency(ctx context.Context, p PaymentProvider) error {
 	// Bitcoin: one listreceivedbyaddress per chunk (it lists every address of the wallet that has received funds,
 	// so its cost grows with the wallet as well) and one gettransaction per transaction received by the chunk's
 	// addresses, every pass. Monero: one get_address_index per address the first time this process reads it (then
-	// cached) and one get_transfers per chunk (subaddr_indices). Each watched order also takes one settleOrder
+	// cached), one batched get_address per chunk to verify issued subaddresses (A-105), and one
+	// get_transfers per chunk (subaddr_indices). Each watched order also takes one settleOrder
 	// transaction per pass. The work per pass (every PAYMENT_POLL_INTERVAL, default 30 s) therefore grows with the
 	// number of orders of the last 30 days and the deposits to them (not measured at volume); a pass is bounded
 	// by watcherPassTimeout, and one cut short leaves the rest to the next.

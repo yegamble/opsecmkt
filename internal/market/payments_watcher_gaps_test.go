@@ -61,6 +61,32 @@ func (g *gapXMRWallet) reset() {
 		}
 		return nil, -2, "Address doesn't belong to the wallet"
 	})
+	g.ov.answer("get_address", func(path, method string, params json.RawMessage) (any, int, string) {
+		var q struct {
+			AddressIndex []int64 `json:"address_index"`
+		}
+		json.Unmarshal(params, &q)
+		if len(q.AddressIndex) == 0 {
+			return g.w.handle(path, method, params)
+		}
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		var addresses []map[string]any
+		for _, index := range q.AddressIndex {
+			address := ""
+			for issued, minor := range g.idx {
+				if minor == index {
+					address = issued
+					break
+				}
+			}
+			if address == "" {
+				return nil, -10, "Address index out of bounds"
+			}
+			addresses = append(addresses, map[string]any{"address_index": index, "address": address})
+		}
+		return map[string]any{"address": g.w.primary, "addresses": addresses}, 0, ""
+	})
 }
 
 func (g *gapXMRWallet) subaddress(addr string, minor int64) {
