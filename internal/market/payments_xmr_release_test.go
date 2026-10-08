@@ -204,7 +204,7 @@ func TestSubFloorXMRPriceOverpaymentIsHeld(t *testing.T) {
 	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note=$2", order, note); n != 1 {
 		t.Fatalf("held release note naming the fee: %d", n)
 	}
-	if n := p.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body=$2", p.vendor.ID, "Order "+order[:8]+": the TESTNET release of 0.5 XMR is more than the order price, so it is held until an administrator checks it; the network fee is taken from the release. Nothing is needed from you; if it is still held after a few days, message an administrator."); n != 1 {
+	if n := p.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body=$2", p.vendor.ID, "Order "+order[:8]+": the TESTNET release of 0.5 XMR is more than the order price, so it is held until an administrator checks it; the network fee is taken from the release. Nothing is needed from you; if it is still held after a few days, message an administrator. Contact the market staff if you need help."); n != 1 {
 		t.Fatalf("vendor's hold notice naming the fee: %d", n)
 	}
 	adminID := p.str("SELECT id FROM users WHERE role='admin'")
