@@ -35,6 +35,7 @@
 <h2>{{if .Verified}}Prove ownership again{{else}}Prove ownership{{end}}</h2>
 <form class="stack" method="post" action="/pgp/challenge">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/pgp/challenge"}}">
 <fieldset>
 <legend>Challenge type</legend>
 <label class="check"><input type="radio" name="kind" value="sign" checked> Sign a text with your private key</label>
@@ -50,6 +51,7 @@
 <p class="help">For example save it to a file and run <code>gpg --clearsign challenge.txt</code> (or <code>gpg --armor --detach-sign</code>). Expires {{.ChallengeExpires}}.</p>
 <form class="stack" method="post" action="/pgp/verify">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/pgp/verify"}}">
 <label>Clearsigned message or armored detached signature<textarea name="signature" required maxlength="32768" rows="9" spellcheck="false" placeholder="-----BEGIN PGP SIGNED MESSAGE-----"></textarea></label>
 <button class="primary" type="submit">Verify signature</button>
 </form>
@@ -59,6 +61,7 @@
 <p class="help">For example save it to a file and run <code>gpg --decrypt challenge.asc</code>. Expires {{.ChallengeExpires}}.</p>
 <form class="stack" method="post" action="/pgp/verify">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/pgp/verify"}}">
 <label>Decrypted text<input name="response" required maxlength="128" autocomplete="off" spellcheck="false" autocapitalize="off"></label>
 <button class="primary" type="submit">Verify decryption</button>
 </form>

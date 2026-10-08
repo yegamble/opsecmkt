@@ -79,6 +79,7 @@
 <p class="help">TOTP stays off until a correct code is confirmed. You then receive 10 one-time recovery codes.</p>
 <form method="post" action="/totp/enroll">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/totp/enroll"}}">
 <button type="submit">Generate a different key</button>
 </form>
 </section>
@@ -88,6 +89,7 @@
 <p>Sign-in currently uses your password only. Enrolling generates a secret key for an authenticator app; TOTP turns on only after you confirm a code from it.</p>
 <form method="post" action="/totp/enroll">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/totp/enroll"}}">
 <button class="primary" type="submit">Start enrollment <span class="action-icon">↗</span></button>
 </form>
 </section>{{end}}{{end}}

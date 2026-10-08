@@ -15,7 +15,7 @@ func init() {
 	registerLoader("totp", totpLoader)
 	registerLoader("account", accountSecurityLoader)
 	registerLoader("pgp", accountSecurityLoader) // TOTPEnabled decides whether PGP sign-in changes ask for a code
-	registerAction("/totp/enroll", actionSpec{Run: totpEnroll})
+	registerAction("/totp/enroll", actionSpec{FormNonce: true, Run: totpEnroll})
 	registerAction("/totp/activate", actionSpec{OwnTx: true, Run: totpActivate})
 	registerAction("/totp/recovery", actionSpec{OwnTx: true, Run: totpRegenerate})
 	registerAction("/totp/disable", actionSpec{OwnTx: true, Run: totpDisable})
