@@ -71,6 +71,9 @@ func TestPooledConfirmationWaitFixedAtFirstRecordedDeposit(t *testing.T) {
 	if got := p.state(p.order); got != stateCancelled {
 		t.Fatalf("past floor with recent replacement: %s", got)
 	}
+	if got := p.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND order_id=$2 AND body LIKE '%fixed confirmation wait ended%'", p.buyer.ID, p.order); got != 1 {
+		t.Fatalf("order-linked expiry notices %d, want 1", got)
+	}
 	if got := p.count("SELECT stock FROM products WHERE id=$1", p.productID); got != stock+1 {
 		t.Fatalf("stock %d, want %d", got, stock+1)
 	}

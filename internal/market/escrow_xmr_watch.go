@@ -1110,7 +1110,7 @@ func (a *App) settleXMREscrow(ctx context.Context, orderID string, walletRead bo
 			return err
 		}
 		body := "Order " + shortID(orderID) + ": the fixed confirmation wait ended, so the order was cancelled and its stock returned. Unconfirmed escrow deposits were not sent; deposits that confirm later follow the escrow refund or stray-recovery path shown on the order page."
-		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.BuyerID, body); err != nil {
+		if _, err = insertNotification(ctx, tx, o.BuyerID, body, o.ID); err != nil {
 			return err
 		}
 	case underpaid:

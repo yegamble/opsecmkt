@@ -482,7 +482,7 @@ func (a *App) settleEscrow(ctx context.Context, orderID string, walletRead bool)
 			return err
 		}
 		body := "Order " + shortID(orderID) + ": the fixed confirmation wait ended, so the order was cancelled and its stock returned. Unconfirmed escrow deposits were not sent; the refund settlement waits for confirmations or leaves them out for later recovery. Check this order before signing any refund."
-		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.BuyerID, body); err != nil {
+		if _, err = insertNotification(ctx, tx, o.BuyerID, body, o.ID); err != nil {
 			return err
 		}
 	case underpaid:

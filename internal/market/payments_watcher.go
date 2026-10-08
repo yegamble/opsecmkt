@@ -498,7 +498,7 @@ func (a *App) settleOrder(ctx context.Context, p PaymentProvider, orderID string
 			o = *next
 			if stalled {
 				body := "Order " + shortID(orderID) + ": the fixed confirmation wait ended, so the order was cancelled and its stock returned. Deposits still unconfirmed were not paid out. Any confirmed amount follows the usual refund rules shown on the order page; a deposit confirming later is refunded only if no payout was already queued, otherwise market staff review it."
-				if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.BuyerID, body); err != nil {
+				if _, err = insertNotification(ctx, tx, o.BuyerID, body, o.ID); err != nil {
 					return err
 				}
 			}
