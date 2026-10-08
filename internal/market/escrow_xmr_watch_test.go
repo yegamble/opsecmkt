@@ -764,6 +764,60 @@ func TestXMREscrowWindowAndLateDeposit(t *testing.T) {
 	}
 }
 
+// A-477: retry a failed after-close flag even when a confirmed deposit disappears from get_transfers after its stray
+// refund is sent. The transaction failure below models a settleXMREscrow database error on the first pass.
+func TestXMREscrowLateDepositFlaggedWhenStrayBuildFailsAtHighThreshold(t *testing.T) {
+	t.Setenv("PAYMENT_CONFIRMATIONS_XMR", "1000")
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	order := x.draft(x.digital(x.vendor))
+	addr := x.mustCheckout(order)
+	agExec(x.testEnv, "UPDATE escrows SET created=now()-interval '3 days' WHERE order_id=$1", order)
+	x.mustPoll()
+	if x.state(order) != stateCancelled {
+		t.Fatalf("unpaid: %s", x.state(order))
+	}
+	txid := hex64("late high threshold")
+	x.fake.payAddress(addr, txid, xmrListingPrice, 1000)
+	agExec(x.testEnv, `CREATE FUNCTION a477_fail_late_note() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+		IF position('arrived at this order''s escrow address after the order closed' in NEW.note)>0 THEN
+			RAISE EXCEPTION 'A-477 forced settleXMREscrow flag failure';
+		END IF;
+		RETURN NEW;
+	END $$;
+	CREATE TRIGGER a477_fail_late_note BEFORE INSERT ON order_events FOR EACH ROW EXECUTE FUNCTION a477_fail_late_note()`)
+	if err := x.poll(); err == nil || !strings.Contains(err.Error(), "A-477 forced settleXMREscrow flag failure") {
+		t.Fatalf("the first late-deposit flag failure: %v", err)
+	}
+	stray := x.settlementOf(order, "stray_refund")
+	if stray.State != "relayed" || agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND xmr_settlement_id=(SELECT id FROM xmr_settlements WHERE order_id=$1 AND kind='stray_refund')", order) != 1 {
+		t.Fatalf("after the first pass: stray refund %+v", stray)
+	}
+	if agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND flagged", order) != 0 {
+		t.Fatal("the failed flag transaction persisted")
+	}
+	agExec(x.testEnv, "DROP TRIGGER a477_fail_late_note ON order_events; DROP FUNCTION a477_fail_late_note()")
+	x.fake.edit(func(f *fakeXMREscrow) {
+		w := f.files["escrow-202610-01"]
+		kept := w.transfers[:0]
+		for _, transfer := range w.transfers {
+			if transfer.TxID != txid {
+				kept = append(kept, transfer)
+			}
+		}
+		w.transfers = kept
+	})
+	if err := x.poll(); err != nil {
+		t.Fatalf("next pass after the flag failure: %v", err)
+	}
+	if got := agStrings(t, x.testEnv, "SELECT confirmations||' '||after_close||' '||flagged||' '||credited FROM payments WHERE order_id=$1", order); !slices.Equal(got, []string{"-1 true true false"}) {
+		t.Fatalf("late deposit after its incoming transfer disappeared: %v", got)
+	}
+	if x.notified(x.admin, "after the order closed") != 1 {
+		t.Fatalf("staff notification after retry: %d", x.notified(x.admin, "after the order closed"))
+	}
+}
+
 // Under the restore gate (and after a restore until Monero escrow's sweep) no wallet or slot is created and no wallet
 // activated; deposits are still read and orders funded.
 func TestXMREscrowGatePausesCreation(t *testing.T) {

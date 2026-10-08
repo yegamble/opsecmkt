@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -654,8 +655,8 @@ func (a *App) flagLateDeposits(ctx context.Context, tx *sql.Tx, o *Order, thresh
 		return err
 	}
 	rows, err := tx.QueryContext(ctx, `UPDATE payments SET flagged=true WHERE order_id=$1 AND NOT credited AND NOT flagged AND NOT locked
-		AND confirmations>=$2 AND ($3 OR after_close OR ($4 AND EXISTS(SELECT 1 FROM disputes d WHERE d.order_id=$1 AND d.outcome='')))
-		RETURNING txid,amount,after_close,EXISTS(SELECT 1 FROM escrow_siblings s WHERE s.address=payments.address)`, o.ID, threshold, paidOut, walletRead && o.State == stateResolved && !o.Escrow)
+		AND ((confirmations>=$2 AND ($3 OR after_close OR ($4 AND EXISTS(SELECT 1 FROM disputes d WHERE d.order_id=$1 AND d.outcome='')))) OR (after_close AND xmr_settlement_id IS NOT NULL))
+		RETURNING txid,idx,amount,after_close,EXISTS(SELECT 1 FROM escrow_siblings s WHERE s.address=payments.address)`, o.ID, threshold, paidOut, walletRead && o.State == stateResolved && !o.Escrow)
 	if err != nil {
 		return err
 	}
@@ -666,16 +667,17 @@ func (a *App) flagLateDeposits(ctx context.Context, tx *sql.Tx, o *Order, thresh
 	atSiblings := 0 // QA5W5A-6: a deposit to a per-order escrow's sibling address is not at its escrow address
 	for rows.Next() {
 		var txid string
-		var amt int64
-		var afterClose, atSibling bool
-		if err = rows.Scan(&txid, &amt, &afterClose, &atSibling); err != nil {
+		var idx, amt int64
+		var afterClose bool
+		var atSibling bool
+		if err = rows.Scan(&txid, &idx, &amt, &afterClose, &atSibling); err != nil {
 			rows.Close()
 			return err
 		}
 		if o.State == stateResolved && !o.Escrow && !paidOut && !afterClose {
 			legacyUnsettled = true
 		}
-		deposits = append(deposits, "deposit "+truncate(txid, 20)+" ("+amount(amt, dec)+" "+o.Currency+")")
+		deposits = append(deposits, lateDepositName(txid, idx, amt, o.Currency, o.Escrow))
 		sum += amt
 		if atSibling {
 			atSiblings++
@@ -693,10 +695,11 @@ func (a *App) flagLateDeposits(ctx context.Context, tx *sql.Tx, o *Order, thresh
 	if len(deposits) > 1 {
 		verb = "were"
 	}
-	note := a.netTag() + " " + strings.Join(deposits, ", ") + " arrived after this order was " + closed + " and " + verb + " not paid out. Moderator review required."
+	notePrefix := a.netTag() + " "
+	noteSuffix := " arrived after this order was " + closed + " and " + verb + " not paid out. Moderator review required."
 	body := "Order " + o.ID[:min(8, len(o.ID))] + ": " + amount(sum, dec) + " " + o.Currency + " (" + a.netTag() + ") arrived at this order's deposit address after the order closed and was not paid out; it is not refunded automatically. Market staff were notified and review it."
 	if legacyUnsettled {
-		note = a.netTag() + " " + strings.Join(deposits, ", ") + " " + verb + " confirmed but not paid out: this legacy resolved dispute has no settlement outcome. Moderator review required."
+		noteSuffix = " " + verb + " confirmed but not paid out: this legacy resolved dispute has no settlement outcome. Moderator review required."
 		body = "Order " + o.ID[:min(8, len(o.ID))] + ": " + amount(sum, dec) + " " + o.Currency + " (" + a.netTag() + ") was confirmed at its deposit address but not paid out: this legacy resolved dispute has no settlement outcome. Market staff were notified and review it."
 	}
 	if o.Escrow {
@@ -712,17 +715,25 @@ func (a *App) flagLateDeposits(ctx context.Context, tx *sql.Tx, o *Order, thresh
 		case atSiblings > 0:
 			where = "this order's escrow address and another address of this order's wallet"
 		}
-		note = a.netTag() + " " + net + " " + strings.Join(deposits, ", ") + " arrived at " + where + " after the order closed; not counted, it is returned to the buyer's refund address by a stray refund from the escrow. Moderator review required."
+		notePrefix = a.netTag() + " " + net + " "
+		noteSuffix = " arrived at " + where + " after the order closed; not counted, it is returned to the buyer's refund address by a stray refund from the escrow. Moderator review required."
 		body = "Order " + o.ID[:min(8, len(o.ID))] + ": " + amount(sum, dec) + " " + o.Currency + " (" + a.netTag() + " " + net + ") arrived at " + where + " after the order closed. It is not counted; " + how + ". Market staff were notified."
 	}
-	if episode {
-		_, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", o.ID, o.State, note)
-		return err
+	notes := splitNamedFlagNotes(notePrefix, deposits, noteSuffix, maxNoteChars)
+	for i, chunk := range notes {
+		if i == 0 && !episode {
+			if err = a.flagOrder(ctx, tx, o, chunk, ""); err != nil {
+				return err
+			}
+			continue
+		}
+		if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", o.ID, o.State, chunk); err != nil {
+			return err
+		}
 	}
-	if err = a.flagOrder(ctx, tx, o, note, ""); err != nil {
-		return err
+	if !episode {
+		_, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.BuyerID, body)
 	}
-	_, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.BuyerID, body)
 	return err
 }
 
@@ -780,6 +791,36 @@ func (a *App) flagStalledPooledDeposits(ctx context.Context, tx *sql.Tx, o *Orde
 		_, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.BuyerID, body)
 	}
 	return err
+}
+
+// lateDepositName keeps one transaction's outputs distinguishable in generated flag notes. Pooled Monero's idx is its
+// subaddress minor index; per-order Monero escrow stores a wallet/account composite, so show its account component.
+func lateDepositName(txid string, idx, amt int64, currency string, escrow bool) string {
+	which := "output " + strconv.FormatInt(idx, 10)
+	if escrow && currency == "XMR" {
+		which = "account " + strconv.FormatInt(idx&((1<<32)-1), 10)
+	}
+	return "deposit " + truncate(txid, 20) + " " + which + " (" + amount(amt, currencyDecimals(currency)) + " " + currency + ")"
+}
+
+// splitNamedFlagNotes keeps every deposit label in a history note under the existing 500-character note bound. The
+// caller sends one staff notice for the episode; extra chunks only date the remaining flagged rows on the desk.
+func splitNamedFlagNotes(prefix string, names []string, suffix string, limit int) []string {
+	out := []string{}
+	chunk := []string{}
+	for _, name := range names {
+		candidate := append(slices.Clone(chunk), name)
+		if len(prefix)+len(strings.Join(candidate, ", "))+len(suffix) > limit && len(chunk) > 0 {
+			out = append(out, prefix+strings.Join(chunk, ", ")+suffix)
+			chunk = []string{name}
+			continue
+		}
+		chunk = candidate
+	}
+	if len(chunk) > 0 {
+		out = append(out, prefix+strings.Join(chunk, ", ")+suffix)
+	}
+	return out
 }
 
 func collectStrings(ctx context.Context, tx *sql.Tx, query string, args ...any) ([]string, error) {

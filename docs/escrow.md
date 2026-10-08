@@ -906,6 +906,9 @@ Phase 4 work (war-room ruling P4-R15, owner decision 2026-10-05), on the develop
 (still off by default, still custodial) accepts stagenet as well as a local fakechain. **No run on the public stagenet is
 recorded**: the evidence below is simulated RPC and an offline stagenet fork.
 
+The staff alert for a requested Monero settlement older than 24 hours is a visibility threshold, not a measured settlement
+or refund-time bound. Requested settlement waits have not been measured on stagenet.
+
 - **Network check and address tags.** The escrow daemon must report nettype `fakechain` (no network flag set) or
   `stagenet` (the stagenet flag set), and a hard fork version of at least 16; mainnet, testnet and inconsistent flags are
   refused. A daemon still syncing (synchronized false, or a target height above its height) is not refused for a lower

@@ -136,12 +136,15 @@ func staffReviewer(ctx context.Context, a *App, o *Order, u *User) (bool, error)
 //   - a Monero escrow deposit refused as another order's escrow account (A-480, xmrFlagCollision): an open record in
 //     xmr_escrow_collisions (xmrCollisionOpen); it clears when staff record what was done about it on the order
 //     page (xmrCollisionAction). It flags no deposit (none is in the ledger) and the order may have no settlement.
+//   - a requested Monero escrow settlement older than 24 hours: it stays visible while requested and clears when the
+//     settlement changes state. The threshold is for staff visibility, not a measured stagenet settlement bound.
 //
 // A new escrow notice through flagOrder either flags the deposits it concerns (as every other one does) or adds its
 // open state here, and its reason to the moderation desk's list (loadEscrowAlerts).
 func escrowStaffAlert(order string) string {
 	return "(EXISTS(SELECT 1 FROM settlements s WHERE s.order_id=" + order + " AND (s.state='broadcast' AND " + escrowStalledSQL +
-		" OR s.kind='release' AND s.state='failed' AND s.build_error='" + settleTooSmall + "')) OR " + xmrCollisionOpen(order) + ")"
+		" OR s.kind='release' AND s.state='failed' AND s.build_error='" + settleTooSmall + "')) OR " + xmrCollisionOpen(order) +
+		" OR EXISTS(SELECT 1 FROM xmr_settlements xs WHERE xs.order_id=" + order + " AND xs.state='requested' AND xs.created<now()-interval '24 hours'))"
 }
 
 // xmrCollisionOpen is SQL that is true while the order whose id is the SQL expression order has an open record of a
@@ -158,11 +161,13 @@ const escrowAlertLimit = 100
 // the notice: a notification names only a short order ID, and a stall or a refused Monero deposit flags no deposit, so
 // the payment review list does not show it. Newest first by when the order's open alert opened (the latest, when it
 // has several: a stall by its stall note, a release too few by its settlement's last update, which recorded the
-// failure, a refused deposit by its record's noted time; QA5W2-3), not by the order's age, because the alert a
+// failure, a refused deposit by its record's noted time, a requested Monero settlement by the time it crossed 24 hours;
+// QA5W2-3), not by the order's age, because the alert a
 // notification just announced is the newest; ties by order ID. When more than escrowAlertLimit are open the desk says
 // how many it leaves out (EscrowAlertsMore). Nothing here is an action (a refused deposit's disposition is recorded on
 // the order page). The prefilter names every table an alert is read from: an order with a refused deposit may have no
-// settlement.
+// settlement. The requested-settlement candidate list is included explicitly because it has no Bitcoin settlement or
+// collision row.
 func loadEscrowAlerts(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
 	if d.User == nil || (d.User.Role != "moderator" && d.User.Role != "admin") {
 		return nil
@@ -171,12 +176,15 @@ func loadEscrowAlerts(ctx context.Context, a *App, _ *http.Request, d *PageData)
 		EXISTS(SELECT 1 FROM settlements s WHERE s.order_id=o.id AND s.state='broadcast' AND `+escrowStalledSQL+`),
 		EXISTS(SELECT 1 FROM settlements s WHERE s.order_id=o.id AND s.kind='release' AND s.state='failed' AND s.build_error='`+settleTooSmall+`'),
 		`+xmrCollisionOpen("o.id")+`,
+		EXISTS(SELECT 1 FROM xmr_settlements xs WHERE xs.order_id=o.id AND xs.state='requested' AND xs.created<now()-interval '24 hours'),
 		count(*) OVER ()
 		FROM orders o WHERE (o.id IN (SELECT order_id FROM settlements WHERE state IN ('broadcast','failed'))
-			OR o.id IN (SELECT order_id FROM xmr_escrow_collisions WHERE disposed_at IS NULL)) AND `+escrowStaffAlert("o.id")+`
+			OR o.id IN (SELECT order_id FROM xmr_escrow_collisions WHERE disposed_at IS NULL)
+			OR o.id IN (SELECT order_id FROM xmr_settlements WHERE state='requested' AND created<now()-interval '24 hours')) AND `+escrowStaffAlert("o.id")+`
 		ORDER BY GREATEST((SELECT max(`+escrowStallOpenedSQL+`) FROM settlements s WHERE s.order_id=o.id AND s.state='broadcast' AND `+escrowStalledSQL+`),
 			(SELECT max(s.updated) FROM settlements s WHERE s.order_id=o.id AND s.kind='release' AND s.state='failed' AND s.build_error='`+settleTooSmall+`'),
-			(SELECT max(x.noted) FROM xmr_escrow_collisions x WHERE x.order_id=o.id AND x.disposed_at IS NULL)) DESC NULLS LAST,o.id DESC
+			(SELECT max(x.noted) FROM xmr_escrow_collisions x WHERE x.order_id=o.id AND x.disposed_at IS NULL),
+			(SELECT max(xs.created+interval '24 hours') FROM xmr_settlements xs WHERE xs.order_id=o.id AND xs.state='requested' AND xs.created<now()-interval '24 hours')) DESC NULLS LAST,o.id DESC
 		LIMIT $1`, escrowAlertLimit)
 	if err != nil {
 		return err
@@ -185,7 +193,7 @@ func loadEscrowAlerts(ctx context.Context, a *App, _ *http.Request, d *PageData)
 	var total int
 	for rows.Next() {
 		var v EscrowAlertView
-		if err = rows.Scan(&v.ID, &v.State, &v.Stall, &v.TooFew, &v.Refused, &total); err != nil {
+		if err = rows.Scan(&v.ID, &v.State, &v.Stall, &v.TooFew, &v.Refused, &v.Requested, &total); err != nil {
 			return err
 		}
 		v.State = stateLabel(v.State)
@@ -254,15 +262,16 @@ func loadOrderDetail(ctx context.Context, a *App, r *http.Request, d *PageData) 
 	if d.OrderViewer == roleModerator && !disputeVisible(o) {
 		// Staff read this order because a deposit is flagged or its escrow has an open staff alert. The help says which
 		// (QA5W1-1): a flag keeps the payment review text, and the alert alone names itself and links the desk's list.
-		var flagged, stall, tooFew, refused bool
+		var flagged, stall, tooFew, refused, requested bool
 		if err = a.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM payments WHERE order_id=$1 AND flagged),
 			EXISTS(SELECT 1 FROM settlements s WHERE s.order_id=$1 AND s.state='broadcast' AND `+escrowStalledSQL+`),
 			EXISTS(SELECT 1 FROM settlements s WHERE s.order_id=$1 AND s.kind='release' AND s.state='failed' AND s.build_error='`+settleTooSmall+`'),
-			`+xmrCollisionOpen("$1"), o.ID).Scan(&flagged, &stall, &tooFew, &refused); err != nil {
+			`+xmrCollisionOpen("$1")+`,
+			EXISTS(SELECT 1 FROM xmr_settlements xs WHERE xs.order_id=$1 AND xs.state='requested' AND xs.created<now()-interval '24 hours')`, o.ID).Scan(&flagged, &stall, &tooFew, &refused, &requested); err != nil {
 			return err
 		}
-		if !flagged && (stall || tooFew || refused) {
-			d.StaffAlert = &EscrowAlertView{ID: o.ID, Stall: stall, TooFew: tooFew, Refused: refused}
+		if !flagged && (stall || tooFew || refused || requested) {
+			d.StaffAlert = &EscrowAlertView{ID: o.ID, Stall: stall, TooFew: tooFew, Refused: refused, Requested: requested}
 		}
 	}
 	if d.OrderViewer == roleModerator {
@@ -869,8 +878,19 @@ func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageDat
 		CROSS JOIN LATERAL (SELECT e.escrow,e.escrow AND NOT pm.after_close AND NOT pm.escrow_left_out AND NOT pm.spent_outside AS counted
 			FROM (SELECT EXISTS(SELECT 1 FROM escrows es WHERE es.order_id=pm.order_id) AS escrow) e) c
 		LEFT JOIN LATERAL (SELECT max(e.created) AS at FROM order_events e WHERE e.order_id=pm.order_id AND e.actor_id IS NULL
-			AND e.note LIKE '%Moderator review required.%'
-			AND strpos(e.note, ' '||CASE WHEN length(pm.txid)<=20 THEN pm.txid ELSE left(pm.txid,20)||'…' END||' ')>0) f ON true
+			AND lower(e.note) LIKE '%moderator review required.%'
+			AND (strpos(e.note,'deposit '||CASE WHEN length(pm.txid)<=20 THEN pm.txid ELSE left(pm.txid,20)||'…' END||' '||
+				CASE WHEN pm.currency='XMR' AND EXISTS(SELECT 1 FROM escrows es WHERE es.order_id=pm.order_id)
+					THEN 'account '||(pm.idx&4294967295)::text ELSE 'output '||pm.idx::text END||' (')>0
+			OR strpos(e.note,CASE WHEN length(pm.txid)<=20 THEN pm.txid ELSE left(pm.txid,20)||'…' END||':'||pm.idx::text||' (')>0
+			OR (strpos(e.note,'deposit '||CASE WHEN length(pm.txid)<=20 THEN pm.txid ELSE left(pm.txid,20)||'…' END||' output ')=0
+					AND strpos(e.note,'deposit '||CASE WHEN length(pm.txid)<=20 THEN pm.txid ELSE left(pm.txid,20)||'…' END||' account ')=0
+					AND strpos(e.note,CASE WHEN length(pm.txid)<=20 THEN pm.txid ELSE left(pm.txid,20)||'…' END||':')=0
+					AND NOT EXISTS(SELECT 1 FROM order_events indexed WHERE indexed.order_id=pm.order_id AND indexed.actor_id IS NULL
+						AND (strpos(indexed.note,'deposit '||CASE WHEN length(pm.txid)<=20 THEN pm.txid ELSE left(pm.txid,20)||'…' END||' output ')>0
+							OR strpos(indexed.note,'deposit '||CASE WHEN length(pm.txid)<=20 THEN pm.txid ELSE left(pm.txid,20)||'…' END||' account ')>0
+							OR strpos(indexed.note,CASE WHEN length(pm.txid)<=20 THEN pm.txid ELSE left(pm.txid,20)||'…' END||':')>0))
+					AND strpos(e.note, ' '||CASE WHEN length(pm.txid)<=20 THEN pm.txid ELSE left(pm.txid,20)||'…' END||' ')>0))) f ON true
 		WHERE pm.flagged AND pm.disposition IN ('','escalated'))
 		SELECT id,order_id,state,product_id,title,currency,amount,txid,idx,credited,locked,confirmations,regress_notice,below_floor,open,COALESCE(to_char(at,'YYYY-MM-DD HH24:MI "UTC"'),''),
 			escalated,disposed,party,escrow,spent_outside,spent_by,counted,left_out,(SELECT count(*) FROM v WHERE NOT open)
