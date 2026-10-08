@@ -25,8 +25,8 @@ import (
 // mined; the plan is checked in Go (checkXMRBuild).
 
 func init() {
-	registerAction("/admin/escrow-xmr-rerequest", actionSpec{Roles: []string{"admin"}, OwnTx: true, Off: escrowXMROff, Run: xmrReRequestAction})
-	registerAction("/admin/escrow-xmr-retry-build", actionSpec{Roles: []string{"admin"}, OwnTx: true, Off: escrowXMROff, Run: xmrRetryBuildAction})
+	registerAction("/admin/escrow-xmr-rerequest", actionSpec{Roles: []string{"admin"}, OwnTx: true, ConfirmedFormNonce: true, ReceiptAuthorize: xmrSettlementRequestReceiptAuthorize, Off: escrowXMROff, Run: xmrReRequestAction})
+	registerAction("/admin/escrow-xmr-retry-build", actionSpec{Roles: []string{"admin"}, OwnTx: true, ConfirmedFormNonce: true, ReceiptAuthorize: xmrSettlementRequestReceiptAuthorize, Off: escrowXMROff, Run: xmrRetryBuildAction})
 }
 
 // Refusal reasons of a re-request (xmr_settlement_rerequests.reason).

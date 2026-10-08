@@ -584,6 +584,8 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 				msg = "Listing change outcome unknown: it may have been saved. Check the listing's status and activity before starting another form. If the original form is still open, resubmit it unchanged to retrieve the saved response."
 			case "/admin/payout":
 				msg = "Payout outcome unknown: it may have been saved. Reload the admin page and check the payout state and audit trail before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
+			case "/escrow/decision", "/admin/escrow-xmr-rerequest", "/admin/escrow-xmr-retry-build":
+				msg = "Escrow administration outcome unknown: it may have been saved. Check the order decision, settlement and activity before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
 			case "/admin/escrow-fee":
 				msg = "Market fee outcome unknown: it may have been saved. Check the fee setting and audit trail on the admin page before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
 			case "/resolve":

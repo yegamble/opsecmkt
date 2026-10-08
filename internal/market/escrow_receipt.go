@@ -96,3 +96,43 @@ func xmrShipReceiptAuthorize(c *actionCtx) error {
 func xmrConfirmReceiptAuthorize(c *actionCtx) error {
 	return escrowPartyReceiptAuthorize(c, "XMR", "buyer")
 }
+
+// Staff receipts retain current target/coin/nonparty eligibility, without requiring
+// the former decision or settlement state that the original request changed.
+// These reads take no target locks before the callback's established lock order.
+func btcDecisionReceiptAuthorize(c *actionCtx) error {
+	var buyer, vendor string
+	err := c.Tx.QueryRowContext(c.Ctx(), `SELECT o.buyer_id,p.vendor_id FROM orders o
+ JOIN products p ON p.id=o.product_id JOIN escrows e ON e.order_id=o.id AND e.coin='BTC'
+ WHERE o.id=$1`, c.Form.Get("order_id")).Scan(&buyer, &vendor)
+	if err == sql.ErrNoRows {
+		return errNoOrder
+	}
+	if err != nil {
+		return err
+	}
+	if c.User.ID == buyer || c.User.ID == vendor {
+		return errDecisionParty
+	}
+	return nil
+}
+func xmrSettlementRequestReceiptAuthorize(c *actionCtx) error {
+	id, err := strconv.ParseInt(c.Form.Get("settlement_id"), 10, 64)
+	if err != nil || id <= 0 {
+		return errReRequestNone
+	}
+	var buyer, vendor string
+	err = c.Tx.QueryRowContext(c.Ctx(), `SELECT o.buyer_id,p.vendor_id FROM xmr_settlements s
+ JOIN orders o ON o.id=s.order_id JOIN products p ON p.id=o.product_id
+ JOIN escrows e ON e.order_id=o.id AND e.coin='XMR' WHERE s.id=$1`, id).Scan(&buyer, &vendor)
+	if err == sql.ErrNoRows {
+		return errReRequestNone
+	}
+	if err != nil {
+		return err
+	}
+	if c.User.ID == buyer || c.User.ID == vendor {
+		return errReRequestParty
+	}
+	return nil
+}

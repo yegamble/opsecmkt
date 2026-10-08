@@ -18,7 +18,7 @@ import (
 // broadcast, confirmed or spent outside the market, the decision is fixed.
 
 func init() {
-	registerAction("/escrow/decision", actionSpec{Roles: []string{"admin"}, OwnTx: true, Off: escrowOff, Run: escrowDecisionAction})
+	registerAction("/escrow/decision", actionSpec{Roles: []string{"admin"}, OwnTx: true, ConfirmedFormNonce: true, ReceiptAuthorize: btcDecisionReceiptAuthorize, Off: escrowOff, Run: escrowDecisionAction})
 }
 
 var (
