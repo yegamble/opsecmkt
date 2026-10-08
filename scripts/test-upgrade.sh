@@ -349,7 +349,7 @@ want_drain='address_collision,flagged_payment,mainnet_history,open_order,recover
 address_collision=BTC:2 flagged_payment=payment:'"$(printf 'd%.0s' {1..64})"':0 mainnet_history=XMR:1 open_order=order:paid recovery_required=payments_recovery_required: unsent_payout=payout:release blocked
 upgrade-drain-xmr
 0
-watched_address=upgrade-drain-xmr:until recorded deposit '"$(printf 'e%.0s' {1..64})"':1 confirms (it is then flagged for review) or leaves the wallet
+watched_address=upgrade-drain-xmr:until recorded deposit '"$(printf 'e%.0s' {1..64})"':1 confirms, leaves the wallet, or reaches staff review 14 days after the later of the horizon and first observation
 0'
 [[ $drain == "$want_drain" ]] || { printf 'pooled_drain_blockers() after the upgrade:\n%s\nwant:\n%s\n' "$drain" "$want_drain" >&2; exit 1; }
 [[ $(sql -c 'SELECT count(*) FROM pooled_drain_blockers()') == 0 && $(sql -c 'SELECT count(*) FROM payouts') == 0 ]]

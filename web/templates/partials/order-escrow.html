@@ -148,7 +148,7 @@
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="order_id" value="{{$.Order.ID}}">
 <input type="hidden" name="settlement_id" value="{{.ID}}">
-<label>Upload a hardware signed PSBT<input type="file" name="psbt_file" required accept=".psbt,.txt" aria-describedby="hardware-sign-help-{{.ID}}"></label>
+<label>Upload hardware wallet signature (.psbt or .txt)<input type="file" name="psbt_file" required accept=".psbt,.txt" aria-describedby="hardware-sign-help-{{.ID}}"></label>
 <span class="help" id="hardware-sign-help-{{.ID}}">Use the PSBT signed by your hardware wallet, at most 8 MiB. Only your signatures are saved.</span>
 <button type="submit">Submit hardware signature</button>
 </form>{{end}}{{range .Bumps}}
@@ -177,7 +177,7 @@
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="order_id" value="{{$.Order.ID}}">
 <input type="hidden" name="bump_id" value="{{.ID}}">
-<label>Upload a hardware signed fee bump PSBT<input type="file" name="psbt_file" required accept=".psbt,.txt" aria-describedby="hardware-bump-help-{{.ID}}"></label>
+<label>Upload hardware wallet fee bump signature (.psbt or .txt)<input type="file" name="psbt_file" required accept=".psbt,.txt" aria-describedby="hardware-bump-help-{{.ID}}"></label>
 <span class="help" id="hardware-bump-help-{{.ID}}">Check the fee bump outputs above on your device. The signed PSBT file may be at most 8 MiB.</span>
 <button type="submit">Submit hardware fee bump signature</button>
 </form>{{end}}
