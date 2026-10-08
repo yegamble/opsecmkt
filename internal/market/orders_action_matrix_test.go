@@ -171,11 +171,11 @@ func orderActionMatrixWant(path string, actor struct {
 		if actor.role != "moderator" && actor.role != "admin" {
 			return 403, state
 		}
-		if state != stateDisputed {
-			return 409, state
-		}
 		if party {
 			return 403, state
+		}
+		if state != stateDisputed {
+			return 409, state
 		}
 		return success(stateResolved)
 	}

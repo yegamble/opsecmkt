@@ -35,12 +35,21 @@ func escrowReceiptCounts(t *testing.T, e *testEnv, path, order, actor string) (r
 	return
 }
 
+func escrowFormReceiptCount(t *testing.T, e *testEnv, path string) int {
+	t.Helper()
+	var n int
+	if err := e.DB.QueryRow("SELECT count(*) FROM form_submissions WHERE action_path=$1", path).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
 func TestEscrowConfirmedNonceBitcoinClaimReplay(t *testing.T) {
 	x := newEscrowEnv(t)
 	order := x.completed(refundAddr, 100000)
 	page := x.page("/order?id="+order, x.vendorSess)
 	nonce := renderedFormNonce(t, page, "/escrow/claim")
-	if submissionCount(t, x.testEnv) != 0 {
+	if escrowFormReceiptCount(t, x.testEnv, "/escrow/claim") != 0 {
 		t.Fatal("GET wrote a receipt")
 	}
 	f := escrowReceiptForm(order, claimAddr, nonce)

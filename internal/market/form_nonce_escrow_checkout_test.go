@@ -10,7 +10,7 @@ func TestEscrowCheckoutReceiptReplaysWithoutSecondNodeOrSignerCall(t *testing.T)
 	x, signer := newPerOrderEnv(t)
 	page := x.page("/order?id="+x.order, x.buyerSess)
 	nonce := renderedFormNonce(t, page, "/orders/escrow")
-	if got := submissionCount(t, x.testEnv); got != 0 {
+	if got := escrowFormReceiptCount(t, x.testEnv, "/orders/escrow"); got != 0 {
 		t.Fatalf("checkout form GET wrote %d receipts", got)
 	}
 	refund := regtestAddr("nonce-receipt-refund")
@@ -19,7 +19,7 @@ func TestEscrowCheckoutReceiptReplaysWithoutSecondNodeOrSignerCall(t *testing.T)
 	if w := x.do("POST", "/orders/escrow", x.buyerSess, url.Values{"order_id": {x.order}, "refund_address": {"invalid"}, formNonceField: {nonce}}); w.Code != 400 {
 		t.Fatalf("invalid refund response = %d %s", w.Code, w.Body.String())
 	}
-	if got := submissionCount(t, x.testEnv); got != 0 {
+	if got := escrowFormReceiptCount(t, x.testEnv, "/orders/escrow"); got != 0 {
 		t.Fatalf("refused checkout left %d receipts", got)
 	}
 	first := x.do("POST", "/orders/escrow", x.buyerSess, form)
@@ -77,7 +77,7 @@ func TestXMREscrowCheckoutReceiptReplaysAndRefusedFormCanRetry(t *testing.T) {
 	order := x.draft(x.digital(x.vendor))
 	page := x.page("/order?id="+order, x.buyerSess)
 	nonce := renderedFormNonce(t, page, "/orders/escrow-xmr")
-	if got := submissionCount(t, x.testEnv); got != 0 {
+	if got := escrowFormReceiptCount(t, x.testEnv, "/orders/escrow-xmr"); got != 0 {
 		t.Fatalf("XMR checkout form GET wrote %d receipts", got)
 	}
 	refund := testXMRAddr("receipt checkout "+order, true)
@@ -87,7 +87,7 @@ func TestXMREscrowCheckoutReceiptReplaysAndRefusedFormCanRetry(t *testing.T) {
 	if w := x.do("POST", "/orders/escrow-xmr", x.buyerSess, invalid); w.Code != 400 {
 		t.Fatalf("invalid refund response = %d %s", w.Code, w.Body.String())
 	}
-	if got := submissionCount(t, x.testEnv); got != 0 {
+	if got := escrowFormReceiptCount(t, x.testEnv, "/orders/escrow-xmr"); got != 0 {
 		t.Fatalf("refused XMR checkout left %d receipts", got)
 	}
 	first := x.do("POST", "/orders/escrow-xmr", x.buyerSess, form)

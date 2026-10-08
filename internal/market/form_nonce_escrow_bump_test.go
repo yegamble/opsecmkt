@@ -18,13 +18,13 @@ func TestEscrowBumpSignatureFormNonceReplayAndCorrectedRetry(t *testing.T) {
 	x := newEscrowEnv(t)
 	order, settlementID := x.broadcastClaim("form-nonce-bump", 100000)
 	bump := x.mustBump(order, x.vendorSess, settlementID, "5")
-	if got := submissionCount(t, x.testEnv); got != 0 {
+	if got := bumpSubmissionCount(t, x.testEnv); got != 0 {
 		t.Fatalf("escrow setup wrote %d form receipts before the signing form", got)
 	}
 
 	page := x.page("/order?id="+order, x.vendorSess)
 	nonce := renderedFormNonce(t, page, "/escrow/bump-sign")
-	if got := submissionCount(t, x.testEnv); got != 0 {
+	if got := bumpSubmissionCount(t, x.testEnv); got != 0 {
 		t.Fatalf("GET /order wrote %d form receipts", got)
 	}
 	copyCode, copyText := x.bumpCopy(order, x.vendorSess, settlementID, bump.ID)
@@ -37,7 +37,7 @@ func TestEscrowBumpSignatureFormNonceReplayAndCorrectedRetry(t *testing.T) {
 	if w := x.do("POST", "/escrow/bump-sign", x.vendorSess, form); w.Code != 400 {
 		t.Fatalf("invalid signature status = %d, want 400: %s", w.Code, w.Body.String())
 	}
-	if got := submissionCount(t, x.testEnv); got != 0 || x.bumpByID(bump.ID).State != "awaiting_signature" {
+	if got := bumpSubmissionCount(t, x.testEnv); got != 0 || x.bumpByID(bump.ID).State != "awaiting_signature" {
 		t.Fatalf("invalid signature left %d receipts and bump state %q", got, x.bumpByID(bump.ID).State)
 	}
 
@@ -157,6 +157,15 @@ func TestEscrowBumpSignatureFormNonceReplayAndCorrectedRetry(t *testing.T) {
 	if got := agInt(x.testEnv, "SELECT count(*) FROM audit_events WHERE user_id=$1 AND action=$2", x.buyer, buyerAudit); got != 1 {
 		t.Fatalf("buyer signature audits = %d, want one", got)
 	}
+}
+
+func bumpSubmissionCount(t *testing.T, e *testEnv) int {
+	t.Helper()
+	var n int
+	if err := e.DB.QueryRow("SELECT count(*) FROM form_submissions WHERE action_path='/escrow/bump-sign'").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
 }
 
 func noticeValue(w *httptest.ResponseRecorder) string {

@@ -388,6 +388,9 @@ func TestEscrowRegtestShapeBRelease(t *testing.T) {
 	var b bytes.Buffer
 	mw := multipart.NewWriter(&b)
 	mw.WriteField("csrf", c.e.A.csrf(c.vendorSess))
+	page := c.e.do("GET", "/order?id="+order, c.vendorSess, nil)
+	c.e.check(page, 200)
+	mw.WriteField(formNonceField, renderedFormNonce(t, page.Body.String(), "/escrow/sign"))
 	mw.WriteField("order_id", order)
 	mw.WriteField("settlement_id", strconv.FormatInt(id, 10))
 	fw, _ := mw.CreateFormFile("psbt_file", "escrow-claim.psbt")

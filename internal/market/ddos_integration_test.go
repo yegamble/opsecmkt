@@ -468,7 +468,7 @@ func TestSlowBodyPostsLeaveSignInWorking(t *testing.T) {
 	if c := post("/login", randomToken(), url.Values{"handle": {"slow_body_user"}, "password": {testPassword}}); c != 303 {
 		t.Fatalf("POST /login during %d slow-body posts: %d", n, c)
 	}
-	if c := post("/notifications", buyer, url.Values{}); c != 303 {
+	if c := post("/notifications", buyer, url.Values{formNonceField: {randomToken()[:32]}}); c != 303 {
 		t.Fatalf("signed-in POST during %d slow-body posts: %d", n, c)
 	}
 }

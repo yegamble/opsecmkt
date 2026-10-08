@@ -7,6 +7,7 @@ import (
 	"html"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -507,7 +508,7 @@ func TestEscrowLeavesPooledOrdersUnchanged(t *testing.T) {
 	x.A.escrowConfigured = false
 	x.A.escrow.Store(nil)
 	for name, id := range orders {
-		if got := x.page("/order?id="+id, x.buyerSess); got != pages[name] {
+		if got := normalizeRenderedFormNonces(x.page("/order?id="+id, x.buyerSess)); got != normalizeRenderedFormNonces(pages[name]) {
 			t.Fatalf("%s order page differs with escrow off", name)
 		}
 	}
@@ -528,6 +529,10 @@ func TestEscrowLeavesPooledOrdersUnchanged(t *testing.T) {
 	if n := agInt(x.testEnv, "SELECT count(*) FROM payment_addresses WHERE order_id=$1", x.order); n != 1 || agInt(x.testEnv, "SELECT count(*) FROM escrows") != 0 {
 		t.Fatal("pooled request did not issue a pooled address")
 	}
+}
+
+func normalizeRenderedFormNonces(body string) string {
+	return regexp.MustCompile(`(name="form_nonce" value=")[0-9a-f]{32}(")`).ReplaceAllString(body, `${1}<nonce>${2}`)
 }
 
 // rotatedSecretKey provides a deterministic foreign key root for unreadable-row fixtures: 64 hex digits derived from

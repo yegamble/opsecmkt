@@ -103,10 +103,19 @@ func TestFreshInstallAppliesBaselineAndMigrations(t *testing.T) {
 }
 
 // A-400: newTestApp's copy of the template database starts exactly where New leaves an empty schema: the same
-// relations, columns, constraints, indexes, triggers, functions, types, sequences and rows.
+// relations, columns, constraints, indexes, triggers, functions, types, sequences and rows. A fresh migration run
+// also writes one startup audit event; that intentional runtime row is excluded from the template comparison.
+const freshStartAuditActionSQL = `(SELECT 'Startup applied ' || count(*) || ' database migrations; schema version ' || lpad(max(version)::text,3,'0') FROM schema_migrations)`
+
 func TestNewTestAppMatchesAFreshStart(t *testing.T) {
 	copied := newTestApp(t)
 	fresh := newFreshTestApp(t) // the schema path, which every database test took before the template
+	if got := agInt(fresh, "SELECT count(*) FROM audit_events WHERE user_id IS NULL AND action="+freshStartAuditActionSQL); got != 1 {
+		t.Fatalf("fresh start has %d migration startup audit rows, want exactly one", got)
+	}
+	if got := agInt(copied, "SELECT count(*) FROM audit_events WHERE user_id IS NULL AND action="+freshStartAuditActionSQL); got != 0 {
+		t.Fatalf("template snapshot has %d migration startup audit rows, want none", got)
+	}
 	want, got := schemaSnapshot(fresh), schemaSnapshot(copied)
 	if len(got) != len(want) {
 		t.Errorf("snapshot has %d lines, a fresh start %d", len(got), len(want))
@@ -125,6 +134,9 @@ func schemaSnapshot(e *testEnv) []string {
 	ns := agStr(e, "SELECT current_schema()")
 	const in = "= current_schema()::regnamespace"
 	var lines []string
+	sequenceSnapshot := "SELECT 'sequence ' || sequencename || ' ' || CASE WHEN sequencename='audit_events_id_seq' THEN " +
+		"(COALESCE(last_value,0) - (SELECT count(*) FROM audit_events WHERE user_id IS NULL AND action=" + freshStartAuditActionSQL + "))::text " +
+		"ELSE COALESCE(last_value::text,'unused') END FROM pg_sequences WHERE schemaname = current_schema()"
 	for _, q := range []string{
 		"SELECT 'relation ' || relname || ' ' || relkind::text FROM pg_class WHERE relnamespace " + in,
 		"SELECT 'column ' || table_name || '.' || column_name || ' #' || ordinal_position || ' ' || data_type || ' ' || is_nullable || ' ' || coalesce(column_default, '') FROM information_schema.columns WHERE table_schema = current_schema()",
@@ -133,7 +145,7 @@ func schemaSnapshot(e *testEnv) []string {
 		"SELECT 'trigger ' || pg_get_triggerdef(t.oid) FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid WHERE NOT t.tgisinternal AND c.relnamespace " + in,
 		"SELECT 'function ' || pg_get_functiondef(oid) FROM pg_proc WHERE prokind IN ('f', 'p') AND pronamespace " + in,
 		"SELECT 'type ' || typname || ' ' || typtype::text FROM pg_type WHERE typtype IN ('d', 'e') AND typnamespace " + in,
-		"SELECT 'sequence ' || sequencename || ' ' || coalesce(last_value::text, 'unused') FROM pg_sequences WHERE schemaname = current_schema()",
+		sequenceSnapshot,
 		"SELECT 'migration ' || version || ' ' || name FROM schema_migrations",
 	} {
 		lines = append(lines, agStrings(e.t, e, q)...)
@@ -144,7 +156,11 @@ func schemaSnapshot(e *testEnv) []string {
 			// This operational timestamp is initialized with now() on each app start; compare every health/config field.
 			rowJSON = "(row_to_json(r)::jsonb - 'updated_at')::text"
 		}
-		lines = append(lines, agStrings(e.t, e, "SELECT 'row "+table+" ' || "+rowJSON+" FROM "+table+" r")...)
+		query := "SELECT 'row " + table + " ' || " + rowJSON + " FROM " + table + " r"
+		if table == "audit_events" {
+			query += " WHERE NOT (r.user_id IS NULL AND r.action=" + freshStartAuditActionSQL + ")"
+		}
+		lines = append(lines, agStrings(e.t, e, query)...)
 	}
 	for i := range lines {
 		lines[i] = strings.ReplaceAll(lines[i], ns+".", "")

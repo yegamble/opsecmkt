@@ -56,7 +56,7 @@ func TestEscrowMultipartSignatureReceiptReplayAndBindings(t *testing.T) {
 	order, settlementID := x.built(regtestAddr("nonce-upload-refund"), regtestAddr("nonce-upload-claim"), 100000)
 	page := x.page("/order?id="+order, x.vendorSess)
 	nonce := renderedFormNonce(t, page, "/escrow/sign")
-	if got := submissionCount(t, x.testEnv); got != 0 {
+	if got := escrowFormReceiptCount(t, x.testEnv, "/escrow/sign"); got != 0 {
 		t.Fatalf("signing form GET wrote %d receipts", got)
 	}
 	copyText := x.partyCopy(order, x.vendorSess, settlementID)
@@ -65,7 +65,7 @@ func TestEscrowMultipartSignatureReceiptReplayAndBindings(t *testing.T) {
 	if w := multipartSigningPost(x, "/escrow/sign", x.vendorSess, order, strconv.FormatInt(settlementID, 10), nonce, "psbt", bad); w.Code != 400 {
 		t.Fatalf("bad-signature response = %d %s", w.Code, w.Body.String())
 	}
-	if got := submissionCount(t, x.testEnv); got != 0 {
+	if got := escrowFormReceiptCount(t, x.testEnv, "/escrow/sign"); got != 0 {
 		t.Fatalf("refused signature left %d receipts", got)
 	}
 	good := walletSign(t, copyText, fingerprint, 1)

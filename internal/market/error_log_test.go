@@ -139,7 +139,7 @@ func TestLogsContainNoSecrets(t *testing.T) {
 	logs.mu.Lock()
 	logs.b.Reset()
 	logs.mu.Unlock()
-	w = send("POST", "/notifications?query-secret=1", url.Values{"id": {handle + "form-secret"}})
+	w = send("POST", "/notifications?query-secret=1", url.Values{"id": {handle + "form-secret"}, formNonceField: {randomToken()[:32]}})
 	check(w, "action", "/notifications", "22021")
 }
 
