@@ -68,7 +68,9 @@ test('draft cannot be paid without a wallet, cancellation is recorded, vendor se
   await expect(page.locator('.account-name')).toHaveText(ADMIN.handle);
   await page.goto('/vendor-dashboard');
   await expect(page.getByRole('heading', { name: 'Incoming orders' })).toBeVisible();
-  await expect(page.locator('tr', { hasText: handle }).first()).toContainText('Cancelled');
+  await expect(page.locator('main')).toContainText('Unfunded drafts and cancelled drafts are kept in your order history but do not appear as incoming work.');
+  await expect(page.locator('tr', { hasText: handle })).toHaveCount(0);
+  // The cancelled draft remains directly readable by its vendor despite staying off the work queue.
   await page.goto(orderURL);
   await expect(page.locator('.eyebrow').first()).toContainText('you are the vendor');
   await expect(page.locator('.order-timeline')).toContainText('Draft — unfunded → Cancelled');
