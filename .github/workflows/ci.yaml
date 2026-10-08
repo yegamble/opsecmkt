@@ -582,7 +582,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
   upgrade:
-    name: Upgrade from v0.1.0-alpha.1
+    name: Upgrade from alpha.1 and an intermediate migrated release
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -595,9 +595,9 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Install age for the encrypted upgrade and restore rehearsal
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends age
-      - name: Migrate a populated alpha.1 database on PostgreSQL 17 with the current server
+      - name: Install PostgreSQL client and age for upgrade rehearsal
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends postgresql-client age
+      - name: Upgrade alpha.1 and intermediate databases on PostgreSQL 17
         run: bash scripts/test-upgrade.sh
   tor-image:
     name: Tor image and offline configuration

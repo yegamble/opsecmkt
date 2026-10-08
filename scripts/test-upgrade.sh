@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Upgrade regression: a database created and used by v0.1.0-alpha.1 must upgrade under the current server.
+# Upgrade regression: databases created by v0.1.0-alpha.1 and an intermediate migrated release upgrade under the
+# current server.
 #
-# Starts a disposable PostgreSQL 17 container, builds and runs the alpha.1 server from its git tag once,
-# populates it through alpha.1's own HTTP forms (admin, vendor, buyers, a listing, BTC/XMR order drafts with
+# Starts one disposable PostgreSQL 17 container, builds and runs the alpha.1 server from its git tag and the
+# 91-migration intermediate server from its frozen commit,
+# populates alpha.1 through its own HTTP forms (admin, vendor, buyers, a listing, BTC/XMR order drafts with
 # the old status text, an armored message), stops it, then boots the server built from this checkout against
 # the same database and checks the migrated data and behaviour, then that it refuses to start on a database
 # recording a migration it does not include, then performs a disposable Tor-mode deployment upgrade and
@@ -14,11 +16,20 @@ unset COMPOSE_PROFILES COMPOSE_FILE
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
 from_ref=${UPGRADE_FROM_REF:-v0.1.0-alpha.1}
+intermediate_ref=${UPGRADE_INTERMEDIATE_REF:-329c7b2bf2e8741ff284256958aad55f5454fd53}
 for dependency in docker go git python3 age age-keygen; do
   command -v "$dependency" >/dev/null || { echo "Missing dependency: $dependency" >&2; exit 1; }
 done
 git rev-parse --verify --quiet "${from_ref}^{commit}" >/dev/null || {
   echo "$from_ref is not in this clone; fetch it first (git fetch origin tag $from_ref, or checkout with fetch-depth: 0)" >&2
+  exit 1
+}
+git rev-parse --verify --quiet "${intermediate_ref}^{commit}" >/dev/null || {
+  echo "$intermediate_ref is not in this clone; fetch full history before running the intermediate migration upgrade" >&2
+  exit 1
+}
+git merge-base --is-ancestor "$intermediate_ref" HEAD || {
+  echo "$intermediate_ref is not an ancestor of this checkout; refusing to test an unrelated migration history" >&2
   exit 1
 }
 work=$(mktemp -d "${TMPDIR:-/tmp}/opsecmkt-upgrade.XXXXXX")
@@ -51,14 +62,32 @@ trap cleanup EXIT
 sql() { docker exec -i "$db" psql -X -q -A -t -v ON_ERROR_STOP=1 -U upgrade -d opsecmkt "$@"; }
 free_port() { python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'; }
 
-# start_server NAME BINARY DIRECTORY: runs a server with a clean environment (nothing inherited from the
-# caller's shell, so a developer's payment or signing settings cannot leak in) and waits for /healthz.
-start_server() {
-  local name=$1 binary=$2 directory=$3
+# launch_server NAME BINARY DIRECTORY [DATABASE_URL]: runs a server with a clean environment (nothing inherited
+# from the caller's shell, so a developer's payment or signing settings cannot leak in). Secrets are read from
+# private temporary files inside $work and never appear in the process argument list.
+launch_server() {
+  local name=$1 binary=$2 directory=$3 target_database_url=${4:-$database_url}
   log="$work/$name.log"
-  (cd "$directory" && exec env -i PATH="$PATH" DATABASE_URL="$database_url" SETUP_TOKEN="$setup_token" \
-    COOKIE_SECURE=false ADDR="127.0.0.1:$app_port" "$binary") > "$log" 2>&1 &
+  local database_url_file="$work/$name.database-url" setup_token_file="$work/$name.setup-token"
+  printf '%s\n' "$target_database_url" > "$database_url_file"
+  printf '%s\n' "$setup_token" > "$setup_token_file"
+  chmod 600 "$database_url_file" "$setup_token_file"
+  (
+    cd "$directory"
+    exec env -i PATH="$PATH" bash -c '
+      IFS= read -r DATABASE_URL < "$1"
+      IFS= read -r SETUP_TOKEN < "$2"
+      export DATABASE_URL SETUP_TOKEN COOKIE_SECURE=false ADDR="$3"
+      exec "$4"
+    ' start-server "$database_url_file" "$setup_token_file" "127.0.0.1:$app_port" "$binary"
+  ) > "$log" 2>&1 &
   server_pid=$!
+}
+
+# start_server NAME BINARY DIRECTORY [DATABASE_URL]: launch and wait for /healthz.
+start_server() {
+  local name=$1 binary=$2 directory=$3 target_database_url=${4:-$database_url}
+  launch_server "$name" "$binary" "$directory" "$target_database_url"
   python3 - "$base" "$server_pid" <<'PY'
 import os, sys, time, urllib.request
 base, pid = sys.argv[1], int(sys.argv[2])
@@ -404,9 +433,7 @@ INSERT INTO escrow_pubkeys(pubkey,escrow_id,party,user_id,key_hmac,origin_finger
 COMMIT;
 SQL
 applied=$(sql -c "SELECT string_agg(version || '@' || applied, ',' ORDER BY version) FROM schema_migrations")
-(cd "$root" && exec env -i PATH="$PATH" DATABASE_URL="$database_url" SETUP_TOKEN="$setup_token" \
-  COOKIE_SECURE=false ADDR="127.0.0.1:$app_port" "$work/new-server") > "$work/refused-089.log" 2>&1 &
-server_pid=$!
+launch_server refused-089 "$work/new-server" "$root"
 for _ in {1..60}; do
   kill -0 "$server_pid" 2>/dev/null || break
   sleep 0.5
@@ -440,9 +467,7 @@ stop_server
 # migration it does not include. It must exit non-zero before serving, name that migration, and change nothing.
 sql -c "INSERT INTO schema_migrations(version,name) VALUES (999,'from_a_newer_release')"
 applied=$(sql -c "SELECT string_agg(version || '@' || applied, ',' ORDER BY version) FROM schema_migrations")
-(cd "$root" && exec env -i PATH="$PATH" DATABASE_URL="$database_url" SETUP_TOKEN="$setup_token" \
-  COOKIE_SECURE=false ADDR="127.0.0.1:$app_port" "$work/new-server") > "$work/refused.log" 2>&1 &
-server_pid=$!
+launch_server refused "$work/new-server" "$root"
 for _ in {1..60}; do
   kill -0 "$server_pid" 2>/dev/null || break
   sleep 0.5
@@ -462,8 +487,14 @@ grep -q 'UPGRADING.md, section "Rolling back"' "$work/refused.log"
 sql -c 'DELETE FROM schema_migrations WHERE version=999'
 start_server roll-forward "$work/new-server" "$root"
 stop_server
+
+# A-41: use the shared intermediate-release leg against this disposable PG17 container. The URL is passed only
+# in the helper's environment; it creates a uniquely named database and never modifies opsecmkt.
+INTERMEDIATE_TEST_DATABASE_URL="$database_url" scripts/test-intermediate-upgrade.sh --disposable-cluster \
+  "$intermediate_ref" "$work/new-server"
+
 # Exercise the supported deployment upgrade and side-by-side restore flow in one disposable Tor-mode Compose
 # directory. Its overlay binds the app only to loopback and puts Tor on an internal network; it makes no claim
 # that a Tor circuit or public onion service was established.
 bash scripts/test-tor-upgrade-rollback.sh "$from_ref"
-echo "Upgrade from $from_ref passed: health, every migration recorded once, orders migrated to draft, one draft per buyer/product/currency, data and sign-in preserved; the pooled drain gate lists seeded blockers of every kind and then none; an escrow key row migration 089 refuses stops startup with its message; a database from a newer release is refused at startup."
+echo "Upgrade from $from_ref and intermediate $intermediate_ref passed: health, migration history and data preserved, buyer sign-in retained; the pooled drain gate lists seeded blockers of every kind and then none; an escrow key row migration 089 refuses startup with its message; a database from a newer release is refused at startup."

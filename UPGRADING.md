@@ -3,6 +3,25 @@
 This release adds test-network payments, signed audit exports and several database migrations. Read this
 whole page before pulling the new code onto a running v0.1.0-alpha.1 deployment.
 
+The migration files included since alpha.1 are: `001_foundation`, `010_auth`, `011_account_suspension`,
+`012_pending_factor_failed`, `013_pending_password_digest`, `020_pgp`, `030_orders`, `031_review_hidden`,
+`040_inventory`, `041_listing_takedown`, `050_payments`, `051_payments_locked`, `052_payment_intake`,
+`053_payout_send_ambiguous`, `054_payments_late_notice`, `055_monero_post_submit_failures`, `056_payments_regression`,
+`057_payout_address_changed`, `058_payments_below_floor`, `060_transparency`, `061_captcha_spent`,
+`062_products_catalog_index`, `063_images`, `064_payout_returns`, `065_payments_after_close`,
+`066_payment_review_disposition`, `067_pgp_key_lifecycle`, `068_pending_login_next`, `069_payout_one_settlement`,
+`070_payout_refund_or_return`, `071_payment_address_collisions`, `072_audit_role_change_index`,
+`073_payout_return_needs_release`, `074_escrow_btc`, `075_escrow_settlements`, `076_escrow_cosign`,
+`077_escrow_recovery`, `078_escrow_waiting_spent`, `079_escrow_physical`, `080_escrow_bumps`,
+`081_escrow_release_guard`, `082_escrow_bump_seen`, `083_escrow_key_reserve`, `084_escrow_xmr`,
+`085_escrow_xmr_settlement_status`, `086_escrow_xmr_destroy_intent`, `087_escrow_supersede_unbuilt`,
+`088_escrow_key_layout`, `089_escrow_per_order`, `090_xmr_escrow_collisions`, `091_pooled_drain_blockers`,
+`092_pooled_stalled_review`, `093_escrow_node_health`, `094_escrow_health_off_and_key_mismatch`,
+`095_pooled_txid_prefix_privacy`, `096_reported_zero_confirmation_regressions`, `097_payout_txid_lookup`,
+`098_remove_profile_xmpp`, `099_audit_event_indexes`, `100_form_submissions`, `101_provider_episodes`,
+`102_handle_casefold_lookup`, `103_message_extra_recipient_count`, `104_notification_order_id`,
+and `105_order_listing_snapshot`. The sections below explain the operator-visible changes and rollback considerations.
+
 ## Upgrade with the installer
 
 From the directory you deploy from, with your age public key:
