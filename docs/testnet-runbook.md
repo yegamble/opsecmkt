@@ -374,12 +374,32 @@ unreviewed flag. A second review of the same flag is refused (409); so is one by
 ## 6. Back up the wallets
 
 Database dumps (`scripts/backup.sh`) do not contain the wallets. Back them up separately and encrypt the
-copies like any other secret:
+copies like any other secret. For Bitcoin, the plaintext wallet file is temporary inside the node
+container; the host receives only the age-encrypted archive. Set `AGE_RECIPIENT` to the public recipient
+and choose a new output name for each backup:
 
 ```sh
-btc -rpcwallet=opsecmkt backupwallet /data/opsecmkt-wallet.bak
-btc getblockcount                          # record this height with the backup (pruned nodes, below)
-docker compose cp bitcoin:/data/opsecmkt-wallet.bak ./opsecmkt-wallet.bak
+set -euo pipefail
+umask 077
+: "${AGE_RECIPIENT:?set the age public recipient}"
+command -v age >/dev/null
+wallet_backup="backups/bitcoin-wallet-$(date -u +%Y%m%dT%H%M%SZ).bak.age"
+node_tmp=/tmp/opsecmkt-wallet.bak
+mkdir -p backups
+test ! -e "$wallet_backup" || { echo "refusing to overwrite $wallet_backup" >&2; exit 1; }
+wallet_tmp=$(mktemp "${wallet_backup}.tmp.XXXXXX")
+cleanup() {
+  rm -f "$wallet_tmp"
+  docker compose exec -T bitcoin rm -f "$node_tmp" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+btc -rpcwallet=opsecmkt backupwallet "$node_tmp"
+docker compose exec -T bitcoin chmod 600 "$node_tmp"
+docker compose exec -T bitcoin cat "$node_tmp" | age -r "$AGE_RECIPIENT" > "$wallet_tmp"
+mv "$wallet_tmp" "$wallet_backup"
+docker compose exec -T bitcoin rm "$node_tmp"
+trap - EXIT
+btc getblockcount                          # record this height with the encrypted wallet backup
 xmr query_key '{"key_type":"mnemonic"}'   # write the seed down offline, with the height from section 3
 docker compose stop monero-wallet          # the wallet files (restored in preference to the seed), copied stopped
 docker compose cp monero-wallet:/home/monero/wallet/opsecmkt ./opsecmkt
@@ -691,14 +711,24 @@ and this `db_sql` for the restored database (replace `opsecmkt_restored` with th
 db_sql() { docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U opsecmkt -d opsecmkt_restored "$@"; }
 ```
 
-**Bitcoin.** Restore the backup file, then advance the index past what the database has issued and rescan:
+**Bitcoin.** Set `AGE_IDENTITY` to the private age identity and `wallet_backup` to the exact encrypted
+filename created in section 6. Decryption streams directly into a temporary file inside the node; no
+plaintext wallet copy is written to the host. Then advance the index past what the database has issued
+and rescan:
 
 ```sh
+set -euo pipefail
+: "${AGE_IDENTITY:?set the age private identity}"
+wallet_backup=backups/bitcoin-wallet-YYYYMMDDTHHMMSSZ.bak.age  # use the exact filename from section 6
+node_tmp=/tmp/opsecmkt-wallet.bak
+cleanup() { docker compose exec -T bitcoin rm -f "$node_tmp" >/dev/null 2>&1 || true; }
+trap cleanup EXIT
 btc listwalletdir                                    # "opsecmkt" listed: the wallet survived, go to the check
-docker compose cp ./opsecmkt-wallet.bak bitcoin:/data/opsecmkt-wallet.bak
-docker compose exec -T bitcoin chown bitcoin:bitcoin /data/opsecmkt-wallet.bak
-btc restorewallet opsecmkt /data/opsecmkt-wallet.bak true   # true: load it again after a node restart
-docker compose exec -T bitcoin rm /data/opsecmkt-wallet.bak
+age -d -i "$AGE_IDENTITY" "$wallet_backup" | docker compose exec -T bitcoin sh -c 'umask 077; cat > /tmp/opsecmkt-wallet.bak'
+docker compose exec -T bitcoin chown bitcoin:bitcoin "$node_tmp"
+btc restorewallet opsecmkt "$node_tmp" true   # true: load it again after a node restart
+docker compose exec -T bitcoin rm "$node_tmp"
+trap - EXIT
 n=$(db_sql -A -t -c "SELECT count(*) FROM payment_addresses WHERE currency='BTC'")
 for i in $(seq $((n + 100))); do btc -rpcwallet=opsecmkt getnewaddress restore-skip bech32 >/dev/null; done
 btc -rpcwallet=opsecmkt rescanblockchain HEIGHT     # the height recorded with the wallet backup

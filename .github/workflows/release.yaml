@@ -71,7 +71,7 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           cat > release-notes.md <<'NOTES'
-          Tested Linux amd64 OCI image archive. Verify SHA256SUMS before importing with an OCI-aware tool such as Skopeo. The archive embeds BuildKit provenance and an SBOM. These are build metadata, not a cryptographic signature. See docs/ci-cd.md for import and rollback instructions. No production deployment is performed.
+          Built after CI verification: Linux amd64 OCI image archive. Verify SHA256SUMS before importing with an OCI-aware tool such as Skopeo. The archive embeds BuildKit provenance and an SBOM. These are build metadata, not a cryptographic signature. See docs/ci-cd.md for import and rollback instructions. No production deployment is performed.
 
           verify-audit-OS-ARCH are standalone builds of cmd/verify-audit for checking a signed audit export offline: verify-audit -pub <key from /canary> export.jsonl export.sig (exit 0 = valid). They are listed in SHA256SUMS.
           NOTES

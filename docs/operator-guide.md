@@ -2238,7 +2238,20 @@ Install [age](https://age-encryption.org/) and generate an identity offline (`ag
 AGE_RECIPIENT=age1YOUR_PUBLIC_RECIPIENT ./scripts/backup.sh backups/market.dump.age
 ```
 
-For external databases also set `BACKUP_DATABASE_URL`, install Python 3 and PostgreSQL client tools matching or newer than the server. `./scripts/install.sh upgrade` backs up through this script too, so on an external database give it both: `BACKUP_DATABASE_URL=YOUR_EXTERNAL_DATABASE_URL AGE_RECIPIENT=age1YOUR_PUBLIC_RECIPIENT ./scripts/install.sh upgrade` (the value of `DATABASE_URL` in `.env` serves when this host can reach that server; quote it in single quotes); without `BACKUP_DATABASE_URL` it refuses before changing anything. The script streams a custom-format dump directly into encryption, uses restrictive file permissions, refuses overwrite and fails if either command fails. Back up `.env`, deployment settings and the Tor identity separately in encrypted storage ([commands below](#secrets-env-and-onion-identities)). Database dumps do not include onion keys or blockchain volumes, and in particular **not the custodial payment wallets** (the `bitcoin_data`, `monero_wallet` and, with Monero escrow, `monero_escrow_wallet` volumes, or your external wallets): back those up on their own (see the [runbook](testnet-runbook.md#6-back-up-the-wallets)). Maintain offline copies and rehearse recovery.
+For external databases also set `BACKUP_DATABASE_URL`, install Python 3 and PostgreSQL client tools matching or newer than the server. `./scripts/install.sh upgrade` backs up through this script too, so on an external database give it both: `BACKUP_DATABASE_URL=YOUR_EXTERNAL_DATABASE_URL AGE_RECIPIENT=age1YOUR_PUBLIC_RECIPIENT ./scripts/install.sh upgrade` (the value of `DATABASE_URL` in `.env` serves when this host can reach that server; quote it in single quotes); without `BACKUP_DATABASE_URL` it refuses before changing anything. The script streams a custom-format dump directly into encryption, uses restrictive file permissions, refuses overwrite and fails if either command fails. Record the `pg_dump --version` used for each backup; use a `pg_restore` version at least as new when inspecting or restoring it. The archive's table of contents also records the producing `pg_dump` version. Back up `.env`, deployment settings and the Tor identity separately in encrypted storage ([commands below](#secrets-env-and-onion-identities)). Database dumps do not include onion keys or blockchain volumes, and in particular **not the custodial payment wallets** (the `bitcoin_data`, `monero_wallet` and, with Monero escrow, `monero_escrow_wallet` volumes, or your external wallets): back those up on their own (see the [runbook](testnet-runbook.md#6-back-up-the-wallets)). Maintain offline copies and rehearse recovery.
+
+Run database backups on a schedule that matches your recovery-point needs. For example, a daily 02:15 UTC cron entry for the internal database can create a dated encrypted archive (replace the recipient and checkout path):
+
+```cron
+15 2 * * * cd /srv/opsecmkt && AGE_RECIPIENT=age1YOUR_PUBLIC_RECIPIENT ./scripts/backup.sh "backups/market-$(date -u +\%Y\%m\%dT\%H\%M\%SZ).dump.age" >> backups/backup.log 2>&1
+```
+
+For an external database, keep `BACKUP_DATABASE_URL` in a root-owned mode-0600 environment file or wrapper and have the cron job invoke that; do not put its credential in the crontab. Copy completed `.age` files unchanged to an approved off-host encrypted-storage location, for example `rsync -a -- backups/market-YYYYMMDDTHHMMSSZ.dump.age backup-host:/srv/opsecmkt/backups/` using the exact archive name. Periodically verify an off-host copy by restoring it to a new disposable database as shown below. Choose a retention period to match your needs. This example only lists old candidates; review the list and confirm a verified off-host copy before manually removing anything. It does not delete backups:
+
+```sh
+KEEP_DAYS=90
+find backups -maxdepth 1 -type f -name 'market-*.dump.age' -mtime "+$KEEP_DAYS" -print
+```
 
 Rehearse recovery on another host, or in a second checkout with its **own Compose project name**. Compose names containers, volumes and networks after the project (`opsecmkt` unless `.env` sets `COMPOSE_PROJECT_NAME`), not the directory: a second checkout under the same name recreates the live containers with its own secrets, and its `docker compose down --volumes` deletes the live volumes. Install the rehearsal copy with, for example, `COMPOSE_PROJECT_NAME=opsecmkt-rehearsal APP_PORT=8081 ./scripts/install.sh` (add `--local` for a quick local copy); the installer saves the name in that checkout's `.env`, so its later `docker compose`, `backup.sh` and `restore.sh` commands stay on the rehearsal project, and it refuses to install when containers of the chosen project were created from another directory, or when any of that project's volumes exist. If you copy a `.env` into the rehearsal checkout instead, change `COMPOSE_PROJECT_NAME` (add the line if it is missing) and `APP_PORT` in the copy before running any `docker compose` command there. On the same host, also drop `compose.nodes-tor.yaml` from the copy's `COMPOSE_FILE` (or the `bitcoin` and `monero` profiles from its `COMPOSE_PROFILES`): its pinned node network `10.199.42.0/28` already exists for the live project, and Docker refuses a second one as overlapping ([Local nodes over Tor](#local-nodes-over-tor); a different subnet means editing `compose.nodes-tor.yaml` and `deploy/torrc-socks` together). Never change `COMPOSE_PROJECT_NAME` on an existing install: it would start on new, empty volumes (`<project>_postgres_data` and the others).
 
@@ -2253,6 +2266,24 @@ docker compose stop app
 AGE_IDENTITY=/secure/backup-key.txt RESTORE_INTERNAL_DATABASE=opsecmkt_restored \
   ./scripts/restore.sh backups/market.dump.age
 ```
+
+To verify an archive without touching the live database, restore it to a uniquely named disposable database and drop only that database when finished. The generated name is checked before use, and the cleanup uses `--if-exists` in case restore failed before creating it:
+
+```sh
+set -euo pipefail
+verify_db="opsecmkt_verify_$(date -u +%Y%m%dT%H%M%SZ)_$$"
+exists=$(docker compose exec -T db psql -X -At -v ON_ERROR_STOP=1 -U opsecmkt -d postgres \
+  -c "SELECT count(*) FROM pg_database WHERE datname='$verify_db'")
+test "$exists" = 0 || { echo "refusing to reuse database $verify_db" >&2; exit 1; }
+cleanup() { docker compose exec -T db dropdb -U opsecmkt --if-exists "$verify_db"; }
+trap cleanup EXIT
+AGE_IDENTITY=/secure/backup-key.txt RESTORE_INTERNAL_DATABASE="$verify_db" \
+  ./scripts/restore.sh backups/market.dump.age
+docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U opsecmkt -d "$verify_db" \
+  -c 'SELECT count(*) AS migration_count FROM schema_migrations'
+```
+
+Keep the app stopped during this check. The trap removes only the generated `opsecmkt_verify_...` database; for an external PostgreSQL server, use a fresh explicitly named database there and its corresponding `dropdb` command after verification.
 
 A database that does not exist yet is created next to the current one, which stays untouched. Point the app at it by changing the database name in `DATABASE_URL` in `.env` (for example `postgres://opsecmkt:PASSWORD@db:5432/opsecmkt_restored?sslmode=disable`); the script prints this exact line for the database it restored into. With payments configured, cut the site off from users before starting the app on it, as the [reconciliation procedure](testnet-runbook.md#reconcile-a-restored-database-before-enabling-payouts) describes; otherwise run `docker compose up -d`. Later `scripts/backup.sh` runs then dump `opsecmkt_restored`, not the abandoned `opsecmkt`. If the `postgres_data` volume itself was lost, `docker compose up -d --wait db` initializes an empty `opsecmkt` database and `RESTORE_INTERNAL_DATABASE=opsecmkt` restores into it with no `.env` change. For an external or otherwise host-reachable server, create an empty database there and restore with Python 3 and compatible PostgreSQL client tools:
 
