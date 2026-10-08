@@ -37,7 +37,7 @@
 <form class="stack" method="post" action="/orders">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="product_id" value="{{.ID}}">
-<label>Reference currency<select name="currency">{{if and (not .BTCOrderUnavailable) (not (index $.PurchaseBlocked "BTC"))}}
+<label>Pay with<select name="currency">{{if and (not .BTCOrderUnavailable) (not (index $.PurchaseBlocked "BTC"))}}
 <option value="BTC">{{.PriceBTC}} BTC{{if eq (index $.Settings "payment_intake_BTC") "false"}} — new payments paused{{else if eq (index $.Settings "payment_intake_BTC") "escrow"}} — escrow only{{end}}</option>{{end}}{{if and (not .XMROrderUnavailable) (not (index $.PurchaseBlocked "XMR"))}}
 <option value="XMR">{{.PriceXMR}} XMR{{if eq (index $.Settings "payment_intake_XMR") "false"}} — new payments paused{{else if eq (index $.Settings "payment_intake_XMR") "escrow"}} — escrow only{{end}}</option>{{end}}
 </select>
