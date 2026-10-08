@@ -66,12 +66,13 @@ test('isolated real chains: seeded buyer/vendor partial deposits, confirmation, 
   await admin.getByLabel('Password', { exact: true }).fill(password);
   await admin.getByRole('button', { name: 'Initialize marketplace' }).click();
   await expect(admin).toHaveURL(/\/admin\?welcome=1$/);
+  await admin.locator('.admin-auth').getByLabel('Current password').fill(password);
   await admin.locator('.admin-auth').getByRole('button', { name: 'Turn CAPTCHA off' }).click();
   const buyer = await signedIn(browser, baseURL, 'chain_buyer', password, true);
   const vendor = await signedIn(browser, baseURL, 'chain_vendor', password, true);
   const moderator = await signedIn(browser, baseURL, 'chain_moderator', password, true);
-  await setRole(admin, 'chain_vendor', 'vendor');
-  await setRole(admin, 'chain_moderator', 'moderator');
+  await setRole(admin, 'chain_vendor', 'vendor', password);
+  await setRole(admin, 'chain_moderator', 'moderator', password);
   // A-83: buyers can pay for the physical listing only while its vendor has a key that can receive the encrypted
   // shipping address.
   await vendor.goto('/account');
@@ -191,7 +192,7 @@ async function legParties(browser: Browser, baseURL: string | undefined, leg: st
   const admin = await signedIn(browser, baseURL, 'chain_admin', password, false);
   const vendor = await signedIn(browser, baseURL, `chain_${leg}_vendor`, password, true);
   const buyer = await signedIn(browser, baseURL, `chain_${leg}_buyer`, password, true);
-  await setRole(admin, `chain_${leg}_vendor`, 'vendor');
+  await setRole(admin, `chain_${leg}_vendor`, 'vendor', password);
   return { admin, vendor, buyer, close: () => Promise.allSettled([admin, vendor, buyer].map(page => page.context().close())) };
 }
 async function saveAddress(page: Page, currency: string, address: string) {

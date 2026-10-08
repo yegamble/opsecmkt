@@ -363,8 +363,8 @@ func TestDeskShowsWhoHoldsDisputeEvidence(t *testing.T) {
 		!regexp.MustCompile(`Vendor → a294_holder \(1`+latest+`</li>`).MatchString(block) {
 		t.Fatalf("holder before the role change: %s", block)
 	}
-	w.expect("/admin", admin, form("action", "role", "role", "buyer", "handle", "a294_holder"), 303, "")
-	w.expect("/admin", admin, form("action", "role", "role", "vendor", "handle", "a294_plain"), 303, "")
+	w.expect("/admin", admin, form("action", "role", "password", testPassword, "role", "buyer", "handle", "a294_holder"), 303, "")
+	w.expect("/admin", admin, form("action", "role", "password", testPassword, "role", "vendor", "handle", "a294_plain"), 303, "")
 	if _, err := SetRole(context.Background(), w.e.DB, "a294_admin_holder", "buyer"); err != nil {
 		t.Fatal(err)
 	}
@@ -387,10 +387,10 @@ func TestDeskShowsWhoHoldsDisputeEvidence(t *testing.T) {
 	rejoinOrder := w.e.order(buyer3ID, w.e.product(vendor3ID, "physical"), "BTC", stateShipped)
 	w.expect("/disputes", buyer3, form("order_id", rejoinOrder, "reason", "The parcel held a different item."), 303, "")
 	rejoinID, _ := w.e.user("a304_holder", "moderator")
-	w.expect("/admin", admin, form("action", "role", "role", "buyer", "handle", "a304_holder"), 303, "")
-	w.expect("/admin", admin, form("action", "role", "role", "moderator", "handle", "a304_holder"), 303, "")
+	w.expect("/admin", admin, form("action", "role", "password", testPassword, "role", "buyer", "handle", "a304_holder"), 303, "")
+	w.expect("/admin", admin, form("action", "role", "password", testPassword, "role", "moderator", "handle", "a304_holder"), 303, "")
 	message(buyer3ID, rejoinID)
-	w.expect("/admin", admin, form("action", "role", "role", "buyer", "handle", "a304_holder"), 303, "")
+	w.expect("/admin", admin, form("action", "role", "password", testPassword, "role", "buyer", "handle", "a304_holder"), 303, "")
 	block = holders(entryFor(w.page("/moderator", modB, 200), rejoinOrder))
 	if !regexp.MustCompile(`Buyer → a304_holder \(no longer staff\) \(1` + latest + `</li>`).MatchString(block) {
 		t.Fatalf("holder messaged between two leaves not listed from the latest leave: %s", block)

@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// A-222: these password-less staff forms may already have passed the session and
+// A-222: these staff forms may already have passed the session and
 // route-role checks when a demotion or suspension commits. None may then run or
 // record an audit row; the caller's current row must be locked in the action tx.
 func TestStaffPostsRefuseCallerChangedAfterAdmission(t *testing.T) {
@@ -26,7 +26,7 @@ func TestStaffPostsRefuseCallerChangedAfterAdmission(t *testing.T) {
 		},
 		{
 			name: "admin captcha after suspension", role: "admin", path: "/admin/captcha",
-			form:      url.Values{"captcha_required": {"false"}},
+			form:      url.Values{"captcha_required": {"false"}, "password": {testPassword}},
 			change:    []string{"UPDATE users SET suspended_at=now() WHERE id=$1", "DELETE FROM sessions WHERE user_id=$1"},
 			unchanged: "SELECT count(*) FROM settings WHERE key='captcha_required' AND value='false'",
 		},

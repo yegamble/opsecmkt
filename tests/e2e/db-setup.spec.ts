@@ -43,6 +43,7 @@ test('initialize the market and publish the fixture listing', async ({ page, bro
   await visitor.close();
   // Turn it off so the other db-*.spec.ts files can register and sign in without solving images.
   await page.goto('/admin');
+  await page.locator('.admin-auth').getByLabel('Current password').fill(ADMIN.password);
   await page.locator('.admin-auth').getByRole('button', { name: 'Turn CAPTCHA off' }).click();
   await expect(page.locator('.admin-auth')).toContainText('Off');
   await page.goto('/register');

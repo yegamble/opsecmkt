@@ -45,6 +45,7 @@
 </select>
 </label>
 <p class="help">Enter the handle exactly (it is case-sensitive) and choose buyer, vendor or moderator. The first administrator is created during installation; administrator roles cannot be assigned or changed here. The operator adds and removes administrators on the server with the <code>-set-role</code> host command.</p>
+{{template "confirm-fields" (and .Security .Security.TOTPEnabled)}}
 <button type="submit">Update role</button>
 </form>{{if .Users}}
 <details class="account-list">

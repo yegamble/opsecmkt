@@ -75,6 +75,7 @@ export async function administrator(admin: Page) {
     await typeInto(admin, admin.getByLabel('Password', { exact: true }), password);
     await pressSubmit(admin, admin.getByRole('button', { name: 'Initialize marketplace' }));
     await expect(admin).toHaveURL(/\/admin\?welcome=1$/);
+    await typeInto(admin, admin.locator('.admin-auth').getByLabel('Current password'), password);
     await pressSubmit(admin, admin.locator('.admin-auth').getByRole('button', { name: 'Turn CAPTCHA off' }));
     return;
   }

@@ -16,6 +16,7 @@ test('Bitcoin escrow paste journey: keys, checkout and funding, completion, the 
   await typeInto(admin, admin.getByLabel('Password', { exact: true }), password);
   await pressSubmit(admin, admin.getByRole('button', { name: 'Initialize marketplace' }));
   await expect(admin).toHaveURL(/\/admin\?welcome=1$/);
+  await typeInto(admin, admin.locator('.admin-auth').getByLabel('Current password'), password);
   await pressSubmit(admin, admin.locator('.admin-auth').getByRole('button', { name: 'Turn CAPTCHA off' }));
   const buyer = await context(browser, baseURL);
   const vendor = await context(browser, baseURL);
@@ -27,6 +28,7 @@ test('Bitcoin escrow paste journey: keys, checkout and funding, completion, the 
   await tabTo(admin, role.getByLabel('Role'));
   await role.getByLabel('Role').press('v'); // the keyboard selects "vendor" in the role list
   await expect(role.getByLabel('Role')).toHaveValue('vendor');
+  await typeInto(admin, role.getByLabel('Current password'), password);
   await pressSubmit(admin, role.getByRole('button', { name: 'Update role' }));
   await expect(admin.getByRole('status').filter({ hasText: 'Account role saved.' })).toBeVisible();
 

@@ -9,7 +9,7 @@ import (
 )
 
 func init() {
-	registerAction("/admin", actionSpec{Roles: []string{"admin"}, Run: adminAction})
+	registerAction("/admin", actionSpec{Roles: []string{"admin"}, OwnTx: true, Run: adminAction})
 	registerAction("/admin/reset-factors", actionSpec{Roles: []string{"admin"}, OwnTx: true, Run: adminResetFactorsAction})
 	registerAction("/admin/suspend", actionSpec{Roles: []string{"admin"}, OwnTx: true, Run: adminSuspendAction})
 	registerAction("/admin/review", actionSpec{Roles: []string{"admin"}, OwnTx: true, Run: adminReviewAction})
@@ -355,6 +355,44 @@ func adminHandleError(c *actionCtx, msg string, keep func(d *PageData)) error {
 }
 
 func adminAction(c *actionCtx) (actionResult, error) {
+	switch c.Form.Get("action") {
+	case "role":
+		role := c.Form.Get("role")
+		if role != "buyer" && role != "vendor" && role != "moderator" {
+			return actionResult{}, fail(400, "Choose buyer, vendor, or moderator")
+		}
+		handle := strings.TrimSpace(c.Form.Get("handle"))
+		if handle == "" {
+			return actionResult{}, fail(400, "Enter an account handle")
+		}
+		if handle == c.User.Handle {
+			return actionResult{}, fail(400, "Cannot change your own administrator role")
+		}
+		// Keep unknown handles out of the password-attempt budget, as the other admin forms do.
+		// adminChange repeats the lookup under its own row lock after authentication.
+		var exists bool
+		if err := c.A.db.QueryRowContext(c.Ctx(), "SELECT EXISTS(SELECT 1 FROM users WHERE handle=$1 AND role<>'admin')", handle).Scan(&exists); err != nil {
+			return actionResult{}, err
+		}
+		if !exists {
+			return actionResult{}, adminRoleHandleError(c, handle, role)
+		}
+		return confirmedTx(c, true, adminChange)
+	case "settings":
+		return confirmedTx(c, false, adminChange)
+	default:
+		return actionResult{}, fail(400, "Unknown action")
+	}
+}
+
+func adminRoleHandleError(c *actionCtx, handle, role string) error {
+	return adminHandleError(c, "No buyer, vendor or moderator has the handle \""+handle+"\". Check the spelling: handles are case-sensitive, and administrator roles cannot be changed here.", func(d *PageData) {
+		d.RoleHandle, d.RoleChoice = handle, role
+	})
+}
+
+// adminChange runs after confirmedTx has locked and rechecked the administrator row.
+func adminChange(c *actionCtx) (actionResult, error) {
 	ctx, f, tx, u := c.Ctx(), c.Form, c.Tx, c.User
 	var err error
 	action := ""
@@ -378,9 +416,7 @@ func adminAction(c *actionCtx) (actionResult, error) {
 		var target, old string
 		err = tx.QueryRowContext(ctx, "SELECT id,role FROM users WHERE handle=$1 AND role<>'admin' FOR UPDATE", handle).Scan(&target, &old)
 		if err == sql.ErrNoRows {
-			return actionResult{}, adminHandleError(c, "No buyer, vendor or moderator has the handle \""+handle+"\". Check the spelling: handles are case-sensitive, and administrator roles cannot be changed here.", func(d *PageData) {
-				d.RoleHandle, d.RoleChoice = handle, role
-			})
+			return actionResult{}, adminRoleHandleError(c, handle, role)
 		}
 		if err != nil {
 			return actionResult{}, err
@@ -406,8 +442,13 @@ func adminAction(c *actionCtx) (actionResult, error) {
 		if name == "" || len(name) > 80 {
 			return actionResult{}, fail(400, "Invalid settings")
 		}
+		var previous string
+		err = tx.QueryRowContext(ctx, "SELECT value FROM settings WHERE key='site_name' FOR UPDATE").Scan(&previous)
+		if err != nil && err != sql.ErrNoRows {
+			return actionResult{}, err
+		}
 		_, err = tx.ExecContext(ctx, "INSERT INTO settings(key,value) VALUES('site_name',$1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", name)
-		action = "Saved marketplace settings"
+		action = "Saved marketplace site name from " + strconv.Quote(previous) + " to " + strconv.Quote(name)
 	default:
 		return actionResult{}, fail(400, "Unknown action")
 	}

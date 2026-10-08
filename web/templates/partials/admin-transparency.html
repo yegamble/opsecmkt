@@ -12,6 +12,7 @@
 <label>Armored public key<textarea name="operator_key" rows="6" required spellcheck="false" placeholder="-----BEGIN PGP PUBLIC KEY BLOCK-----">{{with .Canary}}{{.OperatorKey}}{{end}}</textarea>
 </label>
 <p class="help">Public key only; the private key stays offline with the operator. Replacing the key makes any canary signed by the previous key show as invalid until a new one is posted.</p>
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
 <button type="submit">Save operator key</button>
 </form>
 </section>
@@ -23,6 +24,7 @@
 <label>Clearsigned statement<textarea name="canary" rows="8" required spellcheck="false" placeholder="-----BEGIN PGP SIGNED MESSAGE-----"></textarea>
 </label>
 <p class="help">Write and sign the statement offline, for example with <span class="mono">gpg --clearsign canary.txt</span>, and paste the whole output. It is stored exactly as pasted (surrounding blank lines removed) and rejected with the reason if it does not verify against the operator key.</p>
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
 <button type="submit">Publish canary</button>
 </form>{{else}}<p class="help">Unavailable: save a usable operator PGP key first. This application never writes or signs canary text itself.</p>{{end}}
 <p><a class="text-link" href="/canary">View the public canary page <span class="action-icon">↗</span></a></p>

@@ -1,6 +1,6 @@
 import { writeFileSync } from 'node:fs';
 import { expect, test, type APIRequestContext, type Page, type TestInfo } from '@playwright/test';
-import { administrator, buyerPassword, context, downloadCopy, pressSubmit, pressSubmitGet, register, reloadUntil, settlementStatus, shot, sim, simPost, tabTo, typeInto, vendorPassword } from './escrow-helpers';
+import { administrator, buyerPassword, context, password, downloadCopy, pressSubmit, pressSubmitGet, register, reloadUntil, settlementStatus, shot, sim, simPost, tabTo, typeInto, vendorPassword } from './escrow-helpers';
 
 // A-456b (rulings P4-R2, P4-R17, P4-R18): a per-order (shape (b)) Bitcoin escrow end to end with JavaScript disabled at
 // 320 px, every form driven by the keyboard alone, against the real server and PostgreSQL: both parties register a
@@ -60,6 +60,7 @@ test('Per-order escrow: keys, checkout, setup pages, funding, the release upload
   await tabTo(admin, role.getByLabel('Role'));
   await role.getByLabel('Role').press('v');
   await expect(role.getByLabel('Role')).toHaveValue('vendor');
+  await typeInto(admin, role.getByLabel('Current password'), password);
   await pressSubmit(admin, role.getByRole('button', { name: 'Update role' }));
   await expect(admin.getByRole('status').filter({ hasText: 'Account role saved.' })).toBeVisible();
 
