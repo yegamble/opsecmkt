@@ -166,9 +166,16 @@ func totpDisable(c *actionCtx) (actionResult, error) {
 	if err = lockRecoveryCodes(ctx, tx, uid); err != nil {
 		return actionResult{}, err
 	}
-	var enabled bool
-	if err = tx.QueryRowContext(ctx, "SELECT totp_enabled FROM users WHERE id=$1 FOR NO KEY UPDATE", uid).Scan(&enabled); err != nil {
+	var enabled, suspended bool
+	var role string
+	if err = tx.QueryRowContext(ctx, "SELECT totp_enabled,role,suspended_at IS NOT NULL FROM users WHERE id=$1 FOR NO KEY UPDATE", uid).Scan(&enabled, &role, &suspended); err != nil {
+		if err == sql.ErrNoRows {
+			return actionResult{}, errAccountChanged
+		}
 		return actionResult{}, err
+	}
+	if role != c.User.Role || suspended {
+		return actionResult{}, errAccountChanged
 	}
 	if !enabled {
 		return actionResult{}, fail(409, "TOTP is not enabled for this account")
