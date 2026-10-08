@@ -5,8 +5,8 @@ import { uniqueHandle } from './db-fixtures';
 import { expectNotice, signedIn, submitStatus, withinViewport } from './db-helpers';
 import { waitForStyles } from './styles';
 
-// A-445 (P4-R9, ARCH-12): the pooled wallet's drain panel and the hand settlement of a blocked payout, with JavaScript
-// disabled at 320 px and 1280 px. No wallet runs here, so the blockers are seeded in SQL: an open pooled order and a
+// A-445 (P4-R9, ARCH-12) and A-486: the pooled wallet's drain panel and the hand settlement of a blocked payout (hold,
+// then record), with JavaScript disabled at 320 px and 1280 px. No wallet runs here, so the blockers are seeded in SQL: an open pooled order and a
 // completed one whose release is blocked (its vendor saved no payout address) and whose deposit address is still
 // watched. The panel's counts are compared with pooled_drain_blockers() itself, since other specs leave fixtures in this
 // database. A fresh account is made administrator for this test only; everything seeded is removed at the end
@@ -76,31 +76,52 @@ for (const width of [320, 1280]) {
       await expect(details, 'the blocked payout has a resolve form').toHaveCount(1);
       if ((await details.getAttribute('open')) === null) await details.locator('summary').click();
       await expect(details).toContainText('The recipient has saved no BTC payout address');
+      await expect(details).toContainText('first hold it here, then pay it from the pooled wallet');
       await expect(details).toContainText('The market does not check the transaction ID against the chain');
-      await expect(details.getByRole('button', { name: 'Record sent by hand' })).toBeVisible();
       await withinViewport(details, width);
 
-      // A stale copy of the form, loaded before the settlement, for the repeat after it.
+      // A-486 (R2): hold first, with a staff reason and the password; the order history says so, the reason stays staff only.
+      const holdForm = details.locator('form', { has: admin.getByRole('button', { name: 'Hold to pay by hand' }) });
+      const reason = 'Recipient gave an address by PGP mail; paying by hand.';
+      await holdForm.getByLabel('Reason for holding it (staff only)').fill(reason);
+      await holdForm.getByLabel('Current password', { exact: true }).fill(adminPassword);
+      await holdForm.getByRole('button', { name: 'Hold to pay by hand' }).click();
+      await expectNotice(admin, 'Payout held to be paid by hand.');
+      expect(state()).toBe('held:');
+      expect(sql(`SELECT error FROM payouts WHERE id=${payout}`)).toBe(`Held to be paid by hand: ${reason}`);
+      expect(sql(`SELECT count(*) FROM order_events WHERE order_id='${settledOrder}' AND note LIKE '%held by an administrator to be paid by hand%' AND note NOT LIKE '%PGP%'`)).toBe('1');
+      await admin.goto(`/admin#resolve-payout-${payout}`);
+      await admin.waitForLoadState('load');
+      await expect(admin.locator('.admin-payments tbody tr', { has: admin.getByRole('link', { name: `Resolve payout ${payout}`, exact: true }) }))
+        .toContainText('Held to be paid by hand — record it sent once paid, or release it');
+      if ((await details.getAttribute('open')) === null) await details.locator('summary').click();
+      await expect(details).toContainText('An administrator held this payout to pay it by hand.');
+      await expect(details.getByLabel('Nobody paid this payout by hand: I checked the pooled wallet')).toBeVisible();
+      await withinViewport(details, width);
+      await fits(admin, width, 'admin with a payout held to be paid by hand');
+
+      // A stale copy of the form, loaded before the record, for the repeat after it.
       const stale = await admin.context().newPage();
       await stale.goto(`/admin#resolve-payout-${payout}`);
       await stale.waitForLoadState('load');
 
       // A bad transaction ID: the browser's own check stops a non-hex one, and the server refuses one sent anyway (400).
-      const txid = details.getByLabel('Wallet transaction ID');
+      const sentForm = details.locator('form', { has: admin.getByRole('button', { name: 'Record sent by hand' }) });
+      const txid = sentForm.getByLabel('Wallet transaction ID');
       await txid.fill('g'.repeat(64));
-      await details.getByLabel('Current password', { exact: true }).fill(adminPassword);
+      await sentForm.getByLabel('Current password', { exact: true }).fill(adminPassword);
       expect(await txid.evaluate((e: HTMLInputElement) => e.validity.patternMismatch)).toBe(true);
-      const adminCSRF = await details.locator('input[name="csrf"]').getAttribute('value');
+      const adminCSRF = await sentForm.locator('input[name="csrf"]').getAttribute('value');
       const bad = await admin.request.post('/admin/payout', { form: { csrf: adminCSRF!, payout_id: payout, op: 'sent', txid: 'g'.repeat(64), password: adminPassword }, maxRedirects: 0 });
       expect(bad.status()).toBe(400);
       expect(await bad.text()).toContain('64-character hexadecimal transaction ID');
-      expect(state()).toBe('blocked:');
+      expect(state()).toBe('held:');
 
       // Success: an upper-case ID is stored in lower case, audited with the payout and the ID.
       const id = 'AB'.repeat(32);
       await txid.fill(id);
-      await details.getByLabel('Current password', { exact: true }).fill(adminPassword);
-      await details.getByRole('button', { name: 'Record sent by hand' }).click();
+      await sentForm.getByLabel('Current password', { exact: true }).fill(adminPassword);
+      await sentForm.getByRole('button', { name: 'Record sent by hand' }).click();
       await expectNotice(admin, 'Payout marked sent.');
       expect(state()).toBe(`sent:${id.toLowerCase()}`);
       expect(sql(`SELECT count(*) FROM audit_events a JOIN users u ON u.id=a.user_id WHERE u.handle='${adminHandle}' AND a.action LIKE 'Marked payout ${payout} %sent with transaction ${id.toLowerCase()}%by hand%'`)).toBe('1');
@@ -110,13 +131,17 @@ for (const width of [320, 1280]) {
       await expect(admin.locator('#pooled-drain-unsent_payout').getByRole('link', { name: `Payout ${payout}`, exact: true })).toHaveCount(0);
       await fits(admin, width, 'admin after the hand settlement');
 
-      // The repeat from the stale form answers 409 and changes nothing.
+      // The repeat from the stale form answers 409, says the payout is already recorded as sent (a hand payment would
+      // be a second one), and changes nothing.
       const staleDetails = stale.locator(`details.payout-actions#resolve-payout-${payout}`);
       if ((await staleDetails.getAttribute('open')) === null) await staleDetails.locator('summary').click();
-      await staleDetails.getByLabel('Wallet transaction ID').fill('cd'.repeat(32));
-      await staleDetails.getByLabel('Current password', { exact: true }).fill(adminPassword);
-      const status = await submitStatus(stale, () => staleDetails.getByRole('button', { name: 'Record sent by hand' }).click());
+      const staleSent = staleDetails.locator('form', { has: stale.getByRole('button', { name: 'Record sent by hand' }) });
+      await staleSent.getByLabel('Wallet transaction ID').fill('cd'.repeat(32));
+      await staleSent.getByLabel('Current password', { exact: true }).fill(adminPassword);
+      const status = await submitStatus(stale, () => staleSent.getByRole('button', { name: 'Record sent by hand' }).click());
       expect(status).toBe(409);
+      await expect(stale.locator('body')).toContainText('already recorded as sent');
+      await expect(stale.locator('body')).toContainText('a payment you made by hand would be a second payment');
       await expect(stale.locator('body')).toContainText('Nothing was changed');
       expect(state()).toBe(`sent:${id.toLowerCase()}`);
       expect(sql(`SELECT count(*) FROM audit_events WHERE action LIKE 'Marked payout ${payout} %'`)).toBe('1');

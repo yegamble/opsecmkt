@@ -50,7 +50,7 @@ func TestPooledDrainPanel(t *testing.T) {
 	mustContain(t, panel, "<strong>1</strong> item still needs the pooled wallet.", "Open pooled orders: <span class=\"pooled-drain-count\">1</span>",
 		`Order <span class="mono">`+p.order[:8]+`</span> (BTC, awaiting_payment)`,
 		"The list decides, not the balance.", "advice only",
-		"BTC pooled wallet: 1.5 BTC confirmed, 0.00002 BTC pending (TESTNET fake; advice only).",
+		"BTC pooled wallet: 1.5 BTC confirmed, 0.00002 BTC pending: unconfirmed, immature or locked (TESTNET fake; advice only).",
 		"XMR pooled wallet: no pooled wallet is configured.",
 		"The market never sweeps the pooled wallet. Once this list is empty, move any balance left in it yourself")
 	mustNotContain(t, panel, `href="/order?id=`+p.order, "<form")
@@ -153,7 +153,8 @@ func TestPooledDrainPanelBalanceUnavailable(t *testing.T) {
 // artifacts/a445/core31-getbalances.json; monero-wallet-rpc get_balance in atomic units) and refuse a malformed one.
 func TestPooledWalletBalanceAdapters(t *testing.T) {
 	ctx := context.Background()
-	answer := map[string]any{"mine": map[string]any{"trusted": json.Number("50.00000000"), "untrusted_pending": json.Number("0.00000000"), "immature": json.Number("5000.00000000")}}
+	// untrusted_pending (unconfirmed receipts) and immature (coinbase) both count as pending (QA445 Q17).
+	answer := map[string]any{"mine": map[string]any{"trusted": json.Number("50.00000000"), "untrusted_pending": json.Number("0.00012345"), "immature": json.Number("5000.00000000")}}
 	srv := newPayRPCServer(t, "pooled", "pooled-pass", false, func(path, method string, params json.RawMessage) (any, int, string) {
 		switch method {
 		case "getblockchaininfo":
@@ -174,7 +175,7 @@ func TestPooledWalletBalanceAdapters(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c, pend, err := btc.Balance(ctx); err != nil || c != 5000000000 || pend != 500000000000 {
+	if c, pend, err := btc.Balance(ctx); err != nil || c != 5000000000 || pend != 500000012345 {
 		t.Fatalf("bitcoin balance %d %d %v", c, pend, err)
 	}
 	answer["mine"].(map[string]any)["trusted"] = json.Number("-1")

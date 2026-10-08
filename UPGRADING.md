@@ -1572,7 +1572,7 @@ needs the pre-upgrade backup (section 5) once a per-order escrow exists: the ear
 
 ## 46. Pooled wallet drain gate and hand settlement of a blocked payout (migration 091, A-445)
 
-Migration 091 adds two read-only SQL functions and changes no table, column or row, so it needs no preparation. Like
+Migration 091 adds three read-only SQL functions and changes no table, column or row, so it needs no preparation. Like
 every migration it is one-way: a build that does not include it refuses to start on a database that records it
 ([Rolling back](#5-rolling-back)).
 
@@ -1581,8 +1581,12 @@ every migration it is one-way: a build that does not include it refuses to start
   restore gate (`payments_recovery_required`), issued-address warnings not dismissed, and pooled history on mainnet. A
   later release is planned to remove the pooled wallet's code and to refuse a database for which this list is not empty.
 - `pooled_watch_horizon()` is the pooled watcher's time rule for an address (24 hours after its order last changed state,
-  30 days after a closed order's address was issued), now read by both the watcher and the drain gate. The watcher reads
-  the same addresses as before.
+  30 days after a closed order's address was issued), now read by both the watcher and the drain gate.
+- `pooled_pending_deposit()` names a deposit recorded at a pooled address that is neither credited nor flagged and
+  still reported by the wallet. The watcher now also reads the address of a closed pooled order past the horizon while
+  it has such a deposit, so a deposit below the confirmation threshold when the horizon ended is flagged for review
+  once it confirms, or ends once the wallet stops reporting it; before, it was never read again. Every other address
+  is read exactly as before.
 
 `/admin` shows the list read-only under *Pooled wallet drain*, below *Escrow-only readiness*, with a count per kind,
 the pooled balances as advice, and a sweep note: the market never sweeps the pooled wallet; once the list is empty, move
@@ -1597,15 +1601,18 @@ rpcwhitelist=opsecmkt-pooled:getblockchaininfo,getwalletinfo,loadwallet,getnetwo
 ```
 
 Without it the panel reads "balance unavailable" and nothing else changes: the balance is advice and decides nothing.
-`getbalances` reads amounts only. The Monero balance is read with monero-wallet-rpc's `get_balance` (account 0).
+`getbalances` reads amounts only, of any wallet on the node, as `listreceivedbyaddress` already could. The Monero balance is read with monero-wallet-rpc's `get_balance` (account 0).
 
-**Blocked payouts.** A payout blocked because its recipient never saved a payout address can now be recorded as sent by
-hand: under *Payouts*, *Resolve payout* → *Record sent by hand*, with the wallet's transaction ID (64 hexadecimal
-characters, stored in lower case) and your password, audited with the payout and the transaction ID. Pay it from the
-pooled wallet yourself first, to an address the recipient gave you through a channel you trust; the market does not
-check the transaction ID against the chain. It is then never sent, even if the recipient saves an address later. A
-queued payout or one being sent is never marked sent (409, nothing changed). No new payout state: it is recorded as
-`sent`.
+**Blocked payouts.** A payout blocked because its recipient never saved a payout address can now be paid by hand. The
+simplest route is still to ask the recipient to save a payout address. Otherwise: hold it (*Resolve payout* → *Hold
+to pay by hand*, a staff reason of 10–500 characters and your password, audited; a held payout keeps its hold when the
+recipient saves an address), pay it from the pooled wallet to an address the recipient gave you through a channel you
+trust, then record it (*Record sent by hand*, the wallet's transaction ID, 64 hexadecimal characters stored in lower
+case, and your password, audited with the payout and the transaction ID). The market does not check the transaction
+ID against the chain, and never sends a recorded payout. A queued payout, one being sent or one already sent is never
+marked sent: the refusal (409, nothing changed) says that the market queued, is sending or sent it itself, so a payment
+made by hand would be a second one. Releasing a hand hold needs the confirmation that nobody paid it by hand. No new
+payout state: a hold is `held` (its reason starts "Held to be paid by hand:"), a recorded payout `sent`.
 
 ## 47. Optional: local nodes over Tor (A-442)
 

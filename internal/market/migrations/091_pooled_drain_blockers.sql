@@ -1,5 +1,5 @@
--- A-445 (war-room ruling P4-R9): the pooled wallet's drain gate. Two read-only functions; no table, column or row
--- changes, so an older build ignores them. See UPGRADING.md section 46.
+-- A-445 (war-room ruling P4-R9): the pooled wallet's drain gate. Three read-only functions; no table, column or row
+-- changes. See UPGRADING.md section 46.
 
 -- pooled_watch_horizon is the pooled watcher's time rule for a deposit address (payments_watcher.go, pollCurrency): the
 -- address of an order that is not a draft stays watched for 24 hours after the order last changed state (its
@@ -12,6 +12,20 @@ CREATE FUNCTION pooled_watch_horizon(order_state text, order_updated timestamptz
   LANGUAGE sql STABLE PARALLEL SAFE AS $$
   SELECT (order_state <> 'draft' AND order_updated > now() - interval '24 hours')
       OR (order_state IN ('cancelled','resolved','completed') AND issued > now() - interval '30 days')
+$$;
+
+-- pooled_pending_deposit names (txid:index) the first deposit recorded at the pooled address addr of currency cur that
+-- is still pending: neither credited (counted for its order's payment or settlement) nor flagged for review, and not
+-- ended by the watcher's missing or conflict handling (a row the wallet no longer reports, or reports conflicted, has
+-- negative confirmations). NULL when there is none. The watcher keeps reading such an address after the horizon
+-- (A-486, ruling R1), so the deposit is flagged once it confirms (flagLateDeposits) and then closed through the review
+-- disposition, or ends with negative confirmations once the wallet drops, replaces or reorganises it out; the drain
+-- gate lists the address meanwhile. Both call this function, so they share one definition.
+CREATE FUNCTION pooled_pending_deposit(cur text, addr text) RETURNS text
+  LANGUAGE sql STABLE PARALLEL SAFE AS $$
+  SELECT pm.txid || ':' || pm.idx FROM payments pm
+   WHERE pm.currency = cur AND pm.address = addr AND NOT pm.credited AND NOT pm.flagged AND pm.confirmations >= 0
+   ORDER BY pm.id LIMIT 1
 $$;
 
 -- pooled_drain_blockers lists what still needs the pooled wallet, one row per blocker: its kind, a reference staff can
@@ -28,8 +42,10 @@ $$;
 --                       (payment_review.go) as it stood when this migration was written (flagged, disposition '' or
 --                       'escalated', and still recordable), so every one can be closed through the existing
 --                       disposition on the moderation desk; ref is the payments id, detail txid:index.
---   watched_address     a deposit address of a cancelled, resolved or completed pooled order inside the watch horizon
---                       (pooled_watch_horizon); ref is the address, detail the time the horizon ends (UTC).
+--   watched_address     a deposit address of a cancelled, resolved or completed pooled order the watcher still reads:
+--                       inside the watch horizon (pooled_watch_horizon), or past it while a recorded deposit there is
+--                       pending (pooled_pending_deposit); ref is the address, detail until when (the time the horizon
+--                       ends, UTC, and the pending deposit when there is one).
 --   recovery_required   the restore gate (settings payments_recovery_required = 'true', scripts/restore.sh); ref is
 --                       the settings key. Cleared by the operator after reconciling the restore.
 --   address_collision   a currency whose wallet handed out already-issued addresses and whose /admin warning is not
@@ -56,10 +72,21 @@ CREATE FUNCTION pooled_drain_blockers() RETURNS TABLE(kind text, ref text, order
 	OR pm.escrow_left_out OR NOT pm.credited AND (pm.after_close OR NOT EXISTS (SELECT 1 FROM escrows es WHERE es.order_id=pm.order_id)))
   UNION ALL
   SELECT 'watched_address', pa.address, pa.order_id, pa.currency,
-         to_char(GREATEST(o.updated + interval '24 hours', pa.created + interval '30 days') AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"')
+         'until ' || to_char(GREATEST(o.updated + interval '24 hours', pa.created + interval '30 days') AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"')
+         || COALESCE(', and after that while recorded deposit ' || pooled_pending_deposit(pa.currency, pa.address)
+              || ' awaits confirmation', '')
     FROM payment_addresses pa JOIN orders o ON o.id = pa.order_id
    WHERE o.state IN ('cancelled','resolved','completed')
      AND pooled_watch_horizon(o.state, o.updated, pa.created)
+  UNION ALL
+  SELECT 'watched_address', pa.address, pa.order_id, pa.currency,
+         'until recorded deposit ' || pooled_pending_deposit(pa.currency, pa.address)
+         || ' confirms (it is then flagged for review) or leaves the wallet; its watch horizon ended '
+         || to_char(GREATEST(o.updated + interval '24 hours', pa.created + interval '30 days') AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"')
+    FROM payment_addresses pa JOIN orders o ON o.id = pa.order_id
+   WHERE o.state IN ('cancelled','resolved','completed')
+     AND NOT pooled_watch_horizon(o.state, o.updated, pa.created)
+     AND pooled_pending_deposit(pa.currency, pa.address) IS NOT NULL
   UNION ALL
   SELECT 'recovery_required', s.key, NULL, NULL, ''
     FROM settings s

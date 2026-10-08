@@ -352,7 +352,8 @@ func TestLateDepositAfterCloseIsHandled(t *testing.T) {
 		t.Fatalf("extra deposit notes: %d", n)
 	}
 	sends := len(p.fake.Sends())
-	// Outside the 30-day window nothing is polled any more.
+	// A deposit recorded unconfirmed before the order closed keeps its address watched past the 30-day window while it
+	// is pending (A-486, R1: pooled_pending_deposit), so it is refunded once it confirms instead of being stranded.
 	o3, a3 := p.newOrder(stateAwaitingPayment)
 	p.fake.Deposit(a3, "tx-old", 0, 100000, 1)
 	p.poll()
@@ -361,7 +362,17 @@ func TestLateDepositAfterCloseIsHandled(t *testing.T) {
 	p.DB.Exec("UPDATE payment_addresses SET created=now()-interval '40 days' WHERE order_id=$1", o3)
 	p.fake.SetConfirmations("tx-old", 3)
 	p.poll()
-	if n := p.count("SELECT count(*) FROM payouts WHERE order_id=$1", o3); n != 0 || len(p.fake.Sends()) != sends {
+	if st, _, _, amt := p.payout(o3); st != "sent" || amt != 100000 || len(p.fake.Sends()) != sends+1 {
+		t.Fatalf("pending deposit past the window: refund %s %d, sends %d", st, amt, len(p.fake.Sends())-sends)
+	}
+	// Outside the 30-day window an address with no pending deposit is not polled any more: a deposit sent to it then
+	// is never recorded or settled.
+	o4, a4 := p.newOrder(stateCancelled)
+	p.DB.Exec("UPDATE orders SET updated=now()-interval '40 days' WHERE id=$1", o4)
+	p.DB.Exec("UPDATE payment_addresses SET created=now()-interval '40 days' WHERE order_id=$1", o4)
+	p.fake.Deposit(a4, "tx-too-late", 0, 100000, 3)
+	p.poll()
+	if n := p.count("SELECT count(*) FROM payments WHERE order_id=$1", o4) + p.count("SELECT count(*) FROM payouts WHERE order_id=$1", o4); n != 0 || len(p.fake.Sends()) != sends+1 {
 		t.Fatal("order outside the watch window was settled")
 	}
 }

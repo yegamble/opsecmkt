@@ -621,6 +621,9 @@ func paymentsAdminLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 				r.StateLabel = "Held after a restore from backup and for an account suspension — may already have been sent; check the wallet and the payout address before releasing"
 			}
 		}
+		if heldForHand(r.State, r.Error) {
+			r.StateLabel, r.HandHold = "Held to be paid by hand — record it sent once paid, or release it", true
+		}
 		if heldLarge(r.State, r.Error) {
 			r.LargeCheck = true
 			if !r.AddressCheck && !r.Ambiguous {
