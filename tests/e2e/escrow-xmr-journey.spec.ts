@@ -78,7 +78,8 @@ async function draft(buyer: Page, title: string) {
   await tabTo(buyer, buyer.getByRole('link', { name: 'Review order draft' }));
   await Promise.all([buyer.waitForEvent('load'), buyer.keyboard.press('Enter')]);
   await tabTo(buyer, buyer.getByLabel('Reference currency'));
-  await buyer.keyboard.press('ArrowDown');
+  // Native-select typeahead chooses the Monero reference price without relying on platform popup key behavior.
+  await buyer.keyboard.type('0.5');
   await expect(buyer.getByLabel('Reference currency')).toHaveValue('XMR');
   await pressSubmit(buyer, buyer.getByRole('button', { name: 'Create unfunded draft' }));
   await buyer.waitForURL(/\/order\?id=/);
