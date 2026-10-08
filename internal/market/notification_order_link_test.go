@@ -30,8 +30,14 @@ func TestOrderNotificationsLinkOnlyTheirExplicitOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := e.body("GET", "/notifications", buyer, nil, 200)
-	if !strings.Contains(body, `href="/order?id=`+order+`"`) || strings.Contains(body, "Legacy notice stays unlinked") || strings.Contains(body, strangerOrder) {
+	legacyAt := strings.Index(body, "Legacy notice stays unlinked")
+	if !strings.Contains(body, `href="/order?id=`+order+`"`) || legacyAt < 0 || strings.Contains(body, strangerOrder) {
 		t.Fatalf("notification page links/leaks incorrect order data:\n%s", body)
+	}
+	articleStart := strings.LastIndex(body[:legacyAt], "<article")
+	articleEnd := strings.Index(body[legacyAt:], "</article>")
+	if articleStart < 0 || articleEnd < 0 || strings.Contains(body[articleStart:legacyAt+articleEnd], `href="/order?id=`) {
+		t.Fatalf("legacy notification should remain visible without an order link:\n%s", body)
 	}
 	if got := e.do("GET", orderPage(strangerOrder), buyer, nil).Code; got != 404 {
 		t.Fatalf("notification association widened order access: got %d", got)
