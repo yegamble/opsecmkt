@@ -98,7 +98,7 @@ func lockPaymentIntake(c *actionCtx, currency string, kind intakeKind) error {
 // paymentIntakeOrderLoader replaces the buyer's pooled payment request on a draft while its currency is paused or
 // escrow only; under escrow only, a listing that cannot use escrow says why (listingEscrowBlock).
 func paymentIntakeOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
-	if d.Order == nil {
+	if d.Order == nil || d.VendorSuspensionReason != "" {
 		return nil
 	}
 	value := d.Settings[paymentIntakeKey(d.Order.Currency)]

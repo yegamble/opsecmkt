@@ -316,6 +316,8 @@ type PageData struct {
 	PurchaseBlocks  []PurchaseBlock
 	PurchaseBlocked map[string]bool
 	NoPurchase      bool
+	// A-109: product/checkout and a buyer's draft-order page explain why a suspended vendor takes no new intake.
+	VendorSuspensionReason string
 	// EscrowReadiness (A-444): /admin, the escrow-only readiness panel (escrow_readiness.go).
 	EscrowReadiness *EscrowReadinessView
 	// PooledDrain (A-445): /admin, the pooled wallet's drain panel (pooled_drain.go).

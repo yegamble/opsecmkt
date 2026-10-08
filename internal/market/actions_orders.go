@@ -42,14 +42,14 @@ func orderDraftAction(c *actionCtx) (actionResult, error) {
 	if archived {
 		return actionResult{}, fail(400, "This listing is archived and accepts no new orders.")
 	}
-	if ok, err := sellerIsVendor(c, f.Get("product_id")); err != nil || !ok {
-		if err == nil {
-			err = fail(400, sellerNotVendor)
-		}
-		return actionResult{}, err
-	}
 	if vendor == c.User.ID {
 		return actionResult{}, fail(400, "You cannot order your own listing")
+	}
+	if err = waitForWalletLocks(ctx, tx); err != nil {
+		return actionResult{}, err
+	}
+	if err = lockNewIntake(c, "", vendor, true); err != nil {
+		return actionResult{}, err
 	}
 	// A-444: while the currency is escrow only, a listing that cannot use its escrow takes no draft in it.
 	if err = c.A.purchaseBlock(ctx, tx, f.Get("product_id"), currency); err != nil {

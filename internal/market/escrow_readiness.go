@@ -118,6 +118,15 @@ func purchaseGateLoader(ctx context.Context, a *App, _ *http.Request, d *PageDat
 	if d.Product == nil || d.Product.Archived {
 		return nil
 	}
+	var suspended bool
+	if err := a.db.QueryRowContext(ctx, "SELECT suspended_at IS NOT NULL FROM users WHERE id=$1", d.Product.VendorID).Scan(&suspended); err != nil {
+		return err
+	}
+	if suspended {
+		d.VendorSuspensionReason = "Unavailable. " + sellerSuspended
+		d.NoPurchase = true
+		return nil
+	}
 	for _, coin := range []string{"BTC", "XMR"} {
 		if d.Settings[paymentIntakeKey(coin)] != intakeEscrow {
 			continue
