@@ -90,6 +90,16 @@ func orHome(next string) string {
 	return next
 }
 
+// challengePath carries the already validated sign-in destination through the ten-minute challenge window. The
+// pending row remains authoritative when a factor is verified; this URL copy only lets an expired challenge return
+// to sign-in with the same destination after its cookie or row is gone.
+func challengePath(next string) string {
+	if next == "" {
+		return "/challenge"
+	}
+	return "/challenge?next=" + url.QueryEscape(next)
+}
+
 var passwordWork = make(chan struct{}, 4)
 
 // bcryptCost is the work factor for new password hashes. Tests lower it to bcrypt.MinCost (TestMain) so
@@ -563,7 +573,7 @@ func (a *App) secondFactor(c *actionCtx, userID, passwordHash, next string) (act
 		return actionResult{}, fail(500, "Unable to sign in")
 	}
 	a.cookie(c.W, "pending", pending, 600)
-	return actionResult{Redirect: "/challenge"}, nil
+	return actionResult{Redirect: challengePath(next)}, nil
 }
 
 func pendingCookie(r *http.Request) string {
@@ -687,14 +697,17 @@ func recordFactorFailure(c *actionCtx, pending, userID, method string, err error
 
 func challengeLoader(ctx context.Context, a *App, r *http.Request, d *PageData) error {
 	d.Title = "Verify sign-in"
+	fromURL := a.signInNext(r.URL.Query().Get("next"))
 	pending := pendingCookie(r)
 	if pending == "" {
+		d.Next = fromURL
 		return nil
 	}
 	var userID, next string
 	var unexpired bool
 	err := a.db.QueryRowContext(ctx, "SELECT user_id,next,expires>now() FROM pending_logins WHERE token_hash=$1", digest(pending)).Scan(&userID, &next, &unexpired)
 	if err == sql.ErrNoRows {
+		d.Next = fromURL
 		return nil
 	}
 	if err != nil {

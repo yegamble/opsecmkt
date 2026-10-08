@@ -77,8 +77,8 @@ func pgpLoginCodeAction(c *actionCtx) (actionResult, error) {
 	if pending == "" {
 		return actionResult{}, fail(401, "Sign-in verification expired. Sign in again.")
 	}
-	var userID string
-	err := tx.QueryRowContext(ctx, "SELECT user_id FROM pending_logins WHERE token_hash=$1 AND expires>now() FOR UPDATE", digest(pending)).Scan(&userID)
+	var userID, next string
+	err := tx.QueryRowContext(ctx, "SELECT user_id,next FROM pending_logins WHERE token_hash=$1 AND expires>now() FOR UPDATE", digest(pending)).Scan(&userID, &next)
 	if err == sql.ErrNoRows {
 		return actionResult{}, fail(401, "Sign-in verification expired. Sign in again.")
 	}
@@ -101,7 +101,7 @@ func pgpLoginCodeAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, expiredKeyRefusal(c, userID)
 	}
 	_, err = tx.ExecContext(ctx, "UPDATE pending_logins SET pgp_nonce=$1,pgp_challenge=$2 WHERE token_hash=$3", pgpLoginDigest(code, p), armored, digest(pending))
-	return actionResult{Redirect: "/challenge"}, err
+	return actionResult{Redirect: challengePath(c.A.signInNext(next))}, err
 }
 
 // expiredKeyRefusal is /challenge/pgp's answer when no code can be encrypted to the verified key (A-155): usually it,

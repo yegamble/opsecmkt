@@ -121,11 +121,15 @@ func TestSignInReturnThroughChallenge(t *testing.T) {
 		id, _ := e.user("a126_totp", "buyer")
 		key, _ := agEnableTOTP(e, id)
 		anon, pc, loc := a126Login(e, "a126_totp", checkout)
-		if loc != "/challenge" || pc == nil {
+		if loc != "/challenge?next="+url.QueryEscape(checkout) || pc == nil {
 			t.Fatalf("TOTP sign-in went to %q", loc)
 		}
+		body := e.body("GET", loc, anon, nil, 200, pc)
+		if !strings.Contains(body, `action="/challenge?next=`+url.QueryEscape(checkout)+`"`) {
+			t.Fatalf("TOTP challenge form dropped the URL return target:\n%s", body)
+		}
 		// A next posted to /challenge does not replace the pending sign-in's.
-		w := e.do("POST", "/challenge", anon, url.Values{"method": {"totp"}, "code": {agTOTPNow(key)}, "next": {"/account"}}, pc)
+		w := e.do("POST", "/challenge?next=%2Faccount", anon, url.Values{"method": {"totp"}, "code": {agTOTPNow(key)}, "next": {"/account"}}, pc)
 		e.check(w, 303)
 		if loc := w.Header().Get("Location"); loc != checkout || e.cookie(w, "session") == "" {
 			t.Fatalf("TOTP challenge landed on %q, want %q", loc, checkout)
@@ -193,12 +197,16 @@ func TestSignInReturnThroughChallenge(t *testing.T) {
 		key, pub := testPGPKey(t, "a126")
 		agEnablePGP(e, id, pub)
 		anon, pc, loc := a126Login(e, "a126_pgp", checkout)
-		if loc != "/challenge" {
+		if loc != "/challenge?next="+url.QueryEscape(checkout) {
 			t.Fatalf("PGP sign-in went to %q", loc)
+		}
+		body := e.body("GET", loc, anon, nil, 200, pc)
+		if !strings.Contains(body, `action="/challenge/pgp?next=`+url.QueryEscape(checkout)+`"`) {
+			t.Fatalf("PGP request form dropped the URL return target:\n%s", body)
 		}
 		w := e.do("POST", "/challenge/pgp", anon, nil, pc)
 		e.check(w, 303)
-		if loc := w.Header().Get("Location"); loc != "/challenge" {
+		if loc := w.Header().Get("Location"); loc != "/challenge?next="+url.QueryEscape(checkout) {
 			t.Fatalf("code request went to %q", loc)
 		}
 		code := testDecrypt(t, key, agStr(e, "SELECT pgp_challenge FROM pending_logins WHERE token_hash=$1", digest(pc.Value)))
@@ -223,6 +231,56 @@ func TestExpiredChallengeSignInKeepsReturnTarget(t *testing.T) {
 	body = e.body("GET", "/challenge", randomToken(), nil, 200, p)
 	if !strings.Contains(body, `<a class="button" href="/login">Sign in</a>`) || strings.Contains(body, "evil.test") {
 		t.Fatalf("expired challenge carried an unsafe target:\n%s", body)
+	}
+}
+
+func TestChallengeURLKeepsReturnTargetWithoutPendingRow(t *testing.T) {
+	e := newTestApp(t)
+	e.user("a258_swept", "buyer")
+	target := "/checkout?id=" + strings.Repeat("a", 64)
+	challengeURL := "/challenge?next=" + url.QueryEscape(target)
+	wantLink := `<a class="button" href="/login?next=` + url.QueryEscape(target) + `">Sign in</a>`
+
+	// The pending cookie can expire in the browser before the visitor returns to this URL.
+	body := e.body("GET", challengeURL, randomToken(), nil, 200)
+	if !strings.Contains(body, wantLink) || strings.Contains(body, `value="totp"`) {
+		t.Fatalf("challenge without a cookie did not preserve the validated return target:\n%s", body)
+	}
+
+	// A scheduled expiry sweep can delete the row before the browser follows the same challenge URL.
+	id, _ := e.user("a258_swept2", "buyer")
+	p := agPending(e, id)
+	agExec(e, "UPDATE pending_logins SET next=$1 WHERE token_hash=$2", target, digest(p.Value))
+	agExec(e, "DELETE FROM pending_logins WHERE token_hash=$1", digest(p.Value))
+	body = e.body("GET", challengeURL, randomToken(), nil, 200, p)
+	if !strings.Contains(body, wantLink) || strings.Contains(body, `value="totp"`) {
+		t.Fatalf("swept challenge did not preserve the validated return target:\n%s", body)
+	}
+
+	for _, raw := range []string{"//evil.test", "/login", "/challenge", "/orders/pay", "/checkout?id=a&id=b"} {
+		body = e.body("GET", "/challenge?next="+url.QueryEscape(raw), randomToken(), nil, 200)
+		if !strings.Contains(body, `<a class="button" href="/login">Sign in</a>`) || strings.Contains(body, "evil.test") {
+			t.Errorf("unsafe challenge next %q was retained:\n%s", raw, body)
+		}
+	}
+}
+
+func TestChallengeURLCannotReplaceActivePendingTarget(t *testing.T) {
+	e := newTestApp(t)
+	id, _ := e.user("a258_active", "buyer")
+	key, _ := agEnableTOTP(e, id)
+	pc := agPending(e, id)
+	target := "/checkout?id=" + strings.Repeat("b", 64)
+	agExec(e, "UPDATE pending_logins SET next=$1 WHERE token_hash=$2", target, digest(pc.Value))
+	attackerTarget := "/account"
+	body := e.body("GET", "/challenge?next="+url.QueryEscape(attackerTarget), randomToken(), nil, 200, pc)
+	if !strings.Contains(body, `action="/challenge?next=`+url.QueryEscape(target)+`"`) || strings.Contains(body, "next=%2Faccount") {
+		t.Fatalf("active pending target did not override the challenge URL:\n%s", body)
+	}
+	w := e.do("POST", "/challenge?next="+url.QueryEscape(attackerTarget), randomToken(), url.Values{"method": {"totp"}, "code": {agTOTPNow(key)}, "next": {attackerTarget}}, pc)
+	e.check(w, 303)
+	if got := w.Header().Get("Location"); got != target {
+		t.Fatalf("tampered challenge URL/form changed the stored destination to %q, want %q", got, target)
 	}
 }
 
