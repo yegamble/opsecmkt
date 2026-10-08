@@ -203,6 +203,12 @@ PY
 }
 start_app "$app_source_db"
 stop_app
+# Startup writes its migration audit in the same transaction as the schema.
+# Preserve that baseline along with the later operator canary in the archive.
+audit_all="SELECT string_agg(coalesce(user_id,'-') || ':' || action, '|' ORDER BY id) FROM audit_events"
+startup_audit=$(pg "$app_source_db" -Atq -c "$audit_all")
+[[ $(pg "$app_source_db" -Atq -c 'SELECT count(*) FROM audit_events WHERE user_id IS NULL') == 1 ]]
+[[ $(pg "$app_source_db" -Atq -c 'SELECT count(*) FROM audit_events') == 1 ]]
 migrations=$(pg "$app_source_db" -Atq -c "SELECT string_agg(version || ':' || name || '@' || applied, ',' ORDER BY version) FROM schema_migrations")
 [[ $(pg "$app_source_db" -Atq -c 'SELECT count(*) FROM schema_migrations') == $(find internal/market/migrations -name '*.sql' | wc -l | tr -d ' ') ]]
 pg "$app_source_db" -q -c "
@@ -354,9 +360,8 @@ held="ops-order-failed:failed:true:true:,ops-order-queued:held:true:false:,ops-o
 suspended_error="SELECT error FROM payouts WHERE order_id='ops-order-suspended'"
 [[ $(pg "$app_target_db" -Atq -c "$suspended_error") == "$restored_hold $suspended_hold" ]]
 # restore.sh adds one audit row with no user and the counts; the row from before the backup is unchanged.
-audit_all="SELECT string_agg(coalesce(user_id,'-') || ':' || action, '|' ORDER BY id) FROM audit_events"
 source_audit=$(pg "$app_source_db" -Atq -c "$audit_all")
-[[ $source_audit == 'ops-admin:Restore drill: an audit row written before the backup' ]]
+[[ $source_audit == "$startup_audit|ops-admin:Restore drill: an audit row written before the backup" ]]
 restore_audit="-:Payout recovery gate set by scripts/restore.sh: held 2 restored payout(s) and marked 1 restored failed payout(s) as possibly sent; held 1 restored escrow settlement(s) with a stored transaction until an administrator confirms each rebroadcast; held 1 restored escrow fee bump(s) with a stored transaction until an administrator confirms its settlement's rebroadcast; held 1 restored Monero escrow settlement(s) with a stored transaction until an administrator confirms each relay; all outbound payouts paused until an administrator clears the gate"
 [[ $(pg "$app_target_db" -Atq -c "$settlements") == "$escrow_held" ]]
 [[ $(pg "$app_target_db" -Atq -c "SELECT send_error FROM settlements WHERE order_id='ops-order-escrow-broadcast'") == "$escrow_hold" ]]
