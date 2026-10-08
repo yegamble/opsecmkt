@@ -369,7 +369,10 @@ func (a *App) spenderOf(ctx context.Context, e *escrowBTC, stored *psbtPacket) s
 // stops asking for a signature that can never complete. A physical order's release before the outcome (shipped or
 // disputed) still waits for a party's signature once one party signed, and the market never spends it either, so a
 // party-signed one is followed the same way (A-385): the parties may have combined the stored signature with one made
-// offline and broadcast it. It runs while the restore gate is set too: it only watches.
+// offline and broadcast it. One waiting for a signature whose per-order keys cannot be had (loadSettleBuild's KeysErr)
+// is followed the same way, from its stored PSBT, and logged with the fixed class per-order-key-unavailable on each pass
+// while its inputs are unspent; nothing is recorded on it (QA5W6-1). It runs while the restore gate is set too: it only
+// watches.
 func (a *App) trackAwaiting(ctx context.Context, e *escrowBTC) error {
 	return a.eachSettlement(ctx, "not followed", `SELECT s.id FROM settlements s JOIN orders o ON o.id=s.order_id WHERE s.state='awaiting_signature'
 		OR s.state='party_signed' AND s.kind='release' AND o.state IN ('shipped','disputed') ORDER BY s.id`, func(id int64) error {
@@ -383,8 +386,14 @@ func (a *App) trackAwaiting(ctx context.Context, e *escrowBTC) error {
 			return err
 		}
 		spent, err := a.inputsSpent(ctx, e, b.Stored)
-		if err != nil || !spent {
+		if err != nil {
 			return err
+		}
+		if !spent {
+			if b.KeysErr != nil {
+				log.Printf("escrow: settlement of order %s cannot be signed, its inputs are still watched: %s", shortID(b.OrderID), errorCause(b.KeysErr))
+			}
+			return nil
 		}
 		return a.spentBeforeCosign(ctx, e, b)
 	})
@@ -543,8 +552,13 @@ func (a *App) reconcileOrphans(ctx context.Context, e *escrowBTC) error {
 	}
 	keys := map[string][][]byte{}
 	var sweepErr error
+	var unsolvable []string
 	for _, addr := range unswept {
 		k, err := e.watchKeys(ctx, addr)
+		if errors.Is(err, errWatchUnsolvable) {
+			unsolvable = append(unsolvable, addr)
+			continue
+		}
 		if err != nil {
 			sweepErr = &watchError{label: "escrow", class: "orphan sweep incomplete: " + errorClassOf(err), err: err}
 			continue
@@ -556,9 +570,40 @@ func (a *App) reconcileOrphans(ctx context.Context, e *escrowBTC) error {
 		return err
 	}
 	defer tx.Rollback()
-	known, err := collectStrings(ctx, tx, "SELECT address FROM escrows WHERE coin='BTC' AND address=ANY($1)", addrs)
+	// A shape-(b) escrow's sibling addresses are its own (A-456a), not orphans.
+	known, err := collectStrings(ctx, tx, "SELECT address FROM escrows WHERE coin='BTC' AND address=ANY($1) UNION SELECT address FROM escrow_siblings WHERE address=ANY($1)", addrs)
 	if err != nil {
 		return err
+	}
+	// An orphan the wallet holds by an addr(…) import only has no keys to read. It counts as read only as a lost per-order
+	// escrow's sibling: another orphan with its escrow:<order ID> label gave three keys, in this pass or an earlier one
+	// (escrow_reserved_keys). Anything else, a Bitcoin Core escrow imported again by hand as addr(…) say, keeps the sweep
+	// open, since its keys could be handed out again (QA5W4A-2); re-importing it with its descriptor lets the sweep finish.
+	if len(unsolvable) > 0 {
+		labelOf := map[string]string{}
+		for _, w := range watched {
+			labelOf[w.Address] = w.Label
+		}
+		swept, err := collectStrings(ctx, tx, "SELECT DISTINCT address FROM escrow_reserved_keys WHERE address=ANY($1)", addrs)
+		if err != nil {
+			return err
+		}
+		for addr := range keys {
+			if len(keys[addr]) == 3 {
+				swept = append(swept, addr)
+			}
+		}
+		gave := map[string]bool{}
+		for _, addr := range swept {
+			if order := escrowOrderLabel(labelOf[addr]); order != "" {
+				gave[order] = true
+			}
+		}
+		for _, addr := range unsolvable {
+			if order := escrowOrderLabel(labelOf[addr]); order == "" || !gave[order] {
+				sweepErr = &watchError{label: "escrow", class: "orphan sweep incomplete: an address held without its keys (addr(…)) is no lost per-order escrow's sibling", err: errWatchUnsolvable}
+			}
+		}
 	}
 	// Never nil: a nil slice is sent as NULL, and NOT (address=ANY(NULL)) is NULL, so the DELETE below would keep every
 	// row once the wallet holds no orphan at all (A-358).
@@ -610,7 +655,7 @@ func (a *App) reconcileOrphans(ctx context.Context, e *escrowBTC) error {
 // unsweptOrphans is the addresses among addrs with no escrows row whose keys the orphan sweep has not reserved yet.
 func (a *App) unsweptOrphans(ctx context.Context, addrs []string) ([]string, error) {
 	rows, err := a.db.QueryContext(ctx, `SELECT a FROM unnest($1::text[]) a WHERE NOT EXISTS (SELECT 1 FROM escrows WHERE coin='BTC' AND address=a)
-		AND NOT EXISTS (SELECT 1 FROM escrow_reserved_keys WHERE address=a) ORDER BY a`, addrs)
+		AND NOT EXISTS (SELECT 1 FROM escrow_siblings WHERE address=a) AND NOT EXISTS (SELECT 1 FROM escrow_reserved_keys WHERE address=a) ORDER BY a`, addrs)
 	if err != nil {
 		return nil, err
 	}

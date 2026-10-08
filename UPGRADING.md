@@ -379,7 +379,7 @@ INSERT INTO settings(key,value) VALUES ('xmr_escrow_sweep_required','true')
 ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
 UPDATE payouts SET state='held', updated=now(),
   error='Restored from backup: verify in the wallet before releasing; this payout may already have been sent.'
-    || coalesce(' ' || substring(error from '(?:Suspended account:|Larger than the order price:).*'), '')
+    || coalesce(' ' || substring(error from '(?:Suspended account:|Larger than the order price:|Held to be paid by hand:).*'), '')
 WHERE state IN ('pending','sending','blocked','held');
 UPDATE payouts SET send_ambiguous=true WHERE state='failed';
 UPDATE payouts SET updated=now(),
@@ -394,9 +394,9 @@ WHERE state IN ('built','relayed');
 UPDATE xmr_escrow_slots SET state='retired', updated=now() WHERE state='free';
 UPDATE xmr_escrow_wallets SET state='closing', updated=now() WHERE state IN ('active','sealed');
 INSERT INTO escrow_index_floors(user_id,next_index)
-SELECT k.user_id, GREATEST(COALESCE(max(split_part(p.derivation_suffix,'/',3)::bigint),0)+1, COALESCE(max(f.next_index),1))+50
+SELECT k.user_id, GREATEST(COALESCE(max(CASE WHEN p.derivation_suffix LIKE '/0/%' THEN split_part(p.derivation_suffix,'/',3) ELSE split_part(p.derivation_suffix,'/',2) END::bigint),0)+1, COALESCE(max(f.next_index),1))+50
 FROM user_escrow_keys k
-LEFT JOIN escrow_pubkeys p ON p.user_id=k.user_id AND p.derivation_suffix ~ '^/0/[1-9][0-9]{0,9}$'
+LEFT JOIN escrow_pubkeys p ON p.user_id=k.user_id AND (p.derivation_suffix ~ '^/0/[1-9][0-9]{0,9}$' OR p.derivation_suffix ~ '^/[1-9][0-9]{0,9}/0/0$')
 LEFT JOIN escrow_index_floors f ON f.user_id=k.user_id
 GROUP BY k.user_id
 ON CONFLICT (user_id) DO UPDATE SET next_index=EXCLUDED.next_index;
@@ -1316,6 +1316,329 @@ first. An escrow refund, claim, release or fee address given in capitals is now 
 prefix (`TB1…` on signet and testnet4, as `BCRT1…` already was on regtest). The escrow pages name the chain. **No run on
 public signet or testnet4 is recorded**: the real-chain legs ran on regtest and on a private signet
 (`scripts/test-escrow-regtest.sh --private-signet`).
+
+## 41. Monero escrow: refunds at or below the network fee end too few (A-467)
+
+No migration, no new key. Only with `ESCROW_XMR=on`. A Monero refund or stray refund whose coins are at or below the
+network fee is refused by `monero-wallet-rpc` (`transfer` answers -17, -16 or -46); the market now reads the fee the
+wallet would take (`get_default_fee_priority` and `estimate_tx_size_and_weight` on the escrow wallet-rpc,
+`get_fee_estimate` on the escrow daemon, which monerod's restricted RPC serves; nothing is built or sent) and treats such
+a refund as too few, as it already treated one the wallet built with less than 0.001 XMR left after the fee: the refund
+ends, its deposits are left out and the stray refund returns them with a later deposit. Before, it waited for good and
+staff were told of an "outputs mismatch" or a wallet that "keeps refusing" to build it. A refund waiting so when you
+upgrade ends on the next pass; its earlier order note stays. If the fee estimate fails, that refund waits and is
+flagged once if it fails again on the next pass; the wallet's other orders carry on. Releases are unchanged
+([per-order escrow](docs/escrow.md)).
+
+## 42. Database encoding must be UTF8 (A-481)
+
+No migration, no new key. A database whose `SHOW server_encoding` is not `UTF8` (an external PostgreSQL created as
+`SQL_ASCII` or `LATIN1`, for example by a C-locale `initdb` without `-E UTF8`) now stops startup, before the first
+migration statement, with `the database encoding is ..., not UTF8` and nothing changed. Before, it ran with silent
+differences: on `SQL_ASCII` the image description limit of 250 counted bytes (250 "é" was refused there and
+accepted on UTF8), and case folding and sorting follow the database's encoding and locale. The bundled Compose
+PostgreSQL is initialised as UTF8 and is not affected, and a database already UTF8 needs nothing. Check yours with
+`export DATABASE_URL` and then
+`python3 scripts/postgres-tool.py DATABASE_URL psql -c 'SHOW server_encoding'` before you upgrade. The app also now sends `client_encoding=UTF8` on
+every connection, and refuses a form field that is not valid UTF-8 or holds a NUL byte (400, "Invalid form: a field is
+not valid UTF-8 or contains a NUL character. Nothing was changed."), where it used to accept it on a non-UTF8 database
+and fail with a 500 on a UTF8 one. A page or image address (GET or HEAD) whose query string is not valid UTF-8 or holds
+a NUL byte is refused the same way (400, "Invalid address: a query parameter is not valid UTF-8 or contains a NUL
+character."), where `/product?id=%ff` answered 500 and the catalog search dropped the bytes. The administrator
+password tools (`-bootstrap-admin`, `-reset-admin-password` and `install.sh --admin`) refuse a password that is not
+valid UTF-8 or holds a NUL byte (typed in a terminal set to `LATIN1`, for one), which the sign-in form could never send;
+`install.sh --admin` refuses it before it writes `.env` or starts anything.
+
+To move a non-UTF8 database: the encoding cannot be changed in place, so the data is copied into a new UTF8 database.
+Keep the old database until the new one has passed step 6. The market before A-481 sent PostgreSQL UTF-8 text and no
+client encoding, so whatever the old database's encoding, the bytes it stored are the UTF-8 it was sent; the steps copy
+those bytes unchanged. `scripts/test-utf8-migration.sh` rehearses them on a `SQL_ASCII` and a `LATIN1` database, and
+the check's readings in a `WIN1252` and an `EUC_JP` one (CI operations job). In the commands, `OLD_DATABASE_URL` is the
+database the market uses now and `NEW_DATABASE_URL` the new one; run them where `psql`, `pg_dump` and `pg_restore` as
+new as the server are installed. Each `psql` command runs through `scripts/postgres-tool.py` with its URL variable
+exported first (`export OLD_DATABASE_URL NEW_DATABASE_URL`), which passes the URL's password in `PGPASSWORD` and not on
+the command line, where other users of the host can read it in the process list.
+
+1. Stop the market (`docker compose stop app`). It stays stopped until step 7, so nothing changes the data meanwhile.
+2. Check the old database for text that is not valid UTF-8:
+   `python3 scripts/postgres-tool.py OLD_DATABASE_URL psql -X -f scripts/check-utf8.sql`.
+   Before this release nothing checked that form input was UTF-8, and a `SQL_ASCII` or `LATIN1` database stores any
+   bytes, so a review, a message or a listing may hold some that are not UTF-8 (a review `Great \xff seller`; in a `LATIN1` database, also
+   text another client wrote in `LATIN1`, such as `psql` with its default client encoding). Such bytes would pass the
+   restore into the new database unchanged, and every backup of that database would then fail to restore (`COPY failed
+   for table "reviews": invalid byte sequence for encoding "UTF8": 0xff`). The check reads every column of type text,
+   varchar or char, of an array of one of these (element by element) and of a domain over any of them, the types the
+   market stores text in. For each such value it prints a line `not valid UTF-8: table public.reviews, column body, row
+   where id = '6f0c2a9e41d7' (ctid (0,1)); no valid multibyte UTF-8 in it, so reading its bytes as LATIN1, this
+   database's encoding, is a safe correction; starting: Great \377 seller` (`\377` is the byte 0xff) and it ends with an
+   error (psql exits 3). Correct each value in the old database, one statement per line the check printed, with its
+   table and its column as printed (quoted where SQL needs it; an array element with its subscript, `column tags[2]`,
+   is corrected as `SET tags[2] = ...` with `tags[2]` in place of the column below) and the condition after `row where`
+   (the row's primary key):
+
+   - *no valid multibyte UTF-8 in it*: read its bytes as the encoding the line names: the database's own when it is a
+     single-byte one (`LATIN1`, `WIN1252`, ...), and `LATIN1` in a `SQL_ASCII` database, which records no encoding, unless
+     you know the text was written in another single-byte encoding (then that one). In `LATIN1` the byte 0xff becomes "ÿ":
+
+     ```sql
+     UPDATE public.reviews SET body = convert_from(convert(convert_to(body, 'SQL_ASCII'), 'LATIN1', 'UTF8'), 'SQL_ASCII') WHERE id = '6f0c2a9e41d7';
+     ```
+
+     Put the encoding the line names in place of `'LATIN1'`. In a `WIN1252` database the line names `WIN1252`: read as
+     `LATIN1`, text a Windows client wrote there ("“quote” €") would turn into invisible control characters, and the
+     check would pass on them. A byte the encoding does not define (0x81 in `WIN1252`, for one) stops the update with
+     `... has no equivalent in encoding "UTF8"`: type the text it should hold then, as below.
+
+   - *it also holds valid multibyte UTF-8*: the value mixes UTF-8 with bytes that are not (a title
+     `Cr\303\250me \377 br\303\273l\303\251e`), and reading it as `LATIN1` would double-encode its UTF-8 part ("Crème"
+     would become "CrÃ¨me"). In a database whose own encoding is multibyte (`EUC_JP`, for one) the line says so, and
+     no reading of the bytes is safe either. Type the text it should hold instead, from a UTF-8 terminal, in
+     `python3 scripts/postgres-tool.py OLD_DATABASE_URL psql` after the psql command `\encoding UTF8` (the tool lets
+     no `PGCLIENTENCODING` through):
+
+     ```sql
+     UPDATE public.products SET title = convert_from(convert_to('Crème brûlée', 'UTF8'), 'SQL_ASCII') WHERE id = '0d3e7b5a92c4';
+     ```
+
+     This stores the text as UTF-8 whatever the database's encoding. A database refuses a character its encoding
+     lacks (`character with byte sequence ... has no equivalent in encoding "LATIN1"`): there, give the text's UTF-8 in
+     hexadecimal instead, `convert_from(decode('e69db1e4baac', 'hex'), 'SQL_ASCII')` for "東京".
+
+   Use the row's key, not its ctid: an update moves the row, so a second bad value of the same row, named by the ctid
+   the check printed before, would be left as it was. Only a row of a table without a primary key (the line says `use
+   the ctid`, as it does for a key that is not plain ASCII) is corrected `WHERE ctid = '(0,1)'`, and then one statement
+   per such row before you run the check again.
+
+   Run the check again until it prints `Every value in the N text column(s) is valid UTF-8.` If a table refuses the
+   update (escrow settlement records are frozen by triggers), stop and report it to the project. A correction to a row
+   of `audit_events` changes what the signed audit export shows for it: note what you changed.
+3. Take the encrypted backup with `BACKUP_DUMP_ENCODING=SQL_ASCII`:
+   `BACKUP_DUMP_ENCODING=SQL_ASCII BACKUP_DATABASE_URL="$OLD_DATABASE_URL" AGE_RECIPIENT=age1... ./scripts/backup.sh
+   backups/pre-utf8.dump.age`. With it the dump holds every text as the bytes stored. Without it, a `LATIN1` database is
+   dumped as `LATIN1` and converted to UTF8 on restore, so **every non-ASCII character will be double-encoded** in the
+   new database ("Crème" becomes "CrÃ¨me"); so is one whose database or role has `client_encoding` set to `UTF8`
+   (`ALTER DATABASE ... SET client_encoding`), which is dumped as UTF8 converted from `LATIN1`. A `SQL_ASCII` database
+   is dumped unconverted either way. Use the variable for this move only: `backup.sh` accepts no other value, and on a
+   UTF8 database it changes nothing.
+
+   `scripts/restore.sh` therefore reads, before it asks for confirmation or changes anything, the encoding the
+   backup's text was written in and the encoding of the database it was taken from (every dump records it), and
+   restores only a dump written in `SQL_ASCII` (the bytes stored) or in `UTF8` from a UTF8 or `SQL_ASCII` database.
+   Anything else it refuses, naming both: `Refusing: this backup was taken from a LATIN1 database and holds its text in
+   LATIN1. ...` (or `... in UTF8.` for the `client_encoding` case). A dump that does not record its database's encoding
+   (not made by `scripts/backup.sh`) is restored only if it was written in `SQL_ASCII`. If a refused backup is all you
+   have of the old database (`install.sh upgrade` takes its automatic `backups/pre-upgrade-*.dump.age` without the
+   variable, so for a `LATIN1` database it is one), restore it into a temporary database of the encoding of the
+   database it was taken from (the first one the refusal names; `LATIN1` below), never the encoding its text was
+   written in, which can be one no database can have (`SJIS`). There `pg_restore` turns the text back into the bytes
+   that database stored, and you use it as the old database. Set `LATIN1_DATABASE_URL` to `NEW_DATABASE_URL` with the
+   database name `opsecmkt_latin1`, and `MAINTENANCE_DATABASE_URL` to `NEW_DATABASE_URL` with the database name
+   `postgres` (the maintenance database PostgreSQL creates; `opsecmkt_utf8`, which `NEW_DATABASE_URL` names, does not
+   exist until step 4, so nothing can connect to it yet); `scripts/postgres-tool.py` passes each URL's password to the
+   tool in `PGPASSWORD`, never on its command line, where other users of the host could read it:
+
+   ```sh
+   export MAINTENANCE_DATABASE_URL LATIN1_DATABASE_URL
+   python3 scripts/postgres-tool.py MAINTENANCE_DATABASE_URL psql -c "CREATE DATABASE opsecmkt_latin1 ENCODING 'LATIN1' LC_COLLATE 'C' LC_CTYPE 'C' TEMPLATE template0"
+   age -d -i "$AGE_IDENTITY" backups/pre-upgrade-20260101T000000Z.dump.age | python3 scripts/postgres-tool.py LATIN1_DATABASE_URL pg_restore --dbname='' --no-owner --no-acl --exit-on-error
+   ```
+
+   Then run step 2 and this step with `OLD_DATABASE_URL="$LATIN1_DATABASE_URL"`, go on from step 4, and drop
+   `opsecmkt_latin1` after step 6. Never start the market on it: this plain `pg_restore` applies none of `restore.sh`'s
+   payout recovery protection, which step 5 applies to the backup taken of it.
+4. Create a UTF8 database next to it, as a role with `CREATEDB`. `opsecmkt_utf8` does not exist yet, so connect to the
+   maintenance database: `export MAINTENANCE_DATABASE_URL` (`NEW_DATABASE_URL` with the database name `postgres`, as in
+   step 3) and run
+   `python3 scripts/postgres-tool.py MAINTENANCE_DATABASE_URL psql -c "CREATE DATABASE opsecmkt_utf8 ENCODING 'UTF8' TEMPLATE template0"`
+5. Restore the backup into that empty database with `RESTORE_DATABASE_URL="$NEW_DATABASE_URL" AGE_IDENTITY=...
+   ./scripts/restore.sh backups/pre-utf8.dump.age` (the [restore procedure](docs/operator-guide.md#backups-and-recovery),
+   including its payout recovery gate and reconciliation, applies unchanged). `pg_restore` does not check the bytes of a
+   dump taken unconverted: it does not stop at bytes that are not UTF-8, so a clean step 2 and step 6 are what prove
+   the text.
+6. Before you switch, prove that the new database's own backup restores, into a scratch database you drop afterwards:
+
+   ```sh
+   export NEW_DATABASE_URL
+   BACKUP_DATABASE_URL="$NEW_DATABASE_URL" AGE_RECIPIENT=age1... ./scripts/backup.sh backups/utf8-check.dump.age
+   python3 scripts/postgres-tool.py NEW_DATABASE_URL psql -c "CREATE DATABASE opsecmkt_utf8_check ENCODING 'UTF8' TEMPLATE template0"
+   RESTORE_DATABASE_URL="$CHECK_DATABASE_URL" AGE_IDENTITY=... ./scripts/restore.sh backups/utf8-check.dump.age
+   python3 scripts/postgres-tool.py NEW_DATABASE_URL psql -c "DROP DATABASE opsecmkt_utf8_check"
+   ```
+
+   (`CHECK_DATABASE_URL` is `NEW_DATABASE_URL` with the database name `opsecmkt_utf8_check`.) The restore must print
+   `Restore completed.` If it stops with `COPY failed for table "<table>": ... invalid byte sequence for encoding
+   "UTF8"` instead, the new database holds bytes that are not UTF-8 and its backups are useless: do not switch.
+   `python3 scripts/postgres-tool.py NEW_DATABASE_URL psql -X -f scripts/check-utf8.sql` names the rows; drop the new database, correct them in the
+   old one (step 2) and start again from step 3. Then look at a few accounts and listings with accented characters.
+7. Point `DATABASE_URL` (and `BACKUP_DATABASE_URL`) at the new database and start the app.
+
+Not changed: every merged migration, and the signed audit export (but for a row corrected in step 2).
+
+## 43. Monero escrow: refused deposits are recorded and cleared by staff (migration 090, A-480)
+
+No new key. Migration 090 adds the table `xmr_escrow_collisions`. A Monero escrow deposit the database refuses as
+another order's escrow account (`payments_xmr_escrow_idx`) is still never written to the ledger, and the order note and
+the one "Payment review needed" notification to staff are unchanged; the watcher now also records the deposit (order,
+wallet, account, transaction ID, when noted), once per order and transaction, and the record, not the note text, keeps
+the note and notification to once. While a record is open, moderators and administrators who are not parties may read
+the order, the moderation desk lists it under *Escrow alerts*, and the order page shows them a *Refused Monero
+deposits* section where one of them records what was done (see [operator guide](docs/operator-guide.md), moderation);
+that clears the alert. The parties see no change. The desk's *Escrow alerts* are now ordered by when each order's open
+alert opened rather than by the order's age (QA5W2-3).
+
+Notes written before the upgrade are backfilled: each system order note of the watcher's fixed form ("… Monero escrow
+deposit `<20 hex digits>`… to wallet … account … was not recorded: the database refused it as another order's escrow
+account. Moderator review required.") becomes one **open** record, noted at the note's time. The note named only the
+first 20 characters of the transaction ID, so that is all the record holds (`txid_truncated`); the order page shows it
+with an ellipsis. If the watcher meets the same deposit again it completes the transaction ID and writes nothing else
+(no second note or notification). So after the upgrade any such order already noted appears under *Escrow alerts* until
+staff record what was done about it, even if it was dealt with before; record that. Check for them with
+`SELECT order_id, txid FROM xmr_escrow_collisions WHERE disposed_at IS NULL;`. A market that never ran with `ESCROW_XMR=on` has none.
+
+## 44. Per-order Bitcoin escrows: creation and watching (migration 089, A-456a)
+
+Migration 089 runs at startup. On `escrow_pubkeys` it adds a check that every step of every escrow key's derivation
+suffix is unhardened and below 2^31, for every party, and that a per-order derivation suffix (three or more steps) is
+exactly `/<i>/0/0` with `2 <= i < 2^31-1` (never the practice index, for the market's key either): migration 074 allowed
+steps of ten digits, so `/2147483648/0/0` (which names the hardened `/0h/0/0`) passed migration 088's checks, as did a
+Bitcoin Core escrow key's `/0/2147483648`. It lets the market's per-order key have an origin with no path (the escrow
+signer's rooted account key), it allows the column `per_order_xpub` only on a per-order key (the buyer's, the
+vendor's or the market's) and only as a tpub (per-order checkout stores there each order wallet key, the account key's
+child `<i>`, the market's being the escrow signer's account key's child `<m>`: public data the market already holds,
+derived from a registered or the signer's pinned account key and already in the watch-only wallet's descriptors, kept so
+the order wallet can be rebuilt after a party registers another key, and without asking the escrow signer), and it adds
+the table
+`escrow_siblings` (each per-order escrow's sibling addresses). No release writes such a key or value, so the checks find
+nothing to refuse; if it does, the migration stops before changing
+anything, the app does not start, and the log reads `migration 089: N escrow key row(s) in escrow_pubkeys have a
+derivation suffix (such as …) with a hardened step or a step of 2^31 or more …`: restore the pre-upgrade backup
+(section 5) and report it to the project.
+
+Only with `ESCROW_BTC=on`, checkout now picks the escrow's shape from both parties' active keys: two Bitcoin Core keys
+make the Bitcoin Core escrow as before; a buyer and a vendor whose keys are of different kinds now read "The vendor's
+Bitcoin escrow key is for a per-order wallet and yours is for Bitcoin Core" (or the reverse) instead of the "not
+available on this market yet" refusal; two per-order wallet keys are still refused with that refusal. Per-order escrows
+are built in this release but switched off in the code until the market can co-sign them through the escrow signer
+(A-456b); see [per-order escrow](docs/escrow.md#per-order-escrow-creation-and-watching-a-456a-shape-b). The restore floor
+of `scripts/restore.sh` and of the restore-protection SQL in section 6 now reads an account's highest escrow index in both
+shapes (`/0/<i>` and `/<i>/0/0`), one counter: if you keep a copy of that SQL, take the new one. The escrow RPC user's
+`rpcwhitelist` needs no new method (per-order escrows use `deriveaddresses` with a range, `getdescriptorinfo`,
+`importdescriptors`, `getaddressinfo` and `getwalletinfo`, all on it already), and there is no new key. With an escrow
+signer pinned, the escrow key page now refuses a key that is the signer's own ("This key cannot be used here"). After
+restoring the watch-only wallet, restart the app: its first watcher pass imports what the wallet lacks of each per-order
+escrow again, rebuilt from the keys stored at checkout (the escrow signer is not needed), in one import that rescans
+from the earliest escrow's creation (up to two minutes; it waits while the wallet is already rescanning, as after
+`rescanblockchain`). While the watch-only wallet rescans, Core refuses the import an escrow checkout makes, of either
+kind: the buyer reads "The escrow could not be created: the market's escrow wallet is rescanning the chain. Nothing was
+changed and your order is still a draft; try again in a few minutes", and nothing is written. Expect that after
+restoring the watch-only wallet, for as long as the repair's rescan (or your `rescanblockchain`) runs
+([testnet runbook](docs/testnet-runbook.md#back-up-and-restore-the-escrow-arbiter-and-watch-only-wallets)).
+Rolling back past this release
+needs the pre-upgrade backup, as for every migration (section 5): the earlier release refuses to start on a database
+that records migration 089.
+
+Development databases only: migration 089 was changed before it was released, and a migration that is recorded as
+applied is never run again, so a development database that applied an earlier phase-5 version of 089 keeps its
+earlier checks (one refused the market's stored per-order key, so per-order checkout fails there) and must be
+recreated. No released database has an earlier version of 089.
+
+## 45. Per-order Bitcoin escrows: open to users, co-signed by the escrow signer (A-456b)
+
+No migration. Only with `ESCROW_BTC=on`, a buyer and a vendor whose active escrow keys are both per-order wallet keys now get a
+per-order escrow at checkout, and the market co-signs its settlements and fee bumps through the escrow signer
+(`cmd/escrow-signer`), never the Core arbiter wallet, which keeps Bitcoin Core escrows. Per-order escrows are offered only
+while `ESCROW_SIGNER_SOCKET` names a signer whose account key matches the pins: with no signer configured, or a signer
+whose key differs (`escrow_signer_fingerprint`, `escrow_signer_xpub_hmac`), the order page says "Escrows with per-order
+wallets need the market's escrow signer, which is not available on this market right now", checkout is refused with
+nothing written and, under escrow-only Bitcoin intake, a per-order vendor's listings are not available for purchase in
+BTC (the readiness panel on `/admin` lists the vendor). A signer that does not answer when a settlement waits for it
+leaves the settlement signed by its party, with "The market's escrow signer could not co-sign it yet" on the order page
+and one log line; the next pass tries again and nothing is rebuilt. No per-order key comes from the signer after
+checkout, which stores them: the market contacts it at checkout (for its key), to co-sign, and in its health check (its
+key, read at startup and on every watcher pass). While it is down the order pages, setup pages and copies of per-order
+escrows are still served and the parties can still sign, a sibling address's stray refund included. Set up the signer
+first: see the [operator guide](docs/operator-guide.md#escrow-signer). The signer's RPC user needs no new method. A deposit to one of a per-order
+escrow's sibling addresses is now returned by a stray refund spending that address's own script, co-signed by the
+signer.
+
+Also new for both parties of a per-order escrow: an order wallet setup page (`/escrow-setup?id=<order>`, linked from the
+order page, never shown to staff or the other party), and the settlement sign form takes the signed PSBT as a file (at
+most 64 KB) beside the paste; it is now a `multipart/form-data` form, the only one besides photo and avatar uploads. A
+pasted or uploaded PSBT is no longer refused for a derivation entry under the market's key (Electrum and Sparrow write
+one for every key); a signature under the market's key is still refused. No real Electrum, Sparrow or hardware wallet
+has been tried with a per-order escrow (ledger items A-457 and A-458); see [per-order
+escrow](docs/escrow.md#per-order-escrow-settlement-setup-and-upload-a-456b-shape-b). Rolling back past this release
+needs the pre-upgrade backup (section 5) once a per-order escrow exists: the earlier release cannot settle it.
+
+## 46. Pooled wallet drain gate and hand settlement of a blocked payout (migration 091, A-445)
+
+Migration 091 adds three read-only SQL functions and changes no table, column or row, so it needs no preparation. Like
+every migration it is one-way: a build that does not include it refuses to start on a database that records it
+([Rolling back](#5-rolling-back)).
+
+- `pooled_drain_blockers()` lists, one row per item, what still needs the pooled wallet: open pooled orders, payouts
+  not sent, flagged pooled deposits whose review is not recorded, pooled deposit addresses the watcher still reads, the
+  restore gate (`payments_recovery_required`), issued-address warnings not dismissed, and pooled history on mainnet. A
+  later release is planned to remove the pooled wallet's code and to refuse a database for which this list is not empty.
+- `pooled_watch_horizon()` is the pooled watcher's time rule for an address (24 hours after its order last changed state,
+  30 days after a closed order's address was issued), now read by both the watcher and the drain gate.
+- `pooled_pending_deposit()` names a deposit recorded at a pooled address that is neither credited nor flagged and
+  still reported by the wallet. The watcher now also reads the address of a closed pooled order past the horizon while
+  it has such a deposit, so a deposit below the confirmation threshold when the horizon ended is flagged for review
+  once it confirms, or ends once the wallet stops reporting it; before, it was never read again. Every other address
+  is read exactly as before.
+
+`/admin` shows the list read-only under *Pooled wallet drain*, below *Escrow-only readiness*, with a count per kind,
+the pooled balances as advice, and a sweep note: the market never sweeps the pooled wallet; once the list is empty, move
+what is left in it by hand. How to drain: [operator guide](docs/operator-guide.md#draining-the-pooled-wallet).
+
+**Bitcoin pooled RPC user.** The advisory balance is read with `getbalances`, which is now on the pooled adapter's
+method list. If you restricted the pooled user with `rpcwhitelist` (section 34), add `getbalances` to its line and
+restart bitcoind:
+
+```ini
+rpcwhitelist=opsecmkt-pooled:getblockchaininfo,getwalletinfo,loadwallet,getnetworkinfo,getnewaddress,listreceivedbyaddress,gettransaction,sendtoaddress,validateaddress,getbalances
+```
+
+Without it the panel reads "balance unavailable" and nothing else changes: the balance is advice and decides nothing.
+`getbalances` reads amounts only, of any wallet on the node, as `listreceivedbyaddress` already could. The Monero balance is read with monero-wallet-rpc's `get_balance` (account 0).
+
+**Blocked payouts.** A payout blocked because its recipient never saved a payout address can now be paid by hand. The
+simplest route is still to ask the recipient to save a payout address. Otherwise: hold it (*Resolve payout* → *Hold
+to pay by hand*, a staff reason of 10–500 characters and your password, audited; a held payout keeps its hold when the
+recipient saves an address), pay it from the pooled wallet to an address the recipient gave you through a channel you
+trust, then record it (*Record sent by hand*, the wallet's transaction ID, 64 hexadecimal characters stored in lower
+case, and your password, audited with the payout and the transaction ID). The market does not check the transaction
+ID against the chain, and never sends a recorded payout. A queued payout, one being sent or one already sent is never
+marked sent: the refusal (409, nothing changed) says that the market queued, is sending or sent it itself, so a payment
+made by hand would be a second one. Releasing a hand hold needs the confirmation that nobody paid it by hand. No new
+payout state: a hold is `held` (its reason starts "Held to be paid by hand:"), a recorded payout `sent`. An account
+suspension and a restore from backup hold such a payout again and keep that reason after their own, so releasing it
+then needs their check as well (the payout-address check, or the wallet check); `scripts/restore.sh` and the manual
+restore SQL above keep the reason too.
+
+An account suspension now also marks a payout held by a restore from backup (A-489; older releases did not, for any
+restored hold): its "Restored from backup:" text is kept first and the suspension's added after it, so releasing it
+needs the payout-address check besides the wallet check (and, for a hand hold, the not-paid confirmation). Before, a
+payout restored without an address, given one by whoever had the account's password, could be released after the
+suspension without the address check.
+
+Development databases only: migration 091 was changed before it was released (the pending-deposit rule was added),
+and a migration that is recorded as applied is never run again, so a development database that applied an earlier
+version of 091 lacks `pooled_pending_deposit` and its watcher query fails there; recreate it. No released database has
+an earlier version of 091.
+
+## 47. Optional: local nodes over Tor (A-442)
+
+No migration, no new key, and nothing changes unless you add the new `compose.nodes-tor.yaml` to `COMPOSE_FILE`. With
+`APP_MODE=tor` and a local node, it gives the nodes a Tor client of their own (`tor-socks`, with its own
+`deploy/torrc-socks`), makes the `node_egress` network internal so `bitcoin` and `monero` reach peers only through it,
+and starts bitcoind with `-proxy=tor-socks:9050 -privatebroadcast`, which a Tor-mode market using Bitcoin escrow on the
+local node needs to pass the broadcast gate of section 36. monerod's proxy flag is unverified, and pooled payouts are
+never private. Add it after `compose.nodes.yaml`, run `./scripts/install.sh check` (it refuses the overlay in clearnet
+mode or before `compose.nodes.yaml`) and `docker compose up -d --build`, which recreated the `node_egress` network and
+restarted the nodes on it with Compose 5.1.1 (the guide says what to do if your Compose refuses). How it works, and exactly what it does and does not make private:
+[operator guide](docs/operator-guide.md#local-nodes-over-tor).
 
 ## Appendix: new keys by hand
 

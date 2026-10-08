@@ -11,8 +11,8 @@ below run from the repository root.
 | Command | What it does |
 | --- | --- |
 | `init` (the default: `./scripts/install.sh` and `./scripts/install.sh --local` run it too) | Refuses when `.env` exists, when containers of the Compose project come from another checkout, and when any volume of the project exists. Asks its questions (none when flags answer them), writes `.env` with distinct random `APP_SECRET_KEY` and `SETUP_TOKEN`, runs `check`, then `docker compose up -d --build --wait`. With `--external-db` it first reads that database with a one-off `docker compose run --rm --no-deps app -status`: when a market's setup is already complete there, it removes the new `.env`, starts nothing and says to restore that market's `.env` instead (new secrets would leave its TOTP secrets unreadable). On Tor it waits up to 90 seconds for the onion address. It ends with the setup link and token, and for clearnet behind a proxy with Caddy and nginx snippets for `APP_PORT`. |
-| `init --admin HANDLE [--site-name NAME]` | The same, but creates the first administrator in the terminal ([First administrator from the host](#authentication)): it asks for the password twice without showing it and pipes it to `-bootstrap-admin` on standard input, never in a command line, the environment or `.env`. Then it removes `SETUP_TOKEN` from `.env`, recreates the app and prints no token. |
-| `check` | Validates `.env` and the Compose configuration and starts nothing: the app's startup refusals (placeholder or weak secrets, `COOKIE_SECURE`, a placeholder `DATABASE_URL`, `APP_MODE` against `COMPOSE_FILE`), `POSTGRES_PASSWORD` against the password in `DATABASE_URL`, `COMPOSE_PROFILES` against the database and node settings, node images on `latest`, the mirror outside Tor, the [malware scanner](#photo-uploads-and-the-malware-scanner) (its profile, `CLAMD_ADDRESS` and `compose.scanner.yaml` only together, a readable `deploy/clamd.conf`, `CLAMAV_IMAGE` pinned to a release with signatures and, from `docker compose config`, `clamd` alone with the app on the internal `scanner` network with no port or volume), the project's containers created from another checkout (or this checkout's containers under another project name), and `docker compose config`. When the directory those containers were created from no longer exists, the checkout was probably moved: `check` says so, and `docker compose up -d --force-recreate` run in the moved checkout recreates them with its directory, keeping the volumes (a plain `up -d` leaves them as they are). Do not change `COMPOSE_PROJECT_NAME` for this. Messages name keys, never values. |
+| `init --admin HANDLE [--site-name NAME]` | The same, but creates the first administrator in the terminal ([First administrator from the host](#authentication)): it asks for the password twice without showing it, refuses one that does not match, is not 12-72 bytes or is not valid UTF-8 before it writes or starts anything, and pipes it to `-bootstrap-admin` on standard input, never in a command line, the environment or `.env`. Then it removes `SETUP_TOKEN` from `.env`, recreates the app and prints no token. |
+| `check` | Validates `.env` and the Compose configuration and starts nothing: the app's startup refusals (placeholder or weak secrets, `COOKIE_SECURE`, a placeholder `DATABASE_URL`, `APP_MODE` against `COMPOSE_FILE`), [`compose.nodes-tor.yaml`](#local-nodes-over-tor) only with `APP_MODE=tor` and `compose.tor.yaml` and after `compose.nodes.yaml`, `POSTGRES_PASSWORD` against the password in `DATABASE_URL`, `COMPOSE_PROFILES` against the database and node settings, node images on `latest`, the mirror outside Tor, the [malware scanner](#photo-uploads-and-the-malware-scanner) (its profile, `CLAMD_ADDRESS` and `compose.scanner.yaml` only together, a readable `deploy/clamd.conf`, `CLAMAV_IMAGE` pinned to a release with signatures and, from `docker compose config`, `clamd` alone with the app on the internal `scanner` network with no port or volume), the project's containers created from another checkout (or this checkout's containers under another project name), and `docker compose config`. When the directory those containers were created from no longer exists, the checkout was probably moved: `check` says so, and `docker compose up -d --force-recreate` run in the moved checkout recreates them with its directory, keeping the volumes (a plain `up -d` leaves them as they are). Do not change `COMPOSE_PROJECT_NAME` for this. Messages name keys, never values. |
 | `status` | Mode, each service's health, whether setup is pending or complete, the schema version, every onion address and the malware scanner's state with the version and date of its signatures. |
 | `setup-token [--new]` | While setup is pending: shows the token and setup link, or with `--new` issues a new token and recreates the app. After setup it exits 1: the token grants nothing then. It never shows a token that is also the key root (an install without its own `APP_SECRET_KEY`); `--new` issues a separate one and keeps the keys. |
 | `add-mirror` | See [Optional onion mirror](#optional-onion-mirror). |
@@ -53,9 +53,17 @@ server {
 
 `$host` drops the port. If visitors reach the proxy on a non-default port (for example `https://market.example.com:8443`), use `proxy_set_header Host $http_host;` so the forwarded `Host` keeps the port their browser puts in `Origin`. Other proxies need their equivalent setting (for example `ProxyPreserveHost On` in Apache). The onion services (including the mirror) need nothing: Tor's `HiddenServicePort` forwards the connection unchanged, so the app receives the `.onion` `Host` the browser sent.
 
-`APP_MODE` in `.env` (`clearnet` or `tor`, set by the installer) must be one of those two: any other value stops the server. It changes one behaviour: with `APP_MODE=tor` and [Bitcoin escrow](#bitcoin-escrow-test-networks-only) on, a settlement is broadcast only through an escrow node that sends through a proxy for both IPv4 and IPv6 on Bitcoin Core 31.1 or later (*Tor mode* under Bitcoin escrow, A-441); otherwise escrow broadcasts wait. It routes nothing itself, and pooled payouts are unaffected (they are never private, below). The Compose overlay in `COMPOSE_FILE` decides exposure, and `COOKIE_SECURE` decides whether cookies are marked Secure. Compose passes `COMPOSE_FILE` to the app, which refuses to start when it disagrees with `APP_MODE`: `tor` needs `compose.tor.yaml` in it, `clearnet` needs `compose.clearnet.yaml`, and never both (a blank `COMPOSE_FILE` skips this check). `COOKIE_SECURE` must be exactly `true` or `false` (unset means `true`); `APP_MODE=tor` with `COOKIE_SECURE=true` only logs a warning: the onion is served over plain HTTP, so the Secure session cookie works only in browsers that treat `.onion` addresses as secure (the installer writes `false` for Tor).
+`APP_MODE` in `.env` (`clearnet` or `tor`, set by the installer) must be one of those two: any other value stops the server. It changes one behaviour: with `APP_MODE=tor` and [Bitcoin escrow](#bitcoin-escrow-test-networks-only) on, a settlement is broadcast only through an escrow node that sends through a proxy for both IPv4 and IPv6 on Bitcoin Core 31.1 or later (*Tor mode* under Bitcoin escrow, A-441); otherwise escrow broadcasts wait. It routes nothing itself, and pooled payouts are unaffected (they are never private, below). Routing the local nodes through Tor is [`compose.nodes-tor.yaml`](#local-nodes-over-tor), which `check` accepts only with `APP_MODE=tor`. The Compose overlay in `COMPOSE_FILE` decides exposure, and `COOKIE_SECURE` decides whether cookies are marked Secure. Compose passes `COMPOSE_FILE` to the app, which refuses to start when it disagrees with `APP_MODE`: `tor` needs `compose.tor.yaml` in it, `clearnet` needs `compose.clearnet.yaml`, and never both (a blank `COMPOSE_FILE` skips this check). `COOKIE_SECURE` must be exactly `true` or `false` (unset means `true`); `APP_MODE=tor` with `COOKIE_SECURE=true` only logs a warning: the onion is served over plain HTTP, so the Secure session cookie works only in browsers that treat `.onion` addresses as secure (the installer writes `false` for Tor).
 
 Configure DNS, firewall and the certificate issuer for your domain. A proxy in another container needs a private shared network instead of this host-loopback configuration. Never expose the database or node RPC ports.
+
+**External PostgreSQL and the database encoding.** The database must be UTF8. Startup checks `SHOW server_encoding` before it runs the first migration and, for any other encoding (`SQL_ASCII`, `LATIN1`), exits with `the database encoding is SQL_ASCII, not UTF8 ...` and changes nothing. The length limits (for example the 250-character image description), handle rules, case folding and sorting all assume characters; on `SQL_ASCII` a limit counts bytes, so 250 "é" is refused there and accepted on UTF8. The internal PostgreSQL of the Compose files is initialised with `--encoding=UTF8`. On an external server create the database like this (from `psql` as a role with `CREATEDB`; `TEMPLATE template0` is what lets you choose an encoding the server's default differs from):
+
+```sql
+CREATE DATABASE opsecmkt ENCODING 'UTF8' TEMPLATE template0;
+```
+
+Check an existing database with `export DATABASE_URL` and `python3 scripts/postgres-tool.py DATABASE_URL psql -c 'SHOW server_encoding'` (it must print `UTF8`; the tool keeps the URL's password off the command line, where other users of the host could read it), or `SELECT datname, pg_encoding_to_char(encoding) FROM pg_database;` for all of them. The encoding of a database cannot be changed in place: to move a non-UTF8 one, follow [UPGRADING.md section 42](../UPGRADING.md#42-database-encoding-must-be-utf8-a-481), which checks the old database for text that is not valid UTF-8 (`scripts/check-utf8.sql`), copies the text byte for byte and proves the new database's own backup restores before the switch. Every connection the app opens also sends `client_encoding=UTF8`, overriding the database and role defaults and any `client_encoding` in `DATABASE_URL`.
 
 **External PostgreSQL and time zones.** Every database connection the app opens (the web app, its migrations, `-bootstrap-admin`, `-reset-admin-password`, `-reset-admin-factors` and `-set-role`) sets `TimeZone=UTC` itself, overriding the server, database and role defaults and any `TimeZone` in `DATABASE_URL`. An external or host PostgreSQL left on local time therefore needs no change: pages show every time in UTC, labelled " UTC", and do not reveal the server's UTC offset. Other clients, such as `psql` or the backup scripts, still use the server's own zone.
 
@@ -65,7 +73,7 @@ For onion service deployment run `./scripts/install.sh init --tor` (or choose `t
 docker compose exec tor cat /var/lib/tor/marketplace/hostname
 ```
 
-The persistent `tor_identity` volume contains the onion private keys. Preserve it to retain the address; back it up encrypted with the [documented commands](#secrets-env-and-onion-identities). The setup uses HTTP inside the authenticated onion circuit and sets `COOKIE_SECURE=false` for that endpoint. The application and database share an internal Docker network with no direct Internet egress. Only the Tor gateway has a separate egress network. Selecting external database or RPC endpoints adds `compose.external-egress.yaml`, which explicitly permits direct application egress; that configuration provides onion-only inbound exposure, not Tor-routed outbound traffic. Local nodes have their own direct egress network to synchronize with peers. Docker network isolation does not protect against host administrators or a compromised container runtime. Use the dedicated Tor Compose file without the clearnet overlay. If changing an existing clearnet deployment, stop it before changing `COMPOSE_FILE` and recreate containers and the backend network so published ports are removed and the network becomes internal. Remove only the unused network, not persistent volumes. Never run both overlays together.
+The persistent `tor_identity` volume contains the onion private keys. Preserve it to retain the address; back it up encrypted with the [documented commands](#secrets-env-and-onion-identities). The setup uses HTTP inside the authenticated onion circuit and sets `COOKIE_SECURE=false` for that endpoint. The application and database share an internal Docker network with no direct Internet egress. Only the Tor gateway has a separate egress network. Selecting external database or RPC endpoints adds `compose.external-egress.yaml`, which explicitly permits direct application egress; that configuration provides onion-only inbound exposure, not Tor-routed outbound traffic. Local nodes have their own direct egress network to synchronize with peers, unless [`compose.nodes-tor.yaml`](#local-nodes-over-tor) sends them through a Tor client of their own. Docker network isolation does not protect against host administrators or a compromised container runtime. Use the dedicated Tor Compose file without the clearnet overlay. If changing an existing clearnet deployment, stop it before changing `COMPOSE_FILE` and recreate containers and the backend network so published ports are removed and the network becomes internal. Remove only the unused network, not persistent volumes. Never run both overlays together.
 
 **Tor restarts with the app; this needs Docker Compose 2.17 or later** (check with `docker compose version`). Tor looks up the app's container address once, when it starts ([`deploy/torrc`](../deploy/torrc): `HiddenServicePort 80 app:8080`), and a recreated app container can get a different address, for example when an upgrade adds node services. Tor then keeps forwarding to the old address and the onion stops answering. `compose.tor.yaml` therefore gives `tor` and `tor-mirror` a `restart: true` dependency on the app: whenever Compose recreates the app (`docker compose up -d` after a rebuild or a `.env` change) or restarts it (`docker compose restart app`), it restarts Tor too. The mirror is included only when the command sees the `mirror` profile, so add `mirror` to `COMPOSE_PROFILES` in `.env` if you run it (see [Optional onion mirror](#optional-onion-mirror)). Compose does not restart Tor for `docker compose stop app` followed by `up -d`, and the setting does not repair a Tor that already forwards to an old address. On a Tor install deployed before this change, recreate Tor once:
 
@@ -201,6 +209,8 @@ docker compose up -d tor              # without the onion mirror
 docker compose up -d tor tor-mirror   # with the onion mirror
 ```
 
+With [`compose.nodes-tor.yaml`](#local-nodes-over-tor) in `COMPOSE_FILE`, the nodes' `tor-socks` is a separate image built from the same `Dockerfile.tor`: rebuild and restart it too, with `docker compose build tor tor-socks` instead of the first line and `tor tor-socks` (or `tor tor-mirror tor-socks`) in the `up -d` line. Its own `deploy/torrc-socks` is not read by the `--verify-config` line above.
+
 An edited `deploy/torrc` is a local change to the checkout: if an upgrade changes the same file, `git pull` refuses until you set your edit aside (`git stash`, `git pull`, `git stash pop`).
 
 ### Watching the onion
@@ -254,7 +264,7 @@ The Tor Project's repository lists only its newest release. When it has moved pa
 curl -s https://deb.torproject.org/torproject.org/dists/bookworm/main/binary-amd64/Packages | awk '$1 == "Package:" { tor = $2 == "tor" } tor && $1 == "Version:" { print $2 }'
 ```
 
-put it in `.env` (the value below is only an example), then run the `docker compose build tor` sequence under [Onion-service defences](#onion-service-defences):
+put it in `.env` (the value below is only an example), then run the `docker compose build tor` sequence under [Onion-service defences](#onion-service-defences) (`docker compose build tor tor-socks` and `up -d tor tor-socks` with [`compose.nodes-tor.yaml`](#local-nodes-over-tor)):
 
 ```sh
 TOR_VERSION='0.4.9.14-1~d12.bookworm+1'
@@ -271,6 +281,7 @@ Every service has a memory, CPU and process ceiling, so a flood, a leak or a run
 | `app` | 512m | 2 | 512 | `GOMEMLIMIT=400MiB` makes Go's garbage collector work harder before the memory limit is reached; Go sizes its scheduler to the 2-CPU limit. |
 | `db` | 1g | 2 | 256 | Internal database only. Every PostgreSQL connection is a process; 256 leaves room above the default 100 connections. |
 | `tor`, `tor-mirror` | 256m | 1 | 64 | `MaxMemInQueues 128 MB` in `deploy/torrc` keeps Tor's queues inside this ([Onion-service defences](#onion-service-defences)). |
+| `tor-socks` | 256m | 1 | 64 | The nodes' Tor client, only with [`compose.nodes-tor.yaml`](#local-nodes-over-tor); `MaxMemInQueues 128 MB` in `deploy/torrc-socks`. |
 | `bitcoin` | 2g | 2 | 256 | A pruned test-network node: its database cache and mempool (at most 300 MB by default) plus headroom for the initial sync. Raise it for an unpruned node or a larger `-dbcache`. |
 | `monero` | 2g | 2 | 512 | monerod starts threads per core for sync and verification. |
 | `monero-wallet` | 512m | 1 | 128 | |
@@ -325,12 +336,13 @@ Before changing a tag (default or `.env`):
 2. Bitcoin: check that `sendtoaddress` still stores the transaction in the wallet before submitting it and returns the txid, not an error, when relay fails (`src/wallet/rpc/spend.cpp`, `CWallet::CommitTransaction` in `src/wallet/wallet.cpp`), and update the `walletRejected` comment.
 3. Change the tag in `compose.nodes.yaml`, `.env.example` and `scripts/install.sh` in the same commit. `tests/test_installer.py` fails if the three disagree, if a default is `latest`, or if the versions named in the `payments_watcher.go` comments or `moneroVerifiedWalletRelease` do not match the tags.
 4. Run the payment tests (`TEST_DATABASE_URL=<dedicated test database> go test -race -count=1 -timeout 30m ./...` and `E2E_WALLET_DATABASE_URL=<fresh database> npm run test:e2e:wallet`, both against simulated wallets) and, preferably, the [local-chain journey](local-chain-testing.md) against the new images.
+5. Bitcoin escrow (A-446): set up a regtest node from the new image with `scripts/escrow-node-setup.sh --chain regtest` and check it with `--verify` (the whitelists still answer what the app calls and Core still refuses the pooled user `listdescriptors`, `gethdkeys` and `walletprocesspsbt` with HTTP 403), run `scripts/test-escrow-regtest.sh` against it (and `--private-signet` with `ESCROW_SIGNET_IMAGE` set to the new image), and, before the new version backs any public-network claim, run `scripts/test-escrow-public.sh` with `ESCROW_PUBLIC_NODE_IMAGE` naming it and commit the record it writes ([Escrow node set-up and the public-network smoke](#escrow-node-set-up-and-the-public-network-smoke)).
 
 **Runtime wallet check.** monero-wallet-rpc does not report its release. Its `get_version` answers the version of its RPC interface as one number, `(major<<16)|minor`, and whether it is a release build; v0.18.5.1 reports 1.31 (65567) from a release build (`WALLET_RPC_VERSION` in [`src/wallet/wallet_rpc_server_commands_defs.h`](https://github.com/monero-project/monero/blob/v0.18.5.1/src/wallet/wallet_rpc_server_commands_defs.h); v0.18.5.0 reports 1.30, v0.18.4.1 to v0.18.4.5 report 1.29). The application reads `get_version` at startup and at the start of every watcher pass. While the answer is anything but 1.31 from a release build, the call fails, or the last check failed before reading it, every Monero send failure is recorded as possibly broadcast (so requeueing it needs the wallet confirmation), and the *Payment providers* panel of `/admin` says "XMR wallet version not verified", names the version the wallet reported and points here; that payouts take the fee from the amount sent is then unverified too. The panel's *Version* column also shows the Bitcoin Core version from `getnetworkinfo`; the Bitcoin rule does not depend on it. The RPC version changes only when the wallet's RPC changes, not with every release, so a later release with an unchanged RPC reports 1.31 and is not detected. With a wallet version nobody has verified (a newer tag, a `latest` left in `.env`, or your own image), **treat every Monero send failure as possibly broadcast** even if the panel shows no warning: check the wallet as for an ambiguous failure ([runbook step 5](testnet-runbook.md#5-recover-a-held-or-failed-payout)) before requeueing a failed XMR payout.
 
 ### Local node pruning
 
-Local nodes are **pruned by default**; a full node is an explicit opt-in per coin. The application only needs a node's current state and its wallet: Bitcoin is used through `getblockchaininfo`, `validateaddress` and wallet RPCs (`getwalletinfo`, `loadwallet`, `getnewaddress`, `listreceivedbyaddress`, `gettransaction`, `sendtoaddress`), Monero through the daemon's `get_info` and `monero-wallet-rpc`. Nothing in it reads old blocks.
+Local nodes are **pruned by default**; a full node is an explicit opt-in per coin. The application only needs a node's current state and its wallet: Bitcoin is used through `getblockchaininfo`, `validateaddress` and wallet RPCs (`getwalletinfo`, `loadwallet`, `getnewaddress`, `listreceivedbyaddress`, `gettransaction`, `sendtoaddress`, and `getbalances` for the drain panel's advisory balance), Monero through the daemon's `get_info` and `monero-wallet-rpc`. Nothing in it reads old blocks.
 
 | `.env` key | Default | Full node |
 | --- | --- | --- |
@@ -373,6 +385,28 @@ The effects on an already-synced chain above come from reading the upstream sour
 **Wallet restore trade-off.** A Bitcoin wallet can only be loaded or rescanned over blocks the node still holds. Restoring a backup (`restorewallet`) whose last synchronised block is older than the node's `pruneheight` fails with "Prune: last wallet synchronisation goes beyond pruned data. You need to -reindex (download the whole blockchain again in case of a pruned node)" ([`src/wallet/wallet.cpp`](https://github.com/bitcoin/bitcoin/blob/v31.1/src/wallet/wallet.cpp)), and `rescanblockchain` cannot go below `pruneheight` either (UNVERIFIED here: needs a synced, pruned chain). Record the block height next to each wallet backup ([runbook](testnet-runbook.md#6-back-up-the-wallets)) and compare it with `pruneheight` before relying on the backup. To restore an older one, either restore the whole `bitcoin_data` volume from a copy taken with bitcoind stopped (the pruned chain and the wallet in it then agree, and the node catches up from there), or run the node unpruned as above until the wallet has loaded and rescanned, then set `BITCOIN_PRUNE_MB` back. Monero is not affected: a pruned blockchain "is otherwise identical in functionality to the full blockchain" ([README](https://github.com/monero-project/monero/blob/v0.18.5.1/README.md#pruning)) and keeps the full transaction history, so `monero-wallet-rpc` can restore and refresh a wallet through a pruned daemon.
 
 **Mirrors, development and CI stay pruned.** The `mirror` profile runs a second Tor gateway, not a node. Keep the pruned defaults on a Tor-mirror deployment, a secondary or test instance, and any development or CI configuration: `.env.example`, the Compose defaults and CI's Compose check all use them. Choose a full node only where you want to keep the whole chain for your own reasons. The regtest and offline stagenet chains used by the [local chain tests](local-chain-testing.md) are tiny and are left unpruned.
+
+### Local nodes over Tor
+
+`compose.nodes-tor.yaml` (A-442) sends the local nodes' peer traffic through a Tor client of their own. It is for `APP_MODE=tor` only, and does nothing for an external node.
+
+**Turning it on.** Add it at the end of `COMPOSE_FILE` in `.env`, after `compose.nodes.yaml`, for example `COMPOSE_FILE='compose.yaml:compose.tor.yaml:compose.nodes.yaml:compose.internal-db.yaml:compose.nodes-tor.yaml'`, run `./scripts/install.sh check`, then `docker compose up -d --build`. `check` refuses it without `APP_MODE=tor` and `compose.tor.yaml`, and before `compose.nodes.yaml` (whose node commands would then replace the overlay's and drop the proxy). The installer never writes it. Adding or removing it changes the `node_egress` network: Docker Compose 5.1.1 recreated the network, restarting the containers on it, during `up -d`; if your Compose reports instead that the network's configuration differs, run `docker compose down` (volumes are kept) and `up -d`. To turn it off, remove it from `COMPOSE_FILE` and run `docker compose up -d --remove-orphans`, which also removes `tor-socks`.
+
+**What it changes.**
+
+- **`tor-socks`**, run whenever the `bitcoin` or `monero` profile is: the onion container's pinned Tor build ([Tor image](#tor-image)) with its own [`deploy/torrc-socks`](../deploy/torrc-socks): one SOCKS port on its own address on the node network, `10.199.42.2:9050`, and a `SocksPolicy` that accepts that network (`10.199.42.0/28`) except its gateway (`10.199.42.1`, the host) and refuses everything else; no onion service, `ControlPort 0`. Read-only root, no capabilities, no new privileges, no published port, 256m, 1 CPU and 64 processes. It is healthy once its SOCKS port accepts connections, which does not mean Tor has built a circuit (its log says `Bootstrapped 100%` when it has). Its guards and directory cache stay in the `tor_socks_data` volume. It is a separate image: when you rebuild `tor`, run `docker compose build tor-socks` too. The onion containers (`tor`, `tor-mirror`, [`deploy/torrc`](../deploy/torrc)) are unchanged and keep `SocksPort 0`.
+- **`node_egress` becomes internal**, on that pinned subnet: `bitcoin` and `monero` lose their direct route out and reach peers only through `tor-socks`, the one service on its own egress network (`tor_socks_egress`). The app, the onion containers and the wallets are not on `node_egress` and cannot reach `tor-socks`. If `10.199.42.0/28` is already in use on the host, change it in `compose.nodes-tor.yaml` and `deploy/torrc-socks` together (`tests/test_tor_deploy.py` checks that they agree).
+- **bitcoind** runs with `-proxy=tor-socks:9050 -privatebroadcast`, never `-connect` or `-onlynet` (they stall its sync). With `-proxy`, Bitcoin Core also turns off listening, discovery and NAT-PMP, so the node takes no inbound peers, and asks its DNS seeds through the proxy by name instead of looking them up itself.
+- **monerod** runs with `--proxy=10.199.42.2:9050` (`monerod --help` documents an IP address and port, not a host name). **Unverified:** monerod has not run through Tor here. With no network at all, v0.18.5.1 accepted the flag and addressed every peer attempt (its built-in stagenet seeds) to that proxy. `--tx-proxy`, which keeps local transactions for onion peers, is not set and untested.
+
+**What is private, and what is not.**
+
+- **Escrow settlements** on the local `bitcoin` node: `-privatebroadcast` makes `sendrawtransaction` send a transaction only over short-lived connections through the proxy, and with `APP_MODE=tor` the node passes the [Tor-mode gate](#bitcoin-escrow-test-networks-only) (`getnetworkinfo` shows the proxy for IPv4, IPv6 and onion). On Bitcoin Core 31.1 regtest through a SOCKS stand-in, private broadcast tried onion addresses only: with none known, or with only an IPv4 address known, it returned the txid, kept the transaction out of its own mempool and its peers', listed it in `getprivatebroadcastinfo` with no peers and kept retrying, and it did not use the IPv4 peer it was already connected to through the proxy. A settlement therefore reaches the network only once the node knows onion peers that answer; until then the stall alert reports it (*Queued or stuck*). Whether that happens on signet or testnet4 is not recorded (war room A-447).
+- **The Bitcoin node's peer traffic** (block sync, address discovery, relaying other transactions) goes through Tor, so peers see a Tor exit instead of the host's IP address (on regtest, the other node saw the stand-in's address as its peer, not the node's).
+- **Pooled payouts are never private**, with or without the overlay. They are wallet sends (`sendtoaddress`), which Bitcoin Core relays over its ordinary long-lived peer connections, not by private broadcast (on regtest the payout reached the other node at once over the proxied connection, and `getprivatebroadcastinfo` stayed empty). With the overlay they leave through Tor instead of from the host's IP address, but the node's peers still see each payout first from this node and can link the market's payouts to one another.
+- **Monero:** unverified (above); treat its traffic as not private.
+
+Evidence is local mechanics only, never a public network or the Tor network: the resolved Compose configuration (`tests/test_tor_deploy.py`, CI's Compose job); `deploy/torrc-socks` under Debian's tor 0.4.9.11 on internal networks only (it listened only on `10.199.42.2:9050`, accepted a node, refused the gateway and was unreachable from the app's network); Bitcoin Core 31.1 regtest nodes through a SOCKS stand-in for Tor. No node has run over real Tor here.
 
 ## Migrations
 
@@ -445,14 +479,14 @@ No environment keys. Second-factor secrets are encrypted with a key derived from
   docker compose run --rm app -bootstrap-admin ADMIN_HANDLE -site-name "My Market"
   ```
 
-  It connects with `DATABASE_URL`, starts no web server and needs no setup token. It prompts twice for the administrator's password without showing it (12–72 bytes, as on `/setup`) and then, in one transaction under the same lock as `/setup` (so it cannot race the browser form or another run), creates that one administrator, records the marketplace name (default `OPSMKT`, at most 80 bytes; change it later on `/admin`), marks the market installed and writes the same audit row as `/setup` ("Account created: admin"). It prints only the handle; sign in on `/login` with that handle and password. From then on `/setup` refuses every token. It refuses, changing nothing, when the market is already set up (by `/setup` or an earlier run), a handle, password or name that breaks the rules above, a database the server has never started against, and a database upgraded by a newer release. Arguments go after the service name, as for `-reset-admin-password` below. Without a terminal, for example from a script, add `-T` and pipe the password as a single line on standard input (`docker compose run --rm -T app -bootstrap-admin ADMIN_HANDLE`); it is never accepted as an argument. Anyone who can run this command with the deployment's `.env` can create the first administrator, just as they could read `SETUP_TOKEN` from it; there is no web equivalent.
+  It connects with `DATABASE_URL`, starts no web server and needs no setup token. It prompts twice for the administrator's password without showing it (12–72 bytes, as on `/setup`; valid UTF-8 without a NUL byte, as the sign-in form sends, so a terminal set to `LATIN1` is refused) and then, in one transaction under the same lock as `/setup` (so it cannot race the browser form or another run), creates that one administrator, records the marketplace name (default `OPSMKT`, at most 80 bytes; change it later on `/admin`), marks the market installed and writes the same audit row as `/setup` ("Account created: admin"). It prints only the handle; sign in on `/login` with that handle and password. From then on `/setup` refuses every token. It refuses, changing nothing, when the market is already set up (by `/setup` or an earlier run), a handle, password or name that breaks the rules above, a database the server has never started against, and a database upgraded by a newer release. Arguments go after the service name, as for `-reset-admin-password` below. Without a terminal, for example from a script, add `-T` and pipe the password as a single line on standard input (`docker compose run --rm -T app -bootstrap-admin ADMIN_HANDLE`); it is never accepted as an argument. Anyone who can run this command with the deployment's `.env` can create the first administrator, just as they could read `SETUP_TOKEN` from it; there is no web equivalent.
 - **Forgotten administrator password**: the application has no web password reset. An operator on the host, in the deployment directory (with its `.env`), runs (replace `ADMIN_HANDLE`, exact and case-sensitive):
 
   ```sh
   docker compose run --rm app -reset-admin-password ADMIN_HANDLE
   ```
 
-  It connects with `DATABASE_URL`, starts no web server, prompts twice for the new password without showing it (12–72 bytes, the registration rule) and, in one transaction, stores its hash, ends every session and pending sign-in of that account and writes the audit row "Password reset by the operator on the host". It refuses an account that is not an administrator, an unknown handle, and a database upgraded by a newer release (as startup does); nothing changes then. Arguments go after the service name because the image's entrypoint is the server itself (do not repeat `/app/server`). Without a terminal, for example from a script, add `-T` and pipe the password as a single line on standard input; it is never accepted as an argument. The site can keep running. Second factors are unchanged: if they are lost too, also run `-reset-admin-factors` (above).
+  It connects with `DATABASE_URL`, starts no web server, prompts twice for the new password without showing it (12–72 bytes, the registration rule; valid UTF-8 without a NUL byte) and, in one transaction, stores its hash, ends every session and pending sign-in of that account and writes the audit row "Password reset by the operator on the host". It refuses an account that is not an administrator, an unknown handle, and a database upgraded by a newer release (as startup does); nothing changes then. Arguments go after the service name because the image's entrypoint is the server itself (do not repeat `/app/server`). Without a terminal, for example from a script, add `-T` and pipe the password as a single line on standard input; it is never accepted as an argument. The site can keep running. Second factors are unchanged: if they are lost too, also run `-reset-admin-factors` (above).
 
 ### Administrators
 
@@ -488,7 +522,7 @@ The party who did not open a dispute can put one reply on record from the order 
 
 Resolving as a refund returns the whole counted amount to the buyer; resolving as a release pays the vendor the price and returns any excess worth sending to the buyer (see [overpayments](#payments)). A refund or return larger than the price waits for an administrator's review; the payment watcher sends the rest automatically. The resolve form states each outcome's amount, recipient, difference from the price and the recipient's payout state, and needs a ticked confirmation and the resolver's current password (and authenticator code when enrolled); if another deposit is counted after the form was shown, resolving is refused with 409 and the moderator reviews the new amount. Completing an order and a vendor's cancel of a paid order work the same way.
 
-Moderators and administrators open the order page of a disputed (or resolved) order they are not party to, read-only, from the moderation desk; buyer and vendor actions stay unavailable to them. Roles are assigned under *Admin → Assign an account role* by entering the account's handle (exact, case-sensitive; the list there shows only the 100 newest accounts). Changing a vendor's role to buyer or moderator archives their active listings in the same audited transaction and blocks new drafts and payment requests on them; existing orders continue.
+Moderators and administrators open the order page of a disputed (or resolved) order they are not party to, read-only, from the moderation desk; buyer and vendor actions stay unavailable to them. They may also read, the same way, an order with a deposit flagged for payment review, and an escrow order while it has an open staff alert (A-470): a Bitcoin settlement queued or stuck (until the network sees it), a Bitcoin release too small to build (while it stands), or a Monero escrow deposit the database refused as another order's escrow account (A-480, until staff record what was done about it). Opening it changes nothing, and the only action offered is that record; once the alert clears, the order is 404 to them again unless another of these rules admits them. The moderation desk lists such an order under *Escrow alerts*, linked, until its alert clears (a release too small also appears there with its deposits under *Payment review*), newest alert first: by when the order's open alert opened (a stall's order note, the failed release, the refused deposit's record; the latest when an order has several), not by the order's age (QA5W2-3). The list shows the 100 newest; with more open it says how many more orders it leaves out (an older one is listed once newer alerts clear). A refused Monero deposit was never written to the ledger: check it in the escrow wallet and deal with it outside the market (for example refund it to the buyer by hand, or confirm it belongs to the other order); then a moderator or administrator who is not a party records what was done under *Refused Monero deposits* on the order page (10–500 characters, confirmed with their password and authenticator code when enrolled, one audit row; a second record of the same deposit is refused). Only staff see that section and its note; the parties see the order note they saw before. Each refused deposit is one record, so the watcher meeting it again on later passes writes nothing more, and a new refused transaction opens a new record and a new notice. The order page says why staff may read it: for an escrow alert alone it names the open alert and links *Escrow alerts*, for a flagged deposit it links *Payment review*, and *Payment providers* on `/admin` links each open stall. Roles are assigned under *Admin → Assign an account role* by entering the account's handle (exact, case-sensitive; the list there shows only the 100 newest accounts). Changing a vendor's role to buyer or moderator archives their active listings in the same audited transaction and blocks new drafts and payment requests on them; existing orders continue.
 
 Reviews are published as soon as the buyer writes them. To take one down (for example text that names or locates a vendor), sign in as an administrator, open the listing or the vendor's page, open *Hide this review* under it and confirm with your password (and authenticator code when enrolled). The review is kept but leaves both public pages and their rating; the buyer and vendor still see it on the order, and administrators see it labelled with *Restore this review*. Both actions are audited without the review text and the reviewer is notified. Migration 031 adds `reviews.hidden_at`.
 
@@ -559,12 +593,15 @@ proven with real funds. Know these before you take a real payment:
   automatically (see [Overpayments](#overpayments-and-the-payment-qr-code)), so anyone can use the pooled
   wallet to swap coins up to any listing's price without review; only a refund above the price, or a return of
   more than the price, is held.
-- **With local nodes, payouts in Tor mode leave from the host's own IP address.** The Tor overlay hides the
-  market's web service, but the local Bitcoin and Monero nodes connect to peers and broadcast every payout directly over
-  clearnet from the host, so peers can link the market's payouts to the host's IP address. Nothing in the
-  Compose files routes the nodes through Tor; running them over Tor is not tested here. **Pooled payouts are never
+- **With local nodes, payouts in Tor mode leave from the host's own IP address** unless
+  [`compose.nodes-tor.yaml`](#local-nodes-over-tor) is in `COMPOSE_FILE`. The Tor overlay hides the market's web
+  service, but without that node overlay the local Bitcoin and Monero nodes connect to peers and broadcast every payout
+  directly over clearnet from the host, so peers can link the market's payouts to the host's IP address. With it, the
+  Bitcoin node's peer connections go through Tor (checked only against a local SOCKS stand-in, never real Tor) and the
+  Monero node's are configured to (unverified). **Pooled payouts are never
   private**, whatever the node's flags: they are wallet sends (`sendtoaddress`), which Bitcoin Core relays as ordinary
-  transactions even with `-privatebroadcast` (that flag covers `sendrawtransaction` only; probed on Core 31.1 regtest).
+  transactions over its long-lived peer connections even with `-privatebroadcast` (that flag covers
+  `sendrawtransaction` only; probed on Core 31.1 regtest), so the node's peers can link the payouts to one another.
   The one thing `APP_MODE=tor` changes is Bitcoin escrow: it broadcasts a settlement only through an escrow node set up
   with `-proxy` (*Tor mode* under [Bitcoin escrow](#bitcoin-escrow-test-networks-only), A-441).
 - **Open items** in the project's review ledger (`.claude/war-room/ledger.md`), each still unfixed:
@@ -605,9 +642,9 @@ Operational limits to accept before enabling payments:
 - A credited deposit that later conflicts, disappears or drops below the confirmation threshold (a reorg) holds the order's unsent payout and, while the order is open or any of its payouts is unsent (including an overpayment return after the release was sent), is announced once per episode to the order history, the buyer, the vendor and every moderator and administrator not party to the order and not suspended; staff can then read the order and find it under *Payment review*. The payout resumes automatically once the deposit confirms again, however old the order, which ends the episode; a later regression is announced again. The order state is never reverted automatically. On *Payouts* such a held payout shows the deposit, its address and confirmations instead of a *Release* form.
 - A payout is sent only in a watcher pass that has just read its order's deposit address from the wallet, so a deposit reversed while the payout waited (blocked, held or failed, then released or requeued) is caught before the send. Orders with a payout waiting to be sent are watched whatever their age, so a released payout normally goes out on the next pass.
 - Funded orders that are not yet completed, cancelled or resolved stay watched for as long as they are open. A deposit first seen after an order was funded is noted once in the order history and to the buyer and vendor; it is part of the order's settlement (a release with any excess returned to the buyer, or a refund) if it has the confirmation threshold when the order settles; otherwise it is not paid out automatically (see late deposits below).
-- Late deposits: every cancelled, completed or resolved order's address is watched until it is **30 days** old. A deposit recorded before a cancellation that refunded nothing is refunded to the buyer when it confirms (blocked until the buyer saves an address). Anything first seen after the order closed (a buyer topping up an underpaid order after the payment window cancelled and refunded it, a stray payment to an old address) and extra funds that confirm after the order's settlement was queued are **never paid out or refunded automatically**: they are flagged for payment review, and the buyer's order page shows them as "Arrived after the order closed — not paid out; market staff notified". The buyer is notified once per episode with the amount (not the transaction ID; the vendor is not told) and each moderator and administrator once, however many transactions arrive; return the funds by hand from the wallet and record it on the moderation desk (*Payment review → Record the review → refunded by hand*, or *no action* with a reason; a moderator may escalate to an administrator). The buyer's page then shows the outcome instead of "market staff notified", and a later deposit starts a new notice episode once no late flag of the order is open on the desk (an open locked transfer, payout below the minimum, credited deposit or escrow deposit spent outside the market does not hold the episode; a flag that holds it is always one staff can record, QA462C, QA462D-1) ([runbook](testnet-runbook.md#handle-a-payment-review-flag)). Deposits to older addresses are not seen by the watcher (unless the order still has a payout waiting to be sent or held, or changed in the last 24 hours); handle them by hand from the wallet. The watch set is therefore about 30 days of orders: each pass makes one Bitcoin `listreceivedbyaddress` per 200 addresses plus one `gettransaction` per deposit transaction to them (Monero: one `get_transfers` per 200 addresses); keep the node local.
+- Late deposits: every cancelled, completed or resolved order's address is watched until it is **30 days** old. A deposit recorded before a cancellation that refunded nothing is refunded to the buyer when it confirms (blocked until the buyer saves an address). Anything first seen after the order closed (a buyer topping up an underpaid order after the payment window cancelled and refunded it, a stray payment to an old address) and extra funds that confirm after the order's settlement was queued are **never paid out or refunded automatically**: they are flagged for payment review, and the buyer's order page shows them as "Arrived after the order closed — not paid out; market staff notified". The buyer is notified once per episode with the amount (not the transaction ID; the vendor is not told) and each moderator and administrator once, however many transactions arrive; return the funds by hand from the wallet and record it on the moderation desk (*Payment review → Record the review → refunded by hand*, or *no action* with a reason; a moderator may escalate to an administrator). The buyer's page then shows the outcome instead of "market staff notified", and a later deposit starts a new notice episode once no late flag of the order is open on the desk (an open locked transfer, payout below the minimum, credited deposit or escrow deposit spent outside the market does not hold the episode; a flag that holds it is always one staff can record, QA462C, QA462D-1) ([runbook](testnet-runbook.md#handle-a-payment-review-flag)). Deposits to older addresses are not seen by the watcher (unless the order still has a payout waiting to be sent or held, changed in the last 24 hours, or has a recorded deposit still pending: neither credited nor flagged and still reported by the wallet, which is read until it confirms and is refunded, counted or flagged, or leaves the wallet; A-486); handle them by hand from the wallet. The watch set is therefore about 30 days of orders: each pass makes one Bitcoin `listreceivedbyaddress` per 200 addresses plus one `gettransaction` per deposit transaction to them (Monero: one `get_transfers` per 200 addresses); keep the node local.
 - Monero transfers with a non-zero `unlock_time` (locked transfers) are recorded and shown, but never counted toward payment or paid out. The order history notes "locked transfer ignored" once and moderators and the buyer are notified.
-- Recipients must save a payout address on their account page. Payouts wait ("blocked") until they do. Saving or removing a payout address needs the current password, plus an authenticator code when TOTP is enrolled, and notifies the account (naming the currency, not the address).
+- Recipients must save a payout address on their account page. Payouts wait ("blocked") until they do, or until an administrator who paid one by hand records it as sent ([Draining the pooled wallet](#draining-the-pooled-wallet)). Saving or removing a payout address needs the current password, plus an authenticator code when TOTP is enrolled, and notifies the account (naming the currency, not the address).
 - Saving a payout address never moves an unsent payout that already has one, since anyone with the account's password can save an address. The notification names the orders instead: "N unsent payout(s) still use your previous address (orders …); an administrator must confirm the change" for held payouts and definite failures, and separately those queued, being sent or possibly broadcast, which stay on the previous address. On *Payouts*, a held payout or a failure the wallet rejected before broadcast whose recipient has since saved a different address offers *Use the account's current address*: it shows both addresses and when the saved one last changed, needs your password and the "Current address checked" confirmation after you check the address with the account owner through a channel you trust, audits the old and new address, and changes only the destination (release or requeue it afterwards). A payout being sent, stuck in sending, with an unknown send outcome, or held or marked by a restore from backup is never moved; the server refuses it (409) ([runbook](testnet-runbook.md#5-recover-a-held-or-failed-payout)).
 
 `scripts/regtest-smoke.sh` is a manual check against a local `bitcoind -regtest` (`BITCOIN_REGTEST_RPC_URL=http://user:pass@127.0.0.1:18443`); see the [runbook](testnet-runbook.md#7-manual-regtest-check-bitcoin). It is not part of CI.
@@ -813,7 +850,8 @@ been done. Never switch it on for a market that takes real payments.
   *Payment providers*. The reason is `no proxy for IPv4 or IPv6`, `no proxy for IPv4`, `no proxy for IPv6`, `Bitcoin Core
   older than 31.1` or `getnetworkinfo failed: <class>`. Configure the escrow node with `-proxy=<Tor SOCKS address>` (it
   sets the proxy of every network) and `-privatebroadcast`; never `-connect` or `-onlynet`, which stall the node's
-  sync. `-onion` alone does not pass: it proxies onion peers only, and `getnetworkinfo`'s onion `reachable` reports
+  sync. For the local `bitcoin` service, [`compose.nodes-tor.yaml`](#local-nodes-over-tor) does this; that section says
+  when a private broadcast reaches the network. `-onion` alone does not pass: it proxies onion peers only, and `getnetworkinfo`'s onion `reachable` reports
   configuration, not whether Tor answers, so the gate reads neither. The gate checks configuration only: a proxy that
   is configured but down still accepts the broadcast into a private queue, which the stall alert under *Settlements*
   (*Queued or stuck*) reports. What is private then: a settlement's transaction leaves only through the proxy. What is
@@ -883,7 +921,9 @@ been done. Never switch it on for a market that takes real payments.
   On a Monero escrow a waiting settlement does not flag a deposit recorded after the close: it is flagged when it is
   announced, so the buyer is told of it once even when the stray refund that returns it waits (QA462C-4).
 - **Site-wide notices.** With escrow on, the footer, catalog, listing and draft notices say which chain Bitcoin escrow
-  runs on (regtest, signet or testnet4) even when no pooled provider is configured, and the vendor desk's *Bitcoin escrow* tile counts the viewer's
+  runs on (regtest, signet or testnet4) even when no pooled provider is configured (and, with `ESCROW_XMR` on, which
+  network Monero escrow runs on: a local fakechain or Monero stagenet, "network not verified yet" until the daemon was
+  verified), and the vendor desk's *Bitcoin escrow* tile counts the viewer's
   escrow orders that may hold coins (with `ESCROW_BTC` off too), so no page says escrow is inactive or no funds are
   held while escrow orders exist. With escrow off and no escrow orders the pooled wording is unchanged.
 - **Compose** passes these variables from `.env` to the app container (`compose.yaml`; blank in `.env.example`, so
@@ -924,7 +964,8 @@ leaves a user with no `rpcwhitelist` line unrestricted: keep that for the operat
 app connects as its own line (the pooled user below included). With `rpcwhitelistdefault` unset instead, Core gives every
 user without its own line an empty list once any `rpcwhitelist` is set: the operator user could then call nothing.
 Make SALT and HASH with Core's `share/rpcauth/rpcauth.py`, or as
-the comment in `scripts/test-escrow-regtest.sh` shows.
+the comment in `scripts/test-escrow-regtest.sh` shows, or let `scripts/escrow-node-setup.sh` generate them with these
+lines ([below](#escrow-node-set-up-and-the-public-network-smoke)).
 
 **The pooled RPC user.** `rpcwhitelist` is per user, not per wallet: Core picks the wallet from the URL path
 (`/wallet/<name>`), so any user allowed `listdescriptors` can call it with `private=true` on the arbiter wallet and
@@ -935,7 +976,7 @@ kept equal to this line by a Go test):
 
 ```ini
 rpcauth=opsecmkt-pooled:SALT$HASH
-rpcwhitelist=opsecmkt-pooled:getblockchaininfo,getwalletinfo,loadwallet,getnetworkinfo,getnewaddress,listreceivedbyaddress,gettransaction,sendtoaddress,validateaddress
+rpcwhitelist=opsecmkt-pooled:getblockchaininfo,getwalletinfo,loadwallet,getnetworkinfo,getnewaddress,listreceivedbyaddress,gettransaction,sendtoaddress,validateaddress,getbalances
 ```
 
 Use the user name your `BITCOIN_RPC_URL` carries (on the bundled Compose node it is `marketplace`, set with
@@ -960,6 +1001,101 @@ startup then disables escrow, with the same line and `/admin` alert, until the c
 only warning, because the market key may then be exportable. Another pooled node that happens to hold a
 wallet with the arbiter wallet's name also answers, and keeps escrow off until its pooled user is whitelisted too. Without
 `BITCOIN_RPC_URL` there is nothing to check. Checked on Core 31.1 regtest by `TestEscrowRegtestPooled` (below).
+
+##### Escrow node set-up and the public-network smoke
+
+Two scripts make up the operator package for an escrow node (A-446). Neither reads `.env`, and neither writes a
+password to a file or a log.
+
+**`scripts/escrow-node-setup.sh`** sets up the escrow node on `regtest`, `signet` or `testnet4` (`--chain`; `main`,
+`mainnet`, `test` and `testnet3` are refused, as the app refuses them). It reaches the node only through your own
+`bitcoin-cli` (`--cli`, default `bitcoin-cli`; the script adds `-chain=<chain>`), so your cookie or operator credentials
+stay where `bitcoin-cli` finds them. For the bundled image, use for example
+`--cli 'docker exec -u bitcoin <container> bitcoin-cli'`. It:
+
+1. refuses unless the node reports the chain you named, and on signet prints the `signet_challenge` and whether it is
+   public signet's;
+2. creates the arbiter wallet (`ESCROW_BTC_ARBITER_WALLET`, default `opsecmkt-arbiter`: a descriptor wallet with
+   private keys) and the watch-only wallet (`ESCROW_BTC_WATCH_WALLET`, default `opsecmkt-escrow-watch`: private keys
+   disabled, blank), both loaded at every node start. A wallet that already exists is never overwritten: it is loaded
+   if needed and kept only when it has the right kind (an encrypted arbiter wallet, one without private keys, or a
+   watch-only wallet with private keys is refused);
+3. prints the arbiter wallet's master key fingerprint, read as the app reads it (`getrawchangeaddress`,
+   `getaddressinfo`). Record it with the wallet's backup
+   ([runbook](testnet-runbook.md#back-up-and-restore-the-escrow-arbiter-and-watch-only-wallets)); the app pins it at
+   its first start;
+4. generates the escrow user's password, and the pooled user's (`--pooled-user`, default `opsecmkt-pooled`; `--no-pooled`
+   when the pooled payments use another node), on this host with `openssl`. It then prints them once, on standard
+   output, as part of the lines you need: the `bitcoin.conf` lines (each user's `rpcauth`, `rpcwhitelistdefault=0`, and
+   each user's `rpcwhitelist`: exactly the two lines above, which tests keep equal to the adapters' method lists) and the
+   `.env` lines (`ESCROW_BTC_RPC_URL=http://<escrow user>:<password>@<--rpc-host, default bitcoin>:<port>`, the wallet
+   names, and `BITCOIN_RPC_URL` for the pooled user). The port is 18443 on regtest, 38332 on signet and 48332 on
+   testnet4, unless you give `--rpc-port`. Progress and the fingerprint go to standard error. Nothing is shown for a node
+   that failed a check.
+
+Copy the lines and add the `bitcoin.conf` ones to the escrow node's configuration, at top level or under `[<chain>]`.
+Restart `bitcoind`, then check the node with the two URLs in the environment (exported for this one command, never read
+from `.env`):
+
+```sh
+ESCROW_BTC_RPC_URL='http://opsecmkt-escrow:…@127.0.0.1:38332' BITCOIN_RPC_URL='http://opsecmkt-pooled:…@127.0.0.1:38332' \
+  scripts/escrow-node-setup.sh --chain signet --verify
+```
+
+`--verify` passes when the escrow user answers `getblockchaininfo` on that chain and `getwalletinfo` on both wallets
+(private keys on the arbiter wallet only), and is refused `listdescriptors` and `gethdkeys` with HTTP 403. A node that
+reports another chain, or none, is refused before any wallet call, as in set-up mode. With
+`BITCOIN_RPC_URL` set, it also checks that the pooled user answers `getblockchaininfo` and is refused `listdescriptors`,
+`gethdkeys` and `walletprocesspsbt` on the arbiter wallet's path, with HTTP 403 (or "wallet not found", RPC -18, when
+it is another node). That is the app's own start check (*The pooled RPC user*). The URLs reach `curl` on its standard
+input and are never printed. A command typed with a password on it can stay in your shell history: clear the line
+afterwards, or set the variables from a file only you can read. Checked on a local Bitcoin Core 31.1 regtest container:
+set-up, restart, `--verify`, then the app logged "escrow: Bitcoin escrow on (test networks only)". The script has not
+been run against signet or testnet4 here.
+
+**`scripts/test-escrow-public.sh`** is the public-network smoke (P4-R16), the owner's run (A-447). Run it by hand,
+never in CI, on public signet or testnet4 only. Before anything else touches the node, it refuses regtest, mainnet,
+testnet3 and a private signet: a node on signet counts as public signet only when it reports public signet's
+`signet_challenge`, Bitcoin Core's default, `512103ad5e…52ae`. The Go test refuses them again. It runs three legs from
+this checkout (`TestEscrowPublicSmoke`) against your node, on a disposable PostgreSQL database:
+
+- **practice-sign**: a buyer's and a vendor's Core wallets register their keys and sign the practice transaction;
+- **claim**: one escrow, funded at the price, is claimed by the vendor and followed to confirmation;
+- **refund**: one escrow, funded short of the price, is cancelled by the buyer and refunded.
+
+The run makes its own wallets on the node (`escrow-smoke-<random>-…`, unloaded afterwards), never the market's. It pays
+the escrows from `ESCROW_PUBLIC_FUNDING_WALLET`, a wallet on that node with at least 0.0016 test coins from a faucet,
+and every settlement pays back to that wallet. Settings, all from the environment:
+
+- `ESCROW_PUBLIC_OPERATOR_RPC_URL` and `ESCROW_PUBLIC_APP_RPC_URL`: the operator user and the escrow user;
+- `ESCROW_PUBLIC_NODE_IMAGE`: the image the node runs; its digest from `docker image inspect` goes in the record;
+- `TEST_DATABASE_URL`: a disposable database, never a market's;
+- `ESCROW_PUBLIC_CONFIRMATIONS` (1 to 100, default 1): the confirmations funding and settlements wait for;
+- `ESCROW_PUBLIC_FEE_RATE` (sat/vB, 1 to 100, default 2): the rate of the funding sends and of every settlement. On
+  testnet4, set it above the node's `mempoolminfee`;
+- `ESCROW_PUBLIC_WAIT_MINUTES` (10 to 1440, default 240): how long each of the two waits for confirmations may take;
+- `BITCOIN_MAX_TIP_AGE` and `APP_MODE`: passed to the app as they are set.
+
+The checkout must be clean, because the record names the commit that ran. When every leg passed, the script writes
+`docs/evidence/public-testnet/<UTC date>-<commit, 12 hex>/<chain>/` for you to commit. It holds `manifest.json` and
+`transcript.log`. The manifest records:
+
+- the full commit, start and finish times;
+- the chain and its `signet_challenge`;
+- the node's version, image and image digest, and the Go version;
+- the confirmations and the fee rate;
+- the start and end heights;
+- each leg's result and its txids (funding and settlement for the claim and the refund);
+- the transcript's sha256.
+
+A record is never overwritten. Before anything is written there, the transcript, then the record, must pass a secret
+scan: no password from the URLs it was given, no `rpcpassword` or `rpcauth` line, no salt$hash, no wallet passphrase,
+no cookie, no URL carrying a password, and no serialized or WIF private key. A failed, skipped or incomplete run writes
+no record; its transcript stays under `artifacts/real-chain/` (gitignored).
+
+What was checked here: the refusals, the manifest and the secret scan, offline with a fake node
+(`tests/test_escrow_public_script.py`), and the legs' body on Bitcoin Core 31.1 regtest (`TestEscrowRegtestSmoke` in
+`scripts/test-escrow-regtest.sh`). **No public run is recorded yet.**
 
 **What users see.** With `ESCROW_BTC` off, `/escrow-key` does not exist: it answers 404 like any unknown page,
 signed in or not. With it on, `/account` gains a *Bitcoin escrow key* row linking to `/escrow-key`. There a user registers
@@ -1045,8 +1181,9 @@ broadcast.
   own copy of the PSBT, with its key's origin and the other keys bare, in the page and as a download. Either party
   signs it in Bitcoin Core (`walletprocesspsbt` without finalizing, or the GUI's PSBT dialog) and pastes it back. The
   paste is refused, with nothing stored, unless it is the stored transaction (its unsigned transaction ID), it carries
-  that party's signature on every input and no other key's, it has no entry under the market's key, every signature
-  is `SIGHASH_ALL` and nothing is finalized. Only the party's signatures are kept, never the pasted PSBT; the
+  that party's signature on every input and no other key's, it has no signature under the market's key, every signature
+  is `SIGHASH_ALL` and nothing is finalized (a derivation entry for any key, the market's included, is ignored since
+  A-456b: Electrum and Sparrow write one for every key, and nothing but the signatures is kept). Only the party's signatures are kept, never the pasted PSBT; the
   settlement is then *signed by the buyer* (or vendor), the other party is notified, and the database refuses any
   change to its transaction from then on. The other party may sign it too; with both signatures the market does not
   sign. **A pasted signature's validity is not checked when it is pasted** (the server does not verify signatures):
@@ -1079,8 +1216,9 @@ broadcast.
   notification to each moderator and administrator, and the log says "escrow: settlement of order … queued or stuck,
   not seen by the network after 6 blocks; staff notified". `/admin` lists it under *Payment providers* ("Bitcoin escrow
   settlements queued or stuck: not seen by the network.", with the order and the transaction ID) and the order page, as
-  staff reading the order see it, carries a staff line (staff can open an order only while it is or was disputed or
-  has a flagged deposit; otherwise the `/admin` list is where they see it). The settlement stays broadcast (no new
+  staff reading the order see it, carries a staff line. While the alert is open any moderator or administrator who is
+  not a party may read the order page, read-only (A-470; the `/admin` line and the moderation desk's *Escrow alerts* link it), and when it clears that access
+  ends unless the order is or was disputed or has a flagged deposit. The settlement stays broadcast (no new
   state), and the market keeps sending the same stored transaction on each pass as before. When the wallet sees the transaction, one order
   note ("Seen by the network: …") clears the alert and the lines go. Blocks are counted from the broadcast, in memory:
   after a restart the count starts again at the first pass, so the notice can come up to 6 blocks later, and never
@@ -1158,7 +1296,8 @@ broadcast.
   to the buyer. A release that fails because the coins are too few tells staff once ("Payment review needed", A-461),
   as a refund that fails so does, with an order note naming the deposits it tried and any other credited deposit it
   flags, and flags the order's credited deposits (those it was funded with, also when it tried none of them, QA462C-2),
-  so staff can open the order (also a completed order never disputed) and the moderation desk lists them, dated by that
+  so staff can open the order (also a completed order never disputed; the failed release itself admits them while it
+  stands, A-470) and the moderation desk lists them, dated by that
   note, after the open flags, as escrow deposits counted for the order with no action offered; a deposit it
   tried that counts for the order but was not credited (still confirming, or conflicted, when the escrow was funded,
   and mined since) is not flagged, and should another check flag one, the desk says it is counted for the order,
@@ -1315,7 +1454,7 @@ deposit is mined after all, it is flagged once and returned by a stray refund th
 confirmed to the refund address. Its A-453 leg (`TestEscrowRegtestBIP32`, no product caller yet): the Go per-order key
 derivation of [per-order escrow](escrow.md#per-order-key-derivation-a-453-shape-b-groundwork) agrees with Core's
 `deriveaddresses` for three wallets' BIP48 accounts at several indexes, and a wrong index or a changed chain code is
-refused. Its A-454 leg (`TestEscrowRegtestSigner`, no order uses it yet; needs the signer's RPC user, below): the
+refused. Its A-454 leg (`TestEscrowRegtestSigner`; needs the signer's RPC user, below): the
 [escrow signer](#escrow-signer), built from the tree and started with a fresh seed, co-signs a hand-built per-order
 escrow through its socket, which the buyer's Core wallet signs too and which is broadcast and mined; it refuses a
 SIGHASH_NONE input, another index, two of its keys in one script and two escrows in one request; the seed is backed up,
@@ -1332,7 +1471,19 @@ claim the same way; the encryption step of the runbook is not part of it. Its A-
 (`TestEscrowRegtestPerOrderPractice`, no escrow uses a per-order wallet yet): a per-order wallet key's practice
 transaction is signed by Core from the seed and what the practice page shows ([per-order
 escrow](escrow.md#per-order-key-layout-registration-and-practice-a-455-shape-b)), and the key is active; the same seed's
-Core wallet cannot sign it. In every leg the app runs inside the Go test against the real node, not as the server binary. A browser journey
+Core wallet cannot sign it. Its A-456a leg (`TestEscrowRegtestPerOrderEscrow`): a per-order escrow is created through
+the checkout form, Core derives its address from the parties' private roots as Go does ([per-order
+escrow](escrow.md#per-order-escrow-creation-and-watching-a-456a-shape-b)), and deposits to two sibling addresses are seen
+by the watch-only wallet and recorded left out. Its A-456b legs (`TestEscrowRegtestShapeBRelease`,
+`TestEscrowRegtestShapeBSiblingStray`, `TestEscrowRegtestShapeBSiblingStraySignerDown`, `TestEscrowRegtestShapeBBump`,
+with the real [escrow signer](#escrow-signer) built from the tree): a per-order escrow's claim, signed by the vendor's
+order wallet and uploaded as a PSBT file, is co-signed by the signer, broadcast and confirmed; a deposit to a sibling
+address is returned by a stray refund spending that sibling's script, co-signed and confirmed, and one is shown,
+downloaded and signed while the signer is down, waiting only for the co-signature; a claim is fee-bumped and the bump
+co-signed and confirmed ([per-order escrow](escrow.md#per-order-escrow-settlement-setup-and-upload-a-456b-shape-b)). Its
+QA5W4A leg (`TestEscrowRegtestPerOrderRepair`): the app restarted onto empty watch-only wallets standing in for restored
+ones repairs such an escrow, every address solvable and the deposits found, with the escrow signer up, with it down (the
+order wallet keys, the market's included, are the ones stored at checkout) and after the vendor registered another key. In every leg the app runs inside the Go test against the real node, not as the server binary. A browser journey
 (`npm run test:e2e:escrow`, [development](development.md)) drives the escrow forms by keyboard in Chromium at 320 px
 with JavaScript off against the real server and a simulated escrow node; it is not chain evidence. Nothing about
 escrow has run on a public test network or mainnet, and the escrow pages have not been run in Firefox or WebKit.
@@ -1354,12 +1505,19 @@ simulated node too and moves the clock through SQL; it is not chain evidence.
 
 #### Escrow signer
 
-**Development branch, test networks only, and no order uses it yet.** Per-order (shape (b)) Bitcoin escrows, being built
-for wallets that cannot sign with a key Bitcoin Core derives from the market's account (ruling P4-R2; see
-[per-order escrow](escrow.md#escrow-signer-a-454-shape-b)), need a market key that is not in the Core arbiter wallet.
-The escrow signer, `/app/escrow-signer` in the app's image (`cmd/escrow-signer`), holds that key. Until the
-settlement flow uses it (a later slice), the app only checks it and pins it, as below; nothing else depends on it, and
-the Core arbiter wallet above stays the market's key for every escrow this release creates.
+**Development branch, test networks only.** Per-order (shape (b)) Bitcoin escrows, for wallets that cannot sign with a
+key Bitcoin Core derives from the market's account (ruling P4-R2; see
+[per-order escrow](escrow.md#per-order-escrow-settlement-setup-and-upload-a-456b-shape-b)), need a market key that is not
+in the Core arbiter wallet. The escrow signer, `/app/escrow-signer` in the app's image (`cmd/escrow-signer`), holds that
+key. Since A-456b it co-signs every per-order escrow's settlements and fee bumps: the app sends it the stored PSBT and
+the escrow's per-order market index, after checking its account key against the pins and the escrow's market key. The
+Core arbiter wallet above stays the market's key for Bitcoin Core escrows. Per-order escrows are offered only while
+`ESCROW_SIGNER_SOCKET` is set and the signer's key matches the pins: without a signer, two users with per-order wallet
+keys are told "Escrows with per-order wallets need the market's escrow signer, which is not available on this market
+right now" and, under escrow-only Bitcoin intake, a per-order vendor's listings are not available in BTC (listed in the
+readiness panel on `/admin`). A settlement waiting for the signer logs "escrow: settlement of order … not sent yet:
+signer-waiting" (or `signer-refused`, after one line naming the signer's refusal class) and its order page says "The
+market's escrow signer could not co-sign it yet"; it is tried again on every pass and never rebuilt.
 
 What it does and refuses (ruling P4-R17):
 
@@ -1433,11 +1591,14 @@ the key (keyed from `APP_SECRET_KEY`, as registered escrow keys are) in `setting
   from the one pinned in this database …". Nothing else changes: escrow with the Core arbiter wallet stays on, and the
   pins and every order stay as they are. Check that `ESCROW_SIGNER_SOCKET` reaches the signer whose seed this market
   pinned (compare `escrow-signer info` with the pinned fingerprint), or restore that seed from its backup. Rotating
-  `APP_SECRET_KEY` changes the HMAC, so the right signer then reads as a mismatch too. Only while no per-order escrow
-  exists (none in this release) may an administrator delete the two rows to pin another signer:
+  `APP_SECRET_KEY` changes the HMAC, so the right signer then reads as a mismatch too. While the key differs, no
+  per-order escrow is offered and per-order settlements wait. Only while no per-order escrow exists may an
+  administrator delete the two rows to pin another signer (a per-order escrow can be co-signed only by the signer it
+  was built with):
   `DELETE FROM settings WHERE key IN ('escrow_signer_fingerprint','escrow_signer_xpub_hmac')`.
 - A signer that does not answer: "escrow: escrow signer not reachable at ESCROW_SIGNER_SOCKET; anything that needs it
-  waits (nothing is rebuilt)". Start the service; the next pass finds it.
+  waits (nothing is rebuilt)". Start the service; the next pass finds it. Only new per-order checkouts and the market's
+  co-signature need it: order pages, setup pages, copies and the parties' signatures go on (QA5W5A-1).
 - A reply the app does not understand, such as another protocol version: "escrow: shape (b) unavailable: the escrow
   signer's reply was not understood …".
 
@@ -1785,7 +1946,7 @@ accounts, so without the sweep a deposit to a later account is not seen (the `Lo
 this for account 300). A restore not done by `scripts/restore.sh` or the SQL of [UPGRADING.md, section 6](../UPGRADING.md#6-backups-now-need-the-wallets-too)
 holds nothing.
 
-**Held settlements.** Under *Admin → Payment providers → Monero escrow recovery and retention (fakechain)*, each restored
+**Held settlements.** Under *Admin → Payment providers → Monero escrow recovery and retention (local fakechain, Monero stagenet or network not verified yet)*, each restored
 settlement with a stored transaction is listed with its order, kind, state and transaction hash. The restored records may
 predate its relay, or a transaction that spent its coins, so check it first in the escrow daemon and the escrow wallet, for
 example with the daemon's own RPC (a daemon started with a login needs `--digest -u USER:PASSWORD`):
@@ -1837,7 +1998,7 @@ file is gone and nothing is owed on it; that is refused while the restore gate o
 escrow wallet open in another wallet program** (for example `monero-wallet-cli` on the same files): a wallet "opened by another
 wallet program" keeps its state and its accounts, but the market cannot read its deposits or send its settlements until you
 close it there (logged once). **The market cannot reach the wallet volume, so the files stay until you delete them.**
-*Admin → Payment providers → Monero escrow recovery and retention (fakechain)* lists *Destroyed Monero escrow wallets* with
+*Admin → Payment providers → Monero escrow recovery and retention (local fakechain, Monero stagenet or network not verified yet)* lists *Destroyed Monero escrow wallets* with
 their two files, `NAME` and `NAME.keys`. Delete each pair from the escrow wallet volume:
 
 ```sh
@@ -1868,13 +2029,26 @@ the market (the order page says so); a destroyed wallet is never opened again.
   announced the same way.
 - *Other flags*, each noted on the order or sent to the administrators once: a retained wallet past its 90 days that still holds
   coins (it is not destroyed), a deposit with an unlock time (never counted), a
-  deposit the database refused as another order's account, coins at an account no order claimed or at account 0 (which the
+  deposit the database refused as another order's account (recorded once per deposit; staff record what was done about
+  it on the order page, which clears its escrow alert, A-480), coins at an account no order claimed or at account 0 (which the
   market never spends), a settlement whose build failed a check (the fee above `ESCROW_XMR_MAX_FEE`, a claimant output below
   0.001 XMR, a transaction that does not match its plan, an address mismatch) and a settlement spent outside the market.
   A refund whose claimant output would be below 0.001 XMR (on a cancelled order or one decided for the buyer, with no
   deposit it would spend still confirming) does not wait: it ends (failed, too-small) and its deposits are left out for
   the stray refund, which returns them with any later deposit once together they pay the fee; the parties and staff
-  are told once (A-437). A refund already waiting so when you upgrade ends on the next pass.
+  are told once (A-437). A refund already waiting so when you upgrade ends on the next pass. So does a refund whose
+  coins are at or below the network fee itself, which the wallet refuses to build (-17 "not enough money", -16 "tx not
+  possible" or -46): on those codes the market reads the fee the wallet would take (the wallet-rpc's
+  `get_default_fee_priority` and `estimate_tx_size_and_weight`, the escrow daemon's `get_fee_estimate`; none builds or
+  sends anything) and, when the refund less that fee is below 0.001 XMR, treats it as too few, never as an outputs
+  mismatch or a refusing wallet (A-467). A refund that could pay the fee keeps the wallet's classing, and is flagged as
+  before when the refusal persists. A refund already flagged "outputs mismatch" or "keeps refusing" for this reason when
+  you upgrade ends too few on the next pass (its earlier order note stays). If the fee estimate fails (for example a
+  daemon RPC that does not serve `get_fee_estimate`), that refund waits, staff are told once if it fails again on the
+  next pass, and the market tries again on each pass; the wallet's other orders carry on (QA5W1-4). An estimate that
+  fails only on alternate passes, with the wallet refusing on the others, is flagged on the second pass all the same,
+  and staff are told once of each distinct problem in that run (the unavailable estimate, then, say, coins the wallet
+  no longer sees, or a refusal), however often it flips between them, a restart included (QA5W2-1, QA5W3B).
 
 **Switching it off with orders open.** Setting `ESCROW_XMR` back to `off` moves no coins and closes no order, but it stops the
 Monero escrow watcher: deposits are not read, nothing is built or sent, and each order page says so. Release deadlines are
@@ -1885,7 +2059,7 @@ escrow stays off; it adds no escrow wallet-rpc, no fakechain daemon and no mount
 checked with `docker compose config` only.
 
 **What was checked.** [Per-order escrow, Phase 3](escrow.md#phase-3-monero-escrow-on-a-local-fakechain) lists each tier: unit and `httptest` tests, Go
-tests with PostgreSQL against a fake wallet-rpc, fourteen legs against a real fakechain `monerod` and `monero-wallet-rpc`
+tests with PostgreSQL against a fake wallet-rpc, fifteen legs against a real fakechain `monerod` and `monero-wallet-rpc`
 0.18.5.1 (`scripts/test-escrow-xmr-regtest.sh`, manual, not in CI;
 [runbook](testnet-runbook.md#9-manual-monero-escrow-fakechain-check)), and a simulated-RPC browser journey added in this
 phase. Nothing has run on stagenet, testnet or mainnet, with Monero multisig, or as a deployment.
@@ -1911,7 +2085,7 @@ Before switching a coin:
 3. Keep the pooled wallet configured (`BITCOIN_RPC_URL`, `MONERO_WALLET_RPC_URL`) after the switch, until every pooled
    order is settled and paid out. The pooled watcher, which credits deposits and sends payouts, runs only while its
    provider is configured; removing it strands orders that are still open. Pausing intake would not do instead: paused
-   also refuses escrow checkouts.
+   also refuses escrow checkouts. *Pooled wallet drain* on `/admin` lists what still needs it ([below](#draining-the-pooled-wallet)).
 
 What buyers and vendors see while a coin is escrow only:
 
@@ -1941,6 +2115,87 @@ How it was tested: `TestPaymentIntakeLockByKind`, `TestPaymentIntakeEscrowOnlyRe
 not chain evidence), and `tests/e2e/db-escrow-cutover.spec.ts` (the form and the panel in Chromium at 320 px with
 JavaScript off, on a market with no pooled wallet and no escrow).
 
+#### Draining the pooled wallet
+
+A-445 (war-room ruling P4-R9), on the development branch and in no release; no drain has been run on a public network
+or a real chain. After a coin is escrow only, the pooled wallet still serves the pooled orders opened before the switch.
+A later release is planned to remove the pooled wallet's code (A-448) and to refuse a database for which the drain list is
+not empty. *Pooled wallet drain* on `/admin`, below *Escrow-only readiness*, shows that list read-only, as the
+database function `pooled_drain_blockers()` (migration 091) gives it: a count per kind, never capped, and the first 100
+of each kind, each linked to where it is resolved:
+
+| Kind | Listed while | Resolved by |
+|---|---|---|
+| Open pooled orders | an order without escrow is neither a draft nor cancelled, resolved or completed | its buyer and vendor, a dispute, or the watcher (an unpaid order expires) |
+| Payouts not sent | a payout is blocked, held, queued, sending or failed | the watcher, or *Payouts* on `/admin`: release, requeue, mark sent, or hold a blocked one, pay it by hand and record it sent (below) |
+| Flagged pooled payments without a recorded review | a pooled deposit's payment-review flag is open (the moderation desk's own rule) | recording the review on the moderation desk (no action, or refunded by hand); an escalated flag waits for an administrator |
+| Pooled deposit addresses still watched | the address of a closed pooled order is inside the watcher's horizon (24 hours after the order closed or 30 days after the address was issued, whichever is later), or past it while a deposit recorded there is pending: neither credited nor flagged, and still reported by the wallet | time, and for a pending deposit its confirmation (it is then flagged for review, the row above) or the wallet no longer reporting it (dropped, replaced or reorganised out, which the watcher records with negative confirmations); a deposit sent after the watch ends is never read |
+| Restore reconciliation not finished | `payments_recovery_required` is `true` (a restore from backup) | reconciling the restore as the [runbook](testnet-runbook.md#reconcile-a-restored-database-before-enabling-payouts) says |
+| Issued-address warnings not dismissed | a coin's wallet handed out already-issued addresses and the warning under *Payment providers* is not dismissed | "Restore the wallets" in the runbook, then dismissing the warning |
+| Pooled history on mainnet | the market issued pooled addresses on mainnet | nothing in this release: no release has mainnet escrow, so a mainnet market cannot drop its pooled wallet |
+
+Dust sent to an old deposit address inside its horizon blocks the drain until staff record its review (*no action*
+with a reason, on the moderation desk); dust sent after the horizon is never read, so it never blocks. A deposit that
+was recorded inside the horizon but has not reached the confirmation threshold when the horizon ends keeps its address
+watched and listed, naming the deposit, until it confirms (it is then flagged for review like any late deposit) or the
+wallet stops reporting it (A-486). The same rule, `pooled_pending_deposit()` in migration 091, decides both.
+
+Some blockers have no staff action on `/admin` today; each is listed, never hidden:
+
+- a queued payout while outbound payments are paused for a restore (A-76), or whose coin's pooled wallet is no longer
+  configured: it waits for the restore reconciliation, or for the wallet to be configured again;
+- a payment-review flag escalated to an administrator when every administrator is a party to its order: the desk
+  offers its form to no one (add or promote an administrator who is not a party);
+- a pending deposit the wallet keeps reporting unconfirmed for ever (a Bitcoin Core wallet can keep an unconfirmed
+  incoming transaction it no longer has in its mempool; not checked here on a real node): no exit yet. The smallest one
+  proposed is a review flag the watcher raises once such a deposit has stayed unconfirmed for a set time after the
+  horizon (for example Core's 14-day mempool expiry), closed through the existing disposition;
+- the restore gate, cleared only by the runbook's reconciliation;
+- mainnet history, by design.
+
+Holding a queued payout (the pending half of A-34) is not built.
+
+A blocked payout (its recipient never saved a payout address) is otherwise listed for ever. The simplest route is to
+ask the recipient to save a payout address: the market then sends it once. To pay it by hand instead, in this order:
+
+1. **Hold it**: *Payouts* → *Resolve payout* → *Hold to pay by hand*, with a reason (10–500 characters, staff only:
+   the payouts list and the audit log show it) and your password. The order history says it is held to be paid by hand.
+   A held payout keeps its hold when the recipient saves an address afterwards, so the market cannot send it while you
+   pay it. Only a blocked payout can be held (409 otherwise, and on a repeat; nothing changed). If the recipient's
+   account is suspended, or the database restored from backup, meanwhile, the payout is held again with that reason
+   and the hand-hold reason kept, so releasing it needs both checks; a suspension after a restore adds its own as well,
+   so the release then needs all three (wallet check, payout-address check, not paid by hand).
+2. **Pay it** from the pooled wallet, to an address the recipient gave you through a channel you trust.
+3. **Record it**: *Record sent by hand*, with the wallet's transaction ID and your password. The market stores the ID in
+   lower case, sends the recipient a notification naming it, writes the order history (without the ID) and an audit row
+   naming the payout and the ID, and never sends that payout again. It does not check the ID against the chain.
+
+Paying first and recording a still-blocked payout afterwards leaves a window: if the recipient saves an address in
+between, the market queues and sends the payout itself. Mark sent then refuses (409, nothing changed) and says that
+the market queued, is sending or has sent it itself, so your payment was a second one: reconcile with the recipient.
+Releasing a payout held to be paid by hand needs the confirmation that nobody paid it by hand; it then goes back to
+blocked, or to the queue if the recipient saved an address meanwhile.
+
+Below the list the panel shows each pooled wallet's balance as the wallet reports it (Bitcoin `getbalances`, Monero
+`get_balance` on account 0), as advice only: a balance cannot show what is still owed, and it can include coins sent to
+addresses the market no longer watches. The list decides, not the balance. A wallet that does not answer (or a pooled
+Bitcoin RPC user whose `rpcwhitelist` lacks `getbalances`) reads "balance unavailable", and the page is still served.
+**The market never sweeps the pooled wallet**: once the list is empty, move what is left in it yourself with the
+wallet's own tools, then keep the pooled wallet configured until you install the release that removes it.
+
+How it was tested: `TestPooledDrainOpenOrders`, `TestPooledDrainUnsentPayouts`,
+`TestPooledDrainFlaggedPaymentsFollowTheOpenFlagRule`, `TestPooledDrainWatchedAddressIsTheWatcherHorizon`,
+`TestPooledDrainDustBlocksUntilDisposedNeverAfterHorizon`, `TestPooledDrainRecoveryRequired`,
+`TestPooledDrainAddressCollisions`, `TestPooledDrainMainnetHistory`, `TestPooledDrainPanel`,
+`TestPooledDrainPanelBalanceUnavailable`, `TestPooledDrainPendingDepositFlaggedOnConfirmation`,
+`TestPooledDrainPendingDepositEndsWhenTheWalletDropsIt`, `TestPooledDrainWatcherPredicateEquivalence`,
+`TestPooledHandSettleBlockedPayout`, `TestPooledHandSettleRefusesWhatTheSenderMaySend`,
+`TestPooledHandSettleWaitsForTheRowLock`, `TestPooledHandSettleConcurrentOnce`, `TestPooledHandSettleDoublePayWindow`,
+`TestPooledHandHoldRefusals`, `TestPooledHandHoldRacesAddressSave` and `TestPooledHandHoldReleaseNeedsConfirmation`
+(PostgreSQL with the fake pooled wallet and simulated wallet RPC; not chain
+evidence), a seeded stage of `scripts/test-upgrade.sh`, and `tests/e2e/db-pooled-drain.spec.ts` (the panel, the hold
+and the hand settlement in Chromium at 320 px and 1280 px with JavaScript off, on a market with no pooled wallet).
+
 ### Transparency
 
 `AUDIT_SIGNING_KEY` (64 hex characters, an Ed25519 seed generated by the installer with `openssl rand -hex 32`) enables signed audit exports. It is read only from the environment, never stored in the database; blank or malformed values leave the export visibly unavailable. Changing it changes the public key, so treat it like any long-lived signing key: back it up with `.env` and announce rotations.
@@ -1967,11 +2222,11 @@ AGE_RECIPIENT=age1YOUR_PUBLIC_RECIPIENT ./scripts/backup.sh backups/market.dump.
 
 For external databases also set `BACKUP_DATABASE_URL`, install Python 3 and PostgreSQL client tools matching or newer than the server. `./scripts/install.sh upgrade` backs up through this script too, so on an external database give it both: `BACKUP_DATABASE_URL=YOUR_EXTERNAL_DATABASE_URL AGE_RECIPIENT=age1YOUR_PUBLIC_RECIPIENT ./scripts/install.sh upgrade` (the value of `DATABASE_URL` in `.env` serves when this host can reach that server; quote it in single quotes); without `BACKUP_DATABASE_URL` it refuses before changing anything. The script streams a custom-format dump directly into encryption, uses restrictive file permissions, refuses overwrite and fails if either command fails. Back up `.env`, deployment settings and the Tor identity separately in encrypted storage ([commands below](#secrets-env-and-onion-identities)). Database dumps do not include onion keys or blockchain volumes, and in particular **not the custodial payment wallets** (the `bitcoin_data`, `monero_wallet` and, with Monero escrow, `monero_escrow_wallet` volumes, or your external wallets): back those up on their own (see the [runbook](testnet-runbook.md#6-back-up-the-wallets)). Maintain offline copies and rehearse recovery.
 
-Rehearse recovery on another host, or in a second checkout with its **own Compose project name**. Compose names containers, volumes and networks after the project (`opsecmkt` unless `.env` sets `COMPOSE_PROJECT_NAME`), not the directory: a second checkout under the same name recreates the live containers with its own secrets, and its `docker compose down --volumes` deletes the live volumes. Install the rehearsal copy with, for example, `COMPOSE_PROJECT_NAME=opsecmkt-rehearsal APP_PORT=8081 ./scripts/install.sh` (add `--local` for a quick local copy); the installer saves the name in that checkout's `.env`, so its later `docker compose`, `backup.sh` and `restore.sh` commands stay on the rehearsal project, and it refuses to install when containers of the chosen project were created from another directory, or when any of that project's volumes exist. If you copy a `.env` into the rehearsal checkout instead, change `COMPOSE_PROJECT_NAME` (add the line if it is missing) and `APP_PORT` in the copy before running any `docker compose` command there. Never change `COMPOSE_PROJECT_NAME` on an existing install: it would start on new, empty volumes (`<project>_postgres_data` and the others).
+Rehearse recovery on another host, or in a second checkout with its **own Compose project name**. Compose names containers, volumes and networks after the project (`opsecmkt` unless `.env` sets `COMPOSE_PROJECT_NAME`), not the directory: a second checkout under the same name recreates the live containers with its own secrets, and its `docker compose down --volumes` deletes the live volumes. Install the rehearsal copy with, for example, `COMPOSE_PROJECT_NAME=opsecmkt-rehearsal APP_PORT=8081 ./scripts/install.sh` (add `--local` for a quick local copy); the installer saves the name in that checkout's `.env`, so its later `docker compose`, `backup.sh` and `restore.sh` commands stay on the rehearsal project, and it refuses to install when containers of the chosen project were created from another directory, or when any of that project's volumes exist. If you copy a `.env` into the rehearsal checkout instead, change `COMPOSE_PROJECT_NAME` (add the line if it is missing) and `APP_PORT` in the copy before running any `docker compose` command there. On the same host, also drop `compose.nodes-tor.yaml` from the copy's `COMPOSE_FILE` (or the `bitcoin` and `monero` profiles from its `COMPOSE_PROFILES`): its pinned node network `10.199.42.0/28` already exists for the live project, and Docker refuses a second one as overlapping ([Local nodes over Tor](#local-nodes-over-tor); a different subnet means editing `compose.nodes-tor.yaml` and `deploy/torrc-socks` together). Never change `COMPOSE_PROJECT_NAME` on an existing install: it would start on new, empty volumes (`<project>_postgres_data` and the others).
 
 Without `BACKUP_DATABASE_URL`, the script dumps the internal database through `docker compose exec -T db`, so it needs no published database port or host PostgreSQL tools. It dumps the database named in `DATABASE_URL` in `.env` (the name after the port), so after a side-by-side restore or rollback that switches `DATABASE_URL`, backups follow the database the application uses. The success line names the database dumped (never the URL or password). If the script cannot read a plain lower-case name there (for example the name comes from Compose variable interpolation), set `BACKUP_INTERNAL_DATABASE` to it; a `BACKUP_INTERNAL_DATABASE` that differs from the name in `DATABASE_URL` is refused, and so is setting it together with `BACKUP_DATABASE_URL`.
 
-**External databases:** `BACKUP_DATABASE_URL` is used exactly as given; the script does not look at `DATABASE_URL`. When you switch `DATABASE_URL` to a restored database, point `BACKUP_DATABASE_URL` (in your backup job or cron entry) at that database too, or every later backup silently dumps the old one. The success line names the database it dumped; check it.
+**External databases:** `BACKUP_DATABASE_URL` is used exactly as given; the script does not look at `DATABASE_URL`. When you switch `DATABASE_URL` to a restored database, point `BACKUP_DATABASE_URL` (in your backup job or cron entry) at that database too, or every later backup silently dumps the old one. The success line names the database it dumped; check it. `BACKUP_DUMP_ENCODING=SQL_ASCII` (the dump holds each text as the bytes stored, unconverted) is only for moving a database that is not UTF8 into a UTF8 one ([UPGRADING.md section 42](../UPGRADING.md#42-database-encoding-must-be-utf8-a-481)); the script refuses any other value. Leave it unset in backup jobs.
 
 Restore into an explicitly named **empty** destination. Stop the application first. For the internal database (the default deployment, which publishes no database port), keep the `db` service running and name a database inside it; client tools run in the container:
 
@@ -1990,7 +2245,7 @@ RESTORE_DATABASE_URL='postgres://user:password@localhost/recovery?sslmode=verify
 
 After switching `DATABASE_URL` to that database, set `BACKUP_DATABASE_URL` to it as well (see above).
 
-Set exactly one of the two destinations. Either way the restore requires typing `RESTORE`, runs in one transaction, and does not drop existing tables: restoring into a database that already has the application's tables fails and changes nothing. The payout protection below is applied by the same SQL in both modes. Restore with the `APP_SECRET_KEY` (on an install without it, the `SETUP_TOKEN`) that was in use when the backup was taken, or TOTP secrets in it cannot be read (see [UPGRADING.md](../UPGRADING.md#replace-a-placeholder-setup_token)). To roll back an upgrade, follow [UPGRADING.md](../UPGRADING.md#5-rolling-back).
+Set exactly one of the two destinations. Before anything else the script reads the encoding the backup's text was written in and the encoding of the database it was taken from (both recorded in the dump), and restores only a dump written in `SQL_ASCII` (taken with `BACKUP_DUMP_ENCODING=SQL_ASCII`, or of a `SQL_ASCII` database) or in `UTF8` from a UTF8 or `SQL_ASCII` database; it refuses anything else, changing nothing: a `LATIN1` database backed up without that option (as `LATIN1`, or as `UTF8` when its `client_encoding` is set to `UTF8`) would come out double-encoded; [UPGRADING.md section 42](../UPGRADING.md#42-database-encoding-must-be-utf8-a-481) says how to restore such a backup. Either way the restore requires typing `RESTORE`, runs in one transaction, and does not drop existing tables: restoring into a database that already has the application's tables fails and changes nothing. The payout protection below is applied by the same SQL in both modes. Restore with the `APP_SECRET_KEY` (on an install without it, the `SETUP_TOKEN`) that was in use when the backup was taken, or TOTP secrets in it cannot be read (see [UPGRADING.md](../UPGRADING.md#replace-a-placeholder-setup_token)). To roll back an upgrade, follow [UPGRADING.md](../UPGRADING.md#5-rolling-back).
 
 The script sets a persistent recovery gate that pauses all outbound payouts,
 including payouts created after restoration, and converts pending, sending, blocked and held payouts into

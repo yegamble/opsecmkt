@@ -1,0 +1,15 @@
+# The local nodes' own Tor client (tor-socks in compose.nodes-tor.yaml, A-442): one SOCKS port for bitcoind and monerod,
+# nothing else. It is not the onion service's deploy/torrc: that container keeps SocksPort 0 and this one runs no onion
+# service. docs/operator-guide.md#local-nodes-over-tor says what goes through it and what does not.
+DataDirectory /var/lib/tor
+Log notice stdout
+# Well inside the container's 256m mem_limit (see deploy/torrc).
+MaxMemInQueues 128 MB
+ControlPort 0
+# Only tor-socks's own address on the node network (node_egress, internal; compose.nodes-tor.yaml pins the subnet
+# 10.199.42.0/28 and this address), so its egress network reaches no SOCKS port. Change both files together.
+SocksPort 10.199.42.2:9050
+# Only the nodes: the node network, except its gateway (the host's bridge address); everything else is refused.
+SocksPolicy reject 10.199.42.1
+SocksPolicy accept 10.199.42.0/28
+SocksPolicy reject *

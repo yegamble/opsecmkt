@@ -112,8 +112,9 @@
   color:var(--muted);
   text-transform:uppercase
 }
-/* The table's white-space:nowrap would keep 64-character order and transaction IDs on one line (A-275). */
-.payment-reviews .mono {
+/* The table's white-space:nowrap would keep 64-character order and transaction IDs on one line (A-275); the desk's
+   escrow-alert order IDs (A-470) wrap the same way at 320 px. */
+.payment-reviews .mono,#escrow-alerts .mono {
   white-space:normal;
   overflow-wrap:anywhere;
   word-break:break-all

@@ -88,9 +88,9 @@ func (a *App) listingEscrowBlock(ctx context.Context, q rowQuerier, productID, c
 		reason, fix = escrowIneligibleReason(kind)
 	case coin == "BTC" && !vendorKey:
 		reason, fix = "The vendor has no active Bitcoin escrow key.", "Register your Bitcoin escrow key and sign its practice transaction on your escrow key page."
-	case coin == "BTC" && perOrder: // escrowParties refuses it the same way
-		reason, fix = "The vendor's Bitcoin escrow key is for a per-order wallet, and escrows with per-order wallets are not available on this market yet.",
-			"Register a Bitcoin Core escrow key and sign its practice transaction on your escrow key page."
+	case coin == "BTC" && perOrder && !a.perOrderAvailable(): // A-456b: checkout refuses it the same way (errEscrowSigner)
+		reason, fix = "The vendor's Bitcoin escrow key is for a per-order wallet. "+errPerOrderUnavailable,
+			"Register a Bitcoin Core escrow key and sign its practice transaction on your escrow key page, or ask the market's operator about the escrow signer."
 	}
 	return reason, fix, nil
 }

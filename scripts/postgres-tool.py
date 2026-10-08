@@ -6,7 +6,7 @@ from urllib.parse import parse_qsl, unquote, urlsplit
 
 
 def main():
-    # psql is used only by restore.sh to hold restored payouts in the restored database.
+    # psql: restore.sh holds restored payouts in the restored database, and UPGRADING section 42 runs its commands.
     if len(sys.argv) < 3 or sys.argv[2] not in {'pg_dump', 'pg_restore', 'psql'}:
         raise ValueError('Expected URL environment variable and pg_dump, pg_restore or psql')
     parsed = urlsplit(os.environ[sys.argv[1]])

@@ -456,6 +456,23 @@ func (p *moneroProvider) transfer(ctx context.Context, to string, amt int64, fee
 	return r.TxHash, err
 }
 
+// Balance reads account 0's get_balance: unlocked_balance is confirmed, the rest of balance is pending (locked).
+func (p *moneroProvider) Balance(ctx context.Context) (confirmed, pending int64, err error) {
+	var r struct {
+		Balance         json.Number `json:"balance"`
+		UnlockedBalance json.Number `json:"unlocked_balance"`
+	}
+	if err = p.wallet.call(ctx, "/json_rpc", "get_balance", map[string]any{"account_index": 0}, &r); err != nil {
+		return 0, 0, err
+	}
+	total, terr := r.Balance.Int64()
+	unlocked, uerr := r.UnlockedBalance.Int64()
+	if terr != nil || uerr != nil || unlocked < 0 || unlocked > total {
+		return 0, 0, errors.New("monero get_balance: bad amount")
+	}
+	return unlocked, total - unlocked, nil
+}
+
 func (p *moneroProvider) ValidAddress(addr string) bool {
 	n, ok := moneroNetworks[p.network]
 	if len(addr) < 90 || len(addr) > 110 || !ok || !strings.ContainsRune(n.primary+n.sub, rune(addr[0])) {

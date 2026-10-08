@@ -68,11 +68,11 @@ cleanup() {
   exit "$status"
 }
 trap cleanup EXIT
-pg '' -q -c "CREATE DATABASE $source_db"
-pg '' -q -c "CREATE DATABASE $target_db"
-pg '' -q -c "CREATE DATABASE $app_source_db"
-pg '' -q -c "CREATE DATABASE $app_target_db"
-pg '' -q -c "CREATE DATABASE $app_manual_db"
+pg '' -q -c "CREATE DATABASE $source_db ENCODING 'UTF8' TEMPLATE template0"
+pg '' -q -c "CREATE DATABASE $target_db ENCODING 'UTF8' TEMPLATE template0"
+pg '' -q -c "CREATE DATABASE $app_source_db ENCODING 'UTF8' TEMPLATE template0"
+pg '' -q -c "CREATE DATABASE $app_target_db ENCODING 'UTF8' TEMPLATE template0"
+pg '' -q -c "CREATE DATABASE $app_manual_db ENCODING 'UTF8' TEMPLATE template0"
 pg "$source_db" -q -c "CREATE TABLE a_first (id integer PRIMARY KEY, note text NOT NULL); INSERT INTO a_first VALUES (1, 'Crème brûlée — 東京 🔒'); CREATE TABLE z_conflict (id integer PRIMARY KEY); INSERT INTO z_conflict VALUES (42);"
 # The payouts shape restore.sh relies on (state, error, updated) in a dump older than send_ambiguous; one row
 # per state.

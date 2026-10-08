@@ -132,6 +132,60 @@ type fakeEscrowCore struct {
 	// scriptPubKey, its three public keys in script order and its descriptor written as multi(…) with each key's own
 	// fingerprint, as Core 31.1 does (probed on regtest); any other address it holds reports only its scriptPubKey.
 	watchPubkeys map[string][]string // address -> its keys in script order
+
+	// A-456a (shape (b)): importdescriptors takes several requests and refuses a label on a ranged descriptor, as Core
+	// does; the addresses of a ranged import (each index of its range) and of an addr(…) import are held by the watch
+	// wallet (getaddressinfo ismine) without a label. importReqs records every request.
+	watched    map[string]bool
+	importReqs []map[string]any
+
+	// QA5W3A-3, -8: as Core 31.1 reports an address in a descriptor wallet, getaddressinfo on the watch wallet calls an
+	// address solvable (pubkeys, a multi(…) desc) only when the descriptor that first held it gives the script: a bare-key
+	// sortedmulti (watchPubkeys) or a ranged one (rangedPubkeys, each index's keys in script order); an address an addr(…)
+	// import held first is solvable false with no desc or keys. forgetWatched empties the watch wallet as one restored from
+	// before every import would be, and listreceivedbyaddress no longer lists a forgotten address (forgotten) until an
+	// import holds it again. rangeSkew edits each address deriveaddresses returns for a ranged descriptor (a lying node).
+	rangedPubkeys map[string][]string
+	forgotten     map[string]bool
+	rangeSkew     func(body string, k int64, addr string) string
+
+	// QA5W4A-3: Core's rescan. While the watch wallet rescans (scanning: the operator's rescanblockchain; or an import
+	// running, from beforeImport to its answer), getwalletinfo reports scanning as {duration, progress} (false
+	// otherwise) and importdescriptors answers RPC_WALLET_ERROR "Wallet is currently rescanning" (-4), as Core 31.1 does;
+	// rescanRefuses gives that answer while getwalletinfo still reports false (a rescan that started between the two).
+	scanning, rescanRefuses, importing bool
+
+	// QA5W4-timing: every extended key fakeRealChild has parsed or derived, by ckdSkew, parent key and path, for the life
+	// of the fake. Public derivation in math/big is slow under -race, and a per-order checkout derives each order wallet's
+	// 30 indices for deriveaddresses and again for importdescriptors (a restart or restore imports them once more): with
+	// the memo only the first derivation of a key costs anything. ckdMu, not mu, guards it: tests call address without mu.
+	ckdMu   sync.Mutex
+	ckdMemo map[string]bip32Key
+}
+
+// forgetWatched makes the watch wallet forget every address its imports added (bare-key, ranged and addr(…) alike) with
+// their labels, as a watch-only wallet restored from a backup older than them would: deposits to them are not listed
+// until they are imported again.
+func (c *fakeEscrowCore) forgetWatched() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.forgotten == nil {
+		c.forgotten = map[string]bool{}
+	}
+	for a := range c.watched {
+		c.forgotten[a] = true
+	}
+	for a := range c.labels {
+		c.forgotten[a] = true
+	}
+	c.labels, c.watched, c.watchPubkeys, c.rangedPubkeys = nil, nil, nil, nil
+}
+
+// importRequests is a copy of every importdescriptors request to the watch wallet.
+func (c *fakeEscrowCore) importRequests() []map[string]any {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.importReqs)
 }
 
 // depositAt is the deposit the wallet reports at txid:vout.
@@ -261,31 +315,60 @@ func fakeRealTpub(t *testing.T, tprv string) string {
 }
 
 // fakeRealChild is Core's public derivation of "tpub…/a/b…" (no origin): the child key and its derivation value, the
-// key's own fingerprint followed by the steps (as Core writes an extended key without an origin).
+// key's own fingerprint followed by the steps (as Core writes an extended key without an origin). Each key on the way is
+// computed once per fake (ckdMemo).
 func (c *fakeEscrowCore) fakeRealChild(el string) (pub, deriv []byte) {
 	xpub, rest, _ := strings.Cut(el, "/")
-	k, err := parseBIP32Pub(xpub, versionTpub)
-	if err != nil {
-		c.t.Fatalf("fake core: extended key in %q: %v", el, err)
-	}
-	fp := k.Fingerprint()
+	memo := strconv.FormatBool(c.ckdSkew) + " " + xpub
+	k := c.memoKey(memo, func() bip32Key {
+		k, err := parseBIP32Pub(xpub, versionTpub)
+		if err != nil {
+			c.t.Fatalf("fake core: extended key in %q: %v", el, err)
+		}
+		if c.ckdSkew {
+			k.ChainCode[0] ^= 1
+		}
+		return k
+	})
+	fp := k.Fingerprint() // the skew changes only the chain code: this is still the key's own fingerprint
 	deriv = slices.Clone(fp[:])
-	if c.ckdSkew {
-		k.ChainCode[0] ^= 1
-	}
 	if rest != "" {
 		steps, err := parseOriginPath("/" + rest)
 		if err != nil {
 			c.t.Fatalf("fake core: path in %q: %v", el, err)
 		}
 		for _, step := range steps {
-			if k, _, err = ckdPub(k, step); err != nil {
-				c.t.Fatalf("fake core: derivation in %q: %v", el, err)
-			}
+			memo += "/" + strconv.FormatUint(uint64(step), 10)
+			parent := k
+			k = c.memoKey(memo, func() bip32Key {
+				child, _, err := ckdPub(parent, step)
+				if err != nil {
+					c.t.Fatalf("fake core: derivation in %q: %v", el, err)
+				}
+				return child
+			})
 			deriv = binary.LittleEndian.AppendUint32(deriv, step)
 		}
 	}
 	return k.PubKey[:], deriv
+}
+
+// memoKey is the key ckdMemo holds at memo, computed by derive the first time.
+func (c *fakeEscrowCore) memoKey(memo string, derive func() bip32Key) bip32Key {
+	c.ckdMu.Lock()
+	k, ok := c.ckdMemo[memo]
+	c.ckdMu.Unlock()
+	if ok {
+		return k
+	}
+	k = derive() // outside ckdMu: a concurrent caller may derive the same key as well, with the same result
+	c.ckdMu.Lock()
+	defer c.ckdMu.Unlock()
+	if c.ckdMemo == nil {
+		c.ckdMemo = map[string]bip32Key{}
+	}
+	c.ckdMemo[memo] = k
+	return k
 }
 
 func fakePubFromTprv(tprv string) []byte {
@@ -372,14 +455,18 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 			if l := c.labels[str(0)]; l != "" {
 				labels = append(labels, l)
 			}
-			info := map[string]any{"address": str(0), "ismine": c.watchAll || len(labels) > 0, "iswatchonly": false, "labels": labels}
-			if len(labels) > 0 {
+			info := map[string]any{"address": str(0), "ismine": c.watchAll || len(labels) > 0 || c.watched[str(0)], "iswatchonly": false, "labels": labels}
+			if len(labels) > 0 || c.watched[str(0)] {
 				spk := c.spk[str(0)]
 				if spk == nil {
 					spk, _ = escrowAddressScript(c.chain, str(0))
 				}
 				info["scriptPubKey"] = hex.EncodeToString(spk)
-				if keys := c.watchPubkeys[str(0)]; keys != nil {
+				keys := c.watchPubkeys[str(0)]
+				if keys == nil {
+					keys = c.rangedPubkeys[str(0)]
+				}
+				if keys != nil {
 					var parts []string
 					for _, k := range keys {
 						raw, _ := hex.DecodeString(k)
@@ -389,6 +476,10 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 					desc := "wsh(multi(2," + strings.Join(parts, ",") + "))"
 					sum, _ := descChecksum(desc)
 					info["pubkeys"], info["desc"], info["solvable"], info["script"] = keys, desc+"#"+sum, true, "multisig"
+				} else {
+					// QA5W3A-3: the descriptor that holds the address gives no script (an addr(…) import): Core 31.1
+					// reports it solvable false, with no desc, pubkeys or script (probed on regtest).
+					info["solvable"] = false
 				}
 			}
 			return info, 0, ""
@@ -427,6 +518,25 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 		}
 		if want, _ := descChecksum(body); sum != want && sum != "y" && !(c.infoSkew && sum == "qqqqqqqq") {
 			return nil, -5, "Provided checksum does not match computed checksum"
+		}
+		// A-456a: a ranged descriptor with a range [from, to] derives one address per index, as Core does.
+		var rng []int64
+		if len(p) > 1 {
+			json.Unmarshal(p[1], &rng)
+		}
+		if strings.Contains(body, "*") != (len(rng) == 2) {
+			return nil, -8, "Range should (only) be specified for a ranged descriptor"
+		}
+		if len(rng) == 2 {
+			var out []string
+			for k := rng[0]; k <= rng[1]; k++ {
+				addr := c.address(strings.ReplaceAll(body, "*", strconv.FormatInt(k, 10)))
+				if c.rangeSkew != nil {
+					addr = c.rangeSkew(body, k, addr)
+				}
+				out = append(out, addr)
+			}
+			return out, 0, ""
 		}
 		return []string{c.address(body)}, 0, ""
 	case "gettxout":
@@ -567,36 +677,27 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 	case "importdescriptors":
 		var reqs []map[string]any
 		json.Unmarshal(p[0], &reqs)
-		if len(reqs) != 1 {
+		if len(reqs) == 0 {
 			return nil, -8, "unexpected fake import"
 		}
+		if path == fakeWatchWallet && (c.scanning || c.rescanRefuses || c.importing) {
+			return nil, -4, "Wallet is currently rescanning. Abort existing rescan or wait."
+		}
 		if c.beforeImport != nil {
+			c.importing = true
 			c.mu.Unlock()
 			c.beforeImport()
 			c.mu.Lock()
+			c.importing = false
 		}
 		if c.importFail {
 			return []map[string]any{{"success": false, "error": map[string]any{"code": -4, "message": "fake import failure"}}}, 0, ""
 		}
-		if path == fakeWatchWallet {
-			c.imports = append(c.imports, reqs[0]["desc"].(string))
-			if label, _ := reqs[0]["label"].(string); label != "" {
-				if c.labels == nil {
-					c.labels = map[string]string{}
-				}
-				body, _, _ := strings.Cut(reqs[0]["desc"].(string), "#")
-				c.labels[c.address(body)] = label
-				if m := fakeMulti.FindStringSubmatch(body + "#"); m != nil {
-					keys := slices.Clone(m[1:])
-					slices.Sort(keys) // a bare-key sortedmulti: the script's order
-					if c.watchPubkeys == nil {
-						c.watchPubkeys = map[string][]string{}
-					}
-					c.watchPubkeys[c.address(body)] = keys
-				}
-			}
+		var replies []map[string]any
+		for _, req := range reqs {
+			replies = append(replies, c.importOne(path, req))
 		}
-		return []map[string]any{{"success": true}}, 0, ""
+		return replies, 0, ""
 	case "getwalletinfo":
 		if wallet {
 			info := map[string]any{"walletname": "opsecmkt-arbiter", "descriptors": true, "private_keys_enabled": true, "txcount": len(c.arbiterTxs)}
@@ -611,7 +712,14 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 		if path != fakeWatchWallet || c.watchInfo == nil {
 			return nil, -18, "Requested wallet does not exist or is not loaded"
 		}
-		return c.watchInfo, 0, ""
+		info := map[string]any{"scanning": false}
+		if c.scanning || c.importing {
+			info["scanning"] = map[string]any{"duration": 1, "progress": 0.5}
+		}
+		for k, v := range c.watchInfo {
+			info[k] = v
+		}
+		return info, 0, ""
 	case "listreceivedbyaddress":
 		if path != fakeWatchWallet {
 			return nil, -8, "unexpected fake wallet"
@@ -622,6 +730,11 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 		byAddr := map[string][]string{}
 		var order []string
 		for _, d := range c.deposits {
+			// A-456a, as Core 31.1 does (probed on regtest): listreceivedbyaddress reports only address-book entries, so an
+			// address an unlabelled ranged import holds is not listed, whatever it received.
+			if c.watched[d.Address] && c.labels[d.Address] == "" || c.forgotten[d.Address] {
+				continue // QA5W3A-8: nor one a watch wallet restored from before its import holds no more
+			}
 			if _, ok := byAddr[d.Address]; !ok {
 				order = append(order, d.Address)
 			}
@@ -806,6 +919,87 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 		return txid, 0, ""
 	}
 	return nil, -32601, "Method not found"
+}
+
+// importOne is one importdescriptors request to wallet path: Core refuses a label beside a range (-8); a labelled
+// descriptor's address is labelled (a bare-key sortedmulti also records its keys), a ranged one's addresses (one per
+// index of its range) and an addr(…) one's address are held without a label (A-456a).
+func (c *fakeEscrowCore) importOne(path string, req map[string]any) map[string]any {
+	_, ranged := req["range"]
+	if _, labelled := req["label"]; ranged && labelled {
+		return map[string]any{"success": false, "error": map[string]any{"code": -8, "message": "Ranged descriptors should not have a label"}}
+	}
+	if path != fakeWatchWallet {
+		return map[string]any{"success": true}
+	}
+	desc, _ := req["desc"].(string)
+	c.imports = append(c.imports, desc)
+	c.importReqs = append(c.importReqs, req)
+	body, _, _ := strings.Cut(desc, "#")
+	hold := func(addr string) {
+		if c.watched == nil {
+			c.watched = map[string]bool{}
+		}
+		c.watched[addr] = true
+		delete(c.forgotten, addr)
+	}
+	switch rng, _ := req["range"].([]any); {
+	case ranged && len(rng) == 2:
+		from, _ := rng[0].(float64)
+		to, _ := rng[1].(float64)
+		for k := int64(from); k <= int64(to); k++ {
+			at := strings.ReplaceAll(body, "*", strconv.FormatInt(k, 10))
+			m := fakeMulti.FindStringSubmatch(at + "#")
+			if m == nil {
+				hold(c.address(at))
+				continue
+			}
+			// The keys at index k, derived once (as address derives them, which is slow under -race), give the address.
+			var pubs [][]byte
+			var keys []string
+			for _, el := range m[1:] {
+				pub, _ := c.fakeKeyOf(el)
+				pubs, keys = append(pubs, pub), append(keys, hex.EncodeToString(pub))
+			}
+			h := sha256.Sum256(fakeMultiScript(pubs...))
+			addr := segwitAddress("bcrt", 0, h[:])
+			c.spk[addr] = append([]byte{0, 32}, h[:]...)
+			first := !c.watched[addr]
+			hold(addr)
+			// The keys in script order, unless an addr(…) import held the address first: Core 31.1 then keeps reporting it
+			// unsolvable (probed on regtest: an addr(…) imported before a ranged descriptor covering the same address stays
+			// solvable false; imported after it, or in the same call after it, the address is solvable).
+			if first {
+				slices.Sort(keys)
+				if c.rangedPubkeys == nil {
+					c.rangedPubkeys = map[string][]string{}
+				}
+				c.rangedPubkeys[addr] = keys
+			}
+		}
+	case strings.HasPrefix(body, "addr("):
+		hold(strings.TrimSuffix(strings.TrimPrefix(body, "addr("), ")"))
+	}
+	if label, _ := req["label"].(string); label != "" {
+		if c.labels == nil {
+			c.labels = map[string]string{}
+		}
+		labelled := c.address(body)
+		if a, ok := strings.CutPrefix(body, "addr("); ok {
+			labelled = strings.TrimSuffix(a, ")")
+		}
+		c.labels[labelled] = label
+		delete(c.forgotten, labelled)
+		if m := fakeMulti.FindStringSubmatch(body + "#"); m != nil {
+			keys := slices.Clone(m[1:])
+			slices.Sort(keys) // a bare-key sortedmulti: the script's order
+			if c.watchPubkeys == nil {
+				c.watchPubkeys = map[string][]string{}
+			}
+			c.watchPubkeys[c.address(body)] = keys
+		}
+	}
+	return map[string]any{"success": true}
 }
 
 // settlementTx reads rawHex as a segwit transaction spending recorded escrow deposits, or nil (a practice
@@ -1115,6 +1309,10 @@ func (c *fakeEscrowCore) fakeKeyOf(el string) (pub, deriv []byte) {
 		d := slices.Clone(fp)
 		for _, step := range path {
 			d = binary.LittleEndian.AppendUint32(d, step)
+		}
+		if strings.Count(rest, "/") >= 3 { // A-456a: a per-order key (/<i>/0/0 or a sibling) derives as Core derives it
+			pub, _ := c.fakeRealChild(rest)
+			return pub, d
 		}
 		return fakeChild(el[end+1:]), d
 	case strings.HasPrefix(el, "fakepub"):

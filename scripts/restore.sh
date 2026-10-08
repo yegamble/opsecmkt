@@ -42,6 +42,54 @@ client() {
     (cd "$root_dir" && docker compose exec -T db "$tool" --username=opsecmkt --dbname="$database" "$@")
   fi
 }
+# read_archive ARGS...: pg_restore ARGS on the archive given on stdin, connecting to no database, in UTC (see the
+# backup time below), where the destination's client tools run.
+read_archive() {
+  if [[ -n ${RESTORE_DATABASE_URL:-} ]]; then
+    TZ=UTC python3 "$script_dir/postgres-tool.py" RESTORE_DATABASE_URL pg_restore "$@"
+  else
+    (cd "$root_dir" && docker compose exec -T -e TZ=UTC db pg_restore "$@")
+  fi
+}
+# QA5W4B-2, QA5W5B-1: the encoding the dump's text was written in, from the SET client_encoding its script starts with,
+# and the encoding of the database it was taken from, from its DATABASE entry's CREATE DATABASE (--create prints that
+# entry whatever the list selects; the empty list selects nothing else, so only the start of the archive is read).
+# pg_dump writes text in the database's encoding, or in a client_encoding set for the database, for the role or by
+# PGCLIENTENCODING, unless BACKUP_DUMP_ENCODING=SQL_ASCII makes it write the bytes stored. The market before A-481
+# stored UTF-8 bytes whatever the database's encoding: a LATIN1 database backed up without that option (install.sh
+# upgrade's automatic pre-upgrade backup, for one) is dumped as LATIN1, or as UTF8 converted from LATIN1 once
+# client_encoding is UTF8, and either restored into a UTF8 database double-encodes every non-ASCII character with
+# nothing failing. So only a SQL_ASCII dump (the bytes stored) is restored from any database, and a UTF8 dump only from a
+# UTF8 or SQL_ASCII one (nothing converted). Every whole-database dump has the DATABASE entry (pg_dump 11 and later write it
+# even with --table or --data-only); without it a UTF8 dump of a UTF8 database cannot be told from one converted from
+# LATIN1, so only SQL_ASCII is restored then.
+# Anything else is refused here, before the confirmation and before anything is created or written. The decryption
+# stopping early is expected (|| true); an error of age, pg_restore or the URL parsing is shown above the refusal.
+archive_head=$(age -d -i "$AGE_IDENTITY" "$1" | read_archive --file=- --create --use-list=/dev/null) || true
+archive_encoding=$(sed -n "s/^SET client_encoding = '\([A-Za-z0-9_]*\)';\$/\1/p" <<< "$archive_head" | head -n 1) || true
+source_encoding=$(sed -n "s/^CREATE DATABASE .* WITH TEMPLATE = template0 ENCODING = '\([A-Za-z0-9_]*\)'.*/\1/p" <<< "$archive_head" | head -n 1) || true
+if [[ -z $archive_encoding ]]; then
+  echo 'Cannot read the database dump in this backup (see the error above: a wrong AGE_IDENTITY, a file that is not a backup made by scripts/backup.sh, client tools older than the dump, or a destination URL that cannot be used). Nothing was changed.' >&2
+  exit 1
+elif [[ $archive_encoding != SQL_ASCII && -z $source_encoding ]]; then
+  printf 'Refusing: this backup holds its text in %s but does not record the encoding of the database it was taken from, as every whole-database dump does (scripts/backup.sh makes only those). Restored into a UTF8 database, its non-ASCII text could come out double-encoded, and nothing here can tell. Nothing was changed. Take a new backup of that database with scripts/backup.sh (with BACKUP_DUMP_ENCODING=SQL_ASCII if the database is not UTF8) and restore that: see UPGRADING.md, section 42.\n' \
+    "$archive_encoding" >&2
+  exit 1
+elif [[ $archive_encoding != SQL_ASCII && ! ($archive_encoding == UTF8 && ($source_encoding == UTF8 || $source_encoding == SQL_ASCII)) ]]; then
+  if [[ $source_encoding == UTF8 ]]; then
+    effect="restore.sh restores a UTF8 database's backup only from a dump written in UTF8 or SQL_ASCII."
+  else
+    effect='Restored into a UTF8 database, every non-ASCII character the market stored would be double-encoded.'
+  fi
+  # PostgreSQL creates no database in these (pg_wchar.h's client-only encodings): the way out below names the database's
+  # own encoding, which is always one a database can have.
+  case $archive_encoding in
+    SJIS | SHIFT_JIS_2004 | BIG5 | GBK | UHC | GB18030 | JOHAB) effect+=" $archive_encoding is an encoding for clients only: no database can be created in it." ;;
+  esac
+  printf 'Refusing: this backup was taken from a %s database and holds its text in %s. pg_dump writes text in the database'"'"'s encoding, or in a client_encoding set for the database, for the role or by PGCLIENTENCODING, unless BACKUP_DUMP_ENCODING=SQL_ASCII is used. %s Nothing was changed. Back up the old database again with BACKUP_DUMP_ENCODING=SQL_ASCII and restore that backup; if this backup is all you have, restore it into a temporary %s database, back that up with BACKUP_DUMP_ENCODING=SQL_ASCII and restore the new backup: see UPGRADING.md, section 42.\n' \
+    "$source_encoding" "$archive_encoding" "$effect" "$source_encoding" >&2
+  exit 1
+fi
 read -r -p "Restore into $destination? Type RESTORE: " confirmation
 [[ $confirmation == RESTORE ]] || { echo 'Cancelled'; exit 1; }
 if [[ -n ${RESTORE_INTERNAL_DATABASE:-} ]]; then
@@ -49,7 +97,7 @@ if [[ -n ${RESTORE_INTERNAL_DATABASE:-} ]]; then
   exists=$(cd "$root_dir" && docker compose exec -T db psql -X -q -A -t -v ON_ERROR_STOP=1 -U opsecmkt -d postgres \
     -c "SELECT count(*) FROM pg_database WHERE datname = '$database'" </dev/null)
   if [[ $exists == 0 ]]; then
-    (cd "$root_dir" && docker compose exec -T db psql -X -q -v ON_ERROR_STOP=1 -U opsecmkt -d postgres -c "CREATE DATABASE \"$database\"" </dev/null)
+    (cd "$root_dir" && docker compose exec -T db psql -X -q -v ON_ERROR_STOP=1 -U opsecmkt -d postgres -c "CREATE DATABASE \"$database\" ENCODING 'UTF8' TEMPLATE template0" </dev/null)
     printf 'Created empty database %s.\n' "$database"
   fi
 fi
@@ -80,7 +128,8 @@ age -d -i "$AGE_IDENTITY" "$1" | client pg_restore --single-transaction --exit-o
 # inside other escrow addresses (A-366): escrow_sweep_required makes escrow checkout wait until the escrow watcher's
 # orphan sweep has reserved the keys of every address its watch-only wallet holds with no escrow row (reconcileOrphans
 # in internal/market/escrow_recovery.go), and, for a watch-only wallet restored from the same backup, the escrow-key-margin
-# block moves each account's next escrow child index (escrow_index_floors) and the market's escrow key index 50 past the
+# block moves each account's next escrow child index (escrow_index_floors; one counter for the /0/<i> keys and the
+# per-order /<i>/0/0 ones, A-456a) and the market's escrow key index 50 past the
 # restored records (a database from before migration 083, development builds only, gets no margin). The block between
 # its markers is plain SQL: internal/market/escrow_reserve_test.go runs it as written here.
 # Monero escrow (ESCROW_XMR, local fakechain only; migrations 084 and 085) is held the same way: every restored Monero
@@ -111,9 +160,9 @@ SELECT to_regclass('escrow_index_floors') IS NOT NULL AS has_floors \gset
 \if :has_floors
 -- escrow-key-margin: begin
 INSERT INTO escrow_index_floors(user_id,next_index)
-SELECT k.user_id, GREATEST(COALESCE(max(split_part(p.derivation_suffix,'/',3)::bigint),0)+1, COALESCE(max(f.next_index),1))+50
+SELECT k.user_id, GREATEST(COALESCE(max(CASE WHEN p.derivation_suffix LIKE '/0/%' THEN split_part(p.derivation_suffix,'/',3) ELSE split_part(p.derivation_suffix,'/',2) END::bigint),0)+1, COALESCE(max(f.next_index),1))+50
 FROM user_escrow_keys k
-LEFT JOIN escrow_pubkeys p ON p.user_id=k.user_id AND p.derivation_suffix ~ '^/0/[1-9][0-9]{0,9}$'
+LEFT JOIN escrow_pubkeys p ON p.user_id=k.user_id AND (p.derivation_suffix ~ '^/0/[1-9][0-9]{0,9}$' OR p.derivation_suffix ~ '^/[1-9][0-9]{0,9}/0/0$')
 LEFT JOIN escrow_index_floors f ON f.user_id=k.user_id
 GROUP BY k.user_id
 ON CONFLICT (user_id) DO UPDATE SET next_index=EXCLUDED.next_index;
@@ -129,7 +178,7 @@ UPDATE payouts SET send_ambiguous=true WHERE state='failed';
 WITH held AS (
   UPDATE payouts SET state='held', updated=now(),
     error='Restored from backup: verify in the wallet before releasing; this payout may already have been sent.'
-      || coalesce(' ' || substring(error from '(?:Suspended account:|Larger than the order price:).*'), '')
+      || coalesce(' ' || substring(error from '(?:Suspended account:|Larger than the order price:|Held to be paid by hand:).*'), '')
   WHERE state IN ('pending','sending','blocked','held') RETURNING 1),
 failed AS (
   UPDATE payouts SET updated=now(),
@@ -219,15 +268,8 @@ echo 'Application databases now require payout recovery reconciliation. All outb
 # photo and avatar the backup had, including those removed since. The backup time is the dump's own creation time
 # from its table of contents (pg_restore --list reads only the start of the archive; the decryption stopping early
 # is expected, hence || true). The dump holds it as wall-clock fields of the zone pg_dump ran in, which
-# scripts/backup.sh sets to UTC, and pg_restore labels them with its own zone, so it runs in UTC too.
-list_archive() {
-  if [[ -n ${RESTORE_DATABASE_URL:-} ]]; then
-    TZ=UTC python3 "$script_dir/postgres-tool.py" RESTORE_DATABASE_URL pg_restore --list
-  else
-    (cd "$root_dir" && docker compose exec -T -e TZ=UTC db pg_restore --list)
-  fi
-}
-backup_time=$(age -d -i "$AGE_IDENTITY" "$1" 2>/dev/null | list_archive 2>/dev/null | sed -n 's/^;[[:space:]]*Archive created at //p' | head -n 1) || true
+# scripts/backup.sh sets to UTC, and pg_restore labels them with its own zone, so it runs in UTC too (read_archive).
+backup_time=$(age -d -i "$AGE_IDENTITY" "$1" 2>/dev/null | read_archive --list 2>/dev/null | sed -n 's/^;[[:space:]]*Archive created at //p' | head -n 1) || true
 printf '%s images restored from a backup taken %s; photo and avatar removals made after that time are undone — check /moderator Recent photos and remove them again\n' "$images" "${backup_time:-at an unknown time}"
 echo 'Restore completed. Validate the new database before switching application traffic.'
 if [[ -n ${RESTORE_INTERNAL_DATABASE:-} ]]; then

@@ -25,6 +25,7 @@ func init() {
 	registerLoader("disputes", loadDisputes)
 	registerLoader("moderator", loadDisputes)
 	registerLoader("moderator", loadPaymentReviews)
+	registerLoader("moderator", loadEscrowAlerts)
 
 	registerPreview("order", previewOrder)
 	registerPreview("product", previewReviews)
@@ -106,8 +107,9 @@ func eventActor(handle string, system bool, actorID string, o *Order) string {
 }
 
 // staffReviewer: a moderator or administrator who is not party to the order may read it (never act on it
-// from the order page) once it is disputed, keep reading it after resolution, and read any order with a
-// payment flagged for review (payments.flagged, set by the watcher's flagOrder).
+// from the order page) once it is disputed, keep reading it after resolution, read any order with a
+// payment flagged for review (payments.flagged, set by the watcher's flagOrder), and read an escrow order
+// while it has an open staff alert (escrowStaffAlert, A-470). orderReadable is the same rule in SQL.
 func staffReviewer(ctx context.Context, a *App, o *Order, u *User) (bool, error) {
 	if u == nil || u.ID == o.BuyerID || u.ID == o.VendorID || (u.Role != "moderator" && u.Role != "admin") {
 		return false, nil
@@ -116,8 +118,81 @@ func staffReviewer(ctx context.Context, a *App, o *Order, u *User) (bool, error)
 		return true, nil
 	}
 	var flagged bool
-	err := a.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM payments WHERE order_id=$1 AND flagged)", o.ID).Scan(&flagged)
+	err := a.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM payments WHERE order_id=$1 AND flagged) OR "+escrowStaffAlert("$1"), o.ID).Scan(&flagged)
 	return flagged, err
+}
+
+// escrowStaffAlert is SQL that is true while the escrow order whose id is the SQL expression order has an open staff
+// alert (A-470): an escrow notice flagOrder sent to every moderator and administrator that has not cleared. Staff may
+// read the order (staffReviewer, orderReadable) while it is open, whether or not a deposit is flagged; no action is
+// offered for it. Each alert is read from the state that opens and clears it, never from a column of its own:
+//   - the broadcast stall (A-441, escrow_stall.go): a settlement in state broadcast whose latest stall or seen note is
+//     the stall note (escrowStalledSQL); it clears when the watch-only wallet sees the transaction (the seen note) or
+//     the settlement leaves broadcast (confirmed, or spent outside the market, which flags the deposits);
+//   - a release too few (A-461, failSettlement): a release that failed too-small, as long as it stands (state failed);
+//     it clears when the release is superseded (an administrator's changed dispute decision, escrow_decision.go). Its
+//     deposits are flagged as well (QA462-3), and those flags are never open (paymentFlagOpenRule), so no review of
+//     them clears it;
+//   - a Monero escrow deposit refused as another order's escrow account (A-480, xmrFlagCollision): an open record in
+//     xmr_escrow_collisions (xmrCollisionOpen); it clears when staff record what was done about it on the order
+//     page (xmrCollisionAction). It flags no deposit (none is in the ledger) and the order may have no settlement.
+//
+// A new escrow notice through flagOrder either flags the deposits it concerns (as every other one does) or adds its
+// open state here, and its reason to the moderation desk's list (loadEscrowAlerts).
+func escrowStaffAlert(order string) string {
+	return "(EXISTS(SELECT 1 FROM settlements s WHERE s.order_id=" + order + " AND (s.state='broadcast' AND " + escrowStalledSQL +
+		" OR s.kind='release' AND s.state='failed' AND s.build_error='" + settleTooSmall + "')) OR " + xmrCollisionOpen(order) + ")"
+}
+
+// xmrCollisionOpen is SQL that is true while the order whose id is the SQL expression order has an open record of a
+// refused Monero escrow deposit (A-480).
+func xmrCollisionOpen(order string) string {
+	return "EXISTS(SELECT 1 FROM xmr_escrow_collisions c WHERE c.order_id=" + order + " AND c.disposed_at IS NULL)"
+}
+
+// escrowAlertLimit bounds the moderation desk's list of escrow orders with an open staff alert.
+const escrowAlertLimit = 100
+
+// loadEscrowAlerts lists, on the moderation desk, the escrow orders with an open staff alert (escrowStaffAlert, the
+// rule that lets staff read them), newest first, each linked to its order page, so that a moderator can open one from
+// the notice: a notification names only a short order ID, and a stall or a refused Monero deposit flags no deposit, so
+// the payment review list does not show it. Newest first by when the order's open alert opened (the latest, when it
+// has several: a stall by its stall note, a release too few by its settlement's last update, which recorded the
+// failure, a refused deposit by its record's noted time; QA5W2-3), not by the order's age, because the alert a
+// notification just announced is the newest; ties by order ID. When more than escrowAlertLimit are open the desk says
+// how many it leaves out (EscrowAlertsMore). Nothing here is an action (a refused deposit's disposition is recorded on
+// the order page). The prefilter names every table an alert is read from: an order with a refused deposit may have no
+// settlement.
+func loadEscrowAlerts(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
+	if d.User == nil || (d.User.Role != "moderator" && d.User.Role != "admin") {
+		return nil
+	}
+	rows, err := a.db.QueryContext(ctx, `SELECT o.id,o.state,
+		EXISTS(SELECT 1 FROM settlements s WHERE s.order_id=o.id AND s.state='broadcast' AND `+escrowStalledSQL+`),
+		EXISTS(SELECT 1 FROM settlements s WHERE s.order_id=o.id AND s.kind='release' AND s.state='failed' AND s.build_error='`+settleTooSmall+`'),
+		`+xmrCollisionOpen("o.id")+`,
+		count(*) OVER ()
+		FROM orders o WHERE (o.id IN (SELECT order_id FROM settlements WHERE state IN ('broadcast','failed'))
+			OR o.id IN (SELECT order_id FROM xmr_escrow_collisions WHERE disposed_at IS NULL)) AND `+escrowStaffAlert("o.id")+`
+		ORDER BY GREATEST((SELECT max(`+escrowStallOpenedSQL+`) FROM settlements s WHERE s.order_id=o.id AND s.state='broadcast' AND `+escrowStalledSQL+`),
+			(SELECT max(s.updated) FROM settlements s WHERE s.order_id=o.id AND s.kind='release' AND s.state='failed' AND s.build_error='`+settleTooSmall+`'),
+			(SELECT max(x.noted) FROM xmr_escrow_collisions x WHERE x.order_id=o.id AND x.disposed_at IS NULL)) DESC NULLS LAST,o.id DESC
+		LIMIT $1`, escrowAlertLimit)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var total int
+	for rows.Next() {
+		var v EscrowAlertView
+		if err = rows.Scan(&v.ID, &v.State, &v.Stall, &v.TooFew, &v.Refused, &total); err != nil {
+			return err
+		}
+		v.State = stateLabel(v.State)
+		d.EscrowAlerts = append(d.EscrowAlerts, v)
+	}
+	d.EscrowAlertsMore = max(0, total-len(d.EscrowAlerts))
+	return rows.Err()
 }
 
 // disputeVisible: the order is or was disputed, so a reviewer may also read its digital delivery.
@@ -175,6 +250,27 @@ func loadOrderDetail(ctx context.Context, a *App, r *http.Request, d *PageData) 
 		d.OrderViewer = roleModerator
 	default:
 		return sql.ErrNoRows
+	}
+	if d.OrderViewer == roleModerator && !disputeVisible(o) {
+		// Staff read this order because a deposit is flagged or its escrow has an open staff alert. The help says which
+		// (QA5W1-1): a flag keeps the payment review text, and the alert alone names itself and links the desk's list.
+		var flagged, stall, tooFew, refused bool
+		if err = a.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM payments WHERE order_id=$1 AND flagged),
+			EXISTS(SELECT 1 FROM settlements s WHERE s.order_id=$1 AND s.state='broadcast' AND `+escrowStalledSQL+`),
+			EXISTS(SELECT 1 FROM settlements s WHERE s.order_id=$1 AND s.kind='release' AND s.state='failed' AND s.build_error='`+settleTooSmall+`'),
+			`+xmrCollisionOpen("$1"), o.ID).Scan(&flagged, &stall, &tooFew, &refused); err != nil {
+			return err
+		}
+		if !flagged && (stall || tooFew || refused) {
+			d.StaffAlert = &EscrowAlertView{ID: o.ID, Stall: stall, TooFew: tooFew, Refused: refused}
+		}
+	}
+	if d.OrderViewer == roleModerator {
+		// A-480: staff who are not parties see the order's refused Monero deposits, and record what was done about an
+		// open one here; the parties see only the order note.
+		if err = loadXMRCollisions(ctx, a, r, d); err != nil {
+			return err
+		}
 	}
 	// A dispute decision carries the deciding staff member's avatar (A-189, owner decision 1(c)) when the desk
 	// route serves it to this viewer: its own predicate (imageDeskWhere, $2 viewer and $3 role) picks it, so the

@@ -898,7 +898,8 @@ func TestXMREscrowMigration084Upgrade(t *testing.T) {
 }
 
 // The resolve form's statement of an escrow dispute's outcomes (escrowDisputePreview, on the moderation desk) states a
-// Monero escrow's amount in XMR with its 12 decimals, never as Bitcoin.
+// Monero escrow's amount in XMR with its 12 decimals, never as Bitcoin. ESCROW_XMR is off here, so no network is known
+// and none is named (A-472; with one known the amount names it: TestXMREscrowDisputeAndAdminNameNetwork).
 func TestXMREscrowDisputePreview(t *testing.T) {
 	e := newTestApp(t)
 	buyer, _ := e.user("xdp_buyer", "buyer")
@@ -917,11 +918,11 @@ func TestXMREscrowDisputePreview(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, text := range []string{p.Release, p.Refund} {
-		if strings.Contains(text, "BTC") || !strings.Contains(text, "1.234567890123 fakechain XMR") {
+		if strings.Contains(text, "BTC") || !strings.Contains(text, "1.234567890123 XMR") {
 			t.Errorf("dispute preview of a Monero escrow order: %q", text)
 		}
 	}
-	if body := e.do("GET", "/moderator", adminSess, nil).Body.String(); !strings.Contains(body, "1.234567890123 fakechain XMR") {
+	if body := e.do("GET", "/moderator", adminSess, nil).Body.String(); !strings.Contains(body, "1.234567890123 XMR") {
 		t.Error("the moderation desk does not state the Monero escrow's amount in XMR")
 	}
 }

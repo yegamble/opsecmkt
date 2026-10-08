@@ -69,6 +69,7 @@ func TestEscrowKeyLayoutMigration(t *testing.T) {
 		{"buyer", "/0/0/0"}, {"buyer", "/1/0/0"}, {"vendor", "/0/7/0"}, {"vendor", "/1/0/0/0"}, {"buyer", "/0h/0/0"}, {"buyer", "/1h/0/0"},
 		{"market", "/0/0/0"}, {"market", "/1/0/0"}, // the market's per-order key follows the same rule (P4-R2)
 		{"buyer", "/2147483647/0/0"}, {"vendor", "/2147483647/0/0"}, // the reserved practice index (ES-9)
+		{"market", "/2147483647/0/0"}, // nor for the market's per-order key, since migration 089 (QA5W3A-11)
 	} {
 		if try(c.party, c.suffix) == nil {
 			t.Errorf("%s derivation suffix %s accepted", c.party, c.suffix)
@@ -76,7 +77,7 @@ func TestEscrowKeyLayoutMigration(t *testing.T) {
 	}
 	for _, c := range []struct{ party, suffix string }{
 		{"buyer", "/0/1"}, {"vendor", "/0/2501"}, {"market", "/0/0"}, {"market", "/0/7"}, // shape (a)
-		{"buyer", "/2/0/0"}, {"vendor", "/17/0/0"}, {"buyer", "/2147483646/0/0"}, {"market", "/2147483647/0/0"}, // shape (b)
+		{"buyer", "/2/0/0"}, {"vendor", "/17/0/0"}, {"buyer", "/2147483646/0/0"}, {"market", "/2147483646/0/0"}, // shape (b)
 	} {
 		if err := try(c.party, c.suffix); err != nil {
 			t.Errorf("%s derivation suffix %s refused: %v", c.party, c.suffix, err)
@@ -460,9 +461,10 @@ func TestEscrowKeyWithEscrowsKeepsLayout(t *testing.T) {
 	}
 }
 
-// Until per-order escrows exist (A-456), a party whose active key is a per-order wallet key cannot enter an escrow:
-// a shape-(a) escrow would use a child key (/0/<i>) the party's per-order wallet cannot sign. The order page says why
-// and the checkout is refused with nothing written, whichever party it is.
+// A party whose active key is a per-order wallet key never enters a shape-(a) escrow beside a Bitcoin Core key: such an
+// escrow would use a child key (/0/<i>) the party's per-order wallet cannot sign. Since A-456a it is a mixed pair
+// (P4-R18): the order page says why, naming the vendor's key type, and the checkout is refused with nothing written,
+// whichever party it is (TestEscrowShapeBMixedPairRefused covers both ways with the per-order switch on and off).
 func TestEscrowPerOrderKeyNotUsedForCheckout(t *testing.T) {
 	for _, who := range []string{"buyer", "vendor"} {
 		t.Run(who, func(t *testing.T) {
@@ -478,8 +480,9 @@ func TestEscrowPerOrderKeyNotUsedForCheckout(t *testing.T) {
 			if !strings.Contains(page, "per-order wallet") || strings.Contains(page, "Pay into an escrow</button>") {
 				t.Fatalf("order page offers escrow with a per-order key: %s", page)
 			}
-			// QA4W5K-5: each party's wording on the order page, so that swapping the two flags is noticed.
-			own, vendors := strings.Contains(page, "Your Bitcoin escrow key is for a per-order wallet"), strings.Contains(page, "The vendor's Bitcoin escrow key is for a per-order wallet")
+			// QA4W5K-5: each party's wording on the order page, so that swapping the two flags is noticed (A-456a: the
+			// mixed-pair wording names the vendor's key type).
+			own, vendors := strings.Contains(page, "The vendor's Bitcoin escrow key is for Bitcoin Core and yours is for a per-order wallet"), strings.Contains(page, "The vendor's Bitcoin escrow key is for a per-order wallet and yours is for Bitcoin Core")
 			// QA4W5K-3a: the buyer is told how to fix it and linked to the key page; the vendor's fix is the vendor's to make.
 			fix := strings.Contains(page, "Register a Bitcoin Core escrow key and sign its practice transaction to use escrow") && strings.Contains(page, `href="/escrow-key">Your escrow key</a>`)
 			if who == "buyer" && (!own || vendors || !fix) || who == "vendor" && (own || !vendors || fix) {
@@ -497,10 +500,18 @@ func TestEscrowPerOrderKeyNotUsedForCheckout(t *testing.T) {
 	}
 }
 
-// A-444 with A-455: while BTC intake is escrow only, a listing whose vendor's only active key is a per-order wallet key
-// cannot be bought in BTC (no escrow can be made with it until A-456): the product page says why without the
-// vendor's fix, a BTC draft is refused, and the readiness panel counts and lists the vendor.
-func TestEscrowOnlyPerOrderVendorNotPurchasable(t *testing.T) {
+// A-444 with A-455 and A-456b: while BTC intake is escrow only, a listing whose vendor's only active key is a per-order
+// wallet key cannot be bought in BTC on a market with no escrow signer (no per-order escrow can be co-signed): the
+// product page says why without the vendor's fix, a BTC draft is refused, and the readiness panel counts and lists the
+// vendor. With an escrow signer it can be bought.
+func TestEscrowOnlyPerOrderVendorNeedsSigner(t *testing.T) {
+	s := signerApp(t, newFakeSigner(t, signerKey(t, 7)).path)
+	agExec(s.testEnv, "UPDATE user_escrow_keys SET layout='per_order' WHERE user_id=$1", s.vendor)
+	agExec(s.testEnv, "UPDATE settings SET value='escrow' WHERE key='payment_intake_BTC'")
+	if b := html.UnescapeString(s.page("/product?id="+s.product, s.buyerSess)); strings.Contains(b, "Not available for purchase") {
+		t.Fatalf("a per-order vendor with an escrow signer:\n%s", b)
+	}
+
 	x := newEscrowEnv(t)
 	_, admin := x.user("po_ready_admin_"+randomToken()[:6], "admin")
 	agExec(x.testEnv, "UPDATE user_escrow_keys SET layout='per_order' WHERE user_id=$1", x.vendor)

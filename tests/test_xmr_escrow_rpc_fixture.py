@@ -248,6 +248,36 @@ class EscrowBehaviourTest(unittest.TestCase):
         # The first build's key image is spent now: relaying it is refused.
         self.assertEqual(self.n.wallet('relay_tx', {'hex': built['tx_metadata']})['error']['code'], -4)
 
+    def test_fee_sources_and_refusals_below_the_fee(self):
+        """QA5W1-5: the values monerod and monero-wallet-rpc 0.18.5.1 gave on the fakechain (the shapes file keeps only
+        their types): the fee sources the adapter reads for a refused refund, and the refusals of coins at or below the
+        fee taken from them (-17 at 0.001 and 0.0015 XMR, -16 at 0.0018 XMR, -46 at exactly the fee)."""
+        self.escrow_account()
+        fe = self.n.post(self.n.daemon_url + '/json_rpc', {'jsonrpc': '2.0', 'id': 1, 'method': 'get_fee_estimate', 'params': {'grace_blocks': 10}})[1]['result']
+        self.assertEqual((fe['fee'], fe['fees'], fe['quantization_mask']), (1_200_000, [1_200_000, 4_700_000, 19_000_000, 240_000_000], 10_000))
+        self.assertEqual(self.n.ok('get_default_fee_priority'), {'priority': 1})
+        weights = {(i, o): self.n.ok('estimate_tx_size_and_weight', {'n_inputs': i, 'n_outputs': o, 'ring_size': 16, 'rct': True})['weight']
+                   for i in (1, 2, 3) for o in (1, 2, 3, 4)}
+        self.assertEqual(weights, {(1, 1): 1536, (1, 2): 1536, (1, 3): 2139, (1, 4): 2218, (2, 1): 2215, (2, 2): 2215, (2, 3): 2818, (2, 4): 2897,
+                                   (3, 1): 2894, (3, 2): 2894, (3, 3): 3497, (3, 4): 3576})
+        to = self.n.control('/test/xmr/address', {})['address']
+        back = self.n.control('/test/xmr/address', {'label': 'back'})['address']
+
+        def refund(dests):
+            acct = self.n.ok('create_account')
+            self.n.control('/test/xmr/deposit', {'address': acct['address'], 'amount': sum(a for _, a in dests) + (1_000_000_000 if len(dests) > 1 else 0)})
+            self.n.control('/test/xmr/mine', {'blocks': 10})
+            self.n.ok('refresh')
+            return self.n.wallet('transfer', {'destinations': [{'address': a, 'amount': v} for a, v in dests], 'account_index': acct['account_index'],
+                                              'priority': 0, 'subtract_fee_from_outputs': [0], 'do_not_relay': True})
+        for amount, code in ((1_000_000_000, -17), (1_500_000_000, -17), (1_800_000_000, -16)):
+            self.assertEqual(refund([(to, amount)])['error']['code'], code, amount)
+        built = refund([(to, 5_000_000_000), (back, 4_000_000_000)])['result']
+        self.assertEqual(refund([(to, built['fee']), (back, 4_000_000_000)])['error'], {'code': -46, 'message': 'destination amount is zero'})
+        self.assertEqual(refund([(to, built['fee'] + 10_000), (back, 4_000_000_000)])['result']['amounts_by_dest']['amounts'], [10_000, 4_000_000_000])
+        # The built weight: 659 more per input (2166 and 2825 for two and three inputs of a 1507 build on the fakechain).
+        self.assertEqual([xmr.tx_weight(n, 2) for n in (1, 2, 3)], [1562, 2221, 2880])
+
     def test_small_order_destination_crashes_the_wallet_rpc(self):
         acct = self.escrow_account()
         self.n.control('/test/xmr/deposit', {'address': acct['address'], 'amount': 300_000_000_000})

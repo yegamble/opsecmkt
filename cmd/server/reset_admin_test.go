@@ -42,6 +42,10 @@ func TestReadNewPasswordFromPipe(t *testing.T) {
 		{"first-line-password\nsecond-line\n", "", "single line"},
 		{"", "", "no password"},
 		{"\n", "", "no password"},
+		{"Passwörd-123456\n", "Passwörd-123456", ""},
+		// QA5W4B-6: a browser sends UTF-8 without NUL, so such a password could never sign in.
+		{"Passw\xf6rd-123456\n", "", invalidPasswordText},
+		{"Password\x00-123456\n", "", invalidPasswordText},
 	} {
 		got, err := readNewPassword(strings.NewReader(tc.in), &bytes.Buffer{}, "root_admin", notTerminal)
 		if tc.err == "" && (err != nil || got != tc.want) {
@@ -64,6 +68,8 @@ func TestReadNewPasswordFromTerminal(t *testing.T) {
 		{"operator-chosen-password\r\noperator-chosen-password\r\n", "operator-chosen-password", ""},
 		{"operator-chosen-password\noperator-chosen-passwrd\n", "", "do not match"},
 		{"operator-chosen-password\n", "", "no password entered"},
+		{"Passw\xf6rd-123456\nPassw\xf6rd-123456\n", "", invalidPasswordText},
+		{"Password\x00-123456\nPassword\x00-123456\n", "", invalidPasswordText},
 	} {
 		hidden, restored := false, false
 		var prompt bytes.Buffer

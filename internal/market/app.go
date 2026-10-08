@@ -26,6 +26,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 )
 
 //go:embed schema.sql
@@ -82,6 +83,9 @@ type App struct {
 	// The escrow signer (A-454, escrow_signer.go): nil without ESCROW_SIGNER_SOCKET; its state is in memory only.
 	escrowSigner       *escrowSignerClient
 	escrowSignerStatus atomic.Value // string: the state checkEscrowSigner last found (signerReady, signerWaiting, …)
+	// escrowSiblingsChecked: this process's escrow watcher has checked that the watch-only wallet holds every shape-(b)
+	// escrow's sibling addresses (ensureSiblingWatch, A-456a).
+	escrowSiblingsChecked atomic.Bool
 }
 
 // parseTemplates loads layout (web/templates/*.html), pages/<page>.html ("page:<page>") and partials/<hook>.html.
@@ -265,8 +269,9 @@ func setRuntimeParam(p map[string]string, k, v string) {
 	p[k] = v
 }
 
-// OpenDB opens the database in dsn with TimeZone pinned to UTC on every connection (a startup parameter, which
-// outranks database and role defaults), so displayed times never follow or reveal the server's zone. The
+// OpenDB opens the database in dsn with TimeZone pinned to UTC and client_encoding to UTF8 on every connection
+// (startup parameters, which outrank database and role defaults), so displayed times never follow or reveal
+// the server's zone. The
 // application pool, its migrations and the -bootstrap-admin, -reset-admin-password, -reset-admin-factors,
 // -set-role and -status commands all open the database here; only the application pool passes WithAppTimeouts.
 func OpenDB(dsn string, opts ...DBOption) (*sql.DB, error) {
@@ -275,6 +280,10 @@ func OpenDB(dsn string, opts ...DBOption) (*sql.DB, error) {
 		return nil, errors.New("database configuration invalid")
 	}
 	setRuntimeParam(cfg.RuntimeParams, "timezone", "UTC")
+	// pgx sends no client_encoding, so a session would use the database's own encoding (or the role's setting).
+	// Text crosses the wire as UTF-8 only if the session says so (A-481); startup separately refuses a
+	// database that is not UTF8.
+	setRuntimeParam(cfg.RuntimeParams, "client_encoding", "UTF8")
 	for _, o := range opts {
 		o(cfg.RuntimeParams)
 	}
@@ -401,6 +410,12 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", 405)
 		return
 	}
+	// No page, raw route or image route meets query text the database would refuse: the loaders passed it to
+	// PostgreSQL, so /product?id=%ff answered 500 (QA5W4B-5). A post's query string is in r.Form, checked below.
+	if r.Method != "POST" && !formTextValid(r.URL.Query()) {
+		http.Error(w, invalidQueryText, 400)
+		return
+	}
 	// Admission control (admission.go): a page finding its class full is refused here with 503, before any
 	// database work; a form post takes its slot in a.post, once its body has been read and checked and its
 	// session looked up.
@@ -479,7 +494,8 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			a.serveUpload(w, r.WithContext(context.WithValue(context.WithValue(base, sessionKey{}, token), anonKey{}, anon)), route, session, token)
 			return
 		}
-		if isMultipart(r) {
+		// The sign form's signed PSBT file (A-456b) is the one other multipart post; it is read below.
+		if isMultipart(r) && !psbtUploadRoutes[r.URL.Path] {
 			a.refuseMultipartElsewhere(w, r, token)
 			return
 		}
@@ -487,17 +503,34 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Read-only preview. Start with PostgreSQL to save changes.", 403)
 			return
 		}
-		// The body is read first (at most 64 KiB) and its fields counted before it is parsed: parsing runs before
-		// any slot, on as many connections as the listener admits, and a body of thousands of distinct empty
-		// fields cost about 3.7 MB of allocation to parse. No form has more than maxFormFields (PR #15 re-review).
-		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 65536))
-		if err != nil || bytes.Count(body, []byte("&")) >= maxFormFields {
-			http.Error(w, "Invalid or oversized form", 400)
-			return
+		if isMultipart(r) {
+			// Its five known fields, bounded, become the form; every check below applies to them (psbt_upload.go).
+			form, code, msg := readPSBTUploadForm(w, r)
+			if form == nil {
+				http.Error(w, msg, code)
+				return
+			}
+			r.Form, r.PostForm = form, form
+		} else {
+			// The body is read first (at most 64 KiB) and its fields counted before it is parsed: parsing runs before
+			// any slot, on as many connections as the listener admits, and a body of thousands of distinct empty
+			// fields cost about 3.7 MB of allocation to parse. No form has more than maxFormFields (PR #15 re-review).
+			body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 65536))
+			if err != nil || bytes.Count(body, []byte("&")) >= maxFormFields {
+				http.Error(w, "Invalid or oversized form", 400)
+				return
+			}
+			r.Body = io.NopCloser(bytes.NewReader(body))
+			if err := r.ParseForm(); err != nil {
+				http.Error(w, "Invalid or oversized form", 400)
+				return
+			}
 		}
-		r.Body = io.NopCloser(bytes.NewReader(body))
-		if err := r.ParseForm(); err != nil {
-			http.Error(w, "Invalid or oversized form", 400)
+		// No handler meets text the database would refuse: on a UTF8 database invalid UTF-8 or a NUL byte made the
+		// write fail with a 500, after a confirmation had accepted the password (QA5W3B-5). The upload routes check
+		// their text parts themselves (uploads.go readForm), and so does the sign form's multipart reader.
+		if !formTextValid(r.Form) {
+			http.Error(w, invalidFormText, 400)
 			return
 		}
 		if msg := postOriginError(r); msg != "" {
@@ -664,6 +697,29 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	objectTitle(&d)
 	a.render(w, r, d)
+}
+
+// invalidFormText refuses a form whose text formTextValid rejects.
+const invalidFormText = "Invalid form: a field is not valid UTF-8 or contains a NUL character. Nothing was changed."
+
+// invalidQueryText refuses a GET or HEAD whose query string formTextValid rejects (QA5W4B-5).
+const invalidQueryText = "Invalid address: a query parameter is not valid UTF-8 or contains a NUL character."
+
+// formTextValid reports whether every name and value in form is valid UTF-8 without a NUL byte, as PostgreSQL's
+// UTF8 text must be.
+func formTextValid(form url.Values) bool {
+	ok := func(s string) bool { return utf8.ValidString(s) && !strings.ContainsRune(s, 0) }
+	for k, vs := range form {
+		if !ok(k) {
+			return false
+		}
+		for _, v := range vs {
+			if !ok(v) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // postOriginError returns the refusal of a form post whose Origin names another host or whose Sec-Fetch-Site says

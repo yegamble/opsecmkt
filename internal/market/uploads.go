@@ -25,8 +25,10 @@ import (
 // A-186 (war room 2026-09-27, rulings C3, C5, C6 and D10): the only two routes that take a file. POST
 // /listings/photo (vendors and administrators; the listing's id in the form) adds a photo to a listing, and POST
 // /account/avatar (vendors, administrators and moderators — the owner's staff avatar decision; always the
-// actor's own) sets the actor's avatar, replacing any earlier one. Any other POST with a multipart body is
-// refused with a 415 page before its body is read (ServeHTTP); every other route keeps its 64 KiB form cap.
+// actor's own) sets the actor's avatar, replacing any earlier one. Besides them only the escrow sign form, POST
+// /escrow/sign, takes a multipart body, a signed PSBT file of at most 64 KB (A-456b, psbt_upload.go); any other POST
+// with a multipart body is refused with a 415 page before its body is read (ServeHTTP), and every other route keeps
+// its 64 KiB form cap.
 //
 // Order of work, each refusal a rendered HTML page (renderUploadPage), never text/plain:
 //
@@ -39,7 +41,8 @@ import (
 //     expired or unauthorised sender keeps the server's unextended 15 s ReadTimeout and holds no slot.
 //  5. The body, through multipart.NewReader over io.LimitReader(r.Body, uploadBodyLimit) with the bytes
 //     counted: parts csrf (first, at most 128 bytes), optional id, optional description (at most 250
-//     characters), photo (at most 4 MB, read into one buffer sized from Content-Length). A part's file name
+//     characters), photo (at most 4 MB, read into one buffer sized from Content-Length); id and description
+//     must be valid UTF-8 without a NUL byte, as every other form's fields (QA5W3B-5). A part's file name
 //     and Content-Type are never read. Never http.MaxBytesReader (when exceeded it makes the server close the
 //     connection, racing the answer against the unsent body: the browser shows a reset instead of the page),
 //     never ParseMultipartForm or FormFile (they spill to temporary files).
@@ -120,6 +123,7 @@ var (
 	errUploadForm        = &httpError{Code: http.StatusBadRequest, Msg: "Photo not saved: the form arrived incomplete or out of order. Reload the page and try again. Nothing was stored."}
 	errUploadNoPhoto     = &httpError{Code: http.StatusBadRequest, Msg: "Photo not saved: choose a JPEG or PNG file to upload. Nothing was stored."}
 	errUploadDescription = &httpError{Code: http.StatusBadRequest, Msg: "Photo not saved: the description is longer than 250 characters. Nothing was stored."}
+	errUploadText        = &httpError{Code: http.StatusBadRequest, Msg: "Photo not saved: a field is not valid UTF-8 or contains a NUL character. Nothing was stored."}
 	errUploadCSRF        = &httpError{Code: http.StatusForbidden, Msg: "Form expired. Reload and try again. Nothing was stored."}
 	errUploadTimeout     = &httpError{Code: http.StatusRequestTimeout, Msg: "Photo not saved: the upload did not finish within 90 seconds. Nothing was stored. Try again, or try a smaller picture."}
 	errUploadSignedOut   = &httpError{Code: http.StatusUnauthorized, Msg: "Photo not saved: your session has ended. Sign in again, then upload the photo again. Nothing was stored."}
@@ -379,14 +383,19 @@ func (u *upload) readForm() (uploadForm, error) {
 			if err != nil {
 				return f, failed(err)
 			}
-			f.id = string(v)
+			if f.id = string(v); !formTextValid(url.Values{"id": {f.id}}) {
+				return f, errUploadText
+			}
 		case name == "description" && (seen == "" || seen == "id"):
 			v, err := readSmallPart(p, 4*descriptionLimit)
 			if err != nil {
 				return f, failed(err)
 			}
 			d := strings.TrimSpace(string(v))
-			if !utf8.ValidString(d) || strings.ContainsRune(d, 0) || utf8.RuneCountInString(d) > descriptionLimit {
+			if !formTextValid(url.Values{"description": {d}}) {
+				return f, errUploadText
+			}
+			if utf8.RuneCountInString(d) > descriptionLimit {
 				return f, errUploadDescription
 			}
 			f.description = d

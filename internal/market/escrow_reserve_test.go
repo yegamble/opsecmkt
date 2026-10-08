@@ -68,6 +68,7 @@ func forgetEscrow(t *testing.T, db *sql.DB, orderID string) {
 	for _, q := range []string{
 		"ALTER TABLE escrows DISABLE TRIGGER escrows_not_deleted",
 		"DELETE FROM escrow_pubkeys WHERE escrow_id IN (SELECT id FROM escrows WHERE order_id=$1)",
+		"DELETE FROM escrow_siblings WHERE escrow_id IN (SELECT id FROM escrows WHERE order_id=$1)", // shape (b), A-456a
 		"DELETE FROM escrows WHERE order_id=$1",
 		"ALTER TABLE escrows ENABLE TRIGGER escrows_not_deleted",
 	} {
@@ -428,6 +429,7 @@ func TestEscrowWatchKeysReply(t *testing.T) {
 		{"not held", map[string]any{"ismine": false, "labels": []string{}, "scriptPubKey": coreWatchSPK}, nil, "", ""},
 		{"labelled, not held", map[string]any{"ismine": false, "labels": []string{"escrow:o2"}}, nil, "", ""},
 		{"held, not P2WSH", map[string]any{"ismine": true, "labels": []string{"x"}, "scriptPubKey": "0014" + strings.Repeat("ab", 20)}, nil, "", segwitAddress("bcrt", 0, wpkh)},
+		{"held by addr(…) only (QA5W4A-2)", map[string]any{"ismine": true, "solvable": false, "labels": []string{"escrow:o2"}, "scriptPubKey": coreWatchSPK}, nil, "getaddressinfo unsolvable", ""},
 		{"no ismine", without("ismine"), nil, "getaddressinfo bad-reply", ""},
 		{"no scriptPubKey", without("scriptPubKey"), nil, "getaddressinfo bad-reply", ""},
 		{"neither pubkeys nor desc", without("pubkeys", "desc"), nil, "getaddressinfo bad-reply", ""},

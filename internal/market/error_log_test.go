@@ -117,18 +117,29 @@ func TestLogsContainNoSecrets(t *testing.T) {
 			}
 		}
 	}
-	// A page 500: the product page passes its id to PostgreSQL, which refuses a NUL byte (22021). (The catalog
-	// search drops NUL bytes and invalid UTF-8 from q, category and region since A-181.)
-	w := send("GET", "/product?id="+handle+"%00&q=query-secret", nil)
-	check(w, "page", "product", "22021")
+	// A page 500: the product page's query fails. A NUL byte in its id no longer reaches PostgreSQL (refused with 400
+	// since QA5W4B-5), so the products table is renamed away for this request (42P01, undefined table).
+	if _, err := e.DB.Exec("ALTER TABLE products RENAME TO products_gone"); err != nil {
+		t.Fatal(err)
+	}
+	w := send("GET", "/product?id="+handle+"&q=query-secret", nil)
+	check(w, "page", "product", "42P01")
+	if _, err := e.DB.Exec("ALTER TABLE products_gone RENAME TO products"); err != nil {
+		t.Fatal(err)
+	}
 	if strings.Contains(logs.String(), "/product") || strings.Contains(logs.String(), "id=") || strings.Contains(logs.String(), "q=") {
 		t.Fatalf("log contains the URL path or query: %q", logs.String())
 	}
-	// An action 500: a NUL in a form value reaches the UPDATE.
+	// An action 500: the UPDATE fails. A NUL in a form value no longer reaches it (refused with 400 since
+	// QA5W3B-5), so a trigger in this test's database refuses it with the SQLSTATE the NUL raised.
+	if _, err := e.DB.Exec(`CREATE FUNCTION refuse_notification_update() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN RAISE EXCEPTION 'refused' USING ERRCODE='22021'; END$$;
+		CREATE TRIGGER refuse_notification_update BEFORE UPDATE ON notifications FOR EACH STATEMENT EXECUTE FUNCTION refuse_notification_update()`); err != nil {
+		t.Fatal(err)
+	}
 	logs.mu.Lock()
 	logs.b.Reset()
 	logs.mu.Unlock()
-	w = send("POST", "/notifications?query-secret=1", url.Values{"id": {handle + "\x00form-secret"}})
+	w = send("POST", "/notifications?query-secret=1", url.Values{"id": {handle + "form-secret"}})
 	check(w, "action", "/notifications", "22021")
 }
 

@@ -223,6 +223,24 @@ func (a *App) pollOnce(ctx context.Context) error {
 // deposit address watched, and a deposit first recorded there is announced once (payments.late_notice).
 const fundedOpenStates = "'paid','shipped','delivered','disputed'"
 
+// pendingDepositSQL is true while the pooled address pa has a recorded deposit still pending: neither credited nor
+// flagged, and not ended by the missing or conflict handling (negative confirmations; A-486). It is inline (an EXISTS
+// the planner can turn into a join; a function call per address cost seconds at 100,000 closed addresses, A-488), and
+// migration 091 carries the same text in pooled_drain_blockers, so the watcher and the drain gate share one rule:
+// TestPooledDrainPendingRuleShared pins the migration's copy and pooled_pending_deposit (which names the deposit in
+// the gate's detail) to it.
+const pendingDepositSQL = `EXISTS (SELECT 1 FROM payments pm WHERE pm.currency = pa.currency AND pm.address = pa.address AND NOT pm.credited AND NOT pm.flagged AND pm.confirmations >= 0)`
+
+// pooledWatchSQL is the pooled watcher's address rule, over payment_addresses pa JOIN orders o: an order awaiting
+// payment or funded and open; the time rule (24 hours after the order last changed state, 30 days after a closed
+// order's address was issued), pooled_watch_horizon (migration 091, A-445); a recorded deposit there still pending,
+// pendingDepositSQL (A-486), so a deposit below the threshold when the horizon ends is still flagged once it
+// confirms, or ended once the wallet drops it; or a payout pending or held. The drain gate, pooled_drain_blockers,
+// uses the same two rules. TestPooledDrainWatcherPredicateEquivalence pins the rest to the rule before them.
+const pooledWatchSQL = `(o.state IN ('awaiting_payment',` + fundedOpenStates + `) OR pooled_watch_horizon(o.state,o.updated,pa.created)
+			OR ` + pendingDepositSQL + `
+			OR EXISTS (SELECT 1 FROM payouts po WHERE po.order_id=o.id AND po.state IN ('pending','held')))`
+
 type ledgerKey struct {
 	txid string
 	idx  int64
@@ -237,7 +255,8 @@ func (a *App) pollCurrency(ctx context.Context, p PaymentProvider) error {
 	// payout pending (sendPayouts sends only payouts of orders read and settled in this pass) or held are watched
 	// too: the watcher's own hold resumes once the deposit re-confirms, and the ledger of a hold an administrator
 	// must release (a watcher hold converted by a suspension or a restore from backup) stays current, so the
-	// release is not refused on stale confirmations. Other older addresses of closed orders are not polled.
+	// release is not refused on stale confirmations. So are closed orders' addresses with a recorded deposit still
+	// pending (A-486, pooledWatchSQL). Other older addresses of closed orders are not polled.
 	//
 	// Cost: the watch set is every open order plus every order whose address was issued in the last 30 days, so
 	// about 30 days of orders (3,000 addresses at 100 orders a day). recordIncoming reads them in chunks of 200.
@@ -249,9 +268,7 @@ func (a *App) pollCurrency(ctx context.Context, p PaymentProvider) error {
 	// number of orders of the last 30 days and the deposits to them (not measured at volume); a pass is bounded
 	// by watcherPassTimeout, and one cut short leaves the rest to the next.
 	rows, err := a.db.QueryContext(ctx, `SELECT pa.address,pa.order_id FROM payment_addresses pa JOIN orders o ON o.id=pa.order_id
-		WHERE pa.currency=$1 AND (o.state IN ('awaiting_payment',`+fundedOpenStates+`) OR (o.state<>'draft' AND o.updated > now()-interval '24 hours')
-			OR (o.state IN ('cancelled','resolved','completed') AND pa.created > now()-interval '30 days')
-			OR EXISTS (SELECT 1 FROM payouts po WHERE po.order_id=o.id AND po.state IN ('pending','held')))
+		WHERE pa.currency=$1 AND `+pooledWatchSQL+`
 		ORDER BY o.updated`, cur)
 	if err != nil {
 		return err
@@ -331,11 +348,14 @@ func (a *App) applyIncoming(ctx context.Context, cur string, incoming []Incoming
 
 // upsertIncoming writes one output to the payments ledger for order (applyIncoming's row) and reports whether the row
 // was inserted or changed. The Monero escrow watcher calls it row by row, so a row the database refuses is caught for
-// that row alone (escrow_xmr_watch.go).
+// that row alone (escrow_xmr_watch.go). An output to a sibling address of a shape-(b) Bitcoin escrow's order wallet
+// (escrow_siblings, A-456a) is recorded left out from the start: it never counts for the order and the stray refund
+// returns it once the order is closed.
 func (a *App) upsertIncoming(ctx context.Context, cur, order string, in Incoming) (bool, error) {
-	res, err := a.db.ExecContext(ctx, `INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations,locked,late_notice,after_close)
+	res, err := a.db.ExecContext(ctx, `INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations,locked,late_notice,after_close,escrow_left_out)
 		VALUES($1,$2,$3,$4,$5,$6,$7,$8,EXISTS(SELECT 1 FROM orders WHERE id=$1 AND state IN (`+fundedOpenStates+`)),
-			EXISTS(SELECT 1 FROM orders WHERE id=$1 AND state IN ('cancelled','resolved','completed')))
+			EXISTS(SELECT 1 FROM orders WHERE id=$1 AND state IN ('cancelled','resolved','completed')),
+			$2='BTC' AND EXISTS(SELECT 1 FROM escrow_siblings WHERE address=$5))
 		ON CONFLICT (currency,txid,idx) DO UPDATE SET confirmations=excluded.confirmations, locked=excluded.locked, updated=now()
 		WHERE (payments.confirmations,payments.locked) IS DISTINCT FROM (excluded.confirmations,excluded.locked)`, order, cur, in.TxID, in.Index, in.Address, in.Amount, in.Confirmations, in.Locked)
 	if err != nil {
@@ -629,22 +649,27 @@ func (a *App) flagLateDeposits(ctx context.Context, tx *sql.Tx, o *Order, thresh
 		return err
 	}
 	rows, err := tx.QueryContext(ctx, `UPDATE payments SET flagged=true WHERE order_id=$1 AND NOT credited AND NOT flagged AND NOT locked
-		AND confirmations>=$2 AND ($3 OR after_close) RETURNING txid,amount`, o.ID, threshold, paidOut)
+		AND confirmations>=$2 AND ($3 OR after_close) RETURNING txid,amount,EXISTS(SELECT 1 FROM escrow_siblings s WHERE s.address=payments.address)`, o.ID, threshold, paidOut)
 	if err != nil {
 		return err
 	}
 	dec := currencyDecimals(o.Currency)
 	var deposits []string
 	var sum int64
+	atSiblings := 0 // QA5W5A-6: a deposit to a per-order escrow's sibling address is not at its escrow address
 	for rows.Next() {
 		var txid string
 		var amt int64
-		if err = rows.Scan(&txid, &amt); err != nil {
+		var atSibling bool
+		if err = rows.Scan(&txid, &amt, &atSibling); err != nil {
 			rows.Close()
 			return err
 		}
 		deposits = append(deposits, "deposit "+truncate(txid, 20)+" ("+amount(amt, dec)+" "+o.Currency+")")
 		sum += amt
+		if atSibling {
+			atSiblings++
+		}
 	}
 	rows.Close()
 	if err = rows.Err(); err != nil || len(deposits) == 0 {
@@ -666,8 +691,15 @@ func (a *App) flagLateDeposits(ctx context.Context, tx *sql.Tx, o *Order, thresh
 		if o.Currency == "XMR" { // a Monero escrow is custodial: the market alone builds and sends its stray refund (P3-R8)
 			net, how = a.xmrEscrowNetwork(), "the market returns it, less the network fee, to your refund address by a stray refund from the escrow"
 		}
-		note = a.netTag() + " " + net + " " + strings.Join(deposits, ", ") + " arrived at this order's escrow address after the order closed; not counted, it is returned to the buyer's refund address by a stray refund from the escrow. Moderator review required."
-		body = "Order " + o.ID[:min(8, len(o.ID))] + ": " + amount(sum, dec) + " " + o.Currency + " (" + a.netTag() + " " + net + ") arrived at this order's escrow address after the order closed. It is not counted; " + how + ". Market staff were notified."
+		where := "this order's escrow address"
+		switch {
+		case atSiblings == len(deposits):
+			where = "an address of this order's wallet other than its escrow address"
+		case atSiblings > 0:
+			where = "this order's escrow address and another address of this order's wallet"
+		}
+		note = a.netTag() + " " + net + " " + strings.Join(deposits, ", ") + " arrived at " + where + " after the order closed; not counted, it is returned to the buyer's refund address by a stray refund from the escrow. Moderator review required."
+		body = "Order " + o.ID[:min(8, len(o.ID))] + ": " + amount(sum, dec) + " " + o.Currency + " (" + a.netTag() + " " + net + ") arrived at " + where + " after the order closed. It is not counted; " + how + ". Market staff were notified."
 	}
 	if episode {
 		_, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", o.ID, o.State, note)

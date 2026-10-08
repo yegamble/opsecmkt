@@ -20,7 +20,7 @@ import (
 
 // The escrow signer's client (A-454, ruling P4-R17). Per-order (shape (b)) escrows are co-signed by a dedicated signer,
 // cmd/escrow-signer, which holds the market's key for them and listens on a Unix socket (ESCROW_SIGNER_SOCKET); the app
-// never holds that key. No order uses shape (b) yet: the settlement flow calls sign from A-456. Until then the app only
+// never holds that key. The settlement flow calls sign since A-456b (signerCosign, escrow_cosign.go). The app also
 // checks the signer at startup and on every escrow watcher pass (checkEscrowSigner): it asks for the signer's account
 // key, pins its fingerprint and an HMAC of it at first contact, and reports one of four states. A key that differs from
 // the pinned one makes shape (b) unavailable (one fixed log line and an admin line; nothing else changes: shape (a)
@@ -127,7 +127,7 @@ func (c *escrowSignerClient) info(ctx context.Context) (escrowSignerInfo, error)
 
 // sign asks the signer to co-sign one escrow's PSBT (base64) as the market key of per-order index index, and returns
 // the signed PSBT. The signer refuses anything but exactly one 2-of-3 escrow holding its key for that index
-// (cmd/escrow-signer/sign.go). No caller yet (A-456).
+// (cmd/escrow-signer/sign.go). Its caller is signerCosign (escrow_cosign.go, A-456b).
 func (c *escrowSignerClient) sign(ctx context.Context, psbt string, index uint32) (string, error) {
 	var r struct {
 		PSBT string `json:"psbt"`
@@ -196,6 +196,64 @@ func (a *App) checkEscrowSigner(ctx context.Context) {
 		log.Print(map[string]string{signerReady: escrowLogSignerReady, signerWaiting: escrowLogSignerWaiting,
 			signerMismatch: escrowLogSignerMismatch, signerBadReply: escrowLogSignerBadReply}[state])
 	}
+}
+
+// errSignerNone is shape (b) with no escrow signer configured (ESCROW_SIGNER_SOCKET unset).
+var errSignerNone = errors.New("escrow signer: not configured")
+
+// signerAccount is the escrow signer's account key as a shape-(b) escrow's market key (A-456a): asked of the signer now
+// and checked against the pins in this database, read through q, which the signer's first contact wrote
+// (checkEscrowSigner). No signer configured, one that does not answer or is not understood, a database with no pins
+// yet and a key that differs from them are each an error: no per-order escrow is created then. The key is the
+// signer's rooted account key (depth 0) with its own fingerprint and no path.
+func (a *App) signerAccount(ctx context.Context, q rowQuerier) (escrowKey, error) {
+	if a.escrowSigner == nil {
+		return escrowKey{}, errSignerNone
+	}
+	info, err := a.escrowSigner.info(ctx)
+	if err != nil {
+		return escrowKey{}, err
+	}
+	var fp, mac string
+	if err = q.QueryRowContext(ctx, "SELECT COALESCE((SELECT value FROM settings WHERE key=$1),''),COALESCE((SELECT value FROM settings WHERE key=$2),'')",
+		escrowSignerFingerprintPin, escrowSignerXPubPin).Scan(&fp, &mac); err != nil {
+		return escrowKey{}, err
+	}
+	if fp == "" || fp != info.Fingerprint || mac != a.escrowXPubHMAC(info.Key.ChainCode, info.Key.PubKey) {
+		return escrowKey{}, &signerRefusal{signerMismatch}
+	}
+	return escrowKey{Fingerprint: info.Fingerprint, XPub: info.Key.Rooted(btc.VersionTpub), ChainCode: info.Key.ChainCode, PubKey: info.Key.PubKey}, nil
+}
+
+// isSignerKey reports whether k is the escrow signer's pinned account key (QA5W3A-7): its declared origin fingerprint is
+// the signer's pinned fingerprint, or its HMAC computed as the pin's (escrowXPubHMAC of its chain code and public key) is
+// the pinned one, so the signer's key re-serialized at any depth under any fingerprint is caught. A party key that is
+// the signer's would put two of a per-order escrow's three keys in the signer's seed. Nothing pinned yet: false (the
+// checkout check, escrowCheckoutAction, covers a key registered before the signer's first contact). A key derived from
+// the signer's (a descendant) cannot be detected this way; the practice signature, which only the seed's holder could
+// make for such a key, is what stops it.
+func (a *App) isSignerKey(ctx context.Context, q rowQuerier, k escrowKey) (bool, error) {
+	var fp, mac string
+	if err := q.QueryRowContext(ctx, "SELECT COALESCE((SELECT value FROM settings WHERE key=$1),''),COALESCE((SELECT value FROM settings WHERE key=$2),'')",
+		escrowSignerFingerprintPin, escrowSignerXPubPin).Scan(&fp, &mac); err != nil {
+		return false, err
+	}
+	return fp != "" && k.Fingerprint == fp || mac != "" && mac == a.escrowXPubHMAC(k.ChainCode, k.PubKey), nil
+}
+
+// errPerOrderUnavailable is why no per-order (shape (b)) escrow is offered: perOrderAvailable is false.
+const errPerOrderUnavailable = "Escrows with per-order wallets need the market's escrow signer, which is not available on this market right now."
+
+// perOrderAvailable reports whether per-order (shape (b)) escrows are offered (A-456b): an escrow signer is configured,
+// which co-signs their settlements, and its latest check did not find a key other than the pinned one or a reply it
+// could not understand (P4-R17: shape (b) unavailable). A signer that did not answer the latest check is still offered:
+// checkout asks it again and refuses, nothing written, while it does not answer (errEscrowSigner).
+func (a *App) perOrderAvailable() bool {
+	if a.escrowSigner == nil {
+		return false
+	}
+	s := a.escrowSignerState()
+	return s != signerMismatch && s != signerBadReply
 }
 
 // escrowSignerState is the signer's state as the latest check found it ("" = no signer configured, or not checked).

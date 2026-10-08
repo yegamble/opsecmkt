@@ -487,7 +487,11 @@ func escrowBumpSignAction(c *actionCtx) (actionResult, error) {
 	case state != "awaiting_signature" && !second:
 		return actionResult{}, errBumpNotReady
 	}
-	keys, err := escrowKeys(ctx, c.Tx, o.ID)
+	keys, err := c.A.settlementKeys(ctx, c.Tx, o.ID, sid) // a sibling stray refund's bump: the sibling's keys (A-456b)
+	if errors.Is(err, errPerOrderXpub) {
+		log.Printf("escrow: fee bump of order %s not signed: %s", shortID(o.ID), errorCause(err))
+		return actionResult{}, errSettleKeys // QA5W5A-1: never a 500
+	}
 	if err != nil {
 		return actionResult{}, err
 	}
@@ -753,29 +757,19 @@ func (a *App) cosignBump(ctx context.Context, e *escrowBTC, sid int64) error {
 		// The two do not verify together: the market co-signs with the claimant's alone, and the other party's goes.
 		discard = []string{b.Parties[1].Party}
 	}
-	if err = a.ensureArbiterKey(ctx, e, b.settleBuild); err != nil {
-		var re *escrowRPCError
-		if errors.As(err, &re) && re.Class == sendMarketKey {
-			return a.bumpSendWaits(ctx, b.BumpID, b.OrderID, sendMarketKey)
-		}
-		return err
-	}
-	copyText, err := settlementCopy(encodePSBT(b.Stored.Raw), b.Keys["market"])
+	// The arbiter wallet signs a Bitcoin Core escrow's bump, the escrow signer a per-order escrow's (marketSign, A-456b).
+	signed, class, err := a.marketSign(ctx, e, b.settleBuild)
 	if err != nil {
 		return err
 	}
-	signed, err := e.arbiterSign(ctx, copyText)
-	if err != nil {
-		return err
-	}
-	if class := checkMarketSigned(signed.PSBT, b.settleBuild); class != "" {
+	if class != "" {
 		return a.bumpSendWaits(ctx, b.BumpID, b.OrderID, class)
 	}
 	claimantCopy, err := withPartySigs(b.Stored, claimant)
 	if err != nil {
 		return err
 	}
-	combined, err := e.combinePSBT(ctx, []string{signed.PSBT, claimantCopy})
+	combined, err := e.combinePSBT(ctx, []string{signed, claimantCopy})
 	if err != nil {
 		return err
 	}
@@ -1164,14 +1158,18 @@ func (a *App) bumpView(ctx context.Context, d *PageData, v *EscrowOrderView, s *
 		reader := d.OrderViewer
 		canSign := bstate == "awaiting_signature" && reader == claimant || bstate == "party_signed" && reader == otherParty(claimant) && !readerSigned && signer == claimant
 		if canSign && (reader == roleBuyer || reader == roleVendor) && a.escrowConfigured && state == "broadcast" {
-			keys, err := escrowKeys(ctx, a.db, d.Order.ID)
-			if err != nil {
+			keys, err := a.settlementKeys(ctx, a.db, d.Order.ID, id)
+			switch {
+			case errors.Is(err, errPerOrderXpub):
+				bv.Status += " " + settleKeysUnavailable // QA5W5A-1: served, saying why no copy is offered
+			case err != nil:
 				return err
+			default:
+				if bv.PSBT, err = settlementCopy(psbt, keys[reader]); err != nil {
+					return err
+				}
+				bv.CanSign, bv.SignToo = true, bstate == "party_signed"
 			}
-			if bv.PSBT, err = settlementCopy(psbt, keys[reader]); err != nil {
-				return err
-			}
-			bv.CanSign, bv.SignToo = true, bstate == "party_signed"
 		}
 		s.Bumps = append(s.Bumps, bv)
 	}

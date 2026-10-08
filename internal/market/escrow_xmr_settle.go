@@ -28,7 +28,9 @@ import (
 //     transfer with do_not_relay takes the network fee from the claimant's output alone. The reply is checked
 //     (checkXMRBuild): exactly the claimed key images, amounts_by_dest the plan less the fee on the claimant's output,
 //     the fee within ESCROW_XMR_MAX_FEE and the claimant's output at least the Monero floor; otherwise it is discarded
-//     unrelayed, the settlement stays requested and staff are told. Then, in one transaction, the outputs, the
+//     unrelayed, the settlement stays requested and staff are told (a refund too few ends instead: xmrSettleTooSmall).
+//     A refund the wallet refuses to build because its coins are at or below the network fee is too few as well
+//     (xmrRefundBelowFee, A-467). Then, in one transaction, the outputs, the
 //     transaction (hash, metadata, blob, fee, input total, key images) and the claim of each spent deposit
 //     (payments.xmr_settlement_id, compare-and-set) are stored.
 //  2. Relay (built -> relayed), only after the store, with the stored metadata, never while the restore gate is set or
@@ -92,6 +94,13 @@ const (
 	// settlements' calls time out too.
 	xmrBuildDropped  = "build-dropped"
 	xmrBuildSetAside = "build-set-aside"
+	// the wallet refused to build a refund or stray refund with a code that may mean its coins are too few for the
+	// network fee, and the fee estimate that decides it failed (xmrRefundBelowFee, QA5W1-4): waited on once, then
+	// flagged when a later pass fails the same way. It is never classed too few without an estimate, and the wallet's
+	// pass goes on with its other orders. A failed estimate and a refusal count as one run of passes without a build
+	// (xmrFeeEpisode, QA5W2-1).
+	xmrFeeEstimateWaiting     = "fee-estimate-waiting"
+	xmrFeeEstimateUnavailable = "fee-estimate-unavailable"
 )
 
 // xmrRelayAttempts is the number of passes in a row on which relay_tx may refuse a stored transaction before it is
@@ -101,10 +110,55 @@ const xmrRelayAttempts = 3
 // xmrWaitFlagged reports whether staff are told of class.
 func xmrWaitFlagged(class string) bool {
 	switch class {
-	case xmrOutputsMismatch, xmrAddressMismatch, xmrFeeCap, xmrTooSmall, xmrBadBuild, xmrBuildSetAside:
+	case xmrOutputsMismatch, xmrAddressMismatch, xmrFeeCap, xmrTooSmall, xmrBadBuild, xmrBuildSetAside, xmrFeeEstimateUnavailable:
 		return true
 	}
 	return strings.HasPrefix(class, xmrDestRefused) || strings.HasPrefix(class, xmrWalletRefused+" ")
+}
+
+// xmrFeeEpisode reports whether class records a pass of a refund or stray refund on which transfer built nothing that
+// counts with a failed fee estimate (QA5W2-1): the estimate's own classes, a refusal xmrBuildRefused or xmrOutputsWait
+// counts (wallet-refusing or -refused, outputs-waiting or -mismatch) and coins too few (too-small, which a stray refund
+// waits with). An estimate that fails only on some passes would otherwise restart the refusal's count, and the refusal
+// the estimate's, so the refund would wait unflagged for good: the second pass in a row in these classes is flagged,
+// as whichever class it records. Staff are told of each of its flagged classes once per run (xmrFlaggedBefore).
+func xmrFeeEpisode(class string) bool {
+	switch class {
+	case xmrFeeEstimateWaiting, xmrFeeEstimateUnavailable, xmrWaitOutputs, xmrOutputsMismatch, xmrTooSmall:
+		return true
+	}
+	return strings.HasPrefix(class, xmrWalletRefusing+" ") || strings.HasPrefix(class, xmrWalletRefused+" ")
+}
+
+// xmrFeeEstimateWait reports whether class records a failed fee estimate.
+func xmrFeeEstimateWait(class string) bool {
+	return class == xmrFeeEstimateWaiting || class == xmrFeeEstimateUnavailable
+}
+
+// xmrFlaggedBefore reports whether staff were told already of the flagged class, an xmrFeeEpisode class, in the run
+// of passes without a build of requested settlement s (QA5W2-1, QA5W3B-3/-4). A requested settlement only moves
+// forward (xmr_settlements_moves), so its run is its whole time requested: the run ends with a build, or when it
+// leaves its waiting state. Staff are told once of each distinct flagged class of the run: a refusal flagged, then
+// the estimate failing on alternate passes, flips between two classes each told once; a class staff were told of
+// recurring after a wait never flagged (-37's outputs-waiting, a first failed estimate) is told nothing new; but a
+// different diagnosis (the wallet seeing fewer coins than it listed, or refusing, once the estimate answers; a stray
+// refund's coins found too few) is told, once. What was told is read from s's own flag notes (xmrSettleWaits writes
+// one per announcement, in tx, which holds s's row lock from its compare-and-set), so it survives a restart. Other
+// flagged classes are told whenever they are recorded anew, as before (an administrator's retry of a set-aside
+// build, for one, must be told again if it is set aside again).
+func (a *App) xmrFlaggedBefore(ctx context.Context, tx *sql.Tx, s *xmrSettleRow, class string) (bool, error) {
+	if !xmrWaitFlagged(class) || !xmrFeeEpisode(class) {
+		return false, nil
+	}
+	var told bool
+	err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM order_events WHERE order_id=$1 AND actor_id IS NULL AND strpos(note,$2)=1)",
+		s.OrderID, xmrFlagNotePrefix(s, class, a.escrowXMR.confirmations)).Scan(&told)
+	return told, err
+}
+
+// xmrFlagNotePrefix is how the order note xmrSettleWaits writes to flag class on settlement s begins.
+func xmrFlagNotePrefix(s *xmrSettleRow, class string, threshold int64) string {
+	return fmt.Sprintf("Monero escrow settlement %d (%s) not sent: %s", s.ID, settlementKind(s.Kind), xmrSettleWaitText(class, s.Kind, threshold))
 }
 
 // xmrSettleWaitText is what the order page says about the wait class of a settlement of kind.
@@ -153,6 +207,10 @@ func xmrSettleWaitText(class, kind string, threshold int64) string {
 		return "The escrow wallet stopped responding while it built this transaction; the market tries again on its next pass."
 	case class == xmrBuildSetAside:
 		return "Building this settlement made the escrow wallet stop responding; it is set aside until an administrator asks the market to build it again, so the market goes on with the other settlements. Market staff were notified."
+	case class == xmrFeeEstimateWaiting:
+		return "The escrow wallet refused to build this transaction, and the market could not get the network fee estimate it needs to tell whether the coins are too few for the fee; the market tries again on its next pass."
+	case class == xmrFeeEstimateUnavailable:
+		return "The escrow wallet keeps refusing to build this transaction, and the market still cannot get the network fee estimate it needs to tell whether the coins are too few for the fee. The market tries again on each pass; market staff were notified."
 	case restoreHeld(class):
 		return restoreHeldText
 	}
@@ -499,6 +557,16 @@ func (a *App) buildXMRSettlement(ctx context.Context, s *xmrSettleRow) error {
 	}
 	tx, err := x.rpc.buildTransfer(ctx, s.Account, dests)
 	if err != nil {
+		few, ferr := a.xmrRefundBelowFee(ctx, s, plan, keyImages, floor, err)
+		if ferr != nil {
+			return a.xmrFeeEstimateFailed(ctx, s, ferr)
+		}
+		if few {
+			if s.Wait != xmrTooSmall { // once per settlement and class, not on each pass a stray refund waits (QA5W1-6)
+				log.Printf("escrow: Monero escrow settlement of order %s: the wallet refused to build it (%s) and its coins are too few for the network fee and the floor: %s", shortID(s.OrderID), xmrErrorClass(err), xmrTooSmall)
+			}
+			return a.xmrSettleTooSmall(ctx, s, deposits, pending)
+		}
 		return a.xmrBuildRefused(ctx, s, plan, err)
 	}
 	if class := checkXMRBuild(tx, plan.Outputs, keyImages, x.maxFee, floor); class != "" {
@@ -515,6 +583,7 @@ func (a *App) buildXMRSettlement(ctx context.Context, s *xmrSettleRow) error {
 	if err != nil || !ok {
 		return err
 	}
+	x.belowFee.Delete(s.ID) // built at last (a later deposit): its too-few refusal is not kept
 	s.State, s.TxHash, s.Metadata, s.KeyImages, s.Wait = "built", tx.TxHash, tx.Metadata, keyImages, ""
 	return a.relayXMRStored(ctx, s)
 }
@@ -603,13 +672,76 @@ func (a *App) xmrRefundTooFew(ctx context.Context, s *xmrSettleRow, deposits []x
 	return nil
 }
 
-// xmrBuildRefused handles transfer's error for settlement s's plan (monero-wallet-rpc 0.18.5.1's codes). -17 (not
+// xmrRefundBelowFee reports whether transfer's refusal err of refund or stray refund s's plan, which spends the outputs
+// keyImages, is because the coins are too few for the network fee (A-467). monero-wallet-rpc 0.18.5.1, asked to take
+// the fee from the claimant's output, refuses coins at or below the fee before it builds anything: -17 (not enough
+// money: below the fee of a one-input transaction by its size), -16 (tx not possible: the claimant's output below the
+// fee) or -46 (destination amount is zero: equal to it), so checkXMRBuild never sees them; on the fakechain it answered
+// -17 at 0.001 and 0.0015 XMR, -16 at 0.0018 XMR and -46 at exactly the fee (A-463 probe; recorded in
+// xmr_rpc_shapes_0.18.5.1.json, QA5W1-5). Those codes also mean other things (coins the wallet no longer sees as unlocked or
+// confirmed, a wallet behind the chain), so they are not trusted alone: the claimant's output less the fee the wallet
+// would take (estimateFee) is compared with the floor, as checkXMRBuild compares a build's. Below it the coins are too
+// few whatever the wallet's reason; at or above it the refusal keeps its class (xmrBuildRefused). A fee estimate that
+// fails is returned, and xmrFeeEstimateFailed records it on s alone. Releases are not compared: their coins are the
+// vendor's, and their refusals keep their classes.
+//
+// A settlement found too few this way that waits too-small (a stray refund) is not estimated again while the wallet
+// refuses the same outputs and claimant amount with the same code (QA5W1-6): the fee would be read on every pass for
+// nothing. transfer is still asked on each pass, so a later deposit that lets it build is seen, and new outputs are
+// estimated again. The record is in memory only: after a restart the first refusal is estimated again.
+func (a *App) xmrRefundBelowFee(ctx context.Context, s *xmrSettleRow, plan settlePlan, keyImages []string, floor int64, err error) (bool, error) {
+	var re *xmrRPCError
+	if s.Kind != "refund" && s.Kind != "stray_refund" || !errors.As(err, &re) || re.Service != "wallet" || !strings.HasPrefix(re.Class, "rpc:") ||
+		re.Code != -16 && re.Code != -17 && re.Code != -46 {
+		return false, nil
+	}
+	x := a.escrowXMR
+	seen := fmt.Sprintf("%s %d %d", strings.Join(slices.Sorted(slices.Values(keyImages)), ","), plan.Outputs[0].Sats, re.Code)
+	if prev, ok := x.belowFee.Load(s.ID); ok && prev == seen && s.Wait == xmrTooSmall {
+		return true, nil
+	}
+	fee, err := x.rpc.estimateFee(ctx, len(keyImages), len(plan.Outputs)+1)
+	if err != nil {
+		return false, err
+	}
+	few := plan.Outputs[0].Sats-fee < floor
+	if few {
+		x.belowFee.Store(s.ID, seen)
+	} else {
+		x.belowFee.Delete(s.ID)
+	}
+	return few, nil
+}
+
+// xmrFeeEstimateFailed records that the fee estimate xmrRefundBelowFee needed for settlement s failed with err
+// (QA5W1-4), on s alone: xmrFeeEstimateWaiting the first time, xmrFeeEstimateUnavailable (flagged once) when the
+// previous pass recorded a class of the same run (xmrFeeEpisode, QA5W2-1: the estimate failed, the wallet refused, or
+// the coins were found too few, as a stray refund flagged too small is after a restart). The wallet's pass goes on
+// with its other orders (their payment windows, the wallet's retention) and s is tried again on the next pass. Only a
+// cancelled pass and a wallet-rpc that lost its open wallet (-13; the next pass opens it again) are returned, as
+// xmrBuildRefused returns them.
+func (a *App) xmrFeeEstimateFailed(ctx context.Context, s *xmrSettleRow, err error) error {
+	if ctx.Err() != nil || xmrNotOpen(err) {
+		return err
+	}
+	class := xmrFeeEstimateWaiting
+	if xmrFeeEpisode(s.Wait) {
+		class = xmrFeeEstimateUnavailable
+	}
+	if s.Wait != class {
+		log.Printf("escrow: Monero escrow settlement of order %s: the wallet refused to build it and the network fee estimate failed (%s)", shortID(s.OrderID), xmrErrorClass(err))
+	}
+	return a.xmrSettleWaits(ctx, s, class)
+}
+
+// xmrBuildRefused handles transfer's error for settlement s's plan (monero-wallet-rpc 0.18.5.1's codes) that
+// xmrRefundBelowFee did not find too few. -17 (not
 // enough money: the wallet sees fewer spendable coins than it listed) is an outputs mismatch; -37 (not enough unlocked
 // money: they are not spendable yet, as after a reorganisation since incoming_transfers) a wait, never flagged; -2
 // (WRONG_ADDRESS) a definite refusal of a destination, named by asking validate_address about each output in turn; any
-// other answer of the wallet a refusal recorded with its code alone, flagged when it persists. A connection that ended
-// after the whole request was sent (the wallet-rpc went away while it built) is xmrBuildDropped, then
-// xmrBuildSetAside. Any other transport error (refused, timeout, credentials, a reply that is not one) is returned and
+// other answer of the wallet a refusal recorded with its code alone, flagged when it persists (or follows a failed fee
+// estimate, QA5W2-1). A connection that ended after the whole request was sent (the wallet-rpc went away while it
+// built) is xmrBuildDropped, then xmrBuildSetAside. Any other transport error (refused, timeout, credentials, a reply that is not one) is returned and
 // retried on the next pass, unflagged and not counted.
 func (a *App) xmrBuildRefused(ctx context.Context, s *xmrSettleRow, plan settlePlan, err error) error {
 	var re *xmrRPCError
@@ -642,23 +774,25 @@ func (a *App) xmrBuildRefused(ctx context.Context, s *xmrSettleRow, plan settleP
 		return a.xmrSettleWaits(ctx, s, class)
 	}
 	code := re.Class
-	if s.Wait == xmrWalletRefusing+" "+code || s.Wait == xmrWalletRefused+" "+code {
+	if s.Wait == xmrWalletRefusing+" "+code || s.Wait == xmrWalletRefused+" "+code || xmrFeeEstimateWait(s.Wait) {
 		return a.xmrSettleWaits(ctx, s, xmrWalletRefused+" "+code)
 	}
 	return a.xmrSettleWaits(ctx, s, xmrWalletRefusing+" "+code)
 }
 
 // xmrOutputsWait records that the wallet's outputs do not match the deposits claimed: the first time it waits
-// (xmrWaitOutputs; the wallet may not have caught up), and from the next pass it is flagged (xmrOutputsMismatch).
+// (xmrWaitOutputs; the wallet may not have caught up), and from the next pass it is flagged (xmrOutputsMismatch), as
+// it is at once after a pass whose fee estimate failed (QA5W2-1).
 func (a *App) xmrOutputsWait(ctx context.Context, s *xmrSettleRow) error {
-	if s.Wait == xmrWaitOutputs || s.Wait == xmrOutputsMismatch {
+	if s.Wait == xmrWaitOutputs || s.Wait == xmrOutputsMismatch || xmrFeeEstimateWait(s.Wait) {
 		return a.xmrSettleWaits(ctx, s, xmrOutputsMismatch)
 	}
 	return a.xmrSettleWaits(ctx, s, xmrWaitOutputs)
 }
 
 // xmrSettleWaits records why settlement s is not built or sent yet; it stays where it is and is tried again next
-// pass. A changed class is logged once, and a class in xmrWaitFlagged is flagged to staff once, with a fixed note.
+// pass. A changed class is logged once, and a class in xmrWaitFlagged is flagged to staff once, with a fixed note,
+// unless staff were told of it already in this run of passes without a build (xmrFlaggedBefore, QA5W2-1, QA5W3B).
 func (a *App) xmrSettleWaits(ctx context.Context, s *xmrSettleRow, class string) error {
 	if s.Wait == class {
 		return nil
@@ -675,7 +809,11 @@ func (a *App) xmrSettleWaits(ctx context.Context, s *xmrSettleRow, class string)
 	if n, _ := res.RowsAffected(); n != 1 {
 		return nil // recorded already (s was read before)
 	}
-	if xmrWaitFlagged(class) {
+	told, err := a.xmrFlaggedBefore(ctx, tx, s, class)
+	if err != nil {
+		return err
+	}
+	if xmrWaitFlagged(class) && !told {
 		o, err := scanOrder(tx.QueryRowContext(ctx, orderQuery+" WHERE o.id=$1 FOR UPDATE OF o", s.OrderID))
 		if err != nil {
 			return err
@@ -693,7 +831,7 @@ func (a *App) xmrSettleWaits(ctx context.Context, s *xmrSettleRow, class string)
 			return err
 		}
 		// The note names the deposits it flags, so the desk dates their flags (QA462E-3).
-		note := fmt.Sprintf("Monero escrow settlement %d (%s) not sent: %s", s.ID, settlementKind(s.Kind), xmrSettleWaitText(class, s.Kind, a.escrowXMR.confirmations))
+		note := xmrFlagNotePrefix(s, class, a.escrowXMR.confirmations)
 		if len(named) > 0 {
 			note += " Flagged so staff can open the order: " + strings.Join(named, ", ") + "."
 		}

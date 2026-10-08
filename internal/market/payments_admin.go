@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // Administrator recovery actions for payouts the watcher will not touch on its own: release a held payout,
@@ -18,6 +19,15 @@ import (
 // one held for an account suspension needs an explicit confirmation that its payout address was checked.
 // Moving a held or definitely rejected payout to the recipient's current saved address (A-121) needs an explicit
 // confirmation that the administrator checked that address with the account owner; nothing is sent by the move.
+// A blocked payout (its recipient saved no payout address, so the watcher never sends it) can be recorded as sent by
+// hand with the wallet's transaction ID (A-445, ARCH-12: the pooled wallet's drain gate lists it until then); the
+// market does not check any recorded transaction ID against the chain. A pending payout, which the watcher may claim
+// at any moment, and a send under way are never marked sent: the state is read under the row lock and compared again,
+// and the refusal says that the market queued, is sending or sent it itself, so a payment made by hand would be a
+// second one (A-486, R2). To pay a blocked payout by hand safely, an administrator first holds it (op=hold, a required
+// staff note; A-486, the blocked half of A-34): a held payout keeps its hold when the recipient saves an address
+// (savePayoutAddress), so the watcher cannot send it while the administrator pays it and records it. Releasing such a
+// hold needs an explicit confirmation that it was not paid by hand.
 
 func init() {
 	registerAction("/admin/payout", actionSpec{Roles: []string{"admin"}, OwnTx: true, Run: adminPayoutAction})
@@ -44,10 +54,32 @@ const restoredHoldPrefix = "Restored from backup:"
 
 // heldForSuspension reports a payout held for an account suspension (suspendedHoldPrefix), including one a
 // restore from backup held again: the restore keeps the suspension text after its own prefix (A-112), so the
-// payout address check is not lost.
+// payout address check is not lost; and one a restore held first, which a later suspension marks by adding its text
+// after the restore's (A-489).
 func heldForSuspension(state, payoutErr string) bool {
 	return state == "held" && (strings.HasPrefix(payoutErr, suspendedHoldPrefix) ||
 		strings.HasPrefix(payoutErr, restoredHoldPrefix) && strings.Contains(payoutErr, " "+suspendedHoldPrefix))
+}
+
+// handHoldPrefix starts the error of a blocked payout an administrator held to pay it by hand (op=hold, A-486);
+// the staff note follows it.
+const handHoldPrefix = "Held to be paid by hand:"
+
+// heldForHand reports a payout held to be paid by hand (handHoldPrefix), including one an account suspension or a
+// restore from backup held again: both keep the hand-hold text after their own (A-488), so releasing it still needs
+// the "nobody paid it by hand" confirmation besides theirs. The watcher never lifts this hold, and saving a payout
+// address keeps it.
+func heldForHand(state, payoutErr string) bool {
+	return state == "held" && (strings.HasPrefix(payoutErr, handHoldPrefix) || strings.Contains(payoutErr, " "+handHoldPrefix))
+}
+
+// payoutRefusalLabel names a payout's state in a refusal: payoutStateLabel, but a payout held to be paid by hand says
+// so rather than the watcher's hold (A-488).
+func payoutRefusalLabel(state, payoutErr string) string {
+	if heldForHand(state, payoutErr) {
+		return "Held to be paid by hand"
+	}
+	return payoutStateLabel(state)
 }
 
 // repointable reports a payout an administrator may move to its recipient's current saved address (A-121): held
@@ -65,8 +97,8 @@ var txidPattern = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
 
 func adminPayoutAction(c *actionCtx) (actionResult, error) {
 	op := c.Form.Get("op")
-	if op != "release" && op != "requeue" && op != "sent" && op != "repoint" {
-		return actionResult{}, fail(400, "Choose release, requeue, mark sent or use the account's current address")
+	if op != "release" && op != "requeue" && op != "sent" && op != "repoint" && op != "hold" {
+		return actionResult{}, fail(400, "Choose release, requeue, mark sent, hold to pay by hand or use the account's current address")
 	}
 	id, err := strconv.ParseInt(c.Form.Get("payout_id"), 10, 64)
 	if err != nil || id <= 0 {
@@ -75,6 +107,9 @@ func adminPayoutAction(c *actionCtx) (actionResult, error) {
 	txid := strings.ToLower(strings.TrimSpace(c.Form.Get("txid")))
 	if op == "sent" && !txidPattern.MatchString(txid) {
 		return actionResult{}, fail(400, "Enter the 64-character hexadecimal transaction ID found in the wallet")
+	}
+	if n := utf8.RuneCountInString(strings.TrimSpace(c.Form.Get("note"))); op == "hold" && (n < 10 || n > 500) {
+		return actionResult{}, fail(400, "Give the reason for holding this payout in 10–500 characters (staff only: the administrators' payouts list and the audit log show it). Nothing was changed.")
 	}
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) { return changePayout(c, id, op, txid) })
 }
@@ -119,6 +154,12 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 		if suspendedHeld && c.Form.Get("address_checked") != "confirmed" {
 			return actionResult{}, fail(409, "This payout was held when the recipient's account was suspended, and its payout address may have been changed by someone else. Check the payout address with the account owner, then confirm that you checked it to release the payout. Nothing was changed.")
 		}
+		// A payout held to be paid by hand (op=hold) may already have been paid: releasing it would let the watcher
+		// send it once the recipient saves an address.
+		handHeld := heldForHand(state, payoutErr)
+		if handHeld && c.Form.Get("not_paid") != "confirmed" {
+			return actionResult{}, fail(409, "This payout was held so that an administrator could pay it by hand. Releasing it lets the market send it once the recipient has a payout address, so release it only if nobody paid it by hand (check the pooled wallet), and confirm that. If it was paid, record it as sent with the wallet's transaction ID instead. Nothing was changed.")
+		}
 		// A refund or return larger than the order price is held as a likely mistake (largeHold).
 		large := heldLarge(state, payoutErr)
 		if large && c.Form.Get("large_reviewed") != "confirmed" {
@@ -151,6 +192,10 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 				note = "Administrator confirmed the wallet shows no broadcast transaction for the " + c.A.netTag() + " payout of " + label + " (held after being restored from backup) and checked the payout address (held for an account suspension), and released it; it is queued for a single send."
 			}
 			audit += "; held for an account suspension, administrator checked the payout address " + address
+		}
+		if handHeld {
+			note = "Administrator released the " + c.A.netTag() + " payout of " + label + " that was held to be paid by hand, after confirming that it was not paid by hand; it is queued for a single send once the recipient has a payout address."
+			audit += "; held to be paid by hand, administrator confirmed it was not paid by hand"
 		}
 		note += feeTaken
 		if large {
@@ -188,7 +233,7 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 		case (state == "held" || state == "failed") && !repointable(state, payoutErr, ambiguous):
 			return actionResult{}, fail(409, "This payout may already have been broadcast (its last send had no definite answer, or it was restored from backup), so it is never moved to another address: that could pay twice. Check the wallet, then release, requeue or mark it sent. Nothing was changed.")
 		case !repointable(state, payoutErr, ambiguous):
-			return actionResult{}, fail(409, "This payout is "+payoutStateLabel(state)+": only a held payout or one the wallet definitely rejected can be moved to the account's current address. Nothing was changed.")
+			return actionResult{}, fail(409, "This payout is "+payoutRefusalLabel(state, payoutErr)+": only a held payout or one the wallet definitely rejected can be moved to the account's current address. Nothing was changed.")
 		}
 		column := "payout_btc"
 		if cur == "XMR" {
@@ -221,18 +266,46 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 		note = "Administrator moved the " + c.A.netTag() + " payout of " + label + " to the recipient's current payout address after checking it with them; nothing was sent and its status is unchanged." + feeTaken
 		audit = "Moved payout " + strconv.FormatInt(id, 10) + " (" + label + ", " + state + ") for order " + short + " from " + address +
 			" to the account's current address " + current + "; administrator checked the address with the account owner"
+	case "hold":
+		// Only a blocked payout (no payout address, so the watcher cannot send it): the pending half of A-34 is not
+		// built. The compare-and-set repeats the state check made under the row lock.
+		if state != "blocked" {
+			return actionResult{}, fail(409, "Only a blocked payout (its recipient saved no payout address) can be held to be paid by hand; this payout is "+payoutRefusalLabel(state, payoutErr)+". Nothing was changed.")
+		}
+		staffNote := strings.TrimSpace(c.Form.Get("note"))
+		res, err = tx.ExecContext(ctx, `UPDATE payouts SET state='held',error=$2,updated=now() WHERE id=$1 AND state='blocked'`, id, handHoldPrefix+" "+staffNote)
+		// The order history, which both parties read, does not repeat the staff note.
+		note = c.A.netTag() + " payout of " + label + " held by an administrator to be paid by hand; the market does not send it while it is held."
+		audit = "Held blocked payout " + strconv.FormatInt(id, 10) + " (" + label + ") for order " + short + " to pay it by hand: " + staffNote
 	case "sent":
+		// The market's own send is queued, under way or done: a payment made by hand would be a second one.
+		switch {
+		case state == "pending":
+			return actionResult{}, fail(409, "The market has queued this payout and will send it itself, so a payment you made by hand would be a second payment. Reconcile with the recipient. Nothing was changed.")
+		case state == "sending" && !stuck:
+			return actionResult{}, fail(409, "The market is sending this payout itself right now, so a payment you made by hand would be a second payment. Reconcile with the recipient. Nothing was changed.")
+		case state == "sent":
+			return actionResult{}, fail(409, "This payout is already recorded as sent (by the market's wallet, or by an administrator), so a payment you made by hand would be a second payment. Reconcile with the recipient. Nothing was changed.")
+		}
 		res, err = tx.ExecContext(ctx, `UPDATE payouts SET state='sent',txid=$2,error='',send_ambiguous=false,updated=now()
-			WHERE id=$1 AND (state IN ('failed','held') OR `+stuckSending+`)`, id, txid)
+			WHERE id=$1 AND (state IN ('failed','held','blocked') OR `+stuckSending+`)`, id, txid)
 		// The order history names no txid (both parties read it); the recipient's notification does (A-214).
 		note = c.A.netTag() + " payout of " + label + " recorded as sent by an administrator after wallet reconciliation."
 		audit = "Marked payout " + strconv.FormatInt(id, 10) + " (" + label + ", was " + state + ") sent with transaction " + txid + " for order " + short
+		if state == "blocked" || heldForHand(state, payoutErr) {
+			why := "the recipient had saved no payout address"
+			if address != "" { // saved after the payout was held (A-489)
+				why = "the recipient had no payout address when it was held"
+			}
+			note = c.A.netTag() + " payout of " + label + " recorded as sent by hand by an administrator: " + why + ". It will not be sent again."
+			audit += "; paid by hand (" + why + "); the market did not check the transaction on the chain"
+		}
 	}
 	if err != nil {
 		return actionResult{}, err
 	}
 	if n, _ := res.RowsAffected(); n != 1 {
-		return actionResult{}, fail(409, "This payout is "+payoutStateLabel(state)+"; that action does not apply. Reload the admin page.")
+		return actionResult{}, fail(409, "This payout is "+payoutRefusalLabel(state, payoutErr)+"; that action does not apply. Nothing was changed. Reload the admin page.")
 	}
 	if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,$3,$4)", orderID, orderState, c.User.ID, note); err != nil {
 		return actionResult{}, err
@@ -258,6 +331,8 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 		notice = "payout-sent"
 	case "repoint":
 		notice = "payout-repointed"
+	case "hold":
+		notice = "payout-held"
 	}
 	return actionResult{Redirect: "/admin", Notice: notice, Audit: audit}, nil
 }

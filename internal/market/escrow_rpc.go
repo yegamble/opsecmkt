@@ -52,6 +52,14 @@ const escrowSighash = "ALL"
 // escrowKeypoolTimeout bounds keypoolrefill: deriving 20000 keys took 10-15 s on regtest.
 const escrowKeypoolTimeout = 2 * time.Minute
 
+// escrowRescanTimeout bounds the watch-only wallet repair's one importdescriptors call, which rescans the chain from
+// the earliest lost escrow's creation (ensureSiblingWatch, QA5W4A-3); Core goes on with an import whose call timed out,
+// and the next watcher pass waits for it (watchScanning). A variable only so tests can shorten it.
+var escrowRescanTimeout = 2 * time.Minute
+
+// escrowClassRescanning is the escrowRPCError class of Core's answer that the wallet is busy rescanning.
+const escrowClassRescanning = "rescanning"
+
 type escrowConfig struct {
 	on            bool
 	rpcURL        string
@@ -530,7 +538,9 @@ func errorClassOf(err error) string {
 }
 
 // classifyEscrowRPC maps an rpcClient error to escrowRPCError. rpcClient's own messages name the class in fixed
-// words (payments_rpc.go); anything else is bad-reply.
+// words (payments_rpc.go); anything else is bad-reply. Core's RPC_WALLET_ERROR for a wallet busy rescanning ("Wallet is
+// currently rescanning. Abort existing rescan or wait.", which importdescriptors answers while another import's or
+// rescanblockchain's rescan runs) is the class rescanning (QA5W4A-3).
 func classifyEscrowRPC(method string, err error) error {
 	if err == nil {
 		return nil
@@ -538,6 +548,8 @@ func classifyEscrowRPC(method string, err error) error {
 	e := &escrowRPCError{Method: method, Class: "bad-reply"}
 	var re *rpcError
 	switch msg := err.Error(); {
+	case errors.As(err, &re) && re.Code == -4 && strings.Contains(re.Message, "currently rescanning"):
+		e.Code, e.Class = re.Code, escrowClassRescanning
 	case errors.As(err, &re):
 		e.Code, e.Class = re.Code, fmt.Sprintf("rpc:%d", re.Code)
 	case strings.Contains(msg, "(HTTP 403)"):
@@ -616,6 +628,25 @@ func (e *escrowBTC) checkWatchWallet(ctx context.Context) error {
 		return &escrowRPCError{Method: "getwalletinfo", Class: "not-watch-only"}
 	}
 	return nil
+}
+
+// watchScanning reports whether the watch-only wallet is rescanning (getwalletinfo's scanning: false, or an object with
+// the rescan's duration and progress, as Core 31.1 reports it): an import that outlived its call, or the operator's
+// rescanblockchain after a restore. A reply without it is a bad-reply, never read as "not scanning" (QA5W4A-3).
+func (e *escrowBTC) watchScanning(ctx context.Context) (bool, error) {
+	var info struct {
+		Scanning json.RawMessage `json:"scanning"`
+	}
+	if err := e.call(ctx, e.watchWallet, "getwalletinfo", []any{}, &info); err != nil {
+		return false, err
+	}
+	switch s := strings.TrimSpace(string(info.Scanning)); {
+	case s == "false":
+		return false, nil
+	case strings.HasPrefix(s, "{"):
+		return true, nil
+	}
+	return false, &escrowRPCError{Method: "getwalletinfo", Class: "bad-reply"}
 }
 
 // validAddress asks the node whether addr (already checked by escrowAddressForm, so it cannot close the descriptor)
@@ -747,24 +778,40 @@ func (e *escrowBTC) utxoUpdatePSBT(ctx context.Context, psbt string, descriptors
 	return out, err
 }
 
-// escrowImport is one importdescriptors request: a watch-only, inactive descriptor.
+// escrowImport is one importdescriptors request: a watch-only, inactive descriptor. A ranged descriptor (shape (b)'s
+// order wallet, A-456a) has its Range and no Label: Core refuses a label beside a range.
 type escrowImport struct {
 	Desc      string
 	Timestamp any // "now" or a UNIX time
 	Label     string
+	Range     []int64 // [from, to] of a ranged descriptor; nil otherwise
 }
 
 // importDescriptors imports watch-only descriptors into wallet (P1-b: the escrow watch-only wallet). Any request
-// that Core reports unsuccessful fails the call.
+// that Core reports unsuccessful fails the call. Core's import is idempotent: importing a descriptor the wallet holds
+// again changes nothing but its range and its timestamp's rescan.
 func (e *escrowBTC) importDescriptors(ctx context.Context, wallet string, reqs []escrowImport) error {
+	return e.importDescriptorsWithin(ctx, rpcTimeout, wallet, reqs)
+}
+
+// importDescriptorsWithin is importDescriptors bounded by timeout instead of rpcTimeout: Core rescans from the earliest
+// timestamp of the requests before it answers (escrowRescanTimeout).
+func (e *escrowBTC) importDescriptorsWithin(ctx context.Context, timeout time.Duration, wallet string, reqs []escrowImport) error {
 	body := make([]map[string]any, 0, len(reqs))
 	for _, r := range reqs {
-		body = append(body, map[string]any{"desc": r.Desc, "timestamp": r.Timestamp, "active": false, "label": r.Label})
+		req := map[string]any{"desc": r.Desc, "timestamp": r.Timestamp, "active": false}
+		if r.Label != "" {
+			req["label"] = r.Label
+		}
+		if r.Range != nil {
+			req["range"] = r.Range
+		}
+		body = append(body, req)
 	}
 	var res []struct {
 		Success bool `json:"success"`
 	}
-	if err := e.call(ctx, "/wallet/"+url.PathEscape(wallet), "importdescriptors", []any{body}, &res); err != nil {
+	if err := classifyEscrowRPC("importdescriptors", e.rpc.callWithin(ctx, timeout, "/wallet/"+url.PathEscape(wallet), "importdescriptors", []any{body}, &res)); err != nil {
 		return err
 	}
 	if len(res) != len(reqs) {
@@ -799,6 +846,13 @@ func (e *escrowBTC) deriveAddresses(ctx context.Context, desc string, index int6
 	}
 	var addrs []string
 	err := e.call(ctx, "", "deriveaddresses", params, &addrs)
+	return addrs, err
+}
+
+// deriveAddressRange is deriveaddresses of a ranged descriptor over the indices [from, to] (A-456a).
+func (e *escrowBTC) deriveAddressRange(ctx context.Context, desc string, from, to int64) ([]string, error) {
+	var addrs []string
+	err := e.call(ctx, "", "deriveaddresses", []any{desc, []int64{from, to}}, &addrs)
 	return addrs, err
 }
 
@@ -1019,6 +1073,10 @@ func (e *escrowBTC) watchedAddresses(ctx context.Context) ([]escrowWatched, erro
 	return out, nil
 }
 
+// errWatchUnsolvable is an escrow-shaped (P2WSH) address the watch-only wallet holds but reports solvable false: held by
+// an addr(…) import only, so it has no keys to read (watchKeys).
+var errWatchUnsolvable = &escrowRPCError{Method: "getaddressinfo", Class: "unsolvable"}
+
 // watchKnows reports whether the watch-only wallet already holds addr (getaddressinfo on that wallet): an escrow
 // address it watches was handed out before, by an escrow a restored database no longer has (A-359). Bitcoin Core 31.1
 // reports an imported watch-only escrow address as ismine, with the "escrow:<order ID>" label it was imported with
@@ -1044,11 +1102,13 @@ func (e *escrowBTC) watchKnows(ctx context.Context, addr string) (bool, error) {
 // scriptPubKey (probed on regtest). The keys come from pubkeys, or else from desc, and are returned only when each is a
 // compressed key on the curve, they are distinct, and their 2-of-3 witness script hashes to the scriptPubKey, which
 // must be the asked address's own: so they are the address's own keys. An address the wallet does not hold (ismine false, labelled or not: the wallet has no
-// script to read keys from) and one that is not P2WSH (never an escrow) have none (nil, nil). Any other reply is a
-// bad-reply class, never read as "no keys".
+// script to read keys from) and one that is not P2WSH (never an escrow) have none (nil, nil); one the wallet reports
+// solvable false (held by an addr(…) import only) is errWatchUnsolvable (QA5W4A-2). Any other reply is a bad-reply
+// class, never read as "no keys".
 func (e *escrowBTC) watchKeys(ctx context.Context, addr string) ([][]byte, error) {
 	var info struct {
 		IsMine       *bool    `json:"ismine"`
+		Solvable     *bool    `json:"solvable"`
 		ScriptPubKey string   `json:"scriptPubKey"`
 		PubKeys      []string `json:"pubkeys"`
 		Desc         string   `json:"desc"`
@@ -1074,6 +1134,12 @@ func (e *escrowBTC) watchKeys(ctx context.Context, addr string) ([][]byte, error
 	}
 	if len(spk) != 34 || spk[0] != 0 || spk[1] != 32 {
 		return nil, nil
+	}
+	// An address the wallet holds only by an addr(…) import is solvable false, with no keys (probed on Core 31.1 regtest;
+	// also when a ranged descriptor covering it was imported after the addr(…)): errWatchUnsolvable, which the orphan
+	// sweep counts as read only for a per-order escrow's sibling whose escrow address gave its keys (QA5W3A-3, QA5W4A-2).
+	if info.Solvable != nil && !*info.Solvable {
+		return nil, errWatchUnsolvable
 	}
 	texts, sorted := info.PubKeys, false
 	if texts == nil {

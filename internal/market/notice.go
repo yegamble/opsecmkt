@@ -81,6 +81,7 @@ var notices = map[string]struct{ text, section, pages string }{
 	"dispute-reply":    {"Reply added to the dispute.", "", ""},
 	"dispute-resolved": {"Dispute resolved.", "", ""},
 	"payment-review":   {"Payment review recorded.", "payment-review", "moderator"},
+	"xmr-collision":    {"Recorded what was done about the refused Monero deposit.", "", ""},
 	// Listings
 	"listing-created":    {"Listing created. Add photos here.", "photos", "listing-edit"},
 	"listing-saved":      {"Listing saved.", "", ""},
@@ -110,6 +111,7 @@ var notices = map[string]struct{ text, section, pages string }{
 	"payout-released":  {"Payout released.", "payouts", "admin"},
 	"payout-requeued":  {"Payout queued again.", "payouts", "admin"},
 	"payout-sent":      {"Payout marked sent.", "payouts", "admin"},
+	"payout-held":      {"Payout held to be paid by hand.", "payouts", "admin"},
 	"payout-repointed": {"Payout moved to the current payout address.", "payouts", "admin"},
 	"operator-key":     {"Operator PGP key saved.", "transparency", "admin"},
 }

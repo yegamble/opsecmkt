@@ -110,8 +110,8 @@ test('Per-order wallet key: registration, practice signing, the key type on the 
   await expect(buyer.getByText(/^Bitcoin escrow key: Per-order wallet/)).toBeVisible();
   await shot(buyer, info, 'po-05-vendor-key-type');
 
-  // A buyer with an active Bitcoin Core key: the draft's order page says the vendor's per-order wallet cannot take an
-  // escrow yet, and offers no escrow form.
+  // A buyer with an active Bitcoin Core key: the draft's order page names the vendor's per-order wallet key beside the
+  // buyer's Bitcoin Core key (a mixed pair, P4-R18, A-456a), and offers no escrow form.
   await activateKey(buyer, request, 'po-buyer', buyerPassword, info);
   await openListing();
   await tabTo(buyer, buyer.getByRole('link', { name: 'Review order draft' }));

@@ -81,6 +81,12 @@ func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
 		return err
 	}
 	v.Descriptor = desc
+	// A-456b: a per-order escrow's parties sign in an order wallet, made from its setup page (escrow_setup.go).
+	var marketSuffix string
+	if err = a.db.QueryRowContext(ctx, "SELECT ep.derivation_suffix FROM escrow_pubkeys ep JOIN escrows es ON es.id=ep.escrow_id WHERE es.order_id=$1 AND es.coin='BTC' AND ep.party='market'", o.ID).Scan(&marketSuffix); err != nil && err != sql.ErrNoRows {
+		return err
+	}
+	v.PerOrder = isPerOrderKey(escrowKeyRow{Suffix: marketSuffix})
 	if v.Own != "" {
 		// A party signs on this page, so the keypoolrefill advice of /escrow-key is repeated here when this escrow's
 		// child key lies past escrowRangeAdvice: past its descriptor range a Core wallet cannot sign (P2-R10, A-397).
@@ -395,10 +401,14 @@ func (a *App) escrowCheckoutOffer(ctx context.Context, d *PageData) error {
 		v.Reason, v.KeyLink = "Activate your Bitcoin escrow key first: register it and sign its practice transaction.", true
 	case !vendorActive:
 		v.Reason = "The vendor has no active Bitcoin escrow key, so this order cannot use escrow."
-	case buyerPerOrder: // A-455: escrowParties refuses it the same way until per-order escrows exist (A-456)
-		v.Reason, v.KeyLink = strings.TrimSuffix(errEscrowBuyerPerOrder.Error(), " Nothing was changed.")+" Register a Bitcoin Core escrow key and sign its practice transaction to use escrow.", true
-	case vendorPerOrder:
-		v.Reason = strings.TrimSuffix(errEscrowVendorPerOrder.Error(), " Nothing was changed.")
+	// P4-R18, as escrowParties refuses them: a mixed pair, naming the vendor's key type (a buyer can register a key of
+	// the vendor's kind). A pair of per-order keys needs the escrow signer, which co-signs their escrow (A-456b).
+	case vendorPerOrder && !buyerPerOrder:
+		v.Reason, v.KeyLink = strings.TrimSuffix(errEscrowMixedVendorPerOrder.Error(), " Nothing was changed."), a.perOrderAvailable()
+	case buyerPerOrder && !vendorPerOrder:
+		v.Reason, v.KeyLink = strings.TrimSuffix(errEscrowMixedVendorCore.Error(), " Nothing was changed.")+" Register a Bitcoin Core escrow key and sign its practice transaction to use escrow.", true
+	case buyerPerOrder && !a.perOrderAvailable():
+		v.Reason = errPerOrderUnavailable
 	case v.Physical && !vendorCanEncrypt:
 		v.Reason = noVendorKeyReason // A-83: the buyer could not send the vendor an encrypted shipping address
 	}

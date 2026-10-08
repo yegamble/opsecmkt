@@ -95,7 +95,7 @@ func TestDustBTCRefundIsFlaggedNotQueued(t *testing.T) {
 		}
 	}
 	// Staff can read the order and find it open on the payment-review list with the reason.
-	mustContain(t, p.page("/order?id="+p.order, p.adminSess), "Moderator review (read-only)", "below the minimum automatic payout")
+	mustContain(t, p.page("/order?id="+p.order, p.adminSess), "Administrator review (read-only)", "below the minimum automatic payout")
 	desk := p.page("/moderator", p.adminSess)
 	mustContain(t, desk, "1 open flag", p.order, "Below the minimum automatic payout, not paid out")
 

@@ -204,6 +204,22 @@ type PageData struct {
 	PaymentReviewsOpen  int
 	PaymentReviewOthers int
 	PaymentReviewLimit  int
+	// EscrowAlerts: moderator desk, escrow orders with an open staff alert (escrowStaffAlert, A-470), newest first, at
+	// most escrowAlertLimit; EscrowAlertsMore is how many more there are than it lists (QA5W1-2).
+	EscrowAlerts     []EscrowAlertView
+	EscrowAlertsMore int
+	// StaffAlert: order page, set when staff read the order only because its escrow has an open staff alert (no
+	// deposit flag, no dispute): which alerts are open, so the page names them (QA5W1-1).
+	StaffAlert *EscrowAlertView
+	// XMRCollisions: order page, for staff who are not parties only, the order's Monero escrow deposits refused as
+	// another order's escrow account (A-480), oldest first, each with its disposition or its form.
+	XMRCollisions []XMRCollisionView
+	// XMRCollisionForm: one of XMRCollisions is open, so the page shows its disposition form (the staff help then
+	// names it as the one thing staff change on the page, QA5W3B-6).
+	XMRCollisionForm bool
+	// XMRSettlementForm: order page, the newest Monero escrow settlement shown with an administrator's form (re-request
+	// or build again, escrow_xmr_settle_view.go), 0 for none; the staff help then names and links it (QA5W4B-7).
+	XMRSettlementForm int64
 
 	// P4 Inventory (uses Product.Archived)
 	Listing   *ListingView
@@ -268,6 +284,9 @@ type PageData struct {
 	// BTC draft on a listing that takes escrow, while ESCROW_BTC is on. Both nil otherwise.
 	Escrow         *EscrowOrderView
 	EscrowCheckout *EscrowCheckoutView
+	// EscrowSetup: /escrow-setup, a per-order escrow's order wallet setup for one of its two parties only (escrow_setup.go,
+	// A-456b); nil otherwise.
+	EscrowSetup *EscrowSetupView
 	// XMREscrow: order page of a Monero escrow order, its escrow (escrow_xmr_order.go); XMREscrowCheckout: order page of
 	// the buyer's XMR draft on a listing that takes escrow, while ESCROW_XMR is on. Both nil otherwise.
 	XMREscrow         *XMREscrowOrderView
@@ -299,6 +318,8 @@ type PageData struct {
 	NoPurchase      bool
 	// EscrowReadiness (A-444): /admin, the escrow-only readiness panel (escrow_readiness.go).
 	EscrowReadiness *EscrowReadinessView
+	// PooledDrain (A-445): /admin, the pooled wallet's drain panel (pooled_drain.go).
+	PooledDrain *PooledDrainView
 	// VendorEscrowKey (A-455, P4-R18): the product and vendor pages' vendor's Bitcoin escrow key type while ESCROW_BTC is
 	// on: "core", "per_order" or "none" (no active key); "" with escrow off.
 	VendorEscrowKey string
@@ -466,6 +487,34 @@ type ReadinessCoin struct {
 	EscrowOn, Pooled           bool
 }
 type ReadinessListing struct{ ID, Title, Vendor, Kind, Reason string }
+
+// PooledDrainView is /admin's pooled wallet drain panel (A-445): pooled_drain_blockers() per kind, in the panel's
+// order, with Total and each kind's Count uncapped and at most Limit Items per kind, and each pooled wallet's balance
+// as advice.
+type PooledDrainView struct {
+	Kinds    []*DrainKind
+	Total    int
+	Limit    int
+	Balances []DrainBalance
+}
+
+// DrainKind: Resolve says how blockers of the kind are resolved.
+type DrainKind struct {
+	Kind, Title, Resolve string
+	Count                int
+	Items                []DrainItem
+}
+
+// DrainItem is one blocker: Ref and Detail as the function gives them; Link where it is resolved ("" when nowhere this
+// administrator can open).
+type DrainItem struct{ Ref, Order, OrderShort, Currency, Detail, Link string }
+
+// DrainBalance: Configured, the coin's pooled wallet is configured; Available, its balance was read (Confirmed and
+// Pending, in coin units) from Network.
+type DrainBalance struct {
+	Currency, Network, Confirmed, Pending string
+	Configured, Available                 bool
+}
 type ReadinessVendor struct {
 	Handle   string
 	Listings int
@@ -514,6 +563,9 @@ type PayoutRow struct {
 	// AddressCheck: held for an account suspension (suspendedHoldPrefix); releasing needs an explicit
 	// confirmation that the payout address was checked.
 	AddressCheck bool
+	// HandHold: held by an administrator to pay it by hand (handHoldPrefix, A-486); releasing needs an explicit
+	// confirmation that it was not paid by hand.
+	HandHold bool
 	// LargeCheck: a refund or return larger than the order price (largeHoldPrefix); releasing needs an explicit
 	// confirmation that an administrator reviewed it.
 	LargeCheck bool
@@ -589,7 +641,26 @@ type EscrowOrderView struct {
 	Deadline                                    *EscrowDeadlineView     // a shipped order's release deadline (escrow_deadline.go)
 	RangePath                                   string                  // the viewer's child key in this escrow, set only past escrowRangeAdvice: the page advises keypoolrefill (A-397)
 	KeypoolSize                                 int64                   // the keypoolrefill size it advises: 1000 keys past that child
+	PerOrder                                    bool                    // a per-order (shape (b)) escrow: its parties sign in an order wallet (escrow_setup.go, A-456b)
 }
+
+// EscrowSetupView is what one party of a per-order (shape (b)) escrow builds its order wallet from (escrow_setup.go,
+// A-456b): its own key's origin with the per-order index ([fingerprint/path/i]) and that path as a wallet asks for it
+// (m/path/i), the two cosigner keys served rooted (the other party's per-order key and the market's, as Vpubs), the first
+// receiving address the wallet must show (the escrow address) and a Sparrow output descriptor of the order wallet.
+// Unavailable says why the cosigner keys cannot be shown; NoSparrow why the descriptor cannot (a stored order wallet key
+// cannot be read: a row from before it was stored, QA5W4A-5 and QA5W5A-1).
+type EscrowSetupView struct {
+	OrderID, Short, Own    string
+	OwnPath, OwnDerivation string
+	Cosigners              []EscrowCosignerView
+	Address                string
+	Sparrow                string
+	Unavailable, NoSparrow string
+}
+
+// EscrowCosignerView is one cosigner key on the setup page: whose it is and the key, rooted, as a Vpub.
+type EscrowCosignerView struct{ Who, Key string }
 
 // EscrowDeadlineView is a shipped escrow order's release deadline on its page (escrow_deadline.go, P2-R9): At in UTC,
 // Left the time left when the page loaded; Due once it has passed; Rechecked when a restore from backup moved it.
@@ -670,9 +741,32 @@ type EscrowNodeView struct {
 }
 
 // EscrowStallView is a broadcast settlement whose transaction the watch-only wallet has not seen (escrow_stall.go): the
-// order's short ID, what the settlement pays and its transaction ID.
+// order's ID (the order page opens for staff while the alert is open, A-470) and short ID, what the settlement pays and
+// its transaction ID.
 type EscrowStallView struct {
-	Order, What, TxID string
+	ID, Order, What, TxID string
+}
+
+// EscrowAlertView is an escrow order with an open staff alert on the moderation desk: its ID, its state's label, and
+// which alerts are open (a settlement queued or stuck, a release too few, a Monero deposit refused as another order's
+// escrow account with no disposition recorded, A-480).
+type EscrowAlertView struct {
+	ID, State              string
+	Stall, TooFew, Refused bool
+}
+
+// XMRCollisionView is one record of a Monero escrow deposit refused as another order's escrow account (A-480), as staff
+// read it on the order page: TxID (the first 20 characters only when Truncated, a record backfilled from a note written
+// before migration 090), the wallet and account, when it was noted, and its disposition (Disposed, By, Note) once
+// recorded. Form: the viewer may record the disposition now (open, and the viewer is staff who is not a party).
+type XMRCollisionView struct {
+	ID              int64
+	TxID, Wallet    string
+	Account         int64
+	Truncated       bool
+	Noted, Disposed string
+	By, Note        string
+	Form            bool
 }
 
 // EscrowSignerView is the line under Payment providers on /admin about the escrow signer (escrow_signer.go): State is
@@ -742,6 +836,7 @@ type XMREscrowCheckoutView struct {
 	Reason, Custody string
 	Physical        bool
 	Net, Prefixes   string
+	NetKnown        bool // the network was verified (App.xmrEscrowNetKnown): the copy names none before that (QA5W1-3)
 }
 
 // EscrowKeyView is the viewer's Bitcoin escrow key (escrow_account.go). Origin is the viewer's own key origin

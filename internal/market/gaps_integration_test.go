@@ -43,7 +43,7 @@ func TestModeratorViewsDisputedOrderReadOnly(t *testing.T) {
 	for name, session := range map[string]string{"moderator": w.mod, "admin": admin} {
 		body := w.page("/order?id="+order, session, 200)
 		mustContain(t, body,
-			"Moderator review",
+			map[string]string{"moderator": "Moderator review", "admin": "Administrator review"}[name],
 			"The licence key is rejected by the activation server.", // dispute reason
 			"licence-key-ABC-123", // delivery record
 			"Dispute opened",      // order events

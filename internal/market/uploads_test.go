@@ -275,7 +275,10 @@ func TestUploadPartOrderAndExtraPartsRefused(t *testing.T) {
 		"no photo":               {[]part{csrf, id, desc}, "choose a JPEG or PNG file"},
 		"empty photo":            {[]part{csrf, id, {name: "photo", filename: "", body: nil}}, "choose a JPEG or PNG file"},
 		"long description":       {[]part{csrf, id, {name: "description", body: []byte(strings.Repeat("é", 251))}, photo}, "longer than 250 characters"},
-		"NUL in description":     {[]part{csrf, id, {name: "description", body: []byte("a\x00b")}, photo}, "longer than 250 characters"},
+		"NUL in description":     {[]part{csrf, id, {name: "description", body: []byte("a\x00b")}, photo}, "not valid UTF-8 or contains a NUL character"},
+		"0xff in description":    {[]part{csrf, id, {name: "description", body: []byte("a\xffb")}, photo}, "not valid UTF-8 or contains a NUL character"},
+		"0xff in id":             {[]part{csrf, {name: "id", body: []byte("listing\xff")}, photo}, "not valid UTF-8 or contains a NUL character"},
+		"NUL in id":              {[]part{csrf, {name: "id", body: []byte("listing\x00")}, photo}, "not valid UTF-8 or contains a NUL character"},
 	} {
 		w := e.upload("/listings/photo", vendor, c.parts...)
 		if w.Code != 400 || !strings.Contains(w.Body.String(), c.want) {

@@ -194,6 +194,7 @@ type escrowXMR struct {
 	canCreate atomic.Bool              // ESCROW_XMR_SEED_KEY is the pinned seed key: new wallets may be created and sealed
 	refused   atomic.Bool              // the nodes failed the network check after startup (P3-R2): disabled until a restart
 	locked    sync.Map                 // wallet names another wallet program has open, logged once while it lasts (escrow_xmr_watch.go)
+	belowFee  sync.Map                 // settlement ID -> the refusal xmrRefundBelowFee last found too few (escrow_xmr_settle.go, QA5W1-6)
 
 	// The network pin and the sync guard (A-449), in memory only.
 	pinned   atomic.Value                        // string: the network pin as initEscrowXMR read it, for display before the daemon is verified
@@ -229,6 +230,28 @@ func (a *App) xmrEscrowNetwork() string {
 		return "fakechain"
 	}
 	return a.escrowXMR.network()
+}
+
+// xmrEscrowNetKnown is the network Monero escrow was verified on or pinned to (escrowXMR.formNet), "" before that and
+// while ESCROW_XMR is off: copy that cannot name the network of a particular order says nothing instead of guessing
+// (A-472).
+func (a *App) xmrEscrowNetKnown() string {
+	if a.escrowXMR == nil {
+		return ""
+	}
+	return a.escrowXMR.formNet()
+}
+
+// xmrEscrowNetShort is the short name of the network in "(…)" in Go-built copy, the rule of the templates
+// payment-status:xmr-net and /admin: "network not verified yet", "Monero stagenet" or "local fakechain" (A-472).
+func (a *App) xmrEscrowNetShort() string {
+	switch a.xmrEscrowNetKnown() {
+	case "":
+		return "network not verified yet"
+	case "stagenet":
+		return "Monero stagenet"
+	}
+	return "local fakechain"
 }
 
 // initEscrowXMR runs in New after Bitcoin escrow. ESCROW_XMR=off does nothing. On, a configuration error, an

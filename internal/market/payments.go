@@ -52,6 +52,22 @@ type feeFromAmountSender interface {
 	SendFeeFromAmount(ctx context.Context, to string, amount int64) (txid string, err error)
 }
 
+// balanceReporter is implemented by node-backed pooled providers: the pooled wallet's balance in atomic units, shown
+// on the drain panel of /admin as advice only (A-445): confirmed is spendable now, pending is still confirming,
+// immature or locked. Nothing in the market decides anything from it.
+type balanceReporter interface {
+	Balance(ctx context.Context) (confirmed, pending int64, err error)
+}
+
+// walletBalance reads a non-negative decimal amount a wallet reports (a balance may be zero, which parseAmount refuses).
+func walletBalance(s string, decimals int) (int64, error) {
+	whole, frac, _ := strings.Cut(s, ".")
+	if whole != "" && strings.Trim(whole, "0") == "" && strings.Trim(frac, "0") == "" && !strings.Contains(frac, ".") {
+		return 0, nil
+	}
+	return parseAmount(s, decimals)
+}
+
 // isLiveNetwork reports whether network is a live (mainnet) network rather than a test network.
 func isLiveNetwork(network string) bool {
 	n := strings.ToLower(network)

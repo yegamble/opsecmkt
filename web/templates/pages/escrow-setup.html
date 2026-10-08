@@ -1,0 +1,50 @@
+{{/* A-456b (escrow_setup.go): a per-order Bitcoin escrow's order wallet setup, for one of the order's two parties only (rulings P4-R2, P4-R17). Exists only with ESCROW_BTC=on; staff, strangers and Bitcoin Core escrows get 404. Claims only what is verified: no real Electrum, Sparrow or hardware wallet has been tried (A-457, A-458). */}}
+{{define "page:escrow-setup"}}{{template "header" .}}{{with .EscrowSetup}}
+<div class="page-head">
+<div>
+<div class="eyebrow">Bitcoin escrow · {{template "btc-escrow-only" $.EscrowNet}}</div>
+<h1>Order wallet<span class="accent">.</span></h1>
+<p>Order {{.Short}}: the wallet you sign this order's escrow with, made from the seed of your per-order wallet key, for this order only. It is for you, the {{.Own}}, alone; the market shows it to no one else.</p>
+</div></div>
+<section class="panel" aria-labelledby="setup-steps-heading">
+<h2 id="setup-steps-heading">Make the wallet</h2>
+<ol class="stack">
+<li>In Electrum with your BIP39 seed (start it with <code>--offline</code>: the order wallet only signs, it never needs a server) or in Sparrow, create a new 2-of-3 multisig wallet, native SegWit (P2WSH).</li>
+<li>For your own key, enter the seed of the per-order wallet key you registered, with the derivation path below.</li>
+<li>Add the two cosigner keys below as the other two keys (watch-only, or "xpub" cosigners). In Sparrow you can instead import the whole wallet from the descriptor below.</li>
+<li>Check that the wallet's first receiving address is the escrow address below. If it is not, stop: the wallet is not this escrow's.</li>
+</ol>
+<p class="help">These steps, and the menus they name, have not yet been tried with a real Electrum or Sparrow wallet: the wallet's menus may differ. Hardware wallets have not been tested with per-order escrows.</p>
+</section>
+<section class="panel" aria-labelledby="setup-path-heading">
+<h2 id="setup-path-heading">Derivation path of your key</h2>
+<p class="help">Your seed's fingerprint and the path for this order, as the market expects them; the wallet asks for the path that starts with m.</p>
+<pre class="code-block escrow-setup-path" tabindex="0" aria-labelledby="setup-path-heading">{{.OwnPath}}</pre>
+<pre class="code-block escrow-setup-derivation" tabindex="0" aria-labelledby="setup-path-heading">{{.OwnDerivation}}</pre>
+</section>
+<section class="panel" aria-labelledby="setup-cosigners-heading">
+<h2 id="setup-cosigners-heading">Cosigner keys</h2>{{if .Unavailable}}
+<p class="alert error" role="alert">{{.Unavailable}}</p>{{else}}
+<p class="help">The other party's key for this order and the market's, each made only for this order. Any two of the three keys can spend the escrow; the market's alone cannot.</p>{{range .Cosigners}}
+<h3 class="escrow-cosigner-who">{{.Who}}</h3>
+<pre class="code-block escrow-cosigner" tabindex="0">{{.Key}}</pre>{{end}}{{end}}
+<p class="help"><strong>A wallet or signing device cannot check the other party's key</strong>: it shows these keys as given. The escrow address below is made from all three keys; check it on the order page too, where the escrow descriptor names the keys of this escrow.</p>
+</section>
+<section class="panel" aria-labelledby="setup-address-heading">
+<h2 id="setup-address-heading">First receiving address</h2>
+<p class="help">The order wallet's first receiving address must be this escrow address. Pay only to the escrow address shown on the order page: the order wallet shows other receiving and change addresses too, and coins sent to any of them do not count for the order (the market returns them to the buyer's refund address later, less the network fee).</p>
+<pre class="code-block escrow-setup-address" tabindex="0" aria-labelledby="setup-address-heading">{{.Address}}</pre>
+</section>{{if not .Unavailable}}
+<section class="panel" aria-labelledby="setup-sparrow-heading">
+<h2 id="setup-sparrow-heading">Sparrow descriptor</h2>{{if .Sparrow}}
+<p class="help">In Sparrow: File › New Wallet, then Import from a descriptor, and paste this; then add your seed as the keystore of the first key. The descriptor holds public keys only.</p>
+<pre class="code-block escrow-setup-sparrow" tabindex="0" aria-labelledby="setup-sparrow-heading">{{.Sparrow}}</pre>{{else}}
+<p class="alert" role="note">{{.NoSparrow}}</p>{{end}}
+</section>{{end}}
+<section class="panel" aria-labelledby="setup-after-heading">
+<h2 id="setup-after-heading">Signing and afterwards</h2>
+<p>To sign a settlement, download your copy from the order page, load it into this wallet (in Electrum, Tools › Load transaction › From file; in Sparrow, File › Open Transaction), check its outputs against the order page, sign it without broadcasting it, save it as a PSBT file and upload it on the order page (or paste it there).</p>
+<p><strong>Delete the order wallet once the order's escrow has settled</strong> (its settlement is confirmed): your seed can make it again from the path above. The escrow address stays watched by the market, so coins sent to it later are returned to the buyer's refund address.</p>
+<p><a class="button" href="/order?id={{.OrderID}}">Back to the order</a></p>
+</section>{{end}}
+{{template "footer" .}}{{end}}

@@ -268,6 +268,8 @@ func errorCause(err error) string {
 		return "template:" + ee.Name
 	case errors.As(err, &te):
 		return "template:" + te.Name
+	case errors.Is(err, errPerOrderXpub):
+		return "per-order-key-unavailable" // QA5W5A-1: a fixed class, never a Go type name
 	}
 	for u := errors.Unwrap(err); u != nil; u = errors.Unwrap(err) {
 		err = u

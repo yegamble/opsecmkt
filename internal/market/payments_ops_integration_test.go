@@ -28,7 +28,7 @@ const restoredFailed = "Restored from backup: verify in the wallet before requeu
 // restorePayoutSQL is the payout protection scripts/restore.sh and the manual SQL in UPGRADING.md apply to a
 // restored dump (TestRestoredHoldMarkerMatchesRestoreScripts keeps them identical, whitespace aside).
 var restorePayoutSQL = []string{
-	"UPDATE payouts SET state='held', updated=now(), error='" + restoredHold + "' || coalesce(' ' || substring(error from '(?:Suspended account:|Larger than the order price:).*'), '') WHERE state IN ('pending','sending','blocked','held')",
+	"UPDATE payouts SET state='held', updated=now(), error='" + restoredHold + "' || coalesce(' ' || substring(error from '(?:Suspended account:|Larger than the order price:|Held to be paid by hand:).*'), '') WHERE state IN ('pending','sending','blocked','held')",
 	"UPDATE payouts SET send_ambiguous=true WHERE state='failed'",
 	"UPDATE payouts SET updated=now(), error='" + restoredFailed + "' || error WHERE state='failed'",
 }

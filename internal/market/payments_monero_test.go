@@ -41,6 +41,8 @@ type payMoneroWallet struct {
 	// build); devBuild answers release=false.
 	rpcVersion int64
 	devBuild   bool
+	// get_balance's balance and unlocked_balance (A-445).
+	balance, unlocked json.Number
 }
 
 func (m *payMoneroWallet) handle(path, method string, params json.RawMessage) (any, int, string) {
@@ -92,6 +94,8 @@ func (m *payMoneroWallet) handle(path, method string, params json.RawMessage) (a
 		return nil, -2, "Address doesn't belong to the wallet"
 	case "get_transfers":
 		return m.transfers, 0, ""
+	case "get_balance":
+		return map[string]any{"balance": m.balance, "unlocked_balance": m.unlocked}, 0, ""
 	case "transfer":
 		return map[string]any{"tx_hash": "xmr-payout-1", "fee": 100}, 0, ""
 	case "validate_address":

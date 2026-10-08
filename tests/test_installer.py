@@ -428,7 +428,8 @@ print(value)
         process = subprocess.Popen(
             ['/bin/bash', str(self.root / 'scripts' / 'install.sh'), *(arguments or [])],
             cwd=self.root, env=env, stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            # surrogateescape: an answer can carry bytes that are not UTF-8 ('\udce9' is the byte 0xe9).
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='surrogateescape',
             start_new_session=True, preexec_fn=limit_file_size if file_size_limit else None,
         )
         try:
@@ -1339,6 +1340,36 @@ time.sleep(60)
                 self.assertEqual(self.generated_secrets(), [])
                 self.assertNotIn(PASSWORD, result.stdout + result.stderr)
 
+    def test_init_admin_password_not_utf8_refused_before_anything_is_written(self):
+        # QA5W5B-7: -bootstrap-admin refuses a password that is not valid UTF-8, which the sign-in form could never send;
+        # the installer refuses it up front, before .env is written or anything is started. LATIN1 "été" (a terminal
+        # set to LATIN1), an encoded surrogate and an overlong "/"; QA5W6-4 (mutant S6): the code point above U+10FFFF that
+        # \xf4 starts (U+110000) and a 4-byte sequence led by \xf5, which no UTF-8 holds.
+        for bad in ('correct horse \udce9t\udce9 battery', 'surrogate \udced\udca0\udc80 battery', 'overlong \udcc0\udcaf battery',
+                    'above U+10FFFF \udcf4\udc90\udc80\udc80 battery', 'F5 lead \udcf5\udc80\udc80\udc80 battery'):
+            with self.subTest(bad=bad):
+                self.log.unlink(missing_ok=True)
+                result = self.run_installer([bad, bad], arguments=['--local', '--admin', 'first_admin'])
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn('The password is not valid UTF-8', result.stderr)
+                self.assertIn('nothing was written or started', result.stderr)
+                self.assertEqual(self.calls(), PREFLIGHT)
+                self.assertFalse((self.root / '.env').exists())
+                self.assertEqual(self.generated_secrets(), [])
+                self.assertFalse((self.state / 'bootstrap-stdin').exists())
+        # Valid multibyte UTF-8, of every length, is the password piped to the server.
+        good = 'Crème brûlée 東京 🔒'
+        result = self.run_installer([good, good], arguments=['--local', '--admin', 'first_admin'])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.state / 'bootstrap-stdin').read_text(encoding='utf-8'), good + '\n')
+        # bash's read drops a NUL byte, so none reaches the server: it receives the password without it.
+        (self.root / '.env').unlink()
+        self.log.unlink()
+        self.set_installed(False)
+        result = self.run_installer([PASSWORD.replace(' ', ' \0', 1)] * 2, arguments=['--local', '--admin', 'first_admin'])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.state / 'bootstrap-stdin').read_text(), PASSWORD + '\n')
+
     def test_init_admin_failure_keeps_the_token_path(self):
         result = self.run_installer([PASSWORD, PASSWORD], arguments=['--local', '--admin', 'first_admin'],
                                     extra_env={'INSTALLER_TEST_BOOTSTRAP_FAIL': '1'})
@@ -1491,6 +1522,35 @@ time.sleep(60)
                        'lists both compose.clearnet.yaml and compose.tor.yaml')
         self.check_env(installed_env(APP_MODE='onion'), 'APP_MODE must be clearnet or tor')
         self.check_env(installed_env(COOKIE_SECURE='TRUE'), 'COOKIE_SECURE must be exactly true or false')
+
+    def test_check_takes_the_node_tor_overlay_only_after_tor_and_the_nodes(self):
+        # A-442: compose.nodes-tor.yaml replaces the node commands, so it must follow compose.nodes.yaml (listed
+        # before it, compose.nodes.yaml's commands would win and drop the proxy), and it is for Tor mode only.
+        base = 'compose.yaml:compose.tor.yaml:compose.nodes.yaml:compose.internal-db.yaml'
+        self.check_env(installed_env(COMPOSE_FILE=base + ':compose.nodes-tor.yaml',
+                                     COMPOSE_PROFILES='internal-db,bitcoin', BITCOIN_RPC_PASSWORD=hex_value(48, 'rpc')))
+        self.check_env(installed_env(COMPOSE_FILE='compose.yaml:compose.tor.yaml:compose.nodes.yaml:compose.nodes-tor.yaml:'
+                                                  'compose.internal-db.yaml'))
+        after = 'compose.nodes-tor.yaml must come after compose.nodes.yaml in COMPOSE_FILE'
+        self.check_env(installed_env(COMPOSE_FILE='compose.yaml:compose.tor.yaml:compose.nodes-tor.yaml:compose.nodes.yaml:'
+                                                  'compose.internal-db.yaml'), after)
+        self.check_env(installed_env(COMPOSE_FILE='compose.yaml:compose.tor.yaml:compose.internal-db.yaml:compose.nodes-tor.yaml'),
+                       after)
+        tor_only = 'compose.nodes-tor.yaml (local nodes over Tor) needs APP_MODE=tor and compose.tor.yaml'
+        self.check_env(clearnet_env(COMPOSE_FILE='compose.yaml:compose.clearnet.yaml:compose.nodes.yaml:compose.internal-db.yaml:'
+                                                 'compose.nodes-tor.yaml'), tor_only)
+        # Each half of the Tor rule on its own (the APP_MODE rule above refuses these too, for its own reason).
+        self.check_env(installed_env(COMPOSE_FILE='compose.yaml:compose.nodes.yaml:compose.internal-db.yaml:compose.nodes-tor.yaml'),
+                       tor_only)
+        self.check_env(clearnet_env(COMPOSE_FILE='compose.yaml:compose.tor.yaml:compose.nodes.yaml:compose.internal-db.yaml:'
+                                                 'compose.nodes-tor.yaml'), tor_only)
+        # Paths and separators as Compose takes them: by base name, split on ':' and ';' (A-485 NIT-2).
+        self.check_env(installed_env(COMPOSE_FILE='compose.yaml:compose.tor.yaml:./compose.nodes.yaml:compose.internal-db.yaml:'
+                                                  './compose.nodes-tor.yaml'))
+        self.check_env(installed_env(COMPOSE_FILE='compose.yaml;compose.tor.yaml;compose.nodes.yaml;compose.internal-db.yaml;'
+                                                  'compose.nodes-tor.yaml'))
+        self.check_env(installed_env(COMPOSE_FILE='compose.yaml;compose.tor.yaml;./compose.nodes-tor.yaml;compose.nodes.yaml;'
+                                                  'compose.internal-db.yaml'), after)
 
     def test_check_refuses_placeholders(self):
         self.check_env(installed_env(SETUP_TOKEN='REPLACE_WITH_AT_LEAST_32_RANDOM_CHARACTERS'),

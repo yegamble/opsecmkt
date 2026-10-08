@@ -250,7 +250,11 @@ func escrowKeyLoader(ctx context.Context, a *App, r *http.Request, d *PageData) 
 		log.Print(errKeySealed)
 	}
 	if err == nil && v != nil && v.Registered {
-		if err = a.db.QueryRowContext(ctx, escrowNextChildSQL, d.User.ID).Scan(&v.NextChild); err != nil {
+		floor := 1 // the lowest index of the key's layout (escrowParties)
+		if v.PerOrder {
+			floor = 2
+		}
+		if err = a.db.QueryRowContext(ctx, escrowNextChildSQL, d.User.ID, floor).Scan(&v.NextChild); err != nil {
 			return err
 		}
 		v.RangeAdvice, v.KeypoolSize = !v.PerOrder && v.NextChild > escrowRangeAdvice, v.NextChild+1000 // Core wallets only
@@ -306,6 +310,12 @@ func escrowKeyAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, fail(400, errKeyAck.Error())
 	}
 	if k.Fingerprint == e.fingerprint { // the market's own arbiter key offered as a party key
+		return actionResult{}, fail(400, errKeyUnusable.Error())
+	}
+	// Nor the escrow signer's (QA5W3A-7), in either layout: its pinned fingerprint declared, or its key at any depth.
+	if signer, err := a.isSignerKey(c.Ctx(), a.db, k); err != nil {
+		return actionResult{}, err
+	} else if signer {
 		return actionResult{}, fail(400, errKeyUnusable.Error())
 	}
 	h := a.escrowKeyHMAC(k)

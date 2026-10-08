@@ -92,7 +92,7 @@ func buildTestTemplate(dsn string) {
 		return
 	}
 	name := fmt.Sprintf("opsecmkt_tmpl_%d_%s", os.Getpid(), randomToken()[:8])
-	if _, err = admin.Exec("CREATE DATABASE " + name + " TEMPLATE template0"); err != nil {
+	if _, err = admin.Exec("CREATE DATABASE " + name + " ENCODING 'UTF8' TEMPLATE template0"); err != nil {
 		admin.Close()
 		fmt.Fprintf(os.Stderr, "internal/market tests: no template database (%v); each test migrates a schema of its own in TEST_DATABASE_URL's database instead (slower)\n", err)
 		return

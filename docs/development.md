@@ -10,7 +10,9 @@ test suite locally. For deploying a marketplace, use the
 Requirements: **Go 1.26.8+** (with the default `GOTOOLCHAIN=auto`, Go downloads the
 1.27.1 toolchain pinned in `go.mod`; set `GOTOOLCHAIN=local` to refuse the download),
 **PostgreSQL 17+**, and OpenSSL. The example below
-uses Docker for PostgreSQL only; an existing local PostgreSQL server works too.
+uses Docker for PostgreSQL only; an existing local PostgreSQL server works too, if its databases are UTF8
+(`SHOW server_encoding`; startup and the tests refuse any other encoding, so create them with
+`createdb -E UTF8 -T template0 NAME`).
 This dedicated container uses throwaway local credentials and a loopback port.
 
 ```sh
@@ -240,8 +242,12 @@ npm run test:e2e:escrow
 
 `tests/e2e/escrow-per-order-journey.spec.ts` (A-455) runs next on the same database: a vendor registers a
 per-order wallet key and signs its practice transaction (the simulated node derives rooted keys by real BIP32 public
-derivation), a buyer sees the vendor's key type on the listing and the vendor page, and the order page says a
-per-order wallet cannot take an escrow yet.
+derivation), a buyer sees the vendor's key type on the listing and the vendor page, and the order page names the
+vendor's per-order wallet key beside the buyer's Bitcoin Core key (a mixed pair, refused since A-456a).
+`tests/e2e/escrow-per-order-settle-journey.spec.ts` (A-456b) follows: both parties register per-order wallet keys and
+sign their practice, the buyer pays into a per-order escrow, each party reads its own order wallet setup page, the escrow
+is funded, and the vendor's claim is signed and uploaded as a binary PSBT file, co-signed through a simulated escrow
+signer (`wallet-rpc.py --signer-socket`, a Unix socket named by the config for its run) and confirmed.
 `tests/e2e/escrow-physical-journey.spec.ts` runs after it on the same database and follows a
 physical escrow order (WR-escrow Phase 2): shipped with a claim address, signed by the vendor and
 the buyer, released at its deadline, a dispute that cancels the deadline, the buyer's no-ship
@@ -302,7 +308,7 @@ stagenet fork; it does not claim public-testnet validation.
 ### Monero escrow on a local fakechain (real monerod and monero-wallet-rpc)
 
 Monero escrow (WR-escrow Phase 3, `ESCROW_XMR=on`, custodial, off by default; see [escrow](escrow.md#phase-3-monero-escrow-on-a-local-fakechain))
-has fourteen legs that run the real server code (a Go test per leg, with its own App and Monero escrow watcher) against a real
+has fifteen legs that run the real server code (a Go test per leg, with its own App and Monero escrow watcher) against a real
 `monerod --regtest` and three real `monero-wallet-rpc` 0.18.5.1 instances: `scripts/test-escrow-xmr-regtest.sh`. It is manual
 and not part of CI, refuses any daemon that is not a fakechain with hard fork 16 or later before any wallet call, and needs a
 disposable PostgreSQL database in `TEST_DATABASE_URL` (the legs create their own databases from it, as the other database
