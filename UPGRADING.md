@@ -1695,6 +1695,10 @@ No environment keys are added; see [the arbiter pin](docs/operator-guide.md#bitc
 
 Migration 098 clears stored XMPP profile values from the live `users` rows. The application no longer reads, saves or renders this field; the database column remains for compatibility. A backup made before migration 098 can still contain the old values. If you restore one, upgrade it before use; deleting or rotating a live database does not erase separate backup files.
 
+## 51. Audit-event ordering indexes (migration 099)
+
+Migration 099 adds indexes for audit history ordered within one account and for the global newest-first audit view. It does not change or rewrite existing audit events. Startup applies it with the other pending migrations; take the normal encrypted pre-upgrade backup and use the standard rollback procedure if the new release must be reverted.
+
 ## Appendix: new keys by hand
 
 `./scripts/install.sh upgrade` writes these for you. To add them yourself, use your editor (values in single
