@@ -238,9 +238,6 @@ func (a *App) serveUpload(w http.ResponseWriter, r *http.Request, route uploadRo
 		return
 	}
 	u.drain() // anything after the closing boundary
-	if route.kind == uploadListing {
-		u.back = "/listing-edit?id=" + url.QueryEscape(form.id) + "#photos"
-	}
 	// The body has arrived: the rest has its own bound. The request's context still ends if the client goes away.
 	ctx, cancel := context.WithTimeout(r.Context(), uploadWorkTimeout)
 	defer cancel()
@@ -391,6 +388,9 @@ func (u *upload) readForm() (uploadForm, error) {
 			}
 			if f.id = string(v); !formTextValid(url.Values{"id": {f.id}}) {
 				return f, errUploadText
+			}
+			if u.route.kind == uploadListing && f.id != "" {
+				u.back = "/listing-edit?id=" + url.QueryEscape(f.id) + "#photos"
 			}
 		case name == "description" && (seen == "" || seen == "id"):
 			v, err := readSmallPart(p, 4*descriptionLimit)
