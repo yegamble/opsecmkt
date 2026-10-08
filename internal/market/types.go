@@ -46,6 +46,10 @@ type Message struct {
 	// P2 PGP
 	Encrypted      bool
 	RecipientMatch string
+	// Count is nullable at rest: legacy rows, hidden recipients, or an unknown recipient key cannot support a complete
+	// send-time count. It counts unique visible recipient key IDs, excluding the recipient's saved IDs.
+	RecipientExtraKeys    int
+	RecipientExtraKeysSet bool
 }
 type Notification struct {
 	ID, Body, Created string

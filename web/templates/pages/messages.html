@@ -19,7 +19,7 @@
 <label>Find a recipient<input name="to" value="{{.MessageTo}}" required minlength="3" maxlength="32" pattern="[a-zA-Z0-9_]{3,32}" title="Use the recipient's handle: 3 to 32 letters, numbers, or underscores." autocomplete="off" placeholder="vendor_or_staff_handle"></label>
 <button type="submit">Load recipient’s public key</button>
 </form>
-<p class="help">First load the recipient’s key, confirm its fingerprint, then encrypt in your trusted PGP application. Loading a key reloads this page; do it before composing.</p>
+<p class="help">First load the recipient’s key and confirm its fingerprint through a trusted channel. To encrypt a text file with GnuPG, run <code>gpg --armor --encrypt --recipient &lt;fingerprint&gt; message.txt</code>, replacing <code>&lt;fingerprint&gt;</code> with the confirmed fingerprint. Paste the armored output below. Loading a key reloads this page; do it before composing.</p>
 {{if and .MessageTo (not .Contacts)}}<p role="status">No other account found for this handle. Check the recipient’s handle and try again.</p>{{end}}
 <form class="stack" method="post" action="/messages">
 <input type="hidden" name="csrf" value="{{.CSRF}}">
@@ -41,8 +41,8 @@
 <span>{{.Sender}} → {{.Recipient}}</span>
 <time>{{.Created}}</time>
 </div>
-<p class="pgp-message-status">{{if .Encrypted}}{{if eq .RecipientMatch "yes"}}<span class="badge green">Encrypted (to recipient’s key)</span>{{else if eq .RecipientMatch "no"}}<span class="badge pgp-danger">Encrypted (NOT to recipient’s key)</span>{{else}}<span class="badge neutral">Encrypted (recipient unknown)</span>{{end}}{{else}}<span class="badge pgp-danger">Not encrypted (plaintext or invalid OpenPGP)</span>{{end}}</p>
-<pre class="code-block">{{.Body}}</pre>
+<p class="pgp-message-status">{{if .Encrypted}}{{if eq .RecipientMatch "yes"}}<span class="badge green">Encrypted (to recipient’s key)</span>{{else if eq .RecipientMatch "no"}}<span class="badge pgp-danger">Encrypted (NOT to recipient’s key)</span>{{else}}<span class="badge neutral">Encrypted (recipient unknown)</span>{{end}}{{if and .RecipientExtraKeysSet (gt .RecipientExtraKeys 0)}} <span class="badge pgp-danger">+ {{.RecipientExtraKeys}} other key(s)</span><span class="help">Other key holders can also read this message.</span>{{end}}{{else}}<span class="badge pgp-danger">Not encrypted (plaintext or invalid OpenPGP)</span>{{end}}</p>
+<label class="help">Encrypted message<textarea class="code-block" rows="9" readonly aria-label="Encrypted message from {{.Sender}} to {{.Recipient}}">{{.Body}}</textarea></label>
 </article>{{else}}<div class="empty">
 <span class="empty-icon">[ ]</span>
 <h2>No messages yet</h2>

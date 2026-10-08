@@ -9,7 +9,7 @@
 </div>
 <form class="mobile-search" action="/" method="get" role="search">
 <label class="sr-only" for="mobile-query">Search listings</label>
-<input id="mobile-query" name="q" value="{{.Query}}" maxlength="64" placeholder="Search listings…">
+<input id="mobile-query" name="q" value="{{.Query}}" maxlength="64" autocomplete="off" placeholder="Search listings…">
 <button type="submit">Search</button>
 </form>
 {{template "payment-status:catalog" .}}

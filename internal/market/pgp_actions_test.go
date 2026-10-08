@@ -61,12 +61,59 @@ func TestRecipientMatch(t *testing.T) {
 	}
 }
 
+func TestRecipientExtraKeyCount(t *testing.T) {
+	alice, _ := testPGPKey(t, "alice")
+	bob, _ := testPGPKey(t, "bob")
+	ids := entityKeyIDs(alice)
+	for name, tc := range map[string]struct {
+		ids  []uint64
+		key  *openpgp.Entity
+		want int
+		ok   bool
+	}{
+		"recipient ids excluded and duplicate others deduplicated": {[]uint64{ids[0], ids[1], bob.PrimaryKey.KeyId, bob.PrimaryKey.KeyId, 99}, alice, 2, true},
+		"no additional recipients":                                 {ids, alice, 0, true},
+		"hidden recipient makes count incomplete":                  {[]uint64{ids[0], bob.PrimaryKey.KeyId, 0}, alice, 0, false},
+		"unknown recipient key makes count incomplete":             {[]uint64{bob.PrimaryKey.KeyId}, nil, 0, false},
+		"passphrase only has no count":                             {nil, alice, 0, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, known := recipientExtraKeyCount(tc.ids, tc.key)
+			if got != tc.want || known != tc.ok {
+				t.Fatalf("count=%d known=%v, want %d known=%v", got, known, tc.want, tc.ok)
+			}
+		})
+	}
+}
+
 func TestMessageStatus(t *testing.T) {
 	alice, alicePub := testPGPKey(t, "alice")
-	_, bobPub := testPGPKey(t, "bob")
+	bob, bobPub := testPGPKey(t, "bob")
 	toAlice, err := encryptTo(alice, "hello")
 	if err != nil {
 		t.Fatal(err)
+	}
+	var multiple bytes.Buffer
+	armorWriter, err := armor.Encode(&multiple, "PGP MESSAGE", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plaintext, err := openpgp.Encrypt(armorWriter, []*openpgp.Entity{alice, bob}, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = io.WriteString(plaintext, "hello both"); err != nil {
+		t.Fatal(err)
+	}
+	if err = plaintext.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err = armorWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	enc, match, extra, known := messageStatusDetails(multiple.String(), alicePub)
+	if !enc || match != matchYes || !known || extra != 1 {
+		t.Fatalf("multiple-recipient status encrypted=%v match=%q extras=%d known=%v", enc, match, extra, known)
 	}
 	var signed bytes.Buffer
 	w, _ := armor.Encode(&signed, "PGP MESSAGE", nil)

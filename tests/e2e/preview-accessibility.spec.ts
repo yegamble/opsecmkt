@@ -150,15 +150,19 @@ test('search has a readable keyboard focus indicator, usable controls and a deco
     expect(parseFloat(await control.evaluate(element => getComputedStyle(element).fontSize))).toBeGreaterThanOrEqual(control === input ? 16 : 14);
   }
   const icon = page.locator('.header-search button svg.ui-icon');
+  const searchButton = page.locator('.header-search button');
   await expect(icon).toHaveAttribute('aria-hidden', 'true');
   await expect(icon).toHaveAttribute('width', '20');
   await expect(icon).toHaveAttribute('height', '20');
-  await expect(page.locator('.header-search button')).toHaveAttribute('aria-label', 'Search marketplace');
+  await expect(searchButton).toHaveAttribute('aria-label', 'Search marketplace');
+  await expect(searchButton).toContainText('Search');
   if (await icon.isVisible()) {
-    await expect(page.locator('.header-search button')).toHaveAccessibleName('Search marketplace');
+    await expect(searchButton).toHaveAccessibleName('Search marketplace');
     expect((await icon.boundingBox())!.width).toBeGreaterThanOrEqual(20);
     expect((await icon.boundingBox())!.height).toBeGreaterThanOrEqual(20);
   }
+  await icon.evaluate(element => { (element as SVGElement).style.display = 'none'; });
+  await expect(searchButton).toContainText('Search');
   await input.fill('encrypted');
   await page.keyboard.press('Enter');
   await expect(page.locator('.product-card')).toHaveCount(1);

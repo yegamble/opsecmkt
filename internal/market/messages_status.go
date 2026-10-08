@@ -53,33 +53,64 @@ func recipientMatch(ids []uint64, key *openpgp.Entity) string {
 // messageStatus inspects an armored body. It returns encrypted=false for anything that is not an
 // OpenPGP-encrypted message (plaintext, signed-only, malformed or fake armor).
 func messageStatus(body, recipientKey string) (encrypted bool, match string) {
+	encrypted, match, _, _ = messageStatusDetails(body, recipientKey)
+	return encrypted, match
+}
+
+// messageStatusDetails also counts distinct, visible public-key recipient IDs other than the recipient's saved
+// primary/subkey IDs. A hidden recipient or an unknown recipient key makes that count incomplete, so the page
+// does not claim a number in those cases.
+func messageStatusDetails(body, recipientKey string) (encrypted bool, match string, extraKeys int, extraKeysKnown bool) {
 	ids, encrypted, err := inspectEncrypted(body)
 	if err != nil || !encrypted {
-		return false, ""
+		return false, "", 0, false
 	}
 	key, _, err := parsePublicKey(recipientKey)
 	if err != nil {
 		key = nil
 	}
-	return true, recipientMatch(ids, key)
+	match = recipientMatch(ids, key)
+	extraKeys, extraKeysKnown = recipientExtraKeyCount(ids, key)
+	return true, match, extraKeys, extraKeysKnown
+}
+
+func recipientExtraKeyCount(ids []uint64, key *openpgp.Entity) (int, bool) {
+	if key == nil || len(ids) == 0 {
+		return 0, false
+	}
+	own := make(map[uint64]struct{}, len(key.Subkeys)+1)
+	own[key.PrimaryKey.KeyId] = struct{}{}
+	for _, subkey := range key.Subkeys {
+		own[subkey.PublicKey.KeyId] = struct{}{}
+	}
+	others := make(map[uint64]struct{}, len(ids))
+	for _, id := range ids {
+		if id == 0 { // Hidden-recipient packets make the total unknowable.
+			return 0, false
+		}
+		if _, recipient := own[id]; !recipient {
+			others[id] = struct{}{}
+		}
+	}
+	return len(others), true
 }
 
 // inspectMessage is called by the /messages action before storing: it rejects bodies that are not
 // OpenPGP-encrypted and returns the body to store - a canonical re-armor of the pasted packets, without
 // armor headers or anything around the block - and the recipient-key match computed from that body.
-func inspectMessage(c *actionCtx, body, recipientID string) (stored, match string, err error) {
+func inspectMessage(c *actionCtx, body, recipientID string) (stored, match string, extraKeys int, extraKeysKnown bool, err error) {
 	var key string
 	if err = c.Tx.QueryRowContext(c.Ctx(), "SELECT pgp FROM users WHERE id=$1", recipientID).Scan(&key); err != nil {
-		return "", "", err
+		return "", "", 0, false, err
 	}
 	encrypted := false
 	if stored, err = canonicalMessage(body); err == nil {
-		encrypted, match = messageStatus(stored, key)
+		encrypted, match, extraKeys, extraKeysKnown = messageStatusDetails(stored, key)
 	}
 	if !encrypted {
-		return "", "", fail(400, "This is not an OpenPGP-encrypted message (plaintext, signed-only and malformed armor are rejected). Encrypt it locally to the recipient's public key, then paste the armored result.")
+		return "", "", 0, false, fail(400, "This is not an OpenPGP-encrypted message (plaintext, signed-only and malformed armor are rejected). Encrypt it locally to the recipient's public key, then paste the armored result.")
 	}
-	return stored, match, nil
+	return stored, match, extraKeys, extraKeysKnown, nil
 }
 
 // messageStatusLoader adds the stored inspection result to each listed message. Messages stored before
@@ -93,7 +124,7 @@ func messageStatusLoader(ctx context.Context, a *App, r *http.Request, d *PageDa
 	for i, m := range d.Messages {
 		ids[i] = m.ID
 	}
-	rows, err := a.db.QueryContext(ctx, "SELECT id,encrypted,recipient_match FROM messages WHERE id=ANY($1)", ids)
+	rows, err := a.db.QueryContext(ctx, "SELECT id,encrypted,recipient_match,recipient_extra_keys FROM messages WHERE id=ANY($1)", ids)
 	if err != nil {
 		return err
 	}
@@ -101,12 +132,13 @@ func messageStatusLoader(ctx context.Context, a *App, r *http.Request, d *PageDa
 	type status struct {
 		encrypted sql.NullBool
 		match     string
+		extraKeys sql.NullInt64
 	}
 	found := map[string]status{}
 	for rows.Next() {
 		var id string
 		var s status
-		if err = rows.Scan(&id, &s.encrypted, &s.match); err != nil {
+		if err = rows.Scan(&id, &s.encrypted, &s.match, &s.extraKeys); err != nil {
 			return err
 		}
 		found[id] = s
@@ -120,6 +152,9 @@ func messageStatusLoader(ctx context.Context, a *App, r *http.Request, d *PageDa
 		switch {
 		case ok && s.encrypted.Valid:
 			m.Encrypted, m.RecipientMatch = s.encrypted.Bool, s.match
+			if s.extraKeys.Valid && s.extraKeys.Int64 >= 0 {
+				m.RecipientExtraKeys, m.RecipientExtraKeysSet = int(s.extraKeys.Int64), true
+			}
 			// Rows stored before the strict armor check (A-67) may hold text around or inside the armor.
 			if m.Encrypted {
 				_, strict, err := inspectEncrypted(m.Body)

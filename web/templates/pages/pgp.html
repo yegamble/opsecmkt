@@ -47,7 +47,7 @@
 </section>
 </div>{{if .Challenge}}<section class="panel pgp-challenge">
 <h2>Sign exactly this text</h2>
-<pre class="code-block" tabindex="0" aria-label="Text to sign">{{.Challenge}}</pre>
+<label class="help">Text to sign<textarea class="code-block" rows="8" readonly aria-label="Text to sign">{{.Challenge}}</textarea></label>
 <p class="help">For example save it to a file and run <code>gpg --clearsign challenge.txt</code> (or <code>gpg --armor --detach-sign</code>). Expires {{.ChallengeExpires}}.</p>
 <form class="stack" method="post" action="/pgp/verify">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
@@ -57,8 +57,8 @@
 </form>
 </section>{{else if .EncryptedChallenge}}<section class="panel pgp-challenge">
 <h2>Decrypt this message</h2>
-<pre class="code-block pgp-armor" tabindex="0" aria-label="Encrypted challenge">{{.EncryptedChallenge}}</pre>
-<p class="help">For example save it to a file and run <code>gpg --decrypt challenge.asc</code>. Expires {{.ChallengeExpires}}.</p>
+<label class="help">Encrypted challenge<textarea class="code-block pgp-armor" rows="8" readonly aria-label="Encrypted challenge">{{.EncryptedChallenge}}</textarea></label>
+<p class="help">Save the encrypted message as <code>challenge.asc</code>, then run <code>gpg --decrypt challenge.asc</code> and paste the code it prints. Expires {{.ChallengeExpires}}.</p>
 <form class="stack" method="post" action="/pgp/verify">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="form_nonce" value="{{formNonce "/pgp/verify"}}">

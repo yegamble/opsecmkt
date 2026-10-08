@@ -140,7 +140,8 @@ func TestLifecycleDigitalAndDisputedPhysical(t *testing.T) {
 	if n := l.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND actor_id IS NULL AND to_state IN ('paid','delivered') AND from_state<>to_state", order); n != 2 {
 		t.Fatalf("system paid/delivered events: %d", n)
 	}
-	if !strings.Contains(l.get("/order?id="+order, buyer, 200), secret) {
+	deliveredPage := l.get("/order?id="+order, buyer, 200)
+	if !strings.Contains(deliveredPage, secret) || !strings.Contains(deliveredPage, `readonly aria-label="Digital delivery"`) {
 		t.Fatal("buyer cannot see delivered content")
 	}
 	l.get("/order?id="+order, other, 404)
