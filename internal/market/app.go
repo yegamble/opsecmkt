@@ -483,7 +483,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Method not allowed", 405)
 			return
 		}
-		http.StripPrefix("/static/", http.FileServer(http.Dir("web/static"))).ServeHTTP(w, r)
+		a.serveStatic(w, r)
 		return
 	}
 	// The image routes (image_routes.go) branch here, before any cookie is read or set: the public one reads no
