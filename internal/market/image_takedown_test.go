@@ -621,7 +621,6 @@ func TestStaffDemotionDeletesAvatar(t *testing.T) {
 	e := newTestApp(t)
 	adminID, admin := e.user("demote_admin", "admin")
 	otherAdminID, _ := e.user("demote_other_admin", "admin")
-	const note = "Your staff avatar was removed when your role changed; upload a new one if you want one shown."
 	const audit = "Staff avatar removed when the role changed"
 	for _, to := range []string{"vendor", "buyer"} {
 		modID, _ := e.user("demote_mod_to_"+to, "moderator")
@@ -639,18 +638,19 @@ func TestStaffDemotionDeletesAvatar(t *testing.T) {
 			body := e.body("GET", "/vendor?id="+modID, randomToken(), nil, 200)
 			mustNotContain(t, body, avatar.id, "/img/")
 		}
-		if agInt(e, "SELECT count(*) FROM notifications WHERE user_id=$1 AND body=$2", modID, note) != 1 {
-			t.Fatalf("moderator → %s: owner not notified", to)
+		wantNotice := "Your account role changed from moderator to " + to + ". Your staff avatar was removed."
+		if got := agStr(e, "SELECT body FROM notifications WHERE user_id=$1", modID); got != wantNotice || agInt(e, "SELECT count(*) FROM notifications WHERE user_id=$1", modID) != 1 {
+			t.Fatalf("moderator → %s: notice %q, want exactly %q", to, got, wantNotice)
 		}
 		if !e.auditExact(modID, audit) || !e.auditExact(adminID, "Changed role of demote_mod_to_"+to+" from moderator to "+to+"; removed their staff avatar (confirmed with password)") {
 			t.Fatalf("moderator → %s: audit rows missing", to)
 		}
 	}
-	// A moderator without an avatar is changed with no avatar note or audit row.
+	// A moderator without an avatar still receives the role change notice, with no false avatar consequence or avatar audit.
 	bareID, _ := e.user("demote_mod_bare", "moderator")
 	agExpect(e, "/admin", admin, form("action", "role", "password", testPassword, "role", "vendor", "handle", "demote_mod_bare"), 303, "")
-	if agInt(e, "SELECT count(*) FROM notifications WHERE user_id=$1", bareID) != 0 || e.auditExact(bareID, audit) {
-		t.Fatal("a moderator without an avatar got the avatar note or audit row")
+	if got := agStr(e, "SELECT body FROM notifications WHERE user_id=$1", bareID); got != "Your account role changed from moderator to vendor." || agInt(e, "SELECT count(*) FROM notifications WHERE user_id=$1", bareID) != 1 || e.auditExact(bareID, audit) {
+		t.Fatalf("moderator without avatar got incorrect notification or audit: %q", got)
 	}
 	// Administrators' roles are not changed here: the other administrator's hidden avatar stays, and stays hidden.
 	adminAvatar := e.image(otherAdminID, "", "avatar")

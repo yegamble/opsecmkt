@@ -465,6 +465,8 @@ func adminChange(c *actionCtx) (actionResult, error) {
 // summary.
 func roleChanged(ctx context.Context, tx *sql.Tx, target, old, role, by string) (string, error) {
 	summary := ""
+	avatarRemoved := false
+	archivedListings := "0"
 	if old != role && (old == "moderator" || old == "admin") && role != "moderator" {
 		// PR #28 review: a staff avatar was uploaded under the staff rules (hidden unless listed); as a
 		// vendor's it would be public. It is deleted here (D4's hard delete), after the caller's users row lock.
@@ -479,10 +481,8 @@ func roleChanged(ctx context.Context, tx *sql.Tx, target, old, role, by string) 
 		}
 		if n, _ := res.RowsAffected(); n > 0 {
 			summary += "; removed their staff avatar"
+			avatarRemoved = true
 			if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", target, "Staff avatar removed when the role changed"); err != nil {
-				return "", err
-			}
-			if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), target, "Your staff avatar was removed when your role changed; upload a new one if you want one shown."); err != nil {
 				return "", err
 			}
 		}
@@ -490,15 +490,29 @@ func roleChanged(ctx context.Context, tx *sql.Tx, target, old, role, by string) 
 	if role != "vendor" {
 		// A user who is no longer a vendor cannot manage listings, so their active listings are archived in
 		// this transaction (audited on the account). Existing orders are unaffected.
-		n := "0"
-		if err := tx.QueryRowContext(ctx, "WITH a AS (UPDATE products SET archived=true,archived_at=now(),updated=now() WHERE vendor_id=$1 AND NOT archived RETURNING 1) SELECT count(*)::text FROM a", target).Scan(&n); err != nil {
+		if err := tx.QueryRowContext(ctx, "WITH a AS (UPDATE products SET archived=true,archived_at=now(),updated=now() WHERE vendor_id=$1 AND NOT archived RETURNING 1) SELECT count(*)::text FROM a", target).Scan(&archivedListings); err != nil {
 			return "", err
 		}
-		if n != "0" {
-			summary += "; archived " + n + " active listing(s)"
-			if _, err := tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", target, "Archived "+n+" active listing(s): role changed to "+role+" by "+by); err != nil {
+		if archivedListings != "0" {
+			summary += "; archived " + archivedListings + " active listing(s)"
+			if _, err := tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", target, "Archived "+archivedListings+" active listing(s): role changed to "+role+" by "+by); err != nil {
 				return "", err
 			}
+		}
+	}
+	if old != role {
+		note := "Your account role changed from " + old + " to " + role + "."
+		if archivedListings != "0" {
+			note += " Your " + archivedListings + " active listing(s) were archived; existing orders remain readable."
+		}
+		if avatarRemoved {
+			note += " Your staff avatar was removed."
+		}
+		if old == "admin" && role != "admin" {
+			note += " Your existing sessions and pending sign-ins were ended."
+		}
+		if _, err := tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), target, note); err != nil {
+			return "", err
 		}
 	}
 	return summary, nil
