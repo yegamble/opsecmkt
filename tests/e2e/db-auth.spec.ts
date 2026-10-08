@@ -142,7 +142,7 @@ test('anonymous checkout returns to the checkout after registering and after the
   await page.getByLabel('Handle', { exact: true }).fill(handle);
   await page.getByLabel('Password', { exact: true }).fill(passphrase);
   await page.getByRole('button', { name: 'Sign in' }).click();
-  await expect(page).toHaveURL(/\/challenge$/);
+  await expect(page).toHaveURL(new RegExp(`/challenge\\?next=${encodeURIComponent(checkout)}$`));
   // The enrollment's step is spent (replay guard); the next step's code completes sign-in.
   await page.getByLabel('6-digit code', { exact: true }).fill(totp(secret, currentStep() + 1));
   await page.getByRole('button', { name: 'Verify code' }).click();
