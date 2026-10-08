@@ -17,8 +17,8 @@ import (
 // any other form's (at most psbtUploadBodyLimit bytes, through http.MaxBytesReader); the parts become the request's
 // form and every later check is the paste's: the central text check, Origin, CSRF, the session, then escrowSignAction.
 //
-// Only the known fields, each at most once and within its own bound: csrf, order_id, settlement_id (or bump_id), psbt
-// (the paste) and psbt_file. A part's file name and Content-Type are never read. Every text part, and a text file (a base64
+// Only the known fields, each at most once and within its own bound: csrf, form_nonce, order_id, settlement_id (or bump_id),
+// psbt (the paste) and psbt_file. A part's file name and Content-Type are never read. Every text part, and a text file (a base64
 // PSBT, such as the market's own download signed), must be valid UTF-8 without a NUL byte (formTextValid, as uploads.go's
 // readForm checks its text parts, QA5W3B-5); a binary PSBT file, starting with the PSBT magic bytes, is turned into its
 // base64 text, which decodePSBT bounds and parses as it does a paste.
@@ -47,7 +47,7 @@ const (
 )
 
 // psbtUploadFields is each field the sign form's multipart body may carry, with the most bytes it may hold.
-var psbtUploadFields = map[string]int64{"csrf": csrfPartLimit, "order_id": idPartLimit, "settlement_id": 20, "psbt": psbtMaxBase64, psbtFileField: psbtMaxBase64}
+var psbtUploadFields = map[string]int64{"csrf": csrfPartLimit, "order_id": idPartLimit, "settlement_id": 20, formNonceField: 32, "psbt": psbtMaxBase64, psbtFileField: psbtMaxBase64}
 
 const (
 	errPSBTUploadForm  = "Invalid form: reload the order page and try again. Nothing was changed."

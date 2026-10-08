@@ -135,6 +135,7 @@
 <p class="help">The hardware copy includes the funding transactions some devices require. Check the same outputs above on your device. Hardware signing has not been tested with a physical device.</p>
 <form class="stack" method="post" action="/escrow/sign" enctype="multipart/form-data">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/escrow/sign"}}">
 <input type="hidden" name="order_id" value="{{$.Order.ID}}">
 <input type="hidden" name="settlement_id" value="{{.ID}}">
 <label>Signed PSBT<textarea class="escrow-psbt" name="psbt" maxlength="87384" rows="6" spellcheck="false" autocapitalize="off" placeholder="cHNidP8…"></textarea>
@@ -146,6 +147,7 @@
 </form>
 <form class="stack" method="post" action="/escrow/hardware-sign" enctype="multipart/form-data">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/escrow/hardware-sign"}}">
 <input type="hidden" name="order_id" value="{{$.Order.ID}}">
 <input type="hidden" name="settlement_id" value="{{.ID}}">
 <label>Upload hardware wallet signature (.psbt or .txt)<input type="file" name="psbt_file" required accept=".psbt,.txt" aria-describedby="hardware-sign-help-{{.ID}}"></label>
@@ -176,6 +178,7 @@
 </form>
 <form class="stack" method="post" action="/escrow/hardware-bump-sign" enctype="multipart/form-data">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/escrow/hardware-bump-sign"}}">
 <input type="hidden" name="order_id" value="{{$.Order.ID}}">
 <input type="hidden" name="bump_id" value="{{.ID}}">
 <label>Upload hardware wallet fee bump signature (.psbt or .txt)<input type="file" name="psbt_file" required accept=".psbt,.txt" aria-describedby="hardware-bump-help-{{.ID}}"></label>

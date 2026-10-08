@@ -44,8 +44,8 @@ import (
 
 func init() {
 	registerAction("/escrow/claim", actionSpec{OwnTx: true, OneAtATime: true, Off: escrowOff, Run: escrowClaimAction})
-	registerAction("/escrow/sign", actionSpec{Off: escrowOff, Run: escrowSignAction})
-	registerAction("/escrow/hardware-sign", actionSpec{Off: escrowOff, Run: escrowSignAction})
+	registerAction("/escrow/sign", actionSpec{FormNonce: true, Off: escrowOff, Run: escrowSignAction})
+	registerAction("/escrow/hardware-sign", actionSpec{FormNonce: true, Off: escrowOff, Run: escrowSignAction})
 	registerRaw("/escrow-psbt", escrowPSBTDownload)
 }
 

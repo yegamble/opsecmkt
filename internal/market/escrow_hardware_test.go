@@ -210,10 +210,15 @@ func hardwareSign(t *testing.T, b64, fp string) string {
 }
 
 func hardwareUpload(x *escrowEnv, path, session, order, id, psbt string) *httptest.ResponseRecorder {
+	return hardwareUploadWithNonce(x, path, session, order, id, randomToken()[:32], psbt)
+}
+
+func hardwareUploadWithNonce(x *escrowEnv, path, session, order, id, nonce, psbt string) *httptest.ResponseRecorder {
 	x.t.Helper()
 	var b bytes.Buffer
 	mw := multipart.NewWriter(&b)
 	mw.WriteField("csrf", x.A.csrf(session))
+	mw.WriteField(formNonceField, nonce)
 	mw.WriteField("order_id", order)
 	if path == "/escrow/hardware-bump-sign" {
 		mw.WriteField("bump_id", id)

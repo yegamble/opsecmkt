@@ -5,9 +5,11 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/binary"
 	"encoding/hex"
 	"log"
 	"regexp"
+	"sort"
 	"time"
 )
 
@@ -31,11 +33,44 @@ func formNonceFor(path string) string {
 // In particular, a plain digest of a message or a future password field could aid offline guessing.
 func (a *App) formRequestHMAC(c *actionCtx) string {
 	h := hmac.New(sha256.New, a.key)
+	if psbtUploadRoutes[c.R.URL.Path] {
+		// Hardware PSBTs can be 8 MiB. Hash parsed multipart fields directly with length framing so
+		// canonicalizing them through url.Values.Encode would allocate another expanded copy of the PSBT.
+		for _, part := range []string{c.R.Method, c.R.URL.Path, c.R.URL.RawQuery} {
+			writeFormHMACPart(h, []byte(part))
+		}
+		keys := make([]string, 0, len(c.Form))
+		for key := range c.Form {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		writeFormHMACCount(h, uint64(len(keys)))
+		for _, key := range keys {
+			writeFormHMACPart(h, []byte(key))
+			values := c.Form[key]
+			writeFormHMACCount(h, uint64(len(values)))
+			for _, value := range values {
+				writeFormHMACPart(h, []byte(value))
+			}
+		}
+		return hex.EncodeToString(h.Sum(nil))
+	}
 	for _, part := range []string{c.R.Method, c.R.URL.Path, c.R.URL.RawQuery, c.Form.Encode()} {
 		h.Write([]byte(part))
 		h.Write([]byte{0})
 	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+func writeFormHMACPart(h interface{ Write([]byte) (int, error) }, part []byte) {
+	writeFormHMACCount(h, uint64(len(part)))
+	_, _ = h.Write(part)
+}
+
+func writeFormHMACCount(h interface{ Write([]byte) (int, error) }, count uint64) {
+	var size [8]byte
+	binary.BigEndian.PutUint64(size[:], count)
+	_, _ = h.Write(size[:])
 }
 
 var errFormNonceMismatch = fail(409, "This form was already used for a different request. Reload the page and try again. Nothing was changed.")

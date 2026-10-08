@@ -523,7 +523,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 			}
-			// Its five known fields, bounded, become the form; every check below applies to them (psbt_upload.go).
+			// Its six known fields, bounded, become the form; every check below applies to them (psbt_upload.go).
 			form, code, msg := readPSBTUploadForm(w, r)
 			if form == nil {
 				http.Error(w, msg, code)

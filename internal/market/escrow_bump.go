@@ -46,7 +46,7 @@ import (
 func init() {
 	registerAction("/escrow/bump", actionSpec{OwnTx: true, OneAtATime: true, Off: escrowOff, Run: escrowBumpAction})
 	registerAction("/escrow/bump-sign", actionSpec{FormNonce: true, Off: escrowOff, Run: escrowBumpSignAction})
-	registerAction("/escrow/hardware-bump-sign", actionSpec{Off: escrowOff, Run: escrowBumpSignAction})
+	registerAction("/escrow/hardware-bump-sign", actionSpec{FormNonce: true, Off: escrowOff, Run: escrowBumpSignAction})
 }
 
 // escrowBumpIncrement is BIP125's minimum fee increase per vB of the replacement (Bitcoin Core's default incremental

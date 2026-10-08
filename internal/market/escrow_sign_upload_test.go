@@ -24,11 +24,22 @@ type uploadPart struct {
 
 // signUpload posts the sign form as multipart/form-data as session, the CSRF token first unless parts carry one.
 func (x *escrowEnv) signUpload(session string, parts ...uploadPart) *httptest.ResponseRecorder {
+	return x.signUploadWithNonceDefault(session, true, parts...)
+}
+
+func (x *escrowEnv) signUploadRaw(session string, parts ...uploadPart) *httptest.ResponseRecorder {
+	return x.signUploadWithNonceDefault(session, false, parts...)
+}
+
+func (x *escrowEnv) signUploadWithNonceDefault(session string, generateNonce bool, parts ...uploadPart) *httptest.ResponseRecorder {
 	x.t.Helper()
 	var b bytes.Buffer
 	mw := multipart.NewWriter(&b)
 	if !strings.Contains(partsNames(parts), "csrf,") {
 		mw.WriteField("csrf", x.A.csrf(session))
+	}
+	if generateNonce && !strings.Contains(partsNames(parts), formNonceField+",") {
+		mw.WriteField(formNonceField, randomToken()[:32])
 	}
 	for _, p := range parts {
 		var w interface{ Write([]byte) (int, error) }
@@ -50,6 +61,36 @@ func (x *escrowEnv) signUpload(session string, parts ...uploadPart) *httptest.Re
 	w := httptest.NewRecorder()
 	x.A.ServeHTTP(w, r)
 	return w
+}
+
+func TestEscrowSignUploadRequiresExactFormNonce(t *testing.T) {
+	x, _ := newPerOrderEnv(t)
+	order, id := x.built(regtestAddr("upload-nonce-refund"), regtestAddr("upload-nonce-claim"), 60000, 40000)
+	session, fingerprint := x.partySess(roleVendor)
+	signed := walletSign(t, x.partyCopy(order, session, id), fingerprint, 1)
+	for _, tc := range []struct {
+		name  string
+		extra []uploadPart
+	}{
+		{name: "missing"},
+		{name: "non-hex 32 bytes", extra: []uploadPart{{formNonceField, "", []byte(strings.Repeat("g", 32))}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			parts := []uploadPart{{"order_id", "", []byte(order)}, {"settlement_id", "", []byte(strconv.FormatInt(id, 10))}}
+			parts = append(parts, tc.extra...)
+			parts = append(parts, uploadPart{"psbt_file", "signed.psbt", []byte(signed)})
+			w := x.signUploadRaw(session, parts...)
+			if w.Code != 400 {
+				t.Fatalf("missing/invalid nonce status = %d %s", w.Code, w.Body.String())
+			}
+			if got := submissionCount(t, x.testEnv); got != 0 {
+				t.Fatalf("refused nonce left %d receipts", got)
+			}
+			if got := agInt(x.testEnv, "SELECT count(*) FROM settlement_signatures"); got != 0 {
+				t.Fatalf("refused nonce stored %d signatures", got)
+			}
+		})
+	}
 }
 
 func partsNames(parts []uploadPart) string {
