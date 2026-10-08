@@ -738,6 +738,16 @@ type EscrowNodeView struct {
 	TorHold         string
 	Stalled         []EscrowStallView
 	StallN          int // escrowStallBlocks
+	Health          *EscrowHealthView
+}
+
+// EscrowHealthView is the persisted, allowlisted Bitcoin escrow node summary shown under Payment providers (A-451).
+type EscrowHealthView struct {
+	Enabled                        bool
+	DisabledClass, LastPass, Chain string
+	Height, PinMatch               string
+	KeypoolHighWater               string
+	HighestMarketIndex             int64
 }
 
 // EscrowStallView is a broadcast settlement whose transaction the watch-only wallet has not seen (escrow_stall.go): the

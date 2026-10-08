@@ -135,12 +135,20 @@ func (a *App) escrowPollOnce(ctx context.Context) error {
 	}
 	var nodeErr error
 	notSynced := false
+	var nodeObservation *bitcoinNode
+	var pinMatch *bool
 	if e != nil {
 		node, err := e.blockchainInfo(ctx)
 		// getnetworkinfo, read at most once per pass: on a public chain for the sync guard (its failure fails the node
 		// check), and in APP_MODE=tor for the Tor-mode gate (its failure holds broadcasts, A-441).
 		var netInfo escrowNetInfo
 		var netErr error
+		if err == nil {
+			nodeObservation = &node
+			matches := escrowChainID(node.Chain, node.SignetChallenge) == e.chainID
+			pinMatch = &matches
+			a.observeEscrowNode(node, pinMatch)
+		}
 		if err == nil && (node.Chain != "regtest" || a.mode == "tor") {
 			netInfo, netErr = e.networkInfo(ctx)
 			if node.Chain != "regtest" {
@@ -161,6 +169,16 @@ func (a *App) escrowPollOnce(ctx context.Context) error {
 				a.noteTorGate(torGate(netInfo, netErr))
 			}
 		}
+	}
+	if nodeObservation != nil {
+		a.saveEscrowHealthObservation(ctx, *nodeObservation, pinMatch)
+	}
+	if nodeErr != nil {
+		disabledClass := "node_unreachable"
+		if errors.Is(nodeErr, errEscrowChain) {
+			disabledClass = "chain_pin_mismatch"
+		}
+		a.saveEscrowHealthUnavailable(ctx, disabledClass)
 	}
 	conn, err := a.db.Conn(ctx)
 	if err != nil {
@@ -300,7 +318,11 @@ func (a *App) escrowPollOnce(ctx context.Context) error {
 			errs = append(errs, err)
 		}
 	}
-	return errors.Join(errs...)
+	passErr := errors.Join(errs...)
+	if passErr == nil && nodeObservation != nil {
+		a.saveEscrowHealthPass(ctx, *nodeObservation)
+	}
+	return passErr
 }
 
 // noteEscrowSync records why (a bitcoinNode reason class, "" when synced) as the escrow node's sync state for the admin
@@ -326,6 +348,10 @@ func escrowNodeLoader(ctx context.Context, a *App, _ *http.Request, d *PageData)
 		return nil
 	}
 	v := &EscrowNodeView{Mismatch: a.escrowMismatch.Load(), StallN: escrowStallBlocks}
+	var err error
+	if v.Health, err = escrowHealthView(ctx, a.db); err != nil {
+		return err
+	}
 	if class := a.escrowPooledKey.Load(); class != nil {
 		v.PooledKey, v.PooledWhitelist = *class, strings.Join(pooledRPCMethods, ",")
 	}
@@ -340,11 +366,10 @@ func escrowNodeLoader(ctx context.Context, a *App, _ *http.Request, d *PageData)
 		v.Remedy = syncRemedy(e.network, v.NotSynced)
 		v.TorHold = a.broadcastHold()
 	}
-	var err error
 	if v.Stalled, err = a.escrowStalls(ctx); err != nil {
 		return err
 	}
-	if v.NotSynced != "" || v.Mismatch != nil || v.PooledKey != "" || v.ArbiterRead != "" || v.TorHold != "" || len(v.Stalled) > 0 {
+	if v.Health != nil || v.NotSynced != "" || v.Mismatch != nil || v.PooledKey != "" || v.ArbiterRead != "" || v.TorHold != "" || len(v.Stalled) > 0 {
 		d.EscrowNode = v
 	}
 	return nil
