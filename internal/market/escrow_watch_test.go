@@ -264,8 +264,8 @@ func TestEscrowOrderPanelWithEscrowOff(t *testing.T) {
 	addr := x.mustCheckout(x.order, "bcrt1qbuyerrefund00000000000000000000001")
 	x.core.deposit(addr, "part", 0, 40000, 1)
 	x.poll()
-	if body := x.page("/order?id="+x.order, x.buyerSess); !strings.Contains(body, "If nothing has been received by") {
-		t.Fatal("no payment window on the open escrow order with escrow on")
+	if body := x.page("/order?id="+x.order, x.buyerSess); !strings.Contains(body, "later top-ups do not extend this fixed wait") {
+		t.Fatal("no fixed confirmation wait on the open escrow order with escrow on")
 	}
 	done := x.draft()
 	addr2 := x.mustCheckout(done, "bcrt1qbuyerrefund00000000000000000000002")

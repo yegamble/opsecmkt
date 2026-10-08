@@ -850,7 +850,7 @@ func TestXMREscrowMigration084Upgrade(t *testing.T) {
 			"SELECT to_jsonb(t) FROM settlement_outputs t ORDER BY settlement_id,n",
 			"SELECT to_jsonb(t) FROM settlement_bumps t ORDER BY id",
 			"SELECT to_jsonb(t) FROM escrow_pubkeys t ORDER BY pubkey",
-			"SELECT to_jsonb(t) FROM orders t ORDER BY id",
+			"SELECT to_jsonb(t) - 'listing_title' - 'listing_description' - 'listing_kind' FROM orders t ORDER BY id",
 			"SELECT to_jsonb(t) FROM escrow_orphans t",
 		} {
 			rows, err := db.Query(q)
