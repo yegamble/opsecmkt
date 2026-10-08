@@ -1658,6 +1658,19 @@ disputes with an empty settlement outcome also reach this review when the wallet
 No new configuration is needed. Pooled-wallet removal remains gated on an empty real drain list and the public-network
 operator evidence; this migration does not remove pooled writers.
 
+## 49. Bitcoin escrow health and arbiter account-key pin (A-451, A-452)
+
+Migrations 093 and 094 add one durable Bitcoin escrow health row with its last successful watcher pass, disabled
+reason, node height, pin-match status, arbiter key-pool high-water mark and highest market index. The admin page
+shows this history even after escrow is switched off; the row stores no RPC credentials, wallet names or account
+keys. Startup with escrow off records that state without contacting the node.
+
+The existing arbiter fingerprint pin gains an HMAC of the account key in `settings`. A fingerprint-only deployment
+records it on the first upgraded start only if the observed fingerprint matches. Later account-key changes disable
+escrow even when the fingerprint matches. Restore the original arbiter wallet and original `APP_SECRET_KEY` (or
+legacy `SETUP_TOKEN` key root), since changing the key root also changes the HMAC. Never remove these pins while
+escrows exist. No environment keys are added; see [the arbiter pin](docs/operator-guide.md#bitcoin-escrow-test-networks-only).
+
 ## Appendix: new keys by hand
 
 `./scripts/install.sh upgrade` writes these for you. To add them yourself, use your editor (values in single

@@ -21,6 +21,11 @@ import (
 // using an Ed25519 key taken only from AUDIT_SIGNING_KEY (never the database). A valid signature proves the file
 // came from a holder of that key; it cannot prove the history was never altered before export.
 
+// A-240: an export is buffered for its detached Ed25519 signature and can stay in memory throughout a slow
+// download. Permit one such buffer per process, holding its slot through the final write (including a failed
+// write); ordinary pages and staff actions keep their own admission classes.
+var auditExportWork = make(chan struct{}, 1)
+
 func init() {
 	registerRaw("/admin/audit-export", auditExportHandler)
 	registerLoader("admin", func(ctx context.Context, a *App, r *http.Request, d *PageData) error {
@@ -153,6 +158,13 @@ func auditExportHandler(a *App, w http.ResponseWriter, r *http.Request, u *User)
 		http.Error(w, "upto must be a positive audit event id", 400)
 		return
 	}
+	releaseExport, ok := tryTake(auditExportWork)
+	if !ok {
+		w.Header().Set("Retry-After", busyRetryAfter)
+		http.Error(w, "Another audit export is being prepared or sent. Wait for it to finish, then try again.", http.StatusServiceUnavailable)
+		return
+	}
+	defer releaseExport()
 	// A-139: the export sets its own bounds. Its build may outlast ServeHTTP's 12 s request context, and over Tor
 	// (0.19–0.45 MB/s measured) its download outlasts the 20 s WriteTimeout: a cut download fails verify-audit like
 	// tampering. It still stops when the client goes away. The read deadline is moved with the write deadline only
