@@ -185,7 +185,7 @@ func TestUnreadNotificationCountInNavigation(t *testing.T) {
 
 func TestVendorDemotionArchivesListingsAndRefusesNewOrders(t *testing.T) {
 	w := newOrderWorld(t)
-	_, admin := w.e.user("admin_"+randomToken()[:6], "admin")
+	_, admin := w.e.user("demotion_admin", "admin")
 	a := w.e.product(w.vendorID, "physical")
 	b := w.e.product(w.vendorID, "physical")
 	old := w.e.product(w.vendorID, "digital")
@@ -206,7 +206,7 @@ func TestVendorDemotionArchivesListingsAndRefusesNewOrders(t *testing.T) {
 	if n := w.count("SELECT count(*) FROM products WHERE vendor_id=$1 AND archived_at IS NOT NULL", w.vendorID); n != 3 {
 		t.Fatalf("archived_at not set: %d", n)
 	}
-	if !w.e.auditExact(w.vendorID, "Archived 2 active listing(s): role changed to buyer by an administrator") {
+	if !w.e.auditExact(w.vendorID, "Archived 2 active listing(s): role changed to buyer by administrator demotion_admin") {
 		t.Fatal("demoted user's audit event missing")
 	}
 	if w.count("SELECT count(*) FROM audit_events e JOIN users u ON u.id=e.user_id AND u.role='admin' WHERE e.action='Changed role of '||(SELECT handle FROM users WHERE id=$1)||' from vendor to buyer; archived 2 active listing(s)'", w.vendorID) != 1 {
@@ -240,7 +240,7 @@ func TestVendorDemotionArchivesListingsAndRefusesNewOrders(t *testing.T) {
 	w.expect("/admin", admin, form("action", "role", "role", "moderator", "handle", w.e.loadUser(w.vendorID).Handle), 303, "")
 	var archived bool
 	w.e.DB.QueryRow("SELECT archived FROM products WHERE id=$1", c).Scan(&archived)
-	if !archived || !w.e.auditExact(w.vendorID, "Archived 2 active listing(s): role changed to moderator by an administrator") {
+	if !archived || !w.e.auditExact(w.vendorID, "Archived 2 active listing(s): role changed to moderator by administrator demotion_admin") {
 		t.Fatal("demotion to moderator left the listing active or unaudited")
 	}
 }

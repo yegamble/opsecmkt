@@ -393,11 +393,12 @@ func adminAction(c *actionCtx) (actionResult, error) {
 			if _, err = tx.ExecContext(ctx, "UPDATE users SET role=$1 WHERE id=$2", role, target); err != nil {
 				return actionResult{}, err
 			}
-			_, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", target, "Role changed from "+old+" to "+role+" by an administrator")
+			actor := "administrator " + u.Handle
+			_, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", target, "Role changed from "+old+" to "+role+" by "+actor)
 		}
 		if err == nil {
 			var more string
-			more, err = roleChanged(ctx, tx, target, old, role, "an administrator")
+			more, err = roleChanged(ctx, tx, target, old, role, "administrator "+u.Handle)
 			action += more
 		}
 	case "settings":
@@ -419,7 +420,8 @@ func adminAction(c *actionCtx) (actionResult, error) {
 
 // roleChanged does what an account's new role entails, in tx after its users row is locked and its role set from
 // old to role. The admin form and the -set-role host command (SetRole) share it; by names who changed the role in
-// the account's audit rows ("an administrator" or "host command"). It returns what to add to the change's summary.
+// the account's audit rows (the administrator handle or "host command"). It returns what to add to the change's
+// summary.
 func roleChanged(ctx context.Context, tx *sql.Tx, target, old, role, by string) (string, error) {
 	summary := ""
 	if old != role && (old == "moderator" || old == "admin") && role != "moderator" {

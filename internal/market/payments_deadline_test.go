@@ -11,7 +11,7 @@ import (
 // its expiry query (settleOrder): the later of the address's issue time and the latest deposit that counts (not
 // conflicted, not locked), plus PAYMENT_EXPIRY. System and moderator moves tell the parties why.
 
-const cancellationSentence = ", it can be cancelled; a new deposit moves this time; anything sent after cancellation is not refunded automatically."
+const cancellationSentence = ", it can be cancelled; this time moves when the wallet observes a new deposit, which may be later than when it was sent; anything sent after cancellation is not refunded automatically."
 
 func cancelAfter(t time.Time) string {
 	return "If the order is still unpaid or short at " + t.UTC().Truncate(time.Minute).Format("2006-01-02 15:04") + " UTC" + cancellationSentence
@@ -30,7 +30,9 @@ func TestAwaitingPageStatesCancellationTime(t *testing.T) {
 		"its confirmed deposits are refunded to your saved BTC payout address (the refund waits until one is saved); if together they are below the minimum automatic payout of 0.0001 BTC, they are not refunded automatically and market staff are notified.")
 	// A-233(c): no unconditional refund promise (a total below the floor is flagged for staff, A-99/A-211).
 	mustNotContain(t, page, "it is cancelled and what you sent is refunded")
-	mustContain(t, p.page("/order?id="+p.order, p.vendorSess), cancelAfter(issued.Add(2*time.Hour)), "refunded to the buyer's saved BTC payout address")
+	vendorPage := p.page("/order?id="+p.order, p.vendorSess)
+	mustContain(t, vendorPage, cancelAfter(issued.Add(2*time.Hour)), "refunded to the buyer's saved BTC payout address")
+	mustNotContain(t, vendorPage, "Send <strong>", "top up only", "Only send a top-up", "refunded to your saved")
 
 	// Underpaid: the latest counted deposit moves the time; a conflicted or locked deposit does not.
 	p.fake.Deposit(p.addr, "tx-deadline-a", 0, 20000, 3)

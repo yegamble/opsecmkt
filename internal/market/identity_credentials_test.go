@@ -24,14 +24,14 @@ func TestAdminRoleChangeAuditsBothAccountsAndGuards(t *testing.T) {
 	if !e.auditExact(adminID, "Changed role of role_target from buyer to vendor") {
 		t.Fatal("administrator audit row does not name the account and roles")
 	}
-	if !e.auditExact(targetID, "Role changed from buyer to vendor by an administrator") {
+	if !e.auditExact(targetID, "Role changed from buyer to vendor by administrator role_admin") {
 		t.Fatal("changed account has no audit row of its own")
 	}
 	if agStr(e, "SELECT role FROM users WHERE id=$1", targetID) != "vendor" {
 		t.Fatal("role not changed")
 	}
 	// Both rows are written in the action's transaction (same timestamp).
-	if agInt(e, "SELECT count(DISTINCT created) FROM audit_events WHERE action IN ('Changed role of role_target from buyer to vendor','Role changed from buyer to vendor by an administrator')") != 1 {
+	if agInt(e, "SELECT count(DISTINCT created) FROM audit_events WHERE action IN ('Changed role of role_target from buyer to vendor','Role changed from buyer to vendor by administrator role_admin')") != 1 {
 		t.Fatal("role audit rows not written in one transaction")
 	}
 	if agStr(e, "SELECT action FROM audit_events WHERE id=$1", legacy) != "Changed user role" {
@@ -42,7 +42,7 @@ func TestAdminRoleChangeAuditsBothAccountsAndGuards(t *testing.T) {
 	body := e.body("GET", "/admin", admin, nil, 200)
 	mustContain(t, body, `<th scope="col">Account</th>`,
 		"<td>role_admin</td>\n<td>Changed role of role_target from buyer to vendor</td>",
-		"<td>role_target</td>\n<td>Role changed from buyer to vendor by an administrator</td>")
+		"<td>role_target</td>\n<td>Role changed from buyer to vendor by administrator role_admin</td>")
 
 	// Re-submitting the same role records nothing on the account.
 	agExpect(e, "/admin", admin, form("action", "role", "role", "vendor", "handle", "role_target"), 303, "")

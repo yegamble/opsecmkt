@@ -256,6 +256,12 @@ func (a *App) load(r *http.Request, d *PageData) error {
 			}
 			p.PriceBTC = amount(btc, 8)
 			p.PriceXMR = amount(xmr, 12)
+			if btc < payoutFloor("BTC", "release") {
+				p.BTCOrderUnavailable = subFloorListing("BTC", xmr)
+			}
+			if xmr < payoutFloor("XMR", "release") {
+				p.XMROrderUnavailable = subFloorListing("XMR", btc)
+			}
 			d.Products = append(d.Products, p)
 		}
 		err = rows.Err()

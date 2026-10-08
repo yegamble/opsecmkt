@@ -377,10 +377,20 @@ func loadOrderDetail(ctx context.Context, a *App, r *http.Request, d *PageData) 
 		return err
 	}
 	vendorKeyGate(d)
+	if d.OrderViewer == roleVendor && o.Kind == "physical" && o.State == statePaid {
+		ok, err := userCanReceiveEncrypted(ctx, a.db, o.VendorID)
+		if err != nil {
+			return err
+		}
+		d.VendorKeyUnusable = !ok
+	}
 	if err := vendorKeyChangeGate(ctx, a, d); err != nil {
 		return err
 	}
-	return suspendedVendorOrderGate(ctx, a, d)
+	if err := suspendedVendorOrderGate(ctx, a, d); err != nil {
+		return err
+	}
+	return subFloorOrderGate(ctx, a, d)
 }
 
 // A suspended vendor keeps every existing order and its history, but the buyer's stale draft can take no new
@@ -408,6 +418,38 @@ func suspendedVendorOrderGate(ctx context.Context, a *App, d *PageData) error {
 	}
 	if d.XMREscrowCheckout != nil {
 		d.XMREscrowCheckout.Reason = sellerSuspended
+	}
+	return nil
+}
+
+// subFloorOrderGate (A-230(b), A-241(c)) keeps a buyer's legacy draft from offering a payment step that the
+// current listing price cannot settle above the automatic payout floor. The POST remains guarded independently.
+func subFloorOrderGate(ctx context.Context, a *App, d *PageData) error {
+	o := d.Order
+	if o == nil || o.State != stateDraft || d.OrderViewer != roleBuyer {
+		return nil
+	}
+	var btc, xmr int64
+	if err := a.db.QueryRowContext(ctx, "SELECT btc,xmr FROM products WHERE id=$1", o.ProductID).Scan(&btc, &xmr); err != nil {
+		return err
+	}
+	price, otherPrice := btc, xmr
+	if o.Currency == "XMR" {
+		price, otherPrice = xmr, btc
+	}
+	if price >= payoutFloor(o.Currency, "release") {
+		return nil
+	}
+	message := subFloorListing(o.Currency, otherPrice)
+	for i := range d.Transitions {
+		if d.Transitions[i].To != stateAwaitingPayment {
+			continue
+		}
+		if d.Transitions[i].Action == "" && d.Transitions[i].Label != "" {
+			d.Transitions[i].Label += " " + message
+		} else {
+			d.Transitions[i].Action, d.Transitions[i].Label = "", message
+		}
 	}
 	return nil
 }

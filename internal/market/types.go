@@ -12,6 +12,7 @@ type User struct {
 }
 type Product struct {
 	ID, Title, Description, Category, Region, Kind, Vendor, VendorID, PriceBTC, PriceXMR string
+	BTCOrderUnavailable, XMROrderUnavailable                                             string // legacy price below that currency's minimum automatic payout
 	Stock                                                                                int
 	Archived                                                                             bool // Foundation; P4 uses
 	// P4, vendor-dashboard only: an administrator's takedown reason (A-163); never loaded for public pages.
@@ -307,8 +308,9 @@ type PageData struct {
 	MessageTo           string       // messages page: validated ?to handle for the recipient field
 	OrderViewer         string       // order page: "buyer", "vendor" or "moderator" (read-only dispute review)
 	UnreadNotifications int          // signed-in users, every page
-	// VendorKeyUnusable (A-83): a physical listing's product and checkout pages, and its buyer's order page, when the
-	// vendor has no key that can receive encrypted messages (canReceiveEncrypted), so no shipping address can be sent.
+	// VendorKeyUnusable (A-83/A-225): a physical listing's product and checkout pages, and its buyer's order page, when
+	// the vendor has no key that can receive encrypted messages (canReceiveEncrypted); on a paid physical order it
+	// also tells the vendor to update their key before buyers send shipping addresses.
 	VendorKeyUnusable bool
 	// PurchaseBlocks (A-444): a listing's product and checkout pages, each coin whose intake is escrow only while the
 	// listing cannot use its escrow (escrow_readiness.go), PurchaseBlocked the same by coin, and NoPurchase when every

@@ -229,12 +229,20 @@ func (a *App) xmrEscrowCheckoutOffer(ctx context.Context, d *PageData) error {
 	if a.escrowXMR == nil || o.State != stateDraft || d.OrderViewer != roleBuyer || o.Currency != "XMR" {
 		return nil
 	}
-	eligible, _, _, err := escrowEligible(ctx, a.db, o)
+	eligible, price, _, err := escrowEligible(ctx, a.db, o)
 	if err != nil || !eligible {
 		return err
 	}
 	net := a.xmrEscrowNetwork()
 	v := &XMREscrowCheckoutView{Physical: o.Kind == "physical", Custody: xmrCustody, Net: net, Prefixes: xmrPrefixes(net), NetKnown: a.xmrEscrowNetKnown() != ""}
+	if price < payoutFloor(o.Currency, "release") {
+		v.Reason, err = subFloorListingForProduct(ctx, a.db, o.ProductID, o.Currency)
+		if err != nil {
+			return err
+		}
+		d.XMREscrowCheckout = v
+		return nil
+	}
 	vendorCanEncrypt := true
 	if v.Physical {
 		if vendorCanEncrypt, err = userCanReceiveEncrypted(ctx, a.db, o.VendorID); err != nil {

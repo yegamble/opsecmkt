@@ -300,7 +300,11 @@ func escrowCheckoutAction(c *actionCtx) (actionResult, error) {
 	} else if !eligible {
 		return actionResult{}, errEscrowKind
 	} else if price < payoutFloor(o.Currency, "release") {
-		return actionResult{}, fail(400, subFloorListing(o.Currency))
+		message, err := subFloorListingForProduct(ctx, c.Tx, o.ProductID, o.Currency)
+		if err != nil {
+			return actionResult{}, err
+		}
+		return actionResult{}, fail(400, message)
 	}
 	// A physical order: the buyer must be able to send the vendor an encrypted shipping address (A-83, as payAction
 	// checks), and the escrow snapshots the release deadline length in force with the listing's dispatch window. Both
