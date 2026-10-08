@@ -27,6 +27,9 @@ func escrowPartyReceiptAuthorize(c *actionCtx, coin, party string) error {
 		return errNoOrder
 	}
 	if party == "buyer" && c.User.ID != buyer {
+		if c.R.URL.Path == "/escrow/recover" {
+			return errRecoverOnlyBuyer
+		}
 		return errConfirmOnlyBuyer
 	}
 	if party == "vendor" && c.User.ID != vendor {
@@ -43,6 +46,9 @@ func btcClaimReceiptAuthorize(c *actionCtx) error {
 }
 func btcShipReceiptAuthorize(c *actionCtx) error {
 	return escrowPartyReceiptAuthorize(c, "BTC", "vendor")
+}
+func btcRecoverReceiptAuthorize(c *actionCtx) error {
+	return escrowPartyReceiptAuthorize(c, "BTC", "buyer")
 }
 func xmrClaimReceiptAuthorize(c *actionCtx) error {
 	return escrowPartyReceiptAuthorize(c, "XMR", "vendor")
