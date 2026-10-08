@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { expect, test } from '@playwright/test';
 import { ADMIN, FIXTURE_LISTING, uniqueHandle } from './db-fixtures';
 import { submitAndLoad } from './db-helpers';
@@ -13,6 +14,14 @@ test('payments are visibly disabled without a provider', async ({ page }) => {
   await expect(page.locator('.account-name')).toHaveText(handle);
   await expect(page.locator('footer')).toContainText('Payments disabled');
   await expect(page.locator('main')).toContainText('Order drafts only.');
+
+  // Preserve a saved BTC address so the disabled-provider page renders its real remove form and nonce.
+  // The request below changes that form into a save attempt to check the server-side provider refusal.
+  const databaseURL = process.env.E2E_DATABASE_URL;
+  if (!databaseURL) throw new Error('E2E_DATABASE_URL is required for database browser tests');
+  const escapedHandle = handle.replaceAll("'", "''");
+  execFileSync('psql', [databaseURL, '-v', 'ON_ERROR_STOP=1', '-qtAc',
+    `UPDATE users SET payout_btc='tb1qfixtureaddress0000000000000000000000' WHERE handle='${escapedHandle}'`]);
 
   // The catalog shows 25 listings a page (A-181) and other specs publish more: search for the setup fixture.
   await page.goto(`/?q=${encodeURIComponent(FIXTURE_LISTING)}`);
@@ -30,9 +39,18 @@ test('payments are visibly disabled without a provider', async ({ page }) => {
   await page.goto('/account');
   await expect(page.locator('main')).toContainText('Unavailable — payments disabled');
   await expect(page.getByLabel('Bitcoin payout address')).toHaveCount(0);
-  const csrf = await page.locator('form[action="/logout"] input[name="csrf"]').getAttribute('value');
+  const removeBTC = page.locator('form[action="/account/payout"]').filter({
+    has: page.getByRole('button', { name: 'Remove saved BTC address' }),
+  });
+  await expect(removeBTC).toHaveCount(1);
+  const csrf = await removeBTC.locator('input[name="csrf"]').inputValue();
+  const formNonce = await removeBTC.locator('input[name="form_nonce"]').inputValue();
+  expect(formNonce).toMatch(/^[0-9a-f]{32}$/);
   // Payout changes need the current password; with no provider the request is refused before that check.
-  const refused = await page.request.post('/account/payout', { form: { csrf: csrf!, currency: 'BTC', address: 'tb1qexampleaddress000000000000000000000', password: 'browser-payments-password-123' } });
+  const refused = await page.request.post('/account/payout', { form: {
+    csrf, form_nonce: formNonce, currency: 'BTC', address: 'tb1qexampleaddress000000000000000000000',
+    password: 'browser-payments-password-123',
+  } });
   expect(refused.status()).toBe(409);
   expect(await refused.text()).toContain('BTC payments are not configured');
   await submitAndLoad(page, page.getByRole('button', { name: 'Sign out', exact: true }));
