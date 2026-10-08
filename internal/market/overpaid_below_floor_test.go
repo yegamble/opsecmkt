@@ -16,7 +16,7 @@ func TestOverpaidBelowReleaseFloorDoesNotPromiseSend(t *testing.T) {
 				t.Fatal(err)
 			}
 			addr := p.str("SELECT address FROM payment_addresses WHERE order_id=$1", order)
-			provider.Deposit(addr, "overpaid-floor-"+order, 0, sum, 3)
+			provider.Deposit(addr, "overpaid-floor-"+order, 0, sum, int64(provider.Confirmations()))
 			p.poll()
 			if got := p.state(order); got != statePaid {
 				t.Fatalf("%s payment state %s", currency, got)
@@ -37,11 +37,15 @@ func TestOverpaidBelowReleaseFloorDoesNotPromiseSend(t *testing.T) {
 				}
 			}
 			if sum < floor {
+				// The fixture is a physical order; complete from its supported shipped state.
+				if _, err := p.DB.Exec("UPDATE orders SET state=$1 WHERE id=$2", stateShipped, order); err != nil {
+					t.Fatal(err)
+				}
 				p.check(p.do("POST", "/orders/complete", p.buyerSess, payoutConfirmed(url.Values{"order_id": {order}}, sum)), 303)
 				if n := p.count("SELECT count(*) FROM payouts WHERE order_id=$1", order); n != 0 {
 					t.Fatalf("below-floor completion queued %d payouts", n)
 				}
-				if n := p.count("SELECT count(*) FROM payment_deposits WHERE order_id=$1 AND flagged", order); n != 1 {
+				if n := p.count("SELECT count(*) FROM payments WHERE order_id=$1 AND flagged", order); n != 1 {
 					t.Fatalf("below-floor completion flagged %d deposits", n)
 				}
 			}

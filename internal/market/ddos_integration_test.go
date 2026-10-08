@@ -218,7 +218,7 @@ func TestAppPoolLockTimeout(t *testing.T) {
 }
 
 // QA-178-2: a page load or a post whose pool connection is terminated mid-request (a database restart or
-// failover) answers the busy 503 with Retry-After, like the query one step earlier, never a 500.
+// failover) before Commit answers the busy 503 with Retry-After, like the query one step earlier.
 func TestPageLoadConnectionLossIs503(t *testing.T) {
 	e := newTestApp(t)
 	_, buyer := e.user("lost_buyer", "buyer")
@@ -236,7 +236,7 @@ func TestPageLoadConnectionLossIs503(t *testing.T) {
 		{"POST", "/notifications", buyer, "notifications", nil},
 		// The action's own statement succeeds; the audit row after it loses the connection, so the whole
 		// change rolls back and a retry is safe.
-		{"POST", "/admin/captcha", staff, "audit_events", url.Values{"captcha_required": {"true"}}},
+		{"POST", "/admin/captcha", staff, "audit_events", url.Values{"password": {testPassword}, "captcha_required": {"true"}}},
 	} {
 		// The request's query queues behind an exclusive lock on table; its backend is then terminated.
 		tx, err := admin.Begin()

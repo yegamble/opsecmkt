@@ -753,7 +753,7 @@ func TestOverpaidXMRAlertNamesItsFloorAndAddress(t *testing.T) {
 		deposit    int64
 		want, deny string
 	}{
-		{500000000000 + minPayoutXMR - 1, "Completing releases everything to the vendor: the excess is below the minimum automatic payout of 0.001 XMR, so it is not returned.", "payout address saved"},
+		{500000000000 + minPayoutXMR - 1, "Completing releases everything to the vendor: the excess is below the minimum automatic payout of 0.001 XMR, so it is not returned.", "so the return waits until you save one:"},
 		{500000000000 + minPayoutXMR, "returns the excess to you, with the network fee deducted. You have no XMR payout address saved, so the return waits until you save one:", "your saved"},
 	} {
 		id := p.testEnv.order(p.buyer.ID, p.productID, "XMR", stateAwaitingPayment)
