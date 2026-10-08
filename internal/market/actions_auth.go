@@ -411,7 +411,7 @@ func authPrecheck(a *App, r *http.Request, token string) error {
 // authGate admits one password-bearing request: input bounds, CAPTCHA, a free handle for /register and the
 // per-handle rate limit, then bounded bcrypt concurrency, all before any expensive work. On success the
 // caller must defer release().
-func authGate(c *actionCtx) (handle, password string, release func(), err error) {
+func authGate(c *actionCtx) (handle, password string, rescue bool, release func(), err error) {
 	a, path := c.A, c.R.URL.Path
 	handle, password = strings.TrimSpace(c.Form.Get("handle")), c.Form.Get("password")
 	// Validate the input and the CAPTCHA before the rate limit, so malformed handles and failed CAPTCHAs
@@ -439,24 +439,101 @@ func authGate(c *actionCtx) (handle, password string, release func(), err error)
 		key, refused = strings.TrimPrefix(path, "/")+":"+strings.ToLower(handle), fail(429, "Too many attempts. Try again in ten minutes.")
 	}
 	if err == nil && a.limited(key, 10) {
-		err = refused
+		if path == "/login" && c.Form.Get("rescue_code") != "" {
+			if sixDigitTOTP(c.Form.Get("rescue_code")) {
+				// Reject arbitrary handles before bcrypt. There is no second attacker-spendable lockout:
+				// a sole administrator must retain this route while auth:<handle> is paused.
+				var account signInAccount
+				account, err = lookupSignInAccount(c.Ctx(), a.db, handle)
+				if errors.Is(err, sql.ErrNoRows) {
+					err = errSoleAdminRecovery
+				} else if err != nil {
+					err = fail(503, "Service unavailable")
+				} else if account.role != "admin" || account.suspended || !account.totpEnabled {
+					err = errSoleAdminRecovery
+				} else {
+					var admins int
+					if err = a.db.QueryRowContext(c.Ctx(), "SELECT count(*) FROM users WHERE role='admin'").Scan(&admins); err != nil {
+						err = fail(503, "Service unavailable")
+					} else if admins != 1 {
+						err = errSoleAdminRecovery
+					} else {
+						rescue = true
+					}
+				}
+			} else {
+				err = errSoleAdminRecovery
+			}
+		} else {
+			err = refused
+		}
 	}
 	if err != nil {
-		return "", "", nil, err
+		return "", "", false, nil, err
 	}
 	// A password-check slot is taken only now, so requests refused above never hold one while real
 	// sign-ins wait. The attempt is counted after the slot, so a busy refusal spends no budget.
 	select {
 	case passwordWork <- struct{}{}:
 	default:
-		return "", "", nil, fail(503, "Authentication is busy. Try again shortly.")
+		return "", "", false, nil, fail(503, "Authentication is busy. Try again shortly.")
 	}
 	release = func() { <-passwordWork }
-	if !a.allow(key, 10) {
+	if !rescue && !a.allow(key, 10) {
 		release()
-		return "", "", nil, refused
+		return "", "", false, nil, refused
 	}
-	return handle, password, release, nil
+	return handle, password, rescue, release, nil
+}
+
+func sixDigitTOTP(code string) bool {
+	if len(code) != totpDigits {
+		return false
+	}
+	for i := range code {
+		if code[i] < '0' || code[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+var errSoleAdminRecovery = fail(401, "Invalid handle or password")
+
+type signInAccount struct {
+	id, hash, role         string
+	suspended, totpEnabled bool
+}
+
+// lookupSignInAccount preserves exact handles on legacy installations. A fallback may resolve only one
+// account; two case variants are indistinguishable and therefore have no fallback sign-in identity.
+func lookupSignInAccount(ctx context.Context, db *sql.DB, handle string) (signInAccount, error) {
+	var account signInAccount
+	err := db.QueryRowContext(ctx, `SELECT id,password_hash,role,suspended_at IS NOT NULL,totp_enabled
+		FROM users WHERE handle=$1`, handle).Scan(&account.id, &account.hash, &account.role, &account.suspended, &account.totpEnabled)
+	if !errors.Is(err, sql.ErrNoRows) {
+		return account, err
+	}
+	rows, err := db.QueryContext(ctx, `SELECT id,password_hash,role,suspended_at IS NOT NULL,totp_enabled
+		FROM users WHERE lower(handle)=lower($1) LIMIT 2`, handle)
+	if err != nil {
+		return signInAccount{}, err
+	}
+	defer rows.Close()
+	matches := 0
+	for rows.Next() {
+		matches++
+		if err = rows.Scan(&account.id, &account.hash, &account.role, &account.suspended, &account.totpEnabled); err != nil {
+			return signInAccount{}, err
+		}
+	}
+	if err = rows.Err(); err != nil {
+		return signInAccount{}, err
+	}
+	if matches != 1 {
+		return signInAccount{}, sql.ErrNoRows
+	}
+	return account, nil
 }
 
 // errAuthInput refuses a malformed handle or password.
@@ -472,7 +549,7 @@ var errSignInPaused = fail(429, "Sign-in for this handle is paused for up to 10 
 // authAction serves /setup, /login and /register. bcrypt runs before any transaction is opened.
 func authAction(c *actionCtx) (actionResult, error) {
 	a, ctx, f, path, w := c.A, c.Ctx(), c.Form, c.R.URL.Path, c.W
-	handle, password, release, err := authGate(c)
+	handle, password, rescue, release, err := authGate(c)
 	if err == errSignInPaused {
 		a.logSignInRefusals()
 	}
@@ -485,32 +562,8 @@ func authAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, fail(503, "Service unavailable")
 	}
 	if path == "/login" {
-		var id, stored string
-		var suspended bool
-		err := a.db.QueryRowContext(ctx, "SELECT id,password_hash,suspended_at IS NOT NULL FROM users WHERE handle=$1", handle).Scan(&id, &stored, &suspended)
-		if errors.Is(err, sql.ErrNoRows) {
-			// Keep legacy exact handles usable even when a prior release allowed Alice and alice.
-			// A case-insensitive fallback is safe only if exactly one account matches.
-			rows, qerr := a.db.QueryContext(ctx, "SELECT id,password_hash,suspended_at IS NOT NULL FROM users WHERE lower(handle)=lower($1) LIMIT 2", handle)
-			if qerr == nil {
-				matches := 0
-				for rows.Next() {
-					matches++
-					if scanErr := rows.Scan(&id, &stored, &suspended); scanErr != nil {
-						qerr = scanErr
-						break
-					}
-				}
-				if rowErr := rows.Err(); rowErr != nil {
-					qerr = rowErr
-				}
-				rows.Close()
-				if qerr == nil && matches == 1 {
-					err = nil
-				}
-			}
-		}
-		hash := []byte(stored)
+		account, err := lookupSignInAccount(ctx, a.db, handle)
+		hash := []byte(account.hash)
 		if err != nil {
 			hash = dummyHash()
 		}
@@ -519,11 +572,14 @@ func authAction(c *actionCtx) (actionResult, error) {
 			a.logSignInRefusals()
 			return actionResult{}, fail(401, "Invalid handle or password")
 		}
+		if rescue {
+			return a.soleAdminRecovery(c, account.id, account.hash, f.Get("rescue_code"), a.signInNext(f.Get("next")))
+		}
 		a.refund(signInKey(handle)) // a correct password spends no sign-in budget
-		if suspended {
+		if account.suspended {
 			return actionResult{}, suspendedRefusal(ctx, a.db)
 		}
-		return a.secondFactor(c, id, stored, a.signInNext(f.Get("next")))
+		return a.secondFactor(c, account.id, account.hash, a.signInNext(f.Get("next")))
 	}
 	if path == "/setup" && (installed || a.setupToken == "" || subtle.ConstantTimeCompare([]byte(f.Get("token")), []byte(a.setupToken)) != 1) {
 		return actionResult{}, fail(403, "Setup unavailable or token incorrect")
@@ -570,6 +626,65 @@ func authAction(c *actionCtx) (actionResult, error) {
 		return actionResult{Redirect: "/admin?welcome=1"}, nil
 	}
 	return actionResult{Redirect: orHome(a.signInNext(f.Get("next")))}, nil
+}
+
+// soleAdminRecovery is the narrow A-159(a) escape from a per-handle password-guess lockout. Count ALL admin
+// accounts, including suspended ones: suspension must not silently turn a multi-admin market into sole-admin
+// recovery. The account lock serializes this check with current admin-initiated role/suspension changes. The
+// TOTP replay guard and the session are committed together; no recovery-code branch is reachable here.
+func (a *App) soleAdminRecovery(c *actionCtx, id, checkedHash, code, next string) (actionResult, error) {
+	ctx := c.Ctx()
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		return actionResult{}, fail(503, "Service unavailable")
+	}
+	defer tx.Rollback()
+	var role, currentHash string
+	var suspended, totpEnabled bool
+	err = tx.QueryRowContext(ctx, `SELECT role,password_hash,suspended_at IS NOT NULL,totp_enabled
+		FROM users WHERE id=$1 FOR NO KEY UPDATE`, id).Scan(&role, &currentHash, &suspended, &totpEnabled)
+	if err == sql.ErrNoRows {
+		return actionResult{}, errSoleAdminRecovery
+	}
+	if err != nil {
+		return actionResult{}, fail(503, "Service unavailable")
+	}
+	if role != "admin" || suspended || !totpEnabled || subtle.ConstantTimeCompare([]byte(currentHash), []byte(checkedHash)) != 1 {
+		return actionResult{}, errSoleAdminRecovery
+	}
+	var admins int
+	if err = tx.QueryRowContext(ctx, "SELECT count(*) FROM users WHERE role='admin'").Scan(&admins); err != nil {
+		return actionResult{}, fail(503, "Service unavailable")
+	}
+	if admins != 1 {
+		return actionResult{}, errSoleAdminRecovery
+	}
+	// Charge the existing per-account verification budget only after the password and current eligibility
+	// have passed. A wrong or reused code does not commit a TOTP step or a session.
+	if !a.allow("totp-verify:"+id, 10) || a.checkTOTP(ctx, tx, id, code) != nil {
+		return actionResult{}, errSoleAdminRecovery
+	}
+	if pending := pendingCookie(c.R); pending != "" {
+		// This browser may have opened a normal two-step sign-in before the lockout. Consume only
+		// its pending token; other browsers' pending sign-ins remain untouched.
+		if _, err = tx.ExecContext(ctx, "DELETE FROM pending_logins WHERE token_hash=$1", digest(pending)); err != nil {
+			return actionResult{}, fail(500, "Unable to sign in")
+		}
+	}
+	token, err := a.startSession(ctx, tx, id, c.Token, "password and TOTP", digest(checkedHash))
+	if err != nil {
+		var he *httpError
+		if errors.As(err, &he) {
+			return actionResult{}, errSoleAdminRecovery
+		}
+		return actionResult{}, fail(500, "Unable to sign in")
+	}
+	if err = tx.Commit(); err != nil {
+		return actionResult{}, fail(500, "Unable to sign in")
+	}
+	a.cookie(c.W, "session", token, 43200)
+	a.cookie(c.W, "pending", "", -1)
+	return actionResult{Redirect: orHome(next)}, nil
 }
 
 // errPasswordChanged refuses a sign-in whose password was checked before the account's password changed (A-157).
