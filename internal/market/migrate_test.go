@@ -119,7 +119,7 @@ func TestNewTestAppMatchesAFreshStart(t *testing.T) {
 }
 
 // schemaSnapshot describes e's schema (its search_path) and every row in it, with the schema's own name removed
-// from the server's definitions; only schema_migrations' applied times are left out.
+// from the server's definitions. It excludes schema_migrations and normalizes only the per-start health updated_at.
 func schemaSnapshot(e *testEnv) []string {
 	e.t.Helper()
 	ns := agStr(e, "SELECT current_schema()")
@@ -139,7 +139,12 @@ func schemaSnapshot(e *testEnv) []string {
 		lines = append(lines, agStrings(e.t, e, q)...)
 	}
 	for _, table := range agStrings(e.t, e, "SELECT relname FROM pg_class WHERE relkind = 'r' AND relname <> 'schema_migrations' AND relnamespace "+in) {
-		lines = append(lines, agStrings(e.t, e, "SELECT 'row "+table+" ' || row_to_json(r) FROM "+table+" r")...)
+		rowJSON := "row_to_json(r)"
+		if table == "bitcoin_escrow_health" {
+			// This operational timestamp is initialized with now() on each app start; compare every health/config field.
+			rowJSON = "(row_to_json(r)::jsonb - 'updated_at')::text"
+		}
+		lines = append(lines, agStrings(e.t, e, "SELECT 'row "+table+" ' || "+rowJSON+" FROM "+table+" r")...)
 	}
 	for i := range lines {
 		lines[i] = strings.ReplaceAll(lines[i], ns+".", "")
