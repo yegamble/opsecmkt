@@ -137,7 +137,7 @@ jobs:
       - name: Start Bitcoin Core on regtest
         run: |
           whitelist=getblockchaininfo,getnetworkinfo,getrawchangeaddress,getaddressinfo,createpsbt,utxoupdatepsbt,importdescriptors,getdescriptorinfo,deriveaddresses,gettxout,keypoolrefill,walletprocesspsbt,descriptorprocesspsbt,combinepsbt,finalizepsbt,testmempoolaccept,sendrawtransaction,getwalletinfo,listreceivedbyaddress,gettransaction,listtransactions,listsinceblock
-          pooled_whitelist=getblockchaininfo,getwalletinfo,loadwallet,getnetworkinfo,getnewaddress,listreceivedbyaddress,gettransaction,sendtoaddress,validateaddress,getbalances
+          pooled_whitelist=getblockchaininfo,getwalletinfo,loadwallet,getnetworkinfo,getnewaddress,listreceivedbyaddress,gettransaction,listtransactions,sendtoaddress,validateaddress,getbalances
           operator_pass=$(openssl rand -hex 24)
           app_pass=$(openssl rand -hex 24)
           pooled_pass=$(openssl rand -hex 24)

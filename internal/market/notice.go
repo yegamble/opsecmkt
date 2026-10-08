@@ -87,7 +87,7 @@ var notices = map[string]struct{ text, section, pages string }{
 	"listing-saved":      {"Listing saved.", "", ""},
 	"listing-archived":   {"Listing archived.", "", ""},
 	"listing-restored":   {"Listing restored.", "", ""},
-	"delivery-cleared":   {"Stored delivery text cleared. Existing orders and saved deliveries were not changed.", "", "delivery-cleanup"},
+	"delivery-cleared":   {"Stored delivery text cleared. Existing orders and saved deliveries were not changed.", "", ""},
 	"listing-taken-down": {"Listing taken down.", "", ""},
 	"review-hidden":      {"Review hidden.", "reviews-title", "product vendor"},
 	"review-shown":       {"Review restored.", "reviews-title", "product vendor"},
