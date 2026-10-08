@@ -968,7 +968,8 @@ func (a *App) xmrSettleOrders(ctx context.Context, read map[int64]bool, touched 
 		changed = append(changed, id)
 	}
 	rows, err := a.db.QueryContext(ctx, `SELECT es.order_id,s.wallet_id FROM escrows es JOIN xmr_escrow_slots s ON s.id=es.xmr_slot_id JOIN orders o ON o.id=es.order_id
-		WHERE es.coin='XMR' AND (o.state IN ('awaiting_payment',`+fundedOpenStates+`) OR es.order_id=ANY($1)) ORDER BY o.updated`, changed)
+		WHERE es.coin='XMR' AND (o.state IN ('awaiting_payment',`+fundedOpenStates+`) OR es.order_id=ANY($1)
+			OR EXISTS (SELECT 1 FROM payments p WHERE p.order_id=es.order_id AND p.after_close AND NOT p.flagged AND p.xmr_settlement_id IS NOT NULL)) ORDER BY o.updated`, changed)
 	if err != nil {
 		return err
 	}

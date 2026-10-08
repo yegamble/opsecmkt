@@ -649,7 +649,8 @@ func (a *App) flagLateDeposits(ctx context.Context, tx *sql.Tx, o *Order, thresh
 		return err
 	}
 	rows, err := tx.QueryContext(ctx, `UPDATE payments SET flagged=true WHERE order_id=$1 AND NOT credited AND NOT flagged AND NOT locked
-		AND confirmations>=$2 AND ($3 OR after_close) RETURNING txid,amount,EXISTS(SELECT 1 FROM escrow_siblings s WHERE s.address=payments.address)`, o.ID, threshold, paidOut)
+		AND ((confirmations>=$2 AND ($3 OR after_close)) OR (after_close AND xmr_settlement_id IS NOT NULL))
+		RETURNING txid,amount,EXISTS(SELECT 1 FROM escrow_siblings s WHERE s.address=payments.address)`, o.ID, threshold, paidOut)
 	if err != nil {
 		return err
 	}
