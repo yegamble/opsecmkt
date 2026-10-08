@@ -3,6 +3,7 @@
 <summary>{{.Label}}</summary>
 <form class="stack" method="post" action="/images/remove">
 <input type="hidden" name="csrf" value="{{.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/images/remove"}}">
 <input type="hidden" name="id" value="{{.ID}}">{{if .From}}
 <input type="hidden" name="from" value="{{.From}}">{{end}}
 <label>Reason for the owner<textarea name="reason" required minlength="10" maxlength="500" rows="3"></textarea>

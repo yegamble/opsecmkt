@@ -23,8 +23,8 @@ import (
 func init() {
 	registerLoader("listing-edit", loadPhotoPanel)
 	registerLoader("account", loadAvatarPanel)
-	registerAction("/listings/photo/remove", actionSpec{Roles: []string{"vendor", "admin"}, Run: photoRemoveAction})
-	registerAction("/account/avatar/remove", actionSpec{Run: avatarRemoveAction})
+	registerAction("/listings/photo/remove", actionSpec{Roles: []string{"vendor", "admin"}, FormNonce: true, Run: photoRemoveAction})
+	registerAction("/account/avatar/remove", actionSpec{FormNonce: true, Run: avatarRemoveAction})
 	registerAction("/account/staff-list", actionSpec{Roles: []string{"admin", "moderator"}, Run: staffListChoiceAction})
 }
 
