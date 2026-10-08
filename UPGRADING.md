@@ -1699,6 +1699,14 @@ Migration 098 clears stored XMPP profile values from the live `users` rows. The 
 
 Migration 099 adds indexes for audit history ordered within one account and for the global newest-first audit view. It does not change or rewrite existing audit events. Startup applies it with the other pending migrations; take the normal encrypted pre-upgrade backup and use the standard rollback procedure if the new release must be reverted.
 
+## 52. Durable form-submission receipts (migration 100)
+
+Migration 100 creates the short-lived receipt table used to return the original result when supported forms are submitted again after a lost response. Receipts contain request hashes and routing/result metadata, not submitted form text. They expire after 24 hours and are swept in bounded batches. The application applies the migration at startup; use the normal encrypted pre-upgrade backup and rollback procedure.
+
+## 53. Payment-provider alert episodes (migration 101)
+
+Migration 101 stores a fixed provider key, outage/recovery episode timestamps and per-administrator delivery receipts so a sustained provider alert is sent once per episode across restarts and concurrent watchers. It does not store provider error text, credentials or wallet addresses. Startup applies it transactionally with the other pending migrations; use the normal encrypted pre-upgrade backup and rollback procedure.
+
 ## Appendix: new keys by hand
 
 `./scripts/install.sh upgrade` writes these for you. To add them yourself, use your editor (values in single

@@ -421,7 +421,7 @@ Evidence is local mechanics only, never a public network or the Tor network: the
 
 ## Migrations
 
-`internal/market/schema.sql` is the frozen baseline. Startup applies it, then every `internal/market/migrations/NNN_name.sql` not yet listed in `schema_migrations`, in numeric order, inside one transaction under an advisory lock, so concurrent app starts are safe and a failed migration changes nothing. A version missing from the table is applied even when higher versions already are. A version in the table that the running server does not include means a newer release migrated the database: the server then exits with an error naming it, before changing or serving anything (see [Rolling back](../UPGRADING.md#5-rolling-back)). Never edit a merged migration; add a new file. Reserved blocks: 001–009 Foundation, 010–019 authentication, 020–029 PGP, 030–039 orders, 040–049 inventory, 050–059 payments, 060–069 transparency; 070–099 contain later payments, privacy, escrow and operations migrations. Migration 099 adds indexes for account-filtered and global audit-event ordering. Take an encrypted backup before upgrading; there are no automatic down-migrations.
+`internal/market/schema.sql` is the frozen baseline. Startup applies it, then every `internal/market/migrations/NNN_name.sql` not yet listed in `schema_migrations`, in numeric order, inside one transaction under an advisory lock, so concurrent app starts are safe and a failed migration changes nothing. A version missing from the table is applied even when higher versions already are. A version in the table that the running server does not include means a newer release migrated the database: the server then exits with an error naming it, before changing or serving anything (see [Rolling back](../UPGRADING.md#5-rolling-back)). Never edit a merged migration; add a new file. Reserved blocks: 001–009 Foundation, 010–019 authentication, 020–029 PGP, 030–039 orders, 040–049 inventory, 050–059 payments, 060–069 transparency; 070–101 contain later payments, privacy, escrow and operations migrations. Migration 099 adds indexes for account-filtered and global audit-event ordering; migration 100 adds short-lived form-submission receipts; migration 101 persists provider-alert episode state and delivery deduplication receipts. Take an encrypted backup before upgrading; there are no automatic down-migrations.
 
 Startup runs in separately bounded phases, each set by an optional Go duration in `.env` (blank uses the default):
 
@@ -2227,6 +2227,18 @@ go run ./cmd/verify-audit -pub <pinned-hex-key> audit-events-upto-N.jsonl audit-
 ```
 
 The server prepares and sends one export at a time, retaining its slot until the download completes or fails. Another export receives 503 with `Retry-After: 5`; wait for the active download to finish before retrying. This bounds concurrent export buffers. The export for a given `upto` is byte-for-byte reproducible, so two downloads can be compared. A download cut short leaves a partial file that fails verification with "export sha256 does not match the signature file", the same failure as an altered file: download the same `upto` again (each attempt counts against the 10 downloads per 10 minutes). The export route has its own time limits instead of the server's 12 s request bound and 20 s write timeout: up to one minute to read the events from the database, then 20 seconds plus one second per 32 KB to send the file (a 50 MB export gets about 27 minutes; onion throughput measured 0.19–0.45 MB/s). Every other route keeps the server's limits. **A server compromise can produce validly signed exports**: whoever controls the server or `AUDIT_SIGNING_KEY` can sign an altered history. The signature proves origin from the configured key, not that the log is complete or untampered.
+
+
+**Host-only ranged export.** For an export from event ID 800 exclusive through 900 inclusive, run the command on the server host from the release checkout. The directory must already exist and should be restricted to the operator (for example `install -d -m 700 /secure/audit`). The JSONL and signature files are created with mode 0600 and refuse to overwrite existing files. Standard output reports only the saved paths; keep both files private. This command makes a read-only database query and reads the signing key, but starts no HTTP server or wallet:
+
+```sh
+set -a
+. ./.env
+set +a
+go run ./cmd/server -export-audit 900 -export-audit-from 800 -export-audit-dir /secure/audit
+```
+
+`-export-audit-from` is an exclusive lower bound; omit it to export from the beginning. Keep `DATABASE_URL` and `AUDIT_SIGNING_KEY` in the environment and never put their values in shell arguments or logs. The `-export-audit` command validates its arguments before connecting and writes the range as `800 < event ID <= 900`. Verify the pair with the pinned public key as above.
 
 **Warrant canary.** In the admin page, paste the operator's OpenPGP public key, then paste a statement the operator wrote and signed offline (`gpg --clearsign canary.txt`). The application stores it as pasted only if it verifies, re-verifies it on every view of `/canary`, and shows INVALID with the reason if the key changes or the stored text is altered. Keep the operator's private key off the server; the application never writes or signs canary text.
 
