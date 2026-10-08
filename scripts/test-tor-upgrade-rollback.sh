@@ -8,6 +8,7 @@ shopt -s nullglob
 from_ref=$1
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
+source "$root/scripts/a144_source_archive.sh"
 for dependency in docker git python3 age age-keygen; do
   command -v "$dependency" >/dev/null || { echo "Missing dependency: $dependency" >&2; exit 1; }
 done
@@ -81,7 +82,7 @@ replace_source() {
     [[ -e $entry || -L $entry ]] || continue
     rm -rf "$entry"
   done
-  tar -xf "$archive" -C "$deploy"
+  extract_a144_source "$archive" "$deploy"
   restore_runtime
 }
 
@@ -165,10 +166,13 @@ network_id = network.get("NetworkID")
 assert isinstance(network_id, str) and network_id, "app runtime backend network has no Docker network ID"
 print(network_id)
 ' "$app_networks")
-  # NetworkInspect's verbose option requests the detailed endpoint diagnostics
-  # needed for its Containers map on supported Docker Engine versions.
+  # Request verbose network inspection, but still require the exact endpoint identity below.
   network_info=$(docker network inspect --verbose --format '{{json .}}' "$network_id")
-  app_ip=$(printf '%s\n' "$network_info" | python3 "$root/scripts/tor_network_address.py" "$container" "$network_id")
+  if ! app_ip=$(printf '%s\n' "$network_info" | python3 "$root/scripts/tor_network_address.py" "$container" "$network_id"); then
+    docker inspect --format 'app_state status={{.State.Status}} restarting={{.State.Restarting}} exit_code={{.State.ExitCode}} restart_count={{.RestartCount}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' \
+      "$container" >&2 || true
+    return 1
+  fi
   base="http://$app_ip:8080"
 }
 
@@ -201,7 +205,7 @@ PY
 mkdir -p "$deploy"
 git -C "$root" archive --format=tar "$from_ref" > "$old_archive"
 git -C "$root" archive --format=tar HEAD > "$current_archive"
-tar -xf "$old_archive" -C "$deploy"
+extract_a144_source "$old_archive" "$deploy"
 cat > "$deploy/compose.a144-offline.yaml" <<'YAML'
 services:
   app:

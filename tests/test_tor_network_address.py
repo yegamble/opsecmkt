@@ -60,6 +60,8 @@ class TorNetworkAddressTests(unittest.TestCase):
         self.assertIn('backend.get("internal") is True', script)
         self.assertIn("docker inspect --format '{{.Id}}' \"$compose_container\"", script)
         self.assertIn("docker network inspect --verbose --format '{{json .}}'", script)
+        self.assertIn("app_state status={{.State.Status}} restarting={{.State.Restarting}} exit_code={{.State.ExitCode}} restart_count={{.RestartCount}}", script)
+        self.assertNotIn(".Config.Env", script)
         self.assertIn('scripts/tor_network_address.py', script)
         self.assertNotIn('network["IPAddress"]', script)
 
