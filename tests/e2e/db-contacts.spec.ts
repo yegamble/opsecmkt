@@ -46,7 +46,7 @@ test('vendor contact, unread notifications and demotion archive', async ({ brows
   await vendor.getByText('+ Publish a new listing', { exact: true }).click();
   await vendor.getByLabel('Listing title').fill(title);
   await vendor.getByLabel('Description', { exact: true }).fill('Contacts regression listing.');
-  await vendor.getByLabel('Bitcoin reference price').fill('0.001');
+  await vendor.getByLabel(/Price \(BTC, (?:test network|main network|network not configured|network not yet known)\)/).fill('0.001');
   await vendor.getByLabel('Monero reference price').fill('0.5');
   await vendor.getByRole('button', { name: 'Publish listing' }).click();
   await expect(vendor.getByLabel('Listing title')).toHaveValue(title); // A-188: publishing lands on its edit page

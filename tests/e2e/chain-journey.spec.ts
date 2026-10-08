@@ -99,7 +99,7 @@ test('isolated real chains: seeded buyer/vendor partial deposits, confirmation, 
     await vendor.getByLabel('Description', { exact: true }).fill('Isolated real node browser test. Locally mined test coins only.');
     await vendor.getByLabel('Fulfillment type').selectOption(currency === 'BTC' ? 'physical' : 'digital');
     await vendor.getByLabel('Stock', { exact: true }).fill('3');
-    await vendor.getByLabel('Bitcoin reference price').fill('0.001');
+    await vendor.getByLabel(/Price \(BTC, (?:test network|main network|network not configured|network not yet known)\)/).fill('0.001');
     await vendor.getByLabel('Monero reference price').fill('0.5');
     await vendor.getByRole('button', { name: 'Publish listing' }).click();
     await buyer.goto(`/?q=${encodeURIComponent(title)}`);
@@ -210,7 +210,7 @@ async function publishDigitalListing(vendor: Page, title: string) {
   await vendor.getByLabel('Description', { exact: true }).fill('Isolated real node browser test. Locally mined test coins only.');
   await vendor.getByLabel('Fulfillment type').selectOption('digital');
   await vendor.getByLabel('Stock', { exact: true }).fill('3');
-  await vendor.getByLabel('Bitcoin reference price').fill('0.001');
+  await vendor.getByLabel(/Price \(BTC, (?:test network|main network|network not configured|network not yet known)\)/).fill('0.001');
   await vendor.getByLabel('Monero reference price').fill('0.5');
   await submitAndLoad(vendor, vendor.getByRole('button', { name: 'Publish listing' }));
 }

@@ -99,6 +99,46 @@ func (a *App) netAdj() string {
 	return "test-network"
 }
 
+// bitcoinPriceNetwork reports only Bitcoin's own configured network. The market-wide a.live flag can be set by an
+// XMR-only mainnet provider, which does not establish a network for BTC prices when BTC is not configured.
+func (a *App) bitcoinPriceNetwork() string {
+	a.payMu.RLock()
+	p := a.payments["BTC"]
+	if p == nil {
+		if u := a.unavailable["BTC"]; u != nil {
+			p = u.p
+		}
+	}
+	a.payMu.RUnlock()
+	if p == nil {
+		// BTC escrow can establish the Bitcoin network even when pooled BTC payments are off.
+		// Do not use escrowNetwork's default regtest until a node or existing escrow proves it.
+		if a.escrowConfigured {
+			if a.escrowNetKnown() {
+				network := a.escrowNetwork()
+				if isLiveNetwork(network) {
+					return "main network"
+				}
+				return "test network"
+			}
+			return "not yet known"
+		}
+		return "not configured"
+	}
+	network := p.Network()
+	if network == "" {
+		return "not yet known"
+	}
+	if isLiveNetwork(network) {
+		return "main network"
+	}
+	return "test network"
+}
+
+func (a *App) bitcoinPriceLabel() string {
+	return "Price (BTC, " + a.bitcoinPriceNetwork() + ")"
+}
+
 // providerChecker is implemented by node-backed providers. Check (re)connects, runs the network guard,
 // loads or opens the wallet when needed and reports whether the node is still syncing. It runs at startup
 // and at the start of every watcher pass, so a restarted node or wallet service is picked up again.

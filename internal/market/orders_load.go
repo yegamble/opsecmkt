@@ -794,7 +794,7 @@ func queryDisputes(ctx context.Context, a *App, query string, args ...any) ([]Di
 // administrators): every open dispute first, oldest first, then the most recent resolved ones up to
 // historyLimit. Each dispute gets its order summary; an open one is marked NoResolver when no unsuspended
 // moderator or administrator independent of the parties is available.
-func loadDisputes(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
+func loadDisputes(ctx context.Context, a *App, r *http.Request, d *PageData) error {
 	d.DisputeOrders = map[string]Order{}
 	if d.User == nil {
 		return nil
@@ -809,13 +809,24 @@ func loadDisputes(ctx context.Context, a *App, _ *http.Request, d *PageData) err
 		}
 		d.DisputePartyCounts = &counts
 	}
-	const scope = `SELECT d.id,d.order_id,d.reason,d.status,d.resolution,to_char(d.created,'YYYY-MM-DD HH24:MI "UTC"'),d.status='Open' AND NOT EXISTS(SELECT 1 FROM users s WHERE s.role IN ('moderator','admin') AND s.suspended_at IS NULL AND s.id<>o.buyer_id AND s.id<>p.vendor_id),` +
-		disputeRecordCols + ` FROM disputes d JOIN orders o ON o.id=d.order_id JOIN products p ON p.id=o.product_id` + disputeReplyJoin + ` WHERE (o.buyer_id=$1 OR p.vendor_id=$1 OR $2 IN ('admin','moderator'))`
-	open, err := queryDisputes(ctx, a, scope+" AND d.status='Open' ORDER BY d.created,d.id", d.User.ID, d.User.Role)
+	d.DisputePartyFilter = ""
+	partyFilter := ""
+	queryArgs := []any{d.User.ID, d.User.Role}
+	resolvedLimitArg := "$3"
+	if d.Page == "moderator" {
+		d.DisputePartyFilter = strings.TrimSpace(r.URL.Query().Get("party"))
+		partyFilter = ` AND ($3='' OR EXISTS(SELECT 1 FROM users buyer WHERE buyer.id=o.buyer_id AND buyer.handle=$3) OR EXISTS(SELECT 1 FROM users vendor WHERE vendor.id=p.vendor_id AND vendor.handle=$3))`
+		queryArgs = append(queryArgs, d.DisputePartyFilter)
+		resolvedLimitArg = "$4"
+	}
+	scope := `SELECT d.id,d.order_id,d.reason,d.status,d.resolution,to_char(d.created,'YYYY-MM-DD HH24:MI "UTC"'),d.status='Open' AND NOT EXISTS(SELECT 1 FROM users s WHERE s.role IN ('moderator','admin') AND s.suspended_at IS NULL AND s.id<>o.buyer_id AND s.id<>p.vendor_id),` +
+		disputeRecordCols + ` FROM disputes d JOIN orders o ON o.id=d.order_id JOIN products p ON p.id=o.product_id` + disputeReplyJoin + ` WHERE (o.buyer_id=$1 OR p.vendor_id=$1 OR $2 IN ('admin','moderator'))` + partyFilter
+	open, err := queryDisputes(ctx, a, scope+" AND d.status='Open' ORDER BY d.created,d.id", queryArgs...)
 	if err != nil {
 		return err
 	}
-	resolved, err := queryDisputes(ctx, a, scope+" AND d.status<>'Open' ORDER BY d.created DESC,d.id DESC LIMIT $3", d.User.ID, d.User.Role, historyLimit+1)
+	resolvedArgs := append(slices.Clone(queryArgs), historyLimit+1)
+	resolved, err := queryDisputes(ctx, a, scope+" AND d.status<>'Open' ORDER BY d.created DESC,d.id DESC LIMIT "+resolvedLimitArg, resolvedArgs...)
 	if err != nil {
 		return err
 	}

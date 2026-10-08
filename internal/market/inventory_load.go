@@ -105,13 +105,55 @@ func inventoryFilterURL(filter, currency string) string {
 	return "/vendor-dashboard?" + q.Encode()
 }
 
-func loadInventory(_ context.Context, a *App, _ *http.Request, d *PageData) error {
+func loadInventory(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
 	if d.Inventory == nil {
 		d.Inventory = inventoryCounts(d.Products, "")
 	}
 	d.Inventory.AutoDelivery = a.autoDeliveryCurrencies()
+	ids := make([]string, 0, len(d.Products))
+	for _, p := range d.Products {
+		ids = append(ids, p.ID)
+	}
+	reservations, err := listingReservations(ctx, a, ids)
+	if err != nil {
+		return err
+	}
+	d.Inventory.Reservations = reservations
 	setInventoryURLs(d)
 	return nil
+}
+
+func listingReservations(ctx context.Context, a *App, productIDs []string) (map[string]ListingReservation, error) {
+	result := make(map[string]ListingReservation, len(productIDs))
+	if len(productIDs) == 0 {
+		return result, nil
+	}
+	rows, err := a.db.QueryContext(ctx, `SELECT o.product_id,
+		count(*) FILTER (WHERE o.state NOT IN ('draft','completed','resolved','cancelled')),
+		COALESCE(to_char(min(CASE WHEN o.state='awaiting_payment' AND (pa.order_id IS NOT NULL OR es.order_id IS NOT NULL) THEN
+			GREATEST(COALESCE(pa.created,es.created),COALESCE((SELECT max(pm.created) FROM payments pm WHERE pm.order_id=o.id
+				AND pm.confirmations>=0 AND NOT pm.locked AND (es.order_id IS NULL OR es.coin='XMR' OR NOT pm.escrow_left_out)),COALESCE(pa.created,es.created)))
+				+ make_interval(secs => $2) END),'YYYY-MM-DD HH24:MI "UTC"'),'')
+		FROM orders o LEFT JOIN payment_addresses pa ON pa.order_id=o.id
+		LEFT JOIN escrows es ON es.order_id=o.id
+		WHERE o.product_id=ANY($1) GROUP BY o.product_id`, productIDs, expiryWindow().Seconds())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, expiry string
+		var reservation ListingReservation
+		if err := rows.Scan(&id, &reservation.Units, &expiry); err != nil {
+			return nil, err
+		}
+		reservation.PaymentExpiry = expiry
+		result[id] = reservation
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func setInventoryURLs(d *PageData) {
@@ -137,6 +179,11 @@ func loadListingEdit(ctx context.Context, a *App, r *http.Request, d *PageData) 
 		return err // sql.ErrNoRows -> 404
 	}
 	v.VendorEditor = p.VendorID == d.User.ID
+	reservations, err := listingReservations(ctx, a, []string{p.ID})
+	if err != nil {
+		return err
+	}
+	v.Reservation = reservations[p.ID]
 	p.PriceBTC, p.PriceXMR = amount(btc, 8), amount(xmr, 12)
 	d.Product, d.Listing, d.Title = &p, v, "Edit listing"
 	return nil

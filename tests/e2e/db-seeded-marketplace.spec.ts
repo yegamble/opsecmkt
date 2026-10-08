@@ -30,7 +30,7 @@ test('seeded catalog discovery, role boundaries and persistent unfunded orders',
       await vendor.getByRole('combobox', { name: 'Region', exact: true }).selectOption(region);
       await vendor.getByLabel('Fulfillment type').selectOption(kind);
       await vendor.getByLabel('Stock', { exact: true }).fill(stock);
-      await vendor.getByLabel('Bitcoin reference price').fill('0.002');
+      await vendor.getByLabel(/Price \(BTC, (?:test network|main network|network not configured|network not yet known)\)/).fill('0.002');
       await vendor.getByLabel('Monero reference price').fill('0.75');
       await vendor.getByRole('button', { name: 'Publish listing' }).click();
       await expect(vendor.getByLabel('Listing title')).toHaveValue(title); // A-188: publishing lands on its edit page

@@ -21,7 +21,7 @@ test('listing editor is prefilled and states its limits', async ({ page }) => {
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('Edit listing.');
   await expect(page.getByLabel('Listing title')).toHaveValue('Encrypted USB Drive — 256GB');
   await expect(page.getByLabel('Fulfillment type')).toHaveValue('physical');
-  await expect(page.getByLabel('Bitcoin reference price')).toHaveValue('0.00412');
+  await expect(page.getByLabel(/Price \(BTC, (?:test network|main network|network not configured|network not yet known)\)/)).toHaveValue('0.00412');
   await expect(page.locator('main')).toContainText('1 open order(s) depend on this listing');
   await expect(page.getByRole('button', { name: 'Archive listing' })).toBeVisible();
 });

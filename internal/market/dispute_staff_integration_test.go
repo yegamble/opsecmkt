@@ -1,6 +1,7 @@
 package market
 
 import (
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -60,6 +61,34 @@ func TestDisputePartyModeratorIsNotAResolver(t *testing.T) {
 	}
 	if n := w.count("SELECT count(*) FROM notifications WHERE body LIKE '%needs an unsuspended moderator who is not a party%'"); n != 0 {
 		t.Fatal("no-resolver notice sent although an independent administrator exists")
+	}
+}
+
+func TestModeratorDisputePartyFilterIsExactAndStaffOnly(t *testing.T) {
+	w := newOrderWorld(t)
+	firstOrder := w.e.order(w.buyerID, w.e.product(w.vendorID, "physical"), "BTC", stateShipped)
+	w.expect("/disputes", w.buyer, form("order_id", firstOrder, "reason", "The parcel arrived empty and the seal was broken."), 303, "")
+	secondBuyerID, secondBuyer := w.e.user("party_filter_buyer_"+randomToken()[:6], "buyer")
+	secondVendorID, _ := w.e.user("party_filter_vendor_"+randomToken()[:6], "vendor")
+	secondOrder := w.e.order(secondBuyerID, w.e.product(secondVendorID, "physical"), "BTC", stateShipped)
+	w.expect("/disputes", secondBuyer, form("order_id", secondOrder, "reason", "The parcel arrived empty and the seal was broken."), 303, "")
+
+	firstHandle := agStr(w.e, "SELECT handle FROM users WHERE id=$1", w.buyerID)
+	firstDispute := agStr(w.e, "SELECT id FROM disputes WHERE order_id=$1", firstOrder)
+	filtered := w.page("/moderator?party="+url.QueryEscape(firstHandle), w.mod, 200)
+	if !strings.Contains(filtered, `id="dispute-`+firstDispute+`"`) || !strings.Contains(filtered, "Order "+firstOrder) || strings.Contains(filtered, secondOrder) {
+		t.Fatalf("exact party filter did not isolate its dispute:\n%s", filtered)
+	}
+	caseMismatch := w.page("/moderator?party="+url.QueryEscape(strings.ToUpper(firstHandle)), w.mod, 200)
+	if strings.Contains(caseMismatch, firstOrder) || strings.Contains(caseMismatch, secondOrder) {
+		t.Fatalf("party filter was not exact-case:\n%s", caseMismatch)
+	}
+	if got := w.e.do("GET", "/moderator?party="+url.QueryEscape(firstHandle), secondBuyer, nil).Code; got != 403 {
+		t.Fatalf("non-staff party filter response %d, want 403", got)
+	}
+	personal := w.page("/disputes?party="+url.QueryEscape(agStr(w.e, "SELECT handle FROM users WHERE id=$1", secondBuyerID)), w.buyer, 200)
+	if !strings.Contains(personal, firstOrder) || strings.Contains(personal, secondOrder) {
+		t.Fatalf("staff-only filter changed the buyer's own dispute view:\n%s", personal)
 	}
 }
 

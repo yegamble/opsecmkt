@@ -199,6 +199,7 @@ type PageData struct {
 	// ResolveDispute and ResolveText: the desk re-rendered after a resolve form loaded before the other party's
 	// reply was refused (A-280), keeping the decision typed for that dispute.
 	ResolveDispute, ResolveText string
+	DisputePartyFilter          string // moderator desk's exact handle filter (?party=), shown only to staff.
 
 	// P2 PGP
 	PGP *PGPView
@@ -266,14 +267,15 @@ type PageData struct {
 	VendorReadiness *VendorReadinessView
 
 	// P5 Payments
-	Payment         *PaymentView
-	Providers       []ProviderStatus
-	Payout          *PayoutView
-	PaymentsEnabled bool
-	PaymentNetworks string
-	LiveNetwork     bool            // payment providers are on mainnet: amounts are real funds
-	Payouts         []PayoutRow     // admin: every payout needing attention (oldest first), then recent others (newest first)
-	WalletEvidence  *WalletEvidence // admin: on-demand read for one visible payout; display-only
+	Payment           *PaymentView
+	Providers         []ProviderStatus
+	Payout            *PayoutView
+	PaymentsEnabled   bool
+	PaymentNetworks   string
+	LiveNetwork       bool            // payment providers are on mainnet: amounts are real funds
+	BitcoinPriceLabel string          // network-aware label for a BTC listing price, including an unknown state.
+	Payouts           []PayoutRow     // admin: every payout needing attention (oldest first), then recent others (newest first)
+	WalletEvidence    *WalletEvidence // admin: on-demand read for one visible payout; display-only
 	// PayoutsAttention counts the leading Payouts that need attention; PayoutHistoryLimit is non-zero when
 	// the other payouts were cut to this many most recent rows.
 	PayoutsAttention   int
@@ -475,7 +477,8 @@ type ListingView struct {
 	VendorEditor        bool   // the editor is the listing's vendor (not an administrator editing another vendor's listing)
 	HasDeliveryContent  bool   // automatic delivery content is stored (shown to other editors instead of the content)
 	Updated, ArchivedAt string
-	OpenOrders          int    // orders not completed, resolved or cancelled
+	OpenOrders          int // orders not completed, resolved or cancelled
+	Reservation         ListingReservation
 	AutoDelivery        string // currencies with a configured payment provider, e.g. "BTC, XMR"; "" = none
 	TakedownReason      string // an administrator's takedown reason (A-163); "" when not taken down
 	DispatchDays        int    // a physical listing's dispatch window in days (P2-R5); the default shown when none is set
@@ -486,6 +489,14 @@ type InventoryView struct {
 	Filter                         string
 	AllURL, ActiveURL, ArchivedURL string
 	Paging                         *InventoryPaging
+	Reservations                   map[string]ListingReservation
+}
+
+// ListingReservation is a vendor-only summary of units held by non-draft, nonterminal orders and
+// the next payment-window expiry among awaiting-payment orders.
+type ListingReservation struct {
+	Units         int
+	PaymentExpiry string
 }
 
 type InventoryPaging struct {

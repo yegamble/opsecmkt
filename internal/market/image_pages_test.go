@@ -150,6 +150,51 @@ func TestProductPagePhotos(t *testing.T) {
 	}
 }
 
+func TestProductDescriptionAndBitcoinPriceLabel(t *testing.T) {
+	e := newTestApp(t)
+	vendorID, vendor := e.user("product_copy_vendor", "vendor")
+	product := e.product(vendorID, "physical")
+	if _, err := e.DB.Exec("UPDATE products SET description=$2 WHERE id=$1", product, "First line\nSecond line"); err != nil {
+		t.Fatal(err)
+	}
+	e.A.payMu.Lock()
+	e.A.payments["BTC"] = &bitcoinProvider{wantChain: "signet"}
+	e.A.payMu.Unlock()
+	e.A.live = false
+	testnet := e.do("GET", "/product?id="+product, "", nil)
+	e.check(testnet, 200)
+	if body := testnet.Body.String(); !strings.Contains(body, "First line\nSecond line</p>") || !strings.Contains(body, "Price (BTC, test network)") {
+		t.Fatalf("test-network product page lost description breaks or price context:\n%s", body)
+	}
+	if body := e.do("GET", "/listing-edit?id="+product, vendor, nil).Body.String(); !strings.Contains(body, "Price (BTC, test network)") {
+		t.Fatalf("test-network editor price label is missing:\n%s", body)
+	}
+	if body := e.do("GET", "/vendor-dashboard", vendor, nil).Body.String(); !strings.Contains(body, "Price (BTC, test network)") {
+		t.Fatalf("test-network vendor-desk price label is missing:\n%s", body)
+	}
+	e.A.payMu.Lock()
+	e.A.payments["BTC"] = &bitcoinProvider{wantChain: "main"}
+	e.A.payMu.Unlock()
+	e.A.live = true
+	mainnet := e.do("GET", "/product?id="+product, "", nil)
+	e.check(mainnet, 200)
+	if body := mainnet.Body.String(); !strings.Contains(body, "Price (BTC, main network)") || strings.Contains(body, "Price (BTC, test network)") {
+		t.Fatalf("main-network product label does not follow current config:\n%s", body)
+	}
+	if body := e.do("GET", "/listing-edit?id="+product, vendor, nil).Body.String(); !strings.Contains(body, "Price (BTC, main network)") {
+		t.Fatalf("main-network editor price label is missing:\n%s", body)
+	}
+	if body := e.do("GET", "/vendor-dashboard", vendor, nil).Body.String(); !strings.Contains(body, "Price (BTC, main network)") {
+		t.Fatalf("main-network vendor-desk price label is missing:\n%s", body)
+	}
+	e.A.payMu.Lock()
+	delete(e.A.payments, "BTC")
+	e.A.payMu.Unlock()
+	if body := e.do("GET", "/product?id="+product, "", nil).Body.String(); !strings.Contains(body, "Price (BTC, not configured)") {
+		t.Fatalf("XMR-only/mainnet market falsely assigned a BTC network:\n%s", body)
+	}
+}
+
 // The vendor page: the vendor's avatar thumbnail, decorative, at 58×58 (else the text glyph), and 25 listings a
 // page with Previous/Next links, so a page links at most 25 thumbnails and the avatar.
 func TestVendorPageAvatarAndPaging(t *testing.T) {

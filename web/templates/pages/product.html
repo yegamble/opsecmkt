@@ -22,7 +22,7 @@
 <div class="eyebrow">{{.Category}} / {{.Region}}</div>
 <h1>{{.Title}}</h1>{{if .Archived}}{{/* A-164: shown only to those who may read an order on it (load.go) */}}
 <p role="note"><span class="badge neutral">Archived</span> This listing is hidden from the marketplace and accepts no new orders. You can see it because you can read an order placed on it. It shows the listing as it is now, which may differ from what was bought.</p>{{end}}
-<p class="muted">{{.Description}}</p>
+<p class="muted product-detail-description">{{.Description}}</p>
 <h2 class="section-title">Listing details</h2>
 <dl class="key-values">
 <div>
@@ -52,7 +52,7 @@
 </section>
 <aside>
 <section class="panel">
-<div class="eyebrow">Listed price</div>
+<div class="eyebrow">{{$.BitcoinPriceLabel}}</div>
 <p class="price">{{.PriceBTC}} <small>BTC</small>
 </p>
 <p class="mono">{{.PriceXMR}} XMR</p>

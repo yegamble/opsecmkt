@@ -115,7 +115,7 @@ test('promoting a buyer to vendor opens the vendor desk; the listing form shows 
     await vendor.getByLabel('Listing title').fill(fields.title);
     await vendor.getByLabel('Description', { exact: true }).fill('Listing validation regression.');
     await vendor.getByLabel('Fulfillment type').selectOption(fields.kind ?? 'physical');
-    await vendor.getByLabel('Bitcoin reference price').fill(fields.btc);
+    await vendor.getByLabel(/Price \(BTC, (?:test network|main network|network not configured|network not yet known)\)/).fill(fields.btc);
     await vendor.getByLabel('Monero reference price').fill('0.5');
     if (fields.delivery) await vendor.getByLabel('Automatic delivery content').fill(fields.delivery);
     return submitStatus(vendor, () => vendor.getByRole('button', { name: 'Publish listing ↗' }).click());

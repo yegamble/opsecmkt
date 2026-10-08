@@ -38,7 +38,7 @@ test('Per-order wallet key: registration, practice signing, the key type on the 
   await tabTo(vendor, vendor.getByLabel('Stock', { exact: true }));
   await vendor.keyboard.press('ControlOrMeta+A');
   await vendor.keyboard.type('5');
-  await typeInto(vendor, vendor.getByLabel('Bitcoin reference price'), '0.001');
+  await typeInto(vendor, vendor.getByLabel(/Price \(BTC, (?:test network|main network|network not configured|network not yet known)\)/), '0.001');
   await typeInto(vendor, vendor.getByLabel('Monero reference price'), '0.5');
   await typeInto(vendor, vendor.getByLabel('Automatic delivery content'), 'LICENCE-PER-ORDER-0001');
   await pressSubmit(vendor, vendor.getByRole('button', { name: 'Publish listing' }));

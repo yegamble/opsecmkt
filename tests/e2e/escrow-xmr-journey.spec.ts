@@ -186,7 +186,7 @@ test('Monero escrow: checkout with the custody copy, funding at 9 and 10 confirm
     await tabTo(vendor, vendor.getByLabel('Stock', { exact: true }));
     await vendor.keyboard.press('ControlOrMeta+A');
     await vendor.keyboard.type('40');
-    await typeInto(vendor, vendor.getByLabel('Bitcoin reference price'), '0.001');
+    await typeInto(vendor, vendor.getByLabel(/Price \(BTC, (?:test network|main network|network not configured|network not yet known)\)/), '0.001');
     await typeInto(vendor, vendor.getByLabel('Monero reference price'), '0.5');
     if (kind === 'digital') await typeInto(vendor, vendor.getByLabel('Automatic delivery content'), 'LICENCE-XMR-ESCROW-0001');
     await pressSubmit(vendor, vendor.getByRole('button', { name: 'Publish listing' }));

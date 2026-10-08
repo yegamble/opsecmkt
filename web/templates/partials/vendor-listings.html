@@ -41,7 +41,7 @@
 </label>
 {{if .DispatchOn}}<label>Dispatch within (days)<input type="number" name="dispatch_days" min="1" max="30" inputmode="numeric" value="3" aria-describedby="dispatch-help">
 </label>{{end -}}
-<label>Bitcoin reference price<input name="price_btc" required inputmode="decimal" placeholder="0.00100000" aria-describedby="price-floor-help">
+<label>{{$.BitcoinPriceLabel}}<input name="price_btc" required inputmode="decimal" placeholder="0.00100000" aria-describedby="price-floor-help">
 </label>
 <label>Monero reference price<input name="price_xmr" required inputmode="decimal" placeholder="0.500000000000" aria-describedby="price-floor-help">
 </label>

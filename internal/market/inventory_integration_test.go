@@ -86,6 +86,39 @@ func TestListingEditOwnership(t *testing.T) {
 	e.check(e.do("POST", "/listings/update", ownerS, inventoryForm("missing", nil)), 404)
 }
 
+func TestListingReservationSummaryExcludesDraftsAndShowsPaymentExpiry(t *testing.T) {
+	t.Setenv("PAYMENT_EXPIRY", "24h")
+	e := newTestApp(t)
+	vendorID, vendor := e.user("reservation_vendor", "vendor")
+	buyerID, _ := e.user("reservation_buyer", "buyer")
+	product := e.product(vendorID, "physical")
+	e.order(buyerID, product, "BTC", stateDraft)
+	awaiting := e.order(buyerID, product, "BTC", stateAwaitingPayment)
+	e.order(buyerID, product, "BTC", statePaid)
+	e.order(buyerID, product, "BTC", stateCancelled)
+	if _, err := e.DB.Exec(`INSERT INTO payment_addresses(order_id,currency,address,provider,created)
+		VALUES($1,'BTC','reservation-test-address','fixture',now()-interval '23 hours')`, awaiting); err != nil {
+		t.Fatal(err)
+	}
+	wantExpiry := agStr(e, `SELECT to_char(GREATEST(created,COALESCE((SELECT max(pm.created) FROM payments pm WHERE pm.order_id=$1
+		AND pm.confirmations>=0 AND NOT pm.locked AND NOT pm.escrow_left_out),created))+make_interval(secs=>$2),'YYYY-MM-DD HH24:MI "UTC"') FROM payment_addresses WHERE order_id=$1`, awaiting, expiryWindow().Seconds())
+	edit := e.do("GET", "/listing-edit?id="+product, vendor, nil)
+	e.check(edit, 200)
+	for _, want := range []string{"2 units are reserved", "The earliest awaiting-payment payment window ends " + wantExpiry, "deposits waiting for confirmations can keep an order open beyond this time", "unfunded drafts do not reserve stock"} {
+		if !strings.Contains(edit.Body.String(), want) {
+			t.Errorf("listing editor missing %q in:\n%s", want, edit.Body.String())
+		}
+	}
+	desk := e.do("GET", "/vendor-dashboard", vendor, nil)
+	e.check(desk, 200)
+	card := cardFor(desk.Body.String(), "Test listing")
+	for _, want := range []string{"2 units are reserved", wantExpiry} {
+		if !strings.Contains(card, want) {
+			t.Errorf("vendor listing card missing %q", want)
+		}
+	}
+}
+
 func TestListingUpdateValidation(t *testing.T) {
 	e := newTestApp(t)
 	owner, s := e.user("inv_valid", "vendor")

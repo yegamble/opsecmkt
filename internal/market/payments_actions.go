@@ -182,6 +182,7 @@ func paymentsGlobalLoader(_ context.Context, a *App, _ *http.Request, d *PageDat
 	d.PaymentsEnabled = len(nets) > 0
 	d.PaymentNetworks = strings.Join(nets, ", ")
 	d.LiveNetwork = a.live
+	d.BitcoinPriceLabel = a.bitcoinPriceLabel()
 	d.EscrowOn, d.EscrowAvailable = a.escrowConfigured, a.escrow.Load() != nil
 	if a.escrowNetKnown() {
 		d.EscrowNet = a.escrowNetwork()

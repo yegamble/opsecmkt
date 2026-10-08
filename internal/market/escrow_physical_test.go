@@ -489,8 +489,8 @@ func TestListingDispatchFieldOnlyWithEscrow(t *testing.T) {
 	listing := check(off, vendor, session, false)
 	// Off mode keeps the Phase 1 markup byte for byte around the hidden field and help (A-380): no blank lines left.
 	for page, joins := range map[string][]string{
-		"/vendor-dashboard":           {"</label>\n<label>Bitcoin reference price", "</div>\n<p class=\"help\" id=\"price-floor-help\">"},
-		"/listing-edit?id=" + listing: {"</label>\n<label>Bitcoin reference price", "</p>\n<p class=\"help\" id=\"stock-help\">"},
+		"/vendor-dashboard":           {"</label>\n<label>Price (BTC, not configured)", "</div>\n<p class=\"help\" id=\"price-floor-help\">"},
+		"/listing-edit?id=" + listing: {"</label>\n<label>Price (BTC, not configured)", "</p>\n<p class=\"help\" id=\"stock-help\">"},
 	} {
 		body := off.do("GET", page, session, nil).Body.String()
 		for _, j := range joins {
@@ -505,4 +505,9 @@ func TestListingDispatchFieldOnlyWithEscrow(t *testing.T) {
 	}
 	x := newEscrowEnv(t)
 	check(x.testEnv, x.vendor, x.vendorSess, true)
+	for _, page := range []string{"/vendor-dashboard", "/listing-edit?id=" + x.product} {
+		if body := x.testEnv.do("GET", page, x.vendorSess, nil).Body.String(); !strings.Contains(body, "Price (BTC, test network)") {
+			t.Fatalf("escrow-only Bitcoin configuration should identify its verified test network on %s:\n%s", page, body)
+		}
+	}
 }
