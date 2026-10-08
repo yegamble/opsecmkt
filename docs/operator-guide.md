@@ -992,7 +992,7 @@ kept equal to this line by a Go test):
 
 ```ini
 rpcauth=opsecmkt-pooled:SALT$HASH
-rpcwhitelist=opsecmkt-pooled:getblockchaininfo,getwalletinfo,loadwallet,getnetworkinfo,getnewaddress,listreceivedbyaddress,gettransaction,sendtoaddress,validateaddress,getbalances
+rpcwhitelist=opsecmkt-pooled:getblockchaininfo,getwalletinfo,loadwallet,getnetworkinfo,getnewaddress,listreceivedbyaddress,gettransaction,listtransactions,sendtoaddress,validateaddress,getbalances
 ```
 
 Use the user name your `BITCOIN_RPC_URL` carries (on the bundled Compose node it is `marketplace`, set with

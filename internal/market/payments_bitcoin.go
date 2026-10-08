@@ -23,7 +23,7 @@ func init() { registerProvider(bitcoinFromEnv) }
 // URL path, so a pooled user allowed listdescriptors could print the escrow arbiter wallet's private key (A-440).
 var pooledRPCMethods = []string{
 	"getblockchaininfo", "getwalletinfo", "loadwallet", "getnetworkinfo", "getnewaddress", "listreceivedbyaddress",
-	"gettransaction", "sendtoaddress", "validateaddress", "getbalances",
+	"gettransaction", "listtransactions", "sendtoaddress", "validateaddress", "getbalances",
 }
 
 // bitcoinChains maps each chain getblockchaininfo reports to its bech32 address prefix.

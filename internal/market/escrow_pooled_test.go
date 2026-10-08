@@ -256,6 +256,8 @@ func TestBitcoinPooledRPCMethods(t *testing.T) {
 			return []any{map[string]any{"address": "bcrt1qpooledaddress000000000000000000000", "txids": []string{strings.Repeat("ab", 32)}}}, 0, ""
 		case "gettransaction":
 			return map[string]any{"confirmations": 1, "details": []any{map[string]any{"address": "bcrt1qpooledaddress000000000000000000000", "category": "receive", "amount": json.Number("0.001"), "vout": 0}}}, 0, ""
+		case "listtransactions":
+			return []any{}, 0, ""
 		case "sendtoaddress":
 			return strings.Repeat("cd", 32), 0, ""
 		case "validateaddress":
@@ -284,6 +286,9 @@ func TestBitcoinPooledRPCMethods(t *testing.T) {
 	}
 	if c, pend, err := p.Balance(ctx); err != nil || c != 50000000 || pend != 0 { // the drain panel's advisory balance (A-445)
 		t.Fatalf("getbalances %d %d %v", c, pend, err)
+	}
+	if _, err := p.ReadWalletEvidence(ctx, "bcrt1qpooledaddress000000000000000000000"); err != nil {
+		t.Fatalf("listtransactions evidence read: %v", err)
 	}
 	srv.mu.Lock()
 	called := slices.Clone(srv.calls)

@@ -539,7 +539,7 @@ func paymentsAccountLoader(ctx context.Context, a *App, _ *http.Request, d *Page
 // never capped: their resolve forms exist only there.
 const payoutHistoryLimit = 50
 
-func paymentsAdminLoader(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
+func paymentsAdminLoader(ctx context.Context, a *App, r *http.Request, d *PageData) error {
 	status := map[string]ProviderStatus{}
 	rows, err := a.db.QueryContext(ctx, "SELECT currency,network,COALESCE(to_char(last_poll,'YYYY-MM-DD HH24:MI:SS \"UTC\"'),''),last_error,"+
 		"address_collisions,COALESCE(to_char(address_collision_last,'YYYY-MM-DD HH24:MI:SS \"UTC\"'),'') FROM payment_status")
@@ -694,5 +694,5 @@ func paymentsAdminLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 		// conditional recovery guidance instead of its old promise that every conflicted deposit returns.
 		r.Error = "A credited deposit is conflicted or below the confirmation threshold; the payment watcher can resume this payout only after every credited deposit reaches the confirmation threshold again. A conflicted or missing deposit that never recovers needs wallet reconciliation and manual review."
 	}
-	return nil
+	return a.loadWalletEvidence(ctx, r, d)
 }
