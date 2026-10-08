@@ -50,7 +50,8 @@ type App struct {
 	key              []byte // CSRF/CAPTCHA HMAC key, sha256("csrf:"+keyRoot)
 	captchaIDKey     []byte // CAPTCHA challenge-id MAC key, sha256("captcha-id:"+keyRoot); empty = no challenges
 	mu               sync.Mutex
-	limits           map[string]bucket
+	limits           map[string]bucket               // authentication and factor budgets
+	writeLimits      map[string]bucket               // independent per-account write budgets (A-75)
 	inFlight         map[string]int                  // OneAtATime actions in progress, by path and account (enterOneAtATime)
 	signInLogAt      time.Time                       // last "sign-in limiter refusing" log line (guarded by mu)
 	payMu            sync.RWMutex                    // guards payments and unavailable once Start has run
@@ -109,7 +110,7 @@ func New(ctx context.Context, preview bool) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	a := &App{startedAt: time.Now().UTC(), templates: t, preview: preview, mode: os.Getenv("APP_MODE"), limits: make(map[string]bucket), payments: map[string]PaymentProvider{}, unavailable: map[string]*unavailableProvider{}}
+	a := &App{startedAt: time.Now().UTC(), templates: t, preview: preview, mode: os.Getenv("APP_MODE"), limits: make(map[string]bucket), writeLimits: make(map[string]bucket), payments: map[string]PaymentProvider{}, unavailable: map[string]*unavailableProvider{}}
 	if a.mode == "" {
 		a.mode = "clearnet"
 	}
@@ -326,34 +327,53 @@ func (a *App) cookie(w http.ResponseWriter, name, value string, age int) {
 func (a *App) allow(key string, n int) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	now := time.Now()
-	for k, v := range a.limits {
+	return allowIn(a.limits, key, n, time.Now())
+}
+
+// allowWrite reserves a separate bounded table for signed-in writes. Saturated authentication
+// counters must not refuse a legitimate account's write, and saturated write counters must
+// neither reset themselves nor evict blocking entries from either table.
+func (a *App) allowWrite(userID string) bool {
+	return a.allowWriteBudget(userID, 100)
+}
+
+func (a *App) allowWriteBudget(key string, n int) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.writeLimits == nil {
+		a.writeLimits = make(map[string]bucket)
+	}
+	return allowIn(a.writeLimits, key, n, time.Now())
+}
+
+func allowIn(limits map[string]bucket, key string, n int, now time.Time) bool {
+	for k, v := range limits {
 		if now.After(v.Until) {
-			delete(a.limits, k)
+			delete(limits, k)
 		}
 	}
-	b := a.limits[key]
+	b := limits[key]
 	if b.Count == 0 {
-		if len(a.limits) >= 4096 {
+		if len(limits) >= 4096 {
 			victim, found := "", false
-			for k, v := range a.limits {
+			for k, v := range limits {
 				if v.Count >= v.Limit {
 					continue
 				}
-				if w := a.limits[victim]; !found || v.Count < w.Count || (v.Count == w.Count && v.Until.Before(w.Until)) {
+				if w := limits[victim]; !found || v.Count < w.Count || (v.Count == w.Count && v.Until.Before(w.Until)) {
 					victim, found = k, true
 				}
 			}
 			if !found {
 				return false
 			}
-			delete(a.limits, victim)
+			delete(limits, victim)
 		}
 		b.Until = now.Add(10 * time.Minute)
 	}
 	b.Count++
 	b.Limit = n
-	a.limits[key] = b
+	limits[key] = b
 	return b.Count <= n
 }
 

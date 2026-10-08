@@ -407,7 +407,7 @@ func TestHealthzAndRetryAfterUnderLoad(t *testing.T) {
 	for _, c := range held {
 		c.Close()
 	}
-	e.A.limits["write:"+agStr(e, "SELECT id FROM users WHERE handle='retry_buyer'")] = bucket{Count: 100, Limit: 100, Until: time.Now().Add(time.Minute)}
+	e.A.writeLimits[agStr(e, "SELECT id FROM users WHERE handle='retry_buyer'")] = bucket{Count: 100, Limit: 100, Until: time.Now().Add(time.Minute)}
 	w = e.do("POST", "/notifications", buyer, url.Values{})
 	if w.Code != 429 || w.Header().Get("Retry-After") != "600" {
 		t.Fatalf("write budget spent: %d Retry-After=%q", w.Code, w.Header().Get("Retry-After"))

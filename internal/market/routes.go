@@ -493,7 +493,7 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 			http.Error(w, "Sign in required", 401)
 			return
 		}
-		if !a.allow("write:"+u.ID, 100) {
+		if !a.allowWrite(u.ID) {
 			http.Error(w, "Too many changes. Try again later.", 429)
 			return
 		}

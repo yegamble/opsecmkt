@@ -193,11 +193,11 @@ func (a *App) serveUpload(w http.ResponseWriter, r *http.Request, route uploadRo
 		u.refuse(http.StatusForbidden, msg)
 		return
 	}
-	if !a.allow("write:"+u.user.ID, 100) {
+	if !a.allowWrite(u.user.ID) {
 		u.refuse(http.StatusTooManyRequests, "Too many changes. Try again later. Nothing was stored.")
 		return
 	}
-	if !a.allow("upload:"+u.user.ID, uploadBudget) {
+	if !a.allowWriteBudget("upload:"+u.user.ID, uploadBudget) {
 		u.refuse(http.StatusTooManyRequests, "Photo not saved: an account can upload at most 20 photos or avatars in 10 minutes. Nothing was stored. Try again later.")
 		return
 	}
