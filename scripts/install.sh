@@ -343,8 +343,12 @@ database_placeholder() {
 
 # image_pinned VALUE: the image names a release tag or a digest, not :latest or no tag.
 image_pinned() {
-  local reference=${1%%@*} tag
-  [[ $1 != *@* ]] || return 0
+  local reference=${1%%@*} tag digest
+  if [[ $1 == *@* ]]; then
+    digest=${1#*@}
+    [[ -n $reference && $digest != *@* && $digest =~ ^sha256:[0-9a-f]{64}$ ]]
+    return
+  fi
   tag=${reference##*/}
   [[ $tag == *:* ]] || return 1
   tag=${tag##*:}
@@ -1459,6 +1463,7 @@ cmd_add_scanner() {
 cmd_refresh_scanner() {
   [[ $# -eq 0 ]] || usage
   require_env
+  lock_env_or_die
   has_item "$(env_value COMPOSE_PROFILES)" scanner ||
     die 'The malware scanner is off in this install (COMPOSE_PROFILES lacks scanner): there is nothing to refresh. ./scripts/install.sh add-scanner turns it on.'
   run_check || exit 1

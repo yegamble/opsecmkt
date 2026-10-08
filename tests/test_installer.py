@@ -2222,6 +2222,14 @@ time.sleep(60)
                 self.check_env(installed_env(CLAMAV_IMAGE=image), 'CLAMAV_IMAGE must name a ClamAV release')
         self.write_env(scanner_env(CLAMAV_IMAGE='clamav/clamav@sha256:' + 'b' * 64))
         self.assertEqual(self.command('check').returncode, 0)
+        for digest in ('sha256:abc', 'sha256:' + 'A' * 64, 'sha512:' + 'b' * 64,
+                       'sha256:' + 'b' * 63, 'sha256:' + 'b' * 65,
+                       'bad@sha256:' + 'b' * 64):
+            with self.subTest(digest=digest):
+                self.check_env(scanner_env(CLAMAV_IMAGE='clamav/clamav@' + digest),
+                               'CLAMAV_IMAGE must name a ClamAV release')
+        self.check_env(scanner_env(CLAMAV_IMAGE='@sha256:' + 'b' * 64),
+                       'CLAMAV_IMAGE must name a ClamAV release')
         # The image Compose resolves (an override file can set one) is checked too.
         self.write_env(scanner_env())
         rendered = SCANNER_CONFIG.replace('image: clamav/clamav:1.5.4-debian', 'image: clamav/clamav:latest')
@@ -2313,6 +2321,15 @@ time.sleep(60)
         self.assertEqual(result.returncode, 1)
         self.assertIn('add-scanner', result.stderr)
         self.assertEqual(self.calls(), ['compose version'])
+
+    def test_refresh_scanner_respects_env_lock(self):
+        self.write_env(scanner_env())
+        (self.root / '.env.lock').mkdir()
+        result = self.command('refresh-scanner')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('Another ./scripts/install.sh command is changing .env', result.stderr)
+        self.assertEqual(self.calls(), ['compose version'])
+        self.assertTrue((self.root / '.env.lock').is_dir())
 
     def test_upgrade_does_not_enable_scanner(self):
         for values in (alpha_env(), installed_env(), clearnet_env()):

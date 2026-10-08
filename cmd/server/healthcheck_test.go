@@ -106,3 +106,19 @@ func TestHealthcheckURLFollowsADDR(t *testing.T) {
 		}
 	}
 }
+
+func TestStatusAndHealthcheckRefuseHostCommands(t *testing.T) {
+	for _, args := range [][]string{
+		{"-status", "-set-role", "alice", "buyer"},
+		{"-healthcheck", "-reset-admin-factors", "alice"},
+		{"-status", "-bootstrap-admin", "alice"},
+		{"-healthcheck", "-reset-admin-password", "alice"},
+	} {
+		t.Run(strings.Join(args, "_"), func(t *testing.T) {
+			stdout, stderr, code := runServer(t, nil, args...)
+			if code != 2 || stdout != "" || !strings.Contains(stderr, "cannot be combined with host commands") {
+				t.Fatalf("exit %d stdout %q stderr %q", code, stdout, stderr)
+			}
+		})
+	}
+}
