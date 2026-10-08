@@ -606,6 +606,10 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 				msg = "PGP sign-in setting outcome unknown: it may have been saved. Reload PGP verification and check whether PGP sign-in is on or off before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
 			case "/delivery-cleanup":
 				msg = "Delivery cleanup outcome unknown: it may have been saved. Reload archived listing cleanup and check whether the stored delivery text is present before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
+			case "/admin/escrow-rebroadcast":
+				msg = "Bitcoin escrow rebroadcast outcome unknown: the confirmation may have been saved. Check the settlement on the admin page and verify its transaction against the chain and the watch-only wallet before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
+			case "/admin/escrow-xmr-rebroadcast":
+				msg = "Monero escrow relay outcome unknown: the confirmation may have been saved. Check the settlement on the admin page and verify its transaction with the escrow daemon and wallet before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
 			case "/escrow/claim", "/escrow/ship", "/escrow/recover", "/escrow/bump", "/escrow-xmr/claim", "/escrow-xmr/ship", "/escrow-xmr/confirm":
 				msg = "Escrow action outcome unknown: it may have been saved. Check the order and settlement state before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
 			case "/totp/disable", "/totp/activate", "/totp/recovery":

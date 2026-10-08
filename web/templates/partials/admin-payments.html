@@ -67,6 +67,7 @@ Check the escrow node: its peers (<code>getconnectioncount</code>), and with <co
 <td>{{if or .Confirmed .Sent}}—{{else if not $.EscrowRecovery.On}}Turn Bitcoin escrow on to confirm{{else}}<form class="stack" method="post" action="/admin/escrow-rebroadcast">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="settlement_id" value="{{.ID}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/admin/escrow-rebroadcast"}}">
 <label class="check"><input type="checkbox" name="not_sent" value="confirmed" required> I checked the chain and the escrow watch-only wallet: this transaction was not already sent, and no other transaction spent the escrow's coins</label>
 {{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
 <button type="submit">Rebroadcast once</button>
@@ -121,6 +122,7 @@ Check the escrow node: its peers (<code>getconnectioncount</code>), and with <co
 <td>{{if .Confirmed}}Confirmed: the market relays it on its next pass{{else if not $.XMREscrowRecovery.On}}Turn Monero escrow on to confirm{{else}}<form class="stack" method="post" action="/admin/escrow-xmr-rebroadcast">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="settlement_id" value="{{.ID}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/admin/escrow-xmr-rebroadcast"}}">
 <label class="check"><input type="checkbox" name="not_sent" value="confirmed" required> I checked the escrow daemon and the escrow wallet: this transaction was not already relayed, and no other transaction spent the escrow's coins</label>
 {{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
 <button type="submit">Relay once</button>

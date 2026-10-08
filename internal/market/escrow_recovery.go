@@ -33,8 +33,29 @@ import (
 // the market then sends the highest-fee stored transaction once.
 
 func init() {
-	registerAction("/admin/escrow-rebroadcast", actionSpec{Roles: []string{"admin"}, OwnTx: true, Off: escrowOff, Run: escrowRebroadcastAction})
+	registerAction("/admin/escrow-rebroadcast", actionSpec{Roles: []string{"admin"}, OwnTx: true, ConfirmedFormNonce: true,
+		ReceiptAuthorize: escrowRebroadcastReceiptAuthorize, Off: escrowOff, Run: escrowRebroadcastAction})
 	registerLoader("admin", escrowRecoveryLoader)
+}
+
+// escrowRebroadcastReceiptAuthorize keeps a saved response available only while its current settlement still belongs
+// to a Bitcoin escrow. Hold and send state are deliberately left to the first callback: replay is a historical receipt,
+// and must not requeue a settlement the watcher has since cleared or held again.
+func escrowRebroadcastReceiptAuthorize(c *actionCtx) error {
+	id, err := strconv.ParseInt(c.Form.Get("settlement_id"), 10, 64)
+	if err != nil || id <= 0 {
+		return fail(400, "Unknown settlement")
+	}
+	var exists bool
+	err = c.Tx.QueryRowContext(c.Ctx(), `SELECT EXISTS(SELECT 1 FROM settlements s JOIN escrows e ON e.order_id=s.order_id
+		WHERE s.id=$1 AND e.coin='BTC')`, id).Scan(&exists)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return fail(404, "Settlement not found")
+	}
+	return nil
 }
 
 // restoredSettlementHold is the send_error scripts/restore.sh (and the manual protection SQL in UPGRADING.md section
