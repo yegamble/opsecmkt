@@ -115,7 +115,7 @@ test('promoting a buyer to vendor opens the vendor desk; the listing form shows 
     await vendor.getByLabel('Listing title').fill(fields.title);
     await vendor.getByLabel('Description', { exact: true }).fill('Listing validation regression.');
     await vendor.getByLabel('Fulfillment type').selectOption(fields.kind ?? 'physical');
-    await vendor.getByLabel(/Price \(BTC, (?:test network|main network|network not configured|network not yet known)\)/).fill(fields.btc);
+    await vendor.getByLabel(/Price \(BTC, (?:test network|main network|not configured|not yet known)\)/).fill(fields.btc);
     await vendor.getByLabel('Monero reference price').fill('0.5');
     if (fields.delivery) await vendor.getByLabel('Automatic delivery content').fill(fields.delivery);
     return submitStatus(vendor, () => vendor.getByRole('button', { name: 'Publish listing ↗' }).click());
@@ -224,7 +224,7 @@ test('site settings, account suspension, operator key, canary signature checks a
   await expect(admin).toHaveTitle(/^Account suspended\. – Admin · /);
   expect(await admin.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
   await admin.setViewportSize({ width: 390, height: 900 });
-  await expect(suspended).toHaveText(new RegExp(`^${suspectHandle} · buyer · suspended \\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2} UTC$`));
+  await expect(suspended).toHaveText(new RegExp(`^${suspectHandle} · buyer · suspended \\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2} UTC · factors: none \\(password only\\)$`));
   const suspendRows = admin.locator('table').last().locator('tbody tr');
   await expect(suspendRows.filter({ hasText: `Suspended account ${suspectHandle}; ended 1 session(s) and any pending sign-ins (confirmed with password)` }).locator('td').first()).toHaveText(ADMIN.handle);
   await expect(suspendRows.filter({ hasText: `Account suspended by administrator ${ADMIN.handle}; ended 1 session(s)` }).locator('td').first()).toHaveText(suspectHandle);

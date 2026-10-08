@@ -18,7 +18,7 @@ test('edit, archive and restore a listing without client scripts', async ({ page
   await page.getByLabel('Listing title').fill(title);
   await page.getByLabel('Description', { exact: true }).fill('Inventory regression listing.');
   await page.getByLabel('Fulfillment type').selectOption('digital');
-  await page.getByLabel(/Price \(BTC, (?:test network|main network|network not configured|network not yet known)\)/).fill('0.001');
+  await page.getByLabel(/Price \(BTC, (?:test network|main network|not configured|not yet known)\)/).fill('0.001');
   await page.getByLabel('Monero reference price').fill('0.5');
   await expect(page.locator('main')).toContainText('Automatic delivery requires a payment provider');
   await page.getByRole('button', { name: 'Publish listing' }).click();
@@ -70,7 +70,7 @@ test('edit, archive and restore a listing without client scripts', async ({ page
   await vendor.getByLabel('Listing title').fill(vendorTitle);
   await vendor.getByLabel('Description', { exact: true }).fill('Administrator delivery-content regression.');
   await vendor.getByLabel('Fulfillment type').selectOption('digital');
-  await vendor.getByLabel(/Price \(BTC, (?:test network|main network|network not configured|network not yet known)\)/).fill('0.001');
+  await vendor.getByLabel(/Price \(BTC, (?:test network|main network|not configured|not yet known)\)/).fill('0.001');
   await vendor.getByLabel('Monero reference price').fill('0.5');
   await vendor.getByLabel('Automatic delivery content').fill(secret);
   await vendor.getByRole('button', { name: 'Publish listing' }).click();

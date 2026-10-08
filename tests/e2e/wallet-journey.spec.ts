@@ -62,7 +62,7 @@ test('BTC and XMR: partial payment, intake pause, confirmation, fulfillment and 
     await seller.getByLabel('Description', { exact: true }).fill('Deterministic RPC fixture journey; no real coins.');
     await seller.getByLabel('Fulfillment type').selectOption(digital ? 'digital' : 'physical');
     await seller.getByLabel('Stock', { exact: true }).fill('3');
-    await seller.getByLabel(/Price \(BTC, (?:test network|main network|network not configured|network not yet known)\)/).fill('0.001');
+    await seller.getByLabel(/Price \(BTC, (?:test network|main network|not configured|not yet known)\)/).fill('0.001');
     await seller.getByLabel('Monero reference price').fill('0.5');
     await submitAndLoad(seller, seller.getByRole('button', { name: 'Publish listing' }));
     await buyer.goto(`/?q=${encodeURIComponent(title)}`);

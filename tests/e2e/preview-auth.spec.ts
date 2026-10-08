@@ -123,7 +123,7 @@ test('password change and second-factor reset are plain POST forms and the previ
   await expect(suspend.getByRole('radio', { name: /^Suspend:/ })).not.toBeChecked();
   await expect(suspend.getByRole('radio', { name: /^Restore:/ })).not.toBeChecked();
   await expect(suspend.getByLabel('Authenticator code')).toHaveCount(0);
-  await expect(suspension.locator('.account-list li')).toHaveText(['held_account · buyer · suspended 2026-01-01 00:00 UTC']);
+  await expect(suspension.locator('.account-list li')).toHaveText(['held_account · buyer · suspended 2026-01-01 00:00 UTC · factors: TOTP and PGP sign-in']);
   // A-118: the copy does not promise that orders continue normally, and says a suspended moderator is not a
   // resolver or contact.
   await expect(suspension).toContainText(
