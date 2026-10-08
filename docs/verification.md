@@ -189,3 +189,20 @@ The repository is on GitHub at https://github.com/yegamble/opsecmkt. Automated p
 The JavaScript-disabled mobile browser journey exposed a real form-submission issue: `Referrer-Policy: no-referrer` caused Chromium to submit `Origin: null`. The header now uses `same-origin`; cross-origin checks and session-bound CSRF validation remain enforced. The complete setup/listing/buyer/order/profile/login journey passed after the fix.
 
 Playwright contains 126 preview cases across Chromium/Firefox/WebKit plus one database-backed mobile journey. CI uploads failure traces/screenshots and HTML reports. The release workflow reruns the complete suite before creating private draft OCI image artifacts, checksums and provenance/SBOM metadata. It never deploys to a live host.
+
+## Completion branch focused checks — 2026-10-08
+
+These are local checks, not a final all-green CI record. CI run `37809875136` at `8f54ba1` failed on test fixtures, browser expectations, a vendor-dashboard archive/restore nonce omission, Compose validation fixtures and the authentic Tor rehearsal HTTP probe. The operations backup/restore tests passed within that failed run.
+
+- At `a367cb0`, seven targeted Chromium 320 px and PostgreSQL browser checks passed in 23.3 s, including vendor-dashboard archive/restore and seeded catalog state.
+- The fixture repair `c3d9cc8` (integrated as `ca7efa3`) passed 16 selected market race tests in 16.827 s with real PostgreSQL and no skips, followed by the host reset-command race test in 3.740 s. The real-Core Shape-B multipart journey compiled but was not run in this local check.
+- Bitcoin physical shipping (`c614ccd`) and recovery (`ffea3a8`) each passed six selected PostgreSQL race suites without skips, in 7.735 s and 7.950 s. These pin exact saved-success replay, unchanged timestamps and effect counts, current party/password/session authorization, TOTP and persisted lost-commit recovery.
+- Admin review hide/restore (`4914963`) passed three PostgreSQL race suites in 3.199 s without skips, including replay after a later restore and no second TOTP spend.
+- Go vet and module verification passed at `c614ccd`. Later leaves still need the consolidated final gate.
+- Operations fixture repair `fc04916` (integrated as `2a489da`) passed all ten Compose config combinations, scanner tests 11/11 and wallet-password tests 6/6. The full installer run passed 122/123, with the descendant-cleanup test blocked by sandbox access to process metadata; that same test passed individually with access in 2.013 s. The two changed installer cases also passed individually.
+
+Alpha.1 has a real `/healthz` route. Its authentic Tor upgrade/rollback rehearsal timed out on the host-to-loopback-published app path; the revised harness resolves Compose's actual port, bypasses local HTTP proxies and retains failure diagnostics. No passing Tor deployment rehearsal, public-chain run or hardware-wallet compatibility is inferred from these checks.
+
+- Additional confirmed receipt leaves: Bitcoin bump request (`ecd99df`) 9.022 s; admin settings (`d02755d`) 8.856 s; listing (`d8ee8ad`) 4.948 s plus tightened assertions 2.786 s; staff dispositions (`44fd6f7`) 68.109 s; PGP sign-in/cleanup (`dc625d3`) 8.260 s; payout addresses (`0c6d428`) 6.850 s. Collision/drain checks (`0b09274`) passed 24 top-level race groups in 16.641 s. These were real-PostgreSQL runs without skips.
+- At `0c6d428`, the integrated 22-test receipt/adjacent race selector passed in 24.659 s with no skips. Retained local log: `/tmp/opsecmkt-completion7-combined-receipts.log`. The initial sandbox-only attempt was unable to bind a local fixture port; the actual database/HTTP run above had local access.
+- Formatting, `go vet ./...` and `go mod verify` passed at `0c6d428` after the integrated receipt gate.
