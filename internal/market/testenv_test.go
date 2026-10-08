@@ -317,7 +317,7 @@ func (e *testEnv) order(buyerID, productID, currency, state string) string {
 func (e *testEnv) loadUser(id string) *User {
 	e.t.Helper()
 	u := &User{}
-	if err := e.DB.QueryRow("SELECT id,handle,role,pgp,xmpp FROM users WHERE id=$1", id).Scan(&u.ID, &u.Handle, &u.Role, &u.PGP, &u.XMPP); err != nil {
+	if err := e.DB.QueryRow("SELECT id,handle,role,pgp FROM users WHERE id=$1", id).Scan(&u.ID, &u.Handle, &u.Role, &u.PGP); err != nil {
 		e.t.Fatal(err)
 	}
 	return u

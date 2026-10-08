@@ -918,8 +918,6 @@ func TestStolenSessionCannotAddPGPFactorToTOTPAccount(t *testing.T) {
 	if agStr(e, "SELECT pgp FROM users WHERE id=$1", uid) != "" {
 		t.Fatal("key saved on a TOTP account without full confirmation")
 	}
-	// Other profile fields still save without confirmation when the key is unchanged.
-	e.check(e.do("POST", "/account", stolen, url.Values{"xmpp": {"v@example.org"}}), 303)
 
 	// Even with a proven key already on file (as if saved earlier), turning PGP sign-in on needs both.
 	_, fp, _ := parsePublicKey(malloryPub)
@@ -1068,7 +1066,7 @@ func TestAnonymousLandingFormPostsWhileSignedIn(t *testing.T) {
 	}
 
 	// The anon-derived token never acts as the signed-in user: a protected action is refused.
-	e.check(a48Do(e, "POST", "/account", url.Values{"csrf": {m[1]}, "xmpp": {"x@example.org"}}, both), 401)
+	e.check(a48Do(e, "POST", "/account", url.Values{"csrf": {m[1]}}, both), 401)
 	// Another browser's anon token, a cross-site POST and a foreign Origin are still rejected.
 	creds := url.Values{"csrf": {m[1]}, "handle": {"landing_buyer"}, "password": {testPassword}, "captcha_id": {cm[1]}, "captcha": {e.A.captchaAnswer(cm[1])}}
 	e.check(a48Do(e, "POST", "/login", creds, map[string]string{"session": s, "anon": randomToken()}), 403)

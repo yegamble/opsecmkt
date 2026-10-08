@@ -70,8 +70,8 @@ func accountSessionsLoader(ctx context.Context, a *App, r *http.Request, d *Page
 
 func accountAction(c *actionCtx) (actionResult, error) {
 	f := c.Form
-	pgp, xmpp := strings.TrimSpace(f.Get("pgp")), strings.TrimSpace(f.Get("xmpp"))
-	if len(pgp) > 16384 || len(xmpp) > 254 {
+	pgp := strings.TrimSpace(f.Get("pgp"))
+	if len(pgp) > 16384 {
 		return actionResult{}, fail(400, "Profile fields too long")
 	}
 	// A-110: a photo ID (usually the owner's face) would be shown with the key to everyone who can see it, and
@@ -109,8 +109,7 @@ func accountAction(c *actionCtx) (actionResult, error) {
 		case "subkey":
 			res.Notice = "key-subkey"
 		}
-		_, err = c.Tx.ExecContext(c.Ctx(), "UPDATE users SET xmpp=$1 WHERE id=$2", xmpp, c.User.ID)
-		return res, err
+		return res, nil
 	})
 }
 

@@ -326,7 +326,7 @@ func (a *App) load(r *http.Request, d *PageData) error {
 		}
 		if d.Page == "vendor" {
 			var u User
-			err = a.db.QueryRowContext(ctx, "SELECT id,handle,role,pgp,xmpp FROM users WHERE id=$1 AND role IN ('vendor','admin')", r.URL.Query().Get("id")).Scan(&u.ID, &u.Handle, &u.Role, &u.PGP, &u.XMPP)
+			err = a.db.QueryRowContext(ctx, "SELECT id,handle,role,pgp FROM users WHERE id=$1 AND role IN ('vendor','admin')", r.URL.Query().Get("id")).Scan(&u.ID, &u.Handle, &u.Role, &u.PGP)
 			if err != nil {
 				return err
 			}
@@ -441,13 +441,13 @@ func (a *App) load(r *http.Request, d *PageData) error {
 				return err
 			}
 			d.AdminUsersPaging = activityPagingWithKey("/admin", "users_page", total, r.URL.Query().Get("users_page"), nil)
-			rows, err = a.db.QueryContext(ctx, "SELECT id,handle,role,pgp,xmpp FROM users ORDER BY created DESC,id DESC LIMIT $1 OFFSET $2", activityPageSize, d.AdminUsersPaging.Offset())
+			rows, err = a.db.QueryContext(ctx, "SELECT id,handle,role,pgp FROM users ORDER BY created DESC,id DESC LIMIT $1 OFFSET $2", activityPageSize, d.AdminUsersPaging.Offset())
 			if err != nil {
 				return err
 			}
 			for rows.Next() {
 				var u User
-				if err = rows.Scan(&u.ID, &u.Handle, &u.Role, &u.PGP, &u.XMPP); err != nil {
+				if err = rows.Scan(&u.ID, &u.Handle, &u.Role, &u.PGP); err != nil {
 					rows.Close()
 					return err
 				}

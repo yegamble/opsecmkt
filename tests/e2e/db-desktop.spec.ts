@@ -45,10 +45,7 @@ test('desktop: register, draft, profile persistence and sign-out', async ({ page
   await fits(page);
 
   await page.goto('/account');
-  await page.getByLabel('XMPP address').fill(`${handle}@example.test`);
-  await submitAndLoad(page, page.getByRole('button', { name: 'Save profile' }));
-  await page.reload();
-  await expect(page.getByLabel('XMPP address')).toHaveValue(`${handle}@example.test`);
+  await expect(page.getByLabel('XMPP address')).toHaveCount(0);
   await fits(page);
   await submitAndLoad(page, page.getByRole('button', { name: 'Sign out', exact: true }));
   await page.goto('/account');
@@ -57,5 +54,5 @@ test('desktop: register, draft, profile persistence and sign-out', async ({ page
   await page.getByLabel('Password', { exact: true }).fill(password);
   await submitAndLoad(page, page.getByRole('button', { name: 'Sign in' }));
   await page.goto('/account');
-  await expect(page.getByLabel('XMPP address')).toHaveValue(`${handle}@example.test`);
+  await expect(page.getByLabel('XMPP address')).toHaveCount(0);
 });
