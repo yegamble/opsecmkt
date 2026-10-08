@@ -349,16 +349,19 @@ payment reviews): in the Action cell they widened the scrolling table, so at 320
 {{else if not (or .AddressCheck .LargeCheck .HandHold)}}<p class="help">Release only after checking the wallet: this payout was never sent from this database's point of view, and it will be sent once.</p>
 {{end}}{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
 <button type="submit">Release held payout</button>
-</form>{{else}}<form class="stack" method="post" action="/admin/payout">
+</form>{{else}}{{if and .RequeueAddressCheck (not .Address)}}<p class="help">This failed or stuck payout has no recorded address to check. The recipient must save a payout address after the account is restored; an administrator must check it with them before requeueing. Nothing can be requeued from here yet.</p>{{else}}<form class="stack" method="post" action="/admin/payout">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="form_nonce" value="{{formNonce "/admin/payout"}}">
 <input type="hidden" name="payout_id" value="{{.ID}}">
 <input type="hidden" name="op" value="requeue">
 <p class="help">Requeue only if the wallet shows no transaction to {{.Address}} for this amount; it will be sent once more.</p>
+{{if .RequeueAddressCheck}}<p class="help">The recipient is suspended or was suspended while this payout was waiting. Someone with their password may have changed its destination. Recorded payout address: <span class="mono">{{.Address}}</span>. Check this address with the account owner through a channel you trust before another send.</p>
+<label class="check"><input type="checkbox" name="address_checked" value="confirmed" required> Payout address checked: the account owner confirmed this address is theirs</label>
+{{end}}
 {{if .Ambiguous}}{{template "admin-payments:wallet-check"}}<label class="check"><input type="checkbox" name="not_broadcast" value="confirmed" required> I checked the wallet (including pending and pool transfers): no transaction to this address for this amount was broadcast</label>
 {{end}}{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
 <button type="submit">Requeue payout</button>
-</form>{{end}}
+</form>{{end}}{{end}}
 {{if .Repoint}}<form class="stack" method="post" action="/admin/payout">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="form_nonce" value="{{formNonce "/admin/payout"}}">

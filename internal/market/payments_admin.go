@@ -61,6 +61,14 @@ func heldForSuspension(state, payoutErr string) bool {
 		strings.HasPrefix(payoutErr, restoredHoldPrefix) && strings.Contains(payoutErr, " "+suspendedHoldPrefix))
 }
 
+// A failed or stuck send keeps the suspension marker in its error text even after the account is restored.
+// An administrator must check its recorded destination before another send; a live suspension requires the
+// same check even for failures written before the suspension action reached this payout.
+func requeueNeedsAddressCheck(state, payoutErr string, recipientSuspended bool) bool {
+	return (state == "failed" || state == "sending") &&
+		(recipientSuspended || strings.Contains(payoutErr, suspendedHoldPrefix))
+}
+
 // handHoldPrefix starts the error of a queued or blocked payout an administrator held to pay it by hand (op=hold, A-486);
 // the staff note follows it.
 const handHoldPrefix = "Held to be paid by hand:"
@@ -118,11 +126,12 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 	ctx, tx := c.Ctx(), c.Tx
 	var orderID, buyerID, vendorID, recipient, cur, state, orderState, payoutErr, address string
 	var amt int64
-	var ambiguous, stuck bool
+	var ambiguous, stuck, recipientSuspended bool
 	// stuck repeats stuckSending with the payout alias (orders also has state and updated).
 	err := tx.QueryRowContext(ctx, `SELECT p.order_id,o.buyer_id,product.vendor_id,p.user_id,p.currency,p.amount,p.state,o.state,p.send_ambiguous,
-		(p.state='sending' AND p.updated < now()-interval '5 minutes'),p.error,p.address FROM payouts p JOIN orders o ON o.id=p.order_id
-		JOIN products product ON product.id=o.product_id WHERE p.id=$1 FOR UPDATE OF p`, id).Scan(&orderID, &buyerID, &vendorID, &recipient, &cur, &amt, &state, &orderState, &ambiguous, &stuck, &payoutErr, &address)
+		(p.state='sending' AND p.updated < now()-interval '5 minutes'),p.error,p.address,u.suspended_at IS NOT NULL
+		FROM payouts p JOIN orders o ON o.id=p.order_id JOIN products product ON product.id=o.product_id
+		JOIN users u ON u.id=p.user_id WHERE p.id=$1 FOR UPDATE OF p`, id).Scan(&orderID, &buyerID, &vendorID, &recipient, &cur, &amt, &state, &orderState, &ambiguous, &stuck, &payoutErr, &address, &recipientSuspended)
 	if err == sql.ErrNoRows {
 		return actionResult{}, fail(404, "Payout not found")
 	}
@@ -231,6 +240,13 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 		if unknown && c.Form.Get("not_broadcast") != "confirmed" {
 			return actionResult{}, fail(400, "This payout's last send had no definite answer from the wallet and may have been broadcast. Check the wallet, then confirm that no transaction was broadcast to requeue it, or mark it sent with the wallet's transaction ID.")
 		}
+		addressReview := requeueNeedsAddressCheck(state, payoutErr, recipientSuspended)
+		if addressReview && address == "" {
+			return actionResult{}, fail(409, "This payout's recipient was suspended and its recorded payout address is empty. The recipient must save an address after restoration, then an administrator can check it before requeueing. Nothing was changed.")
+		}
+		if addressReview && c.Form.Get("address_checked") != "confirmed" {
+			return actionResult{}, fail(409, "This payout's recipient was suspended. Check the recorded payout address with the account owner, then confirm that you checked it before requeueing. Nothing was changed.")
+		}
 		res, err = tx.ExecContext(ctx, `UPDATE payouts SET state=CASE WHEN address='' THEN 'blocked' ELSE 'pending' END,error='',txid='',send_ambiguous=false,updated=now()
 			WHERE id=$1 AND (state='failed' OR `+stuckSending+`)`, id)
 		note = "Administrator requeued the " + c.A.netTag() + " payout of " + label + " after checking the wallet; it will be sent once more."
@@ -241,6 +257,10 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 		} else if unknown {
 			note = "Administrator confirmed the wallet shows no broadcast transaction for the " + c.A.netTag() + " payout of " + label + " (last send outcome unknown) and requeued it; it will be sent once more."
 			audit += "; last send outcome unknown, administrator confirmed the wallet shows no broadcast transaction"
+		}
+		if addressReview {
+			note += " An administrator checked the recorded payout address with the account owner before requeueing."
+			audit += "; recipient was suspended, administrator checked the payout address " + address
 		}
 		note += feeTaken
 	case "repoint":

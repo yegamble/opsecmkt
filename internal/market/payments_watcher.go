@@ -1111,7 +1111,16 @@ func (a *App) recordPayout(ctx context.Context, id int64, orderID, recipient, st
 		return err
 	}
 	var orderState string
-	if err = tx.QueryRowContext(ctx, "UPDATE payouts p SET state=$2,txid=$3,error=$4,send_ambiguous=$5,updated=now() FROM orders o WHERE p.id=$1 AND p.state='sending' AND o.id=p.order_id RETURNING o.state", id, state, txid, msg, ambiguous).Scan(&orderState); err != nil {
+	// A suspension can overlap an already-started send. The suspension action marks its sending row; if the
+	// wallet subsequently fails, carry the address-check marker into the failure. If suspension instead
+	// commits after this row update, its own payout update adds the marker to the failed row. The unlocked
+	// account read adds it when the recipient was already suspended before this outcome was recorded.
+	if err = tx.QueryRowContext(ctx, `UPDATE payouts p SET state=$2,txid=$3,
+		error=CASE WHEN $2='failed' AND (position($6 in p.error)>0 OR EXISTS
+			(SELECT 1 FROM users u WHERE u.id=p.user_id AND u.suspended_at IS NOT NULL))
+			THEN CASE WHEN position($6 in $4)>0 THEN $4 ELSE $4 || ' ' || $7 END ELSE $4 END,
+		send_ambiguous=$5,updated=now() FROM orders o
+		WHERE p.id=$1 AND p.state='sending' AND o.id=p.order_id RETURNING o.state`, id, state, txid, msg, ambiguous, suspendedHoldPrefix, suspendedRequeue).Scan(&orderState); err != nil {
 		return err
 	}
 	if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", orderID, orderState, note); err != nil {

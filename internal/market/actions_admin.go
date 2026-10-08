@@ -186,20 +186,50 @@ func adminSuspendAction(c *actionCtx) (actionResult, error) {
 		// review or confirmation too. A hold a restore from backup wrote (restoredHoldPrefix) keeps its text first and
 		// gains the suspension's after it, unless it already carries one (A-489): heldForSuspension then asks for the
 		// address check besides the wallet check, and a later restore keeps both. Payouts queued later start held
-		// (enqueuePayout).
-		heldRes, err := tx.ExecContext(ctx, `UPDATE payouts SET state='held',updated=now(),
-			error=CASE WHEN state='held' AND error LIKE $6 || '%' THEN error || ' ' || $2
+		// (enqueuePayout). Failed and in-progress sends cannot be held retroactively: keep their state, send
+		// uncertainty, timestamp and original error, but record that a later requeue needs an address check.
+		// This must be ONE row update. If a concurrent requeue holds the payout row first, PostgreSQL rechecks
+		// its new state after waiting and holds the resulting pending payout; a second UPDATE here would leave
+		// a gap in which an unreviewed pending payout could escape both checks.
+		rows, err := tx.QueryContext(ctx, `UPDATE payouts SET
+			state=CASE WHEN state IN ('failed','sending') THEN state ELSE 'held' END,
+			updated=CASE WHEN state IN ('failed','sending') THEN updated ELSE now() END,
+			error=CASE WHEN state IN ('failed','sending') THEN CASE WHEN error='' THEN $8 ELSE error || ' ' || $8 END
+				WHEN state='held' AND error LIKE $6 || '%' THEN error || ' ' || $2
 				WHEN state='held' AND (error LIKE $4 || '%' OR error LIKE $5 || '%') THEN $2 || ' ' || error ELSE $2 END
 			WHERE user_id=$1 AND (state IN ('pending','blocked') OR (state='held' AND (error=$3 OR error LIKE $4 || '%' OR error LIKE $5 || '%'
-				OR (error LIKE $6 || '%' AND error NOT LIKE '% ' || $7 || '%'))))`,
-			target, suspendedHold, heldReason, largeHoldPrefix, handHoldPrefix, restoredHoldPrefix, suspendedHoldPrefix)
+				OR (error LIKE $6 || '%' AND error NOT LIKE '% ' || $7 || '%')))
+				OR (state IN ('failed','sending') AND position($7 in error)=0))
+			RETURNING state`, target, suspendedHold, heldReason, largeHoldPrefix, handHoldPrefix, restoredHoldPrefix, suspendedHoldPrefix, suspendedRequeue)
+		if err != nil {
+			return actionResult{}, err
+		}
+		var held, marked int64
+		for rows.Next() {
+			var state string
+			if err = rows.Scan(&state); err != nil {
+				rows.Close()
+				return actionResult{}, err
+			}
+			if state == "held" {
+				held++
+			} else {
+				marked++
+			}
+		}
+		err = rows.Err()
+		rows.Close()
 		if err != nil {
 			return actionResult{}, err
 		}
 		note := "An administrator suspended your account and signed you out everywhere. A suspended account cannot sign in; your listings and orders were not changed."
-		if h, _ := heldRes.RowsAffected(); h > 0 {
-			sessions += "; held " + strconv.FormatInt(h, 10) + " unsent payout(s)"
-			note += " " + strconv.FormatInt(h, 10) + " unsent payout(s) to you are held until an administrator checks your payout address."
+		if held > 0 {
+			sessions += "; held " + strconv.FormatInt(held, 10) + " unsent payout(s)"
+			note += " " + strconv.FormatInt(held, 10) + " unsent payout(s) to you are held until an administrator checks your payout address."
+		}
+		if marked > 0 {
+			sessions += "; marked " + strconv.FormatInt(marked, 10) + " failed or sending payout(s) for an address check before any resend"
+			note += " " + strconv.FormatInt(marked, 10) + " failed or sending payout(s) to you require an administrator's payout address check before any resend; a send already under way may still finish."
 		}
 		if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", target, "Account suspended by administrator "+c.User.Handle+"; ended "+sessions); err != nil {
 			return actionResult{}, err

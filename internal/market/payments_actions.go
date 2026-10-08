@@ -612,7 +612,7 @@ func paymentsAdminLoader(ctx context.Context, a *App, r *http.Request, d *PageDa
 		uid = d.User.ID
 	}
 	rows, err = a.db.QueryContext(ctx, `WITH v AS (SELECT p.id,p.order_id,p.kind,u.handle,p.currency,p.amount,p.address,p.state,p.txid,p.error,to_char(p.updated,'YYYY-MM-DD HH24:MI "UTC"') AS updated,
-		`+payoutNeedsAttention("p")+` AS attention,p.send_ambiguous,
+		`+payoutNeedsAttention("p")+` AS attention,p.send_ambiguous,u.suspended_at IS NOT NULL AS recipient_suspended,
 		(o.buyer_id=$1 OR pr.vendor_id=$1 OR EXISTS(SELECT 1 FROM disputes d WHERE d.order_id=o.id) OR EXISTS(SELECT 1 FROM payments pm WHERE pm.order_id=o.id AND pm.flagged)) AS order_link,
 		CASE p.currency WHEN 'XMR' THEN u.payout_xmr ELSE u.payout_btc END AS current_address,
 		COALESCE(to_char(CASE p.currency WHEN 'XMR' THEN u.payout_xmr_changed ELSE u.payout_btc_changed END,'YYYY-MM-DD HH24:MI "UTC"'),'') AS current_changed
@@ -627,8 +627,8 @@ func paymentsAdminLoader(ctx context.Context, a *App, r *http.Request, d *PageDa
 	for rows.Next() {
 		var r PayoutRow
 		var amt int64
-		var sendAmbiguous bool
-		if err = rows.Scan(&r.ID, &r.OrderID, &r.Kind, &r.Recipient, &r.Currency, &amt, &r.Address, &r.State, &r.TxID, &r.Error, &r.Updated, &r.Attention, &sendAmbiguous, &r.OrderLink, &r.CurrentAddress, &r.CurrentChanged); err != nil {
+		var sendAmbiguous, recipientSuspended bool
+		if err = rows.Scan(&r.ID, &r.OrderID, &r.Kind, &r.Recipient, &r.Currency, &amt, &r.Address, &r.State, &r.TxID, &r.Error, &r.Updated, &r.Attention, &sendAmbiguous, &recipientSuspended, &r.OrderLink, &r.CurrentAddress, &r.CurrentChanged); err != nil {
 			return err
 		}
 		if r.Attention {
@@ -642,6 +642,7 @@ func paymentsAdminLoader(ctx context.Context, a *App, r *http.Request, d *PageDa
 		}
 		r.Amount, r.StateLabel, r.OrderShort = amount(amt, currencyDecimals(r.Currency)), payoutStateLabel(r.State), shortID(r.OrderID)
 		r.Repoint = repointable(r.State, r.Error, sendAmbiguous) && r.Address != "" && r.CurrentAddress != "" && r.CurrentAddress != r.Address
+		r.RequeueAddressCheck = (r.State == "failed" || r.State == "sending" && r.Attention) && requeueNeedsAddressCheck(r.State, r.Error, recipientSuspended)
 		switch {
 		case r.State == "sending" && r.Attention:
 			r.StateLabel, r.Ambiguous = "Stuck in sending — never retried; may have been broadcast, check the wallet", true
@@ -653,6 +654,9 @@ func paymentsAdminLoader(ctx context.Context, a *App, r *http.Request, d *PageDa
 			r.StateLabel += "; the wallet reported a pre-broadcast error, nothing broadcast"
 		case r.State == "held" && strings.HasPrefix(r.Error, restoredHoldPrefix):
 			r.StateLabel, r.Ambiguous = "Held after a restore from backup — may already have been sent, check the wallet", true
+		}
+		if r.RequeueAddressCheck {
+			r.StateLabel += "; payout address check required before requeue"
 		}
 		if heldForSuspension(r.State, r.Error) {
 			r.StateLabel, r.AddressCheck = "Held: account suspended — check the payout address before releasing", true

@@ -27,6 +27,11 @@ const suspendedHoldPrefix = "Suspended account:"
 
 const suspendedHold = suspendedHoldPrefix + " payout held when the recipient's account was suspended; an administrator must check the payout address before releasing it."
 
+// A failed or in-progress send is not held retroactively: the wallet may already have broadcast it. Its
+// suspension history instead travels with the failure until an administrator checks the recorded address
+// (and, for an uncertain send, the wallet) before requeueing. Restore prefixes preserve this text.
+const suspendedRequeue = suspendedHoldPrefix + " recipient was suspended; check the recorded payout address before another send."
+
 // largeHoldPrefix starts the hold on a refund or return larger than the order price (splitPayout). Only an
 // administrator who confirms the check releases it (payments_admin.go); the watcher never lifts it. It follows
 // suspendedHold when both apply, and a restore from backup keeps it after its own prefix (scripts/restore.sh), so

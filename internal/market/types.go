@@ -627,6 +627,9 @@ type PayoutRow struct {
 	// AddressCheck: held for an account suspension (suspendedHoldPrefix); releasing needs an explicit
 	// confirmation that the payout address was checked.
 	AddressCheck bool
+	// RequeueAddressCheck: the recipient is suspended now or was suspended while this failed/stuck send
+	// was outstanding; another send needs the recorded payout address confirmed with the owner.
+	RequeueAddressCheck bool
 	// HandHold: held by an administrator to pay it by hand (handHoldPrefix, A-486); releasing needs an explicit
 	// confirmation that it was not paid by hand.
 	HandHold bool
