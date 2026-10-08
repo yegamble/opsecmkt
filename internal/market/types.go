@@ -563,6 +563,9 @@ type PayoutRow struct {
 	// AddressCheck: held for an account suspension (suspendedHoldPrefix); releasing needs an explicit
 	// confirmation that the payout address was checked.
 	AddressCheck bool
+	// HandHold: held by an administrator to pay it by hand (handHoldPrefix, A-486); releasing needs an explicit
+	// confirmation that it was not paid by hand.
+	HandHold bool
 	// LargeCheck: a refund or return larger than the order price (largeHoldPrefix); releasing needs an explicit
 	// confirmation that an administrator reviewed it.
 	LargeCheck bool

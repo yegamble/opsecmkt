@@ -2,10 +2,12 @@ package market
 
 import (
 	"context"
+	"fmt"
 	"io/fs"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // A-445 (P4-R9): pooled_drain_blockers() (migration 091) lists what still needs the pooled wallet, one row per blocker.
@@ -265,6 +267,16 @@ func TestPooledDrainWatchedAddressIsTheWatcherHorizon(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("watched_address %q, want %q", got, want)
 	}
+	// The time shown is the later bound: for the first case (closed 23 h 59 min ago, issued 31 days ago) the order's
+	// close plus 24 hours, not the address's issue plus 30 days.
+	var closed time.Time
+	if err := p.DB.QueryRow("SELECT updated FROM orders WHERE id=$1", cases[0].order).Scan(&closed); err != nil {
+		t.Fatal(err)
+	}
+	until := "until " + closed.Add(24*time.Hour).UTC().Format("2006-01-02 15:04") + " UTC"
+	if d := p.str("SELECT detail FROM pooled_drain_blockers() WHERE kind='watched_address' AND ref=$1", cases[0].address); d != until {
+		t.Fatalf("watched-until %q, want %q", d, until)
+	}
 	// The watcher reads exactly those addresses: a deposit to each is recorded only where the function lists it.
 	for i, c := range cases {
 		p.fake.Deposit(c.address, "horizon-"+string(rune('a'+i)), 0, 700, 3)
@@ -358,4 +370,176 @@ func TestPooledDrainMainnetHistory(t *testing.T) {
 	agExec(f.testEnv, "UPDATE payment_addresses SET provider='btc-regtest' WHERE order_id IN ($1,$2)", main1, main2)
 	agExec(f.testEnv, "UPDATE payment_addresses SET provider='xmr-stagenet' WHERE order_id=$1", main3)
 	wantRows(t, "no mainnet history", listedKinds(t, f.testEnv))
+}
+
+// R1 (A-486): a deposit recorded at a closed order's address inside the horizon but still below the threshold when the
+// horizon ends keeps the address watched and listed (watched_address, naming the deposit) until it confirms; it is then
+// flagged for review, which the existing disposition closes. QA445's P2 (TestQA445UnconfirmedLateDepositEscapesDrain).
+func TestPooledDrainPendingDepositFlaggedOnConfirmation(t *testing.T) {
+	p := newPayEnv(t)
+	p.setPayoutAddress(p.vendor, "fake-testnet-vendor")
+	p.paidByWatcher(p.order, p.addr, "pending-paid")
+	p.move(p.order, statePaid, stateShipped, p.vendor)
+	p.move(p.order, stateShipped, stateCompleted, p.buyer)
+	p.poll()
+	agExec(p.testEnv, "UPDATE orders SET updated=now()-interval '23 hours 59 minutes' WHERE id=$1", p.order)
+	agExec(p.testEnv, "UPDATE payment_addresses SET created=now()-interval '31 days' WHERE order_id=$1", p.order)
+	p.fake.Deposit(p.addr, "pending-late", 0, 50000, 1) // 1 of 3 confirmations
+	p.poll()
+	row := func() string {
+		return p.str("SELECT credited::text||','||flagged::text||','||after_close::text||','||confirmations::text FROM payments WHERE txid='pending-late'")
+	}
+	if r := row(); r != "false,false,true,1" {
+		t.Fatalf("inside the horizon: %s", r)
+	}
+	wantRows(t, "inside the horizon", listedKinds(t, p.testEnv), "watched_address")
+	if d := p.str("SELECT detail FROM pooled_drain_blockers() WHERE kind='watched_address'"); !strings.HasSuffix(d, ", and after that while recorded deposit pending-late:0 awaits confirmation") {
+		t.Fatalf("detail inside the horizon: %q", d)
+	}
+
+	// The horizon ends with the deposit still unconfirmed: still watched (a pass reads it) and still listed.
+	agExec(p.testEnv, "UPDATE orders SET updated=now()-interval '25 hours' WHERE id=$1", p.order)
+	p.fake.SetConfirmations("pending-late", 2)
+	p.poll()
+	if r := row(); r != "false,false,true,2" {
+		t.Fatalf("past the horizon, the watcher did not read the deposit: %s", r)
+	}
+	wantRows(t, "past the horizon, pending", drainRows(t, p.testEnv, "watched_address"),
+		p.addr+"|"+p.order+"|BTC|until recorded deposit pending-late:0 confirms (it is then flagged for review) or leaves the wallet; its watch horizon ended "+
+			p.str("SELECT to_char((updated+interval '24 hours') AT TIME ZONE 'UTC','YYYY-MM-DD HH24:MI \"UTC\"') FROM orders WHERE id=$1", p.order))
+
+	// It confirms: flagged for review (kind 3) and no longer a watched address; the desk disposition clears it.
+	p.fake.SetConfirmations("pending-late", 6)
+	p.poll()
+	if r := row(); r != "false,true,true,6" {
+		t.Fatalf("after it confirmed: %s", r)
+	}
+	id := p.str("SELECT id::text FROM payments WHERE txid='pending-late'")
+	wantRows(t, "flagged once confirmed", drainRows(t, p.testEnv, "flagged_payment"), id+"|"+p.order+"|BTC|pending-late:0")
+	wantRows(t, "flagged once confirmed (kinds)", listedKinds(t, p.testEnv), "flagged_payment")
+	if code, body := p.dispose(p.adminSess, id, "no_action", "note", "Late payment reviewed with the buyer; returned outside the market."); code != 303 {
+		t.Fatalf("disposition: %d %s", code, body)
+	}
+	wantRows(t, "disposed", listedKinds(t, p.testEnv))
+	// No longer read: a later deposit is never recorded.
+	p.fake.Deposit(p.addr, "pending-after", 0, 546, 3)
+	p.poll()
+	if n := p.count("SELECT count(*) FROM payments WHERE txid='pending-after'"); n != 0 {
+		t.Fatalf("address still read after the pending deposit closed: %d", n)
+	}
+}
+
+// R1's exit: a pending deposit past the horizon that the wallet stops reporting (dropped or replaced) is marked
+// missing (negative confirmations) by the pass that reads it, and one the wallet reports conflicted (a reorganisation
+// or a double spend) is recorded with negative confirmations; either ends it, so the address leaves the watched set
+// and the drain list with no staff action.
+func TestPooledDrainPendingDepositEndsWhenTheWalletDropsIt(t *testing.T) {
+	p := newPayEnv(t)
+	p.move(p.order, stateAwaitingPayment, stateCancelled, p.buyer)
+	other, otherAddr := p.newOrder(stateCancelled)
+	for _, o := range []string{p.order, other} {
+		agExec(p.testEnv, "UPDATE orders SET updated=now()-interval '23 hours 59 minutes' WHERE id=$1", o)
+	}
+	agExec(p.testEnv, "UPDATE payment_addresses SET created=now()-interval '31 days'")
+	p.fake.Deposit(p.addr, "drop-me", 0, 40000, 0)
+	p.fake.Deposit(otherAddr, "conflict-me", 0, 40000, 1)
+	p.poll()
+	agExec(p.testEnv, "UPDATE orders SET updated=now()-interval '25 hours'")
+	p.poll()
+	wantRows(t, "both pending past the horizon", agStrings(t, p.testEnv, "SELECT ref FROM pooled_drain_blockers() WHERE kind='watched_address' ORDER BY 1"),
+		p.addr, otherAddr)
+
+	p.fake.Drop("drop-me")                     // evicted or replaced: the wallet no longer reports it
+	p.fake.SetConfirmations("conflict-me", -1) // conflicted
+	p.poll()
+	for txid, want := range map[string]string{"drop-me": "-1,false,false", "conflict-me": "-1,false,false"} {
+		if got := p.str("SELECT confirmations::text||','||credited::text||','||flagged::text FROM payments WHERE txid=$1", txid); got != want {
+			t.Fatalf("%s: %s, want %s", txid, got, want)
+		}
+	}
+	wantRows(t, "ended", listedKinds(t, p.testEnv))
+	// Not read any more: neither reappearing nor confirming is recorded.
+	p.fake.Deposit(p.addr, "drop-me", 0, 40000, 6)
+	p.fake.SetConfirmations("conflict-me", 6)
+	p.poll()
+	if n := p.count("SELECT count(*) FROM payments WHERE confirmations>=0"); n != 0 {
+		t.Fatalf("an ended deposit's address is still read: %d", n)
+	}
+}
+
+// S1 (adopted from QA445's TestQA445WatcherPredicateEquivalence): the pooled watcher's address rule (pooledWatchSQL)
+// selects, for every order state at both time bounds (exact, a microsecond either side, in the future) and under
+// several session time zones, the addresses the rule before A-445 selected (frozen below), plus exactly the addresses
+// with a pending deposit (pooled_pending_deposit, A-486): nothing else changed. Seeded and compared in one transaction
+// (one now()) per zone.
+func TestPooledDrainWatcherPredicateEquivalence(t *testing.T) {
+	p := newPayEnv(t)
+	states := []string{"draft", "awaiting_payment", "paid", "shipped", "delivered", "completed", "disputed", "resolved", "cancelled"}
+	upd := []string{"0", "24 hours", "24 hours 1 microsecond", "23 hours 59 minutes 59.999999 seconds", "-1 hour", "48 hours", "1 day", "1 day 1 microsecond", "40 days"}
+	cre := []string{"0", "30 days", "30 days 1 microsecond", "29 days 23 hours 59 minutes 59.999999 seconds", "720 hours", "721 hours", "719 hours", "-1 hour", "40 days"}
+	before := `(o.state IN ('awaiting_payment','paid','shipped','delivered','disputed') OR (o.state<>'draft' AND o.updated > now()-interval '24 hours')
+		OR (o.state IN ('cancelled','resolved','completed') AND pa.created > now()-interval '30 days')
+		OR EXISTS (SELECT 1 FROM payouts po WHERE po.order_id=o.id AND po.state IN ('pending','held')))`
+	for _, tz := range []string{"UTC", "America/New_York", "Australia/Lord_Howe", "Pacific/Kiritimati", "America/St_Johns", "Europe/London"} {
+		tx, err := p.DB.BeginTx(context.Background(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		exec := func(q string, args ...any) {
+			t.Helper()
+			if _, err := tx.Exec(q, args...); err != nil {
+				tx.Rollback()
+				t.Fatalf("%s: %v", q, err)
+			}
+		}
+		exec("SET LOCAL TimeZone='" + tz + "'")
+		exec("DROP INDEX IF EXISTS orders_one_draft")
+		for _, q := range []string{"payouts", "payments", "payment_addresses", "order_events", "orders"} {
+			exec("DELETE FROM " + q)
+		}
+		n := 0
+		for _, st := range states {
+			for _, u := range upd {
+				for _, c := range cre {
+					id := fmt.Sprintf("eq-%d", n)
+					exec("INSERT INTO orders(id,buyer_id,product_id,currency,amount,state,updated) VALUES($1,$2,$3,'BTC',1000,$4,now()-$5::interval)", id, p.buyer.ID, p.productID, st, u)
+					exec("INSERT INTO payment_addresses(order_id,currency,address,provider,created) VALUES($1,'BTC',$2,'fake',now()-$3::interval)", id, "addr-"+id, c)
+					n++
+				}
+			}
+		}
+		count := func(where string) int {
+			t.Helper()
+			var k int
+			if err := tx.QueryRow("SELECT count(*) FROM payment_addresses pa JOIN orders o ON o.id=pa.order_id WHERE " + where).Scan(&k); err != nil {
+				tx.Rollback()
+				t.Fatal(err)
+			}
+			return k
+		}
+		// No deposit recorded: the rule is the old one, three-valued results included.
+		if k := count("(" + before + ") IS DISTINCT FROM (" + pooledWatchSQL + ")"); k != 0 {
+			tx.Rollback()
+			t.Fatalf("tz %s: %d of %d addresses watched differently with no deposit recorded", tz, k, n)
+		}
+		// Deposits of every kind at every address: the rule adds exactly the addresses with a pending one (not
+		// credited, not flagged, not ended), and only those.
+		exec(`INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations,credited,flagged)
+			SELECT pa.order_id,'BTC','tx-'||pa.order_id||'-'||k,0,pa.address,500,
+				CASE k WHEN 0 THEN 0 WHEN 1 THEN 2 WHEN 2 THEN -1 WHEN 3 THEN 3 ELSE 1 END, k=3, k=4
+			FROM payment_addresses pa JOIN orders o ON o.id=pa.order_id, generate_series(0,4) k
+			WHERE (hashtext(pa.order_id) & 7) = k OR (k=2 AND (hashtext(pa.order_id) & 7) > 4)`)
+		pending := "EXISTS(SELECT 1 FROM payments pm WHERE pm.address=pa.address AND NOT pm.credited AND NOT pm.flagged AND pm.confirmations>=0)"
+		if k := count("(" + pooledWatchSQL + ") IS DISTINCT FROM ((" + before + ") OR " + pending + ")"); k != 0 {
+			tx.Rollback()
+			t.Fatalf("tz %s: %d addresses watched other than the old rule plus pending deposits", tz, k)
+		}
+		added := count("(" + pooledWatchSQL + ") AND NOT (" + before + ")")
+		if added == 0 {
+			tx.Rollback()
+			t.Fatalf("tz %s: no address added by a pending deposit; the fixture tests nothing", tz)
+		}
+		tx.Rollback()
+		t.Logf("tz %-20s: %d addresses, equal with no deposit; %d added by a pending deposit only", tz, n, added)
+	}
 }

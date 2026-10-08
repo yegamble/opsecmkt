@@ -2098,23 +2098,51 @@ of each kind, each linked to where it is resolved:
 | Kind | Listed while | Resolved by |
 |---|---|---|
 | Open pooled orders | an order without escrow is neither a draft nor cancelled, resolved or completed | its buyer and vendor, a dispute, or the watcher (an unpaid order expires) |
-| Payouts not sent | a payout is blocked, held, queued, sending or failed | the watcher, or *Payouts* on `/admin`: release, requeue, mark sent, or record a blocked one sent by hand (below) |
+| Payouts not sent | a payout is blocked, held, queued, sending or failed | the watcher, or *Payouts* on `/admin`: release, requeue, mark sent, or hold a blocked one, pay it by hand and record it sent (below) |
 | Flagged pooled payments without a recorded review | a pooled deposit's payment-review flag is open (the moderation desk's own rule) | recording the review on the moderation desk (no action, or refunded by hand); an escalated flag waits for an administrator |
-| Pooled deposit addresses still watched | the address of a closed pooled order is inside the watcher's horizon: 24 hours after the order closed or 30 days after the address was issued, whichever is later | time alone; a deposit to it before then is recorded and flagged for review, one after it is never read |
+| Pooled deposit addresses still watched | the address of a closed pooled order is inside the watcher's horizon (24 hours after the order closed or 30 days after the address was issued, whichever is later), or past it while a deposit recorded there is pending: neither credited nor flagged, and still reported by the wallet | time, and for a pending deposit its confirmation (it is then flagged for review, the row above) or the wallet no longer reporting it (dropped, replaced or reorganised out, which the watcher records with negative confirmations); a deposit sent after the watch ends is never read |
 | Restore reconciliation not finished | `payments_recovery_required` is `true` (a restore from backup) | reconciling the restore as the [runbook](testnet-runbook.md#reconcile-a-restored-database-before-enabling-payouts) says |
 | Issued-address warnings not dismissed | a coin's wallet handed out already-issued addresses and the warning under *Payment providers* is not dismissed | "Restore the wallets" in the runbook, then dismissing the warning |
 | Pooled history on mainnet | the market issued pooled addresses on mainnet | nothing in this release: no release has mainnet escrow, so a mainnet market cannot drop its pooled wallet |
 
 Dust sent to an old deposit address inside its horizon blocks the drain until staff record its review (*no action*
-with a reason, on the moderation desk); dust sent after the horizon is never read, so it never blocks.
+with a reason, on the moderation desk); dust sent after the horizon is never read, so it never blocks. A deposit that
+was recorded inside the horizon but has not reached the confirmation threshold when the horizon ends keeps its address
+watched and listed, naming the deposit, until it confirms (it is then flagged for review like any late deposit) or the
+wallet stops reporting it (A-486). The same rule, `pooled_pending_deposit()` in migration 091, decides both.
 
-A blocked payout (its recipient never saved a payout address) is otherwise listed for ever. Pay it by hand from the
-pooled wallet, to an address the recipient gave you through a channel you trust, then record it on `/admin`: *Payouts*
-→ *Resolve payout* → *Record sent by hand*, with the wallet's transaction ID and your password. The market stores the ID
-in lower case, sends the recipient a notification naming it, writes the order history (without the ID) and an audit row
-naming the payout and the ID, and never sends that payout again. It does not check the ID against the chain. A queued
-payout, which the watcher may claim at any moment, and one being sent are never marked sent: such a request answers 409
-and changes nothing, as does a repeat.
+Some blockers have no staff action on `/admin` today; each is listed, never hidden:
+
+- a queued payout while outbound payments are paused for a restore (A-76), or whose coin's pooled wallet is no longer
+  configured: it waits for the restore reconciliation, or for the wallet to be configured again;
+- a payment-review flag escalated to an administrator when every administrator is a party to its order: the desk
+  offers its form to no one (add or promote an administrator who is not a party);
+- a pending deposit the wallet keeps reporting unconfirmed for ever (a Bitcoin Core wallet can keep an unconfirmed
+  incoming transaction it no longer has in its mempool; not checked here on a real node): no exit yet. The smallest one
+  proposed is a review flag the watcher raises once such a deposit has stayed unconfirmed for a set time after the
+  horizon (for example Core's 14-day mempool expiry), closed through the existing disposition;
+- the restore gate, cleared only by the runbook's reconciliation;
+- mainnet history, by design.
+
+Holding a queued payout (the pending half of A-34) is not built.
+
+A blocked payout (its recipient never saved a payout address) is otherwise listed for ever. The simplest route is to
+ask the recipient to save a payout address: the market then sends it once. To pay it by hand instead, in this order:
+
+1. **Hold it**: *Payouts* → *Resolve payout* → *Hold to pay by hand*, with a reason (10–500 characters, staff only:
+   the payouts list and the audit log show it) and your password. The order history says it is held to be paid by hand.
+   A held payout keeps its hold when the recipient saves an address afterwards, so the market cannot send it while you
+   pay it. Only a blocked payout can be held (409 otherwise, and on a repeat; nothing changed).
+2. **Pay it** from the pooled wallet, to an address the recipient gave you through a channel you trust.
+3. **Record it**: *Record sent by hand*, with the wallet's transaction ID and your password. The market stores the ID in
+   lower case, sends the recipient a notification naming it, writes the order history (without the ID) and an audit row
+   naming the payout and the ID, and never sends that payout again. It does not check the ID against the chain.
+
+Paying first and recording a still-blocked payout afterwards leaves a window: if the recipient saves an address in
+between, the market queues and sends the payout itself. Mark sent then refuses (409, nothing changed) and says that
+the market queued, is sending or has sent it itself, so your payment was a second one: reconcile with the recipient.
+Releasing a payout held to be paid by hand needs the confirmation that nobody paid it by hand; it then goes back to
+blocked, or to the queue if the recipient saved an address meanwhile.
 
 Below the list the panel shows each pooled wallet's balance as the wallet reports it (Bitcoin `getbalances`, Monero
 `get_balance` on account 0), as advice only: a balance cannot show what is still owed, and it can include coins sent to
@@ -2127,11 +2155,14 @@ How it was tested: `TestPooledDrainOpenOrders`, `TestPooledDrainUnsentPayouts`,
 `TestPooledDrainFlaggedPaymentsFollowTheOpenFlagRule`, `TestPooledDrainWatchedAddressIsTheWatcherHorizon`,
 `TestPooledDrainDustBlocksUntilDisposedNeverAfterHorizon`, `TestPooledDrainRecoveryRequired`,
 `TestPooledDrainAddressCollisions`, `TestPooledDrainMainnetHistory`, `TestPooledDrainPanel`,
-`TestPooledDrainPanelBalanceUnavailable`, `TestPooledHandSettleBlockedPayout`,
-`TestPooledHandSettleRefusesWhatTheSenderMaySend`, `TestPooledHandSettleWaitsForTheRowLock` and
-`TestPooledHandSettleConcurrentOnce` (PostgreSQL with the fake pooled wallet and simulated wallet RPC; not chain
-evidence), a seeded stage of `scripts/test-upgrade.sh`, and `tests/e2e/db-pooled-drain.spec.ts` (the panel and the hand
-settlement in Chromium at 320 px and 1280 px with JavaScript off, on a market with no pooled wallet).
+`TestPooledDrainPanelBalanceUnavailable`, `TestPooledDrainPendingDepositFlaggedOnConfirmation`,
+`TestPooledDrainPendingDepositEndsWhenTheWalletDropsIt`, `TestPooledDrainWatcherPredicateEquivalence`,
+`TestPooledHandSettleBlockedPayout`, `TestPooledHandSettleRefusesWhatTheSenderMaySend`,
+`TestPooledHandSettleWaitsForTheRowLock`, `TestPooledHandSettleConcurrentOnce`, `TestPooledHandSettleDoublePayWindow`,
+`TestPooledHandHoldRefusals`, `TestPooledHandHoldRacesAddressSave` and `TestPooledHandHoldReleaseNeedsConfirmation`
+(PostgreSQL with the fake pooled wallet and simulated wallet RPC; not chain
+evidence), a seeded stage of `scripts/test-upgrade.sh`, and `tests/e2e/db-pooled-drain.spec.ts` (the panel, the hold
+and the hand settlement in Chromium at 320 px and 1280 px with JavaScript off, on a market with no pooled wallet).
 
 ### Transparency
 

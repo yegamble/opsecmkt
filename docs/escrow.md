@@ -1136,13 +1136,16 @@ pooled deposit addresses of closed orders inside the watch horizon, the restore 
 dismissed (migration 071) and pooled history on mainnet, which always blocks because no release has mainnet escrow. The
 horizon is `pooled_watch_horizon()`, which the pooled watcher itself now calls, so the gate and the watcher share one
 rule: a deposit inside it is recorded and blocks until its review is recorded; one after it is never read and never
-blocks. The removal release's refusing migration is planned to read this function; this release refuses nothing.
+blocks. A deposit recorded inside it but still below the threshold when it ends keeps its address watched and listed
+until it confirms (it is then flagged for review) or the wallet stops reporting it (`pooled_pending_deposit()`, also
+shared; A-486). One that the wallet keeps reporting unconfirmed for ever has no exit yet (operator guide). The removal release's refusing migration is planned to read this function; this release refuses nothing.
 
 `/admin` shows the list read-only (*Pooled wallet drain*), with each pooled wallet's balance as advice (Bitcoin
 `getbalances`, now on the pooled RPC user's method list; Monero `get_balance`) and the note that the market never sweeps:
 once the list is empty the operator moves what is left by hand. The list decides, not the balance. A blocked payout (no
-payout address) can be recorded as sent by hand with the wallet's transaction ID, password step-up and an audit row; a
-queued payout or one being sent never is. Operator steps: [operator guide](operator-guide.md#draining-the-pooled-wallet);
+payout address) can be held to be paid by hand (a staff note, password step-up, audit; the hold survives an address
+save), then recorded as sent by hand with the wallet's transaction ID, password step-up and an audit row; a queued
+payout, one being sent or one already sent never is, and the refusal says the market sent or will send it itself. Operator steps: [operator guide](operator-guide.md#draining-the-pooled-wallet);
 upgrade notes: UPGRADING.md section 46.
 
 How it was tested: the Go tests, the seeded `scripts/test-upgrade.sh` stage and the browser spec listed in the operator

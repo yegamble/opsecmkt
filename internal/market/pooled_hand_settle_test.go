@@ -102,9 +102,14 @@ func TestPooledHandSettleRefusesWhatTheSenderMaySend(t *testing.T) {
 	p := newPayEnv(t)
 	order, id := p.blockedRelease("hand-pending")
 	txid := strings.Repeat("ef", 32)
-	for _, st := range []string{"pending", "sending"} {
+	// The refusal says plainly that the market queued, is sending or sent it itself (A-486, R2).
+	for st, says := range map[string]string{
+		"pending": "The market has queued this payout and will send it itself, so a payment you made by hand would be a second payment. Reconcile with the recipient. Nothing was changed.",
+		"sending": "The market is sending this payout itself right now, so a payment you made by hand would be a second payment. Reconcile with the recipient. Nothing was changed.",
+		"sent":    "This payout is already recorded as sent (by the market's wallet, or by an administrator), so a payment you made by hand would be a second payment. Reconcile with the recipient. Nothing was changed.",
+	} {
 		agExec(p.testEnv, "UPDATE payouts SET state=$2,address='fake-testnet-vendor',updated=now() WHERE id=$1::bigint", id, st)
-		if code, body := p.payoutAction(p.adminSess, id, "sent", txid, testPassword); code != 409 || !strings.Contains(body, "Nothing was changed") {
+		if code, body := p.payoutAction(p.adminSess, id, "sent", txid, testPassword); code != 409 || !strings.Contains(body, says) {
 			t.Fatalf("%s: %d %s", st, code, body)
 		}
 		if got, _, _, _ := p.payout(order); got != st {
@@ -170,5 +175,187 @@ func TestPooledHandSettleConcurrentOnce(t *testing.T) {
 	}
 	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE '%by hand%'", order); n != 1 {
 		t.Fatalf("order events: %d", n)
+	}
+}
+
+// holdPayout submits op=hold as session with note (password testPassword unless password is given).
+func (p *payEnv) holdPayout(session, id, note string, password ...string) (int, string) {
+	p.t.Helper()
+	pw := testPassword
+	if len(password) > 0 {
+		pw = password[0]
+	}
+	w := p.do("POST", "/admin/payout", session, url.Values{"payout_id": {id}, "op": {"hold"}, "note": {note}, "password": {pw}})
+	return w.Code, w.Body.String()
+}
+
+const handNote = "Recipient asked for payment to a fresh address by PGP mail."
+
+// R2 (A-486; QA445's TestQA445HandSettleDoublePayWindow reworked): the safe hand payment is hold, then pay, then record.
+// A held payout keeps its hold when the recipient saves an address meanwhile, so the watcher never sends it; the
+// record then marks it sent by hand.
+func TestPooledHandSettleDoublePayWindow(t *testing.T) {
+	p := newPayEnv(t)
+	order, id := p.blockedRelease("window-paid")
+	if code, body := p.holdPayout(p.adminSess, id, handNote); code != 303 {
+		t.Fatalf("hold: %d %s", code, body)
+	}
+	if st, _, addr, _ := p.payout(order); st != "held" || addr != "" {
+		t.Fatalf("after hold: %s %q", st, addr)
+	}
+	if e := p.str("SELECT error FROM payouts WHERE id=$1::bigint", id); e != handHoldPrefix+" "+handNote {
+		t.Fatalf("hold reason %q", e)
+	}
+	// (the administrator pays it by hand here, outside the market) The recipient saves an address meanwhile.
+	p.check(p.do("POST", "/account/payout", p.vendorSess, url.Values{"currency": {"BTC"}, "address": {"fake-testnet-vendor"}, "password": {testPassword}}), 303)
+	p.poll()
+	p.poll()
+	if st, _, addr, _ := p.payout(order); st != "held" || addr != "fake-testnet-vendor" || len(p.fake.Sends()) != 0 {
+		t.Fatalf("after the address was saved: %s %q sends=%d", st, addr, len(p.fake.Sends()))
+	}
+	admin := p.page("/admin", p.adminSess)
+	mustContain(t, admin, "Held to be paid by hand — record it sent once paid, or release it", `name="not_paid"`, "Record sent by hand")
+	txid := strings.Repeat("9f", 32)
+	if code, body := p.payoutAction(p.adminSess, id, "sent", txid, testPassword); code != 303 {
+		t.Fatalf("record: %d %s", code, body)
+	}
+	p.poll()
+	if st, got, _, _ := p.payout(order); st != "sent" || got != txid || len(p.fake.Sends()) != 0 {
+		t.Fatalf("after the record: %s %q sends=%d", st, got, len(p.fake.Sends()))
+	}
+	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE '%held by an administrator to be paid by hand%' AND note NOT LIKE '%PGP%'", order); n != 1 {
+		t.Fatalf("hold order note: %d", n)
+	}
+	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE '%recorded as sent by hand%'", order); n != 1 {
+		t.Fatalf("record order note: %d", n)
+	}
+	if n := p.count("SELECT count(*) FROM audit_events WHERE action LIKE 'Held blocked payout "+id+" %to pay it by hand: '||$1||'%'", handNote); n != 1 {
+		t.Fatalf("hold audit: %d", n)
+	}
+	wantRows(t, "drain after hold and record", drainRows(t, p.testEnv, "unsent_payout"))
+}
+
+// Hold is for a blocked payout only, by an administrator with the password and a note of 10-500 characters; every
+// refusal changes nothing, and a repeat answers 409.
+func TestPooledHandHoldRefusals(t *testing.T) {
+	p := newPayEnv(t)
+	order, id := p.blockedRelease("hold-refused")
+	audits := p.count("SELECT count(*) FROM audit_events")
+	unchanged := func(what string) {
+		t.Helper()
+		if st, _, _, _ := p.payout(order); st != "blocked" || p.count("SELECT count(*) FROM audit_events") != audits {
+			t.Fatalf("%s changed something: %s", what, st)
+		}
+	}
+	for _, s := range []string{p.vendorSess, p.buyerSess} {
+		if code, _ := p.holdPayout(s, id, handNote); code != 403 {
+			t.Fatalf("non-administrator: %d", code)
+		}
+	}
+	unchanged("a non-administrator")
+	if code, _ := p.holdPayout(p.adminSess, id, handNote, "wrong-password-123"); code != 401 {
+		t.Fatalf("wrong password: %d", code)
+	}
+	unchanged("a wrong password")
+	for _, note := range []string{"", "   ", "too short", strings.Repeat("n", 501)} {
+		if code, body := p.holdPayout(p.adminSess, id, note); code != 400 || !strings.Contains(body, "10–500 characters") {
+			t.Fatalf("note %q: %d %s", note, code, body)
+		}
+	}
+	unchanged("a missing or bad note")
+	if code, _ := p.holdPayout(p.adminSess, id, strings.Repeat("é", 500)); code != 303 { // characters, not bytes
+		t.Fatalf("500-character note: %d", code)
+	}
+	audits++
+	if code, body := p.holdPayout(p.adminSess, id, handNote); code != 409 || !strings.Contains(body, "Only a blocked payout") || !strings.Contains(body, "Nothing was changed") {
+		t.Fatalf("repeat: %d %s", code, body)
+	}
+	for _, st := range []string{"pending", "failed", "sent"} {
+		agExec(p.testEnv, "UPDATE payouts SET state=$2,address='fake-testnet-vendor',error='' WHERE id=$1::bigint", id, st)
+		if code, _ := p.holdPayout(p.adminSess, id, handNote); code != 409 {
+			t.Fatalf("hold of a %s payout: %d", st, code)
+		}
+		if got, _, _, _ := p.payout(order); got != st || p.count("SELECT count(*) FROM audit_events") != audits {
+			t.Fatalf("hold of a %s payout changed it", st)
+		}
+	}
+}
+
+// Hold against the recipient's address save. When the save holds the row first (blocked to pending), the hold waits
+// for its lock and then answers 409, changing nothing, and the watcher sends the payout; when the hold commits first,
+// the save keeps the hold and the watcher sends nothing. Concurrent holds hold it once.
+func TestPooledHandHoldRacesAddressSave(t *testing.T) {
+	p := newPayEnv(t)
+	order, id := p.blockedRelease("hold-race-save")
+	ctx := context.Background()
+	tx, err := p.DB.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec("UPDATE payouts SET address='fake-testnet-vendor',state='pending',error='' WHERE id=$1::bigint AND state='blocked'", id); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan int, 1)
+	go func() {
+		code, _ := p.holdPayout(p.adminSess, id, handNote)
+		done <- code
+	}()
+	select {
+	case code := <-done:
+		t.Fatalf("hold did not wait for the row lock: %d", code)
+	case <-time.After(500 * time.Millisecond):
+	}
+	if err = tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if code := <-done; code != 409 {
+		t.Fatalf("hold after the address was saved: %d", code)
+	}
+	p.poll()
+	if st, _, _, _ := p.payout(order); st != "sent" || len(p.fake.Sends()) != 1 {
+		t.Fatalf("the watcher's send: %s sends=%d", st, len(p.fake.Sends()))
+	}
+
+	// Hold first, then the real address save: the hold stays.
+	agExec(p.testEnv, "UPDATE users SET payout_btc='' WHERE id=$1", p.vendor.ID)
+	order2, id2 := p.blockedRelease("hold-race-first")
+	rs := agRace(cap(passwordWork), func(int) (int, string) { return p.holdPayout(p.adminSess, id2, handNote) })
+	if tally := agTally(t, rs, 303, 409); tally[303] != 1 {
+		t.Fatalf("concurrent holds %v", tally)
+	}
+	p.check(p.do("POST", "/account/payout", p.vendorSess, url.Values{"currency": {"BTC"}, "address": {"fake-testnet-vendor"}, "password": {testPassword}}), 303)
+	p.poll()
+	if st, _, addr, _ := p.payout(order2); st != "held" || addr != "fake-testnet-vendor" || len(p.fake.Sends()) != 1 {
+		t.Fatalf("held payout after the save: %s %q sends=%d", st, addr, len(p.fake.Sends()))
+	}
+}
+
+// Releasing a payout held to be paid by hand needs the confirmation that nobody paid it by hand (409 without it,
+// nothing changed); with it the payout goes back to blocked (no address) and is sent once an address is saved.
+func TestPooledHandHoldReleaseNeedsConfirmation(t *testing.T) {
+	p := newPayEnv(t)
+	order, id := p.blockedRelease("hold-release")
+	if code, body := p.holdPayout(p.adminSess, id, handNote); code != 303 {
+		t.Fatalf("hold: %d %s", code, body)
+	}
+	if code, body := p.payoutAction(p.adminSess, id, "release", "", testPassword); code != 409 || !strings.Contains(body, "release it only if nobody paid it by hand") {
+		t.Fatalf("release without the confirmation: %d %s", code, body)
+	}
+	if st, _, _, _ := p.payout(order); st != "held" {
+		t.Fatalf("refused release changed the payout: %s", st)
+	}
+	w := p.do("POST", "/admin/payout", p.adminSess, url.Values{"payout_id": {id}, "op": {"release"}, "password": {testPassword}, "not_paid": {"confirmed"}})
+	p.check(w, 303)
+	if st, _, _, _ := p.payout(order); st != "blocked" {
+		t.Fatalf("released hand hold: %s", st)
+	}
+	if n := p.count("SELECT count(*) FROM audit_events WHERE action LIKE 'Released held payout " + id + " %administrator confirmed it was not paid by hand%'"); n != 1 {
+		t.Fatalf("release audit: %d", n)
+	}
+	p.check(p.do("POST", "/account/payout", p.vendorSess, url.Values{"currency": {"BTC"}, "address": {"fake-testnet-vendor"}, "password": {testPassword}}), 303)
+	p.poll()
+	if st, _, _, _ := p.payout(order); st != "sent" || len(p.fake.Sends()) != 1 {
+		t.Fatalf("after the release and the address: %s sends=%d", st, len(p.fake.Sends()))
 	}
 }

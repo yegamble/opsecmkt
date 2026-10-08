@@ -304,8 +304,9 @@ stop_server
 # watcher's horizon is the shared pooled_watch_horizon. In one transaction, rolled back so the stages below see the
 # database as it was: on the upgraded alpha.1 data it lists nothing; seeded with a blocker of every kind (an open pooled
 # order, a blocked payout, an undisposed flagged deposit, an address inside the watch horizon, the restore gate, an
-# undismissed issued-address warning, mainnet history) it lists each; with each cleared as staff or the operator clear
-# it (closed and past the horizon, sent, disposed, gate cleared, warning dismissed, test-network history) nothing again.
+# undismissed issued-address warning, mainnet history) it lists each, the address by the horizon's 24-hour clause alone;
+# with each cleared as staff or the operator clear it (closed and past the horizon, sent, disposed, gate cleared, warning
+# dismissed, test-network history) nothing again.
 [[ $(sql -c "SELECT string_agg(proname || ':' || provolatile::text, ',' ORDER BY proname) FROM pg_proc WHERE proname IN ('pooled_drain_blockers','pooled_watch_horizon')") == 'pooled_drain_blockers:s,pooled_watch_horizon:s' ]]
 [[ $(sql -c 'SELECT count(*) FROM pooled_drain_blockers()') == 0 ]]
 drain=$(sql <<'SQL'
@@ -314,6 +315,8 @@ UPDATE orders o SET state='paid' FROM users u WHERE u.id=o.buyer_id AND u.handle
 UPDATE orders o SET state='completed',updated=now() FROM users u WHERE u.id=o.buyer_id AND u.handle='alpha_buyer' AND o.currency='XMR';
 INSERT INTO payment_addresses(order_id,currency,address,provider) SELECT id,currency,'upgrade-drain-'||lower(currency),
   CASE currency WHEN 'BTC' THEN 'btc-regtest' ELSE 'xmr-mainnet' END FROM orders WHERE state IN ('paid','completed');
+-- Issued 31 days ago, its order closed just now: watched by the 24-hour clause alone.
+UPDATE payment_addresses SET created=now()-interval '31 days' WHERE currency='XMR';
 INSERT INTO payouts(order_id,kind,user_id,currency,amount,address,state)
   SELECT o.id,'release',v.id,o.currency,o.amount,'','blocked' FROM orders o, users v WHERE o.state='completed' AND v.handle='alpha_vendor';
 INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations,flagged,after_close)
