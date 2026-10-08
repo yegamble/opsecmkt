@@ -71,6 +71,8 @@ func TestEscrowDisputedStateLineNamesAnAdministrator(t *testing.T) {
 	x := newEscrowEnv(t)
 	escrowOrder, _ := x.disputedEscrow(regtestAddr("state-line"))
 	pooled := x.testEnv.order(x.buyer, x.testEnv.product(x.vendor, "digital"), "BTC", stateDisputed)
+	// A-166 staff reads are keyed to the dispute record that an ordinary dispute transition writes with this state.
+	agExec(x.testEnv, "INSERT INTO disputes(id,order_id,reason) VALUES($1,$2,'The parties referred this order for staff review.')", randomToken(), pooled)
 	for _, sess := range []string{x.buyerSess, x.vendorSess} {
 		page := x.page("/order?id="+escrowOrder, sess)
 		if !strings.Contains(page, "An administrator will review the dispute and record an outcome.") || strings.Contains(page, "A moderator will review") {
