@@ -493,13 +493,20 @@ func (a *App) ensureArbiterKey(ctx context.Context, e *escrowBTC, b *settleBuild
 		return &escrowRPCError{Method: "deriveaddresses", Class: "bad-reply"}
 	}
 	mine, err := e.arbiterOwns(ctx, addrs[0])
+	if err == nil && mine {
+		a.noteEscrowKeypoolHighWater(ctx, b.MarketIndex)
+	}
 	if err != nil || mine {
 		return err
 	}
-	if err = e.keypoolRefill(ctx, int(b.MarketIndex)+escrowKeypoolAhead); err != nil {
+	highWater := b.MarketIndex + escrowKeypoolAhead
+	if err = e.keypoolRefill(ctx, int(highWater)); err != nil {
 		return err
 	}
 	if mine, err = e.arbiterOwns(ctx, addrs[0]); err != nil || mine {
+		if err == nil && mine {
+			a.noteEscrowKeypoolHighWater(ctx, highWater)
+		}
 		return err
 	}
 	return &escrowRPCError{Method: "getaddressinfo", Class: sendMarketKey}

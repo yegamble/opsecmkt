@@ -77,9 +77,10 @@ type App struct {
 	escrowScan        *escrowArbiterScan     // the arbiter wallet read in progress, or finished and not yet taken (arbiterScan); nil = none
 	escrowPace        escrowArbiterPace      // when the next arbiter wallet read may start (A-479, paceArbiter); guarded by escrowScanMu
 	// Broadcast honesty (A-441, escrow_stall.go), in memory only.
-	escrowTip     atomic.Int64 // the escrow node's tip height the last escrow watcher pass read (0 = none yet)
-	escrowUnseen  escrowUnseen // per broadcast settlement not seen by the watch-only wallet, the height it went unseen from
-	escrowTorGate atomic.Value // string: why the Tor-mode gate holds escrow broadcasts ("" = they may be sent; unset = not checked yet)
+	escrowTip               atomic.Int64                            // the escrow node's tip height the last escrow watcher pass read (0 = none yet)
+	escrowHealthObservation atomic.Pointer[escrowHealthObservation] // allowlisted metadata from the last Bitcoin escrow startup check
+	escrowUnseen            escrowUnseen                            // per broadcast settlement not seen by the watch-only wallet, the height it went unseen from
+	escrowTorGate           atomic.Value                            // string: why the Tor-mode gate holds escrow broadcasts ("" = they may be sent; unset = not checked yet)
 	// The escrow signer (A-454, escrow_signer.go): nil without ESCROW_SIGNER_SOCKET; its state is in memory only.
 	escrowSigner       *escrowSignerClient
 	escrowSignerStatus atomic.Value // string: the state checkEscrowSigner last found (signerReady, signerWaiting, …)

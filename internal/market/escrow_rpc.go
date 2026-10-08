@@ -235,6 +235,13 @@ func (a *App) initEscrow(ctx context.Context) error {
 	}
 	a.escrowCfg = cfg
 	state, class, err := a.startEscrow(ctx)
+	healthState := state
+	if errors.Is(err, errEscrowFeeAddress) {
+		healthState = errEscrowFeeAddress.Error()
+	}
+	healthCtx, cancelHealth := escrowHealthContext(ctx)
+	a.saveEscrowHealthAttempt(healthCtx, err == nil && state == escrowLogOn, healthState)
+	cancelHealth()
 	if err == nil {
 		logEscrowState(state, class)
 		a.escrowStartState = state
@@ -257,6 +264,7 @@ var errEscrowFeeAddress = errors.New("refusing to start: ESCROW_BTC_FEE_ADDRESS 
 // arbiter fingerprint must match the pinned one, and the watch-only wallet must hold no private keys. The configured fee
 // address is lowered by the node's chain (escrowAddressForm) before the node checks it.
 func (a *App) startEscrow(ctx context.Context) (state, class string, err error) {
+	a.escrowHealthObservation.Store(nil)
 	e, err := newEscrowBTC(a.escrowCfg)
 	if err != nil {
 		return "", "", err
@@ -269,6 +277,7 @@ func (a *App) startEscrow(ctx context.Context) (state, class string, err error) 
 		a.notePinnedNet(ctx)
 		return escrowLogUnchecked, errorClassOf(err), nil
 	}
+	a.observeEscrowNode(node, nil)
 	if escrowChains[node.Chain] == "" {
 		return "", "", errEscrowChain
 	}
@@ -277,6 +286,7 @@ func (a *App) startEscrow(ctx context.Context) (state, class string, err error) 
 	if err != nil {
 		return "", "", err
 	}
+	a.observeEscrowNode(node, &ok)
 	// The chain escrowNetwork names while escrow is not enabled: the node's, unless the database's escrows are on another,
 	// the pinned one (none pinned: escrows from before the pin, which ran on regtest only).
 	net := node.Chain
@@ -417,6 +427,9 @@ func (a *App) retryEscrow(ctx context.Context, r *escrowRetry) {
 				a.escrow.CompareAndSwap(e, nil)
 				logEscrowState(escrowLogPooledKey, class)
 				r.last = escrowLogPooledKey
+				healthCtx, cancelHealth := escrowHealthContext(ctx)
+				a.saveEscrowHealthAttempt(healthCtx, false, escrowLogPooledKey)
+				cancelHealth()
 			}
 		}
 		return
@@ -435,6 +448,13 @@ func (a *App) retryEscrow(ctx context.Context, r *escrowRetry) {
 	if state == escrowLogOn {
 		r.pooledAt = time.Now() // startEscrow has just run the self-check
 	}
+	healthState := state
+	if errors.Is(err, errEscrowFeeAddress) {
+		healthState = errEscrowFeeAddress.Error()
+	}
+	healthCtx, cancelHealth := escrowHealthContext(ctx)
+	a.saveEscrowHealthAttempt(healthCtx, err == nil && state == escrowLogOn, healthState)
+	cancelHealth()
 	if state != r.last {
 		logEscrowState(state, class)
 		r.last = state
