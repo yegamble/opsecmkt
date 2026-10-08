@@ -29,6 +29,7 @@ func init() {
 			d.Products[len(d.Products)-1].Archived = true
 		}
 		d.Inventory = inventoryCounts(d.Products, "")
+		setInventoryURLs(d)
 	})
 }
 
@@ -109,10 +110,14 @@ func loadInventory(_ context.Context, a *App, _ *http.Request, d *PageData) erro
 		d.Inventory = inventoryCounts(d.Products, "")
 	}
 	d.Inventory.AutoDelivery = a.autoDeliveryCurrencies()
+	setInventoryURLs(d)
+	return nil
+}
+
+func setInventoryURLs(d *PageData) {
 	d.Inventory.AllURL = inventoryFilterURL("all", d.Currency)
 	d.Inventory.ActiveURL = inventoryFilterURL("active", d.Currency)
 	d.Inventory.ArchivedURL = inventoryFilterURL("archived", d.Currency)
-	return nil
 }
 
 // loadListingEdit loads one listing for its vendor or an administrator; anyone else gets 404.
