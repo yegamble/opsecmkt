@@ -38,6 +38,8 @@ type bucket struct {
 	Until time.Time
 }
 type App struct {
+	recentErrors serverErrorRing // A-143: last 20 referenced HTTP errors, in memory only
+
 	db               *sql.DB
 	health           *sql.DB // one connection for /healthz, apart from the application pool (A-178)
 	templates        *template.Template
@@ -428,7 +430,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w = aw
 	// An upload's work after its body has arrived (uploads.go) and the signed audit export (audit_export.go,
 	// through arrivalContext) get their own bounds.
-	base := r.Context()
+	base := context.WithValue(r.Context(), serverErrorRingKey{}, &a.recentErrors)
 	ctx, cancel := context.WithTimeout(context.WithValue(base, arrivalKey{}, base), 12*time.Second)
 	defer cancel()
 	r = r.WithContext(ctx)

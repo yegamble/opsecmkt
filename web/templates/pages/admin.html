@@ -59,6 +59,13 @@
 </details>{{end}}
 </section>
 </div>{{template "admin-auth" .}}{{template "admin-staff-contact" .}}{{template "admin-staff-list" .}}{{template "admin-payments" .}}{{template "admin-scanner" .}}{{template "admin-transparency" .}}
+<section class="panel" aria-labelledby="recent-server-errors">
+<h2 id="recent-server-errors">Recent server errors</h2>
+<p class="help">The last 20 responses carrying an error reference, newest first, from this server process. This list is kept in memory and cleared on restart. It keeps the time, registered route, status and reference, without request contents. Use the reference to find the error class in the server log; log throttling may suppress a line during a burst.</p>
+<div class="table-wrap" tabindex="0" role="region" aria-labelledby="recent-server-errors">
+<table><thead><tr><th scope="col">Time (UTC)</th><th scope="col">Route</th><th scope="col">Status</th><th scope="col">Reference</th></tr></thead>
+<tbody>{{range .RecentServerErrors}}<tr><td>{{.Created}}</td><td>{{.Kind}} {{.Route}}</td><td>{{.Status}}</td><td class="mono">{{.Reference}}</td></tr>{{else}}<tr><td colspan="4">No referenced server errors in this process.</td></tr>{{end}}</tbody></table>
+</div></section>
 <h2 class="section-title">Audit trail</h2>
 <p class="help">Account is the account each event is recorded on. A change an administrator makes to another account is recorded on both: the administrator's row names the account, and the account's row says an administrator made it.</p>
 <div class="table-wrap">

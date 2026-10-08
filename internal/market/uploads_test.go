@@ -446,6 +446,9 @@ func TestUploadScannerRefusalsStoreNothing(t *testing.T) {
 		f.SetVerdict(func([]byte) string { return c.verdict })
 		w = post()
 		checkPage(t, w, c.code, c.want)
+		if c.code == 503 {
+			assertRecentErrorReference(t, e.A, w, "/listings/photo")
+		}
 		if c.code == 503 && w.Header().Get("Retry-After") == "" {
 			t.Fatalf("%s: 503 without Retry-After", name)
 		}

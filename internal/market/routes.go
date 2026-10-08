@@ -165,10 +165,16 @@ func fail(code int, msg string) error { return &httpError{Code: code, Msg: msg} 
 // its sender: no URL path or query, form value, cookie, header, address, handle or user id. At most 10 such
 // lines are written a second; the rest are counted in one "http 5xx suppressed=N" line (A-178). A 503 carries
 // Retry-After.
-func serverError(w http.ResponseWriter, r *http.Request, code int, msg, cause string) {
+func serverErrorReference(r *http.Request, code int, cause string) string {
 	ref := randomToken()[:8]
 	kind, name := routeOf(r)
+	recordServerError(r, code, ref)
 	http5xxLog.Printf("http 5xx kind=%s name=%s status=%d ref=%s cause=%s", kind, name, code, ref, cause)
+	return ref
+}
+
+func serverError(w http.ResponseWriter, r *http.Request, code int, msg, cause string) {
+	ref := serverErrorReference(r, code, cause)
 	if code == http.StatusServiceUnavailable {
 		w.Header().Set("Retry-After", busyRetryAfter)
 	}

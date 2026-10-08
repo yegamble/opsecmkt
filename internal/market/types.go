@@ -106,6 +106,8 @@ type PaymentReview struct {
 type Event struct{ Handle, Action, Created string } // Handle: account the audit row is recorded on ("" = system)
 
 type PageData struct {
+	RecentServerErrors []ServerErrorEntry // administrator-only, volatile, no request contents
+
 	Page, Title, CSRF, Error, Notice, Query, Category, Region, Currency, Mode string
 	NoticeAt                                                                  string // the section a one-shot notice renders in, "" = the top (notice.go)
 	User                                                                      *User

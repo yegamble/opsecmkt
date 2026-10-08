@@ -269,6 +269,7 @@ func (a *App) serveUpload(w http.ResponseWriter, r *http.Request, route uploadRo
 				http5xxLog.Printf("upload staff contact read failed cause=%s", errorCause(cerr))
 			}
 		}
+		recordServerError(u.r, refusal.Status(), refusal.Ref)
 		u.render(refusal.Status(), refusal.Message(contact))
 		return
 	}
@@ -485,8 +486,7 @@ func (u *upload) serverError(code int, cause string) {
 // serverErrorMessage preserves the usual classified 5xx log and refusal page while allowing a lost COMMIT
 // acknowledgement to say the outcome is unknown, without suggesting an automatic retry.
 func (u *upload) serverErrorMessage(code int, cause, msg, title string) {
-	ref := randomToken()[:8]
-	http5xxLog.Printf("http 5xx kind=action name=%s status=%d ref=%s cause=%s", u.r.URL.Path, code, ref, cause)
+	ref := serverErrorReference(u.r, code, cause)
 	if code == http.StatusServiceUnavailable {
 		u.w.Header().Set("Retry-After", busyRetryAfter)
 	}

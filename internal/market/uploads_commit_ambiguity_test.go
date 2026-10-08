@@ -42,6 +42,7 @@ func TestUploadLostCommitAcknowledgementReportsUnknownOutcome(t *testing.T) {
 			t.Cleanup(func() { original.Close() })
 
 			w := e.upload(tc.path, session, tc.parts(e, session, listing, smallJPEG(t))...)
+			assertRecentErrorReference(t, e.A, w, tc.path)
 			if lost.Load() {
 				t.Fatal("Commit did not reach the injected acknowledgement loss")
 			}
