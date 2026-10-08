@@ -41,6 +41,7 @@
 <p class="help">The order history shows what you record to the buyer and the vendor; never include an address, real name or tracking number. One review per flag; it cannot be changed afterwards{{if eq $.User.Role "moderator"}}, except that an administrator records the outcome of one you escalate{{end}}.</p>
 <form class="stack" method="post" action="/moderator/payment-review">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/moderator/payment-review"}}">
 <input type="hidden" name="payment_id" value="{{.ID}}">
 <input type="hidden" name="outcome" value="no_action">
 <label>Reason for taking no action<textarea name="note" required minlength="10" maxlength="1000" rows="3"></textarea>
@@ -50,6 +51,7 @@
 </form>{{if .Refundable}}
 <form class="stack" method="post" action="/moderator/payment-review">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/moderator/payment-review"}}">
 <input type="hidden" name="payment_id" value="{{.ID}}">
 <input type="hidden" name="outcome" value="refunded">
 <p class="help">Record a refund to the buyer that was already sent from the market wallet by hand; the market sends nothing and queues no payout. The buyer sees the transaction ID; the vendor does not.</p>
@@ -64,6 +66,7 @@
 </form>{{end}}{{if eq $.User.Role "moderator"}}
 <form class="stack" method="post" action="/moderator/payment-review">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/moderator/payment-review"}}">
 <input type="hidden" name="payment_id" value="{{.ID}}">
 <input type="hidden" name="outcome" value="escalated">
 <label>Note for the administrator (optional; the parties read it too)<textarea name="note" maxlength="1000" rows="2"></textarea>

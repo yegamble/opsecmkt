@@ -62,6 +62,23 @@ func (a *App) formRequestHMAC(c *actionCtx) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+// completedFormSubmissionForRequest is a read-only pre-confirmation exception
+// for a payment whose flag has since cleared. It does not return a result or
+// authorize a change: confirmedTx still checks the current actor, session,
+// party eligibility, password and exact receipt in its own transaction.
+func completedFormSubmissionForRequest(c *actionCtx) (bool, error) {
+	nonce := c.Form.Get(formNonceField)
+	if !formNoncePattern.MatchString(nonce) || len(c.Form[formNonceField]) != 1 {
+		return false, nil
+	}
+	var completed bool
+	err := c.A.db.QueryRowContext(c.Ctx(), `SELECT EXISTS(SELECT 1 FROM form_submissions
+		WHERE nonce=$1 AND user_id=$2 AND session_hash=$3 AND action_path=$4
+		AND request_hmac=$5 AND redirect<>'')`, nonce, c.User.ID, digest(c.Token), c.R.URL.Path,
+		c.A.formRequestHMAC(c)).Scan(&completed)
+	return completed, err
+}
+
 func writeFormHMACPart(h interface{ Write([]byte) (int, error) }, part []byte) {
 	writeFormHMACCount(h, uint64(len(part)))
 	_, _ = h.Write(part)

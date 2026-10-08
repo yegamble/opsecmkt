@@ -19,7 +19,8 @@ import (
 // A-231); an escalation also notifies every administrator who is not a party.
 
 func init() {
-	registerAction("/moderator/payment-review", actionSpec{Roles: []string{"moderator", "admin"}, OwnTx: true, Run: paymentReviewAction})
+	registerAction("/moderator/payment-review", actionSpec{Roles: []string{"moderator", "admin"}, OwnTx: true,
+		ConfirmedFormNonce: true, ReceiptAuthorize: paymentReviewReceiptAuthorize, Run: paymentReviewAction})
 	registerLoader("moderator", adminConfirmLoader)
 }
 
@@ -109,13 +110,26 @@ func paymentReviewAction(c *actionCtx) (actionResult, error) {
 	// recordPaymentReview checks all of it again under the row locks.
 	var buyer, vendor, cur string
 	var deposit int64
-	err = c.A.db.QueryRowContext(c.Ctx(), `SELECT o.buyer_id,pr.vendor_id,pm.currency,pm.amount FROM payments pm JOIN orders o ON o.id=pm.order_id
-		JOIN products pr ON pr.id=o.product_id WHERE pm.id=$1 AND pm.flagged`, id).Scan(&buyer, &vendor, &cur, &deposit)
+	var flagged bool
+	err = c.A.db.QueryRowContext(c.Ctx(), `SELECT o.buyer_id,pr.vendor_id,pm.currency,pm.amount,pm.flagged FROM payments pm JOIN orders o ON o.id=pm.order_id
+		JOIN products pr ON pr.id=o.product_id WHERE pm.id=$1`, id).Scan(&buyer, &vendor, &cur, &deposit, &flagged)
 	if err == sql.ErrNoRows {
 		return actionResult{}, fail(404, "Flagged payment not found")
 	}
 	if err != nil {
 		return actionResult{}, err
+	}
+	if !flagged {
+		// A watcher may clear this flag after staff recorded the review. Admit
+		// only this exact completed form to the confirmed receipt path; every
+		// fresh or changed request still gets the original pre-password 404.
+		completed, err := completedFormSubmissionForRequest(c)
+		if err != nil {
+			return actionResult{}, err
+		}
+		if !completed {
+			return actionResult{}, fail(404, "Flagged payment not found")
+		}
 	}
 	if c.User.ID == buyer || c.User.ID == vendor {
 		return actionResult{}, errReviewParty
@@ -136,6 +150,29 @@ func paymentReviewAction(c *actionCtx) (actionResult, error) {
 }
 
 var errReviewParty = fail(403, "You are a party to this order, so another moderator or administrator records its payment review. Nothing was changed.")
+
+// Current non-party status is required even for an already completed receipt.
+// Flag/disposition/open state belongs only to recordPaymentReview's locked new
+// action path: a watcher can clear or reopen a flag after the first success.
+func paymentReviewReceiptAuthorize(c *actionCtx) error {
+	id, err := strconv.ParseInt(c.Form.Get("payment_id"), 10, 64)
+	if err != nil || id <= 0 {
+		return fail(404, "Flagged payment not found")
+	}
+	var buyer, vendor string
+	err = c.Tx.QueryRowContext(c.Ctx(), `SELECT o.buyer_id,pr.vendor_id FROM payments pm
+		JOIN orders o ON o.id=pm.order_id JOIN products pr ON pr.id=o.product_id WHERE pm.id=$1`, id).Scan(&buyer, &vendor)
+	if err == sql.ErrNoRows {
+		return fail(404, "Flagged payment not found")
+	}
+	if err != nil {
+		return err
+	}
+	if c.User.ID == buyer || c.User.ID == vendor {
+		return errReviewParty
+	}
+	return nil
+}
 
 func recordPaymentReview(c *actionCtx, id int64, outcome, note, refundTxid string, refunded int64) (actionResult, error) {
 	ctx, tx, a := c.Ctx(), c.Tx, c.A

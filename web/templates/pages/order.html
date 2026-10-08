@@ -98,6 +98,7 @@
 <p><strong>Open</strong>: nothing recorded yet.</p>{{end}}{{if .Form}}
 <form class="stack" method="post" action="/moderator/xmr-collision">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/moderator/xmr-collision"}}">
 <input type="hidden" name="collision_id" value="{{.ID}}">
 <label>What was done (10–500 characters; market staff only)<textarea name="note" required minlength="10" maxlength="500" rows="3"></textarea>
 </label>

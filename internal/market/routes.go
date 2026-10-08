@@ -588,6 +588,8 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 				msg = "Staff action outcome unknown: it may have been saved. Check the account's current state and audit trail before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
 			case "/admin/captcha", "/admin/staff-contact", "/admin/staff-list", "/admin/operator-key", "/admin/canary":
 				msg = "Admin setting outcome unknown: it may have been saved. Reload the admin page and check the setting and audit trail before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
+			case "/moderator/payment-review", "/moderator/xmr-collision":
+				msg = "Staff disposition outcome unknown: it may have been saved. Check the moderation desk and order record before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
 			case "/escrow/claim", "/escrow/ship", "/escrow/recover", "/escrow/bump", "/escrow-xmr/claim", "/escrow-xmr/ship", "/escrow-xmr/confirm":
 				msg = "Escrow action outcome unknown: it may have been saved. Check the order and settlement state before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
 			case "/totp/disable", "/totp/activate", "/totp/recovery":

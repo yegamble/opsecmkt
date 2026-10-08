@@ -21,7 +21,8 @@ import (
 // event and no notification is written, so the parties see only the order note they saw before.
 
 func init() {
-	registerAction("/moderator/xmr-collision", actionSpec{Roles: []string{"moderator", "admin"}, OwnTx: true, Run: xmrCollisionAction})
+	registerAction("/moderator/xmr-collision", actionSpec{Roles: []string{"moderator", "admin"}, OwnTx: true,
+		ConfirmedFormNonce: true, ReceiptAuthorize: xmrCollisionReceiptAuthorize, Run: xmrCollisionAction})
 }
 
 var errCollisionParty = fail(403, "You are a party to this order, so another moderator or administrator records what was done about its refused deposit. Nothing was changed.")
@@ -29,6 +30,29 @@ var errCollisionParty = fail(403, "You are a party to this order, so another mod
 var errCollisionNotFound = fail(404, "Refused deposit not found")
 
 var errCollisionRecorded = fail(409, "What was done about this refused deposit was already recorded; see the order page. Nothing was changed.")
+
+// A saved result is still private to current non-party staff. The disposition
+// state is left to recordXMRCollision for new claims and is absent here so an
+// exact retry of a completed form can retrieve its response.
+func xmrCollisionReceiptAuthorize(c *actionCtx) error {
+	id, err := strconv.ParseInt(c.Form.Get("collision_id"), 10, 64)
+	if err != nil || id <= 0 {
+		return errCollisionNotFound
+	}
+	var buyer, vendor string
+	err = c.Tx.QueryRowContext(c.Ctx(), `SELECT o.buyer_id,pr.vendor_id FROM xmr_escrow_collisions x JOIN orders o ON o.id=x.order_id
+		JOIN products pr ON pr.id=o.product_id WHERE x.id=$1`, id).Scan(&buyer, &vendor)
+	if err == sql.ErrNoRows {
+		return errCollisionNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if c.User.ID == buyer || c.User.ID == vendor {
+		return errCollisionParty
+	}
+	return nil
+}
 
 func xmrCollisionAction(c *actionCtx) (actionResult, error) {
 	id, err := strconv.ParseInt(c.Form.Get("collision_id"), 10, 64)
