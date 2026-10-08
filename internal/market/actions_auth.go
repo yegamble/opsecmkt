@@ -300,8 +300,21 @@ func confirmedTxWith(c *actionCtx, opts *confirmation, run func(c *actionCtx) (a
 		}
 		res.Audit = ""
 	}
-	return res, tx.Commit()
+	if err := tx.Commit(); err != nil {
+		// A lost acknowledgement does not tell us whether PostgreSQL committed. Do not
+		// classify even a connection-looking error as safe to retry (A-209).
+		return actionResult{}, commitOutcomeUnknown{err}
+	}
+	return res, nil
 }
+
+// commitOutcomeUnknown marks only an error returned by Commit, never a failure
+// while preparing the transaction. The underlying error remains available for
+// classification in server logs, but the HTTP response must not promise a retry.
+type commitOutcomeUnknown struct{ cause error }
+
+func (e commitOutcomeUnknown) Error() string { return e.cause.Error() }
+func (e commitOutcomeUnknown) Unwrap() error { return e.cause }
 
 // notifyOwner tells the account owner, inside tx, of a sign-in factor, key or recovery-code event (A-152). The text
 // is link-free and never carries a code, secret, key fingerprint or address.
