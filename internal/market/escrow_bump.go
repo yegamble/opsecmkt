@@ -44,7 +44,8 @@ import (
 // it holds a settlement (escrow_recovery.go).
 
 func init() {
-	registerAction("/escrow/bump", actionSpec{OwnTx: true, OneAtATime: true, Off: escrowOff, Run: escrowBumpAction})
+	registerAction("/escrow/bump", actionSpec{OwnTx: true, OneAtATime: true, Roles: escrowPartyRoles,
+		ConfirmedFormNonce: true, ReceiptAuthorize: btcBumpReceiptAuthorize, Off: escrowOff, Run: escrowBumpAction})
 	registerAction("/escrow/bump-sign", actionSpec{FormNonce: true, Off: escrowOff, Run: escrowBumpSignAction})
 	registerAction("/escrow/hardware-bump-sign", actionSpec{FormNonce: true, Off: escrowOff, Run: escrowBumpSignAction})
 }
@@ -328,9 +329,6 @@ func bumpErrorText(class, claimant string) string {
 // rate and confirming with their password (and authenticator code when enrolled). RPC-free: the escrow watcher builds
 // the bump (buildBumps). An open bump of the settlement is closed in the same transaction.
 func escrowBumpAction(c *actionCtx) (actionResult, error) {
-	if c.A.escrow.Load() == nil {
-		return actionResult{}, errEscrowDown
-	}
 	rate, err := strconv.ParseInt(strings.TrimSpace(c.Form.Get("fee_rate")), 10, 64)
 	if err != nil || rate < 1 || rate > escrowMaxFeeRate {
 		return actionResult{}, errBumpRate
@@ -340,6 +338,9 @@ func escrowBumpAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, errSettleNone
 	}
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
+		if c.A.escrow.Load() == nil {
+			return actionResult{}, errEscrowDown
+		}
 		ctx := c.Ctx()
 		o, err := partyOrder(c, c.Form.Get("order_id"))
 		if err != nil {

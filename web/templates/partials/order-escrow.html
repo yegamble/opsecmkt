@@ -190,6 +190,7 @@
 </section>{{end}}{{if .CanBump}}
 <form class="stack escrow-bump-form" id="escrow-bump-form-{{.ID}}" method="post" action="/escrow/bump">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/escrow/bump"}}">
 <input type="hidden" name="order_id" value="{{$.Order.ID}}">
 <input type="hidden" name="settlement_id" value="{{.ID}}">
 <label>New network fee rate (sat/vB)<input name="fee_rate" type="number" required min="{{.BumpMin}}" max="{{.BumpMax}}" step="1" inputmode="numeric" aria-describedby="escrow-bump-help-{{.ID}}">
