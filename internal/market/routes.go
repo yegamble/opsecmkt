@@ -425,7 +425,23 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 		defer tx.Rollback()
 		c.Tx = tx
 	}
-	res, err := spec.Run(c)
+	// A-222: the session/route-role check above may have run before a staff member was
+	// demoted or suspended. Lock and re-read the caller in the action's transaction
+	// before any role-gated staff change. OwnTx actions use confirmedTx or their own
+	// locked recheck; keeping this first avoids target-row/actor-row lock inversions.
+	var res actionResult
+	var err error
+	if c.Tx != nil && u != nil && len(spec.Roles) > 0 && (u.Role == "admin" || u.Role == "moderator") {
+		var role string
+		var suspended bool
+		err = c.Tx.QueryRowContext(ctx, "SELECT role,suspended_at IS NOT NULL FROM users WHERE id=$1 FOR NO KEY UPDATE", u.ID).Scan(&role, &suspended)
+		if errors.Is(err, sql.ErrNoRows) || err == nil && (role != u.Role || suspended) {
+			err = errAccountChanged
+		}
+	}
+	if err == nil {
+		res, err = spec.Run(c)
+	}
 	var he *httpError
 	if errors.As(err, &he) {
 		if he.Render != nil {
