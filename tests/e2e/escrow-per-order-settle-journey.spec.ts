@@ -130,7 +130,7 @@ test('Per-order escrow: keys, checkout, setup pages, funding, the release upload
   await tabTo(vendor, upload);
   await upload.setInputFiles(file);
   expect(await pressSubmit(vendor, vendor.getByRole('button', { name: 'Submit signature' }))).toBe(303);
-  await expect(settlementStatus(vendor)).toContainText(/Signed by the vendor|Broadcast to the regtest network/);
+  await expect(settlementStatus(vendor)).toContainText(/Signed by the vendor|Signed by the market, with the vendor's signature|Broadcast to the regtest network/);
 
   // The market co-signs through the escrow signer and broadcasts; it confirms.
   await reloadUntil(vendor, async () => { await expect(settlementStatus(vendor)).toContainText('Broadcast to the regtest network: transaction', { timeout: 500 }); });

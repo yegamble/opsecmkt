@@ -117,7 +117,7 @@ test('Bitcoin escrow paste journey: keys, checkout and funding, completion, the 
   const signed = await simPost(request, '/test/escrow/sign', { psbt: copy, fingerprint: vendorKey.slice(1, 9), sighash: 1 });
   await typeInto(vendor, vendor.locator('.escrow-settlement').getByLabel('Signed PSBT'), signed.psbt);
   expect(await pressSubmit(vendor, vendor.getByRole('button', { name: 'Submit signature' }))).toBe(303);
-  await expect(settlementStatus(vendor)).toContainText(/Signed by the vendor|Broadcast to the regtest network/);
+  await expect(settlementStatus(vendor)).toContainText(/Signed by the vendor|Signed by the market, with the vendor's signature|Broadcast to the regtest network/);
   await shot(vendor, info, '09-claim-signed');
   await reloadUntil(vendor, async () => { await expect(settlementStatus(vendor)).toContainText('Broadcast to the regtest network: transaction', { timeout: 500 }); });
   await expect(vendor.locator('.escrow-raw-tx')).toBeVisible();

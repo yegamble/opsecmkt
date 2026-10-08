@@ -1,9 +1,46 @@
 package market
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
+
+// A-452: a changed key root cannot authenticate the immutable arbiter pin. Keep the
+// existing escrow and pin intact, refuse key changes, and recover with the original root.
+func TestEscrowArbiterPinRequiresOriginalKeyRoot(t *testing.T) {
+	x := newEscrowEnv(t)
+	x.mustCheckout(x.order, "bcrt1qbuyerrefund00000000000000000000001")
+	original := os.Getenv("APP_SECRET_KEY")
+	pin := agStr(x.testEnv, "SELECT value FROM settings WHERE key='escrow_btc_arbiter_xpub_hmac'")
+	rows := func() string {
+		return strings.Join(agStrings(t, x.testEnv, "SELECT e::text FROM escrows e ORDER BY id"), "\n") +
+			strings.Join(agStrings(t, x.testEnv, "SELECT p::text FROM escrow_pubkeys p ORDER BY escrow_id,party"), "\n")
+	}
+	before := rows()
+	t.Setenv("APP_SECRET_KEY", rotatedSecretKey())
+	x.restart()
+	if x.A.escrow.Load() != nil || agStr(x.testEnv, "SELECT disabled_class FROM bitcoin_escrow_health WHERE singleton") != "arbiter_key_mismatch" {
+		t.Fatal("changed root did not disable escrow at its arbiter pin")
+	}
+	calls := len(x.core.methods())
+	if code, _ := registerKey(x.testEnv, x.buyerSess, x.buyerKey); code < 400 {
+		t.Fatalf("key registration accepted while the arbiter pin could not be verified: %d", code)
+	}
+	if len(x.core.methods()) != calls || rows() != before || agStr(x.testEnv, "SELECT value FROM settings WHERE key='escrow_btc_arbiter_xpub_hmac'") != pin {
+		t.Fatal("failed pin verification changed escrow rows/pin or made key-registration RPC calls")
+	}
+	t.Setenv("APP_SECRET_KEY", original)
+	x.restart()
+	if x.A.escrow.Load() == nil || rows() != before || agStr(x.testEnv, "SELECT value FROM settings WHERE key='escrow_btc_arbiter_xpub_hmac'") != pin {
+		t.Fatal("restoring the original root failed to recover the unchanged escrow and pin")
+	}
+	order2 := x.draft()
+	x.mustCheckout(order2, "bcrt1qbuyerrefund00000000000000000000002")
+	if suffix := agStrings(t, x.testEnv, "SELECT party||derivation_suffix FROM escrow_pubkeys p JOIN escrows e ON e.id=p.escrow_id WHERE e.order_id=$1 AND party<>'market' ORDER BY party", order2); strings.Join(suffix, ",") != "buyer/0/2,vendor/0/2" {
+		t.Fatalf("recovery reused or skipped a party child: %v", suffix)
+	}
+}
 
 // A-452 SEC-9: the arbiter's 4-byte fingerprint alone cannot distinguish two account keys from
 // the same seed. Pin the account-key material with the existing keyRoot-derived HMAC.

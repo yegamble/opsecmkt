@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -151,7 +152,13 @@ func signerKey(t *testing.T, n uint32) btc.ExtKey {
 
 func newFakeSigner(t *testing.T, key btc.ExtKey) *fakeSigner {
 	t.Helper()
-	f := &fakeSigner{t: t, path: filepath.Join(t.TempDir(), "signer.sock"), key: key}
+	// Darwin limits Unix socket paths to 104 bytes; long test names in t.TempDir exceed it.
+	dir, err := os.MkdirTemp("", "ess-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	f := &fakeSigner{t: t, path: filepath.Join(dir, "s"), key: key}
 	f.start()
 	t.Cleanup(f.stop)
 	return f
