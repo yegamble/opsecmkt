@@ -38,7 +38,7 @@ func TestAdminChangesRoleOfAnyAccountByHandle(t *testing.T) {
 	f := adminForm(t, page, "/admin", "role")
 	mustContain(t, f, `name="handle"`, `pattern="[a-zA-Z0-9_]{3,32}"`, "Account handle")
 	mustNotContain(t, f, `name="user_id"`, "<option value=\"\">Select an account")
-	mustContain(t, page, "newer_buyer_101 · buyer", "the 100 newest accounts")
+	mustContain(t, page, "newer_buyer_101 · buyer", "Showing 1–50 of 104 accounts")
 	mustNotContain(t, page, "lookup_old_vendor ·")
 
 	// The vendor is demoted by handle; its listing is archived and both accounts are audited as before.

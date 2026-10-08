@@ -54,7 +54,7 @@ func TestAdminUserPickerPagesNewestAccountsAndKeepsOtherRolesReachable(t *testin
 	}
 	lastBody, lastList := page("/admin?users_page=3")
 	last := accounts(lastList)
-	if len(last) != 2 || last[0] != "paged_user_001 · buyer" || last[1] != "admin_user · admin" || !strings.Contains(lastList, "Showing 101–102 of 102 accounts") || strings.Contains(lastList, `rel="next"`) {
+	if len(last) != 2 || last[0] != "paged_user_001 · buyer" || last[1] != "admin_user · admin" || !strings.Contains(lastList, "Showing 101–102 of 102 accounts") || strings.Contains(lastList, `rel="next"`) || !strings.Contains(lastBody, `<details class="account-list" open>`) {
 		t.Fatalf("last picker page rows=%d body=%s", len(last), lastList)
 	}
 	if len(first)+len(second)+len(last) != 102 {
