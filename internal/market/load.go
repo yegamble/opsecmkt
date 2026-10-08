@@ -385,12 +385,21 @@ func (a *App) load(r *http.Request, d *PageData) error {
 			}
 		}
 		if d.Page == "messages" {
+			// A valid recipient also selects only this viewer's correspondence with that exact handle.
+			// Unknown valid handles yield an empty conversation; invalid prefill stays ignored as before.
+			to := r.URL.Query().Get("to")
+			if !handlePattern.MatchString(to) {
+				to = ""
+			}
+			const inbox = ` FROM messages m JOIN users s ON s.id=m.sender_id JOIN users t ON t.id=m.recipient_id
+				WHERE (m.sender_id=$1 OR m.recipient_id=$1) AND
+				($2='' OR (m.sender_id=$1 AND t.handle=$2) OR (m.recipient_id=$1 AND s.handle=$2))`
 			var total int
-			if err = a.db.QueryRowContext(ctx, `SELECT count(*) FROM messages WHERE sender_id=$1 OR recipient_id=$1`, d.User.ID).Scan(&total); err != nil {
+			if err = a.db.QueryRowContext(ctx, `SELECT count(*)`+inbox, d.User.ID, to).Scan(&total); err != nil {
 				return err
 			}
 			d.ActivityPaging = activityPaging("/messages", total, r.URL.Query().Get("page"), nil)
-			rows, err = a.db.QueryContext(ctx, `SELECT m.id,s.handle,t.handle,m.body,to_char(m.created,'YYYY-MM-DD HH24:MI "UTC"') FROM messages m JOIN users s ON s.id=m.sender_id JOIN users t ON t.id=m.recipient_id WHERE m.sender_id=$1 OR m.recipient_id=$1 ORDER BY m.created DESC,m.id DESC LIMIT $2 OFFSET $3`, d.User.ID, activityPageSize, d.ActivityPaging.Offset())
+			rows, err = a.db.QueryContext(ctx, `SELECT m.id,s.handle,t.handle,m.body,to_char(m.created,'YYYY-MM-DD HH24:MI "UTC"')`+inbox+` ORDER BY m.created DESC,m.id DESC LIMIT $3 OFFSET $4`, d.User.ID, to, activityPageSize, d.ActivityPaging.Offset())
 			if err != nil {
 				return err
 			}

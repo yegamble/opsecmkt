@@ -34,6 +34,7 @@
 </section>
 <section>
 <h2 class="section-title">Correspondence</h2>
+{{if .MessageTo}}<p class="help">Showing your correspondence with {{.MessageTo}}. <a class="text-link" href="/messages">Show all correspondence</a></p>{{end}}
 <div class="messages-list">{{range .Messages}}<article class="message">
 <div class="message-meta">
 <span>{{.Sender}} → {{.Recipient}}</span>
