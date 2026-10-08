@@ -137,7 +137,7 @@ tor_identity_hash() {
 }
 
 refresh_base() {
-  local container bindings app_networks app_network_info app_ip network_id
+  local container bindings app_networks network_id network_info app_ip
   container=$(compose ps -q app)
   [[ -n $container ]] || { echo 'The app service has no running container' >&2; return 1; }
   bindings=$(docker inspect --format '{{json .HostConfig.PortBindings}}' "$container")
@@ -146,8 +146,8 @@ refresh_base() {
   # Linux Docker hosts can route to a bridge container IP. Use that only in this CI rehearsal;
   # publishing the app port would weaken the internal-network isolation being tested.
   app_networks=$(docker inspect --format '{{json .NetworkSettings.Networks}}' "$container")
-  app_network_info=$(compose config --format json | python3 -c '
-import ipaddress, json, sys
+  network_id=$(compose config --format json | python3 -c '
+import json, sys
 attached = json.loads(sys.argv[1])
 config = json.load(sys.stdin)
 service_networks = config["services"]["app"].get("networks", {})
@@ -157,16 +157,12 @@ assert backend.get("internal") is True, "backend must remain internal"
 expected_name = backend.get("name") or "{}_backend".format(config["name"])
 assert list(attached) == [expected_name], "app runtime network must be the Compose backend network"
 network = attached[expected_name]
-address = ipaddress.ip_address(network["IPAddress"])
-assert address.version == 4 and address.is_private and not address.is_loopback and not address.is_unspecified and not address.is_multicast
-print("{}\t{}".format(address, network["NetworkID"]))
+network_id = network.get("NetworkID")
+assert isinstance(network_id, str) and network_id, "app runtime backend network has no Docker network ID"
+print(network_id)
 ' "$app_networks")
-  app_ip=${app_network_info%%$'\t'*}
-  network_id=${app_network_info#*$'\t'}
-  [[ -n $app_ip && -n $network_id && $network_id != "$app_network_info" ]] || {
-    echo 'Could not determine the app backend network address' >&2; return 1; }
-  [[ $(docker network inspect --format '{{.Internal}}' "$network_id") == true ]] || {
-    echo 'The app runtime backend network is not internal' >&2; return 1; }
+  network_info=$(docker network inspect --format '{{json .}}' "$network_id")
+  app_ip=$(printf '%s\n' "$network_info" | python3 "$root/scripts/tor_network_address.py" "$container" "$network_id")
   base="http://$app_ip:8080"
 }
 
