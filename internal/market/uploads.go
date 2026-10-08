@@ -298,6 +298,12 @@ func (a *App) serveUpload(w http.ResponseWriter, r *http.Request, route uploadRo
 		http.Redirect(w, r, a.setNotice(w, notice, redirect), http.StatusSeeOther)
 	case errors.As(err, &he):
 		u.render(he.Code, he.Msg)
+	case isUploadCommitUnknown(err):
+		subject, place, title := "Photo", "listing", "Photo status unknown"
+		if route.kind == uploadAvatar {
+			subject, place, title = "Avatar", "account", "Avatar status unknown"
+		}
+		u.serverErrorMessage(http.StatusInternalServerError, errorCause(err), subject+" may have been saved: reload the "+place+" to check before uploading again.", title)
 	case dbBusy(err):
 		u.serverError(http.StatusServiceUnavailable, errorCause(err))
 	default:
@@ -469,14 +475,31 @@ func (u *upload) render(code int, msg string) {
 // serverError logs the "http 5xx" line with a reference (serverError's format, A-141) and renders the refusal
 // page carrying the reference.
 func (u *upload) serverError(code int, cause string) {
+	msg := "Photo not saved: the market could not store it. Nothing was stored."
+	if code == http.StatusServiceUnavailable {
+		msg = "Photo not saved: the market is busy. Nothing was stored. Try again in a few seconds."
+	}
+	u.serverErrorMessage(code, cause, msg, "")
+}
+
+// serverErrorMessage preserves the usual classified 5xx log and refusal page while allowing a lost COMMIT
+// acknowledgement to say the outcome is unknown, without suggesting an automatic retry.
+func (u *upload) serverErrorMessage(code int, cause, msg, title string) {
 	ref := randomToken()[:8]
 	http5xxLog.Printf("http 5xx kind=action name=%s status=%d ref=%s cause=%s", u.r.URL.Path, code, ref, cause)
-	msg := "Photo not saved: the market could not store it. Nothing was stored. Reference: " + ref
 	if code == http.StatusServiceUnavailable {
 		u.w.Header().Set("Retry-After", busyRetryAfter)
-		msg = "Photo not saved: the market is busy. Nothing was stored. Try again in a few seconds. Reference: " + ref
 	}
-	u.render(code, msg)
+	msg += " Reference: " + ref
+	if title == "" {
+		u.render(code, msg)
+		return
+	}
+	label := "Back to the listing"
+	if u.route.kind == uploadAvatar {
+		label = "Back to your account"
+	}
+	u.a.renderUploadPage(u.w, u.r, u.user, u.token, code, title, msg, u.back, label)
 }
 
 // renderUploadPage answers with web/templates/partials/upload-error.html: msg in its error alert and a link back.
@@ -640,7 +663,22 @@ func (a *App) storeImage(ctx context.Context, r *http.Request, session string, a
 			return "", err
 		}
 	}
-	return redirect, tx.Commit()
+	if err := tx.Commit(); err != nil {
+		// PostgreSQL may have committed before the acknowledgement was lost. No later code can prove
+		// whether the image and audit row exist, even when the error looks retryable (A-209/A-224).
+		return "", uploadCommitUnknown{err}
+	}
+	return redirect, nil
+}
+
+type uploadCommitUnknown struct{ cause error }
+
+func (e uploadCommitUnknown) Error() string { return e.cause.Error() }
+func (e uploadCommitUnknown) Unwrap() error { return e.cause }
+
+func isUploadCommitUnknown(err error) bool {
+	var unknown uploadCommitUnknown
+	return errors.As(err, &unknown)
 }
 
 // imageDescription is the stored description: a photo's, read aloud to blind buyers; an avatar has none (it is
