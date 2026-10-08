@@ -60,13 +60,20 @@ func TestAwaitingBuyerCopyExplainsReceivedAmountAndSubfloorExcess(t *testing.T) 
 	for _, currency := range []string{"BTC", "XMR"} {
 		order, _ := addGuidanceOrder(t, p, currency, stateAwaitingPayment)
 		floor := amount(payoutFloor(currency, "refund"), currencyDecimals(currency))
-		want := "Make sure the full remaining amount reaches this address after any exchange withdrawal fee; an overpayment below the minimum automatic payout of " + floor + " " + currency + " is not returned automatically and stays with the vendor."
+		want := "Make sure the full remaining amount reaches this address after any exchange withdrawal fee. If you pay more than the price, completing includes any excess below the minimum automatic payout of " + floor + " " + currency + " with the release to the vendor; it is not returned separately."
 		buyerPage := p.page("/order?id="+order, p.buyerSess)
 		mustContain(t, buyerPage, want)
 		mustNotContain(t, p.page("/order?id="+order, p.vendorSess), want)
 		mustNotContain(t, p.page("/order?id="+order, p.adminSess), want)
 	}
-	// The amount-received warning is only useful while the pooled order still needs funds.
+	// A full but unconfirmed deposit leaves the order awaiting payment, but the buyer has nothing more to send.
+	fullSeen, fullSeenAddress := p.newOrder(stateAwaitingPayment)
+	p.fake.Deposit(fullSeenAddress, "tx-full-awaiting-confirmation", 0, 100000, 0)
+	p.poll()
+	if got := p.page("/order?id="+fullSeen, p.buyerSess); !strings.Contains(got, "The full required amount has been seen") || strings.Contains(got, "Make sure the full remaining amount reaches this address") {
+		t.Fatal("fully seen awaiting order has stale received-amount guidance")
+	}
+	// The amount-received warning is also absent once the order is paid.
 	paid, _ := p.newOrder(statePaid)
 	if got := p.page("/order?id="+paid, p.buyerSess); strings.Contains(got, "Make sure the full remaining amount reaches this address") {
 		t.Fatal("paid order still asks the buyer to send funds")
