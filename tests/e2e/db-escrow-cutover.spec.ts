@@ -92,7 +92,7 @@ test('intake form sets escrow only and paused with no pooled wallet; readiness p
     await expect(visitor.getByText('Not available for purchase in BTC.')).toBeVisible();
     await expect(visitor.getByRole('link', { name: 'Review order draft' })).toBeVisible();
     await buyer.goto(`/checkout?id=${productID}`);
-    await expect(buyer.getByLabel('Reference currency').locator('option')).toHaveText([/XMR/]);
+    await expect(buyer.getByLabel('Pay with').locator('option')).toHaveText([/XMR/]);
 
     // XMR escrow only as well: the listing is not available for purchase at all; no buy form, no draft form.
     await admin.goto('/admin');

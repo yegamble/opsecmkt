@@ -32,7 +32,7 @@ test('desktop: register, draft, profile persistence and sign-out', async ({ page
   await page.getByRole('link', { name: FIXTURE_LISTING, exact: true }).click();
   await fits(page);
   await page.getByRole('link', { name: 'Review order draft' }).click();
-  await page.getByLabel('Reference currency').selectOption('XMR');
+  await page.getByLabel('Pay with').selectOption('XMR');
   await page.getByRole('button', { name: 'Create unfunded draft' }).click();
   await expect(page).toHaveURL(/\/order\?id=/);
   await expect(page.getByRole('heading', { name: 'Payment is unavailable' })).toBeVisible();

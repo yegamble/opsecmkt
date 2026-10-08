@@ -75,7 +75,7 @@ test('BTC and XMR: partial payment, intake pause, confirmation, fulfillment and 
     else await expect(buyer.locator('.order-unavailable')).toContainText(`No usable key. wallet_admin ${noKey}`);
     await buyer.getByRole('link', { name: 'Review order draft' }).click();
     if (!digital) await expect(buyer.locator('.order-unavailable')).toContainText(noKey);
-    await buyer.getByLabel('Reference currency').selectOption(currency);
+    await buyer.getByLabel('Pay with').selectOption(currency);
     await buyer.getByRole('button', { name: 'Create unfunded draft' }).click();
     // Measure the draft page, not the checkout page mid-navigation (CI 36261986487 measured 504 px unstyled).
     await buyer.waitForURL(/\/order\?id=/);
@@ -107,7 +107,7 @@ test('BTC and XMR: partial payment, intake pause, confirmation, fulfillment and 
     await expect(admin.getByRole('heading', { name: `${digital ? 'BTC' : 'XMR'} intake: Enabled when wallet is available` })).toBeVisible();
     await second.goto(productURL);
     await second.getByRole('link', { name: 'Review order draft' }).click();
-    await second.getByLabel('Reference currency').selectOption(currency);
+    await second.getByLabel('Pay with').selectOption(currency);
     await second.getByRole('button', { name: 'Create unfunded draft' }).click();
     await expect(second.getByRole('heading', { name: 'New payments paused' })).toBeVisible();
     await expect(second.getByRole('button', { name: 'Request payment address' })).toHaveCount(0);
@@ -403,7 +403,7 @@ test('automatic digital delivery and administrator recovery of a rejected payout
     await buyer.getByRole('link', { name: 'Wallet XMR journey', exact: true }).click();
     await expect(buyer.locator('main')).not.toContainText(content);
     await buyer.getByRole('link', { name: 'Review order draft' }).click();
-    await buyer.getByLabel('Reference currency').selectOption('XMR');
+    await buyer.getByLabel('Pay with').selectOption('XMR');
     await buyer.getByRole('button', { name: 'Create unfunded draft' }).click();
     await buyer.getByRole('button', { name: 'Request payment address' }).click();
     await expectNotice(buyer, 'Payment address ready.');

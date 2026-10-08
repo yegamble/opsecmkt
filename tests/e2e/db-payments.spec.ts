@@ -19,7 +19,7 @@ test('payments are visibly disabled without a provider', async ({ page }) => {
   await page.getByRole('link', { name: FIXTURE_LISTING, exact: true }).click();
   await page.getByRole('link', { name: 'Review order draft' }).click();
   await expect(page.locator('main')).toContainText('UNFUNDED DRAFT ONLY.');
-  await page.getByLabel('Reference currency').selectOption('BTC');
+  await page.getByLabel('Pay with').selectOption('BTC');
   await page.getByRole('button', { name: 'Create unfunded draft' }).click();
   await expect(page).toHaveURL(/\/order\?id=/);
   await expect(page.getByRole('heading', { name: 'Payment is unavailable' })).toBeVisible();

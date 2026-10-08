@@ -60,7 +60,7 @@ test('Bitcoin escrow paste journey: keys, checkout and funding, completion, the 
     await Promise.all([buyer.waitForEvent('load'), buyer.keyboard.press('Enter')]);
     await tabTo(buyer, buyer.getByRole('link', { name: 'Review order draft' }));
     await Promise.all([buyer.waitForEvent('load'), buyer.keyboard.press('Enter')]);
-    await expect(buyer.getByLabel('Reference currency')).toHaveValue('BTC');
+    await expect(buyer.getByLabel('Pay with')).toHaveValue('BTC');
     await pressSubmit(buyer, buyer.getByRole('button', { name: 'Create unfunded draft' }));
     await buyer.waitForURL(/\/order\?id=/);
     await expect(buyer.getByRole('heading', { name: 'Or pay into a Bitcoin escrow (regtest only)' })).toBeVisible();

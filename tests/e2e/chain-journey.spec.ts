@@ -109,7 +109,7 @@ test('isolated real chains: seeded buyer/vendor partial deposits, confirmation, 
     const makeOrder = async () => {
       await buyer.goto(productURL);
       await buyer.getByRole('link', { name: 'Review order draft' }).click();
-      await buyer.getByLabel('Reference currency').selectOption(currency);
+      await buyer.getByLabel('Pay with').selectOption(currency);
       await buyer.getByRole('button', { name: 'Create unfunded draft' }).click();
       await buyer.getByRole('button', { name: 'Request payment address' }).click();
       await expect(buyer.locator('.page-head .badge')).toHaveText('Awaiting payment');
@@ -218,7 +218,7 @@ async function placeOrder(buyer: Page, title: string, currency: string) {
   await buyer.goto(`/?q=${encodeURIComponent(title)}`);
   await buyer.getByRole('link', { name: title, exact: true }).click();
   await buyer.getByRole('link', { name: 'Review order draft' }).click();
-  await buyer.getByLabel('Reference currency').selectOption(currency);
+  await buyer.getByLabel('Pay with').selectOption(currency);
   await buyer.getByRole('button', { name: 'Create unfunded draft' }).click();
   await buyer.getByRole('button', { name: 'Request payment address' }).click();
   await expect(buyer.locator('.page-head .badge')).toHaveText('Awaiting payment');

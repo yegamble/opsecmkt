@@ -70,7 +70,7 @@ test('vendor contact, unread notifications and demotion archive', async ({ brows
   // A cancelled draft notifies the vendor, who sees the count in the navigation at 320px.
   await buyer.goto(productURL);
   await buyer.getByRole('link', { name: 'Review order draft' }).click();
-  await buyer.getByLabel('Reference currency').selectOption('BTC');
+  await buyer.getByLabel('Pay with').selectOption('BTC');
   await buyer.getByRole('button', { name: 'Create unfunded draft' }).click();
   await buyer.waitForURL(/\/order\?id=/);
   const orderURL = buyer.url();
