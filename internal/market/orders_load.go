@@ -377,6 +377,13 @@ func loadOrderDetail(ctx context.Context, a *App, r *http.Request, d *PageData) 
 		return err
 	}
 	vendorKeyGate(d)
+	if d.OrderViewer == roleVendor && o.Kind == "physical" && o.State == statePaid {
+		ok, err := userCanReceiveEncrypted(ctx, a.db, o.VendorID)
+		if err != nil {
+			return err
+		}
+		d.VendorKeyUnusable = !ok
+	}
 	if err := vendorKeyChangeGate(ctx, a, d); err != nil {
 		return err
 	}

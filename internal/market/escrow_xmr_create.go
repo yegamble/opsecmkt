@@ -122,7 +122,11 @@ func xmrEscrowCheckoutAction(c *actionCtx) (actionResult, error) {
 	} else if !eligible {
 		return actionResult{}, errXMREscrowKind
 	} else if price < payoutFloor(o.Currency, "release") {
-		return actionResult{}, fail(400, subFloorListing(o.Currency))
+		message, err := subFloorListingForProduct(ctx, c.Tx, o.ProductID, o.Currency)
+		if err != nil {
+			return actionResult{}, err
+		}
+		return actionResult{}, fail(400, message)
 	}
 	releaseDays := 0
 	if o.Kind == "physical" {

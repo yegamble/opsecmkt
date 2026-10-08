@@ -259,11 +259,18 @@ func TestPaidOrderVendorKeyStopsBeingUsable(t *testing.T) {
 		b = html.UnescapeString(p.body("GET", "/order?id="+order, p.buyerSess, nil, 200))
 		mustContain(t, b, "Send your shipping address", "No usable key.", noUsableKeyPaid)
 		mustNotContain(t, b, sendAddressLabel)
+		vendorPage := html.UnescapeString(p.body("GET", "/order?id="+order, p.vendorSess, nil, 200))
+		mustContain(t, vendorPage, "No usable key.", "Buyers cannot encrypt their shipping address to your saved PGP key.", "/account")
+		mustNotContain(t, vendorPage, "The buyer sends their shipping address to you as an encrypted message.")
 		// The order stays paid; nothing else changes.
 		if p.count("SELECT count(*) FROM orders WHERE id=$1 AND state=$2", order, statePaid) != 1 {
 			t.Fatalf("%s: the order left Paid", variant)
 		}
 	}
+	p.setKey(p.vendor.ID, testPGPKey(t, p.vendor.Handle)[1])
+	vendorPage := html.UnescapeString(p.body("GET", "/order?id="+order, p.vendorSess, nil, 200))
+	mustContain(t, vendorPage, "The buyer sends their shipping address to you as an encrypted message.")
+	mustNotContain(t, vendorPage, "Buyers cannot encrypt their shipping address to your saved PGP key.")
 	// A digital paid order never shows the shipping prompt.
 	digital := p.testEnv.order(p.buyer.ID, p.product(p.vendor.ID, "digital"), "BTC", statePaid)
 	b = html.UnescapeString(p.body("GET", "/order?id="+digital, p.buyerSess, nil, 200))

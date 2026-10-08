@@ -307,8 +307,9 @@ type PageData struct {
 	MessageTo           string       // messages page: validated ?to handle for the recipient field
 	OrderViewer         string       // order page: "buyer", "vendor" or "moderator" (read-only dispute review)
 	UnreadNotifications int          // signed-in users, every page
-	// VendorKeyUnusable (A-83): a physical listing's product and checkout pages, and its buyer's order page, when the
-	// vendor has no key that can receive encrypted messages (canReceiveEncrypted), so no shipping address can be sent.
+	// VendorKeyUnusable (A-83/A-225): a physical listing's product and checkout pages, and its buyer's order page, when
+	// the vendor has no key that can receive encrypted messages (canReceiveEncrypted); on a paid physical order it
+	// also tells the vendor to update their key before buyers send shipping addresses.
 	VendorKeyUnusable bool
 	// PurchaseBlocks (A-444): a listing's product and checkout pages, each coin whose intake is escrow only while the
 	// listing cannot use its escrow (escrow_readiness.go), PurchaseBlocked the same by coin, and NoPurchase when every

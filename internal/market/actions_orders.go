@@ -60,7 +60,11 @@ func orderDraftAction(c *actionCtx) (actionResult, error) {
 		total = xmr
 	}
 	if total < payoutFloor(currency, "release") {
-		return actionResult{}, fail(400, subFloorListing(currency))
+		otherPrice := btc
+		if currency == "BTC" {
+			otherPrice = xmr
+		}
+		return actionResult{}, fail(400, subFloorListing(currency, otherPrice))
 	}
 	id := randomToken()
 	err = tx.QueryRowContext(ctx, `INSERT INTO orders(id,buyer_id,product_id,currency,amount) VALUES($1,$2,$3,$4,$5) ON CONFLICT(buyer_id,product_id,currency) WHERE state='draft' DO UPDATE SET amount=excluded.amount RETURNING id`, id, c.User.ID, f.Get("product_id"), currency, total).Scan(&id)
@@ -71,13 +75,29 @@ func orderDraftAction(c *actionCtx) (actionResult, error) {
 // Bitcoin, A-232 for Monero). validateListing refuses such prices (Bitcoin since A-99, Monero since A-232), but a
 // listing priced earlier keeps its price: its release would never be sent automatically and an overpayment on it
 // could not be returned separately (splitPayout).
-func subFloorListing(currency string) string {
+func subFloorListing(currency string, otherPrice int64) string {
 	coin, other := "Bitcoin", "XMR"
+	otherCurrency := "XMR"
 	if currency == "XMR" {
 		coin, other = "Monero", "BTC"
+		otherCurrency = "BTC"
 	}
-	return "This listing's " + coin + " price is below the minimum automatic payout of " + amount(payoutFloor(currency, "release"), currencyDecimals(currency)) + " " + currency +
-		" (it was priced before that minimum applied), so it cannot be ordered in " + currency + ". Order in " + other + ", or ask the vendor to raise the " + coin + " price. Nothing was changed."
+	message := "This listing's " + coin + " price is below the minimum automatic payout of " + amount(payoutFloor(currency, "release"), currencyDecimals(currency)) + " " + currency +
+		" (it was priced before that minimum applied), so it cannot be ordered in " + currency + "."
+	if otherPrice >= payoutFloor(otherCurrency, "release") {
+		message += " Order in " + other + ", or ask the vendor to raise the " + coin + " price."
+	} else {
+		message += " Ask the vendor to raise the " + coin + " price."
+	}
+	return message + " Nothing was changed."
+}
+
+func subFloorListingForProduct(ctx context.Context, q rowQuerier, productID, currency string) (string, error) {
+	var otherPrice int64
+	if err := q.QueryRowContext(ctx, "SELECT CASE WHEN $2='XMR' THEN btc ELSE xmr END FROM products WHERE id=$1", productID, currency).Scan(&otherPrice); err != nil {
+		return "", err
+	}
+	return subFloorListing(currency, otherPrice), nil
 }
 
 // disputeAction opens a dispute by moving a paid, shipped or delivered order to disputed (P3).
