@@ -42,11 +42,11 @@ func TestAdminChangesRoleOfAnyAccountByHandle(t *testing.T) {
 	mustNotContain(t, page, "lookup_old_vendor ·")
 
 	// The vendor is demoted by handle; its listing is archived and both accounts are audited as before.
-	agExpect(e, "/admin", admin, form("action", "role", "role", "buyer", "handle", " lookup_old_vendor "), 303, "")
+	agExpect(e, "/admin", admin, form("action", "role", "password", testPassword, "role", "buyer", "handle", " lookup_old_vendor "), 303, "")
 	if agStr(e, "SELECT role FROM users WHERE id=$1", vendorID) != "buyer" || agInt(e, "SELECT count(*) FROM products WHERE id=$1 AND archived", product) != 1 {
 		t.Fatal("oldest vendor not demoted by handle or listing not archived")
 	}
-	if !e.auditExact(adminID, "Changed role of lookup_old_vendor from vendor to buyer; archived 1 active listing(s)") ||
+	if !e.auditExact(adminID, "Changed role of lookup_old_vendor from vendor to buyer; archived 1 active listing(s) (confirmed with password)") ||
 		!e.auditExact(vendorID, "Role changed from vendor to buyer by administrator lookup_admin") ||
 		!e.auditExact(vendorID, "Archived 1 active listing(s): role changed to buyer by administrator lookup_admin") {
 		t.Fatal("role change audit rows changed")
@@ -55,7 +55,7 @@ func TestAdminChangesRoleOfAnyAccountByHandle(t *testing.T) {
 	before := agInt(e, "SELECT count(*) FROM audit_events")
 	// An unknown handle answers 404 with the admin page: the error, and the form keeping what was typed.
 	for _, typed := range []string{"no_such_account", "Lookup_Old_Vendor", "bad handle!", "lookup_admin2"} {
-		w := e.do("POST", "/admin", admin, form("action", "role", "role", "moderator", "handle", typed))
+		w := e.do("POST", "/admin", admin, form("action", "role", "password", testPassword, "role", "moderator", "handle", typed))
 		if w.Code != 404 || !strings.HasPrefix(w.Header().Get("Content-Type"), "text/html") {
 			t.Fatalf("unknown handle %q: status %d (%s)", typed, w.Code, w.Header().Get("Content-Type"))
 		}
@@ -66,9 +66,9 @@ func TestAdminChangesRoleOfAnyAccountByHandle(t *testing.T) {
 		mustNotContain(t, adminForm(t, body, "/admin/reset-factors", ""), `value="`+html.EscapeString(typed)+`"`)
 	}
 	// Administrator is never assignable, and the administrator's own role stays fixed.
-	agExpect(e, "/admin", admin, form("action", "role", "role", "admin", "handle", "lookup_old_vendor"), 400, "Choose buyer, vendor, or moderator")
-	agExpect(e, "/admin", admin, form("action", "role", "role", "buyer", "handle", "lookup_admin"), 400, "Cannot change your own administrator role")
-	agExpect(e, "/admin", admin, form("action", "role", "role", "buyer", "handle", ""), 400, "Enter an account handle")
+	agExpect(e, "/admin", admin, form("action", "role", "password", testPassword, "role", "admin", "handle", "lookup_old_vendor"), 400, "Choose buyer, vendor, or moderator")
+	agExpect(e, "/admin", admin, form("action", "role", "password", testPassword, "role", "buyer", "handle", "lookup_admin"), 400, "Cannot change your own administrator role")
+	agExpect(e, "/admin", admin, form("action", "role", "password", testPassword, "role", "buyer", "handle", ""), 400, "Enter an account handle")
 	if agInt(e, "SELECT count(*) FROM audit_events") != before || agInt(e, "SELECT count(*) FROM users WHERE role='admin'") != 2 || agStr(e, "SELECT role FROM users WHERE id=$1", vendorID) != "buyer" {
 		t.Fatal("refused role change altered state")
 	}

@@ -14,7 +14,7 @@ func TestReviewListingCreationRejectsDemotedRequestUser(t *testing.T) {
 	vendor, _ := e.user("listing_stale_vendor", "vendor")
 	_, admin := e.user("listing_stale_admin", "admin")
 	stale := e.loadUser(vendor)
-	e.check(e.do("POST", "/admin", admin, url.Values{"action": {"role"}, "handle": {e.loadUser(vendor).Handle}, "role": {"buyer"}}), 303)
+	e.check(e.do("POST", "/admin", admin, url.Values{"action": {"role"}, "password": {testPassword}, "handle": {e.loadUser(vendor).Handle}, "role": {"buyer"}}), 303)
 	tx, err := e.DB.BeginTx(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -44,7 +44,7 @@ func TestReviewDemotionWaitsForListingCreationThenArchivesIt(t *testing.T) {
 	}
 	done := make(chan int, 1)
 	go func() {
-		done <- e.do("POST", "/admin", admin, url.Values{"action": {"role"}, "handle": {e.loadUser(vendor).Handle}, "role": {"buyer"}}).Code
+		done <- e.do("POST", "/admin", admin, url.Values{"action": {"role"}, "password": {testPassword}, "handle": {e.loadUser(vendor).Handle}, "role": {"buyer"}}).Code
 	}()
 	deadline := time.Now().Add(5 * time.Second)
 	blocked := false

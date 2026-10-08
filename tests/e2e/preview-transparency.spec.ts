@@ -79,6 +79,7 @@ test('admin transparency panels are server-rendered forms and export is visibly 
   await noScriptsNoOverflow(page);
 
   await canaryPanel.getByLabel('Clearsigned statement').fill('-----BEGIN PGP SIGNED MESSAGE-----');
+  await canaryPanel.getByLabel('Current password').fill('preview-password');
   await canaryPanel.getByRole('button', { name: 'Publish canary' }).click();
   await expect(page.locator('body')).toContainText('Read-only preview');
 });

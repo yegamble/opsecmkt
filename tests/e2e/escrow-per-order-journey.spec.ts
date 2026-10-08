@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { activateKey, administrator, buyerPassword, context, pressSubmit, pressSubmitGet, register, shot, simPost, tabTo, typeInto, vendorPassword } from './escrow-helpers';
+import { activateKey, administrator, buyerPassword, context, password, pressSubmit, pressSubmitGet, register, shot, simPost, tabTo, typeInto, vendorPassword } from './escrow-helpers';
 
 // A-455 (shape (b) slice 3; rulings P4-R2, P4-R18, ES-9): a vendor registers a per-order wallet key and activates it by
 // signing the practice transaction of a per-order wallet, with JavaScript disabled at 320 px and every form driven by
@@ -22,6 +22,7 @@ test('Per-order wallet key: registration, practice signing, the key type on the 
   await tabTo(admin, role.getByLabel('Role'));
   await role.getByLabel('Role').press('v');
   await expect(role.getByLabel('Role')).toHaveValue('vendor');
+  await typeInto(admin, role.getByLabel('Current password'), password);
   await pressSubmit(admin, role.getByRole('button', { name: 'Update role' }));
   await expect(admin.getByRole('status').filter({ hasText: 'Account role saved.' })).toBeVisible();
 

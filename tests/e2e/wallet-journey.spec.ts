@@ -36,13 +36,14 @@ test('BTC and XMR: partial payment, intake pause, confirmation, fulfillment and 
   await admin.getByLabel('Password', { exact: true }).fill(password);
   await admin.getByRole('button', { name: 'Initialize marketplace' }).click();
   await expect(admin).toHaveURL(/\/admin\?welcome=1$/);
+  await admin.locator('.admin-auth').getByLabel('Current password').fill(password);
   await admin.locator('.admin-auth').getByRole('button', { name: 'Turn CAPTCHA off' }).click();
   const buyer = await signedIn(browser, baseURL, 'wallet_buyer', 'wallet-browser-buyer-password-123', true);
   const second = await signedIn(browser, baseURL, 'wallet_second', 'wallet-browser-second-password-123', true);
   // The digital XMR listing belongs to wallet_vendor; wallet_admin is the BTC vendor, which must also add a PGP key for
   // its physical listing (A-83). (Correct password confirmations spend no per-account budget since A-274.)
   const vendor = await signedIn(browser, baseURL, 'wallet_vendor', vendorPassword, true);
-  await setRole(admin, 'wallet_vendor', 'vendor');
+  await setRole(admin, 'wallet_vendor', 'vendor', password);
 
   for (const currency of ['BTC', 'XMR']) {
     const digital = currency === 'XMR';
@@ -189,7 +190,7 @@ test('funded dispute: encrypted moderator evidence, independent resolution and o
   const admin = await signedIn(browser, baseURL, 'wallet_admin', password, false);
   const buyer = await signedIn(browser, baseURL, 'wallet_buyer', 'wallet-browser-buyer-password-123', false);
   const moderator = await signedIn(browser, baseURL, 'wallet_moderator', 'wallet-browser-moderator-password-123', true);
-  await setRole(admin, 'wallet_moderator', 'moderator');
+  await setRole(admin, 'wallet_moderator', 'moderator', password);
   await moderator.goto('/account');
   const profile = moderator.locator('form', { has: moderator.getByRole('button', { name: 'Save profile' }) });
   await profile.getByLabel('PGP public key', { exact: true }).fill(pgpFixture('recipient.pub.asc'));

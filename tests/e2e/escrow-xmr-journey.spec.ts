@@ -152,6 +152,7 @@ test('Monero escrow: checkout with the custody copy, funding at 9 and 10 confirm
   await typeInto(admin, admin.getByLabel('Password', { exact: true }), password);
   await pressSubmit(admin, admin.getByRole('button', { name: 'Initialize marketplace' }));
   await expect(admin).toHaveURL(/\/admin\?welcome=1$/);
+  await typeInto(admin, admin.locator('.admin-auth').getByLabel('Current password'), password);
   await pressSubmit(admin, admin.locator('.admin-auth').getByRole('button', { name: 'Turn CAPTCHA off' }));
   const buyer = await context(browser, baseURL);
   const vendor = await context(browser, baseURL);
@@ -163,6 +164,7 @@ test('Monero escrow: checkout with the custody copy, funding at 9 and 10 confirm
   await tabTo(admin, role.getByLabel('Role'));
   await role.getByLabel('Role').press('v');
   await expect(role.getByLabel('Role')).toHaveValue('vendor');
+  await typeInto(admin, role.getByLabel('Current password'), password);
   await pressSubmit(admin, role.getByRole('button', { name: 'Update role' }));
   await expect(admin.getByRole('status').filter({ hasText: 'Account role saved.' })).toBeVisible();
   await vendor.goto('/account');

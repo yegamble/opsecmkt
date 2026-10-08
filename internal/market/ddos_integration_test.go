@@ -611,10 +611,12 @@ func TestSlowWalletDoesNotRefuseQueuedListingWriters(t *testing.T) {
 func TestSlowWalletDoesNotRefuseStaffOrCancel(t *testing.T) {
 	w := newOrderWorld(t)
 	w.e.usableKey(w.vendorID)
-	// Two administrators: one administrator's confirmed actions queue on that administrator's own row.
+	// Separate administrator accounts keep this test on the shared wallet/listing locks;
+	// confirmed staff actions also serialize on their own actor row (A-222).
 	_, admin := w.e.user("slow_cancel_admin", "admin")
 	_, admin2 := w.e.user("slow_cancel_admin2", "admin")
 	_, admin3 := w.e.user("slow_cancel_admin3", "admin")
+	_, admin4 := w.e.user("slow_cancel_admin4", "admin")
 	wallet := &slowWallet{hold: 5 * time.Second, slow: map[string]bool{}, entered: make(chan string, 1)}
 	w.e.A.payments["BTC"] = wallet
 	p := w.e.product(w.vendorID, "physical")
@@ -651,7 +653,7 @@ func TestSlowWalletDoesNotRefuseStaffOrCancel(t *testing.T) {
 			return w.post("/orders/ship", w.vendor, form("order_id", shipped))
 		},
 		"demote the vendor": func() *httptest.ResponseRecorder {
-			return w.post("/admin", admin, url.Values{"action": {"role"}, "handle": {handle(w.vendorID)}, "role": {"buyer"}})
+			return w.post("/admin", admin4, url.Values{"action": {"role"}, "password": {testPassword}, "handle": {handle(w.vendorID)}, "role": {"buyer"}})
 		},
 	}
 	type result struct {

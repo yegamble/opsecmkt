@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { expect, type Browser, type Locator, type Page } from '@playwright/test';
 import { waitForStyles } from './styles';
+import { ADMIN } from './db-fixtures';
 
 // Shared helpers for the database specs that submit real forms with JavaScript disabled.
 
@@ -35,11 +36,12 @@ export async function signedIn(browser: Browser, baseURL: string | undefined, ha
 }
 
 // Submits the admin "Assign an account role" form for handle (a text input looked up on the server).
-export async function setRole(admin: Page, handle: string, role: string) {
+export async function setRole(admin: Page, handle: string, role: string, adminPassword = ADMIN.password) {
   await admin.goto('/admin');
   const form = admin.locator('form', { has: admin.getByRole('button', { name: 'Update role' }) });
   await form.getByLabel('Account handle').fill(handle);
   await form.getByLabel('Role').selectOption(role);
+  await form.getByLabel('Current password').fill(adminPassword);
   await form.getByRole('button', { name: 'Update role' }).click();
   await expectNotice(admin, 'Account role saved.');
   await expect(admin).toHaveURL(/\/admin$/);

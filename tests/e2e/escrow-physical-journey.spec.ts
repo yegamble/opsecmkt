@@ -21,7 +21,8 @@ async function administrator(admin: Page) {
     await typeInto(admin, admin.getByLabel('Password', { exact: true }), password);
     await pressSubmit(admin, admin.getByRole('button', { name: 'Initialize marketplace' }));
     await expect(admin).toHaveURL(/\/admin\?welcome=1$/);
-    await pressSubmit(admin, admin.locator('.admin-auth').getByRole('button', { name: 'Turn CAPTCHA off' }));
+    await typeInto(admin, admin.locator('.admin-auth').getByLabel('Current password'), password);
+  await pressSubmit(admin, admin.locator('.admin-auth').getByRole('button', { name: 'Turn CAPTCHA off' }));
     return;
   }
   await admin.goto('/login');
@@ -43,6 +44,7 @@ test('Bitcoin escrow physical order: shipped with a claim address, the vendor si
   await tabTo(admin, role.getByLabel('Role'));
   await role.getByLabel('Role').press('v');
   await expect(role.getByLabel('Role')).toHaveValue('vendor');
+  await typeInto(admin, role.getByLabel('Current password'), password);
   await pressSubmit(admin, role.getByRole('button', { name: 'Update role' }));
   await expect(admin.getByRole('status').filter({ hasText: 'Account role saved.' })).toBeVisible();
 

@@ -627,7 +627,7 @@ func TestStaffDemotionDeletesAvatar(t *testing.T) {
 		modID, _ := e.user("demote_mod_to_"+to, "moderator")
 		avatar := e.image(modID, "", "avatar")
 		e.wantHidden(avatar, "hidden moderator's avatar before the change")
-		agExpect(e, "/admin", admin, form("action", "role", "role", to, "handle", "demote_mod_to_"+to), 303, "")
+		agExpect(e, "/admin", admin, form("action", "role", "password", testPassword, "role", to, "handle", "demote_mod_to_"+to), 303, "")
 		if agStr(e, "SELECT role FROM users WHERE id=$1", modID) != to {
 			t.Fatalf("moderator not changed to %s", to)
 		}
@@ -642,19 +642,19 @@ func TestStaffDemotionDeletesAvatar(t *testing.T) {
 		if agInt(e, "SELECT count(*) FROM notifications WHERE user_id=$1 AND body=$2", modID, note) != 1 {
 			t.Fatalf("moderator → %s: owner not notified", to)
 		}
-		if !e.auditExact(modID, audit) || !e.auditExact(adminID, "Changed role of demote_mod_to_"+to+" from moderator to "+to+"; removed their staff avatar") {
+		if !e.auditExact(modID, audit) || !e.auditExact(adminID, "Changed role of demote_mod_to_"+to+" from moderator to "+to+"; removed their staff avatar (confirmed with password)") {
 			t.Fatalf("moderator → %s: audit rows missing", to)
 		}
 	}
 	// A moderator without an avatar is changed with no avatar note or audit row.
 	bareID, _ := e.user("demote_mod_bare", "moderator")
-	agExpect(e, "/admin", admin, form("action", "role", "role", "vendor", "handle", "demote_mod_bare"), 303, "")
+	agExpect(e, "/admin", admin, form("action", "role", "password", testPassword, "role", "vendor", "handle", "demote_mod_bare"), 303, "")
 	if agInt(e, "SELECT count(*) FROM notifications WHERE user_id=$1", bareID) != 0 || e.auditExact(bareID, audit) {
 		t.Fatal("a moderator without an avatar got the avatar note or audit row")
 	}
 	// Administrators' roles are not changed here: the other administrator's hidden avatar stays, and stays hidden.
 	adminAvatar := e.image(otherAdminID, "", "avatar")
-	agExpect(e, "/admin", admin, form("action", "role", "role", "vendor", "handle", "demote_other_admin"), 404, "No buyer, vendor or moderator has the handle")
+	agExpect(e, "/admin", admin, form("action", "role", "password", testPassword, "role", "vendor", "handle", "demote_other_admin"), 404, "No buyer, vendor or moderator has the handle")
 	if agStr(e, "SELECT role FROM users WHERE id=$1", otherAdminID) != "admin" || e.imageRows(adminAvatar.id) != 1 {
 		t.Fatal("the admin role form changed an administrator or their avatar")
 	}
@@ -663,7 +663,7 @@ func TestStaffDemotionDeletesAvatar(t *testing.T) {
 	vendorID, _ := e.user("promote_vendor", "vendor")
 	vendorAvatar := e.image(vendorID, "", "avatar")
 	e.wantPublic(vendorAvatar, "vendor's avatar")
-	agExpect(e, "/admin", admin, form("action", "role", "role", "moderator", "handle", "promote_vendor"), 303, "")
+	agExpect(e, "/admin", admin, form("action", "role", "password", testPassword, "role", "moderator", "handle", "promote_vendor"), 303, "")
 	if e.imageRows(vendorAvatar.id) != 1 || agStr(e, "SELECT staff_hidden::text FROM users WHERE id=$1", vendorID) != "true" {
 		t.Fatal("promotion deleted the avatar or did not start hidden")
 	}
@@ -674,8 +674,8 @@ func TestStaffDemotionDeletesAvatar(t *testing.T) {
 	// was made as staff and does not outlive the role (PR #28 re-promotion follow-up).
 	listedID, _ := e.user("listed_mod", "moderator")
 	agExec(e, "UPDATE users SET staff_hidden=false WHERE id=$1", listedID)
-	agExpect(e, "/admin", admin, form("action", "role", "role", "vendor", "handle", "listed_mod"), 303, "")
-	agExpect(e, "/admin", admin, form("action", "role", "role", "moderator", "handle", "listed_mod"), 303, "")
+	agExpect(e, "/admin", admin, form("action", "role", "password", testPassword, "role", "vendor", "handle", "listed_mod"), 303, "")
+	agExpect(e, "/admin", admin, form("action", "role", "password", testPassword, "role", "moderator", "handle", "listed_mod"), 303, "")
 	if agStr(e, "SELECT staff_hidden::text FROM users WHERE id=$1", listedID) != "true" {
 		t.Fatal("a re-promoted moderator kept the public staff list choice from before the demotion")
 	}

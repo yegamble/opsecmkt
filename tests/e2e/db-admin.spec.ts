@@ -34,12 +34,14 @@ test('promoting a buyer to vendor opens the vendor desk; the listing form shows 
   const unknown = uniqueHandle('nobody');
   await roleForm.getByLabel('Account handle').fill(unknown);
   await roleForm.getByLabel('Role').selectOption('vendor');
+  await roleForm.getByLabel('Current password').fill(ADMIN.password);
   expect(await submitStatus(admin, () => roleForm.getByRole('button', { name: 'Update role' }).click())).toBe(404);
   await expect(admin.getByRole('alert')).toHaveText(`No buyer, vendor or moderator has the handle "${unknown}". Check the spelling: handles are case-sensitive, and administrator roles cannot be changed here.`);
   await expect(roleForm.getByLabel('Account handle')).toHaveValue(unknown);
   await expect(roleForm.getByLabel('Role')).toHaveValue('vendor');
   // The administrator's own role is fixed.
   await roleForm.getByLabel('Account handle').fill(ADMIN.handle);
+  await roleForm.getByLabel('Current password').fill(ADMIN.password);
   expect(await submitStatus(admin, () => roleForm.getByRole('button', { name: 'Update role' }).click())).toBe(400);
   await expect(admin.locator('body')).toHaveText('Cannot change your own administrator role');
   await setRole(admin, vendorHandle, 'vendor');
@@ -176,7 +178,7 @@ test('site settings, account suspension, operator key, canary signature checks a
   await admin.waitForLoadState();
   await admin.reload();
   await expect(siteName).toHaveValue(renamed);
-  await expect(admin.locator('table').last()).toContainText('Saved marketplace settings');
+  await expect(admin.locator('table').last()).toContainText(`Saved marketplace site name from ${JSON.stringify(original)} to ${JSON.stringify(renamed)}`);
   await siteName.fill('    ');
   expect(await submitStatus(admin, saveSettings)).toBe(400);
   await expect(admin.locator('body')).toHaveText('Invalid settings');
@@ -265,11 +267,13 @@ test('site settings, account suspension, operator key, canary signature checks a
   const keyPanel = admin.getByRole('region', { name: 'Operator PGP key' });
   const canaryPanel = admin.getByRole('region', { name: 'Warrant canary' });
   await expect(canaryPanel).toContainText('No signed canary published');
+  await keyPanel.getByLabel('Current password').fill(ADMIN.password);
   await keyPanel.getByLabel('Armored public key').fill('-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nbm90IGEga2V5\n-----END PGP PUBLIC KEY BLOCK-----');
   expect(await submitStatus(admin, () => keyPanel.getByRole('button', { name: 'Save operator key' }).click())).toBe(400);
   await expect(admin.locator('body')).toContainText('Operator key rejected:');
   await admin.goto('/admin');
   await keyPanel.getByLabel('Armored public key').fill(pgpFixture('recipient.pub.asc'));
+  await keyPanel.getByLabel('Current password').fill(ADMIN.password);
   expect(await submitStatus(admin, () => keyPanel.getByRole('button', { name: 'Save operator key' }).click())).toBe(303);
   await expect(admin).toHaveURL(/\/admin#transparency$/);
   await expectNotice(admin, 'Operator PGP key saved.');
@@ -279,6 +283,7 @@ test('site settings, account suspension, operator key, canary signature checks a
   await expect(keyPanel.locator('.fingerprint')).toHaveText(RECIPIENT_FINGERPRINT);
 
   // A statement signed by a different key is rejected and nothing is published.
+  await canaryPanel.getByLabel('Current password').fill(ADMIN.password);
   await canaryPanel.getByLabel('Clearsigned statement').fill(pgpFixture('canary.other-key.asc'));
   expect(await submitStatus(admin, () => canaryPanel.getByRole('button', { name: 'Publish canary' }).click())).toBe(400);
   await expect(admin.locator('body')).toHaveText('Canary rejected: signature does not verify with the configured key');
@@ -286,6 +291,7 @@ test('site settings, account suspension, operator key, canary signature checks a
   await expect(admin.locator('section.canary .badge')).toHaveText('No signed canary published');
   // The same statement signed by the operator key is published and verified on the public page.
   await admin.goto('/admin');
+  await canaryPanel.getByLabel('Current password').fill(ADMIN.password);
   await canaryPanel.getByLabel('Clearsigned statement').fill(pgpFixture('canary.recipient-key.asc'));
   expect(await submitStatus(admin, () => canaryPanel.getByRole('button', { name: 'Publish canary' }).click())).toBe(303);
   await expect(admin).toHaveURL(/\/canary$/);
@@ -319,7 +325,7 @@ test('site settings, account suspension, operator key, canary signature checks a
     const exported = readFileSync(await download.path());
     const lines = exported.toString('utf8').trim().split('\n').map(l => JSON.parse(l));
     expect(lines.at(-1).id).toBe(Number(upto));
-    expect(lines.map(l => l.action)).toContain(`Set operator PGP key ${RECIPIENT_FINGERPRINT.replace(/ /g, '')} for canary verification`);
+    expect(lines.map(l => l.action)).toContain(`Set operator PGP key ${RECIPIENT_FINGERPRINT.replace(/ /g, '')} for canary verification (confirmed with password)`);
     const response = await admin.request.get(`/admin/audit-export?upto=${upto}`);
     expect(response.headers()['content-type']).toBe('application/x-ndjson');
     expect(response.headers()['content-disposition']).toBe(`attachment; filename="audit-events-upto-${upto}.jsonl"`);

@@ -238,7 +238,7 @@ func TestDemotionArchiveIsNotATakedown(t *testing.T) {
 	agExpect(e, "/admin/listing", admin, withField(take, "reason", reason), 303, "")
 
 	// Demotion archives the active listing without a reason and leaves the takedown as it was.
-	agExpect(e, "/admin", admin, form("action", "role", "role", "buyer", "handle", "tdd_vendor"), 303, "")
+	agExpect(e, "/admin", admin, form("action", "role", "password", testPassword, "role", "buyer", "handle", "tdd_vendor"), 303, "")
 	if archived, r := takenDown(e, plain); !archived || r != "" {
 		t.Fatalf("demotion archive: archived=%v reason=%q", archived, r)
 	}
@@ -257,7 +257,7 @@ func TestDemotionArchiveIsNotATakedown(t *testing.T) {
 	}
 
 	// Promoted again, the vendor restores the demotion-archived listing as before, but not the taken-down one.
-	agExpect(e, "/admin", admin, form("action", "role", "role", "vendor", "handle", "tdd_vendor"), 303, "")
+	agExpect(e, "/admin", admin, form("action", "role", "password", testPassword, "role", "vendor", "handle", "tdd_vendor"), 303, "")
 	mustContain(t, e.body("GET", "/listing-edit?id="+plain, vendor, nil, 200), `action="/listings/restore"`)
 	agExpect(e, "/listings/restore", vendor, form("id", plain), 303, "")
 	agExpect(e, "/listings/restore", vendor, form("id", taken), 409, reason)
