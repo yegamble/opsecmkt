@@ -234,6 +234,8 @@ type PageData struct {
 	// P4 Inventory (uses Product.Archived)
 	Listing   *ListingView
 	Inventory *InventoryView
+	// VendorReadiness: the seller's current listing, payment and settlement prerequisites, without wallet details.
+	VendorReadiness *VendorReadinessView
 
 	// P5 Payments
 	Payment         *PaymentView
@@ -546,6 +548,18 @@ type DrainBalance struct {
 type ReadinessVendor struct {
 	Handle   string
 	Listings int
+}
+
+// VendorReadinessView is the vendor dashboard's concise view of what the current intake modes can accept.
+type VendorReadinessView struct {
+	EncryptionUsable bool
+	Currencies       []VendorCurrencyReadiness
+}
+
+type VendorCurrencyReadiness struct {
+	Currency, Intake, Provider, Escrow, Payout, Checkout string
+	PooledIntake, PayoutNeeded, PayoutSaved              bool
+	EscrowKeyRequired, EscrowKeyActive                   bool
 }
 
 type ProviderStatus struct {
