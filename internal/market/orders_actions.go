@@ -66,17 +66,19 @@ const sellerSuspended = "The seller of this listing is suspended, so it accepts 
 
 // lockNewIntake serializes a new draft or payment request with suspension and role changes. A suspension updates the
 // vendor's account under FOR NO KEY UPDATE, which conflicts with this FOR SHARE until the new intake commits. The
-// buyer's stronger lock serializes the awaiting-payment cap; acquire the two account rows in id order so reciprocal
-// vendor-to-vendor purchases cannot deadlock. Neither lock blocks foreign-key inserts referencing these users.
+// buyer's stronger lock serializes the awaiting-payment cap. Both account locks use NOWAIT: a confirmed administrator
+// action locks its actor before its target, which can be the two parties here in reverse order. Returning the
+// existing retryable database-busy 503 on contention avoids holding one account while waiting for the other.
+// Account locks still follow id order for reciprocal vendor purchases and do not block foreign-key inserts.
 func lockNewIntake(c *actionCtx, buyerID, vendorID string, draft bool) error {
 	lockBuyer := func() error {
 		var one int
-		return c.Tx.QueryRowContext(c.Ctx(), "SELECT 1 FROM users WHERE id=$1 FOR NO KEY UPDATE", buyerID).Scan(&one)
+		return c.Tx.QueryRowContext(c.Ctx(), "SELECT 1 FROM users WHERE id=$1 FOR NO KEY UPDATE NOWAIT", buyerID).Scan(&one)
 	}
 	var role string
 	var suspended bool
 	lockVendor := func() error {
-		return c.Tx.QueryRowContext(c.Ctx(), "SELECT role,suspended_at IS NOT NULL FROM users WHERE id=$1 FOR SHARE", vendorID).Scan(&role, &suspended)
+		return c.Tx.QueryRowContext(c.Ctx(), "SELECT role,suspended_at IS NOT NULL FROM users WHERE id=$1 FOR SHARE NOWAIT", vendorID).Scan(&role, &suspended)
 	}
 	if buyerID != "" && buyerID < vendorID {
 		if err := lockBuyer(); err != nil {
