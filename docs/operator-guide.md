@@ -161,6 +161,8 @@ ClamAV publishes new signatures every day, but `clamd` has only those its image 
 
 It has Docker pull `CLAMAV_IMAGE` again even though the tag is already present, recreates `clamd` when the pull brought a newer build (uploads pause while it loads, usually under a minute), and prints the signatures before and after. `./scripts/install.sh upgrade` runs it whenever the scanner is on (it never turns the scanner on); a failed pull there is a warning, and the upgrade itself still completes.
 
+The installer keeps `CLAMAV_IMAGE_DEFAULT` in `.env` as bookkeeping for upgrades. If `CLAMAV_IMAGE` still equals the recorded default, a later upgrade advances it to that installer's default; a custom tag or digest is preserved. For older installs without the marker, the installer records one only when the image equals the default it currently knows, and does not guess whether another pin was previously managed. This marker is not a cryptographic attestation; `.env` remains operator-controlled configuration.
+
 **Refresh at least monthly.** The upload code will refuse uploads while the signatures are older than a limit, 30 days by default (war room ruling C2), so an install that is neither upgraded nor refreshed stops taking photos. On a clearnet host, a weekly cron entry does it:
 
 ```text

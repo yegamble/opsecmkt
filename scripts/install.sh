@@ -48,7 +48,7 @@ DATABASE_CONNECT_TIMEOUT MIGRATION_LOCK_TIMEOUT MIGRATION_TIMEOUT COMPOSE_PROJEC
 BITCOIN_RPC_URL BITCOIN_WALLET BITCOIN_CHAIN PAYMENT_CONFIRMATIONS_BTC MONERO_RPC_URL MONERO_WALLET_RPC_URL
 MONERO_NETWORK PAYMENT_CONFIRMATIONS_XMR PAYMENT_POLL_INTERVAL PAYMENT_EXPIRY BITCOIN_MAX_TIP_AGE MONERO_MAX_TIP_AGE AUDIT_SIGNING_KEY BITCOIN_IMAGE
 MONERO_IMAGE MONERO_WALLET_IMAGE BITCOIN_PRUNE_MB MONERO_PRUNE_FLAGS BITCOIN_RPC_PASSWORD BITCOIN_RPC_AUTH MONERO_WALLET_RPC_PASSWORD
-CLAMD_ADDRESS CLAMAV_IMAGE SCANNER_MAX_SIGNATURE_AGE_DAYS IMAGE_STORAGE_LIMIT_MB ESCROW_BTC ESCROW_BTC_RPC_URL
+CLAMD_ADDRESS CLAMAV_IMAGE CLAMAV_IMAGE_DEFAULT SCANNER_MAX_SIGNATURE_AGE_DAYS IMAGE_STORAGE_LIMIT_MB ESCROW_BTC ESCROW_BTC_RPC_URL
 ESCROW_BTC_ARBITER_WALLET ESCROW_BTC_WATCH_WALLET ESCROW_BTC_FEE_BPS ESCROW_BTC_FEE_ADDRESS ESCROW_BTC_FEE_RATE
 ESCROW_XMR ESCROW_XMR_WALLET_RPC_URL ESCROW_XMR_DAEMON_URL ESCROW_XMR_FEE_BPS ESCROW_XMR_FEE_ADDRESS ESCROW_XMR_SLOTS
 ESCROW_XMR_MAX_FEE ESCROW_XMR_SEED_KEY MONERO_WALLET_SECRET ESCROW_XMR_WALLET_RPC_PASSWORD ESCROW_SIGNER_SOCKET
@@ -1043,6 +1043,9 @@ cmd_init() {
   put APP_MODE "$mode"
   put COOKIE_SECURE "$secure"
   put APP_PORT "${caller_app_port:-8080}"
+  # Remember the image this installer manages as its default. Future upgrades can advance it without rewriting
+  # an operator-selected ClamAV image.
+  put CLAMAV_IMAGE_DEFAULT "$clamav_image_default"
   # Every later docker compose command in this directory reads the project name from .env. Never change it on an
   # existing install: Compose would start it on new, empty volumes.
   put COMPOSE_PROJECT_NAME "$project"
@@ -1536,6 +1539,7 @@ cmd_upgrade() {
   fi
   database_url=''
   local project listing entry candidates='' count stamp copy changes='' key value default mode files profiles token database host egress
+  local recorded_clamav_default
   local auth_profiles bitcoin_auth_to_add=''
   # The project whose volumes hold this install: COMPOSE_PROJECT_NAME, else the one its containers were created
   # under from this directory, else the caller's COMPOSE_PROJECT_NAME or Compose's default.
@@ -1668,6 +1672,24 @@ cmd_upgrade() {
   done <<< "$upgrade_defaults"
   if [[ -n $defaulted ]]; then
     changes="$changes  added, with the values Compose already used: $defaulted"$'\n'
+  fi
+  # Newer installer defaults may replace an image only when the prior .env marker records the current value as
+  # was installer-managed. A markerless custom or historical value is unknown and stays untouched; seed a marker
+  # for markerless installs only when the image equals the default this version knows.
+  recorded_clamav_default=$(env_value CLAMAV_IMAGE_DEFAULT)
+  value=$(env_value CLAMAV_IMAGE)
+  if [[ -n $recorded_clamav_default ]]; then
+    if [[ -n $value && $value == "$recorded_clamav_default" && $value != "$clamav_image_default" ]]; then
+      env_set CLAMAV_IMAGE "$clamav_image_default"
+      changes="$changes  advanced the install-managed ClamAV image to the current default"$'\n'
+    fi
+    if [[ $recorded_clamav_default != "$clamav_image_default" ]]; then
+      env_set CLAMAV_IMAGE_DEFAULT "$clamav_image_default"
+      changes="$changes  recorded the current ClamAV image default for future upgrades"$'\n'
+    fi
+  elif [[ $value == "$clamav_image_default" ]]; then
+    env_set CLAMAV_IMAGE_DEFAULT "$clamav_image_default"
+    changes="$changes  recorded the current ClamAV image default for future upgrades"$'\n'
   fi
   # Installs from before A-100 float the node and wallet images on :latest (A-174): pin the verified releases.
   for key in BITCOIN_IMAGE MONERO_IMAGE MONERO_WALLET_IMAGE; do

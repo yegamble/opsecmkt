@@ -575,6 +575,13 @@ time.sleep(60)
         self.assertEqual(list(self.root.glob('.env.edit.*')), [])
         self.assertFalse((self.root / '.env.lock').exists())
 
+    def set_clamav_default(self, image):
+        script = self.root / 'scripts' / 'install.sh'
+        source = script.read_text()
+        current = "clamav_image_default='clamav/clamav:1.5.4-debian'"
+        self.assertIn(current, source)
+        script.write_text(source.replace(current, f"clamav_image_default='{image}'", 1))
+
     def assert_refused_before_writing(self, result, calls):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(self.calls(), calls)
@@ -613,6 +620,7 @@ time.sleep(60)
         # Pruned by default, written explicitly so the operator can see and change it in .env.
         self.assertEqual(config['BITCOIN_PRUNE_MB'], self.compose_bitcoin_prune_default())
         self.assertEqual(config['MONERO_PRUNE_FLAGS'], PRUNED_MONERO_FLAGS)
+        self.assertEqual(config['CLAMAV_IMAGE_DEFAULT'], 'clamav/clamav:1.5.4-debian')
         self.assertEqual(config['BITCOIN_RPC_URL'],
                          'http://marketplace:' + config['BITCOIN_RPC_PASSWORD'] + '@bitcoin:8332')
         self.assertRegex(config['BITCOIN_RPC_AUTH'], r'^marketplace:[0-9a-f]{32}\$[0-9a-f]{64}$')
@@ -2120,7 +2128,46 @@ time.sleep(60)
             if key not in SECRET_KEYS:
                 self.assertIn(key, config, f'upgrade does not add {key}')
                 self.assertEqual(config[key], value, key)
-        self.assertEqual(sorted(set(config) - set(example)), [])
+        # CLAMAV_IMAGE_DEFAULT is installer bookkeeping, not a Compose setting shown in .env.example.
+        self.assertEqual(sorted(set(config) - set(example)), ['CLAMAV_IMAGE_DEFAULT'])
+
+    def test_upgrade_advances_recorded_clamav_default_and_preserves_custom_images(self):
+        previous = 'clamav/clamav:1.5.4-debian'
+        # Test-only sentinel models a later installer default; it makes no claim about upstream tag availability.
+        current = 'clamav/clamav:99.99.99-debian'
+        self.set_clamav_default(current)
+        custom_tag = 'registry.example/security/clamav:1.4.6-debian'
+        custom_digest = 'clamav/clamav@sha256:' + 'a' * 64
+        cases = (
+            ('managed default', previous, previous, current, current),
+            ('custom tag', custom_tag, previous, custom_tag, current),
+            ('custom digest', custom_digest, previous, custom_digest, current),
+            ('disabled blank image', '', previous, '', current),
+        )
+        for name, image, marker, want_image, want_marker in cases:
+            with self.subTest(name=name):
+                self.write_env(alpha_env(CLAMAV_IMAGE=image, CLAMAV_IMAGE_DEFAULT=marker))
+                result = self.upgrade()
+                self.assertEqual(result.returncode, 0, result.stderr)
+                config = self.config()
+                self.assertEqual(config['CLAMAV_IMAGE'], want_image)
+                self.assertEqual(config['CLAMAV_IMAGE_DEFAULT'], want_marker)
+                self.assertNotIn('scanner', config['COMPOSE_PROFILES'].split(','))
+
+    def test_upgrade_marks_only_a_known_current_markerless_clamav_default(self):
+        default = 'clamav/clamav:1.5.4-debian'
+        self.write_env(alpha_env(CLAMAV_IMAGE=default))
+        result = self.upgrade()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.config()['CLAMAV_IMAGE_DEFAULT'], default)
+
+        custom = 'registry.example/security/clamav:1.4.6-debian'
+        self.write_env(alpha_env(CLAMAV_IMAGE=custom))
+        result = self.upgrade()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        config = self.config()
+        self.assertEqual(config['CLAMAV_IMAGE'], custom)
+        self.assertNotIn('CLAMAV_IMAGE_DEFAULT', config)
 
     def test_upgrade_copies_setup_token_to_app_secret_key(self):
         values = alpha_env()
@@ -2683,9 +2730,10 @@ time.sleep(60)
         self.assertNotRegex(INSTALLER.read_text(), r"PASSWORD='")
 
     def test_isolated_keys_cover_env_example(self):
-        # Commands unset these so Compose reads .env alone; .env.example documents every key the app reads.
+        # Commands unset these so Compose reads .env alone; the installer also keeps one bookkeeping-only key.
         keys = re.search(r"^env_keys='([^']*)'", INSTALLER.read_text(), re.M)[1].split()
-        self.assertEqual(sorted(keys), sorted(example_values()))
+        self.assertIn('CLAMAV_IMAGE_DEFAULT', keys)
+        self.assertEqual(sorted(key for key in keys if key != 'CLAMAV_IMAGE_DEFAULT'), sorted(example_values()))
 
 
 if __name__ == '__main__':
