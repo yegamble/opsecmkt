@@ -19,8 +19,9 @@ async function fits(page: Page, width: number, label: string) {
   expect(await page.evaluate(() => document.documentElement.scrollWidth), `${label} at ${width}px`).toBeLessThanOrEqual(width);
 }
 
+for (const initialState of ['blocked', 'pending']) {
 for (const width of [320, 1280]) {
-  test(`drain panel and hand settlement of a blocked payout at ${width} px`, async ({ browser, baseURL }) => {
+  test(`drain panel and hand settlement of a ${initialState} payout at ${width} px`, async ({ browser, baseURL }) => {
     const database = process.env.E2E_DATABASE_URL!;
     const sql = (query: string) => execFileSync('psql', [database, '-v', 'ON_ERROR_STOP=1', '-qtAc', query], { encoding: 'utf8' }).trim();
     const hex = (bytes: number) => randomBytes(bytes).toString('hex');
@@ -39,7 +40,7 @@ for (const width of [320, 1280]) {
         INSERT INTO orders(id,buyer_id,product_id,currency,amount,state)
           VALUES ('${openOrder}','${buyerID}','${productID}','BTC',100000,'paid'),('${settledOrder}','${buyerID}','${productID}','BTC',100000,'completed');
         INSERT INTO payment_addresses(order_id,currency,address,provider) VALUES ('${settledOrder}','BTC','${address}','btc-regtest');
-        INSERT INTO payouts(order_id,kind,user_id,currency,amount,address,state) VALUES ('${settledOrder}','release','${vendorID}','BTC',100000,'','blocked');`);
+        INSERT INTO payouts(order_id,kind,user_id,currency,amount,address,state) VALUES ('${settledOrder}','release','${vendorID}','BTC',100000,'${initialState === 'pending' ? 'tb1qqueuedfixture' : ''}','${initialState}');`);
       const payout = sql(`SELECT id FROM payouts WHERE order_id='${settledOrder}'`);
       const state = () => sql(`SELECT state||':'||txid FROM payouts WHERE id=${payout}`);
 
@@ -51,7 +52,7 @@ for (const width of [320, 1280]) {
       const csrf = await other.locator('input[name="csrf"]').first().getAttribute('value');
       const refused = await other.request.post('/admin/payout', { form: { csrf: csrf!, payout_id: payout, op: 'sent', txid: 'ab'.repeat(32), password: 'browser-drain-buyer-123' }, maxRedirects: 0 });
       expect(refused.status()).toBe(403);
-      expect(state()).toBe('blocked:');
+      expect(state()).toBe(`${initialState}:`);
 
       // The panel: each kind's count is the function's, the payout links to its resolve form, the balance is advice.
       await admin.goto('/admin#pooled-drain');
@@ -75,9 +76,14 @@ for (const width of [320, 1280]) {
       const details = admin.locator(`details.payout-actions#resolve-payout-${payout}`);
       await expect(details, 'the blocked payout has a resolve form').toHaveCount(1);
       if ((await details.getAttribute('open')) === null) await details.locator('summary').click();
-      await expect(details).toContainText('The recipient has saved no BTC payout address');
-      await expect(details).toContainText('first hold it here, then pay it from the pooled wallet');
-      await expect(details).toContainText('The market does not check the transaction ID against the chain');
+      if (initialState === 'pending') {
+        await expect(details).toContainText('The market may start sending this queued payout');
+        await expect(details).toContainText('wait for the successful hold before paying');
+      } else {
+        await expect(details).toContainText('The recipient has saved no BTC payout address');
+        await expect(details).toContainText('first hold it here, then pay it from the pooled wallet');
+        await expect(details).toContainText('The market does not check the transaction ID against the chain');
+      }
       await withinViewport(details, width);
 
       // A-486 (R2): hold first, with a staff reason and the password; the order history says so, the reason stays staff only.
@@ -160,4 +166,5 @@ for (const width of [320, 1280]) {
       await other.context().close();
     }
   });
+}
 }

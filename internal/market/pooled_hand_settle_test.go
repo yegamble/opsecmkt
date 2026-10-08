@@ -230,7 +230,7 @@ func TestPooledHandSettleDoublePayWindow(t *testing.T) {
 		t.Fatalf("hold order note: %d", n)
 	}
 	// The payout gained an address after the hold (A-489, NIT-1): the note says when it had none.
-	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE '%recorded as sent by hand by an administrator: the recipient had no payout address when it was held.%'", order); n != 1 {
+	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE '%recorded as sent by hand by an administrator: an administrator held this payout before recording the hand payment.%'", order); n != 1 {
 		t.Fatalf("record order note: %d", n)
 	}
 	if n := p.count("SELECT count(*) FROM audit_events WHERE action LIKE 'Held blocked payout "+id+" %to pay it by hand: '||$1||'%'", handNote); n != 1 {
@@ -239,7 +239,7 @@ func TestPooledHandSettleDoublePayWindow(t *testing.T) {
 	wantRows(t, "drain after hold and record", drainRows(t, p.testEnv, "unsent_payout"))
 }
 
-// Hold is for a blocked payout only, by an administrator with the password and a note of 10-500 characters; every
+// Hold is for a blocked or queued payout, by an administrator with the password and a note of 10-500 characters; every
 // refusal changes nothing, and a repeat answers 409.
 func TestPooledHandHoldRefusals(t *testing.T) {
 	p := newPayEnv(t)
@@ -271,12 +271,12 @@ func TestPooledHandHoldRefusals(t *testing.T) {
 		t.Fatalf("500-character note: %d", code)
 	}
 	audits++
-	if code, body := p.holdPayout(p.adminSess, id, handNote); code != 409 || !strings.Contains(body, "Only a blocked payout") || !strings.Contains(body, "Nothing was changed") {
+	if code, body := p.holdPayout(p.adminSess, id, handNote); code != 409 || !strings.Contains(body, "Only a queued or blocked payout") || !strings.Contains(body, "Nothing was changed") {
 		t.Fatalf("repeat: %d %s", code, body)
 	}
-	for _, st := range []string{"pending", "failed", "sent"} {
+	for _, st := range []string{"failed", "sent"} {
 		agExec(p.testEnv, "UPDATE payouts SET state=$2,address='fake-testnet-vendor',error='' WHERE id=$1::bigint", id, st)
-		if code, body := p.holdPayout(p.adminSess, id, handNote); code != 409 || !strings.Contains(body, "Only a blocked payout (its recipient saved no payout address) can be held to be paid by hand") {
+		if code, body := p.holdPayout(p.adminSess, id, handNote); code != 409 || !strings.Contains(body, "Only a queued or blocked payout can be held to be paid by hand") {
 			t.Fatalf("hold of a %s payout: %d %s", st, code, body)
 		}
 		if got, _, _, _ := p.payout(order); got != st || p.count("SELECT count(*) FROM audit_events") != audits {
@@ -286,7 +286,7 @@ func TestPooledHandHoldRefusals(t *testing.T) {
 }
 
 // Hold against the recipient's address save. When the save holds the row first (blocked to pending), the hold waits
-// for its lock and then answers 409, changing nothing, and the watcher sends the payout; when the hold commits first,
+// for its lock and then holds the queued payout before the watcher can send it; when the hold commits first,
 // the save keeps the hold and the watcher sends nothing. Concurrent holds hold it once.
 func TestPooledHandHoldRacesAddressSave(t *testing.T) {
 	p := newPayEnv(t)
@@ -313,11 +313,11 @@ func TestPooledHandHoldRacesAddressSave(t *testing.T) {
 	if err = tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	if code := <-done; code != 409 {
+	if code := <-done; code != 303 {
 		t.Fatalf("hold after the address was saved: %d", code)
 	}
 	p.poll()
-	if st, _, _, _ := p.payout(order); st != "sent" || len(p.fake.Sends()) != 1 {
+	if st, _, _, _ := p.payout(order); st != "held" || len(p.fake.Sends()) != 0 {
 		t.Fatalf("the watcher's send: %s sends=%d", st, len(p.fake.Sends()))
 	}
 
@@ -330,7 +330,7 @@ func TestPooledHandHoldRacesAddressSave(t *testing.T) {
 	}
 	p.check(p.do("POST", "/account/payout", p.vendorSess, url.Values{"currency": {"BTC"}, "address": {"fake-testnet-vendor"}, "password": {testPassword}}), 303)
 	p.poll()
-	if st, _, addr, _ := p.payout(order2); st != "held" || addr != "fake-testnet-vendor" || len(p.fake.Sends()) != 1 {
+	if st, _, addr, _ := p.payout(order2); st != "held" || addr != "fake-testnet-vendor" || len(p.fake.Sends()) != 0 {
 		t.Fatalf("held payout after the save: %s %q sends=%d", st, addr, len(p.fake.Sends()))
 	}
 }

@@ -55,7 +55,7 @@ func pooledDrainLoader(ctx context.Context, a *App, _ *http.Request, d *PageData
 	// read for the listed rows only, after the per-kind cap.
 	rows, err := a.db.QueryContext(ctx, `SELECT x.kind,x.ref,x.order_id,x.currency,x.detail,
 			COALESCE(o.buyer_id=$1 OR p.vendor_id=$1 OR o.state IN ('disputed','resolved') OR EXISTS(SELECT 1 FROM payments pm WHERE pm.order_id=o.id AND pm.flagged),false),
-			COALESCE(po.state IN ('blocked','held','failed') OR (po.state='sending' AND po.updated < now()-interval '5 minutes'),false),x.n
+			COALESCE(po.state IN ('pending','blocked','held','failed') OR (po.state='sending' AND po.updated < now()-interval '5 minutes'),false),x.n
 		FROM (SELECT b.kind,b.ref,COALESCE(b.order_id,'') AS order_id,COALESCE(b.currency,'') AS currency,b.detail,
 				count(*) OVER (PARTITION BY b.kind) AS n,
 				row_number() OVER (PARTITION BY b.kind ORDER BY CASE WHEN b.kind IN ('unsent_payout','flagged_payment') THEN lpad(b.ref,20,'0') ELSE b.ref END) AS rn

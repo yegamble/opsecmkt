@@ -2153,7 +2153,7 @@ Some blockers have no staff action on `/admin` today; each is listed, never hidd
 - the restore gate, cleared only by the runbook's reconciliation;
 - mainnet history, by design.
 
-Holding a queued payout (the pending half of A-34) is not built.
+A queued payout can also be held before paying it by hand. The hold competes with the watcher's send claim under the payout row lock: if sending has started, it refuses and changes nothing. Pay by hand only after the hold succeeds; a refused hold requires checking the wallet instead.
 
 A blocked payout (its recipient never saved a payout address) is otherwise listed for ever. The simplest route is to
 ask the recipient to save a payout address: the market then sends it once. To pay it by hand instead, in this order:
@@ -2161,7 +2161,7 @@ ask the recipient to save a payout address: the market then sends it once. To pa
 1. **Hold it**: *Payouts* → *Resolve payout* → *Hold to pay by hand*, with a reason (10–500 characters, staff only:
    the payouts list and the audit log show it) and your password. The order history says it is held to be paid by hand.
    A held payout keeps its hold when the recipient saves an address afterwards, so the market cannot send it while you
-   pay it. Only a blocked payout can be held (409 otherwise, and on a repeat; nothing changed). If the recipient's
+   pay it. A blocked or queued payout can be held (409 otherwise, and on a repeat; nothing changed). A queued payout already has an address; the hold keeps it and prevents the watcher from sending. Every queued payout has a hold form, even beyond the recent-history limit. If the recipient's
    account is suspended, or the database restored from backup, meanwhile, the payout is held again with that reason
    and the hand-hold reason kept, so releasing it needs both checks; a suspension after a restore adds its own as well,
    so the release then needs all three (wallet check, payout-address check, not paid by hand).

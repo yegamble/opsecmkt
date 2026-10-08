@@ -583,7 +583,7 @@ func paymentsAdminLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 		CASE p.currency WHEN 'XMR' THEN u.payout_xmr ELSE u.payout_btc END AS current_address,
 		COALESCE(to_char(CASE p.currency WHEN 'XMR' THEN u.payout_xmr_changed ELSE u.payout_btc_changed END,'YYYY-MM-DD HH24:MI "UTC"'),'') AS current_changed
 		FROM payouts p JOIN users u ON u.id=p.user_id JOIN orders o ON o.id=p.order_id JOIN products pr ON pr.id=o.product_id)
-		SELECT * FROM (SELECT * FROM v WHERE attention UNION ALL (SELECT * FROM v WHERE NOT attention ORDER BY id DESC LIMIT $2)) s
+		SELECT * FROM (SELECT * FROM v WHERE attention OR state='pending' UNION ALL (SELECT * FROM v WHERE NOT attention AND state<>'pending' ORDER BY id DESC LIMIT $2)) s
 		ORDER BY attention DESC, CASE WHEN attention THEN id END, id DESC`, uid, payoutHistoryLimit+1)
 	if err != nil {
 		return err
@@ -599,9 +599,12 @@ func paymentsAdminLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 		}
 		if r.Attention {
 			d.PayoutsAttention++
-		} else if others++; others > payoutHistoryLimit {
-			d.PayoutHistoryLimit = payoutHistoryLimit
-			continue
+		} else if r.State != "pending" {
+			others++
+			if others > payoutHistoryLimit {
+				d.PayoutHistoryLimit = payoutHistoryLimit
+				continue
+			}
 		}
 		r.Amount, r.StateLabel, r.OrderShort = amount(amt, currencyDecimals(r.Currency)), payoutStateLabel(r.State), shortID(r.OrderID)
 		r.Repoint = repointable(r.State, r.Error, sendAmbiguous) && r.Address != "" && r.CurrentAddress != "" && r.CurrentAddress != r.Address

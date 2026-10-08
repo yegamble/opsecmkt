@@ -22,9 +22,9 @@ import (
 // A blocked payout (its recipient saved no payout address, so the watcher never sends it) can be recorded as sent by
 // hand with the wallet's transaction ID (A-445, ARCH-12: the pooled wallet's drain gate lists it until then); the
 // market does not check any recorded transaction ID against the chain. A pending payout, which the watcher may claim
-// at any moment, and a send under way are never marked sent: the state is read under the row lock and compared again,
+// at any moment, must first be held before paying by hand; a send under way is never marked sent: the state is read under the row lock and compared again,
 // and the refusal says that the market queued, is sending or sent it itself, so a payment made by hand would be a
-// second one (A-486, R2). To pay a blocked payout by hand safely, an administrator first holds it (op=hold, a required
+// second one (A-486, R2). To pay a queued or blocked payout by hand safely, an administrator first holds it (op=hold, a required
 // staff note; A-486, the blocked half of A-34): a held payout keeps its hold when the recipient saves an address
 // (savePayoutAddress), so the watcher cannot send it while the administrator pays it and records it. Releasing such a
 // hold needs an explicit confirmation that it was not paid by hand.
@@ -61,7 +61,7 @@ func heldForSuspension(state, payoutErr string) bool {
 		strings.HasPrefix(payoutErr, restoredHoldPrefix) && strings.Contains(payoutErr, " "+suspendedHoldPrefix))
 }
 
-// handHoldPrefix starts the error of a blocked payout an administrator held to pay it by hand (op=hold, A-486);
+// handHoldPrefix starts the error of a queued or blocked payout an administrator held to pay it by hand (op=hold, A-486);
 // the staff note follows it.
 const handHoldPrefix = "Held to be paid by hand:"
 
@@ -267,16 +267,16 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 		audit = "Moved payout " + strconv.FormatInt(id, 10) + " (" + label + ", " + state + ") for order " + short + " from " + address +
 			" to the account's current address " + current + "; administrator checked the address with the account owner"
 	case "hold":
-		// Only a blocked payout (no payout address, so the watcher cannot send it): the pending half of A-34 is not
-		// built. The compare-and-set repeats the state check made under the row lock.
-		if state != "blocked" {
-			return actionResult{}, fail(409, "Only a blocked payout (its recipient saved no payout address) can be held to be paid by hand; this payout is "+payoutRefusalLabel(state, payoutErr)+". Nothing was changed.")
+		// The hold and the watcher claim the same row. If the watcher already claimed
+		// it, the locked read sees sending and refuses; otherwise the hold prevents its claim.
+		if state != "blocked" && state != "pending" {
+			return actionResult{}, fail(409, "Only a queued or blocked payout can be held to be paid by hand; this payout is "+payoutRefusalLabel(state, payoutErr)+". Nothing was changed. Do not pay it by hand unless a hold succeeded.")
 		}
 		staffNote := strings.TrimSpace(c.Form.Get("note"))
-		res, err = tx.ExecContext(ctx, `UPDATE payouts SET state='held',error=$2,updated=now() WHERE id=$1 AND state='blocked'`, id, handHoldPrefix+" "+staffNote)
+		res, err = tx.ExecContext(ctx, `UPDATE payouts SET state='held',error=$2,updated=now() WHERE id=$1 AND state=$3 AND state IN ('blocked','pending')`, id, handHoldPrefix+" "+staffNote, state)
 		// The order history, which both parties read, does not repeat the staff note.
 		note = c.A.netTag() + " payout of " + label + " held by an administrator to be paid by hand; the market does not send it while it is held."
-		audit = "Held blocked payout " + strconv.FormatInt(id, 10) + " (" + label + ") for order " + short + " to pay it by hand: " + staffNote
+		audit = "Held " + state + " payout " + strconv.FormatInt(id, 10) + " (" + label + ") for order " + short + " to pay it by hand: " + staffNote
 	case "sent":
 		// The market's own send is queued, under way or done: a payment made by hand would be a second one.
 		switch {
@@ -294,8 +294,8 @@ func changePayout(c *actionCtx, id int64, op, txid string) (actionResult, error)
 		audit = "Marked payout " + strconv.FormatInt(id, 10) + " (" + label + ", was " + state + ") sent with transaction " + txid + " for order " + short
 		if state == "blocked" || heldForHand(state, payoutErr) {
 			why := "the recipient had saved no payout address"
-			if address != "" { // saved after the payout was held (A-489)
-				why = "the recipient had no payout address when it was held"
+			if address != "" {
+				why = "an administrator held this payout before recording the hand payment"
 			}
 			note = c.A.netTag() + " payout of " + label + " recorded as sent by hand by an administrator: " + why + ". It will not be sent again."
 			audit += "; paid by hand (" + why + "); the market did not check the transaction on the chain"

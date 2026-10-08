@@ -667,7 +667,7 @@ func TestAdminPayoutsAttentionNeverHidden(t *testing.T) {
 	admin := html.UnescapeString(p.page("/admin", p.adminSess))
 	for _, want := range []string{
 		"2 payouts need attention",
-		"Showing every payout that needs attention and the 50 most recent other payouts",
+		"Showing every payout that needs attention, every queued payout and the 50 most recent other payouts",
 		"Resolve payout " + failedID + ":", "Resolve payout " + stuckID + ":",
 		`href="/order?id=` + failedOrder + `"`,
 	} {
