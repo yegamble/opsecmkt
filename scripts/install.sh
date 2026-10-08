@@ -955,8 +955,12 @@ cmd_init() {
     # which the sign-in form could never send; refused here, before .env is written or anything started. The pattern is
     # well-formed UTF-8 byte by byte (RFC 3629: no overlong form, surrogate or code point above U+10FFFF), matched in the
     # C locale. It admits no NUL byte, and none can arrive: bash's read drops it.
-    local utf8_text=$'^([\x01-\x7f]|[\xc2-\xdf][\x80-\xbf]|\xe0[\xa0-\xbf][\x80-\xbf]|[\xe1-\xec\xee\xef][\x80-\xbf][\x80-\xbf]|\xed[\x80-\x9f][\x80-\xbf]|\xf0[\x90-\xbf][\x80-\xbf][\x80-\xbf]|[\xf1-\xf3][\x80-\xbf][\x80-\xbf][\x80-\xbf]|\xf4[\x80-\x8f][\x80-\xbf][\x80-\xbf])*$'
-    (LC_ALL=C; [[ $password1 =~ $utf8_text ]]) ||
+    # Match ASCII hex rather than raw high bytes: BSD regex rejects the latter
+    # even in the C locale. The same RFC 3629 boundaries remain enforced.
+    local password_bytes utf8_text
+    password_bytes=$(printf '%s' "$password1" | od -An -v -tx1 | tr -d ' \n')
+    utf8_text='^((0[1-9a-f]|[1-7][0-9a-f])|(c[2-9a-f]|d[0-9a-f])[89ab][0-9a-f]|e0[ab][0-9a-f][89ab][0-9a-f]|e[1-9abcef]([89ab][0-9a-f]){2}|ed[89][0-9a-f][89ab][0-9a-f]|f0[9ab][0-9a-f]([89ab][0-9a-f]){2}|f[123]([89ab][0-9a-f]){3}|f48[0-9a-f]([89ab][0-9a-f]){2})*$'
+    (LC_ALL=C; [[ $password_bytes =~ $utf8_text ]]) ||
       die 'The password is not valid UTF-8 (is the terminal set to another encoding, such as LATIN1?); nothing was written or started.'
     password2=''
   fi

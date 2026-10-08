@@ -950,6 +950,11 @@ func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageDat
 			v.Reason = "Deposit after settlement or after the order closed, not paid out"
 			if confs < 0 {
 				v.Reason += "; now conflicted or missing"
+			} else if confs == 0 || confs < threshold {
+				v.Reason = fmt.Sprintf("Deposit still unconfirmed (%d confirmations), not paid out; verify confirmation in the wallet before paying by hand", confs)
+				if threshold > 0 {
+					v.Reason = fmt.Sprintf("Deposit still confirming (%d of %d confirmations), not paid out; verify confirmation in the wallet before paying by hand", confs, threshold)
+				}
 			}
 		case escrow && !regressed && !belowFloor:
 			// QA462D-3: a credited escrow deposit flagged with no regression (a release too few, A-461; an external

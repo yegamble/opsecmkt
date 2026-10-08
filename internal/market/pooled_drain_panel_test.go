@@ -67,7 +67,7 @@ func TestPooledDrainPanel(t *testing.T) {
 	// One of every other kind, each linked to where it is resolved.
 	_, blockedID := p.blockedRelease("panel-paid") // its order is completed: its address is watched too
 	paid := p.str("SELECT order_id FROM payouts WHERE id=$1::bigint", blockedID)
-	queued := p.order // a pending payout has no resolve form: it links to the payouts table
+	queued := p.order // a pending payout links to its hold form before it can be settled by hand
 	agExec(p.testEnv, "UPDATE orders SET state='completed' WHERE id=$1", queued)
 	pendingID := p.str("INSERT INTO payouts(order_id,kind,user_id,currency,amount,address,state) VALUES($1,'refund',$2,'BTC',100000,'fake-testnet-buyer','pending') RETURNING id::text", queued, p.buyer.ID)
 	p.fake.Deposit(p.addr, "panel-late", 0, 546, 3)
@@ -81,7 +81,7 @@ func TestPooledDrainPanel(t *testing.T) {
 	panel = drainPanel(t, p, p.adminSess)
 	mustContain(t, panel,
 		`<a class="text-link" href="/admin#resolve-payout-`+blockedID+`">Payout `+blockedID+`</a>: release blocked (BTC), order <span class="mono">`+paid[:8]+`</span>`,
-		`<a class="text-link" href="/admin#payouts">Payout `+pendingID+`</a>: refund pending (BTC)`,
+		`<a class="text-link" href="/admin#resolve-payout-`+pendingID+`">Payout `+pendingID+`</a>: refund pending (BTC)`,
 		`<a class="text-link" href="/moderator#payment-review-`+flagged+`">Payment `+flagged+`</a>: deposit <span class="mono">panel-late:0</span>`,
 		`<a class="text-link" href="/admin#payment-providers">Outbound payments paused</a>`,
 		`<a class="text-link" href="/admin#payment-providers">BTC warning</a>: 1 payment request refused`,
@@ -94,7 +94,7 @@ func TestPooledDrainPanel(t *testing.T) {
 		}
 	}
 	// The resolve form each payout link names is on the page.
-	mustContain(t, p.page("/admin", p.adminSess), `id="resolve-payout-`+blockedID+`"`, `id="payouts"`, `id="payment-providers"`)
+	mustContain(t, p.page("/admin", p.adminSess), `id="resolve-payout-`+blockedID+`"`, `id="resolve-payout-`+pendingID+`"`, `id="payouts"`, `id="payment-providers"`)
 
 	// Counts are never capped; each list is.
 	agExec(p.testEnv, `INSERT INTO orders(id,buyer_id,product_id,currency,amount,state) SELECT 'drain-open-'||lpad(g::text,4,'0'),$1,$2,'XMR',100000,'paid' FROM generate_series(1,$3::int) g`,

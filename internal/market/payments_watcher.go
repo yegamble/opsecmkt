@@ -765,7 +765,7 @@ func (a *App) flagStalledPooledDeposits(ctx context.Context, tx *sql.Tx, o *Orde
 		return err
 	}
 	for i, d := range deposits {
-		note := fmt.Sprintf("%s pooled deposit %s:%d (%s %s) is still unconfirmed 14 days after its address watch horizon ended. It was not paid out; moderator review required.",
+		note := fmt.Sprintf("%s pooled deposit %s:%d (%s %s) is still unconfirmed 14 days after its address watch horizon ended. It was not paid out. Moderator review required.",
 			a.netTag(), truncate(d.txid, 20), d.idx, amount(d.amount, currencyDecimals(o.Currency)), o.Currency)
 		if i == 0 && !episode {
 			if err = a.flagOrder(ctx, tx, o, note, ""); err != nil {
