@@ -869,8 +869,19 @@ func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageDat
 		CROSS JOIN LATERAL (SELECT e.escrow,e.escrow AND NOT pm.after_close AND NOT pm.escrow_left_out AND NOT pm.spent_outside AS counted
 			FROM (SELECT EXISTS(SELECT 1 FROM escrows es WHERE es.order_id=pm.order_id) AS escrow) e) c
 		LEFT JOIN LATERAL (SELECT max(e.created) AS at FROM order_events e WHERE e.order_id=pm.order_id AND e.actor_id IS NULL
-			AND e.note LIKE '%Moderator review required.%'
-			AND strpos(e.note, ' '||CASE WHEN length(pm.txid)<=20 THEN pm.txid ELSE left(pm.txid,20)||'…' END||' ')>0) f ON true
+			AND lower(e.note) LIKE '%moderator review required.%'
+			AND (strpos(e.note,'deposit '||CASE WHEN length(pm.txid)<=20 THEN pm.txid ELSE left(pm.txid,20)||'…' END||' '||
+				CASE WHEN pm.currency='XMR' AND EXISTS(SELECT 1 FROM escrows es WHERE es.order_id=pm.order_id)
+					THEN 'account '||(pm.idx&4294967295)::text ELSE 'output '||pm.idx::text END||' (')>0
+			OR strpos(e.note,CASE WHEN length(pm.txid)<=20 THEN pm.txid ELSE left(pm.txid,20)||'…' END||':'||pm.idx::text)>0
+			OR (strpos(e.note,'deposit '||CASE WHEN length(pm.txid)<=20 THEN pm.txid ELSE left(pm.txid,20)||'…' END||' output ')=0
+					AND strpos(e.note,'deposit '||CASE WHEN length(pm.txid)<=20 THEN pm.txid ELSE left(pm.txid,20)||'…' END||' account ')=0
+					AND strpos(e.note,CASE WHEN length(pm.txid)<=20 THEN pm.txid ELSE left(pm.txid,20)||'…' END||':')=0
+					AND NOT EXISTS(SELECT 1 FROM order_events indexed WHERE indexed.order_id=pm.order_id AND indexed.actor_id IS NULL
+						AND (strpos(indexed.note,'deposit '||CASE WHEN length(pm.txid)<=20 THEN pm.txid ELSE left(pm.txid,20)||'…' END||' output ')>0
+							OR strpos(indexed.note,'deposit '||CASE WHEN length(pm.txid)<=20 THEN pm.txid ELSE left(pm.txid,20)||'…' END||' account ')>0
+							OR strpos(indexed.note,CASE WHEN length(pm.txid)<=20 THEN pm.txid ELSE left(pm.txid,20)||'…' END||':')>0))
+					AND strpos(e.note, ' '||CASE WHEN length(pm.txid)<=20 THEN pm.txid ELSE left(pm.txid,20)||'…' END||' ')>0))) f ON true
 		WHERE pm.flagged AND pm.disposition IN ('','escalated'))
 		SELECT id,order_id,state,product_id,title,currency,amount,txid,idx,credited,locked,confirmations,regress_notice,below_floor,open,COALESCE(to_char(at,'YYYY-MM-DD HH24:MI "UTC"'),''),
 			escalated,disposed,party,escrow,spent_outside,spent_by,counted,left_out,(SELECT count(*) FROM v WHERE NOT open)
