@@ -5,10 +5,10 @@ import "html/template"
 // Shared view types. Each feature package appends fields only inside its own commented block.
 
 type User struct {
-	ID, Handle, Role, PGP, XMPP string
-	Factors                     string // P1, PageData.FactorAccounts only: enrolled second factors, e.g. "TOTP and PGP sign-in"
-	Suspended                   string // P1, PageData.SuspendedAccounts only: when the account was suspended
-	Avatar                      string // A-189, vendor page and /canary staff list only: the avatar thumbnail on /img, "" when none may be shown
+	ID, Handle, Role, PGP string
+	Factors               string // P1, PageData.FactorAccounts only: enrolled second factors, e.g. "TOTP and PGP sign-in"
+	Suspended             string // P1, PageData.SuspendedAccounts only: when the account was suspended
+	Avatar                string // A-189, vendor page and /canary staff list only: the avatar thumbnail on /img, "" when none may be shown
 }
 type Product struct {
 	ID, Title, Description, Category, Region, Kind, Vendor, VendorID, PriceBTC, PriceXMR string

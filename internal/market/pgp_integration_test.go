@@ -117,7 +117,7 @@ func TestPGPKeyOwnershipAndSecondFactor(t *testing.T) {
 	}
 
 	// Re-saving the same key keeps the proof.
-	e.check(e.do("POST", "/account", s, url.Values{"pgp": {alicePub + "\n"}, "xmpp": {"alice@example.test"}}), 303)
+	e.check(e.do("POST", "/account", s, url.Values{"pgp": {alicePub + "\n"}}), 303)
 	if _, verified, _ := status(); !verified {
 		t.Fatal("unchanged key lost verification")
 	}
@@ -592,7 +592,7 @@ func TestProfileKeyStoredCanonically(t *testing.T) {
 	// the textarea with CRLF) - keeps the ownership proof and PGP sign-in, needs no confirmation, and stores
 	// the canonical form.
 	e.check(e.do("POST", "/account", vendor, url.Values{"pgp": {pasted}}), 303)
-	e.check(e.do("POST", "/account", legacy, url.Values{"pgp": {strings.ReplaceAll(stored, "\n", "\r\n")}, "xmpp": {"legacy@example.test"}}), 303)
+	e.check(e.do("POST", "/account", legacy, url.Values{"pgp": {strings.ReplaceAll(stored, "\n", "\r\n")}}), 303)
 	e.check(e.do("POST", "/account", vendor, url.Values{"pgp": {strings.ReplaceAll(stored, "\n", "\r\n")}}), 303)
 	for _, id := range []string{vendorID, legacyID} {
 		var pgp string
@@ -634,15 +634,15 @@ func TestProfileKeyPhotoIDRefused(t *testing.T) {
 	_, fp, _ := parsePublicKey(plain)
 	uid, s := e.user("photo_owner", "vendor")
 	type row struct {
-		pgp, fp, xmpp string
+		pgp, fp       string
 		verified      bool
 		audits, notes int
 	}
 	state := func() (r row) {
 		t.Helper()
-		if err := e.DB.QueryRow(`SELECT pgp,pgp_fingerprint,xmpp,pgp_verified_at IS NOT NULL,
+		if err := e.DB.QueryRow(`SELECT pgp,pgp_fingerprint,pgp_verified_at IS NOT NULL,
 (SELECT count(*) FROM audit_events WHERE user_id=$1),(SELECT count(*) FROM notifications WHERE user_id=$1) FROM users WHERE id=$1`, uid).
-			Scan(&r.pgp, &r.fp, &r.xmpp, &r.verified, &r.audits, &r.notes); err != nil {
+			Scan(&r.pgp, &r.fp, &r.verified, &r.audits, &r.notes); err != nil {
 			t.Fatal(err)
 		}
 		return r
@@ -659,7 +659,7 @@ func TestProfileKeyPhotoIDRefused(t *testing.T) {
 	photoHint := []string{"PGP key rejected: it contains a photo ID", "gpg --edit-key " + fp, "deluid", "save"}
 	refuse := func(form url.Values) { t.Helper(); refuseAs(form, photoHint...) }
 	// No key yet: refused with and without the password, and in the CRLF form a browser submits.
-	refuse(url.Values{"pgp": {photo}, "password": {testPassword}, "xmpp": {"photo@example.test"}})
+	refuse(url.Values{"pgp": {photo}, "password": {testPassword}})
 	refuse(url.Values{"pgp": {photo}})
 	refuse(url.Values{"pgp": {strings.ReplaceAll(photo, "\n", "\r\n")}, "password": {testPassword}})
 	// Every placement: several photo IDs, after the subkey, partial body lengths get the photo ID hint; a photo
@@ -682,7 +682,7 @@ func TestProfileKeyPhotoIDRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Pasting the same key back with its photo ID is refused too, and keeps the ownership proof.
-	refuse(url.Values{"pgp": {photo}, "xmpp": {"photo@example.test"}})
+	refuse(url.Values{"pgp": {photo}})
 	refuse(url.Values{"pgp": {photo}, "password": {testPassword}})
 	if !state().verified {
 		t.Fatal("refused key reset the ownership proof")
@@ -749,7 +749,7 @@ func TestStoredPhotoIDNeverShown(t *testing.T) {
 	// The owner saves the account form as shown (the key without its photo ID, CRLF): no confirmation is
 	// needed, and the stored key loses its photo ID and keeps its proof.
 	shown := armoredKeyPattern.FindString(e.body("GET", "/account", vendor, nil, 200))
-	e.check(e.do("POST", "/account", vendor, url.Values{"pgp": {strings.ReplaceAll(html.UnescapeString(shown), "\n", "\r\n")}, "xmpp": {"v@example.test"}}), 303)
+	e.check(e.do("POST", "/account", vendor, url.Values{"pgp": {strings.ReplaceAll(html.UnescapeString(shown), "\n", "\r\n")}}), 303)
 	var stored string
 	var verified bool
 	if err = e.DB.QueryRow("SELECT pgp,pgp_verified_at IS NOT NULL FROM users WHERE id=$1", vendorID).Scan(&stored, &verified); err != nil {

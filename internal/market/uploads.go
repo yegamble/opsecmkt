@@ -536,7 +536,7 @@ func (a *App) refuseMultipartElsewhere(w http.ResponseWriter, r *http.Request, t
 // is not suspended (a suspended account's sessions never authenticate; suspension also deletes them).
 func (a *App) sessionUser(ctx context.Context, session string) (*User, error) {
 	u := &User{}
-	err := a.db.QueryRowContext(ctx, `SELECT u.id,u.handle,u.role,u.pgp,u.xmpp FROM users u JOIN sessions s ON s.user_id=u.id WHERE s.token_hash=$1 AND s.expires>now() AND u.suspended_at IS NULL`, digest(session)).Scan(&u.ID, &u.Handle, &u.Role, &u.PGP, &u.XMPP)
+	err := a.db.QueryRowContext(ctx, `SELECT u.id,u.handle,u.role,u.pgp FROM users u JOIN sessions s ON s.user_id=u.id WHERE s.token_hash=$1 AND s.expires>now() AND u.suspended_at IS NULL`, digest(session)).Scan(&u.ID, &u.Handle, &u.Role, &u.PGP)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

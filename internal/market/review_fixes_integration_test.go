@@ -55,7 +55,7 @@ func TestLimiterFloodDoesNotLockOutUsers(t *testing.T) {
 	}
 
 	e := newTestApp(t)
-	_, sess := e.user("victim_user", "buyer")
+	e.user("victim_user", "buyer")
 	anon := randomToken()
 	for i := range 4100 {
 		pc := &http.Cookie{Name: "pending", Value: randomToken()}
@@ -76,7 +76,6 @@ func TestLimiterFloodDoesNotLockOutUsers(t *testing.T) {
 		t.Fatalf("unauthenticated junk created %d limiter keys", n)
 	}
 	e.check(e.do("POST", "/login", randomToken(), url.Values{"handle": {"victim_user"}, "password": {testPassword}}), 303)
-	e.check(e.do("POST", "/account", sess, url.Values{"xmpp": {"victim@example.test"}}), 303)
 }
 
 // A-11: limiterFill fills the table with keys prefix0..prefix(n-1), each holding count requests against limit.
@@ -291,7 +290,7 @@ func TestSensitiveChangesNeedPassword(t *testing.T) {
 	if !strings.Contains(p.page("/pgp", vs), `autocomplete="current-password"`) || !strings.Contains(p.page("/account", vs), "pgp-confirm-help") {
 		t.Fatal("PGP forms lack the password field")
 	}
-	p.check(p.do("POST", "/account", vs, url.Values{"pgp": {alicePub}, "xmpp": {"v@example.test"}}), 303) // key unchanged
+	p.check(p.do("POST", "/account", vs, url.Values{"pgp": {alicePub}}), 303) // key unchanged
 	p.check(p.do("POST", "/account", vs, url.Values{"pgp": {bobPub}}), 400)
 	p.check(p.do("POST", "/account", vs, url.Values{"pgp": {""}, "password": {"wrong-password-123"}}), 401)
 	p.check(p.do("POST", "/pgp/2fa", vs, url.Values{"enable": {"0"}}), 400)
@@ -473,11 +472,6 @@ func TestLegacyUnparseableKeySavesUnchanged(t *testing.T) {
 	uid, s := e.user("legacy_user", "buyer")
 	const legacy = "-----BEGIN PGP PUBLIC KEY BLOCK-----\nlegacy key the parser rejects\n-----END PGP PUBLIC KEY BLOCK-----"
 	e.DB.Exec("UPDATE users SET pgp=$1 WHERE id=$2", legacy, uid)
-	e.check(e.do("POST", "/account", s, url.Values{"pgp": {legacy}, "xmpp": {"legacy@example.test"}}), 303)
-	var xmpp string
-	e.DB.QueryRow("SELECT xmpp FROM users WHERE id=$1", uid).Scan(&xmpp)
-	if xmpp != "legacy@example.test" {
-		t.Fatal("profile not saved")
-	}
+	e.check(e.do("POST", "/account", s, url.Values{"pgp": {legacy}}), 303)
 	e.check(e.do("POST", "/account", s, url.Values{"pgp": {legacy + "\nchanged"}, "password": {testPassword}}), 400)
 }

@@ -23,10 +23,7 @@ test('register, draft, profile persistence and session boundaries', async ({ pag
   await expect(page.locator('.page-head .badge')).toHaveText('Draft — unfunded');
   expect((await page.goto('/admin'))?.status()).toBe(403);
   await page.goto('/account');
-  await page.getByLabel('XMPP address').fill(`${handle}@example.test`);
-  await submitAndLoad(page, page.getByRole('button', { name: 'Save profile' }));
-  await page.reload();
-  await expect(page.getByLabel('XMPP address')).toHaveValue(`${handle}@example.test`);
+  await expect(page.getByLabel('XMPP address')).toHaveCount(0);
   await submitAndLoad(page, page.getByRole('button', { name: 'Sign out', exact: true }));
   await page.goto('/account');
   await expect(page).toHaveURL(/\/login\?next=%2Faccount$/);
@@ -39,7 +36,7 @@ test('register, draft, profile persistence and session boundaries', async ({ pag
   await page.getByLabel('Password', { exact: true }).fill(password);
   await submitAndLoad(page, page.getByRole('button', { name: 'Sign in' }));
   await page.goto('/account');
-  await expect(page.getByLabel('XMPP address')).toHaveValue(`${handle}@example.test`);
+  await expect(page.getByLabel('XMPP address')).toHaveCount(0);
   const activity = page.getByRole('region', { name: 'Recent activity' });
   await expect(activity).toContainText('Signed in');
   await expect(activity).toContainText('Updated profile');
