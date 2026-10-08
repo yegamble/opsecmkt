@@ -17,6 +17,43 @@ func init() {
 	registerLoader("account", paymentsAccountLoader)
 	registerLoader("vendor-dashboard", unsentPayoutsLoader)
 	registerLoader("admin", paymentsAdminLoader)
+	registerPreview("admin", func(d *PageData) {
+		d.Providers = []ProviderStatus{{Currency: "BTC", Status: "Read-only preview", LastPoll: "Unknown (preview)", LastPollAge: "Unknown (preview)"}}
+	})
+}
+
+// providerPollAge labels the last persisted watcher pass and marks a provider stale only after two expected
+// intervals, with the existing ten-minute outage threshold as a floor. A preview or missing DB timestamp stays
+// unknown; it is never represented as a live/fresh wallet check.
+func providerPollAge(raw string, now time.Time) (string, bool) {
+	if strings.TrimSpace(raw) == "" {
+		return "Not polled yet", false
+	}
+	last, err := time.Parse(`2006-01-02 15:04:05 UTC`, raw)
+	if err != nil {
+		return "Unknown", false
+	}
+	age := now.Sub(last)
+	if age < 0 {
+		return "Clock differs from database", false
+	}
+	interval, err := pollInterval()
+	staleAfter := providerOutageDelay
+	if err == nil && interval*2 > staleAfter {
+		staleAfter = interval * 2
+	}
+	var label string
+	switch {
+	case age < time.Minute:
+		label = "less than a minute ago"
+	case age < time.Hour:
+		label = strconv.FormatInt(int64(age/time.Minute), 10) + " min ago"
+	case age < 24*time.Hour:
+		label = strconv.FormatInt(int64(age/time.Hour), 10) + " hr ago"
+	default:
+		label = strconv.FormatInt(int64(age/(24*time.Hour)), 10) + " days ago"
+	}
+	return label, age >= staleAfter
 }
 
 // payoutAddressAction saves (or clears) the user's payout address for one currency. Saving requires a live
@@ -576,13 +613,14 @@ func paymentsAdminLoader(ctx context.Context, a *App, r *http.Request, d *PageDa
 	env := map[string]string{"BTC": "BITCOIN_RPC_URL", "XMR": "MONERO_WALLET_RPC_URL"}
 	for _, cur := range []string{"BTC", "XMR"} {
 		s := ProviderStatus{Currency: cur, Status: "Disabled", Configured: a.pooledConfigured(cur), AddressCollisions: status[cur].AddressCollisions, AddressCollisionLast: status[cur].AddressCollisionLast}
+		s.LastPoll = status[cur].LastPoll
+		if s.LastPoll == "" {
+			s.LastPoll = "Not polled yet"
+		}
 		if p := a.provider(cur); p != nil {
 			last := status[cur]
 			s.Enabled, s.Status, s.Network, s.Confirmations = true, "Enabled", p.Network(), p.Confirmations()
-			s.LastPoll, s.Error = last.LastPoll, last.Error
-			if s.LastPoll == "" {
-				s.LastPoll = "Not polled yet"
-			}
+			s.Error = last.Error
 			if v, ok := p.(versionReporter); ok {
 				var unverified bool
 				if s.Version, unverified = v.WalletVersion(); unverified {
@@ -601,6 +639,9 @@ func paymentsAdminLoader(ctx context.Context, a *App, r *http.Request, d *PageDa
 		} else {
 			s.Error = "Not configured (" + env[cur] + " is blank)"
 		}
+		if s.Configured {
+			s.LastPollAge, s.PollStale = providerPollAge(status[cur].LastPoll, time.Now())
+		}
 		d.Providers = append(d.Providers, s)
 	}
 	// One statement, so now() (and so the attention flag) is the same for both halves: every payout needing
@@ -611,14 +652,15 @@ func paymentsAdminLoader(ctx context.Context, a *App, r *http.Request, d *PageDa
 	if d.User != nil {
 		uid = d.User.ID
 	}
-	rows, err = a.db.QueryContext(ctx, `WITH v AS (SELECT p.id,p.order_id,p.kind,u.handle,p.currency,p.amount,p.address,p.state,p.txid,p.error,to_char(p.updated,'YYYY-MM-DD HH24:MI "UTC"') AS updated,
+	rows, err = a.db.QueryContext(ctx, `WITH v AS (SELECT p.id,p.order_id,p.kind,u.handle,p.currency,p.amount,p.address,p.state,p.txid,p.error,p.updated AS updated_sort,to_char(p.updated,'YYYY-MM-DD HH24:MI "UTC"') AS updated,
 		`+payoutNeedsAttention("p")+` AS attention,p.send_ambiguous,u.suspended_at IS NOT NULL AS recipient_suspended,
 		(o.buyer_id=$1 OR pr.vendor_id=$1 OR EXISTS(SELECT 1 FROM disputes d WHERE d.order_id=o.id) OR EXISTS(SELECT 1 FROM payments pm WHERE pm.order_id=o.id AND pm.flagged)) AS order_link,
 		CASE p.currency WHEN 'XMR' THEN u.payout_xmr ELSE u.payout_btc END AS current_address,
 		COALESCE(to_char(CASE p.currency WHEN 'XMR' THEN u.payout_xmr_changed ELSE u.payout_btc_changed END,'YYYY-MM-DD HH24:MI "UTC"'),'') AS current_changed
 		FROM payouts p JOIN users u ON u.id=p.user_id JOIN orders o ON o.id=p.order_id JOIN products pr ON pr.id=o.product_id)
-		SELECT * FROM (SELECT * FROM v WHERE attention OR state='pending' UNION ALL (SELECT * FROM v WHERE NOT attention AND state<>'pending' ORDER BY id DESC LIMIT $2)) s
-		ORDER BY attention DESC, CASE WHEN attention THEN id END, id DESC`, uid, payoutHistoryLimit+1)
+		SELECT id,order_id,kind,handle,currency,amount,address,state,txid,error,updated,attention,send_ambiguous,recipient_suspended,order_link,current_address,current_changed
+		FROM (SELECT * FROM v WHERE attention OR state='pending' UNION ALL (SELECT * FROM v WHERE NOT attention AND state<>'pending' ORDER BY updated_sort DESC,id DESC LIMIT $2)) s
+		ORDER BY attention DESC, CASE WHEN attention THEN id END, CASE WHEN NOT attention THEN updated_sort END DESC, id DESC`, uid, payoutHistoryLimit+1)
 	if err != nil {
 		return err
 	}

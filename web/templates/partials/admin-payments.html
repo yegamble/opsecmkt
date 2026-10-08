@@ -249,6 +249,7 @@ Check the escrow node: its peers (<code>getconnectioncount</code>), and with <co
 <th scope="col">Status</th>
 <th scope="col">Confirmations</th>
 <th scope="col">Last poll</th>
+<th scope="col">Poll age</th>
 <th scope="col">Last error</th>
 <th scope="col">Version</th>
 </tr>
@@ -258,11 +259,12 @@ Check the escrow node: its peers (<code>getconnectioncount</code>), and with <co
 <td>{{if .Enabled}}{{if $.LiveNetwork}}<span class="badge live">MAINNET</span>{{else}}<span class="badge testnet">TESTNET {{.Network}}</span>{{end}}{{else}}—{{end}}</td>
 <td>{{.Status}}</td>
 <td>{{if .Enabled}}{{.Confirmations}}{{else}}—{{end}}</td>
-<td>{{if .Enabled}}{{.LastPoll}}{{else}}—{{end}}</td>
+<td>{{if .Configured}}{{.LastPoll}}{{else if $.Preview}}{{.LastPoll}}{{else}}—{{end}}</td>
+<td>{{if .Configured}}{{.LastPollAge}}{{else if $.Preview}}{{.LastPollAge}}{{else}}—{{end}}{{if .PollStale}}<br><strong>Stale</strong>{{end}}</td>
 <td>{{if .Error}}{{.Error}}{{else}}None{{end}}</td>
 <td>{{if .Version}}{{.Version}}{{else}}—{{end}}</td>
 </tr>{{else}}<tr>
-<td colspan="7">Provider status is unavailable here. No provider is running.</td>
+<td colspan="8">Provider status is unavailable here. No provider is running.</td>
 </tr>{{end}}</tbody>
 </table>
 </div>

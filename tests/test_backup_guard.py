@@ -133,6 +133,50 @@ esac
             archive_dump = next(i for i, line in enumerate(invocations) if '--format=custom' in line)
             self.assertLess(size_check, archive_dump)
 
+    def test_internal_backup_refuses_exported_database_url_override(self):
+        with tempfile.TemporaryDirectory() as work:
+            root = Path(work)
+            scripts = root / 'scripts'
+            scripts.mkdir()
+            for name in ('backup.sh', 'postgres-policy.py'):
+                (scripts / name).write_bytes((ROOT / 'scripts' / name).read_bytes())
+            (root / '.env').write_text(
+                'DATABASE_URL=postgres://app:env-secret@db:5432/from_env?sslmode=disable\n')
+            bin_dir = root / 'bin'
+            bin_dir.mkdir()
+            log = root / 'docker.log'
+            docker = bin_dir / 'docker'
+            docker.write_text('''#!/bin/sh
+printf '%s\\n' "$*" >> "$CALL_LOG"
+case " $* " in
+  *" pg_dump --version "*) echo "pg_dump (PostgreSQL) 17.6" ;;
+  *"pg_database_size(current_database())"*) echo 1024 ;;
+  *"--format=custom"*) echo synthetic-archive ;;
+  *) echo "unexpected docker invocation" >&2; exit 8 ;;
+esac
+''')
+            docker.chmod(0o700)
+            age = bin_dir / 'age'
+            age.write_text('#!/bin/sh\ncat\n')
+            age.chmod(0o700)
+            output = root / 'backup.age'
+            env = dict(os.environ, PATH=f'{bin_dir}:{os.environ["PATH"]}', AGE_RECIPIENT='age1test',
+                       DATABASE_URL='postgres://app:export-secret@db:5432/exported?sslmode=disable',
+                       BACKUP_SPACE_HEADROOM_BYTES='0', CALL_LOG=str(log))
+            env.pop('BACKUP_DATABASE_URL', None)
+            env.pop('BACKUP_INTERNAL_DATABASE', None)
+            result = subprocess.run(['bash', str(scripts / 'backup.sh'), str(output)], cwd=root,
+                                    env=env, capture_output=True, text=True)
+            calls = log.read_text() if log.exists() else ''
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertIn('differs from DATABASE_URL in .env', result.stderr)
+            self.assertNotIn('pg_database_size(current_database())', calls)
+            self.assertNotIn('--format=custom', calls)
+            self.assertFalse(output.exists())
+            self.assertNotIn('env-secret', result.stdout + result.stderr + calls)
+            self.assertNotIn('export-secret', result.stdout + result.stderr + calls)
+            self.assertNotIn('postgres://', result.stdout + result.stderr + calls)
+
 
 if __name__ == '__main__':
     unittest.main()

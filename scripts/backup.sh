@@ -14,10 +14,10 @@ url_database() {
   url=${url%%\?*}
   if [[ $url =~ $pattern ]]; then printf '%s' "${BASH_REMATCH[2]}"; fi
 }
-# env_database: the database in the last DATABASE_URL assignment in .env, which Compose passes to the app; a
+# env_database_url: the last DATABASE_URL assignment in .env, which Compose passes to the app; a
 # side-by-side restore or rollback switches it. Reads the installer's single quotes, double quotes, `export`
 # and unquoted values with a trailing comment; anything else yields nothing rather than a guess.
-env_database() {
+env_database_url() {
   [[ -f .env ]] || return 0
   local line value='' pattern='^[[:space:]]*(export[[:space:]]+)?DATABASE_URL[[:space:]]*=[[:space:]]*(.*)$'
   while IFS= read -r line || [[ -n $line ]]; do
@@ -29,14 +29,22 @@ env_database() {
     \"*) value=${value#\"}; value=${value%%\"*} ;;
     *) value=${value%%[[:space:]]*} ;;
   esac
-  url_database "$value"
+  printf '%s' "$value"
 }
 identifier='^[a-z_][a-z0-9_]{0,62}$'
 if [[ -n ${BACKUP_DATABASE_URL:-} && -n ${BACKUP_INTERNAL_DATABASE:-} ]]; then
   echo 'Set only one of BACKUP_DATABASE_URL and BACKUP_INTERNAL_DATABASE.' >&2; exit 1
 elif [[ -z ${BACKUP_DATABASE_URL:-} ]]; then
   # The internal-db service publishes no port: dump, inside it, the database the application is configured to use.
-  configured=$(env_database)
+  configured_url=$(env_database_url)
+  # Compose gives an exported DATABASE_URL precedence over .env for the app. The internal backup path runs
+  # pg_dump inside the Compose database service, so it must refuse an override instead of silently dumping the
+  # database named in .env while the application uses another URL. External URLs belong in BACKUP_DATABASE_URL.
+  if [[ ${DATABASE_URL+x} && ( -z $configured_url || $DATABASE_URL != "$configured_url" ) ]]; then
+    echo 'Refusing internal backup: exported DATABASE_URL differs from DATABASE_URL in .env. Unset the override or set BACKUP_DATABASE_URL to the intended reachable database.' >&2
+    exit 1
+  fi
+  configured=$(url_database "$configured_url")
   [[ $configured =~ $identifier ]] || configured=''
   database=${BACKUP_INTERNAL_DATABASE:-$configured}
   if [[ -n ${BACKUP_INTERNAL_DATABASE:-} ]]; then

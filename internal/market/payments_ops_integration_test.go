@@ -668,6 +668,10 @@ func TestAdminPayoutsAttentionNeverHidden(t *testing.T) {
 		insert("sent", stateCompleted, "release", txid, "0 seconds")
 		sent = append(sent, txid)
 	}
+	// A hand-reviewed old payout can have the oldest ID and the newest update time; keep it in recent history.
+	if _, err := p.DB.Exec("UPDATE payouts SET updated=now()+interval '1 minute' WHERE txid=$1", sent[0]); err != nil {
+		t.Fatal(err)
+	}
 	admin := html.UnescapeString(p.page("/admin", p.adminSess))
 	for _, want := range []string{
 		"2 payouts need attention",
@@ -688,9 +692,10 @@ func TestAdminPayoutsAttentionNeverHidden(t *testing.T) {
 	if n := strings.Count(admin, `<tr class="payout-attention">`); n != 2 {
 		t.Fatalf("attention rows: %d", n)
 	}
-	// The fifty newest sent payouts are listed; the ten oldest fall past the cap.
+	// The fifty most recently updated sent payouts are listed; an old row just changed stays visible.
 	for i, txid := range sent {
-		if listed := strings.Contains(admin, txid+"<"); listed != (i >= 10) {
+		want := i == 0 || i >= 11
+		if listed := strings.Contains(admin, txid+"<"); listed != want {
 			t.Fatalf("sent payout %d listed=%v", i, listed)
 		}
 	}

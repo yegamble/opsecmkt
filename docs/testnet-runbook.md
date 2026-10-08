@@ -608,8 +608,11 @@ restore, keep the application stopped and apply the protection SQL in
 The restored database knows nothing that happened after the backup. An order that was completed, cancelled or
 resolved **and paid out** after the backup comes back in its earlier state with **no payout row**. If its buyer
 completes it again (or a moderator resolves it again) once the gate is cleared, the application queues and sends
-a second payout. Follow these steps in order and keep the gate set until step 8. There is no automatic timeout
-and no web action that clears the gate or records a lost payout.
+a second payout. Follow these steps in order and keep the gate set until step 8; there is no automatic timeout.
+If a payout row is present as pending behind the gate, verify its transaction in the wallet, hold the row on the
+admin page, then use *Mark sent* with that transaction ID. This retires that row but does not clear the gate.
+A payout the restore lost has no row for the web form to record; use the guarded SQL in step 6 after matching it
+to exactly one order.
 
 1. **Keep the application stopped and cut users off.** Restore with the app stopped (`docker compose stop app`),
    and before starting it on the restored database make sure only you can reach it:

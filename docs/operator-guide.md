@@ -625,8 +625,9 @@ proven with real funds. Know these before you take a real payment:
     Tor (not measured).
   - A-105: a wallet that disowns an issued address, or a Monero wallet behind its daemon, reads as "no
     deposits", so a part-paid order can be cancelled as expired.
-  - A-76: after a restore from backup, the watcher can queue a refund that was already sent after the backup;
-    the recovery gate stops it being sent, but nothing retires it.
+  - A-76: after a restore from backup, the watcher can queue a refund that was already sent after the backup.
+    If the payout row exists, hold it and mark it sent after checking the wallet; if the restored order predates the
+    payout and has no row, record it with the guarded SQL in the recovery runbook.
 
 Administrators set **new payment addresses** independently for Bitcoin and
 Monero under **Admin → New payment addresses**: **On** (pooled payment addresses
