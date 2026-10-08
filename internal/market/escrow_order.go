@@ -362,11 +362,19 @@ func (a *App) escrowCheckoutOffer(ctx context.Context, d *PageData) error {
 	if o.State != stateDraft || d.OrderViewer != roleBuyer || o.Currency != "BTC" {
 		return nil
 	}
-	eligible, _, _, err := escrowEligible(ctx, a.db, o)
+	eligible, price, _, err := escrowEligible(ctx, a.db, o)
 	if err != nil || !eligible {
 		return err
 	}
 	v := &EscrowCheckoutView{Physical: o.Kind == "physical"}
+	if price < payoutFloor(o.Currency, "release") {
+		v.Reason, err = subFloorListingForProduct(ctx, a.db, o.ProductID, o.Currency)
+		if err != nil {
+			return err
+		}
+		d.EscrowCheckout = v
+		return nil
+	}
 	var buyerActive, vendorActive, buyerPerOrder, vendorPerOrder bool
 	if err = a.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM user_escrow_keys WHERE user_id=$1 AND active_at IS NOT NULL),
 		EXISTS(SELECT 1 FROM user_escrow_keys WHERE user_id=$2 AND active_at IS NOT NULL),

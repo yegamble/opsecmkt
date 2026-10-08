@@ -12,6 +12,7 @@ type User struct {
 }
 type Product struct {
 	ID, Title, Description, Category, Region, Kind, Vendor, VendorID, PriceBTC, PriceXMR string
+	BTCOrderUnavailable, XMROrderUnavailable                                             string // legacy price below that currency's minimum automatic payout
 	Stock                                                                                int
 	Archived                                                                             bool // Foundation; P4 uses
 	// P4, vendor-dashboard only: an administrator's takedown reason (A-163); never loaded for public pages.

@@ -868,6 +868,11 @@ func TestEscrowCheckoutOfferCopy(t *testing.T) {
 		}
 	}
 	offered("both active", true, "Or pay into a Bitcoin escrow")
+	floor := payoutFloor("BTC", "release")
+	x.DB.Exec("UPDATE products SET btc=$2 WHERE id=$1", x.product, floor-1)
+	offered("legacy sub-floor BTC price", false, "below the minimum automatic payout")
+	x.DB.Exec("UPDATE products SET btc=$2 WHERE id=$1", x.product, floor)
+	offered("price at the floor", true, "Or pay into a Bitcoin escrow")
 	x.DB.Exec("UPDATE user_escrow_keys SET active_at=NULL WHERE user_id=$1", x.vendor)
 	offered("vendor inactive", false, "<strong>Unavailable.</strong> The vendor has no active Bitcoin escrow key, so this order cannot use escrow.")
 	x.DB.Exec("DELETE FROM user_escrow_keys WHERE user_id=$1", x.vendor)
