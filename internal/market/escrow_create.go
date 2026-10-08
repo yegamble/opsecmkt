@@ -62,7 +62,7 @@ import (
 // settlements (escrow_cosign.go), answers with its pinned key; A-456a's checkout switch is gone.
 
 func init() {
-	registerAction("/orders/escrow", actionSpec{OneAtATime: true, Off: escrowOff, Run: escrowCheckoutAction})
+	registerAction("/orders/escrow", actionSpec{FormNonce: true, OneAtATime: true, Off: escrowOff, Run: escrowCheckoutAction})
 }
 
 // errEscrowRefund and errEscrowRefundInvalid refuse a missing or invalid refund address on the escrow node's chain net.

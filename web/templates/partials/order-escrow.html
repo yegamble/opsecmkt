@@ -203,6 +203,7 @@
 <p class="order-unavailable" role="note"><strong>Unavailable.</strong> {{.Reason}}{{if .KeyLink}} <a class="text-link" href="/escrow-key">Your escrow key</a>{{end}}</p>{{else}}
 <form class="stack" method="post" action="/orders/escrow">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/orders/escrow"}}">
 <input type="hidden" name="order_id" value="{{$.Order.ID}}">
 <label>Refund address<input name="refund_address" required minlength="14" maxlength="90" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="escrow-refund-help">
 </label>

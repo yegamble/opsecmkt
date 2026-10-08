@@ -106,6 +106,7 @@
 <p class="order-unavailable" role="note"><strong>Unavailable.</strong> {{.Reason}}</p>{{else}}
 <form class="stack" method="post" action="/orders/escrow-xmr">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/orders/escrow-xmr"}}">
 <input type="hidden" name="order_id" value="{{$.Order.ID}}">
 <label>Refund address<input name="refund_address" required minlength="95" maxlength="110" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="xmr-escrow-refund-help">
 </label>

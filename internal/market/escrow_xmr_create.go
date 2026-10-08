@@ -25,7 +25,7 @@ import (
 // draft. The escrow watcher made each slot ahead of time (escrow_xmr_watch.go).
 
 func init() {
-	registerAction("/orders/escrow-xmr", actionSpec{Off: escrowXMROff, Run: xmrEscrowCheckoutAction})
+	registerAction("/orders/escrow-xmr", actionSpec{FormNonce: true, Off: escrowXMROff, Run: xmrEscrowCheckoutAction})
 }
 
 // escrowXMROff is ESCROW_XMR off: the Monero escrow action does not exist.
