@@ -3,6 +3,7 @@
 <summary>Take down listing</summary>
 <form class="stack" method="post" action="/admin/listing">
 <input type="hidden" name="csrf" value="{{.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/admin/listing"}}">
 <input type="hidden" name="id" value="{{.Product.ID}}">
 <input type="hidden" name="action" value="takedown">
 <label>Reason for the vendor<textarea name="reason" required minlength="10" maxlength="500" rows="4" aria-describedby="takedown-help"></textarea>
@@ -84,6 +85,7 @@
 <p class="staff-contact">Only an administrator can restore this listing; you can still edit it. If you think this is wrong, ask an administrator to review it. {{template "staff-contact" $}}</p>{{else}}
 <form class="stack" method="post" action="/admin/listing">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/admin/listing"}}">
 <input type="hidden" name="id" value="{{$.Product.ID}}">
 <input type="hidden" name="action" value="restore">
 <p class="help">Restoring shows the listing in the marketplace again, clears the reason and notifies the vendor.</p>

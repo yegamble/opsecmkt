@@ -33,6 +33,9 @@ func takedownForm(t *testing.T, page, op, id string) url.Values {
 				v.Set(m[1], m[2])
 			}
 		}
+		if len(v.Get(formNonceField)) != 32 {
+			t.Fatal("admin listing form has no 32-character receipt nonce")
+		}
 		return v
 	}
 	t.Fatalf("no %s form for listing %s", op, id)
@@ -72,6 +75,11 @@ func TestAdminTakedownSurvivesVendorRestore(t *testing.T) {
 	// vendor keeps the plain archive button and is not offered the administrator form.
 	adminPage := e.body("GET", edit, admin, nil, 200)
 	take := takedownForm(t, adminPage, "takedown", p)
+	freshTake := takedownForm(t, e.body("GET", edit, admin, nil, 200), "takedown", p)
+	if freshTake.Get(formNonceField) == take.Get(formNonceField) {
+		t.Fatal("separately rendered takedown forms shared a receipt nonce")
+	}
+	freshTake.Set("reason", takedownReason)
 	mustNotContain(t, adminPage, `action="/listings/archive"`)
 	vendorPage := e.body("GET", edit, vendor, nil, 200)
 	mustContain(t, vendorPage, `action="/listings/archive"`)
@@ -98,10 +106,16 @@ func TestAdminTakedownSurvivesVendorRestore(t *testing.T) {
 	}
 
 	// The takedown: archived with the trimmed reason, audited on both accounts and notified once, link-free.
-	w := e.do("POST", "/admin/listing", admin, withField(take, "reason", "  "+takedownReason+"\r\n"))
+	takeSubmitted := withField(take, "reason", "  "+takedownReason+"\r\n")
+	w := e.do("POST", "/admin/listing", admin, takeSubmitted)
 	e.check(w, 303)
 	if loc := w.Header().Get("Location"); loc != edit {
 		t.Fatalf("redirect %q", loc)
+	}
+	takeReplay := e.do("POST", "/admin/listing", admin, takeSubmitted)
+	e.check(takeReplay, 303)
+	if takeReplay.Header().Get("Location") != w.Header().Get("Location") {
+		t.Fatalf("takedown replay location %q, original %q", takeReplay.Header().Get("Location"), w.Header().Get("Location"))
 	}
 	if archived, reason := takenDown(e, p); !archived || reason != takedownReason {
 		t.Fatalf("takedown not stored: archived=%v reason=%q", archived, reason)
@@ -122,7 +136,7 @@ func TestAdminTakedownSurvivesVendorRestore(t *testing.T) {
 	note := agStr(e, "SELECT body FROM notifications WHERE user_id=$1", vendorID)
 	mustContain(t, note, takedownReason, "Test listing", short, "contact the market staff", "not delivered automatically")
 	mustNotContain(t, note, "http", "/listing", "?id=", "<")
-	agExpect(e, "/admin/listing", admin, withField(take, "reason", takedownReason), 409, "already taken down")
+	agExpect(e, "/admin/listing", admin, freshTake, 409, "already taken down")
 
 	// The reason stays off public pages; the vendor sees it on the edit page and the desk card, with no restore control.
 	e.check(e.do("GET", "/product?id="+p, randomToken(), nil), 404)
@@ -155,6 +169,10 @@ func TestAdminTakedownSurvivesVendorRestore(t *testing.T) {
 	adminPage = e.body("GET", edit, admin, nil, 200)
 	mustContain(t, adminPage, takedownReason)
 	restore := takedownForm(t, adminPage, "restore", p)
+	freshRestore := takedownForm(t, e.body("GET", edit, admin, nil, 200), "restore", p)
+	if freshRestore.Get(formNonceField) == restore.Get(formNonceField) {
+		t.Fatal("separately rendered restore forms shared a receipt nonce")
+	}
 	for _, s := range []string{vendor, buyer, moderator} {
 		agExpect(e, "/admin/listing", s, restore, 403, "")
 	}
@@ -167,11 +185,29 @@ func TestAdminTakedownSurvivesVendorRestore(t *testing.T) {
 		!e.auditExact(vendorID, "Listing "+short+" restored by administrator td_admin") {
 		t.Fatal("restore audit rows missing")
 	}
+	restoreReplay := e.do("POST", "/admin/listing", admin, restore)
+	e.check(restoreReplay, 303)
+	if restoreReplay.Header().Get("Location") != w.Header().Get("Location") {
+		t.Fatalf("restore replay location %q, original %q", restoreReplay.Header().Get("Location"), w.Header().Get("Location"))
+	}
+	agExpect(e, "/admin/listing", admin, freshRestore, 409, "not taken down")
+	oldTakedownReplay := e.do("POST", "/admin/listing", admin, takeSubmitted)
+	e.check(oldTakedownReplay, 303)
+	if archived, reason := takenDown(e, p); archived || reason != "" {
+		t.Fatalf("old takedown receipt re-executed after restore: archived=%v reason=%q", archived, reason)
+	}
+	if n := agInt(e, `SELECT count(*) FROM audit_events WHERE
+		(user_id=$1 AND action IN ($3,$4)) OR (user_id=$2 AND action IN ($5,$6))`, adminID, vendorID,
+		"Took down listing "+short+" of td_vendor: "+takedownReason+" (confirmed with password)",
+		"Restored listing "+short+" of td_vendor after a takedown (confirmed with password)",
+		"Listing "+short+" taken down by administrator td_admin: "+takedownReason,
+		"Listing "+short+" restored by administrator td_admin"); n != 4 {
+		t.Fatalf("takedown/restore replays left %d matching audits, want 4", n)
+	}
 	if n := agInt(e, "SELECT count(*) FROM notifications WHERE user_id=$1", vendorID); n != 2 {
 		t.Fatalf("vendor notifications after restore: %d", n)
 	}
 	e.check(e.do("GET", "/product?id="+p, randomToken(), nil), 200)
-	agExpect(e, "/admin/listing", admin, restore, 409, "not taken down")
 	// An administrator's own listing is archived from the vendor desk, not taken down.
 	own := e.product(adminID, "physical")
 	agExpect(e, "/admin/listing", admin, withField(withField(take, "reason", takedownReason), "id", own), 400, "your own listing")
