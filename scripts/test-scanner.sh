@@ -120,7 +120,7 @@ docker exec "$name" touch /var/lib/clamav/probe 2>/dev/null && fail 'the signatu
 docker exec "$name" touch /etc/clamav/clamd.conf 2>/dev/null && fail 'clamd.conf is writable'
 docker exec "$name" touch /tmp/probe || fail '/tmp (the scan tmpfs) is not writable'
 # No route anywhere: no IPv4 route at all, IPv6 routes only on loopback (a kernel may list idle tunnel devices).
-routes=$(docker exec "$name" sh -c 'cat /proc/net/route; if [ -r /proc/net/ipv6_route ]; then cat /proc/net/ipv6_route; fi' |
+routes=$(docker exec "$name" sh -c 'set -e; cat /proc/net/route; if [ -r /proc/net/ipv6_route ]; then cat /proc/net/ipv6_route; fi' |
   awk 'NF == 11 && $1 != "Iface" { print $1 } NF == 10 && $10 != "lo" { print $10 }')
 [[ -z $routes ]] || fail "the container has routes besides loopback: $routes"
 processes=$(docker exec "$name" cat /proc/1/comm)

@@ -343,9 +343,10 @@ database_placeholder() {
 
 # image_pinned VALUE: the image names a release tag or a digest, not :latest or no tag.
 image_pinned() {
-  local reference=${1%%@*} tag
+  local reference=${1%%@*} tag digest
   if [[ $1 == *@* ]]; then
-    [[ ${1##*@} =~ ^sha256:[0-9a-f]{64}$ ]]
+    digest=${1#*@}
+    [[ -n $reference && $digest != *@* && $digest =~ ^sha256:[0-9a-f]{64}$ ]]
     return
   fi
   tag=${reference##*/}

@@ -121,14 +121,21 @@ class ScannerComposeTextTests(unittest.TestCase):
             command = command.replace('routes=$(docker exec "$name"', 'routes=$(docker exec scanner')
             command += '; printf "%s" "$routes"'
             env = {**os.environ, 'PATH': str(root) + os.pathsep + os.environ.get('PATH', '')}
-            safe = subprocess.run(['bash', '-c', command], env=env, capture_output=True, text=True)
+            safe = subprocess.run(['bash', '-c', 'set -eo pipefail; ' + command], env=env,
+                                  capture_output=True, text=True)
             self.assertEqual(safe.returncode, 0, safe.stderr)
             self.assertEqual(safe.stdout, '')
             route_file.write_text('Iface Destination Gateway Flags RefCnt Use Metric Mask MTU Window IRTT\n'
                                   'eth0 00000000 0100000A 0003 0 0 0 00000000 0 0 0\n')
-            unsafe = subprocess.run(['bash', '-c', command], env=env, capture_output=True, text=True)
+            unsafe = subprocess.run(['bash', '-c', 'set -eo pipefail; ' + command], env=env,
+                                    capture_output=True, text=True)
             self.assertEqual(unsafe.returncode, 0, unsafe.stderr)
             self.assertEqual(unsafe.stdout.strip(), 'eth0')
+            route_file.unlink()
+            route_file.mkdir()
+            unreadable = subprocess.run(['bash', '-c', 'set -eo pipefail; ' + command], env=env,
+                                        capture_output=True, text=True)
+            self.assertNotEqual(unreadable.returncode, 0)
 
     def test_image_is_a_pinned_release_with_signatures(self):
         image = re.search(r'^    image: \$\{CLAMAV_IMAGE:-([^}]+)\}$', self.clamd, re.M)[1]
