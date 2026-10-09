@@ -1,0 +1,15 @@
+{
+  "Name": "opsecmkt-node-internal",
+  "Internal": true,
+  "IPAM": {
+    "Driver": "default",
+    "Options": {},
+    "Config": [
+      {
+        "Subnet": "10.199.42.0/28",
+        "IPRange": "",
+        "Gateway": "10.199.42.1"
+      }
+    ]
+  }
+}

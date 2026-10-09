@@ -19,8 +19,8 @@ Server-rendered Go and PostgreSQL, PGP identity, Tor-first deployment.
 > [!IMPORTANT]
 > **Pooled payments use test networks by default; mainnet is an explicit operator choice.** Per-order escrow is a
 > separate path, built on the development branch but not released, and is off by default. Bitcoin escrow uses
-> 2-of-3 signing; Monero escrow is custodial, not multisig. Neither escrow path has run on a public network. No
-> public-testnet pooled-payment or mainnet-payment run is recorded. See the network matrix below, the
+> 2-of-3 signing; Monero escrow is custodial, not multisig. Bitcoin escrow has a recorded public signet smoke;
+> Monero public stagenet remains unverified. No public-testnet pooled-payment or mainnet-payment run is recorded. See the network matrix below, the
 > [operator guide](docs/operator-guide.md#payments), and [per-order escrow](docs/escrow.md). Tor protects inbound
 > connections to the site; it does not guarantee anonymity. See [implementation status](docs/implementation-status.md).
 
@@ -55,7 +55,7 @@ These paths have separate network guards. “Mainnet” here means real Bitcoin 
 | Path | Networks and default | What the current evidence covers |
 | --- | --- | --- |
 | **Pooled wallet payments** | Optional wallet RPCs; test networks by default. Bitcoin accepts testnet3 (`test`), testnet4, signet and regtest; Monero accepts testnet and stagenet. Mainnet requires explicit `BITCOIN_CHAIN=main` and/or `MONERO_NETWORK=mainnet`. If both currencies are configured, both must be test networks or both mainnet. | Local-chain and simulated-RPC checks only. No public test-network or mainnet payment run is recorded. Pooled wallets are custodial; they are not multisig escrow. |
-| **Bitcoin per-order escrow** (`ESCROW_BTC`) | Built on the development branch, not released; off by default. Bitcoin 2-of-3 signing accepts regtest, signet and testnet4; refuses mainnet and testnet3, and is refused in a mainnet-configured market. | Regtest and a private, isolated signet have been exercised. No public signet or testnet4 run is recorded; mainnet escrow is unsupported. |
+| **Bitcoin per-order escrow** (`ESCROW_BTC`) | Built on the development branch, not released; off by default. Bitcoin 2-of-3 signing accepts regtest, signet and testnet4; refuses mainnet and testnet3, and is refused in a mainnet-configured market. | Regtest and a private, isolated signet have been exercised. Public signet practice, claim and refund passed on 2026-10-09 ([record](docs/evidence/public-testnet/2026-10-09-9885beef29d3/signet/README.md)). Public testnet4 remains unrun; mainnet escrow is unsupported. |
 | **Monero per-order escrow** (`ESCROW_XMR`) | Built on the development branch, not released; off by default. Accepts a local fakechain or stagenet; refuses Monero testnet and mainnet, and is refused in a mainnet-configured market. Custodial: the market can move these coins; this is not Monero multisig. | A local fakechain and an offline stagenet fork have been exercised. No public stagenet, testnet or mainnet run is recorded. |
 
 The installer's local nodes default to Bitcoin **testnet4** and Monero **stagenet**. Set `BITCOIN_CHAIN=signet` for public signet or `BITCOIN_CHAIN=regtest` for an isolated local Bitcoin chain; `MONERO_NETWORK=testnet` selects Monero testnet for pooled payments. The configured wallet and node must report the selected network. Testnet3 is a legacy pooled-payment option and cannot be used for Bitcoin escrow.
@@ -187,7 +187,7 @@ are reset from the host with `-reset-admin-password` and `-reset-admin-factors`
 | --- | --- |
 | [Operator guide](docs/operator-guide.md) | Deployment, HTTPS and Tor, mirrors, configuration, backups, recovery, troubleshooting |
 | [Test-network payments](docs/testnet-runbook.md) | Wallet setup, funding and payout recovery |
-| [Per-order escrow](docs/escrow.md) | The escrow design replacing the pooled wallet, what it will and will not protect, and its status (Phases 1 and 2: Bitcoin, digital and physical orders, regtest, signet or testnet4 (A-443; tested on regtest and a private signet, no public run recorded); Phase 3: custodial Monero, a local fakechain or stagenet (A-449; no public stagenet run recorded); all off by default) |
+| [Per-order escrow](docs/escrow.md) | The escrow design replacing the pooled wallet, what it will and will not protect, and its status (Phases 1 and 2: Bitcoin, digital and physical orders, regtest, signet or testnet4 (A-443; tested on regtest, a private signet and the recorded public signet smoke); Phase 3: custodial Monero, a local fakechain or stagenet (A-449; no public stagenet run recorded); all off by default) |
 | [Upgrading from v0.1.0-alpha.1](UPGRADING.md) | New settings and migration steps |
 | [Implementation status](docs/implementation-status.md) | What works, what is missing, and what the server keeps |
 | [Acceptance checks](docs/acceptance.md) | The checklist, and the tests that prove each ticked line |

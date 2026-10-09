@@ -6,7 +6,7 @@ commit, chain and `signet_challenge`, the node's version, image and digest, star
 the transcript's sha256; both files passed the script's secret scan before they were written. How to run it:
 [Escrow node set-up and the public-network smoke](../../operator-guide.md#escrow-node-set-up-and-the-public-network-smoke).
 
-No record is here yet: no public-network run of Bitcoin escrow has been recorded (A-447 is the owner's).
+[Public signet — 2026-10-09, frozen 9885beef29d3](2026-10-09-9885beef29d3/signet/README.md): practice signing, funded claim and buyer refund passed with real confirmations. Supplemental records measure sync/storage and Tor private-broadcast observations. Public testnet4 remains unrun.
 
 `scripts/test-escrow-xmr-public-stagenet.py` writes the separate `stagenet-xmr/` directory only after a funded public
 digital-claim journey passes. It records a fetched HTTPS explorer block matched to the own daemon, actual Docker

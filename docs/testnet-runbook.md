@@ -1279,8 +1279,7 @@ Its source/offline checks are not a funded public result, and a claim sample doe
 ## 11. Bitcoin escrow on signet or testnet4
 
 Since A-443, Bitcoin escrow (`ESCROW_BTC=on`, off by default) may run on signet or testnet4 as well as on regtest;
-mainnet and testnet3 stay refused. **No run on a public signet or testnet4 is recorded yet**: nothing in this
-repository is evidence that escrow works with a public network's peers, fees, relay or reorganisations. Try it only on
+mainnet and testnet3 stay refused. **A public signet smoke is recorded** ([2026-10-09 proof](evidence/public-testnet/2026-10-09-9885beef29d3/signet/README.md)): Core practice signatures, a funded digital claim and underpaid buyer refund, confirmed through a Tor-proxied node. Public testnet4 and public-chain reorganisations remain untested. Try it only on
 a new database (a database never changes chain once it holds an escrow) and only with every precondition below in
 place; the [operator guide](operator-guide.md#bitcoin-escrow-test-networks-only) has the settings.
 
@@ -1349,4 +1348,4 @@ from a clean checkout: practice signing, one escrow claimed and one refunded, ea
 `ESCROW_PUBLIC_CONFIRMATIONS`. It refuses regtest, mainnet, testnet3 and a private signet, and when every leg passed it
 writes the record to commit under `docs/evidence/public-testnet/`. Settings and what the record holds:
 [Escrow node set-up and the public-network smoke](operator-guide.md#escrow-node-set-up-and-the-public-network-smoke).
-Until such a record is committed, no public run exists.
+The [2026-10-09 public signet record](evidence/public-testnet/2026-10-09-9885beef29d3/signet/README.md) contains a passing Core practice/claim/refund run and measured Tor delivery, sync and storage. Public testnet4 remains unrun.
