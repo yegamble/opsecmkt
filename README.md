@@ -58,6 +58,8 @@ These paths have separate network guards. “Mainnet” here means real Bitcoin 
 | **Bitcoin per-order escrow** (`ESCROW_BTC`) | Built on the development branch, not released; off by default. Bitcoin 2-of-3 signing accepts regtest, signet and testnet4; refuses mainnet and testnet3, and is refused in a mainnet-configured market. | Regtest and a private, isolated signet have been exercised. No public signet or testnet4 run is recorded; mainnet escrow is unsupported. |
 | **Monero per-order escrow** (`ESCROW_XMR`) | Built on the development branch, not released; off by default. Accepts a local fakechain or stagenet; refuses Monero testnet and mainnet, and is refused in a mainnet-configured market. Custodial: the market can move these coins; this is not Monero multisig. | A local fakechain and an offline stagenet fork have been exercised. No public stagenet, testnet or mainnet run is recorded. |
 
+The installer's local nodes default to Bitcoin **testnet4** and Monero **stagenet**. Set `BITCOIN_CHAIN=signet` for public signet or `BITCOIN_CHAIN=regtest` for an isolated local Bitcoin chain; `MONERO_NETWORK=testnet` selects Monero testnet for pooled payments. The configured wallet and node must report the selected network. Testnet3 is a legacy pooled-payment option and cannot be used for Bitcoin escrow.
+
 The pooled payment path and escrow path have different settings and eligibility checks. See [mainnet pooled payments](docs/operator-guide.md#mainnet), [Bitcoin escrow's network limits](docs/operator-guide.md#bitcoin-escrow-test-networks-only), and [Monero escrow's network limits](docs/operator-guide.md#monero-escrow-fakechain-or-stagenet) before configuring real funds.
 
 <table>
