@@ -9,7 +9,7 @@ import (
 )
 
 func init() {
-	registerAction("/admin", actionSpec{Roles: []string{"admin"}, OwnTx: true, Run: adminAction})
+	registerAction("/admin", actionSpec{Roles: []string{"admin"}, OwnTx: true, OwnFormNonce: true, Run: adminAction})
 	registerAction("/admin/reset-factors", actionSpec{Roles: []string{"admin"}, OwnTx: true,
 		ConfirmedFormNonce: true, ReceiptAuthorize: adminResetReceiptAuthorize, Run: adminResetFactorsAction})
 	registerAction("/admin/suspend", actionSpec{Roles: []string{"admin"}, OwnTx: true,
@@ -430,6 +430,13 @@ func adminHandleError(c *actionCtx, msg string, keep func(d *PageData)) error {
 }
 
 func adminAction(c *actionCtx) (actionResult, error) {
+	required, completed, err := completedOwnFormMode(c)
+	if err != nil {
+		return actionResult{}, err
+	}
+	if completed {
+		return replayOwnForm(c, required)
+	}
 	switch c.Form.Get("action") {
 	case "role":
 		role := c.Form.Get("role")
@@ -452,9 +459,9 @@ func adminAction(c *actionCtx) (actionResult, error) {
 		if !exists {
 			return actionResult{}, adminRoleHandleError(c, handle, role)
 		}
-		return confirmedTx(c, true, adminChange)
+		return ownConfirmedTx(c, true, adminChange)
 	case "settings":
-		return confirmedTx(c, false, adminChange)
+		return ownConfirmedTx(c, false, adminChange)
 	default:
 		return actionResult{}, fail(400, "Unknown action")
 	}

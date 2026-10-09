@@ -27,6 +27,7 @@
 <h2>Marketplace settings</h2>
 <form class="stack" method="post" action="/admin">
 <input type="hidden" name="csrf" value="{{.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/admin"}}">
 <input type="hidden" name="action" value="settings">
 <label>Site name<input name="site_name" value="{{index .Settings "site_name"}}" required maxlength="80">
 </label>
@@ -37,6 +38,7 @@
 <h2 id="assign-role-heading">Assign an account role</h2>
 <form class="stack" method="post" action="/admin">
 <input type="hidden" name="csrf" value="{{.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/admin"}}">
 <input type="hidden" name="action" value="role">
 <label>Account handle<input name="handle" value="{{.RoleHandle}}" required minlength="3" maxlength="32" pattern="[a-zA-Z0-9_]{3,32}" title="3–32 letters, digits or underscores" autocomplete="off" autocapitalize="none" spellcheck="false"{{if .RoleHandle}} aria-invalid="true"{{end}}>
 </label>

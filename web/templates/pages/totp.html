@@ -32,6 +32,7 @@
 <p class="help">Recovery codes and any pending authenticator secret are visible to every signed-in session on this account. Sign out everywhere before replacing recovery codes.</p>
 <form class="stack" method="post" action="/totp/recovery">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/totp/recovery"}}">
 {{template "confirm-fields" true}}
 <span class="help">All previous recovery codes stop working immediately.</span>
 <button type="submit">Replace recovery codes</button>
@@ -41,6 +42,7 @@
 <h2>Turn off TOTP</h2>
 <form class="stack" method="post" action="/totp/disable">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/totp/disable"}}">
 <label>Password<input type="password" name="password" required autocomplete="current-password">
 </label>
 <label>Authenticator code or recovery code<input name="code" required maxlength="40" autocomplete="one-time-code" spellcheck="false">
@@ -73,6 +75,7 @@
 <h2>2. Confirm a code</h2>
 <form class="stack" method="post" action="/totp/activate">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/totp/activate"}}">
 <label>6-digit code from your app<input name="code" required inputmode="numeric" pattern="[0-9]{6}" title="Enter the 6-digit code from your authenticator app." minlength="6" maxlength="6" autocomplete="one-time-code">
 </label>
 {{template "confirm-fields" false}}

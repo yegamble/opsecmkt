@@ -16,9 +16,10 @@ func init() {
 	registerLoader("account", accountSecurityLoader)
 	registerLoader("pgp", accountSecurityLoader) // TOTPEnabled decides whether PGP sign-in changes ask for a code
 	registerAction("/totp/enroll", actionSpec{FormNonce: true, Run: totpEnroll})
-	registerAction("/totp/activate", actionSpec{OwnTx: true, Run: totpActivate})
-	registerAction("/totp/recovery", actionSpec{OwnTx: true, Run: totpRegenerate})
-	registerAction("/totp/disable", actionSpec{OwnTx: true, Run: totpDisable})
+	factorRoles := []string{"buyer", "vendor", "moderator", "admin"}
+	registerAction("/totp/activate", actionSpec{Roles: factorRoles, OwnTx: true, ConfirmedFormNonce: true, FactorFormNonce: true, Run: totpActivate})
+	registerAction("/totp/recovery", actionSpec{Roles: factorRoles, OwnTx: true, ConfirmedFormNonce: true, FactorFormNonce: true, Run: totpRegenerate})
+	registerAction("/totp/disable", actionSpec{Roles: factorRoles, OwnTx: true, ConfirmedFormNonce: true, FactorFormNonce: true, Run: totpDisable})
 	registerBackground(recoveryRevealSweeper)
 	registerPreview("totp", func(d *PageData) {
 		secret := "PREVIEWSAMPLESECRETNOTREAL234567"
@@ -63,15 +64,29 @@ func totpEnroll(c *actionCtx) (actionResult, error) {
 // factor yet: otherwise a stolen session could add a factor only the thief holds and lock the owner out even after
 // they sign out every session.
 func totpActivate(c *actionCtx) (actionResult, error) {
-	if err := totpLimit(c); err != nil {
+	completed, err := completedFormSubmissionForRequest(c)
+	if err != nil {
 		return actionResult{}, err
+	}
+	if !completed {
+		if err := totpLimit(c); err != nil {
+			return actionResult{}, err
+		}
 	}
 	var enabled bool
-	if err := c.A.db.QueryRowContext(c.Ctx(), "SELECT totp_enabled FROM users WHERE id=$1", c.User.ID).Scan(&enabled); err != nil {
-		return actionResult{}, err
+	if !completed {
+		if err := c.A.db.QueryRowContext(c.Ctx(), "SELECT totp_enabled FROM users WHERE id=$1", c.User.ID).Scan(&enabled); err != nil {
+			return actionResult{}, err
+		}
 	}
-	if enabled { // before the password check; activateTOTP re-checks under the row lock
-		return actionResult{}, fail(409, "TOTP is already enabled")
+	if enabled { // before password unless the original activation just committed
+		completed, err = completedFormSubmissionForRequest(c)
+		if err != nil {
+			return actionResult{}, err
+		}
+		if !completed {
+			return actionResult{}, fail(409, "TOTP is already enabled")
+		}
 	}
 	// Activation issues recovery codes, so it locks them before the account row, like every such change (A-154).
 	return confirmedTxWith(c, &confirmation{Before: lockOwnRecoveryCodes}, activateTOTP)
@@ -120,13 +135,18 @@ func activateTOTP(c *actionCtx) (actionResult, error) {
 // totpRegenerate replaces the recovery codes. It needs the current password and a current authenticator code
 // (confirmedTx checks the code because TOTP is on), so a stolen session cannot take the codes (A-152).
 func totpRegenerate(c *actionCtx) (actionResult, error) {
-	if err := totpLimit(c); err != nil {
+	completed, err := completedFormSubmissionForRequest(c)
+	if err != nil {
 		return actionResult{}, err
+	}
+	if !completed {
+		if err := totpLimit(c); err != nil {
+			return actionResult{}, err
+		}
 	}
 	return confirmedTxWith(c, &confirmation{Before: lockOwnRecoveryCodes}, func(c *actionCtx) (actionResult, error) {
 		ctx := c.Ctx()
 		var enabled bool
-		// confirmedTx has locked the row; without TOTP it checked no code, and there are no codes to replace.
 		if err := c.Tx.QueryRowContext(ctx, "SELECT totp_enabled FROM users WHERE id=$1", c.User.ID).Scan(&enabled); err != nil {
 			return actionResult{}, err
 		}
@@ -146,65 +166,35 @@ func totpRegenerate(c *actionCtx) (actionResult, error) {
 // totpDisable needs the password (bcrypt runs before any transaction) and a current code or recovery code; a wrong
 // code after the right password spends the confirmation budget, as in confirmedTxWith (A-274).
 func totpDisable(c *actionCtx) (actionResult, error) {
-	if err := totpLimit(c); err != nil {
+	completed, err := completedFormSubmissionForRequest(c)
+	if err != nil {
 		return actionResult{}, err
 	}
-	a, ctx, uid := c.A, c.Ctx(), c.User.ID
-	password, code := c.Form.Get("password"), c.Form.Get("code")
-	if len(password) > 72 || code == "" {
+	if !completed {
+		if err := totpLimit(c); err != nil {
+			return actionResult{}, err
+		}
+	}
+	if len(c.Form.Get("password")) > 72 || c.Form.Get("code") == "" {
 		return actionResult{}, fail(400, "Enter your password and a current code or recovery code")
 	}
-	if err := a.confirmPassword(ctx, uid, password); err != nil {
-		return actionResult{}, err
-	}
-	tx, err := a.db.BeginTx(ctx, nil)
-	if err != nil {
-		return actionResult{}, fail(503, "Service unavailable")
-	}
-	defer tx.Rollback()
-	// The recovery codes are locked before the account row, in the order /challenge takes them (A-154).
-	if err = lockRecoveryCodes(ctx, tx, uid); err != nil {
-		return actionResult{}, err
-	}
-	var enabled, suspended bool
-	var role string
-	if err = tx.QueryRowContext(ctx, "SELECT totp_enabled,role,suspended_at IS NOT NULL FROM users WHERE id=$1 FOR NO KEY UPDATE", uid).Scan(&enabled, &role, &suspended); err != nil {
-		if err == sql.ErrNoRows {
-			return actionResult{}, errAccountChanged
+	return confirmedTxWith(c, &confirmation{Recovery: true, Before: lockOwnRecoveryCodes}, func(c *actionCtx) (actionResult, error) {
+		ctx, uid := c.Ctx(), c.User.ID
+		var enabled bool
+		if err := c.Tx.QueryRowContext(ctx, "SELECT totp_enabled FROM users WHERE id=$1", uid).Scan(&enabled); err != nil {
+			return actionResult{}, err
 		}
-		return actionResult{}, err
-	}
-	if role != c.User.Role || suspended {
-		return actionResult{}, errAccountChanged
-	}
-	if !enabled {
-		return actionResult{}, fail(409, "TOTP is not enabled for this account")
-	}
-	// The code is checked under the account row lock, as a confirmation's code is: a wrong one spends the confirmation
-	// budget the correct password gave back (A-274, QA19-2).
-	how := "authenticator code"
-	if normalizeRecoveryCode(code) != "" {
-		how = "recovery code"
-		err = a.confirmCode(uid, func() error { _, err := a.useRecoveryCode(ctx, tx, uid, code); return err })
-	} else {
-		err = a.confirmCode(uid, func() error { return a.checkTOTP(ctx, tx, uid, code) })
-	}
-	if err != nil {
-		return actionResult{}, err
-	}
-	if err = turnOffTOTP(ctx, tx, uid); err != nil {
-		return actionResult{}, err
-	}
-	if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", uid, "Turned off TOTP two-factor authentication (confirmed with password and "+how+")"); err != nil {
-		return actionResult{}, err
-	}
-	if err = notifyOwner(ctx, tx, uid, "Two-step sign-in with an authenticator app (TOTP) was turned off for your account and its recovery codes were deleted."); err != nil {
-		return actionResult{}, err
-	}
-	if err = tx.Commit(); err != nil {
-		return actionResult{}, commitOutcomeUnknown{err}
-	}
-	return actionResult{Redirect: "/totp"}, nil
+		if !enabled {
+			return actionResult{}, fail(409, "TOTP is not enabled for this account")
+		}
+		if err := turnOffTOTP(ctx, c.Tx, uid); err != nil {
+			return actionResult{}, err
+		}
+		if err := notifyOwner(ctx, c.Tx, uid, "Two-step sign-in with an authenticator app (TOTP) was turned off for your account and its recovery codes were deleted."); err != nil {
+			return actionResult{}, err
+		}
+		return actionResult{Redirect: "/totp", Audit: "Turned off TOTP two-factor authentication"}, nil
+	})
 }
 
 // turnOffTOTP turns the user's TOTP off inside tx: its secret, pending secret, step counter, recovery codes and any

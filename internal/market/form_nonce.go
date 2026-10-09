@@ -5,8 +5,10 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/subtle"
+	"database/sql"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"log"
 	"regexp"
 	"sort"
@@ -23,7 +25,7 @@ func init() { registerBackground(formSubmissionSweeper) }
 
 // formNonceFor is called once per opted-in form while rendering HTML. Issuing a nonce writes nothing on GET.
 func formNonceFor(path string) string {
-	if spec, ok := actions[path]; ok && (spec.FormNonce || spec.ConfirmedFormNonce) {
+	if spec, ok := actions[path]; ok && (spec.FormNonce || spec.ConfirmedFormNonce || spec.OwnFormNonce) {
 		return randomToken()[:32]
 	}
 	return ""
@@ -92,6 +94,72 @@ func writeFormHMACCount(h interface{ Write([]byte) (int, error) }, count uint64)
 
 var errFormNonceMismatch = fail(409, "This form was already used for a different request. Reload the page and try again. Nothing was changed.")
 
+// completedOwnFormMode is a read-only probe used only by the four dynamic
+// OwnTx actions before their old-state/RPC prechecks. It never returns a saved
+// result or authorizes a mutation: confirmedTx must still lock the actor,
+// verify the live session and current password when the ORIGINAL request
+// required one, and match the exact receipt in its transaction. A nonce used
+// for another body or session is refused without revealing its mode.
+func completedOwnFormMode(c *actionCtx) (required, completed bool, err error) {
+	nonce := c.Form.Get(formNonceField)
+	if !formNoncePattern.MatchString(nonce) || len(c.Form[formNonceField]) != 1 {
+		return false, false, fail(400, "Reload this form and try again. Nothing was changed.")
+	}
+	var userID, sessionHash, path, requestHMAC, redirect string
+	err = c.A.db.QueryRowContext(c.Ctx(), `SELECT user_id,session_hash,action_path,request_hmac,redirect,confirmation_required
+		FROM form_submissions WHERE nonce=$1`, nonce).Scan(&userID, &sessionHash, &path, &requestHMAC, &redirect, &required)
+	if err == sql.ErrNoRows {
+		return false, false, nil
+	}
+	if err != nil {
+		return false, false, err
+	}
+	if userID != c.User.ID || sessionHash != digest(c.Token) || path != c.R.URL.Path ||
+		subtle.ConstantTimeCompare([]byte(requestHMAC), []byte(c.A.formRequestHMAC(c))) != 1 {
+		return false, false, errFormNonceMismatch
+	}
+	return required, redirect != "", nil
+}
+
+// replayOwnForm deliberately cannot mutate anything. The completed probe only
+// selects the original confirmation mode; confirmedTx still checks the current
+// actor and exact durable receipt under its transaction locks.
+func replayOwnForm(c *actionCtx, required bool) (actionResult, error) {
+	return ownConfirmedTx(c, required, func(*actionCtx) (actionResult, error) {
+		return actionResult{}, errFormNonceMismatch
+	})
+}
+
+// A competing exact submission can read the changed live state while the
+// original receipt is still uncommitted. The database conflict then reveals
+// its original mode after verifying the full actor/session/path/request
+// identity. Retry once outside the transaction so bcrypt never holds its locks.
+type ownFormModeChanged struct{ required bool }
+
+func (e ownFormModeChanged) Error() string { return "original form confirmation mode changed" }
+
+func ownConfirmedTx(c *actionCtx, required bool, run func(*actionCtx) (actionResult, error)) (actionResult, error) {
+	res, err := confirmedTx(c, required, run)
+	var saved ownFormModeChanged
+	if errors.As(err, &saved) {
+		return confirmedTx(c, saved.required, run)
+	}
+	// A concurrent no-password request may commit after this request's first
+	// probe but before its live-state read, making the latter demand a password
+	// that the original form did not need. An exact, now-completed receipt is
+	// the only exception; its replay still takes the current actor/session locks.
+	var unknown commitOutcomeUnknown
+	if required && err != nil && !errors.As(err, &unknown) {
+		savedRequired, completed, probeErr := completedOwnFormMode(c)
+		if probeErr == nil && completed && !savedRequired {
+			return confirmedTx(c, false, func(*actionCtx) (actionResult, error) {
+				return actionResult{}, errFormNonceMismatch
+			})
+		}
+	}
+	return res, err
+}
+
 // claimFormSubmission inserts the claim before the action does any work. PostgreSQL's unique key makes a
 // concurrent same-nonce request wait for the first transaction: after a rollback it can run, and after a
 // commit it reads the original success. OneAtATime actions still refuse in-flight repeats before opening a
@@ -105,8 +173,8 @@ func claimFormSubmission(c *actionCtx) (actionResult, bool, error) {
 	}
 	requestHMAC := c.A.formRequestHMAC(c)
 	sessionHash := digest(c.Token)
-	r, err := c.Tx.ExecContext(c.Ctx(), `INSERT INTO form_submissions(nonce,user_id,session_hash,action_path,request_hmac,redirect)
-		VALUES($1,$2,$3,$4,$5,'') ON CONFLICT (nonce) DO NOTHING`, nonce, c.User.ID, sessionHash, c.R.URL.Path, requestHMAC)
+	r, err := c.Tx.ExecContext(c.Ctx(), `INSERT INTO form_submissions(nonce,user_id,session_hash,action_path,request_hmac,redirect,confirmation_required)
+		VALUES($1,$2,$3,$4,$5,'',$6) ON CONFLICT (nonce) DO NOTHING`, nonce, c.User.ID, sessionHash, c.R.URL.Path, requestHMAC, c.OwnFormNonce && c.ReceiptConfirmRequired)
 	if err != nil {
 		return actionResult{}, false, err
 	}
@@ -116,14 +184,18 @@ func claimFormSubmission(c *actionCtx) (actionResult, bool, error) {
 		return actionResult{}, false, nil
 	}
 	var userID, savedSession, path, savedHMAC, redirect, notice string
-	err = c.Tx.QueryRowContext(c.Ctx(), `SELECT user_id,session_hash,action_path,request_hmac,redirect,notice
-		FROM form_submissions WHERE nonce=$1`, nonce).Scan(&userID, &savedSession, &path, &savedHMAC, &redirect, &notice)
+	var savedRequired bool
+	err = c.Tx.QueryRowContext(c.Ctx(), `SELECT user_id,session_hash,action_path,request_hmac,redirect,notice,confirmation_required
+		FROM form_submissions WHERE nonce=$1`, nonce).Scan(&userID, &savedSession, &path, &savedHMAC, &redirect, &notice, &savedRequired)
 	if err != nil {
 		return actionResult{}, false, err
 	}
 	if userID != c.User.ID || savedSession != sessionHash || path != c.R.URL.Path || redirect == "" ||
 		subtle.ConstantTimeCompare([]byte(savedHMAC), []byte(requestHMAC)) != 1 {
 		return actionResult{}, false, errFormNonceMismatch
+	}
+	if c.OwnFormNonce && savedRequired != c.ReceiptConfirmRequired {
+		return actionResult{}, false, ownFormModeChanged{required: savedRequired}
 	}
 	return actionResult{Redirect: redirect, Notice: notice}, true, nil
 }

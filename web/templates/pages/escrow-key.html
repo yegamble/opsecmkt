@@ -34,6 +34,7 @@
 <section class="panel" aria-labelledby="escrow-key-form">
 <h2 id="escrow-key-form">{{if .Registered}}Change your key{{else}}Register a key{{end}}</h2>
 <form class="stack" method="post" action="/escrow-key">
+<input type="hidden" name="form_nonce" value="{{formNonce "/escrow-key"}}">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <fieldset class="stack">
 <legend>The wallet the key comes from</legend>
@@ -72,6 +73,7 @@
 </label>
 <p class="help">{{if .PerOrder}}Load it into the practice wallet (in Electrum, Tools › Load transaction › From text; in Sparrow, File › Open Transaction › From Text), sign it, and copy the signed transaction as a PSBT, without finalizing or broadcasting it. Paste it here.{{else}}In Bitcoin Core, load it with File › Load PSBT from clipboard and press Sign, or run <code>walletprocesspsbt</code> with it in the console, in the wallet that holds this key. Copy the signed PSBT and paste it here.{{end}}</p>
 <form class="stack" method="post" action="/escrow-key/practice">
+<input type="hidden" name="form_nonce" value="{{formNonce "/escrow-key/practice"}}">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <label>Signed practice PSBT<textarea class="escrow-psbt" name="psbt" required maxlength="60000" rows="8" spellcheck="false" autocapitalize="off" placeholder="cHNidP8…"></textarea>
 </label>

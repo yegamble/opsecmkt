@@ -81,6 +81,15 @@ type actionCtx struct {
 	// ConfirmedFormNonce is set only for an opted-in OwnTx action whose confirmedTx
 	// transaction owns both its mutation and the durable submission receipt.
 	ConfirmedFormNonce bool
+	// FactorFormNonce explicitly permits the recovery-code lock and consumption
+	// order used by TOTP activation/replacement/disable. Other confirmed forms
+	// still reject those options.
+	FactorFormNonce bool
+	// OwnFormNonce records the original confirmation mode for dynamic OwnTx
+	// routes such as profile/key changes. It is mutually exclusive with the
+	// fixed confirmed and normal transaction flags.
+	OwnFormNonce           bool
+	ReceiptConfirmRequired bool
 	// ReceiptAuthorize rechecks route-specific eligibility before a confirmed receipt
 	// can be claimed or replayed. It must be read-only and must not require the
 	// original transaction's pre-change state.
@@ -110,6 +119,8 @@ type actionSpec struct {
 	OwnTx              bool                   // Run opens its own transactions (e.g. bcrypt before any tx); c.Tx is nil, Audit is written without a tx
 	FormNonce          bool                   // this normal-transaction form records a successful submission and replays its original 303
 	ConfirmedFormNonce bool                   // this confirmed OwnTx form records its receipt in confirmedTx's transaction
+	FactorFormNonce    bool                   // fixed confirmed receipt whose factor-code rows are locked before the actor
+	OwnFormNonce       bool                   // dynamic OwnTx receipt remembers whether the original request needed confirmation
 	ReceiptAuthorize   func(*actionCtx) error // optional current eligibility check before a confirmed claim/replay
 	// Precheck, when set, runs in ServeHTTP after the CSRF check and before the session lookup and the post
 	// slot: a check of the form alone (no database), so a flood of posts it refuses holds no slot (A-178).
@@ -162,6 +173,12 @@ func registerAction(path string, s actionSpec) {
 	}
 	if s.ConfirmedFormNonce && (!s.OwnTx || s.Public || s.FormNonce || len(s.Roles) == 0) {
 		panic("confirmed form nonce requires a role-gated authenticated OwnTx action: " + path)
+	}
+	if s.OwnFormNonce && (!s.OwnTx || s.Public || s.FormNonce || s.ConfirmedFormNonce || len(s.Roles) == 0) {
+		panic("own form nonce requires a role-gated authenticated OwnTx action: " + path)
+	}
+	if s.FactorFormNonce && (!s.ConfirmedFormNonce || !s.OwnTx) {
+		panic("factor form nonce requires a confirmed OwnTx action: " + path)
 	}
 	if s.ReceiptAuthorize != nil && !s.ConfirmedFormNonce {
 		panic("receipt authorization requires a confirmed form nonce: " + path)
@@ -518,7 +535,7 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 		if !ok {
 			w.Header().Set("Retry-After", busyRetryAfter)
 			msg := "Your previous request is still being processed. Wait a few seconds, then reload the page to see its result."
-			if spec.FormNonce || spec.ConfirmedFormNonce {
+			if spec.FormNonce || spec.ConfirmedFormNonce || spec.OwnFormNonce {
 				msg = "Your previous request is still being processed. Wait a few seconds, then check its result. If the original form is still open, resubmit it unchanged to retrieve the result."
 			}
 			http.Error(w, msg, http.StatusTooManyRequests)
@@ -535,7 +552,8 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 	defer release()
 	ctx := r.Context()
 	c := &actionCtx{A: a, W: w, R: r, User: u, Token: token, Form: r.PostForm,
-		ConfirmedFormNonce: spec.ConfirmedFormNonce, ReceiptAuthorize: spec.ReceiptAuthorize}
+		ConfirmedFormNonce: spec.ConfirmedFormNonce, FactorFormNonce: spec.FactorFormNonce,
+		OwnFormNonce: spec.OwnFormNonce, ReceiptAuthorize: spec.ReceiptAuthorize}
 	if !spec.OwnTx {
 		tx, err := a.db.BeginTx(ctx, nil)
 		if err != nil {
@@ -626,7 +644,9 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 			case "/escrow/claim", "/escrow/ship", "/escrow/recover", "/escrow/bump", "/escrow-xmr/claim", "/escrow-xmr/ship", "/escrow-xmr/confirm":
 				msg = "Escrow action outcome unknown: it may have been saved. Check the order and settlement state before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
 			case "/totp/disable", "/totp/activate", "/totp/recovery":
-				msg = "Authenticator change outcome unknown: it may have been saved. Reload your authenticator settings and check their state before taking further action."
+				msg = "Authenticator change outcome unknown: it may have been saved. Check your authenticator settings and recovery-code state before making another change. If the original form is still open, resubmit it unchanged to retrieve the saved response."
+			case "/account", "/admin", "/escrow-key", "/escrow-key/practice":
+				msg = "Change outcome unknown: it may have been saved. Check the current account, admin or escrow-key state before making another change. If the original form is still open, resubmit it unchanged to retrieve the saved response."
 			}
 			serverError(w, r, 500, msg, errorCause(err))
 			return

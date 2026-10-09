@@ -223,7 +223,7 @@ func (e *testEnv) do(method, path, token string, form url.Values, extra ...*http
 	}
 	if method == "POST" {
 		form.Set("csrf", e.A.csrf(token))
-		if spec, ok := actions[path]; ok && (spec.FormNonce || spec.ConfirmedFormNonce) && !form.Has(formNonceField) {
+		if spec, ok := actions[path]; ok && (spec.FormNonce || spec.ConfirmedFormNonce || spec.OwnFormNonce) && !form.Has(formNonceField) {
 			form.Set(formNonceField, formNonceFor(path))
 		}
 	}

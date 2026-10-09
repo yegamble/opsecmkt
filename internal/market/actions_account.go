@@ -13,7 +13,7 @@ func init() {
 		return actionResult{Redirect: "/login", Notice: "signed-out", Audit: "Signed out", AfterCommit: c.clearSession}, err
 	}})
 	registerAction("/revoke-sessions", actionSpec{Run: revokeSessionsAction})
-	registerAction("/account", actionSpec{OwnTx: true, Run: accountAction})
+	registerAction("/account", actionSpec{Roles: []string{"buyer", "vendor", "moderator", "admin"}, OwnTx: true, OwnFormNonce: true, Run: accountAction})
 	registerAction("/account/password", actionSpec{OwnTx: true, Run: passwordChangeAction})
 	registerLoader("account", accountSessionsLoader)
 	registerPreview("account", func(d *PageData) {
@@ -69,6 +69,13 @@ func accountSessionsLoader(ctx context.Context, a *App, r *http.Request, d *Page
 }
 
 func accountAction(c *actionCtx) (actionResult, error) {
+	required, completed, err := completedOwnFormMode(c)
+	if err != nil {
+		return actionResult{}, err
+	}
+	if completed {
+		return replayOwnForm(c, required)
+	}
 	f := c.Form
 	pgp := strings.TrimSpace(f.Get("pgp"))
 	if len(pgp) > 16384 {
@@ -92,7 +99,7 @@ func accountAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, err
 	}
 	confirm := !sameProfileKey(old, pgp)
-	return confirmedTx(c, confirm, func(c *actionCtx) (actionResult, error) {
+	return ownConfirmedTx(c, confirm, func(c *actionCtx) (actionResult, error) {
 		// P2: parse the key, store its fingerprint and reset ownership proof / PGP sign-in when it changes.
 		audit, outcome, err := saveProfileKey(c, pgp, confirm)
 		if err != nil {

@@ -69,14 +69,16 @@ func TestTOTPDisableLostCommitAcknowledgementReportsUnknownOutcome(t *testing.T)
 	key, _ := agEnableTOTP(e, id)
 	lost := loseNextActionCommit(t, e)
 
-	w := e.do("POST", "/totp/disable", session, url.Values{"password": {testPassword}, "code": {agTOTPNow(key)}})
+	form := url.Values{"password": {testPassword}, "code": {agTOTPNow(key)}, formNonceField: {randomToken()[:32]}}
+	w := e.do("POST", "/totp/disable", session, form)
 	if lost.Load() {
 		t.Fatal("Commit did not reach the injected acknowledgement loss")
 	}
 	if w.Code != 500 || w.Header().Get("Retry-After") != "" ||
 		!strings.Contains(w.Body.String(), "Authenticator change outcome unknown") ||
 		!strings.Contains(w.Body.String(), "may have been saved") ||
-		!strings.Contains(w.Body.String(), "Reload your authenticator settings") {
+		!strings.Contains(w.Body.String(), "Check your authenticator settings") ||
+		!strings.Contains(w.Body.String(), "resubmit it unchanged") {
 		t.Fatalf("lost Commit acknowledgement: status=%d retry=%q body=%s", w.Code, w.Header().Get("Retry-After"), w.Body.String())
 	}
 	var enabled bool
@@ -92,6 +94,11 @@ func TestTOTPDisableLostCommitAcknowledgementReportsUnknownOutcome(t *testing.T)
 	}
 	if err := e.DB.QueryRow("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE 'Two-step sign-in%turned off%'", id).Scan(&notices); err != nil || notices != 1 {
 		t.Fatalf("TOTP-disable notices=%d, err=%v; want 1", notices, err)
+	}
+	repeated := e.do("POST", "/totp/disable", session, form)
+	e.check(repeated, 303)
+	if got := agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1 AND action LIKE 'Turned off TOTP%'", id); got != 1 {
+		t.Fatalf("replay after lost acknowledgment duplicated audit: %d", got)
 	}
 }
 

@@ -20,7 +20,10 @@ The migration files included since alpha.1 are: `001_foundation`, `010_auth`, `0
 `095_pooled_txid_prefix_privacy`, `096_reported_zero_confirmation_regressions`, `097_payout_txid_lookup`,
 `098_remove_profile_xmpp`, `099_audit_event_indexes`, `100_form_submissions`, `101_provider_episodes`,
 `102_handle_casefold_lookup`, `103_message_extra_recipient_count`, `104_notification_order_id`,
-and `105_order_listing_snapshot`. The sections below explain the operator-visible changes and rollback considerations.
+`105_order_listing_snapshot`, and `106_form_confirmation_mode`. Migration 106 adds a boolean to short-lived
+form receipts recording whether the original account, admin or escrow-key submission required password confirmation.
+It stores no submitted password, authenticator code, recovery code, PGP key or practice PSBT. The sections
+below explain the operator-visible changes and rollback considerations.
 
 ## Upgrade with the installer
 

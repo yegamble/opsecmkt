@@ -237,16 +237,23 @@ func confirmedTx(c *actionCtx, confirm bool, run func(c *actionCtx) (actionResul
 // confirmedTxWith is confirmedTx with options; opts nil means no confirmation.
 func confirmedTxWith(c *actionCtx, opts *confirmation, run func(c *actionCtx) (actionResult, error)) (actionResult, error) {
 	a, ctx, uid := c.A, c.Ctx(), c.User.ID
-	// Only the plain password/TOTP flow may replay a confirmed receipt. In particular,
-	// recovery codes and Before hooks act before the account lock and cannot be skipped.
-	if c.ConfirmedFormNonce && (opts == nil || opts.Recovery || opts.Before != nil || opts.AfterPassword != nil) {
+	// A fixed confirmed receipt uses plain password/TOTP unless its route
+	// explicitly owns factor-code locks. Dynamic OwnTx receipts never use
+	// recovery, Before or AfterPassword hooks (notably session rotation).
+	if c.ConfirmedFormNonce && (opts == nil || opts.AfterPassword != nil ||
+		!c.FactorFormNonce && (opts.Recovery || opts.Before != nil)) {
 		return actionResult{}, errors.New("unsupported confirmed form nonce options")
 	}
+	if c.OwnFormNonce && opts != nil && (opts.Recovery || opts.Before != nil || opts.AfterPassword != nil) {
+		return actionResult{}, errors.New("unsupported own form nonce options")
+	}
 	confirm := opts != nil
+	receipt := c.ConfirmedFormNonce || c.OwnFormNonce
+	c.ReceiptConfirmRequired = c.OwnFormNonce && confirm
 	var verifiedHash string
 	if confirm {
 		var err error
-		if c.ConfirmedFormNonce {
+		if receipt {
 			verifiedHash, err = a.confirmPasswordHash(ctx, uid, c.Form.Get("password"))
 		} else {
 			err = a.confirmPassword(ctx, uid, c.Form.Get("password"))
@@ -279,7 +286,7 @@ func confirmedTxWith(c *actionCtx, opts *confirmation, run func(c *actionCtx) (a
 		}
 		// A recovery code is spent before the account row is locked (the lock order of confirmation.Before); it counts
 		// only when TOTP turns out to be on, and otherwise matches nothing (codes exist only while TOTP is on).
-		if recovery {
+		if recovery && !c.FactorFormNonce {
 			var he *httpError
 			if _, codeErr = a.useRecoveryCode(ctx, tx, uid, code); codeErr != nil && !errors.As(codeErr, &he) {
 				return actionResult{}, codeErr
@@ -297,8 +304,8 @@ func confirmedTxWith(c *actionCtx, opts *confirmation, run func(c *actionCtx) (a
 	if role != c.User.Role || suspended {
 		return actionResult{}, errAccountChanged
 	}
-	if c.ConfirmedFormNonce {
-		if subtle.ConstantTimeCompare([]byte(verifiedHash), []byte(currentHash)) != 1 {
+	if receipt {
+		if confirm && subtle.ConstantTimeCompare([]byte(verifiedHash), []byte(currentHash)) != 1 {
 			return actionResult{}, fail(401, "Password changed while this was being saved. Sign in again; nothing was changed.")
 		}
 		// Role/password changes lock the actor before deleting sessions. A live session
@@ -327,7 +334,16 @@ func confirmedTxWith(c *actionCtx, opts *confirmation, run func(c *actionCtx) (a
 	}
 	if confirm && totp {
 		if recovery {
-			err = a.confirmCode(uid, func() error { return codeErr })
+			if c.FactorFormNonce {
+				// Before locked the recovery rows before the user row. Consume
+				// only for a NEW receipt; an exact completed replay returns above.
+				err = a.confirmCode(uid, func() error {
+					_, useErr := a.useRecoveryCode(ctx, tx, uid, code)
+					return useErr
+				})
+			} else {
+				err = a.confirmCode(uid, func() error { return codeErr })
+			}
 			how = "password and recovery code"
 		} else {
 			err = a.confirmCode(uid, func() error { return a.checkTOTP(ctx, tx, uid, code) })
@@ -341,7 +357,7 @@ func confirmedTxWith(c *actionCtx, opts *confirmation, run func(c *actionCtx) (a
 	if err != nil {
 		return actionResult{}, err
 	}
-	if c.ConfirmedFormNonce && res.AfterCommit != nil {
+	if receipt && res.AfterCommit != nil {
 		return actionResult{}, errors.New("confirmed form nonce cannot replay an after-commit effect")
 	}
 	if res.Audit != "" {
@@ -353,7 +369,7 @@ func confirmedTxWith(c *actionCtx, opts *confirmation, run func(c *actionCtx) (a
 		}
 		res.Audit = ""
 	}
-	if c.ConfirmedFormNonce {
+	if receipt {
 		if res.Redirect == "" {
 			res.Redirect = "/"
 		}
