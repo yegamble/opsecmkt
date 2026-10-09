@@ -7,3 +7,10 @@ the transcript's sha256; both files passed the script's secret scan before they 
 [Escrow node set-up and the public-network smoke](../../operator-guide.md#escrow-node-set-up-and-the-public-network-smoke).
 
 No record is here yet: no public-network run of Bitcoin escrow has been recorded (A-447 is the owner's).
+
+`scripts/test-escrow-xmr-public-stagenet.py` writes the separate `stagenet-xmr/` directory only after a funded public
+digital-claim journey passes. It records a fetched HTTPS explorer block matched to the own daemon, actual Docker
+image/container identity, transaction hashes, funding and settlement stage times, and the planned amount received
+with ten confirmations. Its public transcript contains validated proof fields; raw output stays private outside
+the repository. A digital-claim sample is not refund timing or validation of A-482's experimental 24-hour threshold.
+No funded public Monero result is recorded yet; the offline stagenet fork is a different evidence tier.

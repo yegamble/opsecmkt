@@ -1271,6 +1271,11 @@ offline fork proves the stagenet address formats, the refusal of an old hard for
 against real daemons; the network pin is covered by the database tests against the simulated daemon
 (`TestXMREscrowNetworkPinMismatch`, `TestXMREscrowNetworkPinBackfillAndRepin`), not by the fork.
 
+The separate manual public runner is `scripts/test-escrow-xmr-public-stagenet.py`; its guarded digital-claim journey
+uses actual confirmations and a fetched public explorer anchor. See the [operator package](operator-guide.md#escrow-node-set-up-and-the-public-network-smoke)
+and the script header for its dedicated funded wallet, empty escrow wallet directory and Docker/RPC requirements.
+Its source/offline checks are not a funded public result, and a claim sample does not establish refund timing.
+
 ## 11. Bitcoin escrow on signet or testnet4
 
 Since A-443, Bitcoin escrow (`ESCROW_BTC=on`, off by default) may run on signet or testnet4 as well as on regtest;

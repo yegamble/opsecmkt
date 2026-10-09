@@ -1122,6 +1122,28 @@ What was checked here: the refusals, the manifest and the secret scan, offline w
 (`tests/test_escrow_public_script.py`), and the legs' body on Bitcoin Core 31.1 regtest (`TestEscrowRegtestSmoke` in
 `scripts/test-escrow-regtest.sh`). **No public run is recorded yet.**
 
+**Public Monero stagenet smoke.** `python3 scripts/test-escrow-xmr-public-stagenet.py` is a separate manual,
+funded digital-claim check, never CI. Its header lists the required environment. Use a clean checkout, a disposable
+loopback PostgreSQL database with a CREATEDB role, an already synced public stagenet daemon, a dedicated open funder
+wallet with at least **0.02 unlocked stagenet XMR**, and an initially empty escrow wallet directory. All three
+authenticated RPCs must be loopback ports published by the named Docker containers; the runner verifies their
+actual image digests and the escrow wallet directory mount. Keep credentials in a private environment file.
+
+Before any wallet call, both the runner and Go test check stagenet identity, current hard fork, peers, sync and tip
+freshness, then fetch the public explorer's HTTPS block API and match its near-tip height/hash against the daemon.
+The explorer source is `https://stagenet.xmrchain.net/block/<height-or-hash>`; the API must be available. A source URL
+alone is insufficient. The check sends 0.01 test XMR through checkout and the vendor claim, waits for ten real
+confirmations on funding and settlement, and verifies the planned claimant amount arrived back in the funder wallet.
+It neither mines blocks nor changes the application's clock or deadlines.
+
+Only a complete pass writes `docs/evidence/public-testnet/<UTC date>-<commit, 12 hex>/stagenet-xmr/manifest.json`
+and `transcript.log`, after scanning both for secrets. The public transcript contains validated proof fields;
+raw Go output stays in a private file outside the checkout. The record includes the fetched explorer anchor,
+container/image identity, transaction hashes, chain heights and funding/request/build/relay/confirmation times.
+This one digital-claim sample does **not** measure refund timing or validate A-482's experimental 24-hour alert.
+No funded public stagenet result is recorded yet. A fresh pruned cloud sync estimated 5.1 days on 2026-10-09 and
+was stopped; an already synced node or verified snapshot is still needed for that run.
+
 **What users see.** With `ESCROW_BTC` off, `/escrow-key` does not exist: it answers 404 like any unknown page,
 signed in or not. With it on, `/account` gains a *Bitcoin escrow key* row linking to `/escrow-key`. There a user registers
 one extended public key with its origin, `[fingerprint/path]tpub…`, confirmed with their password (and
