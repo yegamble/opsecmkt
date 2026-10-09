@@ -1131,8 +1131,11 @@ actual image digests and the escrow wallet directory mount. Keep credentials in 
 
 Before any wallet call, both the runner and Go test check stagenet identity, current hard fork, peers, sync and tip
 freshness, then fetch the public explorer's HTTPS block API and match its near-tip height/hash against the daemon.
-The explorer source is `https://stagenet.xmrchain.net/block/<height-or-hash>`; the API must be available. A source URL
-alone is insufficient. The check sends 0.01 test XMR through checkout and the vendor claim, waits for ten real
+The explorer source must be exactly `https://stagenet.xmrchain.net/block/<height-or-hash>` or
+`https://xmr-stagenet.librenode.com/block/<height-or-hash>`. Both checks fetch `/api/block/<height>` from the
+selected host with a 30-second timeout and a 2 MiB response limit, without proxies or redirects. The selected
+API must be available; there is no automatic fallback, and a source URL alone is insufficient.
+The check sends 0.01 test XMR through checkout and the vendor claim, waits for ten real
 confirmations on funding and settlement, and verifies the planned claimant amount arrived back in the funder wallet.
 It neither mines blocks nor changes the application's clock or deadlines.
 
@@ -1141,8 +1144,11 @@ and `transcript.log`, after scanning both for secrets. The public transcript con
 raw Go output stays in a private file outside the checkout. The record includes the fetched explorer anchor,
 container/image identity, transaction hashes, chain heights and funding/request/build/relay/confirmation times.
 This one digital-claim sample does **not** measure refund timing or validate A-482's experimental 24-hour alert.
-No funded public stagenet result is recorded yet. A fresh pruned cloud sync estimated 5.1 days on 2026-10-09 and
-was stopped; an already synced node or verified snapshot is still needed for that run.
+No funded public stagenet result is recorded yet. The first fresh cloud sync was stopped after a 5.1-day estimate.
+A separate four-CPU pruned cloud node started syncing on 2026-10-09; it remains a preparation step until it is
+fully synced and the dedicated funder has sufficient unlocked coins. On that date XMRChain returned HTTP 502,
+while Librenode's network and block APIs returned successful stagenet responses. Those availability checks do
+not establish a funded escrow result or a reliable sync completion time.
 
 **What users see.** With `ESCROW_BTC` off, `/escrow-key` does not exist: it answers 404 like any unknown page,
 signed in or not. With it on, `/account` gains a *Bitcoin escrow key* row linking to `/escrow-key`. There a user registers

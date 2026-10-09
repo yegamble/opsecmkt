@@ -13,4 +13,7 @@ digital-claim journey passes. It records a fetched HTTPS explorer block matched 
 image/container identity, transaction hashes, funding and settlement stage times, and the planned amount received
 with ten confirmations. Its public transcript contains validated proof fields; raw output stays private outside
 the repository. A digital-claim sample is not refund timing or validation of A-482's experimental 24-hour threshold.
+The operator selects either XMRChain or Librenode with an exact HTTPS block URL. Both the runner and Go test
+independently fetch the selected host's block API and refuse a missing or mismatching response; there is no
+automatic fallback. Public API availability and a syncing cloud node are preparation, not passing escrow evidence.
 No funded public Monero result is recorded yet; the offline stagenet fork is a different evidence tier.

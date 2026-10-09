@@ -67,11 +67,20 @@ func xmrPublicRefusal(n moneroNode, hf int64, now time.Time) string {
 	return ""
 }
 
+func xmrPublicExplorerHost(source string, height int64, hash string) string {
+	if height <= 0 || !xmrHex64(hash) {
+		return ""
+	}
+	for _, host := range []string{"stagenet.xmrchain.net", "xmr-stagenet.librenode.com"} {
+		if source == "https://"+host+"/block/"+hash || source == "https://"+host+"/block/"+strconv.FormatInt(height, 10) {
+			return host
+		}
+	}
+	return ""
+}
+
 func xmrPublicAnchorRefusal(current, height int64, hash, source, localHash string, localHeight int64, recent bool) string {
-	u, err := url.Parse(source)
-	if height <= 0 || !xmrHex64(hash) || err != nil || u.Scheme != "https" ||
-		u.Hostname() != "stagenet.xmrchain.net" || u.Port() != "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" ||
-		(u.Path != "/block/"+hash && u.Path != "/block/"+strconv.FormatInt(height, 10)) {
+	if xmrPublicExplorerHost(source, height, hash) == "" {
 		return "public stagenet anchor is invalid"
 	}
 	if current < height || recent && current-height > 20 {
@@ -97,18 +106,22 @@ func xmrPublicExplorerRefusal(height int64, hash string, body []byte) string {
 	return ""
 }
 
-func xmrPublicVerifyExplorer(ctx context.Context, height int64, hash string) string {
+func xmrPublicVerifyExplorer(ctx context.Context, source string, height int64, hash string) string {
 	const maxBody = 2 << 20
-	endpoint := "https://stagenet.xmrchain.net/api/block/" + strconv.FormatInt(height, 10)
+	host := xmrPublicExplorerHost(source, height, hash)
+	if host == "" {
+		return "public explorer source is not approved"
+	}
+	endpoint := "https://" + host + "/api/block/" + strconv.FormatInt(height, 10)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return "public explorer request is invalid"
 	}
 	req.Header.Set("Accept", "application/json")
 	client := &http.Client{
-		Timeout: 15 * time.Second,
+		Timeout: 30 * time.Second,
 		Transport: &http.Transport{Proxy: nil, DisableKeepAlives: true, TLSHandshakeTimeout: 5 * time.Second,
-			ResponseHeaderTimeout: 10 * time.Second, MaxResponseHeaderBytes: 16 << 10},
+			ResponseHeaderTimeout: 30 * time.Second, MaxResponseHeaderBytes: 16 << 10},
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 	resp, err := client.Do(req)
@@ -155,8 +168,18 @@ func TestXMREscrowPublicRefusal(t *testing.T) {
 	}
 	anchorHash := strings.Repeat("a", 64)
 	anchorSource := "https://stagenet.xmrchain.net/block/" + anchorHash
+	libreSource := "https://xmr-stagenet.librenode.com/block/" + anchorHash
 	if got := xmrPublicAnchorRefusal(1000, 990, anchorHash, anchorSource, anchorHash, 990, true); got != "" {
 		t.Error(got)
+	}
+	if got := xmrPublicAnchorRefusal(1000, 990, anchorHash, libreSource, anchorHash, 990, true); got != "" {
+		t.Error(got)
+	}
+	if host := xmrPublicExplorerHost(libreSource, 990, anchorHash); host != "xmr-stagenet.librenode.com" {
+		t.Errorf("libreNode block source routed to %q", host)
+	}
+	if host := xmrPublicExplorerHost(anchorSource, 990, anchorHash); host != "stagenet.xmrchain.net" {
+		t.Errorf("xmrchain block source routed to %q", host)
 	}
 	for _, c := range []struct {
 		name                    string
@@ -167,6 +190,10 @@ func TestXMREscrowPublicRefusal(t *testing.T) {
 		{"private fork", 1000, 990, anchorHash, anchorSource, strings.Repeat("b", 64), 990},
 		{"stale anchor", 1000, 979, anchorHash, anchorSource, anchorHash, 979},
 		{"mainnet source", 1000, 990, anchorHash, "https://xmrchain.net/block/" + anchorHash, anchorHash, 990},
+		{"unknown source", 1000, 990, anchorHash, "https://other.example/block/" + anchorHash, anchorHash, 990},
+		{"libreNode fake path", 1000, 990, anchorHash, "https://xmr-stagenet.librenode.com/other/" + anchorHash, anchorHash, 990},
+		{"libreNode extra query", 1000, 990, anchorHash, libreSource + "?redirect=1", anchorHash, 990},
+		{"libreNode empty query", 1000, 990, anchorHash, libreSource + "?", anchorHash, 990},
 		{"wrong height", 1000, 990, anchorHash, anchorSource, anchorHash, 991},
 	} {
 		if xmrPublicAnchorRefusal(c.current, c.height, c.hash, c.source, c.localHash, c.localHeight, true) == "" {
@@ -302,8 +329,8 @@ func TestXMREscrowPublicStagenetSmoke(t *testing.T) {
 		return n, hf
 	}
 	n, hf := preflight(true) // absolutely before any funder or escrow wallet RPC.
-	explorerCtx, explorerCancel := context.WithTimeout(context.Background(), 20*time.Second)
-	if why := xmrPublicVerifyExplorer(explorerCtx, anchorHeight, anchorHash); why != "" {
+	explorerCtx, explorerCancel := context.WithTimeout(context.Background(), 35*time.Second)
+	if why := xmrPublicVerifyExplorer(explorerCtx, anchorSource, anchorHeight, anchorHash); why != "" {
 		explorerCancel()
 		t.Fatalf("refusing: %s", why)
 	}

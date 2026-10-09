@@ -46,13 +46,19 @@ class PublicXMRScriptTests(unittest.TestCase):
     def test_independent_recent_public_block_anchor_refuses_private_fork(self):
         block_hash = "a" * 64
         source = "https://stagenet.xmrchain.net/block/" + block_hash
+        libre_source = "https://xmr-stagenet.librenode.com/block/" + block_hash
         block = {"block_header": {"height": 990, "hash": block_hash}}
         self.assertEqual(xmr.anchor_refusal(1000, 990, block_hash, source, block, True), "")
+        self.assertEqual(xmr.anchor_refusal(1000, 990, block_hash, libre_source, block, True), "")
         for current, returned, given_source in (
             (1011, block, source),
             (1000, {"block_header": {"height": 990, "hash": "b" * 64}}, source),
             (1000, block, "https://xmrchain.net/block/" + block_hash),
             (1000, block, "https://user:pass@stagenet.xmrchain.net/block/" + block_hash),
+            (1000, block, "https://other.example/block/" + block_hash),
+            (1000, block, "https://xmr-stagenet.librenode.com/other/" + block_hash),
+            (1000, block, libre_source + "?redirect=1"),
+            (1000, block, libre_source + "?"),
         ):
             with self.subTest(current=current, returned=returned, source=given_source):
                 self.assertTrue(xmr.anchor_refusal(current, 990, block_hash, given_source, returned, True))
@@ -161,10 +167,10 @@ class PublicXMRScriptTests(unittest.TestCase):
                 seen["timeout"] = timeout
                 return Response(json.dumps(self.payload).encode())
 
-        def fetch(payload):
+        def fetch(payload, source="https://stagenet.xmrchain.net/block/" + "a" * 64):
             with patch.object(xmr, "build_opener", side_effect=lambda *handlers: (
                     seen.update(handlers=handlers) or Opener(payload))):
-                return xmr.fetch_public_anchor(990, block_hash)
+                return xmr.fetch_public_anchor(source, 990, block_hash)
 
         good = {"status": "success", "data": {"block_height": 990, "hash": block_hash}}
         proof = fetch(good)
@@ -172,9 +178,16 @@ class PublicXMRScriptTests(unittest.TestCase):
         self.assertEqual(proof["height"], 990)
         self.assertEqual(proof["hash"], block_hash)
         self.assertEqual(seen["url"], proof["api_url"])
-        self.assertEqual(seen["timeout"], 15)
+        self.assertEqual(seen["timeout"], 30)
         self.assertTrue(any(isinstance(h, xmr.NoRedirect) for h in seen["handlers"]))
         self.assertTrue(any(isinstance(h, xmr.ProxyHandler) and h.proxies == {} for h in seen["handlers"]))
+        libre_source = "https://xmr-stagenet.librenode.com/block/" + block_hash
+        self.assertEqual(fetch(good, libre_source)["api_url"], "https://xmr-stagenet.librenode.com/api/block/990")
+        self.assertEqual(seen["url"], "https://xmr-stagenet.librenode.com/api/block/990")
+        with self.assertRaises(xmr.Refused):
+            fetch(good, "https://other.example/block/" + block_hash)
+        with self.assertRaises(xmr.Refused):
+            fetch(good, libre_source + "?redirect=1")
         for payload in ({"status": "success", "data": {"block_height": 991, "hash": block_hash}},
                         {"status": "success", "data": {"block_height": 990, "hash": "b" * 64}},
                         {"status": "failed", "data": {"block_height": 990, "hash": block_hash}}):

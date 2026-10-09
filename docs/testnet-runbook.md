@@ -1274,6 +1274,8 @@ against real daemons; the network pin is covered by the database tests against t
 The separate manual public runner is `scripts/test-escrow-xmr-public-stagenet.py`; its guarded digital-claim journey
 uses actual confirmations and a fetched public explorer anchor. See the [operator package](operator-guide.md#escrow-node-set-up-and-the-public-network-smoke)
 and the script header for its dedicated funded wallet, empty escrow wallet directory and Docker/RPC requirements.
+Select an exact HTTPS block URL on `stagenet.xmrchain.net` or `xmr-stagenet.librenode.com`; both the runner and Go
+test fetch the selected host's block API before wallet work. An unavailable or mismatching source refuses the run.
 Its source/offline checks are not a funded public result, and a claim sample does not establish refund timing.
 
 ## 11. Bitcoin escrow on signet or testnet4

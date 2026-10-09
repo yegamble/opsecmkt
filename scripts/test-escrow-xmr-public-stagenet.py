@@ -22,7 +22,9 @@ Required environment:
                                   escrow container must use the empty wallet dir
   ESCROW_XMR_PUBLIC_ANCHOR_HEIGHT, ESCROW_XMR_PUBLIC_ANCHOR_HASH,
   ESCROW_XMR_PUBLIC_ANCHOR_SOURCE
-                                  independently sourced near-tip public block
+                                  near-tip public block URL on exactly
+                                  stagenet.xmrchain.net or xmr-stagenet.librenode.com;
+                                  this selects the same host's JSON block API
   TEST_DATABASE_URL               disposable loopback PostgreSQL, CREATEDB role
 Optional: ESCROW_XMR_PUBLIC_WAIT_MINUTES (30..1440, default 480),
           ESCROW_XMR_PUBLIC_LOG (private raw Go log; default private temp file).
@@ -59,6 +61,7 @@ EVENTS = ("funding_submitted", "funding_confirmed", "settlement_requested",
           "settlement_built", "settlement_relayed", "settlement_confirmed")
 MAX_RPC_BYTES = 2 * 1024 * 1024
 MAX_EXPLORER_BYTES = 2 * 1024 * 1024
+EXPLORER_HOSTS = frozenset(("stagenet.xmrchain.net", "xmr-stagenet.librenode.com"))
 
 
 class Refused(Exception):
@@ -117,13 +120,10 @@ def daemon_refusal(info: dict, fork: dict, header: dict, now: datetime) -> str:
 
 
 def anchor_source_ok(source: str, height: int, block_hash: str) -> bool:
-    try:
-        p = urlsplit(source)
-        return (p.scheme == "https" and p.hostname == "stagenet.xmrchain.net" and p.port is None
-                and p.username is None and p.password is None and not p.query and not p.fragment
-                and p.path in ("/block/" + block_hash, "/block/" + str(height)))
-    except (ValueError, TypeError):
-        return False
+    return (isinstance(source, str) and type(height) is int and height > 0
+            and isinstance(block_hash, str) and HEX64.fullmatch(block_hash) is not None
+            and any(source in (f"https://{host}/block/{block_hash}", f"https://{host}/block/{height}")
+                    for host in EXPLORER_HOSTS))
 
 
 def anchor_refusal(current_height: int, anchor_height: int, anchor_hash: str, source: str,
@@ -141,8 +141,10 @@ def anchor_refusal(current_height: int, anchor_height: int, anchor_hash: str, so
     return ""
 
 
-def explorer_api_url(height: int) -> str:
-    return f"https://stagenet.xmrchain.net/api/block/{height}"
+def explorer_api_url(source: str, height: int, block_hash: str) -> str:
+    if not anchor_source_ok(source, height, block_hash):
+        raise Refused("public anchor source is not an approved explorer block URL")
+    return f"https://{urlsplit(source).hostname}/api/block/{height}"
 
 
 def explorer_refusal(height: int, block_hash: str, payload: dict) -> str:
@@ -153,13 +155,13 @@ def explorer_refusal(height: int, block_hash: str, payload: dict) -> str:
     return ""
 
 
-def fetch_public_anchor(height: int, block_hash: str) -> dict:
+def fetch_public_anchor(source: str, height: int, block_hash: str) -> dict:
     # The operator's source label is not evidence on its own. Fetch the explorer's
     # documented JSON API independently over HTTPS before touching either wallet.
-    api = explorer_api_url(height)
+    api = explorer_api_url(source, height, block_hash)
     req = Request(api, headers={"Accept": "application/json"})
     try:
-        with build_opener(ProxyHandler({}), NoRedirect()).open(req, timeout=15) as resp:
+        with build_opener(ProxyHandler({}), NoRedirect()).open(req, timeout=30) as resp:
             if resp.status != 200:
                 raise Refused("public explorer API is unavailable")
             body = resp.read(MAX_EXPLORER_BYTES + 1)
@@ -408,7 +410,7 @@ def run() -> None:
     started = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     info, fork, header = preflight(values["ESCROW_XMR_PUBLIC_DAEMON_URL"], anchor_height,
                                    anchor_hash, anchor_source, True) # no wallet call yet
-    explorer = fetch_public_anchor(anchor_height, anchor_hash) # independent HTTPS check, still before wallet RPC
+    explorer = fetch_public_anchor(anchor_source, anchor_height, anchor_hash) # HTTPS, before wallet RPC
     node_version = info.get("version")
     if not isinstance(node_version, str) or not re.fullmatch(r"[A-Za-z0-9.()_/-]{1,80}", node_version):
         raise Refused("daemon version is missing or malformed")
