@@ -7,8 +7,8 @@ test suite locally. For deploying a marketplace, use the
 
 ## Run from source with a local database
 
-Requirements: **Go 1.26.8+** (with the default `GOTOOLCHAIN=auto`, Go downloads the
-1.27.1 toolchain pinned in `go.mod`; set `GOTOOLCHAIN=local` to refuse the download),
+Requirements: **Go 1.26.9+** (with the default `GOTOOLCHAIN=auto`, Go downloads the
+1.27.2 toolchain pinned in `go.mod`; set `GOTOOLCHAIN=local` to refuse the download),
 **PostgreSQL 17+**, and OpenSSL. The example below
 uses Docker for PostgreSQL only; an existing local PostgreSQL server works too, if its databases are UTF8
 (`SHOW server_encoding`; startup and the tests refuse any other encoding, so create them with

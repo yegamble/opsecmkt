@@ -74,7 +74,7 @@ The pooled payment path and escrow path have different settings and eligibility 
 
 ## Quick start
 
-Try the read-only preview. It needs only **Go 1.26.8 or newer**: no database,
+Try the read-only preview. It needs only **Go 1.26.9 or newer**: no database,
 wallet or Node.js.
 
 ```sh
@@ -91,7 +91,7 @@ sample data and rejects every form write. Stop it with <kbd>Ctrl</kbd>+<kbd>C</k
   `PREVIEW_ADDR=127.0.0.1:18080 go run ./cmd/server -preview`. It must be a
   loopback IP address and port (`127.0.0.1:…` or `[::1]:…`, not `localhost`);
   anything else stops the preview at startup. `ADDR` is ignored in preview mode.
-- With the default `GOTOOLCHAIN=auto`, Go downloads the 1.27.1 toolchain pinned
+- With the default `GOTOOLCHAIN=auto`, Go downloads the 1.27.2 toolchain pinned
   in `go.mod`. Set `GOTOOLCHAIN=local` to refuse the download.
 
 </details>
