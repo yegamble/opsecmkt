@@ -118,6 +118,7 @@ func xmrPublicVerifyExplorer(ctx context.Context, source string, height int64, h
 		return "public explorer request is invalid"
 	}
 	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "opsecmkt-public-stagenet-proof/1")
 	client := &http.Client{
 		Timeout: 30 * time.Second,
 		Transport: &http.Transport{Proxy: nil, DisableKeepAlives: true, TLSHandshakeTimeout: 5 * time.Second,

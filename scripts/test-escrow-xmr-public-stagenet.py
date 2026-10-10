@@ -159,7 +159,7 @@ def fetch_public_anchor(source: str, height: int, block_hash: str) -> dict:
     # The operator's source label is not evidence on its own. Fetch the explorer's
     # documented JSON API independently over HTTPS before touching either wallet.
     api = explorer_api_url(source, height, block_hash)
-    req = Request(api, headers={"Accept": "application/json"})
+    req = Request(api, headers={"Accept": "application/json", "User-Agent": "opsecmkt-public-stagenet-proof/1"})
     try:
         with build_opener(ProxyHandler({}), NoRedirect()).open(req, timeout=30) as resp:
             if resp.status != 200:
