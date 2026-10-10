@@ -9,7 +9,7 @@ Per-order escrow is not part of this runbook, apart from its restore steps, the 
 [section 9](#9-manual-monero-escrow-fakechain-check), [section 10](#10-monero-escrow-on-stagenet) and
 [section 11](#11-bitcoin-escrow-on-signet-or-testnet4): Bitcoin escrow runs on regtest and, since A-443, on signet and
 testnet4, and Monero escrow on a local Monero fakechain or, since A-449, stagenet; both are off by default (built and
-tested on local chains, a private signet included; **no run on a public test network is recorded**;
+tested on local chains, a private signet included; public signet practice/claim/refund and one public stagenet digital claim are recorded, with other public paths unverified; see
 [per-order escrow](escrow.md)), so leave `ESCROW_BTC` off on a testnet4 or signet market unless you are trying Bitcoin
 escrow there (section 11), and `ESCROW_XMR` off on a testnet market and on a stagenet market unless you are trying
 Monero escrow there (section 10). Payments otherwise go through the pooled wallets below.
@@ -1246,9 +1246,8 @@ nodes on a local fakechain, not for stagenet, testnet or mainnet.
 Since A-449, Monero escrow (`ESCROW_XMR=on`, off by default, custodial) may run on Monero stagenet as well as on a local
 fakechain: the escrow daemon must report nettype `stagenet` with hard fork 16 or later, the escrow wallet-rpc must run with
 `--stagenet` against the same daemon, and refund, claim and fee addresses must be stagenet ones (5… or 7…). Setup, the
-network pin and the sync guard are in the [operator guide](operator-guide.md#monero-escrow-fakechain-or-stagenet). **No run
-on the public stagenet is recorded yet**: nothing here is evidence that Monero escrow works with the public network's peers,
-fees, ring members or reorganisations.
+network pin and the sync guard are in the [operator guide](operator-guide.md#monero-escrow-fakechain-or-stagenet). The [public stagenet digital-claim record](evidence/public-testnet/2026-10-10-ac71878dfde4/stagenet-xmr/README.md) proves one funded digital claim with real peers, fees and confirmations.
+Public refunds, physical deadlines, fee/ring-member stress and reorganisations remain unverified.
 
 `scripts/test-escrow-xmr-stagenet.sh` (manual, not CI) runs the legs an **offline stagenet fork, not the public stagenet**,
 can run: stagenet daemons built from the genesis block with the local monerod 0.18.5.1 image, peered only with each other
@@ -1266,7 +1265,7 @@ peers. The commands are in the script's header comment; the transcript goes to `
 from genesis is at hard fork version 1, which Monero escrow refuses, and the fakechain legs mine with `generateblocks`,
 which monerod answers only on a fakechain (`--regtest`), so the fork has only the blocks its local miner finds. Funded
 Monero escrow on stagenet (a deposit seen, an order funded, a settlement built, relayed and confirmed) is therefore proven
-only by the owner's run on the public stagenet (A-447), and until that run is recorded nothing here is that evidence. The
+by the [2026-10-10 public stagenet digital-claim record](evidence/public-testnet/2026-10-10-ac71878dfde4/stagenet-xmr/README.md) (A-447/A-491), scoped to one digital claim. The
 offline fork proves the stagenet address formats, the refusal of an old hard fork and the escrow and pooled sync guards
 against real daemons; the network pin is covered by the database tests against the simulated daemon
 (`TestXMREscrowNetworkPinMismatch`, `TestXMREscrowNetworkPinBackfillAndRepin`), not by the fork.
@@ -1276,7 +1275,7 @@ uses actual confirmations and a fetched public explorer anchor. See the [operato
 and the script header for its dedicated funded wallet, empty escrow wallet directory and Docker/RPC requirements.
 Select an exact HTTPS block URL on `stagenet.xmrchain.net` or `xmr-stagenet.librenode.com`; both the runner and Go
 test fetch the selected host's block API before wallet work. An unavailable or mismatching source refuses the run.
-Its source/offline checks are not a funded public result, and a claim sample does not establish refund timing.
+Its source/offline checks are not a funded public result. The recorded public digital claim passed with ten confirmations on both funding and release; it does not establish public refund timing, physical-order deadlines or deployment readiness.
 
 ## 11. Bitcoin escrow on signet or testnet4
 

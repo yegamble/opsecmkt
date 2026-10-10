@@ -16,4 +16,4 @@ the repository. A digital-claim sample is not refund timing or validation of A-4
 The operator selects either XMRChain or Librenode with an exact HTTPS block URL. Both the runner and Go test
 independently fetch the selected host's block API and refuse a missing or mismatching response; there is no
 automatic fallback. Public API availability and a syncing cloud node are preparation, not passing escrow evidence.
-No funded public Monero result is recorded yet; the offline stagenet fork is a different evidence tier.
+The [2026-10-10 public stagenet digital claim](2026-10-10-ac71878dfde4/stagenet-xmr/README.md) passed on frozen ac71878dfde4: actual 0.01 sXMR funding and confirmed release, ten confirmations each, and exact planned claimant receipt. It includes observed sync/storage, verified private recovery and cloud cleanup. Public refunds remain unmeasured; the offline stagenet fork is a separate evidence tier.

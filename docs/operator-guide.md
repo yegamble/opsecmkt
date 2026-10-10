@@ -655,7 +655,7 @@ confirmed total reaches the required amount.
 
 Operational limits to accept before enabling payments:
 
-- Deposits for all orders sit in **one pooled custodial wallet** per currency. This is not multisig escrow. Whoever controls the node wallet controls the funds. Per-order escrow is in no release ([per-order escrow](escrow.md)): its Phase 1 (digital orders) and Phase 2 (physical orders) are built and tested on regtest and a private signet, and since A-443 accept signet and testnet4 too (the public signet digital-claim/refund smoke is recorded; public testnet4 remains unrun), behind `ESCROW_BTC`, which is off by default ([Bitcoin escrow](#bitcoin-escrow-test-networks-only)), and its Phase 3 (Monero, custodial) on a local fakechain, and since A-449 on stagenet too (no public stagenet run is recorded), behind `ESCROW_XMR`, which is off by default ([Monero escrow](#monero-escrow-fakechain-or-stagenet)). The pooled wallet stays the default payment mode.
+- Deposits for all orders sit in **one pooled custodial wallet** per currency. This is not multisig escrow. Whoever controls the node wallet controls the funds. Per-order escrow is in no release ([per-order escrow](escrow.md)): its Phase 1 (digital orders) and Phase 2 (physical orders) are built and tested on regtest and a private signet, and since A-443 accept signet and testnet4 too (the public signet digital-claim/refund smoke is recorded; public testnet4 remains unrun), behind `ESCROW_BTC`, which is off by default ([Bitcoin escrow](#bitcoin-escrow-test-networks-only)), and its Phase 3 (Monero, custodial) on a local fakechain, and since A-449 on stagenet too (one public stagenet digital claim is recorded; other public journeys remain unverified), behind `ESCROW_XMR`, which is off by default ([Monero escrow](#monero-escrow-fakechain-or-stagenet)). The pooled wallet stays the default payment mode.
 - There is **no commission or fee accounting**. Every payout on both coins, releases included, deducts the network fee from the amount sent (Bitcoin `subtractfeefromamount`; Monero `subtract_fee_from_outputs`), so the recipient bears it and no payout costs the market its fee. When you pay one by hand, send it the same way. Payouts below a minimum are never queued but flagged to moderators: 0.0001 BTC for any Bitcoin payout (a smaller one cannot cover the fee) and 0.001 XMR for any Monero payout (the fee would take too large a share); listings cannot be priced below either minimum, and one priced lower before its rule (Bitcoin before A-99, Monero before A-232) takes no new orders in that currency until its vendor raises the price (an overpayment above such a price on an existing order is held for an administrator's review). The fee-from-amount rule covers the fee's amount only: how many small outputs the pooled Monero wallet accumulates, and what spending them later costs, is not measured (A-221(c)).
 - Payouts are **single-attempt**. A failed or interrupted wallet call is shown on the admin page and never retried automatically, because the transaction may already have been broadcast. After checking the wallet, an administrator can release a held payout, requeue a failed or stuck one, or record one as sent with its transaction ID (password-confirmed and audited). A failure the wallet rejected with a pre-broadcast error (nothing broadcast) requeues with the password alone; requeueing one whose outcome is unknown (timeout, dropped connection, or a Monero error such as -38 that can follow a submission; see the [runbook](testnet-runbook.md#5-recover-a-held-or-failed-payout)) or a stuck send, or releasing a payout held by (or requeueing a failed payout marked by) a restore from backup, also needs an explicit, audited confirmation that the wallet shows no broadcast transaction. A wallet send may take up to 30 seconds (ordinary wallet reads 10 seconds). A shutdown or redeploy lets an in-flight send finish and its outcome be recorded (at most 30 seconds plus 10 to record; even added to the 10-second HTTP drain this stays within the app's 60-second stop grace period).
 - The watcher never cancels an order for non-payment unless it read that order's deposit address from the wallet in the same pass, and it skips a currency entirely while its node is still syncing (Bitcoin `initialblockdownload`; Monero daemon `target_height` above `height`, when `MONERO_RPC_URL` is set), while a Bitcoin node is otherwise not synced (headers ahead of blocks, or on a public chain no peers or a tip older than `BITCOIN_MAX_TIP_AGE`, above; the admin page's last error then reads "Node is not synced (no peers) ...", "(tip older than BITCOIN_MAX_TIP_AGE)", "(headers ahead of blocks)", "(tip time unreadable: this Bitcoin Core is too old for the sync guard; use Bitcoin Core 31.1 or later)" or, when `getnetworkinfo` fails on a public chain, "(peer count unreadable)"; on regtest, "Node is still syncing ..." is followed by the regtest remedy above; and one `payments: BTC node not synced (...)` line is logged when it starts and one `payments: BTC node synced; watcher passes resumed` when it ends), while a Monero daemon is otherwise not synced (when `MONERO_RPC_URL` is set: `synchronized` false, no connections, or a top block older than `MONERO_MAX_TIP_AGE`, above; the last error then reads "Node is not synced (daemon not synchronized) ...", "(no peers)", "(tip older than MONERO_MAX_TIP_AGE)" or, when `get_last_block_header` fails, "(tip time unreadable)", logged as `payments: XMR node not synced (...)` once and `payments: XMR node synced; watcher passes resumed` once), or while the node's tip is below the highest tip it has recorded for that currency (Bitcoin `blocks`; the Monero wallet's `get_height`), as after a node or wallet restarted or restored from an older state. The admin page's last error then reads "Node is behind the highest tip recorded ...". If you deliberately replace a chain with a shorter one (a reset regtest, for example), clear the record so the watcher resumes: `UPDATE payment_status SET tip_height=NULL WHERE currency='BTC';` (or `'XMR'`).
@@ -679,9 +679,9 @@ claim, refunds, an administrator's dispute decisions and the return of coins sen
 the server, signed by the buyer or the vendor in their own wallet, and co-signed, broadcast and followed to their
 confirmations by the market (see *Settlements* below). Every other order still goes through the pooled wallet above,
 which stays the default. It is built and tested on regtest and on a private signet (see *What was checked* below).
-Since A-443 it also runs on signet and testnet4, with the preconditions below, but **no run on a public test network
-is recorded yet**: the owner's public-network runs (the [runbook](testnet-runbook.md#11-bitcoin-escrow-on-signet-or-testnet4)) have not
-been done. Never switch it on for a market that takes real payments.
+Since A-443 it also runs on signet and testnet4, with the preconditions below. The recorded public signet
+smoke covers practice signatures, a digital claim and underpaid buyer refund; public testnet4 and other
+public journeys remain unverified ([runbook](testnet-runbook.md#11-bitcoin-escrow-on-signet-or-testnet4)). Never switch it on for a market that takes real payments.
 
 - `ESCROW_BTC=on` turns it on (blank or `off` keeps it off). The app then refuses to start unless the node at
   `ESCROW_BTC_RPC_URL` reports chain `regtest`, `signet` or `testnet4` (mainnet `main` and testnet3 `test` are refused:
@@ -1144,14 +1144,15 @@ and `transcript.log`, after scanning both for secrets. The public transcript con
 raw Go output stays in a private file outside the checkout. The record includes the fetched explorer anchor,
 container/image identity, transaction hashes, chain heights and funding/request/build/relay/confirmation times.
 This one digital-claim sample does **not** measure refund timing or validate A-482's experimental 24-hour alert.
-No passing public stagenet manifest is recorded yet. A four-CPU pruned cloud node started on 2026-10-09 at
-18:41:47Z and was first observed fully synced on 2026-10-10 at 14:38:01Z, with approximately 7.03 GB in its
-Monero data directory. Completion occurred between the preceding unsynced observation at 12:36:28Z and that
-first synced observation; this is an observed upper bound, not an exact sync duration. Both faucet deposits
-were confirmed and unlocked. The first funded attempt reached ten confirmations on its funding and vendor
-claim, but failed proof capture because it missed the built state between watcher polls. The recorder now
-reads the durable build event; a fresh complete passing run is still required. That failed attempt is not a
-PASS record or refund-timing evidence. No blockchain files were downloaded locally.
+The [2026-10-10 public stagenet digital-claim record](evidence/public-testnet/2026-10-10-ac71878dfde4/stagenet-xmr/README.md) passed on frozen ac71878dfde4.
+Funding and release each reached ten confirmations; the exact planned 0.00996962 sXMR claim arrived in the test
+wallet. Wrapper elapsed time was 50m04s; claim-request-to-confirmed was 27m44s. The fresh pruned cloud node was
+first observed fully synced at 14:38:01Z after an unsynced sample at 12:36:28Z, with about 7.03 GB in its whole
+Monero data directory. The record preserves this completion bracket, start settings and observations; it does
+not claim an exact sync duration. The preceding funded attempt failed proof capture and emitted no PASS
+manifest; the verified retry reads the durable build event. Final private recovery was saved and reopened in
+a separate container using read-only RPCs. Only the temporary task host was deleted after verification.
+No blockchain files were downloaded locally. Public refunds, deployment and A-482 threshold validation remain unverified.
 
 **What users see.** With `ESCROW_BTC` off, `/escrow-key` does not exist: it answers 404 like any unknown page,
 signed in or not. With it on, `/account` gains a *Bitcoin escrow key* row linking to `/escrow-key`. There a user registers
@@ -1542,8 +1543,9 @@ QA5W4A leg (`TestEscrowRegtestPerOrderRepair`): the app restarted onto empty wat
 ones repairs such an escrow, every address solvable and the deposits found, with the escrow signer up, with it down (the
 order wallet keys, the market's included, are the ones stored at checkout) and after the vendor registered another key. In every leg the app runs inside the Go test against the real node, not as the server binary. A browser journey
 (`npm run test:e2e:escrow`, [development](development.md)) drives the escrow forms by keyboard in Chromium at 320 px
-with JavaScript off against the real server and a simulated escrow node; it is not chain evidence. Nothing about
-escrow has run on a public test network or mainnet, and the escrow pages have not been run in Firefox or WebKit.
+with JavaScript off against the real server and a simulated escrow node; it is not chain evidence. The separate public signet smoke and Monero stagenet digital claim are recorded,
+but they do not prove the additional physical/regtest journeys above. Mainnet escrow is refused, and the
+escrow pages have not been run in Firefox or WebKit.
 Since A-443 the same script's `--private-signet` mode (by hand, not in CI) starts two Core 31.1 nodes with
 `-signetchallenge=51` on a Docker network with no route off the host and runs every leg above that needs no
 regtest-only RPC against them (all but `TestEscrowRegtestRecovery`, `TestEscrowRegtestConflicted` and
@@ -1704,8 +1706,8 @@ buyer of an XMR draft on a digital listing with automatic delivery, or on a phys
 an account of a monthly escrow wallet the market holds, instead of the pooled wallet. **The market holds the keys and can
 move these coins**: unlike [Bitcoin escrow](#bitcoin-escrow-test-networks-only) there is no 2-of-3, no key of the buyer's or
 vendor's and nothing for them to sign. It runs against a local Monero fakechain (`monerod --regtest`) or, since A-449, Monero
-stagenet (`monerod --stagenet`); coins on both have no value. It refuses mainnet, testnet and anything else. No run on the
-public stagenet is recorded yet: the stagenet evidence is an offline stagenet fork (see [per-order escrow](escrow.md#monero-escrow-on-stagenet-a-449)).
+stagenet (`monerod --stagenet`); coins on both have no value. It refuses mainnet, testnet and anything else. The [public stagenet digital-claim record](evidence/public-testnet/2026-10-10-ac71878dfde4/stagenet-xmr/README.md) covers one funded claim; broader public journeys
+remain unverified. Offline-fork evidence is separate ([per-order escrow](escrow.md#monero-escrow-on-stagenet-a-449)).
 Never switch it on for a market that takes real payments. Every order not paid into a Monero escrow still goes through the
 pooled wallet. What it does, protects and does not protect, and the tests behind it, are in
 [per-order escrow, Phase 3](escrow.md#phase-3-monero-escrow-on-a-local-fakechain) and

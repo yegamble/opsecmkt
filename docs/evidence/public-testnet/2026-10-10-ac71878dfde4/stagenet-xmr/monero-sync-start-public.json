@@ -1,0 +1,1 @@
+{"batch": "daemon default (no forced block-sync-size)", "cpus_cap": 3.5, "max_concurrency": 4, "memory_cap_bytes": 5368709120, "network": "public stagenet", "out_peers": 24, "pruned": true, "started": "2026-10-09T18:41:44.910238+00:00"}

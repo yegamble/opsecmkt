@@ -5,7 +5,7 @@
 > operator's pooled custodial wallet for its currency ([operator guide](operator-guide.md#payments),
 > [implementation status](implementation-status.md#p5-payments)) unless an operator switches on the escrow
 > phases built so far, which run **on regtest, signet or testnet4 only** (Bitcoin) or **on a local Monero fakechain or
-> Monero stagenet only** (test networks whose coins have no value; a public signet smoke is recorded; testnet4 and public stagenet remain unrun)
+> Monero stagenet only** (test networks whose coins have no value; a public signet smoke and one public stagenet digital claim are recorded; testnet4 and other public Monero journeys remain unrun)
 > and are **off by default**
 > (`ESCROW_BTC`, [operator guide](operator-guide.md#bitcoin-escrow-test-networks-only); `ESCROW_XMR`,
 > [operator guide](operator-guide.md#monero-escrow-fakechain-or-stagenet)). Those phases, Bitcoin escrow for digital
@@ -178,8 +178,8 @@ shipped phase has proven. The full rules and acceptance criteria are in the proj
 | 1 | Bitcoin escrow for digital orders on regtest, behind a setting that is off by default | Built and tested on regtest (and, since A-443, a private signet) on the development branch, not released, behind `ESCROW_BTC` (off by default; regtest, signet or testnet4): see [Phase 1](#phase-1-bitcoin-escrow-on-regtest) for what it does, what it protects and the tests behind it. The public signet smoke covers a digital claim and underpaid refund; mainnet remains untested and refused by escrow. The original layout uses Bitcoin Core, while the per-order layout has BIP39 Electrum evidence (A-457); Sparrow and physical hardware remain untested |
 | Wallets | Electrum and Sparrow support (a signing test showed Electrum needs a different key layout) | Built on the development branch: per-order key derivation (A-453), the escrow signer (A-454), registration and practice (A-455), and checkout/settlement with per-order keys (A-456b). A-457 recorded two real BIP39 Electrum parties signing a release and sibling refund on regtest; Sparrow and physical hardware evidence remains A-458 |
 | 2 | Physical orders: buyer-signed release, 14-day deadline, no-ship cancellation, fee bumps | Built and tested on regtest (and, since A-443, a private signet); not released; off by default (`ESCROW_BTC`; regtest, signet or testnet4): see [Phase 2](#phase-2-bitcoin-escrow-for-physical-orders-on-regtest) for what it does, what it protects, what it does not do and the tests behind it. Not run on any public test network or on mainnet; Bitcoin Core and the per-order BIP39 Electrum layout are implemented, with the recorded A-457 journey scoped to its release/refund legs |
-| 3 | Monero accounts in monthly escrow wallets | Built and tested on a local Monero fakechain (monerod `--regtest`); not released; off by default (`ESCROW_XMR`): see [Phase 3](#phase-3-monero-escrow-on-a-local-fakechain) for what it does, what it protects, what it does not protect and the tests behind it. Custodial: the market can move these coins. Since A-449 it also accepts stagenet ([below](#monero-escrow-on-stagenet-a-449)), checked on an offline stagenet fork only; not run on the public stagenet, testnet or mainnet; no Monero multisig |
-| 4 | Public test networks end to end, then escrow-only for new orders, then removal of the pooled wallet | Under way: the Bitcoin node sync guard, the escrow chain pin and the chain table (A-439, [below](#node-sync-guard-chain-pin-and-chain-table-a-439)), the market key protection (A-440, [below](#market-key-protection-a-440)), Monero escrow on stagenet with its network pin and daemon sync guard (A-449, [below](#monero-escrow-on-stagenet-a-449)), broadcast honesty (A-441, [below](#broadcast-honesty-a-441)), the escrow-only switch with its readiness panel (A-444, [below](#escrow-only-cutover-a-444)), which no market has used on a public network, the pooled wallet's drain gate and panel (A-445, [below](#pooled-wallet-drain-a-445)), which no market has drained, and Bitcoin escrow on signet and testnet4 with its private-signet legs (A-443, [below](#bitcoin-escrow-on-signet-and-testnet4-a-443)) are on the development branch; nothing has run on a public test network |
+| 3 | Monero accounts in monthly escrow wallets | Built and tested on a local Monero fakechain (monerod `--regtest`); not released; off by default (`ESCROW_XMR`): see [Phase 3](#phase-3-monero-escrow-on-a-local-fakechain) for what it does, what it protects, what it does not protect and the tests behind it. Custodial: the market can move these coins. Since A-449 it also accepts stagenet ([below](#monero-escrow-on-stagenet-a-449)), checked on an offline stagenet fork and in one public stagenet digital claim ([record](evidence/public-testnet/2026-10-10-ac71878dfde4/stagenet-xmr/README.md)); public refunds and physical deadlines remain unrun, and testnet/mainnet are refused; no Monero multisig |
+| 4 | Public test networks end to end, then escrow-only for new orders, then removal of the pooled wallet | Under way: the Bitcoin node sync guard, the escrow chain pin and the chain table (A-439, [below](#node-sync-guard-chain-pin-and-chain-table-a-439)), the market key protection (A-440, [below](#market-key-protection-a-440)), Monero escrow on stagenet with its network pin and daemon sync guard (A-449, [below](#monero-escrow-on-stagenet-a-449)), broadcast honesty (A-441, [below](#broadcast-honesty-a-441)), the escrow-only switch with its readiness panel (A-444, [below](#escrow-only-cutover-a-444)), which no market has used on a public network, the pooled wallet's drain gate and panel (A-445, [below](#pooled-wallet-drain-a-445)), which no market has drained, and Bitcoin escrow on signet and testnet4 with its private-signet legs (A-443, [below](#bitcoin-escrow-on-signet-and-testnet4-a-443)) are on the development branch; the public signet practice/claim/refund and one public stagenet digital claim have recorded proofs; neither is a deployed-market or real pooled-drain proof |
 
 
 ## Phase 1: Bitcoin escrow on regtest
@@ -684,9 +684,9 @@ wallet takes an order again and no settlement is relayed until an administrator 
   `MONERO_WALLET_SECRET`, can spend every escrow's coins. Accounts keep orders apart and remove the pooled balance; they do
   not stop the operator. There is no Monero multisig and none is claimed.
 - **It was built and tested on a fakechain.** Phase 3 refused every daemon but a local fakechain; A-449 admits stagenet
-  ([below](#monero-escrow-on-stagenet-a-449)), checked on an offline stagenet fork only. It has not run on the public
-  stagenet, testnet or mainnet, so nothing is known about its behaviour on a real network, with real fees, ring members or
-  reorganisations.
+  ([below](#monero-escrow-on-stagenet-a-449)), checked on an offline fork and in one public digital claim
+  ([record](evidence/public-testnet/2026-10-10-ac71878dfde4/stagenet-xmr/README.md)). That sample verifies actual funding, fees and claim confirmations; public refunds,
+  physical deadlines, fee/ring-member stress and reorganisations remain unverified. Testnet and mainnet are refused.
 - **Backups keep wallet copies until they expire.** A database dump holds each wallet's sealed seed (anyone with the
   OpenPGP private key can open it), and a backup of the escrow wallet volume holds its files. Destroying a wallet reaches
   neither: the dumps and volume copies taken before it stay as they are, and the operator decides how long they are kept.
@@ -812,8 +812,8 @@ wallet takes an order again and no settlement is relayed until an administrator 
   restore that finds every funded account, and a watcher pass over 5 such wallets within the pass timeout. The numbers
   and their limits are in [verification](verification.md#monero-escrow-wallet-scale-paye-e2-war-room-a-429-p3-r12--2026-10-04).
 
-Not tested: the public stagenet (A-449's offline stagenet fork, [below](#monero-escrow-on-stagenet-a-449), cannot run these
-legs), testnet and mainnet, Monero multisig, the escrow pages in Firefox or WebKit, deadlines of 7 to 30
+The [2026-10-10 public stagenet digital-claim record](evidence/public-testnet/2026-10-10-ac71878dfde4/stagenet-xmr/README.md) covers one funded digital claim. Other public stagenet
+legs remain untested; A-449's offline fork cannot run them. Not tested: testnet and mainnet, Monero multisig, the escrow pages in Firefox or WebKit, deadlines of 7 to 30
 days in real time, a wallet with thousands of accounts on a public network (PAYE-E2 measured one on a local fakechain), a restore of a real backup into a
 running market with Phase 3 orders on a real chain (`scripts/test-backup-restore.sh` restores a real dump and checks its
 rows; the fakechain `Restore` leg simulates the database restore in SQL), and a deployment of any of it.
@@ -906,11 +906,11 @@ public network.
 ## Monero escrow on stagenet (A-449)
 
 Phase 4 work (war-room ruling P4-R15, owner decision 2026-10-05), on the development branch and not released. Monero escrow
-(still off by default, still custodial) accepts stagenet as well as a local fakechain. **No run on the public stagenet is
-recorded**: the evidence below is simulated RPC and an offline stagenet fork.
+(still off by default, still custodial) accepts stagenet as well as a local fakechain. The [2026-10-10 public stagenet digital-claim record](evidence/public-testnet/2026-10-10-ac71878dfde4/stagenet-xmr/README.md) passed with real funding and a confirmed vendor release.
+The broader network/failure checks below retain their simulated-RPC or offline-fork evidence tiers.
 
 The staff alert for a requested Monero settlement older than 24 hours is a visibility threshold, not a measured settlement
-or refund-time bound. Requested settlement waits have not been measured on stagenet.
+or refund-time bound. The public digital claim's request-to-confirmed sample was 27m44s; public refund waits remain unmeasured, and one sample does not validate the alert threshold.
 
 - **Network check and address tags.** The escrow daemon must report nettype `fakechain` (no network flag set) or
   `stagenet` (the stagenet flag set), and a hard fork version of at least 16; mainnet, testnet and inconsistent flags are
@@ -976,7 +976,7 @@ or refund-time bound. Requested settlement waits have not been measured on stage
   `--monero-escrow yes` (or its question beside the Monero questions) generates that password and `MONERO_WALLET_SECRET`,
   asks for the seed key file and mounts it through `compose.escrow-xmr.yaml`
   ([operator guide](operator-guide.md#monero-escrow-fakechain-or-stagenet)). Checked with `docker compose config` and the
-  installer's tests (a stub Docker); the service has not been started against a public stagenet daemon.
+  installer's tests (a stub Docker); the Compose service has not been started against a public stagenet daemon. The recorded public smoke used separately launched Docker containers, so it does not verify this deployment path.
 
 How it was tested. Simulated RPC and PostgreSQL, not chain evidence: `TestXMRAddressTagsPerNettype`,
 `TestXMRAddressStagenetVectors` (real stagenet addresses from a disposable wallet and Monero's own test table),
@@ -996,9 +996,9 @@ under the stagenet tags (the integrated one refused) and refused under the fakec
 and that the escrow and pooled sync guards read a restricted stagenet daemon with a peer and a fresh tip as synced and an
 `--offline` daemon as having no peers. No funded escrow leg can run on that fork (hard fork 1, and `generateblocks`, which
 the fakechain legs mine with, works only on a fakechain), so **funded Monero escrow on stagenet is proven only by the
-owner's public stagenet run (A-447)**, not recorded yet; the offline fork proves the stagenet address formats, the old-fork
+recorded public stagenet digital-claim run (A-447/A-491)** ([evidence](evidence/public-testnet/2026-10-10-ac71878dfde4/stagenet-xmr/README.md)); the offline fork proves the stagenet address formats, the old-fork
 refusal and the sync guards, and the network pin rests on the simulated-daemon database tests above. Not tested: the
-public stagenet (its peers, fees, ring members, reorganisations and a funded escrow end to end), a daemon that loses its
+other public stagenet workflows, fee stress, ring-member stress and reorganisations, a daemon that loses its
 peers on a public network, and `ESCROW_XMR_MAX_FEE` against stagenet fees. On a restricted RPC a daemon cut off from its
 peers looks synced until its tip is older than `MONERO_MAX_TIP_AGE` (QA4W3-5, accepted and documented in the
 [operator guide](operator-guide.md#payments): a deposit made in that window is not seen, its order can be cancelled as
