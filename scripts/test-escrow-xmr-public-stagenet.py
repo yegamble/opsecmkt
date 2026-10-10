@@ -247,7 +247,8 @@ def docker_metadata(image: str, container: str, rpc_url: str, wallet_dir: Path |
     if not re.fullmatch(r"[a-zA-Z0-9_.-]{1,100}", container):
         raise Refused("container name has an unexpected form")
     try:
-        cp = subprocess.run(["docker", "image", "inspect", "--format", "{{.Id}}|{{join .RepoDigests \" \"}}", image],
+        # Some Docker clients decode RepoDigests as []interface{}, which join rejects.
+        cp = subprocess.run(["docker", "image", "inspect", "--format", "{{.Id}}|{{range .RepoDigests}}{{.}} {{end}}", image],
                             capture_output=True, text=True, check=True, timeout=30)
         running = subprocess.run(["docker", "inspect", "--format",
                                   "{{.Image}}|{{.State.Running}}|{{json .Mounts}}|{{json .NetworkSettings.Ports}}", container],

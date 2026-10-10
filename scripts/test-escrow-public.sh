@@ -238,7 +238,7 @@ main() {
   fi
   local commit digest
   commit=$(git rev-parse HEAD)
-  digest=$(docker image inspect --format '{{join .RepoDigests " "}}' "$ESCROW_PUBLIC_NODE_IMAGE" 2>/dev/null | tr ' ' '\n' | grep '@sha256:' | head -n 1 || true)
+  digest=$(docker image inspect --format '{{range .RepoDigests}}{{.}} {{end}}' "$ESCROW_PUBLIC_NODE_IMAGE" 2>/dev/null | tr ' ' '\n' | grep '@sha256:' | head -n 1 || true)
   [[ -n $digest ]] || { echo "Refusing: no digest for ESCROW_PUBLIC_NODE_IMAGE (docker image inspect; pull the image the node runs)." >&2; exit 1; }
   local dir log day
   day=$(date -u +%Y-%m-%d)
