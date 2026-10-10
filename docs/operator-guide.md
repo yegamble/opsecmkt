@@ -1144,11 +1144,14 @@ and `transcript.log`, after scanning both for secrets. The public transcript con
 raw Go output stays in a private file outside the checkout. The record includes the fetched explorer anchor,
 container/image identity, transaction hashes, chain heights and funding/request/build/relay/confirmation times.
 This one digital-claim sample does **not** measure refund timing or validate A-482's experimental 24-hour alert.
-No funded public stagenet result is recorded yet. The first fresh cloud sync was stopped after a 5.1-day estimate.
-A separate four-CPU pruned cloud node started syncing on 2026-10-09; it remains a preparation step until it is
-fully synced and the dedicated funder has sufficient unlocked coins. On that date XMRChain returned HTTP 502,
-while Librenode's network and block APIs returned successful stagenet responses. Those availability checks do
-not establish a funded escrow result or a reliable sync completion time.
+No passing public stagenet manifest is recorded yet. A four-CPU pruned cloud node started on 2026-10-09 at
+18:41:47Z and was first observed fully synced on 2026-10-10 at 14:38:01Z, with approximately 7.03 GB in its
+Monero data directory. Completion occurred between the preceding unsynced observation at 12:36:28Z and that
+first synced observation; this is an observed upper bound, not an exact sync duration. Both faucet deposits
+were confirmed and unlocked. The first funded attempt reached ten confirmations on its funding and vendor
+claim, but failed proof capture because it missed the built state between watcher polls. The recorder now
+reads the durable build event; a fresh complete passing run is still required. That failed attempt is not a
+PASS record or refund-timing evidence. No blockchain files were downloaded locally.
 
 **What users see.** With `ESCROW_BTC` off, `/escrow-key` does not exist: it answers 404 like any unknown page,
 signed in or not. With it on, `/account` gains a *Bitcoin escrow key* row linking to `/escrow-key`. There a user registers
