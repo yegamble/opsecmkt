@@ -1125,7 +1125,7 @@ What was checked here: the refusals, the manifest and the secret scan, offline w
 **Public Monero stagenet smoke.** `python3 scripts/test-escrow-xmr-public-stagenet.py` is a separate manual,
 funded digital-claim check, never CI. Its header lists the required environment. Use a clean checkout, a disposable
 loopback PostgreSQL database with a CREATEDB role, an already synced public stagenet daemon, a dedicated open funder
-wallet with at least **0.02 unlocked stagenet XMR**, and an initially empty escrow wallet directory. All three
+wallet with at least **0.015 unlocked stagenet XMR** (the 0.01 order plus a 0.005 funding-fee cushion), and an initially empty escrow wallet directory. All three
 authenticated RPCs must be loopback ports published by the named Docker containers; the runner verifies their
 actual image digests and the escrow wallet directory mount. Keep credentials in a private environment file.
 

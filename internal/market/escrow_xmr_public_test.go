@@ -2,7 +2,9 @@ package market
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -16,7 +18,8 @@ import (
 
 // This deliberately separate public-stagenet leg never mines, moves the clock, or uses the fakechain helpers'
 // wallet creation. scripts/test-escrow-xmr-public-stagenet.py is the only intended entry point. It is not CI.
-const xmrPublicPrice int64 = 10_000_000_000 // 0.01 XMR, paid by a dedicated, already funded stagenet wallet.
+const xmrPublicPrice int64 = 10_000_000_000     // 0.01 XMR, paid by a dedicated, already funded stagenet wallet.
+const xmrPublicFeeCushion int64 = 5_000_000_000 // 0.005 XMR beyond the price, including for a recycled test wallet.
 
 func xmrPublicLoopback(raw string) bool {
 	u, err := url.Parse(raw)
@@ -262,6 +265,62 @@ type xmrPublicProof struct {
 	ClaimReceivedPiconero   int64          `json:"claim_received_piconero"`
 }
 
+// The watcher stores the build and its order event atomically, then relays in the
+// same pass. Reading state='built' after a pass therefore misses a successful
+// build. This smoke has exactly one release; refuse missing or ambiguous events
+// rather than inventing a build timestamp from the later relay or confirmation.
+func xmrPublicBuildTime(db *sql.DB, order string, requestedAt time.Time) (time.Time, error) {
+	var count int
+	var at sql.NullTime
+	err := db.QueryRow(`SELECT count(*),min(created) FROM order_events
+		WHERE order_id=$1 AND actor_id IS NULL AND created >= $2 AND note LIKE $3`,
+		order, requestedAt, "Monero escrow settlement built ("+settlementKind("release")+"): %").Scan(&count, &at)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if count != 1 || !at.Valid {
+		return time.Time{}, errors.New("release build event is missing or ambiguous")
+	}
+	return at.Time, nil
+}
+
+func TestXMREscrowPublicBuildEvidence(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	order, _, _ := x.completed()
+	id, _ := x.release(order)
+	var requestedAt time.Time
+	if err := x.DB.QueryRow("SELECT created FROM xmr_settlements WHERE id=$1", id).Scan(&requestedAt); err != nil {
+		t.Fatal(err)
+	}
+	var atRelay xmrSettlement
+	x.fake.hook("relay_tx", func() { atRelay = x.settlement(id) })
+	x.mustPoll()
+	s := x.settlement(id)
+	if atRelay.State != "built" || s.State != "relayed" || atRelay.TxHash != s.TxHash {
+		t.Fatal("regression must build and relay the same transaction in one watcher pass")
+	}
+	builtAt, err := xmrPublicBuildTime(x.DB, order, requestedAt)
+	if err != nil || builtAt.Before(requestedAt) {
+		t.Fatalf("relayed build evidence: %v", err)
+	}
+	x.fake.mine(10)
+	x.mustPoll()
+	confirmedAt, err := xmrPublicBuildTime(x.DB, order, requestedAt)
+	if err != nil || !confirmedAt.Equal(builtAt) || x.settlement(id).State != "confirmed" || x.settlement(id).TxHash != s.TxHash {
+		t.Fatalf("confirmed build evidence changed: %v", err)
+	}
+	agExec(x.testEnv, `INSERT INTO order_events(order_id,from_state,to_state,note)
+		SELECT order_id,from_state,to_state,note FROM order_events WHERE order_id=$1 AND note LIKE 'Monero escrow settlement built (%'`, order)
+	if _, err := xmrPublicBuildTime(x.DB, order, requestedAt); err == nil {
+		t.Fatal("ambiguous build evidence accepted")
+	}
+	agExec(x.testEnv, "DELETE FROM order_events WHERE order_id=$1 AND note LIKE 'Monero escrow settlement built (%'", order)
+	if _, err := xmrPublicBuildTime(x.DB, order, requestedAt); err == nil {
+		t.Fatal("missing build evidence accepted")
+	}
+}
+
 func TestXMREscrowPublicStagenetSmoke(t *testing.T) {
 	if os.Getenv("ESCROW_XMR_PUBLIC_RUN") == "" {
 		t.Skip("manual public stagenet smoke only")
@@ -356,8 +415,8 @@ func TestXMREscrowPublicStagenetSmoke(t *testing.T) {
 		Unlocked int64 `json:"unlocked_balance"`
 	}
 	r.call(funder, "get_balance", map[string]any{"account_index": 0}, &balance)
-	if balance.Unlocked < 2*xmrPublicPrice {
-		t.Fatal("refusing: funder needs at least 0.02 unlocked stagenet XMR, including a fee cushion")
+	if balance.Unlocked < xmrPublicPrice+xmrPublicFeeCushion {
+		t.Fatal("refusing: funder needs at least 0.015 unlocked stagenet XMR, including a 0.005 fee cushion")
 	}
 	refund := r.funderAddress()
 	if _, err = parseXMRAddress(refund, "stagenet"); err != nil {
@@ -447,13 +506,13 @@ func TestXMREscrowPublicStagenetSmoke(t *testing.T) {
 		preflight(false)
 		_ = r.poll() // a pass can commit one stage and then report an unrelated read error; inspect durable state.
 		s := r.settlement(settlementID)
-		if proof.SettlementBuilt.At == "" && s.State == "built" {
+		if proof.SettlementBuilt.At == "" && (s.State == "built" || s.State == "relayed" || s.State == "confirmed") {
 			if !xmrHex64(s.TxHash) {
 				t.Fatal("built settlement has no transaction hash")
 			}
-			var builtAt time.Time
-			if err := r.DB.QueryRow("SELECT updated FROM xmr_settlements WHERE id=$1 AND state='built'", settlementID).Scan(&builtAt); err != nil {
-				t.Fatal("built settlement timestamp is unreadable")
+			builtAt, err := xmrPublicBuildTime(r.DB, order, requestedAt)
+			if err != nil {
+				t.Fatal("built settlement event is missing, ambiguous or unreadable")
 			}
 			proof.SettlementBuilt = eventAt(s.TxHash, builtAt)
 		}
