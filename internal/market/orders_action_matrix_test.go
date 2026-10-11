@@ -2,6 +2,7 @@ package market
 
 import (
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -131,4 +132,207 @@ func TestDisputeReason5001BytesRefused(t *testing.T) {
 		w.count("SELECT count(*) FROM order_events WHERE order_id=$1", order) != 0 || w.count("SELECT count(*) FROM notifications") != beforeNotifications {
 		t.Fatal("a 5001-byte dispute reason changed order, dispute, history or notifications")
 	}
+}
+
+// TestEscrowOrderActionMatrix pins every order action on live Bitcoin escrow orders (A-493, absorbing A-63's staff
+// refusal pin) through HTTP: ship (the escrow form and the retired order form), complete, cancel, dispute, resolve and
+// either party's concession, for the buyer, the vendor, an unrelated account, an independent moderator and an
+// independent administrator, on a physical escrow order that is a draft, awaiting payment, paid, shipped or disputed.
+// The expected outcomes are the product rules: only the parties reach party actions (anyone else, staff included, is
+// told the order does not exist); the vendor ships a paid order with the escrow form only; the buyer confirms receipt by
+// signing the release, never with Complete; a draft is cancelled by its buyer, an unpaid escrow by either party and a
+// paid one by its vendor (by the buyer only after the ship-by time); either party disputes a paid or shipped order; only
+// an independent administrator decides an escrow dispute; and each party concedes only to the other. Every refusal runs
+// against one order per state and must leave its state, history, settlements, dispute, notifications and form receipts
+// exactly as they were; every success runs on a fresh order of its own and records exactly one move. Fake escrow Core:
+// simulated RPC, not chain evidence.
+func TestEscrowOrderActionMatrix(t *testing.T) {
+	x := newEscrowEnv(t)
+	s := randomToken()[:6]
+	_, other := x.user("ematrix_other_"+s, "buyer")
+	_, mod := x.user("ematrix_mod_"+s, "moderator")
+	_, admin := x.user("ematrix_admin_"+s, "admin")
+	_, pub := testPGPKey(t, "ematrixvendor"+s)
+	x.setKey(x.vendor, pub) // a physical escrow needs a vendor who can receive the buyer's encrypted address
+	actors := []struct{ name, session string }{{"buyer", x.buyerSess}, {"vendor", x.vendorSess}, {"non-party", other}, {"moderator", mod}, {"admin", admin}}
+	n := 0
+	// fresh is a new physical escrow order of the buyer's in state, and its dispute when disputed.
+	fresh := func(state string) (string, string) {
+		t.Helper()
+		n++
+		label := "ematrix-" + strconv.Itoa(n) + "-" + s
+		order := x.testEnv.order(x.buyer, x.physicalListing(x.vendor, 3), "BTC", stateDraft)
+		if state == stateDraft {
+			return order, ""
+		}
+		x.mustCheckout(order, regtestAddr(label+"-refund"))
+		if state == stateAwaitingPayment {
+			return order, ""
+		}
+		x.fund(order, label, 3, 100000)
+		if got := x.state(order); got != statePaid {
+			t.Fatalf("funded matrix order is %s", got)
+		}
+		switch state {
+		case stateShipped:
+			if code, body := x.shipEscrow(order, x.vendorSess, regtestAddr(label+"-claim"), testPassword); code != 303 {
+				t.Fatalf("ship matrix order: %d %s", code, body)
+			}
+		case stateDisputed:
+			w := x.do("POST", "/disputes", x.buyerSess, url.Values{"order_id": {order}, "reason": {"The parcel has not arrived and the vendor does not answer."}})
+			if w.Code != 303 || x.state(order) != stateDisputed {
+				t.Fatalf("dispute matrix order: %d %s", w.Code, w.Body.String())
+			}
+			return order, agStr(x.testEnv, "SELECT id FROM disputes WHERE order_id=$1", order)
+		}
+		return order, ""
+	}
+	formFor := func(action, state, order, dispute string) url.Values {
+		switch action {
+		case "ship":
+			return url.Values{"order_id": {order}, "address": {regtestAddr("ematrix-claim-" + randomToken())}, "password": {testPassword}, "note": {"Sent by tracked post."}}
+		case "ship with the order form":
+			return url.Values{"order_id": {order}, "note": {"Sent by tracked post."}}
+		case "complete":
+			return payoutConfirmed(url.Values{"order_id": {order}}, 100000)
+		case "cancel":
+			from := state
+			if from != stateDraft && from != stateAwaitingPayment && from != statePaid {
+				from = statePaid // a form shown before the order moved on
+			}
+			return payoutConfirmed(url.Values{"order_id": {order}, "from": {from}}, 100000)
+		case "dispute":
+			return url.Values{"order_id": {order}, "reason": {"The parcel has not arrived and the vendor does not answer."}}
+		case "resolve":
+			return resolveConfirmed(url.Values{"id": {dispute}, "outcome": {"refund"}, "resolution": {"The evidence supports refunding the buyer in full."}, "reply_seen": {"0"}}, 100000)
+		case "concede release":
+			return concessionForm(dispute, "release", randomToken()[:32], 100000)
+		case "concede refund":
+			return concessionForm(dispute, "refund", randomToken()[:32], 100000)
+		}
+		t.Fatalf("unknown action %s", action)
+		return nil
+	}
+	// snapshot is everything a refusal must leave unchanged.
+	snapshot := func(order string) string {
+		t.Helper()
+		return agStr(x.testEnv, `SELECT o.state||' events='||(SELECT count(*) FROM order_events WHERE order_id=o.id)||
+			' settlements='||(SELECT count(*) FROM settlements WHERE order_id=o.id)||
+			' disputes='||coalesce((SELECT string_agg(status||':'||outcome,',') FROM disputes WHERE order_id=o.id),'')||
+			' notifications='||(SELECT count(*) FROM notifications)||' receipts='||(SELECT count(*) FROM form_submissions)||
+			' release_at='||coalesce((SELECT release_at::text FROM escrows WHERE order_id=o.id),'-')
+			FROM orders o WHERE o.id=$1`, order)
+	}
+	actions := []struct {
+		name, path string
+		dispute    bool // needs a dispute row: one is planted on the refusal order of a state that has none
+	}{
+		{"ship", "/escrow/ship", false}, {"ship with the order form", "/orders/ship", false}, {"complete", "/orders/complete", false},
+		{"cancel", "/orders/cancel", false}, {"dispute", "/disputes", false},
+		{"resolve", "/resolve", true}, {"concede release", "/disputes/concede", true}, {"concede refund", "/disputes/concede", true},
+	}
+	successes := 0
+	for _, state := range []string{stateDraft, stateAwaitingPayment, statePaid, stateShipped, stateDisputed} {
+		shared, sharedDispute := fresh(state)
+		for _, action := range actions {
+			if action.dispute && sharedDispute == "" {
+				// As TestHistoricalOrderActionMatrix's predecessor did: an Open dispute row on an order that is not disputed,
+				// so that the state rule, not a missing dispute, is what refuses resolve and concede.
+				sharedDispute = randomToken()
+				agExec(x.testEnv, "INSERT INTO disputes(id,order_id,reason) VALUES($1,$2,'The parcel has not arrived and the vendor does not answer.')", sharedDispute, shared)
+			}
+			for _, actor := range actors {
+				want, to := escrowMatrixWant(action.name, actor.name, state)
+				name := action.name + " as " + actor.name + " on " + state
+				if want == 303 {
+					successes++
+					order, dispute := fresh(state)
+					w := x.do("POST", action.path, actor.session, formFor(action.name, state, order, dispute))
+					if w.Code != 303 {
+						t.Errorf("%s: %d, want 303: %s", name, w.Code, w.Body.String())
+						continue
+					}
+					if got := x.state(order); got != to {
+						t.Errorf("%s moved the order to %s, want %s", name, got, to)
+					}
+					if got := agInt(x.testEnv, "SELECT count(*) FROM order_events WHERE order_id=$1 AND from_state=$2 AND to_state=$3", order, state, to); got != 1 {
+						t.Errorf("%s recorded %d %s>%s events, want 1", name, got, state, to)
+					}
+					continue
+				}
+				before := snapshot(shared)
+				w := x.do("POST", action.path, actor.session, formFor(action.name, state, shared, sharedDispute))
+				if w.Code != want {
+					t.Errorf("%s: %d, want %d: %s", name, w.Code, want, w.Body.String())
+				}
+				if after := snapshot(shared); after != before {
+					t.Errorf("refused %s changed the order:\n before %s\n after  %s", name, before, after)
+				}
+			}
+		}
+	}
+	if successes != 12 {
+		t.Fatalf("the matrix allows %d moves, want 12", successes)
+	}
+}
+
+// escrowMatrixWant is the status a physical Bitcoin escrow order's action answers actor in state, and the state a
+// success moves the order to.
+func escrowMatrixWant(action, actor, state string) (int, string) {
+	switch action {
+	case "resolve":
+		switch {
+		case actor != "moderator" && actor != "admin":
+			return 403, "" // staff only
+		case actor == "moderator" && state != stateDraft:
+			return 403, "" // only an administrator decides a dispute on an escrow order (a draft has no escrow yet)
+		case state == stateDisputed:
+			return 303, stateResolved
+		}
+		return 409, ""
+	case "concede release", "concede refund":
+		switch {
+		case action == "concede release" && actor != "buyer", action == "concede refund" && actor != "vendor":
+			return 403, "" // each party concedes only to the other; staff and outsiders never
+		case state != stateDisputed:
+			return 409, ""
+		case actor == "buyer":
+			return 303, stateCompleted
+		}
+		return 303, stateCancelled
+	}
+	if actor != "buyer" && actor != "vendor" {
+		return 404, "" // party actions do not reveal an order to anyone else, staff included
+	}
+	switch action {
+	case "ship":
+		switch {
+		case state == stateDraft:
+			return 404, "" // no escrow yet: the escrow form does not know the order
+		case actor == "buyer":
+			return 403, ""
+		case state == statePaid:
+			return 303, stateShipped
+		}
+	case "ship with the order form":
+		// The retired form: an escrow order is shipped with its claim address; a draft is not paid.
+	case "complete":
+		if actor == "vendor" && state == stateShipped {
+			return 403, ""
+		}
+		// The buyer of a shipped escrow order confirms receipt by signing the release (errEscrowComplete).
+	case "cancel":
+		switch {
+		case state == stateDraft && actor == "buyer", state == stateAwaitingPayment, state == statePaid && actor == "vendor":
+			return 303, stateCancelled
+		case state == stateDraft:
+			return 403, ""
+		}
+		// The buyer of a paid escrow order cancels only after its ship-by time; later states cannot be cancelled.
+	case "dispute":
+		if state == statePaid || state == stateShipped {
+			return 303, stateDisputed
+		}
+	}
+	return 409, ""
 }

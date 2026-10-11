@@ -18,6 +18,7 @@ import (
 	"sync"
 	"testing"
 	"text/template"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -65,6 +66,72 @@ func captureLog(t *testing.T) *lockedBuffer {
 	http5xxLog.reset() // a previous test's burst of 5xx lines must not suppress this test's
 	t.Cleanup(func() { log.SetOutput(w); log.SetFlags(flags) })
 	return buf
+}
+
+// runBackground starts the registered background work (the escrow watchers, the sweeps) as the server does and returns
+// a function that stops it and waits for it to finish; calling it again does nothing.
+func runBackground(t *testing.T, a *App) (stop func()) {
+	t.Helper()
+	a.Start(context.Background())
+	var once sync.Once
+	return func() {
+		t.Helper()
+		once.Do(func() {
+			done := make(chan struct{})
+			go func() { a.stop(); a.background.Wait(); close(done) }()
+			select {
+			case <-done:
+			case <-time.After(10 * time.Second):
+				t.Fatal("background work did not stop")
+			}
+			a.stop = nil // allow another Start
+		})
+	}
+}
+
+// waitForLine waits until a captured line starts with prefix and returns the first such line.
+func waitForLine(t *testing.T, logs *lockedBuffer, prefix string) string {
+	t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		for _, l := range logs.lines(prefix) {
+			if strings.HasPrefix(l, prefix) {
+				return l
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no log line starting with %q: %q", prefix, logs.String())
+		}
+	}
+}
+
+// A-170 on escrow (A-493): the running escrow watcher's error line names its label and the error class only, never the
+// node's error text, which may quote an address. Here the watch-only wallet refuses listreceivedbyaddress with a message
+// carrying a marker and an address; the line keeps "wallet read failed", the method and the RPC code.
+func TestLogsContainNoSecretsFromEscrowWatcher(t *testing.T) {
+	x := newEscrowEnv(t)
+	refund := regtestAddr("elog-refund")
+	escrowAddr := x.mustCheckout(x.order, refund)
+	const marker = "A493-NODE-MARKER"
+	leaked := regtestAddr("elog-leaked-address")
+	x.core.mu.Lock()
+	x.core.txErr, x.core.txErrMsg = -5, marker+" Fixture refused to list "+leaked+" and "+escrowAddr
+	x.core.mu.Unlock()
+	logs := captureLog(t)
+	stop := runBackground(t, x.A)
+	defer stop()
+	line := waitForLine(t, logs, "escrow watcher: ")
+	stop()
+	if line != "escrow watcher: escrow: wallet read failed: listreceivedbyaddress rpc:-5" {
+		t.Fatalf("escrow watcher line %q", line)
+	}
+	for _, s := range []string{marker, leaked, escrowAddr, refund, x.order, "Fixture refused"} {
+		if strings.Contains(logs.String(), s) {
+			t.Fatalf("log contains %q: %q", s, logs.String())
+		}
+	}
+	if x.state(x.order) != stateAwaitingPayment {
+		t.Fatalf("an unread escrow moved its order to %s", x.state(x.order))
+	}
 }
 
 var http5xxLine = regexp.MustCompile(`^http 5xx kind=(page|action) name=(\S+) status=(5\d\d) ref=([0-9a-f]{8}) cause=(.+)$`)
