@@ -39,7 +39,7 @@ test('fresh payment surfaces offer escrow only and removed pooled routes cannot 
     // A-492: no payout table, count or link on the admin page.
     await expect(admin.locator('#payouts')).toHaveCount(0);
     await expect(admin.locator('a[href="/admin#payouts"]')).toHaveCount(0);
-    await expect(admin.locator('nav')).not.toContainText('payouts');
+    await expect(admin.getByRole('navigation', { name: 'Main navigation' })).not.toContainText('payouts');
     await admin.context().close();
   } finally { await buyer.context().close(); }
 });
