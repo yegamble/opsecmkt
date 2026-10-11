@@ -80,7 +80,7 @@ func viewerTransitions(o *Order, u *User) []Transition {
 		allowed, ok := transitions[o.State][to]
 		action := transitionActions[to]
 		if !ok || action == "" || !slices.ContainsFunc(roles, func(r string) bool {
-			return slices.Contains(allowed, r) && !(o.Escrow && pooledOnly[[3]string{o.State, to, r}]) && (o.Escrow || !escrowOnly[[3]string{o.State, to, r}])
+			return slices.Contains(allowed, r) && !(o.Escrow && buyerCompleteRefused[[3]string{o.State, to, r}]) && (o.Escrow || !escrowOnly[[3]string{o.State, to, r}])
 		}) {
 			continue
 		}
@@ -211,21 +211,16 @@ func loadEscrowAlerts(ctx context.Context, a *App, _ *http.Request, d *PageData)
 // disputeVisible: the order is or was disputed, so a reviewer may also read its digital delivery.
 func disputeVisible(o *Order) bool { return o.State == stateDisputed || o.State == stateResolved }
 
-// payoutTxidHidden stands in for a payout's transaction ID in text shown to the order party who is not its
-// recipient (A-214).
+// payoutTxidHidden stands in for a refund's transaction ID in text shown to the vendor (A-214).
 const payoutTxidHidden = "(transaction ID shown only to its recipient)"
 
-// hidePayoutTxids replaces in each text the transaction ID of every payout of order whose recipient is not
-// viewer, in full or as truncate(txid, 20), when viewer is the order's buyer or vendor: on Bitcoin a txid reveals
-// its recipient's payout address. New order-history notes name no payout txid; this covers notes and dispute
-// decisions stored before (the rows stay unchanged). A refund staff recorded as sent to the buyer by hand (A-31,
-// payments.disposition_txid) is named in its order-history note and hidden the same way from the vendor, as is the
-// rest of a refund an operator sent to the buyer by hand and recorded with UPGRADING.md's relabel block (sections 14
-// and 18, A-312), which exists only in that system note. Staff reviewers who are not parties read the text as stored.
+// hidePayoutTxids replaces in each text, when viewer is the order's vendor, the transaction ID of a refund sent to
+// the buyer by hand, in full or as truncate(txid, 20): on Bitcoin a txid reveals its recipient's address. A refund
+// staff recorded as sent by hand (A-31, payments.disposition_txid) is named in its order-history note, as is a refund
+// an operator recorded with UPGRADING.md's relabel block (sections 14 and 18, A-312), which exists only in that system
+// note; the rows stay unchanged. Staff reviewers who are not parties read the text as stored.
 func hidePayoutTxids(ctx context.Context, a *App, order, viewer string, texts ...*string) error {
-	rows, err := a.db.QueryContext(ctx, `SELECT py.txid FROM payouts py JOIN orders o ON o.id=py.order_id JOIN products p ON p.id=o.product_id
-		WHERE py.order_id=$1 AND py.txid<>'' AND py.user_id<>$2 AND $2 IN (o.buyer_id,p.vendor_id)
-		UNION SELECT pm.disposition_txid FROM payments pm JOIN orders o ON o.id=pm.order_id JOIN products p ON p.id=o.product_id
+	rows, err := a.db.QueryContext(ctx, `SELECT pm.disposition_txid FROM payments pm JOIN orders o ON o.id=pm.order_id JOIN products p ON p.id=o.product_id
 		WHERE pm.order_id=$1 AND pm.disposition_txid<>'' AND o.buyer_id<>$2 AND p.vendor_id=$2
 		UNION SELECT m[1] FROM order_events e JOIN orders o ON o.id=e.order_id JOIN products p ON p.id=o.product_id
 		CROSS JOIN LATERAL regexp_matches(e.note, '^Refund recorded by hand \(UPGRADING\.md section 1[48]\): .* in transaction ([0-9a-f]{64})\.$') m
@@ -374,14 +369,6 @@ func loadOrderDetail(ctx context.Context, a *App, r *http.Request, d *PageData) 
 		if err = hidePayoutTxids(ctx, a, o.ID, u.ID, texts...); err != nil {
 			return err
 		}
-		if d.OrderViewer == roleVendor && !o.Escrow {
-			if len(d.Disputes) == 1 {
-				texts = append(texts, &d.Disputes[0].Reason, &d.Disputes[0].Reply)
-			}
-			if err = hidePooledOrderIdentifiers(ctx, a.db, o.ID, texts...); err != nil {
-				return err
-			}
-		}
 	}
 	d.CanReview = u.ID == o.BuyerID && o.State == stateCompleted && len(d.Reviews) == 0
 	if d.OrderViewer != roleModerator { // reviewers resolve on the moderation desk; the order page is read-only for them
@@ -477,7 +464,7 @@ func subFloorOrderGate(ctx context.Context, a *App, d *PageData) error {
 }
 
 // orderPayouts (A-122): on a paid, shipped or delivered order the complete and paid-cancel forms state the
-// payout they queue (payoutBasis), and counted deposits above the price set Overpaid. On an order awaiting
+// payout they state (countedDeposits), and counted deposits above the price set Overpaid. On an order awaiting
 // payment that has received a deposit, the cancel form states the refund it queues (an underpayment).
 func (a *App) orderPayouts(ctx context.Context, d *PageData) error {
 	o := d.Order
@@ -486,7 +473,7 @@ func (a *App) orderPayouts(ctx context.Context, d *PageData) error {
 		if err != nil || !deposits {
 			return err
 		}
-		_, sum, _, err := a.payoutBasis(ctx, a.db, o, false)
+		sum, err := countedDeposits(ctx, a.db, o)
 		if err != nil {
 			return err
 		}
@@ -500,7 +487,7 @@ func (a *App) orderPayouts(ctx context.Context, d *PageData) error {
 	if o.State != statePaid && o.State != stateShipped && o.State != stateDelivered {
 		return nil
 	}
-	_, sum, _, err := a.payoutBasis(ctx, a.db, o, false)
+	sum, err := countedDeposits(ctx, a.db, o)
 	if err != nil {
 		return err
 	}
@@ -539,7 +526,7 @@ func (a *App) orderPayouts(ctx context.Context, d *PageData) error {
 	return nil
 }
 
-// payoutStatement states the payouts of sum (payoutBasis) for o on network net (App.netName), as splitPayout
+// payoutStatement states the payouts of sum (countedDeposits) for o on network net (App.netName), as splitPayout
 // makes them: "Refund 0.01 BTC (test network) to buyer_x — exactly the price; network fee deducted", or for a
 // release with an excess worth returning "Release 0.01 BTC (test network) to vendor_x (the price) and return the
 // 0.009 BTC paid over the price to buyer_x; network fee deducted from each", saying so when a refund or return
@@ -557,7 +544,7 @@ func payoutStatement(kind, recipient, later, net string, o *Order, sum int64) st
 	}
 	dec := currencyDecimals(o.Currency)
 	required, _ := parseAmount(o.Amount, dec)
-	// The same split enqueuePayout makes: a release pays the price and returns an excess worth sending.
+	// The split splitPayout makes: a release pays the price and returns an excess worth sending.
 	parts := splitPayout(kind, o, sum, required)
 	if len(parts) == 2 {
 		statement := "Release " + amount(parts[0].amount, dec) + " " + o.Currency + " (" + net + ") to " + recipient + " (the price) and return the " +
@@ -585,7 +572,7 @@ func payoutStatement(kind, recipient, later, net string, o *Order, sum int64) st
 const resolveConfirm = "I checked the amount and who receives it for the outcome I chose. Resolving is final."
 
 // resolvePayouts (A-161) fills the resolve form of every open dispute on a disputed order the staff viewer is not
-// party to: each outcome's payout (payoutBasis) and the recipient's payout state.
+// party to: each escrow outcome's settlement (escrowDisputePreview).
 func (a *App) resolvePayouts(ctx context.Context, d *PageData) error {
 	d.DisputePayouts = map[string]PayoutPreview{}
 	if d.User == nil || (d.User.Role != "moderator" && d.User.Role != "admin") {
@@ -593,19 +580,16 @@ func (a *App) resolvePayouts(ctx context.Context, d *PageData) error {
 	}
 	for _, v := range d.Disputes[:d.OpenDisputes] {
 		o, ok := d.DisputeOrders[v.OrderID]
-		if !ok || o.State != stateDisputed || d.User.ID == o.BuyerID || d.User.ID == o.VendorID {
+		// A dispute on an order without escrow has no outcome to offer.
+		if !ok || !o.Escrow || o.State != stateDisputed || d.User.ID == o.BuyerID || d.User.ID == o.VendorID {
 			continue
 		}
-		if o.Escrow { // decided by an administrator and paid by a settlement from the escrow (escrow_decision.go)
-			p, err := a.escrowDisputePreview(ctx, &o)
-			if err != nil {
-				return err
-			}
-			d.DisputePayouts[v.ID] = p
-			continue
+		// Decided by an administrator and paid by a settlement from the escrow (escrow_decision.go).
+		p, err := a.escrowDisputePreview(ctx, &o)
+		if err != nil {
+			return err
 		}
-		// Historical pooled disputes are retained for reading; no new payout outcome is offered.
-		continue
+		d.DisputePayouts[v.ID] = p
 	}
 	return nil
 }
@@ -817,12 +801,6 @@ func loadDisputes(ctx context.Context, a *App, r *http.Request, d *PageData) err
 				return err
 			}
 		}
-		if d.User.ID == o.VendorID && !o.Escrow {
-			v := &d.Disputes[i]
-			if err = hidePooledOrderIdentifiers(ctx, a.db, o.ID, &v.Reason, &v.Reply, &v.Resolution); err != nil {
-				return err
-			}
-		}
 	}
 	if err = a.resolvePayouts(ctx, d); err != nil {
 		return err
@@ -919,8 +897,7 @@ const (
 	previewFlaggedID  = "fa3d78b76018852580157c02a484def10cc4354335961a0c9e835e9563a3fc1e" // preview-flagged
 )
 
-// previewPaidOrder replaces the preview draft with a paid sample order that has one confirmed sample deposit, so
-// the preview shows the deposits table. No wallet is connected; the status says the deposit is a sample.
+// previewPaidOrder replaces the preview draft with a paid sample order and its timeline. No wallet is connected.
 func previewPaidOrder(d *PageData) {
 	if d.Order == nil {
 		return
@@ -931,10 +908,6 @@ func previewPaidOrder(d *PageData) {
 		{From: stateLabel(stateDraft), To: stateLabel(stateAwaitingPayment), Actor: o.Buyer + " (buyer)", Created: "Sample order"},
 		{From: stateLabel(stateAwaitingPayment), To: stateLabel(statePaid), Actor: "System", Created: "Sample order"},
 	}
-	d.Payment = &PaymentView{Network: "sample", Testnet: true, Currency: o.Currency, Required: o.Amount, Received: o.Amount,
-		Unconfirmed: "0", Confirmations: 3, Threshold: 3, Issued: true, Monitored: true,
-		Status:   "Preview sample: no wallet is connected and no funds exist",
-		Deposits: []PaymentDeposit{{TxID: "926bb57bc9bcbc21ddd00aa2e6f70f9d445378bcbaf4e55b6bfa53010ba85ddb", Amount: o.Amount, Confirmations: 3, State: "Confirmed"}}}
 }
 
 func previewOrder(d *PageData) {

@@ -37,12 +37,11 @@ test('reviews are labelled verified purchases without reviewer handles', async (
   await expect(reviews).not.toContainText('preview_user');
 });
 
-test('moderator desk preserves historical disputes without pooled actions', async ({ page }) => {
+test('moderator desk offers no outcome for a dispute without escrow', async ({ page }) => {
   await page.goto('/moderator');
   await expect(page.locator('form[action="/resolve"]')).toHaveCount(0);
   await expect(page.getByRole('group', { name: 'Outcome' })).toHaveCount(0);
-  await expect(page.locator('main')).toContainText('Historical dispute.');
-  await expect(page.locator('main')).toContainText('This pooled order is read only.');
+  await expect(page.locator('main')).toContainText('This order has no escrow, so no outcome can be recorded.');
   // A-124 and A-162 (sample data): the reply with its role and line breaks, whom each party messaged, and the
   // resolve help that says whether the other side replied and to ask the evidence holders first.
   await expect(page.locator('.dispute-text').nth(1)).toHaveText('Sample reply from the vendor.\nNothing was stored.');

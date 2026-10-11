@@ -1,9 +1,0 @@
-{{define "order-payment"}}{{with .Payment}}
-{{if .Issued}}<h2>Historical payment record</h2>
-<p class="help">This order used the retired pooled payment system. Its recorded deposits and payouts remain visible for reference. Automated monitoring, payment addresses and payout sends are unavailable; do not send funds to an old address.</p>
-<p>{{.Status}}</p>
-{{if .Deposits}}<h3>Recorded deposits</h3><div class="table-wrap payment-deposits" tabindex="0" role="region" aria-label="Recorded deposits"><table><thead><tr><th>Transaction</th><th>Amount</th><th>Confirmations</th><th>Recorded state</th></tr></thead><tbody>{{range .Deposits}}<tr><td class="mono" style="overflow-wrap:anywhere">{{if .TxID}}{{.TxID}}:{{.Index}}{{else}}Buyer deposit{{end}}</td><td>{{.Amount}} {{$.Order.Currency}}</td><td>{{if lt .Confirmations 0}}Conflicted{{else}}{{.Confirmations}}{{end}}</td><td>{{.State}}</td></tr>{{end}}</tbody></table></div>{{end}}
-{{range .Payouts}}<h3>Recorded {{.Kind}}</h3><dl class="key-values"><div><dt>Amount</dt><dd>{{.Amount}} {{.Currency}}</dd></div><div><dt>Recorded state</dt><dd>{{.StateLabel}}</dd></div>{{if .Address}}<div><dt>Destination</dt><dd class="mono">{{.Address}}</dd></div>{{end}}{{if .TxID}}<div><dt>Transaction</dt><dd class="mono">{{.TxID}}</dd></div>{{end}}</dl>{{end}}
-{{else if eq $.Order.State "draft"}}<h2>Unfunded draft</h2><p>No payment address was issued. If escrow checkout is available, complete it under Next steps. You may cancel this draft.</p>
-{{else}}<h2>No payment record</h2><p>No deposit address was issued for this order.</p>{{end}}
-{{end}}{{end}}

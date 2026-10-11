@@ -209,9 +209,6 @@ func TestDeskOrderRowsLinkTheirListing(t *testing.T) {
 	flaggedOrder := e.order(w.otherID, flagged, "BTC", stateCancelled)
 	// This direct fixture represents a legacy cancelled order whose purchase-time listing terms were never recorded.
 	e.mustExec(`UPDATE orders SET listing_title=NULL,listing_description=NULL,listing_kind=NULL WHERE id=$1`, flaggedOrder)
-	if _, err := e.DB.Exec("INSERT INTO payment_addresses(order_id,currency,address,provider) VALUES($1,'BTC','tb1qa265','test')", flaggedOrder); err != nil {
-		t.Fatal(err)
-	}
 	e.mustExec(`INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations,flagged,after_close) VALUES($1,'BTC','a265-flagged',0,'tb1qa265',1,1,true,true)`, flaggedOrder)
 	e.mustExec(`UPDATE products SET archived=true,archived_at=now() WHERE id=ANY($1::text[])`, "{"+disputed+","+flagged+"}")
 
@@ -237,7 +234,7 @@ func TestDeskOrderRowsLinkTheirListing(t *testing.T) {
 
 	desk := w.page("/moderator", w.mod, 200)
 	mustContain(t, segment(desk, `<article class="message">`, "Order "+disputedOrder+"<", "</article>"), disputeLink)
-	// Historical pooled flags remain readable on their order, but no longer enter the live review queue.
+	// A flag on an order without escrow stays readable on its order, but never enters the live review queue.
 	mustNotContain(t, desk, `href="/order?id=`+flaggedOrder+`"`)
 	opens(w.mod, disputed)
 	opens(w.mod, flagged)

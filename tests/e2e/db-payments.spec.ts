@@ -12,7 +12,8 @@ test('fresh payment surfaces offer escrow only and removed pooled routes cannot 
   const sql = (query: string) => execFileSync('psql', [database, '-v', 'ON_ERROR_STOP=1', '-qtAc', query], { encoding: 'utf8' }).trim();
   try {
     await buyer.goto('/account');
-    await expect(buyer.getByRole('heading', { name: 'Historical payout records' })).toBeVisible();
+    await expect(buyer.getByRole('heading', { name: 'Historical payout addresses' })).toBeVisible();
+    await expect(buyer.locator('#unsent-payouts')).toHaveCount(0);
     await expect(buyer.locator('form[action="/account/payout"]')).toHaveCount(0);
     const csrf = await buyer.locator('input[name="csrf"]').first().inputValue();
     const before = sql('SELECT (SELECT count(*) FROM payment_addresses)::text||\':\'||(SELECT count(*) FROM payouts)::text');
@@ -35,6 +36,10 @@ test('fresh payment surfaces offer escrow only and removed pooled routes cannot 
       await expect(form.getByRole('radio', { name: /^Paused/ })).toHaveAttribute('value', 'false');
     }
     await expect(admin.locator('form[action="/admin/payout"]')).toHaveCount(0);
+    // A-492: no payout table, count or link on the admin page.
+    await expect(admin.locator('#payouts')).toHaveCount(0);
+    await expect(admin.locator('a[href="/admin#payouts"]')).toHaveCount(0);
+    await expect(admin.locator('nav')).not.toContainText('payouts');
     await admin.context().close();
   } finally { await buyer.context().close(); }
 });

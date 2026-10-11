@@ -128,7 +128,7 @@ type actionSpec struct {
 	Precheck func(a *App, r *http.Request, token string) error
 	// OneAtATime admits at most oneAtATimeLimit requests of this action per signed-in account at once; another
 	// is refused at once with 429 and Retry-After: 5, before it takes a post slot or a database connection. For
-	// an action that may wait on a slow wallet while holding the account's row (payAction), so one account's
+	// an action that may wait on a slow node while holding the account's row (escrowCheckoutAction), so one account's
 	// burst cannot hold the application pool's connections queued on its own row lock (PR #15 re-review).
 	OneAtATime bool
 	// Off, when set and true, makes the action answer exactly as an unknown action does (pageSpec.Off).

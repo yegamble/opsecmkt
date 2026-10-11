@@ -359,8 +359,9 @@ for sheet in sheets:
     assert body == (Path(os.environ['SMOKE_ROOT']) / 'web' / sheet.lstrip('/')).read_bytes(), f'{sheet} differs from web{sheet}'
 
 admin = client.open(base + '/admin').read().decode()
-# Historical payments remain readable; no pooled action forms may be reachable.
+# Pooled payments are removed (A-492): no pooled action form, payout table or payout count may be reachable.
 assert 'action="/admin/payout"' not in admin and 'action="/account/payout"' not in admin
+assert 'id="payouts"' not in admin and 'href="/admin#payouts"' not in admin and ' payouts)' not in admin
 assert 'action="/orders/pay"' not in admin
 # Signed audit export: available with the pinned key, and the downloaded export verifies offline below.
 section = admin[admin.index('id="audit-export-title"'):]

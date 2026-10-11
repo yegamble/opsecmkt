@@ -129,8 +129,8 @@ func userCanReceiveEncrypted(ctx context.Context, q rowQuerier, userID string) (
 }
 
 // vendorKeyLoader (A-83): the product and checkout pages of a physical listing say when its vendor has no key that
-// can receive encrypted messages. A draft can still be saved, but payment is refused until the vendor adds one
-// (payAction), since the buyer could not send a shipping address.
+// can receive encrypted messages. A draft can still be saved, but escrow checkout is refused until the vendor adds one
+// (escrowCheckoutAction, xmrEscrowCheckoutAction), since the buyer could not send a shipping address.
 func vendorKeyLoader(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
 	if d.Product == nil || d.Product.Kind != "physical" {
 		return nil
@@ -141,7 +141,7 @@ func vendorKeyLoader(ctx context.Context, a *App, _ *http.Request, d *PageData) 
 }
 
 // noVendorKeyReason is the order page's "Unavailable." reason for requesting payment on a physical order whose
-// vendor has no key that can receive encrypted messages (A-83); payAction refuses with the same words.
+// vendor has no key that can receive encrypted messages (A-83); the escrow checkouts refuse with the same words.
 const noVendorKeyReason = "This vendor has no usable encryption key, so you could not send your shipping address. Ask them to add one."
 
 // vendorKeyGate (A-83) runs once the order page's transitions and contacts are loaded. On a physical order whose

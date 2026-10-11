@@ -463,9 +463,6 @@ func (a *App) load(r *http.Request, d *PageData) error {
 			if err != nil {
 				return err
 			}
-			if err = hidePooledVendorNotifications(ctx, a.db, d.User.ID, d.Notifications); err != nil {
-				return err
-			}
 		}
 		if d.Page == "admin" {
 			var total int

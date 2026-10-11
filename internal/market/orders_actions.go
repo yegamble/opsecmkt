@@ -124,8 +124,8 @@ func formNote(c *actionCtx, fallback string) (string, error) {
 }
 
 // payoutConfirmation reads what the complete, paid-cancel and resolve forms carry (A-161, A-122): the ticked
-// confirmation and amount_seen, the counted amount (payoutBasis) the form stated. Both are required (400);
-// enqueuePayout compares amount_seen with what it counts (409 when it changed).
+// confirmation and amount_seen, the counted amount the form stated. Both are required (400); the settlement
+// request compares amount_seen with what it counts (checkPayoutSeen, 409 when it changed).
 func payoutConfirmation(c *actionCtx) (int64, error) {
 	if c.Form.Get("payout_confirmed") != "confirmed" {
 		return 0, fail(400, "Tick the box confirming the amount and who receives it. Nothing was changed.")
@@ -138,14 +138,14 @@ func payoutConfirmation(c *actionCtx) (int64, error) {
 }
 
 // walletLockWait replaces the application pool's 3 s lock_timeout and 8 s statement_timeout (A-177) in a
-// transaction that may queue for the rows a payment request holds while the wallet is asked for an address:
+// transaction that may queue for the rows an escrow checkout holds while the escrow node is asked for an address:
 // the buyer (FOR NO KEY UPDATE), the payment-intake setting (FOR SHARE) and the listing, for up to rpcTimeout
 // (10 s). Another checkout, a stock edit, an archive or takedown, a cancellation returning stock (stockHook,
-// also the watcher's expiry), a payment-intake change, a payout to the buyer (enqueuePayout), and an
+// also the watcher's expiry), a payment-intake change, and an
 // administrator's suspension, second-factor reset or role change then wait for a slow wallet instead of
 // failing at 3 s. The statement timeout is raised with it, since it would otherwise end the wait at 8 s. Both
 // stay below the 12 s request context, so a longer wait is still refused cleanly (503). The wallet is asked
-// only after every check has passed (payAction), so the rows cannot be released before the call without
+// only after every check has passed (escrowCheckoutAction), so the rows cannot be released before the call without
 // letting refused requests create addresses. One account's burst of payment requests queued on its own row
 // is cut to one at a time (OneAtATime), so it cannot hold the pool's connections.
 const walletLockWait = "11s"
@@ -238,9 +238,9 @@ func shipAction(c *actionCtx) (actionResult, error) {
 	}
 	switch { // P2-R1: an escrow order is shipped with its release's claim address (escrowShipAction, xmrEscrowShipAction)
 	case o.xmrEscrow():
-		return actionResult{}, errShipPooledFormXMR
+		return actionResult{}, errShipPlainFormXMR
 	case o.Escrow:
-		return actionResult{}, errShipPooledForm
+		return actionResult{}, errShipPlainForm
 	}
 	if _, err = c.A.transition(c.Ctx(), c.Tx, o.ID, statePaid, stateShipped, c.User, note); err != nil {
 		return actionResult{}, err

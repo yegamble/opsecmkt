@@ -36,13 +36,7 @@ func (a *App) flagOrder(ctx context.Context, tx *sql.Tx, o *Order, note, party s
 	if party != "" {
 		parties = []string{o.BuyerID, o.VendorID}
 		for _, uid := range parties {
-			body := party
-			if uid == o.VendorID && !o.Escrow {
-				if err := hidePooledOrderIdentifiers(ctx, tx, o.ID, &body); err != nil {
-					return err
-				}
-			}
-			if _, err := insertNotification(ctx, tx, uid, body, o.ID); err != nil {
+			if _, err := insertNotification(ctx, tx, uid, party, o.ID); err != nil {
 				return err
 			}
 		}
@@ -60,8 +54,7 @@ func (a *App) flagOrder(ctx context.Context, tx *sql.Tx, o *Order, note, party s
 	return nil
 }
 
-// flagLateDeposits flags, on a closed order, the confirmed deposits that are not paid out: those that confirmed
-// after the order's settlement was queued (paidOut) and those first recorded after the order closed
+// flagLateDeposits flags, on a closed escrow order, the confirmed deposits first recorded after the order closed
 // (after_close), which are never counted. They are never credited or refunded automatically (A-211). Each pass
 // that flags some writes one order note naming them (the desk dates each flag from it). The buyer (the amount, no
 // transaction ID; the vendor is not told) and the staff are notified once per episode: an episode starts when

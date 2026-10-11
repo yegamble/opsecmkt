@@ -4,7 +4,8 @@ This release adds test-network payments, signed audit exports and several databa
 whole page before pulling the new code onto a running v0.1.0-alpha.1 deployment.
 
 **Current development build:** fresh installs are escrow-only on supported test networks.
-Before upgrading a pooled deployment, read [section 58](#58-pooled-wallet-removal-for-fresh-installs-a-448).
+Before upgrading a pooled deployment, read [section 58](#58-pooled-wallet-removal-for-fresh-installs-a-448) and
+[section 59](#59-pooled-history-refused-migration-108-a-492): this build starts only on a database without pooled payment history.
 Sections below describing pooled behavior document prior builds; they do not enable pooling on this build.
 
 The migration files included since alpha.1 are: `001_foundation`, `010_auth`, `011_account_suspension`,
@@ -24,7 +25,7 @@ The migration files included since alpha.1 are: `001_foundation`, `010_auth`, `0
 `095_pooled_txid_prefix_privacy`, `096_reported_zero_confirmation_regressions`, `097_payout_txid_lookup`,
 `098_remove_profile_xmpp`, `099_audit_event_indexes`, `100_form_submissions`, `101_provider_episodes`,
 `102_handle_casefold_lookup`, `103_message_extra_recipient_count`, `104_notification_order_id`,
-`105_order_listing_snapshot`, `106_form_confirmation_mode`, and `107_remove_pooled_wallet`. Migration 106 adds a boolean to short-lived
+`105_order_listing_snapshot`, `106_form_confirmation_mode`, `107_remove_pooled_wallet`, and `108_refuse_pooled_history`. Migration 106 adds a boolean to short-lived
 form receipts recording whether the original account, admin or escrow-key submission required password confirmation.
 It stores no submitted password, authenticator code, recovery code, PGP key or practice PSBT. The sections
 below explain the operator-visible changes and rollback considerations.
@@ -345,12 +346,11 @@ the **upgraded** checkout: its `scripts/restore.sh` can restore into the interna
 
 Once payments are on, the marketplace is custodial for test coins: the Bitcoin wallet lives in the
 `bitcoin_data` volume and the Monero wallet in `monero_wallet`. **Database dumps do not include them.** Back
-them up separately (see the runbook). `scripts/restore.sh` now pauses all outbound payouts with a persistent recovery gate, holds every
-pending, sending, blocked or held payout (one held for an account suspension keeps its "Suspended account:"
-text, so its payout address check stays), marks every failed payout as possibly sent after the backup (it
-may have been requeued and sent since) and adds an audit row recording the gate and those counts. Follow the [reconciliation procedure](docs/testnet-runbook.md#reconcile-a-restored-database-before-enabling-payouts),
-including orders paid out after the backup that have no payout row in it, before explicitly clearing the
-gate. Restore with the application stopped and keep the site cut off from users until reconciliation is
+them up separately (see the runbook). `scripts/restore.sh` now pauses all outbound sends with a persistent recovery
+gate, holds every restored escrow settlement with a stored transaction and adds an audit row recording the gate and
+those counts. (Pooled payouts are removed: migration 108 refuses a database that holds any, section 59.) Follow the
+[reconciliation procedure](docs/testnet-runbook.md#reconcile-a-restored-database-before-enabling-payouts) before
+explicitly clearing the gate. Restore with the application stopped and keep the site cut off from users until reconciliation is
 complete; the procedure says when the app runs for you alone and when it must be stopped.
 
 The script also prints `<N> images restored from a backup taken <time>; photo and avatar removals made after
@@ -362,18 +362,16 @@ nothing, but undoes those removals all the same. The time is in UTC for backups 
 `scripts/backup.sh`; for a backup made by an earlier one on a host (or, for the internal database, a container)
 not set to UTC, it is off by that zone's offset from UTC.
 
-**Any restore not done by `scripts/restore.sh` skips this payout protection.** A host or volume snapshot, a
-managed-database point-in-time recovery or a manual `pg_restore` brings payouts back as `pending` with no
-gate, and the application sends them again as soon as it starts, even if they were paid after that point in
-time. After such a restore, and whenever the script reports that recovery protection failed, keep the
+**Any restore not done by `scripts/restore.sh` skips this protection.** A host or volume snapshot, a
+managed-database point-in-time recovery or a manual `pg_restore` brings escrow settlements back with no gate and
+no holds, and the escrow watchers would broadcast or relay them as soon as the application starts, even if they
+were sent after that point in time. After such a restore, and whenever the script reports that recovery protection failed, keep the
 application stopped (`docker compose stop app`; for a volume snapshot start only the database with
 `docker compose up -d --wait db`) and apply the protection below to the restored application database
 **before starting the application**, then follow the same reconciliation procedure. It runs in one
-transaction and adds one audit row ("set manually"); existing audit rows are not changed. Older databases
-without a `payouts` table need only the `settings` and `audit_events` statements; omit the `send_ambiguous`
-line if their `payouts` table has no such column, as migration 053 then marks their failed payouts ambiguous
-itself, and omit the `settlements` line if the database has no `settlements.send_error` column (before migration
-076, when no escrow settlement could have a stored transaction). That line holds every restored Bitcoin escrow
+transaction and adds one audit row ("set manually"); existing audit rows are not changed. Omit the `settlements`
+line if the database has no `settlements.send_error` column (before migration 076, when no escrow settlement could
+have a stored transaction). That line holds every restored Bitcoin escrow
 settlement with a stored transaction until an administrator confirms its rebroadcast on `/admin`; the
 `settlement_bumps` line holds every restored fee bump of one with a stored transaction until that confirmation of its
 settlement (omit it if the database has no `settlement_bumps` table, before migration 080). The
@@ -409,14 +407,6 @@ INSERT INTO settings(key,value) VALUES ('escrow_sweep_required','true')
 ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
 INSERT INTO settings(key,value) VALUES ('xmr_escrow_sweep_required','true')
 ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
-UPDATE payouts SET state='held', updated=now(),
-  error='Restored from backup: verify in the wallet before releasing; this payout may already have been sent.'
-    || coalesce(' ' || substring(error from '(?:Suspended account:|Larger than the order price:|Held to be paid by hand:).*'), '')
-WHERE state IN ('pending','sending','blocked','held');
-UPDATE payouts SET send_ambiguous=true WHERE state='failed';
-UPDATE payouts SET updated=now(),
-  error='Restored from backup: verify in the wallet before requeueing; this payout may have been requeued and sent after the backup. Last error: ' || error
-WHERE state='failed';
 UPDATE settlements SET send_error='Restored from backup: check that this escrow settlement''s transaction was not already sent or replaced, then confirm its rebroadcast on the admin page.', updated=now()
 WHERE raw_tx IS NOT NULL AND state IN ('signed','broadcast');
 UPDATE settlement_bumps SET send_error='Restored from backup: check that this escrow settlement''s transaction was not already sent or replaced, then confirm its rebroadcast on the admin page.', updated=now()
@@ -1809,13 +1799,12 @@ changes nothing in that migration transaction, and records no migration 107.
 A restored pre-removal database runs the same check again. Mainnet pooled history
 is a blocker even when every order has closed: mainnet escrow is unsupported.
 
-A fresh database needs no drain operation. A drained legacy database upgrades
-without deleting its orders, payment addresses, deposits, payouts, events or
-user payout-address history. New payment intake uses `escrow` or `false`
-(paused); the old `true` setting becomes `escrow`. Paused currencies stay paused.
-Historical address-reuse refusals remain in the escrow checkout and watchers.
-The server no longer creates pooled addresses, polls pooled deposits or sends
-pooled payouts, and its old pooled mutation routes cannot settle a legacy debt.
+A fresh database needs no drain operation. A drained legacy database passes
+migration 107, but migration 108 then refuses it while it holds any pooled payment
+history (section 59). New payment intake uses `escrow` or `false` (paused); the
+old `true` setting becomes `escrow`. Paused currencies stay paused. The server no
+longer creates pooled addresses, polls pooled deposits or sends pooled payouts,
+and its old pooled mutation routes cannot settle a legacy debt.
 
 For an existing pooled market, **complete the drain using the previous
 migration-106 drain-capable build before switching to this build**. Keep its
@@ -1841,3 +1830,28 @@ on the new database is not a supported rollback.
 No deployed pooled market exists in the current owner setup. Fresh-install and
 seeded legacy tests prove the two database paths; they are not real-market drain
 evidence. Existing public proof records retain their frozen source revisions.
+
+## 59. Pooled history refused (migration 108, A-492)
+
+No pooled market exists (owner directive 2026-10-11), so this build keeps no pooled payment history and has no page
+that shows it: the order page's pooled payment record, the administrator payout table, the account's unsent payouts and
+the staff payout count are removed, and so is the escrow checkout's check of a refund, claim or fee address against
+old pooled deposit addresses.
+
+Migration `108_refuse_pooled_history` refuses, before serving, any database that holds a row in `payouts` or
+`payment_addresses`, even a drained one that migration 107 accepts. The refusal names both counts, changes nothing
+(migrations 107 and 108 are applied in one transaction, so neither is recorded) and the server exits non-zero:
+
+```
+migration 108 refused: this database holds pooled payment history (N payouts row(s), M payment_addresses row(s)), which this build does not support. Nothing was changed. Keep the previous release on this database; see UPGRADING.md section 59.
+```
+
+Keep running the previous release on such a database, with its own backups and recovery procedure; do not delete
+pooled rows to force this build through. A database without those rows (a fresh install, an alpha.1 database, or one
+that never took a pooled payment) migrates normally; its other records, deposits included, are kept.
+
+After migration 108 both tables refuse every new row (`payouts_refuse_insert` and `payment_addresses_refuse_insert`,
+"pooled payments are removed: <table> takes no new rows"). The tables, their constraints and the drain functions
+migration 107 reads stay, since migrations are append-only. `scripts/restore.sh` and the manual protection in
+section 6 no longer touch `payouts`, and the runbook's gate-clearing SQL no longer reads `pooled_drain_blockers()`.
+Older binaries refuse a database that records migration 108, as for any newer migration (section 5).

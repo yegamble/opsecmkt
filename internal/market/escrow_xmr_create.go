@@ -105,7 +105,7 @@ func xmrEscrowCheckoutAction(c *actionCtx) (actionResult, error) {
 	if err = lockNewIntake(c, o.BuyerID, o.VendorID, false); err != nil {
 		return actionResult{}, err
 	}
-	// The buyer's cap on orders awaiting payment, serialised on the buyer's row as in payAction.
+	// The buyer's cap on orders awaiting payment, serialised on the buyer's row as in escrowCheckoutAction.
 	var open int
 	if err = c.Tx.QueryRowContext(ctx, "SELECT count(*) FROM orders WHERE buyer_id=$1 AND state='awaiting_payment'", c.User.ID).Scan(&open); err != nil {
 		return actionResult{}, err
@@ -113,7 +113,7 @@ func xmrEscrowCheckoutAction(c *actionCtx) (actionResult, error) {
 	if open >= maxAwaitingPayment {
 		return actionResult{}, fail(409, "You already have "+strconv.Itoa(maxAwaitingPayment)+" orders awaiting payment. Pay or cancel one before requesting another payment address.")
 	}
-	if err = lockPaymentIntake(c, o.Currency, kindEscrow); err != nil {
+	if err = lockPaymentIntake(c, o.Currency); err != nil {
 		return actionResult{}, err
 	}
 	eligible, price, dispatchDays, err := escrowEligible(ctx, c.Tx, &o)
@@ -198,8 +198,8 @@ func checkXMRRefund(ctx context.Context, q rowQuerier, refund, feeAddress string
 
 // xmrAddressUse names how this market already knows the Monero address addr: "escrow" (an escrow or slot address),
 // "wallet" (an escrow wallet's primary address), "fee" (the fee address feeAddress, or one an escrow snapshotted),
-// "refund" (the refund address of the escrow of order, when order is given), "used" (another refund address, a Monero
-// settlement's destination or a pooled deposit address), or "".
+// "refund" (the refund address of the escrow of order, when order is given), "used" (another refund address or a Monero
+// settlement's destination), or "".
 func xmrAddressUse(ctx context.Context, q rowQuerier, addr, feeAddress, order string) (string, error) {
 	var use string
 	err := q.QueryRowContext(ctx, `SELECT CASE
@@ -207,8 +207,7 @@ func xmrAddressUse(ctx context.Context, q rowQuerier, addr, feeAddress, order st
 		WHEN EXISTS(SELECT 1 FROM xmr_escrow_wallets WHERE primary_address=$1) THEN 'wallet'
 		WHEN $1=$2 OR EXISTS(SELECT 1 FROM escrows WHERE fee_destination=$1) THEN 'fee'
 		WHEN EXISTS(SELECT 1 FROM escrows WHERE order_id=$3 AND refund_address=$1) THEN 'refund'
-		WHEN EXISTS(SELECT 1 FROM escrows WHERE refund_address=$1) OR EXISTS(SELECT 1 FROM xmr_settlements WHERE destination=$1)
-			OR EXISTS(SELECT 1 FROM payment_addresses WHERE address=$1) THEN 'used'
+		WHEN EXISTS(SELECT 1 FROM escrows WHERE refund_address=$1) OR EXISTS(SELECT 1 FROM xmr_settlements WHERE destination=$1) THEN 'used'
 		ELSE '' END`, addr, feeAddress, order).Scan(&use)
 	return use, err
 }

@@ -129,12 +129,11 @@ func listingReservations(ctx context.Context, a *App, productIDs []string) (map[
 	}
 	rows, err := a.db.QueryContext(ctx, `SELECT o.product_id,
 		count(*) FILTER (WHERE o.state NOT IN ('draft','completed','resolved','cancelled')),
-		COALESCE(to_char(min(CASE WHEN o.state='awaiting_payment' AND (pa.order_id IS NOT NULL OR es.order_id IS NOT NULL) THEN
-			GREATEST(COALESCE(pa.created,es.created),COALESCE((SELECT max(pm.created) FROM payments pm WHERE pm.order_id=o.id
-				AND pm.confirmations>=0 AND NOT pm.locked AND (es.order_id IS NULL OR es.coin='XMR' OR NOT pm.escrow_left_out)),COALESCE(pa.created,es.created)))
+		COALESCE(to_char(min(CASE WHEN o.state='awaiting_payment' AND es.order_id IS NOT NULL THEN
+			GREATEST(es.created,COALESCE((SELECT max(pm.created) FROM payments pm WHERE pm.order_id=o.id
+				AND pm.confirmations>=0 AND NOT pm.locked AND (es.coin='XMR' OR NOT pm.escrow_left_out)),es.created))
 				+ make_interval(secs => $2) END),'YYYY-MM-DD HH24:MI "UTC"'),'')
-		FROM orders o LEFT JOIN payment_addresses pa ON pa.order_id=o.id
-		LEFT JOIN escrows es ON es.order_id=o.id
+		FROM orders o LEFT JOIN escrows es ON es.order_id=o.id
 		WHERE o.product_id=ANY($1) GROUP BY o.product_id`, productIDs, expiryWindow().Seconds())
 	if err != nil {
 		return nil, err

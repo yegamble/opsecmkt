@@ -54,15 +54,15 @@ var transitionKind = map[[2]string]string{{statePaid, stateShipped}: "physical",
 var escrowOnly = map[[3]string]bool{{stateDelivered, stateCompleted, roleSystem}: true, {stateShipped, stateCompleted, roleSystem}: true,
 	{statePaid, stateCancelled, roleBuyer}: true}
 
-// pooledOnly restricts a move by one role to pooled orders (A-373, P2-R2): the buyer's Complete queues a pooled payout;
-// on an escrow order the buyer confirms receipt only by signing the release (escrow_release.go), so these edges are
-// refused there (409) and never offered, and "confirm receipt" can never lead to a market co-signature.
-var pooledOnly = map[[3]string]bool{{stateShipped, stateCompleted, roleBuyer}: true, {stateDelivered, stateCompleted, roleBuyer}: true}
+// buyerCompleteRefused lists the buyer's plain Complete edges, refused on an escrow order (A-373, P2-R2): the buyer of
+// a Bitcoin escrow order confirms receipt only by signing the release (escrow_release.go), so these edges are refused
+// there (409) and never offered, and "confirm receipt" can never lead to a market co-signature.
+var buyerCompleteRefused = map[[3]string]bool{{stateShipped, stateCompleted, roleBuyer}: true, {stateDelivered, stateCompleted, roleBuyer}: true}
 
-// xmrConfirmOnly is the one escrow exception to pooledOnly (P3-R7): the buyer of a shipped Monero escrow order, which has
-// no party signatures, confirms receipt with a password step-up (/escrow-xmr/confirm, escrow_xmr_release.go), and that
-// action alone marks its move (withConfirmReceipt). Every other escrow order, and a Monero one through the pooled
-// Complete form, still meets pooledOnly.
+// xmrConfirmOnly is the one exception to buyerCompleteRefused (P3-R7): the buyer of a shipped Monero escrow order, which
+// has no party signatures, confirms receipt with a password step-up (/escrow-xmr/confirm, escrow_xmr_release.go), and
+// that action alone marks its move (withConfirmReceipt). Every other escrow order, and a Monero one through the plain
+// Complete form, still meets buyerCompleteRefused.
 var xmrConfirmOnly = map[[3]string]bool{{stateShipped, stateCompleted, roleBuyer}: true}
 
 type confirmReceiptCtx struct{}
@@ -191,7 +191,7 @@ func (a *App) transition(ctx context.Context, tx *sql.Tx, orderID, from, to stri
 	}
 	if o.Escrow && slices.ContainsFunc(actorRoles(&o, actor), func(r string) bool {
 		edge := [3]string{from, to, r}
-		return pooledOnly[edge] && !(xmrConfirmOnly[edge] && o.xmrEscrow() && isConfirmReceipt(ctx))
+		return buyerCompleteRefused[edge] && !(xmrConfirmOnly[edge] && o.xmrEscrow() && isConfirmReceipt(ctx))
 	}) {
 		if o.xmrEscrow() {
 			return nil, errEscrowCompleteXMR

@@ -408,7 +408,7 @@ func TestXMREscrowNoBuildBeforeOutcome(t *testing.T) {
 
 // P3-R7: the buyer of a shipped, undisputed Monero escrow order confirms receipt with a password step-up; the order
 // row is locked and rechecked (shipped, no dispute), and the order moves to completed through the one escrow
-// exception to pooledOnly, which applies only to a Monero escrow order and only through this action. Afterwards the
+// exception to buyerCompleteRefused, which applies only to a Monero escrow order and only through this action. Afterwards the
 // buyer cannot dispute. The pooled Complete stays refused on a Monero escrow order.
 func TestXMREscrowConfirmReceiptStepUp(t *testing.T) {
 	x := newXMREscrowEnv(t)

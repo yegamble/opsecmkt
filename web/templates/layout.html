@@ -37,7 +37,7 @@
 <a href="/messages" {{if eq .Page "messages"}}aria-current="page"{{end}}>Messages</a>
 {{if .User}}<a href="/notifications" {{if eq .Page "notifications"}}aria-current="page"{{end}}>Notifications{{if .UnreadNotifications}} <span class="nav-count">({{.UnreadNotifications}} unread)</span>{{end}}</a>
 {{end}}<a href="/disputes" {{if eq .Page "disputes"}}aria-current="page"{{end}}>Disputes</a>
-<a href="/account" {{if eq .Page "account"}}aria-current="page"{{end}}>Account</a>{{if .User}}{{if or (eq .User.Role "vendor") (eq .User.Role "admin")}}<a href="/vendor-dashboard" {{if eq .Page "vendor-dashboard"}}aria-current="page"{{end}}>Vendor desk</a>{{end}}{{if or (eq .User.Role "moderator") (eq .User.Role "admin")}}<a href="/moderator" {{if eq .Page "moderator"}}aria-current="page"{{end}}>Moderation{{with .StaffAttention}} <span class="nav-count">({{.Disputes}} disputes · {{.PaymentReviews}} review orders · {{.EscrowAlerts}} alerts)</span>{{end}}</a>{{end}}{{if eq .User.Role "admin"}}<a href="/admin" {{if eq .Page "admin"}}aria-current="page"{{end}}>Admin{{with .StaffAttention}} <span class="nav-count">({{.Payouts}} payouts)</span>{{end}}</a>{{end}}{{end}}<a class="nav-end" href="/canary" {{if eq .Page "canary"}}aria-current="page"{{end}}><span class="action-icon" aria-hidden="true">◇</span> Transparency</a>
+<a href="/account" {{if eq .Page "account"}}aria-current="page"{{end}}>Account</a>{{if .User}}{{if or (eq .User.Role "vendor") (eq .User.Role "admin")}}<a href="/vendor-dashboard" {{if eq .Page "vendor-dashboard"}}aria-current="page"{{end}}>Vendor desk</a>{{end}}{{if or (eq .User.Role "moderator") (eq .User.Role "admin")}}<a href="/moderator" {{if eq .Page "moderator"}}aria-current="page"{{end}}>Moderation{{with .StaffAttention}} <span class="nav-count">({{.Disputes}} disputes · {{.PaymentReviews}} review orders · {{.EscrowAlerts}} alerts)</span>{{end}}</a>{{end}}{{if eq .User.Role "admin"}}<a href="/admin" {{if eq .Page "admin"}}aria-current="page"{{end}}>Admin</a>{{end}}{{end}}<a class="nav-end" href="/canary" {{if eq .Page "canary"}}aria-current="page"{{end}}><span class="action-icon" aria-hidden="true">◇</span> Transparency</a>
 </nav>
 </header>
 <div class="shell {{if eq .Page "catalog"}}layout{{end}}">{{if eq .Page "catalog"}}<aside class="sidebar" aria-label="Marketplace filters">
@@ -64,7 +64,7 @@
 </footer>
 </body>
 </html>{{end}}
-{{define "staff-attention-summary"}}{{with .StaffAttention}}<p class="help staff-attention" aria-label="Staff attention counts">Needs attention: <a href="/moderator">{{.Disputes}} open disputes</a> · <a href="/moderator#payment-review">{{.PaymentReviews}} orders under payment review</a> · <a href="/moderator{{if .EscrowAlerts}}#escrow-alerts{{end}}">{{.EscrowAlerts}} escrow alerts</a>{{if eq $.User.Role "admin"}} · <a href="/admin#payouts">{{.Payouts}} payouts</a>{{end}}.</p>{{end}}{{end}}
+{{define "staff-attention-summary"}}{{with .StaffAttention}}<p class="help staff-attention" aria-label="Staff attention counts">Needs attention: <a href="/moderator">{{.Disputes}} open disputes</a> · <a href="/moderator#payment-review">{{.PaymentReviews}} orders under payment review</a> · <a href="/moderator{{if .EscrowAlerts}}#escrow-alerts{{end}}">{{.EscrowAlerts}} escrow alerts</a>.</p>{{end}}{{end}}
 {{define "filters"}}<div class="filter-content">
 <section class="sidebar-section">
 <h2>CATEGORIES</h2>
