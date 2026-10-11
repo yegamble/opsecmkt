@@ -39,7 +39,7 @@ func init() {
 
 var (
 	errShipOnlyVendor  = fail(403, "Only the vendor marks this order shipped.")
-	errShipPooledForm  = fail(409, "This order is paid into a Bitcoin escrow: mark it shipped with the escrow form on the order page, which takes the claim address the release to you pays, and your password. Nothing was changed.")
+	errShipPlainForm   = fail(409, "This order is paid into a Bitcoin escrow: mark it shipped with the escrow form on the order page, which takes the claim address the release to you pays, and your password. Nothing was changed.")
 	errShipNoDeadline  = fail(409, "This escrow has no release deadline length recorded, so it cannot be marked shipped here. Market staff must check it. Nothing was changed.")
 	errEscrowComplete  = fail(409, "This order is paid into a Bitcoin escrow: you confirm receipt by signing the release to the vendor on the order page, not with this form. Nothing was changed.")
 	errSignDisputed    = fail(409, "This order is disputed: an administrator decides it, and the decision settles the escrow, so the buyer does not sign the release now. Nothing was changed.")
@@ -64,8 +64,8 @@ func releaseBeforeOutcome(kind, state string) bool {
 }
 
 // checkClaimAddress applies the claim action's checks to a vendor's claim address dest: never used on this market (an
-// escrow address or a per-order escrow's sibling address, a refund or fee address, a payment address or another
-// settlement's destination) and valid on the escrow node's chain.
+// escrow address or a per-order escrow's sibling address, a refund or fee address, or another settlement's
+// destination) and valid on the escrow node's chain.
 func checkClaimAddress(c *actionCtx, e *escrowBTC, dest string) error {
 	ctx := c.Ctx()
 	_, feeAddr, err := escrowFee(ctx, c.Tx, e)
@@ -74,8 +74,7 @@ func checkClaimAddress(c *actionCtx, e *escrowBTC, dest string) error {
 	}
 	var used bool
 	if err = c.Tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM escrows WHERE address=$1 OR refund_address=$1 OR fee_destination=$1) OR $1=$2
-		OR EXISTS(SELECT 1 FROM escrow_siblings WHERE address=$1)
-		OR EXISTS(SELECT 1 FROM payment_addresses WHERE address=$1) OR EXISTS(SELECT 1 FROM settlements WHERE destination=$1)`, dest, feeAddr).Scan(&used); err != nil {
+		OR EXISTS(SELECT 1 FROM escrow_siblings WHERE address=$1) OR EXISTS(SELECT 1 FROM settlements WHERE destination=$1)`, dest, feeAddr).Scan(&used); err != nil {
 		return err
 	}
 	if used {

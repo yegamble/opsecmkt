@@ -39,7 +39,7 @@ type managedListing struct {
 // the administrator's takedown (adminListingAction) keeps the same order.
 func lockListing(c *actionCtx, id string) (managedListing, error) {
 	l := managedListing{ID: id}
-	if err := waitForWalletLocks(c.Ctx(), c.Tx); err != nil { // a checkout may hold the row (payAction)
+	if err := waitForWalletLocks(c.Ctx(), c.Tx); err != nil { // a checkout may hold the row (escrowCheckoutAction)
 		return l, err
 	}
 	if _, err := c.Tx.ExecContext(c.Ctx(), `SELECT 1 FROM users WHERE id=$1 OR id=(SELECT vendor_id FROM products WHERE id=$2 AND (vendor_id=$1 OR $3='admin')) FOR KEY SHARE`, c.User.ID, id, c.User.Role); err != nil {
@@ -63,10 +63,9 @@ func listingAudit(action string, c *actionCtx, l managedListing) string {
 
 // openOrdersSQL counts orders that still depend on the listing's fulfillment type. A fund-free draft
 // is repriced and revalidated at checkout, so it must not let an abandoned checkout freeze the listing.
-// Keep the guard for an anomalous historical draft with a payment address, deposit or escrow record.
+// Keep the guard for an anomalous historical draft with a deposit or escrow record.
 const openOrdersSQL = `SELECT count(*) FROM orders o WHERE product_id=$1 AND state NOT IN ('completed','resolved','cancelled')
- AND (state<>'draft' OR EXISTS(SELECT 1 FROM payment_addresses a WHERE a.order_id=o.id)
- OR EXISTS(SELECT 1 FROM payments pm WHERE pm.order_id=o.id) OR EXISTS(SELECT 1 FROM escrows es WHERE es.order_id=o.id))`
+ AND (state<>'draft' OR EXISTS(SELECT 1 FROM payments pm WHERE pm.order_id=o.id) OR EXISTS(SELECT 1 FROM escrows es WHERE es.order_id=o.id))`
 
 func listingUpdateAction(c *actionCtx) (actionResult, error) {
 	ctx := c.Ctx()
@@ -210,7 +209,7 @@ func adminListingAction(c *actionCtx) (actionResult, error) {
 	}
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
 		ctx, tx := c.Ctx(), c.Tx
-		if err := waitForWalletLocks(ctx, tx); err != nil { // a checkout may hold the row (payAction)
+		if err := waitForWalletLocks(ctx, tx); err != nil { // a checkout may hold the row (escrowCheckoutAction)
 			return actionResult{}, err
 		}
 		// The users rows before the listing, as lockListing takes them: a role change holds the vendor's row and then

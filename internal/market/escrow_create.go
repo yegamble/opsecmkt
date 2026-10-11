@@ -283,7 +283,7 @@ func escrowCheckoutAction(c *actionCtx) (actionResult, error) {
 	if err = lockNewIntake(c, o.BuyerID, o.VendorID, false); err != nil {
 		return actionResult{}, err
 	}
-	// The buyer's cap on orders awaiting payment, serialised on the buyer's row as in payAction.
+	// The buyer's cap on orders awaiting payment, serialised on the buyer's row.
 	var open int
 	if err = c.Tx.QueryRowContext(ctx, "SELECT count(*) FROM orders WHERE buyer_id=$1 AND state='awaiting_payment'", c.User.ID).Scan(&open); err != nil {
 		return actionResult{}, err
@@ -291,7 +291,7 @@ func escrowCheckoutAction(c *actionCtx) (actionResult, error) {
 	if open >= maxAwaitingPayment {
 		return actionResult{}, fail(409, "You already have "+strconv.Itoa(maxAwaitingPayment)+" orders awaiting payment. Pay or cancel one before requesting another payment address.")
 	}
-	if err = lockPaymentIntake(c, o.Currency, kindEscrow); err != nil {
+	if err = lockPaymentIntake(c, o.Currency); err != nil {
 		return actionResult{}, err
 	}
 	eligible, price, dispatchDays, err := escrowEligible(ctx, c.Tx, &o)
@@ -306,8 +306,7 @@ func escrowCheckoutAction(c *actionCtx) (actionResult, error) {
 		}
 		return actionResult{}, fail(400, message)
 	}
-	// A physical order: the buyer must be able to send the vendor an encrypted shipping address (A-83, as payAction
-	// checks), and the escrow snapshots the release deadline length in force with the listing's dispatch window. Both
+	// A physical order: the buyer must be able to send the vendor an encrypted shipping address (A-83), and the escrow snapshots the release deadline length in force with the listing's dispatch window. Both
 	// are settled before the node is asked anything.
 	releaseDays := 0
 	if o.Kind == "physical" {
@@ -357,16 +356,15 @@ func escrowCheckoutAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, errEscrowRefundInvalid(c.A.escrowNetwork())
 	}
 	// Never an address the market already used (ES-5): an escrow address or a per-order escrow's sibling address
-	// (QA5W3A-4), another escrow's refund address, a settlement destination (a vendor's claim), a fee destination
-	// snapshotted or configured, or a pooled deposit address.
+	// (QA5W3A-4), another escrow's refund address, a settlement destination (a vendor's claim), or a fee destination
+	// snapshotted or configured.
 	feeBps, feeAddr, err := escrowFee(ctx, c.Tx, e)
 	if err != nil {
 		return actionResult{}, err
 	}
 	var used bool
 	if err = c.Tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM escrows WHERE address=$1 OR refund_address=$1 OR fee_destination=$1) OR $1=$2
-		OR EXISTS(SELECT 1 FROM escrow_siblings WHERE address=$1)
-		OR EXISTS(SELECT 1 FROM payment_addresses WHERE address=$1) OR EXISTS(SELECT 1 FROM settlements WHERE destination=$1)`, refund, feeAddr).Scan(&used); err != nil {
+		OR EXISTS(SELECT 1 FROM escrow_siblings WHERE address=$1) OR EXISTS(SELECT 1 FROM settlements WHERE destination=$1)`, refund, feeAddr).Scan(&used); err != nil {
 		return actionResult{}, err
 	}
 	if used {

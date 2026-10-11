@@ -505,8 +505,8 @@ func TestXMREscrowMigration084(t *testing.T) {
 }
 
 // Migration 074's payouts_not_escrow keys on escrows, so it covers a Monero escrow order too (ES-1, invariant 4): no
-// payouts row is written for one, none is moved to one, and the send claim never claims one that existed before the
-// order's escrow (as by hand).
+// payouts row is written for one and none is moved to one. Migration 108 refuses every new payouts row (A-492), so 074
+// is checked beneath it with 108's triggers off, rolled back.
 func TestXMREscrowPayoutRefused(t *testing.T) {
 	e := newTestApp(t)
 	buyer, _ := e.user("xpay_buyer", "buyer")
@@ -515,10 +515,21 @@ func TestXMREscrowPayoutRefused(t *testing.T) {
 	w := xmrWallet(t, e, 1, "active")
 	order, _, _ := xmrEscrow(t, e, w, 1, buyer, product, stateCompleted)
 	payout := "INSERT INTO payouts(order_id,kind,user_id,currency,amount,address,state) VALUES($1,'release',$2,'XMR',100000,'historical-vendor','pending')"
-	xmrRefused(t, e, "a payout of a Monero escrow order", "is an escrow order", payout, order, vendor)
 	historical := e.order(buyer, product, "XMR", stateCompleted)
-	agExec(e, payout, historical, vendor)
-	xmrRefused(t, e, "a payout moved to a Monero escrow order", "is an escrow order", "UPDATE payouts SET order_id=$2 WHERE order_id=$1", historical, order)
+	xmrRefused(t, e, "a payout of an order without escrow", "takes no new rows", payout, historical, vendor)
+	withPooledHistoryWritable(t, e, func(tx *sql.Tx) {
+		if _, err := tx.Exec(payout, order, vendor); err == nil || !strings.Contains(err.Error(), "is an escrow order") {
+			t.Errorf("a payout of a Monero escrow order, 108 off: %v", err)
+		}
+	})
+	withPooledHistoryWritable(t, e, func(tx *sql.Tx) {
+		if _, err := tx.Exec(payout, historical, vendor); err != nil {
+			t.Fatalf("a payout of an order without escrow, 108 off: %v", err)
+		}
+		if _, err := tx.Exec("UPDATE payouts SET order_id=$2 WHERE order_id=$1", historical, order); err == nil || !strings.Contains(err.Error(), "is an escrow order") {
+			t.Errorf("a payout moved to a Monero escrow order, 108 off: %v", err)
+		}
+	})
 }
 
 // The payments idx of a Monero escrow deposit (2^62 + wallet_id·2^32 + account_index) never meets a pooled Monero
@@ -538,7 +549,6 @@ func TestXMREscrowIdxNoCollision(t *testing.T) {
 	b, addrB, _ := xmrEscrow(t, e, w, 2, buyer, product, stateAwaitingPayment)
 	pooled := e.order(buyer, product, "XMR", stateAwaitingPayment)
 	pooledAddr := xmrAddr("pooled-" + pooled)
-	agExec(e, "INSERT INTO payment_addresses(order_id,currency,address,provider,subaddr_index) VALUES($1,'XMR',$2,'monero',1)", pooled, pooledAddr)
 	tx := txidOf("xidx-one-tx")
 	// The pooled watcher writes the pooled output (minor index 1), the escrow watcher the two escrow accounts' outputs.
 	if err := e.A.applyIncoming(ctx, "XMR", []Incoming{{Address: pooledAddr, TxID: tx, Index: 1, Amount: 100000, Confirmations: 1}},
@@ -767,7 +777,7 @@ func TestEscrowBTCIgnoresXMRRows(t *testing.T) {
 
 	// The vendor desk's escrow tile counts the vendor's Bitcoin escrow orders only.
 	d := &PageData{User: x.loadUser(x.vendor)}
-	if err := unsentPayoutsLoader(context.Background(), x.A, nil, d); err != nil {
+	if err := escrowOrdersLoader(context.Background(), x.A, nil, d); err != nil {
 		t.Fatal(err)
 	}
 	if want := agInt(x.testEnv, "SELECT count(*) FROM escrows WHERE coin='BTC'"); d.EscrowOrders != want || want == 0 {

@@ -174,7 +174,7 @@ Each package records its own acceptance checks here and edits only its subsectio
 - [x] A recipient sees every payout to them that is not sent on `/account#payout` (oldest first, uncapped, with more than 100 newer ones), with its order link, amount, destination and a fixed reason and next step per state, never the wallet's error text; the vendor desk counts them and links there; a closed order with an unsent payout to the viewer gives its next step instead of "No further changes are possible"; the destination and the reason for a hold are shown to the recipient only (not the other party, a moderator or an administrator reviewing the order); suspension and restore notices say how many payouts are held; saving an address writes no order history (`TestRecipientSeesEveryUnsentPayout`, `TestOrderPageShowsPayoutNextStepToRecipientOnly`, `TestSuspensionNoticesCountHeldPayouts`; browser: `wallet-journey.spec.ts` refund waiting for a payout address, rejected-payout recovery).
 - [x] A payout send may take up to 30 s (reads 10 s) and is recorded as sent (`TestSlowWalletSendIsRecordedSentByTheWatcher`). A failed send is recorded as a definite rejection or as ambiguous; requeueing an ambiguous failure or a stuck send is refused without the audited "not broadcast" confirmation (`TestAmbiguousFailedPayoutRequeueNeedsBroadcastConfirmation`). So is requeueing a failure restored from backup, which the restore marks possibly sent (`TestRestoredDefiniteFailureRequeuesOnlyAfterWalletCheck`). A payout held for an account suspension keeps that hold behind the restore marker and is released only with both the wallet and the payout address confirmations (`TestRestoreKeepsSuspensionHold`). The restore, the manual UPGRADING.md section 6 protection (after a plain `pg_dump`/`pg_restore` copy) and the runbook's gate clear each add one audit row, and the clear refuses an unknown or non-administrator handle without change (`scripts/test-backup-restore.sh`).
 - [ ] Every address, amount and confirmation count is marked as test network. Not yet uniform: some places say `TESTNET <network>`, the payment-review badges say only `TESTNET`, payout statements and the overpaid warning say "(test network)", and the order and payout pages show the network only when it is known. Pages say "Payments disabled" when no provider is configured (`TestPaymentLabelsFollowProviders`; browser: `preview-payments.spec.ts`, `db-payments.spec.ts`).
-- [x] Manual: `scripts/regtest-smoke.sh` passes against a real `bitcoind -regtest` (not exercised in CI). Real local chain only: a clean checkout of `7048c2e` passed on 2026-09-26 with the log and SHA-256 sums kept under `artifacts/real-chain/7048c2e/` (gitignored, local to the machine that ran it); see the [evidence table](verification.md#evidence-table). No public test network run is recorded.
+- [x] Manual (prior pooled build; the pooled adapter and this script were removed by A-492): `scripts/regtest-smoke.sh` passed against a real `bitcoind -regtest` (not exercised in CI). Real local chain only: a clean checkout of `7048c2e` passed on 2026-09-26 with the log and SHA-256 sums kept under `artifacts/real-chain/7048c2e/` (gitignored, local to the machine that ran it); see the [evidence table](verification.md#evidence-table). No public test network run is recorded.
 
 ### Bitcoin escrow, Phase 1 (test networks only, `ESCROW_BTC`, off by default)
 
@@ -287,11 +287,15 @@ not a real-market drain.
 - [x] A fresh database starts with escrow-only intake; an operator pause survives upgrade.
 - [x] Migration 107 refuses undrained legacy and mainnet-history fixtures unchanged,
   without recording its version; a restored prior database repeats the guard.
-- [x] A drained legacy fixture keeps orders, addresses, deposits and sent payout records.
-- [x] Removed pooled POST routes cannot create addresses, dispositions or payouts;
-  historical account, order and administrator records remain readable.
-- [x] Historical pooled addresses still trigger BTC/XMR refund and claim reuse
-  refusals, plus the Bitcoin fee-destination refusal.
+- [x] A-492: migration 108 refuses a database holding any `payouts` or `payment_addresses` row
+  (a drained legacy fixture included) unchanged, both tables refuse new rows, and the same fixture
+  without pooled rows upgrades keeping its orders and deposits (`TestMigration108RefusesPooledHistoryUnchanged`,
+  `TestMigration108FreshDatabaseMigratesAndRefusesPooledRows`, the 107/108 stage of `scripts/test-upgrade.sh`).
+- [x] Removed pooled POST routes cannot create addresses, dispositions or payouts; the pooled
+  historical views (order payment record, administrator payout table, unsent payouts, payout count)
+  are removed (A-492), and `TestPooledPaymentsStayRemoved` refuses pooled writers, RPC calls and identifiers.
+- [x] With no pooled address possible after migration 108, the escrow refund, claim and fee-destination
+  reuse checks cover escrow, sibling, refund, fee and settlement addresses only (A-492).
 - [x] Installer/configuration and upgrade regression jobs pass; independent review
   finds no unresolved required issue.
 - [x] The required **CI passed** gate passes at the recorded removal revision:

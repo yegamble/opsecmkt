@@ -65,7 +65,7 @@ func stockHook(ctx context.Context, a *App, tx *sql.Tx, o *Order, from, to strin
 		}
 		o.Title, o.Description, o.Kind, o.KindDisplay, o.ListingRecorded = title, description, kind, kind, true
 	case to == stateCancelled && (from == stateAwaitingPayment || from == statePaid):
-		// A checkout of the same listing may hold its row while it waits on the wallet (payAction).
+		// A checkout of the same listing may hold its row while it waits on the escrow node (escrowCheckoutAction).
 		if err := waitForWalletLocks(ctx, tx); err != nil {
 			return err
 		}

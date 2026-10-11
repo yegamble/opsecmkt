@@ -3,6 +3,7 @@ package market
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/base64"
 	"fmt"
 	"html"
@@ -875,12 +876,24 @@ func TestEscrowMigrationConstraints(t *testing.T) {
 	mustFail("a market fee without a destination", esc, other, "bcrt1qb", 99, "bcrt1qr2", 100, "")
 	mustFail("a market fee above 100%", esc, other, "bcrt1qb", 99, "bcrt1qr2", 10001, "bcrt1qfee")
 	mustFail("a negative market fee", esc, other, "bcrt1qb", 99, "bcrt1qr2", -1, "bcrt1qfee")
-	// No payouts row for an escrow order (ES-1, invariant 4), inserted or moved there.
-	mustFail("a payout for an escrow order", "INSERT INTO payouts(order_id,kind,user_id,currency,amount,address,state) VALUES($1,'release',$2,'BTC',1000,'x','pending')", order, b)
-	if _, err := e.DB.Exec("INSERT INTO payouts(order_id,kind,user_id,currency,amount,address,state) VALUES($1,'release',$2,'BTC',1000,'x','pending')", other, a); err != nil {
-		t.Fatalf("a payout for a pooled order: %v", err)
-	}
-	mustFail("a payout moved to an escrow order", "UPDATE payouts SET order_id=$1 WHERE order_id=$2", order, other)
+	// No payouts row for an escrow order (ES-1, invariant 4), inserted or moved there. Migration 108 refuses every new
+	// payouts row (A-492); 074's escrow refusal beneath it is checked with 108's triggers off, rolled back.
+	payout := "INSERT INTO payouts(order_id,kind,user_id,currency,amount,address,state) VALUES($1,'release',$2,'BTC',1000,'x','pending')"
+	mustFail("a payout for an escrow order", payout, order, b)
+	mustFail("a payout for an order without escrow", payout, other, a)
+	withPooledHistoryWritable(t, e, func(tx *sql.Tx) {
+		if _, err := tx.Exec(payout, order, b); err == nil || !strings.Contains(err.Error(), "is an escrow order") {
+			t.Errorf("a payout for an escrow order, 108 off: %v", err)
+		}
+	})
+	withPooledHistoryWritable(t, e, func(tx *sql.Tx) {
+		if _, err := tx.Exec(payout, other, a); err != nil {
+			t.Fatalf("a payout for an order without escrow, 108 off: %v", err)
+		}
+		if _, err := tx.Exec("UPDATE payouts SET order_id=$1 WHERE order_id=$2", order, other); err == nil || !strings.Contains(err.Error(), "is an escrow order") {
+			t.Errorf("a payout moved to an escrow order, 108 off: %v", err)
+		}
+	})
 	pk := "INSERT INTO escrow_pubkeys(pubkey,escrow_id,party,user_id,key_hmac,origin_fingerprint,origin_path,derivation_suffix) VALUES($1,$2,$3,$4,$5,'7450f935','/48h/1h/0h/2h',$6)"
 	mustFail("the practice child in an escrow", pk, "02"+strings.Repeat("11", 32), id, "buyer", a, h, "/0/0")
 	// Paths are canonical (no leading zeros), so no other spelling of /0/0 passes that CHECK (QA-P1a-3).

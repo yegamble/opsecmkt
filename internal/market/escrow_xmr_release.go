@@ -25,7 +25,7 @@ import (
 //     vendor; a decision for the buyer supersedes it (escrowSettleTerminal).
 //  4. Confirm receipt (/escrow-xmr/confirm): the buyer of a shipped order gives their password; under the order row lock,
 //     rechecked shipped with no dispute, the order moves shipped -> completed by the buyer through xmrConfirmOnly, the
-//     one escrow exception to pooledOnly. A completed order cannot be disputed. Otherwise the release deadline completes
+//     one exception to buyerCompleteRefused. A completed order cannot be disputed. Otherwise the release deadline completes
 //     it (escrow_xmr_deadline.go).
 //
 // No step makes an RPC: addresses are parsed offline (checkXMRFormAddress).
@@ -40,9 +40,9 @@ func init() {
 }
 
 // A-405: the pooled ship and Complete forms and a moderator's resolve refuse a Monero escrow order with Monero wording
-// (errShipPooledForm, errEscrowComplete and errEscrowResolveAdmin are Bitcoin escrow's).
+// (errShipPlainForm, errEscrowComplete and errEscrowResolveAdmin are Bitcoin escrow's).
 var (
-	errShipPooledFormXMR     = fail(409, "This order is paid into a Monero escrow: mark it shipped with the Monero escrow form on the order page, which takes the address the release to you pays, and your password. Nothing was changed.")
+	errShipPlainFormXMR      = fail(409, "This order is paid into a Monero escrow: mark it shipped with the Monero escrow form on the order page, which takes the address the release to you pays, and your password. Nothing was changed.")
 	errEscrowCompleteXMR     = fail(409, "This order is paid into a Monero escrow: use Confirm receipt on the order page, which asks for your password, not this form. Nothing was changed.")
 	errXMREscrowResolveAdmin = fail(403, "Only an administrator decides a dispute on a Monero escrow order: the decision moves coins from the escrow. Nothing was changed.")
 )

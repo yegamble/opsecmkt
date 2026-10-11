@@ -74,18 +74,11 @@ probe=$(PATH="$fake_bin:$PATH" bash -c '
 ' bash "$root" "$work/selected-pg-restore-version.sh" <<< RESTORE)
 [[ $probe == $'pg_restore (PostgreSQL) 17.6\n|RESTORE' ]] || {
   echo 'The internal pg_restore version probe consumed the restore confirmation' >&2; exit 1; }
-# id:state:restore marker:send_ambiguous. A failed payout may have been requeued and sent after the backup,
-# so the restore marks it possibly sent.
-payouts="SELECT string_agg(id || ':' || state || ':' || (error LIKE 'Restored from backup:%') || ':' || send_ambiguous, ',' ORDER BY id) FROM payouts"
 gate="SELECT value FROM settings WHERE key='payments_recovery_required'"
-restored_payouts='1:held:true:false,2:held:true:false,3:sent:false:false,4:failed:true:true,5:held:true:false,6:held:true:false'
-source_payouts='1:pending:false:false,2:sending:false:false,3:sent:false:false,4:failed:false:false,5:blocked:false:false,6:held:false:false'
 
 start_db
 sql opsecmkt "CREATE TABLE notes (id integer PRIMARY KEY, note text NOT NULL); INSERT INTO notes VALUES (1, 'Crème brûlée — 東京 🔒');
 CREATE TABLE settings (key text PRIMARY KEY, value text NOT NULL); INSERT INTO settings VALUES ('payments_recovery_required','false');
-CREATE TABLE payouts (id integer PRIMARY KEY, state text NOT NULL, error text NOT NULL DEFAULT '', updated timestamptz NOT NULL DEFAULT now(), send_ambiguous boolean NOT NULL DEFAULT false);
-INSERT INTO payouts(id,state) VALUES (1,'pending'),(2,'sending'),(3,'sent'),(4,'failed'),(5,'blocked'),(6,'held');
 CREATE TABLE images (id text PRIMARY KEY); INSERT INTO images VALUES ('photo-1'),('photo-2'),('avatar-1');" >/dev/null
 # A-190 (ruling D4): the line restore.sh prints about images removed after the backup, with the dump's creation time.
 images_line='^3 images restored from a backup taken [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} [A-Z]+; photo and avatar removals made after that time are undone — check /moderator Recent photos and remove them again$'
@@ -147,8 +140,6 @@ grep -q 'Cannot read the database dump in this backup' "$work/wrong-key.log"
 # Side-by-side rollback target: a new database next to the live one, created by the script.
 RESTORE_INTERNAL_DATABASE=opsecmkt_restored restore "$work/backup.dump.age" <<< RESTORE > "$work/restore.log"
 grep -q 'Created empty database opsecmkt_restored' "$work/restore.log"
-grep -q 'Held 4 restored payout(s)' "$work/restore.log"
-grep -q 'Marked 1 restored failed payout(s) as possibly sent' "$work/restore.log"
 grep -q 'do not contain the escrow wallets' "$work/restore.log"
 grep -Eq "$images_line" "$work/restore.log"
 # The last line names the .env secrets a restored database needs (A-136).
@@ -156,10 +147,8 @@ last_line=$(tail -n 1 "$work/restore.log")
 [[ $last_line == *SETUP_TOKEN* && $last_line == *AUDIT_SIGNING_KEY* ]] || {
   echo "restore.sh's last line does not name SETUP_TOKEN and AUDIT_SIGNING_KEY: $last_line" >&2; exit 1; }
 [[ $(sql opsecmkt_restored 'SELECT note FROM notes WHERE id = 1') == 'Crème brûlée — 東京 🔒' ]]
-[[ $(sql opsecmkt_restored "$payouts") == "$restored_payouts" ]]
 [[ $(sql opsecmkt_restored "$gate") == true ]]
 # The live database is untouched.
-[[ $(sql opsecmkt "$payouts") == "$source_payouts" ]]
 [[ $(sql opsecmkt "$gate") == false ]]
 grep -q 'Restored into database opsecmkt_restored' "$work/restore.log"
 grep -q "DATABASE_URL='postgres://opsecmkt:YOUR_POSTGRES_PASSWORD@db:5432/opsecmkt_restored?sslmode=disable'" "$work/restore.log"
@@ -230,7 +219,6 @@ if RESTORE_INTERNAL_DATABASE=opsecmkt restore "$work/backup.dump.age" <<< RESTOR
   echo 'Restore unexpectedly succeeded over a populated database' >&2; exit 1
 fi
 [[ $(sql opsecmkt "SELECT to_regclass('public.notes') IS NULL") == t ]]
-[[ $(sql opsecmkt "$payouts") == "$source_payouts" ]]
 [[ $(sql opsecmkt "$gate") == false ]]
 
 # Fresh-volume rollback target: recreate the db service with an empty volume and restore into opsecmkt itself.
@@ -239,11 +227,8 @@ start_db
 [[ $(sql opsecmkt "SELECT count(*) FROM pg_tables WHERE schemaname = 'public'") == 0 ]]
 RESTORE_INTERNAL_DATABASE=opsecmkt restore "$work/backup.dump.age" <<< RESTORE > "$work/fresh-restore.log"
 if grep -q 'Created empty database' "$work/fresh-restore.log"; then echo 'Existing database was recreated' >&2; exit 1; fi
-grep -q 'Held 4 restored payout(s)' "$work/fresh-restore.log"
-grep -q 'Marked 1 restored failed payout(s) as possibly sent' "$work/fresh-restore.log"
 grep -Eq "$images_line" "$work/fresh-restore.log"
 [[ $(sql opsecmkt 'SELECT note FROM notes WHERE id = 1') == 'Crème brûlée — 東京 🔒' ]]
-[[ $(sql opsecmkt "$payouts") == "$restored_payouts" ]]
 [[ $(sql opsecmkt "$gate") == true ]]
 
 # With the database service stopped the script says how to start it, rather than failing obscurely.
@@ -252,4 +237,4 @@ if RESTORE_INTERNAL_DATABASE=opsecmkt_other restore "$work/backup.dump.age" <<< 
   echo 'Restore succeeded without a running database service' >&2; exit 1
 fi
 grep -q 'docker compose up -d --wait db' "$work/stopped.log"
-echo 'Internal-db Compose backup/restore regressions passed (no published port, typed confirmation, wrong key, side-by-side and fresh-volume restores, backups following DATABASE_URL after a switch, conflict rollback, payout recovery gate, holds and failed payouts marked possibly sent, the restored-images line).'
+echo 'Internal-db Compose backup/restore regressions passed (no published port, typed confirmation, wrong key, side-by-side and fresh-volume restores, backups following DATABASE_URL after a switch, conflict rollback, payout recovery gate, the restored-images line).'

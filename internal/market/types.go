@@ -1,7 +1,5 @@
 package market
 
-import "html/template"
-
 // Shared view types. Each feature package appends fields only inside its own commented block.
 
 type User struct {
@@ -267,22 +265,12 @@ type PageData struct {
 	VendorReadiness *VendorReadinessView
 
 	// P5 Payments
-	Payment           *PaymentView
 	Providers         []ProviderStatus
 	Payout            *PayoutView
 	PaymentsEnabled   bool
 	PaymentNetworks   string
-	LiveNetwork       bool        // payment providers are on mainnet: amounts are real funds
-	BitcoinPriceLabel string      // network-aware label for a BTC listing price, including an unknown state.
-	Payouts           []PayoutRow // admin: every payout needing attention (oldest first), then recent others (newest first)
-	// PayoutsAttention counts the leading Payouts that need attention; PayoutHistoryLimit is non-zero when
-	// the other payouts were cut to this many most recent rows.
-	PayoutsAttention   int
-	PayoutHistoryLimit int
-	// MyPayout: order page, the viewer's own payout on this order while it is not sent (A-120).
-	// UnsentPayouts: vendor desk, how many payouts to the viewer are not sent (listed on /account#payout).
-	MyPayout      *RecipientPayout
-	UnsentPayouts int
+	LiveNetwork       bool   // payment providers are on mainnet: amounts are real funds
+	BitcoinPriceLabel string // network-aware label for a BTC listing price, including an unknown state.
 	// EscrowOn: ESCROW_BTC=on (every page); EscrowAvailable: escrow passed its checks. EscrowOrders: vendor desk, the
 	// viewer's escrow orders that may hold coins (QA31-2): the site-wide notices never say no funds are held beside them.
 	// EscrowNet: Bitcoin escrow's chain, regtest, signet or testnet4 (App.escrowNetwork, A-443; every page), so the copy
@@ -364,8 +352,6 @@ type PageData struct {
 	VendorSuspensionReason string
 	// EscrowReadiness (A-444): /admin, the escrow-only readiness panel (escrow_readiness.go).
 	EscrowReadiness *EscrowReadinessView
-	// PooledDrain (A-445): /admin, the pooled wallet's drain panel (pooled_drain.go).
-	PooledDrain *PooledDrainView
 	// VendorEscrowKey (A-455, P4-R18): the product and vendor pages' vendor's Bitcoin escrow key type while ESCROW_BTC is
 	// on: "core", "per_order" or "none" (no active key); "" with escrow off.
 	VendorEscrowKey string
@@ -508,32 +494,6 @@ func (p InventoryPaging) PrevPage() int { return p.Page - 1 }
 func (p InventoryPaging) NextPage() int { return p.Page + 1 }
 
 // P5 Payments
-type PaymentView struct {
-	Network, Address                string
-	Testnet                         bool
-	Required, Received, Unconfirmed string
-	Remaining                       string
-	NeedsTopUp                      bool
-	Confirmations, Threshold        int
-	Status                          string
-	Currency                        string
-	Available                       bool // a live provider serves this order's currency
-	Degraded                        bool // the currency is configured but its wallet is failing its checks
-	Issued                          bool // the provider returned a deposit address for this order
-	Monitored                       bool // Issued and the provider is still configured
-	Open                            bool // Monitored and the order still awaits payment (address shown)
-	BuyerNeedsPayoutAddress         bool // pooled order buyer has no payout address for this order's currency
-	ConfirmationWait                bool // an eligible deposit is below the confirmation threshold; CancelAfter is capped
-	Deposits                        []PaymentDeposit
-	Payouts                         []PayoutRow // release and return of any excess, or refund (ORDER BY id)
-	// PaymentURI and QR: while the order is open and something is still due, the wallet payment request for
-	// exactly that amount (paymentURI) and its inline SVG QR code (qrSVG); empty otherwise.
-	PaymentURI string
-	QR         template.HTML
-	// CancelAfter: while the order is open, the time ("YYYY-MM-DD HH:MM UTC") from which the watcher can cancel
-	// it if still unpaid or short (A-123); RefundFloor: the minimum automatic payout in this currency.
-	CancelAfter, RefundFloor string
-}
 type PaymentDeposit struct {
 	TxID          string
 	Index         int64
@@ -557,41 +517,14 @@ type EscrowReadinessView struct {
 	Limit                     int
 }
 
-// ReadinessCoin: Intake is payment_intake_<COIN>; Pooled, the coin's pooled wallet is configured; NotReady, why the
-// coin's escrow, on, is not ready ("" when it is, QA4W4B-1).
+// ReadinessCoin: Intake is payment_intake_<COIN>; NotReady, why the coin's escrow, on, is not ready ("" when it is,
+// QA4W4B-1).
 type ReadinessCoin struct {
 	Currency, Intake, NotReady string
-	EscrowOn, Pooled           bool
+	EscrowOn                   bool
 }
 type ReadinessListing struct{ ID, Title, Vendor, Kind, Reason string }
 
-// PooledDrainView is /admin's pooled wallet drain panel (A-445): pooled_drain_blockers() per kind, in the panel's
-// order, with Total and each kind's Count uncapped and at most Limit Items per kind, and each pooled wallet's balance
-// as advice.
-type PooledDrainView struct {
-	Kinds    []*DrainKind
-	Total    int
-	Limit    int
-	Balances []DrainBalance
-}
-
-// DrainKind: Resolve says how blockers of the kind are resolved.
-type DrainKind struct {
-	Kind, Title, Resolve string
-	Count                int
-	Items                []DrainItem
-}
-
-// DrainItem is one blocker: Ref and Detail as the function gives them; Link where it is resolved ("" when nowhere this
-// administrator can open).
-type DrainItem struct{ Ref, Order, OrderShort, Currency, Detail, Link string }
-
-// DrainBalance: Configured, the coin's pooled wallet is configured; Available, its balance was read (Confirmed and
-// Pending, in coin units) from Network.
-type DrainBalance struct {
-	Currency, Network, Confirmed, Pending string
-	Configured, Available                 bool
-}
 type ReadinessVendor struct {
 	Handle   string
 	Listings int
@@ -605,7 +538,7 @@ type VendorReadinessView struct {
 
 type VendorCurrencyReadiness struct {
 	Currency, Intake, Provider, Escrow, Payout, Checkout string
-	PooledIntake, PayoutNeeded, PayoutSaved              bool
+	PayoutNeeded, PayoutSaved                            bool
 	EscrowKeyRequired, EscrowKeyActive                   bool
 }
 
@@ -626,59 +559,10 @@ type ProviderStatus struct {
 	AddressCollisions    int
 	AddressCollisionLast string
 }
+
+// PayoutView is the account page's saved payout addresses, kept from before escrow.
 type PayoutView struct {
-	BTC, XMR               string
-	BTCNetwork, XMRNetwork string // empty = no provider for that currency
-	Blocked                int    // payouts waiting for this user's address
-	Unsent                 []RecipientPayout
-}
-
-// RecipientPayout is a payout as its recipient sees it (A-120): every payout to the viewer that is not sent, on
-// /account#payout (oldest first, uncapped) and on its order page. Status and NextStep are fixed copy chosen by
-// recipientPayout from the payout's state and hold; the wallet's error text is never shown. Address is the
-// payout's destination ("" while none is set), shown to its recipient only.
-type RecipientPayout struct {
-	ID                                                   int64 // stable payout ID shown only on its recipient's account page
-	OrderID, OrderShort, Kind, Currency, Amount, Network string
-	Address, Status, NextStep                            string
-	NeedsStaffContact                                    bool // large or suspension hold: show A-119 contact beside the fixed next step
-}
-type PayoutRow struct {
-	ID                                               int64
-	OrderID, Kind, Recipient, Currency, Amount       string
-	Address, State, StateLabel, TxID, Error, Updated string
-	OrderShort                                       string // shortID(OrderID), named in the resolve summary
-	Attention                                        bool
-	OrderLink                                        bool // the viewing administrator can open /order for it
-	// Ambiguous: the payout may already have been broadcast (failed without a definite wallet answer, stuck
-	// in sending, or held by a restore from backup); requeueing or releasing needs an explicit confirmation.
-	Ambiguous bool
-	// AddressCheck: held for an account suspension (suspendedHoldPrefix); releasing needs an explicit
-	// confirmation that the payout address was checked.
-	AddressCheck bool
-	// RequeueAddressCheck: the recipient is suspended now or was suspended while this failed/stuck send
-	// was outstanding; another send needs the recorded payout address confirmed with the owner.
-	RequeueAddressCheck bool
-	// HandHold: held by an administrator to pay it by hand (handHoldPrefix, A-486); releasing needs an explicit
-	// confirmation that it was not paid by hand.
-	HandHold bool
-	// LargeCheck: a refund or return larger than the order price (largeHoldPrefix); releasing needs an explicit
-	// confirmation that an administrator reviewed it.
-	LargeCheck bool
-	// CurrentAddress: the recipient's saved payout address for Currency now; CurrentChanged: when it was last saved
-	// ("" when not recorded). Repoint: the payout may be moved to CurrentAddress (repointable, A-121).
-	CurrentAddress, CurrentChanged string
-	Repoint                        bool
-	// Waiting: held by the watcher (heldReason) while these credited deposits are below Threshold confirmations;
-	// no release is offered until they confirm again.
-	Waiting   []HeldDeposit
-	Threshold int64
-}
-
-// HeldDeposit is a credited deposit, at its deposit address, that holds its order's payout.
-type HeldDeposit struct {
-	TxID, Address        string
-	Index, Confirmations int64
+	BTC, XMR string
 }
 
 // P6 Transparency
@@ -819,23 +703,19 @@ type EscrowChainMismatch struct {
 
 // EscrowNodeView is the line under Payment providers on /admin about the Bitcoin escrow node (escrow_watch.go): the
 // reason class it is not synced for and the remedy when the reason does not say it (syncRemedy), the chain it was
-// refused for, or the class of the answer the pooled user got to the market key self-check (PooledKey, A-440) with the
-// pooled rpcwhitelist methods it should be restricted to; and (A-441, escrow_stall.go) why the Tor-mode gate holds
-// broadcasts and the settlements queued or stuck.
+// refused for; and (A-441, escrow_stall.go) why the Tor-mode gate holds broadcasts and the settlements queued or stuck.
 type EscrowNodeView struct {
-	Configured      bool
-	NotSynced       string
-	NotReady        string // Monero escrow only: the state its startup checks left it in while not ready (escrowXMR.notReady), with Remedy
-	Remedy          string
-	Mismatch        *EscrowChainMismatch
-	PooledKey       string
-	PooledWhitelist string
-	ArbiterRead     string // why the arbiter wallet's entries are not read (QA4W4A-1): "waiting" while the read goes on, or the failure's class
-	ArbiterNext     string // when the next read of them may start after a slow failure (A-479): "1 minute", "12 minutes"; "" = at the next poll
-	TorHold         string
-	Stalled         []EscrowStallView
-	StallN          int // escrowStallBlocks
-	Health          *EscrowHealthView
+	Configured  bool
+	NotSynced   string
+	NotReady    string // Monero escrow only: the state its startup checks left it in while not ready (escrowXMR.notReady), with Remedy
+	Remedy      string
+	Mismatch    *EscrowChainMismatch
+	ArbiterRead string // why the arbiter wallet's entries are not read (QA4W4A-1): "waiting" while the read goes on, or the failure's class
+	ArbiterNext string // when the next read of them may start after a slow failure (A-479): "1 minute", "12 minutes"; "" = at the next poll
+	TorHold     string
+	Stalled     []EscrowStallView
+	StallN      int // escrowStallBlocks
+	Health      *EscrowHealthView
 }
 
 // EscrowHealthView is the persisted, allowlisted Bitcoin escrow node summary shown under Payment providers (A-451).

@@ -5,7 +5,7 @@ import { uniqueHandle } from './db-fixtures';
 import { seedRecordedEscrowKeys, signedIn, submitAndLoad, withinViewport } from './db-helpers';
 
 // A-253 (A-31): the moderator's payment-review disposition forms, submitted with JavaScript disabled against a real
-// database. No wallet runs here, so the flags are seeded in SQL (as db-admin.spec.ts seeds payouts): two escrow deposits
+// database. No wallet runs here, so the flags are seeded in SQL: two escrow deposits
 // the watcher would have flagged after the order closed. A moderator records no action, then escalates another
 // flag after a forged hand-refund request is refused; an administrator records its final review. Both parties
 // read the outcome after a reload, with no payout or refund transaction created. Every account, listing, order and address is unique to the run, and a flag this test leaves open

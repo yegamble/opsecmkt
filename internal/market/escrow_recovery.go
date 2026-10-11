@@ -58,10 +58,13 @@ func escrowRebroadcastReceiptAuthorize(c *actionCtx) error {
 	return nil
 }
 
+// restoredHoldPrefix starts the send_error scripts/restore.sh writes on every restored settlement or fee bump it holds.
+const restoredHoldPrefix = "Restored from backup:"
+
 // restoredSettlementHold is the send_error scripts/restore.sh (and the manual protection SQL in UPGRADING.md section
 // 6) writes on every restored escrow settlement that has a final transaction (signed or broadcast): the restored
 // database may predate its broadcast, or something that replaced it, so it is not broadcast again until an
-// administrator checks it (escrowRebroadcastAction). It starts with restoredHoldPrefix, as the restored payouts do.
+// administrator checks it (escrowRebroadcastAction). It starts with restoredHoldPrefix.
 const restoredSettlementHold = restoredHoldPrefix + " check that this escrow settlement's transaction was not already sent or replaced, then confirm its rebroadcast on the admin page."
 
 // sendRebroadcastOK is the send_error of a settlement whose rebroadcast an administrator confirmed: the watcher sends
@@ -73,7 +76,7 @@ const sendRebroadcastOK = "rebroadcast-confirmed"
 // cleared it behaves as no send_error at all (maySend), and its confirmation clears it.
 const sendRebroadcastSent = "rebroadcast-sent"
 
-// restoreGateSQL is true while the restore gate is set, read directly as the pooled payouts read it (sendPayouts).
+// restoreGateSQL is true while the restore gate is set, read directly from settings.
 const restoreGateSQL = "EXISTS(SELECT 1 FROM settings WHERE key='payments_recovery_required' AND value='true')"
 
 // restoreGateSet reports whether the restore gate is set.

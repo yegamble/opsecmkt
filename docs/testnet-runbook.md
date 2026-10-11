@@ -246,11 +246,9 @@ db_sql() { docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U opsecmkt -d o
    reconciliation*, *Monero escrow recovery and retention*), only after checking it on the chain and in the escrow
    watch-only wallet or escrow daemon as described above. Nothing is sent while the gate is set, except that a
    confirmed settlement is broadcast or relayed once.
-4. **Check that the dump holds no pooled payouts to resolve.** If `scripts/restore.sh` printed a count above zero
-   for restored payouts it held or marked, the dump holds pooled payout rows, which this build neither sends nor
-   resolves, and migration 107 refuses a database with unresolved pooled obligations: do not continue. Restore a newer
-   dump taken after the pooled drain, or use the prior build and its own recovery procedure
-   ([UPGRADING.md section 58](../UPGRADING.md#58-pooled-wallet-removal-for-fresh-installs-a-448)).
+4. **Nothing pooled to resolve.** This build starts only on a database without pooled payment history: if the app
+   refused to start in step 2 naming migration 107 or 108, the dump predates the pooled removal and this build cannot
+   use it; do not continue ([UPGRADING.md sections 58 and 59](../UPGRADING.md#59-pooled-history-refused-migration-108-a-492)).
 5. **Stop the app** (`docker compose stop app`) and keep users cut off.
 6. **Back up the reconciled database**
    (`AGE_RECIPIENT=age1YOUR_PUBLIC_RECIPIENT ./scripts/backup.sh backups/reconciled-YYYYMMDD.dump.age`, with
@@ -269,8 +267,7 @@ db_sql() { docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U opsecmkt -d o
 ### Clear the gate
 
 Only after steps 1 to 6 above, with the app stopped and the reconciled database backed up. Clearing the gate is
-your assertion that reconciliation is complete; it refuses while any pooled payment-review flag is still open and
-directs you to `/moderator` to reconcile it. It does not discover missing settlements or release individual holds.
+your assertion that reconciliation is complete. It does not discover missing settlements or release individual holds.
 On a market running Bitcoin escrow it also lets escrow checkout run again, with only the address check
 described above under *Reconcile a restored database before enabling payouts*. Give your administrator handle: the SQL clears the gate and adds one audit row naming you ("Payout
 recovery gate cleared by ...") in one transaction, and changes nothing for a handle that is not an
@@ -283,7 +280,6 @@ BEGIN;
 SELECT c.problem, c.problem = 'none' AS ready FROM (SELECT CASE
   WHEN NOT EXISTS (SELECT 1 FROM users WHERE handle=:'handle' AND role='admin') THEN 'no administrator with that handle'
   WHEN NOT EXISTS (SELECT 1 FROM settings WHERE key='payments_recovery_required' AND value='true') THEN 'the recovery gate is not set'
-  WHEN EXISTS (SELECT 1 FROM pooled_drain_blockers() WHERE kind='flagged_payment') THEN 'open pooled payment reviews remain; reconcile them on /moderator before clearing the recovery gate'
   ELSE 'none' END AS problem) AS c
 \gset c_
 \if :c_ready
@@ -661,196 +657,3 @@ from a clean checkout: practice signing, one escrow claimed and one refunded, ea
 writes the record to commit under `docs/evidence/public-testnet/`. Settings and what the record holds:
 [Escrow node set-up and the public-network smoke](operator-guide.md#escrow-node-set-up-and-the-public-network-smoke).
 The [2026-10-09 public signet record](evidence/public-testnet/2026-10-09-9885beef29d3/signet/README.md) contains a passing Core practice/claim/refund run and measured Tor delivery, sync and storage. Public testnet4 remains unrun.
-
-## Prior build only: recording a pooled payout sent after a backup (never run with this build)
-
-**Do not use this section with this build.** The pooled wallet is removed, a database that holds unresolved pooled
-obligations cannot cross migration 107, and the current reading path above never sends you here. The two SQL blocks are
-kept byte for byte only because `scripts/test-backup-restore.sh` still executes them against the retained `payouts`
-history; they go when that history does (ledger A-492).
-
-For the prior (migration-106) build only: run these with `psql` against the restored database while the app is stopped. The internal-db service is
-shown; replace `opsecmkt_restored` with the database name in `DATABASE_URL`. With an external database, make
-`db_sql` run your own `psql -X -v ON_ERROR_STOP=1` connected to the restored database (for example
-`psql service=recovery` with the password in `~/.pgpass`), never with the password in its arguments.
-
-```sh
-db_sql() { docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U opsecmkt -d opsecmkt_restored "$@"; }
-```
-
-Find the order from a lost send: the orders in that currency with no payout whose counted deposits add up to
-the payout's amount, with the vendor's and the buyer's current payout addresses. Every payout has the fee taken
-from it (except a Monero release sent before A-232), so search with the destination amount plus the fee:
-a 0.0015 BTC release the wallet shows as `"amount": -0.00148590, "fee": -0.00001410` is `amount=150000`. Match
-the address the wallet sent to (a recipient may have changed their address after the backup, in which case use
-the order history and messages, and ask for help when unsure):
-
-<!-- runbook-sql: find-order -->
-```sh
-db_sql -v currency=BTC -v amount=150000 <<'SQL'
-SELECT o.id AS order_id, o.state, sum(pm.amount) AS deposits,
-  CASE o.currency WHEN 'BTC' THEN v.payout_btc ELSE v.payout_xmr END AS vendor_address,
-  CASE o.currency WHEN 'BTC' THEN b.payout_btc ELSE b.payout_xmr END AS buyer_address
-FROM orders o JOIN products p ON p.id=o.product_id JOIN users v ON v.id=p.vendor_id JOIN users b ON b.id=o.buyer_id
-JOIN payments pm ON pm.order_id=o.id AND NOT pm.locked AND (pm.credited OR pm.confirmations>=0)
-WHERE o.currency=:'currency' AND NOT EXISTS (SELECT 1 FROM payouts WHERE payouts.order_id=o.id)
-GROUP BY o.id, o.state, v.payout_btc, v.payout_xmr, b.payout_btc, b.payout_xmr
-HAVING sum(pm.amount)=:'amount'::bigint ORDER BY o.id;
-SQL
-```
-
-Then save the recording SQL once and run it for each lost payout, first as a check (`no`) and then to record
-it (`yes`). Set the variables in `record_payout` for that payout: the full order ID; `kind` and `state` as
-`release` and `completed` (the buyer completed it), `refund` and `cancelled` (cancelled after payment) or
-`release`/`refund` and `resolved` (a dispute resolved that way); the payout's amount in satoshi or piconero
-(the destination amount plus the fee for a send with the fee taken from it, as in the search above); the address
-and the 64-character transaction ID from the wallet; and your administrator handle. A release whose buyer
-overpaid was sent as two transactions (migration 064): the price to the vendor and the excess back to the buyer.
-Record both at once: `amount`, `address` and `txid` are the vendor's, and `return_amount`, `return_address` and
-`return_txid` the buyer's (leave them out for any other payout), each the destination amount plus that
-transaction's fee (on either coin both; for a Monero release sent before A-232, the vendor's destination amount
-alone). When finding such
-an order above, search with the two amounts added together. The note written to the order history names the
-network class (`MAINNET` or `TESTNET`) from the order's deposit address.
-
-<!-- runbook-sql: record-payout -->
-```sh
-cat > record-payout.sql <<'SQL'
-\if :{?return_amount}
-\else
-\set return_amount 0
-\endif
-\if :{?return_address}
-\else
-\set return_address ''
-\endif
-\if :{?return_txid}
-\else
-\set return_txid ''
-\endif
-BEGIN;
-SELECT c.*, c.problem = 'none' AS ready FROM (
-  SELECT o.id AS order_id, o.state AS restored_state, :'state' AS final_state, :'kind' AS kind, o.currency,
-    CASE :'kind' WHEN 'release' THEN v.handle ELSE b.handle END AS recipient, :'amount'::bigint AS amount,
-    (SELECT coalesce(sum(amount),0) FROM payments WHERE order_id=o.id AND NOT locked AND (credited OR confirmations>=0)) AS deposits,
-    (SELECT count(*) FROM payouts WHERE order_id=o.id) AS payouts,
-    CASE
-      WHEN o.id IS NULL THEN 'no such order'
-      WHEN NOT EXISTS (SELECT 1 FROM users WHERE handle=:'handle' AND role='admin') THEN 'no administrator with that handle'
-      WHEN NOT EXISTS (SELECT 1 FROM settings WHERE key='payments_recovery_required' AND value='true') THEN 'the recovery gate is not set'
-      WHEN EXISTS (SELECT 1 FROM payouts WHERE order_id=o.id) THEN 'the order already has a payout; resolve it on the admin page'
-      WHEN (:'state',:'kind') NOT IN (('completed','release'),('cancelled','refund'),('resolved','release'),('resolved','refund'))
-        THEN 'kind does not match the final state'
-      WHEN o.state <> :'state' AND (:'state',o.state) NOT IN (('completed','awaiting_payment'),('completed','paid'),('completed','shipped'),
-        ('completed','delivered'),('cancelled','awaiting_payment'),('cancelled','paid'),('resolved','disputed'))
-        THEN 'the order cannot have reached that final state'
-      WHEN :'state'='resolved' AND NOT EXISTS (SELECT 1 FROM disputes WHERE order_id=o.id AND ((status='Open' AND outcome='') OR outcome=:'kind'))
-        THEN 'the dispute has another outcome'
-      WHEN NOT EXISTS (SELECT 1 FROM payment_addresses WHERE order_id=o.id) THEN 'no payment address was issued for the order'
-      WHEN :'amount'::bigint <= 0 THEN 'amount must be positive'
-      WHEN :'return_amount'::bigint < 0 THEN 'return_amount must not be negative'
-      WHEN :'return_amount'::bigint > 0 AND :'kind' <> 'release' THEN 'only a release has a return'
-      WHEN :'return_amount'::bigint > 0 AND :'amount'::bigint <> o.amount THEN 'with a return, amount must be the order price'
-      WHEN :'amount'::bigint + :'return_amount'::bigint <> (SELECT coalesce(sum(amount),0) FROM payments WHERE order_id=o.id AND NOT locked AND (credited OR confirmations>=0))
-        THEN 'counted deposits do not add up to the amount'
-      WHEN :'address' = '' THEN 'address is blank'
-      WHEN :'txid' !~ '^[0-9a-f]{64}$' THEN 'transaction ID must be 64 lower-case hexadecimal characters'
-      WHEN EXISTS (SELECT 1 FROM payouts WHERE txid=:'txid') THEN 'that transaction ID is already recorded on another payout'
-      WHEN :'return_amount'::bigint > 0 AND :'return_address' = '' THEN 'return_address is blank'
-      WHEN :'return_amount'::bigint > 0 AND (:'return_txid' !~ '^[0-9a-f]{64}$' OR :'return_txid' = :'txid')
-        THEN 'return_txid must be another 64 lower-case hexadecimal transaction ID'
-      WHEN :'return_amount'::bigint > 0 AND EXISTS (SELECT 1 FROM payouts WHERE txid=:'return_txid') THEN 'that transaction ID is already recorded on another payout'
-      ELSE 'none' END AS problem
-  FROM (SELECT 1) AS one LEFT JOIN orders o ON o.id=:'order_id' LEFT JOIN products p ON p.id=o.product_id
-    LEFT JOIN users v ON v.id=p.vendor_id LEFT JOIN users b ON b.id=o.buyer_id) AS c;
-\gset c_
-\if :c_ready
-\if :record
-WITH ord AS (
-  SELECT o.id, o.state, o.currency, o.buyer_id, o.product_id, p.vendor_id,
-    (SELECT id FROM users WHERE handle=:'handle' AND role='admin') AS admin_id,
-    (SELECT CASE WHEN bool_or(split_part(provider,'-',2) IN ('main','mainnet')) THEN 'MAINNET' ELSE 'TESTNET' END
-      FROM payment_addresses WHERE order_id=o.id) AS net,
-    trim_scale(:'amount'::bigint / CASE o.currency WHEN 'BTC' THEN 1e8 ELSE 1e12 END) || ' ' || o.currency AS label,
-    trim_scale(:'return_amount'::bigint / CASE o.currency WHEN 'BTC' THEN 1e8 ELSE 1e12 END) || ' ' || o.currency AS return_label
-  FROM orders o JOIN products p ON p.id=o.product_id WHERE o.id=:'order_id'),
-pay AS (
-  INSERT INTO payouts(order_id,kind,user_id,currency,amount,address,state,txid)
-  SELECT id, :'kind', CASE :'kind' WHEN 'release' THEN vendor_id ELSE buyer_id END, currency, :'amount'::bigint, :'address', 'sent', :'txid'
-  FROM ord ON CONFLICT (order_id,kind) DO NOTHING RETURNING id, order_id),
-ret AS (
-  INSERT INTO payouts(order_id,kind,user_id,currency,amount,address,state,txid)
-  SELECT ord.id, 'return', ord.buyer_id, ord.currency, :'return_amount'::bigint, :'return_address', 'sent', :'return_txid'
-  FROM ord, pay WHERE :'return_amount'::bigint > 0 ON CONFLICT (order_id,kind) DO NOTHING RETURNING id),
-note AS (
-  SELECT 'Reconciled after a restore from backup: the ' || net || ' ' || :'kind' || ' of ' || label || ' to the '
-    || CASE :'kind' WHEN 'release' THEN 'vendor' ELSE 'buyer' END || ' was sent after the backup was taken'
-    || CASE WHEN :'return_amount'::bigint > 0 THEN ', and the return of ' || return_label
-    || ' paid over the price to the buyer' ELSE '' END
-    || '. Recorded by an administrator from the wallet; nothing was sent now.' AS body FROM ord),
-moved AS (UPDATE orders SET state=:'state', updated=now() FROM pay WHERE orders.id=pay.order_id RETURNING 1),
-closed AS (
-  UPDATE disputes SET outcome=:'kind', resolution=note.body,
-    status=CASE :'kind' WHEN 'release' THEN 'Resolved — release to vendor' ELSE 'Resolved — refund to buyer' END
-  FROM pay, note WHERE disputes.order_id=pay.order_id AND disputes.status='Open' AND disputes.outcome='' AND :'state'='resolved' RETURNING 1),
-restocked AS (
-  UPDATE products SET stock=stock+1 FROM ord, pay
-  WHERE products.id=ord.product_id AND :'state'='cancelled' AND ord.state IN ('awaiting_payment','paid') RETURNING 1),
-credited AS (
-  UPDATE payments SET credited=true FROM pay
-  WHERE payments.order_id=pay.order_id AND NOT payments.locked AND (payments.credited OR payments.confirmations>=0) RETURNING 1),
-event AS (
-  INSERT INTO order_events(order_id,from_state,to_state,actor_id,note)
-  SELECT ord.id, ord.state, :'state', ord.admin_id, note.body FROM ord, pay, note RETURNING 1),
-audit AS (
-  INSERT INTO audit_events(user_id,action)
-  SELECT ord.admin_id, 'Recorded payout ' || pay.id || ' (' || ord.label || ', ' || :'kind' || ') sent after the backup with transaction '
-    || :'txid' || CASE WHEN :'return_amount'::bigint > 0 THEN ' and its return (' || ord.return_label || ') with transaction ' || :'return_txid' ELSE '' END
-    || ' for order ' || left(ord.id, 8) || '; restored from backup, order ' || ord.state || ' -> ' || :'state'
-  FROM ord, pay RETURNING 1)
-SELECT count(*) = 1 AS recorded FROM audit
-\gset c_
-\if :c_recorded
-COMMIT;
-\echo 'Recorded the payout as sent; committed.'
-\else
-ROLLBACK;
-\echo 'Nothing was recorded; rolled back.'
-\endif
-\else
-ROLLBACK;
-\echo 'Check passed; nothing was written. Run it again with -v record=yes to record this payout.'
-\endif
-\else
-ROLLBACK;
-\echo 'Refused; nothing was written:' :c_problem
-\endif
-SQL
-record_payout() {  # record_payout no (check) | yes (record)
-  db_sql -v record="$1" -v order_id=FULL_ORDER_ID -v kind=release -v state=completed -v amount=150000 \
-    -v address=RECIPIENT_ADDRESS -v txid=WALLET_TRANSACTION_ID -v handle=YOUR_ADMIN_HANDLE < record-payout.sql
-}
-record_payout no
-```
-
-The check prints exactly one row: the order, its restored and final state, the kind, currency, recipient
-handle, your amount, the counted deposits (unlocked, not missing), existing payouts, `problem` and `ready`. Go on
-only when `problem` is `none`, `ready` is `t`, `payouts` is `0` and `deposits` equals `amount` (plus `return_amount`), and it ends
-"Check passed; nothing was written". Otherwise it ends "Refused; nothing was written:" with the reason (an order
-that already has a payout is resolved on the admin page). Then run `record_payout yes`: it repeats
-the check in one transaction and ends "Recorded the payout as sent; committed." after writing, together:
-
-- a `sent` payout row with the wallet's transaction ID, and a `sent` return row with its own when you gave one
-  (an order that already has a payout is refused, and so is a transaction ID already recorded);
-- the order moved to its final state if the restored snapshot was behind, with an order-history entry by your
-  account ("Reconciled after a restore from backup: ..."); a resolved dispute gets that outcome, and a
-  cancellation returns the reserved unit to stock as the application would. Neither text names a transaction
-  ID: both parties read them, and on Bitcoin a payout's transaction ID reveals its recipient's address. The
-  order page shows each payout's transaction ID only to its recipient and to staff;
-- the counted deposits marked credited, so the watcher does not flag them as arriving after settlement;
-- one new audit row ("Recorded payout N ... sent after the backup"). Existing audit rows are never changed.
-
-The recipient is not notified; tell them through Messages if needed. The SQL refuses to run once the gate is
-cleared: if you find a lost payout later, stop the app and set the gate again first (the `settings` and
-`audit_events` statements in [UPGRADING.md](../UPGRADING.md#6-backups-now-need-the-wallets-too), between its
-`BEGIN` and `COMMIT`).

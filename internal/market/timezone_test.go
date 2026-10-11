@@ -121,7 +121,6 @@ func TestRenderedTimestampSurfacesAreUTCWhateverTheDatabaseZone(t *testing.T) {
 	const replyAt = "2025-04-10 11:12 UTC"
 	const deliveryAt = "2025-04-11 12:13 UTC"
 	const listingAt = "2025-04-12 13:14 UTC"
-	const payoutAt = "2025-04-13 14:15 UTC"
 
 	if _, err := e.DB.Exec(`UPDATE orders SET created=$2,updated=$3 WHERE id=$1`, order, "2025-04-05 06:07:00+00", "2025-04-06 07:08:00+00"); err != nil {
 		t.Fatal(err)
@@ -145,10 +144,6 @@ func TestRenderedTimestampSurfacesAreUTCWhateverTheDatabaseZone(t *testing.T) {
 	if _, err := e.DB.Exec(`INSERT INTO deliveries(order_id,content,created) VALUES($1,'Timezone fixture delivery',$2)`, order, "2025-04-11 12:13:00+00"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.DB.Exec(`INSERT INTO payouts(order_id,kind,user_id,currency,amount,address,state,updated)
-		VALUES($1,'release',$2,'BTC',100000,'fixture-payout-address','sent',$3)`, order, vendorID, "2025-04-13 14:15:00+00"); err != nil {
-		t.Fatal(err)
-	}
 
 	checks := []struct {
 		name, path, token, marker string
@@ -159,7 +154,7 @@ func TestRenderedTimestampSurfacesAreUTCWhateverTheDatabaseZone(t *testing.T) {
 		{"dispute reply", "/order?id=" + order, buyer, replyAt},
 		{"delivery and order events", "/order?id=" + order, buyer, deliveryAt},
 		{"listing edit", "/listing-edit?id=" + product, vendor, listingAt},
-		{"payout updated", "/admin", admin, payoutAt},
+		{"admin audit trail", "/admin", admin, auditAt},
 	}
 	for _, check := range checks {
 		t.Run(check.name, func(t *testing.T) {

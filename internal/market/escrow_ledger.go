@@ -85,9 +85,9 @@ func currencyDecimals(currency string) int {
 
 // applyIncoming writes what a wallet reported for addresses to the payments ledger, one row per output; ledger rows
 // the wallet no longer reports (replaced, conflicted or evicted transactions) are marked -1 confirmations. A new row
-// on a funded, non-terminal order is marked late_notice for settleOrder to announce; one on a closed order is marked
-// after_close: it is never counted toward the order's settlement (payoutBasis), and settleOrder flags it. The pooled
-// watcher and the escrow watcher (escrow_watch.go) both write the ledger through it.
+// on a funded, non-terminal order is marked late_notice to be announced; one on a closed order is marked after_close:
+// it is never counted toward the order's settlement, and flagLateDeposits flags it. The escrow watcher
+// (escrow_watch.go) writes the ledger through it.
 func (a *App) applyIncoming(ctx context.Context, cur string, incoming []Incoming, addresses []string, orderOf map[string]string) error {
 	seen := map[ledgerKey]bool{}
 	for _, in := range incoming {

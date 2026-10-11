@@ -10,9 +10,9 @@ import (
 	"testing"
 )
 
-// A-161 / A-122: every action that queues a payout (resolve, complete, a vendor's cancel of a paid order) states
-// the amount payoutBasis would pay, the recipient and the difference from the price, needs a ticked confirmation
-// and carries amount_seen, which enqueuePayout compares with the amount it counts under its row locks.
+// Shared helpers for the forms that state an amount (A-161, A-122): resolve, complete, a cancel of a paid order and a
+// concession state the counted amount, need a ticked confirmation and carry amount_seen, which the settlement request
+// compares with the amount it counts under its row locks (checkPayoutSeen).
 
 // payoutConfirmed adds the confirmation fields those forms carry.
 func payoutConfirmed(v url.Values, seen int64) url.Values {

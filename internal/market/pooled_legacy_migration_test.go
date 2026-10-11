@@ -14,8 +14,11 @@ func clearObsoletePooledEnv(t *testing.T) {
 	}
 }
 
+// restoreSchema106 puts the database back as migration 106 left it (107 changes intake, not table layout), so a test
+// can seed pooled rows that migration 108 now refuses.
 func restoreSchema106(t *testing.T, e *testEnv) {
 	t.Helper()
+	restoreSchema107(t, e)
 	if _, err := e.DB.Exec("DELETE FROM schema_migrations WHERE version=107"); err != nil {
 		t.Fatal(err)
 	}
@@ -38,8 +41,8 @@ func applyLatestMigrations(t *testing.T, e *testEnv) error {
 func TestMigration107FreshInstallUsesEscrowAndHasNoPooledHistory(t *testing.T) {
 	clearObsoletePooledEnv(t)
 	e := newFreshTestApp(t)
-	if got := agInt(e, "SELECT max(version) FROM schema_migrations"); got != 107 {
-		t.Fatalf("fresh schema version = %d, want 107", got)
+	if got := agInt(e, "SELECT count(*) FROM schema_migrations WHERE version IN (107,108)"); got != 2 {
+		t.Fatalf("fresh schema records %d of migrations 107 and 108, want both", got)
 	}
 	if btc, xmr := agStr(e, "SELECT value FROM settings WHERE key='payment_intake_BTC'"), agStr(e, "SELECT value FROM settings WHERE key='payment_intake_XMR'"); btc != "escrow" || xmr != "escrow" {
 		t.Fatalf("fresh intake BTC=%q XMR=%q, want escrow/escrow", btc, xmr)
@@ -89,6 +92,7 @@ func TestMigration107RefusesUndrainedLegacyWithoutChangesThenRestoredRerunPasses
 	if _, err := e.DB.Exec(`UPDATE orders SET updated=now()-interval '40 days' WHERE id=$1`, closed); err != nil {
 		t.Fatal(err)
 	}
+	restoreSchema106(t, e)
 	if _, err := e.DB.Exec(`INSERT INTO payment_addresses(order_id,currency,address,provider,created)
 		VALUES($1,'BTC','bcrt1qlegacy107history00000000000000000000','btc-regtest',now()-interval '40 days')`, closed); err != nil {
 		t.Fatal(err)
@@ -103,7 +107,6 @@ func TestMigration107RefusesUndrainedLegacyWithoutChangesThenRestoredRerunPasses
 	if _, err := e.DB.Exec(`UPDATE settings SET value='false' WHERE key='payment_intake_XMR'`); err != nil {
 		t.Fatal(err)
 	}
-	restoreSchema106(t, e)
 	before := []int{
 		agInt(e, "SELECT count(*) FROM orders"),
 		agInt(e, "SELECT count(*) FROM payment_addresses"),
@@ -137,24 +140,43 @@ func TestMigration107RefusesUndrainedLegacyWithoutChangesThenRestoredRerunPasses
 		t.Fatal("failed migration changed historical payment")
 	}
 
-	// This models restoring the pre-107 backup after operators drain it on an older drain-capable release.
+	// This models restoring the pre-107 backup after operators drain it on an older drain-capable release. 107 then
+	// passes, but the drained database still holds pooled history, which migration 108 (A-492) refuses unchanged.
 	if _, err = e.DB.Exec(`UPDATE orders SET state='completed',updated=now()-interval '40 days' WHERE id=$1`, order); err != nil {
 		t.Fatal(err)
 	}
-	if err = applyLatestMigrations(t, e); err != nil {
-		t.Fatalf("migration after the restored database was drained: %v", err)
+	if n := agInt(e, "SELECT count(*) FROM pooled_drain_blockers()"); n != 0 {
+		t.Fatalf("drained fixture still has %d pooled drain blockers", n)
 	}
-	if got := agInt(e, "SELECT max(version) FROM schema_migrations"); got != 107 {
-		t.Fatalf("rerun schema version = %d, want 107", got)
+	err = applyLatestMigrations(t, e)
+	if err == nil || !strings.Contains(err.Error(), "migration 108 refused") || !strings.Contains(err.Error(), "UPGRADING.md section 59") {
+		t.Fatalf("drained legacy database with pooled history = %v, want migration 108's refusal", err)
+	}
+	if got := agInt(e, "SELECT max(version) FROM schema_migrations"); got != 106 {
+		t.Fatalf("refused rerun recorded schema version %d, want 106", got)
+	}
+	if got := agStr(e, "SELECT value FROM settings WHERE key='payment_intake_BTC'"); got != "true" {
+		t.Fatalf("refused rerun changed BTC intake to %q", got)
+	}
+	if got := agInt(e, "SELECT count(*) FROM payment_addresses WHERE order_id=$1", closed); got != 1 {
+		t.Fatal("refused rerun removed the historical address")
+	}
+
+	// A drained legacy database without pooled history (no payouts or payment_addresses row) upgrades through both.
+	if _, err = e.DB.Exec("DELETE FROM payment_addresses WHERE order_id=$1", closed); err != nil {
+		t.Fatal(err)
+	}
+	if err = applyLatestMigrations(t, e); err != nil {
+		t.Fatalf("migration of a drained database without pooled history: %v", err)
+	}
+	if got := agInt(e, "SELECT count(*) FROM schema_migrations WHERE version IN (107,108)"); got != 2 {
+		t.Fatalf("rerun recorded %d of migrations 107 and 108, want both", got)
 	}
 	if btc, xmr := agStr(e, "SELECT value FROM settings WHERE key='payment_intake_BTC'"), agStr(e, "SELECT value FROM settings WHERE key='payment_intake_XMR'"); btc != "escrow" || xmr != "false" {
 		t.Fatalf("drained legacy intake BTC=%q XMR=%q, want escrow/false", btc, xmr)
 	}
 	if got := agInt(e, "SELECT count(*) FROM payments WHERE txid=$1", strings.Repeat("a", 64)); got != 1 {
 		t.Fatal("successful migration changed historical payment")
-	}
-	if got := agInt(e, "SELECT count(*) FROM payment_addresses WHERE order_id=$1", closed); got != 1 {
-		t.Fatal("successful migration removed historical address")
 	}
 }
 
@@ -164,11 +186,11 @@ func TestMigration107RefusesMainnetAddressHistory(t *testing.T) {
 	buyer, _ := e.user("migration107_mainnet_buyer", "buyer")
 	vendor, _ := e.user("migration107_mainnet_vendor", "vendor")
 	order := e.order(buyer, e.product(vendor, "digital"), "BTC", "draft")
+	restoreSchema106(t, e)
 	if _, err := e.DB.Exec(`INSERT INTO payment_addresses(order_id,currency,address,provider)
 		VALUES($1,'BTC','bc1qlegacy107mainnet000000000000000000000','btc-main')`, order); err != nil {
 		t.Fatal(err)
 	}
-	restoreSchema106(t, e)
 	if _, err := e.DB.Exec(`UPDATE settings SET value='true' WHERE key='payment_intake_BTC'`); err != nil {
 		t.Fatal(err)
 	}
@@ -201,48 +223,5 @@ func TestMigration107RefusesUnknownFutureBlockerKindsWithoutReferences(t *testin
 	}
 	if got := agInt(e, "SELECT max(version) FROM schema_migrations"); got != 106 {
 		t.Fatalf("refused future blocker migration recorded version %d, want 106", got)
-	}
-}
-
-func TestMigration107PreservesHistoricalPooledFeeAddressRefusal(t *testing.T) {
-	clearObsoletePooledEnv(t)
-	x := newEscrowEnv(t)
-	_, admin := x.user("legacy107_fee_admin", "admin")
-	old := x.testEnv.order(x.buyer, x.testEnv.product(x.vendor, "physical"), "BTC", stateCompleted)
-	address := regtestAddr("legacy107 pooled fee refusal")
-	agExec(x.testEnv, "UPDATE orders SET updated=now()-interval '40 days' WHERE id=$1", old)
-	agExec(x.testEnv, "INSERT INTO payment_addresses(order_id,currency,address,provider,created) VALUES($1,'BTC',$2,'btc-regtest',now()-interval '40 days')", old, address)
-	w := x.do("POST", "/admin/escrow-fee", admin, url.Values{"fee_bps": {"250"}, "fee_address": {address}, "password": {testPassword}})
-	x.check(w, 409)
-	if n := agInt(x.testEnv, "SELECT count(*) FROM settings WHERE key LIKE 'escrow_btc_fee_%'"); n != 0 {
-		t.Fatalf("refused historical fee address changed %d settings", n)
-	}
-	if n := agInt(x.testEnv, "SELECT count(*) FROM payment_addresses WHERE order_id=$1 AND address=$2", old, address); n != 1 {
-		t.Fatal("historical address was changed")
-	}
-}
-
-func TestMigration107PreservesHistoricalPooledXMRClaimAddressRefusal(t *testing.T) {
-	clearObsoletePooledEnv(t)
-	x := newXMREscrowEnv(t)
-	x.mustPoll()
-	order, _ := x.fundedXMR(x.product)
-	old := x.testEnv.order(x.buyer, x.testEnv.product(x.vendor, "digital"), "XMR", stateCompleted)
-	address := testXMRAddr("legacy107 pooled claim refusal", true)
-	agExec(x.testEnv, "UPDATE orders SET updated=now()-interval '40 days' WHERE id=$1", old)
-	agExec(x.testEnv, "INSERT INTO payment_addresses(order_id,currency,address,provider,created) VALUES($1,'XMR',$2,'xmr-stagenet',now()-interval '40 days')", old, address)
-	restoreSchema106(t, x.testEnv)
-	if err := applyLatestMigrations(t, x.testEnv); err != nil {
-		t.Fatal(err)
-	}
-	events := agInt(x.testEnv, "SELECT count(*) FROM order_events WHERE order_id=$1", order)
-	if code, body := x.xmrClaim(order, x.vendorSess, address, testPassword); code != 409 || !strings.Contains(body, errClaimAddressUsed.Error()) {
-		t.Fatalf("historical XMR claim address: %d %s", code, body)
-	}
-	if x.state(order) != stateCompleted || len(x.xmrSettlements(order)) != 0 || agInt(x.testEnv, "SELECT count(*) FROM order_events WHERE order_id=$1", order) != events {
-		t.Fatal("refused historical XMR claim changed the escrow or its history")
-	}
-	if n := agInt(x.testEnv, "SELECT count(*) FROM payment_addresses WHERE order_id=$1 AND address=$2", old, address); n != 1 {
-		t.Fatal("historical XMR address was changed")
 	}
 }

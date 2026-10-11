@@ -330,8 +330,6 @@ func TestEscrowCheckoutRefusals(t *testing.T) {
 	x.A.escrow.Load().feeAddress = "bcrt1qnowfee000000000000000000000000000"
 	refuse("the configured fee destination", x.order, url.Values{"order_id": {x.order}, "refund_address": {"bcrt1qnowfee000000000000000000000000000"}}, x.buyerSess, 409, "already used on this market", true)
 	x.A.escrow.Load().feeAddress = ""
-	x.DB.Exec("INSERT INTO payment_addresses(order_id,currency,address,provider) VALUES($1,'BTC','bcrt1qpooleddeposit000000000000000000000','btc-regtest')", x.testEnv.order(x.buyer, x.testEnv.product(x.vendor, "physical"), "BTC", stateAwaitingPayment))
-	refuse("a pooled deposit address", x.order, url.Values{"order_id": {x.order}, "refund_address": {"bcrt1qpooleddeposit000000000000000000000"}}, x.buyerSess, 409, "already used on this market", true)
 
 	// Not a draft any more (a repeated checkout): 409, nothing new.
 	if w := x.checkout(other, "bcrt1qbuyerrefund0000000000000000000000b"); w.Code != 409 {

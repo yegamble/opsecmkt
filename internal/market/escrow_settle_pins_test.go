@@ -568,9 +568,8 @@ func TestPinsSettlementBuiltNote(t *testing.T) {
 	}
 }
 
-// Kills CL4 (the configured fee address accepted as a claim address), CL5 (a pooled deposit address accepted) and CL6
-// (another escrow's snapshotted fee destination accepted): each is refused as already used, nothing is requested,
-// and a fresh address is then accepted.
+// Kills CL4 (the configured fee address accepted as a claim address) and CL6 (another escrow's snapshotted fee
+// destination accepted): each is refused as already used, nothing is requested, and a fresh address is then accepted.
 func TestPinsClaimRefusesMarketAddresses(t *testing.T) {
 	x := newEscrowEnv(t)
 	order := x.completed(refundAddr, 100000)
@@ -578,11 +577,8 @@ func TestPinsClaimRefusesMarketAddresses(t *testing.T) {
 	x.mustCheckout(other, "bcrt1qbuyerrefund00000000000000000000002")
 	x.DB.Exec("UPDATE escrows SET fee_bps=100,fee_destination='bcrt1qoldfee000000000000000000000000000' WHERE order_id=$1", other)
 	x.A.escrow.Load().feeAddress = "bcrt1qnowfee000000000000000000000000000"
-	x.DB.Exec("INSERT INTO payment_addresses(order_id,currency,address,provider) VALUES($1,'BTC','bcrt1qpooleddeposit000000000000000000000','btc-regtest')",
-		x.testEnv.order(x.buyer, x.testEnv.product(x.vendor, "physical"), "BTC", stateAwaitingPayment))
 	for _, c := range []struct{ name, addr string }{
 		{"the configured fee address", "bcrt1qnowfee000000000000000000000000000"},
-		{"a pooled deposit address", "bcrt1qpooleddeposit000000000000000000000"},
 		{"another escrow's fee destination", "bcrt1qoldfee000000000000000000000000000"},
 	} {
 		code, body := x.claim(order, x.vendorSess, c.addr)

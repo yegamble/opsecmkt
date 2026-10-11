@@ -16,7 +16,6 @@ func TestStaffAttentionCountsActionableWorkWithoutCapsOrCrossCategorySums(t *tes
 	admin, adminSession := e.user("admin_"+suffix, "admin")
 	product := e.product(vendor, "physical")
 	orders := make([]string, 101)
-	payoutOrders := make([]string, len(orders))
 	for i := range orders {
 		orders[i] = e.order(buyer, product, "BTC", stateDisputed)
 		if _, err := e.DB.Exec(`INSERT INTO escrows(order_id,address,market_index,refund_address,fee_bps,fee_destination)
@@ -32,12 +31,6 @@ func TestStaffAttentionCountsActionableWorkWithoutCapsOrCrossCategorySums(t *tes
 		}
 		if _, err := e.DB.Exec(`INSERT INTO xmr_escrow_collisions(order_id,wallet_name,account,txid)
 			VALUES($1,'test-wallet',$2,$3)`, orders[i], i+1, fmt.Sprintf("%064x", i+1)); err != nil {
-			t.Fatal(err)
-		}
-		// Historical payouts remain readable and counted, separately from escrow settlements.
-		payoutOrders[i] = e.order(buyer, product, "BTC", stateCompleted)
-		if _, err := e.DB.Exec(`INSERT INTO payouts(order_id,kind,user_id,currency,amount,address,state)
-			VALUES($1,'release',$2,'BTC',1000,'test-address','held')`, payoutOrders[i], vendor); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -66,11 +59,6 @@ func TestStaffAttentionCountsActionableWorkWithoutCapsOrCrossCategorySums(t *tes
 	if _, err := e.DB.Exec("INSERT INTO xmr_escrow_collisions(order_id,wallet_name,account,txid) VALUES($1,'test-wallet',1000,$2)", partyOrder, strings.Repeat("c", 64)); err != nil {
 		t.Fatal(err)
 	}
-	partyPayoutOrder := e.order(mod, product, "BTC", stateCompleted)
-	if _, err := e.DB.Exec(`INSERT INTO payouts(order_id,kind,user_id,currency,amount,address,state)
-		VALUES($1,'release',$2,'BTC',1000,'test-address','held')`, partyPayoutOrder, vendor); err != nil {
-		t.Fatal(err)
-	}
 
 	load := func(id, role string) *StaffAttention {
 		t.Helper()
@@ -82,11 +70,11 @@ func TestStaffAttentionCountsActionableWorkWithoutCapsOrCrossCategorySums(t *tes
 		return d.StaffAttention
 	}
 	modCounts := load(mod, "moderator")
-	if modCounts == nil || modCounts.Disputes != 0 || modCounts.PaymentReviews != 100 || modCounts.EscrowAlerts != 101 || modCounts.Payouts != 0 {
-		t.Fatalf("moderator counts = %+v, want 0 administrator-only disputes, 100 review orders, 101 alerts, 0 payouts", modCounts)
+	if modCounts == nil || modCounts.Disputes != 0 || modCounts.PaymentReviews != 100 || modCounts.EscrowAlerts != 101 {
+		t.Fatalf("moderator counts = %+v, want 0 administrator-only disputes, 100 review orders, 101 alerts", modCounts)
 	}
 	adminCounts := load(admin, "admin")
-	if adminCounts == nil || adminCounts.Disputes != 102 || adminCounts.PaymentReviews != 102 || adminCounts.EscrowAlerts != 102 || adminCounts.Payouts != 102 {
+	if adminCounts == nil || adminCounts.Disputes != 102 || adminCounts.PaymentReviews != 102 || adminCounts.EscrowAlerts != 102 {
 		t.Fatalf("admin counts = %+v, want 102 in each accessible category", adminCounts)
 	}
 	if got := load(mod, "admin"); got != nil {
@@ -112,8 +100,12 @@ func TestStaffAttentionCountsActionableWorkWithoutCapsOrCrossCategorySums(t *tes
 		t.Fatalf("moderator page did not show its scoped counts: status=%d", modPage.Code)
 	}
 	adminPage := e.do("GET", "/admin", adminSession, nil)
-	if adminPage.Code != 200 || !strings.Contains(adminPage.Body.String(), "102 disputes · 102 review orders · 102 alerts") || !strings.Contains(adminPage.Body.String(), "102 payouts") {
+	if adminPage.Code != 200 || !strings.Contains(adminPage.Body.String(), "102 disputes · 102 review orders · 102 alerts") {
 		t.Fatalf("admin page did not show its scoped counts: status=%d", adminPage.Code)
+	}
+	// A-492: pooled payouts are removed, so no page counts or links them.
+	for _, page := range []string{modPage.Body.String(), adminPage.Body.String()} {
+		mustNotContain(t, page, " payouts)", "payouts</a>", `href="/admin#payouts"`)
 	}
 
 	// Each category clears independently as its underlying work is resolved or disposed.
@@ -126,15 +118,12 @@ func TestStaffAttentionCountsActionableWorkWithoutCapsOrCrossCategorySums(t *tes
 	if _, err := e.DB.Exec("UPDATE xmr_escrow_collisions SET disposition_note='Checked the wallet record.',disposed_at=now(),disposed_by=$2 WHERE order_id=$1", orders[4], mod); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.DB.Exec("UPDATE payouts SET state='sent' WHERE order_id=$1", payoutOrders[5]); err != nil {
-		t.Fatal(err)
-	}
 	cleared := load(mod, "moderator")
-	if cleared == nil || cleared.Disputes != 0 || cleared.PaymentReviews != 99 || cleared.EscrowAlerts != 100 || cleared.Payouts != 0 {
-		t.Fatalf("cleared counts = %+v, want 0 administrator-only disputes, 99 reviews, 100 alerts, 0 payouts", cleared)
+	if cleared == nil || cleared.Disputes != 0 || cleared.PaymentReviews != 99 || cleared.EscrowAlerts != 100 {
+		t.Fatalf("cleared counts = %+v, want 0 administrator-only disputes, 99 reviews, 100 alerts", cleared)
 	}
 	clearedAdmin := load(admin, "admin")
-	if clearedAdmin == nil || clearedAdmin.Disputes != 101 || clearedAdmin.PaymentReviews != 101 || clearedAdmin.EscrowAlerts != 101 || clearedAdmin.Payouts != 101 {
+	if clearedAdmin == nil || clearedAdmin.Disputes != 101 || clearedAdmin.PaymentReviews != 101 || clearedAdmin.EscrowAlerts != 101 {
 		t.Fatalf("cleared admin counts = %+v, want 101 in each category", clearedAdmin)
 	}
 }

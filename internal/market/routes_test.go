@@ -283,7 +283,6 @@ func TestCanaryRecordsDescribeCurrentActivityAndTemporarySignInRetention(t *test
 	for _, want := range []string{
 		"message sent",
 		"mark-all notification read",
-		"administrator check of a payout address when releasing a suspension-held payout",
 		"Message-send entries do not name the recipient",
 		"Marking all notifications read is recorded; reading one notification is not.",
 		"Temporary sign-in records",
@@ -292,6 +291,10 @@ func TestCanaryRecordsDescribeCurrentActivityAndTemporarySignInRetention(t *test
 		if !strings.Contains(body, want) {
 			t.Errorf("canary records copy lacks %q", want)
 		}
+	}
+	// A-492: pooled payouts are removed, so no activity row records releasing a suspension-held payout.
+	if strings.Contains(body, "suspension-held payout") {
+		t.Error("canary records copy still lists a pooled payout release")
 	}
 	if strings.Contains(body, "expire within 12 hours") {
 		t.Fatal("temporary sign-in copy claims opportunistic deletion completes within 12 hours")
@@ -480,8 +483,7 @@ func TestPreviewOrderSamplesUseRealIDShapes(t *testing.T) {
 		t.Error("preview draft: want its 64-hex ID and no deposit table")
 	}
 	body := get(previewPaidID)
-	for _, want := range []string{previewPaidID, "Recorded deposits", "926bb57bc9bcbc21ddd00aa2e6f70f9d445378bcbaf4e55b6bfa53010ba85ddb:0",
-		"Preview sample: no wallet is connected and no funds exist", ">Paid<"} {
+	for _, want := range []string{previewPaidID, ">Paid<"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("preview paid sample: missing %q", want)
 		}

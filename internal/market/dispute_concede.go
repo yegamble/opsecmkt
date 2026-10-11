@@ -144,7 +144,7 @@ func (a *App) concessionPreview(ctx context.Context, o *Order, party string) (*C
 		}
 		return view, nil
 	}
-	_, sum, _, err := a.payoutBasis(ctx, a.db, o, false)
+	sum, err := countedDeposits(ctx, a.db, o)
 	if err != nil {
 		return nil, err
 	}

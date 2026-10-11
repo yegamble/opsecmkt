@@ -81,8 +81,7 @@ func adminResetReceiptAuthorize(c *actionCtx) error   { return adminTargetReceip
 
 // adminSuspendAction suspends or restores a non-administrator account, looked up by handle. Suspending ends
 // the account's sessions and pending sign-ins and blocks sign-in (checked at the password step, when a
-// session starts and whenever a session loads) and holds the account's unsent payouts for an administrator's
-// payout address check; restoring allows sign-in again and leaves those holds. Role, listings and orders stay
+// session starts and whenever a session loads); restoring allows sign-in again. Role, listings and orders stay
 // as they are: orders waiting on the account stop until it is restored, and the other party can still
 // complete, cancel where allowed or dispute them. A suspended moderator is not a dispute resolver, recipient
 // or contact (A-118). Both accounts are audited and the account is notified. The administrator confirms
@@ -115,7 +114,7 @@ func adminSuspendAction(c *actionCtx) (actionResult, error) {
 	}
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
 		ctx, tx := c.Ctx(), c.Tx
-		if err := waitForWalletLocks(ctx, tx); err != nil { // a checkout by the account holds its row (payAction)
+		if err := waitForWalletLocks(ctx, tx); err != nil { // a checkout by the account holds its row (escrowCheckoutAction)
 			return actionResult{}, err
 		}
 		// Pending sign-ins go first, before the account row is locked: /challenge locks its pending sign-in and
@@ -123,10 +122,8 @@ func adminSuspendAction(c *actionCtx) (actionResult, error) {
 		if _, err := tx.ExecContext(ctx, "DELETE FROM pending_logins WHERE user_id=$1", target); err != nil {
 			return actionResult{}, err
 		}
-		// FOR NO KEY UPDATE, not FOR UPDATE: it still excludes session starts and payout queueing (both take FOR
-		// SHARE), but not the key-share locks of inserts referencing the account (notifications, order events).
-		// The watcher can hold one of this account's payouts and then insert such a row; with FOR UPDATE, the
-		// payout update below would deadlock with it.
+		// FOR NO KEY UPDATE, not FOR UPDATE: it still excludes session starts (FOR SHARE), but not the key-share
+		// locks of inserts referencing the account (notifications, order events) that a watcher pass may hold.
 		var role string
 		var suspended bool
 		err := tx.QueryRowContext(ctx, "SELECT role,suspended_at IS NOT NULL FROM users WHERE id=$1 FOR NO KEY UPDATE", target).Scan(&role, &suspended)
@@ -294,7 +291,7 @@ func adminResetFactorsAction(c *actionCtx) (actionResult, error) {
 	}
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
 		ctx, tx := c.Ctx(), c.Tx
-		if err := waitForWalletLocks(ctx, tx); err != nil { // a checkout by the account holds its row (payAction)
+		if err := waitForWalletLocks(ctx, tx); err != nil { // a checkout by the account holds its row (escrowCheckoutAction)
 			return actionResult{}, err
 		}
 		// Pending sign-ins, then recovery codes, go before the account row is locked, in the order /challenge takes

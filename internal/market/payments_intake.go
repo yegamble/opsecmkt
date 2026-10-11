@@ -10,10 +10,6 @@ const (
 	intakePaused = "false"
 )
 
-type intakeKind int
-
-const kindEscrow intakeKind = iota
-
 func paymentIntakeAction(c *actionCtx) (actionResult, error) {
 	cur, value := c.Form.Get("currency"), c.Form.Get("enabled")
 	if (cur != "BTC" && cur != "XMR") || (value != intakeEscrow && value != intakePaused) {
@@ -38,7 +34,10 @@ func paymentIntakeAction(c *actionCtx) (actionResult, error) {
 		return out, nil
 	})
 }
-func lockPaymentIntake(c *actionCtx, currency string, _ intakeKind) error {
+
+// lockPaymentIntake refuses (409) a new escrow checkout in currency while the administrator has paused its intake, and
+// holds the setting (FOR SHARE) until the checkout's transaction ends.
+func lockPaymentIntake(c *actionCtx, currency string) error {
 	var value string
 	if err := c.Tx.QueryRowContext(c.Ctx(), "SELECT value FROM settings WHERE key=$1 FOR SHARE", paymentIntakeKey(currency)).Scan(&value); err != nil {
 		return err

@@ -219,11 +219,21 @@ ROLLBACK;
 SQL
 ) == 2 ]]
 
+# Migration 108 (A-492): no pooled market exists, so both pooled tables refuse every new row.
+for pooled in "INSERT INTO payouts(order_id,kind,user_id,currency,amount) SELECT id,'release',buyer_id,currency,amount FROM orders WHERE currency='XMR'" \
+  "INSERT INTO payment_addresses(order_id,currency,address,provider) SELECT id,currency,'upgrade-refused-108','xmr-stagenet' FROM orders WHERE currency='XMR'"; do
+  if sql -c "$pooled" > "$work/pooled-108.out" 2>&1; then echo 'A pooled row was accepted after migration 108' >&2; exit 1; fi
+  grep -q 'pooled payments are removed: .* takes no new rows' "$work/pooled-108.out"
+done
+[[ $(sql -c 'SELECT (SELECT count(*) FROM payouts) + (SELECT count(*) FROM payment_addresses)') == 0 ]]
+# The historical payouts constraints below still hold beneath it: each check turns 108's trigger off inside its own
+# transaction, which then rolls back (or fails), so the trigger is never off outside it.
 # One settlement per order (migration 069): a release keeps its return, but a release and a refund for the same
 # order are refused by the database.
 [[ $(sql -c "SELECT indexdef FROM pg_indexes WHERE indexname='payouts_one_settlement'") == *"UNIQUE INDEX payouts_one_settlement ON public.payouts USING btree (order_id) WHERE (kind = ANY (ARRAY['release'::text, 'refund'::text]))"* ]]
 [[ $(sql <<'SQL'
 BEGIN;
+ALTER TABLE payouts DISABLE TRIGGER payouts_refuse_insert;
 INSERT INTO payouts(order_id,kind,user_id,currency,amount) SELECT id,'release',buyer_id,currency,amount FROM orders WHERE currency='XMR';
 INSERT INTO payouts(order_id,kind,user_id,currency,amount) SELECT id,'return',buyer_id,currency,amount FROM orders WHERE currency='XMR';
 SELECT count(*) FROM payouts;
@@ -232,6 +242,7 @@ SQL
 ) == 2 ]]
 if sql > "$work/settlement.out" 2>&1 <<'SQL'
 BEGIN;
+ALTER TABLE payouts DISABLE TRIGGER payouts_refuse_insert;
 INSERT INTO payouts(order_id,kind,user_id,currency,amount) SELECT id,'release',buyer_id,currency,amount FROM orders WHERE currency='XMR';
 INSERT INTO payouts(order_id,kind,user_id,currency,amount) SELECT id,'refund',buyer_id,currency,amount FROM orders WHERE currency='XMR';
 COMMIT;
@@ -245,6 +256,7 @@ grep -q 'payouts_one_settlement' "$work/settlement.out"
 [[ $(sql -c "SELECT indexdef FROM pg_indexes WHERE indexname='payouts_refund_or_return'") == *"UNIQUE INDEX payouts_refund_or_return ON public.payouts USING btree (order_id) WHERE (kind = ANY (ARRAY['refund'::text, 'return'::text]))"* ]]
 if sql > "$work/refund-return.out" 2>&1 <<'SQL'
 BEGIN;
+ALTER TABLE payouts DISABLE TRIGGER payouts_refuse_insert;
 INSERT INTO payouts(order_id,kind,user_id,currency,amount) SELECT id,'refund',buyer_id,currency,amount FROM orders WHERE currency='XMR';
 INSERT INTO payouts(order_id,kind,user_id,currency,amount) SELECT id,'return',buyer_id,currency,amount FROM orders WHERE currency='XMR';
 COMMIT;
@@ -259,6 +271,7 @@ grep -q 'payouts_refund_or_return' "$work/refund-return.out"
 [[ $(sql -c "SELECT pg_get_triggerdef(oid) FROM pg_trigger WHERE tgname='payouts_return_needs_release'") == 'CREATE CONSTRAINT TRIGGER payouts_return_needs_release AFTER INSERT OR DELETE OR UPDATE OF kind, order_id ON public.payouts DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION payouts_return_needs_release()' ]]
 [[ $(sql <<'SQL'
 BEGIN;
+ALTER TABLE payouts DISABLE TRIGGER payouts_refuse_insert;
 INSERT INTO payouts(order_id,kind,user_id,currency,amount) SELECT id,'return',buyer_id,currency,amount FROM orders WHERE currency='XMR';
 INSERT INTO payouts(order_id,kind,user_id,currency,amount) SELECT id,'release',buyer_id,currency,amount FROM orders WHERE currency='XMR';
 SET CONSTRAINTS payouts_return_needs_release IMMEDIATE;
@@ -268,6 +281,7 @@ SQL
 ) == 2 ]]
 if sql > "$work/return-release.out" 2>&1 <<'SQL'
 BEGIN;
+ALTER TABLE payouts DISABLE TRIGGER payouts_refuse_insert;
 INSERT INTO payouts(order_id,kind,user_id,currency,amount) SELECT id,'return',buyer_id,currency,amount FROM orders WHERE currency='XMR';
 COMMIT;
 SQL
@@ -351,6 +365,8 @@ stop_server
 [[ $(sql -c 'SELECT count(*) FROM pooled_drain_blockers()') == 0 ]]
 drain=$(sql <<'SQL'
 BEGIN;
+ALTER TABLE payouts DISABLE TRIGGER payouts_refuse_insert;
+ALTER TABLE payment_addresses DISABLE TRIGGER payment_addresses_refuse_insert;
 UPDATE orders o SET state='paid' FROM users u WHERE u.id=o.buyer_id AND u.handle='alpha_buyer' AND o.currency='BTC';
 UPDATE orders o SET state='completed',updated=now() FROM users u WHERE u.id=o.buyer_id AND u.handle='alpha_buyer' AND o.currency='XMR';
 INSERT INTO payment_addresses(order_id,currency,address,provider) SELECT id,currency,'upgrade-drain-'||lower(currency),
@@ -393,12 +409,16 @@ watched_address=upgrade-drain-xmr:until recorded deposit '"$(printf 'e%.0s' {1..
 [[ $drain == "$want_drain" ]] || { printf 'pooled_drain_blockers() after the upgrade:\n%s\nwant:\n%s\n' "$drain" "$want_drain" >&2; exit 1; }
 [[ $(sql -c 'SELECT count(*) FROM pooled_drain_blockers()') == 0 && $(sql -c 'SELECT count(*) FROM payouts') == 0 ]]
 
-# Migration 107: restored prior-removal history is refused unchanged until drained.
-# Delete only its stamp to model the pre-107 state (107 changes intake, not table layout).
-# Preserve historical records after success; this is a seeded upgrade, not a real-market drain.
+# Migrations 107 and 108: restored prior-removal history is refused unchanged, by 107 until drained and then by 108
+# (A-492) while it holds any pooled payment row; the same database without pooled rows upgrades. The pre-107 state is
+# modelled by deleting both stamps and 108's triggers and function (107 changes intake, not table layout). This is a
+# seeded upgrade, not a real-market drain.
 sql <<'SQL'
 BEGIN;
-DELETE FROM schema_migrations WHERE version=107;
+DELETE FROM schema_migrations WHERE version IN (107,108);
+DROP TRIGGER payouts_refuse_insert ON payouts;
+DROP TRIGGER payment_addresses_refuse_insert ON payment_addresses;
+DROP FUNCTION refuse_pooled_history();
 UPDATE settings SET value='true' WHERE key='payment_intake_BTC';
 UPDATE settings SET value='false' WHERE key='payment_intake_XMR';
 INSERT INTO orders(id,buyer_id,product_id,currency,amount,state,updated)
@@ -440,24 +460,50 @@ server_pid=''
 grep -q 'open_order' "$work/refused-107.log"
 grep -q 'Nothing was changed' "$work/refused-107.log"
 [[ $(legacy_fingerprint) == "$legacy_before" ]]
-[[ $(sql -c 'SELECT count(*) FROM schema_migrations WHERE version=107') == 0 ]]
-# Simulate settlement on the old drain-capable build, then restore/start again.
+[[ $(sql -c 'SELECT count(*) FROM schema_migrations WHERE version IN (107,108)') == 0 ]]
+# Simulate settlement on the old drain-capable build, then restore/start again: 107 now passes, but the drained
+# database still holds pooled payment history, which migration 108 refuses before serving, changing nothing.
 sql -c "UPDATE orders SET state='completed',updated=now()-interval '40 days' WHERE id='upgrade-107-open'"
 [[ $(sql -c 'SELECT count(*) FROM pooled_drain_blockers()') == 0 ]]
-legacy_rows=$(sql -c "SELECT md5(row_to_json(o)::text||row_to_json(pa)::text||row_to_json(pm)::text||row_to_json(p)::text)
-  FROM orders o JOIN payment_addresses pa ON pa.order_id=o.id JOIN payments pm ON pm.order_id=o.id JOIN payouts p ON p.order_id=o.id WHERE o.id='upgrade-107-history'")
-start_server drained-107 "$work/new-server" "$root"
-stop_server
-[[ $(sql -c 'SELECT count(*) FROM schema_migrations WHERE version=107') == 1 ]]
-[[ $(sql -c "SELECT string_agg(key||':'||value,',' ORDER BY key) FROM settings WHERE key IN ('payment_intake_BTC','payment_intake_XMR')") == 'payment_intake_BTC:escrow,payment_intake_XMR:false' ]]
-[[ $(sql -c "SELECT md5(row_to_json(o)::text||row_to_json(pa)::text||row_to_json(pm)::text||row_to_json(p)::text)
-  FROM orders o JOIN payment_addresses pa ON pa.order_id=o.id JOIN payments pm ON pm.order_id=o.id JOIN payouts p ON p.order_id=o.id WHERE o.id='upgrade-107-history'") == "$legacy_rows" ]]
-# Restore this harness's fixtures so later historical migration tests remain isolated.
+legacy_before=$(legacy_fingerprint)
+launch_server refused-108 "$work/new-server" "$root"
+for _ in {1..60}; do
+  kill -0 "$server_pid" 2>/dev/null || break
+  sleep 0.5
+done
+if kill -0 "$server_pid" 2>/dev/null; then
+  echo 'The current server kept running over pooled payment history' >&2; exit 1
+fi
+refused=0
+wait "$server_pid" || refused=$?
+server_pid=''
+((refused != 0)) || { echo 'Migration 108 refusal returned success' >&2; exit 1; }
+grep -q 'migration 108 refused: this database holds pooled payment history (1 payouts row(s), 1 payment_addresses row(s))' "$work/refused-108.log"
+grep -q 'Nothing was changed' "$work/refused-108.log"
+grep -q 'UPGRADING.md section 59' "$work/refused-108.log"
+[[ $(legacy_fingerprint) == "$legacy_before" ]]
+[[ $(sql -c 'SELECT count(*) FROM schema_migrations WHERE version IN (107,108)') == 0 ]]
+# The same database without pooled payment rows (no payouts or payment_addresses row) upgrades through both and keeps
+# its other records.
 sql <<'SQL'
 BEGIN;
 DELETE FROM payouts WHERE order_id='upgrade-107-history';
-DELETE FROM payments WHERE order_id='upgrade-107-history';
 DELETE FROM payment_addresses WHERE order_id='upgrade-107-history';
+COMMIT;
+SQL
+legacy_rows=$(sql -c "SELECT md5(row_to_json(o)::text||row_to_json(pm)::text)
+  FROM orders o JOIN payments pm ON pm.order_id=o.id WHERE o.id='upgrade-107-history'")
+start_server drained-107 "$work/new-server" "$root"
+stop_server
+[[ $(sql -c 'SELECT count(*) FROM schema_migrations WHERE version IN (107,108)') == 2 ]]
+[[ $(sql -c "SELECT count(*) FROM pg_trigger WHERE tgname IN ('payouts_refuse_insert','payment_addresses_refuse_insert') AND tgenabled='O'") == 2 ]]
+[[ $(sql -c "SELECT string_agg(key||':'||value,',' ORDER BY key) FROM settings WHERE key IN ('payment_intake_BTC','payment_intake_XMR')") == 'payment_intake_BTC:escrow,payment_intake_XMR:false' ]]
+[[ $(sql -c "SELECT md5(row_to_json(o)::text||row_to_json(pm)::text)
+  FROM orders o JOIN payments pm ON pm.order_id=o.id WHERE o.id='upgrade-107-history'") == "$legacy_rows" ]]
+# Restore this harness's fixtures so later historical migration tests remain isolated.
+sql <<'SQL'
+BEGIN;
+DELETE FROM payments WHERE order_id='upgrade-107-history';
 DELETE FROM orders WHERE id IN ('upgrade-107-history','upgrade-107-open');
 COMMIT;
 SQL
@@ -568,4 +614,4 @@ INTERMEDIATE_TEST_DATABASE_URL="$database_url" scripts/test-intermediate-upgrade
 # directory. Its overlay binds the app only to loopback and puts Tor on an internal network; it makes no claim
 # that a Tor circuit or public onion service was established.
 bash scripts/test-tor-upgrade-rollback.sh "$from_ref"
-echo "Upgrade from $from_ref and intermediate $intermediate_ref passed: health, migration history and data preserved, buyer sign-in retained; the pooled drain gate lists seeded blockers of every kind and then none; migration107 refuses an undrained restored database unchanged and preserves drained history; an escrow key row migration 089 refuses startup with its message; a database from a newer release is refused at startup."
+echo "Upgrade from $from_ref and intermediate $intermediate_ref passed: health, migration history and data preserved, buyer sign-in retained; the pooled drain gate lists seeded blockers of every kind and then none; migration107 refuses an undrained restored database unchanged; migration 108 refuses one with pooled payment rows unchanged and upgrades it without them; both pooled tables refuse new rows; an escrow key row migration 089 refuses startup with its message; a database from a newer release is refused at startup."

@@ -125,7 +125,7 @@ func TestHistoricalDisputeStaysReadableWithoutResolveForm(t *testing.T) {
 		mustContain(t, w.page("/disputes", session, 200), "Historical parcel dispute")
 	}
 	desk := w.page("/moderator", w.mod, 200)
-	mustContain(t, desk, "Historical dispute", "read only")
+	mustContain(t, desk, "This order has no escrow, so no outcome can be recorded.")
 	mustNotContain(t, desk, `action="/resolve"`)
 	if r := w.post("/resolve", w.mod, resolveConfirmed(form("id", dispute, "outcome", "refund", "resolution", "Historical outcome"), 0)); r.Code == 303 {
 		t.Fatal("historical dispute resolved")

@@ -161,8 +161,8 @@ databases behind: drop leftover `opsecmkt_cmd_server_*`, `opsecmkt_tmpl_*` and
 `opsecmkt_copy_*` databases that have no connections (no later run uses them). Each half of the
 `internal/market` race run takes longer than `go test`'s default 10-minute timeout on a busy host, so both commands
 set `-timeout 30m`. Fake RPC tests cover payment behavior; they do not
-prove live node integration. The manual Bitcoin check is
-[`scripts/regtest-smoke.sh`](../scripts/regtest-smoke.sh).
+prove live node integration. The real-chain Bitcoin escrow check is
+[`scripts/test-escrow-regtest.sh`](../scripts/test-escrow-regtest.sh) (CI's `escrow-regtest` job).
 
 ### Browser regression tests
 
