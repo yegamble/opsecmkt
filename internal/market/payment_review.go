@@ -28,8 +28,8 @@ func init() {
 // late-deposit notice episode is held only by an open flag of a deposit neither credited, nor below the floor, nor
 // locked, nor spent outside the market (flagLateDeposits), so a flag that holds it is always one staff can record. A
 // flag is open until staff record its disposition (A-31: no action or refunded by hand; one escalated to an
-// administrator stays open) while its deposit is a locked transfer, of a payout below the minimum automatic payout
-// (A-99), a credited deposit whose regression was announced and has not confirmed again (regress_notice), an escrow
+// administrator stays open) while its deposit is a locked transfer, below the escrow minimum output
+// (A-99; historical rows, nothing sets it now), a credited deposit whose regression was announced and has not confirmed again (regress_notice), an escrow
 // deposit spent outside the market (P1-d1), an escrow deposit left out of its settlement, credited or not (it no
 // longer counts: a stray refund returns it, QA462D-2), or a deposit not credited that does not count for the order: a
 // pooled one (after settlement or after the close), or an escrow one recorded after the close. An escrow deposit that

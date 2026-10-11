@@ -93,7 +93,7 @@
 </section>{{end}}{{if .Claim}}
 <section class="order-action escrow-claim" id="escrow-settlement" aria-labelledby="escrow-claim-heading">
 <h3 id="escrow-claim-heading">Claim the escrowed coins</h3>
-<p class="help" id="escrow-claim-help">Give a fresh {{template "btc-escrow-address" $.EscrowNet}} from your own wallet, used for nothing else. The market builds a transaction paying it the coins in this escrow{{if .Fee}}, less the market fee,{{end}} less the network fee; any amount paid above the price goes back to the buyer's refund address. You then check the transaction's outputs and sign it in your own wallet. The address cannot be changed once the claim is requested, and an address this market already used is refused.</p>
+<p class="help" id="escrow-claim-help">Give a fresh {{template "btc-escrow-address" $.EscrowNet}} from your own wallet, used for nothing else. The market builds a transaction paying it the coins in this escrow{{if .Fee}}, less the market fee,{{end}} less the network fee; any amount paid above the price goes back to the buyer's refund address, except that one below 0.0001 BTC goes to the vendor. You then check the transaction's outputs and sign it in your own wallet. The address cannot be changed once the claim is requested, and an address this market already used is refused.</p>
 <form class="stack" method="post" action="/escrow/claim">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="form_nonce" value="{{formNonce "/escrow/claim"}}">

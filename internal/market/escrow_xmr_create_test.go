@@ -413,7 +413,7 @@ func TestXMREscrowOrderPanel(t *testing.T) {
 	}
 	x.DB.Exec("UPDATE products SET xmr=$2 WHERE id=$1", productID, payoutFloor("XMR", "release")-1)
 	draft = html.UnescapeString(x.page("/order?id="+order, x.buyerSess))
-	if strings.Contains(draft, `action="/orders/escrow-xmr"`) || !strings.Contains(draft, "below the minimum automatic payout") {
+	if strings.Contains(draft, `action="/orders/escrow-xmr"`) || !strings.Contains(draft, "below the escrow settlement minimum") {
 		t.Fatalf("legacy sub-floor Monero draft still offers escrow or lacks the floor reason:\n%s", draft)
 	}
 	x.DB.Exec("UPDATE products SET xmr=$2 WHERE id=$1", productID, listedXMR)

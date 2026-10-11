@@ -786,7 +786,7 @@ func TestEscrowCheckoutAwaitingCap(t *testing.T) {
 	x.mustCheckout(x.order, "bcrt1qbuyerrefund00000000000000000000001")
 }
 
-// N18b (A-317): a listing priced below the minimum automatic payout cannot be bought with escrow (it could never be
+// N18b (A-317): a listing priced below the escrow settlement minimum cannot be bought with escrow (it could never be
 // settled); at the minimum it can.
 func TestEscrowCheckoutPriceFloor(t *testing.T) {
 	x := newEscrowEnv(t)
@@ -794,7 +794,7 @@ func TestEscrowCheckoutPriceFloor(t *testing.T) {
 	x.DB.Exec("UPDATE products SET btc=$2 WHERE id=$1", x.product, floor-1)
 	calls := len(x.core.methods())
 	w := x.checkout(x.order, "bcrt1qbuyerrefund00000000000000000000001")
-	if w.Code != 400 || !strings.Contains(w.Body.String(), "below the minimum automatic payout") {
+	if w.Code != 400 || !strings.Contains(w.Body.String(), "below the escrow settlement minimum") {
 		t.Fatalf("sub-floor listing: %d %s", w.Code, w.Body.String())
 	}
 	x.nothingWritten(x.order)
@@ -823,7 +823,7 @@ func TestEscrowCheckoutOfferCopy(t *testing.T) {
 	offered("both active", true, "Or pay into a Bitcoin escrow")
 	floor := payoutFloor("BTC", "release")
 	x.DB.Exec("UPDATE products SET btc=$2 WHERE id=$1", x.product, floor-1)
-	offered("legacy sub-floor BTC price", false, "below the minimum automatic payout")
+	offered("legacy sub-floor BTC price", false, "below the escrow settlement minimum")
 	x.DB.Exec("UPDATE products SET btc=$2 WHERE id=$1", x.product, floor)
 	offered("price at the floor", true, "Or pay into a Bitcoin escrow")
 	x.DB.Exec("UPDATE user_escrow_keys SET active_at=NULL WHERE user_id=$1", x.vendor)
