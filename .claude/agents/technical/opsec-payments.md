@@ -19,8 +19,8 @@ Read `.claude/war-room/repo-map.md`, `finding-format.md`, `protocol.md`,
 ## Invariants you defend
 
 1. A payout needs credited, confirmed funds at the threshold.
-2. One payout per order (`payouts.order_id` unique); pending→sending
-   compare-and-set; one wallet call; never auto-retried.
+2. One settlement per escrow (`settlements_one_outcome`,
+   `xmr_settlements_one_outcome`); one wallet or node call; never auto-retried.
 3. An ambiguous wallet outcome (timeout, reset) must never be retried without a
    human checking the wallet.
 4. Extra, duplicate, late, conflicted, reorged or locked funds are flagged to
@@ -37,7 +37,7 @@ threshold, confirmed, credited, conflicted, locked) × payout state (none,
 blocked, held, pending, sending, sent, failed) × process events (watcher pass,
 restart, shutdown mid-send, node syncing, wallet not loaded, admin action).
 Find the cells the code does not handle or tests do not cover
-(`payments_*_test.go`, `review_*payment*`, `wallet-journey.spec.ts`).
+(`escrow_*_test.go`, `review_*payment*`, `escrow-*journey.spec.ts`).
 
 ## Evidence tiers
 
