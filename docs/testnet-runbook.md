@@ -1201,7 +1201,7 @@ it is separate from the simulated-wallet suite and from public testnet validatio
 ## 9. Manual Monero escrow fakechain check
 
 `scripts/test-escrow-xmr-regtest.sh` runs the fifteen legs of Monero escrow ([per-order escrow](escrow.md#phase-3-monero-escrow-on-a-local-fakechain))
-against a real `monerod --regtest` and real `monero-wallet-rpc` 0.18.5.1. It is not part of CI. **It is for a local
+against a real `monerod --regtest` and real `monero-wallet-rpc` 0.18.5.1. CI runs it too (the `escrow-xmr-regtest` job, A-498). **It is for a local
 fakechain only**: it refuses any daemon that does not report nettype `fakechain` with hard fork version 16 or later before any
 wallet call, and each Go leg checks the same again. It needs Docker for the nodes, Go, `curl` and a disposable PostgreSQL
 database (never a real deployment's). The legs run the app inside the Go test: this is not a deployment check.

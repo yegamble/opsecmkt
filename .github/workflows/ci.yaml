@@ -211,6 +211,103 @@ jobs:
       - name: Remove the nodes and their volumes
         if: always()
         run: docker rm -f -v "$BITCOIN_CONTAINER" "$BITCOIN_PRIVATE_CONTAINER"
+  # A-498: the real-chain Monero escrow legs. scripts/test-escrow-xmr-regtest.sh runs the app, inside go test, against a
+  # real monerod and three real monero-wallet-rpc (all v0.18.5.1) on a local fakechain (--regtest, offline, difficulty 1:
+  # a chain nobody else can reach) and a disposable PostgreSQL. The nodes are started with docker run, exactly as the
+  # script's header documents, because a service container cannot take command arguments and two legs stop and restart
+  # containers. Measured locally at 569 s for all 15 legs (go test 525 s), so the 25-minute limit leaves headroom.
+  # Digests measured when the tags were checked (the repository pins these images by tag, as the installer does):
+  # simple-monerod@sha256:0329465ffc599048efd57712d91d3b4b7d66380bd7205d5d0992cd9faf668e38 and
+  # simple-monero-wallet-rpc@sha256:09ff81f470d6d37811e3fde808c5cd1158a8cd2c42abbfb935b33f26f91e879d.
+  # The script itself fails a leg that fails, is skipped or does not run, and refuses a daemon that is not a fakechain.
+  escrow-xmr-regtest:
+    name: Monero escrow on a real fakechain
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test-ci-only
+          POSTGRES_DB: postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U test -d postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      TEST_DATABASE_URL: postgres://test:test-ci-only@127.0.0.1:5432/postgres?sslmode=disable
+      MONERO_IMAGE: ghcr.io/sethforprivacy/simple-monerod:v0.18.5.1
+      MONERO_WALLET_IMAGE: ghcr.io/sethforprivacy/simple-monero-wallet-rpc:v0.18.5.1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      # The commands of the script's header. The wallet-rpcs listen without RPC login, published on 127.0.0.1 only.
+      - name: Start monerod on a fakechain and three monero-wallet-rpc
+        run: |
+          docker network create xmr-escrow-regtest
+          docker run -d --name xmr-escrow-monerod --network xmr-escrow-regtest -p 127.0.0.1:28381:18081 \
+            "$MONERO_IMAGE" --regtest --keep-fakechain --offline --fixed-difficulty 1 \
+            --rpc-bind-ip 0.0.0.0 --rpc-bind-port 18081 --confirm-external-bind --no-igd
+          for w in escrow:28382 funder:28383 restore:28384; do
+            docker run -d --name "xmr-escrow-wallet-${w%%:*}" --network xmr-escrow-regtest -p "127.0.0.1:${w##*:}:18083" \
+              -e RPC_EXPOSE_UNAUTHENTICATED=1 "$MONERO_WALLET_IMAGE" \
+              --daemon-address xmr-escrow-monerod:18081 --trusted-daemon --wallet-dir /tmp/w --disable-rpc-login \
+              --rpc-bind-port 18083 --allow-mismatched-daemon-version
+          done
+          rpc() { # rpc <port> <method>: the JSON-RPC answer, or nothing
+            curl -sS --max-time 5 --noproxy '*' -H 'Content-Type: application/json' \
+              --data "{\"jsonrpc\":\"2.0\",\"id\":\"0\",\"method\":\"$2\"}" "http://127.0.0.1:$1/json_rpc" 2>/dev/null || true
+          }
+          up=no
+          for _ in $(seq 120); do
+            if rpc 28381 get_info | tr -d ' \n' | grep -q '"nettype":"fakechain"' &&
+              rpc 28382 get_version | grep -q '"version"' && rpc 28383 get_version | grep -q '"version"' &&
+              rpc 28384 get_version | grep -q '"version"'; then
+              up=yes
+              break
+            fi
+            sleep 1
+          done
+          if [ "$up" != yes ]; then
+            echo "monerod or a monero-wallet-rpc did not answer within 120 seconds" >&2
+            docker logs --tail 50 xmr-escrow-monerod >&2 || true
+            exit 1
+          fi
+      - name: Monero escrow legs on a real fakechain (scripts/test-escrow-xmr-regtest.sh)
+        run: bash scripts/test-escrow-xmr-regtest.sh
+        env:
+          ESCROW_XMR_REGTEST_DAEMON_URL: http://127.0.0.1:28381
+          ESCROW_XMR_REGTEST_WALLET_URL: http://127.0.0.1:28382
+          ESCROW_XMR_REGTEST_FUNDER_URL: http://127.0.0.1:28383
+          ESCROW_XMR_REGTEST_RESTORE_URL: http://127.0.0.1:28384
+          ESCROW_XMR_REGTEST_WALLET_CONTAINER: xmr-escrow-wallet-escrow
+          ESCROW_XMR_REGTEST_DAEMON_CONTAINER: xmr-escrow-monerod
+          ESCROW_XMR_REGTEST_LOG: artifacts/escrow-xmr-regtest/transcript.log
+      - name: Collect the nodes' logs
+        if: always()
+        run: |
+          mkdir -p artifacts/escrow-xmr-regtest
+          for c in xmr-escrow-monerod xmr-escrow-wallet-escrow xmr-escrow-wallet-funder xmr-escrow-wallet-restore; do
+            docker logs "$c" > "artifacts/escrow-xmr-regtest/$c.log" 2>&1 || true
+          done
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: escrow-xmr-regtest-results
+          path: artifacts/escrow-xmr-regtest/
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Remove the nodes, their volumes and the network
+        if: always()
+        run: |
+          docker rm -f -v xmr-escrow-monerod xmr-escrow-wallet-escrow xmr-escrow-wallet-funder xmr-escrow-wallet-restore || true
+          docker network rm xmr-escrow-regtest || true
   operations:
     name: Operations and encrypted restore
     runs-on: ubuntu-24.04
@@ -787,7 +884,7 @@ jobs:
   required:
     name: CI passed
     if: always()
-    needs: [go, go-escrow, escrow-regtest, operations, installer, upgrade, compose, container, tor-image, browser, browser-escrow]
+    needs: [go, go-escrow, escrow-regtest, escrow-xmr-regtest, operations, installer, upgrade, compose, container, tor-image, browser, browser-escrow]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:

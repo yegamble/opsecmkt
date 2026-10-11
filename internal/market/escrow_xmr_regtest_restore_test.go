@@ -13,7 +13,7 @@ import (
 )
 
 // Escrow Phase 3, slice X-f: the real-chain legs of Monero escrow retention, destruction and restore
-// (scripts/test-escrow-xmr-regtest.sh; not run in CI), on monerod and monero-wallet-rpc 0.18.5.1 fakechain, each with a
+// (scripts/test-escrow-xmr-regtest.sh; run by the escrow-xmr-regtest CI job), on monerod and monero-wallet-rpc 0.18.5.1 fakechain, each with a
 // real App and its watcher against the escrow wallet-rpc behind the counting proxy of the X-d legs. Claim and refund
 // addresses are subaddresses of the funder's wallet. A restore is simulated in SQL: scripts/restore.sh's own Monero
 // block and the settings it writes (restoreXMRSQL).

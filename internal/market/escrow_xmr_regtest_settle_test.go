@@ -17,8 +17,8 @@ import (
 	"time"
 )
 
-// Escrow Phase 3, slice X-d: the real-chain legs of Monero escrow settlements (scripts/test-escrow-xmr-regtest.sh; not
-// run in CI), on monerod and monero-wallet-rpc 0.18.5.1 fakechain. Each leg runs a real App and its Monero escrow
+// Escrow Phase 3, slice X-d: the real-chain legs of Monero escrow settlements (scripts/test-escrow-xmr-regtest.sh;
+// run by the escrow-xmr-regtest CI job), on monerod and monero-wallet-rpc 0.18.5.1 fakechain. Each leg runs a real App and its Monero escrow
 // watcher against the escrow wallet-rpc through a counting proxy (xmrRPCProxy), which can also lose a call's answer
 // after the wallet acted on it. Claim and refund addresses are subaddresses of the funder's wallet, so every settlement
 // pays a real wallet. Each relayed settlement is decoded by the daemon (xmrShape): RingCT type 6 (CLSAG and

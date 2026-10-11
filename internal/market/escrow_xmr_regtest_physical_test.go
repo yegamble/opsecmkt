@@ -8,7 +8,7 @@ import (
 )
 
 // Escrow Phase 3, slice X-e: the real-chain leg of physical Monero escrow orders (scripts/test-escrow-xmr-regtest.sh;
-// not run in CI), on X-c's and X-d's helpers: the App's escrow wallet-rpc behind X-d's counting proxy
+// run by the escrow-xmr-regtest CI job), on X-c's and X-d's helpers: the App's escrow wallet-rpc behind X-d's counting proxy
 // (newXMRSettleRegtest), and claim and refund addresses that are subaddresses of the funder's wallet, so every
 // settlement pays a real wallet.
 

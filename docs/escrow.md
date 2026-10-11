@@ -768,7 +768,7 @@ wallet takes an order again and no settlement is relayed until an administrator 
   `TestXMREscrowOrphanSwept`, `TestXMREscrowLookaheadForOlderWallet`, `TestXMREscrowHeldSettlementConfirm`.
   `scripts/test-backup-restore.sh` (run in CI) restores a real dump through `scripts/restore.sh` with Monero escrow rows
   and checks the holds, the retired slots, the closed wallets and the sweep marker.
-- Real `monerod` and `monero-wallet-rpc` 0.18.5.1 on a local fakechain, run by hand, not in CI
+- Real `monerod` and `monero-wallet-rpc` 0.18.5.1 on a local fakechain, run by the `escrow-xmr-regtest` CI job (A-498) or by hand
   (`scripts/test-escrow-xmr-regtest.sh`, [runbook](testnet-runbook.md#9-manual-monero-escrow-fakechain-check); the app
   runs inside the Go test against the real daemon and wallet-rpc, and the script refuses any daemon that is not a
   fakechain). Fifteen legs, each a Go test:
