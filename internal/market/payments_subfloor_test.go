@@ -38,7 +38,7 @@ func TestLegacySubFloorListingRefusesBTCOrder(t *testing.T) {
 	p := newPayEnv(t)
 	p.legacySubFloor()
 	w := p.do("POST", "/orders", p.buyerSess, url.Values{"product_id": {p.productID}, "currency": {"BTC"}})
-	if w.Code != 400 || !strings.Contains(html.UnescapeString(w.Body.String()), "below the minimum automatic payout") {
+	if w.Code != 400 || !strings.Contains(html.UnescapeString(w.Body.String()), "below the escrow settlement minimum") {
 		t.Fatalf("BTC subfloor draft: %d %s", w.Code, w.Body)
 	}
 	if n := p.count("SELECT count(*) FROM orders WHERE buyer_id=$1 AND product_id=$2 AND currency='BTC' AND state='draft'", p.buyer.ID, p.productID); n != 1 {
@@ -109,7 +109,7 @@ func TestLegacySubFloorProductCheckoutAndDraftPagesGateCurrencies(t *testing.T) 
 		t.Fatal(err)
 	}
 	page = product()
-	mustContain(t, page, "below the minimum automatic payout", "Order in XMR")
+	mustContain(t, page, "below the escrow settlement minimum", "Order in XMR")
 	page = checkout()
 	mustContain(t, page, `<option value="XMR">`)
 	mustNotContain(t, page, `<option value="BTC">`)

@@ -136,8 +136,8 @@ func TestPaymentReviewEscrowMatrix(t *testing.T) {
 			// The escrow's own confirmation threshold, not the pooled one (no pooled provider here).
 			{"regressed_credited", "confirmations,credited,regress_notice", "0,true,true", "Open:</strong> Credited deposit below threshold (0 of 3 confirmations)", true},
 			{"regressed_credited_conflicted", "confirmations,credited,regress_notice", "-1,true,true", "Open:</strong> Credited deposit conflicted or missing", true},
-			{"below_floor_counted", "confirmations,below_floor", "3,true", "Open:</strong> Below the minimum automatic payout, not paid out", true},
-			{"below_floor_credited", "confirmations,credited,below_floor", "3,true,true", "Open:</strong> Below the minimum automatic payout, not paid out", true},
+			{"below_floor_counted", "confirmations,below_floor", "3,true", "Open:</strong> Below the escrow minimum output, not paid as its own output", true},
+			{"below_floor_credited", "confirmations,credited,below_floor", "3,true,true", "Open:</strong> Below the escrow minimum output, not paid as its own output", true},
 			// Open (below the floor) while it confirms: never "settles it".
 			{"below_floor_credited_confirming", "confirmations,credited,below_floor", "1,true,true", "Open:</strong> Credited deposit below threshold (1 of 3 confirmations)", true},
 			// QA462C-1: counted for the order, credited or not: not open anywhere.
@@ -164,7 +164,7 @@ func TestPaymentReviewEscrowMatrix(t *testing.T) {
 			{"left_out", "confirmations,escrow_left_out", n + ",true", "Open:</strong> Escrow deposit left out of its settlement, not counted", true},
 			{"left_out_credited", "confirmations,credited,escrow_left_out", n + ",true,true", "Open:</strong> Escrow deposit left out of its settlement, not counted", true},
 			{"regressed_credited", "confirmations,credited,regress_notice", "5,true,true", "Open:</strong> Credited deposit below threshold (5 of " + n + " confirmations)", true},
-			{"below_floor_counted", "confirmations,below_floor", n + ",true", "Open:</strong> Below the minimum automatic payout", true},
+			{"below_floor_counted", "confirmations,below_floor", n + ",true", "Open:</strong> Below the escrow minimum output", true},
 			{"counted_uncredited", "confirmations", n, "Escrow deposit counted for the order, though not credited toward its funding", false},
 			{"credited_confirmed", "confirmations,credited", n + ",true", "Escrow deposit counted for the order (credited toward its funding); the order's release or refund settles it", false},
 		} {

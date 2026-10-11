@@ -348,8 +348,7 @@ func (a *App) escrowSettleTerminal(ctx context.Context, tx *sql.Tx, o *Order) er
 	var sum int64
 	var n int
 	// A deposit to a shape-(b) escrow's sibling address is never the order's (A-456a): the stray refund returns it.
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(sum(amount),0),count(*) FROM payments WHERE order_id=$1 AND confirmations>=0 AND NOT locked AND NOT after_close
-		AND NOT (escrow_left_out AND EXISTS (SELECT 1 FROM escrow_siblings s WHERE s.address=payments.address))`, o.ID).Scan(&sum, &n); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(sum(amount),0),count(*) `+escrowCountedFrom, o.ID).Scan(&sum, &n); err != nil {
 		return err
 	}
 	// Existing staff resolutions with no deposits keep their original behavior.
@@ -379,17 +378,17 @@ func (a *App) escrowSettleTerminal(ctx context.Context, tx *sql.Tx, o *Order) er
 		if n == 0 {
 			return nil
 		}
-		note := "Dispute decided for the vendor: the vendor claims the escrowed " + amount(sum, 8) + " BTC from the order page with a fresh address. The market builds that settlement (less the market fee and the network fee; any amount paid above the price goes back to the buyer), the buyer or the vendor signs it, and the market co-signs it. Nothing is sent yet."
+		note := "Dispute decided for the vendor: the vendor claims the escrowed " + amount(sum, 8) + " BTC from the order page with a fresh address. The market builds that settlement (less the market fee and the network fee; " + escrowExcessRule("BTC") + "), the buyer or the vendor signs it, and the market co-signs it. Nothing is sent yet."
 		switch {
 		case o.Currency == "XMR" && liveKind == "release":
 			// P3-R7, A-405: the release requested at shipment is the decision's settlement; the Monero escrow watcher alone
 			// builds and sends it (escrow_xmr_settle.go), now that the order's outcome allows it.
-			note = "Dispute decided for the vendor: the release to the vendor requested when the order was shipped pays the claim address the vendor gave then (less the market fee and the network fee; any amount paid above the price goes back to the buyer's refund address). The market builds it from this order's Monero escrow account and sends it. The release deadline no longer applies. Nothing is sent yet."
+			note = "Dispute decided for the vendor: the release to the vendor requested when the order was shipped pays the claim address the vendor gave then (less the market fee and the network fee; " + escrowExcessRule("XMR") + "). The market builds it from this order's Monero escrow account and sends it. The release deadline no longer applies. Nothing is sent yet."
 		case o.Currency == "XMR":
-			note = "Dispute decided for the vendor: the vendor claims the escrowed " + amount(sum, 12) + " XMR from the order page with a fresh Monero address. The market then builds that settlement from this order's escrow account (less the market fee and the network fee; any amount paid above the price goes back to the buyer's refund address) and sends it. Nothing is sent yet."
+			note = "Dispute decided for the vendor: the vendor claims the escrowed " + amount(sum, 12) + " XMR from the order page with a fresh Monero address. The market then builds that settlement from this order's escrow account (less the market fee and the network fee; " + escrowExcessRule("XMR") + ") and sends it. Nothing is sent yet."
 		case liveKind == "release":
 			// P2-R4: the release built at shipment is the decision's settlement; no new claim is asked for.
-			note = "Dispute decided for the vendor: the release to the vendor built when the order was shipped pays the claim address the vendor gave then (less the market fee and the network fee; any amount paid above the price goes back to the buyer). A signature already given on it counts; the buyer or the vendor signs it if neither has, and the market co-signs it. The release deadline no longer applies."
+			note = "Dispute decided for the vendor: the release to the vendor built when the order was shipped pays the claim address the vendor gave then (less the market fee and the network fee; " + escrowExcessRule("BTC") + "). A signature already given on it counts; the buyer or the vendor signs it if neither has, and the market co-signs it. The release deadline no longer applies."
 		}
 		_, err := tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", o.ID, o.State, note)
 		return err

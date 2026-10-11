@@ -89,10 +89,13 @@ type rowsQuerier interface {
 
 // escrowCountedSQL sums an escrow order's deposits as escrowSettleTerminal counts them (the amount_seen its forms state,
 // checkPayoutSeen), and those of them left out (escrow_left_out), which a release or refund does not spend and a stray
-// refund returns. A deposit to a shape-(b) escrow's sibling address is never the order's (A-456a).
-const escrowCountedSQL = `SELECT COALESCE(sum(amount),0),COALESCE(sum(amount) FILTER (WHERE escrow_left_out),0) FROM payments
+// refund returns. A deposit to a shape-(b) escrow's sibling address is never the order's (A-456a). escrowCountedFrom is
+// the one rule of which deposits count: escrowSettleTerminal (the settlement) and the previews both read it.
+const escrowCountedFrom = `FROM payments
 	WHERE order_id=$1 AND confirmations>=0 AND NOT locked AND NOT after_close
 	AND NOT (escrow_left_out AND EXISTS (SELECT 1 FROM escrow_siblings s WHERE s.address=payments.address))`
+
+const escrowCountedSQL = `SELECT COALESCE(sum(amount),0),COALESCE(sum(amount) FILTER (WHERE escrow_left_out),0) ` + escrowCountedFrom
 
 // escrowExcess (A-508) states what a release of an escrow order's deposits (sum: those the release spends) does with
 // the amount above the price, as planSettlement and planXMRSettlement build it, or "" when sum is not above the price:
@@ -112,6 +115,14 @@ func (a *App) escrowExcess(o *Order, sum int64) string {
 	return excess + " goes back in full to the buyer's refund address, as its own output of the release"
 }
 
+// escrowExcessRule (A-509) is the short statement, for help text and order notes, of what a release does with an amount
+// paid above the price: escrowExcess says it exactly for one order. The floor is payoutFloor's, which planSettlement and
+// planXMRSettlement apply.
+func escrowExcessRule(currency string) string {
+	return "any amount paid above the price goes back to the buyer's refund address, except that one below " +
+		amount(payoutFloor(currency, "release"), currencyDecimals(currency)) + " " + currency + " goes to the vendor"
+}
+
 // escrowOverpaid (A-508) is the order page's notice for an escrow order whose coins are not settled yet (paid, shipped,
 // delivered or disputed) and that holds more than the price: what a release and a refund each do with the excess
 // (escrowExcess). It is "" for any other order.
@@ -128,6 +139,19 @@ func (a *App) escrowOverpaid(ctx context.Context, o *Order) (string, error) {
 		return "", nil
 	}
 	required, _ := parseAmount(o.Amount, currencyDecimals(o.Currency))
-	return "This escrow holds " + a.escrowAmount(o, sum-left-required) + " more than the price. On a release to the vendor, " + back +
-		". A refund instead returns everything in this escrow (" + a.escrowAmount(o, sum-left) + "), less the network fee, to the buyer's refund address.", nil
+	// A release with a final transaction (or spent on the network) is the outcome, and a dispute cannot be decided for the
+	// buyer (escrowDisputePreview, errReleaseFinal, errXMRReleaseFinal): no refund is possible any more.
+	table, final := "settlements", "raw_tx"
+	if o.Currency == "XMR" {
+		table, final = "xmr_settlements", "tx_hash"
+	}
+	var released bool
+	if err := a.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM `+table+` WHERE order_id=$1 AND kind='release' AND state<>'superseded' AND (`+final+` IS NOT NULL OR state='external'))`, o.ID).Scan(&released); err != nil {
+		return "", err
+	}
+	refund := "A refund instead returns everything in this escrow (" + a.escrowAmount(o, sum-left) + "), less the network fee, to the buyer's refund address."
+	if released {
+		refund = "The release to the vendor is already final, so a refund is no longer possible."
+	}
+	return "This escrow holds " + a.escrowAmount(o, sum-left-required) + " more than the price. On a release to the vendor, " + back + ". " + refund, nil
 }

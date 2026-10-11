@@ -430,7 +430,7 @@ func suspendedVendorOrderGate(ctx context.Context, a *App, d *PageData) error {
 }
 
 // subFloorOrderGate (A-230(b), A-241(c)) keeps a buyer's legacy draft from offering a payment step that the
-// current listing price cannot settle above the automatic payout floor. The POST remains guarded independently.
+// current listing price cannot settle above the escrow settlement floor. The POST remains guarded independently.
 func subFloorOrderGate(ctx context.Context, a *App, d *PageData) error {
 	o := d.Order
 	if o == nil || o.State != stateDraft || d.OrderViewer != roleBuyer {
@@ -847,8 +847,8 @@ const paymentReviewLimit = 100
 // loadPaymentReviews lists deposits the payment watcher flagged for staff review (payments.flagged): every open
 // flag, oldest first and never capped, then the paymentReviewLimit most recently flagged others, with their
 // count. Whether a flag is open is the one rule paymentFlagOpenRule (QA462C), which the review handler reads too
-// (and only a flag it opens holds a late-deposit notice episode): a locked transfer, a deposit of a payout below the
-// minimum automatic payout (A-99), a credited deposit whose regression was announced and has not confirmed again, an
+// (and only a flag it opens holds a late-deposit notice episode): a locked transfer, a deposit below the escrow
+// minimum output (A-99; historical rows, nothing sets it now), a credited deposit whose regression was announced and has not confirmed again, an
 // escrow deposit spent outside the market, or a deposit not credited that does not count for the order (pooled, or an
 // escrow one recorded after the close or left out of its settlement), until staff record its disposition (an
 // escalated one stays open). An escrow deposit that counts for the order is not open, credited or not (QA462B-1). A
@@ -932,7 +932,7 @@ func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageDat
 		case locked:
 			v.Reason = "Locked transfer (unlock time), not counted or paid out"
 		case belowFloor && (!credited || confs >= threshold):
-			v.Reason = "Below the minimum automatic payout, not paid out"
+			v.Reason = "Below the escrow minimum output, not paid as its own output"
 			if confs < 0 {
 				v.Reason += "; now conflicted or missing"
 			}
