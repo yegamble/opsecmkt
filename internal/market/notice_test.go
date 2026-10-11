@@ -172,12 +172,13 @@ func TestNoticeRendersInItsSection(t *testing.T) {
 		t.Fatalf("suspend notice on /login not shown at the top:\n%s", b)
 	}
 
-	// A-296 (N5): a payout notice lands on /admin inside Payouts, not at the top of the page.
-	w = e.do("GET", "/admin", admin, nil, &http.Cookie{Name: noticeCookie, Value: "payout-released"})
-	e.check(w, 200)
-	b = w.Body.String()
-	if !strings.Contains(b, `<h3 id="payouts">Payouts</h3>`+"\n"+`<div class="alert" role="status">Payout released.</div>`) || strings.Count(b, "Payout released.") != 2 {
-		t.Fatalf("payout notice not (only) inside Payouts:\n%s", b)
+	// Retired pooled actions cannot show a success through an old notice cookie.
+	for _, code := range []string{"payout-released", "payout-address", "payment-address", "intake-enabled", "address-warning"} {
+		w = e.do("GET", "/admin", admin, nil, &http.Cookie{Name: noticeCookie, Value: code})
+		e.check(w, 200)
+		if strings.Contains(w.Body.String(), `<div class="alert" role="status">Payout released.</div>`) || strings.Contains(w.Body.String(), "Payment address ready.") {
+			t.Fatalf("retired notice %q rendered a success", code)
+		}
 	}
 
 	// A failing form's page says Error in its title.

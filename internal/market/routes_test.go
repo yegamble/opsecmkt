@@ -476,11 +476,11 @@ func TestPreviewOrderSamplesUseRealIDShapes(t *testing.T) {
 			t.Errorf("preview ID %q is not 64 lowercase hex", id)
 		}
 	}
-	if body := get(previewDraftID); !strings.Contains(body, previewDraftID) || strings.Contains(body, "Deposits seen by the wallet") {
+	if body := get(previewDraftID); !strings.Contains(body, previewDraftID) || strings.Contains(body, "Recorded deposits") {
 		t.Error("preview draft: want its 64-hex ID and no deposit table")
 	}
 	body := get(previewPaidID)
-	for _, want := range []string{previewPaidID, "Deposits seen by the wallet", "926bb57bc9bcbc21ddd00aa2e6f70f9d445378bcbaf4e55b6bfa53010ba85ddb:0",
+	for _, want := range []string{previewPaidID, "Recorded deposits", "926bb57bc9bcbc21ddd00aa2e6f70f9d445378bcbaf4e55b6bfa53010ba85ddb:0",
 		"Preview sample: no wallet is connected and no funds exist", ">Paid<"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("preview paid sample: missing %q", want)
