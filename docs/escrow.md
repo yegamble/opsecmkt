@@ -1524,16 +1524,20 @@ expected, but is not evidence that two addresses match. Compare their decoded ou
 verified expected address, and reject any signing prompt whose amount, fee, or destination cannot be reconciled.
 Never enter or share a seed or PIN for this test.
 
+**Ledger Flex via Sparrow 2.5.5: attempted, failed before signing, unresolved; only software signing is verified.**
 On 2026-10-11, after restarting Sparrow, the Flex was detected unlocked over USB. With the Bitcoin mainnet app open,
 a test-path xpub request returned `Request not currently supported`; the device showed no prompt and produced no
-signature. This is not a signing result. Use the Bitcoin Test app before evaluating the test-chain path.
+signature. A later attempt with firmware 1.7.0, Bitcoin Test 2.5.1 and Sparrow 2.5.5 failed before any signature
+(address display refused by Sparrow's host integration, `NoSuchElementException` on the ordinary PSBT, USB opening
+failed on a diagnostic copy); see the [diagnostic](evidence/sparrow/ledger-flex-2026-10-11.md). Whether per-order global
+xpubs on the hardware copy would let the device sign is an open experiment (A-458); no four-level origin is planned.
 
 On 2026-10-09, a controlled Sparrow 2.5.5 ARM64 retry verified authenticated Core RPC through the desktop SSH tunnel. After mining 101 blocks on a separate isolated regtest node, Sparrow connected at height 101 and its GUI remained responsive. The prior hung test instance and the retry resources were stopped, with process exits checked. The verified release and private test profile were retained locally. No PSBT was loaded or signed; this connection check does not complete any signing row below.
 
 | Wallet / device model | Wallet version / device firmware | Network and date | Rooted cosigners and descriptor import | Address matches / registration limits / path warning | Ordinary versus hardware PSBT acceptance | Signing-screen amount, fee and destination | Practice, release and sibling-refund result | Evidence |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Sparrow GUI with software signing key | Sparrow 2.5.5 ARM64 | Isolated Core 31.1 regtest, 2026-10-11 | Rooted cosigners worked via native wallet JSON. Separately, File → Import Wallet → Output Descriptor → Import File accepted the checksummed descriptor with origins and saved a watch-only 2-of-3 P2WSH wallet; the party key path was `m/48'/1'/0'/2'/2`, cosigners were rooted at `m`, and no path warning appeared. Receive address `bcrt1qy25ngwmvy3kxwc9q792lq0fkgczysku9rxegxyadcvy57zhsj9xq0fnawc` matched the funded escrow. This import did not sign. | Buyer/vendor practice accepted; outputs independently matched Core | Ordinary release PSBT upload accepted; hardware-format sibling-refund PSBT uploaded and signed with software key | Release: 99,682 sat, 318 sat fee, 3 confirmations; refund: 69,682 sat, 318 sat fee, 3 confirmations; all outputs matched Core | Buyer/vendor practice accepted; per-order index 2 release and index 3 `/0/3` sibling refund confirmed | [A-458 record](evidence/sparrow/2026-10-11-f229a1a65172/README.md); descriptor import was watch-only; no device used |
-| Ledger Flex | Firmware and Bitcoin Test app versions pending | USB probe, 2026-10-11; mainnet Bitcoin app | Unrun | Device detected unlocked; test-path xpub returned `Request not currently supported` | No PSBT/signature attempted | No device prompt | No test-chain signing; Bitcoin Test app still required | No device-signing evidence; Bitcoin Test not yet tested |
+| Ledger Flex via Sparrow 2.5.5 | Firmware 1.7.0, Bitcoin Test 2.5.1 | Isolated regtest, 2026-10-11 (earlier USB probe with the mainnet Bitcoin app: test-path xpub returned `Request not currently supported`) | Public test account export succeeded; practice receiving address matched the application | Sparrow refused to display the address on the device: the per-order origin has five derivation levels and its display path permits at most four (a host-side limit, not a device rejection) | Ordinary practice PSBT (three input derivations, no global xpubs): `NoSuchElementException`, no stack trace obtained. A private copy with the public global xpub/origin records added was not signed: USB opening failed | None reached the device | Attempted, failed before signing, unresolved; no practice signature, no settlement | [Ledger Flex diagnostic](evidence/sparrow/ledger-flex-2026-10-11.md); no PASS manifest |
 
 Import the party-only setup page's order descriptor and compare the first address with the escrow address before
 funding. Record whether the wallet accepts the rooted cosigners and the full per-order path, including any warning
@@ -1543,5 +1547,5 @@ form, confirm the release and the sibling refund on the test chain, and retain a
 secrets. A signing device cannot authenticate the other party's key. Claim compatibility only for a recorded row.
 The funded signing journey used native wallet JSON; the separate supplied-descriptor import was watch-only and did
 not prove key attachment or signing from that wallet. No physical Ledger Flex signed. Fee bumps and public Sparrow
-signing also remain untested; the hardware-format PSBT was signed with a software key. Flex evidence remains pending
-the Bitcoin Test app device test described above.
+signing also remain untested; the hardware-format PSBT was signed with a software key. The Flex attempt failed
+before signing and is unresolved, as described above.

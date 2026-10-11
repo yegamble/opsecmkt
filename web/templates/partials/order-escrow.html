@@ -135,7 +135,7 @@
 <label>Your copy (PSBT)<textarea class="escrow-psbt" readonly rows="6" spellcheck="false">{{.PSBT}}</textarea>
 </label>
 <p><a class="button" href="/escrow-psbt?id={{$.Order.ID}}&amp;s={{.ID}}" download>Download your copy</a> <a class="button" href="/escrow-psbt?id={{$.Order.ID}}&amp;s={{.ID}}&amp;hardware=1" download>Download for a hardware wallet</a></p>
-<p class="help">The hardware copy includes the funding transactions some devices require. Check the same outputs above on your device. Hardware signing has not been tested with a physical device.</p>
+<p class="help">The hardware copy includes the funding transactions some devices require. Check the same outputs above on your device. Ledger Flex via Sparrow 2.5.5: attempted, failed before signing, unresolved; only software signing is verified.</p>
 <form class="stack" method="post" action="/escrow/sign" enctype="multipart/form-data">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="form_nonce" value="{{formNonce "/escrow/sign"}}">
