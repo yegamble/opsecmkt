@@ -89,6 +89,9 @@ func TestPausedDraftCanBeReadAndCancelledWithoutPayment(t *testing.T) {
 	w.expect("/orders/cancel", w.vendor, form("order_id", order, "from", stateDraft), 403, "")
 	w.expect("/orders/cancel", w.other, form("order_id", order, "from", stateDraft), 404, "")
 	w.expect("/orders/cancel", w.buyer, form("order_id", order, "from", stateDraft), 303, "")
+	closed := w.page("/order?id="+order, w.buyer, 200)
+	mustContain(t, closed, "This order is closed", "No payment record")
+	mustNotContain(t, closed, "Historical pooled order")
 	if w.state(order) != stateCancelled || w.stock(product) != 5 || w.count("SELECT count(*) FROM payment_addresses WHERE order_id=$1", order) != 0 {
 		t.Fatal("cancelled draft changed stock or acquired payment address")
 	}
