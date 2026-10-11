@@ -15,8 +15,6 @@
 #   SyncGuard: the escrow adapter's sync read (get_info, get_last_block_header): a restricted-RPC daemon of a peered
 #     pair hides its connection counts (0) and is synced on offline false and a fresh tip; its unrestricted peer shows
 #     the connection; on the --offline daemon it is not synced (no peers).
-#   PooledGuard: the pooled Monero check against the real wallet-rpc is synced with the peered daemon and not synced (no
-#     peers) with the --offline one.
 #
 # Needs, from the local monerod and monero-wallet-rpc 0.18.5.1 images only (no download, no public peer): two stagenet
 # daemons peered only with each other on a Docker network with no route out, one of them serving restricted RPC, one
@@ -92,11 +90,11 @@ log="${ESCROW_XMR_STAGENET_LOG:-artifacts/real-chain/test-escrow-xmr-stagenet-$(
 mkdir -p "$(dirname "$log")"
 echo "Monero escrow check on an offline stagenet fork, not public (height $h, hard fork 1); transcript: $log"
 set +e
-go test -count=1 -timeout 15m -run '^TestXMREscrowStagenet(OldForkRefused|Addresses|SyncGuard|PooledGuard)$' -v ./internal/market/ 2>&1 | tee -a "$log"
+go test -count=1 -timeout 15m -run '^TestXMREscrowStagenet(OldForkRefused|Addresses|SyncGuard)$' -v ./internal/market/ 2>&1 | tee -a "$log"
 status=${PIPESTATUS[0]}
 set -e
 failed=0
-for leg in TestXMREscrowStagenetOldForkRefused TestXMREscrowStagenetAddresses TestXMREscrowStagenetSyncGuard TestXMREscrowStagenetPooledGuard; do
+for leg in TestXMREscrowStagenetOldForkRefused TestXMREscrowStagenetAddresses TestXMREscrowStagenetSyncGuard; do
   if grep -q -- "--- PASS: $leg " "$log"; then
     echo "PASS: $leg"
   elif grep -q -- "--- FAIL: $leg " "$log"; then
@@ -114,4 +112,4 @@ if [[ $status -ne 0 || $failed -ne 0 ]]; then
   echo "FAILED: go test exited $status; see $log" >&2
   exit 1
 fi
-echo "PASS: on an offline stagenet fork (not public): Monero escrow refused for the chain's hard fork, not its network; real stagenet addresses accepted under the stagenet tags and refused under the fakechain's; the escrow and pooled Monero sync guards synced with a peered daemon and not synced (no peers) with an --offline one; transcript in $log"
+echo "PASS: on an offline stagenet fork (not public): Monero escrow refused for the chain's hard fork, not its network; real stagenet addresses accepted under the stagenet tags and refused under the fakechain's; the Monero escrow sync guard recognized a peered restricted daemon as synced and an --offline daemon as not synced; transcript in $log"

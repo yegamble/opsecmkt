@@ -99,7 +99,7 @@ func TestXMREscrowPagesNameNetwork(t *testing.T) {
 				t.Errorf("canary's Monero line says \"not verified\" %d times:\n%s", n, li)
 			}
 			// "Monero escrow on any public network" stays unavailable except on stagenet, which is one.
-			unavailable := pageLine(canary, "Mainnet payments (off unless")
+			unavailable := pageLine(canary, "Mainnet payments (refused by this build)")
 			if has := strings.Contains(unavailable, "Monero escrow on any public network"); has == (c.name == "stagenet") {
 				t.Errorf("canary's unavailable list with %s says \"Monero escrow on any public network\" = %v:\n%s", c.name, has, unavailable)
 			}
@@ -120,7 +120,7 @@ func TestXMREscrowPagesNameNetwork(t *testing.T) {
 				}
 			}
 			dash := html.UnescapeString(x.page("/vendor-dashboard", x.vendorSess))
-			if !strings.Contains(dash, "<div class=\"eyebrow\">Monero escrow</div>\n"+c.tile) || !strings.Contains(dash, c.span) {
+			if !strings.Contains(dash, "<div class=\"eyebrow\">Monero escrow</div>"+c.tile) || !strings.Contains(dash, c.span) {
 				t.Errorf("vendor desk tile lacks %q and %q:\n%s", c.tile, c.span, dash)
 			}
 		})
@@ -153,10 +153,10 @@ func TestEscrowCanaryAndNoticesNameChain(t *testing.T) {
 					t.Errorf("canary lacks %q:\n%s", w, li)
 				}
 			}
-			if unavailable := pageLine(canary, "Mainnet payments (off unless"); !strings.Contains(unavailable, c.unavailable) {
+			if unavailable := pageLine(canary, "Mainnet payments (refused by this build)"); !strings.Contains(unavailable, c.unavailable) {
 				t.Errorf("canary's unavailable list lacks %q:\n%s", c.unavailable, unavailable)
 			}
-			if page := html.UnescapeString(x.page("/", x.buyerSess)); !strings.Contains(page, "Bitcoin escrow only ("+c.chain+") — no real funds") {
+			if page := html.UnescapeString(x.page("/", x.buyerSess)); !strings.Contains(page, "Bitcoin escrow ("+c.chain+")") {
 				t.Errorf("footer badge on %s:\n%s", c.chain, page)
 			}
 			if dash := html.UnescapeString(x.page("/vendor-dashboard", x.vendorSess)); !strings.Contains(dash, "2-of-3 per order, "+c.chain) {

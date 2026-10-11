@@ -1274,7 +1274,7 @@ from genesis is at hard fork version 1, which Monero escrow refuses, and the fak
 which monerod answers only on a fakechain (`--regtest`), so the fork has only the blocks its local miner finds. Funded
 Monero escrow on stagenet (a deposit seen, an order funded, a settlement built, relayed and confirmed) is therefore proven
 by the [2026-10-10 public stagenet digital-claim record](evidence/public-testnet/2026-10-10-ac71878dfde4/stagenet-xmr/README.md) (A-447/A-491), scoped to one digital claim. The
-offline fork proves the stagenet address formats, the refusal of an old hard fork and the escrow and pooled sync guards
+offline fork proves the stagenet address formats, the refusal of an old hard fork and the escrow sync guard
 against real daemons; the network pin is covered by the database tests against the simulated daemon
 (`TestXMREscrowNetworkPinMismatch`, `TestXMREscrowNetworkPinBackfillAndRepin`), not by the fork.
 
@@ -1302,10 +1302,12 @@ place; the [operator guide](operator-guide.md#bitcoin-escrow-test-networks-only)
    than let the line come and go.
 3. The chain pin (A-439): the first start pins `signet:<challenge>` or `testnet4` in `escrow_btc_chain`; check the
    value on `/admin` if the node is ever replaced.
-4. The market key self-check (A-440): with the pooled provider on the same node, its RPC user must be refused
-   `listdescriptors` on the arbiter wallet (the pooled whitelist line of the operator guide), or escrow stays off with
-   "escrow: Bitcoin escrow disabled: the pooled Bitcoin RPC user …"; or run escrow on a node of its own. Back up the
-   arbiter and watch-only wallets as [section 6](#back-up-and-restore-the-escrow-arbiter-and-watch-only-wallets) says.
+4. The previous release's A-440 pooled-user identity check was removed with pooled payments. This release refuses a
+   configured `BITCOIN_RPC_URL` and does not query that user; remove its old credentials and whitelist entry after
+   draining the previous release. Configure the dedicated escrow RPC user and separate signer user using the
+   [operator guide](operator-guide.md#the-apps-rpc-user), and back up the arbiter and watch-only wallets as
+   [section 6](#back-up-and-restore-the-escrow-arbiter-and-watch-only-wallets) says. The escrow startup check still
+   verifies the arbiter wallet's key fingerprint and that its transactions show no spend.
 5. In `APP_MODE=tor` the broadcast gate (A-441) sends settlements only through a node with `-proxy` on Bitcoin Core 31.1
    or later; the stall alert reports one not seen after 6 blocks in every mode.
 6. Refund, claim and fee addresses are `tb1…` (or the test-network base58 forms); one given in capitals is stored in
@@ -1323,7 +1325,8 @@ place; the [operator guide](operator-guide.md#bitcoin-escrow-test-networks-only)
    minute, doubling to at most 1 hour; a slow pass counts as a pass meanwhile, and a quick failure is read again every
    poll), so where slow reads failed during such a burst, escrow can stay off for up to an hour after it ends; restart
    the app to check at once.
-   Before any public network, run escrow on a node of its own, never the pooled payments' node, with memory to spare.
+   Before any public network, run escrow on a dedicated Bitcoin Core node with memory to spare, rather than sharing
+   that node with unrelated workloads.
 8. Fees (QA4W6-5). Every settlement is built at `ESCROW_BTC_FEE_RATE`, default 2 sat/vB, a whole number from 1 to 100
    read at startup (set it in `.env` and restart the app), and no settlement's network fee may exceed 0.001 BTC (one
    that would is not built until the rate is lowered). On testnet4 spam often lifts nodes' mempool minimum above

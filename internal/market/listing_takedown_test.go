@@ -222,7 +222,7 @@ func TestAdminTakedownStopsAutoDelivery(t *testing.T) {
 	if _, err := e.DB.Exec("UPDATE products SET delivery_content=$2 WHERE id=$1", product, secret); err != nil {
 		t.Fatal(err)
 	}
-	deliver := e.order(x.buyer, product, "BTC", stateDraft)
+	deliver := x.order
 	deliverAddr := x.mustCheckout(deliver, regtestAddr("takedown-deliver-refund"))
 	cancel := e.order(x.buyer, product, "BTC", stateDraft)
 	cancelAddr := x.mustCheckout(cancel, regtestAddr("takedown-cancel-refund"))

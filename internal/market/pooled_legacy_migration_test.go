@@ -58,6 +58,11 @@ func TestFreshEscrowOnlyInstallCannotFallBackToPooledPayments(t *testing.T) {
 	_, buyer := e.user("fresh107_buyer", "buyer")
 	vendor, _ := e.user("fresh107_vendor", "vendor")
 	product := e.product(vendor, "digital")
+	for _, path := range []string{"/product?id=" + product, "/checkout?id=" + product} {
+		page := e.body("GET", path, buyer, nil, 200)
+		mustContain(t, page, "New payments paused")
+		mustNotContain(t, page, `class="badge testnet">Bitcoin escrow`, `class="badge testnet">Monero escrow`)
+	}
 	for _, currency := range []string{"BTC", "XMR"} {
 		// Neither currency has an enabled escrow. A fresh install must refuse a new
 		// order instead of silently falling back to the retired pooled payment path.

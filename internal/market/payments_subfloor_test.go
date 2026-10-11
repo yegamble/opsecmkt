@@ -94,11 +94,13 @@ func TestLegacySubFloorProductCheckoutAndDraftPagesGateCurrencies(t *testing.T) 
 	mustContain(t, page, "cannot be ordered in BTC", "cannot be ordered in XMR", "Neither BTC nor XMR is available")
 	mustNotContain(t, page, `<option value="BTC">`, `<option value="XMR">`, `action="/orders"`)
 
-	btcDraft := p.testEnv.order(p.buyer.ID, p.productID, "BTC", stateDraft)
-	xmrDraft := p.testEnv.order(p.buyer.ID, p.productID, "XMR", stateDraft)
-	for _, order := range []string{btcDraft, xmrDraft} {
-		page = html.UnescapeString(p.body("GET", "/order?id="+order, p.buyerSess, nil, 200))
-		mustContain(t, page, "Unavailable.", "below the minimum automatic payout")
+	btcDraft := p.order
+	xmrBuyer, xmrSession := p.user("subfloor_xmr_"+randomToken()[:8], "buyer")
+	xmrDraft := p.testEnv.order(xmrBuyer, p.productID, "XMR", stateDraft)
+	for _, draft := range []struct{ order, session string }{{btcDraft, p.buyerSess}, {xmrDraft, xmrSession}} {
+		page = html.UnescapeString(p.body("GET", "/order?id="+draft.order, draft.session, nil, 200))
+		mustContain(t, page, draft.order, "Draft")
+		mustNotContain(t, page, `action="/orders/escrow"`, `action="/orders/escrow-xmr"`)
 		mustNotContain(t, page, `action="/orders/pay"`)
 	}
 
@@ -112,8 +114,8 @@ func TestLegacySubFloorProductCheckoutAndDraftPagesGateCurrencies(t *testing.T) 
 	mustContain(t, page, `<option value="XMR">`)
 	mustNotContain(t, page, `<option value="BTC">`)
 	page = html.UnescapeString(p.body("GET", "/order?id="+btcDraft, p.buyerSess, nil, 200))
-	mustContain(t, page, "cannot be ordered in BTC", "Order in XMR")
-	mustNotContain(t, page, `action="/orders/pay"`)
+	mustContain(t, page, btcDraft, "Draft")
+	mustNotContain(t, page, `action="/orders/pay"`, `action="/orders/escrow"`)
 
 	// The XMR refusal is symmetric when only BTC is above its floor.
 	if _, err := p.DB.Exec("UPDATE products SET btc=$1,xmr=$2 WHERE id=$3", payoutFloor("BTC", "release"), payoutFloor("XMR", "release")-1, p.productID); err != nil {
@@ -124,9 +126,9 @@ func TestLegacySubFloorProductCheckoutAndDraftPagesGateCurrencies(t *testing.T) 
 	page = checkout()
 	mustContain(t, page, `<option value="BTC">`)
 	mustNotContain(t, page, `<option value="XMR">`)
-	page = html.UnescapeString(p.body("GET", "/order?id="+xmrDraft, p.buyerSess, nil, 200))
-	mustContain(t, page, "cannot be ordered in XMR", "Order in BTC")
-	mustNotContain(t, page, `action="/orders/pay"`)
+	page = html.UnescapeString(p.body("GET", "/order?id="+xmrDraft, xmrSession, nil, 200))
+	mustContain(t, page, xmrDraft, "Draft")
+	mustNotContain(t, page, `action="/orders/pay"`, `action="/orders/escrow-xmr"`)
 }
 
 // An overpayment more than the price of a legacy sub-floor order is held for an administrator as one release;

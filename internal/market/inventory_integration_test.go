@@ -91,8 +91,9 @@ func TestListingReservationSummaryExcludesDraftsAndShowsPaymentExpiry(t *testing
 	x := newEscrowEnv(t)
 	e := x.testEnv
 	product, buyer, vendor := x.product, x.buyer, x.vendorSess
-	e.order(buyer, product, "BTC", stateDraft)
-	awaiting := e.order(buyer, product, "BTC", stateDraft)
+	draftBuyer, _ := e.user("reservation_draft_"+randomToken()[:8], "buyer")
+	e.order(draftBuyer, product, "BTC", stateDraft)
+	awaiting := x.order
 	x.mustCheckout(awaiting, regtestAddr("reservation-awaiting"))
 	paid := e.order(buyer, product, "BTC", stateDraft)
 	x.mustCheckout(paid, regtestAddr("reservation-paid"))
@@ -235,6 +236,7 @@ func TestListingKindLockedWhileOrdersOpen(t *testing.T) {
 	x := newEscrowEnv(t)
 	e := x.testEnv
 	p := x.physicalListing(x.vendor, 3)
+	e.usableKey(x.vendor)
 	o := e.order(x.buyer, p, "BTC", stateDraft)
 	addr := x.mustCheckout(o, regtestAddr("inventory-kind-refund"))
 	x.core.deposit(addr, txidOf("inventory-kind-funded"), 0, 100000, 3)
@@ -555,7 +557,7 @@ func TestAdminListingEditKeepsDeliveryContentHidden(t *testing.T) {
 	// The next order is delivered the vendor's content.
 	o := e.order(x.buyer, digital, "BTC", stateDraft)
 	x.mustCheckout(o, regtestAddr("admin-delivery-refund"))
-	x.fund(o, "admin-delivery", 3, 100000)
+	x.fund(o, "admin-delivery", 3, int64(agInt(e, "SELECT amount FROM orders WHERE id=$1", o)))
 	var got string
 	if err := e.DB.QueryRow("SELECT content FROM deliveries WHERE order_id=$1", o).Scan(&got); err != nil || got != secret {
 		t.Fatalf("next order delivered %q (%v), want the vendor's content", got, err)
