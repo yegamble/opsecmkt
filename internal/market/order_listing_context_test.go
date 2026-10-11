@@ -195,11 +195,17 @@ func TestArchivedListingPhotosThroughOrder(t *testing.T) {
 // vendor desk's incoming-order rows link each order's listing, and each link opens for that viewer even once the
 // listing is archived (the order page's rule, A-164).
 func TestDeskOrderRowsLinkTheirListing(t *testing.T) {
-	w := newOrderWorld(t)
+	w := newDisputeOrderWorld(t)
 	e := w.e
-	disputed, flagged := e.titledListing(w.vendorID, "A265 disputed listing"), e.titledListing(w.vendorID, "A265 flagged listing")
-	disputedOrder := e.order(w.buyerID, disputed, "BTC", stateShipped)
-	w.expect("/disputes", w.buyer, form("order_id", disputedOrder, "reason", "The parcel never arrived at the agreed place."), 303, "")
+	disputedOrder := w.fundedPhysicalFor(w.buyerID, w.buyer, w.vendorID, w.vendor)
+	disputed := agStr(e, "SELECT product_id FROM orders WHERE id=$1", disputedOrder)
+	e.mustExec("UPDATE products SET title='A265 disputed listing' WHERE id=$1", disputed)
+	e.mustExec("UPDATE orders SET listing_title='A265 disputed listing' WHERE id=$1", disputedOrder)
+	flagged := e.titledListing(w.vendorID, "A265 flagged listing")
+	if code, body := w.x.shipEscrow(disputedOrder, w.vendor, regtestAddr("a265-claim"), testPassword); code != 303 {
+		t.Fatalf("ship disputed escrow: %d %s", code, body)
+	}
+	w.openDispute(disputedOrder, w.buyer, "The parcel never arrived at the agreed place.")
 	flaggedOrder := e.order(w.otherID, flagged, "BTC", stateCancelled)
 	// This direct fixture represents a legacy cancelled order whose purchase-time listing terms were never recorded.
 	e.mustExec(`UPDATE orders SET listing_title=NULL,listing_description=NULL,listing_kind=NULL WHERE id=$1`, flaggedOrder)
@@ -231,8 +237,8 @@ func TestDeskOrderRowsLinkTheirListing(t *testing.T) {
 
 	desk := w.page("/moderator", w.mod, 200)
 	mustContain(t, segment(desk, `<article class="message">`, "Order "+disputedOrder+"<", "</article>"), disputeLink)
-	mustContain(t, segment(desk, `<tr class="payment-review-row">`, `href="/order?id=`+flaggedOrder+`"`, "</tr>"),
-		`<span class="order-listing">Listing terms were not recorded for this order</span> <a class="text-link" href="/product?id=`+flagged+`">View current listing</a>`)
+	// Historical pooled flags remain readable on their order, but no longer enter the live review queue.
+	mustNotContain(t, desk, `href="/order?id=`+flaggedOrder+`"`)
 	opens(w.mod, disputed)
 	opens(w.mod, flagged)
 

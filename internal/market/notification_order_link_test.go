@@ -7,17 +7,18 @@ import (
 )
 
 func TestOrderNotificationsLinkOnlyTheirExplicitOrder(t *testing.T) {
-	e := newTestApp(t)
-	vendorID, vendor := e.user("notice_link_vendor", "vendor")
-	buyerID, buyer := e.user("notice_link_buyer", "buyer")
+	w := newDisputeOrderWorld(t)
+	e := w.e
+	vendorID, vendor := w.vendorID, w.vendor
+	buyerID, buyer := w.buyerID, w.buyer
 	strangerID, _ := e.user("notice_link_stranger", "buyer")
-	product := e.product(vendorID, "physical")
-	order := e.order(buyerID, product, "BTC", statePaid)
+	order := w.fundedPhysicalFor(buyerID, buyer, vendorID, vendor)
+	product := agStr(e, "SELECT product_id FROM orders WHERE id=$1", order)
 
 	page := e.do("GET", orderPage(order), vendor, nil)
 	e.check(page, 200)
-	nonce := renderedFormNonce(t, page.Body.String(), "/orders/ship")
-	e.check(e.do("POST", "/orders/ship", vendor, url.Values{"order_id": {order}, formNonceField: {nonce}}), 303)
+	nonce := renderedFormNonce(t, page.Body.String(), "/escrow/ship")
+	e.check(e.do("POST", "/escrow/ship", vendor, url.Values{"order_id": {order}, "address": {regtestAddr("notice-link-claim")}, "password": {testPassword}, formNonceField: {nonce}}), 303)
 	if got := agStr(e, "SELECT COALESCE(order_id,'') FROM notifications WHERE user_id=$1 ORDER BY created DESC,id DESC LIMIT 1", buyerID); got != order {
 		t.Fatalf("state-change notice order_id=%q, want %q", got, order)
 	}

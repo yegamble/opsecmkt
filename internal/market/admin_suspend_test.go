@@ -27,16 +27,21 @@ func suspendForm(action, handle string, extra ...string) url.Values {
 }
 
 func TestAdminSuspendsAccount(t *testing.T) {
-	e := newTestApp(t)
+	x := newEscrowEnv(t)
+	e := x.testEnv
+	world := &disputeOrderWorld{orderWorld: &orderWorld{e: e}, x: x, keySalt: 2}
 	adminID, admin := e.user("susp_admin", "admin")
 	vendorID, vendor := e.user("susp_vendor", "vendor")
 	other := agSession(e, vendorID)
 	agPending(e, vendorID)
 	buyerID, buyer := e.user("susp_buyer", "buyer")
-	product := e.product(vendorID, "physical")
-	shipped := e.order(buyerID, product, "BTC", stateShipped)
-	second := e.product(vendorID, "physical")
-	disputed := e.order(buyerID, second, "BTC", stateShipped)
+	shipped := world.fundedPhysicalFor(buyerID, buyer, vendorID, vendor)
+	disputed := world.fundedPhysicalFor(buyerID, buyer, vendorID, vendor)
+	for _, order := range []string{shipped, disputed} {
+		if code, body := x.shipEscrow(order, vendor, regtestAddr("suspend-claim-"+order[:8]), testPassword); code != 303 {
+			t.Fatalf("ship escrow before suspension: %d %s", code, body)
+		}
+	}
 
 	page := e.body("GET", "/admin", admin, nil, 200)
 	f := adminForm(t, page, "/admin/suspend", "")
@@ -101,10 +106,10 @@ func TestAdminSuspendsAccount(t *testing.T) {
 	agExec(e, "UPDATE users SET pgp_2fa=false WHERE id=$1", vendorID)
 	agExec(e, "DELETE FROM pending_logins WHERE user_id=$1", vendorID)
 
-	// The buyer's open orders with the suspended vendor continue; the vendor's listings are unchanged.
-	agExpect(e, "/orders/complete", buyer, payoutConfirmed(form("order_id", shipped), 0), 303, "")
+	// The buyer's open escrow orders with the suspended vendor remain readable and disputable; listings are unchanged.
+	e.check(e.do("GET", "/order?id="+shipped, buyer, nil), 200)
 	agExpect(e, "/disputes", buyer, form("order_id", disputed, "reason", "The parcel never arrived at the agreed drop."), 303, "")
-	if agStr(e, "SELECT state FROM orders WHERE id=$1", shipped) != stateCompleted || agStr(e, "SELECT state FROM orders WHERE id=$1", disputed) != stateDisputed {
+	if agStr(e, "SELECT state FROM orders WHERE id=$1", shipped) != stateShipped || agStr(e, "SELECT state FROM orders WHERE id=$1", disputed) != stateDisputed {
 		t.Fatal("buyer could not continue orders with a suspended vendor")
 	}
 	if agInt(e, "SELECT count(*) FROM products WHERE vendor_id=$1 AND NOT archived", vendorID) != 2 || agStr(e, "SELECT role FROM users WHERE id=$1", vendorID) != "vendor" {

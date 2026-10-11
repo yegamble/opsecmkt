@@ -179,11 +179,15 @@ func TestDeliveryCleanupPreservesExistingDeliveredSnapshotAndHidesOtherOwners(t 
 }
 
 func TestDeliveryCleanupSerializesWithAutomaticDelivery(t *testing.T) {
-	e := newTestApp(t)
-	owner, session := cleanupDemote(t, e, "cleanup_race_owner", "buyer")
-	product := cleanupListing(t, e, owner, "Archived race listing", "automatic-delivery-snapshot-secret")
-	buyer, _ := e.user("cleanup_race_buyer", "buyer")
-	order := e.order(buyer, product, "BTC", stateAwaitingPayment)
+	x := newEscrowEnv(t)
+	e := x.testEnv
+	owner, session, product, order := x.vendor, x.vendorSess, x.product, x.order
+	e.mustExec("UPDATE products SET title='Archived race listing',delivery_content='automatic-delivery-snapshot-secret' WHERE id=$1", product)
+	x.mustCheckout(order, regtestAddr("cleanup-race-refund"))
+	ownerHandle := agStr(e, "SELECT handle FROM users WHERE id=$1", owner)
+	if _, err := SetRole(context.Background(), e.DB, ownerHandle, "buyer"); err != nil {
+		t.Fatal(err)
+	}
 
 	// Run the real awaiting-payment -> paid transition and automatic-delivery hook, then hold its transaction open
 	// after the hook has taken the listing's FOR KEY SHARE lock and saved the per-order snapshot.

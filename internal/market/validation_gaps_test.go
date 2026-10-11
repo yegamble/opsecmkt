@@ -118,35 +118,33 @@ func TestSetupSiteNameLimit(t *testing.T) {
 }
 
 func TestResolveResolutionBounds(t *testing.T) {
-	w := newOrderWorld(t)
-	product := w.e.product(w.vendorID, "physical")
-	order := w.e.order(w.buyerID, product, "BTC", stateDisputed)
-	dispute := randomToken()
-	agExec(w.e, "INSERT INTO disputes(id,order_id,reason) VALUES($1,$2,'The parcel never arrived at all.')", dispute, order)
+	w := newDisputeOrderWorld(t)
+	order, dispute := w.disputedFor(w.buyerID, w.buyer, w.vendorID, w.vendor, w.buyer, "The parcel never arrived at all.")
+	_, admin := w.e.user("resolve_bounds_admin", "admin")
 	for _, text := range []string{"", "too short", strings.Repeat("r", 19), strings.Repeat("r", 5001)} {
-		w.expect("/resolve", w.mod, form("id", dispute, "outcome", "refund", "resolution", text), 400, "20–5000")
+		w.expect("/resolve", admin, form("id", dispute, "outcome", "refund", "resolution", text), 400, "20–5000")
 	}
 	if agStr(w.e, "SELECT status||'|'||outcome||'|'||resolution FROM disputes WHERE id=$1", dispute) != "Open||" || w.state(order) != stateDisputed {
 		t.Fatal("refused resolution changed the dispute")
 	}
-	w.expect("/resolve", w.mod, resolveConfirmed(form("id", dispute, "outcome", "refund", "resolution", strings.Repeat("r", 5000)), 0), 303, "")
+	w.expect("/resolve", admin, resolveConfirmed(form("id", dispute, "outcome", "refund", "resolution", strings.Repeat("r", 5000)), 100000), 303, "")
 	if agStr(w.e, "SELECT outcome FROM disputes WHERE id=$1", dispute) != "refund" || w.state(order) != stateResolved {
 		t.Fatal("5000-character resolution not accepted")
 	}
 }
 
 func TestOrderNoteLength(t *testing.T) {
-	w := newOrderWorld(t)
-	product := w.e.product(w.vendorID, "physical")
-	order := w.e.order(w.buyerID, product, "BTC", statePaid)
-	w.expect("/orders/ship", w.vendor, form("order_id", order, "note", strings.Repeat("n", 501)), 400, "under 500 characters")
+	w := newDisputeOrderWorld(t)
+	order := w.fundedPhysicalFor(w.buyerID, w.buyer, w.vendorID, w.vendor)
+	beforeEvents := w.count("SELECT count(*) FROM order_events WHERE order_id=$1", order)
+	w.expect("/escrow/ship", w.vendor, form("order_id", order, "address", regtestAddr("note-length-claim"), "password", testPassword, "note", strings.Repeat("n", 501)), 400, "under 500 characters")
 	w.expect("/orders/cancel", w.buyer, form("order_id", order, "from", statePaid, "note", strings.Repeat("n", 501)), 400, "under 500 characters")
-	if w.state(order) != statePaid || w.count("SELECT count(*) FROM order_events WHERE order_id=$1", order) != 0 {
+	if w.state(order) != statePaid || w.count("SELECT count(*) FROM order_events WHERE order_id=$1", order) != beforeEvents {
 		t.Fatal("refused note changed the order")
 	}
 	// The limit counts characters, not bytes: 500 two-byte characters are accepted and stored intact.
 	note := strings.Repeat("é", 500)
-	w.expect("/orders/ship", w.vendor, form("order_id", order, "note", note), 303, "")
+	w.expect("/escrow/ship", w.vendor, form("order_id", order, "address", regtestAddr("note-length-claim"), "password", testPassword, "note", note), 303, "")
 	if w.state(order) != stateShipped || agStr(w.e, "SELECT note FROM order_events WHERE order_id=$1 AND to_state='shipped'", order) != note {
 		t.Fatal("500-character note not recorded")
 	}
@@ -159,23 +157,23 @@ func TestCompleteFromWrongState(t *testing.T) {
 		order := w.e.order(w.buyerID, physical, "BTC", state)
 		w.expect("/orders/complete", w.buyer, payoutConfirmed(form("order_id", order), 0), 409, "")
 		if w.state(order) != state || w.count("SELECT count(*) FROM order_events WHERE order_id=$1", order) != 0 {
-			t.Fatalf("completing from %s changed the order", state)
+			t.Fatalf("legacy completion changed historical %s order", state)
 		}
 	}
-	// A digital order is completed from delivered, not shipped; the vendor can never confirm receipt.
+	// The legacy completion action cannot complete a historical digital order either.
 	digital := w.e.product(w.vendorID, "digital")
 	order := w.e.order(w.buyerID, digital, "BTC", statePaid)
 	w.expect("/orders/complete", w.buyer, payoutConfirmed(form("order_id", order), 0), 409, "")
-	shipped := w.e.order(w.buyerID, physical, "BTC", stateShipped)
-	w.expect("/orders/complete", w.vendor, payoutConfirmed(form("order_id", shipped), 0), 403, "")
-	w.expect("/orders/complete", w.other, payoutConfirmed(form("order_id", shipped), 0), 404, "")
-	if w.state(order) != statePaid || w.state(shipped) != stateShipped || w.count("SELECT count(*) FROM payouts") != 0 {
-		t.Fatal("refused completion changed data")
-	}
-	w.expect("/orders/complete", w.buyer, payoutConfirmed(form("order_id", shipped), 0), 303, "")
-	w.expect("/orders/complete", w.buyer, payoutConfirmed(form("order_id", shipped), 0), 409, "")
-	if w.state(shipped) != stateCompleted || w.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND to_state='completed'", shipped) != 1 {
-		t.Fatal("completion not recorded exactly once")
+	// A real shipped Bitcoin escrow order uses the escrow settlement path. The old completion form
+	// cannot queue a pooled payout for it, and vendor/stranger authorization remains enforced.
+	x := newEscrowEnv(t)
+	shipped, _ := x.shippedPhysical(regtestAddr("wrong-state-refund"), regtestAddr("wrong-state-claim"), 100000)
+	_, stranger := x.user("wrong_state_stranger", "buyer")
+	agExpect(x.testEnv, "/orders/complete", x.vendorSess, payoutConfirmed(form("order_id", shipped), 0), 403, "")
+	agExpect(x.testEnv, "/orders/complete", stranger, payoutConfirmed(form("order_id", shipped), 0), 404, "")
+	agExpect(x.testEnv, "/orders/complete", x.buyerSess, payoutConfirmed(form("order_id", shipped), 0), 409, "")
+	if w.state(order) != statePaid || x.state(shipped) != stateShipped || agInt(x.testEnv, "SELECT count(*) FROM payouts WHERE order_id=$1", shipped) != 0 {
+		t.Fatal("refused completion changed historical or escrow data")
 	}
 }
 
@@ -192,16 +190,16 @@ func TestMessageRecipientNotFound(t *testing.T) {
 }
 
 func TestDeliverTwiceKeepsFirstContent(t *testing.T) {
-	w := newOrderWorld(t)
-	product := w.e.product(w.vendorID, "digital")
-	order := w.e.order(w.buyerID, product, "BTC", statePaid)
+	w := newDisputeOrderWorld(t)
+	order := w.fundedFor(w.buyerID, w.buyer, w.vendorID, w.vendor)
 	w.expect("/orders/deliver", w.vendor, form("order_id", order, "content", "first licence key"), 303, "")
 	w.expect("/orders/deliver", w.vendor, form("order_id", order, "content", "second licence key"), 409, "")
-	if agStr(w.e, "SELECT content FROM deliveries WHERE order_id=$1", order) != "first licence key" ||
-		w.count("SELECT count(*) FROM deliveries WHERE order_id=$1", order) != 1 ||
-		w.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND to_state='delivered'", order) != 1 ||
-		w.state(order) != stateDelivered {
-		t.Fatal("second delivery changed the recorded content or history")
+	content := agStr(w.e, "SELECT content FROM deliveries WHERE order_id=$1", order)
+	deliveries := w.count("SELECT count(*) FROM deliveries WHERE order_id=$1", order)
+	events := w.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND to_state='delivered'", order)
+	state := w.state(order)
+	if content != "first licence key" || deliveries != 1 || events != 1 || state != stateCompleted {
+		t.Fatalf("second delivery changed data: content=%q deliveries=%d delivered events=%d state=%s", content, deliveries, events, state)
 	}
 }
 

@@ -177,12 +177,12 @@ func TestHuntUnusableEncryptionKeyShownAsUsableContact(t *testing.T) {
 // A physical escrow checkout requires a vendor key able to receive the buyer's shipping details.
 func TestPhysicalEscrowRefusedWithoutUsableVendorKey(t *testing.T) {
 	x := newEscrowEnv(t)
-	product := x.testEnv.product(x.vendor, "physical")
 	unusable := testUnusableKeys(t, "vendor")
 	for variant, armored := range map[string]string{"no key": "", "expired key": unusable["expired key"], "signing-only key": unusable["signing-only key"]} {
 		x.setKey(x.vendor, armored)
+		product := x.physicalListing(x.vendor, 3)
 		draft := x.testEnv.order(x.buyer, product, "BTC", stateDraft)
-		page := html.UnescapeString(x.page("/order?id="+draft, x.buyerSess))
+		page := html.UnescapeString(x.page("/checkout?id="+product, x.buyerSess))
 		mustContain(t, page, "no usable encryption key")
 		before := agInt(x.testEnv, "SELECT stock FROM products WHERE id=$1", product)
 		w := x.do("POST", "/orders/escrow", x.buyerSess, url.Values{"order_id": {draft}, "refund_address": {regtestAddr("unusable-key-" + variant)}})
@@ -195,6 +195,7 @@ func TestPhysicalEscrowRefusedWithoutUsableVendorKey(t *testing.T) {
 	}
 	_, usable := testPGPKey(t, "vendor")
 	x.setKey(x.vendor, usable)
+	product := x.physicalListing(x.vendor, 3)
 	draft := x.testEnv.order(x.buyer, product, "BTC", stateDraft)
 	w := x.do("POST", "/orders/escrow", x.buyerSess, url.Values{"order_id": {draft}, "refund_address": {regtestAddr("usable-key")}})
 	if w.Code != 303 {
