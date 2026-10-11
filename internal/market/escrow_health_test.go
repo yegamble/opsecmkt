@@ -3,6 +3,7 @@ package market
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -64,6 +65,51 @@ func TestEscrowHealthPersistsDisableRecoveryAndRendersNoNodeText(t *testing.T) {
 	if strings.Contains(page, "chain-secret-rpc-reply") || strings.Contains(page, "warroom-local-test") {
 		t.Fatal("admin health summary exposed node reply text or database credentials")
 	}
+}
+
+// A-451: the node height is recorded by each of the three writers (startup/retry attempt, watcher observation, completed
+// pass) and rendered on /admin. A-507 pin: a writer that stored a constant height passed every earlier test.
+func TestEscrowHealthStoresAndRendersNodeHeightFromEachWriter(t *testing.T) {
+	x := newEscrowEnv(t)
+	x.poll()
+	setNode := func(chain string, blocks int64) {
+		x.core.mu.Lock()
+		x.core.chain, x.core.blocks = chain, blocks
+		x.core.mu.Unlock()
+	}
+	assertHeight := func(writer string, want int64) {
+		t.Helper()
+		var got sql.NullInt64
+		if err := x.DB.QueryRow(`SELECT height FROM bitcoin_escrow_health WHERE singleton`).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if !got.Valid || got.Int64 != want {
+			t.Fatalf("%s: stored height %v, want %d", writer, got, want)
+		}
+		if page := x.adminPage(); !strings.Contains(page, fmt.Sprintf("height %d; chain pin", want)) {
+			t.Fatalf("%s: admin Payment providers does not render height %d", writer, want)
+		}
+	}
+
+	// Completed watcher pass (saveEscrowHealthPass).
+	setNode("regtest", 4321)
+	x.poll()
+	assertHeight("completed pass", 4321)
+
+	// A retry that re-enables escrow (saveEscrowHealthAttempt from the observation startEscrow made).
+	x.A.escrow.Store(nil)
+	setNode("regtest", 4400)
+	x.A.retryEscrow(context.Background(), &escrowRetry{last: escrowLogRefused})
+	if x.A.escrow.Load() == nil {
+		t.Fatal("retry did not re-enable escrow")
+	}
+	assertHeight("retry attempt", 4400)
+
+	// A pass that finds the node on another chain stops before it completes: only the observation write
+	// (saveEscrowHealthObservation) can have stored this height.
+	setNode("signet", 5555)
+	_ = x.A.escrowPollOnce(context.Background())
+	assertHeight("pass on a changed chain", 5555)
 }
 
 func TestEscrowHealthTracksArbiterKeypoolHighWater(t *testing.T) {
