@@ -35,8 +35,8 @@ For each step record the evidence tier that currently proves it and the gap.
 ## Traps
 
 `TEST_DATABASE_URL` unset skips ~66% of Go tests; preview specs prove layout
-only; `chain-journey`/`regtest-smoke` never run in CI; the shared Playwright
-admin's sign-in budget; navigation-race flakes — re-run unloaded before
+only; `scripts/test-escrow-xmr-regtest.sh` (Monero real wallet) never runs in CI
+and `regtest-smoke.sh` is retired; the shared Playwright admin's sign-in budget; navigation-race flakes — re-run unloaded before
 reporting a single failure.
 
 ## Verification duty

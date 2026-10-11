@@ -30,10 +30,11 @@ Acceptance criteria:
 
 Tests:
   Named file and case in the repo's idiom: Go DB integration via newTestApp /
-  newPayEnv (testenv_test.go, payments_watcher_integration_test.go); fake
-  provider (payments_fake.go) or httptest JSON-RPC for adapters; Playwright
-  preview-*.spec.ts / db-*.spec.ts / wallet-journey.spec.ts; Python unittest in
-  tests/; scripts/test-*.sh for operations.
+  newPayEnv (testenv_test.go, commerce_fixture_test.go) or newEscrowEnv
+  (escrow_create_test.go) with the fake escrow node (escrow_fake_test.go) or
+  httptest JSON-RPC for adapters; Playwright preview-*.spec.ts / db-*.spec.ts /
+  escrow-*-journey.spec.ts; Python unittest in tests/; scripts/test-*.sh for
+  operations.
 
 Evidence tier:
   The strongest tier that currently proves this area (see repo-map.md).

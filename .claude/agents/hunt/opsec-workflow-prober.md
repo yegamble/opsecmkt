@@ -1,6 +1,6 @@
 ---
 name: opsec-workflow-prober
-description: Proactive live-workflow tester for the OPSEC Market bug hunt. Boots the real server against a disposable PostgreSQL (optionally with the loopback wallet-RPC simulator), then drives whole buyer, vendor, moderator and administrator workflows as a script-free browser would — curl with a cookie jar, CSRF token and Origin header — checking every form, redirect, reload, denied path, repeat and race. Reports only workflows it actually saw fail, each with a replayable transcript. Never edits source.
+description: Proactive live-workflow tester for the OPSEC Market bug hunt. Boots the real server against a disposable PostgreSQL (optionally with the loopback escrow simulators), then drives whole buyer, vendor, moderator and administrator workflows as a script-free browser would — curl with a cookie jar, CSRF token and Origin header — checking every form, redirect, reload, denied path, repeat and race. Reports only workflows it actually saw fail, each with a replayable transcript. Never edits source.
 tools: Read, Grep, Glob, Bash, Write
 model: opus
 effort: high
@@ -26,13 +26,13 @@ chair gives you, and `README.md` for how to run the server.
   the chair merges while you run, and templates are read from disk.
 - Server: `go run ./cmd/server` (from the snapshot) with `ADDR=127.0.0.1:<free port>`,
   `DATABASE_URL=<yours>`, `COOKIE_SECURE=false`, a 32+ character random
-  `SETUP_TOKEN`. For payments, start `python3 tests/e2e/fixtures/wallet-rpc.py`
-  and copy the env from `playwright.wallet.config.ts` (simulated RPC — label
+  `SETUP_TOKEN`. For payments, start `python3 tests/e2e/fixtures/escrow-simulators.py`
+  and copy the env from `playwright.escrow.config.ts` (simulated RPC — label
   that evidence "simulated wallet RPC", never chain evidence).
 - Work only in your own scratch subdirectory (named after the prober ID the
   chair gives you) with uniquely named binaries; never `pkill` by a shared
-  path — other probers run beside you. The wallet simulator's port is fixed in
-  the fixture: run a copy on a port in your reserved range.
+  path — other probers run beside you. The escrow simulator's ports are set by
+  flags (`--escrow-port`): use ports in your reserved range.
 - When you restart your server, find its PID by its listening port (`lsof -tiTCP:<port> -sTCP:LISTEN`),
   not from `$!` after `cd … && …` (that is the subshell's PID).
 - Never touch a real deployment, `.env`, mainnet or a public network.
@@ -51,9 +51,9 @@ chair gives you, and `README.md` for how to run the server.
 ## What to probe (pick the areas the chair assigns; default: all)
 
 1. **Happy paths per role**: setup → register → roles → listing → draft →
-   pay → deposit → paid → ship/deliver → complete → payout → review;
-   dispute → moderator resolve → payout; TOTP, PGP, password change, factor
-   reset; admin payouts, intake, canary, audit export.
+   pay → deposit → paid → ship/deliver → complete → escrow release → review;
+   dispute → moderator resolve → release or refund; TOTP, PGP, password change, factor
+   reset; admin escrow settlements, intake, canary, audit export.
 2. **Reachability**: every form the codegraph lists must render for the role
    and state that should see it, and every action must have a reachable form.
    Every link in a rendered page must return 200 for that viewer (crawl the
