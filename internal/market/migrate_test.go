@@ -102,14 +102,15 @@ func TestFreshInstallAppliesBaselineAndMigrations(t *testing.T) {
 	}
 }
 
-// A-400: newTestApp's copy of the template database starts exactly where New leaves an empty schema: the same
-// relations, columns, constraints, indexes, triggers, functions, types, sequences and rows. A fresh migration run
-// also writes one startup audit event; that intentional runtime row is excluded from the template comparison.
+// A-400: compare a copy of the migrated template before newTestApp's intentional paused-intake fixture adjustment
+// with a fresh migration run. They must have the same relations, columns, constraints, indexes, triggers, functions,
+// types, sequences and rows. A fresh migration run also writes one startup audit event; that intentional runtime row
+// is excluded from the template comparison.
 const freshStartAuditActionSQL = `(SELECT 'Startup applied ' || count(*) || ' database migrations; schema version ' || lpad(max(version)::text,3,'0') FROM schema_migrations)`
 
 func TestNewTestAppMatchesAFreshStart(t *testing.T) {
-	copied := newTestApp(t)
-	fresh := newFreshTestApp(t) // the schema path, which every database test took before the template
+	copied := startTestApp(t, testMigratedDSN(t))
+	fresh := newFreshTestApp(t) // creates an empty schema and executes the baseline plus every migration
 	if got := agInt(fresh, "SELECT count(*) FROM audit_events WHERE user_id IS NULL AND action="+freshStartAuditActionSQL); got != 1 {
 		t.Fatalf("fresh start has %d migration startup audit rows, want exactly one", got)
 	}
@@ -122,7 +123,7 @@ func TestNewTestAppMatchesAFreshStart(t *testing.T) {
 	}
 	for i := range min(len(got), len(want)) {
 		if got[i] != want[i] {
-			t.Fatalf("first difference at line %d:\n  newTestApp:  %s\n  fresh start: %s", i, got[i], want[i])
+			t.Fatalf("first difference at line %d:\n  migrated template copy (before shared-fixture intake pause): %s\n  fresh migration: %s", i, got[i], want[i])
 		}
 	}
 }
