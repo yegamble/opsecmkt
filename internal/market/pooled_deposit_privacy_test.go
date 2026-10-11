@@ -23,7 +23,8 @@ func TestHistoricalPooledDepositIdentifiersHiddenFromVendor(t *testing.T) {
 				if viewer.hidden {
 					mustNotContain(t, body, addr, txid, truncate(txid, 20), "payment-qr")
 				} else {
-					mustContain(t, body, addr, txid)
+					mustContain(t, body, txid)
+					mustNotContain(t, body, addr)
 				}
 			}
 		})

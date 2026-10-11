@@ -16,7 +16,12 @@ func TestLateDepositFlagNotesAreBoundedAndIndexOutputs(t *testing.T) {
 			mod, _ := e.user("flagmod_"+randomToken()[:6], "moderator")
 			product := e.product(vendor, "digital")
 			order := e.order(buyer, product, currency, stateCompleted)
-			agExec(e, `INSERT INTO escrows(order_id,address,market_index,refund_address,fee_bps,fee_destination) VALUES($1,$2,nextval('escrow_market_index'),$3,0,'')`, order, "escrow-"+order[:12], "refund-"+order[:12])
+			if currency == "BTC" {
+				agExec(e, `INSERT INTO escrows(order_id,address,market_index,refund_address,fee_bps,fee_destination) VALUES($1,$2,nextval('escrow_market_index'),$3,0,'')`, order, "escrow-"+order[:12], "refund-"+order[:12])
+			} else {
+				wallet := xmrWallet(t, e, 1, "active")
+				xmrEscrowOf(t, e, wallet, 1, order)
+			}
 			const txid = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 			const outputs = 18
 			for idx := range outputs {
@@ -78,6 +83,7 @@ func TestPaymentReviewFlagTimeUsesIndexedOutputAndLegacyNotes(t *testing.T) {
 	_, mod := e.user("flagdatemod_"+randomToken()[:6], "moderator")
 	product := e.product(vendor, "digital")
 	order := e.order(buyer, product, "BTC", stateCompleted)
+	agExec(e, `INSERT INTO escrows(order_id,address,market_index,refund_address,fee_bps,fee_destination) VALUES($1,$2,nextval('escrow_market_index'),$3,0,'')`, order, "escrow-"+order[:12], "refund-"+order[:12])
 	txid := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	legacyTx := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	for _, p := range []struct {

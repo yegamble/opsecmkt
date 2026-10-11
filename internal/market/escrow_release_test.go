@@ -136,23 +136,20 @@ func TestEscrowShipNeedsClaimAddress(t *testing.T) {
 	if agInt(x.testEnv, "SELECT count(*) FROM settlements WHERE order_id=$1", order) != 1 {
 		t.Fatal("a second settlement was written")
 	}
-	// A pooled physical order ships through the pooled form exactly as before; the escrow form does not know it.
+	// A historical non-escrow order cannot ship through either form.
 	product := x.testEnv.product(x.vendor, "physical")
-	pooled := x.testEnv.order(x.buyer, product, "BTC", statePaid)
-	if code, _ := x.shipEscrow(pooled, x.vendorSess, regtestAddr("ship-pooled"), testPassword); code != 404 {
-		t.Fatalf("the escrow form on a pooled order: %d", code)
+	historical := x.testEnv.order(x.buyer, product, "BTC", statePaid)
+	if code, _ := x.shipEscrow(historical, x.vendorSess, regtestAddr("ship-historical"), testPassword); code != 404 {
+		t.Fatalf("escrow form on a historical order: %d", code)
 	}
-	if w := x.do("POST", "/orders/ship", x.vendorSess, url.Values{"order_id": {pooled}}); w.Code != 303 || x.state(pooled) != stateShipped {
-		t.Fatalf("pooled ship: %d %s", w.Code, w.Body.String())
+	if w := x.do("POST", "/orders/ship", x.vendorSess, url.Values{"order_id": {historical}}); w.Code == 303 || x.state(historical) != statePaid {
+		t.Fatalf("historical ship changed state: %d %s", w.Code, w.Body.String())
 	}
-	if got := agStrings(t, x.testEnv, "SELECT action FROM audit_events WHERE user_id=$1 AND action LIKE 'Marked order "+shortID(pooled)+"%'", x.vendor); len(got) != 1 ||
-		got[0] != "Marked order "+shortID(pooled)+" shipped" {
-		t.Fatalf("pooled audit %q", got)
-	}
+
 }
 
 // A-373: on an escrow order the buyer confirms receipt only by signing the release; the pooled Complete is refused
-// (409) and never offered, so it can never lead to a market co-signature. A pooled order completes as before.
+// (409) and never offered, so it can never lead to a market co-signature.
 func TestEscrowPooledCompleteRefusedOnEscrow(t *testing.T) {
 	x := newEscrowEnv(t)
 	order, id := x.shippedPhysical(regtestAddr("complete-refund"), regtestAddr("complete-claim"), 100000)

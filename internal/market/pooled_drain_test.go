@@ -242,7 +242,7 @@ func TestPooledDrainMigrationCarriesTheOpenFlagRule(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(b), legacyPooledFlagOpen("pm")) {
+	if !strings.Contains(strings.Join(strings.Fields(string(b)), " "), strings.Join(strings.Fields(legacyPooledFlagOpen("pm")), " ")) {
 		t.Fatal("latest drain migration's flagged_payment rule is not paymentFlagOpen(\"pm\"): redefine pooled_drain_blockers in a new migration")
 	}
 }
@@ -357,7 +357,7 @@ func TestPooledDrainWatchedAddressHorizon(t *testing.T) {
 
 func TestPooledDrainAddressCollisions(t *testing.T) {
 	f := newDrainFixture(t)
-	agExec(f.testEnv, "UPDATE payment_status SET address_collisions=2 WHERE currency='BTC'")
+	agExec(f.testEnv, "INSERT INTO payment_status(currency,network,address_collisions) VALUES('BTC','historical',2) ON CONFLICT(currency) DO UPDATE SET address_collisions=2")
 	wantRows(t, "historical collisions", drainRows(t, f.testEnv, "address_collision"), "BTC||BTC|2")
 	agExec(f.testEnv, "UPDATE payment_status SET address_collisions=0 WHERE currency='BTC'")
 	wantRows(t, "cleared legacy collision", drainRows(t, f.testEnv, "address_collision"))

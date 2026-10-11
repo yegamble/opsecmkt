@@ -59,16 +59,6 @@ func regtestOperator(t *testing.T, opURL string, urls map[string]string) (func(w
 	}, op
 }
 
-// TestEscrowRegtestPooled is A-440's leg (a): the pooled RPC user, restricted with the rpcwhitelist line the operator
-// guide documents (pooledRPCMethods), is refused listdescriptors true and gethdkeys {"private":true} (QA4W3-1) on the
-// escrow arbiter wallet on the same node, while the operator user is not (a count, never printed); likewise
-// walletprocesspsbt, which the operator user is allowed (an empty PSBT then fails decoding, -22). With escrow and the
-// pooled provider both configured
-// against that node, escrow starts (the startup self-check got Core's real HTTP 403), and the pooled provider still
-// works through every whitelisted method: the node check after an unloaded wallet (loadwallet), a deposit address, a
-// deposit credited by a watcher pass, the wallet's balance (getbalances, A-445), an address check and a payout sent by
-// the watcher, confirmed on chain.
-
 func TestEscrowRegtestArbiterRestore(t *testing.T) {
 	appURL, opURL := os.Getenv("ESCROW_REGTEST_APP_RPC_URL"), os.Getenv("ESCROW_REGTEST_OPERATOR_RPC_URL")
 	if appURL == "" || opURL == "" {
@@ -338,10 +328,7 @@ func TestEscrowRegtestArbiterRestore(t *testing.T) {
 // wallet to the wallet's own change address (createrawtransaction and signrawtransactionwithwallet as the operator
 // user; listtransactions lists no send for it, listsinceblock with include_change does), and a restart leaves escrow
 // disabled as not dedicated. What "never spent" can and cannot see: the check reads the wallet's own entries, so a
-// spend is any transaction spending its coins, change-only ones included; but rpcwhitelist is per method, not per
-// wallet, so where the pooled payments share this node a pooled user allowed sendtoaddress can spend coins paid to the
-// arbiter wallet (by naming its path) and so turn escrow off at the next check: the operator guide recommends a node of
-// escrow's own.
+// spend is any transaction spending its coins, change-only ones included; and the operator keeps wallet ACLs restricted to the dedicated escrow RPC identities.
 func TestEscrowRegtestArbiterDeposit(t *testing.T) {
 	appURL, opURL := os.Getenv("ESCROW_REGTEST_APP_RPC_URL"), os.Getenv("ESCROW_REGTEST_OPERATOR_RPC_URL")
 	if appURL == "" || opURL == "" {

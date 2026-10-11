@@ -485,10 +485,6 @@ func TestEscrowCheckoutConcurrent(t *testing.T) {
 	x.nothingWritten(loser)
 }
 
-// Everything outside escrow keeps today's pooled flow: with ESCROW_BTC on, a physical order, a digital order without
-// automatic delivery and an XMR order render exactly as with it off, and a pooled payment request on an eligible
-// listing still issues a pooled deposit address.
-
 // rotatedSecretKey provides a deterministic foreign key root for unreadable-row fixtures: 64 hex digits derived from
 // a fixed phrase, so the source holds no key-shaped literal for secret scanners to flag (A-370).
 func rotatedSecretKey() string {

@@ -332,18 +332,17 @@ func TestEscrowTakedownNote(t *testing.T) {
 		t.Fatalf("vendor cancel: %d", w.Code)
 	}
 	x.noPayouts(x.order)
-	// The pooled note is unchanged.
-	pooled := x.testEnv.order(x.buyer, x.product, "BTC", stateAwaitingPayment)
-	tx, _ := x.DB.Begin()
-	defer tx.Rollback()
-	if _, err := x.A.transition(context.Background(), tx, pooled, stateAwaitingPayment, statePaid, nil, "test payment"); err != nil {
+	// A historical non-escrow order cannot acquire a new funded state.
+	historical := x.testEnv.order(x.buyer, x.product, "BTC", stateAwaitingPayment)
+	tx, err := x.DB.Begin()
+	if err != nil {
 		t.Fatal(err)
 	}
-	var note string
-	tx.QueryRow("SELECT note FROM order_events WHERE order_id=$1 ORDER BY id DESC LIMIT 1", pooled).Scan(&note)
-	if note != "Not delivered automatically: an administrator took this listing down. The vendor can deliver by hand or cancel and refund." {
-		t.Fatalf("pooled note %q", note)
+	defer tx.Rollback()
+	if _, err := x.A.transition(context.Background(), tx, historical, stateAwaitingPayment, statePaid, nil, "test payment"); err == nil {
+		t.Fatal("historical non-escrow order reached paid")
 	}
+
 }
 
 // A-316 (QA29-3): escrow that could not start (its node down at startup) is retried by the escrow watcher on its

@@ -22,9 +22,6 @@ func TestHistoricalOrderActionMatrix(t *testing.T) {
 		want    int
 	}{{bs, 303}, {vs, 403}, {other, 404}} {
 		order := draft
-		if tc.session != bs {
-			order = e.order(buyer, product, "BTC", stateDraft)
-		}
 		w := e.do("POST", "/orders/cancel", tc.session, url.Values{"order_id": {order}, "from": {stateDraft}})
 		if w.Code != tc.want {
 			t.Errorf("draft cancel as %q: %d want %d: %s", tc.session, w.Code, tc.want, w.Body)

@@ -11,6 +11,9 @@ import (
 func insertHistoricalPayout(t *testing.T, p *payEnv, orderState, kind, userID, state, address, txid, errText string) string {
 	t.Helper()
 	order, _ := p.newOrder(orderState)
+	if _, err := p.DB.Exec(`INSERT INTO payment_addresses(order_id,currency,address,provider) VALUES($1,'BTC',$2,'btc-testnet3')`, order, "legacy-deposit-"+order[:12]); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := p.DB.Exec(`INSERT INTO payouts(order_id,kind,user_id,currency,amount,address,state,txid,error)
         VALUES($1,$2,$3,'BTC',100000,$4,$5,$6,$7)`, order, kind, userID, address, state, txid, errText); err != nil {
 		t.Fatal(err)
