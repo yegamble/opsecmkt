@@ -27,12 +27,13 @@ Read this once, before you form any opinion. Then read `CLAUDE.md`,
    2-of-3 multisig (buyer, vendor, market arbitrator keys; the server can never
    spend alone); Monero is a per-order account, custodial until multisig is
    validated. Escrow is off by default (`ESCROW_BTC`, `ESCROW_XMR`) and runs on
-   Bitcoin testnet3/testnet4/signet/regtest and Monero stagenet/fakechain only;
+   Bitcoin regtest/signet/testnet4 and Monero stagenet/fakechain only (testnet3
+   and mainnet are refused, `escrow_rpc.go`);
    a mainnet market refuses escrow at startup until A-460. The pooled wallet is
    removed (owner directive 2026-10-11: no pooled testing or drain): its history
    (`payouts`, `payment_addresses`) is read-only, migration 107 refuses a legacy
-   database that still has pooled drain blockers, and migration 108 (A-492)
-   refuses any pooled history rows. Development, tests and war-room evidence
+   database that still has pooled drain blockers, and migration 108
+   (A-492, landing with the pooled-code removal) refuses any pooled history rows. Development, tests and war-room evidence
    never use mainnet; never claim escrow for a path that is not implemented and
    verified.
 3. **Orders move only through the server-side transition table**
@@ -100,8 +101,8 @@ are **not** live-chain evidence. Merged is not released is not deployed.
   unloaded; navigation races (click → re-query before load) have caused flakes.
 - `scripts/regtest-smoke.sh` is retired (exits 2). Real-chain Bitcoin escrow legs
   run in CI via `scripts/test-escrow-regtest.sh`; Monero's real-wallet legs run
-  only by hand (`scripts/test-escrow-xmr-regtest.sh`, fakechain), so their
-  evidence is local logs, not CI.
+  on a fakechain in CI too (`escrow-xmr-regtest` job, A-498, via
+  `scripts/test-escrow-xmr-regtest.sh`).
 - **macOS `/bin/bash` is 3.2**: a failing `[[ ]]` does not stop a `set -e` script, so
   `scripts/test-*.sh` can pass falsely there. Run them with bash 5 (Homebrew) or rely on CI (Ubuntu).
 - **govulncheck may need the toolchain pinned locally**: when the tool binary is

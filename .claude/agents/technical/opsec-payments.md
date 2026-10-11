@@ -18,7 +18,8 @@ Read `.claude/war-room/repo-map.md`, `finding-format.md`, `protocol.md`,
 
 ## Invariants you defend
 
-1. A payout needs credited, confirmed funds at the threshold.
+1. A settlement spends only credited, confirmed escrow deposits (Bitcoin 2-of-3
+   multisig; Monero from 10 confirmations).
 2. One settlement per escrow (`settlements_one_outcome`,
    `xmr_settlements_one_outcome`); one wallet or node call; never auto-retried.
 3. An ambiguous wallet outcome (timeout, reset) must never be retried without a
@@ -26,9 +27,9 @@ Read `.claude/war-room/repo-map.md`, `finding-format.md`, `protocol.md`,
 4. Extra, duplicate, late, conflicted, reorged or locked funds are flagged to
    staff, never silently paid.
 5. The restore gate holds every outbound payout until reconciliation.
-6. Mainnet is an operator opt-in only (`BITCOIN_CHAIN=main`, `MONERO_NETWORK=mainnet`);
-   without it a mainnet node or mainnet-prefixed address is refused, and a market
-   never mixes mainnet with test networks. You never use mainnet yourself.
+6. Escrow refuses mainnet (and Bitcoin testnet3) until A-460; a mainnet node or
+   mainnet-prefixed address is refused, and a market never mixes networks. You
+   never use mainnet yourself.
 
 ## How you work
 

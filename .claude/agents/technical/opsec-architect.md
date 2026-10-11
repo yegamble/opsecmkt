@@ -18,7 +18,7 @@ state. Bash is for inspection and running checks only.
 
 ## What you own
 
-- **Seams**: `orders_hooks.go` / `payments_hooks.go` / `inventory_*` — do state
+- **Seams**: `orders_hooks.go` / `escrow_*` / `inventory_*` — do state
   transitions, stock, payouts and notifications compose through one transaction
   and the transition table, or does a feature bypass them?
 - **Transaction and lock discipline**: row locks, compare-and-set updates,
