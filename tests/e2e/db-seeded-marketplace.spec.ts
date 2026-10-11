@@ -3,7 +3,7 @@ import { ADMIN, uniqueHandle } from './db-fixtures';
 import { expectNotice, setRole, signedIn } from './db-helpers';
 
 // All seed records below are created through public forms against PostgreSQL.
-// No wallet is configured here; funded journeys live in wallet-journey.spec.ts.
+// Intake is paused here; funded journeys live in the separate escrow browser suites.
 test('seeded catalog discovery, role boundaries and persistent unfunded orders', async ({ browser, baseURL }) => {
   test.setTimeout(90_000);
   const seed = uniqueHandle('seed');

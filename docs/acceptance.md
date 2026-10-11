@@ -2,6 +2,10 @@
 
 This is a verification plan, not a declaration that every check has passed. Record actual results separately. A ticked line names the tests or CI job that prove it and rests on a row of the [evidence table](verification.md#evidence-table) (for Go, browser and operations tests, the green CI run on `main` at `7048c2e`, 2026-09-26); an unticked line has no such row yet, which does not mean it is unimplemented. A later change to the code a line covers needs a new green run before the tick still holds. The application uses Go server-rendered HTML and CSS with PostgreSQL; React is not required.
 
+The pooled-wallet checks below record prior-build behavior. They are historical after
+migration 107; they do not certify a pooled path in this build. Current fresh-install and
+legacy-refusal checks are listed under [Fresh-install pooled removal](#fresh-install-pooled-removal-a-448-development-branch).
+
 ## Installation and deployment
 
 - [x] A fresh install with no external database starts the PostgreSQL Compose service, waits for readiness, and applies migrations (CI installer job: `scripts/test-install.py`).
@@ -40,7 +44,14 @@ Go's [HTML template documentation](https://pkg.go.dev/html/template) describes c
 
 ## Explicit capability boundaries
 
-Starting Bitcoin or Monero nodes only provides node infrastructure. Payments additionally need a configured wallet provider, on a **test network** unless the operator configures mainnet, (Bitcoin Core wallet RPC or monero-wallet-rpc); the application then assigns receiving addresses, attributes confirmed deposits, flags conflicted ones, and sends single-attempt releases and refunds from the operator's pooled wallet. That is custodial holding, not escrow: there is no multisig settlement or fee accounting, and mainnet is refused at startup unless `BITCOIN_CHAIN=main`/`MONERO_NETWORK=mainnet` configure it. Third-party blockchain APIs are not supported. For any currency without a provider, checkout must remain explicitly non-payable: no live-looking deposit address, no pretend confirmation counter, and no claim that funds are held in escrow.
+Starting Bitcoin or Monero nodes only provides node infrastructure. New orders require the
+corresponding per-order escrow configuration: Bitcoin regtest, signet or testnet4, or Monero
+fakechain or stagenet. Both currencies are off by default and mainnet is refused. Bitcoin
+uses 2-of-3 multisignature escrow; Monero escrow is custodial, with the market holding its
+keys. Pooled payment creation and sending are removed. A legacy upgrade refuses an
+undrained database without applying migration 107; historical records remain readable
+([upgrade boundary](../UPGRADING.md#58-pooled-wallet-removal-for-fresh-installs-a-448)).
+No public-chain evidence here establishes production readiness.
 
 Saving a PGP public key is not proof of ownership and does not encrypt a message. An encryption or signature indicator requires actual cryptographic verification. Plaintext messaging must be described as plaintext. TOTP enrollment must verify a code before activation, and recovery codes need real one-time semantics. Unimplemented features (XMPP delivery, dispute evidence upload, QR-code enrollment, audio CAPTCHA) must be visibly unavailable or absent rather than return cosmetic success.
 
@@ -240,12 +251,17 @@ Covered separately: the [2026-10-10 public stagenet digital-claim record](eviden
 - [ ] The readiness panel's counts equal escrowEligible's and SQL's over the active listings, and it lists them with the reason (`TestEscrowReadinessPanelCounts`).
 - [ ] Under escrow only, a listing that cannot use escrow shows "not available for purchase" with the reason, offers no buy form or draft form in that coin, refuses a draft in it, tells its vendor the fix, and a draft saved before says why it cannot be paid (`TestEscrowOnlyListingNotAvailable`).
 - [ ] The missing-escrow-key reason applies to BTC only and only while BTC is escrow only (an inactive key counts as none); a vendor with no Bitcoin escrow key stays purchasable in XMR under XMR escrow only, through Monero escrow checkout (`TestEscrowOnlyVendorKeyGateBTCOnly`, `TestXMREscrowOnlyIgnoresBTCKey`).
-- [ ] With a coin's escrow on but not ready, the readiness panel reads "on (not ready: …)"; for Monero escrow, `/admin` names the state (waiting for the pooled wallet's first check, node unreachable, refused until a restart, …) and what to do, names no unverified network, and both go once it is ready (`TestXMREscrowRefusesPooledWalletOpen`, `TestXMREscrowStartsBesideSyncingDaemon`, `TestXMREscrowNotReadyNamesEachState`, `TestEscrowReadinessPanelCounts`).
+- [ ] With a coin's escrow on but not ready, the readiness panel reads "on (not ready: …)"; for Monero escrow, `/admin` names the state (initial escrow check, node unreachable, refused until a restart, …) and what to do, names no unverified network, and both go once it is ready (`TestXMREscrowStartsBesideSyncingDaemon`, `TestXMREscrowNotReadyNamesEachState`, `TestEscrowReadinessPanelCounts`).
 - [ ] The form and the panel work with JavaScript off at 320 px in Chromium, within the viewport (`tests/e2e/db-escrow-cutover.spec.ts`).
 
-Not covered: a cutover on a real chain or public network, and the removal of the pooled wallet that follows it (A-448).
+Not covered: a cutover on a real chain or public network. Fresh-install removal and seeded legacy refusal are a separate A-448 scope.
 
 ### Pooled wallet drain (A-445; development branch)
+
+This section records the prior drain-capable build. The current build retains the
+read-only drain function and historical views, but pooled mutation routes and
+watchers are removed. A real-market drain is unverified and is required only for
+an existing pooled deployment, not a fresh install.
 
 [Draining the pooled wallet](operator-guide.md#draining-the-pooled-wallet). These implementation checks are covered by [CI 37977057728 at a59c7a8](verification.md#evidence-table). Tiers: DB integration with the fake pooled wallet and simulated wallet RPC, the upgrade script, and the browser DB spec; the named Core leg uses real local regtest. This does not demonstrate an empty real-market drain.
 
@@ -260,7 +276,25 @@ Not covered: a cutover on a real chain or public network, and the removal of the
 - [x] An upgraded alpha.1 database lists nothing, then seeded blockers of every kind (the address by the horizon's 24-hour clause alone), then nothing once each is cleared (`scripts/test-upgrade.sh`).
 - [x] The panel, the hold and the hand settlement work with JavaScript off at 320 px and 1280 px in Chromium: the denied path, a hold, a bad transaction ID, success, and the 409 repeat from a form loaded before it (`tests/e2e/db-pooled-drain.spec.ts`).
 
-Not covered: a drain of any real or public-network pooled wallet, and the removal release (A-448).
+Not covered: a drain of any real or public-network pooled wallet. A-448 removal is built on the development branch; it is not released.
+
+### Fresh-install pooled removal (A-448; development branch)
+
+Owner scope: no existing market. Fresh installs need no drain; any legacy upgrade
+must refuse unresolved obligations. PostgreSQL fixtures are migration evidence,
+not a real-market drain.
+
+- [x] A fresh database starts with escrow-only intake; an operator pause survives upgrade.
+- [x] Migration 107 refuses undrained legacy and mainnet-history fixtures unchanged,
+  without recording its version; a restored prior database repeats the guard.
+- [x] A drained legacy fixture keeps orders, addresses, deposits and sent payout records.
+- [x] Removed pooled POST routes cannot create addresses, dispositions or payouts;
+  historical account, order and administrator records remain readable.
+- [x] Historical pooled addresses still trigger all four escrow reuse refusals.
+- [ ] Installer/configuration, upgrade regression and independent review pass at the
+  recorded removal revision. Actual Sparrow and Ledger Flex signing remain unverified.
+
+Native checks: the fresh/legacy/drain/privacy/refund/claim race selection passed on PostgreSQL 16 (24.516 s); the historical pooled fee-destination refusal passed separately (3.198 s). Historical browser records passed at 320 and 1280 px; changed dispute, review and intake cases passed. Ten Bitcoin and eight Monero simulated escrow browser journeys passed. Final full CI, including PostgreSQL 17 and Docker upgrade/restore checks, is pending.
 
 ### P6 Transparency
 

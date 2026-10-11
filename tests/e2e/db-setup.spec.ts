@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { expect, test } from '@playwright/test';
 import { ADMIN, FIXTURE_LISTING, SETUP_TOKEN } from './db-fixtures';
 
@@ -11,6 +12,11 @@ test('initialize the market and publish the fixture listing', async ({ page, bro
   await expect(page).toHaveURL(/\/admin\?welcome=1$/);
   await expect(page.getByRole('heading', { name: 'Get your marketplace ready' })).toBeVisible();
   await expect(page.locator('.account-name')).toHaveText(ADMIN.handle);
+  // The general browser suite exercises explicitly unfunded drafts with intake paused.
+  // Fresh default escrow-only readiness is checked separately; no pooled checkout exists.
+  execFileSync('psql', [process.env.E2E_DATABASE_URL!, '-v', 'ON_ERROR_STOP=1', '-qtAc',
+    "UPDATE settings SET value='false' WHERE key IN ('payment_intake_BTC','payment_intake_XMR')"]);
+
   await page.goto('/vendor-dashboard');
   await page.getByText('+ Publish a new listing', { exact: true }).click();
   await page.getByLabel('Listing title').fill(FIXTURE_LISTING);

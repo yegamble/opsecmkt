@@ -35,7 +35,7 @@ test('desktop: register, draft, profile persistence and sign-out', async ({ page
   await page.getByLabel('Pay with').selectOption('XMR');
   await page.getByRole('button', { name: 'Create unfunded draft' }).click();
   await expect(page).toHaveURL(/\/order\?id=/);
-  await expect(page.getByRole('heading', { name: 'Payment is unavailable' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Unfunded draft' })).toBeVisible();
   await expect(page.locator('.total')).toContainText('XMR');
   await expect(page.locator('.page-head .badge')).toHaveText('Draft — unfunded');
   await fits(page);

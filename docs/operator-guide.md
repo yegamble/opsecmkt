@@ -4,6 +4,24 @@ Deployment, feature configuration, migrations and recovery reference. Start with
 [the README](../README.md) for product context and local development. Commands
 below run from the repository root.
 
+**Fresh-install development build:** pooling has been removed. Only per-order escrow
+on the supported test networks can request payment. Both escrow adapters stay off
+by default. Nonblank pooled RPC settings and the legacy `monero-wallet` profile
+must be removed after draining with the prior build; see
+[UPGRADING section 58](../UPGRADING.md#58-pooled-wallet-removal-for-fresh-installs-a-448).
+The pooled-payment, mainnet, cutover and drain procedures below describe the
+previous migration-106 drain-capable build. Keep that build available for any
+legacy obligations; this server retains records but cannot process them.
+
+
+Current Bitcoin operator setup provisions the escrow RPC user; configure the
+dedicated signer RPC user separately using the signer instructions below.
+it does not provision a pooled user. Before reusing an old node, remove the old
+pooled user's `rpcauth` and `rpcwhitelist` entries and unload its pooled wallet
+only after saving recovery and completing the prior-build drain. Provision the
+new escrow users with `scripts/escrow-node-setup.sh`; separate arbiter, watch and
+signer protections still apply.
+
 ## Installer
 
 `scripts/install.sh` installs a checkout and maintains it afterwards. It fetches nothing itself (Docker builds and pulls the images). After `init` it changes `.env` only by rewriting the lines it names through a temporary file moved into place (mode `0600`; every other line stays byte for byte). It prints one secret, the setup token, and only at the end of `init` and from `setup-token`.
@@ -19,7 +37,7 @@ below run from the repository root.
 | `add-scanner`, `refresh-scanner` | Add the ClamAV malware scanner that photo uploads need, and refresh its signatures: see [Photo uploads and the malware scanner](#photo-uploads-and-the-malware-scanner). |
 | `upgrade [--no-backup]` | After `git pull`: see [UPGRADING.md](../UPGRADING.md). |
 
-Flags answer `init`'s questions: `--tor` or `--clearnet`; `--local` (loopback HTTP, internal database, no nodes); `--external-db URL` (without it, a flagged install gets the internal database); `--behind-proxy yes|no` (clearnet: secure cookies behind an HTTPS proxy, or local HTTP only); `--nodes local|none|custom` (`local` runs pruned Bitcoin testnet4 and Monero stagenet nodes with the [default images](#node-image-versions), `custom` asks per coin); and per coin `--bitcoin` or `--monero` `local|external|disabled`, `--bitcoin-image`, `--bitcoin-network testnet4|signet`, `--bitcoin-prune yes|no`, `--bitcoin-rpc-url`, and the Monero equivalents with `--monero-wallet-rpc-url`. `--uploads yes` also sets up the [malware scanner](#photo-uploads-and-the-malware-scanner) as `add-scanner` does (the default, `no`, leaves it out and asks nothing). `./scripts/install.sh --help` lists them. A question without its flag is asked. A value given as a flag, such as an RPC URL with a password, is visible to other local users while the installer runs; answer the question instead to keep it off the command line.
+Flags answer `init`'s questions: `--tor` or `--clearnet`; `--local` (loopback HTTP, internal database, no nodes); `--external-db URL` (without it, a flagged install gets the internal database); `--behind-proxy yes|no` (clearnet: secure cookies behind an HTTPS proxy, or local HTTP only); `--nodes local|none|custom` (`local` runs pruned Bitcoin testnet4 and Monero stagenet nodes with the [default images](#node-image-versions), `custom` asks per coin); and per coin `--bitcoin` or `--monero` `local|disabled`, `--bitcoin-image`, `--bitcoin-network regtest|testnet4|signet`, `--bitcoin-prune yes|no`, and the Monero equivalents restricted to stagenet. For externally hosted nodes, use `--nodes none` and configure the separate `ESCROW_BTC_*` or `ESCROW_XMR_*` credentials afterwards; the installer does not create a pooled wallet or enable Bitcoin escrow by creating a node. `--uploads yes` also sets up the [malware scanner](#photo-uploads-and-the-malware-scanner) as `add-scanner` does (the default, `no`, leaves it out and asks nothing). `./scripts/install.sh --help` lists them. A question without its flag is asked. A value given as a flag, such as an RPC URL with a password, is visible to other local users while the installer runs; answer the question instead to keep it off the command line.
 
 The setup token opens `/setup` once. After setup, `status`, `add-mirror` and `upgrade` remove it from `.env` when `APP_SECRET_KEY` is set and the running app reports `keyroot=app_secret_key` (the next `docker compose up -d` drops it from the running app); it grants nothing by then. An app started before `.env` had `APP_SECRET_KEY` still derives its keys from the token, so the token stays until the app is recreated.
 
@@ -64,7 +82,7 @@ server {
 
 `$host` drops the port. If visitors reach the proxy on a non-default port (for example `https://market.example.com:8443`), use `proxy_set_header Host $http_host;` so the forwarded `Host` keeps the port their browser puts in `Origin`. Other proxies need their equivalent setting (for example `ProxyPreserveHost On` in Apache). The onion services (including the mirror) need nothing: Tor's `HiddenServicePort` forwards the connection unchanged, so the app receives the `.onion` `Host` the browser sent.
 
-`APP_MODE` in `.env` (`clearnet` or `tor`, set by the installer) must be one of those two: any other value stops the server. It changes one behaviour: with `APP_MODE=tor` and [Bitcoin escrow](#bitcoin-escrow-test-networks-only) on, a settlement is broadcast only through an escrow node that sends through a proxy for both IPv4 and IPv6 on Bitcoin Core 31.1 or later (*Tor mode* under Bitcoin escrow, A-441); otherwise escrow broadcasts wait. It routes nothing itself, and pooled payouts are unaffected (they are never private, below). Routing the local nodes through Tor is [`compose.nodes-tor.yaml`](#local-nodes-over-tor), which `check` accepts only with `APP_MODE=tor`. The Compose overlay in `COMPOSE_FILE` decides exposure, and `COOKIE_SECURE` decides whether cookies are marked Secure. Compose passes `COMPOSE_FILE` to the app, which refuses to start when it disagrees with `APP_MODE`: `tor` needs `compose.tor.yaml` in it, `clearnet` needs `compose.clearnet.yaml`, and never both (a blank `COMPOSE_FILE` skips this check). `COOKIE_SECURE` must be exactly `true` or `false` (unset means `true`); `APP_MODE=tor` with `COOKIE_SECURE=true` only logs a warning: the onion is served over plain HTTP, so the Secure session cookie works only in browsers that treat `.onion` addresses as secure (the installer writes `false` for Tor).
+`APP_MODE` in `.env` (`clearnet` or `tor`, set by the installer) must be one of those two: any other value stops the server. It changes one behaviour: with `APP_MODE=tor` and [Bitcoin escrow](#bitcoin-escrow-test-networks-only) on, a settlement is broadcast only through an escrow node that sends through a proxy for both IPv4 and IPv6 on Bitcoin Core 31.1 or later (*Tor mode* under Bitcoin escrow, A-441); otherwise escrow broadcasts wait. It routes nothing itself. Routing the local nodes through Tor is [`compose.nodes-tor.yaml`](#local-nodes-over-tor), which `check` accepts only with `APP_MODE=tor`. The Compose overlay in `COMPOSE_FILE` decides exposure, and `COOKIE_SECURE` decides whether cookies are marked Secure. Compose passes `COMPOSE_FILE` to the app, which refuses to start when it disagrees with `APP_MODE`: `tor` needs `compose.tor.yaml` in it, `clearnet` needs `compose.clearnet.yaml`, and never both (a blank `COMPOSE_FILE` skips this check). `COOKIE_SECURE` must be exactly `true` or `false` (unset means `true`); `APP_MODE=tor` with `COOKIE_SECURE=true` only logs a warning: the onion is served over plain HTTP, so the Secure session cookie works only in browsers that treat `.onion` addresses as secure (the installer writes `false` for Tor).
 
 Configure DNS, firewall and the certificate issuer for your domain. A proxy in another container needs a private shared network instead of this host-loopback configuration. Never expose the database or node RPC ports.
 
@@ -103,7 +121,7 @@ In a Tor deployment, create a second onion address with its own persistent ident
 ./scripts/install.sh add-mirror
 ```
 
-It adds `mirror` to `COMPOSE_PROFILES` in `.env`, keeping the profiles already there, starts the mirror, waits up to 90 seconds for its address and prints both addresses and the command that backs up the mirror's keys. It refuses on a clearnet install, and running it again changes nothing. To do the same by hand, first add `mirror` to `COMPOSE_PROFILES` in `.env`, keeping the profiles already there: the installer's default Tor install has `COMPOSE_PROFILES='internal-db,bitcoin,monero,monero-wallet'`, which becomes `COMPOSE_PROFILES='internal-db,bitcoin,monero,monero-wallet,mirror'`; `COMPOSE_PROFILES='internal-db'` becomes `COMPOSE_PROFILES='internal-db,mirror'`, and an empty value becomes `COMPOSE_PROFILES='mirror'`. Then:
+It adds `mirror` to `COMPOSE_PROFILES` in `.env`, keeping the profiles already there, starts the mirror, waits up to 90 seconds for its address and prints both addresses and the command that backs up the mirror's keys. It refuses on a clearnet install, and running it again changes nothing. To do the same by hand, first add `mirror` to `COMPOSE_PROFILES` in `.env`, keeping the profiles already there: the installer's default Tor install has `COMPOSE_PROFILES='internal-db,bitcoin,monero'`, which becomes `COMPOSE_PROFILES='internal-db,bitcoin,monero,mirror'`; `COMPOSE_PROFILES='internal-db'` becomes `COMPOSE_PROFILES='internal-db,mirror'`, and an empty value becomes `COMPOSE_PROFILES='mirror'`. Then:
 
 <!-- ops-cmd: onion-mirror -->
 ```sh
@@ -297,7 +315,8 @@ Every service has a memory, CPU and process ceiling, so a flood, a leak or a run
 | `tor-socks` | 256m | 1 | 64 | The nodes' Tor client, only with [`compose.nodes-tor.yaml`](#local-nodes-over-tor); `MaxMemInQueues 128 MB` in `deploy/torrc-socks`. |
 | `bitcoin` | 2g | 2 | 256 | A pruned test-network node: its database cache and mempool (at most 300 MB by default) plus headroom for the initial sync. Raise it for an unpruned node or a larger `-dbcache`. |
 | `monero` | 2g | 2 | 512 | monerod starts threads per core for sync and verification. |
-| `monero-wallet` | 512m | 1 | 128 | |
+| `monero-escrow-wallet` | 1g | 1 | 128 | Dedicated Monero escrow wallet-rpc, only with its profile. |
+| `escrow-signer` | 128m | 1 | 64 | Dedicated Bitcoin escrow signer, only with its profile. |
 | `clamd` | 3g | 2 | 256 | The [malware scanner](#photo-uploads-and-the-malware-scanner), only when it is on. It holds ClamAV's signatures in memory: 1035 MiB at its peak with ClamAV 1.5.4 and the signatures of 21 September 2026 (`scripts/test-scanner.sh` prints it), and `ConcurrentDatabaseReload no` keeps a reload from loading a second copy. The figures are provisional until war room A-196 measures scans at the upload limits. |
 
 CPUs are set as `cpu_quota` over `cpu_period` (`cpu_period: 100000` and `cpu_quota: 200000` is 2 CPUs), not with `cpus`: Docker refuses to create a container whose `cpus` exceeds the host's CPU count, so `cpus: 2` would stop the app from starting on a 1-CPU server, while a quota simply never binds there. `pids_limit` counts threads as well as processes. The limits are ceilings, not reservations: a host smaller than their sum still starts everything, but the ceilings then protect it less. When a container reaches its memory limit the kernel kills its process and Docker restarts it (`restart: unless-stopped`); `docker inspect --format '{{.State.OOMKilled}} {{.RestartCount}}' "$(docker compose ps -q app)"` shows whether that happened. A CPU limit only slows a container down; at its process limit new threads fail to start.
@@ -331,31 +350,29 @@ services:
 
 ## Optional cryptocurrency nodes
 
-The installer asks for each coin (bare `./scripts/install.sh`, or `init --nodes custom`; `--nodes local` takes every default below) whether to run a `local` node in Docker (the default; pruned unless you answer `no`, see [Local node pruning](#local-node-pruning)), use an `external` node you run elsewhere, or leave that coin `disabled`. `scripts/install.sh --local` (developer mode) never starts nodes. For a local node, the installer defaults to [`bitcoin/bitcoin:31.1`](https://hub.docker.com/r/bitcoin/bitcoin) for Bitcoin Core and Seth for Privacy's [`simple-monerod:v0.18.5.1`](https://github.com/sethforprivacy/simple-monerod-docker) plus [`simple-monero-wallet-rpc:v0.18.5.1`](https://github.com/sethforprivacy/simple-monero-wallet-rpc-docker) images for Monero (see [Node image versions](#node-image-versions)). Press Enter to use these defaults or supply an image override. The Bitcoin image is community-published and explicitly unofficial; it verifies upstream Bitcoin Core binaries. The Monero images are community-maintained, not published by the Monero project. Review publisher and image provenance before use. A tag can be re-pushed by its publisher; append an immutable `@sha256:<64 lowercase hex characters>` digest in `.env` for a reproducible deployment. Bitcoin and Monero use the same daemon image on test and live networks; the network is selected with daemon flags, not by changing the image. The installer offers Bitcoin `testnet4`, `signet` or `live`, and Monero `stagenet`, `testnet` or `live`. `live` writes `BITCOIN_CHAIN=main` or `MONERO_NETWORK=mainnet` (plus a blank `MONERO_NETWORK_FLAG`, because monerod and monero-wallet-rpc have no `--mainnet` flag) and makes this a [mainnet market](#mainnet). One market cannot mix the two: choosing `live` for one coin and a test network for the other exits before writing `.env`. A mainnet node needs far more disk and a much longer first sync than the test-network estimates below.
+The installer can run local Bitcoin and Monero **daemon** containers, or leave them disabled. Local nodes are infrastructure only: adding a node does not turn payments on. Bitcoin escrow is off unless `ESCROW_BTC=on` is configured after its escrow RPC users and wallets are provisioned; it supports regtest, signet and testnet4. Monero escrow is off unless `ESCROW_XMR=on` is configured with its separate wallet-rpc, seed key and secret; the bundled node setup supports stagenet. Mainnet and Monero testnet are not supported for escrow, and this build refuses mainnet configurations.
 
-Both nodes store their blockchain in dedicated volumes and publish no ports. Even pruned, they need several GB of disk and hours for the first synchronization (sizes below). Bitcoin RPC is password protected; its allowlist covers common private Docker subnets and must be adjusted for custom networking. Monero exposes restricted daemon RPC only inside the deployment network. A Monero daemon is **not** a wallet RPC service. Full-node availability alone does not provide payment processing.
+The installer defaults to [`bitcoin/bitcoin:31.1`](https://hub.docker.com/r/bitcoin/bitcoin) and Seth for Privacy's [`simple-monerod:v0.18.5.1`](https://github.com/sethforprivacy/simple-monerod-docker) (see [Node image versions](#node-image-versions)). The separate [`simple-monero-wallet-rpc:v0.18.5.1`](https://github.com/sethforprivacy/simple-monero-wallet-rpc-docker) image is used only for Monero escrow. Press Enter to use the pinned defaults or supply an image override. The Bitcoin image is community-published and explicitly unofficial; it verifies upstream Bitcoin Core binaries. The Monero images are community-maintained, not published by the Monero project. Review publisher and image provenance before use. A tag can be re-pushed by its publisher; append an immutable `@sha256:<64 lowercase hex characters>` digest in `.env` for a reproducible deployment.
 
-**Payments run on test networks unless you configure mainnet** ([Mainnet](#mainnet)). With a wallet RPC configured (see [Payments](#payments)), the app issues deposit addresses, watches confirmations and sends single-attempt releases and refunds from the operator's pooled wallet. That is custodial holding, not multisig escrow, and there is no fee accounting. On a test-network market, do not send mainnet coins. Providers are enabled by environment variables and a restart. Saving settings in the web application never installs software, launches containers or executes Docker. Operators apply deployment changes in `.env` and Compose themselves; the web container has no Docker socket.
+Local nodes store their chains in dedicated volumes and publish no ports. Even pruned, they need several GB of disk and hours for the first synchronization (sizes below). Bitcoin RPC is password protected; its allowlist covers common private Docker subnets and must be adjusted for custom networking. Monero exposes restricted daemon RPC only inside the deployment network. A Monero daemon alone is not a wallet RPC. For externally hosted escrow nodes, configure the `ESCROW_BTC_*` or `ESCROW_XMR_*` settings manually; the installer does not provision external-node credentials. The obsolete pooled settings (`BITCOIN_RPC_URL`, `BITCOIN_WALLET`, `MONERO_RPC_URL` and `MONERO_WALLET_RPC_URL`) are refused, not used for escrow.
 
 ### Node image versions
 
-The node images default to release tags, never `latest`: `bitcoin/bitcoin:31.1` (Bitcoin Core v31.1), `ghcr.io/sethforprivacy/simple-monerod:v0.18.5.1` and `ghcr.io/sethforprivacy/simple-monero-wallet-rpc:v0.18.5.1` (Monero v0.18.5.1). They are the versions the payout failure rules were checked against. When a send fails, the application decides from the wallet's error whether nothing was broadcast (a definite rejection an administrator may requeue) or the send may have gone out (ambiguous: requeueing needs a wallet check, see [Payments](#payments) and the [runbook](testnet-runbook.md#5-recover-a-held-or-failed-payout)). The Monero "nothing broadcast" table (`moneroPreSubmitCodes` in `internal/market/payments_watcher.go`: -2, -16, -17, -18, -19, -20, -37) holds for **monero-wallet-rpc v0.18.5.1**; the Bitcoin rule that every `sendtoaddress` error is definite was read from Bitcoin Core v31.1. A newer wallet could raise one of those codes after it has submitted the transaction, and the administrator would then be offered a requeue that pays twice.
+The bundled defaults are release tags, never `latest`: `bitcoin/bitcoin:31.1` (Bitcoin Core v31.1), `ghcr.io/sethforprivacy/simple-monerod:v0.18.5.1` and, for the Monero escrow wallet-rpc, `ghcr.io/sethforprivacy/simple-monero-wallet-rpc:v0.18.5.1` (Monero v0.18.5.1). `MONERO_WALLET_IMAGE` overrides the escrow wallet-rpc image; it is not a pooled payment provider. The Bitcoin node and Monero daemon serve escrow only when the corresponding escrow configuration is enabled. The Bitcoin image is community-published and explicitly unofficial; the Monero images are community-maintained. Review publisher and image provenance before use.
 
-`BITCOIN_IMAGE`, `MONERO_IMAGE` and `MONERO_WALLET_IMAGE` in `.env` override the defaults. An `.env` that sets any of them to `:latest` (as the installer did before these tags were pinned) or to no tag keeps floating: change it to the tags above, optionally with `@sha256:<digest>` appended (`docker buildx imagetools inspect <image:tag>` prints the digest). CI's Compose job fails if a default in `compose.nodes.yaml` is `latest` or untagged; it cannot see your `.env`.
+`BITCOIN_IMAGE`, `MONERO_IMAGE` and `MONERO_WALLET_IMAGE` in `.env` override the defaults. Keep release tags pinned (optionally append `@sha256:<digest>`); do not use `:latest`. CI checks the Compose defaults but cannot see a deployment's `.env`. When changing a node image, review its release provenance and verify its RPC behavior against the supported escrow setup. Run the relevant escrow regression (`scripts/test-escrow-regtest.sh`, `scripts/test-escrow-xmr-regtest.sh`) and configuration tests before adopting it. Public-network claims remain limited to the frozen evidence records linked from the Bitcoin and Monero escrow sections; do not infer other journey coverage from a node version change.
 
 Before changing a tag (default or `.env`):
 
-1. Monero: read the new release's wallet source and re-verify every code in `moneroPreSubmitCodes`: each must still be raised only before `wallet2::commit_tx` submits anything (`src/wallet/wallet_rpc_server_error_codes.h`; `validate_transfer`, `on_transfer` and `handle_rpc_exception` in `src/wallet/wallet_rpc_server.cpp`; `commit_tx` in `src/wallet/wallet2.cpp`). Remove any code that can now follow a submission, and update the version and line references in the comment and in [implementation status P5](implementation-status.md#p5-payments). Check that `transfer` still honours `subtract_fee_from_outputs` (every payout, releases included, takes the fee from the amount sent). Set `moneroVerifiedWalletRelease` to the new tag and `moneroVerifiedWalletRPC` to the `WALLET_RPC_VERSION` it defines (`src/wallet/wallet_rpc_server_commands_defs.h`, `(major<<16)|minor`); until both change, the application treats the new wallet as unverified. Move `MONERO_IMAGE` and `MONERO_WALLET_IMAGE` to the same release.
-2. Bitcoin: check that `sendtoaddress` still stores the transaction in the wallet before submitting it and returns the txid, not an error, when relay fails (`src/wallet/rpc/spend.cpp`, `CWallet::CommitTransaction` in `src/wallet/wallet.cpp`), and update the `walletRejected` comment.
-3. Change the tag in `compose.nodes.yaml`, `.env.example` and `scripts/install.sh` in the same commit. `tests/test_installer.py` fails if the three disagree, if a default is `latest`, or if the versions named in the `payments_watcher.go` comments or `moneroVerifiedWalletRelease` do not match the tags.
-4. Run the payment tests (`TEST_DATABASE_URL=<dedicated test database> go test -race -count=1 -timeout 30m ./...` and `E2E_WALLET_DATABASE_URL=<fresh database> npm run test:e2e:wallet`, both against simulated wallets) and, preferably, the [local-chain journey](local-chain-testing.md) against the new images.
-5. Bitcoin escrow (A-446): set up a regtest node from the new image with `scripts/escrow-node-setup.sh --chain regtest` and check it with `--verify` (the whitelists still answer what the app calls and Core still refuses the pooled user `listdescriptors`, `gethdkeys` and `walletprocesspsbt` with HTTP 403), run `scripts/test-escrow-regtest.sh` against it (and `--private-signet` with `ESCROW_SIGNET_IMAGE` set to the new image), and, before the new version backs any public-network claim, run `scripts/test-escrow-public.sh` with `ESCROW_PUBLIC_NODE_IMAGE` naming it and commit the record it writes ([Escrow node set-up and the public-network smoke](#escrow-node-set-up-and-the-public-network-smoke)).
+1. Review the publisher, release and immutable digest; keep the Bitcoin daemon, Monero daemon and escrow wallet-rpc tags pinned to reviewed releases.
+2. Change the corresponding defaults in `compose.nodes.yaml`, `.env.example` and `scripts/install.sh` together, then run installer and Compose configuration tests.
+3. For Bitcoin, run `scripts/escrow-node-setup.sh --chain regtest --verify` and `scripts/test-escrow-regtest.sh`; for Monero, run `scripts/test-escrow-xmr-regtest.sh`. These local regression checks do not create new public-network evidence. `scripts/test-escrow-public.sh` contacts public nodes; run it only as a separately scoped public-network check and do not treat a node image change as evidence for an untested journey.
 
-**Runtime wallet check.** monero-wallet-rpc does not report its release. Its `get_version` answers the version of its RPC interface as one number, `(major<<16)|minor`, and whether it is a release build; v0.18.5.1 reports 1.31 (65567) from a release build (`WALLET_RPC_VERSION` in [`src/wallet/wallet_rpc_server_commands_defs.h`](https://github.com/monero-project/monero/blob/v0.18.5.1/src/wallet/wallet_rpc_server_commands_defs.h); v0.18.5.0 reports 1.30, v0.18.4.1 to v0.18.4.5 report 1.29). The application reads `get_version` at startup and at the start of every watcher pass. While the answer is anything but 1.31 from a release build, the call fails, or the last check failed before reading it, every Monero send failure is recorded as possibly broadcast (so requeueing it needs the wallet confirmation), and the *Payment providers* panel of `/admin` says "XMR wallet version not verified", names the version the wallet reported and points here; that payouts take the fee from the amount sent is then unverified too. The panel's *Version* column also shows the Bitcoin Core version from `getnetworkinfo`; the Bitcoin rule does not depend on it. The RPC version changes only when the wallet's RPC changes, not with every release, so a later release with an unchanged RPC reports 1.31 and is not detected. With a wallet version nobody has verified (a newer tag, a `latest` left in `.env`, or your own image), **treat every Monero send failure as possibly broadcast** even if the panel shows no warning: check the wallet as for an ambiguous failure ([runbook step 5](testnet-runbook.md#5-recover-a-held-or-failed-payout)) before requeueing a failed XMR payout.
+**Runtime wallet check.** The former pooled-payment runtime check for Monero payout error codes was removed with pooled payments. Current Monero escrow readiness checks the daemon network and hard fork, the escrow wallet-rpc's attachment and height, the database's pinned wallet secret, and the seed-key fingerprint; it does not classify payout errors or authorize pooled sends.
 
 ### Local node pruning
 
-Local nodes are **pruned by default**; a full node is an explicit opt-in per coin. The application only needs a node's current state and its wallet: Bitcoin is used through `getblockchaininfo`, `validateaddress` and wallet RPCs (`getwalletinfo`, `loadwallet`, `getnewaddress`, `listreceivedbyaddress`, `gettransaction`, `sendtoaddress`, and `getbalances` for the drain panel's advisory balance), Monero through the daemon's `get_info` and `monero-wallet-rpc`. Nothing in it reads old blocks.
+Local nodes are **pruned by default**; a full node is an explicit opt-in per coin. Bitcoin escrow uses chain state and wallet RPCs of its dedicated node; Monero escrow uses the daemon's restricted `get_info` and a separate escrow wallet-rpc. Historical pooled payments no longer run. Nothing in the application reads old blocks, though a wallet restore may need blocks older than a pruned node retains (see the restore trade-off below).
 
 | `.env` key | Default | Full node |
 | --- | --- | --- |
@@ -551,6 +568,8 @@ To remove another vendor's listing (for example counterfeit or prohibited goods)
 
 ### Payments
 
+**Historical reference only — pooled payments in the migration-106 drain-capable build.** The material from here through the *Mainnet* subsection is retained to explain old records and the prior-build drain/recovery procedure. It is not supported configuration for this build: nonblank pooled RPC settings and the old `monero-wallet` profile are refused, pooled payment routes are removed, and this release never takes mainnet payments. For current operation, use the [Bitcoin escrow](#bitcoin-escrow-test-networks-only) and [Monero escrow](#monero-escrow-fakechain-or-stagenet) sections, or leave intake paused.
+
 **Test networks by default; these payments move no real funds.** The application refuses to start if a node or wallet is on mainnet without `BITCOIN_CHAIN=main`/`MONERO_NETWORK=mainnet`, or disagrees with `BITCOIN_CHAIN`/`MONERO_NETWORK` (blank accepts whichever test network the node reports). To take real payments see [Mainnet](#mainnet). A node that is unreachable, still syncing or has no wallet loaded does **not** stop the site: that currency shows as unavailable on the admin page, payment requests for it are refused, and every watcher pass checks it again (reloading the Bitcoin wallet or reopening the Monero wallet after a node restart). A node that reports another network after startup disables its currency until the app is restarted. A currency with a blank URL stays disabled, and the site then says "Payments disabled". Step-by-step setup, wallet creation and payout recovery: [docs/testnet-runbook.md](testnet-runbook.md). Upgrading from v0.1.0-alpha.1: [UPGRADING.md](../UPGRADING.md).
 
 - Bitcoin: `BITCOIN_RPC_URL` is a wallet-enabled Bitcoin Core RPC. Credentials go in the URL userinfo (`http://marketplace:PASSWORD@bitcoin:8332`); they are sent as HTTP Basic auth and never logged. `BITCOIN_WALLET` (default `opsecmkt`) must exist; the app loads it if needed. Create it once as shown in the [runbook](testnet-runbook.md#2-create-the-bitcoin-wallet) (inside the compose container `bitcoin-cli` needs `-rpcport=8332 -rpcuser=marketplace`). `BITCOIN_CHAIN` (blank, `testnet4`, `signet`, `regtest`, or `main` for mainnet) must match the node when set; the local node service runs `testnet4` when it is blank. `PAYMENT_CONFIRMATIONS_BTC` defaults to 3; use 1 for regtest.
@@ -673,12 +692,12 @@ Operational limits to accept before enabling payments:
 
 **Off by default, test networks only (regtest, signet or testnet4), and not released.** [Per-order escrow](escrow.md)
 is being built in phases. This build contains its first two phases for Bitcoin: Phase 2 (physical orders, below) adds to the first, which is: a user registers the key their own wallet signs escrow with
-and activates it by signing a practice transaction, and the buyer of a digital listing with automatic delivery can
-pay into a 2-of-3 escrow instead of the pooled wallet; the order completes when the escrow is funded. The vendor's
-claim, refunds, an administrator's dispute decisions and the return of coins sent after an order closed are built by
-the server, signed by the buyer or the vendor in their own wallet, and co-signed, broadcast and followed to their
-confirmations by the market (see *Settlements* below). Every other order still goes through the pooled wallet above,
-which stays the default. It is built and tested on regtest and on a private signet (see *What was checked* below).
+and activates it by signing a practice transaction, and the buyer of an eligible listing can pay into a 2-of-3 escrow;
+the order completes when the escrow is funded. The vendor's claim, refunds, an administrator's dispute decisions and
+the return of coins sent after an order closed are built by the server, signed by the buyer or the vendor in their own
+wallet, and co-signed, broadcast and followed to their confirmations by the market (see *Settlements* below). Other
+orders cannot use Bitcoin payment in this release unless they qualify for escrow checkout; there is no pooled fallback.
+It is built and tested on regtest and on a private signet (see *What was checked* below).
 Since A-443 it also runs on signet and testnet4, with the preconditions below. The recorded public signet
 smoke covers practice signatures, a digital claim and underpaid buyer refund; public testnet4 and other
 public journeys remain unverified ([runbook](testnet-runbook.md#11-bitcoin-escrow-on-signet-or-testnet4)). Never switch it on for a market that takes real payments.
@@ -689,8 +708,7 @@ public journeys remain unverified ([runbook](testnet-runbook.md#11-bitcoin-escro
   "refusing to start: ESCROW_BTC=on runs only on regtest, signet or testnet4 …". An unreachable node or an unreadable arbiter wallet
   leaves escrow disabled with one log line starting `escrow: Bitcoin escrow disabled:`, and the market runs
   without it. The escrow watcher then runs the same checks again every `PAYMENT_POLL_INTERVAL`, with the same
-  guards (an escrow chain, the chain pin and the pinned arbiter fingerprint below, the pooled user refused the arbiter wallet as
-  *The pooled RPC user* below describes, a watch-only wallet without private keys), and escrow
+  guards (an escrow chain, the chain pin and the pinned arbiter fingerprint below, and a watch-only wallet without private keys), and escrow
   starts without a restart once they pass ("escrow: Bitcoin escrow on (test networks only)"). A line is logged when the
   state changes, not on every retry. A retry that finds the node on another chain, or refusing
   `ESCROW_BTC_FEE_ADDRESS`, cannot stop the running market: it logs "escrow: Bitcoin escrow disabled until the app
@@ -700,8 +718,7 @@ public journeys remain unverified ([runbook](testnet-runbook.md#11-bitcoin-escro
   default RPC port is 38332 on signet and 48332 on testnet4).
 - **Signet and testnet4 (A-443).** Escrow accepts them only with the safeguards built for a public chain, all of which
   apply as this section describes: the sync guard with its peer and tip-age checks (*Sync guard*), the chain pin with
-  the signet challenge (*Chain pin*), the market key self-check (*The pooled RPC user*: give the pooled user its
-  whitelist, or run escrow on a node of its own) and, with `APP_MODE=tor`, the broadcast gate and the stall alert
+  the signet challenge (*Chain pin*), the arbiter-wallet ownership and transaction checks below and, with `APP_MODE=tor`, the broadcast gate and the stall alert
   (*Tor mode*, *Queued or stuck*). Both chains use `tb1…` addresses; an address given in capitals (`TB1…`, as some
   wallets show it for a QR code) is stored and paid in lower case, as `BCRT1…` is on regtest. A database never
   changes chain once it holds an escrow, so start a signet or testnet4 market on a new database. What has run: the
@@ -730,7 +747,7 @@ public journeys remain unverified ([runbook](testnet-runbook.md#11-bitcoin-escro
   memory: 3000 bumps (measured once on Core 31.1 regtest) made a 605 MB answer, 15 to 18 s from Core and 16 s for the
   app's read, and Core's memory grew by about 1.5 GB per such answer without giving it back, so a node held to 5 GiB
   (a Docker memory limit) was killed by the third read in a row. **Run escrow on a node of its own**, so that such a
-  burst cannot take the pooled payments down with it, and give that node memory to spare (each such read grew Core by
+  burst cannot starve the application or other node workloads, and give that node memory to spare (each such read grew Core by
   about 1.5 GB). A read that fails or outlasts the 5-minute timeout below leaves escrow off ("could not be read",
   never "must be used for the escrow key only") until a replacement is mined; then Core lists the others no more (3000
   bumps: one 202 KB entry) and the next read passes on its own, once the wait after a slow read has passed (*Reads are
@@ -770,10 +787,7 @@ public journeys remain unverified ([runbook](testnet-runbook.md#11-bitcoin-escro
   Bitcoin escrow disabled: the arbiter wallet's transactions could not be read …" (and an `/admin` line naming the
   class), and the check is retried every poll, or after a wait when the read took 5 s or more or timed out (*Reads are
   paced*, below). The answer as a whole has no size limit
-  (100,000 entries are about 71 MB), only the read's 5-minute timeout. What the check cannot tell apart: `rpcwhitelist` allows methods, not wallets, so
-  where the pooled payments share this node, a pooled user allowed `sendtoaddress` can spend coins paid to the arbiter
-  wallet by naming its path, and that spend turns escrow off at the next check (no key is exported). Run escrow on a
-  node of its own to rule that out. It cannot check which descriptors the wallet holds (`listdescriptors` is not on the
+  (100,000 entries are about 71 MB), only the read's 5-minute timeout. A reused node may still have a legacy pooled RPC user. This release refuses its obsolete URL, and the application no longer probes that identity. Remove the old credentials and whitelist entries after draining the prior installation; restrict the escrow RPC user to its documented methods, because RPC method whitelists are not wallet-level permissions. It cannot check which descriptors the wallet holds (`listdescriptors` is not on the
   whitelist, since it can export the private key). Before it co-signs, the watcher checks that the escrow's market
   child key is in the wallet's derived key range (`deriveaddresses` and `getaddressinfo`) and, when it is not,
   extends the range 1000 keys past the market index with `keypoolrefill` (checked on Core 31.1 regtest under the
@@ -782,7 +796,7 @@ public journeys remain unverified ([runbook](testnet-runbook.md#11-bitcoin-escro
   **Reads are paced (A-479).** The escrow watcher retries the checks every `PAYMENT_POLL_INTERVAL` (default 30 s)
   while escrow is off, and before A-479 each retry read the arbiter wallet again: during a burst of 3000 fee bumps the
   market itself asked the node every 30 s for a 605 MB answer that cost Core about 1.5 GB of memory, enough to get a
-  capped node killed, and the pooled payments with it where they share that node. Now only a *slow* read is paced: one
+  capped node killed. Now only a *slow* read is paced: one
   that took 5 s or more, or timed out (the 5-minute timeout), whether it passed, found a spend or failed. It makes the
   next read wait 1 minute, then 2, 4, 8, 16 and 32 after each further slow read, and at most 1 hour, counted from when
   the read ended. A read that answers in under 5 s, pass or failure, ends the waits: a failure that answers at once (a
@@ -827,9 +841,7 @@ public journeys remain unverified ([runbook](testnet-runbook.md#11-bitcoin-escro
   when enrolled; the audit row names the old and new basis points, never the address); the saved values are the
   `settings` keys `escrow_btc_fee_bps` and `escrow_btc_fee_address` and override the environment from then on. Each
   escrow keeps the fee and destination in force at its checkout; changing them affects only later escrows. One fixed
-  address is allowed only because escrow runs on test networks only (startup logs "escrow: the market fee is paid to
-  one fixed address …"); a mainnet market will need a watch-only descriptor giving a fresh fee address per settlement, which
-  this release does not have. The fee is an output of the vendor's claim (below 0.0001 BTC it is added to the
+  address is allowed because Bitcoin escrow runs on supported test networks only; mainnet escrow is refused. The fee is an output of the vendor's claim (below 0.0001 BTC it is added to the
   vendor's output instead).
 - `ESCROW_BTC_FEE_RATE` (default `2`): the network fee rate of every settlement the app builds, a whole number of
   sat/vB from 1 to 100 (anything else stops startup). A settlement whose fee at this rate would exceed 0.001 BTC is
@@ -875,7 +887,7 @@ public journeys remain unverified ([runbook](testnet-runbook.md#11-bitcoin-escro
   configuration, not whether Tor answers, so the gate reads neither. The gate checks configuration only: a proxy that
   is configured but down still accepts the broadcast into a private queue, which the stall alert under *Settlements*
   (*Queued or stuck*) reports. What is private then: a settlement's transaction leaves only through the proxy. What is
-  not: pooled payouts (wallet sends, [never private](#mainnet)), deposits the buyer sends from their own wallet, and the
+  not: deposits sent from a buyer’s own wallet, or legacy pooled sends made by a previous release. The Tor broadcast guard applies to the
   node's own block and peer traffic beyond what `-proxy` covers. Clearnet mode is unaffected. Checked against Core 31.1
   regtest nodes with and without `-proxy` (`TestEscrowRegtestPrivateBroadcast`); no node has run over real Tor here.
 - **Chain pin (A-439).** At startup (and on each retry) the app pins the escrow node's chain in the database
@@ -913,8 +925,7 @@ public journeys remain unverified ([runbook](testnet-runbook.md#11-bitcoin-escro
 - **Switching escrow off with escrow orders open.** Setting `ESCROW_BTC` back to `off` (or escrow being disabled
   because its node is down) moves no coins and closes no order, but it stops the escrow watcher: an open escrow
   order is not cancelled when its payment window ends, and deposits to its escrow are not recorded, so it is not
-  marked paid, until escrow is on and enabled again. The coins stay in the order's 2-of-3 escrow; the pooled wallet
-  never holds them. The order page still shows the escrow panel with its address and descriptor and "Bitcoin escrow
+  marked paid, until escrow is on and enabled again. The coins stay in the order's 2-of-3 escrow; there is no pooled wallet in this release. The order page still shows the escrow panel with its address and descriptor and "Bitcoin escrow
   is unavailable on this market right now …", never the pooled payment panel (the descriptor download is offered
   only with escrow on). A cancelled escrow order then reads "This escrow cannot be checked right now …", never
   "nothing was received" (nor "0 BTC" for its figures, which read "Not read while Bitcoin escrow is unavailable";
@@ -931,9 +942,9 @@ public journeys remain unverified ([runbook](testnet-runbook.md#11-bitcoin-escro
   address is no longer watched and a later deposit is not recorded; the order page then says so instead of "nothing was
   received"), never counted and never spent by the order's claim or refund; once confirmed, a stray refund returns
   them to the buyer's refund address (*Stray refunds* below). A confirmed
-  one is flagged for payment review as a pooled late deposit is: one order note, the buyer told the amount once per
+  one is flagged for payment review as a late deposit: one order note, the buyer told the amount once per
   episode (not the vendor) and each moderator and administrator once. The order page's escrow status reads
-  "Cancelled; a deposit arrived after the order closed …". The coins are not in the pooled wallet: the moderation
+  "Cancelled; a deposit arrived after the order closed …". The funds remain at the escrow address: the moderation
   desk does not offer *refunded by hand* for an escrow deposit (and refuses one, 409); record *no action* once the
   stray refund has returned it, or escalate. A deposit left out of its settlement before the close, credited or not (a
   refund too few could not spend it, so it no longer counts: QA462D-2), is listed as "Escrow deposit left out of its
@@ -946,11 +957,11 @@ public journeys remain unverified ([runbook](testnet-runbook.md#11-bitcoin-escro
   On a Monero escrow a waiting settlement does not flag a deposit recorded after the close: it is flagged when it is
   announced, so the buyer is told of it once even when the stray refund that returns it waits (QA462C-4).
 - **Site-wide notices.** With escrow on, the footer, catalog, listing and draft notices say which chain Bitcoin escrow
-  runs on (regtest, signet or testnet4) even when no pooled provider is configured (and, with `ESCROW_XMR` on, which
+  runs on (regtest, signet or testnet4) even though pooled providers have been removed (and, with `ESCROW_XMR` on, which
   network Monero escrow runs on: a local fakechain or Monero stagenet, "network not verified yet" until the daemon was
   verified), and the vendor desk's *Bitcoin escrow* tile counts the viewer's
   escrow orders that may hold coins (with `ESCROW_BTC` off too), so no page says escrow is inactive or no funds are
-  held while escrow orders exist. With escrow off and no escrow orders the pooled wording is unchanged.
+  held while escrow orders exist. With escrow off and no escrow orders, payment intake stays paused.
 - **Compose** passes these variables from `.env` to the app container (`compose.yaml`; blank in `.env.example`, so
   escrow stays off). The bundled `bitcoin` node of `compose.nodes.yaml` follows `BITCOIN_CHAIN` and has no
   `rpcwhitelist` user for escrow, so `ESCROW_BTC_RPC_URL` must point at a node (regtest, signet or testnet4) you
@@ -986,46 +997,19 @@ deposit spent outside the market is still flagged, but without the spending tran
 with the arbiter wallet's checkpoint (UPGRADING.md section 38): without it the start check cannot read the arbiter
 wallet, and escrow stays disabled with the read-failure line. `rpcwhitelistdefault=0`
 leaves a user with no `rpcwhitelist` line unrestricted: keep that for the operator user alone, and give each user the
-app connects as its own line (the pooled user below included). With `rpcwhitelistdefault` unset instead, Core gives every
+app connects as its own line. With `rpcwhitelistdefault` unset instead, Core gives every
 user without its own line an empty list once any `rpcwhitelist` is set: the operator user could then call nothing.
 Make SALT and HASH with Core's `share/rpcauth/rpcauth.py`, or as
 the comment in `scripts/test-escrow-regtest.sh` shows, or let `scripts/escrow-node-setup.sh` generate them with these
 lines ([below](#escrow-node-set-up-and-the-public-network-smoke)).
 
-**The pooled RPC user.** `rpcwhitelist` is per user, not per wallet: Core picks the wallet from the URL path
-(`/wallet/<name>`), so any user allowed `listdescriptors` can call it with `private=true` on the arbiter wallet and
-print the market's escrow key. Probed on Core 31.1 regtest: with only the escrow user whitelisted, the escrow user got
-HTTP 403 and an unrestricted pooled user got the `tprv`. When the pooled wallet (`BITCOIN_RPC_URL`) and escrow share a
-node, restrict the pooled user to exactly the methods the pooled adapter calls (`internal/market/payments_bitcoin.go`,
-kept equal to this line by a Go test):
-
-```ini
-rpcauth=opsecmkt-pooled:SALT$HASH
-rpcwhitelist=opsecmkt-pooled:getblockchaininfo,getwalletinfo,loadwallet,getnetworkinfo,getnewaddress,listreceivedbyaddress,gettransaction,listtransactions,sendtoaddress,validateaddress,getbalances
-```
-
-Use the user name your `BITCOIN_RPC_URL` carries (on the bundled Compose node it is `marketplace`, set with
-`-rpcuser`; that node has no escrow user, above, so this matters there only if you add escrow's wallets to it). None of
-these methods exports or copies a key. Or put escrow on a node of its own, which no pooled user can reach. Escrow and the pooled
-wallet on one node share one failure domain: a node that is down, out of sync, out of disk or lost stops both, and
-whoever controls the node controls both wallets.
-
-The app checks this at startup and on each retry: through `BITCOIN_RPC_URL`, on the arbiter wallet's path, it calls
-`listdescriptors` with `private=false`, `gethdkeys` with `{"private":false}` (Core 31.1 also exports the key with
-`gethdkeys {"private":true}`) and `walletprocesspsbt` with an empty PSBT and `sign=false` (which signs with the key). None
-of these calls exports or signs anything: Core checks the whitelist, and then the wallet, before it reads the arguments,
-and an allowed `walletprocesspsbt` answers RPC -22 for the empty PSBT. Only HTTP 403 (the method is not on the pooled
-user's whitelist) or "wallet not found" (RPC -18: the pooled node is another node) from each passes. Anything else (an answer, another
-error, wrong credentials, an unreachable pooled node or a timeout) leaves escrow disabled with "escrow: Bitcoin escrow disabled: the pooled Bitcoin
-RPC user (BITCOIN_RPC_URL) was not refused listdescriptors, gethdkeys or walletprocesspsbt on the arbiter wallet, …"
-followed by the first method that was not refused and the answer's class (`listdescriptors answered`, `gethdkeys
-answered`, `walletprocesspsbt rpc:-22`, `… credentials`, `… unreachable`, `… timeout`, `… rpc:<code>`; never Core's
-text), and `/admin` shows the same under *Payment providers* with the line to add. Escrow starts by itself once the check
-passes. While escrow is on, the escrow watcher repeats the check once a day (QA4W3-8): a pooled whitelist widened after
-startup then disables escrow, with the same line and `/admin` alert, until the check passes again; disabling rather than
-only warning, because the market key may then be exportable. Another pooled node that happens to hold a
-wallet with the arbiter wallet's name also answers, and keeps escrow off until its pooled user is whitelisted too. Without
-`BITCOIN_RPC_URL` there is nothing to check. Checked on Core 31.1 regtest by `TestEscrowRegtestPooled` (below).
+**Retired pooled RPC identity.** This build refuses `BITCOIN_RPC_URL` before startup
+and no longer makes the old A-440 pooled-user probes. Remove the prior pooled
+user's credentials and whitelist entries from a reused escrow node after its
+legacy drain; retaining an unused unrestricted user would still expose the node.
+The escrow user's method whitelist, arbiter/watch separation and dedicated signer
+checks remain. The previous check is documented historically in
+[UPGRADING section 34](../UPGRADING.md#34-bitcoin-escrow-refuses-a-pooled-rpc-user-that-can-read-the-arbiter-wallet-a-440).
 
 ##### Escrow node set-up and the public-network smoke
 
@@ -1049,34 +1033,31 @@ stay where `bitcoin-cli` finds them. For the bundled image, use for example
    `getaddressinfo`). Record it with the wallet's backup
    ([runbook](testnet-runbook.md#back-up-and-restore-the-escrow-arbiter-and-watch-only-wallets)); the app pins it at
    its first start;
-4. generates the escrow user's password, and the pooled user's (`--pooled-user`, default `opsecmkt-pooled`; `--no-pooled`
-   when the pooled payments use another node), on this host with `openssl`. It then prints them once, on standard
-   output, as part of the lines you need: the `bitcoin.conf` lines (each user's `rpcauth`, `rpcwhitelistdefault=0`, and
-   each user's `rpcwhitelist`: exactly the two lines above, which tests keep equal to the adapters' method lists) and the
-   `.env` lines (`ESCROW_BTC_RPC_URL=http://<escrow user>:<password>@<--rpc-host, default bitcoin>:<port>`, the wallet
-   names, and `BITCOIN_RPC_URL` for the pooled user). The port is 18443 on regtest, 38332 on signet and 48332 on
-   testnet4, unless you give `--rpc-port`. Progress and the fingerprint go to standard error. Nothing is shown for a node
-   that failed a check.
+4. generates only the escrow user's password on this host with `openssl` and prints
+   it once as part of `bitcoin.conf` (`rpcauth`, `rpcwhitelistdefault=0` and the escrow
+   whitelist) and `ESCROW_BTC_*` environment lines. The helper never creates a pooled
+   RPC user. Port defaults are 18443 on regtest, 38332 on signet and 48332 on testnet4;
+   the bundled Compose node pins RPC to **8332**, so pass `--rpc-port 8332` there.
+   Progress and the fingerprint go to standard error. Nothing is printed for a failed check.
 
 Copy the lines and add the `bitcoin.conf` ones to the escrow node's configuration, at top level or under `[<chain>]`.
-Restart `bitcoind`, then check the node with the two URLs in the environment (exported for this one command, never read
+Restart `bitcoind`, then check the node with the escrow URL in the environment (exported for this one command, never read
 from `.env`):
 
 ```sh
-ESCROW_BTC_RPC_URL='http://opsecmkt-escrow:…@127.0.0.1:38332' BITCOIN_RPC_URL='http://opsecmkt-pooled:…@127.0.0.1:38332' \
+ESCROW_BTC_RPC_URL='http://opsecmkt-escrow:…@127.0.0.1:38332' \
   scripts/escrow-node-setup.sh --chain signet --verify
 ```
 
 `--verify` passes when the escrow user answers `getblockchaininfo` on that chain and `getwalletinfo` on both wallets
 (private keys on the arbiter wallet only), and is refused `listdescriptors` and `gethdkeys` with HTTP 403. A node that
-reports another chain, or none, is refused before any wallet call, as in set-up mode. With
-`BITCOIN_RPC_URL` set, it also checks that the pooled user answers `getblockchaininfo` and is refused `listdescriptors`,
-`gethdkeys` and `walletprocesspsbt` on the arbiter wallet's path, with HTTP 403 (or "wallet not found", RPC -18, when
-it is another node). That is the app's own start check (*The pooled RPC user*). The URLs reach `curl` on its standard
+reports another chain, or none, is refused before any wallet call, as in set-up mode.
+An inherited nonblank `BITCOIN_RPC_URL` is refused before RPC; clear obsolete pooled
+settings before verifying this build. The URLs reach `curl` on its standard
 input and are never printed. A command typed with a password on it can stay in your shell history: clear the line
 afterwards, or set the variables from a file only you can read. Checked on a local Bitcoin Core 31.1 regtest container:
-set-up, restart, `--verify`, then the app logged "escrow: Bitcoin escrow on (test networks only)". The script has not
-been run against signet or testnet4 here.
+set-up, restart, `--verify`, then the app logged "escrow: Bitcoin escrow on (test networks only)". The public signet operator package was exercised at the frozen proof revision; the
+current removal helper is verified separately by its configuration tests, not a new public run.
 
 **`scripts/test-escrow-public.sh`** is the public-network smoke (P4-R16), the owner's run (A-447). Run it by hand,
 never in CI, on public signet or testnet4 only. Before anything else touches the node, it refuses regtest, mainnet,
@@ -1181,7 +1162,7 @@ the cross-account reuse check is not reliable until the original root is restore
 again.
 
 On the order page of a BTC draft on a digital listing with automatic delivery (or, with Phase 2 below, a physical listing with a dispatch window), the buyer is offered *Pay into an
-escrow* beside the pooled payment request, once both the buyer's and the vendor's escrow keys are active. The buyer
+escrow checkout once both the buyer's and the vendor's escrow keys are active. The buyer
 gives a refund address from their own wallet, fixed for the order; an address the market already used as an escrow,
 refund, fee or deposit address is refused. The app then builds the escrow: each party's next child key of the
 registered key (`/0/1`, `/0/2`, …, one more than the highest index any of that account's escrows used, under any
@@ -1701,15 +1682,14 @@ that changes the protocol says so in `UPGRADING.md`.
 
 #### Monero escrow (fakechain or stagenet)
 
-**Off by default, custodial, test networks only, and not released.** [Per-order escrow](escrow.md) Phase 3 lets the
+**Off by default, custodial, test networks only.** [Per-order escrow](escrow.md) Phase 3 lets the
 buyer of an XMR draft on a digital listing with automatic delivery, or on a physical listing with a dispatch window, pay into
-an account of a monthly escrow wallet the market holds, instead of the pooled wallet. **The market holds the keys and can
+an account of a monthly escrow wallet the market holds. **The market holds the keys and can
 move these coins**: unlike [Bitcoin escrow](#bitcoin-escrow-test-networks-only) there is no 2-of-3, no key of the buyer's or
 vendor's and nothing for them to sign. It runs against a local Monero fakechain (`monerod --regtest`) or, since A-449, Monero
 stagenet (`monerod --stagenet`); coins on both have no value. It refuses mainnet, testnet and anything else. The [public stagenet digital-claim record](evidence/public-testnet/2026-10-10-ac71878dfde4/stagenet-xmr/README.md) covers one funded claim; broader public journeys
 remain unverified. Offline-fork evidence is separate ([per-order escrow](escrow.md#monero-escrow-on-stagenet-a-449)).
-Never switch it on for a market that takes real payments. Every order not paid into a Monero escrow still goes through the
-pooled wallet. What it does, protects and does not protect, and the tests behind it, are in
+Never switch it on for a market that takes real payments. With Monero escrow off, Monero checkout is unavailable; this release has no pooled-wallet fallback. What it does, protects and does not protect, and the tests behind it, are in
 [per-order escrow, Phase 3](escrow.md#phase-3-monero-escrow-on-a-local-fakechain) and
 [Monero escrow on stagenet](escrow.md#monero-escrow-on-stagenet-a-449).
 
@@ -1718,28 +1698,27 @@ an OpenPGP key whose private half stays offline, and a secret. A regtest chain m
 (the checks use the daemon's `generateblocks`); the market never does, so on a fakechain nothing confirms a deposit until you
 mine. On stagenet the public network mines blocks about every 2 minutes; the daemon must be synced and have peers (below).
 
-**Settings.** All are read at startup, from `.env` through Compose. With `ESCROW_XMR` blank or `off` nothing below is read, no
-file is opened, no node is contacted and no setting or Monero escrow table is written: the pooled Monero wallet and everything
-else run as before. (`/admin` still lists, from those tables, any settlement a restore holds and any wallet that was destroyed,
-so a market that ran Monero escrow and turned it off keeps seeing them.)
+**Settings.** All are read at startup, from `.env` through Compose. With `ESCROW_XMR` blank or `off` the escrow configuration
+is not used, no seed-key file is opened and no escrow node is contacted. Historical Monero escrow recovery state remains visible
+under `/admin` when present; turning escrow off does not delete wallets, orders or settlements.
 
 | Setting | Default | What it takes |
 | --- | --- | --- |
-| `ESCROW_XMR` | blank (off) | `on` or `off`; any other value stops startup. A market configured for mainnet (`MONERO_NETWORK=mainnet` or `BITCOIN_CHAIN=main`) stops startup too. |
-| `ESCROW_XMR_WALLET_RPC_URL` | none; required when on | `http(s)://[user:password@]host:port` of the monero-wallet-rpc that holds only escrow wallets (credentials are answered with HTTP Digest). It must differ from `MONERO_WALLET_RPC_URL` (same scheme, host, port and path, credentials ignored, is refused; the spellings are compared, so `localhost` and `127.0.0.1` differ, and the backstop is that an escrow wallet-rpc with the pooled wallet open is refused at startup): monero-wallet-rpc holds one wallet open at a time. |
-| `ESCROW_XMR_DAEMON_URL` | none; required when on | The same form, for the fakechain or stagenet `monerod` that wallet-rpc is attached to. It may be the pooled wallet's stagenet daemon (`MONERO_RPC_URL`) and may serve restricted RPC. |
+| `ESCROW_XMR` | blank (off) | `on` or `off`; any other value stops startup. Mainnet configurations (`MONERO_NETWORK=mainnet` or `BITCOIN_CHAIN=main`) are refused. |
+| `ESCROW_XMR_WALLET_RPC_URL` | none; required when on | `http(s)://[user:password@]host:port` of the dedicated Monero escrow wallet-rpc (credentials are answered with HTTP Digest). Keep it dedicated to escrow wallets and attach it to the daemon configured below. The obsolete pooled `MONERO_WALLET_RPC_URL` setting is refused before startup. |
+| `ESCROW_XMR_DAEMON_URL` | none; required when on | The same form, for the fakechain or stagenet `monerod` used by this escrow wallet-rpc. The bundled `monero` service may be used when configured for stagenet and can serve restricted RPC; set this key to `http://monero:18081` rather than the retired `MONERO_RPC_URL`. |
 | `ESCROW_XMR_FEE_BPS` | `0` | The market fee on a fulfilled order, a whole number of basis points from 0 to 10000 (250 = 2.5%). Each escrow keeps the fee in force at its checkout. There is no form for it on `/admin`. |
 | `ESCROW_XMR_FEE_ADDRESS` | none | Required above 0 basis points, ignored at 0: a standard address or subaddress of the escrow daemon's network (95 characters; stagenet ones start with 5 or 7, fakechain ones with 4 or 8; integrated addresses are refused) whose keys are valid, checked in Go at startup: one of the other network stops startup once the daemon is reached. A fee below 0.001 XMR is added to the vendor's output instead. |
 | `ESCROW_XMR_SLOTS` | `20` | The free accounts the watcher keeps ready on the active wallet, a whole number from 5 to 200. Checkout takes one; none free is a 503 until the watcher makes more. |
 | `ESCROW_XMR_MAX_FEE` | `10000000000` (0.01 XMR) | The highest network fee a settlement may pay, in piconero, a whole number from 1 to `100000000000` (0.1 XMR). A transaction the wallet builds above it is discarded unrelayed and its settlement waits. A young fakechain charged about 0.0018 XMR for a one-input, two-output transfer. |
 | `MONERO_WALLET_SECRET` | none; required when on | At least 32 characters, random (not a placeholder, at least 8 distinct characters, no repeating pattern), and different from `SETUP_TOKEN` and `APP_SECRET_KEY`: `openssl rand -hex 32`. Each wallet's password derives from it. |
 | `ESCROW_XMR_SEED_KEY` | none; required when on | The path, inside the app container, of a file holding one armored OpenPGP public key (at most 64 KiB). A private key block, several keys, a revoked key or one with no encryption key usable now (signing-only, expired) stops startup. |
-| `PAYMENT_CONFIRMATIONS_XMR` | `10` | A whole number from 1 to 1000 (shared with the pooled wallet). A Monero escrow deposit counts from the larger of it and 10. |
+| `PAYMENT_CONFIRMATIONS_XMR` | `10` | A whole number from 1 to 1000. A Monero escrow deposit counts from the larger of it and 10. |
 
-`PAYMENT_EXPIRY` (the payment window), `PAYMENT_POLL_INTERVAL` and `MONERO_MAX_TIP_AGE` ([Payments](#payments)) apply to
-Monero escrows as to pooled payments. The refusal messages name the setting and never quote its value.
+`PAYMENT_EXPIRY` (the payment window), `PAYMENT_POLL_INTERVAL` and `MONERO_MAX_TIP_AGE` apply to Monero escrow. The
+refusal messages name the setting and never quote its value.
 
-**At startup.** A configuration error, an unusable seed key file, a mainnet market, or an escrow node that answers but is
+**At startup.** A configuration error, an unusable seed key file, a mainnet configuration, or an escrow node that answers but is
 not what Monero escrow needs stops startup with a message that names the setting (for a node: "refusing to start:
 ESCROW_XMR=on runs only on a local Monero fakechain or on stagenet in this release, and the daemon at ESCROW_XMR_DAEMON_URL
 failed that check …", or the same for the wallet-rpc). The daemon must report nettype `fakechain` (with no network flag) or
@@ -1752,22 +1731,16 @@ again after the refresh before a wallet more than 10 blocks from it is refused, 
 between the two readings passes (A-475), so a daemon that gains blocks while the wallet refreshes (catching up after
 downtime, say) does not disable Monero escrow. Before A-449 the daemon also had to
 be below height 1,000,000 (no fakechain gets there; every public network is past it): that heuristic is gone, and the network
-pin below tells networks apart instead. An escrow wallet-rpc whose open wallet is the pooled Monero wallet (the pooled
-wallet-rpc under another address) stops startup, or, found on a retry, disables Monero escrow until a restart. The pooled
-wallet's address is known only once the pooled check has passed, so with `MONERO_WALLET_RPC_URL` set Monero escrow waits
-until then, making no escrow wallet call (`escrow: Monero escrow waiting: the pooled Monero wallet (MONERO_WALLET_RPC_URL)
-has not passed a check yet, …`, QA4W3-2), and the comparison runs at the next retry. A wallet-rpc with no wallet open is
-not a failure. Addresses (refund, claim,
+pin below tells networks apart instead. The escrow wallet-rpc must be attached to the configured escrow daemon; its refreshed
+height is checked against the daemon's height, and the daemon must report local fakechain or stagenet. A wallet-rpc with no wallet open is not a failure. Addresses (refund, claim,
 the fee address, and every address the wallet-rpc returns) are accepted only in the forms of the network the daemon was
 verified on: stagenet 5… and 7…, a fakechain 4… and 8… (it uses mainnet's address format). A node that cannot be
-reached leaves Monero escrow disabled with `escrow: Monero escrow disabled: the escrow daemon or wallet-rpc could not be
-checked at startup (<class>)` while the market runs; the escrow watcher checks again every `PAYMENT_POLL_INTERVAL` and logs
+reached leaves Monero escrow not ready with `escrow: Monero escrow disabled: the escrow daemon or wallet-rpc could not be
+checked at startup (<class>)` while the market runs; the escrow watcher retries every `PAYMENT_POLL_INTERVAL` and logs
 `escrow: Monero escrow on (stagenet)` (or `(fakechain)`) when it passes. A line is logged when the state changes. A node that
 answers as another network after startup disables Monero escrow until the app is restarted. While Monero escrow is
 configured but not ready, for any of these reasons, `/admin` also shows an alert under *Payment providers* ("Monero escrow
-not ready: …") naming the state in words (waiting for the pooled Monero wallet's first check; the escrow daemon or
-wallet-rpc could not be checked, with its class; the secret mismatch below; a failed database check; refused until the
-app is restarted, with the reason) and what to do, the escrow-only readiness panel reads `XMR escrow: on (not ready: …)`,
+not ready: …") with the current failed check and its remedy. The escrow-only readiness panel reads `XMR escrow: on (not ready: …)`,
 and *Payment providers* names no Monero escrow network until a daemon was verified on one; the alert goes once Monero
 escrow is ready (QA4W4B-1). Two more lines mean the pins below have
 refused: `escrow: Monero escrow disabled: MONERO_WALLET_SECRET differs from the secret this database was first started with
@@ -1803,14 +1776,13 @@ sees it and it confirms. A lower `MONERO_MAX_TIP_AGE` narrows the window ([Payme
 **Stagenet.** Point `ESCROW_XMR_DAEMON_URL` at a synced stagenet `monerod` (the bundled `monero` service with
 `MONERO_NETWORK=stagenet`, `http://monero:18081`, is one; its restricted RPC answers every call escrow makes) and run the
 escrow wallet-rpc with `--stagenet` against the same daemon (the `monero-escrow-wallet` Compose service below does, and the
-installer sets it up). The pooled Monero wallet may share that daemon, never its
-wallet-rpc. Give buyers' refund and vendors' claim addresses from stagenet wallets (5… or 7…), and an `ESCROW_XMR_FEE_ADDRESS`
+installer sets it up). The bundled `monero` daemon may serve the escrow wallet-rpc; the wallet-rpc itself must be dedicated to escrow. Give buyers' refund and vendors' claim addresses from stagenet wallets (5… or 7…), and an `ESCROW_XMR_FEE_ADDRESS`
 on stagenet. Stagenet coins come from the public faucet or your own mining; they have no value. Keep `ESCROW_XMR_MAX_FEE`
 in mind: the default 0.01 XMR cap was sized for a fakechain and is not measured on stagenet.
 
-**The dedicated escrow wallet-rpc.** Run a `monero-wallet-rpc` that holds only escrow wallets, attached to the escrow
-daemon, with its own login and its own volume, never the pooled wallet's (monero-wallet-rpc holds one wallet open at a
-time, and opening an escrow wallet would close the pooled one).
+**The dedicated escrow wallet-rpc.** Run a dedicated `monero-wallet-rpc` for escrow wallets, attached to the escrow
+daemon, with its own login and volume. Keep historical pooled-wallet recovery material separate; this release refuses its old
+`MONERO_WALLET_RPC_URL` setting.
 
 *On stagenet, with the bundled nodes (A-449).* `compose.nodes.yaml` has a `monero-escrow-wallet` service for it, in its
 own profile (`monero-escrow-wallet`) and volume (`monero_escrow_wallet`), with its own login (`escrow`,
@@ -1846,12 +1818,11 @@ docker run -d --name opsecmkt-escrow-wallet --network opsecmkt_backend --restart
   --wallet-dir=/home/monero/wallet --rpc-bind-port=18083 --rpc-login 'marketplace:PASSWORD'
 ```
 
-Use the same wallet-rpc release the checks used (0.18.5.1; the image above is the one the pooled Monero service pins).
+Use the pinned wallet-rpc release the escrow checks used (0.18.5.1).
 The fakechain daemon is started as the header of `scripts/test-escrow-xmr-regtest.sh` starts one (`--regtest
 --keep-fakechain --offline --fixed-difficulty 1`; without `--keep-fakechain`, monerod deletes the fakechain each time it
-starts); it is another daemon than the pooled wallet's `MONERO_RPC_URL`. No wallet needs creating: the escrow
-watcher creates every wallet, named `escrow-YYYYMM-NN`, on its first pass. An escrow wallet-rpc whose open wallet is the
-pooled one is refused at startup; the URL check refuses only the pooled wallet-rpc's own address.
+starts); it is addressed through `ESCROW_XMR_DAEMON_URL`; the obsolete `MONERO_RPC_URL` must remain blank. No wallet needs creating: the escrow
+watcher creates every wallet, named `escrow-YYYYMM-NN`, on its first pass. The escrow wallet-rpc must be dedicated to escrow and attached to this daemon; readiness checks verify its daemon network and refreshed height, not a pooled-wallet URL or address.
 
 **The seed key.** Every wallet's 25-word seed is encrypted to this key when the wallet is created, so that the database never
 holds a seed in the clear. Generate it **offline**, on a machine that never runs the market, and keep its private half offline.
@@ -2125,6 +2096,12 @@ phase. Nothing has run on stagenet, testnet or mainnet, with Monero multisig, or
 
 #### Cutting over to escrow only
 
+**Historical procedure, prior drain-capable build (through migration 106).** Current
+fresh installs already offer escrow or paused intake only; `/orders/pay` is removed
+and pooled RPC settings are refused. Drain existing pooled activity on the prior build
+before [migration 107](../UPGRADING.md#58-pooled-wallet-removal-for-fresh-installs-a-448).
+
+
 A-444 (war-room ruling P4-R8), on the development branch and in no release. Escrow itself runs only where the sections
 above say (Bitcoin escrow on regtest, Monero escrow on a fakechain or stagenet); setting a coin to escrow only does not
 change that, and no cutover has been run on a public network. The cutover is an administrator's choice per coin on
@@ -2175,6 +2152,11 @@ not chain evidence), and `tests/e2e/db-escrow-cutover.spec.ts` (the form and the
 JavaScript off, on a market with no pooled wallet and no escrow).
 
 #### Draining the pooled wallet
+
+**Legacy migration-106 build only.** Migration 107 refuses these blockers before
+startup. Finish this procedure on the prior build, then follow
+[section 58](../UPGRADING.md#58-pooled-wallet-removal-for-fresh-installs-a-448).
+No drain is needed for a fresh database.
 
 A-445 (war-room ruling P4-R9), on the development branch and in no release; no drain has been run on a public network
 or a real chain. After a coin is escrow only, the pooled wallet still serves the pooled orders opened before the switch.

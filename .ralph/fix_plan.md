@@ -55,3 +55,12 @@ scope to accessibility and actual local-chain testing.
   `.env`, then `docker compose up -d --build`) and README's "The installer refuses to overwrite an existing
   configuration"; the installer writes `.env` before `docker compose up` (`scripts/install.sh:173-176`).
 - [x] Verify malformed inputs, valid references, all Python tests and shell syntax.
+
+## Follow-up — fresh-install pooled removal (owner 2026-10-10)
+
+- [x] Delete pooled creation, monitoring and payout writers; keep shared escrow helpers and historical readers.
+- [x] Add refusing legacy upgrade migration and obsolete-config startup refusal; preserve all history.
+- [x] Prove fresh success, undrained unchanged refusal, drained historical preservation and escrow address reuse refusals (native PostgreSQL 16 race checks; CI PostgreSQL 17 still pending).
+- [ ] Align intake, installation, network graph and operator upgrade docs; independent war-room review and CI.
+
+No existing market is available: this work proves fresh installation and synthetic legacy upgrades, not a real-market drain. Actual Sparrow and Ledger Flex signing still require separate device evidence.

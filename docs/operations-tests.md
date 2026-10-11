@@ -309,8 +309,11 @@ operations job.
 
 ## Real Bitcoin and Monero local chains
 
-[Local-chain testing](local-chain-testing.md) documents signature verification,
-`scripts/setup-local-chains.py`, real wallet funding and
-`npm run test:e2e:chain`. These require operator-provided verified binaries and
-are not part of the default CI simulator run. No production/mainnet wallet or
-public-chain faucet is used.
+Current Bitcoin escrow uses `scripts/test-escrow-regtest.sh` against a real
+isolated regtest node; Monero uses `scripts/test-escrow-xmr-regtest.sh` on a
+local fakechain. Neither uses real funds or establishes public-network proof.
+[Local-chain testing](local-chain-testing.md) retains the prior pooled suite's
+signature verification, funding and browser commands as historical evidence;
+those require the prior drain-capable revision. The current
+`scripts/setup-local-chains.py` only stops registered historical processes
+without deleting their data and refuses new pooled-chain setup.

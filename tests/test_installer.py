@@ -981,19 +981,21 @@ time.sleep(60)
         not_a_key.write_text('not a key\n')
         base = ['--tor', '--bitcoin', 'disabled', '--monero-image', 'reviewed-monero:test', '--monero-prune', 'yes', '--monero-escrow', 'yes']
         cases = [
-            (['--monero', 'local', '--monero-network', 'testnet', '--monero-escrow-seed-key', str(key)], 'must be one of: stagenet'),
-            (['--monero', 'disabled', '--monero-escrow-seed-key', str(key)], 'needs --monero-escrow yes'),
+            (['--monero', 'local', '--monero-network', 'testnet', '--monero-escrow-seed-key', str(key)], '--monero-network takes one of: stagenet', []),
+            (['--monero', 'disabled', '--monero-escrow-seed-key', str(key)], 'Monero escrow needs the local Monero node on stagenet'),
             (['--monero', 'local', '--monero-network', 'stagenet', '--monero-escrow-seed-key', str(private)], 'holds a private key'),
             (['--monero', 'local', '--monero-network', 'stagenet', '--monero-escrow-seed-key', str(not_a_key)], 'not an armored OpenPGP public key'),
             (['--monero', 'local', '--monero-network', 'stagenet', '--monero-escrow-seed-key', str(self.root / 'missing.asc')], 'does not exist'),
         ]
-        for extra, message in cases:
+        for case in cases:
+            extra, message = case[:2]
+            expected_calls = case[2] if len(case) == 3 else PREFLIGHT
             with self.subTest(message=message, extra=extra):
                 self.log.unlink(missing_ok=True)
                 result = self.run_installer(None, arguments=[*base, *extra])
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(message, result.stderr)
-                self.assertEqual(self.calls(), PREFLIGHT)
+                self.assertEqual(self.calls(), expected_calls)
                 self.assertFalse((self.root / '.env').exists())
                 self.assertFalse((self.root / 'escrow-xmr-seed-key.asc').exists())
         result = self.run_installer(None, arguments=['--tor', '--monero-escrow-seed-key', str(key)])
@@ -1007,23 +1009,34 @@ time.sleep(60)
                        'escrow-xmr-seed-key.asc (the Monero escrow seed key it mounts) is missing')
 
     def test_secret_generation_failure_starts_nothing(self):
-        # openssl calls: 1 database password, 2 APP_SECRET_KEY, 3 setup token, 4 audit key, then each local
-        # node's credentials. A local Bitcoin node needs an additional random salt for its RPC verifier.
+        # openssl rand calls: 1 database password, 2 APP_SECRET_KEY, 3 setup token, 4 audit key; local Bitcoin
+        # adds 5 its RPC password and 6 the verifier salt; Monero escrow adds its wallet-RPC password and
+        # MONERO_WALLET_SECRET. A Monero daemon without escrow needs no wallet credentials.
+        seed_key = self.seed_key()
+        bitcoin = ['--tor', '--bitcoin', 'local', '--bitcoin-image', 'reviewed-bitcoin:test',
+                   '--bitcoin-network', 'testnet4', '--bitcoin-prune', 'yes', '--monero', 'disabled']
+        monero_escrow = ['--tor', '--bitcoin', 'disabled', '--monero', 'local', '--monero-image', 'reviewed-monero:test',
+                         '--monero-network', 'stagenet', '--monero-prune', 'yes', '--monero-escrow', 'yes',
+                         '--monero-escrow-seed-key', str(seed_key)]
+        both_escrows = ['--tor', '--bitcoin', 'local', '--bitcoin-image', 'reviewed-bitcoin:test',
+                        '--bitcoin-network', 'testnet4', '--bitcoin-prune', 'yes', '--monero', 'local',
+                        '--monero-image', 'reviewed-monero:test', '--monero-network', 'stagenet',
+                        '--monero-prune', 'yes', '--monero-escrow', 'yes', '--monero-escrow-seed-key', str(seed_key)]
         scenarios = [
-            (1, 'random secret', ['clearnet', '', '', 'disabled', 'disabled']),
-            (2, 'random secret', ['clearnet', '', '', 'disabled', 'disabled']),
-            (3, 'random secret', ['clearnet', '', '', 'disabled', 'disabled']),
-            (5, 'random secret', ['tor', '', 'local', 'reviewed-bitcoin:test', 'testnet4', '', 'disabled']),
-            (5, 'random secret', ['tor', '', 'disabled', 'local', 'reviewed-monero:test', 'stagenet', '', '']),
-            (6, 'Bitcoin RPC verifier', ['tor', '', 'local', 'reviewed-bitcoin:test', 'testnet4', '',
-                                         'local', 'reviewed-monero:test', 'stagenet', '', '']),
-            (7, 'random secret', ['tor', '', 'local', 'reviewed-bitcoin:test', 'testnet4', '',
-                                  'local', 'reviewed-monero:test', 'stagenet', '', '']),
+            (1, 'random secret', ['clearnet', '', '', 'disabled', 'disabled'], []),
+            (2, 'random secret', ['clearnet', '', '', 'disabled', 'disabled'], []),
+            (3, 'random secret', ['clearnet', '', '', 'disabled', 'disabled'], []),
+            (5, 'random secret', [], monero_escrow),  # Monero escrow wallet-RPC password.
+            (6, 'random secret', [], monero_escrow),  # Monero escrow wallet-seed sealing secret.
+            (5, 'random secret', [], bitcoin),        # Local Bitcoin RPC password.
+            (6, 'Bitcoin RPC verifier', [], bitcoin), # Salt for the local Bitcoin RPC verifier.
+            (7, 'random secret', [], both_escrows),   # Monero escrow wallet-RPC password after Bitcoin setup.
+            (8, 'random secret', [], both_escrows),   # Monero escrow wallet-seed sealing secret.
         ]
-        for call, message, answers in scenarios:
-            with self.subTest(call=call, answers=answers):
+        for call, message, answers, arguments in scenarios:
+            with self.subTest(call=call, arguments=arguments):
                 self.log.unlink(missing_ok=True)
-                result = self.run_installer(answers, openssl_empty_call=call)
+                result = self.run_installer(answers, arguments=arguments, openssl_empty_call=call)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(message, result.stderr)
                 self.assertEqual(self.calls(), PREFLIGHT)
@@ -1181,7 +1194,7 @@ time.sleep(60)
     def test_init_prints_no_secret_but_the_setup_token(self):
         cases = [
             ([''] * 12, []),
-            (['tor', '', 'local', '', 'testnet4', '', 'local', '', 'stagenet', ''], []),
+            (['tor', '', 'local', '', 'testnet4', '', 'local', '', 'stagenet', '', ''], []),
             ([], ['--local']),
         ]
         for answers, arguments in cases:

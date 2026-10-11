@@ -20,10 +20,8 @@ export COOKIE_SECURE=false APP_PORT=18090
 # Signed audit export on, with a fixed disposable seed whose public key is pinned below.
 export AUDIT_SIGNING_KEY='c15c15c15c15c15c15c15c15c15c15c15c15c15c15c15c15c15c15c15c15c15c'
 export SMOKE_AUDIT_PUBLIC_KEY='1678b99a3a0e29e1bd91e440816593702f6f0824cfa20e68ae70c02e15f7361c'
-# A configured but unreachable test-chain node (nothing listens on port 9 inside the app container): the
-# site must still start and serve, with Bitcoin payments shown as unavailable and retried every poll.
-export BITCOIN_RPC_URL='http://ci:ci-unreachable-node@127.0.0.1:9' BITCOIN_CHAIN=testnet4 PAYMENT_POLL_INTERVAL=2s
-unset MONERO_RPC_URL MONERO_WALLET_RPC_URL MONERO_NETWORK
+# Fresh escrow-only startup with no payment RPC configuration. Legacy pooled URLs are refused separately.
+unset BITCOIN_RPC_URL BITCOIN_WALLET MONERO_RPC_URL MONERO_WALLET_RPC_URL MONERO_NETWORK ESCROW_BTC ESCROW_XMR
 cat > "$work/compose.yaml" <<YAML
 services:
   app:
@@ -361,14 +359,9 @@ for sheet in sheets:
     assert body == (Path(os.environ['SMOKE_ROOT']) / 'web' / sheet.lstrip('/')).read_bytes(), f'{sheet} differs from web{sheet}'
 
 admin = client.open(base + '/admin').read().decode()
-# Degraded payments: the configured node is unreachable, so BTC is unavailable (not fatal); XMR is unset.
-def provider_row(currency):
-    row = re.search(r'<tr>\s*<td>' + currency + r'</td>(.*?)</tr>', admin, re.S)
-    assert row, f'No {currency} provider row on /admin'
-    return row[1]
-btc = provider_row('BTC')
-assert 'Unavailable — retried every poll' in btc and 'bitcoin node check failed' in btc, f'BTC should be unavailable: {btc}'
-assert '<td>Disabled</td>' in provider_row('XMR')
+# Historical payments remain readable; no pooled action forms may be reachable.
+assert 'action="/admin/payout"' not in admin and 'action="/account/payout"' not in admin
+assert 'action="/orders/pay"' not in admin
 # Signed audit export: available with the pinned key, and the downloaded export verifies offline below.
 section = admin[admin.index('id="audit-export-title"'):]
 section = section[:section.index('</section>')]
@@ -387,7 +380,7 @@ work = Path(os.environ['SMOKE_WORK'])
 (work / 'export.jsonl').write_bytes(export_bytes)
 (work / 'export.sig').write_bytes(signature)
 (work / 'tampered.jsonl').write_bytes(export_bytes.replace(b'Account created: admin', b'Account created: buyer'))
-print('Production image: database, health, bootstrap, admin session, setup lockdown, stylesheets, unavailable BTC and audit export passed')
+print('Production image: database, health, bootstrap, admin session, setup lockdown, stylesheets, escrow-only payment surface and audit export passed')
 PY
 # -status inside the container reports the completed setup, and that this SETUP_TOKEN-only environment is a
 # legacy key root, and nothing else (no secret).
@@ -397,11 +390,10 @@ status_line=$("${compose[@]}" exec -T app /app/server -status)
 if "$work/verify-audit" -pub "$SMOKE_AUDIT_PUBLIC_KEY" "$work/tampered.jsonl" "$work/export.sig" 2>/dev/null; then
   echo 'verify-audit accepted a tampered export' >&2; exit 1
 fi
-# Still up after several failed payment polls, never restarted, and the degraded start was logged.
+# The fresh escrow-only server stays healthy without any pooled wallet.
 sleep 5
 python3 -c "import urllib.request; assert urllib.request.urlopen('http://127.0.0.1:18090/healthz', timeout=5).read() == b'ok'"
 app_container=$("${compose[@]}" ps -q app)
 [[ $(docker inspect -f '{{.State.Status}} {{.RestartCount}} {{.State.Health.Status}}' "$app_container") == 'running 0 healthy' ]]
 "${compose[@]}" logs --no-color app > "$work/app.log" 2>&1
-grep -q 'payments: BTC unavailable at startup' "$work/app.log"
-echo 'Production image: stays healthy with an unreachable payment node; signed audit export verified with cmd/verify-audit'
+echo 'Production image: stays healthy without pooled wallets; signed audit export verified with cmd/verify-audit'

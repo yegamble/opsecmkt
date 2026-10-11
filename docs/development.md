@@ -196,26 +196,13 @@ run, including after a setup-only seed. Playwright starts its own servers on
 loopback ports **18080** and **18081**, and refuses to reuse existing servers.
 Never set either test database URL to a deployed instance.
 
-### Payment journeys with browser automation
+### Retired pooled payment journeys
 
-A separate suite exercises both Bitcoin and Monero through the production RPC
-adapters, with a local simulated wallet and real PostgreSQL. It covers browser
-setup, partial deposits, top-ups, confirmation waiting, pausing new payment
-requests, manual and automatic fulfillment, verified reviews, dispute refunds,
-paid-order cancellation and password-confirmed administrator payout recovery.
-It checks single payouts and never connects to a real chain.
-
-The simulated wallet needs Python 3.
-
-```sh
-docker exec opsecmkt-dev-db createdb -U opsecmkt opsecmkt_wallet_e2e
-export E2E_WALLET_DATABASE_URL='postgres://opsecmkt:local-dev-only@127.0.0.1:55432/opsecmkt_wallet_e2e?sslmode=disable'
-npm run test:e2e:wallet
-```
-
-Use a fresh database for every run. This suite owns loopback ports 18082 and
-18083 and writes separate `playwright-wallet-report/` and `test-results-wallet/`
-artifacts. Real-wallet network validation remains a separate runbook step.
+The pooled wallet and chain browser suites are removed from this build. Their
+recorded runs remain historical evidence at the revisions in
+[verification](verification.md). Use a prior drain-capable release for legacy
+pooled obligations; current integration coverage uses the escrow suites below
+and tests immutable historical records and refused legacy upgrades.
 
 ### Bitcoin escrow paste journey (simulated escrow node)
 
@@ -227,7 +214,7 @@ the vendor's claim (copy downloaded, a SIGHASH_NONE paste refused with its error
 copy pasted, co-signed by the market, broadcast and confirmed), and a refund of an underpaid
 order the buyer cancels, with the order page checked and photographed at each state. The
 escrow node is **simulated**: `tests/e2e/fixtures/escrow_rpc.py`, served by
-`wallet-rpc.py --escrow-port`, answers the escrow adapter's PSBT methods with real PSBT and
+`escrow-simulators.py --escrow-port`, answers the escrow adapter's PSBT methods with real PSBT and
 transaction bytes but its own fake signatures, and plays each party's wallet. It knows
 regtest only and refuses mainnet and other-network addresses and keys. This is not chain
 evidence; real Bitcoin Core legs are `scripts/test-escrow-regtest.sh`, and
@@ -249,7 +236,7 @@ vendor's per-order wallet key beside the buyer's Bitcoin Core key (a mixed pair,
 `tests/e2e/escrow-per-order-settle-journey.spec.ts` (A-456b) follows: both parties register per-order wallet keys and
 sign their practice, the buyer pays into a per-order escrow, each party reads its own order wallet setup page, the escrow
 is funded, and the vendor's claim is signed and uploaded as a binary PSBT file, co-signed through a simulated escrow
-signer (`wallet-rpc.py --signer-socket`, a Unix socket named by the config for its run) and confirmed.
+signer (`escrow-simulators.py --signer-socket`, a Unix socket named by the config for its run) and confirmed.
 `tests/e2e/escrow-physical-journey.spec.ts` runs after it on the same database and follows a
 physical escrow order (WR-escrow Phase 2): shipped with a claim address, signed by the vendor and
 the buyer, released at its deadline, a dispute that cancels the deadline, the buyer's no-ship
@@ -280,7 +267,7 @@ with Monero escrow off, read on a second server that runs with `ESCROW_XMR` off 
 database. The retained and destroyed wallet states come with escrow Phase 3's retention slice.
 
 The escrow wallet-rpc and its daemon are **simulated**: `tests/e2e/fixtures/xmr_escrow_rpc.py`,
-served by `wallet-rpc.py --xmr-wallet-port --xmr-daemon-port`. Its keys and addresses are real
+served by `escrow-simulators.py --xmr-wallet-port --xmr-daemon-port`. Its keys and addresses are real
 Monero keys and addresses (prime-order ed25519 points, derived as Monero derives them), and its
 replies have monero-wallet-rpc 0.18.5.1's shapes and error codes: `xmr_record_shapes.py` recorded
 them from the real nodes into `xmr_rpc_shapes_0.18.5.1.json`, and
@@ -302,10 +289,11 @@ Use a fresh database for every run; the test moves clocks and restore settings t
 `npm run test:e2e`; the `browser-escrow` CI job runs it after the Bitcoin escrow suite, each on its
 own database.
 
-For actual local Bitcoin Core and Monero nodes, mined test coins and real wallet
-transactions, follow [isolated real-chain browser testing](local-chain-testing.md)
-and run `npm run test:e2e:chain` with `E2E_CHAIN_DATABASE_URL` set to a fresh database. This uses Bitcoin regtest and an offline Monero
-stagenet fork; it does not claim public-testnet validation.
+For actual local Bitcoin Core escrow transactions, use
+`scripts/test-escrow-regtest.sh` with a disposable PostgreSQL database.
+[Historical pooled local-chain testing](local-chain-testing.md) requires its
+prior revision. Neither local procedure proves public-network behavior; public
+records identify their own frozen sources in [verification](verification.md).
 
 ### Monero escrow on a local fakechain (real monerod and monero-wallet-rpc)
 

@@ -6,7 +6,8 @@ test('order page shows history, unavailable payment and the buyer actions', asyn
   await page.goto(`/order?id=${PREVIEW_DRAFT_ID}`);
   await expect(page.getByRole('heading', { name: 'History' })).toBeVisible();
   await expect(page.locator('.order-timeline li')).toHaveCount(1);
-  await expect(page.locator('.order-unavailable')).toContainText('Payment unavailable for BTC');
+  await expect(page.locator('.key-values')).toContainText('Draft — unfunded');
+  await expect(page.locator('form[action="/orders/pay"]')).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Request payment address' })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Cancel draft' })).toBeVisible();
   // A-164: the order names its listing and links to it as it is now.
@@ -36,28 +37,17 @@ test('reviews are labelled verified purchases without reviewer handles', async (
   await expect(reviews).not.toContainText('preview_user');
 });
 
-test('moderator desk requires an outcome and disputes explain eligibility', async ({ page }) => {
+test('moderator desk preserves historical disputes without pooled actions', async ({ page }) => {
   await page.goto('/moderator');
-  await expect(page.getByRole('group', { name: 'Outcome' })).toBeVisible();
-  // A-161: each outcome states the amount, recipient, difference from the price and the recipient's payout state
-  // (sample figures); resolving needs a ticked confirmation and the decision field warns against identifying text.
-  await expect(page.getByRole('radio', { name: 'Release 0.00412 BTC (test network) to ghost_circuit — exactly the price; network fee deducted', exact: true })).toBeVisible();
-  await expect(page.getByRole('radio', { name: 'Refund 0.00412 BTC (test network) to sample_buyer — exactly the price; network fee deducted; no payout address: the payout waits for one', exact: true })).toBeVisible();
-  await expect(page.getByRole('checkbox', { name: 'I checked the amount and who receives it for the outcome I chose. Resolving is final.' })).toHaveAttribute('required', '');
-  await expect(page.locator('input[type="hidden"][name="amount_seen"]')).toHaveValue('412000');
-  // A-32: resolving queues the payout, so it needs the resolver's current password.
-  const resolve = page.locator('form[action="/resolve"]');
-  await expect(resolve.getByLabel('Current password', { exact: true })).toHaveAttribute('required', '');
-  await expect(resolve).toContainText('Resolving queues the payout, so confirm it with your password.');
-  await expect(page.getByLabel('Decision', { exact: true })).toHaveAccessibleDescription(/^Stored unencrypted\..*Never include an address, real name or tracking number/);
-  await expect(page.locator('main')).toContainText("A refund returns the whole counted amount to the buyer; a release pays the vendor the price and returns any excess worth sending to the buyer, with the network fee deducted. A refund or return larger than the price waits for an administrator's review");
-  await expect(page.locator('main')).not.toContainText('moves no funds');
+  await expect(page.locator('form[action="/resolve"]')).toHaveCount(0);
+  await expect(page.getByRole('group', { name: 'Outcome' })).toHaveCount(0);
+  await expect(page.locator('main')).toContainText('Historical dispute.');
+  await expect(page.locator('main')).toContainText('This pooled order is read only.');
   // A-124 and A-162 (sample data): the reply with its role and line breaks, whom each party messaged, and the
   // resolve help that says whether the other side replied and to ask the evidence holders first.
   await expect(page.locator('.dispute-text').nth(1)).toHaveText('Sample reply from the vendor.\nNothing was stored.');
   await expect(page.locator('.dispute-text').first()).toHaveCSS('white-space', 'pre-wrap');
   await expect(page.locator('.dispute-evidence li')).toHaveText(['Buyer → sample_moderator (1, latest Sample)', 'Vendor → none']);
-  await expect(resolve).toContainText('The vendor replied; the reply is shown above. Before deciding, ask each staff member listed under Encrypted evidence holders');
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(page.viewportSize()!.width);
   await page.goto('/disputes');
   await expect(page.locator('.order-unavailable')).toContainText('Only paid, shipped, or delivered orders qualify');

@@ -303,9 +303,11 @@ xpub_check=$(sql -c "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE c
 [[ $(sql -c "SELECT to_regclass('escrow_siblings') IS NOT NULL") == t ]]
 
 # Behaviour through the upgraded server: an alpha.1 password still signs in, the migrated draft is shown as
-# a draft, and ordering the same product and currency again returns that draft instead of a second one.
+# a draft, and ordering the same product and currency again with intake explicitly paused returns that
+# unfunded draft instead of a second one. Fresh escrow-only defaults were checked above.
 # (Migration 010 turns the CAPTCHA on; switch it off as an operator would, so this script can sign in.)
 sql -c "UPDATE settings SET value='false' WHERE key='captcha_required'"
+sql -c "UPDATE settings SET value='false' WHERE key IN ('payment_intake_BTC','payment_intake_XMR')"
 export UPGRADE_BTC_ORDER
 UPGRADE_BTC_ORDER=$(sql -c "SELECT o.id FROM orders o JOIN users u ON u.id=o.buyer_id WHERE u.handle='alpha_buyer' AND o.currency='BTC'")
 python3 <<'PY'
@@ -390,6 +392,75 @@ watched_address=upgrade-drain-xmr:until recorded deposit '"$(printf 'e%.0s' {1..
 0'
 [[ $drain == "$want_drain" ]] || { printf 'pooled_drain_blockers() after the upgrade:\n%s\nwant:\n%s\n' "$drain" "$want_drain" >&2; exit 1; }
 [[ $(sql -c 'SELECT count(*) FROM pooled_drain_blockers()') == 0 && $(sql -c 'SELECT count(*) FROM payouts') == 0 ]]
+
+# Migration 107: restored prior-removal history is refused unchanged until drained.
+# Delete only its stamp to model the pre-107 state (107 changes intake, not table layout).
+# Preserve historical records after success; this is a seeded upgrade, not a real-market drain.
+sql <<'SQL'
+BEGIN;
+DELETE FROM schema_migrations WHERE version=107;
+UPDATE settings SET value='true' WHERE key='payment_intake_BTC';
+UPDATE settings SET value='false' WHERE key='payment_intake_XMR';
+INSERT INTO orders(id,buyer_id,product_id,currency,amount,state,updated)
+  SELECT 'upgrade-107-history',buyer_id,product_id,currency,amount,'completed',now()-interval '40 days'
+    FROM orders WHERE currency='XMR' ORDER BY id LIMIT 1;
+INSERT INTO payment_addresses(order_id,currency,address,provider,created)
+  VALUES('upgrade-107-history','XMR','upgrade-107-address','xmr-stagenet',now()-interval '40 days');
+INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations,credited)
+  SELECT id,currency,repeat('e',64),0,'upgrade-107-address',amount,12,true FROM orders WHERE id='upgrade-107-history';
+INSERT INTO payouts(order_id,kind,user_id,currency,amount,address,state,txid)
+  SELECT id,'release',buyer_id,currency,amount,'upgrade-107-recipient','sent',repeat('f',64) FROM orders WHERE id='upgrade-107-history';
+INSERT INTO orders(id,buyer_id,product_id,currency,amount,state)
+  SELECT 'upgrade-107-open',buyer_id,product_id,currency,amount,'paid'
+    FROM orders WHERE currency='BTC' ORDER BY id LIMIT 1;
+COMMIT;
+SQL
+legacy_fingerprint() {
+  sql -c "SELECT md5(string_agg(v,'|' ORDER BY v)) FROM (
+    SELECT 'orders:'||row_to_json(o)::text v FROM orders o
+    UNION ALL SELECT 'addresses:'||row_to_json(pa)::text FROM payment_addresses pa
+    UNION ALL SELECT 'payments:'||row_to_json(pm)::text FROM payments pm
+    UNION ALL SELECT 'payouts:'||row_to_json(p)::text FROM payouts p
+    UNION ALL SELECT 'settings:'||row_to_json(s)::text FROM settings s
+    UNION ALL SELECT 'migrations:'||row_to_json(m)::text FROM schema_migrations m) records"
+}
+legacy_before=$(legacy_fingerprint)
+launch_server refused-107 "$work/new-server" "$root"
+for _ in {1..60}; do
+  kill -0 "$server_pid" 2>/dev/null || break
+  sleep 0.5
+done
+if kill -0 "$server_pid" 2>/dev/null; then
+  echo 'The current server kept running over an undrained pooled order' >&2; exit 1
+fi
+refused=0
+wait "$server_pid" || refused=$?
+server_pid=''
+((refused != 0)) || { echo 'Migration107 blocker returned success' >&2; exit 1; }
+grep -q 'open_order' "$work/refused-107.log"
+grep -q 'Nothing was changed' "$work/refused-107.log"
+[[ $(legacy_fingerprint) == "$legacy_before" ]]
+[[ $(sql -c 'SELECT count(*) FROM schema_migrations WHERE version=107') == 0 ]]
+# Simulate settlement on the old drain-capable build, then restore/start again.
+sql -c "UPDATE orders SET state='completed',updated=now()-interval '40 days' WHERE id='upgrade-107-open'"
+[[ $(sql -c 'SELECT count(*) FROM pooled_drain_blockers()') == 0 ]]
+legacy_rows=$(sql -c "SELECT md5(row_to_json(o)::text||row_to_json(pa)::text||row_to_json(pm)::text||row_to_json(p)::text)
+  FROM orders o JOIN payment_addresses pa ON pa.order_id=o.id JOIN payments pm ON pm.order_id=o.id JOIN payouts p ON p.order_id=o.id WHERE o.id='upgrade-107-history'")
+start_server drained-107 "$work/new-server" "$root"
+stop_server
+[[ $(sql -c 'SELECT count(*) FROM schema_migrations WHERE version=107') == 1 ]]
+[[ $(sql -c "SELECT string_agg(key||':'||value,',' ORDER BY key) FROM settings WHERE key IN ('payment_intake_BTC','payment_intake_XMR')") == 'payment_intake_BTC:escrow,payment_intake_XMR:false' ]]
+[[ $(sql -c "SELECT md5(row_to_json(o)::text||row_to_json(pa)::text||row_to_json(pm)::text||row_to_json(p)::text)
+  FROM orders o JOIN payment_addresses pa ON pa.order_id=o.id JOIN payments pm ON pm.order_id=o.id JOIN payouts p ON p.order_id=o.id WHERE o.id='upgrade-107-history'") == "$legacy_rows" ]]
+# Restore this harness's fixtures so later historical migration tests remain isolated.
+sql <<'SQL'
+BEGIN;
+DELETE FROM payouts WHERE order_id='upgrade-107-history';
+DELETE FROM payments WHERE order_id='upgrade-107-history';
+DELETE FROM payment_addresses WHERE order_id='upgrade-107-history';
+DELETE FROM orders WHERE id IN ('upgrade-107-history','upgrade-107-open');
+COMMIT;
+SQL
 
 # A second start applies nothing new and keeps serving.
 applied=$(sql -c "SELECT string_agg(version || '@' || applied, ',' ORDER BY version) FROM schema_migrations")
@@ -497,4 +568,4 @@ INTERMEDIATE_TEST_DATABASE_URL="$database_url" scripts/test-intermediate-upgrade
 # directory. Its overlay binds the app only to loopback and puts Tor on an internal network; it makes no claim
 # that a Tor circuit or public onion service was established.
 bash scripts/test-tor-upgrade-rollback.sh "$from_ref"
-echo "Upgrade from $from_ref and intermediate $intermediate_ref passed: health, migration history and data preserved, buyer sign-in retained; the pooled drain gate lists seeded blockers of every kind and then none; an escrow key row migration 089 refuses startup with its message; a database from a newer release is refused at startup."
+echo "Upgrade from $from_ref and intermediate $intermediate_ref passed: health, migration history and data preserved, buyer sign-in retained; the pooled drain gate lists seeded blockers of every kind and then none; migration107 refuses an undrained restored database unchanged and preserves drained history; an escrow key row migration 089 refuses startup with its message; a database from a newer release is refused at startup."

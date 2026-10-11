@@ -29,8 +29,9 @@ test('draft cannot be paid without a wallet, cancellation is recorded, vendor se
   }
   await page.setViewportSize(viewport);
 
-  // No provider: the payment step is visibly unavailable and there is no button for it.
-  await expect(page.locator('.order-unavailable')).toContainText('Payment unavailable for BTC');
+  // Intake is explicitly paused: the draft is unfunded and has no retired pooled payment step.
+  await expect(page.getByRole('heading', { name: 'Unfunded draft' })).toBeVisible();
+  await expect(page.locator('form[action="/orders/pay"]')).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Request payment address' })).toHaveCount(0);
   await expect(page.getByRole('heading', { name: 'History' })).toBeVisible();
   // A-82: times are UTC and say so, whatever the database server's zone.

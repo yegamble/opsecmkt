@@ -1,5 +1,11 @@
 # Real isolated-chain browser tests
 
+**Historical pooled suite:** the current development build retires pooled runtime
+and its wallet/chain browser tests. The commands below require the prior
+drain-capable revision and are retained as historical evidence. Current escrow
+verification uses `scripts/test-escrow-regtest.sh`, `npm run test:e2e:escrow` and
+`npm run test:e2e:escrow-xmr`; existing public records keep their frozen revisions.
+
 This suite runs actual Bitcoin Core and Monero binaries and wallets, with real
 local blocks and transactions. It is separate from `test:e2e:wallet`, which uses
 simulated JSON-RPC responses. No public blockchain, faucet, mainnet funds or

@@ -3,6 +3,10 @@
 This release adds test-network payments, signed audit exports and several database migrations. Read this
 whole page before pulling the new code onto a running v0.1.0-alpha.1 deployment.
 
+**Current development build:** fresh installs are escrow-only on supported test networks.
+Before upgrading a pooled deployment, read [section 58](#58-pooled-wallet-removal-for-fresh-installs-a-448).
+Sections below describing pooled behavior document prior builds; they do not enable pooling on this build.
+
 The migration files included since alpha.1 are: `001_foundation`, `010_auth`, `011_account_suspension`,
 `012_pending_factor_failed`, `013_pending_password_digest`, `020_pgp`, `030_orders`, `031_review_hidden`,
 `040_inventory`, `041_listing_takedown`, `050_payments`, `051_payments_locked`, `052_payment_intake`,
@@ -20,7 +24,7 @@ The migration files included since alpha.1 are: `001_foundation`, `010_auth`, `0
 `095_pooled_txid_prefix_privacy`, `096_reported_zero_confirmation_regressions`, `097_payout_txid_lookup`,
 `098_remove_profile_xmpp`, `099_audit_event_indexes`, `100_form_submissions`, `101_provider_episodes`,
 `102_handle_casefold_lookup`, `103_message_extra_recipient_count`, `104_notification_order_id`,
-`105_order_listing_snapshot`, and `106_form_confirmation_mode`. Migration 106 adds a boolean to short-lived
+`105_order_listing_snapshot`, `106_form_confirmation_mode`, and `107_remove_pooled_wallet`. Migration 106 adds a boolean to short-lived
 form receipts recording whether the original account, admin or escrow-key submission required password confirmation.
 It stores no submitted password, authenticator code, recovery code, PGP key or practice PSBT. The sections
 below explain the operator-visible changes and rollback considerations.
@@ -1792,3 +1796,49 @@ For a local Monero node, also add `monero-wallet` to `COMPOSE_PROFILES` (for exa
 which drops the other profiles for that command; without it in `.env`, `docker compose up -d` leaves the mirror
 out and Compose does not restart its Tor with the app. See
 [Optional onion mirror](docs/operator-guide.md#optional-onion-mirror).
+
+
+## 58. Pooled-wallet removal for fresh installs (A-448)
+
+Mainnet pooled history is itself a drain blocker even after its orders are settled.
+Such a deployment must keep the prior release; do not delete records to force this
+test-network-only build through migration 107.
+
+Migration `107_remove_pooled_wallet` refuses an older database when
+`pooled_drain_blockers()` returns any rows. The refusal names the blocker kinds,
+changes nothing in that migration transaction, and records no migration 107.
+A restored pre-removal database runs the same check again. Mainnet pooled history
+is a blocker even when every order has closed: mainnet escrow is unsupported.
+
+A fresh database needs no drain operation. A drained legacy database upgrades
+without deleting its orders, payment addresses, deposits, payouts, events or
+user payout-address history. New payment intake uses `escrow` or `false`
+(paused); the old `true` setting becomes `escrow`. Paused currencies stay paused.
+Historical address-reuse refusals remain in the escrow checkout and watchers.
+The server no longer creates pooled addresses, polls pooled deposits or sends
+pooled payouts, and its old pooled mutation routes cannot settle a legacy debt.
+
+For an existing pooled market, **complete the drain using the previous
+migration-106 drain-capable build before switching to this build**. Keep its
+wallet recovery, secrets and encrypted database backups. Pause new pooled intake,
+settle or record every payout, resolve deposit reviews, wait out address watch
+horizons, and clear recovery and address-collision gates following
+[the legacy drain procedure](docs/operator-guide.md#draining-the-pooled-wallet).
+Do not delete records or force migration 107 to bypass a blocker.
+
+After the drain succeeds, remove the obsolete `BITCOIN_RPC_URL`, `BITCOIN_WALLET`,
+`MONERO_RPC_URL` and `MONERO_WALLET_RPC_URL` settings from `.env` (blank also works).
+The server refuses any nonblank value before opening the database or contacting
+an RPC endpoint. Remove the legacy `monero-wallet` profile without deleting its
+volume or recovery. Configure the separate `ESCROW_BTC_*` and `ESCROW_XMR_*`
+settings only for supported test networks. Keep shared node authentication and
+escrow credentials as required by the operator package.
+
+After migration 107 succeeds, older binaries refuse the newer schema. For a
+rollback, restore the encrypted pre-upgrade database into an isolated deployment
+and use its matching drain-capable binary and secrets; restarting an older binary
+on the new database is not a supported rollback.
+
+No deployed pooled market exists in the current owner setup. Fresh-install and
+seeded legacy tests prove the two database paths; they are not real-market drain
+evidence. Existing public proof records retain their frozen source revisions.

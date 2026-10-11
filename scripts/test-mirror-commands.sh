@@ -54,9 +54,9 @@ inline_commands=(
 # database|COMPOSE_FILE|COMPOSE_PROFILES as scripts/install.sh writes them for Tor, with and without local nodes.
 # tests/test_installer.py runs the installer and fails if its values drift from these lines.
 installs=(
-  'internal|compose.yaml:compose.tor.yaml:compose.nodes.yaml:compose.internal-db.yaml|internal-db,bitcoin,monero,monero-wallet'
+  'internal|compose.yaml:compose.tor.yaml:compose.nodes.yaml:compose.internal-db.yaml|internal-db,bitcoin,monero'
   'internal|compose.yaml:compose.tor.yaml:compose.nodes.yaml:compose.internal-db.yaml|internal-db'
-  'external|compose.yaml:compose.tor.yaml:compose.nodes.yaml:compose.external-egress.yaml|bitcoin,monero,monero-wallet'
+  'external|compose.yaml:compose.tor.yaml:compose.nodes.yaml:compose.external-egress.yaml|bitcoin,monero'
   'external|compose.yaml:compose.tor.yaml:compose.nodes.yaml:compose.external-egress.yaml|'
 )
 
@@ -106,7 +106,6 @@ APP_SECRET_KEY='$(openssl rand -hex 32)'
 SETUP_TOKEN='$(openssl rand -hex 32)'
 BITCOIN_RPC_PASSWORD='$bitcoin_password'
 BITCOIN_RPC_AUTH='marketplace:$bitcoin_salt\$$bitcoin_hash'
-MONERO_WALLET_RPC_PASSWORD='$(openssl rand -hex 24)'
 APP_MODE='tor'
 COOKIE_SECURE='false'
 APP_PORT='8080'

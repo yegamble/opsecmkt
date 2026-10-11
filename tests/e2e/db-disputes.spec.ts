@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { expect, test, type Page } from '@playwright/test';
 import { uniqueHandle } from './db-fixtures';
-import { expectNotice, pgpFixture, signedIn, submitAndLoad, submitStatus } from './db-helpers';
+import { expectNotice, pgpFixture, seedRecordedEscrowKeys, signedIn, submitAndLoad, submitStatus } from './db-helpers';
 import { waitForStyles } from './styles';
 
 // A-124 and A-162 against a real database, JavaScript disabled, at 320 px, with fresh accounts: the party who did
@@ -31,16 +31,21 @@ test('the other party replies once and the desk names who holds encrypted eviden
   const productID = randomBytes(16).toString('hex');
   const orderID = randomBytes(32).toString('hex');
   try {
-    // A shipped order (no wallet runs in this suite, so the paid and shipped steps are seeded).
+    // A shipped escrow order: this suite seeds its funding and shipping, then exercises live dispute forms.
     sql(`UPDATE users SET role='vendor' WHERE handle='${vendorHandle}';
-      UPDATE users SET role='moderator' WHERE handle IN ('${holderHandle}','${resolverHandle}');
+      UPDATE users SET role='moderator' WHERE handle='${holderHandle}';
+      UPDATE users SET role='admin' WHERE handle='${resolverHandle}';
       INSERT INTO products(id,vendor_id,title,description,category,region,kind,btc,xmr,stock)
         SELECT '${productID}',id,'Dispute record fixture','Seeded by db-disputes.spec.ts','Hardware','Worldwide','physical',100000,500000000000,1 FROM users WHERE handle='${vendorHandle}';
       INSERT INTO orders(id,buyer_id,product_id,currency,amount,state)
-        SELECT '${orderID}',id,'${productID}','BTC',100000,'shipped' FROM users WHERE handle='${buyerHandle}';`);
+        SELECT '${orderID}',id,'${productID}','BTC',100000,'shipped' FROM users WHERE handle='${buyerHandle}';
+      INSERT INTO escrows(order_id,address,market_index,refund_address,fee_bps,fee_destination)
+        VALUES('${orderID}','bcrt1qdispute${orderID}',nextval('escrow_market_index'),'bcrt1qrefund${orderID}',0,'');`);
+
+    seedRecordedEscrowKeys(sql, orderID, buyerHandle, vendorHandle);
 
     // The buyer opens the dispute from the order page (a <details> form, no script), with a two-line reason.
-    await buyer.goto(`/order?id=${orderID}`);
+    expect((await buyer.goto(`/order?id=${orderID}`))?.status()).toBe(200);
     await buyer.locator('summary', { hasText: 'Open a dispute' }).click();
     await buyer.getByLabel('Describe the issue').fill('The parcel arrived empty.\nThe seal on the box was broken.');
     await submitAndLoad(buyer, buyer.getByRole('button', { name: 'Submit dispute' }));
@@ -122,6 +127,7 @@ test('the other party replies once and the desk names who holds encrypted eviden
     await expect(resolver.locator('main')).not.toContainText('BEGIN PGP MESSAGE');
     await fitsAndNoScripts(resolver, 'moderation desk at 320 px');
   } finally {
+    sql(`UPDATE users SET role='buyer' WHERE handle='${resolverHandle}'`);
     for (const page of pages) await page.context().close();
   }
 });

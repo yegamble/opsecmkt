@@ -1,12 +1,13 @@
 # Per-order escrow
 
 > [!WARNING]
-> **No release contains escrow, and the pooled wallet stays the default.** Every deposit sits in the
-> operator's pooled custodial wallet for its currency ([operator guide](operator-guide.md#payments),
-> [implementation status](implementation-status.md#p5-payments)) unless an operator switches on the escrow
-> phases built so far, which run **on regtest, signet or testnet4 only** (Bitcoin) or **on a local Monero fakechain or
-> Monero stagenet only** (test networks whose coins have no value; a public signet smoke and one public stagenet digital claim are recorded; testnet4 and other public Monero journeys remain unrun)
-> and are **off by default**
+> **Escrow is on the development branch and is in no release.** Fresh installs use per-order escrow
+> only; pooled payment code has been removed. Both currencies are **off by default**. Legacy databases
+> must have no pooled drain blockers before migration 107 can commit, and their historical records stay
+> readable ([upgrade boundary](../UPGRADING.md#58-pooled-wallet-removal-for-fresh-installs-a-448)).
+> Bitcoin escrow accepts **regtest, signet or testnet4 only**; Monero accepts **local fakechain or
+> stagenet only**. Public signet and one public stagenet digital claim have recorded evidence;
+> testnet4, Sparrow and physical-device signing remain unverified.
 > (`ESCROW_BTC`, [operator guide](operator-guide.md#bitcoin-escrow-test-networks-only); `ESCROW_XMR`,
 > [operator guide](operator-guide.md#monero-escrow-fakechain-or-stagenet)). Those phases, Bitcoin escrow for digital
 > orders and for physical orders, and Monero escrow for both, are built and tested on the development
@@ -184,8 +185,7 @@ shipped phase has proven. The full rules and acceptance criteria are in the proj
 
 ## Phase 1: Bitcoin escrow on regtest
 
-**Built and tested on regtest; not released; off by default.** The pooled wallet stays the default for every order
-and the only payment path on a market without it. With `ESCROW_BTC=on` (refused unless the escrow node reports
+**Built and tested on regtest; not released; off by default.** Fresh installs offer escrow only; without an enabled escrow there is no payable checkout. With `ESCROW_BTC=on` (refused unless the escrow node reports
 chain `regtest`, or since A-443 `signet` or `testnet4`; [operator guide](operator-guide.md#bitcoin-escrow-test-networks-only)) the development branch has:
 
 - escrow key registration (one `[fingerprint/path]tpub…` per account, parsed in Go before any RPC; commas, private
@@ -325,7 +325,7 @@ Chromium only; CI runs the preview pages in Firefox and WebKit), Sparrow and har
 ## Phase 2: Bitcoin escrow for physical orders on regtest
 
 **Built and tested on regtest; not released; off by default.** Phase 2 adds to Phase 1 and is switched on and off
-by the same setting. The pooled wallet stays the default for every order. With `ESCROW_BTC=on` (refused unless the
+by the same setting. Fresh installs offer escrow only. With `ESCROW_BTC=on` (refused unless the
 escrow node reports chain `regtest`, or since A-443 `signet` or `testnet4`; [operator guide](operator-guide.md#bitcoin-escrow-test-networks-only)) the
 development branch has, for physical listings:
 
@@ -494,8 +494,7 @@ the sweep marker, the floors and the market's key index; the Go tests run the ma
 ## Phase 3: Monero escrow on a local fakechain
 
 **Built and tested on a local fakechain; not released; off by default; custodial.** Phase 3 adds Monero to the escrow
-built in Phases 1 and 2 and is switched on and off by its own setting, `ESCROW_XMR`. The pooled wallet stays the
-default for every order. A *fakechain* is `monerod --regtest`, Monero's regtest and the counterpart of Phase 1's
+built in Phases 1 and 2 and is switched on and off by its own setting, `ESCROW_XMR`. Fresh installs offer escrow only. A *fakechain* is `monerod --regtest`, Monero's regtest and the counterpart of Phase 1's
 Bitcoin regtest: a local chain whose coins have no value. Its wallets use the mainnet address format, so on it a refund
 or claim address starts with 4 or 8. With `ESCROW_XMR=on` (refused when the market is configured for mainnet, and unless
 the escrow daemon reports nettype `fakechain` and a hard fork version of at least 16 and the escrow wallet-rpc is within 10

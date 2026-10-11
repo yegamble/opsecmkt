@@ -1,18 +1,26 @@
 # Test-network payments runbook
 
-End-to-end operator steps for turning on Bitcoin (testnet4/signet/regtest) and Monero (stagenet/testnet)
-payments with the compose deployment. **Test networks: these coins have no value, and the application refuses
-mainnet unless it is configured** ([Mainnet](operator-guide.md#mainnet); the wallet, backup, restore and
-payout-recovery steps below use the same commands on a mainnet market, with real funds, but have been exercised
-on test networks only). Commands run from the repository directory on the Docker host, where `.env` lives.
-Per-order escrow is not part of this runbook, apart from its restore steps, the manual fakechain check in
-[section 9](#9-manual-monero-escrow-fakechain-check), [section 10](#10-monero-escrow-on-stagenet) and
-[section 11](#11-bitcoin-escrow-on-signet-or-testnet4): Bitcoin escrow runs on regtest and, since A-443, on signet and
-testnet4, and Monero escrow on a local Monero fakechain or, since A-449, stagenet; both are off by default (built and
-tested on local chains, a private signet included; public signet practice/claim/refund and one public stagenet digital claim are recorded, with other public paths unverified; see
-[per-order escrow](escrow.md)), so leave `ESCROW_BTC` off on a testnet4 or signet market unless you are trying Bitcoin
-escrow there (section 11), and `ESCROW_XMR` off on a testnet market and on a stagenet market unless you are trying
-Monero escrow there (section 10). Payments otherwise go through the pooled wallets below.
+**Current build:** fresh installs offer per-order escrow only, off by default.
+Bitcoin supports regtest, signet and testnet4; Monero supports fakechain or stagenet.
+Mainnet and pooled RPC settings are refused. Sections 1–8 below describe pooled provisioning,
+backup and recovery for the prior migration-106 drain-capable build. Run those steps only with
+that matching prior binary, its `.env`, database and wallet recovery material; never run them as
+fresh-install setup or with this build. This release does not accept pooled payments, process
+legacy pooled obligations or take mainnet payments. Existing pooled markets must drain with the
+prior build before migration 107; see [UPGRADING.md section 58](../UPGRADING.md#58-pooled-wallet-removal-for-fresh-installs-a-448).
+
+Current-chain procedures are separated below: section 9 is the local Monero fakechain regression,
+section 10 documents one recorded public Monero stagenet digital claim and clearly scoped unknowns,
+and section 11 documents the frozen public Bitcoin signet smoke. Those records establish only the
+journeys named in them; they do not establish other public-chain journeys or deployment readiness.
+For current operator setup use [Bitcoin escrow](operator-guide.md#bitcoin-escrow-test-networks-only)
+and [Monero escrow](operator-guide.md#monero-escrow-fakechain-or-stagenet), or leave intake paused.
+Commands run from the repository directory on the Docker host, where `.env` lives.
+
+**Prior-build pooled runbook (sections 1–8 only).** These instructions were exercised on test
+networks for the former pooled-payment feature. They are not mainnet recovery advice for the current
+release. If real funds or legacy pooled records are involved, use the migration-106 build and its
+own documented recovery procedure; preserve its database, wallet files, secrets and backups.
 
 What the application does on its own, so you know what to expect while following these steps:
 
@@ -1256,7 +1264,7 @@ wallet-rpc. It refuses any daemon that is not stagenet below height 10,000 (the 
 chain is at hard fork version 1 (version 2 starts at height 32,000, 16 at 1,151,720), so Monero escrow refuses to start on
 it, as it must; the fifteen fakechain legs of section 9 need escrow to start and cannot run on it. The script's legs show
 that refusal names the hard fork rather than the network, that a real stagenet wallet's addresses are accepted under the
-stagenet tags and refused under the fakechain's, and that the escrow and pooled sync guards read a restricted stagenet
+stagenet tags and refused under the fakechain's, and that the Monero escrow sync guard reads a restricted stagenet
 daemon (as the bundled `monero` service serves) as synced with a peer and a fresh tip and an `--offline` one as having no
 peers. The commands are in the script's header comment; the transcript goes to `ESCROW_XMR_STAGENET_LOG` (default
 `artifacts/real-chain/test-escrow-xmr-stagenet-<UTC time>.log`, gitignored).

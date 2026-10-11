@@ -127,8 +127,8 @@ jobs:
           go-version-file: go.mod
           cache: true
       # The same node the script's header documents: an operator user with full rights (the buyer's and vendor's own
-      # nodes), the app's user restricted by rpcwhitelist to what docs/operator-guide.md lists, the pooled user
-      # restricted to the pooled methods it lists (A-440) and the escrow signer's user restricted to decodepsbt,
+      # nodes), the app's user restricted by rpcwhitelist to what docs/operator-guide.md lists,
+      # and the escrow signer's user restricted to decodepsbt,
       # descriptorprocesspsbt and getdescriptorinfo (A-454, QA4W2-1). The passwords are generated for this run,
       # masked before they reach any output and handed to the next step only through GITHUB_ENV inside the URLs;
       # bitcoind learns them as salted HMACs (-rpcauth), so no password is on a command line or in the repository.
@@ -137,14 +137,11 @@ jobs:
       - name: Start Bitcoin Core on regtest
         run: |
           whitelist=getblockchaininfo,getnetworkinfo,getrawchangeaddress,getaddressinfo,createpsbt,utxoupdatepsbt,importdescriptors,getdescriptorinfo,deriveaddresses,gettxout,keypoolrefill,walletprocesspsbt,descriptorprocesspsbt,combinepsbt,finalizepsbt,testmempoolaccept,sendrawtransaction,getwalletinfo,listreceivedbyaddress,gettransaction,listtransactions,listsinceblock
-          pooled_whitelist=getblockchaininfo,getwalletinfo,loadwallet,getnetworkinfo,getnewaddress,listreceivedbyaddress,gettransaction,listtransactions,sendtoaddress,validateaddress,getbalances
           operator_pass=$(openssl rand -hex 24)
           app_pass=$(openssl rand -hex 24)
-          pooled_pass=$(openssl rand -hex 24)
           signer_pass=$(openssl rand -hex 24)
           echo "::add-mask::$operator_pass"
           echo "::add-mask::$app_pass"
-          echo "::add-mask::$pooled_pass"
           echo "::add-mask::$signer_pass"
           rpcauth() { # rpcauth <user> <password>: user:salt$HMAC-SHA256(salt, password), the form bitcoind reads
             local salt hash
@@ -158,8 +155,8 @@ jobs:
             docker run -d --name "$name" -p "127.0.0.1:$port:18443" "$BITCOIN_IMAGE" \
               bitcoind -regtest -fallbackfee=0.0002 -server=1 -rpcbind=0.0.0.0 -rpcallowip=0.0.0.0/0 "$@" \
               "-rpcauth=$(rpcauth operator "$operator_pass")" "-rpcauth=$(rpcauth opsecmkt-escrow "$app_pass")" \
-              "-rpcauth=$(rpcauth opsecmkt-pooled "$pooled_pass")" "-rpcauth=$(rpcauth opsecmkt-signer "$signer_pass")" \
-              -rpcwhitelistdefault=0 "-rpcwhitelist=opsecmkt-escrow:$whitelist" "-rpcwhitelist=opsecmkt-pooled:$pooled_whitelist" \
+              "-rpcauth=$(rpcauth opsecmkt-signer "$signer_pass")" \
+              -rpcwhitelistdefault=0 "-rpcwhitelist=opsecmkt-escrow:$whitelist" \
               -rpcwhitelist=opsecmkt-signer:decodepsbt,descriptorprocesspsbt,getdescriptorinfo
           }
           node "$BITCOIN_CONTAINER" "$BITCOIN_RPC_PORT"
@@ -167,7 +164,6 @@ jobs:
           {
             echo "ESCROW_REGTEST_OPERATOR_RPC_URL=http://operator:$operator_pass@127.0.0.1:$BITCOIN_RPC_PORT"
             echo "ESCROW_REGTEST_APP_RPC_URL=http://opsecmkt-escrow:$app_pass@127.0.0.1:$BITCOIN_RPC_PORT"
-            echo "ESCROW_REGTEST_POOLED_RPC_URL=http://opsecmkt-pooled:$pooled_pass@127.0.0.1:$BITCOIN_RPC_PORT"
             echo "ESCROW_REGTEST_SIGNER_RPC_URL=http://opsecmkt-signer:$signer_pass@127.0.0.1:$BITCOIN_RPC_PORT"
             echo "ESCROW_REGTEST_PRIVATE_OPERATOR_RPC_URL=http://operator:$operator_pass@127.0.0.1:$BITCOIN_PRIVATE_RPC_PORT"
             echo "ESCROW_REGTEST_PRIVATE_APP_RPC_URL=http://opsecmkt-escrow:$app_pass@127.0.0.1:$BITCOIN_PRIVATE_RPC_PORT"
@@ -301,13 +297,12 @@ jobs:
           SETUP_TOKEN: ci-validation-only-not-a-real-bootstrap-secret
           # The bitcoin profile requires a verifier; this is a public synthetic value for config validation only.
           BITCOIN_RPC_AUTH: marketplace:0123456789abcdef0123456789abcdef$f25a796e58dd70ff7eb5b96b54de079cc7e3d6f40eb8a0fa55fd05f26a53635e
-          # Compose refuses either Monero wallet-rpc's profile with a blank password (A-466;
+          # Compose refuses the Monero escrow wallet-rpc profile with a blank password (A-466;
           # tests/test_compose_wallet_passwords.py checks the refusal).
-          MONERO_WALLET_RPC_PASSWORD: ci-validation-only
           ESCROW_XMR_WALLET_RPC_PASSWORD: ci-validation-only
         run: |
           files=(-f compose.yaml -f "compose.$MODE.yaml" -f compose.nodes.yaml)
-          profiles=(--profile bitcoin --profile monero --profile monero-wallet --profile escrow-signer)
+          profiles=(--profile bitcoin --profile monero --profile escrow-signer)
           if [ "$DATABASE" = internal ]; then
             files+=(-f compose.internal-db.yaml)
             profiles+=(--profile internal-db)
@@ -363,7 +358,7 @@ jobs:
           # service: (mem_limit, CPUs as cpu_quota / cpu_period, pids_limit). Not cpus: Docker refuses to create a
           # container whose cpus exceed the host CPU count, which would break 1-CPU hosts.
           limits = {"app": ("512m", 2, 512), "db": ("1g", 2, 256), "tor": ("256m", 1, 64), "tor-mirror": ("256m", 1, 64),
-                    "bitcoin": ("2g", 2, 256), "monero": ("2g", 2, 512), "monero-wallet": ("512m", 1, 128),
+                    "bitcoin": ("2g", 2, 256), "monero": ("2g", 2, 512),
                     "monero-escrow-wallet": ("1g", 1, 128),
                     "clamd": ("3g", 2, 256), "escrow-signer": ("128m", 1, 64), "tor-socks": ("256m", 1, 64)}
           logging = {"driver": sys.argv[1] or "json-file", "options": {"max-size": "10m", "max-file": "3"}}
@@ -516,7 +511,7 @@ jobs:
           docker compose "${files[@]}" "${profiles[@]}" config --format json | python3 -c '
           import json, sys
           services = json.load(sys.stdin)["services"]
-          for name in ("bitcoin", "monero", "monero-wallet"):
+          for name in ("bitcoin", "monero"):
               image = services[name]["image"]
               reference, _, digest = image.partition("@")
               tag = reference.rpartition("/")[2].partition(":")[2]
@@ -715,13 +710,6 @@ jobs:
       - run: npm run test:e2e
         env:
           E2E_DATABASE_URL: postgres://test:test-ci-only@127.0.0.1:5432/e2e?sslmode=disable
-      - name: Wallet-backed browser journeys (simulated RPC, real application)
-        env:
-          E2E_WALLET_DATABASE_URL: postgres://test:test-ci-only@127.0.0.1:5432/e2e_wallet?sslmode=disable
-          POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
-        run: |
-          docker exec "$POSTGRES_CONTAINER" createdb -U test e2e_wallet
-          npm run test:e2e:wallet
       - name: Preserve browser report and failure traces
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -730,8 +718,6 @@ jobs:
           path: |
             playwright-report/
             test-results/
-            playwright-wallet-report/
-            test-results-wallet/
           if-no-files-found: ignore
           retention-days: 14
   browser-escrow:

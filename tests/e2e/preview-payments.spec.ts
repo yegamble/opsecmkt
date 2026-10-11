@@ -5,22 +5,23 @@ import { PREVIEW_DEPOSIT_TXID, PREVIEW_DRAFT_ID, PREVIEW_PAID_ID } from './previ
 test('preview pages state that payments are disabled', async ({ page }) => {
   for (const path of ['/', '/checkout?id=encrypted-drive', `/order?id=${PREVIEW_DRAFT_ID}`, `/order?id=${PREVIEW_PAID_ID}`, '/account', '/vendor-dashboard', '/admin']) {
     expect((await page.goto(path))?.status()).toBe(200);
-    await expect(page.locator('footer')).toContainText('Payments disabled');
+    await expect(page.locator('footer')).toContainText('New payments paused');
     await expect(page.locator('body')).not.toContainText('TESTNET payments');
     await expect(page.locator('.payment-address')).toHaveCount(0);
   }
   await page.goto(`/order?id=${PREVIEW_DRAFT_ID}`);
-  await expect(page.getByRole('heading', { name: 'Payment is unavailable' })).toBeVisible();
+  await expect(page.locator('.key-values')).toContainText('Draft — unfunded');
+  await expect(page.locator('form[action="/orders/pay"]')).toHaveCount(0);
   await page.goto('/checkout?id=encrypted-drive');
-  await expect(page.locator('main')).toContainText('UNFUNDED DRAFT ONLY.');
+  await expect(page.locator('main')).toContainText('A draft reserves no stock and requests no payment.');
   await page.goto('/account');
-  await expect(page.locator('main')).toContainText('Unavailable — payments disabled');
+  await expect(page.locator('main')).toContainText('Historical payout addresses');
   await expect(page.getByLabel('Bitcoin payout address')).toHaveCount(0);
   await page.goto('/admin');
   const providers = page.locator('.admin-payments');
-  await expect(providers.getByRole('heading', { name: 'Payment providers' })).toBeVisible();
-  await expect(providers).toContainText('No provider is running.');
-  await expect(providers).toContainText('No payouts recorded.');
+  await expect(providers.getByRole('heading', { name: 'Escrow status and payment intake' })).toBeVisible();
+  await expect(providers).toContainText('Historical pooled records remain available for reading.');
+  await expect(providers).toContainText('No historical payouts recorded.');
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(page.viewportSize()!.width);
 });
 
@@ -33,14 +34,14 @@ test('preview paid sample shows one sample deposit inside a scrolling table', as
   const deposits = page.locator('.payment-deposits');
   await expect(deposits.locator('tbody tr')).toHaveCount(1);
   await expect(deposits.locator('td.mono')).toHaveText(`${PREVIEW_DEPOSIT_TXID}:0`);
-  await expect(page.locator('.payment-figures')).toContainText('Preview sample: no wallet is connected and no funds exist');
+  await expect(page.locator('main')).toContainText('retired pooled payment system');
   const width = page.viewportSize()!.width;
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
   const box = (await deposits.boundingBox())!;
   expect(box.x + box.width).toBeLessThanOrEqual(width);
   // A-148: the txid wraps, so from tablet width up every column fits without scrolling; where the table does
   // scroll (phones), the scroller is a named region a keyboard user can focus and scroll.
-  await expect(page.getByRole('region', { name: 'Deposits seen by the wallet' })).toHaveAttribute('tabindex', '0');
+  await expect(page.getByRole('region', { name: 'Recorded deposits' })).toHaveAttribute('tabindex', '0');
   expect(await deposits.locator('td.mono').evaluate(e => getComputedStyle(e).whiteSpace)).toBe('normal');
   if (width >= 768) {
     expect(await deposits.evaluate(e => e.scrollWidth - e.clientWidth), `deposit table overflow at ${width}px`).toBeLessThanOrEqual(0);

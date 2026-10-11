@@ -455,7 +455,15 @@ test('Monero escrow switched off: the order page says so and offers no Monero es
     await expect(page.locator('form[action^="/escrow-xmr/"]')).toHaveCount(0);
     await shot(page, info, `o01-off-${name}`);
     if (name === 'buyer') {
-      await draft(page, digitalTitle);
+      // Fresh escrow-only intake refuses a checkout while its escrow is off.
+      const listing = sql(`SELECT id FROM products WHERE title='${digitalTitle}'`);
+      await page.goto(`/product?id=${listing}`);
+      await expect(page.getByRole('link', { name: 'Review order draft' })).toHaveCount(0);
+      await expect(page.locator('main')).toContainText('Not available for purchase in XMR.');
+      // A draft saved on the enabled server remains readable after escrow is switched off.
+      await draft(buyer, digitalTitle);
+      const saved = new URL(buyer.url());
+      await page.goto(saved.pathname + saved.search);
       await expect(page.locator('form[action="/orders/escrow-xmr"]')).toHaveCount(0);
       await expect(page.getByRole('heading', { name: 'Or pay into a Monero escrow (local test chain only)' })).toHaveCount(0);
       await shot(page, info, 'o02-off-draft');
@@ -475,7 +483,7 @@ async function nextWallet(): Promise<string> {
 }
 // Moves retained wallet name's last order close (and so its destruction date) 91 days back.
 function past90Days(name: string) {
-  sql(`BEGIN; ALTER TABLE xmr_escrow_wallets DISABLE TRIGGER xmr_escrow_wallets_kept;
+  sql(`BEGIN; SET LOCAL TIME ZONE 'UTC'; ALTER TABLE xmr_escrow_wallets DISABLE TRIGGER xmr_escrow_wallets_kept;
     UPDATE xmr_escrow_wallets SET last_closed_at=last_closed_at-interval '91 days',destroy_after=destroy_after-interval '91 days' WHERE name='${name}';
     ALTER TABLE xmr_escrow_wallets ENABLE TRIGGER xmr_escrow_wallets_kept; COMMIT;`);
 }

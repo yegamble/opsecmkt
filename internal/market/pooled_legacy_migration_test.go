@@ -2,6 +2,7 @@ package market
 
 import (
 	"context"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -36,7 +37,7 @@ func applyLatestMigrations(t *testing.T, e *testEnv) error {
 
 func TestMigration107FreshInstallUsesEscrowAndHasNoPooledHistory(t *testing.T) {
 	clearObsoletePooledEnv(t)
-	e := newTestApp(t)
+	e := newFreshTestApp(t)
 	if got := agInt(e, "SELECT max(version) FROM schema_migrations"); got != 107 {
 		t.Fatalf("fresh schema version = %d, want 107", got)
 	}
@@ -45,6 +46,30 @@ func TestMigration107FreshInstallUsesEscrowAndHasNoPooledHistory(t *testing.T) {
 	}
 	if n := agInt(e, "SELECT count(*) FROM pooled_drain_blockers()"); n != 0 {
 		t.Fatalf("fresh database has %d pooled drain blockers", n)
+	}
+}
+
+func TestFreshEscrowOnlyInstallCannotFallBackToPooledPayments(t *testing.T) {
+	clearObsoletePooledEnv(t)
+	t.Setenv("ESCROW_BTC", "")
+	t.Setenv("ESCROW_XMR", "")
+	e := newFreshTestApp(t)
+	admin := e.setup()
+	_, buyer := e.user("fresh107_buyer", "buyer")
+	vendor, _ := e.user("fresh107_vendor", "vendor")
+	product := e.product(vendor, "digital")
+	for _, currency := range []string{"BTC", "XMR"} {
+		// Neither currency has an enabled escrow. A fresh install must refuse a new
+		// order instead of silently falling back to the retired pooled payment path.
+		e.check(e.do("POST", "/orders", buyer, url.Values{"product_id": {product}, "currency": {currency}}), 409)
+	}
+	for _, route := range []string{"/orders/pay", "/account/payout", "/admin/payout", "/admin/payment-address-collisions"} {
+		e.check(e.do("POST", route, admin, url.Values{"currency": {"BTC"}, "address": {"bcrt1qretired"}}), 404)
+	}
+	for _, table := range []string{"orders", "payment_addresses", "payments", "payouts", "escrows"} {
+		if n := agInt(e, "SELECT count(*) FROM "+table); n != 0 {
+			t.Fatalf("fresh refusal wrote %d rows to %s", n, table)
+		}
 	}
 }
 
@@ -171,5 +196,23 @@ func TestMigration107RefusesUnknownFutureBlockerKindsWithoutReferences(t *testin
 	}
 	if got := agInt(e, "SELECT max(version) FROM schema_migrations"); got != 106 {
 		t.Fatalf("refused future blocker migration recorded version %d, want 106", got)
+	}
+}
+
+func TestMigration107PreservesHistoricalPooledFeeAddressRefusal(t *testing.T) {
+	clearObsoletePooledEnv(t)
+	x := newEscrowEnv(t)
+	_, admin := x.user("legacy107_fee_admin", "admin")
+	old := x.testEnv.order(x.buyer, x.testEnv.product(x.vendor, "physical"), "BTC", stateCompleted)
+	address := regtestAddr("legacy107 pooled fee refusal")
+	agExec(x.testEnv, "UPDATE orders SET updated=now()-interval '40 days' WHERE id=$1", old)
+	agExec(x.testEnv, "INSERT INTO payment_addresses(order_id,currency,address,provider,created) VALUES($1,'BTC',$2,'btc-regtest',now()-interval '40 days')", old, address)
+	w := x.do("POST", "/admin/escrow-fee", admin, url.Values{"fee_bps": {"250"}, "fee_address": {address}, "password": {testPassword}})
+	x.check(w, 409)
+	if n := agInt(x.testEnv, "SELECT count(*) FROM settings WHERE key LIKE 'escrow_btc_fee_%'"); n != 0 {
+		t.Fatalf("refused historical fee address changed %d settings", n)
+	}
+	if n := agInt(x.testEnv, "SELECT count(*) FROM payment_addresses WHERE order_id=$1 AND address=$2", old, address); n != 1 {
+		t.Fatal("historical address was changed")
 	}
 }

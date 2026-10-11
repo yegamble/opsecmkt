@@ -17,12 +17,12 @@ Server-rendered Go and PostgreSQL, PGP identity, Tor-first deployment.
 </div>
 
 > [!IMPORTANT]
-> **Pooled payments use test networks by default; mainnet is an explicit operator choice.** Per-order escrow is a
-> separate path, built on the development branch but not released, and is off by default. Bitcoin escrow uses
-> 2-of-3 signing; Monero escrow is custodial, not multisig. Bitcoin escrow has a recorded public signet smoke;
-> Monero escrow has a recorded public stagenet digital claim; other public Monero journeys remain unverified. No public-testnet pooled-payment or mainnet-payment run is recorded. See the network matrix below, the
-> [operator guide](docs/operator-guide.md#payments), and [per-order escrow](docs/escrow.md). Tor protects inbound
-> connections to the site; it does not guarantee anonymity. See [implementation status](docs/implementation-status.md).
+> **Fresh installations use per-order escrow on test networks only.** Escrow is built on the development
+> branch, not released, and is off by default. Bitcoin uses 2-of-3 signing; Monero is custodial.
+> Public signet practice, claim and refund and one public stagenet digital claim are recorded;
+> public testnet4 and other Monero journeys remain unverified. Legacy pooled upgrades must pass the drain
+> refusal before this build can start. See the network matrix, [upgrade guide](UPGRADING.md#58-pooled-wallet-removal-for-fresh-installs-a-448),
+> and [per-order escrow](docs/escrow.md). Tor protects inbound connections; it does not guarantee anonymity.
 
 ## Why OPSEC Market
 
@@ -42,25 +42,23 @@ Tor Browser with scripts off, and an operator who runs everything on one host.
 
 | For | Capabilities |
 | --- | --- |
-| **Buyers** | Catalog search and filters, vendor profiles, order tracking, disputes, and reviews tied to a completed paid order (test network by default) |
+| **Buyers** | Catalog search and filters, vendor profiles, order tracking, disputes, and reviews tied to a completed paid order (test networks only) |
 | **Vendors** | Physical and digital listings with up to 4 photos each, an avatar, stock, automatic digital delivery, and a desk of orders to fulfil |
 | **Moderators** | A dispute desk, payment-review flags, read-only access to disputed orders, and takedown of vendors' photos and avatars |
-| **Administrators** | Roles, suspensions, second-factor resets, listing and photo takedowns, the public staff list, CAPTCHA and payment-intake controls, payout recovery, the canary and signed audit exports |
+| **Administrators** | Roles, suspensions, second-factor resets, listing and photo takedowns, the public staff list, CAPTCHA and payment-intake controls, escrow recovery, the canary and signed audit exports |
 | **Operators** | One-command install, PostgreSQL inside or outside Compose, optional pruned test-network nodes, onion mirrors, encrypted backups |
 
 ### Payment and escrow networks
 
-These paths have separate network guards. “Mainnet” here means real Bitcoin or Monero funds.
+Payments on this development build use test coins only. Enabling a node alone does not enable escrow.
 
-| Path | Networks and default | What the current evidence covers |
+| Path | Supported networks | Evidence and limits |
 | --- | --- | --- |
-| **Pooled wallet payments** | Optional wallet RPCs; test networks by default. Bitcoin accepts testnet3 (`test`), testnet4, signet and regtest; Monero accepts testnet and stagenet. Mainnet requires explicit `BITCOIN_CHAIN=main` and/or `MONERO_NETWORK=mainnet`. If both currencies are configured, both must be test networks or both mainnet. | Local-chain and simulated-RPC checks only. No public test-network or mainnet payment run is recorded. Pooled wallets are custodial; they are not multisig escrow. |
-| **Bitcoin per-order escrow** (`ESCROW_BTC`) | Built on the development branch, not released; off by default. Bitcoin 2-of-3 signing accepts regtest, signet and testnet4; refuses mainnet and testnet3, and is refused in a mainnet-configured market. | Regtest and a private, isolated signet have been exercised. Public signet practice, claim and refund passed on 2026-10-09 ([record](docs/evidence/public-testnet/2026-10-09-9885beef29d3/signet/README.md)). Public testnet4 remains unrun; mainnet escrow is unsupported. |
-| **Monero per-order escrow** (`ESCROW_XMR`) | Built on the development branch, not released; off by default. Accepts a local fakechain or stagenet; refuses Monero testnet and mainnet, and is refused in a mainnet-configured market. Custodial: the market can move these coins; this is not Monero multisig. | A local fakechain and an offline stagenet fork have been exercised. A funded public stagenet digital claim passed on 2026-10-10 ([record](docs/evidence/public-testnet/2026-10-10-ac71878dfde4/stagenet-xmr/README.md)). Public refunds and physical-order deadlines remain unrun; testnet and mainnet escrow are unsupported. |
+| **Bitcoin per-order escrow** (`ESCROW_BTC=on`) | Regtest, public signet, testnet4. Off by default; mainnet and testnet3 refused. | 2-of-3 signing. Local regtest and private signet tested. Public signet practice, claim and refund passed on 2026-10-09 ([record](docs/evidence/public-testnet/2026-10-09-9885beef29d3/signet/README.md)). Public testnet4 and actual Sparrow/Ledger signing remain unverified. |
+| **Monero per-order escrow** (`ESCROW_XMR=on`) | Local fakechain or stagenet. Off by default; testnet and mainnet refused. | Custodial. Local fakechain and offline stagenet fork tested. One funded public stagenet digital claim passed on 2026-10-10 ([record](docs/evidence/public-testnet/2026-10-10-ac71878dfde4/stagenet-xmr/README.md)). Public refunds and physical deadlines remain unverified. |
+| **Historical pooled records** | No new pooled payments on this build. | Records remain readable. An older database with any drain blocker, including mainnet pooled history, is refused unchanged. Resolve ordinary blockers using the prior drain-capable build before upgrading. Mainnet history remains a refusal even after settlement: keep the prior release and preserve its records. No real-market drain is claimed. |
 
-The installer's local nodes default to Bitcoin **testnet4** and Monero **stagenet**. Set `BITCOIN_CHAIN=signet` for public signet or `BITCOIN_CHAIN=regtest` for an isolated local Bitcoin chain; `MONERO_NETWORK=testnet` selects Monero testnet for pooled payments. The configured wallet and node must report the selected network. Testnet3 is a legacy pooled-payment option and cannot be used for Bitcoin escrow.
-
-The pooled payment path and escrow path have different settings and eligibility checks. See [mainnet pooled payments](docs/operator-guide.md#mainnet), [Bitcoin escrow's network limits](docs/operator-guide.md#bitcoin-escrow-test-networks-only), and [Monero escrow's network limits](docs/operator-guide.md#monero-escrow-fakechain-or-stagenet) before configuring real funds.
+Bundled nodes default to Bitcoin **testnet4** and Monero **stagenet**. Bitcoin **signet** is the public network with recorded proof; **regtest** and Monero **fakechain** are isolated development networks. Local nodes require disk space and a full first sync even when pruned. External nodes or cloud test nodes avoid storing chains on your workstation. Use the [Bitcoin operator package](docs/operator-guide.md#bitcoin-escrow-test-networks-only) and [Monero setup](docs/operator-guide.md#monero-escrow-fakechain-or-stagenet) to provision escrow wallets and credentials.
 
 <table>
   <tr>
@@ -153,19 +151,18 @@ down` stops everything and keeps the data.
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/architecture-dark.svg">
   <source media="(prefers-color-scheme: light)" srcset="docs/assets/architecture-light.svg">
-  <img alt="OPSEC Market architecture: a no-JavaScript browser reaches the Go server through Tor or an HTTPS proxy. PostgreSQL stores application state. Pooled BTC and XMR payments default to test networks, with mainnet as operator opt-in. Separate unreleased, off-by-default Bitcoin escrow is 2-of-3 and limited to regtest, signet and testnet4; Monero escrow is custodial and limited to local fakechain or stagenet." src="docs/assets/architecture-light.svg" width="880">
+  <img alt="OPSEC Market architecture: a browser reaches the Go server through Tor or HTTPS. PostgreSQL keeps application and historical payment records. Optional Bitcoin 2-of-3 escrow supports regtest, signet and testnet4; custodial Monero escrow supports fakechain or stagenet. Both are off by default and test-network-only. Legacy pooled upgrades require an empty drain list." src="docs/assets/architecture-light.svg" width="880">
 </picture>
 
 A browser with scripts off reaches the Go server through a Tor onion service
 (with an optional mirror address) or the operator's HTTPS reverse proxy. The
 server renders every page, checks CSRF and origin on every form, and writes an
 audit row in the same transaction as each action. PostgreSQL holds all state
-and applies migrations on startup. Optional pooled Bitcoin Core and Monero
-wallet RPCs use test networks by default; an operator may opt pooled payments
-into mainnet, where enabled pooled currencies must agree on live versus test
-network. Per-order escrow has separate guards, stays test-network-only, and is
-off by default. The diagram gives the accepted network limits and the evidence
-boundary for each payment path.
+and applies migrations on startup. Optional per-order escrow is off by default
+and accepts the test networks shown below. Bitcoin uses a dedicated signer and
+2-of-3 PSBT signing by the parties; Monero uses a separate escrow wallet RPC and
+holds the wallet keys. Historical pooled payment records remain in PostgreSQL;
+a refusing migration protects an undrained legacy database.
 
 **What the server keeps.** There is no account, message or order deletion, and
 the operator or anyone holding a decrypted backup can read what is stored.

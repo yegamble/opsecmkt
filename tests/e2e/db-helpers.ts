@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { createHmac } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -116,4 +117,17 @@ export async function withinViewport(details: Locator, width: number) {
     if (box.x < 0 || box.x + box.width > width) outside.push(`${await part.evaluate(e => e.outerHTML.slice(0, 60))}: x ${Math.round(box.x)} to ${Math.round(box.x + box.width)}`);
   }
   expect(outside, `form parts outside 0..${width} px`).toEqual([]);
+}
+
+// Seed public escrow keys for database-only order readers. These on-curve keys have
+// no known private halves and are never signing or payment evidence.
+export function seedRecordedEscrowKeys(sql: (query: string) => string, order: string, buyer: string, vendor: string) {
+  const keys = JSON.parse(execFileSync('python3', ['-c',
+    "import json,sys; sys.path.insert(0,'tests/e2e/fixtures'); from escrow_rpc import point; print(json.dumps([point(sys.argv[1]+p).hex() for p in ('buyer','vendor','market')]))", order], { encoding: 'utf8' })) as string[];
+  for (const [index, party] of ['buyer', 'vendor', 'market'].entries()) {
+    const user = party === 'market' ? 'NULL' : `(SELECT id FROM users WHERE handle='${party === 'buyer' ? buyer : vendor}')`;
+    const hmac = party === 'market' ? 'NULL' : "repeat('0',64)";
+    sql(`INSERT INTO escrow_pubkeys(pubkey,escrow_id,party,user_id,key_hmac,origin_fingerprint,origin_path,derivation_suffix)
+      SELECT '${keys[index]}',id,'${party}',${user},${hmac},'00000000','/48h/1h/0h/2h','/0/1' FROM escrows WHERE order_id='${order}'`);
+  }
 }
