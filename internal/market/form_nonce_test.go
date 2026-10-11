@@ -211,46 +211,51 @@ func TestFormNonceMessageAndOrderTransition(t *testing.T) {
 }
 
 func TestFormNonceOtherOrderTransitionsReplayOnce(t *testing.T) {
-	for _, tc := range []struct {
-		name, kind, from, path, to, notice string
-		buyerActor                         bool
-		fields                             url.Values
-	}{
-		{"ship", "physical", statePaid, "/orders/ship", stateShipped, "order-shipped", false, url.Values{"note": {"Posted today"}}},
-		{"deliver", "digital", statePaid, "/orders/deliver", stateDelivered, "order-delivered", false, url.Values{"content": {"One-time licence"}}},
-		{"complete", "physical", stateShipped, "/orders/complete", stateCompleted, "order-completed", true, payoutConfirmed(url.Values{}, 0)},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			e := newTestApp(t)
-			vendor, vendorSession := e.user("nonce_transition_vendor", "vendor")
-			buyer, buyerSession := e.user("nonce_transition_buyer", "buyer")
-			order := e.order(buyer, e.product(vendor, tc.kind), "BTC", tc.from)
-			session := vendorSession
-			if tc.buyerActor {
-				session = buyerSession
-			}
-			fields := url.Values{}
-			for key, values := range tc.fields {
-				fields[key] = values
-			}
-			fields.Set("order_id", order)
-			fields.Set(formNonceField, randomToken()[:32])
-			first := e.do("POST", tc.path, session, fields)
-			e.check(first, 303)
-			repeat := e.do("POST", tc.path, session, fields)
-			e.check(repeat, 303)
-			if first.Header().Get("Location") != repeat.Header().Get("Location") ||
-				noticeSetCookie(repeat) == nil || noticeSetCookie(repeat).Value != tc.notice {
-				t.Fatalf("replayed %s response changed", tc.name)
-			}
-			var events int
-			if err := e.DB.QueryRow("SELECT count(*) FROM order_events WHERE order_id=$1 AND to_state=$2", order, tc.to).Scan(&events); err != nil {
-				t.Fatal(err)
-			}
-			if events != 1 || submissionCount(t, e) != 1 {
-				t.Fatalf("%s wrote events=%d receipts=%d", tc.name, events, submissionCount(t, e))
-			}
-		})
+	// Shipping and buyer receipt confirmation are escrow-specific actions with
+	// dedicated replay/lost-ack coverage. Digital escrow normally delivers and
+	// completes in the funding watcher; when a listing is taken down, its vendor
+	// can still deliver by hand through the existing order action. Exercise that
+	// real escrow exception here rather than constructing a pooled order.
+	x := newEscrowEnv(t)
+	order := x.draft()
+	addr := x.mustCheckout(order, regtestAddr("nonce-manual-delivery-refund"))
+	if _, err := x.DB.Exec("UPDATE products SET archived=true,archived_at=now(),admin_archive_reason='test takedown' WHERE id=(SELECT product_id FROM orders WHERE id=$1)", order); err != nil {
+		t.Fatal(err)
+	}
+	x.core.deposit(addr, txidOf("nonce-manual-delivery"), 0, 100000, 3)
+	x.poll()
+	if x.state(order) != statePaid {
+		t.Fatalf("taken-down funded escrow was not left paid for manual delivery: %s", x.state(order))
+	}
+	page := x.page("/order?id="+order, x.vendorSess)
+	nonce := renderedFormNonce(t, page, "/orders/deliver")
+	if got := agInt(x.testEnv, "SELECT count(*) FROM form_submissions WHERE action_path='/orders/deliver'"); got != 0 {
+		t.Fatalf("GET wrote %d delivery receipts", got)
+	}
+	f := url.Values{"order_id": {order}, "content": {"One-time licence"}, formNonceField: {nonce}}
+	first := x.do("POST", "/orders/deliver", x.vendorSess, f)
+	x.check(first, 303)
+	if x.state(order) != stateCompleted {
+		t.Fatalf("manual escrow delivery did not complete through the system hook: %s", x.state(order))
+	}
+	repeat := x.do("POST", "/orders/deliver", x.vendorSess, f)
+	x.check(repeat, 303)
+	if first.Header().Get("Location") != repeat.Header().Get("Location") ||
+		noticeSetCookie(repeat) == nil || noticeSetCookie(repeat).Value != "order-delivered" {
+		t.Fatal("manual delivery replay changed its recorded response")
+	}
+	var delivered, completed, content, receipts int
+	if err := x.DB.QueryRow("SELECT count(*) FILTER (WHERE to_state='delivered'), count(*) FILTER (WHERE to_state='completed') FROM order_events WHERE order_id=$1", order).Scan(&delivered, &completed); err != nil {
+		t.Fatal(err)
+	}
+	if err := x.DB.QueryRow("SELECT count(*) FROM deliveries WHERE order_id=$1", order).Scan(&content); err != nil {
+		t.Fatal(err)
+	}
+	if err := x.DB.QueryRow("SELECT count(*) FROM form_submissions WHERE action_path='/orders/deliver'").Scan(&receipts); err != nil {
+		t.Fatal(err)
+	}
+	if delivered != 1 || completed != 1 || content != 1 || receipts != 1 {
+		t.Fatalf("manual delivery replay wrote delivered=%d completed=%d deliveries=%d receipts=%d", delivered, completed, content, receipts)
 	}
 }
 

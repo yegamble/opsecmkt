@@ -14,10 +14,9 @@ func (w *orderWorld) resolverNotices(uid string) int {
 }
 
 func TestDisputeNotifiesIndependentStaff(t *testing.T) {
-	w := newOrderWorld(t)
+	w := newDisputeOrderWorld(t)
 	adminID, _ := w.e.user("admin_"+randomToken()[:6], "admin")
-	order := w.e.order(w.buyerID, w.e.product(w.vendorID, "physical"), "BTC", stateShipped)
-	w.expect("/disputes", w.buyer, form("order_id", order, "reason", "The parcel arrived empty and the seal was broken."), 303, "")
+	order, _ := w.disputedFor(w.buyerID, w.buyer, w.vendorID, w.vendor, w.buyer, "The parcel arrived empty and the seal was broken.")
 
 	want := "Dispute opened on order " + shortID(order) + ". Review it on the moderator desk."
 	for _, uid := range []string{w.modID, adminID} {
@@ -30,12 +29,9 @@ func TestDisputeNotifiesIndependentStaff(t *testing.T) {
 			t.Fatalf("non-resolver %s got %d resolver notices", uid, n)
 		}
 	}
-	// The vendor keeps today's single transition notice; the buyer (actor) gets none.
-	if n := w.count("SELECT count(*) FROM notifications WHERE user_id=$1", w.vendorID); n != 1 {
-		t.Fatalf("vendor notifications=%d, want 1", n)
-	}
-	if n := w.count("SELECT count(*) FROM notifications WHERE user_id=$1", w.buyerID); n != 0 {
-		t.Fatalf("buyer notifications=%d, want 0", n)
+	// Checkout and funding have their own notices; the buyer opener gets no dispute transition notice.
+	if n := w.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE 'Order % is now Disputed.%'", w.buyerID); n != 0 {
+		t.Fatalf("buyer dispute transition notices=%d, want 0", n)
 	}
 	if n := w.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE 'No independent resolver%'", order); n != 0 {
 		t.Fatal("no-resolver note written although a resolver exists")
@@ -44,17 +40,16 @@ func TestDisputeNotifiesIndependentStaff(t *testing.T) {
 }
 
 func TestDisputePartyModeratorIsNotAResolver(t *testing.T) {
-	w := newOrderWorld(t)
+	w := newDisputeOrderWorld(t)
 	adminID, _ := w.e.user("admin_"+randomToken()[:6], "admin")
 	// The moderator buys from the vendor, so they are a party and cannot resolve this dispute.
-	order := w.e.order(w.modID, w.e.product(w.vendorID, "physical"), "BTC", stateShipped)
-	w.expect("/disputes", w.vendor, form("order_id", order, "reason", "The buyer claims non-delivery but tracking shows it arrived."), 303, "")
+	_, _ = w.disputedFor(w.modID, w.mod, w.vendorID, w.vendor, w.vendor, "The buyer claims non-delivery but tracking shows it arrived.")
 
 	if n := w.resolverNotices(w.modID); n != 0 {
 		t.Fatalf("party moderator got %d resolver notices", n)
 	}
-	if n := w.count("SELECT count(*) FROM notifications WHERE user_id=$1", w.modID); n != 1 {
-		t.Fatalf("party moderator notifications=%d, want only the transition notice", n)
+	if n := w.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE 'Order % is now Disputed.%'", w.modID); n != 1 {
+		t.Fatalf("party moderator dispute transition notices=%d, want 1", n)
 	}
 	if n := w.resolverNotices(adminID); n != 1 {
 		t.Fatalf("independent admin got %d resolver notices, want 1", n)
@@ -65,13 +60,11 @@ func TestDisputePartyModeratorIsNotAResolver(t *testing.T) {
 }
 
 func TestModeratorDisputePartyFilterIsExactAndStaffOnly(t *testing.T) {
-	w := newOrderWorld(t)
-	firstOrder := w.e.order(w.buyerID, w.e.product(w.vendorID, "physical"), "BTC", stateShipped)
-	w.expect("/disputes", w.buyer, form("order_id", firstOrder, "reason", "The parcel arrived empty and the seal was broken."), 303, "")
+	w := newDisputeOrderWorld(t)
+	firstOrder, _ := w.disputedFor(w.buyerID, w.buyer, w.vendorID, w.vendor, w.buyer, "The parcel arrived empty and the seal was broken.")
 	secondBuyerID, secondBuyer := w.e.user("party_filter_buyer_"+randomToken()[:6], "buyer")
 	secondVendorID, _ := w.e.user("party_filter_vendor_"+randomToken()[:6], "vendor")
-	secondOrder := w.e.order(secondBuyerID, w.e.product(secondVendorID, "physical"), "BTC", stateShipped)
-	w.expect("/disputes", secondBuyer, form("order_id", secondOrder, "reason", "The parcel arrived empty and the seal was broken."), 303, "")
+	secondOrder, _ := w.disputedFor(secondBuyerID, secondBuyer, secondVendorID, "", secondBuyer, "The parcel arrived empty and the seal was broken.")
 
 	firstHandle := agStr(w.e, "SELECT handle FROM users WHERE id=$1", w.buyerID)
 	firstDispute := agStr(w.e, "SELECT id FROM disputes WHERE order_id=$1", firstOrder)
@@ -93,14 +86,16 @@ func TestModeratorDisputePartyFilterIsExactAndStaffOnly(t *testing.T) {
 }
 
 func TestDisputeWithNoEligibleResolver(t *testing.T) {
-	e := newTestApp(t)
+	w := newDisputeOrderWorld(t)
+	e := w.e
 	suffix := randomToken()[:6]
 	buyerID, buyer := e.user("buyer_"+suffix, "buyer")
 	adminID, admin := e.user("admin_"+suffix, "admin")
-	w := &orderWorld{e: e}
+	if _, err := e.DB.Exec("UPDATE users SET suspended_at=now() WHERE id=$1", w.modID); err != nil {
+		t.Fatal(err)
+	}
 	// The only administrator is the vendor and no moderator exists.
-	order := e.order(buyerID, e.product(adminID, "physical"), "BTC", stateShipped)
-	w.expect("/disputes", buyer, form("order_id", order, "reason", "The parcel never arrived at the agreed drop."), 303, "")
+	order, _ := w.disputedFor(buyerID, buyer, adminID, "", buyer, "The parcel never arrived at the agreed drop.")
 
 	if w.state(order) != stateDisputed || w.count("SELECT count(*) FROM disputes WHERE order_id=$1 AND status='Open'", order) != 1 {
 		t.Fatal("dispute refused although no independent resolver exists")
@@ -123,21 +118,26 @@ func TestDisputeWithNoEligibleResolver(t *testing.T) {
 	mustContain(t, w.page("/moderator", admin, 200), note, "You are a party to this order")
 	mustNotContain(t, w.page("/disputes", buyer, 200), note)
 
-	// Once an independent moderator exists the desk note disappears; the history note stays.
+	// A moderator who is independent still cannot decide an escrow dispute; an independent administrator can.
 	modID, mod := e.user("mod_"+suffix, "moderator")
 	mustNotContain(t, w.page("/moderator", admin, 200), note)
-	mustContain(t, w.page("/moderator", mod, 200), `name="outcome" value="refund"`)
+	mustNotContain(t, w.page("/moderator", mod, 200), `action="/resolve"`)
+	independentAdminID, independentAdmin := e.user("independent_admin_"+suffix, "admin")
+	mustNotContain(t, w.page("/moderator", admin, 200), note)
+	mustContain(t, w.page("/moderator", independentAdmin, 200), `action="/resolve"`, `name="outcome" value="refund"`)
 
 	// A-306: a staff buyer is a party too. The moderator buys from the administrator, so apart from the vendor the
-	// only staff account is the buyer: that dispute is flagged, the first (which the moderator can resolve) is not.
-	staffOrder := e.order(modID, e.product(adminID, "physical"), "BTC", stateShipped)
-	w.expect("/disputes", mod, form("order_id", staffOrder, "reason", "Bought as a customer; the parcel never arrived."), 303, "")
-	desk := w.page("/moderator", admin, 200)
+	// only staff account besides the independent administrator is the buyer; the moderator cannot resolve it.
+	staffOrder, _ := w.disputedFor(modID, mod, adminID, "", mod, "Bought as a customer; the parcel never arrived.")
+	if n := w.resolverNotices(independentAdminID); n != 1 {
+		t.Fatalf("independent administrator resolver notices=%d, want 1", n)
+	}
+	desk := w.page("/moderator", independentAdmin, 200)
 	mustContain(t, desk, "Order "+staffOrder+"<", "Order "+order+"<")
 	for _, entry := range strings.Split(desk, `<article class="message">`)[1:] {
 		switch {
 		case strings.Contains(entry, "Order "+staffOrder+"<"):
-			mustContain(t, entry, note)
+			mustNotContain(t, entry, note)
 		case strings.Contains(entry, "Order "+order+"<"):
 			mustNotContain(t, entry, note)
 		}
@@ -148,7 +148,8 @@ func TestDisputeWithNoEligibleResolver(t *testing.T) {
 // non-party moderator suspended the dispute is handled as if no independent resolver existed; restoring the
 // moderator reverses it.
 func TestDisputeIgnoresSuspendedStaff(t *testing.T) {
-	e := newTestApp(t)
+	w := newDisputeOrderWorld(t)
+	e := w.e
 	suffix := randomToken()[:6]
 	buyerID, buyer := e.user("buyer_"+suffix, "buyer")
 	adminID, admin := e.user("admin_"+suffix, "admin")
@@ -160,13 +161,13 @@ func TestDisputeIgnoresSuspendedStaff(t *testing.T) {
 	if _, err := e.DB.Exec("UPDATE users SET suspended_at=now() WHERE id=$1", lockedID); err != nil {
 		t.Fatal(err)
 	}
-	w := &orderWorld{e: e}
+	if _, err := e.DB.Exec("UPDATE users SET suspended_at=now() WHERE id=$1", w.modID); err != nil {
+		t.Fatal(err)
+	}
 	e.check(e.do("POST", "/admin/suspend", admin, suspendForm("suspend", modHandle)), 303)
 
 	// Every staff account that is not suspended is a party: the only such administrator is the vendor.
-	product := e.product(adminID, "physical")
-	order := e.order(buyerID, product, "BTC", stateShipped)
-	w.expect("/disputes", buyer, form("order_id", order, "reason", "The parcel never arrived at the agreed drop."), 303, "")
+	order, _ := w.disputedFor(buyerID, buyer, adminID, "", buyer, "The parcel never arrived at the agreed drop.")
 
 	if w.state(order) != stateDisputed {
 		t.Fatal("dispute refused")
@@ -212,8 +213,7 @@ func TestDisputeIgnoresSuspendedStaff(t *testing.T) {
 	body = w.page("/order?id="+order, buyer, 200)
 	mustContain(t, body, modHandle+" · moderator")
 	mustNotContain(t, body, "No independent moderator or administrator is available to contact.", lockedHandle)
-	second := e.order(buyerID, product, "BTC", stateShipped)
-	w.expect("/disputes", buyer, form("order_id", second, "reason", "The second parcel never arrived either."), 303, "")
+	second, _ := w.disputedFor(buyerID, buyer, adminID, "", buyer, "The second parcel never arrived either.")
 	if n := w.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body=$2", modID, "Dispute opened on order "+shortID(second)+". Review it on the moderator desk."); n != 1 {
 		t.Fatalf("restored moderator resolver notices=%d, want 1", n)
 	}

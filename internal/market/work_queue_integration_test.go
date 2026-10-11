@@ -27,21 +27,17 @@ func (w *orderWorld) aged(order string) {
 }
 
 func TestModeratorDeskListsEveryOpenDisputeFirst(t *testing.T) {
-	w := newOrderWorld(t)
+	w := newDisputeOrderWorld(t)
+	_, admin := w.e.user("queue_admin_"+randomToken()[:6], "admin")
 	product := w.e.product(w.vendorID, "physical")
-	oldOpen := w.e.order(w.buyerID, product, "BTC", stateDisputed)
-	newOpen := w.e.order(w.buyerID, product, "XMR", stateDisputed)
+	oldOpen, _ := w.disputedFor(w.buyerID, w.buyer, w.vendorID, w.vendor, w.buyer, "Oldest open dispute: parcel never arrived.")
+	newOpen, _ := w.disputedFor(w.buyerID, w.buyer, w.vendorID, w.vendor, w.buyer, "Newest open dispute: wrong item shipped.")
 	w.aged(oldOpen)
-	for _, q := range []struct {
-		sql  string
-		args []any
-	}{
-		{"INSERT INTO disputes(id,order_id,reason,created) VALUES('old-open-dispute',$1,'Oldest open dispute: parcel never arrived.',now()-interval '30 days')", []any{oldOpen}},
-		{"INSERT INTO disputes(id,order_id,reason,created) VALUES('new-open-dispute',$1,'Newest open dispute: wrong item shipped.',now()-interval '2 days')", []any{newOpen}},
-	} {
-		if _, err := w.e.DB.Exec(q.sql, q.args...); err != nil {
-			t.Fatal(err)
-		}
+	if _, err := w.e.DB.Exec("UPDATE disputes SET created=now()-interval '30 days' WHERE order_id=$1", oldOpen); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.e.DB.Exec("UPDATE disputes SET created=now()-interval '2 days' WHERE order_id=$1", newOpen); err != nil {
+		t.Fatal(err)
 	}
 	// 101 newer resolved disputes: one more than the resolved history shown.
 	w.bulkOrders("bulk-resolved-", w.buyerID, product, stateResolved, 101)
@@ -70,8 +66,11 @@ func TestModeratorDeskListsEveryOpenDisputeFirst(t *testing.T) {
 		}
 	}
 	// The open resolve form is still offered for the old dispute.
-	if !strings.Contains(w.page("/moderator", w.mod, 200), `name="id" value="old-open-dispute"`) {
-		t.Fatal("old open dispute has no resolve form")
+	if !strings.Contains(w.page("/moderator", admin, 200), `name="id" value="`+agStr(w.e, "SELECT id FROM disputes WHERE order_id=$1", oldOpen)+`"`) {
+		t.Fatal("eligible administrator has no resolve form for the old escrow dispute")
+	}
+	if strings.Contains(w.page("/moderator", w.mod, 200), `action="/resolve"`) {
+		t.Fatal("moderator can resolve an escrow dispute")
 	}
 	// Authorization unchanged: an unrelated buyer sees none of these disputes and no notice.
 	if body := w.page("/disputes", w.other, 200); !strings.Contains(body, "No disputes to display") || strings.Contains(body, "Oldest open dispute") || strings.Contains(body, "most recent resolved") {
@@ -79,7 +78,7 @@ func TestModeratorDeskListsEveryOpenDisputeFirst(t *testing.T) {
 	}
 
 	// Without truncation there is no notice, and with only resolved disputes the open queue says it is empty.
-	if _, err := w.e.DB.Exec("DELETE FROM disputes WHERE id IN ('old-open-dispute','new-open-dispute') OR id LIKE 'd-bulk-resolved-00%'"); err != nil {
+	if _, err := w.e.DB.Exec("DELETE FROM disputes WHERE order_id IN ($1,$2) OR id LIKE 'd-bulk-resolved-00%'", oldOpen, newOpen); err != nil {
 		t.Fatal(err)
 	}
 	body := w.page("/moderator", w.mod, 200)

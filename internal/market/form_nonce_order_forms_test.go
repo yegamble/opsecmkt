@@ -9,11 +9,11 @@ import (
 )
 
 func TestFormNonceDraftDisputeReplyAndReviewFormsReplay(t *testing.T) {
-	e := newTestApp(t)
-	vendorID, vendor := e.user("nonce_a130_vendor", "vendor")
-	buyerID, buyer := e.user("nonce_a130_buyer", "buyer")
-	e.user("nonce_a130_mod", "moderator")
-	product := e.product(vendorID, "digital")
+	w := newDisputeOrderWorld(t)
+	e := w.e
+	vendorID, vendor := w.vendorID, w.vendor
+	buyerID, buyer := w.buyerID, w.buyer
+	product := w.x.product
 
 	checkout := e.do("GET", "/checkout?id="+product, buyer, nil)
 	e.check(checkout, 200)
@@ -35,7 +35,8 @@ func TestFormNonceDraftDisputeReplyAndReviewFormsReplay(t *testing.T) {
 		t.Fatalf("draft replay wrote %d audits", n)
 	}
 
-	disputeOrder := e.order(buyerID, product, "BTC", statePaid)
+	disputeOrder := w.fundedFor(buyerID, buyer, vendorID, vendor)
+	beforeDisputesPage := submissionCount(t, e)
 	disputes := e.do("GET", "/disputes", buyer, nil)
 	e.check(disputes, 200)
 	// Both entry points must render a nonce; exercise the inline order form that the wallet journey uses.
@@ -43,7 +44,7 @@ func TestFormNonceDraftDisputeReplyAndReviewFormsReplay(t *testing.T) {
 	inlineDispute := e.do("GET", orderPage(disputeOrder), buyer, nil)
 	e.check(inlineDispute, 200)
 	disputeForm := url.Values{"order_id": {disputeOrder}, "reason": {"The delivered item does not match the listing."}, formNonceField: {renderedFormNonce(t, inlineDispute.Body.String(), "/disputes")}}
-	if submissionCount(t, e) != 1 {
+	if submissionCount(t, e) != beforeDisputesPage {
 		t.Fatal("rendering the disputes page wrote a form receipt")
 	}
 	disputeFirst := e.do("POST", "/disputes", buyer, disputeForm)
@@ -57,18 +58,19 @@ func TestFormNonceDraftDisputeReplyAndReviewFormsReplay(t *testing.T) {
 	if n := countFor(t, e, "SELECT count(*) FROM disputes WHERE order_id=$1", disputeOrder); n != 1 {
 		t.Fatalf("dispute replay stored %d dispute records", n)
 	}
-	if n := countFor(t, e, "SELECT count(*) FROM notifications WHERE user_id=(SELECT id FROM users WHERE handle='nonce_a130_mod') AND body LIKE 'Dispute opened on order %'"); n != 1 {
+	if n := countFor(t, e, "SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE 'Dispute opened on order %'", w.modID); n != 1 {
 		t.Fatalf("dispute replay sent %d staff notices", n)
 	}
 	if n := countFor(t, e, "SELECT count(*) FROM audit_events WHERE user_id=$1 AND action LIKE 'Opened dispute on order %'", buyerID); n != 1 {
 		t.Fatalf("dispute replay wrote %d audits", n)
 	}
 
+	beforeReplyPage := submissionCount(t, e)
 	orderPageView := e.do("GET", orderPage(disputeOrder), vendor, nil)
 	e.check(orderPageView, 200)
 	reply := "The package left our warehouse sealed and complete."
 	replyForm := url.Values{"order_id": {disputeOrder}, "reply": {reply}, formNonceField: {renderedFormNonce(t, orderPageView.Body.String(), "/disputes/reply")}}
-	if submissionCount(t, e) != 2 {
+	if submissionCount(t, e) != beforeReplyPage {
 		t.Fatal("rendering the reply form wrote a form receipt")
 	}
 	replyFirst := e.do("POST", "/disputes/reply", vendor, replyForm)
@@ -86,11 +88,12 @@ func TestFormNonceDraftDisputeReplyAndReviewFormsReplay(t *testing.T) {
 		t.Fatalf("reply replay wrote %d audits", n)
 	}
 
-	completed := e.order(buyerID, product, "BTC", stateCompleted)
+	completed := w.x.completed(regtestAddr("nonce-completed-"+randomToken()[:8]), 100000)
+	beforeReviewPage := submissionCount(t, e)
 	completedPage := e.do("GET", orderPage(completed), buyer, nil)
 	e.check(completedPage, 200)
 	reviewForm := url.Values{"order_id": {completed}, "rating": {"5"}, "body": {"Exactly as described."}, formNonceField: {renderedFormNonce(t, completedPage.Body.String(), "/reviews")}}
-	if submissionCount(t, e) != 3 {
+	if submissionCount(t, e) != beforeReviewPage {
 		t.Fatal("rendering the review form wrote a form receipt")
 	}
 	reviewFirst := e.do("POST", "/reviews", buyer, reviewForm)
@@ -110,13 +113,11 @@ func TestFormNonceDraftDisputeReplyAndReviewFormsReplay(t *testing.T) {
 }
 
 func TestFormNonceConcurrentDisputeAndLostAcknowledgement(t *testing.T) {
-	e := newTestApp(t)
-	vendorID, _ := e.user("nonce_a130_concurrent_vendor", "vendor")
-	buyerID, buyer := e.user("nonce_a130_concurrent_buyer", "buyer")
-	modID, _ := e.user("nonce_a130_concurrent_mod", "moderator")
-	product := e.product(vendorID, "physical")
+	w := newDisputeOrderWorld(t)
+	e := w.e
+	vendorID, buyerID, buyer, vendor, modID := w.vendorID, w.buyerID, w.buyer, w.vendor, w.modID
 
-	order := e.order(buyerID, product, "BTC", statePaid)
+	order := w.fundedFor(buyerID, buyer, vendorID, vendor)
 	f := url.Values{"order_id": {order}, "reason": {"The shipped goods arrived damaged and incomplete."}, formNonceField: {randomToken()[:32]}}
 	start := make(chan struct{})
 	var wg sync.WaitGroup
@@ -148,7 +149,7 @@ func TestFormNonceConcurrentDisputeAndLostAcknowledgement(t *testing.T) {
 		t.Fatalf("concurrent dispute wrote %d audits", n)
 	}
 
-	lostOrder := e.order(buyerID, product, "BTC", statePaid)
+	lostOrder := w.fundedFor(buyerID, buyer, vendorID, vendor)
 	lostForm := url.Values{"order_id": {lostOrder}, "reason": {"The replacement order is also missing its required parts."}, formNonceField: {randomToken()[:32]}}
 	lost := loseNextActionCommit(t, e)
 	first := e.do("POST", "/disputes", buyer, lostForm)
