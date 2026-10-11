@@ -299,8 +299,8 @@ records identify their own frozen sources in [verification](verification.md).
 
 Monero escrow (WR-escrow Phase 3, `ESCROW_XMR=on`, custodial, off by default; see [escrow](escrow.md#phase-3-monero-escrow-on-a-local-fakechain))
 has fifteen legs that run the real server code (a Go test per leg, with its own App and Monero escrow watcher) against a real
-`monerod --regtest` and three real `monero-wallet-rpc` 0.18.5.1 instances: `scripts/test-escrow-xmr-regtest.sh`. It is manual
-and not part of CI, refuses any daemon that is not a fakechain with hard fork 16 or later before any wallet call, and needs a
+`monerod --regtest` and three real `monero-wallet-rpc` 0.18.5.1 instances: `scripts/test-escrow-xmr-regtest.sh`. It runs in
+CI (the `escrow-xmr-regtest` job, A-498), refuses any daemon that is not a fakechain with hard fork 16 or later before any wallet call, and needs a
 disposable PostgreSQL database in `TEST_DATABASE_URL` (the legs create their own databases from it, as the other database
 tests do). The header of the script has the exact `docker` commands; the
 [runbook](testnet-runbook.md#9-manual-monero-escrow-fakechain-check) repeats them. The loopback ports it uses by default:

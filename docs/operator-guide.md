@@ -2090,7 +2090,7 @@ checked with `docker compose config` only.
 
 **What was checked.** [Per-order escrow, Phase 3](escrow.md#phase-3-monero-escrow-on-a-local-fakechain) lists each tier: unit and `httptest` tests, Go
 tests with PostgreSQL against a fake wallet-rpc, fifteen legs against a real fakechain `monerod` and `monero-wallet-rpc`
-0.18.5.1 (`scripts/test-escrow-xmr-regtest.sh`, manual, not in CI;
+0.18.5.1 (`scripts/test-escrow-xmr-regtest.sh`, run by the `escrow-xmr-regtest` CI job;
 [runbook](testnet-runbook.md#9-manual-monero-escrow-fakechain-check)), and a simulated-RPC browser journey added in this
 phase. Nothing has run on stagenet, testnet or mainnet, with Monero multisig, or as a deployment.
 

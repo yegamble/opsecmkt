@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Manual Monero escrow check on a real monerod and monero-wallet-rpc 0.18.5.1 local fakechain (WR-escrow Phase 3,
-# A-248). Not run in CI. FAKECHAIN ONLY: it refuses any daemon that does not report nettype "fakechain" with hard fork
+# Monero escrow check on a real monerod and monero-wallet-rpc 0.18.5.1 local fakechain (WR-escrow Phase 3,
+# A-248). Run in CI by the escrow-xmr-regtest job (A-498), which starts the nodes as below. FAKECHAIN ONLY: it refuses any daemon that does not report nettype "fakechain" with hard fork
 # version 16 or later, before any wallet call, and each Go leg checks the same again.
 #
 # Slice X-c legs (internal/market/escrow_xmr_regtest_test.go), each against a real App and its Monero escrow watcher:

@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-// Escrow Phase 3, slice X-c: the real-chain legs of Monero escrow (scripts/test-escrow-xmr-regtest.sh; not run in CI).
+// Escrow Phase 3, slice X-c: the real-chain legs of Monero escrow (scripts/test-escrow-xmr-regtest.sh; run by the escrow-xmr-regtest CI job).
 // They run a real App and its Monero escrow watcher against monerod and monero-wallet-rpc 0.18.5.1 on a local fakechain
 // (monerod --regtest): the App's own escrow wallet-rpc (ESCROW_XMR_REGTEST_WALLET_URL), a funder wallet-rpc standing in
 // for the buyer's own wallet (ESCROW_XMR_REGTEST_FUNDER_URL) and a wallet-rpc used only to restore a sealed seed
