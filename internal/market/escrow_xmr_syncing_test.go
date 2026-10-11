@@ -59,7 +59,10 @@ func TestXMREscrowStartsBesideSyncingDaemon(t *testing.T) {
 		!strings.Contains(readiness, "XMR escrow: on (not ready: "+unchecked+")") {
 		t.Fatalf("/admin beside a syncing daemon: alert %q, readiness %q", alert, readiness)
 	}
-	if strings.Contains(alert+readiness, "fakechain") || strings.Contains(alert+readiness, "stagenet") {
+	// The fixed help link names the supported networks, without claiming the
+	// unchecked node runs on either one. Check the status text before that help.
+	alertStatus, _, _ := strings.Cut(alert, "</strong>")
+	if strings.Contains(alertStatus+readiness, "fakechain") || strings.Contains(alertStatus+readiness, "stagenet") {
 		t.Fatalf("admin status names an unverified network: alert %q, readiness %q", alert, readiness)
 	}
 	x.fake.edit(func(f *fakeXMREscrow) { f.targetAhead, f.hardFork = 0, 16 })
