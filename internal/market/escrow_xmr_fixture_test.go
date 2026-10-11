@@ -16,7 +16,7 @@ import (
 )
 
 // TestXMREscrowFixtureAdapter: the simulated Monero escrow nodes of the browser journey (tests/e2e/fixtures/
-// xmr_escrow_rpc.py, served by wallet-rpc.py --xmr-wallet-port --xmr-daemon-port; SIMULATED: not chain evidence) answer
+// xmr_escrow_rpc.py, served by escrow-simulators.py --xmr-wallet-port --xmr-daemon-port; SIMULATED: not chain evidence) answer
 // the app's own adapter in shapes it parses, with keys its offline parser accepts (checksum and prime-order keys,
 // A-417), and with the faults it classifies: the -21, -13, -8, -4 codes and a transfer that drops the connection
 // (xmrRPCError.Dropped). A transaction the simulator builds passes the settlement builder's checkXMRBuild. The reply
@@ -28,7 +28,7 @@ func TestXMREscrowFixtureAdapter(t *testing.T) {
 	if err != nil {
 		t.Skip("python3 is needed to run the simulated Monero escrow nodes")
 	}
-	ports := make([]string, 3)
+	ports := make([]string, 2)
 	for i := range ports {
 		l, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
@@ -37,14 +37,14 @@ func TestXMREscrowFixtureAdapter(t *testing.T) {
 		ports[i] = strconv.Itoa(l.Addr().(*net.TCPAddr).Port)
 		l.Close()
 	}
-	cmd := exec.Command(py, "tests/e2e/fixtures/wallet-rpc.py", "--port", ports[0], "--xmr-wallet-port", ports[1], "--xmr-daemon-port", ports[2])
-	var stderr bytes.Buffer
+	cmd := exec.Command(py, "tests/e2e/fixtures/escrow-simulators.py", "--xmr-wallet-port", ports[0], "--xmr-daemon-port", ports[1])
+	var stderr lockedBuffer
 	cmd.Stderr = &stderr
 	if err = cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { cmd.Process.Kill(); cmd.Wait() })
-	walletURL, daemonURL := "http://127.0.0.1:"+ports[1], "http://127.0.0.1:"+ports[2]
+	walletURL, daemonURL := "http://127.0.0.1:"+ports[0], "http://127.0.0.1:"+ports[1]
 	sim := func(path string, body any) map[string]any {
 		t.Helper()
 		raw, _ := json.Marshal(body)

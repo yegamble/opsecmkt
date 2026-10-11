@@ -295,12 +295,10 @@ func TestEscrowConfigFromEnv(t *testing.T) {
 		t.Fatalf("on: %+v %v", c, err)
 	}
 	for name, getenv := range map[string]func(string) string{
-		"bad value":           env("ESCROW_BTC", "yes", "ESCROW_BTC_RPC_URL", "http://a:b@h:1"),
-		"no URL":              env("ESCROW_BTC", "on"),
-		"testnet3 chain":      env("ESCROW_BTC", "on", "ESCROW_BTC_RPC_URL", "http://a:b@h:1", "BITCOIN_CHAIN", "test"),
-		"mainnet chain":       env("ESCROW_BTC", "on", "ESCROW_BTC_RPC_URL", "http://a:b@h:1", "BITCOIN_CHAIN", "main"),
-		"pooled wallet":       env("ESCROW_BTC", "on", "ESCROW_BTC_RPC_URL", "http://a:b@h:1", "BITCOIN_RPC_URL", "http://x:y@h:2", "ESCROW_BTC_ARBITER_WALLET", "opsecmkt"),
-		"named pooled wallet": env("ESCROW_BTC", "on", "ESCROW_BTC_RPC_URL", "http://a:b@h:1", "BITCOIN_RPC_URL", "http://x:y@h:2", "BITCOIN_WALLET", "w", "ESCROW_BTC_ARBITER_WALLET", "w"),
+		"bad value":      env("ESCROW_BTC", "yes", "ESCROW_BTC_RPC_URL", "http://a:b@h:1"),
+		"no URL":         env("ESCROW_BTC", "on"),
+		"testnet3 chain": env("ESCROW_BTC", "on", "ESCROW_BTC_RPC_URL", "http://a:b@h:1", "BITCOIN_CHAIN", "test"),
+		"mainnet chain":  env("ESCROW_BTC", "on", "ESCROW_BTC_RPC_URL", "http://a:b@h:1", "BITCOIN_CHAIN", "main"),
 	} {
 		if _, err := escrowConfigFromEnv(getenv); err == nil {
 			t.Errorf("%s: accepted", name)

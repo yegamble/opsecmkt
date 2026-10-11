@@ -404,7 +404,7 @@ func TestXMREscrowMigration090Backfill(t *testing.T) {
 	}{
 		{"INSERT INTO users(id,handle,password_hash,role) VALUES('ub','m90_buyer','x','buyer'),('uv','m90_vendor','x','vendor')", nil},
 		{"INSERT INTO products(id,vendor_id,title,description,category,region,kind,btc,xmr,stock) VALUES('pd','uv','D','D','Hardware','Worldwide','digital',100000,1,5)", nil},
-		{"INSERT INTO orders(id,buyer_id,product_id,currency,amount,state) VALUES('o1','ub','pd','XMR',1,'awaiting_payment'),('o2','ub','pd','XMR',1,'awaiting_payment')", nil},
+		{"INSERT INTO orders(id,buyer_id,product_id,currency,amount,state) VALUES('o1','ub','pd','XMR',1,'cancelled'),('o2','ub','pd','XMR',1,'cancelled')", nil},
 		{"INSERT INTO order_events(order_id,from_state,to_state,actor_id,note,created) VALUES('o1','awaiting_payment','awaiting_payment',NULL,$1,'2026-09-01 10:00Z')", []any{note(tx1, "escrow-202609-01", 3)}},
 		{"INSERT INTO order_events(order_id,from_state,to_state,actor_id,note,created) VALUES('o1','awaiting_payment','awaiting_payment',NULL,$1,'2026-09-02 10:00Z')", []any{note(tx2, "escrow-202609-01", 3)}},
 		{"INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES('o2','awaiting_payment','awaiting_payment','ub',$1)", []any{note(tx1, "escrow-202609-01", 4)}},

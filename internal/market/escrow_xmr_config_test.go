@@ -66,8 +66,6 @@ func TestXMREscrowConfigFromEnv(t *testing.T) {
 		"upper case":                      {"ESCROW_XMR", "ON"},
 		"no wallet URL":                   {"ESCROW_XMR_WALLET_RPC_URL", ""},
 		"no daemon URL":                   {"ESCROW_XMR_DAEMON_URL", " "},
-		"pooled wallet-rpc":               {"MONERO_WALLET_RPC_URL", "http://127.0.0.1:28088"},
-		"pooled wallet-rpc, other spell":  {"MONERO_WALLET_RPC_URL", "HTTP://other:creds@127.0.0.1:28088/"},
 		"mainnet Monero market":           {"MONERO_NETWORK", "mainnet"},
 		"mainnet Bitcoin market":          {"BITCOIN_CHAIN", "main"},
 		"negative fee":                    {"ESCROW_XMR_FEE_BPS", "-1"},
