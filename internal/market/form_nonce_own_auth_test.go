@@ -229,20 +229,45 @@ func TestA130AdminRoleReceiptStillRequiresOriginalPasswordMode(t *testing.T) {
 	}
 }
 
-func TestA130UnchangedProfileFirstSaveAuditsOnceWithoutPassword(t *testing.T) {
+// A-159(h): a profile save that changes nothing writes no audit row (it is not a profile change), needs no password,
+// and still leaves its receipt so an exact repeat replays the same success notice. The receipt is written by
+// finishFormSubmission whether or not the action audits.
+func TestA130UnchangedProfileSaveWritesNoAuditAndReplaysWithoutPassword(t *testing.T) {
 	e := newTestApp(t)
 	uid, session := e.user("own_profile_noop", "buyer")
+	base := agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1", uid)
+	audits := func() int { // any audit row the account gained, whatever its text
+		return agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1", uid) - base
+	}
 	form := url.Values{"pgp": {""}, formNonceField: {randomToken()[:32]}}
-	e.check(e.do("POST", "/account", session, form), 303)
-	if n := agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1 AND action='Updated profile'", uid); n != 1 {
-		t.Fatalf("first unchanged profile submission audit rows=%d, want one", n)
+	w := e.do("POST", "/account", session, form)
+	e.check(w, 303)
+	if w.Header().Get("Location") != "/account" || e.cookie(w, "notice") != "profile" {
+		t.Fatalf("unchanged profile save did not answer with the success notice: %q notice=%q", w.Header().Get("Location"), e.cookie(w, "notice"))
 	}
-	if n := agInt(e, "SELECT count(*) FROM form_submissions WHERE nonce=$1 AND NOT confirmation_required", form.Get(formNonceField)); n != 1 {
-		t.Fatalf("unchanged profile receipt missing its no-password mode: %d", n)
+	if n := audits(); n != 0 {
+		t.Fatalf("unchanged profile submission wrote %d audit rows, want none", n)
 	}
-	e.check(e.do("POST", "/account", session, form), 303)
-	if n := agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1 AND action='Updated profile'", uid); n != 1 {
-		t.Fatalf("exact replay repeated unchanged profile audit: %d", n)
+	if n := agInt(e, "SELECT count(*) FROM form_submissions WHERE nonce=$1 AND NOT confirmation_required AND redirect='/account' AND notice='profile'", form.Get(formNonceField)); n != 1 {
+		t.Fatalf("unchanged profile receipt missing its no-password mode or saved notice: %d", n)
+	}
+	w = e.do("POST", "/account", session, form)
+	e.check(w, 303)
+	if w.Header().Get("Location") != "/account" || e.cookie(w, "notice") != "profile" {
+		t.Fatalf("exact replay did not return the recorded success: %q notice=%q", w.Header().Get("Location"), e.cookie(w, "notice"))
+	}
+	if n := audits(); n != 0 {
+		t.Fatalf("exact replay audited an unchanged profile: %d", n)
+	}
+	if n := agInt(e, "SELECT count(*) FROM form_submissions WHERE nonce=$1", form.Get(formNonceField)); n != 1 {
+		t.Fatalf("exact replay changed the receipt count: %d", n)
+	}
+	// Distinct unchanged submissions (fresh forms) stay unaudited however often they are made.
+	for range 3 {
+		e.check(e.do("POST", "/account", session, url.Values{"pgp": {""}, formNonceField: {randomToken()[:32]}}), 303)
+	}
+	if n := audits(); n != 0 {
+		t.Fatalf("repeated unchanged profile saves wrote %d audit rows, want none", n)
 	}
 }
 
@@ -285,8 +310,8 @@ func TestA130OwnReceiptReconcilesStaleTrueModeWithOriginalNoPassword(t *testing.
 	if err != nil || res.Redirect != "/account" {
 		t.Fatalf("original no-password mode replay: result=%+v err=%v", res, err)
 	}
-	if n := agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1 AND action='Updated profile'", uid); n != 1 {
-		t.Fatalf("stale-mode replay duplicated account audit: %d", n)
+	if n := agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1 AND action='Updated profile'", uid); n != 0 {
+		t.Fatalf("stale-mode replay of an unchanged profile save wrote account audit: %d", n)
 	}
 }
 
