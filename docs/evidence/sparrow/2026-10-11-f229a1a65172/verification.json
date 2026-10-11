@@ -1,0 +1,19 @@
+{
+  "sparrow_version": "2.5.5",
+  "dmg_sha256": "02be94466d92bef4b81b6b9c3efaf6ef4910f713330065309750e92679f711cd",
+  "release_manifest_signer_fingerprint": "D4D0D3202FC06849A257B38DE94618334C674B40",
+  "release_manifest_gpg_verification": "passed with pinned fingerprint",
+  "codesign_deep_strict": "passed on mounted original and ditto copy",
+  "spctl_assessment": "accepted; Notarized Developer ID",
+  "running_executable": "VerifiedSparrow.app/Contents/MacOS/Sparrow",
+  "profile": "isolated offline regtest",
+  "operator_attested_gui_workflow": "native Sparrow wallet JSON created from disposable private roots and the app public per-order cosigners; actual Receive address checked, PSBT opened, finalized for signing, signed, saved",
+  "descriptor_gui_import_attested": false,
+  "hardware_device_attested": false,
+  "application_revision": "f229a1a65172986065bbab4f3aa24a09725695ad",
+  "harness_sha256": "8285ecb297a1f0580ad0bfe2b92624a3f99b6124d1afdface8493637fa303f72",
+  "run_elapsed_seconds": "283.95",
+  "run_result": "PASS",
+  "as_run_harness_git_revision": "9a61d3a04081043a2a651e7564e0529ab92d5064",
+  "manifest_label_correction": "sparrow_source_sha256 renamed to sparrow_dmg_sha256; the recorded digest and all proof values are unchanged"
+}

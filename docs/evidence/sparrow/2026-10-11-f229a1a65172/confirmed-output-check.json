@@ -1,0 +1,36 @@
+{
+  "status": "PASS",
+  "chain": "regtest",
+  "node_version": 310100,
+  "checked_at_height": 217,
+  "all_confirmed_outputs_match_frozen_plan": true,
+  "confirmed_input_funding_txids_match_manifest": true,
+  "transactions": {
+    "sibling_refund": {
+      "txid": "7fcf8c060d614ab2692bfe57947a75327b6953e5b24738addb3ae7784f86390b",
+      "height": 215,
+      "blockhash": "433151d2155c7624ac713733a6b8eb449d9b4a076f65c16bcef0f68042aba0d1",
+      "confirmations": 3,
+      "outputs": [
+        {
+          "n": 0,
+          "sats": 69682,
+          "address": "bcrt1qrhfs7glcyvk0yauc87anp03tsf0sljvs5t6gyg"
+        }
+      ]
+    },
+    "release": {
+      "txid": "a9190bd5180bb5ee1750cfbe4bc1de1cfb380c8df8a1ba667d4e06e90b7d3d5a",
+      "height": 206,
+      "blockhash": "3be3acf004692143180a4f0a60a02ca4e95f7dea1b2cbd3328f3e1be3749edc8",
+      "confirmations": 12,
+      "outputs": [
+        {
+          "n": 0,
+          "sats": 99682,
+          "address": "bcrt1qt56yuy2yaju3al24atpk9aclfxvhzlp3gdg7we"
+        }
+      ]
+    }
+  }
+}

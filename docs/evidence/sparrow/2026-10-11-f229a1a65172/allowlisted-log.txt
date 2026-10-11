@@ -1,0 +1,18 @@
+Selected allowlisted progress from the preserved private journey log; private paths replaced.
+    escrow_regtest_sparrow_test.go:374: Sparrow seq-01buyerpractice: inspect [private operator directory]/seq-01buyerpractice-request.json; write [private operator directory]/seq-01buyerpractice-address-checked.txt and [private operator directory]/seq-01buyerpractice-signed.psbt
+    escrow_regtest_sparrow_test.go:374: Sparrow seq-01buyerpractice: GUI address attested and 1 own SIGHASH_ALL input signature(s) checked
+    escrow_regtest_sparrow_test.go:374: Sparrow seq-02vendorpractice: inspect [private operator directory]/seq-02vendorpractice-request.json; write [private operator directory]/seq-02vendorpractice-address-checked.txt and [private operator directory]/seq-02vendorpractice-signed.psbt
+    escrow_regtest_sparrow_test.go:374: Sparrow seq-02vendorpractice: GUI address attested and 1 own SIGHASH_ALL input signature(s) checked
+    escrow_regtest_sparrow_test.go:383: per-order escrow bcrt1qy25ngwmvy3kxwc9q792lq0fkgczysku9rxegxyadcvy57zhsj9xq0fnawc (market index 2) created through the checkout form, paid 0.001 BTC by c193293f2c346eaf83110fb9b4094a97168f2026efb1ce346fae212fa8451655, confirmed: order completed
+    escrow_regtest_sparrow_test.go:400: Sparrow seq-03vendorrelease: inspect [private operator directory]/seq-03vendorrelease-request.json; write [private operator directory]/seq-03vendorrelease-address-checked.txt and [private operator directory]/seq-03vendorrelease-signed.psbt
+    escrow_regtest_sparrow_test.go:400: Sparrow seq-03vendorrelease: GUI address attested and 1 own SIGHASH_ALL input signature(s) checked
+    escrow_regtest_sparrow_test.go:400: seq-03vendorrelease: co-signed by the escrow signer (cosigned=market), checked, testmempoolaccept allowed, broadcast: a9190bd5180bb5ee1750cfbe4bc1de1cfb380c8df8a1ba667d4e06e90b7d3d5a
+    escrow_regtest_sparrow_test.go:400: seq-03vendorrelease: confirmed; gettxout a9190bd5180bb5ee1750cfbe4bc1de1cfb380c8df8a1ba667d4e06e90b7d3d5a:0 = 0.00099682 BTC to bcrt1qt56yuy2yaju3al24atpk9aclfxvhzlp3gdg7we, 3 confirmations
+    escrow_regtest_sparrow_test.go:402: per-order escrow bcrt1qs6u7qacfh33wq2kt88aqw6exp6jwwtkjc3m6jhad7upy772emzxs9vjzfs (market index 3) created through the checkout form, paid 0.001 BTC by 28b41a9566edec3b36b174890984fe6e0490047baeacb01b96bdf31a93f21163, confirmed: order completed
+    escrow_regtest_sparrow_test.go:429: Sparrow seq-04buyerrefund: inspect [private operator directory]/seq-04buyerrefund-request.json; write [private operator directory]/seq-04buyerrefund-address-checked.txt and [private operator directory]/seq-04buyerrefund-signed.psbt
+    escrow_regtest_sparrow_test.go:429: Sparrow seq-04buyerrefund: GUI address attested and 1 own SIGHASH_ALL input signature(s) checked
+    escrow_regtest_sparrow_test.go:429: seq-04buyerrefund: co-signed by the escrow signer (cosigned=market), checked, testmempoolaccept allowed, broadcast: 7fcf8c060d614ab2692bfe57947a75327b6953e5b24738addb3ae7784f86390b
+    escrow_regtest_sparrow_test.go:429: seq-04buyerrefund: confirmed; gettxout 7fcf8c060d614ab2692bfe57947a75327b6953e5b24738addb3ae7784f86390b:0 = 0.00069682 BTC to bcrt1qrhfs7glcyvk0yauc87anp03tsf0sljvs5t6gyg, 3 confirmations
+    escrow_regtest_sparrow_test.go:431: no tprv or seed in the signer's log or the database; the signer logged:
+--- PASS: TestEscrowRegtestSparrowManualJourney (283.95s)
+ok  	opsecmkt/internal/market	284.505s

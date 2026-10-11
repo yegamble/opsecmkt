@@ -326,8 +326,8 @@ func sparrowConfirmOutputs(t *testing.T, c *shapeBChain, txid string, planned []
 
 func TestEscrowRegtestSparrowManualJourney(t *testing.T) {
 	dir := sparrowPrivateDir(t)
-	if os.Getenv("ESCROW_SPARROW_VERSION") == "" || !regexp.MustCompile(`^[0-9a-fA-F]{64}$`).MatchString(os.Getenv("ESCROW_SPARROW_SOURCE_SHA256")) || !regexp.MustCompile(`^[0-9a-fA-F]{40}$`).MatchString(os.Getenv("ESCROW_SPARROW_APP_REVISION")) {
-		t.Fatal("set verified Sparrow version, source SHA-256, and frozen app revision before the manual journey")
+	if os.Getenv("ESCROW_SPARROW_VERSION") == "" || !regexp.MustCompile(`^[0-9a-fA-F]{64}$`).MatchString(os.Getenv("ESCROW_SPARROW_DMG_SHA256")) || !regexp.MustCompile(`^[0-9a-fA-F]{40}$`).MatchString(os.Getenv("ESCROW_SPARROW_APP_REVISION")) {
+		t.Fatal("set verified Sparrow version, DMG SHA-256, and frozen app revision before the manual journey")
 	}
 	if realChainNet() != "regtest" {
 		t.Skip("Sparrow manual journey requires regtest")
@@ -436,7 +436,7 @@ func TestEscrowRegtestSparrowManualJourney(t *testing.T) {
 	manifest := map[string]any{
 		"status": "confirmed", "chain": "regtest", "core_version": network.Version,
 		"operator_attested": map[string]any{
-			"sparrow_version": os.Getenv("ESCROW_SPARROW_VERSION"), "sparrow_source_sha256": os.Getenv("ESCROW_SPARROW_SOURCE_SHA256"),
+			"sparrow_version": os.Getenv("ESCROW_SPARROW_VERSION"), "sparrow_dmg_sha256": os.Getenv("ESCROW_SPARROW_DMG_SHA256"),
 			"frozen_app_git_revision": os.Getenv("ESCROW_SPARROW_APP_REVISION"),
 			"address_checks":          []string{"buyer practice", "vendor practice", "vendor release /0/0", "buyer refund /0/3"},
 			"release_signed_source":   releaseSource, "refund_signed_source": refundSource,

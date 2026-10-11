@@ -7,7 +7,10 @@
 > readable ([upgrade boundary](../UPGRADING.md#58-pooled-wallet-removal-for-fresh-installs-a-448)).
 > Bitcoin escrow accepts **regtest, signet or testnet4 only**; Monero accepts **local fakechain or
 > stagenet only**. Public signet and one public stagenet digital claim have recorded evidence;
-> testnet4, Sparrow and physical-device signing remain unverified.
+> testnet4 and physical-device signing remain unverified. Sparrow 2.5.5 GUI per-order practice/release/sibling-refund
+> signing passed on isolated regtest at frozen app revision `f229a1a65172986065bbab4f3aa24a09725695ad`; a separate
+> GUI import of the supplied descriptor produced the funded escrow receive address in a saved watch-only wallet
+> ([A-458 evidence](evidence/sparrow/2026-10-11-f229a1a65172/README.md)). This does not prove signing from that wallet.
 > (`ESCROW_BTC`, [operator guide](operator-guide.md#bitcoin-escrow-test-networks-only); `ESCROW_XMR`,
 > [operator guide](operator-guide.md#monero-escrow-fakechain-or-stagenet)). Those phases, Bitcoin escrow for digital
 > orders and for physical orders, and Monero escrow for both, are built and tested on the development
@@ -120,7 +123,10 @@ descriptor in your wallet is what detects that.
 - Wallet support depends on the key layout. Bitcoin Core signed the original layout on regtest; Electrum
   (the wallet built into Tails) could not, because it only signs multisig wallets built from every cosigner's
   extended key. Since A-456b the market also serves the per-order layout described below, with a recorded
-  BIP39 Electrum signing journey on regtest (A-457). Sparrow and physical hardware remain untested.
+  BIP39 Electrum signing journey on regtest (A-457). Later A-458 evidence records Sparrow GUI per-order practice,
+  release and sibling-refund signing on isolated regtest; a separate watch-only descriptor import/address match is
+  recorded, but signing from that imported wallet and physical hardware remain untested
+  ([record](evidence/sparrow/2026-10-11-f229a1a65172/README.md)).
   `scripts/test-escrow-wallets.sh` repeats this check (real local chain plus a real Electrum, run by hand, not CI:
   Bitcoin Core 31.1 on regtest with P2P disabled and RPC bound to host loopback, Electrum 4.8.2 checked against its release signature and used
   offline). A Bitcoin Core wallet signs the transaction the market serves today. An Electrum wallet restored from a
@@ -141,7 +147,9 @@ descriptor in your wallet is what detects that.
   (`TestEscrowRegtestElectrumMarketJourney`, `scripts/test-escrow-wallets.sh`) used two BIP39 Electrum 4.8.2 parties:
   both registered and signed practice through the market; one signed a release and the other a sibling-deposit refund;
   the real escrow signer co-signed both, and both were broadcast and confirmed on regtest. A mixed Core/per-order pair
-  was refused. The Electrum GUI menus, Sparrow, physical hardware, and public networks remain untested.
+  was refused. At A-457, Electrum GUI menus, Sparrow, physical hardware and public networks were untested; later
+  A-458 records Sparrow GUI per-order signing on isolated regtest, while descriptor import, physical hardware and
+  public Sparrow signing remain untested ([record](evidence/sparrow/2026-10-11-f229a1a65172/README.md)).
 
 ## Monero: one account per order
 
@@ -176,8 +184,8 @@ shipped phase has proven. The full rules and acceptance criteria are in the proj
 | --- | --- | --- |
 | 0 | Preparation in the current payment code: one settlement per order enforced by the database, a single settlement dispatcher, password confirmation for dispute decisions | Done on the development branch, not yet released; changes nothing for users except that resolving a dispute asks for the resolver's password |
 | Wallet check | Scripted signing test with Electrum and Bitcoin Core on regtest, before any escrow database change | Done on regtest: Core signs; Electrum cannot sign this layout. Repeatable with `scripts/test-escrow-wallets.sh` (real local chain plus a real Electrum, run by hand, not CI); Electrum's own seed type cannot follow a per-order key path |
-| 1 | Bitcoin escrow for digital orders on regtest, behind a setting that is off by default | Built and tested on regtest (and, since A-443, a private signet) on the development branch, not released, behind `ESCROW_BTC` (off by default; regtest, signet or testnet4): see [Phase 1](#phase-1-bitcoin-escrow-on-regtest) for what it does, what it protects and the tests behind it. The public signet smoke covers a digital claim and underpaid refund; mainnet remains untested and refused by escrow. The original layout uses Bitcoin Core, while the per-order layout has BIP39 Electrum evidence (A-457); Sparrow and physical hardware remain untested |
-| Wallets | Electrum and Sparrow support (a signing test showed Electrum needs a different key layout) | Built on the development branch: per-order key derivation (A-453), the escrow signer (A-454), registration and practice (A-455), and checkout/settlement with per-order keys (A-456b). A-457 recorded two real BIP39 Electrum parties signing a release and sibling refund on regtest; Sparrow and physical hardware evidence remains A-458 |
+| 1 | Bitcoin escrow for digital orders on regtest, behind a setting that is off by default | Built and tested on regtest (and, since A-443, a private signet) on the development branch, not released, behind `ESCROW_BTC` (off by default; regtest, signet or testnet4): see [Phase 1](#phase-1-bitcoin-escrow-on-regtest) for what it does, what it protects and the tests behind it. The public signet smoke covers a digital claim and underpaid refund; mainnet remains untested and refused by escrow. The original layout uses Bitcoin Core, while the per-order layout has BIP39 Electrum evidence (A-457) and partial Sparrow GUI evidence (A-458), including a matching address from a separate watch-only descriptor import; signing from that imported wallet, physical hardware and public Sparrow signing remain unverified |
+| Wallets | Electrum and Sparrow support (a signing test showed Electrum needs a different key layout) | Built on the development branch: per-order key derivation (A-453), the escrow signer (A-454), registration and practice (A-455), and checkout/settlement with per-order keys (A-456b). A-457 recorded two real BIP39 Electrum parties signing a release and sibling refund on regtest; A-458 later recorded Sparrow GUI per-order practice/release/sibling-refund signing and separate watch-only descriptor import/address match on isolated regtest, but not signing from the imported wallet or physical hardware ([record](evidence/sparrow/2026-10-11-f229a1a65172/README.md)) |
 | 2 | Physical orders: buyer-signed release, 14-day deadline, no-ship cancellation, fee bumps | Built and tested on regtest (and, since A-443, a private signet); not released; off by default (`ESCROW_BTC`; regtest, signet or testnet4): see [Phase 2](#phase-2-bitcoin-escrow-for-physical-orders-on-regtest) for what it does, what it protects, what it does not do and the tests behind it. Not run on any public test network or on mainnet; Bitcoin Core and the per-order BIP39 Electrum layout are implemented, with the recorded A-457 journey scoped to its release/refund legs |
 | 3 | Monero accounts in monthly escrow wallets | Built and tested on a local Monero fakechain (monerod `--regtest`); not released; off by default (`ESCROW_XMR`): see [Phase 3](#phase-3-monero-escrow-on-a-local-fakechain) for what it does, what it protects, what it does not protect and the tests behind it. Custodial: the market can move these coins. Since A-449 it also accepts stagenet ([below](#monero-escrow-on-stagenet-a-449)), checked on an offline stagenet fork and in one public stagenet digital claim ([record](evidence/public-testnet/2026-10-10-ac71878dfde4/stagenet-xmr/README.md)); public refunds and physical deadlines remain unrun, and testnet/mainnet are refused; no Monero multisig |
 | 4 | Public test networks end to end, then escrow-only for new orders, then removal of the pooled wallet | Under way: the Bitcoin node sync guard, the escrow chain pin and the chain table (A-439, [below](#node-sync-guard-chain-pin-and-chain-table-a-439)), the market key protection (A-440, [below](#market-key-protection-a-440)), Monero escrow on stagenet with its network pin and daemon sync guard (A-449, [below](#monero-escrow-on-stagenet-a-449)), broadcast honesty (A-441, [below](#broadcast-honesty-a-441)), the escrow-only switch with its readiness panel (A-444, [below](#escrow-only-cutover-a-444)), which no market has used on a public network, the pooled wallet's drain gate and panel (A-445, [below](#pooled-wallet-drain-a-445)), which no market has drained, and Bitcoin escrow on signet and testnet4 with its private-signet legs (A-443, [below](#bitcoin-escrow-on-signet-and-testnet4-a-443)) are on the development branch; the public signet practice/claim/refund and one public stagenet digital claim have recorded proofs; neither is a deployed-market or real pooled-drain proof |
@@ -319,8 +327,11 @@ them together from their own wallets. A reorganisation deeper than 100 blocks is
   and practice signing, checkout, funding, completion on funding, the vendor's claim with a downloaded copy, a refused
   paste, co-signing, broadcast and confirmation, and a refund. Not chain evidence.
 
-Not tested: any public test network, mainnet, the escrow pages in Firefox or WebKit (the escrow journey runs in
-Chromium only; CI runs the preview pages in Firefox and WebKit), Sparrow and hardware wallets. The later A-457 regtest record covers BIP39 Electrum release/refund signing; it does not cover Electrum GUI menus.
+This browser journey did not test any public test network, mainnet, escrow pages in Firefox or WebKit (it runs in
+Chromium only; CI runs preview pages in Firefox and WebKit), Sparrow or hardware wallets. Later A-458 evidence records
+Sparrow GUI per-order signing on isolated regtest, but not supplied descriptor import or a physical device
+([record](evidence/sparrow/2026-10-11-f229a1a65172/README.md)). The A-457 regtest record covers BIP39 Electrum
+release/refund signing; it does not cover Electrum GUI menus.
 
 ## Phase 2: Bitcoin escrow for physical orders on regtest
 
@@ -485,8 +496,10 @@ protect* above: a server taken over can show a substituted key, and the market k
   the cancel and the shipment, in both orders; a buyer who never signs seeing the notices and the banner; and the administrator's 7
   days applying to a new order only. Not chain evidence. The clock is moved through SQL on the test's own database.
 
-Not tested: any public test network, mainnet, the escrow pages in Firefox or WebKit, Electrum, Sparrow and hardware
-wallets, deadlines of 7 to 30 days in real time (every test moves the clock), and a restore of a real backup into a
+The Phase 2 checks did not test any public test network, mainnet, escrow pages in Firefox or WebKit, Electrum, Sparrow
+or hardware wallets. Later A-458 evidence records Sparrow GUI per-order signing on isolated regtest, but not supplied
+descriptor import or a physical device ([record](evidence/sparrow/2026-10-11-f229a1a65172/README.md)). Also untested:
+deadlines of 7 to 30 days in real time (every test moves the clock), and a restore of a real backup into a
 running market with Phase 2 orders on a real chain. `scripts/test-backup-restore.sh` (run in CI) restores a real dump
 through `scripts/restore.sh` with escrow settlement, fee bump and index floor rows and checks the deadline recheck,
 the sweep marker, the floors and the market's key index; the Go tests run the margin block as written.
@@ -1229,8 +1242,11 @@ purchase in BTC, with that reason, and the readiness panel on `/admin` counts an
   cannot change layout. The page says plainly that Electrum's own seed type (Electrum's default, also on Tails) cannot
   make per-order wallets: a BIP39 seed in Electrum, or Sparrow, is needed. The registration copy says that a per-order
   key replaces the account's Bitcoin Core key, which (since A-456b, with any account whose key is not a per-order one too) stops Bitcoin escrow buying and, for a vendor under
-  escrow-only intake, Bitcoin escrow sales; the pages say that BIP39 Electrum signing has been tested on regtest while
-  Electrum GUI steps and Sparrow remain untested (A-457, A-458), and the practice page tells the owner never to send coins to the practice wallet's
+  escrow-only intake, Bitcoin escrow sales; the pages say that BIP39 Electrum signing has been tested on regtest;
+  Electrum GUI steps remain untested, while Sparrow GUI per-order signing and separate watch-only descriptor
+  import/address matching have A-458 evidence; signing from the imported wallet and physical hardware remain
+  untested ([record](evidence/sparrow/2026-10-11-f229a1a65172/README.md)). The
+  practice page tells the owner never to send coins to the practice wallet's
   first receiving address. The database refuses an escrow key whose
   suffix has three or more steps (a per-order key, `/<i>/0/0`) starting with 0 or 1, for any party, and a buyer's or
   vendor's at the practice index 2^31-1; shape (a)'s two-step suffixes are not affected.
@@ -1258,7 +1274,10 @@ wallet's seed standing in for a BIP39 seed and the practice page alone, the oper
 wallet as a private descriptor, Core derives the address shown and signs the PSBT, and the signature activates the key;
 the unsigned PSBT, the same seed's Core wallet holding the shape-(a) range and a SIGHASH_NONE signature are refused).
 The manual A-457 journey in `scripts/test-escrow-wallets.sh` confirms both BIP39 Electrum parties' practice signatures
-through the market. Not tested: Electrum GUI menus, Sparrow, physical hardware wallets, and any public network.
+through the market. At A-455, Electrum GUI menus, Sparrow and hardware wallets were untested. Later A-458 evidence
+records Sparrow GUI per-order practice and settlements plus a separate watch-only descriptor import/address match
+on isolated regtest; signing from the imported wallet, physical devices and public Sparrow signing remain untested
+([record](evidence/sparrow/2026-10-11-f229a1a65172/README.md)).
 
 ## Per-order escrow creation and watching (A-456a, shape (b))
 
@@ -1420,7 +1439,8 @@ is still refused.
   wallet shows; Electrum can run with `--offline` (the order wallet only signs); delete the order wallet once the order's
   escrow has settled (the seed makes it again); a wallet or signing device cannot check the other party's key. The page
   and the order page say that BIP39 Electrum signed the release and sibling refund on regtest, while GUI menu steps,
-  Sparrow and physical hardware remain untested (A-458 records none).
+  A-458 later recorded Sparrow GUI signing and separate watch-only import/address matching for the supplied descriptor;
+  signing from that imported wallet and physical hardware remain untested.
 - **The PSBT file upload.** The settlement sign form is a `multipart/form-data` form, no JavaScript, with a file field
   beside the paste (fee bumps keep the paste). A binary PSBT file, as Electrum and Sparrow save one, is taken by its
   magic bytes; a text file (the market's own download, signed) is read as base64. Every text part and a text file must
@@ -1436,7 +1456,8 @@ is still refused.
   checks as ordinary signing, keep only signatures, and accept at most 8 MiB of PSBT data (128 KiB per funding
   transaction; at most 50 inputs). Ordinary paste and file limits remain 64 KiB. These are simulated-node and form
   checks. A-457's real Core journey checked that the vendor's release download carried the actual funding transaction
-  as verified `non_witness_utxo`; no physical hardware wallet has been tested (A-458).
+  as verified `non_witness_utxo`; A-458's later hardware-format PSBT upload was signed with a software key, and no
+  physical hardware wallet has been tested.
 - **The ES-2 derivation refusal is relaxed (P4-R13).** A pasted or uploaded PSBT is no longer refused for a derivation
   entry under the market's key or from its fingerprint (Electrum and Sparrow write one for every key; A-450's Electrum
   fixtures are now accepted). Every signature rule stays: a signature under the market's key, another key's signature, a
@@ -1468,24 +1489,51 @@ co-signed and confirmed once it is back; `TestEscrowRegtestShapeBBump`: the vend
 to 5 sat/vB, the bump signed by the vendor's order wallet, co-signed by the signer, replacing the claim in the mempool
 and confirmed; no seed or tprv in the signer's log or the database). A-457's `TestEscrowRegtestElectrumMarketJourney`
 adds a real BIP39 Electrum release and sibling refund through the market and real signer, each broadcast and confirmed
-on regtest, with a mixed pair refused. Not tested: Sparrow, a physical hardware wallet, Electrum GUI menus, the Sparrow
-descriptor imported into Sparrow, or any public network.
+on regtest, with a mixed pair refused. This A-457 journey did not test Sparrow, a physical hardware wallet, Electrum
+  GUI menus or any public network. Later A-458 Sparrow GUI signing evidence covers practice, release and sibling
+refund on isolated regtest; a separate descriptor import produced the expected receive address in a watch-only wallet.
+Signing from that imported wallet, a physical device, fee bumps and public Sparrow signing remain untested
+([record](evidence/sparrow/2026-10-11-f229a1a65172/README.md)).
 
-Escrow chain evidence includes Bitcoin regtest, a private isolated Bitcoin signet (A-443, challenge `51`), a local Monero fakechain, an offline Monero stagenet fork (A-449), and the **2026-10-09 public signet smoke** ([record](evidence/public-testnet/2026-10-09-9885beef29d3/signet/README.md)). The public record covers Core practice signing, a funded digital claim and an underpaid buyer refund, with Tor proxy/private-broadcast observations. It does not exercise every physical-order, fee-bump, Electrum, Sparrow or hardware path on a public chain. Public testnet4 and Monero stagenet remain unrun. Mainnet is never used in development or tests and escrow still refuses it.
+Escrow chain evidence includes Bitcoin regtest, a private isolated Bitcoin signet (A-443, challenge `51`), a local Monero fakechain, an offline Monero stagenet fork (A-449), the **2026-10-09 public signet smoke** ([record](evidence/public-testnet/2026-10-09-9885beef29d3/signet/README.md)), and one **2026-10-10 public stagenet digital claim** ([record](evidence/public-testnet/2026-10-10-ac71878dfde4/stagenet-xmr/README.md)). The public Bitcoin record covers Core practice signing, a funded digital claim and an underpaid buyer refund, with Tor proxy/private-broadcast observations. Neither public record exercises every physical-order, fee-bump, Electrum, Sparrow or hardware path on a public chain. Public testnet4 and public stagenet refunds remain unrun. Mainnet is never used in development or tests and escrow still refuses it.
 
 ### Sparrow and hardware-wallet evidence (A-458)
 
-No Sparrow per-order signing or physical-device result has been recorded. A-459's hardware download and upload are implemented,
-but their database tests do not establish device compatibility. Record each actual wallet/device combination
+Sparrow 2.5.5 GUI per-order practice, release and sibling-refund signing now has partial evidence on isolated regtest;
+no physical-device result has been recorded. A-459's hardware download and upload are implemented, but their database
+tests do not establish device compatibility. Record each actual wallet/device combination
 below after running it against an isolated, funded test-network escrow. Retain the transcript and the public
 transaction IDs; keep seeds, private keys and wallet passwords out of the evidence.
+
+**Ledger Flex preparation.** Record the installed device firmware version and the Bitcoin Test app version; use the
+Bitcoin Test app for a test chain, not the Bitcoin mainnet app. Ledger's [Bitcoin app feature notes](https://github.com/LedgerHQ/app-bitcoin/blob/develop/doc/features.md)
+say Bitcoin Test works on all Bitcoin test networks, including Core regtest; its [build configuration](https://github.com/LedgerHQ/app-bitcoin/blob/develop/Makefile)
+includes Flex. Update the device firmware if Ledger Wallet does not offer the app; if Bitcoin Test is not listed,
+Ledger's [maintained test setup instructions](https://github.com/LedgerHQ/moosig) say to enable Developer Mode in
+Ledger Wallet and install it from My Ledger. Sparrow's [connected-device guide](https://www.sparrowwallet.com/docs/connected-wallet.html)
+describes USB connection and Ledger support. Use a USB data cable, unlock the Flex, open Bitcoin Test, and
+close Ledger Wallet/Live before Sparrow connects so it does not hold the device. Keep the device in view and approve
+each connection, wallet-policy registration, address check, and transaction only after reviewing the device prompts.
+The signing flow is a normal PSBT file flow: download the hardware `.psbt` from the order, open/sign it in Sparrow,
+then upload that signed file on the order page. USB carries the PSBT between Sparrow and the Ledger; the market does
+not connect to the device, and HWI's Flex recognition is not proof that this Sparrow policy will work. In particular,
+the per-order key path is `m/48h/1h/0h/2h/<i>/<branch>/<index>` (`<i>` is unhardened), with rooted cosigners and a
+2-of-3 P2WSH policy. This path/policy combination still needs an actual Flex signing result. Ledger's Bitcoin Test
+app displays SegWit addresses with `tb1` even on regtest, where Core displays `bcrt1`; that prefix difference is
+expected, but is not evidence that two addresses match. Compare their decoded output scripts against the independently
+verified expected address, and reject any signing prompt whose amount, fee, or destination cannot be reconciled.
+Never enter or share a seed or PIN for this test.
+
+On 2026-10-11, after restarting Sparrow, the Flex was detected unlocked over USB. With the Bitcoin mainnet app open,
+a test-path xpub request returned `Request not currently supported`; the device showed no prompt and produced no
+signature. This is not a signing result. Use the Bitcoin Test app before evaluating the test-chain path.
 
 On 2026-10-09, a controlled Sparrow 2.5.5 ARM64 retry verified authenticated Core RPC through the desktop SSH tunnel. After mining 101 blocks on a separate isolated regtest node, Sparrow connected at height 101 and its GUI remained responsive. The prior hung test instance and the retry resources were stopped, with process exits checked. The verified release and private test profile were retained locally. No PSBT was loaded or signed; this connection check does not complete any signing row below.
 
 | Wallet / device model | Wallet version / device firmware | Network and date | Rooted cosigners and descriptor import | Address matches / registration limits / path warning | Ordinary versus hardware PSBT acceptance | Signing-screen amount, fee and destination | Practice, release and sibling-refund result | Evidence |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Sparrow | Unrun | Unrun | Unrun | Unrun | Unrun | Unrun | Unrun | None |
-| Physical device | Unrun | Unrun | Unrun | Unrun | Unrun | Unrun | Unrun | None |
+| Sparrow GUI with software signing key | Sparrow 2.5.5 ARM64 | Isolated Core 31.1 regtest, 2026-10-11 | Rooted cosigners worked via native wallet JSON. Separately, File → Import Wallet → Output Descriptor → Import File accepted the checksummed descriptor with origins and saved a watch-only 2-of-3 P2WSH wallet; the party key path was `m/48'/1'/0'/2'/2`, cosigners were rooted at `m`, and no path warning appeared. Receive address `bcrt1qy25ngwmvy3kxwc9q792lq0fkgczysku9rxegxyadcvy57zhsj9xq0fnawc` matched the funded escrow. This import did not sign. | Buyer/vendor practice accepted; outputs independently matched Core | Ordinary release PSBT upload accepted; hardware-format sibling-refund PSBT uploaded and signed with software key | Release: 99,682 sat, 318 sat fee, 3 confirmations; refund: 69,682 sat, 318 sat fee, 3 confirmations; all outputs matched Core | Buyer/vendor practice accepted; per-order index 2 release and index 3 `/0/3` sibling refund confirmed | [A-458 record](evidence/sparrow/2026-10-11-f229a1a65172/README.md); descriptor import was watch-only; no device used |
+| Ledger Flex | Firmware and Bitcoin Test app versions pending | USB probe, 2026-10-11; mainnet Bitcoin app | Unrun | Device detected unlocked; test-path xpub returned `Request not currently supported` | No PSBT/signature attempted | No device prompt | No test-chain signing; Bitcoin Test app still required | No device-signing evidence; Bitcoin Test not yet tested |
 
 Import the party-only setup page's order descriptor and compare the first address with the escrow address before
 funding. Record whether the wallet accepts the rooted cosigners and the full per-order path, including any warning
@@ -1493,3 +1541,7 @@ or registration limit. Try the ordinary PSBT and the hardware copy separately to
 requires `non_witness_utxo`. Record what the device actually displays when signing, then upload through the matching
 form, confirm the release and the sibling refund on the test chain, and retain any refusal verbatim after removing
 secrets. A signing device cannot authenticate the other party's key. Claim compatibility only for a recorded row.
+The funded signing journey used native wallet JSON; the separate supplied-descriptor import was watch-only and did
+not prove key attachment or signing from that wallet. No physical Ledger Flex signed. Fee bumps and public Sparrow
+signing also remain untested; the hardware-format PSBT was signed with a software key. Flex evidence remains pending
+the Bitcoin Test app device test described above.
