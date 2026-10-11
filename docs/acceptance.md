@@ -287,11 +287,15 @@ not a real-market drain.
 - [x] A fresh database starts with escrow-only intake; an operator pause survives upgrade.
 - [x] Migration 107 refuses undrained legacy and mainnet-history fixtures unchanged,
   without recording its version; a restored prior database repeats the guard.
-- [x] A drained legacy fixture keeps orders, addresses, deposits and sent payout records.
-- [x] Removed pooled POST routes cannot create addresses, dispositions or payouts;
-  historical account, order and administrator records remain readable.
-- [x] Historical pooled addresses still trigger BTC/XMR refund and claim reuse
-  refusals, plus the Bitcoin fee-destination refusal.
+- [x] A-492: migration 108 refuses a database holding any `payouts` or `payment_addresses` row
+  (a drained legacy fixture included) unchanged, both tables refuse new rows, and the same fixture
+  without pooled rows upgrades keeping its orders and deposits (`TestMigration108RefusesPooledHistoryUnchanged`,
+  `TestMigration108FreshDatabaseMigratesAndRefusesPooledRows`, the 107/108 stage of `scripts/test-upgrade.sh`).
+- [x] Removed pooled POST routes cannot create addresses, dispositions or payouts; the pooled
+  historical views (order payment record, administrator payout table, unsent payouts, payout count)
+  are removed (A-492), and `TestPooledPaymentsStayRemoved` refuses pooled writers, RPC calls and identifiers.
+- [x] With no pooled address possible after migration 108, the escrow refund, claim and fee-destination
+  reuse checks cover escrow, sibling, refund, fee and settlement addresses only (A-492).
 - [x] Installer/configuration and upgrade regression jobs pass; independent review
   finds no unresolved required issue.
 - [x] The required **CI passed** gate passes at the recorded removal revision:
