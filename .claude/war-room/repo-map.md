@@ -99,7 +99,7 @@ are **not** live-chain evidence. Merged is not released is not deployed.
   other agents' test runs (QA22a and QA22b each lost a race run this way).
 - A single Playwright failure under load is not a finding until re-run
   unloaded; navigation races (click → re-query before load) have caused flakes.
-- `scripts/regtest-smoke.sh` is retired (exits 2). Real-chain Bitcoin escrow legs
+- The pooled `scripts/regtest-smoke.sh` was deleted with the pooled runtime (A-492). Real-chain Bitcoin escrow legs
   run in CI via `scripts/test-escrow-regtest.sh`; Monero's real-wallet legs run
   on a fakechain in CI too (`escrow-xmr-regtest` job, A-498, via
   `scripts/test-escrow-xmr-regtest.sh`).

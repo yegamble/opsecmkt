@@ -523,7 +523,7 @@ market holds the wallet keys and builds, stores and sends every transaction itse
 **What it does.**
 
 - **Monthly wallets, one account per order.** A watcher of its own, with its own lock and its own `monero-wallet-rpc`
-  (one that holds only escrow wallets, never the pooled wallet's URL), creates a wallet named `escrow-YYYYMM-NN` for each
+  (one that holds only escrow wallets), creates a wallet named `escrow-YYYYMM-NN` for each
   month. Its password is derived from `MONERO_WALLET_SECRET` and its name, so the database holds no wallet password. Its
   25-word seed is encrypted to an OpenPGP public key whose private half the operator keeps offline (`ESCROW_XMR_SEED_KEY`,
   never the canary key) and stored with the wallet's primary address and restore height before the wallet may take an
@@ -532,8 +532,7 @@ market holds the wallet keys and builds, stores and sends every transaction itse
   accounts retired. A first run, or a market that was down past a month's start, creates and activates that month's wallet
   at once, with no lead. The watcher keeps `ESCROW_XMR_SLOTS` (20 by default) free accounts ready on the active wallet.
   Account 0 of a wallet is never an escrow and is never spent from; coins that arrive there alert the administrators, once per episode.
-- **The slot claim at checkout.** The buyer of an XMR draft on an eligible listing may pay into a Monero escrow instead
-  of the pooled wallet, giving a refund address from their own wallet (a standard address or subaddress; integrated
+- **The slot claim at checkout.** The buyer of an XMR draft on an eligible listing pays into a Monero escrow, giving a refund address from their own wallet (a standard address or subaddress; integrated
   addresses, other networks, addresses whose keys are not valid, and any address this market already knows are refused;
   it is checked in Go, with no wallet call, and cannot be changed afterwards). Checkout makes no RPC: in one
   transaction it moves the order out of draft, claims a free account of the active wallet by compare-and-set and pins the

@@ -119,7 +119,7 @@ Name `tor-mirror` only if you run the mirror: naming it starts it, which creates
 
 ## Optional onion mirror
 
-In a Tor deployment, create a second onion address with its own persistent identity:
+In a Tor deployment, create a second onion address with its own persistent identity. The mirror is the **same instance** reached at another address: one app, one database and one set of escrow wallets and nodes, so orders, accounts and balances are the same rows seen twice, not copies. It is not an independent instance: nothing replicates data or balances to a second server, and two separate installations are two unrelated markets with their own databases and wallets, never safe to point at the same wallets or to treat as one market:
 
 ```sh
 ./scripts/install.sh add-mirror

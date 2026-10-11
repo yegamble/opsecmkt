@@ -36,7 +36,7 @@ For each step record the evidence tier that currently proves it and the gap.
 
 `TEST_DATABASE_URL` unset skips ~66% of Go tests; preview specs prove layout
 only; `scripts/test-escrow-xmr-regtest.sh` (Monero real wallet, fakechain) runs in CI
-as the `escrow-xmr-regtest` job (A-498), while public-network runs stay manual; `regtest-smoke.sh` is retired; the shared Playwright admin's sign-in budget; navigation-race flakes — re-run unloaded before
+as the `escrow-xmr-regtest` job (A-498), while public-network runs stay manual; `regtest-smoke.sh` was deleted (A-492); the shared Playwright admin's sign-in budget; navigation-race flakes — re-run unloaded before
 reporting a single failure.
 
 ## Verification duty
