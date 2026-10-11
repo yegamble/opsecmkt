@@ -290,11 +290,16 @@ not a real-market drain.
 - [x] A drained legacy fixture keeps orders, addresses, deposits and sent payout records.
 - [x] Removed pooled POST routes cannot create addresses, dispositions or payouts;
   historical account, order and administrator records remain readable.
-- [x] Historical pooled addresses still trigger all four escrow reuse refusals.
-- [ ] Installer/configuration, upgrade regression and independent review pass at the
-  recorded removal revision. Actual Sparrow and Ledger Flex signing remain unverified.
+- [x] Historical pooled addresses still trigger BTC/XMR refund and claim reuse
+  refusals, plus the Bitcoin fee-destination refusal.
+- [x] Installer/configuration and upgrade regression jobs pass; independent review
+  finds no unresolved required issue.
+- [x] The required **CI passed** gate passes at the recorded removal revision:
+  [`6abed16`, run 38110263336](https://github.com/yegamble/opsecmkt/actions/runs/38110263336),
+  all 22 workflow jobs successful.
+  Actual Sparrow and Ledger Flex signing remain unverified.
 
-Native checks: the fresh/legacy/drain/privacy/refund/claim race selection passed on PostgreSQL 16 (24.516 s); the historical pooled fee-destination refusal passed separately (3.198 s). Historical browser records passed at 320 and 1280 px; changed dispute, review and intake cases passed. Ten Bitcoin and eight Monero simulated escrow browser journeys passed. Final full CI, including PostgreSQL 17 and Docker upgrade/restore checks, is pending.
+Native checks: the final fresh/legacy/drain/privacy/reuse race selection passed on PostgreSQL 16 (7.021 s), including the historical pooled fee-destination refusal; the additional historical XMR claim refusal passed separately (2.698 s). After correcting the shared-fixture pause comparison, all nine template/fresh/migration checks passed together at `7966aa5` (4.175 s). Independent war-room review found no unresolved required issue. The full Python suite passed 335 tests and the full browser suite passed 542; the final affected payment/transparency rerun passed 42. Ten Bitcoin and eight Monero simulated escrow browser journeys passed. The first removal CI run found the template comparison, an omitted readiness vendor list and stale Monero syncing assertions. The integrated corrections passed focused race checks (template/fresh/migration: 4.175 s; readiness: 3.566 s; syncing: 2.365 s), with the mobile no-JavaScript readiness browser check passing 2/2 including setup (8.6 s). Full CI then passed on frozen `6abed16377197af7614e0ec9cfce6dbb0395d1ce`, including both PostgreSQL 17 race partitions, real Bitcoin Core regtest, all browser journeys and Docker installer/upgrade/restore checks. This proves fresh installation and seeded legacy upgrades; no real-market drain was exercised.
 
 ### P6 Transparency
 

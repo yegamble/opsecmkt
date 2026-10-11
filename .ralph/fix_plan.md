@@ -60,7 +60,9 @@ scope to accessibility and actual local-chain testing.
 
 - [x] Delete pooled creation, monitoring and payout writers; keep shared escrow helpers and historical readers.
 - [x] Add refusing legacy upgrade migration and obsolete-config startup refusal; preserve all history.
-- [x] Prove fresh success, undrained unchanged refusal, drained historical preservation and escrow address reuse refusals (native PostgreSQL 16 race checks; CI PostgreSQL 17 still pending).
-- [ ] Align intake, installation, network graph and operator upgrade docs; independent war-room review and CI.
+- [x] Prove fresh success, undrained unchanged refusal, drained historical preservation and escrow address reuse refusals (native PostgreSQL 16 race checks and full CI PostgreSQL 17).
+- [x] Align intake, installation, network graph and operator upgrade docs; independent war-room review and CI.
+
+Completion scrutiny: lower-tier independent reviewers found no remaining required issue after the template-fidelity, readiness-list and Monero syncing corrections. Focused race checks and mobile no-JavaScript readiness pass; CI [38110263336](https://github.com/yegamble/opsecmkt/actions/runs/38110263336) passed all 22 jobs on frozen `6abed16377197af7614e0ec9cfce6dbb0395d1ce`. Documentation-only commits do not change that tested source or the earlier public-proof revisions.
 
 No existing market is available: this work proves fresh installation and synthetic legacy upgrades, not a real-market drain. Actual Sparrow and Ledger Flex signing still require separate device evidence.
