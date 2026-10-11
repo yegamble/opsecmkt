@@ -33,7 +33,7 @@ Read this once, before you form any opinion. Then read `CLAUDE.md`,
    removed (owner directive 2026-10-11: no pooled testing or drain): its history
    (`payouts`, `payment_addresses`) is read-only, migration 107 refuses a legacy
    database that still has pooled drain blockers, and migration 108
-   (A-492, landing with the pooled-code removal) refuses any pooled history rows. Development, tests and war-room evidence
+   (A-492) refuses any pooled history rows and any new ones. Development, tests and war-room evidence
    never use mainnet; never claim escrow for a path that is not implemented and
    verified.
 3. **Orders move only through the server-side transition table**
