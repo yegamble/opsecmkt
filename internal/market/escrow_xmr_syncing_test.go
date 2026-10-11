@@ -53,22 +53,22 @@ func TestXMREscrowStartsBesideSyncingDaemon(t *testing.T) {
 	}
 	// /admin names the unchecked state with its class, the readiness line is not a plain "on", and no network is named
 	// before one was verified (QA4W4B-1).
-	alert, readiness, providers := xmrAdminLines(t, x.adminPage())
+	alert, readiness := xmrAdminLines(t, x.adminPage())
 	unchecked := "the escrow daemon or wallet-rpc could not be checked (hard_fork_info daemon-syncing)"
 	if !strings.Contains(alert, "Monero escrow not ready: "+unchecked) || !strings.Contains(alert, "ESCROW_XMR_DAEMON_URL") ||
 		!strings.Contains(readiness, "XMR escrow: on (not ready: "+unchecked+")") {
 		t.Fatalf("/admin beside a syncing daemon: alert %q, readiness %q", alert, readiness)
 	}
-	if strings.Contains(providers, "fakechain") || strings.Contains(providers, "stagenet") || !strings.Contains(providers, "network not verified yet") {
-		t.Fatalf("Payment providers names an unverified network: %q", providers)
+	if strings.Contains(alert+readiness, "fakechain") || strings.Contains(alert+readiness, "stagenet") {
+		t.Fatalf("admin status names an unverified network: alert %q, readiness %q", alert, readiness)
 	}
 	x.fake.edit(func(f *fakeXMREscrow) { f.targetAhead, f.hardFork = 0, 16 })
 	x.A.retryEscrowXMR(context.Background(), &escrowRetry{last: m.startState})
 	if !m.ready.Load() {
 		t.Fatal("Monero escrow did not start once the daemon was synced at hard fork 16")
 	}
-	alert, readiness, providers = xmrAdminLines(t, x.adminPage())
-	if alert != "" || !strings.HasPrefix(readiness, "<li>XMR escrow: on · ") || !strings.Contains(providers, "Monero escrow orders (Monero stagenet)") {
-		t.Fatalf("/admin once Monero escrow is ready: alert %q, readiness %q, providers %q", alert, readiness, providers)
+	alert, readiness = xmrAdminLines(t, x.adminPage())
+	if alert != "" || !strings.HasPrefix(readiness, "<li>XMR escrow: on") || !strings.Contains(readiness, "intake: paused") {
+		t.Fatalf("/admin once Monero escrow is ready: alert %q, readiness %q", alert, readiness)
 	}
 }

@@ -24,9 +24,8 @@ func (x *xmrEscrowEnv) adminPage() string {
 	return html.UnescapeString(x.page("/admin", as))
 }
 
-// xmrAdminLines reads, from an /admin page, the alert under Payment providers about the Monero escrow daemon ("" when
-// there is none), the XMR line of the escrow-only readiness panel and the Payment providers paragraph (QA4W4B-1).
-func xmrAdminLines(t *testing.T, page string) (alert, readiness, providers string) {
+// xmrAdminLines reads the Monero escrow readiness alert and status row from the admin page.
+func xmrAdminLines(t *testing.T, page string) (alert, readiness string) {
 	t.Helper()
 	cut := func(from, to string) string {
 		i := strings.Index(page, from)
@@ -39,11 +38,11 @@ func xmrAdminLines(t *testing.T, page string) (alert, readiness, providers strin
 		}
 		return page[i : i+j]
 	}
-	alert, readiness, providers = cut(`id="xmr-escrow-node"`, "</div>"), cut("<li>XMR escrow: ", "</li>"), cut("Deposits of pooled orders", "</p>")
-	if readiness == "" || providers == "" {
-		t.Fatalf("/admin lacks the readiness line or the Payment providers paragraph:\n%s", page)
+	alert, readiness = cut(`id="xmr-escrow-node"`, "</div>"), cut("<li>XMR escrow: ", "</li>")
+	if readiness == "" {
+		t.Fatalf("/admin lacks the XMR escrow readiness line:\n%s", page)
 	}
-	return alert, readiness, providers
+	return alert, readiness
 }
 
 // adminOf is /admin, unescaped, as a new administrator of a's market.
@@ -111,7 +110,7 @@ func TestXMREscrowStagenetTags(t *testing.T) {
 	if !strings.Contains(page, "STAGENET") || strings.Contains(strings.ToLower(page), "fakechain") {
 		t.Fatalf("the order page does not name stagenet only:\n%s", page)
 	}
-	if home := html.UnescapeString(x.page("/", x.buyerSess)); !strings.Contains(home, "Monero escrow only (Monero stagenet)") || strings.Contains(strings.ToLower(home), "fakechain") {
+	if home := html.UnescapeString(x.page("/", x.buyerSess)); !strings.Contains(home, "Monero escrow (Monero stagenet)") || strings.Contains(strings.ToLower(home), "fakechain") {
 		t.Fatalf("the site-wide notice does not name stagenet only:\n%s", home)
 	}
 	x.fake.payAddress(addr, hex64("tags deposit"), xmrListingPrice, 10)

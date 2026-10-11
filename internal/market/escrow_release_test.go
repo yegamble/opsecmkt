@@ -56,7 +56,7 @@ func (x *escrowEnv) marketCalls() int {
 // P2-R1: an escrow order is marked shipped only through the escrow form, with a fresh claim address (the claim
 // action's checks) and the vendor's password; in one transaction the order is shipped, the release is requested to
 // that address and release_at is the escrow's snapshot of release_days from now. The pooled form refuses an escrow
-// order; a pooled order ships through it as before.
+// order, and a historical pooled order is read-only.
 func TestEscrowShipNeedsClaimAddress(t *testing.T) {
 	x := newEscrowEnv(t)
 	agExec(x.testEnv, "INSERT INTO settings(key,value) VALUES('escrow_release_days','10')")
@@ -142,14 +142,19 @@ func TestEscrowShipNeedsClaimAddress(t *testing.T) {
 	if code, _ := x.shipEscrow(historical, x.vendorSess, regtestAddr("ship-historical"), testPassword); code != 404 {
 		t.Fatalf("escrow form on a historical order: %d", code)
 	}
-	if w := x.do("POST", "/orders/ship", x.vendorSess, url.Values{"order_id": {historical}}); w.Code == 303 || x.state(historical) != statePaid {
-		t.Fatalf("historical ship changed state: %d %s", w.Code, w.Body.String())
+	historyBefore := strings.Join(x.events(historical), "\n")
+	if w := x.do("POST", "/orders/ship", x.vendorSess, url.Values{"order_id": {historical}}); w.Code != 409 || !strings.Contains(w.Body.String(), "Historical pooled orders are read-only") {
+		t.Fatalf("historical ship was not refused read-only: %d %s", w.Code, w.Body.String())
+	}
+	if x.state(historical) != statePaid || strings.Join(x.events(historical), "\n") != historyBefore ||
+		agInt(x.testEnv, "SELECT count(*) FROM settlements WHERE order_id=$1", historical) != 0 {
+		t.Fatal("historical ship changed its recorded history")
 	}
 
 }
 
-// A-373: on an escrow order the buyer confirms receipt only by signing the release; the pooled Complete is refused
-// (409) and never offered, so it can never lead to a market co-signature.
+// A-373: on an escrow order the buyer confirms receipt only by signing the release; Complete is refused (409) and
+// never offered, so it can never lead to a market co-signature. Historical pooled orders have no completion action.
 func TestEscrowPooledCompleteRefusedOnEscrow(t *testing.T) {
 	x := newEscrowEnv(t)
 	order, id := x.shippedPhysical(regtestAddr("complete-refund"), regtestAddr("complete-claim"), 100000)
@@ -167,11 +172,16 @@ func TestEscrowPooledCompleteRefusedOnEscrow(t *testing.T) {
 	}
 	product := x.testEnv.product(x.vendor, "physical")
 	pooled := x.testEnv.order(x.buyer, product, "BTC", stateShipped)
-	if page := x.page("/order?id="+pooled, x.buyerSess); !strings.Contains(page, `action="/orders/complete"`) {
-		t.Fatal("the buyer of a pooled order is not offered Complete")
+	pooledEvents := strings.Join(x.events(pooled), "\n")
+	if page := x.page("/order?id="+pooled, x.buyerSess); strings.Contains(page, `action="/orders/complete"`) {
+		t.Fatal("the buyer of a historical pooled order is offered Complete")
 	}
-	if w := x.do("POST", "/orders/complete", x.buyerSess, url.Values{"order_id": {pooled}, "payout_confirmed": {"confirmed"}, "amount_seen": {"0"}}); w.Code != 303 || x.state(pooled) != stateCompleted {
-		t.Fatalf("pooled complete: %d %s", w.Code, w.Body.String())
+	if w := x.do("POST", "/orders/complete", x.buyerSess, url.Values{"order_id": {pooled}, "payout_confirmed": {"confirmed"}, "amount_seen": {"0"}}); w.Code != 409 || !strings.Contains(w.Body.String(), "Historical pooled orders are read-only") {
+		t.Fatalf("historical pooled complete: %d %s", w.Code, w.Body.String())
+	}
+	if x.state(pooled) != stateShipped || strings.Join(x.events(pooled), "\n") != pooledEvents ||
+		agInt(x.testEnv, "SELECT count(*) FROM settlements WHERE order_id=$1", pooled) != 0 {
+		t.Fatal("the refused historical pooled Complete changed its recorded history")
 	}
 }
 

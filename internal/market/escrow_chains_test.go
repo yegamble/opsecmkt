@@ -213,7 +213,7 @@ func TestEscrowPagesNameSignet(t *testing.T) {
 		{"transparency", "/canary", "", "Bitcoin escrow (signet only)"},
 		{"transparency chain", "/canary", "", "It runs on signet, a test network with no real funds"},
 		{"vendor desk", "/vendor-dashboard", x.vendorSess, "<strong>SIGNET</strong>"},
-		{"administration", "/admin", admin, "Bitcoin escrow orders (signet only)"},
+		{"administration", "/admin", admin, "Bitcoin escrow market fee (signet)"},
 	} {
 		page := html.UnescapeString(x.page(p.path, p.sess))
 		if !strings.Contains(page, p.want) {
@@ -254,12 +254,12 @@ func TestEscrowChainNotVerifiedAtFirstStart(t *testing.T) {
 	}
 	_, admin := x.user("unverifiedadmin", "admin")
 	pages := []struct{ name, path, sess, want string }{
-		{"footer", "/", "", "2-of-3 Bitcoin escrow on a test network (chain not verified yet)"},
+		{"footer", "/", "", "Bitcoin escrow (chain not verified yet)"},
 		{"checkout offer", "/order?id=" + x.order, x.buyerSess, "Or pay into a Bitcoin escrow (chain not verified yet)"},
 		{"escrow key", "/escrow-key", x.buyerSess, "Bitcoin escrow · chain not verified yet"},
 		{"transparency", "/canary", "", "Bitcoin escrow (chain not verified yet)"},
 		{"vendor desk", "/vendor-dashboard", x.vendorSess, "2-of-3 per order, chain not verified yet"},
-		{"administration", "/admin", admin, "Bitcoin escrow orders (chain not verified yet)"},
+		{"administration", "/admin", admin, "Bitcoin escrow market fee (chain not verified yet)"},
 	}
 	for _, p := range pages {
 		page := html.UnescapeString(x.page(p.path, p.sess))

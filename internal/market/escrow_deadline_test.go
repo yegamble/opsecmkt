@@ -466,13 +466,18 @@ func TestEscrowNoShipCancel(t *testing.T) {
 	if r := x.settleByID(id); r.State != "broadcast" || r.Cosigned != "market" {
 		t.Fatalf("the refund signed by the buyer: %+v", r)
 	}
-	// A pooled paid order: the buyer has no such edge.
+	// A historical pooled paid order is read only: the buyer has no cancellation edge.
 	pooled := x.testEnv.order(x.buyer, x.physicalListing(x.vendor, 3), "BTC", statePaid)
-	if code, body := x.buyerCancel(pooled); code != 403 {
-		t.Fatalf("a buyer cancel of a pooled paid order: %d %s", code, body)
+	eventsBefore := strings.Join(x.events(pooled), "\n")
+	if code, body := x.buyerCancel(pooled); code != 409 || !strings.Contains(body, "Historical pooled orders are read-only") {
+		t.Fatalf("a buyer cancel of a historical pooled paid order: %d %s", code, body)
 	}
 	if page := x.page("/order?id="+pooled, x.buyerSess); strings.Contains(page, `action="/orders/cancel"`) {
-		t.Fatal("a pooled paid order offers the buyer a cancel form")
+		t.Fatal("a historical pooled paid order offers the buyer a cancel form")
+	}
+	if x.state(pooled) != statePaid || strings.Join(x.events(pooled), "\n") != eventsBefore ||
+		agInt(x.testEnv, "SELECT count(*) FROM settlements WHERE order_id=$1", pooled) != 0 {
+		t.Fatal("the refused historical pooled cancel changed its history")
 	}
 	// A digital escrow order left paid (its content could not be delivered automatically): no ship_by, no buyer cancel.
 	digital := x.draft()

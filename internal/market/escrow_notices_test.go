@@ -8,10 +8,13 @@ import (
 // Escrow notices describe only active checkout options, including after a funded order outlives intake.
 func TestEscrowSiteNotices(t *testing.T) {
 	x := newEscrowEnv(t)
-	for _, path := range []string{"/", "/product?id=" + x.product, "/checkout?id=" + x.product, "/vendor-dashboard"} {
-		body := x.page(path, x.buyerSess)
+	for _, page := range []struct{ path, sess string }{
+		{"/", x.buyerSess}, {"/product?id=" + x.product, x.buyerSess},
+		{"/checkout?id=" + x.product, x.buyerSess}, {"/vendor-dashboard", x.vendorSess},
+	} {
+		body := x.page(page.path, page.sess)
 		if strings.Contains(body, "pooled wallet") || strings.Contains(body, "Payments disabled") {
-			t.Fatalf("%s describes retired payment intake: %s", path, body)
+			t.Fatalf("%s describes retired payment intake: %s", page.path, body)
 		}
 	}
 	if body := x.page("/", x.buyerSess); !strings.Contains(body, "Bitcoin escrow (regtest)") {

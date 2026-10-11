@@ -282,9 +282,10 @@ func TestEscrowOrderPanelWithEscrowOff(t *testing.T) {
 		strings.Contains(body, "Reload in a minute") {
 		t.Fatalf("refund with escrow off:\n%s", body)
 	}
-	// A pooled draft is unchanged: no escrow panel, no checkout offer.
-	if body := x.page("/order?id="+x.draft(), x.buyerSess); strings.Contains(body, "escrow") {
-		t.Fatal("a pooled draft mentions escrow with escrow off")
+	// A non-escrow draft has no per-order escrow panel, even while the market's site-wide escrow notice remains.
+	historicalDraft := x.testEnv.order(x.buyer, x.product, "BTC", stateDraft)
+	if body := x.page("/order?id="+historicalDraft, x.buyerSess); strings.Contains(body, `<h2>Bitcoin escrow`) || strings.Contains(body, `<h2>Monero escrow`) {
+		t.Fatal("a non-escrow draft shows a per-order escrow panel while escrow is off")
 	}
 }
 
@@ -311,7 +312,7 @@ func TestEscrowUnconfirmedDepositAtWindowEnd(t *testing.T) {
 
 // A-319 (QA29-6): a funded escrow order on a listing taken down is not delivered automatically, and its history note
 // says what is possible for an escrow order: delivery by hand, or a cancel that requests the refund of the escrow
-// (P1-c1). A pooled order keeps its note.
+// (P1-c1). A historical pooled order stays read-only.
 func TestEscrowTakedownNote(t *testing.T) {
 	x := newEscrowEnv(t)
 	addr := x.mustCheckout(x.order, "bcrt1qbuyerrefund00000000000000000000001")
@@ -332,7 +333,7 @@ func TestEscrowTakedownNote(t *testing.T) {
 		t.Fatalf("vendor cancel: %d", w.Code)
 	}
 	x.noPayouts(x.order)
-	// A historical non-escrow order cannot acquire a new funded state.
+	// A historical pooled order's cancellation action is refused without changing its history.
 	historical := x.testEnv.order(x.buyer, x.product, "BTC", stateAwaitingPayment)
 	tx, err := x.DB.Begin()
 	if err != nil {
@@ -346,7 +347,7 @@ func TestEscrowTakedownNote(t *testing.T) {
 }
 
 // A-316 (QA29-3): escrow that could not start (its node down at startup) is retried by the escrow watcher on its
-// interval, as pooled providers are: once the node answers, escrow is enabled without a restart, logged once, and a
+// interval: once the node answers, escrow is enabled without a restart, logged once, and a
 // deposit is credited. While the node stays down the disabled line is not repeated on every pass.
 func TestEscrowRetriedAfterStartupFailure(t *testing.T) {
 	x := newEscrowEnv(t)

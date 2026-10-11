@@ -79,16 +79,17 @@ func TestEscrowDisputedStateLineNamesAnAdministrator(t *testing.T) {
 			t.Fatalf("a disputed escrow order's state line:\n%s", page)
 		}
 		page = x.page("/order?id="+pooled, sess)
-		if !strings.Contains(page, "A moderator will review the dispute and record an outcome.") || strings.Contains(page, "An administrator will review") {
-			t.Fatalf("a disputed pooled order's state line:\n%s", page)
+		if !strings.Contains(page, "Historical pooled order. Its payment and payout actions are retired") ||
+			strings.Contains(page, "A moderator will review") || strings.Contains(page, "An administrator will review") {
+			t.Fatalf("a disputed historical pooled order's state line:\n%s", page)
 		}
 	}
-	// A-354: every staff viewer, moderator and administrator, reads that an administrator decides an escrow dispute; a
-	// pooled order never says so.
+	// A-354: every staff viewer, moderator and administrator, reads that an administrator decides an escrow dispute;
+	// historical pooled disputes remain read-only.
 	_, mod := x.user("slmod", "moderator")
 	_, admin := x.user("sladmin", "admin")
-	// The state line itself (order.html's muted line, A-354 reopened by QA37) names an administrator as the decider on an
-	// escrow order, for both; a pooled order's keeps the moderator's line.
+	// The state line itself names an administrator as the decider on an escrow order, for both; pooled history has no
+	// moderator action.
 	const escrowStaffLine = `<p class="muted">An administrator decides this escrow dispute and records the outcome on the moderation desk. The order page is read-only for market staff.</p>`
 	const pooledStaffLine = `<p class="muted">Record the outcome on the moderation desk. The order page is read-only for moderators.</p>`
 	for _, sess := range []string{mod, admin} {
@@ -98,12 +99,13 @@ func TestEscrowDisputedStateLineNamesAnAdministrator(t *testing.T) {
 			t.Fatalf("a staff viewer's line on a disputed escrow order:\n%s", page)
 		}
 		page = oneSpace(html.UnescapeString(x.page("/order?id="+pooled, sess)))
-		if !strings.Contains(page, pooledStaffLine) || strings.Contains(page, "An administrator decides this escrow dispute") {
+		if !strings.Contains(page, "Historical pooled order. Its payment and payout actions are retired") ||
+			strings.Contains(page, pooledStaffLine) || strings.Contains(page, "An administrator decides this escrow dispute") {
 			t.Fatalf("a staff viewer's line on a disputed pooled order:\n%s", page)
 		}
 	}
 	if page := oneSpace(x.page("/order?id="+pooled, mod)); strings.Contains(page, "Only an administrator decides") {
-		t.Fatalf("a moderator's line on a disputed pooled order:\n%s", page)
+		t.Fatalf("a moderator's action copy on a historical pooled order:\n%s", page)
 	}
 }
 
@@ -140,12 +142,11 @@ func TestEscrowBothSignedStatusSaysTheMarketDoesNotSign(t *testing.T) {
 // co-signs, and both parties' signatures, which the market broadcasts without signing.
 func TestEscrowStatementsCoverBothPaths(t *testing.T) {
 	for file, want := range map[string][]string{
-		"web/templates/partials/payment-status.html": {"the market co-signs it and broadcasts it to the {{template \"btc-escrow-network\" $.EscrowNet}}; when both have signed it, the market does not sign it and broadcasts what they signed"},
-		"web/templates/partials/order-escrow.html":   {"the market co-signs it and broadcasts it to the {{template \"btc-escrow-network\" $.EscrowNet}}; when both have signed it, the market does not sign it and broadcasts what they signed"},
-		"web/templates/pages/order.html":             {"the market then co-signs it and broadcasts it to the {{template \"btc-escrow-network\" $.EscrowNet}} (when both sign it, the market does not sign it and broadcasts what they signed)"},
-		"web/templates/partials/disputes-list.html":  {"which the buyer or the vendor signs and the market co-signs (when both sign it, the market does not sign it and broadcasts what they signed)"},
-		"docs/implementation-status.md":              {"a party signs, and the market then co-signs and broadcasts (when both parties sign it, the market broadcasts it without signing)"},
-		"docs/operator-guide.md":                     {"which the market then co-signs and broadcasts (when both sign it, the market broadcasts it without signing)"},
+		"web/templates/partials/order-escrow.html":  {"the market co-signs it and broadcasts it to the {{template \"btc-escrow-network\" $.EscrowNet}}; when both have signed it, the market does not sign it and broadcasts what they signed"},
+		"web/templates/pages/order.html":            {"the market then co-signs it and broadcasts it to the {{template \"btc-escrow-network\" $.EscrowNet}} (when both sign it, the market does not sign it and broadcasts what they signed)"},
+		"web/templates/partials/disputes-list.html": {"which the buyer or the vendor signs and the market co-signs (when both sign it, the market does not sign it and broadcasts what they signed)"},
+		"docs/implementation-status.md":             {"a party signs, and the market then co-signs and broadcasts (when both parties sign it, the market broadcasts it without signing)"},
+		"docs/operator-guide.md":                    {"which the market then co-signs and broadcasts (when both sign it, the market broadcasts it without signing)"},
 	} {
 		b, err := os.ReadFile(file)
 		if err != nil {

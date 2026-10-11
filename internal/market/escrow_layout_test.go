@@ -509,7 +509,7 @@ func TestEscrowOnlyPerOrderVendorNeedsSigner(t *testing.T) {
 	s := signerApp(t, newFakeSigner(t, signerKey(t, 7)).path)
 	agExec(s.testEnv, "UPDATE user_escrow_keys SET layout='per_order' WHERE user_id=$1", s.vendor)
 	agExec(s.testEnv, "UPDATE settings SET value='escrow' WHERE key='payment_intake_BTC'")
-	if b := html.UnescapeString(s.page("/product?id="+s.product, s.buyerSess)); strings.Contains(b, "Not available for purchase") {
+	if b := html.UnescapeString(s.page("/product?id="+s.product, s.buyerSess)); strings.Contains(b, "Not available for purchase in BTC") {
 		t.Fatalf("a per-order vendor with an escrow signer:\n%s", b)
 	}
 

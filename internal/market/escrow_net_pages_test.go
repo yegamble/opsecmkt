@@ -47,18 +47,18 @@ func TestXMREscrowPagesNameNetwork(t *testing.T) {
 	}{
 		{
 			name: "stagenet", edit: onStagenet, known: true,
-			listed: "<li>Monero escrow (Monero stagenet, a public test network): an order in Monero",
+			listed: "<li>Monero escrow (Monero stagenet, a public test network): an order in Monero can be paid into an escrow account of its own",
 			runs:   "It runs on Monero stagenet, a public test network with no real funds, and has been tested only on local test chains, not yet on the public stagenet.",
-			badge:  "Monero escrow only (Monero stagenet) — no real funds", on: stagenetOn,
-			tile: "<strong>STAGENET</strong>", span: "One account per order, Monero stagenet only; none of your orders uses it yet",
+			badge:  "Monero escrow (Monero stagenet)", on: stagenetOn,
+			tile: "<strong>STAGENET</strong>", span: "One account per order; " + xmrCustody,
 			gone: []string{"fakechain", "not verified yet", "not verified on any public network"},
 		},
 		{
 			name: "fakechain", edit: nil, known: true,
-			listed: "<li>Monero escrow (local fakechain only): an order in Monero",
+			listed: "<li>Monero escrow (local fakechain only): an order in Monero can be paid into an escrow account of its own",
 			runs:   "It runs on a local Monero fakechain, a test chain with no real funds, and is not verified on any public network.",
-			badge:  "Monero escrow only (local fakechain) — no real funds", on: fakechainOn,
-			tile: "<strong>FAKECHAIN</strong>", span: "One account per order, local fakechain only; none of your orders uses it yet",
+			badge:  "Monero escrow (local fakechain)", on: fakechainOn,
+			tile: "<strong>FAKECHAIN</strong>", span: "One account per order; " + xmrCustody,
 			gone: []string{"stagenet", "not verified yet", "tested only on local test chains"},
 		},
 		{
@@ -67,10 +67,10 @@ func TestXMREscrowPagesNameNetwork(t *testing.T) {
 			edit: func(f *fakeXMREscrow) {
 				f.nettype, f.peers, f.targetAhead, f.hardFork = "stagenet", 8, 1_000_000, 1
 			},
-			listed: "<li>Monero escrow (network not verified yet): an order in Monero",
+			listed: "<li>Monero escrow (network not verified yet): an order in Monero can be paid into an escrow account of its own",
 			runs:   "It runs on a Monero test network with no real funds, the market has not yet checked which, and nothing has run on a public network.",
-			badge:  "Monero escrow only (network not verified yet) — no real funds", on: unknownOn,
-			tile: "<strong>UNAVAILABLE</strong>", span: "One account per order on a network that is not verified yet; none of your orders uses it yet",
+			badge:  "Monero escrow (network not verified yet)", on: unknownOn,
+			tile: "<strong>UNAVAILABLE</strong>", span: "One account per order; " + xmrCustody,
 			gone: []string{"fakechain", "stagenet", "tested only on local test chains"},
 		},
 	} {
@@ -106,7 +106,7 @@ func TestXMREscrowPagesNameNetwork(t *testing.T) {
 			if c.name == "stagenet" && !strings.Contains(unavailable, "Monero escrow verified on the public stagenet") {
 				t.Errorf("canary's unavailable list on stagenet:\n%s", unavailable)
 			}
-			notice := "A listing paid by Monero escrow pays into an account of its own, on " + c.on + " with no real funds. The coins are " + xmrCustody + "."
+			notice := "A Monero escrow order pays into its own account on " + c.on + ". The coins are " + xmrCustody + "."
 			for path, body := range map[string]string{"/": x.page("/", x.buyerSess), product: x.page(product, x.buyerSess), checkout: x.page(checkout, x.buyerSess)} {
 				page := html.UnescapeString(body)
 				if !strings.Contains(page, c.badge) {
