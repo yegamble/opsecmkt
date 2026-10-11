@@ -175,7 +175,17 @@ func testMigratedDSN(t *testing.T) string {
 // e.user() for fast fixtures.
 func newTestApp(t *testing.T) *testEnv {
 	t.Helper()
-	return startTestApp(t, testMigratedDSN(t))
+	e := startTestApp(t, testMigratedDSN(t))
+	// Shared commerce fixtures exercise unfunded drafts even when no escrow node is
+	// configured. A real fresh install still defaults to escrow; newFreshTestApp
+	// leaves those migration settings untouched. Escrow fixtures configure their
+	// nodes before startup and retain escrow intake for checkout coverage.
+	if !e.A.escrowConfigured && e.A.escrowXMR == nil {
+		if _, err := e.DB.Exec("UPDATE settings SET value=$1 WHERE key IN ($2,$3)", intakePaused, paymentIntakeKey("BTC"), paymentIntakeKey("XMR")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return e
 }
 
 // newFreshTestApp is newTestApp on an empty schema, where New itself applies the baseline and every migration.

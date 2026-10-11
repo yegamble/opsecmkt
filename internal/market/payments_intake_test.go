@@ -6,7 +6,7 @@ import (
 )
 
 func TestEscrowIntakeOnlyAllowsEscrowOrPaused(t *testing.T) {
-	p := newPayEnv(t)
+	p := newPayEnv(t, newFreshTestApp(t))
 	change := func(session, cur, value, password string) int {
 		return p.do("POST", "/admin/payment-intake", session, url.Values{"currency": {cur}, "enabled": {value}, "password": {password}}).Code
 	}

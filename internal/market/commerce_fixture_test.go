@@ -12,8 +12,13 @@ type payEnv struct {
 	order, productID                 string
 }
 
-func newPayEnv(t *testing.T) *payEnv {
-	e := newTestApp(t)
+func newPayEnv(t *testing.T, supplied ...*testEnv) *payEnv {
+	var e *testEnv
+	if len(supplied) == 0 {
+		e = newTestApp(t)
+	} else {
+		e = supplied[0]
+	}
 	suffix := randomToken()[:6]
 	b, bs := e.user("cbuyer_"+suffix, "buyer")
 	v, vs := e.user("cvendor_"+suffix, "vendor")

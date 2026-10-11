@@ -98,7 +98,7 @@ func TestEscrowReleaseDaysConfirmedReceiptAndLostAcknowledgement(t *testing.T) {
 }
 
 func TestPaymentIntakeConfirmedReceiptAndLostAcknowledgement(t *testing.T) {
-	e := newTestApp(t)
+	e := newFreshTestApp(t)
 	adminID, admin := e.user("nonce_intake_admin", "admin")
 	otherSession := agSession(e, adminID)
 	page := e.do("GET", "/admin", admin, nil)
@@ -152,7 +152,7 @@ func TestPaymentIntakeConfirmedReceiptAndLostAcknowledgement(t *testing.T) {
 }
 
 func TestPaymentIntakeInvalidChoiceRollsBackNonceForCorrection(t *testing.T) {
-	e := newTestApp(t)
+	e := newFreshTestApp(t)
 	id, admin := e.user("nonce_intake_invalid", "admin")
 	page := e.do("GET", "/admin", admin, nil)
 	e.check(page, 200)
@@ -207,7 +207,7 @@ func TestAdminPaymentSettingFormsKeepTOTPGuardAndNonceRollback(t *testing.T) {
 		}
 	})
 	t.Run("payment intake", func(t *testing.T) {
-		e := newTestApp(t)
+		e := newFreshTestApp(t)
 		adminID, admin := e.user("nonce_intake_totp", "admin")
 		key, _ := agEnableTOTP(e, adminID)
 		page := e.do("GET", "/admin", admin, nil)
@@ -261,7 +261,7 @@ func TestAdminPaymentSettingReceiptsRecheckCurrentActor(t *testing.T) {
 			name: "payment intake",
 			path: "/admin/payment-intake",
 			setup: func(t *testing.T) (*testEnv, string, string, url.Values) {
-				e := newTestApp(t)
+				e := newFreshTestApp(t)
 				id, admin := e.user("nonce_intake_actor_guard", "admin")
 				page := e.do("GET", "/admin", admin, nil)
 				e.check(page, 200)
