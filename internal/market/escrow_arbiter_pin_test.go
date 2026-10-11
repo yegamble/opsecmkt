@@ -123,4 +123,45 @@ func TestEscrowArbiterAccountKeyPinUpgradeAndSubstitution(t *testing.T) {
 		t.Fatalf("operator logs exposed fingerprint or key material: %s", logs.String())
 	}
 	a.Close()
+
+	// The pin covers the public key as well as the chain code: altEscrowKey changes only the chain code (raw[13]),
+	// so a pin that dropped the public key would still pass the leg above. Here only the public key's parity byte
+	// (raw[45], 02 <-> 03: the same x, the negated y) differs.
+	samePub, err := parseEscrowKey(altEscrowPubKey(t, testBIP84Key, fakeArbiterFP))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if samePub.ChainCode != key.ChainCode || samePub.PubKey == key.PubKey {
+		t.Fatalf("pubkey-only substitution fixture is wrong: chain code equal=%v pubkey equal=%v", samePub.ChainCode == key.ChainCode, samePub.PubKey == key.PubKey)
+	}
+	core.arbiterDesc = "wpkh([" + fakeArbiterFP + "/84h/1h/0h]" + samePub.XPub + "/1/*)#pubkey-substituted"
+	a, _, err = startApp(t, dsn)
+	if err != nil || a.escrow.Load() != nil || strings.Count(logs.String(), keyMismatchLog) != 2 {
+		t.Fatalf("same-fingerprint, same-chain-code public-key substitution was not refused: err=%v logs=%s", err, logs.String())
+	}
+	if err = a.db.QueryRow("SELECT disabled_class FROM bitcoin_escrow_health WHERE singleton").Scan(&healthClass); err != nil || healthClass != "arbiter_key_mismatch" {
+		t.Fatalf("public-key substitution health class %q (err=%v)", healthClass, err)
+	}
+	if err = a.db.QueryRow("SELECT value FROM settings WHERE key=$1", arbiterKeyPin).Scan(&pin); err != nil || pin != want {
+		t.Fatalf("public-key substitution changed key pin to %q (err=%v)", pin, err)
+	}
+	if strings.Contains(logs.String(), samePub.XPub) {
+		t.Fatalf("operator logs exposed the substituted key: %s", logs.String())
+	}
+	a.Close()
+}
+
+// altEscrowPubKey is key with its public key's parity byte flipped (02 <-> 03) and the same chain code, under origin fp.
+func altEscrowPubKey(t *testing.T, key, fp string) string {
+	t.Helper()
+	k, err := parseEscrowKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := base58CheckDecode(k.XPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw[45] ^= 1
+	return "[" + fp + k.PathText + "]" + base58CheckEncode(raw)
 }

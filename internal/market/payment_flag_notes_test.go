@@ -67,12 +67,25 @@ func TestLateDepositFlagNotesAreBoundedAndIndexOutputs(t *testing.T) {
 					t.Fatalf("generated note does not date a flag: %q", note)
 				}
 			}
+			// Literal expectations, not lateDepositName itself: a Bitcoin escrow output is named by its own output index, and
+			// a Monero escrow deposit by its account component (the wallet bits stay out of the note), each exactly once.
+			seen := map[string]bool{}
 			for n := range outputs {
-				id, idx := deposit(n)
-				label := lateDepositName(id, idx, 5000, currency, true)
-				if !strings.Contains(joined, label) {
-					t.Errorf("deposit %d is not distinctly named: %q", n, label)
+				id, _ := deposit(n)
+				want := "deposit " + id[:20] + "… output " + strconv.Itoa(n) + " (0.00005 BTC)"
+				if currency == "XMR" {
+					want = "deposit " + id[:20] + "… account 1 (0.000000005 XMR)"
 				}
+				if c := strings.Count(joined, want); c != 1 {
+					t.Errorf("deposit %d: %q appears %d times in the notes, want once", n, want, c)
+				}
+				seen[want] = true
+			}
+			if len(seen) != outputs {
+				t.Errorf("%d outputs are named with only %d distinct labels", outputs, len(seen))
+			}
+			if currency == "XMR" && strings.Contains(joined, "output ") {
+				t.Errorf("a Monero escrow note names an output index: %s", joined)
 			}
 			if n := agInt(e, "SELECT count(*) FROM payments WHERE order_id=$1 AND flagged", order); n != outputs {
 				t.Fatalf("flagged %d of %d outputs", n, outputs)
