@@ -446,53 +446,38 @@ What staff can do:
    [escrow wallet backup](#back-up-and-restore-the-escrow-arbiter-and-watch-only-wallets); Monero: `get_transfer_by_txid`
    on the escrow wallet-rpc).
 2. A conflicted or below-threshold deposit that confirms again needs nothing. One that is gone for good
-   means the order was never fully funded: leave its held payout held (/admin offers no *Release* while the
-   deposit is below the threshold, and the server refuses one) and talk to both parties through Messages. If
-   either party opens a dispute, the moderator resolves it on the desk as usual; the resulting payout is held
-   too.
-3. Locked transfers and extra funds after settlement or after the order closed sit in the pooled wallet. They normally belong to the
-   buyer. Agree a return address with the buyer through Messages (ideally signed with their verified PGP key),
-   send the funds back **by hand from the wallet** (`sendtoaddress` / `transfer`), and record it on the desk as
-   *refunded by hand* (below).
-4. Deposits below the minimum automatic payout are too small to send on their own: a Bitcoin amount at or
-   below the fee cannot be sent with the fee taken from it, and on Monero (releases included since A-232) the fee
-   would take too large a share. Decide with the parties whether to leave them in the pooled wallet or send them
-   by hand (a refund to the buyer, or for a release below the minimum the vendor) with the wallet paying the fee
-   (`sendtoaddress` with `subtractfeefromamount` false, or `transfer`), and record whatever you did on the desk
-   (below). A flag stays
-   open until a payout includes the deposits or its review is recorded.
+   means the order was never fully funded: talk to both parties through Messages. If either party opens a dispute,
+   an administrator decides it as usual (escrow disputes are decided by an administrator only).
+3. Locked transfers and extra funds after settlement or after the order closed sit in the order's escrow, not in a
+   market wallet, so there is nothing to send by hand and the market never refunds one by hand: a stray refund
+   returns coins left in an escrow to the buyer's pinned refund address once they are worth spending. Check on the
+   order page that the stray refund was requested, built, signed and confirmed. Coins too few to pay a refund's fee
+   and a minimum output stay in the escrow (the order page says so); tell the buyer.
+4. Deposits below the minimum output (0.0001 BTC; 0.001 XMR) are too small for any settlement to spend. Decide
+   with the parties whether to wait for a further deposit that makes them worth spending; the flag stays open
+   until a settlement or stray refund includes the deposit or its review is recorded.
 
 **Record the review** (A-31). Each open flag on the desk has *Record the review* for a moderator or
 administrator who is not party to the order (a party sees who must do it instead): the link in the flag's row
 goes to its *Record the review of TXID:INDEX* section under the table, which opens the forms. Choose one, confirmed with
 your password (and authenticator code when enrolled); each flag takes one review, which cannot be changed:
 
-- **No action**, with the reason (10–1000 characters), for example a double spend that left the order unpaid or
-  funds the buyer agreed to leave in the pooled wallet.
-- **Refunded by hand**, for a deposit that is not counted toward the order's payout (a locked transfer, a deposit
-  after settlement or after the order closed, or a deposit below the minimum automatic payout), after you sent
-  the refund from the wallet as in steps 3 and 4: the refund's 64-character transaction ID and the amount sent
-  (at most the deposit), with an optional note. The market sends nothing and writes **no payout row**: each order
-  has at most one payout of each kind (`payouts` `UNIQUE (order_id, kind)`, migration 064) and never both a release and a refund (`payouts_one_settlement`, migration 069) or a refund and a return (`payouts_refund_or_return`, migration 070), and never a return without its release (`payouts_return_needs_release`, migration 073), owned by its release
-  and any return, or its refund, so do not insert a payout and do not use *Mark sent* on the order's payout for a
-  manual transfer. A deposit recorded as refunded by hand is never counted toward a payout afterwards, even if a
-  later deposit lifts a below-minimum sum over the minimum. A credited deposit (counted toward the payout) is
-  refused (409): it is settled through that payout.
+- **No action**, with the reason (10–1000 characters), for example a double spend that left the order unpaid, or a
+  deposit its stray refund has returned. The market sends nothing.
 - **Escalate to an administrator** (moderators only), with an optional note: every administrator who is not
   party to the order is notified, the flag stays open on the desk marked "escalated to an administrator" and only
-  an administrator can then record no action or a refund by hand.
+  an administrator can then record no action.
+- *Refunded by hand* is refused (409, nothing changed) for every reviewed deposit, because each is in an escrow and
+  not in a market wallet that staff could refund it from (A-330). Historical flags of the removed pooled build that the
+  desk can still list were the only deposits that took it.
 
 Each review writes one order-history event (the buyer and the vendor read it, with the reason or note, so keep
-addresses and anything private out of it), one audit row and a notification to the buyer. A refund's transaction
-ID is in the event, the audit row and the buyer's notification; on the order page only the buyer and staff
-reading the order see it (the vendor reads "(transaction ID shown only to its recipient)": on Bitcoin it reveals
-the buyer's address). The buyer's order page then reads "Refunded by hand on DATE: AMOUNT, transaction TXID",
-or for a deposit after the order closed "…; reviewed by market staff on DATE: no action" or "…; escalated to an
-administrator on DATE", instead of "market staff notified". A reviewed flag (no action or refunded) leaves the
-desk; once every late-deposit flag of an order is reviewed, a later late deposit is announced to the buyer and
-staff again. A credited deposit reviewed during a regression that confirms and later regresses again is a new,
-unreviewed flag. A second review of the same flag is refused (409); so is one by staff who are party to the order
-(403).
+addresses and anything private out of it), one audit row and a notification to the buyer. The buyer's order page then
+reads, for a deposit after the order closed, "…; reviewed by market staff on DATE: no action" or "…; escalated to an
+administrator on DATE", instead of "market staff notified". A reviewed flag leaves the desk; once every late-deposit
+flag of an order is reviewed, a later late deposit is announced to the buyer and staff again. A credited deposit
+reviewed during a regression that confirms and later regresses again is a new, unreviewed flag. A second review of
+the same flag is refused (409); so is one by staff who are party to the order (403).
 
 ## 9. Manual Monero escrow fakechain check
 
@@ -601,7 +586,7 @@ place; the [operator guide](operator-guide.md#bitcoin-escrow-test-networks-only)
 4. The previous release's A-440 pooled-user identity check was removed with pooled payments. This release refuses a
    configured `BITCOIN_RPC_URL` and does not query that user; remove its old credentials and whitelist entry after
    draining the previous release. Configure the dedicated escrow RPC user and separate signer user using the
-   [operator guide](operator-guide.md#the-apps-rpc-user), and back up the arbiter and watch-only wallets as
+   [operator guide](operator-guide.md#bitcoin-escrow-test-networks-only) (*The app's RPC user*), and back up the arbiter and watch-only wallets as
    [escrow wallet backup](#back-up-and-restore-the-escrow-arbiter-and-watch-only-wallets) says. The escrow startup check still
    verifies the arbiter wallet's key fingerprint and that its transactions show no spend.
 5. In `APP_MODE=tor` the broadcast gate (A-441) sends settlements only through a node with `-proxy` on Bitcoin Core 31.1

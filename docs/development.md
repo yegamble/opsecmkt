@@ -290,9 +290,9 @@ Use a fresh database for every run; the test moves clocks and restore settings t
 own database.
 
 For actual local Bitcoin Core escrow transactions, use
-`scripts/test-escrow-regtest.sh` with a disposable PostgreSQL database.
-[Historical pooled local-chain testing](local-chain-testing.md) requires its
-prior revision. Neither local procedure proves public-network behavior; public
+`scripts/test-escrow-regtest.sh` with a disposable PostgreSQL database
+([real-chain escrow tests](local-chain-testing.md) lists every real-chain script
+and what CI runs). Neither local procedure proves public-network behavior; public
 records identify their own frozen sources in [verification](verification.md).
 
 ### Monero escrow on a local fakechain (real monerod and monero-wallet-rpc)
