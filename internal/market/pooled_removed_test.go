@@ -25,6 +25,9 @@ var pooledRemovedPatterns = []*regexp.Regexp{
 	// columns only (migrations are immutable).
 	regexp.MustCompile(`\b(orderPayouts|payoutStatement|splitPayout|payoutPart|subFloorPriceExcess|countedDeposits|OverpaidView|PayoutView|NoAddress)\b|\bbelowFloor\(`),
 	regexp.MustCompile(`\bpayout_(btc|xmr)\b`),
+	// QA59b: pooled readers A-492 deleted (pooledOnly is now buyerCompleteRefused, payoutBasis countedDeposits, itself
+	// deleted by A-508).
+	regexp.MustCompile(`\b(paymentsOrderLoader|unsentPayouts|unsentPayoutsLoader|payoutStateLabel|orderPayoutLabel|recipientPayout|PayoutRow|payoutBasis|pooledOnly|hidePooled)\b`),
 }
 
 // pooledRemovedAllowed: the one pattern a file may match, by path.
@@ -115,10 +118,20 @@ func TestPooledRemovedGuardCatchesEachPattern(t *testing.T) {
 		`d.Payout = &PayoutView{}`,
 		`a.db.QueryRowContext(ctx, "SELECT payout_btc,payout_xmr FROM users WHERE id=$1", id)`,
 		`column := "payout_xmr"`,
+		`registerLoader("order", paymentsOrderLoader)`,
+		`rows, err := unsentPayouts(ctx, a.db, u.ID)`,
+		`registerLoader("account", unsentPayoutsLoader)`,
+		`v.State = payoutStateLabel(p.State)`,
+		`{{orderPayoutLabel .}}`,
+		`p := recipientPayout(o)`,
+		`var rows []PayoutRow`,
+		`sum, err := payoutBasis(ctx, tx, o)`,
+		`if pooledOnly[[3]string{o.State, to, r}] {`,
+		`if hidePooled(ctx, a, o) {`,
 	} {
 		for _, path := range []string{"internal/market/payments.go", "web/templates/pages/admin.html", "internal/market/config.go"} {
 			got := pooledRemovedFindings(map[string]string{path: "ok\n" + line})
-			if path == "internal/market/config.go" && strings.Contains(line, "Pooled") {
+			if path == "internal/market/config.go" && regexp.MustCompile(pooledRemovedAllowed[path]).MatchString(line) {
 				if len(got) != 0 { // config.go's one allowed pattern
 					t.Errorf("%s in %s: %v, want none", line, path, got)
 				}
