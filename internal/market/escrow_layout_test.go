@@ -536,7 +536,7 @@ func TestEscrowOnlyPerOrderVendorNeedsSigner(t *testing.T) {
 	}
 	// Back to a Bitcoin Core key: the gate lifts.
 	agExec(x.testEnv, "UPDATE user_escrow_keys SET layout='core' WHERE user_id=$1", x.vendor)
-	if b := html.UnescapeString(x.page("/product?id="+x.product, x.buyerSess)); strings.Contains(b, "Not available for purchase") {
+	if b := html.UnescapeString(x.page("/product?id="+x.product, x.buyerSess)); strings.Contains(b, "Not available for purchase in BTC") {
 		t.Fatal("a Core key did not lift the gate")
 	}
 }
