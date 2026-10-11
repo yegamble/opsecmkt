@@ -336,7 +336,7 @@ func TestXMREscrowNoShipCancel(t *testing.T) {
 	}
 	x.forceDeadline(order, "ship_by=now()-interval '1 minute'")
 	page = html.UnescapeString(x.page("/order?id="+order, buyerSess))
-	if !containsAll(page, `action="/orders/cancel"`, "Cancelling refunds the 0.5 XMR", `name="amount_seen" value="500000000000"`) {
+	if !containsAll(page, `action="/orders/cancel"`, "Cancelling refunds the 0.5 fakechain XMR", `name="amount_seen" value="500000000000"`) {
 		t.Fatalf("the buyer's page once the window opened:\n%s", page)
 	}
 	for _, sess := range []string{buyerSess, x.vendorSess} {
