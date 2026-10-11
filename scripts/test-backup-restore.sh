@@ -138,10 +138,10 @@ scripts/restore.sh "$backup" <<< 'RESTORE' > "$work/restore.log"
 [[ $(pg "$source_db" -Atq -c "SELECT count(*) FROM payouts WHERE state = 'held'") == 1 ]]
 grep -q 'Held 4 restored payout(s)' "$work/restore.log"
 grep -q 'Marked 1 restored failed payout(s) as possibly sent' "$work/restore.log"
-grep -q 'do not contain the custodial wallets' "$work/restore.log"
+grep -q 'do not contain the escrow wallets' "$work/restore.log"
 # A-142: the wallet reminder names the runbook section, which must exist under that heading.
-grep -q 'docs/testnet-runbook.md describes ("Restore the wallets")' "$work/restore.log"
-grep -q '^#### Restore the wallets$' docs/testnet-runbook.md
+grep -q 'docs/testnet-runbook.md describes ("Back up and restore the escrow arbiter and watch-only wallets")' "$work/restore.log"
+grep -q '^## Back up and restore the escrow arbiter and watch-only wallets$' docs/testnet-runbook.md
 grep -q 'point BACKUP_DATABASE_URL at the same database' "$work/restore.log"
 # A-190 (ruling D4): the line about images removed after the backup, with the dump's creation time; a dump
 # without an images table restores none.
@@ -410,6 +410,29 @@ runbook_sql find-order > "$work/find-order.sql"
 runbook_sql record-payout > "$work/record-payout.sql"
 runbook_sql clear-gate > "$work/clear-gate.sql"
 runbook_sql restore-protection UPGRADING.md > "$work/restore-protection.sql"
+
+# A-497: the clear-gate SQL belongs to the current-build reading path. A Markdown heading whose text says "prior build"
+# or "never run" (headings inside code fences are ignored) marks the text after it as prior-build. The marker NAME in
+# FILE must exist and no such heading may precede it: that puts it outside every prior-build range and means a reader
+# going from the top never crosses a "never run" warning on the way to it.
+marker_outside_prior_build() {
+  awk -v marker="<!-- runbook-sql: $1 -->" '
+    /^```/ { fence = !fence }
+    !fence && /^#+ / && tolower($0) ~ /prior[ -]build|never run/ { warned = 1 }
+    index($0, marker) { found = 1; if (warned) bad = 1 }
+    END { exit !(found && !bad) }
+  ' "$2"
+}
+marker_outside_prior_build clear-gate docs/testnet-runbook.md
+# The check itself (`! cmd` would not stop under set -e): a warning heading before the marker, at any level, is
+# refused; one after it and a "#" comment inside a code fence are not; a missing marker is refused.
+printf '## Prior build only (never run with this build)\n\ntext\n\n<!-- runbook-sql: clear-gate -->\n' > "$work/prior-before.md"
+printf '# Title\n\n### Prior-build detail\n\nx\n\n## Next\n\n<!-- runbook-sql: clear-gate -->\n' > "$work/prior-nested.md"
+printf '# Title\n\n## Current\n\n```sh\n# prior build comment, not a heading\n```\n\n<!-- runbook-sql: clear-gate -->\n\n## Old (never run)\n' > "$work/prior-after.md"
+if marker_outside_prior_build clear-gate "$work/prior-before.md"; then echo 'prior-build check accepted a marker below a warning heading' >&2; exit 1; fi
+if marker_outside_prior_build clear-gate "$work/prior-nested.md"; then echo 'prior-build check accepted a marker below a nested warning heading' >&2; exit 1; fi
+marker_outside_prior_build clear-gate "$work/prior-after.md"
+if marker_outside_prior_build find-order "$work/prior-after.md"; then echo 'prior-build check accepted a missing marker' >&2; exit 1; fi
 
 # A restore not done by restore.sh (plain pg_dump/pg_restore here; a volume snapshot or point-in-time recovery is
 # the same) brings the queued payout back pending with no gate: the application would send it again. The manual

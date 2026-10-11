@@ -557,12 +557,12 @@ requeue it (it would fail the same way). Settle it by hand as the runbook descri
 minimum ([payment-review flags](docs/testnet-runbook.md#handle-a-payment-review-flag), step 4): agree with the
 vendor whether to send it, and if so `transfer` the payout's amount from the wallet with the wallet paying the fee
 (without `subtract_fee_from_outputs`), then record it with *Mark sent* and its transaction ID
-([section 5](docs/testnet-runbook.md#5-recover-a-held-or-failed-payout)). One Monero minimum, 0.001 XMR, now
+(the prior build's runbook section 5, since removed). One Monero minimum, 0.001 XMR, now
 applies to every payout: a release below it is flagged for payment review instead of sent, like a refund.
 Listings cannot be priced below 0.001 XMR; a listing priced lower before the upgrade takes no new XMR drafts or payment requests, and saving it is refused until its vendor raises the Monero
 price. On an existing order at such a price, an overpayment of more than the price is held as one release for an
-administrator's review. When matching Monero payouts sent before the upgrade in the wallet (the runbook's
-[failed-payout check](docs/testnet-runbook.md#5-recover-a-held-or-failed-payout) and [restore reconciliation](docs/testnet-runbook.md#reconcile-a-restored-database-before-enabling-payouts)), a release sent by the
+administrator's review. When matching Monero payouts sent before the upgrade in the wallet (the prior build's runbook
+failed-payout check, since removed, and its [restore reconciliation](docs/testnet-runbook.md#reconcile-a-restored-database-before-enabling-payouts)), a release sent by the
 earlier version paid its fee on top: its destination amount is the payout's.
 
 ## 14. One settlement per order, and resolving needs a password (migrations 069 and 070)
@@ -620,7 +620,7 @@ db_sql() { docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U opsecmkt -d o
    `send_ambiguous` true, and any row whose error starts `Restored from backup:` may have been sent. Check every
    listed row in the wallet, whatever its state (a `pending`, `blocked`, `held` or definitely failed row may have
    been paid by hand): a transaction to its address and amount since before the row was created, with the complete
-   checks in [runbook section 5](docs/testnet-runbook.md#5-recover-a-held-or-failed-payout). A row that may have
+   checks in the prior build's runbook section 5 (since removed). A row that may have
    been sent and that the wallet check does not clear counts as sent. Never delete a sent row, or one that may
    have been sent, except as step 3 describes for an order paid twice or for a sent release that the order's
    outcome did not owe.
@@ -751,8 +751,7 @@ changes" with status 500. It is now refused with 503 "BTC payment addresses are 
 Nothing was charged and your order is still a draft; try again later." (or XMR), logged as a `payments:` line naming
 only the currency, and shown on the *Payment providers* panel of `/admin` until an administrator dismisses it. A
 monitor that matched `cause=23505 payment_addresses payment_addresses_address_key` should match
-`cause=payment-address-already-issued` instead. What to do when it appears:
-[Restore the wallets](docs/testnet-runbook.md#restore-the-wallets).
+`cause=payment-address-already-issued` instead. The pooled wallet and this warning are since removed; the runbook no longer has a "Restore the wallets" section.
 
 ## 17. An index for role changes in the audit log (migration 072, A-301)
 

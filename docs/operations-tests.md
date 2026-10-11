@@ -24,7 +24,7 @@ Required executables are Bash, Python 3, Go (to build the server from this check
 The script creates five uniquely named `opsecmkt_ops_*` databases, generates temporary encryption identities, and verifies:
 
 - Actual encrypted dump and restore with Unicode text and primary keys preserved; the backup's success line names the `BACKUP_DATABASE_URL` database without printing the URL, and the restore says to point `BACKUP_DATABASE_URL` at the restored database.
-- The restore's wallet reminder names the runbook section [Restore the wallets](testnet-runbook.md#restore-the-wallets) (A-142), and that heading exists.
+- The restore's wallet reminder names the runbook section [Back up and restore the escrow arbiter and watch-only wallets](testnet-runbook.md#back-up-and-restore-the-escrow-arbiter-and-watch-only-wallets) (A-142, A-497), and that heading exists.
 - An age-encrypted output file with mode `0600`.
 - Refusal to overwrite an existing backup, with its contents unchanged.
 - A wrong decryption identity fails without creating tables.

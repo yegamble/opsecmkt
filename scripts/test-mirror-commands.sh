@@ -47,7 +47,7 @@ inline_commands=(
   'docs/operator-guide.md|docker compose up -d --force-recreate tor tor-mirror'
   'UPGRADING.md|docker compose up -d --force-recreate tor tor-mirror'
   'docs/testnet-runbook.md|`docker compose stop tor-mirror`'
-  # Recovery step 9 starts the mirror that step 1 stopped, then checks it runs.
+  # The last recovery step (8) starts the mirror that step 1 stopped, then checks it runs.
   'docs/testnet-runbook.md|run `docker compose up -d`'
   'docs/testnet-runbook.md|`docker compose ps tor-mirror`'
 )
