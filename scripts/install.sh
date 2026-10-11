@@ -1201,6 +1201,16 @@ cmd_init() {
   echo
   echo 'Next: back up .env (it holds every secret) and, on Tor, the onion keys: docs/operator-guide.md#secrets-env-and-onion-identities.'
   echo 'Check the installation any time with ./scripts/install.sh status.'
+  # A local Bitcoin node is infrastructure only (D-58): say how escrow is turned on, and change nothing for it.
+  if [[ $btc_choice == local ]]; then
+    local escrow_chain=${bitcoin_chain:-testnet4}
+    echo
+    echo 'Bitcoin escrow stays off until you set it up; this installer edits no file for it. With the local Bitcoin node running:'
+    echo "  ./scripts/escrow-node-setup.sh --chain $escrow_chain --rpc-port 8332 --cli 'docker compose exec -T -u bitcoin bitcoin bitcoin-cli -datadir=/data'"
+    echo '  (it prints bitcoin.conf and .env lines: add the first to the node'"'"'s /data/bitcoin.conf and the second to .env together with ESCROW_BTC=on, then restart the node)'
+    echo "  ESCROW_BTC_RPC_URL='<the URL it printed>' ./scripts/escrow-node-setup.sh --chain $escrow_chain --verify"
+    echo '  Then restart the app. Details: docs/operator-guide.md#escrow-node-set-up-and-the-public-network-smoke'
+  fi
 }
 
 # ---- status, setup-token, add-mirror ---------------------------------------------------------------------

@@ -17,11 +17,13 @@ Server-rendered Go and PostgreSQL, PGP identity, Tor-first deployment.
 </div>
 
 > [!IMPORTANT]
-> **Fresh installations use per-order escrow on test networks only.** Escrow is built on the development
-> branch, not released, and is off by default. Bitcoin uses 2-of-3 signing; Monero is custodial.
-> Public signet practice, claim and refund and one public stagenet digital claim are recorded;
-> public testnet4 and other Monero journeys remain unverified. Legacy pooled upgrades must pass the drain
-> refusal before this build can start. See the network matrix, [upgrade guide](UPGRADING.md#58-pooled-wallet-removal-for-fresh-installs-a-448),
+> **Fresh installations use per-order escrow on test networks only.** Escrow is available but **off until the
+> operator sets it up** ([Enable Bitcoin escrow](#enable-bitcoin-escrow)): a default install can register users and
+> list goods, but takes no payment. Bitcoin uses 2-of-3 signing; Monero is custodial. Escrow is on the development
+> branch, in no release, and runs on test networks only; mainnet and Bitcoin testnet3 are refused. Public signet
+> practice, claim and refund and one public stagenet digital claim are recorded; public testnet4 and other Monero
+> journeys remain unverified. The pooled wallet is removed: a database holding pooled payment history is refused
+> (migrations 107 and 108). See the network matrix, [upgrade guide](UPGRADING.md#58-pooled-wallet-removal-for-fresh-installs-a-448),
 > and [per-order escrow](docs/escrow.md). Tor protects inbound connections; it does not guarantee anonymity.
 
 ## Why OPSEC Market
@@ -54,9 +56,9 @@ Payments on this development build use test coins only. Enabling a node alone do
 
 | Path | Supported networks | Evidence and limits |
 | --- | --- | --- |
-| **Bitcoin per-order escrow** (`ESCROW_BTC=on`) | Regtest, public signet, testnet4. Off by default; mainnet and testnet3 refused. | 2-of-3 signing. Local regtest and private signet tested. Public signet practice, claim and refund passed on 2026-10-09 ([record](docs/evidence/public-testnet/2026-10-09-9885beef29d3/signet/README.md)). Sparrow 2.5.5 GUI per-order practice/release/refund passed on isolated regtest at frozen app `f229a1a65172986065bbab4f3aa24a09725695ad`; a separate GUI import of the supplied descriptor produced the same escrow receive address ([record](docs/evidence/sparrow/2026-10-11-f229a1a65172/README.md)). Signing from that imported watch-only wallet, Ledger Flex signing, public Sparrow signing and testnet4 remain unverified. |
-| **Monero per-order escrow** (`ESCROW_XMR=on`) | Local fakechain or stagenet. Off by default; testnet and mainnet refused. | Custodial. Local fakechain and offline stagenet fork tested. One funded public stagenet digital claim passed on 2026-10-10 ([record](docs/evidence/public-testnet/2026-10-10-ac71878dfde4/stagenet-xmr/README.md)). Public refunds and physical deadlines remain unverified. |
-| **Historical pooled records** | No new pooled payments on this build. | Records remain readable. An older database with any drain blocker, including mainnet pooled history, is refused unchanged. Resolve ordinary blockers using the prior drain-capable build before upgrading. Mainnet history remains a refusal even after settlement: keep the prior release and preserve its records. No real-market drain is claimed. |
+| **Bitcoin per-order escrow** (`ESCROW_BTC=on`) | Regtest, public signet, testnet4. Off by default; mainnet and testnet3 refused. | 2-of-3 signing. Local regtest and private signet tested. Public signet practice, claim and refund passed on 2026-10-09 ([record](docs/evidence/public-testnet/2026-10-09-9885beef29d3/signet/README.md)). Sparrow 2.5.5 GUI per-order practice, release and sibling stray refund passed on isolated regtest at frozen app `f229a1a65172986065bbab4f3aa24a09725695ad`; a separate GUI import of the supplied descriptor produced the same escrow receive address ([record](docs/evidence/sparrow/2026-10-11-f229a1a65172/README.md)). Signing from that imported watch-only wallet, public Sparrow signing and testnet4 remain unverified. Ledger Flex via Sparrow 2.5.5: attempted, failed before signing, unresolved ([diagnostic](docs/evidence/sparrow/ledger-flex-2026-10-11.md)); only software signing is verified. Real Bitcoin Core regtest escrow legs run in CI (`escrow-regtest`). |
+| **Monero per-order escrow** (`ESCROW_XMR=on`) | Local fakechain or stagenet. Off by default; testnet and mainnet refused. | Custodial. Fifteen legs on a real `monerod` fakechain run in CI (`escrow-xmr-regtest`); an offline stagenet fork is tested by hand. One funded public stagenet digital claim passed on 2026-10-10 ([record](docs/evidence/public-testnet/2026-10-10-ac71878dfde4/stagenet-xmr/README.md)). Public refunds and physical deadlines remain unverified. |
+| **Pooled wallet (removed)** | None. No pooled payment, payout or drain exists on this build. | A database that holds pooled payment history is refused unchanged: migration 107 while pooled obligations are open (mainnet history always), migration 108 for any `payouts` or `payment_addresses` row. Keep the previous release on such a database; this build neither tests nor drains it (owner directive). No real-market drain is claimed. |
 
 Bundled nodes default to Bitcoin **testnet4** and Monero **stagenet**. Bitcoin **signet** is the public network with recorded proof; **regtest** and Monero **fakechain** are isolated development networks. Local nodes require disk space and a full first sync even when pruned. External nodes or cloud test nodes avoid storing chains on your workstation. Use the [Bitcoin operator package](docs/operator-guide.md#bitcoin-escrow-test-networks-only) and [Monero setup](docs/operator-guide.md#monero-escrow-fakechain-or-stagenet) to provision escrow wallets and credentials.
 
@@ -121,7 +123,8 @@ rest, or nothing if you pass every flag (`./scripts/install.sh --help`):
 
 Add `--admin HANDLE` to create the administrator in the terminal instead of with
 a token. For each coin the installer defaults to a pruned local test-network
-node; `--nodes none` leaves payments off.
+node; `--nodes none` leaves out the nodes. Either way no payment can be taken
+until escrow is set up (below).
 
 **Afterwards.** `status` shows health, setup state and onion addresses.
 `add-mirror` adds a second onion address. `add-scanner` adds the ClamAV malware
@@ -142,6 +145,37 @@ port and project-name choices, node pruning, backups, upgrades and recovery.
 `docker compose logs app` shows startup and migration errors; `docker compose
 down` stops everything and keeps the data.
 
+### Enable Bitcoin escrow
+
+A fresh install takes no payment: both escrow adapters are off and the installer edits no
+escrow setting. To turn on Bitcoin escrow against the local test-network node the installer
+started (Monero escrow has its own steps in the
+[operator guide](docs/operator-guide.md#monero-escrow-fakechain-or-stagenet)):
+
+1. Install with a local Bitcoin node on regtest, signet or testnet4, for example
+   `./scripts/install.sh init --tor --nodes local --bitcoin-network signet`, and let the node sync.
+   Never use a mainnet or testnet3 node: escrow refuses them.
+2. Run `scripts/escrow-node-setup.sh`, with the `--chain`, `--rpc-port` and `--cli` the installer
+   printed at its end. It creates the arbiter and watch-only wallets and prints, once, the
+   `bitcoin.conf` and `.env` lines for a restricted escrow RPC user. It writes no file.
+3. Paste the printed `bitcoin.conf` lines into the node's configuration (`/data/bitcoin.conf`
+   in the bundled node's volume), and the printed `.env` lines (`ESCROW_BTC_RPC_URL` and the
+   wallet names) into `.env` together with `ESCROW_BTC=on`.
+4. Restart the Bitcoin node (`docker compose restart bitcoin`).
+5. Check it: `ESCROW_BTC_RPC_URL='<the printed URL>' scripts/escrow-node-setup.sh --chain signet --verify`
+   must print `PASS`. The bundled node publishes no port and the printed host name (`bitcoin`)
+   resolves only inside the Compose network, so run it from somewhere that can reach the node, as
+   the operator guide's node set-up section describes.
+6. Restart the app (`docker compose up -d`). The log line `escrow: Bitcoin escrow on (test networks
+   only)` and the `/admin` escrow status show it is on.
+
+Then back up the arbiter and watch-only wallets as the
+[runbook](docs/testnet-runbook.md#back-up-and-restore-the-escrow-arbiter-and-watch-only-wallets)
+says, and read the operator guide's
+[Bitcoin escrow](docs/operator-guide.md#bitcoin-escrow-test-networks-only) and
+[node set-up](docs/operator-guide.md#escrow-node-set-up-and-the-public-network-smoke) sections
+before inviting anyone: every key, signing step and limit is described there.
+
 > [!WARNING]
 > `docker compose down --volumes` deletes the marketplace's data. Use it only on
 > an install you mean to destroy.
@@ -161,8 +195,8 @@ audit row in the same transaction as each action. PostgreSQL holds all state
 and applies migrations on startup. Optional per-order escrow is off by default
 and accepts the test networks shown below. Bitcoin uses a dedicated signer and
 2-of-3 PSBT signing by the parties; Monero uses a separate escrow wallet RPC and
-holds the wallet keys. Historical pooled payment records remain in PostgreSQL;
-a refusing migration protects an undrained legacy database.
+holds the wallet keys. A database that holds pooled payment records from the
+removed wallet is refused by migrations 107 and 108.
 
 **What the server keeps.** There is no account, message or order deletion, and
 the operator or anyone holding a decrypted backup can read what is stored.
@@ -184,13 +218,13 @@ are reset from the host with `-reset-admin-password` and `-reset-admin-factors`
 | --- | --- |
 | [Operator guide](docs/operator-guide.md) | Deployment, HTTPS and Tor, mirrors, configuration, backups, recovery, troubleshooting |
 | [Test-network payments](docs/testnet-runbook.md) | Escrow wallet backup and restore, restore reconciliation, clearing the recovery gate, and chain checks |
-| [Per-order escrow](docs/escrow.md) | The escrow design replacing the pooled wallet, what it will and will not protect, and its status (Phases 1 and 2: Bitcoin, digital and physical orders, regtest, signet or testnet4 (A-443; tested on regtest, a private signet and the recorded public signet smoke); Phase 3: custodial Monero, a local fakechain or stagenet (A-449; one public stagenet digital claim recorded, other public journeys unrun); all off by default) |
+| [Per-order escrow](docs/escrow.md) | The escrow design (the pooled wallet it replaced is removed), what it will and will not protect, and its status (Phases 1 and 2: Bitcoin, digital and physical orders, regtest, signet or testnet4 (A-443; tested on regtest, a private signet and the recorded public signet smoke); Phase 3: custodial Monero, a local fakechain or stagenet (A-449; one public stagenet digital claim recorded, other public journeys unrun); all off by default) |
 | [Upgrading from v0.1.0-alpha.1](UPGRADING.md) | New settings and migration steps |
 | [Implementation status](docs/implementation-status.md) | What works, what is missing, and what the server keeps |
 | [Acceptance checks](docs/acceptance.md) | The checklist, and the tests that prove each ticked line |
 | [Verification](docs/verification.md) | Evidence table of CI runs and local chain runs |
 | [Development and testing](docs/development.md) | Running from source, seeding data, every test suite |
-| [Operations tests](docs/operations-tests.md) · [CI and releases](docs/ci-cd.md) · [Local chains](docs/local-chain-testing.md) | Rehearsals, pipelines and real regtest and stagenet runs |
+| [Operations tests](docs/operations-tests.md) · [CI and releases](docs/ci-cd.md) · [Local chains](docs/local-chain-testing.md) | Rehearsals, pipelines and the real-chain escrow tests |
 
 ## Project layout
 
@@ -203,7 +237,7 @@ are reset from the host with `-reset-admin-password` and `-reset-admin-factors`
 | `web/` | Server-rendered templates and static CSS |
 | `deploy/` | Tor image and `torrc`, the malware scanner's `clamd.conf` |
 | `scripts/` | Installer, backup and restore, and operations checks |
-| `tests/` | Playwright journeys (`tests/e2e/`: preview, database, wallet and, in the `browser-escrow` CI job, Bitcoin and Monero escrow against simulated nodes) and installer tests |
+| `tests/` | Playwright journeys (`tests/e2e/`: preview, database and, in the `browser-escrow` CI job, Bitcoin and Monero escrow against simulated nodes) and installer tests |
 | `docs/` | Status, acceptance, operator runbooks and README assets |
 
 ## Contributing

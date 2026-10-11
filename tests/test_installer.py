@@ -532,7 +532,8 @@ print(value)
         index = next(i for i, line in enumerate(lines) if token in line)
         self.assertEqual(lines[index], 'Setup token: ' + token)
         self.assertTrue(lines[index - 1].startswith('Ready. Open '), lines[index - 1])
-        self.assertGreaterEqual(index, len(lines) - 8)
+        # After the token come the two reminders and, with a local Bitcoin node, the escrow set-up commands (A-495).
+        self.assertGreaterEqual(index, len(lines) - 16)
 
     def test_timeout_stops_stub_descendants_without_bytecode_writes(self):
         self.stub('docker', '''
@@ -866,6 +867,42 @@ time.sleep(60)
         self.assertNotIn('MONERO_WALLET_RPC_PASSWORD', config)
         self.assert_no_secret_printed(result, config, allow_token=True)
         self.assertNotIn('compose.external-egress.yaml', config['COMPOSE_FILE'])
+
+    def test_local_bitcoin_node_ends_with_the_two_escrow_setup_commands(self):
+        # A-495 (D-58): the installer only tells the operator how Bitcoin escrow is turned on; it edits no file.
+        for network in ('regtest', 'signet', 'testnet4'):
+            with self.subTest(network=network):
+                (self.root / '.env').unlink(missing_ok=True)
+                self.log.unlink(missing_ok=True)
+                result = self.run_installer(None, arguments=[
+                    '--tor', '--bitcoin', 'local', '--bitcoin-image', 'reviewed-bitcoin:test',
+                    '--bitcoin-network', network, '--bitcoin-prune', 'yes', '--monero', 'disabled'])
+                self.assert_started(result)
+                config = self.config()
+                commands = [line.strip() for line in result.stdout.splitlines() if 'escrow-node-setup.sh' in line]
+                self.assertEqual(len(commands), 2, result.stdout)
+                setup, verify = commands
+                self.assertIn(f'./scripts/escrow-node-setup.sh --chain {network} --rpc-port 8332 --cli ', setup)
+                self.assertNotIn('--verify', setup)
+                self.assertTrue(verify.endswith(f'./scripts/escrow-node-setup.sh --chain {network} --verify'), verify)
+                self.assertIn('ESCROW_BTC_RPC_URL=', verify)
+                self.assertGreater(result.stdout.index('escrow-node-setup.sh'), result.stdout.index('Setup token:'))
+                self.assertIn('docs/operator-guide.md#escrow-node-set-up-and-the-public-network-smoke', result.stdout)
+                self.assertIn('off until', result.stdout)
+                # Nothing is written for it, and no escrow setting or secret appears in the output.
+                self.assertFalse([key for key in config if key.startswith('ESCROW_')], config)
+                self.assert_no_secret_printed(result, config, allow_token=True)
+
+    def test_no_local_bitcoin_node_prints_no_escrow_setup_commands(self):
+        for arguments in (['--tor', '--nodes', 'none'],
+                          ['--tor', '--bitcoin', 'disabled', '--monero', 'local', '--monero-image', 'reviewed-monero:test',
+                           '--monero-network', 'stagenet', '--monero-prune', 'yes']):
+            with self.subTest(arguments=arguments):
+                (self.root / '.env').unlink(missing_ok=True)
+                self.log.unlink(missing_ok=True)
+                result = self.run_installer([''] * 6, arguments=arguments)
+                self.assert_started(result)
+                self.assertNotIn('escrow-node-setup.sh', result.stdout)
 
     def test_local_bitcoin_verifier_crypto_failure_leaves_no_install(self):
         for key, value in (('INSTALLER_TEST_OPENSSL_BAD_SALT', 'fail'),

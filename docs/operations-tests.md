@@ -312,8 +312,8 @@ operations job.
 Current Bitcoin escrow uses `scripts/test-escrow-regtest.sh` against a real
 isolated regtest node; Monero uses `scripts/test-escrow-xmr-regtest.sh` on a
 local fakechain. Neither uses real funds or establishes public-network proof.
-[Local-chain testing](local-chain-testing.md) retains the prior pooled suite's
-signature verification, funding and browser commands as historical evidence;
-those require the prior drain-capable revision. The current
+[Real-chain escrow tests](local-chain-testing.md) lists every real-chain script
+and which of them CI runs (`escrow-regtest`, `escrow-xmr-regtest`). The pooled
+suite's commands were deleted with the pooled wallet. The current
 `scripts/setup-local-chains.py` only stops registered historical processes
 without deleting their data and refuses new pooled-chain setup.

@@ -1,5 +1,11 @@
 # Project review and product verification — 2026-09-23
 
+> **Dated record of a pooled-wallet-era review; not a description of this build.** Its payment findings, journeys and
+> checks concern the pooled wallet (payouts, recovery lock, wallet endpoints), which was removed (A-448, A-492), and
+> the files and browser suites it names that no longer exist are written as plain names below, not links. Current
+> payment behaviour: [implementation status](implementation-status.md); current evidence:
+> [verification](verification.md).
+
 This review covers the existing application and the requested product journeys:
 one-command local installation followed by browser setup, administration, per-currency
 payment intake, partial deposits and top-ups, order fulfillment, and encrypted
@@ -52,7 +58,7 @@ and fixtures are tracked in the repository.
 | `go vet ./...`, `go mod verify`, formatting | Passed |
 | Standard Playwright suite, real PostgreSQL + six preview browser/viewport configurations | 302 passed |
 | Follow-up PostgreSQL browser workflows | 15 passed across two runs: 14 existing cases, then the added seeded catalog/role/order case after correcting its selector |
-| `npm run test:e2e:wallet`, real app/DB + simulated production RPC adapters | 4 complete journeys passed in 42.2s: BTC/XMR partial/top-up/fulfillment/payout/reviews; funded dispute/encrypted staff contact/refund; paid cancellation/refund/stock restoration; automatic delivery/admin payout recovery |
+| the wallet browser journeys (npm script and spec since deleted), real app/DB + simulated production RPC adapters | 4 complete journeys passed in 42.2s: BTC/XMR partial/top-up/fulfillment/payout/reviews; funded dispute/encrypted staff contact/refund; paid cancellation/refund/stock restoration; automatic delivery/admin payout recovery |
 | Python helper/installer/hook tests | 28 passed |
 | `python3 scripts/test-install.py` | Real one-command Docker installation, wrong-token rejection, setup, onboarding, custom title, setup lockout, configuration preservation and restart persistence passed |
 | Production Docker image, internal and external PostgreSQL | Startup, setup, admin session, stylesheets, unavailable-wallet handling and signed audit export passed |
@@ -72,13 +78,13 @@ each Go test cleans up its own schema.
 ## Source and regression map
 
 - Recovery lock: [restore script](../scripts/restore.sh),
-  [payout sending](../internal/market/payments_watcher.go), and
-  [recovery regressions](../internal/market/review_recovery_integration_test.go).
+  payout sending (`internal/market/payments_watcher.go`, deleted), and
+  recovery regressions (`review_recovery_integration_test.go`, deleted).
 - Identity/factor corrections: [PGP factor](../internal/market/pgp_factor.go),
   [confirmation transaction](../internal/market/actions_auth.go), and
   [identity regressions](../internal/market/review_identity_integration_test.go).
 - Provider disappearance and deposit recovery:
-  [payment regressions](../internal/market/review_payment_recovery_test.go).
+  payment regressions (`review_payment_recovery_test.go`, deleted).
 - Vendor demotion: [listing creation](../internal/market/actions_listings.go) and
   [concurrency regressions](../internal/market/review_listing_demotion_test.go).
 - Preserved delivery: [order template](../web/templates/pages/order.html) and
@@ -86,8 +92,8 @@ each Go test cleans up its own schema.
 - Currency controls: [intake policy](../internal/market/payments_intake.go),
   [migration 052](../internal/market/migrations/052_payment_intake.sql), and
   [intake regressions](../internal/market/payments_intake_test.go).
-- Partial deposits: [Go lifecycle matrix](../internal/market/review_partial_payment_integration_test.go)
-  and [browser payment/dispute journeys](../tests/e2e/wallet-journey.spec.ts).
+- Partial deposits: Go lifecycle matrix (`review_partial_payment_integration_test.go`, deleted)
+  and browser payment/dispute journeys (a Playwright spec since deleted).
 - Dispute contacts: [staff access regression](../internal/market/dispute_contacts_integration_test.go)
   and [encrypted-message browser tests](../tests/e2e/db-pgp-messages.spec.ts).
 - Seeded discovery and role boundaries:
@@ -177,8 +183,8 @@ been exercised.
 
 The follow-up used signed, checksum-verified Bitcoin Core 31.1 and Monero
 0.18.5.1 binaries, separate disposable PostgreSQL databases, real application
-forms and locally mined test coins. The [reproducible guide](local-chain-testing.md)
-explains setup, browser execution and shutdown. No public-network test funds or
+forms and locally mined test coins. Its pooled-wallet guide and scripts were
+deleted; [real-chain escrow tests](local-chain-testing.md) lists the current ones. No public-network test funds or
 existing wallets were available; the user selected isolated local chains.
 
 | Check | Result |

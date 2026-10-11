@@ -342,6 +342,23 @@ the **upgraded** checkout: its `scripts/restore.sh` can restore into the interna
 
    Use a new file name each time, as `scripts/backup.sh` does, and delete the file if the command failed.
 
+6. Only after the rolled-back site is verified (sign-in works, a known order and message are present, a
+   fresh backup of `opsecmkt_rollback` restores) and you no longer want to roll forward, remove the abandoned
+   upgraded database. This cannot be undone and the upgraded data is not kept anywhere else, so take one more
+   encrypted backup of it first if there is any doubt. The command connects through the database you now run,
+   because PostgreSQL will not drop the database a session is connected to; the app is stopped, so nothing else
+   holds `opsecmkt`:
+
+   ```sh
+   docker compose exec -T db psql -U opsecmkt -d opsecmkt_rollback -c 'DROP DATABASE opsecmkt'
+   ```
+
+   With an external database, run the same statement as a user that may drop it, connected to the restored
+   database: `python3 scripts/postgres-tool.py RESTORED_DATABASE_URL psql -c 'DROP DATABASE opsecmkt'`. If it
+   answers that the database is being accessed by other users, stop whatever is connected and run it again.
+   Afterwards alpha.1's `scripts/backup.sh`, which always dumps `opsecmkt`, fails instead of dumping the wrong
+   database: keep using the direct backup command of step 5.
+
 ## 6. Backups now need the wallets too
 
 Once payments are on, the marketplace is custodial for test coins: the Bitcoin wallet lives in the
@@ -1762,12 +1779,10 @@ quotes, as the installer writes them). Blank values keep a feature off.
 | Key | What to put there |
 | --- | --- |
 | `AUDIT_SIGNING_KEY` | `openssl rand -hex 32` output. Enables signed audit exports; back it up with `.env`. |
-| `BITCOIN_CHAIN` | Leave blank to accept whichever test chain the node reports, or `testnet4` / `signet` / `regtest`. `main` configures mainnet (real funds; [operator guide](docs/operator-guide.md#mainnet)); mainnet is refused otherwise. See step 3 before setting it for a local node. |
-| `BITCOIN_WALLET` | Wallet name, default `opsecmkt`. |
+| `BITCOIN_CHAIN` | Leave blank to accept whichever test chain the node reports, or `testnet4` / `signet` / `regtest`. `main` (mainnet) and `testnet3` are refused with Bitcoin escrow on, and there is no mainnet opt-in in this build ([operator guide](docs/operator-guide.md#mainnet)). See step 3 before setting it for a local node. |
+| `BITCOIN_WALLET`, `BITCOIN_RPC_URL`, `MONERO_RPC_URL`, `MONERO_WALLET_RPC_URL` | Obsolete pooled-wallet settings: leave them blank. This build stops at startup, before the database opens, if any is set (sections 58 and 59). Escrow uses the `ESCROW_BTC_*` and `ESCROW_XMR_*` keys of the operator guide instead. |
 | `BITCOIN_RPC_AUTH` | Local `bitcoin` profile only: salted Core `rpcauth` verifier for user `marketplace` and the existing `BITCOIN_RPC_PASSWORD` (section 54). `upgrade` adds it for existing local-node installs; `check` refuses a missing or mismatched value. |
-| `MONERO_NETWORK` | Blank, `stagenet` or `testnet`; `mainnet` configures mainnet (a local node also needs `MONERO_NETWORK_FLAG=`). |
-| `MONERO_WALLET_RPC_URL` | monero-wallet-rpc URL with credentials, for example `http://marketplace:PASSWORD@monero-wallet:18083`. Blank keeps Monero payments off. A daemon URL alone (`MONERO_RPC_URL`, which alpha.1 wrote) does **not** enable them. |
-| `MONERO_WALLET_RPC_PASSWORD` | For the local `monero-wallet` service only: `openssl rand -hex 24` output, the same value as the password in `MONERO_WALLET_RPC_URL`. Compose refuses the `monero-wallet` profile without it (section 35). |
+| `MONERO_NETWORK` | Blank or `stagenet`; `mainnet` is refused with Monero escrow on. |
 | `PAYMENT_CONFIRMATIONS_BTC` / `PAYMENT_CONFIRMATIONS_XMR` | Defaults 3 and 10. |
 | `PAYMENT_POLL_INTERVAL` / `PAYMENT_EXPIRY` | Defaults `30s` and `24h`. |
 | `BITCOIN_MAX_TIP_AGE` | Default `2h` (30m to 24h): a public-network Bitcoin node whose tip is older counts as not synced (section 33). |
@@ -1779,8 +1794,8 @@ quotes, as the installer writes them). Blank values keep a feature off.
 | `CLAMD_ADDRESS` / `CLAMAV_IMAGE` | The malware scanner photo uploads need. Leave `CLAMD_ADDRESS` blank (uploads off) and `CLAMAV_IMAGE` at `clamav/clamav:1.5.4-debian`; `./scripts/install.sh add-scanner` turns the scanner on. See [Photo uploads and the malware scanner](docs/operator-guide.md#photo-uploads-and-the-malware-scanner). |
 | `DATABASE_CONNECT_TIMEOUT` / `MIGRATION_LOCK_TIMEOUT` / `MIGRATION_TIMEOUT` | Optional; leave blank for `15s`, `10m` and `10m`. Raise `MIGRATION_TIMEOUT` if your database is large; see [Migrations](docs/operator-guide.md#migrations). |
 
-For a local Monero node, also add `monero-wallet` to `COMPOSE_PROFILES` (for example
-`COMPOSE_PROFILES='internal-db,monero,monero-wallet'`). If you run the Tor onion mirror, add `mirror` there too
+For a local Monero node, add `monero` to `COMPOSE_PROFILES` (for example `COMPOSE_PROFILES='internal-db,monero'`; add
+`monero-escrow-wallet` only for Monero escrow, and never the removed `monero-wallet` profile). If you run the Tor onion mirror, add `mirror` there too
 (for example `COMPOSE_PROFILES='internal-db,mirror'`) instead of starting it with a `--profile mirror` option,
 which drops the other profiles for that command; without it in `.env`, `docker compose up -d` leaves the mirror
 out and Compose does not restart its Tor with the app. See
@@ -1811,7 +1826,7 @@ migration-106 drain-capable build before switching to this build**. Keep its
 wallet recovery, secrets and encrypted database backups. Pause new pooled intake,
 settle or record every payout, resolve deposit reviews, wait out address watch
 horizons, and clear recovery and address-collision gates following
-[the legacy drain procedure](docs/operator-guide.md#draining-the-pooled-wallet).
+the legacy drain procedure (section *Draining the pooled wallet* of that build's own `docs/operator-guide.md`, for example at commit `5a0dabcb`; this build's guide no longer carries it).
 Do not delete records or force migration 107 to bypass a blocker.
 
 After the drain succeeds, remove the obsolete `BITCOIN_RPC_URL`, `BITCOIN_WALLET`,
