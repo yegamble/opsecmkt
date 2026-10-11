@@ -54,7 +54,7 @@ func TestXMREscrowStartsBesideSyncingDaemon(t *testing.T) {
 	// /admin names the unchecked state with its class, the readiness line is not a plain "on", and no network is named
 	// before one was verified (QA4W4B-1).
 	alert, readiness := xmrAdminLines(t, x.adminPage())
-	unchecked := "the escrow daemon or wallet-rpc could not be checked (hard_fork_info daemon-syncing)"
+	unchecked := "the escrow daemon or wallet-rpc could not be checked at startup (hard_fork_info daemon-syncing)"
 	if !strings.Contains(alert, "Monero escrow not ready: "+unchecked) || !strings.Contains(alert, "ESCROW_XMR_DAEMON_URL") ||
 		!strings.Contains(readiness, "XMR escrow: on (not ready: "+unchecked+")") {
 		t.Fatalf("/admin beside a syncing daemon: alert %q, readiness %q", alert, readiness)
@@ -68,7 +68,7 @@ func TestXMREscrowStartsBesideSyncingDaemon(t *testing.T) {
 		t.Fatal("Monero escrow did not start once the daemon was synced at hard fork 16")
 	}
 	alert, readiness = xmrAdminLines(t, x.adminPage())
-	if alert != "" || !strings.HasPrefix(readiness, "<li>XMR escrow: on") || !strings.Contains(readiness, "intake: paused") {
+	if alert != "" || !strings.HasPrefix(readiness, "<li>XMR escrow: on") || !strings.Contains(readiness, "intake: escrow") {
 		t.Fatalf("/admin once Monero escrow is ready: alert %q, readiness %q", alert, readiness)
 	}
 }
