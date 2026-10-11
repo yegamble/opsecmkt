@@ -43,9 +43,8 @@
 <option value="XMR">{{.PriceXMR}} XMR{{if eq (index $.Settings "payment_intake_XMR") "false"}} — new payments paused{{else if eq (index $.Settings "payment_intake_XMR") "escrow"}} — escrow only{{end}}</option>{{end}}
 </select>
 </label>
-<p class="help">The listed price is recorded in your draft and refreshed from the listing when you request payment. A draft reserves no stock and requests no payment. From the order page you can then request a payment address, which works only when this server has a {{if $.LiveNetwork}}mainnet{{else}}test-network{{end}} wallet for that currency.</p>
-{{if or (eq (index $.Settings "payment_intake_BTC") "escrow") (eq (index $.Settings "payment_intake_XMR") "escrow")}}<p class="help">A currency marked escrow only is paid through escrow checkout on the order page, not a payment address from the market's wallet.</p>{{end}}
-{{if or (eq (index $.Settings "payment_intake_BTC") "false") (eq (index $.Settings "payment_intake_XMR") "false")}}<p class="help">Currencies marked paused can still be saved as unfunded drafts. New payment addresses are unavailable until the administrator enables them; existing deposits and payouts continue.</p>{{end}}
+<p class="help">The listed price is recorded in your unfunded draft. A draft reserves no stock and requests no payment. If an escrow checkout is available for this currency, open the order page to complete it; send nothing until that page shows the escrow address.</p>
+{{if or (eq (index $.Settings "payment_intake_BTC") "false") (eq (index $.Settings "payment_intake_XMR") "false")}}<p class="help">A paused currency still allows an unfunded draft. Its escrow checkout waits until the administrator enables it.</p>{{end}}
 <button class="primary" type="submit">Create unfunded draft <span class="action-icon">↗</span></button>
 </form>{{else}}<p class="order-unavailable" role="note">Neither BTC nor XMR is available for this listing. Review the currency and escrow reasons above.</p>{{end}}{{end}}{{end}}
 </section>

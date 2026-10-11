@@ -28,7 +28,7 @@ an archived listing opens by the order page's rule (A-164). */}}
 </ul>
 </div>{{end}}{{if $party}}<p class="order-unavailable" role="note">
 <strong>Unavailable.</strong> You are a party to this order; another moderator must resolve it.</p>{{else if ne $o.State "disputed"}}<p class="order-unavailable" role="note">
-<strong>Unavailable.</strong> This order is not in the Disputed state, so no outcome can be recorded.</p>{{else if and $o.Escrow (ne $.User.Role "admin")}}<p class="order-unavailable" role="note">
+<strong>Unavailable.</strong> This order is not in the Disputed state, so no outcome can be recorded.</p>{{else if not $o.Escrow}}<p class="order-unavailable" role="note"><strong>Historical dispute.</strong> This pooled order is read only. Contact the operator about its recorded state.</p>{{else if and $o.Escrow (ne $.User.Role "admin")}}<p class="order-unavailable" role="note">
 <strong>Unavailable.</strong> Only an administrator decides a dispute on a {{if eq $o.Currency "XMR"}}Monero escrow order ({{template "payment-status:xmr-net" $}}){{else}}Bitcoin escrow order ({{template "btc-escrow-chain" $.EscrowNet}}){{end}}: the decision moves coins from the escrow.</p>{{else}}<form class="stack" method="post" action="/resolve">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="form_nonce" value="{{formNonce "/resolve"}}">

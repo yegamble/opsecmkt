@@ -604,40 +604,8 @@ func (a *App) resolvePayouts(ctx context.Context, d *PageData) error {
 			d.DisputePayouts[v.ID] = p
 			continue
 		}
-		_, sum, _, err := a.payoutBasis(ctx, a.db, &o, false)
-		if err != nil {
-			return err
-		}
-		column := "payout_btc"
-		if o.Currency == "XMR" {
-			column = "payout_xmr"
-		}
-		state := map[string]string{}
-		rows, err := a.db.QueryContext(ctx, "SELECT id,"+column+"='',suspended_at IS NOT NULL FROM users WHERE id=$1 OR id=$2", o.BuyerID, o.VendorID)
-		if err != nil {
-			return err
-		}
-		for rows.Next() {
-			var id string
-			var noAddress, suspended bool
-			if err = rows.Scan(&id, &noAddress, &suspended); err != nil {
-				rows.Close()
-				return err
-			}
-			switch {
-			case suspended:
-				state[id] = "; account suspended: an administrator must check the address"
-			case noAddress:
-				state[id] = "; no payout address: the payout waits for one"
-			}
-		}
-		rows.Close()
-		if err = rows.Err(); err != nil {
-			return err
-		}
-		d.DisputePayouts[v.ID] = PayoutPreview{Seen: sum, Confirm: resolveConfirm,
-			Release: payoutStatement("release", o.Vendor, "the chosen party", a.netName(), &o, sum) + state[o.VendorID],
-			Refund:  payoutStatement("refund", o.Buyer, "the chosen party", a.netName(), &o, sum) + state[o.BuyerID]}
+		// Historical pooled disputes are retained for reading; no new payout outcome is offered.
+		continue
 	}
 	return nil
 }
@@ -1004,11 +972,7 @@ func previewDisputes(d *PageData) {
 		Opener: roleBuyer, ReplyRole: roleVendor, Reply: "Sample reply from the vendor.\nNothing was stored.", ReplyCreated: "Sample"}}, 1
 	d.DisputeOrders = map[string]Order{o.ID: o}
 	d.DisputeEvidence = map[string]*DisputeEvidence{"sample-dispute": {Buyer: []EvidenceHolder{{Handle: "sample_moderator", Count: 1, Latest: "Sample"}}}}
-	// A sample counted amount equal to the price; the sample buyer has no payout address.
-	sum, _ := parseAmount(o.Amount, currencyDecimals(o.Currency))
-	d.DisputePayouts = map[string]PayoutPreview{"sample-dispute": {Seen: sum, Confirm: resolveConfirm,
-		Release: payoutStatement("release", o.Vendor, "the chosen party", "test network", &o, sum),
-		Refund:  payoutStatement("refund", o.Buyer, "the chosen party", "test network", &o, sum) + "; no payout address: the payout waits for one"}}
+	d.DisputePayouts = map[string]PayoutPreview{}
 }
 
 // paymentReviewLimit caps the other (not open) flags on the moderation desk's payment-review list.
