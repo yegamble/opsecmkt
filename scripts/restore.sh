@@ -302,5 +302,5 @@ if [[ -n ${RESTORE_INTERNAL_DATABASE:-} ]]; then
 else
   echo 'Restored into the database named in RESTORE_DATABASE_URL. To switch the application to it, set DATABASE_URL in .env to that database, and point BACKUP_DATABASE_URL at the same database: external backups follow BACKUP_DATABASE_URL, not DATABASE_URL.'
 fi
-echo 'Database dumps do not contain the custodial wallets (bitcoin_data / monero_wallet volumes). A wallet restored from an older backup or seed hands out addresses this database has already issued, and payment requests then fail: restore the wallets and advance their address index before users return, as docs/testnet-runbook.md describes ("Restore the wallets").'
+echo 'Database dumps do not contain the escrow wallets (the escrow node'"'"'s arbiter and watch-only wallets, the escrow wallet-rpc volume). Restore any wallet that is lost or older than this database before the app starts, as docs/testnet-runbook.md describes ("Back up and restore the escrow arbiter and watch-only wallets"), then reconcile and clear the gate.'
 echo 'Run the app on this database with the .env from the same backup set: the SETUP_TOKEN in use when the backup was taken (without it TOTP secrets cannot be read) and the same AUDIT_SIGNING_KEY (else the audit-export public key changes); see docs/operator-guide.md, "Secrets, .env and onion identities".'

@@ -183,7 +183,7 @@ are reset from the host with `-reset-admin-password` and `-reset-admin-factors`
 | Guide | What it covers |
 | --- | --- |
 | [Operator guide](docs/operator-guide.md) | Deployment, HTTPS and Tor, mirrors, configuration, backups, recovery, troubleshooting |
-| [Test-network payments](docs/testnet-runbook.md) | Wallet setup, funding and payout recovery |
+| [Test-network payments](docs/testnet-runbook.md) | Escrow wallet backup and restore, restore reconciliation, clearing the recovery gate, and chain checks |
 | [Per-order escrow](docs/escrow.md) | The escrow design replacing the pooled wallet, what it will and will not protect, and its status (Phases 1 and 2: Bitcoin, digital and physical orders, regtest, signet or testnet4 (A-443; tested on regtest, a private signet and the recorded public signet smoke); Phase 3: custodial Monero, a local fakechain or stagenet (A-449; one public stagenet digital claim recorded, other public journeys unrun); all off by default) |
 | [Upgrading from v0.1.0-alpha.1](UPGRADING.md) | New settings and migration steps |
 | [Implementation status](docs/implementation-status.md) | What works, what is missing, and what the server keeps |

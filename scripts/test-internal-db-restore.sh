@@ -149,7 +149,7 @@ RESTORE_INTERNAL_DATABASE=opsecmkt_restored restore "$work/backup.dump.age" <<< 
 grep -q 'Created empty database opsecmkt_restored' "$work/restore.log"
 grep -q 'Held 4 restored payout(s)' "$work/restore.log"
 grep -q 'Marked 1 restored failed payout(s) as possibly sent' "$work/restore.log"
-grep -q 'do not contain the custodial wallets' "$work/restore.log"
+grep -q 'do not contain the escrow wallets' "$work/restore.log"
 grep -Eq "$images_line" "$work/restore.log"
 # The last line names the .env secrets a restored database needs (A-136).
 last_line=$(tail -n 1 "$work/restore.log")
