@@ -164,7 +164,7 @@ func orderPayoutLabel(state, payoutErr string, conflicted bool) string {
 		return "Held — a deposit is conflicted or missing; market staff review it"
 	}
 	if state == "held" {
-		return "Held — a deposit is re-confirming; released automatically once it confirms again"
+		return "Held — historical deposit confirmation needs operator review"
 	}
 	return payoutStateLabel(state)
 }
@@ -329,6 +329,7 @@ func paymentsAdminLoader(ctx context.Context, a *App, r *http.Request, d *PageDa
 				r.StateLabel = "Held: larger than the order price — review before releasing"
 			}
 		}
+		r.Error = "Historical wallet error; ask the operator to inspect the original record."
 		d.Payouts = append(d.Payouts, r)
 	}
 	if err = rows.Err(); err != nil {
@@ -361,7 +362,7 @@ func paymentsAdminLoader(ctx context.Context, a *App, r *http.Request, d *PageDa
 		}
 		// Keep heldReason as the stored watcher-recognition key (including historical rows), but display
 		// conditional recovery guidance instead of its old promise that every conflicted deposit returns.
-		r.Error = "A credited deposit is conflicted or below the confirmation threshold; the payment watcher can resume this payout only after every credited deposit reaches the confirmation threshold again. A conflicted or missing deposit that never recovers needs wallet reconciliation and manual review."
+		r.Error = "A credited deposit is conflicted or below the confirmation threshold; automatic payment monitoring has retired. The operator must reconcile the historical wallet and recorded payout state."
 	}
 	return nil
 }

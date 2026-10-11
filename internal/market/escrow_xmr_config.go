@@ -16,8 +16,7 @@ import (
 )
 
 // Monero escrow configuration and startup (WR-escrow Phase 3, P3-R2, P3-R4, P3-R13; A-449, P4-R15). ESCROW_XMR=on (off
-// by default) runs only against a local fakechain (monerod --regtest) or stagenet and its own monero-wallet-rpc, never
-// the pooled one. The daemon's network is pinned in settings (escrow_xmr_network, pinXMRNetwork): a database whose
+// by default) runs only against a local fakechain (monerod --regtest) or stagenet and its own monero-wallet-rpc, with an independent escrow wallet-rpc. The daemon's network is pinned in settings (escrow_xmr_network, pinXMRNetwork): a database whose
 // Monero escrows are on one network refuses a daemon on the other. With ESCROW_XMR off nothing here reads another
 // setting, opens a file, writes a setting or contacts a node.
 
@@ -69,7 +68,7 @@ type escrowXMRConfig struct {
 }
 
 // escrowXMRConfigFromEnv reads ESCROW_XMR (on/off, blank = off), ESCROW_XMR_WALLET_RPC_URL and ESCROW_XMR_DAEMON_URL
-// (both required; the wallet-rpc must not be MONERO_WALLET_RPC_URL's), ESCROW_XMR_FEE_BPS (0 to 10000, default 0)
+// (both required), ESCROW_XMR_FEE_BPS (0 to 10000, default 0)
 // and ESCROW_XMR_FEE_ADDRESS (needed above 0: a fakechain or stagenet standard address or subaddress with valid keys;
 // startEscrowXMR requires the daemon's network), ESCROW_XMR_SLOTS (5 to 200, default 20), ESCROW_XMR_MAX_FEE
 // (piconero, 1 to xmrMaxMaxFee, default xmrDefaultMaxFee), MONERO_MAX_TIP_AGE (parseMoneroMaxTipAge),
@@ -156,7 +155,7 @@ func escrowXMRConfigFromEnv(getenv func(string) string) (escrowXMRConfig, error)
 
 // sameRPCEndpoint reports whether two RPC URLs name the same endpoint, ignoring credentials, case in the scheme and
 // host, and a trailing slash. It compares spellings (localhost and 127.0.0.1 differ); startEscrowXMR backs it up by
-// refusing an escrow wallet-rpc whose open wallet is the pooled one (pooledXMRWalletOpen), since both may follow one
+// checking the escrow wallet-rpc network; legacy pooled RPC settings are rejected at startup, so
 // stagenet daemon (A-449).
 func sameRPCEndpoint(a, b string) bool {
 	norm := func(raw string) string {
@@ -320,6 +319,8 @@ func (x *escrowXMR) notReady() (state, remedy string) {
 		return words
 	}
 	switch s.line {
+	case xmrLogUnchecked:
+		return withClass("the escrow daemon or wallet-rpc could not be checked at startup"), "Check ESCROW_XMR_DAEMON_URL and ESCROW_XMR_WALLET_RPC_URL, then restart or wait for the next poll." + retried
 	case xmrLogNetwork:
 		return "the escrow daemon is not on the network this database's Monero escrows are on",
 			"Point ESCROW_XMR_DAEMON_URL and the escrow wallet-rpc back at a daemon on that network; a new network needs a new database." + retried
@@ -338,7 +339,7 @@ func (x *escrowXMR) notReady() (state, remedy string) {
 // contacted), the seed key pin (a mismatch clears canCreate: wallet creation only), the daemon (checkDaemon), the
 // network pin (pinXMRNetwork: a mismatch leaves Monero escrow disabled with xmrLogNetwork, writes nothing and makes no
 // wallet call; retried like an unreachable node), that ESCROW_XMR_FEE_ADDRESS is of the verified network, then the open
-// wallet (checkOpenWallet) and that it is not the pooled one (pooledXMRWalletOpen). Only then is the network type the
+// wallet (checkOpenWallet) before the network type is
 // adapter parses addresses for set, and escrow ready. It
 // reports the state as one of the fixed lines (xmrLogOn, with the network type as its class, when ready) with the
 // error class that caused it, or an error: an *xmrRefusal when a node answered but failed the network check

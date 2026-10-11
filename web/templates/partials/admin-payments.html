@@ -171,14 +171,14 @@ Check the escrow node: its peers (<code>getconnectioncount</code>), and with <co
 <p>None.</p>{{end}}{{end}}
 <h3 id="payment-intake">New escrow checkouts</h3>{{with $.NoticeIn "payment-intake"}}<div class="alert" role="status">{{.}}</div>{{end}}
 <p>Set each currency to escrow or paused. A paused currency accepts no new escrow checkout. Existing order history remains readable.</p>
-{{range $.EscrowReadiness.Coins}}{{$v := .Intake}}<div class="order-action">
+{{with $.EscrowReadiness}}{{range .Coins}}{{$v := .Intake}}<div class="order-action">
 <h4>{{.Currency}} intake: {{if eq $v "escrow"}}Escrow{{else}}Paused{{end}}</h4>
 <form class="stack" method="post" action="/admin/payment-intake">
 <input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="form_nonce" value="{{formNonce "/admin/payment-intake"}}"><input type="hidden" name="currency" value="{{.Currency}}">
 <fieldset><legend>New {{.Currency}} checkouts</legend>
 <label class="check"><input type="radio" name="enabled" value="escrow" required{{if eq $v "escrow"}} checked{{end}}> Escrow</label>
 <label class="check"><input type="radio" name="enabled" value="false" required{{if eq $v "false"}} checked{{end}}> Paused</label></fieldset>
-{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}<button type="submit">Save {{.Currency}} intake</button></form></div>{{end}}
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}<button type="submit">Save {{.Currency}} intake</button></form></div>{{end}}{{end}}
 <h3 id="escrow-readiness">Escrow readiness</h3>{{with $.EscrowReadiness}}
 <ul>{{range .Coins}}<li>{{.Currency}} escrow: {{if .EscrowOn}}on{{with .NotReady}} (not ready: {{.}}){{end}}{{else}}off{{end}}; intake: {{if eq .Intake "escrow"}}escrow{{else}}paused{{end}}.</li>{{end}}</ul>
 <p id="escrow-readiness-listings"><strong>{{.ListingCount}}</strong> active {{if eq .ListingCount 1}}listing cannot{{else}}listings cannot{{end}} use escrow in any coin.</p>{{if .Listings}}<ul>{{range .Listings}}<li><a href="/product?id={{.ID}}">{{.Title}}</a> ({{.Vendor}}): {{.Reason}}</li>{{end}}</ul>{{end}}

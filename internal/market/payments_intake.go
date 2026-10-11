@@ -1,7 +1,5 @@
 package market
 
-import "context"
-
 func init() {
 	registerAction("/admin/payment-intake", actionSpec{Roles: []string{"admin"}, OwnTx: true, ConfirmedFormNonce: true, Run: paymentIntakeAction})
 }
@@ -50,5 +48,3 @@ func lockPaymentIntake(c *actionCtx, currency string, _ intakeKind) error {
 	}
 	return fail(409, "New "+currency+" escrow checkouts are paused by the administrator.")
 }
-
-var _ = context.Background
