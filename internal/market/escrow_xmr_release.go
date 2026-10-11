@@ -201,16 +201,18 @@ const xmrResolveConfirm = "I checked the amount and who receives it for the outc
 // xmrDisputePreview is escrowDisputePreview for a Monero escrow order (A-405): the counted escrowed amount in XMR, the
 // transaction each outcome has the market build from the order's account, and the release requested at shipment.
 func (a *App) xmrDisputePreview(ctx context.Context, o *Order) (PayoutPreview, error) {
-	var sum int64
+	var sum, left int64
 	var release, final bool
-	if err := a.db.QueryRowContext(ctx, `SELECT COALESCE((SELECT sum(amount) FROM payments WHERE order_id=$1 AND confirmations>=0 AND NOT locked AND NOT after_close),0),
-		EXISTS(SELECT 1 FROM xmr_settlements WHERE order_id=$1 AND kind='release' AND state<>'superseded'),
-		EXISTS(SELECT 1 FROM xmr_settlements WHERE order_id=$1 AND kind='release' AND state<>'superseded' AND (tx_hash IS NOT NULL OR state='external'))`, o.ID).Scan(&sum, &release, &final); err != nil {
+	if err := a.db.QueryRowContext(ctx, escrowCountedSQL, o.ID).Scan(&sum, &left); err != nil {
 		return PayoutPreview{}, err
 	}
-	escrowed := a.escrowAmount(o, sum)
+	if err := a.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM xmr_settlements WHERE order_id=$1 AND kind='release' AND state<>'superseded'),
+		EXISTS(SELECT 1 FROM xmr_settlements WHERE order_id=$1 AND kind='release' AND state<>'superseded' AND (tx_hash IS NOT NULL OR state='external'))`, o.ID).Scan(&release, &final); err != nil {
+		return PayoutPreview{}, err
+	}
+	escrowed, fees := a.escrowAmount(o, sum), escrowReleaseFees(a.escrowExcess(o, sum-left))
 	p := PayoutPreview{Seen: sum, Confirm: xmrResolveConfirm,
-		Release: "Release to " + o.Vendor + ": the vendor claims the escrowed " + escrowed + " with a fresh address, and the market builds the release from this order's escrow account and sends it (less the market fee and the network fee; any amount paid above the price goes back to the buyer)",
+		Release: "Release to " + o.Vendor + ": the vendor claims the escrowed " + escrowed + " with a fresh address, and the market builds the release from this order's escrow account and sends it " + fees,
 		Refund:  "Refund to " + o.Buyer + ": the escrowed " + escrowed + ", less the network fee, go back to the buyer's refund address by a refund the market builds from this order's escrow account and sends",
 		Escrow:  "This is a Monero escrow order (" + a.xmrEscrowNetShort() + "): its coins are " + xmrCustody + ". The decision is paid from this order's escrow account by a transaction the market builds and sends: a refund goes to the buyer's refund address given at checkout; a release pays the address the vendor gave when marking the order shipped, or one the vendor gives afterwards to claim to. On its next pass after you resolve, the market sends the coins to the vendor or refunds the buyer, as you decide: this cannot be undone, and the decision cannot be changed once it is made."}
 	switch {
@@ -218,7 +220,7 @@ func (a *App) xmrDisputePreview(ctx context.Context, o *Order) (PayoutPreview, e
 		p.Release = "Release to " + o.Vendor + ": the release to the vendor already has its transaction, so the escrow pays the vendor"
 		p.Refund = "Refund to " + o.Buyer + ": refused, because the release to the vendor already has its transaction"
 	case release:
-		p.Release = "Release to " + o.Vendor + ": the release to the vendor requested when the order was shipped pays the escrowed " + escrowed + " to the address the vendor gave then (less the market fee and the network fee; any amount paid above the price goes back to the buyer)"
+		p.Release = "Release to " + o.Vendor + ": the release to the vendor requested when the order was shipped pays the escrowed " + escrowed + " to the address the vendor gave then " + fees
 		p.Refund += "; the release to the vendor requested when the order was shipped is cancelled"
 	}
 	return p, nil

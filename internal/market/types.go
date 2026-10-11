@@ -226,9 +226,10 @@ type PageData struct {
 	// DisputeEvidence: per open dispute a staff viewer is not party to, keyed by dispute id, whom each party messaged
 	// since it opened (A-162). Absent (nil) for everyone else.
 	DisputeEvidence map[string]*DisputeEvidence
-	// Overpaid: order page for its buyer or vendor, a paid, shipped or delivered order whose counted deposits
-	// exceed the price; nil otherwise.
-	Overpaid *OverpaidView
+	// Overpaid: order page for its buyer or vendor, an escrow order not settled yet (paid, shipped, delivered or
+	// disputed) holding more than the price: what a release and a refund do with the excess (escrowOverpaid, A-508);
+	// "" otherwise.
+	Overpaid string
 	// HistoryLimit: non-zero when closed history (resolved disputes, or completed/resolved/funded-cancelled
 	// vendor orders) was cut to this many most recent rows.
 	HistoryLimit int
@@ -266,7 +267,6 @@ type PageData struct {
 
 	// P5 Payments
 	Providers         []ProviderStatus
-	Payout            *PayoutView
 	PaymentsEnabled   bool
 	PaymentNetworks   string
 	LiveNetwork       bool   // payment providers are on mainnet: amounts are real funds
@@ -408,15 +408,14 @@ type PGPView struct {
 type OrderEvent struct{ From, To, Actor, Note, Created, Avatar string }
 type Transition struct {
 	To, Label, Action string         // Action "" = shown as unavailable with Label as the reason
-	Payout            *PayoutPreview // complete, and cancel of a paid order: the payout it queues
+	Payout            *PayoutPreview // cancel of an escrow order holding coins: the refund it requests
 }
 
-// PayoutPreview states what a form that queues a payout (complete, a cancel of a paid order or of an order
-// awaiting payment that has received a deposit, resolve)
-// pays now, by payoutBasis (A-161, A-122). Seen is that amount in atomic units, sent back as amount_seen;
-// Confirm labels the required confirmation checkbox. Resolve form only: Release and Refund state each outcome
-// (amount, recipient, difference from the price, the recipient's payout state); Escrow, when set, how a Monero escrow
-// order's decision is paid (xmrDisputePreview).
+// PayoutPreview states the settlement a form requests from an escrow (a cancel of an order holding coins, resolve;
+// A-161, A-122): Seen is the amount escrowSettleTerminal counts, in atomic units, sent back as amount_seen; Confirm
+// labels the required confirmation checkbox. Resolve form only: Release and Refund state each outcome's settlement
+// (escrowDisputePreview: amount, recipient, destination, what happens to an amount paid above the price); Escrow, when
+// set, how a Monero escrow order's decision is paid (xmrDisputePreview).
 type PayoutPreview struct {
 	Seen                             int64
 	Confirm, Release, Refund, Escrow string
@@ -429,16 +428,6 @@ type ConcessionPreview struct {
 
 type DisputePartyCounts struct{ Open, Closed, Withdrawn int }
 
-// OverpaidView says what completing an overpaid order does with the excess, from the split the complete form
-// states (splitPayout, A-215). Excess: "0.009 BTC". Kept: it goes to the vendor with the release, for Reason
-// (below the minimum automatic payout, or a legacy price below the release floor, A-216). Held: larger than the
-// price, so an administrator reviews its return (or, when Kept, the release) first. NoAddress: buyer's view of a
-// return only, no payout address saved in the order's currency. BelowFloor: the whole amount is too small to
-// send automatically.
-type OverpaidView struct {
-	Excess, Reason, BelowFloor string
-	Kept, Held, NoAddress      bool
-}
 type DeliveryView struct{ Content, Created string }
 type Review struct {
 	ID, OrderID, Buyer string
@@ -537,9 +526,8 @@ type VendorReadinessView struct {
 }
 
 type VendorCurrencyReadiness struct {
-	Currency, Intake, Provider, Escrow, Payout, Checkout string
-	PayoutNeeded, PayoutSaved                            bool
-	EscrowKeyRequired, EscrowKeyActive                   bool
+	Currency, Intake, Provider, Escrow, Checkout string
+	EscrowKeyRequired, EscrowKeyActive           bool
 }
 
 type ProviderStatus struct {
@@ -558,11 +546,6 @@ type ProviderStatus struct {
 	// since an administrator last dismissed the warning; AddressCollisionLast: when the latest one was refused.
 	AddressCollisions    int
 	AddressCollisionLast string
-}
-
-// PayoutView is the account page's saved payout addresses, kept from before escrow.
-type PayoutView struct {
-	BTC, XMR string
 }
 
 // P6 Transparency

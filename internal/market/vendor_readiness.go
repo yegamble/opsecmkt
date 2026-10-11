@@ -12,8 +12,8 @@ func init() {
 		d.VendorReadiness = &VendorReadinessView{
 			EncryptionUsable: true,
 			Currencies: []VendorCurrencyReadiness{
-				{Currency: "BTC", Intake: "Escrow", Escrow: "Available", PayoutSaved: true, EscrowKeyRequired: true, EscrowKeyActive: true, Checkout: "Available"},
-				{Currency: "XMR", Intake: "Escrow", Escrow: "Available", PayoutSaved: true, Checkout: "Available"},
+				{Currency: "BTC", Intake: "Escrow", Escrow: "Available", EscrowKeyRequired: true, EscrowKeyActive: true, Checkout: "Available"},
+				{Currency: "XMR", Intake: "Escrow", Escrow: "Available", Checkout: "Available"},
 			},
 		}
 	})
@@ -29,10 +29,6 @@ func loadVendorReadiness(ctx context.Context, a *App, _ *http.Request, d *PageDa
 		return err
 	}
 	v.EncryptionUsable = ok
-	var payoutBTC, payoutXMR string
-	if err := a.db.QueryRowContext(ctx, "SELECT payout_btc,payout_xmr FROM users WHERE id=$1", d.User.ID).Scan(&payoutBTC, &payoutXMR); err != nil {
-		return err
-	}
 	var btcKeyLayout string
 	if a.escrowConfigured {
 		err := a.db.QueryRowContext(ctx, `SELECT COALESCE((SELECT layout FROM user_escrow_keys WHERE user_id=$1 AND active_at IS NOT NULL),'')`, d.User.ID).Scan(&btcKeyLayout)
@@ -44,16 +40,16 @@ func loadVendorReadiness(ctx context.Context, a *App, _ *http.Request, d *PageDa
 	btcPerOrder := btcKeyActive && btcKeyLayout != "core"
 	btcEscrowAvailable := a.escrow.Load() != nil && btcKeyActive && (!btcPerOrder || (a.perOrderAvailable() && a.escrowSignerState() == signerReady))
 	v.Currencies = []VendorCurrencyReadiness{
-		vendorCurrencyReadiness(a, d, "BTC", payoutBTC, a.escrowConfigured, btcEscrowAvailable, a.escrowConfigured, btcKeyActive, btcPerOrder, a.escrowSignerState()),
-		vendorCurrencyReadiness(a, d, "XMR", payoutXMR, a.escrowXMR != nil, a.xmrEscrowReady(), false, false, false, ""),
+		vendorCurrencyReadiness(a, d, "BTC", a.escrowConfigured, btcEscrowAvailable, a.escrowConfigured, btcKeyActive, btcPerOrder, a.escrowSignerState()),
+		vendorCurrencyReadiness(a, d, "XMR", a.escrowXMR != nil, a.xmrEscrowReady(), false, false, false, ""),
 	}
 	d.VendorReadiness = v
 	return nil
 }
 
-func vendorCurrencyReadiness(a *App, d *PageData, currency, payout string, escrowOn, escrowReady, hasEscrowKey, escrowKeyActive, perOrder bool, signerState string) VendorCurrencyReadiness {
+func vendorCurrencyReadiness(a *App, d *PageData, currency string, escrowOn, escrowReady, hasEscrowKey, escrowKeyActive, perOrder bool, signerState string) VendorCurrencyReadiness {
 	mode := d.Settings[paymentIntakeKey(currency)]
-	v := VendorCurrencyReadiness{Currency: currency, PayoutSaved: payout != "", EscrowKeyActive: escrowKeyActive}
+	v := VendorCurrencyReadiness{Currency: currency, EscrowKeyActive: escrowKeyActive}
 	if mode == intakeEscrow {
 		v.Intake = "Escrow"
 	} else {
@@ -84,7 +80,6 @@ func vendorCurrencyReadiness(a *App, d *PageData, currency, payout string, escro
 		}
 	}
 	v.EscrowKeyRequired = hasEscrowKey && mode == intakeEscrow
-	v.Payout = "Legacy pooled payout addresses are retained as history"
 	if mode != intakeEscrow {
 		v.Checkout = "No current checkout: intake is paused"
 	} else if escrowReady {

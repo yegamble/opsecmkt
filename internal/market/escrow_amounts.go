@@ -8,27 +8,28 @@ import (
 // Terminal escrow transitions request their settlement inside the order transaction.
 func init() { registerTransitionHook(paymentsTransitionHook) }
 
-// Minimum payouts (A-99, A-232), in atomic units: the smallest output an escrow settlement pays (payoutFloor, used by
-// planSettlement and the Monero settlement), and the lowest listing price (validateListing). The network fee is taken
-// from the amount, and the floors keep the fee from swallowing it.
+// Minimum outputs (A-99, A-232), in atomic units: the smallest output an escrow settlement pays (payoutFloor, used by
+// planSettlement, planXMRSettlement and the fee bumps), and the lowest listing price (validateListing). The network fee
+// is taken from the claimant's output, and the floors keep the fee from swallowing it.
 //
-// minPayoutBTC applies to every Bitcoin output (release, refund or return). An amount at or below the fee can never be
-// sent: on regtest a 3,000-satoshi output came out 6 satoshi negative after the fee while 5,000 was sent. 10,000
-// satoshi (0.0001 BTC) clears that fee about three times over. It removes the never-sendable class, not every failure:
-// fees move. Listings cannot be priced below it in BTC (validateListing).
+// minPayoutBTC applies to every Bitcoin escrow output (release, refund, stray refund, market fee or return of an
+// overpayment). An amount at or below the fee can never be sent: on regtest a 3,000-satoshi output came out 6 satoshi
+// negative after the fee while 5,000 was sent. 10,000 satoshi (0.0001 BTC) clears that fee about three times over. It
+// removes the never-sendable class, not every failure: fees move. Listings cannot be priced below it in BTC
+// (validateListing).
 //
-// minPayoutXMR applies to every Monero payout (release, refund or return; A-232 made releases fee-deducted too,
-// matching Bitcoin). A Monero transfer costs very roughly 0.00003-0.0001 XMR in fees at the default priority (more
-// for one spending many small outputs), and below 0.001 XMR the fee would take several percent of the amount or
-// more, so such a payout is left to staff and such an excess goes to the vendor with the release (splitPayout).
-// Listings cannot be priced below it in XMR (validateListing).
+// minPayoutXMR applies to every Monero escrow output (release, refund, stray refund, market fee or return of an
+// overpayment; A-232 made releases fee-deducted too, matching Bitcoin). A Monero transfer costs very roughly
+// 0.00003-0.0001 XMR in fees at the default priority (more for one spending many small outputs), and below 0.001 XMR the
+// fee would take several percent of the amount or more, so a market fee or overpayment below it is added to the
+// vendor's output (planXMRSettlement). Listings cannot be priced below it in XMR (validateListing).
 const (
 	minPayoutBTC = 10000      // 0.0001 BTC
 	minPayoutXMR = 1000000000 // 0.001 XMR
 )
 
-// payoutFloor is the smallest payout of kind ("release", "refund" or "return") in currency. The floor is the same for
-// every kind.
+// payoutFloor is the smallest escrow output of a settlement of kind ("release", "refund" or "stray_refund") in
+// currency. The floor is the same for every kind.
 func payoutFloor(currency, kind string) int64 {
 	switch currency {
 	case "BTC":
@@ -39,15 +40,6 @@ func payoutFloor(currency, kind string) int64 {
 	return 0
 }
 
-// belowFloor states that a payout of sum is not sent automatically, or returns "" when sum reaches the floor.
-func belowFloor(currency, kind string, sum int64) string {
-	floor := payoutFloor(currency, kind)
-	if sum <= 0 || sum >= floor {
-		return ""
-	}
-	return "below the minimum automatic payout of " + amount(floor, currencyDecimals(currency)) + " " + currency
-}
-
 func paymentsTransitionHook(ctx context.Context, a *App, tx *sql.Tx, o *Order, from, to string) error {
 	if !o.Escrow || !isTerminal(to) {
 		return nil
@@ -55,8 +47,8 @@ func paymentsTransitionHook(ctx context.Context, a *App, tx *sql.Tx, o *Order, f
 	return a.escrowSettleTerminal(ctx, tx, o)
 }
 
-// payoutSeen is the counted amount an actor confirmed for one order's payout (the form's amount_seen). Only the
-// resolve, complete and paid-cancel actions set it (withPayoutSeen); the watcher's calls carry none.
+// payoutSeen is the counted amount an actor confirmed for one order's settlement (the form's amount_seen). Only the
+// resolve, concede, complete and cancel actions set it (withPayoutSeen); the watcher's calls carry none.
 type payoutSeen struct {
 	orderID string
 	amount  int64
@@ -68,7 +60,7 @@ func withPayoutSeen(ctx context.Context, orderID string, amount int64) context.C
 	return context.WithValue(ctx, payoutSeenKey{}, payoutSeen{orderID, amount})
 }
 
-// checkPayoutSeen refuses (409) a payout of sum for o when the actor confirmed a different amount; the action's
+// checkPayoutSeen refuses (409) a settlement of sum for o when the actor confirmed a different amount; the action's
 // transaction then rolls back, so the order and any dispute stay as they were.
 func checkPayoutSeen(ctx context.Context, o *Order, sum int64) error {
 	if seen, ok := ctx.Value(payoutSeenKey{}).(payoutSeen); ok && seen.orderID == o.ID && seen.amount != sum {
@@ -95,63 +87,47 @@ type rowsQuerier interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }
 
-// countedDeposits is the sum of o's deposits that count toward its price on the forms that state an amount (the
-// complete, paid-cancel and concession forms of an order without escrow): credited deposits, even if now conflicted,
-// except locked (unlock_time) transfers, deposits first recorded after the order closed (payments.after_close, A-211)
-// and deposits staff recorded as refunded by hand (A-31: payments.disposition).
-func countedDeposits(ctx context.Context, q rowsQuerier, o *Order) (sum int64, err error) {
-	rows, err := q.QueryContext(ctx, "SELECT amount FROM payments WHERE order_id=$1 AND credited AND NOT locked AND NOT after_close AND disposition<>'refunded'", o.ID)
-	if err != nil {
-		return 0, err
+// escrowCountedSQL sums an escrow order's deposits as escrowSettleTerminal counts them (the amount_seen its forms state,
+// checkPayoutSeen), and those of them left out (escrow_left_out), which a release or refund does not spend and a stray
+// refund returns. A deposit to a shape-(b) escrow's sibling address is never the order's (A-456a).
+const escrowCountedSQL = `SELECT COALESCE(sum(amount),0),COALESCE(sum(amount) FILTER (WHERE escrow_left_out),0) FROM payments
+	WHERE order_id=$1 AND confirmations>=0 AND NOT locked AND NOT after_close
+	AND NOT (escrow_left_out AND EXISTS (SELECT 1 FROM escrow_siblings s WHERE s.address=payments.address))`
+
+// escrowExcess (A-508) states what a release of an escrow order's deposits (sum: those the release spends) does with
+// the amount above the price, as planSettlement and planXMRSettlement build it, or "" when sum is not above the price:
+// the excess is its own output of the release, paid in full to the buyer's refund address (the network fee comes from
+// the vendor's output alone), unless it is below the minimum output (payoutFloor), when the release adds it to the
+// vendor's output. A refund needs no such clause: it returns everything to the buyer's refund address.
+func (a *App) escrowExcess(o *Order, sum int64) string {
+	dec := currencyDecimals(o.Currency)
+	required, _ := parseAmount(o.Amount, dec)
+	if sum <= required {
+		return ""
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var amt int64
-		if err = rows.Scan(&amt); err != nil {
-			return 0, err
-		}
-		sum += amt
+	excess := "the " + a.escrowAmount(o, sum-required) + " paid above the price"
+	if floor := payoutFloor(o.Currency, "release"); sum-required < floor {
+		return excess + " is below the minimum output of " + amount(floor, dec) + " " + o.Currency + ", so the release adds it to the vendor's output"
 	}
-	return sum, rows.Err()
+	return excess + " goes back in full to the buyer's refund address, as its own output of the release"
 }
 
-type payoutPart struct {
-	kind, recipient, who string
-	amount               int64
-	large                bool
-}
-
-// splitPayout divides an order's counted sum (countedDeposits) into its payouts. A refund returns the whole sum to the
-// buyer. A release pays the vendor exactly the price and returns the excess to the buyer as a separate payout,
-// unless the excess is below the minimum automatic payout (it then goes to the vendor with the release: sending
-// dust back costs more than it is worth and invites fee abuse) or the price itself is below the release floor. A
-// refund or return larger than the order price is marked large, a likely mistake an administrator checks first. The
-// bound is the price: a refund of up to the price (and a return of an excess up to the price, so a payment of up to
-// twice the price) needs no review.
-//
-// A price below the release floor exists only on listings priced before the listing floor applied (Bitcoin before
-// A-99, Monero before A-232; new orders on them are refused, A-216, A-232). The vendor's share alone would be below
-// the floor, so the whole sum stays one release; when its excess is more than the price, that release is marked
-// large too, so the buyer's overpayment is not paid to the vendor without an administrator's review.
-func splitPayout(kind string, o *Order, sum, required int64) []payoutPart {
-	if kind == "refund" {
-		return []payoutPart{{kind: "refund", recipient: o.BuyerID, who: "buyer", amount: sum, large: sum > required}}
+// escrowOverpaid (A-508) is the order page's notice for an escrow order whose coins are not settled yet (paid, shipped,
+// delivered or disputed) and that holds more than the price: what a release and a refund each do with the excess
+// (escrowExcess). It is "" for any other order.
+func (a *App) escrowOverpaid(ctx context.Context, o *Order) (string, error) {
+	if !o.Escrow || o.State != statePaid && o.State != stateShipped && o.State != stateDelivered && o.State != stateDisputed {
+		return "", nil
 	}
-	excess := sum - required
-	if belowFloor(o.Currency, "release", required) != "" {
-		return []payoutPart{{kind: "release", recipient: o.VendorID, who: "vendor", amount: sum, large: excess > required}}
+	var sum, left int64
+	if err := a.db.QueryRowContext(ctx, escrowCountedSQL, o.ID).Scan(&sum, &left); err != nil {
+		return "", err
 	}
-	if excess <= 0 || belowFloor(o.Currency, "return", excess) != "" {
-		return []payoutPart{{kind: "release", recipient: o.VendorID, who: "vendor", amount: sum}}
+	back := a.escrowExcess(o, sum-left)
+	if back == "" {
+		return "", nil
 	}
-	return []payoutPart{
-		{kind: "release", recipient: o.VendorID, who: "vendor", amount: required},
-		{kind: "return", recipient: o.BuyerID, who: "buyer", amount: excess, large: excess > required},
-	}
-}
-
-// subFloorPriceExcess says why a release whose price is below the release floor (A-216) keeps the excess.
-func subFloorPriceExcess(currency string) string {
-	return "the price is below the minimum automatic payout of " + amount(payoutFloor(currency, "release"), currencyDecimals(currency)) + " " + currency +
-		", so the amount paid over it cannot be returned separately"
+	required, _ := parseAmount(o.Amount, currencyDecimals(o.Currency))
+	return "This escrow holds " + a.escrowAmount(o, sum-left-required) + " more than the price. On a release to the vendor, " + back +
+		". A refund instead returns everything in this escrow (" + a.escrowAmount(o, sum-left) + "), less the network fee, to the buyer's refund address.", nil
 }

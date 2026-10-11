@@ -66,14 +66,14 @@
 <dt>PGP sign-in verification</dt>
 <dd>{{with $.PGP}}{{if .TwoFactor}}Enabled{{else if .Verified}}Off{{else if .HasKey}}Requires a verified key{{else}}No key saved{{end}}{{else}}Not available{{end}}</dd>
 </div>
-{{template "account-payout" $}}{{with $.EscrowKey}}
+{{with $.EscrowKey}}
 <div>
 <dt>Bitcoin escrow key</dt>
 <dd>{{if not .Available}}Unavailable{{else if .Unreadable}}Unreadable: register it again{{else if .ActiveAt}}Active since {{.ActiveAt}}{{else if .Registered}}Inactive{{else}}Not registered{{end}}{{if and .Available .Registered (not .Unreadable) .PerOrder}} (per-order wallet){{end}} · <a class="text-link" href="/escrow-key">Manage</a></dd>
 </div>{{end}}
 </dl>
 <p>Use a unique password. Never share private keys or recovery phrases.</p>
-</div>{{template "account-security:panel" $}}{{template "account-payout:panel" $}}
+</div>{{template "account-security:panel" $}}
 <section class="panel" aria-labelledby="account-sign-ins">
 <h2 id="account-sign-ins">Last five sign-ins</h2>
 <ol class="order-timeline">{{range $.RecentSignIns}}<li>

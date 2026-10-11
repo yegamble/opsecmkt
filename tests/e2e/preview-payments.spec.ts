@@ -15,7 +15,8 @@ test('preview pages state that payments are disabled', async ({ page }) => {
   await page.goto('/checkout?id=encrypted-drive');
   await expect(page.locator('main')).toContainText('A draft reserves no stock and requests no payment.');
   await page.goto('/account');
-  await expect(page.locator('main')).toContainText('Historical payout addresses');
+  // A-508: the saved pooled payout addresses are no longer read or shown.
+  await expect(page.locator('main')).not.toContainText('payout address');
   await expect(page.getByLabel('Bitcoin payout address')).toHaveCount(0);
   await page.goto('/admin');
   const providers = page.locator('.admin-payments');

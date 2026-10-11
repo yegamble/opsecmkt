@@ -19,6 +19,15 @@ var pooledRemovedPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`\b(sendtoaddress|getnewaddress|create_address|sendmany)\b`),
 	regexp.MustCompile(`Pooled[A-Z]`),
 	regexp.MustCompile(`\b(enqueuePayout|sendPayouts|settleOrder|payAction)\b`),
+	// A-508: the pooled payout preview (a release/return split with an administrator's review and a minimum automatic
+	// payout, paid to the saved payout address) and every reader of the saved payout addresses. Escrow settlements pay
+	// the claim and refund addresses (escrowExcess, escrowDisputePreview); users.payout_btc and payout_xmr stay as
+	// columns only (migrations are immutable).
+	regexp.MustCompile(`\b(orderPayouts|payoutStatement|splitPayout|payoutPart|subFloorPriceExcess|countedDeposits|OverpaidView|PayoutView|NoAddress)\b|\bbelowFloor\(`),
+	regexp.MustCompile(`\bpayout_(btc|xmr)\b`),
+	// QA59b: pooled readers A-492 deleted (pooledOnly is now buyerCompleteRefused, payoutBasis countedDeposits, itself
+	// deleted by A-508).
+	regexp.MustCompile(`\b(paymentsOrderLoader|unsentPayouts|unsentPayoutsLoader|payoutStateLabel|orderPayoutLabel|recipientPayout|PayoutRow|payoutBasis|pooledOnly|hidePooled)\b`),
 }
 
 // pooledRemovedAllowed: the one pattern a file may match, by path.
@@ -98,10 +107,31 @@ func TestPooledRemovedGuardCatchesEachPattern(t *testing.T) {
 		`a.sendPayouts(ctx)`,
 		`a.settleOrder(ctx, o)`,
 		`registerAction("/orders/pay", actionSpec{Run: payAction})`,
+		`parts := splitPayout("release", o, sum, required)`,
+		`Confirm: payoutStatement("refund", o.Buyer, "the buyer", a.netName(), o, sum)`,
+		`if err = a.orderPayouts(ctx, d); err != nil {`,
+		`sum, err := countedDeposits(ctx, a.db, o)`,
+		`v.Held, v.Reason = true, subFloorPriceExcess(o.Currency)`,
+		`if below := belowFloor(o.Currency, kind, sum); below != "" {`,
+		`Overpaid *OverpaidView`,
+		`{{if .NoAddress}}`,
+		`d.Payout = &PayoutView{}`,
+		`a.db.QueryRowContext(ctx, "SELECT payout_btc,payout_xmr FROM users WHERE id=$1", id)`,
+		`column := "payout_xmr"`,
+		`registerLoader("order", paymentsOrderLoader)`,
+		`rows, err := unsentPayouts(ctx, a.db, u.ID)`,
+		`registerLoader("account", unsentPayoutsLoader)`,
+		`v.State = payoutStateLabel(p.State)`,
+		`{{orderPayoutLabel .}}`,
+		`p := recipientPayout(o)`,
+		`var rows []PayoutRow`,
+		`sum, err := payoutBasis(ctx, tx, o)`,
+		`if pooledOnly[[3]string{o.State, to, r}] {`,
+		`if hidePooled(ctx, a, o) {`,
 	} {
 		for _, path := range []string{"internal/market/payments.go", "web/templates/pages/admin.html", "internal/market/config.go"} {
 			got := pooledRemovedFindings(map[string]string{path: "ok\n" + line})
-			if path == "internal/market/config.go" && strings.Contains(line, "Pooled") {
+			if path == "internal/market/config.go" && regexp.MustCompile(pooledRemovedAllowed[path]).MatchString(line) {
 				if len(got) != 0 { // config.go's one allowed pattern
 					t.Errorf("%s in %s: %v, want none", line, path, got)
 				}
@@ -116,6 +146,10 @@ func TestPooledRemovedGuardCatchesEachPattern(t *testing.T) {
 		`SELECT count(*) FROM payouts`,
 		`UPDATE payments SET flagged=true`,
 		`errShipPlainForm`,
+		`var credited, locked, regressed, belowFloor, escrow, outside, counted, leftOut bool`,
+		`ADD COLUMN IF NOT EXISTS payout_btc_changed timestamptz`,
+		`back := a.escrowExcess(o, sum-left)`,
+		`floor := payoutFloor("XMR", s.Kind)`,
 	} {
 		path := "internal/market/escrow_watch.go"
 		if strings.Contains(clean, "refuseObsoletePooledEnv") {

@@ -263,7 +263,7 @@ test('Monero escrow: checkout with the custody copy, funding at 9 and 10 confirm
   await expect(badge(buyer)).toHaveText('Awaiting payment');
   await shot(buyer, info, '08-underpaid');
   const cancel = buyer.locator('form', { has: buyer.getByRole('button', { name: 'Cancel order' }) });
-  await expect(cancel).toContainText('Cancelling refunds the 0.2 XMR in this escrow, less the network fee, to the buyer\'s refund address given at checkout.');
+  await expect(cancel).toContainText('Cancelling refunds the 0.2 fakechain XMR in this escrow, less the network fee, to the buyer\'s refund address given at checkout.');
   await check(buyer, cancel.locator('input[name="payout_confirmed"]'));
   expect(await pressSubmit(buyer, cancel.getByRole('button', { name: 'Cancel order' }))).toBe(303);
   await expect(badge(buyer)).toHaveText('Cancelled');

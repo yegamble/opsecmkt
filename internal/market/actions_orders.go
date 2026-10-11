@@ -75,8 +75,8 @@ func orderDraftAction(c *actionCtx) (actionResult, error) {
 
 // subFloorListing refuses an order in currency on a listing priced below that currency's payout floor (A-216 for
 // Bitcoin, A-232 for Monero). validateListing refuses such prices (Bitcoin since A-99, Monero since A-232), but a
-// listing priced earlier keeps its price: its release would never be sent automatically and an overpayment on it
-// could not be returned separately (splitPayout).
+// listing priced earlier keeps its price: an escrow release of it would leave the vendor an output below the floor,
+// which planSettlement and the Monero settlement refuse.
 func subFloorListing(currency string, otherPrice int64) string {
 	coin, other := "Bitcoin", "XMR"
 	otherCurrency := "XMR"
