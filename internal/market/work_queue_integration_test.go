@@ -1,7 +1,9 @@
 package market
 
 import (
+	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -136,6 +138,85 @@ func TestVendorDeskListsEveryActiveOrderByLastChangeAndCapsOnlyTerminalHistory(t
 	}
 	if strings.Contains(w.page("/disputes", w.other, 200), `<option value="`+shippedOld+`">`) {
 		t.Fatal("unrelated buyer sees another buyer's dispute choice")
+	}
+}
+
+// A-494 / A-507: the vendor desk's history cap turns on the number of terminal orders of every kind together
+// (completed, resolved and cancelled with an escrow or a payment), counted exactly against historyLimit and without
+// the buyer-side abandoned drafts. No single kind exceeds the limit here, so a count that left one kind out or
+// admitted the drafts, or that compared with >= , gives a different answer at 100 or 101.
+func TestVendorDeskHistoryCapCountsEveryTerminalKindAtTheLimit(t *testing.T) {
+	w := newOrderWorld(t)
+	product := w.e.product(w.vendorID, "physical")
+	// Terminal order g is completed (g%3=1), resolved (2) or cancelled with a payment (0); a higher g changed later.
+	terminals := func(from, to int) {
+		t.Helper()
+		agExec(w.e, `INSERT INTO orders(id,buyer_id,product_id,currency,amount,state,created,updated)
+			SELECT 'term-'||lpad(g::text,3,'0'),$1,$2,'BTC',100000,
+			  CASE g%3 WHEN 1 THEN 'completed' WHEN 2 THEN 'resolved' ELSE 'cancelled' END,
+			  now()-interval '1 day', now()-interval '1 day'+g*interval '1 second' FROM generate_series($3::int,$4::int) g`,
+			w.buyerID, product, from, to)
+		agExec(w.e, `INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations)
+			SELECT id,'BTC',encode(sha256(convert_to(id,'UTF8')),'hex'),0,'bcrt1qterm'||right(id,3),100000,3
+			FROM orders WHERE id LIKE 'term-%' AND state='cancelled' AND id NOT IN (SELECT order_id FROM payments)`)
+	}
+	listed := func() (ids []string, limit int) {
+		t.Helper()
+		d := &PageData{Page: "vendor-dashboard", User: w.e.loadUser(w.vendorID), Settings: map[string]string{}}
+		if err := loadIncomingOrders(t.Context(), w.e.A, httptest.NewRequest("GET", "/vendor", nil), d); err != nil {
+			t.Fatal(err)
+		}
+		for _, o := range d.IncomingOrders {
+			ids = append(ids, o.ID)
+		}
+		return ids, d.HistoryLimit
+	}
+	const note = "Showing the 100 most recent completed, resolved or funded-cancelled orders as history"
+	active := []string{
+		w.e.order(w.buyerID, product, "BTC", statePaid),
+		w.e.order(w.buyerID, product, "BTC", stateShipped),
+		w.e.order(w.buyerID, product, "BTC", stateAwaitingPayment),
+	}
+	// Abandoned drafts (cancelled, no escrow, no payment) are not customer work: they neither show nor count.
+	var abandoned []string
+	for range 5 {
+		abandoned = append(abandoned, w.e.order(w.buyerID, product, "BTC", stateCancelled))
+	}
+
+	// Exactly historyLimit terminal orders of three kinds: everything is listed, nothing is announced as cut.
+	terminals(1, historyLimit)
+	ids, limit := listed()
+	if limit != 0 || len(ids) != historyLimit+len(active) || !sameOrders(slices.DeleteFunc(slices.Clone(ids), func(id string) bool { return !strings.HasPrefix(id, "term-") }), agStrings(t, w.e, "SELECT id FROM orders WHERE id LIKE 'term-%'")) {
+		t.Fatalf("at the limit: HistoryLimit=%d, %d orders listed, want 0 and %d", limit, len(ids), historyLimit+len(active))
+	}
+	for _, id := range append(slices.Clone(active), "term-001", "term-100") {
+		if !slices.Contains(ids, id) {
+			t.Fatalf("at the limit the desk lost %s", id)
+		}
+	}
+	for _, id := range abandoned {
+		if slices.Contains(ids, id) {
+			t.Fatalf("an abandoned draft %s is listed on the vendor desk", id)
+		}
+	}
+	if body := w.page("/vendor-dashboard", w.vendor, 200); strings.Contains(body, note) || !strings.Contains(body, "term-001") {
+		t.Fatal("the desk announced a history cut at exactly the limit, or lost the oldest order")
+	}
+
+	// One more terminal order tips it over: the oldest of the 101 is dropped, active work is untouched and the cut is announced.
+	terminals(historyLimit+1, historyLimit+1)
+	ids, limit = listed()
+	if limit != historyLimit || len(ids) != historyLimit+len(active) || slices.Contains(ids, "term-001") || !slices.Contains(ids, "term-101") {
+		t.Fatalf("over the limit: HistoryLimit=%d, %d orders listed, term-001 listed=%v, term-101 listed=%v; want %d, %d, false, true",
+			limit, len(ids), slices.Contains(ids, "term-001"), slices.Contains(ids, "term-101"), historyLimit, historyLimit+len(active))
+	}
+	for _, id := range active {
+		if !slices.Contains(ids, id) {
+			t.Fatalf("the history cap dropped active order %s", id)
+		}
+	}
+	if body := w.page("/vendor-dashboard", w.vendor, 200); !strings.Contains(body, note) || strings.Contains(body, "term-001") || !strings.Contains(body, "term-101") {
+		t.Fatal("the over-limit desk does not announce the cut or keeps the wrong end of the history")
 	}
 }
 
