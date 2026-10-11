@@ -1,82 +1,9 @@
-{{/* P5 Payments owns. Payment panel heading and body on the order page. Addresses, amounts and confirmations come only from a live provider and the payments ledger. */}}
-{{define "order-payment"}}{{with .Payment}}{{if and (eq $.OrderViewer "buyer") .BuyerNeedsPayoutAddress}}<p class="help">You have no {{.Currency}} payout address saved. If this order later needs a pooled refund or return, it cannot be sent until you save one on <a class="text-link" href="/account#payout">your payout settings</a>.</p>{{end}}
-{{if .Monitored}}<h2>Payment {{if $.LiveNetwork}}<span class="badge live">MAINNET</span>{{else}}<span class="badge testnet">TESTNET {{.Network}}</span>{{end}}</h2>
-{{if eq .Currency "BTC"}}<p class="help">Bitcoin deposit addresses and transaction IDs are publicly traceable. Only the buyer and market staff see this pooled payment's identifiers.</p>{{end}}
-{{if .Open}}{{if eq $.OrderViewer "vendor"}}<p class="help">The buyer's pooled deposit address is private. You can follow the amount, confirmations and payment status below. If the order is still unpaid or short at {{.CancelAfter}}, it can be cancelled{{if .ConfirmationWait}}: a deposit is still waiting for confirmations, and later top-ups do not extend this fixed confirmation wait. Unconfirmed deposits are not paid out on cancellation; a later confirmation is refunded only if no payout was already queued, otherwise market staff review it. Anything sent after cancellation is not refunded automatically{{else}}; this time moves when the wallet observes a new deposit, which may be later than when it was sent; anything sent after cancellation is not refunded automatically{{end}}.{{if .NeedsTopUp}} If it is cancelled, its confirmed deposits are refunded to the buyer's saved {{.Currency}} payout address (the refund waits until one is saved); if together they are below the minimum automatic payout of {{.RefundFloor}} {{.Currency}}, they are not refunded automatically and market staff are notified.{{end}}</p>{{else}}{{if eq $.OrderViewer "moderator"}}<p class="help">Deposit address issued to the buyer for this order. Read-only moderator view.</p>{{else}}<p class="help">{{if .NeedsTopUp}}Send <strong>{{.Remaining}} {{.Network}}{{if not $.LiveNetwork}} test{{end}} {{.Currency}}</strong> to this address. If you already made a partial payment, top up only this remaining amount using the same address.{{else}}The full required amount has been seen. Do not send another payment; wait for confirmation.{{end}} If the order is still unpaid or short at {{.CancelAfter}}, it can be cancelled{{if .ConfirmationWait}}: a deposit is still waiting for confirmations, and later top-ups do not extend this fixed confirmation wait. Unconfirmed deposits are not paid out on cancellation; a later confirmation is refunded only if no payout was already queued, otherwise market staff review it. Anything sent after cancellation is not refunded automatically{{else}}; this time moves when the wallet observes a new deposit, which may be later than when it was sent; anything sent after cancellation is not refunded automatically{{end}}.{{if .NeedsTopUp}} If it is cancelled, its confirmed deposits are refunded to {{if eq $.OrderViewer "buyer"}}your{{else}}the buyer's{{end}} saved {{.Currency}} payout address (the refund waits until one is saved); if together they are below the minimum automatic payout of {{.RefundFloor}} {{.Currency}}, they are not refunded automatically and market staff are notified. Only send a top-up after any recent payment appears below; wallet updates can take time. Make sure the full remaining amount reaches this address after any exchange withdrawal fee. If you pay more than the price, completing includes any excess below the minimum automatic payout of {{.RefundFloor}} {{.Currency}} with the release to the vendor; it is not returned separately.{{end}} {{if $.LiveNetwork}}Mainnet coins only: this is a real payment and test-network coins sent here are never credited. Funds are held in the market's pooled mainnet wallet{{else}}Test coins only: mainnet coins sent here are lost. Funds are held in the market's pooled test wallet{{end}} (custodial, not multisig escrow) until the order completes, is cancelled, or a dispute is resolved.</p>{{end}}
-<div class="payment-address">
-{{if $.LiveNetwork}}<span class="badge live">MAINNET deposit address</span>{{else}}<span class="badge testnet">TESTNET {{.Network}} deposit address</span>{{end}}
-<p class="mono">{{.Address}}</p>
-{{if and .QR (eq $.OrderViewer "buyer")}}<figure class="payment-qr">{{.QR}}
-<figcaption>Scan to pay exactly <strong>{{.Remaining}} {{.Currency}}</strong>, the amount still due, to this address. Payment request: <span class="payment-uri">{{.PaymentURI}}</span>. Check the address and amount your wallet shows before sending. If no code appears, copy the address and amount above.</figcaption>
-</figure>{{end}}
-</div>{{end}}{{end}}
-<dl class="key-values payment-figures">
-<div>
-<dt>Amount</dt>
-<dd>{{.Required}} {{.Currency}} {{if $.LiveNetwork}}<span class="badge live">MAINNET</span>{{else}}<span class="badge testnet">TESTNET {{.Network}}</span>{{end}}</dd>
-</div>
-<div>
-<dt>Confirmed (at least {{.Threshold}} confirmations)</dt>
-<dd>{{.Received}} {{.Currency}} {{if $.LiveNetwork}}<span class="badge live">MAINNET</span>{{else}}<span class="badge testnet">TESTNET {{.Network}}</span>{{end}}</dd>
-</div>
-<div>
-<dt>Unconfirmed</dt>
-<dd>{{.Unconfirmed}} {{.Currency}} {{if $.LiveNetwork}}<span class="badge live">MAINNET</span>{{else}}<span class="badge testnet">TESTNET {{.Network}}</span>{{end}}</dd>
-</div>
-{{if .Open}}<div>
-<dt>Remaining to send</dt>
-<dd>{{.Remaining}} {{.Currency}} {{if $.LiveNetwork}}<span class="badge live">MAINNET</span>{{else}}<span class="badge testnet">TESTNET {{.Network}}</span>{{end}}</dd>
-</div>{{end}}
-<div>
-<dt>Payment status</dt>
-<dd>{{.Status}}</dd>
-</div>
-</dl>
-{{if .Deposits}}<h3 id="deposits-heading">Deposits seen by the wallet</h3>
-<div class="table-wrap payment-deposits" tabindex="0" role="region" aria-labelledby="deposits-heading">
-<table>
-<thead>
-<tr>
-<th scope="col">{{if eq $.OrderViewer "vendor"}}Deposit{{else}}Transaction{{end}}</th>
-<th scope="col">Amount</th>
-<th scope="col">Confirmations</th>
-<th scope="col">Counted</th>
-</tr>
-</thead>
-<tbody>{{range .Deposits}}<tr>
-<td class="mono">{{if eq $.OrderViewer "vendor"}}Buyer deposit{{else}}{{.TxID}}:{{.Index}}{{end}}</td>
-<td>{{.Amount}} {{$.Payment.Currency}} {{if $.LiveNetwork}}<span class="badge live">MAINNET</span>{{else}}<span class="badge testnet">TESTNET {{$.Payment.Network}}</span>{{end}}</td>
-<td>{{if lt .Confirmations 0}}Conflicted{{else}}{{.Confirmations}}{{end}} {{if $.LiveNetwork}}<span class="badge live">MAINNET</span>{{else}}<span class="badge testnet">TESTNET {{$.Payment.Network}}</span>{{end}}</td>
-<td>{{.State}}</td>
-</tr>{{end}}</tbody>
-</table>
-</div>{{end}}
-{{range .Payouts}}<h3>{{if eq .Kind "return"}}Return of the amount paid over the price{{else}}Payout{{end}}</h3>
-<p class="help">The {{if eq .Currency "BTC"}}Bitcoin{{else}}Monero{{end}} network fee is deducted from this payout. The destination receives the amount below minus the network fee.</p>
-<dl class="key-values payment-figures">
-<div>
-<dt>{{if eq .Kind "release"}}Release to vendor{{else if eq .Kind "return"}}Return to buyer{{else}}Refund to buyer{{end}}</dt>
-<dd>{{.Amount}} {{.Currency}} {{if $.LiveNetwork}}<span class="badge live">MAINNET</span>{{else}}<span class="badge testnet">TESTNET {{$.Payment.Network}}</span>{{end}}</dd>
-</div>
-<div>
-<dt>Payout status</dt>
-<dd>{{.StateLabel}}</dd>
-</div>{{if .Address}}
-<div>
-<dt>Destination (shown only to you)</dt>
-<dd><span class="mono">{{.Address}}</span> {{if $.LiveNetwork}}<span class="badge live">MAINNET</span>{{else}}<span class="badge testnet">TESTNET {{$.Payment.Network}}</span>{{end}}</dd>
-</div>{{end}}{{if .TxID}}
-<div>
-<dt>Payout transaction</dt>
-<dd class="mono">{{.TxID}}</dd>
-</div>{{end}}
-</dl>{{end}}
-{{else if .Issued}}<h2>Payment is not monitored</h2>
-{{if .Degraded}}<div class="alert error" role="status">The {{.Currency}} {{if $.LiveNetwork}}mainnet{{else}}test-network{{end}} wallet is temporarily unavailable, so deposits for this order are not being read right now. Deposits already sent are recorded once it reconnects. Do not send funds until the deposit address is shown again.</div>{{else}}<div class="alert error" role="status">{{.Currency}} payments are not configured on this server, so deposits for this order are not being watched. Do not send funds.</div>{{end}}
-{{else if eq $.Order.State "draft"}}{{if eq (index $.Settings (printf "payment_intake_%s" .Currency)) "false"}}<h2>New payments paused</h2><p>The administrator has paused new {{.Currency}} payment addresses. This draft remains unfunded. Existing deposit addresses and payouts continue to be monitored.</p>{{else if eq (index $.Settings (printf "payment_intake_%s" .Currency)) "escrow"}}<h2>New payments use escrow only</h2><p>This market takes new {{.Currency}} payments through escrow only: its pooled wallet issues no new payment address. This draft remains unfunded.{{if or $.EscrowCheckout $.XMREscrowCheckout}} Pay it with escrow checkout under Next steps.{{end}} Existing deposit addresses and payouts continue to be monitored.</p>{{else if .Available}}<h2>Payment not requested yet</h2>
-<p>This record is an unfunded draft. {{if $.LiveNetwork}}Requesting payment returns a <strong>MAINNET</strong> deposit address from the market's wallet. Payments to it are real funds.{{else}}Requesting payment returns a <strong>TESTNET {{.Network}}</strong> deposit address from the market's test wallet. No real funds are accepted.{{end}}</p>
-<p class="help">{{if eq .Currency "BTC"}}Bitcoin{{else}}Monero{{end}} network fees are deducted from vendor payouts, buyer refunds and returns of any amount paid over the price.</p>{{else}}<h2>Payment is unavailable</h2>
-{{if .Degraded}}<p>This record is an unfunded draft. The {{.Currency}} {{if $.LiveNetwork}}mainnet{{else}}test-network{{end}} wallet is temporarily unavailable, so payment cannot be requested right now. Try again later. No funds are held.</p>{{else}}<p>This record is an unfunded draft. {{.Currency}} payments are not configured on this market, so no payment or settlement can take place. No funds are held.</p>{{end}}{{end}}
-{{else}}<h2>No payment record</h2>
-<p>No deposit address was issued for this order, and no funds are held for it.</p>{{end}}{{else}}<h2>Payment is unavailable</h2>
-<p>This record is an unfunded draft. No funds are held, and no payment or settlement can take place.</p>{{end}}{{end}}
+{{define "order-payment"}}{{with .Payment}}
+{{if .Issued}}<h2>Historical payment record</h2>
+<p class="help">This order used the retired pooled payment system. Its recorded deposits and payouts remain visible for reference. Automated monitoring, payment addresses and payout sends are unavailable; do not send funds to an old address.</p>
+<p>{{.Status}}</p>
+{{if .Deposits}}<h3>Recorded deposits</h3><div class="table-wrap payment-deposits" tabindex="0" role="region" aria-label="Recorded deposits"><table><thead><tr><th>Transaction</th><th>Amount</th><th>Confirmations</th><th>Recorded state</th></tr></thead><tbody>{{range .Deposits}}<tr><td class="mono" style="overflow-wrap:anywhere">{{if .TxID}}{{.TxID}}:{{.Index}}{{else}}Buyer deposit{{end}}</td><td>{{.Amount}} {{$.Order.Currency}}</td><td>{{if lt .Confirmations 0}}Conflicted{{else}}{{.Confirmations}}{{end}}</td><td>{{.State}}</td></tr>{{end}}</tbody></table></div>{{end}}
+{{range .Payouts}}<h3>Recorded {{.Kind}}</h3><dl class="key-values"><div><dt>Amount</dt><dd>{{.Amount}} {{.Currency}}</dd></div><div><dt>Recorded state</dt><dd>{{.StateLabel}}</dd></div>{{if .Address}}<div><dt>Destination</dt><dd class="mono">{{.Address}}</dd></div>{{end}}{{if .TxID}}<div><dt>Transaction</dt><dd class="mono">{{.TxID}}</dd></div>{{end}}</dl>{{end}}
+{{else if eq $.Order.State "draft"}}<h2>Unfunded draft</h2><p>No payment address was issued. If escrow checkout is available, complete it under Next steps. You may cancel this draft.</p>
+{{else}}<h2>No payment record</h2><p>No deposit address was issued for this order.</p>{{end}}
+{{end}}{{end}}

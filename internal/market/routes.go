@@ -607,14 +607,10 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 			switch r.URL.Path {
 			case "/admin/escrow-xmr-destroyed":
 				msg = "Escrow wallet destruction outcome unknown: the confirmation may have been saved. Check the wallet record and sealed-seed status on the admin page, and verify the wallet files and backups before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
-			case "/account/payout":
-				msg = "Payout address outcome unknown: it may have been saved. Check the saved address and payout states on your account page before starting another form. If the original form is still open, resubmit it unchanged to retrieve the saved response."
 			case "/admin/review":
 				msg = "Review change outcome unknown: it may have been saved. Check the review on the product or vendor page before starting another form. If the original form is still open, resubmit it unchanged to retrieve the saved response."
 			case "/admin/listing":
 				msg = "Listing change outcome unknown: it may have been saved. Check the listing's status and activity before starting another form. If the original form is still open, resubmit it unchanged to retrieve the saved response."
-			case "/admin/payout":
-				msg = "Payout outcome unknown: it may have been saved. Reload the admin page and check the payout state and audit trail before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
 			case "/escrow/decision", "/admin/escrow-xmr-rerequest", "/admin/escrow-xmr-retry-build":
 				msg = "Escrow administration outcome unknown: it may have been saved. Check the order decision, settlement and activity before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
 			case "/admin/escrow-fee":

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
-	"slices"
 	"strconv"
 	"strings"
 )
@@ -37,12 +36,12 @@ func init() {
 // automatic delivery only happens when a payment is confirmed.
 func (a *App) autoDeliveryCurrencies() string {
 	var list []string
-	for currency, p := range a.providers() {
-		if p != nil {
-			list = append(list, currency)
-		}
+	if a.escrowConfigured {
+		list = append(list, "BTC")
 	}
-	slices.Sort(list)
+	if a.escrowXMR != nil {
+		list = append(list, "XMR")
+	}
 	return strings.Join(list, ", ")
 }
 

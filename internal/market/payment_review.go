@@ -38,7 +38,7 @@ func init() {
 // counts for the order is not open, credited or not (QA462B-1): it is settled by the order's release or refund, never
 // by staff.
 const paymentFlagOpenRule = `@.flagged AND @.disposition IN ('','escalated') AND (@.locked OR @.below_floor OR @.regress_notice OR @.spent_outside
-	OR @.escrow_left_out OR NOT @.credited AND (@.after_close OR NOT EXISTS (SELECT 1 FROM escrows es WHERE es.order_id=@.order_id)))`
+	OR @.escrow_left_out OR NOT @.credited AND @.after_close) AND EXISTS (SELECT 1 FROM escrows es WHERE es.order_id=@.order_id)`
 
 // newFlagSQL sets a payments row's flag as a new one in an UPDATE: flagged with no recorded disposition (A-31), so the
 // review its "Moderator review required." note asks for is open on the desk and recordable (QA462E-1). The order
@@ -112,7 +112,7 @@ func paymentReviewAction(c *actionCtx) (actionResult, error) {
 	var deposit int64
 	var flagged bool
 	err = c.A.db.QueryRowContext(c.Ctx(), `SELECT o.buyer_id,pr.vendor_id,pm.currency,pm.amount,pm.flagged FROM payments pm JOIN orders o ON o.id=pm.order_id
-		JOIN products pr ON pr.id=o.product_id WHERE pm.id=$1`, id).Scan(&buyer, &vendor, &cur, &deposit, &flagged)
+		JOIN products pr ON pr.id=o.product_id JOIN escrows es ON es.order_id=o.id WHERE pm.id=$1`, id).Scan(&buyer, &vendor, &cur, &deposit, &flagged)
 	if err == sql.ErrNoRows {
 		return actionResult{}, fail(404, "Flagged payment not found")
 	}
@@ -161,7 +161,7 @@ func paymentReviewReceiptAuthorize(c *actionCtx) error {
 	}
 	var buyer, vendor string
 	err = c.Tx.QueryRowContext(c.Ctx(), `SELECT o.buyer_id,pr.vendor_id FROM payments pm
-		JOIN orders o ON o.id=pm.order_id JOIN products pr ON pr.id=o.product_id WHERE pm.id=$1`, id).Scan(&buyer, &vendor)
+		JOIN orders o ON o.id=pm.order_id JOIN products pr ON pr.id=o.product_id JOIN escrows es ON es.order_id=o.id WHERE pm.id=$1`, id).Scan(&buyer, &vendor)
 	if err == sql.ErrNoRows {
 		return fail(404, "Flagged payment not found")
 	}
@@ -178,7 +178,7 @@ func recordPaymentReview(c *actionCtx, id int64, outcome, note, refundTxid strin
 	ctx, tx, a := c.Ctx(), c.Tx, c.A
 	// The order row first, as the watcher's settleOrder takes it: a late deposit it flags meanwhile sees this
 	// disposition, so its notice episode (flagLateDeposits) is decided consistently.
-	o, err := scanOrder(tx.QueryRowContext(ctx, orderQuery+" WHERE o.id=(SELECT order_id FROM payments WHERE id=$1 AND flagged) FOR UPDATE OF o", id))
+	o, err := scanOrder(tx.QueryRowContext(ctx, orderQuery+" WHERE o.id=(SELECT pm.order_id FROM payments pm JOIN escrows es ON es.order_id=pm.order_id WHERE pm.id=$1 AND pm.flagged) FOR UPDATE OF o", id))
 	if err == sql.ErrNoRows {
 		return actionResult{}, fail(404, "Flagged payment not found")
 	}

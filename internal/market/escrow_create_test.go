@@ -7,7 +7,6 @@ import (
 	"html"
 	"net/http/httptest"
 	"net/url"
-	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -489,51 +488,6 @@ func TestEscrowCheckoutConcurrent(t *testing.T) {
 // Everything outside escrow keeps today's pooled flow: with ESCROW_BTC on, a physical order, a digital order without
 // automatic delivery and an XMR order render exactly as with it off, and a pooled payment request on an eligible
 // listing still issues a pooled deposit address.
-func TestEscrowLeavesPooledOrdersUnchanged(t *testing.T) {
-	x := newEscrowEnv(t)
-	fake := newFakeProvider("BTC", 3)
-	x.A.payments["BTC"] = fake
-	pages := map[string]string{}
-	orders := map[string]string{
-		"physical": x.testEnv.order(x.buyer, x.testEnv.product(x.vendor, "physical"), "BTC", stateDraft),
-		"manual":   x.testEnv.order(x.buyer, x.testEnv.product(x.vendor, "digital"), "BTC", stateDraft),
-		"xmr":      x.testEnv.order(x.buyer, x.product, "XMR", stateDraft),
-	}
-	for name, id := range orders {
-		pages[name] = x.page("/order?id="+id, x.buyerSess)
-		if strings.Contains(pages[name], "/orders/escrow") || strings.Contains(pages[name], "escrow") {
-			t.Fatalf("%s order page mentions escrow", name)
-		}
-	}
-	x.A.escrowConfigured = false
-	x.A.escrow.Store(nil)
-	for name, id := range orders {
-		if got := normalizeRenderedFormNonces(x.page("/order?id="+id, x.buyerSess)); got != normalizeRenderedFormNonces(pages[name]) {
-			t.Fatalf("%s order page differs with escrow off", name)
-		}
-	}
-	// The eligible listing with escrow off: no escrow form; with it on, both the pooled request and escrow.
-	off := x.page("/order?id="+x.order, x.buyerSess)
-	if strings.Contains(off, "/orders/escrow") {
-		t.Fatal("escrow checkout offered with ESCROW_BTC off")
-	}
-	x.restart()
-	x.A.payments["BTC"] = fake
-	on := x.page("/order?id="+x.order, x.buyerSess)
-	if !strings.Contains(on, `action="/orders/escrow"`) || !strings.Contains(on, `action="/orders/pay"`) || !strings.Contains(on, `name="refund_address"`) {
-		t.Fatalf("eligible draft with escrow on: %s", on)
-	}
-	if w := x.do("POST", "/orders/pay", x.buyerSess, url.Values{"order_id": {x.order}}); w.Code != 303 {
-		t.Fatalf("pooled request: %d %s", w.Code, w.Body.String())
-	}
-	if n := agInt(x.testEnv, "SELECT count(*) FROM payment_addresses WHERE order_id=$1", x.order); n != 1 || agInt(x.testEnv, "SELECT count(*) FROM escrows") != 0 {
-		t.Fatal("pooled request did not issue a pooled address")
-	}
-}
-
-func normalizeRenderedFormNonces(body string) string {
-	return regexp.MustCompile(`(name="form_nonce" value=")[0-9a-f]{32}(")`).ReplaceAllString(body, `${1}<nonce>${2}`)
-}
 
 // rotatedSecretKey provides a deterministic foreign key root for unreadable-row fixtures: 64 hex digits derived from
 // a fixed phrase, so the source holds no key-shaped literal for secret scanners to flag (A-370).

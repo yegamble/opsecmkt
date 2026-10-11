@@ -1046,7 +1046,7 @@ func (a *App) settleXMREscrow(ctx context.Context, orderID string, walletRead bo
 			return err
 		}
 		// A deposit first recorded after the order closed is never counted; it is flagged for the stray refund (P3-R8).
-		if err = a.flagLateDeposits(ctx, tx, &o, threshold, false, true); err != nil {
+		if err = a.flagLateDeposits(ctx, tx, &o, threshold); err != nil {
 			return err
 		}
 		return tx.Commit()

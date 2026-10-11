@@ -14,8 +14,6 @@ import (
 const providerOutageDelay = 10 * time.Minute
 
 var providerEpisodeNames = map[string]string{
-	"pooled_BTC": "Bitcoin pooled payment provider",
-	"pooled_XMR": "Monero pooled payment provider",
 	"escrow_BTC": "Bitcoin escrow payment provider",
 	"escrow_XMR": "Monero escrow payment provider",
 }
@@ -58,12 +56,12 @@ func (a *App) observeProviderEpisode(ctx context.Context, provider string, bad b
 				return err
 			}
 		}
-		if err = deliverProviderEpisode(ctx, tx, provider, episode, "outage", name+" has been unavailable for about 10 minutes. Existing payments and payouts may be delayed; check Payment providers and the watcher logs."); err != nil {
+		if err = deliverProviderEpisode(ctx, tx, provider, episode, "outage", name+" has been unavailable for about 10 minutes. Existing escrow deposits and settlements may be delayed; check escrow health and the watcher logs."); err != nil {
 			return err
 		}
 	case !bad && badSince.Valid:
 		if alerted {
-			if err = deliverProviderEpisode(ctx, tx, provider, episode, "recovery", name+" is available again. Check Payment providers and any delayed payments or payouts."); err != nil {
+			if err = deliverProviderEpisode(ctx, tx, provider, episode, "recovery", name+" is available again. Check escrow health and any delayed deposits or settlements."); err != nil {
 				return err
 			}
 		}

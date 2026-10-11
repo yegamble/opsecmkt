@@ -70,7 +70,6 @@ type escrowConfig struct {
 	confirmations int64  // PAYMENT_CONFIRMATIONS_BTC: confirmations before an escrow counts as funded
 	feeRate       int64  // ESCROW_BTC_FEE_RATE: the network fee rate of every settlement, in sat/vB (P1-c)
 	signerSocket  string // ESCROW_SIGNER_SOCKET (A-454): the escrow signer's Unix socket; "" = no signer
-	pooledURL     string // BITCOIN_RPC_URL: the pooled client the market key self-check goes through (A-440); "" = none
 }
 
 // escrowConfigFromEnv reads ESCROW_BTC (on/off, blank = off), ESCROW_BTC_RPC_URL, ESCROW_BTC_ARBITER_WALLET
@@ -106,18 +105,6 @@ func escrowConfigFromEnv(getenv func(string) string) (escrowConfig, error) {
 	}
 	if c.watchWallet == c.arbiterWallet {
 		return c, errors.New("ESCROW_BTC_WATCH_WALLET must name a watch-only wallet of its own, not the arbiter wallet ESCROW_BTC_ARBITER_WALLET")
-	}
-	if c.pooledURL = strings.TrimSpace(getenv("BITCOIN_RPC_URL")); c.pooledURL != "" {
-		pooled := strings.TrimSpace(getenv("BITCOIN_WALLET"))
-		if pooled == "" {
-			pooled = "opsecmkt"
-		}
-		if pooled == c.arbiterWallet {
-			return c, errors.New("ESCROW_BTC_ARBITER_WALLET must name a wallet that holds only the escrow arbiter key, not the pooled wallet BITCOIN_WALLET")
-		}
-		if pooled == c.watchWallet {
-			return c, errors.New("ESCROW_BTC_WATCH_WALLET must name a watch-only wallet of its own, not the pooled wallet BITCOIN_WALLET")
-		}
 	}
 	if v := strings.TrimSpace(getenv("ESCROW_BTC_FEE_BPS")); v != "" {
 		n, err := strconv.ParseInt(v, 10, 64)
@@ -179,7 +166,6 @@ const (
 	escrowLogRefused      = "escrow: Bitcoin escrow disabled until the app is restarted: the escrow node is on a chain escrow does not run on (mainnet, testnet3 or another), or it refused ESCROW_BTC_FEE_ADDRESS"
 	escrowLogUnrecorded   = "escrow: Bitcoin escrow disabled: its arbiter fingerprint could not be checked in the database"
 	escrowLogChain        = "escrow: Bitcoin escrow disabled: the escrow node is not on the chain this database's escrows are on (escrow_btc_chain); the admin page names both; see docs/operator-guide.md, \"Bitcoin escrow (test networks only)\""
-	escrowLogPooledKey    = "escrow: Bitcoin escrow disabled: the pooled Bitcoin RPC user (BITCOIN_RPC_URL) was not refused listdescriptors, gethdkeys or walletprocesspsbt on the arbiter wallet, so it may be able to export or sign with the market's escrow key; give that user the pooled rpcwhitelist line, or run escrow on a node of its own; see docs/operator-guide.md, \"The pooled RPC user\""
 	escrowFingerprintPin  = "escrow_btc_arbiter_fingerprint" // settings key
 	escrowArbiterKeyPin   = "escrow_btc_arbiter_xpub_hmac"   // settings key: HMAC of the account chain code and public key
 	escrowChainPin        = "escrow_btc_chain"               // settings key: escrowChainID of the node the database's escrows are on (A-439)
@@ -275,7 +261,6 @@ func (a *App) startEscrow(ctx context.Context) (state, class string, err error) 
 		return "", "", err
 	}
 	a.escrowMismatch.Store(nil)    // shown on /admin only while the latest attempt found the node on another chain
-	a.escrowPooledKey.Store(nil)   // likewise, while the latest attempt found the pooled user not refused (A-440)
 	a.escrowArbiterRead.Store(nil) // likewise, while the latest attempt could not finish reading the arbiter wallet (QA4W4A-1)
 	node, err := e.blockchainInfo(ctx)
 	if err != nil {
@@ -305,10 +290,6 @@ func (a *App) startEscrow(ctx context.Context) (state, class string, err error) 
 	if !ok {
 		a.escrowMismatch.Store(&EscrowChainMismatch{Pinned: pinned, Reported: e.chainID})
 		return escrowLogChain, "", nil
-	}
-	if class := e.pooledKeyCheck(ctx, a.escrowCfg.pooledURL); class != "" {
-		a.escrowPooledKey.Store(&class)
-		return escrowLogPooledKey, class, nil
 	}
 	if err = e.readArbiter(ctx); err != nil {
 		return escrowLogArbiter, errorClassOf(err), nil
@@ -346,50 +327,6 @@ func (a *App) startEscrow(ctx context.Context) (state, class string, err error) 
 	return escrowLogOn, "", nil
 }
 
-// pooledKeyCheck is the market key protection self-check (P4-R6, A-440). rpcwhitelist is per user, not per wallet,
-// and Core selects the wallet by the URL path, so a pooled user allowed listdescriptors could call it with
-// private=true on the arbiter wallet's path and print the market's escrow key (probed on Core 31.1 regtest); Core 31.1
-// also exports it with gethdkeys {"private":true} and signs with it through walletprocesspsbt (QA4W3-1). Through the
-// pooled client (pooledURL, BITCOIN_RPC_URL), on that path, it calls each of pooledKeyProbes in turn with arguments
-// that export and sign nothing (Core checks the whitelist, and then the wallet, before it reads them: an allowed
-// walletprocesspsbt answers -22 for the empty PSBT). It reports "" when every one is refused: HTTP 403 (the method is
-// not on the pooled user's rpcwhitelist) or RPC -18 (no such wallet: the pooled node is another node). Otherwise it
-// reports the first method that was not refused and the class escrow stays disabled with, as "<method> <class>":
-// "answered" for a success, otherwise the escrowRPCError class (credentials, timeout, rpc:<code>, ...), never Core's
-// text. With no pooled client configured there is nothing to check.
-func (e *escrowBTC) pooledKeyCheck(ctx context.Context, pooledURL string) string {
-	if pooledURL == "" {
-		return ""
-	}
-	rpc, err := newRPCClient("bitcoin", pooledURL, "1.0", false)
-	if err != nil {
-		return "bad-url"
-	}
-	for _, p := range pooledKeyProbes {
-		err = classifyEscrowRPC(p.method, rpc.call(ctx, e.arbiterWallet, p.method, p.params, nil))
-		var re *escrowRPCError
-		switch {
-		case err == nil:
-			return p.method + " answered"
-		case !errors.As(err, &re):
-			return p.method + " " + errorCause(err)
-		case re.Class != "forbidden" && re.Class != "rpc:-18":
-			return p.method + " " + re.Class
-		}
-	}
-	return ""
-}
-
-// pooledKeyProbes are the calls pooledKeyCheck makes, in order: none exports a private key or signs anything.
-var pooledKeyProbes = []struct {
-	method string
-	params []any
-}{
-	{"listdescriptors", []any{false}},
-	{"gethdkeys", []any{map[string]any{"private": false}}},
-	{"walletprocesspsbt", []any{"", false}},
-}
-
 // logEscrowState logs a startEscrow state line, with its error class when there is one.
 func logEscrowState(state, class string) {
 	if class != "" {
@@ -402,47 +339,15 @@ func logEscrowState(state, class string) {
 // escrowRetry is the escrow watcher's record of the last escrow state it logged, so a state is logged when it
 // changes, not on every pass.
 type escrowRetry struct {
-	last     string
-	refused  bool      // the node answered on another chain, or refused the fee address: no retry until a restart
-	pooledAt time.Time // when the pooled key self-check last ran while escrow was on (zero: not yet seen on)
+	last    string
+	refused bool // the node answered on another chain, or refused the fee address: no retry until a restart
 }
 
-// escrowPooledRecheck is how often the watcher runs the pooled key self-check again while escrow is on (QA4W3-8).
-const escrowPooledRecheck = 24 * time.Hour
-
-// retryEscrow runs startEscrow again for the escrow watcher while escrow is switched on but not enabled (A-316), as
-// refreshProviders retries a pooled provider. A refusal that would stop startup cannot stop a running market: it logs
-// one fixed line and ends the retries until a restart. While escrow is on it runs the pooled key self-check again
-// (pooledKeyCheck) once escrowPooledRecheck has passed since the last one (QA4W3-8), so a pooled whitelist widened
-// after startup is found within a day: then escrow is disabled, as startEscrow would leave it (the key may be
-// exportable; disabling is the safer default), with the same line and admin alert, and retried like any other check.
-// Its read of the arbiter wallet's entries is paced after a slow one (A-479, checkArbiterWallet).
 func (a *App) retryEscrow(ctx context.Context, r *escrowRetry) {
 	if r.refused {
 		return
 	}
-	if e := a.escrow.Load(); e != nil {
-		switch {
-		case r.pooledAt.IsZero(): // escrow came on at startup, which ran the self-check
-			r.pooledAt = time.Now()
-		case time.Since(r.pooledAt) >= escrowPooledRecheck:
-			pass, cancel := context.WithTimeout(ctx, watcherPassTimeout)
-			class := e.pooledKeyCheck(pass, a.escrowCfg.pooledURL)
-			cancel()
-			if ctx.Err() != nil {
-				return
-			}
-			r.pooledAt = time.Now()
-			if class != "" {
-				a.escrowPooledKey.Store(&class)
-				a.escrow.CompareAndSwap(e, nil)
-				logEscrowState(escrowLogPooledKey, class)
-				r.last = escrowLogPooledKey
-				healthCtx, cancelHealth := escrowHealthContext(ctx)
-				a.saveEscrowHealthAttempt(healthCtx, false, escrowLogPooledKey)
-				cancelHealth()
-			}
-		}
+	if a.escrow.Load() != nil {
 		return
 	}
 	pass, cancel := context.WithTimeout(ctx, watcherPassTimeout)
@@ -455,9 +360,6 @@ func (a *App) retryEscrow(ctx context.Context, r *escrowRetry) {
 		r.refused, state = true, escrowLogRefused
 	case err != nil:
 		state, class = escrowLogUnrecorded, errorCause(err)
-	}
-	if state == escrowLogOn {
-		r.pooledAt = time.Now() // startEscrow has just run the self-check
 	}
 	healthState := state
 	if errors.Is(err, errEscrowFeeAddress) {

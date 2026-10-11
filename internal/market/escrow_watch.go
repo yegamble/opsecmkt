@@ -361,9 +361,6 @@ func escrowNodeLoader(ctx context.Context, a *App, _ *http.Request, d *PageData)
 		}
 		return nil
 	}
-	if class := a.escrowPooledKey.Load(); class != nil {
-		v.PooledKey, v.PooledWhitelist = *class, strings.Join(pooledRPCMethods, ",")
-	}
 	if why := a.escrowArbiterRead.Load(); why != nil {
 		v.ArbiterRead = *why
 		if *why != "waiting" {
@@ -378,7 +375,7 @@ func escrowNodeLoader(ctx context.Context, a *App, _ *http.Request, d *PageData)
 	if v.Stalled, err = a.escrowStalls(ctx); err != nil {
 		return err
 	}
-	if v.Health != nil || v.NotSynced != "" || v.Mismatch != nil || v.PooledKey != "" || v.ArbiterRead != "" || v.TorHold != "" || len(v.Stalled) > 0 {
+	if v.Health != nil || v.NotSynced != "" || v.Mismatch != nil || v.ArbiterRead != "" || v.TorHold != "" || len(v.Stalled) > 0 {
 		d.EscrowNode = v
 	}
 	return nil
@@ -414,7 +411,7 @@ func (a *App) settleEscrow(ctx context.Context, orderID string, walletRead bool)
 		}
 		// A deposit first recorded after the order closed is never counted; it is flagged for payment review, the
 		// buyer and the staff told once per episode, as a pooled one is (A-211, QA31-3). It stays in the escrow.
-		if err = a.flagLateDeposits(ctx, tx, &o, threshold, false, true); err != nil {
+		if err = a.flagLateDeposits(ctx, tx, &o, threshold); err != nil {
 			return err
 		}
 		return tx.Commit()

@@ -156,7 +156,7 @@ func purchaseGateLoader(ctx context.Context, a *App, _ *http.Request, d *PageDat
 func escrowReadinessLoader(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
 	v := &EscrowReadinessView{Limit: readinessListLimit}
 	for _, coin := range []string{"BTC", "XMR"} {
-		c := ReadinessCoin{Currency: coin, Intake: d.Settings[paymentIntakeKey(coin)], EscrowOn: a.escrowOn(coin), Pooled: a.pooledConfigured(coin)}
+		c := ReadinessCoin{Currency: coin, Intake: d.Settings[paymentIntakeKey(coin)], EscrowOn: a.escrowOn(coin)}
 		switch {
 		case !c.EscrowOn || a.escrowReady(coin):
 		case coin == "XMR":

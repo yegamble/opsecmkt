@@ -226,35 +226,6 @@ func TestEscrowWatcherRestartMidFunding(t *testing.T) {
 
 // No payouts row for an escrow order, and the send claim never claims one (A-244's carry-over, ES-1): a pending
 // payout that existed before its order became an escrow order (as by hand) is never sent.
-func TestEscrowSendClaimExcludesEscrowOrders(t *testing.T) {
-	x := newEscrowEnv(t)
-	fake := newFakeProvider("BTC", 3)
-	x.A.payments["BTC"] = fake
-	addr, _ := fake.NewAddress(context.Background(), x.order)
-	x.DB.Exec("INSERT INTO payment_addresses(order_id,currency,address,provider) VALUES($1,'BTC',$2,'fake')", x.order, addr)
-	if _, err := x.DB.Exec("INSERT INTO payouts(order_id,kind,user_id,currency,amount,address,state) VALUES($1,'release',$2,'BTC',100000,'fake-testnet-vendor','pending')", x.order, x.vendor); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := x.DB.Exec("INSERT INTO escrows(order_id,address,market_index,refund_address,fee_bps,fee_destination) VALUES($1,'bcrt1qhand',nextval('escrow_market_index'),'bcrt1qhandrefund',0,'')", x.order); err != nil {
-		t.Fatal(err)
-	}
-	x.DB.Exec("UPDATE orders SET state='completed' WHERE id=$1", x.order)
-	if err := x.A.sendPayouts(context.Background(), fake, []string{x.order}); err != nil {
-		t.Fatal(err)
-	}
-	if len(fake.Sends()) != 0 || agInt(x.testEnv, "SELECT count(*) FROM payouts WHERE order_id=$1 AND state='pending'", x.order) != 1 {
-		t.Fatalf("escrow order payout claimed: %d sends", len(fake.Sends()))
-	}
-	// A pooled order's payout in the same pass is still sent.
-	pooled := x.testEnv.order(x.buyer, x.testEnv.product(x.vendor, "physical"), "BTC", stateCompleted)
-	x.DB.Exec("INSERT INTO payouts(order_id,kind,user_id,currency,amount,address,state) VALUES($1,'release',$2,'BTC',100000,'fake-testnet-vendor','pending')", pooled, x.vendor)
-	if err := x.A.sendPayouts(context.Background(), fake, []string{x.order, pooled}); err != nil {
-		t.Fatal(err)
-	}
-	if len(fake.Sends()) != 1 {
-		t.Fatalf("%d sends, want the pooled one", len(fake.Sends()))
-	}
-}
 
 // A-315 (QA29-2): an escrow order always renders the escrow panel. With ESCROW_BTC switched off, a funded escrow
 // order shows its escrow address and the unavailable copy, never the pooled "no funds are held for it"; the moves

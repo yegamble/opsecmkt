@@ -39,18 +39,15 @@ func init() {
 // transitionActions maps a target state to the form that performs it. Resolution happens on the
 // moderator desk and payment confirmation only through the payment watcher, so neither appears here.
 var transitionActions = map[string]string{
-	stateAwaitingPayment: "/orders/pay",
-	stateShipped:         "/orders/ship",
-	stateDelivered:       "/orders/deliver",
-	stateCompleted:       "/orders/complete",
-	stateDisputed:        "/disputes",
-	stateCancelled:       "/orders/cancel",
+	stateShipped:   "/orders/ship",
+	stateDelivered: "/orders/deliver",
+	stateCompleted: "/orders/complete",
+	stateDisputed:  "/disputes",
+	stateCancelled: "/orders/cancel",
 }
 
 func transitionLabel(from, to string) string {
 	switch to {
-	case stateAwaitingPayment:
-		return "Request payment address"
 	case stateShipped:
 		return "Mark as shipped"
 	case stateDelivered:
@@ -70,10 +67,13 @@ func transitionLabel(from, to string) string {
 
 // viewerTransitions lists the moves the viewer may make now, using the same table, roles and kind rules
 // as transition(). Requesting payment without a provider is listed with an empty Action (unavailable).
-func viewerTransitions(payments map[string]PaymentProvider, netAdj string, o *Order, u *User) []Transition {
+func viewerTransitions(o *Order, u *User) []Transition {
 	roles := actorRoles(o, u)
 	var out []Transition
 	for _, to := range orderStates {
+		if !o.Escrow && !(o.State == stateDraft && to == stateCancelled) {
+			continue
+		}
 		if o.State == stateDisputed && (to == stateCompleted || to == stateCancelled) {
 			continue // A-166 uses the dedicated confirmed concession form, never the ordinary action.
 		}
@@ -88,13 +88,6 @@ func viewerTransitions(payments map[string]PaymentProvider, netAdj string, o *Or
 			continue
 		}
 		t := Transition{To: to, Label: transitionLabel(o.State, to), Action: action}
-		if to == stateAwaitingPayment && o.Kind == "service" {
-			t.Action = ""
-			t.Label = "This legacy service order cannot request a new payment address. Existing orders and their history remain readable; cancel or dispute this order as appropriate."
-		} else if to == stateAwaitingPayment && payments[o.Currency] == nil {
-			t.Action = ""
-			t.Label = "Payment unavailable for " + o.Currency + ": no " + o.Currency + " " + netAdj + " wallet is available on this server (not configured, or temporarily unreachable)."
-		}
 		out = append(out, t)
 	}
 	return out
@@ -392,7 +385,7 @@ func loadOrderDetail(ctx context.Context, a *App, r *http.Request, d *PageData) 
 	}
 	d.CanReview = u.ID == o.BuyerID && o.State == stateCompleted && len(d.Reviews) == 0
 	if d.OrderViewer != roleModerator { // reviewers resolve on the moderation desk; the order page is read-only for them
-		d.Transitions = viewerTransitions(a.providers(), a.netAdj(), o, u)
+		d.Transitions = viewerTransitions(o, u)
 		if !o.Escrow { // an escrow order queues no payout (settleTerminal)
 			if err = a.orderPayouts(ctx, d); err != nil {
 				return err
@@ -979,7 +972,7 @@ func previewOrder(d *PageData) {
 	if d.Order == nil || d.User == nil {
 		return
 	}
-	d.Transitions = viewerTransitions(nil, "test-network", d.Order, d.User)
+	d.Transitions = viewerTransitions(d.Order, d.User)
 }
 
 func previewReviews(d *PageData) {
@@ -1042,6 +1035,7 @@ func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageDat
 			pm.disposition='escalated' AS escalated,COALESCE(to_char(pm.disposed_at,'YYYY-MM-DD'),'') AS disposed,(o.buyer_id=$2 OR pr.vendor_id=$2) AS party,
 			c.escrow,pm.spent_outside,COALESCE(pm.spent_by,'') AS spent_by,c.counted,pm.escrow_left_out AND NOT pm.after_close AS left_out
 		FROM payments pm JOIN orders o ON o.id=pm.order_id JOIN products pr ON pr.id=o.product_id
+		JOIN escrows esc ON esc.order_id=o.id
 		CROSS JOIN LATERAL (SELECT e.escrow,e.escrow AND NOT pm.after_close AND NOT pm.escrow_left_out AND NOT pm.spent_outside AS counted
 			FROM (SELECT EXISTS(SELECT 1 FROM escrows es WHERE es.order_id=pm.order_id) AS escrow) e) c
 		LEFT JOIN LATERAL (SELECT max(e.created) AS at FROM order_events e WHERE e.order_id=pm.order_id AND e.actor_id IS NULL
@@ -1083,7 +1077,7 @@ func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageDat
 		v.Form = v.Open && !v.Party && (!v.Escalated || d.User.Role == "admin")
 		v.Refundable, v.Escrow = !credited && !escrow, escrow
 		v.Amount, v.OrderState = amount(amt, currencyDecimals(v.Currency)), stateLabel(v.OrderState)
-		threshold := a.confirmationThreshold(v.Currency)
+		threshold := int64(0)
 		if escrow {
 			// An escrow deposit's own confirmation threshold, as its order page reads it (escrowOrder, xmrEscrowOrder),
 			// not the pooled wallet's (0 when no pooled provider is configured).

@@ -1,12 +1,6 @@
-{{/* P5 Payments owns. admin-payments: provider panels */}}
-{{define "admin-payments:wallet-check"}}<p class="help">Wallet check: Bitcoin <code>listsinceblock</code> from a block before the backup or failed send (not <code>listtransactions</code>, which shows only recent entries); Monero <code>refresh</code>, then <code>get_transfers</code> with out, pending and pool twice, where a pending or outgoing transfer since then without destinations is this payout until proven otherwise.</p>
-{{end}}
 {{define "admin-payments"}}<section class="panel admin-payments">
-<h2 id="payment-providers">Payment providers</h2>
-{{if $.Preview}}<p class="help">Preview samples only. No provider is running.</p>{{end}}
-{{if eq (index .Settings "payments_recovery_required") "true"}}<div class="alert" role="status"><strong>Outbound payments paused for restore reconciliation.</strong> All payouts, including newly queued ones, stay unsent until the operator reconciles restored orders and payments with the wallets and clears the recovery lock. The clear step also refuses while pooled payment reviews remain open; reconcile those on the <a class="text-link" href="/moderator">moderation desk</a>. See the recovery runbook; releasing an individual payout does not clear this lock.</div>{{end}}
-<p>{{if $.LiveNetwork}}<strong>Mainnet: deposits and payouts move real funds.</strong> The server was configured for mainnet (<code>BITCOIN_CHAIN=main</code>, <code>MONERO_NETWORK=mainnet</code>) and disables a provider whose node later reports another network.{{else}}Test networks. The server refuses to start against mainnet unless the operator configures it (<code>BITCOIN_CHAIN=main</code>, <code>MONERO_NETWORK=mainnet</code>) and disables a provider whose node later reports another network.{{end}} An unreachable node or a wallet that is not loaded does not stop the site: that currency shows as unavailable, payment requests for it are refused, and the check is retried every poll. {{if or $.EscrowOn $.XMREscrowOn}}Deposits of pooled orders sit in one pooled wallet per currency. {{if $.EscrowOn}}Bitcoin escrow orders ({{template "btc-escrow-only" $.EscrowNet}}) never pay into that wallet: each one's coins stay in its own 2-of-3 escrow until a settlement spends them. {{end}}{{if $.XMREscrowOn}}Monero escrow orders ({{if not $.XMREscrowNetKnown}}network not verified yet{{else if eq $.XMREscrowNet "stagenet"}}Monero stagenet{{else}}local fakechain only{{end}}) never pay into that wallet either: each one's coins are {{$.XMRCustody}}. {{end}}{{if $.EscrowOn}}Apart from the escrow market fee below{{if $.XMREscrowOn}} and the Monero escrow fee set in the server's configuration (<code>ESCROW_XMR_FEE_BPS</code>){{end}}{{else}}Apart from the Monero escrow fee set in the server's configuration (<code>ESCROW_XMR_FEE_BPS</code>){{end}}, there is no commission or fee accounting.{{else}}Deposits sit in one pooled wallet per currency. There is no commission or fee accounting.{{end}}</p>{{with $.EscrowNode}}{{with .Health}}<p class="help" id="escrow-health"><strong>Bitcoin escrow node health:</strong> configuration {{if $.EscrowNode.Configured}}on{{else}}off{{end}}, {{if .Enabled}}enabled{{else}}disabled{{end}}; last disabled class <code>{{.DisabledClass}}</code>; last successful watcher pass {{if .LastPass}}{{.LastPass}}{{else}}none yet{{end}}{{if not $.EscrowNode.Configured}} (stale while <code>ESCROW_BTC=off</code>){{end}}; status updated {{.StatusUpdated}}; chain {{.Chain}}, height {{if .Height}}{{.Height}}{{else}}unknown{{end}}; chain pin {{if .PinMatch}}{{.PinMatch}}{{else}}not checked{{end}}; arbiter keypool high-water {{if .KeypoolHighWater}}{{.KeypoolHighWater}}{{else}}not confirmed{{end}}, highest allocated market index {{.HighestMarketIndex}}.</p>{{end}}{{if .PooledKey}}
-<div class="alert" role="status" id="escrow-node"><strong>Bitcoin escrow disabled: the pooled Bitcoin RPC user (BITCOIN_RPC_URL) was not refused listdescriptors, gethdkeys or walletprocesspsbt on the arbiter wallet ({{.PooledKey}}).</strong> That user may be able to export or sign with the market's escrow key, so escrow stays off; nothing else changes. On the node, give the user named in <code>BITCOIN_RPC_URL</code> its own line <code>rpcwhitelist=USER:{{.PooledWhitelist}}</code> (keep <code>rpcwhitelistdefault=0</code>, so the operator user keeps its rights) and restart bitcoind, or run escrow on a node of its own. Escrow starts by itself once each of those calls is refused with HTTP 403, or the pooled node has no wallet of that name; a success, another error or a timeout is not a refusal. The check is retried every poll, and repeated daily while escrow is on. See <code>docs/operator-guide.md#bitcoin-escrow-test-networks-only</code>, "The pooled RPC user".</div>{{else if eq .ArbiterRead "waiting"}}
+<h2 id="payment-providers">Escrow status and payment intake</h2>
+<p>New payments use Bitcoin or Monero escrow when the currency is enabled below. Historical pooled records remain available for reading.</p>{{with $.EscrowNode}}{{with .Health}}<p class="help" id="escrow-health"><strong>Bitcoin escrow node health:</strong> configuration {{if $.EscrowNode.Configured}}on{{else}}off{{end}}, {{if .Enabled}}enabled{{else}}disabled{{end}}; last disabled class <code>{{.DisabledClass}}</code>; last successful watcher pass {{if .LastPass}}{{.LastPass}}{{else}}none yet{{end}}{{if not $.EscrowNode.Configured}} (stale while <code>ESCROW_BTC=off</code>){{end}}; status updated {{.StatusUpdated}}; chain {{.Chain}}, height {{if .Height}}{{.Height}}{{else}}unknown{{end}}; chain pin {{if .PinMatch}}{{.PinMatch}}{{else}}not checked{{end}}; arbiter keypool high-water {{if .KeypoolHighWater}}{{.KeypoolHighWater}}{{else}}not confirmed{{end}}, highest allocated market index {{.HighestMarketIndex}}.</p>{{end}}{{if eq .ArbiterRead "waiting"}}
 <div class="alert" role="status" id="escrow-node"><strong>Bitcoin escrow off while the arbiter wallet is checked.</strong> Escrow reads the arbiter wallet's transactions to check that it has never spent, and this read takes longer than startup allows (a first read, or many payments to the wallet since the last one). The read goes on; once it passes, the escrow watcher starts escrow by itself, without reading again. Nothing else changes. See <code>docs/operator-guide.md#bitcoin-escrow-test-networks-only</code>.</div>{{else if .ArbiterRead}}
 <div class="alert" role="status" id="escrow-node"><strong>Bitcoin escrow disabled: the arbiter wallet's transactions could not be read ({{.ArbiterRead}}).</strong> Escrow reads them to check that the arbiter wallet has never spent; a timeout, an unreachable node or an RPC error is not a pass, so escrow stays off; nothing else changes. Check that the escrow node answers and that <code>listsinceblock</code> is on the escrow user's <code>rpcwhitelist</code>. {{if .ArbiterNext}}The next check is in about {{.ArbiterNext}}.{{else}}The next check is at the next poll.{{end}} A read that took 5 s or more, or timed out, makes the next wait, 1 minute at first and doubling up to 1 hour, so the market does not load a struggling node (as when a payer holds many unconfirmed fee bumps of a payment to the market's key); a quicker failure is retried every poll; restarting the app checks at once. See <code>docs/operator-guide.md#bitcoin-escrow-test-networks-only</code>.</div>{{else if .Mismatch}}
 <div class="alert" role="status" id="escrow-node"><strong>Bitcoin escrow disabled: the escrow node reports chain {{.Mismatch.Reported}}, but this database's escrows are on {{if .Mismatch.Pinned}}{{.Mismatch.Pinned}}{{else}}a chain it did not record{{end}}.</strong> A database never changes chain once it holds an escrow, so escrow stays off and nothing is changed: point <code>ESCROW_BTC_RPC_URL</code> back at a node on {{if .Mismatch.Pinned}}{{.Mismatch.Pinned}}{{else}}regtest, the only chain escrow ran on before this check{{end}}; a new chain needs a new database. The check is retried every poll, and repeated daily while escrow is on. See <code>docs/operator-guide.md#bitcoin-escrow-test-networks-only</code>.</div>{{else if .NotSynced}}
@@ -175,221 +169,22 @@ Check the escrow node: its peers (<code>getconnectioncount</code>), and with <co
 </table>
 </div>{{else}}
 <p>None.</p>{{end}}{{end}}
-<h3 id="payment-intake">New payment addresses</h3>{{with $.NoticeIn "payment-intake"}}
-<div class="alert" role="status">{{.}}</div>{{end}}
-<p>Set Bitcoin and Monero separately. <strong>On</strong>: buyers can request a pooled payment address, or use escrow checkout where it is offered. <strong>Escrow only</strong>: escrow checkouts continue and the pooled wallet issues no new payment address. <strong>Paused</strong>: no new payment address and no escrow checkout. In every case existing deposit addresses, payment confirmation, refunds and payouts continue, so keep a pooled wallet configured while pooled orders are open. On needs the currency's pooled wallet RPC provisioned on the server; escrow only and paused do not. Changes require your password and are audited, and each can be changed back.</p>
-{{range .Providers}}{{$v := index $.Settings (printf "payment_intake_%s" .Currency)}}<div class="order-action">
-<h4>{{.Currency}} intake: {{if eq $v "false"}}Paused{{else if eq $v "escrow"}}Escrow only{{else if eq $v "true"}}{{if .Configured}}Enabled when wallet is available{{else}}On, but no pooled wallet is configured{{end}}{{else}}Paused (unknown value){{end}}</h4>
+<h3 id="payment-intake">New escrow checkouts</h3>{{with $.NoticeIn "payment-intake"}}<div class="alert" role="status">{{.}}</div>{{end}}
+<p>Set each currency to escrow or paused. A paused currency accepts no new escrow checkout. Existing order history remains readable.</p>
+{{range $.EscrowReadiness.Coins}}{{$v := .Intake}}<div class="order-action">
+<h4>{{.Currency}} intake: {{if eq $v "escrow"}}Escrow{{else}}Paused{{end}}</h4>
 <form class="stack" method="post" action="/admin/payment-intake">
-<input type="hidden" name="csrf" value="{{$.CSRF}}">
-<input type="hidden" name="form_nonce" value="{{formNonce "/admin/payment-intake"}}">
-<input type="hidden" name="currency" value="{{.Currency}}">
-<fieldset>
-<legend>New {{.Currency}} payments</legend>{{if .Configured}}
-<label class="check">
-<input type="radio" name="enabled" value="true" required{{if eq $v "true"}} checked{{end}}> On: pooled payment addresses and escrow checkouts</label>{{end}}
-<label class="check">
-<input type="radio" name="enabled" value="escrow" required{{if eq $v "escrow"}} checked{{end}}> Escrow only: escrow checkouts, no new pooled payment addresses</label>
-<label class="check">
-<input type="radio" name="enabled" value="false" required{{if eq $v "false"}} checked{{end}}> Paused: no new payment addresses or escrow checkouts</label>
-</fieldset>{{if not .Configured}}
-<span class="help">On is not offered: configure the {{.Currency}} wallet RPC on the server first.</span>{{end}}
-{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
-<button type="submit">Save new {{.Currency}} payments</button>
-</form>
-</div>{{end}}
-<h3 id="escrow-readiness">Escrow-only readiness</h3>{{with $.EscrowReadiness}}
-<p>Check this before setting a coin to escrow only. While a coin is escrow only, a listing that cannot use its escrow stays visible but is not available for purchase in that coin: its page gives buyers the reason and no buy form, its vendor reads how to fix it, and no draft can be saved in that coin. Orders already awaiting a pooled payment are not affected.</p>
-<ul>{{range .Coins}}
-<li>{{.Currency}} escrow: {{if .EscrowOn}}on{{with .NotReady}} (not ready: {{.}}){{end}}{{else}}off{{end}} · {{.Currency}} intake: {{if eq .Intake "false"}}paused{{else if eq .Intake "escrow"}}escrow only{{else if eq .Intake "true"}}on{{else}}paused (unknown value){{end}} · pooled wallet: {{if .Pooled}}configured{{else}}not configured{{end}}{{if and (not .EscrowOn) (eq .Intake "escrow")}}. <strong>Nothing can be bought in {{.Currency}}: its escrow is off.</strong>{{end}}</li>{{end}}
-</ul>
-<p id="escrow-readiness-listings"><strong>{{.ListingCount}}</strong> active {{if eq .ListingCount 1}}listing cannot{{else}}listings cannot{{end}} use escrow in any coin.</p>{{if .Listings}}
-<div class="table-wrap" tabindex="0" role="region" aria-labelledby="escrow-readiness-listings">
-<table>
-<thead>
-<tr>
-<th scope="col">Listing</th>
-<th scope="col">Vendor</th>
-<th scope="col">Why</th>
-</tr>
-</thead>
-<tbody>{{range .Listings}}<tr>
-<td><a class="text-link" href="/product?id={{.ID}}">{{.Title}}</a></td>
-<td>{{.Vendor}}</td>
-<td>{{.Reason}}</td>
-</tr>{{end}}</tbody>
-</table>
-</div>{{if gt .ListingCount (len .Listings)}}
-<p class="help">Showing the first {{.Limit}} by vendor and title.</p>{{end}}{{end}}
-<p id="escrow-readiness-vendors"><strong>{{.VendorCount}}</strong> {{if eq .VendorCount 1}}vendor has{{else}}vendors have{{end}} active listings but no active Bitcoin escrow key (or only a per-order wallet key, which cannot take an escrow yet), so none of their listings can be bought in BTC while BTC is escrow only.{{if $.XMREscrowOn}} Monero escrow needs no vendor key.{{end}}</p>{{if .Vendors}}
-<ul>{{range .Vendors}}
-<li>{{.Handle}}: {{.Listings}} active {{if eq .Listings 1}}listing{{else}}listings{{end}}</li>{{end}}
-</ul>{{if gt .VendorCount (len .Vendors)}}
-<p class="help">Showing the first {{.Limit}} by handle.</p>{{end}}{{end}}{{end}}
-{{with $.PooledDrain}}<h3 id="pooled-drain">Pooled wallet drain</h3>
-<p>What still needs the pooled wallet, as the database lists it (<code>pooled_drain_blockers()</code>). A later release is planned to remove the pooled wallet and to refuse a database for which this list is not empty. This panel changes nothing; each kind says where it is resolved.</p>
-<p id="pooled-drain-total">{{if eq .Total 0}}<strong>Nothing still needs the pooled wallet.</strong>{{else}}<strong>{{.Total}}</strong> {{if eq .Total 1}}item still needs{{else}}items still need{{end}} the pooled wallet.{{end}}</p>
-<ul class="pooled-drain">{{range .Kinds}}{{$kind := .Kind}}
-<li id="pooled-drain-{{.Kind}}"><strong>{{.Title}}: <span class="pooled-drain-count">{{.Count}}</span></strong>{{if .Count}}. {{.Resolve}}{{end}}{{if .Items}}
-<ul>{{range .Items}}
-<li>{{if eq $kind "open_order"}}Order {{if .Link}}<a class="text-link mono" href="{{.Link}}">{{.OrderShort}}</a>{{else}}<span class="mono">{{.OrderShort}}</span>{{end}} ({{.Currency}}, {{.Detail}}){{else if eq $kind "unsent_payout"}}<a class="text-link" href="{{.Link}}">Payout {{.Ref}}</a>: {{.Detail}} ({{.Currency}}), order <span class="mono">{{.OrderShort}}</span>{{else if eq $kind "flagged_payment"}}<a class="text-link" href="{{.Link}}">Payment {{.Ref}}</a>: deposit <span class="mono">{{.Detail}}</span> ({{.Currency}}), order <span class="mono">{{.OrderShort}}</span>{{else if eq $kind "watched_address"}}<span class="mono">{{.Ref}}</span> ({{.Currency}}), order {{if .Link}}<a class="text-link mono" href="{{.Link}}">{{.OrderShort}}</a>{{else}}<span class="mono">{{.OrderShort}}</span>{{end}}, watched {{.Detail}}{{else if eq $kind "recovery_required"}}<a class="text-link" href="{{.Link}}">Outbound payments paused</a> (settings <code>{{.Ref}}</code>){{else if eq $kind "address_collision"}}<a class="text-link" href="{{.Link}}">{{.Currency}} warning</a>: {{.Detail}} payment {{if eq .Detail "1"}}request{{else}}requests{{end}} refused{{else if eq $kind "mainnet_history"}}{{.Currency}}: {{.Detail}} mainnet deposit {{if eq .Detail "1"}}address{{else}}addresses{{end}}{{else}}<span class="mono">{{.Ref}}</span>{{with .Detail}} ({{.}}){{end}}{{end}}</li>{{end}}
-</ul>{{if gt .Count (len .Items)}}
-<p class="help">Showing the first {{$.PooledDrain.Limit}}.</p>{{end}}{{end}}</li>{{end}}
-</ul>
-<p id="pooled-drain-advice"><strong>The list decides, not the balance.</strong> The balances below are advice only, as each pooled wallet reports them: a wallet balance cannot show what is still owed to anyone, and it can include coins sent to addresses the market no longer watches.</p>
-<ul id="pooled-drain-balance">{{range .Balances}}
-<li>{{.Currency}} pooled wallet: {{if not .Configured}}no pooled wallet is configured.{{else if .Available}}{{.Confirmed}} {{.Currency}} confirmed, {{.Pending}} {{.Currency}} pending: unconfirmed, immature or locked ({{if $.LiveNetwork}}MAINNET{{else}}TESTNET{{end}} {{.Network}}; advice only).{{else}}balance unavailable (its wallet did not answer the balance request).{{end}}</li>{{end}}
-</ul>
-<p id="pooled-drain-sweep">The market never sweeps the pooled wallet. Once this list is empty, move any balance left in it yourself, with the wallet's own tools, to an address you control.</p>{{end}}
-<div class="table-wrap">
-<table>
-<thead>
-<tr>
-<th scope="col">Currency</th>
-<th scope="col">Network</th>
-<th scope="col">Status</th>
-<th scope="col">Confirmations</th>
-<th scope="col">Last poll</th>
-<th scope="col">Poll age</th>
-<th scope="col">Last error</th>
-<th scope="col">Version</th>
-</tr>
-</thead>
-<tbody>{{range .Providers}}<tr>
-<td>{{.Currency}}</td>
-<td>{{if .Enabled}}{{if $.LiveNetwork}}<span class="badge live">MAINNET</span>{{else}}<span class="badge testnet">TESTNET {{.Network}}</span>{{end}}{{else}}—{{end}}</td>
-<td>{{.Status}}</td>
-<td>{{if .Enabled}}{{.Confirmations}}{{else}}—{{end}}</td>
-<td>{{if .Configured}}{{.LastPoll}}{{else if $.Preview}}{{.LastPoll}}{{else}}—{{end}}</td>
-<td>{{if .Configured}}{{.LastPollAge}}{{else if $.Preview}}{{.LastPollAge}}{{else}}—{{end}}{{if .PollStale}}<br><strong>Stale</strong>{{end}}</td>
-<td>{{if .Error}}{{.Error}}{{else}}None{{end}}</td>
-<td>{{if .Version}}{{.Version}}{{else}}—{{end}}</td>
-</tr>{{else}}<tr>
-<td colspan="8">Provider status is unavailable here. No provider is running.</td>
-</tr>{{end}}</tbody>
-</table>
-</div>
-{{range .Providers}}{{if .VersionWarning}}<div class="alert" role="status"><strong>{{.Currency}} wallet version not verified: {{.Version}}.</strong> {{.VersionWarning}} <code>docs/operator-guide.md#node-image-versions</code>.</div>{{end}}{{end}}
-{{range .Providers}}{{if .AddressCollisions}}<div class="alert" role="status"><p><strong>{{.Currency}} wallet handed out payment addresses this market had already issued: {{.AddressCollisions}} payment {{if eq .AddressCollisions 1}}request{{else}}requests{{end}} refused, last at {{.AddressCollisionLast}}.</strong> This happens when the wallet was restored from an older backup or seed without being advanced past the addresses the database issued. Buyers were told nothing was charged, and their orders stay drafts. The restored wallet may also miss deposits made after the backup until it rescans. Follow "Restore the wallets" in the test-network payments runbook, <code>docs/testnet-runbook.md#restore-the-wallets</code>, then dismiss this warning: it stays until an administrator dismisses it, and a later collision shows it again.</p>
-<form method="post" action="/admin/payment-address-collisions">
-<input type="hidden" name="csrf" value="{{$.CSRF}}">
-<input type="hidden" name="form_nonce" value="{{formNonce "/admin/payment-address-collisions"}}">
-<input type="hidden" name="currency" value="{{.Currency}}">
-<input type="hidden" name="seen" value="{{.AddressCollisions}}">
-<button type="submit">Dismiss the {{.Currency}} warning</button>
-</form></div>{{end}}{{end}}
-<h3 id="payouts">Payouts</h3>{{with $.NoticeIn "payouts"}}
-<div class="alert" role="status">{{.}}</div>{{end}}
-<p>{{if eq .PayoutsAttention 0}}No payouts need attention.{{else}}<strong>{{.PayoutsAttention}} {{if eq .PayoutsAttention 1}}payout needs{{else}}payouts need{{end}} attention</strong>, listed first, oldest first.{{end}}{{if .PayoutHistoryLimit}} Showing every payout that needs attention, every queued payout and the {{.PayoutHistoryLimit}} most recent other payouts; older payouts that need no attention are not listed.{{end}}</p>
-<p>Every payout, on both coins, is sent with the network fee taken from its amount (Bitcoin <code>subtractfeefromamount</code>, Monero <code>subtract_fee_from_outputs</code>): the recipient receives the amount shown minus the fee, and the market's wallet pays no payout's fee. Pay a payout manually the same way.</p>
-<p>Each payout is attempted once. Failed or stuck payouts are never retried automatically: check the wallet before paying anything manually. A payout for which the wallet reported a pre-broadcast error was not broadcast; one whose outcome is unknown (the wallet call timed out or its reply was lost) or that is stuck in sending may have been. After checking the wallet you can release a held payout, requeue a payout that was not broadcast (confirming that explicitly when the outcome was unknown), or record one the wallet shows as sent. A blocked payout (its recipient saved no payout address) is sent once they save one; to pay it by hand instead, hold it first, then pay it, then record it as sent with the wallet's transaction ID. Saving a payout address never moves a payout that already has one: you can move a held payout, or one the wallet definitely rejected, to the recipient's current saved address after checking that address with the account owner. A payout that is being sent or may have been broadcast is never moved. Each action needs your password and is audited.</p>
-<div class="table-wrap">
-<table>
-<thead>
-<tr>
-<th scope="col">Order</th>
-<th scope="col">Type</th>
-<th scope="col">Recipient</th>
-<th scope="col">Amount</th>
-<th scope="col">Status</th>
-<th scope="col">Transaction or error</th>
-<th scope="col">Updated</th>
-<th scope="col">Action</th>
-</tr>
-</thead>
-<tbody>{{range .Payouts}}<tr{{if .Attention}} class="payout-attention"{{end}}>
-<td class="mono">{{if .OrderLink}}<a href="/order?id={{.OrderID}}">{{.OrderID}}</a>{{else}}{{.OrderID}}{{end}}</td>
-<td>{{if eq .Kind "release"}}Release{{else if eq .Kind "return"}}Return of overpayment{{else}}Refund{{end}}</td>
-<td>{{.Recipient}}</td>
-<td>{{.Amount}} {{.Currency}} {{if $.LiveNetwork}}<span class="badge live">MAINNET</span>{{else}}<span class="badge testnet">TESTNET</span>{{end}}</td>
-<td>{{if .Attention}}<strong>Needs attention:</strong> {{end}}{{.StateLabel}}</td>
-<td class="mono">{{if .TxID}}{{.TxID}}{{else}}{{.Error}}{{end}}</td>
-<td>{{.Updated}}</td>
-<td>{{if or (eq .State "pending") (eq .State "blocked") (eq .State "held") (eq .State "failed") (and (eq .State "sending") .Attention)}}<a class="text-link" href="#resolve-payout-{{.ID}}">Resolve payout {{.ID}}</a>{{else}}—{{end}}</td>
-</tr>{{else}}<tr>
-<td colspan="8">No payouts recorded.</td>
-</tr>{{end}}</tbody>
-</table>
-</div>{{/* A-281: the resolve forms sit under the table, full width, each linked from its row (as A-275 did for
-payment reviews): in the Action cell they widened the scrolling table, so at 320 px they lay off-screen. */}}{{range .Payouts}}{{$p := .}}{{if or (eq .State "pending") (eq .State "blocked") (eq .State "held") (eq .State "failed") (and (eq .State "sending") .Attention)}}
-<details class="payout-actions" id="resolve-payout-{{.ID}}"{{with $.WalletEvidence}}{{if eq .PayoutID $p.ID}} open{{end}}{{end}}>
-<summary>Resolve payout {{.ID}}: {{.Kind}} {{.Amount}} {{.Currency}} to {{.Recipient}}, order {{.OrderShort}}</summary>
-<p class="help"><a class="text-link" href="/admin?wallet_evidence={{.ID}}#resolve-payout-{{.ID}}">Read recent pooled-wallet entries for this payout address</a>. This is display-only advice; an address match may be another payment. Wallet history may be incomplete after a rescan, and no match never proves no send. Check the wallet as the recovery steps below require.</p>
-{{with $.WalletEvidence}}{{if eq .PayoutID $p.ID}}<div class="notice" role="status" aria-label="Pooled wallet evidence for payout {{.PayoutID}}">
-<p><strong>Recent pooled-wallet evidence for payout {{.PayoutID}}.</strong> {{if eq .State "busy"}}Wallet read busy; try this link again.{{else if eq .State "unavailable"}}Wallet evidence unavailable; check the wallet directly.{{else if eq .State "unsupported"}}This provider does not offer wallet evidence; check the wallet directly.{{else if eq .State "no-address"}}This payout has no recorded destination address to match.{{else}}{{if eq .State "limited"}}Limited wallet read.{{else}}Wallet read completed.{{end}} {{.Scope}}{{if .Entries}} Exact-address outgoing entries found; none is proven to be this payout.{{else}} No exact-address outgoing entry was found in this read.{{end}}{{end}}</p>
-{{if .Entries}}<ul>{{range .Entries}}<li><span class="mono">{{.TxID}}</span>: {{.Amount}} {{$p.Currency}} to this payout address; {{.Status}}, {{.Confirmations}} confirmations.</li>{{end}}</ul>{{end}}
-<p class="help">May be incomplete after a rescan. Absence here never proves no send; use the full wallet checks before any recovery action.</p>
-</div>{{end}}{{end}}
-{{if and .AddressCheck (not .Address)}}<p class="help">This payout was held when the recipient's account was suspended and has no payout address. It can be released after the recipient saves one (once the account is restored); check that address with them first.</p>
-{{else if .Waiting}}{{$threshold := .Threshold}}<p class="help">The payment watcher holds this payout while a credited deposit of {{if .OrderLink}}<a class="text-link" href="/order?id={{.OrderID}}">this order</a>{{else}}this order{{end}} is conflicted or below the confirmation threshold, and can resume it only after every credited deposit reaches the confirmation threshold again. A conflicted or missing deposit that never recovers needs wallet reconciliation and manual review. There is nothing to release until then:</p>
-<ul class="held-deposits">{{range .Waiting}}<li>Deposit <span class="mono">{{.TxID}}:{{.Index}}</span> to deposit address <span class="mono">{{.Address}}</span>: {{if lt .Confirmations 0}}conflicted or missing from the wallet{{else}}{{.Confirmations}} of {{$threshold}} confirmations{{end}}</li>{{end}}</ul>
-{{else if or (eq .State "blocked") (eq .State "pending")}}{{if eq .State "pending"}}<p class="help">The market may start sending this queued payout at any moment. To pay it by hand, first hold it here and wait for the successful hold before paying. If the hold is refused because sending started, check the wallet; do not pay it by hand. A successful hold stops the market from sending it. Once you pay it, record it as sent with the wallet's transaction ID.</p>{{else}}<p class="help">The recipient has saved no {{.Currency}} payout address, so the market cannot send this payout. The simplest route is to ask the recipient to save one: the market then sends it once. To pay it by hand instead, first hold it here, then pay it from the pooled wallet to an address the recipient gave you through a channel you trust, then record it as sent with the wallet's transaction ID. A held payout is not sent even if the recipient saves an address meanwhile; an unheld one would be, and your payment would be a second one. Until it is sent or recorded, the pooled wallet cannot be drained.</p>{{end}}
-<form class="stack" method="post" action="/admin/payout">
-<input type="hidden" name="csrf" value="{{$.CSRF}}">
-<input type="hidden" name="form_nonce" value="{{formNonce "/admin/payout"}}">
-<input type="hidden" name="payout_id" value="{{.ID}}">
-<input type="hidden" name="op" value="hold">
-<label>Reason for holding it (staff only)<textarea name="note" required minlength="10" maxlength="500" rows="2"></textarea>
-</label>
-{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
-<button type="submit">Hold to pay by hand</button>
-</form>
-{{else if eq .State "held"}}<form class="stack" method="post" action="/admin/payout">
-<input type="hidden" name="csrf" value="{{$.CSRF}}">
-<input type="hidden" name="form_nonce" value="{{formNonce "/admin/payout"}}">
-<input type="hidden" name="payout_id" value="{{.ID}}">
-<input type="hidden" name="op" value="release">
-{{if .AddressCheck}}<p class="help">This payout was held when the recipient's account was suspended: someone with the account's password may have changed its payout address. Payout address: <span class="mono">{{.Address}}</span>. Release only after checking this address with the account owner through a channel you trust. It will be sent once.</p>
-<label class="check"><input type="checkbox" name="address_checked" value="confirmed" required> Payout address checked: the account owner confirmed this address is theirs</label>
-{{end}}{{if .LargeCheck}}{{if eq .Kind "release"}}<p class="help">This is a release to the vendor, not a refund. On this legacy below-floor listing, the held release includes the excess and there is no separate buyer-return payout. If you decide to return the excess, send it manually from the pooled wallet; use Mark sent only for this vendor release and its transaction ID.</p>
-<label class="check"><input type="checkbox" name="large_reviewed" value="confirmed" required> Reviewed: this held payout releases the amount shown to the vendor</label>
-{{else}}<p class="help">This {{if eq .Kind "return"}}return of an overpayment{{else}}refund{{end}} is larger than the order price, so it was held as a likely mistake. This check does not stop swaps: refunds and returns up to the order price are sent automatically, so the market's pooled wallet can be used to swap coins up to a listing's price without review{{if eq .Kind "return"}}; a return is held only when the amount paid over the price is itself larger than the price{{end}}. Open the order and check that the payment looks like a genuine mistake before releasing it; if it does not, leave it held. It will be sent once, with the network fee taken from it.</p>
-<label class="check"><input type="checkbox" name="large_reviewed" value="confirmed" required> Reviewed: this payment is a genuine mistake and may be returned</label>{{end}}
-{{end}}{{if .HandHold}}<p class="help">An administrator held this payout to pay it by hand. Once it is paid, record it as sent below with the wallet's transaction ID. Release it only if nobody paid it by hand: the market then sends it once the recipient has a payout address{{if .Address}} (<span class="mono">{{.Address}}</span>){{end}}.</p>
-<label class="check"><input type="checkbox" name="not_paid" value="confirmed" required> Nobody paid this payout by hand: I checked the pooled wallet</label>
-{{end}}{{if .Ambiguous}}<p class="help">This payout was restored from a backup and may already have been sent. Release only if the wallet shows no transaction {{if .Address}}to {{.Address}} {{end}}for this amount; otherwise mark it sent with the wallet's transaction ID. It will be sent once.</p>
-{{template "admin-payments:wallet-check"}}<label class="check"><input type="checkbox" name="not_broadcast" value="confirmed" required> I checked the wallet (including pending and pool transfers): no transaction to this address for this amount was broadcast</label>
-{{else if not (or .AddressCheck .LargeCheck .HandHold)}}<p class="help">Release only after checking the wallet: this payout was never sent from this database's point of view, and it will be sent once.</p>
-{{end}}{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
-<button type="submit">Release held payout</button>
-</form>{{else}}{{if and .RequeueAddressCheck (not .Address)}}<p class="help">This failed or stuck payout has no recorded address to check. The recipient must save a payout address after the account is restored; an administrator must check it with them before requeueing. Nothing can be requeued from here yet.</p>{{else}}<form class="stack" method="post" action="/admin/payout">
-<input type="hidden" name="csrf" value="{{$.CSRF}}">
-<input type="hidden" name="form_nonce" value="{{formNonce "/admin/payout"}}">
-<input type="hidden" name="payout_id" value="{{.ID}}">
-<input type="hidden" name="op" value="requeue">
-<p class="help">Requeue only if the wallet shows no transaction to {{.Address}} for this amount; it will be sent once more.</p>
-{{if .RequeueAddressCheck}}<p class="help">The recipient is suspended or was suspended while this payout was waiting. Someone with their password may have changed its destination. Recorded payout address: <span class="mono">{{.Address}}</span>. Check this address with the account owner through a channel you trust before another send.</p>
-<label class="check"><input type="checkbox" name="address_checked" value="confirmed" required> Payout address checked: the account owner confirmed this address is theirs</label>
-{{end}}
-{{if .Ambiguous}}{{template "admin-payments:wallet-check"}}<label class="check"><input type="checkbox" name="not_broadcast" value="confirmed" required> I checked the wallet (including pending and pool transfers): no transaction to this address for this amount was broadcast</label>
-{{end}}{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
-<button type="submit">Requeue payout</button>
-</form>{{end}}{{end}}
-{{if .Repoint}}<form class="stack" method="post" action="/admin/payout">
-<input type="hidden" name="csrf" value="{{$.CSRF}}">
-<input type="hidden" name="form_nonce" value="{{formNonce "/admin/payout"}}">
-<input type="hidden" name="payout_id" value="{{.ID}}">
-<input type="hidden" name="op" value="repoint">
-<input type="hidden" name="from_address" value="{{.Address}}">
-<input type="hidden" name="to_address" value="{{.CurrentAddress}}">
-<p class="help">The recipient's saved {{.Currency}} payout address differs from this payout's. Payout address: <span class="mono">{{.Address}}</span>. Account's current address: <span class="mono">{{.CurrentAddress}}</span> ({{if .CurrentChanged}}last changed {{.CurrentChanged}}{{else}}change time not recorded{{end}}). Anyone with the account's password can change the saved address: move the payout only after the account owner confirms the current address through a channel you trust. Moving sends nothing and keeps the payout's status{{if eq .State "failed"}}: requeue it afterwards{{end}}.</p>
-<label class="check"><input type="checkbox" name="address_checked" value="confirmed" required> Current address checked: the account owner confirmed it is theirs</label>
-{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
-<button type="submit">Use the account's current address</button>
-</form>{{end}}
-<form class="stack" method="post" action="/admin/payout">
-<input type="hidden" name="csrf" value="{{$.CSRF}}">
-<input type="hidden" name="form_nonce" value="{{formNonce "/admin/payout"}}">
-<input type="hidden" name="payout_id" value="{{.ID}}">
-<input type="hidden" name="op" value="sent">
-<label>Wallet transaction ID<input name="txid" required minlength="64" maxlength="64" pattern="[0-9a-fA-F]{64}" title="Enter the 64-character hexadecimal transaction ID from the wallet." spellcheck="false" autocomplete="off">
-</label>
-<p class="help">The market does not check the transaction ID against the chain: it records the ID you enter, and the recipient is sent it.</p>
-<p class="help">If the ID is already recorded for another payout, the market names that payout and asks you to confirm that this transaction pays both. After checking the wallet, enter the other payout number below and tick the confirmation. Leave these fields empty for a transaction used only for this payout.</p>
-<label>Other payout number (only after a reused-ID warning)<input type="number" name="shared_payout_id" min="1" step="1"></label>
-<label class="check"><input type="checkbox" name="shared_txid" value="confirmed"> This transaction also pays the other payout number entered above; I checked both payments in the wallet</label>
-{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
-<button type="submit">{{if or (eq .State "blocked") .HandHold}}Record sent by hand{{else}}Mark sent{{end}}</button>
-</form>
-</details>{{end}}{{end}}
+<input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="form_nonce" value="{{formNonce "/admin/payment-intake"}}"><input type="hidden" name="currency" value="{{.Currency}}">
+<fieldset><legend>New {{.Currency}} checkouts</legend>
+<label class="check"><input type="radio" name="enabled" value="escrow" required{{if eq $v "escrow"}} checked{{end}}> Escrow</label>
+<label class="check"><input type="radio" name="enabled" value="false" required{{if eq $v "false"}} checked{{end}}> Paused</label></fieldset>
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}<button type="submit">Save {{.Currency}} intake</button></form></div>{{end}}
+<h3 id="escrow-readiness">Escrow readiness</h3>{{with $.EscrowReadiness}}
+<ul>{{range .Coins}}<li>{{.Currency}} escrow: {{if .EscrowOn}}on{{with .NotReady}} (not ready: {{.}}){{end}}{{else}}off{{end}}; intake: {{if eq .Intake "escrow"}}escrow{{else}}paused{{end}}.</li>{{end}}</ul>
+<p id="escrow-readiness-listings"><strong>{{.ListingCount}}</strong> active {{if eq .ListingCount 1}}listing cannot{{else}}listings cannot{{end}} use escrow in any coin.</p>{{if .Listings}}<ul>{{range .Listings}}<li><a href="/product?id={{.ID}}">{{.Title}}</a> ({{.Vendor}}): {{.Reason}}</li>{{end}}</ul>{{end}}
+<p id="escrow-readiness-vendors"><strong>{{.VendorCount}}</strong> {{if eq .VendorCount 1}}vendor has{{else}}vendors have{{end}} active listings but no active Bitcoin escrow key.</p>{{end}}
+<h3 id="payouts">Historical pooled payouts</h3>
+<p>These records are read only. This build does not queue, send or change pooled payouts.</p>
+<div class="table-wrap"><table><thead><tr><th>Order</th><th>Type</th><th>Recipient</th><th>Amount</th><th>Status</th><th>Transaction or error</th><th>Updated</th></tr></thead><tbody>
+{{range .Payouts}}<tr><td class="mono">{{if .OrderLink}}<a href="/order?id={{.OrderID}}">{{.OrderID}}</a>{{else}}{{.OrderID}}{{end}}</td><td>{{.Kind}}</td><td>{{.Recipient}}</td><td>{{.Amount}} {{.Currency}}</td><td>{{.StateLabel}}</td><td class="mono">{{if .TxID}}{{.TxID}}{{else}}{{.Error}}{{end}}</td><td>{{.Updated}}</td></tr>{{else}}<tr><td colspan="7">No historical payouts recorded.</td></tr>{{end}}</tbody></table></div>
 </section>{{end}}

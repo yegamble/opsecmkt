@@ -19,7 +19,6 @@ const (
 )
 
 func init() {
-	registerAction("/orders/pay", actionSpec{OneAtATime: true, FormNonce: true, Run: payAction})
 	registerAction("/orders/cancel", actionSpec{FormNonce: true, Run: cancelAction})
 	registerAction("/orders/ship", actionSpec{FormNonce: true, Run: shipAction})
 	registerAction("/orders/deliver", actionSpec{FormNonce: true, Run: deliverAction})
@@ -162,97 +161,6 @@ func waitForWalletLocks(ctx context.Context, tx *sql.Tx) error {
 
 // maxAwaitingPayment bounds the stock one buyer can hold in unpaid orders (the watcher also expires them).
 const maxAwaitingPayment = 3
-
-// payAction: buyer moves draft -> awaiting_payment at the current listing price. A physical order whose vendor has
-// no key that can receive encrypted messages is refused before transition (409, A-83). transition() refuses when no
-// provider serves the currency (409) and the stock hook reserves one unit (409 when none is left). Only then is the
-// live wallet asked for an address, so refused requests never create wallet addresses.
-func payAction(c *actionCtx) (actionResult, error) {
-	ctx := c.Ctx()
-	if err := waitForWalletLocks(ctx, c.Tx); err != nil {
-		return actionResult{}, err
-	}
-	o, err := partyOrder(c, c.Form.Get("order_id"))
-	if err != nil {
-		return actionResult{}, err
-	}
-	if o.State == stateDraft {
-		if err := lockNewIntake(c, o.BuyerID, o.VendorID, false); err != nil {
-			return actionResult{}, err
-		}
-	}
-	if o.BuyerID == c.User.ID && o.State == stateDraft {
-		if o.Kind == "service" {
-			return actionResult{}, fail(409, "This legacy service order cannot request a new payment address. Nothing was changed.")
-		}
-		var open int
-		// The buyer row lock serialises concurrent requests so the cap cannot be raced. The count must be a
-		// separate statement: under READ COMMITTED it then takes its snapshot after the lock is held and sees
-		// the orders a concurrent request committed while this one waited. FOR NO KEY UPDATE, not FOR UPDATE:
-		// it is held while the wallet is asked for an address, and inserts that reference the buyer
-		// (notifications, messages, order events by anyone) take a key-share lock that FOR UPDATE would block.
-		if err = c.Tx.QueryRowContext(ctx, "SELECT count(*) FROM orders WHERE buyer_id=$1 AND state='awaiting_payment'", c.User.ID).Scan(&open); err != nil {
-			return actionResult{}, err
-		}
-		if open >= maxAwaitingPayment {
-			return actionResult{}, fail(409, "You already have "+strconv.Itoa(maxAwaitingPayment)+" orders awaiting payment. Pay or cancel one before requesting another payment address.")
-		}
-	}
-	if err = lockPaymentIntake(c, o.Currency, kindPooled); err != nil {
-		return actionResult{}, err
-	}
-	// A-216, A-232: a listing priced below its currency's payout floor (Bitcoin before A-99, Monero before A-232)
-	// takes no payment request in that currency on a draft saved earlier; the order would take that price. A-83: the
-	// buyer of a physical order must be able to send the vendor an encrypted shipping address. Both are checked
-	// before any reservation or wallet call, after the reasons the order page gives first (paused intake, then no
-	// wallet, as transition refuses); the page shows the key reason instead of the form (vendorKeyGate).
-	if o.State == stateDraft && o.BuyerID == c.User.ID {
-		if c.A.provider(o.Currency) == nil {
-			return actionResult{}, fail(409, "Payment unavailable for "+o.Currency)
-		}
-		var btc, xmr int64
-		if err = c.Tx.QueryRowContext(ctx, "SELECT btc,xmr FROM products WHERE id=$1", o.ProductID).Scan(&btc, &xmr); err != nil {
-			return actionResult{}, err
-		}
-		price, otherPrice := btc, xmr
-		if o.Currency == "XMR" {
-			price, otherPrice = xmr, btc
-		}
-		if price < payoutFloor(o.Currency, "release") {
-			return actionResult{}, fail(400, subFloorListing(o.Currency, otherPrice))
-		}
-		if o.Kind == "physical" {
-			if ok, err := userCanReceiveEncrypted(ctx, c.Tx, o.VendorID); err != nil {
-				return actionResult{}, err
-			} else if !ok {
-				return actionResult{}, fail(409, "Payment unavailable. "+noVendorKeyReason+" Nothing was changed.")
-			}
-		}
-	}
-	if _, err = c.Tx.ExecContext(ctx, "UPDATE orders o SET amount=CASE WHEN o.currency='XMR' THEN p.xmr ELSE p.btc END FROM products p WHERE o.id=$1 AND o.state='draft' AND p.id=o.product_id", o.ID); err != nil {
-		return actionResult{}, err
-	}
-	if _, err = c.A.transition(withCheckoutPrice(ctx), c.Tx, o.ID, stateDraft, stateAwaitingPayment, c.User, "Payment address requested"); err != nil {
-		return actionResult{}, err
-	}
-	p := c.A.provider(o.Currency)
-	// The watcher may disable a provider while transition's stock reservation
-	// waits for a row lock. Recheck before calling it and roll back that reservation.
-	if p == nil {
-		return actionResult{}, fail(409, "Payment unavailable for "+o.Currency)
-	}
-	addr, err := p.NewAddress(ctx, o.ID)
-	if err != nil || addr == "" || !p.ValidAddress(addr) {
-		return actionResult{}, fail(503, "The "+o.Currency+" "+c.A.netAdj()+" wallet did not return a usable address. Nothing was changed; try again later.")
-	}
-	if _, err = c.Tx.ExecContext(ctx, "INSERT INTO payment_addresses(order_id,currency,address,provider) VALUES($1,$2,$3,$4)", o.ID, o.Currency, addr, strings.ToLower(o.Currency)+"-"+p.Network()); err != nil {
-		if addressAlreadyIssued(err) { // A-288: a wallet restored from an older backup
-			return actionResult{}, addressCollisionRefusal(c, o.Currency, p.Network())
-		}
-		return actionResult{}, err
-	}
-	return actionResult{Redirect: orderPage(o.ID), Notice: "payment-address", Audit: "Requested " + o.Currency + " " + c.A.netAdj() + " payment address for order " + shortID(o.ID)}, nil
-}
 
 // hasDeposits reports whether an order has received a deposit that can be refunded: not conflicted and not a
 // locked transfer (those are never paid out automatically), confirmed or still confirming.

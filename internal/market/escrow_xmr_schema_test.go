@@ -509,31 +509,16 @@ func TestXMREscrowMigration084(t *testing.T) {
 // order's escrow (as by hand).
 func TestXMREscrowPayoutRefused(t *testing.T) {
 	e := newTestApp(t)
-	fake := newFakeProvider("XMR", 10)
-	e.A.payments["XMR"] = fake
 	buyer, _ := e.user("xpay_buyer", "buyer")
 	vendor, _ := e.user("xpay_vendor", "vendor")
 	product := e.product(vendor, "digital")
 	w := xmrWallet(t, e, 1, "active")
 	order, _, _ := xmrEscrow(t, e, w, 1, buyer, product, stateCompleted)
-	payout := "INSERT INTO payouts(order_id,kind,user_id,currency,amount,address,state) VALUES($1,'release',$2,'XMR',100000,'fake-testnet-vendor','pending')"
+	payout := "INSERT INTO payouts(order_id,kind,user_id,currency,amount,address,state) VALUES($1,'release',$2,'XMR',100000,'historical-vendor','pending')"
 	xmrRefused(t, e, "a payout of a Monero escrow order", "is an escrow order", payout, order, vendor)
-	pooled := e.order(buyer, product, "XMR", stateCompleted)
-	agExec(e, payout, pooled, vendor)
-	xmrRefused(t, e, "a payout moved to a Monero escrow order", "is an escrow order", "UPDATE payouts SET order_id=$2 WHERE order_id=$1", pooled, order)
-
-	// A pending payout written before its order got a Monero escrow is never claimed; a pooled one in the same pass is.
-	early := e.order(buyer, product, "XMR", stateCompleted)
-	agExec(e, payout, early, vendor)
-	slot := xmrSlot(t, e, w, 2)
-	addr := agStrings(t, e, "UPDATE xmr_escrow_slots SET state='claimed',order_id=$2 WHERE id=$1 RETURNING address", slot, early)[0]
-	agExec(e, "INSERT INTO escrows(order_id,coin,address,refund_address,fee_bps,fee_destination,xmr_slot_id) VALUES($1,'XMR',$2,$3,0,'',$4)", early, addr, xmrAddr("refund-early"), slot)
-	if err := e.A.sendPayouts(context.Background(), fake, []string{early, pooled}); err != nil {
-		t.Fatal(err)
-	}
-	if len(fake.Sends()) != 1 || agInt(e, "SELECT count(*) FROM payouts WHERE order_id=$1 AND state='pending'", early) != 1 {
-		t.Fatalf("%d sends; the Monero escrow order's payout must stay pending and the pooled one be sent", len(fake.Sends()))
-	}
+	historical := e.order(buyer, product, "XMR", stateCompleted)
+	agExec(e, payout, historical, vendor)
+	xmrRefused(t, e, "a payout moved to a Monero escrow order", "is an escrow order", "UPDATE payouts SET order_id=$2 WHERE order_id=$1", historical, order)
 }
 
 // The payments idx of a Monero escrow deposit (2^62 + wallet_id·2^32 + account_index) never meets a pooled Monero

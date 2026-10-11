@@ -12,8 +12,8 @@ func init() {
 		d.VendorReadiness = &VendorReadinessView{
 			EncryptionUsable: true,
 			Currencies: []VendorCurrencyReadiness{
-				{Currency: "BTC", Intake: "Pooled and escrow", Provider: "Available", Escrow: "Available", PooledIntake: true, PayoutNeeded: true, PayoutSaved: true, EscrowKeyRequired: true, EscrowKeyActive: true, Checkout: "Available"},
-				{Currency: "XMR", Intake: "Pooled and escrow", Provider: "Available", Escrow: "Available", PooledIntake: true, PayoutNeeded: true, PayoutSaved: true, Checkout: "Available"},
+				{Currency: "BTC", Intake: "Escrow", Escrow: "Available", PayoutSaved: true, EscrowKeyRequired: true, EscrowKeyActive: true, Checkout: "Available"},
+				{Currency: "XMR", Intake: "Escrow", Escrow: "Available", PayoutSaved: true, Checkout: "Available"},
 			},
 		}
 	})
@@ -53,46 +53,13 @@ func loadVendorReadiness(ctx context.Context, a *App, _ *http.Request, d *PageDa
 
 func vendorCurrencyReadiness(a *App, d *PageData, currency, payout string, escrowOn, escrowReady, hasEscrowKey, escrowKeyActive, perOrder bool, signerState string) VendorCurrencyReadiness {
 	mode := d.Settings[paymentIntakeKey(currency)]
-	if mode != intakeOn && mode != intakeEscrow {
-		mode = intakePaused
-	}
 	v := VendorCurrencyReadiness{Currency: currency, PayoutSaved: payout != "", EscrowKeyActive: escrowKeyActive}
-	providerAvailable := a.provider(currency) != nil
-	providerConfigured := a.pooledConfigured(currency)
-	switch mode {
-	case intakeOn:
-		v.Intake, v.PooledIntake, v.PayoutNeeded = "Pooled and escrow", true, true
-	case intakeEscrow:
-		v.Intake = "Escrow only"
-	default:
+	if mode == intakeEscrow {
+		v.Intake = "Escrow"
+	} else {
 		v.Intake = "Paused"
 	}
-	if providerAvailable {
-		v.Provider = "Configured; availability is checked when paying"
-	} else if providerConfigured {
-		v.Provider = "Configured; last check unavailable"
-	} else {
-		v.Provider = "Not configured"
-	}
-	if escrowOn && currency == "BTC" {
-		var blockers []string
-		if a.escrow.Load() == nil {
-			blockers = append(blockers, "Bitcoin startup checks have not passed")
-		}
-		if hasEscrowKey && !escrowKeyActive {
-			blockers = append(blockers, "your Bitcoin escrow account key is not active")
-		}
-		if perOrder && signerState != signerReady {
-			blockers = append(blockers, "per-order signer is not ready")
-		}
-		if len(blockers) > 0 {
-			v.Escrow = strings.Join(blockers, "; ")
-		} else if escrowReady {
-			v.Escrow = "Ready at last check"
-		} else {
-			v.Escrow = "Configured; not ready at last check"
-		}
-	} else if escrowOn {
+	if escrowOn {
 		if escrowReady {
 			v.Escrow = "Ready at last check"
 		} else {
@@ -101,32 +68,29 @@ func vendorCurrencyReadiness(a *App, d *PageData, currency, payout string, escro
 	} else {
 		v.Escrow = "Off"
 	}
-	v.EscrowKeyRequired = hasEscrowKey && mode != intakePaused
-	if v.PayoutNeeded {
-		if v.PayoutSaved {
-			v.Payout = "Saved; check it on your account"
-		} else {
-			v.Payout = "Needed for pooled payouts"
+	if currency == "BTC" && escrowOn {
+		var blockers []string
+		if a.escrow.Load() == nil {
+			blockers = append(blockers, "Bitcoin startup checks have not passed")
 		}
-	} else {
-		v.Payout = "Not needed for escrow-only or paused intake"
+		if !escrowKeyActive {
+			blockers = append(blockers, "your Bitcoin escrow account key is not active")
+		}
+		if perOrder && signerState != signerReady {
+			blockers = append(blockers, "per-order signer is not ready")
+		}
+		if len(blockers) > 0 {
+			v.Escrow = strings.Join(blockers, "; ")
+		}
 	}
-	if mode == intakePaused {
+	v.EscrowKeyRequired = hasEscrowKey && mode == intakeEscrow
+	v.Payout = "Legacy pooled payout addresses are retained as history"
+	if mode != intakeEscrow {
 		v.Checkout = "No current checkout: intake is paused"
-	} else if mode == intakeEscrow {
-		if escrowReady {
-			v.Checkout = "Escrow checkout ready at last check (eligible listings only)"
-		} else if currency == "BTC" {
-			v.Checkout = "No current checkout: Bitcoin escrow or this account's key/signer is not ready"
-		} else {
-			v.Checkout = "No current checkout: Monero escrow is not ready"
-		}
-	} else if providerAvailable {
-		v.Checkout = "Pooled checkout configured; wallet availability is checked when paying"
 	} else if escrowReady {
 		v.Checkout = "Escrow checkout ready at last check (eligible listings only)"
 	} else {
-		v.Checkout = "No current checkout: no usable provider or escrow setup is ready"
+		v.Checkout = "No current checkout: escrow is not ready"
 	}
 	return v
 }

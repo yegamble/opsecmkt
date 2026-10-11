@@ -801,18 +801,6 @@ func TestEscrowPracticeKeyChangedDuringCheck(t *testing.T) {
 
 // A mainnet market (a payment provider configured for mainnet) with ESCROW_BTC=on stops startup before any escrow
 // RPC, even with BITCOIN_CHAIN blank (QA-P1a-6, M4c): escrow runs on test networks only.
-func TestEscrowStartupRefusesMainnetMarket(t *testing.T) {
-	core, srv := newFakeEscrowCore(t)
-	setEscrowEnv(t, srv.url(""))
-	withProviderFactory(t, func(context.Context) (PaymentProvider, error) { return liveFake{newFakeProvider("BTC", 3)}, nil })
-	a, _, err := startApp(t, "")
-	if err == nil || a != nil || !strings.Contains(err.Error(), "ESCROW_BTC=on runs only on test networks") || !strings.Contains(err.Error(), "mainnet") {
-		t.Fatalf("got %v", err)
-	}
-	if m := core.methods(); len(m) != 0 {
-		t.Fatalf("escrow RPC before the refusal: %v", m)
-	}
-}
 
 // A party-key row sealed under another root is unreadable: /escrow-key says so with a fixed message instead of
 // blaming the node, the practice check refuses the same way, and registering the key again replaces that row.

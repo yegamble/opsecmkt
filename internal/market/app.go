@@ -50,31 +50,25 @@ type App struct {
 	key              []byte // CSRF/CAPTCHA HMAC key, sha256("csrf:"+keyRoot)
 	captchaIDKey     []byte // CAPTCHA challenge-id MAC key, sha256("captcha-id:"+keyRoot); empty = no challenges
 	mu               sync.Mutex
-	limits           map[string]bucket               // authentication and factor budgets
-	writeLimits      map[string]bucket               // independent per-account write budgets (A-75)
-	inFlight         map[string]int                  // OneAtATime actions in progress, by path and account (enterOneAtATime)
-	signInLogAt      time.Time                       // last "sign-in limiter refusing" log line (guarded by mu)
-	payMu            sync.RWMutex                    // guards payments and unavailable once Start has run
-	checkMu          sync.Mutex                      // serialises provider checks (refreshProviders)
-	payments         map[string]PaymentProvider      // currency -> working provider; empty = payments disabled
-	unavailable      map[string]*unavailableProvider // configured but failing its checks (retried each watcher pass)
-	live             bool                            // payment providers are configured for mainnet (initPayments)
-	escrowConfigured bool                            // ESCROW_BTC=on (escrow_rpc.go); escrow may still be disabled
-	escrowCfg        escrowConfig                    // the ESCROW_BTC settings read at startup, for the escrow watcher's retries
-	escrowStartState string                          // the escrow state line logged at startup (escrowRetry starts from it)
-	escrow           atomic.Pointer[escrowBTC]       // the Bitcoin escrow adapter once ESCROW_BTC=on passed its checks, at startup or on a watcher retry (A-316); nil = no escrow; never cleared once set
-	escrowXMR        *escrowXMR                      // Monero escrow while ESCROW_XMR=on (escrow_xmr_config.go), ready or not; nil = off; set once in New
-	scanner          *imageScanner                   // clamd client for uploads (clamd.go); nil = Disabled
-	storageLimit     int64                           // IMAGE_STORAGE_LIMIT_MB in bytes (uploads.go); 0 = the default
+	limits           map[string]bucket         // authentication and factor budgets
+	writeLimits      map[string]bucket         // independent per-account write budgets (A-75)
+	inFlight         map[string]int            // OneAtATime actions in progress, by path and account (enterOneAtATime)
+	signInLogAt      time.Time                 // last "sign-in limiter refusing" log line (guarded by mu)
+	live             bool                      // escrow currently supports test networks only
+	escrowConfigured bool                      // ESCROW_BTC=on (escrow_rpc.go); escrow may still be disabled
+	escrowCfg        escrowConfig              // the ESCROW_BTC settings read at startup, for the escrow watcher's retries
+	escrowStartState string                    // the escrow state line logged at startup (escrowRetry starts from it)
+	escrow           atomic.Pointer[escrowBTC] // the Bitcoin escrow adapter once ESCROW_BTC=on passed its checks, at startup or on a watcher retry (A-316); nil = no escrow; never cleared once set
+	escrowXMR        *escrowXMR                // Monero escrow while ESCROW_XMR=on (escrow_xmr_config.go), ready or not; nil = off; set once in New
+	scanner          *imageScanner             // clamd client for uploads (clamd.go); nil = Disabled
+	storageLimit     int64                     // IMAGE_STORAGE_LIMIT_MB in bytes (uploads.go); 0 = the default
 	stop             context.CancelFunc
 	background       sync.WaitGroup
 
 	// The Bitcoin node sync guard and escrow chain pin (A-439, bitcoin_sync.go), in memory only.
-	syncLogged      map[string]string                   // currency -> the pooled not-synced reason last logged ("" = synced); guarded by checkMu
-	escrowSync      atomic.Value                        // string: the reason class the escrow watcher last found its node not synced for ("" or unset = synced)
-	escrowMismatch  atomic.Pointer[EscrowChainMismatch] // set while startEscrow refuses the node's chain against the escrow chain pin; nil = none
-	escrowPooledKey atomic.Pointer[string]              // set while startEscrow's pooled key self-check (A-440) got no refusal: the answer's class; nil = none
-	escrowNet       atomic.Pointer[string]              // the escrow chain escrowNetwork names while escrow is not enabled (A-443); nil = not known yet
+	escrowSync     atomic.Value                        // string: the reason class the escrow watcher last found its node not synced for ("" or unset = synced)
+	escrowMismatch atomic.Pointer[EscrowChainMismatch] // set while startEscrow refuses the node's chain against the escrow chain pin; nil = none
+	escrowNet      atomic.Pointer[string]              // the escrow chain escrowNetwork names while escrow is not enabled (A-443); nil = not known yet
 	// The arbiter wallet check (QA4W4A-1, checkArbiterWallet), in memory only; the checkpoint is in settings.
 	escrowArbiterRead atomic.Pointer[string] // set while startEscrow could not finish reading the arbiter wallet's entries: "waiting" (the read goes on) or the read failure's class; nil = none
 	escrowScanMu      sync.Mutex             // guards escrowScan and escrowPace
@@ -110,7 +104,7 @@ func New(ctx context.Context, preview bool) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	a := &App{startedAt: time.Now().UTC(), templates: t, preview: preview, mode: os.Getenv("APP_MODE"), limits: make(map[string]bucket), writeLimits: make(map[string]bucket), payments: map[string]PaymentProvider{}, unavailable: map[string]*unavailableProvider{}}
+	a := &App{startedAt: time.Now().UTC(), templates: t, preview: preview, mode: os.Getenv("APP_MODE"), limits: make(map[string]bucket), writeLimits: make(map[string]bucket)}
 	if a.mode == "" {
 		a.mode = "clearnet"
 	}
@@ -176,19 +170,6 @@ func New(ctx context.Context, preview bool) (*App, error) {
 	a.health.SetMaxIdleConns(1)
 	a.health.SetConnMaxLifetime(30 * time.Minute)
 	if err = a.checkInstallState(ctx, legacy); err != nil {
-		a.closeDB()
-		return nil, err
-	}
-	payCtx, cancel := context.WithTimeout(ctx, paymentStartupTimeout)
-	defer cancel()
-	if err = a.initPayments(payCtx); err != nil {
-		a.closeDB()
-		if timedOut(ctx, payCtx) {
-			return nil, fmt.Errorf("payment provider startup timed out after %s; check the wallet and node RPC services: %w", paymentStartupTimeout, err)
-		}
-		return nil, err
-	}
-	if err = a.checkNetworkHistory(ctx); err != nil {
 		a.closeDB()
 		return nil, err
 	}

@@ -180,6 +180,9 @@ func (a *App) transition(ctx context.Context, tx *sql.Tx, orderID, from, to stri
 	if o.State != from {
 		return nil, errConflict
 	}
+	if !o.Escrow && !(from == stateDraft && to == stateCancelled) && !(from == stateDraft && to == stateAwaitingPayment && isEscrowCheckout(ctx)) {
+		return nil, fail(409, "Historical pooled orders are read-only")
+	}
 	if from == stateDisputed && (to == stateCompleted || to == stateCancelled) {
 		concession, ok := ctx.Value(concessionTransitionKey{}).(concessionTransition)
 		if !ok || actor == nil || concession.orderID != orderID || concession.to != to || concession.actorID != actor.ID {
@@ -204,21 +207,8 @@ func (a *App) transition(ctx context.Context, tx *sql.Tx, orderID, from, to stri
 	if kind, ok := transitionKind[[2]string{from, to}]; ok && o.Kind != kind {
 		return nil, fail(403, "This step is only available for "+kind+" orders.")
 	}
-	// An escrow checkout needs its coin's escrow (escrowCheckoutAction, xmrEscrowCheckoutAction), not a pooled wallet
-	// for the currency.
-	if from == stateDraft && to == stateAwaitingPayment && a.provider(o.Currency) == nil && !(isEscrowCheckout(ctx) && a.escrowReady(o.Currency)) {
-		return nil, fail(409, "Payment unavailable for "+o.Currency)
-	}
-	// A pooled payment request while the currency's intake is escrow only (P4-R8): payAction's lockPaymentIntake
-	// refuses it first; this refuses any other pooled path to awaiting_payment.
-	if from == stateDraft && to == stateAwaitingPayment && !isEscrowCheckout(ctx) {
-		var intake string
-		if err = tx.QueryRowContext(ctx, "SELECT value FROM settings WHERE key=$1", paymentIntakeKey(o.Currency)).Scan(&intake); err != nil && err != sql.ErrNoRows {
-			return nil, err
-		}
-		if intake == intakeEscrow {
-			return nil, fail(409, escrowOnlyRefusal(o.Currency))
-		}
+	if from == stateDraft && to == stateAwaitingPayment && (!isEscrowCheckout(ctx) || !a.escrowReady(o.Currency)) {
+		return nil, fail(409, "Escrow checkout unavailable for "+o.Currency)
 	}
 	res, err := tx.ExecContext(ctx, "UPDATE orders SET state=$2,updated=now() WHERE id=$1 AND state=$3", orderID, to, from)
 	if err != nil {

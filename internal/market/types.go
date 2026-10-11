@@ -272,10 +272,9 @@ type PageData struct {
 	Payout            *PayoutView
 	PaymentsEnabled   bool
 	PaymentNetworks   string
-	LiveNetwork       bool            // payment providers are on mainnet: amounts are real funds
-	BitcoinPriceLabel string          // network-aware label for a BTC listing price, including an unknown state.
-	Payouts           []PayoutRow     // admin: every payout needing attention (oldest first), then recent others (newest first)
-	WalletEvidence    *WalletEvidence // admin: on-demand read for one visible payout; display-only
+	LiveNetwork       bool        // payment providers are on mainnet: amounts are real funds
+	BitcoinPriceLabel string      // network-aware label for a BTC listing price, including an unknown state.
+	Payouts           []PayoutRow // admin: every payout needing attention (oldest first), then recent others (newest first)
 	// PayoutsAttention counts the leading Payouts that need attention; PayoutHistoryLimit is non-zero when
 	// the other payouts were cut to this many most recent rows.
 	PayoutsAttention   int

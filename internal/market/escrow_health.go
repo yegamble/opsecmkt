@@ -48,8 +48,6 @@ func escrowHealthDisabledClass(state string) string {
 		return "unsupported_chain"
 	case escrowLogChain:
 		return "chain_pin_mismatch"
-	case escrowLogPooledKey:
-		return "pooled_key_access"
 	case escrowLogArbiter:
 		return "arbiter_wallet_unreadable"
 	case escrowLogFingerprint:

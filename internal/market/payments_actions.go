@@ -3,184 +3,24 @@ package market
 import (
 	"context"
 	"database/sql"
-	"log"
 	"net/http"
-	"strconv"
 	"strings"
-	"time"
 )
 
 func init() {
-	registerAction("/account/payout", actionSpec{Roles: []string{"buyer", "vendor", "moderator", "admin"}, OwnTx: true, ConfirmedFormNonce: true, Run: payoutAddressAction})
 	registerLoader("*", paymentsGlobalLoader)
 	registerLoader("order", paymentsOrderLoader)
 	registerLoader("account", paymentsAccountLoader)
 	registerLoader("vendor-dashboard", unsentPayoutsLoader)
 	registerLoader("admin", paymentsAdminLoader)
 	registerPreview("admin", func(d *PageData) {
-		d.Providers = []ProviderStatus{{Currency: "BTC", Status: "Read-only preview", LastPoll: "Unknown (preview)", LastPollAge: "Unknown (preview)"}}
+		d.Providers = nil
 	})
-}
-
-// providerPollAge labels the last persisted watcher pass and marks a provider stale only after two expected
-// intervals, with the existing ten-minute outage threshold as a floor. A preview or missing DB timestamp stays
-// unknown; it is never represented as a live/fresh wallet check.
-func providerPollAge(raw string, now time.Time) (string, bool) {
-	if strings.TrimSpace(raw) == "" {
-		return "Not polled yet", false
-	}
-	last, err := time.Parse(`2006-01-02 15:04:05 UTC`, raw)
-	if err != nil {
-		return "Unknown", false
-	}
-	age := now.Sub(last)
-	if age < 0 {
-		return "Clock differs from database", false
-	}
-	interval, err := pollInterval()
-	staleAfter := providerOutageDelay
-	if err == nil && interval*2 > staleAfter {
-		staleAfter = interval * 2
-	}
-	var label string
-	switch {
-	case age < time.Minute:
-		label = "less than a minute ago"
-	case age < time.Hour:
-		label = strconv.FormatInt(int64(age/time.Minute), 10) + " min ago"
-	case age < 24*time.Hour:
-		label = strconv.FormatInt(int64(age/time.Hour), 10) + " hr ago"
-	default:
-		label = strconv.FormatInt(int64(age/(24*time.Hour)), 10) + " days ago"
-	}
-	return label, age >= staleAfter
-}
-
-// payoutAddressAction saves (or clears) the user's payout address for one currency. Saving requires a live
-// provider and an address valid for its network; blocked payouts for that currency are then released.
-// Every change needs the current password (and a TOTP code when enrolled), checked after the cheap validation,
-// and notifies the account.
-func payoutAddressAction(c *actionCtx) (actionResult, error) {
-	cur := c.Form.Get("currency")
-	if cur != "BTC" && cur != "XMR" {
-		return actionResult{}, fail(400, "Choose BTC or XMR")
-	}
-	addr := strings.TrimSpace(c.Form.Get("address"))
-	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
-		// Provider state can change after the first successful save. Keep it inside the
-		// receipt callback so an exact replay returns its saved result while offline.
-		p := c.A.provider(cur)
-		if addr != "" {
-			if p == nil {
-				return actionResult{}, fail(409, cur+" payments are not configured on this market, so a payout address cannot be saved.")
-			}
-			if len(addr) > 128 || !p.ValidAddress(addr) {
-				return actionResult{}, fail(400, payoutAddressHint(cur, p.Network()))
-			}
-		}
-		return savePayoutAddress(c, cur, addr, p)
-	})
-}
-
-func savePayoutAddress(c *actionCtx, cur, addr string, p PaymentProvider) (actionResult, error) {
-	column := "payout_btc"
-	if cur == "XMR" {
-		column = "payout_xmr"
-	}
-	ctx := c.Ctx()
-	// The change time is shown next to the address when an administrator moves a payout to it (A-121).
-	if _, err := c.Tx.ExecContext(ctx, "UPDATE users SET "+column+"=$1,"+column+"_changed=CASE WHEN "+column+"=$1 THEN "+column+"_changed ELSE now() END WHERE id=$2", addr, c.User.ID); err != nil {
-		return actionResult{}, err
-	}
-	audit := "Removed " + cur + " payout address"
-	note := "Your " + cur + " payout address was removed"
-	if addr != "" {
-		// Blocked payouts become pending; held payouts that had no address keep their hold but gain the address.
-		res, err := c.Tx.ExecContext(ctx, `UPDATE payouts SET address=$1,state=CASE WHEN state='blocked' THEN 'pending' ELSE state END,
-			error=CASE WHEN state='blocked' THEN '' ELSE error END,updated=now()
-			WHERE user_id=$2 AND currency=$3 AND (state='blocked' OR (state='held' AND address=''))`, addr, c.User.ID, cur)
-		if err != nil {
-			return actionResult{}, err
-		}
-		n, _ := res.RowsAffected()
-		audit = "Saved " + cur + " payout address (" + c.A.netTag() + " " + p.Network() + ")"
-		note = "Your " + cur + " payout address was changed"
-		if n > 0 {
-			audit += "; " + strconv.FormatInt(n, 10) + " waiting payout(s) now use it"
-			note += "; " + strconv.FormatInt(n, 10) + " waiting payout(s) now use it"
-		}
-		// An unsent payout that already has an address keeps it (A-121): someone who knows the password must not
-		// re-point money already on its way. The owner learns which orders still use a previous address; an
-		// administrator moves a held or definitely rejected one after checking the new address with them.
-		movable, others, err := previousAddressPayouts(ctx, c.Tx, c.User.ID, cur, addr)
-		if err != nil {
-			return actionResult{}, err
-		}
-		if len(movable) > 0 {
-			note += "; " + strconv.Itoa(len(movable)) + " unsent payout(s) still use your previous address (" + ordersList(movable) + "); an administrator must confirm the change"
-		}
-		if len(others) > 0 {
-			note += "; " + strconv.Itoa(len(others)) + " other unsent payout(s) are queued, being sent or may already have been sent, and stay on your previous address (" + ordersList(others) + ")"
-		}
-	}
-	// The owner hears of every change, so one made by someone who knows the password does not go unseen (A-102).
-	// The address itself is not repeated.
-	note += ". If you did not make this change, someone else may know your password: change it and contact the market staff."
-	if _, err := c.Tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), c.User.ID, note); err != nil {
-		return actionResult{}, err
-	}
-	return actionResult{Redirect: "/account", Notice: "payout-address", Audit: audit}, nil
-}
-
-// previousAddressPayouts returns the short order IDs of the user's unsent payouts in cur that use an address other
-// than addr, oldest first: those an administrator may move (repointable), and the others (queued, being sent, or
-// possibly broadcast).
-func previousAddressPayouts(ctx context.Context, tx *sql.Tx, userID, cur, addr string) (movable, others []string, err error) {
-	rows, err := tx.QueryContext(ctx, `SELECT order_id,state,error,send_ambiguous FROM payouts WHERE user_id=$1 AND currency=$2
-		AND address<>'' AND address<>$3 AND state IN ('held','failed','pending','sending') ORDER BY id`, userID, cur, addr)
-	if err != nil {
-		return nil, nil, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var order, state, payoutErr string
-		var ambiguous bool
-		if err = rows.Scan(&order, &state, &payoutErr, &ambiguous); err != nil {
-			return nil, nil, err
-		}
-		if repointable(state, payoutErr, ambiguous) {
-			movable = append(movable, shortID(order))
-		} else {
-			others = append(others, shortID(order))
-		}
-	}
-	return movable, others, rows.Err()
-}
-
-// ordersList names short order IDs in a notification: "order 1a2b3c4d" or "orders 1a2b3c4d, 5e6f7a8b".
-func ordersList(ids []string) string {
-	if len(ids) == 1 {
-		return "order " + ids[0]
-	}
-	return "orders " + strings.Join(ids, ", ")
-}
-
-// payoutAddressHint is the error for a payout address that is not valid for network.
-func payoutAddressHint(cur, network string) string {
-	if isLiveNetwork(network) {
-		return "Enter a valid " + cur + " mainnet address. Test-network addresses are rejected."
-	}
-	return "Enter a valid " + cur + " address for the " + network + " test network. Mainnet addresses are rejected."
 }
 
 func paymentsGlobalLoader(_ context.Context, a *App, _ *http.Request, d *PageData) error {
-	var nets []string
-	ready := a.providers()
-	for _, cur := range sortedCurrencies(ready) {
-		nets = append(nets, cur+" "+ready[cur].Network())
-	}
-	d.PaymentsEnabled = len(nets) > 0
-	d.PaymentNetworks = strings.Join(nets, ", ")
+	d.PaymentsEnabled = false
+	d.PaymentNetworks = ""
 	d.LiveNetwork = a.live
 	d.BitcoinPriceLabel = a.bitcoinPriceLabel()
 	d.EscrowOn, d.EscrowAvailable = a.escrowConfigured, a.escrow.Load() != nil
@@ -200,17 +40,8 @@ func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 		return nil
 	}
 	o := d.Order
-	privatePooledDeposit := !o.Escrow && d.User != nil && d.User.ID == o.VendorID
-	p := a.provider(o.Currency)
-	pv := &PaymentView{Currency: o.Currency, Required: o.Amount, Testnet: !a.live, Available: p != nil}
-	if p == nil {
-		msg, _ := a.unavailableError(o.Currency)
-		pv.Degraded = msg != ""
-	}
+	pv := &PaymentView{Currency: o.Currency, Required: o.Amount, Testnet: !a.live}
 	d.Payment = pv
-	if p != nil {
-		pv.Network, pv.Threshold = p.Network(), p.Confirmations()
-	}
 	dec := currencyDecimals(o.Currency)
 	// The payouts are read before the provider checks: each recipient learns what happens next even while the
 	// wallet is unavailable (A-120). Only the recipient sees a payout's destination and the reason it waits; the
@@ -250,190 +81,52 @@ func paymentsOrderLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 	if err = rows.Err(); err != nil {
 		return err
 	}
-	// windowFrom: the later of the address's issue time and latest active deposit, used for the ordinary
-	// unpaid/confirmed-underpaid window. A deposit still confirming uses the separate, fixed first-seen wait.
-	var addr string
-	var issued, windowFrom time.Time
-	var firstSeen sql.NullTime
-	var confirming bool
-	err = a.db.QueryRowContext(ctx, `SELECT pa.address,pa.created,
-		GREATEST(pa.created,(SELECT max(created) FROM payments WHERE order_id=$1 AND confirmations>=0 AND NOT locked AND NOT after_close AND NOT escrow_left_out AND NOT spent_outside)),
-		(SELECT min(created) FROM payments WHERE order_id=$1 AND NOT locked AND NOT after_close),
-		EXISTS(SELECT 1 FROM payments WHERE order_id=$1 AND confirmations>=0 AND confirmations<$2 AND NOT locked AND NOT after_close AND NOT escrow_left_out AND NOT spent_outside)
-		FROM payment_addresses pa WHERE pa.order_id=$1`, o.ID, pv.Threshold).Scan(&addr, &issued, &windowFrom, &firstSeen, &confirming)
+	var issued bool
+	err = a.db.QueryRowContext(ctx, "SELECT true FROM payment_addresses WHERE order_id=$1", o.ID).Scan(&issued)
 	if err == sql.ErrNoRows {
+		pv.Payouts = payouts
 		return nil
 	}
 	if err != nil {
 		return err
 	}
 	pv.Issued = true
-	// Only a buyer viewing an issued pooled payment gets this prompt. Escrow orders do not issue
-	// payment_addresses, so this cannot imply that escrow funds are held or automatically paid.
-	if d.User != nil && d.User.ID == o.BuyerID && (o.State == stateAwaitingPayment || o.State == statePaid || o.State == stateShipped || o.State == stateDelivered) {
-		column := "payout_btc"
-		if o.Currency == "XMR" {
-			column = "payout_xmr"
-		}
-		var saved string
-		if err = a.db.QueryRowContext(ctx, "SELECT "+column+" FROM users WHERE id=$1", o.BuyerID).Scan(&saved); err != nil {
-			return err
-		}
-		pv.BuyerNeedsPayoutAddress = saved == ""
-	}
-	pv.Monitored = p != nil
-	if !pv.Monitored {
-		pv.Status = "Not monitored: " + o.Currency + " payments are not configured on this server."
-		if pv.Degraded {
-			pv.Status = "Not monitored right now: the " + o.Currency + " " + a.netAdj() + " wallet is unavailable."
-		}
-		return nil
-	}
-	pv.Open = o.State == stateAwaitingPayment
-	if pv.Open && !privatePooledDeposit {
-		pv.Address = addr
-	}
-	if pv.Open {
-		// Truncated to the minute, so the stated time is never later than the watcher's (A-123).
-		deadline := windowFrom.Add(expiryWindow())
-		if confirming && firstSeen.Valid {
-			deadline = confirmationDeadline(issued, firstSeen.Time)
-			pv.ConfirmationWait = true
-		}
-		pv.CancelAfter = deadline.UTC().Truncate(time.Minute).Format("2006-01-02 15:04 UTC")
-		pv.RefundFloor = amount(payoutFloor(o.Currency, "refund"), dec)
-	}
-	rows, err = a.db.QueryContext(ctx, `SELECT txid,idx,amount,confirmations,credited,locked,regress_notice,flagged,below_floor,
-		disposition,disposition_txid,disposition_amount,COALESCE(to_char(disposed_at,'YYYY-MM-DD'),'') FROM payments WHERE order_id=$1 ORDER BY created,id`, o.ID)
+	pv.Status = "Historical pooled payment. Automated monitoring and payouts have been retired."
+	pv.Payouts = payouts
+	// Preserve the recorded deposit ledger without presenting its address as a payment request.
+	rows, err = a.db.QueryContext(ctx, `SELECT txid,idx,amount,confirmations,credited,locked,disposition,
+		COALESCE(to_char(disposed_at,'YYYY-MM-DD'),'') FROM payments WHERE order_id=$1 ORDER BY created,id`, o.ID)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
-	// belowFloor: deposits of a payout below the minimum automatic payout, flagged instead of paid (A-99).
-	var received, pending, belowFloor int64
-	required, err := parseAmount(o.Amount, dec)
-	if err != nil {
-		return err
-	}
-	remaining := required
-	minConfs := int64(-1)
-	// conflicted/regressed: a credited deposit is conflicted, or back below the threshold; notified: that
-	// regression was announced to the parties and staff (settleOrder).
-	conflicted, regressed, notified := false, false, false
-	// A-31: a staff disposition of a flagged deposit. A hand refund's transaction ID is shown to its recipient (the
-	// buyer) and staff reviewers, never to the vendor (A-214).
-	showRefundTxid := d.User == nil || d.User.ID != o.VendorID
 	for rows.Next() {
 		var dep PaymentDeposit
-		var amt, refunded int64
-		var credited, locked, notice, flagged, floor bool
-		var disposition, refundTxid, disposed string
-		if err = rows.Scan(&dep.TxID, &dep.Index, &amt, &dep.Confirmations, &credited, &locked, &notice, &flagged, &floor,
-			&disposition, &refundTxid, &refunded, &disposed); err != nil {
+		var atomic int64
+		var credited, locked bool
+		var disposition, disposed string
+		if err := rows.Scan(&dep.TxID, &dep.Index, &atomic, &dep.Confirmations, &credited, &locked, &disposition, &disposed); err != nil {
 			return err
 		}
-		if privatePooledDeposit {
+		if d.User != nil && d.User.ID == o.VendorID {
 			dep.TxID = ""
 		}
-		reviewed := ""
-		switch disposition {
-		case "no_action":
-			reviewed = "; reviewed by market staff on " + disposed + ": no action"
-		case "escalated":
-			reviewed = "; escalated to an administrator on " + disposed
-		}
-		if floor && !locked && dep.Confirmations >= 0 && disposition != "refunded" {
-			belowFloor += amt
-		}
-		if !locked && dep.Confirmations >= 0 {
-			remaining -= min(remaining, amt)
-		}
-		dep.Amount = amount(amt, dec)
+		dep.Amount = amount(atomic, dec)
 		switch {
 		case disposition == "refunded":
-			// Never counted toward a payout (payoutBasis) and not part of what was paid, so not in Confirmed.
-			dep.State = "Refunded by hand on " + disposed + ": " + amount(refunded, dec) + " " + o.Currency
-			if showRefundTxid {
-				dep.State += ", transaction " + refundTxid
-			}
+			dep.State = "Refunded by hand on " + disposed
 		case locked:
 			dep.State = "Locked transfer — not counted"
 		case dep.Confirmations < 0:
-			dep.State = "Conflicted or missing — not counted"
-			conflicted = conflicted || credited
-			notified = notified || (credited && notice)
-		case isTerminal(o.State) && flagged && !credited && !floor:
-			// A-211: confirmed after the order's settlement was queued, or sent after the order closed; the watcher
-			// flagged it and notified the buyer and staff. It is not part of what was paid, so not in Confirmed.
-			dep.State = "Arrived after the order closed — not paid out"
-			if reviewed == "" {
-				reviewed = "; market staff notified"
-			}
-		case dep.Confirmations >= int64(pv.Threshold):
-			dep.State = "Confirmed"
-			received += amt
+			dep.State = "Conflicted or missing"
+		case credited:
+			dep.State = "Counted in historical settlement"
 		default:
-			dep.State = "Waiting for confirmations"
-			pending += amt
-			regressed = regressed || credited
-			notified = notified || (credited && notice)
-		}
-		dep.State += reviewed
-		if !locked && dep.Confirmations >= 0 && (minConfs < 0 || dep.Confirmations < minConfs) {
-			minConfs = dep.Confirmations
+			dep.State = "Recorded; not counted in settlement"
 		}
 		pv.Deposits = append(pv.Deposits, dep)
 	}
-	if err = rows.Err(); err != nil {
-		return err
-	}
-	pv.Received, pv.Unconfirmed = amount(received, dec), amount(pending, dec)
-	pv.Remaining, pv.NeedsTopUp = amount(remaining, dec), remaining > 0
-	if remaining == 0 {
-		pv.Remaining = "0"
-	}
-	// The payment request and its QR code ask for exactly what is still due (deposits seen, confirmed or not,
-	// are already subtracted), and only while something is.
-	if pv.Open && pv.NeedsTopUp && !privatePooledDeposit {
-		pv.PaymentURI = paymentURI(o.Currency, pv.Address, remaining)
-		if pv.QR, err = qrSVG(pv.PaymentURI, "QR code: pay "+pv.Remaining+" "+o.Currency+" to the deposit address"); err != nil {
-			log.Printf("payments: payment QR code not rendered: %v", err)
-			pv.QR = ""
-		}
-	}
-	if received == 0 {
-		pv.Received = "0"
-	}
-	if pending == 0 {
-		pv.Unconfirmed = "0"
-	}
-	if minConfs > 0 {
-		pv.Confirmations = int(minConfs)
-	}
-	switch {
-	case conflicted || regressed:
-		pv.Status = "A credited deposit is back below " + strconv.Itoa(pv.Threshold) + " confirmations; unsent payouts wait until it confirms again"
-		if conflicted {
-			pv.Status = "A credited deposit is conflicted or missing; unsent payouts wait until it confirms again"
-		}
-		if notified {
-			pv.Status += "; market staff have been notified"
-		}
-	case o.State == stateAwaitingPayment && len(pv.Deposits) == 0:
-		pv.Status = "Waiting for a deposit"
-	case o.State == stateAwaitingPayment && pending > 0:
-		pv.Status = "Deposit seen; waiting for " + strconv.Itoa(pv.Threshold) + " confirmations"
-	case o.State == stateAwaitingPayment:
-		pv.Status = "Confirmed deposits are below the required amount"
-	case o.State == stateDraft:
-		pv.Status = "Not requested"
-	case o.State == stateCancelled && belowFloor > 0:
-		pv.Status = amount(belowFloor, dec) + " " + o.Currency + " received, below the minimum automatic payout of " + amount(payoutFloor(o.Currency, "refund"), dec) + " " + o.Currency + "; not refunded; market staff were notified"
-	default:
-		pv.Status = "Deposit address closed (order " + stateLabel(o.State) + ")"
-	}
-	pv.Payouts = payouts
-	return nil
+	return rows.Err()
 }
 
 func payoutStateLabel(s string) string {
@@ -484,44 +177,8 @@ func orderPayoutLabel(state, payoutErr string, conflicted bool) string {
 // (conflictedDeposit), so the watcher's hold is not described as lifting by itself (A-213).
 func recipientPayout(orderID, kind, cur, network, amt, address, state, payoutErr string, ambiguous, stuck, conflicted bool) RecipientPayout {
 	r := RecipientPayout{OrderID: orderID, OrderShort: shortID(orderID), Kind: kind, Currency: cur, Network: network, Amount: amt, Address: address}
-	restored := strings.HasPrefix(payoutErr, restoredHoldPrefix)
-	switch {
-	case state == "blocked":
-		r.Status, r.NextStep = "Waiting for your payout address", "Save a "+cur+" payout address on your account page; the payout is then queued and sent automatically."
-	case state == "failed" && !ambiguous && !restored:
-		r.Status, r.NextStep = "Failed — nothing was sent", "The market wallet refused the send before broadcasting; administrators have been notified. It is never retried automatically: only an administrator can queue it again."
-	case state == "failed" || stuck:
-		r.Status, r.NextStep = "Outcome unknown", "The send may have been broadcast; an administrator checks the wallet before any resend, so it is not paid twice."
-	case heldForSuspension(state, payoutErr):
-		r.Status, r.NextStep = "Held for a payout address check", "Held because your account was suspended; an administrator checks your payout address before releasing it."
-		r.NeedsStaffContact = true
-		r.NextStep += " If it is still held after a few days, message an administrator."
-	case state == "held" && restored:
-		r.Status, r.NextStep = "Held for a wallet check", "Held after the market restored its records from a backup; an administrator checks the market wallet before releasing it, so it is not paid twice."
-	case heldForHand(state, payoutErr):
-		r.Status, r.NextStep = "Held to be paid by hand", "An administrator holds it to pay it to you by hand from the market wallet, to an address agreed with you; saving a payout address does not release it. Contact the market staff if you were not asked about it."
-	case heldLarge(state, payoutErr):
-		r.Status, r.NextStep = "Held for review", "It is more than the order price, so an administrator reviews it before it is sent."
-		r.NeedsStaffContact = true
-		if address != "" {
-			r.NextStep += " Nothing is needed from you; if it is still held after a few days, message an administrator."
-		} else {
-			r.NextStep += " If it is still held after a few days, message an administrator."
-		}
-	case state == "held" && payoutErr == heldReason && conflicted:
-		r.Status, r.NextStep = "Held for review", "A deposit for this order is conflicted or missing from the market wallet, so this payout is held and market staff review it."
-	case state == "held" && payoutErr == heldReason:
-		r.Status, r.NextStep = "Held until a deposit confirms", "A deposit for this order is re-confirming; the payment watcher releases the payout by itself once it confirms again."
-	case state == "held":
-		r.Status, r.NextStep = "Held for an administrator check", "An administrator reviews it before it is released."
-	case state == "sending":
-		r.Status, r.NextStep = "Being sent", "The market wallet is sending it now, in a single attempt."
-	default:
-		r.Status, r.NextStep = "Queued", "The payment watcher sends it automatically, in a single attempt."
-	}
-	if address == "" && state == "held" && !heldForHand(state, payoutErr) {
-		r.NextStep += " No " + cur + " payout address is saved yet: save one on your account page so it can be paid."
-	}
+	r.Status = payoutStateLabel(state)
+	r.NextStep = "This is a historical record. Contact the operator to investigate its recorded state."
 	return r
 }
 
@@ -542,9 +199,7 @@ func unsentPayouts(ctx context.Context, a *App, userID string) ([]RecipientPayou
 		if err = rows.Scan(&payoutID, &order, &kind, &cur, &amt, &address, &state, &payoutErr, &ambiguous, &stuck, &conflicted); err != nil {
 			return nil, err
 		}
-		if p := a.provider(cur); p != nil {
-			network = p.Network()
-		}
+		network = "historical"
 		payout := recipientPayout(order, kind, cur, network, amount(amt, currencyDecimals(cur)), address, state, payoutErr, ambiguous, stuck, conflicted)
 		payout.ID = payoutID
 		out = append(out, payout)
@@ -580,12 +235,6 @@ func paymentsAccountLoader(ctx context.Context, a *App, _ *http.Request, d *Page
 		return nil
 	}
 	v := &PayoutView{}
-	if p := a.provider("BTC"); p != nil {
-		v.BTCNetwork = p.Network()
-	}
-	if p := a.provider("XMR"); p != nil {
-		v.XMRNetwork = p.Network()
-	}
 	if err := a.db.QueryRowContext(ctx, "SELECT payout_btc,payout_xmr,(SELECT count(*) FROM payouts WHERE user_id=$1 AND state='blocked') FROM users WHERE id=$1", d.User.ID).Scan(&v.BTC, &v.XMR, &v.Blocked); err != nil {
 		return err
 	}
@@ -603,58 +252,6 @@ func paymentsAccountLoader(ctx context.Context, a *App, _ *http.Request, d *Page
 const payoutHistoryLimit = 50
 
 func paymentsAdminLoader(ctx context.Context, a *App, r *http.Request, d *PageData) error {
-	status := map[string]ProviderStatus{}
-	rows, err := a.db.QueryContext(ctx, "SELECT currency,network,COALESCE(to_char(last_poll,'YYYY-MM-DD HH24:MI:SS \"UTC\"'),''),last_error,"+
-		"address_collisions,COALESCE(to_char(address_collision_last,'YYYY-MM-DD HH24:MI:SS \"UTC\"'),'') FROM payment_status")
-	if err != nil {
-		return err
-	}
-	for rows.Next() {
-		var s ProviderStatus
-		if err = rows.Scan(&s.Currency, &s.Network, &s.LastPoll, &s.Error, &s.AddressCollisions, &s.AddressCollisionLast); err != nil {
-			rows.Close()
-			return err
-		}
-		status[s.Currency] = s
-	}
-	rows.Close()
-	if err = rows.Err(); err != nil {
-		return err
-	}
-	env := map[string]string{"BTC": "BITCOIN_RPC_URL", "XMR": "MONERO_WALLET_RPC_URL"}
-	for _, cur := range []string{"BTC", "XMR"} {
-		s := ProviderStatus{Currency: cur, Status: "Disabled", Configured: a.pooledConfigured(cur), AddressCollisions: status[cur].AddressCollisions, AddressCollisionLast: status[cur].AddressCollisionLast}
-		s.LastPoll = status[cur].LastPoll
-		if s.LastPoll == "" {
-			s.LastPoll = "Not polled yet"
-		}
-		if p := a.provider(cur); p != nil {
-			last := status[cur]
-			s.Enabled, s.Status, s.Network, s.Confirmations = true, "Enabled", p.Network(), p.Confirmations()
-			s.Error = last.Error
-			if v, ok := p.(versionReporter); ok {
-				var unverified bool
-				if s.Version, unverified = v.WalletVersion(); unverified {
-					s.VersionWarning = "The rule that a failed " + cur + " send broadcast nothing was verified against monero-wallet-rpc " + moneroVerifiedWalletRelease + ", which reports " + moneroRPCVersion(moneroVerifiedWalletRPC, true) + ". Until the wallet reports that, every " + cur + " send failure is recorded as possibly broadcast, and requeueing one needs the wallet check. That payouts take the network fee out of the amount sent (subtract_fee_from_outputs) is also unverified for this version. Set MONERO_WALLET_IMAGE and MONERO_IMAGE in .env to the " + moneroVerifiedWalletRelease + " tags, or follow the bump checklist before running another wallet version:"
-				}
-			}
-		} else if msg, disabled := a.unavailableError(cur); msg != "" {
-			// Configured but failing its checks in this process: payment requests are refused.
-			s.Status, s.Error = "Unavailable — retried every poll", msg
-			if disabled {
-				s.Status = "Refused — not a test network"
-				if a.live {
-					s.Status = "Refused — not mainnet"
-				}
-			}
-		} else {
-			s.Error = "Not configured (" + env[cur] + " is blank)"
-		}
-		if s.Configured {
-			s.LastPollAge, s.PollStale = providerPollAge(status[cur].LastPoll, time.Now())
-		}
-		d.Providers = append(d.Providers, s)
-	}
 	// One statement, so now() (and so the attention flag) is the same for both halves: every payout needing
 	// attention (oldest first; its resolve form is only on this page), then the most recent others up to
 	// payoutHistoryLimit. OrderLink: the order page opens for this administrator (a party, or a disputed,
@@ -663,7 +260,7 @@ func paymentsAdminLoader(ctx context.Context, a *App, r *http.Request, d *PageDa
 	if d.User != nil {
 		uid = d.User.ID
 	}
-	rows, err = a.db.QueryContext(ctx, `WITH v AS (SELECT p.id,p.order_id,p.kind,u.handle,p.currency,p.amount,p.address,p.state,p.txid,p.error,p.updated AS updated_sort,to_char(p.updated,'YYYY-MM-DD HH24:MI "UTC"') AS updated,
+	rows, err := a.db.QueryContext(ctx, `WITH v AS (SELECT p.id,p.order_id,p.kind,u.handle,p.currency,p.amount,p.address,p.state,p.txid,p.error,p.updated AS updated_sort,to_char(p.updated,'YYYY-MM-DD HH24:MI "UTC"') AS updated,
 		`+payoutNeedsAttention("p")+` AS attention,p.send_ambiguous,u.suspended_at IS NOT NULL AS recipient_suspended,
 		(o.buyer_id=$1 OR pr.vendor_id=$1 OR EXISTS(SELECT 1 FROM disputes d WHERE d.order_id=o.id) OR EXISTS(SELECT 1 FROM payments pm WHERE pm.order_id=o.id AND pm.flagged)) AS order_link,
 		CASE p.currency WHEN 'XMR' THEN u.payout_xmr ELSE u.payout_btc END AS current_address,
@@ -694,8 +291,8 @@ func paymentsAdminLoader(ctx context.Context, a *App, r *http.Request, d *PageDa
 			}
 		}
 		r.Amount, r.StateLabel, r.OrderShort = amount(amt, currencyDecimals(r.Currency)), payoutStateLabel(r.State), shortID(r.OrderID)
-		r.Repoint = repointable(r.State, r.Error, sendAmbiguous) && r.Address != "" && r.CurrentAddress != "" && r.CurrentAddress != r.Address
-		r.RequeueAddressCheck = (r.State == "failed" || r.State == "sending" && r.Attention) && requeueNeedsAddressCheck(r.State, r.Error, recipientSuspended)
+		r.Repoint = false
+		r.RequeueAddressCheck = (r.State == "failed" || r.State == "sending" && r.Attention) && false
 		switch {
 		case r.State == "sending" && r.Attention:
 			r.StateLabel, r.Ambiguous = "Stuck in sending — never retried; may have been broadcast, check the wallet", true
@@ -745,7 +342,7 @@ func paymentsAdminLoader(ctx context.Context, a *App, r *http.Request, d *PageDa
 		if r.State != "held" || r.Error != heldReason {
 			continue
 		}
-		r.Threshold = a.confirmationThreshold(r.Currency)
+		r.Threshold = 0
 		deps, err := a.db.QueryContext(ctx, "SELECT txid,idx,confirmations,address FROM payments WHERE order_id=$1 AND credited AND confirmations<$2 ORDER BY id", r.OrderID, r.Threshold)
 		if err != nil {
 			return err
@@ -766,5 +363,5 @@ func paymentsAdminLoader(ctx context.Context, a *App, r *http.Request, d *PageDa
 		// conditional recovery guidance instead of its old promise that every conflicted deposit returns.
 		r.Error = "A credited deposit is conflicted or below the confirmation threshold; the payment watcher can resume this payout only after every credited deposit reaches the confirmation threshold again. A conflicted or missing deposit that never recovers needs wallet reconciliation and manual review."
 	}
-	return a.loadWalletEvidence(ctx, r, d)
+	return nil
 }
