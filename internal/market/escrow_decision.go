@@ -193,20 +193,19 @@ func (a *App) escrowAmount(o *Order, n int64) string {
 }
 
 // escrowDisputePreview is the resolve form's statement of each outcome for an escrow order: the counted escrowed amount
-// (as escrowSettleTerminal counts it) and the settlement each outcome builds.
+// (as escrowSettleTerminal counts it) and the settlement each outcome builds, with what a release does with an amount
+// paid above the price (escrowExcess, A-508).
 func (a *App) escrowDisputePreview(ctx context.Context, o *Order) (PayoutPreview, error) {
 	if o.xmrEscrow() {
 		return a.xmrDisputePreview(ctx, o)
 	}
 	var sum, left int64
-	if err := a.db.QueryRowContext(ctx, `SELECT COALESCE(sum(amount),0),COALESCE(sum(amount) FILTER (WHERE escrow_left_out),0) FROM payments
-		WHERE order_id=$1 AND confirmations>=0 AND NOT locked AND NOT after_close
-		AND NOT (escrow_left_out AND EXISTS (SELECT 1 FROM escrow_siblings s WHERE s.address=payments.address))`, o.ID).Scan(&sum, &left); err != nil {
+	if err := a.db.QueryRowContext(ctx, escrowCountedSQL, o.ID).Scan(&sum, &left); err != nil {
 		return PayoutPreview{}, err
 	}
-	escrowed := a.escrowAmount(o, sum)
+	escrowed, fees := a.escrowAmount(o, sum), escrowReleaseFees(a.escrowExcess(o, sum-left))
 	p := PayoutPreview{Seen: sum, Confirm: resolveConfirm,
-		Release: "Release to " + o.Vendor + ": the vendor claims the escrowed " + escrowed + " by a settlement from the escrow (less the market fee and the network fee; any amount paid above the price goes back to the buyer)",
+		Release: "Release to " + o.Vendor + ": the vendor claims the escrowed " + escrowed + " by a settlement from the escrow " + fees,
 		Refund:  "Refund to " + o.Buyer + ": the escrowed " + escrowed + ", less the network fee, go back to the buyer's refund address by a settlement from the escrow"}
 	// P2-R4: a physical order's release built when it was shipped.
 	var release, final bool
@@ -219,15 +218,23 @@ func (a *App) escrowDisputePreview(ctx context.Context, o *Order) (PayoutPreview
 		p.Release = "Release to " + o.Vendor + ": the release to the vendor built when the order was shipped is already final, so the escrow pays the vendor"
 		p.Refund = "Refund to " + o.Buyer + ": refused, because the release to the vendor built when the order was shipped is already final"
 	case release:
-		p.Release = "Release to " + o.Vendor + ": the release to the vendor built when the order was shipped pays the escrowed " + escrowed + " to the claim address the vendor gave then (less the market fee and the network fee; any amount paid above the price goes back to the buyer)"
+		p.Release = "Release to " + o.Vendor + ": the release to the vendor built when the order was shipped pays the escrowed " + escrowed + " to the claim address the vendor gave then " + fees
 		p.Refund += "; the release to the vendor built when the order was shipped is cancelled"
 	}
 	if left > 0 && release && !final {
 		// A-374, A-387: deposits left out of the built release are not spent by the decision's settlement; a stray refund
 		// returns them to the buyer once the order is closed.
 		settled, back := a.escrowAmount(o, sum-left), "the "+a.escrowAmount(o, left)+" left out of the release (deposits that arrived after it was built) goes back to the buyer's refund address by a stray refund once the order is closed"
-		p.Release = "Release to " + o.Vendor + ": the release to the vendor built when the order was shipped pays " + settled + " to the claim address the vendor gave then (less the market fee and the network fee; any amount paid above the price goes back to the buyer); " + back
+		p.Release = "Release to " + o.Vendor + ": the release to the vendor built when the order was shipped pays " + settled + " to the claim address the vendor gave then " + fees + "; " + back
 		p.Refund = "Refund to " + o.Buyer + ": the release to the vendor built when the order was shipped is cancelled, and the refund settlement goes back " + settled + ", less the network fee, to the buyer's refund address; " + back
 	}
 	return p, nil
+}
+
+// escrowReleaseFees is what a release statement says it pays less, with excess (escrowExcess) when there is one.
+func escrowReleaseFees(excess string) string {
+	if excess == "" {
+		return "(less the market fee and the network fee)"
+	}
+	return "(less the market fee and the network fee; " + excess + ")"
 }

@@ -373,10 +373,8 @@ func loadOrderDetail(ctx context.Context, a *App, r *http.Request, d *PageData) 
 	d.CanReview = u.ID == o.BuyerID && o.State == stateCompleted && len(d.Reviews) == 0
 	if d.OrderViewer != roleModerator { // reviewers resolve on the moderation desk; the order page is read-only for them
 		d.Transitions = viewerTransitions(o, u)
-		if !o.Escrow { // an escrow order queues no payout (settleTerminal)
-			if err = a.orderPayouts(ctx, d); err != nil {
-				return err
-			}
+		if d.Overpaid, err = a.escrowOverpaid(ctx, o); err != nil {
+			return err
 		}
 	}
 	if err = a.escrowOrder(ctx, d); err != nil {
@@ -461,112 +459,6 @@ func subFloorOrderGate(ctx context.Context, a *App, d *PageData) error {
 		}
 	}
 	return nil
-}
-
-// orderPayouts (A-122): on a paid, shipped or delivered order the complete and paid-cancel forms state the
-// payout they state (countedDeposits), and counted deposits above the price set Overpaid. On an order awaiting
-// payment that has received a deposit, the cancel form states the refund it queues (an underpayment).
-func (a *App) orderPayouts(ctx context.Context, d *PageData) error {
-	o := d.Order
-	if o.State == stateAwaitingPayment {
-		deposits, err := hasDeposits(ctx, a.db, o.ID)
-		if err != nil || !deposits {
-			return err
-		}
-		sum, err := countedDeposits(ctx, a.db, o)
-		if err != nil {
-			return err
-		}
-		for i, t := range d.Transitions {
-			if t.To == stateCancelled {
-				d.Transitions[i].Payout = &PayoutPreview{Seen: sum, Confirm: payoutStatement("refund", o.Buyer, "the buyer", a.netName(), o, sum) + ". This is final."}
-			}
-		}
-		return nil
-	}
-	if o.State != statePaid && o.State != stateShipped && o.State != stateDelivered {
-		return nil
-	}
-	sum, err := countedDeposits(ctx, a.db, o)
-	if err != nil {
-		return err
-	}
-	dec := currencyDecimals(o.Currency)
-	if required, _ := parseAmount(o.Amount, dec); sum > required {
-		// The split the complete form states (payoutStatement): a return (maybe held), or the excess kept.
-		parts := splitPayout("release", o, sum, required)
-		v := &OverpaidView{Excess: amount(sum-required, dec) + " " + o.Currency, Kept: len(parts) == 1, BelowFloor: belowFloor(o.Currency, "release", sum)}
-		switch {
-		case v.Kept && parts[0].large: // a legacy price below the release floor (A-216)
-			v.Held, v.Reason = true, subFloorPriceExcess(o.Currency)
-		case v.Kept:
-			v.Reason = "the excess is below the minimum automatic payout of " + amount(payoutFloor(o.Currency, "return"), dec) + " " + o.Currency + ", so it is not returned"
-		default:
-			v.Held = parts[1].large
-		}
-		if !v.Kept && d.OrderViewer == roleBuyer {
-			column := "payout_btc"
-			if o.Currency == "XMR" {
-				column = "payout_xmr"
-			}
-			if err = a.db.QueryRowContext(ctx, "SELECT "+column+"='' FROM users WHERE id=$1", o.BuyerID).Scan(&v.NoAddress); err != nil {
-				return err
-			}
-		}
-		d.Overpaid = v
-	}
-	for i, t := range d.Transitions {
-		switch {
-		case t.To == stateCompleted:
-			d.Transitions[i].Payout = &PayoutPreview{Seen: sum, Confirm: payoutStatement("release", o.Vendor, "the vendor", a.netName(), o, sum) + ". This is final."}
-		case t.To == stateCancelled && o.State == statePaid:
-			d.Transitions[i].Payout = &PayoutPreview{Seen: sum, Confirm: payoutStatement("refund", o.Buyer, "the buyer", a.netName(), o, sum) + ". This is final."}
-		}
-	}
-	return nil
-}
-
-// payoutStatement states the payouts of sum (countedDeposits) for o on network net (App.netName), as splitPayout
-// makes them: "Refund 0.01 BTC (test network) to buyer_x — exactly the price; network fee deducted", or for a
-// release with an excess worth returning "Release 0.01 BTC (test network) to vendor_x (the price) and return the
-// 0.009 BTC paid over the price to buyer_x; network fee deducted from each", saying so when a refund or return
-// waits for an administrator (larger than the price), a release keeps an excess because the price is below the
-// release floor (A-216), or the sum is below the minimum automatic payout (A-99; then nothing is sent automatically
-// and no fee is named). Every payout on both coins is sent with the fee taken from it (A-232). With nothing
-// counted, later deposits go to later (the recipient's role, or "the chosen party" on the resolve form).
-func payoutStatement(kind, recipient, later, net string, o *Order, sum int64) string {
-	verb := "Release"
-	if kind == "refund" {
-		verb = "Refund"
-	}
-	if sum == 0 {
-		return verb + " (" + net + ") to " + recipient + " — nothing counted yet; deposits confirming later go to " + later
-	}
-	dec := currencyDecimals(o.Currency)
-	required, _ := parseAmount(o.Amount, dec)
-	// The split splitPayout makes: a release pays the price and returns an excess worth sending.
-	parts := splitPayout(kind, o, sum, required)
-	if len(parts) == 2 {
-		statement := "Release " + amount(parts[0].amount, dec) + " " + o.Currency + " (" + net + ") to " + recipient + " (the price) and return the " +
-			amount(parts[1].amount, dec) + " " + o.Currency + " paid over the price to " + o.Buyer + "; network fee deducted from each"
-		if parts[1].large {
-			statement += "; the return is more than the price, so an administrator reviews it before it is sent"
-		}
-		return statement
-	}
-	statement := verb + " " + amount(sum, dec) + " " + o.Currency + " (" + net + ") to " + recipient + " — " + priceDifference(sum, required, o.Currency)
-	switch {
-	case kind == "release" && parts[0].large:
-		statement += "; " + subFloorPriceExcess(o.Currency) + "; an administrator reviews the release before it is sent"
-	case kind == "release" && sum > required:
-		statement += ", below the minimum automatic payout, so it is not returned"
-	case kind == "refund" && sum > required:
-		statement += "; more than the price, so an administrator reviews it before it is sent"
-	}
-	if below := belowFloor(o.Currency, kind, sum); below != "" {
-		return statement + "; " + below + ": not sent automatically, staff are asked to review it"
-	}
-	return statement + "; network fee deducted"
 }
 
 const resolveConfirm = "I checked the amount and who receives it for the outcome I chose. Resolving is final."

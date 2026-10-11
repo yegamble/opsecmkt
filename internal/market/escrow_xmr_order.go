@@ -196,7 +196,7 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 		case t.To == stateCancelled && o.State == statePaid && d.OrderViewer == roleBuyer && !shipByOpen:
 			t.Action, t.Label = "", "You can cancel from "+utcFrom(shipBy.Time)+" if the vendor has not shipped the order by then; the escrow is then refunded to your refund address."
 		case t.To == stateCancelled && counted > 0:
-			t.Payout = &PayoutPreview{Seen: counted, Confirm: "Cancelling refunds the " + amount(counted, 12) + " XMR in this escrow, less the network fee, to the buyer's refund address given at checkout. The market builds and sends the refund transaction. This is final."}
+			t.Payout = &PayoutPreview{Seen: counted, Confirm: "Cancelling refunds the " + a.escrowAmount(o, counted) + " in this escrow, less the network fee, to the buyer's refund address given at checkout. The market builds and sends the refund transaction. This is final."}
 		}
 		kept = append(kept, t)
 	}

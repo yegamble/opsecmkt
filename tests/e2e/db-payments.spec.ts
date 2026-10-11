@@ -12,7 +12,8 @@ test('fresh payment surfaces offer escrow only and removed pooled routes cannot 
   const sql = (query: string) => execFileSync('psql', [database, '-v', 'ON_ERROR_STOP=1', '-qtAc', query], { encoding: 'utf8' }).trim();
   try {
     await buyer.goto('/account');
-    await expect(buyer.getByRole('heading', { name: 'Historical payout addresses' })).toBeVisible();
+    // A-508: no reader of the saved pooled payout addresses remains; the account page no longer lists them.
+    await expect(buyer.getByRole('heading', { name: 'Historical payout addresses' })).toHaveCount(0);
     await expect(buyer.locator('#unsent-payouts')).toHaveCount(0);
     await expect(buyer.locator('form[action="/account/payout"]')).toHaveCount(0);
     const csrf = await buyer.locator('input[name="csrf"]').first().inputValue();

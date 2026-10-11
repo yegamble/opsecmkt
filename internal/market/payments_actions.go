@@ -7,7 +7,6 @@ import (
 
 func init() {
 	registerLoader("*", paymentsGlobalLoader)
-	registerLoader("account", paymentsAccountLoader)
 	registerLoader("vendor-dashboard", escrowOrdersLoader)
 	registerPreview("admin", func(d *PageData) {
 		d.Providers = nil
@@ -47,17 +46,4 @@ func escrowOrdersLoader(ctx context.Context, a *App, _ *http.Request, d *PageDat
 		WHERE es.coin='XMR' AND (o.buyer_id=$1 OR p.vendor_id=$1) AND (o.state<>'cancelled'
 			OR EXISTS(SELECT 1 FROM payments pm WHERE pm.order_id=o.id AND pm.confirmations>=0 AND NOT pm.locked AND pm.xmr_settlement_id IS NULL))`,
 		d.User.ID).Scan(&d.XMREscrowOrders)
-}
-
-// paymentsAccountLoader shows the account's saved payout addresses, kept from before escrow.
-func paymentsAccountLoader(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
-	if d.User == nil {
-		return nil
-	}
-	v := &PayoutView{}
-	if err := a.db.QueryRowContext(ctx, "SELECT payout_btc,payout_xmr FROM users WHERE id=$1", d.User.ID).Scan(&v.BTC, &v.XMR); err != nil {
-		return err
-	}
-	d.Payout = v
-	return nil
 }

@@ -124,44 +124,25 @@ func notifyConcededStaff(ctx context.Context, tx *sql.Tx, orderID, status string
 }
 
 // concessionPreview uses the same counted amount and outcome descriptions as
-// the staff resolve form. Only the current party's outcome is exposed on the
-// order page; no payout address is revealed to the other party.
+// the staff resolve form (escrowDisputePreview). Only the current party's
+// outcome is exposed on the order page. An order without escrow holds no coins
+// (pooled payments are removed, A-492), so its concession moves none.
 func (a *App) concessionPreview(ctx context.Context, o *Order, party string) (*ConcessionPreview, error) {
-	view := &ConcessionPreview{Confirm: "I checked the amount and recipient above. Conceding this dispute is final."}
-	kind, recipientID, recipient := "release", o.VendorID, o.Vendor
+	view := &ConcessionPreview{Confirm: "I checked the amount and recipient above. Conceding this dispute is final.", Outcome: "release"}
 	if party == roleVendor {
-		kind, recipientID, recipient = "refund", o.BuyerID, o.Buyer
+		view.Outcome = "refund"
 	}
-	view.Outcome = kind
-	if o.Escrow {
-		p, err := a.escrowDisputePreview(ctx, o)
-		if err != nil {
-			return nil, err
-		}
-		view.Seen, view.Statement = p.Seen, p.Release
-		if kind == "refund" {
-			view.Statement = p.Refund
-		}
+	if !o.Escrow {
+		view.Statement = "No escrow holds coins for this order, so conceding sends nothing"
 		return view, nil
 	}
-	sum, err := countedDeposits(ctx, a.db, o)
+	p, err := a.escrowDisputePreview(ctx, o)
 	if err != nil {
 		return nil, err
 	}
-	view.Seen = sum
-	view.Statement = payoutStatement(kind, recipient, "the "+map[string]string{"release": "vendor", "refund": "buyer"}[kind], a.netName(), o, sum)
-	column := "payout_btc"
-	if o.Currency == "XMR" {
-		column = "payout_xmr"
-	}
-	var noAddress, suspended bool
-	if err = a.db.QueryRowContext(ctx, "SELECT "+column+"='',suspended_at IS NOT NULL FROM users WHERE id=$1", recipientID).Scan(&noAddress, &suspended); err != nil {
-		return nil, err
-	}
-	if suspended {
-		view.Statement += "; account suspended: an administrator must check the address"
-	} else if noAddress {
-		view.Statement += "; no payout address: the payout waits for one"
+	view.Seen, view.Statement = p.Seen, p.Release
+	if view.Outcome == "refund" {
+		view.Statement = p.Refund
 	}
 	return view, nil
 }
