@@ -20,7 +20,7 @@ import (
 )
 
 // Bitcoin escrow (WR-escrow Phase 1, A-246): configuration, the startup checks and the Bitcoin Core RPC adapter
-// the escrow code uses. It is apart from the pooled adapter (payments_bitcoin.go) and shares only rpcClient.
+// the escrow code uses. It shares rpcClient with the other Bitcoin RPC helpers.
 //
 // ESCROW_BTC=on (off by default) runs only against a node on regtest, signet or testnet4 (the chain table, escrowChains;
 // A-443 opened signet and testnet4 once the sync guard, the chain pin, the market key self-check and the Tor-mode gate
@@ -201,7 +201,7 @@ func newEscrowBTC(c escrowConfig) (*escrowBTC, error) {
 		confirmations: c.confirmations, feeRate: c.feeRate}, nil
 }
 
-// initEscrow runs in New after the payment providers. ESCROW_BTC=off does nothing. On, a node that answers on a chain
+// initEscrow runs in New during escrow startup. ESCROW_BTC=off does nothing. On, a node that answers on a chain
 // escrow does not run on stops startup (errEscrowChain); an unreachable node, an unreadable arbiter wallet or a
 // fingerprint that differs from the pinned one leaves escrow disabled with one fixed line, and the market runs; the
 // escrow watcher then retries (retryEscrow).

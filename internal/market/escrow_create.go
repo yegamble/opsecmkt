@@ -18,13 +18,13 @@ import (
 
 // Escrow checkout and creation (WR-escrow Phase 1, slice P1-b; ES-3, ES-5). With ESCROW_BTC=on, the buyer of a BTC
 // draft on a digital listing with automatic delivery, or on a physical listing with a dispatch window (Phase 2,
-// P2-R8), may pay into a 2-of-3 escrow instead of the pooled wallet, once both the buyer's and the vendor's escrow
-// keys are active (ES-9). Every other order keeps the pooled flow. A physical order's checkout also needs a vendor
+// P2-R8), may pay into a 2-of-3 escrow once both the buyer's and the vendor's escrow
+// keys are active (ES-9). A physical order's checkout also needs a vendor
 // who can receive an encrypted shipping address (A-83, checked before any RPC), and its escrow row snapshots the
 // release deadline length in force and the listing's dispatch window (escrows.release_days, dispatch_days).
 //
 // POST /orders/escrow takes the buyer's refund address, pinned for the order, and builds the escrow in the checkout
-// transaction, after every check has passed (as /orders/pay asks the wallet for an address only then):
+// transaction, after every check has passed (before deriving an address):
 //  1. each party's next child key (/0/<i>, from 1; /0/0 is the practice child) and a fresh market child index from
 //     the escrow_market_index counter;
 //  2. Bitcoin Core expands the child keys statelessly: deriveaddresses of the extended-key descriptor, createpsbt

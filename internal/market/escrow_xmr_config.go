@@ -155,8 +155,7 @@ func escrowXMRConfigFromEnv(getenv func(string) string) (escrowXMRConfig, error)
 
 // sameRPCEndpoint reports whether two RPC URLs name the same endpoint, ignoring credentials, case in the scheme and
 // host, and a trailing slash. It compares spellings (localhost and 127.0.0.1 differ); startEscrowXMR backs it up by
-// checking the escrow wallet-rpc network; legacy pooled RPC settings are rejected at startup, so
-// stagenet daemon (A-449).
+// checking the escrow wallet-rpc network (A-449).
 func sameRPCEndpoint(a, b string) bool {
 	norm := func(raw string) string {
 		u, err := url.Parse(strings.TrimSpace(raw))

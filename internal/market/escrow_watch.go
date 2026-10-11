@@ -17,8 +17,7 @@ import (
 	"time"
 )
 
-// The escrow watcher (WR-escrow Phase 1, slice P1-b). One per deployment (its own PostgreSQL advisory lock), apart
-// from the pooled watcher: it reads what the watch-only wallet received at each watched escrow address and writes it
+// The escrow watcher (WR-escrow Phase 1, slice P1-b). One per deployment (its own PostgreSQL advisory lock): it reads what the watch-only wallet received at each watched escrow address and writes it
 // to the payments ledger, one row per output (applyIncoming; payments.settlement_id stays NULL until a settlement
 // claims the output, P1-c). An escrow order awaiting payment whose confirmed outputs reach the price moves to paid;
 // autoDeliveryHook delivers the content and escrowTransitionHook completes the order on funding through the
@@ -30,7 +29,7 @@ import (
 // its pass (buildSettlements), then co-signs party-signed ones, stores and broadcasts them and follows them to their
 // confirmation (escrow_cosign.go, slice P1-c2). A dispute on an escrow order is decided by an administrator and its
 // decision is paid by a settlement (escrow_decision.go). An escrow order that has received nothing when its payment
-// window ends is cancelled, as a pooled order is; one underpaid then is cancelled too and its refund requested. A confirmed deposit
+// window ends is cancelled; one underpaid then is cancelled too and its refund requested. A confirmed deposit
 // first recorded after an escrow order closed is flagged for payment review (flagLateDeposits); one that did not count
 // when the order was cancelled and has confirmed since is left out for the stray refund (leaveOutUncounted, A-428).
 //
@@ -39,10 +38,10 @@ import (
 // but apply the release deadlines, which need no node (escrow_deadline.go): no deposit is read and no order expires
 // until they pass. The same holds for each pass while the node is not synced (A-439, bitcoin_sync.go).
 
-const escrowWatcherLock = 782495 // the pooled watcher's is 782494
+const escrowWatcherLock = 782495
 
-// xmrEscrowWatcherLock is the Monero escrow watcher's session advisory lock (escrow_xmr_watch.go), apart from both, so
-// a slow Monero wallet pass never holds up the Bitcoin escrow or the pooled watcher.
+// xmrEscrowWatcherLock is the Monero escrow watcher's session advisory lock (escrow_xmr_watch.go), apart from the Bitcoin escrow watcher, so
+// a slow Monero wallet pass never holds up the Bitcoin escrow watcher.
 const xmrEscrowWatcherLock = 782496
 
 // The escrow watcher's horizon for a closed order, in SQL interval text: the order changed within escrowClosedWatch
@@ -90,7 +89,7 @@ const escrowCompletedNote = "Completed on funding (Bitcoin escrow): the content 
 
 // escrowWatcher runs while ESCROW_BTC=on. Until escrow is enabled (its node was down at startup, say) each pass first
 // retries its checks (retryEscrow, A-316), so escrow starts without a restart once the node answers; while it is
-// enabled, retryEscrow runs the pooled key self-check again once a day (QA4W3-8).
+// enabled, retryEscrow rechecks escrow readiness once a day.
 func escrowWatcher(ctx context.Context, a *App) {
 	if !a.escrowConfigured {
 		return
@@ -343,7 +342,7 @@ func (a *App) noteEscrowSync(why string) {
 
 // escrowNodeLoader shows on /admin, under Payment providers, why the Bitcoin escrow node is not used: the reason class
 // it is not synced for (with syncRemedy's advice when there is one), the pinned chain and the node's when
-// startEscrow refused it, the pooled user's answer to the market key self-check (A-440), or why the arbiter wallet's
+// startEscrow refused it, or why the arbiter wallet's
 // entries are not read (QA4W4A-1); in APP_MODE=tor why the
 // Tor-mode gate holds broadcasts; and the settlements queued or stuck (A-441, escrow_stall.go).
 func escrowNodeLoader(ctx context.Context, a *App, _ *http.Request, d *PageData) error {

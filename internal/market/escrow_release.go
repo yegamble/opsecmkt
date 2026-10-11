@@ -18,8 +18,7 @@ import (
 //
 //  1. Mark shipped (/escrow/ship): the vendor gives a fresh claim address (the claim action's checks) and their
 //     password; in one transaction the order moves paid -> shipped, the release is requested to that address (kind
-//     release, state building) and escrows.release_at is the escrow's snapshot of release_days from now. The pooled
-//     ship form refuses an escrow order.
+//     release, state building) and escrows.release_at is the escrow's snapshot of release_days from now.
 //  2. The watcher builds and tracks that release while the order is shipped (settlementBuildable), long before the
 //     order has an outcome; settlementFits stays terminal-only and gates every market signature.
 //  3. The vendor and the buyer sign it through the existing sign action; the buyer's signature confirms receipt, and a
