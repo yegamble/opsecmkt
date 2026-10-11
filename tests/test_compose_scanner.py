@@ -201,8 +201,6 @@ class ScannerComposeConfigTests(unittest.TestCase):
         salt, password = '0123456789abcdef0123456789abcdef', 'compose-only-password'
         environment['BITCOIN_RPC_AUTH'] = 'marketplace:' + salt + '$' + hmac.new(
             salt.encode(), password.encode(), hashlib.sha256).hexdigest()
-        # Compose refuses the monero-wallet profile without its password (A-466).
-        environment['MONERO_WALLET_RPC_PASSWORD'] = 'unused'
         result = subprocess.run(arguments + ['config', '--format', 'json'], cwd=REPOSITORY, env=environment,
                                 capture_output=True, text=True, check=False)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -213,7 +211,7 @@ class ScannerComposeConfigTests(unittest.TestCase):
             with self.subTest(mode=mode, extra=extra):
                 files = ('compose.yaml', f'compose.{mode}.yaml', 'compose.nodes.yaml', 'compose.internal-db.yaml',
                          *extra, 'compose.scanner.yaml')
-                config = self.config(*files, profiles=('scanner', 'internal-db', 'bitcoin', 'monero', 'monero-wallet', 'mirror'))
+                config = self.config(*files, profiles=('scanner', 'internal-db', 'bitcoin', 'monero', 'mirror'))
                 services = config['services']
                 members = sorted(name for name, service in services.items() if 'scanner' in (service.get('networks') or {}))
                 self.assertEqual(members, ['app', 'clamd'])

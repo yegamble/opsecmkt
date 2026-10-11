@@ -1,22 +1,14 @@
 # Default images: bitcoin/bitcoin (unofficial image, with upstream binary signature checks) and
-# Seth for Privacy's Monero daemon and wallet-RPC images. Override *_IMAGE in .env to use reviewed
-# alternatives. The defaults are the release tags the payout error handling was verified against (Bitcoin
-# Core 31.1, Monero v0.18.5.1; payments_watcher.go walletRejected). Never change them to latest: follow the
-# bump checklist in docs/operator-guide.md#node-image-versions. Add @sha256:<digest> for reproducible deployments.
-# No RPC or peer ports are published to the host. BITCOIN_CHAIN (testnet4, signet, regtest, or main) and
-# MONERO_NETWORK (stagenet, testnet, or mainnet) select the network; the app accepts mainnet only when they
-# name it. monerod and monero-wallet-rpc have no --mainnet flag (mainnet is their default), so a mainnet .env
-# also sets MONERO_NETWORK_FLAG= (blank) to drop the flag. RPC ports are pinned so the installer's URLs do not
-# depend on the chain.
-# The installer keeps the Bitcoin RPC password in private .env for the app URL and puts only its salted HMAC
+# Seth for Privacy's Monero daemon and escrow wallet-RPC images. Override *_IMAGE in .env to use reviewed
+# alternatives. The defaults are pinned, supported releases (Bitcoin Core 31.1, Monero v0.18.5.1). Never change
+# them to latest: follow the bump checklist in docs/operator-guide.md#node-image-versions. Add @sha256:<digest>
+# for reproducible deployments.
+# No RPC or peer ports are published to the host. The local Bitcoin node supports regtest, testnet4 and signet;
+# the Monero daemon is restricted to stagenet for escrow support. RPC ports are pinned across those networks.
+# The installer keeps the Bitcoin RPC password in private .env for operator setup and puts only its salted HMAC
 # verifier in bitcoind's -rpcauth argument. Compose refuses a bitcoin-profile service with blank
 # BITCOIN_RPC_AUTH; otherwise an unset verifier would leave only cookie authentication. Compose also refuses
-# to create or start monero-wallet without MONERO_WALLET_RPC_PASSWORD, and monero-escrow-wallet without
-# ESCROW_XMR_WALLET_RPC_PASSWORD (A-466): every command with that service's profile active stops with "env file
-# .../<KEY>-is-blank not found" (see their env_file). An install whose COMPOSE_PROFILES leaves a wallet out needs
-# neither password. Were a wallet started anyway, its --rpc-login would be ':' (the user name follows the password's
-# presence), which monero-wallet-rpc 0.18.5.1 rejects at startup. None runs without authentication or falls back to
-# a guessable password.
+# to create or start monero-escrow-wallet without ESCROW_XMR_WALLET_RPC_PASSWORD.
 # Same log rotation as compose.yaml (anchors do not cross files; CI checks every service has it).
 x-logging: &logging
   driver: ${LOG_DRIVER:-json-file}
@@ -46,12 +38,11 @@ services:
       - -rpcallowip=172.16.0.0/12
       - -rpcallowip=192.168.0.0/16
       - -rpcauth=${BITCOIN_RPC_AUTH:-}
-      # Test networks often have too little fee data for estimation; without a fallback fee every payout
-      # would fail. 0.0002 BTC/kvB (20 sat/vB) is deliberately generous so test payouts confirm; on mainnet a
-      # synced node estimates its own fee and uses this only when it cannot.
+      # Test networks often have too little fee data for estimation; without a fallback fee escrow transactions
+      # can fail. 0.0002 BTC/kvB (20 sat/vB) is deliberately generous so test transactions confirm.
       - -fallbackfee=0.0002
-    # Compose interpolates even inactive profiles, so an unconditional ${VAR:?} would break external-node
-    # installs. This missing-file gate is evaluated only when the bitcoin profile starts (as for monero-wallet).
+    # Compose interpolates even inactive profiles, so an unconditional ${VAR:?} would break installs without
+    # bundled nodes. This missing-file gate is evaluated only when the bitcoin profile starts.
     env_file:
       - BITCOIN_RPC_AUTH-is-blank${BITCOIN_RPC_AUTH:+/../../../../../../../../../../../../../../../../../../../../../../../../../../../../../../../../dev/null}
     volumes: [bitcoin_data:/data]
@@ -71,7 +62,7 @@ services:
     # MONERO_PRUNE_FLAGS= in .env adds no flag and runs a full node, while an unset one uses the default.
     # See docs/operator-guide.md#local-node-pruning.
     command: >-
-      ${MONERO_NETWORK_FLAG---${MONERO_NETWORK:-stagenet}} --data-dir=/home/monero/.bitmonero --restricted-rpc
+      --stagenet --data-dir=/home/monero/.bitmonero --restricted-rpc
       --rpc-restricted-bind-ip=0.0.0.0 --rpc-restricted-bind-port=18081 --confirm-external-bind
       ${MONERO_PRUNE_FLAGS---prune-blockchain --sync-pruned-blocks}
     volumes: [monero_data:/home/monero/.bitmonero]
@@ -81,39 +72,12 @@ services:
     cpu_quota: 200000
     pids_limit: 512
     logging: *logging
-  monero-wallet:
-    # Separate wallet-RPC image; reachable only on the backend network.
-    image: ${MONERO_WALLET_IMAGE:-ghcr.io/sethforprivacy/simple-monero-wallet-rpc:v0.18.5.1}
-    profiles: [monero-wallet]
-    restart: unless-stopped
-    networks: [backend]
-    # A string, so a blank MONERO_NETWORK_FLAG adds no argument (mainnet); the password must not contain a
-    # single quote (the installer generates a hex one).
-    command: >-
-      ${MONERO_NETWORK_FLAG---${MONERO_NETWORK:-stagenet}} --daemon-address monero:18081 --trusted-daemon
-      --wallet-dir=/home/monero/wallet --rpc-bind-port=18083
-      --rpc-login '${MONERO_WALLET_RPC_PASSWORD:+marketplace}:${MONERO_WALLET_RPC_PASSWORD:-}'
-    # The refusal of a blank password (A-466). A ${VAR:?} would stop every Compose command of every install, since
-    # interpolation ignores profiles; a missing env file stops only those with this profile active. Blank, the path is
-    # the missing file MONERO_WALLET_RPC_PASSWORD-is-blank in the project directory; set, the ".." steps (Compose
-    # cleans a relative path; enough for a project directory up to 31 levels deep) lead to /dev/null, which adds
-    # nothing to the environment. The short form: an env file Compose cannot find is an error in every version (the
-    # long form's `required` needs Compose 2.24).
-    env_file:
-      - MONERO_WALLET_RPC_PASSWORD-is-blank${MONERO_WALLET_RPC_PASSWORD:+/../../../../../../../../../../../../../../../../../../../../../../../../../../../../../../../../dev/null}
-    volumes: [monero_wallet:/home/monero/wallet]
-    mem_limit: 512m
-    cpu_period: 100000
-    cpu_quota: 100000
-    pids_limit: 128
-    logging: *logging
   monero-escrow-wallet:
     # Monero escrow's own wallet-RPC (ESCROW_XMR=on, A-449; docs/operator-guide.md#monero-escrow-fakechain-or-stagenet):
     # stagenet only, attached to the monero service, which must then run stagenet (MONERO_NETWORK=stagenet). It holds
-    # only escrow wallets, in its own volume, behind its own login: never the monero-wallet service, whose wallet it
-    # would close (monero-wallet-rpc holds one wallet open at a time). The installer generates
+    # only escrow wallets, in its own volume, behind its own login. The installer generates
     # ESCROW_XMR_WALLET_RPC_PASSWORD; Compose refuses this service without it (A-466, env_file below, as for
-    # monero-wallet). Were it started anyway, the login would be ':' (the user name follows the password's presence),
+    # the wallet service). Were it started anyway, the login would be ':' (the user name follows the password's presence),
     # which monero-wallet-rpc 0.18.5.1 refuses at startup; 'escrow:' would start it with an empty password (probed,
     # A-449). Reachable only on the backend network. Back the volume up yourself: scripts/backup.sh does not copy
     # wallet volumes.
@@ -128,7 +92,7 @@ services:
       - ESCROW_XMR_WALLET_RPC_PASSWORD-is-blank${ESCROW_XMR_WALLET_RPC_PASSWORD:+/../../../../../../../../../../../../../../../../../../../../../../../../../../../../../../../../dev/null}
     volumes: [monero_escrow_wallet:/home/monero/wallet]
     # An escrow wallet holds one account per order; PAYE-E2 measured 574 MB at peak over five 10,000-account wallets
-    # (docs/verification.md), so this is twice the pooled wallet's limit.
+    # (docs/verification.md), with room for its account database.
     mem_limit: 1g
     cpu_period: 100000
     cpu_quota: 100000

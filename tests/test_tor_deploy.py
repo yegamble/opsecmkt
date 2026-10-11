@@ -275,7 +275,7 @@ class NodesTorComposeTests(unittest.TestCase):
         self.assertEqual(self.members('tor_socks_egress'), ['tor-socks'])
         networks = self.config['networks']
         self.assertIsNot(networks['tor_socks_egress'].get('internal'), True)
-        for name in ('app', 'tor', 'db', 'escrow-signer', 'monero-wallet'):
+        for name in ('app', 'tor', 'db', 'escrow-signer', 'monero-escrow-wallet'):
             if name in self.services:
                 self.assertFalse(set(self.services[name].get('networks') or {}) & set(self.socks['networks']), name)
         for name in NODE_SERVICES:

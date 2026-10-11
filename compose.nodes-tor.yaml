@@ -7,8 +7,8 @@
 # on node_egress and cannot reach tor-socks.
 # Bitcoin Core: -proxy sends every outbound peer connection (IPv4, IPv6, onion) through Tor, DNS seeds included (by
 # name, through the proxy); -privatebroadcast sends sendrawtransaction (escrow settlements) over short-lived Tor
-# connections only. Never -connect or -onlynet: they stall the node's sync. Pooled payouts (sendtoaddress) are never
-# private, whatever these flags (docs/operator-guide.md#mainnet).
+# connections only. Never -connect or -onlynet: they stall the node's sync. Escrow settlement broadcasts use
+# Bitcoin Core's private-broadcast path when escrow is enabled (docs/operator-guide.md#bitcoin-escrow-test-networks-only).
 # monerod: --proxy as `monerod --help` documents it (an IP address, not a host name). UNVERIFIED: nothing here has run
 # monerod through Tor; treat Monero traffic as not private.
 # The two commands repeat compose.nodes.yaml's and add only the proxy flags (tests/test_tor_deploy.py checks that they
