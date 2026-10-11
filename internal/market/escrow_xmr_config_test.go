@@ -332,8 +332,7 @@ func TestXMREscrowNotReadyNamesEachState(t *testing.T) {
 		t.Fatalf("no state recorded: %q, %q", s, r)
 	}
 	for _, c := range []struct{ line, class, state, remedy string }{
-		{xmrLogPooledWait, "", "waiting for the pooled Monero wallet's first check", "Start the pooled monero-wallet-rpc, or correct MONERO_WALLET_RPC_URL"},
-		{xmrLogUnchecked, "get_info unreachable", "the escrow daemon or wallet-rpc could not be checked (get_info unreachable)", "ESCROW_XMR_WALLET_RPC_URL is running and reachable"},
+		{xmrLogUnchecked, "get_info unreachable", "the escrow daemon or wallet-rpc could not be checked at startup (get_info unreachable)", "ESCROW_XMR_WALLET_RPC_URL"},
 		{xmrLogNetwork, "", "the escrow daemon is not on the network this database's Monero escrows are on", "a new network needs a new database"},
 		{xmrLogSecret, "", "MONERO_WALLET_SECRET is not the secret this database was first started with", "Restore the original secret and restart the app"},
 		{xmrLogUnrecorded, "db-connection", "its secret verifier or seed key could not be checked in the database (db-connection)", "Check the database"},
@@ -350,8 +349,8 @@ func TestXMREscrowNotReadyNamesEachState(t *testing.T) {
 		t.Fatalf("ready: %q, %q", s, r)
 	}
 	logs := captureLog(t)
-	x.refuseEscrowXMR(errXMRPooledWallet)
-	if s, r := x.notReady(); s != "refused until the app is restarted" || !strings.Contains(r, "Reason: "+errXMRPooledWallet.msg+".") || !strings.Contains(r, "restart the app") ||
+	x.refuseEscrowXMR(errXMRNetworkMoved)
+	if s, r := x.notReady(); s != "refused until the app is restarted" || !strings.Contains(r, "Reason: "+errXMRNetworkMoved.msg+".") || !strings.Contains(r, "restart the app") ||
 		strings.Count(logs.String(), xmrLogRefused) != 1 {
 		t.Fatalf("refused: %q, %q", s, r)
 	}

@@ -5,7 +5,6 @@ import (
 	"database/sql/driver"
 	"net/url"
 	"os"
-	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -29,38 +28,6 @@ func loseNextActionCommit(t *testing.T, e *testEnv) *atomic.Bool {
 	e.A.db = wrapped
 	t.Cleanup(func() { original.Close() })
 	return lost
-}
-
-func TestConfirmedPayoutLostCommitAcknowledgementReportsUnknownOutcome(t *testing.T) {
-	p := newPayEnv(t)
-	order := p.insertPayout(stateCompleted, "release", p.vendor.ID, "pending", "fake-testnet-vendor", "", false, "")
-	id := p.payoutID(order)
-	lost := loseNextActionCommit(t, p.testEnv)
-
-	w := p.do("POST", "/admin/payout", p.adminSess, url.Values{
-		"payout_id": {id}, "op": {"hold"}, "note": {"Check the wallet before paying by hand"}, "password": {testPassword},
-	})
-	if lost.Load() {
-		t.Fatal("Commit did not reach the injected acknowledgement loss")
-	}
-	if w.Code != 500 || w.Header().Get("Retry-After") != "" ||
-		!strings.Contains(w.Body.String(), "Payout outcome unknown") ||
-		!strings.Contains(w.Body.String(), "may have been saved") ||
-		!strings.Contains(w.Body.String(), "check the payout state and audit trail") ||
-		strings.Contains(w.Body.String(), "Nothing was changed") {
-		t.Fatalf("lost Commit acknowledgement: status=%d retry=%q body=%s", w.Code, w.Header().Get("Retry-After"), w.Body.String())
-	}
-	var state string
-	if err := p.DB.QueryRow("SELECT state FROM payouts WHERE id=$1", id).Scan(&state); err != nil || state != "held" {
-		t.Fatalf("payout state = %q, err=%v; want committed hold", state, err)
-	}
-	var audits, events int
-	if err := p.DB.QueryRow("SELECT count(*) FROM audit_events WHERE action LIKE $1", "Held pending payout "+id+"%").Scan(&audits); err != nil || audits != 1 {
-		t.Fatalf("held payout audits = %d, err=%v; want 1", audits, err)
-	}
-	if err := p.DB.QueryRow("SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE '%held by an administrator%'", order).Scan(&events); err != nil || events != 1 {
-		t.Fatalf("held payout events = %d, err=%v; want 1", events, err)
-	}
 }
 
 func TestTOTPDisableLostCommitAcknowledgementReportsUnknownOutcome(t *testing.T) {
@@ -99,34 +66,5 @@ func TestTOTPDisableLostCommitAcknowledgementReportsUnknownOutcome(t *testing.T)
 	e.check(repeated, 303)
 	if got := agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1 AND action LIKE 'Turned off TOTP%'", id); got != 1 {
 		t.Fatalf("replay after lost acknowledgment duplicated audit: %d", got)
-	}
-}
-
-func TestConfirmedPayoutPrecommitBusyStaysRetryable(t *testing.T) {
-	p := newPayEnv(t)
-	order := p.insertPayout(stateCompleted, "release", p.vendor.ID, "pending", "fake-testnet-vendor", "", false, "")
-	id := p.payoutID(order)
-	lock, err := p.DB.Begin()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer lock.Rollback()
-	var locked int64
-	if err := lock.QueryRow("SELECT id FROM payouts WHERE id=$1 FOR UPDATE", id).Scan(&locked); err != nil {
-		t.Fatal(err)
-	}
-	w := p.do("POST", "/admin/payout", p.adminSess, url.Values{
-		"payout_id": {strconv.FormatInt(locked, 10)}, "op": {"hold"}, "note": {"Check the wallet before paying by hand"}, "password": {testPassword},
-	})
-	if w.Code != 503 || w.Header().Get("Retry-After") != busyRetryAfter || !strings.Contains(w.Body.String(), errBusyMsg) {
-		t.Fatalf("precommit busy: status=%d retry=%q body=%s", w.Code, w.Header().Get("Retry-After"), w.Body.String())
-	}
-	var state string
-	if err := p.DB.QueryRow("SELECT state FROM payouts WHERE id=$1", id).Scan(&state); err != nil || state != "pending" {
-		t.Fatalf("payout state = %q, err=%v; want unchanged pending", state, err)
-	}
-	var audits int
-	if err := p.DB.QueryRow("SELECT count(*) FROM audit_events WHERE action LIKE $1", "Held pending payout "+id+"%").Scan(&audits); err != nil || audits != 0 {
-		t.Fatalf("held payout audits=%d, err=%v; want none", audits, err)
 	}
 }

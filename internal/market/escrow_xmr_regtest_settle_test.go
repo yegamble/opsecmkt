@@ -446,9 +446,6 @@ func TestXMREscrowRegtestReRequest(t *testing.T) {
 	}
 	r, p := newXMRSettleRegtest(t)
 	// The relay call waits for the daemon's stop and start through the proxy.
-	old := payoutSendTimeout
-	payoutSendTimeout = 5 * time.Minute
-	t.Cleanup(func() { payoutSendTimeout = old })
 	order, addr := r.completedReal()
 	id := r.releaseReal(order)
 	p.wrap("relay_tx", r.daemonStoppedAround(container))

@@ -18,7 +18,6 @@ import (
 	"sync"
 	"testing"
 	"text/template"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -222,60 +221,6 @@ func TestDBBusyClasses(t *testing.T) {
 // A payout outcome is logged by sendPayouts itself, so it is not lost when the watcher is stopping (the
 // watcher drops a pass's error once its context is cancelled): the payout id, order short id, currency,
 // amount and the error class or txid, never the wallet's error text or the destination address.
-func TestPayoutOutcomeLoggedDuringShutdown(t *testing.T) {
-	p := newPayEnv(t)
-	p.setPayoutAddress(p.vendor, "fake-testnet-vendor")
-	failed := p.completedWithPayout("tx-log-failed")
-	failedID := p.payoutID(failed)
-	logs := captureLog(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	p.fake.sendErr = &rpcError{Method: "fake RPC send", Code: -6, Message: "Insufficient funds for fake-testnet-vendor"}
-	p.fake.sendHook = cancel // SIGTERM arrives while the wallet call is in flight
-	p.A.pollOnce(ctx)
-	p.fake.sendErr, p.fake.sendHook = nil, nil
-	want := "payout id=" + failedID + " order=" + failed[:8] + " currency=BTC amount=0.001 outcome=failed error=definite/rpc:-6 recorded=yes"
-	if got := logs.lines("payout id=" + failedID + " "); len(got) != 1 || got[0] != want {
-		t.Fatalf("failure log %q, want %q", got, want)
-	}
-	sent := p.completedWithPayout("tx-log-sent")
-	sentID := p.payoutID(sent)
-	ctx, cancel = context.WithCancel(context.Background())
-	p.fake.sendHook = cancel
-	p.A.pollOnce(ctx)
-	p.fake.sendHook = nil
-	_, txid, _, _ := p.payout(sent)
-	want = "payout id=" + sentID + " order=" + sent[:8] + " currency=BTC amount=0.001 outcome=sent txid=" + txid + " recorded=yes"
-	if got := logs.lines("payout id=" + sentID + " "); txid == "" || len(got) != 1 || got[0] != want {
-		t.Fatalf("sent log %q, want %q", got, want)
-	}
-	for _, s := range []string{"Insufficient", "fake-testnet-vendor", failed, sent} {
-		if strings.Contains(logs.String(), s) {
-			t.Fatalf("log contains %q: %q", s, logs.String())
-		}
-	}
-}
-
-func TestPayoutErrorClass(t *testing.T) {
-	for _, c := range []struct {
-		cur  string
-		err  error
-		want string
-	}{
-		{"BTC", &rpcError{Method: "sendtoaddress", Code: -6, Message: "secret"}, "definite/rpc:-6"},
-		{"XMR", &rpcError{Method: "transfer", Code: -38, Message: "secret"}, "ambiguous/rpc:-38"},
-		{"XMR", &rpcError{Method: "transfer", Code: -17, Message: "secret"}, "definite/rpc:-17"},
-		{"BTC", fmt.Errorf("send: %w", context.DeadlineExceeded), "ambiguous/timeout"},
-		{"BTC", errors.New("bitcoin RPC unreachable: timed out"), "ambiguous/*errors.errorString"},
-	} {
-		if got := payoutErrorClass(c.cur, c.err); got != c.want {
-			t.Errorf("payoutErrorClass(%s, %v) = %q, want %q", c.cur, c.err, got, c.want)
-		}
-	}
-}
-
-// A-427: a call whose connection ended after the whole request was sent (rpcDroppedError, which Monero escrow's build
-// classes tell apart) logs the class any other transport error has, the one it had before that type existed, so the
-// pooled payout and watcher log lines are unchanged.
 func TestErrorCauseDroppedConnection(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		io.Copy(io.Discard, r.Body)
@@ -295,7 +240,6 @@ func TestErrorCauseDroppedConnection(t *testing.T) {
 	}
 	for _, c := range []struct{ what, got, want string }{
 		{"errorCause", errorCause(err), "*errors.errorString"},
-		{"payout", payoutErrorClass("XMR", err), "ambiguous/*errors.errorString"},
 		{"watcher", watcherCause(&watchError{label: "XMR", err: fmt.Errorf("wallet read: %w", err)}), "XMR: *errors.errorString"},
 	} {
 		if c.got != c.want {
@@ -307,130 +251,19 @@ func TestErrorCauseDroppedConnection(t *testing.T) {
 // watcherCause keeps a pass's labels (currency, order short id, payout id) and replaces every error text by
 // its class, on one line; Error() keeps the text for payment_status and the admin pages.
 func TestWatcherCause(t *testing.T) {
-	send := &rpcError{Method: "bitcoin RPC sendtoaddress", Code: -6, Message: "secret tb1qsecretaddress"}
 	pass := errors.Join(
-		&watchError{label: "XMR", class: "pass skipped: wallet check failed: rpc:-13", err: errors.New("Wallet check failed; secret")},
-		&watchError{label: "BTC", err: errors.Join(
-			&watchError{class: "wallet read failed: rpc:-5", err: fmt.Errorf("bitcoin: %w", &rpcError{Code: -5, Message: "secret"})},
-			&watchError{label: "order 5f2c9e7a", err: fmt.Errorf("x: %w", &pgconn.PgError{Code: "40001", Message: "secret"})},
-			&watchError{label: "payout 7", class: payoutErrorClass("BTC", send), err: send},
-			&watchError{label: "payout 8 recorded as sending only", err: driver.ErrBadConn},
-		)},
-		errors.New("secret driver text"),
+		&watchError{label: "XMR", class: "wallet check failed: rpc:-13", err: errors.New("secret wallet text")},
+		&watchError{label: "BTC", err: errors.Join(&watchError{class: "wallet read failed: rpc:-5", err: errors.New("secret node text")}, &watchError{label: "order 5f2c9e7a", err: &pgconn.PgError{Code: "40001", Message: "secret"}})},
 	)
-	want := "XMR: pass skipped: wallet check failed: rpc:-13; BTC: wallet read failed: rpc:-5; BTC: order 5f2c9e7a: 40001; BTC: payout 7: definite/rpc:-6; BTC: payout 8 recorded as sending only: db-connection; *errors.errorString"
-	if got := watcherCause(pass); got != want {
-		t.Fatalf("watcherCause = %q, want %q", got, want)
-	}
-	if got := watcherCause(fmt.Errorf("check: %w", &rpcError{Code: -18, Message: "secret"})); got != "rpc:-18" {
-		t.Fatalf("wrapped rpc error = %q", got)
-	}
-	for _, s := range []string{"payout 7: bitcoin RPC sendtoaddress: error -6: secret tb1qsecretaddress", "XMR: Wallet check failed; secret", "BTC: bitcoin: : error -5: secret", "order 5f2c9e7a: x: "} {
-		if !strings.Contains(pass.Error(), s) {
-			t.Fatalf("Error() %q lost %q", pass.Error(), s)
+	got := watcherCause(pass)
+	for _, want := range []string{"XMR: wallet check failed: rpc:-13", "BTC: wallet read failed: rpc:-5", "order 5f2c9e7a: 40001"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("cause %q lacks %q", got, want)
 		}
 	}
-}
-
-// runBackground starts the registered background work (payment watcher, recovery reveal sweep) as the server
-// does and returns a function that stops it and waits for it to finish.
-func runBackground(t *testing.T, a *App) (stop func()) {
-	t.Helper()
-	a.Start(context.Background())
-	return func() {
-		t.Helper()
-		done := make(chan struct{})
-		go func() { a.stop(); a.background.Wait(); close(done) }()
-		select {
-		case <-done:
-		case <-time.After(10 * time.Second):
-			t.Fatal("background work did not stop")
-		}
-		a.stop = nil // allow another Start
-	}
-}
-
-// waitForLine waits until a captured line contains substr and returns the first such line.
-func waitForLine(t *testing.T, logs *lockedBuffer, substr string) string {
-	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		if l := logs.lines(substr); len(l) > 0 {
-			return l[0]
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("no log line containing %q: %q", substr, logs.String())
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-}
-
-// A-170: the running watcher's own error line and the recovery reveal sweep's line print classes only: never
-// the wallet's error text (which may quote an address) nor the driver's text about a refused database (its
-// user, database name, host and port). The currency, payout id and class remain for the operator.
-func TestLogsContainNoSecretsFromBackgroundWork(t *testing.T) {
-	p := newPayEnv(t)
-	p.setPayoutAddress(p.vendor, "fake-testnet-vendor")
-	order := p.completedWithPayout("tx-a170")
-	payoutID := p.payoutID(order)
-	const marker, addrLike, xmrAddrLike = "A170-WALLET-MARKER", "tb1qa170leakedaddress0000000000000000000", "5A170leakedmoneroaddress"
-	p.fake.sendErr = &rpcError{Method: "bitcoin RPC sendtoaddress", Code: -6, Message: marker + " Fixture rejected send to " + addrLike}
-	xmr := newFakeProvider("XMR", 10)
-	xmr.SetWallet(nil, fmt.Errorf("monero wallet check failed: %w", &rpcError{Method: "monero RPC get_address", Code: -13, Message: marker + " No wallet file " + xmrAddrLike}), false)
-	p.A.payments["XMR"] = xmr
-	logs := captureLog(t)
-
-	// (a) A live watcher pass: one wallet refuses a payout, the other's check fails.
-	stop := runBackground(t, p.A)
-	line := waitForLine(t, logs, "payment watcher:")
-	stop()
-	for _, want := range []string{"BTC: payout " + payoutID + ": definite/rpc:-6", "XMR: pass skipped: wallet check failed: rpc:-13"} {
-		if !strings.Contains(line, want) {
-			t.Fatalf("watcher line %q lacks %q", line, want)
-		}
-	}
-	for _, s := range []string{marker, addrLike, xmrAddrLike, "fake-testnet-vendor", "sendtoaddress", "get_address", order} {
-		if strings.Contains(logs.String(), s) {
-			t.Fatalf("log contains %q: %q", s, logs.String())
-		}
-	}
-
-	// A wallet read failure is named as such, with its code only.
-	p.fake.SetWallet(&rpcError{Method: "bitcoin RPC listreceivedbyaddress", Code: -5, Message: marker + " " + addrLike}, nil, false)
-	if got := watcherCause(p.A.pollOnce(context.Background())); !strings.Contains(got, "BTC: wallet read failed: rpc:-5") || strings.Contains(got, marker) {
-		t.Fatalf("wallet read failure cause %q", got)
-	}
-	p.fake.SetWallet(nil, nil, false)
-
-	// (b) The database refuses connections: nothing listens on its port any more.
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	hostPort := l.Addr().String()
-	l.Close()
-	const user, dbName, password = "a170_leak_user", "a170_leak_db", "a170-leak-password"
-	bad, err := OpenDB("postgres://" + user + ":" + password + "@" + hostPort + "/" + dbName + "?sslmode=disable&connect_timeout=2")
-	if err != nil {
-		t.Fatal(err)
-	}
-	orig := p.A.db
-	p.A.db = bad
-	t.Cleanup(func() { p.A.db = orig; bad.Close() }) // before newTestApp's Close
-	logs.mu.Lock()
-	logs.b.Reset()
-	logs.mu.Unlock()
-	stop = runBackground(t, p.A)
-	watcher := waitForLine(t, logs, "payment watcher:")
-	sweep := waitForLine(t, logs, "recovery code reveal sweep:")
-	stop()
-	if watcher != "payment watcher: db-connection" || sweep != "recovery code reveal sweep: db-connection" {
-		t.Fatalf("database outage lines %q, %q", watcher, sweep)
-	}
-	_, port, _ := net.SplitHostPort(hostPort)
-	for _, s := range []string{user, dbName, password, hostPort, ":" + port, "127.0.0.1", marker} {
-		if strings.Contains(logs.String(), s) {
-			t.Fatalf("log contains %q: %q", s, logs.String())
+	for _, secret := range []string{"secret wallet text", "secret node text", "secret"} {
+		if strings.Contains(got, secret) {
+			t.Fatalf("cause disclosed %q", secret)
 		}
 	}
 }

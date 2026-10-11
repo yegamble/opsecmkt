@@ -157,41 +157,23 @@ func TestProductDescriptionAndBitcoinPriceLabel(t *testing.T) {
 	if _, err := e.DB.Exec("UPDATE products SET description=$2 WHERE id=$1", product, "First line\nSecond line"); err != nil {
 		t.Fatal(err)
 	}
-	e.A.payMu.Lock()
-	e.A.payments["BTC"] = &bitcoinProvider{wantChain: "signet"}
-	e.A.payMu.Unlock()
-	e.A.live = false
+	// The shared price label follows the configured escrow network, including when it is not yet verified.
+	e.A.escrowConfigured = true
+	network := "regtest"
+	e.A.escrowNet.Store(&network)
 	testnet := e.do("GET", "/product?id="+product, "", nil)
 	e.check(testnet, 200)
 	if body := testnet.Body.String(); !strings.Contains(body, "First line\nSecond line</p>") || !strings.Contains(body, "Price (BTC, test network)") {
-		t.Fatalf("test-network product page lost description breaks or price context:\n%s", body)
+		t.Fatalf("escrow product label: %s", body)
 	}
-	if body := e.do("GET", "/listing-edit?id="+product, vendor, nil).Body.String(); !strings.Contains(body, "Price (BTC, test network)") {
-		t.Fatalf("test-network editor price label is missing:\n%s", body)
+	for _, path := range []string{"/listing-edit?id=" + product, "/vendor-dashboard"} {
+		if body := e.do("GET", path, vendor, nil).Body.String(); !strings.Contains(body, "Price (BTC, test network)") {
+			t.Fatalf("%s lacks escrow network label: %s", path, body)
+		}
 	}
-	if body := e.do("GET", "/vendor-dashboard", vendor, nil).Body.String(); !strings.Contains(body, "Price (BTC, test network)") {
-		t.Fatalf("test-network vendor-desk price label is missing:\n%s", body)
-	}
-	e.A.payMu.Lock()
-	e.A.payments["BTC"] = &bitcoinProvider{wantChain: "main"}
-	e.A.payMu.Unlock()
-	e.A.live = true
-	mainnet := e.do("GET", "/product?id="+product, "", nil)
-	e.check(mainnet, 200)
-	if body := mainnet.Body.String(); !strings.Contains(body, "Price (BTC, main network)") || strings.Contains(body, "Price (BTC, test network)") {
-		t.Fatalf("main-network product label does not follow current config:\n%s", body)
-	}
-	if body := e.do("GET", "/listing-edit?id="+product, vendor, nil).Body.String(); !strings.Contains(body, "Price (BTC, main network)") {
-		t.Fatalf("main-network editor price label is missing:\n%s", body)
-	}
-	if body := e.do("GET", "/vendor-dashboard", vendor, nil).Body.String(); !strings.Contains(body, "Price (BTC, main network)") {
-		t.Fatalf("main-network vendor-desk price label is missing:\n%s", body)
-	}
-	e.A.payMu.Lock()
-	delete(e.A.payments, "BTC")
-	e.A.payMu.Unlock()
+	e.A.escrowConfigured = false
 	if body := e.do("GET", "/product?id="+product, "", nil).Body.String(); !strings.Contains(body, "Price (BTC, not configured)") {
-		t.Fatalf("XMR-only/mainnet market falsely assigned a BTC network:\n%s", body)
+		t.Fatalf("unconfigured BTC label: %s", body)
 	}
 }
 

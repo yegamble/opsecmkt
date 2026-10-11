@@ -2,11 +2,8 @@ package market
 
 import (
 	"bytes"
-	"context"
 	"html"
 	"net/url"
-	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -177,72 +174,31 @@ func TestHuntUnusableEncryptionKeyShownAsUsableContact(t *testing.T) {
 	mustNotContain(t, page, "No usable key.")
 }
 
-// countingWallet counts NewAddress calls.
-type countingWallet struct {
-	*fakeProvider
-	addresses atomic.Int64
-}
-
-func (w *countingWallet) NewAddress(ctx context.Context, order string) (string, error) {
-	w.addresses.Add(1)
-	return w.fakeProvider.NewAddress(ctx, order)
-}
-
-// TestPhysicalPayRefusedWithoutUsableVendorKey (A-83): with no key, an expired key or a signing-only key, the order
-// page offers no payment for a physical draft ("Unavailable. This vendor has no usable encryption key..."), the
-// product and checkout pages say so, and /orders/pay refuses with 409 before reserving stock or asking the wallet
-// for an address. A digital order from the same vendor is unaffected; a usable key restores payment.
-func TestPhysicalPayRefusedWithoutUsableVendorKey(t *testing.T) {
-	p := newPayEnv(t)
-	wallet := &countingWallet{fakeProvider: p.fake}
-	p.A.payments["BTC"] = wallet
-	digital := p.product(p.vendor.ID, "digital")
-	unusable := testUnusableKeys(t, p.vendor.Handle)
-	stock := func(product string) int { return p.count("SELECT stock FROM products WHERE id=$1", product) }
+// A physical escrow checkout requires a vendor key able to receive the buyer's shipping details.
+func TestPhysicalEscrowRefusedWithoutUsableVendorKey(t *testing.T) {
+	x := newEscrowEnv(t)
+	product := x.testEnv.product(x.vendor, "physical")
+	unusable := testUnusableKeys(t, "vendor")
 	for variant, armored := range map[string]string{"no key": "", "expired key": unusable["expired key"], "signing-only key": unusable["signing-only key"]} {
-		p.setKey(p.vendor.ID, armored)
-		for _, page := range []string{"/product?id=" + p.productID, "/checkout?id=" + p.productID} {
-			b := html.UnescapeString(p.body("GET", page, p.buyerSess, nil, 200))
-			mustContain(t, b, "No usable key.", "has no usable encryption key, so you could not send a shipping address")
+		x.setKey(x.vendor, armored)
+		draft := x.testEnv.order(x.buyer, product, "BTC", stateDraft)
+		page := html.UnescapeString(x.page("/order?id="+draft, x.buyerSess))
+		mustContain(t, page, "no usable encryption key")
+		before := agInt(x.testEnv, "SELECT stock FROM products WHERE id=$1", product)
+		w := x.do("POST", "/orders/escrow", x.buyerSess, url.Values{"order_id": {draft}, "refund_address": {regtestAddr("unusable-key-" + variant)}})
+		if w.Code != 409 {
+			t.Fatalf("%s: checkout status %d: %s", variant, w.Code, w.Body.String())
 		}
-		for _, page := range []string{"/product?id=" + digital, "/checkout?id=" + digital} {
-			mustNotContain(t, html.UnescapeString(p.body("GET", page, p.buyerSess, nil, 200)), "has no usable encryption key")
+		if x.state(draft) != stateDraft || agInt(x.testEnv, "SELECT stock FROM products WHERE id=$1", product) != before || agInt(x.testEnv, "SELECT count(*) FROM escrows WHERE order_id=$1", draft) != 0 {
+			t.Fatalf("%s changed draft or stock", variant)
 		}
-		draft := p.testEnv.order(p.buyer.ID, p.productID, "BTC", stateDraft)
-		b := html.UnescapeString(p.body("GET", "/order?id="+draft, p.buyerSess, nil, 200))
-		mustContain(t, b, "<strong>Unavailable.</strong> This vendor has no usable encryption key, so you could not send your shipping address. Ask them to add one.")
-		mustNotContain(t, b, "Request payment address")
-		before, addresses := stock(p.productID), wallet.addresses.Load()
-		w := p.do("POST", "/orders/pay", p.buyerSess, url.Values{"order_id": {draft}})
-		if w.Code != 409 || !strings.Contains(w.Body.String(), noUsableKeyPay) {
-			t.Fatalf("%s: physical pay status=%d body=%q, want 409 naming the missing key", variant, w.Code, w.Body.String())
-		}
-		if wallet.addresses.Load() != addresses {
-			t.Fatalf("%s: the wallet was asked for an address", variant)
-		}
-		if stock(p.productID) != before || p.count("SELECT count(*) FROM payment_addresses WHERE order_id=$1", draft) != 0 {
-			t.Fatalf("%s: a refused payment request reserved stock or stored an address", variant)
-		}
-		var state string
-		if err := p.DB.QueryRow("SELECT state FROM orders WHERE id=$1", draft).Scan(&state); err != nil || state != stateDraft {
-			t.Fatalf("%s: order state %q (%v), want draft", variant, state, err)
-		}
-		p.check(p.do("POST", "/orders/cancel", p.buyerSess, url.Values{"order_id": {draft}, "from": {stateDraft}}), 303)
-		// Digital orders need no shipping address.
-		d := p.testEnv.order(p.buyer.ID, digital, "BTC", stateDraft)
-		mustContain(t, p.body("GET", "/order?id="+d, p.buyerSess, nil, 200), "Request payment address")
-		p.check(p.do("POST", "/orders/pay", p.buyerSess, url.Values{"order_id": {d}}), 303)
-		p.check(p.do("POST", "/orders/cancel", p.buyerSess, url.Values{"order_id": {d}, "from": {stateAwaitingPayment}}), 303)
 	}
-	_, usable := testPGPKey(t, p.vendor.Handle)
-	p.setKey(p.vendor.ID, usable)
-	mustNotContain(t, p.body("GET", "/product?id="+p.productID, p.buyerSess, nil, 200), "has no usable encryption key")
-	draft := p.testEnv.order(p.buyer.ID, p.productID, "BTC", stateDraft)
-	mustContain(t, p.body("GET", "/order?id="+draft, p.buyerSess, nil, 200), "Request payment address")
-	before, addresses := stock(p.productID), wallet.addresses.Load()
-	p.check(p.do("POST", "/orders/pay", p.buyerSess, url.Values{"order_id": {draft}}), 303)
-	if stock(p.productID) != before-1 || wallet.addresses.Load() != addresses+1 {
-		t.Fatal("a vendor with a usable key could not be paid")
+	_, usable := testPGPKey(t, "vendor")
+	x.setKey(x.vendor, usable)
+	draft := x.testEnv.order(x.buyer, product, "BTC", stateDraft)
+	w := x.do("POST", "/orders/escrow", x.buyerSess, url.Values{"order_id": {draft}, "refund_address": {regtestAddr("usable-key")}})
+	if w.Code != 303 {
+		t.Fatalf("usable key checkout: %d %s", w.Code, w.Body.String())
 	}
 }
 

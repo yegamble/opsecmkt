@@ -1,35 +1,10 @@
 package market
 
 import (
-	"context"
-	"errors"
 	"slices"
 	"strings"
 	"testing"
 )
-
-// stubProvider is the P3 test double for a payment provider (P5 owns the real fake).
-type stubProvider struct {
-	currency string
-	broken   bool
-	created  []string
-}
-
-func (s *stubProvider) Currency() string   { return s.currency }
-func (s *stubProvider) Network() string    { return "regtest" }
-func (s *stubProvider) Confirmations() int { return 1 }
-func (s *stubProvider) NewAddress(_ context.Context, orderID string) (string, error) {
-	if s.broken {
-		return "", errors.New("wallet offline")
-	}
-	s.created = append(s.created, orderID)
-	return "stub-" + orderID[:8], nil
-}
-func (s *stubProvider) Incoming(context.Context, []string) ([]Incoming, error) { return nil, nil }
-func (s *stubProvider) Send(context.Context, string, int64) (string, error) {
-	return "", errors.New("stub cannot send")
-}
-func (s *stubProvider) ValidAddress(addr string) bool { return strings.HasPrefix(addr, "stub-") }
 
 func targets(ts []Transition) []string {
 	var out []string
@@ -42,33 +17,32 @@ func targets(ts []Transition) []string {
 func TestViewerTransitionsFollowTheStateTable(t *testing.T) {
 	buyer, vendor := &User{ID: "b", Role: "buyer"}, &User{ID: "v", Role: "vendor"}
 	mod, stranger := &User{ID: "m", Role: "moderator"}, &User{ID: "x", Role: "buyer"}
-	withBTC := map[string]PaymentProvider{"BTC": &stubProvider{currency: "BTC"}}
+
 	for _, tc := range []struct {
 		state, kind string
 		u           *User
-		payments    map[string]PaymentProvider
 		want        []string
 	}{
-		{stateDraft, "physical", buyer, withBTC, []string{stateAwaitingPayment, stateCancelled}},
-		{stateDraft, "physical", vendor, withBTC, nil},
-		{stateAwaitingPayment, "physical", buyer, withBTC, []string{stateCancelled}},
-		{stateAwaitingPayment, "physical", vendor, withBTC, []string{stateCancelled}},
-		{statePaid, "physical", vendor, nil, []string{stateShipped, stateDisputed, stateCancelled}},
-		{statePaid, "digital", vendor, nil, []string{stateDelivered, stateDisputed, stateCancelled}},
-		{statePaid, "service", vendor, nil, []string{stateDisputed, stateCancelled}},
-		{statePaid, "physical", buyer, nil, []string{stateDisputed}},
-		{stateShipped, "physical", buyer, nil, []string{stateCompleted, stateDisputed}},
-		{stateShipped, "physical", vendor, nil, []string{stateDisputed}},
-		{stateDelivered, "digital", buyer, nil, []string{stateCompleted, stateDisputed}},
-		{stateDisputed, "physical", mod, nil, nil}, // resolved on the moderator desk, not the order page
-		{stateDisputed, "physical", buyer, nil, nil},
-		{statePaid, "physical", stranger, nil, nil},
-		{stateCompleted, "physical", buyer, nil, nil},
-		{stateCancelled, "physical", vendor, nil, nil},
-		{stateResolved, "physical", buyer, nil, nil},
+		{stateDraft, "physical", buyer, []string{stateCancelled}},
+		{stateDraft, "physical", vendor, nil},
+		{stateAwaitingPayment, "physical", buyer, nil},
+		{stateAwaitingPayment, "physical", vendor, nil},
+		{statePaid, "physical", vendor, nil},
+		{statePaid, "digital", vendor, nil},
+		{statePaid, "service", vendor, nil},
+		{statePaid, "physical", buyer, nil},
+		{stateShipped, "physical", buyer, nil},
+		{stateShipped, "physical", vendor, nil},
+		{stateDelivered, "digital", buyer, nil},
+		{stateDisputed, "physical", mod, nil}, // resolved on the moderator desk, not the order page
+		{stateDisputed, "physical", buyer, nil},
+		{statePaid, "physical", stranger, nil},
+		{stateCompleted, "physical", buyer, nil},
+		{stateCancelled, "physical", vendor, nil},
+		{stateResolved, "physical", buyer, nil},
 	} {
 		o := &Order{State: tc.state, Kind: tc.kind, BuyerID: "b", VendorID: "v", Currency: "BTC"}
-		got := viewerTransitions(tc.payments, "test-network", o, tc.u)
+		got := viewerTransitions(o, tc.u)
 		if !slices.Equal(targets(got), tc.want) {
 			t.Errorf("%s/%s as %s: got %v want %v", tc.state, tc.kind, tc.u.ID, targets(got), tc.want)
 		}
@@ -81,11 +55,6 @@ func TestViewerTransitionsFollowTheStateTable(t *testing.T) {
 				t.Errorf("%s -> %s has no action/label", tc.state, tr.To)
 			}
 		}
-	}
-	// Without a provider the payment step is shown, but as unavailable (no form action).
-	got := viewerTransitions(nil, "test-network", &Order{State: stateDraft, Kind: "physical", BuyerID: "b", VendorID: "v", Currency: "XMR"}, buyer)
-	if len(got) != 2 || got[0].To != stateAwaitingPayment || got[0].Action != "" || !strings.Contains(got[0].Label, "Payment unavailable for XMR") {
-		t.Fatalf("unavailable payment step: %+v", got)
 	}
 	for to, path := range transitionActions {
 		if _, ok := actions[path]; !ok {

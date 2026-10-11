@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -581,4 +582,14 @@ func TestEscrowVendorKeyTypeShown(t *testing.T) {
 			t.Errorf("%s mentions escrow keys with escrow off", path)
 		}
 	}
+}
+
+var readinessCount = regexp.MustCompile(`id="(escrow-readiness-[a-z]+)"><strong>(\d+)</strong>`)
+
+func readinessCounts(page string) map[string]int {
+	out := map[string]int{}
+	for _, m := range readinessCount.FindAllStringSubmatch(page, -1) {
+		out[m[1]], _ = strconv.Atoi(m[2])
+	}
+	return out
 }

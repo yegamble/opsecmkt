@@ -111,7 +111,6 @@ func TestRenderedTimestampSurfacesAreUTCWhateverTheDatabaseZone(t *testing.T) {
 	buyerID, buyer := e.user("tz_surface_buyer", "buyer")
 	vendorID, vendor := e.user("tz_surface_vendor", "vendor")
 	_, admin := e.user("tz_surface_admin", "admin")
-	_, moderator := e.user("tz_surface_mod", "moderator")
 	product := e.product(vendorID, "digital")
 	order := e.order(buyerID, product, "BTC", stateDisputed)
 	const created = "2025-04-05 06:07 UTC"
@@ -123,8 +122,6 @@ func TestRenderedTimestampSurfacesAreUTCWhateverTheDatabaseZone(t *testing.T) {
 	const deliveryAt = "2025-04-11 12:13 UTC"
 	const listingAt = "2025-04-12 13:14 UTC"
 	const payoutAt = "2025-04-13 14:15 UTC"
-	const pollAt = "2025-04-14 15:16:17 UTC"
-	const reviewAt = "2025-04-15 16:17 UTC"
 
 	if _, err := e.DB.Exec(`UPDATE orders SET created=$2,updated=$3 WHERE id=$1`, order, "2025-04-05 06:07:00+00", "2025-04-06 07:08:00+00"); err != nil {
 		t.Fatal(err)
@@ -152,24 +149,6 @@ func TestRenderedTimestampSurfacesAreUTCWhateverTheDatabaseZone(t *testing.T) {
 		VALUES($1,'release',$2,'BTC',100000,'fixture-payout-address','sent',$3)`, order, vendorID, "2025-04-13 14:15:00+00"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.DB.Exec(`INSERT INTO payment_status(currency,network,last_poll) VALUES('BTC','testnet3',$1)
-		ON CONFLICT(currency) DO UPDATE SET network=EXCLUDED.network,last_poll=EXCLUDED.last_poll`, "2025-04-14 15:16:17+00"); err != nil {
-		t.Fatal(err)
-	}
-	e.A.payMu.Lock()
-	if e.A.payments == nil {
-		e.A.payments = make(map[string]PaymentProvider)
-	}
-	e.A.payments["BTC"] = &stubProvider{currency: "BTC"}
-	e.A.payMu.Unlock()
-	if _, err := e.DB.Exec(`INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations,flagged,after_close,created)
-		VALUES($1,'BTC','timezone-review-tx',0,'fixture-payment-address',5000,1,true,true,$2)`, order, "2025-04-15 16:17:00+00"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := e.DB.Exec(`INSERT INTO order_events(order_id,from_state,to_state,note,created)
-		VALUES($1,'disputed','disputed','Late deposit timezone-review-tx output 0 (0.00005000 BTC) arrived after the order closed. Moderator review required.',$2)`, order, "2025-04-15 16:17:00+00"); err != nil {
-		t.Fatal(err)
-	}
 
 	checks := []struct {
 		name, path, token, marker string
@@ -181,8 +160,6 @@ func TestRenderedTimestampSurfacesAreUTCWhateverTheDatabaseZone(t *testing.T) {
 		{"delivery and order events", "/order?id=" + order, buyer, deliveryAt},
 		{"listing edit", "/listing-edit?id=" + product, vendor, listingAt},
 		{"payout updated", "/admin", admin, payoutAt},
-		{"provider poll", "/admin", admin, pollAt},
-		{"payment review", "/moderator", moderator, reviewAt},
 	}
 	for _, check := range checks {
 		t.Run(check.name, func(t *testing.T) {

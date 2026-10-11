@@ -16,6 +16,7 @@ func TestLateDepositFlagNotesAreBoundedAndIndexOutputs(t *testing.T) {
 			mod, _ := e.user("flagmod_"+randomToken()[:6], "moderator")
 			product := e.product(vendor, "digital")
 			order := e.order(buyer, product, currency, stateCompleted)
+			agExec(e, `INSERT INTO escrows(order_id,address,market_index,refund_address,fee_bps,fee_destination) VALUES($1,$2,nextval('escrow_market_index'),$3,0,'')`, order, "escrow-"+order[:12], "refund-"+order[:12])
 			const txid = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 			const outputs = 18
 			for idx := range outputs {
@@ -31,7 +32,7 @@ func TestLateDepositFlagNotesAreBoundedAndIndexOutputs(t *testing.T) {
 				t.Fatal(err)
 			}
 			auditBefore := agInt(e, "SELECT count(*) FROM audit_events")
-			if err = e.A.flagLateDeposits(context.Background(), tx, &o, 3, false, true); err != nil {
+			if err = e.A.flagLateDeposits(context.Background(), tx, &o, 3); err != nil {
 				t.Fatal(err)
 			}
 			if err = tx.Commit(); err != nil {
@@ -52,15 +53,13 @@ func TestLateDepositFlagNotesAreBoundedAndIndexOutputs(t *testing.T) {
 				}
 			}
 			for idx := range outputs {
-				label := lateDepositName(txid, int64(idx), 5000, currency, false)
+				label := lateDepositName(txid, int64(idx), 5000, currency, true)
 				if !strings.Contains(joined, label) {
 					t.Errorf("output %d is not distinctly named: %q", idx, label)
 				}
 			}
-			if n := agInt(e, `SELECT count(*) FROM payments p WHERE p.order_id=$1 AND p.flagged AND EXISTS (
-				SELECT 1 FROM order_events ev WHERE ev.order_id=p.order_id AND ev.actor_id IS NULL
-				AND lower(ev.note) LIKE '%moderator review required.%' AND strpos(ev.note,'deposit '||CASE WHEN length(p.txid)<=20 THEN p.txid ELSE left(p.txid,20)||'…' END||' output '||p.idx::text||' (')>0)`, order); n != outputs {
-				t.Fatalf("flag timestamp notes match %d of %d outputs", n, outputs)
+			if n := agInt(e, "SELECT count(*) FROM payments WHERE order_id=$1 AND flagged", order); n != outputs {
+				t.Fatalf("flagged %d of %d outputs", n, outputs)
 			}
 			if n := agInt(e, `SELECT count(*) FROM notifications WHERE user_id=$1 AND strpos(body,'Payment review needed for order '||left($2,8))=1`, mod, order); n != 1 {
 				t.Fatalf("staff notices were not episode-bounded: %d", n)

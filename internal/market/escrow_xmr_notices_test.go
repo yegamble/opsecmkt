@@ -18,7 +18,7 @@ type copyEnv struct {
 }
 
 // newCopyEnv starts a market with the given pooled BTC provider (the fake), Bitcoin escrow and Monero escrow.
-func newCopyEnv(t *testing.T, pooled, btc, xmr bool) *copyEnv {
+func newCopyEnv(t *testing.T, btc, xmr bool) *copyEnv {
 	t.Helper()
 	for _, k := range []string{"ESCROW_BTC", "ESCROW_XMR", "BITCOIN_RPC_URL", "BITCOIN_CHAIN", "MONERO_WALLET_RPC_URL", "MONERO_NETWORK"} {
 		t.Setenv(k, "")
@@ -35,11 +35,7 @@ func newCopyEnv(t *testing.T, pooled, btc, xmr bool) *copyEnv {
 	if e.A.escrowConfigured != btc || (e.A.escrowXMR != nil) != xmr || (btc && e.A.escrow.Load() == nil) || (xmr && !e.A.xmrEscrowReady()) {
 		t.Fatalf("escrow state: btc %v/%v, xmr %v/%v", e.A.escrowConfigured, e.A.escrow.Load() != nil, e.A.escrowXMR != nil, e.A.xmrEscrowReady())
 	}
-	if pooled {
-		e.A.payMu.Lock()
-		e.A.payments["BTC"] = newFakeProvider("BTC", 3)
-		e.A.payMu.Unlock()
-	}
+
 	v := &copyEnv{testEnv: e}
 	vendor, vendorSess := e.user("cvendor_"+randomToken()[:6], "vendor")
 	_, v.buyerSess = e.user("cbuyer_"+randomToken()[:6], "buyer")
@@ -71,28 +67,23 @@ func multisigAboutMonero(body string) string {
 
 func TestMoneroEscrowSiteCopyEveryCombination(t *testing.T) {
 	const (
-		disabled  = `<span class="accent">Payments disabled</span>`
-		pooledBdg = `<span class="badge testnet">TESTNET payments (BTC fake) — no real funds</span>`
-		btcBdg    = `<span class="badge testnet">Bitcoin escrow only (regtest) — no real funds</span>`
-		xmrBdg    = `<span class="badge testnet">Monero escrow only (local fakechain) — no real funds</span>`
-		bothBdg   = `<span class="badge testnet">Bitcoin and Monero escrow only (test networks) — no real funds</span>`
+		disabled = `<span class="accent">New payments paused</span>`
+		btcBdg   = `<span class="badge testnet">Bitcoin escrow (regtest)</span>`
+		xmrBdg   = `<span class="badge testnet">Monero escrow (local fakechain)</span>`
+		bothBdg  = `<span class="badge testnet">Bitcoin and Monero escrow (test networks)</span>`
 	)
 	for _, c := range []struct {
-		name             string
-		pooled, btc, xmr bool
-		badge            string
+		name     string
+		btc, xmr bool
+		badge    string
 	}{
-		{"none", false, false, false, disabled},
-		{"pooled only", true, false, false, pooledBdg},
-		{"bitcoin escrow only", false, true, false, btcBdg},
-		{"monero escrow only", false, false, true, xmrBdg},
-		{"bitcoin and monero escrow", false, true, true, bothBdg},
-		{"pooled and bitcoin escrow", true, true, false, pooledBdg},
-		{"pooled and monero escrow", true, false, true, pooledBdg},
-		{"pooled, bitcoin and monero escrow", true, true, true, pooledBdg},
+		{"none", false, false, disabled},
+		{"bitcoin escrow", true, false, btcBdg},
+		{"monero escrow", false, true, xmrBdg},
+		{"both escrows", true, true, bothBdg},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			v := newCopyEnv(t, c.pooled, c.btc, c.xmr)
+			v := newCopyEnv(t, c.btc, c.xmr)
 			product, checkout := "/product?id="+v.product, "/checkout?id="+v.product
 			pages := map[string]string{
 				"/":                 v.page("/", v.buyerSess),

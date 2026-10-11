@@ -182,7 +182,7 @@ func TestEscrowArbiterReadPacing(t *testing.T) {
 	}
 	e = x.A.escrow.Load()
 	x.A.escrow.CompareAndSwap(e, nil)
-	retry.last = escrowLogPooledKey // as the pooled key self-check leaves it
+	retry.last = escrowLogUnchecked // as a transient escrow node check leaves it
 	if x.A.retryEscrow(ctx, retry); reads() != n || x.A.escrow.Load() == nil || retry.last != escrowLogOn {
 		t.Fatalf("escrow off within the slow pass's wait: %q, %d reads (want no read, the pass held, escrow on)\n%s", retry.last, reads()-n, logs.String())
 	}

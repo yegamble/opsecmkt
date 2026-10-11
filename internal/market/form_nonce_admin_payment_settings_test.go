@@ -100,8 +100,6 @@ func TestEscrowReleaseDaysConfirmedReceiptAndLostAcknowledgement(t *testing.T) {
 func TestPaymentIntakeConfirmedReceiptAndLostAcknowledgement(t *testing.T) {
 	e := newTestApp(t)
 	adminID, admin := e.user("nonce_intake_admin", "admin")
-	agExec(e, "UPDATE settings SET value='true' WHERE key=$1", paymentIntakeKey("BTC"))
-	e.A.payments["BTC"] = newFakeProvider("BTC", 3)
 	otherSession := agSession(e, adminID)
 	page := e.do("GET", "/admin", admin, nil)
 	e.check(page, 200)
@@ -125,7 +123,7 @@ func TestPaymentIntakeConfirmedReceiptAndLostAcknowledgement(t *testing.T) {
 	if got := agStr(e, "SELECT value FROM settings WHERE key=$1", paymentIntakeKey("BTC")); got != intakePaused {
 		t.Fatalf("BTC intake after lost acknowledgement = %q", got)
 	}
-	if got := agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1 AND action LIKE 'Paused new BTC payment addresses%'", adminID); got != 1 {
+	if got := agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1 AND action LIKE 'Paused new BTC escrow checkouts%'", adminID); got != 1 {
 		t.Fatalf("lost-ack intake audit rows=%d, want 1", got)
 	}
 	replay := e.do("POST", "/admin/payment-intake", admin, firstForm)
@@ -136,12 +134,12 @@ func TestPaymentIntakeConfirmedReceiptAndLostAcknowledgement(t *testing.T) {
 
 	newerPage := e.do("GET", "/admin", admin, nil)
 	e.check(newerPage, 200)
-	newerForm := url.Values{"currency": {"BTC"}, "enabled": {"true"}, "password": {testPassword}, formNonceField: {renderedCurrencyIntakeNonce(t, newerPage.Body.String(), "BTC")}}
+	newerForm := url.Values{"currency": {"BTC"}, "enabled": {intakeEscrow}, "password": {testPassword}, formNonceField: {renderedCurrencyIntakeNonce(t, newerPage.Body.String(), "BTC")}}
 	e.check(e.do("POST", "/admin/payment-intake", admin, newerForm), 303)
 	beforeReplayAudits := agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1", adminID)
 	beforeReplayNotices := agInt(e, "SELECT count(*) FROM notifications WHERE user_id=$1", adminID)
 	e.check(e.do("POST", "/admin/payment-intake", admin, firstForm), 303)
-	if got := agStr(e, "SELECT value FROM settings WHERE key=$1", paymentIntakeKey("BTC")); got != intakeOn {
+	if got := agStr(e, "SELECT value FROM settings WHERE key=$1", paymentIntakeKey("BTC")); got != intakeEscrow {
 		t.Fatalf("old receipt reverted newer BTC intake: %q", got)
 	}
 	if agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1", adminID) != beforeReplayAudits || agInt(e, "SELECT count(*) FROM notifications WHERE user_id=$1", adminID) != beforeReplayNotices {
@@ -153,22 +151,21 @@ func TestPaymentIntakeConfirmedReceiptAndLostAcknowledgement(t *testing.T) {
 	e.check(e.do("POST", "/admin/payment-intake", otherSession, firstForm), 409)
 }
 
-func TestPaymentIntakeRefusalRollsBackNonceForProviderCorrection(t *testing.T) {
+func TestPaymentIntakeInvalidChoiceRollsBackNonceForCorrection(t *testing.T) {
 	e := newTestApp(t)
-	id, admin := e.user("nonce_intake_missing_wallet", "admin")
-	agExec(e, "UPDATE settings SET value='escrow' WHERE key=$1", paymentIntakeKey("XMR"))
+	id, admin := e.user("nonce_intake_invalid", "admin")
 	page := e.do("GET", "/admin", admin, nil)
 	e.check(page, 200)
-	form := url.Values{"currency": {"XMR"}, "enabled": {intakeOn}, "password": {testPassword}, formNonceField: {renderedCurrencyIntakeNonce(t, page.Body.String(), "XMR")}}
-	if w := e.do("POST", "/admin/payment-intake", admin, form); w.Code != 409 || !strings.Contains(w.Body.String(), "Configure the XMR wallet RPC") {
-		t.Fatalf("missing-wallet refusal: %d %s", w.Code, w.Body)
+	form := url.Values{"currency": {"XMR"}, "enabled": {"true"}, "password": {testPassword}, formNonceField: {renderedCurrencyIntakeNonce(t, page.Body.String(), "XMR")}}
+	if w := e.do("POST", "/admin/payment-intake", admin, form); w.Code != 400 {
+		t.Fatalf("invalid legacy choice: %d %s", w.Code, w.Body)
 	}
-	if agStr(e, "SELECT value FROM settings WHERE key=$1", paymentIntakeKey("XMR")) != intakeEscrow || agInt(e, "SELECT count(*) FROM form_submissions WHERE nonce=$1", form.Get(formNonceField)) != 0 {
-		t.Fatal("missing-wallet refusal changed state or retained receipt")
+	if agInt(e, "SELECT count(*) FROM form_submissions WHERE nonce=$1", form.Get(formNonceField)) != 0 {
+		t.Fatal("invalid choice retained receipt")
 	}
-	e.A.payments["XMR"] = newFakeProvider("XMR", 3)
+	form.Set("enabled", intakePaused)
 	e.check(e.do("POST", "/admin/payment-intake", admin, form), 303)
-	if agStr(e, "SELECT value FROM settings WHERE key=$1", paymentIntakeKey("XMR")) != intakeOn || agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1", id) != 1 {
+	if agStr(e, "SELECT value FROM settings WHERE key=$1", paymentIntakeKey("XMR")) != intakePaused || agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1", id) != 1 {
 		t.Fatal("corrected payment-intake form did not save once")
 	}
 }
@@ -212,7 +209,6 @@ func TestAdminPaymentSettingFormsKeepTOTPGuardAndNonceRollback(t *testing.T) {
 	t.Run("payment intake", func(t *testing.T) {
 		e := newTestApp(t)
 		adminID, admin := e.user("nonce_intake_totp", "admin")
-		e.A.payments["BTC"] = newFakeProvider("BTC", 3)
 		key, _ := agEnableTOTP(e, adminID)
 		page := e.do("GET", "/admin", admin, nil)
 		e.check(page, 200)
@@ -238,7 +234,7 @@ func TestAdminPaymentSettingFormsKeepTOTPGuardAndNonceRollback(t *testing.T) {
 		}
 		freshPage := e.do("GET", "/admin", admin, nil)
 		e.check(freshPage, 200)
-		fresh := url.Values{"currency": {"BTC"}, "enabled": {intakeOn}, "password": {testPassword}, "code": {savedCode}, formNonceField: {renderedCurrencyIntakeNonce(t, freshPage.Body.String(), "BTC")}}
+		fresh := url.Values{"currency": {"BTC"}, "enabled": {intakeEscrow}, "password": {testPassword}, "code": {savedCode}, formNonceField: {renderedCurrencyIntakeNonce(t, freshPage.Body.String(), "BTC")}}
 		if w := e.do("POST", "/admin/payment-intake", admin, fresh); w.Code != 401 || !strings.Contains(w.Body.String(), "already used") {
 			t.Fatalf("fresh payment-intake change reused a spent TOTP: %d %s", w.Code, w.Body)
 		}
@@ -315,7 +311,7 @@ func TestAdminPaymentSettingReceiptsRecheckCurrentActor(t *testing.T) {
 					if got := agStr(e, "SELECT COALESCE((SELECT value FROM settings WHERE key=$1), '14')", escrowReleaseDaysSetting); got != "14" {
 						t.Fatalf("stale actor changed release deadline: %q", got)
 					}
-				} else if got := agStr(e, "SELECT value FROM settings WHERE key=$1", paymentIntakeKey("BTC")); got != intakeOn {
+				} else if got := agStr(e, "SELECT value FROM settings WHERE key=$1", paymentIntakeKey("BTC")); got != intakeEscrow {
 					t.Fatalf("stale actor changed BTC intake: %q", got)
 				}
 			})

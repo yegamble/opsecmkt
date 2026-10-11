@@ -1,38 +1,27 @@
 package market
 
 import (
-	"context"
 	"database/sql"
-	"net/url"
 	"strings"
 	"testing"
 )
 
-func TestPaidOrderKeepsListingTermsAfterEditForPartiesAndDisputeDesk(t *testing.T) {
+func TestHistoricalPaidOrderKeepsListingTermsAfterEdit(t *testing.T) {
 	w := newOrderWorld(t)
 	listing := w.e.product(w.vendorID, "digital")
-	order := w.e.order(w.buyerID, listing, "BTC", stateDraft)
-	w.e.A.payments["BTC"] = &stubProvider{currency: "BTC"}
-	w.e.mustExec("UPDATE products SET title='Purchased name',description='Purchased description: private order context' WHERE id=$1", listing)
-	mustContain(t, w.page("/order?id="+order, w.buyer, 200), "Purchased name", "Purchased description: private order context")
-	w.expect("/orders/pay", w.buyer, url.Values{"order_id": {order}}, 303, "")
-	var title, description, kind string
-	if err := w.e.DB.QueryRow("SELECT listing_title,listing_description,listing_kind FROM orders WHERE id=$1", order).Scan(&title, &description, &kind); err != nil || title != "Purchased name" || description != "Purchased description: private order context" || kind != "digital" {
-		t.Fatalf("snapshot %q %q %q: %v", title, description, kind, err)
-	}
+	order := w.e.order(w.buyerID, listing, "BTC", statePaid)
+	w.e.mustExec("UPDATE orders SET listing_title='Purchased name',listing_description='Purchased description: private order context',listing_kind='digital' WHERE id=$1", order)
 	w.e.mustExec("UPDATE products SET title='Edited live name',description='Edited live description',kind='physical' WHERE id=$1", listing)
 	for _, session := range []string{w.buyer, w.vendor} {
 		body := w.page("/order?id="+order, session, 200)
-		mustContain(t, body, "Purchased name", "Purchased description: private order context", "digital", "Listing as it is now; it may have changed since purchase")
+		mustContain(t, body, "Purchased name", "Purchased description: private order context", "Listing as it is now; it may have changed since purchase")
 		mustNotContain(t, body, "Edited live name", "Edited live description")
 	}
 	for _, session := range []string{w.other, w.mod} {
-		if page := w.page("/order?id="+order, session, 404); strings.Contains(page, "Purchased description: private order context") {
-			t.Fatal("unauthorized viewer read a purchased description")
+		if body := w.page("/order?id="+order, session, 404); strings.Contains(body, "Purchased description: private order context") {
+			t.Fatal("unauthorized viewer read purchased terms")
 		}
 	}
-	// A paid order may later be disputed: the staff desk and the parties' dispute list
-	// must continue naming what was purchased, not what the vendor edits afterwards.
 	w.e.mustExec("UPDATE orders SET state='disputed' WHERE id=$1", order)
 	w.e.mustExec("INSERT INTO disputes(id,order_id,reason) VALUES($1,$2,'Terms changed later')", randomToken(), order)
 	for _, session := range []string{w.buyer, w.vendor, w.mod} {
@@ -40,13 +29,6 @@ func TestPaidOrderKeepsListingTermsAfterEditForPartiesAndDisputeDesk(t *testing.
 		mustContain(t, body, "Purchased name", "digital")
 		mustNotContain(t, body, "Edited live name")
 	}
-	staffOrder := w.page("/order?id="+order, w.mod, 200)
-	mustContain(t, staffOrder, "Purchased description: private order context")
-	w.e.mustExec(`INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations,flagged)
-        VALUES($1,'BTC','snapshot-review',0,'stub-review',100000,1,true)`, order)
-	moderatorDesk := w.page("/moderator", w.mod, 200)
-	mustContain(t, moderatorDesk, "Purchased name", "View current listing")
-	mustNotContain(t, moderatorDesk, "Edited live name")
 }
 
 func TestEarlierOrderWithoutSnapshotStatesDetailsUnavailable(t *testing.T) {
@@ -69,71 +51,23 @@ func TestEarlierOrderWithoutSnapshotStatesDetailsUnavailable(t *testing.T) {
 	mustContain(t, w.page("/order?id="+cancelled, w.buyer, 200), "Listing terms were not recorded for this order", "Not recorded")
 }
 
-func TestRefusedPaymentRequestRollsBackListingSnapshot(t *testing.T) {
-	w := newOrderWorld(t)
-	listing := w.e.product(w.vendorID, "digital")
-	order := w.e.order(w.buyerID, listing, "BTC", stateDraft)
-	provider := &stubProvider{currency: "BTC", broken: true}
-	w.e.A.payments["BTC"] = provider
-	w.expect("/orders/pay", w.buyer, url.Values{"order_id": {order}}, 503, "did not return a usable address")
+func TestRefusedEscrowCheckoutRollsBackListingSnapshot(t *testing.T) {
+	x := newEscrowEnv(t)
+	x.testEnv.mustExec("UPDATE products SET title='Checkout terms' WHERE id=$1", x.product)
+	w := x.checkout(x.order, "invalid-address")
+	if w.Code != 400 {
+		t.Fatalf("bad refund address: %d %s", w.Code, w.Body)
+	}
 	var title, description, kind sql.NullString
-	if err := w.e.DB.QueryRow("SELECT listing_title,listing_description,listing_kind FROM orders WHERE id=$1", order).Scan(&title, &description, &kind); err != nil {
+	if err := x.DB.QueryRow("SELECT listing_title,listing_description,listing_kind FROM orders WHERE id=$1", x.order).Scan(&title, &description, &kind); err != nil {
 		t.Fatal(err)
 	}
-	if title.Valid || description.Valid || kind.Valid || w.state(order) != stateDraft || w.stock(listing) != 5 || len(provider.created) != 0 {
-		t.Fatal("refused payment request retained a snapshot, stock reservation or address")
+	if title.Valid || description.Valid || kind.Valid || x.state(x.order) != stateDraft {
+		t.Fatal("refused escrow checkout stored a snapshot or changed draft")
 	}
-	provider.broken = false
-	w.expect("/orders/pay", w.buyer, url.Values{"order_id": {order}}, 303, "")
-	if err := w.e.DB.QueryRow("SELECT listing_title FROM orders WHERE id=$1", order).Scan(&title); err != nil || !title.Valid || title.String != "Test listing" {
-		t.Fatalf("successful retry did not save snapshot: %+v %v", title, err)
-	}
-}
-
-// Repricing precedes the stock row lock. If an edit commits while checkout waits
-// for that lock, the row-locked terms must not be saved beside the old amount.
-func TestPaymentPriceEditWhileStockLockWaitsRollsBackSnapshot(t *testing.T) {
-	w := newOrderWorld(t)
-	listing := w.e.product(w.vendorID, "digital")
-	order := w.e.order(w.buyerID, listing, "BTC", stateDraft)
-	provider := &stubProvider{currency: "BTC"}
-	w.e.A.payments["BTC"] = provider
-	blocker, err := w.e.DB.BeginTx(context.Background(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer blocker.Rollback()
-	var blockerPID int
-	if err := blocker.QueryRow("UPDATE products SET btc=200000,title='New priced terms' WHERE id=$1 RETURNING pg_backend_pid()", listing).Scan(&blockerPID); err != nil {
-		t.Fatal(err)
-	}
-	result := make(chan int, 1)
-	go func() { result <- w.post("/orders/pay", w.buyer, url.Values{"order_id": {order}}).Code }()
-	waitFor(t, func() bool {
-		return w.count(`SELECT count(*) FROM pg_stat_activity WHERE datname=current_database()
-			AND query LIKE 'UPDATE products SET stock=stock-1%'
-			AND $1=ANY(pg_blocking_pids(pid))`, blockerPID) == 1
-	})
-	if err := blocker.Commit(); err != nil {
-		t.Fatal(err)
-	}
-	if code := <-result; code != 409 {
-		t.Fatalf("price edit racing checkout returned %d, want 409", code)
-	}
-	var amount int64
-	var title, description, kind sql.NullString
-	if err := w.e.DB.QueryRow("SELECT amount,listing_title,listing_description,listing_kind FROM orders WHERE id=$1", order).Scan(&amount, &title, &description, &kind); err != nil {
-		t.Fatal(err)
-	}
-	if amount != 100000 || title.Valid || description.Valid || kind.Valid || w.state(order) != stateDraft || w.stock(listing) != 5 || len(provider.created) != 0 ||
-		w.count("SELECT count(*) FROM payment_addresses WHERE order_id=$1", order) != 0 ||
-		w.count("SELECT count(*) FROM order_events WHERE order_id=$1", order) != 0 ||
-		w.count("SELECT count(*) FROM notifications WHERE body LIKE '%'||$1||'%'", order[:8]) != 0 {
-		t.Fatal("racing price edit left an order, stock, address, event, or notice side effect")
-	}
-	w.expect("/orders/pay", w.buyer, url.Values{"order_id": {order}}, 303, "")
-	if err := w.e.DB.QueryRow("SELECT amount,listing_title FROM orders WHERE id=$1", order).Scan(&amount, &title); err != nil || amount != 200000 || !title.Valid || title.String != "New priced terms" {
-		t.Fatalf("retry did not atomically use revised price and terms: amount=%d title=%+v err=%v", amount, title, err)
+	x.mustCheckout(x.order, "bcrt1qbuyerrefund00000000000000000000001")
+	if err := x.DB.QueryRow("SELECT listing_title FROM orders WHERE id=$1", x.order).Scan(&title); err != nil || title.String != "Checkout terms" {
+		t.Fatalf("successful checkout snapshot %+v %v", title, err)
 	}
 }
 

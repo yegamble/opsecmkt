@@ -71,11 +71,7 @@ func TestBitcoinMaxTipAgeSetting(t *testing.T) {
 	}); err == nil || !strings.Contains(err.Error(), "BITCOIN_MAX_TIP_AGE") {
 		t.Fatalf("escrow startup accepted a 10m tip age: %v", err)
 	}
-	t.Setenv("BITCOIN_RPC_URL", "http://u:p@127.0.0.1:1")
-	t.Setenv("BITCOIN_MAX_TIP_AGE", "10m")
-	if _, err := bitcoinFromEnv(t.Context()); err == nil || !strings.Contains(err.Error(), "BITCOIN_MAX_TIP_AGE") {
-		t.Fatalf("pooled startup accepted a 10m tip age: %v", err)
-	}
+
 }
 
 // A-439 (P4-R5): one chain table. regtest pays bcrt, signet and testnet4 pay tb; main and testnet3 ("test") are not
