@@ -844,7 +844,7 @@ regtest and, since A-443, signet and testnet4 ([below](#bitcoin-escrow-on-signet
   untested). While it is not synced the escrow watcher's Bitcoin
   pass reads no deposit, expires no order, flags nothing and builds, co-signs or broadcasts no settlement (the release
   deadlines, which need no node, still apply). The rule is stateless: nothing is stored, so a legitimately replaced chain never stalls it (A-147). One
-  log line per change and a line under *Payment providers* on `/admin` name the reason
+  log line per change and a line under *Escrow status and payment intake* on `/admin` name the reason
   ([operator guide](operator-guide.md#bitcoin-escrow-test-networks-only)); on regtest the initial block download line adds
   the remedy (mine one block, or restart bitcoind with a larger `-maxtipage`), since a regtest node has no peers to
   sync from. Past its payment window, while the node is not synced, an open escrow order's page says the order stays
@@ -929,7 +929,7 @@ or refund-time bound. The public digital claim's request-to-confirmed sample was
   wallet's height (below 1,000,000). That is gone: the database pins the escrow daemon's network (`settings` key
   `escrow_xmr_network`). While the database holds no Monero escrow and no escrow wallet (a wallet's free accounts are
   addresses of one network) the pin follows the daemon. Once it holds either, a daemon on the other network leaves Monero
-  escrow disabled, writes nothing, logs one fixed line and shows both networks under *Payment providers* on `/admin`; it
+  escrow disabled, writes nothing, logs one fixed line and shows both networks under *Escrow status and payment intake* on `/admin`; it
   is retried every pass. A database from before the pin that holds Monero escrow state is pinned `fakechain` when the
   daemon reports fakechain, and refused otherwise. The wallet-rpc must still be within 10 blocks of the daemon.
 - **Public pages name the verified network (A-472).** The transparency page (`/canary`), the footer, catalog, listing and
@@ -969,7 +969,7 @@ or refund-time bound. The public digital claim's request-to-confirmed sample was
   An order held open past its payment window that way (no deposit waiting for confirmations) says on its page that the
   window ended and the order stays open while the market waits for its Monero node, not that it will be cancelled at a
   time already past (as the Bitcoin page does, QA4W1-5; `TestXMREscrowWindowPassedWhileNotSynced`).
-  Stateless; one log line per change and a line under *Payment providers*. A fakechain is exempt from the peer and tip-age
+  Stateless; one log line per change and a line under *Escrow status and payment intake*. A fakechain is exempt from the peer and tip-age
   checks and `get_last_block_header` is not called on it.
 - **Compose service (INFRA-11).** `compose.nodes.yaml` has a `monero-escrow-wallet` service: the escrow wallet-rpc on
   stagenet, sharing the bundled `monero` daemon, in its own profile and volume with its own login password; the installer's
@@ -1014,7 +1014,7 @@ it as broadcast (probed on Core 31.1 regtest by the A-255/A-249 council and agai
 - **Stall alert, every mode.** A settlement in state broadcast none of whose transactions (its own and its fee bumps')
   the watch-only wallet has seen 6 blocks after the broadcast tells staff once (an order note and a "Payment review
   needed" notification to each moderator and administrator) and shows "queued or stuck: not seen by the network" on
-  `/admin` under *Payment providers* and to staff on the order page, until the wallet sees one: then one order note
+  `/admin` under *Escrow status and payment intake* and to staff on the order page, until the wallet sees one: then one order note
   clears it. Six blocks: a transaction the node accepted into its mempool is in the wallet at once and one sent
   privately comes back from the network within minutes, so six (about an hour on a public test network, twice the
   default confirmation threshold) is well past either and still within the hour. No settlement state is added

@@ -567,7 +567,7 @@ The party who did not open a dispute can put one reply on record from the order 
 
 Resolving as a refund has the escrow watcher build the refund of the whole counted amount to the buyer; resolving as a release has it build the release to the vendor (see [overpayments](#payments) and [per-order escrow](escrow.md)). The resolve form states each outcome's amount, recipient and difference from the price (its wording still carries pooled concepts that A-508 is reconciling), and needs a ticked confirmation and the resolver's current password (and authenticator code when enrolled); if another deposit is counted after the form was shown, resolving is refused with 409 and the moderator reviews the new amount. Completing an order and a vendor's cancel of a paid order work the same way.
 
-Moderators and administrators open the order page of a disputed (or resolved) order they are not party to, read-only, from the moderation desk; buyer and vendor actions stay unavailable to them. They may also read, the same way, an order with a deposit flagged for payment review, and an escrow order while it has an open staff alert (A-470): a Bitcoin settlement queued or stuck (until the network sees it), a Bitcoin release too small to build (while it stands), or a Monero escrow deposit the database refused as another order's escrow account (A-480, until staff record what was done about it). Opening it changes nothing, and the only action offered is that record; once the alert clears, the order is 404 to them again unless another of these rules admits them. The moderation desk lists such an order under *Escrow alerts*, linked, until its alert clears (a release too small also appears there with its deposits under *Payment review*), newest alert first: by when the order's open alert opened (a stall's order note, the failed release, the refused deposit's record; the latest when an order has several), not by the order's age (QA5W2-3). The list shows the 100 newest; with more open it says how many more orders it leaves out (an older one is listed once newer alerts clear). A refused Monero deposit was never written to the ledger: check it in the escrow wallet and deal with it outside the market (for example refund it to the buyer by hand, or confirm it belongs to the other order); then a moderator or administrator who is not a party records what was done under *Refused Monero deposits* on the order page (10–500 characters, confirmed with their password and authenticator code when enrolled, one audit row; a second record of the same deposit is refused). Only staff see that section and its note; the parties see the order note they saw before. Each refused deposit is one record, so the watcher meeting it again on later passes writes nothing more, and a new refused transaction opens a new record and a new notice. The order page says why staff may read it: for an escrow alert alone it names the open alert and links *Escrow alerts*, for a flagged deposit it links *Payment review*, and *Payment providers* on `/admin` links each open stall. Roles are assigned under *Admin → Assign an account role* by entering the account's handle (exact, case-sensitive; the list there shows only the 100 newest accounts). Changing a vendor's role to buyer or moderator archives their active listings in the same audited transaction and blocks new drafts and payment requests on them; existing orders continue.
+Moderators and administrators open the order page of a disputed (or resolved) order they are not party to, read-only, from the moderation desk; buyer and vendor actions stay unavailable to them. They may also read, the same way, an order with a deposit flagged for payment review, and an escrow order while it has an open staff alert (A-470): a Bitcoin settlement queued or stuck (until the network sees it), a Bitcoin release too small to build (while it stands), or a Monero escrow deposit the database refused as another order's escrow account (A-480, until staff record what was done about it). Opening it changes nothing, and the only action offered is that record; once the alert clears, the order is 404 to them again unless another of these rules admits them. The moderation desk lists such an order under *Escrow alerts*, linked, until its alert clears (a release too small also appears there with its deposits under *Payment review*), newest alert first: by when the order's open alert opened (a stall's order note, the failed release, the refused deposit's record; the latest when an order has several), not by the order's age (QA5W2-3). The list shows the 100 newest; with more open it says how many more orders it leaves out (an older one is listed once newer alerts clear). A refused Monero deposit was never written to the ledger: check it in the escrow wallet and deal with it outside the market (for example refund it to the buyer by hand, or confirm it belongs to the other order); then a moderator or administrator who is not a party records what was done under *Refused Monero deposits* on the order page (10–500 characters, confirmed with their password and authenticator code when enrolled, one audit row; a second record of the same deposit is refused). Only staff see that section and its note; the parties see the order note they saw before. Each refused deposit is one record, so the watcher meeting it again on later passes writes nothing more, and a new refused transaction opens a new record and a new notice. The order page says why staff may read it: for an escrow alert alone it names the open alert and links *Escrow alerts*, for a flagged deposit it links *Payment review*, and *Escrow status and payment intake* on `/admin` links each open stall. Roles are assigned under *Admin → Assign an account role* by entering the account's handle (exact, case-sensitive; the list there shows only the 100 newest accounts). Changing a vendor's role to buyer or moderator archives their active listings in the same audited transaction and blocks new drafts and payment requests on them; existing orders continue.
 
 Reviews are published as soon as the buyer writes them. To take one down (for example text that names or locates a vendor), sign in as an administrator, open the listing or the vendor's page, open *Hide this review* under it and confirm with your password (and authenticator code when enrolled). The review is kept but leaves both public pages and their rating; the buyer and vendor still see it on the order, and administrators see it labelled with *Restore this review*. Both actions are audited without the review text and the reviewer is notified. Migration 031 adds `reviews.hidden_at`.
 
@@ -762,7 +762,7 @@ public journeys remain unverified ([runbook](testnet-runbook.md#11-bitcoin-escro
   does and does not check). Keep this wallet when you restore the database: it is what remembers those escrows.
 - `ESCROW_BTC_FEE_BPS` (default `0`) and `ESCROW_BTC_FEE_ADDRESS`: the market fee in basis points (250 = 2.5%) and
   the address on the escrow node's chain it is to be paid to, required when the fee is above 0 and checked with the node at startup.
-  They apply until an administrator saves the fee on `/admin` (*Payment providers → Bitcoin escrow market fee*:
+  They apply until an administrator saves the fee on `/admin` (*Escrow status and payment intake → Bitcoin escrow market fee*:
   basis points from 0 to 10000 and, above 0, an address on the escrow chain the node accepts and the market has not used as an
   escrow, refund, deposit or settlement address; confirmed with the administrator's password and authenticator code
   when enrolled; the audit row names the old and new basis points, never the address); the saved values are the
@@ -806,7 +806,7 @@ public journeys remain unverified ([runbook](testnet-runbook.md#11-bitcoin-escro
   the log says once per change "escrow: APP_MODE=tor: escrow broadcasts wait (<reason>); start the escrow node with
   -proxy=<Tor SOCKS address> on Bitcoin Core 31.1 or later, never -connect or -onlynet" and, when it passes again,
   "… escrow broadcasts resumed", and `/admin` shows "Bitcoin escrow broadcasts wait (APP_MODE=tor): <reason>." under
-  *Payment providers*. The reason is `no proxy for IPv4 or IPv6`, `no proxy for IPv4`, `no proxy for IPv6`, `Bitcoin Core
+  *Escrow status and payment intake*. The reason is `no proxy for IPv4 or IPv6`, `no proxy for IPv4`, `no proxy for IPv6`, `Bitcoin Core
   older than 31.1` or `getnetworkinfo failed: <class>`. Configure the escrow node with `-proxy=<Tor SOCKS address>` (it
   sets the proxy of every network) and `-privatebroadcast`; never `-connect` or `-onlynet`, which stall the node's
   sync. For the local `bitcoin` service, [`compose.nodes-tor.yaml`](#local-nodes-over-tor) does this; that section says
@@ -822,13 +822,13 @@ public journeys remain unverified ([runbook](testnet-runbook.md#11-bitcoin-escro
   `signet_challenge` on signet, so two signets are told apart). **A database never changes chain once it holds an
   escrow**: when the node reports another chain while any Bitcoin escrow exists, escrow stays disabled with "escrow:
   Bitcoin escrow disabled: the escrow node is not on the chain this database's escrows are on (escrow_btc_chain) …"
-  and `/admin` shows, under *Payment providers*, "Bitcoin escrow disabled: the escrow node reports chain <node's>, but
+  and `/admin` shows, under *Escrow status and payment intake*, "Bitcoin escrow disabled: the escrow node reports chain <node's>, but
   this database's escrows are on <pinned>."; nothing is changed. Point `ESCROW_BTC_RPC_URL` back at the right node
   (the watcher's next retry enables escrow); a new chain needs a new database. While no escrow exists the pin follows
   the node. A database from before this check that already holds escrows is pinned to `regtest` at the first start
   when the node reports regtest, and refused on any other chain. Two regtest nodes cannot be told apart (both report
   `regtest`).
-- **Persisted node health (A-451).** `/admin` under *Payment providers* shows the current `ESCROW_BTC` configuration, whether the latest startup or watcher state enabled escrow, the last disabled reason class, the timestamp of the latest status update, the last successful watcher pass, and the last observed chain, height, pin result and keypool/index high-water marks. The row stores fixed reason classes and allowlisted chain names only; it never stores node error text, wallet names or RPC secrets. If `ESCROW_BTC=off`, startup makes no Bitcoin RPC call and records class `off`; the last successful pass and node measurements remain from the prior enabled run and are marked stale in the panel. Turning escrow on again refreshes them after startup checks and watcher passes. A same-fingerprint arbiter account-key substitution is shown as `arbiter_key_mismatch`.
+- **Persisted node health (A-451).** `/admin` under *Escrow status and payment intake* shows the current `ESCROW_BTC` configuration, whether the latest startup or watcher state enabled escrow, the last disabled reason class, the timestamp of the latest status update, the last successful watcher pass, and the last observed chain, height, pin result and keypool/index high-water marks. The row stores fixed reason classes and allowlisted chain names only; it never stores node error text, wallet names or RPC secrets. If `ESCROW_BTC=off`, startup makes no Bitcoin RPC call and records class `off`; the last successful pass and node measurements remain from the prior enabled run and are marked stale in the panel. Turning escrow on again refreshes them after startup checks and watcher passes. A same-fingerprint arbiter account-key substitution is shown as `arbiter_key_mismatch`.
 - `PAYMENT_CONFIRMATIONS_BTC` (default 3), `PAYMENT_EXPIRY` and `PAYMENT_POLL_INTERVAL` apply to escrows
   (*Payments* above). An escrow order that has received nothing when its payment window ends is cancelled. One that is
   underpaid (every deposit confirmed, short of the price, and no top-up for a whole window) is cancelled too, and its
@@ -1180,7 +1180,7 @@ broadcast.
   settlement's transactions (its own and any fee bump's) is in the watch-only wallet 6 blocks after it was broadcast,
   staff are told once: an order note "Queued or stuck: not seen by the network. …" and a "Payment review needed"
   notification to each moderator and administrator, and the log says "escrow: settlement of order … queued or stuck,
-  not seen by the network after 6 blocks; staff notified". `/admin` lists it under *Payment providers* ("Bitcoin escrow
+  not seen by the network after 6 blocks; staff notified". `/admin` lists it under *Escrow status and payment intake* ("Bitcoin escrow
   settlements queued or stuck: not seen by the network.", with the order and the transaction ID) and the order page, as
   staff reading the order see it, carries a staff line. While the alert is open any moderator or administrator who is
   not a party may read the order page, read-only (A-470; the `/admin` line and the moderation desk's *Escrow alerts* link it), and when it clears that access
@@ -1232,7 +1232,7 @@ broadcast.
   evicted); still spent on the next pass, the settlement is *external* without being built (A-356, migration 078)
   and the deposit is marked as above. Deposits of that escrow still unspent stay there: the market builds nothing
   more for them, and the buyer and the vendor can move them together from their own wallets.
-- *Orphan addresses.* The daily check (below) also lists, under *Admin → Payment providers → Bitcoin escrow
+- *Orphan addresses.* The daily check (below) also lists, under *Admin → Escrow status and payment intake → Bitcoin escrow
   recovery and reconciliation*, every address the watch-only wallet holds with no escrow on record
   (`listreceivedbyaddress` with `include_empty`: each escrow descriptor is imported with the label `escrow:<order
   ID>`, which puts its address in the wallet's address book; `listdescriptors` stays off the whitelist): a descriptor
@@ -1317,7 +1317,7 @@ lists.
   is turned on, such a listing takes escrow checkout with a window its vendor did not choose. Each escrow keeps the window in force at its checkout. The buyer may
   cancel a paid order the vendor has not marked shipped from the payment's confirmation plus the window plus 48 hours;
   before that the cancel is refused with its date.
-- *Release deadline length.* *Admin → Payment providers → Bitcoin escrow release deadline* sets how many days after
+- *Release deadline length.* *Admin → Escrow status and payment intake → Bitcoin escrow release deadline* sets how many days after
   "shipped" the order completes and the market co-signs the vendor's signature, if the buyer has neither signed nor
   disputed: a whole number from 7 to 30, default 14 (setting `escrow_release_days`), confirmed with your password (and
   authenticator code when enrolled), audited with the old and new days. It applies to escrows created after the
@@ -1358,7 +1358,7 @@ transaction, and sends none again; it still reads deposits, follows broadcast an
 as broadcast (without sending it) a held settlement the watch-only wallet shows on the network. Signing on the order
 page still works. The restore also holds every restored settlement that has a stored final transaction (*signed* or
 *broadcast*; `settlements.send_error` starting `Restored from backup:`): the restored records may predate its
-broadcast or something that replaced it. Under *Admin → Payment providers → Bitcoin escrow recovery and
+broadcast or something that replaced it. Under *Admin → Escrow status and payment intake → Bitcoin escrow recovery and
 reconciliation*, each held or paused settlement is listed with its transaction ID; check it on the chain and in the
 watch-only wallet (`gettransaction` of the txid, `gettxout` of its inputs), then confirm that it was not already sent
 and that no other transaction spent the escrow's coins, with your password (and authenticator code when enrolled):
@@ -1546,7 +1546,7 @@ file its group or others can read.
 account key at startup and on every escrow watcher pass. At first contact it pins the key's fingerprint and an HMAC of
 the key (keyed from `APP_SECRET_KEY`, as registered escrow keys are) in `settings` (`escrow_signer_fingerprint`,
 `escrow_signer_xpub_hmac`); a pin is never rewritten. Each state change logs one line and, until the signer is ready,
-`/admin` shows a line under *Payment providers*:
+`/admin` shows a line under *Escrow status and payment intake*:
 
 - A signer whose key differs from the pins: "escrow: shape (b) unavailable: the escrow signer's account key differs
   from the one pinned in this database …". Nothing else changes: escrow with the Core arbiter wallet stays on, and the
@@ -1660,9 +1660,9 @@ reached leaves Monero escrow not ready with `escrow: Monero escrow disabled: the
 checked at startup (<class>)` while the market runs; the escrow watcher retries every `PAYMENT_POLL_INTERVAL` and logs
 `escrow: Monero escrow on (stagenet)` (or `(fakechain)`) when it passes. A line is logged when the state changes. A node that
 answers as another network after startup disables Monero escrow until the app is restarted. While Monero escrow is
-configured but not ready, for any of these reasons, `/admin` also shows an alert under *Payment providers* ("Monero escrow
+configured but not ready, for any of these reasons, `/admin` also shows an alert under *Escrow status and payment intake* ("Monero escrow
 not ready: …") with the current failed check and its remedy. The escrow-only readiness panel reads `XMR escrow: on (not ready: …)`,
-and *Payment providers* names no Monero escrow network until a daemon was verified on one; the alert goes once Monero
+and *Escrow status and payment intake* names no Monero escrow network until a daemon was verified on one; the alert goes once Monero
 escrow is ready (QA4W4B-1). Two more lines mean the pins below have
 refused: `escrow: Monero escrow disabled: MONERO_WALLET_SECRET differs from the secret this database was first started with
 …` (nothing is created or opened) and `escrow: Monero escrow wallet creation stopped: ESCROW_XMR_SEED_KEY is not the seed key
@@ -1673,7 +1673,7 @@ pinned in this database …` (existing wallets are still read and their orders f
 follows the daemon and may change. Once it holds either (a wallet counts: its free accounts are addresses of one network),
 a daemon on the other network leaves Monero escrow disabled and changes nothing, with one line, `escrow: Monero escrow
 disabled: the escrow daemon is not on the network this database's Monero escrows are on (escrow_xmr_network) …`, and a line
-under *Payment providers* on `/admin` naming both networks; the check is retried every `PAYMENT_POLL_INTERVAL`, so pointing
+under *Escrow status and payment intake* on `/admin` naming both networks; the check is retried every `PAYMENT_POLL_INTERVAL`, so pointing
 `ESCROW_XMR_DAEMON_URL` (and the escrow wallet-rpc) back at the pinned network brings it back. A new network needs a new
 database: there is no supported way to move a database's Monero escrows to another network. A database from before A-449
 that holds Monero escrow state and no pin is pinned `fakechain` at the first start against a fakechain daemon (the only
@@ -1686,7 +1686,7 @@ no peers (`offline`, or no connections on an unrestricted RPC; a restricted RPC 
 deposit, funds or expires no order and builds, relays or follows no settlement; release deadlines still apply. One line is
 logged when this starts (`escrow: Monero escrow daemon not synced (<reason>); Monero escrow watcher passes skipped until it
 is`) and one when it ends (`escrow: Monero escrow daemon synced; Monero escrow watcher passes resumed`), and `/admin` shows
-the reason under *Payment providers*. Nothing is stored for this. A fakechain is exempt from the peer and tip-age checks.
+the reason under *Escrow status and payment intake*. Nothing is stored for this. A fakechain is exempt from the peer and tip-age checks.
 If the daemon cannot be read at all, or its top block cannot (`get_last_block_header` fails), the pass applies only the
 deadlines and logs `monero escrow watcher: monero escrow: daemon check failed: <class>`. On a restricted RPC (the bundled
 `monero` service) a daemon cut off from its peers looks synced until its top block is older than `MONERO_MAX_TIP_AGE`
@@ -1897,7 +1897,7 @@ accounts, so without the sweep a deposit to a later account is not seen (the `Lo
 this for account 300). A restore not done by `scripts/restore.sh` or the SQL of [UPGRADING.md, section 6](../UPGRADING.md#6-backups-now-need-the-wallets-too)
 holds nothing.
 
-**Held settlements.** Under *Admin → Payment providers → Monero escrow recovery and retention (local fakechain, Monero stagenet or network not verified yet)*, each restored
+**Held settlements.** Under *Admin → Escrow status and payment intake → Monero escrow recovery and retention (local fakechain, Monero stagenet or network not verified yet)*, each restored
 settlement with a stored transaction is listed with its order, kind, state and transaction hash. The restored records may
 predate its relay, or a transaction that spent its coins, so check it first in the escrow daemon and the escrow wallet, for
 example with the daemon's own RPC (a daemon started with a login needs `--digest -u USER:PASSWORD`):
@@ -1949,7 +1949,7 @@ file is gone and nothing is owed on it; that is refused while the restore gate o
 escrow wallet open in another wallet program** (for example `monero-wallet-cli` on the same files): a wallet "opened by another
 wallet program" keeps its state and its accounts, but the market cannot read its deposits or send its settlements until you
 close it there (logged once). **The market cannot reach the wallet volume, so the files stay until you delete them.**
-*Admin → Payment providers → Monero escrow recovery and retention (local fakechain, Monero stagenet or network not verified yet)* lists *Destroyed Monero escrow wallets* with
+*Admin → Escrow status and payment intake → Monero escrow recovery and retention (local fakechain, Monero stagenet or network not verified yet)* lists *Destroyed Monero escrow wallets* with
 their two files, `NAME` and `NAME.keys`. Delete each pair from the escrow wallet volume:
 
 ```sh
@@ -2053,7 +2053,7 @@ Paused, for escrow checkouts too, and that section gives the SQL step to run bet
 starting the older one.
 
 While a coin's escrow is on but not ready (its node or wallet-rpc unreachable at startup, say), the readiness panel
-reads "on (not ready: …)" with the state, and for Monero escrow an alert under *Payment providers* names the state and
+reads "on (not ready: …)" with the state, and for Monero escrow an alert under *Escrow status and payment intake* names the state and
 what to do (QA4W4B-1). A checkout in that coin is refused until it is ready; listings keep their buy links meanwhile.
 
 How it was tested: `TestEscrowIntakeOnlyAllowsEscrowOrPaused`, `TestEscrowOrderActionMatrix`,

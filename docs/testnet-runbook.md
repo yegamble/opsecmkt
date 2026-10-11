@@ -144,7 +144,7 @@ order is released at its deadline. The script also sets `escrow_release_recheck`
 every release deadline of a shipped physical order that has passed in the restored records to 72 hours later and
 tells each buyer. Confirming a
 held settlement also releases its fee bumps, and the market then sends only the highest-fee stored transaction. Before
-clearing the gate, check each held settlement listed under *Admin → Payment providers → Bitcoin escrow recovery and
+clearing the gate, check each held settlement listed under *Admin → Escrow status and payment intake → Bitcoin escrow recovery and
 reconciliation* on the chain and in the escrow watch-only wallet, and confirm it there if it was not already sent
 or replaced; the market then broadcasts it once, and while the gate is set it refuses a second confirmation after
 that send. The confirmation needs `ESCROW_BTC=on`: with escrow off the section lists held settlements without the
@@ -181,7 +181,7 @@ was charged and your order is still a draft; try again later.", 503, the order s
 restored Monero settlement with a stored transaction, built or relayed (it prints how many, and the audit row counts them),
 retires every free escrow account, moves every active or sealed escrow wallet to closing so that no account of a restored
 wallet takes an order again, and sets `escrow_xmr_release_recheck` and `xmr_escrow_sweep_required`. Before clearing the gate, check each
-held settlement listed under *Admin → Payment providers → Monero escrow recovery and retention (local fakechain* or *Monero stagenet)* in the escrow
+held settlement listed under *Admin → Escrow status and payment intake → Monero escrow recovery and retention (local fakechain* or *Monero stagenet)* in the escrow
 daemon and the escrow wallet and confirm it there if it was not already relayed or replaced; the market then relays the same
 stored transaction once. Checkout stays refused ("Monero escrow is paused until this market has checked its escrow wallets
 after restoring its records from a backup. …") until the Monero escrow watcher's sweep has probed for escrow wallets created
@@ -242,7 +242,7 @@ db_sql() { docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U opsecmkt -d o
 2. **Start the app for yourself only** (`docker compose up -d app`) and let the escrow watchers run their first
    passes, so deposits made after the backup are read. The Bitcoin orphan sweep and the Monero restore sweep described
    above run on every pass, gate or not; the Monero one logs `escrow: Monero escrow's restore sweep is complete …`.
-3. **Confirm each held escrow settlement** under *Admin → Payment providers* (*Bitcoin escrow recovery and
+3. **Confirm each held escrow settlement** under *Admin → Escrow status and payment intake* (*Bitcoin escrow recovery and
    reconciliation*, *Monero escrow recovery and retention*), only after checking it on the chain and in the escrow
    watch-only wallet or escrow daemon as described above. Nothing is sent while the gate is set, except that a
    confirmed settlement is broadcast or relayed once.

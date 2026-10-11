@@ -158,11 +158,14 @@ started (Monero escrow has its own steps in the
 2. Run `scripts/escrow-node-setup.sh`, with the `--chain`, `--rpc-port` and `--cli` the installer
    printed at its end. It creates the arbiter and watch-only wallets and prints, once, the
    `bitcoin.conf` and `.env` lines for a restricted escrow RPC user. It writes no file.
-3. Paste the printed `bitcoin.conf` lines into the node's configuration, and the printed `.env`
-   lines (`ESCROW_BTC_RPC_URL` and the wallet names) into `.env` together with `ESCROW_BTC=on`.
+3. Paste the printed `bitcoin.conf` lines into the node's configuration (`/data/bitcoin.conf`
+   in the bundled node's volume), and the printed `.env` lines (`ESCROW_BTC_RPC_URL` and the
+   wallet names) into `.env` together with `ESCROW_BTC=on`.
 4. Restart the Bitcoin node (`docker compose restart bitcoin`).
 5. Check it: `ESCROW_BTC_RPC_URL='<the printed URL>' scripts/escrow-node-setup.sh --chain signet --verify`
-   must print `PASS`.
+   must print `PASS`. The bundled node publishes no port and the printed host name (`bitcoin`)
+   resolves only inside the Compose network, so run it from somewhere that can reach the node, as
+   the operator guide's node set-up section describes.
 6. Restart the app (`docker compose up -d`). The log line `escrow: Bitcoin escrow on (test networks
    only)` and the `/admin` escrow status show it is on.
 
