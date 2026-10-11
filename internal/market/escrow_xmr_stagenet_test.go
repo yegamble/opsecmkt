@@ -27,8 +27,6 @@ import (
 //     shows its peer; its restricted one (as the bundled monero service serves) hides the counts (0) and is synced on
 //     offline false and a fresh tip; the --offline daemon has no peers; the same reading judged 21 minutes after its
 //     tip, under MONERO_MAX_TIP_AGE's minimum of 20 minutes, is stale.
-//   - PooledGuard: the pooled Monero check (moneroProvider.Check) against the real stagenet wallet-rpc and the restricted
-//     daemon is synced; against the --offline daemon it is not synced (no peers).
 
 // xmrStagenet is one leg's view of the offline stagenet fork.
 type xmrStagenet struct {

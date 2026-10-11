@@ -221,3 +221,28 @@ func TestMigration107PreservesHistoricalPooledFeeAddressRefusal(t *testing.T) {
 		t.Fatal("historical address was changed")
 	}
 }
+
+func TestMigration107PreservesHistoricalPooledXMRClaimAddressRefusal(t *testing.T) {
+	clearObsoletePooledEnv(t)
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	order, _ := x.fundedXMR(x.product)
+	old := x.testEnv.order(x.buyer, x.testEnv.product(x.vendor, "digital"), "XMR", stateCompleted)
+	address := testXMRAddr("legacy107 pooled claim refusal", true)
+	agExec(x.testEnv, "UPDATE orders SET updated=now()-interval '40 days' WHERE id=$1", old)
+	agExec(x.testEnv, "INSERT INTO payment_addresses(order_id,currency,address,provider,created) VALUES($1,'XMR',$2,'xmr-stagenet',now()-interval '40 days')", old, address)
+	restoreSchema106(t, x.testEnv)
+	if err := applyLatestMigrations(t, x.testEnv); err != nil {
+		t.Fatal(err)
+	}
+	events := agInt(x.testEnv, "SELECT count(*) FROM order_events WHERE order_id=$1", order)
+	if code, body := x.xmrClaim(order, x.vendorSess, address, testPassword); code != 409 || !strings.Contains(body, errClaimAddressUsed.Error()) {
+		t.Fatalf("historical XMR claim address: %d %s", code, body)
+	}
+	if x.state(order) != stateCompleted || len(x.xmrSettlements(order)) != 0 || agInt(x.testEnv, "SELECT count(*) FROM order_events WHERE order_id=$1", order) != events {
+		t.Fatal("refused historical XMR claim changed the escrow or its history")
+	}
+	if n := agInt(x.testEnv, "SELECT count(*) FROM payment_addresses WHERE order_id=$1 AND address=$2", old, address); n != 1 {
+		t.Fatal("historical XMR address was changed")
+	}
+}

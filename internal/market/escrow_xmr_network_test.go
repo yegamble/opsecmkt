@@ -11,9 +11,9 @@ import (
 
 // A-449 (P4-R15): Monero escrow on stagenet. The address tags follow the network the escrow daemon was verified on
 // (stagenet 24 and 36, fakechain 18 and 42), the daemon's network is pinned in settings (escrow_xmr_network) instead
-// of the old height heuristic, and a stateless sync guard skips the Monero escrow pass and the pooled Monero pass while
-// the daemon is not synced. DB integration tests against the simulated wallet-rpc and monerod (escrow_xmr_fake_test.go,
-// payments_monero_test.go): simulated RPC, not chain evidence.
+// of the old height heuristic, and a stateless sync guard skips the Monero escrow pass while
+// the daemon is not synced. DB integration tests against the simulated wallet-rpc and monerod
+// (escrow_xmr_fake_test.go): simulated RPC, not chain evidence.
 
 // onStagenet makes the fake a synced stagenet daemon with peers and a fresh tip.
 func onStagenet(f *fakeXMREscrow) { f.nettype, f.peers = "stagenet", 8 }
@@ -466,10 +466,7 @@ func TestXMREscrowSkipsWhileTipUnreadable(t *testing.T) {
 	}
 }
 
-// The pooled Monero check applies the same rule (A-439 found pooled Monero read only target_height): on stagenet no
-// peers, a stale tip, a tip get_last_block_header cannot read, or synchronized false count as not synced, each logged once and named on the admin page; target
-// above height keeps the "still syncing" reason; MONERO_MAX_TIP_AGE moves the bound.
-
+// The escrow watcher leaves an expired payment window open until its node is synced.
 func TestXMREscrowWindowPassedWhileNotSynced(t *testing.T) {
 	x := newXMREscrowEnv(t)
 	x.mustPoll()
