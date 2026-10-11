@@ -685,7 +685,8 @@ func queryOrders(ctx context.Context, a *App, query string, args ...any) ([]Orde
 }
 
 // loadIncomingOrders shows all current vendor work, newest change first, plus a bounded closed history.
-// Drafts and cancellations without an issued payment address are buyer-side abandoned checkout attempts.
+// Drafts and cancellations without an escrow or a payment (cancelledCustomerWork) are buyer-side abandoned checkout
+// attempts.
 func loadIncomingOrders(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
 	if d.User == nil {
 		return nil
@@ -694,7 +695,7 @@ func loadIncomingOrders(ctx context.Context, a *App, _ *http.Request, d *PageDat
 		o.state IN ('awaiting_payment','paid','shipped','delivered','disputed') OR
 		o.id IN (SELECT o2.id FROM orders o2 JOIN products p2 ON p2.id=o2.product_id WHERE p2.vendor_id=$1 AND (
 			o2.state IN ('completed','resolved') OR
-			(o2.state='cancelled' AND EXISTS(SELECT 1 FROM payment_addresses pa WHERE pa.order_id=o2.id))
+			(o2.state='cancelled' AND ` + cancelledCustomerWork("o2") + `)
 		) ORDER BY o2.updated DESC,o2.id DESC LIMIT $2)
 	)`
 	orders, err := queryOrders(ctx, a, orderQuery+" WHERE "+ctxQ+" ORDER BY o.updated DESC,o.id DESC", d.User.ID, historyLimit+1)
@@ -704,7 +705,7 @@ func loadIncomingOrders(ctx context.Context, a *App, _ *http.Request, d *PageDat
 	var terminalCount int
 	if err = a.db.QueryRowContext(ctx, `SELECT count(*) FROM orders o JOIN products p ON p.id=o.product_id
 		WHERE p.vendor_id=$1 AND (o.state IN ('completed','resolved') OR
-		(o.state='cancelled' AND EXISTS(SELECT 1 FROM payment_addresses pa WHERE pa.order_id=o.id)))`, d.User.ID).Scan(&terminalCount); err != nil {
+		(o.state='cancelled' AND `+cancelledCustomerWork("o")+`))`, d.User.ID).Scan(&terminalCount); err != nil {
 		return err
 	}
 	if terminalCount > historyLimit {

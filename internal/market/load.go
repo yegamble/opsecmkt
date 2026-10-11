@@ -213,6 +213,14 @@ func orderReadable(viewer, role string) string {
 		escrowStaffAlert("o.id") + ")))"
 }
 
+// cancelledCustomerWork is the SQL test, over an orders alias, for a cancelled order its vendor keeps seeing (A-494):
+// checkout took an escrow for it (Bitcoin or Monero: one escrows table) or a payment to it was recorded. A draft
+// cancelled before checkout has neither: it is not customer work. The vendor's /orders list, its paging count and the
+// vendor desk's incoming-order history share this test so that they cannot drift.
+func cancelledCustomerWork(order string) string {
+	return "(EXISTS(SELECT 1 FROM escrows es WHERE es.order_id=" + order + ".id) OR EXISTS(SELECT 1 FROM payments pm WHERE pm.order_id=" + order + ".id))"
+}
+
 // load fills generic page data, then runs registered loaders (routes.go).
 func (a *App) load(r *http.Request, d *PageData) error {
 	ctx := r.Context()
@@ -349,9 +357,9 @@ func (a *App) load(r *http.Request, d *PageData) error {
 			// No admin order list (A-127): staff see an order only while it is disputed or resolved, a payment on it
 			// is flagged (A-24, /canary#records) or it is an escrow order with an open staff alert (A-470).
 			// Buyers keep their full order history. Vendor-side activity excludes drafts and
-			// cancelled drafts that never received a payment address: those are not customer work.
-			const vendorOrderVisible = `(p.vendor_id=$1 AND o.state<>'draft' AND (o.state<>'cancelled' OR EXISTS(SELECT 1 FROM payment_addresses pa WHERE pa.order_id=o.id)))`
-			query := orderQuery + " WHERE (o.buyer_id=$1 OR " + vendorOrderVisible + ")"
+			// cancelled orders that never had an escrow or a payment: those are not customer work.
+			activityVisible := "(o.buyer_id=$1 OR (p.vendor_id=$1 AND o.state<>'draft' AND (o.state<>'cancelled' OR " + cancelledCustomerWork("o") + ")))"
+			query := orderQuery + " WHERE " + activityVisible
 			args := []any{d.User.ID}
 			if d.Page == "order" {
 				// Moderators and administrators may also open disputed or resolved orders, orders with a payment
@@ -364,7 +372,7 @@ func (a *App) load(r *http.Request, d *PageData) error {
 				query += " AND o.state IN ('paid','shipped','delivered') ORDER BY o.created DESC"
 			} else if d.Page == "orders" {
 				var total int
-				if err = a.db.QueryRowContext(ctx, "SELECT count(*) FROM orders o JOIN products p ON p.id=o.product_id WHERE o.buyer_id=$1 OR (p.vendor_id=$1 AND o.state<>'draft' AND (o.state<>'cancelled' OR EXISTS(SELECT 1 FROM payment_addresses pa WHERE pa.order_id=o.id)))", d.User.ID).Scan(&total); err != nil {
+				if err = a.db.QueryRowContext(ctx, "SELECT count(*) FROM orders o JOIN products p ON p.id=o.product_id WHERE "+activityVisible, d.User.ID).Scan(&total); err != nil {
 					return err
 				}
 				d.ActivityPaging = activityPaging("/orders", total, r.URL.Query().Get("page"), nil)

@@ -161,12 +161,13 @@ func TestVendorRowsExcludeUnfundedDraftsButKeepBuyerHistory(t *testing.T) {
 	draft := w.e.order(w.buyerID, product, "BTC", stateDraft)
 	cancelledDraft := w.e.order(w.buyerID, product, "XMR", stateCancelled)
 	fundedCancelled := w.e.order(w.otherID, product, "BTC", stateCancelled)
-	if _, err := w.e.DB.Exec("INSERT INTO payment_addresses(order_id,currency,address,provider) VALUES($1,'BTC','test-funded-cancelled','test')", fundedCancelled); err != nil {
+	// A cancellation that received a payment is customer work its vendor keeps seeing (A-494, cancelledCustomerWork).
+	if _, err := w.e.DB.Exec("INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations) VALUES($1,'BTC',$2,0,'bcrt1qtestfundedcancelled',100000,3)", fundedCancelled, txidOf("funded-cancelled")); err != nil {
 		t.Fatal(err)
 	}
 	w.bulkOrders("bulk-funded-cancel-", w.otherID, product, stateCancelled, 51)
-	if _, err := w.e.DB.Exec(`INSERT INTO payment_addresses(order_id,currency,address,provider)
-		SELECT id,'BTC','address-'||id,'test' FROM orders WHERE id LIKE 'bulk-funded-cancel-%'`); err != nil {
+	if _, err := w.e.DB.Exec(`INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations)
+		SELECT id,'BTC',encode(sha256(convert_to(id,'UTF8')),'hex'),0,'bcrt1qaddress'||right(id,3),100000,3 FROM orders WHERE id LIKE 'bulk-funded-cancel-%'`); err != nil {
 		t.Fatal(err)
 	}
 	w.bulkOrders("bulk-unfunded-cancel-", w.otherID, product, stateCancelled, 51)
@@ -182,6 +183,6 @@ func TestVendorRowsExcludeUnfundedDraftsButKeepBuyerHistory(t *testing.T) {
 		t.Fatal("vendor order history did not page through funded cancelled orders")
 	}
 	if !strings.Contains(w.page("/vendor-dashboard", w.vendor, 200), fundedCancelled) {
-		t.Fatal("vendor terminal history lost a cancellation with an issued payment address")
+		t.Fatal("vendor terminal history lost a cancellation with a recorded payment")
 	}
 }
