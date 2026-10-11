@@ -1456,8 +1456,8 @@ is still refused.
   checks as ordinary signing, keep only signatures, and accept at most 8 MiB of PSBT data (128 KiB per funding
   transaction; at most 50 inputs). Ordinary paste and file limits remain 64 KiB. These are simulated-node and form
   checks. A-457's real Core journey checked that the vendor's release download carried the actual funding transaction
-  as verified `non_witness_utxo`; A-458's later hardware-format PSBT upload was signed with a software key, and no
-  physical hardware wallet has been tested.
+  as `non_witness_utxo` matching the funding transaction. A-458's later hardware-format PSBT upload was signed
+  with a software key, and no physical hardware wallet has been tested.
 - **The ES-2 derivation refusal is relaxed (P4-R13).** A pasted or uploaded PSBT is no longer refused for a derivation
   entry under the market's key or from its fingerprint (Electrum and Sparrow write one for every key; A-450's Electrum
   fixtures are now accepted). Every signature rule stays: a signature under the market's key, another key's signature, a
@@ -1509,7 +1509,7 @@ transaction IDs; keep seeds, private keys and wallet passwords out of the eviden
 Bitcoin Test app for a test chain, not the Bitcoin mainnet app. Ledger's [Bitcoin app feature notes](https://github.com/LedgerHQ/app-bitcoin/blob/develop/doc/features.md)
 say Bitcoin Test works on all Bitcoin test networks, including Core regtest; its [build configuration](https://github.com/LedgerHQ/app-bitcoin/blob/develop/Makefile)
 includes Flex. Update the device firmware if Ledger Wallet does not offer the app; if Bitcoin Test is not listed,
-Ledger's [maintained test setup instructions](https://github.com/LedgerHQ/moosig) say to enable Developer Mode in
+Ledger's [test setup instructions](https://github.com/LedgerHQ/moosig) say to enable Developer Mode in
 Ledger Wallet and install it from My Ledger. Sparrow's [connected-device guide](https://www.sparrowwallet.com/docs/connected-wallet.html)
 describes USB connection and Ledger support. Use a USB data cable, unlock the Flex, open Bitcoin Test, and
 close Ledger Wallet/Live before Sparrow connects so it does not hold the device. Keep the device in view and approve
