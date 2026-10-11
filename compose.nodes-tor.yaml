@@ -7,8 +7,8 @@
 # on node_egress and cannot reach tor-socks.
 # Bitcoin Core: -proxy sends every outbound peer connection (IPv4, IPv6, onion) through Tor, DNS seeds included (by
 # name, through the proxy); -privatebroadcast sends sendrawtransaction (escrow settlements) over short-lived Tor
-# connections only. Never -connect or -onlynet: they stall the node's sync. Pooled payouts (sendtoaddress) are never
-# private, whatever these flags (docs/operator-guide.md#mainnet).
+# connections only. Never -connect or -onlynet: they stall the node's sync. Escrow settlement broadcasts use
+# Bitcoin Core's private-broadcast path when escrow is enabled (docs/operator-guide.md#bitcoin-escrow-test-networks-only).
 # monerod: --proxy as `monerod --help` documents it (an IP address, not a host name). UNVERIFIED: nothing here has run
 # monerod through Tor; treat Monero traffic as not private.
 # The two commands repeat compose.nodes.yaml's and add only the proxy flags (tests/test_tor_deploy.py checks that they
@@ -68,8 +68,7 @@ services:
       - -rpcport=8332
       - -rpcallowip=172.16.0.0/12
       - -rpcallowip=192.168.0.0/16
-      - -rpcuser=marketplace
-      - -rpcpassword=${BITCOIN_RPC_PASSWORD:-}
+      - -rpcauth=${BITCOIN_RPC_AUTH:-}
       - -fallbackfee=0.0002
       - -proxy=tor-socks:9050
       - -privatebroadcast
@@ -78,7 +77,7 @@ services:
       tor-socks:
         condition: service_started
     command: >-
-      ${MONERO_NETWORK_FLAG---${MONERO_NETWORK:-stagenet}} --data-dir=/home/monero/.bitmonero --restricted-rpc
+      --stagenet --data-dir=/home/monero/.bitmonero --restricted-rpc
       --rpc-restricted-bind-ip=0.0.0.0 --rpc-restricted-bind-port=18081 --confirm-external-bind
       ${MONERO_PRUNE_FLAGS---prune-blockchain --sync-pruned-blocks} --proxy=10.199.42.2:9050
 volumes:

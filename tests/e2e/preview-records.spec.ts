@@ -19,7 +19,7 @@ test('/canary#records lists what the server keeps, who reads it and that nothing
   await expect(heading).toBeVisible();
   await expect(heading).toBeInViewport();
   await expect(records.locator('table')).toHaveCount(0);
-  await expect(records).toContainText('kept until the operator removes it; there is no account or message deletion');
+  await expect(records).toContainText('Most records are kept until the operator removes them; there is no account or message deletion');
   await expect(records).toContainText('records no IP address or browser details');
   await expect(records).toContainText('reverse proxy');
   for (const item of ['Handle', 'Password', 'Second factors', 'PGP public key', 'Messages', 'Notifications',

@@ -16,6 +16,7 @@ test('Bitcoin escrow paste journey: keys, checkout and funding, completion, the 
   await typeInto(admin, admin.getByLabel('Password', { exact: true }), password);
   await pressSubmit(admin, admin.getByRole('button', { name: 'Initialize marketplace' }));
   await expect(admin).toHaveURL(/\/admin\?welcome=1$/);
+  await typeInto(admin, admin.locator('.admin-auth').getByLabel('Current password'), password);
   await pressSubmit(admin, admin.locator('.admin-auth').getByRole('button', { name: 'Turn CAPTCHA off' }));
   const buyer = await context(browser, baseURL);
   const vendor = await context(browser, baseURL);
@@ -27,6 +28,7 @@ test('Bitcoin escrow paste journey: keys, checkout and funding, completion, the 
   await tabTo(admin, role.getByLabel('Role'));
   await role.getByLabel('Role').press('v'); // the keyboard selects "vendor" in the role list
   await expect(role.getByLabel('Role')).toHaveValue('vendor');
+  await typeInto(admin, role.getByLabel('Current password'), password);
   await pressSubmit(admin, role.getByRole('button', { name: 'Update role' }));
   await expect(admin.getByRole('status').filter({ hasText: 'Account role saved.' })).toBeVisible();
 
@@ -40,9 +42,9 @@ test('Bitcoin escrow paste journey: keys, checkout and funding, completion, the 
   await vendor.getByLabel('Fulfillment type').press('d');
   await expect(vendor.getByLabel('Fulfillment type')).toHaveValue('digital');
   await tabTo(vendor, vendor.getByLabel('Stock', { exact: true }));
-  await vendor.keyboard.press('Control+A');
+  await vendor.keyboard.press('ControlOrMeta+A');
   await vendor.keyboard.type('5');
-  await typeInto(vendor, vendor.getByLabel('Bitcoin reference price'), '0.001');
+  await typeInto(vendor, vendor.getByLabel(/Price \(BTC, (?:test network|main network|not configured|not yet known)\)/), '0.001');
   await typeInto(vendor, vendor.getByLabel('Monero reference price'), '0.5');
   await typeInto(vendor, vendor.getByLabel('Automatic delivery content'), 'LICENCE-ESCROW-JOURNEY-0001');
   await pressSubmit(vendor, vendor.getByRole('button', { name: 'Publish listing' }));
@@ -58,7 +60,7 @@ test('Bitcoin escrow paste journey: keys, checkout and funding, completion, the 
     await Promise.all([buyer.waitForEvent('load'), buyer.keyboard.press('Enter')]);
     await tabTo(buyer, buyer.getByRole('link', { name: 'Review order draft' }));
     await Promise.all([buyer.waitForEvent('load'), buyer.keyboard.press('Enter')]);
-    await expect(buyer.getByLabel('Reference currency')).toHaveValue('BTC');
+    await expect(buyer.getByLabel('Pay with')).toHaveValue('BTC');
     await pressSubmit(buyer, buyer.getByRole('button', { name: 'Create unfunded draft' }));
     await buyer.waitForURL(/\/order\?id=/);
     await expect(buyer.getByRole('heading', { name: 'Or pay into a Bitcoin escrow (regtest only)' })).toBeVisible();
@@ -117,7 +119,7 @@ test('Bitcoin escrow paste journey: keys, checkout and funding, completion, the 
   const signed = await simPost(request, '/test/escrow/sign', { psbt: copy, fingerprint: vendorKey.slice(1, 9), sighash: 1 });
   await typeInto(vendor, vendor.locator('.escrow-settlement').getByLabel('Signed PSBT'), signed.psbt);
   expect(await pressSubmit(vendor, vendor.getByRole('button', { name: 'Submit signature' }))).toBe(303);
-  await expect(settlementStatus(vendor)).toContainText(/Signed by the vendor|Broadcast to the regtest network/);
+  await expect(settlementStatus(vendor)).toContainText(/Signed by the vendor|Signed by the market, with the vendor's signature|Broadcast to the regtest network/);
   await shot(vendor, info, '09-claim-signed');
   await reloadUntil(vendor, async () => { await expect(settlementStatus(vendor)).toContainText('Broadcast to the regtest network: transaction', { timeout: 500 }); });
   await expect(vendor.locator('.escrow-raw-tx')).toBeVisible();

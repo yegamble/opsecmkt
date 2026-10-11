@@ -22,7 +22,8 @@ import (
 //     escrowStrayCheck after escrow first runs on a database (settings key escrow_btc_stray_check).
 
 func init() {
-	registerAction("/escrow/recover", actionSpec{OwnTx: true, OneAtATime: true, Off: escrowOff, Run: escrowRecoverAction})
+	registerAction("/escrow/recover", actionSpec{Roles: escrowPartyRoles, OwnTx: true, OneAtATime: true, Off: escrowOff,
+		ConfirmedFormNonce: true, ReceiptAuthorize: btcRecoverReceiptAuthorize, Run: escrowRecoverAction})
 }
 
 const (
@@ -207,7 +208,7 @@ func (a *App) requestStray(ctx context.Context, threshold, rate int64, orderID s
 		if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", orderID, state, note); err != nil {
 			return err
 		}
-		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), buyer, "Order "+shortID(orderID)+": "+body); err != nil {
+		if _, err = insertNotification(ctx, tx, buyer, "Order "+shortID(orderID)+": "+body, orderID); err != nil {
 			return err
 		}
 	}
@@ -217,10 +218,10 @@ func (a *App) requestStray(ctx context.Context, threshold, rate int64, orderID s
 // escrowRecoverAction is the buyer's "Recover coins at this escrow" (see the file comment): confirmed with the buyer's
 // password (and authenticator code when enrolled), on a closed escrow order with no stray refund in progress.
 func escrowRecoverAction(c *actionCtx) (actionResult, error) {
-	if c.A.escrow.Load() == nil {
-		return actionResult{}, errEscrowDown
-	}
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
+		if c.A.escrow.Load() == nil {
+			return actionResult{}, errEscrowDown
+		}
 		ctx := c.Ctx()
 		o, err := partyOrder(c, c.Form.Get("order_id"))
 		switch {

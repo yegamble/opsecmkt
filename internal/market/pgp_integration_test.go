@@ -31,6 +31,29 @@ func (e *testEnv) body(method, path, token string, form url.Values, want int, ex
 	return w.Body.String()
 }
 
+func encryptToRecipients(t *testing.T, plaintext string, recipients ...*openpgp.Entity) string {
+	t.Helper()
+	var buf bytes.Buffer
+	w, err := armor.Encode(&buf, "PGP MESSAGE", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pt, err := openpgp.Encrypt(w, recipients, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = io.WriteString(pt, plaintext); err != nil {
+		t.Fatal(err)
+	}
+	if err = pt.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err = w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.String()
+}
+
 func TestPGPKeyOwnershipAndSecondFactor(t *testing.T) {
 	e := newTestApp(t)
 	alice, alicePub := testPGPKey(t, "alice")
@@ -93,7 +116,7 @@ func TestPGPKeyOwnershipAndSecondFactor(t *testing.T) {
 	if err := e.DB.QueryRow("SELECT challenge FROM pgp_challenges WHERE user_id=$1 AND kind='sign'", uid).Scan(&challenge); err != nil {
 		t.Fatal(err)
 	}
-	if page = e.body("GET", "/pgp", s, nil, 200); !strings.Contains(page, challenge) || !strings.Contains(page, "Unavailable until ownership") {
+	if page = e.body("GET", "/pgp", s, nil, 200); !strings.Contains(page, challenge) || !strings.Contains(page, "Unavailable until ownership") || !strings.Contains(page, `readonly aria-label="Text to sign"`) {
 		t.Fatal("challenge not shown")
 	}
 	for _, bad := range []string{testClearsign(t, mallory, challenge), testClearsign(t, alice, challenge+"!"), challenge} {
@@ -117,7 +140,7 @@ func TestPGPKeyOwnershipAndSecondFactor(t *testing.T) {
 	}
 
 	// Re-saving the same key keeps the proof.
-	e.check(e.do("POST", "/account", s, url.Values{"pgp": {alicePub + "\n"}, "xmpp": {"alice@example.test"}}), 303)
+	e.check(e.do("POST", "/account", s, url.Values{"pgp": {alicePub + "\n"}}), 303)
 	if _, verified, _ := status(); !verified {
 		t.Fatal("unchanged key lost verification")
 	}
@@ -143,6 +166,7 @@ func TestPGPKeyOwnershipAndSecondFactor(t *testing.T) {
 	if _, _, twoFA := status(); !twoFA {
 		t.Fatal("2fa not enabled")
 	}
+	agEnableTOTP(e, uid)
 	if !strings.Contains(e.body("GET", "/account", s, nil, 200), "<dt>PGP sign-in verification</dt>\n<dd>Enabled</dd>") {
 		t.Fatal("account does not show PGP sign-in enabled")
 	}
@@ -154,9 +178,10 @@ func TestPGPKeyOwnershipAndSecondFactor(t *testing.T) {
 		t.Fatal("PGP-enrolled login skipped the challenge")
 	}
 	pc := &http.Cookie{Name: "pending", Value: pending}
-	if page = e.body("GET", "/challenge", anon, nil, 200, pc); !strings.Contains(page, "Create encrypted code") || strings.Contains(page, "BEGIN PGP MESSAGE") {
+	if page = e.body("GET", "/challenge", anon, nil, 200, pc); !strings.Contains(page, "Create encrypted code") || strings.Contains(page, "BEGIN PGP MESSAGE") || !strings.Contains(page, "Either your authenticator or your verified PGP key can complete sign-in") || !strings.Contains(page, `name="method" value="totp"`) {
 		t.Fatal("challenge page state")
 	}
+	agExec(e, "UPDATE users SET totp_enabled=false WHERE id=$1", uid)
 	e.check(e.do("POST", "/challenge", anon, url.Values{"method": {"pgp"}, "pgp_code": {"anything"}}, pc), 401) // no code yet
 	e.check(e.do("POST", "/challenge/pgp", anon, nil), 401)                                                     // no pending cookie
 	e.check(e.do("POST", "/challenge/pgp", anon, nil, pc), 303)
@@ -164,7 +189,7 @@ func TestPGPKeyOwnershipAndSecondFactor(t *testing.T) {
 	if err := e.DB.QueryRow("SELECT pgp_challenge,pgp_nonce FROM pending_logins WHERE token_hash=$1", digest(pending)).Scan(&loginCT, &loginHash); err != nil {
 		t.Fatal(err)
 	}
-	if page = e.body("GET", "/challenge", anon, nil, 200, pc); !strings.Contains(page, "BEGIN PGP MESSAGE") || !strings.Contains(page, `name="pgp_code"`) {
+	if page = e.body("GET", "/challenge", anon, nil, 200, pc); !strings.Contains(page, "BEGIN PGP MESSAGE") || !strings.Contains(page, `name="pgp_code"`) || !strings.Contains(page, `readonly aria-label="Encrypted sign-in code"`) {
 		t.Fatal("encrypted code not shown")
 	}
 	code := testDecrypt(t, alice, loginCT)
@@ -242,7 +267,7 @@ func TestPGPSecondFactorNeedsVerifiedKey(t *testing.T) {
 func TestMessageEncryptionStatus(t *testing.T) {
 	e := newTestApp(t)
 	alice, alicePub := testPGPKey(t, "alice")
-	bob, _ := testPGPKey(t, "bob")
+	bob, bobPub := testPGPKey(t, "bob")
 	senderID, sender := e.user("msg_sender", "buyer")
 	aliceID, aliceSession := e.user("msg_alice", "vendor")
 	e.user("msg_nokey", "vendor")
@@ -250,6 +275,7 @@ func TestMessageEncryptionStatus(t *testing.T) {
 
 	toAlice, _ := encryptTo(alice, "for alice")
 	toBob, _ := encryptTo(bob, "for bob")
+	toAliceAndBob := encryptToRecipients(t, "for both", alice, bob)
 	var signed bytes.Buffer
 	w, _ := armor.Encode(&signed, "PGP MESSAGE", nil)
 	lit, _ := openpgp.Sign(w, alice, nil, nil)
@@ -268,27 +294,39 @@ func TestMessageEncryptionStatus(t *testing.T) {
 	}
 	send("msg_alice", toAlice)
 	send("msg_alice", toBob)
+	send("msg_alice", toAliceAndBob)
 	send("msg_nokey", toBob)
-	rows, err := e.DB.Query("SELECT u.handle,m.body=$2,m.encrypted,m.recipient_match FROM messages m JOIN users u ON u.id=m.recipient_id WHERE m.sender_id=$1", senderID, toAlice)
+	rows, err := e.DB.Query("SELECT u.handle,m.encrypted,m.recipient_match,m.recipient_extra_keys FROM messages m JOIN users u ON u.id=m.recipient_id WHERE m.sender_id=$1", senderID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	got := map[string]int{}
+	extraCounts := map[int64]int{}
+	unknownExtraCount := 0
 	for rows.Next() {
 		var to, match string
-		var isAlice bool
 		var enc sql.NullBool
-		if err = rows.Scan(&to, &isAlice, &enc, &match); err != nil {
+		var extras sql.NullInt64
+		if err = rows.Scan(&to, &enc, &match, &extras); err != nil {
 			t.Fatal(err)
 		}
 		if !enc.Valid || !enc.Bool {
 			t.Errorf("stored encrypted=%v", enc)
 		}
 		got[to+"/"+match]++
+		if to == "msg_alice" && extras.Valid {
+			extraCounts[extras.Int64]++
+		}
+		if to == "msg_nokey" && !extras.Valid {
+			unknownExtraCount++
+		}
 	}
 	rows.Close()
-	if got["msg_alice/yes"] != 1 || got["msg_alice/no"] != 1 || got["msg_nokey/unknown"] != 1 || len(got) != 3 {
+	if got["msg_alice/yes"] != 2 || got["msg_alice/no"] != 1 || got["msg_nokey/unknown"] != 1 || len(got) != 3 {
 		t.Fatalf("stored statuses %v", got)
+	}
+	if extraCounts[0] != 1 || extraCounts[1] != 2 || unknownExtraCount != 1 {
+		t.Fatalf("send-time extra-key counts=%v unknown=%d", extraCounts, unknownExtraCount)
 	}
 	if !e.auditExact(senderID, "Sent OpenPGP-encrypted message (recipient key match: no)") {
 		t.Fatal("audit")
@@ -302,7 +340,7 @@ func TestMessageEncryptionStatus(t *testing.T) {
 	}
 	page := e.body("GET", "/messages", sender, nil, 200)
 	for label, n := range map[string]int{
-		"Encrypted (to recipient’s key)":               1,
+		"Encrypted (to recipient’s key)":               2,
 		"Encrypted (NOT to recipient’s key)":           1,
 		"Encrypted (recipient unknown)":                2, // no key + legacy ciphertext
 		"Not encrypted (plaintext or invalid OpenPGP)": 1, // legacy fake armor
@@ -311,8 +349,20 @@ func TestMessageEncryptionStatus(t *testing.T) {
 			t.Errorf("%q shown %d times, want %d", label, c, n)
 		}
 	}
-	if c := strings.Count(page, "badge green\">Encrypted"); c != 1 {
+	if c := strings.Count(page, "badge green\">Encrypted"); c != 2 {
 		t.Errorf("green encrypted badges: %d", c)
+	}
+	if !strings.Contains(page, "+ 1 other visible key(s)") || !strings.Contains(page, "hidden recipients may also exist") {
+		t.Fatal("additional recipients were not warned")
+	}
+	if !strings.Contains(page, `readonly aria-label="Encrypted message from msg_sender to msg_alice"`) {
+		t.Fatal("encrypted message was not rendered in a labeled readonly textarea")
+	}
+	// The extra-key count and match are historical send-time facts, not recomputed if the recipient changes keys.
+	e.check(e.do("POST", "/account", aliceSession, url.Values{"pgp": {bobPub}, "password": {testPassword}}), 303)
+	page = e.body("GET", "/messages", sender, nil, 200)
+	if !strings.Contains(page, "+ 1 other visible key(s)") {
+		t.Fatal("recipient key change rewrote the send-time additional-key count")
 	}
 	// The recipient sees the same stored statuses.
 	if !strings.Contains(e.body("GET", "/messages", aliceSession, nil, 200), "Encrypted (NOT to recipient’s key)") {
@@ -403,7 +453,7 @@ func TestMessagePlaintextInsideArmorRejected(t *testing.T) {
 	}
 	want := armorPackets(t, ct)
 	shown := 0
-	for _, m := range regexp.MustCompile(`(?s)<pre class="code-block">(.*?)</pre>`).FindAllStringSubmatch(page, -1) {
+	for _, m := range regexp.MustCompile(`(?s)<textarea[^>]*aria-label="Encrypted message from armor_buyer to armor_vendor"[^>]*>\n(.*?)</textarea>`).FindAllStringSubmatch(page, -1) {
 		if body := html.UnescapeString(m[1]); body == block {
 			if armorPackets(t, body) != want {
 				t.Fatal("displayed armor decodes to other packets")
@@ -592,7 +642,7 @@ func TestProfileKeyStoredCanonically(t *testing.T) {
 	// the textarea with CRLF) - keeps the ownership proof and PGP sign-in, needs no confirmation, and stores
 	// the canonical form.
 	e.check(e.do("POST", "/account", vendor, url.Values{"pgp": {pasted}}), 303)
-	e.check(e.do("POST", "/account", legacy, url.Values{"pgp": {strings.ReplaceAll(stored, "\n", "\r\n")}, "xmpp": {"legacy@example.test"}}), 303)
+	e.check(e.do("POST", "/account", legacy, url.Values{"pgp": {strings.ReplaceAll(stored, "\n", "\r\n")}}), 303)
 	e.check(e.do("POST", "/account", vendor, url.Values{"pgp": {strings.ReplaceAll(stored, "\n", "\r\n")}}), 303)
 	for _, id := range []string{vendorID, legacyID} {
 		var pgp string
@@ -634,15 +684,15 @@ func TestProfileKeyPhotoIDRefused(t *testing.T) {
 	_, fp, _ := parsePublicKey(plain)
 	uid, s := e.user("photo_owner", "vendor")
 	type row struct {
-		pgp, fp, xmpp string
+		pgp, fp       string
 		verified      bool
 		audits, notes int
 	}
 	state := func() (r row) {
 		t.Helper()
-		if err := e.DB.QueryRow(`SELECT pgp,pgp_fingerprint,xmpp,pgp_verified_at IS NOT NULL,
+		if err := e.DB.QueryRow(`SELECT pgp,pgp_fingerprint,pgp_verified_at IS NOT NULL,
 (SELECT count(*) FROM audit_events WHERE user_id=$1),(SELECT count(*) FROM notifications WHERE user_id=$1) FROM users WHERE id=$1`, uid).
-			Scan(&r.pgp, &r.fp, &r.xmpp, &r.verified, &r.audits, &r.notes); err != nil {
+			Scan(&r.pgp, &r.fp, &r.verified, &r.audits, &r.notes); err != nil {
 			t.Fatal(err)
 		}
 		return r
@@ -659,7 +709,7 @@ func TestProfileKeyPhotoIDRefused(t *testing.T) {
 	photoHint := []string{"PGP key rejected: it contains a photo ID", "gpg --edit-key " + fp, "deluid", "save"}
 	refuse := func(form url.Values) { t.Helper(); refuseAs(form, photoHint...) }
 	// No key yet: refused with and without the password, and in the CRLF form a browser submits.
-	refuse(url.Values{"pgp": {photo}, "password": {testPassword}, "xmpp": {"photo@example.test"}})
+	refuse(url.Values{"pgp": {photo}, "password": {testPassword}})
 	refuse(url.Values{"pgp": {photo}})
 	refuse(url.Values{"pgp": {strings.ReplaceAll(photo, "\n", "\r\n")}, "password": {testPassword}})
 	// Every placement: several photo IDs, after the subkey, partial body lengths get the photo ID hint; a photo
@@ -682,7 +732,7 @@ func TestProfileKeyPhotoIDRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Pasting the same key back with its photo ID is refused too, and keeps the ownership proof.
-	refuse(url.Values{"pgp": {photo}, "xmpp": {"photo@example.test"}})
+	refuse(url.Values{"pgp": {photo}})
 	refuse(url.Values{"pgp": {photo}, "password": {testPassword}})
 	if !state().verified {
 		t.Fatal("refused key reset the ownership proof")
@@ -749,7 +799,7 @@ func TestStoredPhotoIDNeverShown(t *testing.T) {
 	// The owner saves the account form as shown (the key without its photo ID, CRLF): no confirmation is
 	// needed, and the stored key loses its photo ID and keeps its proof.
 	shown := armoredKeyPattern.FindString(e.body("GET", "/account", vendor, nil, 200))
-	e.check(e.do("POST", "/account", vendor, url.Values{"pgp": {strings.ReplaceAll(html.UnescapeString(shown), "\n", "\r\n")}, "xmpp": {"v@example.test"}}), 303)
+	e.check(e.do("POST", "/account", vendor, url.Values{"pgp": {strings.ReplaceAll(html.UnescapeString(shown), "\n", "\r\n")}}), 303)
 	var stored string
 	var verified bool
 	if err = e.DB.QueryRow("SELECT pgp,pgp_verified_at IS NOT NULL FROM users WHERE id=$1", vendorID).Scan(&stored, &verified); err != nil {

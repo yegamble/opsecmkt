@@ -361,7 +361,10 @@ func TestEscrowRecoverySectionHiddenWithoutEscrow(t *testing.T) {
 	}
 	w := e.do("GET", "/admin", admin, nil)
 	e.check(w, 200)
-	if body := w.Body.String(); strings.Contains(body, "escrow-recovery") || strings.Contains(body, "Bitcoin escrow paused") || !strings.Contains(body, "Outbound payments paused for restore reconciliation") {
+	if body := w.Body.String(); strings.Contains(body, "escrow-recovery") || strings.Contains(body, "Bitcoin escrow paused") {
 		t.Fatalf("/admin on a market without escrow, gate set:\n%s", body)
+	}
+	if got := agStrings(t, e, "SELECT value FROM settings WHERE key='payments_recovery_required'"); len(got) != 1 || got[0] != "true" {
+		t.Fatalf("hiding escrow recovery changed the restore gate: %v", got)
 	}
 }

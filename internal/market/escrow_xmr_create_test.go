@@ -403,6 +403,24 @@ func TestXMREscrowOrderPanel(t *testing.T) {
 			t.Fatalf("the draft's checkout offer lacks %q:\n%s", want, draft)
 		}
 	}
+	var productID string
+	var listedXMR int64
+	if err := x.DB.QueryRow("SELECT product_id FROM orders WHERE id=$1", order).Scan(&productID); err != nil {
+		t.Fatal(err)
+	}
+	if err := x.DB.QueryRow("SELECT xmr FROM products WHERE id=$1", productID).Scan(&listedXMR); err != nil {
+		t.Fatal(err)
+	}
+	x.DB.Exec("UPDATE products SET xmr=$2 WHERE id=$1", productID, payoutFloor("XMR", "release")-1)
+	draft = html.UnescapeString(x.page("/order?id="+order, x.buyerSess))
+	if strings.Contains(draft, `action="/orders/escrow-xmr"`) || !strings.Contains(draft, "below the escrow settlement minimum") {
+		t.Fatalf("legacy sub-floor Monero draft still offers escrow or lacks the floor reason:\n%s", draft)
+	}
+	x.DB.Exec("UPDATE products SET xmr=$2 WHERE id=$1", productID, listedXMR)
+	draft = html.UnescapeString(x.page("/order?id="+order, x.buyerSess))
+	if !strings.Contains(draft, `action="/orders/escrow-xmr"`) {
+		t.Fatalf("Monero escrow offer did not return at the original valid price:\n%s", draft)
+	}
 	addr := x.mustCheckout(order)
 	x.fake.payAddress(addr, hex64("panel-dep"), 123456789012, 4)
 	x.mustPoll()

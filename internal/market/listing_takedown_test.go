@@ -33,6 +33,9 @@ func takedownForm(t *testing.T, page, op, id string) url.Values {
 				v.Set(m[1], m[2])
 			}
 		}
+		if len(v.Get(formNonceField)) != 32 {
+			t.Fatal("admin listing form has no 32-character receipt nonce")
+		}
 		return v
 	}
 	t.Fatalf("no %s form for listing %s", op, id)
@@ -72,6 +75,11 @@ func TestAdminTakedownSurvivesVendorRestore(t *testing.T) {
 	// vendor keeps the plain archive button and is not offered the administrator form.
 	adminPage := e.body("GET", edit, admin, nil, 200)
 	take := takedownForm(t, adminPage, "takedown", p)
+	freshTake := takedownForm(t, e.body("GET", edit, admin, nil, 200), "takedown", p)
+	if freshTake.Get(formNonceField) == take.Get(formNonceField) {
+		t.Fatal("separately rendered takedown forms shared a receipt nonce")
+	}
+	freshTake.Set("reason", takedownReason)
 	mustNotContain(t, adminPage, `action="/listings/archive"`)
 	vendorPage := e.body("GET", edit, vendor, nil, 200)
 	mustContain(t, vendorPage, `action="/listings/archive"`)
@@ -98,10 +106,16 @@ func TestAdminTakedownSurvivesVendorRestore(t *testing.T) {
 	}
 
 	// The takedown: archived with the trimmed reason, audited on both accounts and notified once, link-free.
-	w := e.do("POST", "/admin/listing", admin, withField(take, "reason", "  "+takedownReason+"\r\n"))
+	takeSubmitted := withField(take, "reason", "  "+takedownReason+"\r\n")
+	w := e.do("POST", "/admin/listing", admin, takeSubmitted)
 	e.check(w, 303)
 	if loc := w.Header().Get("Location"); loc != edit {
 		t.Fatalf("redirect %q", loc)
+	}
+	takeReplay := e.do("POST", "/admin/listing", admin, takeSubmitted)
+	e.check(takeReplay, 303)
+	if takeReplay.Header().Get("Location") != w.Header().Get("Location") {
+		t.Fatalf("takedown replay location %q, original %q", takeReplay.Header().Get("Location"), w.Header().Get("Location"))
 	}
 	if archived, reason := takenDown(e, p); !archived || reason != takedownReason {
 		t.Fatalf("takedown not stored: archived=%v reason=%q", archived, reason)
@@ -122,7 +136,7 @@ func TestAdminTakedownSurvivesVendorRestore(t *testing.T) {
 	note := agStr(e, "SELECT body FROM notifications WHERE user_id=$1", vendorID)
 	mustContain(t, note, takedownReason, "Test listing", short, "contact the market staff", "not delivered automatically")
 	mustNotContain(t, note, "http", "/listing", "?id=", "<")
-	agExpect(e, "/admin/listing", admin, withField(take, "reason", takedownReason), 409, "already taken down")
+	agExpect(e, "/admin/listing", admin, freshTake, 409, "already taken down")
 
 	// The reason stays off public pages; the vendor sees it on the edit page and the desk card, with no restore control.
 	e.check(e.do("GET", "/product?id="+p, randomToken(), nil), 404)
@@ -155,6 +169,10 @@ func TestAdminTakedownSurvivesVendorRestore(t *testing.T) {
 	adminPage = e.body("GET", edit, admin, nil, 200)
 	mustContain(t, adminPage, takedownReason)
 	restore := takedownForm(t, adminPage, "restore", p)
+	freshRestore := takedownForm(t, e.body("GET", edit, admin, nil, 200), "restore", p)
+	if freshRestore.Get(formNonceField) == restore.Get(formNonceField) {
+		t.Fatal("separately rendered restore forms shared a receipt nonce")
+	}
 	for _, s := range []string{vendor, buyer, moderator} {
 		agExpect(e, "/admin/listing", s, restore, 403, "")
 	}
@@ -167,63 +185,87 @@ func TestAdminTakedownSurvivesVendorRestore(t *testing.T) {
 		!e.auditExact(vendorID, "Listing "+short+" restored by administrator td_admin") {
 		t.Fatal("restore audit rows missing")
 	}
+	restoreReplay := e.do("POST", "/admin/listing", admin, restore)
+	e.check(restoreReplay, 303)
+	if restoreReplay.Header().Get("Location") != w.Header().Get("Location") {
+		t.Fatalf("restore replay location %q, original %q", restoreReplay.Header().Get("Location"), w.Header().Get("Location"))
+	}
+	agExpect(e, "/admin/listing", admin, freshRestore, 409, "not taken down")
+	oldTakedownReplay := e.do("POST", "/admin/listing", admin, takeSubmitted)
+	e.check(oldTakedownReplay, 303)
+	if archived, reason := takenDown(e, p); archived || reason != "" {
+		t.Fatalf("old takedown receipt re-executed after restore: archived=%v reason=%q", archived, reason)
+	}
+	if n := agInt(e, `SELECT count(*) FROM audit_events WHERE
+		(user_id=$1 AND action IN ($3,$4)) OR (user_id=$2 AND action IN ($5,$6))`, adminID, vendorID,
+		"Took down listing "+short+" of td_vendor: "+takedownReason+" (confirmed with password)",
+		"Restored listing "+short+" of td_vendor after a takedown (confirmed with password)",
+		"Listing "+short+" taken down by administrator td_admin: "+takedownReason,
+		"Listing "+short+" restored by administrator td_admin"); n != 4 {
+		t.Fatalf("takedown/restore replays left %d matching audits, want 4", n)
+	}
 	if n := agInt(e, "SELECT count(*) FROM notifications WHERE user_id=$1", vendorID); n != 2 {
 		t.Fatalf("vendor notifications after restore: %d", n)
 	}
 	e.check(e.do("GET", "/product?id="+p, randomToken(), nil), 200)
-	agExpect(e, "/admin/listing", admin, restore, 409, "not taken down")
 	// An administrator's own listing is archived from the vendor desk, not taken down.
 	own := e.product(adminID, "physical")
 	agExpect(e, "/admin/listing", admin, withField(withField(take, "reason", takedownReason), "id", own), 400, "your own listing")
 }
 
 func TestAdminTakedownStopsAutoDelivery(t *testing.T) {
-	p := newPayEnv(t)
+	x := newEscrowEnv(t)
+	e := x.testEnv
+	_, admin := e.user("td_auto_admin", "admin")
 	const secret = "AUTO-DELIVERY-SECRET-A163"
-	p.productID = p.product(p.vendor.ID, "digital")
-	if _, err := p.DB.Exec("UPDATE products SET delivery_content=$2 WHERE id=$1", p.productID, secret); err != nil {
+	product := x.product
+	if _, err := e.DB.Exec("UPDATE products SET delivery_content=$2 WHERE id=$1", product, secret); err != nil {
 		t.Fatal(err)
 	}
-	deliver, deliverAddr := p.newOrder(stateAwaitingPayment)
-	cancel, cancelAddr := p.newOrder(stateAwaitingPayment)
+	deliver := x.order
+	deliverAddr := x.mustCheckout(deliver, regtestAddr("takedown-deliver-refund"))
+	cancel := e.order(x.buyer, product, "BTC", stateDraft)
+	cancelAddr := x.mustCheckout(cancel, regtestAddr("takedown-cancel-refund"))
 
-	take := takedownForm(t, p.page("/listing-edit?id="+p.productID, p.adminSess), "takedown", p.productID)
-	p.check(p.do("POST", "/admin/listing", p.adminSess, withField(take, "reason", takedownReason)), 303)
+	take := takedownForm(t, e.body("GET", "/listing-edit?id="+product, admin, nil, 200), "takedown", product)
+	e.check(e.do("POST", "/admin/listing", admin, withField(take, "reason", takedownReason)), 303)
 
-	// Payment confirms: the orders become paid, but nothing is released and the history says why.
-	p.paidByWatcher(deliver, deliverAddr, "a163-deliver")
-	p.paidByWatcher(cancel, cancelAddr, "a163-cancel")
+	// Escrow funding confirms: the orders become paid, but no digital content is delivered automatically.
+	x.core.deposit(deliverAddr, txidOf("a163-deliver"), 0, 100000, 3)
+	x.core.deposit(cancelAddr, txidOf("a163-cancel"), 0, 100000, 3)
+	x.poll()
 	for _, o := range []string{deliver, cancel} {
-		if p.state(o) != statePaid {
-			t.Fatalf("order %s: %s", o[:8], p.state(o))
+		if x.state(o) != statePaid {
+			t.Fatalf("order %s: %s", o[:8], x.state(o))
 		}
-		if n := p.count("SELECT count(*) FROM deliveries WHERE order_id=$1", o); n != 0 {
+		if n := agInt(e, "SELECT count(*) FROM deliveries WHERE order_id=$1", o); n != 0 {
 			t.Fatalf("taken-down listing released its content for %s", o[:8])
 		}
-		if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND actor_id IS NULL AND note LIKE 'Not delivered automatically%'", o); n != 1 {
+		if n := agInt(e, "SELECT count(*) FROM order_events WHERE order_id=$1 AND actor_id IS NULL AND note LIKE 'Not delivered automatically%'", o); n != 1 {
 			t.Fatalf("withheld-delivery note for %s: %d", o[:8], n)
 		}
-		mustNotContain(t, p.page("/order?id="+o, p.buyerSess), secret, takedownReason)
+		mustNotContain(t, x.page("/order?id="+o, x.buyerSess), secret, takedownReason)
 	}
 
-	// The vendor delivers one by hand and cancels (refunds) the other.
-	p.check(p.do("POST", "/orders/deliver", p.vendorSess, form("order_id", deliver, "content", "Delivered by hand.")), 303)
-	if p.state(deliver) != stateDelivered || p.str("SELECT content FROM deliveries WHERE order_id=$1", deliver) != "Delivered by hand." {
+	// The vendor delivers one by hand and requests an escrow refund for the other.
+	e.check(e.do("POST", "/orders/deliver", x.vendorSess, form("order_id", deliver, "content", "Delivered by hand.")), 303)
+	if x.state(deliver) != stateCompleted || agStr(e, "SELECT content FROM deliveries WHERE order_id=$1", deliver) != "Delivered by hand." {
 		t.Fatal("manual delivery after a takedown failed")
 	}
-	p.check(p.do("POST", "/orders/cancel", p.vendorSess, payoutConfirmed(form("order_id", cancel, "from", statePaid), 100000)), 303)
-	if p.state(cancel) != stateCancelled {
-		t.Fatalf("cancel after a takedown: %s", p.state(cancel))
+	e.check(e.do("POST", "/orders/cancel", x.vendorSess, payoutConfirmed(form("order_id", cancel, "from", statePaid), 100000)), 303)
+	if x.state(cancel) != stateCancelled || agInt(e, "SELECT count(*) FROM settlements WHERE order_id=$1 AND kind='refund'", cancel) != 1 {
+		t.Fatalf("escrow refund request after a takedown: %s", x.state(cancel))
 	}
 
 	// Once an administrator restores the listing, automatic delivery works again.
-	restore := takedownForm(t, p.page("/listing-edit?id="+p.productID, p.adminSess), "restore", p.productID)
-	p.check(p.do("POST", "/admin/listing", p.adminSess, restore), 303)
-	again, againAddr := p.newOrder(stateAwaitingPayment)
-	p.fake.Deposit(againAddr, "a163-again", 0, 100000, 3)
-	p.poll()
-	if p.state(again) != stateDelivered || p.str("SELECT content FROM deliveries WHERE order_id=$1", again) != secret {
-		t.Fatalf("restored listing not delivered automatically: %s", p.state(again))
+	restore := takedownForm(t, e.body("GET", "/listing-edit?id="+product, admin, nil, 200), "restore", product)
+	e.check(e.do("POST", "/admin/listing", admin, restore), 303)
+	again := e.order(x.buyer, product, "BTC", stateDraft)
+	againAddr := x.mustCheckout(again, regtestAddr("takedown-restored-refund"))
+	x.core.deposit(againAddr, txidOf("a163-again"), 0, 100000, 3)
+	x.poll()
+	if x.state(again) != stateCompleted || agStr(e, "SELECT content FROM deliveries WHERE order_id=$1", again) != secret {
+		t.Fatalf("restored listing not delivered automatically: %s", x.state(again))
 	}
 }
 
@@ -238,7 +280,7 @@ func TestDemotionArchiveIsNotATakedown(t *testing.T) {
 	agExpect(e, "/admin/listing", admin, withField(take, "reason", reason), 303, "")
 
 	// Demotion archives the active listing without a reason and leaves the takedown as it was.
-	agExpect(e, "/admin", admin, form("action", "role", "role", "buyer", "handle", "tdd_vendor"), 303, "")
+	agExpect(e, "/admin", admin, form("action", "role", "password", testPassword, "role", "buyer", "handle", "tdd_vendor"), 303, "")
 	if archived, r := takenDown(e, plain); !archived || r != "" {
 		t.Fatalf("demotion archive: archived=%v reason=%q", archived, r)
 	}
@@ -257,7 +299,7 @@ func TestDemotionArchiveIsNotATakedown(t *testing.T) {
 	}
 
 	// Promoted again, the vendor restores the demotion-archived listing as before, but not the taken-down one.
-	agExpect(e, "/admin", admin, form("action", "role", "role", "vendor", "handle", "tdd_vendor"), 303, "")
+	agExpect(e, "/admin", admin, form("action", "role", "password", testPassword, "role", "vendor", "handle", "tdd_vendor"), 303, "")
 	mustContain(t, e.body("GET", "/listing-edit?id="+plain, vendor, nil, 200), `action="/listings/restore"`)
 	agExpect(e, "/listings/restore", vendor, form("id", plain), 303, "")
 	agExpect(e, "/listings/restore", vendor, form("id", taken), 409, reason)

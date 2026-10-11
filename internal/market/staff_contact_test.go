@@ -12,7 +12,7 @@ import (
 // A-119: the administrator's "Staff contact" setting gives every "contact the market staff" a path. It is set on
 // /admin with the administrator's password, audited old→new, and shown escaped on /canary, in the suspended
 // sign-in refusal, as the lost-factors line on /challenge, under notifications that ask the reader to contact the
-// staff (the payout-address change notice among them), as "Can't read the image?" help beside the CAPTCHA and in
+// staff (including security and takedown notices), as "Can't read the image?" help beside the CAPTCHA and in
 // the expired-key sign-in refusal; unset, each says "Ask the operator of this market." A staff handle whose key can
 // receive encrypted messages adds a /messages?to=<handle> link for a signed-in reader.
 
@@ -80,8 +80,9 @@ func TestStaffContactShownWherePromised(t *testing.T) {
 	agExec(e, "UPDATE users SET suspended_at=now() WHERE id=$1", suspendedID)
 	totpID, _ := e.user("sc_totp", "buyer")
 	agEnableTOTP(e, totpID)
-	// The payout-address change notice (A-102) tells the owner to contact the market staff.
-	p.check(p.do("POST", "/account/payout", p.vendorSess, url.Values{"currency": {"BTC"}, "address": {"fake-testnet-vendor"}, "password": {testPassword}}), 303)
+	// A retained security notice asks its owner to contact staff; notification rendering adds the configured path.
+	agExec(e, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), p.vendor.ID,
+		"Your security settings changed. If this was not you, change your password and contact the market staff.")
 	// A-279: a listing an administrator took down (vendor desk, edit page, restore refusal), a photo the malware
 	// scanner flagged, and /totp after a sign-in with the last recovery code.
 	takenDown := e.product(p.vendor.ID, "physical")
@@ -136,9 +137,9 @@ func TestStaffContactShownWherePromised(t *testing.T) {
 	}
 	notice := func() string {
 		b := html.UnescapeString(e.body("GET", "/notifications", p.vendorSess, nil, 200))
-		i := strings.Index(b, "Your BTC payout address was changed")
+		i := strings.Index(b, "Your security settings changed")
 		if i < 0 {
-			t.Fatal("payout-address change notice missing")
+			t.Fatal("security notice missing")
 		}
 		b, _, _ = strings.Cut(b[i:], "</article>")
 		return b

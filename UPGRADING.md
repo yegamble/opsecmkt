@@ -3,6 +3,33 @@
 This release adds test-network payments, signed audit exports and several database migrations. Read this
 whole page before pulling the new code onto a running v0.1.0-alpha.1 deployment.
 
+**Current development build:** fresh installs are escrow-only on supported test networks.
+Before upgrading a pooled deployment, read [section 58](#58-pooled-wallet-removal-for-fresh-installs-a-448) and
+[section 59](#59-pooled-history-refused-migration-108-a-492): this build starts only on a database without pooled payment history.
+Sections below describing pooled behavior document prior builds; they do not enable pooling on this build.
+
+The migration files included since alpha.1 are: `001_foundation`, `010_auth`, `011_account_suspension`,
+`012_pending_factor_failed`, `013_pending_password_digest`, `020_pgp`, `030_orders`, `031_review_hidden`,
+`040_inventory`, `041_listing_takedown`, `050_payments`, `051_payments_locked`, `052_payment_intake`,
+`053_payout_send_ambiguous`, `054_payments_late_notice`, `055_monero_post_submit_failures`, `056_payments_regression`,
+`057_payout_address_changed`, `058_payments_below_floor`, `060_transparency`, `061_captcha_spent`,
+`062_products_catalog_index`, `063_images`, `064_payout_returns`, `065_payments_after_close`,
+`066_payment_review_disposition`, `067_pgp_key_lifecycle`, `068_pending_login_next`, `069_payout_one_settlement`,
+`070_payout_refund_or_return`, `071_payment_address_collisions`, `072_audit_role_change_index`,
+`073_payout_return_needs_release`, `074_escrow_btc`, `075_escrow_settlements`, `076_escrow_cosign`,
+`077_escrow_recovery`, `078_escrow_waiting_spent`, `079_escrow_physical`, `080_escrow_bumps`,
+`081_escrow_release_guard`, `082_escrow_bump_seen`, `083_escrow_key_reserve`, `084_escrow_xmr`,
+`085_escrow_xmr_settlement_status`, `086_escrow_xmr_destroy_intent`, `087_escrow_supersede_unbuilt`,
+`088_escrow_key_layout`, `089_escrow_per_order`, `090_xmr_escrow_collisions`, `091_pooled_drain_blockers`,
+`092_pooled_stalled_review`, `093_escrow_node_health`, `094_escrow_health_off_and_key_mismatch`,
+`095_pooled_txid_prefix_privacy`, `096_reported_zero_confirmation_regressions`, `097_payout_txid_lookup`,
+`098_remove_profile_xmpp`, `099_audit_event_indexes`, `100_form_submissions`, `101_provider_episodes`,
+`102_handle_casefold_lookup`, `103_message_extra_recipient_count`, `104_notification_order_id`,
+`105_order_listing_snapshot`, `106_form_confirmation_mode`, `107_remove_pooled_wallet`, and `108_refuse_pooled_history`. Migration 106 adds a boolean to short-lived
+form receipts recording whether the original account, admin or escrow-key submission required password confirmation.
+It stores no submitted password, authenticator code, recovery code, PGP key or practice PSBT. The sections
+below explain the operator-visible changes and rollback considerations.
+
 ## Upgrade with the installer
 
 From the directory you deploy from, with your age public key:
@@ -106,6 +133,12 @@ the value to rotate, with the consequences below. An instance that ran with the 
 
 - Sessions stay signed in (they are stored as hashes in the database). A form or CAPTCHA that was open during
   the restart is refused once; reload it.
+- **Bitcoin escrow.** A new key root changes the immutable HMAC pin for the arbiter account key and, when configured,
+  the escrow signer's account key. Bitcoin escrow fails closed even if the same wallets are still present. Restore the
+  original `APP_SECRET_KEY` (or legacy `SETUP_TOKEN` root); never clear or replace these pins while escrows exist.
+  Party-key rows also use that root. If a party row still needs recovery, re-register it only after the original root is
+  restored and startup has verified the pinned node and, when configured, signer; the app checks the submitted key against existing
+  escrow children before activating it.
 - **alpha.1 has no TOTP**, so an alpha.1 instance that rotates at this upgrade loses nothing else.
 - On an instance that already ran this release with the placeholder, every stored TOTP secret, pending
   enrolment and not-yet-shown recovery-code list was encrypted under the old token and can no longer be read.
@@ -309,16 +342,32 @@ the **upgraded** checkout: its `scripts/restore.sh` can restore into the interna
 
    Use a new file name each time, as `scripts/backup.sh` does, and delete the file if the command failed.
 
+6. Only after the rolled-back site is verified (sign-in works, a known order and message are present, a
+   fresh backup of `opsecmkt_rollback` restores) and you no longer want to roll forward, remove the abandoned
+   upgraded database. This cannot be undone and the upgraded data is not kept anywhere else, so take one more
+   encrypted backup of it first if there is any doubt. The command connects through the database you now run,
+   because PostgreSQL will not drop the database a session is connected to; the app is stopped, so nothing else
+   holds `opsecmkt`:
+
+   ```sh
+   docker compose exec -T db psql -U opsecmkt -d opsecmkt_rollback -c 'DROP DATABASE opsecmkt'
+   ```
+
+   With an external database, run the same statement as a user that may drop it, connected to the restored
+   database: `python3 scripts/postgres-tool.py RESTORED_DATABASE_URL psql -c 'DROP DATABASE opsecmkt'`. If it
+   answers that the database is being accessed by other users, stop whatever is connected and run it again.
+   Afterwards alpha.1's `scripts/backup.sh`, which always dumps `opsecmkt`, fails instead of dumping the wrong
+   database: keep using the direct backup command of step 5.
+
 ## 6. Backups now need the wallets too
 
 Once payments are on, the marketplace is custodial for test coins: the Bitcoin wallet lives in the
 `bitcoin_data` volume and the Monero wallet in `monero_wallet`. **Database dumps do not include them.** Back
-them up separately (see the runbook). `scripts/restore.sh` now pauses all outbound payouts with a persistent recovery gate, holds every
-pending, sending, blocked or held payout (one held for an account suspension keeps its "Suspended account:"
-text, so its payout address check stays), marks every failed payout as possibly sent after the backup (it
-may have been requeued and sent since) and adds an audit row recording the gate and those counts. Follow the [reconciliation procedure](docs/testnet-runbook.md#reconcile-a-restored-database-before-enabling-payouts),
-including orders paid out after the backup that have no payout row in it, before explicitly clearing the
-gate. Restore with the application stopped and keep the site cut off from users until reconciliation is
+them up separately (see the runbook). `scripts/restore.sh` now pauses all outbound sends with a persistent recovery
+gate, holds every restored escrow settlement with a stored transaction and adds an audit row recording the gate and
+those counts. (Pooled payouts are removed: migration 108 refuses a database that holds any, section 59.) Follow the
+[reconciliation procedure](docs/testnet-runbook.md#reconcile-a-restored-database-before-enabling-payouts) before
+explicitly clearing the gate. Restore with the application stopped and keep the site cut off from users until reconciliation is
 complete; the procedure says when the app runs for you alone and when it must be stopped.
 
 The script also prints `<N> images restored from a backup taken <time>; photo and avatar removals made after
@@ -330,18 +379,16 @@ nothing, but undoes those removals all the same. The time is in UTC for backups 
 `scripts/backup.sh`; for a backup made by an earlier one on a host (or, for the internal database, a container)
 not set to UTC, it is off by that zone's offset from UTC.
 
-**Any restore not done by `scripts/restore.sh` skips this payout protection.** A host or volume snapshot, a
-managed-database point-in-time recovery or a manual `pg_restore` brings payouts back as `pending` with no
-gate, and the application sends them again as soon as it starts, even if they were paid after that point in
-time. After such a restore, and whenever the script reports that recovery protection failed, keep the
+**Any restore not done by `scripts/restore.sh` skips this protection.** A host or volume snapshot, a
+managed-database point-in-time recovery or a manual `pg_restore` brings escrow settlements back with no gate and
+no holds, and the escrow watchers would broadcast or relay them as soon as the application starts, even if they
+were sent after that point in time. After such a restore, and whenever the script reports that recovery protection failed, keep the
 application stopped (`docker compose stop app`; for a volume snapshot start only the database with
 `docker compose up -d --wait db`) and apply the protection below to the restored application database
 **before starting the application**, then follow the same reconciliation procedure. It runs in one
-transaction and adds one audit row ("set manually"); existing audit rows are not changed. Older databases
-without a `payouts` table need only the `settings` and `audit_events` statements; omit the `send_ambiguous`
-line if their `payouts` table has no such column, as migration 053 then marks their failed payouts ambiguous
-itself, and omit the `settlements` line if the database has no `settlements.send_error` column (before migration
-076, when no escrow settlement could have a stored transaction). That line holds every restored Bitcoin escrow
+transaction and adds one audit row ("set manually"); existing audit rows are not changed. Omit the `settlements`
+line if the database has no `settlements.send_error` column (before migration 076, when no escrow settlement could
+have a stored transaction). That line holds every restored Bitcoin escrow
 settlement with a stored transaction until an administrator confirms its rebroadcast on `/admin`; the
 `settlement_bumps` line holds every restored fee bump of one with a stored transaction until that confirmation of its
 settlement (omit it if the database has no `settlement_bumps` table, before migration 080). The
@@ -377,14 +424,6 @@ INSERT INTO settings(key,value) VALUES ('escrow_sweep_required','true')
 ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
 INSERT INTO settings(key,value) VALUES ('xmr_escrow_sweep_required','true')
 ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
-UPDATE payouts SET state='held', updated=now(),
-  error='Restored from backup: verify in the wallet before releasing; this payout may already have been sent.'
-    || coalesce(' ' || substring(error from '(?:Suspended account:|Larger than the order price:|Held to be paid by hand:).*'), '')
-WHERE state IN ('pending','sending','blocked','held');
-UPDATE payouts SET send_ambiguous=true WHERE state='failed';
-UPDATE payouts SET updated=now(),
-  error='Restored from backup: verify in the wallet before requeueing; this payout may have been requeued and sent after the backup. Last error: ' || error
-WHERE state='failed';
 UPDATE settlements SET send_error='Restored from backup: check that this escrow settlement''s transaction was not already sent or replaced, then confirm its rebroadcast on the admin page.', updated=now()
 WHERE raw_tx IS NOT NULL AND state IN ('signed','broadcast');
 UPDATE settlement_bumps SET send_error='Restored from backup: check that this escrow settlement''s transaction was not already sent or replaced, then confirm its rebroadcast on the admin page.', updated=now()
@@ -477,8 +516,20 @@ Migration 065 runs at startup and adds `payments.after_close`. From this release
 cancelled, completed or resolved order's deposit address until the address is 30 days old (before, only while a
 deposit was confirming or unhandled, or for 24 hours after the order changed), so each pass reads more addresses.
 A deposit first recorded after its order closed is never refunded or paid out automatically, even when the
-cancellation refunded nothing: it is flagged for payment review and the buyer is told once per order. Deposits
-recorded before the upgrade keep their earlier treatment. See
+cancellation refunded nothing: it is flagged for payment review and the buyer is told once per open late-deposit
+review episode. Deposits recorded before the upgrade keep their earlier treatment.
+
+**Legacy notice exception (A-239):** upgrading from a version that notified only staff of late deposits does not
+backfill buyer notifications. An existing open late-deposit flag (uncredited, not below the payout floor, not locked
+and not spent outside the market) holds its order's notice episode open even if the earlier version never told the
+buyer. Further late deposits are still flagged and dated in the order history, but do not produce another buyer or
+staff notice while that episode remains open. During upgrade reconciliation, review these existing late flags and
+confirm the buyer knows about the unpaid deposit. Record the actual disposition only after wallet reconciliation;
+do not close a flag merely to restart notifications. Once all eligible late flags have dispositions that close them,
+a later deposit starts a new episode and is announced normally. This is the documented legacy exception allowed by
+A-239; it does not change deposit credit, refunds or payouts.
+
+See
 [late deposits](docs/operator-guide.md#payments) and the
 [runbook](docs/testnet-runbook.md#handle-a-payment-review-flag).
 
@@ -513,12 +564,12 @@ requeue it (it would fail the same way). Settle it by hand as the runbook descri
 minimum ([payment-review flags](docs/testnet-runbook.md#handle-a-payment-review-flag), step 4): agree with the
 vendor whether to send it, and if so `transfer` the payout's amount from the wallet with the wallet paying the fee
 (without `subtract_fee_from_outputs`), then record it with *Mark sent* and its transaction ID
-([section 5](docs/testnet-runbook.md#5-recover-a-held-or-failed-payout)). One Monero minimum, 0.001 XMR, now
+(the prior build's runbook section 5, since removed). One Monero minimum, 0.001 XMR, now
 applies to every payout: a release below it is flagged for payment review instead of sent, like a refund.
 Listings cannot be priced below 0.001 XMR; a listing priced lower before the upgrade takes no new XMR drafts or payment requests, and saving it is refused until its vendor raises the Monero
 price. On an existing order at such a price, an overpayment of more than the price is held as one release for an
-administrator's review. When matching Monero payouts sent before the upgrade in the wallet (the runbook's
-[failed-payout check](docs/testnet-runbook.md#5-recover-a-held-or-failed-payout) and [restore reconciliation](docs/testnet-runbook.md#reconcile-a-restored-database-before-enabling-payouts)), a release sent by the
+administrator's review. When matching Monero payouts sent before the upgrade in the wallet (the prior build's runbook
+failed-payout check, since removed, and its [restore reconciliation](docs/testnet-runbook.md#reconcile-a-restored-database-before-enabling-payouts)), a release sent by the
 earlier version paid its fee on top: its destination amount is the payout's.
 
 ## 14. One settlement per order, and resolving needs a password (migrations 069 and 070)
@@ -576,7 +627,7 @@ db_sql() { docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U opsecmkt -d o
    `send_ambiguous` true, and any row whose error starts `Restored from backup:` may have been sent. Check every
    listed row in the wallet, whatever its state (a `pending`, `blocked`, `held` or definitely failed row may have
    been paid by hand): a transaction to its address and amount since before the row was created, with the complete
-   checks in [runbook section 5](docs/testnet-runbook.md#5-recover-a-held-or-failed-payout). A row that may have
+   checks in the prior build's runbook section 5 (since removed). A row that may have
    been sent and that the wallet check does not clear counts as sent. Never delete a sent row, or one that may
    have been sent, except as step 3 describes for an order paid twice or for a sent release that the order's
    outcome did not owe.
@@ -707,8 +758,7 @@ changes" with status 500. It is now refused with 503 "BTC payment addresses are 
 Nothing was charged and your order is still a draft; try again later." (or XMR), logged as a `payments:` line naming
 only the currency, and shown on the *Payment providers* panel of `/admin` until an administrator dismisses it. A
 monitor that matched `cause=23505 payment_addresses payment_addresses_address_key` should match
-`cause=payment-address-already-issued` instead. What to do when it appears:
-[Restore the wallets](docs/testnet-runbook.md#restore-the-wallets).
+`cause=payment-address-already-issued` instead. The pooled wallet and this warning are since removed; the runbook no longer has a "Restore the wallets" section.
 
 ## 17. An index for role changes in the audit log (migration 072, A-301)
 
@@ -1609,9 +1659,10 @@ to pay by hand*, a staff reason of 10–500 characters and your password, audite
 recipient saves an address), pay it from the pooled wallet to an address the recipient gave you through a channel you
 trust, then record it (*Record sent by hand*, the wallet's transaction ID, 64 hexadecimal characters stored in lower
 case, and your password, audited with the payout and the transaction ID). The market does not check the transaction
-ID against the chain, and never sends a recorded payout. A queued payout, one being sent or one already sent is never
-marked sent: the refusal (409, nothing changed) says that the market queued, is sending or sent it itself, so a payment
-made by hand would be a second one. Releasing a hand hold needs the confirmation that nobody paid it by hand. No new
+ID against the chain, and never sends a recorded payout. A queued payout can now be held through the same form, but
+the watcher may claim it first. Wait for the successful hold and reload the page before paying by hand. A queued
+payout must be held before recording a hand payment; one being sent or already sent cannot be held or recorded.
+The refusal (409, nothing changed) means paying by hand could pay it twice. Releasing a hand hold needs the confirmation that nobody paid it by hand. No new
 payout state: a hold is `held` (its reason starts "Held to be paid by hand:"), a recorded payout `sent`. An account
 suspension and a restore from backup hold such a payout again and keep that reason after their own, so releasing it
 then needs their check as well (the payout-address check, or the wallet check); `scripts/restore.sh` and the manual
@@ -1640,6 +1691,86 @@ mode or before `compose.nodes.yaml`) and `docker compose up -d --build`, which r
 restarted the nodes on it with Compose 5.1.1 (the guide says what to do if your Compose refuses). How it works, and exactly what it does and does not make private:
 [operator guide](docs/operator-guide.md#local-nodes-over-tor).
 
+## 48. Stalled pooled deposits reach staff review (A-487)
+
+Migration 092 updates the drain panel's explanation; it does not move funds or change its blocker predicates.
+For a terminal pooled order, an uncredited deposit still reported by the wallet below its confirmation threshold
+is flagged for staff review 14 days after the later of its normal watch horizon and its first recorded observation.
+The horizon is the later of 24 hours after the order closed and 30 days after its address was created. A wallet read
+failure never starts this review from stale confirmations. A deposit the wallet has dropped or reports conflicted
+is not flagged by this rule.
+
+An open review replaces the extra address watch on the drain list. Staff must record a disposition on the moderation
+desk; the flag never credits the deposit or queues a payment. The desk shows its confirmations and tells staff to
+verify confirmation in the wallet before paying by hand. Confirmed, uncredited deposits belonging to legacy resolved
+disputes with an empty settlement outcome also reach this review when the wallet is readable.
+
+No new configuration is needed. Pooled-wallet removal remains gated on an empty real drain list and the public-network
+operator evidence; this migration does not remove pooled writers.
+
+## 49. Bitcoin escrow health and arbiter account-key pin (A-451, A-452)
+
+Migrations 093 and 094 add one durable Bitcoin escrow health row with its last successful watcher pass, disabled
+reason, node height, pin-match status, arbiter key-pool high-water mark and highest market index. The admin page
+shows this history even after escrow is switched off; the row stores no RPC credentials, wallet names or account
+keys. Startup with escrow off records that state without contacting the node.
+
+The existing arbiter fingerprint pin gains an HMAC of the account key in `settings`. A fingerprint-only deployment
+records it on the first upgraded start only if the observed fingerprint matches. Later account-key changes disable
+escrow even when the fingerprint matches. The configured escrow signer's account key is pinned the same way. Restore
+the original arbiter/signer wallet keys and original `APP_SECRET_KEY` (or legacy `SETUP_TOKEN` key root): changing the
+root changes both HMACs and disables escrow. Never remove or replace these pins while escrows exist. Party-key rows
+can be re-registered only after the original root is restored and startup has verified the pinned node and, when configured, signer.
+No environment keys are added; see [the arbiter pin](docs/operator-guide.md#bitcoin-escrow-test-networks-only).
+
+## 50. Removed XMPP profile values (migration 098)
+
+Migration 098 clears stored XMPP profile values from the live `users` rows. The application no longer reads, saves or renders this field; the database column remains for compatibility. A backup made before migration 098 can still contain the old values. If you restore one, upgrade it before use; deleting or rotating a live database does not erase separate backup files.
+
+## 51. Audit-event ordering indexes (migration 099)
+
+Migration 099 adds indexes for audit history ordered within one account and for the global newest-first audit view. It does not change or rewrite existing audit events. Startup applies it with the other pending migrations; take the normal encrypted pre-upgrade backup and use the standard rollback procedure if the new release must be reverted.
+
+## 52. Durable form-submission receipts (migration 100)
+
+Migration 100 creates the short-lived receipt table used to return the original result when supported forms are submitted again after a lost response. Receipts contain request hashes and routing/result metadata, not submitted form text. They expire after 24 hours and are swept in bounded batches. The application applies the migration at startup; use the normal encrypted pre-upgrade backup and rollback procedure.
+
+## 53. Payment-provider alert episodes (migration 101)
+
+Migration 101 stores a fixed provider key, outage/recovery episode timestamps and per-administrator delivery receipts so a sustained provider alert is sent once per episode across restarts and concurrent watchers. It does not store provider error text, credentials or wallet addresses. Startup applies it transactionally with the other pending migrations; use the normal encrypted pre-upgrade backup and rollback procedure.
+
+## 54. Local Bitcoin RPC uses a salted verifier (A-144)
+
+The local `bitcoin` Compose service no longer puts its RPC password in the container command line. It takes
+`BITCOIN_RPC_AUTH=marketplace:SALT$HMAC` from private `.env` as Bitcoin Core's `-rpcauth` verifier. The app still
+uses the **same** private `BITCOIN_RPC_PASSWORD` in `BITCOIN_RPC_URL` for HTTP Basic authentication. The verifier
+cannot authenticate on its own, but a weak manually selected password can be guessed from it offline; use the
+installer's random password. External Bitcoin RPC configurations and disabled local profiles need no verifier.
+
+For an existing local-node install, use the normal backed-up `./scripts/install.sh upgrade`: after saving the prior
+`.env`, it derives a fresh salted verifier from the **existing** password and adds `BITCOIN_RPC_AUTH` before
+recreating the node. It does not rotate the password, change the app URL or touch the Bitcoin wallet volume.
+The previous `.env` copy is mode 0600 for rollback. A second upgrade leaves the verifier unchanged. An existing
+mismatched or malformed verifier is never silently replaced: `./scripts/install.sh check` refuses startup with
+its key name. Repair it from the current private password, then check again; if you changed the password,
+update `BITCOIN_RPC_URL` to the same value as well. Do not put the password on a command line or in a log.
+
+For a manually maintained `.env` with the local `bitcoin` profile, set `BITCOIN_RPC_AUTH` to a Bitcoin Core
+`rpcauth` verifier for user `marketplace` and the password in `BITCOIN_RPC_PASSWORD`; the format is
+`marketplace:<32 lowercase hex salt>$<64 lowercase hex HMAC-SHA256(salt, password)>`. Use a private editor
+and host OpenSSL with the password on standard input, as the checked helper inside `scripts/install.sh` does;
+then run `./scripts/install.sh check` before starting the profile. The check
+verifies the HMAC without printing either value. Compose refuses to create the local `bitcoin` service when
+`BITCOIN_RPC_AUTH` is blank, while inactive profiles continue to render normally.
+
+For a repeatable disposable check on a Docker host with the pinned image cached, run
+`python3 scripts/test-bitcoin-rpcauth.py`. It creates only its own internal-network regtest project, checks the
+runtime argument and correct/wrong authentication, and removes that project's container and volume. A
+run of that saved script on 2026-10-08 passed against Core 31.1: one literal `$` in the actual `-rpcauth`
+argument, no password in node arguments, correct-password RPC success, explicit wrong-password authentication
+rejection, and the node remained healthy. Its owned project and volume were removed; no public node or wallet was
+involved. CI runs the same script after its pinned Core image is cached in the `escrow-regtest` job.
+
 ## Appendix: new keys by hand
 
 `./scripts/install.sh upgrade` writes these for you. To add them yourself, use your editor (values in single
@@ -1648,11 +1779,10 @@ quotes, as the installer writes them). Blank values keep a feature off.
 | Key | What to put there |
 | --- | --- |
 | `AUDIT_SIGNING_KEY` | `openssl rand -hex 32` output. Enables signed audit exports; back it up with `.env`. |
-| `BITCOIN_CHAIN` | Leave blank to accept whichever test chain the node reports, or `testnet4` / `signet` / `regtest`. `main` configures mainnet (real funds; [operator guide](docs/operator-guide.md#mainnet)); mainnet is refused otherwise. See step 3 before setting it for a local node. |
-| `BITCOIN_WALLET` | Wallet name, default `opsecmkt`. |
-| `MONERO_NETWORK` | Blank, `stagenet` or `testnet`; `mainnet` configures mainnet (a local node also needs `MONERO_NETWORK_FLAG=`). |
-| `MONERO_WALLET_RPC_URL` | monero-wallet-rpc URL with credentials, for example `http://marketplace:PASSWORD@monero-wallet:18083`. Blank keeps Monero payments off. A daemon URL alone (`MONERO_RPC_URL`, which alpha.1 wrote) does **not** enable them. |
-| `MONERO_WALLET_RPC_PASSWORD` | For the local `monero-wallet` service only: `openssl rand -hex 24` output, the same value as the password in `MONERO_WALLET_RPC_URL`. Compose refuses the `monero-wallet` profile without it (section 35). |
+| `BITCOIN_CHAIN` | Leave blank to accept whichever test chain the node reports, or `testnet4` / `signet` / `regtest`. `main` (mainnet) and `testnet3` are refused with Bitcoin escrow on, and there is no mainnet opt-in in this build ([operator guide](docs/operator-guide.md#mainnet)). See step 3 before setting it for a local node. |
+| `BITCOIN_WALLET`, `BITCOIN_RPC_URL`, `MONERO_RPC_URL`, `MONERO_WALLET_RPC_URL` | Obsolete pooled-wallet settings: leave them blank. This build stops at startup, before the database opens, if any is set (sections 58 and 59). Escrow uses the `ESCROW_BTC_*` and `ESCROW_XMR_*` keys of the operator guide instead. |
+| `BITCOIN_RPC_AUTH` | Local `bitcoin` profile only: salted Core `rpcauth` verifier for user `marketplace` and the existing `BITCOIN_RPC_PASSWORD` (section 54). `upgrade` adds it for existing local-node installs; `check` refuses a missing or mismatched value. |
+| `MONERO_NETWORK` | Blank or `stagenet`; `mainnet` is refused with Monero escrow on. |
 | `PAYMENT_CONFIRMATIONS_BTC` / `PAYMENT_CONFIRMATIONS_XMR` | Defaults 3 and 10. |
 | `PAYMENT_POLL_INTERVAL` / `PAYMENT_EXPIRY` | Defaults `30s` and `24h`. |
 | `BITCOIN_MAX_TIP_AGE` | Default `2h` (30m to 24h): a public-network Bitcoin node whose tip is older counts as not synced (section 33). |
@@ -1664,9 +1794,79 @@ quotes, as the installer writes them). Blank values keep a feature off.
 | `CLAMD_ADDRESS` / `CLAMAV_IMAGE` | The malware scanner photo uploads need. Leave `CLAMD_ADDRESS` blank (uploads off) and `CLAMAV_IMAGE` at `clamav/clamav:1.5.4-debian`; `./scripts/install.sh add-scanner` turns the scanner on. See [Photo uploads and the malware scanner](docs/operator-guide.md#photo-uploads-and-the-malware-scanner). |
 | `DATABASE_CONNECT_TIMEOUT` / `MIGRATION_LOCK_TIMEOUT` / `MIGRATION_TIMEOUT` | Optional; leave blank for `15s`, `10m` and `10m`. Raise `MIGRATION_TIMEOUT` if your database is large; see [Migrations](docs/operator-guide.md#migrations). |
 
-For a local Monero node, also add `monero-wallet` to `COMPOSE_PROFILES` (for example
-`COMPOSE_PROFILES='internal-db,monero,monero-wallet'`). If you run the Tor onion mirror, add `mirror` there too
+For a local Monero node, add `monero` to `COMPOSE_PROFILES` (for example `COMPOSE_PROFILES='internal-db,monero'`; add
+`monero-escrow-wallet` only for Monero escrow, and never the removed `monero-wallet` profile). If you run the Tor onion mirror, add `mirror` there too
 (for example `COMPOSE_PROFILES='internal-db,mirror'`) instead of starting it with a `--profile mirror` option,
 which drops the other profiles for that command; without it in `.env`, `docker compose up -d` leaves the mirror
 out and Compose does not restart its Tor with the app. See
 [Optional onion mirror](docs/operator-guide.md#optional-onion-mirror).
+
+
+## 58. Pooled-wallet removal for fresh installs (A-448)
+
+Mainnet pooled history is itself a drain blocker even after its orders are settled.
+Such a deployment must keep the prior release; do not delete records to force this
+test-network-only build through migration 107.
+
+Migration `107_remove_pooled_wallet` refuses an older database when
+`pooled_drain_blockers()` returns any rows. The refusal names the blocker kinds,
+changes nothing in that migration transaction, and records no migration 107.
+A restored pre-removal database runs the same check again. Mainnet pooled history
+is a blocker even when every order has closed: mainnet escrow is unsupported.
+
+A fresh database needs no drain operation. A drained legacy database passes
+migration 107, but migration 108 then refuses it while it holds any pooled payment
+history (section 59). New payment intake uses `escrow` or `false` (paused); the
+old `true` setting becomes `escrow`. Paused currencies stay paused. The server no
+longer creates pooled addresses, polls pooled deposits or sends pooled payouts,
+and its old pooled mutation routes cannot settle a legacy debt.
+
+For an existing pooled market, **complete the drain using the previous
+migration-106 drain-capable build before switching to this build**. Keep its
+wallet recovery, secrets and encrypted database backups. Pause new pooled intake,
+settle or record every payout, resolve deposit reviews, wait out address watch
+horizons, and clear recovery and address-collision gates following
+the legacy drain procedure (section *Draining the pooled wallet* of that build's own `docs/operator-guide.md`, for example at commit `5a0dabcb`; this build's guide no longer carries it).
+Do not delete records or force migration 107 to bypass a blocker.
+
+After the drain succeeds, remove the obsolete `BITCOIN_RPC_URL`, `BITCOIN_WALLET`,
+`MONERO_RPC_URL` and `MONERO_WALLET_RPC_URL` settings from `.env` (blank also works).
+The server refuses any nonblank value before opening the database or contacting
+an RPC endpoint. Remove the legacy `monero-wallet` profile without deleting its
+volume or recovery. Configure the separate `ESCROW_BTC_*` and `ESCROW_XMR_*`
+settings only for supported test networks. Keep shared node authentication and
+escrow credentials as required by the operator package.
+
+After migration 107 succeeds, older binaries refuse the newer schema. For a
+rollback, restore the encrypted pre-upgrade database into an isolated deployment
+and use its matching drain-capable binary and secrets; restarting an older binary
+on the new database is not a supported rollback.
+
+No deployed pooled market exists in the current owner setup. Fresh-install and
+seeded legacy tests prove the two database paths; they are not real-market drain
+evidence. Existing public proof records retain their frozen source revisions.
+
+## 59. Pooled history refused (migration 108, A-492)
+
+No pooled market exists (owner directive 2026-10-11), so this build keeps no pooled payment history and has no page
+that shows it: the order page's pooled payment record, the administrator payout table, the account's unsent payouts and
+the staff payout count are removed, and so is the escrow checkout's check of a refund, claim or fee address against
+old pooled deposit addresses.
+
+Migration `108_refuse_pooled_history` refuses, before serving, any database that holds a row in `payouts` or
+`payment_addresses`, even a drained one that migration 107 accepts. The refusal names both counts, changes nothing
+(migrations 107 and 108 are applied in one transaction, so neither is recorded) and the server exits non-zero:
+
+```
+migration 108 refused: this database holds pooled payment history (N payouts row(s), M payment_addresses row(s)), which this build does not support. Nothing was changed. Keep the previous release on this database; see UPGRADING.md section 59.
+```
+
+Keep running the previous release on such a database, with its own backups and recovery procedure; do not delete
+pooled rows to force this build through. A database without those rows (a fresh install, an alpha.1 database, or one
+that never took a pooled payment) migrates normally; its other records, deposits included, are kept.
+
+After migration 108 both tables refuse every new row (`payouts_refuse_insert` and `payment_addresses_refuse_insert`,
+"pooled payments are removed: <table> takes no new rows"). The tables, their constraints and the drain functions
+migration 107 reads stay, since migrations are append-only. `scripts/restore.sh` and the manual protection in
+section 6 no longer touch `payouts`, and the runbook's gate-clearing SQL no longer reads `pooled_drain_blockers()`.
+Older binaries refuse a database that records migration 108, as for any newer migration (section 5).

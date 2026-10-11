@@ -101,7 +101,11 @@ func TestAdminHidesAndRestoresReview(t *testing.T) {
 	if loc := w.Header().Get("Location"); loc != productPage+"#reviews-title" {
 		t.Fatalf("redirect %q", loc)
 	}
-	agExpect(e, "/admin/review", admin, hide, 409, "already hidden")
+	replay := e.do("POST", "/admin/review", admin, hide)
+	e.check(replay, 303)
+	if replay.Header().Get("Location") != w.Header().Get("Location") {
+		t.Fatalf("hide replay location %q, want saved %q", replay.Header().Get("Location"), w.Header().Get("Location"))
+	}
 	if agInt(e, "SELECT count(*) FROM reviews WHERE id=$1 AND hidden_at IS NOT NULL AND body=$2", badID, doxx) != 1 {
 		t.Fatal("review not hidden, or not kept")
 	}
@@ -143,7 +147,20 @@ func TestAdminHidesAndRestoresReview(t *testing.T) {
 	if loc := w.Header().Get("Location"); loc != vendorPage+"#reviews-title" {
 		t.Fatalf("redirect %q", loc)
 	}
-	agExpect(e, "/admin/review", admin, restore, 409, "is not hidden")
+	replay = e.do("POST", "/admin/review", admin, restore)
+	e.check(replay, 303)
+	if replay.Header().Get("Location") != w.Header().Get("Location") {
+		t.Fatalf("restore replay location %q, want saved %q", replay.Header().Get("Location"), w.Header().Get("Location"))
+	}
+	oldHideReplay := e.do("POST", "/admin/review", admin, hide)
+	e.check(oldHideReplay, 303)
+	if oldHideReplay.Header().Get("Location") != productPage+"#reviews-title" ||
+		agInt(e, "SELECT count(*) FROM reviews WHERE id=$1 AND hidden_at IS NULL", badID) != 1 ||
+		agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1 AND action IN ($2,$3)", adminID,
+			"Hid review of order "+short+" (confirmed with password)", "Restored review of order "+short+" (confirmed with password)") != 2 ||
+		agInt(e, "SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE 'An administrator % your review of order %'", buyerID) != 2 {
+		t.Fatal("replaying an old hide receipt re-executed it or duplicated review effects")
+	}
 	if !e.auditExact(adminID, "Restored review of order "+short+" (confirmed with password)") ||
 		!e.auditExact(buyerID, "Review of order "+short+" restored by administrator hide_admin") {
 		t.Fatal("restore not audited on both accounts")
@@ -160,11 +177,30 @@ func TestAdminHidesAndRestoresReview(t *testing.T) {
 	key, _ := agEnableTOTP(e, adminID)
 	page := e.body("GET", productPage, admin, nil, 200)
 	mustContain(t, adminForm(t, page, "/admin/review", "hide"), `name="code" required`)
+	hide = reviewForm(t, page, "hide", badID)
 	agExpect(e, "/admin/review", admin, hide, 401, "")
-	hide.Set("code", agTOTPNow(key))
+	spentCode := agTOTPNow(key)
+	hide.Set("code", spentCode)
 	agExpect(e, "/admin/review", admin, hide, 303, "")
 	if !e.auditExact(adminID, "Hid review of order "+short+" (confirmed with password and authenticator code)") {
 		t.Fatal("TOTP-confirmed hide not audited")
+	}
+	stepAfterHide := agInt(e, "SELECT totp_last_step FROM users WHERE id=$1", adminID)
+	agExpect(e, "/admin/review", admin, hide, 303, "")
+	if step := agInt(e, "SELECT totp_last_step FROM users WHERE id=$1", adminID); step != stepAfterHide {
+		t.Fatalf("exact receipt replay spent TOTP again: step %d, want %d", step, stepAfterHide)
+	}
+	changedCode := url.Values{}
+	for k, values := range hide {
+		changedCode[k] = append([]string(nil), values...)
+	}
+	changedCode.Set("code", agTOTPNow(key)+"x")
+	agExpect(e, "/admin/review", admin, changedCode, 409, "")
+	newRestore := reviewForm(t, e.body("GET", productPage, admin, nil, 200), "restore", badID)
+	newRestore.Set("code", spentCode)
+	agExpect(e, "/admin/review", admin, newRestore, 401, "")
+	if step := agInt(e, "SELECT totp_last_step FROM users WHERE id=$1", adminID); step != stepAfterHide {
+		t.Fatalf("fresh-nonce request accepted a spent TOTP code: step %d, want %d", step, stepAfterHide)
 	}
 	// With every review hidden, the public page shows the empty state and no rating.
 	agExec(e, "UPDATE reviews SET hidden_at=now()")

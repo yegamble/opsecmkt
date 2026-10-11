@@ -35,7 +35,7 @@
 .payment-figures dd .badge,.payment-deposits .badge {
   margin-left:6px
 }
-/* Tables do not wrap (style.css), which also stops break-all. The deposit and payout tables wrap, so txids,
+/* Tables do not wrap (style.css), which also stops break-all. The deposit and admin payment tables wrap, so txids,
    order IDs, wallet errors, payout states and the resolve forms stay inside the table's scroller and a whole row
    fits a desktop page (A-116, A-148). Headings break only between words; cells keep a readable width. */
 .payment-deposits table,.admin-payments table {
@@ -62,12 +62,6 @@
   overflow-wrap:anywhere;
   word-break:break-all
 }
-.payout-panel form {
-  margin-bottom:16px
-}
-.payout-panel label .badge {
-  margin-left:6px
-}
 .payout-attention td {
   color:#ffdc9e
 }
@@ -91,24 +85,6 @@
 }
 .payout-actions form {
   margin-top:12px
-}
-.payment-qr {
-  margin:12px 0 0
-}
-.payment-qr svg {
-  display:block;
-  width:240px;
-  max-width:100%;
-  height:auto
-}
-.payment-qr .payment-uri {
-  font-family:var(--mono)
-}
-.payment-qr figcaption {
-  margin:8px 0 0;
-  color:var(--text);
-  font-size:0.875rem;
-  overflow-wrap:anywhere
 }
 .escrow-psbt {
   font-family:var(--mono);

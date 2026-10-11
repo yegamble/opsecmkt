@@ -50,8 +50,19 @@ scope to accessibility and actual local-chain testing.
 ## Follow-up scope — local node image input recovery
 
 - [x] Reject incomplete Docker image names/digests before saving configuration or starting services.
-- [ ] Document recovery for the protected `.env` left by the failed pull. Unticked 2026-09-24 (war-room A-13):
+- [x] Document recovery for the protected `.env` left by the failed pull. Completed 2026-10-08 (war-room A-13): see `docs/operator-guide.md#recover-after-a-failed-first-install`. Historical note from when it was unticked on 2026-09-24:
   no such document exists. What exists is the installer's refusal message (`scripts/install.sh:14`: edit
   `.env`, then `docker compose up -d --build`) and README's "The installer refuses to overwrite an existing
   configuration"; the installer writes `.env` before `docker compose up` (`scripts/install.sh:173-176`).
 - [x] Verify malformed inputs, valid references, all Python tests and shell syntax.
+
+## Follow-up — fresh-install pooled removal (owner 2026-10-10)
+
+- [x] Delete pooled creation, monitoring and payout writers; keep shared escrow helpers and historical readers.
+- [x] Add refusing legacy upgrade migration and obsolete-config startup refusal; preserve all history.
+- [x] Prove fresh success, undrained unchanged refusal, drained historical preservation and escrow address reuse refusals (native PostgreSQL 16 race checks and full CI PostgreSQL 17).
+- [x] Align intake, installation, network graph and operator upgrade docs; independent war-room review and CI.
+
+Completion scrutiny: lower-tier independent reviewers found no remaining required issue after the template-fidelity, readiness-list and Monero syncing corrections. Focused race checks and mobile no-JavaScript readiness pass; CI [38110263336](https://github.com/yegamble/opsecmkt/actions/runs/38110263336) passed all 22 jobs on frozen `6abed16377197af7614e0ec9cfce6dbb0395d1ce`. Documentation-only commits do not change that tested source or the earlier public-proof revisions.
+
+No existing market is available: this work proves fresh installation and synthetic legacy upgrades, not a real-market drain. Actual Sparrow and Ledger Flex signing still require separate device evidence.

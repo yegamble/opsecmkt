@@ -130,10 +130,10 @@ func TestFactorlessAccountNeedsPasswordForKeyAndPGPSignIn(t *testing.T) {
 	if agStr(e, "SELECT pgp_fingerprint FROM users WHERE id=$1", uid) != aliceFP || a152Notes(e, uid, "") != 1 {
 		t.Fatal("key swapped or removed by a session alone")
 	}
-	// Other fields, and the same key re-saved, need no password and notify nobody.
-	e.check(e.do("POST", "/account", stolen, url.Values{"pgp": {alicePub + "\n"}, "xmpp": {"v@example.org"}}), 303)
-	if a152Notes(e, uid, "") != 1 || agStr(e, "SELECT xmpp FROM users WHERE id=$1", uid) != "v@example.org" {
-		t.Fatal("unchanged key save notified or other fields not saved")
+	// Re-saving the same key notifies nobody.
+	e.check(e.do("POST", "/account", stolen, url.Values{"pgp": {alicePub + "\n"}}), 303)
+	if a152Notes(e, uid, "") != 1 {
+		t.Fatal("unchanged key save notified")
 	}
 
 	// Proving ownership notifies once.

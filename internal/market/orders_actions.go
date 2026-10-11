@@ -19,12 +19,11 @@ const (
 )
 
 func init() {
-	registerAction("/orders/pay", actionSpec{OneAtATime: true, Run: payAction})
-	registerAction("/orders/cancel", actionSpec{Run: cancelAction})
-	registerAction("/orders/ship", actionSpec{Run: shipAction})
-	registerAction("/orders/deliver", actionSpec{Run: deliverAction})
-	registerAction("/orders/complete", actionSpec{Run: completeAction})
-	registerAction("/reviews", actionSpec{Run: reviewAction})
+	registerAction("/orders/cancel", actionSpec{FormNonce: true, Run: cancelAction})
+	registerAction("/orders/ship", actionSpec{FormNonce: true, Run: shipAction})
+	registerAction("/orders/deliver", actionSpec{FormNonce: true, Run: deliverAction})
+	registerAction("/orders/complete", actionSpec{FormNonce: true, Run: completeAction})
+	registerAction("/reviews", actionSpec{FormNonce: true, Run: reviewAction})
 }
 
 // partyOrder loads an order the signed-in user buys or sells. Anyone else gets 404, as on GET /order,
@@ -50,14 +49,6 @@ func partyOrderLocked(c *actionCtx, id string) (Order, error) {
 	return o, err
 }
 
-// sellerIsVendor reports whether a listing's owner is currently a vendor or administrator. Listings of a
-// demoted vendor accept no new drafts, payment requests or restores; existing orders continue.
-func sellerIsVendor(c *actionCtx, productID string) (bool, error) {
-	var ok bool
-	err := c.Tx.QueryRowContext(c.Ctx(), sellerIsVendorSQL, productID).Scan(&ok)
-	return ok, err
-}
-
 const sellerIsVendorSQL = "SELECT u.role IN ('vendor','admin') FROM products p JOIN users u ON u.id=p.vendor_id WHERE p.id=$1"
 
 // sellerIsVendorLocked is sellerIsVendor for a restore (A-70, A-163): it share-locks the owner's account row until
@@ -70,6 +61,51 @@ func sellerIsVendorLocked(c *actionCtx, productID string) (bool, error) {
 }
 
 const sellerNotVendor = "The seller of this listing is no longer a vendor, so it accepts no new orders."
+const sellerSuspended = "The seller of this listing is suspended, so it accepts no new orders. Existing orders continue."
+
+// lockNewIntake serializes a new draft or payment request with suspension and role changes. A suspension updates the
+// vendor's account under FOR NO KEY UPDATE, which conflicts with this FOR SHARE until the new intake commits. The
+// buyer's stronger lock serializes the awaiting-payment cap. Both account locks use NOWAIT: a confirmed administrator
+// action locks its actor before its target, which can be the two parties here in reverse order. Returning the
+// existing retryable database-busy 503 on contention avoids holding one account while waiting for the other.
+// Account locks still follow id order for reciprocal vendor purchases and do not block foreign-key inserts.
+func lockNewIntake(c *actionCtx, buyerID, vendorID string, draft bool) error {
+	lockBuyer := func() error {
+		var one int
+		return c.Tx.QueryRowContext(c.Ctx(), "SELECT 1 FROM users WHERE id=$1 FOR NO KEY UPDATE NOWAIT", buyerID).Scan(&one)
+	}
+	var role string
+	var suspended bool
+	lockVendor := func() error {
+		return c.Tx.QueryRowContext(c.Ctx(), "SELECT role,suspended_at IS NOT NULL FROM users WHERE id=$1 FOR SHARE NOWAIT", vendorID).Scan(&role, &suspended)
+	}
+	if buyerID != "" && buyerID < vendorID {
+		if err := lockBuyer(); err != nil {
+			return err
+		}
+	}
+	if err := lockVendor(); err != nil {
+		return err
+	}
+	if buyerID != "" && buyerID > vendorID {
+		if err := lockBuyer(); err != nil {
+			return err
+		}
+	}
+	if role != "vendor" && role != "admin" {
+		if draft {
+			return fail(400, sellerNotVendor)
+		}
+		return fail(409, sellerNotVendor+" Cancel this draft.")
+	}
+	if suspended {
+		if draft {
+			return fail(409, "Unavailable. "+sellerSuspended+" Nothing was changed.")
+		}
+		return fail(409, "Unavailable. "+sellerSuspended+" Cancel this draft.")
+	}
+	return nil
+}
 
 func shortID(id string) string { return id[:min(8, len(id))] }
 
@@ -88,8 +124,8 @@ func formNote(c *actionCtx, fallback string) (string, error) {
 }
 
 // payoutConfirmation reads what the complete, paid-cancel and resolve forms carry (A-161, A-122): the ticked
-// confirmation and amount_seen, the counted amount (payoutBasis) the form stated. Both are required (400);
-// enqueuePayout compares amount_seen with what it counts (409 when it changed).
+// confirmation and amount_seen, the counted amount the form stated. Both are required (400); the settlement
+// request compares amount_seen with what it counts (checkPayoutSeen, 409 when it changed).
 func payoutConfirmation(c *actionCtx) (int64, error) {
 	if c.Form.Get("payout_confirmed") != "confirmed" {
 		return 0, fail(400, "Tick the box confirming the amount and who receives it. Nothing was changed.")
@@ -102,14 +138,14 @@ func payoutConfirmation(c *actionCtx) (int64, error) {
 }
 
 // walletLockWait replaces the application pool's 3 s lock_timeout and 8 s statement_timeout (A-177) in a
-// transaction that may queue for the rows a payment request holds while the wallet is asked for an address:
+// transaction that may queue for the rows an escrow checkout holds while the escrow node is asked for an address:
 // the buyer (FOR NO KEY UPDATE), the payment-intake setting (FOR SHARE) and the listing, for up to rpcTimeout
 // (10 s). Another checkout, a stock edit, an archive or takedown, a cancellation returning stock (stockHook,
-// also the watcher's expiry), a payment-intake change, a payout to the buyer (enqueuePayout), and an
+// also the watcher's expiry), a payment-intake change, and an
 // administrator's suspension, second-factor reset or role change then wait for a slow wallet instead of
 // failing at 3 s. The statement timeout is raised with it, since it would otherwise end the wait at 8 s. Both
 // stay below the 12 s request context, so a longer wait is still refused cleanly (503). The wallet is asked
-// only after every check has passed (payAction), so the rows cannot be released before the call without
+// only after every check has passed (escrowCheckoutAction), so the rows cannot be released before the call without
 // letting refused requests create addresses. One account's burst of payment requests queued on its own row
 // is cut to one at a time (OneAtATime), so it cannot hold the pool's connections.
 const walletLockWait = "11s"
@@ -126,93 +162,6 @@ func waitForWalletLocks(ctx context.Context, tx *sql.Tx) error {
 // maxAwaitingPayment bounds the stock one buyer can hold in unpaid orders (the watcher also expires them).
 const maxAwaitingPayment = 3
 
-// payAction: buyer moves draft -> awaiting_payment at the current listing price. A physical order whose vendor has
-// no key that can receive encrypted messages is refused before transition (409, A-83). transition() refuses when no
-// provider serves the currency (409) and the stock hook reserves one unit (409 when none is left). Only then is the
-// live wallet asked for an address, so refused requests never create wallet addresses.
-func payAction(c *actionCtx) (actionResult, error) {
-	ctx := c.Ctx()
-	if err := waitForWalletLocks(ctx, c.Tx); err != nil {
-		return actionResult{}, err
-	}
-	o, err := partyOrder(c, c.Form.Get("order_id"))
-	if err != nil {
-		return actionResult{}, err
-	}
-	if ok, err := sellerIsVendor(c, o.ProductID); err != nil {
-		return actionResult{}, err
-	} else if !ok && o.State == stateDraft {
-		return actionResult{}, fail(409, sellerNotVendor+" Cancel this draft.")
-	}
-	if o.BuyerID == c.User.ID {
-		var open int
-		// The buyer row lock serialises concurrent requests so the cap cannot be raced. The count must be a
-		// separate statement: under READ COMMITTED it then takes its snapshot after the lock is held and sees
-		// the orders a concurrent request committed while this one waited. FOR NO KEY UPDATE, not FOR UPDATE:
-		// it is held while the wallet is asked for an address, and inserts that reference the buyer
-		// (notifications, messages, order events by anyone) take a key-share lock that FOR UPDATE would block.
-		if _, err = c.Tx.ExecContext(ctx, "SELECT 1 FROM users WHERE id=$1 FOR NO KEY UPDATE", c.User.ID); err != nil {
-			return actionResult{}, err
-		}
-		if err = c.Tx.QueryRowContext(ctx, "SELECT count(*) FROM orders WHERE buyer_id=$1 AND state='awaiting_payment'", c.User.ID).Scan(&open); err != nil {
-			return actionResult{}, err
-		}
-		if open >= maxAwaitingPayment {
-			return actionResult{}, fail(409, "You already have "+strconv.Itoa(maxAwaitingPayment)+" orders awaiting payment. Pay or cancel one before requesting another payment address.")
-		}
-	}
-	if err = lockPaymentIntake(c, o.Currency, kindPooled); err != nil {
-		return actionResult{}, err
-	}
-	// A-216, A-232: a listing priced below its currency's payout floor (Bitcoin before A-99, Monero before A-232)
-	// takes no payment request in that currency on a draft saved earlier; the order would take that price. A-83: the
-	// buyer of a physical order must be able to send the vendor an encrypted shipping address. Both are checked
-	// before any reservation or wallet call, after the reasons the order page gives first (paused intake, then no
-	// wallet, as transition refuses); the page shows the key reason instead of the form (vendorKeyGate).
-	if o.State == stateDraft && o.BuyerID == c.User.ID {
-		if c.A.provider(o.Currency) == nil {
-			return actionResult{}, fail(409, "Payment unavailable for "+o.Currency)
-		}
-		var price int64
-		if err = c.Tx.QueryRowContext(ctx, "SELECT CASE WHEN $2='XMR' THEN xmr ELSE btc END FROM products WHERE id=$1", o.ProductID, o.Currency).Scan(&price); err != nil {
-			return actionResult{}, err
-		}
-		if price < payoutFloor(o.Currency, "release") {
-			return actionResult{}, fail(400, subFloorListing(o.Currency))
-		}
-		if o.Kind == "physical" {
-			if ok, err := userCanReceiveEncrypted(ctx, c.Tx, o.VendorID); err != nil {
-				return actionResult{}, err
-			} else if !ok {
-				return actionResult{}, fail(409, "Payment unavailable. "+noVendorKeyReason+" Nothing was changed.")
-			}
-		}
-	}
-	if _, err = c.Tx.ExecContext(ctx, "UPDATE orders o SET amount=CASE WHEN o.currency='XMR' THEN p.xmr ELSE p.btc END FROM products p WHERE o.id=$1 AND o.state='draft' AND p.id=o.product_id", o.ID); err != nil {
-		return actionResult{}, err
-	}
-	if _, err = c.A.transition(ctx, c.Tx, o.ID, stateDraft, stateAwaitingPayment, c.User, "Payment address requested"); err != nil {
-		return actionResult{}, err
-	}
-	p := c.A.provider(o.Currency)
-	// The watcher may disable a provider while transition's stock reservation
-	// waits for a row lock. Recheck before calling it and roll back that reservation.
-	if p == nil {
-		return actionResult{}, fail(409, "Payment unavailable for "+o.Currency)
-	}
-	addr, err := p.NewAddress(ctx, o.ID)
-	if err != nil || addr == "" || !p.ValidAddress(addr) {
-		return actionResult{}, fail(503, "The "+o.Currency+" "+c.A.netAdj()+" wallet did not return a usable address. Nothing was changed; try again later.")
-	}
-	if _, err = c.Tx.ExecContext(ctx, "INSERT INTO payment_addresses(order_id,currency,address,provider) VALUES($1,$2,$3,$4)", o.ID, o.Currency, addr, strings.ToLower(o.Currency)+"-"+p.Network()); err != nil {
-		if addressAlreadyIssued(err) { // A-288: a wallet restored from an older backup
-			return actionResult{}, addressCollisionRefusal(c, o.Currency, p.Network())
-		}
-		return actionResult{}, err
-	}
-	return actionResult{Redirect: orderPage(o.ID), Notice: "payment-address", Audit: "Requested " + o.Currency + " " + c.A.netAdj() + " payment address for order " + shortID(o.ID)}, nil
-}
-
 // hasDeposits reports whether an order has received a deposit that can be refunded: not conflicted and not a
 // locked transfer (those are never paid out automatically), confirmed or still confirming.
 func hasDeposits(ctx context.Context, q rowQuerier, orderID string) (bool, error) {
@@ -221,7 +170,8 @@ func hasDeposits(ctx context.Context, q rowQuerier, orderID string) (bool, error
 	return ok, err
 }
 
-// cancelAction takes the state the viewer saw ("from") so a stale or repeated form is a 409, not a new move.
+// cancelAction takes the state the viewer saw ("from") so a stale or newly submitted form is a 409, not a
+// new move. routes.post replays the original 303 for the exact successful form nonce before reaching here.
 // Cancelling a paid order refunds every counted deposit, so it needs the payout confirmation; so does
 // cancelling an order awaiting payment once a deposit has arrived (an underpayment is refunded).
 func cancelAction(c *actionCtx) (actionResult, error) {
@@ -288,9 +238,9 @@ func shipAction(c *actionCtx) (actionResult, error) {
 	}
 	switch { // P2-R1: an escrow order is shipped with its release's claim address (escrowShipAction, xmrEscrowShipAction)
 	case o.xmrEscrow():
-		return actionResult{}, errShipPooledFormXMR
+		return actionResult{}, errShipPlainFormXMR
 	case o.Escrow:
-		return actionResult{}, errShipPooledForm
+		return actionResult{}, errShipPlainForm
 	}
 	if _, err = c.A.transition(c.Ctx(), c.Tx, o.ID, statePaid, stateShipped, c.User, note); err != nil {
 		return actionResult{}, err
@@ -344,7 +294,7 @@ func completeAction(c *actionCtx) (actionResult, error) {
 	return actionResult{Redirect: orderPage(o.ID), Notice: "order-completed", Audit: "Completed order " + shortID(o.ID)}, nil
 }
 
-// reviewAction: one review per completed order, by its buyer. "Verified purchase" on public pages rests
+// reviewAction: one review per completed order, by its buyer. The completed-order badge on public pages rests
 // on this check and the UNIQUE(order_id) constraint.
 func reviewAction(c *actionCtx) (actionResult, error) {
 	rating, err := strconv.Atoi(c.Form.Get("rating"))
@@ -371,6 +321,9 @@ func reviewAction(c *actionCtx) (actionResult, error) {
 	}
 	if n, _ := res.RowsAffected(); n != 1 {
 		return actionResult{}, fail(409, "You already reviewed this order")
+	}
+	if _, err = insertNotification(c.Ctx(), c.Tx, o.VendorID, "A new review was posted on order "+shortID(o.ID)+". Read it on the order page.", o.ID); err != nil {
+		return actionResult{}, err
 	}
 	return actionResult{Redirect: orderPage(o.ID), Notice: "review-saved", Audit: "Reviewed order " + shortID(o.ID)}, nil
 }

@@ -4,7 +4,7 @@
 <strong>{{with .Inventory}}{{.Active}}{{else}}{{len .Products}}{{end}}</strong>
 <span>{{with .Inventory}}Active{{if .Archived}} · {{.Archived}} archived{{end}}{{else}}Your inventory{{end}}</span>
 </div>{{end}}
-{{define "vendor-listings:delivery-help"}}<p class="help" id="delivery-help">Optional, digital listings only. Released to the buyer automatically once their payment is confirmed. <strong>Stored unencrypted on the server</strong>: operators and anyone with database access can read it. Leave empty to deliver manually.</p>
+{{define "vendor-listings:delivery-help"}}<p class="help" id="delivery-help">Optional, digital listings only. When a payment provider is configured for the order's currency, every buyer whose payment is confirmed receives exactly the text saved here. <strong>Stored unencrypted on the server</strong>: operators and anyone with database access can read it. Leave empty to deliver manually.</p>
 {{if .}}<p class="help">Payment confirmation is configured for {{.}}; orders in other currencies are not delivered automatically.</p>{{else}}<div class="notice inventory-unavailable">
 <p><strong>Automatic delivery requires a payment provider.</strong> None is configured, so saved content is not released to anyone until payments are enabled.</p>
 </div>{{end}}{{end}}
@@ -12,6 +12,7 @@
 <summary class="accent mono">+ Publish a new listing</summary>
 <form class="stack" method="post" action="/listings">
 <input type="hidden" name="csrf" value="{{.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/listings"}}">
 <label>Listing title<input name="title" required minlength="3" maxlength="140">
 </label>
 <label>Description<textarea name="description" required maxlength="10000">
@@ -40,7 +41,7 @@
 </label>
 {{if .DispatchOn}}<label>Dispatch within (days)<input type="number" name="dispatch_days" min="1" max="30" inputmode="numeric" value="3" aria-describedby="dispatch-help">
 </label>{{end -}}
-<label>Bitcoin reference price<input name="price_btc" required inputmode="decimal" placeholder="0.00100000" aria-describedby="price-floor-help">
+<label>{{$.BitcoinPriceLabel}}<input name="price_btc" required inputmode="decimal" placeholder="0.00100000" aria-describedby="price-floor-help">
 </label>
 <label>Monero reference price<input name="price_xmr" required inputmode="decimal" placeholder="0.500000000000" aria-describedby="price-floor-help">
 </label>
@@ -54,4 +55,11 @@
 </form>
 </details>
 <h2 class="section-title">Your listings</h2>
-<p class="help">Archived listings stay here, hidden from the marketplace and closed to new orders. Existing orders are not changed.</p>{{template "products" .}}{{if not .Products}}<p class="muted">You have not published any listings yet.</p>{{end}}{{end}}
+<p class="help">Archived listings stay here, hidden from the marketplace and closed to new orders. Existing orders are not changed.</p>
+{{if .Inventory}}<nav class="pagination inventory-filters" aria-label="Filter your listings">
+<a href="{{.Inventory.AllURL}}"{{if eq .Inventory.Filter "all"}} aria-current="page"{{end}}>All ({{.Inventory.Total}})</a>
+<a href="{{.Inventory.ActiveURL}}"{{if eq .Inventory.Filter "active"}} aria-current="page"{{end}}>Active ({{.Inventory.Active}})</a>
+<a href="{{.Inventory.ArchivedURL}}"{{if eq .Inventory.Filter "archived"}} aria-current="page"{{end}}>Archived ({{.Inventory.Archived}})</a>
+</nav>{{end}}
+{{with .Inventory.Paging}}{{if gt .Pages 1}}<p class="help">Showing {{.First}}–{{.Last}} of {{.Total}} listings.</p><nav class="pagination" aria-label="Your listing pages">{{if .PrevURL}}<a href="{{.PrevURL}}" rel="prev" aria-label="Previous listing page, page {{.PrevPage}} of {{.Pages}}">← Previous</a>{{end}}<span class="current" aria-current="page">Page {{.Page}} of {{.Pages}}</span>{{if .NextURL}}<a href="{{.NextURL}}" rel="next" aria-label="Next listing page, page {{.NextPage}} of {{.Pages}}">Next →</a>{{end}}</nav>{{end}}{{end}}
+{{template "products" .}}{{if not .Products}}<p class="muted">{{if eq .Inventory.Filter "active"}}You have no active listings.{{else if eq .Inventory.Filter "archived"}}You have no archived listings.{{else}}You have not published any listings yet.{{end}}</p>{{end}}{{end}}

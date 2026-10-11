@@ -23,11 +23,9 @@ func (w *orderWorld) replyEvents(order string) int {
 }
 
 func TestDisputeCounterpartyResponse(t *testing.T) {
-	w := newOrderWorld(t)
-	product := w.e.product(w.vendorID, "physical")
-	order := w.e.order(w.buyerID, product, "BTC", stateShipped)
+	w := newDisputeOrderWorld(t)
 	reason := "The parcel arrived empty.\nThe seal on the box was broken."
-	w.expect("/disputes", w.buyer, form("order_id", order, "reason", reason), 303, "")
+	order, _ := w.disputedFor(w.buyerID, w.buyer, w.vendorID, w.vendor, w.buyer, reason)
 	events := w.count("SELECT count(*) FROM order_events WHERE order_id=$1", order)
 
 	// The dispute-opened notice tells the vendor (who did not open it) that a reply exists; the buyer gets none.
@@ -35,8 +33,8 @@ func TestDisputeCounterpartyResponse(t *testing.T) {
 	if n := w.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body=$2", w.vendorID, notice); n != 1 {
 		t.Fatalf("vendor dispute notices with the reply hint: %d", n)
 	}
-	if n := w.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE 'Order %'", w.buyerID); n != 0 {
-		t.Fatalf("the opener got %d order notices", n)
+	if n := w.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE 'Order % is now Disputed.%'", w.buyerID); n != 0 {
+		t.Fatalf("the opener got %d dispute transition notices", n)
 	}
 
 	// Line breaks in the reason survive (pre-wrap) on the order page and the desk; the vendor is offered the form,
@@ -67,7 +65,8 @@ func TestDisputeCounterpartyResponse(t *testing.T) {
 	mustContain(t, w.page("/order?id="+order, w.vendor, 200), "Send evidence encrypted first")
 
 	// The desk says the vendor has not replied yet, in the entry and on the resolve form.
-	desk := w.page("/moderator", w.mod, 200)
+	_, admin := w.e.user("reply_desk_admin_"+randomToken()[:6], "admin")
+	desk := w.page("/moderator", admin, 200)
 	mustContain(t, desk, `<p class="dispute-text">The parcel arrived empty.`+"\n", "UTC by the buyer</p>", "The vendor has not replied; only the buyer’s account is on record.")
 
 	reply := "The parcel left sealed.\nThe courier photo shows the box intact."
@@ -168,20 +167,15 @@ func TestDisputeCounterpartyResponse(t *testing.T) {
 		mustNotContain(t, p, `action="/disputes/reply"`)
 		mustContain(t, w.page("/disputes", s, 200), "Reply from the vendor", shown)
 	}
-	desk = w.page("/moderator", w.mod, 200)
+	desk = w.page("/moderator", admin, 200)
 	mustContain(t, desk, "Reply from the vendor", shown, "The vendor replied; the reply is shown above.")
 	mustNotContain(t, desk, "has not replied")
 	mustContain(t, w.page("/order?id="+order, w.mod, 200), "Reply from the vendor", shown)
 
 	// The vendor can open a dispute too; the buyer then replies. After resolution no reply is offered (409).
-	other := w.e.order(w.buyerID, product, "BTC", stateShipped)
-	w.expect("/disputes", w.vendor, form("order_id", other, "reason", "The buyer confirmed receipt by message and then stopped answering."), 303, "")
+	other, disputeID := w.disputedFor(w.buyerID, w.buyer, w.vendorID, w.vendor, w.vendor, "The buyer confirmed receipt by message and then stopped answering.")
 	mustContain(t, w.page("/order?id="+other, w.buyer, 200), `action="/disputes/reply"`, "The vendor reads it on this order")
-	var disputeID string
-	if err := w.e.DB.QueryRow("SELECT id FROM disputes WHERE order_id=$1", other).Scan(&disputeID); err != nil {
-		t.Fatal(err)
-	}
-	w.expect("/resolve", w.mod, resolveConfirmed(form("id", disputeID, "outcome", "release", "resolution", "Delivery confirmed by the courier; release."), 0), 303, "")
+	w.expect("/resolve", admin, resolveConfirmed(form("id", disputeID, "outcome", "release", "resolution", "Delivery confirmed by the courier; release."), 100000), 303, "")
 	mustNotContain(t, w.page("/order?id="+other, w.buyer, 200), `action="/disputes/reply"`, "may put one reply")
 	w.expect("/disputes/reply", w.buyer, form("order_id", other, "reply", reply), 409, "resolved")
 	if n := w.replyEvents(other); n != 0 {
@@ -189,6 +183,7 @@ func TestDisputeCounterpartyResponse(t *testing.T) {
 	}
 
 	// A dispute with no recorded opener (a fixture or old import) offers no reply and refuses one.
+	product := w.e.product(w.vendorID, "physical")
 	bare := w.e.order(w.buyerID, product, "BTC", stateDisputed)
 	if _, err := w.e.DB.Exec("INSERT INTO disputes(id,order_id,reason) VALUES($1,$2,'Imported dispute with no opening event.')", randomToken(), bare); err != nil {
 		t.Fatal(err)
@@ -196,13 +191,14 @@ func TestDisputeCounterpartyResponse(t *testing.T) {
 	mustNotContain(t, w.page("/order?id="+bare, w.vendor, 200), `action="/disputes/reply"`)
 	w.expect("/disputes/reply", w.vendor, form("order_id", bare, "reply", reply), 409, "")
 	// No dispute at all: 409.
-	w.expect("/disputes/reply", w.vendor, form("order_id", w.e.order(w.buyerID, product, "BTC", stateShipped), "reply", reply), 409, "")
+	noDispute := w.x.draft()
+	w.expect("/disputes/reply", w.vendor, form("order_id", noDispute, "reply", reply), 409, "")
 }
 
 // A-162: the resolve form and desk entry name, per open dispute, the staff members each party messaged since it
 // opened (count and latest time, from message metadata only), so a resolver consults them first.
 func TestDeskShowsWhoHoldsDisputeEvidence(t *testing.T) {
-	w := newOrderWorld(t)
+	w := newDisputeOrderWorld(t)
 	var modA string
 	if err := w.e.DB.QueryRow("SELECT handle FROM users WHERE id=$1", w.modID).Scan(&modA); err != nil {
 		t.Fatal(err)
@@ -233,14 +229,13 @@ func TestDeskShowsWhoHoldsDisputeEvidence(t *testing.T) {
 		return stored
 	}
 
-	product := w.e.product(w.vendorID, "physical")
-	order := w.e.order(w.buyerID, product, "BTC", stateShipped)
 	// A message before the dispute opened does not count.
+	order := w.fundedFor(w.buyerID, w.buyer, w.vendorID, w.vendor)
 	send(w.buyer, modA, keyA)
 	if _, err := w.e.DB.Exec("UPDATE messages SET created=created-interval '1 hour'"); err != nil {
 		t.Fatal(err)
 	}
-	w.expect("/disputes", w.buyer, form("order_id", order, "reason", "The parcel never arrived at the agreed place."), 303, "")
+	w.openDispute(order, w.buyer, "The parcel never arrived at the agreed place.")
 	ciphertext := send(w.buyer, modA, keyA)
 
 	// Messages to someone who is not staff, from someone who is not a party, or from staff do not count either.
@@ -271,6 +266,7 @@ func TestDeskShowsWhoHoldsDisputeEvidence(t *testing.T) {
 		t.Fatalf("no entry for order %s", order)
 		return ""
 	}
+	_, evidenceAdmin := w.e.user("evidence_admin_"+randomToken()[:6], "admin")
 	const noHolders = "Neither party has messaged a current moderator or administrator since this dispute opened, nor one recorded as removed from staff after being messaged."
 	for _, path := range []string{"/moderator", "/disputes"} {
 		page := w.page(path, modB, 200)
@@ -279,9 +275,11 @@ func TestDeskShowsWhoHoldsDisputeEvidence(t *testing.T) {
 			t.Fatalf("%s: buyer holder missing: %s", path, block)
 		}
 		mustContain(t, block, "Vendor → none</li>")
-		mustContain(t, page, "Before deciding, ask each staff member listed under Encrypted evidence holders")
 		mustNotContain(t, page, "BEGIN PGP MESSAGE", ciphertext[40:120])
+		adminPage := w.page(path, evidenceAdmin, 200)
+		mustContain(t, entryFor(adminPage, order), "Before deciding, ask each staff member listed under Encrypted evidence holders")
 	}
+	mustContain(t, w.page("/moderator", evidenceAdmin, 200), "Before deciding, ask each staff member listed under Encrypted evidence holders")
 	mustNotContain(t, w.page("/order?id="+order, modB, 200), "BEGIN PGP MESSAGE", ciphertext[40:120])
 
 	// A second buyer message and a vendor message to B.
@@ -300,13 +298,11 @@ func TestDeskShowsWhoHoldsDisputeEvidence(t *testing.T) {
 	}
 
 	// With neither party having messaged staff since the dispute opened, the form says so.
-	quiet := w.e.order(w.buyerID, product, "BTC", stateShipped)
-	w.expect("/disputes", w.buyer, form("order_id", quiet, "reason", "Wrong item in the parcel, not the one listed."), 303, "")
-	mustContain(t, w.page("/moderator", modB, 200), noHolders)
+	_, _ = w.disputedFor(w.buyerID, w.buyer, w.vendorID, w.vendor, w.buyer, "Wrong item in the parcel, not the one listed.")
+	mustContain(t, w.page("/moderator", evidenceAdmin, 200), noHolders)
 
 	// A staff member who is a party to a dispute sees no holders list for it (whom the other party messaged).
-	own := w.e.order(w.modID, product, "BTC", stateShipped)
-	w.expect("/disputes", w.mod, form("order_id", own, "reason", "Bought as a customer; the parcel never came."), 303, "")
+	_, _ = w.disputedFor(w.modID, w.mod, w.vendorID, w.vendor, w.mod, "Bought as a customer; the parcel never came.")
 	send(w.vendor, modBHandle, keyB)
 	if n := strings.Count(w.page("/moderator", w.mod, 200), `class="dispute-evidence"`); n != 2 {
 		t.Fatalf("party moderator sees %d holders lists, want 2 (not the dispute on its own order)", n)
@@ -318,8 +314,7 @@ func TestDeskShowsWhoHoldsDisputeEvidence(t *testing.T) {
 	// A-285: a counterparty who is staff holds no evidence. An administrator sells the listing and the buyer messages
 	// that administrator (ordinary messages to the vendor): the independent moderator's block says "Buyer → none".
 	adminVendorID, _ := w.e.user("a285_admin_vendor", "admin")
-	adminOrder := w.e.order(w.buyerID, w.e.product(adminVendorID, "physical"), "BTC", stateShipped)
-	w.expect("/disputes", w.buyer, form("order_id", adminOrder, "reason", "The administrator's parcel never arrived."), 303, "")
+	adminOrder, _ := w.disputedFor(w.buyerID, w.buyer, adminVendorID, "", w.buyer, "The administrator's parcel never arrived.")
 	if _, err := w.e.DB.Exec("INSERT INTO messages(id,sender_id,recipient_id,body,encrypted) VALUES($1,$2,$3,'x',true)", randomToken(), w.buyerID, adminVendorID); err != nil {
 		t.Fatal(err)
 	}
@@ -331,8 +326,7 @@ func TestDeskShowsWhoHoldsDisputeEvidence(t *testing.T) {
 	// moderator (ordinary messages to the buyer): the independent moderator's block says "Vendor → none".
 	staffBuyerID, staffBuyer := w.e.user("a295_staff_buyer", "moderator")
 	vendor2ID, _ := w.e.user("a295_vendor", "vendor")
-	staffOrder := w.e.order(staffBuyerID, w.e.product(vendor2ID, "physical"), "BTC", stateShipped)
-	w.expect("/disputes", staffBuyer, form("order_id", staffOrder, "reason", "Bought as a customer; the parcel was empty."), 303, "")
+	staffOrder, _ := w.disputedFor(staffBuyerID, staffBuyer, vendor2ID, "", staffBuyer, "Bought as a customer; the parcel was empty.")
 	w.e.mustExec("INSERT INTO messages(id,sender_id,recipient_id,body,encrypted) VALUES($1,$2,$3,'x',true)", randomToken(), vendor2ID, staffBuyerID)
 	block = holders(entryFor(w.page("/moderator", modB, 200), staffOrder))
 	mustContain(t, block, "Buyer → none</li>", "Vendor → none</li>")
@@ -348,8 +342,7 @@ func TestDeskShowsWhoHoldsDisputeEvidence(t *testing.T) {
 	holderID, _ := w.e.user("a294_holder", "moderator")
 	plainID, _ := w.e.user("a294_plain", "buyer")
 	adminHolderID, _ := w.e.user("a294_admin_holder", "admin")
-	demotedOrder := w.e.order(buyer3ID, w.e.product(vendor3ID, "physical"), "BTC", stateShipped)
-	w.expect("/disputes", buyer3, form("order_id", demotedOrder, "reason", "The parcel was opened before it arrived."), 303, "")
+	demotedOrder, _ := w.disputedFor(buyer3ID, buyer3, vendor3ID, "", buyer3, "The parcel was opened before it arrived.")
 	message := func(from, to string) {
 		t.Helper()
 		w.e.mustExec("INSERT INTO messages(id,sender_id,recipient_id,body,encrypted) VALUES($1,$2,$3,'x',true)", randomToken(), from, to)
@@ -363,8 +356,8 @@ func TestDeskShowsWhoHoldsDisputeEvidence(t *testing.T) {
 		!regexp.MustCompile(`Vendor → a294_holder \(1`+latest+`</li>`).MatchString(block) {
 		t.Fatalf("holder before the role change: %s", block)
 	}
-	w.expect("/admin", admin, form("action", "role", "role", "buyer", "handle", "a294_holder"), 303, "")
-	w.expect("/admin", admin, form("action", "role", "role", "vendor", "handle", "a294_plain"), 303, "")
+	w.expect("/admin", admin, form("action", "role", "password", testPassword, "role", "buyer", "handle", "a294_holder"), 303, "")
+	w.expect("/admin", admin, form("action", "role", "password", testPassword, "role", "vendor", "handle", "a294_plain"), 303, "")
 	if _, err := SetRole(context.Background(), w.e.DB, "a294_admin_holder", "buyer"); err != nil {
 		t.Fatal(err)
 	}
@@ -378,19 +371,18 @@ func TestDeskShowsWhoHoldsDisputeEvidence(t *testing.T) {
 			t.Fatalf("%s: demoted holder not listed with the messages before the change, labelled: %s", path, block)
 		}
 		mustNotContain(t, block, "a294_plain")
-		mustContain(t, entry, "Before deciding, ask each staff member listed under Encrypted evidence holders")
+		mustNotContain(t, entry, "Before deciding, ask each staff member listed under Encrypted evidence holders")
 		mustNotContain(t, entry, noHolders, "Neither party has messaged a moderator")
 	}
 
 	// A-304: the leave time is the latest leave row, not the first. A holder is demoted, promoted back, messaged
 	// during the open dispute, then demoted again: the message was sent before the latest leave, so it counts.
-	rejoinOrder := w.e.order(buyer3ID, w.e.product(vendor3ID, "physical"), "BTC", stateShipped)
-	w.expect("/disputes", buyer3, form("order_id", rejoinOrder, "reason", "The parcel held a different item."), 303, "")
+	rejoinOrder, _ := w.disputedFor(buyer3ID, buyer3, vendor3ID, "", buyer3, "The parcel held a different item.")
 	rejoinID, _ := w.e.user("a304_holder", "moderator")
-	w.expect("/admin", admin, form("action", "role", "role", "buyer", "handle", "a304_holder"), 303, "")
-	w.expect("/admin", admin, form("action", "role", "role", "moderator", "handle", "a304_holder"), 303, "")
+	w.expect("/admin", admin, form("action", "role", "password", testPassword, "role", "buyer", "handle", "a304_holder"), 303, "")
+	w.expect("/admin", admin, form("action", "role", "password", testPassword, "role", "moderator", "handle", "a304_holder"), 303, "")
 	message(buyer3ID, rejoinID)
-	w.expect("/admin", admin, form("action", "role", "role", "buyer", "handle", "a304_holder"), 303, "")
+	w.expect("/admin", admin, form("action", "role", "password", testPassword, "role", "buyer", "handle", "a304_holder"), 303, "")
 	block = holders(entryFor(w.page("/moderator", modB, 200), rejoinOrder))
 	if !regexp.MustCompile(`Buyer → a304_holder \(no longer staff\) \(1` + latest + `</li>`).MatchString(block) {
 		t.Fatalf("holder messaged between two leaves not listed from the latest leave: %s", block)
@@ -469,24 +461,15 @@ func TestDisputeEvidenceReadsRoleChangesByIndex(t *testing.T) {
 // (reply_seen); once a reply is on record, a form that did not show it is refused with 409 and the desk again,
 // showing the reply and keeping the typed decision, and nothing changes. The reloaded form resolves.
 func TestResolveRefusesFormLoadedBeforeReply(t *testing.T) {
-	w := newOrderWorld(t)
+	w := newDisputeOrderWorld(t)
 	_, modB := w.e.user("a280_modb_"+randomToken()[:6], "moderator")
-	product := w.e.product(w.vendorID, "physical")
-	order := w.e.order(w.buyerID, product, "BTC", stateShipped)
-	w.expect("/disputes", w.buyer, form("order_id", order, "reason", "The parcel never arrived at the agreed place."), 303, "")
-	disputeOf := func(order string) string {
-		t.Helper()
-		var id string
-		if err := w.e.DB.QueryRow("SELECT id FROM disputes WHERE order_id=$1", order).Scan(&id); err != nil {
-			t.Fatal(err)
-		}
-		return id
+	_, admin := w.e.user("a280_admin_"+randomToken()[:6], "admin")
+	order, disputeID := w.disputedFor(w.buyerID, w.buyer, w.vendorID, w.vendor, w.buyer, "The parcel never arrived at the agreed place.")
+	if strings.Contains(w.page("/moderator", modB, 200), `action="/resolve"`) {
+		t.Fatal("moderator can resolve an escrow dispute")
 	}
-	disputeID := disputeOf(order)
 	// A second open dispute (A-295, R6): its form on the 409 page keeps an empty decision.
-	otherOrder := w.e.order(w.buyerID, product, "BTC", stateShipped)
-	w.expect("/disputes", w.buyer, form("order_id", otherOrder, "reason", "The second parcel never arrived either."), 303, "")
-	otherID := disputeOf(otherOrder)
+	otherOrder, otherID := w.disputedFor(w.buyerID, w.buyer, w.vendorID, w.vendor, w.buyer, "The second parcel never arrived either.")
 	// seen reads reply_seen from dispute id's resolve form.
 	seen := func(page, id string) string {
 		t.Helper()
@@ -497,14 +480,14 @@ func TestResolveRefusesFormLoadedBeforeReply(t *testing.T) {
 		return m[0][1]
 	}
 	for _, path := range []string{"/moderator", "/disputes"} {
-		page := w.page(path, w.mod, 200)
+		page := w.page(path, admin, 200)
 		mustContain(t, page, "The vendor has not replied")
 		if v := seen(page, disputeID); v != "0" {
 			t.Fatalf("%s: reply_seen=%s before the reply", path, v)
 		}
 	}
 	decision := "Refund: the courier has no record of delivery at the agreed place."
-	stale := resolveConfirmed(form("id", disputeID, "outcome", "refund", "resolution", decision, "reply_seen", "0"), 0)
+	stale := resolveConfirmed(form("id", disputeID, "outcome", "refund", "resolution", decision, "reply_seen", "0"), 100000)
 	events := w.count("SELECT count(*) FROM order_events WHERE order_id=$1", order)
 
 	reply := "The parcel was handed over at the agreed place; the courier has a signature."
@@ -512,7 +495,7 @@ func TestResolveRefusesFormLoadedBeforeReply(t *testing.T) {
 	events++
 	refused := func(v url.Values) {
 		t.Helper()
-		r := w.post("/resolve", w.mod, v)
+		r := w.post("/resolve", admin, v)
 		body := r.Body.String()
 		if r.Code != 409 {
 			t.Fatalf("stale resolve: status %d %q", r.Code, body)
@@ -530,14 +513,14 @@ func TestResolveRefusesFormLoadedBeforeReply(t *testing.T) {
 	}
 	refused(stale)
 	// A post without the field counts as a form that showed no reply.
-	missing := resolveConfirmed(form("id", disputeID, "outcome", "refund", "resolution", decision), 0)
+	missing := resolveConfirmed(form("id", disputeID, "outcome", "refund", "resolution", decision), 100000)
 	refused(missing)
 	// Another resolver's desk is unaffected: it shows the reply and its form says so.
-	if v := seen(w.page("/moderator", modB, 200), disputeID); v != "1" {
+	if v := seen(w.page("/moderator", admin, 200), disputeID); v != "1" {
 		t.Fatalf("reply_seen=%s after the reply", v)
 	}
 	// The reloaded form resolves.
-	w.expect("/resolve", w.mod, resolveConfirmed(form("id", disputeID, "outcome", "refund", "resolution", decision, "reply_seen", "1"), 0), 303, "")
+	w.expect("/resolve", admin, resolveConfirmed(form("id", disputeID, "outcome", "refund", "resolution", decision, "reply_seen", "1"), 100000), 303, "")
 	if w.state(order) != stateResolved {
 		t.Fatalf("state %s after resolving with the reloaded form", w.state(order))
 	}
@@ -545,7 +528,7 @@ func TestResolveRefusesFormLoadedBeforeReply(t *testing.T) {
 	// A-295 (R5): the reply is read after the dispute row is locked, not before. The test holds that row, which the
 	// resolve's UPDATE waits on; while it waits, the reply is recorded and committed. A resolve that had read the
 	// reply before taking the lock would then accept a form that never showed it.
-	if v := seen(w.page("/moderator", w.mod, 200), otherID); v != "0" {
+	if v := seen(w.page("/moderator", admin, 200), otherID); v != "0" {
 		t.Fatalf("reply_seen=%s before the second dispute's reply", v)
 	}
 	otherEvents := w.count("SELECT count(*) FROM order_events WHERE order_id=$1", otherOrder)
@@ -559,7 +542,7 @@ func TestResolveRefusesFormLoadedBeforeReply(t *testing.T) {
 	}
 	result := make(chan agResult, 1)
 	go func() {
-		r := w.post("/resolve", w.mod, resolveConfirmed(form("id", otherID, "outcome", "release", "resolution", "Release: the courier record shows delivery.", "reply_seen", "0"), 0))
+		r := w.post("/resolve", admin, resolveConfirmed(form("id", otherID, "outcome", "release", "resolution", "Release: the courier record shows delivery.", "reply_seen", "0"), 100000))
 		result <- agResult{r.Code, r.Body.String()}
 	}()
 	for deadline := time.Now().Add(20 * time.Second); ; time.Sleep(10 * time.Millisecond) {

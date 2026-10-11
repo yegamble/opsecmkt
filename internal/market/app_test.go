@@ -1,6 +1,8 @@
 package market
 
 import (
+	"bytes"
+	"html"
 	"html/template"
 	"math"
 	"net/http"
@@ -9,6 +11,67 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestOrderDeliveryTextareaPreservesLeadingNewlineAndEscapesMarkup(t *testing.T) {
+	templates, err := parseTemplates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := "\nfirst line\n</textarea>& trailing text"
+	data := PageData{
+		Page:        "order",
+		Title:       "Order",
+		User:        &User{ID: "buyer", Role: "buyer"},
+		Order:       &Order{ID: "order-test", BuyerID: "buyer", VendorID: "vendor", State: stateDelivered, Kind: "digital", Status: "Delivered"},
+		OrderViewer: "buyer",
+		Delivery:    &DeliveryView{Content: content, Created: "now"},
+	}
+	var rendered bytes.Buffer
+	if err = templates.ExecuteTemplate(&rendered, "page:order", data); err != nil {
+		t.Fatal(err)
+	}
+	page := rendered.String()
+	const label = `aria-label="Digital delivery">`
+	start := strings.Index(page, label)
+	if start < 0 {
+		t.Fatal("labeled readonly delivery textarea not rendered")
+	}
+	start += len(label)
+	end := strings.Index(page[start:], "</textarea>")
+	if end < 0 {
+		t.Fatal("delivery textarea did not close")
+	}
+	value := page[start : start+end]
+	if !strings.HasPrefix(value, "\n") {
+		t.Fatal("textarea is missing the sacrificial initial newline")
+	}
+	// HTML parsing drops exactly one initial LF in a textarea and resolves character references.
+	value = strings.TrimPrefix(value, "\n")
+	if got := html.UnescapeString(value); got != content {
+		t.Fatalf("parsed textarea value %q, want %q", got, content)
+	}
+}
+
+func TestReviewBadgeNamesCompletedOrderAndMarketNetwork(t *testing.T) {
+	templates, err := parseTemplates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, live := range []bool{false, true} {
+		var rendered bytes.Buffer
+		d := PageData{Page: "product", LiveNetwork: live, Reviews: []Review{{Rating: 5, Body: "Review text"}}}
+		if err := templates.ExecuteTemplate(&rendered, "product-reviews", d); err != nil {
+			t.Fatal(err)
+		}
+		label := "Completed order (test network)"
+		if live {
+			label = "Completed order (main network)"
+		}
+		if !strings.Contains(rendered.String(), label) || strings.Contains(rendered.String(), "Verified purchase") {
+			t.Fatalf("incorrect review badge for live=%v", live)
+		}
+	}
+}
 
 func TestParseAmountExactAtomicUnits(t *testing.T) {
 	for _, tc := range []struct {

@@ -76,6 +76,13 @@ func (e *testEnv) pendingSignIn(handle string) (string, *http.Cookie) {
 	return anon, &http.Cookie{Name: "pending", Value: pending}
 }
 
+func TestRegistrationExplainsThereIsNoPasswordReset(t *testing.T) {
+	e := newTestApp(t)
+	e.user("registration_notice", "buyer") // registration is available only after first-run setup
+	page := e.body("GET", "/register", randomToken(), nil, 200)
+	mustContain(t, page, "There is no password reset.")
+}
+
 func TestTOTPEnrollmentChallengeAndRecovery(t *testing.T) {
 	e := newTestApp(t)
 	id, sess := e.user("totp_user", "buyer")
@@ -87,6 +94,7 @@ func TestTOTPEnrollmentChallengeAndRecovery(t *testing.T) {
 	if b := body("/account"); !strings.Contains(b, "Not enrolled") || strings.Contains(b, ">Enabled<") {
 		t.Fatal("account page must say Not enrolled before enrollment")
 	}
+	mustContain(t, body("/totp"), "your authenticator and all recovery codes", "second-factor reset")
 	e.check(e.do("POST", "/totp/activate", sess, url.Values{"code": {"123456"}, "password": {testPassword}}), 409)
 	w := e.do("POST", "/totp/enroll", sess, nil)
 	e.check(w, 303)
@@ -100,7 +108,7 @@ func TestTOTPEnrollmentChallengeAndRecovery(t *testing.T) {
 	if err != nil || enabled || strings.Contains(pending, secret) {
 		t.Fatalf("pending secret must be sealed and inactive: %v enabled=%v", err, enabled)
 	}
-	if b := body("/totp"); !strings.Contains(b, groupSecret(secret)) || !strings.Contains(b, "otpauth://totp/") || !strings.Contains(b, "No QR code") {
+	if b := body("/totp"); !strings.Contains(b, groupSecret(secret)) || !strings.Contains(b, "otpauth://totp/") || !strings.Contains(b, "No QR code") || !strings.Contains(b, "sync keys to a cloud account") || !strings.Contains(b, "Sign out everywhere before replacing recovery codes") {
 		t.Fatal("pending secret not shown for manual entry")
 	}
 	if !strings.Contains(body("/account"), "setup not confirmed") {
@@ -125,7 +133,7 @@ func TestTOTPEnrollmentChallengeAndRecovery(t *testing.T) {
 	}
 	page := body("/totp")
 	codes := recoveryCodePattern.FindAllStringSubmatch(page, -1)
-	if len(codes) != 10 || !strings.Contains(page, "Shown once") {
+	if len(codes) != 10 || !strings.Contains(page, "Shown once") || !strings.Contains(page, "Sign out everywhere before replacing recovery codes") {
 		t.Fatalf("recovery codes not shown once after activation: %d", len(codes))
 	}
 	stored := strings.Join(hashes, ",")
@@ -249,11 +257,17 @@ func (e *testEnv) captcha(page, session string) string {
 
 // wrongCaptchaRetry checks the page a wrong CAPTCHA answer to form gets: the error, a link to form, and a new
 // challenge other than spent. It returns the new challenge id; following the link issues another.
-func wrongCaptchaRetry(e *testEnv, w *httptest.ResponseRecorder, form, spent string) string {
+func wrongCaptchaRetry(e *testEnv, w *httptest.ResponseRecorder, form, spent string, next ...string) string {
 	e.t.Helper()
 	b := w.Body.String()
 	m := captchaField.FindStringSubmatch(b)
-	if !strings.Contains(b, "CAPTCHA answer incorrect") || !strings.Contains(b, `href="`+form+`"`) || !strings.Contains(b, `action="`+form+`"`) || m == nil || m[1] == spent {
+	link := form
+	if form == "/login" && len(next) != 0 {
+		link += "?next=" + url.QueryEscape(next[0])
+	}
+	// HTML's URL escaping may use either hex case; the destination must still be the expected one.
+	linkPresent := strings.Contains(b, `href="`+link+`"`) || strings.Contains(b, `href="`+strings.ReplaceAll(link, "%2F", "%2f")+`"`)
+	if !strings.Contains(b, "CAPTCHA answer incorrect") || !linkPresent || !strings.Contains(b, `action="`+form+`"`) || m == nil || m[1] == spent {
 		e.t.Fatalf("wrong CAPTCHA answer to %s: %s", form, b)
 	}
 	return m[1]
@@ -266,7 +280,7 @@ func TestCaptchaOnRegisterAndLogin(t *testing.T) {
 	_, buyer := e.user("cap_buyer", "buyer")
 	e.check(e.do("POST", "/admin/captcha", buyer, url.Values{"captcha_required": {"true"}}), 403)
 	e.check(e.do("POST", "/admin/captcha", admin, url.Values{"captcha_required": {"maybe"}}), 400)
-	e.check(e.do("POST", "/admin/captcha", admin, url.Values{"captcha_required": {"true"}}), 303)
+	e.check(e.do("POST", "/admin/captcha", admin, url.Values{"captcha_required": {"true"}, "password": {testPassword}}), 303)
 	if !e.auditHas(adminID, "Turned on CAPTCHA") || !strings.Contains(e.do("GET", "/admin", admin, nil).Body.String(), "Turn CAPTCHA off") {
 		t.Fatal("captcha toggle not audited or not shown")
 	}
@@ -326,7 +340,7 @@ func TestCaptchaOnRegisterAndLogin(t *testing.T) {
 		t.Fatalf("replayed captcha on login: %d", c)
 	}
 
-	e.check(e.do("POST", "/admin/captcha", admin, url.Values{"captcha_required": {"false"}}), 303)
+	e.check(e.do("POST", "/admin/captcha", admin, url.Values{"captcha_required": {"false"}, "password": {testPassword}}), 303)
 	if !e.auditHas(adminID, "Turned off CAPTCHA") {
 		t.Fatal("turning the captcha off was not audited")
 	}

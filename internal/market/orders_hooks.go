@@ -14,20 +14,58 @@ func init() {
 	registerTransitionHook(autoDeliveryHook)
 }
 
+// checkoutPriceCtx marks a production checkout that has repriced the order from the listing.
+// It is set only by the pooled/BTC escrow/XMR escrow payment-request paths, never by a form field.
+type checkoutPriceCtx struct{}
+
+func withCheckoutPrice(ctx context.Context) context.Context {
+	return context.WithValue(ctx, checkoutPriceCtx{}, true)
+}
+
 // stockHook reserves one unit when a buyer requests payment and returns it when a reserved order is
 // cancelled. Drafts never hold stock.
 func stockHook(ctx context.Context, a *App, tx *sql.Tx, o *Order, from, to string) error {
 	switch {
 	case from == stateDraft && to == stateAwaitingPayment:
-		res, err := tx.ExecContext(ctx, "UPDATE products SET stock=stock-1 WHERE id=$1 AND stock>0 AND NOT archived", o.ProductID)
+		// Reserving stock locks the listing row. Read its terms from that same UPDATE so an
+		// edit racing this checkout is either wholly before or wholly after the snapshot.
+		var title, description, kind string
+		var btc, xmr int64
+		err := tx.QueryRowContext(ctx, `UPDATE products SET stock=stock-1 WHERE id=$1 AND stock>0 AND NOT archived
+			RETURNING title,description,kind,btc,xmr`, o.ProductID).Scan(&title, &description, &kind, &btc, &xmr)
+		if err == sql.ErrNoRows {
+			return fail(409, "This listing is out of stock or no longer available")
+		}
+		if err != nil {
+			return err
+		}
+		if kind != o.Kind {
+			return fail(409, "This listing changed while payment was requested. Reload and try again; nothing was changed.")
+		}
+		if ctx.Value(checkoutPriceCtx{}) != nil {
+			dec, price := 8, btc
+			if o.Currency == "XMR" {
+				dec, price = 12, xmr
+			}
+			recorded, err := parseAmount(o.Amount, dec)
+			if err != nil {
+				return err
+			}
+			if recorded != price {
+				return fail(409, "This listing price changed while payment was requested. Reload and try again; nothing was changed.")
+			}
+		}
+		res, err := tx.ExecContext(ctx, `UPDATE orders SET listing_title=$2,listing_description=$3,listing_kind=$4
+			WHERE id=$1 AND state='awaiting_payment' AND listing_title IS NULL`, o.ID, title, description, kind)
 		if err != nil {
 			return err
 		}
 		if n, _ := res.RowsAffected(); n != 1 {
-			return fail(409, "This listing is out of stock or no longer available")
+			return errConflict
 		}
+		o.Title, o.Description, o.Kind, o.KindDisplay, o.ListingRecorded = title, description, kind, kind, true
 	case to == stateCancelled && (from == stateAwaitingPayment || from == statePaid):
-		// A checkout of the same listing may hold its row while it waits on the wallet (payAction).
+		// A checkout of the same listing may hold its row while it waits on the escrow node (escrowCheckoutAction).
 		if err := waitForWalletLocks(ctx, tx); err != nil {
 			return err
 		}

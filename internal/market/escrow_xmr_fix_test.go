@@ -252,10 +252,7 @@ func TestXMREscrowCheckoutRefusalsMore(t *testing.T) {
 	x.mustCheckout(first)
 	claim := testXMRAddr("a vendor's claim", true)
 	agExec(x.testEnv, "INSERT INTO xmr_settlements(order_id,kind,destination) VALUES($1,'release',$2)", first, claim)
-	pooledOrder := x.order(x.buyer, x.digital(x.vendor), "XMR", stateCancelled)
-	pooled := testXMRAddr("a pooled deposit address", true)
-	agExec(x.testEnv, "INSERT INTO payment_addresses(order_id,currency,address,provider,subaddr_index) VALUES($1,'XMR',$2,'monero',7)", pooledOrder, pooled)
-	for what, addr := range map[string]string{"a settlement destination": claim, "a pooled deposit address": pooled} {
+	for what, addr := range map[string]string{"a settlement destination": claim} {
 		order := x.draft(x.digital(x.vendor))
 		if w := x.checkout(x.buyerSess, order, addr); w.Code != 409 || !strings.Contains(w.Body.String(), errEscrowRefundUsed.Error()) || x.state(order) != stateDraft {
 			t.Fatalf("%s: %d %s", what, w.Code, w.Body.String())

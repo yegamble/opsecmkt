@@ -31,12 +31,12 @@ Never write anywhere else.
 4. **Order state machine.** The transition table in `orders_state.go` as a
    from → to → allowed-actor list.
 5. **Invariant sites.** Where each invariant in `.claude/war-room/repo-map.md`
-   is enforced (payout CAS, `payouts.order_id` uniqueness, restore gate, CSRF
+   is enforced (settlement one-outcome indexes, restore gate, CSRF
    and Origin checks, mainnet opt-in guards).
 6. **Test coverage per handler**, by tier: Go unit, Go DB (`newTestApp`,
-   `newPayEnv`), Playwright preview, Playwright DB, wallet journey, chain
-   journey (manual). A handler with no DB-tier or browser-tier test is listed
-   under "thin coverage".
+   `newPayEnv`), Playwright preview, Playwright DB, escrow journeys, real-chain
+   escrow scripts (regtest in CI; Monero manual). A handler with no DB-tier or
+   browser-tier test is listed under "thin coverage".
 7. **Hot spots.** `git log --since=30.days --name-only --format=` counted per
    file (top 15), and files changed since the last `v*` tag. Bugs cluster
    where code churns.

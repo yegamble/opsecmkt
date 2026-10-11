@@ -160,15 +160,18 @@ func TestImageGetNoSessionLookup(t *testing.T) {
 	if w := e.imgGet("GET", publicImageURL(photo.id, false)); len(w.Header().Values("Set-Cookie")) != 0 {
 		t.Fatal("the image route issued an anonymous cookie to a browser without one")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-	defer cancel()
 	for _, path := range []string{"/catalog", deskImageURL(photo.id, false)} {
+		// Give each control its own live deadline. The session lookup waits on the held table until its
+		// caller expires; this is not a retryable database outage (A-209).
+		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+		start := time.Now()
 		r := httptest.NewRequest("GET", path, nil).WithContext(ctx)
 		r.AddCookie(sessionCookie(vendor))
 		w := httptest.NewRecorder()
 		e.A.ServeHTTP(w, r)
-		if w.Code != 503 {
-			t.Fatalf("control: GET %s with the sessions table locked answered %d; the lock does not catch a lookup", path, w.Code)
+		cancel()
+		if w.Code != 500 || w.Header().Get("Retry-After") != "" || time.Since(start) < 200*time.Millisecond {
+			t.Fatalf("control: GET %s with the sessions table locked answered %d after %s (retry=%q); want a blocked lookup until caller expiry", path, w.Code, time.Since(start), w.Header().Get("Retry-After"))
 		}
 	}
 }

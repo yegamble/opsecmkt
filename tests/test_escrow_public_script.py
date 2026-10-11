@@ -2,11 +2,11 @@
 and a fake node, and scripts/test-escrow-public.sh against a fake node, a fake `go` and a fake `docker` in a throwaway
 git repository. No real node, no network: the public run itself is the owner's (A-447).
 
-What is pinned here: the setup script's rpcwhitelist lists are exactly the Go adapters' (escrowRPCMethods,
-pooledRPCMethods); it refuses mainnet and testnet3 and a node on another chain before any wallet call, creates the arbiter
-and watch-only wallets as the app needs them (or keeps checked existing ones), and prints an rpcauth line that verifies
-against the password in the ESCROW_BTC_RPC_URL line it prints, writing nothing; --verify passes only when the pooled
-user is refused listdescriptors, gethdkeys and walletprocesspsbt on the arbiter wallet. The public script refuses
+What is pinned here: the setup script's rpcwhitelist is exactly the Go escrow adapter's (escrowRPCMethods); it refuses
+mainnet and testnet3 and a node on another chain before any wallet call, creates the arbiter and watch-only wallets as
+the app needs them (or keeps checked existing ones), and prints an rpcauth line that verifies against the password in
+the ESCROW_BTC_RPC_URL line it prints, writing nothing; --verify checks the escrow user's required methods and refuses
+private-key reads. The public script refuses
 regtest, mainnet, testnet3 and a private signet (any challenge but public signet's) before go runs; its manifest holds
 the commit, the image digest, chain and signet_challenge, heights, txids per leg and the transcript's sha256; and a
 record that holds a password, an rpcauth salt or hash, a passphrase or a cookie is never written.
@@ -43,7 +43,6 @@ def go_list(path, name):
 
 
 ESCROW_METHODS = go_list('internal/market/escrow_rpc.go', 'escrowRPCMethods')
-POOLED_METHODS = go_list('internal/market/payments_bitcoin.go', 'pooledRPCMethods')
 
 
 def scan_for_secrets(text, passwords):
@@ -123,7 +122,7 @@ class NodeCase(unittest.TestCase):
     def setUp(self):
         s = self.server
         s.chain, s.challenge, s.height, s.calls = 'signet', PUBLIC_SIGNET, 250000, []
-        s.whitelists = {'opsecmkt-escrow': set(ESCROW_METHODS), 'opsecmkt-pooled': set(POOLED_METHODS), 'operator': None}
+        s.whitelists = {'opsecmkt-escrow': set(ESCROW_METHODS), 'operator': None}
         s.wallets = {'opsecmkt-arbiter': True, 'opsecmkt-escrow-watch': False, 'funding': True}
 
     def url(self, user, password):
@@ -134,13 +133,9 @@ class ConsistencyTest(unittest.TestCase):
     def test_setup_whitelists_are_the_go_adapters_lists(self):
         text = SETUP.read_text()
         self.assertEqual(re.search(r'^escrow_methods=(\S+)$', text, re.M).group(1).split(','), ESCROW_METHODS)
-        self.assertEqual(re.search(r'^pooled_methods=(\S+)$', text, re.M).group(1).split(','), POOLED_METHODS)
+        self.assertNotIn('pooled_methods=', text)
         for key_method in ('listdescriptors', 'gethdkeys', 'dumpprivkey', 'dumpwallet', 'backupwallet'):
             self.assertNotIn(key_method, ESCROW_METHODS)
-            self.assertNotIn(key_method, POOLED_METHODS)
-        # A-440: the three methods the app's self-check probes are never the pooled user's.
-        for probe in ('listdescriptors', 'gethdkeys', 'walletprocesspsbt'):
-            self.assertNotIn(probe, POOLED_METHODS)
 
     def test_public_signet_challenge_is_the_same_everywhere(self):
         go = re.search(r'const publicSignetChallenge = "([0-9a-f]+)"', (REPOSITORY / 'internal/market/escrow_public_test.go').read_text())
@@ -166,7 +161,7 @@ class ConsistencyTest(unittest.TestCase):
         example = (REPOSITORY / '.env.example').read_text()
         compose = (REPOSITORY / 'compose.yaml').read_text()
         printed = set(re.findall(r'^ *(?:echo ")?([A-Z][A-Z0-9_]+)=(?:http|\$)', SETUP.read_text(), re.M))
-        self.assertEqual(printed, {'ESCROW_BTC_RPC_URL', 'ESCROW_BTC_ARBITER_WALLET', 'ESCROW_BTC_WATCH_WALLET', 'BITCOIN_RPC_URL'})
+        self.assertEqual(printed, {'ESCROW_BTC_RPC_URL', 'ESCROW_BTC_ARBITER_WALLET', 'ESCROW_BTC_WATCH_WALLET'})
         for key in printed:
             self.assertRegex(example, r'(?m)^%s=$' % key)
             self.assertIn('%s: ${%s:-}' % (key, key), compose)
@@ -248,7 +243,9 @@ class SetupScriptTest(NodeCase):
             state.write_text(json.dumps({'chain': chain, 'challenge': challenge, 'flag': flag, 'wallets': wallets or {}, 'calls': []}))
             work = Path(tmp, 'work')
             work.mkdir()
-            env = dict(os.environ, FAKE_CLI_STATE=str(state), HOME=str(work))
+            # macOS's system Python otherwise writes its stdlib bytecode cache under this temporary HOME.
+            # Keep the fake CLI from creating files so the assertion measures the operator script.
+            env = dict(os.environ, FAKE_CLI_STATE=str(state), HOME=str(work), PYTHONDONTWRITEBYTECODE='1')
             env.pop('ESCROW_BTC_RPC_URL', None)
             env.pop('BITCOIN_RPC_URL', None)
             env.update(env_extra or {})
@@ -288,33 +285,29 @@ class SetupScriptTest(NodeCase):
         self.assertIn('master key fingerprint d34db33f', r.stderr)
         lines = self.lines(r.stdout)
         auth = [l for l in lines if l.startswith('rpcauth=')]
-        self.assertEqual(len(auth), 2)
+        self.assertEqual(len(auth), 1)
         self.assertIn('rpcwhitelistdefault=0', lines)
         self.assertIn('rpcwhitelist=opsecmkt-escrow:' + ','.join(ESCROW_METHODS), lines)
-        self.assertIn('rpcwhitelist=opsecmkt-pooled:' + ','.join(POOLED_METHODS), lines)
-        self.assertEqual(len([l for l in lines if l.startswith('rpcwhitelist=')]), 2)
-        urls = dict(l.split('=', 1) for l in lines if l.startswith(('ESCROW_BTC_', 'BITCOIN_RPC_URL')))
+        self.assertEqual(len([l for l in lines if l.startswith('rpcwhitelist=')]), 1)
+        urls = dict(l.split('=', 1) for l in lines if l.startswith('ESCROW_BTC_'))
         self.assertEqual(urls['ESCROW_BTC_ARBITER_WALLET'], 'opsecmkt-arbiter')
         self.assertEqual(urls['ESCROW_BTC_WATCH_WALLET'], 'opsecmkt-escrow-watch')
-        for user, key in (('opsecmkt-escrow', 'ESCROW_BTC_RPC_URL'), ('opsecmkt-pooled', 'BITCOIN_RPC_URL')):
-            m = re.fullmatch(r'http://%s:([0-9a-f]{64})@bitcoin:18443' % user, urls[key])
-            self.assertTrue(m, urls[key])
-            line = next(l for l in auth if l.startswith('rpcauth=%s:' % user))
-            salt, digest = line.split(':', 1)[1].split('$')
-            self.assertRegex(salt, '^[0-9a-f]{32}$')
-            # Core's share/rpcauth/rpcauth.py: HMAC-SHA256 keyed with the salt over the password.
-            self.assertEqual(digest, hmac.new(salt.encode(), m.group(1).encode(), hashlib.sha256).hexdigest())
-            self.assertNotIn(m.group(1), r.stderr)
+        m = re.fullmatch(r'http://opsecmkt-escrow:([0-9a-f]{64})@bitcoin:18443', urls['ESCROW_BTC_RPC_URL'])
+        self.assertTrue(m, urls['ESCROW_BTC_RPC_URL'])
+        line = next(l for l in auth if l.startswith('rpcauth=opsecmkt-escrow:'))
+        salt, digest = line.split(':', 1)[1].split('$')
+        self.assertRegex(salt, '^[0-9a-f]{32}$')
+        self.assertEqual(digest, hmac.new(salt.encode(), m.group(1).encode(), hashlib.sha256).hexdigest())
+        self.assertNotIn(m.group(1), r.stderr)
         # A second run never repeats a password.
         r2, _, _ = self.run_setup('--chain', 'regtest')
         self.assertNotEqual(re.findall('[0-9a-f]{64}@', r.stdout), re.findall('[0-9a-f]{64}@', r2.stdout))
 
-    def test_chain_ports_host_and_no_pooled(self):
+    def test_chain_ports_and_host(self):
         for chain, port in (('signet', 38332), ('testnet4', 48332)):
-            r, _, _ = self.run_setup('--chain', chain, '--rpc-host', 'escrow-node', '--no-pooled', chain=chain, challenge=PUBLIC_SIGNET)
+            r, _, _ = self.run_setup('--chain', chain, '--rpc-host', 'escrow-node', chain=chain, challenge=PUBLIC_SIGNET)
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertRegex(r.stdout, r'(?m)^ESCROW_BTC_RPC_URL=http://opsecmkt-escrow:[0-9a-f]{64}@escrow-node:%d$' % port)
-            self.assertNotIn('opsecmkt-pooled', r.stdout)
             self.assertNotIn('BITCOIN_RPC_URL=', r.stdout)
         self.assertIn("signet_challenge is public signet's", self.run_setup('--chain', 'signet', chain='signet', challenge=PUBLIC_SIGNET)[0].stderr)
         self.assertIn('NOT public signet', self.run_setup('--chain', 'signet', chain='signet', challenge='51')[0].stderr)
@@ -338,27 +331,23 @@ class SetupScriptTest(NodeCase):
 
     def test_verify_passes_with_the_documented_whitelists(self):
         self.server.chain = 'regtest'
-        env = {'ESCROW_BTC_RPC_URL': self.url('opsecmkt-escrow', 'escrow-not-real-1'),
-               'BITCOIN_RPC_URL': self.url('opsecmkt-pooled', 'pooled-not-real-2')}
+        env = {'ESCROW_BTC_RPC_URL': self.url('opsecmkt-escrow', 'escrow-not-real-1')}
         r = subprocess.run(['bash', str(SETUP), '--chain', 'regtest', '--verify'], env=dict(os.environ, **env),
                            capture_output=True, text=True, timeout=60)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn('PASS', r.stdout)
-        for probe in ('listdescriptors', 'gethdkeys', 'walletprocesspsbt'):
-            self.assertIn(('opsecmkt-pooled', '/wallet/opsecmkt-arbiter', probe), self.server.calls)
+        for probe in ('listdescriptors', 'gethdkeys'):
+            self.assertIn(('opsecmkt-escrow', '/wallet/opsecmkt-arbiter', probe), self.server.calls)
         self.assertNotIn('not-real', r.stdout + r.stderr)
 
-    def test_verify_fails_when_the_pooled_user_can_read_the_arbiter_wallet(self):
+    def test_verify_refuses_legacy_pooled_url_before_rpc(self):
         self.server.chain = 'regtest'
-        self.server.whitelists['opsecmkt-pooled'] = None  # unrestricted, as the guide used to leave it
-        env = {'ESCROW_BTC_RPC_URL': self.url('opsecmkt-escrow', 'x1'), 'BITCOIN_RPC_URL': self.url('opsecmkt-pooled', 'x2')}
+        env = {'ESCROW_BTC_RPC_URL': self.url('opsecmkt-escrow', 'x1'), 'BITCOIN_RPC_URL': self.url('obsolete', 'x2')}
         r = subprocess.run(['bash', str(SETUP), '--chain', 'regtest', '--verify'], env=dict(os.environ, **env),
                            capture_output=True, text=True, timeout=60)
         self.assertEqual(r.returncode, 1)
-        self.assertIn('FAILED: pooled user: listdescriptors on opsecmkt-arbiter refused', r.stderr)
-        self.assertIn('FAILED: pooled user: gethdkeys', r.stderr)
-        # walletprocesspsbt allowed: the empty PSBT answers -22, which is not a refusal.
-        self.assertIn('FAILED: pooled user: walletprocesspsbt', r.stderr)
+        self.assertIn('BITCOIN_RPC_URL is retired pooled-payment configuration', r.stderr)
+        self.assertEqual(self.server.calls, [])
 
     def test_verify_refuses_mainnet_and_a_widened_escrow_user(self):
         self.server.chain = 'main'
@@ -378,7 +367,7 @@ class SetupScriptTest(NodeCase):
         """QA5W3A-9: as set-up mode does, --verify asks nothing more of a node on another test chain, or of one that
         names no chain (its getblockchaininfo refused with HTTP 403, an HTTP 200 reply without a chain field (QA5W4A P2),
         or no node answering at all)."""
-        env = {'ESCROW_BTC_RPC_URL': self.url('opsecmkt-escrow', 'x1'), 'BITCOIN_RPC_URL': self.url('opsecmkt-pooled', 'x2')}
+        env = {'ESCROW_BTC_RPC_URL': self.url('opsecmkt-escrow', 'x1')}
         for name, node_chain, whitelist, url, why in (
                 ('another test chain', 'signet', None, None, "reports chain 'signet' (HTTP 200), not regtest"),
                 ('a reply naming no chain', None, None, None, "reports chain 'nothing' (HTTP 200), not regtest"),
@@ -628,6 +617,20 @@ class ManifestWriterTest(unittest.TestCase):
             r, m, exists = self.write(passing_output(), **override)
             self.assertEqual(r.returncode, 1, override)
             self.assertFalse(exists, override)
+
+    def test_challenge_length_bound_on_testnet4(self):
+        # macOS's regex engine rejects counted repetitions above 255 even
+        # with Bash 5. Validate bytes and length separately without relaxing
+        # the original 400-character manifest bound.
+        for challenge in ('', 'aa', 'ab' * 200):
+            r, m, exists = self.write(passing_output(), M_CHAIN='testnet4', M_CHALLENGE=challenge)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertTrue(exists)
+            self.assertEqual(m['signet_challenge'], challenge)
+        for challenge in ('a', 'a' * 401, 'az', 'aa\n'):
+            r, m, exists = self.write(passing_output(), M_CHAIN='testnet4', M_CHALLENGE=challenge)
+            self.assertEqual(r.returncode, 1, challenge)
+            self.assertFalse(exists)
 
     def test_refuses_a_transcript_holding_a_secret(self):
         # The last: a URL carrying a password this run was never given (QA5W3A-10), so only the URL pattern can catch it.

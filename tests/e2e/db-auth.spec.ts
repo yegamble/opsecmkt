@@ -1,7 +1,7 @@
 import { createHmac } from 'node:crypto';
 import { expect, test, type Page } from '@playwright/test';
 import { FIXTURE_LISTING, uniqueHandle } from './db-fixtures';
-import { enrollTOTP } from './db-helpers';
+import { enrollTOTP, submitAndLoad } from './db-helpers';
 
 // RFC 6238 TOTP (SHA-1, 30 s, 6 digits) computed in the test runner, not in the browser.
 function base32Decode(input: string): Buffer {
@@ -32,7 +32,7 @@ const totpStatus = (page: Page) => page.locator('.key-values div', { hasText: 'T
 
 async function signOutAndIn(page: Page, handle: string, password: string) {
   await page.goto('/account');
-  await page.getByRole('button', { name: 'Sign out', exact: true }).click();
+  await submitAndLoad(page, page.getByRole('button', { name: 'Sign out', exact: true }));
   await page.goto('/login');
   await page.getByLabel('Handle', { exact: true }).fill(handle);
   await page.getByLabel('Password', { exact: true }).fill(password);
@@ -142,7 +142,7 @@ test('anonymous checkout returns to the checkout after registering and after the
   await page.getByLabel('Handle', { exact: true }).fill(handle);
   await page.getByLabel('Password', { exact: true }).fill(passphrase);
   await page.getByRole('button', { name: 'Sign in' }).click();
-  await expect(page).toHaveURL(/\/challenge$/);
+  await expect(page).toHaveURL(new RegExp(`/challenge\\?next=${encodeURIComponent(checkout)}$`));
   // The enrollment's step is spent (replay guard); the next step's code completes sign-in.
   await page.getByLabel('6-digit code', { exact: true }).fill(totp(secret, currentStep() + 1));
   await page.getByRole('button', { name: 'Verify code' }).click();

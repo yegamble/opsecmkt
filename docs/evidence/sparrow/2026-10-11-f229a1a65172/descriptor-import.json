@@ -1,0 +1,37 @@
+{
+  "status": "PASS",
+  "provenance": "operator-attested actual GUI inspection",
+  "wallet": "Sparrow",
+  "version": "2.5.5",
+  "chain": "regtest",
+  "workflow": [
+    "File > Import Wallet > Output Descriptor > Import File",
+    "Exact app setup descriptor imported without editing; watch-only wallet saved",
+    "Receive /0/0 address compared",
+    "Settings inspected for 2-of-3 P2WSH, party origin and both root origins"
+  ],
+  "descriptor": "wsh(sortedmulti(2,[77acd50f]tpubD6NzVbkrYhZ4XPsjaAyEFrPFdwDtazk8L5Y7DY2Vx8uXnBcVvoDuFqLfzC4CZp2ft3jeWgBoehzpV8wM1JzBpNSiKr6aZCM9L48KXhqozNu/<0;1>/*,[04ea4665/48h/1h/0h/2h/2]tpubDGsCNZ1bwxAkEpbTG1rXvay59d2MhRYTvsrU4FFQhxgYvvShpfehsf5hipi4BU3WEN3tE1bhg54ZDF69YYiRAPXVARivX32uLjLAwtLuJx6/<0;1>/*,[664d28be]tpubD6NzVbkrYhZ4Xq6Usxh2GhJUFHZBo3CUchPviNeUbq4UC4EeD5KrQKu2GgoNdWMZu7j5cK9KrmBNxHrGgnFFMGNV9hxKdFUAtAAdBMD7tRu/<0;1>/*))#0h4vw480",
+  "descriptor_sha256": "73ec686e933eb7deab23f67954bb4eaa265e0d6f286fc478adbfee899dc4c26d",
+  "first_address": "bcrt1qy25ngwmvy3kxwc9q792lq0fkgczysku9rxegxyadcvy57zhsj9xq0fnawc",
+  "first_address_matches_app": true,
+  "policy": "2-of-3 P2WSH sortedmulti",
+  "party_origin": {
+    "fingerprint": "04ea4665",
+    "path": "m/48'/1'/0'/2'/2"
+  },
+  "cosigner_origins": [
+    {
+      "fingerprint": "77acd50f",
+      "path": "m"
+    },
+    {
+      "fingerprint": "664d28be",
+      "path": "m"
+    }
+  ],
+  "path_warning_observed": false,
+  "descriptor_gui_import_attested": true,
+  "signed_from_imported_watch_only_wallet": false,
+  "hardware_device_attested": false,
+  "timing": "supplemental check after the funded native-wallet signing journey"
+}

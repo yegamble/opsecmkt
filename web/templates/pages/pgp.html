@@ -35,6 +35,7 @@
 <h2>{{if .Verified}}Prove ownership again{{else}}Prove ownership{{end}}</h2>
 <form class="stack" method="post" action="/pgp/challenge">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/pgp/challenge"}}">
 <fieldset>
 <legend>Challenge type</legend>
 <label class="check"><input type="radio" name="kind" value="sign" checked> Sign a text with your private key</label>
@@ -46,19 +47,23 @@
 </section>
 </div>{{if .Challenge}}<section class="panel pgp-challenge">
 <h2>Sign exactly this text</h2>
-<pre class="code-block" tabindex="0" aria-label="Text to sign">{{.Challenge}}</pre>
+<label class="help">Text to sign<textarea class="code-block" rows="8" readonly aria-label="Text to sign">
+{{.Challenge}}</textarea></label>
 <p class="help">For example save it to a file and run <code>gpg --clearsign challenge.txt</code> (or <code>gpg --armor --detach-sign</code>). Expires {{.ChallengeExpires}}.</p>
 <form class="stack" method="post" action="/pgp/verify">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/pgp/verify"}}">
 <label>Clearsigned message or armored detached signature<textarea name="signature" required maxlength="32768" rows="9" spellcheck="false" placeholder="-----BEGIN PGP SIGNED MESSAGE-----"></textarea></label>
 <button class="primary" type="submit">Verify signature</button>
 </form>
 </section>{{else if .EncryptedChallenge}}<section class="panel pgp-challenge">
 <h2>Decrypt this message</h2>
-<pre class="code-block pgp-armor" tabindex="0" aria-label="Encrypted challenge">{{.EncryptedChallenge}}</pre>
-<p class="help">For example save it to a file and run <code>gpg --decrypt challenge.asc</code>. Expires {{.ChallengeExpires}}.</p>
+<label class="help">Encrypted challenge<textarea class="code-block pgp-armor" rows="8" readonly aria-label="Encrypted challenge">
+{{.EncryptedChallenge}}</textarea></label>
+<p class="help">Save the encrypted message as <code>challenge.asc</code>, then run <code>gpg --decrypt challenge.asc</code> and paste the code it prints. Expires {{.ChallengeExpires}}.</p>
 <form class="stack" method="post" action="/pgp/verify">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/pgp/verify"}}">
 <label>Decrypted text<input name="response" required maxlength="128" autocomplete="off" spellcheck="false" autocapitalize="off"></label>
 <button class="primary" type="submit">Verify decryption</button>
 </form>
@@ -67,6 +72,7 @@
 <p>On. After your password, sign-in asks you to decrypt a one-time code encrypted to this key.</p>
 <form class="stack" method="post" action="/pgp/2fa">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/pgp/2fa"}}">
 <input type="hidden" name="enable" value="0">
 {{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
 <button type="submit">Turn off PGP sign-in verification</button>
@@ -74,6 +80,7 @@
 <p>Off. When on, sign-in asks you to decrypt a one-time code encrypted to this key after your password. If the key expires or you lose it, you cannot sign in unless another verification method is enrolled.</p>
 <form class="stack" method="post" action="/pgp/2fa">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/pgp/2fa"}}">
 <input type="hidden" name="enable" value="1">{{$totp := and $.Security $.Security.TOTPEnabled}}
 {{template "confirm-fields" $totp}}
 <span class="help">Adding a sign-in method needs your current password{{if $totp}} and an authenticator code{{end}}, so someone using only your session cannot lock you out.</span>

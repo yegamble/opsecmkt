@@ -4,8 +4,8 @@ import { setRole } from './db-helpers';
 import { waitForStyles } from './styles';
 
 // Contacts and vendor demotion against a real database: an administrator promotes a new account to
-// vendor, a buyer contacts it through a prefilled message form, the vendor sees an unread notification
-// in the main navigation at phone width, and demoting the vendor archives its listing.
+// vendor, a buyer contacts it through a prefilled message form, a real role change appears as an unread
+// notification in the main navigation at phone width, and demoting the vendor archives its listing.
 
 async function fits(page: Page, label: string) {
   await waitForStyles(page);
@@ -38,11 +38,15 @@ test('vendor contact, unread notifications and demotion archive', async ({ brows
   await expect(vendorNav.getByRole('link', { name: 'Notifications', exact: true })).toBeVisible();
 
   await setRole(admin, vendorHandle, 'vendor');
+  await vendor.goto('/notifications');
+  await expect(vendor.locator('main')).toContainText('Your account role changed from buyer to vendor.');
+  await vendor.getByRole('button', { name: 'Mark all as read', exact: true }).click();
+  await expect(vendorNav.getByRole('link', { name: 'Notifications', exact: true })).toBeVisible();
   await vendor.goto('/vendor-dashboard');
   await vendor.getByText('+ Publish a new listing', { exact: true }).click();
   await vendor.getByLabel('Listing title').fill(title);
   await vendor.getByLabel('Description', { exact: true }).fill('Contacts regression listing.');
-  await vendor.getByLabel('Bitcoin reference price').fill('0.001');
+  await vendor.getByLabel(/Price \(BTC, (?:test network|main network|not configured|not yet known)\)/).fill('0.001');
   await vendor.getByLabel('Monero reference price').fill('0.5');
   await vendor.getByRole('button', { name: 'Publish listing' }).click();
   await expect(vendor.getByLabel('Listing title')).toHaveValue(title); // A-188: publishing lands on its edit page
@@ -67,10 +71,10 @@ test('vendor contact, unread notifications and demotion archive', async ({ brows
   await expect(buyer.getByLabel('Recipient handle')).toHaveValue(vendorHandle);
   await expect(buyer.locator('main')).toContainText('Ask them to add a public key, or obtain and confirm their key through a trusted channel before encrypting.');
 
-  // A cancelled draft notifies the vendor, who sees the count in the navigation at 320px.
+  // Cancelling an unfunded draft does not create vendor noise; the buyer can still read its order history.
   await buyer.goto(productURL);
   await buyer.getByRole('link', { name: 'Review order draft' }).click();
-  await buyer.getByLabel('Reference currency').selectOption('BTC');
+  await buyer.getByLabel('Pay with').selectOption('BTC');
   await buyer.getByRole('button', { name: 'Create unfunded draft' }).click();
   await buyer.waitForURL(/\/order\?id=/);
   const orderURL = buyer.url();
@@ -80,17 +84,24 @@ test('vendor contact, unread notifications and demotion archive', async ({ brows
   await expect(buyer.locator('.page-head .badge')).toHaveText('Cancelled');
 
   await vendor.goto('/');
-  const unread = vendorNav.getByRole('link', { name: 'Notifications (1 unread)' });
-  await expect(unread).toBeVisible();
-  expect(await vendor.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
-  await unread.click();
-  await vendor.getByRole('button', { name: 'Mark as read' }).first().click();
   await expect(vendorNav.getByRole('link', { name: 'Notifications', exact: true })).toBeVisible();
+  await expect(vendorNav.getByRole('link', { name: /Notifications \(\d+ unread\)/ })).toHaveCount(0);
+  expect(await vendor.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
 
   // Demoting the vendor archives the listing: it leaves the catalog and the product page is gone for anyone who
   // cannot read an order on it (the administrator is not a party to the draft, which is not disputed).
   await setRole(admin, vendorHandle, 'buyer');
   await expect(admin.locator('main')).toContainText(`Changed role of ${vendorHandle} from vendor to buyer; archived 1 active listing(s)`);
+  // The actual demotion notice remains a usable unread notification at 320px; drafts above did not create one.
+  await vendor.goto('/');
+  const unread = vendorNav.getByRole('link', { name: 'Notifications (1 unread)' });
+  await expect(unread).toBeVisible();
+  expect(await vendor.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
+  await unread.click();
+  await expect(vendor.locator('main')).toContainText('Your account role changed from vendor to buyer.');
+  await vendor.getByRole('button', { name: 'Mark as read' }).first().click();
+  await expect(vendorNav.getByRole('link', { name: 'Notifications', exact: true })).toBeVisible();
+
   await buyer.goto(`/?q=${encodeURIComponent(title)}`);
   await expect(buyer.getByRole('heading', { name: 'No listings found' })).toBeVisible();
   expect((await admin.goto(productURL))?.status()).toBe(404);
@@ -99,7 +110,10 @@ test('vendor contact, unread notifications and demotion archive', async ({ brows
   await buyer.goto(orderURL);
   const listingRow = buyer.locator('.key-values > div', { has: buyer.getByText('Listing', { exact: true }) });
   await expect(listingRow).toContainText('Listing as it is now; it may have changed since purchase.');
-  await listingRow.getByRole('link', { name: title, exact: true }).click();
+  await expect(listingRow).toContainText('not recorded for this order');
+  const currentListing = listingRow.getByRole('link');
+  await expect(currentListing).toHaveAttribute('href', new URL(productURL).pathname + new URL(productURL).search);
+  await currentListing.click();
   await buyer.waitForURL(/\/product\?id=/);
   await expect(buyer.locator('.detail-copy .badge')).toHaveText('Archived');
   await expect(buyer.locator('main')).toContainText('This listing accepts no new orders.');

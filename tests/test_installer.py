@@ -1,5 +1,6 @@
 """Exercise installer decisions in disposable directories with no real Docker."""
 import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
@@ -29,11 +30,12 @@ STATUS = 'compose exec -T app /app/server -status'
 PROBE = 'compose run --rm -T --no-deps app -status'
 # Keys whose values are secrets: upgrade never invents them and no command prints them.
 SECRET_KEYS = ('DATABASE_URL', 'POSTGRES_PASSWORD', 'APP_SECRET_KEY', 'SETUP_TOKEN', 'AUDIT_SIGNING_KEY',
-               'BITCOIN_RPC_PASSWORD', 'MONERO_WALLET_RPC_PASSWORD', 'MONERO_WALLET_SECRET', 'ESCROW_XMR_WALLET_RPC_PASSWORD')
+               'BITCOIN_RPC_PASSWORD', 'BITCOIN_RPC_AUTH', 'MONERO_WALLET_SECRET', 'ESCROW_XMR_WALLET_RPC_PASSWORD')
 PASSWORD = 'correct horse battery staple'
 # The malware scanner (A-184): what clamdscan --version prints once clamd answers, and the calls it takes.
 CLAMD_VERSION = 'ClamAV 1.5.4/28130/Mon Sep 21 06:24:29 2026'
 CLAMD_READ = 'compose exec -T clamd clamdscan --version'
+CLAMD_CONFIG_READ = 'compose exec -T clamd cat /etc/clamav/clamd.conf'
 MEMORY = 'info --format {{.MemTotal}}'
 CHECK_SCANNER = [*CHECK, 'compose config']
 # With the scanner on, `up --wait` names every service but clamd, which is then started without waiting: its
@@ -129,6 +131,11 @@ def hex_value(length=64, seed='x'):
     return value[:length]
 
 
+def bitcoin_rpcauth(password, salt='0123456789abcdef0123456789abcdef'):
+    digest = hmac.new(salt.encode(), password.encode(), hashlib.sha256).hexdigest()
+    return f'marketplace:{salt}${digest}'
+
+
 def env_text(values):
     return ''.join(f"{key}='{value}'\n" for key, value in values.items())
 
@@ -146,12 +153,19 @@ def installed_env(**overrides):
         'APP_PORT': '8080',
         'COMPOSE_PROJECT_NAME': 'opsecmkt',
         'AUDIT_SIGNING_KEY': hex_value(64, 'audit'),
+        'BITCOIN_RPC_URL': '',
+        'BITCOIN_WALLET': '',
         'BITCOIN_CHAIN': '',
+        'MONERO_RPC_URL': '',
+        'MONERO_WALLET_RPC_URL': '',
         'MONERO_NETWORK': '',
         'COMPOSE_FILE': 'compose.yaml:compose.tor.yaml:compose.nodes.yaml:compose.internal-db.yaml',
         'COMPOSE_PROFILES': 'internal-db',
     }
     values.update(overrides)
+    if ('bitcoin' in (values.get('COMPOSE_PROFILES') or '').split(',') and values.get('BITCOIN_RPC_PASSWORD')
+            and 'BITCOIN_RPC_AUTH' not in overrides):
+        values['BITCOIN_RPC_AUTH'] = bitcoin_rpcauth(values['BITCOIN_RPC_PASSWORD'])
     return {key: value for key, value in values.items() if value is not None}
 
 
@@ -177,7 +191,6 @@ def alpha_env(**overrides):
         'APP_MODE': 'tor',
         'COOKIE_SECURE': 'false',
         'MONERO_IMAGE': 'ghcr.io/sethforprivacy/simple-monerod:latest',
-        'MONERO_RPC_URL': 'http://monero:18081',
         'COMPOSE_FILE': 'compose.yaml:compose.tor.yaml:compose.nodes.yaml:compose.internal-db.yaml',
         'COMPOSE_PROFILES': 'internal-db,monero',
     }
@@ -255,6 +268,8 @@ if args == ['compose', 'config', '--quiet']:
     assert Path('.env').is_file(), 'Configuration must exist before validation'
     sys.exit(42 if flag('INSTALLER_TEST_BAD_CONFIG') else 0)
 if args[:2] == ['compose', 'up']:
+    if args == ['compose', 'up', '-d', '--force-recreate', 'clamd'] and flag('INSTALLER_TEST_CLAMD_RECREATE_FAIL'):
+        sys.exit('Error response from daemon: clamd recreate failed')
     # A clamd that never becomes healthy fails `up --wait` whenever that wait includes it: named, or no service
     # named (every service of the active profiles).
     named = [arg for arg in args[2:] if not arg.startswith('-')]
@@ -357,20 +372,42 @@ if args == ['compose', 'exec', '-T', 'clamd', 'clamdscan', '--version']:
     version = state / 'clamd-version'
     print(version.read_text() if version.exists() else os.environ['INSTALLER_TEST_CLAMD_VERSION'])
     sys.exit(0)
+if args == ['compose', 'exec', '-T', 'clamd', 'cat', '/etc/clamav/clamd.conf']:
+    if flag('INSTALLER_TEST_CLAMD_CONFIG_READ_FAIL'):
+        sys.exit('service "clamd" is not running')
+    config = os.environ.get('INSTALLER_TEST_CLAMD_CONFIG')
+    sys.stdout.write(config if config is not None else Path('deploy/clamd.conf').read_text())
+    sys.exit(0)
 sys.exit('Unexpected docker command')
 ''')
         self.stub('openssl', '''
 import hashlib
+import hmac
 import os
 from pathlib import Path
 import sys
 ''' + LIFT_FILE_SIZE_LIMIT + '''
-assert sys.argv[1:3] == ['rand', '-hex']
+if sys.argv[1:3] == ['dgst', '-sha256']:
+    assert len(sys.argv) == 5 and sys.argv[3] == '-hmac', sys.argv
+    if os.environ.get('INSTALLER_TEST_OPENSSL_BAD_DGST') == 'fail':
+        sys.exit(1)
+    if os.environ.get('INSTALLER_TEST_OPENSSL_BAD_DGST') == 'malformed':
+        print('SHA2-256(stdin)= not-a-hash')
+        sys.exit(0)
+    print('SHA2-256(stdin)= ' + hmac.new(sys.argv[4].encode(), sys.stdin.buffer.read(), hashlib.sha256).hexdigest())
+    sys.exit(0)
+assert sys.argv[1:3] == ['rand', '-hex'], sys.argv
 counter = Path(os.environ['INSTALLER_TEST_LOG'] + '.openssl')
 call = int(counter.read_text()) + 1 if counter.exists() else 1
 counter.write_text(str(call))
 if str(call) == os.environ.get('INSTALLER_TEST_OPENSSL_EMPTY_CALL'):
     sys.exit(1)  # generation failure: no output
+if sys.argv[3] == '16' and os.environ.get('INSTALLER_TEST_OPENSSL_BAD_SALT'):
+    bad = os.environ['INSTALLER_TEST_OPENSSL_BAD_SALT']
+    if bad == 'fail':
+        sys.exit(1)
+    print('' if bad == 'empty' else 'not-hex')
+    sys.exit(0)
 # Distinct, random-looking values: the installer's check applies the app's secret rules to them.
 value = ''
 while len(value) < 2 * int(sys.argv[3]):
@@ -495,7 +532,8 @@ print(value)
         index = next(i for i, line in enumerate(lines) if token in line)
         self.assertEqual(lines[index], 'Setup token: ' + token)
         self.assertTrue(lines[index - 1].startswith('Ready. Open '), lines[index - 1])
-        self.assertGreaterEqual(index, len(lines) - 8)
+        # After the token come the two reminders and, with a local Bitcoin node, the escrow set-up commands (A-495).
+        self.assertGreaterEqual(index, len(lines) - 16)
 
     def test_timeout_stops_stub_descendants_without_bytecode_writes(self):
         self.stub('docker', '''
@@ -514,10 +552,13 @@ time.sleep(60)
         child = int(Path(str(self.log) + '.child').read_text())
         # A killed orphan may briefly await reaping; a zombie cannot write to
         # the temporary directory or keep captured output pipes open.
-        state = subprocess.run(
-            ['/bin/ps', '-o', 'stat=', '-p', str(child)],
-            capture_output=True, text=True, timeout=5, check=False,
-        ).stdout.strip()
+        try:
+            state = subprocess.run(
+                ['/bin/ps', '-o', 'stat=', '-p', str(child)],
+                capture_output=True, text=True, timeout=5, check=False,
+            ).stdout.strip()
+        except PermissionError:
+            self.skipTest('sandbox does not allow inspecting child process state')
         self.assertTrue(not state or state.startswith('Z'), state)
         self.assertEqual(list(self.root.rglob('*.pyc')), [])
 
@@ -541,6 +582,13 @@ time.sleep(60)
         self.assertEqual(list(self.root.glob('.env.edit.*')), [])
         self.assertFalse((self.root / '.env.lock').exists())
 
+    def set_clamav_default(self, image):
+        script = self.root / 'scripts' / 'install.sh'
+        source = script.read_text()
+        current = "clamav_image_default='clamav/clamav:1.5.4-debian'"
+        self.assertIn(current, source)
+        script.write_text(source.replace(current, f"clamav_image_default='{image}'", 1))
+
     def assert_refused_before_writing(self, result, calls):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(self.calls(), calls)
@@ -561,7 +609,7 @@ time.sleep(60)
         self.assertEqual(config['COOKIE_SECURE'], 'true')
         # Existing installs have no COMPOSE_PROJECT_NAME and use compose.yaml's name; new ones keep that default.
         self.assertEqual(config['COMPOSE_PROJECT_NAME'], 'opsecmkt')
-        self.assertEqual(config['COMPOSE_PROFILES'], 'internal-db,bitcoin,monero,monero-wallet')
+        self.assertEqual(config['COMPOSE_PROFILES'], 'internal-db,bitcoin,monero')
         self.assertEqual(config['COMPOSE_FILE'],
                          'compose.yaml:compose.clearnet.yaml:compose.nodes.yaml:compose.internal-db.yaml')
         self.assertIn('@db:5432/opsecmkt', config['DATABASE_URL'])
@@ -579,17 +627,22 @@ time.sleep(60)
         # Pruned by default, written explicitly so the operator can see and change it in .env.
         self.assertEqual(config['BITCOIN_PRUNE_MB'], self.compose_bitcoin_prune_default())
         self.assertEqual(config['MONERO_PRUNE_FLAGS'], PRUNED_MONERO_FLAGS)
-        self.assertEqual(config['BITCOIN_RPC_URL'],
-                         'http://marketplace:' + config['BITCOIN_RPC_PASSWORD'] + '@bitcoin:8332')
-        self.assertEqual(config['MONERO_WALLET_RPC_URL'],
-                         'http://marketplace:' + config['MONERO_WALLET_RPC_PASSWORD'] + '@monero-wallet:18083')
+        self.assertEqual(config['CLAMAV_IMAGE_DEFAULT'], 'clamav/clamav:1.5.4-debian')
+        self.assertEqual(config['BITCOIN_RPC_URL'], '')
+        self.assertEqual(config['BITCOIN_WALLET'], '')
+        self.assertRegex(config['BITCOIN_RPC_AUTH'], r'^marketplace:[0-9a-f]{32}\$[0-9a-f]{64}$')
+        self.assertEqual(config['BITCOIN_RPC_AUTH'], bitcoin_rpcauth(
+            config['BITCOIN_RPC_PASSWORD'], config['BITCOIN_RPC_AUTH'].split(':', 1)[1].split('$', 1)[0]))
+        self.assertEqual(config['MONERO_RPC_URL'], '')
+        self.assertEqual(config['MONERO_WALLET_RPC_URL'], '')
+        self.assertNotIn('MONERO_WALLET_RPC_PASSWORD', config)
         self.assertNotIn('compose.external-egress.yaml', config['COMPOSE_FILE'])
         # The node question states the disk and first-sync cost before the operator answers.
         self.assertIn('pruned Bitcoin Core node', result.stdout)
-        self.assertIn('pruned monerod', result.stdout)
+        self.assertIn('pruned Monero daemon', result.stdout)
         self.assertIn('first sync', result.stdout)
         self.assertNotIn('Full node', result.stdout)
-        self.assertIn('docs/testnet-runbook.md', result.stdout)
+        self.assertNotIn('docs/testnet-runbook.md', result.stdout)
         self.assertIn('Secure cookies require HTTPS', result.stdout)
         # Behind a proxy: the snippets name the chosen loopback port and forward Host.
         self.assertIn('reverse_proxy 127.0.0.1:8080', result.stdout)
@@ -612,22 +665,14 @@ time.sleep(60)
         self.assertEqual(sorted(defaults), ['BITCOIN_IMAGE', 'MONERO_IMAGE', 'MONERO_WALLET_IMAGE'])
         return defaults
 
-    def test_node_images_default_to_the_verified_release_tags(self):
-        # War-room A-100: walletRejected's error tables are verified against these releases; a floating tag
-        # could upgrade the wallet under them and make a post-broadcast error look definite.
+    def test_node_images_default_to_supported_release_tags(self):
+        # Keep Compose, installer defaults and the example aligned; floating tags can change node behavior.
         defaults = self.compose_image_defaults()
         tags = {}
         for variable, image in defaults.items():
             tag = image.partition('@')[0].rpartition('/')[2].partition(':')[2]  # a digest may follow the tag
             self.assertNotIn(tag, ('', 'latest'), f'{variable} defaults to {image!r}, not a pinned release tag')
             tags[variable] = tag
-        # Bumping a tag means re-verifying the code tables first (docs/operator-guide.md#node-image-versions);
-        # the verified version named in payments_watcher.go must change in the same commit.
-        watcher = (REPOSITORY / 'internal/market/payments_watcher.go').read_text()
-        # A-174: moneroVerifiedWalletRelease names the release whose get_version the running wallet must report.
-        for verified in (f'Bitcoin Core (v{tags["BITCOIN_IMAGE"]} ', f'(monero {tags["MONERO_WALLET_IMAGE"]}: ',
-                         f'moneroVerifiedWalletRelease = "{tags["MONERO_WALLET_IMAGE"]}"'):
-            self.assertTrue(verified in watcher, f'payments_watcher.go does not name {verified!r} as verified')
         self.assertEqual(tags['MONERO_IMAGE'], tags['MONERO_WALLET_IMAGE'])
         example = dict(line.split('=', 1) for line in (REPOSITORY / '.env.example').read_text().splitlines()
                        if line.split('=', 1)[0] in defaults)
@@ -641,22 +686,24 @@ time.sleep(60)
         # No node chosen: nothing forces a chain, so a node added later may use any test network.
         self.assertEqual(config['BITCOIN_CHAIN'], '')
         self.assertEqual(config['MONERO_NETWORK'], '')
-        self.assertNotIn('BITCOIN_RPC_URL', config)
-        self.assertNotIn('MONERO_WALLET_RPC_URL', config)
+        self.assertEqual(config['BITCOIN_RPC_URL'], '')
+        self.assertEqual(config['BITCOIN_WALLET'], '')
+        self.assertEqual(config['MONERO_RPC_URL'], '')
+        self.assertEqual(config['MONERO_WALLET_RPC_URL'], '')
         self.assertNotIn('BITCOIN_PRUNE_MB', config)
         self.assertNotIn('MONERO_PRUNE_FLAGS', config)
         self.assertNotIn('docs/testnet-runbook.md', result.stdout)
 
     def test_local_nodes_can_opt_out_of_pruning(self):
-        result = self.run_installer(['tor', '', 'local', '', 'signet', 'no', 'local', '', 'testnet', 'no'])
+        result = self.run_installer(['tor', '', 'local', '', 'signet', 'no', 'local', '', 'stagenet', 'no', ''])
         self.assert_started(result)
         config = self.config()
-        self.assertEqual(config['COMPOSE_PROFILES'], 'internal-db,bitcoin,monero,monero-wallet')
+        self.assertEqual(config['COMPOSE_PROFILES'], 'internal-db,bitcoin,monero')
         # -prune=0 disables pruning in bitcoind; a blank flag list drops --prune-blockchain for monerod.
         self.assertEqual(config['BITCOIN_PRUNE_MB'], '0')
         self.assertEqual(config['MONERO_PRUNE_FLAGS'], '')
         self.assertEqual(config['BITCOIN_CHAIN'], 'signet')
-        self.assertEqual(config['MONERO_NETWORK'], 'testnet')
+        self.assertEqual(config['MONERO_NETWORK'], 'stagenet')
         self.assertEqual(result.stdout.count('Full node'), 2)
         # Compose reads an unquoted blank followed by a comment ("MONERO_PRUNE_FLAGS= # x") as the value "# x"
         # (A-149): every line the installer writes is a single-quoted value with nothing after it.
@@ -747,7 +794,7 @@ time.sleep(60)
         self.assertEqual(config['COMPOSE_PROFILES'], '')
         self.assertNotIn('compose.internal-db.yaml', config['COMPOSE_FILE'])
         self.assertTrue(config['COMPOSE_FILE'].endswith(':compose.external-egress.yaml'))
-        self.assertIn('direct network egress is enabled', result.stdout)
+        self.assertIn('app direct network egress is enabled', result.stdout)
 
     def test_tor_profiles_match_the_mirror_command_check(self):
         # A-140: scripts/test-mirror-commands.sh (run by CI) checks the guide's onion-mirror commands against .env
@@ -756,9 +803,9 @@ time.sleep(60)
         script = (REPOSITORY / 'scripts' / 'test-mirror-commands.sh').read_text()
         external = 'postgres://test@database/scratch'
         cases = [
-            ('internal', ['tor', ''] + [''] * 9, 'internal-db,bitcoin,monero,monero-wallet'),
+            ('internal', ['tor', ''] + [''] * 9, 'internal-db,bitcoin,monero'),
             ('internal', ['tor', '', 'disabled', 'disabled'], 'internal-db'),
-            ('external', ['tor', external] + [''] * 9, 'bitcoin,monero,monero-wallet'),
+            ('external', ['tor', external] + [''] * 9, 'bitcoin,monero'),
             ('external', ['tor', external, 'disabled', 'disabled'], ''),
         ]
         for database, answers, profiles in cases:
@@ -781,19 +828,21 @@ time.sleep(60)
         self.assertNotIn('--profile', INSTALLER.read_text())
         guide = (REPOSITORY / 'docs' / 'operator-guide.md').read_text()
         self.assertEqual(guide.count('<!-- ops-cmd: onion-mirror -->'), 1)
-        self.assertIn("COMPOSE_PROFILES='internal-db,bitcoin,monero,monero-wallet,mirror'", guide)
+        self.assertIn("COMPOSE_PROFILES='internal-db,bitcoin,monero,mirror'", guide)
         self.assertIn('./scripts/install.sh add-mirror', guide)
 
-    def test_external_rpc_also_enables_tor_egress(self):
-        result = self.run_installer(['tor', '', 'external', 'https://rpc.example.test', 'disabled'])
-        self.assert_started(result)
-        config = self.config()
-        self.assertEqual(config['BITCOIN_RPC_URL'], 'https://rpc.example.test')
-        # External nodes are not forced onto one chain; the app accepts any test chain the node reports.
-        self.assertEqual(config['BITCOIN_CHAIN'], '')
-        self.assertEqual(config['COMPOSE_PROFILES'], 'internal-db')
-        self.assertIn('compose.external-egress.yaml', config['COMPOSE_FILE'])
-        self.assertIn('docs/testnet-runbook.md', result.stdout)
+    def test_legacy_external_wallet_options_are_rejected_before_writes(self):
+        cases = [
+            ['--tor', '--bitcoin', 'external', '--bitcoin-rpc-url', 'https://rpc.example.test'],
+            ['--tor', '--monero', 'external', '--monero-rpc-url', 'https://monerod.example.test'],
+            ['--tor', '--monero-wallet-rpc-url', 'https://wallet.example.test'],
+        ]
+        for arguments in cases:
+            with self.subTest(arguments=arguments):
+                result = self.run_installer(None, arguments=arguments)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse((self.root / '.env').exists())
+                self.assertEqual(self.calls(), [])
 
     def test_local_node_profiles_and_images(self):
         result = self.run_installer([
@@ -802,22 +851,73 @@ time.sleep(60)
         ])
         self.assert_started(result)
         config = self.config()
-        self.assertEqual(config['COMPOSE_PROFILES'], 'internal-db,bitcoin,monero,monero-wallet')
+        self.assertEqual(config['COMPOSE_PROFILES'], 'internal-db,bitcoin,monero')
         self.assertEqual(config['BITCOIN_IMAGE'], 'reviewed-bitcoin:test')
         self.assertEqual(config['MONERO_IMAGE'], 'reviewed-monero:test')
         self.assertEqual(config['MONERO_WALLET_IMAGE'], self.compose_image_defaults()['MONERO_WALLET_IMAGE'])
         self.assertEqual(len(config['BITCOIN_RPC_PASSWORD']), 48)
-        self.assertEqual(config['BITCOIN_RPC_URL'],
-                         'http://marketplace:' + config['BITCOIN_RPC_PASSWORD'] + '@bitcoin:8332')
+        self.assertEqual(config['BITCOIN_RPC_URL'], '')
+        self.assertRegex(config['BITCOIN_RPC_AUTH'], r'^marketplace:[0-9a-f]{32}\$[0-9a-f]{64}$')
+        self.assertEqual(config['BITCOIN_RPC_AUTH'], bitcoin_rpcauth(
+            config['BITCOIN_RPC_PASSWORD'], config['BITCOIN_RPC_AUTH'].split(':', 1)[1].split('$', 1)[0]))
         self.assertEqual(config['BITCOIN_CHAIN'], 'testnet4')
         self.assertEqual(config['MONERO_NETWORK'], 'stagenet')
-        self.assertEqual(config['MONERO_RPC_URL'], 'http://monero:18081')
-        # monero-wallet-rpc runs with --rpc-login; the app authenticates with the same generated password.
-        self.assertEqual(len(config['MONERO_WALLET_RPC_PASSWORD']), 48)
-        self.assertEqual(config['MONERO_WALLET_RPC_URL'],
-                         'http://marketplace:' + config['MONERO_WALLET_RPC_PASSWORD'] + '@monero-wallet:18083')
+        self.assertEqual(config['MONERO_RPC_URL'], '')
+        self.assertEqual(config['MONERO_WALLET_RPC_URL'], '')
+        self.assertNotIn('MONERO_WALLET_RPC_PASSWORD', config)
         self.assert_no_secret_printed(result, config, allow_token=True)
         self.assertNotIn('compose.external-egress.yaml', config['COMPOSE_FILE'])
+
+    def test_local_bitcoin_node_ends_with_the_two_escrow_setup_commands(self):
+        # A-495 (D-58): the installer only tells the operator how Bitcoin escrow is turned on; it edits no file.
+        for network in ('regtest', 'signet', 'testnet4'):
+            with self.subTest(network=network):
+                (self.root / '.env').unlink(missing_ok=True)
+                self.log.unlink(missing_ok=True)
+                result = self.run_installer(None, arguments=[
+                    '--tor', '--bitcoin', 'local', '--bitcoin-image', 'reviewed-bitcoin:test',
+                    '--bitcoin-network', network, '--bitcoin-prune', 'yes', '--monero', 'disabled'])
+                self.assert_started(result)
+                config = self.config()
+                commands = [line.strip() for line in result.stdout.splitlines() if 'escrow-node-setup.sh' in line]
+                self.assertEqual(len(commands), 2, result.stdout)
+                setup, verify = commands
+                self.assertIn(f'./scripts/escrow-node-setup.sh --chain {network} --rpc-port 8332 --cli ', setup)
+                self.assertNotIn('--verify', setup)
+                self.assertTrue(verify.endswith(f'./scripts/escrow-node-setup.sh --chain {network} --verify'), verify)
+                self.assertIn('ESCROW_BTC_RPC_URL=', verify)
+                self.assertGreater(result.stdout.index('escrow-node-setup.sh'), result.stdout.index('Setup token:'))
+                self.assertIn('docs/operator-guide.md#escrow-node-set-up-and-the-public-network-smoke', result.stdout)
+                self.assertIn('off until', result.stdout)
+                # Nothing is written for it, and no escrow setting or secret appears in the output.
+                self.assertFalse([key for key in config if key.startswith('ESCROW_')], config)
+                self.assert_no_secret_printed(result, config, allow_token=True)
+
+    def test_no_local_bitcoin_node_prints_no_escrow_setup_commands(self):
+        for arguments in (['--tor', '--nodes', 'none'],
+                          ['--tor', '--bitcoin', 'disabled', '--monero', 'local', '--monero-image', 'reviewed-monero:test',
+                           '--monero-network', 'stagenet', '--monero-prune', 'yes']):
+            with self.subTest(arguments=arguments):
+                (self.root / '.env').unlink(missing_ok=True)
+                self.log.unlink(missing_ok=True)
+                result = self.run_installer([''] * 6, arguments=arguments)
+                self.assert_started(result)
+                self.assertNotIn('escrow-node-setup.sh', result.stdout)
+
+    def test_local_bitcoin_verifier_crypto_failure_leaves_no_install(self):
+        for key, value in (('INSTALLER_TEST_OPENSSL_BAD_SALT', 'fail'),
+                           ('INSTALLER_TEST_OPENSSL_BAD_SALT', 'empty'),
+                           ('INSTALLER_TEST_OPENSSL_BAD_SALT', 'malformed'),
+                           ('INSTALLER_TEST_OPENSSL_BAD_DGST', 'fail'),
+                           ('INSTALLER_TEST_OPENSSL_BAD_DGST', 'malformed')):
+            with self.subTest(key=key, value=value):
+                self.log.unlink(missing_ok=True)
+                result = self.run_installer([''] * 12, extra_env={key: value})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('Could not generate the Bitcoin RPC verifier', result.stderr)
+                self.assertFalse((self.root / '.env').exists())
+                self.assertEqual(list(self.root.glob('.env.install.*')), [])
+                self.assertFalse(any('compose up' in call for call in self.calls()))
 
     def test_local_node_rejects_incomplete_or_malformed_image_before_compose(self):
         for image in ('@sha256', 'vendor/node@sha256:deadbeef', 'vendor/node:'):
@@ -842,49 +942,14 @@ time.sleep(60)
         self.assertEqual({key: config[key] for key in ('BITCOIN_IMAGE', 'MONERO_IMAGE', 'MONERO_WALLET_IMAGE')},
                          self.compose_image_defaults())
 
-    def test_local_live_nodes_configure_mainnet(self):
-        result = self.run_installer(['tor', '', 'local', '', 'live', '', 'local', '', 'live', ''])
-        self.assert_started(result)
-        config = self.config()
-        self.assertEqual(config['BITCOIN_CHAIN'], 'main')
-        self.assertEqual(config['MONERO_NETWORK'], 'mainnet')
-        # monerod has no --mainnet flag: the blank flag makes compose.nodes.yaml pass none.
-        self.assertEqual(config['MONERO_NETWORK_FLAG'], '')
-        self.assertIn('MAINNET', result.stdout)
-
-    def test_local_live_node_with_a_test_network_fails_closed_before_writing_config(self):
-        for answers in (['tor', '', 'local', '', 'live', '', 'local', '', 'stagenet', ''],
-                        ['tor', '', 'local', '', 'testnet4', '', 'local', '', 'live', '']):
-            with self.subTest(answers=answers):
-                self.log.unlink(missing_ok=True)
-                result = self.run_installer(answers)
+    def test_local_nodes_restrict_networks_to_escrow_support(self):
+        for flag, unsupported in (('--bitcoin-network', 'live'), ('--monero-network', 'testnet')):
+            with self.subTest(flag=flag, unsupported=unsupported):
+                result = self.run_installer(None, arguments=['--tor', '--nodes', 'custom', '--bitcoin', 'disabled',
+                                                              '--monero', 'disabled', flag, unsupported])
                 self.assertNotEqual(result.returncode, 0)
-                self.assertIn('cannot mix mainnet and test networks', result.stderr)
                 self.assertFalse((self.root / '.env').exists())
-                self.assertEqual(self.calls(), PREFLIGHT)
-
-    def test_external_monero_wallet_rpc(self):
-        daemon, wallet = 'https://monerod.example.test', 'http://user:pass@wallet.example.test:18083'
-        result = self.run_installer(['tor', '', 'disabled', 'external', daemon, wallet])
-        self.assert_started(result)
-        config = self.config()
-        self.assertEqual(config['MONERO_RPC_URL'], daemon)
-        self.assertEqual(config['MONERO_WALLET_RPC_URL'], wallet)
-        self.assertEqual(config['MONERO_NETWORK'], '')
-        self.assertNotIn('MONERO_WALLET_RPC_PASSWORD', config)
-        self.assertNotIn('WARNING', result.stderr)
-        self.assertEqual(config['COMPOSE_PROFILES'], 'internal-db')
-        self.assertIn('compose.external-egress.yaml', config['COMPOSE_FILE'])
-        self.assertNotIn(wallet, result.stdout + result.stderr)
-
-    def test_external_monero_daemon_without_wallet_warns(self):
-        result = self.run_installer(['tor', '', 'disabled', 'external', 'https://monerod.example.test', ''])
-        self.assert_started(result)
-        config = self.config()
-        self.assertNotIn('MONERO_WALLET_RPC_URL', config)
-        self.assertIn('Monero payments stay disabled', result.stderr)
-        # Nothing in the app would use the daemon, so Tor mode opens no direct egress for it.
-        self.assertNotIn('compose.external-egress.yaml', config['COMPOSE_FILE'])
+                self.assertEqual(self.calls(), [])
 
     def seed_key(self, text=None):
         path = self.root / 'operator-seed-key.asc'
@@ -900,11 +965,10 @@ time.sleep(60)
                          'http://escrow:' + config['ESCROW_XMR_WALLET_RPC_PASSWORD'] + '@monero-escrow-wallet:18083')
         self.assertEqual(config['ESCROW_XMR_DAEMON_URL'], 'http://monero:18081')
         self.assertRegex(config['MONERO_WALLET_SECRET'], '^[0-9a-f]{64}$')
-        for other in ('APP_SECRET_KEY', 'SETUP_TOKEN', 'MONERO_WALLET_RPC_PASSWORD', 'ESCROW_XMR_WALLET_RPC_PASSWORD'):
+        for other in ('APP_SECRET_KEY', 'SETUP_TOKEN', 'ESCROW_XMR_WALLET_RPC_PASSWORD'):
             self.assertNotEqual(config['MONERO_WALLET_SECRET'], config[other])
-        self.assertNotEqual(config['ESCROW_XMR_WALLET_RPC_PASSWORD'], config['MONERO_WALLET_RPC_PASSWORD'])
         self.assertEqual(config['ESCROW_XMR_SEED_KEY'], '/etc/opsecmkt/escrow-xmr-seed-key.asc')
-        self.assertEqual(config['COMPOSE_PROFILES'].split(',')[-3:], ['monero', 'monero-wallet', 'monero-escrow-wallet'])
+        self.assertEqual(config['COMPOSE_PROFILES'].split(',')[-2:], ['monero', 'monero-escrow-wallet'])
         self.assertTrue(config['COMPOSE_FILE'].endswith(':compose.escrow-xmr.yaml'), config['COMPOSE_FILE'])
         copy = self.root / 'escrow-xmr-seed-key.asc'
         self.assertEqual(copy.read_text(), key.read_text())
@@ -954,20 +1018,21 @@ time.sleep(60)
         not_a_key.write_text('not a key\n')
         base = ['--tor', '--bitcoin', 'disabled', '--monero-image', 'reviewed-monero:test', '--monero-prune', 'yes', '--monero-escrow', 'yes']
         cases = [
-            (['--monero', 'local', '--monero-network', 'testnet', '--monero-escrow-seed-key', str(key)], 'needs the local Monero node on stagenet'),
-            (['--monero', 'external', '--monero-rpc-url', 'https://monerod.example.test', '--monero-wallet-rpc-url',
-              'http://user:pass@wallet.example.test:18083', '--monero-escrow-seed-key', str(key)], 'needs the local Monero node on stagenet'),
+            (['--monero', 'local', '--monero-network', 'testnet', '--monero-escrow-seed-key', str(key)], '--monero-network takes one of: stagenet', []),
+            (['--monero', 'disabled', '--monero-escrow-seed-key', str(key)], 'Monero escrow needs the local Monero node on stagenet'),
             (['--monero', 'local', '--monero-network', 'stagenet', '--monero-escrow-seed-key', str(private)], 'holds a private key'),
             (['--monero', 'local', '--monero-network', 'stagenet', '--monero-escrow-seed-key', str(not_a_key)], 'not an armored OpenPGP public key'),
             (['--monero', 'local', '--monero-network', 'stagenet', '--monero-escrow-seed-key', str(self.root / 'missing.asc')], 'does not exist'),
         ]
-        for extra, message in cases:
+        for case in cases:
+            extra, message = case[:2]
+            expected_calls = case[2] if len(case) == 3 else PREFLIGHT
             with self.subTest(message=message, extra=extra):
                 self.log.unlink(missing_ok=True)
                 result = self.run_installer(None, arguments=[*base, *extra])
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(message, result.stderr)
-                self.assertEqual(self.calls(), PREFLIGHT)
+                self.assertEqual(self.calls(), expected_calls)
                 self.assertFalse((self.root / '.env').exists())
                 self.assertFalse((self.root / 'escrow-xmr-seed-key.asc').exists())
         result = self.run_installer(None, arguments=['--tor', '--monero-escrow-seed-key', str(key)])
@@ -975,29 +1040,42 @@ time.sleep(60)
         self.assertIn('needs --monero-escrow yes', result.stderr)
 
     def test_check_refuses_monero_escrow_without_its_password_or_key(self):
-        self.check_env(installed_env(COMPOSE_PROFILES='internal-db,monero,monero-wallet,monero-escrow-wallet',
-                                     MONERO_WALLET_RPC_PASSWORD='b' * 48),
+        self.check_env(installed_env(COMPOSE_PROFILES='internal-db,monero,monero-escrow-wallet'),
                        'needs ESCROW_XMR_WALLET_RPC_PASSWORD')
         self.check_env(installed_env(COMPOSE_FILE='compose.yaml:compose.tor.yaml:compose.nodes.yaml:compose.internal-db.yaml:compose.escrow-xmr.yaml'),
                        'escrow-xmr-seed-key.asc (the Monero escrow seed key it mounts) is missing')
 
     def test_secret_generation_failure_starts_nothing(self):
-        # openssl calls: 1 database password, 2 APP_SECRET_KEY, 3 setup token, 4 audit key, then one per local node.
+        # openssl rand calls: 1 database password, 2 APP_SECRET_KEY, 3 setup token, 4 audit key; local Bitcoin
+        # adds 5 its RPC password and 6 the verifier salt; Monero escrow adds its wallet-RPC password and
+        # MONERO_WALLET_SECRET. A Monero daemon without escrow needs no wallet credentials.
+        seed_key = self.seed_key()
+        bitcoin = ['--tor', '--bitcoin', 'local', '--bitcoin-image', 'reviewed-bitcoin:test',
+                   '--bitcoin-network', 'testnet4', '--bitcoin-prune', 'yes', '--monero', 'disabled']
+        monero_escrow = ['--tor', '--bitcoin', 'disabled', '--monero', 'local', '--monero-image', 'reviewed-monero:test',
+                         '--monero-network', 'stagenet', '--monero-prune', 'yes', '--monero-escrow', 'yes',
+                         '--monero-escrow-seed-key', str(seed_key)]
+        both_escrows = ['--tor', '--bitcoin', 'local', '--bitcoin-image', 'reviewed-bitcoin:test',
+                        '--bitcoin-network', 'testnet4', '--bitcoin-prune', 'yes', '--monero', 'local',
+                        '--monero-image', 'reviewed-monero:test', '--monero-network', 'stagenet',
+                        '--monero-prune', 'yes', '--monero-escrow', 'yes', '--monero-escrow-seed-key', str(seed_key)]
         scenarios = [
-            (1, ['clearnet', '', '', 'disabled', 'disabled']),
-            (2, ['clearnet', '', '', 'disabled', 'disabled']),
-            (3, ['clearnet', '', '', 'disabled', 'disabled']),
-            (5, ['tor', '', 'local', 'reviewed-bitcoin:test', 'testnet4', '', 'disabled']),
-            (5, ['tor', '', 'disabled', 'local', 'reviewed-monero:test', 'stagenet', '', '']),
-            (6, ['tor', '', 'local', 'reviewed-bitcoin:test', 'testnet4', '',
-                 'local', 'reviewed-monero:test', 'stagenet', '', '']),
+            (1, 'random secret', ['clearnet', '', '', 'disabled', 'disabled'], []),
+            (2, 'random secret', ['clearnet', '', '', 'disabled', 'disabled'], []),
+            (3, 'random secret', ['clearnet', '', '', 'disabled', 'disabled'], []),
+            (5, 'random secret', [], monero_escrow),  # Monero escrow wallet-RPC password.
+            (6, 'random secret', [], monero_escrow),  # Monero escrow wallet-seed sealing secret.
+            (5, 'random secret', [], bitcoin),        # Local Bitcoin RPC password.
+            (6, 'Bitcoin RPC verifier', [], bitcoin), # Salt for the local Bitcoin RPC verifier.
+            (7, 'random secret', [], both_escrows),   # Monero escrow wallet-RPC password after Bitcoin setup.
+            (8, 'random secret', [], both_escrows),   # Monero escrow wallet-seed sealing secret.
         ]
-        for call, answers in scenarios:
-            with self.subTest(call=call, answers=answers):
+        for call, message, answers, arguments in scenarios:
+            with self.subTest(call=call, arguments=arguments):
                 self.log.unlink(missing_ok=True)
-                result = self.run_installer(answers, openssl_empty_call=call)
+                result = self.run_installer(answers, arguments=arguments, openssl_empty_call=call)
                 self.assertNotEqual(result.returncode, 0)
-                self.assertIn('Could not generate a random secret', result.stderr)
+                self.assertIn(message, result.stderr)
                 self.assertEqual(self.calls(), PREFLIGHT)
                 self.assertFalse((self.root / '.env').exists())
                 self.assertEqual(list(self.root.glob('.env.install.*')), [])
@@ -1109,8 +1187,8 @@ time.sleep(60)
             ['invalid-mode'],
             ['tor', 'https://not-postgres'],
             ['tor', '', 'invalid-node'],
-            ['tor', '', 'external', 'ftp://invalid-rpc'],
-            ['tor', '', 'disabled', 'external', 'https://monerod.example.test', 'ftp://invalid-wallet'],
+            ['tor', '', 'custom', 'external'],
+            ['tor', '', 'custom', 'disabled', 'external'],
             ['tor', '', 'local', ''],
             ['tor', '', 'local', '', 'testnet4', 'maybe', 'disabled'],
             ['tor', '', 'disabled', 'local', '', 'stagenet', 'maybe'],
@@ -1153,8 +1231,7 @@ time.sleep(60)
     def test_init_prints_no_secret_but_the_setup_token(self):
         cases = [
             ([''] * 12, []),
-            (['tor', '', 'local', '', '', '', 'external', 'https://monerod.example.test',
-              'http://user:wallet-secret@wallet.example.test:18083'], []),
+            (['tor', '', 'local', '', 'testnet4', '', 'local', '', 'stagenet', '', ''], []),
             ([], ['--local']),
         ]
         for answers, arguments in cases:
@@ -1184,23 +1261,17 @@ time.sleep(60)
             (['init', '--tor', '--nodes', 'none'],
              dict(APP_MODE='tor', COOKIE_SECURE='false', COMPOSE_PROFILES='internal-db')),
             (['--clearnet', '--behind-proxy', 'no', '--nodes', 'local'],
-             dict(APP_MODE='clearnet', COOKIE_SECURE='false', COMPOSE_PROFILES='internal-db,bitcoin,monero,monero-wallet',
+             dict(APP_MODE='clearnet', COOKIE_SECURE='false', COMPOSE_PROFILES='internal-db,bitcoin,monero',
                   BITCOIN_CHAIN='testnet4', MONERO_NETWORK='stagenet', BITCOIN_PRUNE_MB='2000',
                   BITCOIN_IMAGE='bitcoin/bitcoin:31.1')),
             (['init', '--clearnet', '--behind-proxy', 'yes', '--nodes', 'none'],
              dict(APP_MODE='clearnet', COOKIE_SECURE='true', COMPOSE_PROFILES='internal-db')),
             (['init', '--tor', '--external-db', 'postgres://market@database.example/market', '--nodes', 'custom',
               '--bitcoin', 'local', '--bitcoin-image', 'reviewed-bitcoin:test', '--bitcoin-network', 'signet',
-              '--bitcoin-prune', 'no', '--monero', 'external', '--monero-rpc-url', 'https://monerod.example.test',
-              '--monero-wallet-rpc-url', wallet],
+              '--bitcoin-prune', 'no', '--monero', 'disabled'],
              dict(APP_MODE='tor', DATABASE_URL='postgres://market@database.example/market', COMPOSE_PROFILES='bitcoin',
                   BITCOIN_IMAGE='reviewed-bitcoin:test', BITCOIN_CHAIN='signet', BITCOIN_PRUNE_MB='0',
-                  MONERO_RPC_URL='https://monerod.example.test', MONERO_WALLET_RPC_URL=wallet,
                   COMPOSE_FILE='compose.yaml:compose.tor.yaml:compose.nodes.yaml:compose.external-egress.yaml')),
-            (['--tor', '--bitcoin', 'external', '--bitcoin-rpc-url', 'https://rpc.example.test', '--monero', 'local',
-              '--monero-image', 'reviewed-monero:test', '--monero-network', 'testnet', '--monero-prune', 'yes'],
-             dict(BITCOIN_RPC_URL='https://rpc.example.test', MONERO_IMAGE='reviewed-monero:test', MONERO_NETWORK='testnet',
-                  MONERO_PRUNE_FLAGS=PRUNED_MONERO_FLAGS, COMPOSE_PROFILES='internal-db,monero,monero-wallet')),
         ]
         for arguments, expected in cases:
             with self.subTest(arguments=arguments):
@@ -1237,7 +1308,8 @@ time.sleep(60)
         self.log.unlink(missing_ok=True)
         result = self.run_installer(None, arguments=['--tor', '--nodes', 'local', '--bitcoin', 'external'])
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn('RPC URL', result.stderr)
+        self.assertIn('takes one of: local disabled', result.stderr)
+        self.assertEqual(self.calls(), [])
         self.assertFalse((self.root / '.env').exists())
 
     def test_bare_invocation_and_local_alias_are_init(self):
@@ -1362,13 +1434,28 @@ time.sleep(60)
         result = self.run_installer([good, good], arguments=['--local', '--admin', 'first_admin'])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((self.state / 'bootstrap-stdin').read_text(encoding='utf-8'), good + '\n')
-        # bash's read drops a NUL byte, so none reaches the server: it receives the password without it.
+        # Bash versions differ on a NUL in read input: some discard it, others stop at it. The installer must
+        # send only the value Bash actually read, and reject a shortened prefix before writing configuration.
+        nul_input = PASSWORD.replace(' ', ' \0', 1)
+        probe = subprocess.run(['/bin/bash', '-c', 'IFS= read -r -s -p x value; printf %s "$value"'],
+                               input=(nul_input + '\n').encode(), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               check=True).stdout
         (self.root / '.env').unlink()
         self.log.unlink()
         self.set_installed(False)
-        result = self.run_installer([PASSWORD.replace(' ', ' \0', 1)] * 2, arguments=['--local', '--admin', 'first_admin'])
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual((self.state / 'bootstrap-stdin').read_text(), PASSWORD + '\n')
+        (self.state / 'bootstrap-stdin').unlink(missing_ok=True)
+        result = self.run_installer([nul_input] * 2, arguments=['--local', '--admin', 'first_admin'])
+        if probe == PASSWORD.encode():
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((self.state / 'bootstrap-stdin').read_text(), PASSWORD + '\n')
+        elif probe == b'correct ':
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertIn('Use a password of 12-72 bytes', result.stderr)
+            self.assertEqual(self.calls(), PREFLIGHT)
+            self.assertFalse((self.root / '.env').exists())
+            self.assertFalse((self.state / 'bootstrap-stdin').exists())
+        else:
+            self.fail(f'unexpected Bash read behavior for NUL input: {len(probe)} bytes')
 
     def test_init_admin_failure_keeps_the_token_path(self):
         result = self.run_installer([PASSWORD, PASSWORD], arguments=['--local', '--admin', 'first_admin'],
@@ -1516,6 +1603,20 @@ time.sleep(60)
         self.check_env(installed_env(APP_SECRET_KEY=None))  # legacy key root
         self.check_env(installed_env(COMPOSE_PROFILES='internal-db,mirror'))
 
+    def test_check_restricts_local_nodes_to_escrow_networks(self):
+        self.check_env(installed_env(COMPOSE_PROFILES='internal-db,bitcoin', BITCOIN_CHAIN='main'),
+                       'BITCOIN_CHAIN must be regtest, testnet4 or signet')
+        self.check_env(installed_env(COMPOSE_PROFILES='internal-db,monero', MONERO_NETWORK='testnet'),
+                       'MONERO_NETWORK must be stagenet')
+
+    def test_check_refuses_legacy_pooled_values_and_profile(self):
+        for key in ('BITCOIN_RPC_URL', 'BITCOIN_WALLET', 'MONERO_RPC_URL', 'MONERO_WALLET_RPC_URL'):
+            with self.subTest(key=key):
+                result = self.check_env(installed_env(**{key: 'legacy-value'}), f'{key} is a retired pooled-payment setting')
+                self.assertNotIn('legacy-value', result.stdout + result.stderr)
+        self.check_env(installed_env(COMPOSE_PROFILES='internal-db,monero,monero-wallet'),
+                       'retired monero-wallet profile')
+
     def test_check_refuses_overlay_mismatch(self):
         self.check_env(installed_env(APP_MODE='clearnet'), 'APP_MODE=clearnet needs compose.clearnet.yaml in COMPOSE_FILE')
         self.check_env(installed_env(COMPOSE_FILE='compose.yaml:compose.clearnet.yaml:compose.tor.yaml'),
@@ -1568,6 +1669,23 @@ time.sleep(60)
                 self.check_env(installed_env(MONERO_WALLET_IMAGE=image), 'MONERO_WALLET_IMAGE must name a release tag')
         self.check_env(installed_env(BITCOIN_IMAGE='registry.example:5000/node@sha256:' + 'a' * 64))
         self.check_env(installed_env(BITCOIN_IMAGE='bitcoin/bitcoin:31.1'))
+
+    def test_check_local_bitcoin_verifier_and_inactive_profile(self):
+        password = hex_value(48, 'rpc')
+        local = installed_env(COMPOSE_PROFILES='internal-db,bitcoin', BITCOIN_RPC_PASSWORD=password,
+                              BITCOIN_RPC_URL='')
+        self.check_env(local)
+        self.check_env({**local, 'BITCOIN_RPC_AUTH': ''}, 'needs BITCOIN_RPC_AUTH')
+        self.check_env({**local, 'BITCOIN_RPC_AUTH': password}, 'must be a marketplace salted HMAC verifier')
+        self.check_env({**local, 'BITCOIN_RPC_AUTH': bitcoin_rpcauth('wrong')},
+                       'does not match BITCOIN_RPC_PASSWORD')
+        original = self.write_env(local)
+        result = self.command('check', extra_env={'INSTALLER_TEST_OPENSSL_BAD_DGST': 'fail'})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Could not check the local Bitcoin RPC verifier', result.stderr)
+        self.assertEqual((self.root / '.env').read_bytes(), original)
+        # A disabled Bitcoin node requires no local verifier.
+        self.check_env(clearnet_env(BITCOIN_RPC_AUTH=None))
 
     def test_check_refuses_postgres_password_mismatch(self):
         self.check_env(installed_env(POSTGRES_PASSWORD=hex_value(48, 'other')), 'POSTGRES_PASSWORD differs')
@@ -1778,11 +1896,10 @@ time.sleep(60)
     # ---- add-mirror -------------------------------------------------------------------------------------
 
     def test_add_mirror_appends_profile_keeping_existing(self):
-        for profiles, expected in (('internal-db,bitcoin,monero,monero-wallet', 'internal-db,bitcoin,monero,monero-wallet,mirror'),
+        for profiles, expected in (('internal-db,bitcoin,monero', 'internal-db,bitcoin,monero,mirror'),
                                    ('internal-db', 'internal-db,mirror'), ('', 'mirror')):
             with self.subTest(profiles=profiles):
-                values = installed_env(COMPOSE_PROFILES=profiles, BITCOIN_RPC_PASSWORD=hex_value(48, 'rpc'),
-                                       MONERO_WALLET_RPC_PASSWORD=hex_value(48, 'wallet'))
+                values = installed_env(COMPOSE_PROFILES=profiles, BITCOIN_RPC_PASSWORD=hex_value(48, 'rpc'))
                 if 'internal-db' not in profiles:
                     values['DATABASE_URL'] = 'postgres://market@database.example/market'
                 original = self.write_env(values)
@@ -1863,15 +1980,89 @@ time.sleep(60)
         for copy in self.pre_upgrade_copies():
             copy.unlink()
         # A failed backup stops the upgrade before .env changes.
-        self.write_env(alpha_env())
-        for copy in self.pre_upgrade_copies():
-            copy.unlink()
+        original = self.write_env(alpha_env())
         self.backup_stub(code=1)
         result = self.command('upgrade', extra_env={'AGE_RECIPIENT': 'age1testrecipient'})
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('backup failed', result.stderr)
         self.assertEqual((self.root / '.env').read_bytes(), original)
         self.assertEqual(self.pre_upgrade_copies(), [])
+
+    def test_upgrade_refuses_legacy_pooled_config_before_backup_or_mutation(self):
+        cases = [
+            {'BITCOIN_RPC_URL': 'http://legacy:secret@bitcoin:8332'},
+            {'BITCOIN_WALLET': 'opsecmkt'},
+            {'MONERO_RPC_URL': 'http://monero:18081'},
+            {'MONERO_WALLET_RPC_URL': 'http://legacy:secret@monero-wallet:18083'},
+            {'COMPOSE_PROFILES': 'internal-db,monero-wallet'},
+        ]
+        for overrides in cases:
+            with self.subTest(overrides=overrides):
+                original = self.write_env(alpha_env(**overrides))
+                result = self.command('upgrade', extra_env={'AGE_RECIPIENT': 'age1testrecipient'})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('Refusing:', result.stderr)
+                self.assertEqual((self.root / '.env').read_bytes(), original)
+                self.assertEqual(self.pre_upgrade_copies(), [])
+                self.assertFalse(Path(str(self.log) + '.backup').exists())
+                self.assertFalse((self.root / '.env.lock').exists())
+
+    def test_upgrade_adds_local_bitcoin_verifier_without_password_rotation(self):
+        password = hex_value(48, 'old-rpc')
+        legacy = installed_env(COMPOSE_PROFILES=None, BITCOIN_RPC_PASSWORD=password,
+                               BITCOIN_RPC_AUTH=None)
+        self.write_env(legacy)
+        result = self.upgrade()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        config = self.config()
+        self.assertIn('bitcoin', config['COMPOSE_PROFILES'].split(','))
+        self.assertEqual(config['BITCOIN_RPC_PASSWORD'], password)
+        self.assertEqual(config['BITCOIN_RPC_URL'], '')
+        salt = config['BITCOIN_RPC_AUTH'].split(':', 1)[1].split('$', 1)[0]
+        self.assertEqual(config['BITCOIN_RPC_AUTH'], bitcoin_rpcauth(password, salt))
+        self.assertEqual(stat.S_IMODE((self.root / '.env').stat().st_mode), 0o600)
+        self.assertIn('added BITCOIN_RPC_AUTH', result.stdout)
+        self.assert_no_secret_printed(result, config)
+        first = (self.root / '.env').read_bytes()
+        result = self.upgrade()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.root / '.env').read_bytes(), first)
+        self.assertEqual(self.config()['BITCOIN_RPC_AUTH'], config['BITCOIN_RPC_AUTH'])
+        # A manually changed password with stale verifier is refused without auto-rotation or node restart.
+        stale = {**config, 'BITCOIN_RPC_PASSWORD': hex_value(48, 'new-rpc')}
+        original = self.write_env(stale)
+        result = self.upgrade()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('does not match BITCOIN_RPC_PASSWORD', result.stderr)
+        self.assertEqual((self.root / '.env').read_bytes(), original)
+        self.assertNotIn(UP, self.calls())
+        self.assert_no_secret_printed(result, stale)
+
+    def test_upgrade_repairs_blank_local_verifier_and_failed_crypto_preserves_env(self):
+        password = hex_value(48, 'old-rpc')
+        base = installed_env(COMPOSE_PROFILES='internal-db,bitcoin', BITCOIN_RPC_PASSWORD=password,
+                             BITCOIN_RPC_AUTH='')
+        for key, value in (('INSTALLER_TEST_OPENSSL_BAD_SALT', 'empty'),
+                           ('INSTALLER_TEST_OPENSSL_BAD_SALT', 'malformed'),
+                           ('INSTALLER_TEST_OPENSSL_BAD_DGST', 'fail'),
+                           ('INSTALLER_TEST_OPENSSL_BAD_DGST', 'malformed')):
+            with self.subTest(key=key, value=value):
+                original = self.write_env(base)
+                result = self.upgrade(extra_env={key: value})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('Could not generate the local Bitcoin RPC verifier', result.stderr)
+                self.assertEqual((self.root / '.env').read_bytes(), original)
+                self.assertNotIn(UP, self.calls())
+                self.assert_no_secret_printed(result, base)
+        self.write_env(base)
+        result = self.upgrade()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        config = self.config()
+        self.assertEqual(config['BITCOIN_RPC_PASSWORD'], password)
+        self.assertEqual(config['BITCOIN_RPC_URL'], '')
+        self.assertEqual(config['BITCOIN_RPC_AUTH'], bitcoin_rpcauth(
+            password, config['BITCOIN_RPC_AUTH'].split(':', 1)[1].split('$', 1)[0]))
+        self.assert_no_secret_printed(result, config)
 
     def test_upgrade_writes_pre_upgrade_copy_0600(self):
         original = self.write_env(alpha_env(), mode=0o644)
@@ -1898,8 +2089,9 @@ time.sleep(60)
         self.assertEqual(config['APP_PORT'], '18092')  # the port the caller runs it on
         self.assertEqual(config['COMPOSE_PROJECT_NAME'], 'opsecmkt')
         # Existing values are never changed (only :latest images are pinned).
-        for key in ('DATABASE_URL', 'POSTGRES_PASSWORD', 'APP_MODE', 'COOKIE_SECURE', 'COMPOSE_FILE', 'MONERO_RPC_URL'):
+        for key in ('DATABASE_URL', 'POSTGRES_PASSWORD', 'APP_MODE', 'COOKIE_SECURE', 'COMPOSE_FILE'):
             self.assertEqual(config[key], values[key], key)
+        self.assertEqual(config['MONERO_RPC_URL'], '')
         self.assertNotIn('AUDIT_SIGNING_KEY', config)  # secrets are not invented
         self.assertIn('AUDIT_SIGNING_KEY is not set', result.stdout)
         self.assertRegex(result.stdout, r'added, with the values Compose already used: [A-Z_, ]*PAYMENT_EXPIRY')
@@ -1970,7 +2162,46 @@ time.sleep(60)
             if key not in SECRET_KEYS:
                 self.assertIn(key, config, f'upgrade does not add {key}')
                 self.assertEqual(config[key], value, key)
-        self.assertEqual(sorted(set(config) - set(example)), [])
+        # CLAMAV_IMAGE_DEFAULT is installer bookkeeping, not a Compose setting shown in .env.example.
+        self.assertEqual(sorted(set(config) - set(example)), ['CLAMAV_IMAGE_DEFAULT'])
+
+    def test_upgrade_advances_recorded_clamav_default_and_preserves_custom_images(self):
+        previous = 'clamav/clamav:1.5.4-debian'
+        # Test-only sentinel models a later installer default; it makes no claim about upstream tag availability.
+        current = 'clamav/clamav:99.99.99-debian'
+        self.set_clamav_default(current)
+        custom_tag = 'registry.example/security/clamav:1.4.6-debian'
+        custom_digest = 'clamav/clamav@sha256:' + 'a' * 64
+        cases = (
+            ('managed default', previous, previous, current, current),
+            ('custom tag', custom_tag, previous, custom_tag, current),
+            ('custom digest', custom_digest, previous, custom_digest, current),
+            ('disabled blank image', '', previous, '', current),
+        )
+        for name, image, marker, want_image, want_marker in cases:
+            with self.subTest(name=name):
+                self.write_env(alpha_env(CLAMAV_IMAGE=image, CLAMAV_IMAGE_DEFAULT=marker))
+                result = self.upgrade()
+                self.assertEqual(result.returncode, 0, result.stderr)
+                config = self.config()
+                self.assertEqual(config['CLAMAV_IMAGE'], want_image)
+                self.assertEqual(config['CLAMAV_IMAGE_DEFAULT'], want_marker)
+                self.assertNotIn('scanner', config['COMPOSE_PROFILES'].split(','))
+
+    def test_upgrade_marks_only_a_known_current_markerless_clamav_default(self):
+        default = 'clamav/clamav:1.5.4-debian'
+        self.write_env(alpha_env(CLAMAV_IMAGE=default))
+        result = self.upgrade()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.config()['CLAMAV_IMAGE_DEFAULT'], default)
+
+        custom = 'registry.example/security/clamav:1.4.6-debian'
+        self.write_env(alpha_env(CLAMAV_IMAGE=custom))
+        result = self.upgrade()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        config = self.config()
+        self.assertEqual(config['CLAMAV_IMAGE'], custom)
+        self.assertNotIn('CLAMAV_IMAGE_DEFAULT', config)
 
     def test_upgrade_copies_setup_token_to_app_secret_key(self):
         values = alpha_env()
@@ -2213,6 +2444,14 @@ time.sleep(60)
                 self.check_env(installed_env(CLAMAV_IMAGE=image), 'CLAMAV_IMAGE must name a ClamAV release')
         self.write_env(scanner_env(CLAMAV_IMAGE='clamav/clamav@sha256:' + 'b' * 64))
         self.assertEqual(self.command('check').returncode, 0)
+        for digest in ('sha256:abc', 'sha256:' + 'A' * 64, 'sha512:' + 'b' * 64,
+                       'sha256:' + 'b' * 63, 'sha256:' + 'b' * 65,
+                       'bad@sha256:' + 'b' * 64):
+            with self.subTest(digest=digest):
+                self.check_env(scanner_env(CLAMAV_IMAGE='clamav/clamav@' + digest),
+                               'CLAMAV_IMAGE must name a ClamAV release')
+        self.check_env(scanner_env(CLAMAV_IMAGE='@sha256:' + 'b' * 64),
+                       'CLAMAV_IMAGE must name a ClamAV release')
         # The image Compose resolves (an override file can set one) is checked too.
         self.write_env(scanner_env())
         rendered = SCANNER_CONFIG.replace('image: clamav/clamav:1.5.4-debian', 'image: clamav/clamav:latest')
@@ -2256,9 +2495,9 @@ time.sleep(60)
             with self.subTest(mode=mode):
                 files = f'compose.yaml:compose.{mode}.yaml:compose.nodes.yaml:compose.internal-db.yaml:compose.scanner.yaml'
                 environment = {key: value for key, value in os.environ.items() if not key.startswith('COMPOSE_')}
-                # Compose refuses the monero-wallet profile without its password (A-466).
-                environment.update(COMPOSE_FILE=files, COMPOSE_PROFILES='internal-db,scanner,bitcoin,monero,monero-wallet',
-                                   DATABASE_URL='postgres://unused@db/unused', MONERO_WALLET_RPC_PASSWORD='unused')
+                environment.update(COMPOSE_FILE=files, COMPOSE_PROFILES='internal-db,scanner,bitcoin,monero',
+                                   DATABASE_URL='postgres://unused@db/unused',
+                                   BITCOIN_RPC_AUTH=bitcoin_rpcauth('unused'))
                 rendered = subprocess.run(['docker', 'compose', '--env-file', os.devnull, 'config'], cwd=REPOSITORY,
                                           env=environment, capture_output=True, text=True, check=True).stdout
                 values = scanner_env(COMPOSE_FILE=files)
@@ -2305,6 +2544,15 @@ time.sleep(60)
         self.assertIn('add-scanner', result.stderr)
         self.assertEqual(self.calls(), ['compose version'])
 
+    def test_refresh_scanner_respects_env_lock(self):
+        self.write_env(scanner_env())
+        (self.root / '.env.lock').mkdir()
+        result = self.command('refresh-scanner')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('Another ./scripts/install.sh command is changing .env', result.stderr)
+        self.assertEqual(self.calls(), ['compose version'])
+        self.assertTrue((self.root / '.env.lock').is_dir())
+
     def test_upgrade_does_not_enable_scanner(self):
         for values in (alpha_env(), installed_env(), clearnet_env()):
             with self.subTest(mode=values['APP_MODE'], alpha='SETUP_TOKEN' in values and 'APP_SECRET_KEY' not in values):
@@ -2340,6 +2588,41 @@ time.sleep(60)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('scanner signatures were not refreshed', result.stderr)
         self.assertIn('./scripts/install.sh refresh-scanner', result.stderr)
+        self.assertIn('Upgrade complete', result.stdout)
+
+    def test_upgrade_recreates_clamd_when_config_changed(self):
+        self.write_env(scanner_env())
+        self.set_installed(False)
+        old_config = (self.root / 'deploy' / 'clamd.conf').read_text().replace('SelfCheck 600', 'SelfCheck 300')
+        result = self.upgrade(extra_env={'INSTALLER_TEST_CLAMD_CONFIG': old_config})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.calls()
+        config_check = calls.index(CLAMD_CONFIG_READ)
+        force_recreate = calls.index('compose up -d --force-recreate clamd')
+        pull = calls.index('compose pull clamd')
+        self.assertLess(config_check, force_recreate)
+        self.assertLess(force_recreate, pull)
+        self.assertIn('configuration changed', result.stdout)
+        self.assertNotIn('SelfCheck 300', result.stdout + result.stderr)
+
+    def test_upgrade_does_not_force_recreate_clamd_when_config_matches(self):
+        self.write_env(scanner_env())
+        self.set_installed(False)
+        result = self.upgrade()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.calls()
+        self.assertIn(CLAMD_CONFIG_READ, calls)
+        self.assertNotIn('compose up -d --force-recreate clamd', calls)
+
+    def test_upgrade_continues_if_clamd_config_recreate_fails(self):
+        self.write_env(scanner_env())
+        self.set_installed(False)
+        old_config = (self.root / 'deploy' / 'clamd.conf').read_text().replace('SelfCheck 600', 'SelfCheck 300')
+        result = self.upgrade(extra_env={'INSTALLER_TEST_CLAMD_CONFIG': old_config,
+                                         'INSTALLER_TEST_CLAMD_RECREATE_FAIL': '1'})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('warning: clamd could not be recreated to apply its configuration', result.stderr)
+        self.assertIn('compose pull clamd', self.calls())
         self.assertIn('Upgrade complete', result.stdout)
 
     def test_status_prints_scanner(self):
@@ -2480,9 +2763,11 @@ time.sleep(60)
         self.assertNotRegex(INSTALLER.read_text(), r"PASSWORD='")
 
     def test_isolated_keys_cover_env_example(self):
-        # Commands unset these so Compose reads .env alone; .env.example documents every key the app reads.
+        # Commands unset these so Compose reads .env alone; the installer also keeps one bookkeeping-only key.
         keys = re.search(r"^env_keys='([^']*)'", INSTALLER.read_text(), re.M)[1].split()
-        self.assertEqual(sorted(keys), sorted(example_values()))
+        self.assertIn('CLAMAV_IMAGE_DEFAULT', keys)
+        retired_internal = {'CLAMAV_IMAGE_DEFAULT', 'MONERO_WALLET_RPC_PASSWORD'}
+        self.assertEqual(sorted(key for key in keys if key not in retired_internal), sorted(example_values()))
 
 
 if __name__ == '__main__':

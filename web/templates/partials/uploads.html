@@ -18,6 +18,7 @@
 <p class="photo-description">{{if .Description}}{{.Description}}{{else}}No description{{end}}</p>
 <form method="post" action="/listings/photo/remove">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/listings/photo/remove"}}">
 <input type="hidden" name="id" value="{{.ID}}">
 <button type="submit">Remove photo {{.N}}</button>
 </form>
@@ -65,6 +66,7 @@
 <p class="mono">Your avatar: JPEG, {{.Width}}×{{.Height}}, {{.KB}} KB</p>
 <form method="post" action="/account/avatar/remove">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/account/avatar/remove"}}">
 <button type="submit">Remove avatar</button>
 </form>
 </div>

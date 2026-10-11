@@ -23,7 +23,7 @@ done
 docker compose version >/dev/null
 # Only the temporary .env written below may configure Compose.
 unset COMPOSE_FILE COMPOSE_PROFILES COMPOSE_PROJECT_NAME COMPOSE_ENV_FILES DATABASE_URL SETUP_TOKEN POSTGRES_PASSWORD \
-  APP_MODE COOKIE_SECURE APP_PORT
+  APP_MODE COOKIE_SECURE APP_PORT BITCOIN_RPC_PASSWORD BITCOIN_RPC_AUTH
 work=$(mktemp -d "${TMPDIR:-/tmp}/opsecmkt-mirror-commands.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 cp compose*.yaml Dockerfile "$work/"
@@ -47,16 +47,16 @@ inline_commands=(
   'docs/operator-guide.md|docker compose up -d --force-recreate tor tor-mirror'
   'UPGRADING.md|docker compose up -d --force-recreate tor tor-mirror'
   'docs/testnet-runbook.md|`docker compose stop tor-mirror`'
-  # Recovery step 9 starts the mirror that step 1 stopped, then checks it runs.
+  # The last recovery step (8) starts the mirror that step 1 stopped, then checks it runs.
   'docs/testnet-runbook.md|run `docker compose up -d`'
   'docs/testnet-runbook.md|`docker compose ps tor-mirror`'
 )
 # database|COMPOSE_FILE|COMPOSE_PROFILES as scripts/install.sh writes them for Tor, with and without local nodes.
 # tests/test_installer.py runs the installer and fails if its values drift from these lines.
 installs=(
-  'internal|compose.yaml:compose.tor.yaml:compose.nodes.yaml:compose.internal-db.yaml|internal-db,bitcoin,monero,monero-wallet'
+  'internal|compose.yaml:compose.tor.yaml:compose.nodes.yaml:compose.internal-db.yaml|internal-db,bitcoin,monero'
   'internal|compose.yaml:compose.tor.yaml:compose.nodes.yaml:compose.internal-db.yaml|internal-db'
-  'external|compose.yaml:compose.tor.yaml:compose.nodes.yaml:compose.external-egress.yaml|bitcoin,monero,monero-wallet'
+  'external|compose.yaml:compose.tor.yaml:compose.nodes.yaml:compose.external-egress.yaml|bitcoin,monero'
   'external|compose.yaml:compose.tor.yaml:compose.nodes.yaml:compose.external-egress.yaml|'
 )
 
@@ -95,13 +95,17 @@ resolve() {
 }
 # write_env PROFILES: the installer's .env keys for this install ($url, $files) with COMPOSE_PROFILES=PROFILES.
 write_env() {
+  local bitcoin_password bitcoin_salt bitcoin_hash
+  bitcoin_password=$(openssl rand -hex 24)
+  bitcoin_salt=$(openssl rand -hex 16)
+  bitcoin_hash=$(printf '%s' "$bitcoin_password" | openssl dgst -sha256 -hmac "$bitcoin_salt" | sed 's/^.* //')
   cat > "$work/.env" <<ENV
 DATABASE_URL='$url'
 POSTGRES_PASSWORD='mirror-check'
 APP_SECRET_KEY='$(openssl rand -hex 32)'
 SETUP_TOKEN='$(openssl rand -hex 32)'
-BITCOIN_RPC_PASSWORD='$(openssl rand -hex 24)'
-MONERO_WALLET_RPC_PASSWORD='$(openssl rand -hex 24)'
+BITCOIN_RPC_PASSWORD='$bitcoin_password'
+BITCOIN_RPC_AUTH='marketplace:$bitcoin_salt\$$bitcoin_hash'
 APP_MODE='tor'
 COOKIE_SECURE='false'
 APP_PORT='8080'

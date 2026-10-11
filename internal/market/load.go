@@ -14,11 +14,50 @@ import (
 // A-181 (with A-16 catalog paging, A-60 PA-8): the catalog on / is searched with a capped, literal term and
 // served 25 listings a page, each card showing an excerpt; the product page keeps the full description.
 const (
-	searchMaxRunes  = 64  // characters of q kept, as the search boxes' maxlength counts them; so at most 256 bytes
-	filterMaxBytes  = 80  // category and region filters (a listing region is at most 80 bytes)
-	catalogPageSize = 25  // listings per catalog page
-	excerptRunes    = 300 // characters of description on a listing card, including the trailing "…"
+	searchMaxRunes   = 64  // characters of q kept, as the search boxes' maxlength counts them; so at most 256 bytes
+	filterMaxBytes   = 80  // category and region filters (a listing region is at most 80 bytes)
+	catalogPageSize  = 25  // listings per catalog page
+	excerptRunes     = 300 // characters of description on a listing card, including the trailing "…"
+	activityPageSize = 50  // rows per page on the signed-in user's orders, messages and notifications
 )
+
+// activityPaging is the signed-in user's history position. The count and row query share the same visibility
+// predicate; links contain only this user's page and, for messages, the validated recipient prefill.
+func activityPaging(path string, total int, raw string, extra url.Values) *ActivityPaging {
+	return activityPagingWithKey(path, "page", total, raw, extra)
+}
+
+func activityPagingWithKey(path, pageKey string, total int, raw string, extra url.Values) *ActivityPaging {
+	p := &ActivityPaging{Page: 1, Total: total, Pages: max(1, (total+activityPageSize-1)/activityPageSize)}
+	if n, err := strconv.Atoi(raw); err == nil && n > 1 {
+		p.Page = min(n, p.Pages)
+	} else if errors.Is(err, strconv.ErrRange) && !strings.HasPrefix(raw, "-") {
+		p.Page = p.Pages
+	}
+	if total > 0 {
+		p.First, p.Last = (p.Page-1)*activityPageSize+1, min(p.Page*activityPageSize, total)
+	}
+	link := func(n int) string {
+		v := maps.Clone(extra)
+		if v == nil {
+			v = url.Values{}
+		}
+		if n > 1 {
+			v.Set(pageKey, strconv.Itoa(n))
+		}
+		if encoded := v.Encode(); encoded != "" {
+			return path + "?" + encoded
+		}
+		return path
+	}
+	if p.Page > 1 {
+		p.PrevURL = link(p.Page - 1)
+	}
+	if p.Page < p.Pages {
+		p.NextURL = link(p.Page + 1)
+	}
+	return p
+}
 
 // cleanParam drops NUL bytes and invalid UTF-8 (PostgreSQL refuses both, which would be a 500), trims
 // surrounding space and cuts s to at most limit bytes without splitting a character.
@@ -84,6 +123,16 @@ type CatalogPaging struct {
 	Page, Pages, Total, First, Last int
 	PrevURL, NextURL                string
 }
+
+// ActivityPaging is one page of the signed-in user's activity history.
+type ActivityPaging struct {
+	Page, Pages, Total, First, Last int
+	PrevURL, NextURL                string
+}
+
+func (p ActivityPaging) PrevPage() int { return p.Page - 1 }
+func (p ActivityPaging) NextPage() int { return p.Page + 1 }
+func (p ActivityPaging) Offset() int   { return (p.Page - 1) * activityPageSize }
 
 // Offset is the number of listings before this page.
 func (p CatalogPaging) Offset() int { return (p.Page - 1) * catalogPageSize }
@@ -155,12 +204,21 @@ func pageSlice(d *PageData, all []Product, raw string) []Product {
 }
 
 // orderReadable is the order page's read rule over orders o joined to products p, for the viewer's id and role
-// (SQL placeholders): the buyer and the vendor, and a moderator or administrator while the order is disputed or
-// resolved, has a payment flagged for review or is an escrow order with an open staff alert (escrowStaffAlert, A-470).
+// (SQL placeholders): the buyer and the vendor, and a moderator or administrator once a dispute record exists
+// (including after concession), while a payment is flagged for review, or while an escrow staff alert is open
+// (escrowStaffAlert, A-470).
 // An archived listing's product page uses the same rule (A-164).
 func orderReadable(viewer, role string) string {
-	return "(o.buyer_id=" + viewer + " OR p.vendor_id=" + viewer + " OR (" + role + " IN ('moderator','admin') AND (o.state IN ('disputed','resolved') OR EXISTS(SELECT 1 FROM payments pm WHERE pm.order_id=o.id AND pm.flagged) OR " +
+	return "(o.buyer_id=" + viewer + " OR p.vendor_id=" + viewer + " OR (" + role + " IN ('moderator','admin') AND (EXISTS(SELECT 1 FROM disputes d WHERE d.order_id=o.id) OR EXISTS(SELECT 1 FROM payments pm WHERE pm.order_id=o.id AND pm.flagged) OR " +
 		escrowStaffAlert("o.id") + ")))"
+}
+
+// cancelledCustomerWork is the SQL test, over an orders alias, for a cancelled order its vendor keeps seeing (A-494):
+// checkout took an escrow for it (Bitcoin or Monero: one escrows table) or a payment to it was recorded. A draft
+// cancelled before checkout has neither: it is not customer work. The vendor's /orders list, its paging count and the
+// vendor desk's incoming-order history share this test so that they cannot drift.
+func cancelledCustomerWork(order string) string {
+	return "(EXISTS(SELECT 1 FROM escrows es WHERE es.order_id=" + order + ".id) OR EXISTS(SELECT 1 FROM payments pm WHERE pm.order_id=" + order + ".id))"
 }
 
 // load fills generic page data, then runs registered loaders (routes.go).
@@ -216,8 +274,17 @@ func (a *App) load(r *http.Request, d *PageData) error {
 			d.Paging = &paging
 			limit = " LIMIT " + strconv.Itoa(catalogPageSize) + " OFFSET " + strconv.Itoa(paging.Offset())
 		case "vendor-dashboard":
-			query += " AND p.vendor_id=$1"
-			args = append(args, d.User.ID)
+			filter := inventoryFilter(r.URL.Query().Get("inventory"))
+			var total, active, archived int
+			if err = a.db.QueryRowContext(ctx, `SELECT count(*) FILTER (WHERE $2='all' OR archived=($2='archived')),
+				count(*) FILTER (WHERE NOT archived),count(*) FILTER (WHERE archived) FROM products WHERE vendor_id=$1`, d.User.ID, filter).Scan(&total, &active, &archived); err != nil {
+				return err
+			}
+			paging := inventoryPaging(filter, d.Currency, total, r.URL.Query().Get("page"))
+			d.Inventory = &InventoryView{Active: active, Archived: archived, Total: active + archived, Filter: filter, Paging: &paging}
+			query += " AND p.vendor_id=$1 AND ($2='all' OR p.archived=($2='archived'))"
+			args = append(args, d.User.ID, filter, inventoryPageSize, paging.Offset())
+			limit = " LIMIT $3 OFFSET $4"
 		case "catalog":
 			// The term is matched literally (likePattern); the count and the page share one filter. E'\\' is one
 			// backslash whatever standard_conforming_strings an external database sets.
@@ -256,6 +323,12 @@ func (a *App) load(r *http.Request, d *PageData) error {
 			}
 			p.PriceBTC = amount(btc, 8)
 			p.PriceXMR = amount(xmr, 12)
+			if btc < payoutFloor("BTC", "release") {
+				p.BTCOrderUnavailable = subFloorListing("BTC", xmr)
+			}
+			if xmr < payoutFloor("XMR", "release") {
+				p.XMROrderUnavailable = subFloorListing("XMR", btc)
+			}
 			d.Products = append(d.Products, p)
 		}
 		err = rows.Err()
@@ -271,7 +344,7 @@ func (a *App) load(r *http.Request, d *PageData) error {
 		}
 		if d.Page == "vendor" {
 			var u User
-			err = a.db.QueryRowContext(ctx, "SELECT id,handle,role,pgp,xmpp FROM users WHERE id=$1 AND role IN ('vendor','admin')", r.URL.Query().Get("id")).Scan(&u.ID, &u.Handle, &u.Role, &u.PGP, &u.XMPP)
+			err = a.db.QueryRowContext(ctx, "SELECT id,handle,role,pgp FROM users WHERE id=$1 AND role IN ('vendor','admin')", r.URL.Query().Get("id")).Scan(&u.ID, &u.Handle, &u.Role, &u.PGP)
 			if err != nil {
 				return err
 			}
@@ -283,7 +356,10 @@ func (a *App) load(r *http.Request, d *PageData) error {
 		case "orders", "order", "disputes":
 			// No admin order list (A-127): staff see an order only while it is disputed or resolved, a payment on it
 			// is flagged (A-24, /canary#records) or it is an escrow order with an open staff alert (A-470).
-			query := orderQuery + " WHERE (o.buyer_id=$1 OR p.vendor_id=$1)"
+			// Buyers keep their full order history. Vendor-side activity excludes drafts and
+			// cancelled orders that never had an escrow or a payment: those are not customer work.
+			activityVisible := "(o.buyer_id=$1 OR (p.vendor_id=$1 AND o.state<>'draft' AND (o.state<>'cancelled' OR " + cancelledCustomerWork("o") + ")))"
+			query := orderQuery + " WHERE " + activityVisible
 			args := []any{d.User.ID}
 			if d.Page == "order" {
 				// Moderators and administrators may also open disputed or resolved orders, orders with a payment
@@ -294,8 +370,18 @@ func (a *App) load(r *http.Request, d *PageData) error {
 			if d.Page == "disputes" {
 				// Only disputable orders, and every one of them: an old shipped order must stay selectable.
 				query += " AND o.state IN ('paid','shipped','delivered') ORDER BY o.created DESC"
+			} else if d.Page == "orders" {
+				var total int
+				if err = a.db.QueryRowContext(ctx, "SELECT count(*) FROM orders o JOIN products p ON p.id=o.product_id WHERE "+activityVisible, d.User.ID).Scan(&total); err != nil {
+					return err
+				}
+				d.ActivityPaging = activityPaging("/orders", total, r.URL.Query().Get("page"), nil)
+				// Keep buyer history in its established creation order; vendor-side orders use
+				// last-change order so an active update surfaces in the vendor's activity list.
+				query += " ORDER BY CASE WHEN o.buyer_id=$1 THEN o.created ELSE o.updated END DESC,o.id DESC LIMIT $2 OFFSET $3"
+				args = append(args, activityPageSize, d.ActivityPaging.Offset())
 			} else {
-				query += " ORDER BY o.created DESC LIMIT 100"
+				query += " ORDER BY o.created DESC,o.id DESC LIMIT 1"
 			}
 			rows, err = a.db.QueryContext(ctx, query, args...)
 			if err != nil {
@@ -322,7 +408,21 @@ func (a *App) load(r *http.Request, d *PageData) error {
 			}
 		}
 		if d.Page == "messages" {
-			rows, err = a.db.QueryContext(ctx, `SELECT m.id,s.handle,t.handle,m.body,to_char(m.created,'YYYY-MM-DD HH24:MI "UTC"') FROM messages m JOIN users s ON s.id=m.sender_id JOIN users t ON t.id=m.recipient_id WHERE m.sender_id=$1 OR m.recipient_id=$1 ORDER BY m.created DESC LIMIT 100`, d.User.ID)
+			// A valid recipient also selects only this viewer's correspondence with that exact handle.
+			// Unknown valid handles yield an empty conversation; invalid prefill stays ignored as before.
+			to := r.URL.Query().Get("to")
+			if !handlePattern.MatchString(to) {
+				to = ""
+			}
+			const inbox = ` FROM messages m JOIN users s ON s.id=m.sender_id JOIN users t ON t.id=m.recipient_id
+				WHERE (m.sender_id=$1 OR m.recipient_id=$1) AND
+				($2='' OR (m.sender_id=$1 AND t.handle=$2) OR (m.recipient_id=$1 AND s.handle=$2))`
+			var total int
+			if err = a.db.QueryRowContext(ctx, `SELECT count(*)`+inbox, d.User.ID, to).Scan(&total); err != nil {
+				return err
+			}
+			d.ActivityPaging = activityPaging("/messages", total, r.URL.Query().Get("page"), nil)
+			rows, err = a.db.QueryContext(ctx, `SELECT m.id,s.handle,t.handle,m.body,to_char(m.created,'YYYY-MM-DD HH24:MI "UTC"')`+inbox+` ORDER BY m.created DESC,m.id DESC LIMIT $3 OFFSET $4`, d.User.ID, to, activityPageSize, d.ActivityPaging.Offset())
 			if err != nil {
 				return err
 			}
@@ -341,13 +441,18 @@ func (a *App) load(r *http.Request, d *PageData) error {
 			}
 		}
 		if d.Page == "notifications" {
-			rows, err = a.db.QueryContext(ctx, `SELECT id,body,to_char(created,'YYYY-MM-DD HH24:MI "UTC"'),is_read FROM notifications WHERE user_id=$1 ORDER BY created DESC LIMIT 100`, d.User.ID)
+			var total int
+			if err = a.db.QueryRowContext(ctx, `SELECT count(*) FROM notifications WHERE user_id=$1`, d.User.ID).Scan(&total); err != nil {
+				return err
+			}
+			d.ActivityPaging = activityPaging("/notifications", total, r.URL.Query().Get("page"), nil)
+			rows, err = a.db.QueryContext(ctx, `SELECT id,body,to_char(created,'YYYY-MM-DD HH24:MI "UTC"'),is_read,COALESCE(order_id,'') FROM notifications WHERE user_id=$1 ORDER BY is_read ASC,created DESC,id DESC LIMIT $2 OFFSET $3`, d.User.ID, activityPageSize, d.ActivityPaging.Offset())
 			if err != nil {
 				return err
 			}
 			for rows.Next() {
 				var n Notification
-				if err = rows.Scan(&n.ID, &n.Body, &n.Created, &n.Read); err != nil {
+				if err = rows.Scan(&n.ID, &n.Body, &n.Created, &n.Read, &n.OrderID); err != nil {
 					rows.Close()
 					return err
 				}
@@ -360,13 +465,18 @@ func (a *App) load(r *http.Request, d *PageData) error {
 			}
 		}
 		if d.Page == "admin" {
-			rows, err = a.db.QueryContext(ctx, "SELECT id,handle,role,pgp,xmpp FROM users ORDER BY created DESC LIMIT 100")
+			var total int
+			if err = a.db.QueryRowContext(ctx, "SELECT count(*) FROM users").Scan(&total); err != nil {
+				return err
+			}
+			d.AdminUsersPaging = activityPagingWithKey("/admin", "users_page", total, r.URL.Query().Get("users_page"), nil)
+			rows, err = a.db.QueryContext(ctx, "SELECT id,handle,role,pgp FROM users ORDER BY created DESC,id DESC LIMIT $1 OFFSET $2", activityPageSize, d.AdminUsersPaging.Offset())
 			if err != nil {
 				return err
 			}
 			for rows.Next() {
 				var u User
-				if err = rows.Scan(&u.ID, &u.Handle, &u.Role, &u.PGP, &u.XMPP); err != nil {
+				if err = rows.Scan(&u.ID, &u.Handle, &u.Role, &u.PGP); err != nil {
 					rows.Close()
 					return err
 				}
@@ -379,13 +489,21 @@ func (a *App) load(r *http.Request, d *PageData) error {
 			}
 		}
 		if d.Page == "account" || d.Page == "admin" {
-			// The admin audit trail lists every user's events; the account page shows only the viewer's recent ones.
+			// The admin audit trail lists the latest 100 events across accounts, or for one exact handle; the
+			// account page continues to show only the viewer's own recent events.
 			all, limit := d.Page == "admin" && d.User.Role == "admin", 100
+			filterHandle := ""
 			if d.Page == "account" {
 				limit = 15
+			} else if all {
+				filterHandle = r.URL.Query().Get("audit_handle")
+				if filterHandle != "" && !handlePattern.MatchString(filterHandle) {
+					return fail(400, "Enter an exact account handle of 3–32 letters, digits or underscores")
+				}
+				d.AuditHandle = filterHandle
 			}
 			rows, err = a.db.QueryContext(ctx, `SELECT COALESCE(u.handle,''),e.action,to_char(e.created,'YYYY-MM-DD HH24:MI "UTC"') FROM audit_events e LEFT JOIN users u ON u.id=e.user_id
-				WHERE e.user_id=$1 OR $2 ORDER BY e.created DESC,e.id DESC LIMIT $3`, d.User.ID, all, limit)
+				WHERE (e.user_id=$1 OR $2) AND ($4='' OR ($2 AND u.handle=$4)) ORDER BY e.created DESC,e.id DESC LIMIT $3`, d.User.ID, all, limit, filterHandle)
 			if err != nil {
 				return err
 			}
@@ -404,7 +522,18 @@ func (a *App) load(r *http.Request, d *PageData) error {
 			}
 		}
 	}
-	return runLoaders(ctx, a, r, d)
+	if err := runLoaders(ctx, a, r, d); err != nil {
+		return err
+	}
+	// Recipient prefill is validated by its page loader, so carry it into links only after that validation ran.
+	if d.Page == "messages" && d.ActivityPaging != nil {
+		extra := url.Values{}
+		if d.MessageTo != "" {
+			extra.Set("to", d.MessageTo)
+		}
+		d.ActivityPaging = activityPaging("/messages", d.ActivityPaging.Total, r.URL.Query().Get("page"), extra)
+	}
+	return nil
 }
 
 func previewData(page string) PageData {
@@ -427,5 +556,5 @@ func previewData(page string) PageData {
 		u.Role = "vendor"
 	}
 	o := Order{ID: previewDraftID, ProductID: p[0].ID, Title: p[0].Title, Buyer: u.Handle, Vendor: p[0].Vendor, Currency: "BTC", Amount: p[0].PriceBTC, State: stateDraft, Status: stateLabel(stateDraft), Kind: p[0].Kind, BuyerID: u.ID, VendorID: p[0].VendorID, Created: "Sample order", Updated: "Sample order"}
-	return PageData{Page: page, Title: strings.ReplaceAll(strings.Title(page), "-", " "), Preview: true, User: u, Products: p, Product: &p[0], Orders: []Order{o}, Order: &o, Currency: "BTC", Settings: map[string]string{"site_name": "OPSMKT"}, Users: []User{{ID: "ghost", Handle: "ghost_circuit", Role: "vendor"}}, Events: []Event{{Handle: u.Handle, Action: "Preview only — no real activity", Created: "—"}}}
+	return PageData{Page: page, Title: strings.ReplaceAll(strings.Title(page), "-", " "), Preview: true, User: u, Products: p, Product: &p[0], Orders: []Order{o}, Order: &o, Currency: "BTC", BitcoinPriceLabel: "Price (BTC, test network)", Settings: map[string]string{"site_name": "OPSMKT"}, Users: []User{{ID: "ghost", Handle: "ghost_circuit", Role: "vendor"}}, Events: []Event{{Handle: u.Handle, Action: "Preview only — no real activity", Created: "—"}}}
 }

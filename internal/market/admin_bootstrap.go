@@ -16,7 +16,7 @@ func CheckBootstrapInput(handle, siteName string) error {
 		return errors.New("use a 3–32 character handle (letters, digits, underscores)")
 	}
 	if _, err := setupSiteName(siteName); err != nil {
-		return errors.New("use a marketplace name of at most 80 bytes")
+		return errors.New("use a marketplace name of at most 80 characters")
 	}
 	return nil
 }

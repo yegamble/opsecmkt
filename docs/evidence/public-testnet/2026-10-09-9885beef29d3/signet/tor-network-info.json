@@ -1,0 +1,42 @@
+{
+  "subversion": "/Satoshi:31.1.0/",
+  "connections": 10,
+  "networks": [
+    {
+      "name": "ipv4",
+      "limited": false,
+      "reachable": true,
+      "proxy": "10.199.42.2:9050",
+      "proxy_randomize_credentials": true
+    },
+    {
+      "name": "ipv6",
+      "limited": false,
+      "reachable": true,
+      "proxy": "10.199.42.2:9050",
+      "proxy_randomize_credentials": true
+    },
+    {
+      "name": "onion",
+      "limited": false,
+      "reachable": true,
+      "proxy": "10.199.42.2:9050",
+      "proxy_randomize_credentials": true
+    },
+    {
+      "name": "i2p",
+      "limited": true,
+      "reachable": false,
+      "proxy": "",
+      "proxy_randomize_credentials": false
+    },
+    {
+      "name": "cjdns",
+      "limited": true,
+      "reachable": false,
+      "proxy": "10.199.42.2:9050",
+      "proxy_randomize_credentials": true
+    }
+  ],
+  "localrelay": true
+}

@@ -153,7 +153,19 @@ func prepareDatabase(ctx context.Context, db *sql.DB, t startupTimeouts) error {
 	}
 	migrateCtx, cancelMigrate := context.WithTimeout(ctx, t.migrate)
 	defer cancelMigrate()
-	if err = runMigrations(migrateCtx, tx); err != nil {
+	before, _, snapshotErr := migrationSnapshot(migrateCtx, tx)
+	err = snapshotErr
+	if err == nil {
+		err = runMigrations(migrateCtx, tx)
+	}
+	if err == nil {
+		var after, version int
+		after, version, err = migrationSnapshot(migrateCtx, tx)
+		if err == nil && after > before {
+			_, err = tx.ExecContext(migrateCtx, "INSERT INTO audit_events(user_id,action) VALUES(NULL,$1)", fmt.Sprintf("Startup applied %d database migrations; schema version %03d", after-before, version))
+		}
+	}
+	if err != nil {
 		if timedOut(ctx, migrateCtx) {
 			abandon()
 			return fmt.Errorf("database migration timed out after %s and was rolled back; nothing was changed. Raise MIGRATION_TIMEOUT (a large database can need longer) and start again", t.migrate)
@@ -161,4 +173,15 @@ func prepareDatabase(ctx context.Context, db *sql.DB, t startupTimeouts) error {
 		return fmt.Errorf("database migration failed: %w", err)
 	}
 	return tx.Commit()
+}
+
+// migrationSnapshot is read under the startup migration lock. Counting catches a missing migration even
+// when a higher version was already recorded; the highest version alone cannot describe applied work.
+func migrationSnapshot(ctx context.Context, tx *sql.Tx) (count, version int, err error) {
+	var exists bool
+	if err = tx.QueryRowContext(ctx, "SELECT to_regclass('schema_migrations') IS NOT NULL").Scan(&exists); err != nil || !exists {
+		return
+	}
+	err = tx.QueryRowContext(ctx, "SELECT count(*),COALESCE(max(version),0) FROM schema_migrations").Scan(&count, &version)
+	return
 }

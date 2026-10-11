@@ -1,0 +1,57 @@
+{
+  "chain": "regtest",
+  "core_version": 310100,
+  "descriptor_gui_import_attested": false,
+  "hardware_device_attested": false,
+  "machine_checked": {
+    "core_transaction_outputs": "all matched frozen plans",
+    "practice": "buyer and vendor accepted",
+    "signature_shape": "own partial SIGHASH_ALL on every input"
+  },
+  "operator_attested": {
+    "address_checks": [
+      "buyer practice",
+      "vendor practice",
+      "vendor release /0/0",
+      "buyer refund /0/3"
+    ],
+    "frozen_app_git_revision": "f229a1a65172986065bbab4f3aa24a09725695ad",
+    "refund_signed_source": "hardware",
+    "release_signed_source": "ordinary",
+    "sparrow_version": "2.5.5",
+    "sparrow_dmg_sha256": "02be94466d92bef4b81b6b9c3efaf6ef4910f713330065309750e92679f711cd"
+  },
+  "release": {
+    "confirmations": 3,
+    "funding_txids": [
+      "c193293f2c346eaf83110fb9b4094a97168f2026efb1ce346fae212fa8451655"
+    ],
+    "planned_outputs": [
+      {
+        "n": 0,
+        "role": "claimant",
+        "address": "bcrt1qt56yuy2yaju3al24atpk9aclfxvhzlp3gdg7we",
+        "sats": 99682
+      }
+    ],
+    "status": "confirmed",
+    "txid": "a9190bd5180bb5ee1750cfbe4bc1de1cfb380c8df8a1ba667d4e06e90b7d3d5a"
+  },
+  "sibling_refund": {
+    "confirmations": 3,
+    "funding_txids": [
+      "399b688b6fe4d45a3d580fee42a8a6c5c6d3a74b424ad63e544bac7554cc7784"
+    ],
+    "planned_outputs": [
+      {
+        "n": 0,
+        "role": "claimant",
+        "address": "bcrt1qrhfs7glcyvk0yauc87anp03tsf0sljvs5t6gyg",
+        "sats": 69682
+      }
+    ],
+    "status": "confirmed",
+    "txid": "7fcf8c060d614ab2692bfe57947a75327b6953e5b24738addb3ae7784f86390b"
+  },
+  "status": "confirmed"
+}

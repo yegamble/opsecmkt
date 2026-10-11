@@ -3,10 +3,25 @@ package market
 import "strings"
 
 func init() {
-	registerAction("/messages", actionSpec{Run: messageAction})
-	registerAction("/notifications", actionSpec{Run: func(c *actionCtx) (actionResult, error) {
+	registerAction("/messages", actionSpec{FormNonce: true, Run: messageAction})
+	registerAction("/notifications", actionSpec{FormNonce: true, Run: func(c *actionCtx) (actionResult, error) {
+		if c.Form.Get("mark_all") == "1" {
+			result, err := c.Tx.ExecContext(c.Ctx(), "UPDATE notifications SET is_read=true WHERE user_id=$1 AND NOT is_read", c.User.ID)
+			if err != nil {
+				return actionResult{}, err
+			}
+			changed, err := result.RowsAffected()
+			if err != nil {
+				return actionResult{}, err
+			}
+			audit := ""
+			if changed > 0 {
+				audit = "Marked all notifications read"
+			}
+			return actionResult{Redirect: "/notifications", Audit: audit}, nil
+		}
 		_, err := c.Tx.ExecContext(c.Ctx(), "UPDATE notifications SET is_read=true WHERE id=$1 AND user_id=$2", c.Form.Get("id"), c.User.ID)
-		return actionResult{Redirect: "/notifications", Audit: "Marked notification read"}, err
+		return actionResult{Redirect: "/notifications"}, err
 	}})
 }
 
@@ -23,11 +38,15 @@ func messageAction(c *actionCtx) (actionResult, error) {
 	}
 	// P2: packet inspection rejects anything that is not OpenPGP-encrypted and records the recipient-key
 	// match; only the canonical re-armor of the packets is stored (A-67).
-	body, match, err := inspectMessage(c, body, recipient)
+	body, match, extraKeys, extraKeysKnown, err := inspectMessage(c, body, recipient)
 	if err != nil {
 		return actionResult{}, err
 	}
-	_, err = tx.ExecContext(ctx, "INSERT INTO messages(id,sender_id,recipient_id,body,encrypted,recipient_match) VALUES($1,$2,$3,$4,true,$5)", randomToken(), u.ID, recipient, body, match)
+	var extraKeysValue any
+	if extraKeysKnown {
+		extraKeysValue = extraKeys
+	}
+	_, err = tx.ExecContext(ctx, "INSERT INTO messages(id,sender_id,recipient_id,body,encrypted,recipient_match,recipient_extra_keys) VALUES($1,$2,$3,$4,true,$5,$6)", randomToken(), u.ID, recipient, body, match, extraKeysValue)
 	if err == nil {
 		_, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), recipient, "New message from "+u.Handle)
 	}

@@ -101,6 +101,9 @@ func TestSetRole(t *testing.T) {
 	if got != "Role of root_admin changed from admin to buyer; ended 2 session(s) and any pending sign-ins; removed their staff avatar" {
 		t.Fatalf("summary %q", got)
 	}
+	if notice := agStr(e, "SELECT body FROM notifications WHERE user_id=$1", rootID); notice != "Your account role changed from admin to buyer. Your staff avatar was removed. Your existing sessions and pending sign-ins were ended." || agInt(e, "SELECT count(*) FROM notifications WHERE user_id=$1", rootID) != 1 {
+		t.Fatalf("host demotion notice %q", notice)
+	}
 	if agUserSessions(e, rootID) != 0 || agInt(e, "SELECT count(*) FROM pending_logins WHERE user_id=$1", rootID) != 0 {
 		t.Fatal("a removed administrator's sessions or pending sign-ins survived")
 	}

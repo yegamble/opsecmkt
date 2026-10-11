@@ -25,21 +25,24 @@ import (
 //     vendor; a decision for the buyer supersedes it (escrowSettleTerminal).
 //  4. Confirm receipt (/escrow-xmr/confirm): the buyer of a shipped order gives their password; under the order row lock,
 //     rechecked shipped with no dispute, the order moves shipped -> completed by the buyer through xmrConfirmOnly, the
-//     one escrow exception to pooledOnly. A completed order cannot be disputed. Otherwise the release deadline completes
+//     one exception to buyerCompleteRefused. A completed order cannot be disputed. Otherwise the release deadline completes
 //     it (escrow_xmr_deadline.go).
 //
 // No step makes an RPC: addresses are parsed offline (checkXMRFormAddress).
 
 func init() {
-	registerAction("/escrow-xmr/claim", actionSpec{OwnTx: true, OneAtATime: true, Off: escrowXMROff, Run: xmrEscrowClaimAction})
-	registerAction("/escrow-xmr/ship", actionSpec{OwnTx: true, OneAtATime: true, Off: escrowXMROff, Run: xmrEscrowShipAction})
-	registerAction("/escrow-xmr/confirm", actionSpec{OwnTx: true, OneAtATime: true, Off: escrowXMROff, Run: xmrConfirmReceiptAction})
+	registerAction("/escrow-xmr/claim", actionSpec{Roles: escrowPartyRoles, OwnTx: true, OneAtATime: true, Off: escrowXMROff,
+		ConfirmedFormNonce: true, ReceiptAuthorize: xmrClaimReceiptAuthorize, Run: xmrEscrowClaimAction})
+	registerAction("/escrow-xmr/ship", actionSpec{Roles: escrowPartyRoles, OwnTx: true, OneAtATime: true, Off: escrowXMROff,
+		ConfirmedFormNonce: true, ReceiptAuthorize: xmrShipReceiptAuthorize, Run: xmrEscrowShipAction})
+	registerAction("/escrow-xmr/confirm", actionSpec{Roles: escrowPartyRoles, OwnTx: true, OneAtATime: true, Off: escrowXMROff,
+		ConfirmedFormNonce: true, ReceiptAuthorize: xmrConfirmReceiptAuthorize, Run: xmrConfirmReceiptAction})
 }
 
 // A-405: the pooled ship and Complete forms and a moderator's resolve refuse a Monero escrow order with Monero wording
-// (errShipPooledForm, errEscrowComplete and errEscrowResolveAdmin are Bitcoin escrow's).
+// (errShipPlainForm, errEscrowComplete and errEscrowResolveAdmin are Bitcoin escrow's).
 var (
-	errShipPooledFormXMR     = fail(409, "This order is paid into a Monero escrow: mark it shipped with the Monero escrow form on the order page, which takes the address the release to you pays, and your password. Nothing was changed.")
+	errShipPlainFormXMR      = fail(409, "This order is paid into a Monero escrow: mark it shipped with the Monero escrow form on the order page, which takes the address the release to you pays, and your password. Nothing was changed.")
 	errEscrowCompleteXMR     = fail(409, "This order is paid into a Monero escrow: use Confirm receipt on the order page, which asks for your password, not this form. Nothing was changed.")
 	errXMREscrowResolveAdmin = fail(403, "Only an administrator decides a dispute on a Monero escrow order: the decision moves coins from the escrow. Nothing was changed.")
 )
@@ -50,8 +53,8 @@ var (
 	errConfirmNotShipped = fail(409, "Only a shipped order's receipt can be confirmed. Reload the page. Nothing was changed.")
 	errConfirmDisputed   = fail(409, "This order is disputed: an administrator decides it, and the decision settles the escrow, so receipt cannot be confirmed now. Nothing was changed.")
 	errXMRReleaseFinal   = fail(409, "The release to the vendor already has its transaction, built by the market from this order's escrow account, so the escrow pays the vendor and the dispute cannot be decided for the buyer. Decide it for the vendor. Nothing was changed.")
-	xmrShippedNote       = "Release requested at shipment (Monero escrow): the vendor gave the address the release pays. Nothing is built or sent before the order is completed: when the buyer confirms receipt, or at the release deadline if the buyer has neither confirmed receipt nor opened a dispute, the market builds the release from this order's escrow account (less the market fee and the network fee; any amount paid above the price goes back to the buyer's refund address) and sends it."
-	xmrClaimNote         = "Vendor requested the escrow claim (Monero escrow): the market builds the release from this order's escrow account (less the market fee and the network fee; any amount paid above the price goes back to the buyer's refund address) and sends it. Nothing is sent yet."
+	xmrShippedNote       = "Release requested at shipment (Monero escrow): the vendor gave the address the release pays. Nothing is built or sent before the order is completed: when the buyer confirms receipt, or at the release deadline if the buyer has neither confirmed receipt nor opened a dispute, the market builds the release from this order's escrow account (less the market fee and the network fee; " + escrowExcessRule("XMR") + ") and sends it."
+	xmrClaimNote         = "Vendor requested the escrow claim (Monero escrow): the market builds the release from this order's escrow account (less the market fee and the network fee; " + escrowExcessRule("XMR") + ") and sends it. Nothing is sent yet."
 	xmrConfirmedNote     = "Receipt confirmed by the buyer (Monero escrow): the order is completed, and the market builds the release of the escrowed coins to the address the vendor gave when marking it shipped, and sends it. This cannot be undone."
 )
 
@@ -99,11 +102,11 @@ func insertXMRRelease(c *actionCtx, orderID, dest string) error {
 
 // xmrEscrowClaimAction: the vendor requests the release of a completed Monero escrow order (step 1 of the file comment).
 func xmrEscrowClaimAction(c *actionCtx) (actionResult, error) {
-	dest, err := xmrClaimForm(c)
-	if err != nil {
-		return actionResult{}, err
-	}
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
+		dest, err := xmrClaimForm(c)
+		if err != nil {
+			return actionResult{}, err
+		}
 		ctx := c.Ctx()
 		o, err := partyOrder(c, c.Form.Get("order_id"))
 		if err != nil {
@@ -137,11 +140,11 @@ func xmrEscrowClaimAction(c *actionCtx) (actionResult, error) {
 
 // xmrEscrowShipAction: the vendor of a paid physical Monero escrow order marks it shipped (step 2 of the file comment).
 func xmrEscrowShipAction(c *actionCtx) (actionResult, error) {
-	dest, err := xmrClaimForm(c)
-	if err != nil {
-		return actionResult{}, err
-	}
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
+		dest, err := xmrClaimForm(c)
+		if err != nil {
+			return actionResult{}, err
+		}
 		ctx := c.Ctx()
 		o, err := partyOrder(c, c.Form.Get("order_id"))
 		switch {
@@ -198,16 +201,18 @@ const xmrResolveConfirm = "I checked the amount and who receives it for the outc
 // xmrDisputePreview is escrowDisputePreview for a Monero escrow order (A-405): the counted escrowed amount in XMR, the
 // transaction each outcome has the market build from the order's account, and the release requested at shipment.
 func (a *App) xmrDisputePreview(ctx context.Context, o *Order) (PayoutPreview, error) {
-	var sum int64
+	var sum, left int64
 	var release, final bool
-	if err := a.db.QueryRowContext(ctx, `SELECT COALESCE((SELECT sum(amount) FROM payments WHERE order_id=$1 AND confirmations>=0 AND NOT locked AND NOT after_close),0),
-		EXISTS(SELECT 1 FROM xmr_settlements WHERE order_id=$1 AND kind='release' AND state<>'superseded'),
-		EXISTS(SELECT 1 FROM xmr_settlements WHERE order_id=$1 AND kind='release' AND state<>'superseded' AND (tx_hash IS NOT NULL OR state='external'))`, o.ID).Scan(&sum, &release, &final); err != nil {
+	if err := a.db.QueryRowContext(ctx, escrowCountedSQL, o.ID).Scan(&sum, &left); err != nil {
 		return PayoutPreview{}, err
 	}
-	escrowed := a.escrowAmount(o, sum)
+	if err := a.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM xmr_settlements WHERE order_id=$1 AND kind='release' AND state<>'superseded'),
+		EXISTS(SELECT 1 FROM xmr_settlements WHERE order_id=$1 AND kind='release' AND state<>'superseded' AND (tx_hash IS NOT NULL OR state='external'))`, o.ID).Scan(&release, &final); err != nil {
+		return PayoutPreview{}, err
+	}
+	escrowed, fees := a.escrowAmount(o, sum), escrowReleaseFees(a.escrowExcess(o, sum-left))
 	p := PayoutPreview{Seen: sum, Confirm: xmrResolveConfirm,
-		Release: "Release to " + o.Vendor + ": the vendor claims the escrowed " + escrowed + " with a fresh address, and the market builds the release from this order's escrow account and sends it (less the market fee and the network fee; any amount paid above the price goes back to the buyer)",
+		Release: "Release to " + o.Vendor + ": the vendor claims the escrowed " + escrowed + " with a fresh address, and the market builds the release from this order's escrow account and sends it " + fees,
 		Refund:  "Refund to " + o.Buyer + ": the escrowed " + escrowed + ", less the network fee, go back to the buyer's refund address by a refund the market builds from this order's escrow account and sends",
 		Escrow:  "This is a Monero escrow order (" + a.xmrEscrowNetShort() + "): its coins are " + xmrCustody + ". The decision is paid from this order's escrow account by a transaction the market builds and sends: a refund goes to the buyer's refund address given at checkout; a release pays the address the vendor gave when marking the order shipped, or one the vendor gives afterwards to claim to. On its next pass after you resolve, the market sends the coins to the vendor or refunds the buyer, as you decide: this cannot be undone, and the decision cannot be changed once it is made."}
 	switch {
@@ -215,7 +220,7 @@ func (a *App) xmrDisputePreview(ctx context.Context, o *Order) (PayoutPreview, e
 		p.Release = "Release to " + o.Vendor + ": the release to the vendor already has its transaction, so the escrow pays the vendor"
 		p.Refund = "Refund to " + o.Buyer + ": refused, because the release to the vendor already has its transaction"
 	case release:
-		p.Release = "Release to " + o.Vendor + ": the release to the vendor requested when the order was shipped pays the escrowed " + escrowed + " to the address the vendor gave then (less the market fee and the network fee; any amount paid above the price goes back to the buyer)"
+		p.Release = "Release to " + o.Vendor + ": the release to the vendor requested when the order was shipped pays the escrowed " + escrowed + " to the address the vendor gave then " + fees
 		p.Refund += "; the release to the vendor requested when the order was shipped is cancelled"
 	}
 	return p, nil

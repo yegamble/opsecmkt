@@ -51,6 +51,16 @@ read_archive() {
     (cd "$root_dir" && docker compose exec -T -e TZ=UTC db pg_restore "$@")
   fi
 }
+selected_pg_restore_version() {
+  if [[ -n ${RESTORE_DATABASE_URL:-} ]]; then
+    python3 "$script_dir/postgres-tool.py" RESTORE_DATABASE_URL pg_restore --version
+  else
+    # This probe runs before the operator's typed confirmation. Keep it from consuming stdin
+    # when the caller provides that confirmation non-interactively (for example, in a recovery
+    # rehearsal using a here-string).
+    (cd "$root_dir" && docker compose exec -T db pg_restore --version </dev/null)
+  fi
+}
 # QA5W4B-2, QA5W5B-1: the encoding the dump's text was written in, from the SET client_encoding its script starts with,
 # and the encoding of the database it was taken from, from its DATABASE entry's CREATE DATABASE (--create prints that
 # entry whatever the list selects; the empty list selects nothing else, so only the start of the archive is read).
@@ -90,6 +100,19 @@ elif [[ $archive_encoding != SQL_ASCII && ! ($archive_encoding == UTF8 && ($sour
     "$source_encoding" "$archive_encoding" "$effect" "$source_encoding" >&2
   exit 1
 fi
+# Custom archives record the pg_dump client that produced them. Refuse an older
+# or unrecognized restore client before the operator confirms or any database is
+# created/changed. Do not print raw archive headers or connection configuration.
+dump_client_version=$(age -d -i "$AGE_IDENTITY" "$1" 2>/dev/null | read_archive --list 2>/dev/null |
+  sed -n '/^;[[:space:]]*Dumped by pg_dump version:/ { s/^;[[:space:]]*Dumped by pg_dump version:[[:space:]]*//; p; q; }') || true
+restore_client_version=$(selected_pg_restore_version) || {
+  echo 'Cannot determine the selected pg_restore version; nothing was changed.' >&2; exit 1; }
+if [[ -z $dump_client_version ]] || ! python3 "$script_dir/postgres-policy.py" compatible "$dump_client_version" "$restore_client_version"; then
+  if [[ -z $dump_client_version ]]; then
+    echo 'Cannot determine which pg_dump version created this archive; nothing was changed.' >&2
+  fi
+  exit 1
+fi
 read -r -p "Restore into $destination? Type RESTORE: " confirmation
 [[ $confirmation == RESTORE ]] || { echo 'Cancelled'; exit 1; }
 if [[ -n ${RESTORE_INTERNAL_DATABASE:-} ]]; then
@@ -103,21 +126,15 @@ if [[ -n ${RESTORE_INTERNAL_DATABASE:-} ]]; then
 fi
 # No --clean: this cannot silently delete an existing schema. Transaction rolls back on conflicts.
 age -d -i "$AGE_IDENTITY" "$1" | client pg_restore --single-transaction --exit-on-error --no-owner --no-acl
-# The dump can predate a payout's creation as well as its broadcast. Pause ALL outbound payouts until
-# reconciliation, and replace automatic holds with manual recovery holds. A payout that failed before the
-# backup may have been requeued and sent after it, so failed payouts are marked possibly sent (send_ambiguous,
-# which dumps taken before migration 053 lack; that migration marks their failed payouts ambiguous itself) and
-# their error is prefixed with the same marker. Older app dumps have settings even if payments migrations have
-# not run; table-only test dumps can lack either table. The application matches the "Restored from backup:"
-# error prefix (restoredHoldPrefix in internal/market/payments_admin.go) and asks for a "wallet shows no
-# broadcast" confirmation before an administrator releases or requeues such a payout. A payout held for an
-# account suspension keeps that text after the restore prefix, so its payout address check is not lost
-# (heldForSuspension in payments_admin.go). One new audit row (no user) records the gate and the counts; existing
-# audit rows are never changed. Bitcoin escrow settlements (ESCROW_BTC, test networks only) are never sent as payouts, but
-# a restored one with a stored final transaction (signed or broadcast) may also have been sent, or replaced, after the
-# backup: each is held with the same marker in settlements.send_error (restoredSettlementHold in
-# internal/market/escrow_recovery.go) until an administrator confirms its rebroadcast on the admin page, and the audit
-# row counts them when there are any. A restored fee bump of a settlement (settlement_bumps, migration 080) with a stored
+# The dump can predate a send as well as its broadcast. Pause ALL outbound sends until reconciliation (the
+# payments_recovery_required gate). Older app dumps have settings even if payments migrations have not run;
+# table-only test dumps can lack any table. One new audit row (no user) records the gate and the counts; existing
+# audit rows are never changed. Pooled payouts are removed: migration 108 refuses a database that holds any
+# (UPGRADING.md section 59), so nothing here touches the payouts table. A restored Bitcoin escrow settlement
+# (ESCROW_BTC, test networks only) with a stored final transaction (signed or broadcast) may have been sent, or
+# replaced, after the backup: each is held with the "Restored from backup:" marker in settlements.send_error
+# (restoredSettlementHold in internal/market/escrow_recovery.go) until an administrator confirms its rebroadcast on
+# the admin page, and the audit row counts them when there are any. A restored fee bump of a settlement (settlement_bumps, migration 080) with a stored
 # final transaction is held the same way, in settlement_bumps.send_error, until that confirmation of its settlement.
 # A physical escrow order's release deadline may have passed in the restored records: the escrow_release_recheck setting
 # asks the escrow watcher's next pass to move every passed deadline of a shipped order to 72 hours later and tell its
@@ -169,25 +186,6 @@ ON CONFLICT (user_id) DO UPDATE SET next_index=EXCLUDED.next_index;
 DO $$ BEGIN PERFORM setval('escrow_market_index', nextval('escrow_market_index')+49); END $$;
 -- escrow-key-margin: end
 \endif
-SELECT to_regclass('payouts') IS NOT NULL AS has_payouts \gset
-\if :has_payouts
-SELECT EXISTS(SELECT 1 FROM pg_attribute WHERE attrelid=to_regclass('payouts') AND attname='send_ambiguous' AND NOT attisdropped) AS has_send_ambiguous \gset
-\if :has_send_ambiguous
-UPDATE payouts SET send_ambiguous=true WHERE state='failed';
-\endif
-WITH held AS (
-  UPDATE payouts SET state='held', updated=now(),
-    error='Restored from backup: verify in the wallet before releasing; this payout may already have been sent.'
-      || coalesce(' ' || substring(error from '(?:Suspended account:|Larger than the order price:|Held to be paid by hand:).*'), '')
-  WHERE state IN ('pending','sending','blocked','held') RETURNING 1),
-failed AS (
-  UPDATE payouts SET updated=now(),
-    error='Restored from backup: verify in the wallet before requeueing; this payout may have been requeued and sent after the backup. Last error: ' || error
-  WHERE state='failed' RETURNING 1)
-SELECT (SELECT count(*) FROM held) AS held, (SELECT count(*) FROM failed) AS failed \gset
-\else
-SELECT 0 AS held, 0 AS failed \gset
-\endif
 SELECT EXISTS(SELECT 1 FROM pg_attribute WHERE attrelid=to_regclass('settlements') AND attname='send_error' AND NOT attisdropped) AS has_settlements \gset
 \if :has_settlements
 WITH escrow_held AS (
@@ -222,8 +220,7 @@ SELECT 0 AS xmr_held, 0 AS xmr_retired, 0 AS xmr_closed \gset
 \endif
 SELECT :'has_settings'::boolean AND to_regclass('audit_events') IS NOT NULL AS has_audit \gset
 \if :has_audit
-INSERT INTO audit_events(user_id,action) VALUES (NULL, 'Payout recovery gate set by scripts/restore.sh: held ' || :'held'
-  || ' restored payout(s) and marked ' || :'failed' || ' restored failed payout(s) as possibly sent'
+INSERT INTO audit_events(user_id,action) VALUES (NULL, 'Payout recovery gate set by scripts/restore.sh'
   || CASE WHEN :'escrow_held'::int > 0 THEN '; held ' || :'escrow_held' || ' restored escrow settlement(s) with a stored transaction until an administrator confirms each rebroadcast' ELSE '' END
   || CASE WHEN :'bump_held'::int > 0 THEN '; held ' || :'bump_held' || ' restored escrow fee bump(s) with a stored transaction until an administrator confirms its settlement''s rebroadcast' ELSE '' END
   || CASE WHEN :'xmr_held'::int > 0 THEN '; held ' || :'xmr_held' || ' restored Monero escrow settlement(s) with a stored transaction until an administrator confirms each relay' ELSE '' END
@@ -235,15 +232,14 @@ SELECT count(*) AS images FROM images \gset
 \else
 SELECT 0 AS images \gset
 \endif
-SELECT :'held' || ' ' || :'failed' || ' ' || :'images' || ' ' || :'escrow_held' || ' ' || :'bump_held' || ' ' || :'has_floors'
+SELECT :'images' || ' ' || :'escrow_held' || ' ' || :'bump_held' || ' ' || :'has_floors'
   || ' ' || :'has_xmr' || ' ' || :'xmr_held' || ' ' || :'xmr_retired' || ' ' || :'xmr_closed';
 SQL
 ); then
   echo 'The database was restored, but payout recovery protection FAILED. Do not start the application on it; apply the recovery gate and holds by hand first (UPGRADING.md, section 6).' >&2
   exit 1
 fi
-read -r held failed images escrow_held bump_held floors xmr xmr_held xmr_retired xmr_closed <<< "$counts"
-printf 'Held %s restored payout(s); release each from the admin page only after checking the wallet.\n' "$held"
+read -r images escrow_held bump_held floors xmr xmr_held xmr_retired xmr_closed <<< "$counts"
 if [[ ${escrow_held:-0} != 0 ]]; then
   printf 'Held %s restored Bitcoin escrow settlement(s) with a stored transaction; confirm each rebroadcast from the admin page only after checking the chain and the escrow watch-only wallet.\n' "$escrow_held"
 fi
@@ -253,7 +249,6 @@ fi
 if [[ ${xmr_held:-0} != 0 ]]; then
   printf 'Held %s restored Monero escrow settlement(s) with a stored transaction; confirm each relay from the admin page only after checking the escrow daemon and the escrow wallet.\n' "$xmr_held"
 fi
-printf 'Marked %s restored failed payout(s) as possibly sent after the backup; requeue each from the admin page only after checking the wallet.\n' "$failed"
 echo 'Bitcoin escrow (if used): release deadlines that passed in the restored records move to 72 hours after the escrow watcher'"'"'s next pass, and each buyer is told.'
 if [[ ${floors:-f} == t ]]; then
   echo 'Bitcoin escrow (if used): escrow checkout waits until the escrow watcher has reserved the keys of the escrows its watch-only wallet holds and the restored records lack, and every next escrow key index moves 50 past the restored records.'
@@ -279,5 +274,5 @@ if [[ -n ${RESTORE_INTERNAL_DATABASE:-} ]]; then
 else
   echo 'Restored into the database named in RESTORE_DATABASE_URL. To switch the application to it, set DATABASE_URL in .env to that database, and point BACKUP_DATABASE_URL at the same database: external backups follow BACKUP_DATABASE_URL, not DATABASE_URL.'
 fi
-echo 'Database dumps do not contain the custodial wallets (bitcoin_data / monero_wallet volumes). A wallet restored from an older backup or seed hands out addresses this database has already issued, and payment requests then fail: restore the wallets and advance their address index before users return, as docs/testnet-runbook.md describes ("Restore the wallets").'
+echo 'Database dumps do not contain the escrow wallets (the escrow node'"'"'s arbiter and watch-only wallets, the escrow wallet-rpc volume). Restore any wallet that is lost or older than this database before the app starts, as docs/testnet-runbook.md describes ("Back up and restore the escrow arbiter and watch-only wallets"), then reconcile and clear the gate.'
 echo 'Run the app on this database with the .env from the same backup set: the SETUP_TOKEN in use when the backup was taken (without it TOTP secrets cannot be read) and the same AUDIT_SIGNING_KEY (else the audit-export public key changes); see docs/operator-guide.md, "Secrets, .env and onion identities".'

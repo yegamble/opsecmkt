@@ -44,8 +44,10 @@ import (
 // it holds a settlement (escrow_recovery.go).
 
 func init() {
-	registerAction("/escrow/bump", actionSpec{OwnTx: true, OneAtATime: true, Off: escrowOff, Run: escrowBumpAction})
-	registerAction("/escrow/bump-sign", actionSpec{Off: escrowOff, Run: escrowBumpSignAction})
+	registerAction("/escrow/bump", actionSpec{OwnTx: true, OneAtATime: true, Roles: escrowPartyRoles,
+		ConfirmedFormNonce: true, ReceiptAuthorize: btcBumpReceiptAuthorize, Off: escrowOff, Run: escrowBumpAction})
+	registerAction("/escrow/bump-sign", actionSpec{FormNonce: true, Off: escrowOff, Run: escrowBumpSignAction})
+	registerAction("/escrow/hardware-bump-sign", actionSpec{FormNonce: true, Off: escrowOff, Run: escrowBumpSignAction})
 }
 
 // escrowBumpIncrement is BIP125's minimum fee increase per vB of the replacement (Bitcoin Core's default incremental
@@ -327,9 +329,6 @@ func bumpErrorText(class, claimant string) string {
 // rate and confirming with their password (and authenticator code when enrolled). RPC-free: the escrow watcher builds
 // the bump (buildBumps). An open bump of the settlement is closed in the same transaction.
 func escrowBumpAction(c *actionCtx) (actionResult, error) {
-	if c.A.escrow.Load() == nil {
-		return actionResult{}, errEscrowDown
-	}
 	rate, err := strconv.ParseInt(strings.TrimSpace(c.Form.Get("fee_rate")), 10, 64)
 	if err != nil || rate < 1 || rate > escrowMaxFeeRate {
 		return actionResult{}, errBumpRate
@@ -339,6 +338,9 @@ func escrowBumpAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, errSettleNone
 	}
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
+		if c.A.escrow.Load() == nil {
+			return actionResult{}, errEscrowDown
+		}
 		ctx := c.Ctx()
 		o, err := partyOrder(c, c.Form.Get("order_id"))
 		if err != nil {
@@ -411,7 +413,7 @@ func escrowBumpAction(c *actionCtx) (actionResult, error) {
 		if _, err = c.Tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,$3,$4)", o.ID, o.State, c.User.ID, note); err != nil {
 			return actionResult{}, err
 		}
-		if _, err = c.Tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), counterparty, "Order "+shortID(o.ID)+": "+note); err != nil {
+		if _, err = insertNotification(ctx, c.Tx, counterparty, "Order "+shortID(o.ID)+": "+note, o.ID); err != nil {
 			return actionResult{}, err
 		}
 		return actionResult{Redirect: orderPage(o.ID) + settlementAnchor(kind, sid), Notice: "escrow-bump",
@@ -498,7 +500,16 @@ func escrowBumpSignAction(c *actionCtx) (actionResult, error) {
 	if sp, err := decodePSBT(stored); err != nil || sp.TxID() != txid {
 		return actionResult{}, errors.New("escrow: the stored fee bump PSBT does not match its txid")
 	}
-	sigs, err := checkSettlementPaste(c.Form.Get("psbt"), txid, keys[party], keys["market"])
+	pasted := c.Form.Get("psbt")
+	if c.R.URL.Path == "/escrow/hardware-bump-sign" {
+		if pasted != "" && c.Form.Get(psbtFileField) != "" {
+			return actionResult{}, errSettleBoth
+		}
+		if pasted == "" {
+			pasted = c.Form.Get(psbtFileField)
+		}
+	}
+	sigs, err := checkSettlementPasteLimit(pasted, txid, keys[party], keys["market"], c.R.URL.Path == "/escrow/hardware-bump-sign")
 	if err != nil {
 		return actionResult{}, err
 	}
@@ -532,7 +543,7 @@ func escrowBumpSignAction(c *actionCtx) (actionResult, error) {
 	if party == roleBuyer {
 		counterparty = o.VendorID
 	}
-	if _, err = c.Tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), counterparty, "Order "+shortID(o.ID)+": "+what); err != nil {
+	if _, err = insertNotification(ctx, c.Tx, counterparty, "Order "+shortID(o.ID)+": "+what, o.ID); err != nil {
 		return actionResult{}, err
 	}
 	return res, nil

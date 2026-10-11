@@ -22,7 +22,7 @@ broken-image icon in Chromium and WebKit); otherwise the CSS illustration. Thumb
 </h2>{{if .Archived}}<p class="inventory-state">{{if .TakedownReason}}<span class="badge danger">Taken down</span> Hidden from the marketplace by an administrator; no new orders.{{else}}<span class="badge neutral">Archived</span> Hidden from the marketplace; no new orders.{{end}}</p>{{end}}{{if and .TakedownReason (eq $.Page "vendor-dashboard")}}
 <p class="takedown-reason"><strong>Reason:</strong> {{.TakedownReason}}</p>
 <p class="help staff-contact">Only an administrator can restore it. If you think this is wrong, ask an administrator to review it. {{template "staff-contact" $}}</p>{{end}}
-<p class="product-description">{{.Excerpt}}</p>
+<p class="product-description">{{.Excerpt}}</p>{{if eq $.Page "vendor-dashboard"}}{{with index $.Inventory.Reservations .ID}}<p class="help inventory-reservation">{{.Units}} {{if eq .Units 1}}unit is{{else}}units are{{end}} reserved by orders past draft; drafts do not reserve stock.{{if .PaymentExpiry}} Earliest payment window ends {{.PaymentExpiry}}; deposits waiting for confirmations can keep an order open beyond this time.{{end}}</p>{{else}}<p class="help inventory-reservation">0 units are reserved; drafts do not reserve stock.</p>{{end}}{{end}}
 <div class="product-bottom">
 <span class="price">{{if eq $.Currency "XMR"}}{{.PriceXMR}}<small>XMR</small>{{else}}{{.PriceBTC}}<small>BTC</small>{{end}}</span>
 <span class="stock">{{if lt .Stock 1}}OUT OF STOCK{{else}}{{.Stock}} AVAILABLE{{end}}</span>
@@ -31,6 +31,7 @@ broken-image icon in Chromium and WebKit); otherwise the CSS illustration. Thumb
 <a class="button" href="/listing-edit?id={{.ID}}" aria-label="Edit {{.Title}}">Edit</a>
 {{if not .TakedownReason}}<form method="post" action="{{if .Archived}}/listings/restore{{else}}/listings/archive{{end}}">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{if .Archived}}{{formNonce "/listings/restore"}}{{else}}{{formNonce "/listings/archive"}}{{end}}">
 <input type="hidden" name="id" value="{{.ID}}">
 <button type="submit" aria-label="{{if .Archived}}Restore{{else}}Archive{{end}} {{.Title}}">{{if .Archived}}Restore{{else}}Archive{{end}}</button>
 </form>{{end}}

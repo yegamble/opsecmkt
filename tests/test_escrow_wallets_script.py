@@ -82,7 +82,7 @@ class PSBTHelpersTest(unittest.TestCase):
 
 
 class ScriptRefusalsTest(unittest.TestCase):
-    def run_script(self, args, container_exists):
+    def run_script(self, args, container_exists, database_url='postgres://unused/unused'):
         with tempfile.TemporaryDirectory() as tmp:
             calls = Path(tmp, 'docker-calls')
             for tool in ('curl', 'gpg', 'python3', 'go', 'git', 'tar', 'sha256sum'):
@@ -90,7 +90,8 @@ class ScriptRefusalsTest(unittest.TestCase):
             Path(tmp, 'docker').write_text('#!/bin/sh\necho "$@" >>"%s"\nexit %d\n' % (calls, 0 if container_exists else 1))
             for f in Path(tmp).iterdir():
                 f.chmod(0o755)
-            env = dict(os.environ, PATH=tmp + os.pathsep + '/usr/bin:/bin', ESCROW_WALLETS_CONTAINER='taken-name')
+            env = dict(os.environ, PATH=tmp + os.pathsep + '/usr/bin:/bin', ESCROW_WALLETS_CONTAINER='taken-name',
+                       TEST_DATABASE_URL=database_url)
             r = subprocess.run(['bash', str(SCRIPT)] + args, env=env, capture_output=True, text=True, timeout=60)
             return r.returncode, r.stdout + r.stderr, calls.read_text() if calls.exists() else ''
 
@@ -106,6 +107,12 @@ class ScriptRefusalsTest(unittest.TestCase):
         self.assertIn('Refusing: a container named taken-name exists', text)
         self.assertEqual(calls.splitlines(), ['container inspect taken-name'])
         self.assertNotIn('unexpected', text)
+
+    def test_missing_database_is_refused_before_docker(self):
+        code, text, calls = self.run_script([], True, database_url='')
+        self.assertEqual(code, 2, text)
+        self.assertIn('TEST_DATABASE_URL must name a disposable local PostgreSQL database', text)
+        self.assertEqual(calls, '')
 
 
 if __name__ == '__main__':

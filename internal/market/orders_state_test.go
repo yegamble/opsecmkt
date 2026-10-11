@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -101,14 +102,14 @@ func TestTransitionRulesAndSideEffects(t *testing.T) {
 	if err := f.try(stateDraft, stateCancelled, f.other); !errors.Is(err, errForbidden) {
 		t.Fatalf("stranger cancelled a draft: %v", err)
 	}
-	if err := f.try(stateDraft, stateAwaitingPayment, f.buyer); err == nil || err.Error() != "Payment unavailable for BTC" {
-		t.Fatalf("payment step without provider: %v", err)
+	if err := f.try(stateDraft, stateAwaitingPayment, f.buyer); err == nil || !strings.Contains(err.Error(), "Historical pooled orders are read-only") {
+		t.Fatalf("historical draft payment step: %v", err)
 	}
 	if err := f.try(stateAwaitingPayment, statePaid, nil); !errors.Is(err, errConflict) {
 		t.Fatalf("stale from-state: %v", err)
 	}
-	if err := f.try(stateDraft, stateCompleted, f.buyer); !errors.Is(err, errForbidden) {
-		t.Fatalf("move outside the table: %v", err)
+	if err := f.try(stateDraft, stateCompleted, f.buyer); err == nil || !strings.Contains(err.Error(), "Historical pooled orders are read-only") {
+		t.Fatalf("historical draft completion: %v", err)
 	}
 	var hooked []string
 	transitionHooks = append(transitionHooks, func(ctx context.Context, a *App, tx *sql.Tx, o *Order, from, to string) error {
@@ -126,25 +127,22 @@ func TestTransitionRulesAndSideEffects(t *testing.T) {
 	var notes int
 	f.e.DB.QueryRow("SELECT o.state,e.actor_id,e.from_state FROM orders o JOIN order_events e ON e.order_id=o.id WHERE o.id=$1", f.order).Scan(&state, &actor, &from)
 	f.e.DB.QueryRow("SELECT count(*) FROM notifications WHERE user_id=$1", f.vendor.ID).Scan(&notes)
-	if state != stateCancelled || actor != f.buyer.ID || from != stateDraft || notes != 1 {
+	// A cancelled unfunded draft stays in the buyer history without notifying the vendor (A-165).
+	if state != stateCancelled || actor != f.buyer.ID || from != stateDraft || notes != 0 {
 		t.Fatalf("state=%s actor=%s from=%s vendor notifications=%d", state, actor, from, notes)
 	}
-	if err := f.try(stateCancelled, stateDraft, f.buyer); !errors.Is(err, errForbidden) {
+	if err := f.try(stateCancelled, stateDraft, f.buyer); err == nil || !strings.Contains(err.Error(), "Historical pooled orders are read-only") {
 		t.Fatalf("terminal state left: %v", err)
 	}
 
 	g := newOrderFixture(t, "digital", statePaid)
-	if err := g.try(statePaid, stateShipped, g.vendor); err == nil || errors.Is(err, errConflict) {
-		t.Fatalf("digital order shipped: %v", err)
-	}
-	if err := g.try(statePaid, stateDelivered, nil); err != nil {
-		t.Fatalf("system delivery: %v", err)
-	}
-	if err := g.try(stateDelivered, stateCompleted, g.vendor); !errors.Is(err, errForbidden) {
-		t.Fatalf("vendor completed: %v", err)
-	}
-	if err := g.try(stateDelivered, stateCompleted, g.buyer); err != nil {
-		t.Fatal(err)
+	for _, attempt := range []struct {
+		to    string
+		actor *User
+	}{{stateShipped, g.vendor}, {stateDelivered, nil}, {stateCompleted, g.buyer}} {
+		if err := g.try(statePaid, attempt.to, attempt.actor); err == nil || !strings.Contains(err.Error(), "Historical pooled orders are read-only") {
+			t.Fatalf("historical paid order advanced to %s: %v", attempt.to, err)
+		}
 	}
 }
 
@@ -180,8 +178,8 @@ func TestTransitionCompareAndSetIsExclusive(t *testing.T) {
 }
 
 // A-244 (ARCH-4): the escrow-only system edges exist in the table for the system role and are marked escrow-only,
-// and on a pooled order (Order.Escrow false: no escrows row) the system cannot complete an order on them: 403, the
-// order and its history unchanged. The buyer's own completion is unaffected. (An escrow order completes on funding
+// and on a historical non-escrow order (Order.Escrow false: no escrows row) the system cannot complete an order on them: 403, the
+// order and its history unchanged. Historical orders are read-only for buyers too. (An escrow order completes on funding
 // through the digital edge: TestEscrowFundingCompletesOrder.)
 func TestEscrowOnlySystemEdgesRefusedForPooledOrders(t *testing.T) {
 	for _, tc := range []struct{ kind, from string }{{"digital", stateDelivered}, {"physical", stateShipped}} {
@@ -189,8 +187,8 @@ func TestEscrowOnlySystemEdgesRefusedForPooledOrders(t *testing.T) {
 			t.Fatalf("%s -> completed: system edge missing or not escrow-only", tc.from)
 		}
 		f := newOrderFixture(t, tc.kind, tc.from)
-		if err := f.try(tc.from, stateCompleted, nil); !errors.Is(err, errForbidden) {
-			t.Fatalf("system completed a pooled %s order from %s: %v", tc.kind, tc.from, err)
+		if err := f.try(tc.from, stateCompleted, nil); err == nil || !strings.Contains(err.Error(), "Historical pooled orders are read-only") {
+			t.Fatalf("system completed a historical %s order from %s: %v", tc.kind, tc.from, err)
 		}
 		var state string
 		var events int
@@ -200,8 +198,8 @@ func TestEscrowOnlySystemEdgesRefusedForPooledOrders(t *testing.T) {
 		if state != tc.from || events != 0 {
 			t.Fatalf("refused system completion changed the order: %s, %d events", state, events)
 		}
-		if err := f.try(tc.from, stateCompleted, f.buyer); err != nil {
-			t.Fatalf("buyer completion of a pooled %s order: %v", tc.kind, err)
+		if err := f.try(tc.from, stateCompleted, f.buyer); err == nil || !strings.Contains(err.Error(), "Historical pooled orders are read-only") {
+			t.Fatalf("buyer completed a historical %s order: %v", tc.kind, err)
 		}
 	}
 	// Every escrow-only edge is a real edge for its role; nothing else is guarded.

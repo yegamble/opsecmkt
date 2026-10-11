@@ -116,13 +116,13 @@ test('navigation accessibility structure stays stable', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByRole('navigation', { name: 'Main navigation' })).toMatchAriaSnapshot(`
     - navigation "Main navigation":
-      - link "⌘ Marketplace"
+      - link "Marketplace"
       - link "Orders"
       - link "Messages"
       - link "Notifications (1 unread)"
       - link "Disputes"
       - link "Account"
-      - link "◇ Transparency"
+      - link "Transparency"
   `);
 });
 

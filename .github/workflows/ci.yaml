@@ -127,8 +127,8 @@ jobs:
           go-version-file: go.mod
           cache: true
       # The same node the script's header documents: an operator user with full rights (the buyer's and vendor's own
-      # nodes), the app's user restricted by rpcwhitelist to what docs/operator-guide.md lists, the pooled user
-      # restricted to the pooled methods it lists (A-440) and the escrow signer's user restricted to decodepsbt,
+      # nodes), the app's user restricted by rpcwhitelist to what docs/operator-guide.md lists,
+      # and the escrow signer's user restricted to decodepsbt,
       # descriptorprocesspsbt and getdescriptorinfo (A-454, QA4W2-1). The passwords are generated for this run,
       # masked before they reach any output and handed to the next step only through GITHUB_ENV inside the URLs;
       # bitcoind learns them as salted HMACs (-rpcauth), so no password is on a command line or in the repository.
@@ -137,14 +137,11 @@ jobs:
       - name: Start Bitcoin Core on regtest
         run: |
           whitelist=getblockchaininfo,getnetworkinfo,getrawchangeaddress,getaddressinfo,createpsbt,utxoupdatepsbt,importdescriptors,getdescriptorinfo,deriveaddresses,gettxout,keypoolrefill,walletprocesspsbt,descriptorprocesspsbt,combinepsbt,finalizepsbt,testmempoolaccept,sendrawtransaction,getwalletinfo,listreceivedbyaddress,gettransaction,listtransactions,listsinceblock
-          pooled_whitelist=getblockchaininfo,getwalletinfo,loadwallet,getnetworkinfo,getnewaddress,listreceivedbyaddress,gettransaction,sendtoaddress,validateaddress,getbalances
           operator_pass=$(openssl rand -hex 24)
           app_pass=$(openssl rand -hex 24)
-          pooled_pass=$(openssl rand -hex 24)
           signer_pass=$(openssl rand -hex 24)
           echo "::add-mask::$operator_pass"
           echo "::add-mask::$app_pass"
-          echo "::add-mask::$pooled_pass"
           echo "::add-mask::$signer_pass"
           rpcauth() { # rpcauth <user> <password>: user:salt$HMAC-SHA256(salt, password), the form bitcoind reads
             local salt hash
@@ -158,8 +155,8 @@ jobs:
             docker run -d --name "$name" -p "127.0.0.1:$port:18443" "$BITCOIN_IMAGE" \
               bitcoind -regtest -fallbackfee=0.0002 -server=1 -rpcbind=0.0.0.0 -rpcallowip=0.0.0.0/0 "$@" \
               "-rpcauth=$(rpcauth operator "$operator_pass")" "-rpcauth=$(rpcauth opsecmkt-escrow "$app_pass")" \
-              "-rpcauth=$(rpcauth opsecmkt-pooled "$pooled_pass")" "-rpcauth=$(rpcauth opsecmkt-signer "$signer_pass")" \
-              -rpcwhitelistdefault=0 "-rpcwhitelist=opsecmkt-escrow:$whitelist" "-rpcwhitelist=opsecmkt-pooled:$pooled_whitelist" \
+              "-rpcauth=$(rpcauth opsecmkt-signer "$signer_pass")" \
+              -rpcwhitelistdefault=0 "-rpcwhitelist=opsecmkt-escrow:$whitelist" \
               -rpcwhitelist=opsecmkt-signer:decodepsbt,descriptorprocesspsbt,getdescriptorinfo
           }
           node "$BITCOIN_CONTAINER" "$BITCOIN_RPC_PORT"
@@ -167,7 +164,6 @@ jobs:
           {
             echo "ESCROW_REGTEST_OPERATOR_RPC_URL=http://operator:$operator_pass@127.0.0.1:$BITCOIN_RPC_PORT"
             echo "ESCROW_REGTEST_APP_RPC_URL=http://opsecmkt-escrow:$app_pass@127.0.0.1:$BITCOIN_RPC_PORT"
-            echo "ESCROW_REGTEST_POOLED_RPC_URL=http://opsecmkt-pooled:$pooled_pass@127.0.0.1:$BITCOIN_RPC_PORT"
             echo "ESCROW_REGTEST_SIGNER_RPC_URL=http://opsecmkt-signer:$signer_pass@127.0.0.1:$BITCOIN_RPC_PORT"
             echo "ESCROW_REGTEST_PRIVATE_OPERATOR_RPC_URL=http://operator:$operator_pass@127.0.0.1:$BITCOIN_PRIVATE_RPC_PORT"
             echo "ESCROW_REGTEST_PRIVATE_APP_RPC_URL=http://opsecmkt-escrow:$app_pass@127.0.0.1:$BITCOIN_PRIVATE_RPC_PORT"
@@ -191,6 +187,10 @@ jobs:
               exit 1
             fi
           done
+      # A-144: the image above is already cached. A separate owned Compose project with internal-only networks
+      # proves the local-node rpcauth argument and successful/refused credentials; it pulls no other image.
+      - name: Local Bitcoin Compose RPC verifier on isolated regtest (A-144)
+        run: python3 scripts/test-bitcoin-rpcauth.py
       - name: Escrow legs on a real regtest node (scripts/test-escrow-regtest.sh)
         run: bash scripts/test-escrow-regtest.sh
         env:
@@ -211,6 +211,103 @@ jobs:
       - name: Remove the nodes and their volumes
         if: always()
         run: docker rm -f -v "$BITCOIN_CONTAINER" "$BITCOIN_PRIVATE_CONTAINER"
+  # A-498: the real-chain Monero escrow legs. scripts/test-escrow-xmr-regtest.sh runs the app, inside go test, against a
+  # real monerod and three real monero-wallet-rpc (all v0.18.5.1) on a local fakechain (--regtest, offline, difficulty 1:
+  # a chain nobody else can reach) and a disposable PostgreSQL. The nodes are started with docker run, exactly as the
+  # script's header documents, because a service container cannot take command arguments and two legs stop and restart
+  # containers. Measured locally at 569 s for all 15 legs (go test 525 s), so the 25-minute limit leaves headroom.
+  # Digests measured when the tags were checked (the repository pins these images by tag, as the installer does):
+  # simple-monerod@sha256:0329465ffc599048efd57712d91d3b4b7d66380bd7205d5d0992cd9faf668e38 and
+  # simple-monero-wallet-rpc@sha256:09ff81f470d6d37811e3fde808c5cd1158a8cd2c42abbfb935b33f26f91e879d.
+  # The script itself fails a leg that fails, is skipped or does not run, and refuses a daemon that is not a fakechain.
+  escrow-xmr-regtest:
+    name: Monero escrow on a real fakechain
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test-ci-only
+          POSTGRES_DB: postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U test -d postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      TEST_DATABASE_URL: postgres://test:test-ci-only@127.0.0.1:5432/postgres?sslmode=disable
+      MONERO_IMAGE: ghcr.io/sethforprivacy/simple-monerod:v0.18.5.1
+      MONERO_WALLET_IMAGE: ghcr.io/sethforprivacy/simple-monero-wallet-rpc:v0.18.5.1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      # The commands of the script's header. The wallet-rpcs listen without RPC login, published on 127.0.0.1 only.
+      - name: Start monerod on a fakechain and three monero-wallet-rpc
+        run: |
+          docker network create xmr-escrow-regtest
+          docker run -d --name xmr-escrow-monerod --network xmr-escrow-regtest -p 127.0.0.1:28381:18081 \
+            "$MONERO_IMAGE" --regtest --keep-fakechain --offline --fixed-difficulty 1 \
+            --rpc-bind-ip 0.0.0.0 --rpc-bind-port 18081 --confirm-external-bind --no-igd
+          for w in escrow:28382 funder:28383 restore:28384; do
+            docker run -d --name "xmr-escrow-wallet-${w%%:*}" --network xmr-escrow-regtest -p "127.0.0.1:${w##*:}:18083" \
+              -e RPC_EXPOSE_UNAUTHENTICATED=1 "$MONERO_WALLET_IMAGE" \
+              --daemon-address xmr-escrow-monerod:18081 --trusted-daemon --wallet-dir /tmp/w --disable-rpc-login \
+              --rpc-bind-port 18083 --allow-mismatched-daemon-version
+          done
+          rpc() { # rpc <port> <method>: the JSON-RPC answer, or nothing
+            curl -sS --max-time 5 --noproxy '*' -H 'Content-Type: application/json' \
+              --data "{\"jsonrpc\":\"2.0\",\"id\":\"0\",\"method\":\"$2\"}" "http://127.0.0.1:$1/json_rpc" 2>/dev/null || true
+          }
+          up=no
+          for _ in $(seq 120); do
+            if rpc 28381 get_info | tr -d ' \n' | grep -q '"nettype":"fakechain"' &&
+              rpc 28382 get_version | grep -q '"version"' && rpc 28383 get_version | grep -q '"version"' &&
+              rpc 28384 get_version | grep -q '"version"'; then
+              up=yes
+              break
+            fi
+            sleep 1
+          done
+          if [ "$up" != yes ]; then
+            echo "monerod or a monero-wallet-rpc did not answer within 120 seconds" >&2
+            docker logs --tail 50 xmr-escrow-monerod >&2 || true
+            exit 1
+          fi
+      - name: Monero escrow legs on a real fakechain (scripts/test-escrow-xmr-regtest.sh)
+        run: bash scripts/test-escrow-xmr-regtest.sh
+        env:
+          ESCROW_XMR_REGTEST_DAEMON_URL: http://127.0.0.1:28381
+          ESCROW_XMR_REGTEST_WALLET_URL: http://127.0.0.1:28382
+          ESCROW_XMR_REGTEST_FUNDER_URL: http://127.0.0.1:28383
+          ESCROW_XMR_REGTEST_RESTORE_URL: http://127.0.0.1:28384
+          ESCROW_XMR_REGTEST_WALLET_CONTAINER: xmr-escrow-wallet-escrow
+          ESCROW_XMR_REGTEST_DAEMON_CONTAINER: xmr-escrow-monerod
+          ESCROW_XMR_REGTEST_LOG: artifacts/escrow-xmr-regtest/transcript.log
+      - name: Collect the nodes' logs
+        if: always()
+        run: |
+          mkdir -p artifacts/escrow-xmr-regtest
+          for c in xmr-escrow-monerod xmr-escrow-wallet-escrow xmr-escrow-wallet-funder xmr-escrow-wallet-restore; do
+            docker logs "$c" > "artifacts/escrow-xmr-regtest/$c.log" 2>&1 || true
+          done
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: escrow-xmr-regtest-results
+          path: artifacts/escrow-xmr-regtest/
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Remove the nodes, their volumes and the network
+        if: always()
+        run: |
+          docker rm -f -v xmr-escrow-monerod xmr-escrow-wallet-escrow xmr-escrow-wallet-funder xmr-escrow-wallet-restore || true
+          docker network rm xmr-escrow-regtest || true
   operations:
     name: Operations and encrypted restore
     runs-on: ubuntu-24.04
@@ -295,13 +392,14 @@ jobs:
           NODES_TOR: ${{ matrix.nodes_tor }}
           DATABASE_URL: postgres://test:test@db/test
           SETUP_TOKEN: ci-validation-only-not-a-real-bootstrap-secret
-          # Compose refuses either Monero wallet-rpc's profile with a blank password (A-466;
+          # The bitcoin profile requires a verifier; this is a public synthetic value for config validation only.
+          BITCOIN_RPC_AUTH: marketplace:0123456789abcdef0123456789abcdef$f25a796e58dd70ff7eb5b96b54de079cc7e3d6f40eb8a0fa55fd05f26a53635e
+          # Compose refuses the Monero escrow wallet-rpc profile with a blank password (A-466;
           # tests/test_compose_wallet_passwords.py checks the refusal).
-          MONERO_WALLET_RPC_PASSWORD: ci-validation-only
           ESCROW_XMR_WALLET_RPC_PASSWORD: ci-validation-only
         run: |
           files=(-f compose.yaml -f "compose.$MODE.yaml" -f compose.nodes.yaml)
-          profiles=(--profile bitcoin --profile monero --profile monero-wallet --profile escrow-signer)
+          profiles=(--profile bitcoin --profile monero --profile escrow-signer)
           if [ "$DATABASE" = internal ]; then
             files+=(-f compose.internal-db.yaml)
             profiles+=(--profile internal-db)
@@ -321,7 +419,8 @@ jobs:
           profiles+=(--profile scanner)
           docker compose "${files[@]}" "${profiles[@]}" config --quiet
           # Monero escrow on stagenet (A-449): its own wallet-rpc service and the overlay mounting its seed key.
-          docker compose "${files[@]}" -f compose.escrow-xmr.yaml "${profiles[@]}" --profile monero-escrow-wallet config --quiet
+          ESCROW_XMR=on ESCROW_XMR_SEED_KEY=/etc/opsecmkt/escrow-xmr-seed-key.asc \
+            docker compose "${files[@]}" -f compose.escrow-xmr.yaml "${profiles[@]}" --profile monero-escrow-wallet config --quiet
           # `up --wait` needs a healthcheck on the app (its -healthcheck flag) and, in Tor mode, on each Tor service
           # (the onion hostname file exists).
           docker compose "${files[@]}" "${profiles[@]}" config --format json | python3 -c '
@@ -340,16 +439,24 @@ jobs:
           print("healthchecks:", ", ".join(want))
           ' "$MODE" "$MIRROR" "$NODES_TOR"
           # Every service has resource ceilings and rotated logs (A-180, A-144); a new service must be added here.
+          # Enable the optional Monero escrow wallet for this resolved-config pass too: its separate overlay and
+          # password-protected profile were previously validated with --quiet, outside the resource assertions.
           # LOG_DRIVER picks the logging driver (blank: json-file); the rotation options stay.
+          limits_files=("${files[@]}" -f compose.escrow-xmr.yaml)
+          limits_profiles=("${profiles[@]}" --profile monero-escrow-wallet)
           for log_driver in "" local; do
-          LOG_DRIVER="$log_driver" docker compose "${files[@]}" "${profiles[@]}" config --format json | python3 -c '
+          ESCROW_XMR=on ESCROW_XMR_SEED_KEY=/etc/opsecmkt/escrow-xmr-seed-key.asc LOG_DRIVER="$log_driver" \
+            docker compose "${limits_files[@]}" "${limits_profiles[@]}" config --format json | python3 -c '
           import json, sys
           services = json.load(sys.stdin)["services"]
           units = {"m": 2**20, "g": 2**30}
+          if "monero-escrow-wallet" not in services:
+              sys.exit("monero-escrow-wallet profile was not included in the resource-limit check")
           # service: (mem_limit, CPUs as cpu_quota / cpu_period, pids_limit). Not cpus: Docker refuses to create a
           # container whose cpus exceed the host CPU count, which would break 1-CPU hosts.
           limits = {"app": ("512m", 2, 512), "db": ("1g", 2, 256), "tor": ("256m", 1, 64), "tor-mirror": ("256m", 1, 64),
-                    "bitcoin": ("2g", 2, 256), "monero": ("2g", 2, 512), "monero-wallet": ("512m", 1, 128),
+                    "bitcoin": ("2g", 2, 256), "monero": ("2g", 2, 512),
+                    "monero-escrow-wallet": ("1g", 1, 128),
                     "clamd": ("3g", 2, 256), "escrow-signer": ("128m", 1, 64), "tor-socks": ("256m", 1, 64)}
           logging = {"driver": sys.argv[1] or "json-file", "options": {"max-size": "10m", "max-file": "3"}}
           for name, service in sorted(services.items()):
@@ -501,7 +608,7 @@ jobs:
           docker compose "${files[@]}" "${profiles[@]}" config --format json | python3 -c '
           import json, sys
           services = json.load(sys.stdin)["services"]
-          for name in ("bitcoin", "monero", "monero-wallet"):
+          for name in ("bitcoin", "monero"):
               image = services[name]["image"]
               reference, _, digest = image.partition("@")
               tag = reference.rpartition("/")[2].partition(":")[2]
@@ -567,9 +674,9 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
   upgrade:
-    name: Upgrade from v0.1.0-alpha.1
+    name: Upgrade from alpha.1 and an intermediate migrated release
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -580,7 +687,9 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Migrate a populated alpha.1 database on PostgreSQL 17 with the current server
+      - name: Install PostgreSQL client and age for upgrade rehearsal
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends postgresql-client age
+      - name: Upgrade alpha.1 and intermediate databases on PostgreSQL 17
         run: bash scripts/test-upgrade.sh
   tor-image:
     name: Tor image and offline configuration
@@ -698,13 +807,6 @@ jobs:
       - run: npm run test:e2e
         env:
           E2E_DATABASE_URL: postgres://test:test-ci-only@127.0.0.1:5432/e2e?sslmode=disable
-      - name: Wallet-backed browser journeys (simulated RPC, real application)
-        env:
-          E2E_WALLET_DATABASE_URL: postgres://test:test-ci-only@127.0.0.1:5432/e2e_wallet?sslmode=disable
-          POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
-        run: |
-          docker exec "$POSTGRES_CONTAINER" createdb -U test e2e_wallet
-          npm run test:e2e:wallet
       - name: Preserve browser report and failure traces
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -713,8 +815,6 @@ jobs:
           path: |
             playwright-report/
             test-results/
-            playwright-wallet-report/
-            test-results-wallet/
           if-no-files-found: ignore
           retention-days: 14
   browser-escrow:
@@ -784,7 +884,7 @@ jobs:
   required:
     name: CI passed
     if: always()
-    needs: [go, go-escrow, escrow-regtest, operations, installer, upgrade, compose, container, tor-image, browser, browser-escrow]
+    needs: [go, go-escrow, escrow-regtest, escrow-xmr-regtest, operations, installer, upgrade, compose, container, tor-image, browser, browser-escrow]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:

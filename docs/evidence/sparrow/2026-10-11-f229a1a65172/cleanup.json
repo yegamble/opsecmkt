@@ -1,0 +1,20 @@
+{
+  "task_droplet_id": 608057482,
+  "task_droplet_deleted": true,
+  "task_only_ssh_key_id": 60000594,
+  "task_only_ssh_key_deleted": true,
+  "absence_verified_by_utc": "2026-10-11T05:17:00Z",
+  "task_ssh_tunnel_stopped": true,
+  "task_test_postgresql_stopped": true,
+  "no_blockchain_downloaded": true,
+  "private_software_wallet_archive": {
+    "gitignored": true,
+    "permissions": "archive 0600; directory 0700",
+    "bytes": 36296,
+    "sha256": "fbfb5e4b44f1723cde6f5b693d9090498c36d16ca046eb4d6ce646b51720d4a7",
+    "allowed_members_no_links_no_chain_files": true,
+    "saved_party_roots_match": true
+  },
+  "physical_ledger_wallet_keys_exported": false,
+  "hardware_device_signature_produced": false
+}

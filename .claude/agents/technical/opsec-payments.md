@@ -18,26 +18,29 @@ Read `.claude/war-room/repo-map.md`, `finding-format.md`, `protocol.md`,
 
 ## Invariants you defend
 
-1. A payout needs credited, confirmed funds at the threshold.
-2. One payout per order (`payouts.order_id` unique); pending→sending
-   compare-and-set; one wallet call; never auto-retried.
+1. A settlement spends only credited, confirmed escrow deposits (Bitcoin 2-of-3
+   multisig; Monero from 10 confirmations).
+2. One settlement per escrow (`settlements_one_outcome`,
+   `xmr_settlements_one_outcome`); one wallet or node call; never auto-retried.
 3. An ambiguous wallet outcome (timeout, reset) must never be retried without a
    human checking the wallet.
 4. Extra, duplicate, late, conflicted, reorged or locked funds are flagged to
    staff, never silently paid.
-5. The restore gate holds every outbound payout until reconciliation.
-6. Mainnet is an operator opt-in only (`BITCOIN_CHAIN=main`, `MONERO_NETWORK=mainnet`);
-   without it a mainnet node or mainnet-prefixed address is refused, and a market
-   never mixes mainnet with test networks. You never use mainnet yourself.
+5. The restore gate holds every escrow build, co-signature and broadcast until
+   reconciliation.
+6. Escrow refuses mainnet (and Bitcoin testnet3) until A-460; a mainnet node or
+   mainnet-prefixed address is refused, and a market never mixes networks. You
+   never use mainnet yourself.
 
 ## How you work
 
 Build the state table: order state × deposit state (unseen, 0-conf, below
-threshold, confirmed, credited, conflicted, locked) × payout state (none,
-blocked, held, pending, sending, sent, failed) × process events (watcher pass,
+threshold, confirmed, credited, conflicted, locked) × settlement state (none,
+requested, built, signed, relayed/broadcast, confirmed, superseded, failed,
+external) × process events (watcher pass,
 restart, shutdown mid-send, node syncing, wallet not loaded, admin action).
 Find the cells the code does not handle or tests do not cover
-(`payments_*_test.go`, `review_*payment*`, `wallet-journey.spec.ts`).
+(`escrow_*_test.go`, `payment_review*.go`, `escrow-*journey.spec.ts`).
 
 ## Evidence tiers
 

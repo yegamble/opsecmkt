@@ -147,6 +147,8 @@ class BackupDumpEncodingTests(unittest.TestCase):
 
 
 PG_RESTORE_STUB = r'''case " $* " in
+*" --version "*) echo "pg_restore (PostgreSQL) ${RESTORE_TOOL_VERSION:-17.6}";;
+*" --list "*) echo ";     Dumped by pg_dump version: ${DUMP_TOOL_VERSION:-17.6}";;
 *" --use-list=/dev/null "*)
   read -r client source
   printf "SET client_encoding = '%s';\n" "$client"
@@ -174,7 +176,8 @@ class RestoreArchiveEncodingTests(unittest.TestCase):
             backup = Path(work) / 'market.dump.age'
             backup.write_text(f'{encoding} {encoding if source is None else source}\n' if encoding else '')
             env = dict(os.environ, PATH=f'{bin_dir}:{os.environ["PATH"]}', AGE_IDENTITY=str(Path(work) / 'identity'),
-                       RESTORE_DATABASE_URL='postgres://user@127.0.0.1:1/db')
+                       RESTORE_DATABASE_URL='postgres://user@127.0.0.1:1/db',
+                       DUMP_TOOL_VERSION='17.6', RESTORE_TOOL_VERSION='17.6')
             env.pop('RESTORE_INTERNAL_DATABASE', None)
             return subprocess.run(['bash', str(RESTORE), str(backup)], env=env, input='RESTORE\n', capture_output=True, text=True)
 
@@ -249,6 +252,43 @@ class RestoreArchiveEncodingTests(unittest.TestCase):
                 result = self.run_restore(client, source)
                 self.assertNotIn('Refusing', result.stderr)
                 self.assertIn('pg_restore ran', result.stderr)
+
+    def test_older_restore_client_refused_before_confirmation_or_database_write(self):
+        with tempfile.TemporaryDirectory() as work:
+            bin_dir = Path(work) / 'bin'
+            bin_dir.mkdir()
+            stubs = {
+                'age': 'shift 3; cat "$1"',
+                'pg_restore': PG_RESTORE_STUB,
+                'psql': 'echo psql ran >&2; exit 9',
+            }
+            for tool, body in stubs.items():
+                (bin_dir / tool).write_text(f'#!/bin/sh\n{body}\n')
+                (bin_dir / tool).chmod(0o700)
+            backup = Path(work) / 'market.dump.age'
+            backup.write_text('UTF8 UTF8\n')
+            secret = 'credential-must-not-appear'
+            env = dict(os.environ, PATH=f'{bin_dir}:{os.environ["PATH"]}',
+                       AGE_IDENTITY=str(Path(work) / 'identity'),
+                       RESTORE_DATABASE_URL=f'postgres://user:{secret}@127.0.0.1:1/db',
+                       DUMP_TOOL_VERSION='17.6', RESTORE_TOOL_VERSION='16.9')
+            result = subprocess.run(['bash', str(RESTORE), str(backup)], env=env,
+                                    input='', capture_output=True, text=True)
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertIn('selected pg_restore is older than the pg_dump client', result.stderr)
+            self.assertNotIn('Restore into', result.stderr)
+            self.assertNotIn('pg_restore ran', result.stderr)
+            self.assertNotIn('psql ran', result.stderr)
+            self.assertNotIn(secret, result.stdout + result.stderr)
+            env['RESTORE_TOOL_VERSION'] = '17.6beta1'
+            unknown = subprocess.run(['bash', str(RESTORE), str(backup)], env=env,
+                                     input='', capture_output=True, text=True)
+            self.assertEqual(unknown.returncode, 1, unknown.stderr)
+            self.assertIn('Cannot safely verify PostgreSQL backup space or client-version compatibility', unknown.stderr)
+            self.assertNotIn('Restore into', unknown.stderr)
+            self.assertNotIn('pg_restore ran', unknown.stderr)
+            self.assertNotIn('psql ran', unknown.stderr)
+            self.assertNotIn(secret, unknown.stdout + unknown.stderr)
 
 
 class CheckScriptTests(unittest.TestCase):

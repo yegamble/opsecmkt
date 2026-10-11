@@ -204,7 +204,7 @@ type xmrSlotRow struct {
 }
 
 // xmrEscrowPollOnce runs one Monero escrow pass unless another process holds its lock (see the file comment).
-func (a *App) xmrEscrowPollOnce(ctx context.Context) error {
+func (a *App) xmrEscrowPollOnce(ctx context.Context) (outcome error) {
 	x := a.escrowXMR
 	if a.db == nil || x == nil {
 		return nil
@@ -224,6 +224,10 @@ func (a *App) xmrEscrowPollOnce(ctx context.Context) error {
 		if _, err := conn.ExecContext(uctx, "SELECT pg_advisory_unlock($1)", xmrEscrowWatcherLock); err != nil {
 			conn.Raw(func(any) error { return driver.ErrBadConn })
 		}
+	}()
+	providerSynced, providerUnread := false, false
+	defer func() {
+		a.noteProviderEpisode(ctx, "escrow_XMR", !x.ready.Load() || !providerSynced || providerUnread || outcome != nil)
 	}()
 	// Monero escrow configured but not ready (its node unreachable, or refused): no wallet is touched, but the deadlines,
 	// which make no RPC, still apply, as escrowPollOnce applies Bitcoin escrow's when its node check fails (P3-R7).
@@ -246,6 +250,7 @@ func (a *App) xmrEscrowPollOnce(ctx context.Context) error {
 		if why != "" {
 			return a.xmrDeadlines(ctx)
 		}
+		providerSynced = true
 	}
 	var gate, sweep bool
 	if err = a.db.QueryRowContext(ctx, "SELECT "+restoreGateSQL+",EXISTS(SELECT 1 FROM settings WHERE key=$1 AND value='true')", xmrEscrowSweepKey).Scan(&gate, &sweep); err != nil {
@@ -291,7 +296,9 @@ func (a *App) xmrEscrowPollOnce(ctx context.Context) error {
 			var checked bool
 			checked, err = a.xmrWalletPass(ctx, w, now, paused, sweep, touched)
 			swept, read[w.id] = swept && checked, err == nil
+			providerUnread = providerUnread || !checked
 		case xmrOpenRefusal(err) == xmrOpenLocked:
+			providerUnread = true
 			// Another wallet program has its file open (an operator inspecting it, say): it waits, keeps its state and its
 			// slots, and is tried again on the next pass (A-421). Logged once while it lasts.
 			swept, err = false, nil
@@ -299,6 +306,7 @@ func (a *App) xmrEscrowPollOnce(ctx context.Context) error {
 				log.Printf("escrow: Monero escrow wallet %s is opened by another wallet program; not read until it is closed there", w.name)
 			}
 		case xmrWalletDenied(err):
+			providerUnread = true
 			// It did not open: recorded missing, or destroyed again on its own wrong-password refusal outside a restore when
 			// the market itself began destroying it (escrow_xmr_retain.go); checked, but never read.
 			if err = a.xmrWalletUnopenable(ctx, w, now, xmrOpenRefusal(err) == xmrOpenPassword && !paused); err != nil {
@@ -306,6 +314,7 @@ func (a *App) xmrEscrowPollOnce(ctx context.Context) error {
 			}
 		default:
 			swept = false
+			providerUnread = true
 		}
 		if err != nil {
 			errs = append(errs, &watchError{label: "monero escrow wallet " + w.name, class: xmrErrorClass(err), err: err})
@@ -968,7 +977,8 @@ func (a *App) xmrSettleOrders(ctx context.Context, read map[int64]bool, touched 
 		changed = append(changed, id)
 	}
 	rows, err := a.db.QueryContext(ctx, `SELECT es.order_id,s.wallet_id FROM escrows es JOIN xmr_escrow_slots s ON s.id=es.xmr_slot_id JOIN orders o ON o.id=es.order_id
-		WHERE es.coin='XMR' AND (o.state IN ('awaiting_payment',`+fundedOpenStates+`) OR es.order_id=ANY($1)) ORDER BY o.updated`, changed)
+		WHERE es.coin='XMR' AND (o.state IN ('awaiting_payment',`+fundedOpenStates+`) OR es.order_id=ANY($1)
+			OR EXISTS (SELECT 1 FROM payments p WHERE p.order_id=es.order_id AND p.after_close AND NOT p.flagged AND p.xmr_settlement_id IS NOT NULL)) ORDER BY o.updated`, changed)
 	if err != nil {
 		return err
 	}
@@ -1036,7 +1046,7 @@ func (a *App) settleXMREscrow(ctx context.Context, orderID string, walletRead bo
 			return err
 		}
 		// A deposit first recorded after the order closed is never counted; it is flagged for the stray refund (P3-R8).
-		if err = a.flagLateDeposits(ctx, tx, &o, threshold, false); err != nil {
+		if err = a.flagLateDeposits(ctx, tx, &o, threshold); err != nil {
 			return err
 		}
 		return tx.Commit()
@@ -1072,21 +1082,35 @@ func (a *App) settleXMREscrow(ctx context.Context, orderID string, walletRead bo
 	if !walletRead {
 		return tx.Commit()
 	}
-	// The payment window, from the same inputs as a Bitcoin escrow's (settleEscrow).
-	var unpaid, underpaid bool
+	// The ordinary payment window and fixed first-recorded-deposit confirmation wait use the same inputs
+	// as a Bitcoin escrow's (settleEscrow).
+	var unpaid, underpaid, stalled bool
 	var received int64
-	if err = tx.QueryRowContext(ctx, `WITH d AS (SELECT amount,confirmations,created FROM payments WHERE order_id=$1 AND confirmations>=0 AND NOT locked)
+	if err = tx.QueryRowContext(ctx, `WITH d AS (SELECT amount,confirmations,created FROM payments WHERE order_id=$1 AND confirmations>=0 AND NOT locked AND NOT after_close AND NOT escrow_left_out AND NOT spent_outside),
+		h AS (SELECT min(created) AS first_seen FROM payments WHERE order_id=$1 AND NOT locked AND NOT after_close)
 		SELECT es.created < now()-make_interval(secs => $2) AND NOT EXISTS (SELECT 1 FROM d),
 			es.created < now()-make_interval(secs => $2) AND EXISTS (SELECT 1 FROM d) AND NOT EXISTS (SELECT 1 FROM d WHERE confirmations<$3)
 				AND (SELECT max(created) FROM d) < now()-make_interval(secs => $2),
+			EXISTS (SELECT 1 FROM d WHERE confirmations<$3) AND GREATEST(es.created+make_interval(secs => $2),
+				(SELECT first_seen FROM h)+make_interval(secs => $4)) <= now(),
 			(SELECT COALESCE(sum(amount),0) FROM d)
-		FROM escrows es WHERE es.order_id=$1 AND es.coin='XMR'`, orderID, expiryWindow().Seconds(), threshold).Scan(&unpaid, &underpaid, &received); err != nil {
+		FROM escrows es WHERE es.order_id=$1 AND es.coin='XMR'`, orderID, expiryWindow().Seconds(), threshold, confirmationWait().Seconds()).Scan(&unpaid, &underpaid, &stalled, &received); err != nil {
 		return err
 	}
 	switch {
 	case unpaid:
 		// Nothing received: cancelled as a pooled order is; the stock hook returns the unit, and nothing is refunded.
 		if _, err = a.transition(ctx, tx, orderID, stateAwaitingPayment, stateCancelled, nil, "payment window expired"); err != nil {
+			return err
+		}
+	case stalled:
+		// The Monero settlement may be requested, but its builder freezes any
+		// unconfirmed output and never sends it before the threshold.
+		if _, err = a.transition(ctx, tx, orderID, stateAwaitingPayment, stateCancelled, nil, "payment confirmation wait ended; unconfirmed deposits were not counted"); err != nil {
+			return err
+		}
+		body := "Order " + shortID(orderID) + ": the fixed confirmation wait ended, so the order was cancelled and its stock returned. Unconfirmed escrow deposits were not sent; deposits that confirm later follow the escrow refund or stray-recovery path shown on the order page."
+		if _, err = insertNotification(ctx, tx, o.BuyerID, body, o.ID); err != nil {
 			return err
 		}
 	case underpaid:
@@ -1099,7 +1123,7 @@ func (a *App) settleXMREscrow(ctx context.Context, orderID string, walletRead bo
 		}
 		body := "Order " + shortID(orderID) + ": the payment window ended with " + what + " into its Monero escrow (" + a.netTag() + " " + a.xmrEscrowNetwork() + "), so the order was cancelled. " +
 			"The market returns the escrowed coins, less the network fee, to the refund address you gave at checkout: it builds and sends the refund transaction from this order's escrow account."
-		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.BuyerID, body); err != nil {
+		if _, err = insertNotification(ctx, tx, o.BuyerID, body, o.ID); err != nil {
 			return err
 		}
 	}
@@ -1121,7 +1145,7 @@ func (a *App) flagLockedXMR(ctx context.Context, tx *sql.Tx, o *Order) error {
 		if o.State == stateAwaitingPayment {
 			body += " Send an ordinary transfer to the escrow address."
 		}
-		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.BuyerID, body); err != nil {
+		if _, err = insertNotification(ctx, tx, o.BuyerID, body, o.ID); err != nil {
 			return err
 		}
 	}

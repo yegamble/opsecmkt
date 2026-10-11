@@ -47,7 +47,7 @@ func lateEpisodeOpen(t *testing.T, e *testEnv, order, cur, addr string, threshol
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = e.A.flagLateDeposits(ctx, tx, &o, threshold, false); err != nil {
+	if err = e.A.flagLateDeposits(ctx, tx, &o, threshold); err != nil {
 		t.Fatal(err)
 	}
 	if err = tx.Commit(); err != nil {
@@ -136,8 +136,8 @@ func TestPaymentReviewEscrowMatrix(t *testing.T) {
 			// The escrow's own confirmation threshold, not the pooled one (no pooled provider here).
 			{"regressed_credited", "confirmations,credited,regress_notice", "0,true,true", "Open:</strong> Credited deposit below threshold (0 of 3 confirmations)", true},
 			{"regressed_credited_conflicted", "confirmations,credited,regress_notice", "-1,true,true", "Open:</strong> Credited deposit conflicted or missing", true},
-			{"below_floor_counted", "confirmations,below_floor", "3,true", "Open:</strong> Below the minimum automatic payout, not paid out", true},
-			{"below_floor_credited", "confirmations,credited,below_floor", "3,true,true", "Open:</strong> Below the minimum automatic payout, not paid out", true},
+			{"below_floor_counted", "confirmations,below_floor", "3,true", "Open:</strong> Below the escrow minimum output, not paid as its own output", true},
+			{"below_floor_credited", "confirmations,credited,below_floor", "3,true,true", "Open:</strong> Below the escrow minimum output, not paid as its own output", true},
 			// Open (below the floor) while it confirms: never "settles it".
 			{"below_floor_credited_confirming", "confirmations,credited,below_floor", "1,true,true", "Open:</strong> Credited deposit below threshold (1 of 3 confirmations)", true},
 			// QA462C-1: counted for the order, credited or not: not open anywhere.
@@ -164,7 +164,7 @@ func TestPaymentReviewEscrowMatrix(t *testing.T) {
 			{"left_out", "confirmations,escrow_left_out", n + ",true", "Open:</strong> Escrow deposit left out of its settlement, not counted", true},
 			{"left_out_credited", "confirmations,credited,escrow_left_out", n + ",true,true", "Open:</strong> Escrow deposit left out of its settlement, not counted", true},
 			{"regressed_credited", "confirmations,credited,regress_notice", "5,true,true", "Open:</strong> Credited deposit below threshold (5 of " + n + " confirmations)", true},
-			{"below_floor_counted", "confirmations,below_floor", n + ",true", "Open:</strong> Below the minimum automatic payout", true},
+			{"below_floor_counted", "confirmations,below_floor", n + ",true", "Open:</strong> Below the escrow minimum output", true},
 			{"counted_uncredited", "confirmations", n, "Escrow deposit counted for the order, though not credited toward its funding", false},
 			{"credited_confirmed", "confirmations,credited", n + ",true", "Escrow deposit counted for the order (credited toward its funding); the order's release or refund settles it", false},
 		} {
@@ -187,28 +187,7 @@ func TestPaymentReviewEscrowMatrix(t *testing.T) {
 		m.A.escrowXMR.confirmations = 12
 		checkFlagCase(t, m.testEnv, m.page, xmod, xorder, "XMR", xaddr, 12, flagCase{"regressed_credited_12", "confirmations,credited,regress_notice", "11,true,true", "Open:</strong> Credited deposit below threshold (11 of 12 confirmations)", true})
 	})
-	t.Run("pooled", func(t *testing.T) {
-		p := newPayEnv(t)
-		_, mod := p.user("fmpmod_"+randomToken()[:6], "moderator")
-		threshold := p.A.confirmationThreshold("BTC")
-		for _, c := range []flagCase{
-			{"late", "confirmations", "3", "Open:</strong> Deposit after settlement or after the order closed, not paid out", true},
-			{"after_close", "confirmations,after_close", "3,true", "Open:</strong> Deposit after settlement or after the order closed, not paid out", true},
-			{"locked", "confirmations,locked", "3,true", "Open:</strong> Locked transfer", true},
-			{"below_floor", "confirmations,below_floor", "3,true", "Open:</strong> Below the minimum automatic payout", true},
-			{"regressed_credited", "confirmations,credited,regress_notice", "1,true,true", "Open:</strong> Credited deposit below threshold (1 of 3 confirmations)", true},
-			{"credited_confirmed", "confirmations,credited", "3,true", "Credited deposit confirmed again (3 confirmations)", false},
-		} {
-			order, addr := p.newOrder(stateCompleted)
-			checkFlagCase(t, p.testEnv, p.page, mod, order, "BTC", addr, threshold, c)
-		}
-		// A pooled uncredited deposit is refundable by hand (an escrow one never is).
-		order, addr := p.newOrder(stateCompleted)
-		agExec(p.testEnv, "INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations,flagged) VALUES($1,'BTC',$2,0,$3,5000,3,true)", order, txidOf("pooled refundable "+order), addr)
-		if desk := p.page("/moderator", mod); !strings.Contains(desk, `value="refunded"`) {
-			t.Errorf("no refund-by-hand form for a pooled late deposit")
-		}
-	})
+
 }
 
 // QA462C-1, QA462C-4 (A-211 on a Monero escrow): a deposit still in the pool at funding counts for the order but is
@@ -386,27 +365,6 @@ func TestEscrowReleaseTooFewCreditedConflicted(t *testing.T) {
 	}
 	if got := agStrings(t, x.testEnv, "SELECT amount||' '||flagged||' '||credited FROM payments WHERE order_id=$1 ORDER BY amount", order); strings.Join(got, ",") != "2000 false false,100000 true true" {
 		t.Fatalf("the deposits: %q", got)
-	}
-}
-
-// QA462C chair ruling: an open locked flag and an open below-floor flag on a pooled order are open on the desk, yet a
-// later deposit after the close is announced to the buyer and the staff, by the watcher, as before QA462C.
-func TestLateDepositAnnouncedBesideOpenFlag(t *testing.T) {
-	p := newPayEnv(t)
-	for _, c := range []struct{ name, cols, vals string }{
-		{"locked", "confirmations,locked", "3,true"},
-		{"below_floor", "confirmations,below_floor", "3,true"},
-	} {
-		order, addr := p.newOrder(stateCompleted)
-		agExec(p.testEnv, "INSERT INTO payments(order_id,currency,txid,idx,address,amount,flagged,"+c.cols+") VALUES($1,'BTC',$2,0,$3,5000,true,"+c.vals+")", order, txidOf("beside open "+c.name+" "+order), addr)
-		p.fake.Deposit(addr, txidOf("beside open late "+c.name+" "+order), 0, 7000, 3)
-		p.poll()
-		buyer := p.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND strpos(body,$2)=1 AND strpos(body,'after the order closed')>0", p.buyer.ID, "Order "+shortID(order)+":")
-		staff := p.count("SELECT count(*) FROM notifications n JOIN users u ON u.id=n.user_id WHERE u.role IN ('moderator','admin') AND strpos(n.body,$1)=1 AND strpos(n.body,' after this order was ')>0", "Payment review needed for order "+shortID(order))
-		if buyer != 1 || staff < 1 {
-			t.Errorf("%s: the deposit after the close beside an open %s flag: buyer told %d times, staff %d; rows %q", c.name, c.name, buyer, staff,
-				agStrings(t, p.testEnv, "SELECT amount||' flagged='||flagged||' after_close='||after_close||' confs='||confirmations FROM payments WHERE order_id=$1 ORDER BY id", order))
-		}
 	}
 }
 

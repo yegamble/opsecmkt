@@ -383,12 +383,15 @@ func TestRateLimitWritesPerUser(t *testing.T) {
 	if agStr(e, "SELECT is_read::text FROM notifications WHERE id=$1", mine) != "false" {
 		t.Fatal("limited write was applied")
 	}
-	if n := agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1 AND action='Marked notification read'", id); n != 100 {
-		t.Fatalf("audited writes=%d", n)
+	if n := agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1 AND action='Marked notification read'", id); n != 0 {
+		t.Fatalf("single-notification reads wrote %d audit rows", n)
 	}
 	e.check(e.do("POST", "/notifications", other, url.Values{"id": {theirs}}), 303)
 	if agStr(e, "SELECT is_read::text FROM notifications WHERE id=$1", theirs) != "true" {
 		t.Fatal("other user's write was refused")
+	}
+	if n := agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1 AND action='Marked notification read'", otherID); n != 0 {
+		t.Fatalf("owned notification read wrote %d audit rows", n)
 	}
 }
 
@@ -736,9 +739,15 @@ func TestNotificationMarkReadOnlyOwnRows(t *testing.T) {
 	if agStr(e, "SELECT is_read::text FROM notifications WHERE id=$1", na) != "false" {
 		t.Fatal("a user marked another user's notification read")
 	}
+	if n := agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1 AND action='Marked notification read'", bID); n != 0 {
+		t.Fatalf("foreign notification read wrote %d audit rows", n)
+	}
 	e.check(e.do("POST", "/notifications", b, url.Values{"id": {nb}}), 303)
 	if agStr(e, "SELECT is_read::text FROM notifications WHERE id=$1", nb) != "true" || agStr(e, "SELECT is_read::text FROM notifications WHERE id=$1", na) != "false" {
 		t.Fatal("mark-read touched the wrong rows")
+	}
+	if n := agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1 AND action='Marked notification read'", bID); n != 0 {
+		t.Fatalf("owned notification read wrote %d audit rows", n)
 	}
 }
 
@@ -918,8 +927,6 @@ func TestStolenSessionCannotAddPGPFactorToTOTPAccount(t *testing.T) {
 	if agStr(e, "SELECT pgp FROM users WHERE id=$1", uid) != "" {
 		t.Fatal("key saved on a TOTP account without full confirmation")
 	}
-	// Other profile fields still save without confirmation when the key is unchanged.
-	e.check(e.do("POST", "/account", stolen, url.Values{"xmpp": {"v@example.org"}}), 303)
 
 	// Even with a proven key already on file (as if saved earlier), turning PGP sign-in on needs both.
 	_, fp, _ := parsePublicKey(malloryPub)
@@ -1068,7 +1075,7 @@ func TestAnonymousLandingFormPostsWhileSignedIn(t *testing.T) {
 	}
 
 	// The anon-derived token never acts as the signed-in user: a protected action is refused.
-	e.check(a48Do(e, "POST", "/account", url.Values{"csrf": {m[1]}, "xmpp": {"x@example.org"}}, both), 401)
+	e.check(a48Do(e, "POST", "/account", url.Values{"csrf": {m[1]}}, both), 401)
 	// Another browser's anon token, a cross-site POST and a foreign Origin are still rejected.
 	creds := url.Values{"csrf": {m[1]}, "handle": {"landing_buyer"}, "password": {testPassword}, "captcha_id": {cm[1]}, "captcha": {e.A.captchaAnswer(cm[1])}}
 	e.check(a48Do(e, "POST", "/login", creds, map[string]string{"session": s, "anon": randomToken()}), 403)
@@ -1083,6 +1090,37 @@ func TestAnonymousLandingFormPostsWhileSignedIn(t *testing.T) {
 		t.Fatal("sign-in from the landing page did not issue a fresh session")
 	}
 	e.check(a48Do(e, "GET", "/account", nil, map[string]string{"session": fresh, "anon": anon}), 200)
+}
+
+// A-65: an anonymous form submitted with both cookies remains anonymous for authorization,
+// but a successful sign-in rotates the original browser session. Refused sign-ins must not
+// revoke it; the old token comes only from the cookie, never a submitted form field.
+func TestAnonymousCSRFSignInRotatesOriginalSessionOnlyOnSuccess(t *testing.T) {
+	e := newTestApp(t)
+	id, old := e.user("landing_rotation", "buyer")
+	anon := randomToken()
+	both := map[string]string{"session": old, "anon": anon}
+	form := url.Values{"csrf": {e.A.csrf(anon)}, "handle": {"landing_rotation"}, "password": {"wrong-password"}, "old_session": {randomToken()}}
+	e.check(a48Do(e, "POST", "/login", form, both), 401)
+	if agInt(e, "SELECT count(*) FROM sessions WHERE token_hash=$1 AND user_id=$2", digest(old), id) != 1 {
+		t.Fatal("refused sign-in revoked the original session")
+	}
+	// A session-derived CSRF token follows the ordinary path; an anon-derived token
+	// still cannot authorize a protected action with the otherwise valid session cookie.
+	e.check(a48Do(e, "POST", "/account", url.Values{"csrf": {e.A.csrf(anon)}}, both), 401)
+	if agInt(e, "SELECT count(*) FROM sessions WHERE token_hash=$1 AND user_id=$2", digest(old), id) != 1 {
+		t.Fatal("anonymous protected-action refusal revoked the original session")
+	}
+	form.Set("password", testPassword)
+	w := a48Do(e, "POST", "/login", form, both)
+	e.check(w, 303)
+	fresh := e.session(w)
+	if fresh == old || agInt(e, "SELECT count(*) FROM sessions WHERE token_hash=$1 AND user_id=$2", digest(fresh), id) != 1 {
+		t.Fatal("successful anonymous-form sign-in did not create a fresh session")
+	}
+	if agInt(e, "SELECT count(*) FROM sessions WHERE token_hash=$1", digest(old)) != 0 {
+		t.Fatal("successful anonymous-form sign-in left the prior browser session active")
+	}
 }
 
 // A-48: a browser with no cookies gets only the pre-login cookie; registering with it sets the session,

@@ -23,7 +23,7 @@ const (
 )
 
 func init() {
-	registerAction("/admin/escrow-release-days", actionSpec{Roles: []string{"admin"}, OwnTx: true, Off: physicalEscrowOff, Run: escrowReleaseDaysAction})
+	registerAction("/admin/escrow-release-days", actionSpec{Roles: []string{"admin"}, OwnTx: true, ConfirmedFormNonce: true, Off: physicalEscrowOff, Run: escrowReleaseDaysAction})
 	registerLoader("admin", escrowReleaseDaysLoader)
 }
 

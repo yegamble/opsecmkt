@@ -4,7 +4,7 @@ Run from the repository root. README.md contains copyable database setup,
 preview, fixture-seeding and test commands. Do not read or print private .env
 values into logs or reports.
 
-- Go 1.26.8+, PostgreSQL 17+, Python 3; Node 22+ only for browser tests.
+- Go 1.26.9+, PostgreSQL 17+, Python 3; Node 22+ only for browser tests.
 - Go changes: gofmt changed files, go mod verify, go vet ./..., then
   `TEST_DATABASE_URL=<dedicated-test-db> go test -race -count=1 -timeout 30m -run '^(TestEscrow|TestXMR|FuzzEscrow)' ./...`
   and the same with `-skip` instead of `-run` (CI's two halves; docs/development.md).

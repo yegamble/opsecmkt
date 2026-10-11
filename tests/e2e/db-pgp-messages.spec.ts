@@ -67,8 +67,8 @@ test('save a PGP key, see its fingerprint unverified, and fail ownership proofs 
   await expect(page.getByRole('radio', { name: 'Sign a text with your private key' })).toBeChecked();
   await page.getByRole('button', { name: 'Start challenge' }).click();
   const challenge = page.getByLabel('Text to sign');
-  await expect(challenge).toHaveText(new RegExp(`^OPSECMKT key ownership proof for ${handle}: [0-9a-f]{32}$`));
-  const challengeText = await challenge.innerText();
+  await expect(challenge).toHaveValue(new RegExp(`^OPSECMKT key ownership proof for ${handle}: [0-9a-f]{32}$`));
+  const challengeText = await challenge.inputValue();
   const signature = page.getByLabel('Clearsigned message or armored detached signature');
 
   // A valid signature by the saved key over a different (stale) challenge is not proof.
@@ -89,13 +89,13 @@ test('save a PGP key, see its fingerprint unverified, and fail ownership proofs 
   // Nothing was verified; the open challenge is unchanged after reload.
   await page.goto('/pgp');
   await expect(page.locator('.page-head .badge')).toHaveText('Not verified');
-  await expect(page.getByLabel('Text to sign')).toHaveText(challengeText);
+  await expect(page.getByLabel('Text to sign')).toHaveValue(challengeText);
 
   // The decryption challenge shows a real OpenPGP message; a wrong answer is refused.
   await page.getByRole('radio', { name: 'Decrypt a message encrypted to your key' }).check();
   await page.getByRole('button', { name: 'Start challenge' }).click();
   await expect(page.getByRole('heading', { name: 'Decrypt this message' })).toBeVisible();
-  await expect(page.getByLabel('Encrypted challenge')).toContainText('-----BEGIN PGP MESSAGE-----');
+  await expect(page.getByLabel('Encrypted challenge')).toHaveValue(/-----BEGIN PGP MESSAGE-----/);
   await expect(page.getByLabel('Text to sign')).toHaveCount(0);
   await page.getByLabel('Decrypted text').fill('not-the-nonce');
   expect(await submitStatus(page, () => page.getByRole('button', { name: 'Verify decryption' }).click())).toBe(400);
@@ -184,11 +184,12 @@ test('only OpenPGP-encrypted messages are accepted; status badges and the unread
   }
   await s.waitForLoadState();
   await s.reload();
-  const sent = (to: string) => s.locator('article.message', { hasText: `${sender} → ${to}` }).locator('.pgp-message-status .badge');
+  const sent = (to: string) => s.locator('article.message', { hasText: `${sender} → ${to}` }).locator('.pgp-message-status .badge').first();
   await expect(sent(withKey)).toHaveText('Encrypted (to recipient’s key)');
   await expect(sent(otherKey)).toHaveText('Encrypted (NOT to recipient’s key)');
+  await expect(s.locator('article.message', { hasText: `${sender} → ${otherKey}` }).locator('.pgp-message-status .badge').nth(1)).toHaveText('+ 1 other visible key(s)');
   await expect(sent(noKey)).toHaveText('Encrypted (recipient unknown)');
-  await expect(s.locator('article.message').first().locator('pre')).toContainText('-----BEGIN PGP MESSAGE-----');
+  await expect(s.locator('article.message').first().locator('textarea[readonly]')).toHaveValue(/-----BEGIN PGP MESSAGE-----/);
 
   // The recipient sees the message with the same status and one unread notification in the navigation.
   await r.goto('/messages');
@@ -228,7 +229,7 @@ test('find a moderator key and exchange encrypted dispute evidence without scrip
   await buyer.getByLabel('PGP encrypted message').fill(pgpFixture('message-to-recipient.asc'));
   expect(await submitStatus(buyer, () => buyer.getByRole('button', { name: 'Send encrypted text ↗' }).click())).toBe(303);
   await staff.goto('/messages');
-  await expect(staff.locator('article.message pre')).toHaveText(pgpFixture('message-to-recipient.asc').trim());
+  await expect(staff.locator('article.message textarea[readonly]')).toHaveValue(pgpFixture('message-to-recipient.asc').trim());
   await expect(staff.locator('.pgp-message-status')).toHaveText('Encrypted (to recipient’s key)');
   await buyer.goto('/messages');
   await buyer.getByLabel('Find a recipient', { exact: true }).fill('no_such_staff_handle');

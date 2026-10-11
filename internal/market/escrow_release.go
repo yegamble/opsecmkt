@@ -18,8 +18,7 @@ import (
 //
 //  1. Mark shipped (/escrow/ship): the vendor gives a fresh claim address (the claim action's checks) and their
 //     password; in one transaction the order moves paid -> shipped, the release is requested to that address (kind
-//     release, state building) and escrows.release_at is the escrow's snapshot of release_days from now. The pooled
-//     ship form refuses an escrow order.
+//     release, state building) and escrows.release_at is the escrow's snapshot of release_days from now.
 //  2. The watcher builds and tracks that release while the order is shipped (settlementBuildable), long before the
 //     order has an outcome; settlementFits stays terminal-only and gates every market signature.
 //  3. The vendor and the buyer sign it through the existing sign action; the buyer's signature confirms receipt, and a
@@ -34,18 +33,19 @@ import (
 //     (leaveOutTopUps, A-374).
 
 func init() {
-	registerAction("/escrow/ship", actionSpec{OwnTx: true, OneAtATime: true, Off: escrowOff, Run: escrowShipAction})
+	registerAction("/escrow/ship", actionSpec{Roles: escrowPartyRoles, OwnTx: true, OneAtATime: true, Off: escrowOff,
+		ConfirmedFormNonce: true, ReceiptAuthorize: btcShipReceiptAuthorize, Run: escrowShipAction})
 }
 
 var (
 	errShipOnlyVendor  = fail(403, "Only the vendor marks this order shipped.")
-	errShipPooledForm  = fail(409, "This order is paid into a Bitcoin escrow: mark it shipped with the escrow form on the order page, which takes the claim address the release to you pays, and your password. Nothing was changed.")
+	errShipPlainForm   = fail(409, "This order is paid into a Bitcoin escrow: mark it shipped with the escrow form on the order page, which takes the claim address the release to you pays, and your password. Nothing was changed.")
 	errShipNoDeadline  = fail(409, "This escrow has no release deadline length recorded, so it cannot be marked shipped here. Market staff must check it. Nothing was changed.")
 	errEscrowComplete  = fail(409, "This order is paid into a Bitcoin escrow: you confirm receipt by signing the release to the vendor on the order page, not with this form. Nothing was changed.")
 	errSignDisputed    = fail(409, "This order is disputed: an administrator decides it, and the decision settles the escrow, so the buyer does not sign the release now. Nothing was changed.")
 	errDisputeSigned   = fail(409, "You signed the release to the vendor, which confirms receipt of this order, so it can no longer be disputed. Nothing was changed.")
 	errReleaseFinal    = fail(409, "The release to the vendor built when this order was shipped is already final (signed by both parties, or broadcast or spent on the network), so the escrow pays the vendor and the dispute cannot be decided for the buyer. Decide it for the vendor. Nothing was changed.")
-	escrowShippedNote  = "Release requested at shipment (Bitcoin escrow): the market builds the release to the vendor, paying the claim address the vendor gave now (less the market fee and the network fee; any amount paid above the price goes back to the buyer's refund address). The vendor signs it; the buyer signs it once the goods have arrived, which confirms receipt and ends the buyer's right to open a dispute. With both signatures the market broadcasts the transaction they signed; the market never signs it before the order is completed. Nothing is sent yet."
+	escrowShippedNote  = "Release requested at shipment (Bitcoin escrow): the market builds the release to the vendor, paying the claim address the vendor gave now (less the market fee and the network fee; " + escrowExcessRule("BTC") + "). The vendor signs it; the buyer signs it once the goods have arrived, which confirms receipt and ends the buyer's right to open a dispute. With both signatures the market broadcasts the transaction they signed; the market never signs it before the order is completed. Nothing is sent yet."
 	escrowReleasedNote = "Completed: the buyer and the vendor signed the release to the vendor (Bitcoin escrow); the buyer's signature confirms receipt. The market did not sign it."
 	escrowSeenNote     = "Completed: the release to the vendor is on the network, signed outside the market by two of the escrow's keys; the market did not sign it."
 )
@@ -64,8 +64,8 @@ func releaseBeforeOutcome(kind, state string) bool {
 }
 
 // checkClaimAddress applies the claim action's checks to a vendor's claim address dest: never used on this market (an
-// escrow address or a per-order escrow's sibling address, a refund or fee address, a payment address or another
-// settlement's destination) and valid on the escrow node's chain.
+// escrow address or a per-order escrow's sibling address, a refund or fee address, or another settlement's
+// destination) and valid on the escrow node's chain.
 func checkClaimAddress(c *actionCtx, e *escrowBTC, dest string) error {
 	ctx := c.Ctx()
 	_, feeAddr, err := escrowFee(ctx, c.Tx, e)
@@ -74,8 +74,7 @@ func checkClaimAddress(c *actionCtx, e *escrowBTC, dest string) error {
 	}
 	var used bool
 	if err = c.Tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM escrows WHERE address=$1 OR refund_address=$1 OR fee_destination=$1) OR $1=$2
-		OR EXISTS(SELECT 1 FROM escrow_siblings WHERE address=$1)
-		OR EXISTS(SELECT 1 FROM payment_addresses WHERE address=$1) OR EXISTS(SELECT 1 FROM settlements WHERE destination=$1)`, dest, feeAddr).Scan(&used); err != nil {
+		OR EXISTS(SELECT 1 FROM escrow_siblings WHERE address=$1) OR EXISTS(SELECT 1 FROM settlements WHERE destination=$1)`, dest, feeAddr).Scan(&used); err != nil {
 		return err
 	}
 	if used {
@@ -108,19 +107,19 @@ func insertRelease(c *actionCtx, orderID, dest string) error {
 
 // escrowShipAction: the vendor of a paid physical escrow order marks it shipped (step 1 of the file comment).
 func escrowShipAction(c *actionCtx) (actionResult, error) {
-	e := c.A.escrow.Load()
-	if e == nil {
-		return actionResult{}, errEscrowDown
-	}
-	note, err := formNote(c, "Marked shipped")
-	if err != nil {
-		return actionResult{}, err
-	}
-	dest, ok := escrowAddressForm(e.network, c.Form.Get("address"))
-	if !ok {
-		return actionResult{}, errClaimAddress(c.A.escrowNetwork())
-	}
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
+		e := c.A.escrow.Load()
+		if e == nil {
+			return actionResult{}, errEscrowDown
+		}
+		note, err := formNote(c, "Marked shipped")
+		if err != nil {
+			return actionResult{}, err
+		}
+		dest, ok := escrowAddressForm(e.network, c.Form.Get("address"))
+		if !ok {
+			return actionResult{}, errClaimAddress(c.A.escrowNetwork())
+		}
 		ctx := c.Ctx()
 		o, err := partyOrder(c, c.Form.Get("order_id"))
 		switch {
@@ -265,7 +264,7 @@ func (a *App) leaveOutTopUps(ctx context.Context, tx *sql.Tx, o *Order) error {
 	if err = a.flagOrder(ctx, tx, o, note+" Moderator review required.", ""); err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.BuyerID, "Order "+shortID(o.ID)+": "+note)
+	_, err = insertNotification(ctx, tx, o.BuyerID, "Order "+shortID(o.ID)+": "+note, o.ID)
 	return err
 }
 
@@ -339,7 +338,7 @@ func (a *App) leaveOutUncounted(ctx context.Context, tx *sql.Tx, o *Order, thres
 	if err = a.flagOrder(ctx, tx, o, note+" Moderator review required.", ""); err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.BuyerID, "Order "+shortID(o.ID)+": "+note)
+	_, err = insertNotification(ctx, tx, o.BuyerID, "Order "+shortID(o.ID)+": "+note, o.ID)
 	return err
 }
 
@@ -389,7 +388,7 @@ func (a *App) leaveOutTooFew(ctx context.Context, tx *sql.Tx, o *Order, refund i
 	if err = a.flagOrder(ctx, tx, o, note+" Moderator review required.", ""); err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.BuyerID, "Order "+shortID(o.ID)+": "+note)
+	_, err = insertNotification(ctx, tx, o.BuyerID, "Order "+shortID(o.ID)+": "+note, o.ID)
 	return err
 }
 

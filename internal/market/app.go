@@ -38,6 +38,9 @@ type bucket struct {
 	Until time.Time
 }
 type App struct {
+	startedAt    time.Time       // this process instance, never a persisted heartbeat
+	recentErrors serverErrorRing // A-143: last 20 referenced HTTP errors, in memory only
+
 	db               *sql.DB
 	health           *sql.DB // one connection for /healthz, apart from the application pool (A-178)
 	templates        *template.Template
@@ -47,39 +50,35 @@ type App struct {
 	key              []byte // CSRF/CAPTCHA HMAC key, sha256("csrf:"+keyRoot)
 	captchaIDKey     []byte // CAPTCHA challenge-id MAC key, sha256("captcha-id:"+keyRoot); empty = no challenges
 	mu               sync.Mutex
-	limits           map[string]bucket
-	inFlight         map[string]int                  // OneAtATime actions in progress, by path and account (enterOneAtATime)
-	signInLogAt      time.Time                       // last "sign-in limiter refusing" log line (guarded by mu)
-	payMu            sync.RWMutex                    // guards payments and unavailable once Start has run
-	checkMu          sync.Mutex                      // serialises provider checks (refreshProviders)
-	payments         map[string]PaymentProvider      // currency -> working provider; empty = payments disabled
-	unavailable      map[string]*unavailableProvider // configured but failing its checks (retried each watcher pass)
-	live             bool                            // payment providers are configured for mainnet (initPayments)
-	escrowConfigured bool                            // ESCROW_BTC=on (escrow_rpc.go); escrow may still be disabled
-	escrowCfg        escrowConfig                    // the ESCROW_BTC settings read at startup, for the escrow watcher's retries
-	escrowStartState string                          // the escrow state line logged at startup (escrowRetry starts from it)
-	escrow           atomic.Pointer[escrowBTC]       // the Bitcoin escrow adapter once ESCROW_BTC=on passed its checks, at startup or on a watcher retry (A-316); nil = no escrow; never cleared once set
-	escrowXMR        *escrowXMR                      // Monero escrow while ESCROW_XMR=on (escrow_xmr_config.go), ready or not; nil = off; set once in New
-	scanner          *imageScanner                   // clamd client for uploads (clamd.go); nil = Disabled
-	storageLimit     int64                           // IMAGE_STORAGE_LIMIT_MB in bytes (uploads.go); 0 = the default
+	limits           map[string]bucket         // authentication and factor budgets
+	writeLimits      map[string]bucket         // independent per-account write budgets (A-75)
+	inFlight         map[string]int            // OneAtATime actions in progress, by path and account (enterOneAtATime)
+	signInLogAt      time.Time                 // last "sign-in limiter refusing" log line (guarded by mu)
+	live             bool                      // escrow currently supports test networks only
+	escrowConfigured bool                      // ESCROW_BTC=on (escrow_rpc.go); escrow may still be disabled
+	escrowCfg        escrowConfig              // the ESCROW_BTC settings read at startup, for the escrow watcher's retries
+	escrowStartState string                    // the escrow state line logged at startup (escrowRetry starts from it)
+	escrow           atomic.Pointer[escrowBTC] // the Bitcoin escrow adapter once ESCROW_BTC=on passed its checks, at startup or on a watcher retry (A-316); nil = no escrow; never cleared once set
+	escrowXMR        *escrowXMR                // Monero escrow while ESCROW_XMR=on (escrow_xmr_config.go), ready or not; nil = off; set once in New
+	scanner          *imageScanner             // clamd client for uploads (clamd.go); nil = Disabled
+	storageLimit     int64                     // IMAGE_STORAGE_LIMIT_MB in bytes (uploads.go); 0 = the default
 	stop             context.CancelFunc
 	background       sync.WaitGroup
 
 	// The Bitcoin node sync guard and escrow chain pin (A-439, bitcoin_sync.go), in memory only.
-	syncLogged      map[string]string                   // currency -> the pooled not-synced reason last logged ("" = synced); guarded by checkMu
-	escrowSync      atomic.Value                        // string: the reason class the escrow watcher last found its node not synced for ("" or unset = synced)
-	escrowMismatch  atomic.Pointer[EscrowChainMismatch] // set while startEscrow refuses the node's chain against the escrow chain pin; nil = none
-	escrowPooledKey atomic.Pointer[string]              // set while startEscrow's pooled key self-check (A-440) got no refusal: the answer's class; nil = none
-	escrowNet       atomic.Pointer[string]              // the escrow chain escrowNetwork names while escrow is not enabled (A-443); nil = not known yet
+	escrowSync     atomic.Value                        // string: the reason class the escrow watcher last found its node not synced for ("" or unset = synced)
+	escrowMismatch atomic.Pointer[EscrowChainMismatch] // set while startEscrow refuses the node's chain against the escrow chain pin; nil = none
+	escrowNet      atomic.Pointer[string]              // the escrow chain escrowNetwork names while escrow is not enabled (A-443); nil = not known yet
 	// The arbiter wallet check (QA4W4A-1, checkArbiterWallet), in memory only; the checkpoint is in settings.
 	escrowArbiterRead atomic.Pointer[string] // set while startEscrow could not finish reading the arbiter wallet's entries: "waiting" (the read goes on) or the read failure's class; nil = none
 	escrowScanMu      sync.Mutex             // guards escrowScan and escrowPace
 	escrowScan        *escrowArbiterScan     // the arbiter wallet read in progress, or finished and not yet taken (arbiterScan); nil = none
 	escrowPace        escrowArbiterPace      // when the next arbiter wallet read may start (A-479, paceArbiter); guarded by escrowScanMu
 	// Broadcast honesty (A-441, escrow_stall.go), in memory only.
-	escrowTip     atomic.Int64 // the escrow node's tip height the last escrow watcher pass read (0 = none yet)
-	escrowUnseen  escrowUnseen // per broadcast settlement not seen by the watch-only wallet, the height it went unseen from
-	escrowTorGate atomic.Value // string: why the Tor-mode gate holds escrow broadcasts ("" = they may be sent; unset = not checked yet)
+	escrowTip               atomic.Int64                            // the escrow node's tip height the last escrow watcher pass read (0 = none yet)
+	escrowHealthObservation atomic.Pointer[escrowHealthObservation] // allowlisted metadata from the last Bitcoin escrow startup check
+	escrowUnseen            escrowUnseen                            // per broadcast settlement not seen by the watch-only wallet, the height it went unseen from
+	escrowTorGate           atomic.Value                            // string: why the Tor-mode gate holds escrow broadcasts ("" = they may be sent; unset = not checked yet)
 	// The escrow signer (A-454, escrow_signer.go): nil without ESCROW_SIGNER_SOCKET; its state is in memory only.
 	escrowSigner       *escrowSignerClient
 	escrowSignerStatus atomic.Value // string: the state checkEscrowSigner last found (signerReady, signerWaiting, …)
@@ -90,7 +89,7 @@ type App struct {
 
 // parseTemplates loads layout (web/templates/*.html), pages/<page>.html ("page:<page>") and partials/<hook>.html.
 func parseTemplates() (*template.Template, error) {
-	t := template.New("")
+	t := template.New("").Funcs(template.FuncMap{"formNonce": formNonceFor})
 	for _, pattern := range []string{"web/templates/*.html", "web/templates/pages/*.html", "web/templates/partials/*.html"} {
 		var err error
 		if t, err = t.ParseGlob(pattern); err != nil {
@@ -105,7 +104,7 @@ func New(ctx context.Context, preview bool) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	a := &App{templates: t, preview: preview, mode: os.Getenv("APP_MODE"), limits: make(map[string]bucket), payments: map[string]PaymentProvider{}, unavailable: map[string]*unavailableProvider{}}
+	a := &App{startedAt: time.Now().UTC(), templates: t, preview: preview, mode: os.Getenv("APP_MODE"), limits: make(map[string]bucket), writeLimits: make(map[string]bucket)}
 	if a.mode == "" {
 		a.mode = "clearnet"
 	}
@@ -171,19 +170,6 @@ func New(ctx context.Context, preview bool) (*App, error) {
 	a.health.SetMaxIdleConns(1)
 	a.health.SetConnMaxLifetime(30 * time.Minute)
 	if err = a.checkInstallState(ctx, legacy); err != nil {
-		a.closeDB()
-		return nil, err
-	}
-	payCtx, cancel := context.WithTimeout(ctx, paymentStartupTimeout)
-	defer cancel()
-	if err = a.initPayments(payCtx); err != nil {
-		a.closeDB()
-		if timedOut(ctx, payCtx) {
-			return nil, fmt.Errorf("payment provider startup timed out after %s; check the wallet and node RPC services: %w", paymentStartupTimeout, err)
-		}
-		return nil, err
-	}
-	if err = a.checkNetworkHistory(ctx); err != nil {
 		a.closeDB()
 		return nil, err
 	}
@@ -322,34 +308,53 @@ func (a *App) cookie(w http.ResponseWriter, name, value string, age int) {
 func (a *App) allow(key string, n int) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	now := time.Now()
-	for k, v := range a.limits {
+	return allowIn(a.limits, key, n, time.Now())
+}
+
+// allowWrite reserves a separate bounded table for signed-in writes. Saturated authentication
+// counters must not refuse a legitimate account's write, and saturated write counters must
+// neither reset themselves nor evict blocking entries from either table.
+func (a *App) allowWrite(userID string) bool {
+	return a.allowWriteBudget(userID, 100)
+}
+
+func (a *App) allowWriteBudget(key string, n int) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.writeLimits == nil {
+		a.writeLimits = make(map[string]bucket)
+	}
+	return allowIn(a.writeLimits, key, n, time.Now())
+}
+
+func allowIn(limits map[string]bucket, key string, n int, now time.Time) bool {
+	for k, v := range limits {
 		if now.After(v.Until) {
-			delete(a.limits, k)
+			delete(limits, k)
 		}
 	}
-	b := a.limits[key]
+	b := limits[key]
 	if b.Count == 0 {
-		if len(a.limits) >= 4096 {
+		if len(limits) >= 4096 {
 			victim, found := "", false
-			for k, v := range a.limits {
+			for k, v := range limits {
 				if v.Count >= v.Limit {
 					continue
 				}
-				if w := a.limits[victim]; !found || v.Count < w.Count || (v.Count == w.Count && v.Until.Before(w.Until)) {
+				if w := limits[victim]; !found || v.Count < w.Count || (v.Count == w.Count && v.Until.Before(w.Until)) {
 					victim, found = k, true
 				}
 			}
 			if !found {
 				return false
 			}
-			delete(a.limits, victim)
+			delete(limits, victim)
 		}
 		b.Until = now.Add(10 * time.Minute)
 	}
 	b.Count++
 	b.Limit = n
-	a.limits[key] = b
+	limits[key] = b
 	return b.Count <= n
 }
 
@@ -405,6 +410,9 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+	if a.secure {
+		w.Header().Set("Strict-Transport-Security", "max-age=31536000")
+	}
 	if r.Method != "GET" && r.Method != "POST" && r.Method != "HEAD" {
 		w.Header().Set("Allow", "GET, HEAD, POST")
 		http.Error(w, "Method not allowed", 405)
@@ -427,7 +435,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w = aw
 	// An upload's work after its body has arrived (uploads.go) and the signed audit export (audit_export.go,
 	// through arrivalContext) get their own bounds.
-	base := r.Context()
+	base := context.WithValue(r.Context(), serverErrorRingKey{}, &a.recentErrors)
 	ctx, cancel := context.WithTimeout(context.WithValue(base, arrivalKey{}, base), 12*time.Second)
 	defer cancel()
 	r = r.WithContext(ctx)
@@ -438,7 +446,13 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if probe != nil {
 			if err := probe.PingContext(ctx); err != nil {
-				serverError(w, r, 503, "unavailable", errorCause(err))
+				var ce *pgconn.ConnectError
+				if errors.As(err, &ce) && !dbBusyForContext(ctx, err) {
+					// A persistent TLS/certificate fault is unhealthy but does not warrant Retry-After.
+					serverError(w, r, 500, "unavailable", errorCause(err))
+				} else {
+					serverError(w, r, 503, "unavailable", errorCause(err))
+				}
 				return
 			}
 		}
@@ -450,7 +464,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Method not allowed", 405)
 			return
 		}
-		http.StripPrefix("/static/", http.FileServer(http.Dir("web/static"))).ServeHTTP(w, r)
+		a.serveStatic(w, r)
 		return
 	}
 	// The image routes (image_routes.go) branch here, before any cookie is read or set: the public one reads no
@@ -483,7 +497,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		token = anon
 	}
-	r = r.WithContext(context.WithValue(context.WithValue(ctx, sessionKey{}, token), anonKey{}, anon))
+	r = r.WithContext(context.WithValue(context.WithValue(context.WithValue(ctx, sessionKey{}, token), anonKey{}, anon), rotationSessionKey{}, session))
 	ctx = r.Context()
 	if r.Method == "POST" {
 		// Everything here reads no database and holds no slot: a post takes its slot in a.post, after its
@@ -504,7 +518,16 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if isMultipart(r) {
-			// Its five known fields, bounded, become the form; every check below applies to them (psbt_upload.go).
+			if isHardwarePSBTUpload(r.URL.Path) {
+				select {
+				case hardwarePSBTReadSlots <- struct{}{}:
+					defer func() { <-hardwarePSBTReadSlots }()
+				default:
+					http.Error(w, "Hardware PSBT uploads are busy. Try again shortly. Nothing was changed.", http.StatusServiceUnavailable)
+					return
+				}
+			}
+			// Its six known fields, bounded, become the form; every check below applies to them (psbt_upload.go).
 			form, code, msg := readPSBTUploadForm(w, r)
 			if form == nil {
 				http.Error(w, msg, code)
@@ -533,7 +556,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, invalidFormText, 400)
 			return
 		}
-		if msg := postOriginError(r); msg != "" {
+		if msg := postOriginError(r, a.secure); msg != "" {
 			http.Error(w, msg, 403)
 			return
 		}
@@ -542,8 +565,8 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// a token derived from `anon`, and this same-site POST now sends both cookies. Serve it as the
 			// anonymous request the form was rendered for: never as the signed-in user, so the anon token
 			// grants nothing an anonymous visitor lacks, while that page's sign-in form and CAPTCHA work.
-			// Origin and Sec-Fetch-Site are checked above either way. A sign-in served this way replaces
-			// the `session` cookie; the previous session row lapses at expiry or with revoke-sessions.
+			// Origin and Sec-Fetch-Site are checked above either way. Successful sign-in
+			// rotates the original session cookie retained separately for that purpose; a refusal leaves it live.
 			if anon == "" || anon == token || subtle.ConstantTimeCompare(sent, []byte(a.csrf(anon))) != 1 {
 				http.Error(w, "Form expired. Reload and try again.", 403)
 				return
@@ -576,7 +599,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		u, err := a.sessionUser(ctx, session)
 		lookupDone()
 		if err != nil {
-			serverError(w, r, 503, "Service unavailable", errorCause(err))
+			writeDBFailure(w, r, err)
 			return
 		}
 		user = u
@@ -654,7 +677,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	var installed bool
 	if err := a.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM settings WHERE key='installed')").Scan(&installed); err != nil {
-		serverError(w, r, 503, "Service unavailable", errorCause(err))
+		writeDBFailure(w, r, err)
 		return
 	}
 	if !installed && page != "setup" {
@@ -684,7 +707,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case err == sql.ErrNoRows:
 			http.NotFound(w, r)
-		case dbBusy(err):
+		case dbBusyForContext(ctx, err):
 			serverError(w, r, 503, errBusyMsg, errorCause(err))
 		case !errors.As(err, &he):
 			serverError(w, r, 500, "Unable to load this page", errorCause(err))
@@ -722,13 +745,13 @@ func formTextValid(form url.Values) bool {
 	return true
 }
 
-// postOriginError returns the refusal of a form post whose Origin names another host or whose Sec-Fetch-Site says
-// cross-site, or "" when neither does. Fixed copy naming no header value; the usual cause of a mismatch is a
-// reverse proxy rewriting Host (A-138).
-func postOriginError(r *http.Request) string {
+// postOriginError refuses a different Origin host, an HTTP Origin when secure cookies are required, or a
+// cross-site fetch. Forwarded headers do not weaken this check. The fixed copy names no header value; a
+// common host mismatch is a reverse proxy rewriting Host (A-138).
+func postOriginError(r *http.Request, secure bool) string {
 	if origin := r.Header.Get("Origin"); origin != "" {
 		u, e := url.Parse(origin)
-		if e != nil || u.Host != r.Host || (u.Scheme != "http" && u.Scheme != "https") {
+		if e != nil || u.Host != r.Host || (u.Scheme != "http" && u.Scheme != "https") || (secure && u.Scheme != "https") {
 			return "Origin does not match Host; if this market runs behind a reverse proxy, the proxy must forward the Host header."
 		}
 	}
@@ -764,7 +787,7 @@ func objectTitle(d *PageData) {
 
 // pageData is the state a page render starts from, before a.load fills it.
 func (a *App) pageData(r *http.Request, page, token string, user *User) PageData {
-	d := PageData{Page: page, Title: pageTitle(page), CSRF: a.csrf(token), User: user, Mode: a.mode, Query: r.URL.Query().Get("q"), Category: r.URL.Query().Get("category"), Region: r.URL.Query().Get("region"), Currency: r.URL.Query().Get("currency"), Settings: map[string]string{}}
+	d := PageData{Page: page, Title: pageTitle(page), CSRF: a.csrf(token), User: user, Mode: a.mode, Query: r.URL.Query().Get("q"), Category: r.URL.Query().Get("category"), Region: r.URL.Query().Get("region"), Currency: r.URL.Query().Get("currency"), BitcoinPriceLabel: "Price (BTC, network not configured)", Settings: map[string]string{}}
 	if d.Currency != "XMR" {
 		d.Currency = "BTC"
 	}

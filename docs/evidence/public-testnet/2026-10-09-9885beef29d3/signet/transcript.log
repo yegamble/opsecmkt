@@ -1,0 +1,34 @@
+=== RUN   TestEscrowPublicSmoke
+2026/10/09 17:45:55 keys: derived from SETUP_TOKEN (legacy); add APP_SECRET_KEY to .env with the same value to keep them, as UPGRADING.md describes
+2026/10/09 17:45:55 escrow: Bitcoin escrow on (test networks only)
+    escrow_public_test.go:171: escrow-public: escrow on; arbiter wallet escrow-smoke-45d57959-arbiter, watch-only wallet escrow-smoke-45d57959-watch, 1 confirmation(s), fee rate 2 sat/vB
+    escrow_public_test.go:213: escrow-public: leg practice-sign passed (buyer and vendor keys activated by practice signatures from their own Core wallets; nothing broadcast)
+    escrow_public_test.go:244: escrow-public: txid claim funding 055adcc728b41159995fb7ba7c1f4bdb5ec19c639922eb0cbc4826bdd16a5174
+    escrow_public_test.go:245: escrow-public: txid refund funding f1270a2b99e666335eb76e8ae64002ead5328eba0d1ee0009943a46bc433bfc8
+    escrow_public_test.go:246: escrow-public: gettransaction 055adcc728b41159995fb7ba7c1f4bdb5ec19c639922eb0cbc4826bdd16a5174: public operator RPC unreachable: EOF
+    escrow_public_test.go:246: escrow-public: gettransaction 055adcc728b41159995fb7ba7c1f4bdb5ec19c639922eb0cbc4826bdd16a5174: public operator RPC unreachable: EOF
+    escrow_public_test.go:246: escrow-public: gettransaction 055adcc728b41159995fb7ba7c1f4bdb5ec19c639922eb0cbc4826bdd16a5174: public operator RPC unreachable: EOF
+    escrow_public_test.go:246: escrow-public: gettransaction 055adcc728b41159995fb7ba7c1f4bdb5ec19c639922eb0cbc4826bdd16a5174: public operator RPC unreachable: EOF
+    escrow_public_test.go:246: escrow-public: gettransaction 055adcc728b41159995fb7ba7c1f4bdb5ec19c639922eb0cbc4826bdd16a5174: public operator RPC unreachable: EOF
+    escrow_public_test.go:246: escrow-public: gettransaction 055adcc728b41159995fb7ba7c1f4bdb5ec19c639922eb0cbc4826bdd16a5174: public operator RPC unreachable: EOF
+    escrow_public_test.go:246: escrow-public: gettransaction 055adcc728b41159995fb7ba7c1f4bdb5ec19c639922eb0cbc4826bdd16a5174: public operator RPC unreachable: EOF
+    escrow_public_test.go:246: escrow-public: confirmed 055adcc728b41159995fb7ba7c1f4bdb5ec19c639922eb0cbc4826bdd16a5174, f1270a2b99e666335eb76e8ae64002ead5328eba0d1ee0009943a46bc433bfc8 at height 325662
+    escrow_public_test.go:310: escrow-public: txid claim settlement 17a523091c8e208f13c0310ad73cc87916c0054ca5cd63bf7444616a7ad29863
+    escrow_public_test.go:311: escrow-public: txid refund settlement eca81da9b68c85abd63036e919a062d8801f7e59f01e787c52003784269785cf
+    escrow_public_test.go:312: escrow-public: gettransaction 17a523091c8e208f13c0310ad73cc87916c0054ca5cd63bf7444616a7ad29863: public operator RPC gettransaction: error -5: Invalid or non-wallet transaction id
+    escrow_public_test.go:312: escrow-public: gettransaction 17a523091c8e208f13c0310ad73cc87916c0054ca5cd63bf7444616a7ad29863: public operator RPC gettransaction: error -5: Invalid or non-wallet transaction id
+    escrow_public_test.go:312: escrow-public: gettransaction 17a523091c8e208f13c0310ad73cc87916c0054ca5cd63bf7444616a7ad29863: public operator RPC unreachable: EOF
+    escrow_public_test.go:312: escrow-public: gettransaction 17a523091c8e208f13c0310ad73cc87916c0054ca5cd63bf7444616a7ad29863: public operator RPC unreachable: EOF
+    escrow_public_test.go:312: escrow-public: gettransaction 17a523091c8e208f13c0310ad73cc87916c0054ca5cd63bf7444616a7ad29863: public operator RPC unreachable: EOF
+    escrow_public_test.go:312: escrow-public: gettransaction 17a523091c8e208f13c0310ad73cc87916c0054ca5cd63bf7444616a7ad29863: public operator RPC unreachable: EOF
+    escrow_public_test.go:312: escrow-public: gettransaction 17a523091c8e208f13c0310ad73cc87916c0054ca5cd63bf7444616a7ad29863: public operator RPC unreachable: EOF
+    escrow_public_test.go:312: escrow-public: gettransaction 17a523091c8e208f13c0310ad73cc87916c0054ca5cd63bf7444616a7ad29863: public operator RPC unreachable: EOF
+    escrow_public_test.go:312: escrow-public: gettransaction 17a523091c8e208f13c0310ad73cc87916c0054ca5cd63bf7444616a7ad29863: public operator RPC unreachable: EOF
+    escrow_public_test.go:312: escrow-public: gettransaction 17a523091c8e208f13c0310ad73cc87916c0054ca5cd63bf7444616a7ad29863: public operator RPC unreachable: EOF
+    escrow_public_test.go:312: escrow-public: gettransaction 17a523091c8e208f13c0310ad73cc87916c0054ca5cd63bf7444616a7ad29863: public operator RPC unreachable: EOF
+    escrow_public_test.go:312: escrow-public: confirmed 17a523091c8e208f13c0310ad73cc87916c0054ca5cd63bf7444616a7ad29863, eca81da9b68c85abd63036e919a062d8801f7e59f01e787c52003784269785cf at height 325663
+    escrow_public_test.go:348: escrow-public: leg claim passed (funded at the price, completed on funding, the vendor's claim signed in its own wallet, co-signed, broadcast and confirmed with 1 confirmation(s); outputs on chain = planned)
+    escrow_public_test.go:350: escrow-public: leg refund passed (underpaid, cancelled by the buyer, the refund signed in the buyer's wallet, co-signed, broadcast and confirmed with 1 confirmation(s), paying the refund address pinned at checkout)
+--- PASS: TestEscrowPublicSmoke (2081.62s)
+PASS
+ok  	opsecmkt/internal/market	2081.702s

@@ -73,7 +73,7 @@ test('account sessions panel lists sessions without client data and explains sig
   await expect(sessions).toContainText('every sign-in still waiting for its second step');
   await expect(sessions).toContainText('Only changing your password stops them. A password change ends every other session and every sign-in in progress');
   for (const action of ['/logout', '/revoke-sessions']) {
-    const form = sessions.locator(`form[action="${action}"]`);
+    const form = (action === '/logout' ? page : sessions).locator(`form[action="${action}"]`);
     await expect(form).toHaveAttribute('method', 'post');
     await expect(form.locator('input[name="csrf"]')).toHaveCount(1);
   }
@@ -123,7 +123,7 @@ test('password change and second-factor reset are plain POST forms and the previ
   await expect(suspend.getByRole('radio', { name: /^Suspend:/ })).not.toBeChecked();
   await expect(suspend.getByRole('radio', { name: /^Restore:/ })).not.toBeChecked();
   await expect(suspend.getByLabel('Authenticator code')).toHaveCount(0);
-  await expect(suspension.locator('.account-list li')).toHaveText(['held_account · buyer · suspended 2026-01-01 00:00 UTC']);
+  await expect(suspension.locator('.account-list li')).toHaveText(['held_account · buyer · suspended 2026-01-01 00:00 UTC · factors: TOTP and PGP sign-in']);
   // A-118: the copy does not promise that orders continue normally, and says a suspended moderator is not a
   // resolver or contact.
   await expect(suspension).toContainText(

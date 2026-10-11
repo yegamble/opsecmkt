@@ -150,6 +150,33 @@ func TestProductPagePhotos(t *testing.T) {
 	}
 }
 
+func TestProductDescriptionAndBitcoinPriceLabel(t *testing.T) {
+	e := newTestApp(t)
+	vendorID, vendor := e.user("product_copy_vendor", "vendor")
+	product := e.product(vendorID, "physical")
+	if _, err := e.DB.Exec("UPDATE products SET description=$2 WHERE id=$1", product, "First line\nSecond line"); err != nil {
+		t.Fatal(err)
+	}
+	// The shared price label follows the configured escrow network, including when it is not yet verified.
+	e.A.escrowConfigured = true
+	network := "regtest"
+	e.A.escrowNet.Store(&network)
+	testnet := e.do("GET", "/product?id="+product, "", nil)
+	e.check(testnet, 200)
+	if body := testnet.Body.String(); !strings.Contains(body, "First line\nSecond line</p>") || !strings.Contains(body, "Price (BTC, test network)") {
+		t.Fatalf("escrow product label: %s", body)
+	}
+	for _, path := range []string{"/listing-edit?id=" + product, "/vendor-dashboard"} {
+		if body := e.do("GET", path, vendor, nil).Body.String(); !strings.Contains(body, "Price (BTC, test network)") {
+			t.Fatalf("%s lacks escrow network label: %s", path, body)
+		}
+	}
+	e.A.escrowConfigured = false
+	if body := e.do("GET", "/product?id="+product, "", nil).Body.String(); !strings.Contains(body, "Price (BTC, not configured)") {
+		t.Fatalf("unconfigured BTC label: %s", body)
+	}
+}
+
 // The vendor page: the vendor's avatar thumbnail, decorative, at 58×58 (else the text glyph), and 25 listings a
 // page with Previous/Next links, so a page links at most 25 thumbnails and the avatar.
 func TestVendorPageAvatarAndPaging(t *testing.T) {
@@ -289,6 +316,8 @@ func TestStaffAvatarVisibleToOrderPartiesOnOrderPage(t *testing.T) {
 	for _, ev := range [][4]string{{"paid", "shipped", vendorID, ""}, {"shipped", "disputed", buyerID, ""}, {"disputed", "resolved", modID, "Resolved — refund to buyer"}} {
 		e.mustExec("INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$3,$4,$5)", order, ev[0], ev[1], ev[2], ev[3])
 	}
+	e.mustExec(`INSERT INTO disputes(id,order_id,reason,status,outcome,resolution)
+		VALUES($1,$2,'The parcel did not arrive and the buyer requests a refund.','Resolved — refund to buyer','refund','The evidence supports refunding the buyer.')`, randomToken(), order)
 	img := `<img class="decision-avatar" src="/desk/img/` + avatar.id + `-t" alt="" width="64" height="64">`
 	for name, s := range map[string]string{"buyer": buyer, "vendor": vendor, "moderator": mod, "another moderator": otherMod, "administrator": admin} {
 		body := e.body("GET", "/order?id="+order, s, nil, 200)

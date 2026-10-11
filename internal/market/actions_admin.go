@@ -9,22 +9,27 @@ import (
 )
 
 func init() {
-	registerAction("/admin", actionSpec{Roles: []string{"admin"}, Run: adminAction})
-	registerAction("/admin/reset-factors", actionSpec{Roles: []string{"admin"}, OwnTx: true, Run: adminResetFactorsAction})
-	registerAction("/admin/suspend", actionSpec{Roles: []string{"admin"}, OwnTx: true, Run: adminSuspendAction})
-	registerAction("/admin/review", actionSpec{Roles: []string{"admin"}, OwnTx: true, Run: adminReviewAction})
+	registerAction("/admin", actionSpec{Roles: []string{"admin"}, OwnTx: true, OwnFormNonce: true, Run: adminAction})
+	registerAction("/admin/reset-factors", actionSpec{Roles: []string{"admin"}, OwnTx: true,
+		ConfirmedFormNonce: true, ReceiptAuthorize: adminResetReceiptAuthorize, Run: adminResetFactorsAction})
+	registerAction("/admin/suspend", actionSpec{Roles: []string{"admin"}, OwnTx: true,
+		ConfirmedFormNonce: true, ReceiptAuthorize: adminSuspendReceiptAuthorize, Run: adminSuspendAction})
+	registerAction("/admin/review", actionSpec{Roles: []string{"admin"}, OwnTx: true, ConfirmedFormNonce: true, Run: adminReviewAction})
 	registerLoader("admin", factorAccountsLoader)
 	registerLoader("admin", suspendedAccountsLoader)
 	registerPreview("admin", func(d *PageData) {
 		d.FactorAccounts = []User{{ID: "ghost", Handle: "ghost_circuit", Role: "vendor", Factors: "TOTP"}}
-		d.SuspendedAccounts = []User{{ID: "held", Handle: "held_account", Role: "buyer", Suspended: "2026-01-01 00:00 UTC"}}
+		d.SuspendedAccounts = []User{{ID: "held", Handle: "held_account", Role: "buyer", Suspended: "2026-01-01 00:00 UTC", Factors: "TOTP and PGP sign-in"}}
 	})
 }
 
 // suspendedAccountsLoader lists up to 100 suspended accounts, most recently suspended first, so they can be
 // restored without remembering the handle; the form takes any handle, so accounts past the list work the same.
 func suspendedAccountsLoader(ctx context.Context, a *App, r *http.Request, d *PageData) error {
-	rows, err := a.db.QueryContext(ctx, `SELECT id,handle,role,to_char(suspended_at,'YYYY-MM-DD HH24:MI "UTC"') FROM users
+	rows, err := a.db.QueryContext(ctx, `SELECT id,handle,role,to_char(suspended_at,'YYYY-MM-DD HH24:MI "UTC"'),
+		CASE WHEN totp_enabled AND pgp_2fa THEN 'TOTP and PGP sign-in'
+			WHEN totp_enabled THEN 'TOTP' WHEN pgp_2fa THEN 'PGP sign-in' ELSE '' END
+		FROM users
 		WHERE suspended_at IS NOT NULL ORDER BY suspended_at DESC, handle LIMIT 100`)
 	if err != nil {
 		return err
@@ -32,7 +37,7 @@ func suspendedAccountsLoader(ctx context.Context, a *App, r *http.Request, d *Pa
 	defer rows.Close()
 	for rows.Next() {
 		var u User
-		if err = rows.Scan(&u.ID, &u.Handle, &u.Role, &u.Suspended); err != nil {
+		if err = rows.Scan(&u.ID, &u.Handle, &u.Role, &u.Suspended, &u.Factors); err != nil {
 			return err
 		}
 		d.SuspendedAccounts = append(d.SuspendedAccounts, u)
@@ -40,10 +45,43 @@ func suspendedAccountsLoader(ctx context.Context, a *App, r *http.Request, d *Pa
 	return rows.Err()
 }
 
+// The target must still be a different, non-administrator account before a
+// confirmed staff receipt can be replayed. A successful suspend/restore or
+// factor reset changes the very state their callbacks require on first use,
+// so this check intentionally does not require the former suspended/factor
+// state. It takes no target lock: replay changes nothing, while a first use
+// repeats all target checks under the callback's established lock order.
+func adminTargetReceiptAuthorize(c *actionCtx, reset bool) error {
+	handle := strings.TrimSpace(c.Form.Get("handle"))
+	var target, role string
+	err := c.Tx.QueryRowContext(c.Ctx(), "SELECT id,role FROM users WHERE handle=$1", handle).Scan(&target, &role)
+	if err == sql.ErrNoRows {
+		return fail(404, "Account not found")
+	}
+	if err != nil {
+		return err
+	}
+	if target == c.User.ID {
+		if reset {
+			return fail(400, "You cannot reset your own second factors here. Use your recovery codes, or follow the operator procedure for administrator lockout.")
+		}
+		return fail(400, "You cannot suspend your own account.")
+	}
+	if role == "admin" {
+		if reset {
+			return fail(403, "Administrator second factors cannot be reset here; administrator lockout is an operator procedure.")
+		}
+		return fail(403, "Administrator accounts cannot be suspended or restored here.")
+	}
+	return nil
+}
+
+func adminSuspendReceiptAuthorize(c *actionCtx) error { return adminTargetReceiptAuthorize(c, false) }
+func adminResetReceiptAuthorize(c *actionCtx) error   { return adminTargetReceiptAuthorize(c, true) }
+
 // adminSuspendAction suspends or restores a non-administrator account, looked up by handle. Suspending ends
 // the account's sessions and pending sign-ins and blocks sign-in (checked at the password step, when a
-// session starts and whenever a session loads) and holds the account's unsent payouts for an administrator's
-// payout address check; restoring allows sign-in again and leaves those holds. Role, listings and orders stay
+// session starts and whenever a session loads); restoring allows sign-in again. Role, listings and orders stay
 // as they are: orders waiting on the account stop until it is restored, and the other party can still
 // complete, cancel where allowed or dispute them. A suspended moderator is not a dispute resolver, recipient
 // or contact (A-118). Both accounts are audited and the account is notified. The administrator confirms
@@ -76,7 +114,7 @@ func adminSuspendAction(c *actionCtx) (actionResult, error) {
 	}
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
 		ctx, tx := c.Ctx(), c.Tx
-		if err := waitForWalletLocks(ctx, tx); err != nil { // a checkout by the account holds its row (payAction)
+		if err := waitForWalletLocks(ctx, tx); err != nil { // a checkout by the account holds its row (escrowCheckoutAction)
 			return actionResult{}, err
 		}
 		// Pending sign-ins go first, before the account row is locked: /challenge locks its pending sign-in and
@@ -84,10 +122,8 @@ func adminSuspendAction(c *actionCtx) (actionResult, error) {
 		if _, err := tx.ExecContext(ctx, "DELETE FROM pending_logins WHERE user_id=$1", target); err != nil {
 			return actionResult{}, err
 		}
-		// FOR NO KEY UPDATE, not FOR UPDATE: it still excludes session starts and payout queueing (both take FOR
-		// SHARE), but not the key-share locks of inserts referencing the account (notifications, order events).
-		// The watcher can hold one of this account's payouts and then insert such a row; with FOR UPDATE, the
-		// payout update below would deadlock with it.
+		// FOR NO KEY UPDATE, not FOR UPDATE: it still excludes session starts (FOR SHARE), but not the key-share
+		// locks of inserts referencing the account (notifications, order events) that a watcher pass may hold.
 		var role string
 		var suspended bool
 		err := tx.QueryRowContext(ctx, "SELECT role,suspended_at IS NOT NULL FROM users WHERE id=$1 FOR NO KEY UPDATE", target).Scan(&role, &suspended)
@@ -110,23 +146,11 @@ func adminSuspendAction(c *actionCtx) (actionResult, error) {
 			if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", target, "Account restored by administrator "+c.User.Handle); err != nil {
 				return actionResult{}, err
 			}
-			// Restoring does not release payouts held for the suspension (A-102); the owner is told how many wait
-			// (A-120), and where each one's next step is.
-			holds, err := collectStrings(ctx, tx, "SELECT error FROM payouts WHERE user_id=$1 AND state='held'", target)
-			if err != nil {
+			note := "An administrator restored your account. You can sign in again."
+			if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), target, note); err != nil {
 				return actionResult{}, err
 			}
-			held := 0
-			for _, e := range holds {
-				if heldForSuspension("held", e) {
-					held++
-				}
-			}
-			note := "An administrator restored your account. You can sign in again."
-			if held > 0 {
-				note += " " + strconv.Itoa(held) + " payout(s) to you stay held until an administrator checks your payout address; your account page lists them."
-			}
-			if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), target, note); err != nil {
+			if err = notifyActiveCounterparties(ctx, tx, target, handle, false); err != nil {
 				return actionResult{}, err
 			}
 			return actionResult{Redirect: "/admin", Notice: "restored", Audit: "Restored account " + handle}, nil
@@ -143,32 +167,14 @@ func adminSuspendAction(c *actionCtx) (actionResult, error) {
 		}
 		n, _ := ended.RowsAffected()
 		sessions := strconv.FormatInt(n, 10) + " session(s) and any pending sign-ins"
-		// Unsent payouts to the account are held until an administrator checks their payout address: whoever
-		// the account was suspended for may have changed it (A-102). The watcher's own hold is replaced, since the
-		// watcher lifts that one by itself. A hold for a payout larger than the order price, or one an administrator
-		// made to pay the payout by hand (A-488), is kept after the suspension text, so releasing it still needs that
-		// review or confirmation too. A hold a restore from backup wrote (restoredHoldPrefix) keeps its text first and
-		// gains the suspension's after it, unless it already carries one (A-489): heldForSuspension then asks for the
-		// address check besides the wallet check, and a later restore keeps both. Payouts queued later start held
-		// (enqueuePayout).
-		heldRes, err := tx.ExecContext(ctx, `UPDATE payouts SET state='held',updated=now(),
-			error=CASE WHEN state='held' AND error LIKE $6 || '%' THEN error || ' ' || $2
-				WHEN state='held' AND (error LIKE $4 || '%' OR error LIKE $5 || '%') THEN $2 || ' ' || error ELSE $2 END
-			WHERE user_id=$1 AND (state IN ('pending','blocked') OR (state='held' AND (error=$3 OR error LIKE $4 || '%' OR error LIKE $5 || '%'
-				OR (error LIKE $6 || '%' AND error NOT LIKE '% ' || $7 || '%'))))`,
-			target, suspendedHold, heldReason, largeHoldPrefix, handHoldPrefix, restoredHoldPrefix, suspendedHoldPrefix)
-		if err != nil {
-			return actionResult{}, err
-		}
 		note := "An administrator suspended your account and signed you out everywhere. A suspended account cannot sign in; your listings and orders were not changed."
-		if h, _ := heldRes.RowsAffected(); h > 0 {
-			sessions += "; held " + strconv.FormatInt(h, 10) + " unsent payout(s)"
-			note += " " + strconv.FormatInt(h, 10) + " unsent payout(s) to you are held until an administrator checks your payout address."
-		}
 		if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", target, "Account suspended by administrator "+c.User.Handle+"; ended "+sessions); err != nil {
 			return actionResult{}, err
 		}
 		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), target, note); err != nil {
+			return actionResult{}, err
+		}
+		if err = notifyActiveCounterparties(ctx, tx, target, handle, true); err != nil {
 			return actionResult{}, err
 		}
 		return actionResult{Redirect: "/admin", Notice: "suspended", Audit: "Suspended account " + handle + "; ended " + sessions}, nil
@@ -225,7 +231,7 @@ func adminReviewAction(c *actionCtx) (actionResult, error) {
 		if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", buyerID, "Review of order "+short+" "+target+" by administrator "+c.User.Handle); err != nil {
 			return actionResult{}, err
 		}
-		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), buyerID, note); err != nil {
+		if _, err = insertNotification(ctx, tx, buyerID, note, orderID); err != nil {
 			return actionResult{}, err
 		}
 		back := "/product?id=" + productID
@@ -285,7 +291,7 @@ func adminResetFactorsAction(c *actionCtx) (actionResult, error) {
 	}
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
 		ctx, tx := c.Ctx(), c.Tx
-		if err := waitForWalletLocks(ctx, tx); err != nil { // a checkout by the account holds its row (payAction)
+		if err := waitForWalletLocks(ctx, tx); err != nil { // a checkout by the account holds its row (escrowCheckoutAction)
 			return actionResult{}, err
 		}
 		// Pending sign-ins, then recovery codes, go before the account row is locked, in the order /challenge takes
@@ -355,6 +361,51 @@ func adminHandleError(c *actionCtx, msg string, keep func(d *PageData)) error {
 }
 
 func adminAction(c *actionCtx) (actionResult, error) {
+	required, completed, err := completedOwnFormMode(c)
+	if err != nil {
+		return actionResult{}, err
+	}
+	if completed {
+		return replayOwnForm(c, required)
+	}
+	switch c.Form.Get("action") {
+	case "role":
+		role := c.Form.Get("role")
+		if role != "buyer" && role != "vendor" && role != "moderator" {
+			return actionResult{}, fail(400, "Choose buyer, vendor, or moderator")
+		}
+		handle := strings.TrimSpace(c.Form.Get("handle"))
+		if handle == "" {
+			return actionResult{}, fail(400, "Enter an account handle")
+		}
+		if handle == c.User.Handle {
+			return actionResult{}, fail(400, "Cannot change your own administrator role")
+		}
+		// Keep unknown handles out of the password-attempt budget, as the other admin forms do.
+		// adminChange repeats the lookup under its own row lock after authentication.
+		var exists bool
+		if err := c.A.db.QueryRowContext(c.Ctx(), "SELECT EXISTS(SELECT 1 FROM users WHERE handle=$1 AND role<>'admin')", handle).Scan(&exists); err != nil {
+			return actionResult{}, err
+		}
+		if !exists {
+			return actionResult{}, adminRoleHandleError(c, handle, role)
+		}
+		return ownConfirmedTx(c, true, adminChange)
+	case "settings":
+		return ownConfirmedTx(c, false, adminChange)
+	default:
+		return actionResult{}, fail(400, "Unknown action")
+	}
+}
+
+func adminRoleHandleError(c *actionCtx, handle, role string) error {
+	return adminHandleError(c, "No buyer, vendor or moderator has the handle \""+handle+"\". Check the spelling: handles are case-sensitive, and administrator roles cannot be changed here.", func(d *PageData) {
+		d.RoleHandle, d.RoleChoice = handle, role
+	})
+}
+
+// adminChange runs after confirmedTx has locked and rechecked the administrator row.
+func adminChange(c *actionCtx) (actionResult, error) {
 	ctx, f, tx, u := c.Ctx(), c.Form, c.Tx, c.User
 	var err error
 	action := ""
@@ -378,9 +429,7 @@ func adminAction(c *actionCtx) (actionResult, error) {
 		var target, old string
 		err = tx.QueryRowContext(ctx, "SELECT id,role FROM users WHERE handle=$1 AND role<>'admin' FOR UPDATE", handle).Scan(&target, &old)
 		if err == sql.ErrNoRows {
-			return actionResult{}, adminHandleError(c, "No buyer, vendor or moderator has the handle \""+handle+"\". Check the spelling: handles are case-sensitive, and administrator roles cannot be changed here.", func(d *PageData) {
-				d.RoleHandle, d.RoleChoice = handle, role
-			})
+			return actionResult{}, adminRoleHandleError(c, handle, role)
 		}
 		if err != nil {
 			return actionResult{}, err
@@ -393,20 +442,29 @@ func adminAction(c *actionCtx) (actionResult, error) {
 			if _, err = tx.ExecContext(ctx, "UPDATE users SET role=$1 WHERE id=$2", role, target); err != nil {
 				return actionResult{}, err
 			}
-			_, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", target, "Role changed from "+old+" to "+role+" by an administrator")
+			actor := "administrator " + u.Handle
+			_, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", target, "Role changed from "+old+" to "+role+" by "+actor)
 		}
 		if err == nil {
 			var more string
-			more, err = roleChanged(ctx, tx, target, old, role, "an administrator")
+			more, err = roleChanged(ctx, tx, target, old, role, "administrator "+u.Handle)
 			action += more
 		}
 	case "settings":
-		name := strings.TrimSpace(f.Get("site_name"))
-		if name == "" || len(name) > 80 {
+		if strings.TrimSpace(f.Get("site_name")) == "" {
 			return actionResult{}, fail(400, "Invalid settings")
 		}
+		name, err := setupSiteName(f.Get("site_name"))
+		if err != nil {
+			return actionResult{}, fail(400, "Invalid settings")
+		}
+		var previous string
+		err = tx.QueryRowContext(ctx, "SELECT value FROM settings WHERE key='site_name' FOR UPDATE").Scan(&previous)
+		if err != nil && err != sql.ErrNoRows {
+			return actionResult{}, err
+		}
 		_, err = tx.ExecContext(ctx, "INSERT INTO settings(key,value) VALUES('site_name',$1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", name)
-		action = "Saved marketplace settings"
+		action = "Saved marketplace site name from " + strconv.Quote(previous) + " to " + strconv.Quote(name)
 	default:
 		return actionResult{}, fail(400, "Unknown action")
 	}
@@ -419,9 +477,12 @@ func adminAction(c *actionCtx) (actionResult, error) {
 
 // roleChanged does what an account's new role entails, in tx after its users row is locked and its role set from
 // old to role. The admin form and the -set-role host command (SetRole) share it; by names who changed the role in
-// the account's audit rows ("an administrator" or "host command"). It returns what to add to the change's summary.
+// the account's audit rows (the administrator handle or "host command"). It returns what to add to the change's
+// summary.
 func roleChanged(ctx context.Context, tx *sql.Tx, target, old, role, by string) (string, error) {
 	summary := ""
+	avatarRemoved := false
+	archivedListings := "0"
 	if old != role && (old == "moderator" || old == "admin") && role != "moderator" {
 		// PR #28 review: a staff avatar was uploaded under the staff rules (hidden unless listed); as a
 		// vendor's it would be public. It is deleted here (D4's hard delete), after the caller's users row lock.
@@ -436,10 +497,8 @@ func roleChanged(ctx context.Context, tx *sql.Tx, target, old, role, by string) 
 		}
 		if n, _ := res.RowsAffected(); n > 0 {
 			summary += "; removed their staff avatar"
+			avatarRemoved = true
 			if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", target, "Staff avatar removed when the role changed"); err != nil {
-				return "", err
-			}
-			if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), target, "Your staff avatar was removed when your role changed; upload a new one if you want one shown."); err != nil {
 				return "", err
 			}
 		}
@@ -447,15 +506,29 @@ func roleChanged(ctx context.Context, tx *sql.Tx, target, old, role, by string) 
 	if role != "vendor" {
 		// A user who is no longer a vendor cannot manage listings, so their active listings are archived in
 		// this transaction (audited on the account). Existing orders are unaffected.
-		n := "0"
-		if err := tx.QueryRowContext(ctx, "WITH a AS (UPDATE products SET archived=true,archived_at=now(),updated=now() WHERE vendor_id=$1 AND NOT archived RETURNING 1) SELECT count(*)::text FROM a", target).Scan(&n); err != nil {
+		if err := tx.QueryRowContext(ctx, "WITH a AS (UPDATE products SET archived=true,archived_at=now(),updated=now() WHERE vendor_id=$1 AND NOT archived RETURNING 1) SELECT count(*)::text FROM a", target).Scan(&archivedListings); err != nil {
 			return "", err
 		}
-		if n != "0" {
-			summary += "; archived " + n + " active listing(s)"
-			if _, err := tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", target, "Archived "+n+" active listing(s): role changed to "+role+" by "+by); err != nil {
+		if archivedListings != "0" {
+			summary += "; archived " + archivedListings + " active listing(s)"
+			if _, err := tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", target, "Archived "+archivedListings+" active listing(s): role changed to "+role+" by "+by); err != nil {
 				return "", err
 			}
+		}
+	}
+	if old != role {
+		note := "Your account role changed from " + old + " to " + role + "."
+		if archivedListings != "0" {
+			note += " Your " + archivedListings + " active listing(s) were archived; existing orders remain readable."
+		}
+		if avatarRemoved {
+			note += " Your staff avatar was removed."
+		}
+		if old == "admin" && role != "admin" {
+			note += " Your existing sessions and pending sign-ins were ended."
+		}
+		if _, err := tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), target, note); err != nil {
+			return "", err
 		}
 	}
 	return summary, nil

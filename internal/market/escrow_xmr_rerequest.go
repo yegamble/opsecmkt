@@ -25,8 +25,8 @@ import (
 // mined; the plan is checked in Go (checkXMRBuild).
 
 func init() {
-	registerAction("/admin/escrow-xmr-rerequest", actionSpec{Roles: []string{"admin"}, OwnTx: true, Off: escrowXMROff, Run: xmrReRequestAction})
-	registerAction("/admin/escrow-xmr-retry-build", actionSpec{Roles: []string{"admin"}, OwnTx: true, Off: escrowXMROff, Run: xmrRetryBuildAction})
+	registerAction("/admin/escrow-xmr-rerequest", actionSpec{Roles: []string{"admin"}, OwnTx: true, ConfirmedFormNonce: true, ReceiptAuthorize: xmrSettlementRequestReceiptAuthorize, Off: escrowXMROff, Run: xmrReRequestAction})
+	registerAction("/admin/escrow-xmr-retry-build", actionSpec{Roles: []string{"admin"}, OwnTx: true, ConfirmedFormNonce: true, ReceiptAuthorize: xmrSettlementRequestReceiptAuthorize, Off: escrowXMROff, Run: xmrRetryBuildAction})
 }
 
 // Refusal reasons of a re-request (xmr_settlement_rerequests.reason).
@@ -235,7 +235,7 @@ func (a *App) xmrReRequest(ctx context.Context, id int64, s *xmrSettleRow, admin
 	if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) SELECT id,state,state,NULL,$2 FROM orders WHERE id=$1", s.OrderID, note); err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), admin, "Order "+shortID(s.OrderID)+": "+note); err != nil {
+	if _, err = insertNotification(ctx, tx, admin, "Order "+shortID(s.OrderID)+": "+note, s.OrderID); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -260,7 +260,7 @@ func (a *App) refuseXMRReRequest(ctx context.Context, id int64, s *xmrSettleRow,
 	if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) SELECT id,state,state,NULL,$2 FROM orders WHERE id=$1", s.OrderID, note); err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), admin, "Order "+shortID(s.OrderID)+": "+note); err != nil {
+	if _, err = insertNotification(ctx, tx, admin, "Order "+shortID(s.OrderID)+": "+note, s.OrderID); err != nil {
 		return err
 	}
 	return tx.Commit()

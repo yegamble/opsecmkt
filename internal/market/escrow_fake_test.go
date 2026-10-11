@@ -77,7 +77,9 @@ type fakeEscrowCore struct {
 	imports      []string            // descriptors imported into the watch wallet, in order
 	spk          map[string][]byte   // address -> scriptPubKey, for createpsbt outputs to escrow addresses
 	deposits     []fakeEscrowDeposit // what listreceivedbyaddress/gettransaction report
+	fundingHex   map[string]string   // optional serialized funding transactions for hardware-copy tests
 	txErr        int                 // JSON-RPC error for listreceivedbyaddress (0 = none)
+	txErrMsg     string              // its message ("" = "fake wallet failure"), as a node that quotes an address in it
 
 	// Escrow P1-c1: settlement builds. gettxout reports each deposit as unspent (with its confirmations, value and
 	// address) until it is in spent; utxoupdatepsbt fills a witness UTXO for an input spending a deposit.
@@ -725,6 +727,9 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 			return nil, -8, "unexpected fake wallet"
 		}
 		if c.txErr != 0 {
+			if c.txErrMsg != "" {
+				return nil, c.txErr, c.txErrMsg
+			}
 			return nil, c.txErr, "fake wallet failure"
 		}
 		byAddr := map[string][]string{}
@@ -851,7 +856,7 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 		if details == nil {
 			return nil, -5, "Invalid or non-wallet transaction id"
 		}
-		return map[string]any{"confirmations": confs, "details": details}, 0, ""
+		return map[string]any{"confirmations": confs, "details": details, "hex": c.fundingHex[txid]}, 0, ""
 	case "sendrawtransaction":
 		if c.beforeSend != nil {
 			c.mu.Unlock()

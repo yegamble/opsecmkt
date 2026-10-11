@@ -25,7 +25,7 @@ import (
 // draft. The escrow watcher made each slot ahead of time (escrow_xmr_watch.go).
 
 func init() {
-	registerAction("/orders/escrow-xmr", actionSpec{Off: escrowXMROff, Run: xmrEscrowCheckoutAction})
+	registerAction("/orders/escrow-xmr", actionSpec{FormNonce: true, Off: escrowXMROff, Run: xmrEscrowCheckoutAction})
 }
 
 // escrowXMROff is ESCROW_XMR off: the Monero escrow action does not exist.
@@ -64,6 +64,9 @@ var (
 // xmrEscrowCheckoutAction: the buyer moves a draft to awaiting_payment into a Monero escrow (see the file comment).
 func xmrEscrowCheckoutAction(c *actionCtx) (actionResult, error) {
 	a, ctx := c.A, c.Ctx()
+	if err := waitForWalletLocks(ctx, c.Tx); err != nil {
+		return actionResult{}, err
+	}
 	x := a.escrowXMR
 	if !a.xmrEscrowReady() {
 		return actionResult{}, errXMREscrowDown
@@ -99,23 +102,18 @@ func xmrEscrowCheckoutAction(c *actionCtx) (actionResult, error) {
 	case sweep:
 		return actionResult{}, errXMREscrowSweep
 	}
-	if ok, err := sellerIsVendor(c, o.ProductID); err != nil {
+	if err = lockNewIntake(c, o.BuyerID, o.VendorID, false); err != nil {
 		return actionResult{}, err
-	} else if !ok {
-		return actionResult{}, fail(409, sellerNotVendor+" Cancel this draft.")
 	}
-	// The buyer's cap on orders awaiting payment, serialised on the buyer's row as in payAction.
+	// The buyer's cap on orders awaiting payment, serialised on the buyer's row as in escrowCheckoutAction.
 	var open int
-	if _, err = c.Tx.ExecContext(ctx, "SELECT 1 FROM users WHERE id=$1 FOR NO KEY UPDATE", c.User.ID); err != nil {
-		return actionResult{}, err
-	}
 	if err = c.Tx.QueryRowContext(ctx, "SELECT count(*) FROM orders WHERE buyer_id=$1 AND state='awaiting_payment'", c.User.ID).Scan(&open); err != nil {
 		return actionResult{}, err
 	}
 	if open >= maxAwaitingPayment {
 		return actionResult{}, fail(409, "You already have "+strconv.Itoa(maxAwaitingPayment)+" orders awaiting payment. Pay or cancel one before requesting another payment address.")
 	}
-	if err = lockPaymentIntake(c, o.Currency, kindEscrow); err != nil {
+	if err = lockPaymentIntake(c, o.Currency); err != nil {
 		return actionResult{}, err
 	}
 	eligible, price, dispatchDays, err := escrowEligible(ctx, c.Tx, &o)
@@ -124,7 +122,11 @@ func xmrEscrowCheckoutAction(c *actionCtx) (actionResult, error) {
 	} else if !eligible {
 		return actionResult{}, errXMREscrowKind
 	} else if price < payoutFloor(o.Currency, "release") {
-		return actionResult{}, fail(400, subFloorListing(o.Currency))
+		message, err := subFloorListingForProduct(ctx, c.Tx, o.ProductID, o.Currency)
+		if err != nil {
+			return actionResult{}, err
+		}
+		return actionResult{}, fail(400, message)
 	}
 	releaseDays := 0
 	if o.Kind == "physical" {
@@ -145,7 +147,7 @@ func xmrEscrowCheckoutAction(c *actionCtx) (actionResult, error) {
 	if _, err = c.Tx.ExecContext(ctx, "UPDATE orders o SET amount=p.xmr FROM products p WHERE o.id=$1 AND o.state='draft' AND p.id=o.product_id", o.ID); err != nil {
 		return actionResult{}, err
 	}
-	if _, err = a.transition(context.WithValue(ctx, escrowCheckoutCtx{}, true), c.Tx, o.ID, stateDraft, stateAwaitingPayment, c.User, "Monero escrow address requested"); err != nil {
+	if _, err = a.transition(withCheckoutPrice(context.WithValue(ctx, escrowCheckoutCtx{}, true)), c.Tx, o.ID, stateDraft, stateAwaitingPayment, c.User, "Monero escrow address requested"); err != nil {
 		return actionResult{}, err
 	}
 	// The claim: a free slot of the active wallet, by compare-and-set; a slot another checkout holds is skipped.
@@ -196,8 +198,8 @@ func checkXMRRefund(ctx context.Context, q rowQuerier, refund, feeAddress string
 
 // xmrAddressUse names how this market already knows the Monero address addr: "escrow" (an escrow or slot address),
 // "wallet" (an escrow wallet's primary address), "fee" (the fee address feeAddress, or one an escrow snapshotted),
-// "refund" (the refund address of the escrow of order, when order is given), "used" (another refund address, a Monero
-// settlement's destination or a pooled deposit address), or "".
+// "refund" (the refund address of the escrow of order, when order is given), "used" (another refund address or a Monero
+// settlement's destination), or "".
 func xmrAddressUse(ctx context.Context, q rowQuerier, addr, feeAddress, order string) (string, error) {
 	var use string
 	err := q.QueryRowContext(ctx, `SELECT CASE
@@ -205,8 +207,7 @@ func xmrAddressUse(ctx context.Context, q rowQuerier, addr, feeAddress, order st
 		WHEN EXISTS(SELECT 1 FROM xmr_escrow_wallets WHERE primary_address=$1) THEN 'wallet'
 		WHEN $1=$2 OR EXISTS(SELECT 1 FROM escrows WHERE fee_destination=$1) THEN 'fee'
 		WHEN EXISTS(SELECT 1 FROM escrows WHERE order_id=$3 AND refund_address=$1) THEN 'refund'
-		WHEN EXISTS(SELECT 1 FROM escrows WHERE refund_address=$1) OR EXISTS(SELECT 1 FROM xmr_settlements WHERE destination=$1)
-			OR EXISTS(SELECT 1 FROM payment_addresses WHERE address=$1) THEN 'used'
+		WHEN EXISTS(SELECT 1 FROM escrows WHERE refund_address=$1) OR EXISTS(SELECT 1 FROM xmr_settlements WHERE destination=$1) THEN 'used'
 		ELSE '' END`, addr, feeAddress, order).Scan(&use)
 	return use, err
 }

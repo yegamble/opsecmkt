@@ -1,8 +1,6 @@
 package market
 
 import (
-	"context"
-	"encoding/json"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -12,12 +10,13 @@ import (
 
 // Regression tests for the 2026-09-23 review findings (one test per finding).
 
-// F1: a draft keeps the price it was created at; resubmitting checkout and requesting payment both use the
+// F1: a draft keeps the price it was created at; resubmitting checkout and requesting escrow both use the
 // current listing price.
-func TestDraftRepricedOnResubmitAndPay(t *testing.T) {
-	p := newPayEnv(t)
+func TestDraftRepricedOnResubmitAndEscrowCheckout(t *testing.T) {
+	x := newEscrowEnv(t)
+	p := x.testEnv
 	draftAt := func() (string, int64) {
-		w := p.do("POST", "/orders", p.buyerSess, url.Values{"product_id": {p.productID}, "currency": {"BTC"}})
+		w := p.do("POST", "/orders", x.buyerSess, url.Values{"product_id": {x.product}, "currency": {"BTC"}})
 		p.check(w, 303)
 		id := strings.TrimPrefix(w.Header().Get("Location"), "/order?id=")
 		var amt int64
@@ -30,13 +29,15 @@ func TestDraftRepricedOnResubmitAndPay(t *testing.T) {
 	if amt != 100000 {
 		t.Fatalf("draft amount %d", amt)
 	}
-	p.DB.Exec("UPDATE products SET btc=1000000 WHERE id=$1", p.productID)
+	p.DB.Exec("UPDATE products SET btc=1000000 WHERE id=$1", x.product)
 	if again, amt := draftAt(); again != id || amt != 1000000 {
 		t.Fatalf("resubmitted draft %s amount %d, want same draft at 1000000", again[:8], amt)
 	}
 	// Price changes again without a resubmit: requesting payment records the current price.
-	p.DB.Exec("UPDATE products SET btc=2000000 WHERE id=$1", p.productID)
-	p.check(p.do("POST", "/orders/pay", p.buyerSess, url.Values{"order_id": {id}}), 303)
+	p.DB.Exec("UPDATE products SET btc=2000000 WHERE id=$1", x.product)
+	if got := x.mustCheckout(id, regtestAddr("repriced-checkout")); got == "" {
+		t.Fatal("escrow checkout returned no address")
+	}
 	var st string
 	p.DB.QueryRow("SELECT amount,state FROM orders WHERE id=$1", id).Scan(&amt, &st)
 	if st != stateAwaitingPayment || amt != 2000000 {
@@ -55,7 +56,7 @@ func TestLimiterFloodDoesNotLockOutUsers(t *testing.T) {
 	}
 
 	e := newTestApp(t)
-	_, sess := e.user("victim_user", "buyer")
+	e.user("victim_user", "buyer")
 	anon := randomToken()
 	for i := range 4100 {
 		pc := &http.Cookie{Name: "pending", Value: randomToken()}
@@ -76,7 +77,6 @@ func TestLimiterFloodDoesNotLockOutUsers(t *testing.T) {
 		t.Fatalf("unauthenticated junk created %d limiter keys", n)
 	}
 	e.check(e.do("POST", "/login", randomToken(), url.Values{"handle": {"victim_user"}, "password": {testPassword}}), 303)
-	e.check(e.do("POST", "/account", sess, url.Values{"xmpp": {"victim@example.test"}}), 303)
 }
 
 // A-11: limiterFill fills the table with keys prefix0..prefix(n-1), each holding count requests against limit.
@@ -192,94 +192,9 @@ func TestWrongCaptchaDoesNotConsumeSignInBudget(t *testing.T) {
 	}
 }
 
-// F3a: a buyer may hold at most three orders awaiting payment.
-func TestPayCapsOpenAwaitingPaymentOrders(t *testing.T) {
-	p := newPayEnv(t) // one awaiting_payment order already
-	p.newOrder(stateAwaitingPayment)
-	p.newOrder(stateAwaitingPayment)
-	w := p.do("POST", "/orders", p.buyerSess, url.Values{"product_id": {p.productID}, "currency": {"BTC"}})
-	p.check(w, 303)
-	id := strings.TrimPrefix(w.Header().Get("Location"), "/order?id=")
-	w = p.do("POST", "/orders/pay", p.buyerSess, url.Values{"order_id": {id}})
-	p.check(w, 409)
-	if !strings.Contains(w.Body.String(), "3 orders awaiting payment") {
-		t.Fatalf("cap message: %q", w.Body.String())
-	}
-	if p.state(id) != stateDraft {
-		t.Fatal("capped order left draft")
-	}
-	p.move(p.order, stateAwaitingPayment, stateCancelled, p.buyer)
-	p.check(p.do("POST", "/orders/pay", p.buyerSess, url.Values{"order_id": {id}}), 303)
-}
-
-// F3b: unpaid orders expire after PAYMENT_EXPIRY and return their stock; orders with a deposit in flight stay open.
-func TestWatcherExpiresUnpaidOrders(t *testing.T) {
-	for _, bad := range []string{"abc", "1m", "1000h"} {
-		t.Setenv("PAYMENT_EXPIRY", bad)
-		if _, err := paymentExpiry(); err == nil {
-			t.Fatalf("PAYMENT_EXPIRY=%s accepted", bad)
-		}
-	}
-	t.Setenv("PAYMENT_EXPIRY", "2h")
+// F4's payout-address controls belonged to the retired pooled-payment flow. PGP sign-in changes remain sensitive.
+func TestPGPChangesNeedPassword(t *testing.T) {
 	p := newPayEnv(t)
-	stock := func() int { return p.count("SELECT stock FROM products WHERE id=$1", p.productID) }
-	before := stock()
-	pending, pendingAddr := p.newOrder(stateAwaitingPayment)
-	conflicted, conflictedAddr := p.newOrder(stateAwaitingPayment)
-	fresh, _ := p.newOrder(stateAwaitingPayment)
-	p.fake.Deposit(pendingAddr, "tx-slow", 0, 100000, 0)
-	p.fake.Deposit(conflictedAddr, "tx-gone", 0, 100000, -1)
-	p.DB.Exec("UPDATE payment_addresses SET created=now()-interval '3 hours' WHERE order_id<>$1", fresh)
-	p.poll()
-	p.poll()
-	for id, want := range map[string]string{p.order: stateCancelled, conflicted: stateCancelled, pending: stateAwaitingPayment, fresh: stateAwaitingPayment} {
-		if got := p.state(id); got != want {
-			t.Errorf("order %s: %s want %s", id[:8], got, want)
-		}
-	}
-	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND to_state='cancelled' AND actor_id IS NULL AND note='payment window expired'", p.order); n != 1 {
-		t.Fatalf("expiry events: %d", n)
-	}
-	if got := stock(); got != before+2 {
-		t.Fatalf("stock %d, want %d", got, before+2)
-	}
-	if n := p.count("SELECT count(*) FROM payouts"); n != 0 {
-		t.Fatal("expired unpaid orders queued a payout")
-	}
-}
-
-// F4: payout addresses and PGP sign-in need the current password (and a TOTP code when TOTP is on).
-func TestSensitiveChangesNeedPassword(t *testing.T) {
-	p := newPayEnv(t)
-	payout := func(extra ...string) int {
-		f := url.Values{"currency": {"BTC"}, "address": {"fake-testnet-mine"}}
-		for i := 0; i < len(extra); i += 2 {
-			f.Set(extra[i], extra[i+1])
-		}
-		return p.do("POST", "/account/payout", p.buyerSess, f).Code
-	}
-	if c := payout(); c != 400 {
-		t.Fatalf("payout without password: %d", c)
-	}
-	if c := payout("password", "wrong-password-123"); c != 401 {
-		t.Fatalf("payout with wrong password: %d", c)
-	}
-	if c := payout("password", testPassword); c != 303 {
-		t.Fatalf("payout with password: %d", c)
-	}
-	sealed, _ := p.A.seal("totp", newTOTPSecret())
-	p.DB.Exec("UPDATE users SET totp_secret=$1,totp_enabled=true WHERE id=$2", sealed, p.buyer.ID)
-	if c := payout("password", testPassword); c != 401 {
-		t.Fatalf("payout without TOTP code while enrolled: %d", c)
-	}
-	// Scoped to the payout panel: the password-change form on the same page has these fields too.
-	if _, body, ok := strings.Cut(p.page("/account", p.buyerSess), `id="payout"`); !ok || !strings.Contains(body, `name="password" required`) || !strings.Contains(body, "Authenticator code") {
-		t.Fatal("payout form lacks the password and code fields")
-	}
-	code, _ := p.totpCodeFor(p.buyer.ID, 0)
-	if c := payout("password", testPassword, "code", code); c != 303 {
-		t.Fatalf("payout with password and code: %d", c)
-	}
 
 	// PGP sign-in on (verified key), no TOTP.
 	_, alicePub := testPGPKey(t, "alice")
@@ -291,7 +206,7 @@ func TestSensitiveChangesNeedPassword(t *testing.T) {
 	if !strings.Contains(p.page("/pgp", vs), `autocomplete="current-password"`) || !strings.Contains(p.page("/account", vs), "pgp-confirm-help") {
 		t.Fatal("PGP forms lack the password field")
 	}
-	p.check(p.do("POST", "/account", vs, url.Values{"pgp": {alicePub}, "xmpp": {"v@example.test"}}), 303) // key unchanged
+	p.check(p.do("POST", "/account", vs, url.Values{"pgp": {alicePub}}), 303) // key unchanged
 	p.check(p.do("POST", "/account", vs, url.Values{"pgp": {bobPub}}), 400)
 	p.check(p.do("POST", "/account", vs, url.Values{"pgp": {""}, "password": {"wrong-password-123"}}), 401)
 	p.check(p.do("POST", "/pgp/2fa", vs, url.Values{"enable": {"0"}}), 400)
@@ -313,142 +228,12 @@ func TestSensitiveChangesNeedPassword(t *testing.T) {
 	}
 }
 
-// F5: a deposit that confirms after a cancellation (and after the 24-hour window) is refunded.
-func TestLateDepositAfterCloseIsHandled(t *testing.T) {
-	p := newPayEnv(t)
-	p.fake.Deposit(p.addr, "tx-slow", 0, 100000, 1)
-	p.poll()
-	p.move(p.order, stateAwaitingPayment, stateCancelled, p.buyer)
-	if n := p.count("SELECT count(*) FROM payouts WHERE order_id=$1", p.order); n != 0 {
-		t.Fatal("refund queued for an unconfirmed deposit")
-	}
-	p.DB.Exec("UPDATE orders SET updated=now()-interval '3 days' WHERE id=$1", p.order)
-	p.fake.SetConfirmations("tx-slow", 3)
-	p.poll()
-	if st, _, _, amt := p.payout(p.order); st != "blocked" || amt != 100000 {
-		t.Fatalf("late refund %s %d", st, amt)
-	}
-	if n := p.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE '%confirmed after this order was cancelled%'", p.buyer.ID); n != 1 {
-		t.Fatalf("buyer late-refund notifications: %d", n)
-	}
-	p.check(p.do("POST", "/account/payout", p.buyerSess, url.Values{"currency": {"BTC"}, "address": {"fake-testnet-buyer"}, "password": {testPassword}}), 303)
-	p.poll()
-	if st, _, _, _ := p.payout(p.order); st != "sent" {
-		t.Fatalf("late refund not sent: %s", st)
-	}
-
-	// Completed order: an extra deposit seen unconfirmed, confirming days later, is flagged, never paid.
-	o2, a2 := p.newOrder(stateAwaitingPayment)
-	p.paidByWatcher(o2, a2, "tx-main")
-	p.setPayoutAddress(p.vendor, "fake-testnet-vendor")
-	p.move(o2, statePaid, stateShipped, p.vendor)
-	p.move(o2, stateShipped, stateCompleted, p.buyer)
-	p.fake.Deposit(a2, "tx-extra", 0, 7000, 1)
-	p.poll()
-	p.DB.Exec("UPDATE orders SET updated=now()-interval '3 days' WHERE id=$1", o2)
-	p.fake.SetConfirmations("tx-extra", 3)
-	p.poll()
-	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE '%arrived after this order was settled%'", o2); n != 1 {
-		t.Fatalf("extra deposit notes: %d", n)
-	}
-	sends := len(p.fake.Sends())
-	// A deposit recorded unconfirmed before the order closed keeps its address watched past the 30-day window while it
-	// is pending (A-486, R1: pooled_pending_deposit), so it is refunded once it confirms instead of being stranded.
-	o3, a3 := p.newOrder(stateAwaitingPayment)
-	p.fake.Deposit(a3, "tx-old", 0, 100000, 1)
-	p.poll()
-	p.move(o3, stateAwaitingPayment, stateCancelled, p.buyer)
-	p.DB.Exec("UPDATE orders SET updated=now()-interval '40 days' WHERE id=$1", o3)
-	p.DB.Exec("UPDATE payment_addresses SET created=now()-interval '40 days' WHERE order_id=$1", o3)
-	p.fake.SetConfirmations("tx-old", 3)
-	p.poll()
-	if st, _, _, amt := p.payout(o3); st != "sent" || amt != 100000 || len(p.fake.Sends()) != sends+1 {
-		t.Fatalf("pending deposit past the window: refund %s %d, sends %d", st, amt, len(p.fake.Sends())-sends)
-	}
-	// Outside the 30-day window an address with no pending deposit is not polled any more: a deposit sent to it then
-	// is never recorded or settled.
-	o4, a4 := p.newOrder(stateCancelled)
-	p.DB.Exec("UPDATE orders SET updated=now()-interval '40 days' WHERE id=$1", o4)
-	p.DB.Exec("UPDATE payment_addresses SET created=now()-interval '40 days' WHERE order_id=$1", o4)
-	p.fake.Deposit(a4, "tx-too-late", 0, 100000, 3)
-	p.poll()
-	if n := p.count("SELECT count(*) FROM payments WHERE order_id=$1", o4) + p.count("SELECT count(*) FROM payouts WHERE order_id=$1", o4); n != 0 || len(p.fake.Sends()) != sends+1 {
-		t.Fatal("order outside the watch window was settled")
-	}
-}
-
-// F6: a payout waits while a credited deposit is below the threshold (reorg) and resumes once it re-confirms.
-func TestPayoutHeldWhileCreditedDepositReconfirms(t *testing.T) {
-	p := newPayEnv(t)
-	p.paidByWatcher(p.order, p.addr, "tx-reorg")
-	p.setPayoutAddress(p.vendor, "fake-testnet-vendor")
-	p.move(p.order, statePaid, stateShipped, p.vendor)
-	p.move(p.order, stateShipped, stateCompleted, p.buyer)
-	p.fake.SetConfirmations("tx-reorg", 0)
-	p.poll()
-	if st, _, _, _ := p.payout(p.order); st != "held" || len(p.fake.Sends()) != 0 {
-		t.Fatalf("payout during reorg: %s sends=%d", st, len(p.fake.Sends()))
-	}
-	p.fake.SetConfirmations("tx-reorg", 3)
-	p.poll()
-	if st, _, _, _ := p.payout(p.order); st != "sent" || len(p.fake.Sends()) != 1 {
-		t.Fatalf("payout after re-confirmation: %s sends=%d", st, len(p.fake.Sends()))
-	}
-}
-
-// F7: Monero transfers with a non-zero unlock_time are reported but never credited.
-func TestMoneroLockedTransfersAreNotCredited(t *testing.T) {
-	ctx := context.Background()
-	w, s := newPayMonero(t, payStagenetPrimary, payStagenetSub)
-	mp, err := newMoneroProvider(ctx, s.url(""), "", "stagenet", 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr, _ := mp.NewAddress(ctx, "order-locked")
-	w.transfers = map[string]any{"in": []map[string]any{
-		{"txid": "in-locked", "amount": json.Number("500000000000"), "confirmations": 12, "unlock_time": 3000000, "subaddr_index": map[string]any{"major": 0, "minor": 1}},
-		{"txid": "in-free", "amount": json.Number("5"), "confirmations": 12, "unlock_time": 0, "subaddr_index": map[string]any{"major": 0, "minor": 1}},
-	}}
-	in, err := mp.Incoming(ctx, []string{addr})
-	if err != nil || len(in) != 2 || !in[0].Locked || in[1].Locked {
-		t.Fatalf("incoming %+v %v", in, err)
-	}
-
-	p := newPayEnv(t)
-	p.fake.mu.Lock()
-	p.fake.outputs = append(p.fake.outputs, Incoming{Address: p.addr, TxID: "tx-locked", Amount: 100000, Confirmations: 5, Locked: true})
-	p.fake.mu.Unlock()
-	p.poll()
-	p.poll()
-	if st := p.state(p.order); st != stateAwaitingPayment {
-		t.Fatalf("locked transfer paid the order: %s", st)
-	}
-	if n := p.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE '%locked transfer ignored%'", p.order); n != 1 {
-		t.Fatalf("locked notes: %d", n)
-	}
-	if n := p.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE '%locked transfer ignored%'", p.buyer.ID); n != 1 {
-		t.Fatalf("buyer locked notifications: %d", n)
-	}
-	if body := p.page("/order?id="+p.order, p.buyerSess); !strings.Contains(body, "Locked transfer — not counted") {
-		t.Fatal("order page does not show the locked transfer")
-	}
-	p.move(p.order, stateAwaitingPayment, stateCancelled, p.buyer)
-	if n := p.count("SELECT count(*) FROM payouts WHERE order_id=$1", p.order); n != 0 {
-		t.Fatal("locked transfer refunded automatically")
-	}
-}
-
 // F8: an upgraded account whose stored key no longer parses can still save its profile unchanged.
 func TestLegacyUnparseableKeySavesUnchanged(t *testing.T) {
 	e := newTestApp(t)
 	uid, s := e.user("legacy_user", "buyer")
 	const legacy = "-----BEGIN PGP PUBLIC KEY BLOCK-----\nlegacy key the parser rejects\n-----END PGP PUBLIC KEY BLOCK-----"
 	e.DB.Exec("UPDATE users SET pgp=$1 WHERE id=$2", legacy, uid)
-	e.check(e.do("POST", "/account", s, url.Values{"pgp": {legacy}, "xmpp": {"legacy@example.test"}}), 303)
-	var xmpp string
-	e.DB.QueryRow("SELECT xmpp FROM users WHERE id=$1", uid).Scan(&xmpp)
-	if xmpp != "legacy@example.test" {
-		t.Fatal("profile not saved")
-	}
+	e.check(e.do("POST", "/account", s, url.Values{"pgp": {legacy}}), 303)
 	e.check(e.do("POST", "/account", s, url.Values{"pgp": {legacy + "\nchanged"}, "password": {testPassword}}), 400)
 }

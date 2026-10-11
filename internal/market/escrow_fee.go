@@ -24,7 +24,7 @@ const (
 )
 
 func init() {
-	registerAction("/admin/escrow-fee", actionSpec{Roles: []string{"admin"}, OwnTx: true, Off: escrowOff, Run: escrowFeeAction})
+	registerAction("/admin/escrow-fee", actionSpec{Roles: []string{"admin"}, OwnTx: true, ConfirmedFormNonce: true, Off: escrowOff, Run: escrowFeeAction})
 	registerLoader("admin", escrowFeeLoader)
 }
 
@@ -70,10 +70,6 @@ func escrowFeeLoader(ctx context.Context, a *App, _ *http.Request, d *PageData) 
 // their password (and authenticator code when enrolled); the audit row names the old and new basis points, never the
 // address (ES-10).
 func escrowFeeAction(c *actionCtx) (actionResult, error) {
-	e := c.A.escrow.Load()
-	if e == nil {
-		return actionResult{}, errEscrowDown
-	}
 	bps, err := strconv.ParseInt(strings.TrimSpace(c.Form.Get("fee_bps")), 10, 64)
 	if err != nil || bps < 0 || bps > 10000 {
 		return actionResult{}, fail(400, "Enter the market fee as a whole number of basis points from 0 to 10000 (250 = 2.5%). Nothing was changed.")
@@ -81,19 +77,25 @@ func escrowFeeAction(c *actionCtx) (actionResult, error) {
 	addr := ""
 	if bps > 0 {
 		var ok bool
-		if addr, ok = escrowAddressForm(e.network, c.Form.Get("fee_address")); !ok {
+		if addr, ok = escrowAddressForm(c.A.escrowNetwork(), c.Form.Get("fee_address")); !ok {
 			return actionResult{}, fail(400, "Enter the "+c.A.escrowNetwork()+" Bitcoin address the market fee is paid to. Nothing was changed.")
-		}
-		valid, err := e.validAddress(c.Ctx(), addr)
-		if err != nil {
-			return actionResult{}, fail(503, "The fee address could not be checked: the market's Bitcoin node did not answer. Nothing was changed; try again later.")
-		}
-		if !valid {
-			return actionResult{}, fail(400, "The fee address is not a valid "+c.A.escrowNetwork()+" Bitcoin address. Nothing was changed.")
 		}
 	}
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
+		e := c.A.escrow.Load()
+		if e == nil {
+			return actionResult{}, errEscrowDown
+		}
 		ctx := c.Ctx()
+		if addr != "" {
+			valid, err := e.validAddress(ctx, addr)
+			if err != nil {
+				return actionResult{}, fail(503, "The fee address could not be checked: the market's Bitcoin node did not answer. Nothing was changed; try again later.")
+			}
+			if !valid {
+				return actionResult{}, fail(400, "The fee address is not a valid "+c.A.escrowNetwork()+" Bitcoin address. Nothing was changed.")
+			}
+		}
 		for _, key := range []string{escrowFeeBpsSetting, escrowFeeAddrSetting} {
 			if err := lockSetting(ctx, c.Tx, key); err != nil {
 				return actionResult{}, err
@@ -108,7 +110,7 @@ func escrowFeeAction(c *actionCtx) (actionResult, error) {
 		}
 		if addr != "" {
 			var used bool
-			if err = c.Tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM escrows WHERE address=$1 OR refund_address=$1) OR EXISTS(SELECT 1 FROM payment_addresses WHERE address=$1)
+			if err = c.Tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM escrows WHERE address=$1 OR refund_address=$1)
 				OR EXISTS(SELECT 1 FROM escrow_siblings WHERE address=$1)
 				OR EXISTS(SELECT 1 FROM settlements WHERE destination=$1)`, addr).Scan(&used); err != nil {
 				return actionResult{}, err

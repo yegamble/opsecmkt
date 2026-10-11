@@ -1,0 +1,107 @@
+{
+  "a482_measurement": {
+    "note": "digital claim only; refund timing unmeasured and one sample does not validate a 24-hour alert threshold",
+    "observed_requested_to_confirmed_seconds": 1664,
+    "threshold_validated": false
+  },
+  "commit": "ac71878dfde42daed9dc7b4e883c8d24600816f3",
+  "finished": "2026-10-10T17:46:36Z",
+  "flow": "digital checkout, actual funding, vendor claim, watcher build/relay, confirmed release",
+  "fresh_escrow_wallet_directory_verified": true,
+  "network": "stagenet",
+  "node": {
+    "digest": "ghcr.io/sethforprivacy/simple-monerod@sha256:0329465ffc599048efd57712d91d3b4b7d66380bd7205d5d0992cd9faf668e38",
+    "end_height": 2226309,
+    "end_peers": 24,
+    "end_target_height": 0,
+    "end_tip_timestamp": 1791654375,
+    "hard_fork": 16,
+    "image": "ghcr.io/sethforprivacy/simple-monerod:v0.18.5.1",
+    "start_height": 2226289,
+    "start_peers": 24,
+    "start_target_height": 0,
+    "start_tip_timestamp": 1791651384,
+    "synchronized_at_both_checks": true,
+    "version": "0.18.5.1-release"
+  },
+  "price_piconero": 10000000000,
+  "proof": {
+    "anchor_hash": "ac3300c780ae75267e3090cbf2cec2e52fac680bd058606f87006adf103cebcf",
+    "anchor_height": 2226284,
+    "anchor_source": "https://xmr-stagenet.librenode.com/block/2226284",
+    "claim_received_piconero": 9969620000,
+    "escrow_wallet_rpc_version": 65567,
+    "funder_wallet_rpc_version": 65567,
+    "funding_confirmations": 10,
+    "funding_confirmed": {
+      "at": "2026-10-10T17:18:51Z",
+      "height": 2226299,
+      "txid": "fe2b54ccbe9102bc8164b691f7c57bad6a180511ee606a9dad1216257dc3dbc9"
+    },
+    "funding_submitted": {
+      "at": "2026-10-10T16:56:53Z",
+      "height": 2226289,
+      "txid": "fe2b54ccbe9102bc8164b691f7c57bad6a180511ee606a9dad1216257dc3dbc9"
+    },
+    "hard_fork": 16,
+    "network": "stagenet",
+    "settlement_built": {
+      "at": "2026-10-10T17:19:01Z",
+      "height": 2226299,
+      "txid": "f2518684f2102a2f13436c54ff80ea360898b2a339fc92abc6c3df039823833b"
+    },
+    "settlement_confirmations": 10,
+    "settlement_confirmed": {
+      "at": "2026-10-10T17:46:35Z",
+      "height": 2226309,
+      "txid": "f2518684f2102a2f13436c54ff80ea360898b2a339fc92abc6c3df039823833b"
+    },
+    "settlement_relayed": {
+      "at": "2026-10-10T17:19:01Z",
+      "height": 2226299,
+      "txid": "f2518684f2102a2f13436c54ff80ea360898b2a339fc92abc6c3df039823833b"
+    },
+    "settlement_requested": {
+      "at": "2026-10-10T17:18:51Z",
+      "height": 2226299
+    },
+    "start_height": 2226289
+  },
+  "public_anchor": {
+    "explorer_api_url": "https://xmr-stagenet.librenode.com/api/block/2226284",
+    "explorer_fetched_at": "2026-10-10T16:56:32Z",
+    "explorer_hash": "ac3300c780ae75267e3090cbf2cec2e52fac680bd058606f87006adf103cebcf",
+    "explorer_height": 2226284,
+    "hash": "ac3300c780ae75267e3090cbf2cec2e52fac680bd058606f87006adf103cebcf",
+    "height": 2226284,
+    "maximum_initial_lag_blocks": 20,
+    "source": "https://xmr-stagenet.librenode.com/block/2226284"
+  },
+  "record": "opsecmkt Monero escrow public-stagenet digital claim smoke (A-447/A-491)",
+  "rpc_bindings": {
+    "daemon": {
+      "container": "opsecmkt-public-stagenet",
+      "loopback_port": 38081
+    },
+    "escrow_wallet": {
+      "container": "opsecmkt-stagenet-wallet-escrow",
+      "loopback_port": 38082
+    },
+    "funder_wallet": {
+      "container": "opsecmkt-stagenet-wallet-funder",
+      "loopback_port": 38083
+    }
+  },
+  "secret_scan": "passed",
+  "started": "2026-10-10T16:56:32Z",
+  "transcript": {
+    "file": "transcript.log",
+    "sha256": "39993af3f8e924a7b1cd2702dbd8e672849ac0c0c48af8e04aa0cbaa70d7e850"
+  },
+  "wallet_rpc": {
+    "digest": "ghcr.io/sethforprivacy/simple-monero-wallet-rpc@sha256:09ff81f470d6d37811e3fde808c5cd1158a8cd2c42abbfb935b33f26f91e879d",
+    "escrow_rpc_version": 65567,
+    "funder_rpc_version": 65567,
+    "image": "ghcr.io/sethforprivacy/simple-monero-wallet-rpc:v0.18.5.1"
+  }
+}

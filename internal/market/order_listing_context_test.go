@@ -27,6 +27,7 @@ func TestArchivedListingVisibleThroughOrder(t *testing.T) {
 	disputed, paid := e.titledListing(vendorID, "A164 disputed listing"), e.titledListing(vendorID, "A164 paid listing")
 	e.mustExec(`UPDATE products SET kind='digital',description='A164 full description of what was sold',delivery_content='A164-SECRET-DELIVERY' WHERE id=$1`, disputed)
 	disputedOrder := e.order(buyerID, disputed, "BTC", stateDisputed)
+	addOpenDisputeFixture(t, e, disputedOrder)
 	paidOrder := e.order(otherBuyerID, paid, "BTC", statePaid)
 
 	// The order page names the listing and links to it as it is now, for each viewer allowed to read the order.
@@ -130,7 +131,8 @@ func TestArchivedListingPhotosThroughOrder(t *testing.T) {
 	e.mustExec("UPDATE images SET created=created+interval '1 second' WHERE id=$1", second.id)
 	paidPhoto := e.image(vendorID, paid, "photo")
 	avatar := e.image(vendorID, "", "avatar")
-	e.order(buyerID, disputed, "BTC", stateDisputed)
+	disputedOrder := e.order(buyerID, disputed, "BTC", stateDisputed)
+	addOpenDisputeFixture(t, e, disputedOrder)
 	e.order(otherBuyerID, paid, "BTC", statePaid)
 
 	// Live: public route, public URLs on the page; the desk route adds nothing for the order's buyer or staff.
@@ -193,12 +195,20 @@ func TestArchivedListingPhotosThroughOrder(t *testing.T) {
 // vendor desk's incoming-order rows link each order's listing, and each link opens for that viewer even once the
 // listing is archived (the order page's rule, A-164).
 func TestDeskOrderRowsLinkTheirListing(t *testing.T) {
-	w := newOrderWorld(t)
+	w := newDisputeOrderWorld(t)
 	e := w.e
-	disputed, flagged := e.titledListing(w.vendorID, "A265 disputed listing"), e.titledListing(w.vendorID, "A265 flagged listing")
-	disputedOrder := e.order(w.buyerID, disputed, "BTC", stateShipped)
-	w.expect("/disputes", w.buyer, form("order_id", disputedOrder, "reason", "The parcel never arrived at the agreed place."), 303, "")
+	disputedOrder := w.fundedPhysicalFor(w.buyerID, w.buyer, w.vendorID, w.vendor)
+	disputed := agStr(e, "SELECT product_id FROM orders WHERE id=$1", disputedOrder)
+	e.mustExec("UPDATE products SET title='A265 disputed listing' WHERE id=$1", disputed)
+	e.mustExec("UPDATE orders SET listing_title='A265 disputed listing' WHERE id=$1", disputedOrder)
+	flagged := e.titledListing(w.vendorID, "A265 flagged listing")
+	if code, body := w.x.shipEscrow(disputedOrder, w.vendor, regtestAddr("a265-claim"), testPassword); code != 303 {
+		t.Fatalf("ship disputed escrow: %d %s", code, body)
+	}
+	w.openDispute(disputedOrder, w.buyer, "The parcel never arrived at the agreed place.")
 	flaggedOrder := e.order(w.otherID, flagged, "BTC", stateCancelled)
+	// This direct fixture represents a legacy cancelled order whose purchase-time listing terms were never recorded.
+	e.mustExec(`UPDATE orders SET listing_title=NULL,listing_description=NULL,listing_kind=NULL WHERE id=$1`, flaggedOrder)
 	e.mustExec(`INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations,flagged,after_close) VALUES($1,'BTC','a265-flagged',0,'tb1qa265',1,1,true,true)`, flaggedOrder)
 	e.mustExec(`UPDATE products SET archived=true,archived_at=now() WHERE id=ANY($1::text[])`, "{"+disputed+","+flagged+"}")
 
@@ -224,8 +234,8 @@ func TestDeskOrderRowsLinkTheirListing(t *testing.T) {
 
 	desk := w.page("/moderator", w.mod, 200)
 	mustContain(t, segment(desk, `<article class="message">`, "Order "+disputedOrder+"<", "</article>"), disputeLink)
-	mustContain(t, segment(desk, `<tr class="payment-review-row">`, `href="/order?id=`+flaggedOrder+`"`, "</tr>"),
-		`<a class="text-link order-listing" href="/product?id=`+flagged+`">A265 flagged listing</a>`)
+	// A flag on an order without escrow stays readable on its order, but never enters the live review queue.
+	mustNotContain(t, desk, `href="/order?id=`+flaggedOrder+`"`)
 	opens(w.mod, disputed)
 	opens(w.mod, flagged)
 
@@ -235,9 +245,14 @@ func TestDeskOrderRowsLinkTheirListing(t *testing.T) {
 	}
 
 	vendorDesk := w.page("/vendor-dashboard", w.vendor, 200)
-	for id, c := range map[string]struct{ order, title string }{disputed: {disputedOrder, "A265 disputed listing"}, flagged: {flaggedOrder, "A265 flagged listing"}} {
+	for id, c := range map[string]struct{ order, title string }{disputed: {disputedOrder, "A265 disputed listing"}, flagged: {flaggedOrder, "Listing terms were not recorded for this order"}} {
 		mustContain(t, segment(vendorDesk, "<tr>", `href="/order?id=`+c.order+`"`, "</tr>"),
 			`<a class="text-link" href="/product?id=`+id+`">Listing<span class="sr-only">: `+c.title+`</span></a>`)
 		opens(w.vendor, id)
 	}
+}
+
+func addOpenDisputeFixture(t *testing.T, e *testEnv, order string) {
+	t.Helper()
+	e.mustExec(`INSERT INTO disputes(id,order_id,reason) VALUES($1,$2,'The parcel never arrived; please review.')`, randomToken(), order)
 }

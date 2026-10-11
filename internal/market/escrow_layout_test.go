@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -159,8 +160,8 @@ var (
 	practicePath = regexp.MustCompile(`<pre class="code-block escrow-practice-path"[^>]*>([^<]+)</pre>`)
 )
 
-// untriedWallets is the phrase the pages carry until a real Electrum or Sparrow has signed the practice (A-457, A-458).
-const untriedWallets = "have not yet been tried with a real Electrum or Sparrow wallet"
+// untriedWallets keeps the remaining GUI/Sparrow limitation visible after A-457's real Electrum signing journey.
+const untriedWallets = "The Electrum menu steps have not been checked, and Sparrow has not been tested"
 
 // perOrderPractice reads the shape-(b) practice material of the viewer's page: the PSBT, the two cosigner keys, the
 // practice wallet's first address and the owner's path.
@@ -508,7 +509,7 @@ func TestEscrowOnlyPerOrderVendorNeedsSigner(t *testing.T) {
 	s := signerApp(t, newFakeSigner(t, signerKey(t, 7)).path)
 	agExec(s.testEnv, "UPDATE user_escrow_keys SET layout='per_order' WHERE user_id=$1", s.vendor)
 	agExec(s.testEnv, "UPDATE settings SET value='escrow' WHERE key='payment_intake_BTC'")
-	if b := html.UnescapeString(s.page("/product?id="+s.product, s.buyerSess)); strings.Contains(b, "Not available for purchase") {
+	if b := html.UnescapeString(s.page("/product?id="+s.product, s.buyerSess)); strings.Contains(b, "Not available for purchase in BTC") {
 		t.Fatalf("a per-order vendor with an escrow signer:\n%s", b)
 	}
 
@@ -535,7 +536,7 @@ func TestEscrowOnlyPerOrderVendorNeedsSigner(t *testing.T) {
 	}
 	// Back to a Bitcoin Core key: the gate lifts.
 	agExec(x.testEnv, "UPDATE user_escrow_keys SET layout='core' WHERE user_id=$1", x.vendor)
-	if b := html.UnescapeString(x.page("/product?id="+x.product, x.buyerSess)); strings.Contains(b, "Not available for purchase") {
+	if b := html.UnescapeString(x.page("/product?id="+x.product, x.buyerSess)); strings.Contains(b, "Not available for purchase in BTC") {
 		t.Fatal("a Core key did not lift the gate")
 	}
 }
@@ -581,4 +582,14 @@ func TestEscrowVendorKeyTypeShown(t *testing.T) {
 			t.Errorf("%s mentions escrow keys with escrow off", path)
 		}
 	}
+}
+
+var readinessCount = regexp.MustCompile(`id="(escrow-readiness-[a-z]+)"><strong>(\d+)</strong>`)
+
+func readinessCounts(page string) map[string]int {
+	out := map[string]int{}
+	for _, m := range readinessCount.FindAllStringSubmatch(page, -1) {
+		out[m[1]], _ = strconv.Atoi(m[2])
+	}
+	return out
 }

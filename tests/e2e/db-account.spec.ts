@@ -3,7 +3,7 @@ import { FIXTURE_LISTING, uniqueHandle } from './db-fixtures';
 import { submitAndLoad } from './db-helpers';
 
 // Uses the listing published by db-setup.spec.ts and registers its own buyer.
-test('register, draft, profile persistence and session boundaries', async ({ page, browser, baseURL }) => {
+test('register, draft, removed XMPP field and session boundaries', async ({ page, browser, baseURL }) => {
   const handle = uniqueHandle('buyer');
   const password = 'browser-buyer-password-123';
   await page.goto('/register');
@@ -15,19 +15,23 @@ test('register, draft, profile persistence and session boundaries', async ({ pag
   await page.goto(`/?q=${encodeURIComponent(FIXTURE_LISTING)}`);
   await page.getByRole('link', { name: FIXTURE_LISTING, exact: true }).click();
   await page.getByRole('link', { name: 'Review order draft' }).click();
-  await page.getByLabel('Reference currency').selectOption('XMR');
+  await page.getByLabel('Pay with').selectOption('XMR');
   await page.getByRole('button', { name: 'Create unfunded draft' }).click();
   await expect(page).toHaveURL(/\/order\?id=/);
-  await expect(page.getByRole('heading', { name: 'Payment is unavailable' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Unfunded draft' })).toBeVisible();
   await expect(page.locator('.total')).toContainText('XMR');
   await expect(page.locator('.page-head .badge')).toHaveText('Draft — unfunded');
   expect((await page.goto('/admin'))?.status()).toBe(403);
   await page.goto('/account');
-  await page.getByLabel('XMPP address').fill(`${handle}@example.test`);
-  await submitAndLoad(page, page.getByRole('button', { name: 'Save profile' }));
-  await page.reload();
-  await expect(page.getByLabel('XMPP address')).toHaveValue(`${handle}@example.test`);
-  await page.getByRole('button', { name: 'Sign out', exact: true }).click();
+  await expect(page.getByLabel('XMPP address')).toHaveCount(0);
+  const signOutForm = page.locator('form[action="/logout"]');
+  await expect(signOutForm).toBeVisible();
+  await expect(signOutForm.locator('input[name="csrf"]')).toHaveValue(/.+/);
+  expect(await signOutForm.evaluate(form => {
+    const sessions = document.querySelector('#sessions');
+    return !!sessions && !!(form.compareDocumentPosition(sessions) & Node.DOCUMENT_POSITION_FOLLOWING);
+  })).toBeTruthy();
+  await submitAndLoad(page, page.getByRole('button', { name: 'Sign out', exact: true }));
   await page.goto('/account');
   await expect(page).toHaveURL(/\/login\?next=%2Faccount$/);
   await page.getByLabel('Handle', { exact: true }).fill(handle);
@@ -37,12 +41,12 @@ test('register, draft, profile persistence and session boundaries', async ({ pag
   await page.goto('/login');
   await page.getByLabel('Handle', { exact: true }).fill(handle);
   await page.getByLabel('Password', { exact: true }).fill(password);
-  await page.getByRole('button', { name: 'Sign in' }).click();
+  await submitAndLoad(page, page.getByRole('button', { name: 'Sign in' }));
   await page.goto('/account');
-  await expect(page.getByLabel('XMPP address')).toHaveValue(`${handle}@example.test`);
+  await expect(page.getByLabel('XMPP address')).toHaveCount(0);
   const activity = page.getByRole('region', { name: 'Recent activity' });
   await expect(activity).toContainText('Signed in');
-  await expect(activity).toContainText('Updated profile');
+  await expect(activity).not.toContainText('Updated profile');
   await expect(activity).toContainText('Account created: buyer');
 
   // "Sign out everywhere" ends this session and one opened in a separate browser context.
@@ -51,12 +55,13 @@ test('register, draft, profile persistence and session boundaries', async ({ pag
   await otherPage.goto('/login');
   await otherPage.getByLabel('Handle', { exact: true }).fill(handle);
   await otherPage.getByLabel('Password', { exact: true }).fill(password);
-  await otherPage.getByRole('button', { name: 'Sign in' }).click();
+  await submitAndLoad(otherPage, otherPage.getByRole('button', { name: 'Sign in' }));
   await otherPage.goto('/account');
   await expect(otherPage).toHaveURL(/\/account$/);
   // A-157: both sessions are listed with their start time; each browser sees its own marked.
   await page.reload();
   const sessions = page.getByRole('region', { name: 'Sessions' });
+  await expect(sessions.getByRole('button', { name: 'Sign out everywhere' })).toBeVisible();
   await expect(sessions.locator('.session-count')).toHaveText('2 active sessions');
   await expect(sessions.locator('.session-row')).toHaveCount(2);
   await expect(sessions.locator('.session-row', { hasText: 'This session' })).toHaveCount(1);

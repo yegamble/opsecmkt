@@ -1,0 +1,19 @@
+{
+  "created_at": "2026-10-09T18:33:29Z",
+  "disk_gb": 160,
+  "id": 607700697,
+  "identity_verified_before_cleanup": true,
+  "memory_mb": 8192,
+  "name": "opsecmkt-public-monero-20261009",
+  "price_hourly_usd": 0.07143,
+  "public_ipv4": [
+    "159.203.27.48"
+  ],
+  "region": "tor1",
+  "size_slug": "s-4vcpu-8gb",
+  "tags": [
+    "opsecmkt-warroom-monero-temporary"
+  ],
+  "vcpus": 4,
+  "volume_ids": []
+}

@@ -21,6 +21,11 @@ import (
 // using an Ed25519 key taken only from AUDIT_SIGNING_KEY (never the database). A valid signature proves the file
 // came from a holder of that key; it cannot prove the history was never altered before export.
 
+// A-240: an export is buffered for its detached Ed25519 signature and can stay in memory throughout a slow
+// download. Permit one such buffer per process, holding its slot through the final write (including a failed
+// write); ordinary pages and staff actions keep their own admission classes.
+var auditExportWork = make(chan struct{}, 1)
+
 func init() {
 	registerRaw("/admin/audit-export", auditExportHandler)
 	registerLoader("admin", func(ctx context.Context, a *App, r *http.Request, d *PageData) error {
@@ -86,6 +91,12 @@ func settledAuditMax(ctx context.Context, db *sql.DB) (int64, error) {
 
 // auditExport renders audit_events with id <= upto as NDJSON ordered by id. Same upto, same bytes.
 func auditExport(ctx context.Context, db *sql.DB, upto int64) ([]byte, error) {
+	return auditExportRange(ctx, db, 0, upto)
+}
+
+// auditExportRange selects the exclusive lower and inclusive upper event IDs. Adjacent ranges concatenate
+// to the original export; from=0 retains its bytes and detached signature.
+func auditExportRange(ctx context.Context, db *sql.DB, from, upto int64) ([]byte, error) {
 	// One statement streams every row, so on a large table it runs for longer than the application pool's 8 s
 	// statement_timeout allows (A-177) and is exempt from it: 1M rows took about 6 s. The caller's ctx bounds it
 	// (auditExportBuildTimeout in the handler); lock_timeout and idle_in_transaction_session_timeout still apply.
@@ -97,7 +108,7 @@ func auditExport(ctx context.Context, db *sql.DB, upto int64) ([]byte, error) {
 	if _, err = tx.ExecContext(ctx, "SET LOCAL statement_timeout = 0"); err != nil {
 		return nil, err
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT e.id, e.user_id, u.handle, e.action, e.created FROM audit_events e LEFT JOIN users u ON u.id=e.user_id WHERE e.id<=$1 ORDER BY e.id`, upto)
+	rows, err := tx.QueryContext(ctx, `SELECT e.id, e.user_id, u.handle, e.action, e.created FROM audit_events e LEFT JOIN users u ON u.id=e.user_id WHERE e.id>$1 AND e.id<=$2 ORDER BY e.id`, from, upto)
 	if err != nil {
 		return nil, err
 	}
@@ -153,6 +164,21 @@ func auditExportHandler(a *App, w http.ResponseWriter, r *http.Request, u *User)
 		http.Error(w, "upto must be a positive audit event id", 400)
 		return
 	}
+	var from int64
+	if raw := q.Get("from"); raw != "" {
+		from, err = strconv.ParseInt(raw, 10, 64)
+		if err != nil || from < 0 || from > upto {
+			http.Error(w, "from must be a nonnegative audit event id no greater than upto", 400)
+			return
+		}
+	}
+	releaseExport, ok := tryTake(auditExportWork)
+	if !ok {
+		w.Header().Set("Retry-After", busyRetryAfter)
+		http.Error(w, "Another audit export is being prepared or sent. Wait for it to finish, then try again.", http.StatusServiceUnavailable)
+		return
+	}
+	defer releaseExport()
 	// A-139: the export sets its own bounds. Its build may outlast ServeHTTP's 12 s request context, and over Tor
 	// (0.19–0.45 MB/s measured) its download outlasts the 20 s WriteTimeout: a cut download fails verify-audit like
 	// tampering. It still stops when the client goes away. The read deadline is moved with the write deadline only
@@ -170,23 +196,23 @@ func auditExportHandler(a *App, w http.ResponseWriter, r *http.Request, u *User)
 	defer cancel()
 	settled, err := settledAuditMax(ctx, a.db)
 	if err != nil {
-		serverError(w, r, 503, "Service unavailable", errorCause(err))
+		writeDBFailureContext(ctx, w, r, err)
 		return
 	}
 	if upto > settled {
 		http.Error(w, fmt.Sprintf("upto %d is beyond the latest recorded audit event (%d)", upto, settled), 400)
 		return
 	}
-	export, err := auditExport(ctx, a.db, upto)
+	export, err := auditExportRange(ctx, a.db, from, upto)
 	if err != nil {
-		if dbBusy(err) {
+		if dbBusyForContext(ctx, err) {
 			serverError(w, r, 503, errBusyMsg, errorCause(err))
 			return
 		}
 		serverError(w, r, 500, "Unable to export audit events", errorCause(err))
 		return
 	}
-	name := fmt.Sprintf("audit-events-upto-%d", upto)
+	name := AuditExportName(from, upto)
 	body := export
 	if q.Get("sig") == "1" {
 		body = auditSignature(key, export)

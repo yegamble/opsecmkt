@@ -86,6 +86,45 @@ func TestListingEditOwnership(t *testing.T) {
 	e.check(e.do("POST", "/listings/update", ownerS, inventoryForm("missing", nil)), 404)
 }
 
+func TestListingReservationSummaryExcludesDraftsAndShowsPaymentExpiry(t *testing.T) {
+	t.Setenv("PAYMENT_EXPIRY", "24h")
+	x := newEscrowEnv(t)
+	e := x.testEnv
+	product, buyer, vendor := x.product, x.buyer, x.vendorSess
+	draftBuyer, _ := e.user("reservation_draft_"+randomToken()[:8], "buyer")
+	e.order(draftBuyer, product, "BTC", stateDraft)
+	awaiting := x.order
+	x.mustCheckout(awaiting, regtestAddr("reservation-awaiting"))
+	paid := e.order(buyer, product, "BTC", stateDraft)
+	x.mustCheckout(paid, regtestAddr("reservation-paid"))
+	// A takedown keeps this funded escrow order paid and open, so it reserves stock without exposing delivery.
+	if _, err := e.DB.Exec("UPDATE products SET archived=true,admin_archive_reason='reservation fixture takedown' WHERE id=$1", product); err != nil {
+		t.Fatal(err)
+	}
+	x.fund(paid, "reservation-paid", 3, 100000)
+	e.order(buyer, product, "BTC", stateCancelled)
+	if _, err := e.DB.Exec("UPDATE escrows SET created=now()-interval '23 hours' WHERE order_id=$1", awaiting); err != nil {
+		t.Fatal(err)
+	}
+	wantExpiry := agStr(e, `SELECT to_char(GREATEST(created,COALESCE((SELECT max(pm.created) FROM payments pm WHERE pm.order_id=$1
+		AND pm.confirmations>=0 AND NOT pm.locked),created))+make_interval(secs=>$2),'YYYY-MM-DD HH24:MI "UTC"') FROM escrows WHERE order_id=$1`, awaiting, expiryWindow().Seconds())
+	edit := e.do("GET", "/listing-edit?id="+product, vendor, nil)
+	e.check(edit, 200)
+	for _, want := range []string{"2 units are reserved", "The earliest awaiting-payment payment window ends " + wantExpiry, "deposits waiting for confirmations can keep an order open beyond this time", "unfunded drafts do not reserve stock"} {
+		if !strings.Contains(edit.Body.String(), want) {
+			t.Errorf("listing editor missing %q in:\n%s", want, edit.Body.String())
+		}
+	}
+	desk := e.do("GET", "/vendor-dashboard", vendor, nil)
+	e.check(desk, 200)
+	card := cardFor(desk.Body.String(), "Test listing")
+	for _, want := range []string{"2 units are reserved", wantExpiry} {
+		if !strings.Contains(card, want) {
+			t.Errorf("vendor listing card missing %q", want)
+		}
+	}
+}
+
 func TestListingUpdateValidation(t *testing.T) {
 	e := newTestApp(t)
 	owner, s := e.user("inv_valid", "vendor")
@@ -194,23 +233,29 @@ func TestListingStockEditDoesNotOverwriteReservations(t *testing.T) {
 }
 
 func TestListingKindLockedWhileOrdersOpen(t *testing.T) {
-	e := newTestApp(t)
-	owner, s := e.user("inv_kind", "vendor")
-	buyer, _ := e.user("inv_kind_buyer", "buyer")
-	p := e.product(owner, "physical")
-	o := e.order(buyer, p, "BTC", statePaid)
-	w := e.do("POST", "/listings/update", s, inventoryForm(p, map[string]string{"kind": "digital"}))
+	x := newEscrowEnv(t)
+	e := x.testEnv
+	p := x.physicalListing(x.vendor, 3)
+	e.usableKey(x.vendor)
+	o := e.order(x.buyer, p, "BTC", stateDraft)
+	addr := x.mustCheckout(o, regtestAddr("inventory-kind-refund"))
+	x.core.deposit(addr, txidOf("inventory-kind-funded"), 0, 100000, 3)
+	x.poll()
+	if x.state(o) != statePaid {
+		t.Fatalf("funded escrow order state: %s", x.state(o))
+	}
+	w := e.do("POST", "/listings/update", x.vendorSess, inventoryForm(p, map[string]string{"kind": "digital"}))
 	e.check(w, 409)
 	var kind string
 	e.DB.QueryRow("SELECT kind FROM products WHERE id=$1", p).Scan(&kind)
 	if kind != "physical" {
 		t.Fatalf("kind changed under an open order: %s", kind)
 	}
-	if !strings.Contains(e.do("GET", "/listing-edit?id="+p, s, nil).Body.String(), "1 open order(s)") {
+	if !strings.Contains(e.do("GET", "/listing-edit?id="+p, x.vendorSess, nil).Body.String(), "1 open order(s)") {
 		t.Fatal("edit page does not explain the open order")
 	}
 	// Other fields still save; the order keeps its recorded amount.
-	e.check(e.do("POST", "/listings/update", s, inventoryForm(p, map[string]string{"price_btc": "0.5"})), 303)
+	e.check(e.do("POST", "/listings/update", x.vendorSess, inventoryForm(p, map[string]string{"price_btc": "0.5"})), 303)
 	var amt int64
 	var state string
 	if err := e.DB.QueryRow("SELECT amount,state FROM orders WHERE id=$1", o).Scan(&amt, &state); err != nil || amt != 100000 || state != statePaid {
@@ -219,7 +264,74 @@ func TestListingKindLockedWhileOrdersOpen(t *testing.T) {
 	if _, err := e.DB.Exec("UPDATE orders SET state='completed' WHERE id=$1", o); err != nil {
 		t.Fatal(err)
 	}
-	e.check(e.do("POST", "/listings/update", s, inventoryForm(p, map[string]string{"kind": "digital"})), 303)
+	e.check(e.do("POST", "/listings/update", x.vendorSess, inventoryForm(p, map[string]string{"kind": "digital"})), 303)
+}
+
+func TestUnfundedDraftDoesNotLockListingKind(t *testing.T) {
+	e := newTestApp(t)
+	owner, session := e.user("draft_kind_vendor", "vendor")
+	buyer, _ := e.user("draft_kind_buyer", "buyer")
+	p := e.product(owner, "physical")
+	draft := e.order(buyer, p, "BTC", stateDraft)
+	e.check(e.do("POST", "/listings/update", session, inventoryForm(p, map[string]string{"kind": "digital"})), 303)
+	if agStr(e, "SELECT state FROM orders WHERE id=$1", draft) != stateDraft || agInt(e, "SELECT stock FROM products WHERE id=$1", p) != 5 {
+		t.Fatal("editing fulfillment changed a draft or reserved stock")
+	}
+	// A historical anomalous draft that has an escrow record retains the conservative guard.
+	if _, err := e.DB.Exec(`INSERT INTO escrows(order_id,address,market_index,refund_address,fee_bps,fee_destination)
+		VALUES($1,'bcrt1qdraftkindescrow000000000000000000',nextval('escrow_market_index'),'bcrt1qdraftkindrefund0000000000000000000',0,'')`, draft); err != nil {
+		t.Fatal(err)
+	}
+	e.check(e.do("POST", "/listings/update", session, inventoryForm(p, map[string]string{"kind": "physical"})), 409)
+	if agStr(e, "SELECT kind FROM products WHERE id=$1", p) != "digital" {
+		t.Fatal("payment-record draft did not retain the fulfillment guard")
+	}
+}
+
+func TestLegacyServiceListingRequiresExplicitSupportedKind(t *testing.T) {
+	e := newTestApp(t)
+	owner, s := e.user("legacy_service_owner", "vendor")
+	buyer, _ := e.user("legacy_service_buyer", "buyer")
+	service := e.product(owner, "service")
+	edit := e.do("GET", "/listing-edit?id="+service, s, nil)
+	e.check(edit, 200)
+	body := edit.Body.String()
+	if !strings.Contains(body, `value="" selected disabled>Choose a supported fulfillment type`) || !strings.Contains(body, "Choose Physical or Digital explicitly to convert it") {
+		t.Fatalf("legacy service edit does not require an explicit supported type:\n%s", body)
+	}
+	for name, kind := range map[string]string{"omitted": "", "legacy service": "service", "unsupported": "weapon"} {
+		t.Run(name, func(t *testing.T) {
+			f := inventoryForm(service, map[string]string{"kind": kind})
+			if kind == "" {
+				f.Del("kind")
+			}
+			w := e.do("POST", "/listings/update", s, f)
+			if w.Code != 400 {
+				t.Fatalf("unsupported kind save: %d %s", w.Code, w.Body.String())
+			}
+			var got string
+			if err := e.DB.QueryRow("SELECT kind FROM products WHERE id=$1", service).Scan(&got); err != nil || got != "service" {
+				t.Fatalf("refused save changed legacy kind to %q: %v", got, err)
+			}
+		})
+	}
+	open := e.order(buyer, service, "BTC", statePaid)
+	w := e.do("POST", "/listings/update", s, inventoryForm(service, map[string]string{"kind": "physical"}))
+	if w.Code != 409 || !strings.Contains(w.Body.String(), "cannot change while this listing has open orders") {
+		t.Fatalf("conversion with open service order: %d %s", w.Code, w.Body.String())
+	}
+	if got := agStr(e, "SELECT kind FROM products WHERE id=$1", service); got != "service" {
+		t.Fatalf("open order allowed conversion to %q", got)
+	}
+	if got := agStr(e, "SELECT state FROM orders WHERE id=$1", open); got != statePaid {
+		t.Fatalf("open service order history changed to %q", got)
+	}
+	closed := e.product(owner, "service")
+	w = e.do("POST", "/listings/update", s, inventoryForm(closed, map[string]string{"kind": "digital"}))
+	e.check(w, 303)
+	if got := agStr(e, "SELECT kind FROM products WHERE id=$1", closed); got != "digital" {
+		t.Fatalf("explicit conversion stored kind %q", got)
+	}
 }
 
 func TestArchiveHidesListingAndRefusesDrafts(t *testing.T) {
@@ -330,7 +442,7 @@ func TestArchiveHidesListingAndRefusesDrafts(t *testing.T) {
 	}
 }
 
-func TestAutoDeliveryCopyFollowsProviders(t *testing.T) {
+func TestAutoDeliveryCopyFollowsEscrowConfiguration(t *testing.T) {
 	e := newTestApp(t)
 	owner, s := e.user("inv_auto", "vendor")
 	p := e.product(owner, "digital")
@@ -341,12 +453,11 @@ func TestAutoDeliveryCopyFollowsProviders(t *testing.T) {
 			t.Fatalf("%s: unavailable copy missing without providers", path)
 		}
 	}
-	e.A.payments["XMR"] = inventoryStubProvider{"XMR"}
-	e.A.payments["BTC"] = inventoryStubProvider{"BTC"}
+	e.A.escrowConfigured = true
 	for _, path := range []string{"/listing-edit?id=" + p, "/vendor-dashboard"} {
 		w := e.do("GET", path, s, nil)
 		e.check(w, 200)
-		if strings.Contains(w.Body.String(), "Automatic delivery requires a payment provider") || !strings.Contains(w.Body.String(), "Payment confirmation is configured for BTC, XMR") {
+		if strings.Contains(w.Body.String(), "Automatic delivery requires a payment provider") || !strings.Contains(w.Body.String(), "Payment confirmation is configured for BTC") {
 			t.Fatalf("%s: provider copy wrong", path)
 		}
 	}
@@ -363,41 +474,26 @@ func TestInventoryMigrationColumns(t *testing.T) {
 	}
 }
 
-// inventoryStubProvider only reports a currency; it is never asked to move funds in these tests.
-type inventoryStubProvider struct{ currency string }
-
-func (p inventoryStubProvider) Currency() string   { return p.currency }
-func (p inventoryStubProvider) Network() string    { return "testnet" }
-func (p inventoryStubProvider) Confirmations() int { return 1 }
-func (p inventoryStubProvider) NewAddress(context.Context, string) (string, error) {
-	return "", fail(409, "stub")
-}
-func (p inventoryStubProvider) Incoming(context.Context, []string) ([]Incoming, error) {
-	return nil, nil
-}
-func (p inventoryStubProvider) Send(context.Context, string, int64) (string, error) {
-	return "", fail(409, "stub")
-}
-func (p inventoryStubProvider) ValidAddress(string) bool { return false }
-
 // A-72: automatic delivery content is what every buyer of the listing receives. Only the listing's vendor
 // may read or change it on /listing-edit; an administrator editing another vendor's listing sees whether it
 // is set, and their saves keep the stored content whatever the form sends.
 func TestAdminListingEditKeepsDeliveryContentHidden(t *testing.T) {
-	p := newPayEnv(t)
+	x := newEscrowEnv(t)
+	e := x.testEnv
+	adminID, adminSess := e.user("padmin_"+randomToken()[:8], "admin")
 	secret := "LICENSE-KEY-A72-" + randomToken()[:8]
-	digital := p.product(p.vendor.ID, "digital")
-	p.check(p.do("POST", "/listings/update", p.vendorSess, inventoryForm(digital, map[string]string{"kind": "digital", "delivery_content": secret})), 303)
+	digital := e.product(x.vendor, "digital")
+	e.check(e.do("POST", "/listings/update", x.vendorSess, inventoryForm(digital, map[string]string{"kind": "digital", "delivery_content": secret})), 303)
 	stored := func() (kind, content string) {
 		t.Helper()
-		if err := p.DB.QueryRow("SELECT kind,delivery_content FROM products WHERE id=$1", digital).Scan(&kind, &content); err != nil {
+		if err := e.DB.QueryRow("SELECT kind,delivery_content FROM products WHERE id=$1", digital).Scan(&kind, &content); err != nil {
 			t.Fatal(err)
 		}
 		return kind, content
 	}
 
 	// The administrator's editor says content is set, without the field or the content itself.
-	edit := p.page("/listing-edit?id="+digital, p.adminSess)
+	edit := e.body("GET", "/listing-edit?id="+digital, adminSess, nil, 200)
 	if strings.Contains(edit, secret) || strings.Contains(edit, `name="delivery_content"`) {
 		t.Fatal("administrator /listing-edit exposes the vendor's automatic delivery content")
 	}
@@ -405,18 +501,14 @@ func TestAdminListingEditKeepsDeliveryContentHidden(t *testing.T) {
 		t.Fatal("administrator /listing-edit does not say that delivery content is set")
 	}
 	// The loader itself never selects the content for an editor who is not the vendor (QA5-3).
-	var adminID string
-	if err := p.DB.QueryRow(`SELECT id FROM users WHERE role='admin' AND handle LIKE 'padmin\_%'`).Scan(&adminID); err != nil {
-		t.Fatal(err)
-	}
 	d := &PageData{User: &User{ID: adminID, Role: "admin"}}
-	if err := loadListingEdit(context.Background(), p.A, httptest.NewRequest("GET", "/listing-edit?id="+digital, nil), d); err != nil {
+	if err := loadListingEdit(context.Background(), e.A, httptest.NewRequest("GET", "/listing-edit?id="+digital, nil), d); err != nil {
 		t.Fatal(err)
 	}
 	if d.Listing.DeliveryContent != "" || !d.Listing.HasDeliveryContent || d.Listing.VendorEditor {
 		t.Fatalf("administrator ListingView: content=%q set=%v vendor=%v", d.Listing.DeliveryContent, d.Listing.HasDeliveryContent, d.Listing.VendorEditor)
 	}
-	if empty := p.page("/listing-edit?id="+p.product(p.vendor.ID, "digital"), p.adminSess); !strings.Contains(empty, "Automatic delivery content is not set; only the vendor can add it.") {
+	if empty := e.body("GET", "/listing-edit?id="+e.product(x.vendor, "digital"), adminSess, nil, 200); !strings.Contains(empty, "Automatic delivery content is not set; only the vendor can add it.") {
 		t.Fatal("administrator /listing-edit does not say that delivery content is not set")
 	}
 
@@ -432,25 +524,29 @@ func TestAdminListingEditKeepsDeliveryContentHidden(t *testing.T) {
 	f.Set("region", "Worldwide")
 	f.Set("kind", "digital")
 	f.Set("title", "Admin retitled")
-	p.check(p.do("POST", "/listings/update", p.adminSess, f), 303)
+	e.check(e.do("POST", "/listings/update", adminSess, f), 303)
 	if _, got := stored(); got != secret {
 		t.Fatalf("administrator title save changed delivery content to %q", got)
 	}
 
 	// A crafted administrator POST with other content (or none) does not change what buyers receive.
 	for _, dc := range []string{"ADMIN-SUBSTITUTED", ""} {
+		edit = e.body("GET", "/listing-edit?id="+digital, adminSess, nil, 200)
+		f.Set(formNonceField, renderedFormNonce(t, edit, "/listings/update"))
 		f.Set("delivery_content", dc)
-		p.check(p.do("POST", "/listings/update", p.adminSess, f), 303)
+		e.check(e.do("POST", "/listings/update", adminSess, f), 303)
 		if _, got := stored(); got != secret {
 			t.Fatalf("administrator POST with delivery_content=%q changed it to %q", dc, got)
 		}
 	}
 
 	// The administrator cannot make the listing physical while content they cannot remove is stored.
+	edit = e.body("GET", "/listing-edit?id="+digital, adminSess, nil, 200)
+	f.Set(formNonceField, renderedFormNonce(t, edit, "/listings/update"))
 	f.Del("delivery_content")
 	f.Set("kind", "physical")
-	w := p.do("POST", "/listings/update", p.adminSess, f)
-	p.check(w, 400)
+	w := e.do("POST", "/listings/update", adminSess, f)
+	e.check(w, 400)
 	if !strings.Contains(w.Body.String(), "only its vendor can remove") {
 		t.Fatalf("kind refusal does not explain itself: %q", w.Body.String())
 	}
@@ -459,20 +555,20 @@ func TestAdminListingEditKeepsDeliveryContentHidden(t *testing.T) {
 	}
 
 	// The next order is delivered the vendor's content.
-	o, addr := p.orderFor(p.buyer.ID, digital)
-	p.fake.Deposit(addr, longTxid("a7"), 0, 100000, 3)
-	p.poll()
+	o := e.order(x.buyer, digital, "BTC", stateDraft)
+	x.mustCheckout(o, regtestAddr("admin-delivery-refund"))
+	x.fund(o, "admin-delivery", 3, int64(agInt(e, "SELECT amount FROM orders WHERE id=$1", o)))
 	var got string
-	if err := p.DB.QueryRow("SELECT content FROM deliveries WHERE order_id=$1", o).Scan(&got); err != nil || got != secret {
+	if err := e.DB.QueryRow("SELECT content FROM deliveries WHERE order_id=$1", o).Scan(&got); err != nil || got != secret {
 		t.Fatalf("next order delivered %q (%v), want the vendor's content", got, err)
 	}
 
 	// The vendor still reads and changes the content.
-	vendorEdit := p.page("/listing-edit?id="+digital, p.vendorSess)
+	vendorEdit := e.body("GET", "/listing-edit?id="+digital, x.vendorSess, nil, 200)
 	if !strings.Contains(vendorEdit, secret) || !strings.Contains(vendorEdit, `name="delivery_content"`) {
 		t.Fatal("vendor /listing-edit no longer shows the delivery content field")
 	}
-	p.check(p.do("POST", "/listings/update", p.vendorSess, inventoryForm(digital, map[string]string{"kind": "digital", "delivery_content": "VENDOR-NEW"})), 303)
+	e.check(e.do("POST", "/listings/update", x.vendorSess, inventoryForm(digital, map[string]string{"kind": "digital", "delivery_content": "VENDOR-NEW"})), 303)
 	if _, got := stored(); got != "VENDOR-NEW" {
 		t.Fatalf("vendor change not stored: %q", got)
 	}

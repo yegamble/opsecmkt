@@ -4,15 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"net/http"
-	"strings"
-	"unicode/utf8"
 )
 
 func init() {
-	registerAction("/orders", actionSpec{Run: orderDraftAction})
-	registerAction("/disputes", actionSpec{Run: disputeAction})
-	registerAction("/disputes/reply", actionSpec{Run: disputeReplyAction})
-	registerAction("/resolve", actionSpec{Roles: []string{"moderator", "admin"}, OwnTx: true, Run: resolveAction})
+	registerAction("/orders", actionSpec{FormNonce: true, Run: orderDraftAction})
+	registerAction("/disputes", actionSpec{FormNonce: true, Run: disputeAction})
+	registerAction("/disputes/reply", actionSpec{FormNonce: true, Run: disputeReplyAction})
+	registerAction("/resolve", actionSpec{Roles: []string{"moderator", "admin"}, OwnTx: true,
+		ConfirmedFormNonce: true, ReceiptAuthorize: resolveReceiptAuthorize, Run: resolveAction})
 	registerLoader("disputes", resolveConfirmLoader)
 }
 
@@ -32,24 +31,27 @@ func orderDraftAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, fail(400, "Choose BTC or XMR")
 	}
 	var btc, xmr int64
-	var vendor string
+	var vendor, kind string
 	var stock int
 	var archived bool
-	err := tx.QueryRowContext(ctx, "SELECT btc,xmr,vendor_id,stock,archived FROM products WHERE id=$1", f.Get("product_id")).Scan(&btc, &xmr, &vendor, &stock, &archived)
+	err := tx.QueryRowContext(ctx, "SELECT btc,xmr,vendor_id,kind,stock,archived FROM products WHERE id=$1", f.Get("product_id")).Scan(&btc, &xmr, &vendor, &kind, &stock, &archived)
 	if err != nil || stock < 1 {
 		return actionResult{}, fail(400, "Product unavailable")
 	}
 	if archived {
 		return actionResult{}, fail(400, "This listing is archived and accepts no new orders.")
 	}
-	if ok, err := sellerIsVendor(c, f.Get("product_id")); err != nil || !ok {
-		if err == nil {
-			err = fail(400, sellerNotVendor)
-		}
-		return actionResult{}, err
+	if kind == "service" {
+		return actionResult{}, fail(409, "This legacy service listing cannot accept new orders. Existing orders and their history remain readable; ask the vendor to offer a supported physical or digital listing instead. Nothing was changed.")
 	}
 	if vendor == c.User.ID {
 		return actionResult{}, fail(400, "You cannot order your own listing")
+	}
+	if err = waitForWalletLocks(ctx, tx); err != nil {
+		return actionResult{}, err
+	}
+	if err = lockNewIntake(c, "", vendor, true); err != nil {
+		return actionResult{}, err
 	}
 	// A-444: while the currency is escrow only, a listing that cannot use its escrow takes no draft in it.
 	if err = c.A.purchaseBlock(ctx, tx, f.Get("product_id"), currency); err != nil {
@@ -60,31 +62,51 @@ func orderDraftAction(c *actionCtx) (actionResult, error) {
 		total = xmr
 	}
 	if total < payoutFloor(currency, "release") {
-		return actionResult{}, fail(400, subFloorListing(currency))
+		otherPrice := btc
+		if currency == "BTC" {
+			otherPrice = xmr
+		}
+		return actionResult{}, fail(400, subFloorListing(currency, otherPrice))
 	}
 	id := randomToken()
 	err = tx.QueryRowContext(ctx, `INSERT INTO orders(id,buyer_id,product_id,currency,amount) VALUES($1,$2,$3,$4,$5) ON CONFLICT(buyer_id,product_id,currency) WHERE state='draft' DO UPDATE SET amount=excluded.amount RETURNING id`, id, c.User.ID, f.Get("product_id"), currency, total).Scan(&id)
 	return actionResult{Redirect: "/order?id=" + id, Audit: "Saved unfunded order draft"}, err
 }
 
-// subFloorListing refuses an order in currency on a listing priced below that currency's payout floor (A-216 for
+// subFloorListing refuses an order in currency on a listing priced below that currency's settlement floor (payoutFloor) (A-216 for
 // Bitcoin, A-232 for Monero). validateListing refuses such prices (Bitcoin since A-99, Monero since A-232), but a
-// listing priced earlier keeps its price: its release would never be sent automatically and an overpayment on it
-// could not be returned separately (splitPayout).
-func subFloorListing(currency string) string {
+// listing priced earlier keeps its price: an escrow release of it would leave the vendor an output below the floor,
+// which planSettlement and the Monero settlement refuse.
+func subFloorListing(currency string, otherPrice int64) string {
 	coin, other := "Bitcoin", "XMR"
+	otherCurrency := "XMR"
 	if currency == "XMR" {
 		coin, other = "Monero", "BTC"
+		otherCurrency = "BTC"
 	}
-	return "This listing's " + coin + " price is below the minimum automatic payout of " + amount(payoutFloor(currency, "release"), currencyDecimals(currency)) + " " + currency +
-		" (it was priced before that minimum applied), so it cannot be ordered in " + currency + ". Order in " + other + ", or ask the vendor to raise the " + coin + " price. Nothing was changed."
+	message := "This listing's " + coin + " price is below the escrow settlement minimum of " + amount(payoutFloor(currency, "release"), currencyDecimals(currency)) + " " + currency +
+		" (it was priced before that minimum applied), so it cannot be ordered in " + currency + "."
+	if otherPrice >= payoutFloor(otherCurrency, "release") {
+		message += " Order in " + other + ", or ask the vendor to raise the " + coin + " price."
+	} else {
+		message += " Ask the vendor to raise the " + coin + " price."
+	}
+	return message + " Nothing was changed."
+}
+
+func subFloorListingForProduct(ctx context.Context, q rowQuerier, productID, currency string) (string, error) {
+	var otherPrice int64
+	if err := q.QueryRowContext(ctx, "SELECT CASE WHEN $2='XMR' THEN btc ELSE xmr END FROM products WHERE id=$1", productID, currency).Scan(&otherPrice); err != nil {
+		return "", err
+	}
+	return subFloorListing(currency, otherPrice), nil
 }
 
 // disputeAction opens a dispute by moving a paid, shipped or delivered order to disputed (P3).
 func disputeAction(c *actionCtx) (actionResult, error) {
 	ctx, f, tx := c.Ctx(), c.Form, c.Tx
-	reason := strings.TrimSpace(f.Get("reason"))
-	if len(reason) < 20 || len(reason) > 5000 {
+	reason := normalizedFormText(f.Get("reason"))
+	if !textLength(reason, 20, 5000) {
 		return actionResult{}, fail(400, "Describe the issue in 20–5000 characters")
 	}
 	// A-386: the order row first, as the sign action takes it, so the check below sees a buyer's signature committed
@@ -94,7 +116,7 @@ func disputeAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, err
 	}
 	if o.State != statePaid && o.State != stateShipped && o.State != stateDelivered {
-		return actionResult{}, fail(409, "Only paid, shipped, or delivered orders can be disputed. Draft orders contain no funds.")
+		return actionResult{}, fail(409, "This order cannot be disputed from its current state. Disputes can be opened only for paid, shipped, or delivered orders.")
 	}
 	if o.Escrow && o.BuyerID == c.User.ID {
 		// P2-R2: the buyer's signature on the release to the vendor confirms receipt and ends the buyer's right to dispute.
@@ -133,8 +155,8 @@ func disputeAction(c *actionCtx) (actionResult, error) {
 // second reply, or a resolution, waits and then sees this one (or the resolution) and is refused with 409.
 func disputeReplyAction(c *actionCtx) (actionResult, error) {
 	ctx, tx := c.Ctx(), c.Tx
-	reply := strings.TrimSpace(c.Form.Get("reply"))
-	if n := utf8.RuneCountInString(reply); n < 20 || n > 5000 {
+	reply := normalizedFormText(c.Form.Get("reply"))
+	if !textLength(reply, 20, 5000) {
 		return actionResult{}, fail(400, "Write your reply in 20–5000 characters. Nothing was changed.")
 	}
 	o, err := partyOrder(c, c.Form.Get("order_id"))
@@ -177,8 +199,8 @@ func disputeReplyAction(c *actionCtx) (actionResult, error) {
 }
 
 // notifyDisputeStaff tells every moderator and administrator who is not a party to the order that a dispute
-// opened. If every staff account is a party, the dispute still stands: the order history records that no
-// independent resolver was available and every administrator is told it needs a moderator who is not a party.
+// opened. If no unsuspended staff account is independent of the parties, the dispute still stands: the order
+// history records that no independent resolver was available and unsuspended administrators are told.
 // A suspended account cannot sign in, so it counts as neither a resolver nor a recipient (A-118).
 func notifyDisputeStaff(c *actionCtx, o *Order) error {
 	ctx, tx := c.Ctx(), c.Tx
@@ -194,19 +216,50 @@ func notifyDisputeStaff(c *actionCtx, o *Order) error {
 		if staff, err = collectStrings(ctx, tx, "SELECT id FROM users WHERE role='admin' AND suspended_at IS NULL"); err != nil {
 			return err
 		}
-		body = "Dispute opened on order " + shortID(o.ID) + " needs a moderator who is not a party to the order. Every moderator and administrator is its buyer or vendor, so nobody can resolve it yet."
+		body = "Dispute opened on order " + shortID(o.ID) + " needs an unsuspended moderator who is not a party to resolve it; no independent resolver was available when it opened."
 	}
 	for _, uid := range staff {
-		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), uid, body); err != nil {
+		if _, err = insertNotification(ctx, tx, uid, body, o.ID); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-const noResolverNote = "No independent resolver was available: every moderator and administrator is a party to this order. An administrator must assign a moderator who is not a party to resolve this dispute."
+const noResolverNote = "No independent resolver was available when this dispute opened: no unsuspended moderator or administrator who was not a party was available. An administrator must assign an unsuspended moderator who is not a party to resolve this dispute."
 
 var disputeOutcomes = map[string]string{"release": "Resolved — release to vendor", "refund": "Resolved — refund to buyer"}
+
+// resolveReceiptAuthorize checks only eligibility that must still hold when a
+// successful /resolve form is replayed. It does not require an Open dispute or
+// disputed order: both have changed precisely because the first request
+// committed. The new request still takes the existing state checks in
+// resolveAction. This read takes no dispute/order/product row locks, avoiding
+// an inversion with escrow decision's order-then-dispute lock order.
+func resolveReceiptAuthorize(c *actionCtx) error {
+	var buyerID, vendorID, currency string
+	var escrow bool
+	err := c.Tx.QueryRowContext(c.Ctx(), `SELECT o.buyer_id,p.vendor_id,o.currency,
+		EXISTS(SELECT 1 FROM escrows e WHERE e.order_id=o.id)
+		FROM disputes d JOIN orders o ON o.id=d.order_id
+		JOIN products p ON p.id=o.product_id WHERE d.id=$1`, c.Form.Get("id")).Scan(&buyerID, &vendorID, &currency, &escrow)
+	if err == sql.ErrNoRows {
+		return fail(409, "Open dispute not found")
+	}
+	if err != nil {
+		return err
+	}
+	if escrow && c.User.Role != "admin" {
+		if currency == "XMR" {
+			return errXMREscrowResolveAdmin
+		}
+		return errEscrowResolveAdmin
+	}
+	if c.User.ID == buyerID || c.User.ID == vendorID {
+		return errForbidden
+	}
+	return nil
+}
 
 // resolveAction records the outcome, then moves disputed -> resolved as moderator (P3). The outcome is
 // written first so transition hooks (payouts) read it in the same transaction. A moderator who is a party
@@ -220,8 +273,8 @@ func resolveAction(c *actionCtx) (actionResult, error) {
 	if !ok {
 		return actionResult{}, fail(400, "Choose an outcome: release to vendor or refund to buyer")
 	}
-	resolution := strings.TrimSpace(c.Form.Get("resolution"))
-	if len(resolution) < 20 || len(resolution) > 5000 {
+	resolution := normalizedFormText(c.Form.Get("resolution"))
+	if !textLength(resolution, 20, 5000) {
 		return actionResult{}, fail(400, "Provide a decision of 20–5000 characters")
 	}
 	seen, err := payoutConfirmation(c)

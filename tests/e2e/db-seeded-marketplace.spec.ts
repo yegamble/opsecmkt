@@ -3,7 +3,7 @@ import { ADMIN, uniqueHandle } from './db-fixtures';
 import { expectNotice, setRole, signedIn } from './db-helpers';
 
 // All seed records below are created through public forms against PostgreSQL.
-// No wallet is configured here; funded journeys live in wallet-journey.spec.ts.
+// Intake is paused here; funded journeys live in the separate escrow browser suites.
 test('seeded catalog discovery, role boundaries and persistent unfunded orders', async ({ browser, baseURL }) => {
   test.setTimeout(90_000);
   const seed = uniqueHandle('seed');
@@ -30,7 +30,7 @@ test('seeded catalog discovery, role boundaries and persistent unfunded orders',
       await vendor.getByRole('combobox', { name: 'Region', exact: true }).selectOption(region);
       await vendor.getByLabel('Fulfillment type').selectOption(kind);
       await vendor.getByLabel('Stock', { exact: true }).fill(stock);
-      await vendor.getByLabel('Bitcoin reference price').fill('0.002');
+      await vendor.getByLabel(/Price \(BTC, (?:test network|main network|not configured|not yet known)\)/).fill('0.002');
       await vendor.getByLabel('Monero reference price').fill('0.75');
       await vendor.getByRole('button', { name: 'Publish listing' }).click();
       await expect(vendor.getByLabel('Listing title')).toHaveValue(title); // A-188: publishing lands on its edit page

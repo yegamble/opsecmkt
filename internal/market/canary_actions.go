@@ -3,6 +3,7 @@ package market
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"io"
 	"net/http"
 	"strings"
@@ -16,8 +17,8 @@ import (
 )
 
 func init() {
-	registerAction("/admin/operator-key", actionSpec{Roles: []string{"admin"}, Run: operatorKeyAction})
-	registerAction("/admin/canary", actionSpec{Roles: []string{"admin"}, Run: canaryAction})
+	registerAction("/admin/operator-key", actionSpec{Roles: []string{"admin"}, OwnTx: true, ConfirmedFormNonce: true, Run: operatorKeyAction})
+	registerAction("/admin/canary", actionSpec{Roles: []string{"admin"}, OwnTx: true, ConfirmedFormNonce: true, Run: canaryAction})
 	registerLoader("canary", func(ctx context.Context, a *App, r *http.Request, d *PageData) error {
 		v, err := loadCanary(ctx, a.db, d.Settings)
 		if err != nil {
@@ -57,17 +58,24 @@ func operatorKeyAction(c *actionCtx) (actionResult, error) {
 	if armored == "" || len(armored) > 65536 {
 		return actionResult{}, fail(400, "Paste the operator's armored PGP public key")
 	}
-	_, fp, err := parsePublicKey(armored)
+	if _, photos, other := keyExtraPackets(armored); photos > 0 {
+		return actionResult{}, fail(400, "Operator key rejected: it contains a photo ID; remove it before publishing the public key")
+	} else if other > 0 {
+		return actionResult{}, fail(400, "Operator key rejected: it contains an OpenPGP packet type this market does not publish")
+	}
+	_, fp, canonical, err := parseCanonicalPublicKey(armored)
 	if err != nil {
 		return actionResult{}, fail(400, "Operator key rejected: "+err.Error())
 	}
-	if err = setSetting(c, settingOperatorKey, armored); err != nil {
-		return actionResult{}, err
-	}
-	if err = setSetting(c, settingOperatorFingerprint, fp); err != nil {
-		return actionResult{}, err
-	}
-	return actionResult{Redirect: "/admin", Notice: "operator-key", Audit: "Set operator PGP key " + fp + " for canary verification"}, nil
+	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
+		if err := setSetting(c, settingOperatorKey, canonical); err != nil {
+			return actionResult{}, err
+		}
+		if err := setSetting(c, settingOperatorFingerprint, fp); err != nil {
+			return actionResult{}, err
+		}
+		return actionResult{Redirect: "/admin", Notice: "operator-key", Audit: "Set operator PGP key " + fp + " for canary verification"}, nil
+	})
 }
 
 // canaryAction stores an operator-clearsigned statement verbatim, only if it verifies against the operator key.
@@ -76,19 +84,33 @@ func canaryAction(c *actionCtx) (actionResult, error) {
 	if text == "" {
 		return actionResult{}, fail(400, "Paste the clearsigned canary statement")
 	}
-	var key string
-	err := c.Tx.QueryRowContext(c.Ctx(), "SELECT value FROM settings WHERE key=$1 FOR UPDATE", settingOperatorKey).Scan(&key)
-	if err != nil || strings.TrimSpace(key) == "" {
-		return actionResult{}, fail(409, "Configure the operator PGP key before publishing a canary")
-	}
-	_, signedAt, fp, err := verifyCanary(key, text)
-	if err != nil {
-		return actionResult{}, fail(400, "Canary rejected: "+err.Error())
-	}
-	if _, err = c.Tx.ExecContext(c.Ctx(), "INSERT INTO canary(id,clearsigned,posted) VALUES(1,$1,now()) ON CONFLICT(id) DO UPDATE SET clearsigned=excluded.clearsigned, posted=excluded.posted", text); err != nil {
+	// Preserve the no-key 409 before spending a password attempt; re-read under the
+	// confirmed transaction lock so a concurrent key change cannot validate stale text.
+	var configured bool
+	if err := c.A.db.QueryRowContext(c.Ctx(), "SELECT EXISTS(SELECT 1 FROM settings WHERE key=$1 AND btrim(value)<>'')", settingOperatorKey).Scan(&configured); err != nil {
 		return actionResult{}, err
 	}
-	return actionResult{Redirect: "/canary", Audit: "Published warrant canary signed " + formatUTC(signedAt) + " by operator key " + fp}, nil
+	if !configured {
+		return actionResult{}, fail(409, "Configure the operator PGP key before publishing a canary")
+	}
+	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
+		var key string
+		err := c.Tx.QueryRowContext(c.Ctx(), "SELECT value FROM settings WHERE key=$1 FOR UPDATE", settingOperatorKey).Scan(&key)
+		if err == sql.ErrNoRows || err == nil && strings.TrimSpace(key) == "" {
+			return actionResult{}, fail(409, "Configure the operator PGP key before publishing a canary")
+		}
+		if err != nil {
+			return actionResult{}, err
+		}
+		_, signedAt, fp, err := verifyCanary(key, text)
+		if err != nil {
+			return actionResult{}, fail(400, "Canary rejected: "+err.Error())
+		}
+		if _, err = c.Tx.ExecContext(c.Ctx(), "INSERT INTO canary(id,clearsigned,posted) VALUES(1,$1,now()) ON CONFLICT(id) DO UPDATE SET clearsigned=excluded.clearsigned, posted=excluded.posted", text); err != nil {
+			return actionResult{}, err
+		}
+		return actionResult{Redirect: "/canary", Audit: "Published warrant canary signed " + formatUTC(signedAt) + " by operator key " + fp}, nil
+	})
 }
 
 // previewCanary signs a clearly labelled sample with a throwaway key generated when the preview starts, then runs

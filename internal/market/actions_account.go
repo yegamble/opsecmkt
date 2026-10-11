@@ -13,7 +13,7 @@ func init() {
 		return actionResult{Redirect: "/login", Notice: "signed-out", Audit: "Signed out", AfterCommit: c.clearSession}, err
 	}})
 	registerAction("/revoke-sessions", actionSpec{Run: revokeSessionsAction})
-	registerAction("/account", actionSpec{OwnTx: true, Run: accountAction})
+	registerAction("/account", actionSpec{Roles: []string{"buyer", "vendor", "moderator", "admin"}, OwnTx: true, OwnFormNonce: true, Run: accountAction})
 	registerAction("/account/password", actionSpec{OwnTx: true, Run: passwordChangeAction})
 	registerLoader("account", accountSessionsLoader)
 	registerPreview("account", func(d *PageData) {
@@ -69,9 +69,16 @@ func accountSessionsLoader(ctx context.Context, a *App, r *http.Request, d *Page
 }
 
 func accountAction(c *actionCtx) (actionResult, error) {
+	required, completed, err := completedOwnFormMode(c)
+	if err != nil {
+		return actionResult{}, err
+	}
+	if completed {
+		return replayOwnForm(c, required)
+	}
 	f := c.Form
-	pgp, xmpp := strings.TrimSpace(f.Get("pgp")), strings.TrimSpace(f.Get("xmpp"))
-	if len(pgp) > 16384 || len(xmpp) > 254 {
+	pgp := strings.TrimSpace(f.Get("pgp"))
+	if len(pgp) > 16384 {
 		return actionResult{}, fail(400, "Profile fields too long")
 	}
 	// A-110: a photo ID (usually the owner's face) would be shown with the key to everyone who can see it, and
@@ -92,7 +99,7 @@ func accountAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, err
 	}
 	confirm := !sameProfileKey(old, pgp)
-	return confirmedTx(c, confirm, func(c *actionCtx) (actionResult, error) {
+	return ownConfirmedTx(c, confirm, func(c *actionCtx) (actionResult, error) {
 		// P2: parse the key, store its fingerprint and reset ownership proof / PGP sign-in when it changes.
 		audit, outcome, err := saveProfileKey(c, pgp, confirm)
 		if err != nil {
@@ -109,8 +116,7 @@ func accountAction(c *actionCtx) (actionResult, error) {
 		case "subkey":
 			res.Notice = "key-subkey"
 		}
-		_, err = c.Tx.ExecContext(c.Ctx(), "UPDATE users SET xmpp=$1 WHERE id=$2", xmpp, c.User.ID)
-		return res, err
+		return res, nil
 	})
 }
 

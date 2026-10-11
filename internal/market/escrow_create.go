@@ -18,13 +18,13 @@ import (
 
 // Escrow checkout and creation (WR-escrow Phase 1, slice P1-b; ES-3, ES-5). With ESCROW_BTC=on, the buyer of a BTC
 // draft on a digital listing with automatic delivery, or on a physical listing with a dispatch window (Phase 2,
-// P2-R8), may pay into a 2-of-3 escrow instead of the pooled wallet, once both the buyer's and the vendor's escrow
-// keys are active (ES-9). Every other order keeps the pooled flow. A physical order's checkout also needs a vendor
+// P2-R8), may pay into a 2-of-3 escrow once both the buyer's and the vendor's escrow
+// keys are active (ES-9). A physical order's checkout also needs a vendor
 // who can receive an encrypted shipping address (A-83, checked before any RPC), and its escrow row snapshots the
 // release deadline length in force and the listing's dispatch window (escrows.release_days, dispatch_days).
 //
 // POST /orders/escrow takes the buyer's refund address, pinned for the order, and builds the escrow in the checkout
-// transaction, after every check has passed (as /orders/pay asks the wallet for an address only then):
+// transaction, after every check has passed (before deriving an address):
 //  1. each party's next child key (/0/<i>, from 1; /0/0 is the practice child) and a fresh market child index from
 //     the escrow_market_index counter;
 //  2. Bitcoin Core expands the child keys statelessly: deriveaddresses of the extended-key descriptor, createpsbt
@@ -62,7 +62,7 @@ import (
 // settlements (escrow_cosign.go), answers with its pinned key; A-456a's checkout switch is gone.
 
 func init() {
-	registerAction("/orders/escrow", actionSpec{OneAtATime: true, Off: escrowOff, Run: escrowCheckoutAction})
+	registerAction("/orders/escrow", actionSpec{FormNonce: true, OneAtATime: true, Off: escrowOff, Run: escrowCheckoutAction})
 }
 
 // errEscrowRefund and errEscrowRefundInvalid refuse a missing or invalid refund address on the escrow node's chain net.
@@ -280,23 +280,18 @@ func escrowCheckoutAction(c *actionCtx) (actionResult, error) {
 	} else if sweep {
 		return actionResult{}, errEscrowSweep
 	}
-	if ok, err := sellerIsVendor(c, o.ProductID); err != nil {
+	if err = lockNewIntake(c, o.BuyerID, o.VendorID, false); err != nil {
 		return actionResult{}, err
-	} else if !ok {
-		return actionResult{}, fail(409, sellerNotVendor+" Cancel this draft.")
 	}
-	// The buyer's cap on orders awaiting payment, serialised on the buyer's row as in payAction.
+	// The buyer's cap on orders awaiting payment, serialised on the buyer's row.
 	var open int
-	if _, err = c.Tx.ExecContext(ctx, "SELECT 1 FROM users WHERE id=$1 FOR NO KEY UPDATE", c.User.ID); err != nil {
-		return actionResult{}, err
-	}
 	if err = c.Tx.QueryRowContext(ctx, "SELECT count(*) FROM orders WHERE buyer_id=$1 AND state='awaiting_payment'", c.User.ID).Scan(&open); err != nil {
 		return actionResult{}, err
 	}
 	if open >= maxAwaitingPayment {
 		return actionResult{}, fail(409, "You already have "+strconv.Itoa(maxAwaitingPayment)+" orders awaiting payment. Pay or cancel one before requesting another payment address.")
 	}
-	if err = lockPaymentIntake(c, o.Currency, kindEscrow); err != nil {
+	if err = lockPaymentIntake(c, o.Currency); err != nil {
 		return actionResult{}, err
 	}
 	eligible, price, dispatchDays, err := escrowEligible(ctx, c.Tx, &o)
@@ -305,10 +300,13 @@ func escrowCheckoutAction(c *actionCtx) (actionResult, error) {
 	} else if !eligible {
 		return actionResult{}, errEscrowKind
 	} else if price < payoutFloor(o.Currency, "release") {
-		return actionResult{}, fail(400, subFloorListing(o.Currency))
+		message, err := subFloorListingForProduct(ctx, c.Tx, o.ProductID, o.Currency)
+		if err != nil {
+			return actionResult{}, err
+		}
+		return actionResult{}, fail(400, message)
 	}
-	// A physical order: the buyer must be able to send the vendor an encrypted shipping address (A-83, as payAction
-	// checks), and the escrow snapshots the release deadline length in force with the listing's dispatch window. Both
+	// A physical order: the buyer must be able to send the vendor an encrypted shipping address (A-83), and the escrow snapshots the release deadline length in force with the listing's dispatch window. Both
 	// are settled before the node is asked anything.
 	releaseDays := 0
 	if o.Kind == "physical" {
@@ -358,16 +356,15 @@ func escrowCheckoutAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, errEscrowRefundInvalid(c.A.escrowNetwork())
 	}
 	// Never an address the market already used (ES-5): an escrow address or a per-order escrow's sibling address
-	// (QA5W3A-4), another escrow's refund address, a settlement destination (a vendor's claim), a fee destination
-	// snapshotted or configured, or a pooled deposit address.
+	// (QA5W3A-4), another escrow's refund address, a settlement destination (a vendor's claim), or a fee destination
+	// snapshotted or configured.
 	feeBps, feeAddr, err := escrowFee(ctx, c.Tx, e)
 	if err != nil {
 		return actionResult{}, err
 	}
 	var used bool
 	if err = c.Tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM escrows WHERE address=$1 OR refund_address=$1 OR fee_destination=$1) OR $1=$2
-		OR EXISTS(SELECT 1 FROM escrow_siblings WHERE address=$1)
-		OR EXISTS(SELECT 1 FROM payment_addresses WHERE address=$1) OR EXISTS(SELECT 1 FROM settlements WHERE destination=$1)`, refund, feeAddr).Scan(&used); err != nil {
+		OR EXISTS(SELECT 1 FROM escrow_siblings WHERE address=$1) OR EXISTS(SELECT 1 FROM settlements WHERE destination=$1)`, refund, feeAddr).Scan(&used); err != nil {
 		return actionResult{}, err
 	}
 	if used {
@@ -376,7 +373,7 @@ func escrowCheckoutAction(c *actionCtx) (actionResult, error) {
 	if _, err = c.Tx.ExecContext(ctx, "UPDATE orders o SET amount=p.btc FROM products p WHERE o.id=$1 AND o.state='draft' AND p.id=o.product_id", o.ID); err != nil {
 		return actionResult{}, err
 	}
-	moved, err := a.transition(context.WithValue(ctx, escrowCheckoutCtx{}, true), c.Tx, o.ID, stateDraft, stateAwaitingPayment, c.User, "Escrow address requested")
+	moved, err := a.transition(withCheckoutPrice(context.WithValue(ctx, escrowCheckoutCtx{}, true)), c.Tx, o.ID, stateDraft, stateAwaitingPayment, c.User, "Escrow address requested")
 	if err != nil {
 		return actionResult{}, err
 	}

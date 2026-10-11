@@ -30,27 +30,33 @@ func TestModeratorViewsDisputedOrderReadOnly(t *testing.T) {
 	w := newOrderWorld(t)
 	_, admin := w.e.user("admin_"+randomToken()[:6], "admin")
 	digital := w.e.product(w.vendorID, "digital")
-	order := w.e.order(w.buyerID, digital, "BTC", stateDelivered)
+	order := w.e.order(w.buyerID, digital, "BTC", stateDisputed)
 	if _, err := w.e.DB.Exec("INSERT INTO deliveries(order_id,content) VALUES($1,$2)", order, "licence-key-ABC-123"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.e.DB.Exec("INSERT INTO disputes(id,order_id,reason) VALUES($1,$2,$3)", randomToken(), order, "The licence key is rejected by the activation server."); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.e.DB.Exec("INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,'draft','disputed',$2,'Buyer opened a dispute')", order, w.buyerID); err != nil {
 		t.Fatal(err)
 	}
 	notDisputed := w.e.order(w.buyerID, w.e.product(w.vendorID, "physical"), "BTC", statePaid)
 
-	// Before any dispute a moderator who is not party to the order cannot open it.
-	w.page("/order?id="+order, w.mod, 404)
-	w.expect("/disputes", w.buyer, form("order_id", order, "reason", "The licence key is rejected by the activation server."), 303, "")
+	// A moderator who is not party to this historical order can read its dispute, but neither staff role can write to it.
+	w.page("/order?id="+order, w.mod, 200)
 
 	for name, session := range map[string]string{"moderator": w.mod, "admin": admin} {
 		body := w.page("/order?id="+order, session, 200)
 		mustContain(t, body,
 			map[string]string{"moderator": "Moderator review", "admin": "Administrator review"}[name],
 			"The licence key is rejected by the activation server.", // dispute reason
-			"licence-key-ABC-123", // delivery record
-			"Dispute opened",      // order events
+			"licence-key-ABC-123",    // delivery record
+			"Buyer opened a dispute", // order events
 			`href="/moderator">moderation desk</a>`,
 		)
 		// No buyer/vendor action forms render for a reviewer.
 		mustNotContain(t, body, `action="/orders/`, `action="/reviews"`, `action="/disputes"`, "Confirm receipt", "Open a dispute")
+		mustNotContain(t, body, `action="/resolve"`)
 		if name == "moderator" {
 			// The actions themselves refuse a non-party (404, as on GET), so nothing can be changed from here.
 			w.expect("/orders/complete", session, payoutConfirmed(form("order_id", order), 0), 404, "Order not found")
@@ -71,9 +77,12 @@ func TestModeratorViewsDisputedOrderReadOnly(t *testing.T) {
 	if err := w.e.DB.QueryRow("SELECT id FROM disputes WHERE order_id=$1", order).Scan(&disputeID); err != nil {
 		t.Fatal(err)
 	}
-	w.expect("/resolve", w.mod, resolveConfirmed(form("id", disputeID, "outcome", "refund", "resolution", "Key verified as invalid; refund the buyer."), 0), 303, "")
+	w.expect("/resolve", admin, resolveConfirmed(form("id", disputeID, "outcome", "refund", "resolution", "Key verified as invalid; refund the buyer."), 0), 409, "Historical pooled orders are read-only")
+	if w.state(order) != stateDisputed || w.count("SELECT count(*) FROM disputes WHERE id=$1 AND status='Open'", disputeID) != 1 {
+		t.Fatal("refused legacy resolve changed the dispute")
+	}
 	body := w.page("/order?id="+order, w.mod, 200)
-	mustContain(t, body, "Key verified as invalid; refund the buyer.", "Resolved")
+	mustContain(t, body, "The licence key is rejected by the activation server.", "Disputed")
 	// Parties see the dispute record on their own order page as well.
 	mustContain(t, w.page("/order?id="+order, w.buyer, 200), "The licence key is rejected by the activation server.")
 }
@@ -185,7 +194,7 @@ func TestUnreadNotificationCountInNavigation(t *testing.T) {
 
 func TestVendorDemotionArchivesListingsAndRefusesNewOrders(t *testing.T) {
 	w := newOrderWorld(t)
-	_, admin := w.e.user("admin_"+randomToken()[:6], "admin")
+	_, admin := w.e.user("demotion_admin", "admin")
 	a := w.e.product(w.vendorID, "physical")
 	b := w.e.product(w.vendorID, "physical")
 	old := w.e.product(w.vendorID, "digital")
@@ -194,28 +203,28 @@ func TestVendorDemotionArchivesListingsAndRefusesNewOrders(t *testing.T) {
 	draft := w.e.order(w.buyerID, b, "BTC", stateDraft)
 
 	// Promoting or keeping a vendor archives nothing.
-	w.expect("/admin", admin, form("action", "role", "role", "vendor", "handle", w.e.loadUser(w.vendorID).Handle), 303, "")
+	w.expect("/admin", admin, form("action", "role", "password", testPassword, "role", "vendor", "handle", w.e.loadUser(w.vendorID).Handle), 303, "")
 	if n := w.count("SELECT count(*) FROM products WHERE vendor_id=$1 AND NOT archived", w.vendorID); n != 2 {
 		t.Fatalf("active listings after vendor->vendor: %d", n)
 	}
 
-	w.expect("/admin", admin, form("action", "role", "role", "buyer", "handle", w.e.loadUser(w.vendorID).Handle), 303, "")
+	w.expect("/admin", admin, form("action", "role", "password", testPassword, "role", "buyer", "handle", w.e.loadUser(w.vendorID).Handle), 303, "")
 	if n := w.count("SELECT count(*) FROM products WHERE vendor_id=$1 AND NOT archived", w.vendorID); n != 0 {
 		t.Fatalf("listings still active after demotion: %d", n)
 	}
 	if n := w.count("SELECT count(*) FROM products WHERE vendor_id=$1 AND archived_at IS NOT NULL", w.vendorID); n != 3 {
 		t.Fatalf("archived_at not set: %d", n)
 	}
-	if !w.e.auditExact(w.vendorID, "Archived 2 active listing(s): role changed to buyer by an administrator") {
+	if !w.e.auditExact(w.vendorID, "Archived 2 active listing(s): role changed to buyer by administrator demotion_admin") {
 		t.Fatal("demoted user's audit event missing")
 	}
-	if w.count("SELECT count(*) FROM audit_events e JOIN users u ON u.id=e.user_id AND u.role='admin' WHERE e.action='Changed role of '||(SELECT handle FROM users WHERE id=$1)||' from vendor to buyer; archived 2 active listing(s)'", w.vendorID) != 1 {
+	if w.count("SELECT count(*) FROM audit_events e JOIN users u ON u.id=e.user_id AND u.role='admin' WHERE e.action='Changed role of '||(SELECT handle FROM users WHERE id=$1)||' from vendor to buyer; archived 2 active listing(s) (confirmed with password)'", w.vendorID) != 1 {
 		t.Fatal("administrator audit event missing")
 	}
 
 	// Archived: new drafts and payment requests are refused; the product page is gone from the catalog.
 	w.expect("/orders", w.other, form("product_id", a, "currency", "BTC"), 400, "archived")
-	w.expect("/orders/pay", w.buyer, form("order_id", draft), 409, "no longer a vendor")
+	w.expect("/orders/pay", w.buyer, form("order_id", draft), 404, "Unknown action")
 	// Even if a listing is active again (restored directly in the database), the non-vendor owner blocks orders.
 	w.e.DB.Exec("UPDATE products SET archived=false WHERE id=$1", a)
 	w.expect("/orders", w.other, form("product_id", a, "currency", "BTC"), 400, "no longer a vendor")
@@ -229,18 +238,18 @@ func TestVendorDemotionArchivesListingsAndRefusesNewOrders(t *testing.T) {
 	if w.state(paid) != statePaid {
 		t.Fatal("demotion changed an open order")
 	}
-	w.expect("/orders/ship", w.vendor, form("order_id", paid, "note", "Posted today"), 303, "")
-	if w.state(paid) != stateShipped {
-		t.Fatalf("paid order after ship: %s", w.state(paid))
+	w.expect("/orders/ship", w.vendor, form("order_id", paid, "note", "Posted today"), 409, "Historical pooled orders are read-only")
+	if w.state(paid) != statePaid {
+		t.Fatalf("refused historical ship changed order: %s", w.state(paid))
 	}
 
 	// Demoting to moderator archives too (the new listing and the one reactivated above).
-	w.expect("/admin", admin, form("action", "role", "role", "vendor", "handle", w.e.loadUser(w.vendorID).Handle), 303, "")
+	w.expect("/admin", admin, form("action", "role", "password", testPassword, "role", "vendor", "handle", w.e.loadUser(w.vendorID).Handle), 303, "")
 	c := w.e.product(w.vendorID, "digital")
-	w.expect("/admin", admin, form("action", "role", "role", "moderator", "handle", w.e.loadUser(w.vendorID).Handle), 303, "")
+	w.expect("/admin", admin, form("action", "role", "password", testPassword, "role", "moderator", "handle", w.e.loadUser(w.vendorID).Handle), 303, "")
 	var archived bool
 	w.e.DB.QueryRow("SELECT archived FROM products WHERE id=$1", c).Scan(&archived)
-	if !archived || !w.e.auditExact(w.vendorID, "Archived 2 active listing(s): role changed to moderator by an administrator") {
+	if !archived || !w.e.auditExact(w.vendorID, "Archived 2 active listing(s): role changed to moderator by administrator demotion_admin") {
 		t.Fatal("demotion to moderator left the listing active or unaudited")
 	}
 }

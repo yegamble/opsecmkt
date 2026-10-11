@@ -21,7 +21,8 @@ async function administrator(admin: Page) {
     await typeInto(admin, admin.getByLabel('Password', { exact: true }), password);
     await pressSubmit(admin, admin.getByRole('button', { name: 'Initialize marketplace' }));
     await expect(admin).toHaveURL(/\/admin\?welcome=1$/);
-    await pressSubmit(admin, admin.locator('.admin-auth').getByRole('button', { name: 'Turn CAPTCHA off' }));
+    await typeInto(admin, admin.locator('.admin-auth').getByLabel('Current password'), password);
+  await pressSubmit(admin, admin.locator('.admin-auth').getByRole('button', { name: 'Turn CAPTCHA off' }));
     return;
   }
   await admin.goto('/login');
@@ -43,6 +44,7 @@ test('Bitcoin escrow physical order: shipped with a claim address, the vendor si
   await tabTo(admin, role.getByLabel('Role'));
   await role.getByLabel('Role').press('v');
   await expect(role.getByLabel('Role')).toHaveValue('vendor');
+  await typeInto(admin, role.getByLabel('Current password'), password);
   await pressSubmit(admin, role.getByRole('button', { name: 'Update role' }));
   await expect(admin.getByRole('status').filter({ hasText: 'Account role saved.' })).toBeVisible();
 
@@ -62,9 +64,9 @@ test('Bitcoin escrow physical order: shipped with a claim address, the vendor si
   await expect(vendor.getByLabel('Fulfillment type')).toHaveValue('physical');
   await expect(vendor.getByLabel('Dispatch within (days)')).toHaveValue('3');
   await tabTo(vendor, vendor.getByLabel('Stock', { exact: true }));
-  await vendor.keyboard.press('Control+A');
+  await vendor.keyboard.press('ControlOrMeta+A');
   await vendor.keyboard.type('20');
-  await typeInto(vendor, vendor.getByLabel('Bitcoin reference price'), '0.001');
+  await typeInto(vendor, vendor.getByLabel(/Price \(BTC, (?:test network|main network|not configured|not yet known)\)/), '0.001');
   await typeInto(vendor, vendor.getByLabel('Monero reference price'), '0.5');
   await pressSubmit(vendor, vendor.getByRole('button', { name: 'Publish listing' }));
 
@@ -394,7 +396,7 @@ test('Bitcoin escrow physical order: the administrator sets 7 days, a new order 
     const form = admin.locator('form', { has: admin.getByRole('button', { name: 'Save the release deadline' }) });
     const field = form.getByLabel(/^Release deadline \(whole days/);
     await tabTo(admin, field);
-    await admin.keyboard.press('Control+A');
+    await admin.keyboard.press('ControlOrMeta+A');
     await admin.keyboard.type(days);
     await typeInto(admin, form.getByLabel('Current password'), password);
     expect(await pressSubmit(admin, form.getByRole('button', { name: 'Save the release deadline' }))).toBe(303);

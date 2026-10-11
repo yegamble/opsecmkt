@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { expect, test } from '@playwright/test';
 import { ADMIN, FIXTURE_LISTING, SETUP_TOKEN } from './db-fixtures';
 
@@ -11,11 +12,16 @@ test('initialize the market and publish the fixture listing', async ({ page, bro
   await expect(page).toHaveURL(/\/admin\?welcome=1$/);
   await expect(page.getByRole('heading', { name: 'Get your marketplace ready' })).toBeVisible();
   await expect(page.locator('.account-name')).toHaveText(ADMIN.handle);
+  // The general browser suite exercises explicitly unfunded drafts with intake paused.
+  // Fresh default escrow-only readiness is checked separately; no pooled checkout exists.
+  execFileSync('psql', [process.env.E2E_DATABASE_URL!, '-v', 'ON_ERROR_STOP=1', '-qtAc',
+    "UPDATE settings SET value='false' WHERE key IN ('payment_intake_BTC','payment_intake_XMR')"]);
+
   await page.goto('/vendor-dashboard');
   await page.getByText('+ Publish a new listing', { exact: true }).click();
   await page.getByLabel('Listing title').fill(FIXTURE_LISTING);
   await page.getByLabel('Description', { exact: true }).fill('Deterministic browser regression fixture. Unfunded drafts only.');
-  await page.getByLabel('Bitcoin reference price').fill('0.00100000');
+  await page.getByLabel(/Price \(BTC, (?:test network|main network|not configured|not yet known)\)/).fill('0.00100000');
   await page.getByLabel('Monero reference price').fill('0.500000000000');
   await page.getByRole('button', { name: 'Publish listing' }).click();
   await expect(page.getByLabel('Listing title')).toHaveValue(FIXTURE_LISTING); // A-188: publishing lands on its edit page
@@ -43,6 +49,7 @@ test('initialize the market and publish the fixture listing', async ({ page, bro
   await visitor.close();
   // Turn it off so the other db-*.spec.ts files can register and sign in without solving images.
   await page.goto('/admin');
+  await page.locator('.admin-auth').getByLabel('Current password').fill(ADMIN.password);
   await page.locator('.admin-auth').getByRole('button', { name: 'Turn CAPTCHA off' }).click();
   await expect(page.locator('.admin-auth')).toContainText('Off');
   await page.goto('/register');

@@ -27,6 +27,7 @@
 <p class="alert" role="status">The last re-request was refused: {{.}} Nothing was built or sent.</p>{{end}}{{if .ReRequest}}
 <form class="stack" method="post" action="/admin/escrow-xmr-rerequest">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/admin/escrow-xmr-rerequest"}}">
 <input type="hidden" name="order_id" value="{{$.Order.ID}}">
 <input type="hidden" name="settlement_id" value="{{.ID}}">
 <p class="help" id="xmr-rerequest-help-{{.ID}}">Re-request this settlement: on its next pass the market builds it again only if its stored transaction is in neither the daemon's pool nor the chain and none of its coins is spent. The new transaction spends exactly the same coins to the same destinations and amounts; only the network fee, and with it the first output, may differ. At most one of the two can ever be mined.</p>
@@ -35,6 +36,7 @@
 </form>{{end}}{{if .RetryBuild}}
 <form class="stack" method="post" action="/admin/escrow-xmr-retry-build">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/admin/escrow-xmr-retry-build"}}">
 <input type="hidden" name="order_id" value="{{$.Order.ID}}">
 <input type="hidden" name="settlement_id" value="{{.ID}}">
 <p class="help" id="xmr-retry-build-help-{{.ID}}">Build this settlement again: the market tries on its next pass. If building it makes the escrow wallet stop responding twice more, it is set aside again. Check its destination addresses first; an address the wallet cannot use may be what stops it.</p>

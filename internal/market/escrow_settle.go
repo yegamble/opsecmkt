@@ -43,8 +43,10 @@ import (
 //     transaction once a party has signed (migration 075).
 
 func init() {
-	registerAction("/escrow/claim", actionSpec{OwnTx: true, OneAtATime: true, Off: escrowOff, Run: escrowClaimAction})
-	registerAction("/escrow/sign", actionSpec{Off: escrowOff, Run: escrowSignAction})
+	registerAction("/escrow/claim", actionSpec{Roles: escrowPartyRoles, OwnTx: true, OneAtATime: true, Off: escrowOff,
+		ConfirmedFormNonce: true, ReceiptAuthorize: btcClaimReceiptAuthorize, Run: escrowClaimAction})
+	registerAction("/escrow/sign", actionSpec{FormNonce: true, Off: escrowOff, Run: escrowSignAction})
+	registerAction("/escrow/hardware-sign", actionSpec{FormNonce: true, Off: escrowOff, Run: escrowSignAction})
 	registerRaw("/escrow-psbt", escrowPSBTDownload)
 }
 
@@ -328,10 +330,17 @@ func (a *App) escrowSettleTerminal(ctx context.Context, tx *sql.Tx, o *Order) er
 	var outcome string
 	switch o.State {
 	case stateCancelled:
-	case stateResolved:
+	case stateResolved, stateCompleted:
 		var err error
 		if outcome, err = escrowDisputeOutcome(ctx, tx, o.ID); err != nil {
 			return err
+		}
+		// Ordinary completed escrow orders already have their release path.
+		// A buyer's conceded dispute reaches completed with an explicit
+		// release outcome and still needs the amount check and settlement
+		// note used by a staff decision for the vendor.
+		if o.State == stateCompleted && outcome != "release" {
+			return nil
 		}
 	default:
 		return nil
@@ -339,11 +348,13 @@ func (a *App) escrowSettleTerminal(ctx context.Context, tx *sql.Tx, o *Order) er
 	var sum int64
 	var n int
 	// A deposit to a shape-(b) escrow's sibling address is never the order's (A-456a): the stray refund returns it.
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(sum(amount),0),count(*) FROM payments WHERE order_id=$1 AND confirmations>=0 AND NOT locked AND NOT after_close
-		AND NOT (escrow_left_out AND EXISTS (SELECT 1 FROM escrow_siblings s WHERE s.address=payments.address))`, o.ID).Scan(&sum, &n); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(sum(amount),0),count(*) `+escrowCountedFrom, o.ID).Scan(&sum, &n); err != nil {
 		return err
 	}
-	if n > 0 {
+	// Existing staff resolutions with no deposits keep their original behavior.
+	// A concession explicitly confirms even zero, so a deposit seen after its
+	// form was shown must refuse the transition before closing the dispute.
+	if concession, ok := ctx.Value(concessionTransitionKey{}).(concessionTransition); n > 0 || ok && concession.orderID == o.ID {
 		if err := checkPayoutSeen(ctx, o, sum); err != nil {
 			return err
 		}
@@ -367,17 +378,17 @@ func (a *App) escrowSettleTerminal(ctx context.Context, tx *sql.Tx, o *Order) er
 		if n == 0 {
 			return nil
 		}
-		note := "Dispute decided for the vendor: the vendor claims the escrowed " + amount(sum, 8) + " BTC from the order page with a fresh address. The market builds that settlement (less the market fee and the network fee; any amount paid above the price goes back to the buyer), the buyer or the vendor signs it, and the market co-signs it. Nothing is sent yet."
+		note := "Dispute decided for the vendor: the vendor claims the escrowed " + amount(sum, 8) + " BTC from the order page with a fresh address. The market builds that settlement (less the market fee and the network fee; " + escrowExcessRule("BTC") + "), the buyer or the vendor signs it, and the market co-signs it. Nothing is sent yet."
 		switch {
 		case o.Currency == "XMR" && liveKind == "release":
 			// P3-R7, A-405: the release requested at shipment is the decision's settlement; the Monero escrow watcher alone
 			// builds and sends it (escrow_xmr_settle.go), now that the order's outcome allows it.
-			note = "Dispute decided for the vendor: the release to the vendor requested when the order was shipped pays the claim address the vendor gave then (less the market fee and the network fee; any amount paid above the price goes back to the buyer's refund address). The market builds it from this order's Monero escrow account and sends it. The release deadline no longer applies. Nothing is sent yet."
+			note = "Dispute decided for the vendor: the release to the vendor requested when the order was shipped pays the claim address the vendor gave then (less the market fee and the network fee; " + escrowExcessRule("XMR") + "). The market builds it from this order's Monero escrow account and sends it. The release deadline no longer applies. Nothing is sent yet."
 		case o.Currency == "XMR":
-			note = "Dispute decided for the vendor: the vendor claims the escrowed " + amount(sum, 12) + " XMR from the order page with a fresh Monero address. The market then builds that settlement from this order's escrow account (less the market fee and the network fee; any amount paid above the price goes back to the buyer's refund address) and sends it. Nothing is sent yet."
+			note = "Dispute decided for the vendor: the vendor claims the escrowed " + amount(sum, 12) + " XMR from the order page with a fresh Monero address. The market then builds that settlement from this order's escrow account (less the market fee and the network fee; " + escrowExcessRule("XMR") + ") and sends it. Nothing is sent yet."
 		case liveKind == "release":
 			// P2-R4: the release built at shipment is the decision's settlement; no new claim is asked for.
-			note = "Dispute decided for the vendor: the release to the vendor built when the order was shipped pays the claim address the vendor gave then (less the market fee and the network fee; any amount paid above the price goes back to the buyer). A signature already given on it counts; the buyer or the vendor signs it if neither has, and the market co-signs it. The release deadline no longer applies."
+			note = "Dispute decided for the vendor: the release to the vendor built when the order was shipped pays the claim address the vendor gave then (less the market fee and the network fee; " + escrowExcessRule("BTC") + "). A signature already given on it counts; the buyer or the vendor signs it if neither has, and the market co-signs it. The release deadline no longer applies."
 		}
 		_, err := tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", o.ID, o.State, note)
 		return err
@@ -427,15 +438,15 @@ func (a *App) escrowSettleTerminal(ctx context.Context, tx *sql.Tx, o *Order) er
 // fresh address, taken now and never at signing), confirmed with their password (and authenticator code when
 // enrolled). The escrow watcher builds the transaction (buildSettlements).
 func escrowClaimAction(c *actionCtx) (actionResult, error) {
-	e := c.A.escrow.Load()
-	if e == nil {
-		return actionResult{}, errEscrowDown
-	}
-	dest, ok := escrowAddressForm(e.network, c.Form.Get("address"))
-	if !ok {
-		return actionResult{}, errClaimAddress(c.A.escrowNetwork())
-	}
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
+		e := c.A.escrow.Load()
+		if e == nil {
+			return actionResult{}, errEscrowDown
+		}
+		dest, ok := escrowAddressForm(e.network, c.Form.Get("address"))
+		if !ok {
+			return actionResult{}, errClaimAddress(c.A.escrowNetwork())
+		}
 		ctx := c.Ctx()
 		o, err := partyOrder(c, c.Form.Get("order_id"))
 		if err != nil {
@@ -932,7 +943,7 @@ func (a *App) storeSettlement(ctx context.Context, id int64, orderID, kind, psbt
 		}
 	}
 	for _, uid := range []string{buyer, vendor} {
-		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), uid, body); err != nil {
+		if _, err = insertNotification(ctx, tx, uid, body, orderID); err != nil {
 			return err
 		}
 	}
@@ -987,7 +998,7 @@ func leaveOut(ctx context.Context, tx *sql.Tx, orderID, kind, buyer, verb string
 	if _, err := tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) SELECT id,state,state,NULL,$2 FROM orders WHERE id=$1", orderID, note); err != nil {
 		return err
 	}
-	_, err := tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), buyer, "Order "+shortID(orderID)+": "+note)
+	_, err := insertNotification(ctx, tx, buyer, "Order "+shortID(orderID)+": "+note, orderID)
 	return err
 }
 
@@ -1114,7 +1125,7 @@ func (a *App) failSettlement(ctx context.Context, id int64, orderID, class strin
 		return err
 	}
 	for _, uid := range []string{buyer, vendor} {
-		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), uid, "Order "+shortID(orderID)+": its escrow settlement could not be built. "+text); err != nil {
+		if _, err = insertNotification(ctx, tx, uid, "Order "+shortID(orderID)+": its escrow settlement could not be built. "+text, orderID); err != nil {
 			return err
 		}
 	}
@@ -1173,7 +1184,17 @@ func settlementCopy(stored string, k escrowKeyRow) (string, error) {
 // It returns the party's signature on each input; nothing else of the paste is kept, which is why a derivation entry
 // (under the market's key or any other) is not refused (P4-R13, relaxed by A-456b for per-order wallets).
 func checkSettlementPaste(pasted, txid string, party, market escrowKeyRow) ([]psbtSig, error) {
-	p, err := decodePSBT(pasted)
+	return checkSettlementPasteLimit(pasted, txid, party, market, false)
+}
+
+func checkSettlementPasteLimit(pasted, txid string, party, market escrowKeyRow, hardware bool) ([]psbtSig, error) {
+	var p *psbtPacket
+	var err error
+	if hardware {
+		p, err = decodeHardwarePSBT(pasted)
+	} else {
+		p, err = decodePSBT(pasted)
+	}
 	if err != nil {
 		var pe *psbtError
 		if errors.As(err, &pe) {
@@ -1278,7 +1299,7 @@ func escrowSignAction(c *actionCtx) (actionResult, error) {
 	if err != nil || sp.TxID() != txid {
 		return actionResult{}, errors.New("escrow: the stored settlement PSBT does not match its txid")
 	}
-	sigs, err := checkSettlementPaste(pasted, txid, keys[party], keys["market"])
+	sigs, err := checkSettlementPasteLimit(pasted, txid, keys[party], keys["market"], c.R.URL.Path == "/escrow/hardware-sign")
 	if err != nil {
 		return actionResult{}, err
 	}
@@ -1323,8 +1344,7 @@ func escrowSignAction(c *actionCtx) (actionResult, error) {
 	if party == roleBuyer {
 		counterparty = o.VendorID
 	}
-	if _, err = c.Tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), counterparty,
-		"Order "+shortID(o.ID)+": "+what+notSent); err != nil {
+	if _, err = insertNotification(ctx, c.Tx, counterparty, "Order "+shortID(o.ID)+": "+what+notSent, o.ID); err != nil {
 		return actionResult{}, err
 	}
 	return res, nil
@@ -1352,6 +1372,11 @@ func escrowPSBTDownload(a *App, w http.ResponseWriter, r *http.Request, u *User)
 		reader = roleBuyer
 	}
 	bump := r.URL.Query().Get("b")
+	hardware := r.URL.Query().Get("hardware")
+	if hardware != "" && hardware != "1" {
+		http.NotFound(w, r)
+		return
+	}
 	if err == nil && bump == "" {
 		// A copy is served while the settlement waits for a signature, and to the party who has not signed a
 		// party-signed one (A-340: it may sign too).
@@ -1378,7 +1403,22 @@ func escrowPSBTDownload(a *App, w http.ResponseWriter, r *http.Request, u *User)
 	if err == nil {
 		var keys map[string]escrowKeyRow
 		if keys, err = a.settlementKeys(ctx, a.db, o.ID, sid); err == nil {
-			copyText, err = settlementCopy(stored, keys[reader])
+			if hardware == "1" {
+				e := a.escrow.Load()
+				if e == nil {
+					err = errHardwareFunding
+				} else {
+					copyText, err = hardwarePSBTCopy(ctx, stored, keys[reader], func(ctx context.Context, txid string) (string, error) {
+						tx, e := e.walletTx(ctx, txid)
+						if e != nil || !tx.Found {
+							return "", errHardwareFunding
+						}
+						return tx.Hex, nil
+					})
+				}
+			} else {
+				copyText, err = settlementCopy(stored, keys[reader])
+			}
 		}
 	}
 	if errors.Is(err, errPerOrderXpub) {
@@ -1388,7 +1428,18 @@ func escrowPSBTDownload(a *App, w http.ResponseWriter, r *http.Request, u *User)
 		return
 	}
 	if err != nil {
-		serverError(w, r, 503, "Service unavailable", errorCause(err))
+		writeEscrowDownloadFailure(w, r, err)
+		return
+	}
+	if hardware == "1" {
+		p, err := decodeHardwarePSBT(copyText)
+		if err != nil {
+			serverError(w, r, 503, "Service unavailable", errorCause(err))
+			return
+		}
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Disposition", `attachment; filename="escrow-hardware-`+file+shortID(o.ID)+`-`+reader+`.psbt"`)
+		w.Write(p.Raw)
 		return
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")

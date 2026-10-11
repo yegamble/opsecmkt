@@ -77,9 +77,10 @@ async function draft(buyer: Page, title: string) {
   await Promise.all([buyer.waitForEvent('load'), buyer.keyboard.press('Enter')]);
   await tabTo(buyer, buyer.getByRole('link', { name: 'Review order draft' }));
   await Promise.all([buyer.waitForEvent('load'), buyer.keyboard.press('Enter')]);
-  await tabTo(buyer, buyer.getByLabel('Reference currency'));
-  await buyer.keyboard.press('ArrowDown');
-  await expect(buyer.getByLabel('Reference currency')).toHaveValue('XMR');
+  await tabTo(buyer, buyer.getByLabel('Pay with'));
+  // Native-select typeahead chooses the Monero reference price without relying on platform popup key behavior.
+  await buyer.keyboard.type('0.5');
+  await expect(buyer.getByLabel('Pay with')).toHaveValue('XMR');
   await pressSubmit(buyer, buyer.getByRole('button', { name: 'Create unfunded draft' }));
   await buyer.waitForURL(/\/order\?id=/);
 }
@@ -151,6 +152,7 @@ test('Monero escrow: checkout with the custody copy, funding at 9 and 10 confirm
   await typeInto(admin, admin.getByLabel('Password', { exact: true }), password);
   await pressSubmit(admin, admin.getByRole('button', { name: 'Initialize marketplace' }));
   await expect(admin).toHaveURL(/\/admin\?welcome=1$/);
+  await typeInto(admin, admin.locator('.admin-auth').getByLabel('Current password'), password);
   await pressSubmit(admin, admin.locator('.admin-auth').getByRole('button', { name: 'Turn CAPTCHA off' }));
   const buyer = await context(browser, baseURL);
   const vendor = await context(browser, baseURL);
@@ -162,6 +164,7 @@ test('Monero escrow: checkout with the custody copy, funding at 9 and 10 confirm
   await tabTo(admin, role.getByLabel('Role'));
   await role.getByLabel('Role').press('v');
   await expect(role.getByLabel('Role')).toHaveValue('vendor');
+  await typeInto(admin, role.getByLabel('Current password'), password);
   await pressSubmit(admin, role.getByRole('button', { name: 'Update role' }));
   await expect(admin.getByRole('status').filter({ hasText: 'Account role saved.' })).toBeVisible();
   await vendor.goto('/account');
@@ -181,9 +184,9 @@ test('Monero escrow: checkout with the custody copy, funding at 9 and 10 confirm
       await expect(vendor.getByLabel('Fulfillment type')).toHaveValue('digital');
     }
     await tabTo(vendor, vendor.getByLabel('Stock', { exact: true }));
-    await vendor.keyboard.press('Control+A');
+    await vendor.keyboard.press('ControlOrMeta+A');
     await vendor.keyboard.type('40');
-    await typeInto(vendor, vendor.getByLabel('Bitcoin reference price'), '0.001');
+    await typeInto(vendor, vendor.getByLabel(/Price \(BTC, (?:test network|main network|not configured|not yet known)\)/), '0.001');
     await typeInto(vendor, vendor.getByLabel('Monero reference price'), '0.5');
     if (kind === 'digital') await typeInto(vendor, vendor.getByLabel('Automatic delivery content'), 'LICENCE-XMR-ESCROW-0001');
     await pressSubmit(vendor, vendor.getByRole('button', { name: 'Publish listing' }));
@@ -260,7 +263,7 @@ test('Monero escrow: checkout with the custody copy, funding at 9 and 10 confirm
   await expect(badge(buyer)).toHaveText('Awaiting payment');
   await shot(buyer, info, '08-underpaid');
   const cancel = buyer.locator('form', { has: buyer.getByRole('button', { name: 'Cancel order' }) });
-  await expect(cancel).toContainText('Cancelling refunds the 0.2 XMR in this escrow, less the network fee, to the buyer\'s refund address given at checkout.');
+  await expect(cancel).toContainText('Cancelling refunds the 0.2 fakechain XMR in this escrow, less the network fee, to the buyer\'s refund address given at checkout.');
   await check(buyer, cancel.locator('input[name="payout_confirmed"]'));
   expect(await pressSubmit(buyer, cancel.getByRole('button', { name: 'Cancel order' }))).toBe(303);
   await expect(badge(buyer)).toHaveText('Cancelled');
@@ -452,7 +455,15 @@ test('Monero escrow switched off: the order page says so and offers no Monero es
     await expect(page.locator('form[action^="/escrow-xmr/"]')).toHaveCount(0);
     await shot(page, info, `o01-off-${name}`);
     if (name === 'buyer') {
-      await draft(page, digitalTitle);
+      // Fresh escrow-only intake refuses a checkout while its escrow is off.
+      const listing = sql(`SELECT id FROM products WHERE title='${digitalTitle}'`);
+      await page.goto(`/product?id=${listing}`);
+      await expect(page.getByRole('link', { name: 'Review order draft' })).toHaveCount(0);
+      await expect(page.locator('main')).toContainText('Not available for purchase in XMR.');
+      // A draft saved on the enabled server remains readable after escrow is switched off.
+      await draft(buyer, digitalTitle);
+      const saved = new URL(buyer.url());
+      await page.goto(saved.pathname + saved.search);
       await expect(page.locator('form[action="/orders/escrow-xmr"]')).toHaveCount(0);
       await expect(page.getByRole('heading', { name: 'Or pay into a Monero escrow (local test chain only)' })).toHaveCount(0);
       await shot(page, info, 'o02-off-draft');
@@ -472,7 +483,7 @@ async function nextWallet(): Promise<string> {
 }
 // Moves retained wallet name's last order close (and so its destruction date) 91 days back.
 function past90Days(name: string) {
-  sql(`BEGIN; ALTER TABLE xmr_escrow_wallets DISABLE TRIGGER xmr_escrow_wallets_kept;
+  sql(`BEGIN; SET LOCAL TIME ZONE 'UTC'; ALTER TABLE xmr_escrow_wallets DISABLE TRIGGER xmr_escrow_wallets_kept;
     UPDATE xmr_escrow_wallets SET last_closed_at=last_closed_at-interval '91 days',destroy_after=destroy_after-interval '91 days' WHERE name='${name}';
     ALTER TABLE xmr_escrow_wallets ENABLE TRIGGER xmr_escrow_wallets_kept; COMMIT;`);
 }

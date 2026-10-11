@@ -64,10 +64,11 @@ func TestResetAdminFactorsCLI(t *testing.T) {
 		}
 		return n
 	}
+	startupAudits := count("SELECT count(*) FROM audit_events")
 	untouched := func(when string) {
 		t.Helper()
 		if count("SELECT count(*) FROM users WHERE id='a1' AND totp_enabled AND pgp_2fa") != 1 || count("SELECT count(*) FROM recovery_codes") != 2 ||
-			count("SELECT count(*) FROM sessions") != 2 || count("SELECT count(*) FROM pending_logins") != 1 || count("SELECT count(*) FROM audit_events") != 0 {
+			count("SELECT count(*) FROM sessions") != 2 || count("SELECT count(*) FROM pending_logins") != 1 || count("SELECT count(*) FROM audit_events") != startupAudits {
 			t.Fatalf("%s: a refused reset changed something", when)
 		}
 	}
@@ -110,7 +111,7 @@ func TestResetAdminFactorsCLI(t *testing.T) {
 	}
 	if count("SELECT count(*) FROM users WHERE id='a1' AND NOT totp_enabled AND totp_secret='' AND NOT pgp_2fa") != 1 ||
 		count("SELECT count(*) FROM recovery_codes WHERE user_id='a1'") != 0 || count("SELECT count(*) FROM sessions WHERE user_id='a1'") != 0 ||
-		count("SELECT count(*) FROM pending_logins WHERE user_id='a1'") != 0 ||
+		count("SELECT count(*) FROM pending_logins WHERE user_id='a1'") != 0 || count("SELECT count(*) FROM audit_events") != startupAudits+1 ||
 		count("SELECT count(*) FROM audit_events WHERE user_id='a1' AND action='Second factors reset by host command: TOTP and recovery codes and PGP sign-in turned off; ended 1 session(s) and any pending sign-ins'") != 1 {
 		t.Fatal("reset not applied or not audited")
 	}

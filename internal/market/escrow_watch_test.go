@@ -226,35 +226,6 @@ func TestEscrowWatcherRestartMidFunding(t *testing.T) {
 
 // No payouts row for an escrow order, and the send claim never claims one (A-244's carry-over, ES-1): a pending
 // payout that existed before its order became an escrow order (as by hand) is never sent.
-func TestEscrowSendClaimExcludesEscrowOrders(t *testing.T) {
-	x := newEscrowEnv(t)
-	fake := newFakeProvider("BTC", 3)
-	x.A.payments["BTC"] = fake
-	addr, _ := fake.NewAddress(context.Background(), x.order)
-	x.DB.Exec("INSERT INTO payment_addresses(order_id,currency,address,provider) VALUES($1,'BTC',$2,'fake')", x.order, addr)
-	if _, err := x.DB.Exec("INSERT INTO payouts(order_id,kind,user_id,currency,amount,address,state) VALUES($1,'release',$2,'BTC',100000,'fake-testnet-vendor','pending')", x.order, x.vendor); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := x.DB.Exec("INSERT INTO escrows(order_id,address,market_index,refund_address,fee_bps,fee_destination) VALUES($1,'bcrt1qhand',nextval('escrow_market_index'),'bcrt1qhandrefund',0,'')", x.order); err != nil {
-		t.Fatal(err)
-	}
-	x.DB.Exec("UPDATE orders SET state='completed' WHERE id=$1", x.order)
-	if err := x.A.sendPayouts(context.Background(), fake, []string{x.order}); err != nil {
-		t.Fatal(err)
-	}
-	if len(fake.Sends()) != 0 || agInt(x.testEnv, "SELECT count(*) FROM payouts WHERE order_id=$1 AND state='pending'", x.order) != 1 {
-		t.Fatalf("escrow order payout claimed: %d sends", len(fake.Sends()))
-	}
-	// A pooled order's payout in the same pass is still sent.
-	pooled := x.testEnv.order(x.buyer, x.testEnv.product(x.vendor, "physical"), "BTC", stateCompleted)
-	x.DB.Exec("INSERT INTO payouts(order_id,kind,user_id,currency,amount,address,state) VALUES($1,'release',$2,'BTC',100000,'fake-testnet-vendor','pending')", pooled, x.vendor)
-	if err := x.A.sendPayouts(context.Background(), fake, []string{x.order, pooled}); err != nil {
-		t.Fatal(err)
-	}
-	if len(fake.Sends()) != 1 {
-		t.Fatalf("%d sends, want the pooled one", len(fake.Sends()))
-	}
-}
 
 // A-315 (QA29-2): an escrow order always renders the escrow panel. With ESCROW_BTC switched off, a funded escrow
 // order shows its escrow address and the unavailable copy, never the pooled "no funds are held for it"; the moves
@@ -264,8 +235,8 @@ func TestEscrowOrderPanelWithEscrowOff(t *testing.T) {
 	addr := x.mustCheckout(x.order, "bcrt1qbuyerrefund00000000000000000000001")
 	x.core.deposit(addr, "part", 0, 40000, 1)
 	x.poll()
-	if body := x.page("/order?id="+x.order, x.buyerSess); !strings.Contains(body, "If nothing has been received by") {
-		t.Fatal("no payment window on the open escrow order with escrow on")
+	if body := x.page("/order?id="+x.order, x.buyerSess); !strings.Contains(body, "later top-ups do not extend this fixed wait") {
+		t.Fatal("no fixed confirmation wait on the open escrow order with escrow on")
 	}
 	done := x.draft()
 	addr2 := x.mustCheckout(done, "bcrt1qbuyerrefund00000000000000000000002")
@@ -311,9 +282,10 @@ func TestEscrowOrderPanelWithEscrowOff(t *testing.T) {
 		strings.Contains(body, "Reload in a minute") {
 		t.Fatalf("refund with escrow off:\n%s", body)
 	}
-	// A pooled draft is unchanged: no escrow panel, no checkout offer.
-	if body := x.page("/order?id="+x.draft(), x.buyerSess); strings.Contains(body, "escrow") {
-		t.Fatal("a pooled draft mentions escrow with escrow off")
+	// A non-escrow draft has no per-order escrow panel, even while the market's site-wide escrow notice remains.
+	historicalDraft := x.testEnv.order(x.buyer, x.product, "BTC", stateDraft)
+	if body := x.page("/order?id="+historicalDraft, x.buyerSess); strings.Contains(body, `<h2>Bitcoin escrow`) || strings.Contains(body, `<h2>Monero escrow`) {
+		t.Fatal("a non-escrow draft shows a per-order escrow panel while escrow is off")
 	}
 }
 
@@ -340,7 +312,7 @@ func TestEscrowUnconfirmedDepositAtWindowEnd(t *testing.T) {
 
 // A-319 (QA29-6): a funded escrow order on a listing taken down is not delivered automatically, and its history note
 // says what is possible for an escrow order: delivery by hand, or a cancel that requests the refund of the escrow
-// (P1-c1). A pooled order keeps its note.
+// (P1-c1). A historical pooled order stays read-only.
 func TestEscrowTakedownNote(t *testing.T) {
 	x := newEscrowEnv(t)
 	addr := x.mustCheckout(x.order, "bcrt1qbuyerrefund00000000000000000000001")
@@ -361,22 +333,21 @@ func TestEscrowTakedownNote(t *testing.T) {
 		t.Fatalf("vendor cancel: %d", w.Code)
 	}
 	x.noPayouts(x.order)
-	// The pooled note is unchanged.
-	pooled := x.testEnv.order(x.buyer, x.product, "BTC", stateAwaitingPayment)
-	tx, _ := x.DB.Begin()
-	defer tx.Rollback()
-	if _, err := x.A.transition(context.Background(), tx, pooled, stateAwaitingPayment, statePaid, nil, "test payment"); err != nil {
+	// A historical pooled order's cancellation action is refused without changing its history.
+	historical := x.testEnv.order(x.buyer, x.product, "BTC", stateAwaitingPayment)
+	tx, err := x.DB.Begin()
+	if err != nil {
 		t.Fatal(err)
 	}
-	var note string
-	tx.QueryRow("SELECT note FROM order_events WHERE order_id=$1 ORDER BY id DESC LIMIT 1", pooled).Scan(&note)
-	if note != "Not delivered automatically: an administrator took this listing down. The vendor can deliver by hand or cancel and refund." {
-		t.Fatalf("pooled note %q", note)
+	defer tx.Rollback()
+	if _, err := x.A.transition(context.Background(), tx, historical, stateAwaitingPayment, statePaid, nil, "test payment"); err == nil {
+		t.Fatal("historical non-escrow order reached paid")
 	}
+
 }
 
 // A-316 (QA29-3): escrow that could not start (its node down at startup) is retried by the escrow watcher on its
-// interval, as pooled providers are: once the node answers, escrow is enabled without a restart, logged once, and a
+// interval: once the node answers, escrow is enabled without a restart, logged once, and a
 // deposit is credited. While the node stays down the disabled line is not repeated on every pass.
 func TestEscrowRetriedAfterStartupFailure(t *testing.T) {
 	x := newEscrowEnv(t)

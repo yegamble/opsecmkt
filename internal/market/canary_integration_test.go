@@ -37,17 +37,17 @@ func TestCanaryIntegration(t *testing.T) {
 		e.check(e.do("POST", "/admin/canary", s, url.Values{"canary": {signed}}), 403)
 	}
 	// Publishing before a key exists is refused.
-	w := e.do("POST", "/admin/canary", admin, url.Values{"canary": {signed}})
+	w := e.do("POST", "/admin/canary", admin, url.Values{"password": {testPassword}, "canary": {signed}})
 	if w.Code != 409 || !strings.Contains(w.Body.String(), "operator PGP key") {
 		t.Fatalf("canary without key: %d %s", w.Code, w.Body)
 	}
 	// Garbage and private keys are rejected with the reason.
 	for _, bad := range []string{"", "not a key", "-----BEGIN PGP PRIVATE KEY BLOCK-----\nx\n-----END PGP PRIVATE KEY BLOCK-----"} {
-		if w := e.do("POST", "/admin/operator-key", admin, url.Values{"operator_key": {bad}}); w.Code != 400 {
+		if w := e.do("POST", "/admin/operator-key", admin, url.Values{"password": {testPassword}, "operator_key": {bad}}); w.Code != 400 {
 			t.Fatalf("key %q: %d", bad, w.Code)
 		}
 	}
-	e.check(e.do("POST", "/admin/operator-key", admin, url.Values{"operator_key": {operatorPub}}), 303)
+	e.check(e.do("POST", "/admin/operator-key", admin, url.Values{"password": {testPassword}, "operator_key": {operatorPub}}), 303)
 	_, fp, _ := parsePublicKey(operatorPub)
 	var storedFP string
 	e.DB.QueryRow("SELECT value FROM settings WHERE key='operator_pgp_fingerprint'").Scan(&storedFP)
@@ -65,7 +65,7 @@ func TestCanaryIntegration(t *testing.T) {
 		"No warrants. Trust me.":                                      "clearsigned",
 		signed + "\nUnsigned postscript":                              "after the signature",
 	} {
-		w := e.do("POST", "/admin/canary", admin, url.Values{"canary": {text}})
+		w := e.do("POST", "/admin/canary", admin, url.Values{"password": {testPassword}, "canary": {text}})
 		if w.Code != 400 || !strings.Contains(w.Body.String(), reason) {
 			t.Fatalf("invalid canary accepted or wrong reason: %d %s", w.Code, w.Body)
 		}
@@ -78,7 +78,7 @@ func TestCanaryIntegration(t *testing.T) {
 
 	// A valid statement (browser CRLF line endings) is stored verbatim and shown verified with dates.
 	crlf := strings.ReplaceAll(signed, "\n", "\r\n")
-	w = e.do("POST", "/admin/canary", admin, url.Values{"canary": {crlf}})
+	w = e.do("POST", "/admin/canary", admin, url.Values{"password": {testPassword}, "canary": {crlf}})
 	if w.Code != 303 || w.Header().Get("Location") != "/canary" {
 		t.Fatalf("valid canary: %d %s", w.Code, w.Body)
 	}
@@ -87,7 +87,7 @@ func TestCanaryIntegration(t *testing.T) {
 	if text != strings.TrimSpace(crlf) {
 		t.Fatal("statement not stored verbatim")
 	}
-	if auditCount("Published warrant canary signed 2026-01-02 04:04 UTC by operator key "+fp) != 1 {
+	if auditCount("Published warrant canary signed 2026-01-02 04:04 UTC by operator key "+fp+" (confirmed with password)") != 1 {
 		t.Fatal("canary publication not audited")
 	}
 	body := canary()
@@ -104,13 +104,13 @@ func TestCanaryIntegration(t *testing.T) {
 	}
 
 	// Rotating the operator key re-verifies on render: the old statement now shows INVALID with the reason.
-	e.check(e.do("POST", "/admin/operator-key", admin, url.Values{"operator_key": {otherPub}}), 303)
+	e.check(e.do("POST", "/admin/operator-key", admin, url.Values{"password": {testPassword}, "operator_key": {otherPub}}), 303)
 	body = canary()
 	if !strings.Contains(body, "INVALID") || !strings.Contains(body, "signature does not verify with the configured key") || strings.Contains(body, "Signature verified") {
 		t.Fatal("stale canary after key rotation must show INVALID")
 	}
 	// Tampering in the database is detected on the next render too.
-	e.check(e.do("POST", "/admin/operator-key", admin, url.Values{"operator_key": {operatorPub}}), 303)
+	e.check(e.do("POST", "/admin/operator-key", admin, url.Values{"password": {testPassword}, "operator_key": {operatorPub}}), 303)
 	if !strings.Contains(canary(), "Signature verified") {
 		t.Fatal("restored key should verify again")
 	}
@@ -119,5 +119,70 @@ func TestCanaryIntegration(t *testing.T) {
 	}
 	if body := canary(); !strings.Contains(body, "INVALID") || strings.Contains(body, "Signature verified") {
 		t.Fatal("database tampering not detected")
+	}
+}
+
+// A-201: refuse photo IDs and other unpublishable packets at the operator-key endpoint,
+// without changing settings/audits. Legacy rows still serve a usable, stripped public key.
+func TestOperatorKeyPacketPrivacy(t *testing.T) {
+	e := newTestApp(t)
+	adminID, admin := e.user("operator_privacy_admin", "admin")
+	key, photo, plain := testPhotoIDKey(t, "operator_packet_privacy")
+	_, fp, canonical, err := parseCanonicalPublicKey(plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.check(e.do("POST", "/admin/operator-key", admin, url.Values{"password": {testPassword}, "operator_key": {plain}}), 303)
+	type row struct {
+		key, fp string
+		audits  int
+	}
+	state := func() (r row) {
+		t.Helper()
+		if err := e.DB.QueryRow(`SELECT
+   (SELECT value FROM settings WHERE key='operator_pgp_key'),
+   (SELECT value FROM settings WHERE key='operator_pgp_fingerprint'),
+   (SELECT count(*) FROM audit_events WHERE user_id=$1)`, adminID).Scan(&r.key, &r.fp, &r.audits); err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	before := state()
+	if before.key != canonical || before.fp != fp {
+		t.Fatalf("operator key not canonical: %+v", before)
+	}
+	variants := testPhotoIDVariants(t, key)
+	variants["original photo"] = photoIDVariant{armored: photo}
+	signed := canarySign(t, key, "Operator statement.", time.Now())
+	for name, variant := range variants {
+		t.Run(name, func(t *testing.T) {
+			w := e.do("POST", "/admin/operator-key", admin, url.Values{"password": {testPassword}, "operator_key": {variant.armored}})
+			if w.Code != 400 || !strings.Contains(w.Body.String(), "Operator key rejected:") {
+				t.Fatalf("photo/private operator key accepted: %d", w.Code)
+			}
+			if after := state(); after != before {
+				t.Fatalf("rejected operator key changed settings/audit: %+v -> %+v", before, after)
+			}
+		})
+	}
+	// Simulate a pre-refusal database row. Public and administrator views show only allowed packets.
+	e.mustExec("UPDATE settings SET value=$1 WHERE key='operator_pgp_key'", photo)
+	e.check(e.do("POST", "/admin/canary", admin, url.Values{"password": {testPassword}, "canary": {signed}}), 303)
+	for _, path := range []string{"/canary", "/admin"} {
+		session := ""
+		if path == "/admin" {
+			session = admin
+		}
+		page := e.body("GET", path, session, nil, 200)
+		keys := shownKeys(t, page)
+		if len(keys) == 0 {
+			t.Fatalf("%s omitted the usable operator public key", path)
+		}
+		for _, packets := range keys {
+			if packets != armorPackets(t, canonical) {
+				t.Fatalf("%s published a legacy operator photo ID", path)
+			}
+		}
+		mustContain(t, page, "Signature verified", groupFingerprint(fp))
 	}
 }

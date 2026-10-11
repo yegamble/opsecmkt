@@ -28,7 +28,7 @@ func TestEscrowAdminMarketFee(t *testing.T) {
 	before := x.draft()
 	x.mustCheckout(before, regtestAddr("fee-refund-0"))
 	page := x.page("/admin", admin)
-	for _, want := range []string{`action="/admin/escrow-fee"`, "0 basis points", "watch-only descriptor", "Bitcoin escrow orders (regtest only) never pay into that wallet"} {
+	for _, want := range []string{`action="/admin/escrow-fee"`, "0 basis points", "watch-only descriptor", "One fixed destination address is allowed only because escrow runs on test networks only"} {
 		if !strings.Contains(page, want) {
 			t.Fatalf("admin page lacks %q:\n%s", want, page)
 		}
@@ -275,7 +275,13 @@ func TestEscrowArbiterWalletDedicated(t *testing.T) {
 
 	// An answer beyond rpcMaxBody (20,000 entries of about 1 KB) is read as it arrives.
 	core.arbiterBirth, core.arbiterTxs, core.arbiterPad = 1700000900, slices.Repeat([]string{"receive"}, 20000), 1000
-	if a, _, err = startApp(t, dsn); err != nil || a.escrow.Load() == nil {
+	// Constructing and streaming 20 MB of JSON can exceed the normal 15-second startup budget under -race.
+	// Give this read enough time; the bounded-startup/continued-background behavior has separate coverage.
+	savedStartup := paymentStartupTimeout
+	paymentStartupTimeout = 90 * time.Second
+	a, _, err = startApp(t, dsn)
+	paymentStartupTimeout = savedStartup
+	if err != nil || a.escrow.Load() == nil {
 		t.Fatalf("answer beyond rpcMaxBody: %v\n%s", err, logs.String())
 	}
 	a.Close()

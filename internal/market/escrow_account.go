@@ -41,8 +41,9 @@ func init() {
 	registerLoader("account", escrowAccountLoader)
 	registerLoader("product", vendorEscrowKeyLoader)
 	registerLoader("vendor", vendorEscrowKeyLoader)
-	registerAction("/escrow-key", actionSpec{OwnTx: true, Off: escrowOff, Run: escrowKeyAction})
-	registerAction("/escrow-key/practice", actionSpec{OwnTx: true, OneAtATime: true, Off: escrowOff, Run: escrowPracticeAction})
+	keyRoles := []string{"buyer", "vendor", "moderator", "admin"}
+	registerAction("/escrow-key", actionSpec{Roles: keyRoles, OwnTx: true, OwnFormNonce: true, Off: escrowOff, Run: escrowKeyAction})
+	registerAction("/escrow-key/practice", actionSpec{Roles: keyRoles, OwnTx: true, OwnFormNonce: true, OneAtATime: true, Off: escrowOff, Run: escrowPracticeAction})
 }
 
 // escrowOff is ESCROW_BTC off: the escrow page and actions do not exist.
@@ -291,6 +292,13 @@ func (a *App) practiceFor(ctx context.Context, userID string, k *storedEscrowKey
 // escrowKeyAction registers or changes the account's escrow key. The key is parsed (ES-3) before the password is
 // checked or anything else is read, so a pasted private key is refused at once and goes nowhere.
 func escrowKeyAction(c *actionCtx) (actionResult, error) {
+	required, completed, err := completedOwnFormMode(c)
+	if err != nil {
+		return actionResult{}, err
+	}
+	if completed {
+		return replayOwnForm(c, required)
+	}
 	a := c.A
 	e := a.escrow.Load()
 	if e == nil {
@@ -324,14 +332,16 @@ func escrowKeyAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, err
 	}
 	if cur != nil && cur.hmac == h && cur.fingerprint == k.Fingerprint && cur.path == k.PathText && cur.layout == layout {
-		return actionResult{Redirect: "/escrow-key", Notice: "escrow-key-unchanged"}, nil
+		return ownConfirmedTx(c, false, func(*actionCtx) (actionResult, error) {
+			return actionResult{Redirect: "/escrow-key", Notice: "escrow-key-unchanged"}, nil
+		})
 	}
 	// Checked against the keys this account's escrows hold, before the password is.
 	restored, err := a.keyAgainstEscrows(c.Ctx(), e, c.User.ID, k, h, layout)
 	if err != nil {
 		return actionResult{}, err
 	}
-	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
+	return ownConfirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
 		ctx, uid := c.Ctx(), c.User.ID
 		sealed, err := c.A.seal("escrow-xpub", k.XPub)
 		if err != nil {
@@ -387,6 +397,13 @@ func escrowKeyAction(c *actionCtx) (actionResult, error) {
 // stored. The paste itself is never stored, logged or shown again. The node RPCs run before the transaction; the
 // update then requires the same key to be still inactive and without escrows.
 func escrowPracticeAction(c *actionCtx) (actionResult, error) {
+	required, completed, err := completedOwnFormMode(c)
+	if err != nil {
+		return actionResult{}, err
+	}
+	if completed {
+		return replayOwnForm(c, required)
+	}
 	a, ctx, uid := c.A, c.Ctx(), c.User.ID
 	e := a.escrow.Load()
 	if e == nil {
@@ -421,7 +438,7 @@ func escrowPracticeAction(c *actionCtx) (actionResult, error) {
 		log.Printf("escrow: practice check failed: %s", errorClassOf(err))
 		return actionResult{}, errPracticeNode
 	}
-	return confirmedTx(c, false, func(c *actionCtx) (actionResult, error) {
+	return ownConfirmedTx(c, false, func(c *actionCtx) (actionResult, error) {
 		// The key checked (the same key, origin and layout) must still be the account's, inactive and without escrows.
 		res, err := c.Tx.ExecContext(ctx, `UPDATE user_escrow_keys k SET active_at=now(),updated=now() WHERE user_id=$1 AND xpub_hmac=$2
 			AND origin_fingerprint=$3 AND origin_path=$4 AND layout=$5 AND active_at IS NULL AND NOT EXISTS (`+escrowsOfKey+`)`,

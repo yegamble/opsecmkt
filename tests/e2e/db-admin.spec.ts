@@ -34,12 +34,14 @@ test('promoting a buyer to vendor opens the vendor desk; the listing form shows 
   const unknown = uniqueHandle('nobody');
   await roleForm.getByLabel('Account handle').fill(unknown);
   await roleForm.getByLabel('Role').selectOption('vendor');
+  await roleForm.getByLabel('Current password').fill(ADMIN.password);
   expect(await submitStatus(admin, () => roleForm.getByRole('button', { name: 'Update role' }).click())).toBe(404);
   await expect(admin.getByRole('alert')).toHaveText(`No buyer, vendor or moderator has the handle "${unknown}". Check the spelling: handles are case-sensitive, and administrator roles cannot be changed here.`);
   await expect(roleForm.getByLabel('Account handle')).toHaveValue(unknown);
   await expect(roleForm.getByLabel('Role')).toHaveValue('vendor');
   // The administrator's own role is fixed.
   await roleForm.getByLabel('Account handle').fill(ADMIN.handle);
+  await roleForm.getByLabel('Current password').fill(ADMIN.password);
   expect(await submitStatus(admin, () => roleForm.getByRole('button', { name: 'Update role' }).click())).toBe(400);
   await expect(admin.locator('body')).toHaveText('Cannot change your own administrator role');
   await setRole(admin, vendorHandle, 'vendor');
@@ -50,7 +52,7 @@ test('promoting a buyer to vendor opens the vendor desk; the listing form shows 
   // Account column shows whose row each is.
   const auditRows = admin.locator('table').last().locator('tbody tr');
   await expect(auditRows.filter({ hasText: `Changed role of ${vendorHandle} from buyer to vendor` }).locator('td').first()).toHaveText(ADMIN.handle);
-  await expect(auditRows.filter({ hasText: 'Role changed from buyer to vendor by an administrator' }).filter({ hasText: vendorHandle }).locator('td').first()).toHaveText(vendorHandle);
+  await expect(auditRows.filter({ hasText: `Role changed from buyer to vendor by administrator ${ADMIN.handle}` }).filter({ hasText: vendorHandle }).locator('td').first()).toHaveText(vendorHandle);
   // Only roles the server can assign are offered; administrator remains setup-only.
   await expect(roleForm.getByLabel('Role').locator('option[value="admin"]')).toHaveCount(0);
 
@@ -113,7 +115,7 @@ test('promoting a buyer to vendor opens the vendor desk; the listing form shows 
     await vendor.getByLabel('Listing title').fill(fields.title);
     await vendor.getByLabel('Description', { exact: true }).fill('Listing validation regression.');
     await vendor.getByLabel('Fulfillment type').selectOption(fields.kind ?? 'physical');
-    await vendor.getByLabel('Bitcoin reference price').fill(fields.btc);
+    await vendor.getByLabel(/Price \(BTC, (?:test network|main network|not configured|not yet known)\)/).fill(fields.btc);
     await vendor.getByLabel('Monero reference price').fill('0.5');
     if (fields.delivery) await vendor.getByLabel('Automatic delivery content').fill(fields.delivery);
     return submitStatus(vendor, () => vendor.getByRole('button', { name: 'Publish listing ↗' }).click());
@@ -176,7 +178,7 @@ test('site settings, account suspension, operator key, canary signature checks a
   await admin.waitForLoadState();
   await admin.reload();
   await expect(siteName).toHaveValue(renamed);
-  await expect(admin.locator('table').last()).toContainText('Saved marketplace settings');
+  await expect(admin.locator('table').last()).toContainText(`Saved marketplace site name from ${JSON.stringify(original)} to ${JSON.stringify(renamed)}`);
   await siteName.fill('    ');
   expect(await submitStatus(admin, saveSettings)).toBe(400);
   await expect(admin.locator('body')).toHaveText('Invalid settings');
@@ -222,7 +224,7 @@ test('site settings, account suspension, operator key, canary signature checks a
   await expect(admin).toHaveTitle(/^Account suspended\. – Admin · /);
   expect(await admin.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
   await admin.setViewportSize({ width: 390, height: 900 });
-  await expect(suspended).toHaveText(new RegExp(`^${suspectHandle} · buyer · suspended \\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2} UTC$`));
+  await expect(suspended).toHaveText(new RegExp(`^${suspectHandle} · buyer · suspended \\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2} UTC · factors: none \\(password only\\)$`));
   const suspendRows = admin.locator('table').last().locator('tbody tr');
   await expect(suspendRows.filter({ hasText: `Suspended account ${suspectHandle}; ended 1 session(s) and any pending sign-ins (confirmed with password)` }).locator('td').first()).toHaveText(ADMIN.handle);
   await expect(suspendRows.filter({ hasText: `Account suspended by administrator ${ADMIN.handle}; ended 1 session(s)` }).locator('td').first()).toHaveText(suspectHandle);
@@ -265,11 +267,13 @@ test('site settings, account suspension, operator key, canary signature checks a
   const keyPanel = admin.getByRole('region', { name: 'Operator PGP key' });
   const canaryPanel = admin.getByRole('region', { name: 'Warrant canary' });
   await expect(canaryPanel).toContainText('No signed canary published');
+  await keyPanel.getByLabel('Current password').fill(ADMIN.password);
   await keyPanel.getByLabel('Armored public key').fill('-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nbm90IGEga2V5\n-----END PGP PUBLIC KEY BLOCK-----');
   expect(await submitStatus(admin, () => keyPanel.getByRole('button', { name: 'Save operator key' }).click())).toBe(400);
   await expect(admin.locator('body')).toContainText('Operator key rejected:');
   await admin.goto('/admin');
   await keyPanel.getByLabel('Armored public key').fill(pgpFixture('recipient.pub.asc'));
+  await keyPanel.getByLabel('Current password').fill(ADMIN.password);
   expect(await submitStatus(admin, () => keyPanel.getByRole('button', { name: 'Save operator key' }).click())).toBe(303);
   await expect(admin).toHaveURL(/\/admin#transparency$/);
   await expectNotice(admin, 'Operator PGP key saved.');
@@ -279,6 +283,7 @@ test('site settings, account suspension, operator key, canary signature checks a
   await expect(keyPanel.locator('.fingerprint')).toHaveText(RECIPIENT_FINGERPRINT);
 
   // A statement signed by a different key is rejected and nothing is published.
+  await canaryPanel.getByLabel('Current password').fill(ADMIN.password);
   await canaryPanel.getByLabel('Clearsigned statement').fill(pgpFixture('canary.other-key.asc'));
   expect(await submitStatus(admin, () => canaryPanel.getByRole('button', { name: 'Publish canary' }).click())).toBe(400);
   await expect(admin.locator('body')).toHaveText('Canary rejected: signature does not verify with the configured key');
@@ -286,6 +291,7 @@ test('site settings, account suspension, operator key, canary signature checks a
   await expect(admin.locator('section.canary .badge')).toHaveText('No signed canary published');
   // The same statement signed by the operator key is published and verified on the public page.
   await admin.goto('/admin');
+  await canaryPanel.getByLabel('Current password').fill(ADMIN.password);
   await canaryPanel.getByLabel('Clearsigned statement').fill(pgpFixture('canary.recipient-key.asc'));
   expect(await submitStatus(admin, () => canaryPanel.getByRole('button', { name: 'Publish canary' }).click())).toBe(303);
   await expect(admin).toHaveURL(/\/canary$/);
@@ -319,7 +325,7 @@ test('site settings, account suspension, operator key, canary signature checks a
     const exported = readFileSync(await download.path());
     const lines = exported.toString('utf8').trim().split('\n').map(l => JSON.parse(l));
     expect(lines.at(-1).id).toBe(Number(upto));
-    expect(lines.map(l => l.action)).toContain(`Set operator PGP key ${RECIPIENT_FINGERPRINT.replace(/ /g, '')} for canary verification`);
+    expect(lines.map(l => l.action)).toContain(`Set operator PGP key ${RECIPIENT_FINGERPRINT.replace(/ /g, '')} for canary verification (confirmed with password)`);
     const response = await admin.request.get(`/admin/audit-export?upto=${upto}`);
     expect(response.headers()['content-type']).toBe('application/x-ndjson');
     expect(response.headers()['content-disposition']).toBe(`attachment; filename="audit-events-upto-${upto}.jsonl"`);
@@ -332,104 +338,6 @@ test('site settings, account suspension, operator key, canary signature checks a
     expect(verify(null, exported, spki, Buffer.from(fields.signature, 'hex'))).toBe(true);
   }
   await admin.context().close();
-});
-
-// A-116: the payout resolve forms are the last human check before a possible double pay. Their help text and
-// confirmation labels must wrap within the page (not run off under table{white-space:nowrap}), and each summary
-// must say which payout it resolves. A-281: the forms sit under the payouts table, each linked from its row, so at
-// 320 px they lie within the viewport instead of in a cell of the scrolling table. No wallet runs here, so the payouts are seeded in SQL: a refund held
-// by a restore from backup and an account suspension (both confirmations), an ambiguous failed release and a definite
-// failed release whose recipient has since saved another address (A-121: the move to the current address). A fresh
-// account is made administrator for this test only, so the shared administrator's sign-in budget is untouched.
-test('payout resolve forms sit under the payouts table, wrap at 320 px and name what they resolve', async ({ browser, baseURL }) => {
-  const database = process.env.E2E_DATABASE_URL!;
-  const sql = (query: string) => execFileSync('psql', [database, '-v', 'ON_ERROR_STOP=1', '-qtAc', query], { encoding: 'utf8' }).trim();
-  const hex = (bytes: number) => randomBytes(bytes).toString('hex');
-  const adminHandle = uniqueHandle('payout_admin');
-  const buyer = uniqueHandle('refund_recipient_long_handle');
-  const vendor = uniqueHandle('release_recipient_long_handle');
-  const [buyerID, vendorID, productID, refundOrder, releaseOrder, movedOrder] = [hex(16), hex(16), hex(16), hex(32), hex(32), hex(32)];
-  const admin = await signedIn(browser, baseURL, adminHandle, 'browser-payout-admin-password-123', true, 1280);
-  try {
-    sql(`UPDATE users SET role='admin' WHERE handle='${adminHandle}';
-      INSERT INTO users(id,handle,password_hash,role) VALUES ('${buyerID}','${buyer}','!','buyer'),('${vendorID}','${vendor}','!','vendor');
-      UPDATE users SET payout_xmr='5${'b'.repeat(94)}',payout_xmr_changed=now() WHERE id='${vendorID}';
-      INSERT INTO products(id,vendor_id,title,description,category,region,kind,btc,xmr,stock,archived)
-        VALUES ('${productID}','${vendorID}','Payout layout fixture','Seeded by db-admin.spec.ts','Other','Worldwide','physical',100000,500000000000,0,true);
-      INSERT INTO orders(id,buyer_id,product_id,currency,amount,state)
-        VALUES ('${refundOrder}','${buyerID}','${productID}','BTC',100000,'cancelled'),('${releaseOrder}','${buyerID}','${productID}','XMR',500000000000,'completed'),
-          ('${movedOrder}','${buyerID}','${productID}','XMR',500000000000,'completed');
-      INSERT INTO payouts(order_id,kind,user_id,currency,amount,address,state,error,send_ambiguous) VALUES
-        ('${refundOrder}','refund','${buyerID}','BTC',100000,'tb1q${'q'.repeat(58)}','held',
-         'Restored from backup: verify in the wallet before releasing; this payout may already have been sent. Suspended account: payout held when the recipient''s account was suspended; an administrator must check the payout address before releasing it.',false),
-        ('${releaseOrder}','release','${vendorID}','XMR',500000000000,'5${'a'.repeat(94)}','failed',
-         'wallet call failed without a definite answer: Post "http://monero-wallet-rpc:18083/json_rpc": context deadline exceeded (Client.Timeout exceeded while awaiting headers)',true),
-        ('${movedOrder}','release','${vendorID}','XMR',500000000000,'5${'a'.repeat(94)}','failed',
-         'The wallet rejected the send; nothing was broadcast. monero-wallet-rpc error -17: not enough money',false);`);
-    const ids = sql(`SELECT id FROM payouts WHERE order_id IN ('${refundOrder}','${releaseOrder}','${movedOrder}') ORDER BY order_id='${movedOrder}', order_id='${releaseOrder}'`).split('\n');
-    const summaries = [
-      `Resolve payout ${ids[0]}: refund 0.001 BTC to ${buyer}, order ${refundOrder.slice(0, 8)}`,
-      `Resolve payout ${ids[1]}: release 0.5 XMR to ${vendor}, order ${releaseOrder.slice(0, 8)}`,
-      `Resolve payout ${ids[2]}: release 0.5 XMR to ${vendor}, order ${movedOrder.slice(0, 8)}`,
-    ];
-    await admin.goto('/admin#payouts');
-    await admin.waitForLoadState('load');
-    const payouts = admin.locator('.admin-payments');
-    const resolve = async (width: number) => {
-      await admin.setViewportSize({ width, height: 900 });
-      for (const [i, summary] of summaries.entries()) {
-        // The row's link goes to its form under the table; nothing in the table is a form.
-        const row = payouts.locator('tbody tr', { has: admin.getByRole('link', { name: `Resolve payout ${ids[i]}`, exact: true }) });
-        await expect(row.locator('form, details')).toHaveCount(0);
-        // The long-value cells wrap instead of widening the table.
-        for (const cell of await row.locator('td.mono').all()) {
-          expect(await cell.evaluate(e => getComputedStyle(e).whiteSpace), summary).toBe('normal');
-        }
-        await row.getByRole('link', { name: `Resolve payout ${ids[i]}`, exact: true }).click();
-        await expect(admin).toHaveURL(new RegExp(`/admin#resolve-payout-${ids[i]}$`));
-        const details = payouts.locator(`details.payout-actions#resolve-payout-${ids[i]}`);
-        await expect(details.locator('> summary')).toHaveText(summary);
-        await expect(details.locator('xpath=ancestor::table')).toHaveCount(0);
-        if ((await details.getAttribute('open')) === null) await details.locator('summary').click();
-        await expect(details).toHaveAttribute('open', '');
-        expect(await details.evaluate(e => getComputedStyle(e).whiteSpace), summary).toBe('normal');
-        // Whichever control has focus (the browser scrolls it into view), every help text and label of its form lies
-        // within the viewport, so the administrator reads the whole confirmation they are ticking.
-        for (const form of await details.locator('form').all()) {
-          for (const control of await form.locator('input:not([type="hidden"])').all()) {
-            await control.focus();
-            const clipped = await form.evaluate(f => [...f.querySelectorAll('.help, label')].filter(e => {
-              const box = e.getBoundingClientRect();
-              return box.left < -1 || box.right > window.innerWidth + 1;
-            }).map(e => e.textContent!.trim().slice(0, 60)));
-            expect(clipped, `${summary} at ${width} px: clipped with ${await control.getAttribute('name')} focused`).toEqual([]);
-          }
-        }
-        // A-281 (after the stylesheet applied, A-228): the open form, its labels, fields and buttons lie within the
-        // viewport; in a table cell they sat at x 824 to 1112 at 320 px.
-        await withinViewport(details, width);
-      }
-      expect(await admin.evaluate(() => document.documentElement.scrollWidth), `/admin at ${width}px`).toBeLessThanOrEqual(width);
-    };
-    await resolve(1280);
-    await expect(payouts.locator('details.payout-actions input[name="not_broadcast"]')).toHaveCount(2);
-    await expect(payouts.locator('details.payout-actions input[name="address_checked"]')).toHaveCount(2);
-    await expect(payouts.locator('details.payout-actions input[name="op"][value="repoint"]')).toHaveCount(1);
-    await admin.goto('/admin#payouts');
-    await admin.waitForLoadState('load');
-    await resolve(320);
-    await admin.setViewportSize({ width: 390, height: 900 });
-    expect(await admin.evaluate(() => document.documentElement.scrollWidth), '/admin at 390px').toBeLessThanOrEqual(390);
-  } finally {
-    // db-payments.spec.ts expects no payouts, and no other spec should meet an extra administrator.
-    sql(`DELETE FROM payouts WHERE order_id IN ('${refundOrder}','${releaseOrder}','${movedOrder}');
-      DELETE FROM orders WHERE id IN ('${refundOrder}','${releaseOrder}','${movedOrder}');
-      DELETE FROM products WHERE id='${productID}';
-      DELETE FROM users WHERE id IN ('${buyerID}','${vendorID}');
-      DELETE FROM sessions WHERE user_id=(SELECT id FROM users WHERE handle='${adminHandle}');
-      UPDATE users SET role='buyer' WHERE handle='${adminHandle}';`);
-    await admin.context().close();
-  }
 });
 
 // A-185: the image scanner panel reads the app's cached clamd state. playwright.config.ts starts a loopback fake

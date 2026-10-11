@@ -190,27 +190,6 @@ func TestStartupMigrationTimeoutRollsBackAndNamesThePhase(t *testing.T) {
 	}
 }
 
-// Payment provider startup has its own bound: a slow migration no longer eats into it, and a provider
-// that hangs past it fails startup with an error naming the payment phase.
-func TestStartupPaymentPhaseTimeoutNamesThePhase(t *testing.T) {
-	startupEnv(t)
-	saved := paymentStartupTimeout
-	paymentStartupTimeout = 200 * time.Millisecond
-	t.Cleanup(func() { paymentStartupTimeout = saved })
-	withProviderFactory(t, func(ctx context.Context) (PaymentProvider, error) {
-		<-ctx.Done()
-		return nil, ctx.Err()
-	})
-	a, err := New(context.Background(), false)
-	if err == nil {
-		a.Close()
-		t.Fatal("New succeeded with a hanging payment provider")
-	}
-	if !strings.Contains(err.Error(), "payment provider startup timed out after 200ms") {
-		t.Fatalf("error does not name the payment phase: %v", err)
-	}
-}
-
 // A-141: a failed startup connection names its class (authentication, missing database, unknown host,
 // refused) so the operator can act on it, without printing the DSN or the driver's error text (which carries
 // the user, database and host).

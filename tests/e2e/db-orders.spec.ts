@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { ADMIN, FIXTURE_LISTING, uniqueHandle } from './db-fixtures';
+import { submitAndLoad } from './db-helpers';
 import { waitForStyles } from './styles';
 
 // P3 order lifecycle against a real database with no payment provider configured.
@@ -15,7 +16,7 @@ test('draft cannot be paid without a wallet, cancellation is recorded, vendor se
   await page.goto(`/?q=${encodeURIComponent(FIXTURE_LISTING)}`);
   await page.getByRole('link', { name: FIXTURE_LISTING, exact: true }).click();
   await page.getByRole('link', { name: 'Review order draft' }).click();
-  await page.getByLabel('Reference currency').selectOption('BTC');
+  await page.getByLabel('Pay with').selectOption('BTC');
   await page.getByRole('button', { name: 'Create unfunded draft' }).click();
   await expect(page).toHaveURL(/\/order\?id=/);
   const orderURL = page.url();
@@ -28,8 +29,9 @@ test('draft cannot be paid without a wallet, cancellation is recorded, vendor se
   }
   await page.setViewportSize(viewport);
 
-  // No provider: the payment step is visibly unavailable and there is no button for it.
-  await expect(page.locator('.order-unavailable')).toContainText('Payment unavailable for BTC');
+  // Intake is explicitly paused: the draft is unfunded and has no retired pooled payment step.
+  await expect(page.getByRole('heading', { name: 'Unfunded draft' })).toBeVisible();
+  await expect(page.locator('form[action="/orders/pay"]')).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Request payment address' })).toHaveCount(0);
   await expect(page.getByRole('heading', { name: 'History' })).toBeVisible();
   // A-82: times are UTC and say so, whatever the database server's zone.
@@ -57,9 +59,9 @@ test('draft cannot be paid without a wallet, cancellation is recorded, vendor se
   await expect(page.getByText('This order is closed.')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Cancel draft' })).toHaveCount(0);
 
-  // The listing owner sees the order among incoming orders.
+  // The listing owner can still read the cancelled draft, which stays off incoming work.
   await page.goto('/account');
-  await page.getByRole('button', { name: 'Sign out', exact: true }).click();
+  await submitAndLoad(page, page.getByRole('button', { name: 'Sign out', exact: true }));
   await page.goto('/login');
   await page.getByLabel('Handle', { exact: true }).fill(ADMIN.handle);
   await page.getByLabel('Password', { exact: true }).fill(ADMIN.password);
@@ -67,7 +69,9 @@ test('draft cannot be paid without a wallet, cancellation is recorded, vendor se
   await expect(page.locator('.account-name')).toHaveText(ADMIN.handle);
   await page.goto('/vendor-dashboard');
   await expect(page.getByRole('heading', { name: 'Incoming orders' })).toBeVisible();
-  await expect(page.locator('tr', { hasText: handle }).first()).toContainText('Cancelled');
+  await expect(page.locator('main')).toContainText('Unfunded drafts and cancelled drafts are kept in your order history but do not appear as incoming work.');
+  await expect(page.locator('tr', { hasText: handle })).toHaveCount(0);
+  // The cancelled draft remains directly readable by its vendor despite staying off the work queue.
   await page.goto(orderURL);
   await expect(page.locator('.eyebrow').first()).toContainText('you are the vendor');
   await expect(page.locator('.order-timeline')).toContainText('Draft — unfunded → Cancelled');

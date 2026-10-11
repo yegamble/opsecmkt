@@ -25,7 +25,7 @@ import (
 // The owner sees "Photo removed by staff: <reason>" on the listing's edit page, read from their own audit row.
 
 func init() {
-	registerAction("/images/remove", actionSpec{Roles: []string{"moderator", "admin"}, Run: imageTakedownAction})
+	registerAction("/images/remove", actionSpec{Roles: []string{"moderator", "admin"}, FormNonce: true, Run: imageTakedownAction})
 	registerLoader("moderator", recentImagesLoader)
 	registerPreview("moderator", previewRecentImages)
 }

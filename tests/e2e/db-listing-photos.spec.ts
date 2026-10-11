@@ -67,7 +67,7 @@ async function publish(vendor: Page, title: string): Promise<string> {
   await vendor.getByText('+ Publish a new listing', { exact: true }).click();
   await vendor.getByLabel('Listing title').fill(title);
   await vendor.getByLabel('Description', { exact: true }).fill('Listing photo regression.');
-  await vendor.getByLabel('Bitcoin reference price').fill('0.001');
+  await vendor.getByLabel(/Price \(BTC, (?:test network|main network|not configured|not yet known)\)/).fill('0.001');
   await vendor.getByLabel('Monero reference price').fill('0.5');
   await vendor.getByRole('button', { name: 'Publish listing' }).click();
   await expect(vendor).toHaveURL(/\/listing-edit\?id=[0-9a-f]{64}#photos$/);
@@ -172,9 +172,8 @@ test('oversized photo shows the limit without JS', { tag: '@firefox' }, async ({
   png(64, 48, PLANTED).copy(big);
   expect(await uploadPhoto(vendor, big)).toBe(413);
   await expect(vendor.getByRole('alert')).toHaveText('Photo not saved: the file is larger than 4 MB, the most accepted. Nothing was stored.');
-  // A refusal while the form is read links to the vendor desk, not the listing (uploads.go sets the listing link
-  // only once the whole form has been read).
-  await expect(vendor.getByRole('link', { name: 'Back to the vendor desk' })).toHaveAttribute('href', '/vendor-dashboard');
+  // The validated listing ID is read before the oversized file, so the refusal returns to its Photos panel.
+  await expect(vendor.getByRole('link', { name: 'Back to the listing' })).toHaveAttribute('href', `/listing-edit?id=${listing}#photos`);
   await vendor.goto(`/listing-edit?id=${listing}`);
   await expect(vendor.getByRole('region', { name: 'Photos' })).toContainText('0 of 4 photos');
   await vendor.context().close();

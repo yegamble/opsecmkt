@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"strings"
 	"sync"
 	"testing"
 )
@@ -76,43 +75,6 @@ func TestConcurrentSetupCreatesExactlyOneAdmin(t *testing.T) {
 		agInt(e, "SELECT count(*) FROM settings WHERE key='installed'") != 1 ||
 		agInt(e, "SELECT count(*) FROM audit_events WHERE action='Account created: admin'") != 1 {
 		t.Fatal("installation state does not belong to the single winner")
-	}
-}
-
-func TestConcurrentPayRespectsPerBuyerCap(t *testing.T) {
-	e := newTestApp(t)
-	buyerID, buyer := e.user("cap_buyer", "buyer")
-	vendorID, _ := e.user("cap_vendor", "vendor")
-	e.usableKey(vendorID)
-	e.A.payments["BTC"] = newFakeProvider("BTC", 1)
-	const n = 8
-	// The in-process limit of one payment request per account at a time is lifted: this races the database's
-	// own guard (the buyer row lock), which also holds when the limit does not (another process, a restart).
-	defer func(v int) { oneAtATimeLimit = v }(oneAtATimeLimit)
-	oneAtATimeLimit = n
-	orders, products := make([]string, n), make([]string, n)
-	for i := range n {
-		products[i] = e.product(vendorID, "physical")
-		orders[i] = e.order(buyerID, products[i], "BTC", stateDraft)
-	}
-	rs := agRace(n, func(i int) (int, string) {
-		w := e.do("POST", "/orders/pay", buyer, url.Values{"order_id": {orders[i]}})
-		return w.Code, w.Body.String()
-	})
-	got := agTally(t, rs, 303, 409)
-	open := agInt(e, "SELECT count(*) FROM orders WHERE buyer_id=$1 AND state='awaiting_payment'", buyerID)
-	if got[303] != maxAwaitingPayment || open != maxAwaitingPayment {
-		t.Fatalf("%d payment requests succeeded, %d orders awaiting payment; cap is %d", got[303], open, maxAwaitingPayment)
-	}
-	for i, r := range rs {
-		if r.code == 409 && !strings.Contains(r.body, "awaiting payment") {
-			t.Fatalf("refusal %d: %s", i, r.body)
-		}
-	}
-	if agInt(e, "SELECT count(*) FROM payment_addresses") != maxAwaitingPayment ||
-		agInt(e, "SELECT count(*) FROM products WHERE stock=4") != maxAwaitingPayment ||
-		agInt(e, "SELECT count(*) FROM orders WHERE state='draft'") != n-maxAwaitingPayment {
-		t.Fatal("refused requests reserved stock, issued addresses or moved orders")
 	}
 }
 

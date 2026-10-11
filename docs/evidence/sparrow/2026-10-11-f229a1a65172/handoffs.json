@@ -1,0 +1,58 @@
+[
+  {
+    "party": "buyer",
+    "kind": "practice",
+    "index": 2147483647,
+    "child": 0,
+    "address": "bcrt1q4v8hgryz9v9mt53q8ga8kmv7xqgqzzmda7ywgdlznna2nqy6ecgqak463k",
+    "path": "m/48h/1h/0h/2h/2147483647/0/0",
+    "cosigners": [
+      "Vpub5dEvVGKn7251yp3mwoZhUetpcHHx9vsFALdYtimjze212gw1PTZYK2K7J9jb36ndtB7UE6K7PWf9qJQseQhK1SeCQAmsLKGdFLmnE7C67Vz",
+      "Vpub5dEvVGKn7251yXq8tz5PDBLPgBg5iNurZrRbQ24tvJNZKgKCph64hxtp7arYDbth6oA8RzvgNweRA8sUees2DXbfPgV2s4brwMG39s2gfSX"
+    ],
+    "unsignedtxid": "bd73244e5c71d4598d0fde77e47d3f1367d4fa427e129d94a54978224c215215"
+  },
+  {
+    "party": "vendor",
+    "kind": "practice",
+    "index": 2147483647,
+    "child": 0,
+    "address": "bcrt1qer8hea0wxw9vkgr5d7uvx86wszqlx3x93sn36tgv3amsmua3cs6s7xyamd",
+    "path": "m/48h/1h/0h/2h/2147483647/0/0",
+    "cosigners": [
+      "Vpub5dEvVGKn7251zCxcadoK36ziWqMYwpPsVV9my7jN6QQw6r4brufDH1ndCzUpRtrBhu7DxGb97ahnqEVarfohXUTz4V4n6piJuXREWrzij9Q",
+      "Vpub5dEvVGKn7251zs1KA9B1VeHTEUWEiGisWBjey4BVup9hnfmXw5yGRqSQfN9WWwy4C4GxrYY7Q9Eig3rQgjJw7Ff6uqJpYrEbg9W9dRwX9qB"
+    ],
+    "unsignedtxid": "ab4f002307ad92d4021626e2a9c7b2186a80b0da81844c38013962a3c773f1ac"
+  },
+  {
+    "party": "vendor",
+    "kind": "settlement",
+    "index": 2,
+    "child": 0,
+    "address": "bcrt1qy25ngwmvy3kxwc9q792lq0fkgczysku9rxegxyadcvy57zhsj9xq0fnawc",
+    "path": "m/48h/1h/0h/2h/2/0/0",
+    "order_path": "m/48h/1h/0h/2h/2",
+    "cosigners": [
+      "Vpub5dEvVGKn7251yaU2PvssTqCggfsbviwfGVZ3DTT8DzEHYstF7fRxxPDVWT1ibvzVWL37GjUw5VrB9YqNUHTsUwjtN34q7FWw6NgVaUCfpeu",
+      "Vpub5dEvVGKn7251z1gmhibfUg7uJ2Cu8mQ1Z7QriJ56sgPDxkWPPwXv6smqnwktfdKPXQ2YNNSTHZ2jchkJ9kiw1qffBtvaBJdxeUioE4KSoZy"
+    ],
+    "descriptor": "wsh(sortedmulti(2,[77acd50f]tpubD6NzVbkrYhZ4XPsjaAyEFrPFdwDtazk8L5Y7DY2Vx8uXnBcVvoDuFqLfzC4CZp2ft3jeWgBoehzpV8wM1JzBpNSiKr6aZCM9L48KXhqozNu/<0;1>/*,[04ea4665/48h/1h/0h/2h/2]tpubDGsCNZ1bwxAkEpbTG1rXvay59d2MhRYTvsrU4FFQhxgYvvShpfehsf5hipi4BU3WEN3tE1bhg54ZDF69YYiRAPXVARivX32uLjLAwtLuJx6/<0;1>/*,[664d28be]tpubD6NzVbkrYhZ4Xq6Usxh2GhJUFHZBo3CUchPviNeUbq4UC4EeD5KrQKu2GgoNdWMZu7j5cK9KrmBNxHrGgnFFMGNV9hxKdFUAtAAdBMD7tRu/<0;1>/*))#0h4vw480",
+    "unsignedtxid": "a9190bd5180bb5ee1750cfbe4bc1de1cfb380c8df8a1ba667d4e06e90b7d3d5a"
+  },
+  {
+    "party": "buyer",
+    "kind": "settlement",
+    "index": 3,
+    "child": 3,
+    "address": "bcrt1q406l2hfjvkpnklj6uj2hu6wz2eq33jq8kya9nhsznltjhspszejsj76rf4",
+    "path": "m/48h/1h/0h/2h/3/0/3",
+    "order_path": "m/48h/1h/0h/2h/3",
+    "cosigners": [
+      "Vpub5dEvVGKn7251zvsS2Hg4mJSZP4sn4hAYnjTpyg81qFE8z6M4cEzn1uUmbxsp95bbedDU4dZ4btTN1PoDeXUUfhme41NLT8B5P6fDbs977Xo",
+      "Vpub5dEvVGKn7251yLJgQSKNWxCTUkZHSRZbWPdNWs4BGqbFQCWf82ie69u7bqvVhWGiRw3nn5A79iAksPkFmUDz4AjoRbpsXjqUAGEbvmMkD2s"
+    ],
+    "descriptor": "wsh(sortedmulti(2,[fe522e49/48h/1h/0h/2h/3]tpubDG7VHkb2debFXyWZe5ZsXYStBUSRdcY1bYmHhrWYJC97eGFYwkcpB687pc1MotxXYrwY8f1vozdovpKkMasDfYC9ACeMbYpuQ8ej1gjiB9J/<0;1>/*,[bf174051]tpubD6NzVbkrYhZ4YkH9CXmRZKd8LLE4ixy1rKStykhPZPuPDQ5KRNniKMbx5hvJ6xdn2Lv1JaFwB6c1LyuCBYzo18UU1pQ5u51Hcn73Z3rfLGi/<0;1>/*,[391cf2ec]tpubD6NzVbkrYhZ4X9iPagQjJyP2S1ua6hN4ZycSWwdYzzGVdWEuwAWaPc2J5axyfPJtoekL21ryivKQCyrEJVkJPbSdPQrcygfgPwgRszBeV2B/<0;1>/*))#ev3up57d",
+    "unsignedtxid": "7fcf8c060d614ab2692bfe57947a75327b6953e5b24738addb3ae7784f86390b"
+  }
+]

@@ -7,14 +7,21 @@
 <p>Updates about your orders and account.</p>
 </div>
 </div>
+{{if .UnreadNotifications}}<form class="notification-mark-all" method="post" action="/notifications">
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/notifications"}}">
+<input type="hidden" name="mark_all" value="1">
+<button type="submit">Mark all as read</button>
+</form>{{end}}
 <div class="messages-list">{{range .Notifications}}<article class="message">
 <div class="message-meta">
 <time>{{.Created}}</time>
 <span>{{if .Read}}Read{{else}}Unread{{end}}</span>
 </div>
-<p>{{.Body}}</p>{{if .AsksForStaff}}
+<p>{{.Body}}</p>{{if .OrderID}}<p><a class="text-link" href="/order?id={{.OrderID}}">Open this order</a></p>{{end}}{{if .AsksForStaff}}
 <p class="help staff-contact">{{template "staff-contact" $}}</p>{{end}}{{if not .Read}}<form method="post" action="/notifications">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/notifications"}}">
 <input type="hidden" name="id" value="{{.ID}}">
 <button type="submit">Mark as read</button>
 </form>{{end}}</article>{{else}}<div class="empty">
@@ -22,4 +29,5 @@
 <h2>You’re all caught up</h2>
 <p>New account and order updates will appear here.</p>
 </div>{{end}}</div>
+{{with .ActivityPaging}}{{if gt .Pages 1}}<p class="help">Showing {{.First}}–{{.Last}} of {{.Total}} notifications.</p><nav class="pagination" aria-label="Notification pages">{{if .PrevURL}}<a href="{{.PrevURL}}" rel="prev" aria-label="Previous page, page {{.PrevPage}} of {{.Pages}}">← Previous</a>{{end}}<span class="current" aria-current="page">Page {{.Page}} of {{.Pages}}</span>{{if .NextURL}}<a href="{{.NextURL}}" rel="next" aria-label="Next page, page {{.NextPage}} of {{.Pages}}">Next →</a>{{end}}</nav>{{end}}{{end}}
 {{template "footer" .}}{{end}}

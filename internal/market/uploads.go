@@ -25,8 +25,8 @@ import (
 // A-186 (war room 2026-09-27, rulings C3, C5, C6 and D10): the only two routes that take a file. POST
 // /listings/photo (vendors and administrators; the listing's id in the form) adds a photo to a listing, and POST
 // /account/avatar (vendors, administrators and moderators — the owner's staff avatar decision; always the
-// actor's own) sets the actor's avatar, replacing any earlier one. Besides them only the escrow sign form, POST
-// /escrow/sign, takes a multipart body, a signed PSBT file of at most 64 KB (A-456b, psbt_upload.go); any other POST
+// actor's own) sets the actor's avatar, replacing any earlier one. Besides them the escrow sign form, POST
+// /escrow/sign, and A-459's bounded hardware sign forms take multipart PSBT files (psbt_upload.go); any other POST
 // with a multipart body is refused with a 415 page before its body is read (ServeHTTP), and every other route keeps
 // its 64 KiB form cap.
 //
@@ -147,7 +147,7 @@ func (a *App) serveUpload(w http.ResponseWriter, r *http.Request, route uploadRo
 	if route.kind == uploadListing {
 		u.back = "/vendor-dashboard"
 	}
-	if msg := postOriginError(r); msg != "" {
+	if msg := postOriginError(r, a.secure); msg != "" {
 		u.refuse(http.StatusForbidden, msg)
 		return
 	}
@@ -193,11 +193,11 @@ func (a *App) serveUpload(w http.ResponseWriter, r *http.Request, route uploadRo
 		u.refuse(http.StatusForbidden, msg)
 		return
 	}
-	if !a.allow("write:"+u.user.ID, 100) {
+	if !a.allowWrite(u.user.ID) {
 		u.refuse(http.StatusTooManyRequests, "Too many changes. Try again later. Nothing was stored.")
 		return
 	}
-	if !a.allow("upload:"+u.user.ID, uploadBudget) {
+	if !a.allowWriteBudget("upload:"+u.user.ID, uploadBudget) {
 		u.refuse(http.StatusTooManyRequests, "Photo not saved: an account can upload at most 20 photos or avatars in 10 minutes. Nothing was stored. Try again later.")
 		return
 	}
@@ -238,9 +238,6 @@ func (a *App) serveUpload(w http.ResponseWriter, r *http.Request, route uploadRo
 		return
 	}
 	u.drain() // anything after the closing boundary
-	if route.kind == uploadListing {
-		u.back = "/listing-edit?id=" + url.QueryEscape(form.id) + "#photos"
-	}
 	// The body has arrived: the rest has its own bound. The request's context still ends if the client goes away.
 	ctx, cancel := context.WithTimeout(r.Context(), uploadWorkTimeout)
 	defer cancel()
@@ -272,6 +269,7 @@ func (a *App) serveUpload(w http.ResponseWriter, r *http.Request, route uploadRo
 				http5xxLog.Printf("upload staff contact read failed cause=%s", errorCause(cerr))
 			}
 		}
+		recordServerError(u.r, refusal.Status(), refusal.Ref)
 		u.render(refusal.Status(), refusal.Message(contact))
 		return
 	}
@@ -298,6 +296,12 @@ func (a *App) serveUpload(w http.ResponseWriter, r *http.Request, route uploadRo
 		http.Redirect(w, r, a.setNotice(w, notice, redirect), http.StatusSeeOther)
 	case errors.As(err, &he):
 		u.render(he.Code, he.Msg)
+	case isUploadCommitUnknown(err):
+		subject, place, title := "Photo", "listing", "Photo status unknown"
+		if route.kind == uploadAvatar {
+			subject, place, title = "Avatar", "account", "Avatar status unknown"
+		}
+		u.serverErrorMessage(http.StatusInternalServerError, errorCause(err), subject+" may have been saved: reload the "+place+" to check before uploading again.", title)
 	case dbBusy(err):
 		u.serverError(http.StatusServiceUnavailable, errorCause(err))
 	default:
@@ -386,6 +390,9 @@ func (u *upload) readForm() (uploadForm, error) {
 			if f.id = string(v); !formTextValid(url.Values{"id": {f.id}}) {
 				return f, errUploadText
 			}
+			if u.route.kind == uploadListing && f.id != "" {
+				u.back = "/listing-edit?id=" + url.QueryEscape(f.id) + "#photos"
+			}
 		case name == "description" && (seen == "" || seen == "id"):
 			v, err := readSmallPart(p, 4*descriptionLimit)
 			if err != nil {
@@ -469,14 +476,30 @@ func (u *upload) render(code int, msg string) {
 // serverError logs the "http 5xx" line with a reference (serverError's format, A-141) and renders the refusal
 // page carrying the reference.
 func (u *upload) serverError(code int, cause string) {
-	ref := randomToken()[:8]
-	http5xxLog.Printf("http 5xx kind=action name=%s status=%d ref=%s cause=%s", u.r.URL.Path, code, ref, cause)
-	msg := "Photo not saved: the market could not store it. Nothing was stored. Reference: " + ref
+	msg := "Photo not saved: the market could not store it. Nothing was stored."
+	if code == http.StatusServiceUnavailable {
+		msg = "Photo not saved: the market is busy. Nothing was stored. Try again in a few seconds."
+	}
+	u.serverErrorMessage(code, cause, msg, "")
+}
+
+// serverErrorMessage preserves the usual classified 5xx log and refusal page while allowing a lost COMMIT
+// acknowledgement to say the outcome is unknown, without suggesting an automatic retry.
+func (u *upload) serverErrorMessage(code int, cause, msg, title string) {
+	ref := serverErrorReference(u.r, code, cause)
 	if code == http.StatusServiceUnavailable {
 		u.w.Header().Set("Retry-After", busyRetryAfter)
-		msg = "Photo not saved: the market is busy. Nothing was stored. Try again in a few seconds. Reference: " + ref
 	}
-	u.render(code, msg)
+	msg += " Reference: " + ref
+	if title == "" {
+		u.render(code, msg)
+		return
+	}
+	label := "Back to the listing"
+	if u.route.kind == uploadAvatar {
+		label = "Back to your account"
+	}
+	u.a.renderUploadPage(u.w, u.r, u.user, u.token, code, title, msg, u.back, label)
 }
 
 // renderUploadPage answers with web/templates/partials/upload-error.html: msg in its error alert and a link back.
@@ -513,7 +536,7 @@ func (a *App) refuseMultipartElsewhere(w http.ResponseWriter, r *http.Request, t
 // is not suspended (a suspended account's sessions never authenticate; suspension also deletes them).
 func (a *App) sessionUser(ctx context.Context, session string) (*User, error) {
 	u := &User{}
-	err := a.db.QueryRowContext(ctx, `SELECT u.id,u.handle,u.role,u.pgp,u.xmpp FROM users u JOIN sessions s ON s.user_id=u.id WHERE s.token_hash=$1 AND s.expires>now() AND u.suspended_at IS NULL`, digest(session)).Scan(&u.ID, &u.Handle, &u.Role, &u.PGP, &u.XMPP)
+	err := a.db.QueryRowContext(ctx, `SELECT u.id,u.handle,u.role,u.pgp FROM users u JOIN sessions s ON s.user_id=u.id WHERE s.token_hash=$1 AND s.expires>now() AND u.suspended_at IS NULL`, digest(session)).Scan(&u.ID, &u.Handle, &u.Role, &u.PGP)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -640,7 +663,22 @@ func (a *App) storeImage(ctx context.Context, r *http.Request, session string, a
 			return "", err
 		}
 	}
-	return redirect, tx.Commit()
+	if err := tx.Commit(); err != nil {
+		// PostgreSQL may have committed before the acknowledgement was lost. No later code can prove
+		// whether the image and audit row exist, even when the error looks retryable (A-209/A-224).
+		return "", uploadCommitUnknown{err}
+	}
+	return redirect, nil
+}
+
+type uploadCommitUnknown struct{ cause error }
+
+func (e uploadCommitUnknown) Error() string { return e.cause.Error() }
+func (e uploadCommitUnknown) Unwrap() error { return e.cause }
+
+func isUploadCommitUnknown(err error) bool {
+	var unknown uploadCommitUnknown
+	return errors.As(err, &unknown)
 }
 
 // imageDescription is the stored description: a photo's, read aloud to blind buyers; an avatar has none (it is

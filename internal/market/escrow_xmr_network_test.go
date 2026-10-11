@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"html"
-	"net/url"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -13,9 +11,9 @@ import (
 
 // A-449 (P4-R15): Monero escrow on stagenet. The address tags follow the network the escrow daemon was verified on
 // (stagenet 24 and 36, fakechain 18 and 42), the daemon's network is pinned in settings (escrow_xmr_network) instead
-// of the old height heuristic, and a stateless sync guard skips the Monero escrow pass and the pooled Monero pass while
-// the daemon is not synced. DB integration tests against the simulated wallet-rpc and monerod (escrow_xmr_fake_test.go,
-// payments_monero_test.go): simulated RPC, not chain evidence.
+// of the old height heuristic, and a stateless sync guard skips the Monero escrow pass while
+// the daemon is not synced. DB integration tests against the simulated wallet-rpc and monerod
+// (escrow_xmr_fake_test.go): simulated RPC, not chain evidence.
 
 // onStagenet makes the fake a synced stagenet daemon with peers and a fresh tip.
 func onStagenet(f *fakeXMREscrow) { f.nettype, f.peers = "stagenet", 8 }
@@ -26,9 +24,8 @@ func (x *xmrEscrowEnv) adminPage() string {
 	return html.UnescapeString(x.page("/admin", as))
 }
 
-// xmrAdminLines reads, from an /admin page, the alert under Payment providers about the Monero escrow daemon ("" when
-// there is none), the XMR line of the escrow-only readiness panel and the Payment providers paragraph (QA4W4B-1).
-func xmrAdminLines(t *testing.T, page string) (alert, readiness, providers string) {
+// xmrAdminLines reads the Monero escrow readiness alert and status row from the admin page.
+func xmrAdminLines(t *testing.T, page string) (alert, readiness string) {
 	t.Helper()
 	cut := func(from, to string) string {
 		i := strings.Index(page, from)
@@ -41,11 +38,11 @@ func xmrAdminLines(t *testing.T, page string) (alert, readiness, providers strin
 		}
 		return page[i : i+j]
 	}
-	alert, readiness, providers = cut(`id="xmr-escrow-node"`, "</div>"), cut("<li>XMR escrow: ", "</li>"), cut("Deposits of pooled orders", "</p>")
-	if readiness == "" || providers == "" {
-		t.Fatalf("/admin lacks the readiness line or the Payment providers paragraph:\n%s", page)
+	alert, readiness = cut(`id="xmr-escrow-node"`, "</div>"), cut("<li>XMR escrow: ", "</li>")
+	if readiness == "" {
+		t.Fatalf("/admin lacks the XMR escrow readiness line:\n%s", page)
 	}
-	return alert, readiness, providers
+	return alert, readiness
 }
 
 // adminOf is /admin, unescaped, as a new administrator of a's market.
@@ -113,7 +110,7 @@ func TestXMREscrowStagenetTags(t *testing.T) {
 	if !strings.Contains(page, "STAGENET") || strings.Contains(strings.ToLower(page), "fakechain") {
 		t.Fatalf("the order page does not name stagenet only:\n%s", page)
 	}
-	if home := html.UnescapeString(x.page("/", x.buyerSess)); !strings.Contains(home, "Monero escrow only (Monero stagenet)") || strings.Contains(strings.ToLower(home), "fakechain") {
+	if home := html.UnescapeString(x.page("/", x.buyerSess)); !strings.Contains(home, "Monero escrow (Monero stagenet)") || strings.Contains(strings.ToLower(home), "fakechain") {
 		t.Fatalf("the site-wide notice does not name stagenet only:\n%s", home)
 	}
 	x.fake.payAddress(addr, hex64("tags deposit"), xmrListingPrice, 10)
@@ -469,123 +466,7 @@ func TestXMREscrowSkipsWhileTipUnreadable(t *testing.T) {
 	}
 }
 
-// The pooled Monero check applies the same rule (A-439 found pooled Monero read only target_height): on stagenet no
-// peers, a stale tip, a tip get_last_block_header cannot read, or synchronized false count as not synced, each logged once and named on the admin page; target
-// above height keeps the "still syncing" reason; MONERO_MAX_TIP_AGE moves the bound.
-func TestMoneroPooledGuardPeersAndTipAge(t *testing.T) {
-	ctx := context.Background()
-	w, s := newPayMonero(t, payStagenetPrimary, payStagenetSub)
-	setPaymentEnv(t, "", "", s.url(""), s.url(""), "stagenet")
-	t.Setenv("MONERO_MAX_TIP_AGE", "")
-	a := newPaymentsApp()
-	if err := a.initPayments(ctx); err != nil || a.provider("XMR") == nil {
-		t.Fatalf("startup: %v", err)
-	}
-	logs := captureLog(t)
-	if skip, _, _ := a.refreshProviders(ctx); len(skip) != 0 {
-		t.Fatalf("a synced stagenet daemon skipped: %v", skip)
-	}
-	for _, tc := range []struct {
-		set, undo func(m *payMoneroWallet)
-		why       string
-	}{
-		{func(m *payMoneroWallet) { m.peers = 0 }, func(m *payMoneroWallet) { m.peers = 8 }, "no peers"},
-		{func(m *payMoneroWallet) { m.tipAge = 2 * time.Hour }, func(m *payMoneroWallet) { m.tipAge = 0 }, "tip older than MONERO_MAX_TIP_AGE"},
-		{func(m *payMoneroWallet) { m.unsynced = true }, func(m *payMoneroWallet) { m.unsynced = false }, "daemon not synchronized"},
-		// QA4W3-3: a tip that cannot be read is not taken as fresh.
-		{func(m *payMoneroWallet) { m.tipErr = true }, func(m *payMoneroWallet) { m.tipErr = false }, "tip time unreadable"},
-	} {
-		w.set(tc.set)
-		want := syncSkipReason(tc.why, "")
-		if skip, _, _ := a.refreshProviders(ctx); skip["XMR"] != want || a.provider("XMR") == nil || !strings.Contains(want, tc.why) {
-			t.Fatalf("%s: skip %q, want %q", tc.why, skip["XMR"], want)
-		}
-		a.refreshProviders(ctx)
-		if line := "payments: XMR node not synced (" + tc.why + "); watcher passes skipped until it is"; strings.Count(logs.String(), line) != 1 {
-			t.Fatalf("%s: log\n%s", tc.why, logs.String())
-		}
-		w.set(tc.undo)
-		if skip, _, _ := a.refreshProviders(ctx); len(skip) != 0 {
-			t.Fatalf("%s: synced again but skipped: %v", tc.why, skip)
-		}
-	}
-	if n := strings.Count(logs.String(), "payments: XMR node synced; watcher passes resumed"); n != 4 {
-		t.Fatalf("%d resumed lines:\n%s", n, logs.String())
-	}
-	// A restricted RPC (the bundled monero service) reports 0 connections whatever its peers: with a fresh tip it is
-	// synced; offline or a stale tip still count.
-	w.set(func(m *payMoneroWallet) { m.restricted = true })
-	if skip, _, _ := a.refreshProviders(ctx); len(skip) != 0 {
-		t.Fatalf("a restricted RPC with a fresh tip: %v", skip)
-	}
-	w.set(func(m *payMoneroWallet) { m.offline = true })
-	if skip, _, _ := a.refreshProviders(ctx); skip["XMR"] != syncSkipReason("no peers", "") {
-		t.Fatalf("an offline restricted RPC: %v", skip)
-	}
-	w.set(func(m *payMoneroWallet) { m.offline, m.tipAge = false, 2*time.Hour })
-	if skip, _, _ := a.refreshProviders(ctx); skip["XMR"] != syncSkipReason("tip older than MONERO_MAX_TIP_AGE", "") {
-		t.Fatalf("a restricted RPC with a stale tip: %v", skip)
-	}
-	w.set(func(m *payMoneroWallet) { m.restricted, m.tipAge = false, 0 })
-	a.refreshProviders(ctx)
-	t.Setenv("MONERO_MAX_TIP_AGE", "3h")
-	w.set(func(m *payMoneroWallet) { m.tipAge = 2 * time.Hour })
-	if skip, _, _ := a.refreshProviders(ctx); len(skip) != 0 {
-		t.Fatalf("a 2h-old tip under MONERO_MAX_TIP_AGE=3h: %v", skip)
-	}
-	w.set(func(m *payMoneroWallet) { m.tipAge, m.height, m.target = 0, 100, 500 })
-	if skip, _, _ := a.refreshProviders(ctx); skip["XMR"] != syncingReason {
-		t.Fatalf("target above height: %v", skip)
-	}
-}
-
-// The pooled Monero pass end to end: with no peers an unpaid order past its window is not cancelled, the admin page
-// names the reason and the pass is no error; once the daemon has peers again the next pass cancels it.
-func TestMoneroPooledNoPeersHoldsExpiry(t *testing.T) {
-	w, s := newPayMonero(t, payStagenetPrimary, payStagenetSub)
-	w.valid[payStagenetSub] = "stagenet"
-	setPaymentEnv(t, "", "", s.url(""), s.url(""), "stagenet")
-	t.Setenv("MONERO_MAX_TIP_AGE", "")
-	e := newTestApp(t)
-	b, bs := e.user("xsyncbuyer", "buyer")
-	v, _ := e.user("xsyncvendor", "vendor")
-	_, as := e.user("xsyncadmin", "admin")
-	order := e.order(b, e.product(v, "digital"), "XMR", stateDraft)
-	if r := e.do("POST", "/orders/pay", bs, url.Values{"order_id": {order}}); r.Code != 303 {
-		t.Fatalf("pay: %d %s", r.Code, r.Body.String())
-	}
-	if _, err := e.DB.Exec("UPDATE payment_addresses SET created=now()-interval '48 hours' WHERE order_id=$1", order); err != nil {
-		t.Fatal(err)
-	}
-	w.set(func(m *payMoneroWallet) { m.peers = 0 })
-	if err := e.A.pollOnce(context.Background()); err != nil {
-		t.Fatalf("a not-synced pass is not an error: %v", err)
-	}
-	state := func() string {
-		var st string
-		e.DB.QueryRow("SELECT state FROM orders WHERE id=$1", order).Scan(&st)
-		return st
-	}
-	if st := state(); st != stateAwaitingPayment {
-		t.Fatalf("an order expired while the daemon had no peers: %s", st)
-	}
-	r := e.do("GET", "/admin", as, nil)
-	e.check(r, 200)
-	if page := html.UnescapeString(r.Body.String()); !strings.Contains(page, syncSkipReason("no peers", "")) {
-		t.Fatalf("admin page lacks the reason:\n%s", page)
-	}
-	w.set(func(m *payMoneroWallet) { m.peers = 8 })
-	if err := e.A.pollOnce(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if st := state(); st != stateCancelled {
-		t.Fatalf("expired order after a synced pass: %s", st)
-	}
-}
-
-// While the guard holds an expired order open (its payment window has passed, no deposit waits for confirmations, the
-// daemon is not synced), its page says the order stays open while the market waits for its Monero node, never that it
-// will be cancelled at a time already past (the Bitcoin page's QA4W1-5, for Monero).
+// The escrow watcher leaves an expired payment window open until its node is synced.
 func TestXMREscrowWindowPassedWhileNotSynced(t *testing.T) {
 	x := newXMREscrowEnv(t)
 	x.mustPoll()
@@ -610,124 +491,5 @@ func TestXMREscrowWindowPassedWhileNotSynced(t *testing.T) {
 	x.mustPoll()
 	if s := x.state(order); s != stateCancelled {
 		t.Fatalf("after a synced pass: %s", s)
-	}
-}
-
-// QA4W5-5: the watcher's retry of Monero escrow's startup checks records the state it reached, so /admin follows it:
-// started with the escrow daemon unchecked (get_info past startup's budget) and the pooled wallet-rpc down, then
-// retried once the daemon answers, the alert says Monero escrow waits for the pooled wallet's first check, no longer
-// that the daemon could not be checked.
-func TestXMREscrowRetryRecordsState(t *testing.T) {
-	ctx := context.Background()
-	fake := newFakeXMREscrow(t)
-	fake.edit(onStagenet)
-	fake.hook("get_info", func() { time.Sleep(time.Second) })
-	_, pub := testSeedKey(t, nil)
-	fake.setEnv(t, writeSeedKey(t, pub))
-	_, pooled := newPayMonero(t, payStagenetPrimary, payStagenetSub)
-	t.Setenv("MONERO_WALLET_RPC_URL", pooled.url(""))
-	t.Setenv("MONERO_RPC_URL", pooled.url(""))
-	t.Setenv("MONERO_NETWORK", "stagenet")
-	t.Setenv("MONERO_MAX_TIP_AGE", "")
-	pooled.down.Store(true)
-	saved := paymentStartupTimeout
-	paymentStartupTimeout = 300 * time.Millisecond
-	a, _, err := startApp(t, "")
-	paymentStartupTimeout = saved
-	if err != nil || a.escrowXMR == nil || a.escrowXMR.ready.Load() || a.escrowXMR.startState != xmrLogUnchecked {
-		t.Fatalf("startup with the escrow daemon unchecked: %v %q", err, a.escrowXMR.startState)
-	}
-	t.Cleanup(a.Close)
-	unchecked := "the escrow daemon or wallet-rpc could not be checked"
-	if alert, _, _ := xmrAdminLines(t, adminOf(t, a)); !strings.Contains(alert, "Monero escrow not ready: "+unchecked) {
-		t.Fatalf("/admin with the daemon unchecked: alert %q", alert)
-	}
-	fake.hook("get_info", nil)
-	retry := &escrowRetry{last: a.escrowXMR.startState}
-	a.retryEscrowXMR(ctx, retry)
-	if a.escrowXMR.ready.Load() || retry.last != xmrLogPooledWait {
-		t.Fatalf("retry with the daemon answering and the pooled wallet-rpc down: ready %v, state %q", a.escrowXMR.ready.Load(), retry.last)
-	}
-	waiting := "waiting for the pooled Monero wallet's first check"
-	if alert, readiness, _ := xmrAdminLines(t, adminOf(t, a)); !strings.Contains(alert, "Monero escrow not ready: "+waiting) || strings.Contains(alert, unchecked) ||
-		!strings.Contains(readiness, "(not ready: "+waiting+")") {
-		t.Fatalf("/admin after the retry: alert %q, readiness %q", alert, readiness)
-	}
-}
-
-// QA4W3-2: the wallet open in the escrow wallet-rpc is compared with the pooled Monero wallet's primary address
-// (pooledXMRWalletOpen), which backs up sameRPCEndpoint now that both wallet-rpcs may follow one stagenet daemon. When
-// the escrow wallet-rpc answers get_address with the pooled primary, startup is refused (errXMRStartWallet). When the
-// pooled provider has not passed a check yet (its wallet-rpc down at startup), the comparison has nothing to compare
-// with, so Monero escrow waits, making no escrow wallet call, instead of starting unchecked; once the pooled check
-// passes, the next retry compares and refuses, and later retries stay refused (until a restart) whatever wallet the
-// escrow wallet-rpc then has open.
-func TestXMREscrowRefusesPooledWalletOpen(t *testing.T) {
-	ctx := context.Background()
-	fake := newFakeXMREscrow(t)
-	pooledFile := &fakeXMRWalletFile{name: "opsecmkt", accounts: []string{payStagenetPrimary}, nettype: "stagenet"}
-	fake.edit(func(f *fakeXMREscrow) {
-		onStagenet(f)
-		f.files[pooledFile.name], f.open = pooledFile, pooledFile
-	})
-	_, pub := testSeedKey(t, nil)
-	fake.setEnv(t, writeSeedKey(t, pub))
-	_, pooled := newPayMonero(t, payStagenetPrimary, payStagenetSub)
-	t.Setenv("MONERO_WALLET_RPC_URL", pooled.url(""))
-	t.Setenv("MONERO_RPC_URL", pooled.url(""))
-	t.Setenv("MONERO_NETWORK", "stagenet")
-	t.Setenv("MONERO_MAX_TIP_AGE", "")
-	a, dsn, err := startApp(t, "")
-	if !errors.Is(err, errXMRStartWallet) || !strings.Contains(err.Error(), errXMRPooledWallet.msg) {
-		t.Fatalf("startup with the pooled wallet open in the escrow wallet-rpc: %v", err)
-	}
-	if a != nil {
-		a.Close()
-	}
-
-	// The pooled wallet-rpc down at startup: no primary address to compare with yet.
-	pooled.down.Store(true)
-	logs := captureLog(t)
-	from := fake.count()
-	a, _, err = startApp(t, dsn)
-	if err != nil || a.escrowXMR == nil || a.escrowXMR.ready.Load() || a.escrowXMR.startState != xmrLogPooledWait || !strings.Contains(logs.String(), xmrLogPooledWait) {
-		t.Fatalf("startup with the pooled provider unchecked: %v\n%s", err, logs.String())
-	}
-	for _, c := range fake.callLog()[from:] {
-		if !slices.Contains([]string{"get_info", "get_last_block_header", "hard_fork_info"}, c.Method) {
-			t.Fatalf("Monero escrow called %s while waiting for the pooled check", c.Method)
-		}
-	}
-	// The administrator reads the waiting state, not a plain "on" (QA4W4B-1).
-	alert, readiness, _ := xmrAdminLines(t, adminOf(t, a))
-	waiting := "waiting for the pooled Monero wallet's first check"
-	if !strings.Contains(alert, "Monero escrow not ready: "+waiting) || !strings.Contains(alert, "MONERO_WALLET_RPC_URL") ||
-		!strings.Contains(readiness, "XMR escrow: on (not ready: "+waiting+")") {
-		t.Fatalf("/admin while waiting for the pooled check: alert %q, readiness %q", alert, readiness)
-	}
-	pooled.down.Store(false)
-	if a.refreshProviders(ctx); a.provider("XMR") == nil {
-		t.Fatal("the pooled Monero provider did not come up")
-	}
-	retry := &escrowRetry{last: a.escrowXMR.startState}
-	a.retryEscrowXMR(ctx, retry)
-	refusedLine := xmrLogRefused + errXMRPooledWallet.msg
-	if !retry.refused || a.escrowXMR.ready.Load() || strings.Count(logs.String(), refusedLine) != 1 {
-		t.Fatalf("retry once the pooled check passed: refused %v, ready %v\n%s", retry.refused, a.escrowXMR.ready.Load(), logs.String())
-	}
-	alert, readiness, _ = xmrAdminLines(t, adminOf(t, a))
-	if !strings.Contains(alert, "Monero escrow not ready: refused until the app is restarted") || !strings.Contains(alert, errXMRPooledWallet.msg) ||
-		strings.Contains(alert, waiting) || !strings.Contains(readiness, "XMR escrow: on (not ready: refused until the app is restarted)") {
-		t.Fatalf("/admin after the refusal: alert %q, readiness %q", alert, readiness)
-	}
-	// It sticks: with an escrow wallet open instead, a retry checks nothing and stays refused.
-	fake.edit(func(f *fakeXMREscrow) {
-		other := &fakeXMRWalletFile{name: "escrow-other", accounts: []string{testXMRAddrOn("stagenet", "escrow other", false)}, nettype: "stagenet"}
-		f.files[other.name], f.open = other, other
-	})
-	from = fake.count()
-	a.retryEscrowXMR(ctx, &escrowRetry{last: xmrLogUnchecked})
-	if _, _, err := a.startEscrowXMR(ctx); !errors.Is(err, errXMRRefusedUntilRestart) || a.escrowXMR.ready.Load() || fake.count() != from || strings.Count(logs.String(), refusedLine) != 1 {
-		t.Fatalf("after the refusal: %v, ready %v, %d calls\n%s", err, a.escrowXMR.ready.Load(), fake.count()-from, logs.String())
 	}
 }

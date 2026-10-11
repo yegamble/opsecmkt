@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	texttemplate "text/template"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -77,9 +78,32 @@ type actionCtx struct {
 	User  *User   // nil for anonymous Public actions
 	Token string  // raw request token: session, or pre-login anon when anonymous (also sessionToken(R))
 	Form  url.Values
+	// ConfirmedFormNonce is set only for an opted-in OwnTx action whose confirmedTx
+	// transaction owns both its mutation and the durable submission receipt.
+	ConfirmedFormNonce bool
+	// FactorFormNonce explicitly permits the recovery-code lock and consumption
+	// order used by TOTP activation/replacement/disable. Other confirmed forms
+	// still reject those options.
+	FactorFormNonce bool
+	// OwnFormNonce records the original confirmation mode for dynamic OwnTx
+	// routes such as profile/key changes. It is mutually exclusive with the
+	// fixed confirmed and normal transaction flags.
+	OwnFormNonce           bool
+	ReceiptConfirmRequired bool
+	// ReceiptAuthorize rechecks route-specific eligibility before a confirmed receipt
+	// can be claimed or replayed. It must be read-only and must not require the
+	// original transaction's pre-change state.
+	ReceiptAuthorize func(*actionCtx) error
 }
 
 func (c *actionCtx) Ctx() context.Context { return c.R.Context() }
+
+func rotationSession(c *actionCtx) string {
+	if old, ok := c.R.Context().Value(rotationSessionKey{}).(string); ok {
+		return old
+	}
+	return c.Token // action contexts built directly by tests keep their existing semantics
+}
 
 type actionResult struct {
 	Redirect    string // default "/"
@@ -90,16 +114,21 @@ type actionResult struct {
 }
 
 type actionSpec struct {
-	Public bool     // allow anonymous; skips the write:<user> rate limit
-	Roles  []string // required user roles (implies signed in)
-	OwnTx  bool     // Run opens its own transactions (e.g. bcrypt before any tx); c.Tx is nil, Audit is written without a tx
+	Public             bool                   // allow anonymous; skips the write:<user> rate limit
+	Roles              []string               // required user roles (implies signed in)
+	OwnTx              bool                   // Run opens its own transactions (e.g. bcrypt before any tx); c.Tx is nil, Audit is written without a tx
+	FormNonce          bool                   // this normal-transaction form records a successful submission and replays its original 303
+	ConfirmedFormNonce bool                   // this confirmed OwnTx form records its receipt in confirmedTx's transaction
+	FactorFormNonce    bool                   // fixed confirmed receipt whose factor-code rows are locked before the actor
+	OwnFormNonce       bool                   // dynamic OwnTx receipt remembers whether the original request needed confirmation
+	ReceiptAuthorize   func(*actionCtx) error // optional current eligibility check before a confirmed claim/replay
 	// Precheck, when set, runs in ServeHTTP after the CSRF check and before the session lookup and the post
 	// slot: a check of the form alone (no database), so a flood of posts it refuses holds no slot (A-178).
 	// Run must still make the same checks; it is also called without Precheck (tests call post directly).
 	Precheck func(a *App, r *http.Request, token string) error
 	// OneAtATime admits at most oneAtATimeLimit requests of this action per signed-in account at once; another
 	// is refused at once with 429 and Retry-After: 5, before it takes a post slot or a database connection. For
-	// an action that may wait on a slow wallet while holding the account's row (payAction), so one account's
+	// an action that may wait on a slow node while holding the account's row (escrowCheckoutAction), so one account's
 	// burst cannot hold the application pool's connections queued on its own row lock (PR #15 re-review).
 	OneAtATime bool
 	// Off, when set and true, makes the action answer exactly as an unknown action does (pageSpec.Off).
@@ -139,6 +168,21 @@ func registerAction(path string, s actionSpec) {
 	if _, dup := actions[path]; dup {
 		panic("duplicate action " + path)
 	}
+	if s.FormNonce && (s.OwnTx || s.Public) {
+		panic("form nonce requires an authenticated shared-transaction action: " + path)
+	}
+	if s.ConfirmedFormNonce && (!s.OwnTx || s.Public || s.FormNonce || len(s.Roles) == 0) {
+		panic("confirmed form nonce requires a role-gated authenticated OwnTx action: " + path)
+	}
+	if s.OwnFormNonce && (!s.OwnTx || s.Public || s.FormNonce || s.ConfirmedFormNonce || len(s.Roles) == 0) {
+		panic("own form nonce requires a role-gated authenticated OwnTx action: " + path)
+	}
+	if s.FactorFormNonce && (!s.ConfirmedFormNonce || !s.OwnTx) {
+		panic("factor form nonce requires a confirmed OwnTx action: " + path)
+	}
+	if s.ReceiptAuthorize != nil && !s.ConfirmedFormNonce {
+		panic("receipt authorization requires a confirmed form nonce: " + path)
+	}
 	actions[path] = s
 }
 
@@ -163,12 +207,18 @@ func fail(code int, msg string) error { return &httpError{Code: code, Msg: msg} 
 //
 // cause is a class from errorCause, never the error's text, and the line names nothing about the request or
 // its sender: no URL path or query, form value, cookie, header, address, handle or user id. At most 10 such
-// lines are written a second; the rest are counted in one "http 5xx suppressed=N" line (A-178). A 503 carries
-// Retry-After.
-func serverError(w http.ResponseWriter, r *http.Request, code int, msg, cause string) {
+// lines are written a second; the rest are counted in one "http 5xx suppressed=N" line (A-178).
+// Retryable 503 responses carry Retry-After.
+func serverErrorReference(r *http.Request, code int, cause string) string {
 	ref := randomToken()[:8]
 	kind, name := routeOf(r)
+	recordServerError(r, code, ref)
 	http5xxLog.Printf("http 5xx kind=%s name=%s status=%d ref=%s cause=%s", kind, name, code, ref, cause)
+	return ref
+}
+
+func serverError(w http.ResponseWriter, r *http.Request, code int, msg, cause string) {
+	ref := serverErrorReference(r, code, cause)
 	if code == http.StatusServiceUnavailable {
 		w.Header().Set("Retry-After", busyRetryAfter)
 	}
@@ -182,12 +232,37 @@ func writeHTTPError(w http.ResponseWriter, r *http.Request, err error) {
 		http.Error(w, he.Msg, he.Code)
 		return
 	}
+	writeDBFailure(w, r, err)
+}
+
+// writeDBFailure reserves Retry-After for transient database faults. A certificate or configuration failure
+// may need operator repair; repeatedly retrying the same request will not make it safe or successful.
+func writeDBFailure(w http.ResponseWriter, r *http.Request, err error) {
+	writeDBFailureContext(r.Context(), w, r, err)
+}
+
+func writeDBFailureContext(ctx context.Context, w http.ResponseWriter, r *http.Request, err error) {
+	if dbBusyForContext(ctx, err) {
+		serverError(w, r, 503, "Service unavailable", errorCause(err))
+		return
+	}
+	serverError(w, r, 500, "Unable to access database", errorCause(err))
+}
+
+// Raw escrow downloads depend on both the database and the wallet. Preserve their existing temporary
+// wallet-failure response while refusing to promise retries for a persistent database TLS configuration error.
+func writeEscrowDownloadFailure(w http.ResponseWriter, r *http.Request, err error) {
+	var ce *pgconn.ConnectError
+	if errors.As(err, &ce) && !dbBusyForContext(r.Context(), err) {
+		writeDBFailure(w, r, err)
+		return
+	}
 	serverError(w, r, 503, "Service unavailable", errorCause(err))
 }
 
 // dbBusy reports a statement cancelled by the application pool's statement_timeout or lock_timeout (A-177),
 // or a database that is unavailable (QA-178-2): shutting down or refusing connections (57P01-57P03, 53300),
-// or a lost or failed connection (08000, 08001, 08003, 08004, 08006 or dbConnLost; the other class 08 codes,
+// or a lost or failed transport (08000, 08001, 08003, 08004, 08006 or dbConnLost; the other class 08 codes,
 // such as 08P01 protocol_violation, point at configuration, which retrying does not fix). The database is
 // overloaded, restarting or a row is held too long, so the request is answered 503 (retry), not 500. A client
 // that went away or a request past its deadline is not.
@@ -200,7 +275,60 @@ func dbBusy(err error) bool {
 		}
 		return false
 	}
-	return !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) && dbConnLost(err)
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+	var ce *pgconn.ConnectError
+	if errors.As(err, &ce) {
+		// A failed handshake or certificate validation is a configuration problem even though pgx wraps it
+		// in ConnectError. Retry only identifiable transport failures from an attempted connection.
+		return dbConnectTransportFailure(err)
+	}
+	return !errors.Is(err, context.DeadlineExceeded) && dbConnLost(err)
+}
+
+// A configured pgx connect_timeout can surface as context.DeadlineExceeded inside ConnectError while the
+// HTTP request is still live. A caller whose own request has expired must not receive a retry promise.
+func dbBusyForContext(ctx context.Context, err error) bool {
+	return ctx.Err() == nil && dbBusy(err)
+}
+
+func dbConnectTransportFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	// A multi-host ConnectError joins every attempt. One permanent TLS/configuration failure must not
+	// become retryable merely because another host also refused a TCP connection.
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		children := joined.Unwrap()
+		if len(children) == 0 {
+			return false
+		}
+		for _, child := range children {
+			if !dbConnectTransportFailure(child) {
+				return false
+			}
+		}
+		return true
+	}
+	if op, ok := err.(*net.OpError); ok {
+		return dbConnectTransportFailure(op.Err) // a TLS handshake error can sit inside net.OpError
+	}
+	if dns, ok := err.(*net.DNSError); ok {
+		return dns.IsTimeout || dns.IsTemporary
+	}
+	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+		return dbConnectTransportFailure(wrapped.Unwrap())
+	}
+	for _, target := range []error{context.DeadlineExceeded, io.EOF, io.ErrUnexpectedEOF, net.ErrClosed, syscall.ECONNREFUSED,
+		syscall.ECONNRESET, syscall.ECONNABORTED, syscall.EPIPE, syscall.ETIMEDOUT,
+		syscall.EHOSTUNREACH, syscall.ENETUNREACH} {
+		if errors.Is(err, target) {
+			return true
+		}
+	}
+	var ne net.Error
+	return errors.As(err, &ne) && (ne.Timeout() || ne.Temporary())
 }
 
 // dbConnLost reports a failed or lost database connection: errorCause's db-connection class.
@@ -344,6 +472,10 @@ type sessionKey struct{}
 
 type anonKey struct{}
 
+// rotationSessionKey retains the original session cookie even if a matching anonymous CSRF
+// token makes this request anonymous. Only successful sign-in may revoke that session.
+type rotationSessionKey struct{}
+
 // sessionToken returns this request's token: the `session` cookie value, or else the pre-login `anon`
 // cookie value (including one issued by this response). CSRF and CAPTCHA are bound to it.
 func sessionToken(r *http.Request) string { s, _ := r.Context().Value(sessionKey{}).(string); return s }
@@ -389,7 +521,7 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 			http.Error(w, "Sign in required", 401)
 			return
 		}
-		if !a.allow("write:"+u.ID, 100) {
+		if !a.allowWrite(u.ID) {
 			http.Error(w, "Too many changes. Try again later.", 429)
 			return
 		}
@@ -402,7 +534,11 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 		done, ok := a.enterOneAtATime(r.URL.Path, u.ID)
 		if !ok {
 			w.Header().Set("Retry-After", busyRetryAfter)
-			http.Error(w, "Your previous request is still being processed. Wait a few seconds, then reload the page to see its result.", http.StatusTooManyRequests)
+			msg := "Your previous request is still being processed. Wait a few seconds, then reload the page to see its result."
+			if spec.FormNonce || spec.ConfirmedFormNonce || spec.OwnFormNonce {
+				msg = "Your previous request is still being processed. Wait a few seconds, then check its result. If the original form is still open, resubmit it unchanged to retrieve the result."
+			}
+			http.Error(w, msg, http.StatusTooManyRequests)
 			return
 		}
 		defer done()
@@ -415,17 +551,39 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 	}
 	defer release()
 	ctx := r.Context()
-	c := &actionCtx{A: a, W: w, R: r, User: u, Token: token, Form: r.PostForm}
+	c := &actionCtx{A: a, W: w, R: r, User: u, Token: token, Form: r.PostForm,
+		ConfirmedFormNonce: spec.ConfirmedFormNonce, FactorFormNonce: spec.FactorFormNonce,
+		OwnFormNonce: spec.OwnFormNonce, ReceiptAuthorize: spec.ReceiptAuthorize}
 	if !spec.OwnTx {
 		tx, err := a.db.BeginTx(ctx, nil)
 		if err != nil {
-			serverError(w, r, 503, "Service unavailable", errorCause(err))
+			writeDBFailure(w, r, err)
 			return
 		}
 		defer tx.Rollback()
 		c.Tx = tx
 	}
-	res, err := spec.Run(c)
+	// A-222: the session/route-role check above may have run before a staff member was
+	// demoted or suspended. Lock and re-read the caller in the action's transaction
+	// before any role-gated staff change. OwnTx actions use confirmedTx or their own
+	// locked recheck; keeping this first avoids target-row/actor-row lock inversions.
+	var res actionResult
+	var repeated bool
+	var err error
+	if c.Tx != nil && u != nil && len(spec.Roles) > 0 && (u.Role == "admin" || u.Role == "moderator") {
+		var role string
+		var suspended bool
+		err = c.Tx.QueryRowContext(ctx, "SELECT role,suspended_at IS NOT NULL FROM users WHERE id=$1 FOR NO KEY UPDATE", u.ID).Scan(&role, &suspended)
+		if errors.Is(err, sql.ErrNoRows) || err == nil && (role != u.Role || suspended) {
+			err = errAccountChanged
+		}
+	}
+	if err == nil && spec.FormNonce {
+		res, repeated, err = claimFormSubmission(c)
+	}
+	if err == nil && !repeated {
+		res, err = spec.Run(c)
+	}
 	var he *httpError
 	if errors.As(err, &he) {
 		if he.Render != nil {
@@ -443,14 +601,60 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 		return
 	}
 	if err != nil {
-		if dbBusy(err) {
+		var unknown commitOutcomeUnknown
+		if errors.As(err, &unknown) {
+			msg := "Change outcome unknown: it may have been saved. Reload the relevant page and check the recorded state before taking further action."
+			switch r.URL.Path {
+			case "/admin/escrow-xmr-destroyed":
+				msg = "Escrow wallet destruction outcome unknown: the confirmation may have been saved. Check the wallet record and sealed-seed status on the admin page, and verify the wallet files and backups before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
+			case "/admin/review":
+				msg = "Review change outcome unknown: it may have been saved. Check the review on the product or vendor page before starting another form. If the original form is still open, resubmit it unchanged to retrieve the saved response."
+			case "/admin/listing":
+				msg = "Listing change outcome unknown: it may have been saved. Check the listing's status and activity before starting another form. If the original form is still open, resubmit it unchanged to retrieve the saved response."
+			case "/escrow/decision", "/admin/escrow-xmr-rerequest", "/admin/escrow-xmr-retry-build":
+				msg = "Escrow administration outcome unknown: it may have been saved. Check the order decision, settlement and activity before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
+			case "/admin/escrow-fee":
+				msg = "Market fee outcome unknown: it may have been saved. Check the fee setting and audit trail on the admin page before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
+			case "/resolve":
+				msg = "Resolution outcome unknown: it may have been saved. Check the dispute, order and payout state before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
+			case "/disputes/concede":
+				msg = "Concession outcome unknown: it may have been saved. Check the dispute, order and payout or escrow settlement before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
+			case "/admin/suspend", "/admin/reset-factors":
+				msg = "Staff action outcome unknown: it may have been saved. Check the account's current state and audit trail before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
+			case "/admin/captcha", "/admin/staff-contact", "/admin/staff-list", "/admin/operator-key", "/admin/canary":
+				msg = "Admin setting outcome unknown: it may have been saved. Reload the admin page and check the setting and audit trail before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
+			case "/admin/escrow-release-days":
+				msg = "Escrow release deadline setting outcome unknown: it may have been saved. Reload the admin page and check the current deadline and audit trail before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
+			case "/admin/payment-intake":
+				msg = "Payment intake setting outcome unknown: it may have been saved. Reload the admin page and check the currency's current intake and audit trail before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
+			case "/moderator/payment-review", "/moderator/xmr-collision":
+				msg = "Staff disposition outcome unknown: it may have been saved. Check the moderation desk and order record before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
+			case "/pgp/2fa":
+				msg = "PGP sign-in setting outcome unknown: it may have been saved. Reload PGP verification and check whether PGP sign-in is on or off before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
+			case "/delivery-cleanup":
+				msg = "Delivery cleanup outcome unknown: it may have been saved. Reload archived listing cleanup and check whether the stored delivery text is present before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
+			case "/admin/escrow-rebroadcast":
+				msg = "Bitcoin escrow rebroadcast outcome unknown: the confirmation may have been saved. Check the settlement on the admin page and verify its transaction against the chain and the watch-only wallet before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
+			case "/admin/escrow-xmr-rebroadcast":
+				msg = "Monero escrow relay outcome unknown: the confirmation may have been saved. Check the settlement on the admin page and verify its transaction with the escrow daemon and wallet before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
+			case "/escrow/claim", "/escrow/ship", "/escrow/recover", "/escrow/bump", "/escrow-xmr/claim", "/escrow-xmr/ship", "/escrow-xmr/confirm":
+				msg = "Escrow action outcome unknown: it may have been saved. Check the order and settlement state before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
+			case "/totp/disable", "/totp/activate", "/totp/recovery":
+				msg = "Authenticator change outcome unknown: it may have been saved. Check your authenticator settings and recovery-code state before making another change. If the original form is still open, resubmit it unchanged to retrieve the saved response."
+			case "/account", "/admin", "/escrow-key", "/escrow-key/practice":
+				msg = "Change outcome unknown: it may have been saved. Check the current account, admin or escrow-key state before making another change. If the original form is still open, resubmit it unchanged to retrieve the saved response."
+			}
+			serverError(w, r, 500, msg, errorCause(err))
+			return
+		}
+		if dbBusyForContext(ctx, err) {
 			serverError(w, r, 503, errBusyMsg, errorCause(err))
 			return
 		}
 		serverError(w, r, 500, "Unable to save changes", errorCause(err))
 		return
 	}
-	if res.Audit != "" {
+	if res.Audit != "" && !repeated {
 		var uid any
 		if res.AuditUserID != "" {
 			uid = res.AuditUserID
@@ -465,7 +669,7 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 			// Inside the action's transaction nothing is committed yet, so a busy or lost database answers
 			// the retryable 503 like the action itself. An OwnTx action has already committed its change
 			// (the row is written in autocommit), so a retry could repeat it: that stays 500.
-			if c.Tx != nil && dbBusy(err) {
+			if c.Tx != nil && dbBusyForContext(ctx, err) {
 				serverError(w, r, 503, errBusyMsg, errorCause(err))
 				return
 			}
@@ -473,17 +677,27 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 			return
 		}
 	}
+	if res.Redirect == "" {
+		res.Redirect = "/"
+	}
+	if spec.FormNonce && !repeated {
+		if err = finishFormSubmission(c, res); err != nil {
+			writeDBFailure(w, r, err)
+			return
+		}
+	}
 	if c.Tx != nil {
 		if err = c.Tx.Commit(); err != nil {
+			if spec.FormNonce {
+				serverError(w, r, 500, "Submission outcome unknown: it may have been saved. Check the result on the relevant page before starting a new form. If the original form is still open, resubmit it unchanged to retrieve the saved response.", errorCause(err))
+				return
+			}
 			serverError(w, r, 500, "Unable to save changes", errorCause(err))
 			return
 		}
 	}
 	if res.AfterCommit != nil {
 		res.AfterCommit(w)
-	}
-	if res.Redirect == "" {
-		res.Redirect = "/"
 	}
 	if res.Notice != "" && u != nil {
 		res.Redirect = a.setNotice(w, res.Notice, res.Redirect)

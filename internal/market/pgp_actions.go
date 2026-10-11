@@ -26,9 +26,9 @@ func init() {
 	registerPage("pgp", pageSpec{Protected: true})
 	registerLoader("pgp", pgpLoader)
 	registerLoader("account", pgpLoader)
-	registerAction("/pgp/challenge", actionSpec{Run: pgpChallengeAction})
-	registerAction("/pgp/verify", actionSpec{Run: pgpVerifyAction})
-	registerAction("/pgp/2fa", actionSpec{OwnTx: true, Run: pgpTwoFactorAction})
+	registerAction("/pgp/challenge", actionSpec{FormNonce: true, Run: pgpChallengeAction})
+	registerAction("/pgp/verify", actionSpec{FormNonce: true, Run: pgpVerifyAction})
+	registerAction("/pgp/2fa", actionSpec{Roles: []string{"buyer", "vendor", "moderator", "admin"}, OwnTx: true, ConfirmedFormNonce: true, Run: pgpTwoFactorAction})
 	registerPreview("pgp", previewPGP)
 	registerPreview("account", func(d *PageData) { d.PGP = &PGPView{} })
 }
@@ -61,7 +61,8 @@ func sameProfileKey(stored, pasted string) bool {
 
 // saveProfileKey is called by the /account action (inside its tx). An unchanged key is not re-parsed (a
 // legacy key that no longer parses must not block the profile form). The same key re-saved (sameProfileKey)
-// is stored in its canonical form and keeps its ownership proof and PGP sign-in. A changed key (added, replaced or
+// is stored in its canonical form and keeps its ownership proof and PGP sign-in (that rewrite is audited as a profile
+// update; a byte-identical key writes nothing and returns no audit text). A changed key (added, replaced or
 // removed) must parse and needs the confirmation (confirmed: password, plus a TOTP code if enrolled) on every
 // account (A-152): buyers encrypt shipping addresses to it. A new version of the saved key (same fingerprint) is
 // renewProfileKey's. A different key is stored in its canonical form with its fingerprint; ownership proof, PGP
@@ -75,8 +76,8 @@ func saveProfileKey(c *actionCtx, armored string, confirmed bool) (string, strin
 		return "", "", err
 	}
 	old := p.Armored
-	if old == armored {
-		return "Updated profile", "", nil
+	if old == armored { // nothing changed: no write and no audit row (A-159(h)); the form's receipt and notice still apply
+		return "", "", nil
 	}
 	if armored != "" && sameProfileKey(old, armored) {
 		_, _, canonical, _ := parseCanonicalPublicKey(armored)

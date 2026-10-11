@@ -3,12 +3,15 @@
 The text checks need nothing; the resolved-configuration checks run `docker compose config` and are skipped
 without Docker Compose. scripts/test-scanner.sh runs the container itself.
 """
+import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
 import re
 import shutil
 import subprocess
+import tempfile
 import unittest
 
 REPOSITORY = Path(__file__).resolve().parents[1]
@@ -100,6 +103,42 @@ class ScannerComposeTextTests(unittest.TestCase):
         self.assertIsNotNone(tmpfs, 'clamd needs exactly a sized /tmp tmpfs')
         self.assertGreaterEqual(int(tmpfs[1]) * 1024 ** 2, 2 * size_bytes(clamd_options()['StreamMaxLength']))
 
+    def test_route_check_tolerates_missing_ipv6_procfs_and_keeps_ipv4_check(self):
+        script = (REPOSITORY / 'scripts' / 'test-scanner.sh').read_text()
+        start = script.index('routes=$(docker exec')
+        end = script.index('\n[[ -z $routes ]]', start)
+        command = script[start:end]
+        self.assertIn('if [ -r /proc/net/ipv6_route ]; then cat /proc/net/ipv6_route; fi', command)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            net = root / 'net'
+            net.mkdir()
+            route_file = net / 'route'
+            route_file.write_text('Iface Destination Gateway Flags RefCnt Use Metric Mask MTU Window IRTT\n')
+            docker = root / 'docker'
+            docker.write_text('#!/bin/sh\n[ "$1" = exec ] || exit 90\nshift 2\nexec "$@"\n')
+            docker.chmod(0o755)
+            command = command.replace('/proc/net/route', str(route_file)).replace(
+                '/proc/net/ipv6_route', str(net / 'ipv6_route'))
+            command = command.replace('routes=$(docker exec "$name"', 'routes=$(docker exec scanner')
+            command += '; printf "%s" "$routes"'
+            env = {**os.environ, 'PATH': str(root) + os.pathsep + os.environ.get('PATH', '')}
+            safe = subprocess.run(['bash', '-c', 'set -eo pipefail; ' + command], env=env,
+                                  capture_output=True, text=True)
+            self.assertEqual(safe.returncode, 0, safe.stderr)
+            self.assertEqual(safe.stdout, '')
+            route_file.write_text('Iface Destination Gateway Flags RefCnt Use Metric Mask MTU Window IRTT\n'
+                                  'eth0 00000000 0100000A 0003 0 0 0 00000000 0 0 0\n')
+            unsafe = subprocess.run(['bash', '-c', 'set -eo pipefail; ' + command], env=env,
+                                    capture_output=True, text=True)
+            self.assertEqual(unsafe.returncode, 0, unsafe.stderr)
+            self.assertEqual(unsafe.stdout.strip(), 'eth0')
+            route_file.unlink()
+            route_file.mkdir()
+            unreadable = subprocess.run(['bash', '-c', 'set -eo pipefail; ' + command], env=env,
+                                        capture_output=True, text=True)
+            self.assertNotEqual(unreadable.returncode, 0)
+
     def test_image_is_a_pinned_release_with_signatures(self):
         image = re.search(r'^    image: \$\{CLAMAV_IMAGE:-([^}]+)\}$', self.clamd, re.M)[1]
         repository, _, tag = image.partition('@')[0].rpartition(':')
@@ -157,8 +196,11 @@ class ScannerComposeConfigTests(unittest.TestCase):
             arguments += ['--profile', profile]
         environment = {key: value for key, value in os.environ.items() if not key.startswith('COMPOSE_')}
         environment['DATABASE_URL'] = 'postgres://unused@db/unused'
-        # Compose refuses the monero-wallet profile without its password (A-466).
-        environment['MONERO_WALLET_RPC_PASSWORD'] = 'unused'
+        # Compose requires the local Bitcoin verifier whenever the bitcoin profile is active.
+        # These config-only tests do not contact bitcoind, but provide a correctly shaped synthetic value.
+        salt, password = '0123456789abcdef0123456789abcdef', 'compose-only-password'
+        environment['BITCOIN_RPC_AUTH'] = 'marketplace:' + salt + '$' + hmac.new(
+            salt.encode(), password.encode(), hashlib.sha256).hexdigest()
         result = subprocess.run(arguments + ['config', '--format', 'json'], cwd=REPOSITORY, env=environment,
                                 capture_output=True, text=True, check=False)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -169,7 +211,7 @@ class ScannerComposeConfigTests(unittest.TestCase):
             with self.subTest(mode=mode, extra=extra):
                 files = ('compose.yaml', f'compose.{mode}.yaml', 'compose.nodes.yaml', 'compose.internal-db.yaml',
                          *extra, 'compose.scanner.yaml')
-                config = self.config(*files, profiles=('scanner', 'internal-db', 'bitcoin', 'monero', 'monero-wallet', 'mirror'))
+                config = self.config(*files, profiles=('scanner', 'internal-db', 'bitcoin', 'monero', 'mirror'))
                 services = config['services']
                 members = sorted(name for name, service in services.items() if 'scanner' in (service.get('networks') or {}))
                 self.assertEqual(members, ['app', 'clamd'])

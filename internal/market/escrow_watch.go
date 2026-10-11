@@ -17,8 +17,7 @@ import (
 	"time"
 )
 
-// The escrow watcher (WR-escrow Phase 1, slice P1-b). One per deployment (its own PostgreSQL advisory lock), apart
-// from the pooled watcher: it reads what the watch-only wallet received at each watched escrow address and writes it
+// The escrow watcher (WR-escrow Phase 1, slice P1-b). One per deployment (its own PostgreSQL advisory lock): it reads what the watch-only wallet received at each watched escrow address and writes it
 // to the payments ledger, one row per output (applyIncoming; payments.settlement_id stays NULL until a settlement
 // claims the output, P1-c). An escrow order awaiting payment whose confirmed outputs reach the price moves to paid;
 // autoDeliveryHook delivers the content and escrowTransitionHook completes the order on funding through the
@@ -30,7 +29,7 @@ import (
 // its pass (buildSettlements), then co-signs party-signed ones, stores and broadcasts them and follows them to their
 // confirmation (escrow_cosign.go, slice P1-c2). A dispute on an escrow order is decided by an administrator and its
 // decision is paid by a settlement (escrow_decision.go). An escrow order that has received nothing when its payment
-// window ends is cancelled, as a pooled order is; one underpaid then is cancelled too and its refund requested. A confirmed deposit
+// window ends is cancelled; one underpaid then is cancelled too and its refund requested. A confirmed deposit
 // first recorded after an escrow order closed is flagged for payment review (flagLateDeposits); one that did not count
 // when the order was cancelled and has confirmed since is left out for the stray refund (leaveOutUncounted, A-428).
 //
@@ -39,10 +38,10 @@ import (
 // but apply the release deadlines, which need no node (escrow_deadline.go): no deposit is read and no order expires
 // until they pass. The same holds for each pass while the node is not synced (A-439, bitcoin_sync.go).
 
-const escrowWatcherLock = 782495 // the pooled watcher's is 782494
+const escrowWatcherLock = 782495
 
-// xmrEscrowWatcherLock is the Monero escrow watcher's session advisory lock (escrow_xmr_watch.go), apart from both, so
-// a slow Monero wallet pass never holds up the Bitcoin escrow or the pooled watcher.
+// xmrEscrowWatcherLock is the Monero escrow watcher's session advisory lock (escrow_xmr_watch.go), apart from the Bitcoin escrow watcher, so
+// a slow Monero wallet pass never holds up the Bitcoin escrow watcher.
 const xmrEscrowWatcherLock = 782496
 
 // The escrow watcher's horizon for a closed order, in SQL interval text: the order changed within escrowClosedWatch
@@ -90,7 +89,7 @@ const escrowCompletedNote = "Completed on funding (Bitcoin escrow): the content 
 
 // escrowWatcher runs while ESCROW_BTC=on. Until escrow is enabled (its node was down at startup, say) each pass first
 // retries its checks (retryEscrow, A-316), so escrow starts without a restart once the node answers; while it is
-// enabled, retryEscrow runs the pooled key self-check again once a day (QA4W3-8).
+// enabled, retryEscrow rechecks escrow readiness once a day.
 func escrowWatcher(ctx context.Context, a *App) {
 	if !a.escrowConfigured {
 		return
@@ -128,19 +127,27 @@ func escrowWatcher(ctx context.Context, a *App) {
 // or broadcast. A node that is not synced is not an error: its state is logged once per change (noteEscrowSync). In
 // APP_MODE=tor the same node check evaluates the Tor-mode gate for the pass (torGate, A-441): while it holds, nothing is
 // sent, and everything else in the pass goes on.
-func (a *App) escrowPollOnce(ctx context.Context) error {
+func (a *App) escrowPollOnce(ctx context.Context) (outcome error) {
 	e := a.escrow.Load()
 	if a.db == nil || e == nil && !a.escrowConfigured {
 		return nil
 	}
 	var nodeErr error
 	notSynced := false
+	var nodeObservation *bitcoinNode
+	var pinMatch *bool
 	if e != nil {
 		node, err := e.blockchainInfo(ctx)
 		// getnetworkinfo, read at most once per pass: on a public chain for the sync guard (its failure fails the node
 		// check), and in APP_MODE=tor for the Tor-mode gate (its failure holds broadcasts, A-441).
 		var netInfo escrowNetInfo
 		var netErr error
+		if err == nil {
+			nodeObservation = &node
+			matches := escrowChainID(node.Chain, node.SignetChallenge) == e.chainID
+			pinMatch = &matches
+			a.observeEscrowNode(node, pinMatch)
+		}
 		if err == nil && (node.Chain != "regtest" || a.mode == "tor") {
 			netInfo, netErr = e.networkInfo(ctx)
 			if node.Chain != "regtest" {
@@ -162,6 +169,16 @@ func (a *App) escrowPollOnce(ctx context.Context) error {
 			}
 		}
 	}
+	if nodeObservation != nil {
+		a.saveEscrowHealthObservation(ctx, *nodeObservation, pinMatch)
+	}
+	if nodeErr != nil {
+		disabledClass := "node_unreachable"
+		if errors.Is(nodeErr, errEscrowChain) {
+			disabledClass = "chain_pin_mismatch"
+		}
+		a.saveEscrowHealthUnavailable(ctx, disabledClass)
+	}
 	conn, err := a.db.Conn(ctx)
 	if err != nil {
 		return errors.Join(nodeErr, err)
@@ -177,6 +194,9 @@ func (a *App) escrowPollOnce(ctx context.Context) error {
 		if _, err := conn.ExecContext(uctx, "SELECT pg_advisory_unlock($1)", escrowWatcherLock); err != nil {
 			conn.Raw(func(any) error { return driver.ErrBadConn })
 		}
+	}()
+	defer func() {
+		a.noteProviderEpisode(ctx, "escrow_BTC", e == nil || nodeErr != nil || notSynced || outcome != nil)
 	}()
 	if e == nil || nodeErr != nil || notSynced {
 		return errors.Join(nodeErr, a.escrowDeadlines(ctx))
@@ -300,7 +320,11 @@ func (a *App) escrowPollOnce(ctx context.Context) error {
 			errs = append(errs, err)
 		}
 	}
-	return errors.Join(errs...)
+	passErr := errors.Join(errs...)
+	if passErr == nil && nodeObservation != nil {
+		a.saveEscrowHealthPass(ctx, *nodeObservation)
+	}
+	return passErr
 }
 
 // noteEscrowSync records why (a bitcoinNode reason class, "" when synced) as the escrow node's sync state for the admin
@@ -318,16 +342,23 @@ func (a *App) noteEscrowSync(why string) {
 
 // escrowNodeLoader shows on /admin, under Payment providers, why the Bitcoin escrow node is not used: the reason class
 // it is not synced for (with syncRemedy's advice when there is one), the pinned chain and the node's when
-// startEscrow refused it, the pooled user's answer to the market key self-check (A-440), or why the arbiter wallet's
+// startEscrow refused it, or why the arbiter wallet's
 // entries are not read (QA4W4A-1); in APP_MODE=tor why the
 // Tor-mode gate holds broadcasts; and the settlements queued or stuck (A-441, escrow_stall.go).
 func escrowNodeLoader(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
-	if !a.escrowConfigured || d.User == nil || d.User.Role != "admin" {
+	if d.User == nil || d.User.Role != "admin" {
 		return nil
 	}
-	v := &EscrowNodeView{Mismatch: a.escrowMismatch.Load(), StallN: escrowStallBlocks}
-	if class := a.escrowPooledKey.Load(); class != nil {
-		v.PooledKey, v.PooledWhitelist = *class, strings.Join(pooledRPCMethods, ",")
+	v := &EscrowNodeView{Configured: a.escrowConfigured, Mismatch: a.escrowMismatch.Load(), StallN: escrowStallBlocks}
+	var err error
+	if v.Health, err = escrowHealthView(ctx, a.db); err != nil {
+		return err
+	}
+	if !a.escrowConfigured {
+		if v.Health != nil {
+			d.EscrowNode = v
+		}
+		return nil
 	}
 	if why := a.escrowArbiterRead.Load(); why != nil {
 		v.ArbiterRead = *why
@@ -340,11 +371,10 @@ func escrowNodeLoader(ctx context.Context, a *App, _ *http.Request, d *PageData)
 		v.Remedy = syncRemedy(e.network, v.NotSynced)
 		v.TorHold = a.broadcastHold()
 	}
-	var err error
 	if v.Stalled, err = a.escrowStalls(ctx); err != nil {
 		return err
 	}
-	if v.NotSynced != "" || v.Mismatch != nil || v.PooledKey != "" || v.ArbiterRead != "" || v.TorHold != "" || len(v.Stalled) > 0 {
+	if v.Health != nil || v.NotSynced != "" || v.Mismatch != nil || v.ArbiterRead != "" || v.TorHold != "" || len(v.Stalled) > 0 {
 		d.EscrowNode = v
 	}
 	return nil
@@ -380,7 +410,7 @@ func (a *App) settleEscrow(ctx context.Context, orderID string, walletRead bool)
 		}
 		// A deposit first recorded after the order closed is never counted; it is flagged for payment review, the
 		// buyer and the staff told once per episode, as a pooled one is (A-211, QA31-3). It stays in the escrow.
-		if err = a.flagLateDeposits(ctx, tx, &o, threshold, false); err != nil {
+		if err = a.flagLateDeposits(ctx, tx, &o, threshold); err != nil {
 			return err
 		}
 		return tx.Commit()
@@ -418,16 +448,19 @@ func (a *App) settleEscrow(ctx context.Context, orderID string, walletRead bool)
 	if !walletRead {
 		return tx.Commit()
 	}
-	// The payment window, from the same inputs as a pooled order's (settleOrder): the escrow's creation and the
-	// latest deposit that counts.
-	var unpaid, underpaid bool
+	// The ordinary payment window uses the escrow's creation and latest active deposit; a deposit still
+	// confirming uses the first recorded eligible deposit and the fixed confirmation wait.
+	var unpaid, underpaid, stalled bool
 	var received int64
-	if err = tx.QueryRowContext(ctx, `WITH d AS (SELECT amount,confirmations,created FROM payments WHERE order_id=$1 AND confirmations>=0 AND NOT locked AND NOT escrow_left_out)
+	if err = tx.QueryRowContext(ctx, `WITH d AS (SELECT amount,confirmations,created FROM payments WHERE order_id=$1 AND confirmations>=0 AND NOT locked AND NOT after_close AND NOT escrow_left_out AND NOT spent_outside),
+		h AS (SELECT min(created) AS first_seen FROM payments WHERE order_id=$1 AND NOT locked AND NOT after_close)
 		SELECT es.created < now()-make_interval(secs => $2) AND NOT EXISTS (SELECT 1 FROM d),
 			es.created < now()-make_interval(secs => $2) AND EXISTS (SELECT 1 FROM d) AND NOT EXISTS (SELECT 1 FROM d WHERE confirmations<$3)
 				AND (SELECT max(created) FROM d) < now()-make_interval(secs => $2),
+			EXISTS (SELECT 1 FROM d WHERE confirmations<$3) AND GREATEST(es.created+make_interval(secs => $2),
+				(SELECT first_seen FROM h)+make_interval(secs => $4)) <= now(),
 			(SELECT COALESCE(sum(amount),0) FROM d)
-		FROM escrows es WHERE es.order_id=$1 AND es.coin='BTC'`, orderID, expiryWindow().Seconds(), threshold).Scan(&unpaid, &underpaid, &received); err != nil {
+		FROM escrows es WHERE es.order_id=$1 AND es.coin='BTC'`, orderID, expiryWindow().Seconds(), threshold, confirmationWait().Seconds()).Scan(&unpaid, &underpaid, &stalled, &received); err != nil {
 		return err
 	}
 	switch {
@@ -435,6 +468,17 @@ func (a *App) settleEscrow(ctx context.Context, orderID string, walletRead bool)
 		// Nothing received: cancelled as a pooled order is; the stock hook returns the unit, and there is nothing to
 		// refund. Coins sent after this are a stray payment (recovered by a stray refund, P1-c2).
 		if _, err = a.transition(ctx, tx, orderID, stateAwaitingPayment, stateCancelled, nil, "payment window expired"); err != nil {
+			return err
+		}
+	case stalled:
+		// A deposit still below the threshold cannot keep stock reserved forever.
+		// The settlement is requested, but its builder never spends unconfirmed inputs;
+		// a later-confirming input that it left out is recovered by a stray refund.
+		if _, err = a.transition(ctx, tx, orderID, stateAwaitingPayment, stateCancelled, nil, "payment confirmation wait ended; unconfirmed deposits were not counted"); err != nil {
+			return err
+		}
+		body := "Order " + shortID(orderID) + ": the fixed confirmation wait ended, so the order was cancelled and its stock returned. Unconfirmed escrow deposits were not sent; the refund settlement waits for confirmations or leaves them out for later recovery. Check this order before signing any refund."
+		if _, err = insertNotification(ctx, tx, o.BuyerID, body, o.ID); err != nil {
 			return err
 		}
 	case underpaid:
@@ -446,7 +490,7 @@ func (a *App) settleEscrow(ctx context.Context, orderID string, walletRead bool)
 		}
 		body := "Order " + shortID(orderID) + ": the payment window ended with " + what + " into its escrow (" + a.netTag() + " " + a.escrowNetwork() + "), so the order was cancelled. " +
 			"The market builds a refund of the escrowed coins, less the network fee, to the refund address you gave at checkout; you or the vendor then sign it on the order page. " + a.settleNotSent()
-		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.BuyerID, body); err != nil {
+		if _, err = insertNotification(ctx, tx, o.BuyerID, body, o.ID); err != nil {
 			return err
 		}
 	}

@@ -11,22 +11,28 @@
 <dd>Optional for each account</dd>
 </div>
 </dl>
-<form method="post" action="/admin/captcha">
-<input type="hidden" name="csrf" value="{{.CSRF}}">{{if $off}}
+<form class="stack" method="post" action="/admin/captcha">
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/admin/captcha"}}">{{if $off}}
 <input type="hidden" name="captcha_required" value="true">
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
 <button type="submit">Turn CAPTCHA on</button>{{else}}
 <input type="hidden" name="captcha_required" value="false">
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
 <button type="submit">Turn CAPTCHA off</button>{{end}}
 </form>
 <p class="help">The CAPTCHA is an image only, with no audio alternative; first-run setup never asks for it. Changes are recorded in the audit trail.</p>
 </section>
+{{template "signin-protection" .}}
 <section class="panel admin-reset-factors" id="reset-factors" aria-labelledby="reset-factors-heading">
 <h2 id="reset-factors-heading">Reset a user's second factors</h2>{{with $.NoticeIn "reset-factors"}}
 <div class="alert" role="status">{{.}}</div>{{end}}
 <p>For a user who lost their authenticator and recovery codes, or their PGP private key. This turns off TOTP (deleting its secret and recovery codes) and PGP sign-in verification; their saved PGP key and its verification stay. They are signed out everywhere, notified, and sign in next with their password only.</p>
+<p class="help">When the account holder can still use their verified PGP key, ask them to sign a fresh message and verify it against the key already saved on their account. Do not trust a replacement key supplied with the reset request. If they cannot use that key, follow the operator’s account-recovery procedure before resetting.</p>
 <form class="stack" method="post" action="/admin/reset-factors">
 <input type="hidden" name="csrf" value="{{.CSRF}}">
-<label>Account handle<input name="handle" value="{{.ResetHandle}}" required minlength="3" maxlength="32" pattern="[a-zA-Z0-9_]{3,32}" autocomplete="off" autocapitalize="none" spellcheck="false"{{if .ResetHandle}} aria-invalid="true"{{end}}>
+<input type="hidden" name="form_nonce" value="{{formNonce "/admin/reset-factors"}}">
+<label>Account handle<input name="handle" value="{{.ResetHandle}}" required minlength="3" maxlength="32" pattern="[a-zA-Z0-9_]{3,32}" title="Use 3 to 32 letters, numbers, or underscores." autocomplete="off" autocapitalize="none" spellcheck="false"{{if .ResetHandle}} aria-invalid="true"{{end}}>
 </label>
 {{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
 <span class="help">Enter the handle exactly (it is case-sensitive). Confirm with your own password{{if and $.Security $.Security.TOTPEnabled}} and authenticator code{{end}}. Check the request really comes from the account holder first: anyone who knows their password can then sign in.</span>
@@ -46,9 +52,11 @@
 <h2 id="suspend-heading">Suspend or restore an account</h2>{{with $.NoticeIn "suspend"}}
 <div class="alert" role="status">{{.}}</div>{{end}}
 <p>Contains a compromised or abusive account. Suspending signs it out everywhere, cancels any sign-in in progress and refuses new sign-ins until you restore it. Its role, listings and orders stay as they are. Orders waiting on this account stop until it is restored; the other party can still complete, cancel where allowed, or open a dispute. A suspended moderator does not resolve disputes, is not notified of them or of payment reviews and is not offered as a dispute contact. The account is notified and both accounts record the change.</p>
+<p class="help">Restoring hands the account back to whoever has its password. Verify that the password holder should regain access before you restore it.</p>
 <form class="stack" method="post" action="/admin/suspend">
 <input type="hidden" name="csrf" value="{{.CSRF}}">
-<label>Account handle<input name="handle" value="{{.SuspendHandle}}" required minlength="3" maxlength="32" pattern="[a-zA-Z0-9_]{3,32}" autocomplete="off" autocapitalize="none" spellcheck="false"{{if .SuspendHandle}} aria-invalid="true"{{end}}>
+<input type="hidden" name="form_nonce" value="{{formNonce "/admin/suspend"}}">
+<label>Account handle<input name="handle" value="{{.SuspendHandle}}" required minlength="3" maxlength="32" pattern="[a-zA-Z0-9_]{3,32}" title="Use 3 to 32 letters, numbers, or underscores." autocomplete="off" autocapitalize="none" spellcheck="false"{{if .SuspendHandle}} aria-invalid="true"{{end}}>
 </label>
 <fieldset>
 <legend>Action</legend>
@@ -65,7 +73,7 @@
 <summary>Suspended accounts</summary>
 <p class="help">Up to 100 accounts, most recently suspended first; any other account is restored the same way by entering its handle above.</p>
 <ul>{{range .SuspendedAccounts}}
-<li>{{.Handle}} · {{.Role}} · suspended {{.Suspended}}</li>{{end}}
+<li>{{.Handle}} · {{.Role}} · suspended {{.Suspended}} · factors: {{if .Factors}}{{.Factors}}{{else}}none (password only){{end}}</li>{{end}}
 </ul>
 </details>{{else}}
 <p class="help">No account is suspended.</p>{{end}}

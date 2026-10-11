@@ -64,7 +64,7 @@ button:disabled {
   opacity:.6;
   cursor:not-allowed
 }
-a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-visible {
+a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-visible,pre[tabindex]:focus-visible {
   outline:3px solid var(--amber);
   outline-offset:2px
 }
@@ -125,8 +125,12 @@ a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,te
   min-width:0
 }
 .header-search button {
-  flex:0 0 48px;
-  padding:10px;
+  flex:0 0 82px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap:6px;
+  padding:8px;
   border-radius:0 2px 2px 0
 }
 /* Inset indicators stay on the focused control, without crossing its neighbour. */
@@ -533,6 +537,9 @@ main {
   color:var(--muted);
   margin:0 0 16px;
   line-height:1.6
+}
+.product-detail-description {
+  white-space:pre-wrap
 }
 .vendor-line {
   display:flex;

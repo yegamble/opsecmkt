@@ -57,6 +57,9 @@ var dbPlaceholderMarkers = []string{"replace_me", "replace-me", "replace_with", 
 // that disagrees with the Compose overlay in COMPOSE_FILE.
 func loadStartupConfig(getenv func(string) string, mode string) (startupConfig, error) {
 	c := startupConfig{appSecretKey: getenv("APP_SECRET_KEY"), setupToken: getenv("SETUP_TOKEN")}
+	if err := refuseObsoletePooledEnv(getenv); err != nil {
+		return c, err
+	}
 	if c.appSecretKey != "" {
 		if err := checkSecret("APP_SECRET_KEY", c.appSecretKey); err != nil {
 			return c, err
@@ -94,6 +97,22 @@ func loadStartupConfig(getenv func(string) string, mode string) (startupConfig, 
 		c.notes = append(c.notes, "keys: derived from SETUP_TOKEN (legacy); add APP_SECRET_KEY to .env with the same value to keep them, as UPGRADING.md describes")
 	}
 	return c, nil
+}
+
+// refuseObsoletePooledEnv prevents a release with no pooled payment runtime from silently ignoring an old pooled
+// wallet configuration. These variables are exclusive to the removed pooled providers. Escrow credentials and
+// shared chain, confirmation, freshness and watcher settings remain valid and are intentionally not listed here.
+func refuseObsoletePooledEnv(getenv func(string) string) error {
+	var configured []string
+	for _, name := range []string{"BITCOIN_RPC_URL", "BITCOIN_WALLET", "MONERO_WALLET_RPC_URL", "MONERO_RPC_URL"} {
+		if strings.TrimSpace(getenv(name)) != "" {
+			configured = append(configured, name)
+		}
+	}
+	if len(configured) == 0 {
+		return nil
+	}
+	return errors.New("obsolete pooled payment configuration is set (" + strings.Join(configured, ", ") + "); remove these variables from .env. This release accepts escrow or paused intake only, and no database changes were made")
 }
 
 func dbPlaceholder(dsn string) bool {

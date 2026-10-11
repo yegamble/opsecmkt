@@ -1,23 +1,35 @@
 #!/usr/bin/env bash
-# Upgrade regression: a database created and used by v0.1.0-alpha.1 must upgrade under the current server.
+# Upgrade regression: databases created by v0.1.0-alpha.1 and an intermediate migrated release upgrade under the
+# current server.
 #
-# Starts a disposable PostgreSQL 17 container, builds and runs the alpha.1 server from its git tag once,
-# populates it through alpha.1's own HTTP forms (admin, vendor, buyers, a listing, BTC/XMR order drafts with
+# Starts one disposable PostgreSQL 17 container, builds and runs the alpha.1 server from its git tag and the
+# 91-migration intermediate server from its frozen commit,
+# populates alpha.1 through its own HTTP forms (admin, vendor, buyers, a listing, BTC/XMR order drafts with
 # the old status text, an armored message), stops it, then boots the server built from this checkout against
 # the same database and checks the migrated data and behaviour, then that it refuses to start on a database
-# recording a migration it does not include (rollback rehearsal). Needs Docker, Go, Git (with the tag fetched)
-# and Python 3. Nothing outside the container, a temporary directory and two loopback ports is touched.
+# recording a migration it does not include, then performs a disposable Tor-mode deployment upgrade and
+# side-by-side restore. Needs Docker, Go, Git (with the tag fetched), Python 3 and age. Only temporary deployment
+# files, project-owned containers/volumes and loopback ports are used.
 set -euo pipefail
 umask 077
 unset COMPOSE_PROFILES COMPOSE_FILE
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
 from_ref=${UPGRADE_FROM_REF:-v0.1.0-alpha.1}
-for dependency in docker go git python3; do
+intermediate_ref=${UPGRADE_INTERMEDIATE_REF:-329c7b2bf2e8741ff284256958aad55f5454fd53}
+for dependency in docker go git python3 age age-keygen; do
   command -v "$dependency" >/dev/null || { echo "Missing dependency: $dependency" >&2; exit 1; }
 done
 git rev-parse --verify --quiet "${from_ref}^{commit}" >/dev/null || {
   echo "$from_ref is not in this clone; fetch it first (git fetch origin tag $from_ref, or checkout with fetch-depth: 0)" >&2
+  exit 1
+}
+git rev-parse --verify --quiet "${intermediate_ref}^{commit}" >/dev/null || {
+  echo "$intermediate_ref is not in this clone; fetch full history before running the intermediate migration upgrade" >&2
+  exit 1
+}
+git merge-base --is-ancestor "$intermediate_ref" HEAD || {
+  echo "$intermediate_ref is not an ancestor of this checkout; refusing to test an unrelated migration history" >&2
   exit 1
 }
 work=$(mktemp -d "${TMPDIR:-/tmp}/opsecmkt-upgrade.XXXXXX")
@@ -50,14 +62,32 @@ trap cleanup EXIT
 sql() { docker exec -i "$db" psql -X -q -A -t -v ON_ERROR_STOP=1 -U upgrade -d opsecmkt "$@"; }
 free_port() { python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'; }
 
-# start_server NAME BINARY DIRECTORY: runs a server with a clean environment (nothing inherited from the
-# caller's shell, so a developer's payment or signing settings cannot leak in) and waits for /healthz.
-start_server() {
-  local name=$1 binary=$2 directory=$3
+# launch_server NAME BINARY DIRECTORY [DATABASE_URL]: runs a server with a clean environment (nothing inherited
+# from the caller's shell, so a developer's payment or signing settings cannot leak in). Secrets are read from
+# private temporary files inside $work and never appear in the process argument list.
+launch_server() {
+  local name=$1 binary=$2 directory=$3 target_database_url=${4:-$database_url}
   log="$work/$name.log"
-  (cd "$directory" && exec env -i PATH="$PATH" DATABASE_URL="$database_url" SETUP_TOKEN="$setup_token" \
-    COOKIE_SECURE=false ADDR="127.0.0.1:$app_port" "$binary") > "$log" 2>&1 &
+  local database_url_file="$work/$name.database-url" setup_token_file="$work/$name.setup-token"
+  printf '%s\n' "$target_database_url" > "$database_url_file"
+  printf '%s\n' "$setup_token" > "$setup_token_file"
+  chmod 600 "$database_url_file" "$setup_token_file"
+  (
+    cd "$directory"
+    exec env -i PATH="$PATH" bash -c '
+      IFS= read -r DATABASE_URL < "$1"
+      IFS= read -r SETUP_TOKEN < "$2"
+      export DATABASE_URL SETUP_TOKEN COOKIE_SECURE=false ADDR="$3"
+      exec "$4"
+    ' start-server "$database_url_file" "$setup_token_file" "127.0.0.1:$app_port" "$binary"
+  ) > "$log" 2>&1 &
   server_pid=$!
+}
+
+# start_server NAME BINARY DIRECTORY [DATABASE_URL]: launch and wait for /healthz.
+start_server() {
+  local name=$1 binary=$2 directory=$3 target_database_url=${4:-$database_url}
+  launch_server "$name" "$binary" "$directory" "$target_database_url"
   python3 - "$base" "$server_pid" <<'PY'
 import os, sys, time, urllib.request
 base, pid = sys.argv[1], int(sys.argv[2])
@@ -189,11 +219,21 @@ ROLLBACK;
 SQL
 ) == 2 ]]
 
+# Migration 108 (A-492): no pooled market exists, so both pooled tables refuse every new row.
+for pooled in "INSERT INTO payouts(order_id,kind,user_id,currency,amount) SELECT id,'release',buyer_id,currency,amount FROM orders WHERE currency='XMR'" \
+  "INSERT INTO payment_addresses(order_id,currency,address,provider) SELECT id,currency,'upgrade-refused-108','xmr-stagenet' FROM orders WHERE currency='XMR'"; do
+  if sql -c "$pooled" > "$work/pooled-108.out" 2>&1; then echo 'A pooled row was accepted after migration 108' >&2; exit 1; fi
+  grep -q 'pooled payments are removed: .* takes no new rows' "$work/pooled-108.out"
+done
+[[ $(sql -c 'SELECT (SELECT count(*) FROM payouts) + (SELECT count(*) FROM payment_addresses)') == 0 ]]
+# The historical payouts constraints below still hold beneath it: each check turns 108's trigger off inside its own
+# transaction, which then rolls back (or fails), so the trigger is never off outside it.
 # One settlement per order (migration 069): a release keeps its return, but a release and a refund for the same
 # order are refused by the database.
 [[ $(sql -c "SELECT indexdef FROM pg_indexes WHERE indexname='payouts_one_settlement'") == *"UNIQUE INDEX payouts_one_settlement ON public.payouts USING btree (order_id) WHERE (kind = ANY (ARRAY['release'::text, 'refund'::text]))"* ]]
 [[ $(sql <<'SQL'
 BEGIN;
+ALTER TABLE payouts DISABLE TRIGGER payouts_refuse_insert;
 INSERT INTO payouts(order_id,kind,user_id,currency,amount) SELECT id,'release',buyer_id,currency,amount FROM orders WHERE currency='XMR';
 INSERT INTO payouts(order_id,kind,user_id,currency,amount) SELECT id,'return',buyer_id,currency,amount FROM orders WHERE currency='XMR';
 SELECT count(*) FROM payouts;
@@ -202,6 +242,7 @@ SQL
 ) == 2 ]]
 if sql > "$work/settlement.out" 2>&1 <<'SQL'
 BEGIN;
+ALTER TABLE payouts DISABLE TRIGGER payouts_refuse_insert;
 INSERT INTO payouts(order_id,kind,user_id,currency,amount) SELECT id,'release',buyer_id,currency,amount FROM orders WHERE currency='XMR';
 INSERT INTO payouts(order_id,kind,user_id,currency,amount) SELECT id,'refund',buyer_id,currency,amount FROM orders WHERE currency='XMR';
 COMMIT;
@@ -215,6 +256,7 @@ grep -q 'payouts_one_settlement' "$work/settlement.out"
 [[ $(sql -c "SELECT indexdef FROM pg_indexes WHERE indexname='payouts_refund_or_return'") == *"UNIQUE INDEX payouts_refund_or_return ON public.payouts USING btree (order_id) WHERE (kind = ANY (ARRAY['refund'::text, 'return'::text]))"* ]]
 if sql > "$work/refund-return.out" 2>&1 <<'SQL'
 BEGIN;
+ALTER TABLE payouts DISABLE TRIGGER payouts_refuse_insert;
 INSERT INTO payouts(order_id,kind,user_id,currency,amount) SELECT id,'refund',buyer_id,currency,amount FROM orders WHERE currency='XMR';
 INSERT INTO payouts(order_id,kind,user_id,currency,amount) SELECT id,'return',buyer_id,currency,amount FROM orders WHERE currency='XMR';
 COMMIT;
@@ -229,6 +271,7 @@ grep -q 'payouts_refund_or_return' "$work/refund-return.out"
 [[ $(sql -c "SELECT pg_get_triggerdef(oid) FROM pg_trigger WHERE tgname='payouts_return_needs_release'") == 'CREATE CONSTRAINT TRIGGER payouts_return_needs_release AFTER INSERT OR DELETE OR UPDATE OF kind, order_id ON public.payouts DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION payouts_return_needs_release()' ]]
 [[ $(sql <<'SQL'
 BEGIN;
+ALTER TABLE payouts DISABLE TRIGGER payouts_refuse_insert;
 INSERT INTO payouts(order_id,kind,user_id,currency,amount) SELECT id,'return',buyer_id,currency,amount FROM orders WHERE currency='XMR';
 INSERT INTO payouts(order_id,kind,user_id,currency,amount) SELECT id,'release',buyer_id,currency,amount FROM orders WHERE currency='XMR';
 SET CONSTRAINTS payouts_return_needs_release IMMEDIATE;
@@ -238,6 +281,7 @@ SQL
 ) == 2 ]]
 if sql > "$work/return-release.out" 2>&1 <<'SQL'
 BEGIN;
+ALTER TABLE payouts DISABLE TRIGGER payouts_refuse_insert;
 INSERT INTO payouts(order_id,kind,user_id,currency,amount) SELECT id,'return',buyer_id,currency,amount FROM orders WHERE currency='XMR';
 COMMIT;
 SQL
@@ -273,9 +317,11 @@ xpub_check=$(sql -c "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE c
 [[ $(sql -c "SELECT to_regclass('escrow_siblings') IS NOT NULL") == t ]]
 
 # Behaviour through the upgraded server: an alpha.1 password still signs in, the migrated draft is shown as
-# a draft, and ordering the same product and currency again returns that draft instead of a second one.
+# a draft, and ordering the same product and currency again with intake explicitly paused returns that
+# unfunded draft instead of a second one. Fresh escrow-only defaults were checked above.
 # (Migration 010 turns the CAPTCHA on; switch it off as an operator would, so this script can sign in.)
 sql -c "UPDATE settings SET value='false' WHERE key='captcha_required'"
+sql -c "UPDATE settings SET value='false' WHERE key IN ('payment_intake_BTC','payment_intake_XMR')"
 export UPGRADE_BTC_ORDER
 UPGRADE_BTC_ORDER=$(sql -c "SELECT o.id FROM orders o JOIN users u ON u.id=o.buyer_id WHERE u.handle='alpha_buyer' AND o.currency='BTC'")
 python3 <<'PY'
@@ -292,7 +338,14 @@ page = client.open(base + '/order?id=' + order).read().decode()
 assert 'Draft — unfunded' in page and 'Alpha era soldering kit' in page, 'migrated order is not shown as a draft'
 product = subprocess.run(['docker', 'exec', '-i', os.environ['UPGRADE_DB'], 'psql', '-X', '-q', '-A', '-t', '-U', 'upgrade', '-d', 'opsecmkt', '-c',
                           'SELECT product_id FROM orders WHERE id=' + "'" + order + "'"], check=True, capture_output=True, text=True).stdout.strip()
-again = client.open(base + '/orders', data=urllib.parse.urlencode({'csrf': csrf('/account'), 'product_id': product, 'currency': 'BTC'}).encode())
+checkout = client.open(base + '/checkout?' + urllib.parse.urlencode({'id': product})).read().decode()
+orders_forms = re.findall(r'<form\b(?=[^>]*\baction="/orders")[^>]*>(.*?)</form>', checkout, re.S)
+assert len(orders_forms) == 1, 'checkout must render one matching /orders form'
+csrf_match = re.search(r'name="csrf"\s+value="([^"]+)"', orders_forms[0])
+nonce_match = re.search(r'name="form_nonce"\s+value="([^"]+)"', orders_forms[0])
+assert csrf_match and nonce_match, 'rendered /orders form must supply its CSRF token and nonce'
+again = client.open(base + '/orders', data=urllib.parse.urlencode({'csrf': csrf_match[1], 'form_nonce': nonce_match[1],
+                                                                     'product_id': product, 'currency': 'BTC'}).encode())
 assert again.status == 200 and urllib.parse.parse_qs(urllib.parse.urlsplit(again.url).query).get('id') == [order], f'reorder did not return the migrated draft ({again.url})'
 print('Upgraded server: alpha.1 sign-in, migrated draft page and draft reuse passed')
 PY
@@ -312,6 +365,8 @@ stop_server
 [[ $(sql -c 'SELECT count(*) FROM pooled_drain_blockers()') == 0 ]]
 drain=$(sql <<'SQL'
 BEGIN;
+ALTER TABLE payouts DISABLE TRIGGER payouts_refuse_insert;
+ALTER TABLE payment_addresses DISABLE TRIGGER payment_addresses_refuse_insert;
 UPDATE orders o SET state='paid' FROM users u WHERE u.id=o.buyer_id AND u.handle='alpha_buyer' AND o.currency='BTC';
 UPDATE orders o SET state='completed',updated=now() FROM users u WHERE u.id=o.buyer_id AND u.handle='alpha_buyer' AND o.currency='XMR';
 INSERT INTO payment_addresses(order_id,currency,address,provider) SELECT id,currency,'upgrade-drain-'||lower(currency),
@@ -349,10 +404,109 @@ want_drain='address_collision,flagged_payment,mainnet_history,open_order,recover
 address_collision=BTC:2 flagged_payment=payment:'"$(printf 'd%.0s' {1..64})"':0 mainnet_history=XMR:1 open_order=order:paid recovery_required=payments_recovery_required: unsent_payout=payout:release blocked
 upgrade-drain-xmr
 0
-watched_address=upgrade-drain-xmr:until recorded deposit '"$(printf 'e%.0s' {1..64})"':1 confirms (it is then flagged for review) or leaves the wallet
+watched_address=upgrade-drain-xmr:until recorded deposit '"$(printf 'e%.0s' {1..64})"':1 confirms, leaves the wallet, or reaches staff review 14 days after the later of the horizon and first observation
 0'
 [[ $drain == "$want_drain" ]] || { printf 'pooled_drain_blockers() after the upgrade:\n%s\nwant:\n%s\n' "$drain" "$want_drain" >&2; exit 1; }
 [[ $(sql -c 'SELECT count(*) FROM pooled_drain_blockers()') == 0 && $(sql -c 'SELECT count(*) FROM payouts') == 0 ]]
+
+# Migrations 107 and 108: restored prior-removal history is refused unchanged, by 107 until drained and then by 108
+# (A-492) while it holds any pooled payment row; the same database without pooled rows upgrades. The pre-107 state is
+# modelled by deleting both stamps and 108's triggers and function (107 changes intake, not table layout). This is a
+# seeded upgrade, not a real-market drain.
+sql <<'SQL'
+BEGIN;
+DELETE FROM schema_migrations WHERE version IN (107,108);
+DROP TRIGGER payouts_refuse_insert ON payouts;
+DROP TRIGGER payment_addresses_refuse_insert ON payment_addresses;
+DROP FUNCTION refuse_pooled_history();
+UPDATE settings SET value='true' WHERE key='payment_intake_BTC';
+UPDATE settings SET value='false' WHERE key='payment_intake_XMR';
+INSERT INTO orders(id,buyer_id,product_id,currency,amount,state,updated)
+  SELECT 'upgrade-107-history',buyer_id,product_id,currency,amount,'completed',now()-interval '40 days'
+    FROM orders WHERE currency='XMR' ORDER BY id LIMIT 1;
+INSERT INTO payment_addresses(order_id,currency,address,provider,created)
+  VALUES('upgrade-107-history','XMR','upgrade-107-address','xmr-stagenet',now()-interval '40 days');
+INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations,credited)
+  SELECT id,currency,repeat('e',64),0,'upgrade-107-address',amount,12,true FROM orders WHERE id='upgrade-107-history';
+INSERT INTO payouts(order_id,kind,user_id,currency,amount,address,state,txid)
+  SELECT id,'release',buyer_id,currency,amount,'upgrade-107-recipient','sent',repeat('f',64) FROM orders WHERE id='upgrade-107-history';
+INSERT INTO orders(id,buyer_id,product_id,currency,amount,state)
+  SELECT 'upgrade-107-open',buyer_id,product_id,currency,amount,'paid'
+    FROM orders WHERE currency='BTC' ORDER BY id LIMIT 1;
+COMMIT;
+SQL
+legacy_fingerprint() {
+  sql -c "SELECT md5(string_agg(v,'|' ORDER BY v)) FROM (
+    SELECT 'orders:'||row_to_json(o)::text v FROM orders o
+    UNION ALL SELECT 'addresses:'||row_to_json(pa)::text FROM payment_addresses pa
+    UNION ALL SELECT 'payments:'||row_to_json(pm)::text FROM payments pm
+    UNION ALL SELECT 'payouts:'||row_to_json(p)::text FROM payouts p
+    UNION ALL SELECT 'settings:'||row_to_json(s)::text FROM settings s
+    UNION ALL SELECT 'migrations:'||row_to_json(m)::text FROM schema_migrations m) records"
+}
+legacy_before=$(legacy_fingerprint)
+launch_server refused-107 "$work/new-server" "$root"
+for _ in {1..60}; do
+  kill -0 "$server_pid" 2>/dev/null || break
+  sleep 0.5
+done
+if kill -0 "$server_pid" 2>/dev/null; then
+  echo 'The current server kept running over an undrained pooled order' >&2; exit 1
+fi
+refused=0
+wait "$server_pid" || refused=$?
+server_pid=''
+((refused != 0)) || { echo 'Migration107 blocker returned success' >&2; exit 1; }
+grep -q 'open_order' "$work/refused-107.log"
+grep -q 'Nothing was changed' "$work/refused-107.log"
+[[ $(legacy_fingerprint) == "$legacy_before" ]]
+[[ $(sql -c 'SELECT count(*) FROM schema_migrations WHERE version IN (107,108)') == 0 ]]
+# Simulate settlement on the old drain-capable build, then restore/start again: 107 now passes, but the drained
+# database still holds pooled payment history, which migration 108 refuses before serving, changing nothing.
+sql -c "UPDATE orders SET state='completed',updated=now()-interval '40 days' WHERE id='upgrade-107-open'"
+[[ $(sql -c 'SELECT count(*) FROM pooled_drain_blockers()') == 0 ]]
+legacy_before=$(legacy_fingerprint)
+launch_server refused-108 "$work/new-server" "$root"
+for _ in {1..60}; do
+  kill -0 "$server_pid" 2>/dev/null || break
+  sleep 0.5
+done
+if kill -0 "$server_pid" 2>/dev/null; then
+  echo 'The current server kept running over pooled payment history' >&2; exit 1
+fi
+refused=0
+wait "$server_pid" || refused=$?
+server_pid=''
+((refused != 0)) || { echo 'Migration 108 refusal returned success' >&2; exit 1; }
+grep -q 'migration 108 refused: this database holds pooled payment history (1 payouts row(s), 1 payment_addresses row(s))' "$work/refused-108.log"
+grep -q 'Nothing was changed' "$work/refused-108.log"
+grep -q 'UPGRADING.md section 59' "$work/refused-108.log"
+[[ $(legacy_fingerprint) == "$legacy_before" ]]
+[[ $(sql -c 'SELECT count(*) FROM schema_migrations WHERE version IN (107,108)') == 0 ]]
+# The same database without pooled payment rows (no payouts or payment_addresses row) upgrades through both and keeps
+# its other records.
+sql <<'SQL'
+BEGIN;
+DELETE FROM payouts WHERE order_id='upgrade-107-history';
+DELETE FROM payment_addresses WHERE order_id='upgrade-107-history';
+COMMIT;
+SQL
+legacy_rows=$(sql -c "SELECT md5(row_to_json(o)::text||row_to_json(pm)::text)
+  FROM orders o JOIN payments pm ON pm.order_id=o.id WHERE o.id='upgrade-107-history'")
+start_server drained-107 "$work/new-server" "$root"
+stop_server
+[[ $(sql -c 'SELECT count(*) FROM schema_migrations WHERE version IN (107,108)') == 2 ]]
+[[ $(sql -c "SELECT count(*) FROM pg_trigger WHERE tgname IN ('payouts_refuse_insert','payment_addresses_refuse_insert') AND tgenabled='O'") == 2 ]]
+[[ $(sql -c "SELECT string_agg(key||':'||value,',' ORDER BY key) FROM settings WHERE key IN ('payment_intake_BTC','payment_intake_XMR')") == 'payment_intake_BTC:escrow,payment_intake_XMR:false' ]]
+[[ $(sql -c "SELECT md5(row_to_json(o)::text||row_to_json(pm)::text)
+  FROM orders o JOIN payments pm ON pm.order_id=o.id WHERE o.id='upgrade-107-history'") == "$legacy_rows" ]]
+# Restore this harness's fixtures so later historical migration tests remain isolated.
+sql <<'SQL'
+BEGIN;
+DELETE FROM payments WHERE order_id='upgrade-107-history';
+DELETE FROM orders WHERE id IN ('upgrade-107-history','upgrade-107-open');
+COMMIT;
+SQL
 
 # A second start applies nothing new and keeps serving.
 applied=$(sql -c "SELECT string_agg(version || '@' || applied, ',' ORDER BY version) FROM schema_migrations")
@@ -396,9 +550,7 @@ INSERT INTO escrow_pubkeys(pubkey,escrow_id,party,user_id,key_hmac,origin_finger
 COMMIT;
 SQL
 applied=$(sql -c "SELECT string_agg(version || '@' || applied, ',' ORDER BY version) FROM schema_migrations")
-(cd "$root" && exec env -i PATH="$PATH" DATABASE_URL="$database_url" SETUP_TOKEN="$setup_token" \
-  COOKIE_SECURE=false ADDR="127.0.0.1:$app_port" "$work/new-server") > "$work/refused-089.log" 2>&1 &
-server_pid=$!
+launch_server refused-089 "$work/new-server" "$root"
 for _ in {1..60}; do
   kill -0 "$server_pid" 2>/dev/null || break
   sleep 0.5
@@ -432,9 +584,7 @@ stop_server
 # migration it does not include. It must exit non-zero before serving, name that migration, and change nothing.
 sql -c "INSERT INTO schema_migrations(version,name) VALUES (999,'from_a_newer_release')"
 applied=$(sql -c "SELECT string_agg(version || '@' || applied, ',' ORDER BY version) FROM schema_migrations")
-(cd "$root" && exec env -i PATH="$PATH" DATABASE_URL="$database_url" SETUP_TOKEN="$setup_token" \
-  COOKIE_SECURE=false ADDR="127.0.0.1:$app_port" "$work/new-server") > "$work/refused.log" 2>&1 &
-server_pid=$!
+launch_server refused "$work/new-server" "$root"
 for _ in {1..60}; do
   kill -0 "$server_pid" 2>/dev/null || break
   sleep 0.5
@@ -454,4 +604,14 @@ grep -q 'UPGRADING.md, section "Rolling back"' "$work/refused.log"
 sql -c 'DELETE FROM schema_migrations WHERE version=999'
 start_server roll-forward "$work/new-server" "$root"
 stop_server
-echo "Upgrade from $from_ref passed: health, every migration recorded once, orders migrated to draft, one draft per buyer/product/currency, data and sign-in preserved; the pooled drain gate lists seeded blockers of every kind and then none; an escrow key row migration 089 refuses stops startup with its message; a database from a newer release is refused at startup."
+
+# A-41: use the shared intermediate-release leg against this disposable PG17 container. The URL is passed only
+# in the helper's environment; it creates a uniquely named database and never modifies opsecmkt.
+INTERMEDIATE_TEST_DATABASE_URL="$database_url" scripts/test-intermediate-upgrade.sh --disposable-cluster \
+  "$intermediate_ref" "$work/new-server"
+
+# Exercise the supported deployment upgrade and side-by-side restore flow in one disposable Tor-mode Compose
+# directory. Its overlay binds the app only to loopback and puts Tor on an internal network; it makes no claim
+# that a Tor circuit or public onion service was established.
+bash scripts/test-tor-upgrade-rollback.sh "$from_ref"
+echo "Upgrade from $from_ref and intermediate $intermediate_ref passed: health, migration history and data preserved, buyer sign-in retained; the pooled drain gate lists seeded blockers of every kind and then none; migration107 refuses an undrained restored database unchanged; migration 108 refuses one with pooled payment rows unchanged and upgrades it without them; both pooled tables refuse new rows; an escrow key row migration 089 refuses startup with its message; a database from a newer release is refused at startup."

@@ -618,7 +618,7 @@ func TestStaffAvatarRefusedAfterScanDemotion(t *testing.T) {
 	entered, release := stallScans(t, f)
 	done := e.uploadAsync("/account/avatar", mod, e.avatarParts(mod, smallJPEG(t))...)
 	waitEntered(t, entered)
-	agExpect(e, "/admin", admin, form("action", "role", "role", "vendor", "handle", "demoted_mod"), 303, "")
+	agExpect(e, "/admin", admin, form("action", "role", "password", testPassword, "role", "vendor", "handle", "demoted_mod"), 303, "")
 	release()
 	checkPage(t, <-done, 403, "role changed")
 	if e.imageCount() != 0 {

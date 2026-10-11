@@ -20,18 +20,18 @@ func TestAdminRoleChangeAuditsBothAccountsAndGuards(t *testing.T) {
 	agExec(e, "INSERT INTO audit_events(user_id,action) VALUES($1,'Changed user role')", adminID)
 	legacy := agInt(e, "SELECT id FROM audit_events WHERE action='Changed user role'")
 
-	agExpect(e, "/admin", admin, form("action", "role", "role", "vendor", "handle", "role_target"), 303, "")
-	if !e.auditExact(adminID, "Changed role of role_target from buyer to vendor") {
+	agExpect(e, "/admin", admin, form("action", "role", "password", testPassword, "role", "vendor", "handle", "role_target"), 303, "")
+	if !e.auditExact(adminID, "Changed role of role_target from buyer to vendor (confirmed with password)") {
 		t.Fatal("administrator audit row does not name the account and roles")
 	}
-	if !e.auditExact(targetID, "Role changed from buyer to vendor by an administrator") {
+	if !e.auditExact(targetID, "Role changed from buyer to vendor by administrator role_admin") {
 		t.Fatal("changed account has no audit row of its own")
 	}
 	if agStr(e, "SELECT role FROM users WHERE id=$1", targetID) != "vendor" {
 		t.Fatal("role not changed")
 	}
 	// Both rows are written in the action's transaction (same timestamp).
-	if agInt(e, "SELECT count(DISTINCT created) FROM audit_events WHERE action IN ('Changed role of role_target from buyer to vendor','Role changed from buyer to vendor by an administrator')") != 1 {
+	if agInt(e, "SELECT count(DISTINCT created) FROM audit_events WHERE action IN ('Changed role of role_target from buyer to vendor (confirmed with password)','Role changed from buyer to vendor by administrator role_admin')") != 1 {
 		t.Fatal("role audit rows not written in one transaction")
 	}
 	if agStr(e, "SELECT action FROM audit_events WHERE id=$1", legacy) != "Changed user role" {
@@ -41,23 +41,23 @@ func TestAdminRoleChangeAuditsBothAccountsAndGuards(t *testing.T) {
 	// The admin audit trail shows the account each row is recorded on.
 	body := e.body("GET", "/admin", admin, nil, 200)
 	mustContain(t, body, `<th scope="col">Account</th>`,
-		"<td>role_admin</td>\n<td>Changed role of role_target from buyer to vendor</td>",
-		"<td>role_target</td>\n<td>Role changed from buyer to vendor by an administrator</td>")
+		"<td>role_admin</td>\n<td>Changed role of role_target from buyer to vendor (confirmed with password)</td>",
+		"<td>role_target</td>\n<td>Role changed from buyer to vendor by administrator role_admin</td>")
 
 	// Re-submitting the same role records nothing on the account.
-	agExpect(e, "/admin", admin, form("action", "role", "role", "vendor", "handle", "role_target"), 303, "")
-	if !e.auditExact(adminID, "Role of role_target unchanged (already vendor)") || agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1 AND action LIKE 'Role changed%'", targetID) != 1 {
+	agExpect(e, "/admin", admin, form("action", "role", "password", testPassword, "role", "vendor", "handle", "role_target"), 303, "")
+	if !e.auditExact(adminID, "Role of role_target unchanged (already vendor) (confirmed with password)") || agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1 AND action LIKE 'Role changed%'", targetID) != 1 {
 		t.Fatal("unchanged role audited incorrectly")
 	}
 
 	before := agInt(e, "SELECT count(*) FROM audit_events")
 	// Server-side guards (actions_admin.go): administrator is never assignable, and the caller's own role is fixed.
-	agExpect(e, "/admin", admin, form("action", "role", "role", "admin", "handle", "role_target"), 400, "Choose buyer, vendor, or moderator")
-	agExpect(e, "/admin", admin, form("action", "role", "role", "", "handle", "role_target"), 400, "Choose buyer, vendor, or moderator")
-	agExpect(e, "/admin", admin, form("action", "role", "role", "buyer", "handle", "role_admin"), 400, "Cannot change your own administrator role")
+	agExpect(e, "/admin", admin, form("action", "role", "password", testPassword, "role", "admin", "handle", "role_target"), 400, "Choose buyer, vendor, or moderator")
+	agExpect(e, "/admin", admin, form("action", "role", "password", testPassword, "role", "", "handle", "role_target"), 400, "Choose buyer, vendor, or moderator")
+	agExpect(e, "/admin", admin, form("action", "role", "password", testPassword, "role", "buyer", "handle", "role_admin"), 400, "Cannot change your own administrator role")
 	// Another administrator is not an eligible target either.
-	agExpect(e, "/admin", admin, form("action", "role", "role", "buyer", "handle", "role_admin2"), 404, "No buyer, vendor or moderator has the handle")
-	agExpect(e, "/admin", admin, form("action", "role", "role", "buyer", "handle", "missing"), 404, "No buyer, vendor or moderator has the handle")
+	agExpect(e, "/admin", admin, form("action", "role", "password", testPassword, "role", "buyer", "handle", "role_admin2"), 404, "No buyer, vendor or moderator has the handle")
+	agExpect(e, "/admin", admin, form("action", "role", "password", testPassword, "role", "buyer", "handle", "missing"), 404, "No buyer, vendor or moderator has the handle")
 	for id, want := range map[string]string{targetID: "vendor", adminID: "admin", otherAdminID: "admin"} {
 		if got := agStr(e, "SELECT role FROM users WHERE id=$1", id); got != want {
 			t.Fatalf("refused role change altered %s: %s", id, got)
@@ -246,6 +246,7 @@ func TestAdminResetsSecondFactors(t *testing.T) {
 		return f
 	}
 	opts := resetOptions()
+	mustContain(t, e.body("GET", "/admin", admin, nil, 200), "account holder can still use their verified PGP key", "sign a fresh message and verify it against the key already saved on their account")
 	mustContain(t, opts, "reset_target · TOTP and PGP sign-in", `name="password" required`)
 	mustNotContain(t, opts, "reset_admin2", "reset_plain", "reset_admin ", `name="code"`)
 

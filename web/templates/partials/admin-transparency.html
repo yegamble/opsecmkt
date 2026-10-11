@@ -9,9 +9,11 @@
 <p>Fingerprint <span class="fingerprint mono">{{.Fingerprint}}</span></p>{{else}}<p><span class="badge neutral">Not configured</span></p>{{end}}{{else}}<p><span class="badge neutral">Not configured</span></p>{{end}}
 <form class="stack" method="post" action="/admin/operator-key">
 <input type="hidden" name="csrf" value="{{.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/admin/operator-key"}}">
 <label>Armored public key<textarea name="operator_key" rows="6" required spellcheck="false" placeholder="-----BEGIN PGP PUBLIC KEY BLOCK-----">{{with .Canary}}{{.OperatorKey}}{{end}}</textarea>
 </label>
 <p class="help">Public key only; the private key stays offline with the operator. Replacing the key makes any canary signed by the previous key show as invalid until a new one is posted.</p>
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
 <button type="submit">Save operator key</button>
 </form>
 </section>
@@ -20,9 +22,11 @@
 {{with .Canary}}{{if .Verified}}<p><span class="badge green">Signature verified</span> Signed {{.SignedAt}}, posted {{.Posted}}.</p>{{else if .Error}}<p><span class="badge danger">INVALID</span> {{.Error}}</p>{{else}}<p><span class="badge neutral">No signed canary published</span></p>{{end}}{{end}}
 {{if and .Canary .Canary.Fingerprint}}<form class="stack" method="post" action="/admin/canary">
 <input type="hidden" name="csrf" value="{{.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/admin/canary"}}">
 <label>Clearsigned statement<textarea name="canary" rows="8" required spellcheck="false" placeholder="-----BEGIN PGP SIGNED MESSAGE-----"></textarea>
 </label>
 <p class="help">Write and sign the statement offline, for example with <span class="mono">gpg --clearsign canary.txt</span>, and paste the whole output. It is stored exactly as pasted (surrounding blank lines removed) and rejected with the reason if it does not verify against the operator key.</p>
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
 <button type="submit">Publish canary</button>
 </form>{{else}}<p class="help">Unavailable: save a usable operator PGP key first. This application never writes or signs canary text itself.</p>{{end}}
 <p><a class="text-link" href="/canary">View the public canary page <span class="action-icon">↗</span></a></p>
@@ -34,9 +38,10 @@
 {{with .AuditExport}}{{if .Available}}<p><span class="badge green">Available</span></p>
 <p>Ed25519 public key (also published on /canary): <span class="fingerprint mono">{{.PublicKey}}</span></p>
 {{if .UpTo}}<form class="stack" method="get" action="/admin/audit-export">
+<label>Include events after id<input name="from" type="number" min="0" max="{{.UpTo}}" value="0" required></label>
 <label>Include events up to id<input name="upto" type="number" min="1" max="{{.UpTo}}" value="{{.UpTo}}" required>
 </label>
-<p class="help">The same range always produces byte-identical export and signature files. Verify offline with <span class="mono">verify-audit -pub {{.PublicKey}} export.jsonl export.sig</span>. The signature proves origin from this server's key only; whoever controls the server can also sign an altered history. A download cut short (a dropped connection or Tor circuit) leaves a partial file that fails verification with "sha256 does not match"; download the same range again. Large exports over Tor can take minutes: the server allows 20 seconds plus one second per 32 KB. Limited to 10 downloads per 10 minutes.</p>
+<p class="help">The lower ID is excluded and the upper ID is included. Leave the lower ID at 0 for all history up to the upper ID. Adjacent ranges concatenate to the whole export. The same range always produces byte-identical export and signature files. Verify offline with <span class="mono">verify-audit -pub {{.PublicKey}} export.jsonl export.sig</span>. The signature proves origin from this server's key only; whoever controls the server can also sign an altered history. A download cut short (a dropped connection or Tor circuit) leaves a partial file that fails verification with "sha256 does not match"; download the same range again. Large exports over Tor can take minutes: the server allows 20 seconds plus one second per 32 KB. The server sends one export at a time; if it is busy, wait for that download to finish before retrying. Limited to 10 downloads per 10 minutes.</p>
 <div class="actions">
 <button type="submit">Download export (.jsonl)</button>
 <button type="submit" name="sig" value="1">Download signature (.sig)</button>

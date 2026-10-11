@@ -1,48 +1,46 @@
+import { execFileSync } from 'node:child_process';
 import { expect, test } from '@playwright/test';
-import { ADMIN, FIXTURE_LISTING, uniqueHandle } from './db-fixtures';
+import { ADMIN, uniqueHandle } from './db-fixtures';
+import { signedIn } from './db-helpers';
 
-// The browser test server runs without any payment provider (no RPC URLs). Every payment surface must be
-// visibly unavailable, no address may appear, and saving a payout address must be refused.
-test('payments are visibly disabled without a provider', async ({ page }) => {
-  const handle = uniqueHandle('paybuyer');
-  await page.goto('/register');
-  await page.getByLabel('Handle', { exact: true }).fill(handle);
-  await page.getByLabel('Password', { exact: true }).fill('browser-payments-password-123');
-  await page.getByRole('button', { name: 'Create account' }).click();
-  await expect(page.locator('.account-name')).toHaveText(handle);
-  await expect(page.locator('footer')).toContainText('Payments disabled');
-  await expect(page.locator('main')).toContainText('Order drafts only.');
-
-  // The catalog shows 25 listings a page (A-181) and other specs publish more: search for the setup fixture.
-  await page.goto(`/?q=${encodeURIComponent(FIXTURE_LISTING)}`);
-  await page.getByRole('link', { name: FIXTURE_LISTING, exact: true }).click();
-  await page.getByRole('link', { name: 'Review order draft' }).click();
-  await expect(page.locator('main')).toContainText('UNFUNDED DRAFT ONLY.');
-  await page.getByLabel('Reference currency').selectOption('BTC');
-  await page.getByRole('button', { name: 'Create unfunded draft' }).click();
-  await expect(page).toHaveURL(/\/order\?id=/);
-  await expect(page.getByRole('heading', { name: 'Payment is unavailable' })).toBeVisible();
-  await expect(page.locator('main')).toContainText('BTC payments are not configured on this market');
-  await expect(page.locator('.payment-address')).toHaveCount(0);
-  await expect(page.locator('body')).not.toContainText('TESTNET');
-
-  await page.goto('/account');
-  await expect(page.locator('main')).toContainText('Unavailable — payments disabled');
-  await expect(page.getByLabel('Bitcoin payout address')).toHaveCount(0);
-  const csrf = await page.locator('form[action="/logout"] input[name="csrf"]').getAttribute('value');
-  // Payout changes need the current password; with no provider the request is refused before that check.
-  const refused = await page.request.post('/account/payout', { form: { csrf: csrf!, currency: 'BTC', address: 'tb1qexampleaddress000000000000000000000', password: 'browser-payments-password-123' } });
-  expect(refused.status()).toBe(409);
-  expect(await refused.text()).toContain('BTC payments are not configured');
-  await page.getByRole('button', { name: 'Sign out', exact: true }).click();
-
-  await page.goto('/login');
-  await page.getByLabel('Handle', { exact: true }).fill(ADMIN.handle);
-  await page.getByLabel('Password', { exact: true }).fill(ADMIN.password);
-  await page.getByRole('button', { name: 'Sign in' }).click();
-  await page.goto('/admin');
-  const providers = page.locator('.admin-payments');
-  await expect(providers).toContainText('Not configured (BITCOIN_RPC_URL is blank)');
-  await expect(providers).toContainText('Not configured (MONERO_WALLET_RPC_URL is blank)');
-  await expect(providers).toContainText('No payouts recorded.');
+// No wallet or node RPC runs here. The normal database suite explicitly pauses intake
+// for unfunded draft coverage; migration tests separately verify fresh escrow defaults.
+test('fresh payment surfaces offer escrow only and removed pooled routes cannot write', async ({ browser, baseURL }) => {
+  const password = 'browser-payments-password-123';
+  const buyer = await signedIn(browser, baseURL, uniqueHandle('paybuyer'), password, true);
+  const database = process.env.E2E_DATABASE_URL!;
+  const sql = (query: string) => execFileSync('psql', [database, '-v', 'ON_ERROR_STOP=1', '-qtAc', query], { encoding: 'utf8' }).trim();
+  try {
+    await buyer.goto('/account');
+    // A-508: no reader of the saved pooled payout addresses remains; the account page no longer lists them.
+    await expect(buyer.getByRole('heading', { name: 'Historical payout addresses' })).toHaveCount(0);
+    await expect(buyer.locator('#unsent-payouts')).toHaveCount(0);
+    await expect(buyer.locator('form[action="/account/payout"]')).toHaveCount(0);
+    const csrf = await buyer.locator('input[name="csrf"]').first().inputValue();
+    const before = sql('SELECT (SELECT count(*) FROM payment_addresses)::text||\':\'||(SELECT count(*) FROM payouts)::text');
+    for (const route of ['/orders/pay', '/account/payout', '/admin/payout', '/admin/payment-address-collisions']) {
+      const response = await buyer.request.post(route, { form: { csrf, currency: 'BTC', address: 'tb1qretired', op: 'sent', password }, maxRedirects: 0 });
+      expect(response.status(), route).toBe(404);
+    }
+    expect(sql('SELECT (SELECT count(*) FROM payment_addresses)::text||\':\'||(SELECT count(*) FROM payouts)::text')).toBe(before);
+    const admin = await browser.newPage({ baseURL, javaScriptEnabled: false });
+    await admin.goto('/login');
+    await admin.getByLabel('Handle', { exact: true }).fill(ADMIN.handle);
+    await admin.getByLabel('Password', { exact: true }).fill(ADMIN.password);
+    await admin.getByRole('button', { name: 'Sign in' }).click();
+    await admin.goto('/admin');
+    await expect(admin.getByRole('heading', { name: 'Escrow status and payment intake' })).toBeVisible();
+    for (const currency of ['BTC', 'XMR']) {
+      const form = admin.locator('form', { has: admin.getByRole('button', { name: `Save ${currency} intake` }) });
+      await expect(form.getByRole('radio')).toHaveCount(2);
+      await expect(form.getByRole('radio', { name: /^Escrow$/ })).toHaveAttribute('value', 'escrow');
+      await expect(form.getByRole('radio', { name: /^Paused/ })).toHaveAttribute('value', 'false');
+    }
+    await expect(admin.locator('form[action="/admin/payout"]')).toHaveCount(0);
+    // A-492: no payout table, count or link on the admin page.
+    await expect(admin.locator('#payouts')).toHaveCount(0);
+    await expect(admin.locator('a[href="/admin#payouts"]')).toHaveCount(0);
+    await expect(admin.getByRole('navigation', { name: 'Main navigation' })).not.toContainText('payouts');
+    await admin.context().close();
+  } finally { await buyer.context().close(); }
 });

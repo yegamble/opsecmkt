@@ -5,6 +5,7 @@ umask 077
 [[ $# -eq 1 ]] || { echo 'Usage: AGE_RECIPIENT=age1... scripts/backup.sh backups/name.dump.age' >&2; exit 1; }
 : "${AGE_RECIPIENT:?Set an age public recipient key; backups are encrypted before writing}"
 command -v age >/dev/null || { echo 'Install age first.' >&2; exit 1; }
+command -v python3 >/dev/null || { echo 'Python 3 is required for safe backup-space checks.' >&2; exit 1; }
 output=$1
 [[ ! -e $output ]] || { echo 'Refusing to overwrite backup.' >&2; exit 1; }
 # url_database URL: the database (path) of a PostgreSQL URL, cut as Go's net/url does. Never prints the URL.
@@ -13,10 +14,10 @@ url_database() {
   url=${url%%\?*}
   if [[ $url =~ $pattern ]]; then printf '%s' "${BASH_REMATCH[2]}"; fi
 }
-# env_database: the database in the last DATABASE_URL assignment in .env, which Compose passes to the app; a
+# env_database_url: the last DATABASE_URL assignment in .env, which Compose passes to the app; a
 # side-by-side restore or rollback switches it. Reads the installer's single quotes, double quotes, `export`
 # and unquoted values with a trailing comment; anything else yields nothing rather than a guess.
-env_database() {
+env_database_url() {
   [[ -f .env ]] || return 0
   local line value='' pattern='^[[:space:]]*(export[[:space:]]+)?DATABASE_URL[[:space:]]*=[[:space:]]*(.*)$'
   while IFS= read -r line || [[ -n $line ]]; do
@@ -28,14 +29,22 @@ env_database() {
     \"*) value=${value#\"}; value=${value%%\"*} ;;
     *) value=${value%%[[:space:]]*} ;;
   esac
-  url_database "$value"
+  printf '%s' "$value"
 }
 identifier='^[a-z_][a-z0-9_]{0,62}$'
 if [[ -n ${BACKUP_DATABASE_URL:-} && -n ${BACKUP_INTERNAL_DATABASE:-} ]]; then
   echo 'Set only one of BACKUP_DATABASE_URL and BACKUP_INTERNAL_DATABASE.' >&2; exit 1
 elif [[ -z ${BACKUP_DATABASE_URL:-} ]]; then
   # The internal-db service publishes no port: dump, inside it, the database the application is configured to use.
-  configured=$(env_database)
+  configured_url=$(env_database_url)
+  # Compose gives an exported DATABASE_URL precedence over .env for the app. The internal backup path runs
+  # pg_dump inside the Compose database service, so it must refuse an override instead of silently dumping the
+  # database named in .env while the application uses another URL. External URLs belong in BACKUP_DATABASE_URL.
+  if [[ ${DATABASE_URL+x} && ( -z $configured_url || $DATABASE_URL != "$configured_url" ) ]]; then
+    echo 'Refusing internal backup: exported DATABASE_URL differs from DATABASE_URL in .env. Unset the override or set BACKUP_DATABASE_URL to the intended reachable database.' >&2
+    exit 1
+  fi
+  configured=$(url_database "$configured_url")
   [[ $configured =~ $identifier ]] || configured=''
   database=${BACKUP_INTERNAL_DATABASE:-$configured}
   if [[ -n ${BACKUP_INTERNAL_DATABASE:-} ]]; then
@@ -59,12 +68,44 @@ case ${BACKUP_DUMP_ENCODING:-} in
   SQL_ASCII) dump_encoding=(--encoding=SQL_ASCII) ;;
   *) echo 'BACKUP_DUMP_ENCODING may only be SQL_ASCII, and only to move a database that is not UTF8 (UPGRADING.md, section 42).' >&2; exit 1 ;;
 esac
-mkdir -p "$(dirname "$output")"
+# Create only the destination directory before checking it. The guard runs before
+# any temporary archive or pg_dump output is created.
+output_dir=$(dirname "$output")
+mkdir -p "$output_dir"
+if [[ -n ${BACKUP_DATABASE_URL:-} ]]; then
+  command -v pg_dump >/dev/null || { echo 'Install PostgreSQL client tools for external backups.' >&2; exit 1; }
+  command -v psql >/dev/null || { echo 'Install PostgreSQL client tools for external backups.' >&2; exit 1; }
+  database_bytes=$(python3 scripts/postgres-tool.py BACKUP_DATABASE_URL psql -X -q -A -t -v ON_ERROR_STOP=1 \
+    -c 'SELECT pg_database_size(current_database())') || {
+      echo 'Could not determine the source database size; refusing to create a backup.' >&2; exit 1; }
+else
+  database_bytes=$(docker compose exec -T db psql -X -q -A -t -v ON_ERROR_STOP=1 -U opsecmkt -d "$database" \
+    -c 'SELECT pg_database_size(current_database())') || {
+      echo 'Could not determine the source database size; refusing to create a backup.' >&2; exit 1; }
+fi
+database_bytes=${database_bytes//[$'\t\r\n ']/}
+available_kib=$(df -PkP "$output_dir" | awk 'NR == 2 && $4 ~ /^[0-9]+$/ { print $4; found = 1 } END { if (!found) exit 1 }') || {
+  echo 'Could not determine free space on the backup destination filesystem.' >&2; exit 1; }
+[[ $available_kib =~ ^[0-9]+$ ]] || {
+  echo 'Could not determine free space on the backup destination filesystem.' >&2; exit 1; }
+if ! python3 scripts/postgres-policy.py space "$database_bytes" "$available_kib" >/dev/null; then
+  echo 'Backup refused before writing an archive.' >&2
+  exit 1
+fi
+if [[ -n ${BACKUP_DATABASE_URL:-} ]]; then
+  dump_client_version=$(python3 scripts/postgres-tool.py BACKUP_DATABASE_URL pg_dump --version) || {
+    echo 'Could not determine the selected pg_dump version.' >&2; exit 1; }
+else
+  dump_client_version=$(docker compose exec -T db pg_dump --version) || {
+    echo 'Could not determine the selected pg_dump version.' >&2; exit 1; }
+fi
+if ! python3 scripts/postgres-policy.py compatible "$dump_client_version" "$dump_client_version" >/dev/null; then
+  echo 'Cannot safely interpret the selected pg_dump version; refusing to create a backup.' >&2
+  exit 1
+fi
 temporary=$(mktemp "${output}.tmp.XXXXXX")
 trap 'rm -f "$temporary"' EXIT
 if [[ -n ${BACKUP_DATABASE_URL:-} ]]; then
-  command -v pg_dump >/dev/null || { echo 'Install PostgreSQL client tools for external backups.' >&2; exit 1; }
-  command -v python3 >/dev/null || { echo 'Python 3 is required for external connection URL parsing.' >&2; exit 1; }
   # TZ=UTC here and below: a custom-format dump records its creation time as wall-clock fields of pg_dump's zone,
   # and restore.sh reads them back as UTC.
   TZ=UTC python3 scripts/postgres-tool.py BACKUP_DATABASE_URL pg_dump --format=custom --no-owner --no-acl ${dump_encoding[@]+"${dump_encoding[@]}"} | age -r "$AGE_RECIPIENT" > "$temporary"
@@ -76,4 +117,4 @@ else
   dumped="internal database $database"
 fi
 mv "$temporary" "$output"
-printf 'Encrypted backup of %s saved to %s\n' "$dumped" "$output"
+printf 'Encrypted backup of %s saved to %s (client: %s)\n' "$dumped" "$output" "$dump_client_version"

@@ -9,17 +9,16 @@ import (
 )
 
 // Payment-review dispositions (A-31). A moderator or administrator who is not party to the order records one
-// outcome for a deposit the payment watcher flagged (payments.flagged) and that is still open on the moderation
-// desk: no action (with a reason), refunded to the buyer by hand (the wallet transaction ID and the amount; the
-// market sends nothing and writes no payouts row, so the one-settlement rule is untouched) or escalated to an
-// administrator (moderators only; an administrator then records one of the other two). Each needs the staff
-// member's password (and authenticator code when enrolled) through confirmedTx, which also re-reads their role
-// and suspension. It writes one order event (the parties read it; the refund's transaction ID is hidden from the
-// vendor by hidePayoutTxids), one audit row and a notification to the buyer (with the refund's transaction ID,
-// A-231); an escalation also notifies every administrator who is not a party.
+// outcome for an escrow deposit the payment watcher flagged (payments.flagged) and that is still open on the
+// moderation desk: no action (with a reason) or escalated to an administrator (moderators only; an administrator then
+// records no action). A refund by hand is refused (A-330): the coins are in the order's escrow, and a stray refund
+// from the escrow returns them. Each needs the staff member's password (and authenticator code when enrolled) through
+// confirmedTx, which also re-reads their role and suspension. It writes one order event (the parties read it), one
+// audit row and a notification to the buyer; an escalation also notifies every administrator who is not a party.
 
 func init() {
-	registerAction("/moderator/payment-review", actionSpec{Roles: []string{"moderator", "admin"}, OwnTx: true, Run: paymentReviewAction})
+	registerAction("/moderator/payment-review", actionSpec{Roles: []string{"moderator", "admin"}, OwnTx: true,
+		ConfirmedFormNonce: true, ReceiptAuthorize: paymentReviewReceiptAuthorize, Run: paymentReviewAction})
 	registerLoader("moderator", adminConfirmLoader)
 }
 
@@ -29,22 +28,21 @@ func init() {
 // late-deposit notice episode is held only by an open flag of a deposit neither credited, nor below the floor, nor
 // locked, nor spent outside the market (flagLateDeposits), so a flag that holds it is always one staff can record. A
 // flag is open until staff record its disposition (A-31: no action or refunded by hand; one escalated to an
-// administrator stays open) while its deposit is a locked transfer, of a payout below the minimum automatic payout
-// (A-99), a credited deposit whose regression was announced and has not confirmed again (regress_notice), an escrow
+// administrator stays open) while its deposit is a locked transfer, below the escrow minimum output
+// (A-99; historical rows, nothing sets it now), a credited deposit whose regression was announced and has not confirmed again (regress_notice), an escrow
 // deposit spent outside the market (P1-d1), an escrow deposit left out of its settlement, credited or not (it no
 // longer counts: a stray refund returns it, QA462D-2), or a deposit not credited that does not count for the order: a
 // pooled one (after settlement or after the close), or an escrow one recorded after the close. An escrow deposit that
 // counts for the order is not open, credited or not (QA462B-1): it is settled by the order's release or refund, never
 // by staff.
 const paymentFlagOpenRule = `@.flagged AND @.disposition IN ('','escalated') AND (@.locked OR @.below_floor OR @.regress_notice OR @.spent_outside
-	OR @.escrow_left_out OR NOT @.credited AND (@.after_close OR NOT EXISTS (SELECT 1 FROM escrows es WHERE es.order_id=@.order_id)))`
+	OR @.escrow_left_out OR NOT @.credited AND @.after_close) AND EXISTS (SELECT 1 FROM escrows es WHERE es.order_id=@.order_id)`
 
 // newFlagSQL sets a payments row's flag as a new one in an UPDATE: flagged with no recorded disposition (A-31), so the
 // review its "Moderator review required." note asks for is open on the desk and recordable (QA462E-1). The order
 // history and the audit log keep any earlier review. Every flag write uses it unless it touches only unflagged rows,
 // which never carry a disposition: a disposition is recorded only on a flagged row, and countAgain, the only write that
-// unflags one, clears it too. A deposit refunded by hand is never flagged again: it is pooled, never counted for a
-// payout (payoutBasis), never left out, and escrow deposits are never refunded by hand.
+// unflags one, clears it too. Escrow deposits are never refunded by hand, so no flag write meets that disposition.
 const newFlagSQL = "flagged=true,disposition='',disposition_note='',disposed_at=NULL"
 
 // depositName names a deposit in a flag note as flagLateDeposits does, "deposit <truncate(txid, 20)> (<amount> <cur>)",
@@ -99,49 +97,67 @@ func paymentReviewAction(c *actionCtx) (actionResult, error) {
 	if len(note) > 1000 || outcome == "no_action" && len(note) < 10 {
 		return actionResult{}, fail(400, "Give the reason in 10–1000 characters (a note on a refund or an escalation is optional, up to 1000). The buyer and the vendor read it.")
 	}
-	var txid string
-	if outcome == "refunded" {
-		if txid = strings.ToLower(strings.TrimSpace(c.Form.Get("txid"))); !txidPattern.MatchString(txid) {
-			return actionResult{}, fail(400, "Enter the 64-character hexadecimal transaction ID of the refund, as the wallet shows it")
-		}
-	}
 	// Read before the password check (a refused party or unknown payment spends none of the confirmation budget);
 	// recordPaymentReview checks all of it again under the row locks.
-	var buyer, vendor, cur string
-	var deposit int64
-	err = c.A.db.QueryRowContext(c.Ctx(), `SELECT o.buyer_id,pr.vendor_id,pm.currency,pm.amount FROM payments pm JOIN orders o ON o.id=pm.order_id
-		JOIN products pr ON pr.id=o.product_id WHERE pm.id=$1 AND pm.flagged`, id).Scan(&buyer, &vendor, &cur, &deposit)
+	var buyer, vendor string
+	var flagged bool
+	err = c.A.db.QueryRowContext(c.Ctx(), `SELECT o.buyer_id,pr.vendor_id,pm.flagged FROM payments pm JOIN orders o ON o.id=pm.order_id
+		JOIN products pr ON pr.id=o.product_id JOIN escrows es ON es.order_id=o.id WHERE pm.id=$1`, id).Scan(&buyer, &vendor, &flagged)
 	if err == sql.ErrNoRows {
 		return actionResult{}, fail(404, "Flagged payment not found")
 	}
 	if err != nil {
 		return actionResult{}, err
 	}
+	if !flagged {
+		// A watcher may clear this flag after staff recorded the review. Admit
+		// only this exact completed form to the confirmed receipt path; every
+		// fresh or changed request still gets the original pre-password 404.
+		completed, err := completedFormSubmissionForRequest(c)
+		if err != nil {
+			return actionResult{}, err
+		}
+		if !completed {
+			return actionResult{}, fail(404, "Flagged payment not found")
+		}
+	}
 	if c.User.ID == buyer || c.User.ID == vendor {
 		return actionResult{}, errReviewParty
 	}
-	var refunded int64
-	if outcome == "refunded" {
-		dec := currencyDecimals(cur)
-		if refunded, err = parseAmount(strings.TrimSpace(c.Form.Get("amount")), dec); err != nil {
-			return actionResult{}, fail(400, "Enter the amount refunded in "+cur+", as sent (for example 0.0005)")
-		}
-		if refunded > deposit {
-			return actionResult{}, fail(400, "The amount refunded by hand cannot be more than the deposit ("+amount(deposit, dec)+" "+cur+")")
-		}
-	}
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
-		return recordPaymentReview(c, id, outcome, note, txid, refunded)
+		return recordPaymentReview(c, id, outcome, note)
 	})
 }
 
 var errReviewParty = fail(403, "You are a party to this order, so another moderator or administrator records its payment review. Nothing was changed.")
 
-func recordPaymentReview(c *actionCtx, id int64, outcome, note, refundTxid string, refunded int64) (actionResult, error) {
+// Current non-party status is required even for an already completed receipt.
+// Flag/disposition/open state belongs only to recordPaymentReview's locked new
+// action path: a watcher can clear or reopen a flag after the first success.
+func paymentReviewReceiptAuthorize(c *actionCtx) error {
+	id, err := strconv.ParseInt(c.Form.Get("payment_id"), 10, 64)
+	if err != nil || id <= 0 {
+		return fail(404, "Flagged payment not found")
+	}
+	var buyer, vendor string
+	err = c.Tx.QueryRowContext(c.Ctx(), `SELECT o.buyer_id,pr.vendor_id FROM payments pm
+		JOIN orders o ON o.id=pm.order_id JOIN products pr ON pr.id=o.product_id JOIN escrows es ON es.order_id=o.id WHERE pm.id=$1`, id).Scan(&buyer, &vendor)
+	if err == sql.ErrNoRows {
+		return fail(404, "Flagged payment not found")
+	}
+	if err != nil {
+		return err
+	}
+	if c.User.ID == buyer || c.User.ID == vendor {
+		return errReviewParty
+	}
+	return nil
+}
+
+func recordPaymentReview(c *actionCtx, id int64, outcome, note string) (actionResult, error) {
 	ctx, tx, a := c.Ctx(), c.Tx, c.A
-	// The order row first, as the watcher's settleOrder takes it: a late deposit it flags meanwhile sees this
-	// disposition, so its notice episode (flagLateDeposits) is decided consistently.
-	o, err := scanOrder(tx.QueryRowContext(ctx, orderQuery+" WHERE o.id=(SELECT order_id FROM payments WHERE id=$1 AND flagged) FOR UPDATE OF o", id))
+	// The order row first, then the payment row.
+	o, err := scanOrder(tx.QueryRowContext(ctx, orderQuery+" WHERE o.id=(SELECT pm.order_id FROM payments pm JOIN escrows es ON es.order_id=pm.order_id WHERE pm.id=$1 AND pm.flagged) FOR UPDATE OF o", id))
 	if err == sql.ErrNoRows {
 		return actionResult{}, fail(404, "Flagged payment not found")
 	}
@@ -153,9 +169,9 @@ func recordPaymentReview(c *actionCtx, id int64, outcome, note, refundTxid strin
 	}
 	var txid, disposition string
 	var idx, deposit int64
-	var credited, open bool
-	if err = tx.QueryRowContext(ctx, "SELECT p.txid,p.idx,p.amount,p.credited,p.disposition,"+paymentFlagOpen("p")+" FROM payments p WHERE p.id=$1 AND p.order_id=$2 FOR UPDATE OF p", id, o.ID).
-		Scan(&txid, &idx, &deposit, &credited, &disposition, &open); err != nil {
+	var credited, regressNotice, open bool
+	if err = tx.QueryRowContext(ctx, "SELECT p.txid,p.idx,p.amount,p.credited,p.regress_notice,p.disposition,"+paymentFlagOpen("p")+" FROM payments p WHERE p.id=$1 AND p.order_id=$2 FOR UPDATE OF p", id, o.ID).
+		Scan(&txid, &idx, &deposit, &credited, &regressNotice, &disposition, &open); err != nil {
 		return actionResult{}, err
 	}
 	switch {
@@ -171,16 +187,15 @@ func recordPaymentReview(c *actionCtx, id int64, outcome, note, refundTxid strin
 		// The open-flag rule: a credited deposit's flag is not open once a regression confirmed again, nor when it was
 		// never a regression (the flag of a release too few, A-461, only lets staff open the order).
 		return actionResult{}, fail(409, "This flag is not open: its deposit is credited toward the order, which settles it, and no announced regression of it is still open, so there is nothing to review. Nothing was changed.")
-	case outcome == "refunded" && o.Escrow:
-		// A-330: an escrow deposit is in the order's escrow, never in a wallet staff could refund it from; a credited one
-		// left out of its settlement no longer counts for the order (QA462D-2), so this, not the payout, is the reason.
+	case outcome == "refunded":
+		// A-330: every reviewed deposit is an escrow deposit (the order row above joins escrows), in the order's escrow,
+		// never in a wallet staff could refund it from; a credited one left out of its settlement no longer counts for the
+		// order (QA462D-2), so this is the reason.
 		coin := "Bitcoin"
 		if o.Currency == "XMR" {
 			coin = "Monero"
 		}
 		return actionResult{}, fail(409, "This deposit is in the order's "+coin+" escrow, not in a market wallet, so it is never refunded by hand: a stray refund from the escrow returns it to the buyer's refund address. Record no action, or escalate. Nothing was changed.")
-	case outcome == "refunded" && credited:
-		return actionResult{}, fail(409, "This deposit is counted toward the order's payout, so it is settled through that payout and never refunded by hand (that could pay it twice). Nothing was changed.")
 	}
 	var admins []string
 	if outcome == "escalated" {
@@ -188,13 +203,13 @@ func recordPaymentReview(c *actionCtx, id int64, outcome, note, refundTxid strin
 			return actionResult{}, err
 		}
 		if len(admins) == 0 {
-			return actionResult{}, fail(409, "No administrator who is not a party to this order can take this review; record no action or a refund by hand instead. Nothing was changed.")
+			return actionResult{}, fail(409, "No administrator who is not a party to this order can take this review; record no action instead. Nothing was changed.")
 		}
 	}
 	// Compare-and-set on the disposition read above: under the row locks it always matches; should a concurrent
 	// disposition ever slip past them, this one is refused and nothing else is written (A-252).
-	res, err := tx.ExecContext(ctx, "UPDATE payments SET disposition=$2,disposition_note=$3,disposition_txid=$4,disposition_amount=$5,disposed_at=now() WHERE id=$1 AND disposition=$6",
-		id, outcome, note, refundTxid, refunded, disposition)
+	res, err := tx.ExecContext(ctx, "UPDATE payments SET disposition=$2,disposition_note=$3,disposed_at=now() WHERE id=$1 AND disposition=$4",
+		id, outcome, note, disposition)
 	if err != nil {
 		return actionResult{}, err
 	}
@@ -219,13 +234,6 @@ func recordPaymentReview(c *actionCtx, id int64, outcome, note, refundTxid strin
 	case "no_action":
 		event += " Reason: " + note
 		body += " Reason: " + note
-	case "refunded":
-		// The refund's transaction ID: the order page hides it from the vendor (hidePayoutTxids, A-214); the buyer's
-		// notification carries it (A-231).
-		sent := amount(refunded, dec) + " " + o.Currency
-		event = "Payment review of " + dep + ": refunded to the buyer by hand, outside the market's automatic payouts: " + sent + ", transaction " + refundTxid + "."
-		body = "Order " + short + ": market staff refunded the flagged " + dep + " to you by hand, outside the market's automatic payouts: " + sent + ". Transaction ID: " + refundTxid
-		audit += " " + sent + " with transaction " + refundTxid
 	case "escalated":
 		body = "Order " + short + ": market staff passed the review of the flagged " + dep + " to an administrator."
 	}
@@ -236,15 +244,23 @@ func recordPaymentReview(c *actionCtx, id int64, outcome, note, refundTxid strin
 	if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,$3,$4)", o.ID, o.State, c.User.ID, event); err != nil {
 		return actionResult{}, err
 	}
-	if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), o.BuyerID, body); err != nil {
+	if _, err = insertNotification(ctx, tx, o.BuyerID, body, o.ID); err != nil {
 		return actionResult{}, err
+	}
+	if credited && regressNotice {
+		// Give the vendor an inbox signal without putting the deposit or refund transaction identity, amount, or staff
+		// note in that notification.
+		vendorBody := "Order " + short + ": market staff recorded a payment review (" + reviewOutcomes[outcome] + "). See the order history."
+		if _, err = insertNotification(ctx, tx, o.VendorID, vendorBody, o.ID); err != nil {
+			return actionResult{}, err
+		}
 	}
 	for _, uid := range admins {
 		msg := "Payment review escalated for order " + short + ": " + dep + ". Record the outcome under Payment review on the moderation desk."
 		if note != "" {
 			msg += " Moderator's note: " + note
 		}
-		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), uid, msg); err != nil {
+		if _, err = insertNotification(ctx, tx, uid, msg, o.ID); err != nil {
 			return actionResult{}, err
 		}
 	}

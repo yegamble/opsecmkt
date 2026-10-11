@@ -32,10 +32,10 @@ test('desktop: register, draft, profile persistence and sign-out', async ({ page
   await page.getByRole('link', { name: FIXTURE_LISTING, exact: true }).click();
   await fits(page);
   await page.getByRole('link', { name: 'Review order draft' }).click();
-  await page.getByLabel('Reference currency').selectOption('XMR');
+  await page.getByLabel('Pay with').selectOption('XMR');
   await page.getByRole('button', { name: 'Create unfunded draft' }).click();
   await expect(page).toHaveURL(/\/order\?id=/);
-  await expect(page.getByRole('heading', { name: 'Payment is unavailable' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Unfunded draft' })).toBeVisible();
   await expect(page.locator('.total')).toContainText('XMR');
   await expect(page.locator('.page-head .badge')).toHaveText('Draft — unfunded');
   await fits(page);
@@ -45,17 +45,14 @@ test('desktop: register, draft, profile persistence and sign-out', async ({ page
   await fits(page);
 
   await page.goto('/account');
-  await page.getByLabel('XMPP address').fill(`${handle}@example.test`);
-  await submitAndLoad(page, page.getByRole('button', { name: 'Save profile' }));
-  await page.reload();
-  await expect(page.getByLabel('XMPP address')).toHaveValue(`${handle}@example.test`);
+  await expect(page.getByLabel('XMPP address')).toHaveCount(0);
   await fits(page);
-  await page.getByRole('button', { name: 'Sign out', exact: true }).click();
+  await submitAndLoad(page, page.getByRole('button', { name: 'Sign out', exact: true }));
   await page.goto('/account');
   await expect(page).toHaveURL(/\/login\?next=%2Faccount$/);
   await page.getByLabel('Handle', { exact: true }).fill(handle);
   await page.getByLabel('Password', { exact: true }).fill(password);
-  await page.getByRole('button', { name: 'Sign in' }).click();
+  await submitAndLoad(page, page.getByRole('button', { name: 'Sign in' }));
   await page.goto('/account');
-  await expect(page.getByLabel('XMPP address')).toHaveValue(`${handle}@example.test`);
+  await expect(page.getByLabel('XMPP address')).toHaveCount(0);
 });

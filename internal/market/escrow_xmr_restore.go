@@ -47,9 +47,30 @@ import (
 // is owed (xmrConfirmDestroyedAction, A-419): its seal is wiped then, never by the watcher on that evidence.
 
 func init() {
-	registerAction("/admin/escrow-xmr-rebroadcast", actionSpec{Roles: []string{"admin"}, OwnTx: true, Off: escrowXMROff, Run: xmrRebroadcastAction})
-	registerAction("/admin/escrow-xmr-destroyed", actionSpec{Roles: []string{"admin"}, OwnTx: true, Off: escrowXMROff, Run: xmrConfirmDestroyedAction})
+	registerAction("/admin/escrow-xmr-rebroadcast", actionSpec{Roles: []string{"admin"}, OwnTx: true, ConfirmedFormNonce: true,
+		ReceiptAuthorize: xmrRebroadcastReceiptAuthorize, Off: escrowXMROff, Run: xmrRebroadcastAction})
+	registerAction("/admin/escrow-xmr-destroyed", actionSpec{Roles: []string{"admin"}, OwnTx: true, ConfirmedFormNonce: true,
+		ReceiptAuthorize: xmrDestroyedReceiptAuthorize, Off: escrowXMROff, Run: xmrConfirmDestroyedAction})
 	registerLoader("admin", xmrEscrowRecoveryLoader)
+}
+
+// xmrRebroadcastReceiptAuthorize binds a saved response to a settlement that still belongs to a Monero escrow.
+// Mutable hold and relay state stay in the first callback; replay only returns the already committed result.
+func xmrRebroadcastReceiptAuthorize(c *actionCtx) error {
+	id, err := strconv.ParseInt(c.Form.Get("settlement_id"), 10, 64)
+	if err != nil || id <= 0 {
+		return fail(400, "Unknown settlement")
+	}
+	var exists bool
+	err = c.Tx.QueryRowContext(c.Ctx(), `SELECT EXISTS(SELECT 1 FROM xmr_settlements s JOIN escrows e ON e.order_id=s.order_id
+		WHERE s.id=$1 AND e.coin='XMR')`, id).Scan(&exists)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return fail(404, "Settlement not found")
+	}
+	return nil
 }
 
 // xmrLookaheadMajor is monero-wallet-rpc's default account lookahead, never lowered; minor lookahead 1 is enough, since

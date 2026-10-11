@@ -6,4 +6,14 @@ commit, chain and `signet_challenge`, the node's version, image and digest, star
 the transcript's sha256; both files passed the script's secret scan before they were written. How to run it:
 [Escrow node set-up and the public-network smoke](../../operator-guide.md#escrow-node-set-up-and-the-public-network-smoke).
 
-No record is here yet: no public-network run of Bitcoin escrow has been recorded (A-447 is the owner's).
+[Public signet — 2026-10-09, frozen 9885beef29d3](2026-10-09-9885beef29d3/signet/README.md): practice signing, funded claim and buyer refund passed with real confirmations. Supplemental records measure sync/storage and Tor private-broadcast observations. Public testnet4 remains unrun.
+
+`scripts/test-escrow-xmr-public-stagenet.py` writes the separate `stagenet-xmr/` directory only after a funded public
+digital-claim journey passes. It records a fetched HTTPS explorer block matched to the own daemon, actual Docker
+image/container identity, transaction hashes, funding and settlement stage times, and the planned amount received
+with ten confirmations. Its public transcript contains validated proof fields; raw output stays private outside
+the repository. A digital-claim sample is not refund timing or validation of A-482's experimental 24-hour threshold.
+The operator selects either XMRChain or Librenode with an exact HTTPS block URL. Both the runner and Go test
+independently fetch the selected host's block API and refuse a missing or mismatching response; there is no
+automatic fallback. Public API availability and a syncing cloud node are preparation, not passing escrow evidence.
+The [2026-10-10 public stagenet digital claim](2026-10-10-ac71878dfde4/stagenet-xmr/README.md) passed on frozen ac71878dfde4: actual 0.01 sXMR funding and confirmed release, ten confirmations each, and exact planned claimant receipt. It includes observed sync/storage, verified private recovery and cloud cleanup. Public refunds remain unmeasured; the offline stagenet fork is a separate evidence tier.

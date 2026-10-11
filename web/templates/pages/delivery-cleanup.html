@@ -1,0 +1,13 @@
+{{define "page:delivery-cleanup"}}{{template "header" .}}
+<div class="page-head"><div><div class="eyebrow">Account privacy</div><h1>Clear stored delivery text<span class="accent">.</span></h1>
+<p>Only archived listings you own appear here. Listing titles and IDs are shown; the stored text is never displayed.</p></div><a class="button" href="/account">Account</a></div>
+<section class="panel"><h2>Archived listings with stored text</h2>
+<p class="help">Clearing removes the listing's automatic-delivery text only. Existing orders and their saved delivery records are preserved. An order awaiting payment must finish or be cancelled first.</p>
+{{range .DeliveryCleanup}}<article class="panel"><h3>{{.Title}}</h3><p class="help">Listing ID: <code>{{.ID}}</code><br>Stored automatic-delivery text: present</p>
+{{if .AwaitingPayment}}<p class="alert" role="note">An order is awaiting payment, so this text cannot be cleared yet.</p>{{else}}<form class="stack" method="post" action="/delivery-cleanup">
+<input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="id" value="{{.ID}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/delivery-cleanup"}}">
+<p>Clear the stored text from this archived listing? This does not change any existing order or delivery.</p>
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}<button type="submit">Clear stored text</button></form>{{end}}</article>{{else}}<p>No archived listings have stored delivery text.</p>{{end}}
+{{with .DeliveryCleanupPaging}}{{if gt .Pages 1}}<p class="help">Showing {{.First}}–{{.Last}} of {{.Total}} listings.</p><nav class="pagination" aria-label="Delivery cleanup pages">{{if .PrevURL}}<a href="{{.PrevURL}}" rel="prev">← Previous</a>{{end}}<span aria-current="page">Page {{.Page}} of {{.Pages}}</span>{{if .NextURL}}<a href="{{.NextURL}}" rel="next">Next →</a>{{end}}</nav>{{end}}{{end}}
+</section>{{template "footer" .}}{{end}}

@@ -36,9 +36,9 @@ var transitions = map[string]map[string][]string{
 	stateDraft:           {stateAwaitingPayment: {roleBuyer}, stateCancelled: {roleBuyer}},
 	stateAwaitingPayment: {statePaid: {roleSystem}, stateCancelled: {roleBuyer, roleVendor, roleSystem}}, // system: payment window expired
 	statePaid:            {stateShipped: {roleVendor}, stateDelivered: {roleVendor, roleSystem}, stateCancelled: {roleVendor, roleBuyer}, stateDisputed: {roleBuyer, roleVendor}},
-	stateShipped:         {stateCompleted: {roleBuyer, roleSystem}, stateDisputed: {roleBuyer, roleVendor}}, // system: escrowOnly
-	stateDelivered:       {stateCompleted: {roleBuyer, roleSystem}, stateDisputed: {roleBuyer, roleVendor}}, // system: escrowOnly
-	stateDisputed:        {stateResolved: {roleModerator}},
+	stateShipped:         {stateCompleted: {roleBuyer, roleSystem}, stateDisputed: {roleBuyer, roleVendor}},           // system: escrowOnly
+	stateDelivered:       {stateCompleted: {roleBuyer, roleSystem}, stateDisputed: {roleBuyer, roleVendor}},           // system: escrowOnly
+	stateDisputed:        {stateResolved: {roleModerator}, stateCompleted: {roleBuyer}, stateCancelled: {roleVendor}}, // A-166: party concessions use only /disputes/concede.
 	stateCompleted:       {},
 	stateResolved:        {},
 	stateCancelled:       {},
@@ -54,15 +54,15 @@ var transitionKind = map[[2]string]string{{statePaid, stateShipped}: "physical",
 var escrowOnly = map[[3]string]bool{{stateDelivered, stateCompleted, roleSystem}: true, {stateShipped, stateCompleted, roleSystem}: true,
 	{statePaid, stateCancelled, roleBuyer}: true}
 
-// pooledOnly restricts a move by one role to pooled orders (A-373, P2-R2): the buyer's Complete queues a pooled payout;
-// on an escrow order the buyer confirms receipt only by signing the release (escrow_release.go), so these edges are
-// refused there (409) and never offered, and "confirm receipt" can never lead to a market co-signature.
-var pooledOnly = map[[3]string]bool{{stateShipped, stateCompleted, roleBuyer}: true, {stateDelivered, stateCompleted, roleBuyer}: true}
+// buyerCompleteRefused lists the buyer's plain Complete edges, refused on an escrow order (A-373, P2-R2): the buyer of
+// a Bitcoin escrow order confirms receipt only by signing the release (escrow_release.go), so these edges are refused
+// there (409) and never offered, and "confirm receipt" can never lead to a market co-signature.
+var buyerCompleteRefused = map[[3]string]bool{{stateShipped, stateCompleted, roleBuyer}: true, {stateDelivered, stateCompleted, roleBuyer}: true}
 
-// xmrConfirmOnly is the one escrow exception to pooledOnly (P3-R7): the buyer of a shipped Monero escrow order, which has
-// no party signatures, confirms receipt with a password step-up (/escrow-xmr/confirm, escrow_xmr_release.go), and that
-// action alone marks its move (withConfirmReceipt). Every other escrow order, and a Monero one through the pooled
-// Complete form, still meets pooledOnly.
+// xmrConfirmOnly is the one exception to buyerCompleteRefused (P3-R7): the buyer of a shipped Monero escrow order, which
+// has no party signatures, confirms receipt with a password step-up (/escrow-xmr/confirm, escrow_xmr_release.go), and
+// that action alone marks its move (withConfirmReceipt). Every other escrow order, and a Monero one through the plain
+// Complete form, still meets buyerCompleteRefused.
 var xmrConfirmOnly = map[[3]string]bool{{stateShipped, stateCompleted, roleBuyer}: true}
 
 type confirmReceiptCtx struct{}
@@ -123,13 +123,22 @@ func actorRoles(o *Order, u *User) []string {
 }
 
 // orderQuery selects the columns scanOrder reads; append WHERE/ORDER clauses.
-const orderQuery = `SELECT o.id,p.id,p.title,b.handle,v.handle,o.currency,o.amount,o.state,to_char(o.created,'YYYY-MM-DD HH24:MI "UTC"'),p.kind,o.buyer_id,p.vendor_id,to_char(o.updated,'YYYY-MM-DD HH24:MI "UTC"'),EXISTS(SELECT 1 FROM escrows es WHERE es.order_id=o.id) FROM orders o JOIN products p ON p.id=o.product_id JOIN users b ON b.id=o.buyer_id JOIN users v ON v.id=p.vendor_id`
+const orderQuery = `SELECT o.id,p.id,
+	CASE WHEN o.state='draft' THEN p.title ELSE COALESCE(o.listing_title,'Listing terms were not recorded for this order') END,
+	b.handle,v.handle,o.currency,o.amount,o.state,to_char(o.created,'YYYY-MM-DD HH24:MI "UTC"'),
+	CASE WHEN o.state='draft' THEN p.kind ELSE COALESCE(o.listing_kind,p.kind) END,
+	o.buyer_id,p.vendor_id,to_char(o.updated,'YYYY-MM-DD HH24:MI "UTC"'),
+	EXISTS(SELECT 1 FROM escrows es WHERE es.order_id=o.id),
+	CASE WHEN o.state='draft' THEN p.kind ELSE COALESCE(o.listing_kind,'Not recorded') END,
+	CASE WHEN o.state='draft' THEN p.description ELSE COALESCE(o.listing_description,'') END,
+	o.listing_title IS NOT NULL
+	FROM orders o JOIN products p ON p.id=o.product_id JOIN users b ON b.id=o.buyer_id JOIN users v ON v.id=p.vendor_id`
 
 func scanOrder(s interface{ Scan(...any) error }) (Order, error) {
 	var o Order
 	var n int64
 	// Escrow: the order has an escrows row (escrow checkout, escrow_create.go); every other order is pooled.
-	err := s.Scan(&o.ID, &o.ProductID, &o.Title, &o.Buyer, &o.Vendor, &o.Currency, &n, &o.State, &o.Created, &o.Kind, &o.BuyerID, &o.VendorID, &o.Updated, &o.Escrow)
+	err := s.Scan(&o.ID, &o.ProductID, &o.Title, &o.Buyer, &o.Vendor, &o.Currency, &n, &o.State, &o.Created, &o.Kind, &o.BuyerID, &o.VendorID, &o.Updated, &o.Escrow, &o.KindDisplay, &o.Description, &o.ListingRecorded)
 	dec := 8
 	if o.Currency == "XMR" {
 		dec = 12
@@ -171,9 +180,18 @@ func (a *App) transition(ctx context.Context, tx *sql.Tx, orderID, from, to stri
 	if o.State != from {
 		return nil, errConflict
 	}
+	if !o.Escrow && !(from == stateDraft && to == stateCancelled) && !(from == stateDraft && to == stateAwaitingPayment && isEscrowCheckout(ctx)) {
+		return nil, fail(409, "Historical pooled orders are read-only")
+	}
+	if from == stateDisputed && (to == stateCompleted || to == stateCancelled) {
+		concession, ok := ctx.Value(concessionTransitionKey{}).(concessionTransition)
+		if !ok || actor == nil || concession.orderID != orderID || concession.to != to || concession.actorID != actor.ID {
+			return nil, errForbidden
+		}
+	}
 	if o.Escrow && slices.ContainsFunc(actorRoles(&o, actor), func(r string) bool {
 		edge := [3]string{from, to, r}
-		return pooledOnly[edge] && !(xmrConfirmOnly[edge] && o.xmrEscrow() && isConfirmReceipt(ctx))
+		return buyerCompleteRefused[edge] && !(xmrConfirmOnly[edge] && o.xmrEscrow() && isConfirmReceipt(ctx))
 	}) {
 		if o.xmrEscrow() {
 			return nil, errEscrowCompleteXMR
@@ -189,21 +207,8 @@ func (a *App) transition(ctx context.Context, tx *sql.Tx, orderID, from, to stri
 	if kind, ok := transitionKind[[2]string{from, to}]; ok && o.Kind != kind {
 		return nil, fail(403, "This step is only available for "+kind+" orders.")
 	}
-	// An escrow checkout needs its coin's escrow (escrowCheckoutAction, xmrEscrowCheckoutAction), not a pooled wallet
-	// for the currency.
-	if from == stateDraft && to == stateAwaitingPayment && a.provider(o.Currency) == nil && !(isEscrowCheckout(ctx) && a.escrowReady(o.Currency)) {
-		return nil, fail(409, "Payment unavailable for "+o.Currency)
-	}
-	// A pooled payment request while the currency's intake is escrow only (P4-R8): payAction's lockPaymentIntake
-	// refuses it first; this refuses any other pooled path to awaiting_payment.
-	if from == stateDraft && to == stateAwaitingPayment && !isEscrowCheckout(ctx) {
-		var intake string
-		if err = tx.QueryRowContext(ctx, "SELECT value FROM settings WHERE key=$1", paymentIntakeKey(o.Currency)).Scan(&intake); err != nil && err != sql.ErrNoRows {
-			return nil, err
-		}
-		if intake == intakeEscrow {
-			return nil, fail(409, escrowOnlyRefusal(o.Currency))
-		}
+	if from == stateDraft && to == stateAwaitingPayment && (!isEscrowCheckout(ctx) || !a.escrowReady(o.Currency)) {
+		return nil, fail(409, "Escrow checkout unavailable for "+o.Currency)
 	}
 	res, err := tx.ExecContext(ctx, "UPDATE orders SET state=$2,updated=now() WHERE id=$1 AND state=$3", orderID, to, from)
 	if err != nil {
@@ -232,11 +237,16 @@ func (a *App) transition(ctx context.Context, tx *sql.Tx, orderID, from, to stri
 	if d, ok := ctx.Value(noticeDetailKey{}).(noticeDetail); ok && d.orderID == orderID && d.to == to {
 		body = strings.TrimSuffix(body, ".") + ". " + d.text
 	}
+	// Draft cancellation is an abandoned checkout cleanup, not vendor work; notifying the vendor
+	// would let buyers bury incoming orders with repeated create/cancel cycles (A-165).
 	for _, uid := range []string{o.BuyerID, o.VendorID} {
 		if actor != nil && uid == actor.ID {
 			continue
 		}
-		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), uid, body); err != nil {
+		if from == stateDraft && to == stateCancelled && uid == o.VendorID {
+			continue
+		}
+		if _, err = insertNotification(ctx, tx, uid, body, orderID); err != nil {
 			return nil, err
 		}
 	}

@@ -27,8 +27,6 @@ import (
 //     shows its peer; its restricted one (as the bundled monero service serves) hides the counts (0) and is synced on
 //     offline false and a fresh tip; the --offline daemon has no peers; the same reading judged 21 minutes after its
 //     tip, under MONERO_MAX_TIP_AGE's minimum of 20 minutes, is stale.
-//   - PooledGuard: the pooled Monero check (moneroProvider.Check) against the real stagenet wallet-rpc and the restricted
-//     daemon is synced; against the --offline daemon it is not synced (no peers).
 
 // xmrStagenet is one leg's view of the offline stagenet fork.
 type xmrStagenet struct {
@@ -176,37 +174,5 @@ func TestXMREscrowStagenetSyncGuard(t *testing.T) {
 	t.Logf("--offline daemon: synchronized %v, height %d, connections %d", off.Synchronized, off.Height, off.Connections)
 	if why := off.notSynced(time.Now(), time.Hour); why != notSyncedPeers {
 		t.Fatalf("the --offline daemon: %q, want %q", why, notSyncedPeers)
-	}
-}
-
-func TestXMREscrowStagenetPooledGuard(t *testing.T) {
-	s := newXMRStagenet(t)
-	ctx := context.Background()
-	t.Setenv("MONERO_MAX_TIP_AGE", "")
-	// The pooled adapter opens the conventional wallet "opsecmkt" when none is open: make it on this wallet-rpc.
-	w, err := newRPCClient("stagenet wallet", s.wallet, "2.0", true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = w.call(ctx, "/json_rpc", "create_wallet", map[string]any{"filename": "opsecmkt", "password": "", "language": "English"}, nil); err != nil {
-		if err = w.call(ctx, "/json_rpc", "open_wallet", map[string]any{"filename": "opsecmkt", "password": ""}, nil); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for _, c := range []struct {
-		daemon, why string
-	}{{s.peered, ""}, {s.offline, notSyncedPeers}} {
-		p, err := buildMoneroProvider(s.wallet, c.daemon, "stagenet", 10)
-		if err != nil {
-			t.Fatal(err)
-		}
-		st, err := p.Check(ctx)
-		if err != nil || st.Why != c.why || st.Syncing != (c.why != "") || p.Network() != "stagenet" {
-			t.Fatalf("pooled check (want %q): %+v %v", c.why, st, err)
-		}
-		t.Logf("pooled check: syncing %v (%q), wallet tip %d", st.Syncing, st.Why, st.Tip)
-	}
-	if err = w.call(ctx, "/json_rpc", "close_wallet", nil, nil); err != nil {
-		t.Fatal(err)
 	}
 }

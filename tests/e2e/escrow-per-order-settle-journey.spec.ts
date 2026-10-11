@@ -1,6 +1,6 @@
 import { writeFileSync } from 'node:fs';
 import { expect, test, type APIRequestContext, type Page, type TestInfo } from '@playwright/test';
-import { administrator, buyerPassword, context, downloadCopy, pressSubmit, pressSubmitGet, register, reloadUntil, settlementStatus, shot, sim, simPost, tabTo, typeInto, vendorPassword } from './escrow-helpers';
+import { administrator, buyerPassword, context, password, downloadCopy, pressSubmit, pressSubmitGet, register, reloadUntil, settlementStatus, shot, sim, simPost, tabTo, typeInto, vendorPassword } from './escrow-helpers';
 
 // A-456b (rulings P4-R2, P4-R17, P4-R18): a per-order (shape (b)) Bitcoin escrow end to end with JavaScript disabled at
 // 320 px, every form driven by the keyboard alone, against the real server and PostgreSQL: both parties register a
@@ -60,6 +60,7 @@ test('Per-order escrow: keys, checkout, setup pages, funding, the release upload
   await tabTo(admin, role.getByLabel('Role'));
   await role.getByLabel('Role').press('v');
   await expect(role.getByLabel('Role')).toHaveValue('vendor');
+  await typeInto(admin, role.getByLabel('Current password'), password);
   await pressSubmit(admin, role.getByRole('button', { name: 'Update role' }));
   await expect(admin.getByRole('status').filter({ hasText: 'Account role saved.' })).toBeVisible();
 
@@ -72,9 +73,9 @@ test('Per-order escrow: keys, checkout, setup pages, funding, the release upload
   await vendor.getByLabel('Fulfillment type').press('d');
   await expect(vendor.getByLabel('Fulfillment type')).toHaveValue('digital');
   await tabTo(vendor, vendor.getByLabel('Stock', { exact: true }));
-  await vendor.keyboard.press('Control+A');
+  await vendor.keyboard.press('ControlOrMeta+A');
   await vendor.keyboard.type('5');
-  await typeInto(vendor, vendor.getByLabel('Bitcoin reference price'), '0.001');
+  await typeInto(vendor, vendor.getByLabel(/Price \(BTC, (?:test network|main network|not configured|not yet known)\)/), '0.001');
   await typeInto(vendor, vendor.getByLabel('Monero reference price'), '0.5');
   await typeInto(vendor, vendor.getByLabel('Automatic delivery content'), 'LICENCE-PER-ORDER-SETTLE-0001');
   await pressSubmit(vendor, vendor.getByRole('button', { name: 'Publish listing' }));
@@ -130,7 +131,7 @@ test('Per-order escrow: keys, checkout, setup pages, funding, the release upload
   await tabTo(vendor, upload);
   await upload.setInputFiles(file);
   expect(await pressSubmit(vendor, vendor.getByRole('button', { name: 'Submit signature' }))).toBe(303);
-  await expect(settlementStatus(vendor)).toContainText(/Signed by the vendor|Broadcast to the regtest network/);
+  await expect(settlementStatus(vendor)).toContainText(/Signed by the vendor|Signed by the market, with the vendor's signature|Broadcast to the regtest network/);
 
   // The market co-signs through the escrow signer and broadcasts; it confirms.
   await reloadUntil(vendor, async () => { await expect(settlementStatus(vendor)).toContainText('Broadcast to the regtest network: transaction', { timeout: 500 }); });

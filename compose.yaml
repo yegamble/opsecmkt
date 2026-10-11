@@ -31,7 +31,8 @@ services:
       # The most all stored photos and avatars may use, in MB; blank uses 2048 (docs/operator-guide.md#troubleshooting).
       IMAGE_STORAGE_LIMIT_MB: ${IMAGE_STORAGE_LIMIT_MB:-}
       BITCOIN_RPC_URL: ${BITCOIN_RPC_URL:-}
-      BITCOIN_WALLET: ${BITCOIN_WALLET:-opsecmkt}
+      # Keep obsolete mappings blank by default so old values reach the startup guard.
+      BITCOIN_WALLET: ${BITCOIN_WALLET:-}
       # Blank chain/network: accept whichever test network the node reports (mainnet is always refused).
       BITCOIN_CHAIN: ${BITCOIN_CHAIN:-}
       PAYMENT_CONFIRMATIONS_BTC: ${PAYMENT_CONFIRMATIONS_BTC:-3}

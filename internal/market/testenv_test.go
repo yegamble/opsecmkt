@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -174,7 +175,17 @@ func testMigratedDSN(t *testing.T) string {
 // e.user() for fast fixtures.
 func newTestApp(t *testing.T) *testEnv {
 	t.Helper()
-	return startTestApp(t, testMigratedDSN(t))
+	e := startTestApp(t, testMigratedDSN(t))
+	// Shared commerce fixtures exercise unfunded drafts even when no escrow node is
+	// configured. A real fresh install still defaults to escrow; newFreshTestApp
+	// leaves those migration settings untouched. Escrow fixtures configure their
+	// nodes before startup and retain escrow intake for checkout coverage.
+	if !e.A.escrowConfigured && e.A.escrowXMR == nil {
+		if _, err := e.DB.Exec("UPDATE settings SET value=$1 WHERE key IN ($2,$3)", intakePaused, paymentIntakeKey("BTC"), paymentIntakeKey("XMR")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return e
 }
 
 // newFreshTestApp is newTestApp on an empty schema, where New itself applies the baseline and every migration.
@@ -217,9 +228,14 @@ func (e *testEnv) restart() {
 func (e *testEnv) do(method, path, token string, form url.Values, extra ...*http.Cookie) *httptest.ResponseRecorder {
 	if form == nil {
 		form = url.Values{}
+	} else {
+		form = maps.Clone(form) // each call represents a newly rendered form unless it supplies its nonce
 	}
 	if method == "POST" {
 		form.Set("csrf", e.A.csrf(token))
+		if spec, ok := actions[path]; ok && (spec.FormNonce || spec.ConfirmedFormNonce || spec.OwnFormNonce) && !form.Has(formNonceField) {
+			form.Set(formNonceField, formNonceFor(path))
+		}
 	}
 	r := httptest.NewRequest(method, path, strings.NewReader(form.Encode()))
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -307,8 +323,16 @@ func (e *testEnv) product(vendorID, kind string) string {
 func (e *testEnv) order(buyerID, productID, currency, state string) string {
 	e.t.Helper()
 	id := randomToken()
-	if _, err := e.DB.Exec(`INSERT INTO orders(id,buyer_id,product_id,currency,amount,state) VALUES($1,$2,$3,$4,100000,$5)`, id, buyerID, productID, currency, state); err != nil {
+	res, err := e.DB.Exec(`INSERT INTO orders(id,buyer_id,product_id,currency,amount,state,listing_title,listing_description,listing_kind)
+		SELECT $1,$2,p.id,$3,100000,$4,
+		CASE WHEN $4='draft' THEN NULL ELSE p.title END,
+		CASE WHEN $4='draft' THEN NULL ELSE p.description END,
+		CASE WHEN $4='draft' THEN NULL ELSE p.kind END FROM products p WHERE p.id=$5`, id, buyerID, currency, state, productID)
+	if err != nil {
 		e.t.Fatal(err)
+	}
+	if n, err := res.RowsAffected(); err != nil || n != 1 {
+		e.t.Fatalf("insert order: %d rows: %v", n, err)
 	}
 	return id
 }
@@ -317,7 +341,7 @@ func (e *testEnv) order(buyerID, productID, currency, state string) string {
 func (e *testEnv) loadUser(id string) *User {
 	e.t.Helper()
 	u := &User{}
-	if err := e.DB.QueryRow("SELECT id,handle,role,pgp,xmpp FROM users WHERE id=$1", id).Scan(&u.ID, &u.Handle, &u.Role, &u.PGP, &u.XMPP); err != nil {
+	if err := e.DB.QueryRow("SELECT id,handle,role,pgp FROM users WHERE id=$1", id).Scan(&u.ID, &u.Handle, &u.Role, &u.PGP); err != nil {
 		e.t.Fatal(err)
 	}
 	return u

@@ -4,7 +4,7 @@
 # the app refuses them (escrowChains in internal/market/escrow_tx.go).
 #
 #   scripts/escrow-node-setup.sh --chain signet [--cli 'docker exec -u bitcoin escrow-node bitcoin-cli']
-#       [--rpc-host bitcoin] [--rpc-port 38332] [--escrow-user opsecmkt-escrow] [--pooled-user opsecmkt-pooled | --no-pooled]
+#       [--rpc-host bitcoin] [--rpc-port 38332] [--escrow-user opsecmkt-escrow]
 #       [--arbiter-wallet opsecmkt-arbiter] [--watch-wallet opsecmkt-escrow-watch]
 #
 # Set-up (the default) talks to the node only through the operator's own bitcoin-cli (--cli, default bitcoin-cli; the
@@ -15,36 +15,33 @@
 #      (private keys disabled, blank), both loaded at every node start, or keeps existing ones after checking exactly
 #      that (it never overwrites a wallet);
 #   3. reads the arbiter wallet's master key fingerprint as the app does (getrawchangeaddress, getaddressinfo);
-#   4. generates the escrow user's password (and the pooled user's) here with openssl, and prints once, on standard
-#      output, the bitcoin.conf lines (rpcauth, rpcwhitelistdefault=0 and each user's rpcwhitelist) and the .env lines
-#      (ESCROW_BTC_RPC_URL and the wallet names; BITCOIN_RPC_URL for the pooled user). Nothing is written to a file:
+#   4. generates the escrow user's password here with openssl, and prints once, on standard output, the bitcoin.conf
+#      lines (rpcauth, rpcwhitelistdefault=0 and the user's rpcwhitelist) and the .env lines (ESCROW_BTC_RPC_URL and
+#      the wallet names). Nothing is written to a file:
 #      copy the lines, add the bitcoin.conf ones and restart bitcoind.
 #
-#   ESCROW_BTC_RPC_URL=... [BITCOIN_RPC_URL=...] scripts/escrow-node-setup.sh --chain signet --verify
+#   ESCROW_BTC_RPC_URL=... scripts/escrow-node-setup.sh --chain signet --verify
 #
-# --verify (after the restart) reads the two URLs from the environment (never from .env), sends each to curl on its
+# --verify (after the restart) reads the URL from the environment (never from .env), sends it to curl on its
 # standard input (never printed) and checks what the app needs and what A-440 requires refused: the escrow user answers
 # getblockchaininfo on --chain (any other chain, or none, is refused before any wallet call, as in set-up mode) and
 # getwalletinfo on both wallets, and is refused (HTTP 403) listdescriptors and
-# gethdkeys; the pooled user answers getblockchaininfo and gets HTTP 403 (or "wallet not found" when it is another
-# node) for listdescriptors, gethdkeys and walletprocesspsbt on the arbiter wallet's path.
+# gethdkeys.
 #
-# The whitelists are escrowRPCMethods (internal/market/escrow_rpc.go) and pooledRPCMethods
-# (internal/market/payments_bitcoin.go); tests/test_escrow_public_script.py keeps them equal.
+# The whitelist is escrowRPCMethods (internal/market/escrow_rpc.go); tests/test_escrow_public_script.py keeps it equal.
 set -euo pipefail
 
 escrow_methods=getblockchaininfo,getnetworkinfo,getrawchangeaddress,getaddressinfo,createpsbt,utxoupdatepsbt,importdescriptors,getdescriptorinfo,deriveaddresses,gettxout,keypoolrefill,walletprocesspsbt,descriptorprocesspsbt,combinepsbt,finalizepsbt,testmempoolaccept,sendrawtransaction,getwalletinfo,listreceivedbyaddress,gettransaction,listtransactions,listsinceblock
-pooled_methods=getblockchaininfo,getwalletinfo,loadwallet,getnetworkinfo,getnewaddress,listreceivedbyaddress,gettransaction,sendtoaddress,validateaddress,getbalances
 public_signet_challenge=512103ad5e0edad18cb1f0fc0d28a3d4f1f3e445640337489abb10404f2d1e086be430210359ef5021964fe22d6f8e05b2463c9540ce96883fe3b278760f048f5189f2e6c452ae
 
 usage() {
   sed -n '6,8p' "$0" | sed 's/^# \{0,1\}//' >&2
-  echo "   or: ESCROW_BTC_RPC_URL=... [BITCOIN_RPC_URL=...] $0 --chain <regtest|signet|testnet4> --verify" >&2
+  echo "   or: ESCROW_BTC_RPC_URL=... $0 --chain <regtest|signet|testnet4> --verify" >&2
   exit 2
 }
 die() { echo "$*" >&2; exit 1; }
 
-chain='' cli='bitcoin-cli' host='bitcoin' port='' escrow_user='opsecmkt-escrow' pooled_user='opsecmkt-pooled'
+chain='' cli='bitcoin-cli' host='bitcoin' port='' escrow_user='opsecmkt-escrow'
 arbiter='opsecmkt-arbiter' watch='opsecmkt-escrow-watch' verify=no
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -53,8 +50,6 @@ while [[ $# -gt 0 ]]; do
     --rpc-host) host="${2:-}"; shift 2 ;;
     --rpc-port) port="${2:-}"; shift 2 ;;
     --escrow-user) escrow_user="${2:-}"; shift 2 ;;
-    --pooled-user) pooled_user="${2:-}"; shift 2 ;;
-    --no-pooled) pooled_user=''; shift ;;
     --arbiter-wallet) arbiter="${2:-}"; shift 2 ;;
     --watch-wallet) watch="${2:-}"; shift 2 ;;
     --verify) verify=yes; shift ;;
@@ -73,11 +68,10 @@ case "$chain" in
   *) die "Refusing: --chain must be regtest, signet or testnet4." ;;
 esac
 port="${port:-$default_port}"
-for v in "$escrow_user" "$pooled_user" "$arbiter" "$watch"; do
+for v in "$escrow_user" "$arbiter" "$watch"; do
   [[ "$v" =~ ^[A-Za-z0-9._-]*$ ]] || die "Refusing: user and wallet names may hold only letters, digits, '.', '_' and '-'."
 done
 [[ -n "$escrow_user" && -n "$arbiter" && -n "$watch" ]] || die "Refusing: the escrow user and the wallet names cannot be empty."
-[[ "$escrow_user" != "$pooled_user" ]] || die "Refusing: the escrow user and the pooled user must differ."
 [[ "$arbiter" != "$watch" ]] || die "Refusing: the arbiter wallet and the watch-only wallet must differ."
 [[ "$host" =~ ^[A-Za-z0-9.:_-]+$ && "$port" =~ ^[0-9]{1,5}$ ]] || die "Refusing: --rpc-host or --rpc-port is not a host name or port."
 
@@ -87,6 +81,7 @@ field() { tr -d '\n' | sed -n "s/.*\"$1\": *\"\{0,1\}\([^\",}]*\)\"\{0,1\}.*/\1/
 if [[ $verify == yes ]]; then
   command -v curl >/dev/null || die "curl is required"
   [[ -n "${ESCROW_BTC_RPC_URL:-}" ]] || die "Set ESCROW_BTC_RPC_URL in the environment (the line the set-up printed); this script never reads .env."
+  [[ -z "${BITCOIN_RPC_URL:-}" ]] || die "BITCOIN_RPC_URL is retired pooled-payment configuration; drain and remove it with the previous build before setup."
   failed=0
   # rpc <url> <path> <method> <params>: the answer, then a last line with the HTTP status. The URL reaches curl on its
   # standard input and is never printed.
@@ -118,18 +113,6 @@ if [[ $verify == yes ]]; then
     check "escrow user: ${m%% *} on $arbiter refused with HTTP 403 (got HTTP $(status_of "$answer"))" \
       "$([[ $(status_of "$answer") == 403 ]] && echo yes || echo no)"
   done
-  if [[ -n "${BITCOIN_RPC_URL:-}" ]]; then
-    answer=$(rpc "$BITCOIN_RPC_URL" "" getblockchaininfo '[]')
-    check "pooled user: getblockchaininfo answers (HTTP $(status_of "$answer"))" "$([[ $(status_of "$answer") == 200 ]] && echo yes || echo no)"
-    for m in 'listdescriptors [false]' 'gethdkeys [{"private":false}]' 'walletprocesspsbt ["",false]'; do
-      answer=$(rpc "$BITCOIN_RPC_URL" "/wallet/$arbiter" "${m%% *}" "${m#* }")
-      code=$(sed '$d' <<<"$answer" | sed -n 's/.*"error": *{[^}]*"code": *\(-\{0,1\}[0-9]*\).*/\1/p')
-      check "pooled user: ${m%% *} on $arbiter refused (HTTP 403, or RPC -18 on another node; got HTTP $(status_of "$answer")${code:+, RPC $code})" \
-        "$([[ $(status_of "$answer") == 403 || $code == -18 ]] && echo yes || echo no)"
-    done
-  else
-    echo "not checked: the pooled user (BITCOIN_RPC_URL is not set; set it when the pooled payments use this node)"
-  fi
   if [[ $failed -ne 0 ]]; then
     echo "FAILED: the escrow node is not set up as docs/operator-guide.md describes" >&2
     exit 1
@@ -199,28 +182,21 @@ rpcauth() {
   printf '%s:%s$%s' "$1" "$salt" "$hash"
 }
 escrow_pass=$(openssl rand -hex 32)
-[[ -z "$pooled_user" ]] || pooled_pass=$(openssl rand -hex 32)
 
 echo "arbiter wallet $arbiter: master key fingerprint $fingerprint (record it with the wallet's backup; the app pins it at its first start)" >&2
 cat <<EOF
 # ---- Shown once; this script wrote none of it anywhere. Copy it now. ----
 # bitcoin.conf of the escrow node ($chain): add these lines (top level, or under [$chain]), then restart bitcoind.
 # The operator user (bitcoin-cli's cookie or your own rpcauth) has no rpcwhitelist line: rpcwhitelistdefault=0 keeps it
-# unrestricted; every user the app connects as gets exactly its line.
+# unrestricted; the app's escrow user gets exactly its line.
 rpcauth=$(rpcauth "$escrow_user" "$escrow_pass")
 EOF
-[[ -z "$pooled_user" ]] || echo "rpcauth=$(rpcauth "$pooled_user" "$pooled_pass")"
 echo "rpcwhitelistdefault=0"
 echo "rpcwhitelist=$escrow_user:$escrow_methods"
-[[ -z "$pooled_user" ]] || echo "rpcwhitelist=$pooled_user:$pooled_methods"
 cat <<EOF
 # .env of the market (with ESCROW_BTC=on when you turn escrow on):
 ESCROW_BTC_RPC_URL=http://$escrow_user:$escrow_pass@$host:$port
 ESCROW_BTC_ARBITER_WALLET=$arbiter
 ESCROW_BTC_WATCH_WALLET=$watch
 EOF
-if [[ -n "$pooled_user" ]]; then
-  echo "# Only if the pooled payments use this node (run escrow on a node of its own where you can):"
-  echo "BITCOIN_RPC_URL=http://$pooled_user:$pooled_pass@$host:$port"
-fi
-echo "# After the restart: ESCROW_BTC_RPC_URL=...${pooled_user:+ BITCOIN_RPC_URL=...} $0 --chain $chain --verify"
+echo "# After the restart: ESCROW_BTC_RPC_URL=... $0 --chain $chain --verify"

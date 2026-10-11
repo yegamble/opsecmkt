@@ -1,17 +1,16 @@
 package market
 
-import "html/template"
-
 // Shared view types. Each feature package appends fields only inside its own commented block.
 
 type User struct {
-	ID, Handle, Role, PGP, XMPP string
-	Factors                     string // P1, PageData.FactorAccounts only: enrolled second factors, e.g. "TOTP and PGP sign-in"
-	Suspended                   string // P1, PageData.SuspendedAccounts only: when the account was suspended
-	Avatar                      string // A-189, vendor page and /canary staff list only: the avatar thumbnail on /img, "" when none may be shown
+	ID, Handle, Role, PGP string
+	Factors               string // P1, PageData.FactorAccounts only: enrolled second factors, e.g. "TOTP and PGP sign-in"
+	Suspended             string // P1, PageData.SuspendedAccounts only: when the account was suspended
+	Avatar                string // A-189, vendor page and /canary staff list only: the avatar thumbnail on /img, "" when none may be shown
 }
 type Product struct {
 	ID, Title, Description, Category, Region, Kind, Vendor, VendorID, PriceBTC, PriceXMR string
+	BTCOrderUnavailable, XMROrderUnavailable                                             string // legacy price below that currency's escrow settlement minimum
 	Stock                                                                                int
 	Archived                                                                             bool // Foundation; P4 uses
 	// P4, vendor-dashboard only: an administrator's takedown reason (A-163); never loaded for public pages.
@@ -36,6 +35,11 @@ type ProductPhoto struct {
 type Order struct {
 	ID, ProductID, Title, Buyer, Vendor, Currency, Amount, Status, Created string
 	State, Kind, BuyerID, VendorID, Updated                                string
+	// Listing snapshot is captured only when the draft first requests payment. Kind remains
+	// operational (live for earlier orders with no snapshot); KindDisplay never invents
+	// historical terms for those orders. Description is rendered only on an authorized order.
+	KindDisplay, Description string
+	ListingRecorded          bool
 	// Escrow: settled through a per-order escrow instead of the pooled wallet (settleTerminal, escrowOnly): the order
 	// has an escrows row (WR-escrow Phase 1, escrow_create.go), of either coin (btcEscrow).
 	Escrow bool
@@ -45,10 +49,14 @@ type Message struct {
 	// P2 PGP
 	Encrypted      bool
 	RecipientMatch string
+	// Count is nullable at rest: legacy rows or an unknown recipient key cannot support a send-time count. It counts
+	// unique visible recipient key IDs, excluding the recipient's saved IDs; hidden IDs are not included.
+	RecipientExtraKeys    int
+	RecipientExtraKeysSet bool
 }
 type Notification struct {
-	ID, Body, Created string
-	Read              bool
+	ID, Body, Created, OrderID string
+	Read                       bool
 }
 
 // StaffContactView is the administrator's staff contact (A-119, staff_contact.go): Text as saved, shown escaped;
@@ -56,7 +64,7 @@ type Notification struct {
 type StaffContactView struct{ Text, Handle string }
 type Dispute struct {
 	ID, OrderID, Reason, Status, Resolution, Created string
-	NoResolver                                       bool // open, and every moderator and administrator is a party
+	NoResolver                                       bool // open, and no unsuspended moderator or administrator is independent
 	// A-124: Opener is "buyer" or "vendor", the party who moved the order to disputed ("" when no such event is
 	// recorded). Reply is the other party's one reply (an order_events row, disputeReplyPrefix), ReplyRole its
 	// author's role and ReplyCreated its time.
@@ -104,7 +112,19 @@ type PaymentReview struct {
 }
 type Event struct{ Handle, Action, Created string } // Handle: account the audit row is recorded on ("" = system)
 
+// SignInRefusal is a current, in-memory handle lockout on this application instance.
+// It is visible only on the administrator's sign-in protection panel.
+type SignInRefusal struct{ Handle, Until string }
+
 type PageData struct {
+	ServerStarted string
+	SchemaVersion int
+
+	StaffRoster       []StaffRosterEntry
+	StaffRosterPaging *ActivityPaging
+
+	RecentServerErrors []ServerErrorEntry // administrator-only, volatile, no request contents
+
 	Page, Title, CSRF, Error, Notice, Query, Category, Region, Currency, Mode string
 	NoticeAt                                                                  string // the section a one-shot notice renders in, "" = the top (notice.go)
 	User                                                                      *User
@@ -115,12 +135,23 @@ type PageData struct {
 	Messages                                                                  []Message
 	Notifications                                                             []Notification
 	Disputes                                                                  []Dispute
+	Concession                                                                *ConcessionPreview  // disputed order: current party's one final concession
+	DisputePartyCounts                                                        *DisputePartyCounts // /disputes: only this account's own orders
 	Users                                                                     []User
 	Events                                                                    []Event
 	Settings                                                                  map[string]string
 	Preview                                                                   bool
-	// Paging: catalog and vendor page, the page shown of the matching listings (A-181, A-189, load.go).
+	AuditHandle                                                               string // /admin audit trail's exact-handle filter.
+	// Paging: catalog and public vendor page of the matching listings (A-181, A-189, load.go).
 	Paging *CatalogPaging
+	// ActivityPaging: signed-in user's orders, messages or notifications (A-16, load.go).
+	ActivityPaging *ActivityPaging
+	// AdminUsersPaging: the admin role form's newest-account picker (A-16, load.go).
+	AdminUsersPaging *ActivityPaging
+	// DeliveryCleanup lists only this account's archived listings that still hold automatic-delivery text; the text itself is never loaded.
+	DeliveryCleanup       []DeliveryCleanupListing
+	DeliveryCleanupPaging *ActivityPaging
+	DeliveryCleanupCount  int
 	// UploadBack and UploadBackLabel: the refusal page of an upload (A-186, uploads.go) links back here.
 	UploadBack, UploadBackLabel string
 	// ImageStorage: admin page, stored photos and avatars against IMAGE_STORAGE_LIMIT_MB (uploads.go).
@@ -132,6 +163,8 @@ type PageData struct {
 	// StaffContact: /canary, /challenge, /login, /register, /notifications, /vendor-dashboard and /listing-edit (a
 	// taken-down listing, A-279), the administrator's staff contact (A-119, staff_contact.go); nil while unset.
 	StaffContact *StaffContactView
+	// StaffAttention: uncapped actionable category totals in the shared navigation and staff desk summaries.
+	StaffAttention *StaffAttention
 	// A-190 (image_takedown.go). RecentImages: /moderator, the newest public photos and avatars (vendors' only for a moderator); AvatarTakedown:
 	// vendor page, the staff remove form for the vendor's avatar.
 	RecentImages   []RecentImage
@@ -156,12 +189,15 @@ type PageData struct {
 	// SuspendedAccounts: admin page, up to 100 suspended accounts, most recently suspended first
 	// (User.Suspended says when); the suspend/restore form itself takes any handle.
 	SuspendedAccounts []User
+	SignInRefusals    []SignInRefusal
+	RecentSignIns     []Event // account only: latest five successful sign-ins, including legacy audit rows.
 	// RoleHandle, RoleChoice, ResetHandle, SuspendHandle and SuspendChoice: admin page re-rendered after a
 	// handle matched no account, keeping what was typed into the role, second-factor reset or suspension form.
 	RoleHandle, RoleChoice, ResetHandle, SuspendHandle, SuspendChoice string
 	// ResolveDispute and ResolveText: the desk re-rendered after a resolve form loaded before the other party's
 	// reply was refused (A-280), keeping the decision typed for that dispute.
 	ResolveDispute, ResolveText string
+	DisputePartyFilter          string // moderator desk's exact handle filter (?party=), shown only to staff.
 
 	// P2 PGP
 	PGP *PGPView
@@ -173,10 +209,11 @@ type PageData struct {
 	Reviews       []Review
 	ReviewSummary *ReviewSummary
 	CanReview     bool
-	// IncomingOrders: vendor-dashboard orders on the viewer's own listings, every paid one first;
-	// NeedsAction counts all paid ones.
-	IncomingOrders []Order
-	NeedsAction    int
+	// IncomingOrders: all active orders and bounded terminal history on the viewer's own listings.
+	// NeedsAction counts all paid orders; VendorOpenDisputes counts open disputes on those listings.
+	IncomingOrders     []Order
+	NeedsAction        int
+	VendorOpenDisputes int
 	// DeadlineBanners: /orders, the viewer's escrow orders whose release deadline is less than 72 hours away
 	// (escrow_deadline.go, P2-R9).
 	DeadlineBanners []DeadlineBanner
@@ -189,11 +226,12 @@ type PageData struct {
 	// DisputeEvidence: per open dispute a staff viewer is not party to, keyed by dispute id, whom each party messaged
 	// since it opened (A-162). Absent (nil) for everyone else.
 	DisputeEvidence map[string]*DisputeEvidence
-	// Overpaid: order page for its buyer or vendor, a paid, shipped or delivered order whose counted deposits
-	// exceed the price; nil otherwise.
-	Overpaid *OverpaidView
-	// HistoryLimit: non-zero when closed history (resolved disputes, or incoming orders not paid) was
-	// cut to this many most recent rows.
+	// Overpaid: order page for its buyer or vendor, an escrow order not settled yet (paid, shipped, delivered or
+	// disputed) holding more than the price: what a release and a refund do with the excess (escrowOverpaid, A-508);
+	// "" otherwise.
+	Overpaid string
+	// HistoryLimit: non-zero when closed history (resolved disputes, or completed/resolved/funded-cancelled
+	// vendor orders) was cut to this many most recent rows.
 	HistoryLimit int
 	// DeliveryWithheld: order page viewed by a reviewer of a payment flag on an order never disputed.
 	DeliveryWithheld bool
@@ -224,23 +262,15 @@ type PageData struct {
 	// P4 Inventory (uses Product.Archived)
 	Listing   *ListingView
 	Inventory *InventoryView
+	// VendorReadiness: the seller's current listing, payment and settlement prerequisites, without wallet details.
+	VendorReadiness *VendorReadinessView
 
 	// P5 Payments
-	Payment         *PaymentView
-	Providers       []ProviderStatus
-	Payout          *PayoutView
-	PaymentsEnabled bool
-	PaymentNetworks string
-	LiveNetwork     bool        // payment providers are on mainnet: amounts are real funds
-	Payouts         []PayoutRow // admin: every payout needing attention (oldest first), then recent others (newest first)
-	// PayoutsAttention counts the leading Payouts that need attention; PayoutHistoryLimit is non-zero when
-	// the other payouts were cut to this many most recent rows.
-	PayoutsAttention   int
-	PayoutHistoryLimit int
-	// MyPayout: order page, the viewer's own payout on this order while it is not sent (A-120).
-	// UnsentPayouts: vendor desk, how many payouts to the viewer are not sent (listed on /account#payout).
-	MyPayout      *RecipientPayout
-	UnsentPayouts int
+	Providers         []ProviderStatus
+	PaymentsEnabled   bool
+	PaymentNetworks   string
+	LiveNetwork       bool   // payment providers are on mainnet: amounts are real funds
+	BitcoinPriceLabel string // network-aware label for a BTC listing price, including an unknown state.
 	// EscrowOn: ESCROW_BTC=on (every page); EscrowAvailable: escrow passed its checks. EscrowOrders: vendor desk, the
 	// viewer's escrow orders that may hold coins (QA31-2): the site-wide notices never say no funds are held beside them.
 	// EscrowNet: Bitcoin escrow's chain, regtest, signet or testnet4 (App.escrowNetwork, A-443; every page), so the copy
@@ -302,13 +332,15 @@ type PageData struct {
 	Uploads *UploadsView
 
 	// Contacts (contacts.go): counterparty PGP keys, message recipient prefill, unread notifications
-	Contacts            []ContactKey // vendor page: the vendor; order page: the other party (both for a reviewer); messages: the ?to recipient
-	StaffContacts       []ContactKey // disputed order: independent moderators and administrators
-	MessageTo           string       // messages page: validated ?to handle for the recipient field
-	OrderViewer         string       // order page: "buyer", "vendor" or "moderator" (read-only dispute review)
-	UnreadNotifications int          // signed-in users, every page
-	// VendorKeyUnusable (A-83): a physical listing's product and checkout pages, and its buyer's order page, when the
-	// vendor has no key that can receive encrypted messages (canReceiveEncrypted), so no shipping address can be sent.
+	Contacts              []ContactKey // vendor page: the vendor; order page: the other party (both for a reviewer); messages: the ?to recipient
+	StaffContacts         []ContactKey // disputed order: independent moderators and administrators
+	MessageTo             string       // messages page: validated ?to handle for the recipient field
+	OrderViewer           string       // order page: "buyer", "vendor" or "moderator" (read-only dispute review)
+	OrderSuspendedParties []string     // current buyer/vendor suspension status; never the administrator's reason
+	UnreadNotifications   int          // signed-in users, every page
+	// VendorKeyUnusable (A-83/A-225): a physical listing's product and checkout pages, and its buyer's order page, when
+	// the vendor has no key that can receive encrypted messages (canReceiveEncrypted); on a paid physical order it
+	// also tells the vendor to update their key before buyers send shipping addresses.
 	VendorKeyUnusable bool
 	// PurchaseBlocks (A-444): a listing's product and checkout pages, each coin whose intake is escrow only while the
 	// listing cannot use its escrow (escrow_readiness.go), PurchaseBlocked the same by coin, and NoPurchase when every
@@ -316,10 +348,10 @@ type PageData struct {
 	PurchaseBlocks  []PurchaseBlock
 	PurchaseBlocked map[string]bool
 	NoPurchase      bool
+	// A-109: product/checkout and a buyer's draft-order page explain why a suspended vendor takes no new intake.
+	VendorSuspensionReason string
 	// EscrowReadiness (A-444): /admin, the escrow-only readiness panel (escrow_readiness.go).
 	EscrowReadiness *EscrowReadinessView
-	// PooledDrain (A-445): /admin, the pooled wallet's drain panel (pooled_drain.go).
-	PooledDrain *PooledDrainView
 	// VendorEscrowKey (A-455, P4-R18): the product and vendor pages' vendor's Bitcoin escrow key type while ESCROW_BTC is
 	// on: "core", "per_order" or "none" (no active key); "" with escrow off.
 	VendorEscrowKey string
@@ -376,29 +408,26 @@ type PGPView struct {
 type OrderEvent struct{ From, To, Actor, Note, Created, Avatar string }
 type Transition struct {
 	To, Label, Action string         // Action "" = shown as unavailable with Label as the reason
-	Payout            *PayoutPreview // complete, and cancel of a paid order: the payout it queues
+	Payout            *PayoutPreview // cancel of an escrow order holding coins: the refund it requests
 }
 
-// PayoutPreview states what a form that queues a payout (complete, a cancel of a paid order or of an order
-// awaiting payment that has received a deposit, resolve)
-// pays now, by payoutBasis (A-161, A-122). Seen is that amount in atomic units, sent back as amount_seen;
-// Confirm labels the required confirmation checkbox. Resolve form only: Release and Refund state each outcome
-// (amount, recipient, difference from the price, the recipient's payout state); Escrow, when set, how a Monero escrow
-// order's decision is paid (xmrDisputePreview).
+// PayoutPreview states the settlement a form requests from an escrow (a cancel of an order holding coins, resolve;
+// A-161, A-122): Seen is the amount escrowSettleTerminal counts, in atomic units, sent back as amount_seen; Confirm
+// labels the required confirmation checkbox. Resolve form only: Release and Refund state each outcome's settlement
+// (escrowDisputePreview: amount, recipient, destination, what happens to an amount paid above the price); Escrow, when
+// set, how a Monero escrow order's decision is paid (xmrDisputePreview).
 type PayoutPreview struct {
 	Seen                             int64
 	Confirm, Release, Refund, Escrow string
 }
 
-// OverpaidView says what completing an overpaid order does with the excess, from the split the complete form
-// states (splitPayout, A-215). Excess: "0.009 BTC". Kept: it goes to the vendor with the release, for Reason
-// (below the minimum automatic payout, or a legacy price below the release floor, A-216). Held: larger than the
-// price, so an administrator reviews its return (or, when Kept, the release) first. NoAddress: buyer's view of a
-// return only, no payout address saved in the order's currency.
-type OverpaidView struct {
-	Excess, Reason        string
-	Kept, Held, NoAddress bool
+type ConcessionPreview struct {
+	Seen                        int64
+	Outcome, Statement, Confirm string
 }
+
+type DisputePartyCounts struct{ Open, Closed, Withdrawn int }
+
 type DeliveryView struct{ Content, Created string }
 type Review struct {
 	ID, OrderID, Buyer string
@@ -422,41 +451,38 @@ type ListingView struct {
 	VendorEditor        bool   // the editor is the listing's vendor (not an administrator editing another vendor's listing)
 	HasDeliveryContent  bool   // automatic delivery content is stored (shown to other editors instead of the content)
 	Updated, ArchivedAt string
-	OpenOrders          int    // orders not completed, resolved or cancelled
+	OpenOrders          int // orders not completed, resolved or cancelled
+	Reservation         ListingReservation
 	AutoDelivery        string // currencies with a configured payment provider, e.g. "BTC, XMR"; "" = none
 	TakedownReason      string // an administrator's takedown reason (A-163); "" when not taken down
 	DispatchDays        int    // a physical listing's dispatch window in days (P2-R5); the default shown when none is set
 }
 type InventoryView struct {
-	Active, Archived int
-	AutoDelivery     string
+	Active, Archived, Total        int
+	AutoDelivery                   string
+	Filter                         string
+	AllURL, ActiveURL, ArchivedURL string
+	Paging                         *InventoryPaging
+	Reservations                   map[string]ListingReservation
 }
 
-// P5 Payments
-type PaymentView struct {
-	Network, Address                string
-	Testnet                         bool
-	Required, Received, Unconfirmed string
-	Remaining                       string
-	NeedsTopUp                      bool
-	Confirmations, Threshold        int
-	Status                          string
-	Currency                        string
-	Available                       bool // a live provider serves this order's currency
-	Degraded                        bool // the currency is configured but its wallet is failing its checks
-	Issued                          bool // the provider returned a deposit address for this order
-	Monitored                       bool // Issued and the provider is still configured
-	Open                            bool // Monitored and the order still awaits payment (address shown)
-	Deposits                        []PaymentDeposit
-	Payouts                         []PayoutRow // release and return of any excess, or refund (ORDER BY id)
-	// PaymentURI and QR: while the order is open and something is still due, the wallet payment request for
-	// exactly that amount (paymentURI) and its inline SVG QR code (qrSVG); empty otherwise.
-	PaymentURI string
-	QR         template.HTML
-	// CancelAfter: while the order is open, the time ("YYYY-MM-DD HH:MM UTC") from which the watcher can cancel
-	// it if still unpaid or short (A-123); RefundFloor: the minimum automatic payout in this currency.
-	CancelAfter, RefundFloor string
+// ListingReservation is a vendor-only summary of units held by non-draft, nonterminal orders and
+// the next payment-window expiry among awaiting-payment orders.
+type ListingReservation struct {
+	Units         int
+	PaymentExpiry string
 }
+
+type InventoryPaging struct {
+	Page, Pages, Total, First, Last int
+	PrevURL, NextURL                string
+}
+
+func (p InventoryPaging) Offset() int   { return (p.Page - 1) * inventoryPageSize }
+func (p InventoryPaging) PrevPage() int { return p.Page - 1 }
+func (p InventoryPaging) NextPage() int { return p.Page + 1 }
+
+// P5 Payments
 type PaymentDeposit struct {
 	TxID          string
 	Index         int64
@@ -480,44 +506,28 @@ type EscrowReadinessView struct {
 	Limit                     int
 }
 
-// ReadinessCoin: Intake is payment_intake_<COIN>; Pooled, the coin's pooled wallet is configured; NotReady, why the
-// coin's escrow, on, is not ready ("" when it is, QA4W4B-1).
+// ReadinessCoin: Intake is payment_intake_<COIN>; NotReady, why the coin's escrow, on, is not ready ("" when it is,
+// QA4W4B-1).
 type ReadinessCoin struct {
 	Currency, Intake, NotReady string
-	EscrowOn, Pooled           bool
+	EscrowOn                   bool
 }
 type ReadinessListing struct{ ID, Title, Vendor, Kind, Reason string }
 
-// PooledDrainView is /admin's pooled wallet drain panel (A-445): pooled_drain_blockers() per kind, in the panel's
-// order, with Total and each kind's Count uncapped and at most Limit Items per kind, and each pooled wallet's balance
-// as advice.
-type PooledDrainView struct {
-	Kinds    []*DrainKind
-	Total    int
-	Limit    int
-	Balances []DrainBalance
-}
-
-// DrainKind: Resolve says how blockers of the kind are resolved.
-type DrainKind struct {
-	Kind, Title, Resolve string
-	Count                int
-	Items                []DrainItem
-}
-
-// DrainItem is one blocker: Ref and Detail as the function gives them; Link where it is resolved ("" when nowhere this
-// administrator can open).
-type DrainItem struct{ Ref, Order, OrderShort, Currency, Detail, Link string }
-
-// DrainBalance: Configured, the coin's pooled wallet is configured; Available, its balance was read (Confirmed and
-// Pending, in coin units) from Network.
-type DrainBalance struct {
-	Currency, Network, Confirmed, Pending string
-	Configured, Available                 bool
-}
 type ReadinessVendor struct {
 	Handle   string
 	Listings int
+}
+
+// VendorReadinessView is the vendor dashboard's concise view of what the current intake modes can accept.
+type VendorReadinessView struct {
+	EncryptionUsable bool
+	Currencies       []VendorCurrencyReadiness
+}
+
+type VendorCurrencyReadiness struct {
+	Currency, Intake, Provider, Escrow, Checkout string
+	EscrowKeyRequired, EscrowKeyActive           bool
 }
 
 type ProviderStatus struct {
@@ -528,61 +538,14 @@ type ProviderStatus struct {
 	Error             string
 	Confirmations     int
 	LastPoll          string
+	LastPollAge       string
+	PollStale         bool
 	Version           string // wallet or node version its last check read (versionReporter)
 	VersionWarning    string // set when send errors are all ambiguous because Version is not the verified one
 	// AddressCollisions: payment requests refused because the wallet returned an address already issued (A-288),
 	// since an administrator last dismissed the warning; AddressCollisionLast: when the latest one was refused.
 	AddressCollisions    int
 	AddressCollisionLast string
-}
-type PayoutView struct {
-	BTC, XMR               string
-	BTCNetwork, XMRNetwork string // empty = no provider for that currency
-	Blocked                int    // payouts waiting for this user's address
-	Unsent                 []RecipientPayout
-}
-
-// RecipientPayout is a payout as its recipient sees it (A-120): every payout to the viewer that is not sent, on
-// /account#payout (oldest first, uncapped) and on its order page. Status and NextStep are fixed copy chosen by
-// recipientPayout from the payout's state and hold; the wallet's error text is never shown. Address is the
-// payout's destination ("" while none is set), shown to its recipient only.
-type RecipientPayout struct {
-	OrderID, OrderShort, Kind, Currency, Amount, Network string
-	Address, Status, NextStep                            string
-}
-type PayoutRow struct {
-	ID                                               int64
-	OrderID, Kind, Recipient, Currency, Amount       string
-	Address, State, StateLabel, TxID, Error, Updated string
-	OrderShort                                       string // shortID(OrderID), named in the resolve summary
-	Attention                                        bool
-	OrderLink                                        bool // the viewing administrator can open /order for it
-	// Ambiguous: the payout may already have been broadcast (failed without a definite wallet answer, stuck
-	// in sending, or held by a restore from backup); requeueing or releasing needs an explicit confirmation.
-	Ambiguous bool
-	// AddressCheck: held for an account suspension (suspendedHoldPrefix); releasing needs an explicit
-	// confirmation that the payout address was checked.
-	AddressCheck bool
-	// HandHold: held by an administrator to pay it by hand (handHoldPrefix, A-486); releasing needs an explicit
-	// confirmation that it was not paid by hand.
-	HandHold bool
-	// LargeCheck: a refund or return larger than the order price (largeHoldPrefix); releasing needs an explicit
-	// confirmation that an administrator reviewed it.
-	LargeCheck bool
-	// CurrentAddress: the recipient's saved payout address for Currency now; CurrentChanged: when it was last saved
-	// ("" when not recorded). Repoint: the payout may be moved to CurrentAddress (repointable, A-121).
-	CurrentAddress, CurrentChanged string
-	Repoint                        bool
-	// Waiting: held by the watcher (heldReason) while these credited deposits are below Threshold confirmations;
-	// no release is offered until they confirm again.
-	Waiting   []HeldDeposit
-	Threshold int64
-}
-
-// HeldDeposit is a credited deposit, at its deposit address, that holds its order's payout.
-type HeldDeposit struct {
-	TxID, Address        string
-	Index, Confirmations int64
 }
 
 // P6 Transparency
@@ -625,7 +588,7 @@ type EscrowOrderView struct {
 	Address, Descriptor, Own, RefundAddress     string
 	Required, Confirmed, Unconfirmed, Remaining string
 	Threshold                                   int64
-	Open, NeedsTopUp                            bool
+	Open, NeedsTopUp, ConfirmationWait          bool
 	WindowPassed                                bool // Open, CancelAfter has passed, no deposit waits for confirmations and the escrow node is not synced: the watcher holds the order (QA4W1-5)
 	CancelAfter, Status, NextStep, Fee          string
 	Deposits                                    []PaymentDeposit
@@ -723,21 +686,28 @@ type EscrowChainMismatch struct {
 
 // EscrowNodeView is the line under Payment providers on /admin about the Bitcoin escrow node (escrow_watch.go): the
 // reason class it is not synced for and the remedy when the reason does not say it (syncRemedy), the chain it was
-// refused for, or the class of the answer the pooled user got to the market key self-check (PooledKey, A-440) with the
-// pooled rpcwhitelist methods it should be restricted to; and (A-441, escrow_stall.go) why the Tor-mode gate holds
-// broadcasts and the settlements queued or stuck.
+// refused for; and (A-441, escrow_stall.go) why the Tor-mode gate holds broadcasts and the settlements queued or stuck.
 type EscrowNodeView struct {
-	NotSynced       string
-	NotReady        string // Monero escrow only: the state its startup checks left it in while not ready (escrowXMR.notReady), with Remedy
-	Remedy          string
-	Mismatch        *EscrowChainMismatch
-	PooledKey       string
-	PooledWhitelist string
-	ArbiterRead     string // why the arbiter wallet's entries are not read (QA4W4A-1): "waiting" while the read goes on, or the failure's class
-	ArbiterNext     string // when the next read of them may start after a slow failure (A-479): "1 minute", "12 minutes"; "" = at the next poll
-	TorHold         string
-	Stalled         []EscrowStallView
-	StallN          int // escrowStallBlocks
+	Configured  bool
+	NotSynced   string
+	NotReady    string // Monero escrow only: the state its startup checks left it in while not ready (escrowXMR.notReady), with Remedy
+	Remedy      string
+	Mismatch    *EscrowChainMismatch
+	ArbiterRead string // why the arbiter wallet's entries are not read (QA4W4A-1): "waiting" while the read goes on, or the failure's class
+	ArbiterNext string // when the next read of them may start after a slow failure (A-479): "1 minute", "12 minutes"; "" = at the next poll
+	TorHold     string
+	Stalled     []EscrowStallView
+	StallN      int // escrowStallBlocks
+	Health      *EscrowHealthView
+}
+
+// EscrowHealthView is the persisted, allowlisted Bitcoin escrow node summary shown under Payment providers (A-451).
+type EscrowHealthView struct {
+	Enabled                                       bool
+	DisabledClass, LastPass, StatusUpdated, Chain string
+	Height, PinMatch                              string
+	KeypoolHighWater                              string
+	HighestMarketIndex                            int64
 }
 
 // EscrowStallView is a broadcast settlement whose transaction the watch-only wallet has not seen (escrow_stall.go): the
@@ -749,10 +719,10 @@ type EscrowStallView struct {
 
 // EscrowAlertView is an escrow order with an open staff alert on the moderation desk: its ID, its state's label, and
 // which alerts are open (a settlement queued or stuck, a release too few, a Monero deposit refused as another order's
-// escrow account with no disposition recorded, A-480).
+// escrow account with no disposition recorded, A-480, or a requested Monero settlement older than 24 hours).
 type EscrowAlertView struct {
-	ID, State              string
-	Stall, TooFew, Refused bool
+	ID, State                         string
+	Stall, TooFew, Refused, Requested bool
 }
 
 // XMRCollisionView is one record of a Monero escrow deposit refused as another order's escrow account (A-480), as staff
@@ -810,7 +780,7 @@ type XMREscrowOrderView struct {
 	Custody, Address, RefundAddress             string
 	Required, Confirmed, Unconfirmed, Remaining string
 	Threshold                                   int64
-	Open, NeedsTopUp                            bool
+	Open, NeedsTopUp, ConfirmationWait          bool
 	CancelAfter, Status, NextStep, Fee          string
 	Deposits                                    []PaymentDeposit
 	Unread                                      string // set when nothing is read at the address: shown for the Confirmed and Unconfirmed figures

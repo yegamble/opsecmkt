@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// TestXMREscrowRegtestRefundBelowFee (A-467; scripts/test-escrow-xmr-regtest.sh, not run in CI): three physical Monero
+// TestXMREscrowRegtestRefundBelowFee (A-467; scripts/test-escrow-xmr-regtest.sh, run by the escrow-xmr-regtest CI job): three physical Monero
 // escrow orders priced 0.001, 0.0015 and 0.0018 XMR are funded with their price in one real transaction and decided for
 // the buyer. The real monero-wallet-rpc refuses each refund (transfer with subtract_fee_from_outputs: -17, -17, -16, as
 // the A-463 probe saw); the market reads the fee it would take (get_default_fee_priority, estimate_tx_size_and_weight,

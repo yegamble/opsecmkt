@@ -11,7 +11,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -90,6 +92,16 @@ func orHome(next string) string {
 	return next
 }
 
+// challengePath carries the already validated sign-in destination through the ten-minute challenge window. The
+// pending row remains authoritative when a factor is verified; this URL copy only lets an expired challenge return
+// to sign-in with the same destination after its cookie or row is gone.
+func challengePath(next string) string {
+	if next == "" {
+		return "/challenge"
+	}
+	return "/challenge?next=" + url.QueryEscape(next)
+}
+
 var passwordWork = make(chan struct{}, 4)
 
 // bcryptCost is the work factor for new password hashes. Tests lower it to bcrypt.MinCost (TestMain) so
@@ -121,25 +133,33 @@ var errConfirmPaused = fail(429, "Too many failed password confirmations. Try ag
 // wrong password here, or a wrong code after the right password (confirmCode); a correct confirmation spends nothing.
 // Call it before opening a transaction.
 func (a *App) confirmPassword(ctx context.Context, userID, password string) error {
+	_, err := a.confirmPasswordHash(ctx, userID, password)
+	return err
+}
+
+// confirmPasswordHash returns the hash that bcrypt actually verified. A confirmed form receipt
+// compares it with the account's locked current hash before replaying or making a new change:
+// a password replacement between this read and the transaction must not authorize either.
+func (a *App) confirmPasswordHash(ctx context.Context, userID, password string) (string, error) {
 	if password == "" || len(password) > 72 {
-		return fail(400, "Enter your current password to confirm this change.")
+		return "", fail(400, "Enter your current password to confirm this change.")
 	}
 	// A spent budget is refused before a slot is taken, so it never runs bcrypt or keeps other checks waiting.
 	key := "confirm:" + userID
 	if a.limited(key, 10) {
-		return errConfirmPaused
+		return "", errConfirmPaused
 	}
 	// The slot is taken before the attempt is counted, so a busy refusal spends none of the user's budget.
 	select {
 	case passwordWork <- struct{}{}:
 	default:
-		return fail(503, "Authentication is busy. Try again shortly.")
+		return "", fail(503, "Authentication is busy. Try again shortly.")
 	}
 	defer func() { <-passwordWork }()
 	// One attempt is reserved before bcrypt and refunded when the password is correct, so only failures spend the
 	// budget and concurrent wrong passwords still cannot exceed it.
 	if !a.allow(key, 10) {
-		return errConfirmPaused
+		return "", errConfirmPaused
 	}
 	var hash string
 	err := a.db.QueryRowContext(ctx, "SELECT password_hash FROM users WHERE id=$1", userID).Scan(&hash)
@@ -147,10 +167,10 @@ func (a *App) confirmPassword(ctx context.Context, userID, password string) erro
 		err = bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
 	}
 	if err != nil {
-		return fail(401, "Password incorrect")
+		return "", fail(401, "Password incorrect")
 	}
 	a.refund(key)
-	return nil
+	return hash, nil
 }
 
 // confirmCode runs check, the authenticator or recovery code of a confirmation whose password was correct. A code is
@@ -217,9 +237,28 @@ func confirmedTx(c *actionCtx, confirm bool, run func(c *actionCtx) (actionResul
 // confirmedTxWith is confirmedTx with options; opts nil means no confirmation.
 func confirmedTxWith(c *actionCtx, opts *confirmation, run func(c *actionCtx) (actionResult, error)) (actionResult, error) {
 	a, ctx, uid := c.A, c.Ctx(), c.User.ID
+	// A fixed confirmed receipt uses plain password/TOTP unless its route
+	// explicitly owns factor-code locks. Dynamic OwnTx receipts never use
+	// recovery, Before or AfterPassword hooks (notably session rotation).
+	if c.ConfirmedFormNonce && (opts == nil || opts.AfterPassword != nil ||
+		!c.FactorFormNonce && (opts.Recovery || opts.Before != nil)) {
+		return actionResult{}, errors.New("unsupported confirmed form nonce options")
+	}
+	if c.OwnFormNonce && opts != nil && (opts.Recovery || opts.Before != nil || opts.AfterPassword != nil) {
+		return actionResult{}, errors.New("unsupported own form nonce options")
+	}
 	confirm := opts != nil
+	receipt := c.ConfirmedFormNonce || c.OwnFormNonce
+	c.ReceiptConfirmRequired = c.OwnFormNonce && confirm
+	var verifiedHash string
 	if confirm {
-		if err := a.confirmPassword(ctx, uid, c.Form.Get("password")); err != nil {
+		var err error
+		if receipt {
+			verifiedHash, err = a.confirmPasswordHash(ctx, uid, c.Form.Get("password"))
+		} else {
+			err = a.confirmPassword(ctx, uid, c.Form.Get("password"))
+		}
+		if err != nil {
 			return actionResult{}, err
 		}
 		if opts.AfterPassword != nil {
@@ -247,7 +286,7 @@ func confirmedTxWith(c *actionCtx, opts *confirmation, run func(c *actionCtx) (a
 		}
 		// A recovery code is spent before the account row is locked (the lock order of confirmation.Before); it counts
 		// only when TOTP turns out to be on, and otherwise matches nothing (codes exist only while TOTP is on).
-		if recovery {
+		if recovery && !c.FactorFormNonce {
 			var he *httpError
 			if _, codeErr = a.useRecoveryCode(ctx, tx, uid, code); codeErr != nil && !errors.As(codeErr, &he) {
 				return actionResult{}, codeErr
@@ -258,16 +297,53 @@ func confirmedTxWith(c *actionCtx, opts *confirmation, run func(c *actionCtx) (a
 	// or suspension committed after this request's session was loaded refuses the change (A-156). Either one locks
 	// this row too, so it is waited for.
 	var totp, suspended bool
-	var role string
-	if err = tx.QueryRowContext(ctx, "SELECT totp_enabled,role,suspended_at IS NOT NULL FROM users WHERE id=$1 FOR NO KEY UPDATE", uid).Scan(&totp, &role, &suspended); err != nil {
+	var role, currentHash string
+	if err = tx.QueryRowContext(ctx, "SELECT totp_enabled,role,suspended_at IS NOT NULL,password_hash FROM users WHERE id=$1 FOR NO KEY UPDATE", uid).Scan(&totp, &role, &suspended, &currentHash); err != nil {
 		return actionResult{}, err
 	}
 	if role != c.User.Role || suspended {
 		return actionResult{}, errAccountChanged
 	}
+	if receipt {
+		if confirm && subtle.ConstantTimeCompare([]byte(verifiedHash), []byte(currentHash)) != 1 {
+			return actionResult{}, fail(401, "Password changed while this was being saved. Sign in again; nothing was changed.")
+		}
+		// Role/password changes lock the actor before deleting sessions. A live session
+		// must still exist in this transaction, and a concurrent revoke must serialize
+		// with this read. clock_timestamp prevents a long transaction extending expiry.
+		var live int
+		err = tx.QueryRowContext(ctx, `SELECT 1 FROM sessions WHERE token_hash=$1 AND user_id=$2
+			AND expires>clock_timestamp() FOR SHARE`, digest(c.Token), uid).Scan(&live)
+		if err == sql.ErrNoRows {
+			return actionResult{}, fail(401, "Sign in again; nothing was changed.")
+		}
+		if err != nil {
+			return actionResult{}, err
+		}
+		if c.ReceiptAuthorize != nil {
+			if err = c.ReceiptAuthorize(c); err != nil {
+				return actionResult{}, err
+			}
+		}
+		var repeated bool
+		var saved actionResult
+		saved, repeated, err = claimFormSubmission(c)
+		if err != nil || repeated {
+			return saved, err
+		}
+	}
 	if confirm && totp {
 		if recovery {
-			err = a.confirmCode(uid, func() error { return codeErr })
+			if c.FactorFormNonce {
+				// Before locked the recovery rows before the user row. Consume
+				// only for a NEW receipt; an exact completed replay returns above.
+				err = a.confirmCode(uid, func() error {
+					_, useErr := a.useRecoveryCode(ctx, tx, uid, code)
+					return useErr
+				})
+			} else {
+				err = a.confirmCode(uid, func() error { return codeErr })
+			}
 			how = "password and recovery code"
 		} else {
 			err = a.confirmCode(uid, func() error { return a.checkTOTP(ctx, tx, uid, code) })
@@ -281,6 +357,9 @@ func confirmedTxWith(c *actionCtx, opts *confirmation, run func(c *actionCtx) (a
 	if err != nil {
 		return actionResult{}, err
 	}
+	if receipt && res.AfterCommit != nil {
+		return actionResult{}, errors.New("confirmed form nonce cannot replay an after-commit effect")
+	}
 	if res.Audit != "" {
 		if confirm {
 			res.Audit += " (confirmed with " + how + ")"
@@ -290,8 +369,29 @@ func confirmedTxWith(c *actionCtx, opts *confirmation, run func(c *actionCtx) (a
 		}
 		res.Audit = ""
 	}
-	return res, tx.Commit()
+	if receipt {
+		if res.Redirect == "" {
+			res.Redirect = "/"
+		}
+		if err = finishFormSubmission(c, res); err != nil {
+			return actionResult{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		// A lost acknowledgement does not tell us whether PostgreSQL committed. Do not
+		// classify even a connection-looking error as safe to retry (A-209).
+		return actionResult{}, commitOutcomeUnknown{err}
+	}
+	return res, nil
 }
+
+// commitOutcomeUnknown marks only an error returned by Commit, never a failure
+// while preparing the transaction. The underlying error remains available for
+// classification in server logs, but the HTTP response must not promise a retry.
+type commitOutcomeUnknown struct{ cause error }
+
+func (e commitOutcomeUnknown) Error() string { return e.cause.Error() }
+func (e commitOutcomeUnknown) Unwrap() error { return e.cause }
 
 // notifyOwner tells the account owner, inside tx, of a sign-in factor, key or recovery-code event (A-152). The text
 // is link-free and never carries a code, secret, key fingerprint or address.
@@ -327,7 +427,7 @@ func authPrecheck(a *App, r *http.Request, token string) error {
 // authGate admits one password-bearing request: input bounds, CAPTCHA, a free handle for /register and the
 // per-handle rate limit, then bounded bcrypt concurrency, all before any expensive work. On success the
 // caller must defer release().
-func authGate(c *actionCtx) (handle, password string, release func(), err error) {
+func authGate(c *actionCtx) (handle, password string, rescue bool, release func(), err error) {
 	a, path := c.A, c.R.URL.Path
 	handle, password = strings.TrimSpace(c.Form.Get("handle")), c.Form.Get("password")
 	// Validate the input and the CAPTCHA before the rate limit, so malformed handles and failed CAPTCHAs
@@ -338,10 +438,10 @@ func authGate(c *actionCtx) (handle, password string, release func(), err error)
 		err = a.checkCaptcha(c) // P1: single-use image CAPTCHA unless an administrator turned it off
 	}
 	if err == nil && path == "/register" {
-		// A taken handle is refused before any bcrypt, slot or budget. The INSERT's unique key still
-		// refuses a handle registered concurrently after this check.
+		// A taken handle is refused before any bcrypt, slot or budget. Recheck under the creation
+		// advisory lock below, since this precheck alone cannot serialize case variants.
 		var taken bool
-		if qerr := a.db.QueryRowContext(c.Ctx(), "SELECT EXISTS(SELECT 1 FROM users WHERE handle=$1)", handle).Scan(&taken); qerr != nil {
+		if qerr := a.db.QueryRowContext(c.Ctx(), "SELECT EXISTS(SELECT 1 FROM users WHERE lower(handle)=lower($1))", handle).Scan(&taken); qerr != nil {
 			err = fail(503, "Service unavailable")
 		} else if taken {
 			err = fail(400, "Handle unavailable")
@@ -355,24 +455,101 @@ func authGate(c *actionCtx) (handle, password string, release func(), err error)
 		key, refused = strings.TrimPrefix(path, "/")+":"+strings.ToLower(handle), fail(429, "Too many attempts. Try again in ten minutes.")
 	}
 	if err == nil && a.limited(key, 10) {
-		err = refused
+		if path == "/login" && c.Form.Get("rescue_code") != "" {
+			if sixDigitTOTP(c.Form.Get("rescue_code")) {
+				// Reject arbitrary handles before bcrypt. There is no second attacker-spendable lockout:
+				// a sole administrator must retain this route while auth:<handle> is paused.
+				var account signInAccount
+				account, err = lookupSignInAccount(c.Ctx(), a.db, handle)
+				if errors.Is(err, sql.ErrNoRows) {
+					err = errSoleAdminRecovery
+				} else if err != nil {
+					err = fail(503, "Service unavailable")
+				} else if account.role != "admin" || account.suspended || !account.totpEnabled {
+					err = errSoleAdminRecovery
+				} else {
+					var admins int
+					if err = a.db.QueryRowContext(c.Ctx(), "SELECT count(*) FROM users WHERE role='admin'").Scan(&admins); err != nil {
+						err = fail(503, "Service unavailable")
+					} else if admins != 1 {
+						err = errSoleAdminRecovery
+					} else {
+						rescue = true
+					}
+				}
+			} else {
+				err = errSoleAdminRecovery
+			}
+		} else {
+			err = refused
+		}
 	}
 	if err != nil {
-		return "", "", nil, err
+		return "", "", false, nil, err
 	}
 	// A password-check slot is taken only now, so requests refused above never hold one while real
 	// sign-ins wait. The attempt is counted after the slot, so a busy refusal spends no budget.
 	select {
 	case passwordWork <- struct{}{}:
 	default:
-		return "", "", nil, fail(503, "Authentication is busy. Try again shortly.")
+		return "", "", false, nil, fail(503, "Authentication is busy. Try again shortly.")
 	}
 	release = func() { <-passwordWork }
-	if !a.allow(key, 10) {
+	if !rescue && !a.allow(key, 10) {
 		release()
-		return "", "", nil, refused
+		return "", "", false, nil, refused
 	}
-	return handle, password, release, nil
+	return handle, password, rescue, release, nil
+}
+
+func sixDigitTOTP(code string) bool {
+	if len(code) != totpDigits {
+		return false
+	}
+	for i := range code {
+		if code[i] < '0' || code[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+var errSoleAdminRecovery = fail(401, "Invalid handle or password")
+
+type signInAccount struct {
+	id, hash, role         string
+	suspended, totpEnabled bool
+}
+
+// lookupSignInAccount preserves exact handles on legacy installations. A fallback may resolve only one
+// account; two case variants are indistinguishable and therefore have no fallback sign-in identity.
+func lookupSignInAccount(ctx context.Context, db *sql.DB, handle string) (signInAccount, error) {
+	var account signInAccount
+	err := db.QueryRowContext(ctx, `SELECT id,password_hash,role,suspended_at IS NOT NULL,totp_enabled
+		FROM users WHERE handle=$1`, handle).Scan(&account.id, &account.hash, &account.role, &account.suspended, &account.totpEnabled)
+	if !errors.Is(err, sql.ErrNoRows) {
+		return account, err
+	}
+	rows, err := db.QueryContext(ctx, `SELECT id,password_hash,role,suspended_at IS NOT NULL,totp_enabled
+		FROM users WHERE lower(handle)=lower($1) LIMIT 2`, handle)
+	if err != nil {
+		return signInAccount{}, err
+	}
+	defer rows.Close()
+	matches := 0
+	for rows.Next() {
+		matches++
+		if err = rows.Scan(&account.id, &account.hash, &account.role, &account.suspended, &account.totpEnabled); err != nil {
+			return signInAccount{}, err
+		}
+	}
+	if err = rows.Err(); err != nil {
+		return signInAccount{}, err
+	}
+	if matches != 1 {
+		return signInAccount{}, sql.ErrNoRows
+	}
+	return account, nil
 }
 
 // errAuthInput refuses a malformed handle or password.
@@ -388,7 +565,7 @@ var errSignInPaused = fail(429, "Sign-in for this handle is paused for up to 10 
 // authAction serves /setup, /login and /register. bcrypt runs before any transaction is opened.
 func authAction(c *actionCtx) (actionResult, error) {
 	a, ctx, f, path, w := c.A, c.Ctx(), c.Form, c.R.URL.Path, c.W
-	handle, password, release, err := authGate(c)
+	handle, password, rescue, release, err := authGate(c)
 	if err == errSignInPaused {
 		a.logSignInRefusals()
 	}
@@ -401,10 +578,8 @@ func authAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, fail(503, "Service unavailable")
 	}
 	if path == "/login" {
-		var id, stored string
-		var suspended bool
-		err := a.db.QueryRowContext(ctx, "SELECT id,password_hash,suspended_at IS NOT NULL FROM users WHERE handle=$1", handle).Scan(&id, &stored, &suspended)
-		hash := []byte(stored)
+		account, err := lookupSignInAccount(ctx, a.db, handle)
+		hash := []byte(account.hash)
 		if err != nil {
 			hash = dummyHash()
 		}
@@ -413,11 +588,14 @@ func authAction(c *actionCtx) (actionResult, error) {
 			a.logSignInRefusals()
 			return actionResult{}, fail(401, "Invalid handle or password")
 		}
+		if rescue {
+			return a.soleAdminRecovery(c, account.id, account.hash, f.Get("rescue_code"), a.signInNext(f.Get("next")))
+		}
 		a.refund(signInKey(handle)) // a correct password spends no sign-in budget
-		if suspended {
+		if account.suspended {
 			return actionResult{}, suspendedRefusal(ctx, a.db)
 		}
-		return a.secondFactor(c, id, stored, a.signInNext(f.Get("next")))
+		return a.secondFactor(c, account.id, account.hash, a.signInNext(f.Get("next")))
 	}
 	if path == "/setup" && (installed || a.setupToken == "" || subtle.ConstantTimeCompare([]byte(f.Get("token")), []byte(a.setupToken)) != 1) {
 		return actionResult{}, fail(403, "Setup unavailable or token incorrect")
@@ -443,9 +621,12 @@ func authAction(c *actionCtx) (actionResult, error) {
 		if _, err = tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(782493)"); err != nil {
 			return actionResult{}, fail(503, "Service unavailable")
 		}
+		if err = refuseTakenHandle(ctx, tx, handle); err != nil {
+			return actionResult{}, err
+		}
 		id = randomToken()
 		if _, err = tx.ExecContext(ctx, "INSERT INTO users(id,handle,password_hash,role) VALUES($1,$2,$3,'buyer')", id, handle, string(hash)); err != nil {
-			return actionResult{}, fail(400, "Handle unavailable")
+			return actionResult{}, accountInsertError(err)
 		}
 		if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", id, "Account created: buyer"); err != nil {
 			return actionResult{}, fail(500, "Audit failed")
@@ -454,13 +635,72 @@ func authAction(c *actionCtx) (actionResult, error) {
 	if err = tx.Commit(); err != nil {
 		return actionResult{}, fail(500, "Unable to save account")
 	}
-	if err = a.login(ctx, w, id, c.Token, string(hash)); err != nil {
+	if err = a.login(ctx, w, id, rotationSession(c), string(hash)); err != nil {
 		return actionResult{}, fail(500, "Account created; sign in to continue")
 	}
 	if path == "/setup" {
 		return actionResult{Redirect: "/admin?welcome=1"}, nil
 	}
 	return actionResult{Redirect: orHome(a.signInNext(f.Get("next")))}, nil
+}
+
+// soleAdminRecovery is the narrow A-159(a) escape from a per-handle password-guess lockout. Count ALL admin
+// accounts, including suspended ones: suspension must not silently turn a multi-admin market into sole-admin
+// recovery. The account lock serializes this check with current admin-initiated role/suspension changes. The
+// TOTP replay guard and the session are committed together; no recovery-code branch is reachable here.
+func (a *App) soleAdminRecovery(c *actionCtx, id, checkedHash, code, next string) (actionResult, error) {
+	ctx := c.Ctx()
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		return actionResult{}, fail(503, "Service unavailable")
+	}
+	defer tx.Rollback()
+	var role, currentHash string
+	var suspended, totpEnabled bool
+	err = tx.QueryRowContext(ctx, `SELECT role,password_hash,suspended_at IS NOT NULL,totp_enabled
+		FROM users WHERE id=$1 FOR NO KEY UPDATE`, id).Scan(&role, &currentHash, &suspended, &totpEnabled)
+	if err == sql.ErrNoRows {
+		return actionResult{}, errSoleAdminRecovery
+	}
+	if err != nil {
+		return actionResult{}, fail(503, "Service unavailable")
+	}
+	if role != "admin" || suspended || !totpEnabled || subtle.ConstantTimeCompare([]byte(currentHash), []byte(checkedHash)) != 1 {
+		return actionResult{}, errSoleAdminRecovery
+	}
+	var admins int
+	if err = tx.QueryRowContext(ctx, "SELECT count(*) FROM users WHERE role='admin'").Scan(&admins); err != nil {
+		return actionResult{}, fail(503, "Service unavailable")
+	}
+	if admins != 1 {
+		return actionResult{}, errSoleAdminRecovery
+	}
+	// Charge the existing per-account verification budget only after the password and current eligibility
+	// have passed. A wrong or reused code does not commit a TOTP step or a session.
+	if !a.allow("totp-verify:"+id, 10) || a.checkTOTP(ctx, tx, id, code) != nil {
+		return actionResult{}, errSoleAdminRecovery
+	}
+	if pending := pendingCookie(c.R); pending != "" {
+		// This browser may have opened a normal two-step sign-in before the lockout. Consume only
+		// its pending token; other browsers' pending sign-ins remain untouched.
+		if _, err = tx.ExecContext(ctx, "DELETE FROM pending_logins WHERE token_hash=$1", digest(pending)); err != nil {
+			return actionResult{}, fail(500, "Unable to sign in")
+		}
+	}
+	token, err := a.startSession(ctx, tx, id, rotationSession(c), "password and TOTP", digest(checkedHash))
+	if err != nil {
+		var he *httpError
+		if errors.As(err, &he) {
+			return actionResult{}, errSoleAdminRecovery
+		}
+		return actionResult{}, fail(500, "Unable to sign in")
+	}
+	if err = tx.Commit(); err != nil {
+		return actionResult{}, fail(500, "Unable to sign in")
+	}
+	a.cookie(c.W, "session", token, 43200)
+	a.cookie(c.W, "pending", "", -1)
+	return actionResult{Redirect: orHome(next)}, nil
 }
 
 // errPasswordChanged refuses a sign-in whose password was checked before the account's password changed (A-157).
@@ -470,13 +710,16 @@ var errPasswordChanged = fail(401, "Sign-in verification expired. Sign in again.
 var errSetupComplete = fail(403, "Setup already complete")
 
 // setupSiteName applies first-run setup's marketplace-name rule: surrounding space trimmed, "OPSMKT" when
-// blank, at most 80 bytes.
+// blank, at most 80 characters, matching the form's maxlength.
 func setupSiteName(raw string) (string, error) {
 	name := strings.TrimSpace(raw)
 	if name == "" {
 		name = "OPSMKT"
 	}
-	if len(name) > 80 {
+	if !utf8.ValidString(name) || strings.ContainsRune(name, 0) {
+		return "", fail(400, "Invalid site name")
+	}
+	if utf8.RuneCountInString(name) > 80 {
 		return "", fail(400, "Site name too long")
 	}
 	return name, nil
@@ -495,9 +738,12 @@ func installFirstAdmin(ctx context.Context, tx *sql.Tx, handle, hash, siteName s
 	if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM settings WHERE key='installed')").Scan(&installed); err != nil || installed {
 		return "", errSetupComplete
 	}
+	if err := refuseTakenHandle(ctx, tx, handle); err != nil {
+		return "", err
+	}
 	id := randomToken()
 	if _, err := tx.ExecContext(ctx, "INSERT INTO users(id,handle,password_hash,role) VALUES($1,$2,$3,'admin')", id, handle, hash); err != nil {
-		return "", fail(400, "Handle unavailable")
+		return "", accountInsertError(err)
 	}
 	name, err := setupSiteName(siteName)
 	if err != nil {
@@ -510,6 +756,28 @@ func installFirstAdmin(ctx context.Context, tx *sql.Tx, handle, hash, siteName s
 		return "", fail(500, "Audit failed")
 	}
 	return id, nil
+}
+
+// refuseTakenHandle runs under creation advisory lock 782493 for both HTTP and CLI account creation.
+// The index is deliberately non-unique: a legacy database may already contain case variants.
+func refuseTakenHandle(ctx context.Context, tx *sql.Tx, handle string) error {
+	var taken bool
+	if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM users WHERE lower(handle)=lower($1))", handle).Scan(&taken); err != nil {
+		return fail(503, "Service unavailable")
+	}
+	if taken {
+		return fail(400, "Handle unavailable")
+	}
+	return nil
+}
+
+// Only a uniqueness violation is a taken handle. Do not describe other database failures as a collision.
+func accountInsertError(err error) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		return fail(400, "Handle unavailable")
+	}
+	return fail(503, "Service unavailable")
 }
 
 // enrolledFactors lists the registered second factors the user has enrolled.
@@ -551,7 +819,7 @@ func (a *App) secondFactor(c *actionCtx, userID, passwordHash, next string) (act
 	}
 	if len(names) == 0 {
 		var he *httpError
-		if err = a.login(ctx, c.W, userID, c.Token, passwordHash); errors.As(err, &he) { // suspended or password changed
+		if err = a.login(ctx, c.W, userID, rotationSession(c), passwordHash); errors.As(err, &he) { // suspended or password changed
 			return actionResult{}, err
 		} else if err != nil {
 			return actionResult{}, fail(500, "Unable to sign in")
@@ -563,7 +831,7 @@ func (a *App) secondFactor(c *actionCtx, userID, passwordHash, next string) (act
 		return actionResult{}, fail(500, "Unable to sign in")
 	}
 	a.cookie(c.W, "pending", pending, 600)
-	return actionResult{Redirect: "/challenge"}, nil
+	return actionResult{Redirect: challengePath(next)}, nil
 }
 
 func pendingCookie(r *http.Request) string {
@@ -619,7 +887,7 @@ func challengeAction(c *actionCtx) (actionResult, error) {
 	if _, err = c.Tx.ExecContext(ctx, "DELETE FROM pending_logins WHERE token_hash=$1 OR expires<now()", digest(pending)); err != nil {
 		return actionResult{}, err
 	}
-	token, err := a.startSession(ctx, c.Tx, userID, c.Token, "password and "+method, checked.String)
+	token, err := a.startSession(ctx, c.Tx, userID, rotationSession(c), "password and "+method, checked.String)
 	if err != nil {
 		return actionResult{}, err
 	}
@@ -687,17 +955,25 @@ func recordFactorFailure(c *actionCtx, pending, userID, method string, err error
 
 func challengeLoader(ctx context.Context, a *App, r *http.Request, d *PageData) error {
 	d.Title = "Verify sign-in"
+	fromURL := a.signInNext(r.URL.Query().Get("next"))
 	pending := pendingCookie(r)
 	if pending == "" {
+		d.Next = fromURL
 		return nil
 	}
-	var userID string
-	err := a.db.QueryRowContext(ctx, "SELECT user_id FROM pending_logins WHERE token_hash=$1 AND expires>now()", digest(pending)).Scan(&userID)
+	var userID, next string
+	var unexpired bool
+	err := a.db.QueryRowContext(ctx, "SELECT user_id,next,expires>now() FROM pending_logins WHERE token_hash=$1", digest(pending)).Scan(&userID, &next, &unexpired)
 	if err == sql.ErrNoRows {
+		d.Next = fromURL
 		return nil
 	}
 	if err != nil {
 		return err
+	}
+	d.Next = a.signInNext(next)
+	if !unexpired {
+		return nil
 	}
 	names, err := a.enrolledFactors(ctx, userID)
 	if err != nil {

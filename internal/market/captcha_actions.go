@@ -16,7 +16,7 @@ func init() {
 	registerRaw("/captcha", captchaPNG)
 	registerLoader("login", captchaLoader)
 	registerLoader("register", captchaLoader)
-	registerAction("/admin/captcha", actionSpec{Roles: []string{"admin"}, Run: captchaToggle})
+	registerAction("/admin/captcha", actionSpec{Roles: []string{"admin"}, OwnTx: true, ConfirmedFormNonce: true, Run: captchaToggle})
 	registerBackground(captchaSpentSweeper)
 	for _, page := range []string{"login", "register"} {
 		registerPreview(page, func(d *PageData) { d.Captcha = &CaptchaView{ID: "preview"} })
@@ -170,10 +170,23 @@ func captchaToggle(c *actionCtx) (actionResult, error) {
 	if v != "true" && v != "false" {
 		return actionResult{}, fail(400, "Choose whether the CAPTCHA is required")
 	}
-	_, err := c.Tx.ExecContext(c.Ctx(), "INSERT INTO settings(key,value) VALUES('captcha_required',$1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", v)
-	audit := "Turned on CAPTCHA for sign-in and registration"
-	if v == "false" {
-		audit = "Turned off CAPTCHA for sign-in and registration"
-	}
-	return actionResult{Redirect: "/admin", Notice: "captcha", Audit: audit}, err
+	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
+		var previous string
+		err := c.Tx.QueryRowContext(c.Ctx(), "SELECT value FROM settings WHERE key='captcha_required' FOR UPDATE").Scan(&previous)
+		if err != nil && err != sql.ErrNoRows {
+			return actionResult{}, err
+		}
+		if err == sql.ErrNoRows {
+			previous = "true" // a missing setting fails closed
+		}
+		if _, err = c.Tx.ExecContext(c.Ctx(), "INSERT INTO settings(key,value) VALUES('captcha_required',$1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", v); err != nil {
+			return actionResult{}, err
+		}
+		audit := "Turned on CAPTCHA for sign-in and registration"
+		if v == "false" {
+			audit = "Turned off CAPTCHA for sign-in and registration"
+		}
+		audit += "; required changed from " + previous + " to " + v
+		return actionResult{Redirect: "/admin", Notice: "captcha", Audit: audit}, nil
+	})
 }
