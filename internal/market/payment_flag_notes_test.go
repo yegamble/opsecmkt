@@ -2,6 +2,7 @@ package market
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -16,17 +17,26 @@ func TestLateDepositFlagNotesAreBoundedAndIndexOutputs(t *testing.T) {
 			mod, _ := e.user("flagmod_"+randomToken()[:6], "moderator")
 			product := e.product(vendor, "digital")
 			order := e.order(buyer, product, currency, stateCompleted)
+			addr := "escrow-" + order[:12]
+			var wallet int64
 			if currency == "BTC" {
-				agExec(e, `INSERT INTO escrows(order_id,address,market_index,refund_address,fee_bps,fee_destination) VALUES($1,$2,nextval('escrow_market_index'),$3,0,'')`, order, "escrow-"+order[:12], "refund-"+order[:12])
+				agExec(e, `INSERT INTO escrows(order_id,address,market_index,refund_address,fee_bps,fee_destination) VALUES($1,$2,nextval('escrow_market_index'),$3,0,'')`, order, addr, "refund-"+order[:12])
 			} else {
-				wallet := xmrWallet(t, e, 1, "active")
-				xmrEscrowOf(t, e, wallet, 1, order)
+				wallet = xmrWallet(t, e, 1, "active")
+				addr, _ = xmrEscrowOf(t, e, wallet, 1, order)
 			}
 			const txid = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 			const outputs = 18
-			for idx := range outputs {
+			deposit := func(n int) (string, int64) {
+				if currency == "XMR" {
+					return txidOf("bounded XMR note " + strconv.Itoa(n)), xmrEscrowIdx(wallet, 1)
+				}
+				return txid, int64(n)
+			}
+			for n := range outputs {
+				id, idx := deposit(n)
 				agExec(e, `INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations,after_close)
-					VALUES($1,$2,$3,$4,'test-address',5000,3,true)`, order, currency, txid, idx)
+					VALUES($1,$2,$3,$4,$5,5000,3,true)`, order, currency, id, idx, addr)
 			}
 			tx, err := e.DB.BeginTx(context.Background(), nil)
 			if err != nil {
@@ -57,10 +67,11 @@ func TestLateDepositFlagNotesAreBoundedAndIndexOutputs(t *testing.T) {
 					t.Fatalf("generated note does not date a flag: %q", note)
 				}
 			}
-			for idx := range outputs {
-				label := lateDepositName(txid, int64(idx), 5000, currency, true)
+			for n := range outputs {
+				id, idx := deposit(n)
+				label := lateDepositName(id, idx, 5000, currency, true)
 				if !strings.Contains(joined, label) {
-					t.Errorf("output %d is not distinctly named: %q", idx, label)
+					t.Errorf("deposit %d is not distinctly named: %q", n, label)
 				}
 			}
 			if n := agInt(e, "SELECT count(*) FROM payments WHERE order_id=$1 AND flagged", order); n != outputs {

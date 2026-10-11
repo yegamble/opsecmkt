@@ -20,7 +20,7 @@ func TestHistoricalOrderActionMatrix(t *testing.T) {
 	for _, tc := range []struct {
 		session string
 		want    int
-	}{{bs, 303}, {vs, 403}, {other, 404}} {
+	}{{vs, 403}, {other, 404}, {bs, 303}} {
 		order := draft
 		w := e.do("POST", "/orders/cancel", tc.session, url.Values{"order_id": {order}, "from": {stateDraft}})
 		if w.Code != tc.want {
