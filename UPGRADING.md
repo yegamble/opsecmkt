@@ -1882,3 +1882,14 @@ Monero escrow on and neither set will see "Monero relays held" on `/admin`, one 
 *Tor mode*), then restart the app: the stored transactions are relayed unchanged on the next pass, never rebuilt.
 `upgrade` adds `ESCROW_XMR_TOR_RELAY` blank. Clearnet installs and installs with Monero escrow off are unchanged. Rolling
 back to an earlier build relays every held settlement from the host's IP address on its first pass.
+
+## 61. The bundled Bitcoin node defaults to signet (A-513)
+
+When `BITCOIN_CHAIN` is blank, `compose.nodes.yaml` and `compose.nodes-tor.yaml` now start the bundled Bitcoin node on
+signet; earlier builds started testnet4. The installer has always written `BITCOIN_CHAIN` for a local node, so an install
+made by it is unchanged. An `.env` with the `bitcoin` profile and a blank `BITCOIN_CHAIN` would, on its next
+`docker compose up -d`, start a signet node on a fresh `bitcoin_data` chain directory beside the testnet4 one (the old data
+stays in the volume), and a market whose escrow already pinned testnet4 would refuse that node. Set `BITCOIN_CHAIN=testnet4` in `.env`
+first if that node is yours. The installer's printed escrow commands now carry `-rpcport=8332` for `bitcoin-cli`
+(the bundled node's pinned RPC port) and `--via-compose app` for the `--verify` check; see the
+[operator guide](docs/operator-guide.md#escrow-node-set-up-and-the-public-network-smoke).

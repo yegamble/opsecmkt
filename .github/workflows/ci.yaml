@@ -673,6 +673,26 @@ jobs:
           path: artifacts/install-test/
           if-no-files-found: ignore
           retention-days: 14
+  escrow-node-rehearsal:
+    name: Bundled-node escrow set-up, run from the installer's printed commands
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # install.sh init with a local regtest node in a throwaway Compose project, then the escrow commands it prints, run
+      # verbatim: set-up, bitcoin.conf append, .env append, node restart, --verify --via-compose app (PASS), the signer's
+      # seed, docker compose up -d (A-513). Regtest only; the evidence log holds no password.
+      - name: Rehearse the installer-printed escrow set-up on regtest
+        run: python3 scripts/test-escrow-node-rehearsal.py
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: escrow-node-rehearsal-results
+          path: artifacts/escrow-node-rehearsal/
+          if-no-files-found: ignore
+          retention-days: 14
   upgrade:
     name: Upgrade from alpha.1 and an intermediate migrated release
     runs-on: ubuntu-24.04
@@ -884,7 +904,7 @@ jobs:
   required:
     name: CI passed
     if: always()
-    needs: [go, go-escrow, escrow-regtest, escrow-xmr-regtest, operations, installer, upgrade, compose, container, tor-image, browser, browser-escrow]
+    needs: [go, go-escrow, escrow-regtest, escrow-xmr-regtest, operations, installer, escrow-node-rehearsal, upgrade, compose, container, tor-image, browser, browser-escrow]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:

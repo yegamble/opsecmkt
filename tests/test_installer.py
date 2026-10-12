@@ -532,8 +532,8 @@ print(value)
         index = next(i for i, line in enumerate(lines) if token in line)
         self.assertEqual(lines[index], 'Setup token: ' + token)
         self.assertTrue(lines[index - 1].startswith('Ready. Open '), lines[index - 1])
-        # After the token come the two reminders and, with a local Bitcoin node, the escrow set-up commands (A-495).
-        self.assertGreaterEqual(index, len(lines) - 16)
+        # After the token come the two reminders and, with a local Bitcoin node, the escrow set-up commands (A-495, A-513).
+        self.assertGreaterEqual(index, len(lines) - 40)
 
     def test_timeout_stops_stub_descendants_without_bytecode_writes(self):
         self.stub('docker', '''
@@ -618,7 +618,7 @@ time.sleep(60)
         self.assertEqual(len(config['AUDIT_SIGNING_KEY']), 64)
         self.assert_token_only_in_final_block(result, config['SETUP_TOKEN'])
         self.assert_no_secret_printed(result, config, allow_token=True)
-        self.assertEqual(config['BITCOIN_CHAIN'], 'testnet4')
+        self.assertEqual(config['BITCOIN_CHAIN'], 'signet')
         self.assertEqual(config['MONERO_NETWORK'], 'stagenet')
         images = self.compose_image_defaults()
         self.assertEqual(config['BITCOIN_IMAGE'], images['BITCOIN_IMAGE'])
@@ -868,8 +868,9 @@ time.sleep(60)
         self.assert_no_secret_printed(result, config, allow_token=True)
         self.assertNotIn('compose.external-egress.yaml', config['COMPOSE_FILE'])
 
-    def test_local_bitcoin_node_ends_with_the_two_escrow_setup_commands(self):
-        # A-495 (D-58): the installer only tells the operator how Bitcoin escrow is turned on; it edits no file.
+    def test_local_bitcoin_node_ends_with_the_runnable_escrow_setup_commands(self):
+        # A-495 (D-58), A-513: the installer only tells the operator how Bitcoin escrow is turned on; it edits no file.
+        # The commands are the ones scripts/test-escrow-node-rehearsal.py runs verbatim in CI.
         for network in ('regtest', 'signet', 'testnet4'):
             with self.subTest(network=network):
                 (self.root / '.env').unlink(missing_ok=True)
@@ -879,13 +880,25 @@ time.sleep(60)
                     '--bitcoin-network', network, '--bitcoin-prune', 'yes', '--monero', 'disabled'])
                 self.assert_started(result)
                 config = self.config()
-                commands = [line.strip() for line in result.stdout.splitlines() if 'escrow-node-setup.sh' in line]
+                commands = [line.strip() for line in result.stdout.splitlines() if 'escrow-node-setup.sh' in line
+                            and not line.startswith('#')]
                 self.assertEqual(len(commands), 2, result.stdout)
                 setup, verify = commands
-                self.assertIn(f'./scripts/escrow-node-setup.sh --chain {network} --rpc-port 8332 --cli ', setup)
+                # bitcoind listens on 8332 (compose.nodes.yaml -rpcport) and bitcoin-cli defaults to the chain's own
+                # port, so the cli must say -rpcport=8332 too (SRE60-1).
+                self.assertEqual(setup, f"./scripts/escrow-node-setup.sh --chain {network} --rpc-port 8332 --signer --cli "
+                                        "'docker compose exec -T -u bitcoin bitcoin bitcoin-cli -datadir=/data -rpcport=8332'")
                 self.assertNotIn('--verify', setup)
-                self.assertTrue(verify.endswith(f'./scripts/escrow-node-setup.sh --chain {network} --verify'), verify)
-                self.assertIn('ESCROW_BTC_RPC_URL=', verify)
+                self.assertEqual(verify, "ESCROW_BTC_RPC_URL='<the URL it printed>' ./scripts/escrow-node-setup.sh "
+                                         f'--chain {network} --verify --via-compose app --wait 120')
+                # The conf append quotes its heredoc so the $ in rpcauth stays literal (SRE60-3), then restarts the node.
+                self.assertIn("docker compose exec -T -u bitcoin bitcoin sh -c 'cat >> /data/bitcoin.conf' <<'EOF'\n",
+                              result.stdout)
+                self.assertIn("cat >> .env <<'EOF'\nESCROW_BTC=on\nCOMPOSE_PROFILES=internal-db,bitcoin,escrow-signer\n",
+                              result.stdout)
+                self.assertLess(result.stdout.index('cat >> /data/bitcoin.conf'), result.stdout.index('docker compose restart bitcoin'))
+                self.assertLess(result.stdout.index('docker compose restart bitcoin'), result.stdout.index('--verify'))
+                self.assertIn('docker compose run --rm --no-deps escrow-signer init', result.stdout)
                 self.assertGreater(result.stdout.index('escrow-node-setup.sh'), result.stdout.index('Setup token:'))
                 self.assertIn('docs/operator-guide.md#escrow-node-set-up-and-the-public-network-smoke', result.stdout)
                 self.assertIn('off until', result.stdout)
@@ -1262,7 +1275,7 @@ time.sleep(60)
              dict(APP_MODE='tor', COOKIE_SECURE='false', COMPOSE_PROFILES='internal-db')),
             (['--clearnet', '--behind-proxy', 'no', '--nodes', 'local'],
              dict(APP_MODE='clearnet', COOKIE_SECURE='false', COMPOSE_PROFILES='internal-db,bitcoin,monero',
-                  BITCOIN_CHAIN='testnet4', MONERO_NETWORK='stagenet', BITCOIN_PRUNE_MB='2000',
+                  BITCOIN_CHAIN='signet', MONERO_NETWORK='stagenet', BITCOIN_PRUNE_MB='2000',
                   BITCOIN_IMAGE='bitcoin/bitcoin:31.1')),
             (['init', '--clearnet', '--behind-proxy', 'yes', '--nodes', 'none'],
              dict(APP_MODE='clearnet', COOKIE_SECURE='true', COMPOSE_PROFILES='internal-db')),

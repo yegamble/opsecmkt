@@ -3,7 +3,7 @@
 # alternatives. The defaults are pinned, supported releases (Bitcoin Core 31.1, Monero v0.18.5.1). Never change
 # them to latest: follow the bump checklist in docs/operator-guide.md#node-image-versions. Add @sha256:<digest>
 # for reproducible deployments.
-# No RPC or peer ports are published to the host. The local Bitcoin node supports regtest, testnet4 and signet;
+# No RPC or peer ports are published to the host. The local Bitcoin node supports regtest, testnet4 and signet (default signet, the public network with recorded proof; BITCOIN_CHAIN picks another, and the escrow chain pin makes the first one sticky);
 # the Monero daemon is restricted to stagenet for escrow support. RPC ports are pinned across those networks.
 # The installer keeps the Bitcoin RPC password in private .env for operator setup and puts only its salted HMAC
 # verifier in bitcoind's -rpcauth argument. Compose refuses a bitcoin-profile service with blank
@@ -24,7 +24,7 @@ services:
     environment:
       BITCOIN_DATA: /data
     command:
-      - -chain=${BITCOIN_CHAIN:-testnet4}
+      - -chain=${BITCOIN_CHAIN:-signet}
       # Explicit, so the data directory does not depend on the image entrypoint reading BITCOIN_DATA.
       - -datadir=/data
       # Pruned by default: bitcoind keeps about BITCOIN_PRUNE_MB MiB of recent block and undo files (at least

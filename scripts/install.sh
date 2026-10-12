@@ -905,7 +905,7 @@ cmd_init() {
     if [[ $bare == true ]]; then
       nodes=custom
     elif [[ -z $nodes ]]; then
-      printf '%s\n' "Test-network nodes: 'local' (the default) runs pruned Bitcoin Core (testnet4) and Monero (stagenet) nodes in Docker; they keep about 25-30 GB on disk and their first sync takes hours. 'none' leaves payments off. 'custom' asks per coin."
+      printf '%s\n' "Test-network nodes: 'local' (the default) runs pruned Bitcoin Core (signet) and Monero (stagenet) nodes in Docker; they keep about 25-30 GB on disk and their first sync takes hours. 'none' leaves payments off. 'custom' asks per coin."
       ask nodes 'Nodes (local/none/custom) [local]: '
       nodes=${nodes:-local}
       [[ $nodes == local || $nodes == none || $nodes == custom ]] || die 'Choose local, none or custom.'
@@ -947,9 +947,9 @@ cmd_init() {
         image=${image:-$default_image}
         check_image "$image"
         if [[ $coin == BITCOIN ]]; then
-          if [[ -z $network && $detail == true ]]; then ask network 'BITCOIN escrow network (regtest/testnet4/signet) [testnet4]: '; fi
-          case ${network:-testnet4} in
-            regtest|testnet4|signet) network=${network:-testnet4} ;;
+          if [[ -z $network && $detail == true ]]; then ask network 'BITCOIN escrow network (regtest/testnet4/signet) [signet]: '; fi
+          case ${network:-signet} in
+            regtest|testnet4|signet) network=${network:-signet} ;;
             *) die 'Choose regtest, testnet4, or signet.' ;;
           esac
           if [[ -z $prune && $detail == true ]]; then ask prune 'Prune the BITCOIN node to save disk? (yes/no) [yes]: '; fi
@@ -1216,13 +1216,29 @@ cmd_init() {
   echo 'Check the installation any time with ./scripts/install.sh status.'
   # A local Bitcoin node is infrastructure only (D-58): say how escrow is turned on, and change nothing for it.
   if [[ $btc_choice == local ]]; then
-    local escrow_chain=${bitcoin_chain:-testnet4}
+    local escrow_chain=${bitcoin_chain:-signet}
     echo
-    echo 'Bitcoin escrow stays off until you set it up; this installer edits no file for it. With the local Bitcoin node running:'
-    echo "  ./scripts/escrow-node-setup.sh --chain $escrow_chain --rpc-port 8332 --cli 'docker compose exec -T -u bitcoin bitcoin bitcoin-cli -datadir=/data'"
-    echo '  (it prints bitcoin.conf and .env lines: add the first to the node'"'"'s /data/bitcoin.conf and the second to .env together with ESCROW_BTC=on, then restart the node)'
-    echo "  ESCROW_BTC_RPC_URL='<the URL it printed>' ./scripts/escrow-node-setup.sh --chain $escrow_chain --verify"
-    echo '  Then restart the app. Details: docs/operator-guide.md#escrow-node-set-up-and-the-public-network-smoke'
+    echo 'Bitcoin escrow stays off until you set it up; this installer edits no file for it. Run these in this directory, once the local Bitcoin'
+    echo 'node has synced its chain (a regtest node is ready at once). Lines starting with # are comments, safe to paste.'
+    echo '# 1. Wallets and RPC users; prints bitcoin.conf and .env lines once and writes no file. Copy its output.'
+    echo "./scripts/escrow-node-setup.sh --chain $escrow_chain --rpc-port 8332 --signer --cli 'docker compose exec -T -u bitcoin bitcoin bitcoin-cli -datadir=/data -rpcport=8332'"
+    echo '# 2. Append its rpcauth=, rpcwhitelistdefault= and rpcwhitelist= lines to the node'"'"'s bitcoin.conf (quoted EOF keeps the $ in rpcauth literal):'
+    echo "docker compose exec -T -u bitcoin bitcoin sh -c 'cat >> /data/bitcoin.conf' <<'EOF'"
+    echo '# paste the printed rpcauth, rpcwhitelistdefault and rpcwhitelist lines here'
+    echo 'EOF'
+    echo '# 3. Append its ESCROW_* lines to .env, turn escrow on, and add the signer service. If .env already has any of these keys, the last line wins.'
+    echo "cat >> .env <<'EOF'"
+    echo 'ESCROW_BTC=on'
+    echo "COMPOSE_PROFILES=$profiles,escrow-signer"
+    echo '# paste the printed ESCROW_* lines here'
+    echo 'EOF'
+    echo '# 4. Restart the node, then check it from the Compose network (the bundled node publishes no port). It must print PASS.'
+    echo 'docker compose restart bitcoin'
+    echo "ESCROW_BTC_RPC_URL='<the URL it printed>' ./scripts/escrow-node-setup.sh --chain $escrow_chain --verify --via-compose app --wait 120"
+    echo '# 5. Make the escrow signer'"'"'s seed (write down the fingerprint it prints, then back the seed up), and start everything with the new settings.'
+    echo 'docker compose run --rm --no-deps escrow-signer init'
+    echo 'docker compose up -d'
+    echo 'Details: docs/operator-guide.md#escrow-node-set-up-and-the-public-network-smoke'
   fi
 }
 

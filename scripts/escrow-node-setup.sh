@@ -4,7 +4,7 @@
 # the app refuses them (escrowChains in internal/market/escrow_tx.go).
 #
 #   scripts/escrow-node-setup.sh --chain signet [--cli 'docker exec -u bitcoin escrow-node bitcoin-cli']
-#       [--rpc-host bitcoin] [--rpc-port 38332] [--escrow-user opsecmkt-escrow]
+#       [--rpc-host bitcoin] [--rpc-port 38332] [--escrow-user opsecmkt-escrow] [--signer]
 #       [--arbiter-wallet opsecmkt-arbiter] [--watch-wallet opsecmkt-escrow-watch]
 #
 # Set-up (the default) talks to the node only through the operator's own bitcoin-cli (--cli, default bitcoin-cli; the
@@ -19,30 +19,36 @@
 #      lines (rpcauth, rpcwhitelistdefault=0 and the user's rpcwhitelist) and the .env lines (ESCROW_BTC_RPC_URL and
 #      the wallet names). Nothing is written to a file:
 #      copy the lines, add the bitcoin.conf ones and restart bitcoind.
+#   With --signer it also makes the per-order escrow signer's own RPC user (A-454, A-513: rpcauth, a three-method
+#   rpcwhitelist, ESCROW_SIGNER_RPC_URL and ESCROW_SIGNER_SOCKET), which per-order escrows need.
 #
-#   ESCROW_BTC_RPC_URL=... scripts/escrow-node-setup.sh --chain signet --verify
+#   ESCROW_BTC_RPC_URL=... scripts/escrow-node-setup.sh --chain signet --verify [--via-compose app] [--wait 120]
 #
 # --verify (after the restart) reads the URL from the environment (never from .env), sends it to curl on its
 # standard input (never printed) and checks what the app needs and what A-440 requires refused: the escrow user answers
 # getblockchaininfo on --chain (any other chain, or none, is refused before any wallet call, as in set-up mode) and
 # getwalletinfo on both wallets, and is refused (HTTP 403) listdescriptors and
-# gethdkeys.
+# gethdkeys. --via-compose SERVICE sends the same requests from inside that Compose service of the project in the
+# current directory (`docker compose exec`, bash's /dev/tcp; no curl needed there), for a node that publishes no port,
+# such as the bundled one whose URL host `bitcoin` resolves only on the Compose network. --wait SECONDS keeps asking
+# the first question while the node is not answering yet (a restarting bitcoind).
 #
 # The whitelist is escrowRPCMethods (internal/market/escrow_rpc.go); tests/test_escrow_public_script.py keeps it equal.
 set -euo pipefail
 
 escrow_methods=getblockchaininfo,getnetworkinfo,getrawchangeaddress,getaddressinfo,createpsbt,utxoupdatepsbt,importdescriptors,getdescriptorinfo,deriveaddresses,gettxout,keypoolrefill,walletprocesspsbt,descriptorprocesspsbt,combinepsbt,finalizepsbt,testmempoolaccept,sendrawtransaction,getwalletinfo,listreceivedbyaddress,gettransaction,listtransactions,listsinceblock
+signer_methods=decodepsbt,descriptorprocesspsbt,getdescriptorinfo
 public_signet_challenge=512103ad5e0edad18cb1f0fc0d28a3d4f1f3e445640337489abb10404f2d1e086be430210359ef5021964fe22d6f8e05b2463c9540ce96883fe3b278760f048f5189f2e6c452ae
 
 usage() {
   sed -n '6,8p' "$0" | sed 's/^# \{0,1\}//' >&2
-  echo "   or: ESCROW_BTC_RPC_URL=... $0 --chain <regtest|signet|testnet4> --verify" >&2
+  echo "   or: ESCROW_BTC_RPC_URL=... $0 --chain <regtest|signet|testnet4> --verify [--via-compose SERVICE] [--wait SECONDS]" >&2
   exit 2
 }
 die() { echo "$*" >&2; exit 1; }
 
 chain='' cli='bitcoin-cli' host='bitcoin' port='' escrow_user='opsecmkt-escrow'
-arbiter='opsecmkt-arbiter' watch='opsecmkt-escrow-watch' verify=no
+arbiter='opsecmkt-arbiter' watch='opsecmkt-escrow-watch' verify=no signer=no signer_user='opsecmkt-signer' via='' wait=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --chain) chain="${2:-}"; shift 2 ;;
@@ -53,6 +59,9 @@ while [[ $# -gt 0 ]]; do
     --arbiter-wallet) arbiter="${2:-}"; shift 2 ;;
     --watch-wallet) watch="${2:-}"; shift 2 ;;
     --verify) verify=yes; shift ;;
+    --signer) signer=yes; shift ;;
+    --via-compose) via="${2:-}"; shift 2 ;;
+    --wait) wait="${2:-}"; shift 2 ;;
     -h|--help) usage ;;
     *) echo "Unknown argument: $1" >&2; usage ;;
   esac
@@ -74,31 +83,62 @@ done
 [[ -n "$escrow_user" && -n "$arbiter" && -n "$watch" ]] || die "Refusing: the escrow user and the wallet names cannot be empty."
 [[ "$arbiter" != "$watch" ]] || die "Refusing: the arbiter wallet and the watch-only wallet must differ."
 [[ "$host" =~ ^[A-Za-z0-9.:_-]+$ && "$port" =~ ^[0-9]{1,5}$ ]] || die "Refusing: --rpc-host or --rpc-port is not a host name or port."
+[[ "$wait" =~ ^[0-9]{1,4}$ ]] || die "Refusing: --wait is a number of seconds."
+[[ "$via" =~ ^[A-Za-z0-9_.-]*$ ]] || die "Refusing: --via-compose names a Compose service."
+[[ $verify == yes || -z $via ]] || die "Refusing: --via-compose belongs to --verify; set-up reaches the node through --cli."
 
 # field <name>: a scalar JSON field of the answer on standard input (bitcoin-cli's or curl's), quotes stripped.
 field() { tr -d '\n' | sed -n "s/.*\"$1\": *\"\{0,1\}\([^\",}]*\)\"\{0,1\}.*/\1/p"; }
 
 if [[ $verify == yes ]]; then
-  command -v curl >/dev/null || die "curl is required"
+  if [[ -n $via ]]; then
+    command -v docker >/dev/null || die "docker is required for --via-compose"
+    command -v base64 >/dev/null || die "base64 is required for --via-compose"
+  else
+    command -v curl >/dev/null || die "curl is required"
+  fi
   [[ -n "${ESCROW_BTC_RPC_URL:-}" ]] || die "Set ESCROW_BTC_RPC_URL in the environment (the line the set-up printed); this script never reads .env."
   [[ -z "${BITCOIN_RPC_URL:-}" ]] || die "BITCOIN_RPC_URL is retired pooled-payment configuration; drain and remove it with the previous build before setup."
+  [[ -z $via || $ESCROW_BTC_RPC_URL =~ ^http://[^:@/]+:[^@/]*@[A-Za-z0-9._-]+:[0-9]{1,5}/?$ ]] ||
+    die "Refusing: --via-compose needs ESCROW_BTC_RPC_URL as http://user:password@host:port."
   failed=0
   # rpc <url> <path> <method> <params>: the answer, then a last line with the HTTP status. The URL reaches curl on its
   # standard input and is never printed.
   rpc() {
+    if [[ -n $via ]]; then rpc_compose "$@"; return; fi
     printf 'url = "%s%s"\n' "${1%/}" "$2" | curl -sS --max-time 30 --noproxy '*' -H 'Content-Type: application/json' \
       --data "{\"jsonrpc\":\"1.0\",\"id\":\"setup\",\"method\":\"$3\",\"params\":$4}" -w '\n%{http_code}' --config - 2>/dev/null || echo
+  }
+  # rpc_compose <url> <path> <method> <params>: the same, sent from inside Compose service $via of the project in the
+  # current directory, which reaches the node by the URL's own host and port (so a name that resolves only on the
+  # Compose network works). The request, with its Authorization header, reaches bash's /dev/tcp on the service's
+  # standard input: no password is on any command line or in any output. The service needs bash, as the app image has.
+  rpc_compose() {
+    local rest=${1#http://} creds hostport body
+    creds=${rest%%@*}
+    hostport=${rest#*@}
+    hostport=${hostport%/}
+    body="{\"jsonrpc\":\"1.0\",\"id\":\"setup\",\"method\":\"$3\",\"params\":$4}"
+    { printf 'POST %s HTTP/1.0\r\nHost: %s\r\nAuthorization: Basic %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s' \
+        "${2:-/}" "$hostport" "$(printf %s "$creds" | base64 | tr -d '\n')" "${#body}" "$body" |
+        docker compose exec -T "$via" bash -c 'exec 3<>"/dev/tcp/$0/$1"; cat >&3; cat <&3' "${hostport%:*}" "${hostport##*:}" 2>/dev/null || true; } |
+      tr -d '\r' | awk 'NR == 1 { status = $2 } head == 0 && $0 == "" { head = 1; next } head { print } END { printf "\n%s\n", status }'
   }
   status_of() { tail -n 1 <<<"$1"; }
   check() { # check <description> <ok: yes|no>
     if [[ $2 == yes ]]; then echo "ok: $1"; else echo "FAILED: $1" >&2; failed=1; fi
   }
-  answer=$(rpc "$ESCROW_BTC_RPC_URL" "" getblockchaininfo '[]')
+  deadline=$((SECONDS + wait))
+  while :; do
+    answer=$(rpc "$ESCROW_BTC_RPC_URL" "" getblockchaininfo '[]')
+    [[ $(status_of "$answer") == 200 || $SECONDS -ge $deadline ]] && break
+    sleep 2
+  done
   got=$(sed '$d' <<<"$answer" | field chain)
   case "$got" in main|test) die "Refusing: the escrow node reports chain $got; Bitcoin escrow runs only on regtest, signet or testnet4." ;; esac
   # As set-up mode does, nothing else is asked of a node on another chain, or one that names none (QA5W3A-9).
   [[ $(status_of "$answer") == 200 && $got == "$chain" ]] ||
-    die "Refusing: the escrow node reports chain '${got:-nothing}' (HTTP $(status_of "$answer")), not $chain; nothing else was asked."
+    die "Refusing: the escrow node reports chain '${got:-nothing}' (HTTP $(status_of "$answer")), not $chain; nothing else was asked.$([[ -n $via && -z $(status_of "$answer") ]] && echo " No answer through Compose service $via: is it running, and is this the project directory?")"
   check "escrow user: getblockchaininfo answers chain $chain" yes
   for w in "$arbiter" "$watch"; do
     answer=$(rpc "$ESCROW_BTC_RPC_URL" "/wallet/$w" getwalletinfo '[]')
@@ -182,6 +222,8 @@ rpcauth() {
   printf '%s:%s$%s' "$1" "$salt" "$hash"
 }
 escrow_pass=$(openssl rand -hex 32)
+signer_pass=''
+[[ $signer == no ]] || signer_pass=$(openssl rand -hex 32)
 
 echo "arbiter wallet $arbiter: master key fingerprint $fingerprint (record it with the wallet's backup; the app pins it at its first start)" >&2
 cat <<EOF
@@ -191,12 +233,22 @@ cat <<EOF
 # unrestricted; the app's escrow user gets exactly its line.
 rpcauth=$(rpcauth "$escrow_user" "$escrow_pass")
 EOF
+[[ $signer == no ]] || echo "rpcauth=$(rpcauth "$signer_user" "$signer_pass")"
 echo "rpcwhitelistdefault=0"
 echo "rpcwhitelist=$escrow_user:$escrow_methods"
+[[ $signer == no ]] || echo "rpcwhitelist=$signer_user:$signer_methods"
 cat <<EOF
 # .env of the market (with ESCROW_BTC=on when you turn escrow on):
 ESCROW_BTC_RPC_URL=http://$escrow_user:$escrow_pass@$host:$port
 ESCROW_BTC_ARBITER_WALLET=$arbiter
 ESCROW_BTC_WATCH_WALLET=$watch
 EOF
-echo "# After the restart: ESCROW_BTC_RPC_URL=... $0 --chain $chain --verify"
+if [[ $signer == yes ]]; then
+  cat <<EOF
+# Per-order escrow signer (its own RPC user, three methods): the signer service takes the first line, the app the second.
+# Also add escrow-signer to COMPOSE_PROFILES, then make its seed: docker compose run --rm --no-deps escrow-signer init
+ESCROW_SIGNER_RPC_URL=http://$signer_user:$signer_pass@$host:$port
+ESCROW_SIGNER_SOCKET=/run/escrow-signer/signer.sock
+EOF
+fi
+echo "# After the restart: ESCROW_BTC_RPC_URL=... $0 --chain $chain --verify   (add --via-compose app for the bundled Compose node)"

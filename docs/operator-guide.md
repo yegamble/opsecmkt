@@ -41,7 +41,7 @@ still apply.
 | `add-scanner`, `refresh-scanner` | Add the ClamAV malware scanner that photo uploads need, and refresh its signatures: see [Photo uploads and the malware scanner](#photo-uploads-and-the-malware-scanner). |
 | `upgrade [--no-backup]` | After `git pull`: see [UPGRADING.md](../UPGRADING.md). |
 
-Flags answer `init`'s questions: `--tor` or `--clearnet`; `--local` (loopback HTTP, internal database, no nodes); `--external-db URL` (without it, a flagged install gets the internal database); `--behind-proxy yes|no` (clearnet: secure cookies behind an HTTPS proxy, or local HTTP only); `--nodes local|none|custom` (`local` runs pruned Bitcoin testnet4 and Monero stagenet nodes with the [default images](#node-image-versions), `custom` asks per coin); and per coin `--bitcoin` or `--monero` `local|disabled`, `--bitcoin-image`, `--bitcoin-network regtest|testnet4|signet`, `--bitcoin-prune yes|no`, and the Monero equivalents restricted to stagenet. For externally hosted nodes, use `--nodes none` and configure the separate `ESCROW_BTC_*` or `ESCROW_XMR_*` credentials afterwards; the installer does not create a pooled wallet or enable Bitcoin escrow by creating a node. `--uploads yes` also sets up the [malware scanner](#photo-uploads-and-the-malware-scanner) as `add-scanner` does (the default, `no`, leaves it out and asks nothing). `./scripts/install.sh --help` lists them. A question without its flag is asked. A value given as a flag, such as an RPC URL with a password, is visible to other local users while the installer runs; answer the question instead to keep it off the command line.
+Flags answer `init`'s questions: `--tor` or `--clearnet`; `--local` (loopback HTTP, internal database, **no nodes**; the installer cannot add nodes to an existing install later, so choose `init` with `--nodes local` or a per-coin `--bitcoin local` at the start); `--external-db URL` (without it, a flagged install gets the internal database); `--behind-proxy yes|no` (clearnet: secure cookies behind an HTTPS proxy, or local HTTP only); `--nodes local|none|custom` (`local` runs pruned Bitcoin signet (the default; `--bitcoin-network` picks regtest or testnet4) and Monero stagenet nodes with the [default images](#node-image-versions), `custom` asks per coin); and per coin `--bitcoin` or `--monero` `local|disabled`, `--bitcoin-image`, `--bitcoin-network regtest|testnet4|signet`, `--bitcoin-prune yes|no`, and the Monero equivalents restricted to stagenet. For externally hosted nodes, use `--nodes none` and configure the separate `ESCROW_BTC_*` or `ESCROW_XMR_*` credentials afterwards; the installer does not create a pooled wallet or enable Bitcoin escrow by creating a node. `--uploads yes` also sets up the [malware scanner](#photo-uploads-and-the-malware-scanner) as `add-scanner` does (the default, `no`, leaves it out and asks nothing). `./scripts/install.sh --help` lists them. A question without its flag is asked. A value given as a flag, such as an RPC URL with a password, is visible to other local users while the installer runs; answer the question instead to keep it off the command line.
 
 The setup token opens `/setup` once. After setup, `status`, `add-mirror` and `upgrade` remove it from `.env` when `APP_SECRET_KEY` is set and the running app reports `keyroot=app_secret_key` (the next `docker compose up -d` drops it from the running app); it grants nothing by then. An app started before `.env` had `APP_SECRET_KEY` still derives its keys from the token, so the token stays until the app is recreated.
 
@@ -891,11 +891,12 @@ public journeys remain unverified ([runbook](testnet-runbook.md#11-bitcoin-escro
   escrow orders that may hold coins (with `ESCROW_BTC` off too), so no page says escrow is inactive or no funds are
   held while escrow orders exist. With escrow off and no escrow orders, payment intake stays paused.
 - **Compose** passes these variables from `.env` to the app container (`compose.yaml`; blank in `.env.example`, so
-  escrow stays off). The bundled `bitcoin` node of `compose.nodes.yaml` follows `BITCOIN_CHAIN` and has no
-  `rpcwhitelist` user for escrow, so `ESCROW_BTC_RPC_URL` must point at a node (regtest, signet or testnet4) you
-  configure as below; the checked set-up is still the app run outside Compose (inside `go test` against a regtest node
-  or a private signet), as `scripts/test-escrow-regtest.sh` does. Passing them through Compose was checked with `docker compose config`
-  only.
+  escrow stays off). The bundled `bitcoin` node of `compose.nodes.yaml` follows `BITCOIN_CHAIN` (signet when blank) and
+  has no `rpcwhitelist` user for escrow until you add one, so `ESCROW_BTC_RPC_URL` must point at a node (regtest, signet
+  or testnet4) you configure as below; for the bundled node, the installer prints the commands and
+  [the set-up section](#escrow-node-set-up-and-the-public-network-smoke) explains them. The CI job
+  `escrow-node-rehearsal` runs them on a throwaway regtest install; the app against a real regtest node is also run
+  outside Compose (inside `go test`), as `scripts/test-escrow-regtest.sh` does.
 
 **The app's RPC user.** Give the escrow code its own RPC user with `rpcauth` and allow it exactly these methods;
 keep a separate operator user with full rights for creating and backing up wallets. In `bitcoin.conf`:
@@ -947,8 +948,12 @@ password to a file or a log.
 **`scripts/escrow-node-setup.sh`** sets up the escrow node on `regtest`, `signet` or `testnet4` (`--chain`; `main`,
 `mainnet`, `test` and `testnet3` are refused, as the app refuses them). It reaches the node only through your own
 `bitcoin-cli` (`--cli`, default `bitcoin-cli`; the script adds `-chain=<chain>`), so your cookie or operator credentials
-stay where `bitcoin-cli` finds them. For the bundled image, use for example
-`--cli 'docker exec -u bitcoin <container> bitcoin-cli'`. It:
+stay where `bitcoin-cli` finds them. For the bundled Compose node, the installer prints the exact command: its `bitcoind`
+listens on RPC port **8332** on every chain (`-rpcport=8332` in `compose.nodes.yaml`), no `bitcoin.conf` says so, and
+`bitcoin-cli` otherwise tries the chain's own port (18443, 38332, 48332), so `--cli` must carry `-rpcport=8332` as well:
+`--rpc-port 8332 --cli 'docker compose exec -T -u bitcoin bitcoin bitcoin-cli -datadir=/data -rpcport=8332'`. For another
+container, use for example `--cli 'docker exec -u bitcoin <container> bitcoin-cli'` (plus its RPC port, if the node
+does not use the chain's own). It:
 
 1. refuses unless the node reports the chain you named, and on signet prints the `signet_challenge` and whether it is
    public signet's;
@@ -966,16 +971,47 @@ stay where `bitcoin-cli` finds them. For the bundled image, use for example
    whitelist) and `ESCROW_BTC_*` environment lines. The helper never creates a pooled
    RPC user. Port defaults are 18443 on regtest, 38332 on signet and 48332 on testnet4;
    the bundled Compose node pins RPC to **8332**, so pass `--rpc-port 8332` there.
-   Progress and the fingerprint go to standard error. Nothing is printed for a failed check.
+   Progress and the fingerprint go to standard error. Nothing is printed for a failed check;
+5. with `--signer`, also makes the per-order escrow signer's own RPC user (`opsecmkt-signer`, a separate password):
+   its `rpcauth` line, an `rpcwhitelist` line of exactly the three methods it calls (`decodepsbt`,
+   `descriptorprocesspsbt`, `getdescriptorinfo`), and the `ESCROW_SIGNER_RPC_URL` and `ESCROW_SIGNER_SOCKET` lines
+   for `.env` ([Escrow signer](#escrow-signer)). Per-order escrows need the signer; Core-wallet escrows do not.
 
 Copy the lines and add the `bitcoin.conf` ones to the escrow node's configuration, at top level or under `[<chain>]`.
-Restart `bitcoind`, then check the node with the escrow URL in the environment (exported for this one command, never read
-from `.env`):
+On the bundled Compose node, whose volume holds no `bitcoin.conf` until you write one, append them from the project
+directory (the heredoc delimiter is quoted so the shell leaves the `$` inside `rpcauth` alone; paste the printed
+`rpcauth`, `rpcwhitelistdefault` and `rpcwhitelist` lines in place of the comment, nothing else), add the printed
+`ESCROW_*` lines to `.env` the same way with `ESCROW_BTC=on` and `escrow-signer` appended to `COMPOSE_PROFILES`
+(a later line for a key wins), then restart the node:
+
+```sh
+docker compose exec -T -u bitcoin bitcoin sh -c 'cat >> /data/bitcoin.conf' <<'EOF'
+# paste the printed rpcauth, rpcwhitelistdefault and rpcwhitelist lines here
+EOF
+docker compose restart bitcoin
+```
+
+Once the node has restarted, check it with the escrow URL in the environment (exported for this one command, never read
+from `.env`). For a node you reach from this host:
 
 ```sh
 ESCROW_BTC_RPC_URL='http://opsecmkt-escrow:…@127.0.0.1:38332' \
   scripts/escrow-node-setup.sh --chain signet --verify
 ```
+
+The bundled node publishes no port and its host name `bitcoin` resolves only on the Compose network, so send the same
+checks from inside it with `--via-compose SERVICE` (from the project directory; the service needs `bash`, as the app
+image has). The script runs `docker compose exec -T SERVICE bash` and talks to the URL's own host and port through
+bash's `/dev/tcp`, with the request (and so the password) on standard input, never on a command line. `--wait SECONDS`
+keeps asking while the restarted node is not answering yet:
+
+```sh
+ESCROW_BTC_RPC_URL='http://opsecmkt-escrow:…@bitcoin:8332' \
+  scripts/escrow-node-setup.sh --chain signet --verify --via-compose app --wait 120
+```
+
+`--via-compose` accepts only a plain `http://user:password@host:port` URL. It is for `--verify` alone; set-up reaches the
+node through `--cli`.
 
 `--verify` passes when the escrow user answers `getblockchaininfo` on that chain and `getwalletinfo` on both wallets
 (private keys on the arbiter wallet only), and is refused `listdescriptors` and `gethdkeys` with HTTP 403. A node that
@@ -984,7 +1020,12 @@ An inherited nonblank `BITCOIN_RPC_URL` is refused before RPC; clear obsolete po
 settings before verifying this build. The URLs reach `curl` on its standard
 input and are never printed. A command typed with a password on it can stay in your shell history: clear the line
 afterwards, or set the variables from a file only you can read. Checked on a local Bitcoin Core 31.1 regtest container:
-set-up, restart, `--verify`, then the app logged "escrow: Bitcoin escrow on (test networks only)". The public signet operator package was exercised at the frozen proof revision; the
+set-up, restart, `--verify`, then the app logged "escrow: Bitcoin escrow on (test networks only)". CI repeats the
+bundled-node path on every change (`escrow-node-rehearsal`, A-513): `scripts/test-escrow-node-rehearsal.py` installs a
+throwaway project with a local **regtest** node and runs the commands the installer prints, verbatim (the set-up above
+with `--signer`, the `bitcoin.conf` and `.env` appends, the restart, `--verify --via-compose app` which must print
+`PASS`, the signer's seed and `docker compose up -d`), then expects the app to log that escrow is on and the signer ready. It
+proves the command path on regtest, not a signet or testnet4 node, a published port or Tor. The public signet operator package was exercised at the frozen proof revision; the
 current removal helper is verified separately by its configuration tests, not a new public run.
 
 **`scripts/test-escrow-public.sh`** is the public-network smoke (P4-R16), the owner's run (A-447). Run it by hand,
@@ -1510,8 +1551,11 @@ What it does and refuses (ruling P4-R17):
   what it signed, so a script holding its keys of two different order indexes is not detected by the signer: the app
   must never build one.
 
-**Set-up** (Compose, `compose.nodes.yaml`'s `escrow-signer` profile; checked with `docker compose config` only, not
-yet run under Compose):
+**Set-up** (Compose, `compose.nodes.yaml`'s `escrow-signer` profile; the CI rehearsal `escrow-node-rehearsal` runs
+steps 1 to 4 below on a throwaway regtest install, and the profile's configuration is also checked with
+`docker compose config`). `scripts/escrow-node-setup.sh --signer` prints steps 1 and 2's lines for you (a separate
+password, the whitelist below, `ESCROW_SIGNER_RPC_URL` and `ESCROW_SIGNER_SOCKET`), and the installer's printed commands
+carry them through step 4:
 
 1. Give the signer its own RPC user on the escrow node, allowed exactly the three methods it calls, beside the app's
    user (`rpcwhitelistdefault=0` is already set):
