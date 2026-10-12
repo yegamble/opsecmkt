@@ -1,12 +1,54 @@
-# Upgrading from v0.1.0-alpha.1
+# Upgrading from v0.1.0-alpha.1 to `v0.1.0-alpha.2`
 
-This release adds test-network payments, signed audit exports and several database migrations. Read this
-whole page before pulling the new code onto a running v0.1.0-alpha.1 deployment.
+`v0.1.0-alpha.2` is a prerelease for test networks only: no real funds. Upgrade to the tag, not to `main`
+(`git fetch --tags && git checkout v0.1.0-alpha.2`). Read this summary and the sections it names before you
+upgrade a running v0.1.0-alpha.1 deployment.
 
-**Current development build:** fresh installs are escrow-only on supported test networks.
-Before upgrading a pooled deployment, read [section 58](#58-pooled-wallet-removal-for-fresh-installs-a-448) and
-[section 59](#59-pooled-history-refused-migration-108-a-492): this build starts only on a database without pooled payment history.
-Sections below describing pooled behavior document prior builds; they do not enable pooling on this build.
+## Summary
+
+**What changes for an operator**
+
+- **Payments are per-order escrow on test networks only, off until you set them up.** Bitcoin uses 2-of-3 escrow on
+  regtest, signet or testnet4; Monero escrow is custodial, on a local fakechain or stagenet. Mainnet and Bitcoin
+  testnet3 are refused. Upgrading turns no payment on ([per-order escrow](docs/escrow.md)).
+- **There is no pooled wallet.** The server refuses a non-blank `BITCOIN_RPC_URL`, `BITCOIN_WALLET`, `MONERO_RPC_URL`
+  or `MONERO_WALLET_RPC_URL` and a database holding pooled payment history, and the installer also refuses the
+  `monero-wallet` profile ([section 58](#58-pooled-wallet-removal-for-fresh-installs-a-448), [section 59](#59-pooled-history-refused-migration-108-a-492)).
+  Sections below that describe pooled payments document builds between alpha.1 and this one; they do not apply here.
+- **Startup is stricter.** `SETUP_TOKEN` must be random and `APP_SECRET_KEY` is new ([section 2](#2-new-keys-in-env)),
+  the database must be UTF8 ([section 42](#42-database-encoding-must-be-utf8-a-481)), and the server refuses a database
+  that records a migration it does not include ([section 5](#5-rolling-back)).
+- **Optional local nodes** are pruned ([section 7](#7-local-nodes-are-now-pruned)) and pinned to release tags
+  ([section 8](#8-node-images-are-pinned-to-release-tags)). The bundled Bitcoin node defaults to signet
+  ([section 61](#61-the-bundled-bitcoin-node-defaults-to-signet-a-513)) and its RPC password is checked through a
+  salted verifier ([section 54](#54-local-bitcoin-rpc-uses-a-salted-verifier-a-144)).
+- Also new: signed audit exports, and listing photos and avatars (uploads stay off until a ClamAV scanner is set up).
+
+**Migrations:** `001_foundation` to `108_refuse_pooled_history`, 68 files (listed below). The server applies them
+once, in order, at startup. They are one-way: there are no down-migrations.
+
+**Before you upgrade**
+
+1. Take an encrypted backup and keep a copy of `.env` ([section 1](#1-take-a-backup-and-record-what-you-run));
+   `./scripts/install.sh upgrade` does both.
+2. If your alpha.1 `.env` sets `BITCOIN_RPC_URL` or `MONERO_RPC_URL` (alpha.1's installer wrote them for local nodes,
+   but alpha.1 never read them, so no pooled funds exist), blank them. `install.sh upgrade` refuses until you do; its
+   advice to drain pooled funds first is for later pooled builds, not alpha.1.
+3. With a local node from alpha.1, its volume holds mainnet data: read [section 3](#3-bitcoin_rpc_url-now-turns-payments-on)
+   for removing it, but do not add the `monero-wallet` profile or a pooled wallet it mentions (this build refuses both).
+   Set `BITCOIN_CHAIN=testnet4` in `.env` if you want testnet4 rather than signet (section 61).
+4. With an external PostgreSQL, check that `SHOW server_encoding` says `UTF8` (section 42).
+5. With a hand-written `.env`, replace a placeholder `SETUP_TOKEN` (section 2).
+
+A database holding pooled payment history is refused by migration 108; keep the release it runs on (section 59).
+An alpha.1 database holds none. Then follow [Upgrade with the installer](#upgrade-with-the-installer).
+
+**Rollback rule:** rolling back is not an image swap. Stop the app, restore the pre-upgrade backup into a new
+database and rebuild the previous tag against it; everything written after the upgrade is lost from the rolled-back
+site. alpha.1 does not refuse a newer schema, so never point it at the upgraded database. Keep the backup, the
+`.env` copy and the previous tag until you trust the new release ([section 5](#5-rolling-back)).
+
+## Migrations and changes in detail
 
 The migration files included since alpha.1 are: `001_foundation`, `010_auth`, `011_account_suspension`,
 `012_pending_factor_failed`, `013_pending_password_digest`, `020_pgp`, `030_orders`, `031_review_hidden`,
@@ -36,7 +78,7 @@ From the directory you deploy from, with your age public key:
 
 ```sh
 git describe --tags --always   # note the revision you run today, e.g. v0.1.0-alpha.1
-git pull                       # or check out the release tag
+git fetch --tags && git checkout v0.1.0-alpha.2   # the release tag; git pull on main is not a release upgrade
 AGE_RECIPIENT=age1YOUR_PUBLIC_RECIPIENT ./scripts/install.sh upgrade
 ```
 
