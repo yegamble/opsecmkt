@@ -1004,7 +1004,8 @@ The bundled node publishes no port and its host name `bitcoin` resolves only on 
 checks from inside it with `--via-compose SERVICE` (from the project directory; the service needs `bash`, as the app
 image has). The script runs `docker compose exec -T SERVICE bash` and talks to the URL's own host and port through
 bash's `/dev/tcp`, with the request (and so the password) on standard input, never on a command line. `--wait SECONDS`
-keeps asking while the restarted node is not answering yet:
+keeps asking, for at least that many seconds, while the restarted node is not answering yet (without it the node is
+asked once):
 
 ```sh
 ESCROW_BTC_RPC_URL='http://opsecmkt-escrow:…@bitcoin:8332' \
