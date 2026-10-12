@@ -89,12 +89,12 @@ func escrowSetupLoader(ctx context.Context, a *App, r *http.Request, d *PageData
 	for _, party := range []string{roleBuyer, roleVendor, "market"} {
 		k := order[party]
 		if party == reader {
-			desc[party] = v.OwnPath + k.Serialize(versionTpub) + "/<0;1>/*"
+			desc[party] = v.OwnPath + k.Serialize(a.keyNet().pub) + "/<0;1>/*"
 			continue
 		}
 		fp := k.Fingerprint()
-		v.Cosigners = append(v.Cosigners, EscrowCosignerView{Who: map[string]string{roleBuyer: "The buyer's key", roleVendor: "The vendor's key", "market": "The market's key"}[party], Key: k.Rooted(versionVpub)})
-		desc[party] = "[" + hex.EncodeToString(fp[:]) + "]" + k.Rooted(versionTpub) + "/<0;1>/*"
+		v.Cosigners = append(v.Cosigners, EscrowCosignerView{Who: map[string]string{roleBuyer: "The buyer's key", roleVendor: "The vendor's key", "market": "The market's key"}[party], Key: k.Rooted(a.keyNet().msig)})
+		desc[party] = "[" + hex.EncodeToString(fp[:]) + "]" + k.Rooted(a.keyNet().pub) + "/<0;1>/*"
 	}
 	if v.NoSparrow == "" {
 		v.Sparrow = withChecksum("wsh(sortedmulti(2," + desc[roleBuyer] + "," + desc[roleVendor] + "," + desc["market"] + "))")

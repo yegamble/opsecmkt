@@ -51,12 +51,12 @@ const (
 
 // Fixed messages for a practice PSBT that is refused. None of them quotes the paste.
 var (
-	errPracticeOtherTx   = &keyRefusal{"This is not the practice transaction shown on this page. Copy the practice PSBT below again, sign it and paste the result."}
-	errPracticeFinal     = &keyRefusal{"The pasted PSBT is already finalized. Sign the practice PSBT without finalizing it (in Bitcoin Core: walletprocesspsbt with finalize false, or the PSBT dialog's Sign button) and paste the result."}
-	errPracticeUnsigned  = &keyRefusal{"The pasted PSBT has no signature from your registered key. Sign it in the wallet that holds the key you registered, then paste the signed PSBT."}
-	errPracticeOtherKey  = &keyRefusal{"The pasted PSBT carries a signature from a key other than your registered key. Sign it only in the wallet that holds the key you registered."}
-	errPracticeSighash   = &keyRefusal{"The signature uses a sighash type other than ALL. Sign with the default sighash type (ALL)."}
-	errPracticeBadSig    = &keyRefusal{"Your signature did not verify. Sign the practice PSBT shown below again, unchanged, and paste the result."}
+	errPracticeOtherTx   = &keyRefusal{msg: "This is not the practice transaction shown on this page. Copy the practice PSBT below again, sign it and paste the result."}
+	errPracticeFinal     = &keyRefusal{msg: "The pasted PSBT is already finalized. Sign the practice PSBT without finalizing it (in Bitcoin Core: walletprocesspsbt with finalize false, or the PSBT dialog's Sign button) and paste the result."}
+	errPracticeUnsigned  = &keyRefusal{msg: "The pasted PSBT has no signature from your registered key. Sign it in the wallet that holds the key you registered, then paste the signed PSBT."}
+	errPracticeOtherKey  = &keyRefusal{msg: "The pasted PSBT carries a signature from a key other than your registered key. Sign it only in the wallet that holds the key you registered."}
+	errPracticeSighash   = &keyRefusal{msg: "The signature uses a sighash type other than ALL. Sign with the default sighash type (ALL)."}
+	errPracticeBadSig    = &keyRefusal{msg: "Your signature did not verify. Sign the practice PSBT shown below again, unchanged, and paste the result."}
 	errPracticeNode      = &httpError{Code: 503, Msg: "The practice transaction cannot be checked right now: the market's Bitcoin node did not answer. Try again later."}
 	errPracticeKeyShape  = errors.New("practice: unexpected key derivations")
 	errPracticeUnsafeOut = errors.New("practice: the fabricated outpoint exists or the transaction is acceptable to the mempool")
@@ -96,9 +96,9 @@ func practiceHash(seed []byte, label string, i int) []byte {
 }
 
 // throwawayTprv is a test-network extended private key (depth 0) from seed: the server's practice co-signer.
-func throwawayTprv(seed []byte) string {
+func throwawayTprv(seed []byte, version uint32) string {
 	k, chainCode := throwawayKey(seed)
-	raw := binary.BigEndian.AppendUint32(nil, 0x04358394)
+	raw := binary.BigEndian.AppendUint32(nil, version)
 	raw = append(raw, make([]byte, 9)...) // depth 0, parent fingerprint 0, child 0
 	raw = append(raw, chainCode...)
 	raw = append(append(raw, 0), k...)
@@ -173,7 +173,7 @@ func (e *escrowBTC) buildPractice(ctx context.Context, key escrowKey, seed []byt
 		}
 	} else {
 		pt.Blank = unsignableKey(seed)
-		pt.signDesc = "wsh(sortedmulti(2," + key.Expression() + escrowPracticeSuffix + "," + throwawayTprv(seed) + "," + hex.EncodeToString(pt.Blank) + "))"
+		pt.signDesc = "wsh(sortedmulti(2," + key.Expression() + escrowPracticeSuffix + "," + throwawayTprv(seed, e.keyNet().prv) + "," + hex.EncodeToString(pt.Blank) + "))"
 		if public, err = e.descriptorInfo(ctx, pt.signDesc); err != nil {
 			return nil, err
 		}
@@ -246,8 +246,9 @@ func (e *escrowBTC) perOrderPracticeDescriptors(ctx context.Context, key escrowK
 	pt.Blank = blankFirst.PubKey[:]
 	index := "/" + strconv.FormatUint(escrowPracticeIndex, 10)
 	owner := key.Expression() + index + "/0/0"
-	pt.signDesc = "wsh(sortedmulti(2," + owner + "," + throwawayTprv(seed) + index + "/0/0," + blank.Rooted(versionTpub) + "/0/0))"
-	public, err := e.descriptorInfo(ctx, "wsh(sortedmulti(2,"+owner+","+throwaway.Rooted(versionTpub)+"/0/0,"+blank.Rooted(versionTpub)+"/0/0))")
+	n := e.keyNet()
+	pt.signDesc = "wsh(sortedmulti(2," + owner + "," + throwawayTprv(seed, n.prv) + index + "/0/0," + blank.Rooted(n.pub) + "/0/0))"
+	public, err := e.descriptorInfo(ctx, "wsh(sortedmulti(2,"+owner+","+throwaway.Rooted(n.pub)+"/0/0,"+blank.Rooted(n.pub)+"/0/0))")
 	if err != nil {
 		return "", nil, err
 	}
@@ -267,7 +268,7 @@ func (e *escrowBTC) perOrderPracticeDescriptors(ctx context.Context, key escrowK
 		return "", nil, errPerOrderMismatch
 	}
 	pt.OwnPath, pt.OwnDeriv = "["+key.Fingerprint+key.PathText+index+"]", "m"+key.PathText+index
-	pt.Cosigners = [2]string{throwaway.Rooted(versionVpub), blank.Rooted(versionVpub)}
+	pt.Cosigners = [2]string{throwaway.Rooted(n.msig), blank.Rooted(n.msig)}
 	pt.Address = fromRooted[0]
 	return public, server.PubKey[:], nil
 }

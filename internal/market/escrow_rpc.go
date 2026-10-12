@@ -237,7 +237,7 @@ func (a *App) initEscrow(ctx context.Context) error {
 		logEscrowState(state, class)
 		a.escrowStartState = state
 		if cfg.signerSocket != "" {
-			a.escrowSigner = &escrowSignerClient{socket: cfg.signerSocket}
+			a.escrowSigner = &escrowSignerClient{socket: cfg.signerSocket, main: a.live}
 			a.checkEscrowSigner(ctx) // a signer that does not answer is "waiting": startup goes on
 		}
 	}
@@ -555,7 +555,7 @@ func (e *escrowBTC) readArbiter(ctx context.Context) error {
 	} else {
 		ok = false
 	}
-	k, err := parseEscrowKey(inner)
+	k, err := parseEscrowKey(inner, e.keyNet())
 	if !info.IsMine || !ok || err != nil || len(info.Fingerprint) != escrowFingerprintSize || k.Fingerprint != info.Fingerprint {
 		return &escrowRPCError{Method: "getaddressinfo", Class: "bad-reply"}
 	}

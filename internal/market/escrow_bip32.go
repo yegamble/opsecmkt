@@ -106,7 +106,7 @@ func (s perOrderStored) orderKey() (bip32Key, error) {
 	if err != nil || len(steps) != 3 || !s.Xpub.Valid {
 		return bip32Key{}, errPerOrderXpub
 	}
-	order, err := parseBIP32Pub(s.Xpub.String, versionTpub)
+	order, err := parseBIP32Pub(s.Xpub.String, btc.VersionTpub, btc.VersionXpub) // as insertEscrow stored it, with its class's version
 	if err != nil {
 		return bip32Key{}, errPerOrderXpub
 	}
@@ -174,7 +174,7 @@ func (e *escrowBTC) checkPerOrderEscrow(ctx context.Context, b *builtEscrow) err
 		if p.Layout != layoutPerOrder || !bytes.Equal(b.Keys[p.Party], p.Leaf.PubKey[:]) {
 			return errPerOrderMismatch
 		}
-		keys = append(keys, perOrderKey{Account: p.Key, Index: uint32(p.Index), Rooted: p.Order.Rooted(versionTpub)})
+		keys = append(keys, perOrderKey{Account: p.Key, Index: uint32(p.Index), Rooted: p.Order.Rooted(e.keyNet().pub)})
 	}
 	if err := e.checkPerOrderDerivation(ctx, keys); err != nil {
 		return err
@@ -252,12 +252,12 @@ func (e *escrowBTC) checkPerOrderDerivation(ctx context.Context, keys []perOrder
 	}
 	var fromAccount, fromRooted []string
 	for _, k := range keys {
-		r, err := parseBIP32Pub(k.Rooted, versionTpub, versionVpub)
+		r, err := parseBIP32Pub(k.Rooted, e.keyNet().pub, e.keyNet().msig)
 		if k.Index >= 1<<31 || err != nil || r.Depth != 0 {
 			return errPerOrderInput
 		}
 		fromAccount = append(fromAccount, k.Account.Expression()+"/"+strconv.FormatUint(uint64(k.Index), 10)+"/0/0")
-		fromRooted = append(fromRooted, r.Serialize(versionTpub)+"/0/0")
+		fromRooted = append(fromRooted, r.Serialize(e.keyNet().pub)+"/0/0")
 	}
 	desc := func(ks []string) string {
 		if len(ks) == 1 {

@@ -208,7 +208,7 @@ func (a *App) escrowParties(ctx context.Context, tx *sql.Tx, o *Order) (buyer, v
 			}
 			return escrowParty{}, refused
 		}
-		key, err := parseEscrowKey("[" + r.fp + r.path + "]" + xpub)
+		key, err := parseEscrowKey("["+r.fp+r.path+"]"+xpub, a.keyNet())
 		if err != nil {
 			return escrowParty{}, refused
 		}
@@ -592,6 +592,7 @@ type builtEscrow struct {
 	Keys                map[string][]byte
 	Siblings            []escrowSibling
 	Ranged              []escrowImport
+	Net                 keyNet // the escrow node's key class: the version bytes per_order_xpub is stored with
 }
 
 // buildEscrow composes and checks the shape-(a) escrow of one order with the arbiter key's child /0/<marketIndex>.
@@ -669,7 +670,7 @@ func (e *escrowBTC) buildEscrowWith(ctx context.Context, orderID string, sats in
 	if !slices.Equal(bareAddrs, addrs) {
 		return nil, &escrowRPCError{Method: "deriveaddresses", Class: "address-mismatch"}
 	}
-	return &builtEscrow{Address: addrs[0], Descriptor: public, MarketIndex: market.Index, Parties: parties, Keys: keys}, nil
+	return &builtEscrow{Address: addrs[0], Descriptor: public, MarketIndex: market.Index, Parties: parties, Keys: keys, Net: e.keyNet()}, nil
 }
 
 // insertEscrow writes the escrow row (the pinned refund address, the fee snapshot and, for a physical order, the
@@ -708,12 +709,12 @@ func insertEscrow(ctx context.Context, tx *sql.Tx, orderID, refund string, feeBp
 					return err
 				}
 				order, used, err := deriveOrderKey(p.Key, uint32(p.Index))
-				if pinned == "" || p.Key.Fingerprint != pinned || err != nil || used != uint32(p.Index) || order.Serialize(versionTpub) != p.Order.Serialize(versionTpub) {
+				if pinned == "" || p.Key.Fingerprint != pinned || err != nil || used != uint32(p.Index) || order.Serialize(b.Net.pub) != p.Order.Serialize(b.Net.pub) {
 					return errPerOrderMismatch
 				}
 			}
 			s := perOrderStored{Party: p.Party, PubKey: hex.EncodeToString(b.Keys[p.Party]), Suffix: p.Suffix,
-				Xpub: sql.NullString{String: p.Order.Serialize(versionTpub), Valid: true}}
+				Xpub: sql.NullString{String: p.Order.Serialize(b.Net.pub), Valid: true}}
 			if _, err := s.orderKey(); err != nil {
 				return errPerOrderMismatch
 			}

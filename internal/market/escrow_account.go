@@ -55,15 +55,15 @@ func physicalEscrowOff(a *App) bool { return !a.escrowConfigured && a.escrowXMR 
 
 var (
 	errEscrowDown      = fail(409, "Bitcoin escrow is unavailable on this market right now: the operator must fix its Bitcoin node or arbiter wallet. Nothing was changed.")
-	errKeyAck          = &keyRefusal{"This key is not on the standard multisig path m/48h/1h/<account>h/2h. Register it only if the wallet (or wallet account) it comes from is used only for this market: tick the box and send the form again. Nothing was saved."}
-	errKeyUnusable     = &keyRefusal{"This key cannot be used here. Create a new wallet, or a new account in your wallet, used only for this market, and register its key. Nothing was saved."}
+	errKeyAck          = &keyRefusal{"This key is not on the standard multisig path m/48h/1h/<account>h/2h. Register it only if the wallet (or wallet account) it comes from is used only for this market: tick the box and send the form again. Nothing was saved.", "This key is not on the standard multisig path m/48h/0h/<account>h/2h. Register it only if the wallet (or wallet account) it comes from is used only for this market: tick the box and send the form again. Nothing was saved."}
+	errKeyUnusable     = &keyRefusal{msg: "This key cannot be used here. Create a new wallet, or a new account in your wallet, used only for this market, and register its key. Nothing was saved."}
 	errPracticeState   = fail(409, "The practice transaction is offered only for a registered key that is not active yet and has no escrows. Reload the page.")
 	errPracticeChanged = fail(409, "Your escrow key was changed or activated while the practice transaction was checked; nothing was changed. Reload the page.")
-	errKeyOtherOrigin  = &keyRefusal{"This key has the same origin as the key your escrows use, but it is a different key. Check the fingerprint and path your wallet shows for this key. Nothing was saved."}
+	errKeyOtherOrigin  = &keyRefusal{msg: "This key has the same origin as the key your escrows use, but it is a different key. Check the fingerprint and path your wallet shows for this key. Nothing was saved."}
 	errKeyOriginLocked = fail(409, "This key has escrows, so its origin (fingerprint and path) cannot be changed. Its existing escrows keep the origin they were created with. If that origin is wrong, contact the market's staff. Nothing was saved.")
 	errKeyUnchecked    = fail(503, "The key cannot be checked right now: the market's Bitcoin node did not answer. Nothing was saved; try again later.")
-	errKeyLayout       = &keyRefusal{"Choose the kind of wallet the key comes from: Bitcoin Core, or a per-order wallet. Nothing was saved."}
-	errKeyPerOrderPath = &keyRefusal{"A per-order wallet key must be the wallet's multisig account key, on the path m/48h/1h/0h/2h (another account number may replace 0h). In Electrum with a BIP39 seed or in Sparrow, export the key of a native SegWit (P2WSH) multisig wallet. Nothing was saved."}
+	errKeyLayout       = &keyRefusal{msg: "Choose the kind of wallet the key comes from: Bitcoin Core, or a per-order wallet. Nothing was saved."}
+	errKeyPerOrderPath = &keyRefusal{"A per-order wallet key must be the wallet's multisig account key, on the path m/48h/1h/0h/2h (another account number may replace 0h). In Electrum with a BIP39 seed or in Sparrow, export the key of a native SegWit (P2WSH) multisig wallet. Nothing was saved.", "A per-order wallet key must be the wallet's multisig account key, on the path m/48h/0h/0h/2h (another account number may replace 0h). In Electrum with a BIP39 seed or in Sparrow, export the key of a native SegWit (P2WSH) multisig wallet. Nothing was saved."}
 	errKeyLayoutLocked = fail(409, "This key is the key of your existing escrows, which were made for the other kind of wallet, so it keeps that kind. To use the other kind, register a key from a different wallet. Nothing was saved.")
 )
 
@@ -282,7 +282,7 @@ func (a *App) practiceFor(ctx context.Context, userID string, k *storedEscrowKey
 	if err != nil {
 		return nil, errKeySealed
 	}
-	key, err := parseEscrowKey("[" + k.fingerprint + k.path + "]" + xpub)
+	key, err := parseEscrowKey("["+k.fingerprint+k.path+"]"+xpub, a.keyNet())
 	if err != nil {
 		return nil, err
 	}
@@ -304,18 +304,18 @@ func escrowKeyAction(c *actionCtx) (actionResult, error) {
 	if e == nil {
 		return actionResult{}, errEscrowDown
 	}
-	k, err := parseEscrowKey(c.Form.Get("key"))
+	k, err := parseEscrowKey(c.Form.Get("key"), a.keyNet())
 	if err != nil {
-		return actionResult{}, fail(400, err.Error())
+		return actionResult{}, fail(400, keyRefusalText(err, a.live))
 	}
 	layout, ok := keyLayout(c.Form.Get("layout"))
 	switch {
 	case !ok:
 		return actionResult{}, fail(400, errKeyLayout.Error())
 	case layout == layoutPerOrder && !k.BIP48: // the per-order paths are built on the BIP48 account
-		return actionResult{}, fail(400, errKeyPerOrderPath.Error())
+		return actionResult{}, fail(400, keyRefusalText(errKeyPerOrderPath, a.live))
 	case !k.BIP48 && c.Form.Get("dedicated") != "1":
-		return actionResult{}, fail(400, errKeyAck.Error())
+		return actionResult{}, fail(400, keyRefusalText(errKeyAck, a.live))
 	}
 	if k.Fingerprint == e.fingerprint { // the market's own arbiter key offered as a party key
 		return actionResult{}, fail(400, errKeyUnusable.Error())
@@ -428,7 +428,7 @@ func escrowPracticeAction(c *actionCtx) (actionResult, error) {
 	var pe *psbtError
 	switch {
 	case errors.As(err, &kr), errors.As(err, &pe):
-		return actionResult{}, fail(400, err.Error())
+		return actionResult{}, fail(400, keyRefusalText(err, a.live))
 	case errors.Is(err, errKeySealed):
 		log.Print(errKeySealed)
 		return actionResult{}, fail(409, errEscrowKeyUnreadable)

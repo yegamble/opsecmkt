@@ -719,7 +719,7 @@ func (a *App) perOrderWatchImports(ctx context.Context, e *escrowBTC, s *perOrde
 		if err != nil {
 			return bare, nil, nil
 		}
-		exprs = append(exprs, order.Rooted(versionTpub))
+		exprs = append(exprs, order.Rooted(e.keyNet().pub))
 	}
 	for branch, n := range []int{perOrderReceive, perOrderChange} {
 		var branchExprs []string
