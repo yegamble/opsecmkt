@@ -332,15 +332,15 @@ func TestParseEscrowKeyRefusesBadKeyMaterial(t *testing.T) {
 			}
 		}
 	})
-	if _, err := parseEscrowKey(testBIP48Key[:23] + offCurve, keyNetTest); err == nil || err.Error() != errKeyInvalid.Error() {
+	if _, err := parseEscrowKey(testBIP48Key[:23]+offCurve, keyNetTest); err == nil || err.Error() != errKeyInvalid.Error() {
 		t.Fatalf("off-curve: %v", err)
 	}
 	badPrefix := mutate(func(b []byte) { b[45] = 0x04 })
-	if _, err := parseEscrowKey(testBIP48Key[:23] + badPrefix, keyNetTest); err == nil || err.Error() != errKeyInvalid.Error() {
+	if _, err := parseEscrowKey(testBIP48Key[:23]+badPrefix, keyNetTest); err == nil || err.Error() != errKeyInvalid.Error() {
 		t.Fatalf("prefix 04: %v", err)
 	}
 	master := mutate(func(b []byte) { b[4] = 0; copy(b[5:13], make([]byte, 8)) })
-	if _, err := parseEscrowKey("[7450f935]" + master, keyNetTest); err == nil || err.Error() != errKeyOriginForm.Error() {
+	if _, err := parseEscrowKey("[7450f935]"+master, keyNetTest); err == nil || err.Error() != errKeyOriginForm.Error() {
 		t.Fatalf("master: %v", err)
 	}
 }

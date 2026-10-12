@@ -57,8 +57,8 @@ func marketLiveFromEnv(getenv func(string) string) (bool, error) {
 
 // checkNetworkClass refuses a database whose escrows are on the other class of network than the market (A-460): a
 // mainnet market never shows test-network escrows as real funds, and a test-network market never handles mainnet
-// ones. It reads the escrow pins (escrowChainPin, xmrNetworkPin); escrows from before a pin ran on regtest or a local
-// fakechain only.
+// ones. It reads the escrow pins (escrowChainPin, xmrNetworkPin) of a database that holds escrows; escrows from before a
+// pin ran on regtest or a local fakechain only.
 func (a *App) checkNetworkClass(ctx context.Context) error {
 	var btcPin, xmrPin string
 	var btcHeld, xmrHeld bool
@@ -69,10 +69,18 @@ func (a *App) checkNetworkClass(ctx context.Context) error {
 		escrowChainPin, xmrNetworkPin).Scan(&btcPin, &xmrPin, &btcHeld, &xmrHeld); err != nil {
 		return err
 	}
-	if btcPin == "" && btcHeld {
+	// A pin without escrows is rewritten by the next escrow startup (pinEscrowChain, pinXMRNetwork): only held escrows
+	// count.
+	switch {
+	case !btcHeld:
+		btcPin = ""
+	case btcPin == "":
 		btcPin = "regtest"
 	}
-	if xmrPin == "" && xmrHeld {
+	switch {
+	case !xmrHeld:
+		xmrPin = ""
+	case xmrPin == "":
 		xmrPin = "fakechain"
 	}
 	chain, _, _ := strings.Cut(btcPin, ":")

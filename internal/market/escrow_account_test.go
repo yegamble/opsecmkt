@@ -31,6 +31,7 @@ func setEscrowEnv(t *testing.T, rpcURL string) {
 	t.Setenv("BITCOIN_MAX_TIP_AGE", "")
 	t.Setenv("BITCOIN_RPC_URL", "")
 	t.Setenv("BITCOIN_CHAIN", "")
+	t.Setenv("MONERO_NETWORK", "")
 	t.Setenv("MONERO_WALLET_RPC_URL", "")
 }
 

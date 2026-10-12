@@ -54,7 +54,7 @@ func TestEscrowArbiterAccountKeyPinUpgradeAndSubstitution(t *testing.T) {
 	if err != nil || a.escrow.Load() == nil {
 		t.Fatalf("initial escrow start: %v", err)
 	}
-	key, err := parseEscrowKey("[" + fakeArbiterFP + "/84h/1h/0h]" + testBIP84Key[20:], keyNetTest)
+	key, err := parseEscrowKey("["+fakeArbiterFP+"/84h/1h/0h]"+testBIP84Key[20:], keyNetTest)
 	if err != nil {
 		t.Fatal(err)
 	}

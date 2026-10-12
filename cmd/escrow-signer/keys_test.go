@@ -54,7 +54,7 @@ func TestSignerNoPointMultiplication(t *testing.T) {
 	// internal/btc: encodings, the public derivation (CKDPub of public keys), the public-key and curve-order checks, and
 	// ExtKey (a public extended key) with its Rooted serialization and Fingerprint (HASH160 of the public key).
 	allowedBTC := map[string]bool{"Base58CheckDecode": true, "Base58CheckEncode": true, "CKDPub": true, "DescriptorChecksum": true,
-		"ExtKey": true, "Fingerprint": true, "Hardened": true, "N": true, "OnCurve": true, "ParseExtPub": true, "Rooted": true, "VersionTpub": true, "WithChecksum": true}
+		"ExtKey": true, "Fingerprint": true, "Hardened": true, "N": true, "OnCurve": true, "ParseExtPub": true, "Rooted": true, "VersionTpub": true, "VersionTprv": true, "VersionXpub": true, "VersionXprv": true, "WithChecksum": true}
 	// math/big: what hardened CKDpriv needs (a key from bytes, a range check, an addition mod n, its bytes back).
 	allowedBig := map[string]bool{"Int": true, "Add": true, "Cmp": true, "FillBytes": true, "Mod": true, "SetBytes": true, "Sign": true}
 	// reflect: DeepEqual compares decodepsbt trees (sign.go), and nothing else, so no method is called by name.

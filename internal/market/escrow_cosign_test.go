@@ -16,7 +16,6 @@ import (
 // confirmation, a party signature that does not verify (A-339) and both parties signing (A-340), against the fake
 // escrow Core (simulated RPC, not chain evidence: scripts/test-escrow-regtest.sh has the real-chain legs).
 
-
 // regtestAddr is a valid regtest P2WPKH address for label.
 func regtestAddr(label string) string {
 	h := sha256.Sum256([]byte("addr:" + label))

@@ -24,8 +24,9 @@ import (
 //
 // ESCROW_BTC=on (off by default) runs only against a node on regtest, signet or testnet4 (the chain table, escrowChains;
 // A-443 opened signet and testnet4 once the sync guard, the chain pin, the market key self-check and the Tor-mode gate
-// were in place). The app reaches Core as its own RPC user, which the operator restricts with rpcwhitelist to the
-// methods below (docs/operator-guide.md, "Bitcoin escrow (test networks only)"). listdescriptors is deliberately not
+// were in place), or on mainnet when the operator opts in with BITCOIN_CHAIN=main (A-460: mainnet keys, and the market
+// fee to a watch-only descriptor). The app reaches Core as its own RPC user, which the operator restricts with rpcwhitelist to the
+// methods below (docs/operator-guide.md, "Bitcoin escrow"). listdescriptors is deliberately not
 // among them: rpcwhitelist allows or refuses a method, not its arguments, and a user allowed listdescriptors can call it
 // with private=true and export the arbiter's private key (probed on Core 31.1 regtest). The arbiter's fingerprint is
 // read with getrawchangeaddress and getaddressinfo instead, which export nothing.
@@ -86,11 +87,11 @@ func escrowConfigFromEnv(getenv func(string) string) (escrowConfig, error) {
 	case "on":
 		c.on = true
 	default:
-		return c, errors.New(`ESCROW_BTC must be "on" or "off" (blank means off); Bitcoin escrow runs on test networks only (regtest, signet or testnet4)`)
+		return c, errors.New(`ESCROW_BTC must be "on" or "off" (blank means off); Bitcoin escrow runs on regtest, signet or testnet4, or on mainnet with BITCOIN_CHAIN=main`)
 	}
 	c.rpcURL = strings.TrimSpace(getenv("ESCROW_BTC_RPC_URL"))
 	if c.rpcURL == "" {
-		return c, errors.New("ESCROW_BTC=on needs ESCROW_BTC_RPC_URL: the Bitcoin Core RPC URL (regtest, signet or testnet4) of the app's rpcwhitelist user (docs/operator-guide.md, \"Bitcoin escrow (test networks only)\")")
+		return c, errors.New("ESCROW_BTC=on needs ESCROW_BTC_RPC_URL: the Bitcoin Core RPC URL (regtest, signet, testnet4 or, with BITCOIN_CHAIN=main, mainnet) of the app's rpcwhitelist user (docs/operator-guide.md, \"Bitcoin escrow\")")
 	}
 	c.arbiterWallet = strings.TrimSpace(getenv("ESCROW_BTC_ARBITER_WALLET"))
 	if c.arbiterWallet == "" {
@@ -168,19 +169,19 @@ var errEscrowChain = errors.New("refusing to start: ESCROW_BTC=on runs only on r
 
 // Fixed operator lines for an escrow that is switched on but not usable: nothing in them comes from the node.
 const (
-	escrowLogOn           = "escrow: Bitcoin escrow on (test networks only)"
+	escrowLogOn           = "escrow: Bitcoin escrow on"
 	escrowLogUnchecked    = "escrow: Bitcoin escrow disabled: the escrow node could not be checked at startup"
 	escrowLogArbiter      = "escrow: Bitcoin escrow disabled: the arbiter wallet could not be read (is ESCROW_BTC_ARBITER_WALLET loaded, and a descriptor wallet with private keys?)"
-	escrowLogFingerprint  = "escrow: Bitcoin escrow disabled: the arbiter wallet's key fingerprint differs from the one pinned in this database; see docs/operator-guide.md, \"Bitcoin escrow (test networks only)\""
+	escrowLogFingerprint  = "escrow: Bitcoin escrow disabled: the arbiter wallet's key fingerprint differs from the one pinned in this database; see docs/operator-guide.md, \"Bitcoin escrow\""
 	escrowLogWatch        = "escrow: Bitcoin escrow disabled: the watch-only wallet could not be read (is ESCROW_BTC_WATCH_WALLET loaded, and a descriptor wallet with private keys disabled?)"
-	escrowLogArbiterUse   = "escrow: Bitcoin escrow disabled: the arbiter wallet must be used for the escrow key only (an unencrypted descriptor wallet with private keys that has never spent); see docs/operator-guide.md, \"Bitcoin escrow (test networks only)\""
-	escrowLogArbiterRead  = "escrow: Bitcoin escrow disabled: the arbiter wallet's transactions could not be read to check that it has never spent (is listsinceblock on the escrow user's rpcwhitelist, and the node answering?); the read is retried every poll, or after a wait when it took 5 s or more or timed out (1 minute, doubling up to 1 hour; restarting the app reads at once); see docs/operator-guide.md, \"Bitcoin escrow (test networks only)\""
+	escrowLogArbiterUse   = "escrow: Bitcoin escrow disabled: the arbiter wallet must be used for the escrow key only (an unencrypted descriptor wallet with private keys that has never spent); see docs/operator-guide.md, \"Bitcoin escrow\""
+	escrowLogArbiterRead  = "escrow: Bitcoin escrow disabled: the arbiter wallet's transactions could not be read to check that it has never spent (is listsinceblock on the escrow user's rpcwhitelist, and the node answering?); the read is retried every poll, or after a wait when it took 5 s or more or timed out (1 minute, doubling up to 1 hour; restarting the app reads at once); see docs/operator-guide.md, \"Bitcoin escrow\""
 	escrowLogArbiterWait  = "escrow: Bitcoin escrow off while the arbiter wallet is checked: reading its transactions takes longer than startup allows; the read goes on, and the escrow watcher starts escrow once it has passed"
-	escrowLogArbiterKey   = "escrow: Bitcoin escrow disabled: the arbiter account key differs from the one pinned in this database; see docs/operator-guide.md, \"Bitcoin escrow (test networks only)\""
+	escrowLogArbiterKey   = "escrow: Bitcoin escrow disabled: the arbiter account key differs from the one pinned in this database; see docs/operator-guide.md, \"Bitcoin escrow\""
 	escrowLogFixedFee     = "escrow: the market fee is paid to one fixed address (ESCROW_BTC_FEE_ADDRESS); allowed on test networks only"
-	escrowLogRefused      = "escrow: Bitcoin escrow disabled until the app is restarted: the escrow node is on a chain escrow does not run on (mainnet, testnet3 or another), or it refused ESCROW_BTC_FEE_ADDRESS"
+	escrowLogRefused      = "escrow: Bitcoin escrow disabled until the app is restarted: the escrow node is on a chain escrow does not run on (testnet3, another, or mainnet without BITCOIN_CHAIN=main), or it refused ESCROW_BTC_FEE_ADDRESS"
 	escrowLogUnrecorded   = "escrow: Bitcoin escrow disabled: its arbiter fingerprint could not be checked in the database"
-	escrowLogChain        = "escrow: Bitcoin escrow disabled: the escrow node is not on the chain this database's escrows are on (escrow_btc_chain); the admin page names both; see docs/operator-guide.md, \"Bitcoin escrow (test networks only)\""
+	escrowLogChain        = "escrow: Bitcoin escrow disabled: the escrow node is not on the chain this database's escrows are on (escrow_btc_chain); the admin page names both; see docs/operator-guide.md, \"Bitcoin escrow\""
 	escrowFingerprintPin  = "escrow_btc_arbiter_fingerprint" // settings key
 	escrowArbiterKeyPin   = "escrow_btc_arbiter_xpub_hmac"   // settings key: HMAC of the account chain code and public key
 	escrowChainPin        = "escrow_btc_chain"               // settings key: escrowChainID of the node the database's escrows are on (A-439)

@@ -2,8 +2,8 @@ package market
 
 import (
 	"encoding/binary"
-	"errors"
 	"encoding/hex"
+	"errors"
 	"strconv"
 	"strings"
 
@@ -49,7 +49,7 @@ type keyNet struct {
 }
 
 var (
-	keyNetTest = keyNet{pub: btc.VersionTpub, msig: btc.VersionVpub, prv: btc.VersionTprv, coin: 1, singleSig: [2]uint32{0x044a5262, 0x045f1cf6}, nested: 0x024289ef}  // upub, vpub; Upub
+	keyNetTest = keyNet{pub: btc.VersionTpub, msig: btc.VersionVpub, prv: btc.VersionTprv, coin: 1, singleSig: [2]uint32{0x044a5262, 0x045f1cf6}, nested: 0x024289ef}             // upub, vpub; Upub
 	keyNetMain = keyNet{main: true, pub: btc.VersionXpub, msig: btc.VersionZpub, prv: btc.VersionXprv, coin: 0, singleSig: [2]uint32{0x049d7cb2, 0x04b24746}, nested: 0x0295b43f} // ypub, zpub; Ypub
 )
 
