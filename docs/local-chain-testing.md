@@ -2,9 +2,8 @@
 
 The market's only payment path is per-order escrow, so the real-chain checks are the escrow ones. They run actual
 Bitcoin Core and Monero binaries with locally mined blocks and test coins. No public blockchain, faucet, mainnet funds
-or existing wallet is used, and none of these commands is a deployment check. (The earlier pooled-wallet chain suite,
-`setup-local-chains.py`'s node setup, its Playwright chain configuration and its smoke script were deleted with the
-pooled wallet; their dated results are kept as history under *Prior build* in [verification.md](verification.md#prior-build-pooled-wallet-removed-local-chain-evidence-2026-09-23-to-2026-09-30).)
+or existing wallet is used, and none of these commands is a deployment check. Mainnet is never used in development
+or tests; a mainnet market is an operator opt-in ([operator guide](operator-guide.md#mainnet)).
 
 | What | Command | Runs in CI |
 | --- | --- | --- |
@@ -19,16 +18,15 @@ including `TEST_DATABASE_URL` for a **disposable** PostgreSQL database. The Dock
 in those headers, in `.github/workflows/ci.yaml` and, for the public-network smokes, in the
 [operator guide](operator-guide.md#escrow-node-set-up-and-the-public-network-smoke). Pin the node images to the tags
 the installer pins (Bitcoin Core 31.1, Monero v0.18.5.1; [node image versions](operator-guide.md#node-image-versions)).
-Monero's `--regtest` fakechain is used for Monero escrow only because escrow's network guard accepts a fakechain or
-stagenet daemon and nothing else.
+Monero's `--regtest` fakechain is used for Monero escrow because, on a test-network market, escrow's network guard
+accepts a fakechain or stagenet daemon and nothing else.
 
 Never point the application at these disposable wallets when restoring or testing real data. Evidence from a run is
 only as good as its record: see [verification.md](verification.md) for what each recorded run covers.
 
 ## Stopping leftover processes
 
-`scripts/setup-local-chains.py --stop STATE_DIR` is the only part of the old harness that remains. It stops the
-processes an earlier pooled-chain run registered in `STATE_DIR/runtime.json` (it checks each PID against its
-binary and private data path first, so a stale PID cannot stop an unrelated process) and keeps their data for
-inspection. It refuses to set anything up. To run the retired pooled suite you need the revision that had it (for
-example the commit `5a0dabcb` and its `docs/local-chain-testing.md`); this build refuses a database that suite wrote.
+`scripts/setup-local-chains.py --stop STATE_DIR` is the only part of an older local-chain harness that remains. It
+stops the processes an earlier run registered in `STATE_DIR/runtime.json` (it checks each PID against its binary and
+private data path first, so a stale PID cannot stop an unrelated process) and keeps their data for inspection. It
+refuses to set anything up.

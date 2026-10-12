@@ -196,14 +196,6 @@ run, including after a setup-only seed. Playwright starts its own servers on
 loopback ports **18080** and **18081**, and refuses to reuse existing servers.
 Never set either test database URL to a deployed instance.
 
-### Retired pooled payment journeys
-
-The pooled wallet and chain browser suites are removed from this build. Their
-recorded runs remain historical evidence at the revisions in
-[verification](verification.md). Use a prior drain-capable release for legacy
-pooled obligations; current integration coverage uses the escrow suites below
-and tests immutable historical records and refused legacy upgrades.
-
 ### Bitcoin escrow paste journey (simulated escrow node)
 
 `tests/e2e/escrow-journey.spec.ts` drives Bitcoin escrow (a simulated regtest node, `ESCROW_BTC=on`;
