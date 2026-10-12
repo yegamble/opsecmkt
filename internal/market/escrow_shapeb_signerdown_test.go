@@ -403,7 +403,7 @@ func TestEscrowShapeBMarketKeyCrossChecked(t *testing.T) {
 			t.Fatal(err)
 		}
 		b := &builtEscrow{Address: regtestAddr("xcheck-" + strings.Fields(c.name)[0]), MarketIndex: market.Index, Parties: []escrowParty{buyer, vendor, market},
-			Keys: map[string][]byte{"buyer": buyer.Leaf.PubKey[:], "vendor": vendor.Leaf.PubKey[:], "market": market.Leaf.PubKey[:]}}
+			Keys: map[string][]byte{"buyer": buyer.Leaf.PubKey[:], "vendor": vendor.Leaf.PubKey[:], "market": market.Leaf.PubKey[:]}, Net: keyNetTest}
 		c.spoil(b, tx)
 		err = insertEscrow(ctx, tx, x.order, regtestAddr("xcheck-refund-"+strings.Fields(c.name)[0]), 0, "", 0, 0, b)
 		switch {

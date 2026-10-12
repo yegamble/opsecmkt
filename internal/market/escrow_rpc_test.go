@@ -298,7 +298,7 @@ func TestEscrowConfigFromEnv(t *testing.T) {
 		"bad value":      env("ESCROW_BTC", "yes", "ESCROW_BTC_RPC_URL", "http://a:b@h:1"),
 		"no URL":         env("ESCROW_BTC", "on"),
 		"testnet3 chain": env("ESCROW_BTC", "on", "ESCROW_BTC_RPC_URL", "http://a:b@h:1", "BITCOIN_CHAIN", "test"),
-		"mainnet chain":  env("ESCROW_BTC", "on", "ESCROW_BTC_RPC_URL", "http://a:b@h:1", "BITCOIN_CHAIN", "main"),
+		"mainnet market without BITCOIN_CHAIN=main": env("ESCROW_BTC", "on", "ESCROW_BTC_RPC_URL", "http://a:b@h:1", "MONERO_NETWORK", "mainnet"),
 	} {
 		if _, err := escrowConfigFromEnv(getenv); err == nil {
 			t.Errorf("%s: accepted", name)

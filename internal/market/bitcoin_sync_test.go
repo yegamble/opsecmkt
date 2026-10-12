@@ -103,8 +103,12 @@ func TestEscrowAddressTable(t *testing.T) {
 		{"testnet4", segwitAddress("bc", 0, prog32), nil},
 		{"signet", base58CheckEncode(append([]byte{0x00}, prog20...)), nil},
 		{"testnet4", base58CheckEncode(append([]byte{0x05}, prog20...)), nil},
+		// Mainnet (A-460): its own forms, never a test network's.
+		{"main", segwitAddress("bc", 0, prog20), slices.Concat([]byte{0, 20}, prog20)},
+		{"main", base58CheckEncode(append([]byte{0x05}, prog20...)), slices.Concat([]byte{0xa9, 20}, prog20, []byte{0x87})},
+		{"main", segwitAddress("tb", 0, prog20), nil},
+		{"main", base58CheckEncode(append([]byte{0xc4}, prog20...)), nil},
 		// Not escrow chains, even for an address of their own form.
-		{"main", segwitAddress("bc", 0, prog20), nil},
 		{"test", segwitAddress("tb", 0, prog20), nil},
 		{"", segwitAddress("bcrt", 0, prog20), nil},
 	}
@@ -117,7 +121,7 @@ func TestEscrowAddressTable(t *testing.T) {
 			t.Errorf("%s %s: %x %v, want %x", c.chain, c.addr, got, err, c.want)
 		}
 	}
-	if escrowChains["signet"] != "tb" || escrowChains["testnet4"] != "tb" || escrowChains["regtest"] != "bcrt" || len(escrowChains) != 3 {
+	if escrowChains["signet"] != "tb" || escrowChains["testnet4"] != "tb" || escrowChains["regtest"] != "bcrt" || escrowChains["main"] != "bc" || len(escrowChains) != 4 {
 		t.Fatalf("chain table %v", escrowChains)
 	}
 }

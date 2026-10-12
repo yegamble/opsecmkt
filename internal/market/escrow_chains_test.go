@@ -90,10 +90,10 @@ func TestEscrowStartupChains(t *testing.T) {
 	}
 }
 
-// BITCOIN_CHAIN, when set beside ESCROW_BTC=on, may name an escrow chain only: mainnet and testnet3 are refused before
-// anything is contacted.
+// BITCOIN_CHAIN, when set beside ESCROW_BTC=on, may name an escrow chain only: testnet3 is refused before anything is
+// contacted; main is the mainnet opt-in (A-460, TestEscrowConfigMainnet).
 func TestEscrowConfigChains(t *testing.T) {
-	for chain, ok := range map[string]bool{"": true, "regtest": true, "signet": true, "testnet4": true, "main": false, "test": false} {
+	for chain, ok := range map[string]bool{"": true, "regtest": true, "signet": true, "testnet4": true, "main": true, "test": false} {
 		_, err := escrowConfigFromEnv(func(k string) string {
 			return map[string]string{"ESCROW_BTC": "on", "ESCROW_BTC_RPC_URL": "http://a:b@h:1", "BITCOIN_CHAIN": chain}[k]
 		})

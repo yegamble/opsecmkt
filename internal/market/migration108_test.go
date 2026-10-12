@@ -2,6 +2,7 @@ package market
 
 import (
 	"database/sql"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -14,9 +15,23 @@ const (
 	pooledAddressInsert = "INSERT INTO payment_addresses(order_id,currency,address,provider) VALUES($1,'BTC','bcrt1qlegacy108address0000000000000000000','btc-regtest')"
 )
 
+// restoreSchema108 puts the database back as migration 108 left it: 109's stamp, columns, constraints and sequence
+// removed, and 074's fee destination check restored.
+func restoreSchema108(t *testing.T, e *testEnv) {
+	t.Helper()
+	if _, err := e.DB.Exec(`DELETE FROM schema_migrations WHERE version=109;
+		ALTER TABLE escrows DROP CONSTRAINT escrows_fee_destination_or_descriptor, DROP CONSTRAINT escrows_fee_descriptor_btc,
+			DROP CONSTRAINT escrows_fee_index_descriptor, DROP COLUMN fee_descriptor, DROP COLUMN fee_index,
+			ADD CONSTRAINT escrows_fee_destination_check CHECK (fee_bps = 0 OR fee_destination <> '');
+		DROP SEQUENCE escrow_fee_index`); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // restoreSchema107 puts the database back as migration 107 left it: 108's stamp, triggers and function removed.
 func restoreSchema107(t *testing.T, e *testEnv) {
 	t.Helper()
+	restoreSchema108(t, e)
 	if _, err := e.DB.Exec(`DELETE FROM schema_migrations WHERE version=108;
 		DROP TRIGGER payouts_refuse_insert ON payouts;
 		DROP TRIGGER payment_addresses_refuse_insert ON payment_addresses;
@@ -116,12 +131,22 @@ func TestMigration108RefusesPooledHistoryUnchanged(t *testing.T) {
 			if err = applyLatestMigrations(t, e); err != nil {
 				t.Fatalf("migration 108 without pooled history: %v", err)
 			}
-			if got := snapshot(); got != "0:0:108:2:1" {
-				t.Fatalf("after migration 108: %s, want 0:0:108:2:1", got)
+			if got := snapshot(); got != "0:0:"+latestMigrationVersion(t)+":2:1" { // 108 and every later migration
+				t.Fatalf("after migration 108: %s, want 0:0:%s:2:1", got, latestMigrationVersion(t))
 			}
 			if n := pooledRefusalTriggers(t, e); n != 2 {
 				t.Fatalf("%d enabled pooled refusal triggers after migration 108, want 2", n)
 			}
 		})
 	}
+}
+
+// latestMigrationVersion is the highest migration number embedded in this build, as schema_migrations records it.
+func latestMigrationVersion(t *testing.T) string {
+	t.Helper()
+	list, err := loadMigrations(migrationFiles)
+	if err != nil || len(list) == 0 {
+		t.Fatal("no migrations", err)
+	}
+	return strconv.Itoa(list[len(list)-1].Version)
 }
