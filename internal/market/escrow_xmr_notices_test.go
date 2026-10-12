@@ -140,7 +140,7 @@ func TestMoneroEscrowSiteCopyEveryCombination(t *testing.T) {
 			// The canary's lines: the Monero line, and what stays unavailable.
 			canary := pages["/canary"]
 			for _, w := range []string{"<li>Monero escrow (local fakechain only): an order in Monero can be paid into an escrow account of its own, and its coins are " + xmrCustody + ".",
-				"is not verified on any public network.", "Monero escrow on any public network, a Monero escrow the market cannot move, commission"} {
+				publicRecordNote, "a Monero escrow the market cannot move, commission"} {
 				if !strings.Contains(canary, w) {
 					t.Errorf("canary lacks %q", w)
 				}

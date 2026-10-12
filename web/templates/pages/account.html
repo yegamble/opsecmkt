@@ -5,7 +5,7 @@
 <h1>Your account<span class="accent">.</span>
 </h1>
 <p>Manage your public key. <a class="text-link" href="/canary#records">What this server keeps</a></p>
-{{if and .User (eq .User.Role "vendor")}}<p class="help">Getting ready to sell? Check your listing, encryption key and payout setup on the <a class="text-link" href="/vendor-dashboard">vendor desk</a>.</p>{{end}}
+{{if and .User (eq .User.Role "vendor")}}<p class="help">Getting ready to sell? Check your listing, encryption key and payout setup on the <a class="text-link" href="/vendor-dashboard">vendor desk</a>.</p>{{else if and .User (eq .User.Role "buyer")}}<p class="help staff-contact">Selling needs an administrator to give your account the vendor role. {{template "staff-contact" .}}</p>{{end}}
 </div>{{if .User}}<span class="badge neutral">{{.User.Role}}</span>{{end}}</div>{{with .User}}<form class="account-signout" method="post" action="/logout">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <button type="submit">Sign out</button>

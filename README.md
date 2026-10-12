@@ -212,9 +212,11 @@ removed wallet is refused by migrations 107 and 108.
 
 **What the server keeps.** There is no account, message or order deletion, and
 the operator or anyone holding a decrypted backup can read what is stored.
-Shipping addresses are never stored: buyers send them to the vendor
-PGP-encrypted. Review text, dispute reasons, order
-notes and digital delivery content are stored in plaintext. Listing photos and
+There is no shipping address field: buyers send the address as a message
+encrypted to the vendor's key, and the market keeps that encrypted message
+(it cannot read it). It cannot stop an address typed into a plaintext field
+such as a dispute reason, an order note or a review. Review text, dispute
+reasons, order notes and digital delivery content are stored in plaintext. Listing photos and
 avatars are kept only as re-encoded JPEGs without the uploaded file, its name or
 its metadata; deleting one leaves copies in older backups. The full list is in
 [what the server keeps](docs/implementation-status.md#what-the-server-keeps).
