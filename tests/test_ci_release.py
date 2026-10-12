@@ -23,6 +23,7 @@ REPRODUCIBILITY = (
     'the OCI archive is for inspection and registry import',
     'scripts/install.sh builds the application from source on your host and is not bit-reproducible',
 )
+CAPTCHA_LINE = 'The default image CAPTCHA has no audio or text alternative.'
 BUILD_LINE = "go build -trimpath -buildvcs=false -ldflags='-s -w -buildid=' -o verify-audit-OS-ARCH ./cmd/verify-audit"
 
 
@@ -60,6 +61,9 @@ class ReleaseNotesStaticTest(unittest.TestCase):
         self.assertIn(BUILD_LINE, self.step)
         self.assertIn('go version', self.step)
 
+    def test_notes_state_the_captcha_limit(self):
+        self.assertIn(CAPTCHA_LINE, self.step)
+
     def test_notes_build_line_matches_the_build_step(self):
         build = WORKFLOW[WORKFLOW.index('Build the offline audit export verifier'):WORKFLOW.index('Package checksums')]
         self.assertIn("CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch go build -trimpath -buildvcs=false -ldflags='-s -w -buildid=' \\", build)
@@ -71,6 +75,9 @@ class ReleaseNotesStaticTest(unittest.TestCase):
         for text in REPRODUCIBILITY:
             self.assertIn(text, CI_CD)
         self.assertIn(BUILD_LINE, CI_CD)
+        self.assertIn(CAPTCHA_LINE, CI_CD)
+        checklist = CI_CD[CI_CD.index('Tag-time checklist'):]
+        self.assertIn('"%s"' % CAPTCHA_LINE, checklist)
 
 
 class ReleaseStepRunTest(unittest.TestCase):
@@ -98,6 +105,7 @@ class ReleaseStepRunTest(unittest.TestCase):
         self.assertIn('--draft', args)
         self.assertTrue(notes.startswith(WARNING + 'v0.1.0-alpha.2; see UPGRADING.md.\n'), notes[:200])
         self.assertTrue(notes.rstrip().endswith('Go version: go version go9.9.9 linux/amd64'), notes[-200:])
+        self.assertIn('\n' + CAPTCHA_LINE + '\n', notes)
 
     def test_plain_tag_is_not_a_prerelease(self):
         args, notes = self.run_step('v0.1.0')
@@ -105,6 +113,7 @@ class ReleaseStepRunTest(unittest.TestCase):
         self.assertIn('--draft', args)
         self.assertIn('not bit-reproducible', notes)
         self.assertIn(BUILD_LINE, notes)
+        self.assertIn('\n' + CAPTCHA_LINE + '\n', notes)
 
 
 if __name__ == '__main__':

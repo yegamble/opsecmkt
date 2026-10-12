@@ -2,7 +2,7 @@
 {{define "admin-staff-contact"}}<section class="panel" id="staff-contact" aria-labelledby="staff-contact-heading">
 <h2 id="staff-contact-heading">Staff contact</h2>{{with $.NoticeIn "staff-contact"}}
 <div class="alert" role="status">{{.}}</div>{{end}}
-<p>Shown on the Transparency page, to a suspended account signing in, to someone who lost their sign-in factors or whose PGP key expired, beside the CAPTCHA and under notifications that tell people to contact the market staff. Write a handle, onion address or XMPP address. It is shown as text, never as a link; when it is exactly the handle of a moderator or administrator whose key can receive encrypted messages, signed-in users also get a link to message that handle. While it is empty, those places say “Ask the operator of this market.”</p>
+<p>Shown on the Transparency page, to a suspended account signing in, to someone who lost their sign-in factors or whose PGP key expired, beside the CAPTCHA and under notifications that tell people to contact the market staff. Write a handle, onion address or XMPP address. With the CAPTCHA on, use an address that works without an account: a bare handle can be messaged only from an account, which someone who cannot read the CAPTCHA image cannot get. It is shown as text, never as a link; when it is exactly the handle of a moderator or administrator whose key can receive encrypted messages, signed-in users also get a link to message that handle. While it is empty, those places say “Ask the operator of this market.”</p>
 <form class="stack" method="post" action="/admin/staff-contact">
 <input type="hidden" name="csrf" value="{{.CSRF}}">
 <input type="hidden" name="form_nonce" value="{{formNonce "/admin/staff-contact"}}">

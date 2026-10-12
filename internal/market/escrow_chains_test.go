@@ -207,11 +207,11 @@ func TestEscrowPagesNameSignet(t *testing.T) {
 	_, admin := x.user("pagesadmin", "admin")
 	for _, p := range []struct{ name, path, sess, want string }{
 		{"order panel", "/order?id=" + order, x.buyerSess, `<span class="badge testnet">SIGNET</span>`},
-		{"order panel headline", "/order?id=" + order, x.buyerSess, "<strong>Signet only.</strong> Bitcoin escrow on this market runs on signet, a public test network; its coins have no value. The project's recorded public-network runs are listed in docs/verification.md; this market itself has not been checked on a public network."},
+		{"order panel headline", "/order?id=" + order, x.buyerSess, "<strong>Signet only.</strong> Bitcoin escrow on this market runs on signet (the public signet, unless this operator runs a private one); its coins have no value. The project's recorded public-network runs are listed in docs/verification.md; this market itself has not been checked on a public network."},
 		{"checkout offer", "/order?id=" + x.order, x.buyerSess, "Pay into a Bitcoin escrow (signet only)"},
 		{"escrow key", "/escrow-key", x.buyerSess, "Bitcoin escrow · signet only"},
 		{"transparency", "/canary", "", "Bitcoin escrow (signet only)"},
-		{"transparency chain", "/canary", "", "It runs on signet, a public test network with no real funds"},
+		{"transparency chain", "/canary", "", "It runs on signet (the public signet, unless this operator runs a private one) with no real funds"},
 		{"vendor desk", "/vendor-dashboard", x.vendorSess, "<strong>SIGNET</strong>"},
 		{"administration", "/admin", admin, "Bitcoin escrow market fee (signet)"},
 	} {
