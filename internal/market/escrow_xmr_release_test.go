@@ -19,7 +19,7 @@ import (
 // xmrPost posts form to path as sess and returns the status and the unescaped body.
 func (x *xmrEscrowEnv) xmrPost(path, sess string, form url.Values) (int, string) {
 	w := x.do("POST", path, sess, form)
-	return w.Code, html.UnescapeString(w.Body.String())
+	return w.Code, refusalText(w.Body.String())
 }
 
 func (x *xmrEscrowEnv) xmrShip(order, sess, addr, password string) (int, string) {

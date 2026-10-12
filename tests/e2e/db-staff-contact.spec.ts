@@ -86,12 +86,12 @@ test('administrator publishes a staff contact that every promised page shows as 
     await expect(notice.locator('.staff-contact b')).toHaveCount(0);
     await noOverflow(buyer);
 
-    // The suspended account's refusal names the contact (plain text).
+    // The suspended account's refusal names the contact (escaped text in the sign-in form's alert).
     await suspect.goto('/login');
     await suspect.getByLabel('Handle', { exact: true }).fill(suspectHandle);
     await suspect.getByLabel('Password', { exact: true }).fill(password);
     expect(await submitStatus(suspect, () => suspect.getByRole('button', { name: 'Sign in' }).click())).toBe(403);
-    await expect(suspect.locator('body')).toHaveText(`This account is suspended. Contact the market staff: ${hostile}.`);
+    await expect(suspect.getByRole('alert')).toHaveText(`This account is suspended. Contact the market staff: ${hostile}.`);
 
     // A moderator's handle with a usable key links a signed-in reader to Messages, prefilled; a visitor gets text.
     expect(await saveContact(modHandle)).toBe(303);

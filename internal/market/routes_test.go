@@ -163,6 +163,8 @@ func TestPreviewRendersEveryPage(t *testing.T) {
 	}
 	a := testHTTPApp(true)
 	a.templates = tmpl
+	unknown := httptest.NewRecorder()
+	a.ServeHTTP(unknown, httptest.NewRequest("GET", "/no-such-page?id=encrypted-drive", nil))
 	for name := range pages {
 		path := "/" + name + "?id=encrypted-drive"
 		if name == "vendor" {
@@ -171,7 +173,7 @@ func TestPreviewRendersEveryPage(t *testing.T) {
 		w := httptest.NewRecorder()
 		a.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
 		if !a.pageOn(name) { // switched off in the preview (ESCROW_BTC is never on there): an unknown page
-			if w.Code != 404 || w.Body.String() != "404 page not found\n" {
+			if w.Code != 404 || unknown.Code != 404 || w.Body.String() != unknown.Body.String() {
 				t.Errorf("preview %s (off): %d", path, w.Code)
 			}
 			continue

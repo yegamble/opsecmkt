@@ -415,13 +415,13 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method != "GET" && r.Method != "POST" && r.Method != "HEAD" {
 		w.Header().Set("Allow", "GET, HEAD, POST")
-		http.Error(w, "Method not allowed", 405)
+		a.refuse(w, r, nil, 405, "Method not allowed")
 		return
 	}
 	// No page, raw route or image route meets query text the database would refuse: the loaders passed it to
 	// PostgreSQL, so /product?id=%ff answered 500 (QA5W4B-5). A post's query string is in r.Form, checked below.
 	if r.Method != "POST" && !formTextValid(r.URL.Query()) {
-		http.Error(w, invalidQueryText, 400)
+		a.refuse(w, r, nil, 400, invalidQueryText)
 		return
 	}
 	// Admission control (admission.go): a page finding its class full is refused here with 503, before any
@@ -461,7 +461,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.HasPrefix(r.URL.Path, "/static/") {
 		if r.Method == "POST" {
-			http.Error(w, "Method not allowed", 405)
+			a.refuse(w, r, nil, 405, "Method not allowed")
 			return
 		}
 		a.serveStatic(w, r)
@@ -514,7 +514,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if a.preview {
-			http.Error(w, "Read-only preview. Start with PostgreSQL to save changes.", 403)
+			a.refuse(w, r, nil, 403, "Read-only preview. Start with PostgreSQL to save changes.")
 			return
 		}
 		if isMultipart(r) {
@@ -523,14 +523,14 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				case hardwarePSBTReadSlots <- struct{}{}:
 					defer func() { <-hardwarePSBTReadSlots }()
 				default:
-					http.Error(w, "Hardware PSBT uploads are busy. Try again shortly. Nothing was changed.", http.StatusServiceUnavailable)
+					a.refuse(w, r, nil, http.StatusServiceUnavailable, "Hardware PSBT uploads are busy. Try again shortly. Nothing was changed.")
 					return
 				}
 			}
 			// Its six known fields, bounded, become the form; every check below applies to them (psbt_upload.go).
 			form, code, msg := readPSBTUploadForm(w, r)
 			if form == nil {
-				http.Error(w, msg, code)
+				a.refuse(w, r, nil, code, msg)
 				return
 			}
 			r.Form, r.PostForm = form, form
@@ -540,12 +540,13 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// fields cost about 3.7 MB of allocation to parse. No form has more than maxFormFields (PR #15 re-review).
 			body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 65536))
 			if err != nil || bytes.Count(body, []byte("&")) >= maxFormFields {
-				http.Error(w, "Invalid or oversized form", 400)
+				a.refuse(w, r, nil, 400, "Invalid or oversized form")
 				return
 			}
 			r.Body = io.NopCloser(bytes.NewReader(body))
 			if err := r.ParseForm(); err != nil {
-				http.Error(w, "Invalid or oversized form", 400)
+				r.PostForm = nil // nothing of a form that did not parse is shown back
+				a.refuse(w, r, nil, 400, "Invalid or oversized form")
 				return
 			}
 		}
@@ -553,11 +554,11 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// write fail with a 500, after a confirmation had accepted the password (QA5W3B-5). The upload routes check
 		// their text parts themselves (uploads.go readForm), and so does the sign form's multipart reader.
 		if !formTextValid(r.Form) {
-			http.Error(w, invalidFormText, 400)
+			a.refuse(w, r, nil, 400, invalidFormText)
 			return
 		}
 		if msg := postOriginError(r, a.secure); msg != "" {
-			http.Error(w, msg, 403)
+			a.refuse(w, r, nil, 403, msg)
 			return
 		}
 		if sent := []byte(r.PostForm.Get("csrf")); subtle.ConstantTimeCompare(sent, []byte(a.csrf(token))) != 1 {
@@ -568,7 +569,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// Origin and Sec-Fetch-Site are checked above either way. Successful sign-in
 			// rotates the original session cookie retained separately for that purpose; a refusal leaves it live.
 			if anon == "" || anon == token || subtle.ConstantTimeCompare(sent, []byte(a.csrf(anon))) != 1 {
-				http.Error(w, "Form expired. Reload and try again.", 403)
+				a.refuse(w, r, nil, 403, formExpired)
 				return
 			}
 			token, session = anon, ""
@@ -576,7 +577,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if spec, ok := actions[r.URL.Path]; ok && spec.Precheck != nil {
 			if err := spec.Precheck(a, r, token); err != nil {
-				writeHTTPError(w, r, err)
+				a.writeHTTPError(w, r, err)
 				return
 			}
 		}
@@ -617,7 +618,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		page = "catalog"
 	}
 	if !a.pageOn(page) {
-		http.NotFound(w, r)
+		a.refuse(w, r, user, 404, pageNotFound)
 		return
 	}
 	if a.preview {
@@ -653,7 +654,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			if page == "product" || page == "checkout" {
 				if len(d.Products) == 0 {
-					http.NotFound(w, r)
+					a.refuse(w, r, user, 404, pageNotFound)
 					return
 				}
 				d.Product = &d.Products[0]
@@ -685,7 +686,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if installed && page == "setup" {
-		http.Error(w, "Installation is already complete", 403)
+		a.refuse(w, r, user, 403, "Installation is already complete")
 		return
 	}
 	if protected(page) && user == nil {
@@ -697,7 +698,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !authorized(page, user) {
-		http.Error(w, "You do not have access to this page", 403)
+		a.refuse(w, r, user, 403, "You do not have access to this page")
 		return
 	}
 	d := a.pageData(r, page, token, user)
@@ -706,7 +707,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		var he *httpError
 		switch {
 		case err == sql.ErrNoRows:
-			http.NotFound(w, r)
+			a.refuse(w, r, user, 404, pageNotFound)
 		case dbBusyForContext(ctx, err):
 			serverError(w, r, 503, errBusyMsg, errorCause(err))
 		case !errors.As(err, &he):
@@ -714,13 +715,19 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case he.Code >= 500:
 			serverError(w, r, he.Code, he.Msg, errorCause(he))
 		default:
-			http.Error(w, he.Msg, he.Code)
+			a.refuse(w, r, user, he.Code, he.Msg)
 		}
 		return
 	}
 	objectTitle(&d)
 	a.render(w, r, d)
 }
+
+// formExpired refuses a post whose CSRF token is not this browser's, or a cross-site post.
+const formExpired = "Form expired. Reload and try again."
+
+// pageNotFound answers an unknown page, a page switched off (pageSpec.Off) and a page whose object does not exist alike.
+const pageNotFound = "Page not found."
 
 // invalidFormText refuses a form whose text formTextValid rejects.
 const invalidFormText = "Invalid form: a field is not valid UTF-8 or contains a NUL character. Nothing was changed."
@@ -756,7 +763,7 @@ func postOriginError(r *http.Request, secure bool) string {
 		}
 	}
 	if r.Header.Get("Sec-Fetch-Site") == "cross-site" {
-		return "Form expired. Reload and try again."
+		return formExpired
 	}
 	return ""
 }

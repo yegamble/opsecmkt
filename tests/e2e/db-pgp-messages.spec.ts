@@ -74,17 +74,17 @@ test('save a PGP key, see its fingerprint unverified, and fail ownership proofs 
   // A valid signature by the saved key over a different (stale) challenge is not proof.
   await signature.fill(pgpFixture('stale-challenge.signed.asc'));
   expect(await submitStatus(page, () => page.getByRole('button', { name: 'Verify signature' }).click())).toBe(400);
-  await expect(page.locator('body')).toHaveText('Not verified: the signed text is not the current challenge.');
+  await expect(page.getByRole('alert')).toHaveText('Not verified: the signed text is not the current challenge.');
 
   // A signature by another key is rejected, and so is text that is not a signature.
   await page.goto('/pgp');
   await signature.fill(pgpFixture('canary.other-key.asc'));
   expect(await submitStatus(page, () => page.getByRole('button', { name: 'Verify signature' }).click())).toBe(400);
-  await expect(page.locator('body')).toHaveText('Not verified: the clearsigned message does not verify with your saved key.');
+  await expect(page.getByRole('alert')).toHaveText('Not verified: the clearsigned message does not verify with your saved key.');
   await page.goto('/pgp');
   await signature.fill('I promise this is my key.');
   expect(await submitStatus(page, () => page.getByRole('button', { name: 'Verify signature' }).click())).toBe(400);
-  await expect(page.locator('body')).toHaveText('Not verified: paste a clearsigned message or an armored detached signature.');
+  await expect(page.getByRole('alert')).toHaveText('Not verified: paste a clearsigned message or an armored detached signature.');
 
   // Nothing was verified; the open challenge is unchanged after reload.
   await page.goto('/pgp');
@@ -99,7 +99,7 @@ test('save a PGP key, see its fingerprint unverified, and fail ownership proofs 
   await expect(page.getByLabel('Text to sign')).toHaveCount(0);
   await page.getByLabel('Decrypted text').fill('not-the-nonce');
   expect(await submitStatus(page, () => page.getByRole('button', { name: 'Verify decryption' }).click())).toBe(400);
-  await expect(page.locator('body')).toHaveText('Not verified: the decrypted text does not match the challenge.');
+  await expect(page.getByRole('alert')).toHaveText('Not verified: the decrypted text does not match the challenge.');
 
   await page.goto('/account');
   await expect(page.locator('.pgp-summary .badge')).toHaveText('Not verified');
@@ -159,7 +159,7 @@ test('only OpenPGP-encrypted messages are accepted; status badges and the unread
 
   await body.fill('Hello, this is plaintext and must never be stored by the server.');
   expect(await submitStatus(s, send)).toBe(400);
-  await expect(s.locator('body')).toHaveText('Encrypt the message locally and paste the complete armored PGP message (up to 20 KB).');
+  await expect(s.getByRole('alert')).toHaveText('Encrypt the message locally and paste the complete armored PGP message (up to 20 KB).');
 
   await s.goto(`/messages?to=${withKey}`);
   await body.fill('-----BEGIN PGP MESSAGE-----\n\nVGhpcyBpcyBub3QgYW4gT3BlblBHUCBwYWNrZXQgYXQgYWxs\n-----END PGP MESSAGE-----');
@@ -169,7 +169,7 @@ test('only OpenPGP-encrypted messages are accepted; status badges and the unread
   await s.goto('/messages?to=nobody_with_this_handle');
   await body.fill(pgpFixture('message-to-recipient.asc'));
   expect(await submitStatus(s, send)).toBe(400);
-  await expect(s.locator('body')).toHaveText('Recipient not found');
+  await expect(s.getByRole('alert')).toHaveText('Recipient not found');
 
   // Nothing was stored for the refused attempts.
   await s.goto('/messages');

@@ -154,6 +154,10 @@ type PageData struct {
 	DeliveryCleanupCount  int
 	// UploadBack and UploadBackLabel: the refusal page of an upload (A-186, uploads.go) links back here.
 	UploadBack, UploadBackLabel string
+	// Refusal: the shared refusal page of a refused request (A-514, refusal.go); nil on every other page.
+	Refusal *RefusalView
+	// FormHandle: /login and /register re-rendered after a refused post, the handle that was typed (A-514).
+	FormHandle string
 	// ImageStorage: admin page, stored photos and avatars against IMAGE_STORAGE_LIMIT_MB (uploads.go).
 	ImageStorage *ImageStorageView
 	// A-189 (image_pages.go). StaffListPublic: /canary, the administrator's "Show a public staff list" is on;

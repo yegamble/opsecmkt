@@ -38,9 +38,9 @@ test('changing the password needs the current one, ends other sessions and keeps
   await expect(page.getByLabel('Authenticator code or recovery code')).toHaveCount(0);
 
   expect(await changePassword(page, 'not-my-password-123', second)).toBe(401);
-  await expect(page.locator('body')).toHaveText('Password incorrect');
+  await expect(page.getByRole('alert')).toHaveText('Password incorrect');
   expect(await changePassword(page, first, second, { repeat: `${second}-typo` })).toBe(400);
-  await expect(page.locator('body')).toHaveText('The new passwords do not match.');
+  await expect(page.getByRole('alert')).toHaveText('The new passwords do not match.');
 
   expect(await changePassword(page, first, second)).toBe(303);
   await expect(page).toHaveURL(/\/account$/);
@@ -53,7 +53,7 @@ test('changing the password needs the current one, ends other sessions and keeps
   await other.goto('/account');
   await expect(other).toHaveURL(/\/login\?next=%2Faccount$/);
   expect(await signIn(other, handle, first)).toBe(401);
-  await expect(other.locator('body')).toHaveText('Invalid handle or password');
+  await expect(other.getByRole('alert')).toHaveText('Invalid handle or password');
   expect(await signIn(other, handle, second)).toBe(303);
   await expect(other.locator('.account-name')).toHaveText(handle);
   await other.context().close();
@@ -67,7 +67,7 @@ test('changing the password needs the current one, ends other sessions and keeps
   await expect(page.getByRole('status')).toHaveText('Password changed.');
   await expect(activity).toContainText('Changed password; ended 1 other session(s) and any pending sign-ins (confirmed with password and recovery code)');
   expect(await changePassword(page, third, first, { code: recovery })).toBe(401);
-  await expect(page.locator('body')).toHaveText('Recovery code incorrect or already used');
+  await expect(page.getByRole('alert')).toHaveText('Recovery code incorrect or already used');
   await page.goto('/totp');
   await expect(page.locator('.key-values div', { hasText: 'Unused recovery codes' }).locator('dd')).toHaveText('9 of 10');
   await page.context().close();
@@ -96,7 +96,7 @@ test('a success notice shows once: not on reload, not on Back after a failed cha
   expect(await changePassword(page, second, first)).toBe(303);
   await expect(status).toHaveText('Password changed.');
   expect(await changePassword(page, 'not-my-password-123', second, { here: true })).toBe(401);
-  await expect(page.locator('body')).toHaveText('Password incorrect');
+  await expect(page.getByRole('alert')).toHaveText('Password incorrect');
   await page.goBack();
   await expect(page).toHaveURL(/\/account$/);
   await expect(page.locator('.account-name')).toHaveText(handle);

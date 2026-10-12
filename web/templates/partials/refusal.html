@@ -1,0 +1,18 @@
+{{/* A-514: the shared page of a refused form post or address (refusal.go). Response-only, so it lives here rather than in pages/ (every pages/ template is a routable GET page). The reason is .Error (the layout alert); a refused post's long text fields are shown read-only, with no name, so nothing here can be submitted again by mistake. */}}
+{{define "page:refusal"}}{{template "header" .}}
+<div class="form-narrow">
+<div class="panel">
+<h1>{{.Title}}<span class="accent">.</span></h1>
+{{with .Refusal}}{{if .SignIn}}<p>You are not signed in, or your session has ended. Sign in, then go back to the form.</p>
+<p><a class="button primary refusal-sign-in" href="/login?next={{.Back}}">Sign in</a></p>
+{{end}}<p><a class="text-link refusal-back" href="{{.Back}}">{{.BackLabel}}</a></p>
+{{with .Echo}}<section class="stack" aria-labelledby="refusal-echo">
+<h2 id="refusal-echo">Your text, to copy</h2>
+<p class="help">This is the text the form sent. Copy what you need before you leave this page.</p>
+{{range $i, $f := .}}<label for="refusal-echo-{{$i}}">{{$f.Label}}</label>
+<textarea id="refusal-echo-{{$i}}" readonly rows="6" spellcheck="false">
+{{$f.Text}}</textarea>
+{{end}}</section>
+{{end}}{{end}}</div>
+</div>
+{{template "footer" .}}{{end}}

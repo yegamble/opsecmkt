@@ -52,7 +52,7 @@ test('replacing recovery codes invalidates the old ones; TOTP turns off with pas
     await page.getByLabel('Current password').fill(password);
     await replace.fill(code);
     expect(await submitStatus(page, () => page.getByRole('button', { name: 'Replace recovery codes' }).click())).toBe(401);
-    await expect(page.locator('body')).toHaveText('Verification code incorrect, expired or already used');
+    await expect(page.getByRole('alert')).toHaveText('Verification code incorrect, expired or already used');
   }
   await page.goto('/totp');
   await expect(page.locator('.recovery-codes')).toHaveCount(0);
@@ -104,9 +104,9 @@ test('replacing recovery codes invalidates the old ones; TOTP turns off with pas
     return submitStatus(page, () => page.getByRole('button', { name: 'Turn off TOTP' }).click());
   };
   expect(await off('not-the-password-123', totp(secret, step + 1))).toBe(401);
-  await expect(page.locator('body')).toHaveText('Password incorrect');
+  await expect(page.getByRole('alert')).toHaveText('Password incorrect');
   expect(await off(password, oldCodes[1])).toBe(401);
-  await expect(page.locator('body')).toHaveText('Recovery code incorrect or already used');
+  await expect(page.getByRole('alert')).toHaveText('Recovery code incorrect or already used');
   await page.goto('/totp');
   await expect(page.locator('.page-head .badge')).toHaveText('Enabled');
 

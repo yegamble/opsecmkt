@@ -435,13 +435,13 @@ func (a *App) escrowCheckoutOffer(ctx context.Context, d *PageData) error {
 // without an escrow it answers as an unknown page does.
 func escrowDescriptorDownload(a *App, w http.ResponseWriter, r *http.Request, u *User) {
 	if !a.escrowConfigured || a.db == nil || u == nil {
-		http.NotFound(w, r)
+		a.refuse(w, r, u, 404, pageNotFound)
 		return
 	}
 	ctx := r.Context()
 	o, err := scanOrder(a.db.QueryRowContext(ctx, orderQuery+" WHERE o.id=$1 AND (o.buyer_id=$2 OR p.vendor_id=$2)", r.URL.Query().Get("id"), u.ID))
 	if err == sql.ErrNoRows || err == nil && !o.btcEscrow() {
-		http.NotFound(w, r)
+		a.refuse(w, r, u, 404, pageNotFound)
 		return
 	}
 	reader := roleVendor

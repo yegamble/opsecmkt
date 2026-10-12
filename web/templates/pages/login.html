@@ -5,7 +5,7 @@
 <h1>Welcome back<span class="accent">.</span></h1>
 <p>{{if .Next}}Sign in to see {{.NextTitle}}.{{else}}Sign in to your marketplace account.{{end}}</p>
 <form class="stack" method="post" action="/login">
-<input type="hidden" name="csrf" value="{{.CSRF}}">{{with .Next}}<input type="hidden" name="next" value="{{.}}">{{end}}<label>Handle<input name="handle" required minlength="3" maxlength="32" autocomplete="username" spellcheck="false" autocapitalize="none" placeholder="your_handle">
+<input type="hidden" name="csrf" value="{{.CSRF}}">{{with .Next}}<input type="hidden" name="next" value="{{.}}">{{end}}<label>Handle<input name="handle"{{with .FormHandle}} value="{{.}}"{{end}} required minlength="3" maxlength="32" autocomplete="username" spellcheck="false" autocapitalize="none" placeholder="your_handle">
 </label>
 <label>Password<input type="password" name="password" required autocomplete="current-password">
 </label><label>Authenticator code (optional)<input name="rescue_code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" aria-describedby="paused-signin-help">
