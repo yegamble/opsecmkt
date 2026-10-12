@@ -4,7 +4,7 @@
 <div class="eyebrow">Independent by design</div>
 <h1>The marketplace<span class="accent">.</span>
 </h1>
-<p>Tools, knowledge, and services for a more private digital life.</p>
+<p>Listings from vendors, with PGP-based accounts and messages and no browser JavaScript.</p>
 </div>
 </div>
 <form class="mobile-search" action="/" method="get" role="search">
@@ -16,7 +16,7 @@
 <div class="catalog-tools">
 <p>
 <span class="accent">{{if .Paging}}{{.Paging.Total}}{{else}}{{len .Products}}{{end}}</span> listings {{if .Query}}matching “{{.Query}}”{{else}}in the marketplace{{end}}{{if .Category}} / {{.Category}}{{end}}{{if and .Paging (gt .Paging.Pages 1) .Products}} · showing {{.Paging.First}}–{{.Paging.Last}}{{end}}</p>
-<span class="eyebrow">Purpose-built for privacy</span>
+<span class="eyebrow">Test-network alpha · no real funds</span>
 </div>{{template "products" .}}{{if not .Products}}<div class="empty">
 <span class="empty-icon">∅</span>
 {{if and .Paging (gt .Paging.Total 0)}}<h2>This page is empty</h2>
