@@ -20,7 +20,7 @@
 <button type="submit">Load recipient’s public key</button>
 </form>
 <p class="help">First load the recipient’s key and confirm its fingerprint through a trusted channel. To encrypt a text file with GnuPG, run <code>gpg --armor --encrypt --recipient &lt;fingerprint&gt; message.txt</code>, replacing <code>&lt;fingerprint&gt;</code> with the confirmed fingerprint. Paste the armored output below. Loading a key reloads this page; do it before composing.</p>
-{{if and .MessageTo (not .Contacts)}}<p role="status">No other account found for this handle. Check the recipient’s handle and try again.</p>{{end}}
+{{if .MessageLookupPaused}}<p role="status">Key not loaded: an account can look up at most 60 different handles in 10 minutes. Handles you looked up in that time still load; try others later.</p>{{else if and .MessageTo (not .Contacts)}}<p role="status">No other account found for this handle. Check the recipient’s handle and try again.</p>{{end}}
 <form class="stack" method="post" action="/messages">
 <input type="hidden" name="csrf" value="{{.CSRF}}">
 <input type="hidden" name="form_nonce" value="{{formNonce "/messages"}}">

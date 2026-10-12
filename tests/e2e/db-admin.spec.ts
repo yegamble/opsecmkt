@@ -43,7 +43,7 @@ test('promoting a buyer to vendor opens the vendor desk; the listing form shows 
   await roleForm.getByLabel('Account handle').fill(ADMIN.handle);
   await roleForm.getByLabel('Current password').fill(ADMIN.password);
   expect(await submitStatus(admin, () => roleForm.getByRole('button', { name: 'Update role' }).click())).toBe(400);
-  await expect(admin.locator('body')).toHaveText('Cannot change your own administrator role');
+  await expect(admin.getByRole('alert')).toHaveText('Cannot change your own administrator role');
   await setRole(admin, vendorHandle, 'vendor');
   await admin.waitForLoadState();
   await admin.reload();
@@ -75,7 +75,7 @@ test('promoting a buyer to vendor opens the vendor desk; the listing form shows 
   await expect(reset.getByLabel('Account handle')).toHaveValue(unknown);
   await expect(reset.getByLabel('Current password')).toHaveValue('');
   expect(await submitReset(lockedHandle, 'not-the-admin-password')).toBe(401);
-  await expect(admin.locator('body')).toHaveText('Password incorrect');
+  await expect(admin.getByRole('alert')).toHaveText('Password incorrect');
   await locked.goto('/account');
   await expect(locked.locator('.key-values div', { hasText: 'TOTP authentication' }).locator('dd')).toHaveText('Enabled');
   expect(await submitReset(lockedHandle, ADMIN.password)).toBe(303);
@@ -120,15 +120,17 @@ test('promoting a buyer to vendor opens the vendor desk; the listing form shows 
     if (fields.delivery) await vendor.getByLabel('Automatic delivery content').fill(fields.delivery);
     return submitStatus(vendor, () => vendor.getByRole('button', { name: 'Publish listing ↗' }).click());
   };
-  const invalid = 'Invalid listing. Check price precision, stock, category, and required fields.';
-  // Nine decimal places for BTC (satoshi precision is eight).
+  // Nine decimal places for BTC (satoshi precision is eight). The refusal names the field and keeps the typed text (A-514).
   expect(await publish({ title, btc: '0.123456789' })).toBe(400);
-  await expect(vendor.locator('body')).toHaveText(invalid);
+  await expect(vendor.getByRole('alert')).toHaveText('Bitcoin price: use a positive amount with at most 8 decimal places.');
+  await expect(vendor.getByLabel('Description', { exact: true })).toHaveValue('Listing validation regression.');
+  await expect(vendor.getByLabel('Listing title', { exact: true })).toHaveValue(title);
+  await expect(vendor.getByRole('link', { name: 'Back to Vendor Dashboard' })).toHaveAttribute('href', '/vendor-dashboard');
   // Whitespace passes the browser's minlength but not the server's trimmed title check.
   expect(await publish({ title: '     ', btc: '0.001' })).toBe(400);
-  await expect(vendor.locator('body')).toHaveText(invalid);
+  await expect(vendor.getByRole('alert')).toHaveText('Listing title: use 3 to 140 characters.');
   expect(await publish({ title, btc: '0.001', delivery: 'secret-download-link' })).toBe(400);
-  await expect(vendor.locator('body')).toHaveText('Automatic delivery content is only available for digital listings.');
+  await expect(vendor.getByRole('alert')).toHaveText('Automatic delivery content is only available for digital listings.');
   await vendor.goto('/vendor-dashboard');
   await expect(vendor.getByText('You have not published any listings yet.')).toBeVisible();
 
@@ -148,12 +150,12 @@ test('promoting a buyer to vendor opens the vendor desk; the listing form shows 
   await expectNotice(second, 'Listing saved.');
   await vendor.getByLabel('Stock').fill('2');
   expect(await submitStatus(vendor, () => vendor.getByRole('button', { name: 'Save changes' }).click())).toBe(409);
-  await expect(vendor.locator('body')).toHaveText('Stock changed to 5 while you were editing (orders reserve stock). Reload and try again.');
+  await expect(vendor.getByRole('alert')).toHaveText('Stock changed to 5 while you were editing (orders reserve stock). Reload and try again.');
   await vendor.goto(editURL);
   await expect(vendor.getByLabel('Stock')).toHaveValue('5');
   await vendor.getByLabel('Monero reference price').fill('0.1234567890123');
   expect(await submitStatus(vendor, () => vendor.getByRole('button', { name: 'Save changes' }).click())).toBe(400);
-  await expect(vendor.locator('body')).toHaveText(invalid);
+  await expect(vendor.getByRole('alert')).toHaveText('Monero reference price: use a positive amount with at most 12 decimal places.');
   await vendor.goto(editURL);
   await expect(vendor.getByLabel('Monero reference price')).toHaveValue(/^0\.5/);
   await vendor.context().close();
@@ -181,7 +183,7 @@ test('site settings, account suspension, operator key, canary signature checks a
   await expect(admin.locator('table').last()).toContainText(`Saved marketplace site name from ${JSON.stringify(original)} to ${JSON.stringify(renamed)}`);
   await siteName.fill('    ');
   expect(await submitStatus(admin, saveSettings)).toBe(400);
-  await expect(admin.locator('body')).toHaveText('Invalid settings');
+  await expect(admin.getByRole('alert')).toHaveText('Invalid settings');
   await admin.goto('/admin');
   await expect(siteName).toHaveValue(renamed);
   await siteName.fill(original);
@@ -209,7 +211,7 @@ test('site settings, account suspension, operator key, canary signature checks a
   await expect(suspension.getByLabel('Account handle')).toHaveValue(nobody);
   await expect(suspension.getByRole('radio', { name: /^Suspend:/ })).toBeChecked();
   expect(await submitSuspension(suspectHandle, 'Suspend', 'not-the-admin-password')).toBe(401);
-  await expect(admin.locator('body')).toHaveText('Password incorrect');
+  await expect(admin.getByRole('alert')).toHaveText('Password incorrect');
   await suspect.goto('/account');
   await expect(suspect.locator('.account-name')).toHaveText(suspectHandle);
   // A-117: the one-shot notice names the change inside the section the page returns to, in view at 320 px (and
@@ -241,10 +243,10 @@ test('site settings, account suspension, operator key, canary signature checks a
     return submitStatus(suspect, () => suspect.getByRole('button', { name: 'Sign in' }).click());
   };
   expect(await suspectSignIn('wrong-suspect-password-1')).toBe(401);
-  await expect(suspect.locator('body')).toHaveText('Invalid handle or password');
+  await expect(suspect.getByRole('alert')).toHaveText('Invalid handle or password');
   expect(await suspectSignIn(suspectPassword)).toBe(403);
   // A-119: no staff contact is set in this suite at this point (db-staff-contact.spec.ts clears the one it sets).
-  await expect(suspect.locator('body')).toHaveText('This account is suspended. Ask the operator of this market.');
+  await expect(suspect.getByRole('alert')).toHaveText('This account is suspended. Ask the operator of this market.');
 
   // Restoring allows sign-in again; the account was told about both changes.
   await admin.setViewportSize({ width: 1280, height: 900 });
@@ -286,7 +288,7 @@ test('site settings, account suspension, operator key, canary signature checks a
   await canaryPanel.getByLabel('Current password').fill(ADMIN.password);
   await canaryPanel.getByLabel('Clearsigned statement').fill(pgpFixture('canary.other-key.asc'));
   expect(await submitStatus(admin, () => canaryPanel.getByRole('button', { name: 'Publish canary' }).click())).toBe(400);
-  await expect(admin.locator('body')).toHaveText('Canary rejected: signature does not verify with the configured key');
+  await expect(admin.getByRole('alert')).toHaveText('Canary rejected: signature does not verify with the configured key');
   await admin.goto('/canary');
   await expect(admin.locator('section.canary .badge')).toHaveText('No signed canary published');
   // The same statement signed by the operator key is published and verified on the public page.

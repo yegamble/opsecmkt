@@ -37,12 +37,13 @@ test('register, draft, removed XMPP field and session boundaries', async ({ page
   await page.getByLabel('Handle', { exact: true }).fill(handle);
   await page.getByLabel('Password', { exact: true }).fill('wrong-password-123');
   await page.getByRole('button', { name: 'Sign in' }).click();
-  await expect(page.locator('body')).toContainText('Invalid handle or password');
-  await page.goto('/login');
-  await page.getByLabel('Handle', { exact: true }).fill(handle);
+  await expect(page.getByRole('alert')).toHaveText('Invalid handle or password');
+  // A-514: the sign-in form comes back with the handle kept, never the password, and still returns to /account.
+  await expect(page.getByLabel('Handle', { exact: true })).toHaveValue(handle);
+  await expect(page.getByLabel('Password', { exact: true })).toHaveValue('');
   await page.getByLabel('Password', { exact: true }).fill(password);
   await submitAndLoad(page, page.getByRole('button', { name: 'Sign in' }));
-  await page.goto('/account');
+  await expect(page).toHaveURL(/\/account$/);
   await expect(page.getByLabel('XMPP address')).toHaveCount(0);
   const activity = page.getByRole('region', { name: 'Recent activity' });
   await expect(activity).toContainText('Signed in');

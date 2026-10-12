@@ -1788,6 +1788,7 @@ quotes, as the installer writes them). Blank values keep a feature off.
 | `BITCOIN_MAX_TIP_AGE` | Default `2h` (30m to 24h): a public-network Bitcoin node whose tip is older counts as not synced (section 33). |
 | `MONERO_MAX_TIP_AGE` | Default `1h` (20m to 24h): a public-network Monero daemon whose top block is older counts as not synced (section 35). |
 | `ESCROW_XMR_WALLET_RPC_PASSWORD` | Only for the `monero-escrow-wallet` service (Monero escrow on stagenet): `openssl rand -hex 24` output, the same value as the password in `ESCROW_XMR_WALLET_RPC_URL` (section 35). Blank, Compose refuses the `monero-escrow-wallet` profile. |
+| `ESCROW_XMR_TOR_RELAY` | Blank, or `clearnet-accepted` to relay Monero escrow settlements without the node Tor overlay in `APP_MODE=tor` (section 60). Any other value stops startup. |
 | `BITCOIN_PRUNE_MB` / `MONERO_PRUNE_FLAGS` | Local nodes only. Absent keys mean **pruned** (`2000` and `'--prune-blockchain --sync-pruned-blocks'`); `BITCOIN_PRUNE_MB='0'` and `MONERO_PRUNE_FLAGS=''` keep a full node. Read [section 7](#7-local-nodes-are-now-pruned) before deploying if you run a local node. |
 | `BITCOIN_IMAGE` / `MONERO_IMAGE` / `MONERO_WALLET_IMAGE` | Local nodes only. Absent keys mean the pinned release images the payout code was verified against; the images alpha.1 made you choose stay in use until you remove or change them (`upgrade` pins the default images left on `latest`). Read [section 8](#8-node-images-are-pinned-to-release-tags). |
 | `COMPOSE_PROJECT_NAME` | Not needed: absent means `opsecmkt`, which is what your containers and volumes are named after. Never set another value on this install, or Compose starts it on new, empty volumes. A second checkout on the same host needs its own name; see [Backups and recovery](docs/operator-guide.md#backups-and-recovery). |
@@ -1870,3 +1871,25 @@ After migration 108 both tables refuse every new row (`payouts_refuse_insert` an
 migration 107 reads stay, since migrations are append-only. `scripts/restore.sh` and the manual protection in
 section 6 no longer touch `payouts`, and the runbook's gate-clearing SQL no longer reads `pooled_drain_blockers()`.
 Older binaries refuse a database that records migration 108, as for any newer migration (section 5).
+
+## 60. Monero escrow relays wait in Tor mode without the node Tor overlay (A-515)
+
+With `APP_MODE=tor` and `ESCROW_XMR=on`, this build builds, checks and stores Monero escrow settlements but relays none
+unless `COMPOSE_FILE` includes `compose.nodes-tor.yaml` or `.env` sets `ESCROW_XMR_TOR_RELAY=clearnet-accepted`: the escrow
+wallet-rpc's `relay_tx` would otherwise send them from the host's IP address, as earlier builds did. A Tor install with
+Monero escrow on and neither set will see "Monero relays held" on `/admin`, one startup log line and a warning from
+`./scripts/install.sh check`. Choose one ([operator guide](docs/operator-guide.md#monero-escrow-fakechain-or-stagenet),
+*Tor mode*), then restart the app: the stored transactions are relayed unchanged on the next pass, never rebuilt.
+`upgrade` adds `ESCROW_XMR_TOR_RELAY` blank. Clearnet installs and installs with Monero escrow off are unchanged. Rolling
+back to an earlier build relays every held settlement from the host's IP address on its first pass.
+
+## 61. The bundled Bitcoin node defaults to signet (A-513)
+
+When `BITCOIN_CHAIN` is blank, `compose.nodes.yaml` and `compose.nodes-tor.yaml` now start the bundled Bitcoin node on
+signet; earlier builds started testnet4. The installer has always written `BITCOIN_CHAIN` for a local node, so an install
+made by it is unchanged. An `.env` with the `bitcoin` profile and a blank `BITCOIN_CHAIN` would, on its next
+`docker compose up -d`, start a signet node on a fresh `bitcoin_data` chain directory beside the testnet4 one (the old data
+stays in the volume), and a market whose escrow already pinned testnet4 would refuse that node. Set `BITCOIN_CHAIN=testnet4` in `.env`
+first if that node is yours. The installer's printed escrow commands now carry `-rpcport=8332` for `bitcoin-cli`
+(the bundled node's pinned RPC port) and `--via-compose app` for the `--verify` check; see the
+[operator guide](docs/operator-guide.md#escrow-node-set-up-and-the-public-network-smoke).

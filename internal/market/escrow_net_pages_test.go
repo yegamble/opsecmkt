@@ -11,10 +11,10 @@ import (
 // A-472: the public canary and the site-wide payment notices (partials/payment-status.html) name the network Monero
 // escrow was verified on, by the rule /admin uses (admin-payments.html): "network not verified yet" until a daemon was
 // verified or a network pin was read, "Monero stagenet" on stagenet, "a local Monero fakechain" on a fakechain. The
-// canary says "not verified on any public network" only where it is true: stagenet is a public test network, and
-// nothing is recorded on it beyond local test chains and an offline fork (docs/escrow.md, A-449; the owner's public run,
-// A-447, has not happened). The same pages name Bitcoin escrow's chain (regtest, signet, testnet4). DB integration with
-// the simulated Core and wallet-rpc: copy checks, not chain evidence.
+// canary names stagenet a public test network and fakechain local, and (A-512) never claims per-instance proof: the
+// project's recorded public-network runs are listed in docs/verification.md and this market itself has not been
+// checked. The same pages name Bitcoin escrow's chain (regtest, signet, testnet4). DB integration with the simulated
+// Core and wallet-rpc: copy checks, not chain evidence.
 
 // pageLine is the first line of body (unescaped) that holds marker: the canary's list items and the payment notices are
 // one line each. "" when none does.
@@ -48,18 +48,18 @@ func TestXMREscrowPagesNameNetwork(t *testing.T) {
 		{
 			name: "stagenet", edit: onStagenet, known: true,
 			listed: "<li>Monero escrow (Monero stagenet, a public test network): an order in Monero can be paid into an escrow account of its own",
-			runs:   "It runs on Monero stagenet, a public test network with no real funds, and has been tested only on local test chains, not yet on the public stagenet.",
+			runs:   "It runs on Monero stagenet, a public test network with no real funds. The project's recorded public-network runs are listed in docs/verification.md; this market itself has not been checked on a public network.",
 			badge:  "Monero escrow (Monero stagenet)", on: stagenetOn,
 			tile: "<strong>STAGENET</strong>", span: "One account per order; " + xmrCustody,
-			gone: []string{"fakechain", "not verified yet", "not verified on any public network"},
+			gone: []string{"fakechain", "not verified yet", "not verified on any public network", "tested only on local test chains"},
 		},
 		{
 			name: "fakechain", edit: nil, known: true,
 			listed: "<li>Monero escrow (local fakechain only): an order in Monero can be paid into an escrow account of its own",
-			runs:   "It runs on a local Monero fakechain, a test chain with no real funds, and is not verified on any public network.",
+			runs:   "It runs on a local Monero fakechain, a test chain with no real funds. The project's recorded public-network runs are listed in docs/verification.md; this market itself has not been checked on a public network.",
 			badge:  "Monero escrow (local fakechain)", on: fakechainOn,
 			tile: "<strong>FAKECHAIN</strong>", span: "One account per order; " + xmrCustody,
-			gone: []string{"stagenet", "not verified yet", "tested only on local test chains"},
+			gone: []string{"stagenet", "not verified yet", "tested only on local test chains", "not verified on any public network"},
 		},
 		{
 			// A stagenet daemon still syncing (hard fork 1) is never verified, and nothing is pinned: no network is known.
@@ -68,7 +68,7 @@ func TestXMREscrowPagesNameNetwork(t *testing.T) {
 				f.nettype, f.peers, f.targetAhead, f.hardFork = "stagenet", 8, 1_000_000, 1
 			},
 			listed: "<li>Monero escrow (network not verified yet): an order in Monero can be paid into an escrow account of its own",
-			runs:   "It runs on a Monero test network with no real funds, the market has not yet checked which, and nothing has run on a public network.",
+			runs:   "It runs on a Monero test network with no real funds, and the market has not yet checked which. The project's recorded public-network runs are listed in docs/verification.md; this market itself has not been checked on a public network.",
 			badge:  "Monero escrow (network not verified yet)", on: unknownOn,
 			tile: "<strong>UNAVAILABLE</strong>", span: "One account per order; " + xmrCustody,
 			gone: []string{"fakechain", "stagenet", "tested only on local test chains"},
@@ -98,13 +98,12 @@ func TestXMREscrowPagesNameNetwork(t *testing.T) {
 			if n := strings.Count(li, "not verified"); n > 1 {
 				t.Errorf("canary's Monero line says \"not verified\" %d times:\n%s", n, li)
 			}
-			// "Monero escrow on any public network" stays unavailable except on stagenet, which is one.
+			// A-512: the unavailable list makes no public-network claim of its own; the escrow lines carry the record note.
 			unavailable := pageLine(canary, "Mainnet payments (refused by this build)")
-			if has := strings.Contains(unavailable, "Monero escrow on any public network"); has == (c.name == "stagenet") {
-				t.Errorf("canary's unavailable list with %s says \"Monero escrow on any public network\" = %v:\n%s", c.name, has, unavailable)
-			}
-			if c.name == "stagenet" && !strings.Contains(unavailable, "Monero escrow verified on the public stagenet") {
-				t.Errorf("canary's unavailable list on stagenet:\n%s", unavailable)
+			for _, w := range []string{"on any public network", "verified on the public stagenet"} {
+				if strings.Contains(unavailable, w) {
+					t.Errorf("canary's unavailable list with %s says %q:\n%s", c.name, w, unavailable)
+				}
 			}
 			notice := "A Monero escrow order pays into its own account on " + c.on + ". The coins are " + xmrCustody + "."
 			for path, body := range map[string]string{"/": x.page("/", x.buyerSess), product: x.page(product, x.buyerSess), checkout: x.page(checkout, x.buyerSess)} {
@@ -127,13 +126,13 @@ func TestXMREscrowPagesNameNetwork(t *testing.T) {
 	}
 }
 
-// Bitcoin escrow's chain on the same pages: each of regtest, signet and testnet4 is named, and testnet4, a public test
-// network, is not also called unverified on every public network.
+// Bitcoin escrow's chain on the same pages: each of regtest, signet and testnet4 is named (signet and testnet4 as public
+// test networks, regtest as local), and each page points to the project's records instead of claiming per-instance proof.
 func TestEscrowCanaryAndNoticesNameChain(t *testing.T) {
-	for _, c := range []struct{ chain, challenge, runs, unavailable, panel string }{
-		{"regtest", "", "It runs on regtest, a local test chain with no real funds, and is not verified on any public network.", "Bitcoin escrow on any public network", "Bitcoin escrow on this market runs on regtest, a local test chain, and has not been verified on any public network"},
-		{"signet", "51", "It runs on signet, a test network with no real funds, and is not verified on any public network.", "Bitcoin escrow on any public network", "Bitcoin escrow on this market runs on signet, a test network, and has not been verified on any public network"},
-		{"testnet4", "", "It runs on testnet4, a public test network with no real funds, and has been tested only on local test chains, not yet on public testnet4.", "Bitcoin escrow verified on public testnet4", "Bitcoin escrow on this market runs on testnet4, a public test network, and has been tested only on local test chains, not yet on public testnet4"},
+	for _, c := range []struct{ chain, challenge, runs, panel string }{
+		{"regtest", "", "It runs on regtest, a local test chain with no real funds. The project's recorded public-network runs are listed in docs/verification.md; this market itself has not been checked on a public network.", "Bitcoin escrow on this market runs on regtest, a local test chain; its coins have no value. The project's recorded public-network runs are listed in docs/verification.md; this market itself has not been checked on a public network."},
+		{"signet", "51", "It runs on signet (the public signet, unless this operator runs a private one) with no real funds. The project's recorded public-network runs are listed in docs/verification.md; this market itself has not been checked on a public network.", "Bitcoin escrow on this market runs on signet (the public signet, unless this operator runs a private one); its coins have no value. The project's recorded public-network runs are listed in docs/verification.md; this market itself has not been checked on a public network."},
+		{"testnet4", "", "It runs on testnet4, a public test network with no real funds. The project's recorded public-network runs are listed in docs/verification.md; this market itself has not been checked on a public network. The project has no recorded run on public testnet4.", "Bitcoin escrow on this market runs on testnet4, a public test network; its coins have no value. The project's recorded public-network runs are listed in docs/verification.md; this market itself has not been checked on a public network. The project has no recorded run on public testnet4."},
 	} {
 		t.Run(c.chain, func(t *testing.T) {
 			x := newEscrowEnv(t)
@@ -153,8 +152,8 @@ func TestEscrowCanaryAndNoticesNameChain(t *testing.T) {
 					t.Errorf("canary lacks %q:\n%s", w, li)
 				}
 			}
-			if unavailable := pageLine(canary, "Mainnet payments (refused by this build)"); !strings.Contains(unavailable, c.unavailable) {
-				t.Errorf("canary's unavailable list lacks %q:\n%s", c.unavailable, unavailable)
+			if unavailable := pageLine(canary, "Mainnet payments (refused by this build)"); strings.Contains(unavailable, "on any public network") || strings.Contains(unavailable, "verified on public testnet4") {
+				t.Errorf("canary's unavailable list makes a public-network claim of its own:\n%s", unavailable)
 			}
 			if page := html.UnescapeString(x.page("/", x.buyerSess)); !strings.Contains(page, "Bitcoin escrow ("+c.chain+")") {
 				t.Errorf("footer badge on %s:\n%s", c.chain, page)
@@ -229,8 +228,8 @@ func TestXMREscrowDisputeAndAdminNameNetwork(t *testing.T) {
 // (a database from before the pin, its daemon unverified) and after Monero escrow was switched off.
 func TestXMREscrowOrderPanelNamesItsOwnNetwork(t *testing.T) {
 	const (
-		stage = "Monero escrow on this market runs on Monero stagenet, a public test network, and has been tested only on local test chains, not yet on the public stagenet"
-		fake  = "Monero escrow on this market runs on a Monero fakechain, a local test chain, and has not been verified on any public network"
+		stage = "Monero escrow on this market runs on Monero stagenet, a public test network; its coins have no value. The project's recorded public-network runs are listed in docs/verification.md; this market itself has not been checked on a public network."
+		fake  = "Monero escrow on this market runs on a Monero fakechain, a local test chain; its coins have no value. The project's recorded public-network runs are listed in docs/verification.md; this market itself has not been checked on a public network."
 	)
 	for _, c := range []struct {
 		name, badge, want, gone string

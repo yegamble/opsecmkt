@@ -325,14 +325,14 @@ func resolveAction(c *actionCtx) (actionResult, error) {
 // staleResolveForm answers a resolve form loaded before the other party's reply (A-280) with 409 and the
 // moderation desk again, after the rollback: the reply shown, the reason in its error alert and the typed decision
 // kept for that dispute; the outcome and the password are chosen and typed again. When the desk cannot be
-// loaded, the answer is plain text asking for a reload.
+// loaded, the shared refusal page asks for a reload.
 func staleResolveForm(c *actionCtx, replyRole, resolution string) error {
 	msg := "The " + replyRole + " replied to this dispute after the form was loaded. Read the reply below and decide again. Nothing was changed."
 	return &httpError{Code: 409, Msg: msg, Render: func(w http.ResponseWriter) {
 		a := c.A
 		d := a.pageData(c.R, "moderator", c.Token, c.User)
 		if err := a.load(c.R, &d); err != nil {
-			http.Error(w, "The "+replyRole+" replied to this dispute after the form was loaded. Reload the moderation desk, read the reply and decide again. Nothing was changed.", 409)
+			a.refuse(w, c.R, c.User, 409, "The "+replyRole+" replied to this dispute after the form was loaded. Reload the moderation desk, read the reply and decide again. Nothing was changed.")
 			return
 		}
 		d.Error, d.ResolveDispute, d.ResolveText = msg, c.Form.Get("id"), resolution

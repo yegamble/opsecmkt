@@ -63,7 +63,7 @@ test('Bitcoin escrow paste journey: keys, checkout and funding, completion, the 
     await expect(buyer.getByLabel('Pay with')).toHaveValue('BTC');
     await pressSubmit(buyer, buyer.getByRole('button', { name: 'Create unfunded draft' }));
     await buyer.waitForURL(/\/order\?id=/);
-    await expect(buyer.getByRole('heading', { name: 'Or pay into a Bitcoin escrow (regtest only)' })).toBeVisible();
+    await expect(buyer.getByRole('heading', { name: 'Pay into a Bitcoin escrow (regtest only)' })).toBeVisible();
     const { address: refund } = await simPost(request, '/test/escrow/address', {});
     await typeInto(buyer, buyer.getByLabel('Refund address'), refund);
     await pressSubmit(buyer, buyer.getByRole('button', { name: 'Pay into an escrow' }));
@@ -108,9 +108,9 @@ test('Bitcoin escrow paste journey: keys, checkout and funding, completion, the 
   const none = await simPost(request, '/test/escrow/sign', { psbt: copy, fingerprint: vendorKey.slice(1, 9), sighash: 2 });
   await typeInto(vendor, vendor.locator('.escrow-settlement').getByLabel('Signed PSBT'), none.psbt);
   expect(await pressSubmit(vendor, vendor.getByRole('button', { name: 'Submit signature' }))).toBe(400);
-  await expect(vendor.locator('body')).toContainText('A signature uses a sighash type other than ALL. Sign with the default sighash type (ALL). Nothing was changed.');
-  // Refusals are plain-text pages (http.Error) for every form of the market, not an escrow page: Chromium with
-  // JavaScript off shows them unwrapped, so this one is recorded but not measured at 320 px.
+  await expect(vendor.getByRole('alert')).toHaveText('A signature uses a sighash type other than ALL. Sign with the default sighash type (ALL). Nothing was changed.');
+  // The shared refusal page (A-514) keeps the pasted PSBT, read-only, to copy.
+  await expect(vendor.getByLabel('Signed PSBT')).toHaveValue(none.psbt);
   await vendor.screenshot({ path: info.outputPath('08-refused-paste.png'), fullPage: true });
   await vendor.goto(first.url);
   await expect(settlementStatus(vendor)).toContainText('Waiting for a signature');

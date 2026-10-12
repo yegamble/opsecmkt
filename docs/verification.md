@@ -37,6 +37,35 @@ Every CI row is the `CI` workflow ([`.github/workflows/ci.yaml`](../.github/work
 
 The public signet and Monero stagenet rows above are separate, later escrow evidence; none proves a pooled-wallet drain. Public testnet4, a deployed market, Tor onion reachability and a release remain unverified. The only tag is `v0.1.0-alpha.1`, still a draft GitHub release. The historical pooled Monero send failure with the daemon killed mid-send remains untested (war-room A-45); migration 107 removes that runtime while preserving its records.
 
+## Manual Tor Browser pass (owner)
+
+**Status: not yet run.** No page of this project has been loaded in Tor Browser by the project: every browser result in the table above is Chromium, Firefox or WebKit under Playwright, and no result here is a Tor Browser or onion-service result. Until the owner fills this section in, the README says Tor Browser has not been tried and public copy must not claim otherwise. The pass is the owner's; an agent cannot run it.
+
+How to run it: use a fresh Tor Browser profile, set the security level to **Safest** (which turns JavaScript off) before opening the instance, and use a test-network instance with no real funds. Record the first failure of each step as it happened (what was on screen); do not retry until it passes and then record only the pass. A step that cannot be done without enabling JavaScript or lowering the security level is a failure, not a pass.
+
+| Field | Value |
+|---|---|
+| Date (UTC) | |
+| Tor Browser version | |
+| Operating system | |
+| Security level | Safest |
+| Install mode (local `--local` / onion `init --tor`) | |
+| Instance commit or tag | |
+| CAPTCHA enabled (yes/no) | |
+
+| # | Step | Result (pass / fail / not run) | Notes |
+|---|---|---|---|
+| 1 | Open the catalog | not run | |
+| 2 | Register a buyer, including solving the CAPTCHA if it is on | not run | |
+| 3 | Sign in | not run | |
+| 4 | Open the account page | not run | |
+| 5 | Vendor: sign in as a vendor and create a listing | not run | |
+| 6 | Buyer: open that listing and create an order draft | not run | |
+| 7 | Send an encrypted message (paste PGP ciphertext) | not run | |
+| 8 | Sign out | not run | |
+
+Overall result: not yet run. When the table is filled, change the status line above, add a row to the evidence table with the instance's tier ("deployed instance" only if it was an onion service on a host the owner runs), and update the README sentence (and any public copy that mentions Tor Browser) to match what was found.
+
 ## Prior build (pooled wallet, removed): local-chain evidence, 2026-09-23 to 2026-09-30
 
 Dated history, kept so the commits and limits of those runs stay readable. The pooled wallet, its chain

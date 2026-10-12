@@ -18,6 +18,15 @@ test('canary page names no staff contact the preview does not have (A-119)', asy
   await noScriptsNoOverflow(page);
 });
 
+// A-512: the Monero records item names a test network, and no sentence on the page claims that no public network was ever used.
+test('canary escrow copy makes no unconditional public-network claim (A-512)', async ({ page }) => {
+  await page.goto('/canary');
+  await expect(page.locator('#records')).not.toContainText('exist only on that local test chain');
+  await expect(page.locator('main')).not.toContainText('not verified on any public network');
+  await expect(page.locator('main')).not.toContainText('nothing has run on a public network');
+  await noScriptsNoOverflow(page);
+});
+
 test('canary page shows one verified, clearly labelled sample statement', async ({ page }) => {
   const response = await page.goto('/canary');
   expect(response?.status()).toBe(200);

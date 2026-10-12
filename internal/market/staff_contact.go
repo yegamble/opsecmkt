@@ -13,7 +13,8 @@ import (
 // free text) is the path behind every "contact the market staff". It is shown as text, never as a link, on /canary,
 // in the suspended sign-in refusal, as the lost-factors line on /challenge, under a notification that asks its
 // reader to contact the staff (the payout-address change notice among them), as "Can't read the image?" help beside
-// the CAPTCHA on /login and /register, in the expired- and unreadable-key sign-in refusals (pgpKeyRefusal), and (A-279)
+// the CAPTCHA on /login and /register (with, A-517, what to do without the image), in the "Selling needs an
+// administrator to give your account the vendor role" line on /register, in the expired- and unreadable-key sign-in refusals (pgpKeyRefusal), and (A-279)
 // with a taken-down listing on the vendor desk, its edit page and its restore refusal, with a photo the malware
 // scanner flagged, and on /totp after a sign-in with the last recovery code. When it is exactly
 // the handle of a moderator or administrator who is not suspended and whose key can receive encrypted messages
@@ -29,6 +30,7 @@ const (
 
 func init() {
 	registerAction("/admin/staff-contact", actionSpec{Roles: []string{"admin"}, OwnTx: true, ConfirmedFormNonce: true, Run: staffContactAction})
+	registerLoader("admin", captchaContactLoader)
 	for _, page := range []string{"canary", "challenge", "login", "register", "notifications", "vendor-dashboard", "listing-edit", "account", "order"} {
 		registerLoader(page, staffContactLoader)
 	}
@@ -63,6 +65,20 @@ func suspendedRefusal(ctx context.Context, q rowQuerier) error {
 	return fail(403, "This account is suspended. "+contact)
 }
 
+// staffContactNeedsAccount: a contact that is exactly a handle can be messaged only from an account, so it is no
+// way in for someone who cannot solve the CAPTCHA (A-517). Anything else (an onion or XMPP address, a sentence) is
+// taken to work without one; the setting is free text and the application cannot tell more than that.
+func staffContactNeedsAccount(contact string) bool { return handlePattern.MatchString(contact) }
+
+// captchaContactLoader (admin page, A-517) sets d.CaptchaNoContact while the CAPTCHA is required and the staff
+// contact is unset or a bare handle: a person who cannot read the image (it has no audio or text alternative) then
+// has no way to ask anyone for help without first getting past it.
+func captchaContactLoader(_ context.Context, _ *App, _ *http.Request, d *PageData) error {
+	contact := d.Settings[settingStaffContact]
+	d.CaptchaNoContact = captchaRequired(d.Settings) && (contact == "" || staffContactNeedsAccount(contact))
+	return nil
+}
+
 // staffContactLoader sets d.StaffContact from the setting (nil while unset; the "staff-contact" partial then says
 // askOperator) and, for a signed-in reader other than that staff member, the handle to link.
 func staffContactLoader(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
@@ -70,7 +86,7 @@ func staffContactLoader(ctx context.Context, a *App, _ *http.Request, d *PageDat
 	if contact == "" {
 		return nil
 	}
-	d.StaffContact = &StaffContactView{Text: contact}
+	d.StaffContact = &StaffContactView{Text: contact, NeedsAccount: staffContactNeedsAccount(contact)}
 	if d.User == nil || !handlePattern.MatchString(contact) {
 		return nil
 	}

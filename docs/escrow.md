@@ -571,6 +571,15 @@ market holds the wallet keys and builds, stores and sends every transaction itse
   (not enough money) waits once and is flagged if it persists, except for a refund whose coins are too few for the
   network fee (below, A-467). These are the codes `monero-wallet-rpc` 0.18.5.1 gave
   when recorded (`tests/e2e/fixtures/xmr_rpc_shapes_0.18.5.1.json`).
+- **Tor mode (A-515).** With `APP_MODE=tor`, `relay_tx` would send a settlement through the escrow daemon from the
+  host's IP address, so nothing is relayed (a stored one is not relayed again either) unless `COMPOSE_FILE` includes
+  `compose.nodes-tor.yaml` or `ESCROW_XMR_TOR_RELAY=clearnet-accepted`; settlements are still built, checked and stored,
+  with one startup log line and an `/admin` line ("Monero relays held: Tor mode without the node Tor overlay — see operator
+  guide"). Both are read at startup; after a restart with either, the stored transaction is relayed unchanged and never
+  rebuilt. Monero over Tor itself is unverified (A-95). `TestXMREscrowTorModeWithoutNodeProxyHoldsRelay` (simulated
+  wallet-rpc and PostgreSQL, not chain evidence) covers holding, both ways to resume, a lost relayed transaction while
+  held, clearnet mode and an invalid value refused at startup; see the
+  [operator guide](operator-guide.md#monero-escrow-fakechain-or-stagenet) (*Tor mode*).
 - **Refunds and strays.** A refund goes to the address pinned at checkout, with the network fee taken from the amount.
   A release pays the vendor's claim address the escrow less the market fee (fixed at checkout; a fee below 0.001 XMR is
   added to the vendor's output) and less any amount paid above the price, which goes back to the buyer's refund address
@@ -934,19 +943,20 @@ or refund-time bound. The public digital claim's request-to-confirmed sample was
 - **Public pages name the verified network (A-472).** The transparency page (`/canary`), the footer, catalog, listing and
   draft notices and the vendor desk tile name the network by the rule `/admin` uses: "network not verified yet" until a
   daemon was verified or the pin was read, "Monero stagenet, a public test network" on stagenet, "a local Monero
-  fakechain" on a fakechain. On stagenet the canary says Monero escrow "has been tested only on local test chains, not yet
-  on the public stagenet" and lists "Monero escrow verified on the public stagenet" as unavailable; "not verified on any
-  public network" stays on a fakechain; while the network is unknown the canary says the market has not yet checked
-  which test network it is and that nothing has run on a public network (QA5W1-8), and the buyer's Monero escrow checkout
-  offer says "network not verified yet", Monero stagenet or a local Monero fakechain by the same rule (QA5W1-3). On Bitcoin testnet4 the canary
-  says the same (tested only on local test chains, not yet on public testnet4); regtest and signet keep "not verified on
-  any public network". The same rule names the network in the dispute pages (the moderator's refusal and the
+  fakechain" on a fakechain. The canary, the order panels and `/escrow-key` (A-512) name the configured network (stagenet, signet and testnet4 as public
+  test networks; fakechain and regtest as local ones) and make no per-instance claim about public networks: they say the
+  project's recorded public-network runs are listed in [verification.md](verification.md) and that this market itself has not
+  been checked (testnet4 adds that the project has no recorded run on it); while the network is unknown the canary says the
+  market has not yet checked which test network it is (QA5W1-8), and the buyer's Monero escrow checkout
+  offer says "network not verified yet", Monero stagenet or a local Monero fakechain by the same rule (QA5W1-3). The same rule names the network in the dispute pages (the moderator's refusal and the
   administrator's preview), `/admin`'s Monero escrow recovery heading and the Bitcoin order panel's headline (testnet4);
   the dispute amounts say "0.5 stagenet XMR" or "0.5 fakechain XMR" once the network is known and plain "XMR" before.
   A Monero escrow order's own panel names the network of its stored escrow address (its tag), not the market's current
   one, so it stays right with Monero escrow off or its network forgotten. Copy only: `TestXMREscrowPagesNameNetwork`,
   `TestXMREscrowDisputeAndAdminNameNetwork`, `TestXMREscrowOrderPanelNamesItsOwnNetwork`,
-  `TestEscrowCanaryAndNoticesNameChain` (simulated RPC, not evidence of a public run).
+  `TestEscrowCanaryAndNoticesNameChain`, `TestCanaryMoneroCopyFollowsConfiguredNetwork`,
+  `TestCanaryBitcoinCopyFollowsConfiguredNetwork`, `TestEscrowKeyPageNamesConfiguredNetwork`,
+  `TestOrderPanelNamesConfiguredBitcoinNetwork` (simulated RPC, not evidence of a public run).
 - **Wallet height after a refresh, compared with a fresh daemon reading (A-475).** The daemon's height was read before
   the wallet's refresh, which can take minutes, so a daemon that gained more than 10 blocks meanwhile (catching up after
   downtime, a slow pass; the browser journey's `mine` of 100 blocks did it under load) left the wallet, correctly synced

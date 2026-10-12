@@ -295,6 +295,33 @@ PY
     fail 'no infected log line'
   echo 'Scanner leg passed: real clamd with a test signature only (not a production signature feed).'
 }
+# Response hardening on the running production image (war room A-518 (c)): the headers acceptance.md names are on
+# a GET page as the image sends them (not only on the handler in a Go test), and no profiling or debugging
+# endpoint answers. Statuses and headers only: no refusal body or Content-Type is asserted here.
+security_headers_check() {
+  local base=http://127.0.0.1:18090 headers="$work/security-headers" csp xcto xfo referrer path
+  curl -sS -o /dev/null -D "$headers" "$base/" || fail 'GET / did not answer'
+  header() { grep -i "^$1:" "$headers" | sed -n '1s/^[^:]*: *//p' | tr -d '\r' || true; }
+  lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+  csp=$(header Content-Security-Policy)
+  [[ $csp == *"default-src 'none'"* ]] || fail "GET /: Content-Security-Policy lacks default-src 'none': '$csp'"
+  [[ $csp != *unsafe-* && $csp != *script-src* ]] || fail "GET /: Content-Security-Policy allows scripts or unsafe sources: '$csp'"
+  xcto=$(header X-Content-Type-Options)
+  [[ $(lower "$xcto") == nosniff ]] || fail "GET /: X-Content-Type-Options is '$xcto', not nosniff"
+  xfo=$(header X-Frame-Options)
+  xfo=$(lower "$xfo")
+  [[ $xfo == deny || $xfo == sameorigin || $csp == *"frame-ancestors 'none'"* || $csp == *"frame-ancestors 'self'"* ]] ||
+    fail "GET /: no frame protection (X-Frame-Options '$xfo', Content-Security-Policy '$csp')"
+  referrer=$(header Referrer-Policy)
+  case $(lower "$referrer") in
+    no-referrer | same-origin | strict-origin | strict-origin-when-cross-origin) ;;
+    *) fail "GET /: Referrer-Policy is '$referrer', not a restrictive policy" ;;
+  esac
+  for path in /debug/pprof/ /debug/pprof/cmdline /debug/vars; do
+    [[ $(curl -sS -o /dev/null -w '%{http_code}' "$base$path") == 404 ]] || fail "GET $path did not answer 404"
+  done
+  echo 'Production image: CSP, nosniff, frame protection and Referrer-Policy on GET /; /debug/pprof/ and /debug/vars answer 404'
+}
 command -v go >/dev/null || { echo 'Go is required to build cmd/verify-audit for the audit export check' >&2; exit 1; }
 CGO_ENABLED=0 go build -trimpath -o "$work/verify-audit" ./cmd/verify-audit
 export SMOKE_WORK="$work" SMOKE_ROOT="$root"
@@ -396,5 +423,6 @@ sleep 5
 python3 -c "import urllib.request; assert urllib.request.urlopen('http://127.0.0.1:18090/healthz', timeout=5).read() == b'ok'"
 app_container=$("${compose[@]}" ps -q app)
 [[ $(docker inspect -f '{{.State.Status}} {{.RestartCount}} {{.State.Health.Status}}' "$app_container") == 'running 0 healthy' ]]
+security_headers_check
 "${compose[@]}" logs --no-color app > "$work/app.log" 2>&1
 echo 'Production image: stays healthy without pooled wallets; signed audit export verified with cmd/verify-audit'

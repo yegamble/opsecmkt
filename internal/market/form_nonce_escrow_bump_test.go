@@ -109,7 +109,7 @@ func TestEscrowBumpSignatureFormNonceReplayAndCorrectedRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	sessionMismatch := x.do("POST", "/escrow/bump-sign", otherSession, form)
-	if sessionMismatch.Code != 409 || sessionMismatch.Body.String() != bodyMismatch.Body.String() {
+	if sessionMismatch.Code != 409 || refusalText(sessionMismatch.Body.String()) != refusalText(bodyMismatch.Body.String()) {
 		t.Fatalf("different-session replay response = %d %q; body mismatch = %d %q", sessionMismatch.Code, sessionMismatch.Body.String(), bodyMismatch.Code, bodyMismatch.Body.String())
 	}
 	if got := agInt(x.testEnv, "SELECT count(*) FROM settlement_bump_signatures WHERE bump_id=$1", bump.ID); got != 1 || x.bumpByID(bump.ID).State != "party_signed" {

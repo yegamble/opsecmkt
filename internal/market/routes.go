@@ -123,7 +123,8 @@ type actionSpec struct {
 	OwnFormNonce       bool                   // dynamic OwnTx receipt remembers whether the original request needed confirmation
 	ReceiptAuthorize   func(*actionCtx) error // optional current eligibility check before a confirmed claim/replay
 	// Precheck, when set, runs in ServeHTTP after the CSRF check and before the session lookup and the post
-	// slot: a check of the form alone (no database), so a flood of posts it refuses holds no slot (A-178).
+	// slot: a check of the form alone (no database), so a flood of posts it refuses holds no post slot (A-178); its
+	// refusal page reads the database only as a page view does, under a page slot it never waits for (refuse).
 	// Run must still make the same checks; it is also called without Precheck (tests call post directly).
 	Precheck func(a *App, r *http.Request, token string) error
 	// OneAtATime admits at most oneAtATimeLimit requests of this action per signed-in account at once; another
@@ -225,11 +226,12 @@ func serverError(w http.ResponseWriter, r *http.Request, code int, msg, cause st
 	http.Error(w, msg+"\nReference: "+ref, code)
 }
 
-// writeHTTPError answers err from a check made before the action runs (actionSpec.Precheck).
-func writeHTTPError(w http.ResponseWriter, r *http.Request, err error) {
+// writeHTTPError answers err from a check made before the action runs (actionSpec.Precheck): a refusal on the
+// shared refusal page (refuse), a fault as serverError does.
+func (a *App) writeHTTPError(w http.ResponseWriter, r *http.Request, err error) {
 	var he *httpError
 	if errors.As(err, &he) && he.Code < 500 {
-		http.Error(w, he.Msg, he.Code)
+		a.refuse(w, r, nil, he.Code, he.Msg)
 		return
 	}
 	writeDBFailure(w, r, err)
@@ -508,7 +510,7 @@ func roleRequired(roles []string) string {
 func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string) {
 	spec, ok := actions[r.URL.Path]
 	if !ok || spec.Off != nil && spec.Off(a) {
-		http.Error(w, "Unknown action", 404)
+		a.refuse(w, r, u, 404, "Unknown action")
 		return
 	}
 	// Only a post that is charged to its account's write budget takes a signed-in slot: a public action (sign-in,
@@ -518,15 +520,15 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 	if !spec.Public || len(spec.Roles) > 0 {
 		class = userPostWork
 		if u == nil {
-			http.Error(w, "Sign in required", 401)
+			a.refuse(w, r, nil, 401, "Sign in required")
 			return
 		}
 		if !a.allowWrite(u.ID) {
-			http.Error(w, "Too many changes. Try again later.", 429)
+			a.refuse(w, r, u, 429, "Too many changes. Try again later.")
 			return
 		}
 		if len(spec.Roles) > 0 && !slices.Contains(spec.Roles, u.Role) {
-			http.Error(w, roleRequired(spec.Roles), 403)
+			a.refuse(w, r, u, 403, roleRequired(spec.Roles))
 			return
 		}
 	}
@@ -538,7 +540,7 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 			if spec.FormNonce || spec.ConfirmedFormNonce || spec.OwnFormNonce {
 				msg = "Your previous request is still being processed. Wait a few seconds, then check its result. If the original form is still open, resubmit it unchanged to retrieve the result."
 			}
-			http.Error(w, msg, http.StatusTooManyRequests)
+			a.refuse(w, r, u, http.StatusTooManyRequests, msg)
 			return
 		}
 		defer done()
@@ -597,7 +599,11 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 			serverError(w, r, he.Code, he.Msg, errorCause(he))
 			return
 		}
-		http.Error(w, he.Msg, he.Code)
+		// The refusal page reads the database (refuse): the action's transaction ends first, as for Render.
+		if c.Tx != nil {
+			c.Tx.Rollback()
+		}
+		a.refuse(w, r, u, he.Code, he.Msg)
 		return
 	}
 	if err != nil {

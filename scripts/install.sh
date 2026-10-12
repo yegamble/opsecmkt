@@ -51,7 +51,7 @@ MONERO_IMAGE MONERO_WALLET_IMAGE BITCOIN_PRUNE_MB MONERO_PRUNE_FLAGS BITCOIN_RPC
 CLAMD_ADDRESS CLAMAV_IMAGE CLAMAV_IMAGE_DEFAULT SCANNER_MAX_SIGNATURE_AGE_DAYS IMAGE_STORAGE_LIMIT_MB ESCROW_BTC ESCROW_BTC_RPC_URL
 ESCROW_BTC_ARBITER_WALLET ESCROW_BTC_WATCH_WALLET ESCROW_BTC_FEE_BPS ESCROW_BTC_FEE_ADDRESS ESCROW_BTC_FEE_RATE
 ESCROW_XMR ESCROW_XMR_WALLET_RPC_URL ESCROW_XMR_DAEMON_URL ESCROW_XMR_FEE_BPS ESCROW_XMR_FEE_ADDRESS ESCROW_XMR_SLOTS
-ESCROW_XMR_MAX_FEE ESCROW_XMR_SEED_KEY MONERO_WALLET_SECRET ESCROW_XMR_WALLET_RPC_PASSWORD ESCROW_SIGNER_SOCKET
+ESCROW_XMR_MAX_FEE ESCROW_XMR_SEED_KEY ESCROW_XMR_TOR_RELAY MONERO_WALLET_SECRET ESCROW_XMR_WALLET_RPC_PASSWORD ESCROW_SIGNER_SOCKET
 ESCROW_SIGNER_RPC_URL'
 # What `upgrade` writes for a key missing from .env: the value Compose already uses when the key is absent, so
 # adding it changes nothing but makes it visible. APP_MODE, APP_PORT, COMPOSE_PROJECT_NAME, COMPOSE_PROFILES and
@@ -98,7 +98,8 @@ ESCROW_XMR_FEE_BPS=
 ESCROW_XMR_FEE_ADDRESS=
 ESCROW_XMR_SLOTS=
 ESCROW_XMR_MAX_FEE=
-ESCROW_XMR_SEED_KEY="
+ESCROW_XMR_SEED_KEY=
+ESCROW_XMR_TOR_RELAY="
 # Values from the caller's environment that init and upgrade honour, read before isolate_env clears them.
 caller_app_port=${APP_PORT-}
 caller_project=${COMPOSE_PROJECT_NAME-}
@@ -611,6 +612,18 @@ run_check() {
   if has_item "$profiles" monero-escrow-wallet && [[ -z $(env_value ESCROW_XMR_WALLET_RPC_PASSWORD) ]]; then
     problems="$problems  - the Monero escrow wallet (monero-escrow-wallet profile) needs ESCROW_XMR_WALLET_RPC_PASSWORD"$'\n'
   fi
+  # Monero escrow in Tor mode (A-515): the app refuses any ESCROW_XMR_TOR_RELAY but blank or clearnet-accepted, and
+  # holds settlement relays (relay_tx goes out from this host's IP address) unless the node Tor overlay is listed.
+  if [[ $(env_value ESCROW_XMR) == on ]]; then
+    value=$(env_value ESCROW_XMR_TOR_RELAY)
+    case $value in
+      ''|clearnet-accepted) ;;
+      *) problems="$problems  - ESCROW_XMR_TOR_RELAY must be blank or clearnet-accepted"$'\n' ;;
+    esac
+    if [[ $mode == tor && -z $value ]] && ! compose_has compose.nodes-tor.yaml; then
+      warnings="${warnings}warning: APP_MODE=tor with ESCROW_XMR=on: Monero escrow settlements are built but not relayed, because the escrow wallet-rpc would relay them from this host's IP address. Add compose.nodes-tor.yaml to COMPOSE_FILE (Monero over Tor is unverified) or set ESCROW_XMR_TOR_RELAY=clearnet-accepted; see docs/operator-guide.md#monero-escrow-fakechain-or-stagenet"$'\n'
+    fi
+  fi
   if [[ -n $files ]] && compose_has compose.escrow-xmr.yaml && ! [[ -f $escrow_seed_key_file && ! -L $escrow_seed_key_file ]]; then
     problems="$problems  - COMPOSE_FILE includes compose.escrow-xmr.yaml but $escrow_seed_key_file (the Monero escrow seed key it mounts) is missing"$'\n'
   fi
@@ -892,7 +905,7 @@ cmd_init() {
     if [[ $bare == true ]]; then
       nodes=custom
     elif [[ -z $nodes ]]; then
-      printf '%s\n' "Test-network nodes: 'local' (the default) runs pruned Bitcoin Core (testnet4) and Monero (stagenet) nodes in Docker; they keep about 25-30 GB on disk and their first sync takes hours. 'none' leaves payments off. 'custom' asks per coin."
+      printf '%s\n' "Test-network nodes: 'local' (the default) runs pruned Bitcoin Core (signet) and Monero (stagenet) nodes in Docker; they keep about 25-30 GB on disk and their first sync takes hours. 'none' leaves payments off. 'custom' asks per coin."
       ask nodes 'Nodes (local/none/custom) [local]: '
       nodes=${nodes:-local}
       [[ $nodes == local || $nodes == none || $nodes == custom ]] || die 'Choose local, none or custom.'
@@ -934,9 +947,9 @@ cmd_init() {
         image=${image:-$default_image}
         check_image "$image"
         if [[ $coin == BITCOIN ]]; then
-          if [[ -z $network && $detail == true ]]; then ask network 'BITCOIN escrow network (regtest/testnet4/signet) [testnet4]: '; fi
-          case ${network:-testnet4} in
-            regtest|testnet4|signet) network=${network:-testnet4} ;;
+          if [[ -z $network && $detail == true ]]; then ask network 'BITCOIN escrow network (regtest/testnet4/signet) [signet]: '; fi
+          case ${network:-signet} in
+            regtest|testnet4|signet) network=${network:-signet} ;;
             *) die 'Choose regtest, testnet4, or signet.' ;;
           esac
           if [[ -z $prune && $detail == true ]]; then ask prune 'Prune the BITCOIN node to save disk? (yes/no) [yes]: '; fi
@@ -1203,13 +1216,29 @@ cmd_init() {
   echo 'Check the installation any time with ./scripts/install.sh status.'
   # A local Bitcoin node is infrastructure only (D-58): say how escrow is turned on, and change nothing for it.
   if [[ $btc_choice == local ]]; then
-    local escrow_chain=${bitcoin_chain:-testnet4}
+    local escrow_chain=${bitcoin_chain:-signet}
     echo
-    echo 'Bitcoin escrow stays off until you set it up; this installer edits no file for it. With the local Bitcoin node running:'
-    echo "  ./scripts/escrow-node-setup.sh --chain $escrow_chain --rpc-port 8332 --cli 'docker compose exec -T -u bitcoin bitcoin bitcoin-cli -datadir=/data'"
-    echo '  (it prints bitcoin.conf and .env lines: add the first to the node'"'"'s /data/bitcoin.conf and the second to .env together with ESCROW_BTC=on, then restart the node)'
-    echo "  ESCROW_BTC_RPC_URL='<the URL it printed>' ./scripts/escrow-node-setup.sh --chain $escrow_chain --verify"
-    echo '  Then restart the app. Details: docs/operator-guide.md#escrow-node-set-up-and-the-public-network-smoke'
+    echo 'Bitcoin escrow stays off until you set it up; this installer edits no file for it. Run these in this directory, once the local Bitcoin'
+    echo 'node has synced its chain (a regtest node is ready at once). Lines starting with # are comments, safe to paste.'
+    echo '# 1. Wallets and RPC users; prints bitcoin.conf and .env lines once and writes no file. Copy its output.'
+    echo "./scripts/escrow-node-setup.sh --chain $escrow_chain --rpc-port 8332 --signer --cli 'docker compose exec -T -u bitcoin bitcoin bitcoin-cli -datadir=/data -rpcport=8332'"
+    echo '# 2. Append its rpcauth=, rpcwhitelistdefault= and rpcwhitelist= lines to the node'"'"'s bitcoin.conf (quoted EOF keeps the $ in rpcauth literal):'
+    echo "docker compose exec -T -u bitcoin bitcoin sh -c 'cat >> /data/bitcoin.conf' <<'EOF'"
+    echo '# paste the printed rpcauth, rpcwhitelistdefault and rpcwhitelist lines here'
+    echo 'EOF'
+    echo '# 3. Append its ESCROW_* lines to .env, turn escrow on, and add the signer service. If .env already has any of these keys, the last line wins.'
+    echo "cat >> .env <<'EOF'"
+    echo 'ESCROW_BTC=on'
+    echo "COMPOSE_PROFILES=$profiles,escrow-signer"
+    echo '# paste the printed ESCROW_* lines here'
+    echo 'EOF'
+    echo '# 4. Restart the node, then check it from the Compose network (the bundled node publishes no port). It must print PASS.'
+    echo 'docker compose restart bitcoin'
+    echo "ESCROW_BTC_RPC_URL='<the URL it printed>' ./scripts/escrow-node-setup.sh --chain $escrow_chain --verify --via-compose app --wait 120"
+    echo '# 5. Make the escrow signer'"'"'s seed (write down the fingerprint it prints, then back the seed up), and start everything with the new settings.'
+    echo 'docker compose run --rm --no-deps escrow-signer init'
+    echo 'docker compose up -d'
+    echo 'Details: docs/operator-guide.md#escrow-node-set-up-and-the-public-network-smoke'
   fi
 }
 

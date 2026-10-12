@@ -2,6 +2,7 @@ package market
 
 import (
 	"html"
+	"html/template"
 	"net/url"
 	"regexp"
 	"strings"
@@ -105,7 +106,7 @@ func TestStaffContactShownWherePromised(t *testing.T) {
 		if w.Code != 409 {
 			t.Fatalf("restore of a taken-down listing: %d %q", w.Code, w.Body.String())
 		}
-		return strings.TrimSpace(w.Body.String())
+		return refusalText(w.Body.String())
 	}
 	uploadRefusal := func() string {
 		w := e.upload("/listings/photo", p.vendorSess, e.photoParts(p.vendorSess, photoListing, smallJPEG(t))...)
@@ -129,7 +130,7 @@ func TestStaffContactShownWherePromised(t *testing.T) {
 		if w.Code != 403 || e.cookie(w, "session") != "" || e.cookie(w, "pending") != "" {
 			t.Fatalf("suspended sign-in: %d %q", w.Code, w.Body.String())
 		}
-		return strings.TrimSpace(w.Body.String())
+		return refusalText(w.Body.String())
 	}
 	challenge := func() string {
 		anon, pc := e.pendingSignIn("sc_totp")
@@ -230,8 +231,10 @@ func TestStaffContactShownWherePromised(t *testing.T) {
 		t.Fatalf("hostile contact in the restore refusal: %q", got)
 	}
 	w = e.do("POST", "/login", randomToken(), form("handle", "sc_suspended", "password", testPassword))
-	if ct := w.Header().Get("Content-Type"); w.Code != 403 || !strings.HasPrefix(ct, "text/plain") || w.Header().Get("X-Content-Type-Options") != "nosniff" ||
-		strings.TrimSpace(w.Body.String()) != "This account is suspended. Contact the market staff: "+hostile+"." {
+	// A-514: the sign-in form again, the refusal escaped in its alert.
+	if ct := w.Header().Get("Content-Type"); w.Code != 403 || !strings.HasPrefix(ct, "text/html") || w.Header().Get("X-Content-Type-Options") != "nosniff" ||
+		!strings.Contains(w.Body.String(), `role="alert">`+template.HTMLEscapeString("This account is suspended. Contact the market staff: "+hostile+".")+`</div>`) ||
+		strings.Contains(w.Body.String(), "<script>alert") {
 		t.Fatalf("hostile contact in the suspended refusal: %d %q %q", w.Code, ct, w.Body.String())
 	}
 }

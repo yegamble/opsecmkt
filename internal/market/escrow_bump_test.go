@@ -114,7 +114,7 @@ func (x *escrowEnv) bumpCopy(order, sess string, sid, bid int64) (int, string) {
 
 func (x *escrowEnv) signBump(order, sess string, bid int64, psbt string) (int, string) {
 	w := x.do("POST", "/escrow/bump-sign", sess, url.Values{"order_id": {order}, "bump_id": {strconv.FormatInt(bid, 10)}, "psbt": {psbt}})
-	return w.Code, w.Body.String()
+	return w.Code, refusalText(w.Body.String())
 }
 
 // signBumpAs pastes party's good signature of the fee bump (its wallet signing its own downloaded copy).

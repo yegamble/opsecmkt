@@ -23,6 +23,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 
 REPOSITORY = Path(__file__).resolve().parents[1]
@@ -161,10 +162,18 @@ class ConsistencyTest(unittest.TestCase):
         example = (REPOSITORY / '.env.example').read_text()
         compose = (REPOSITORY / 'compose.yaml').read_text()
         printed = set(re.findall(r'^ *(?:echo ")?([A-Z][A-Z0-9_]+)=(?:http|\$)', SETUP.read_text(), re.M))
-        self.assertEqual(printed, {'ESCROW_BTC_RPC_URL', 'ESCROW_BTC_ARBITER_WALLET', 'ESCROW_BTC_WATCH_WALLET'})
+        self.assertEqual(printed, {'ESCROW_BTC_RPC_URL', 'ESCROW_BTC_ARBITER_WALLET', 'ESCROW_BTC_WATCH_WALLET',
+                                   'ESCROW_SIGNER_RPC_URL'})
         for key in printed:
             self.assertRegex(example, r'(?m)^%s=$' % key)
+        # The signer's URL reaches the signer service alone (compose.nodes.yaml), never the app.
+        nodes = (REPOSITORY / 'compose.nodes.yaml').read_text()
+        for key in printed - {'ESCROW_SIGNER_RPC_URL'}:
             self.assertIn('%s: ${%s:-}' % (key, key), compose)
+        self.assertIn('ESCROW_SIGNER_RPC_URL: ${ESCROW_SIGNER_RPC_URL:-}', nodes)
+        self.assertNotIn('ESCROW_SIGNER_RPC_URL', compose)
+        self.assertRegex(SETUP.read_text(), r'(?m)^ESCROW_SIGNER_SOCKET=/run/escrow-signer/signer\.sock$')
+        self.assertIn('ESCROW_SIGNER_SOCKET: /run/escrow-signer/signer.sock', nodes)
 
     def test_node_bump_checklist_names_both_escrow_scripts(self):
         guide = (REPOSITORY / 'docs' / 'operator-guide.md').read_text()
@@ -339,6 +348,96 @@ class SetupScriptTest(NodeCase):
         for probe in ('listdescriptors', 'gethdkeys'):
             self.assertIn(('opsecmkt-escrow', '/wallet/opsecmkt-arbiter', probe), self.server.calls)
         self.assertNotIn('not-real', r.stdout + r.stderr)
+
+    def test_signer_option_prints_the_signers_own_rpc_user_and_nothing_else_changes(self):
+        r, _, left = self.run_setup('--chain', 'regtest', '--signer', '--rpc-port', '8332')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(left, [])
+        lines = self.lines(r.stdout)
+        auth = [l for l in lines if l.startswith('rpcauth=')]
+        self.assertEqual([l.split(':')[0] for l in auth], ['rpcauth=opsecmkt-escrow', 'rpcauth=opsecmkt-signer'])
+        self.assertEqual([l for l in lines if l.startswith('rpcwhitelist=')],
+                         ['rpcwhitelist=opsecmkt-escrow:' + ','.join(ESCROW_METHODS),
+                          'rpcwhitelist=opsecmkt-signer:decodepsbt,descriptorprocesspsbt,getdescriptorinfo'])
+        self.assertEqual(lines.count('rpcwhitelistdefault=0'), 1)
+        env = dict(l.split('=', 1) for l in lines if l.startswith('ESCROW_'))
+        escrow = re.fullmatch(r'http://opsecmkt-escrow:([0-9a-f]{64})@bitcoin:8332', env['ESCROW_BTC_RPC_URL'])
+        signer = re.fullmatch(r'http://opsecmkt-signer:([0-9a-f]{64})@bitcoin:8332', env['ESCROW_SIGNER_RPC_URL'])
+        self.assertTrue(escrow and signer, env)
+        self.assertNotEqual(escrow.group(1), signer.group(1))
+        self.assertEqual(env['ESCROW_SIGNER_SOCKET'], '/run/escrow-signer/signer.sock')
+        salt, digest = auth[1].split(':', 1)[1].split('$')
+        self.assertEqual(digest, hmac.new(salt.encode(), signer.group(1).encode(), hashlib.sha256).hexdigest())
+        self.assertNotIn(signer.group(1), r.stderr)
+        # Without the option nothing about the signer is printed.
+        plain, _, _ = self.run_setup('--chain', 'regtest')
+        self.assertNotIn('ESCROW_SIGNER', plain.stdout)
+
+    def via_compose(self, extra_args=(), url=None, wait_args=()):
+        """--verify through a fake `docker compose exec -T SERVICE CMD...` that runs CMD here (the real inner bash
+        /dev/tcp script, against the fake node) and records its own arguments."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        fake = Path(tmp.name, 'docker')
+        argv_log = Path(tmp.name, 'argv')
+        fake.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$@" >> "$FAKE_DOCKER_ARGV"\n'
+                        '[ "$1 $2 $3" = "compose exec -T" ] || exit 1\nshift 4\nexec "$@"\n')
+        fake.chmod(0o755)
+        env = dict(os.environ, PATH=tmp.name + os.pathsep + os.environ['PATH'], FAKE_DOCKER_ARGV=str(argv_log),
+                   ESCROW_BTC_RPC_URL=url or self.url('opsecmkt-escrow', 'escrow-not-real-1'))
+        r = subprocess.run(['bash', str(SETUP), '--chain', 'regtest', '--verify', '--via-compose', 'app', *extra_args],
+                           env=env, capture_output=True, text=True, timeout=60)
+        return r, argv_log.read_text() if argv_log.exists() else ''
+
+    def test_verify_via_compose_passes_from_inside_the_network_without_curl_or_a_password_on_a_command_line(self):
+        self.server.chain = 'regtest'
+        r, argv = self.via_compose()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn('PASS', r.stdout)
+        self.assertIn('ok: escrow user: listdescriptors on opsecmkt-arbiter refused with HTTP 403 (got HTTP 403)', r.stdout)
+        for probe in ('listdescriptors', 'gethdkeys'):
+            self.assertIn(('opsecmkt-escrow', '/wallet/opsecmkt-arbiter', probe), self.server.calls)
+        self.assertEqual(argv.split()[:4], ['compose', 'exec', '-T', 'app'])
+        self.assertIn('/dev/tcp', argv)
+        self.assertNotIn('not-real', argv + r.stdout + r.stderr)
+        # The same checks refuse a widened escrow user and another chain, as the curl route does.
+        self.server.whitelists['opsecmkt-escrow'] = set(ESCROW_METHODS) | {'gethdkeys'}
+        r, _ = self.via_compose()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn('FAILED: escrow user: gethdkeys on opsecmkt-arbiter refused with HTTP 403 (got HTTP 200)', r.stderr)
+        self.server.whitelists['opsecmkt-escrow'] = set(ESCROW_METHODS)
+        self.server.chain, self.server.calls = 'signet', []
+        r, _ = self.via_compose()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("reports chain 'signet' (HTTP 200), not regtest", r.stderr)
+        self.assertEqual([c for c in self.server.calls if c[2] != 'getblockchaininfo'], [])
+
+    def test_verify_via_compose_needs_a_plain_http_url_and_belongs_to_verify(self):
+        r, _ = self.via_compose(url='https://opsecmkt-escrow:x1@127.0.0.1:1')
+        self.assertEqual(r.returncode, 1)
+        self.assertIn('--via-compose needs ESCROW_BTC_RPC_URL as http://user:password@host:port', r.stderr)
+        r, _ = self.via_compose(url='http://opsecmkt-escrow:x1@127.0.0.1:9')
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("reports chain 'nothing' (HTTP )", r.stderr)
+        self.assertIn('No answer through Compose service app: is it running, and is this the project directory?', r.stderr)
+        r = subprocess.run(['bash', str(SETUP), '--chain', 'regtest', '--via-compose', 'app'], capture_output=True, text=True,
+                           timeout=60)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn('--via-compose belongs to --verify', r.stderr)
+
+    def test_verify_wait_keeps_asking_a_node_that_is_not_answering_yet(self):
+        started = time.monotonic()
+        r = subprocess.run(['bash', str(SETUP), '--chain', 'regtest', '--verify', '--wait', '3'],
+                           env=dict(os.environ, ESCROW_BTC_RPC_URL='http://opsecmkt-escrow:x1@127.0.0.1:9'),
+                           capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 1)
+        self.assertGreaterEqual(time.monotonic() - started, 3)
+        self.assertIn("reports chain 'nothing'", r.stderr)
+        started = time.monotonic()
+        subprocess.run(['bash', str(SETUP), '--chain', 'regtest', '--verify'],
+                       env=dict(os.environ, ESCROW_BTC_RPC_URL='http://opsecmkt-escrow:x1@127.0.0.1:9'),
+                       capture_output=True, text=True, timeout=60)
+        self.assertLess(time.monotonic() - started, 3)
 
     def test_verify_refuses_legacy_pooled_url_before_rpc(self):
         self.server.chain = 'regtest'

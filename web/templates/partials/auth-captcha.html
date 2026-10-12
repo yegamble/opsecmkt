@@ -1,11 +1,12 @@
 {{/* P1 Authentication owns. Fields inside the login and register forms, before the submit button */}}
 {{define "auth-captcha"}}{{with .Captcha}}<fieldset class="captcha">
 <legend>Human check</legend>{{if .ID}}
-<img class="captcha-image" src="/captcha?id={{.ID}}" width="200" height="70" alt="CAPTCHA image of six letters and digits. No audio alternative is available.">
+<img class="captcha-image" src="/captcha?id={{.ID}}" width="200" height="70" alt="CAPTCHA image of six letters and digits. No audio or text alternative is available.">
 <input type="hidden" name="captcha_id" value="{{.ID}}">
 <label>Characters in the image<input name="captcha" required minlength="6" maxlength="6" autocomplete="off" autocapitalize="characters" spellcheck="false">
 </label>
-<span class="help">Not case-sensitive. Each image works once and expires after 10 minutes; reload the page for a new one. There is no audio alternative.</span>
-<span class="help staff-contact">Can’t read the image? {{template "staff-contact" $}}</span>{{else}}
+<span class="help">Not case-sensitive. Each image works once and expires after 10 minutes; reload the page for a new one. There is no audio or text alternative.</span>
+<span class="help staff-contact">Can’t read the image? {{template "staff-contact" $}}</span>
+<span class="help captcha-fallback">{{with $.StaffContact}}{{if .NeedsAccount}}That handle can be messaged only from an account, which needs this image first, so it does not help here. Only the operator of this market can turn the CAPTCHA off.{{else}}You do not need an account to write to that contact: ask the staff to have the market’s operator turn the CAPTCHA off, since accounts are made on this page and there is no other way in.{{end}}{{else}}This market lists no contact that works without an account, so there is no way to get one without the image. Only the operator of this market can turn the CAPTCHA off.{{end}}</span>{{else}}
 <p class="alert error" role="alert">{{.Error}}</p>{{end}}
 </fieldset>{{end}}{{end}}

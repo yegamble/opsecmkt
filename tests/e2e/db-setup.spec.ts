@@ -46,12 +46,17 @@ test('initialize the market and publish the fixture listing', async ({ page, bro
   await expect(anon.getByRole('alert')).toContainText('Enter the characters of the new image below.');
   await expect(anon.locator('img.captcha-image')).toHaveCount(1);
   expect(await anon.locator('img.captcha-image').getAttribute('src')).not.toBe(src);
+  // A-517: no staff contact is set yet, so the form says there is no way in without the image.
+  await expect(anon.locator('.captcha .captcha-fallback')).toContainText('This market lists no contact that works without an account');
   await visitor.close();
   // Turn it off so the other db-*.spec.ts files can register and sign in without solving images.
   await page.goto('/admin');
+  // A-517: the CAPTCHA is on and there is no staff contact, so the administrator is warned.
+  await expect(page.locator('.admin-auth .captcha-contact-warning')).toContainText('the CAPTCHA is on, but no staff contact is set.');
   await page.locator('.admin-auth').getByLabel('Current password').fill(ADMIN.password);
   await page.locator('.admin-auth').getByRole('button', { name: 'Turn CAPTCHA off' }).click();
   await expect(page.locator('.admin-auth')).toContainText('Off');
+  await expect(page.locator('.admin-auth .captcha-contact-warning')).toHaveCount(0);
   await page.goto('/register');
   await expect(page.locator('img.captcha-image')).toHaveCount(0);
 });

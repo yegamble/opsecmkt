@@ -61,7 +61,11 @@ type Notification struct {
 
 // StaffContactView is the administrator's staff contact (A-119, staff_contact.go): Text as saved, shown escaped;
 // Handle set only when a signed-in reader may be linked to /messages?to=<Handle>.
-type StaffContactView struct{ Text, Handle string }
+// NeedsAccount: the contact is a bare handle, which only a signed-in user can message (A-517).
+type StaffContactView struct {
+	Text, Handle string
+	NeedsAccount bool
+}
 type Dispute struct {
 	ID, OrderID, Reason, Status, Resolution, Created string
 	NoResolver                                       bool // open, and no unsuspended moderator or administrator is independent
@@ -154,6 +158,10 @@ type PageData struct {
 	DeliveryCleanupCount  int
 	// UploadBack and UploadBackLabel: the refusal page of an upload (A-186, uploads.go) links back here.
 	UploadBack, UploadBackLabel string
+	// Refusal: the shared refusal page of a refused request (A-514, refusal.go); nil on every other page.
+	Refusal *RefusalView
+	// FormHandle: /login and /register re-rendered after a refused post, the handle that was typed (A-514).
+	FormHandle string
 	// ImageStorage: admin page, stored photos and avatars against IMAGE_STORAGE_LIMIT_MB (uploads.go).
 	ImageStorage *ImageStorageView
 	// A-189 (image_pages.go). StaffListPublic: /canary, the administrator's "Show a public staff list" is on;
@@ -163,6 +171,8 @@ type PageData struct {
 	// StaffContact: /canary, /challenge, /login, /register, /notifications, /vendor-dashboard and /listing-edit (a
 	// taken-down listing, A-279), the administrator's staff contact (A-119, staff_contact.go); nil while unset.
 	StaffContact *StaffContactView
+	// CaptchaNoContact: admin page, the CAPTCHA is required but no staff contact works without an account (A-517).
+	CaptchaNoContact bool
 	// StaffAttention: uncapped actionable category totals in the shared navigation and staff desk summaries.
 	StaffAttention *StaffAttention
 	// A-190 (image_takedown.go). RecentImages: /moderator, the newest public photos and avatars (vendors' only for a moderator); AvatarTakedown:
@@ -335,6 +345,7 @@ type PageData struct {
 	Contacts              []ContactKey // vendor page: the vendor; order page: the other party (both for a reviewer); messages: the ?to recipient
 	StaffContacts         []ContactKey // disputed order: independent moderators and administrators
 	MessageTo             string       // messages page: validated ?to handle for the recipient field
+	MessageLookupPaused   bool         // messages page: the account's recipient lookup budget is spent (A-516); no key, no existence text
 	OrderViewer           string       // order page: "buyer", "vendor" or "moderator" (read-only dispute review)
 	OrderSuspendedParties []string     // current buyer/vendor suspension status; never the administrator's reason
 	UnreadNotifications   int          // signed-in users, every page

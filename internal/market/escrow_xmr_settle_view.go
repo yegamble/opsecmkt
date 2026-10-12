@@ -129,6 +129,8 @@ func (a *App) xmrSettlementStatus(s *XMRSettlementView, o *Order, outcome string
 		switch {
 		case restoreHeld(s.wait):
 			s.Status = "Built, checked and stored. " + restoreHeldText
+		case a.xmrRelayHold() != "":
+			s.Status = "Built, checked and stored. The market holds its Monero relays until the operator has finished setting up its node; it then sends this transaction unchanged. Nothing has been sent yet."
 		case s.wait == sendRebroadcastOK:
 			s.Status = "Built, checked and stored. " + xmrRelayConfirmedText
 		case v.RestorePaused && !xmrRelayConfirmed(s.wait):

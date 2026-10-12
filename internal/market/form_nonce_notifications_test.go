@@ -78,7 +78,8 @@ func TestFormNonceNotificationMarkReadReplaysAndBindsActorSessionAndBody(t *test
 	e.check(sessionMismatch, 409)
 	actorMismatch := e.do("POST", "/notifications", other, form)
 	e.check(actorMismatch, 409)
-	if bodyMismatch.Body.String() != sessionMismatch.Body.String() || bodyMismatch.Body.String() != actorMismatch.Body.String() {
+	// The refusal page's header names the signed-in account, so its reason is compared.
+	if refusalText(bodyMismatch.Body.String()) != refusalText(sessionMismatch.Body.String()) || refusalText(bodyMismatch.Body.String()) != refusalText(actorMismatch.Body.String()) {
 		t.Fatal("nonce mismatch response reveals whether another account owns the receipt")
 	}
 	if got := agStr(e, "SELECT is_read::text FROM notifications WHERE id='notification-other'"); got != "false" {

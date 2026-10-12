@@ -242,8 +242,8 @@ func TestEscrowCheckoutCreatesEscrow(t *testing.T) {
 	}
 	// Anyone else: the download does not exist for them.
 	_, other := x.user("eother_"+randomToken()[:6], "buyer")
-	unknown := x.do("GET", "/no-such-page", other, nil)
 	for _, sess := range []string{other, randomToken()} {
+		unknown := x.do("GET", "/no-such-page", sess, nil) // A-514: an HTML page whose header shows the reader
 		if w := x.do("GET", "/escrow-descriptor?id="+x.order, sess, nil); w.Code != 404 || w.Body.String() != unknown.Body.String() {
 			t.Fatalf("download for a non-party: %d", w.Code)
 		}
@@ -820,12 +820,12 @@ func TestEscrowCheckoutOfferCopy(t *testing.T) {
 			t.Fatalf("%s: form=%v, want %q:\n%s", name, form, want, body)
 		}
 	}
-	offered("both active", true, "Or pay into a Bitcoin escrow")
+	offered("both active", true, "Pay into a Bitcoin escrow")
 	floor := payoutFloor("BTC", "release")
 	x.DB.Exec("UPDATE products SET btc=$2 WHERE id=$1", x.product, floor-1)
 	offered("legacy sub-floor BTC price", false, "below the escrow settlement minimum")
 	x.DB.Exec("UPDATE products SET btc=$2 WHERE id=$1", x.product, floor)
-	offered("price at the floor", true, "Or pay into a Bitcoin escrow")
+	offered("price at the floor", true, "Pay into a Bitcoin escrow")
 	x.DB.Exec("UPDATE user_escrow_keys SET active_at=NULL WHERE user_id=$1", x.vendor)
 	offered("vendor inactive", false, "<strong>Unavailable.</strong> The vendor has no active Bitcoin escrow key, so this order cannot use escrow.")
 	x.DB.Exec("DELETE FROM user_escrow_keys WHERE user_id=$1", x.vendor)

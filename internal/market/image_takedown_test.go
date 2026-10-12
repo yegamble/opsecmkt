@@ -180,12 +180,12 @@ func TestImageTakedownRefusalsMatchUnknownID(t *testing.T) {
 	for what, id := range map[string]string{"archived listing's photo": hiddenPhoto.id, "hidden administrator's avatar": hiddenAdminAvatar.id,
 		"own avatar": ownAvatar.id, "malformed id": "../" + hiddenPhoto.id, "empty id": ""} {
 		w := e.takeDown(moderator, id, imageTakedownReason)
-		if w.Code != ref.Code || w.Body.String() != ref.Body.String() {
+		if w.Code != ref.Code || refusalText(w.Body.String()) != refusalText(ref.Body.String()) {
 			t.Fatalf("%s: %d %q, want the unknown-id answer %q", what, w.Code, w.Body.String(), ref.Body.String())
 		}
 	}
 	// An administrator may take down the photo of an archived listing, but not their own avatar here.
-	if w := e.takeDown(admin, hiddenAdminAvatar.id, imageTakedownReason); w.Code != 404 || w.Body.String() != ref.Body.String() {
+	if w := e.takeDown(admin, hiddenAdminAvatar.id, imageTakedownReason); w.Code != 404 || refusalText(w.Body.String()) != refusalText(ref.Body.String()) {
 		t.Fatalf("administrator's own avatar: %d %q", w.Code, w.Body.String())
 	}
 	for _, reason := range []string{"", "too short", "   short   ", strings.Repeat("x", 501), "\xff\xfe invalid utf-8 reason"} {

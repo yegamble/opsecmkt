@@ -27,6 +27,21 @@ test('preview pages state that payments are disabled', async ({ page }) => {
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(page.viewportSize()!.width);
 });
 
+// A-512: with neither escrow on (always true in the preview) the catalog, checkout and an unfunded draft say once that
+// the market is not accepting payments, and give no how-to-pay instruction. The catalog eyebrow is a status, not a claim.
+test('preview pages say once that payments are off and give no how-to-pay text', async ({ page }) => {
+  for (const path of ['/', '/checkout?id=encrypted-drive', `/order?id=${PREVIEW_DRAFT_ID}`]) {
+    expect((await page.goto(path))?.status()).toBe(200);
+    await expect(page.locator('main').getByText('This market is not accepting payments right now')).toHaveCount(1);
+    await expect(page.locator('main')).not.toContainText('complete it under Next steps');
+    await expect(page.locator('main')).not.toContainText('If an escrow checkout is available');
+    await expect(page.locator('main')).not.toContainText('can be paid through per-order escrow');
+  }
+  await page.goto('/');
+  await expect(page.locator('main')).toContainText('Test-network alpha · no real funds');
+  await expect(page.locator('main')).not.toContainText('Purpose-built for privacy');
+});
+
 // A-492: the paid sample has no pooled payment record (its deposit table and copy were removed with pooled payments).
 test('preview paid sample shows no pooled payment record', async ({ page }) => {
   await page.goto(`/order?id=${PREVIEW_PAID_ID}`);

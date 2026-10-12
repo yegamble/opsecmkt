@@ -70,10 +70,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          cat > release-notes.md <<'NOTES'
+          printf 'Pre-release. Test networks only. No real funds. Install: git checkout %s; see UPGRADING.md.\n\n' "$RELEASE_TAG" > release-notes.md
+          cat >> release-notes.md <<'NOTES'
           Built after CI verification: Linux amd64 OCI image archive. Verify SHA256SUMS before importing with an OCI-aware tool such as Skopeo. The archive embeds BuildKit provenance and an SBOM. These are build metadata, not a cryptographic signature. See docs/ci-cd.md for import and rollback instructions. No production deployment is performed.
 
-          verify-audit-OS-ARCH are standalone builds of cmd/verify-audit for checking a signed audit export offline: verify-audit -pub <key from /canary> export.jsonl export.sig (exit 0 = valid). They are listed in SHA256SUMS.
+          The default image CAPTCHA has no audio or text alternative.
+
+          Reproducibility: the OCI archive is for inspection and registry import. scripts/install.sh builds the application from source on your host and is not bit-reproducible, so the archive is not what the installer runs.
+
+          verify-audit-OS-ARCH are standalone builds of cmd/verify-audit for checking a signed audit export offline: verify-audit -pub <key from /canary> export.jsonl export.sig (exit 0 = valid). They are listed in SHA256SUMS. Each is built on the runner with: CGO_ENABLED=0 GOOS=OS GOARCH=ARCH go build -trimpath -buildvcs=false -ldflags='-s -w -buildid=' -o verify-audit-OS-ARCH ./cmd/verify-audit
           NOTES
+          echo "Go version: $(go version)" >> release-notes.md
+          flags=()
+          if [[ "$RELEASE_TAG" == *-* ]]; then flags=(--prerelease); fi
           gh release create "$RELEASE_TAG" opsecmkt.oci.tar.gz SHA256SUMS build.json verify-audit-* \
-            --verify-tag --draft --title "$RELEASE_TAG" --notes-file release-notes.md
+            --verify-tag --draft "${flags[@]}" --title "$RELEASE_TAG" --notes-file release-notes.md

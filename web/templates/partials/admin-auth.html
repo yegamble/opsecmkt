@@ -1,6 +1,7 @@
 {{/* P1 Authentication owns. Admin panels after the settings grid */}}
 {{define "admin-auth"}}{{$off := eq (index .Settings "captcha_required") "false"}}<section class="panel admin-auth">
-<h2>Sign-in protection</h2>
+<h2>Sign-in protection</h2>{{if .CaptchaNoContact}}
+<p class="alert captcha-contact-warning" role="note"><strong>Warning:</strong> the CAPTCHA is on, but {{if index .Settings "staff_contact"}}the staff contact is only a handle, which can be messaged only from an account{{else}}no staff contact is set{{end}}. The image has no audio or text alternative, so someone who cannot read it cannot sign in or register and has no way to ask for help. Fix it by saving an onion, XMPP or other address that works without an account under Staff contact below, or by turning the CAPTCHA off here.</p>{{end}}
 <dl class="key-values">
 <div>
 <dt>CAPTCHA on sign-in and registration</dt>
@@ -21,7 +22,7 @@
 {{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
 <button type="submit">Turn CAPTCHA off</button>{{end}}
 </form>
-<p class="help">The CAPTCHA is an image only, with no audio alternative; first-run setup never asks for it. Changes are recorded in the audit trail.</p>
+<p class="help">The CAPTCHA is an image only, with no audio or text alternative (it fails WCAG 3.3.8 for people who cannot read it); first-run setup never asks for it. Changes are recorded in the audit trail.</p>
 </section>
 {{template "signin-protection" .}}
 <section class="panel admin-reset-factors" id="reset-factors" aria-labelledby="reset-factors-heading">

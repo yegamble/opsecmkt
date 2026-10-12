@@ -211,8 +211,10 @@ func TestUnknownAndMissingResources404(t *testing.T) {
 	product := e.product(vendorID, "physical")
 	foreign := e.order(otherID, product, "BTC", stateDraft)
 	for _, path := range []string{"/no-such-page", "/admin/../secret", "/product?id=missing", "/product", "/vendor?id=missing", "/vendor?id=" + buyerID, "/checkout?id=missing", "/order?id=missing", "/order?id=" + foreign} {
-		if w := e.do("GET", path, buyer, nil); w.Code != 404 {
-			t.Errorf("GET %s: %d", path, w.Code)
+		// A-514: the shared refusal page, the same for every kind of missing page.
+		if w := e.do("GET", path, buyer, nil); w.Code != 404 || !strings.HasPrefix(w.Header().Get("Content-Type"), "text/html") ||
+			!strings.Contains(w.Body.String(), `role="alert">Page not found.</div>`) {
+			t.Errorf("GET %s: %d %q", path, w.Code, w.Header().Get("Content-Type"))
 		}
 	}
 	agExpect(e, "/no-such-action", buyer, nil, 404, "Unknown action")

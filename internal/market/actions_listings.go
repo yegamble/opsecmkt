@@ -38,8 +38,27 @@ func validateListing(f url.Values) (listingInput, error) {
 	xmr, e2 := parseAmount(f.Get("price_xmr"), 12)
 	stock, e3 := strconv.Atoi(f.Get("stock"))
 	in := listingInput{Title: normalizedFormText(f.Get("title")), Description: normalizedFormText(f.Get("description")), Category: f.Get("category"), Region: f.Get("region"), Kind: f.Get("kind"), DeliveryContent: f.Get("delivery_content"), BTC: btc, XMR: xmr, Stock: stock}
-	if e1 != nil || e2 != nil || e3 != nil || stock < 0 || stock > 1000000 || !textLength(in.Title, 3, 140) || !textLength(in.Description, 0, 10000) || (in.Kind != "digital" && in.Kind != "physical") || (in.Category != "Hardware" && in.Category != "Digital" && in.Category != "Services") || !textLength(in.Region, 2, 80) {
-		return listingInput{}, fail(400, "Invalid listing. Check price precision, stock, category, and required fields.")
+	// A-514: each field in error is named, by its form label, in form order.
+	var problems []string
+	for _, p := range []struct {
+		bad bool
+		msg string
+	}{
+		{!textLength(in.Title, 3, 140), "Listing title: use 3 to 140 characters."},
+		{!textLength(in.Description, 0, 10000), "Description: use at most 10000 characters."},
+		{in.Category != "Hardware" && in.Category != "Digital" && in.Category != "Services", "Category: choose Hardware, Digital or Services."},
+		{!textLength(in.Region, 2, 80), "Region: use 2 to 80 characters."},
+		{in.Kind != "digital" && in.Kind != "physical", "Fulfillment type: choose physical or digital."},
+		{e3 != nil || stock < 0 || stock > 1000000, "Stock: use a whole number from 0 to 1000000."},
+		{e1 != nil, "Bitcoin price: use a positive amount with at most 8 decimal places."},
+		{e2 != nil, "Monero reference price: use a positive amount with at most 12 decimal places."},
+	} {
+		if p.bad {
+			problems = append(problems, p.msg)
+		}
+	}
+	if len(problems) > 0 {
+		return listingInput{}, fail(400, strings.Join(problems, " "))
 	}
 	// A payout below its currency's floor is never sent (A-99, A-232), so no order may be priced below it.
 	if in.BTC < minPayoutBTC {

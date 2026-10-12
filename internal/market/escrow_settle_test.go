@@ -110,7 +110,7 @@ func addField(t *testing.T, raw []byte, i int, key, value []byte) []byte {
 
 func (x *escrowEnv) sign(order, sess string, id int64, psbt string) (int, string) {
 	w := x.do("POST", "/escrow/sign", sess, url.Values{"order_id": {order}, "settlement_id": {strconv.FormatInt(id, 10)}, "psbt": {psbt}})
-	return w.Code, w.Body.String()
+	return w.Code, refusalText(w.Body.String())
 }
 
 func (x *escrowEnv) keyHex(order, party string) string {

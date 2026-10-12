@@ -31,6 +31,8 @@ Server-rendered Go and PostgreSQL, PGP identity, Tor-first deployment.
 Most marketplace software assumes a JavaScript-heavy browser and a stack of
 third-party services. OPSEC Market is built for the opposite case: a visitor on
 Tor Browser with scripts off, and an operator who runs everything on one host.
+It has not yet been tried in Tor Browser; the
+[manual pass](docs/verification.md#manual-tor-browser-pass-owner) is not yet run.
 
 - **Nothing runs in the browser.** Pages are plain HTML and CSS with a strict
   Content Security Policy. There is no frontend build and no third-party asset.
@@ -60,7 +62,7 @@ Payments on this development build use test coins only. Enabling a node alone do
 | **Monero per-order escrow** (`ESCROW_XMR=on`) | Local fakechain or stagenet. Off by default; testnet and mainnet refused. | Custodial. Fifteen legs on a real `monerod` fakechain run in CI (`escrow-xmr-regtest`); an offline stagenet fork is tested by hand. One funded public stagenet digital claim passed on 2026-10-10 ([record](docs/evidence/public-testnet/2026-10-10-ac71878dfde4/stagenet-xmr/README.md)). Public refunds and physical deadlines remain unverified. |
 | **Pooled wallet (removed)** | None. No pooled payment, payout or drain exists on this build. | A database that holds pooled payment history is refused unchanged: migration 107 while pooled obligations are open (mainnet history always), migration 108 for any `payouts` or `payment_addresses` row. Keep the previous release on such a database; this build neither tests nor drains it (owner directive). No real-market drain is claimed. |
 
-Bundled nodes default to Bitcoin **testnet4** and Monero **stagenet**. Bitcoin **signet** is the public network with recorded proof; **regtest** and Monero **fakechain** are isolated development networks. Local nodes require disk space and a full first sync even when pruned. External nodes or cloud test nodes avoid storing chains on your workstation. Use the [Bitcoin operator package](docs/operator-guide.md#bitcoin-escrow-test-networks-only) and [Monero setup](docs/operator-guide.md#monero-escrow-fakechain-or-stagenet) to provision escrow wallets and credentials.
+Bundled nodes default to Bitcoin **signet** (the public network with recorded proof; the escrow chain pin makes the first chain sticky, so choose before first use) and Monero **stagenet**; **regtest** and Monero **fakechain** are isolated development networks. Local nodes require disk space and a full first sync even when pruned. External nodes or cloud test nodes avoid storing chains on your workstation. Use the [Bitcoin operator package](docs/operator-guide.md#bitcoin-escrow-test-networks-only) and [Monero setup](docs/operator-guide.md#monero-escrow-fakechain-or-stagenet) to provision escrow wallets and credentials.
 
 <table>
   <tr>
@@ -97,6 +99,16 @@ sample data and rejects every form write. Stop it with <kbd>Ctrl</kbd>+<kbd>C</k
 </details>
 
 ## Self-host
+
+Install a release, not `main`. Replace `v0.1.0-alpha.2` with the latest prerelease
+tag listed on the [Releases page](https://github.com/yegamble/opsecmkt/releases):
+
+```sh
+git clone https://github.com/yegamble/opsecmkt.git && cd opsecmkt && git checkout v0.1.0-alpha.2
+```
+
+`git pull` on `main` is not a supported upgrade path for a release install; see
+[UPGRADING.md](UPGRADING.md).
 
 You need Docker with Compose v2 (2.17 or later for Tor) and OpenSSL.
 
@@ -152,22 +164,69 @@ escrow setting. To turn on Bitcoin escrow against the local test-network node th
 started (Monero escrow has its own steps in the
 [operator guide](docs/operator-guide.md#monero-escrow-fakechain-or-stagenet)):
 
-1. Install with a local Bitcoin node on regtest, signet or testnet4, for example
+1. Install with a local Bitcoin node (signet by default; regtest or testnet4 by option), for example
    `./scripts/install.sh init --tor --nodes local --bitcoin-network signet`, and let the node sync.
-   Never use a mainnet or testnet3 node: escrow refuses them.
-2. Run `scripts/escrow-node-setup.sh`, with the `--chain`, `--rpc-port` and `--cli` the installer
-   printed at its end. It creates the arbiter and watch-only wallets and prints, once, the
-   `bitcoin.conf` and `.env` lines for a restricted escrow RPC user. It writes no file.
-3. Paste the printed `bitcoin.conf` lines into the node's configuration (`/data/bitcoin.conf`
-   in the bundled node's volume), and the printed `.env` lines (`ESCROW_BTC_RPC_URL` and the
-   wallet names) into `.env` together with `ESCROW_BTC=on`.
-4. Restart the Bitcoin node (`docker compose restart bitcoin`).
-5. Check it: `ESCROW_BTC_RPC_URL='<the printed URL>' scripts/escrow-node-setup.sh --chain signet --verify`
-   must print `PASS`. The bundled node publishes no port and the printed host name (`bitcoin`)
-   resolves only inside the Compose network, so run it from somewhere that can reach the node, as
-   the operator guide's node set-up section describes.
-6. Restart the app (`docker compose up -d`). The log line `escrow: Bitcoin escrow on (test networks
-   only)` and the `/admin` escrow status show it is on.
+   Never use a mainnet or testnet3 node: escrow refuses them. `--local` installs **no nodes** and the
+   installer cannot add them to an existing install later; start with `init` and a node option instead
+   (or follow the [operator guide](docs/operator-guide.md#escrow-node-set-up-and-the-public-network-smoke)
+   for a node you run yourself).
+2. Run the commands the installer printed at its end, in this directory (they are also in the
+   [operator guide](docs/operator-guide.md#escrow-node-set-up-and-the-public-network-smoke); the examples
+   use signet, `--chain` follows your install). First the set-up script, which creates the arbiter and
+   watch-only wallets and prints, once, `bitcoin.conf` and `.env` lines for the app's restricted escrow
+   RPC user and for the escrow signer's own user. It writes no file. The bundled node listens on RPC port
+   8332 whatever the chain, so `bitcoin-cli` needs `-rpcport=8332` as well:
+
+   ```sh
+   ./scripts/escrow-node-setup.sh --chain signet --rpc-port 8332 --signer \
+     --cli 'docker compose exec -T -u bitcoin bitcoin bitcoin-cli -datadir=/data -rpcport=8332'
+   ```
+
+3. Append the printed `rpcauth`, `rpcwhitelistdefault` and `rpcwhitelist` lines to the node's
+   `bitcoin.conf`. The quoted `'EOF'` keeps the `$` inside `rpcauth` literal; a shell would expand it in
+   an unquoted heredoc or a double-quoted `echo`:
+
+   ```sh
+   docker compose exec -T -u bitcoin bitcoin sh -c 'cat >> /data/bitcoin.conf' <<'EOF'
+   # paste the printed rpcauth, rpcwhitelistdefault and rpcwhitelist lines here
+   EOF
+   ```
+
+4. Append the printed `ESCROW_*` lines to `.env`, with `ESCROW_BTC=on` and the signer's profile (the last
+   line for a key wins, so write the `COMPOSE_PROFILES` value already in `.env`, here the usual
+   `internal-db,bitcoin`, followed by `,escrow-signer`; the installer prints it for your install):
+
+   ```sh
+   cat >> .env <<'EOF'
+   ESCROW_BTC=on
+   COMPOSE_PROFILES=internal-db,bitcoin,escrow-signer
+   # paste the printed ESCROW_* lines here
+   EOF
+   ```
+
+5. Restart the node and check it from the Compose network (the bundled node publishes no port, and the
+   printed host `bitcoin` resolves only there; `--via-compose app` sends the checks from the app container).
+   It must print `PASS`:
+
+   ```sh
+   docker compose restart bitcoin
+   ESCROW_BTC_RPC_URL='<the printed URL>' ./scripts/escrow-node-setup.sh --chain signet --verify --via-compose app --wait 120
+   ```
+
+6. Make the escrow signer's seed (per-order escrows need the signer; write down the fingerprint it prints and
+   back the seed up as the [operator guide](docs/operator-guide.md#escrow-signer) says), then restart
+   everything with the new settings:
+
+   ```sh
+   docker compose run --rm --no-deps escrow-signer init
+   docker compose up -d
+   ```
+
+   The app logs `escrow: Bitcoin escrow on (test networks only)` and, once the signer answers, `escrow signer ready`;
+   `/admin` shows the escrow status.
+
+CI runs these installer-printed commands on a throwaway regtest install (`escrow-node-rehearsal`); that proves the
+command path, not a signet or testnet4 node.
 
 Then back up the arbiter and watch-only wallets as the
 [runbook](docs/testnet-runbook.md#back-up-and-restore-the-escrow-arbiter-and-watch-only-wallets)
@@ -200,9 +259,11 @@ removed wallet is refused by migrations 107 and 108.
 
 **What the server keeps.** There is no account, message or order deletion, and
 the operator or anyone holding a decrypted backup can read what is stored.
-Shipping addresses are never stored: buyers send them to the vendor
-PGP-encrypted. Review text, dispute reasons, order
-notes and digital delivery content are stored in plaintext. Listing photos and
+There is no shipping address field: buyers send the address as a message
+encrypted to the vendor's key, and the market keeps that encrypted message
+(it cannot read it). It cannot stop an address typed into a plaintext field
+such as a dispute reason, an order note or a review. Review text, dispute
+reasons, order notes and digital delivery content are stored in plaintext. Listing photos and
 avatars are kept only as re-encoded JPEGs without the uploaded file, its name or
 its metadata; deleting one leaves copies in older backups. The full list is in
 [what the server keeps](docs/implementation-status.md#what-the-server-keeps).
@@ -245,3 +306,7 @@ are reset from the host with `-reset-admin-password` and `-reset-admin-factors`
 Read [CONTRIBUTING.md](CONTRIBUTING.md) for the ground rules, the test gates and
 the review loops. Development setup and every test suite are in
 [docs/development.md](docs/development.md).
+
+## License
+
+AGPL-3.0; see [LICENSE](LICENSE). To report a vulnerability, see [SECURITY.md](SECURITY.md).
