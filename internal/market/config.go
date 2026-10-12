@@ -137,10 +137,7 @@ func checkComposeOverlay(mode, composeFile string) error {
 	if strings.TrimSpace(composeFile) == "" {
 		return nil
 	}
-	has := map[string]bool{}
-	for _, f := range strings.FieldsFunc(composeFile, func(r rune) bool { return r == ':' || r == ';' }) {
-		has[path.Base(strings.ReplaceAll(strings.TrimSpace(f), `\`, "/"))] = true
-	}
+	has := composeFiles(composeFile)
 	const fix = "; APP_MODE and the Compose overlay must agree (scripts/install.sh writes both; see docs/operator-guide.md)"
 	if has["compose.clearnet.yaml"] && has["compose.tor.yaml"] {
 		return errors.New("COMPOSE_FILE lists both compose.clearnet.yaml and compose.tor.yaml; never run both overlays together" + fix)
@@ -149,6 +146,15 @@ func checkComposeOverlay(mode, composeFile string) error {
 		return errors.New("APP_MODE=" + mode + " needs " + want + " in COMPOSE_FILE" + fix)
 	}
 	return nil
+}
+
+// composeFiles is the set of file names (base names) in COMPOSE_FILE, split as checkComposeOverlay describes.
+func composeFiles(composeFile string) map[string]bool {
+	has := map[string]bool{}
+	for _, f := range strings.FieldsFunc(composeFile, func(r rune) bool { return r == ':' || r == ';' }) {
+		has[path.Base(strings.ReplaceAll(strings.TrimSpace(f), `\`, "/"))] = true
+	}
+	return has
 }
 
 // errSetupTokenRequired stops a server that is not installed yet and has no SETUP_TOKEN: nobody could

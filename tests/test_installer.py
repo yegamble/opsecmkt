@@ -1750,6 +1750,33 @@ time.sleep(60)
         result = self.check_env(installed_env(COOKIE_SECURE='true'))
         self.assertIn('warning: APP_MODE=tor with COOKIE_SECURE=true', result.stderr)
 
+    def test_check_warns_monero_escrow_relays_held_in_tor_mode(self):
+        # A-515: with APP_MODE=tor and ESCROW_XMR=on the app holds Monero escrow relays unless COMPOSE_FILE has the
+        # node Tor overlay or ESCROW_XMR_TOR_RELAY=clearnet-accepted; check warns (names, never values) and passes.
+        warning = 'warning: APP_MODE=tor with ESCROW_XMR=on'
+        base = 'compose.yaml:compose.tor.yaml:compose.nodes.yaml:compose.internal-db.yaml'
+        wallet = 'http://escrow:held-relay-secret-0123456789@monero-escrow-wallet:18083'
+        held = installed_env(ESCROW_XMR='on', ESCROW_XMR_WALLET_RPC_URL=wallet)
+        result = self.check_env(held)
+        self.assertIn(warning, result.stderr)
+        for name in ('ESCROW_XMR_TOR_RELAY=clearnet-accepted', 'compose.nodes-tor.yaml', 'COMPOSE_FILE'):
+            self.assertIn(name, result.stderr)
+        self.assertNotIn('held-relay-secret', result.stdout + result.stderr)
+        self.assertEqual(result.stderr.count(warning), 1)
+        # Either condition, clearnet mode, or Monero escrow off: no warning.
+        for values in (installed_env(ESCROW_XMR='on', COMPOSE_FILE=base + ':compose.nodes-tor.yaml'),
+                       installed_env(ESCROW_XMR='on', ESCROW_XMR_TOR_RELAY='clearnet-accepted'),
+                       installed_env(ESCROW_XMR='on', COMPOSE_FILE=base.replace(':', ';') + ';./compose.nodes-tor.yaml'),
+                       clearnet_env(ESCROW_XMR='on'),
+                       installed_env(ESCROW_XMR='off'),
+                       installed_env()):
+            with self.subTest(values={k: values.get(k) for k in ('APP_MODE', 'ESCROW_XMR', 'ESCROW_XMR_TOR_RELAY', 'COMPOSE_FILE')}):
+                self.assertNotIn(warning, self.check_env(values).stderr)
+        # Any other value is refused, as the app refuses it at startup; the value is never printed.
+        result = self.check_env(installed_env(ESCROW_XMR='on', ESCROW_XMR_TOR_RELAY='yes-really'),
+                                'ESCROW_XMR_TOR_RELAY must be blank or clearnet-accepted')
+        self.assertNotIn('yes-really', result.stdout + result.stderr)
+
     def test_commands_need_an_env(self):
         for arguments in (['check'], ['status'], ['setup-token'], ['add-mirror'], ['upgrade', '--no-backup'],
                           ['add-scanner'], ['refresh-scanner']):

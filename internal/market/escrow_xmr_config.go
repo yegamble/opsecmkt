@@ -65,7 +65,20 @@ type escrowXMRConfig struct {
 	secret               string // MONERO_WALLET_SECRET; never logged
 	seedKeyPath          string
 	confirmations        int64 // a deposit counts from max(PAYMENT_CONFIRMATIONS_XMR, xmrMinConfirmations) (P3-R5)
+	torRelayOK           bool  // in APP_MODE=tor settlements may be relayed: COMPOSE_FILE has xmrNodeTorOverlay, or ESCROW_XMR_TOR_RELAY=clearnet-accepted (A-515)
 }
+
+// xmrNodeTorOverlay is the Compose overlay that puts the local monerod behind its own Tor client (A-442), and
+// xmrTorRelayAccepted the one value of ESCROW_XMR_TOR_RELAY: the operator accepts that Monero escrow settlements are
+// relayed from this host's IP address in APP_MODE=tor (A-515).
+const (
+	xmrNodeTorOverlay   = "compose.nodes-tor.yaml"
+	xmrTorRelayAccepted = "clearnet-accepted"
+)
+
+// xmrLogTorHold is logged once at startup with xmrRelayHold's reason (A-515); nothing in it comes from a node.
+const xmrLogTorHold = "escrow: APP_MODE=tor: Monero escrow relays held (%s): settlements are built, checked and stored but not relayed, because the escrow wallet-rpc relays through its daemon from this host's IP address. Add " +
+	xmrNodeTorOverlay + " to COMPOSE_FILE (Monero over Tor is unverified), or set ESCROW_XMR_TOR_RELAY=" + xmrTorRelayAccepted + ", then restart; the stored transactions are then relayed unchanged (docs/operator-guide.md, \"Monero escrow\")"
 
 // escrowXMRConfigFromEnv reads ESCROW_XMR (on/off, blank = off), ESCROW_XMR_WALLET_RPC_URL and ESCROW_XMR_DAEMON_URL
 // (both required), ESCROW_XMR_FEE_BPS (0 to 10000, default 0)
@@ -73,7 +86,8 @@ type escrowXMRConfig struct {
 // startEscrowXMR requires the daemon's network), ESCROW_XMR_SLOTS (5 to 200, default 20), ESCROW_XMR_MAX_FEE
 // (piconero, 1 to xmrMaxMaxFee, default xmrDefaultMaxFee), MONERO_MAX_TIP_AGE (parseMoneroMaxTipAge),
 // PAYMENT_CONFIRMATIONS_XMR (1 to 1000; a deposit counts from at least xmrMinConfirmations), MONERO_WALLET_SECRET
-// (checkXMRWalletSecret) and ESCROW_XMR_SEED_KEY (a path, read by initEscrowXMR). A market
+// (checkXMRWalletSecret), ESCROW_XMR_SEED_KEY (a path, read by initEscrowXMR) and ESCROW_XMR_TOR_RELAY (blank or
+// xmrTorRelayAccepted; blank, COMPOSE_FILE decides whether APP_MODE=tor relays: xmrRelayHold, A-515). A market
 // configured for mainnet (MONERO_NETWORK=mainnet, BITCOIN_CHAIN=main) is refused. Nothing is opened or contacted,
 // and with ESCROW_XMR off nothing else is read.
 func escrowXMRConfigFromEnv(getenv func(string) string) (escrowXMRConfig, error) {
@@ -150,6 +164,14 @@ func escrowXMRConfigFromEnv(getenv func(string) string) (escrowXMRConfig, error)
 	if c.seedKeyPath = strings.TrimSpace(getenv("ESCROW_XMR_SEED_KEY")); c.seedKeyPath == "" {
 		return c, errors.New("ESCROW_XMR=on needs ESCROW_XMR_SEED_KEY: the path of the armored OpenPGP public key every escrow wallet's seed is sealed to (keep its private key offline)")
 	}
+	switch strings.TrimSpace(getenv("ESCROW_XMR_TOR_RELAY")) {
+	case "":
+		c.torRelayOK = composeFiles(getenv("COMPOSE_FILE"))[xmrNodeTorOverlay]
+	case xmrTorRelayAccepted:
+		c.torRelayOK = true
+	default:
+		return c, errors.New(`ESCROW_XMR_TOR_RELAY must be blank or "` + xmrTorRelayAccepted + `": with APP_MODE=tor, "` + xmrTorRelayAccepted + `" relays Monero escrow settlements from this host's IP address without the node Tor overlay (` + xmrNodeTorOverlay + `); see docs/operator-guide.md, "Monero escrow"`)
+	}
 	return c, nil
 }
 
@@ -182,6 +204,7 @@ type escrowXMR struct {
 	seedKey       *xmrSeedKey
 	startState    string           // the state line logged at startup
 	now           func() time.Time // the watcher's clock (escrow_xmr_watch.go); nil is time.Now. Tests move it
+	torRelayOK    bool             // escrowXMRConfig.torRelayOK: in APP_MODE=tor settlements may be relayed (xmrRelayHold, A-515)
 
 	state     atomic.Pointer[xmrState] // the latest startup check's state (initEscrowXMR, retryEscrowXMR, refuseEscrowXMR), for /admin (notReady)
 	ready     atomic.Bool              // the secret verifier matched and the network check passed: escrow wallets may be used
@@ -272,7 +295,7 @@ func (a *App) initEscrowXMR(ctx context.Context) error {
 		return err
 	}
 	a.escrowXMR = &escrowXMR{rpc: rpc, feeBps: cfg.feeBps, feeAddress: cfg.feeAddress, slots: cfg.slots, maxFee: cfg.maxFee,
-		confirmations: cfg.confirmations, secret: cfg.secret, seedKey: key}
+		confirmations: cfg.confirmations, secret: cfg.secret, seedKey: key, torRelayOK: cfg.torRelayOK}
 	var pinned string
 	if err = a.db.QueryRowContext(ctx, "SELECT COALESCE((SELECT value FROM settings WHERE key=$1),'')", xmrNetworkPin).Scan(&pinned); err != nil {
 		return err
@@ -287,6 +310,9 @@ func (a *App) initEscrowXMR(ctx context.Context) error {
 		return err
 	}
 	logEscrowState(state, class)
+	if why := a.xmrRelayHold(); why != "" {
+		log.Printf(xmrLogTorHold, why) // once per process: both conditions are read at startup only
+	}
 	if state != xmrLogSecret && !a.escrowXMR.canCreate.Load() {
 		log.Print(xmrLogSeedKey)
 	}

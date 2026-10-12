@@ -33,9 +33,10 @@ import (
 //     (xmrRefundBelowFee, A-467). Then, in one transaction, the outputs, the
 //     transaction (hash, metadata, blob, fee, input total, key images) and the claim of each spent deposit
 //     (payments.xmr_settlement_id, compare-and-set) are stored.
-//  2. Relay (built -> relayed), only after the store, with the stored metadata, never while the restore gate is set or
-//     a restore holds it. A built settlement found on a later pass (a relay that timed out after it took effect, or a
-//     restart mid-send) is looked up first: the daemon has it -> relayed; otherwise the wallet is asked
+//  2. Relay (built -> relayed), only after the store, with the stored metadata, never while the restore gate is set, a
+//     restore holds it or Monero relays are held in Tor mode (xmrRelayHold, A-515). A built settlement found on a later
+//     pass (a relay that timed out after it took effect, or a restart mid-send) is looked up first: the daemon has it ->
+//     relayed; otherwise the wallet is asked
 //     (get_transfer_by_txid; only -8 means it does not know it) and the same stored metadata is relayed again. relay_tx
 //     is idempotent and the metadata spends the same key images, so it cannot pay twice. transfer is never called for a
 //     settlement that has a transaction. A refusal (-4) of a transaction the daemon does not have: a stored key image
@@ -891,8 +892,12 @@ func (a *App) storeXMRBuilt(ctx context.Context, s *xmrSettleRow, built xmrBuilt
 	if n, _ := res.RowsAffected(); n != int64(len(ids)) {
 		return false, nil // a deposit was claimed meanwhile: roll back, build again next pass
 	}
-	note := fmt.Sprintf("Monero escrow settlement built (%s): spends %s XMR from this order's escrow account in %d output(s); network fee %s XMR, taken from the %s output. It was checked and stored, and the market sends it now.",
-		settlementKind(s.Kind), amount(total, 12), len(built.SpentKeyImages), amount(built.Fee, 12), settlementClaimant(s.Kind))
+	next := "and the market sends it now"
+	if a.xmrRelayHold() != "" {
+		next = "and the market sends it, unchanged, once the operator lets Monero relays go out"
+	}
+	note := fmt.Sprintf("Monero escrow settlement built (%s): spends %s XMR from this order's escrow account in %d output(s); network fee %s XMR, taken from the %s output. It was checked and stored, %s.",
+		settlementKind(s.Kind), amount(total, 12), len(built.SpentKeyImages), amount(built.Fee, 12), settlementClaimant(s.Kind), next)
 	for _, n := range append([]string{note}, plan.Folded...) {
 		if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) SELECT id,state,state,NULL,$2 FROM orders WHERE id=$1", s.OrderID, n); err != nil {
 			return false, err
@@ -905,8 +910,11 @@ func (a *App) storeXMRBuilt(ctx context.Context, s *xmrSettleRow, built xmrBuilt
 // is relayed; a definite refusal is resolved by xmrRelayRefused; metadata the wallet cannot parse (-27, which only a
 // corrupted row explains, since the wallet made it) fails the settlement at once rather than being relayed again on
 // every pass; any other error (a timeout, say) leaves it as it is, and the next pass looks it up before it relays the
-// same metadata again.
+// same metadata again. While xmrRelayHold holds, nothing is relayed and s stays built.
 func (a *App) relayXMRStored(ctx context.Context, s *xmrSettleRow) error {
+	if a.xmrRelayHold() != "" {
+		return nil
+	}
 	got, err := a.escrowXMR.rpc.relayTx(ctx, s.Metadata)
 	var re *xmrRPCError
 	switch {
@@ -1013,10 +1021,27 @@ func xmrMaySend(gate bool, sendErr string) bool {
 	return !restoreHeld(sendErr) && (xmrRelayConfirmed(sendErr) || !gate)
 }
 
+// xmrTorRelayHeld is xmrRelayHold's reason (fixed text, for the log and /admin).
+const xmrTorRelayHeld = "Tor mode without the node Tor overlay"
+
+// xmrRelayHold is why Monero escrow relays wait ("" = they may be sent), as broadcastHold is Bitcoin escrow's (A-441):
+// in APP_MODE=tor, monero-wallet-rpc's relay_tx goes out through its daemon from this host's IP address, so nothing is
+// relayed unless COMPOSE_FILE has xmrNodeTorOverlay or ESCROW_XMR_TOR_RELAY=clearnet-accepted (A-515; Monero over Tor
+// is unverified, A-95). Settlements are still built, checked and stored; once a restart with either relays, the stored
+// transaction is relayed unchanged (sendXMRBuilt). An administrator's confirmation after a restore (sendRebroadcastOK)
+// waits too, unused. Both conditions are read at startup only.
+func (a *App) xmrRelayHold() string {
+	if a.mode != "tor" || a.escrowXMR == nil || a.escrowXMR.torRelayOK {
+		return ""
+	}
+	return xmrTorRelayHeld
+}
+
 // sendXMRBuilt handles a built settlement found on a later pass (a relay whose answer was lost, or a restart mid-send):
 // the daemon has its transaction -> relayed, without sending anything (under the restore gate too); otherwise, unless
-// the gate is set or a restore holds it, the wallet is asked (an error there is never read as "not known") and the same
-// stored metadata is relayed again. transfer is never called again.
+// the gate is set, a restore holds it or Monero relays are held in Tor mode (xmrRelayHold), the wallet is asked (an
+// error there is never read as "not known") and the same stored metadata is relayed again. transfer is never called
+// again.
 func (a *App) sendXMRBuilt(ctx context.Context, s *xmrSettleRow, gate bool) error {
 	found, _, err := a.xmrOnNetwork(ctx, s)
 	if err != nil {
@@ -1025,7 +1050,7 @@ func (a *App) sendXMRBuilt(ctx context.Context, s *xmrSettleRow, gate bool) erro
 	if found {
 		return a.markXMRRelayed(ctx, s, true)
 	}
-	if !xmrMaySend(gate, s.Wait) {
+	if !xmrMaySend(gate, s.Wait) || a.xmrRelayHold() != "" {
 		return nil
 	}
 	if _, _, err = a.escrowXMR.rpc.transferByTxid(ctx, s.Account, s.TxHash); err != nil {
@@ -1067,8 +1092,8 @@ func (a *App) markXMRRelayed(ctx context.Context, s *xmrSettleRow, seen bool) er
 
 // trackXMRRelayed follows a relayed settlement (step 3 of the file comment): mined with the confirmation threshold ->
 // confirmed; in the pool or a block below it -> waited for; unknown to the daemon -> external when another
-// transaction spent a stored key image, else the same stored metadata is relayed again (not under the restore gate or
-// a restore's hold), with relayXMRStored's handling of a refusal.
+// transaction spent a stored key image, else the same stored metadata is relayed again (not under the restore gate, a
+// restore's hold or xmrRelayHold), with relayXMRStored's handling of a refusal.
 func (a *App) trackXMRRelayed(ctx context.Context, s *xmrSettleRow, gate bool) error {
 	found, confirmations, err := a.xmrOnNetwork(ctx, s)
 	if err == nil && found && strings.HasPrefix(s.Wait, xmrRelayRefusing+" ") {
@@ -1092,7 +1117,7 @@ func (a *App) trackXMRRelayed(ctx context.Context, s *xmrSettleRow, gate bool) e
 	if elsewhere {
 		return a.markXMRExternal(ctx, s)
 	}
-	if !xmrMaySend(gate, s.Wait) {
+	if !xmrMaySend(gate, s.Wait) || a.xmrRelayHold() != "" {
 		return nil
 	}
 	got, err := a.escrowXMR.rpc.relayTx(ctx, s.Metadata)

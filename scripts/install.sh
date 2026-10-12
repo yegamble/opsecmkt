@@ -51,7 +51,7 @@ MONERO_IMAGE MONERO_WALLET_IMAGE BITCOIN_PRUNE_MB MONERO_PRUNE_FLAGS BITCOIN_RPC
 CLAMD_ADDRESS CLAMAV_IMAGE CLAMAV_IMAGE_DEFAULT SCANNER_MAX_SIGNATURE_AGE_DAYS IMAGE_STORAGE_LIMIT_MB ESCROW_BTC ESCROW_BTC_RPC_URL
 ESCROW_BTC_ARBITER_WALLET ESCROW_BTC_WATCH_WALLET ESCROW_BTC_FEE_BPS ESCROW_BTC_FEE_ADDRESS ESCROW_BTC_FEE_RATE
 ESCROW_XMR ESCROW_XMR_WALLET_RPC_URL ESCROW_XMR_DAEMON_URL ESCROW_XMR_FEE_BPS ESCROW_XMR_FEE_ADDRESS ESCROW_XMR_SLOTS
-ESCROW_XMR_MAX_FEE ESCROW_XMR_SEED_KEY MONERO_WALLET_SECRET ESCROW_XMR_WALLET_RPC_PASSWORD ESCROW_SIGNER_SOCKET
+ESCROW_XMR_MAX_FEE ESCROW_XMR_SEED_KEY ESCROW_XMR_TOR_RELAY MONERO_WALLET_SECRET ESCROW_XMR_WALLET_RPC_PASSWORD ESCROW_SIGNER_SOCKET
 ESCROW_SIGNER_RPC_URL'
 # What `upgrade` writes for a key missing from .env: the value Compose already uses when the key is absent, so
 # adding it changes nothing but makes it visible. APP_MODE, APP_PORT, COMPOSE_PROJECT_NAME, COMPOSE_PROFILES and
@@ -98,7 +98,8 @@ ESCROW_XMR_FEE_BPS=
 ESCROW_XMR_FEE_ADDRESS=
 ESCROW_XMR_SLOTS=
 ESCROW_XMR_MAX_FEE=
-ESCROW_XMR_SEED_KEY="
+ESCROW_XMR_SEED_KEY=
+ESCROW_XMR_TOR_RELAY="
 # Values from the caller's environment that init and upgrade honour, read before isolate_env clears them.
 caller_app_port=${APP_PORT-}
 caller_project=${COMPOSE_PROJECT_NAME-}
@@ -610,6 +611,18 @@ run_check() {
   fi
   if has_item "$profiles" monero-escrow-wallet && [[ -z $(env_value ESCROW_XMR_WALLET_RPC_PASSWORD) ]]; then
     problems="$problems  - the Monero escrow wallet (monero-escrow-wallet profile) needs ESCROW_XMR_WALLET_RPC_PASSWORD"$'\n'
+  fi
+  # Monero escrow in Tor mode (A-515): the app refuses any ESCROW_XMR_TOR_RELAY but blank or clearnet-accepted, and
+  # holds settlement relays (relay_tx goes out from this host's IP address) unless the node Tor overlay is listed.
+  if [[ $(env_value ESCROW_XMR) == on ]]; then
+    value=$(env_value ESCROW_XMR_TOR_RELAY)
+    case $value in
+      ''|clearnet-accepted) ;;
+      *) problems="$problems  - ESCROW_XMR_TOR_RELAY must be blank or clearnet-accepted"$'\n' ;;
+    esac
+    if [[ $mode == tor && -z $value ]] && ! compose_has compose.nodes-tor.yaml; then
+      warnings="${warnings}warning: APP_MODE=tor with ESCROW_XMR=on: Monero escrow settlements are built but not relayed, because the escrow wallet-rpc would relay them from this host's IP address. Add compose.nodes-tor.yaml to COMPOSE_FILE (Monero over Tor is unverified) or set ESCROW_XMR_TOR_RELAY=clearnet-accepted; see docs/operator-guide.md#monero-escrow-fakechain-or-stagenet"$'\n'
+    fi
   fi
   if [[ -n $files ]] && compose_has compose.escrow-xmr.yaml && ! [[ -f $escrow_seed_key_file && ! -L $escrow_seed_key_file ]]; then
     problems="$problems  - COMPOSE_FILE includes compose.escrow-xmr.yaml but $escrow_seed_key_file (the Monero escrow seed key it mounts) is missing"$'\n'
