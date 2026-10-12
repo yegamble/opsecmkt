@@ -56,7 +56,7 @@ type App struct {
 	writeLimits      map[string]bucket         // independent per-account write budgets (A-75)
 	inFlight         map[string]int            // OneAtATime actions in progress, by path and account (enterOneAtATime)
 	signInLogAt      time.Time                 // last "sign-in limiter refusing" log line (guarded by mu)
-	live             bool                      // escrow currently supports test networks only
+	live             bool                      // a mainnet market: BITCOIN_CHAIN=main or MONERO_NETWORK=mainnet (marketLiveFromEnv, A-460)
 	escrowConfigured bool                      // ESCROW_BTC=on (escrow_rpc.go); escrow may still be disabled
 	escrowCfg        escrowConfig              // the ESCROW_BTC settings read at startup, for the escrow watcher's retries
 	escrowStartState string                    // the escrow state line logged at startup (escrowRetry starts from it)
@@ -123,6 +123,9 @@ func New(ctx context.Context, preview bool) (*App, error) {
 		return nil, err
 	}
 	a.secure, a.setupToken = cfg.secure, cfg.setupToken
+	if a.live, err = marketLiveFromEnv(os.Getenv); err != nil {
+		return nil, err
+	}
 	root, legacy := cfg.keyRoot()
 	a.useKeyRoot(root)
 	for _, note := range cfg.notes {
@@ -172,6 +175,10 @@ func New(ctx context.Context, preview bool) (*App, error) {
 	a.health.SetMaxIdleConns(1)
 	a.health.SetConnMaxLifetime(30 * time.Minute)
 	if err = a.checkInstallState(ctx, legacy); err != nil {
+		a.closeDB()
+		return nil, err
+	}
+	if err = a.checkNetworkClass(ctx); err != nil {
 		a.closeDB()
 		return nil, err
 	}
