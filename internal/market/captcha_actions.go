@@ -120,18 +120,18 @@ func (a *App) checkCaptcha(c *actionCtx) error {
 }
 
 // captchaRetry answers a wrong CAPTCHA answer with 400 and the login or register form again, the error in its
-// alert and a fresh challenge, so a browser without JavaScript needs no reload (QA-3). The used id stays spent.
-// When the page cannot be loaded, the answer is plain text asking for a reload.
+// alert, the typed handle kept (A-514) and a fresh challenge, so a browser without JavaScript needs no reload (QA-3).
+// The used id stays spent. When the page cannot be loaded, the shared refusal page asks for a reload.
 func captchaRetry(c *actionCtx) error {
 	const msg = "CAPTCHA answer incorrect. Enter the characters of the new image below."
 	return &httpError{Code: 400, Msg: msg, Render: func(w http.ResponseWriter) {
 		a := c.A
 		d := a.pageData(c.R, strings.TrimPrefix(c.R.URL.Path, "/"), c.Token, c.User)
 		if err := a.load(c.R, &d); err != nil {
-			http.Error(w, "CAPTCHA answer incorrect. Go back, reload the page and enter the new image's characters.", 400)
+			a.refuse(w, c.R, c.User, 400, "CAPTCHA answer incorrect. Go back, reload the page and enter the new image's characters.")
 			return
 		}
-		d.Error = msg
+		d.Error, d.FormHandle = msg, a.typedHandle(c.R)
 		a.renderStatus(w, c.R, d, 400)
 	}}
 }

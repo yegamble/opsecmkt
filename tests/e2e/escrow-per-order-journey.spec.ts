@@ -88,7 +88,7 @@ test('Per-order wallet key: registration, practice signing, the key type on the 
   const { psbt: none } = await simPost(request, '/test/escrow/sign', { psbt: practice, fingerprint: key.slice(1, 9), sighash: 2 });
   await typeInto(vendor, vendor.getByLabel('Signed practice PSBT'), none);
   expect(await pressSubmit(vendor, vendor.getByRole('button', { name: 'Check signature' }))).toBe(400);
-  await expect(vendor.locator('body')).toContainText('The signature uses a sighash type other than ALL.'); // a plain-text refusal (A-59), not measured at 320 px
+  await expect(vendor.getByRole('alert')).toContainText('The signature uses a sighash type other than ALL.'); // the shared refusal page (A-514)
   await vendor.goto('/escrow-key');
   await expect(vendor.locator('.page-head .badge')).toHaveText('Inactive');
   await pressSubmitGet(vendor, vendor.getByRole('button', { name: 'Show the practice transaction' }));

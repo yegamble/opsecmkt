@@ -221,7 +221,7 @@ func TestSetupBehindProxyNeedsForwardedHost(t *testing.T) {
 		e.A.ServeHTTP(w, r)
 		return w
 	}
-	if w := setup("127.0.0.1:8080"); w.Code != http.StatusForbidden || w.Body.String() != originHostMismatch {
+	if w := setup("127.0.0.1:8080"); w.Code != http.StatusForbidden || refusalText(w.Body.String()) != strings.TrimSpace(originHostMismatch) {
 		t.Fatalf("rewritten Host: status=%d body=%q", w.Code, w.Body)
 	}
 	var installed int

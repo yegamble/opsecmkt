@@ -32,7 +32,7 @@ func (w *orderWorld) post(path, session string, form url.Values) *httptest.Respo
 func (w *orderWorld) expect(path, session string, form url.Values, code int, msg string) {
 	w.e.t.Helper()
 	r := w.post(path, session, form)
-	if r.Code != code || !strings.Contains(r.Body.String(), msg) {
+	if r.Code != code || !strings.Contains(refusalText(r.Body.String()), msg) {
 		w.e.t.Fatalf("POST %s %v: status=%d body=%q, want %d containing %q", path, form, r.Code, r.Body.String(), code, msg)
 	}
 }

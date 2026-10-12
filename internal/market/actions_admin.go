@@ -351,7 +351,7 @@ func adminHandleError(c *actionCtx, msg string, keep func(d *PageData)) error {
 		a := c.A
 		d := a.pageData(c.R, "admin", c.Token, c.User)
 		if err := a.load(c.R, &d); err != nil {
-			http.Error(w, msg, 404)
+			a.refuse(w, c.R, c.User, 404, msg)
 			return
 		}
 		d.Error = msg

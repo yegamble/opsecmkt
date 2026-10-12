@@ -65,7 +65,7 @@ func TestGetRefusesInvalidQueryText(t *testing.T) {
 						case w.Code >= 500:
 							fivexx++
 							t.Errorf("%s %s?%s as %s: %d %q", method, path, q, role, w.Code, w.Body.String())
-						case w.Code != 400 || method == "GET" && w.Body.String() != invalidQueryText+"\n":
+						case w.Code != 400 || method == "GET" && refusalText(w.Body.String()) != invalidQueryText:
 							other++
 							if other <= 10 {
 								t.Errorf("%s %s?%s as %s: %d %q, want 400 %q", method, path, q, role, w.Code, w.Body.String(), invalidQueryText)

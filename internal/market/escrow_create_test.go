@@ -242,8 +242,8 @@ func TestEscrowCheckoutCreatesEscrow(t *testing.T) {
 	}
 	// Anyone else: the download does not exist for them.
 	_, other := x.user("eother_"+randomToken()[:6], "buyer")
-	unknown := x.do("GET", "/no-such-page", other, nil)
 	for _, sess := range []string{other, randomToken()} {
+		unknown := x.do("GET", "/no-such-page", sess, nil) // A-514: an HTML page whose header shows the reader
 		if w := x.do("GET", "/escrow-descriptor?id="+x.order, sess, nil); w.Code != 404 || w.Body.String() != unknown.Body.String() {
 			t.Fatalf("download for a non-party: %d", w.Code)
 		}

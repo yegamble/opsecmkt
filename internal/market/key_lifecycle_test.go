@@ -629,7 +629,7 @@ func TestExpiredKeySignInPointsToLostFactorHelp(t *testing.T) {
 			mustContain(t, html.UnescapeString(e.body("GET", page, sess, nil, 200)), keyCannotEncrypt, "Expired "+utcDay(created.Add(2*time.Hour+30*time.Minute))+" UTC")
 		}
 		anon, pc := e.pendingSignIn(handle)
-		b := e.body("POST", "/challenge/pgp", anon, nil, 409, pc)
+		b := refusalText(e.body("POST", "/challenge/pgp", anon, nil, 409, pc))
 		mustContain(t, b, keyExpiredRefusal)
 		mustNotContain(t, b, "Use another verification method")
 		switch {

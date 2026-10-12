@@ -95,7 +95,7 @@ test('password change and second-factor reset are plain POST forms and the previ
   await password.getByLabel('New password', { exact: true }).fill('preview-new-password');
   await password.getByLabel('Repeat new password').fill('preview-new-password');
   await password.getByRole('button', { name: 'Change password' }).click();
-  await expect(page.locator('body')).toHaveText('Read-only preview. Start with PostgreSQL to save changes.');
+  await expect(page.getByRole('alert')).toHaveText('Read-only preview. Start with PostgreSQL to save changes.');
 
   await page.goto('/admin');
   const reset = page.getByRole('region', { name: "Reset a user's second factors" });
@@ -109,7 +109,7 @@ test('password change and second-factor reset are plain POST forms and the previ
   await form.getByLabel('Account handle').fill('ghost_circuit');
   await form.getByLabel('Current password').fill('preview-password-123');
   await form.getByRole('button', { name: 'Reset second factors' }).click();
-  await expect(page.locator('body')).toHaveText('Read-only preview. Start with PostgreSQL to save changes.');
+  await expect(page.getByRole('alert')).toHaveText('Read-only preview. Start with PostgreSQL to save changes.');
 
   // Suspend / restore: a handle, a required suspend-or-restore choice and the administrator's password; the
   // suspended accounts are listed so they can be restored.
@@ -136,5 +136,5 @@ test('password change and second-factor reset are plain POST forms and the previ
   await suspend.getByRole('radio', { name: /^Restore:/ }).check();
   await suspend.getByLabel('Current password').fill('preview-password-123');
   await suspend.getByRole('button', { name: 'Suspend or restore' }).click();
-  await expect(page.locator('body')).toHaveText('Read-only preview. Start with PostgreSQL to save changes.');
+  await expect(page.getByRole('alert')).toHaveText('Read-only preview. Start with PostgreSQL to save changes.');
 });

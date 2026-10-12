@@ -512,19 +512,26 @@ func (a *App) renderUploadPage(w http.ResponseWriter, r *http.Request, user *Use
 
 // loadRefusalPage loads a refusal page's settings and shared data like a page view does: under a pageWork slot,
 // so a flood of refused posts reads the database no more than a flood of pages. With every slot taken, or no
-// database, the page is rendered without them.
-func (a *App) loadRefusalPage(r *http.Request, d *PageData) {
+// database, the page is rendered without them; it reports whether the page loaded. Without d.User, a session
+// cookie the request sent is looked up first (A-514: a refusal made before ServeHTTP's own lookup still shows
+// the signed-in header); a session that is not live leaves d.User nil.
+func (a *App) loadRefusalPage(r *http.Request, d *PageData) bool {
 	if a.db == nil {
-		return
+		return false
 	}
 	release, ok := tryTake(pageWork)
 	if !ok {
-		return
+		return false
 	}
 	defer release()
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	a.load(r.WithContext(ctx), d) // best effort: the refusal is the point
+	if c, err := r.Cookie("session"); d.User == nil && err == nil && len(c.Value) == 64 {
+		if u, err := a.sessionUser(ctx, c.Value); err == nil {
+			d.User = u
+		}
+	}
+	return a.load(r.WithContext(ctx), d) == nil // best effort: the refusal is the point
 }
 
 // refuseMultipartElsewhere answers a multipart post to any other route without reading its body.

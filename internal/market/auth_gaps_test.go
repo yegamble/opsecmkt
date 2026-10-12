@@ -48,11 +48,11 @@ func agStr(e *testEnv, q string, args ...any) string {
 	return s
 }
 
-// agExpect posts and checks both the status and a fragment of the plain-text reason.
+// agExpect posts and checks both the status and a fragment of the reason (refusalText).
 func agExpect(e *testEnv, path, token string, form url.Values, code int, msg string, extra ...*http.Cookie) {
 	e.t.Helper()
 	w := e.do("POST", path, token, form, extra...)
-	if w.Code != code || !strings.Contains(w.Body.String(), msg) {
+	if w.Code != code || !strings.Contains(refusalText(w.Body.String()), msg) {
 		e.t.Fatalf("POST %s: status=%d body=%q, want %d containing %q", path, w.Code, w.Body.String(), code, msg)
 	}
 }

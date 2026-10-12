@@ -56,7 +56,7 @@ export async function expectNotice(page: Page, text: string): Promise<void> {
 }
 
 // Clicks a submit button and returns the HTTP status of the navigation it causes. Refused actions answer
-// with a plain-text error page (http.Error), which is what a no-JavaScript browser shows the user.
+// with the shared refusal page (A-514): the reason in its alert, a link back and the long text fields that were sent.
 export async function submitStatus(page: Page, click: () => Promise<void>): Promise<number> {
   const [response] = await Promise.all([
     page.waitForResponse(r => r.request().method() === 'POST' && r.request().isNavigationRequest()),

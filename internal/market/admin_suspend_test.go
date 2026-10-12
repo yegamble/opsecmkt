@@ -80,7 +80,7 @@ func TestAdminSuspendsAccount(t *testing.T) {
 	// with the reason, and no session or pending sign-in is created.
 	agExpect(e, "/login", randomToken(), form("handle", "susp_vendor", "password", "not-the-password-at-all"), 401, "Invalid handle or password")
 	w = e.do("POST", "/login", randomToken(), form("handle", "susp_vendor", "password", testPassword))
-	if w.Code != 403 || strings.TrimSpace(w.Body.String()) != suspendedMsg || e.cookie(w, "session") != "" || e.cookie(w, "pending") != "" {
+	if w.Code != 403 || refusalText(w.Body.String()) != suspendedMsg || e.cookie(w, "session") != "" || e.cookie(w, "pending") != "" {
 		t.Fatalf("suspended password sign-in: %d %q", w.Code, w.Body.String())
 	}
 	// TOTP challenge: a pending sign-in that survived (created in a race with the suspension) cannot finish.
@@ -205,7 +205,7 @@ func TestSuspendedAccountCannotCompleteSignIn(t *testing.T) {
 	anon, pc := e.pendingSignIn("susp_racer")
 	agExec(e, "UPDATE users SET suspended_at=now() WHERE id=$1", id)
 	w := e.do("POST", "/challenge", anon, form("method", "totp", "code", agTOTPNow(key)), pc)
-	if w.Code != 403 || strings.TrimSpace(w.Body.String()) != suspendedMsg || e.cookie(w, "session") != "" {
+	if w.Code != 403 || refusalText(w.Body.String()) != suspendedMsg || e.cookie(w, "session") != "" {
 		t.Fatalf("challenge for a suspended account: %d %q", w.Code, w.Body.String())
 	}
 	if agUserSessions(e, id) != 1 { // only the fixture session e.user created
@@ -244,7 +244,7 @@ func TestSuspendDuringSignInLeavesNoSession(t *testing.T) {
 	finished := make(chan loginResult, 1)
 	go func() {
 		w := e.do("POST", "/login", randomToken(), form("handle", "a108_susp_race", "password", testPassword))
-		finished <- loginResult{code: w.Code, body: strings.TrimSpace(w.Body.String()), session: e.cookie(w, "session")}
+		finished <- loginResult{code: w.Code, body: refusalText(w.Body.String()), session: e.cookie(w, "session")}
 	}()
 
 	// Observe the specific PostgreSQL row-lock wait or the competing login's completion. The transaction is only

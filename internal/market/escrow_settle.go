@@ -1356,14 +1356,14 @@ func escrowSignAction(c *actionCtx) (actionResult, error) {
 // awaiting the reader's signature it answers as an unknown page does.
 func escrowPSBTDownload(a *App, w http.ResponseWriter, r *http.Request, u *User) {
 	if !a.escrowConfigured || a.db == nil || u == nil {
-		http.NotFound(w, r)
+		a.refuse(w, r, u, 404, pageNotFound)
 		return
 	}
 	ctx := r.Context()
 	o, err := scanOrder(a.db.QueryRowContext(ctx, orderQuery+" WHERE o.id=$1 AND (o.buyer_id=$2 OR p.vendor_id=$2)", r.URL.Query().Get("id"), u.ID))
 	sid, perr := strconv.ParseInt(r.URL.Query().Get("s"), 10, 64)
 	if err == sql.ErrNoRows || err == nil && (!o.btcEscrow() || perr != nil) {
-		http.NotFound(w, r)
+		a.refuse(w, r, u, 404, pageNotFound)
 		return
 	}
 	var stored string
@@ -1374,7 +1374,7 @@ func escrowPSBTDownload(a *App, w http.ResponseWriter, r *http.Request, u *User)
 	bump := r.URL.Query().Get("b")
 	hardware := r.URL.Query().Get("hardware")
 	if hardware != "" && hardware != "1" {
-		http.NotFound(w, r)
+		a.refuse(w, r, u, 404, pageNotFound)
 		return
 	}
 	if err == nil && bump == "" {
@@ -1387,7 +1387,7 @@ func escrowPSBTDownload(a *App, w http.ResponseWriter, r *http.Request, u *User)
 		// the claimant has signed it and while the other party has not (escrow_bump.go).
 		bid, perr := strconv.ParseInt(bump, 10, 64)
 		if perr != nil {
-			http.NotFound(w, r)
+			a.refuse(w, r, u, 404, pageNotFound)
 			return
 		}
 		file = "escrow-fee-bump-"
@@ -1396,7 +1396,7 @@ func escrowPSBTDownload(a *App, w http.ResponseWriter, r *http.Request, u *User)
 			AND NOT EXISTS(SELECT 1 FROM settlement_bump_signatures g WHERE g.bump_id=b.id AND g.party=$4))`, bid, sid, o.ID, reader).Scan(&stored)
 	}
 	if err == sql.ErrNoRows {
-		http.NotFound(w, r)
+		a.refuse(w, r, u, 404, pageNotFound)
 		return
 	}
 	var copyText string
