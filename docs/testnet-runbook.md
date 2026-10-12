@@ -1,10 +1,13 @@
 # Test-network payments runbook
 
-**Current build:** per-order escrow is the only payment path, off by default. Bitcoin supports regtest, signet and
-testnet4; Monero supports fakechain or stagenet. Mainnet and pooled RPC settings are refused. The pooled wallet is
-removed: this runbook no longer provisions, operates or backs up one. A database that still holds unresolved pooled
-obligations cannot cross migration 107; see
-[UPGRADING.md section 58](../UPGRADING.md#58-pooled-wallet-removal-for-fresh-installs-a-448).
+**Current build:** per-order escrow is the only payment path, off by default. This runbook is for test networks:
+Bitcoin regtest, signet and testnet4; Monero fakechain and stagenet. Mainnet is an operator opt-in with real funds
+(`BITCOIN_CHAIN=main`, `MONERO_NETWORK=mainnet`, on a new database), set up as the
+[operator guide's Mainnet section](operator-guide.md#mainnet) describes; no mainnet run is recorded. The backup,
+restore, gate and moderation steps below are written for test networks and have not been run on mainnet. A database
+from an older release with payment history this build does not support is refused at startup by migrations 107 and
+108 ([UPGRADING.md sections 58](../UPGRADING.md#58-pooled-wallet-removal-for-fresh-installs-a-448) and
+[59](../UPGRADING.md#59-pooled-history-refused-migration-108-a-492)).
 
 Everything below applies to this build, in this reading path:
 
@@ -18,16 +21,17 @@ Everything below applies to this build, in this reading path:
    Monero stagenet digital claim and clearly scoped unknowns, and section 11 documents the frozen public Bitcoin
    signet smoke. Those records establish only the journeys named in them; they do not establish other public-chain
    journeys or deployment readiness. The section numbers 9 to 11 are kept so that existing links and records keep
-   resolving; the sections that once had numbers 1 to 8 described pooled provisioning and were deleted.
+   resolving; the sections that once had numbers 1 to 8 described an earlier build and were deleted.
 
-For current operator setup use [Bitcoin escrow](operator-guide.md#bitcoin-escrow-test-networks-only)
-and [Monero escrow](operator-guide.md#monero-escrow-fakechain-or-stagenet), or leave intake paused.
+For current operator setup use [Bitcoin escrow](operator-guide.md#bitcoin-escrow)
+and [Monero escrow](operator-guide.md#monero-escrow), or leave intake paused.
 Commands run from the repository directory on the Docker host, where `.env` lives.
 
 ## Back up and restore the escrow arbiter and watch-only wallets
 
-Only for a market running [Bitcoin escrow](operator-guide.md#bitcoin-escrow-test-networks-only) (regtest, signet or
-testnet4). Database dumps (`scripts/backup.sh`) contain no wallet file, and its node keeps two wallets that they do
+Only for a market running [Bitcoin escrow](operator-guide.md#bitcoin-escrow) (regtest, signet or
+testnet4; a mainnet market needs the same two wallet backups, unrun there, with `bitcoin-cli` given no chain flag).
+Database dumps (`scripts/backup.sh`) contain no wallet file, and its node keeps two wallets that they do
 not copy: the arbiter wallet
 (`ESCROW_BTC_ARBITER_WALLET`, default `opsecmkt-arbiter`), whose seed is the market's escrow key, and the watch-only
 wallet (`ESCROW_BTC_WATCH_WALLET`, default `opsecmkt-escrow-watch`), which holds every escrow's public descriptor and
@@ -129,7 +133,7 @@ rehearsed.
 
 **Monero escrow wallets.** A database dump holds their sealed seeds, not their wallet files, which live in the escrow
 wallet-rpc volume. Back up and restore that volume as the
-[operator guide](operator-guide.md#monero-escrow-fakechain-or-stagenet) describes (its *Restore* paragraph), with the
+[operator guide](operator-guide.md#monero-escrow) describes (its *Restore* paragraph), with the
 same `.env` secrets, then follow the reconciliation below.
 
 ## Reconcile a restored database before enabling payouts
@@ -139,7 +143,7 @@ pauses **every outbound send**, including those created after restoration; the e
 deposits and follow broadcast settlements to their confirmations. The script prints what it held and adds one audit
 row recording the gate and those counts.
 
-On a market running [Bitcoin escrow](operator-guide.md#bitcoin-escrow-test-networks-only) (test networks only), the gate
+On a market running [Bitcoin escrow](operator-guide.md#bitcoin-escrow), the gate
 pauses escrow: the escrow watcher builds, co-signs and broadcasts no settlement while it is set, escrow checkout is
 refused ("Bitcoin escrow is paused while this market restores its records from a backup. Nothing was charged and
 your order is still a draft; try again later.", 503, the order stays a draft), and the script holds every restored
@@ -179,7 +183,7 @@ in the watch-only wallet"). Clearing the gate (below) lets escrow checkout run a
 party's Core wallet signs only keys inside its descriptor range: their escrow key page advises `keypoolrefill` once
 their next child index passes 900, and the order page does the same for their child key in that escrow.
 
-On a market running [Monero escrow](operator-guide.md#monero-escrow-fakechain-or-stagenet) (a local fakechain or stagenet,
+On a market running [Monero escrow](operator-guide.md#monero-escrow) (a local fakechain or stagenet,
 `ESCROW_XMR=on`), the gate pauses it too: the Monero escrow watcher builds and relays no settlement while it is set, and
 Monero escrow checkout is refused ("Monero escrow is paused while this market restores its records from a backup. Nothing
 was charged and your order is still a draft; try again later.", 503, the order stays a draft). The script holds every
@@ -194,7 +198,7 @@ after the backup (each found is sealed to the seed key and kept, never offered t
 listed to the administrators), read every wallet and raised the subaddress lookahead of any wallet older than the database;
 the sweep needs the escrow wallet-rpc and the seed key and logs `escrow: Monero escrow's restore sweep is complete …` when it
 has run. If only the escrow wallet volume was restored from an older backup, set the sweep marker by hand
-([operator guide](operator-guide.md#monero-escrow-fakechain-or-stagenet)).
+([operator guide](operator-guide.md#monero-escrow)).
 
 **Only `scripts/restore.sh` applies this protection.** A host or volume snapshot, a managed-database
 point-in-time recovery or a manual `pg_restore` brings the database back with no gate and no held settlements, so
@@ -251,9 +255,9 @@ db_sql() { docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U opsecmkt -d o
    reconciliation*, *Monero escrow recovery and retention*), only after checking it on the chain and in the escrow
    watch-only wallet or escrow daemon as described above. Nothing is sent while the gate is set, except that a
    confirmed settlement is broadcast or relayed once.
-4. **Nothing pooled to resolve.** This build starts only on a database without pooled payment history: if the app
-   refused to start in step 2 naming migration 107 or 108, the dump predates the pooled removal and this build cannot
-   use it; do not continue ([UPGRADING.md sections 58 and 59](../UPGRADING.md#59-pooled-history-refused-migration-108-a-492)).
+4. **Older payment history.** If the app refused to start in step 2 naming migration 107 or 108, the dump holds
+   payment history from an older release that this build does not support, and this build cannot use it; do not
+   continue ([UPGRADING.md sections 58 and 59](../UPGRADING.md#59-pooled-history-refused-migration-108-a-492)).
 5. **Stop the app** (`docker compose stop app`) and keep users cut off.
 6. **Back up the reconciled database**
    (`AGE_RECIPIENT=age1YOUR_PUBLIC_RECIPIENT ./scripts/backup.sh backups/reconciled-YYYYMMDD.dump.age`, with
@@ -309,7 +313,7 @@ cleared) and rolls back.
 
 ### An orphan whose keys cannot be read: escrow checkout stays paused
 
-For a market running [Bitcoin escrow](operator-guide.md#bitcoin-escrow-test-networks-only) (test networks only). After a restore
+For a market running [Bitcoin escrow](operator-guide.md#bitcoin-escrow). After a restore
 by `scripts/restore.sh` (or the manual SQL in UPGRADING.md section 6) escrow checkout answers 503 ("Bitcoin escrow is
 paused until this market has checked its escrow wallet after restoring its records from a backup. …") until the escrow
 watcher's orphan sweep has read the keys of every address the watch-only wallet holds with no escrow row. If the node
@@ -403,13 +407,13 @@ Three limits of the key protection, each stated in [per-order escrow](escrow.md#
 ## Handle a payment-review flag
 
 This section is shared with the moderation desk. A flag on an escrow order is one of the escrow rows of the table below;
-rows and steps that speak of the pooled wallet, a payout or the minimum automatic payout describe deposits of the removed
-pooled build and stay only for the historical flags the desk can still list. Escrow deposits are never refunded by hand
+rows and steps that speak of a payout or the minimum automatic payout stay only for historical flags of an earlier
+build that the desk can still list. Escrow deposits are never refunded by hand
 from a market wallet (there is none): a stray refund from the escrow returns them.
 
 The watcher flags a deposit (`payments.flagged`): it writes a system note ending "Moderator review
 required." to the order history and notifies every moderator and administrator who is not suspended
-("Payment review needed for order <first 8 characters of the order ID>"). A locked transfer, a deposit after settlement or after the order closed, is flagged once (the prior pooled build also flagged the deposits of a payout below its minimum automatic payout). Deposits after settlement or after the order closed are announced once per episode however many arrive: one order note per watcher pass names the deposits it flagged, but the buyer (the amount, no transaction ID; the vendor is not told) and each staff member are notified only when no late flag of the order is open on the desk yet (a flag open below of a deposit neither credited, nor below the minimum, nor locked, nor spent outside the market: not yet reviewed, or escalated to an administrator; see "Record the review" below). The buyer's order page shows each as "Arrived after the order closed — not paid out; market staff notified".
+("Payment review needed for order <first 8 characters of the order ID>"). A locked transfer, a deposit after settlement or after the order closed, is flagged once. Deposits after settlement or after the order closed are announced once per episode however many arrive: one order note per watcher pass names the deposits it flagged, but the buyer (the amount, no transaction ID; the vendor is not told) and each staff member are notified only when no late flag of the order is open on the desk yet (a flag open below of a deposit neither credited, nor below the minimum, nor locked, nor spent outside the market: not yet reviewed, or escalated to an administrator; see "Record the review" below). The buyer's order page shows each as "Arrived after the order closed — not paid out; market staff notified".
 A credited deposit that falls back below the threshold (conflicted, missing, or at a lower depth after a
 reorg) is announced once per episode while the order is open or any of its payouts unsent (a release already sent with its overpayment return still unsent counts): the buyer and the vendor
 are notified too (staff who are party to the order get that notification instead of the review one), and if
@@ -442,7 +446,7 @@ the order is disputed.
 | Escrow deposit spent by a transaction this market did not make, … | Another transaction spent the escrow deposit (the parties signing together, or a key compromise). | Flagged with notices to the parties and staff; the coins are gone from the escrow. Record what you found. It does not hold the late-deposit notice episode. |
 | Escrow deposit counted for the order (credited toward its funding); the order's release or refund settles it | A credited escrow deposit flagged only so staff can open the order (a release too few, A-461; a settlement spent outside the market). Not open. | Nothing to record: the order's release or refund settles it. |
 | Escrow deposit counted for the order, though not credited toward its funding … | A deposit recorded before the order closed but still confirming at funding, flagged by another check. Not open. | Nothing to record: it counts for the order. |
-| Below the escrow minimum output, not paid as its own output (a flag of the removed pooled build; nothing sets it now) | The order's release or refund counted less than the minimum automatic payout: 0.0001 BTC for any Bitcoin payout (the network fee is taken from the amount, so a smaller one can never be sent), 0.001 XMR for any Monero payout (the fee is taken from the amount, so a smaller one is not worth sending). Usually a stray deposit to a cancelled order's address. | No payout row was queued; the order kept its final state. The buyer and the vendor were told it was not sent. A deposit recorded before the order closed that confirms later and lifts the sum to the minimum is paid out with it and closes the flag; one first seen after the order closed is not counted (previous row). Otherwise see step 4 below. |
+| Below the escrow minimum output, not paid as its own output (a historical flag; nothing sets it now) | The order's release or refund counted less than the minimum automatic payout: 0.0001 BTC for any Bitcoin payout (the network fee is taken from the amount, so a smaller one can never be sent), 0.001 XMR for any Monero payout (the fee is taken from the amount, so a smaller one is not worth sending). Usually a stray deposit to a cancelled order's address. | No payout row was queued; the order kept its final state. The buyer and the vendor were told it was not sent. A deposit recorded before the order closed that confirms later and lifts the sum to the minimum is paid out with it and closes the flag; one first seen after the order closed is not counted (previous row). Otherwise see step 4 below. |
 
 What staff can do:
 
@@ -473,8 +477,8 @@ your password (and authenticator code when enrolled); each flag takes one review
   party to the order is notified, the flag stays open on the desk marked "escalated to an administrator" and only
   an administrator can then record no action.
 - *Refunded by hand* is refused (409, nothing changed) for every reviewed deposit, because each is in an escrow and
-  not in a market wallet that staff could refund it from (A-330). Historical flags of the removed pooled build that the
-  desk can still list were the only deposits that took it.
+  not in a market wallet that staff could refund it from (A-330). Historical flags of an earlier build that the desk
+  can still list were the only deposits that took it.
 
 Each review writes one order-history event (the buyer and the vendor read it, with the reason or note, so keep
 addresses and anything private out of it), one audit row and a notification to the buyer. The buyer's order page then
@@ -540,7 +544,7 @@ nodes on a local fakechain, not for stagenet, testnet or mainnet.
 Since A-449, Monero escrow (`ESCROW_XMR=on`, off by default, custodial) may run on Monero stagenet as well as on a local
 fakechain: the escrow daemon must report nettype `stagenet` with hard fork 16 or later, the escrow wallet-rpc must run with
 `--stagenet` against the same daemon, and refund, claim and fee addresses must be stagenet ones (5… or 7…). Setup, the
-network pin and the sync guard are in the [operator guide](operator-guide.md#monero-escrow-fakechain-or-stagenet). The [public stagenet digital-claim record](evidence/public-testnet/2026-10-10-ac71878dfde4/stagenet-xmr/README.md) proves one funded digital claim with real peers, fees and confirmations.
+network pin and the sync guard are in the [operator guide](operator-guide.md#monero-escrow). The [public stagenet digital-claim record](evidence/public-testnet/2026-10-10-ac71878dfde4/stagenet-xmr/README.md) proves one funded digital claim with real peers, fees and confirmations.
 Public refunds, physical deadlines, fee/ring-member stress and reorganisations remain unverified.
 
 `scripts/test-escrow-xmr-stagenet.sh` (manual, not CI) runs the legs an **offline stagenet fork, not the public stagenet**,
@@ -574,9 +578,9 @@ Its source/offline checks are not a funded public result. The recorded public di
 ## 11. Bitcoin escrow on signet or testnet4
 
 Since A-443, Bitcoin escrow (`ESCROW_BTC=on`, off by default) may run on signet or testnet4 as well as on regtest;
-mainnet and testnet3 stay refused. **A public signet smoke is recorded** ([2026-10-09 proof](evidence/public-testnet/2026-10-09-9885beef29d3/signet/README.md)): Core practice signatures, a funded digital claim and underpaid buyer refund, confirmed through a Tor-proxied node. Public testnet4 and public-chain reorganisations remain untested. Try it only on
+testnet3 stays refused, and mainnet is a separate operator opt-in ([operator guide](operator-guide.md#mainnet)). **A public signet smoke is recorded** ([2026-10-09 proof](evidence/public-testnet/2026-10-09-9885beef29d3/signet/README.md)): Core practice signatures, a funded digital claim and underpaid buyer refund, confirmed through a Tor-proxied node. Public testnet4 and public-chain reorganisations remain untested. Try it only on
 a new database (a database never changes chain once it holds an escrow) and only with every precondition below in
-place; the [operator guide](operator-guide.md#bitcoin-escrow-test-networks-only) has the settings.
+place; the [operator guide](operator-guide.md#bitcoin-escrow) has the settings.
 
 1. The escrow node runs Bitcoin Core 31.1 (the sync guard reads `getblockchaininfo`'s tip `time`) on `-signet` or
    `-testnet4`, synced, with peers. The app's escrow user has the whitelist line of *The app's RPC user*, which
@@ -588,10 +592,9 @@ place; the [operator guide](operator-guide.md#bitcoin-escrow-test-networks-only)
    than let the line come and go.
 3. The chain pin (A-439): the first start pins `signet:<challenge>` or `testnet4` in `escrow_btc_chain`; check the
    value on `/admin` if the node is ever replaced.
-4. The previous release's A-440 pooled-user identity check was removed with pooled payments. This release refuses a
-   configured `BITCOIN_RPC_URL` and does not query that user; remove its old credentials and whitelist entry after
-   draining the previous release. Configure the dedicated escrow RPC user and separate signer user using the
-   [operator guide](operator-guide.md#bitcoin-escrow-test-networks-only) (*The app's RPC user*), and back up the arbiter and watch-only wallets as
+4. This release refuses a configured `BITCOIN_RPC_URL`; remove any old credentials and whitelist entry for the
+   user it named. Configure the dedicated escrow RPC user and separate signer user using the
+   [operator guide](operator-guide.md#bitcoin-escrow) (*The app's RPC user*), and back up the arbiter and watch-only wallets as
    [escrow wallet backup](#back-up-and-restore-the-escrow-arbiter-and-watch-only-wallets) says. The escrow startup check still
    verifies the arbiter wallet's key fingerprint and that its transactions show no spend.
 5. In `APP_MODE=tor` the broadcast gate (A-441) sends settlements only through a node with `-proxy` on Bitcoin Core 31.1

@@ -19,8 +19,11 @@ are Go handlers, SQL migrations, templates and CSS.
 
 - **No browser JavaScript and no third-party assets.** Every page must work with
   scripts disabled, from 320 px to desktop.
-- **Test networks only.** Never add a code path that accepts mainnet chains or
-  addresses.
+- **Test networks only for development, tests and CI.** Never run a test against
+  mainnet or with real funds. Mainnet is an operator opt-in (`BITCOIN_CHAIN=main`,
+  `MONERO_NETWORK=mainnet`); a change to it must keep its refusals: a market
+  mixing mainnet and test networks, keys or addresses of the other network
+  class, Bitcoin testnet3 and Monero testnet.
 - **Migrations are append-only.** Add a new file in `internal/market/migrations/`;
   never rewrite a merged one.
 - **Test first.** Add or change the Go test, database test or browser test that
