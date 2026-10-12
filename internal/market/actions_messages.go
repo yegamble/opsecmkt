@@ -2,6 +2,10 @@ package market
 
 import "strings"
 
+// messageBudget is how many messages an account may send in ten minutes (msg:<user>), apart from its general write
+// budget (A-516).
+const messageBudget = 20
+
 func init() {
 	registerAction("/messages", actionSpec{FormNonce: true, Run: messageAction})
 	registerAction("/notifications", actionSpec{FormNonce: true, Run: func(c *actionCtx) (actionResult, error) {
@@ -30,6 +34,11 @@ func messageAction(c *actionCtx) (actionResult, error) {
 	body := strings.TrimSpace(c.Form.Get("body"))
 	if len(body) < 60 || len(body) > 20000 || !strings.HasPrefix(body, "-----BEGIN PGP MESSAGE-----") || !strings.HasSuffix(body, "-----END PGP MESSAGE-----") {
 		return actionResult{}, fail(400, "Encrypt the message locally and paste the complete armored PGP message (up to 20 KB).")
+	}
+	// Counted before the recipient lookup and packet inspection, so neither a flood of messages nor probing which
+	// handles exist outlasts it (A-516). A refused send writes nothing.
+	if !c.A.allowWriteBudget("msg:"+u.ID, messageBudget) {
+		return actionResult{}, fail(429, "Message not sent: an account can send at most 20 messages in 10 minutes. Nothing was stored. Try again later.")
 	}
 	var recipient string
 	err := tx.QueryRowContext(ctx, "SELECT id FROM users WHERE handle=$1", c.Form.Get("recipient")).Scan(&recipient)

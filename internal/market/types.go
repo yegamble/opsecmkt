@@ -335,6 +335,7 @@ type PageData struct {
 	Contacts              []ContactKey // vendor page: the vendor; order page: the other party (both for a reviewer); messages: the ?to recipient
 	StaffContacts         []ContactKey // disputed order: independent moderators and administrators
 	MessageTo             string       // messages page: validated ?to handle for the recipient field
+	MessageLookupPaused   bool         // messages page: the account's recipient lookup budget is spent (A-516); no key, no existence text
 	OrderViewer           string       // order page: "buyer", "vendor" or "moderator" (read-only dispute review)
 	OrderSuspendedParties []string     // current buyer/vendor suspension status; never the administrator's reason
 	UnreadNotifications   int          // signed-in users, every page

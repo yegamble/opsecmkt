@@ -81,10 +81,13 @@ func listingUpdateAction(c *actionCtx) (actionResult, error) {
 	if err != nil {
 		return actionResult{}, err
 	}
+	// was is the listing before an administrator's edit of another vendor's listing, for the vendor's notice (A-516).
+	was := listingInput{Kind: l.Kind, Stock: l.Stock}
 	if l.VendorID != c.User.ID {
 		// Automatic delivery content is what every buyer receives in the vendor's name. Other editors
 		// (administrators) never see it, so their saves keep the stored content whatever the form sends.
-		if err = c.Tx.QueryRowContext(ctx, `SELECT delivery_content FROM products WHERE id=$1`, l.ID).Scan(&in.DeliveryContent); err != nil {
+		if err = c.Tx.QueryRowContext(ctx, `SELECT delivery_content,title,description,category,region,btc,xmr,coalesce(dispatch_days,0) FROM products WHERE id=$1`, l.ID).Scan(
+			&in.DeliveryContent, &was.Title, &was.Description, &was.Category, &was.Region, &was.BTC, &was.XMR, &was.DispatchDays); err != nil {
 			return actionResult{}, err
 		}
 		if in.DeliveryContent != "" && in.Kind != "digital" {
@@ -113,10 +116,54 @@ func listingUpdateAction(c *actionCtx) (actionResult, error) {
 	// The dispatch window (P2-R5): a physical listing keeps its stored window when the form sends none, and takes the
 	// default when it has none (a listing saved before migration 079, or one that was digital); a digital one has none.
 	// Orders and escrows snapshot the window, so changing it affects only later checkouts.
-	_, err = c.Tx.ExecContext(ctx, `UPDATE products SET title=$2,description=$3,category=$4,region=$5,kind=$6,btc=$7,xmr=$8,stock=$9,delivery_content=$10,
-		dispatch_days=CASE WHEN $6<>'physical' THEN NULL ELSE COALESCE(NULLIF($11,0),dispatch_days,$12) END,updated=now() WHERE id=$1`,
-		l.ID, in.Title, in.Description, in.Category, in.Region, in.Kind, in.BTC, in.XMR, stock, in.DeliveryContent, in.DispatchDays, defaultDispatchDays)
-	return actionResult{Redirect: "/listing-edit?id=" + l.ID, Notice: "listing-saved", Audit: listingAudit("Updated", c, l)}, err
+	saved := in
+	saved.Stock = stock
+	err = c.Tx.QueryRowContext(ctx, `UPDATE products SET title=$2,description=$3,category=$4,region=$5,kind=$6,btc=$7,xmr=$8,stock=$9,delivery_content=$10,
+		dispatch_days=CASE WHEN $6<>'physical' THEN NULL ELSE COALESCE(NULLIF($11,0),dispatch_days,$12) END,updated=now() WHERE id=$1
+		RETURNING coalesce(dispatch_days,0)`,
+		l.ID, in.Title, in.Description, in.Category, in.Region, in.Kind, in.BTC, in.XMR, stock, in.DeliveryContent, in.DispatchDays, defaultDispatchDays).Scan(&saved.DispatchDays)
+	if err != nil {
+		return actionResult{}, err
+	}
+	// An administrator's change to another vendor's listing is told to the vendor, naming what changed, and kept in
+	// the vendor's audit trail too (A-516), as an administrator's photo change is (A-190). A save that changed
+	// nothing tells them nothing.
+	if changed := changedListingFields(was, saved); l.VendorID != c.User.ID && len(changed) > 0 {
+		short, fields := shortID(l.ID), strings.Join(changed, ", ")
+		if _, err = c.Tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", l.VendorID, "Listing "+short+" edited by administrator "+c.User.Handle+": changed "+fields); err != nil {
+			return actionResult{}, err
+		}
+		note := "An administrator edited your listing “" + was.Title + "” (" + short + ") and changed: " + fields + ". Check it on your vendor desk; if you think this is wrong, contact the market staff."
+		if _, err = c.Tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), l.VendorID, note); err != nil {
+			return actionResult{}, err
+		}
+	}
+	return actionResult{Redirect: "/listing-edit?id=" + l.ID, Notice: "listing-saved", Audit: listingAudit("Updated", c, l)}, nil
+}
+
+// changedListingFields names, in form order, the fields an edit changed (automatic delivery content excepted: an
+// administrator never changes it).
+func changedListingFields(was, now listingInput) []string {
+	var out []string
+	for _, f := range []struct {
+		name    string
+		changed bool
+	}{
+		{"title", was.Title != now.Title},
+		{"description", was.Description != now.Description},
+		{"category", was.Category != now.Category},
+		{"region", was.Region != now.Region},
+		{"fulfillment type", was.Kind != now.Kind},
+		{"Bitcoin price", was.BTC != now.BTC},
+		{"Monero price", was.XMR != now.XMR},
+		{"stock", was.Stock != now.Stock},
+		{"dispatch window", was.DispatchDays != now.DispatchDays},
+	} {
+		if f.changed {
+			out = append(out, f.name)
+		}
+	}
+	return out
 }
 
 // listingArchiveAction archives (hides from the catalog and refuses new drafts) or restores a listing.
