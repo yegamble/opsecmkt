@@ -618,7 +618,7 @@ Mainnet (live Bitcoin and Monero, real funds) is **not available**. Bitcoin escr
 
 #### Bitcoin escrow (test networks only)
 
-**Off by default, test networks only (regtest, signet or testnet4), and in no release.** [Per-order escrow](escrow.md)
+**Off by default, test networks only (regtest, signet or testnet4), and first released in prerelease `v0.1.0-alpha.2`.** [Per-order escrow](escrow.md)
 is built for Bitcoin through its physical-order phase and per-order wallet keys; what is not built is listed there
 (mainnet, A-460, is refused, and public testnet4 is unrun). A user registers the key their own wallet signs escrow with
 and activates it by signing a practice transaction, and the buyer of an eligible listing can pay into a 2-of-3 escrow;

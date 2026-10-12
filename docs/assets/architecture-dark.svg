@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="510" viewBox="0 0 1100 510" role="img" aria-label="Browser through Tor or HTTPS to the Go server and PostgreSQL. Optional Bitcoin 2-of-3 escrow: regtest, signet or testnet4. Optional custodial Monero escrow: fakechain or stagenet. Escrow is off by default, test networks only, development build. Historical pooled records retained; undrained legacy upgrades refused.">
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="510" viewBox="0 0 1100 510" role="img" aria-label="Browser through Tor or HTTPS to the Go server and PostgreSQL. Optional Bitcoin 2-of-3 escrow: regtest, signet or testnet4. Optional custodial Monero escrow: fakechain or stagenet. Escrow is off by default, test networks only, first released in v0.1.0-alpha.2. Historical pooled records retained; undrained legacy upgrades refused.">
 <title>OPSEC Market architecture and supported networks</title>
-<desc>Browser through Tor or HTTPS to the Go server and PostgreSQL. Optional Bitcoin 2-of-3 escrow: regtest, signet or testnet4. Optional custodial Monero escrow: fakechain or stagenet. Escrow is off by default, test networks only, development build. Historical pooled records retained; undrained legacy upgrades refused.</desc>
+<desc>Browser through Tor or HTTPS to the Go server and PostgreSQL. Optional Bitcoin 2-of-3 escrow: regtest, signet or testnet4. Optional custodial Monero escrow: fakechain or stagenet. Escrow is off by default, test networks only, first released in v0.1.0-alpha.2. Historical pooled records retained; undrained legacy upgrades refused.</desc>
 <defs><marker id="adark" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#b5b0a6"/></marker></defs>
 <rect width="1100" height="510" fill="#0a0a0a"/>
 <rect x="20" y="200" width="150" height="95" rx="10" fill="#141412" stroke="#3a3a33" stroke-width="1.5"/>
@@ -44,5 +44,5 @@
 <line x1="615" y1="218" x2="658" y2="85" stroke="#b5b0a6" stroke-width="1.5" marker-end="url(#adark)"/>
 <line x1="615" y1="255" x2="658" y2="235" stroke="#b5b0a6" stroke-width="1.5" marker-end="url(#adark)" stroke-dasharray="5 4"/>
 <line x1="615" y1="285" x2="658" y2="392" stroke="#b5b0a6" stroke-width="1.5" marker-end="url(#adark)" stroke-dasharray="5 4"/>
-<text x="550" y="492" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13" fill="#b5b0a6">Escrow: off by default · test coins only · development build, not released</text>
+<text x="550" y="492" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13" fill="#b5b0a6">Escrow: off by default · test coins only · first released in v0.1.0-alpha.2</text>
 </svg>

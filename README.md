@@ -19,8 +19,8 @@ Server-rendered Go and PostgreSQL, PGP identity, Tor-first deployment.
 > [!IMPORTANT]
 > **Fresh installations use per-order escrow on test networks only.** Escrow is available but **off until the
 > operator sets it up** ([Enable Bitcoin escrow](#enable-bitcoin-escrow)): a default install can register users and
-> list goods, but takes no payment. Bitcoin uses 2-of-3 signing; Monero is custodial. Escrow is on the development
-> branch, in no release, and runs on test networks only; mainnet and Bitcoin testnet3 are refused. Public signet
+> list goods, but takes no payment. Bitcoin uses 2-of-3 signing; Monero is custodial. Escrow is first released in
+> prerelease `v0.1.0-alpha.2` and runs on test networks only; mainnet and Bitcoin testnet3 are refused. Public signet
 > practice, claim and refund and one public stagenet digital claim are recorded; public testnet4 and other Monero
 > journeys remain unverified. The pooled wallet is removed: a database holding pooled payment history is refused
 > (migrations 107 and 108). See the network matrix, [upgrade guide](UPGRADING.md#58-pooled-wallet-removal-for-fresh-installs-a-448),
