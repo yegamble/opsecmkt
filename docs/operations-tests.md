@@ -247,6 +247,27 @@ daemon can prevent cleanup; the unique project name is in the reported log path.
 Evidence is written to `artifacts/install-test/<project>/`. CI runs this same
 script as a required job and retains its logs and result for 14 days.
 
+## Bundled-node escrow set-up from the installer's printed commands
+
+```sh
+python3 scripts/test-escrow-node-rehearsal.py
+```
+
+Requires Docker Engine with Compose v2, Python 3, Bash and OpenSSL (CI job `escrow-node-rehearsal`, A-513). The script
+runs `install.sh init` with a local **regtest** Bitcoin node and no Monero node in a uniquely named Compose project, takes
+the escrow commands the installer prints at its end and runs them verbatim in order: `escrow-node-setup.sh --signer` with
+the printed `--cli` (`-rpcport=8332` included), the `bitcoin.conf` append through the printed quoted heredoc, the `.env`
+append, `docker compose restart bitcoin`, `escrow-node-setup.sh --verify --via-compose app --wait 120` (it must print
+`PASS`), `docker compose run --rm --no-deps escrow-signer init` and `docker compose up -d`. Only the lines the printed text
+asks you to paste (taken from the set-up script's output) and the URL it printed are filled in. It then requires `bitcoin.conf`
+in the node to hold the printed `rpcauth` lines unchanged (the `$` survives), the app's log to say `escrow: Bitcoin
+escrow on (test networks only)` and the signer ready, no generated RPC password in the app or signer logs, and
+`install.sh check` to accept `.env`. The evidence log under `artifacts/escrow-node-rehearsal/` holds commands and exit
+codes, never the set-up output. This proves the command path on a private regtest chain; it says nothing about a synced
+signet or testnet4 node, a payment, a published port or Tor. The Docker bridge subnet must fall in the node's
+`-rpcallowip` ranges (172.16.0.0/12, 192.168.0.0/16), as Docker's default does; a daemon with another address pool gets
+HTTP 403 from the node.
+
 ## Upgrade from v0.1.0-alpha.1
 
 ```sh

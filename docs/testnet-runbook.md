@@ -40,6 +40,11 @@ Take the backups as the operator user. The app's escrow user is refused `backupw
 should be (*The app's RPC user* in the operator guide). Below, `opcli` is `bitcoin-cli -regtest` (or `-signet`, `-testnet4`) with the operator
 user's credentials kept in a mode-600 file (for example `-conf=$HOME/.opsecmkt-operator-cli.conf` holding `rpcuser`
 and `rpcpassword`), and `NODE` runs a command on the node's machine (for a container: `docker exec -i <name>`).
+On the installer's **bundled Compose node** `bitcoind` listens on RPC port 8332 on every chain and no `bitcoin.conf`
+says so, so `bitcoin-cli` also needs `-rpcport=8332`, and the cookie is found through the data directory: there
+`NODE` is `docker compose exec -T -u bitcoin bitcoin` and `opcli` is
+`bitcoin-cli -datadir=/data -rpcport=8332 -signet` (`-regtest` or `-testnet4` on those chains; `-T` and no `-i` pass
+standard input through). Paths such as `/tmp/arbiter.bak` are then inside the node's container.
 Encrypt each copy to the operator's key with `age` as it leaves the node, as `scripts/backup.sh` does for the
 database, so no plain copy is written anywhere else:
 
@@ -635,7 +640,10 @@ gitignored) starts with the node version, the commit, the nodes' command line wi
 time, and every line carries "[private signet, not public]".
 
 **The public run (A-446, A-447).** Set up the escrow node with `scripts/escrow-node-setup.sh --chain signet` (or
-`testnet4`). It creates the arbiter and watch-only wallets and prints the fingerprint, the `bitcoin.conf` lines and the
+`testnet4`; for the bundled node add the `--rpc-port 8332 --cli '…'` the installer prints, and
+`--verify --via-compose app` after the restart, see the
+[operator guide](operator-guide.md#escrow-node-set-up-and-the-public-network-smoke)). It creates the arbiter and
+watch-only wallets and prints the fingerprint, the `bitcoin.conf` lines and the
 `ESCROW_BTC_RPC_URL` line once. Check the node with `--verify` after the restart. Then run `scripts/test-escrow-public.sh`
 from a clean checkout: practice signing, one escrow claimed and one refunded, each followed to
 `ESCROW_PUBLIC_CONFIRMATIONS`. It refuses regtest, mainnet, testnet3 and a private signet, and when every leg passed it

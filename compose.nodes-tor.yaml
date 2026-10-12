@@ -59,7 +59,7 @@ services:
       tor-socks:
         condition: service_started
     command:
-      - -chain=${BITCOIN_CHAIN:-testnet4}
+      - -chain=${BITCOIN_CHAIN:-signet}
       - -datadir=/data
       - -prune=${BITCOIN_PRUNE_MB:-2000}
       - -server=1
