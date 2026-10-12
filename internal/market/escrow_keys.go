@@ -32,6 +32,12 @@ var (
 	privatePrefixes = []string{"xprv", "tprv", "yprv", "zprv", "uprv", "vprv", "Yprv", "Zprv", "Uprv", "Vprv"}
 )
 
+// The test networks' plain and multisig public versions, the default class.
+const (
+	versionTpub = btc.VersionTpub
+	versionVpub = btc.VersionVpub
+)
+
 // keyNet is a network class's extended-key version bytes and BIP44 coin type (A-460): the plain public version Bitcoin
 // Core's descriptors use, the SLIP-132 P2WSH multisig version wallets show, the private version, the single-signature
 // and nested-SegWit multisig public versions (refused), and the coin type of the BIP48 account path.

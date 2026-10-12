@@ -66,7 +66,7 @@ type escrowConfig struct {
 	arbiterWallet string
 	watchWallet   string // the watch-only wallet escrow descriptors are imported into (P1-b)
 	feeBps        int64  // the market fee in basis points, snapshotted on each escrow at checkout (ES-5)
-	feeAddress    string // where the market fee goes ("" when feeBps is 0); one fixed address, test networks only
+	feeAddress    string // where the market fee goes ("" when feeBps is 0): a fixed address (test networks only) or a watch-only descriptor (A-460)
 	confirmations int64  // PAYMENT_CONFIRMATIONS_BTC: confirmations before an escrow counts as funded
 	feeRate       int64  // ESCROW_BTC_FEE_RATE: the network fee rate of every settlement, in sat/vB (P1-c)
 	signerSocket  string // ESCROW_SIGNER_SOCKET (A-454): the escrow signer's Unix socket; "" = no signer
@@ -96,8 +96,12 @@ func escrowConfigFromEnv(getenv func(string) string) (escrowConfig, error) {
 	if c.arbiterWallet == "" {
 		c.arbiterWallet = "opsecmkt-arbiter"
 	}
-	if chain := strings.TrimSpace(getenv("BITCOIN_CHAIN")); chain != "" && escrowChains[chain] == "" {
-		return c, errors.New("refusing to start: ESCROW_BTC=on runs only on regtest, signet or testnet4, and BITCOIN_CHAIN names mainnet or testnet3. Set ESCROW_BTC=off, or use one of those chains")
+	chain := strings.TrimSpace(getenv("BITCOIN_CHAIN"))
+	if chain != "" && escrowChains[chain] == "" {
+		return c, errors.New("refusing to start: ESCROW_BTC=on runs only on regtest, signet, testnet4 or, as an operator opt-in, mainnet (BITCOIN_CHAIN=main), and BITCOIN_CHAIN names another chain (testnet3 is refused). Set ESCROW_BTC=off, or use one of those chains")
+	}
+	if chain != "main" && strings.TrimSpace(getenv("MONERO_NETWORK")) == "mainnet" {
+		return c, errors.New("refusing to start: this market is configured for mainnet (MONERO_NETWORK=mainnet), and ESCROW_BTC=on runs on mainnet only when BITCOIN_CHAIN=main is set as well. Set BITCOIN_CHAIN=main, or ESCROW_BTC=off")
 	}
 	c.watchWallet = strings.TrimSpace(getenv("ESCROW_BTC_WATCH_WALLET"))
 	if c.watchWallet == "" {
@@ -114,9 +118,20 @@ func escrowConfigFromEnv(getenv func(string) string) (escrowConfig, error) {
 		c.feeBps = n
 	}
 	if c.feeBps > 0 {
-		var ok bool
-		if c.feeAddress, ok = escrowAddressForm("", getenv("ESCROW_BTC_FEE_ADDRESS")); !ok {
-			return c, errors.New("ESCROW_BTC_FEE_BPS above 0 needs ESCROW_BTC_FEE_ADDRESS: the Bitcoin address, on the escrow node's chain, the market fee is paid to")
+		raw := strings.TrimSpace(getenv("ESCROW_BTC_FEE_ADDRESS"))
+		switch {
+		case isFeeDescriptorInput(raw): // parsed again, and sealed, by startEscrow (feeDestinationForm)
+			if _, err := parseFeeDescriptor(raw, keyNetFor(chain == "main")); err != nil {
+				return c, errors.New("ESCROW_BTC_FEE_ADDRESS: " + err.Error())
+			}
+			c.feeAddress = raw
+		case chain == "main":
+			return c, errors.New("ESCROW_BTC_FEE_ADDRESS: " + errFeePlainOnMainnet.Error())
+		default:
+			var ok bool
+			if c.feeAddress, ok = escrowAddressForm("", raw); !ok {
+				return c, errors.New("ESCROW_BTC_FEE_BPS above 0 needs ESCROW_BTC_FEE_ADDRESS: the Bitcoin address, on the escrow node's chain, the market fee is paid to, or the fee wallet's watch-only descriptor wpkh([fingerprint/path]key/0/*)")
+			}
 		}
 	}
 	c.feeRate = escrowDefaultFeeRate
@@ -149,7 +164,7 @@ func escrowConfigFromEnv(getenv func(string) string) (escrowConfig, error) {
 
 // errEscrowChain is the fixed startup refusal for an escrow node on a chain that is not in the chain table (escrowChains):
 // mainnet, testnet3 or any other.
-var errEscrowChain = errors.New("refusing to start: ESCROW_BTC=on runs only on regtest, signet or testnet4, and the node at ESCROW_BTC_RPC_URL reports another chain (mainnet and testnet3 are refused). Set ESCROW_BTC=off, or point ESCROW_BTC_RPC_URL at a node on one of those chains")
+var errEscrowChain = errors.New("refusing to start: ESCROW_BTC=on runs only on regtest, signet or testnet4, or on mainnet when the market is configured for it (BITCOIN_CHAIN=main), and the node at ESCROW_BTC_RPC_URL reports another chain (testnet3 is always refused, mainnet without BITCOIN_CHAIN=main, a test chain with it). Set ESCROW_BTC=off, or point ESCROW_BTC_RPC_URL at a node on the configured chain")
 
 // Fixed operator lines for an escrow that is switched on but not usable: nothing in them comes from the node.
 const (
@@ -218,9 +233,6 @@ func (a *App) initEscrow(ctx context.Context) error {
 		return nil
 	}
 	a.escrowConfigured = true
-	if a.live {
-		return errors.New("refusing to start: ESCROW_BTC=on runs only on test networks (regtest, signet or testnet4), and this market is configured for mainnet")
-	}
 	if _, err = newEscrowBTC(cfg); err != nil {
 		return err
 	}
@@ -245,7 +257,7 @@ func (a *App) initEscrow(ctx context.Context) error {
 }
 
 // errEscrowFeeAddress is the fixed startup refusal for a fee address the escrow node does not accept.
-var errEscrowFeeAddress = errors.New("refusing to start: ESCROW_BTC_FEE_ADDRESS is not a valid address on the escrow node's chain")
+var errEscrowFeeAddress = errors.New("refusing to start: ESCROW_BTC_FEE_ADDRESS is not a valid address on the escrow node's chain, nor a watch-only descriptor of its network (a mainnet market needs the descriptor), or it is the arbiter wallet's key")
 
 // startEscrow runs every escrow check once and, when all pass, enables escrow (a.escrow). It reports the state as
 // one of the fixed lines (escrowLogOn when enabled) with the error class that caused it (""), or an error: a refusal
@@ -268,7 +280,7 @@ func (a *App) startEscrow(ctx context.Context) (state, class string, err error) 
 		return escrowLogUnchecked, errorClassOf(err), nil
 	}
 	a.observeEscrowNode(node, nil)
-	if escrowChains[node.Chain] == "" {
+	if !a.escrowChainAllowed(node.Chain) {
 		return "", "", errEscrowChain
 	}
 	e.network, e.chainID = node.Chain, escrowChainID(node.Chain, node.SignetChallenge)
@@ -313,15 +325,21 @@ func (a *App) startEscrow(ctx context.Context) (state, class string, err error) 
 		return escrowLogWatch, errorClassOf(err), nil
 	}
 	if e.feeAddress != "" {
-		e.feeAddress, _ = escrowAddressForm(e.network, e.feeAddress)
-		valid, err := e.validAddress(ctx, e.feeAddress)
+		dest, plain, err := a.feeDestinationForm(e.network, e.feeAddress, e.fingerprint)
 		if err != nil {
-			return escrowLogUnchecked, errorClassOf(err), nil
-		}
-		if !valid {
 			return "", "", errEscrowFeeAddress
 		}
-		log.Print(escrowLogFixedFee)
+		e.feeAddress = dest
+		if plain {
+			valid, err := e.validAddress(ctx, e.feeAddress)
+			if err != nil {
+				return escrowLogUnchecked, errorClassOf(err), nil
+			}
+			if !valid {
+				return "", "", errEscrowFeeAddress
+			}
+			log.Print(escrowLogFixedFee)
+		}
 	}
 	a.escrow.Store(e)
 	return escrowLogOn, "", nil

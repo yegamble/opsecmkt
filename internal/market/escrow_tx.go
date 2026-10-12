@@ -113,15 +113,21 @@ func parseSignedTx(raw []byte) (*signedTx, error) {
 }
 
 // escrowChains is the one chain table of Bitcoin escrow (A-439, P4-R5): each chain escrow can run on, keyed by the
-// node's getblockchaininfo chain, and the human-readable part of its segwit addresses. Mainnet ("main") and testnet3
-// ("test") are not escrow chains (escrow hard-codes test-network key versions and coin type 1): startEscrow refuses a
-// node on any chain not in the table (errEscrowChain; A-443 opened signet and testnet4).
-var escrowChains = map[string]string{"regtest": "bcrt", "signet": "tb", "testnet4": "tb"}
+// node's getblockchaininfo chain, and the human-readable part of its segwit addresses. A-443 opened signet and
+// testnet4; A-460 opened mainnet ("main"), on a mainnet market only (escrowChainAllowed). Testnet3 ("test") is not an
+// escrow chain: startEscrow refuses a node on any chain not in the table (errEscrowChain).
+var escrowChains = map[string]string{"regtest": "bcrt", "signet": "tb", "testnet4": "tb", "main": "bc"}
+
+// escrowChainAllowed reports whether escrow may run on chain on this market: a chain of the table of the market's
+// class, mainnet on a mainnet market (BITCOIN_CHAIN=main) and the test chains on any other (A-460).
+func (a *App) escrowChainAllowed(chain string) bool {
+	return escrowChains[chain] != "" && isLiveNetwork(chain) == a.live
+}
 
 // escrowAddressScript is the scriptPubKey an address of chain pays: a bech32 (witness version 0: P2WPKH or P2WSH) or
-// bech32m (versions 1 to 16) address with the chain's human-readable part (escrowChains), or a base58check P2PKH
-// (version 0x6f) or P2SH (0xc4) address, the test-network versions all three chains share. Anything else, and any
-// chain not in the table, is refused.
+// bech32m (versions 1 to 16) address with the chain's human-readable part (escrowChains), or a base58check P2PKH or
+// P2SH address with the chain's versions: 0x00 and 0x05 on mainnet, 0x6f and 0xc4 on the test chains. Anything else,
+// and any chain not in the table, is refused.
 func escrowAddressScript(chain, addr string) ([]byte, error) {
 	hrp, ok := escrowChains[chain]
 	if !ok {
@@ -142,13 +148,47 @@ func escrowAddressScript(chain, addr string) ([]byte, error) {
 	if err != nil || len(payload) != 21 {
 		return nil, errors.New("escrow: not an address of the escrow chain")
 	}
+	p2pkh, p2sh := byte(0x6f), byte(0xc4)
+	if chain == "main" {
+		p2pkh, p2sh = 0x00, 0x05
+	}
 	switch payload[0] {
-	case 0x6f:
+	case p2pkh:
 		return slices.Concat([]byte{0x76, 0xa9, 20}, payload[1:], []byte{0x88, 0xac}), nil
-	case 0xc4:
+	case p2sh:
 		return slices.Concat([]byte{0xa9, 20}, payload[1:], []byte{0x87}), nil
 	}
 	return nil, errors.New("escrow: not an address of the escrow chain")
+}
+
+// segwitAddress encodes a segwit address (BIP 173 for version 0, BIP 350 above it).
+func segwitAddress(hrp string, version byte, program []byte) string {
+	data := []byte{version}
+	acc, bits := uint32(0), uint(0)
+	for _, b := range program {
+		acc, bits = acc<<8|uint32(b), bits+8
+		for bits >= 5 {
+			bits -= 5
+			data = append(data, byte(acc>>bits&31))
+		}
+	}
+	if bits > 0 {
+		data = append(data, byte(acc<<(5-bits)&31))
+	}
+	constant := uint32(1)
+	if version > 0 {
+		constant = 0x2bc830a3
+	}
+	mod := bech32Polymod(append(append(bech32HRPExpand(hrp), data...), 0, 0, 0, 0, 0, 0)) ^ constant
+	for i := range 6 {
+		data = append(data, byte(mod>>(5*(5-i))&31))
+	}
+	var sb strings.Builder
+	sb.WriteString(hrp + "1")
+	for _, d := range data {
+		sb.WriteByte(bech32Charset[d])
+	}
+	return sb.String()
 }
 
 const bech32Charset = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"

@@ -687,6 +687,9 @@ type EscrowBumpView struct {
 type EscrowFeeView struct {
 	Bps, Percent, Address string
 	Available             bool
+	Descriptor            string // the fee descriptor's key fingerprint when the fee goes to a watch-only descriptor (A-460)
+	HighestIndex          string // the highest fee index an escrow holds; "" when none
+	Live                  bool   // a mainnet market: only a descriptor is accepted
 }
 
 // EscrowChainMismatch is the escrow chain pin (escrow_btc_chain) and the escrow node's chain identity startEscrow

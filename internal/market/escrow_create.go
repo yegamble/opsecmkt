@@ -677,12 +677,19 @@ func (e *escrowBTC) buildEscrowWith(ctx context.Context, orderID string, sats in
 // release deadline length and dispatch window; 0 = none) and its three child keys, each party's with its own origin
 // (ruling (b): origin_path the exact account origin, derivation_suffix below it).
 func insertEscrow(ctx context.Context, tx *sql.Tx, orderID, refund string, feeBps int64, feeDest string, releaseDays, dispatchDays int, b *builtEscrow) error {
+	var feeDesc sql.NullString // a descriptor's sealed key: the fee address is taken at the first release build (A-460)
+	if isSealedFeeDescriptor(feeDest) {
+		feeDesc, feeDest = sql.NullString{String: feeDest, Valid: true}, ""
+	}
 	if feeBps == 0 {
 		feeDest = ""
 	}
 	var id int64
-	err := tx.QueryRowContext(ctx, `INSERT INTO escrows(order_id,coin,address,market_index,refund_address,fee_bps,fee_destination,release_days,dispatch_days)
-		VALUES($1,'BTC',$2,$3,$4,$5,$6,NULLIF($7,0),NULLIF($8,0)) RETURNING id`, orderID, b.Address, b.MarketIndex, refund, feeBps, feeDest, releaseDays, dispatchDays).Scan(&id)
+	if feeBps == 0 {
+		feeDesc = sql.NullString{}
+	}
+	err := tx.QueryRowContext(ctx, `INSERT INTO escrows(order_id,coin,address,market_index,refund_address,fee_bps,fee_destination,release_days,dispatch_days,fee_descriptor)
+		VALUES($1,'BTC',$2,$3,$4,$5,$6,NULLIF($7,0),NULLIF($8,0),$9) RETURNING id`, orderID, b.Address, b.MarketIndex, refund, feeBps, feeDest, releaseDays, dispatchDays, feeDesc).Scan(&id)
 	var pe *pgconn.PgError
 	if errors.As(err, &pe) && pe.Code == "23505" && pe.ConstraintName == "escrows_refund_address_key" {
 		return errEscrowRefundUsed // another checkout pinned it first

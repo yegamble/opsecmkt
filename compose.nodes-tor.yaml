@@ -77,7 +77,7 @@ services:
       tor-socks:
         condition: service_started
     command: >-
-      --stagenet --data-dir=/home/monero/.bitmonero --restricted-rpc
+      ${MONERO_NETWORK_FLAG---stagenet} --data-dir=/home/monero/.bitmonero --restricted-rpc
       --rpc-restricted-bind-ip=0.0.0.0 --rpc-restricted-bind-port=18081 --confirm-external-bind
       ${MONERO_PRUNE_FLAGS---prune-blockchain --sync-pruned-blocks} --proxy=10.199.42.2:9050
 volumes:

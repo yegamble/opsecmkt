@@ -321,7 +321,7 @@ func TestEscrowRegtestSigner(t *testing.T) {
 		call(name, "listdescriptors", &pub)
 		for _, d := range pub.Descriptors {
 			if strings.Contains(d.Desc, "/48h/1h/0h/2h]") {
-				k, err := parseEscrowKey(strings.SplitN(strings.TrimPrefix(d.Desc, "wpkh("), "/0/*", 2)[0])
+				k, err := parseEscrowKey(strings.SplitN(strings.TrimPrefix(d.Desc, "wpkh("), "/0/*", 2)[0], keyNetTest)
 				if err != nil {
 					t.Fatal(err)
 				}

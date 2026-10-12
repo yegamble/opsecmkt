@@ -140,7 +140,7 @@ func TestEscrowRPCPinsParams(t *testing.T) {
 
 func mustParseKey(t *testing.T, s string) escrowKey {
 	t.Helper()
-	k, err := parseEscrowKey(s)
+	k, err := parseEscrowKey(s, keyNetTest)
 	if err != nil {
 		t.Fatal(err)
 	}

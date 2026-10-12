@@ -261,7 +261,7 @@ func TestEscrowKeyRegister(t *testing.T) {
 	if err := e.DB.QueryRow("SELECT xpub_sealed,xpub_hmac,origin_fingerprint,origin_path,active_at IS NOT NULL FROM user_escrow_keys WHERE user_id=$1", uid).Scan(&sealed, &h, &fp, &path, &active); err != nil {
 		t.Fatal(err)
 	}
-	k, _ := parseEscrowKey(testBIP48Key)
+	k, _ := parseEscrowKey(testBIP48Key, keyNetTest)
 	if fp != "7450f935" || path != "/48h/1h/0h/2h" || active || h != e.A.escrowKeyHMAC(k) {
 		t.Fatalf("row %s %s %v %s", fp, path, active, h)
 	}
@@ -449,7 +449,7 @@ func TestEscrowKeyReuseRefused(t *testing.T) {
 	otherParent := "[7450f935/48h/1h/0h/2h]" + reencode(func(b []byte) { copy(b[5:9], []byte{0xde, 0xad, 0xbe, 0xef}) })
 	otherDepth := "[7450f935/48h/1h/0h/9/2h]" + reencode(func(b []byte) { b[4] = 5 })
 	for _, in := range []string{otherParent, otherDepth} {
-		if k, err := parseEscrowKey(in); err != nil || k.XPub == testBIP48Key[23:] {
+		if k, err := parseEscrowKey(in, keyNetTest); err != nil || k.XPub == testBIP48Key[23:] {
 			t.Fatalf("re-encoded fixture %q: %+v %v", in, k, err)
 		}
 	}

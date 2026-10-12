@@ -202,8 +202,8 @@ func TestEscrowClaimBuildAndSign(t *testing.T) {
 	}
 
 	// Each party's page shows the expected outputs and its own copy; each copy carries only that party's origin.
-	vk, _ := parseEscrowKey(x.vendorKey)
-	bk, _ := parseEscrowKey(x.buyerKey)
+	vk, _ := parseEscrowKey(x.vendorKey, keyNetTest)
+	bk, _ := parseEscrowKey(x.buyerKey, keyNetTest)
 	for _, c := range []struct {
 		sess, fp, pub string
 	}{{x.buyerSess, bk.Fingerprint, x.keyHex(order, "buyer")}, {x.vendorSess, vk.Fingerprint, x.keyHex(order, "vendor")}} {
@@ -564,8 +564,8 @@ func TestEscrowSettlementRaces(t *testing.T) {
 		agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND settlement_id=$2", order, id) != 2 {
 		t.Fatalf("after two builds: %s", state)
 	}
-	vk, _ := parseEscrowKey(x.vendorKey)
-	bk, _ := parseEscrowKey(x.buyerKey)
+	vk, _ := parseEscrowKey(x.vendorKey, keyNetTest)
+	bk, _ := parseEscrowKey(x.buyerKey, keyNetTest)
 	vs := walletSign(t, x.partyCopy(order, x.vendorSess, id), vk.Fingerprint, 1)
 	bs := walletSign(t, x.partyCopy(order, x.buyerSess, id), bk.Fingerprint, 1)
 	codes := make([]int, 2)
@@ -604,8 +604,8 @@ func TestEscrowPasteRefusals(t *testing.T) {
 	x.poll()
 	otherID, _, _, _ := x.settlement(other)
 
-	vk, _ := parseEscrowKey(x.vendorKey)
-	bk, _ := parseEscrowKey(x.buyerKey)
+	vk, _ := parseEscrowKey(x.vendorKey, keyNetTest)
+	bk, _ := parseEscrowKey(x.buyerKey, keyNetTest)
 	vcopy := x.partyCopy(order, x.vendorSess, id)
 	cp, _ := decodePSBT(vcopy)
 	txid := cp.TxID()
@@ -676,7 +676,7 @@ func TestEscrowPasteMarketDerivationAccepted(t *testing.T) {
 	x.claim(order, x.vendorSess, claimAddr)
 	x.poll()
 	id, _, _, _ := x.settlement(order)
-	vk, _ := parseEscrowKey(x.vendorKey)
+	vk, _ := parseEscrowKey(x.vendorKey, keyNetTest)
 	good, _ := decodePSBT(walletSign(t, x.partyCopy(order, x.vendorSess, id), vk.Fingerprint, 1))
 	vpub, _ := hex.DecodeString(x.keyHex(order, "vendor"))
 	bpub, _ := hex.DecodeString(x.keyHex(order, "buyer"))
@@ -734,7 +734,7 @@ func TestEscrowRefundRoutes(t *testing.T) {
 			x.DB.Exec("UPDATE payments SET created=now()-interval '25 hours' WHERE order_id=$1", o)
 		}, func(o string) int { x.poll(); return 303 }, 40000},
 	}
-	bk, _ := parseEscrowKey(x.buyerKey)
+	bk, _ := parseEscrowKey(x.buyerKey, keyNetTest)
 	for _, r := range routes {
 		order := x.draft()
 		x.mustCheckout(order, r.refund)

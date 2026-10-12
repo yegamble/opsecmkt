@@ -35,7 +35,7 @@ func TestDescriptorChecksum(t *testing.T) {
 // The party child path (ruling (b)): origin is exactly the registered account path, the suffix is /0/<i> with
 // 1 <= i < 2^31, and nothing reaches the practice child <account>/0/0 (ES-9).
 func TestEscrowPartySuffixBoundaries(t *testing.T) {
-	k, err := parseEscrowKey(testBIP48Key)
+	k, err := parseEscrowKey(testBIP48Key, keyNetTest)
 	if err != nil {
 		t.Fatal(err)
 	}

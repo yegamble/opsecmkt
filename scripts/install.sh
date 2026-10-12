@@ -580,8 +580,8 @@ run_check() {
   if has_item "$profiles" bitcoin; then
     value=$(env_value BITCOIN_CHAIN)
     case $value in
-      ''|regtest|testnet4|signet) ;;
-      *) problems="$problems  - BITCOIN_CHAIN must be regtest, testnet4 or signet for the local escrow-support node"$'\n' ;;
+      ''|regtest|testnet4|signet|main) ;;
+      *) problems="$problems  - BITCOIN_CHAIN must be regtest, testnet4, signet or main (mainnet, real funds) for the local escrow-support node"$'\n' ;;
     esac
     rpc_password=$(env_value BITCOIN_RPC_PASSWORD)
     rpc_auth=$(env_value BITCOIN_RPC_AUTH)
@@ -605,8 +605,15 @@ run_check() {
   if has_item "$profiles" monero; then
     value=$(env_value MONERO_NETWORK)
     case $value in
-      ''|stagenet) ;;
-      *) problems="$problems  - MONERO_NETWORK must be stagenet for the local escrow-support daemon"$'\n' ;;
+      ''|stagenet)
+        if [[ $(env_value MONERO_NETWORK_FLAG) != --stagenet ]] && env_get MONERO_NETWORK_FLAG >/dev/null; then
+          problems="$problems  - MONERO_NETWORK_FLAG must be --stagenet (or absent) for a stagenet daemon"$'\n'
+        fi ;;
+      mainnet)
+        if ! env_get MONERO_NETWORK_FLAG >/dev/null || [[ -n $(env_value MONERO_NETWORK_FLAG) ]]; then
+          problems="$problems  - MONERO_NETWORK=mainnet needs a blank MONERO_NETWORK_FLAG= line so the local daemon runs mainnet (monerod has no --mainnet)"$'\n'
+        fi ;;
+      *) problems="$problems  - MONERO_NETWORK must be stagenet or mainnet (real funds) for the local escrow-support daemon"$'\n' ;;
     esac
   fi
   if has_item "$profiles" monero-escrow-wallet && [[ -z $(env_value ESCROW_XMR_WALLET_RPC_PASSWORD) ]]; then

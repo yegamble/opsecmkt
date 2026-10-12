@@ -16,35 +16,6 @@ import (
 // confirmation, a party signature that does not verify (A-339) and both parties signing (A-340), against the fake
 // escrow Core (simulated RPC, not chain evidence: scripts/test-escrow-regtest.sh has the real-chain legs).
 
-// segwitAddress encodes a segwit address (BIP 173 for version 0, BIP 350 above it).
-func segwitAddress(hrp string, version byte, program []byte) string {
-	data := []byte{version}
-	acc, bits := uint32(0), uint(0)
-	for _, b := range program {
-		acc, bits = acc<<8|uint32(b), bits+8
-		for bits >= 5 {
-			bits -= 5
-			data = append(data, byte(acc>>bits&31))
-		}
-	}
-	if bits > 0 {
-		data = append(data, byte(acc<<(5-bits)&31))
-	}
-	constant := uint32(1)
-	if version > 0 {
-		constant = 0x2bc830a3
-	}
-	mod := bech32Polymod(append(append(bech32HRPExpand(hrp), data...), 0, 0, 0, 0, 0, 0)) ^ constant
-	for i := range 6 {
-		data = append(data, byte(mod>>(5*(5-i))&31))
-	}
-	var sb strings.Builder
-	sb.WriteString(hrp + "1")
-	for _, d := range data {
-		sb.WriteByte(bech32Charset[d])
-	}
-	return sb.String()
-}
 
 // regtestAddr is a valid regtest P2WPKH address for label.
 func regtestAddr(label string) string {
@@ -97,7 +68,7 @@ func (x *escrowEnv) partySess(party string) (string, string) {
 	if party == roleBuyer {
 		key, sess = x.buyerKey, x.buyerSess
 	}
-	k, err := parseEscrowKey(key)
+	k, err := parseEscrowKey(key, keyNetTest)
 	if err != nil {
 		x.t.Fatal(err)
 	}

@@ -146,8 +146,8 @@ age -d -i "$AGE_IDENTITY" "$1" | client pg_restore --single-transaction --exit-o
 # orphan sweep has reserved the keys of every address its watch-only wallet holds with no escrow row (reconcileOrphans
 # in internal/market/escrow_recovery.go), and, for a watch-only wallet restored from the same backup, the escrow-key-margin
 # block moves each account's next escrow child index (escrow_index_floors; one counter for the /0/<i> keys and the
-# per-order /<i>/0/0 ones, A-456a) and the market's escrow key index 50 past the
-# restored records (a database from before migration 083, development builds only, gets no margin). The block between
+# per-order /<i>/0/0 ones, A-456a), the market's escrow key index and the market fee descriptor's index (escrow_fee_index,
+# migration 109, A-460) 50 past the restored records (a database from before migration 083, development builds only, gets no margin). The block between
 # its markers is plain SQL: internal/market/escrow_reserve_test.go runs it as written here.
 # Monero escrow (ESCROW_XMR, local fakechain only; migrations 084 and 085) is held the same way: every restored Monero
 # settlement with a stored transaction (built or relayed) gets the same marker in xmr_settlements.send_error, so the
@@ -184,6 +184,7 @@ LEFT JOIN escrow_index_floors f ON f.user_id=k.user_id
 GROUP BY k.user_id
 ON CONFLICT (user_id) DO UPDATE SET next_index=EXCLUDED.next_index;
 DO $$ BEGIN PERFORM setval('escrow_market_index', nextval('escrow_market_index')+49); END $$;
+DO $$ BEGIN IF to_regclass('escrow_fee_index') IS NOT NULL THEN PERFORM setval('escrow_fee_index', nextval('escrow_fee_index')+49); END IF; END $$;
 -- escrow-key-margin: end
 \endif
 SELECT EXISTS(SELECT 1 FROM pg_attribute WHERE attrelid=to_regclass('settlements') AND attname='send_error' AND NOT attisdropped) AS has_settlements \gset

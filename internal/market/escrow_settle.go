@@ -540,6 +540,11 @@ func (a *App) buildSettlement(ctx context.Context, e *escrowBTC, id int64) error
 	if r.dest == "" || !settlementBuildable(kind, orderState, outcome) {
 		return errors.New("escrow: the settlement does not fit its order's state or dispute decision")
 	}
+	if kind == "release" && r.feeBps > 0 && r.feeDest == "" { // the fee went to a descriptor: its address is taken now (A-460)
+		if r.feeDest, err = a.escrowFeeAddress(ctx, e, orderID); err != nil {
+			return err
+		}
+	}
 	keys, err := escrowKeys(ctx, a.db, orderID)
 	if err != nil {
 		return err

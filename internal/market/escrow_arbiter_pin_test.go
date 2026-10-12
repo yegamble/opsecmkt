@@ -54,7 +54,7 @@ func TestEscrowArbiterAccountKeyPinUpgradeAndSubstitution(t *testing.T) {
 	if err != nil || a.escrow.Load() == nil {
 		t.Fatalf("initial escrow start: %v", err)
 	}
-	key, err := parseEscrowKey("[" + fakeArbiterFP + "/84h/1h/0h]" + testBIP84Key[20:])
+	key, err := parseEscrowKey("[" + fakeArbiterFP + "/84h/1h/0h]" + testBIP84Key[20:], keyNetTest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func TestEscrowArbiterAccountKeyPinUpgradeAndSubstitution(t *testing.T) {
 	a.Close()
 
 	// A different account key with the same fingerprint must not replace the pin or enable escrow.
-	other, err := parseEscrowKey(altEscrowKey(t, testBIP84Key, fakeArbiterFP, 1))
+	other, err := parseEscrowKey(altEscrowKey(t, testBIP84Key, fakeArbiterFP, 1), keyNetTest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +127,7 @@ func TestEscrowArbiterAccountKeyPinUpgradeAndSubstitution(t *testing.T) {
 	// The pin covers the public key as well as the chain code: altEscrowKey changes only the chain code (raw[13]),
 	// so a pin that dropped the public key would still pass the leg above. Here only the public key's parity byte
 	// (raw[45], 02 <-> 03: the same x, the negated y) differs.
-	samePub, err := parseEscrowKey(altEscrowPubKey(t, testBIP84Key, fakeArbiterFP))
+	samePub, err := parseEscrowKey(altEscrowPubKey(t, testBIP84Key, fakeArbiterFP), keyNetTest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +154,7 @@ func TestEscrowArbiterAccountKeyPinUpgradeAndSubstitution(t *testing.T) {
 // altEscrowPubKey is key with its public key's parity byte flipped (02 <-> 03) and the same chain code, under origin fp.
 func altEscrowPubKey(t *testing.T, key, fp string) string {
 	t.Helper()
-	k, err := parseEscrowKey(key)
+	k, err := parseEscrowKey(key, keyNetTest)
 	if err != nil {
 		t.Fatal(err)
 	}

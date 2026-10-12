@@ -91,7 +91,7 @@ func TestEscrowRegtestPracticeSign(t *testing.T) {
 			key = strings.SplitN(strings.TrimPrefix(d.Desc, "wpkh("), "/0/*", 2)[0]
 		}
 	}
-	parsed, err := parseEscrowKey(key)
+	parsed, err := parseEscrowKey(key, keyNetTest)
 	if err != nil || !parsed.BIP48 {
 		t.Fatalf("buyer key %q: %v", key, err)
 	}
