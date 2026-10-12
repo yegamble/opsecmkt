@@ -571,6 +571,15 @@ market holds the wallet keys and builds, stores and sends every transaction itse
   (not enough money) waits once and is flagged if it persists, except for a refund whose coins are too few for the
   network fee (below, A-467). These are the codes `monero-wallet-rpc` 0.18.5.1 gave
   when recorded (`tests/e2e/fixtures/xmr_rpc_shapes_0.18.5.1.json`).
+- **Tor mode (A-515).** With `APP_MODE=tor`, `relay_tx` would send a settlement through the escrow daemon from the
+  host's IP address, so nothing is relayed (a stored one is not relayed again either) unless `COMPOSE_FILE` includes
+  `compose.nodes-tor.yaml` or `ESCROW_XMR_TOR_RELAY=clearnet-accepted`; settlements are still built, checked and stored,
+  with one startup log line and an `/admin` line ("Monero relays held: Tor mode without the node Tor overlay — see operator
+  guide"). Both are read at startup; after a restart with either, the stored transaction is relayed unchanged and never
+  rebuilt. Monero over Tor itself is unverified (A-95). `TestXMREscrowTorModeWithoutNodeProxyHoldsRelay` (simulated
+  wallet-rpc and PostgreSQL, not chain evidence) covers holding, both ways to resume, a lost relayed transaction while
+  held, clearnet mode and an invalid value refused at startup; see the
+  [operator guide](operator-guide.md#monero-escrow-fakechain-or-stagenet) (*Tor mode*).
 - **Refunds and strays.** A refund goes to the address pinned at checkout, with the network fee taken from the amount.
   A release pays the vendor's claim address the escrow less the market fee (fixed at checkout; a fee below 0.001 XMR is
   added to the vendor's output) and less any amount paid above the price, which goes back to the buyer's refund address

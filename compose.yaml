@@ -67,6 +67,9 @@ services:
       ESCROW_XMR_SLOTS: ${ESCROW_XMR_SLOTS:-}
       ESCROW_XMR_MAX_FEE: ${ESCROW_XMR_MAX_FEE:-}
       ESCROW_XMR_SEED_KEY: ${ESCROW_XMR_SEED_KEY:-}
+      # With APP_MODE=tor, Monero escrow relays wait unless COMPOSE_FILE has compose.nodes-tor.yaml or this is
+      # clearnet-accepted (A-515).
+      ESCROW_XMR_TOR_RELAY: ${ESCROW_XMR_TOR_RELAY:-}
       MONERO_WALLET_SECRET: ${MONERO_WALLET_SECRET:-}
       # Photo uploads: clamd:3310 with compose.scanner.yaml and the scanner profile; blank keeps uploads off.
       CLAMD_ADDRESS: ${CLAMD_ADDRESS:-}
