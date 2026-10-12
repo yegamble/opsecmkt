@@ -95,7 +95,7 @@ func TestRefusalPageForRefusedPostEchoesText(t *testing.T) {
 	before := p.count("SELECT count(*) FROM order_events")
 	nonce := formNonceFor("/disputes/reply")
 	w := refusalPost(p.testEnv, "POST", "/disputes/reply", p.buyerSess, form("order_id", randomToken(), "reply", xssProbe, formNonceField, nonce,
-		"password", "secret-pass-word-1", "code", "654321", "recovery", "rcvy-code-9", "captcha", "CAPT01", "new_password", "new-secret-word-2",
+		"password", "marker-field-a1", "code", "654321", "recovery", "rcvy-code-9", "captcha", "CAPT01", "new_password", "marker-field-b2",
 		"rescue_code", "112233", "pgp_code", "pgp-code-7", "token", "setup-token-8"), "")
 	b := checkRefusalPage(t, w, 404, "Order not found", "/disputes")
 	if !echoed(b, "Dispute reply", xssProbe) || !strings.Contains(b, "Your text, to copy") {
@@ -104,7 +104,7 @@ func TestRefusalPageForRefusedPostEchoesText(t *testing.T) {
 	if strings.Contains(b, "<script>alert") || strings.Contains(b, "<img src=x") {
 		t.Fatalf("the echoed probe is not escaped:\n%s", b)
 	}
-	for _, secret := range []string{"secret-pass-word-1", "654321", "rcvy-code-9", "CAPT01", "new-secret-word-2", "112233", "pgp-code-7", "setup-token-8",
+	for _, secret := range []string{"marker-field-a1", "654321", "rcvy-code-9", "CAPT01", "marker-field-b2", "112233", "pgp-code-7", "setup-token-8",
 		p.A.csrf(p.buyerSess), nonce} {
 		if strings.Contains(b, secret) {
 			t.Fatalf("the refusal page echoes %q", secret)
