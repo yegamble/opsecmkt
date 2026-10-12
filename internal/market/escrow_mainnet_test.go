@@ -397,3 +397,52 @@ func TestEscrowFeeActionMainnet(t *testing.T) {
 		t.Fatalf("admin page:\n%s", page)
 	}
 }
+
+// A fee index whose address the market already used (here a settlement's destination) is skipped: the escrow moves to
+// the next index. The arbiter's own key is refused as the fee descriptor, at startup and on the admin form.
+func TestEscrowFeeDescriptorSkipsUsedAndArbiter(t *testing.T) {
+	desc := "wpkh(" + testBIP84Key + "/0/*)"
+	x := newEscrowEnv(t, "ESCROW_BTC_FEE_BPS", "250", "ESCROW_BTC_FEE_ADDRESS", desc)
+	k, _ := parseFeeDescriptor(desc, keyNetTest)
+	x.core.mu.Lock()
+	x.core.deriveHook = func(body string) (string, bool) {
+		rest, ok := strings.CutPrefix(body, "wpkh("+k.Expression()+"/0/")
+		if !ok {
+			return "", false
+		}
+		var i uint32
+		for _, c := range strings.TrimSuffix(rest, ")") {
+			i = i*10 + uint32(c-'0')
+		}
+		addr, _ := feeDescriptorAddress(k, "regtest", i)
+		return addr, true
+	}
+	x.core.mu.Unlock()
+	used, _ := feeDescriptorAddress(k, "regtest", 0)
+	// Index 0's address is already a refund address on this market.
+	prior := x.draft()
+	x.mustCheckout(prior, used)
+	order := x.draft()
+	x.mustCheckout(order, x.netAddr("skip-refund"))
+	got, err := x.A.escrowFeeAddress(context.Background(), x.A.escrow.Load(), order)
+	want, _ := feeDescriptorAddress(k, "regtest", 1)
+	if err != nil || got != want {
+		t.Fatalf("fee address %q %v, want index 1's %q", got, err, want)
+	}
+
+	// The arbiter's key as the fee descriptor: refused at startup.
+	core, srv := newFakeEscrowCore(t)
+	_ = core
+	setEscrowEnv(t, srv.url(""))
+	t.Setenv("ESCROW_BTC_FEE_BPS", "250")
+	t.Setenv("ESCROW_BTC_FEE_ADDRESS", "wpkh("+fakeArbiterExpr()+"/0/*)")
+	if _, _, err := startApp(t, ""); !errors.Is(err, errEscrowFeeAddress) {
+		t.Fatalf("arbiter key at startup: %v", err)
+	}
+	// And on the admin form.
+	_, admin := x.user("feearb_admin", "admin")
+	w := x.do("POST", "/admin/escrow-fee", admin, url.Values{"fee_bps": {"250"}, "fee_address": {"wpkh(" + fakeArbiterExpr() + "/0/*)"}, "password": {testPassword}})
+	if w.Code != 400 || !strings.Contains(w.Body.String(), "arbiter key") {
+		t.Fatalf("arbiter key on the admin form: %d %s", w.Code, w.Body.String())
+	}
+}

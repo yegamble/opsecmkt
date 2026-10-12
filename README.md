@@ -221,7 +221,7 @@ started (Monero escrow has its own steps in the
    docker compose up -d
    ```
 
-   The app logs `escrow: Bitcoin escrow on (test networks only)` and, once the signer answers, `escrow signer ready`;
+   The app logs `escrow: Bitcoin escrow on` and, once the signer answers, `escrow signer ready`;
    `/admin` shows the escrow status.
 
 CI runs these installer-printed commands on a throwaway regtest install (`escrow-node-rehearsal`); that proves the
