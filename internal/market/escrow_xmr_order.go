@@ -42,7 +42,7 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 	if destroyed.Valid {
 		v.Unrecoverable = xmrAfterDestroyText(destroyed.Time)
 	}
-	if v.Net = xmrAddressNet(v.Address); v.Net == "" {
+	if v.Net = xmrAddressNet(v.Address, a.live); v.Net == "" {
 		v.Net = a.xmrEscrowNetwork()
 	}
 	if d.OrderViewer == roleBuyer {

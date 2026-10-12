@@ -66,8 +66,8 @@ func TestXMREscrowConfigFromEnv(t *testing.T) {
 		"upper case":                      {"ESCROW_XMR", "ON"},
 		"no wallet URL":                   {"ESCROW_XMR_WALLET_RPC_URL", ""},
 		"no daemon URL":                   {"ESCROW_XMR_DAEMON_URL", " "},
-		"mainnet Monero market":           {"MONERO_NETWORK", "mainnet"},
-		"mainnet Bitcoin market":          {"BITCOIN_CHAIN", "main"},
+		"mainnet Bitcoin market":          {"BITCOIN_CHAIN", "main"}, // A-460: Monero needs its own opt-in (TestXMREscrowConfigMainnetOptIn)
+		"mixed network classes":           {"MONERO_NETWORK", "mainnet", "BITCOIN_CHAIN", "regtest"},
 		"negative fee":                    {"ESCROW_XMR_FEE_BPS", "-1"},
 		"fee above 100%":                  {"ESCROW_XMR_FEE_BPS", "10001"},
 		"fractional fee":                  {"ESCROW_XMR_FEE_BPS", "2.5"},
@@ -110,15 +110,85 @@ func TestXMREscrowConfigFromEnv(t *testing.T) {
 	}
 }
 
-// A market configured for mainnet (a.live) refuses ESCROW_XMR=on before anything is read or contacted.
+// A-460: a market configured for mainnet (a.live) runs Monero escrow only with Monero's own opt-in,
+// MONERO_NETWORK=mainnet; a mainnet market from BITCOIN_CHAIN=main alone refuses ESCROW_XMR=on before anything is read
+// or contacted, naming the setting.
 func TestXMREscrowRefusedOnLiveMarket(t *testing.T) {
-	env := xmrOnEnv("/nonexistent/seed.asc")
+	env := xmrOnEnv("/nonexistent/seed.asc", "BITCOIN_CHAIN", "main", "MONERO_NETWORK", "")
 	for i := 0; i < len(env); i += 2 {
 		t.Setenv(env[i], env[i+1])
 	}
 	a := &App{live: true}
-	if err := a.initEscrowXMR(context.Background()); !errors.Is(err, errXMRMainnetMarket) || a.escrowXMR != nil {
-		t.Fatalf("live market: %v %v", err, a.escrowXMR)
+	if err := a.initEscrowXMR(context.Background()); !errors.Is(err, errXMRMainnetOptIn) || a.escrowXMR != nil || !strings.Contains(err.Error(), "MONERO_NETWORK=mainnet") {
+		t.Fatalf("live market without MONERO_NETWORK=mainnet: %v %v", err, a.escrowXMR)
+	}
+	// The same opt-in on an App whose class says mainnet while the environment does not (no MONERO_NETWORK at all).
+	t.Setenv("BITCOIN_CHAIN", "")
+	if err := a.initEscrowXMR(context.Background()); !errors.Is(err, errXMRMainnetOptIn) || a.escrowXMR != nil {
+		t.Fatalf("live App, no opt-in: %v", err)
+	}
+}
+
+// A-460: MONERO_NETWORK=mainnet is Monero escrow's mainnet opt-in. Configuration reads it with the market's class
+// rule (errMixedNetworks), and checks ESCROW_XMR_FEE_ADDRESS by class before any node is contacted: on a mainnet
+// market only a mainnet address (standard 4… or subaddress 8…, valid keys); on a test-network market a fakechain or
+// stagenet one as before (a 4…/8… address is a fakechain's there: the formats are the same).
+func TestXMREscrowConfigMainnetOptIn(t *testing.T) {
+	cfg := func(extra ...string) (escrowXMRConfig, error) {
+		return escrowXMRConfigFromEnv(xmrEnv(xmrOnEnv("/k", extra...)...))
+	}
+	for _, env := range [][]string{{"MONERO_NETWORK", "mainnet"}, {"MONERO_NETWORK", " mainnet ", "BITCOIN_CHAIN", "main"}} {
+		if c, err := cfg(env...); err != nil || !c.mainnet {
+			t.Fatalf("%v: %+v %v", env, c, err)
+		}
+	}
+	for _, env := range [][]string{{}, {"MONERO_NETWORK", "stagenet"}, {"BITCOIN_CHAIN", "regtest"}} {
+		if c, err := cfg(env...); err != nil || c.mainnet {
+			t.Fatalf("%v: mainnet %v, %v", env, c.mainnet, err)
+		}
+	}
+	if _, err := cfg("BITCOIN_CHAIN", "main"); !errors.Is(err, errXMRMainnetOptIn) || !strings.Contains(err.Error(), "MONERO_NETWORK=mainnet") {
+		t.Fatalf("BITCOIN_CHAIN=main alone: %v", err)
+	}
+	if _, err := cfg("BITCOIN_CHAIN", "main", "MONERO_NETWORK", "stagenet"); !errors.Is(err, errMixedNetworks) {
+		t.Fatalf("mixed classes: %v", err)
+	}
+	fee := func(addr string, live bool) error {
+		extra := []string{"ESCROW_XMR_FEE_BPS", "250", "ESCROW_XMR_FEE_ADDRESS", addr}
+		if live {
+			extra = append(extra, "MONERO_NETWORK", "mainnet")
+		}
+		_, err := cfg(extra...)
+		return err
+	}
+	for _, c := range []struct {
+		name string
+		addr string
+		live bool
+		ok   bool
+	}{
+		{"mainnet standard on mainnet", testXMRAddrOn("mainnet", "fee", false), true, true},
+		{"mainnet subaddress on mainnet", testXMRAddrOn("mainnet", "fee", true), true, true},
+		{"stagenet standard on mainnet", testXMRAddrOn("stagenet", "fee", false), true, false},
+		{"stagenet subaddress on mainnet", testXMRAddrOn("stagenet", "fee", true), true, false},
+		{"testnet on mainnet", testXMRAddrOn("testnet", "fee", false), true, false},
+		{"mainnet integrated on mainnet", testXMRAddressWith(19, testXMRKey("s"), testXMRKey("v"), nil, false), true, false},
+		{"4… on a test-network market (a fakechain's)", testXMRAddrOn("mainnet", "fee", false), false, true},
+		{"stagenet on a test-network market", testXMRAddrOn("stagenet", "fee", true), false, true},
+	} {
+		err := fee(c.addr, c.live)
+		if c.ok != (err == nil) {
+			t.Errorf("%s: %v", c.name, err)
+		}
+		if err != nil && (!strings.Contains(err.Error(), "ESCROW_XMR_FEE_ADDRESS") || strings.Contains(err.Error(), c.addr[:12])) {
+			t.Errorf("%s: refusal %v", c.name, err)
+		}
+		if err != nil && c.live && !strings.Contains(err.Error(), "mainnet") {
+			t.Errorf("%s: the mainnet refusal does not name mainnet: %v", c.name, err)
+		}
+	}
+	if err := fee(testXMRAddressWith(xmrTagStandard, testXMROffCurveKey(), testXMRKey("v"), nil, false), true); !errors.Is(err, errXMRFeeAddressKeys) {
+		t.Fatalf("off-curve mainnet fee address: %v", err)
 	}
 }
 

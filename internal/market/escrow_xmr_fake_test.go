@@ -235,6 +235,9 @@ func (f *fakeXMREscrow) setEnv(t *testing.T, keyPath string) {
 		"ESCROW_BTC": "", "BITCOIN_RPC_URL": "", "BITCOIN_CHAIN": ""} {
 		t.Setenv(k, v)
 	}
+	if f.nettype == "mainnet" { // a mainnet daemon runs only with the operator's opt-in (A-460); simulated nodes only
+		t.Setenv("MONERO_NETWORK", "mainnet")
+	}
 }
 
 func (f *fakeXMREscrow) serve(w http.ResponseWriter, r *http.Request, wallet bool) {
