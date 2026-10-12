@@ -15,10 +15,12 @@ import (
 	"time"
 )
 
-// Monero escrow configuration and startup (WR-escrow Phase 3, P3-R2, P3-R4, P3-R13; A-449, P4-R15). ESCROW_XMR=on (off
-// by default) runs only against a local fakechain (monerod --regtest) or stagenet and its own monero-wallet-rpc, with an independent escrow wallet-rpc. The daemon's network is pinned in settings (escrow_xmr_network, pinXMRNetwork): a database whose
-// Monero escrows are on one network refuses a daemon on the other. With ESCROW_XMR off nothing here reads another
-// setting, opens a file, writes a setting or contacts a node.
+// Monero escrow configuration and startup (WR-escrow Phase 3, P3-R2, P3-R4, P3-R13; A-449, P4-R15; A-460). ESCROW_XMR=on
+// (off by default) runs against its own monero-wallet-rpc, with an independent escrow wallet-rpc, and a monerod on a
+// local fakechain (monerod --regtest) or stagenet on a test-network market, or on mainnet only on a market configured
+// with MONERO_NETWORK=mainnet (the operator's opt-in: real funds). The daemon's network is pinned in settings
+// (escrow_xmr_network, pinXMRNetwork): a database whose Monero escrows are on one network refuses a daemon on another.
+// With ESCROW_XMR off nothing here reads another setting, opens a file, writes a setting or contacts a node.
 
 // xmrDefaultMaxFee caps a settlement's network fee (P3-R6) when ESCROW_XMR_MAX_FEE is blank: 0.01 XMR. A young
 // fakechain charges about 0.0018744 XMR for a one-input, two-output, ring-16 transfer (chair probe on monerod
@@ -31,7 +33,7 @@ const (
 // Startup refusals for escrow nodes that answer but fail the network check (P3-R2), as errEscrowChain does for
 // Bitcoin escrow. startupRefusal appends the fixed reason (an xmrRefusal); nothing in them comes from a node.
 var (
-	errXMRStartDaemon = errors.New("refusing to start: ESCROW_XMR=on runs only on a local Monero fakechain or on stagenet in this release, and the daemon at ESCROW_XMR_DAEMON_URL failed that check. Set ESCROW_XMR=off, or point it at a fakechain daemon (monerod --regtest) or a stagenet one (monerod --stagenet)")
+	errXMRStartDaemon = errors.New("refusing to start: the Monero escrow daemon at ESCROW_XMR_DAEMON_URL failed the network check. ESCROW_XMR=on runs on a local Monero fakechain (monerod --regtest) or on stagenet (monerod --stagenet), or on mainnet only when MONERO_NETWORK=mainnet. Set ESCROW_XMR=off, or point it at a daemon on the network this market is configured for")
 	errXMRStartWallet = errors.New("refusing to start: the escrow wallet-rpc at ESCROW_XMR_WALLET_RPC_URL is not attached to the escrow daemon at ESCROW_XMR_DAEMON_URL. Set ESCROW_XMR=off, or start monero-wallet-rpc with --daemon-address pointing at that daemon")
 	errXMRStartFee    = errors.New("refusing to start: ESCROW_XMR_FEE_ADDRESS is not an address of the escrow daemon's network. Set the fee wallet's address on that network")
 	// errXMRRefusedUntilRestart answers recheckEscrowXMRNetwork once a re-check has refused the nodes.
@@ -42,7 +44,9 @@ var (
 // so the wallet could build no settlement paying it.
 var errXMRFeeAddressKeys = errors.New("ESCROW_XMR_FEE_ADDRESS is not a valid Monero address: its checksum matches but its keys are not valid, so no Monero escrow settlement could pay it. Copy the fee wallet's address again")
 
-var errXMRMainnetMarket = errors.New("refusing to start: ESCROW_XMR=on runs only on a local fakechain or on stagenet in this release, and this market is configured for mainnet (MONERO_NETWORK=mainnet or BITCOIN_CHAIN=main). Set ESCROW_XMR=off")
+// errXMRMainnetOptIn (A-460): a market configured for mainnet by BITCOIN_CHAIN=main alone runs Monero escrow only with
+// Monero's own opt-in.
+var errXMRMainnetOptIn = errors.New("refusing to start: this market is configured for mainnet (BITCOIN_CHAIN=main), and Monero escrow on mainnet holds real funds: it needs its own opt-in. Set MONERO_NETWORK=mainnet to run Monero escrow on mainnet, or set ESCROW_XMR=off")
 
 // Fixed operator lines for Monero escrow's state at startup: nothing in them comes from a node. xmrLogOn is logged
 // with the verified network type as its class: "escrow: Monero escrow on (stagenet)".
@@ -66,6 +70,7 @@ type escrowXMRConfig struct {
 	seedKeyPath          string
 	confirmations        int64 // a deposit counts from max(PAYMENT_CONFIRMATIONS_XMR, xmrMinConfirmations) (P3-R5)
 	torRelayOK           bool  // in APP_MODE=tor settlements may be relayed: COMPOSE_FILE has xmrNodeTorOverlay, or ESCROW_XMR_TOR_RELAY=clearnet-accepted (A-515)
+	mainnet              bool  // MONERO_NETWORK=mainnet: the operator's opt-in to Monero escrow on mainnet (A-460)
 }
 
 // xmrNodeTorOverlay is the Compose overlay that puts the local monerod behind its own Tor client (A-442), and
@@ -82,14 +87,15 @@ const xmrLogTorHold = "escrow: APP_MODE=tor: Monero escrow relays held (%s): set
 
 // escrowXMRConfigFromEnv reads ESCROW_XMR (on/off, blank = off), ESCROW_XMR_WALLET_RPC_URL and ESCROW_XMR_DAEMON_URL
 // (both required), ESCROW_XMR_FEE_BPS (0 to 10000, default 0)
-// and ESCROW_XMR_FEE_ADDRESS (needed above 0: a fakechain or stagenet standard address or subaddress with valid keys;
-// startEscrowXMR requires the daemon's network), ESCROW_XMR_SLOTS (5 to 200, default 20), ESCROW_XMR_MAX_FEE
+// and ESCROW_XMR_FEE_ADDRESS (needed above 0: a standard address or subaddress with valid keys, a mainnet one with
+// MONERO_NETWORK=mainnet, else a fakechain or stagenet one; startEscrowXMR requires the daemon's network), ESCROW_XMR_SLOTS (5 to 200, default 20), ESCROW_XMR_MAX_FEE
 // (piconero, 1 to xmrMaxMaxFee, default xmrDefaultMaxFee), MONERO_MAX_TIP_AGE (parseMoneroMaxTipAge),
 // PAYMENT_CONFIRMATIONS_XMR (1 to 1000; a deposit counts from at least xmrMinConfirmations), MONERO_WALLET_SECRET
 // (checkXMRWalletSecret), ESCROW_XMR_SEED_KEY (a path, read by initEscrowXMR) and ESCROW_XMR_TOR_RELAY (blank or
-// xmrTorRelayAccepted; blank, COMPOSE_FILE decides whether APP_MODE=tor relays: xmrRelayHold, A-515). A market
-// configured for mainnet (MONERO_NETWORK=mainnet, BITCOIN_CHAIN=main) is refused. Nothing is opened or contacted,
-// and with ESCROW_XMR off nothing else is read.
+// xmrTorRelayAccepted; blank, COMPOSE_FILE decides whether APP_MODE=tor relays: xmrRelayHold, A-515). The market's
+// class is read as New reads it (marketLiveFromEnv, A-460): MONERO_NETWORK=mainnet is Monero escrow's mainnet opt-in
+// (mainnet), and a mainnet market without it (BITCOIN_CHAIN=main alone) is refused (errXMRMainnetOptIn). Nothing is
+// opened or contacted, and with ESCROW_XMR off nothing else is read.
 func escrowXMRConfigFromEnv(getenv func(string) string) (escrowXMRConfig, error) {
 	var c escrowXMRConfig
 	switch strings.TrimSpace(getenv("ESCROW_XMR")) {
@@ -98,16 +104,20 @@ func escrowXMRConfigFromEnv(getenv func(string) string) (escrowXMRConfig, error)
 	case "on":
 		c.on = true
 	default:
-		return c, errors.New(`ESCROW_XMR must be "on" or "off" (blank means off); Monero escrow runs on a local fakechain or on stagenet only in this release`)
+		return c, errors.New(`ESCROW_XMR must be "on" or "off" (blank means off); Monero escrow runs on a local fakechain or on stagenet, or on mainnet only with MONERO_NETWORK=mainnet`)
 	}
-	if strings.TrimSpace(getenv("MONERO_NETWORK")) == "mainnet" || strings.TrimSpace(getenv("BITCOIN_CHAIN")) == "main" {
-		return c, errXMRMainnetMarket
+	live, err := marketLiveFromEnv(getenv)
+	if err != nil {
+		return c, err
+	}
+	if c.mainnet = strings.TrimSpace(getenv("MONERO_NETWORK")) == "mainnet"; live && !c.mainnet {
+		return c, errXMRMainnetOptIn
 	}
 	if c.walletURL = strings.TrimSpace(getenv("ESCROW_XMR_WALLET_RPC_URL")); c.walletURL == "" {
 		return c, errors.New("ESCROW_XMR=on needs ESCROW_XMR_WALLET_RPC_URL: the RPC URL of the monero-wallet-rpc that holds only the escrow wallets (docs/operator-guide.md, \"Monero escrow\")")
 	}
 	if c.daemonURL = strings.TrimSpace(getenv("ESCROW_XMR_DAEMON_URL")); c.daemonURL == "" {
-		return c, errors.New("ESCROW_XMR=on needs ESCROW_XMR_DAEMON_URL: the RPC URL of the monerod (a local fakechain, monerod --regtest, or stagenet, monerod --stagenet) the escrow wallet-rpc uses")
+		return c, errors.New("ESCROW_XMR=on needs ESCROW_XMR_DAEMON_URL: the RPC URL of the monerod (a local fakechain, monerod --regtest, or stagenet, monerod --stagenet; mainnet with MONERO_NETWORK=mainnet) the escrow wallet-rpc uses")
 	}
 	if v := strings.TrimSpace(getenv("ESCROW_XMR_FEE_BPS")); v != "" {
 		n, err := strconv.ParseInt(v, 10, 64)
@@ -117,16 +127,22 @@ func escrowXMRConfigFromEnv(getenv func(string) string) (escrowXMRConfig, error)
 		c.feeBps = n
 	}
 	if c.feeBps > 0 {
-		// Before any node is contacted the fee address may be of either escrow network; startEscrowXMR refuses it unless
-		// it is of the network the daemon is verified on (errXMRFeeNetwork).
+		// Before any node is contacted the fee address is checked by the market's class: with MONERO_NETWORK=mainnet a
+		// mainnet address only; otherwise one of either test escrow network (a 4…/8… address is a fakechain's: mainnet's
+		// format, never mainnet on such a market). startEscrowXMR refuses it unless it is of the network the daemon is
+		// verified on (errXMRFeeNetwork).
 		c.feeAddress = strings.TrimSpace(getenv("ESCROW_XMR_FEE_ADDRESS"))
-		_, err := parseXMRAddress(c.feeAddress, "fakechain")
-		if errors.Is(err, errXMRAddressNetwork) {
+		if c.mainnet {
+			_, err = parseXMRAddress(c.feeAddress, "mainnet")
+		} else if _, err = parseXMRAddress(c.feeAddress, "fakechain"); errors.Is(err, errXMRAddressNetwork) {
 			_, err = parseXMRAddress(c.feeAddress, "stagenet")
 		}
-		if errors.Is(err, errXMRAddressKeys) {
+		switch {
+		case errors.Is(err, errXMRAddressKeys):
 			return c, errXMRFeeAddressKeys
-		} else if err != nil {
+		case err != nil && c.mainnet:
+			return c, errors.New("ESCROW_XMR_FEE_BPS above 0 needs ESCROW_XMR_FEE_ADDRESS: the Monero mainnet standard address or subaddress (not integrated; starting with 4 or 8) the market fee is paid to, as MONERO_NETWORK=mainnet runs Monero escrow on mainnet")
+		case err != nil:
 			return c, errors.New("ESCROW_XMR_FEE_BPS above 0 needs ESCROW_XMR_FEE_ADDRESS: the Monero standard address or subaddress (not integrated) the market fee is paid to, on the escrow daemon's network (stagenet: starting with 5 or 7; a local fakechain: 4 or 8)")
 		}
 	}
@@ -231,22 +247,30 @@ func (x *escrowXMR) formNet() string {
 	return p
 }
 
-// network names the network Monero escrow's notes, notices and pages speak of: formNet, else "fakechain", the only
-// network Monero escrow ran on before the pin (A-449).
+// network names the network Monero escrow's notes, notices and pages speak of: formNet, else "mainnet" on a mainnet
+// market (the only network its daemon may be on, A-460), else "fakechain", the only network Monero escrow ran on
+// before the pin (A-449).
 func (x *escrowXMR) network() string {
 	if n := x.formNet(); n != "" {
 		return n
 	}
+	if x.rpc.mainnet {
+		return "mainnet"
+	}
 	return "fakechain"
 }
 
-// xmrEscrowNetwork is escrowXMR.network, or "fakechain" while ESCROW_XMR is off (an order page of an escrow made
-// before it was switched off).
+// xmrEscrowNetwork is escrowXMR.network, or while ESCROW_XMR is off (an order page of an escrow made before it was
+// switched off) "mainnet" on a mainnet market (checkNetworkClass: its escrows are mainnet ones) and "fakechain" on
+// any other.
 func (a *App) xmrEscrowNetwork() string {
-	if a.escrowXMR == nil {
-		return "fakechain"
+	if a.escrowXMR != nil {
+		return a.escrowXMR.network()
 	}
-	return a.escrowXMR.network()
+	if a.live {
+		return "mainnet"
+	}
+	return "fakechain"
 }
 
 // xmrEscrowNetKnown is the network Monero escrow was verified on or pinned to (escrowXMR.formNet), "" before that and
@@ -260,11 +284,14 @@ func (a *App) xmrEscrowNetKnown() string {
 }
 
 // xmrEscrowNetShort is the short name of the network in "(…)" in Go-built copy, the rule of the templates
-// payment-status:xmr-net and /admin: "network not verified yet", "Monero stagenet" or "local fakechain" (A-472).
+// payment-status:xmr-net and /admin: "network not verified yet", "Monero mainnet", "Monero stagenet" or "local
+// fakechain" (A-472, A-460).
 func (a *App) xmrEscrowNetShort() string {
 	switch a.xmrEscrowNetKnown() {
 	case "":
 		return "network not verified yet"
+	case "mainnet":
+		return "Monero mainnet"
 	case "stagenet":
 		return "Monero stagenet"
 	}
@@ -272,7 +299,7 @@ func (a *App) xmrEscrowNetShort() string {
 }
 
 // initEscrowXMR runs in New after Bitcoin escrow. ESCROW_XMR=off does nothing. On, a configuration error, an
-// unusable seed key file, a mainnet market, or an escrow node that answers but fails the network check
+// unusable seed key file, a mainnet market without MONERO_NETWORK=mainnet (errXMRMainnetOptIn), or an escrow node that answers but fails the network check
 // (errXMRStartDaemon, errXMRStartWallet) stops startup. A changed secret, a changed seed key (wallet creation only),
 // an unreachable node or a timeout leaves Monero escrow configured but unavailable with one fixed line, and the market
 // runs; the watcher retries. A wallet-rpc with no wallet open (-13) is not a failure: the daemon is checked and escrow
@@ -283,8 +310,8 @@ func (a *App) initEscrowXMR(ctx context.Context) error {
 	if err != nil || !cfg.on {
 		return err
 	}
-	if a.live {
-		return errXMRMainnetMarket
+	if a.live && !cfg.mainnet {
+		return errXMRMainnetOptIn
 	}
 	key, err := loadXMRSeedKey(cfg.seedKeyPath)
 	if err != nil {
@@ -294,6 +321,7 @@ func (a *App) initEscrowXMR(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	rpc.mainnet = a.live // the market's class decides which daemon checkDaemon accepts (A-460)
 	a.escrowXMR = &escrowXMR{rpc: rpc, feeBps: cfg.feeBps, feeAddress: cfg.feeAddress, slots: cfg.slots, maxFee: cfg.maxFee,
 		confirmations: cfg.confirmations, secret: cfg.secret, seedKey: key, torRelayOK: cfg.torRelayOK}
 	var pinned string

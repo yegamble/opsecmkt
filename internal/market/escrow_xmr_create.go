@@ -73,7 +73,7 @@ func xmrEscrowCheckoutAction(c *actionCtx) (actionResult, error) {
 	}
 	refund := strings.TrimSpace(c.Form.Get("refund_address"))
 	if refund == "" {
-		return actionResult{}, fail(400, "Enter a refund address: a Monero standard address or subaddress from your own wallet (95 characters, starting with "+xmrPrefixes(x.network())+" on this test network), used for nothing else. A refund of this escrow is paid there, and it cannot be changed later. Nothing was changed.")
+		return actionResult{}, fail(400, "Enter a refund address: a Monero standard address or subaddress from your own wallet (95 characters, starting with "+xmrPrefixes(x.network())+" "+xmrOnNetwork(x.network())+"), used for nothing else. A refund of this escrow is paid there, and it cannot be changed later. Nothing was changed.")
 	}
 	if err := checkXMRFormAddress(refund, x.formNet()); err != nil {
 		return actionResult{}, fail(400, "The refund address is refused: "+err.Error()+". Nothing was changed.")

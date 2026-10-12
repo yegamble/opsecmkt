@@ -11,8 +11,9 @@ import (
 // rule. Unit tests (no database).
 
 // Each network type accepts exactly its own standard and subaddress tags: stagenet 5…/7…, fakechain 4…/8… (the mainnet
-// format); integrated addresses are refused as such on their own network; mainnet and testnet are no escrow network,
-// and an unverified network ("") accepts nothing.
+// format), mainnet 4…/8… (A-460: verified only on a market configured with MONERO_NETWORK=mainnet); integrated
+// addresses are refused as such on their own network; testnet is no escrow network, and an unverified network ("")
+// accepts nothing.
 func TestXMRAddressTagsPerNettype(t *testing.T) {
 	addr := func(net string, kind int) string {
 		return testXMRAddressWith(testXMRTags[net][kind], testXMRKey("tbl/s"), testXMRKey("tbl/v"), nil, false)
@@ -37,8 +38,13 @@ func TestXMRAddressTagsPerNettype(t *testing.T) {
 		{"fakechain", "stagenet", 2, errXMRAddressNetwork, '7'},
 		{"fakechain", "stagenet", 1, errXMRAddressNetwork, '5'},
 		{"fakechain", "testnet", 2, errXMRAddressNetwork, 'B'},
-		{"mainnet", "mainnet", 0, errXMRAddressNetwork, '4'},
-		{"mainnet", "mainnet", 2, errXMRAddressNetwork, '8'},
+		{"mainnet", "mainnet", 0, nil, '4'},
+		{"mainnet", "mainnet", 2, nil, '8'},
+		{"mainnet", "mainnet", 1, errXMRAddressIntegrated, '4'},
+		{"mainnet", "stagenet", 0, errXMRAddressNetwork, '5'},
+		{"mainnet", "stagenet", 2, errXMRAddressNetwork, '7'},
+		{"mainnet", "testnet", 0, errXMRAddressNetwork, '9'},
+		{"mainnet", "testnet", 2, errXMRAddressNetwork, 'B'},
 		{"testnet", "testnet", 0, errXMRAddressNetwork, '9'},
 		{"testnet", "testnet", 2, errXMRAddressNetwork, 'B'},
 		{"", "fakechain", 0, errXMRAddressNetwork, '4'},
@@ -65,6 +71,30 @@ func TestXMRAddressTagsPerNettype(t *testing.T) {
 	}
 	if _, err := parseXMRAddress(addr("stagenet", 2), "fakechain"); err == nil || !strings.Contains(err.Error(), "start with 4 or 8") {
 		t.Fatalf("fakechain refusal: %v", err)
+	}
+	if _, err := parseXMRAddress(addr("stagenet", 0), "mainnet"); err == nil || !strings.Contains(err.Error(), "Monero mainnet, whose addresses start with 4 or 8") {
+		t.Fatalf("mainnet refusal: %v", err)
+	}
+	// A 106-character integrated mainnet address is refused as integrated on mainnet.
+	if err := checkXMRFormAddress(testXMRAddressWith(19, testXMRKey("tbl/s"), testXMRKey("tbl/v"), testXMRKey("pid")[:8], false), "mainnet"); !errors.Is(err, errXMRAddressIntegrated) {
+		t.Fatalf("mainnet integrated form address: %v", err)
+	}
+	// An order page names the network of its escrow's address: the mainnet-format tags are a fakechain's on a
+	// test-network market and mainnet's on a mainnet one (A-460); stagenet's are stagenet's on either (a mainnet market
+	// never holds one: checkNetworkClass).
+	for _, c := range []struct {
+		addr string
+		live bool
+		want string
+	}{
+		{addr("fakechain", 0), false, "fakechain"}, {addr("fakechain", 2), false, "fakechain"},
+		{addr("mainnet", 0), true, "mainnet"}, {addr("mainnet", 2), true, "mainnet"},
+		{addr("stagenet", 0), false, "stagenet"}, {addr("stagenet", 2), true, "stagenet"},
+		{addr("testnet", 0), true, ""}, {"not an address", true, ""},
+	} {
+		if got := xmrAddressNet(c.addr, c.live); got != c.want {
+			t.Errorf("xmrAddressNet(%.8s…, live %v) = %q, want %q", c.addr, c.live, got, c.want)
+		}
 	}
 	// A 106-character integrated address of the escrow's network is refused as integrated by the form check.
 	integrated := testXMRAddressWith(25, testXMRKey("tbl/s"), testXMRKey("tbl/v"), testXMRKey("pid")[:8], false)
@@ -120,6 +150,10 @@ func TestMoneroNodeNotSynced(t *testing.T) {
 		{moneroNode{NetType: "stagenet", Synchronized: true, Height: 100, Connections: 3, TipTime: now.Add(-61 * time.Minute).Unix()}, xmrNotSyncedTip},
 		{moneroNode{NetType: "testnet", Synchronized: true, Height: 100, Connections: 0, TipTime: fresh}, notSyncedPeers},
 		{moneroNode{NetType: "mainnet", Synchronized: true, Height: 100, Connections: 3, TipTime: 0}, xmrNotSyncedTip},
+		// A-460: mainnet, a public network, gets the peer and tip checks too.
+		{moneroNode{NetType: "mainnet", Synchronized: true, Height: 100, Connections: 3, TipTime: fresh}, ""},
+		{moneroNode{NetType: "mainnet", Synchronized: true, Height: 100, Connections: 0, TipTime: fresh}, notSyncedPeers},
+		{moneroNode{NetType: "mainnet", Synchronized: true, Height: 100, Offline: true, Restricted: true, TipTime: fresh}, notSyncedPeers},
 		{moneroNode{NetType: "stagenet", Synchronized: true, Height: 100, Connections: 3, Offline: true, TipTime: fresh}, notSyncedPeers},
 		// A restricted RPC reports 0 connections whatever its peers: offline and the tip's age decide.
 		{moneroNode{NetType: "stagenet", Synchronized: true, Height: 100, Restricted: true, Connections: 0, TipTime: fresh}, ""},

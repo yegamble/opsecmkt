@@ -592,6 +592,55 @@ func TestXMREscrowNetworkCheck(t *testing.T) {
 	}
 }
 
+// TestXMREscrowNetworkCheckMainnetMarket (A-460): on a market configured with MONERO_NETWORK=mainnet (xmrEscrowRPC.mainnet)
+// the escrow daemon must report mainnet (nettype "mainnet" with the mainnet flag alone); every test network is
+// refused with the mainnet market's own fixed refusal, and the hard fork and wallet height rules still apply. On a
+// test-network market a mainnet daemon stays refused (TestXMREscrowNetworkCheck).
+func TestXMREscrowNetworkCheckMainnetMarket(t *testing.T) {
+	ctx := context.Background()
+	info := func(nettype string, mainnet, stagenet, testnet bool) map[string]any {
+		return map[string]any{"nettype": nettype, "mainnet": mainnet, "stagenet": stagenet, "testnet": testnet, "height": 3_200_000, "synchronized": true, "status": "OK"}
+	}
+	for _, c := range []struct {
+		name         string
+		info         map[string]any
+		hardFork     int64
+		walletHeight int64
+		want         error
+	}{
+		{"mainnet", info("mainnet", true, false, false), 16, 3_200_000, nil},
+		{"mainnet, wallet 10 behind", info("mainnet", true, false, false), 16, 3_199_990, nil},
+		{"mainnet without the mainnet flag", info("mainnet", false, false, false), 16, 3_200_000, errXMRDaemonNotMainnet},
+		{"mainnet with the stagenet flag", info("mainnet", true, true, false), 16, 3_200_000, errXMRDaemonNotMainnet},
+		{"mainnet with the testnet flag", info("mainnet", true, false, true), 16, 3_200_000, errXMRDaemonNotMainnet},
+		{"fakechain", info("fakechain", false, false, false), 16, 3_200_000, errXMRDaemonNotMainnet},
+		{"fakechain with the mainnet flag", info("fakechain", true, false, false), 16, 3_200_000, errXMRDaemonNotMainnet},
+		{"stagenet", info("stagenet", false, true, false), 16, 3_200_000, errXMRDaemonNotMainnet},
+		{"testnet", info("testnet", false, false, true), 16, 3_200_000, errXMRDaemonNotMainnet},
+		{"empty nettype", info("", true, false, false), 16, 3_200_000, errXMRDaemonNotMainnet},
+		{"mainnet at hard fork 15", info("mainnet", true, false, false), 15, 3_200_000, errXMRHardFork},
+		{"mainnet, wallet 11 behind", info("mainnet", true, false, false), 16, 3_199_989, errXMRWalletLag},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			wallet, daemon, r := happyXMRNodes(t)
+			r.mainnet = true
+			daemon.result("get_info", c.info)
+			daemon.result("hard_fork_info", map[string]any{"version": c.hardFork, "enabled": true})
+			wallet.result("get_height", map[string]any{"height": c.walletHeight})
+			net, open, err := testXMRCheckNetwork(ctx, r)
+			if !errors.Is(err, c.want) || (err == nil && (!open || net != "mainnet")) {
+				t.Fatalf("got %v (open %v, network %q), want %v", err, open, net, c.want)
+			}
+			if err != nil && (strings.Contains(err.Error(), "127.0.0.1") || strings.Contains(err.Error(), "s3cret")) {
+				t.Fatalf("refusal names the node: %v", err)
+			}
+		})
+	}
+	if !strings.Contains(errXMRDaemonNotMainnet.Error(), "MONERO_NETWORK=mainnet") || !strings.Contains(errXMRDaemonNetwork.Error(), "MONERO_NETWORK=mainnet") {
+		t.Fatalf("the refusals do not name the opt-in: %q / %q", errXMRDaemonNotMainnet, errXMRDaemonNetwork)
+	}
+}
+
 // TestXMREscrowWalletLagRereadsDaemon (A-475): the daemon height the wallet is compared with is read before the
 // refresh, which can take minutes. A daemon that gains (or, popping blocks, loses) more than 10 blocks meanwhile leaves
 // a wallet synced to it more than 10 blocks from that reading, so the daemon is read again after the refresh, and the

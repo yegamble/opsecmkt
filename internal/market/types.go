@@ -295,8 +295,8 @@ type PageData struct {
 	// XMREscrowOn: ESCROW_XMR=on (every page), the site-wide notices describe Monero escrow (A-423); XMREscrowAvailable:
 	// it is ready to take a checkout (xmrEscrowReady). XMRCustody is xmrCustody (every page), so a template never
 	// retypes the owner's sentence (A-402); XMREscrowOrders: vendor desk, the viewer's Monero escrow orders that may hold
-	// coins, counted like EscrowOrders. XMREscrowNet: Monero escrow's network, "fakechain" or "stagenet"
-	// (App.xmrEscrowNetwork, A-449), so the notices name it. XMREscrowNetKnown: that network was verified (escrowXMR.formNet
+	// coins, counted like EscrowOrders. XMREscrowNet: Monero escrow's network, "fakechain", "stagenet" or
+	// "mainnet" (App.xmrEscrowNetwork, A-449, A-460), so the notices name it. XMREscrowNetKnown: that network was verified (escrowXMR.formNet
 	// is not ""), so /admin's Payment providers text never names a network no daemon was verified on (QA4W4B-1).
 	XMREscrowOn, XMREscrowAvailable, XMREscrowNetKnown bool
 	XMRCustody, XMREscrowNet                           string
@@ -807,7 +807,7 @@ type XMREscrowOrderView struct {
 	Settlements []*XMRSettlementView
 	// Unrecoverable: set once the wallet that held its account was destroyed (ES-8, escrow_xmr_retain.go)
 	Unrecoverable string
-	// Net: the network of its escrow address, "fakechain" or "stagenet" (A-449)
+	// Net: the network of its escrow address, "fakechain", "stagenet" or "mainnet" (A-449, A-460)
 	Net string
 	// WindowPassed: Open, CancelAfter has passed and no deposit waits for confirmations: the watcher has not acted yet
 	// (its daemon not synced or not readable; A-449, as EscrowOrderView's QA4W1-5)
