@@ -74,7 +74,7 @@ services:
     pids_limit: 512
     logging: *logging
   monero-escrow-wallet:
-    # Monero escrow's own wallet-RPC (ESCROW_XMR=on, A-449; docs/operator-guide.md#monero-escrow-fakechain-or-stagenet):
+    # Monero escrow's own wallet-RPC (ESCROW_XMR=on, A-449; docs/operator-guide.md#monero-escrow):
     # on the monero service's network (MONERO_NETWORK_FLAG, as there: stagenet, or mainnet when blank), attached to it. It holds
     # only escrow wallets, in its own volume, behind its own login. The installer generates
     # ESCROW_XMR_WALLET_RPC_PASSWORD; Compose refuses this service without it (A-466, env_file below, as for

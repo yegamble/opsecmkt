@@ -219,7 +219,7 @@
 #
 # Needs a regtest node with three RPC users: an operator user with full rights (sets up the wallets, standing in
 # for the buyer's own node), the app's user restricted by rpcwhitelist exactly as docs/operator-guide.md
-# ("Bitcoin escrow (test networks only)") describes, and the escrow signer's user restricted to decodepsbt, descriptorprocesspsbt and getdescriptorinfo ("Escrow
+# ("Bitcoin escrow") describes, and the escrow signer's user restricted to decodepsbt, descriptorprocesspsbt and getdescriptorinfo ("Escrow
 # signer"); a second node like it (the same three users) started with -privatebroadcast -proxy=127.0.0.1:9 -listen=0
 # for the A-441 leg (its own chain: the two nodes are not connected); and a disposable PostgreSQL database. For
 # example:

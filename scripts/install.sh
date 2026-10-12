@@ -628,7 +628,7 @@ run_check() {
       *) problems="$problems  - ESCROW_XMR_TOR_RELAY must be blank or clearnet-accepted"$'\n' ;;
     esac
     if [[ $mode == tor && -z $value ]] && ! compose_has compose.nodes-tor.yaml; then
-      warnings="${warnings}warning: APP_MODE=tor with ESCROW_XMR=on: Monero escrow settlements are built but not relayed, because the escrow wallet-rpc would relay them from this host's IP address. Add compose.nodes-tor.yaml to COMPOSE_FILE (Monero over Tor is unverified) or set ESCROW_XMR_TOR_RELAY=clearnet-accepted; see docs/operator-guide.md#monero-escrow-fakechain-or-stagenet"$'\n'
+      warnings="${warnings}warning: APP_MODE=tor with ESCROW_XMR=on: Monero escrow settlements are built but not relayed, because the escrow wallet-rpc would relay them from this host's IP address. Add compose.nodes-tor.yaml to COMPOSE_FILE (Monero over Tor is unverified) or set ESCROW_XMR_TOR_RELAY=clearnet-accepted; see docs/operator-guide.md#monero-escrow"$'\n'
     fi
   fi
   if [[ -n $files ]] && compose_has compose.escrow-xmr.yaml && ! [[ -f $escrow_seed_key_file && ! -L $escrow_seed_key_file ]]; then
@@ -985,7 +985,7 @@ cmd_init() {
   # wallet-RPC password are generated below; the seed key (a public key whose private half the operator keeps offline)
   # is asked for, never defaulted.
   if [[ -z $xmr_escrow && $detail == true && $xmr_choice == local && $monero_network == stagenet ]]; then
-    printf '%s\n' "MONERO escrow (off by default): each order paid by Monero escrow gets an account of its own in a monthly escrow wallet on stagenet, run by a separate wallet-RPC service. It is custodial: the market holds every escrow wallet's keys and can move these coins. It needs an OpenPGP public key whose private half you keep offline; every wallet seed is sealed to it (docs/operator-guide.md#monero-escrow-fakechain-or-stagenet)."
+    printf '%s\n' "MONERO escrow (off by default): each order paid by Monero escrow gets an account of its own in a monthly escrow wallet on stagenet, run by a separate wallet-RPC service. It is custodial: the market holds every escrow wallet's keys and can move these coins. It needs an OpenPGP public key whose private half you keep offline; every wallet seed is sealed to it (docs/operator-guide.md#monero-escrow)."
     ask xmr_escrow 'Turn on Monero escrow? (yes/no) [no]: '
   fi
   case ${xmr_escrow:-no} in yes|no) xmr_escrow=${xmr_escrow:-no} ;; *) die 'Answer yes or no.' ;; esac
@@ -1111,7 +1111,7 @@ cmd_init() {
     put MONERO_WALLET_SECRET "$wallet_secret"
     profiles="${profiles:+$profiles,}monero-escrow-wallet"
     compose_files="${compose_files}:compose.escrow-xmr.yaml"
-    echo 'Monero escrow is on (stagenet, custodial: the market holds every escrow wallet'"'"'s keys). Back up .env (MONERO_WALLET_SECRET) and the monero_escrow_wallet volume; keep the seed key'"'"'s private half offline (docs/operator-guide.md#monero-escrow-fakechain-or-stagenet).'
+    echo 'Monero escrow is on (stagenet, custodial: the market holds every escrow wallet'"'"'s keys). Back up .env (MONERO_WALLET_SECRET) and the monero_escrow_wallet volume; keep the seed key'"'"'s private half offline (docs/operator-guide.md#monero-escrow).'
   fi
   put BITCOIN_CHAIN "$bitcoin_chain"
   put MONERO_NETWORK "$monero_network"
