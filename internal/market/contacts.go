@@ -198,14 +198,22 @@ func orderContacts(ctx context.Context, a *App, o *Order, viewer string) ([]Cont
 	return out, nil
 }
 
+// lookupBudget is how many different handles an account may look up on /messages?to= in ten minutes (A-516, A-92).
+const lookupBudget = 60
+
 // messageRecipientLoader prefills the recipient from ?to=<handle> (ignored unless it matches the handle
-// pattern) and shows that user's key when the handle exists and is not the viewer.
+// pattern) and shows that user's key when the handle exists and is not the viewer. Past the account's lookup budget
+// it shows neither a key nor whether the handle exists, only that lookups are paused (A-516, A-92).
 func messageRecipientLoader(ctx context.Context, a *App, r *http.Request, d *PageData) error {
 	to := r.URL.Query().Get("to")
 	if !handlePattern.MatchString(to) || d.User == nil {
 		return nil
 	}
 	d.MessageTo = to
+	if !a.allowLookup(d.User.ID, to) {
+		d.MessageLookupPaused = true
+		return nil
+	}
 	var id, handle string
 	err := a.db.QueryRowContext(ctx, "SELECT id,handle FROM users WHERE handle=$1", to).Scan(&id, &handle)
 	if err == sql.ErrNoRows || err == nil && id == d.User.ID {

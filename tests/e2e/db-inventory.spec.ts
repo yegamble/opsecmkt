@@ -87,6 +87,10 @@ test('edit, archive and restore a listing without client scripts', async ({ page
   await expectNotice(page, 'Listing saved.');
   await expect(page.getByLabel('Listing title')).toHaveValue(`${vendorTitle} admin`);
 
+  // A-516: the vendor is told what the administrator changed.
+  await vendor.goto('/notifications');
+  await expect(vendor.locator('article.message', { hasText: `An administrator edited your listing “${vendorTitle}”` })).toContainText('and changed: title.');
+
   await vendor.goto(editURL);
   await expect(vendor.getByLabel('Automatic delivery content')).toHaveValue(secret);
   await vendor.context().close();

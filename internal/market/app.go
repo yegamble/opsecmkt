@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -36,6 +37,7 @@ type bucket struct {
 	Count int
 	Limit int // requests admitted per window; an entry with Count >= Limit is blocking and is never evicted
 	Until time.Time
+	Seen  []string // allowLookup: the distinct handles this window admitted (A-516)
 }
 type App struct {
 	startedAt    time.Time       // this process instance, never a persisted heartbeat
@@ -325,6 +327,28 @@ func (a *App) allowWriteBudget(key string, n int) bool {
 		a.writeLimits = make(map[string]bucket)
 	}
 	return allowIn(a.writeLimits, key, n, time.Now())
+}
+
+// allowLookup counts a recipient lookup on /messages?to= against the account's budget of lookupBudget distinct
+// handles per ten minutes, in the write table (A-516, A-92). A handle the window already admitted is admitted again
+// without spending, so reloading the compose page never runs the budget down.
+func (a *App) allowLookup(userID, handle string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.writeLimits == nil {
+		a.writeLimits = make(map[string]bucket)
+	}
+	key, now := "lookup:"+userID, time.Now()
+	if b, ok := a.writeLimits[key]; ok && !now.After(b.Until) && slices.Contains(b.Seen, handle) {
+		return true
+	}
+	if !allowIn(a.writeLimits, key, lookupBudget, now) {
+		return false
+	}
+	b := a.writeLimits[key]
+	b.Seen = append(b.Seen, handle)
+	a.writeLimits[key] = b
+	return true
 }
 
 func allowIn(limits map[string]bucket, key string, n int, now time.Time) bool {
