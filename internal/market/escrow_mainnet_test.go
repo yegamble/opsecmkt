@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -350,5 +351,49 @@ func TestEscrowFeeDescriptorIndex(t *testing.T) {
 	body := x.page("/admin", admin)
 	if !strings.Contains(body, k.Fingerprint) || !strings.Contains(body, "Highest fee index used: <strong>1</strong>") || strings.Contains(body, escrowFeeDescPrefix) {
 		t.Fatalf("admin page:\n%s", body)
+	}
+}
+
+// On a mainnet market the admin fee form refuses a plain address and saves a descriptor sealed; the audit row and the
+// admin page never show the descriptor, only its fingerprint.
+func TestEscrowFeeActionMainnet(t *testing.T) {
+	core, srv := newFakeEscrowCore(t)
+	mainnetCore(t, core)
+	setEscrowEnv(t, srv.url(""))
+	t.Setenv("BITCOIN_CHAIN", "main")
+	a, _, err := startApp(t, "")
+	if err != nil || a.escrow.Load() == nil {
+		t.Fatalf("mainnet escrow: %v", err)
+	}
+	e := &testEnv{t: t, A: a, DB: a.db}
+	_, admin := e.user("mainfee_admin", "admin")
+	plain := e.do("POST", "/admin/escrow-fee", admin, url.Values{"fee_bps": {"250"}, "fee_address": {bip84VectorAddr0}, "password": {testPassword}})
+	if plain.Code != 400 || !strings.Contains(plain.Body.String(), "watch-only descriptor") {
+		t.Fatalf("plain address: %d %s", plain.Code, plain.Body.String())
+	}
+	tpub := e.do("POST", "/admin/escrow-fee", admin, url.Values{"fee_bps": {"250"}, "fee_address": {"wpkh(" + testBIP84Key + "/0/*)"}, "password": {testPassword}})
+	if tpub.Code != 400 {
+		t.Fatalf("test-network descriptor: %d", tpub.Code)
+	}
+	if agInt(e, "SELECT count(*) FROM settings WHERE key LIKE 'escrow_btc_fee_%'") != 0 {
+		t.Fatal("a refused save was stored")
+	}
+	desc := withChecksum("wpkh(" + bip84VectorExpr(t) + "/0/*)")
+	if w := e.do("POST", "/admin/escrow-fee", admin, url.Values{"fee_bps": {"250"}, "fee_address": {desc}, "password": {testPassword}}); w.Code != 303 {
+		t.Fatalf("descriptor: %d %s", w.Code, w.Body.String())
+	}
+	var stored string
+	if err := a.db.QueryRow("SELECT value FROM settings WHERE key=$1", escrowFeeAddrSetting).Scan(&stored); err != nil || !isSealedFeeDescriptor(stored) || strings.Contains(stored, "xpub") {
+		t.Fatalf("stored %q %v", stored, err)
+	}
+	if agInt(e, "SELECT count(*) FROM audit_events WHERE action LIKE '%xpub%' OR action LIKE '%wpkh%'") != 0 {
+		t.Fatal("the descriptor is in the audit log")
+	}
+	if w := e.do("POST", "/admin/escrow-fee", admin, url.Values{"fee_bps": {"250"}, "fee_address": {bip84VectorExpr(t)}, "password": {testPassword}}); w.Code != 409 {
+		t.Fatalf("the same key again: %d", w.Code)
+	}
+	page := e.do("GET", "/admin", admin, nil).Body.String()
+	if !strings.Contains(page, bip84VectorFP) || strings.Contains(page, "xpub6") || !strings.Contains(page, "must go to a watch-only descriptor") {
+		t.Fatalf("admin page:\n%s", page)
 	}
 }
