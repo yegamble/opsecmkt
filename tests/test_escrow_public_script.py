@@ -263,13 +263,22 @@ class SetupScriptTest(NodeCase):
             left = sorted(p.name for p in work.iterdir())
             return r, json.loads(state.read_text()), left
 
-    def test_refuses_mainnet_and_testnet3_before_any_node_call(self):
-        for chain in ('main', 'mainnet', 'test', 'testnet', 'testnet3', 'bogus'):
+    def test_refuses_testnet3_and_other_names_before_any_node_call(self):
+        # A-460: mainnet is "main", as Bitcoin Core names it; "mainnet" and testnet3 are refused.
+        for chain in ('mainnet', 'test', 'testnet', 'testnet3', 'bogus'):
             r, state, _ = self.run_setup('--chain', chain, chain=chain)
             self.assertEqual(r.returncode, 1, (chain, r.stdout, r.stderr))
             self.assertIn('Refusing', r.stderr)
             self.assertEqual(state['calls'], [], chain)
             self.assertNotIn('rpcauth=', r.stdout)
+
+    def test_sets_up_a_mainnet_node_with_a_warning(self):
+        # A-460: --chain main is the mainnet opt-in; the script says the node holds real funds.
+        r, state, _ = self.run_setup('--chain', 'main', chain='main')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('real funds', r.stderr)
+        self.assertIn('BITCOIN_CHAIN=main', r.stderr)
+        self.assertIn('rpcauth=', r.stdout)
 
     def test_refuses_a_node_on_another_chain_before_any_wallet_call(self):
         for node in ('main', 'test', 'signet'):
@@ -478,7 +487,7 @@ class SetupScriptTest(NodeCase):
         r = subprocess.run(['bash', str(SETUP), '--chain', 'regtest', '--verify'], env=dict(os.environ, **env),
                            capture_output=True, text=True, timeout=60)
         self.assertEqual(r.returncode, 1)
-        self.assertIn('Refusing: the escrow node reports chain main', r.stderr)
+        self.assertIn("Refusing: the escrow node reports chain 'main'", r.stderr)
         self.server.chain = 'regtest'
         self.server.whitelists['opsecmkt-escrow'] = set(ESCROW_METHODS) | {'listdescriptors'}
         r = subprocess.run(['bash', str(SETUP), '--chain', 'regtest', '--verify'], env=dict(os.environ, **env),

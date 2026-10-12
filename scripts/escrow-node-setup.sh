@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Bitcoin escrow node set-up (war-room A-446, P4-R16; docs/operator-guide.md, "Escrow node set-up script"). For the
-# operator's own escrow node on regtest, signet or testnet4; mainnet ("main") and testnet3 ("test") are refused, as
-# the app refuses them (escrowChains in internal/market/escrow_tx.go).
+# operator's own escrow node on regtest, signet or testnet4, or on mainnet ("main") for a market that opts in with
+# BITCOIN_CHAIN=main (A-460; real funds); testnet3 ("test") is refused, as the app refuses it (escrowChains in
+# internal/market/escrow_tx.go).
 #
 #   scripts/escrow-node-setup.sh --chain signet [--cli 'docker exec -u bitcoin escrow-node bitcoin-cli']
 #       [--rpc-host bitcoin] [--rpc-port 38332] [--escrow-user opsecmkt-escrow] [--signer]
@@ -72,10 +73,12 @@ case "$chain" in
   regtest) default_port=18443 ;;
   signet) default_port=38332 ;;
   testnet4) default_port=48332 ;;
-  main|mainnet) die "Refusing: Bitcoin escrow never runs on mainnet (escrow uses test-network key versions and coin type 1)." ;;
+  main) default_port=8332
+    echo "Mainnet: this escrow node will hold real funds. The market must set BITCOIN_CHAIN=main." >&2 ;;
+  mainnet) die "Refusing: Bitcoin Core names mainnet \"main\": give --chain main." ;;
   test|testnet|testnet3) die "Refusing: testnet3 is not an escrow chain; use testnet4 or signet." ;;
-  '') echo "Give --chain regtest, signet or testnet4." >&2; usage ;;
-  *) die "Refusing: --chain must be regtest, signet or testnet4." ;;
+  '') echo "Give --chain regtest, signet, testnet4 or main." >&2; usage ;;
+  *) die "Refusing: --chain must be regtest, signet, testnet4 or main." ;;
 esac
 port="${port:-$default_port}"
 for v in "$escrow_user" "$arbiter" "$watch"; do
@@ -138,7 +141,7 @@ if [[ $verify == yes ]]; then
     sleep 2
   done
   got=$(sed '$d' <<<"$answer" | field chain)
-  case "$got" in main|test) die "Refusing: the escrow node reports chain $got; Bitcoin escrow runs only on regtest, signet or testnet4." ;; esac
+  case "$got" in test) die "Refusing: the escrow node reports chain $got; Bitcoin escrow runs only on regtest, signet, testnet4 or main." ;; esac
   # As set-up mode does, nothing else is asked of a node on another chain, or one that names none (QA5W3A-9).
   [[ $(status_of "$answer") == 200 && $got == "$chain" ]] ||
     die "Refusing: the escrow node reports chain '${got:-nothing}' (HTTP $(status_of "$answer")), not $chain; nothing else was asked.$([[ -n $via && -z $(status_of "$answer") ]] && echo " No answer through Compose service $via: is it running, and is this the project directory?")"
