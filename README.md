@@ -31,6 +31,8 @@ Server-rendered Go and PostgreSQL, PGP identity, Tor-first deployment.
 Most marketplace software assumes a JavaScript-heavy browser and a stack of
 third-party services. OPSEC Market is built for the opposite case: a visitor on
 Tor Browser with scripts off, and an operator who runs everything on one host.
+It has not yet been tried in Tor Browser; the
+[manual pass](docs/verification.md#manual-tor-browser-pass-owner) is not yet run.
 
 - **Nothing runs in the browser.** Pages are plain HTML and CSS with a strict
   Content Security Policy. There is no frontend build and no third-party asset.
@@ -97,6 +99,16 @@ sample data and rejects every form write. Stop it with <kbd>Ctrl</kbd>+<kbd>C</k
 </details>
 
 ## Self-host
+
+Install a release, not `main`. Replace `v0.1.0-alpha.2` with the latest prerelease
+tag listed on the [Releases page](https://github.com/yegamble/opsecmkt/releases):
+
+```sh
+git clone https://github.com/yegamble/opsecmkt.git && cd opsecmkt && git checkout v0.1.0-alpha.2
+```
+
+`git pull` on `main` is not a supported upgrade path for a release install; see
+[UPGRADING.md](UPGRADING.md).
 
 You need Docker with Compose v2 (2.17 or later for Tor) and OpenSSL.
 
@@ -245,3 +257,7 @@ are reset from the host with `-reset-admin-password` and `-reset-admin-factors`
 Read [CONTRIBUTING.md](CONTRIBUTING.md) for the ground rules, the test gates and
 the review loops. Development setup and every test suite are in
 [docs/development.md](docs/development.md).
+
+## License
+
+AGPL-3.0; see [LICENSE](LICENSE). To report a vulnerability, see [SECURITY.md](SECURITY.md).

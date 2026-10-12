@@ -1,6 +1,7 @@
 {
   "name": "opsecmkt-regression-tests",
   "private": true,
+  "license": "AGPL-3.0-only",
   "description": "Development-only browser regressions for the server-rendered HTML/CSS application",
   "scripts": {
     "test:e2e": "playwright test",

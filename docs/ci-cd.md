@@ -34,7 +34,7 @@ GitHub retains coverage and browser reports/traces for 14 days. Inspect failed A
 
 ## Release a tested version
 
-Push a version tag, for example `v0.1.0`, on the intended reviewed commit. The release workflow reruns the entire CI workflow against that tag before building any release output. It requires the tag to use `vMAJOR.MINOR.PATCH` (an optional prerelease suffix is supported). The image is built without any Actions cache.
+Push a version tag, for example `v0.1.0`, on the intended reviewed commit. The release workflow reruns the entire CI workflow against that tag before building any release output. It requires the tag to use `vMAJOR.MINOR.PATCH` (an optional prerelease suffix is supported). A tag with a suffix (any `-` in the name, such as `v0.1.0-alpha.2`) is created with `gh release create --prerelease`; a plain tag is not. The image is built without any Actions cache.
 
 The pipeline creates a **draft GitHub release** with:
 
@@ -42,6 +42,8 @@ The pipeline creates a **draft GitHub release** with:
 - `build.json`: exact source commit, tag, platform and Actions run URL.
 - `verify-audit-linux-amd64`, `verify-audit-linux-arm64`, `verify-audit-darwin-amd64`, `verify-audit-darwin-arm64`, `verify-audit-windows-amd64.exe`: static builds of `cmd/verify-audit`, the offline checker for signed audit exports (standard library only, no network access).
 - `SHA256SUMS`: checksums for the archive, build record and every verifier binary.
+
+The release notes open with `Pre-release. Test networks only. No real funds. Install: git checkout <tag>; see UPGRADING.md.` (the workflow writes the actual tag). They then state the reproducibility limits: the OCI archive is for inspection and registry import; scripts/install.sh builds the application from source on your host and is not bit-reproducible, so the archive is not what the installer runs; the verify-audit binaries are built on the runner with `CGO_ENABLED=0 GOOS=OS GOARCH=ARCH go build -trimpath -buildvcs=false -ldflags='-s -w -buildid=' -o verify-audit-OS-ARCH ./cmd/verify-audit`, and the notes end with the Go version (`go version`) of that runner. `tests/test_ci_release.py` fails if the conditional or this wording changes in `release.yaml` without this page.
 
 It does not publish a registry package, contact a production host, or deploy. There are no deployment credentials to configure. A draft is visible only to people with write access to the repository. The repository is public, so publishing a release makes its assets available to anyone: review the draft and its green checks first. A pre-existing release makes a rerun fail instead of silently replacing release assets; delete an unwanted draft explicitly before retrying packaging.
 
@@ -67,6 +69,19 @@ It exits 0 only when the signature over the exact export bytes verifies with tha
 The OCI archive is intended for an OCI-aware importer; do not assume every Docker version can load it directly. Review embedded metadata in the archive before import; copying to a Docker daemon can discard attestations. The checksums detect corruption and BuildKit metadata records the build; neither is an independent cryptographic signature. The workflow does not create GitHub artifact attestations (available to public repositories via `actions/attest-build-provenance`).
 
 A future deployment workflow needs an explicitly selected target, environment protection, deployment credentials, backup policy, and rollback decision. Database migrations are one-way (there are no down-migrations, and migration 001 drops `orders.status`), so an older image cannot simply be redeployed against a migrated database: rolling back means restoring the encrypted backup taken before the upgrade into a fresh database and rebuilding the previous tagged revision against it (Compose builds the app from the checkout), losing everything written since. Keep the previous release tag, its `.env` and that verified pre-upgrade backup until the new release is trusted. See [UPGRADING.md](../UPGRADING.md).
+
+## Tag-time checklist
+
+Do these in order for each release tag (the first is `v0.1.0-alpha.2` or whatever the owner picks). Nothing here deploys anything.
+
+1. **Merge first.** The tag goes on a reviewed commit on `main` whose CI run passed, including the **CI passed** check. Do not tag a branch.
+2. **Replace "in no release".** Once the tag exists, those words are false. Change them to name the tag in `README.md` (the important note under the title), `docs/escrow.md`, `docs/operator-guide.md` (Escrow) and the "development branch and in no release" lines in `docs/acceptance.md`, in the same commit that precedes the tag. Keep "test networks only" and the unverified-journey wording; a tag does not verify anything.
+3. **Retitle UPGRADING.md** from "Upgrading from v0.1.0-alpha.1" to "Upgrading from v0.1.0-alpha.1 to `<tag>`", and put a one-page summary on top: what changed for an operator, the migration range (`001` to the last file in `internal/market/migrations`), the sections that need action before the upgrade (pooled history is refused, section 59), and the rollback rule.
+4. **Check the notes.** Push the tag. The release workflow reruns CI and creates a draft marked **Pre-release**; open it and confirm the first line of the notes, the reproducibility paragraph and the Go version, then publish.
+5. **Cite the tag's CI run** in [verification.md](verification.md): a row for the tag with the run URL of the **Release** workflow (confirm the commit and conclusion with `gh run view <id>`), as for every other row.
+6. **Bump `UPGRADE_FROM_REF`.** After the tag exists, change the default in `scripts/test-upgrade.sh` (`from_ref=${UPGRADE_FROM_REF:-v0.1.0-alpha.1}`) to the new tag (the `upgrade` job in `ci.yaml` already fetches every tag) and update the tag `docs/operations-tests.md` names, so the next release is tested from this one. Keep the alpha.1 rehearsal until a decision to drop it is recorded.
+7. **Owner settings.** Enable private vulnerability reporting (Settings, Code security, Private vulnerability reporting) so the link in [SECURITY.md](../SECURITY.md) works, and add a tag ruleset for `v*` that blocks deleting or moving a release tag.
+8. **Tor Browser.** Either the owner has filled [Manual Tor Browser pass (owner)](verification.md#manual-tor-browser-pass-owner), or the README and notes keep saying it has not been tried.
 
 ## Workflow maintenance
 
