@@ -426,18 +426,42 @@ class SetupScriptTest(NodeCase):
         self.assertIn('--via-compose belongs to --verify', r.stderr)
 
     def test_verify_wait_keeps_asking_a_node_that_is_not_answering_yet(self):
+        # bash's SECONDS counts whole seconds of the clock, so it can tick just after it is read. A `sleep` that returns
+        # almost at once (and logs each call) has the loop ask again as soon as it may, so the wait ends at its
+        # deadline, not at the next 2-second nap; starting half-way through a second puts the tick half a second after
+        # the read.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        naps = Path(tmp.name, 'naps')
+        fake = Path(tmp.name, 'sleep')
+        fake.write_text('#!/bin/sh\necho "$1" >> "$FAKE_SLEEP_LOG"\nexec "$REAL_SLEEP" 0.05\n')
+        fake.chmod(0o755)
+        env = dict(os.environ, PATH=tmp.name + os.pathsep + os.environ['PATH'], FAKE_SLEEP_LOG=str(naps),
+                   REAL_SLEEP=shutil.which('sleep'), ESCROW_BTC_RPC_URL='http://opsecmkt-escrow:x1@127.0.0.1:9')
+        verify = ['bash', str(SETUP), '--chain', 'regtest', '--verify']
+        time.sleep((1.5 - time.time() % 1) % 1)
         started = time.monotonic()
-        r = subprocess.run(['bash', str(SETUP), '--chain', 'regtest', '--verify', '--wait', '3'],
-                           env=dict(os.environ, ESCROW_BTC_RPC_URL='http://opsecmkt-escrow:x1@127.0.0.1:9'),
-                           capture_output=True, text=True, timeout=60)
-        self.assertEqual(r.returncode, 1)
+        r = subprocess.run([*verify, '--wait', '3'], env=env, capture_output=True, text=True, timeout=60)
         self.assertGreaterEqual(time.monotonic() - started, 3)
+        self.assertEqual(r.returncode, 1)
         self.assertIn("reports chain 'nothing'", r.stderr)
-        started = time.monotonic()
-        subprocess.run(['bash', str(SETUP), '--chain', 'regtest', '--verify'],
-                       env=dict(os.environ, ESCROW_BTC_RPC_URL='http://opsecmkt-escrow:x1@127.0.0.1:9'),
-                       capture_output=True, text=True, timeout=60)
-        self.assertLess(time.monotonic() - started, 3)
+        self.assertEqual(set(naps.read_text().split()), {'2'})
+        # Without --wait the node is asked once: no nap, no second question.
+        naps.unlink()
+        r = subprocess.run(verify, env=env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("reports chain 'nothing'", r.stderr)
+        self.assertFalse(naps.exists())
+
+    def test_verify_wait_refuses_a_number_with_a_leading_zero(self):
+        # bash arithmetic reads a leading zero as octal: 010 would wait 8 seconds and 08 is no number at all.
+        for value in ('08', '010'):
+            r = subprocess.run(['bash', str(SETUP), '--chain', 'regtest', '--verify', '--wait', value],
+                               env=dict(os.environ, ESCROW_BTC_RPC_URL='http://opsecmkt-escrow:x1@127.0.0.1:9'),
+                               capture_output=True, text=True, timeout=60)
+            self.assertEqual(r.returncode, 1, value)
+            self.assertIn('Refusing: --wait is a number of seconds.', r.stderr, value)
+            self.assertNotIn('reports chain', r.stderr, value)
 
     def test_verify_refuses_legacy_pooled_url_before_rpc(self):
         self.server.chain = 'regtest'

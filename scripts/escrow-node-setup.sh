@@ -31,7 +31,8 @@
 # gethdkeys. --via-compose SERVICE sends the same requests from inside that Compose service of the project in the
 # current directory (`docker compose exec`, bash's /dev/tcp; no curl needed there), for a node that publishes no port,
 # such as the bundled one whose URL host `bitcoin` resolves only on the Compose network. --wait SECONDS keeps asking
-# the first question while the node is not answering yet (a restarting bitcoind).
+# the first question, for at least SECONDS seconds, while the node is not answering yet (a restarting bitcoind);
+# without --wait it is asked once.
 #
 # The whitelist is escrowRPCMethods (internal/market/escrow_rpc.go); tests/test_escrow_public_script.py keeps it equal.
 set -euo pipefail
@@ -83,7 +84,7 @@ done
 [[ -n "$escrow_user" && -n "$arbiter" && -n "$watch" ]] || die "Refusing: the escrow user and the wallet names cannot be empty."
 [[ "$arbiter" != "$watch" ]] || die "Refusing: the arbiter wallet and the watch-only wallet must differ."
 [[ "$host" =~ ^[A-Za-z0-9.:_-]+$ && "$port" =~ ^[0-9]{1,5}$ ]] || die "Refusing: --rpc-host or --rpc-port is not a host name or port."
-[[ "$wait" =~ ^[0-9]{1,4}$ ]] || die "Refusing: --wait is a number of seconds."
+[[ "$wait" =~ ^(0|[1-9][0-9]{0,3})$ ]] || die "Refusing: --wait is a number of seconds." # no leading 0: bash reads octal
 [[ "$via" =~ ^[A-Za-z0-9_.-]*$ ]] || die "Refusing: --via-compose names a Compose service."
 [[ $verify == yes || -z $via ]] || die "Refusing: --via-compose belongs to --verify; set-up reaches the node through --cli."
 
@@ -128,10 +129,12 @@ if [[ $verify == yes ]]; then
   check() { # check <description> <ok: yes|no>
     if [[ $2 == yes ]]; then echo "ok: $1"; else echo "FAILED: $1" >&2; failed=1; fi
   }
-  deadline=$((SECONDS + wait))
+  # SECONDS counts whole seconds of the clock and can tick just after it is read, so the deadline is one more than
+  # --wait: the wait never ends early. Without --wait the node is asked once.
+  deadline=$((SECONDS + wait + 1))
   while :; do
     answer=$(rpc "$ESCROW_BTC_RPC_URL" "" getblockchaininfo '[]')
-    [[ $(status_of "$answer") == 200 || $SECONDS -ge $deadline ]] && break
+    [[ $(status_of "$answer") == 200 || $wait -eq 0 || $SECONDS -ge $deadline ]] && break
     sleep 2
   done
   got=$(sed '$d' <<<"$answer" | field chain)
