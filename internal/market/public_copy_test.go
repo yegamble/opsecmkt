@@ -99,7 +99,7 @@ func TestCanaryBitcoinCopyFollowsConfiguredNetwork(t *testing.T) {
 	rejectStaleClaims(t, "canary on regtest", canary)
 	s := signetEscrowEnv(t)
 	li = pageLine(html.UnescapeString(s.page("/canary", "")), "<li>Bitcoin escrow (")
-	if want := "It runs on signet, a public test network with no real funds. " + publicRecordNote; !strings.Contains(li, want) {
+	if want := "It runs on signet (the public signet, unless this operator runs a private one) with no real funds. " + publicRecordNote; !strings.Contains(li, want) {
 		t.Errorf("canary on signet lacks %q:\n%s", want, li)
 	}
 }
@@ -110,7 +110,7 @@ func TestEscrowKeyPageNamesConfiguredNetwork(t *testing.T) {
 		env  func(t *testing.T, env ...string) *escrowEnv
 		want string
 	}{
-		{"signet", signetEscrowEnv, "Bitcoin escrow on this market runs on signet, a public test network, with no real funds."},
+		{"signet", signetEscrowEnv, "Bitcoin escrow on this market runs on signet (the public signet, unless this operator runs a private one), with no real funds."},
 		{"regtest", newEscrowEnv, "Bitcoin escrow on this market runs on regtest, a local test chain, with no real funds."},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -133,7 +133,7 @@ func TestOrderPanelNamesConfiguredBitcoinNetwork(t *testing.T) {
 		env  func(t *testing.T, env ...string) *escrowEnv
 		want string
 	}{
-		{"signet", signetEscrowEnv, "Bitcoin escrow on this market runs on signet, a public test network; its coins have no value. " + publicRecordNote},
+		{"signet", signetEscrowEnv, "Bitcoin escrow on this market runs on signet (the public signet, unless this operator runs a private one); its coins have no value. " + publicRecordNote},
 		{"regtest", newEscrowEnv, "Bitcoin escrow on this market runs on regtest, a local test chain; its coins have no value. " + publicRecordNote},
 	} {
 		t.Run(c.name, func(t *testing.T) {

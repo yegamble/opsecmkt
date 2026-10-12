@@ -31,9 +31,15 @@ for (const path of ['/login', '/register']) {
     expect(png.headers()['cache-control']).toBe('no-store');
     expect(await image.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(200);
     await expect(page.getByLabel('Characters in the image')).toBeVisible();
-    await expect(page.locator('.captcha')).toContainText('There is no audio alternative.');
+    await expect(page.locator('.captcha')).toContainText('There is no audio or text alternative.');
     // A-119: the preview has no staff contact, so the help points to the operator, not an in-app channel.
     await expect(page.locator('.captcha .staff-contact')).toHaveText('Can’t read the image? Ask the operator of this market.');
+    // A-517: with no staff contact the fallback says honestly that there is no way in without the image.
+    await expect(page.locator('.captcha .captcha-fallback')).toHaveText('This market lists no contact that works without an account, so there is no way to get one without the image. Only the operator of this market can turn the CAPTCHA off.');
+    if (path === '/register') {
+      // A-512: selling needs the vendor role from an administrator.
+      await expect(page.locator('main p.staff-contact')).toHaveText('Selling needs an administrator to give your account the vendor role. Ask the operator of this market.');
+    }
     await noScriptsNoOverflow(page);
   });
 }
@@ -59,7 +65,7 @@ test('account and admin state TOTP and CAPTCHA status truthfully', async ({ page
   await expect(page.getByRole('link', { name: 'Manage TOTP' })).toBeVisible();
   await page.goto('/admin');
   await expect(page.locator('.admin-auth')).toContainText('Sign-in protection');
-  await expect(page.locator('.admin-auth')).toContainText('no audio alternative');
+  await expect(page.locator('.admin-auth')).toContainText('no audio or text alternative');
   await noScriptsNoOverflow(page);
 });
 

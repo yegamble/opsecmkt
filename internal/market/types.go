@@ -61,7 +61,11 @@ type Notification struct {
 
 // StaffContactView is the administrator's staff contact (A-119, staff_contact.go): Text as saved, shown escaped;
 // Handle set only when a signed-in reader may be linked to /messages?to=<Handle>.
-type StaffContactView struct{ Text, Handle string }
+// NeedsAccount: the contact is a bare handle, which only a signed-in user can message (A-517).
+type StaffContactView struct {
+	Text, Handle string
+	NeedsAccount bool
+}
 type Dispute struct {
 	ID, OrderID, Reason, Status, Resolution, Created string
 	NoResolver                                       bool // open, and no unsuspended moderator or administrator is independent
@@ -167,6 +171,8 @@ type PageData struct {
 	// StaffContact: /canary, /challenge, /login, /register, /notifications, /vendor-dashboard and /listing-edit (a
 	// taken-down listing, A-279), the administrator's staff contact (A-119, staff_contact.go); nil while unset.
 	StaffContact *StaffContactView
+	// CaptchaNoContact: admin page, the CAPTCHA is required but no staff contact works without an account (A-517).
+	CaptchaNoContact bool
 	// StaffAttention: uncapped actionable category totals in the shared navigation and staff desk summaries.
 	StaffAttention *StaffAttention
 	// A-190 (image_takedown.go). RecentImages: /moderator, the newest public photos and avatars (vendors' only for a moderator); AvatarTakedown:
