@@ -133,7 +133,7 @@ def exercise(repo, environment, log_path):
 
     def logs():
         return sh('docker compose logs --no-color app escrow-signer', repo, environment, log_path)[1]
-    wait_for(lambda: 'escrow: Bitcoin escrow on (test networks only)' in logs(), 'the app never logged Bitcoin escrow on', 180)
+    wait_for(lambda: 'escrow: Bitcoin escrow on' in logs(), 'the app never logged Bitcoin escrow on', 180)
     wait_for(lambda: 'escrow signer ready' in logs(), 'the app never logged that the escrow signer is ready', 180)
     final = logs()
     for secret in re.findall(r'://[^/@\s:]+:([0-9a-f]{64})@', ' '.join(env_lines)):

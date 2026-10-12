@@ -16,7 +16,8 @@ import (
 )
 
 // The signer's keys (A-454, ruling P4-R17). The seed is a fresh one of its own, never the Core arbiter wallet's. Its
-// BIP32 master key is the root; the signer's account is m/48h/1h/0h/2h; the market key of the escrow with per-order
+// BIP32 master key is the root; the signer's account is m/48h/1h/0h/2h (m/48h/0h/0h/2h with xprv and xpub on a mainnet
+// market, BITCOIN_CHAIN=main, A-460); the market key of the escrow with per-order
 // index i is account/i/0/0, and its per-order wallet's siblings account/i/0/k and account/i/1/k (k < 20) may be signed
 // for too (P4-R2: a top-up to a sibling address is refunded, not stranded).
 //
@@ -33,13 +34,16 @@ import (
 // key, and Core adds no signature for any other, which the result check refuses.
 
 const (
-	tprvVersion = 0x04358394 // BIP32 test-network private key version
-	seedLen     = 32         // init's default; a 64-byte seed is accepted too
+	tprvVersion = btc.VersionTprv // BIP32 test-network private key version
+	seedLen     = 32              // init's default; a 64-byte seed is accepted too
 )
 
 // accountPath is m/48h/1h/0h/2h: BIP48, coin type 1 (test networks), account 0, script type 2 (native SegWit
-// multisig), as the escrow's party accounts are (escrow_keys.go isBIP48Path).
-var accountPath = []uint32{48, 1, 0, 2}
+// multisig), as the escrow's party accounts are (escrow_keys.go isBIP48Path). mainAccountPath is mainnet's, coin type 0.
+var (
+	accountPath     = []uint32{48, 1, 0, 2}
+	mainAccountPath = []uint32{48, 0, 0, 2}
+)
 
 var (
 	errSeedSize    = errors.New("the seed must be exactly 32 or 64 bytes")
@@ -111,14 +115,18 @@ func (p extPriv) serialize(version uint32) string {
 // signerKeys is what the signer keeps in memory for its lifetime: the account tprv (only ever placed in a descriptor
 // sent to Core over its RPC), its chain code, and the account's public key as Core gave it (loadAccount).
 type signerKeys struct {
-	accountTprv string     // m/48h/1h/0h/2h, rooted
+	main        bool       // a mainnet market (BITCOIN_CHAIN=main): xprv and xpub, coin type 0
+	accountTprv string     // m/48h/1h/0h/2h (mainnet m/48h/0h/0h/2h), rooted, as a tprv (mainnet an xprv)
 	chain       [32]byte   // the account's chain code, to check Core's answer
 	account     btc.ExtKey // m/48h/1h/0h/2h, rooted; zero until loadAccount
 }
 
 // keysFromSeed derives the signer's account tprv from a 32- or 64-byte seed; loadAccount then asks Core for its public
 // key. Errors name no key material.
-func keysFromSeed(seed []byte) (*signerKeys, error) {
+func keysFromSeed(seed []byte) (*signerKeys, error) { return keysFromSeedNet(seed, false) }
+
+// keysFromSeedNet is keysFromSeed for a mainnet market (main) or a test-network one.
+func keysFromSeedNet(seed []byte, main bool) (*signerKeys, error) {
 	if len(seed) != 32 && len(seed) != 64 {
 		return nil, errSeedSize
 	}
@@ -126,17 +134,21 @@ func keysFromSeed(seed []byte) (*signerKeys, error) {
 	if err != nil {
 		return nil, err
 	}
-	for _, step := range accountPath {
+	path, version := accountPath, uint32(tprvVersion)
+	if main {
+		path, version = mainAccountPath, btc.VersionXprv
+	}
+	for _, step := range path {
 		if acct, err = hardenedChild(acct, step); err != nil {
 			return nil, err
 		}
 	}
-	return &signerKeys{accountTprv: acct.serialize(tprvVersion), chain: acct.chain}, nil
+	return &signerKeys{main: main, accountTprv: acct.serialize(version), chain: acct.chain}, nil
 }
 
 // coreTpubDescriptor is getdescriptorinfo's descriptor for wpkh(<account tprv>/0/*): the same with the tpub, and its
 // checksum.
-var coreTpubDescriptor = regexp.MustCompile(`^wpkh\((tpub[1-9A-HJ-NP-Za-km-z]+)/0/\*\)#[0-9a-z]{8}$`)
+var coreTpubDescriptor = regexp.MustCompile(`^wpkh\(([tx]pub[1-9A-HJ-NP-Za-km-z]+)/0/\*\)#[0-9a-z]{8}$`)
 
 // loadAccount has Core compute the account's public key: getdescriptorinfo of wpkh(<account tprv>/0/*) answers the
 // descriptor with the account tpub in the tprv's place. The tpub must parse as a rooted tpub (a valid point) with Go's
@@ -152,7 +164,7 @@ func (k *signerKeys) loadAccount(ctx context.Context, c rpcCaller) error {
 	if m == nil {
 		return errAccountCore
 	}
-	pub, err := btc.ParseExtPub(m[1], btc.VersionTpub)
+	pub, err := btc.ParseExtPub(m[1], k.pubVersion())
 	if err != nil || pub.Depth != 0 || pub.ChainCode != k.chain {
 		return errAccountCore
 	}
@@ -160,8 +172,24 @@ func (k *signerKeys) loadAccount(ctx context.Context, c rpcCaller) error {
 	return nil
 }
 
-// accountTpub is the account key rooted, as a tpub: what info answers and the app pins (by HMAC).
-func (k *signerKeys) accountTpub() string { return k.account.Rooted(btc.VersionTpub) }
+// accountTpub is the account key rooted, as a tpub (an xpub on mainnet): what info answers and the app pins (by HMAC).
+func (k *signerKeys) accountTpub() string { return k.account.Rooted(k.pubVersion()) }
+
+// pubVersion is the account key's public version bytes: xpub on mainnet, else tpub.
+func (k *signerKeys) pubVersion() uint32 {
+	if k.main {
+		return btc.VersionXpub
+	}
+	return btc.VersionTpub
+}
+
+// accountPathText is the account's path, as info prints it.
+func (k *signerKeys) accountPathText() string {
+	if k.main {
+		return "m/48h/0h/0h/2h"
+	}
+	return "m/48h/1h/0h/2h"
+}
 
 // fingerprint is the account key's own fingerprint (HASH160 of its public key, 4 bytes, hex): the origin a descriptor
 // names for keys derived from the rooted account key.

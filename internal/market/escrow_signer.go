@@ -55,9 +55,13 @@ type signerRefusal struct{ Class string }
 func (r *signerRefusal) Error() string { return "escrow signer refused: " + r.Class }
 
 // escrowSignerClient speaks the signer's socket protocol: one JSON request line, one JSON reply line, per connection.
-type escrowSignerClient struct{ socket string }
+type escrowSignerClient struct {
+	socket string
+	main   bool // a mainnet market: the signer's account key is an xpub (A-460), else a tpub
+}
 
-// escrowSignerInfo is the signer's info reply, checked: a rooted account tpub and its own fingerprint.
+// escrowSignerInfo is the signer's info reply, checked: a rooted account key (tpub, or xpub on mainnet) and its own
+// fingerprint.
 type escrowSignerInfo struct {
 	Key         btc.ExtKey
 	Fingerprint string
@@ -106,8 +110,9 @@ func (c *escrowSignerClient) roundTrip(ctx context.Context, timeout time.Duratio
 	return nil
 }
 
-// info asks for the signer's account key and checks the reply: the protocol version, a rooted (depth 0) tpub, and a
-// fingerprint that is the key's own.
+// info asks for the signer's account key and checks the reply: the protocol version, a rooted (depth 0) key of the
+// market's class (the reply's "tpub" field holds an xpub on a mainnet market, A-460), and a fingerprint that is the
+// key's own.
 func (c *escrowSignerClient) info(ctx context.Context) (escrowSignerInfo, error) {
 	var r struct {
 		Version     int    `json:"version"`
@@ -117,7 +122,7 @@ func (c *escrowSignerClient) info(ctx context.Context) (escrowSignerInfo, error)
 	if err := c.roundTrip(ctx, escrowSignerInfoTimeout, map[string]any{"version": escrowSignerProtocol, "op": "info"}, &r); err != nil {
 		return escrowSignerInfo{}, err
 	}
-	k, err := btc.ParseExtPub(r.Tpub, btc.VersionTpub)
+	k, err := btc.ParseExtPub(r.Tpub, keyNetFor(c.main).pub)
 	fp := k.Fingerprint()
 	if r.Version != escrowSignerProtocol || err != nil || k.Depth != 0 || r.Fingerprint != hex.EncodeToString(fp[:]) {
 		return escrowSignerInfo{}, &signerRefusal{signerBadReply}
@@ -222,7 +227,7 @@ func (a *App) signerAccount(ctx context.Context, q rowQuerier) (escrowKey, error
 	if fp == "" || fp != info.Fingerprint || mac != a.escrowXPubHMAC(info.Key.ChainCode, info.Key.PubKey) {
 		return escrowKey{}, &signerRefusal{signerMismatch}
 	}
-	return escrowKey{Fingerprint: info.Fingerprint, XPub: info.Key.Rooted(btc.VersionTpub), ChainCode: info.Key.ChainCode, PubKey: info.Key.PubKey}, nil
+	return escrowKey{Fingerprint: info.Fingerprint, XPub: info.Key.Rooted(a.keyNet().pub), ChainCode: info.Key.ChainCode, PubKey: info.Key.PubKey}, nil
 }
 
 // isSignerKey reports whether k is the escrow signer's pinned account key (QA5W3A-7): its declared origin fingerprint is

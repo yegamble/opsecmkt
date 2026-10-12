@@ -24,8 +24,9 @@ import (
 // descriptor's private key only, and finalizepsbt completes only with two valid signatures, or when the input is
 // already finalized (Core trusts final fields). Its "signatures" are keyed hashes shaped as DER: fakeSig.
 type fakeEscrowCore struct {
-	t  *testing.T
-	mu sync.Mutex
+	deriveHook func(body string) (string, bool) // A-460: answers deriveaddresses of a descriptor with no range when ok
+	t          *testing.T
+	mu         sync.Mutex
 
 	chain     string
 	arbiterFP string
@@ -539,6 +540,11 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 				out = append(out, addr)
 			}
 			return out, 0, ""
+		}
+		if c.deriveHook != nil {
+			if addr, ok := c.deriveHook(body); ok {
+				return []string{addr}, 0, ""
+			}
 		}
 		return []string{c.address(body)}, 0, ""
 	case "gettxout":

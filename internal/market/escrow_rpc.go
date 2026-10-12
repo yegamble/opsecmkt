@@ -24,8 +24,9 @@ import (
 //
 // ESCROW_BTC=on (off by default) runs only against a node on regtest, signet or testnet4 (the chain table, escrowChains;
 // A-443 opened signet and testnet4 once the sync guard, the chain pin, the market key self-check and the Tor-mode gate
-// were in place). The app reaches Core as its own RPC user, which the operator restricts with rpcwhitelist to the
-// methods below (docs/operator-guide.md, "Bitcoin escrow (test networks only)"). listdescriptors is deliberately not
+// were in place), or on mainnet when the operator opts in with BITCOIN_CHAIN=main (A-460: mainnet keys, and the market
+// fee to a watch-only descriptor). The app reaches Core as its own RPC user, which the operator restricts with rpcwhitelist to the
+// methods below (docs/operator-guide.md, "Bitcoin escrow"). listdescriptors is deliberately not
 // among them: rpcwhitelist allows or refuses a method, not its arguments, and a user allowed listdescriptors can call it
 // with private=true and export the arbiter's private key (probed on Core 31.1 regtest). The arbiter's fingerprint is
 // read with getrawchangeaddress and getaddressinfo instead, which export nothing.
@@ -66,7 +67,7 @@ type escrowConfig struct {
 	arbiterWallet string
 	watchWallet   string // the watch-only wallet escrow descriptors are imported into (P1-b)
 	feeBps        int64  // the market fee in basis points, snapshotted on each escrow at checkout (ES-5)
-	feeAddress    string // where the market fee goes ("" when feeBps is 0); one fixed address, test networks only
+	feeAddress    string // where the market fee goes ("" when feeBps is 0): a fixed address (test networks only) or a watch-only descriptor (A-460)
 	confirmations int64  // PAYMENT_CONFIRMATIONS_BTC: confirmations before an escrow counts as funded
 	feeRate       int64  // ESCROW_BTC_FEE_RATE: the network fee rate of every settlement, in sat/vB (P1-c)
 	signerSocket  string // ESCROW_SIGNER_SOCKET (A-454): the escrow signer's Unix socket; "" = no signer
@@ -86,18 +87,22 @@ func escrowConfigFromEnv(getenv func(string) string) (escrowConfig, error) {
 	case "on":
 		c.on = true
 	default:
-		return c, errors.New(`ESCROW_BTC must be "on" or "off" (blank means off); Bitcoin escrow runs on test networks only (regtest, signet or testnet4)`)
+		return c, errors.New(`ESCROW_BTC must be "on" or "off" (blank means off); Bitcoin escrow runs on regtest, signet or testnet4, or on mainnet with BITCOIN_CHAIN=main`)
 	}
 	c.rpcURL = strings.TrimSpace(getenv("ESCROW_BTC_RPC_URL"))
 	if c.rpcURL == "" {
-		return c, errors.New("ESCROW_BTC=on needs ESCROW_BTC_RPC_URL: the Bitcoin Core RPC URL (regtest, signet or testnet4) of the app's rpcwhitelist user (docs/operator-guide.md, \"Bitcoin escrow (test networks only)\")")
+		return c, errors.New("ESCROW_BTC=on needs ESCROW_BTC_RPC_URL: the Bitcoin Core RPC URL (regtest, signet, testnet4 or, with BITCOIN_CHAIN=main, mainnet) of the app's rpcwhitelist user (docs/operator-guide.md, \"Bitcoin escrow\")")
 	}
 	c.arbiterWallet = strings.TrimSpace(getenv("ESCROW_BTC_ARBITER_WALLET"))
 	if c.arbiterWallet == "" {
 		c.arbiterWallet = "opsecmkt-arbiter"
 	}
-	if chain := strings.TrimSpace(getenv("BITCOIN_CHAIN")); chain != "" && escrowChains[chain] == "" {
-		return c, errors.New("refusing to start: ESCROW_BTC=on runs only on regtest, signet or testnet4, and BITCOIN_CHAIN names mainnet or testnet3. Set ESCROW_BTC=off, or use one of those chains")
+	chain := strings.TrimSpace(getenv("BITCOIN_CHAIN"))
+	if chain != "" && escrowChains[chain] == "" {
+		return c, errors.New("refusing to start: ESCROW_BTC=on runs only on regtest, signet, testnet4 or, as an operator opt-in, mainnet (BITCOIN_CHAIN=main), and BITCOIN_CHAIN names another chain (testnet3 is refused). Set ESCROW_BTC=off, or use one of those chains")
+	}
+	if chain != "main" && strings.TrimSpace(getenv("MONERO_NETWORK")) == "mainnet" {
+		return c, errors.New("refusing to start: this market is configured for mainnet (MONERO_NETWORK=mainnet), and ESCROW_BTC=on runs on mainnet only when BITCOIN_CHAIN=main is set as well. Set BITCOIN_CHAIN=main, or ESCROW_BTC=off")
 	}
 	c.watchWallet = strings.TrimSpace(getenv("ESCROW_BTC_WATCH_WALLET"))
 	if c.watchWallet == "" {
@@ -114,9 +119,20 @@ func escrowConfigFromEnv(getenv func(string) string) (escrowConfig, error) {
 		c.feeBps = n
 	}
 	if c.feeBps > 0 {
-		var ok bool
-		if c.feeAddress, ok = escrowAddressForm("", getenv("ESCROW_BTC_FEE_ADDRESS")); !ok {
-			return c, errors.New("ESCROW_BTC_FEE_BPS above 0 needs ESCROW_BTC_FEE_ADDRESS: the Bitcoin address, on the escrow node's chain, the market fee is paid to")
+		raw := strings.TrimSpace(getenv("ESCROW_BTC_FEE_ADDRESS"))
+		switch {
+		case isFeeDescriptorInput(raw): // parsed again, and sealed, by startEscrow (feeDestinationForm)
+			if _, err := parseFeeDescriptor(raw, keyNetFor(chain == "main")); err != nil {
+				return c, errors.New("ESCROW_BTC_FEE_ADDRESS: " + err.Error())
+			}
+			c.feeAddress = raw
+		case chain == "main":
+			return c, errors.New("ESCROW_BTC_FEE_ADDRESS: " + errFeePlainOnMainnet.Error())
+		default:
+			var ok bool
+			if c.feeAddress, ok = escrowAddressForm("", raw); !ok {
+				return c, errors.New("ESCROW_BTC_FEE_BPS above 0 needs ESCROW_BTC_FEE_ADDRESS: the Bitcoin address, on the escrow node's chain, the market fee is paid to, or the fee wallet's watch-only descriptor wpkh([fingerprint/path]key/0/*)")
+			}
 		}
 	}
 	c.feeRate = escrowDefaultFeeRate
@@ -149,23 +165,23 @@ func escrowConfigFromEnv(getenv func(string) string) (escrowConfig, error) {
 
 // errEscrowChain is the fixed startup refusal for an escrow node on a chain that is not in the chain table (escrowChains):
 // mainnet, testnet3 or any other.
-var errEscrowChain = errors.New("refusing to start: ESCROW_BTC=on runs only on regtest, signet or testnet4, and the node at ESCROW_BTC_RPC_URL reports another chain (mainnet and testnet3 are refused). Set ESCROW_BTC=off, or point ESCROW_BTC_RPC_URL at a node on one of those chains")
+var errEscrowChain = errors.New("refusing to start: ESCROW_BTC=on runs only on regtest, signet or testnet4, or on mainnet when the market is configured for it (BITCOIN_CHAIN=main), and the node at ESCROW_BTC_RPC_URL reports another chain (testnet3 is always refused, mainnet without BITCOIN_CHAIN=main, a test chain with it). Set ESCROW_BTC=off, or point ESCROW_BTC_RPC_URL at a node on the configured chain")
 
 // Fixed operator lines for an escrow that is switched on but not usable: nothing in them comes from the node.
 const (
-	escrowLogOn           = "escrow: Bitcoin escrow on (test networks only)"
+	escrowLogOn           = "escrow: Bitcoin escrow on"
 	escrowLogUnchecked    = "escrow: Bitcoin escrow disabled: the escrow node could not be checked at startup"
 	escrowLogArbiter      = "escrow: Bitcoin escrow disabled: the arbiter wallet could not be read (is ESCROW_BTC_ARBITER_WALLET loaded, and a descriptor wallet with private keys?)"
-	escrowLogFingerprint  = "escrow: Bitcoin escrow disabled: the arbiter wallet's key fingerprint differs from the one pinned in this database; see docs/operator-guide.md, \"Bitcoin escrow (test networks only)\""
+	escrowLogFingerprint  = "escrow: Bitcoin escrow disabled: the arbiter wallet's key fingerprint differs from the one pinned in this database; see docs/operator-guide.md, \"Bitcoin escrow\""
 	escrowLogWatch        = "escrow: Bitcoin escrow disabled: the watch-only wallet could not be read (is ESCROW_BTC_WATCH_WALLET loaded, and a descriptor wallet with private keys disabled?)"
-	escrowLogArbiterUse   = "escrow: Bitcoin escrow disabled: the arbiter wallet must be used for the escrow key only (an unencrypted descriptor wallet with private keys that has never spent); see docs/operator-guide.md, \"Bitcoin escrow (test networks only)\""
-	escrowLogArbiterRead  = "escrow: Bitcoin escrow disabled: the arbiter wallet's transactions could not be read to check that it has never spent (is listsinceblock on the escrow user's rpcwhitelist, and the node answering?); the read is retried every poll, or after a wait when it took 5 s or more or timed out (1 minute, doubling up to 1 hour; restarting the app reads at once); see docs/operator-guide.md, \"Bitcoin escrow (test networks only)\""
+	escrowLogArbiterUse   = "escrow: Bitcoin escrow disabled: the arbiter wallet must be used for the escrow key only (an unencrypted descriptor wallet with private keys that has never spent); see docs/operator-guide.md, \"Bitcoin escrow\""
+	escrowLogArbiterRead  = "escrow: Bitcoin escrow disabled: the arbiter wallet's transactions could not be read to check that it has never spent (is listsinceblock on the escrow user's rpcwhitelist, and the node answering?); the read is retried every poll, or after a wait when it took 5 s or more or timed out (1 minute, doubling up to 1 hour; restarting the app reads at once); see docs/operator-guide.md, \"Bitcoin escrow\""
 	escrowLogArbiterWait  = "escrow: Bitcoin escrow off while the arbiter wallet is checked: reading its transactions takes longer than startup allows; the read goes on, and the escrow watcher starts escrow once it has passed"
-	escrowLogArbiterKey   = "escrow: Bitcoin escrow disabled: the arbiter account key differs from the one pinned in this database; see docs/operator-guide.md, \"Bitcoin escrow (test networks only)\""
+	escrowLogArbiterKey   = "escrow: Bitcoin escrow disabled: the arbiter account key differs from the one pinned in this database; see docs/operator-guide.md, \"Bitcoin escrow\""
 	escrowLogFixedFee     = "escrow: the market fee is paid to one fixed address (ESCROW_BTC_FEE_ADDRESS); allowed on test networks only"
-	escrowLogRefused      = "escrow: Bitcoin escrow disabled until the app is restarted: the escrow node is on a chain escrow does not run on (mainnet, testnet3 or another), or it refused ESCROW_BTC_FEE_ADDRESS"
+	escrowLogRefused      = "escrow: Bitcoin escrow disabled until the app is restarted: the escrow node is on a chain escrow does not run on (testnet3, another, or mainnet without BITCOIN_CHAIN=main), or it refused ESCROW_BTC_FEE_ADDRESS"
 	escrowLogUnrecorded   = "escrow: Bitcoin escrow disabled: its arbiter fingerprint could not be checked in the database"
-	escrowLogChain        = "escrow: Bitcoin escrow disabled: the escrow node is not on the chain this database's escrows are on (escrow_btc_chain); the admin page names both; see docs/operator-guide.md, \"Bitcoin escrow (test networks only)\""
+	escrowLogChain        = "escrow: Bitcoin escrow disabled: the escrow node is not on the chain this database's escrows are on (escrow_btc_chain); the admin page names both; see docs/operator-guide.md, \"Bitcoin escrow\""
 	escrowFingerprintPin  = "escrow_btc_arbiter_fingerprint" // settings key
 	escrowArbiterKeyPin   = "escrow_btc_arbiter_xpub_hmac"   // settings key: HMAC of the account chain code and public key
 	escrowChainPin        = "escrow_btc_chain"               // settings key: escrowChainID of the node the database's escrows are on (A-439)
@@ -218,9 +234,6 @@ func (a *App) initEscrow(ctx context.Context) error {
 		return nil
 	}
 	a.escrowConfigured = true
-	if a.live {
-		return errors.New("refusing to start: ESCROW_BTC=on runs only on test networks (regtest, signet or testnet4), and this market is configured for mainnet")
-	}
 	if _, err = newEscrowBTC(cfg); err != nil {
 		return err
 	}
@@ -237,7 +250,7 @@ func (a *App) initEscrow(ctx context.Context) error {
 		logEscrowState(state, class)
 		a.escrowStartState = state
 		if cfg.signerSocket != "" {
-			a.escrowSigner = &escrowSignerClient{socket: cfg.signerSocket}
+			a.escrowSigner = &escrowSignerClient{socket: cfg.signerSocket, main: a.live}
 			a.checkEscrowSigner(ctx) // a signer that does not answer is "waiting": startup goes on
 		}
 	}
@@ -245,7 +258,7 @@ func (a *App) initEscrow(ctx context.Context) error {
 }
 
 // errEscrowFeeAddress is the fixed startup refusal for a fee address the escrow node does not accept.
-var errEscrowFeeAddress = errors.New("refusing to start: ESCROW_BTC_FEE_ADDRESS is not a valid address on the escrow node's chain")
+var errEscrowFeeAddress = errors.New("refusing to start: ESCROW_BTC_FEE_ADDRESS is not a valid address on the escrow node's chain, nor a watch-only descriptor of its network (a mainnet market needs the descriptor), or it is the arbiter wallet's key")
 
 // startEscrow runs every escrow check once and, when all pass, enables escrow (a.escrow). It reports the state as
 // one of the fixed lines (escrowLogOn when enabled) with the error class that caused it (""), or an error: a refusal
@@ -268,7 +281,7 @@ func (a *App) startEscrow(ctx context.Context) (state, class string, err error) 
 		return escrowLogUnchecked, errorClassOf(err), nil
 	}
 	a.observeEscrowNode(node, nil)
-	if escrowChains[node.Chain] == "" {
+	if !a.escrowChainAllowed(node.Chain) {
 		return "", "", errEscrowChain
 	}
 	e.network, e.chainID = node.Chain, escrowChainID(node.Chain, node.SignetChallenge)
@@ -313,15 +326,21 @@ func (a *App) startEscrow(ctx context.Context) (state, class string, err error) 
 		return escrowLogWatch, errorClassOf(err), nil
 	}
 	if e.feeAddress != "" {
-		e.feeAddress, _ = escrowAddressForm(e.network, e.feeAddress)
-		valid, err := e.validAddress(ctx, e.feeAddress)
+		dest, plain, err := a.feeDestinationForm(e.network, e.feeAddress, e.fingerprint)
 		if err != nil {
-			return escrowLogUnchecked, errorClassOf(err), nil
-		}
-		if !valid {
 			return "", "", errEscrowFeeAddress
 		}
-		log.Print(escrowLogFixedFee)
+		e.feeAddress = dest
+		if plain {
+			valid, err := e.validAddress(ctx, e.feeAddress)
+			if err != nil {
+				return escrowLogUnchecked, errorClassOf(err), nil
+			}
+			if !valid {
+				return "", "", errEscrowFeeAddress
+			}
+			log.Print(escrowLogFixedFee)
+		}
 	}
 	a.escrow.Store(e)
 	return escrowLogOn, "", nil
@@ -555,7 +574,7 @@ func (e *escrowBTC) readArbiter(ctx context.Context) error {
 	} else {
 		ok = false
 	}
-	k, err := parseEscrowKey(inner)
+	k, err := parseEscrowKey(inner, e.keyNet())
 	if !info.IsMine || !ok || err != nil || len(info.Fingerprint) != escrowFingerprintSize || k.Fingerprint != info.Fingerprint {
 		return &escrowRPCError{Method: "getaddressinfo", Class: "bad-reply"}
 	}

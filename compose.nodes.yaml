@@ -60,9 +60,10 @@ services:
     networks: [backend, node_egress]
     # Pruned by default. monerod has no --prune-blockchain=false, so this command is a string: a blank
     # MONERO_PRUNE_FLAGS= in .env adds no flag and runs a full node, while an unset one uses the default.
-    # See docs/operator-guide.md#local-node-pruning.
+    # See docs/operator-guide.md#local-node-pruning. MONERO_NETWORK_FLAG (default --stagenet) picks the network: a
+    # blank MONERO_NETWORK_FLAG= runs mainnet, which monerod selects with no flag (MONERO_NETWORK=mainnet, A-460).
     command: >-
-      --stagenet --data-dir=/home/monero/.bitmonero --restricted-rpc
+      ${MONERO_NETWORK_FLAG---stagenet} --data-dir=/home/monero/.bitmonero --restricted-rpc
       --rpc-restricted-bind-ip=0.0.0.0 --rpc-restricted-bind-port=18081 --confirm-external-bind
       ${MONERO_PRUNE_FLAGS---prune-blockchain --sync-pruned-blocks}
     volumes: [monero_data:/home/monero/.bitmonero]
@@ -73,8 +74,8 @@ services:
     pids_limit: 512
     logging: *logging
   monero-escrow-wallet:
-    # Monero escrow's own wallet-RPC (ESCROW_XMR=on, A-449; docs/operator-guide.md#monero-escrow-fakechain-or-stagenet):
-    # stagenet only, attached to the monero service, which must then run stagenet (MONERO_NETWORK=stagenet). It holds
+    # Monero escrow's own wallet-RPC (ESCROW_XMR=on, A-449; docs/operator-guide.md#monero-escrow):
+    # on the monero service's network (MONERO_NETWORK_FLAG, as there: stagenet, or mainnet when blank), attached to it. It holds
     # only escrow wallets, in its own volume, behind its own login. The installer generates
     # ESCROW_XMR_WALLET_RPC_PASSWORD; Compose refuses this service without it (A-466, env_file below, as for
     # the wallet service). Were it started anyway, the login would be ':' (the user name follows the password's presence),
@@ -86,7 +87,7 @@ services:
     restart: unless-stopped
     networks: [backend]
     command: >-
-      --stagenet --daemon-address monero:18081 --trusted-daemon --wallet-dir=/home/monero/wallet
+      ${MONERO_NETWORK_FLAG---stagenet} --daemon-address monero:18081 --trusted-daemon --wallet-dir=/home/monero/wallet
       --rpc-bind-port=18083 --rpc-login '${ESCROW_XMR_WALLET_RPC_PASSWORD:+escrow}:${ESCROW_XMR_WALLET_RPC_PASSWORD:-}'
     env_file:
       - ESCROW_XMR_WALLET_RPC_PASSWORD-is-blank${ESCROW_XMR_WALLET_RPC_PASSWORD:+/../../../../../../../../../../../../../../../../../../../../../../../../../../../../../../../../dev/null}
@@ -116,6 +117,7 @@ services:
       ESCROW_SIGNER_SEED_FILE: /var/lib/escrow-signer/seed
       ESCROW_SIGNER_SOCKET: /run/escrow-signer/signer.sock
       ESCROW_SIGNER_RPC_URL: ${ESCROW_SIGNER_RPC_URL:-}
+      BITCOIN_CHAIN: ${BITCOIN_CHAIN:-} # main: the signer's mainnet keys (xprv/xpub, m/48h/0h/0h/2h; A-460)
     volumes:
       - escrow_signer_seed:/var/lib/escrow-signer
       - escrow_signer_socket:/run/escrow-signer

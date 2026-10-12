@@ -13,10 +13,15 @@ import (
 // indexes and moving to the next index on IL >= n or the point at infinity, a strict parser (test vector 5's rules)
 // and a rooted serializer (depth 0, parent fingerprint 0, child 0).
 
-// Extended-key version bytes (BIP32 and SLIP-132) escrow uses: tpub, and Vpub (a test-network P2WSH multisig key).
+// Extended-key version bytes (BIP32 and SLIP-132) escrow uses: on test networks tpub, and Vpub (a P2WSH multisig
+// key); on mainnet xpub and Zpub (A-460). The private versions are what the practice transaction's throwaway key uses.
 const (
 	VersionTpub = 0x043587cf
 	VersionVpub = 0x02575483 // SLIP-132 multisig P2WSH, test networks
+	VersionTprv = 0x04358394
+	VersionXpub = 0x0488b21e
+	VersionZpub = 0x02aa7ed3 // SLIP-132 multisig P2WSH, mainnet
+	VersionXprv = 0x0488ade4
 	// Hardened is the first hardened child number (2^31).
 	Hardened = 1 << 31
 )
@@ -43,7 +48,8 @@ type ExtKey struct {
 
 // ParseExtPub decodes a bare extended public key strictly (BIP32 "Serialization format" and test vector 5):
 // base58check of exactly 78 bytes, version bytes among versions, a compressed key (02 or 03) whose x has a point on
-// the curve, and at depth 0 a zero parent fingerprint and child number. Escrow passes only tpub and Vpub.
+// the curve, and at depth 0 a zero parent fingerprint and child number. Escrow passes only one network's plain and
+// multisig versions (tpub and Vpub, or xpub and Zpub).
 func ParseExtPub(s string, versions ...uint32) (ExtKey, error) {
 	raw, err := Base58CheckDecode(s)
 	if err != nil || len(raw) != 78 {
@@ -79,7 +85,7 @@ func (k ExtKey) Serialize(version uint32) string {
 }
 
 // Rooted is the key serialized as a root (depth 0, parent fingerprint 0, child number 0) under version: VersionTpub
-// for Bitcoin Core descriptors, VersionVpub (SLIP-132 test-network P2WSH multisig) for wallets. Only the chain code
+// or VersionXpub for Bitcoin Core descriptors, VersionVpub or VersionZpub (SLIP-132 P2WSH multisig) for wallets. Only the chain code
 // and key are kept, so the result names no parent.
 func (k ExtKey) Rooted(version uint32) string {
 	return ExtKey{ChainCode: k.ChainCode, PubKey: k.PubKey}.Serialize(version)

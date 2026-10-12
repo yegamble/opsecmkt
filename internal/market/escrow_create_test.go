@@ -65,7 +65,7 @@ func (x *escrowEnv) autoListing(vendor string) string {
 // activeKey stores expr as uid's escrow key, active (as registration and practice signing leave it).
 func (x *escrowEnv) activeKey(uid, expr string) {
 	x.t.Helper()
-	k, err := parseEscrowKey(expr)
+	k, err := parseEscrowKey(expr, keyNetTest)
 	if err != nil {
 		x.t.Fatal(err)
 	}
@@ -130,7 +130,7 @@ func (x *escrowEnv) nothingWritten(order string) {
 // altEscrowKey is key with another chain code (so another key) under origin fingerprint fp.
 func altEscrowKey(t *testing.T, key, fp string, n byte) string {
 	t.Helper()
-	k, err := parseEscrowKey(key)
+	k, err := parseEscrowKey(key, keyNetTest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,8 +187,8 @@ func TestEscrowCheckoutCreatesEscrow(t *testing.T) {
 	if marketIndex != 0 || pinned != refund || feeBps != 250 || feeDest != "bcrt1qmarketfee0000000000000000000000000" {
 		t.Fatalf("escrow %d %s %d %s", marketIndex, pinned, feeBps, feeDest)
 	}
-	bk, _ := parseEscrowKey(x.buyerKey)
-	vk, _ := parseEscrowKey(x.vendorKey)
+	bk, _ := parseEscrowKey(x.buyerKey, keyNetTest)
+	vk, _ := parseEscrowKey(x.vendorKey, keyNetTest)
 	rows := agStrings(t, x.testEnv, `SELECT party||' '||pubkey||' '||coalesce(user_id,'-')||' '||coalesce(key_hmac,'-')||' '||origin_fingerprint||' '||origin_path||' '||derivation_suffix||' '||coalesce(per_order_xpub,'-')
 		FROM escrow_pubkeys p JOIN escrows e ON e.id=p.escrow_id WHERE e.order_id=$1 ORDER BY party`, x.order)
 	want := []string{
@@ -387,7 +387,7 @@ func TestEscrowCheckoutBuildFailureWritesNothing(t *testing.T) {
 
 	// The vendor registered the buyer's very key (another HMAC, so the database let it through): the escrow would
 	// hold one key twice, which lets one party spend alone.
-	bk, _ := parseEscrowKey(x.buyerKey)
+	bk, _ := parseEscrowKey(x.buyerKey, keyNetTest)
 	sealed, _ := x.A.seal("escrow-xpub", bk.XPub)
 	x.DB.Exec("UPDATE user_escrow_keys SET xpub_sealed=$2,origin_fingerprint='7450f935',xpub_hmac=repeat('0',64) WHERE user_id=$1", x.vendor, sealed)
 	if w := x.checkout(x.order, "bcrt1qbuyerrefund00000000000000000000001"); w.Code != 503 {
@@ -494,7 +494,7 @@ func rotatedSecretKey() string {
 // without rotating this app's root or changing the immutable arbiter/signer pins.
 func makePartyEscrowKeyUnreadable(t *testing.T, x *escrowEnv, uid, expression string) {
 	t.Helper()
-	key, err := parseEscrowKey(expression)
+	key, err := parseEscrowKey(expression, keyNetTest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -577,7 +577,7 @@ func TestEscrowOriginLockedOnceKeyHasEscrows(t *testing.T) {
 	}
 	before := keyRows()
 	moved := func(expr, origin string) string {
-		k, err := parseEscrowKey(expr)
+		k, err := parseEscrowKey(expr, keyNetTest)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -658,7 +658,7 @@ func TestEscrowOriginLockRecheckedInTransaction(t *testing.T) {
 	x.activeKey(x.buyer, altEscrowKey(t, testBIP48Key, "0badf00d", 7))
 	x.mustCheckout(x.order, "bcrt1qbuyerrefund00000000000000000000001")
 	x.activeKey(x.buyer, x.buyerKey)
-	bk, _ := parseEscrowKey(x.buyerKey)
+	bk, _ := parseEscrowKey(x.buyerKey, keyNetTest)
 	var once sync.Once
 	x.core.beforeDerive = func() {
 		once.Do(func() { // a checkout with the current key commits while the node is asked

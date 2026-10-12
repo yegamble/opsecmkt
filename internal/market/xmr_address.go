@@ -10,14 +10,17 @@ import (
 	"golang.org/x/crypto/sha3"
 )
 
-// Offline Monero address parsing for Monero escrow (WR-escrow Phase 3, P3-R2; A-449, P4-R15). Monero escrow runs on a
-// local fakechain (monerod --regtest) or on stagenet, and the address tags it accepts follow the network type the
-// escrow daemon was verified on (xmrEscrowRPC.nettype, set by startEscrowXMR after checkDaemon and the network pin),
-// never a configured or guessed one: on stagenet the standard (network byte 24, "5…") and subaddress (36, "7…") forms,
-// on a fakechain, whose wallets use the mainnet address format, the mainnet standard (18, "4…") and subaddress (42,
-// "8…") forms. Every other tag is refused: integrated addresses of the network as integrated, anything else (testnet,
-// mainnet on stagenet, stagenet on a fakechain) as another network's, and before the network is verified ("") every
-// address. Mainnet and testnet are no escrow network. It is for the escrow path only; the pooled adapter
+// Offline Monero address parsing for Monero escrow (WR-escrow Phase 3, P3-R2; A-449, P4-R15; A-460). Monero escrow runs
+// on a local fakechain (monerod --regtest) or on stagenet, or on mainnet on a market configured with
+// MONERO_NETWORK=mainnet, and the address tags it accepts follow the network type the escrow daemon was verified on
+// (xmrEscrowRPC.nettype, set by startEscrowXMR after checkDaemon and the network pin), never a configured or guessed
+// one: on stagenet the standard (network byte 24, "5…") and subaddress (36, "7…") forms, on mainnet and on a
+// fakechain, whose wallets use the mainnet address format, the mainnet standard (18, "4…") and subaddress (42, "8…")
+// forms. The two share their tags, so only the verified network type tells them apart: checkDaemon verifies mainnet
+// only on a mainnet market, and a fakechain never on one. Every other tag is refused: integrated addresses of the
+// network as integrated, anything else (testnet, mainnet on stagenet, stagenet on a fakechain or mainnet) as another
+// network's, and before the network is verified ("") every address. Testnet is no escrow network. It is for the
+// escrow path only; the pooled adapter
 // (payments_monero.go) asks its wallet and refuses fakechain. Both keys must be points of ed25519's prime-order
 // subgroup (xmrPointValid, A-417): stricter than the wallet's own check, which accepts a point with a small-order
 // component and then cannot build, or crashes building, a transfer to it.
@@ -30,7 +33,7 @@ const xmrBase58Alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstu
 var xmrBase58BlockSizes = [9]int{0, 2, 3, 5, 6, 7, 9, 10, 11}
 
 const (
-	xmrTagStandard   = 18 // mainnet-format standard address (fakechain uses the mainnet format)
+	xmrTagStandard   = 18 // mainnet standard address (fakechain uses the mainnet format)
 	xmrTagIntegrated = 19
 	xmrTagSubaddress = 42
 	xmrAddressLength = 95 // characters: 1 tag byte, two 32-byte keys and a 4-byte checksum (69 bytes)
@@ -64,14 +67,17 @@ type xmrNet struct {
 	refusal                          error
 }
 
-// xmrNets are the network types Monero escrow runs on (checkDaemon refuses the others), by get_info's nettype.
+// xmrNets are the network types Monero escrow runs on (checkDaemon refuses the others, and mainnet on a market not
+// configured for it), by get_info's nettype.
 var xmrNets = map[string]xmrNet{
+	"mainnet":   {xmrTagStandard, xmrTagIntegrated, xmrTagSubaddress, &xmrNetRefusal{"not an address of this escrow's network: Monero escrow on this market runs on Monero mainnet, whose addresses start with 4 or 8 (stagenet and testnet addresses are refused)"}},
 	"fakechain": {xmrTagStandard, xmrTagIntegrated, xmrTagSubaddress, &xmrNetRefusal{"not an address of this escrow's network: Monero escrow on this market runs on a local fakechain, whose addresses start with 4 or 8 (stagenet and testnet addresses are refused)"}},
 	"stagenet":  {24, 25, 36, &xmrNetRefusal{"not an address of this escrow's network: Monero escrow on this market runs on Monero stagenet, whose addresses start with 5 or 7 (mainnet, fakechain and testnet addresses are refused)"}},
 }
 
 // xmrPrefixes names the first characters of nettype's standard addresses and subaddresses, for help text: "5 or 7" on
-// stagenet, "4 or 8" on a fakechain (and for any other value: the only network Monero escrow ran on before A-449).
+// stagenet, "4 or 8" on mainnet and on a fakechain (and for any other value: the only network Monero escrow ran on
+// before A-449).
 func xmrPrefixes(nettype string) string {
 	if nettype == "stagenet" {
 		return "5 or 7"
@@ -79,15 +85,32 @@ func xmrPrefixes(nettype string) string {
 	return "4 or 8"
 }
 
-// xmrAddressNet is the escrow network type an address's tag belongs to (xmrNets), or "" for none. For display only (an
-// order page names the network of its escrow's address); no address is accepted by it.
-func xmrAddressNet(addr string) string {
+// xmrOnNetwork names where nettype's addresses are used, for help text after the prefixes: "on Monero mainnet", "on
+// this test network" (stagenet) or "on this test chain" (a fakechain, and any other value, as xmrPrefixes).
+func xmrOnNetwork(nettype string) string {
+	switch nettype {
+	case "mainnet":
+		return "on Monero mainnet"
+	case "stagenet":
+		return "on this test network"
+	}
+	return "on this test chain"
+}
+
+// xmrAddressNet is the escrow network type an address's tag belongs to (xmrNets), or "" for none. Mainnet and the
+// fakechain share their tags: such an address is mainnet's on a mainnet market (live) and a fakechain's on any other
+// (checkNetworkClass keeps each market's escrows to its class, A-460). For display only (an order page names the
+// network of its escrow's address); no address is accepted by it.
+func xmrAddressNet(addr string, live bool) string {
 	data, ok := xmrBase58Decode(addr)
 	if !ok || len(data) == 0 {
 		return ""
 	}
-	for name, n := range xmrNets {
-		if data[0] == n.standard || data[0] == n.subaddress || data[0] == n.integrated {
+	for _, name := range []string{"stagenet", "fakechain"} {
+		if n := xmrNets[name]; data[0] == n.standard || data[0] == n.subaddress || data[0] == n.integrated {
+			if name == "fakechain" && live {
+				return "mainnet"
+			}
 			return name
 		}
 	}

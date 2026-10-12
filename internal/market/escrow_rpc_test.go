@@ -140,7 +140,7 @@ func TestEscrowRPCPinsParams(t *testing.T) {
 
 func mustParseKey(t *testing.T, s string) escrowKey {
 	t.Helper()
-	k, err := parseEscrowKey(s)
+	k, err := parseEscrowKey(s, keyNetTest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,7 +298,7 @@ func TestEscrowConfigFromEnv(t *testing.T) {
 		"bad value":      env("ESCROW_BTC", "yes", "ESCROW_BTC_RPC_URL", "http://a:b@h:1"),
 		"no URL":         env("ESCROW_BTC", "on"),
 		"testnet3 chain": env("ESCROW_BTC", "on", "ESCROW_BTC_RPC_URL", "http://a:b@h:1", "BITCOIN_CHAIN", "test"),
-		"mainnet chain":  env("ESCROW_BTC", "on", "ESCROW_BTC_RPC_URL", "http://a:b@h:1", "BITCOIN_CHAIN", "main"),
+		"mainnet market without BITCOIN_CHAIN=main": env("ESCROW_BTC", "on", "ESCROW_BTC_RPC_URL", "http://a:b@h:1", "MONERO_NETWORK", "mainnet"),
 	} {
 		if _, err := escrowConfigFromEnv(getenv); err == nil {
 			t.Errorf("%s: accepted", name)

@@ -37,6 +37,21 @@ Every CI row is the `CI` workflow ([`.github/workflows/ci.yaml`](../.github/work
 
 The public signet and Monero stagenet rows above are separate, later escrow evidence; none proves a pooled-wallet drain. Public testnet4, a deployed market, Tor onion reachability and a release remain unverified. The only tag is `v0.1.0-alpha.1`, still a draft GitHub release. The historical pooled Monero send failure with the daemon killed mid-send remains untested (war-room A-45); migration 107 removes that runtime while preserving its records.
 
+## Mainnet escrow opt-in (A-460) — 2026-10-12
+
+Mainnet support was added for Bitcoin and Monero escrow as an operator opt-in: `BITCOIN_CHAIN=main` or
+`MONERO_NETWORK=mainnet` makes a mainnet market, which must be all mainnet and start on a new database
+([operator guide](operator-guide.md#mainnet)). It supersedes the 2026-10-11 note under *Not verified* that mainnet is
+refused; that note is kept as it was written.
+
+**No mainnet run is recorded.** Nothing has been run against a mainnet node or wallet, with real funds, or as a
+deployment. The evidence is unit and DB integration tests with a simulated Bitcoin Core RPC and published key vectors,
+none of which contacts a network: `TestMarketLiveFromEnv`, `TestEscrowKeyClasses`, `TestEscrowAddressScriptMainnet`,
+`TestEscrowChainAllowed`, `TestFeeDescriptorAddressVector`, `TestEscrowConfigMainnet`, `TestEscrowStartupMainnet` and
+`TestEscrowFeeDescriptorIndex` (`internal/market/escrow_mainnet_test.go`). No CI run of them is recorded here yet.
+Monero mainnet tests: pending. The real-chain and public-network evidence in the table above remains test-network
+only (regtest, signet, a local Monero fakechain, stagenet).
+
 ## Manual Tor Browser pass (owner)
 
 **Status: not yet run.** No page of this project has been loaded in Tor Browser by the project: every browser result in the table above is Chromium, Firefox or WebKit under Playwright, and no result here is a Tor Browser or onion-service result. Until the owner fills this section in, the README says Tor Browser has not been tried and public copy must not claim otherwise. The pass is the owner's; an agent cannot run it.
@@ -205,7 +220,7 @@ Scope: the Foundation refactor and packages P1–P6 (authentication, PGP, orders
 - Live Docker image builds, container startup and Tor/onion reachability were not exercised in this effort. *Superseded in part, 2026-09-24:* every CI row in the evidence table builds the production image and starts it with internal and external PostgreSQL. Tor/onion reachability is still unverified.
 - Live Bitcoin regtest/testnet run: the Bitcoin Core adapter is tested only against local HTTP fakes. A regtest smoke script for the operator was provided; it was not run here. *Superseded, 2026-09-24:* the smoke test and real local-chain browser journeys were run later on 2026-09-23 (prior-build rows, now under the dated prior-build heading above; the pooled adapter and those scripts were deleted in A-492). *Superseded, 2026-10-11:* real Core 31.1 regtest escrow runs in CI (job `escrow-regtest`), and a public signet escrow smoke passed on 2026-10-09 ([record](evidence/public-testnet/2026-10-09-9885beef29d3/signet/README.md)). Public testnet4 is unrun.
 - Monero stagenet live run: the monero-wallet-rpc adapter is tested only against local HTTP fakes. *Superseded in part, 2026-09-24:* real local-chain journeys on an offline stagenet fork are in the evidence table. *Superseded, 2026-10-10:* one public stagenet digital claim passed ([record](evidence/public-testnet/2026-10-10-ac71878dfde4/stagenet-xmr/README.md)); public refunds and physical deadlines are unrun. *Superseded, 2026-10-11:* Monero escrow runs on a real fakechain in CI (job `escrow-xmr-regtest`, [38141035056](https://github.com/yegamble/opsecmkt/actions/runs/38141035056)).
-- Mainnet payments: no mainnet run is recorded. *Superseded, 2026-10-11:* mainnet is refused, not an operator opt-in: this build stops at startup on `BITCOIN_CHAIN=main`, `MONERO_NETWORK=mainnet` or a mainnet or Bitcoin testnet3 node with escrow on, and the pooled wallet that carried the old opt-in was removed (A-448, A-492). A mainnet path is not built (A-460).
+- Mainnet payments: no mainnet run is recorded. *Superseded, 2026-10-11:* mainnet is refused, not an operator opt-in: this build stops at startup on `BITCOIN_CHAIN=main`, `MONERO_NETWORK=mainnet` or a mainnet or Bitcoin testnet3 node with escrow on, and the pooled wallet that carried the old opt-in was removed (A-448, A-492). A mainnet path is not built (A-460). *Superseded, 2026-10-12:* mainnet escrow is now an operator opt-in (A-460); still no mainnet run is recorded. See [Mainnet escrow opt-in (A-460)](#mainnet-escrow-opt-in-a-460--2026-10-12).
 - The GitHub Actions run for this branch (including the full `-race` suite on PostgreSQL 17) is not recorded here. *Superseded, 2026-09-24:* later CI runs, with commits, are in the evidence table (the latest: [38141035056](https://github.com/yegamble/opsecmkt/actions/runs/38141035056) at `e617fe0`, 23 jobs).
 - Browser checks are not a complete WCAG AAA audit.
 

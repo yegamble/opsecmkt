@@ -602,7 +602,7 @@ func TestPinsPasteMarketSignatureOnSecondInput(t *testing.T) {
 	x.claim(order, x.vendorSess, claimAddr)
 	x.poll()
 	id, _, _, _ := x.settlement(order)
-	vk, _ := parseEscrowKey(x.vendorKey)
+	vk, _ := parseEscrowKey(x.vendorKey, keyNetTest)
 	vcopy := x.partyCopy(order, x.vendorSess, id)
 	cp, _ := decodePSBT(vcopy)
 	vpub, _ := hex.DecodeString(x.keyHex(order, "vendor"))

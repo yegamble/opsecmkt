@@ -29,6 +29,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/ProtonMail/go-crypto/openpgp"
@@ -94,17 +95,18 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	}
 	var err error
 	rpcURL := getenv("ESCROW_SIGNER_RPC_URL")
+	mainnet := strings.TrimSpace(getenv("BITCOIN_CHAIN")) == "main" // the market's opt-in (A-460): mainnet keys
 	switch cmd {
 	case "init":
-		err = cmdInit(ctx, seedFile, *size, rpcURL, stdout)
+		err = cmdInit(ctx, seedFile, *size, rpcURL, mainnet, stdout)
 	case "serve":
-		err = cmdServe(ctx, seedFile, *socket, rpcURL, stderr)
+		err = cmdServe(ctx, seedFile, *socket, rpcURL, mainnet, stderr)
 	case "info":
-		err = cmdInfo(ctx, seedFile, rpcURL, stdout)
+		err = cmdInfo(ctx, seedFile, rpcURL, mainnet, stdout)
 	case "backup":
 		err = cmdBackup(seedFile, *keyFile, stdout, stderr)
 	case "restore":
-		err = cmdRestore(ctx, seedFile, *fingerprint, rpcURL, stdin, stdout)
+		err = cmdRestore(ctx, seedFile, *fingerprint, rpcURL, mainnet, stdin, stdout)
 	}
 	if err != nil {
 		fmt.Fprintf(stderr, "escrow-signer %s: %v\n", cmd, err)
@@ -114,7 +116,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 }
 
 func printInfo(w io.Writer, k *signerKeys) {
-	fmt.Fprintf(w, "escrow signer protocol version %d\naccount (m/48h/1h/0h/2h, rooted): %s\naccount fingerprint: %s\n", protocolVersion, k.accountTpub(), k.fingerprint())
+	fmt.Fprintf(w, "escrow signer protocol version %d\naccount (%s, rooted): %s\naccount fingerprint: %s\n", protocolVersion, k.accountPathText(), k.accountTpub(), k.fingerprint())
 }
 
 // readSeed reads a seed file: a regular file no group or other user can read, of exactly 32 or 64 bytes.
@@ -143,12 +145,12 @@ func readSeed(path string) ([]byte, error) {
 }
 
 // loadKeys reads the seed file and has Core give the account key (loadAccount).
-func loadKeys(ctx context.Context, path string, c *core) (*signerKeys, error) {
+func loadKeys(ctx context.Context, path string, c *core, mainnet bool) (*signerKeys, error) {
 	seed, err := readSeed(path)
 	if err != nil {
 		return nil, err
 	}
-	keys, err := keysFromSeed(seed)
+	keys, err := keysFromSeedNet(seed, mainnet)
 	if err != nil {
 		return nil, err
 	}
@@ -159,12 +161,12 @@ func loadKeys(ctx context.Context, path string, c *core) (*signerKeys, error) {
 }
 
 // cmdInfo prints the protocol version and the seed's account key and fingerprint.
-func cmdInfo(ctx context.Context, path, rpcURL string, stdout io.Writer) error {
+func cmdInfo(ctx context.Context, path, rpcURL string, mainnet bool, stdout io.Writer) error {
 	c, err := newCore(rpcURL)
 	if err != nil {
 		return err
 	}
-	keys, err := loadKeys(ctx, path, c)
+	keys, err := loadKeys(ctx, path, c, mainnet)
 	if err != nil {
 		return err
 	}
@@ -201,7 +203,7 @@ func writeSeed(path string, seed []byte) error {
 
 // cmdInit makes a new seed of size random bytes (crypto/rand) and prints the account it gives. Nothing is written
 // unless Core gave the account key.
-func cmdInit(ctx context.Context, path string, size int, rpcURL string, stdout io.Writer) error {
+func cmdInit(ctx context.Context, path string, size int, rpcURL string, mainnet bool, stdout io.Writer) error {
 	if size != 32 && size != 64 {
 		return errSeedSize
 	}
@@ -219,7 +221,7 @@ func cmdInit(ctx context.Context, path string, size int, rpcURL string, stdout i
 			return errors.New("no randomness available")
 		}
 		var err error
-		if keys, err = keysFromSeed(seed); err == nil {
+		if keys, err = keysFromSeedNet(seed, mainnet); err == nil {
 			break
 		}
 	}
@@ -281,7 +283,7 @@ func cmdBackup(seedPath, keyFile string, stdout, stderr io.Writer) error {
 
 // cmdRestore reads a decrypted seed (exactly 32 or 64 bytes) from stdin into a new seed file, after checking its
 // account fingerprint against the expected one (-fingerprint, required: the pin), and prints the account.
-func cmdRestore(ctx context.Context, path, want, rpcURL string, stdin io.Reader, stdout io.Writer) error {
+func cmdRestore(ctx context.Context, path, want, rpcURL string, mainnet bool, stdin io.Reader, stdout io.Writer) error {
 	if want == "" {
 		return errors.New("-fingerprint is required: the account fingerprint this market pinned (settings key escrow_signer_fingerprint) or that init printed; nothing was written")
 	}
@@ -296,7 +298,7 @@ func cmdRestore(ctx context.Context, path, want, rpcURL string, stdin io.Reader,
 	if err != nil {
 		return errors.New("the seed could not be read from stdin")
 	}
-	keys, err := keysFromSeed(seed)
+	keys, err := keysFromSeedNet(seed, mainnet)
 	if err != nil {
 		return fmt.Errorf("stdin: %w (pipe the decrypted backup straight in: gpg --decrypt seed-backup.asc | escrow-signer restore -fingerprint HEX)", err)
 	}
@@ -315,7 +317,7 @@ func cmdRestore(ctx context.Context, path, want, rpcURL string, stdin io.Reader,
 }
 
 // cmdServe signs on the socket until ctx ends.
-func cmdServe(ctx context.Context, seedPath, socket, rpcURL string, stderr io.Writer) error {
+func cmdServe(ctx context.Context, seedPath, socket, rpcURL string, mainnet bool, stderr io.Writer) error {
 	c, err := newCore(rpcURL)
 	if err != nil {
 		return err
@@ -323,7 +325,7 @@ func cmdServe(ctx context.Context, seedPath, socket, rpcURL string, stderr io.Wr
 	if !filepath.IsAbs(socket) {
 		return errors.New("-socket (ESCROW_SIGNER_SOCKET) must be an absolute path")
 	}
-	keys, err := loadKeys(ctx, seedPath, c)
+	keys, err := loadKeys(ctx, seedPath, c, mainnet)
 	if err != nil {
 		return err
 	}

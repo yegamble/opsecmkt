@@ -1,7 +1,8 @@
 # Security policy
 
-OPSEC Market is an alpha that runs on **test networks only**. It has no bounty
-programme and makes no promise about response time.
+OPSEC Market is an alpha. It is developed and tested on test networks only;
+mainnet escrow is an operator opt-in that has never been run or verified. It has
+no bounty programme and makes no promise about response time.
 
 ## Report a vulnerability privately
 
@@ -14,11 +15,12 @@ gains. Do not include real credentials, real funds or other people's data.
 
 ## Scope
 
-- In scope: the code in this repository, and deployments that run it on a test
-  network.
-- Mainnet is refused by design (Bitcoin mainnet and testnet3, and Monero mainnet
-  and testnet, are not accepted), and no mainnet deployment is supported. A
-  report that needs mainnet is out of scope.
+- In scope: the code in this repository, including its mainnet code paths
+  (`BITCOIN_CHAIN=main`, `MONERO_NETWORK=mainnet`), and deployments that run it.
+  Demonstrate a mainnet issue from the code or on a test network; never with
+  real funds on a market you do not run.
+- No mainnet deployment has been verified. Bitcoin testnet3 and Monero testnet
+  are refused.
 - Out of scope: third-party software (Bitcoin Core, Monero, Tor, PostgreSQL,
   Docker), a misconfigured or unpatched host, attacks that need physical access
   or an already-compromised operator, and reports against someone else's

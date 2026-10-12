@@ -1,10 +1,11 @@
 # Project review and product verification — 2026-09-23
 
-> **Dated record of a pooled-wallet-era review; not a description of this build.** Its payment findings, journeys and
-> checks concern the pooled wallet (payouts, recovery lock, wallet endpoints), which was removed (A-448, A-492), and
-> the files and browser suites it names that no longer exist are written as plain names below, not links. Current
-> payment behaviour: [implementation status](implementation-status.md); current evidence:
-> [verification](verification.md).
+> **Dated record of a review of an earlier build; not a description of this build.** Its payment findings, journeys
+> and checks concern a payment path that was later removed (A-448, A-492), and the files and browser suites it names
+> that no longer exist are written as plain names below, not links. Where it says mainnet is refused or outside the
+> implementation, that was true on its date; mainnet escrow has since become an operator opt-in (A-460) with no
+> mainnet run recorded. Current payment behaviour: [implementation status](implementation-status.md); current
+> evidence: [verification](verification.md).
 
 This review covers the existing application and the requested product journeys:
 one-command local installation followed by browser setup, administration, per-currency
@@ -183,7 +184,7 @@ been exercised.
 
 The follow-up used signed, checksum-verified Bitcoin Core 31.1 and Monero
 0.18.5.1 binaries, separate disposable PostgreSQL databases, real application
-forms and locally mined test coins. Its pooled-wallet guide and scripts were
+forms and locally mined test coins. Its guide and scripts were
 deleted; [real-chain escrow tests](local-chain-testing.md) lists the current ones. No public-network test funds or
 existing wallets were available; the user selected isolated local chains.
 

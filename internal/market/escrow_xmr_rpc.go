@@ -46,8 +46,9 @@ var xmrWalletSlowTimeout = 2 * time.Minute
 // one; the pass reads nothing from a wallet whose refresh failed. A variable so tests can shorten it.
 var xmrWalletRefreshTimeout = 8 * time.Minute
 
-// P3-R2, A-449 (P4-R15): the escrow runs on a local fakechain or on stagenet (xmrNets). Which network a database's
-// escrows are on is pinned in settings (escrow_xmr_network, pinXMRNetwork), not guessed from the height.
+// P3-R2, A-449 (P4-R15), A-460: the escrow runs on a local fakechain or on stagenet on a test-network market, and on
+// mainnet only on a market configured with MONERO_NETWORK=mainnet (xmrEscrowRPC.mainnet, checkDaemon). Which network a
+// database's escrows are on is pinned in settings (escrow_xmr_network, pinXMRNetwork), not guessed from the height.
 const (
 	xmrMinHardFork  = 16 // CLSAG and Bulletproofs+, the rules monerod 0.18 enforces on mainnet
 	xmrMaxWalletLag = 10 // blocks between the wallet's height after a refresh and the daemon's
@@ -63,11 +64,13 @@ type xmrRefusal struct {
 func (e *xmrRefusal) Error() string { return e.msg }
 
 var (
-	errXMRDaemonNetwork = &xmrRefusal{"the escrow daemon (ESCROW_XMR_DAEMON_URL) is on neither a local fakechain (monerod --regtest) nor stagenet (monerod --stagenet); Monero escrow runs on those only in this release, never on mainnet or testnet", false}
-	errXMRHardFork      = &xmrRefusal{"the escrow daemon (ESCROW_XMR_DAEMON_URL) runs a hard fork version below 16; use monerod from release 0.18 or later on a fakechain, or on the public stagenet", false}
-	errXMRWalletLag     = &xmrRefusal{"the escrow wallet-rpc (ESCROW_XMR_WALLET_RPC_URL) is more than 10 blocks from the escrow daemon after a refresh; it must use the daemon at ESCROW_XMR_DAEMON_URL (--daemon-address)", true}
-	errXMRNetworkMoved  = &xmrRefusal{"the escrow daemon (ESCROW_XMR_DAEMON_URL) now reports another network than the one Monero escrow started on; restart the app once it is back on the network this database's escrows are on", false}
-	errXMRFeeNetwork    = &xmrRefusal{"ESCROW_XMR_FEE_ADDRESS is not an address of the network the escrow daemon is on (stagenet addresses start with 5 or 7, fakechain ones with 4 or 8); give the fee wallet's address on that network", false}
+	errXMRDaemonNetwork = &xmrRefusal{"the escrow daemon (ESCROW_XMR_DAEMON_URL) is on neither a local fakechain (monerod --regtest) nor stagenet (monerod --stagenet); on a market not configured for mainnet Monero escrow runs on those only, never on mainnet (only with MONERO_NETWORK=mainnet, on a new database) or testnet", false}
+	// errXMRDaemonNotMainnet (A-460): on a market configured with MONERO_NETWORK=mainnet the daemon must be on mainnet.
+	errXMRDaemonNotMainnet = &xmrRefusal{"the escrow daemon (ESCROW_XMR_DAEMON_URL) is not on Monero mainnet; this market is configured with MONERO_NETWORK=mainnet, so Monero escrow runs on mainnet only (monerod with no --stagenet, --testnet or --regtest), never on a test network", false}
+	errXMRHardFork         = &xmrRefusal{"the escrow daemon (ESCROW_XMR_DAEMON_URL) runs a hard fork version below 16; use monerod from release 0.18 or later", false}
+	errXMRWalletLag        = &xmrRefusal{"the escrow wallet-rpc (ESCROW_XMR_WALLET_RPC_URL) is more than 10 blocks from the escrow daemon after a refresh; it must use the daemon at ESCROW_XMR_DAEMON_URL (--daemon-address)", true}
+	errXMRNetworkMoved     = &xmrRefusal{"the escrow daemon (ESCROW_XMR_DAEMON_URL) now reports another network than the one Monero escrow started on; restart the app once it is back on the network this database's escrows are on", false}
+	errXMRFeeNetwork       = &xmrRefusal{"ESCROW_XMR_FEE_ADDRESS is not an address of the network the escrow daemon is on (stagenet addresses start with 5 or 7, mainnet and fakechain ones with 4 or 8); give the fee wallet's address on that network", false}
 )
 
 // Offline refusals: the request is never sent.
@@ -174,6 +177,9 @@ type xmrEscrowRPC struct {
 	// pin), unset until then. Every address the adapter or a form reads is parsed for it (parseXMRAddress), so before
 	// the network is verified no address parses.
 	net atomic.Value
+	// mainnet: the market is configured for mainnet with MONERO_NETWORK=mainnet (App.live; initEscrowXMR, A-460):
+	// checkDaemon accepts a mainnet daemon only. False, it accepts a fakechain or stagenet one only. Set before use.
+	mainnet bool
 }
 
 // nettype is the verified network type, or "" before startEscrowXMR verified it.
@@ -1048,16 +1054,22 @@ func (r *xmrEscrowRPC) keyImagesSpent(ctx context.Context, keyImages []string) (
 
 // --- network check (P3-R2, A-449) ---
 
-// checkDaemon requires the escrow daemon to be on a network type Monero escrow runs on (xmrNets): nettype fakechain
-// with no network flag set, or nettype stagenet with the stagenet flag alone (mainnet, testnet and anything else are
-// refused), and a hard fork version of at least 16. It returns get_info. Which of the two networks a database's
-// escrows are on is the network pin's to decide (pinXMRNetwork), not the height's.
+// checkDaemon requires the escrow daemon to be on a network type Monero escrow runs on for the market's class
+// (xmrNets): on a mainnet market (r.mainnet, A-460) nettype mainnet with the mainnet flag alone, and everything else
+// refused (errXMRDaemonNotMainnet); on any other, nettype fakechain with no network flag set, or nettype stagenet with
+// the stagenet flag alone (mainnet, testnet and anything else are refused: errXMRDaemonNetwork); and on either a hard
+// fork version of at least 16. It returns get_info. Which network a database's escrows are on is the network pin's to
+// decide (pinXMRNetwork), not the height's.
 func (r *xmrEscrowRPC) checkDaemon(ctx context.Context) (xmrDaemonInfo, error) {
 	info, err := r.daemonInfo(ctx)
 	if err != nil {
 		return xmrDaemonInfo{}, err
 	}
 	switch {
+	case r.mainnet:
+		if info.NetType != "mainnet" || !info.Mainnet || info.Stagenet || info.Testnet {
+			return xmrDaemonInfo{}, errXMRDaemonNotMainnet
+		}
 	case info.Mainnet || info.Testnet:
 		return xmrDaemonInfo{}, errXMRDaemonNetwork
 	case info.NetType == "fakechain" && !info.Stagenet:

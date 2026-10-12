@@ -341,7 +341,7 @@ func TestEscrowRegtestSparrowManualJourney(t *testing.T) {
 		t.Fatal("public-accounts.json must map buyer and vendor to public rooted account keys")
 	}
 	for _, party := range []string{roleBuyer, roleVendor} {
-		key, err := parseEscrowKey(accounts[party])
+		key, err := parseEscrowKey(accounts[party], keyNetTest)
 		if err != nil || !key.BIP48 {
 			t.Fatalf("%s has no public BIP48 account key: %v", party, err)
 		}

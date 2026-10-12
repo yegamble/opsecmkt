@@ -28,7 +28,7 @@ func TestEscrowAdminMarketFee(t *testing.T) {
 	before := x.draft()
 	x.mustCheckout(before, regtestAddr("fee-refund-0"))
 	page := x.page("/admin", admin)
-	for _, want := range []string{`action="/admin/escrow-fee"`, "0 basis points", "watch-only descriptor", "One fixed destination address is allowed only because escrow runs on test networks only"} {
+	for _, want := range []string{`action="/admin/escrow-fee"`, "0 basis points", "watch-only descriptor", "one fixed address is allowed on test networks only"} {
 		if !strings.Contains(page, want) {
 			t.Fatalf("admin page lacks %q:\n%s", want, page)
 		}

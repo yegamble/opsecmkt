@@ -88,7 +88,7 @@ func TestEscrowRegtestBIP32(t *testing.T) {
 		for _, d := range pub.Descriptors {
 			if strings.Contains(d.Desc, "/48h/1h/0h/2h]") {
 				expr := strings.SplitN(strings.TrimPrefix(d.Desc, "wpkh("), "/0/*", 2)[0]
-				k, err := parseEscrowKey(expr)
+				k, err := parseEscrowKey(expr, keyNetTest)
 				if err != nil || !k.BIP48 {
 					t.Fatalf("%s: account key %q: %v", name, expr, err)
 				}

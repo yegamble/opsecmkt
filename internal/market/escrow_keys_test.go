@@ -66,7 +66,7 @@ func TestBase58CheckRoundTrip(t *testing.T) {
 }
 
 func TestParseEscrowKeyAccepts(t *testing.T) {
-	k, err := parseEscrowKey(testBIP48Key)
+	k, err := parseEscrowKey(testBIP48Key, keyNetTest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,20 +86,20 @@ func TestParseEscrowKeyAccepts(t *testing.T) {
 		testBIP48Key + "/0/*",
 		"[7450f935/48h/1h/0h/2h]" + vpub,
 	} {
-		got, err := parseEscrowKey(in)
+		got, err := parseEscrowKey(in, keyNetTest)
 		if err != nil || got.Expression() != testBIP48Key || got.KeyMaterial() != k.KeyMaterial() {
 			t.Errorf("%q: %+v %v", in, got, err)
 		}
 	}
 	// A Core-native BIP84 account parses but is not BIP48: registering it needs the acknowledgement.
-	k84, err := parseEscrowKey(testBIP84Key)
+	k84, err := parseEscrowKey(testBIP84Key, keyNetTest)
 	if err != nil || k84.BIP48 || k84.PathText != "/84h/1h/0h" {
 		t.Fatalf("bip84: %+v %v", k84, err)
 	}
 	// Other BIP48 accounts are plain BIP48; the nested-SegWit script type (1h) and mainnet coin type are not.
 	for path, bip48 := range map[string]bool{"/48h/1h/7h/2h": true, "/48h/1h/0h/1h": false, "/48h/0h/0h/2h": false, "/48h/1h/0/2h": false} {
-		if got := isBIP48Path(mustPath(t, path)); got != bip48 {
-			t.Errorf("isBIP48Path(%s)=%v", path, got)
+		if got := isBIP48Path(mustPath(t, path), 1); got != bip48 {
+			t.Errorf("isBIP48Path(%s, 1)=%v", path, got)
 		}
 	}
 }
@@ -240,7 +240,7 @@ func TestParseEscrowKeyRefusals(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			_, err := parseEscrowKey(c.in)
+			_, err := parseEscrowKey(c.in, keyNetTest)
 			var r *keyRefusal
 			if err == nil || !errors.As(err, &r) || err.Error() != c.want {
 				t.Fatalf("got %v, want %q", err, c.want)
@@ -259,7 +259,7 @@ func TestParseEscrowKeyNoFalseExposed(t *testing.T) {
 	for _, in := range []string{testBIP48Key, testBIP84Key, testBIP48Key + "/0/*", "wpkh(" + testBIP84Key + "/0/*)#20gdjfqv",
 		"wsh(sortedmulti(2," + testBIP48Key + "/0/*," + testBIP84Key + "/0/*))", `{"desc":"wpkh(` + testBIP84Key + `/0/*)#20gdjfqv","timestamp":1,"active":true,"internal":false,"range":[0,999],"next":0}`,
 		publicListDescriptors} {
-		if _, err := parseEscrowKey(in); err == errKeyExposed {
+		if _, err := parseEscrowKey(in, keyNetTest); err == errKeyExposed {
 			t.Errorf("public export called exposed: %q", in)
 		}
 	}
@@ -287,7 +287,7 @@ func TestParseEscrowKeyNoFalseExposed(t *testing.T) {
 		if rng.IntN(2) == 1 {
 			expr += "/0/*"
 		}
-		k, err := parseEscrowKey(expr)
+		k, err := parseEscrowKey(expr, keyNetTest)
 		if err != nil || !k.BIP48 {
 			t.Fatalf("%q: %v", expr, err)
 		}
@@ -332,15 +332,15 @@ func TestParseEscrowKeyRefusesBadKeyMaterial(t *testing.T) {
 			}
 		}
 	})
-	if _, err := parseEscrowKey(testBIP48Key[:23] + offCurve); err == nil || err.Error() != errKeyInvalid.Error() {
+	if _, err := parseEscrowKey(testBIP48Key[:23]+offCurve, keyNetTest); err == nil || err.Error() != errKeyInvalid.Error() {
 		t.Fatalf("off-curve: %v", err)
 	}
 	badPrefix := mutate(func(b []byte) { b[45] = 0x04 })
-	if _, err := parseEscrowKey(testBIP48Key[:23] + badPrefix); err == nil || err.Error() != errKeyInvalid.Error() {
+	if _, err := parseEscrowKey(testBIP48Key[:23]+badPrefix, keyNetTest); err == nil || err.Error() != errKeyInvalid.Error() {
 		t.Fatalf("prefix 04: %v", err)
 	}
 	master := mutate(func(b []byte) { b[4] = 0; copy(b[5:13], make([]byte, 8)) })
-	if _, err := parseEscrowKey("[7450f935]" + master); err == nil || err.Error() != errKeyOriginForm.Error() {
+	if _, err := parseEscrowKey("[7450f935]"+master, keyNetTest); err == nil || err.Error() != errKeyOriginForm.Error() {
 		t.Fatalf("master: %v", err)
 	}
 }
@@ -353,11 +353,11 @@ func FuzzParseEscrowKey(f *testing.F) {
 		f.Add(s)
 	}
 	f.Fuzz(func(t *testing.T, s string) {
-		k, err := parseEscrowKey(s)
+		k, err := parseEscrowKey(s, keyNetTest)
 		if err != nil {
 			return
 		}
-		again, err := parseEscrowKey(k.Expression())
+		again, err := parseEscrowKey(k.Expression(), keyNetTest)
 		if err != nil || again.KeyMaterial() != k.KeyMaterial() || again.Expression() != k.Expression() {
 			t.Fatalf("%q: canonical %q does not round-trip: %v", s, k.Expression(), err)
 		}

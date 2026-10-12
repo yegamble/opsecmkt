@@ -23,7 +23,7 @@ const (
 // tested in internal/btc).
 func TestBIP32PerOrderChildRooted(t *testing.T) {
 	// A per-order child of a registered account key: the rooted form of the derived key.
-	acct, err := parseEscrowKey(testBIP48Key)
+	acct, err := parseEscrowKey(testBIP48Key, keyNetTest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +41,7 @@ func TestBIP32PerOrderChildRooted(t *testing.T) {
 // for one key and wsh(sortedmulti(2,…)) for three, and refuses unless Core returns one and the same address for both.
 // Malformed input is refused before any RPC. The real comparison is TestEscrowRegtestBIP32.
 func TestEscrowPerOrderCrossCheck(t *testing.T) {
-	acct, err := parseEscrowKey(testBIP48Key)
+	acct, err := parseEscrowKey(testBIP48Key, keyNetTest)
 	if err != nil {
 		t.Fatal(err)
 	}

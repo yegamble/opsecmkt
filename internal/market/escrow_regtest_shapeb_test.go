@@ -102,7 +102,7 @@ func TestEscrowRegtestPerOrderEscrow(t *testing.T) {
 				key = strings.SplitN(strings.TrimPrefix(d.Desc, "wpkh("), "/0/*", 2)[0]
 			}
 		}
-		if k, err := parseEscrowKey(key); err != nil || !k.BIP48 {
+		if k, err := parseEscrowKey(key, keyNetTest); err != nil || !k.BIP48 {
 			t.Fatalf("%s key %q: %v", name, key, err)
 		}
 		return root, key

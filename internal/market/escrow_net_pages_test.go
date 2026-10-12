@@ -99,7 +99,7 @@ func TestXMREscrowPagesNameNetwork(t *testing.T) {
 				t.Errorf("canary's Monero line says \"not verified\" %d times:\n%s", n, li)
 			}
 			// A-512: the unavailable list makes no public-network claim of its own; the escrow lines carry the record note.
-			unavailable := pageLine(canary, "Mainnet payments (refused by this build)")
+			unavailable := pageLine(canary, "commission or fee accounting")
 			for _, w := range []string{"on any public network", "verified on the public stagenet"} {
 				if strings.Contains(unavailable, w) {
 					t.Errorf("canary's unavailable list with %s says %q:\n%s", c.name, w, unavailable)
@@ -152,7 +152,7 @@ func TestEscrowCanaryAndNoticesNameChain(t *testing.T) {
 					t.Errorf("canary lacks %q:\n%s", w, li)
 				}
 			}
-			if unavailable := pageLine(canary, "Mainnet payments (refused by this build)"); strings.Contains(unavailable, "on any public network") || strings.Contains(unavailable, "verified on public testnet4") {
+			if unavailable := pageLine(canary, "commission or fee accounting"); strings.Contains(unavailable, "on any public network") || strings.Contains(unavailable, "verified on public testnet4") {
 				t.Errorf("canary's unavailable list makes a public-network claim of its own:\n%s", unavailable)
 			}
 			if page := html.UnescapeString(x.page("/", x.buyerSess)); !strings.Contains(page, "Bitcoin escrow ("+c.chain+")") {

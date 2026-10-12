@@ -117,7 +117,7 @@ func newShapeBChainWithPartyKeys(t *testing.T, label string, partyKeys map[strin
 				key = strings.SplitN(strings.TrimPrefix(d.Desc, "wpkh("), "/0/*", 2)[0]
 			}
 		}
-		if k, err := parseEscrowKey(key); root == "" || err != nil || !k.BIP48 {
+		if k, err := parseEscrowKey(key, keyNetTest); root == "" || err != nil || !k.BIP48 {
 			t.Fatalf("%s: no BIP48 account (%v)", name, err)
 		}
 		return root, key
@@ -128,10 +128,10 @@ func newShapeBChainWithPartyKeys(t *testing.T, label string, partyKeys map[strin
 		c.vendorRoot, vendorKey = party(label + "-vendor-" + s)
 	} else {
 		buyerKey, vendorKey = partyKeys[roleBuyer], partyKeys[roleVendor]
-		if _, err := parseEscrowKey(buyerKey); err != nil {
+		if _, err := parseEscrowKey(buyerKey, keyNetTest); err != nil {
 			t.Fatalf("Electrum buyer account key: %v", err)
 		}
-		if _, err := parseEscrowKey(vendorKey); err != nil {
+		if _, err := parseEscrowKey(vendorKey, keyNetTest); err != nil {
 			t.Fatalf("Electrum vendor account key: %v", err)
 		}
 	}

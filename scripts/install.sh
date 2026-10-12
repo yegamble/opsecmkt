@@ -580,8 +580,8 @@ run_check() {
   if has_item "$profiles" bitcoin; then
     value=$(env_value BITCOIN_CHAIN)
     case $value in
-      ''|regtest|testnet4|signet) ;;
-      *) problems="$problems  - BITCOIN_CHAIN must be regtest, testnet4 or signet for the local escrow-support node"$'\n' ;;
+      ''|regtest|testnet4|signet|main) ;;
+      *) problems="$problems  - BITCOIN_CHAIN must be regtest, testnet4, signet or main (mainnet, real funds) for the local escrow-support node"$'\n' ;;
     esac
     rpc_password=$(env_value BITCOIN_RPC_PASSWORD)
     rpc_auth=$(env_value BITCOIN_RPC_AUTH)
@@ -605,8 +605,15 @@ run_check() {
   if has_item "$profiles" monero; then
     value=$(env_value MONERO_NETWORK)
     case $value in
-      ''|stagenet) ;;
-      *) problems="$problems  - MONERO_NETWORK must be stagenet for the local escrow-support daemon"$'\n' ;;
+      ''|stagenet)
+        if [[ $(env_value MONERO_NETWORK_FLAG) != --stagenet ]] && env_get MONERO_NETWORK_FLAG >/dev/null; then
+          problems="$problems  - MONERO_NETWORK_FLAG must be --stagenet (or absent) for a stagenet daemon"$'\n'
+        fi ;;
+      mainnet)
+        if ! env_get MONERO_NETWORK_FLAG >/dev/null || [[ -n $(env_value MONERO_NETWORK_FLAG) ]]; then
+          problems="$problems  - MONERO_NETWORK=mainnet needs a blank MONERO_NETWORK_FLAG= line so the local daemon runs mainnet (monerod has no --mainnet)"$'\n'
+        fi ;;
+      *) problems="$problems  - MONERO_NETWORK must be stagenet or mainnet (real funds) for the local escrow-support daemon"$'\n' ;;
     esac
   fi
   if has_item "$profiles" monero-escrow-wallet && [[ -z $(env_value ESCROW_XMR_WALLET_RPC_PASSWORD) ]]; then
@@ -621,7 +628,7 @@ run_check() {
       *) problems="$problems  - ESCROW_XMR_TOR_RELAY must be blank or clearnet-accepted"$'\n' ;;
     esac
     if [[ $mode == tor && -z $value ]] && ! compose_has compose.nodes-tor.yaml; then
-      warnings="${warnings}warning: APP_MODE=tor with ESCROW_XMR=on: Monero escrow settlements are built but not relayed, because the escrow wallet-rpc would relay them from this host's IP address. Add compose.nodes-tor.yaml to COMPOSE_FILE (Monero over Tor is unverified) or set ESCROW_XMR_TOR_RELAY=clearnet-accepted; see docs/operator-guide.md#monero-escrow-fakechain-or-stagenet"$'\n'
+      warnings="${warnings}warning: APP_MODE=tor with ESCROW_XMR=on: Monero escrow settlements are built but not relayed, because the escrow wallet-rpc would relay them from this host's IP address. Add compose.nodes-tor.yaml to COMPOSE_FILE (Monero over Tor is unverified) or set ESCROW_XMR_TOR_RELAY=clearnet-accepted; see docs/operator-guide.md#monero-escrow"$'\n'
     fi
   fi
   if [[ -n $files ]] && compose_has compose.escrow-xmr.yaml && ! [[ -f $escrow_seed_key_file && ! -L $escrow_seed_key_file ]]; then
@@ -978,7 +985,7 @@ cmd_init() {
   # wallet-RPC password are generated below; the seed key (a public key whose private half the operator keeps offline)
   # is asked for, never defaulted.
   if [[ -z $xmr_escrow && $detail == true && $xmr_choice == local && $monero_network == stagenet ]]; then
-    printf '%s\n' "MONERO escrow (off by default): each order paid by Monero escrow gets an account of its own in a monthly escrow wallet on stagenet, run by a separate wallet-RPC service. It is custodial: the market holds every escrow wallet's keys and can move these coins. It needs an OpenPGP public key whose private half you keep offline; every wallet seed is sealed to it (docs/operator-guide.md#monero-escrow-fakechain-or-stagenet)."
+    printf '%s\n' "MONERO escrow (off by default): each order paid by Monero escrow gets an account of its own in a monthly escrow wallet on stagenet, run by a separate wallet-RPC service. It is custodial: the market holds every escrow wallet's keys and can move these coins. It needs an OpenPGP public key whose private half you keep offline; every wallet seed is sealed to it (docs/operator-guide.md#monero-escrow)."
     ask xmr_escrow 'Turn on Monero escrow? (yes/no) [no]: '
   fi
   case ${xmr_escrow:-no} in yes|no) xmr_escrow=${xmr_escrow:-no} ;; *) die 'Answer yes or no.' ;; esac
@@ -1104,7 +1111,7 @@ cmd_init() {
     put MONERO_WALLET_SECRET "$wallet_secret"
     profiles="${profiles:+$profiles,}monero-escrow-wallet"
     compose_files="${compose_files}:compose.escrow-xmr.yaml"
-    echo 'Monero escrow is on (stagenet, custodial: the market holds every escrow wallet'"'"'s keys). Back up .env (MONERO_WALLET_SECRET) and the monero_escrow_wallet volume; keep the seed key'"'"'s private half offline (docs/operator-guide.md#monero-escrow-fakechain-or-stagenet).'
+    echo 'Monero escrow is on (stagenet, custodial: the market holds every escrow wallet'"'"'s keys). Back up .env (MONERO_WALLET_SECRET) and the monero_escrow_wallet volume; keep the seed key'"'"'s private half offline (docs/operator-guide.md#monero-escrow).'
   fi
   put BITCOIN_CHAIN "$bitcoin_chain"
   put MONERO_NETWORK "$monero_network"

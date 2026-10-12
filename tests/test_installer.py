@@ -1617,10 +1617,17 @@ time.sleep(60)
         self.check_env(installed_env(COMPOSE_PROFILES='internal-db,mirror'))
 
     def test_check_restricts_local_nodes_to_escrow_networks(self):
-        self.check_env(installed_env(COMPOSE_PROFILES='internal-db,bitcoin', BITCOIN_CHAIN='main'),
-                       'BITCOIN_CHAIN must be regtest, testnet4 or signet')
+        # A-460: main is the mainnet opt-in; testnet3 stays refused.
+        self.check_env(installed_env(COMPOSE_PROFILES='internal-db,bitcoin', BITCOIN_CHAIN='test'),
+                       'BITCOIN_CHAIN must be regtest, testnet4, signet or main')
         self.check_env(installed_env(COMPOSE_PROFILES='internal-db,monero', MONERO_NETWORK='testnet'),
-                       'MONERO_NETWORK must be stagenet')
+                       'MONERO_NETWORK must be stagenet or mainnet')
+        # A local mainnet daemon needs a blank MONERO_NETWORK_FLAG= line (monerod has no --mainnet).
+        self.check_env(installed_env(COMPOSE_PROFILES='internal-db,monero', MONERO_NETWORK='mainnet'),
+                       'MONERO_NETWORK=mainnet needs a blank MONERO_NETWORK_FLAG= line')
+        self.check_env(installed_env(COMPOSE_PROFILES='internal-db,monero', MONERO_NETWORK='mainnet', MONERO_NETWORK_FLAG=''))
+        self.check_env(installed_env(COMPOSE_PROFILES='internal-db,monero', MONERO_NETWORK='stagenet', MONERO_NETWORK_FLAG='--testnet'),
+                       'MONERO_NETWORK_FLAG must be --stagenet (or absent)')
 
     def test_check_refuses_legacy_pooled_values_and_profile(self):
         for key in ('BITCOIN_RPC_URL', 'BITCOIN_WALLET', 'MONERO_RPC_URL', 'MONERO_WALLET_RPC_URL'):
