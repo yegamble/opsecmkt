@@ -128,8 +128,10 @@ func TestXMREscrowMainnetStartup(t *testing.T) {
 	if err := start(); !errors.Is(err, errXMRMainnetOptIn) {
 		t.Fatalf("BITCOIN_CHAIN=main without MONERO_NETWORK=mainnet: %v", err)
 	}
-	// A test-network market: the database pinned to mainnet is refused before any node is asked (checkNetworkClass).
+	// A test-network market: a database holding Monero escrow state pinned to mainnet is refused before any node is
+	// asked (checkNetworkClass; a pin alone, with no escrow state, may still be rewritten, so a wallet row is held).
 	t.Setenv("BITCOIN_CHAIN", "")
+	agExec(x.testEnv, "INSERT INTO xmr_escrow_wallets(name,month,state) VALUES('escrow-202610-01','2026-10-01','creating')")
 	calls := x.fake.count()
 	if err := start(); err == nil || !strings.Contains(err.Error(), "holds mainnet escrows") || x.fake.count() != calls {
 		t.Fatalf("a mainnet-pinned database on a test-network market: %v (%d calls)", err, x.fake.count()-calls)
