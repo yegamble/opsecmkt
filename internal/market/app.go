@@ -106,7 +106,7 @@ func New(ctx context.Context, preview bool) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	a := &App{startedAt: time.Now().UTC(), templates: t, preview: preview, mode: os.Getenv("APP_MODE"), limits: make(map[string]bucket), writeLimits: make(map[string]bucket)}
+	a := &App{startedAt: time.Now().UTC(), templates: t, preview: preview, mode: os.Getenv("APP_MODE"), limits: make(map[string]bucket), writeLimits: make(map[string]bucket), inFlight: make(map[string]int)}
 	if a.mode == "" {
 		a.mode = "clearnet"
 	}
@@ -312,8 +312,9 @@ func (a *App) cookie(w http.ResponseWriter, name, value string, age int) {
 }
 
 // allow counts one request against key's budget of n per ten minutes. When the table is full it evicts
-// the non-blocking entry with the lowest count (earliest expiry breaks ties); if every entry is blocking
-// it refuses the new key instead, so junk keys can never reset a counter that is refusing requests.
+// the non-blocking entry with the lowest count (earliest expiry breaks ties). Active TOTP verification
+// entries are protected even before exhaustion, so fresh handles cannot reset a recovery allowance.
+// If every entry is blocking or protected it refuses the new key instead.
 func (a *App) allow(key string, n int) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -369,7 +370,7 @@ func allowIn(limits map[string]bucket, key string, n int, now time.Time) bool {
 		if len(limits) >= 4096 {
 			victim, found := "", false
 			for k, v := range limits {
-				if v.Count >= v.Limit {
+				if v.Count >= v.Limit || strings.HasPrefix(k, "totp-verify:") {
 					continue
 				}
 				if w := limits[victim]; !found || v.Count < w.Count || (v.Count == w.Count && v.Until.Before(w.Until)) {
