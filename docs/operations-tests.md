@@ -170,6 +170,31 @@ into a temporary directory with its own `.env` and a uniquely named Compose proj
 The exit trap runs `docker compose down --volumes --remove-orphans` for the test project and removes the
 temporary directory, keys and dumps. It never reads the checkout's `.env` or touches other projects.
 
+## Onion identity import
+
+```sh
+docker build -t opsecmkt-tor:ci -f deploy/Dockerfile.tor deploy   # once; or set TOR_IMAGE to another tag
+./scripts/test-tor-identity-import.sh
+```
+
+Requires Docker and the Tor image; every container runs with `--network none`. The script sources
+`scripts/install.sh` and runs the functions `init --onion-key-dir` and `add-mirror --mirror-onion-key-dir` call
+(A-526):
+
+- Tor generates two identities offline, each laid out as `mkp224o` writes one, with a forged `hostname`. One, with
+  its public key, and the other, secret key only, are checked, dry-run and imported into scratch volumes carrying
+  Compose's labels. The files are owned by `debian-tor` (directories `0700`, keys `0600`), and Tor, started as
+  `compose.tor.yaml` runs it, serves the dry run's address with the same secret key (compared by digest).
+- A 95-byte copy of a secret key (from which Tor would silently create a new identity) and a secret key paired with
+  another identity's public key are refused, and no volume is created.
+- Tor in the dry run refuses a key with a wrong header, and an import into a volume Tor has used is refused and
+  leaves it unchanged.
+
+Removing the import's empty-volume check, its `chown` or the installer's size check makes the script fail.
+`tests/test_installer.py` covers the rest with a stubbed Docker: the order of calls in `init` and `add-mirror`, the
+refusals (symlinks, a directory inside the checkout, `--clearnet`, an unexpected address, the main onion's key for
+the mirror) and that no key byte reaches an argument, the environment or the output.
+
 ## Documented .env and onion identity backup and restore
 
 ```sh

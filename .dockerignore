@@ -7,6 +7,9 @@ artifacts
 design-reference
 *.dump
 *.age
+# Plaintext onion keys
+hs_ed25519_*
+**/hs_ed25519_*
 
 node_modules
 playwright-report

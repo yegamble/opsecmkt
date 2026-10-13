@@ -31,6 +31,8 @@ test-results-escrow-xmr/
 
 # Monero escrow seed key copied by the installer (compose.escrow-xmr.yaml mounts it): install-specific.
 /escrow-xmr-seed-key.asc
+# Plaintext onion keys (an identity for scripts/install.sh --onion-key-dir belongs outside the checkout).
+hs_ed25519_*
 # Legacy plaintext Bitcoin wallet backup name; use age-encrypted files under backups/ instead.
 /opsecmkt-wallet.bak
 

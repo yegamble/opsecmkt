@@ -64,6 +64,17 @@ A node does not turn on escrow. See [Enabling payments](enable-payments.md).
 - `--uploads yes|no`<br>
   Add the malware scanner for photo uploads. Needs 3 GiB of memory. Default `no`.
 
+### Onion identity flags
+
+- `--onion-key-dir DIR`<br>
+  Tor only (implies `--tor`; refused with `--clearnet` or `--local`). Use an existing onion identity, such as a
+  vanity address, instead of a new one. `DIR` is outside the checkout and holds `hs_ed25519_secret_key` (required)
+  and `hs_ed25519_public_key` (optional), as regular files. A `hostname` file is ignored. See
+  [Use your own onion address](tor.md#use-your-own-vanity-onion-address).
+- `--onion-address ADDR.onion`<br>
+  With `--onion-key-dir`: the address the key must have. Without it, the installer shows the address for you to
+  confirm by typing `yes`, and refuses when there is no terminal.
+
 ### Environment
 
 - `APP_PORT`<br>
@@ -79,6 +90,7 @@ A node does not turn on escrow. See [Enabling payments](enable-payments.md).
 ./scripts/install.sh init --clearnet --behind-proxy yes --nodes none
 ./scripts/install.sh init --tor --nodes custom --bitcoin local --bitcoin-network testnet4 --monero disabled
 APP_PORT=8081 ./scripts/install.sh --local --admin alice
+./scripts/install.sh init --tor --nodes local --onion-key-dir /root/onion-keys --onion-address ADDR.onion
 ```
 
 > **Note:** values passed as flags, such as a database URL with a password, are visible to other users of the
@@ -130,7 +142,15 @@ Show the setup token while setup is pending.
 
 Add a second onion address for the same market. Tor installs only.
 
-**Command:** `./scripts/install.sh add-mirror`
+**Command:** `./scripts/install.sh add-mirror [--mirror-onion-key-dir DIR [--mirror-onion-address ADDR.onion]]`
+
+### Flags
+
+- `--mirror-onion-key-dir DIR`<br>
+  Use an existing onion identity for the mirror, as `--onion-key-dir` does for `init`. Only before the mirror
+  first starts; refused when the key is the main onion's.
+- `--mirror-onion-address ADDR.onion`<br>
+  With `--mirror-onion-key-dir`: the address the key must have.
 
 See [Optional onion mirror](../operator-guide.md#optional-onion-mirror).
 
