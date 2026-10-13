@@ -112,6 +112,26 @@ docker exec opsecmkt-dev-db dropdb -U opsecmkt opsecmkt_e2e
 docker exec opsecmkt-dev-db createdb -U opsecmkt opsecmkt_e2e
 ```
 
+## Documentation site
+
+The docs in `docs/` build into a static site with [MkDocs](https://www.mkdocs.org/) and the Material theme
+(`mkdocs.yml`). The site loads no third-party fonts or scripts. Pages work without JavaScript; search needs it.
+
+```sh
+python3 -m venv .venv-docs
+.venv-docs/bin/pip install -r requirements-docs.txt
+.venv-docs/bin/mkdocs serve      # http://127.0.0.1:8000, reloads on save
+.venv-docs/bin/mkdocs build      # writes site/; fails on any broken link or anchor
+```
+
+`scripts/mkdocs_hooks.py` publishes `UPGRADING.md`, `SECURITY.md` and `CONTRIBUTING.md` from the repository root
+and points other links outside `docs/` at GitHub. Add a new page to `nav` in `mkdocs.yml`. CI's `docs` job runs
+the same strict build.
+
+`requirements-docs.txt` is hash-locked. To change a version, edit `requirements-docs.in` and run the `uv pip compile`
+command at its top. MkDocs stays below 2.0, which drops the plugin and theme system Material needs. The planned
+successor is [Zensical](https://zensical.org/), which reads `mkdocs.yml`; migrate once it runs hooks.
+
 ## Run tests
 
 ### Go and PostgreSQL

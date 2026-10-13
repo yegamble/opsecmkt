@@ -605,8 +605,7 @@ There is no payment QR code. The order page shows the escrow address, the amount
 
 #### Mainnet
 
-> [!CAUTION]
-> **Mainnet moves real funds, and no mainnet run is recorded.** Mainnet escrow (A-460) is an operator opt-in. Its
+> **Caution:** **Mainnet moves real funds, and no mainnet run is recorded.** Mainnet escrow (A-460) is an operator opt-in. Its
 > evidence is unit and database tests against simulated nodes ([acceptance](acceptance.md),
 > [verification](verification.md)); no build has run against a mainnet node or with real coins, in CI or by hand.
 > Development, tests and CI never use mainnet. Bitcoin escrow's settlements need the buyer's or the vendor's signature,

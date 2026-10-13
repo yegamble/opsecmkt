@@ -1,0 +1,5 @@
+# Documentation site (mkdocs.yml). Compile requirements-docs.txt from this file:
+#   uv pip compile requirements-docs.in --generate-hashes --python-version 3.12 -o requirements-docs.txt
+# MkDocs stays below 2: 2.0 removes the plugin and theme system Material uses. Zensical is the planned successor.
+mkdocs==1.6.1
+mkdocs-material==9.7.7

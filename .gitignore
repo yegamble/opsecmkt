@@ -33,3 +33,7 @@ test-results-escrow-xmr/
 /escrow-xmr-seed-key.asc
 # Legacy plaintext Bitcoin wallet backup name; use age-encrypted files under backups/ instead.
 /opsecmkt-wallet.bak
+
+# Documentation site build output and its virtualenv (mkdocs.yml).
+/site/
+/.venv-docs/

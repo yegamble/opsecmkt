@@ -1,7 +1,6 @@
 # Per-order escrow
 
-> [!WARNING]
-> **Escrow is first released in prerelease `v0.1.0-alpha.2`.** Per-order escrow is the only payment path, and
+> **Warning:** **Escrow is first released in prerelease `v0.1.0-alpha.2`.** Per-order escrow is the only payment path, and
 > both currencies are **off by default**. A database from an older release with payment history this build does
 > not support is refused at startup by migrations 107 and 108 ([UPGRADING sections 58](../UPGRADING.md#58-pooled-wallet-removal-for-fresh-installs-a-448)
 > and [59](../UPGRADING.md#59-pooled-history-refused-migration-108-a-492)).

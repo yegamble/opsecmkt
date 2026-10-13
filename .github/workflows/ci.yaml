@@ -901,10 +901,24 @@ jobs:
             test-results-escrow-xmr/
           if-no-files-found: ignore
           retention-days: 14
+  docs:
+    name: Documentation site builds with no broken link or anchor
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the hash-locked MkDocs toolchain
+        run: |
+          python3 -m venv .venv-docs
+          .venv-docs/bin/pip install --require-hashes --no-deps -r requirements-docs.txt
+      - name: Build in strict mode (mkdocs.yml)
+        run: .venv-docs/bin/mkdocs build
   required:
     name: CI passed
     if: always()
-    needs: [go, go-escrow, escrow-regtest, escrow-xmr-regtest, operations, installer, escrow-node-rehearsal, upgrade, compose, container, tor-image, browser, browser-escrow]
+    needs: [go, go-escrow, escrow-regtest, escrow-xmr-regtest, operations, installer, escrow-node-rehearsal, upgrade, compose, container, tor-image, browser, browser-escrow, docs]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:

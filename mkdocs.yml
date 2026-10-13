@@ -1,0 +1,101 @@
+site_name: OPSEC Market
+site_description: Self-hosted marketplace that needs no browser JavaScript
+repo_url: https://github.com/yegamble/opsecmkt
+repo_name: yegamble/opsecmkt
+edit_uri: edit/main/docs/
+docs_dir: docs
+strict: true
+
+theme:
+  name: material
+  # No Google Fonts: the site makes no third-party requests.
+  font: false
+  logo: assets/logo-dark.svg
+  favicon: assets/logo-light.svg
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/weather-night
+        name: Dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/weather-sunny
+        name: Light mode
+  features:
+    - navigation.sections
+    - navigation.indexes
+    - navigation.footer
+    - navigation.top
+    - toc.follow
+    - search.highlight
+    - content.code.copy
+
+plugins:
+  - search
+
+extra:
+  generator: false
+
+hooks:
+  - scripts/mkdocs_hooks.py
+
+markdown_extensions:
+  - tables
+  - attr_list
+  - md_in_html
+  - admonition
+  - pymdownx.details
+  - pymdownx.highlight
+  - pymdownx.superfences
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - toc:
+      permalink: true
+      # GitHub-compatible heading IDs, so the same links work on GitHub and on the site.
+      slugify: !!python/object/apply:pymdownx.slugs.slugify
+        kwds:
+          case: lower
+
+validation:
+  omitted_files: info
+  absolute_links: warn
+  unrecognized_links: warn
+  anchors: warn
+
+not_in_nav: |
+  /evidence/
+  /project-review.md
+
+nav:
+  - Welcome: README.md
+  - Get started:
+      - install/README.md
+      - Requirements: install/requirements.md
+      - Read-only preview: install/preview.md
+      - Local marketplace: install/local.md
+      - Onion service (Tor): install/tor.md
+      - Public domain (HTTPS): install/clearnet.md
+      - External PostgreSQL: install/external-database.md
+      - First steps: install/first-steps.md
+      - Enabling payments: install/enable-payments.md
+      - Production checklist: install/production-checklist.md
+      - Troubleshooting: install/troubleshooting.md
+  - Operate:
+      - Operator guide: operator-guide.md
+      - Upgrading: project/UPGRADING.md
+      - Test-network payments: testnet-runbook.md
+      - Per-order escrow: escrow.md
+  - Reference:
+      - Installer reference: install/installer-reference.md
+      - Implementation status: implementation-status.md
+      - Acceptance checks: acceptance.md
+      - Verification: verification.md
+      - Security policy: project/SECURITY.md
+  - Contribute:
+      - Contributing: project/CONTRIBUTING.md
+      - Development: development.md
+      - Local chain testing: local-chain-testing.md
+      - Operations tests: operations-tests.md
+      - CI/CD: ci-cd.md
