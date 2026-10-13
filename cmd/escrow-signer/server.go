@@ -32,6 +32,9 @@ const (
 	maxLine         = 1 << 20 // bytes per request line; a settlement PSBT is far smaller
 	idleTimeout     = 2 * time.Minute
 	signTimeout     = 2 * time.Minute
+	// maxConns bounds the connections served at once (A-537). Only the app connects and dials one connection per
+	// request (about 16 concurrent info calls and one sign at peak), so 32 is slack, not a tuned limit.
+	maxConns = 32
 )
 
 type request struct {
@@ -121,10 +124,12 @@ func listenSocket(path string) (net.Listener, error) {
 	return ln, nil
 }
 
-// serveSocket accepts connections until ctx ends or the listener is closed, and waits for open ones to finish.
+// serveSocket accepts connections until ctx ends or the listener is closed, and waits for open ones to finish. At most
+// maxConns are served at once; one more is closed at once without a reply.
 func serveSocket(ctx context.Context, ln net.Listener, s *signer) {
 	var wg sync.WaitGroup
 	defer wg.Wait()
+	slots := make(chan struct{}, maxConns)
 	go func() { <-ctx.Done(); ln.Close() }()
 	for {
 		c, err := ln.Accept()
@@ -135,9 +140,18 @@ func serveSocket(ctx context.Context, ln net.Listener, s *signer) {
 			time.Sleep(100 * time.Millisecond)
 			continue
 		}
+		// Try to take a slot without blocking. Over the cap the connection is closed with no reply: the app reads a
+		// closed connection as "signer unreachable" and waits, where a JSON error would be taken as a refusal.
+		select {
+		case slots <- struct{}{}:
+		default:
+			c.Close()
+			continue
+		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			defer func() { <-slots }()
 			defer c.Close()
 			stop := context.AfterFunc(ctx, func() { c.Close() })
 			defer stop()
