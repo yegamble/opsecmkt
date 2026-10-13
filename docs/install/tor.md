@@ -73,6 +73,29 @@ Every service is healthy, setup is complete, and the onion address is listed.
 
 Onion DoS defences are on by default: [Onion-service defences](../operator-guide.md#onion-service-defences).
 
+## Use your own (vanity) onion address
+
+By default Tor creates a new, random address. To use one you already have, such as a vanity address, give its key
+directory at install time:
+
+```sh
+./scripts/install.sh init --tor --nodes local --onion-key-dir /root/onion-keys --onion-address ADDR.onion
+```
+
+`/root/onion-keys` holds `hs_ed25519_secret_key` and, optionally, `hs_ed25519_public_key`, as `mkp224o` writes them.
+Keep it outside the checkout.
+
+- **Generate it yourself, offline.** A key made by anyone else, including a vanity service, is held by them: they can
+  run your address. Use [mkp224o](https://github.com/cathugger/mkp224o) on a machine you control.
+- **Checked before use.** The installer checks both files byte for byte, has Tor derive the address offline and
+  compares it with `--onion-address` (or asks you to confirm it). A mismatch writes nothing.
+- **First install only.** The key goes into a new, empty `tor_identity` volume before Tor first starts. The
+  installer never replaces the address of a running install.
+- **Afterwards:** back up the volume as in Step 4, then securely delete `/root/onion-keys`.
+
+For the mirror: `./scripts/install.sh add-mirror --mirror-onion-key-dir DIR --mirror-onion-address ADDR.onion`,
+before the mirror first runs.
+
 ## Good to know
 
 - Only the Tor container has internet access. With an external database, the app does too.

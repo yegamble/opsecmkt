@@ -7,6 +7,8 @@
 #   ./scripts/install.sh status             mode, service health, setup state and onion addresses
 #   ./scripts/install.sh setup-token [--new]   show (or reissue) the first-run setup token while setup is pending
 #   ./scripts/install.sh add-mirror         add the second onion address (Tor installs)
+#   ./scripts/install.sh init --tor --onion-key-dir DIR, add-mirror --mirror-onion-key-dir DIR
+#                                           use an existing onion identity (a vanity address) instead of a new one
 #   ./scripts/install.sh add-scanner        add the ClamAV malware scanner that photo uploads need
 #   ./scripts/install.sh refresh-scanner    have Docker fetch the scanner's newer signatures and restart it
 #   ./scripts/install.sh upgrade [--no-backup]  after pulling new code: back up, update .env, rebuild, restart
@@ -17,7 +19,7 @@
 set -euo pipefail
 # Never trace: SHELLOPTS=xtrace in the caller's environment would print every secret the installer handles.
 set +x
-cd "$(dirname "$0")/.."
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
 umask 077
 
 # Pinned node images: reviewed releases for the escrow-support nodes (A-100), each written with its tag's multi-arch
@@ -117,6 +119,9 @@ caller_app_port=${APP_PORT-}
 caller_project=${COMPOSE_PROJECT_NAME-}
 caller_wallet_image=${MONERO_WALLET_IMAGE-}
 temporaries=''
+# A private temporary directory holding the copy of an imported onion key that is checked and streamed (A-526).
+onion_stage=''
+onion_files=()
 env_locked=false
 # The file env_get reads and env_edit rewrites: .env, or a staged copy that a command moves into place whole
 # (add-scanner changes three keys together).
@@ -124,6 +129,7 @@ env_file=.env
 # Bash runs this on exit, including after SIGINT, SIGTERM and SIGHUP.
 cleanup() {
   if [[ -n $temporaries ]]; then rm -f $temporaries; fi
+  if [[ -n $onion_stage ]]; then rm -rf -- "$onion_stage"; fi
   if [[ $env_locked == true ]]; then rmdir .env.lock 2>/dev/null || true; fi
 }
 trap cleanup EXIT
@@ -138,6 +144,7 @@ usage_text() {
 Usage: scripts/install.sh [init] [options]   first install (the default)
        scripts/install.sh --local [--admin HANDLE [--site-name NAME]]
        scripts/install.sh check | status | add-mirror | add-scanner | refresh-scanner
+       scripts/install.sh add-mirror [--mirror-onion-key-dir DIR [--mirror-onion-address ADDR.onion]]
        scripts/install.sh setup-token [--new]
        scripts/install.sh upgrade [--no-backup]
 init options (each answers one question; a question without its option is asked):
@@ -155,6 +162,10 @@ init options (each answers one question; a question without its option is asked)
   --admin HANDLE [--site-name NAME]  create the first administrator here (password asked twice, never shown)
                                    instead of printing a setup token for the browser
   --uploads yes|no                 photo uploads with the ClamAV malware scanner (needs 3 GiB of memory; default no)
+  --onion-key-dir DIR              Tor: use this onion identity (e.g. a vanity address) instead of a new one: DIR holds
+                                   hs_ed25519_secret_key and optionally hs_ed25519_public_key, outside this checkout
+  --onion-address ADDR.onion       with it: the address the key must have (otherwise it is shown for you to confirm)
+add-mirror's two options do the same for the mirror, before it first starts.
 Local nodes run MAINNET (main, mainnet: real funds) unless a network option names a test network; the other coin then
 defaults to its own (signet, stagenet): a market is all mainnet or all test networks. No mainnet run of this software
 is recorded (docs/operator-guide.md#mainnet).
@@ -476,6 +487,153 @@ wait_onion() {
     sleep 1
   done
   return 1
+}
+
+# ---- onion identity import (A-526) -------------------------------------------------------------------------
+#
+# init --onion-key-dir and add-mirror --mirror-onion-key-dir give a new onion service an existing identity, such as a
+# vanity address, instead of letting Tor create one. Tor alone is no validator: it silently creates a new identity for
+# a truncated key and overwrites a forged hostname. So the files are checked byte for byte, Tor derives the address in a
+# throwaway container with no network, the operator confirms it (or names it with --onion-address), the key goes into
+# an empty volume before that Tor first starts, and the address Tor then serves is compared once more. Key bytes only
+# ever move between files and stdin: never into a variable, an argument, the environment, .env or the output.
+# scripts/test-tor-identity-import.sh runs these functions against the real Tor image.
+
+# The dry run, as Tor's user in the Tor image: read the key files from stdin (the secret key, then the public key if
+# any), start Tor offline on them in a tmpfs, wait up to 10 seconds for the hostname it derives, stop it and print the
+# hostname. Status 3: Tor refused the public key as not matching the secret key. The torrc is an empty file (tor
+# 0.4.9.14 refuses -f /dev/null: "Unable to open configuration file"). Never --verify-config: it accepts a mismatched pair. (Single quotes: the
+# container expands the script.)
+# shellcheck disable=SC2016
+onion_dry_run_script='umask 077
+cat > /dry/keys
+size=$(wc -c < /dry/keys)
+case $size in 96|160) ;; *) echo "The key stream is $size bytes, not 96 or 160." >&2; exit 1 ;; esac
+mkdir /dry/data /dry/data/hs
+head -c 96 /dry/keys > /dry/secret
+cp /dry/secret /dry/data/hs/hs_ed25519_secret_key
+if [ "$size" = 160 ]; then tail -c 64 /dry/keys > /dry/data/hs/hs_ed25519_public_key; fi
+: > /dry/torrc
+tor -f /dry/torrc --DisableNetwork 1 --SocksPort 0 --DataDirectory /dry/data --HiddenServiceDir /dry/data/hs \
+  --HiddenServicePort "80 127.0.0.1:8080" > /dry/log 2>&1 &
+pid=$!
+i=0
+while [ ! -s /dry/data/hs/hostname ] && kill -0 "$pid" 2>/dev/null && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+kill "$pid" 2>/dev/null || true
+wait "$pid" 2>/dev/null || true
+if [ ! -s /dry/data/hs/hostname ]; then
+  if grep -q "does not match" /dry/log; then exit 3; fi
+  grep "\[warn\]\|\[err\]" /dry/log >&2 || tail -n 5 /dry/log >&2
+  exit 1
+fi
+cmp -s /dry/secret /dry/data/hs/hs_ed25519_secret_key || { echo "Tor replaced the key with a new one." >&2; exit 1; }
+head -n 1 /dry/data/hs/hostname'
+
+# The import, as root (it writes whatever the volume's owner) with only the capabilities that needs: refuse a volume
+# Tor has used, write the key files from stdin into marketplace/, and give them to Tor's user (0700 directories,
+# 0600 files: Tor refuses keys it does not own). Tor writes hostname itself when it starts. $0 is the volume's name.
+# shellcheck disable=SC2016
+onion_import_script='umask 077
+if [ -n "$(ls -A /var/lib/tor)" ]; then echo "Refusing: volume $0 is not empty (Tor has run on it), so nothing was written." >&2; exit 3; fi
+cat > /in/keys
+size=$(wc -c < /in/keys)
+case $size in 96|160) ;; *) echo "The key stream is $size bytes, not 96 or 160." >&2; exit 1 ;; esac
+mkdir /var/lib/tor/marketplace
+head -c 96 /in/keys > /var/lib/tor/marketplace/hs_ed25519_secret_key
+if [ "$size" = 160 ]; then tail -c 64 /in/keys > /var/lib/tor/marketplace/hs_ed25519_public_key; fi
+chown -R debian-tor:debian-tor /var/lib/tor
+chmod 700 /var/lib/tor /var/lib/tor/marketplace
+chmod 600 /var/lib/tor/marketplace/hs_ed25519_*'
+
+# onion_address_option OPTION VALUE: VALUE as a v3 onion address in lower case, else a usage error.
+onion_address_option() {
+  local address
+  address=$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')
+  [[ $address =~ $onion_pattern ]] || { echo "$1 takes a v3 onion address: 56 characters (a-z, 2-7) and .onion." >&2; exit 2; }
+  printf '%s' "$address"
+}
+
+# onion_key_check DIR: copy DIR's hs_ed25519_secret_key, and hs_ed25519_public_key when there is one, into the private
+# directory onion_stage and check the copies: regular files (not symlinks) in a directory outside this checkout, the
+# secret key exactly 96 bytes and the public key 64, each starting with Tor's 32-byte header. A hostname file is
+# ignored (Tor derives the address from the key). Sets onion_files to the copies, the secret key first. Exits on a
+# problem; nothing is written anywhere else.
+onion_key_check() {
+  local dir=$1 physical here name file copy size expected
+  [[ -d $dir ]] || die "Refusing: $dir is not a directory. Nothing was written."
+  physical=$(cd -- "$dir" && pwd -P) || die "Refusing: cannot open $dir. Nothing was written."
+  here=$(pwd -P)
+  [[ $physical != "$here" && $physical != "$here"/* ]] ||
+    die "Refusing: $dir is inside this checkout, where git or a Docker build could pick up the private key. Move it outside first. Nothing was written."
+  onion_stage=$(mktemp -d "${TMPDIR:-/tmp}/opsecmkt-onion.XXXXXX") || die 'Could not create a temporary directory. Nothing was written.'
+  onion_files=()
+  for name in secret public; do
+    file=$dir/hs_ed25519_${name}_key
+    if [[ $name == public && ! -e $file && ! -L $file ]]; then continue; fi
+    [[ -f $file && ! -L $file ]] || die "Refusing: $file must be a regular file, not a symlink (or missing). Nothing was written."
+    copy=$onion_stage/hs_ed25519_${name}_key
+    cat -- "$file" > "$copy" || die "Refusing: cannot read $file. Nothing was written."
+    expected=96
+    if [[ $name == public ]]; then expected=64; fi
+    size=$(wc -c < "$copy") || die "Refusing: cannot read $file. Nothing was written."
+    size=$((size))
+    ((size == expected)) ||
+      die "Refusing: $file is $size bytes; a Tor v3 onion $name key is exactly $expected bytes. Nothing was written."
+    # The header is the only part compared, file to file (a NUL cannot be held in a bash variable).
+    printf "== ed25519v1-%s: type0 ==\\0\\0\\0" "$name" > "$onion_stage/header"
+    head -c 32 "$copy" | cmp -s - "$onion_stage/header" ||
+      die "Refusing: $file does not start with Tor's $name key header (== ed25519v1-$name: type0 == and three NUL bytes). Nothing was written."
+    onion_files+=("$copy")
+  done
+  rm -f -- "$onion_stage/header"
+}
+
+# onion_dry_run IMAGE: the address Tor derives from the checked key, started offline in a throwaway container of the
+# project's Tor image: no network, no capabilities, a tmpfs, the key files streamed on stdin. Exits on a refusal.
+onion_dry_run() {
+  local address status=0
+  address=$(cat -- "${onion_files[@]}" | docker run --rm -i --pull never --network none --cap-drop ALL \
+    --security-opt no-new-privileges:true --tmpfs /dry --entrypoint sh "$1" -euc "$onion_dry_run_script") || status=$?
+  case $status in
+    0) ;;
+    3) die 'Refusing: hs_ed25519_public_key does not match hs_ed25519_secret_key (Tor refused the pair). Use the two files of one identity, or only the secret key. Nothing was written.' ;;
+    *) die 'Refusing: Tor did not accept the key (the message above says why). Nothing was written.' ;;
+  esac
+  [[ $address =~ $onion_pattern ]] || die 'Refusing: Tor wrote no onion address for the key. Nothing was written.'
+  printf '%s' "$address"
+}
+
+# onion_confirm DERIVED EXPECTED: DERIVED must equal EXPECTED (--onion-address); without one the operator confirms it
+# in a terminal.
+onion_confirm() {
+  local confirmed=''  # not "answer": ask keeps its own local of that name
+  if [[ -n $2 ]]; then
+    [[ $1 == "$2" ]] || die "Refusing: the key derives $1, not $2. Nothing was written."
+    return 0
+  fi
+  [[ -t 0 ]] || die 'Refusing: with no terminal to confirm the address on, give it as --onion-address. Nothing was written.'
+  printf 'The key is for %s.\n' "$1"
+  ask confirmed 'Type yes to use this onion address: '
+  [[ $confirmed == yes ]] || die 'Not confirmed. Nothing was written.'
+}
+
+# onion_volume_create PROJECT NAME: create PROJECT's Compose volume NAME, labelled as Compose labels its own (so
+# Compose uses it and `docker compose down -v` removes it).
+onion_volume_create() {
+  docker volume create --label "com.docker.compose.project=$1" --label "com.docker.compose.volume=$2" "${1}_$2" >/dev/null
+}
+
+# onion_import IMAGE VOLUME: stream the checked key files into the empty VOLUME (onion_import_script).
+onion_import() {
+  cat -- "${onion_files[@]}" | docker run --rm -i --pull never --network none --user 0 --cap-drop ALL --cap-add CHOWN \
+    --cap-add DAC_OVERRIDE --cap-add FOWNER --security-opt no-new-privileges:true --tmpfs /in -v "$2:/var/lib/tor" \
+    --entrypoint sh "$1" -euc "$onion_import_script" "$2"
+}
+
+# onion_import_notes DIR: after an import and the backup command, the warning and what to do with DIR.
+onion_import_notes() {
+  echo 'Warning: a key generated by anyone else, including a vanity service, is held by them: generate vanity keys yourself (e.g. mkp224o, offline).'
+  printf 'Once that encrypted backup is stored, securely delete the plaintext keys in %s.\n' "$1"
 }
 
 # retire_setup_token STATUS: once setup is complete SETUP_TOKEN grants nothing (the app refuses it), so remove
@@ -832,7 +990,7 @@ cmd_init() {
   local bare=true local_mode=false mode='' database='' proxy='' nodes='' admin='' site_name='' site_given=false
   local btc='' xmr='' btc_image='' xmr_image='' btc_network='' xmr_network='' btc_prune='' xmr_prune=''
   local detail=false local_http='' password1='' password2='' uploads=''
-  local xmr_escrow='' xmr_seed_key=''
+  local xmr_escrow='' xmr_seed_key='' onion_dir='' onion_given='' onion_expected=''
   (($# == 0)) || bare=false
   while (($#)); do
     case $1 in
@@ -840,7 +998,7 @@ cmd_init() {
       --tor|--clearnet) [[ -z $mode ]] || usage; mode=${1#--} ;;
       --external-db|--behind-proxy|--nodes|--bitcoin|--monero|--bitcoin-image|--monero-image|--bitcoin-network|\
       --monero-network|--bitcoin-prune|--monero-prune|\
-      --monero-escrow|--monero-escrow-seed-key|--admin|--site-name|--uploads)
+      --monero-escrow|--monero-escrow-seed-key|--admin|--site-name|--uploads|--onion-key-dir|--onion-address)
         (($# >= 2)) || usage
         case $1 in
           --external-db) database=$2; [[ -n $database ]] || usage ;;
@@ -859,6 +1017,8 @@ cmd_init() {
           --admin) admin=$2 ;;
           --site-name) site_name=$2; site_given=true ;;
           --uploads) uploads=$(one_of "$1" "$2" yes no) ;;
+          --onion-key-dir) onion_dir=$2; [[ -n $onion_dir ]] || usage ;;
+          --onion-address) onion_given=$(onion_address_option "$1" "$2") ;;
         esac
         shift ;;
       *) usage ;;
@@ -866,6 +1026,19 @@ cmd_init() {
     shift
   done
   if [[ -n $xmr_seed_key && $xmr_escrow != yes ]]; then echo '--monero-escrow-seed-key needs --monero-escrow yes.' >&2; exit 2; fi
+  if [[ -n $onion_given && -z $onion_dir ]]; then echo '--onion-address needs --onion-key-dir DIR.' >&2; exit 2; fi
+  if [[ -n $onion_dir ]]; then
+    # An onion identity is for a Tor install, which the option implies.
+    if [[ $local_mode == true || $mode == clearnet ]]; then
+      echo '--onion-key-dir imports an onion identity, so it needs a Tor install: it cannot be combined with --clearnet or --local.' >&2
+      exit 2
+    fi
+    mode=tor
+    if [[ -z $onion_given && ! -t 0 ]]; then
+      echo 'Refusing: with no terminal to confirm the imported onion address on, give it as --onion-address ADDR.onion. Nothing was written.' >&2
+      exit 2
+    fi
+  fi
   if [[ $local_mode == true && -n $mode$database$proxy$nodes$btc$xmr$btc_image$xmr_image$btc_network$xmr_network$btc_prune$xmr_prune$uploads$xmr_escrow ]]; then
     echo '--local answers every question itself; combine it only with --admin and --site-name.' >&2
     exit 2
@@ -926,6 +1099,13 @@ cmd_init() {
     exit 1
   fi
   if [[ $uploads == yes ]]; then host_memory_check || exit 1; fi
+  if [[ -n $onion_dir ]]; then
+    # A-526: the key files first, before any question. A volume under the identity's name that the label check above
+    # misses (one created by hand) is refused too: the key goes only into a volume this installer creates.
+    onion_key_check "$onion_dir"
+    ! docker volume inspect "${project}_tor_identity" >/dev/null 2>&1 ||
+      die "Refusing: the volume ${project}_tor_identity already exists, and an onion identity is imported only into a new, empty one. Nothing was written."
+  fi
 
   # Questions. The bare invocation asks today's questions; with options, only what they leave open.
   if [[ $local_mode == true ]]; then
@@ -1272,6 +1452,15 @@ cmd_init() {
   fi
   put COMPOSE_FILE "$compose_files"
   put COMPOSE_PROFILES "$profiles"
+  if [[ -n $onion_dir ]]; then
+    # A-526: Tor derives the key's address offline, in the image Compose builds for the tor service (built here from the
+    # configuration about to become .env when it is absent), before .env is written or anything starts.
+    if ! docker image inspect "$project-tor" >/dev/null 2>&1; then
+      docker compose --env-file "$config" build tor || die 'Could not build the Tor image (the message above says why). Nothing was written or started.'
+    fi
+    onion_expected=$(onion_dry_run "$project-tor") || exit 1
+    onion_confirm "$onion_expected" "$onion_given"
+  fi
   if [[ $xmr_escrow == yes ]]; then
     # A public key: readable by the app's user through the read-only mount (compose.escrow-xmr.yaml).
     cp -- "$xmr_seed_key" "$escrow_seed_key_file" && chmod 0644 "$escrow_seed_key_file" ||
@@ -1293,6 +1482,13 @@ cmd_init() {
         'The new .env was removed and nothing was started.'
     fi
   fi
+  if [[ -n $onion_dir ]]; then
+    # A-526: into the identity's volume, created here, before Tor first starts.
+    onion_volume_create "$project" tor_identity || die "Could not create the volume ${project}_tor_identity. Nothing was started."
+    onion_import "$project-tor" "${project}_tor_identity" ||
+      die "Could not import the onion key into the volume ${project}_tor_identity (the message above says why). Nothing was started." \
+        "To try again, remove the volume (docker volume rm ${project}_tor_identity) and .env."
+  fi
   # Builds, starts and waits until every service's healthcheck passes: the app answers /healthz (it reaches
   # PostgreSQL and has migrated) and each Tor service has written its onion address.
   up_wait --build ||
@@ -1300,6 +1496,11 @@ cmd_init() {
   local onion='' base
   if [[ $mode == tor ]]; then
     onion=$(wait_onion tor) || onion=''
+    if [[ -n $onion_expected && $onion != "$onion_expected" ]]; then
+      docker compose stop tor || true
+      die "Refusing: Tor serves ${onion:-no onion address}, not the imported $onion_expected, so the tor service was stopped." \
+        'Inspect docker compose logs tor; .env and data were kept.'
+    fi
     base="http://${onion:-YOUR-ONION-ADDRESS}"
   elif [[ $secure == false ]]; then
     base="http://127.0.0.1:${caller_app_port:-8080}"
@@ -1361,6 +1562,13 @@ cmd_init() {
   echo
   echo 'Next: back up .env (it holds every secret) and, on Tor, the onion keys: docs/operator-guide.md#secrets-env-and-onion-identities.'
   echo 'Check the installation any time with ./scripts/install.sh status.'
+  if [[ -n $onion_expected ]]; then
+    echo
+    echo 'Back up the imported onion keys now: they are its address. In this directory, with age installed, run'
+    echo '  identity=tor_identity AGE_RECIPIENT=age1YOUR_PUBLIC_RECIPIENT'
+    echo 'and then the "Back up an onion identity" commands in docs/operator-guide.md#secrets-env-and-onion-identities.'
+    onion_import_notes "$onion_dir"
+  fi
   # A local Bitcoin node is infrastructure only (D-58): say how escrow is turned on, and change nothing for it.
   if [[ $btc_choice == local ]]; then
     local escrow_chain=${bitcoin_chain:-signet}
@@ -1497,7 +1705,16 @@ cmd_setup_token() {
 }
 
 cmd_add_mirror() {
-  [[ $# -eq 0 ]] || usage
+  local key_dir='' given='' expected='' project
+  while (($#)); do
+    case $1 in
+      --mirror-onion-key-dir) (($# >= 2)) && [[ -n $2 ]] || usage; key_dir=$2 ;;
+      --mirror-onion-address) (($# >= 2)) || usage; given=$(onion_address_option "$1" "$2") ;;
+      *) usage ;;
+    esac
+    shift 2
+  done
+  if [[ -n $given && -z $key_dir ]]; then echo '--mirror-onion-address needs --mirror-onion-key-dir DIR.' >&2; exit 2; fi
   require_env
   legacy_pooled_guard || exit 1
   lock_env_or_die
@@ -1505,6 +1722,33 @@ cmd_add_mirror() {
   [[ $(env_value APP_MODE) == tor ]] || die 'The onion mirror is a second Tor address, so it needs a Tor install (APP_MODE=tor). Nothing was changed.'
   run_check || exit 1
   profiles=$(env_value COMPOSE_PROFILES)
+  if [[ -n $key_dir ]]; then
+    # A-526: an existing identity for the mirror, imported before the mirror's Tor first starts, and only then: a mirror
+    # that ran has a published address, which an import would replace (A-532).
+    project=$(project_name)
+    ! has_item "$profiles" mirror ||
+      die 'Refusing: the mirror is already set up (mirror is in COMPOSE_PROFILES), so it has an onion address; an import would replace it. Nothing was changed.'
+    [[ -z $(docker ps -a -q --filter "label=com.docker.compose.project=$project" --filter label=com.docker.compose.service=tor-mirror) ]] ||
+      die 'Refusing: a tor-mirror container exists, so the mirror has run and has an onion address; an import would replace it. Nothing was changed.'
+    [[ -n $given || -t 0 ]] ||
+      die 'Refusing: with no terminal to confirm the imported onion address on, give it as --mirror-onion-address ADDR.onion. Nothing was changed.'
+    onion_key_check "$key_dir"
+    main=$(onion_address tor) ||
+      die 'Refusing: could not read the main onion address, which the mirror key must differ from. Start the install (docker compose up -d) and try again. Nothing was changed.'
+    if ! docker image inspect "$project-tor" >/dev/null 2>&1; then
+      docker compose build tor || die 'Could not build the Tor image (the message above says why). Nothing was changed.'
+    fi
+    expected=$(onion_dry_run "$project-tor") || exit 1
+    [[ $expected != "$main" ]] ||
+      die "Refusing: that key is the main onion's ($main); the mirror needs an identity of its own. Nothing was changed."
+    onion_confirm "$expected" "$given"
+    if ! docker volume inspect "${project}_tor_mirror_identity" >/dev/null 2>&1; then
+      onion_volume_create "$project" tor_mirror_identity || die 'Could not create the mirror volume. Nothing was changed.'
+    fi
+    onion_import "$project-tor" "${project}_tor_mirror_identity" ||
+      die "Could not import the onion key into the volume ${project}_tor_mirror_identity (the message above says why). .env was not changed." \
+        "If Tor never ran on it, remove it (docker volume rm ${project}_tor_mirror_identity) and try again."
+  fi
   if has_item "$profiles" mirror; then
     echo 'mirror is already in COMPOSE_PROFILES.'
   else
@@ -1514,7 +1758,13 @@ cmd_add_mirror() {
     echo 'Added mirror to COMPOSE_PROFILES in .env (the other profiles are kept).'
   fi
   up_wait || die 'The services did not become healthy. Inspect docker compose ps and docker compose logs tor-mirror.'
-  mirror=$(wait_onion tor-mirror) || die 'tor-mirror did not write its onion address within 90 seconds. Run ./scripts/install.sh status later to see it.'
+  mirror=$(wait_onion tor-mirror) || mirror=''
+  if [[ -n $expected && $mirror != "$expected" ]]; then
+    docker compose stop tor-mirror || true
+    die "Refusing: Tor serves ${mirror:-no onion address}, not the imported $expected, so the tor-mirror service was stopped." \
+      'Inspect docker compose logs tor-mirror.'
+  fi
+  [[ -n $mirror ]] || die 'tor-mirror did not write its onion address within 90 seconds. Run ./scripts/install.sh status later to see it.'
   main=$(onion_address tor) || main='(not available: is tor running?)'
   if state=$(app_status 2>/dev/null); then retire_setup_token "$state" || true; fi
   echo
@@ -1525,6 +1775,7 @@ cmd_add_mirror() {
   echo 'Back up the mirror onion keys now: they are its address. In this directory, with age installed, run'
   echo '  identity=tor_mirror_identity AGE_RECIPIENT=age1YOUR_PUBLIC_RECIPIENT'
   echo 'and then the "Back up an onion identity" commands in docs/operator-guide.md#secrets-env-and-onion-identities.'
+  if [[ -n $expected ]]; then onion_import_notes "$key_dir"; fi
   echo 'Publish both addresses in your operator-signed verification document; the installer does not sign anything.'
 }
 
@@ -1939,6 +2190,8 @@ cmd_upgrade() {
   echo 'Upgrade complete. ./scripts/install.sh status shows the result.'
 }
 
+# Sourced (scripts/test-tor-identity-import.sh), the installer only defines its functions.
+if [[ ${BASH_SOURCE[0]} != "$0" ]]; then return 0; fi
 # From here on Docker Compose reads .env alone; the values the installer honours were captured above.
 isolate_env
 case ${1-} in

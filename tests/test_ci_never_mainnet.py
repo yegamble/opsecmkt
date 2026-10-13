@@ -23,6 +23,9 @@ COINS = (('--bitcoin', '--bitcoin-network'), ('--monero', '--monero-network'))
 GOVERNING = {'--local', '--nodes', '--bitcoin', '--monero', '--bitcoin-network', '--monero-network'}
 # install.sh as a word of a shell command (a path ending in it), not part of another name.
 SHELL_INVOCATION = re.compile(r'''(?:^|[\s;&|(`'"])(?:[\w./$-]*/)?install\.sh(?=$|[\s;&|)'"])(.*)$''')
+# install.sh sourced (`source` or `.`) for its functions (scripts/test-tor-identity-import.sh): it returns before its
+# command dispatch then, so it runs no init (test_sourced_installer_runs_no_command checks the guard).
+SOURCED = re.compile(r'''(?:^|[\s;&|(])(?:source|\.)\s+(?:[\w./$-]*/)?install\.sh(?=$|[\s;&|)])''')
 # A Python string that is itself a shell command running the installer, e.g. sh('./scripts/install.sh check', ...).
 COMMAND_STRING = re.compile(r'^\s*(?:bash\s+)?(?:\./)?scripts/install\.sh(?:\s|$)')
 SCRIPT_PATH = re.compile(r'(?:^|/)install\.sh$')
@@ -70,7 +73,7 @@ def shell_invocations(text):
         if stripped.startswith('#'):
             continue
         match = SHELL_INVOCATION.search(stripped)
-        if match:
+        if match and not SOURCED.search(stripped):
             rest = re.split(r'\s(?:&&|\|\||\||>)|[;)`]', match.group(1))[0]
             try:
                 words = shlex.split(rest)
@@ -188,7 +191,9 @@ class NeverMainnetTests(unittest.TestCase):
                  '(cd "$work" && ./scripts/install.sh check) || fail\n'
                  'cp scripts/install.sh "$work/scripts/"\n'
                  '    ./scripts/install.sh --local\n'
-                 'run: ./scripts/install.sh\n')
+                 'run: ./scripts/install.sh\n'
+                 '(source scripts/install.sh; onion_key_check "$dir")\n'
+                 '. ./scripts/install.sh\n')
         found = shell_invocations(shell)
         self.assertEqual(found, [(2, ['--tor', '--nodes', 'local']), (4, ['check']), (5, ['$work/scripts/']),
                                  (6, ['--local']), (7, [])])
@@ -215,6 +220,13 @@ class NeverMainnetTests(unittest.TestCase):
                  if not words or words[0] == 'init' or (words[0] or '').startswith('--')}
         self.assertIn('scripts/test-install.py', inits)
         self.assertIn('scripts/test-escrow-node-rehearsal.py', inits)
+
+    def test_sourced_installer_runs_no_command(self):
+        # The exception for a sourced install.sh above holds only while it returns before it dispatches any command.
+        text = INSTALLER.read_text()
+        guard = text.index('\nif [[ ${BASH_SOURCE[0]} != "$0" ]]; then return 0; fi\n')
+        self.assertLess(guard, text.index('\nisolate_env\ncase ${1-} in\n'))
+        self.assertEqual(text.count('\ncase ${1-} in\n'), 1)
 
     def test_installer_unit_tests_stub_docker(self):
         # The exception above holds only while tests/test_installer.py runs the installer against its Docker stub.
