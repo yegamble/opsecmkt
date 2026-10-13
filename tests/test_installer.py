@@ -1100,13 +1100,12 @@ time.sleep(60)
         self.assertNotIn('escrow-node-setup.sh', result.stdout)
 
     def test_init_refuses_mixed_network_class(self):
-        # One coin on mainnet and the other on a test network: refused before .env is written (errMixedNetworks).
+        # Two chosen networks of different classes (one mainnet, one a test network): refused before .env is written
+        # (errMixedNetworks), naming both options. A defaulted network follows the chosen one instead (below).
         cases = [
-            (None, ['--tor', '--nodes', 'local', '--bitcoin-network', 'signet']),
-            (None, ['--tor', '--nodes', 'local', '--monero-network', 'stagenet']),
             (None, ['--tor', '--nodes', 'local', '--bitcoin-network', 'main', '--monero-network', 'stagenet']),
             (None, ['--tor', '--nodes', 'local', '--bitcoin-network', 'regtest', '--monero-network', 'mainnet']),
-            (['tor', '', 'local', '', 'testnet4', '', 'local', '', '', '', ''], []),
+            (['tor', '', 'local', '', 'testnet4', '', 'local', '', 'mainnet', ''], []),
         ]
         for answers, arguments in cases:
             with self.subTest(arguments=arguments, answers=answers):
@@ -1114,11 +1113,58 @@ time.sleep(60)
                 result = self.run_installer(answers, arguments=arguments)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn('mix mainnet with a test network', result.stderr)
+                self.assertIn('--bitcoin-network', result.stderr)
+                self.assertIn('--monero-network', result.stderr)
                 self.assertIn('Nothing was written', result.stderr)
                 self.assertFalse((self.root / '.env').exists())
                 self.assertEqual(list(self.root.glob('.env.install.*')), [])
                 self.assertEqual(self.calls(), PREFLIGHT)
                 self.assertEqual(self.generated_secrets(), [])
+
+    def assert_test_class(self, result, chain, network):
+        self.assert_started(result)
+        config = self.config()
+        self.assertEqual(config['BITCOIN_CHAIN'], chain)
+        self.assertEqual(config['MONERO_NETWORK'], network)
+        self.assertEqual(config['MONERO_NETWORK_FLAG'], '--stagenet')
+        self.assertEqual(config['BITCOIN_PRUNE_MB'], self.compose_bitcoin_prune_default())
+        self.assertNotIn('PAYMENT_CONFIRMATIONS_BTC', config)
+        self.assertNotIn('MAINNET', result.stdout)
+        self.assertNotIn('No mainnet run', result.stdout)
+
+    def test_explicit_test_network_carries_the_other_coin(self):
+        # The market's class follows an explicitly chosen network: a Bitcoin test chain makes Monero default to stagenet.
+        self.assert_test_class(self.run_installer(None, arguments=['--tor', '--nodes', 'local', '--bitcoin-network', 'signet']),
+                               'signet', 'stagenet')
+        # So does an answer: Monero's network question then defaults to stagenet (Enter), as does its escrow question (no).
+        (self.root / '.env').unlink()
+        self.log.unlink()
+        self.assert_test_class(self.run_installer(['tor', '', 'local', '', 'testnet4', '', 'local', '', '', '', '']),
+                               'testnet4', 'stagenet')
+
+    def test_explicit_monero_test_network_carries_bitcoin(self):
+        self.assert_test_class(self.run_installer(None, arguments=['--tor', '--nodes', 'local', '--monero-network', 'stagenet']),
+                               'signet', 'stagenet')
+        # Asked interactively, Bitcoin's network question comes first: its default follows a --monero-network option...
+        (self.root / '.env').unlink()
+        self.log.unlink()
+        self.assert_test_class(self.run_installer([''] * 6, arguments=[
+            '--tor', '--nodes', 'custom', '--bitcoin', 'local', '--monero', 'local', '--monero-network', 'stagenet']),
+            'signet', 'stagenet')
+        # ...and a Monero test answer after a defaulted Bitcoin network moves Bitcoin to signet, saying so.
+        (self.root / '.env').unlink()
+        self.log.unlink()
+        result = self.run_installer(['tor', '', 'local', '', '', '', 'local', '', 'stagenet', '', ''])
+        self.assert_test_class(result, 'signet', 'stagenet')
+        self.assertIn('BITCOIN follows the Monero network', result.stdout)
+        # A coin disabled by its option chooses nothing: Monero alone stays on the mainnet default.
+        (self.root / '.env').unlink()
+        self.log.unlink()
+        result = self.run_installer([''], arguments=['--tor', '--bitcoin', 'disabled', '--bitcoin-network', 'signet',
+                                                     '--monero', 'local', '--monero-image', 'reviewed-monero:test',
+                                                     '--monero-prune', 'yes', '--monero-escrow', 'no'])
+        self.assert_started(result)
+        self.assertEqual(self.config()['MONERO_NETWORK'], 'mainnet')
 
     def test_mainnet_prune_and_confirmations(self):
         cases = (

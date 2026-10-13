@@ -155,9 +155,9 @@ init options (each answers one question; a question without its option is asked)
   --admin HANDLE [--site-name NAME]  create the first administrator here (password asked twice, never shown)
                                    instead of printing a setup token for the browser
   --uploads yes|no                 photo uploads with the ClamAV malware scanner (needs 3 GiB of memory; default no)
-Local nodes run MAINNET (main, mainnet: real funds) unless --bitcoin-network and --monero-network name test
-networks; a market is all mainnet or all test networks. No mainnet run of this software is recorded
-(docs/operator-guide.md#mainnet).
+Local nodes run MAINNET (main, mainnet: real funds) unless a network option names a test network; the other coin then
+defaults to its own (signet, stagenet): a market is all mainnet or all test networks. No mainnet run of this software
+is recorded (docs/operator-guide.md#mainnet).
 Values given as options (URLs with passwords) are visible to other local users while the installer runs.
 USAGE
 }
@@ -951,7 +951,7 @@ cmd_init() {
     if [[ $bare == true ]]; then
       nodes=custom
     elif [[ -z $nodes ]]; then
-      printf '%s\n' "Nodes: 'local' (the default) runs pruned Bitcoin Core and Monero nodes in Docker on MAINNET (real funds) unless --bitcoin-network and --monero-network name test networks. Pruned, Bitcoin mainnet keeps about 30 GB and Monero mainnet 45 GB or more on disk, and their first sync takes days; on test networks (Bitcoin signet or testnet4, Monero stagenet) about 5-8 GB and 20 GB, synced in hours (all estimates). 'none' leaves payments off. 'custom' asks per coin."
+      printf '%s\n' "Nodes: 'local' (the default) runs pruned Bitcoin Core and Monero nodes in Docker on MAINNET (real funds) unless --bitcoin-network or --monero-network names a test network (the other coin then follows). Pruned, Bitcoin mainnet keeps about 30 GB and Monero mainnet 45 GB or more on disk, and their first sync takes days; on test networks (Bitcoin signet or testnet4, Monero stagenet) about 5-8 GB and 20 GB, synced in hours (all estimates). 'none' leaves payments off. 'custom' asks per coin."
       ask nodes 'Nodes (local/none/custom) [local]: '
       nodes=${nodes:-local}
       [[ $nodes == local || $nodes == none || $nodes == custom ]] || die 'Choose local, none or custom.'
@@ -962,8 +962,13 @@ cmd_init() {
     [[ ${caller_app_port:-8080} =~ ^[0-9]{1,5}$ ]] && ((10#${caller_app_port:-8080} > 0 && 10#${caller_app_port:-8080} <= 65535)) ||
       die 'APP_PORT must be between 1 and 65535.'
   fi
-  # Per-coin answers. local: pruned node with the default image on mainnet (A-523) unless an option names a test
-  # network; none: disabled; custom: every question without an option is asked.
+  # Per-coin answers. local: pruned node with the default image on mainnet (A-523) unless a network is chosen; none:
+  # disabled; custom: every question without an option is asked. The market's class follows an explicitly chosen
+  # network (an option, or an answer): a test network for one coin makes the other default to its own (signet,
+  # stagenet). A coin disabled by its option chooses nothing.
+  local btc_explicit=false xmr_explicit=false
+  if [[ -n $btc_network && $btc != disabled ]]; then btc_explicit=true; fi
+  if [[ -n $xmr_network && $xmr != disabled ]]; then xmr_explicit=true; fi
   local coin choice image network prune default_image value
   local btc_choice='' xmr_choice='' bitcoin_chain='' monero_network='' btc_prune_mb='' xmr_prune_flags=$monero_prune_default
   for coin in BITCOIN MONERO; do
@@ -993,18 +998,24 @@ cmd_init() {
         image=${image:-$default_image}
         check_image "$image"
         if [[ $coin == BITCOIN ]]; then
-          if [[ -z $network && $detail == true ]]; then ask network 'BITCOIN network (main = mainnet, real funds; or signet/testnet4/regtest) [main]: '; fi
+          value=main
+          if [[ $xmr_explicit == true && $xmr_network == stagenet ]]; then value=signet; fi
+          if [[ -z $network && $detail == true ]]; then ask network "BITCOIN network (main = mainnet, real funds; or signet/testnet4/regtest) [$value]: "; fi
           refuse_network_name BITCOIN "$network" ''
-          case ${network:-main} in
-            main|signet|testnet4|regtest) network=${network:-main} ;;
+          if [[ -n $network ]]; then btc_explicit=true btc_network=$network; fi
+          case ${network:-$value} in
+            main|signet|testnet4|regtest) network=${network:-$value} ;;
             *) die 'Choose main, signet, testnet4 or regtest.' ;;
           esac
           if [[ -z $prune && $detail == true ]]; then ask prune 'Prune the BITCOIN node to save disk? (yes/no) [yes]: '; fi
         else
-          if [[ -z $network && $detail == true ]]; then ask network 'MONERO network (mainnet = real funds; or stagenet) [mainnet]: '; fi
+          value=mainnet
+          if [[ $btc_explicit == true && $btc_network != main ]]; then value=stagenet; fi
+          if [[ -z $network && $detail == true ]]; then ask network "MONERO network (mainnet = real funds; or stagenet) [$value]: "; fi
           refuse_network_name MONERO "$network" ''
-          case ${network:-mainnet} in
-            mainnet|stagenet) network=${network:-mainnet} ;;
+          if [[ -n $network ]]; then xmr_explicit=true xmr_network=$network; fi
+          case ${network:-$value} in
+            mainnet|stagenet) network=${network:-$value} ;;
             *) die 'Choose mainnet or stagenet.' ;;
           esac
           if [[ -z $prune && $detail == true ]]; then ask prune 'Prune the MONERO node to save disk? (yes/no) [yes]: '; fi
@@ -1015,21 +1026,31 @@ cmd_init() {
     esac
     if [[ $coin == BITCOIN ]]; then
       btc_choice=$choice btc_image=$image
-      if [[ $choice == local ]]; then
-        bitcoin_chain=$network btc_prune_mb=$bitcoin_prune_default
-        if [[ $network == main ]]; then btc_prune_mb=$bitcoin_mainnet_prune_mb; fi
-        if [[ $prune == no ]]; then btc_prune_mb=0; fi
-      fi
+      if [[ $choice == local ]]; then bitcoin_chain=$network btc_prune=$prune; fi
     else
       xmr_choice=$choice xmr_image=$image
       if [[ $choice == local ]]; then monero_network=$network; if [[ $prune == no ]]; then xmr_prune_flags=''; fi; fi
     fi
   done
-  # A market is all mainnet or all test networks (the app's errMixedNetworks): refused here, before anything else is
-  # asked or written. The defaults are mainnet, so a test network for one coin needs one for the other (or disable it).
+  # A market is all mainnet or all test networks (the app's errMixedNetworks). Two chosen networks that conflict are
+  # refused here, before anything else is asked or written. A defaulted one follows the chosen one: Bitcoin's default,
+  # asked first, can only conflict with a Monero network answered after it.
   if mixed_networks "$bitcoin_chain" "$monero_network"; then
-    die "Refusing: Bitcoin on $bitcoin_chain and Monero on $monero_network mix mainnet with a test network. A market runs on mainnet or on test networks, never both (the app refuses to start otherwise)." \
-      'Choose test networks for both (--bitcoin-network signet|testnet4|regtest --monero-network stagenet), mainnet for both, or disable one coin. Nothing was written.'
+    if [[ $btc_explicit == true && $xmr_explicit == true ]]; then
+      die "Refusing: --bitcoin-network $bitcoin_chain and --monero-network $monero_network mix mainnet with a test network. A market runs on mainnet or on test networks, never both (the app refuses to start otherwise)." \
+        'Give both test networks (--bitcoin-network signet|testnet4|regtest with --monero-network stagenet), both mainnet (main, mainnet), or disable one coin. Nothing was written.'
+    elif [[ $btc_explicit == false ]]; then
+      if [[ $monero_network == mainnet ]]; then bitcoin_chain=main; else bitcoin_chain=signet; fi
+      echo "BITCOIN follows the Monero network's class: $bitcoin_chain (--bitcoin-network chooses another)."
+    else
+      if [[ $bitcoin_chain == main ]]; then monero_network=mainnet; else monero_network=stagenet; fi
+      echo "MONERO follows the Bitcoin network's class: $monero_network (--monero-network chooses another)."
+    fi
+  fi
+  if [[ $btc_choice == local ]]; then
+    btc_prune_mb=$bitcoin_prune_default
+    if [[ $bitcoin_chain == main ]]; then btc_prune_mb=$bitcoin_mainnet_prune_mb; fi
+    if [[ $btc_prune == no ]]; then btc_prune_mb=0; fi
   fi
   # Monero escrow (A-449): only beside the local Monero node, on stagenet or (A-523) mainnet, whose daemon its own
   # wallet-RPC service (monero-escrow-wallet) shares. Off unless chosen; asked where the Monero questions are asked.

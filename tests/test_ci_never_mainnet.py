@@ -1,8 +1,8 @@
 """Development, tests and CI never run the installer on mainnet (A-523, owner directive 2026-10-13).
 
 `scripts/install.sh init` defaults to mainnet for the coins it runs local nodes for, so every real invocation in
-.github/, scripts/ or tests/ must say it is not one: `--local`, `--nodes none`, or an explicit test network for each
-coin it does not disable. tests/test_installer.py is the one exception, and only because its Docker is a stub (checked
+.github/, scripts/ or tests/ must say it is not one: `--local`, `--nodes none`, or an explicit test network (for a
+coin its options do not disable; the other coin follows its class) and no explicit mainnet. tests/test_installer.py is the one exception, and only because its Docker is a stub (checked
 below): it checks the configuration strings a mainnet install writes and never starts a node.
 """
 import ast
@@ -47,10 +47,12 @@ def mainnet_problem(arguments):
                if word is not None and word.startswith('--')}
     if options.get('--nodes') == 'none':
         return None
-    for coin, network in COINS:
-        if options.get(coin) != 'disabled' and options.get(network) not in TEST_NETWORKS[network]:
-            return f'{coin} is not disabled and {network} names no test network ({" ".join(arguments) or "no options"})'
-    return None
+    # The installer's class follows an explicitly chosen network: one test network, for a coin its option does not
+    # disable, makes the other coin default to its own test network. Any other chosen network (mainnet) disqualifies.
+    chosen = [network for coin, network in COINS if options.get(coin) != 'disabled' and network in options]
+    if chosen and all(options[network] in TEST_NETWORKS[network] for network in chosen):
+        return None
+    return f'no --local, --nodes none or explicit test network ({" ".join(map(str, arguments)) or "no options"})'
 
 
 def shell_invocations(text):
@@ -161,10 +163,13 @@ class NeverMainnetTests(unittest.TestCase):
                     ['init', '--clearnet', '--bitcoin', 'local', '--bitcoin-network', 'regtest', '--monero', 'disabled'],
                     ['--tor', '--nodes', 'local', '--bitcoin-network', 'signet', '--monero-network', 'stagenet'],
                     ['--tor', '--bitcoin', 'disabled', '--monero', 'local', '--monero-network', 'stagenet'],
-                    ['--tor', '--bitcoin-image', None, '--nodes', 'none'])
+                    ['--tor', '--bitcoin-image', None, '--nodes', 'none'],
+                    # One explicit test network carries the other coin (the class follows it).
+                    ['--tor', '--nodes', 'local', '--bitcoin-network', 'signet'],
+                    ['--tor', '--nodes', 'local', '--monero-network', 'stagenet'])
         refused = ([], ['init'], ['--tor'], ['--tor', '--nodes', 'local'], ['--nodes', 'custom'],
-                   ['--tor', '--nodes', 'local', '--bitcoin-network', 'signet'],
-                   ['--tor', '--nodes', 'local', '--monero-network', 'stagenet'],
+                   ['--tor', '--nodes', 'local', '--bitcoin-network', 'signet', '--monero-network', 'mainnet'],
+                   ['--tor', '--bitcoin', 'disabled', '--bitcoin-network', 'signet', '--monero', 'local'],
                    ['--tor', '--bitcoin', 'local', '--bitcoin-network', 'main', '--monero', 'disabled'],
                    ['--tor', '--bitcoin', 'disabled', '--monero', 'local', '--monero-network', 'mainnet'],
                    ['--tor', '--bitcoin', 'local', '--monero', 'disabled'],
