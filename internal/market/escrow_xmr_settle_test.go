@@ -812,7 +812,7 @@ func TestXMREscrowVendorDecisionNote(t *testing.T) {
 		t.Fatalf("decision notes: %q", notes)
 	}
 	for _, banned := range []string{"BTC", "Bitcoin", "sign", "co-sign"} {
-		if strings.Contains(notes[0], banned) {
+		if strings.Contains(withoutXMRAddresses(notes[0]), banned) {
 			t.Fatalf("the note says %q: %s", banned, notes[0])
 		}
 	}

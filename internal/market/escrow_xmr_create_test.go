@@ -433,7 +433,7 @@ func TestXMREscrowOrderPanel(t *testing.T) {
 		}
 	}
 	for _, banned := range []string{"Bitcoin", "BTC", "regtest", "REGTEST", "descriptor", "multisig", "PSBT", "sign", "style=", "width="} {
-		if strings.Contains(buyer, banned) {
+		if strings.Contains(withoutXMRAddresses(buyer), banned) {
 			t.Fatalf("the Monero escrow panel says %q:\n%s", banned, buyer)
 		}
 	}

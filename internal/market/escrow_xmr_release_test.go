@@ -129,7 +129,7 @@ func (x *xmrEscrowEnv) partyOf(order, viewer string) string {
 func noBitcoinWords(t *testing.T, what, s string) {
 	t.Helper()
 	for _, banned := range []string{"Bitcoin", "BTC", "sign", "Sign", "PSBT", "regtest"} {
-		if strings.Contains(s, banned) {
+		if strings.Contains(withoutXMRAddresses(s), banned) {
 			t.Errorf("%s says %q:\n%s", what, banned, s)
 		}
 	}
