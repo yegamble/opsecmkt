@@ -18,6 +18,7 @@ skip. They need no Docker daemon and start nothing.
 import itertools
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -142,8 +143,39 @@ class ResolvedComposeExposureTests(unittest.TestCase):
                 with self.subTest(name + suffix):
                     config = resolved(files + extra_files, profiles + extra_profiles, environment)
                     self.assertEqual(exposure_problems(config, mode), [])
+                    for service_name in ('db', 'bitcoin', 'monero', 'monero-escrow-wallet'):
+                        if service_name not in config['services']:
+                            continue
+                        service = config['services'][service_name]
+                        self.assertIs(service.get('read_only'), True, service_name)
+                        self.assertEqual(service.get('cap_drop'), ['ALL'], service_name)
+                        self.assertEqual(set(service.get('cap_add', [])),
+                                         {'CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'SETGID', 'SETUID'}, service_name)
+                        self.assertIn('no-new-privileges:true', service.get('security_opt', []), service_name)
+                        self.assertIn('/tmp', service.get('tmpfs', []), service_name)
+                        if service_name == 'monero-escrow-wallet':
+                            command = service['command']
+                            self.assertIn('--shared-ringdb-dir=/home/monero/wallet/.shared-ringdb', command)
+                            self.assertIn('--max-log-file-size=1048576', command)
+                            self.assertIn('--max-log-files=2', command)
                     seen += 1
         self.assertEqual(seen, 10 * 3, 'the combinations enumerated no longer match the compose job matrix')
+
+    def test_internal_database_has_no_default_password_and_uses_a_digest(self):
+        files = ['-f', 'compose.yaml', '-f', 'compose.internal-db.yaml']
+        config = resolved(files, ['--profile', 'internal-db'], {'POSTGRES_PASSWORD': ''})
+        db = config['services']['db']
+        self.assertEqual(db['environment']['POSTGRES_PASSWORD'], '')
+        self.assertRegex(db['image'], r'^postgres:17-alpine@sha256:[0-9a-f]{64}$')
+        self.assertIn('/var/run/postgresql', db['tmpfs'])
+        supplied = resolved(files, ['--profile', 'internal-db'], {'POSTGRES_PASSWORD': 'explicit-test-password'})
+        self.assertEqual(supplied['services']['db']['environment']['POSTGRES_PASSWORD'], 'explicit-test-password')
+
+    def test_application_base_images_are_pinned(self):
+        images = re.findall(r'^FROM\s+(\S+)', (REPOSITORY / 'Dockerfile').read_text(), re.M)
+        self.assertEqual(len(images), 2)
+        for image in images:
+            self.assertRegex(image, r'@sha256:[0-9a-f]{64}$')
 
 
 if __name__ == '__main__':
