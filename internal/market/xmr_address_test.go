@@ -7,7 +7,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"math/big"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -68,6 +70,15 @@ func testXMRSmallOrderKey() []byte {
 }
 
 // testXMRAddr is a valid fakechain escrow address (mainnet format): a subaddress, or a standard address.
+// xmrAddressRun matches a Monero address as a page shows it: 95 (standard, subaddress) or 106 (integrated) base58
+// characters.
+var xmrAddressRun = regexp.MustCompile(`[1-9A-HJ-NP-Za-km-z]{95,106}`)
+
+// withoutXMRAddresses removes Monero addresses from s before a banned-word check. Test addresses derive from labels
+// holding random order ids, so one can contain "BTC" or "sign" by chance and fail a check that meant the page's
+// own words.
+func withoutXMRAddresses(s string) string { return xmrAddressRun.ReplaceAllString(s, "<xmr-address>") }
+
 func testXMRAddr(label string, sub bool) string {
 	tag := byte(xmrTagStandard)
 	if sub {
@@ -455,6 +466,26 @@ func TestXMRAddressKeysRefused(t *testing.T) {
 		}
 		if _, err := parseXMRAddress(testXMRAddressWith(tag, good, good, nil, false), "fakechain"); err != nil {
 			t.Fatalf("%d, valid keys: %v", tag, err)
+		}
+	}
+}
+
+// A test address that happens to contain a banned word is removed before the check, and the page's own words stay:
+// TestXMREscrowOrderPanel once failed on a random escrow address containing "BTC".
+func TestWithoutXMRAddresses(t *testing.T) {
+	var addr string
+	for i := 0; addr == ""; i++ {
+		if a := testXMRAddr("banned "+strconv.Itoa(i), true); strings.Contains(a, "BTC") {
+			addr = a
+		}
+	}
+	got := withoutXMRAddresses("<dd class=\"mono\">" + addr + "</dd> Pay BTC here")
+	if strings.Contains(got, addr) || got != "<dd class=\"mono\"><xmr-address></dd> Pay BTC here" {
+		t.Fatalf("withoutXMRAddresses = %q", got)
+	}
+	for _, a := range []string{testXMRAddr("standard", false), testXMRAddr("sub", true)} {
+		if withoutXMRAddresses(a) != "<xmr-address>" {
+			t.Errorf("address %s was not removed", a)
 		}
 	}
 }
