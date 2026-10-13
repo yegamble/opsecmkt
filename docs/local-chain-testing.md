@@ -7,7 +7,7 @@ or tests; a mainnet market is an operator opt-in ([operator guide](operator-guid
 
 | What | Command | Runs in CI |
 | --- | --- | --- |
-| Bitcoin escrow on a real Bitcoin Core 31.1 regtest node (practice signing, funding, claims, refunds, restart and reorg legs, dispute decisions, the signer) | `scripts/test-escrow-regtest.sh` (`--private-signet` for the two-node private signet legs) | `escrow-regtest` |
+| Bitcoin escrow on a real Bitcoin Core 31.1 regtest node (practice signing, funding, claims, refunds, restart and reorg legs, dispute decisions, the signer, the watch-only wallet repair on a pruned node) | `scripts/test-escrow-regtest.sh` (`--private-signet` for the two-node private signet legs) | `escrow-regtest` |
 | Monero escrow on a real `monerod` and `monero-wallet-rpc` 0.18.5.1 fakechain (15 legs: wallets, funding, physical orders, relay loss and restart, top-up, reorg, outside spend, re-request, restore, lookahead, wrong secret, destroy, refund below the fee) | `scripts/test-escrow-xmr-regtest.sh` | `escrow-xmr-regtest` |
 | Monero escrow on an offline stagenet fork | `scripts/test-escrow-xmr-stagenet.sh` | no |
 | Escrow forms in a browser with JavaScript off, against simulated nodes (not chain evidence) | `npm run test:e2e:escrow`, `npm run test:e2e:escrow-xmr` | `browser-escrow` |

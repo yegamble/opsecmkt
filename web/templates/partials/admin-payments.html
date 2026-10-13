@@ -71,7 +71,25 @@ Check the escrow node: its peers (<code>getconnectioncount</code>), and with <co
 </tr>{{end}}</tbody>
 </table>
 </div>{{else}}
-<p>No escrow settlement is waiting for a rebroadcast check.</p>{{end}}
+<p>No escrow settlement is waiting for a rebroadcast check.</p>{{end}}{{if .Unwatched}}
+<h4 id="escrow-unwatched">Escrows the watch-only wallet cannot rescan</h4>
+<div class="alert" role="status"><strong>The escrow watch-only wallet may not show every deposit to {{len .Unwatched}} escrow(s).</strong> After the wallet lost them (restored from an older backup, say), the escrow watcher could not import them again with a rescan from their creation. Until it can, these orders do not expire, the market keeps escrow checkout paused after a restore (<code>escrow_sweep_required</code> stays set), and you should not clear the recovery lock. To fix it, either restore the whole <code>bitcoin_data</code> volume (blocks, chain state and wallets together) from a copy taken with bitcoind stopped, or run the node unpruned (<code>-prune=0</code> with <code>-reindex</code>) until the escrow watcher has rescanned them. The watcher checks again on every pass and removes each escrow from this list once the wallet holds it. See <code>docs/testnet-runbook.md</code>, section “An escrow the watch-only wallet cannot rescan”.</div>
+<div class="table-wrap" tabindex="0" role="region" aria-labelledby="escrow-unwatched">
+<table>
+<thead>
+<tr>
+<th scope="col">Order</th>
+<th scope="col">Why</th>
+<th scope="col">Listed since</th>
+</tr>
+</thead>
+<tbody>{{range .Unwatched}}<tr>
+<td class="mono">{{.Short}}</td>
+<td>{{if .Pruned}}Its escrow cannot be rescanned on this pruned node: the escrow is older than the oldest block the node keeps, so a deposit made before that block is not seen.{{else}}Bitcoin Core reported that its rescan failed (a block it needed could not be read); the watcher imports it again on every pass.{{end}}</td>
+<td>{{.Since}}</td>
+</tr>{{end}}</tbody>
+</table>
+</div>{{end}}
 <h4 id="escrow-orphans">Escrow addresses with no escrow record</h4>
 <p>Addresses the escrow watch-only wallet holds with no escrow on record, found on the escrow watcher's daily check: a descriptor imported for an escrow whose checkout did not complete, or an escrow created after the backup a restored database came from. The market never builds a settlement for them; coins at such an address can be spent only with two of its three keys. The order ID comes from the wallet's label.</p>{{if .Orphans}}
 <div class="table-wrap" tabindex="0" role="region" aria-labelledby="escrow-orphans">

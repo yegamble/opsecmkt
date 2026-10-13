@@ -38,12 +38,13 @@ import (
 // getnetworkinfo (read-only: the peer count for the sync guard, A-439, and the proxies and version for the Tor-mode
 // gate, A-441) is called only on a public chain or in APP_MODE=tor, so a clearnet regtest whitelist written before it
 // keeps working. listsinceblock (read-only) reads the arbiter wallet's entries for the start check (QA4W4A-1,
-// checkArbiterWallet).
+// checkArbiterWallet). getblockhash and getblockheader (read-only) give the time of the oldest block a pruned node keeps,
+// read only on a pruned node before the watch-only wallet repair imports (pruneFloor, A-527).
 var escrowRPCMethods = []string{
 	"getblockchaininfo", "getnetworkinfo", "getrawchangeaddress", "getaddressinfo", "createpsbt", "utxoupdatepsbt",
 	"importdescriptors", "getdescriptorinfo", "deriveaddresses", "gettxout", "keypoolrefill", "walletprocesspsbt",
 	"descriptorprocesspsbt", "combinepsbt", "finalizepsbt", "testmempoolaccept", "sendrawtransaction", "getwalletinfo",
-	"listreceivedbyaddress", "gettransaction", "listtransactions", "listsinceblock",
+	"listreceivedbyaddress", "gettransaction", "listtransactions", "listsinceblock", "getblockhash", "getblockheader",
 }
 
 // escrowSighash is the only sighash type the market ever signs with (ES-2): a signature made with SIGHASH_NONE let
@@ -759,12 +760,17 @@ type escrowImport struct {
 // that Core reports unsuccessful fails the call. Core's import is idempotent: importing a descriptor the wallet holds
 // again changes nothing but its range and its timestamp's rescan.
 func (e *escrowBTC) importDescriptors(ctx context.Context, wallet string, reqs []escrowImport) error {
-	return e.importDescriptorsWithin(ctx, rpcTimeout, wallet, reqs)
+	_, err := e.importDescriptorsWithin(ctx, rpcTimeout, wallet, reqs)
+	return err
 }
 
 // importDescriptorsWithin is importDescriptors bounded by timeout instead of rpcTimeout: Core rescans from the earliest
-// timestamp of the requests before it answers (escrowRescanTimeout).
-func (e *escrowBTC) importDescriptorsWithin(ctx context.Context, timeout time.Duration, wallet string, reqs []escrowImport) error {
+// timestamp of the requests before it answers (escrowRescanTimeout). failed is the index of each request Core reported
+// unsuccessful (the error is then import-failed). A request whose rescan could not read a block (pruned, or corrupt) is
+// one: Core 31.1 answers it success false with error code -1 ("Rescan failed for descriptor …") yet keeps its descriptor
+// and label, and answers the requests of the same call with later timestamps successful (probed on a pruned regtest
+// node, A-527).
+func (e *escrowBTC) importDescriptorsWithin(ctx context.Context, timeout time.Duration, wallet string, reqs []escrowImport) (failed []int, err error) {
 	body := make([]map[string]any, 0, len(reqs))
 	for _, r := range reqs {
 		req := map[string]any{"desc": r.Desc, "timestamp": r.Timestamp, "active": false}
@@ -780,17 +786,59 @@ func (e *escrowBTC) importDescriptorsWithin(ctx context.Context, timeout time.Du
 		Success bool `json:"success"`
 	}
 	if err := classifyEscrowRPC("importdescriptors", e.rpc.callWithin(ctx, timeout, "/wallet/"+url.PathEscape(wallet), "importdescriptors", []any{body}, &res)); err != nil {
-		return err
+		return nil, err
 	}
 	if len(res) != len(reqs) {
-		return &escrowRPCError{Method: "importdescriptors", Class: "bad-reply"}
+		return nil, &escrowRPCError{Method: "importdescriptors", Class: "bad-reply"}
 	}
-	for _, r := range res {
+	for i, r := range res {
 		if !r.Success {
-			return &escrowRPCError{Method: "importdescriptors", Class: "import-failed"}
+			failed = append(failed, i)
 		}
 	}
-	return nil
+	if len(failed) > 0 {
+		return failed, &escrowRPCError{Method: "importdescriptors", Class: "import-failed"}
+	}
+	return nil, nil
+}
+
+// escrowTimestampWindow is Bitcoin Core's TIMESTAMP_WINDOW in seconds: an import rescans from the first block whose time
+// is within it before the descriptor's timestamp (A-527).
+const escrowTimestampWindow = 7200
+
+// pruneFloor reads whether the node is pruned (getblockchaininfo: pruned, pruneheight) and, when it has pruned any block,
+// the time of the block at pruneheight (getblockhash, getblockheader), the oldest whose data it keeps: an import whose
+// rescan would start before that block cannot be rescanned (A-527). An unpruned node, or a pruned one that has pruned
+// nothing yet (pruneheight 0), is (0, false). A pruned node's answer without a pruneheight, or a header without a time,
+// is a bad-reply.
+func (e *escrowBTC) pruneFloor(ctx context.Context) (floor int64, pruned bool, err error) {
+	var info struct {
+		Pruned      bool   `json:"pruned"`
+		PruneHeight *int64 `json:"pruneheight"`
+	}
+	if err = e.call(ctx, "", "getblockchaininfo", []any{}, &info); err != nil || !info.Pruned {
+		return 0, false, err
+	}
+	if info.PruneHeight == nil || *info.PruneHeight < 0 {
+		return 0, true, &escrowRPCError{Method: "getblockchaininfo", Class: "bad-reply"}
+	}
+	if *info.PruneHeight == 0 {
+		return 0, false, nil
+	}
+	var hash string
+	if err = e.call(ctx, "", "getblockhash", []any{*info.PruneHeight}, &hash); err != nil {
+		return 0, true, err
+	}
+	if _, herr := hex.DecodeString(hash); herr != nil || len(hash) != 64 {
+		return 0, true, &escrowRPCError{Method: "getblockhash", Class: "bad-reply"}
+	}
+	var header struct {
+		Time int64 `json:"time"`
+	}
+	if err = e.call(ctx, "", "getblockheader", []any{hash, true}, &header); err == nil && header.Time <= 0 {
+		err = &escrowRPCError{Method: "getblockheader", Class: "bad-reply"}
+	}
+	return header.Time, true, err
 }
 
 // descriptorInfo is getdescriptorinfo: the descriptor in Core's canonical public form with its checksum (private

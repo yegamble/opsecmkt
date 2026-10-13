@@ -1331,6 +1331,18 @@ removed the switch. What A-456a built:
   which no escrow created since QA5W5A-1 has) leave the siblings out (logged); the next start tries again. Until
   QA5W5A-1 the repair waited for the escrow signer, whose key it needed for the market's part. Restart the app after
   restoring the watch-only wallet. Bitcoin Core escrows are not repaired this way.
+- **Repair on a pruned node (A-527).** Core rescans an import from its timestamp less 2 hours, and only over blocks it
+  still holds. Before the repair imports, the market reads `getblockchaininfo` (`pruned`, `pruneheight`) and, on a node
+  that has pruned, the time of the block at `pruneheight` (`getblockhash`, `getblockheader`). An escrow created before
+  that block, or less than 2 hours after it, is not imported: Core 31.1 would add its descriptor and label yet answer
+  the request failed (error code -1, "Rescan failed for descriptor …"; observed on a pruned regtest node), so a deposit
+  made before that block would never be seen and the next pass would find the address held. Such an escrow is listed
+  (`escrow_watch_unrepaired`, migration 110) and named on `/admin` with the remedy; so is one whose import Core answers
+  as failed for any other reason, whose label then counts for nothing until an import of it succeeds (it is imported
+  again on every pass). While any escrow is listed its order does not expire, the orphan sweep leaves
+  `escrow_sweep_required` set, and the repair checks again on every pass; the restore gate is the operator's to clear
+  ([runbook](testnet-runbook.md#an-escrow-the-watch-only-wallet-cannot-rescan)). Unpruned nodes, and escrows created
+  after that block, are repaired as before.
 - **Orphan sweep.** After a database restore, a lost per-order escrow's address and siblings are orphans; the sweep
   reserves their keys. An orphan that Core reports unsolvable (held by an address-only import) has no keys to read: it
   counts as read only as a lost per-order escrow's sibling, when another orphan with the same `escrow:<order ID>` label
@@ -1372,7 +1384,7 @@ out; its first run found that Core's `listreceivedbyaddress` lists only labelled
 imported labelled) and `TestEscrowRegtestPerOrderRepair` (the watch-only wallet repair onto empty wallets standing in for
 ones restored from before the escrow: deposits made meanwhile found and every address solvable, with the signer up and,
 since QA5W5A-1, with it down; after the vendor registers another key, the siblings still solvable; Core deriving each
-stored order wallet key's `/0/0` as the account key's `/<i>/0/0`, the market's included; an address held by `addr(…)` first staying unsolvable after its descriptor is imported).
+stored order wallet key's `/0/0` as the account key's `/<i>/0/0`, the market's included; an address held by `addr(…)` first staying unsolvable after its descriptor is imported), and `TestEscrowRegtestPrunedRepair` (A-527, on a `-prune=550 -fastprune` node: Core's failed import below `pruneheight` recorded, then an escrow older than `pruneheight` listed and not imported, its order not expired, the gate and the sweep marker kept and `/admin` naming it, while a newer escrow is repaired and completes).
 Not tested in that slice: signing, settling or refunding a per-order escrow (A-456b tests them, below), the orphan sweep of a lost per-order escrow on a
 real node (simulated only), a repair rescan longer than one call on a real node, any wallet other than Bitcoin Core, and
 any public network.

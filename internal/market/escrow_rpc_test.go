@@ -54,6 +54,24 @@ func TestEscrowRPCPinsParams(t *testing.T) {
 	}{
 		{"getblockchaininfo", "/", `[]`, func() error { _, err := e.blockchainInfo(ctx); return err }},
 		{"getnetworkinfo", "/", `[]`, func() error { _, err := e.networkInfo(ctx); return err }},
+		// A-527: on a pruned node, before the watch-only wallet repair imports, the time of the block at pruneheight.
+		{"getblockhash", "/", `[150]`, func() error {
+			core.mu.Lock()
+			core.pruned, core.pruneHeight, core.pruneTime = true, 150, 1700000000
+			core.mu.Unlock()
+			_, _, err := e.pruneFloor(ctx)
+			return err
+		}},
+		{"getblockheader", "/", `["` + strings.Repeat("0", 62) + `96",true]`, func() error {
+			floor, pruned, err := e.pruneFloor(ctx)
+			if err == nil && (!pruned || floor != 1700000000) {
+				t.Errorf("pruneFloor %d %v, want the time of the block at pruneheight", floor, pruned)
+			}
+			core.mu.Lock()
+			core.pruned = false
+			core.mu.Unlock()
+			return err
+		}},
 		{"getrawchangeaddress", arb, `["bech32"]`, func() error { return e.readArbiter(ctx) }},
 		{"getaddressinfo", arb, `["bcrt1qarbiterchange000000000000000000000"]`, func() error { return e.readArbiter(ctx) }},
 		{"createpsbt", "/", `[[{"txid":"` + testCorePSBTTxID + `","vout":1}],[{"bcrt1qdest":0.00099},{"bcrt1qfee":0.00000546}],0,true]`, func() error {

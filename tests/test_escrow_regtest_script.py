@@ -19,7 +19,7 @@ LEGS = ('TestEscrowRegtestPracticeSign', 'TestEscrowRegtestFunding', 'TestEscrow
         'TestEscrowRegtestPerOrderPractice', 'TestEscrowRegtestPerOrderEscrow', 'TestEscrowRegtestPerOrderRepair',
         'TestEscrowRegtestShapeBRelease',
         'TestEscrowRegtestShapeBSiblingStray', 'TestEscrowRegtestShapeBSiblingStraySignerDown', 'TestEscrowRegtestShapeBBump',
-        'TestEscrowRegtestSmoke')
+        'TestEscrowRegtestSmoke', 'TestEscrowRegtestPrunedRepair')
 
 
 class FakeRegtest(BaseHTTPRequestHandler):
@@ -59,7 +59,8 @@ class EscrowRegtestScriptTest(unittest.TestCase):
                        FAKE_GO_STATUS=str(status), ESCROW_REGTEST_OPERATOR_RPC_URL=self.url,
                        ESCROW_REGTEST_APP_RPC_URL=self.url,
                        ESCROW_REGTEST_SIGNER_RPC_URL=self.url, ESCROW_REGTEST_PRIVATE_OPERATOR_RPC_URL=self.url,
-                       ESCROW_REGTEST_PRIVATE_APP_RPC_URL=self.url, TEST_DATABASE_URL='postgres://unused/none',
+                       ESCROW_REGTEST_PRIVATE_APP_RPC_URL=self.url, ESCROW_REGTEST_PRUNED_OPERATOR_RPC_URL=self.url,
+                       ESCROW_REGTEST_PRUNED_APP_RPC_URL=self.url, TEST_DATABASE_URL='postgres://unused/none',
                        ESCROW_REGTEST_LOG=str(Path(tmp, 'transcript.log')))
             env.pop('NO_PROXY', None)
             r = subprocess.run(['bash', str(SCRIPT)], env=env, capture_output=True, text=True, timeout=60)
@@ -114,13 +115,16 @@ class EscrowRegtestScriptTest(unittest.TestCase):
         self.assertIn('holds a serialized tprv', text)
 
     def test_signer_and_private_node_urls_are_required(self):
-        # A-454's signer and A-441's private-broadcast node: without any one the script refuses to start.
+        # A-454's signer, A-441's private-broadcast node and A-527's pruned node: without any one the script refuses
+        # to start.
         for missing in ('ESCROW_REGTEST_SIGNER_RPC_URL',
-                        'ESCROW_REGTEST_PRIVATE_OPERATOR_RPC_URL', 'ESCROW_REGTEST_PRIVATE_APP_RPC_URL'):
+                        'ESCROW_REGTEST_PRIVATE_OPERATOR_RPC_URL', 'ESCROW_REGTEST_PRIVATE_APP_RPC_URL',
+                        'ESCROW_REGTEST_PRUNED_OPERATOR_RPC_URL', 'ESCROW_REGTEST_PRUNED_APP_RPC_URL'):
             with tempfile.TemporaryDirectory() as tmp:
                 env = dict(os.environ, ESCROW_REGTEST_OPERATOR_RPC_URL=self.url, ESCROW_REGTEST_APP_RPC_URL=self.url,
                            ESCROW_REGTEST_SIGNER_RPC_URL=self.url,
                            ESCROW_REGTEST_PRIVATE_OPERATOR_RPC_URL=self.url, ESCROW_REGTEST_PRIVATE_APP_RPC_URL=self.url,
+                           ESCROW_REGTEST_PRUNED_OPERATOR_RPC_URL=self.url, ESCROW_REGTEST_PRUNED_APP_RPC_URL=self.url,
                            TEST_DATABASE_URL='postgres://unused/none', ESCROW_REGTEST_LOG=str(Path(tmp, 't.log')))
                 env.pop(missing)
                 r = subprocess.run(['bash', str(SCRIPT)], env=env, capture_output=True, text=True, timeout=60)
@@ -136,6 +140,8 @@ class EscrowRegtestScriptTest(unittest.TestCase):
         # The A-441 node: private broadcast through a proxy nobody answers; never -connect or -onlynet, never public.
         self.assertIn('-privatebroadcast -proxy=127.0.0.1:9 -listen=0', head)
         self.assertNotRegex(head, r'-(connect|onlynet|addnode|seednode)=')
+        # The A-527 node: pruned, its blocks in small files so a short regtest chain can be pruned.
+        self.assertIn('#   #   -prune=550 -fastprune\n', head)
 
 
 class PrivateSignetModeTest(unittest.TestCase):

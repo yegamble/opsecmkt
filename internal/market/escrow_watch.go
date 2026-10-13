@@ -243,11 +243,30 @@ func (a *App) escrowPollOnce(ctx context.Context) (outcome error) {
 	var errs []error
 	// Once per process, after a restart: the watch-only wallet must still hold every shape-(b) escrow's siblings.
 	if !a.escrowSiblingsChecked.Load() {
-		if err = a.ensureSiblingWatch(ctx, e); err != nil {
+		if done, err := a.ensureSiblingWatch(ctx, e); err != nil {
 			errs = append(errs, err)
-		} else {
+		} else if done {
 			a.escrowSiblingsChecked.Store(true)
 		}
+	}
+	// A-527: an order whose escrow the watch-only wallet could not rescan for (escrow_watch_unrepaired) may have received
+	// what the wallet does not show, so it does not expire in this pass.
+	unwatched := map[string]bool{}
+	urows, err := a.db.QueryContext(ctx, "SELECT es.order_id FROM escrow_watch_unrepaired u JOIN escrows es ON es.id=u.escrow_id")
+	if err != nil {
+		return err
+	}
+	for urows.Next() {
+		var id string
+		if err = urows.Scan(&id); err != nil {
+			urows.Close()
+			return err
+		}
+		unwatched[id] = true
+	}
+	urows.Close()
+	if err = urows.Err(); err != nil {
+		return err
 	}
 	unread := map[string]bool{}
 	for chunk := range slices.Chunk(addresses, 200) {
@@ -267,7 +286,7 @@ func (a *App) escrowPollOnce(ctx context.Context) (outcome error) {
 		errs = append(errs, err)
 	}
 	for _, id := range orders {
-		if err = a.settleEscrow(ctx, id, !unread[id]); err != nil {
+		if err = a.settleEscrow(ctx, id, !unread[id] && !unwatched[id]); err != nil {
 			errs = append(errs, &watchError{label: "escrow order " + shortID(id), err: err})
 		}
 	}
@@ -557,14 +576,20 @@ func (a *App) escrowSiblingAddresses(ctx context.Context, orders []string) ([][2
 // Every escrow's imports go in one importdescriptors call, so Core rescans once, from the earliest creation time, within
 // escrowRescanTimeout (QA5W4A-3). Before it, the wallet must not be rescanning already (watchScanning: an earlier import
 // that outlived its call, or the operator's rescanblockchain): Core refuses an import then, and no second rescan is ever
-// started on top of one. The check is done (nil) once the wallet holds everything, or what it lacks cannot be rebuilt
+// started on top of one. The check is done once the wallet holds everything, or what it lacks cannot be rebuilt
 // from what is stored (logged; the next start tries again). It is not done, and the next pass checks again, while the
 // wallet is rescanning, and when the import timed out or was refused as rescanning (a wait).
-func (a *App) ensureSiblingWatch(ctx context.Context, e *escrowBTC) error {
+//
+// A-527: before the import, the node's prune height and the time of its block are read (pruneFloor). An escrow whose
+// rescan would start before that block is not imported and is listed in escrow_watch_unrepaired; so is one whose import
+// Core answered as failed, whose label then proves nothing until an import of it succeeds. While any escrow is listed
+// the check is not done (no error for the pruned ones: the admin page names them) and the next pass checks again, so it
+// is repaired by itself once the node can rescan it (run unpruned) or holds it (a restored bitcoin_data volume).
+func (a *App) ensureSiblingWatch(ctx context.Context, e *escrowBTC) (done bool, err error) {
 	rows, err := a.db.QueryContext(ctx, `SELECT s.escrow_id,es.order_id,extract(epoch FROM es.created)::bigint,es.address,s.address,s.branch=1 AND s.idx=9
 		FROM escrow_siblings s JOIN escrows es ON es.id=s.escrow_id ORDER BY s.escrow_id,s.branch,s.idx`)
 	if err != nil {
-		return err
+		return false, err
 	}
 	var order []int64
 	byEscrow := map[int64]*perOrderWatch{}
@@ -574,7 +599,7 @@ func (a *App) ensureSiblingWatch(ctx context.Context, e *escrowBTC) error {
 		var last bool
 		if err = rows.Scan(&id, &orderID, &created, &escrowAddr, &addr, &last); err != nil {
 			rows.Close()
-			return err
+			return false, err
 		}
 		s := byEscrow[id]
 		if s == nil {
@@ -589,9 +614,29 @@ func (a *App) ensureSiblingWatch(ctx context.Context, e *escrowBTC) error {
 	}
 	rows.Close()
 	if err = rows.Err(); err != nil {
-		return err
+		return false, err
+	}
+	// A-527: an escrow whose earlier repair import Core reported failed is held without what it received before the block
+	// its rescan could not read: its label proves nothing, so it is imported again.
+	failedBefore := map[int64]bool{}
+	frows, err := a.db.QueryContext(ctx, "SELECT escrow_id FROM escrow_watch_unrepaired WHERE import_failed")
+	if err != nil {
+		return false, err
+	}
+	for frows.Next() {
+		var id int64
+		if err = frows.Scan(&id); err != nil {
+			frows.Close()
+			return false, err
+		}
+		failedBefore[id] = true
+	}
+	frows.Close()
+	if err = frows.Err(); err != nil {
+		return false, err
 	}
 	var need []*perOrderWatch
+	needIDs := []int64{} // never nil: NOT (escrow_id=ANY(NULL)) would keep every row (A-358)
 	for _, id := range order {
 		s := byEscrow[id]
 		// Held and labelled: the label is what lists its deposits (siblingImports).
@@ -600,9 +645,9 @@ func (a *App) ensureSiblingWatch(ctx context.Context, e *escrowBTC) error {
 				Labels []string `json:"labels"`
 			}
 			if err := e.call(ctx, e.watchWallet, "getaddressinfo", []any{addr}, &info); err != nil {
-				return &watchError{label: "escrow", class: "sibling check failed: " + errorClassOf(err), err: err}
+				return false, &watchError{label: "escrow", class: "sibling check failed: " + errorClassOf(err), err: err}
 			}
-			held := slices.Contains(info.Labels, "escrow:"+s.order)
+			held := slices.Contains(info.Labels, "escrow:"+s.order) && !failedBefore[id]
 			if i == 0 {
 				s.bareHeld = held
 			} else {
@@ -611,23 +656,43 @@ func (a *App) ensureSiblingWatch(ctx context.Context, e *escrowBTC) error {
 		}
 		if !s.bareHeld || !s.siblingsHeld {
 			need = append(need, s)
+			needIDs = append(needIDs, id)
 		}
+	}
+	// An escrow the wallet holds now (after a repair, or in a restored bitcoin_data volume) is no longer listed.
+	if _, err = a.db.ExecContext(ctx, "DELETE FROM escrow_watch_unrepaired WHERE NOT (escrow_id=ANY($1))", needIDs); err != nil {
+		return false, err
 	}
 	if len(need) == 0 {
-		return nil
+		return true, nil
 	}
 	if scanning, err := e.watchScanning(ctx); err != nil {
-		return &watchError{label: "escrow", class: "sibling check failed: " + errorClassOf(err), err: err}
+		return false, &watchError{label: "escrow", class: "sibling check failed: " + errorClassOf(err), err: err}
 	} else if scanning {
-		return &watchError{label: "escrow", class: "watch-only wallet repair waits: the wallet is rescanning", err: errRepairRescanning}
+		return false, &watchError{label: "escrow", class: "watch-only wallet repair waits: the wallet is rescanning", err: errRepairRescanning}
+	}
+	// A-527: Core rescans an import from its timestamp less escrowTimestampWindow. On a pruned node, an escrow created
+	// before the oldest block the node keeps (within that window) cannot be rescanned: Core would add its descriptor and
+	// answer the request failed, and a deposit made before that block would never be seen. It is not imported; it stays
+	// listed (escrow_watch_unrepaired) until the node can rescan it.
+	floor, pruned, err := e.pruneFloor(ctx)
+	if err != nil {
+		return false, &watchError{label: "escrow", class: "watch-only wallet repair waits: the node's prune height could not be read: " + errorClassOf(err), err: err}
 	}
 	var imports []escrowImport
+	var owner []*perOrderWatch // owner[i] is the escrow imports[i] belongs to
+	var below []*perOrderWatch
 	repaired, unbuilt := 0, 0
 	for _, s := range need {
+		if pruned && s.created-escrowTimestampWindow <= floor {
+			below = append(below, s)
+			continue
+		}
 		bare, ranged, err := a.perOrderWatchImports(ctx, e, s)
 		if err != nil {
-			return err
+			return false, err
 		}
+		n := len(imports)
 		imports = append(imports, bare...)
 		switch {
 		case s.siblingsHeld:
@@ -636,22 +701,92 @@ func (a *App) ensureSiblingWatch(ctx context.Context, e *escrowBTC) error {
 		default:
 			unbuilt++
 		}
+		for range imports[n:] {
+			owner = append(owner, s)
+		}
 		if len(bare) > 0 || ranged != nil {
 			repaired++
 		}
 	}
+	if err = a.noteUnwatched(ctx, below, true); err != nil {
+		return false, err
+	}
 	if len(imports) > 0 {
-		if err := e.importDescriptorsWithin(ctx, escrowRescanTimeout, e.watchName, imports); err != nil {
+		failed, err := e.importDescriptorsWithin(ctx, escrowRescanTimeout, e.watchName, imports)
+		if err != nil {
 			var re *escrowRPCError
 			if errors.As(err, &re) && (re.Class == escrowClassRescanning || re.Class == "timeout") {
-				return &watchError{label: "escrow", class: "watch-only wallet repair waits: its import answered " + errorClassOf(err) + " (Core may still be importing; the next pass checks)", err: err}
+				return false, &watchError{label: "escrow", class: "watch-only wallet repair waits: its import answered " + errorClassOf(err) + " (Core may still be importing; the next pass checks)", err: err}
 			}
-			return &watchError{label: "escrow", class: "sibling import failed: " + errorClassOf(err), err: err}
+			// A-527: when Core answered each request, an escrow with a failed one is listed and imported again on the next
+			// pass, and one whose requests all succeeded is repaired. Any other failure (no answer, or one that cannot be
+			// read) changes no listing.
+			if len(failed) > 0 {
+				bad := map[*perOrderWatch]bool{}
+				for _, i := range failed {
+					bad[owner[i]] = true
+				}
+				var failedNow []*perOrderWatch
+				succeeded := []int64{}
+				for i, s := range owner {
+					switch {
+					case i > 0 && owner[i-1] == s:
+					case bad[s]:
+						failedNow = append(failedNow, s)
+					default:
+						succeeded = append(succeeded, s.id)
+					}
+				}
+				if nerr := a.noteUnwatched(ctx, failedNow, false); nerr != nil {
+					return false, errors.Join(err, nerr)
+				}
+				if _, derr := a.db.ExecContext(ctx, "DELETE FROM escrow_watch_unrepaired WHERE escrow_id=ANY($1)", succeeded); derr != nil {
+					return false, errors.Join(err, derr)
+				}
+			}
+			return false, &watchError{label: "escrow", class: "sibling import failed: " + errorClassOf(err), err: err}
+		}
+		ids := []int64{}
+		for _, s := range owner {
+			ids = append(ids, s.id)
+		}
+		if _, err = a.db.ExecContext(ctx, "DELETE FROM escrow_watch_unrepaired WHERE escrow_id=ANY($1)", ids); err != nil {
+			return false, err
 		}
 		log.Printf("escrow: the watch-only wallet lacked what %d per-order escrow(s) imported; imported it again in one import from the earliest escrow's creation time", repaired)
 	}
 	if unbuilt > 0 {
 		log.Printf("escrow: the sibling addresses of %d per-order escrow(s) were not imported again: their order wallets cannot be rebuilt from the stored keys; deposits to them are not seen until a start that can", unbuilt)
+	}
+	return len(below) == 0, nil
+}
+
+// noteUnwatched lists escrows in escrow_watch_unrepaired (A-527): ones older than the oldest block the pruned node keeps
+// (pruned), or ones whose repair import Core reported failed (otherwise). One log line names each order when it is first
+// listed for that reason: its short ID and fixed words, never an address or the node's text.
+func (a *App) noteUnwatched(ctx context.Context, escrows []*perOrderWatch, pruned bool) error {
+	for _, s := range escrows {
+		var added bool
+		// import_failed stays set once Core failed an import of it: its label proves nothing until an import succeeds. A
+		// row that already says so is left as it is (no row is returned).
+		err := a.db.QueryRowContext(ctx, `WITH prev AS (SELECT pruned FROM escrow_watch_unrepaired WHERE escrow_id=$1)
+			INSERT INTO escrow_watch_unrepaired AS u(escrow_id,pruned,import_failed) VALUES($1,$2,NOT $2)
+			ON CONFLICT (escrow_id) DO UPDATE SET pruned=EXCLUDED.pruned,import_failed=u.import_failed OR EXCLUDED.import_failed
+				WHERE u.pruned<>EXCLUDED.pruned OR EXCLUDED.import_failed AND NOT u.import_failed
+			RETURNING NOT EXISTS (SELECT 1 FROM prev WHERE prev.pruned=$2)`, s.id, pruned).Scan(&added)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		switch {
+		case !added:
+		case pruned:
+			log.Printf("escrow: order %s: its escrow is older than the oldest block this pruned node keeps, so the watch-only wallet cannot rescan for it; it was not imported again, a deposit made before that block is not seen, and the order is listed on the admin page until the node can rescan it", shortID(s.order))
+		default:
+			log.Printf("escrow: order %s: Bitcoin Core reported the watch-only wallet's import of its escrow failed (its rescan could not read a block); it is imported again on the next pass and listed on the admin page until an import succeeds", shortID(s.order))
+		}
 	}
 	return nil
 }
