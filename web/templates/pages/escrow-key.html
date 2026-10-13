@@ -27,7 +27,7 @@
 </div>{{end}}
 </dl>{{if .Unreadable}}
 <div class="alert error" role="alert">Your escrow key can no longer be read on this market; register it again.</div>{{end}}
-<p class="help">Compare the origin (your wallet's fingerprint and the key's path) with what your wallet shows. The market stores the key encrypted and never shows it to anyone else. Bitcoin escrow on this market runs on {{template "btc-escrow-net" $.EscrowNet}}, with no real funds.</p>{{if .HasEscrows}}
+<p class="help">Compare the origin (your wallet's fingerprint and the key's path) with what your wallet shows. The market stores the key encrypted and never shows it to anyone else. Bitcoin escrow on this market runs on {{template "btc-escrow-net" $.EscrowNet}}{{if ne $.EscrowNet "main"}}, with no real funds{{end}}.</p>{{if .HasEscrows}}
 <p class="help">This key is used by escrows. Changing it affects only escrows created afterwards; existing escrows keep the keys they were built with. Its origin (fingerprint and path) can no longer be changed.</p>{{end}}{{if .RangeAdvice}}
 <div class="alert">Your next escrow uses child key /0/{{.NextChild}} of this key. Your Bitcoin Core wallet signs only keys inside its descriptor range (1000 keys by default), so run <code>keypoolrefill {{.KeypoolSize}}</code> in that wallet before you sign for an escrow; otherwise it cannot sign.</div>{{end}}
 </section>
