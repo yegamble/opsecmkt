@@ -206,6 +206,31 @@ func TestCatalogEyebrowIsNotAProductClaim(t *testing.T) {
 	}
 }
 
+// A-525: a mainnet market (BITCOIN_CHAIN=main) must not tell visitors the alpha has no real funds. Env only: escrow
+// stays off, so no node is contacted.
+func TestCatalogEyebrowMainnet(t *testing.T) {
+	for _, k := range []string{"ESCROW_BTC", "ESCROW_XMR", "BITCOIN_RPC_URL", "MONERO_WALLET_RPC_URL", "MONERO_NETWORK"} {
+		t.Setenv(k, "")
+	}
+	t.Setenv("BITCOIN_CHAIN", "main")
+	e := newTestApp(t)
+	e.user("mainnet_buyer", "buyer") // completes first-run setup so "/" renders the catalog
+	if !e.A.live {
+		t.Fatal("BITCOIN_CHAIN=main did not make the market live")
+	}
+	page := html.UnescapeString(e.body("GET", "/", "", nil, 200))
+	mustNotContain(t, page, "no real funds", "Test-network")
+	mustContain(t, page, `<span class="eyebrow">Mainnet · real funds</span>`)
+	mustContain(t, page, `<meta name="description" content="Marketplace with PGP-based accounts and messages and no browser JavaScript. Mainnet payments are real funds.">`)
+	// The layout covers every page, including a refusal that never runs the page loaders.
+	for _, path := range []string{"/login", "/canary", "/no-such-page"} {
+		w := e.do("GET", path, "", nil)
+		body := html.UnescapeString(w.Body.String())
+		mustNotContain(t, body, "Test-network marketplace")
+		mustContain(t, body, "Mainnet payments are real funds.")
+	}
+}
+
 func TestAccountSaysSellingNeedsTheVendorRole(t *testing.T) {
 	e := newTestApp(t)
 	_, buyer := e.user("sellbuyer_"+randomToken()[:6], "buyer")
