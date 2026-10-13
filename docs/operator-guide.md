@@ -1638,6 +1638,8 @@ What it does and refuses (ruling P4-R17):
   `escrow_signer_socket` volume. Requests are JSON lines with a `version` field (`{"version":1,"op":"info"}`,
   `{"version":1,"op":"sign","psbt":"<base64>","index":<i>}`); `info` answers the protocol version, the account key
   (rooted: depth 0, no parent) and its fingerprint, and a refusal answers only a fixed class (`{"error":"sighash"}`).
+  It serves at most 32 connections at once; one more is closed at once with no reply, which the app treats as the
+  signer being unreachable, not as a refusal.
 - It does no elliptic-curve arithmetic with its private key: the escrow node computes its account's public key
   (`getdescriptorinfo`, at every start of `init`, `info`, `restore` and `serve`) and every signing key. It signs through
   the escrow node's `descriptorprocesspsbt` as its own RPC user, with `ALL` hard-coded, and hands Core its account key
