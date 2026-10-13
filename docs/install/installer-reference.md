@@ -36,7 +36,7 @@ Refuses when `.env` or the project's volumes already exist. Any question your op
 - `--bitcoin local|disabled`<br>
   Run a Bitcoin node.
 - `--bitcoin-network main|signet|testnet4|regtest`<br>
-  Default `main` (mainnet, real funds). A test network here makes Monero default to `stagenet`. Fixed after first use.
+  Default `main` (mainnet, real funds; no mainnet run is recorded). A test network here makes Monero default to `stagenet`. Fixed after first use.
 - `--bitcoin-image IMAGE`<br>
   A release tag or `@sha256` digest, not `latest`.
 - `--bitcoin-prune yes|no`<br>
@@ -44,7 +44,7 @@ Refuses when `.env` or the project's volumes already exist. Any question your op
 - `--monero local|disabled`<br>
   Run a Monero node.
 - `--monero-network mainnet|stagenet`<br>
-  Default `mainnet` (real funds). `stagenet` makes Bitcoin default to `signet`. One coin on mainnet and the other on
+  Default `mainnet` (real funds; no mainnet run is recorded). `stagenet` makes Bitcoin default to `signet`. One coin on mainnet and the other on
   a test network is refused: a market is all mainnet or all test networks.
 - `--monero-image IMAGE`<br>
   A release tag or `@sha256` digest, not `latest`.

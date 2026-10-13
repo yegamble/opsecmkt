@@ -24,7 +24,7 @@ upgrade a running v0.1.0-alpha.1 deployment.
   that records a migration it does not include ([section 5](#5-rolling-back)).
 - **Optional local nodes** are pruned ([section 7](#7-local-nodes-are-now-pruned)) and pinned to release tags
   ([section 8](#8-node-images-are-pinned-to-release-tags)). The bundled Bitcoin node defaults to signet when `BITCOIN_CHAIN` is blank
-  ([section 61](#61-the-bundled-bitcoin-node-defaults-to-signet-a-513); a new install writes mainnet,
+  ([section 61](#61-the-bundled-bitcoin-node-defaults-to-signet-a-513); a new install writes mainnet, with no mainnet run recorded,
   [section 64](#64-new-installs-default-to-mainnet-a-523)) and its RPC password is checked through a salted verifier
   ([section 54](#54-local-bitcoin-rpc-uses-a-salted-verifier-a-144)).
 - Also new: signed audit exports, and listing photos and avatars (uploads stay off until a ClamAV scanner is set up).
