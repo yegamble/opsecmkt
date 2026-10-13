@@ -1,3 +1,4 @@
+import io
 import os
 import stat
 import subprocess
@@ -22,24 +23,19 @@ class TorArchivePermissionsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             temp = Path(temporary)
             archive = temp / "source.tar"
-            with archive.open("wb") as stream:
-                subprocess.run(
-                    ["git", "archive", "--format=tar", "HEAD", "web/templates"],
-                    cwd=REPOSITORY,
-                    check=True,
-                    stdout=stream,
-                )
-
-            control = temp / "old-extract"
-            control.mkdir(mode=0o700)
-            subprocess.run(
-                ["bash", "-c", 'umask 077; tar -xf "$1" -C "$2"', "tar-mode-control", str(archive), str(control)],
-                check=True,
-                cwd=REPOSITORY,
-            )
-            old_template = control / "web" / "templates" / "pages" / "orders.html"
-            self.assertFalse(stat.S_IMODE(old_template.stat().st_mode) & stat.S_IROTH)
-            self.assertFalse(stat.S_IMODE((control / "web").stat().st_mode) & stat.S_IXOTH)
+            # Test the archive's public modes without relying on this checkout having Git history.
+            # Default tar permissions differ for root, so assert the helper's required outcome directly.
+            with tarfile.open(archive, "w") as source:
+                for directory in ("web", "web/templates", "web/templates/pages"):
+                    entry = tarfile.TarInfo(directory)
+                    entry.type = tarfile.DIRTYPE
+                    entry.mode = 0o755
+                    source.addfile(entry)
+                contents = b"template fixture\n"
+                entry = tarfile.TarInfo("web/templates/pages/orders.html")
+                entry.mode = 0o644
+                entry.size = len(contents)
+                source.addfile(entry, io.BytesIO(contents))
 
             for label in ("initial", "replacement"):
                 destination = temp / label

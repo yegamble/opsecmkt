@@ -9,8 +9,17 @@ ROOT = Path(__file__).resolve().parents[1]
 BACKUP = ROOT / 'scripts' / 'backup.sh'
 
 
+def df_stub(available_kib=800, mount_with_spaces=False):
+    mount = '/tmp/mock mount with spaces' if mount_with_spaces else '/tmp/mock'
+    return f'''cat <<'EOF'
+Filesystem 1024-blocks Used Available Capacity Mounted on
+/dev/mock 10000 100 {available_kib} 1% {mount}
+EOF'''
+
+
 class BackupGuardTests(unittest.TestCase):
-    def run_backup(self, headroom, database_size='1024', invalid_df=False, mount_with_spaces=False):
+    def run_backup(self, headroom, database_size='1024', invalid_df=False, mount_with_spaces=False,
+                   available_kib=800):
         work = tempfile.TemporaryDirectory()
         self.addCleanup(work.cleanup)
         bin_dir = Path(work.name) / 'bin'
@@ -19,24 +28,12 @@ class BackupGuardTests(unittest.TestCase):
             'psql': f'printf "{database_size}\\n"',
             'pg_dump': 'if [ "$1" = --version ]; then echo "pg_dump (PostgreSQL) 17.6"; else echo "archive pg_dump invoked" >&2; echo synthetic-archive; fi',
             'age': 'cat',
+            'df': 'echo "unknown filesystem capacity"' if invalid_df else df_stub(available_kib, mount_with_spaces),
         }
         for name, body in stubs.items():
             tool = bin_dir / name
             tool.write_text(f'#!/bin/sh\n{body}\n')
             tool.chmod(0o700)
-        if invalid_df:
-            df = bin_dir / 'df'
-            df.write_text('#!/bin/sh\necho "unknown filesystem capacity"\n')
-            df.chmod(0o700)
-        if mount_with_spaces:
-            df = bin_dir / 'df'
-            df.write_text('''#!/bin/sh
-cat <<'EOF'
-Filesystem 1024-blocks Used Available Capacity Mounted on
-/dev/mock 10000 100 800 1% /tmp/mock mount with spaces
-EOF
-''')
-            df.chmod(0o700)
         secret = 'backup-credential-never-print'
         output = Path(work.name) / 'backups' / 'market.dump.age'
         env = dict(os.environ, PATH=f'{bin_dir}:{os.environ["PATH"]}',
@@ -48,7 +45,7 @@ EOF
         return result, output, Path(work.name), secret
 
     def test_low_space_fails_before_archive_temp_or_pg_dump(self):
-        result, output, work, secret = self.run_backup('9000000000000000')
+        result, output, work, secret = self.run_backup('1024', available_kib=1)
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn('Insufficient free space', result.stderr)
         self.assertIn('Backup refused before writing an archive', result.stderr)
@@ -119,6 +116,9 @@ esac
             age = bin_dir / 'age'
             age.write_text('#!/bin/sh\ncat\n')
             age.chmod(0o700)
+            df = bin_dir / 'df'
+            df.write_text('#!/bin/sh\n' + df_stub() + '\n')
+            df.chmod(0o700)
             output = Path(work) / 'backups' / 'internal.dump.age'
             env = dict(os.environ, PATH=f'{bin_dir}:{os.environ["PATH"]}', AGE_RECIPIENT='age1test',
                        BACKUP_INTERNAL_DATABASE='market', BACKUP_SPACE_HEADROOM_BYTES='0',
