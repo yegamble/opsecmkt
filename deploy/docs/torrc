@@ -1,0 +1,14 @@
+# The documentation site's onion service (deploy/docs/compose.yaml): its own address and keys, separate from the
+# market's. The defences follow deploy/torrc, explained in docs/operator-guide.md#onion-service-defences.
+DataDirectory /var/lib/tor
+SocksPort 0
+Log notice stdout
+MaxMemInQueues 64 MB
+
+HiddenServiceDir /var/lib/tor/docs
+HiddenServiceVersion 3
+HiddenServicePort 80 docs:8080
+HiddenServicePoWDefensesEnabled 1
+HiddenServiceEnableIntroDoSDefense 1
+HiddenServiceMaxStreams 32
+HiddenServiceMaxStreamsCloseCircuit 1

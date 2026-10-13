@@ -1,8 +1,7 @@
 site_name: OPSEC Market
 site_description: Self-hosted marketplace that needs no browser JavaScript
-repo_url: https://github.com/yegamble/opsecmkt
-repo_name: yegamble/opsecmkt
-edit_uri: edit/main/docs/
+# No repo_url: Material's repository widget would make every reader's browser call api.github.com.
+# The footer links to GitHub instead (extra.social), which fetches nothing.
 docs_dir: docs
 strict: true
 
@@ -37,6 +36,10 @@ plugins:
 
 extra:
   generator: false
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/yegamble/opsecmkt
+      name: Source on GitHub
 
 hooks:
   - scripts/mkdocs_hooks.py

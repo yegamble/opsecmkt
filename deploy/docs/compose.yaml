@@ -1,0 +1,47 @@
+# The documentation site as its own onion service, in its own Compose project so it never touches the market's
+# containers or volumes. Always pass the project name (it overrides COMPOSE_PROJECT_NAME from a market's .env):
+#   docker compose -p opsecmkt-docs -f deploy/docs/compose.yaml up -d --build
+# docs/development.md#host-the-docs-as-an-onion-service has the full procedure.
+name: opsecmkt-docs
+services:
+  docs:
+    build:
+      context: ../..
+      dockerfile: deploy/docs/Dockerfile
+    restart: unless-stopped
+    networks: [internal]
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 64m
+  tor:
+    build:
+      context: ..
+      dockerfile: Dockerfile.tor
+    restart: unless-stopped
+    depends_on:
+      docs:
+        condition: service_started
+        restart: true
+    networks: [internal, tor_egress]
+    volumes:
+      - tor_identity:/var/lib/tor
+      - ./torrc:/etc/tor/torrc:ro
+    healthcheck:
+      test: [CMD-SHELL, 'test -s /var/lib/tor/docs/hostname']
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 1m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 128m
+networks:
+  # No internet access for the web server; only Tor gets egress.
+  internal:
+    internal: true
+  tor_egress: {}
+volumes:
+  # The onion address's private keys. Back it up; losing it changes the address for good.
+  tor_identity: {}

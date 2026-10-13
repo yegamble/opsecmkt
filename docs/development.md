@@ -132,6 +132,38 @@ the same strict build.
 command at its top. MkDocs stays below 2.0, which drops the plugin and theme system Material needs. The planned
 successor is [Zensical](https://zensical.org/), which reads `mkdocs.yml`; migrate once it runs hooks.
 
+### Host the docs as an onion service
+
+The site runs as its own onion service: an nginx container with no internet access, behind the project's pinned Tor
+image, in a separate Compose project (`opsecmkt-docs`, `deploy/docs/compose.yaml`). The image runs the same strict
+build as CI, keeps no access log and sends a restrictive Content Security Policy.
+
+> **Warning:** run the docs on a **separate host** from any market. The docs are public and tied to the project;
+> on a shared host the two onion addresses could be linked by shared downtime and timing, and one seizure takes
+> both. `scripts/docs-onion.sh up` refuses on a host with a market `.env` in the checkout, a container from a market
+> Compose file, another project's Tor container or another onion identity volume.
+
+On the docs host:
+
+```sh
+git clone https://github.com/yegamble/opsecmkt.git && cd opsecmkt
+./scripts/docs-onion.sh up        # builds, starts, prints the onion address
+./scripts/docs-onion.sh address   # print it again
+./scripts/docs-onion.sh down      # stop; keeps the address
+```
+
+To publish changes, pull and run `up` again. The address lives only in the `opsecmkt-docs_tor_identity` volume:
+back it up encrypted, as for the market's onion keys
+([Secrets, .env and onion identities](operator-guide.md#secrets-env-and-onion-identities)). Publish the address in
+a signed statement before linking to it.
+
+**Cloudflare.** Cloudflare cannot host an onion address you own. Its
+[Onion Routing](https://developers.cloudflare.com/network/onion-routing) only serves a site already proxied on a
+clearnet domain, and sends Tor Browser users to a Cloudflare-owned `.onion` that you cannot publish or keep, while
+Cloudflare sees every request. [Cloudflare Tunnel](https://developers.cloudflare.com/tunnel/) exposes services on
+clearnet domains only. Use Cloudflare, if at all, for an optional clearnet copy of these public docs, never for a
+market.
+
 ## Run tests
 
 ### Go and PostgreSQL
