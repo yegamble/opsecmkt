@@ -1,0 +1,49 @@
+name: Docs deploy
+# Publishes the documentation site to a Cloudflare Worker (deploy/docs/cloudflare). Off until the repository has the
+# CLOUDFLARE_ACCOUNT_ID variable and the CLOUDFLARE_API_TOKEN secret (docs/development.md#serve-the-docs-from-cloudflare).
+on:
+  push:
+    branches: [main]
+    paths: [docs/**, mkdocs.yml, requirements-docs.txt, scripts/mkdocs_hooks.py, README.md, UPGRADING.md,
+            SECURITY.md, CONTRIBUTING.md, deploy/docs/cloudflare/**, .github/workflows/docs-deploy.yaml]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: docs-deploy
+  cancel-in-progress: false
+jobs:
+  deploy:
+    name: Build the docs and deploy the Worker
+    if: vars.CLOUDFLARE_ACCOUNT_ID != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: docs
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the site (strict, hash-locked toolchain)
+        run: |
+          python3 -m venv .venv-docs
+          .venv-docs/bin/pip install --require-hashes --no-deps -r requirements-docs.txt
+          NO_MKDOCS_2_WARNING=1 .venv-docs/bin/mkdocs build
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - name: Install Wrangler from the lockfile
+        working-directory: deploy/docs/cloudflare
+        run: npm ci --ignore-scripts
+      - name: Deploy
+        working-directory: deploy/docs/cloudflare
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          # The docs host's own onion (scripts/docs-onion.sh address); empty sends no Onion-Location.
+          DOCS_ONION: ${{ vars.DOCS_ONION }}
+          WRANGLER_SEND_METRICS: 'false'
+        run: |
+          if [ -n "$DOCS_ONION" ] && ! printf '%s' "$DOCS_ONION" | grep -Eqx '[a-z2-7]{56}\.onion'; then
+            echo 'DOCS_ONION must be a bare v3 onion address (56 base32 characters + .onion)' >&2; exit 1
+          fi
+          npx wrangler deploy --var "DOCS_ONION:$DOCS_ONION"

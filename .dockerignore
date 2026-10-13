@@ -16,3 +16,8 @@ tests
 
 playwright-wallet-report
 test-results-wallet
+
+# Documentation site build output and virtualenv
+site
+.venv-docs
+**/node_modules

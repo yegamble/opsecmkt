@@ -112,6 +112,87 @@ docker exec opsecmkt-dev-db dropdb -U opsecmkt opsecmkt_e2e
 docker exec opsecmkt-dev-db createdb -U opsecmkt opsecmkt_e2e
 ```
 
+## Documentation site
+
+The docs in `docs/` build into a static site with [MkDocs](https://www.mkdocs.org/) and the Material theme
+(`mkdocs.yml`). The site loads no third-party fonts or scripts. Pages work without JavaScript; search needs it.
+
+```sh
+python3 -m venv .venv-docs
+.venv-docs/bin/pip install -r requirements-docs.txt
+.venv-docs/bin/mkdocs serve      # http://127.0.0.1:8000, reloads on save
+.venv-docs/bin/mkdocs build      # writes site/; fails on any broken link or anchor
+```
+
+`scripts/mkdocs_hooks.py` publishes `UPGRADING.md`, `SECURITY.md` and `CONTRIBUTING.md` from the repository root
+and points other links outside `docs/` at GitHub. Add a new page to `nav` in `mkdocs.yml`. CI's `docs` job runs
+the same strict build.
+
+`requirements-docs.txt` is hash-locked. To change a version, edit `requirements-docs.in` and run the `uv pip compile`
+command at its top. MkDocs stays below 2.0, which drops the plugin and theme system Material needs. The planned
+successor is [Zensical](https://zensical.org/), which reads `mkdocs.yml`; migrate once it runs hooks.
+
+### Host the docs as an onion service
+
+The site runs as its own onion service: an nginx container with no internet access, behind the project's pinned Tor
+image, in a separate Compose project (`opsecmkt-docs`, `deploy/docs/compose.yaml`). The image runs the same strict
+build as CI, keeps no access log and sends a restrictive Content Security Policy.
+
+> **Warning:** run the docs on a **separate host** from any market. The docs are public and tied to the project;
+> on a shared host the two onion addresses could be linked by shared downtime and timing, and one seizure takes
+> both. `scripts/docs-onion.sh up` refuses on a host with a market `.env` in the checkout, a container from a market
+> Compose file, another project's Tor container or another onion identity volume.
+
+On the docs host:
+
+```sh
+git clone https://github.com/yegamble/opsecmkt.git && cd opsecmkt
+./scripts/docs-onion.sh up        # builds, starts, prints the onion address
+./scripts/docs-onion.sh address   # print it again
+./scripts/docs-onion.sh down      # stop; keeps the address
+```
+
+To publish changes, pull and run `up` again.
+
+The address exists only as the keys in the `opsecmkt-docs_tor_identity` volume. Back them up with
+[age](https://age-encryption.org/) before publishing the address, and store the backup away from the age identity:
+
+```sh
+AGE_RECIPIENT=age1... ./scripts/docs-onion.sh backup-keys          # writes backups/docs-onion-<UTC>.tar.age
+AGE_IDENTITY=key.txt ./scripts/docs-onion.sh restore-keys FILE     # new host, before the first up
+```
+
+`backup-keys` never overwrites a file, and `restore-keys` refuses a volume that already holds keys. Publish the
+address in a signed statement before linking to it.
+
+### Serve the docs from Cloudflare
+
+A Cloudflare Worker (`deploy/docs/cloudflare/`) serves the same site over HTTPS for readers without Tor. It adds the
+security headers and an `Onion-Location` header, so Tor Browser offers to switch to the docs onion above, on the
+same page. The deploy workflow (`.github/workflows/docs-deploy.yaml`) runs on every push to `main` that changes the
+docs, and stays off until it is configured:
+
+1. In Cloudflare, create an API token with the **Edit Cloudflare Workers** template.
+2. In the repository settings, add the secret `CLOUDFLARE_API_TOKEN` and the variables `CLOUDFLARE_ACCOUNT_ID` and
+   `DOCS_ONION` (the docs host's `./scripts/docs-onion.sh address`; leave it empty to send no `Onion-Location`).
+3. Run the **Docs deploy** workflow. The site is at `https://opsecmkt-docs.<your-subdomain>.workers.dev`.
+
+> **Warning:** set `DOCS_ONION` only to the docs onion, never to a market's address.
+
+To deploy by hand, build the site and run Wrangler from the lockfile:
+
+```sh
+.venv-docs/bin/mkdocs build
+cd deploy/docs/cloudflare && npm ci --ignore-scripts
+npx wrangler deploy --var DOCS_ONION:YOUR_DOCS_ONION.onion
+```
+
+Optional, with your own domain on Cloudflare: add it to the Worker as a custom domain, then turn on
+[Onion Routing](https://developers.cloudflare.com/network/onion-routing) under **Network** for that zone. Tor Browser
+users are then carried over a `.onion` that Cloudflare owns, through an `Alt-Svc` header. That address is not yours
+to publish and Cloudflare still sees each request; the docs onion stays the address to publish. It does not apply to
+`workers.dev`. Cloudflare cannot host an onion address you own, and must never front a market.
+
 ## Run tests
 
 ### Go and PostgreSQL
