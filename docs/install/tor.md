@@ -11,9 +11,13 @@ Run the market as a Tor onion service. No inbound port is opened on the host. Re
 
 | Choice | Result |
 | --- | --- |
-| `--nodes local` | Pruned Bitcoin signet and Monero stagenet nodes. 25–30 GB disk, hours to sync. |
+| `--nodes local` | Pruned **mainnet** Bitcoin and Monero nodes: real funds. About 30 GB (Bitcoin) and 45+ GB (Monero) of disk, days to sync (estimates). |
+| `--nodes local --bitcoin-network signet` | Pruned test-network nodes (signet and stagenet). About 8 + 20 GB, hours to sync. |
 | `--nodes custom` | Choose network, image and pruning per coin. |
 | `--nodes none` | No nodes. No payments with a bundled node. |
+
+> **Warning:** mainnet is the default and moves real funds. No mainnet run of this software is recorded; mainnet is
+> covered by unit, database and simulated-RPC tests only. See [Mainnet](../operator-guide.md#mainnet).
 
 ## Step 1: Get the release
 

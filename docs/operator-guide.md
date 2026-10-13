@@ -5,9 +5,9 @@ Deployment, feature configuration, migrations and recovery reference. Start with
 below run from the repository root.
 
 **Current build:** per-order escrow is the only way to request payment (Bitcoin
-regtest, signet and testnet4; Monero fakechain and stagenet; mainnet, with real funds,
-only as the operator's opt-in described under [Mainnet](#mainnet); Bitcoin testnet3 and
-Monero testnet are refused), and both escrow adapters stay off by default. A database
+regtest, signet and testnet4; Monero fakechain and stagenet; or mainnet, with real funds,
+as described under [Mainnet](#mainnet), which the installer chooses by default for new installs with local nodes;
+no mainnet run is recorded; Bitcoin testnet3 and Monero testnet are refused), and both escrow adapters stay off by default. A database
 from an older release with payment history this build does not support is refused at
 startup by migrations 107 and 108; see
 [UPGRADING sections 58–59](../UPGRADING.md#58-pooled-wallet-removal-for-fresh-installs-a-448).
@@ -32,7 +32,7 @@ build does not use; separate arbiter, watch and signer protections still apply.
 | `add-scanner`, `refresh-scanner` | Add the ClamAV malware scanner that photo uploads need, and refresh its signatures: see [Photo uploads and the malware scanner](#photo-uploads-and-the-malware-scanner). |
 | `upgrade [--no-backup]` | After `git pull`: see [UPGRADING.md](../UPGRADING.md). |
 
-Flags answer `init`'s questions: `--tor` or `--clearnet`; `--local` (loopback HTTP, internal database, **no nodes**; the installer cannot add nodes to an existing install later, so choose `init` with `--nodes local` or a per-coin `--bitcoin local` at the start); `--external-db URL` (without it, a flagged install gets the internal database); `--behind-proxy yes|no` (clearnet: secure cookies behind an HTTPS proxy, or local HTTP only); `--nodes local|none|custom` (`local` runs pruned Bitcoin signet (the default; `--bitcoin-network` picks regtest or testnet4) and Monero stagenet nodes with the [default images](#node-image-versions), `custom` asks per coin); and per coin `--bitcoin` or `--monero` `local|disabled`, `--bitcoin-image`, `--bitcoin-network regtest|testnet4|signet`, `--bitcoin-prune yes|no`, and the Monero equivalents restricted to stagenet. For externally hosted nodes, use `--nodes none` and configure the separate `ESCROW_BTC_*` or `ESCROW_XMR_*` credentials afterwards; the installer does not enable Bitcoin escrow by creating a node. `--uploads yes` also sets up the [malware scanner](#photo-uploads-and-the-malware-scanner) as `add-scanner` does (the default, `no`, leaves it out and asks nothing). `./scripts/install.sh --help` lists them. A question without its flag is asked. A value given as a flag, such as an RPC URL with a password, is visible to other local users while the installer runs; answer the question instead to keep it off the command line.
+Flags answer `init`'s questions: `--tor` or `--clearnet`; `--local` (loopback HTTP, internal database, **no nodes**; the installer cannot add nodes to an existing install later, so choose `init` with `--nodes local` or a per-coin `--bitcoin local` at the start); `--external-db URL` (without it, a flagged install gets the internal database); `--behind-proxy yes|no` (clearnet: secure cookies behind an HTTPS proxy, or local HTTP only); `--nodes local|none|custom` (`local` runs pruned **mainnet** Bitcoin and Monero nodes with the [default images](#node-image-versions) unless a network flag names a test network, `custom` asks per coin); and per coin `--bitcoin` or `--monero` `local|disabled`, `--bitcoin-image`, `--bitcoin-network main|signet|testnet4|regtest`, `--bitcoin-prune yes|no`, and the Monero equivalents (`--monero-network mainnet|stagenet`). A test network named for one coin makes the other default to its test network (signet, stagenet); two flags of different classes are refused. On mainnet the installer writes `BITCOIN_PRUNE_MB='15000'` and `PAYMENT_CONFIRMATIONS_BTC='6'` and prints the real-funds warnings before writing `.env`; `upgrade` never changes an installed market's network ([Mainnet](#mainnet)). For externally hosted nodes, use `--nodes none` and configure the separate `ESCROW_BTC_*` or `ESCROW_XMR_*` credentials afterwards; the installer does not enable Bitcoin escrow by creating a node. `--uploads yes` also sets up the [malware scanner](#photo-uploads-and-the-malware-scanner) as `add-scanner` does (the default, `no`, leaves it out and asks nothing). `./scripts/install.sh --help` lists them. A question without its flag is asked. A value given as a flag, such as an RPC URL with a password, is visible to other local users while the installer runs; answer the question instead to keep it off the command line.
 
 The setup token opens `/setup` once. After setup, `status`, `add-mirror` and `upgrade` remove it from `.env` when `APP_SECRET_KEY` is set and the running app reports `keyroot=app_secret_key` (the next `docker compose up -d` drops it from the running app); it grants nothing by then. An app started before `.env` had `APP_SECRET_KEY` still derives its keys from the token, so the token stays until the app is recreated.
 
@@ -352,7 +352,7 @@ services:
 
 ## Optional cryptocurrency nodes
 
-The installer can run local Bitcoin and Monero **daemon** containers, or leave them disabled. Local nodes are infrastructure only: adding a node does not turn payments on. Bitcoin escrow is off unless `ESCROW_BTC=on` is configured after its escrow RPC users and wallets are provisioned; it supports regtest, signet and testnet4 (mainnet as an opt-in). Monero escrow is off unless `ESCROW_XMR=on` is configured with its separate wallet-rpc, seed key and secret; the bundled node setup supports stagenet. Mainnet is an operator opt-in with real funds ([Mainnet](#mainnet)): the bundled nodes run it with `BITCOIN_CHAIN=main` and, for Monero, a blank `MONERO_NETWORK_FLAG=` line. Bitcoin testnet3 and Monero testnet are refused.
+The installer can run local Bitcoin and Monero **daemon** containers, or leave them disabled. Local nodes are infrastructure only: adding a node does not turn payments on. Bitcoin escrow is off unless `ESCROW_BTC=on` is configured after its escrow RPC users and wallets are provisioned; it supports regtest, signet and testnet4, or mainnet on a mainnet market. Monero escrow is off unless `ESCROW_XMR=on` is configured with its separate wallet-rpc, seed key and secret; the bundled node setup supports stagenet or mainnet. New installs with local nodes default to mainnet, with real funds ([Mainnet](#mainnet)): the installer writes `BITCOIN_CHAIN=main` and, for Monero, `MONERO_NETWORK=mainnet` with a blank `MONERO_NETWORK_FLAG=` line. No mainnet run is recorded. Bitcoin testnet3 and Monero testnet are refused.
 
 The installer defaults to [`bitcoin/bitcoin:31.1`](https://hub.docker.com/r/bitcoin/bitcoin) and Seth for Privacy's [`simple-monerod:v0.18.5.1`](https://github.com/sethforprivacy/simple-monerod-docker) (see [Node image versions](#node-image-versions)). The separate [`simple-monero-wallet-rpc:v0.18.5.1`](https://github.com/sethforprivacy/simple-monero-wallet-rpc-docker) image is used only for Monero escrow. Press Enter to use the pinned defaults or supply an image override. The Bitcoin image is community-published and explicitly unofficial; it verifies upstream Bitcoin Core binaries. The Monero images are community-maintained, not published by the Monero project. Review publisher and image provenance before use. A tag can be re-pushed by its publisher; append an immutable `@sha256:<64 lowercase hex characters>` digest in `.env` for a reproducible deployment.
 
@@ -392,6 +392,10 @@ Put any comment on its own line in `.env`. Compose strips a ` # comment` after a
 | Bitcoin testnet4 | about 31 GB of blocks + 2 GB chain state | about 2 GB of blocks + 2 GB chain state; budget 5 GB |
 | Bitcoin signet | about 24 GB of blocks + 4 GB chain state | about 2 GB of blocks + 4 GB chain state; budget 8 GB |
 | Monero stagenet/testnet | not published upstream (UNVERIFIED) | about a third of the full size; reserve 20 GB (UNVERIFIED estimate) |
+| Bitcoin mainnet | about 856 GB of blocks + 14 GB chain state | 15000 MiB of blocks (the installer's mainnet target) + 14 GB chain state; about 30 GB |
+| Monero mainnet | 130 GB in April 2022 ([Monero README](https://github.com/monero-project/monero/blob/v0.18.5.1/README.md#pruning)), more today | 45 GB in April 2022, more today (UNVERIFIED estimate) |
+
+On mainnet the installer's 15000 MiB target keeps about two months of blocks (an estimate: check `pruneheight` with `getblockchaininfo`). A watch-only wallet restore or repair cannot rescan below it: escrows created before it are listed on `/admin` and keep the recovery gate held (A-527) until you restore the whole `bitcoin_data` volume or reindex unpruned. Back the escrow wallets up well inside that window.
 
 A pruned bitcoind still downloads and validates the whole chain once; it only discards old blocks as it goes, so the first sync takes as long as a full node's. A pruned monerod started from an empty volume downloads about a third of the chain ([Moneropedia: Pruning](https://www.getmonero.org/resources/moneropedia/pruning.html)).
 
@@ -605,7 +609,7 @@ There is no payment QR code. The order page shows the escrow address, the amount
 
 #### Mainnet
 
-> **Caution:** **Mainnet moves real funds, and no mainnet run is recorded.** Mainnet escrow (A-460) is an operator opt-in. Its
+> **Caution:** **Mainnet moves real funds, and no mainnet run is recorded.** Mainnet (A-460) is the installer's default for new installs with local nodes (A-523). Its
 > evidence is unit and database tests against simulated nodes ([acceptance](acceptance.md),
 > [verification](verification.md)); no build has run against a mainnet node or with real coins, in CI or by hand.
 > Development, tests and CI never use mainnet. Bitcoin escrow's settlements need the buyer's or the vendor's signature,
@@ -616,7 +620,7 @@ There is no payment QR code. The order page shows the escrow address, the amount
 Everything in [Bitcoin escrow](#bitcoin-escrow) and [Monero escrow](#monero-escrow) applies on mainnet too; this section
 lists what differs.
 
-**Opting in.** `BITCOIN_CHAIN=main` or `MONERO_NETWORK=mainnet` makes the market a mainnet market; its pages then say
+**Choosing the class.** The installer writes `BITCOIN_CHAIN=main` and `MONERO_NETWORK=mainnet` for the coins you enable unless you name a test network; `upgrade` never changes it. `BITCOIN_CHAIN=main` or `MONERO_NETWORK=mainnet` makes the market a mainnet market; its pages then say
 MAINNET and that payments are real funds. A market is all mainnet or all test networks:
 
 - `BITCOIN_CHAIN=main` beside a `MONERO_NETWORK` set to another network (or `MONERO_NETWORK=mainnet` beside a
@@ -628,7 +632,7 @@ MAINNET and that payments are real funds. A market is all mainnet or all test ne
 
 **Bitcoin node.** Run Bitcoin Core 31.1 or later on mainnet, synced, as escrow's own node (the reasons are under
 [Bitcoin escrow](#bitcoin-escrow)); its chain is far larger than the test chains under
-[Local node pruning](#local-node-pruning). The installer accepts `BITCOIN_CHAIN=main` for the local `bitcoin` profile.
+[Local node pruning](#local-node-pruning). The installer writes `BITCOIN_CHAIN=main` for the local `bitcoin` profile by default, with a 15000 MiB prune target (see [Local node pruning](#local-node-pruning)).
 Provision it as [Escrow node set-up](#escrow-node-set-up-and-the-public-network-smoke) describes with `--chain main`
 (Bitcoin Core's name for mainnet; `--chain mainnet` is refused): the script prints a real-funds warning and defaults to
 RPC port 8332. Use a new arbiter wallet, watch-only wallet and escrow signer seed for a mainnet market, never ones a
@@ -710,7 +714,7 @@ after the backup is not reused.
 
 #### Bitcoin escrow
 
-**Off by default, on regtest, signet or testnet4 (mainnet only as the opt-in under [Mainnet](#mainnet)), and first released in prerelease `v0.1.0-alpha.2`.** [Per-order escrow](escrow.md)
+**Off by default, on regtest, signet or testnet4 (or mainnet on a mainnet market, the installer's default: [Mainnet](#mainnet)), and first released in prerelease `v0.1.0-alpha.2`.** [Per-order escrow](escrow.md)
 is built for Bitcoin through its physical-order phase and per-order wallet keys; what is not built is listed there
 (public testnet4 is unrun, and so is mainnet, built in A-460). A user registers the key their own wallet signs escrow with
 and activates it by signing a practice transaction, and the buyer of an eligible listing can pay into a 2-of-3 escrow;
@@ -1748,7 +1752,7 @@ that changes the protocol says so in `UPGRADING.md`.
 
 #### Monero escrow
 
-**Off by default, custodial, on a fakechain or stagenet (mainnet only as the opt-in under [Mainnet](#mainnet)).** [Per-order escrow](escrow.md) Phase 3 lets the
+**Off by default, custodial, on a fakechain or stagenet (or mainnet on a mainnet market, the installer's default: [Mainnet](#mainnet)).** [Per-order escrow](escrow.md) Phase 3 lets the
 buyer of an XMR draft on a digital listing with automatic delivery, or on a physical listing with a dispatch window, pay into
 an account of a monthly escrow wallet the market holds. **The market holds the keys and can
 move these coins**: unlike [Bitcoin escrow](#bitcoin-escrow) there is no 2-of-3, no key of the buyer's or

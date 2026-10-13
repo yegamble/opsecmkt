@@ -31,27 +31,33 @@ Refuses when `.env` or the project's volumes already exist. Any question your op
 ### Node flags
 
 - `--nodes local|none|custom`<br>
-  `local`: pruned Bitcoin signet and Monero stagenet nodes. `none`: no nodes. `custom`: ask per coin.
+  `local`: pruned **mainnet** Bitcoin and Monero nodes (real funds) unless a network flag names a test network.
+  `none`: no nodes. `custom`: ask per coin.
 - `--bitcoin local|disabled`<br>
   Run a Bitcoin node.
-- `--bitcoin-network signet|testnet4|regtest`<br>
-  Default `signet`. Fixed after first use.
+- `--bitcoin-network main|signet|testnet4|regtest`<br>
+  Default `main` (mainnet, real funds). A test network here makes Monero default to `stagenet`. Fixed after first use.
 - `--bitcoin-image IMAGE`<br>
   A release tag or `@sha256` digest, not `latest`.
 - `--bitcoin-prune yes|no`<br>
   Default `yes`.
 - `--monero local|disabled`<br>
   Run a Monero node.
-- `--monero-network stagenet`<br>
-  The only Monero network.
+- `--monero-network mainnet|stagenet`<br>
+  Default `mainnet` (real funds). `stagenet` makes Bitcoin default to `signet`. One coin on mainnet and the other on
+  a test network is refused: a market is all mainnet or all test networks.
 - `--monero-image IMAGE`<br>
   A release tag or `@sha256` digest, not `latest`.
 - `--monero-prune yes|no`<br>
   Default `yes`.
 - `--monero-escrow yes|no`<br>
-  Custodial Monero escrow on the local stagenet node. Default `no`.
+  Custodial Monero escrow on the local Monero node. On mainnet the market holds real funds. Default `no`.
 - `--monero-escrow-seed-key FILE`<br>
   With Monero escrow: the armored OpenPGP **public** key that wallet seeds are sealed to.
+
+On mainnet the installer also writes a 15000 MiB Bitcoin prune target (about two months, an estimate) and 6 Bitcoin
+confirmations, and prints the real-funds warnings first. `upgrade` never changes an installed market's network.
+No mainnet run of this software is recorded.
 
 A node does not turn on escrow. See [Enabling payments](enable-payments.md).
 
@@ -107,11 +113,11 @@ APP_PORT=8081 ./scripts/install.sh --local --admin alice
 | Local HTTP development only? (clearnet) | `no` | `no` |
 | BITCOIN node (local/disabled) | `local` | `local` to take Bitcoin |
 | BITCOIN Docker image | pinned default | default |
-| BITCOIN escrow network | `signet` | `signet` |
+| BITCOIN escrow network | `main` | `main` for a real market; `signet` to test |
 | Prune the BITCOIN node? | `yes` | `yes` |
 | MONERO node (local/disabled) | `local` | `local` to take Monero |
 | MONERO Docker image | pinned default | default |
-| MONERO escrow network | `stagenet` | `stagenet` |
+| MONERO escrow network | `mainnet` | follows Bitcoin's class |
 | Prune the MONERO node? | `yes` | `yes` |
 | Turn on Monero escrow? | `no` | `no` |
 
