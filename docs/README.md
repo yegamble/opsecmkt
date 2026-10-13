@@ -4,8 +4,9 @@ Self-hosted marketplace software that needs no browser JavaScript. Go renders ev
 PostgreSQL stores the data, users identify with PGP, and one Docker Compose install runs it all, as a Tor onion
 service or behind HTTPS.
 
-> **Prerelease:** `v0.1.0-alpha.2`. Escrow uses Bitcoin and Monero **test networks** by default. Mainnet is an
-> opt-in with no recorded run. See [Implementation status](implementation-status.md).
+> **Prerelease:** `v0.1.0-alpha.2`. The installer's local nodes default to **mainnet (real funds)**; test networks are
+> an option. No mainnet run is recorded; mainnet is covered by unit, database and simulated-RPC tests only. See
+> [Implementation status](implementation-status.md).
 
 ## Start here
 

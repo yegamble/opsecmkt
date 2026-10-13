@@ -1,11 +1,13 @@
 # Test-network payments runbook
 
-**Current build:** per-order escrow is the only payment path, off by default. This runbook is for test networks:
-Bitcoin regtest, signet and testnet4; Monero fakechain and stagenet. Mainnet is an operator opt-in with real funds
-(`BITCOIN_CHAIN=main`, `MONERO_NETWORK=mainnet`, on a new database), set up as the
-[operator guide's Mainnet section](operator-guide.md#mainnet) describes; no mainnet run is recorded. The backup,
-restore, gate and moderation steps below are written for test networks and have not been run on mainnet. A database
-from an older release with payment history this build does not support is refused at startup by migrations 107 and
+**Current build:** per-order escrow is the only payment path, off by default. This runbook is written for test networks:
+Bitcoin regtest, signet and testnet4; Monero fakechain and stagenet. The installer's local nodes now default to mainnet
+(`BITCOIN_CHAIN=main`, `MONERO_NETWORK=mainnet`, real funds, on a new database), set up as the
+[operator guide's Mainnet section](operator-guide.md#mainnet) describes. No mainnet run is recorded; mainnet is covered
+by unit, database and simulated-RPC tests only. The backup, restore, gate and moderation steps below were written for
+test networks and have not been run on mainnet; to rehearse them, install with
+`--bitcoin-network signet --monero-network stagenet` ([choose a network](install/enable-payments.md#choose-a-network)).
+A database from an older release with payment history this build does not support is refused at startup by migrations 107 and
 108 ([UPGRADING.md sections 58](../UPGRADING.md#58-pooled-wallet-removal-for-fresh-installs-a-448) and
 [59](../UPGRADING.md#59-pooled-history-refused-migration-108-a-492)).
 

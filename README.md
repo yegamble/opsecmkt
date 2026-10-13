@@ -17,8 +17,9 @@ Server-rendered Go and PostgreSQL, PGP identity, Tor-first deployment.
 </div>
 
 > **Prerelease (`v0.1.0-alpha.2`).** A new install takes **no payments** until you
-> [enable escrow](docs/install/enable-payments.md). Escrow runs on **test networks** by default. Mainnet is an operator
-> opt-in with no recorded run. Tor protects inbound connections; it does not guarantee anonymity.
+> [enable escrow](docs/install/enable-payments.md). `init --tor` and `init --clearnet` run local nodes on **mainnet
+> (real funds)** unless you name a test network; `--local` runs no nodes. No mainnet run is recorded; mainnet is covered
+> by unit, database and simulated-RPC tests only. Tor protects inbound connections; it does not guarantee anonymity.
 
 ## Why OPSEC Market
 
@@ -59,6 +60,11 @@ git clone https://github.com/yegamble/opsecmkt.git && cd opsecmkt && git checkou
 ```
 
 Open the printed setup link, paste the token, create the administrator.
+
+> **Warning:** the local nodes of `init --tor` and `init --clearnet` default to **mainnet**. Real funds; no mainnet run
+> is recorded; mainnet is covered by unit, database and simulated-RPC tests only. For a test market add
+> `--bitcoin-network signet --monero-network stagenet` ([why](docs/install/enable-payments.md#choose-a-network)).
+
 **[Full installation guide →](docs/install/README.md)**
 
 ## Features
@@ -80,10 +86,15 @@ Per-order escrow, off by default. A node alone does not turn it on.
 
 | Coin | Model | Networks | Evidence |
 | --- | --- | --- | --- |
-| Bitcoin | 2-of-3 multisig: buyer, vendor, market | regtest, signet, testnet4; mainnet opt-in | CI on regtest; public signet run [recorded](docs/evidence/public-testnet/2026-10-09-9885beef29d3/signet/README.md). testnet4, mainnet and hardware-wallet signing unverified. |
-| Monero | Custodial: market holds keys | fakechain, stagenet; mainnet opt-in | CI on fakechain; one public stagenet claim [recorded](docs/evidence/public-testnet/2026-10-10-ac71878dfde4/stagenet-xmr/README.md). Mainnet unrun. |
+| Bitcoin | 2-of-3 multisig: buyer, vendor, market | mainnet (installer default), regtest, signet, testnet4 | CI on regtest; public signet run [recorded](docs/evidence/public-testnet/2026-10-09-9885beef29d3/signet/README.md). testnet4, mainnet and hardware-wallet signing unverified. |
+| Monero | Custodial: market holds keys | mainnet (installer default), fakechain, stagenet | CI on fakechain; one public stagenet claim [recorded](docs/evidence/public-testnet/2026-10-10-ac71878dfde4/stagenet-xmr/README.md). Mainnet unrun. |
 
-Bitcoin testnet3 and Monero testnet are refused. A market is all test networks or all mainnet. Full evidence:
+Bitcoin testnet3 and Monero testnet are refused. A market is all mainnet or all test networks.
+
+**Mainnet default.** The installer's local nodes run mainnet unless you pass `--bitcoin-network
+signet|testnet4|regtest` or `--monero-network stagenet`. No mainnet run is recorded; mainnet is covered by unit,
+database and simulated-RPC tests only. Monero escrow on mainnet is custodial with real funds. Upgrading never changes
+an existing install's network ([UPGRADING](UPGRADING.md#64-new-installs-default-to-mainnet-a-523)). Full evidence:
 [Verification](docs/verification.md) and [Per-order escrow](docs/escrow.md).
 
 ## How it works
@@ -91,7 +102,7 @@ Bitcoin testnet3 and Monero testnet are refused. A market is all test networks o
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/architecture-dark.svg">
   <source media="(prefers-color-scheme: light)" srcset="docs/assets/architecture-light.svg">
-  <img alt="OPSEC Market architecture: a browser reaches the Go server through Tor or HTTPS. PostgreSQL keeps application and historical payment records. Optional Bitcoin 2-of-3 escrow supports regtest, signet and testnet4; custodial Monero escrow supports fakechain or stagenet. Both are off by default; mainnet is an operator opt-in." src="docs/assets/architecture-light.svg" width="880">
+  <img alt="OPSEC Market architecture: a browser reaches the Go server through Tor or HTTPS. PostgreSQL keeps application and historical payment records. Optional Bitcoin 2-of-3 escrow is shown on regtest, signet and testnet4; custodial Monero escrow on fakechain or stagenet. Both are off by default. The installer's local nodes default to mainnet (real funds); no mainnet run is recorded." src="docs/assets/architecture-light.svg" width="880">
 </picture>
 
 - A browser reaches the Go server through a Tor onion service or the operator's HTTPS proxy.
