@@ -165,12 +165,33 @@ AGE_IDENTITY=key.txt ./scripts/docs-onion.sh restore-keys FILE     # new host, b
 `backup-keys` never overwrites a file, and `restore-keys` refuses a volume that already holds keys. Publish the
 address in a signed statement before linking to it.
 
-**Cloudflare.** Cloudflare cannot host an onion address you own. Its
-[Onion Routing](https://developers.cloudflare.com/network/onion-routing) only serves a site already proxied on a
-clearnet domain, and sends Tor Browser users to a Cloudflare-owned `.onion` that you cannot publish or keep, while
-Cloudflare sees every request. [Cloudflare Tunnel](https://developers.cloudflare.com/tunnel/) exposes services on
-clearnet domains only. Use Cloudflare, if at all, for an optional clearnet copy of these public docs, never for a
-market.
+### Serve the docs from Cloudflare
+
+A Cloudflare Worker (`deploy/docs/cloudflare/`) serves the same site over HTTPS for readers without Tor. It adds the
+security headers and an `Onion-Location` header, so Tor Browser offers to switch to the docs onion above, on the
+same page. The deploy workflow (`.github/workflows/docs-deploy.yaml`) runs on every push to `main` that changes the
+docs, and stays off until it is configured:
+
+1. In Cloudflare, create an API token with the **Edit Cloudflare Workers** template.
+2. In the repository settings, add the secret `CLOUDFLARE_API_TOKEN` and the variables `CLOUDFLARE_ACCOUNT_ID` and
+   `DOCS_ONION` (the docs host's `./scripts/docs-onion.sh address`; leave it empty to send no `Onion-Location`).
+3. Run the **Docs deploy** workflow. The site is at `https://opsecmkt-docs.<your-subdomain>.workers.dev`.
+
+> **Warning:** set `DOCS_ONION` only to the docs onion, never to a market's address.
+
+To deploy by hand, build the site and run Wrangler from the lockfile:
+
+```sh
+.venv-docs/bin/mkdocs build
+cd deploy/docs/cloudflare && npm ci --ignore-scripts
+npx wrangler deploy --var DOCS_ONION:YOUR_DOCS_ONION.onion
+```
+
+Optional, with your own domain on Cloudflare: add it to the Worker as a custom domain, then turn on
+[Onion Routing](https://developers.cloudflare.com/network/onion-routing) under **Network** for that zone. Tor Browser
+users are then carried over a `.onion` that Cloudflare owns, through an `Alt-Svc` header. That address is not yours
+to publish and Cloudflare still sees each request; the docs onion stays the address to publish. It does not apply to
+`workers.dev`. Cloudflare cannot host an onion address you own, and must never front a market.
 
 ## Run tests
 

@@ -915,6 +915,8 @@ jobs:
           .venv-docs/bin/pip install --require-hashes --no-deps -r requirements-docs.txt
       - name: Build in strict mode (mkdocs.yml)
         run: .venv-docs/bin/mkdocs build
+      - name: Cloudflare Worker headers (deploy/docs/cloudflare)
+        run: node --test deploy/docs/cloudflare/worker.test.mjs
   required:
     name: CI passed
     if: always()
