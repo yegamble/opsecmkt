@@ -1976,3 +1976,29 @@ mainnet market, follow the operator guide's [Mainnet](docs/operator-guide.md#mai
 
 **Rollback.** As for any migration (section 5), an older binary refuses a database that records migration 109; restore
 the pre-upgrade backup instead.
+
+## 63. Pruned escrow nodes and the watch-only wallet repair (migration 110, A-527)
+
+**Add two read-only methods to the escrow user's `rpcwhitelist`:** `getblockhash` and `getblockheader`. The line now
+ends `…,gettransaction,listtransactions,listsinceblock,getblockhash,getblockheader` (the
+[operator guide](docs/operator-guide.md#bitcoin-escrow) has it, and `scripts/escrow-node-setup.sh` prints it); restart
+bitcoind after changing it. The app calls them only on a pruned node, and only when the watch-only wallet repair of
+per-order escrows is about to import. On a pruned node without them the repair waits and imports nothing, and the log
+repeats `escrow watcher: escrow: watch-only wallet repair waits: the node's prune height could not be read: getblockhash
+forbidden`; an unpruned node never calls them.
+
+**What changes.** Before the repair imports a per-order escrow the watch-only wallet lacks (a wallet restored from an
+older backup, say), it reads `getblockchaininfo` (`pruned`, `pruneheight`) and the time of the block at `pruneheight`.
+An escrow created before that block, or less than 2 hours (Bitcoin Core's rescan window) after it, is no longer imported:
+Core would keep its descriptor while answering the import failed, so a deposit made before that block was never seen and
+the next pass took the address as held (the order could expire unpaid with nothing refunded). Such an escrow is now listed
+on `/admin` (*Escrows the watch-only wallet cannot rescan*) with its order; so is an escrow whose import Core answers as
+failed for any other reason, which is then imported again on every pass instead of being taken as repaired. While any
+is listed its order does not expire and the orphan sweep leaves `escrow_sweep_required` set. Do not clear the restore gate
+until the list is empty; the [runbook](docs/testnet-runbook.md#an-escrow-the-watch-only-wallet-cannot-rescan) gives the
+two remedies (restore the whole `bitcoin_data` volume from a copy taken with bitcoind stopped, or run the node unpruned
+until the watcher has rescanned them). Unpruned nodes, and escrows newer than the prune height, are repaired as before.
+
+Migration `110_escrow_watch_unrepaired` adds the table `escrow_watch_unrepaired` (one row per listed escrow: its escrow
+ID, why it is listed and since when); it is empty until the repair lists an escrow. **Rollback.** As for any migration
+(section 5), an older binary refuses a database that records migration 110; restore the pre-upgrade backup instead.

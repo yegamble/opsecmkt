@@ -15,10 +15,19 @@ const (
 	pooledAddressInsert = "INSERT INTO payment_addresses(order_id,currency,address,provider) VALUES($1,'BTC','bcrt1qlegacy108address0000000000000000000','btc-regtest')"
 )
 
+// restoreSchema109 puts the database back as migration 109 left it: 110's stamp and table removed.
+func restoreSchema109(t *testing.T, e *testEnv) {
+	t.Helper()
+	if _, err := e.DB.Exec(`DELETE FROM schema_migrations WHERE version=110; DROP TABLE escrow_watch_unrepaired`); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // restoreSchema108 puts the database back as migration 108 left it: 109's stamp, columns, constraints and sequence
 // removed, and 074's fee destination check restored.
 func restoreSchema108(t *testing.T, e *testEnv) {
 	t.Helper()
+	restoreSchema109(t, e)
 	if _, err := e.DB.Exec(`DELETE FROM schema_migrations WHERE version=109;
 		ALTER TABLE escrows DROP CONSTRAINT escrows_fee_destination_or_descriptor, DROP CONSTRAINT escrows_fee_descriptor_btc,
 			DROP CONSTRAINT escrows_fee_index_descriptor, DROP COLUMN fee_descriptor, DROP COLUMN fee_index,

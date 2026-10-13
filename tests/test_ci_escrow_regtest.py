@@ -39,7 +39,8 @@ class EscrowRegtestJobTest(unittest.TestCase):
         # The script refuses to start without each of these; the job must hand it each.
         for name in ('ESCROW_REGTEST_OPERATOR_RPC_URL', 'ESCROW_REGTEST_APP_RPC_URL',
                      'ESCROW_REGTEST_SIGNER_RPC_URL', 'ESCROW_REGTEST_PRIVATE_OPERATOR_RPC_URL',
-                     'ESCROW_REGTEST_PRIVATE_APP_RPC_URL', 'TEST_DATABASE_URL'):
+                     'ESCROW_REGTEST_PRIVATE_APP_RPC_URL', 'ESCROW_REGTEST_PRUNED_OPERATOR_RPC_URL',
+                     'ESCROW_REGTEST_PRUNED_APP_RPC_URL', 'TEST_DATABASE_URL'):
             self.assertIn(name, block)
 
     def test_job_gives_the_app_user_the_documented_whitelist_and_nothing_else(self):
@@ -95,6 +96,16 @@ class EscrowRegtestJobTest(unittest.TestCase):
         self.assertIn('-privatebroadcast -proxy=127.0.0.1:9 -listen=0', SCRIPT.split('set -euo pipefail')[0])
         self.assertNotRegex(block, r'-(connect|onlynet|addnode|seednode)=')
         self.assertIn('docker rm -f -v "$BITCOIN_CONTAINER" "$BITCOIN_PRIVATE_CONTAINER"', block)
+
+    def test_pruned_node_matches_the_script_and_is_removed(self):
+        # A-527: the third node runs the documented prune flags with the same users and whitelists (node()), is
+        # waited for, and is collected and removed with the others.
+        block = job_block(WORKFLOW, JOB)
+        self.assertIn('node "$BITCOIN_PRUNED_CONTAINER" "$BITCOIN_PRUNED_RPC_PORT" -prune=550 -fastprune\n', block)
+        self.assertIn('-prune=550 -fastprune', SCRIPT.split('set -euo pipefail')[0])
+        self.assertIn('for port in "$BITCOIN_RPC_PORT" "$BITCOIN_PRIVATE_RPC_PORT" "$BITCOIN_PRUNED_RPC_PORT"; do', block)
+        self.assertIn('docker logs "$BITCOIN_PRUNED_CONTAINER"', block)
+        self.assertIn('docker rm -f -v "$BITCOIN_CONTAINER" "$BITCOIN_PRIVATE_CONTAINER" "$BITCOIN_PRUNED_CONTAINER"', block)
 
     def test_node_is_removed_with_its_volume_even_when_a_step_fails(self):
         block = job_block(WORKFLOW, JOB)

@@ -831,3 +831,229 @@ func TestEscrowNeverClearedOnceSet(t *testing.T) {
 		t.Fatalf("startup checks ran again with the node down: %d calls, %d before", n, before)
 	}
 }
+
+// pruneEnv is a per-order escrow env with two escrows awaiting payment, each paid its price in the fake node: x.order's
+// escrow created 10 days ago and a newer one created now. The watch-only wallet then forgets both (restored from a backup
+// older than them), the restore gate and the sweep marker are set as scripts/restore.sh sets them, and the App restarts.
+// setup runs on the fake node before the restart.
+func pruneEnv(t *testing.T, setup func(c *fakeEscrowCore)) (x *escrowEnv, newer string, created map[string]float64) {
+	t.Helper()
+	x, _ = newPerOrderEnv(t)
+	newer = x.draft()
+	created = map[string]float64{}
+	for _, o := range []string{x.order, newer} {
+		addr := x.mustCheckout(o, regtestAddr("prune-"+o))
+		x.core.deposit(addr, txidOf("prune "+o), 0, agInt64(t, x.testEnv, "SELECT amount FROM orders WHERE id=$1", o), 6)
+	}
+	agExec(x.testEnv, "UPDATE escrows SET created=now()-interval '10 days' WHERE order_id=$1", x.order)
+	for _, o := range []string{x.order, newer} {
+		created[o] = float64(agInt64(t, x.testEnv, "SELECT extract(epoch FROM created)::bigint FROM escrows WHERE order_id=$1", o))
+	}
+	x.setGate(true)
+	agExec(x.testEnv, "INSERT INTO settings(key,value) VALUES('escrow_sweep_required','true')")
+	x.core.forgetWatched()
+	x.core.mu.Lock()
+	setup(x.core)
+	x.core.mu.Unlock()
+	x.restart()
+	return x, newer, created
+}
+
+// unwatchedRows is escrow_watch_unrepaired as "<order> pruned=<bool> import_failed=<bool>", by order.
+func (x *escrowEnv) unwatchedRows() []string {
+	return agStrings(x.t, x.testEnv, `SELECT es.order_id||' pruned='||u.pruned||' import_failed='||u.import_failed FROM escrow_watch_unrepaired u
+		JOIN escrows es ON es.id=u.escrow_id ORDER BY es.order_id`)
+}
+
+// importedSince counts the import requests made after the first n by the order whose escrow creation time is their
+// timestamp.
+func importedSince(t *testing.T, x *escrowEnv, n int, created map[string]float64) map[string]int {
+	t.Helper()
+	out := map[string]int{}
+	for _, r := range x.core.importRequests()[n:] {
+		for o, c := range created {
+			if r["timestamp"] == c {
+				out[o]++
+			}
+		}
+	}
+	return out
+}
+
+// A-527: after a restore, on a pruned escrow node, the watch-only wallet repair reads the prune height and the time of
+// its block before it imports. An escrow created before that block (within Bitcoin Core's 2-hour rescan window) is not
+// imported: Core would add its descriptor but could not rescan for it, so a deposit made before then would never be
+// seen, and the next pass would find the address held. It is not counted as repaired, its order does not expire, the
+// restore gate and the sweep marker stay set, one log line names the order (no address), and /admin names it with the
+// remedy. An escrow created after that block is repaired in the same pass and its deposit counts. Once the node can
+// rescan (run unpruned), the next pass imports the old escrow from its creation and its deposit counts. Simulated RPC
+// (escrow_fake_test.go); TestEscrowRegtestPrunedRepair is the real Core leg.
+func TestEscrowRepairBelowPruneHeight(t *testing.T) {
+	logs := captureLog(t)
+	x, newer, created := pruneEnv(t, func(c *fakeEscrowCore) {
+		c.pruned, c.pruneHeight, c.pruneTime = true, 150, time.Now().Add(-5*24*time.Hour).Unix()
+	})
+	old := x.order
+	n := len(x.core.importRequests())
+	x.poll()
+	if got := importedSince(t, x, n, created); got[old] != 0 || got[newer] != 32 || len(x.core.importRequests())-n != 32 {
+		t.Fatalf("imports %v, want the newer escrow's 32 and none of the old one's", got)
+	}
+	if _, params := x.core.lastCall(t, "getblockhash"); params != "[150]" {
+		t.Fatalf("getblockhash %s, want the prune height", params)
+	}
+	if x.state(newer) != stateCompleted || x.state(old) != stateAwaitingPayment {
+		t.Fatalf("newer escrow %s, old escrow %s: want completed and still awaiting payment (not expired)", x.state(newer), x.state(old))
+	}
+	if n := agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1", old); n != 0 {
+		t.Fatalf("%d deposits recorded for an escrow the wallet could not rescan", n)
+	}
+	if got := x.unwatchedRows(); !slices.Equal(got, []string{old + " pruned=true import_failed=false"}) {
+		t.Fatalf("unrepaired escrows %v", got)
+	}
+	if gate, _ := restoreGateSet(context.Background(), x.DB); !gate || !x.sweepRequired() || x.A.escrowSiblingsChecked.Load() {
+		t.Fatalf("gate %v, sweep marker %v, check done %v: want the gate and the marker kept and the check not done", gate, x.sweepRequired(), x.A.escrowSiblingsChecked.Load())
+	}
+	line := "escrow: order " + shortID(old) + ": its escrow is older than the oldest block this pruned node keeps"
+	if !strings.Contains(logs.String(), line) {
+		t.Fatalf("log lacks %q: %s", line, logs.String())
+	}
+	for _, addr := range agStrings(t, x.testEnv, "SELECT address FROM escrows WHERE order_id=$1 UNION ALL SELECT s.address FROM escrow_siblings s JOIN escrows es ON es.id=s.escrow_id WHERE es.order_id=$1", old) {
+		if strings.Contains(logs.String(), addr) {
+			t.Fatalf("an escrow address in the log: %s", logs.String())
+		}
+	}
+	page := x.adminPage()
+	for _, want := range []string{shortID(old), "cannot be rescanned on this pruned node", "bitcoin_data", "with bitcoind stopped", "-reindex"} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("/admin lacks %q", want)
+		}
+	}
+	n = len(x.core.importRequests())
+	x.poll()
+	if got := len(x.core.importRequests()) - n; got != 0 || strings.Count(logs.String(), line) != 1 || x.state(old) != stateAwaitingPayment {
+		t.Fatalf("second pass: %d imports, %d log lines, old order %s", got, strings.Count(logs.String(), line), x.state(old))
+	}
+	x.restart()
+	x.poll()
+	if got := len(x.core.importRequests()) - n; got != 0 || len(x.unwatchedRows()) != 1 {
+		t.Fatalf("after a restart: %d imports, unrepaired %v", got, x.unwatchedRows())
+	}
+
+	// The operator runs the node unpruned (-prune=0 -reindex): the next pass repairs the old escrow from its creation.
+	x.core.mu.Lock()
+	x.core.pruned = false
+	x.core.mu.Unlock()
+	x.poll()
+	if got := importedSince(t, x, n, created); got[old] != 32 || got[newer] != 0 {
+		t.Fatalf("imports once the node can rescan: %v", got)
+	}
+	if x.state(old) != stateCompleted || len(x.unwatchedRows()) != 0 || x.sweepRequired() || !x.A.escrowSiblingsChecked.Load() {
+		t.Fatalf("old order %s, unrepaired %v, sweep marker %v, check done %v", x.state(old), x.unwatchedRows(), x.sweepRequired(), x.A.escrowSiblingsChecked.Load())
+	}
+	if gate, _ := restoreGateSet(context.Background(), x.DB); !gate {
+		t.Fatal("the restore gate was cleared by the app")
+	}
+	if strings.Contains(x.adminPage(), "cannot be rescanned on this pruned node") {
+		t.Fatal("/admin still lists the repaired escrow")
+	}
+}
+
+// A-527 control: on an unpruned node the repair behaves as before. Both escrows are imported in one call from their
+// creation times, no block is looked up, both deposits count, nothing is listed and the sweep marker is cleared (the
+// restore gate stays: only the operator clears it).
+func TestEscrowRepairUnprunedNode(t *testing.T) {
+	x, newer, created := pruneEnv(t, func(*fakeEscrowCore) {})
+	calls, n := x.core.count("importdescriptors"), len(x.core.importRequests())
+	x.poll()
+	if got := importedSince(t, x, n, created); got[x.order] != 32 || got[newer] != 32 || x.core.count("importdescriptors")-calls != 1 {
+		t.Fatalf("imports %v in %d calls, want both escrows' 32 in one", got, x.core.count("importdescriptors")-calls)
+	}
+	if x.core.count("getblockhash")+x.core.count("getblockheader") != 0 {
+		t.Fatal("a block looked up on an unpruned node")
+	}
+	if x.state(x.order) != stateCompleted || x.state(newer) != stateCompleted || len(x.unwatchedRows()) != 0 || x.sweepRequired() || !x.A.escrowSiblingsChecked.Load() {
+		t.Fatalf("orders %s %s, unrepaired %v, sweep marker %v, check done %v", x.state(x.order), x.state(newer), x.unwatchedRows(), x.sweepRequired(), x.A.escrowSiblingsChecked.Load())
+	}
+}
+
+// A-527: on a pruned node whose escrow user's rpcwhitelist predates getblockhash (HTTP 403), the repair cannot tell which
+// escrows it could rescan: it waits, imports nothing, lists nothing, keeps the sweep marker and logs the failing call.
+// With the method allowed, the next pass repairs the newer escrow and lists the old one.
+func TestEscrowRepairPruneHeightUnreadable(t *testing.T) {
+	x, newer, _ := pruneEnv(t, func(c *fakeEscrowCore) {
+		c.pruned, c.pruneHeight, c.pruneTime = true, 150, time.Now().Add(-5*24*time.Hour).Unix()
+		c.forbidden = map[string]bool{"getblockhash": true}
+	})
+	calls := x.core.count("importdescriptors")
+	err := x.A.escrowPollOnce(context.Background())
+	if err == nil || !strings.Contains(watcherCause(err), "watch-only wallet repair waits: the node's prune height could not be read: getblockhash forbidden") {
+		t.Fatalf("pass: %v", err)
+	}
+	if x.core.count("importdescriptors") != calls || len(x.unwatchedRows()) != 0 || !x.sweepRequired() || x.A.escrowSiblingsChecked.Load() {
+		t.Fatalf("imports %d, unrepaired %v, sweep marker %v, check done %v", x.core.count("importdescriptors")-calls, x.unwatchedRows(), x.sweepRequired(), x.A.escrowSiblingsChecked.Load())
+	}
+	x.core.mu.Lock()
+	x.core.forbidden = nil
+	x.core.mu.Unlock()
+	x.poll()
+	if got := x.unwatchedRows(); !slices.Equal(got, []string{x.order + " pruned=true import_failed=false"}) || x.state(newer) != stateCompleted {
+		t.Fatalf("with getblockhash allowed: unrepaired %v, newer order %s", got, x.state(newer))
+	}
+}
+
+// A-527: an import Core answers with a failed request (its rescan could not read a block: data corruption, or a pruned
+// block the prune check did not foresee) is never a repair. Core holds that escrow's descriptor and label all the same
+// (probed on Core 31.1), so the next pass, and the next start, import it again instead of finding it held; its order
+// does not expire meanwhile and /admin names it. The escrow whose requests succeeded in the same call is repaired. Once
+// Core can rescan, the next pass repairs it.
+func TestEscrowRepairImportFailedNotHeld(t *testing.T) {
+	x, newer, created := pruneEnv(t, func(c *fakeEscrowCore) { c.rescanFloor = time.Now().Add(-3 * 24 * time.Hour).Unix() })
+	old := x.order
+	fail := func(what string) {
+		t.Helper()
+		n := len(x.core.importRequests())
+		err := x.A.escrowPollOnce(context.Background())
+		if err == nil || !strings.Contains(watcherCause(err), "sibling import failed: importdescriptors import-failed") {
+			t.Fatalf("%s: pass %v, want the failed import", what, err)
+		}
+		if got := importedSince(t, x, n, created); got[old] != 32 {
+			t.Fatalf("%s: imports %v, want the old escrow's 32 again", what, got)
+		}
+		if got := x.unwatchedRows(); !slices.Equal(got, []string{old + " pruned=false import_failed=true"}) || x.state(old) != stateAwaitingPayment || x.A.escrowSiblingsChecked.Load() {
+			t.Fatalf("%s: unrepaired %v, old order %s, check done %v", what, got, x.state(old), x.A.escrowSiblingsChecked.Load())
+		}
+	}
+	fail("first pass")
+	if x.state(newer) != stateCompleted {
+		t.Fatalf("the escrow whose import succeeded: %s", x.state(newer))
+	}
+	addr := agStrings(t, x.testEnv, "SELECT address FROM escrows WHERE order_id=$1", old)[0]
+	x.core.mu.Lock()
+	label := x.core.labels[addr]
+	x.core.mu.Unlock()
+	if label != "escrow:"+old {
+		t.Fatalf("the fake did not keep the failed import's label, as Core does: %q", label)
+	}
+	if page := x.adminPage(); !strings.Contains(page, shortID(old)) || !strings.Contains(page, "Bitcoin Core reported that its rescan failed") {
+		t.Fatal("/admin does not name the escrow whose import failed")
+	}
+	fail("next pass")
+	x.restart()
+	fail("after a restart")
+	// An answer the app cannot read request by request (one reply for 32 requests: bad-reply) changes no listing.
+	x.core.mu.Lock()
+	x.core.rescanFloor, x.core.importFail = 0, true
+	x.core.mu.Unlock()
+	if err := x.A.escrowPollOnce(context.Background()); err == nil || !strings.Contains(watcherCause(err), "sibling import failed: importdescriptors bad-reply") ||
+		!slices.Equal(x.unwatchedRows(), []string{old + " pruned=false import_failed=true"}) {
+		t.Fatalf("an unreadable import answer: %v, unrepaired %v", err, x.unwatchedRows())
+	}
+	x.core.mu.Lock()
+	x.core.importFail = false
+	x.core.mu.Unlock()
+	x.poll()
+	if x.state(old) != stateCompleted || len(x.unwatchedRows()) != 0 || !x.A.escrowSiblingsChecked.Load() || x.sweepRequired() {
+		t.Fatalf("once Core can rescan: old order %s, unrepaired %v, check done %v, sweep marker %v", x.state(old), x.unwatchedRows(), x.A.escrowSiblingsChecked.Load(), x.sweepRequired())
+	}
+}

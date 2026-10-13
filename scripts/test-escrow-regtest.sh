@@ -209,6 +209,20 @@
 # 5 sat/vB; the vendor's order wallet signs the bump copy, the signer co-signs it, it replaces the claim in the mempool
 # and confirms. Neither the signer's log nor the database holds the seed or a tprv.
 #
+# A-527 leg (the watch-only wallet repair on a pruned node, TestEscrowRegtestPrunedRepair; on the third node, started with
+# -prune=550 -fastprune, block times set with setmocktime): a per-order escrow created through the checkout form (its
+# creation set 10 days back) is paid; a day later 400 blocks and 6 hours after those 300 more are mined and
+# pruneblockchain prunes past the deposit's block; a newer escrow, created after the block at pruneheight, is paid.
+# Core's own behaviour is recorded first, as the operator into a scratch watch-only wallet. Observed on Core 31.1:
+# importdescriptors of the old escrow's descriptor from its creation time answers success false, error code -1
+# ("Rescan failed for descriptor with timestamp … This error could be caused by pruning or data corruption …"), yet the
+# wallet keeps the descriptor (getaddressinfo ismine true, its escrow:<order ID> label) and lists nothing it received;
+# in one call with a request whose timestamp is after the block at pruneheight (plus Core's 2-hour window), only the old
+# request fails. Then the restore gate and escrow_sweep_required are set and the App restarts onto an empty watch-only
+# wallet: one pass imports only the newer escrow (its order completes), lists the old one as cannot be rescanned on
+# this pruned node (not imported, its order still awaiting payment), and keeps the gate and the marker set; /admin
+# names the order; a second pass imports nothing.
+#
 # Ruled Phase 1 legs and where they run: release (Settlement, Cosign: claim), refund (Settlement, Cosign), dispute
 # (Cosign), comma injection refused (Gate), NONE paste refused (PracticeSign, Settlement), forged market slot refused
 # (Gate), conflicting outcome refused (Gate), spent-outpoint build refused (Gate), restart mid-send rebroadcasts the
@@ -221,8 +235,9 @@
 # for the buyer's own node), the app's user restricted by rpcwhitelist exactly as docs/operator-guide.md
 # ("Bitcoin escrow") describes, and the escrow signer's user restricted to decodepsbt, descriptorprocesspsbt and getdescriptorinfo ("Escrow
 # signer"); a second node like it (the same three users) started with -privatebroadcast -proxy=127.0.0.1:9 -listen=0
-# for the A-441 leg (its own chain: the two nodes are not connected); and a disposable PostgreSQL database. For
-# example:
+# for the A-441 leg (its own chain: the two nodes are not connected); a third like it started with -prune=550
+# -fastprune for the A-527 leg (its own chain too; a leg that fails part-way can leave its tip region pruned, so start
+# it afresh after one); and a disposable PostgreSQL database. For example:
 #
 #   salt=$(openssl rand -hex 16); hash=$(printf %s app-pass | openssl dgst -sha256 -hmac "$salt" | cut -d' ' -f2)
 #   ssalt=$(openssl rand -hex 16); shash=$(printf %s signer-pass | openssl dgst -sha256 -hmac "$ssalt" | cut -d' ' -f2)
@@ -231,14 +246,18 @@
 #     "-rpcauth=opsecmkt-escrow:$salt\$$hash" \
 #     "-rpcauth=opsecmkt-signer:$ssalt\$$shash" -rpcwhitelistdefault=0 \
 #     -rpcwhitelist=opsecmkt-signer:decodepsbt,descriptorprocesspsbt,getdescriptorinfo \
-#     -rpcwhitelist=opsecmkt-escrow:getblockchaininfo,getnetworkinfo,getrawchangeaddress,getaddressinfo,createpsbt,utxoupdatepsbt,importdescriptors,getdescriptorinfo,deriveaddresses,gettxout,keypoolrefill,walletprocesspsbt,descriptorprocesspsbt,combinepsbt,finalizepsbt,testmempoolaccept,sendrawtransaction,getwalletinfo,listreceivedbyaddress,gettransaction,listtransactions,listsinceblock
+#     -rpcwhitelist=opsecmkt-escrow:getblockchaininfo,getnetworkinfo,getrawchangeaddress,getaddressinfo,createpsbt,utxoupdatepsbt,importdescriptors,getdescriptorinfo,deriveaddresses,gettxout,keypoolrefill,walletprocesspsbt,descriptorprocesspsbt,combinepsbt,finalizepsbt,testmempoolaccept,sendrawtransaction,getwalletinfo,listreceivedbyaddress,gettransaction,listtransactions,listsinceblock,getblockhash,getblockheader
 #   # the same command again as escrow-regtest-private, published on 127.0.0.1:18453, ending in:
 #   #   -privatebroadcast -proxy=127.0.0.1:9 -listen=0
+#   # and again as escrow-regtest-pruned, published on 127.0.0.1:18463, ending in:
+#   #   -prune=550 -fastprune
 #   ESCROW_REGTEST_OPERATOR_RPC_URL=http://operator:operator-pass@127.0.0.1:18443 \
 #   ESCROW_REGTEST_APP_RPC_URL=http://opsecmkt-escrow:app-pass@127.0.0.1:18443 \
 #   ESCROW_REGTEST_SIGNER_RPC_URL=http://opsecmkt-signer:signer-pass@127.0.0.1:18443 \
 #   ESCROW_REGTEST_PRIVATE_OPERATOR_RPC_URL=http://operator:operator-pass@127.0.0.1:18453 \
 #   ESCROW_REGTEST_PRIVATE_APP_RPC_URL=http://opsecmkt-escrow:app-pass@127.0.0.1:18453 \
+#   ESCROW_REGTEST_PRUNED_OPERATOR_RPC_URL=http://operator:operator-pass@127.0.0.1:18463 \
+#   ESCROW_REGTEST_PRUNED_APP_RPC_URL=http://opsecmkt-escrow:app-pass@127.0.0.1:18463 \
 #   TEST_DATABASE_URL=postgres://…/a_disposable_database ./scripts/test-escrow-regtest.sh
 #
 # The transcript is written to ESCROW_REGTEST_LOG (default artifacts/real-chain/test-escrow-regtest-<UTC time>.log,
@@ -416,6 +435,7 @@ private_signet() {
   done
   say "NOT RUN on the private signet: TestEscrowRegtestRecovery (it fakes a reorganisation with invalidateblock and reconsiderblock, test-only RPCs this harness treats as regtest-only: on two connected nodes the invalidated block stays on node A, so what runs would be a split network, not the single-node reorganisation the leg is written for)"
   say "NOT RUN on the private signet: TestEscrowRegtestConflicted (the same reorganisation, with invalidateblock, and prioritisetransaction to bring the conflicted deposit back)"
+  say "NOT RUN on the private signet: TestEscrowRegtestPrunedRepair (it needs a node started with -prune=550 -fastprune whose block times setmocktime sets and pruneblockchain prunes, a regtest-only setup)"
   say "NOT RUN on the private signet: TestEscrowRegtestPrivateBroadcast (it needs a node started with -privatebroadcast behind a dead proxy and mines the queued transaction with generateblock, which takes no maxtries: Core's fixed 1000000 tries do not find a signet block)"
   if grep -qE 'tprv[1-9A-HJ-NP-Za-km-z]{100,}' "$body"; then
     say "FAILED: the transcript holds a serialized tprv (private key material)"
@@ -453,7 +473,7 @@ case "${1:-}" in
   *) echo "Usage: $0 [--private-signet]" >&2; exit 2 ;;
 esac
 
-for v in ESCROW_REGTEST_OPERATOR_RPC_URL ESCROW_REGTEST_APP_RPC_URL ESCROW_REGTEST_SIGNER_RPC_URL ESCROW_REGTEST_PRIVATE_OPERATOR_RPC_URL ESCROW_REGTEST_PRIVATE_APP_RPC_URL TEST_DATABASE_URL; do
+for v in ESCROW_REGTEST_OPERATOR_RPC_URL ESCROW_REGTEST_APP_RPC_URL ESCROW_REGTEST_SIGNER_RPC_URL ESCROW_REGTEST_PRIVATE_OPERATOR_RPC_URL ESCROW_REGTEST_PRIVATE_APP_RPC_URL ESCROW_REGTEST_PRUNED_OPERATOR_RPC_URL ESCROW_REGTEST_PRUNED_APP_RPC_URL TEST_DATABASE_URL; do
   if [[ -z "${!v:-}" ]]; then
     echo "Set $v (see the comment at the top of this script)." >&2
     exit 2
@@ -468,7 +488,7 @@ chain_of() { # chain_of <url>: the chain getblockchaininfo reports, or nothing
     --data '{"jsonrpc":"1.0","id":"escrow","method":"getblockchaininfo","params":[]}' --config - 2>/dev/null |
     sed -n 's/.*"chain":"\([a-z0-9]*\)".*/\1/p' || true
 }
-for v in ESCROW_REGTEST_OPERATOR_RPC_URL ESCROW_REGTEST_APP_RPC_URL ESCROW_REGTEST_PRIVATE_OPERATOR_RPC_URL ESCROW_REGTEST_PRIVATE_APP_RPC_URL; do
+for v in ESCROW_REGTEST_OPERATOR_RPC_URL ESCROW_REGTEST_APP_RPC_URL ESCROW_REGTEST_PRIVATE_OPERATOR_RPC_URL ESCROW_REGTEST_PRIVATE_APP_RPC_URL ESCROW_REGTEST_PRUNED_OPERATOR_RPC_URL ESCROW_REGTEST_PRUNED_APP_RPC_URL; do
   if [[ "$(chain_of "${!v}")" != regtest ]]; then
     echo "Refusing: the node at $v is not on regtest (or is unreachable)." >&2
     exit 1
@@ -480,12 +500,12 @@ log="${ESCROW_REGTEST_LOG:-artifacts/real-chain/test-escrow-regtest-$(date -u +%
 mkdir -p "$(dirname "$log")"
 echo "Bitcoin escrow regtest check; transcript: $log"
 set +e
-go test -count=1 -timeout 15m -run '^TestEscrowRegtest(PracticeSign|Funding|Settlement|Cosign|Recovery|Gate|Bump|Physical|Deadline|Reserve|Conflicted|BIP32|Signer|ArbiterRestore|ArbiterDeposit|PrivateBroadcast|PerOrderPractice|PerOrderEscrow|PerOrderRepair|ShapeBRelease|ShapeBSiblingStray|ShapeBSiblingStraySignerDown|ShapeBBump|Smoke)$' -v ./internal/market/ 2>&1 | tee "$log"
+go test -count=1 -timeout 15m -run '^TestEscrowRegtest(PracticeSign|Funding|Settlement|Cosign|Recovery|Gate|Bump|Physical|Deadline|Reserve|Conflicted|BIP32|Signer|ArbiterRestore|ArbiterDeposit|PrivateBroadcast|PerOrderPractice|PerOrderEscrow|PerOrderRepair|ShapeBRelease|ShapeBSiblingStray|ShapeBSiblingStraySignerDown|ShapeBBump|Smoke|PrunedRepair)$' -v ./internal/market/ 2>&1 | tee "$log"
 status=${PIPESTATUS[0]}
 set -e
 # Each leg is reported from its own go test result line, so one failing leg never makes another read as failed.
 failed=0
-for leg in TestEscrowRegtestPracticeSign TestEscrowRegtestFunding TestEscrowRegtestSettlement TestEscrowRegtestCosign TestEscrowRegtestRecovery TestEscrowRegtestGate TestEscrowRegtestBump TestEscrowRegtestPhysical TestEscrowRegtestDeadline TestEscrowRegtestReserve TestEscrowRegtestConflicted TestEscrowRegtestBIP32 TestEscrowRegtestSigner TestEscrowRegtestArbiterRestore TestEscrowRegtestArbiterDeposit TestEscrowRegtestPrivateBroadcast TestEscrowRegtestPerOrderPractice TestEscrowRegtestPerOrderEscrow TestEscrowRegtestPerOrderRepair TestEscrowRegtestShapeBRelease TestEscrowRegtestShapeBSiblingStray TestEscrowRegtestShapeBSiblingStraySignerDown TestEscrowRegtestShapeBBump TestEscrowRegtestSmoke; do
+for leg in TestEscrowRegtestPracticeSign TestEscrowRegtestFunding TestEscrowRegtestSettlement TestEscrowRegtestCosign TestEscrowRegtestRecovery TestEscrowRegtestGate TestEscrowRegtestBump TestEscrowRegtestPhysical TestEscrowRegtestDeadline TestEscrowRegtestReserve TestEscrowRegtestConflicted TestEscrowRegtestBIP32 TestEscrowRegtestSigner TestEscrowRegtestArbiterRestore TestEscrowRegtestArbiterDeposit TestEscrowRegtestPrivateBroadcast TestEscrowRegtestPerOrderPractice TestEscrowRegtestPerOrderEscrow TestEscrowRegtestPerOrderRepair TestEscrowRegtestShapeBRelease TestEscrowRegtestShapeBSiblingStray TestEscrowRegtestShapeBSiblingStraySignerDown TestEscrowRegtestShapeBBump TestEscrowRegtestSmoke TestEscrowRegtestPrunedRepair; do
   if grep -q -- "--- PASS: $leg " "$log"; then
     echo "PASS: $leg"
   elif grep -q -- "--- FAIL: $leg " "$log"; then
@@ -507,4 +527,4 @@ if [[ $status -ne 0 || $failed -ne 0 ]]; then
   echo "FAILED: go test exited $status; see $log" >&2
   exit 1
 fi
-echo "PASS: practice signing, escrow creation and funding, settlement building and party signing, co-signing, broadcast and confirmation, recovery and reconciliation, the Phase 1 gate's remaining adversarial legs, a same-recipient fee bump, a physical order's release signed by the buyer and the vendor with no arbiter signature, one released at its deadline with the vendor's signature co-signed by the market, no escrow key handed out again after a restore, a deposit conflicted at an unpaid cancellation and mined afterwards returned by a stray refund, the Go per-order key derivation agreeing with Core, the escrow signer co-signing a shape-(b) escrow and refusing what it must, the arbiter wallet backed up, wiped, restored (restorewallet, then the importdescriptors fallback) and co-signing with its fingerprint pin unchanged, a payment to the arbiter wallet (and 6000 dust outputs, and 1100 fee bumps of one payment) leaving escrow on while a spend from it disables escrow, and a settlement queued by -privatebroadcast behind a dead proxy reported queued or stuck after 6 blocks and cleared once mined, a per-order wallet key's practice signed by Core from the seed and the practice page, a per-order escrow created with Go and Core agreeing on its address and its sibling deposits recorded left out, its watch-only wallet repaired after a restore (with the signer up, down, and after a key change), a per-order escrow's release uploaded as a PSBT file and co-signed by the real escrow signer, a sibling deposit returned by a stray refund spending the sibling's own script and co-signed by the signer (and, with the signer down meanwhile, still shown, downloaded and signed, waiting only for the co-signature), a per-order claim fee-bumped and co-signed by the signer, and the public-network smoke's legs (practice signing, one escrow claimed and one refunded, each confirmed), on regtest; transcript in $log"
+echo "PASS: practice signing, escrow creation and funding, settlement building and party signing, co-signing, broadcast and confirmation, recovery and reconciliation, the Phase 1 gate's remaining adversarial legs, a same-recipient fee bump, a physical order's release signed by the buyer and the vendor with no arbiter signature, one released at its deadline with the vendor's signature co-signed by the market, no escrow key handed out again after a restore, a deposit conflicted at an unpaid cancellation and mined afterwards returned by a stray refund, the Go per-order key derivation agreeing with Core, the escrow signer co-signing a shape-(b) escrow and refusing what it must, the arbiter wallet backed up, wiped, restored (restorewallet, then the importdescriptors fallback) and co-signing with its fingerprint pin unchanged, a payment to the arbiter wallet (and 6000 dust outputs, and 1100 fee bumps of one payment) leaving escrow on while a spend from it disables escrow, and a settlement queued by -privatebroadcast behind a dead proxy reported queued or stuck after 6 blocks and cleared once mined, a per-order wallet key's practice signed by Core from the seed and the practice page, a per-order escrow created with Go and Core agreeing on its address and its sibling deposits recorded left out, its watch-only wallet repaired after a restore (with the signer up, down, and after a key change), a per-order escrow's release uploaded as a PSBT file and co-signed by the real escrow signer, a sibling deposit returned by a stray refund spending the sibling's own script and co-signed by the signer (and, with the signer down meanwhile, still shown, downloaded and signed, waiting only for the co-signature), a per-order claim fee-bumped and co-signed by the signer, the public-network smoke's legs (practice signing, one escrow claimed and one refunded, each confirmed), and the watch-only wallet repair on a pruned node leaving an escrow older than the prune height listed with the restore gate kept, on regtest; transcript in $log"
