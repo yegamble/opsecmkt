@@ -17,11 +17,22 @@ import (
 	"opsecmkt/internal/btc"
 )
 
+func testSocketPath(t *testing.T) string {
+	t.Helper()
+	// t.TempDir includes the test/subtest name, which can exceed Unix socket path limits on macOS.
+	dir, err := os.MkdirTemp("", "signer-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return filepath.Join(dir, "s.sock")
+}
+
 // startServer serves a signer (keys from testSeed, Core faked) on a Unix socket in a temporary directory.
 func startServer(t *testing.T) (string, *signEnv) {
 	t.Helper()
 	e := newSignEnv(t)
-	sock := filepath.Join(t.TempDir(), "signer.sock")
+	sock := testSocketPath(t)
 	ln, err := listenSocket(sock)
 	if err != nil {
 		t.Fatal(err)

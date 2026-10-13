@@ -58,6 +58,22 @@ type extPriv struct {
 	chain [32]byte
 }
 
+// wipe clears the buffers we own after deriving/serializing their successor. This is best effort: Go's runtime,
+// HMAC and big.Int can make copies, and the active account tprv must remain available for signing.
+func (p *extPriv) wipe() {
+	if p.key != nil {
+		wipeInt(p.key)
+		p.key = nil
+	}
+	clear(p.chain[:])
+}
+
+func wipeInt(k *big.Int) {
+	words := k.Bits()
+	clear(words[:cap(words)])
+	k.SetInt64(0)
+}
+
 func hmac512(key, data []byte) []byte {
 	m := hmac.New(sha512.New, key)
 	m.Write(data)
@@ -68,8 +84,10 @@ func hmac512(key, data []byte) []byte {
 // when 0 or >= n), IR the chain code.
 func masterKey(seed []byte) (extPriv, error) {
 	sum := hmac512([]byte("Bitcoin seed"), seed)
+	defer clear(sum)
 	k := new(big.Int).SetBytes(sum[:32])
 	if k.Sign() == 0 || k.Cmp(btc.N) >= 0 {
+		wipeInt(k)
 		return extPriv{}, errSeedMaster
 	}
 	m := extPriv{key: k}
@@ -82,16 +100,20 @@ func masterKey(seed []byte) (extPriv, error) {
 // instead: the account path is fixed (probability about 2^-127 per step).
 func hardenedChild(p extPriv, i uint32) (extPriv, error) {
 	data := make([]byte, 37)
+	defer clear(data)
 	p.key.FillBytes(data[1:33])
 	binary.BigEndian.PutUint32(data[33:], i|btc.Hardened)
 	sum := hmac512(p.chain[:], data)
+	defer clear(sum)
 	il := new(big.Int).SetBytes(sum[:32])
 	if il.Cmp(btc.N) >= 0 {
+		wipeInt(il)
 		return extPriv{}, errSeedMaster
 	}
 	k := il.Add(il, p.key)
 	k.Mod(k, btc.N)
 	if k.Sign() == 0 {
+		wipeInt(k)
 		return extPriv{}, errSeedMaster
 	}
 	c := extPriv{key: k}
@@ -104,11 +126,11 @@ func (p extPriv) hardenedChild(i uint32) (extPriv, error) { return hardenedChild
 // serialize is the key's BIP32 serialization as a root (depth 0, parent fingerprint 0, child number 0) under version.
 // Only the account key is serialized, and only into the descriptors handed to Core.
 func (p extPriv) serialize(version uint32) string {
-	raw := binary.BigEndian.AppendUint32(make([]byte, 0, 78), version)
-	raw = append(raw, make([]byte, 9)...) // depth, parent fingerprint, child number
-	raw = append(raw, p.chain[:]...)
-	raw = append(raw, 0)
-	raw = append(raw, p.key.FillBytes(make([]byte, 32))...)
+	raw := make([]byte, 78) // depth, parent fingerprint and child number remain zero
+	defer clear(raw)
+	binary.BigEndian.PutUint32(raw, version)
+	copy(raw[13:45], p.chain[:])
+	p.key.FillBytes(raw[46:])
 	return btc.Base58CheckEncode(raw)
 }
 
@@ -134,14 +156,18 @@ func keysFromSeedNet(seed []byte, main bool) (*signerKeys, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer func() { acct.wipe() }()
 	path, version := accountPath, uint32(tprvVersion)
 	if main {
 		path, version = mainAccountPath, btc.VersionXprv
 	}
 	for _, step := range path {
-		if acct, err = hardenedChild(acct, step); err != nil {
+		child, err := hardenedChild(acct, step)
+		acct.wipe()
+		if err != nil {
 			return nil, err
 		}
+		acct = child
 	}
 	return &signerKeys{main: main, accountTprv: acct.serialize(version), chain: acct.chain}, nil
 }
