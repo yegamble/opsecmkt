@@ -685,7 +685,11 @@ MONERO_NETWORK_FLAG=
 ```
 
 Without the line Compose uses `--stagenet`, and the escrow daemon check then refuses the network. The installer requires
-the blank line when `MONERO_NETWORK=mainnet` with the local `monero` profile. The `ESCROW_XMR_MAX_FEE` default (0.01
+the blank line when `MONERO_NETWORK=mainnet` with the local `monero` profile. The bundled `monero` service pins
+monerod's core RPC to `127.0.0.1:18089` inside its container, so the restricted RPC that escrow uses stays
+`http://monero:18081` on mainnet as on stagenet (before A-524 both servers asked for 18081 on mainnet and monerod exited
+at startup). That port layout is checked offline on stagenet ([operations tests](operations-tests.md#bundled-monerod-rpc-ports));
+no mainnet start of the bundled node is recorded. The `ESCROW_XMR_MAX_FEE` default (0.01
 XMR) was sized on a fakechain and is not measured on mainnet. A Monero deposit counts from the larger of
 `PAYMENT_CONFIRMATIONS_XMR` and 10 confirmations.
 

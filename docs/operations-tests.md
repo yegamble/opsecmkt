@@ -247,6 +247,25 @@ daemon can prevent cleanup; the unique project name is in the reported log path.
 Evidence is written to `artifacts/install-test/<project>/`. CI runs this same
 script as a required job and retains its logs and result for 14 days.
 
+## Bundled monerod RPC ports
+
+```sh
+./scripts/test-monerod-ports.sh
+```
+
+Requires Docker with Compose v2 and Python 3; pulls the pinned `simple-monerod` image if it is absent. monerod runs a
+core RPC server at the network's default port unless `--rpc-bind-port` pins it, and a restricted one on
+`--rpc-restricted-bind-port`; given one port for both it exits with `Failed to bind IPv4`. The bundled `monero`
+service's restricted port is 18081, mainnet's core default, so before A-524 it could not start on mainnet. The script
+renders the service's image and command with `docker compose config` (stagenet, no `.env`), forces the restricted port
+to 38081 (stagenet's core default, the same collision without mainnet), adds `--offline --no-igd` and runs it with
+`--network none`. It passes when monerod logs `core RPC server initialized OK` (bound to `127.0.0.1` on the pinned port)
+and `restricted RPC server initialized OK` on 38081, is still running five seconds later and logged no bind error; the
+exit trap removes the container. With compose's old command (no `--rpc-bind-port`) it fails before starting monerod;
+with that check removed, monerod on the old command exits with the bind error and the script fails (A-524's negative
+control, run by hand). It never starts mainnet, so a mainnet start of the bundled node remains unverified. CI's Tor
+image job runs it.
+
 ## Bundled-node escrow set-up from the installer's printed commands
 
 ```sh

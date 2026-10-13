@@ -789,6 +789,11 @@ jobs:
         run: bash scripts/test-tor-identity-restore.sh
         env:
           TOR_IMAGE: opsecmkt-tor:ci
+      # A-524: the pinned monerod, with compose.nodes.yaml's command and networking disabled, starts both its core and
+      # restricted RPC servers (stagenet, with the restricted port on stagenet's core default to stand in for mainnet).
+      - name: Bundled monerod RPC ports start offline (scripts/test-monerod-ports.sh)
+        timeout-minutes: 5
+        run: bash scripts/test-monerod-ports.sh
   browser:
     name: Playwright regressions
     runs-on: ubuntu-24.04
