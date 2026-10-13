@@ -2,8 +2,9 @@
 
 Pick a method, follow its page, then do the [first steps](first-steps.md).
 
-> **Prerelease:** `v0.1.0-alpha.2`. A new install takes **no payments** until you set up escrow, and escrow uses
-> test networks by default. See [Implementation status](../implementation-status.md).
+> **Prerelease:** `v0.1.0-alpha.2`. A new install takes **no payments** until you set up escrow. Its local nodes
+> default to **mainnet (real funds)**; test networks are an option. No mainnet run is recorded; mainnet is covered by
+> unit, database and simulated-RPC tests only. See [Implementation status](../implementation-status.md).
 
 ## Choose a method
 
@@ -15,6 +16,20 @@ Pick a method, follow its page, then do the [first steps](first-steps.md).
 | [Public domain](clearnet.md) | Run a market behind your HTTPS proxy | `https://YOUR-DOMAIN` | 15 min + node sync |
 
 New to OPSEC Market? Start with **local**. Running a real market? Use **onion service**.
+
+## Mainnet or test networks
+
+`init --tor` and `init --clearnet` with local nodes (the default) write mainnet. No mainnet run is recorded; mainnet is
+covered by unit, database and simulated-RPC tests only.
+
+| You want | Pass | Writes |
+| --- | --- | --- |
+| Mainnet (default) | nothing | `BITCOIN_CHAIN=main`, `MONERO_NETWORK=mainnet`, blank `MONERO_NETWORK_FLAG=` |
+| Test networks | `--bitcoin-network signet` and `--monero-network stagenet` | `signet`, `stagenet`, `MONERO_NETWORK_FLAG=--stagenet` |
+| No nodes | `--nodes none`, or `--local` | Nothing for payments |
+
+Details and the other options: [Enabling payments](enable-payments.md#choose-a-network). Upgrading never changes an
+existing install's network ([UPGRADING](../../UPGRADING.md#64-new-installs-default-to-mainnet-a-523)).
 
 > **Note:** nodes cannot be added after install. To take payments with a bundled node, choose them when you
 > install with Tor or public domain.

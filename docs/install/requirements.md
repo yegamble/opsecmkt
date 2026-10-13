@@ -1,6 +1,7 @@
 # Requirements
 
-What the host needs. The installer checks Docker, Compose and OpenSSL, but not disk space.
+What the host needs. The installer checks Docker, Compose and OpenSSL. With local nodes it also compares the free
+space of Docker's data directory with the estimate below and **warns only**: it never refuses for disk.
 
 ## Software
 
@@ -28,16 +29,25 @@ ClamAV checks uploads for known malware; it does not review picture content.
 
 ## Disk for nodes
 
-Optional. Pruned by default, but the first sync downloads the whole test chain and can take hours.
+Optional. Local nodes are pruned by default and **run mainnet unless you name a test network**
+([Enabling payments](enable-payments.md#choose-a-network)). No mainnet run is recorded; mainnet is covered by unit,
+database and simulated-RPC tests only. All figures are estimates.
 
-| Node | Pruned (default) | Full |
-| --- | --- | --- |
-| Bitcoin signet (default) | ~8 GB | ~28 GB |
-| Bitcoin testnet4 | ~5 GB | ~33 GB |
-| Monero stagenet | ~20 GB (estimate) | Not published |
-| Bitcoin regtest | Minimal, no sync | — |
+| Node | Pruned (default) | Full | First sync |
+| --- | --- | --- | --- |
+| Bitcoin mainnet (default) | ~30 GB: 15000 MiB of recent blocks (about two months) + ~14 GB chain state | ~870 GB: ~856 GB blocks + ~14 GB chain state | Days |
+| Monero mainnet (default) | 45 GB or more (45 GB in April 2022 per Monero's README, more today) | 130 GB or more (April 2022) | Days |
+| Bitcoin signet | ~8 GB | ~28 GB | Hours |
+| Bitcoin testnet4 | ~5 GB | ~33 GB | Hours |
+| Monero stagenet | ~20 GB | Not published | Hours |
+| Bitcoin regtest | Minimal, no sync | — | — |
 
-Both default nodes together: 25–30 GB. Details: [Local node pruning](../operator-guide.md#local-node-pruning).
+Both mainnet defaults together: 75 GB or more pruned. Both test defaults (signet and stagenet): 25–30 GB. The Bitcoin
+mainnet sizes are Bitcoin Core v31.1's chainparams estimates (≈ 856 GB of blocks + 14 GB of chain state).
+Details: [Local node pruning](../operator-guide.md#local-node-pruning).
+
+> **Warning:** a full disk stops the nodes. The installer prints `WARNING` when Docker's data directory has less free
+> space than the estimate, then continues. Free space before they sync.
 
 ## Network
 
