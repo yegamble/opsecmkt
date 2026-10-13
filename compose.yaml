@@ -120,6 +120,15 @@ services:
       interval: 5s
       timeout: 5s
       retries: 20
+    # postgres (70:70) from the start, with a read-only root: no root entrypoint step, so the volume must already
+    # belong to 70:70 (a new volume does; after restoring one as root, see docs/operator-guide.md#troubleshooting).
+    # The socket, lock and temporary files go to memory (A-536; scripts/test-service-hardening.sh); the entrypoint's
+    # "chmod: /var/run/postgresql: Operation not permitted" at each start is harmless.
+    user: '70:70'
+    read_only: true
+    tmpfs: [/var/run/postgresql, /tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
     mem_limit: 1g
     cpu_period: 100000
     cpu_quota: 200000

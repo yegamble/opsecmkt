@@ -722,7 +722,8 @@ jobs:
   tor-image:
     name: Tor image and offline configuration
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    # 20: the hardened-container start test (A-536) pulls four images and starts each twice.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -809,6 +810,11 @@ jobs:
       - name: Bundled monerod RPC ports start offline (scripts/test-monerod-ports.sh)
         timeout-minutes: 5
         run: bash scripts/test-monerod-ports.sh
+      # A-536: db, bitcoin, monero and monero-escrow-wallet with Compose's rendered user, capabilities, no-new-privileges,
+      # read-only root and tmpfs start offline on a new volume and again on the same one.
+      - name: Hardened database and node containers start offline (scripts/test-service-hardening.sh)
+        timeout-minutes: 10
+        run: bash scripts/test-service-hardening.sh
   browser:
     name: Playwright regressions
     runs-on: ubuntu-24.04
