@@ -586,10 +586,17 @@ func authAction(c *actionCtx) (actionResult, error) {
 		check := bcrypt.CompareHashAndPassword(hash, []byte(password))
 		if err != nil || check != nil {
 			a.logSignInRefusals()
+			if rescue {
+				a.logRescueRefusal()
+			}
 			return actionResult{}, fail(401, "Invalid handle or password")
 		}
 		if rescue {
-			return a.soleAdminRecovery(c, account.id, account.hash, f.Get("rescue_code"), a.signInNext(f.Get("next")))
+			res, err := a.soleAdminRecovery(c, account.id, account.hash, f.Get("rescue_code"), a.signInNext(f.Get("next")))
+			if err == errSoleAdminRecovery {
+				a.logRescueRefusal()
+			}
+			return res, err
 		}
 		a.refund(signInKey(handle)) // a correct password spends no sign-in budget
 		if account.suspended {
