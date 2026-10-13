@@ -48,6 +48,16 @@ services:
     env_file:
       - BITCOIN_RPC_AUTH-is-blank${BITCOIN_RPC_AUTH:+/../../../../../../../../../../../../../../../../../../../../../../../../../../../../../../../../dev/null}
     volumes: [bitcoin_data:/data]
+    # The image's entrypoint starts as root: it chmods and chowns /data and /home/bitcoin on every start (a volume
+    # restored as root needs that), then runs bitcoind as bitcoin with gosu; it keeps only the capabilities for that.
+    # DAC_OVERRIDE also lets the documented root `sh` commands edit /data/bitcoin.conf. The home directory is in memory,
+    # and so is /tmp, where docs/testnet-runbook.md has bitcoind write wallet backups before they are encrypted out of
+    # the container (A-536; scripts/test-service-hardening.sh).
+    read_only: true
+    tmpfs: [/home/bitcoin, /tmp]
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID]
+    security_opt: [no-new-privileges:true]
     # Sized for a pruned test-network node: its database cache and mempool (at most 300 MB by default) plus
     # headroom for the initial sync (docs/operator-guide.md#resource-limits-and-log-rotation).
     mem_limit: 2g
@@ -67,13 +77,21 @@ services:
     # monerod also runs a core RPC server, at the network's default port (18081 on mainnet) unless pinned. It is pinned
     # to 127.0.0.1:18089 inside the container: on mainnet it would otherwise take 18081 from the restricted server and
     # monerod would exit with "Failed to bind IPv4" (A-524; scripts/test-monerod-ports.sh). The app and
-    # monero-escrow-wallet use the restricted 18081.
+    # monero-escrow-wallet use the restricted 18081. --no-igd and --no-zmq are image defaults this command replaces:
+    # no UPnP port mapping on the host's router, no ZMQ server (A-536). The image's --enable-dns-blocklist stays off:
+    # its lookups would leave outside Tor with compose.nodes-tor.yaml.
     command: >-
       ${MONERO_NETWORK_FLAG---stagenet} --data-dir=/home/monero/.bitmonero --restricted-rpc
       --rpc-bind-ip=127.0.0.1 --rpc-bind-port=18089
-      --rpc-restricted-bind-ip=0.0.0.0 --rpc-restricted-bind-port=18081 --confirm-external-bind
+      --rpc-restricted-bind-ip=0.0.0.0 --rpc-restricted-bind-port=18081 --confirm-external-bind --no-igd --no-zmq
       ${MONERO_PRUNE_FLAGS---prune-blockchain --sync-pruned-blocks}
     volumes: [monero_data:/home/monero/.bitmonero]
+    # The image's own user from the start, with a read-only root: no root entrypoint step, so the volume must already
+    # belong to 1000:1000 (a new volume does; after restoring one as root, see docs/operator-guide.md#troubleshooting).
+    user: '1000:1000'
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
     # monerod starts a thread per core for sync and verification, so pids_limit leaves room on large hosts.
     mem_limit: 2g
     cpu_period: 100000
@@ -99,6 +117,11 @@ services:
     env_file:
       - ESCROW_XMR_WALLET_RPC_PASSWORD-is-blank${ESCROW_XMR_WALLET_RPC_PASSWORD:+/../../../../../../../../../../../../../../../../../../../../../../../../../../../../../../../../dev/null}
     volumes: [monero_escrow_wallet:/home/monero/wallet]
+    # As for monero: the image's user, no capabilities, a read-only root; the volume must belong to 1000:1000.
+    user: '1000:1000'
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
     # An escrow wallet holds one account per order; PAYE-E2 measured 574 MB at peak over five 10,000-account wallets
     # (docs/verification.md), with room for its account database.
     mem_limit: 1g

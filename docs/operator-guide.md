@@ -2457,6 +2457,16 @@ The escrow watchers log what they do to an escrow in lines that start `escrow:` 
 
 When the database connection fails at startup the server exits with its class and no part of `DATABASE_URL`: `authentication failed (SQLSTATE 28P01)` or `(SQLSTATE 28000)` for a wrong user or password or a `pg_hba.conf` rule, `database missing (SQLSTATE 3D000)`, `host not found`, `connection refused`, `timed out`, or `TLS required` (the server accepts only encrypted connections; set `sslmode=require` or `verify-full`).
 
+**Volume ownership after a restore** (A-536). `db`, `monero` and `monero-escrow-wallet` start as their images' users (`70:70` for PostgreSQL, `1000:1000` for both Monero services) with no capabilities, so they cannot take back a volume restored as root (for example by `tar` as root from an archive without the original owners). `db` then exits with `initdb: error: could not access directory "/var/lib/postgresql/data": Permission denied`, `monero` exits with `Failed to open lmdb environment: Permission denied`, and `monero-escrow-wallet` starts but gets `Permission denied` when it creates or opens a wallet. Stop the service, give the volume back to that user and start it again (here the internal database, in the default `opsecmkt` project):
+
+```sh
+docker compose stop db
+docker run --rm --network none -v opsecmkt_postgres_data:/v --entrypoint chown postgres:17-alpine -R 70:70 /v
+docker compose up -d db
+```
+
+For `opsecmkt_monero_data` or `opsecmkt_monero_escrow_wallet` use `-R 1000:1000` (with the monerod image, for example). `bitcoin` is not affected: its image's entrypoint starts as root and gives `/data` back to `bitcoin` on every start. The line `chmod: /var/run/postgresql: Operation not permitted` at every start of `db` is harmless: that directory is in memory and PostgreSQL can write to it.
+
 **Image scanner.** Photo and avatar uploads need the ClamAV scanner: `CLAMD_ADDRESS` is clamd's `host:port` on the scanner network (the installer writes `clamd:3310`; empty turns uploads off), and `SCANNER_MAX_SIGNATURE_AGE_DAYS` (default 30, from 7 to 90) is how old the daily signatures may be before uploads pause. The app refuses to start with a malformed value of either, naming the variable. No setting lets an upload skip the scan. The app asks clamd for `PING` and `VERSION` every 30 seconds; `/admin#image-scanner` shows the result, and each change of state writes one line:
 
 ```text
