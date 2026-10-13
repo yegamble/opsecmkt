@@ -152,10 +152,18 @@ git clone https://github.com/yegamble/opsecmkt.git && cd opsecmkt
 ./scripts/docs-onion.sh down      # stop; keeps the address
 ```
 
-To publish changes, pull and run `up` again. The address lives only in the `opsecmkt-docs_tor_identity` volume:
-back it up encrypted, as for the market's onion keys
-([Secrets, .env and onion identities](operator-guide.md#secrets-env-and-onion-identities)). Publish the address in
-a signed statement before linking to it.
+To publish changes, pull and run `up` again.
+
+The address exists only as the keys in the `opsecmkt-docs_tor_identity` volume. Back them up with
+[age](https://age-encryption.org/) before publishing the address, and store the backup away from the age identity:
+
+```sh
+AGE_RECIPIENT=age1... ./scripts/docs-onion.sh backup-keys          # writes backups/docs-onion-<UTC>.tar.age
+AGE_IDENTITY=key.txt ./scripts/docs-onion.sh restore-keys FILE     # new host, before the first up
+```
+
+`backup-keys` never overwrites a file, and `restore-keys` refuses a volume that already holds keys. Publish the
+address in a signed statement before linking to it.
 
 **Cloudflare.** Cloudflare cannot host an onion address you own. Its
 [Onion Routing](https://developers.cloudflare.com/network/onion-routing) only serves a site already proxied on a
