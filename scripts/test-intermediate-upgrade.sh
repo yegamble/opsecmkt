@@ -5,6 +5,7 @@ set -euo pipefail
 umask 077
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
+source "$root/scripts/a144_source_archive.sh"
 
 disposable_cluster=false
 if [[ ${1:-} == --disposable-cluster ]]; then
@@ -127,7 +128,7 @@ PY
 
 old_source="$work/intermediate"
 mkdir -p "$old_source"
-git archive --format=tar "$intermediate_ref" | tar -x -C "$old_source"
+git archive --format=tar "$intermediate_ref" | extract_a144_source - "$old_source"
 (cd "$old_source" && GOWORK=off CGO_ENABLED=0 go build -trimpath -o "$work/intermediate-server" ./cmd/server)
 if [[ -z $current_binary ]]; then
   GOWORK=off CGO_ENABLED=0 go build -trimpath -o "$work/current-server" ./cmd/server
