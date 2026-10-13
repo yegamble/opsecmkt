@@ -71,6 +71,9 @@ Open the printed setup link, paste the token, create the administrator.
 | **Administrators** | Roles, suspensions, second-factor resets, takedowns, CAPTCHA, payment intake, escrow recovery, canary, signed audit exports |
 | **Operators** | One-command install, internal or external PostgreSQL, optional pruned nodes, onion mirrors, encrypted backups |
 
+Photo uploads need the optional ClamAV scanner. ClamAV checks uploads for known malware; it does not review picture
+content.
+
 ## Payments
 
 Per-order escrow, off by default. A node alone does not turn it on.

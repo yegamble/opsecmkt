@@ -24,7 +24,7 @@ PostgreSQL 17 runs in a container. No host PostgreSQL needed unless you use an
 | Default | Not yet measured |
 | Photo uploads on (ClamAV scanner) | **3 GiB minimum**, 4 GiB advised. The installer refuses below 3 GiB. |
 
-ClamAV checks uploads for known malware. It does not review what a picture shows.
+ClamAV checks uploads for known malware; it does not review picture content.
 
 ## Disk for nodes
 
