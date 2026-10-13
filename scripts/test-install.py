@@ -286,7 +286,9 @@ def exercise(repo, environment, second, second_environment, third, third_environ
     require(upgraded.get('COMPOSE_PROJECT_NAME') == third_environment['COMPOSE_PROJECT_NAME'],
             "upgrade did not record the project its containers use")
     require(upgraded.get('APP_PORT') == third_environment['APP_PORT'], 'upgrade did not record the running port')
-    require(upgraded.get('MONERO_WALLET_IMAGE', '').endswith(':v0.18.5.1'), 'upgrade did not pin the wallet image')
+    # A-523: default node images are pinned by tag and digest.
+    require(re.fullmatch(r'ghcr\.io/sethforprivacy/simple-monero-wallet-rpc:v0\.18\.5\.1@sha256:[0-9a-f]{64}',
+                         upgraded.get('MONERO_WALLET_IMAGE', '')) is not None, 'upgrade did not pin the wallet image')
     require(len(list(third.glob('.env.pre-upgrade-*'))) == 1, 'upgrade wrote no pre-upgrade copy')
     wait_for(lambda: 'Get your marketplace ready' in third_browser.page('/admin'),
              'The session did not survive the upgrade')
