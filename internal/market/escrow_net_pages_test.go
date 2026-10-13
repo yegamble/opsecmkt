@@ -347,6 +347,27 @@ func TestEscrowKeyAndCanaryRealFundsWording(t *testing.T) {
 			x.checkWording(c.key, c.canary, c.chain == "main")
 		})
 	}
+	// A-540: a mainnet market whose escrow node has not answered and whose chain was never pinned still says mainnet, with
+	// real funds, on /canary: never "a test network (chain not verified yet)" beside the catalog's "Mainnet · real funds".
+	t.Run("mainnet, chain not verified yet", func(t *testing.T) {
+		x := newEscrowEnv(t)
+		x.DB.Exec("DELETE FROM settings WHERE key=$1", escrowChainPin)
+		if _, err := x.DB.Exec(`UPDATE bitcoin_escrow_health SET enabled=false,disabled_class='not_checked',last_pass=NULL,
+			chain='unknown',height=NULL,pin_match=NULL,keypool_high_water=NULL,highest_market_index=0,updated_at=now() WHERE singleton`); err != nil {
+			t.Fatal(err)
+		}
+		mainnetCore(t, x.core)
+		t.Setenv("BITCOIN_CHAIN", "main")
+		srvDown(x, true)
+		x.restart()
+		if !x.A.live || x.A.escrowNetKnown() {
+			t.Fatalf("live %v, chain known %v: want a live market whose chain is not known yet", x.A.live, x.A.escrowNetKnown())
+		}
+		x.checkWording("", "It runs on Bitcoin mainnet, with real funds. The project has no recorded mainnet run: escrow on mainnet is the operator's choice, with real funds.", true)
+		if canary := pageLine(x.page("/canary", ""), "<li>Bitcoin escrow ("); strings.Contains(canary, "test network") || strings.Contains(canary, "not verified yet") {
+			t.Errorf("/canary on a mainnet market names a test network or an unverified chain:\n%s", canary)
+		}
+	})
 	t.Run("chain not verified yet", func(t *testing.T) {
 		x := newEscrowEnv(t)
 		x.DB.Exec("DELETE FROM settings WHERE key=$1", escrowChainPin)
@@ -376,6 +397,9 @@ func (x *escrowEnv) checkWording(key, canary string, mainnet bool) {
 		x.t.Errorf("/canary lacks %q:\n%s", canary, canaryLine)
 	}
 	for name, line := range map[string]string{"/escrow-key": keyLine, "/canary": canaryLine} {
+		if line == "" {
+			continue // an expected absence (key == "") was asserted above
+		}
 		if mainnet && strings.Contains(line, "no real funds") {
 			x.t.Errorf("%s says \"no real funds\" on a mainnet market:\n%s", name, line)
 		}

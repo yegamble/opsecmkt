@@ -73,7 +73,8 @@ func (a *App) escrowNetwork() string {
 
 // escrowNetKnown reports whether escrowNetwork's chain is one an escrow node reported or this database's escrows are on
 // (QA4W6-8): not while a market that has never run escrow waits for its node's first answer. Until then PageData's
-// EscrowNet is "" and the pages say the chain is not verified yet, as Monero escrow's do (QA4W4B-1).
+// EscrowNet is "" and the pages say the chain is not verified yet, as Monero escrow's do (QA4W4B-1); on a mainnet
+// market it is "main" (paymentsGlobalLoader, A-540), the only chain escrow can start on there.
 func (a *App) escrowNetKnown() bool {
 	return a.escrow.Load() != nil || a.escrowNet.Load() != nil
 }
