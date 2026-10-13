@@ -33,7 +33,9 @@ services:
       BITCOIN_RPC_URL: ${BITCOIN_RPC_URL:-}
       # Keep obsolete mappings blank by default so old values reach the startup guard.
       BITCOIN_WALLET: ${BITCOIN_WALLET:-}
-      # Blank chain/network: accept whichever test network the node reports (mainnet is always refused).
+      # .env picks the network class. Blank chain/network: accept whichever test network the node reports (a mainnet node
+      # is refused). BITCOIN_CHAIN=main or MONERO_NETWORK=mainnet makes this a mainnet market, an operator opt-in with
+      # real funds (A-460; docs/operator-guide.md#mainnet).
       BITCOIN_CHAIN: ${BITCOIN_CHAIN:-}
       PAYMENT_CONFIRMATIONS_BTC: ${PAYMENT_CONFIRMATIONS_BTC:-3}
       MONERO_RPC_URL: ${MONERO_RPC_URL:-}
@@ -45,8 +47,8 @@ services:
       BITCOIN_MAX_TIP_AGE: ${BITCOIN_MAX_TIP_AGE:-2h}
       MONERO_MAX_TIP_AGE: ${MONERO_MAX_TIP_AGE:-1h}
       AUDIT_SIGNING_KEY: ${AUDIT_SIGNING_KEY:-}
-      # Bitcoin escrow: test networks only (regtest, signet, testnet4), off unless ESCROW_BTC=on; blank values use the app defaults
-      # (docs/operator-guide.md#bitcoin-escrow).
+      # Bitcoin escrow: test networks (regtest, signet, testnet4), or mainnet on a mainnet market (BITCOIN_CHAIN=main, A-460);
+      # off unless ESCROW_BTC=on; blank values use the app defaults (docs/operator-guide.md#bitcoin-escrow).
       ESCROW_BTC: ${ESCROW_BTC:-}
       ESCROW_BTC_RPC_URL: ${ESCROW_BTC_RPC_URL:-}
       ESCROW_BTC_ARBITER_WALLET: ${ESCROW_BTC_ARBITER_WALLET:-}
@@ -56,8 +58,8 @@ services:
       ESCROW_BTC_FEE_RATE: ${ESCROW_BTC_FEE_RATE:-}
       # The escrow signer's socket, as compose.nodes.yaml mounts it (/run/escrow-signer/signer.sock); blank = no signer.
       ESCROW_SIGNER_SOCKET: ${ESCROW_SIGNER_SOCKET:-}
-      # Monero escrow: a local Monero fakechain or stagenet only, off unless ESCROW_XMR=on; blank values use the app defaults
-      # (docs/operator-guide.md#monero-escrow). ESCROW_XMR_SEED_KEY is a path inside this
+      # Monero escrow: a local Monero fakechain or stagenet, or mainnet on a mainnet market (MONERO_NETWORK=mainnet, A-460);
+      # off unless ESCROW_XMR=on; blank values use the app defaults (docs/operator-guide.md#monero-escrow). ESCROW_XMR_SEED_KEY is a path inside this
       # container: mount the public key file read-only there (the app container has no volume for it by default).
       ESCROW_XMR: ${ESCROW_XMR:-}
       ESCROW_XMR_WALLET_RPC_URL: ${ESCROW_XMR_WALLET_RPC_URL:-}

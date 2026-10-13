@@ -3,8 +3,10 @@
 # alternatives. The defaults are pinned, supported releases (Bitcoin Core 31.1, Monero v0.18.5.1). Never change
 # them to latest: follow the bump checklist in docs/operator-guide.md#node-image-versions. Add @sha256:<digest>
 # for reproducible deployments.
-# No RPC or peer ports are published to the host. The local Bitcoin node supports regtest, testnet4 and signet (default signet, the public network with recorded proof; BITCOIN_CHAIN picks another, and the escrow chain pin makes the first one sticky);
-# the Monero daemon is restricted to stagenet for escrow support. RPC ports are pinned across those networks.
+# No RPC or peer ports are published to the host. .env picks each node's network. The local Bitcoin node runs regtest, testnet4 or signet (default signet, the public network with recorded proof; BITCOIN_CHAIN picks another, and the escrow chain pin makes the first one sticky),
+# or mainnet with BITCOIN_CHAIN=main; the Monero daemon runs stagenet (MONERO_NETWORK_FLAG, default --stagenet), or mainnet with a blank
+# MONERO_NETWORK_FLAG=. Mainnet is only for a mainnet market, an operator opt-in with real funds (A-460; docs/operator-guide.md#mainnet).
+# RPC ports are pinned across those networks.
 # The installer keeps the Bitcoin RPC password in private .env for operator setup and puts only its salted HMAC
 # verifier in bitcoind's -rpcauth argument. Compose refuses a bitcoin-profile service with blank
 # BITCOIN_RPC_AUTH; otherwise an unset verifier would leave only cookie authentication. Compose also refuses
@@ -62,8 +64,13 @@ services:
     # MONERO_PRUNE_FLAGS= in .env adds no flag and runs a full node, while an unset one uses the default.
     # See docs/operator-guide.md#local-node-pruning. MONERO_NETWORK_FLAG (default --stagenet) picks the network: a
     # blank MONERO_NETWORK_FLAG= runs mainnet, which monerod selects with no flag (MONERO_NETWORK=mainnet, A-460).
+    # monerod also runs a core RPC server, at the network's default port (18081 on mainnet) unless pinned. It is pinned
+    # to 127.0.0.1:18089 inside the container: on mainnet it would otherwise take 18081 from the restricted server and
+    # monerod would exit with "Failed to bind IPv4" (A-524; scripts/test-monerod-ports.sh). The app and
+    # monero-escrow-wallet use the restricted 18081.
     command: >-
       ${MONERO_NETWORK_FLAG---stagenet} --data-dir=/home/monero/.bitmonero --restricted-rpc
+      --rpc-bind-ip=127.0.0.1 --rpc-bind-port=18089
       --rpc-restricted-bind-ip=0.0.0.0 --rpc-restricted-bind-port=18081 --confirm-external-bind
       ${MONERO_PRUNE_FLAGS---prune-blockchain --sync-pruned-blocks}
     volumes: [monero_data:/home/monero/.bitmonero]
