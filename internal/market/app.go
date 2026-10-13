@@ -56,6 +56,8 @@ type App struct {
 	writeLimits      map[string]bucket         // independent per-account write budgets (A-75)
 	inFlight         map[string]int            // OneAtATime actions in progress, by path and account (enterOneAtATime)
 	signInLogAt      time.Time                 // last "sign-in limiter refusing" log line (guarded by mu)
+	rescueRefused    int                       // sole-admin rescue refusals not yet logged (guarded by mu)
+	rescueLogAt      time.Time                 // last "sole-admin rescue refused" log line (guarded by mu)
 	live             bool                      // a mainnet market: BITCOIN_CHAIN=main or MONERO_NETWORK=mainnet (marketLiveFromEnv, A-460)
 	escrowConfigured bool                      // ESCROW_BTC=on (escrow_rpc.go); escrow may still be disabled
 	escrowCfg        escrowConfig              // the ESCROW_BTC settings read at startup, for the escrow watcher's retries
@@ -302,6 +304,10 @@ func randomToken() string {
 	return hex.EncodeToString(b)
 }
 func digest(s string) string { h := sha256.Sum256([]byte(s)); return hex.EncodeToString(h[:]) }
+
+// csrf is HMAC(a.key, token) where token is the session cookie value, which a client can choose (any 64-character
+// value). Every other input HMAC'd with a.key must therefore carry its own distinct prefix (as captchaSeed's
+// "captcha:" does), or a client could obtain that MAC as the CSRF token of a chosen cookie (SEC-3).
 func (a *App) csrf(token string) string {
 	h := hmac.New(sha256.New, a.key)
 	h.Write([]byte(token))
@@ -424,6 +430,24 @@ func (a *App) logSignInRefusals() {
 	a.mu.Unlock()
 	if n > 0 {
 		log.Printf("sign-in limiter refusing handles=%d", n)
+	}
+}
+
+// logRescueRefusal counts one refused sole-admin rescue (a wrong password, or the right password with a code
+// soleAdminRecovery refused) and writes "sole-admin rescue refused attempts=N", at most once a minute, where N is
+// the refusals since the previous line. Like logSignInRefusals it names no handle, account or client. It is the
+// operator's only signal of guessing on this path, which deliberately charges no budget a stranger could spend
+// to lock the sole administrator out (A-534, A-159(a)); it touches no limiter.
+func (a *App) logRescueRefusal() {
+	a.mu.Lock()
+	now, n := time.Now(), 0
+	a.rescueRefused++
+	if now.Sub(a.rescueLogAt) >= time.Minute {
+		n, a.rescueRefused, a.rescueLogAt = a.rescueRefused, 0, now
+	}
+	a.mu.Unlock()
+	if n > 0 {
+		log.Printf("sole-admin rescue refused attempts=%d", n)
 	}
 }
 
