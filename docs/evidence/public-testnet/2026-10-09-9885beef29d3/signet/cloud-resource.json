@@ -1,9 +1,4 @@
 {
-  "id": 607653271,
-  "name": "opsecmkt-public-tests-20261009",
-  "tags": [
-    "opsecmkt-warroom-temporary"
-  ],
   "created_at": "2026-10-09T15:29:09Z",
   "observed_at": "2026-10-09T18:21:53.681750+00:00",
   "size": "s-4vcpu-8gb",
@@ -15,5 +10,13 @@
   ],
   "deleted": true,
   "cost_note": "Current hourly rate, not an invoice; the host was resized during validation. No extra volumes or backup service.",
-  "cleanup_recorded_at": "2026-10-09T18:24:39.966080+00:00"
+  "cleanup_recorded_at": "2026-10-09T18:24:39.966080+00:00",
+  "redaction": {
+    "fields": [
+      "id",
+      "name",
+      "tags"
+    ],
+    "reason": "Cloud resource identifiers and location metadata omitted from public evidence for operator privacy."
+  }
 }
