@@ -5,6 +5,9 @@
 backups
 artifacts
 design-reference
+.claude
+.ralph
+.ralphrc
 *.dump
 *.age
 # Plaintext onion keys
@@ -24,3 +27,6 @@ test-results-wallet
 site
 .venv-docs
 **/node_modules
+
+# Wrangler local caches, databases, and observability traces.
+**/.wrangler

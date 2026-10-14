@@ -108,7 +108,7 @@ func New(ctx context.Context, preview bool) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	a := &App{startedAt: time.Now().UTC(), templates: t, preview: preview, mode: os.Getenv("APP_MODE"), limits: make(map[string]bucket), writeLimits: make(map[string]bucket)}
+	a := &App{startedAt: time.Now().UTC(), templates: t, preview: preview, mode: os.Getenv("APP_MODE"), limits: make(map[string]bucket), writeLimits: make(map[string]bucket), inFlight: make(map[string]int)}
 	if a.mode == "" {
 		a.mode = "clearnet"
 	}
@@ -318,8 +318,9 @@ func (a *App) cookie(w http.ResponseWriter, name, value string, age int) {
 }
 
 // allow counts one request against key's budget of n per ten minutes. When the table is full it evicts
-// the non-blocking entry with the lowest count (earliest expiry breaks ties); if every entry is blocking
-// it refuses the new key instead, so junk keys can never reset a counter that is refusing requests.
+// the non-blocking entry with the lowest count (earliest expiry breaks ties). Active TOTP verification
+// entries are protected even before exhaustion, so fresh handles cannot reset a recovery allowance.
+// If every entry is blocking or protected it refuses the new key instead.
 func (a *App) allow(key string, n int) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -375,7 +376,7 @@ func allowIn(limits map[string]bucket, key string, n int, now time.Time) bool {
 		if len(limits) >= 4096 {
 			victim, found := "", false
 			for k, v := range limits {
-				if v.Count >= v.Limit {
+				if v.Count >= v.Limit || strings.HasPrefix(k, "totp-verify:") {
 					continue
 				}
 				if w := limits[victim]; !found || v.Count < w.Count || (v.Count == w.Count && v.Until.Before(w.Until)) {
@@ -436,8 +437,8 @@ func (a *App) logSignInRefusals() {
 // logRescueRefusal counts one refused sole-admin rescue (a wrong password, or the right password with a code
 // soleAdminRecovery refused) and writes "sole-admin rescue refused attempts=N", at most once a minute, where N is
 // the refusals since the previous line. Like logSignInRefusals it names no handle, account or client. It is the
-// operator's only signal of guessing on this path, which deliberately charges no budget a stranger could spend
-// to lock the sole administrator out (A-534, A-159(a)); it touches no limiter.
+// operator's signal of guessing on this path. authGate separately charges the account's factor budget before
+// password verification; this count-only logging helper touches no limiter (A-534, A-159(a)).
 func (a *App) logRescueRefusal() {
 	a.mu.Lock()
 	now, n := time.Now(), 0

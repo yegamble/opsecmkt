@@ -39,3 +39,6 @@ hs_ed25519_*
 # Documentation site build output and its virtualenv (mkdocs.yml).
 /site/
 /.venv-docs/
+
+# Wrangler local caches, databases, and observability traces.
+.wrangler/

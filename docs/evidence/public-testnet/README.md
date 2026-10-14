@@ -17,3 +17,18 @@ The operator selects either XMRChain or Librenode with an exact HTTPS block URL.
 independently fetch the selected host's block API and refuse a missing or mismatching response; there is no
 automatic fallback. Public API availability and a syncing cloud node are preparation, not passing escrow evidence.
 The [2026-10-10 public stagenet digital claim](2026-10-10-ac71878dfde4/stagenet-xmr/README.md) passed on frozen ac71878dfde4: actual 0.01 sXMR funding and confirmed release, ten confirmations each, and exact planned claimant receipt. It includes observed sync/storage, verified private recovery and cloud cleanup. Public refunds remain unmeasured; the offline stagenet fork is a separate evidence tier.
+
+## Publishing supplemental cloud records
+
+The runners write the proof manifest and transcript; supplemental cloud records are reviewed separately.
+Publish measured capacity, cost, storage, timestamps and cleanup results. Omit cloud account and resource IDs,
+resource names and tags, host addresses, region or VPC identifiers, SSH fingerprints and storage bucket names.
+Never copy an unfiltered provider response into public evidence.
+
+When removing metadata from an existing supplemental record, list the omitted fields and reason in its
+`redaction` object. Preserve the proof transcript, its hash and the measured results. The records from
+2026-10-09 and 2026-10-10 have had cloud identifiers removed; prior Git revisions retain their original values.
+The redacted cleanup record reports the observed deletion but no longer identifies a provider resource.
+
+Run `python3 -m unittest discover -s tests -p 'test_public_evidence_privacy.py' -v` before publishing.
+This check limits supplemental cloud JSON fields; review prose and new evidence formats separately.

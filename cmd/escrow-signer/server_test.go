@@ -18,17 +18,22 @@ import (
 	"opsecmkt/internal/btc"
 )
 
-// startServer serves a signer (keys from testSeed, Core faked) on a Unix socket in a temporary directory.
-func startServer(t *testing.T) (string, *signEnv) {
+func testSocketPath(t *testing.T) string {
 	t.Helper()
-	e := newSignEnv(t)
-	// Not t.TempDir(): its name carries the test's name, and a Unix socket path is limited to 104 bytes on macOS.
-	dir, err := os.MkdirTemp("", "sg")
+	// t.TempDir includes the test/subtest name, which can exceed Unix socket path limits on macOS.
+	dir, err := os.MkdirTemp("", "signer-")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
-	sock := filepath.Join(dir, "signer.sock")
+	return filepath.Join(dir, "s.sock")
+}
+
+// startServer serves a signer (keys from testSeed, Core faked) on a Unix socket in a temporary directory.
+func startServer(t *testing.T) (string, *signEnv) {
+	t.Helper()
+	e := newSignEnv(t)
+	sock := testSocketPath(t)
 	ln, err := listenSocket(sock)
 	if err != nil {
 		t.Fatal(err)
@@ -190,7 +195,7 @@ func TestSignerSocketFile(t *testing.T) {
 	}
 }
 
-// TestSignerSocketConnectionCap (A-537): at most maxConns connections are served at once. One more is closed at once
+// TestSignerSocketConnectionCap (A-537): at most maxSignerConns connections are served at once. One more is closed at once
 // with no reply byte (the app reads a closed connection as "signer unreachable" and waits; a JSON error would be taken
 // as a refusal), and a slot freed by a closed connection is usable again.
 func TestSignerSocketConnectionCap(t *testing.T) {
@@ -202,7 +207,7 @@ func TestSignerSocketConnectionCap(t *testing.T) {
 			c.Close()
 		}
 	}()
-	for i := 0; i < maxConns; i++ {
+	for i := 0; i < maxSignerConns; i++ {
 		c, err := net.Dial("unix", sock)
 		if err != nil {
 			t.Fatal(err)

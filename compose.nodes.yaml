@@ -3,9 +3,10 @@
 # alternatives. The defaults are pinned, supported releases (Bitcoin Core 31.1, Monero v0.18.5.1). Never change
 # them to latest: follow the bump checklist in docs/operator-guide.md#node-image-versions. Add @sha256:<digest>
 # for reproducible deployments.
-# No RPC or peer ports are published to the host. .env picks each node's network. The local Bitcoin node runs regtest, testnet4 or signet (default signet, the public network with recorded proof; BITCOIN_CHAIN picks another, and the escrow chain pin makes the first one sticky),
-# or mainnet with BITCOIN_CHAIN=main; the Monero daemon runs stagenet (MONERO_NETWORK_FLAG, default --stagenet), or mainnet with a blank
-# MONERO_NETWORK_FLAG=. Mainnet is only for a mainnet market, an operator opt-in with real funds (A-460; docs/operator-guide.md#mainnet).
+# No RPC or peer ports are published to the host. The local Bitcoin node defaults to signet; BITCOIN_CHAIN also
+# selects regtest, testnet4 or explicit mainnet. The escrow chain pin makes the selected network sticky.
+# Monero defaults to stagenet; mainnet requires MONERO_NETWORK=mainnet and a blank MONERO_NETWORK_FLAG.
+# Mainnet is only for a mainnet market, an operator opt-in with real funds (docs/operator-guide.md#mainnet).
 # RPC ports are pinned across those networks.
 # The installer keeps the Bitcoin RPC password in private .env for operator setup and puts only its salted HMAC
 # verifier in bitcoind's -rpcauth argument. Compose refuses a bitcoin-profile service with blank
@@ -90,6 +91,7 @@ services:
     # belong to 1000:1000 (a new volume does; after restoring one as root, see docs/operator-guide.md#troubleshooting).
     user: '1000:1000'
     read_only: true
+    tmpfs: [/tmp]
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     # monerod starts a thread per core for sync and verification, so pids_limit leaves room on large hosts.
@@ -113,13 +115,17 @@ services:
     networks: [backend]
     command: >-
       ${MONERO_NETWORK_FLAG---stagenet} --daemon-address monero:18081 --trusted-daemon --wallet-dir=/home/monero/wallet
-      --rpc-bind-port=18083 --rpc-login '${ESCROW_XMR_WALLET_RPC_PASSWORD:+escrow}:${ESCROW_XMR_WALLET_RPC_PASSWORD:-}'
+      --shared-ringdb-dir=/home/monero/wallet/.shared-ringdb
+      --rpc-bind-port=18083 --log-file=/tmp/monero-wallet-rpc.log
+      --max-log-file-size=1048576 --max-log-files=2
+      --rpc-login '${ESCROW_XMR_WALLET_RPC_PASSWORD:+escrow}:${ESCROW_XMR_WALLET_RPC_PASSWORD:-}'
     env_file:
       - ESCROW_XMR_WALLET_RPC_PASSWORD-is-blank${ESCROW_XMR_WALLET_RPC_PASSWORD:+/../../../../../../../../../../../../../../../../../../../../../../../../../../../../../../../../dev/null}
     volumes: [monero_escrow_wallet:/home/monero/wallet]
     # As for monero: the image's user, no capabilities, a read-only root; the volume must belong to 1000:1000.
     user: '1000:1000'
     read_only: true
+    tmpfs: [/tmp]
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     # An escrow wallet holds one account per order; PAYE-E2 measured 574 MB at peak over five 10,000-account wallets
@@ -130,7 +136,7 @@ services:
     pids_limit: 128
     logging: *logging
   escrow-signer:
-    # The market's dedicated signer for per-order (shape (b)) Bitcoin escrows (A-454; no order uses it yet). Same image
+    # The market's dedicated signer for per-order (shape (b)) Bitcoin escrows (A-454). Same image
     # as the app, run as its own user (65533, in the app's group 65532 so the app can open its mode-0660 socket). Its
     # seed lives only in escrow_signer_seed, mounted nowhere else (never in .env, the database or scripts/backup.sh's
     # output: back it up with `escrow-signer backup`). It publishes no port and listens on no network; it joins backend
@@ -167,6 +173,7 @@ services:
 volumes:
   bitcoin_data:
   monero_data:
+  # Retained for recovery of retired pooled wallets; no running service mounts it.
   monero_wallet:
   monero_escrow_wallet:
   escrow_signer_seed:

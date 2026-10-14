@@ -40,6 +40,7 @@ import (
 const (
 	defaultSeedFile = "/var/lib/escrow-signer/seed"
 	defaultSocket   = "/run/escrow-signer/signer.sock"
+	maxOperatorKey  = 64 << 10
 )
 
 func main() {
@@ -134,11 +135,18 @@ func readSeed(path string) ([]byte, error) {
 	if st.Size() != 32 && st.Size() != 64 {
 		return nil, fmt.Errorf("seed file %s: %w", path, errSeedSize)
 	}
-	seed, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("seed file %s cannot be read", path)
 	}
+	defer f.Close()
+	seed, err := io.ReadAll(io.LimitReader(f, 65))
+	if err != nil {
+		clear(seed)
+		return nil, fmt.Errorf("seed file %s cannot be read", path)
+	}
 	if len(seed) != 32 && len(seed) != 64 {
+		clear(seed)
 		return nil, fmt.Errorf("seed file %s: %w", path, errSeedSize)
 	}
 	return seed, nil
@@ -150,6 +158,7 @@ func loadKeys(ctx context.Context, path string, c *core, mainnet bool) (*signerK
 	if err != nil {
 		return nil, err
 	}
+	defer clear(seed)
 	keys, err := keysFromSeedNet(seed, mainnet)
 	if err != nil {
 		return nil, err
@@ -215,6 +224,7 @@ func cmdInit(ctx context.Context, path string, size int, rpcURL string, mainnet 
 		return err
 	}
 	seed := make([]byte, size)
+	defer clear(seed)
 	var keys *signerKeys
 	for {
 		if _, err := rand.Read(seed); err != nil {
@@ -245,15 +255,22 @@ func cmdBackup(seedPath, keyFile string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	raw, err := os.ReadFile(keyFile)
+	defer clear(seed)
+	f, err := os.Open(keyFile)
 	if err != nil {
 		return fmt.Errorf("operator key file %s cannot be read", keyFile)
 	}
-	ring, err := openpgp.ReadArmoredKeyRing(bytes.NewReader(raw))
+	defer f.Close()
+	raw, err := io.ReadAll(io.LimitReader(f, maxOperatorKey+1))
+	defer clear(raw)
 	if err != nil {
-		ring, err = openpgp.ReadKeyRing(bytes.NewReader(raw))
+		return fmt.Errorf("operator key file %s cannot be read", keyFile)
 	}
-	if err != nil || len(ring) != 1 {
+	if len(raw) > maxOperatorKey {
+		return fmt.Errorf("operator key file %s exceeds the 64 KiB limit", keyFile)
+	}
+	operator, err := readOperatorKey(raw)
+	if err != nil {
 		return fmt.Errorf("operator key file %s must hold exactly one OpenPGP public key", keyFile)
 	}
 	var buf bytes.Buffer
@@ -261,7 +278,7 @@ func cmdBackup(seedPath, keyFile string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	pt, err := openpgp.Encrypt(w, ring, nil, &openpgp.FileHints{IsBinary: true}, &packet.Config{DefaultCipher: packet.CipherAES256})
+	pt, err := openpgp.Encrypt(w, openpgp.EntityList{operator}, nil, &openpgp.FileHints{IsBinary: true}, &packet.Config{DefaultCipher: packet.CipherAES256})
 	if err != nil {
 		return fmt.Errorf("the operator key in %s cannot encrypt (expired, revoked, or no encryption subkey)", keyFile)
 	}
@@ -277,8 +294,71 @@ func cmdBackup(seedPath, keyFile string, stdout, stderr io.Writer) error {
 	if _, err := stdout.Write(buf.Bytes()); err != nil {
 		return err
 	}
-	fmt.Fprintf(stderr, "seed encrypted to OpenPGP key %X\n", ring[0].PrimaryKey.Fingerprint)
+	fmt.Fprintf(stderr, "seed encrypted to OpenPGP key %X\n", operator.PrimaryKey.Fingerprint)
 	return nil
+}
+
+// readOperatorKey parses one complete public entity without ReadKeyRing's recovery that skips malformed entities.
+// Secret primary/subkeys are refused, including a private packet in a purported public armor block. V6 keys may
+// have no identity: their direct-key self-signature supplies the preferences used by the pinned Encrypt implementation.
+func readOperatorKey(raw []byte) (*openpgp.Entity, error) {
+	invalid := errors.New("invalid operator public key")
+	if len(raw) == 0 || len(raw) > maxOperatorKey {
+		return nil, invalid
+	}
+	keyData := raw
+	trimmed := bytes.TrimSpace(raw)
+	if bytes.HasPrefix(trimmed, []byte("-----BEGIN ")) {
+		end := []byte("-----END PGP PUBLIC KEY BLOCK-----")
+		i := bytes.Index(trimmed, end)
+		if i < 0 || len(bytes.TrimSpace(trimmed[i+len(end):])) != 0 {
+			return nil, invalid
+		}
+		block, err := armor.Decode(bytes.NewReader(trimmed))
+		if err != nil || block.Type != openpgp.PublicKeyType {
+			return nil, invalid
+		}
+		body, err := io.ReadAll(io.LimitReader(block.Body, maxOperatorKey+1))
+		defer clear(body)
+		if err != nil || len(body) > maxOperatorKey {
+			return nil, invalid
+		}
+		keyData = body
+	}
+	// packet.Reader.Next skips unsupported packets. Inspect every packet first so an unreadable secret-key packet
+	// or a malformed extra entity cannot be silently ignored beside a valid public recipient.
+	r := bytes.NewReader(keyData)
+	for {
+		p, err := packet.Read(r)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, invalid
+		}
+		switch p.(type) {
+		case *packet.PublicKey, *packet.Signature, *packet.UserId, *packet.UserAttribute, *packet.Marker:
+		default:
+			return nil, invalid
+		}
+	}
+	packets := packet.NewReader(bytes.NewReader(keyData))
+	entity, err := openpgp.ReadEntity(packets)
+	if err != nil || entity == nil || entity.PrimaryKey == nil || entity.PrivateKey != nil {
+		return nil, invalid
+	}
+	if _, err := packets.Next(); err != io.EOF {
+		return nil, invalid
+	}
+	for _, subkey := range entity.Subkeys {
+		if subkey.PublicKey == nil || subkey.Sig == nil || subkey.PrivateKey != nil {
+			return nil, invalid
+		}
+	}
+	if signature, _ := entity.PrimarySelfSignature(); signature == nil {
+		return nil, invalid
+	}
+	return entity, nil
 }
 
 // cmdRestore reads a decrypted seed (exactly 32 or 64 bytes) from stdin into a new seed file, after checking its
@@ -295,6 +375,7 @@ func cmdRestore(ctx context.Context, path, want, rpcURL string, mainnet bool, st
 		return err
 	}
 	seed, err := io.ReadAll(io.LimitReader(stdin, 65))
+	defer clear(seed)
 	if err != nil {
 		return errors.New("the seed could not be read from stdin")
 	}

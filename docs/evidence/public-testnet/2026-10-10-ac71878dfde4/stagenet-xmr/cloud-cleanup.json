@@ -1,11 +1,16 @@
 {
   "absence_verified_at": "2026-10-10T17:52:01Z",
   "deleted": true,
-  "droplet_id": 607700697,
   "final_private_recovery_saved_and_verified": true,
   "known_unrelated_droplets_still_present": true,
   "no_blockchain_files_downloaded": true,
   "public_evidence_saved_and_verified": true,
   "recovery_reopened_in_separate_container": true,
-  "verification": "doctl compute droplet list"
+  "verification": "doctl compute droplet list",
+  "redaction": {
+    "fields": [
+      "droplet_id"
+    ],
+    "reason": "Cloud resource identifiers and location metadata omitted from public evidence for operator privacy."
+  }
 }

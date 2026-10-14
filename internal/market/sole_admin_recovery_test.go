@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -53,8 +54,8 @@ func TestSoleAdminPausedSignInNeedsCurrentPasswordAndTOTP(t *testing.T) {
 	}
 	correct := agTOTPNow(key)
 	agExpect(e, "/login", randomToken(), rescueForm("sole_admin", "wrong-long-password", correct), 401, "Invalid handle or password")
-	if agLimited(e, "totp-verify:"+id) || agInt(e, "SELECT totp_last_step FROM users WHERE id=$1", id) != 0 {
-		t.Fatal("wrong password spent factor budget or TOTP step")
+	if !agLimited(e, "totp-verify:"+id) || agInt(e, "SELECT totp_last_step FROM users WHERE id=$1", id) != 0 {
+		t.Fatal("wrong recovery password escaped its budget or spent a TOTP step")
 	}
 	agExpect(e, "/login", randomToken(), rescueForm("sole_admin", testPassword, e.wrongTOTP(id)), 401, "Invalid handle or password")
 	if !agLimited(e, "totp-verify:"+id) || agUserSessions(e, id) != 1 {
@@ -84,6 +85,127 @@ func TestSoleAdminPausedSignInNeedsCurrentPasswordAndTOTP(t *testing.T) {
 	agExpect(e, "/login", randomToken(), rescueForm("sole_admin", testPassword, correct), 401, "Invalid handle or password")
 	if agUserSessions(e, id) != 2 || agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1 AND action='Signed in with password and TOTP'", id) != 1 {
 		t.Fatal("reused code created another session or sign-in audit")
+	}
+}
+
+func TestSoleAdminPausedSignInWrongPasswordsExhaustRecoveryBeforeBcrypt(t *testing.T) {
+	e := newTestApp(t)
+	id, _ := e.user("sole_admin", "admin")
+	key, _ := agEnableTOTP(e, id)
+	pauseSignIn(t, e, "sole_admin")
+	budget := "totp-verify:" + id
+	for i := range 10 {
+		// Varying the case, code and browser cannot create a fresh recovery allowance.
+		handle := "sole_admin"
+		if i%2 == 1 {
+			handle = "SOLE_ADMIN"
+		}
+		code := strings.Repeat(string(rune('0'+i)), totpDigits)
+		agExpect(e, "/login", randomToken(), rescueForm(handle, "wrong-long-password", code), 401, "Invalid handle or password")
+		e.A.mu.Lock()
+		count := e.A.limits[budget].Count
+		e.A.mu.Unlock()
+		if count != i+1 {
+			t.Fatalf("wrong recovery password %d: budget count=%d", i+1, count)
+		}
+	}
+	if !e.A.limited(budget, 10) || agUserSessions(e, id) != 1 || agInt(e, "SELECT totp_last_step FROM users WHERE id=$1", id) != 0 {
+		t.Fatal("wrong recovery passwords escaped the cap or changed authentication state")
+	}
+	// An exhausted request must fail before trying to acquire bcrypt work, even with both factors right.
+	release := agHoldPasswordWork(t)
+	agExpect(e, "/login", randomToken(), rescueForm("sole_admin", testPassword, agTOTPNow(key)), 401, "Invalid handle or password")
+	release()
+	// Once the existing factor window expires, legitimate recovery still bypasses the paused auth budget.
+	e.A.mu.Lock()
+	b := e.A.limits[budget]
+	b.Until = time.Now().Add(-time.Second)
+	e.A.limits[budget] = b
+	e.A.mu.Unlock()
+	w := e.do("POST", "/login", randomToken(), rescueForm("sole_admin", testPassword, agTOTPNow(key)))
+	e.check(w, 303)
+	e.session(w)
+	e.A.mu.Lock()
+	count := e.A.limits[budget].Count
+	e.A.mu.Unlock()
+	if count != 1 || !e.A.limited(signInKey("sole_admin"), 10) || agUserSessions(e, id) != 2 ||
+		agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1 AND action='Signed in with password and TOTP'", id) != 1 {
+		t.Fatal("successful recovery was double charged, cleared the password pause or failed to create one session")
+	}
+}
+
+func TestSoleAdminPausedSignInConcurrentRecoveryAllowance(t *testing.T) {
+	e := newTestApp(t)
+	id, _ := e.user("sole_admin", "admin")
+	agEnableTOTP(e, id)
+	pauseSignIn(t, e, "sole_admin")
+	for range 9 {
+		if !e.A.allow("totp-verify:"+id, 10) {
+			t.Fatal("could not reserve nine factor attempts")
+		}
+	}
+	// Exercise admission directly: only one concurrent request may reach the password-check stage.
+	results := agRace(2, func(i int) (int, string) {
+		handle := "sole_admin"
+		if i == 1 {
+			handle = "SOLE_ADMIN"
+		}
+		c := &actionCtx{A: e.A, W: httptest.NewRecorder(), R: httptest.NewRequest(http.MethodPost, "/login", nil),
+			Form: rescueForm(handle, "wrong-long-password", "123456"), Token: randomToken()}
+		_, _, rescueID, release, err := authGate(c)
+		if err == errSoleAdminRecovery {
+			return 401, "refused"
+		}
+		if err != nil {
+			return 500, err.Error()
+		}
+		defer release()
+		if rescueID != id {
+			return 500, "allowance belongs to a different account"
+		}
+		return 200, "admitted"
+	})
+	if got := agTally(t, results, 200, 401); got[200] != 1 || got[401] != 1 {
+		t.Fatalf("concurrent recovery budget: %+v", got)
+	}
+	if len(passwordWork) != 0 || agUserSessions(e, id) != 1 || agInt(e, "SELECT totp_last_step FROM users WHERE id=$1", id) != 0 {
+		t.Fatal("recovery admission leaked a work slot or changed authentication state")
+	}
+}
+
+func TestSoleAdminRecoveryBudgetSurvivesBogusHandleChurn(t *testing.T) {
+	e := newTestApp(t)
+	id, _ := e.user("sole_admin", "admin")
+	key, _ := agEnableTOTP(e, id)
+	pauseSignIn(t, e, "sole_admin")
+	agExpect(e, "/login", randomToken(), rescueForm("sole_admin", "wrong-long-password", "123456"), 401, "Invalid handle or password")
+	budget := "totp-verify:" + id
+	e.A.mu.Lock()
+	started := e.A.limits[budget]
+	e.A.mu.Unlock()
+	// Installed /setup posts with fresh syntactically valid handles create cheap shared limiter
+	// entries before their setup refusal. They must not evict the oldest, one-attempt factor bucket.
+	anon := randomToken()
+	for i := range 4096 + 32 {
+		agExpect(e, "/setup", anon, url.Values{"handle": {"churn_" + strconv.Itoa(i)}, "password": {testPassword}}, 403, "Setup unavailable")
+	}
+	e.A.mu.Lock()
+	retained, size := e.A.limits[budget], len(e.A.limits)
+	e.A.mu.Unlock()
+	if retained.Count != started.Count || !retained.Until.Equal(started.Until) || size != 4096 {
+		t.Fatalf("bogus handles reset recovery allowance or grew table: before=%+v after=%+v size=%d", started, retained, size)
+	}
+	for range 9 {
+		agExpect(e, "/login", randomToken(), rescueForm("sole_admin", "wrong-long-password", "123456"), 401, "Invalid handle or password")
+	}
+	if !e.A.limited(budget, 10) {
+		t.Fatal("churn restored spent recovery attempts")
+	}
+	release := agHoldPasswordWork(t)
+	agExpect(e, "/login", randomToken(), rescueForm("sole_admin", testPassword, agTOTPNow(key)), 401, "Invalid handle or password")
+	release()
+	if agUserSessions(e, id) != 1 || agInt(e, "SELECT totp_last_step FROM users WHERE id=$1", id) != 0 {
+		t.Fatal("churn enabled a recovery session or spent a TOTP step")
 	}
 }
 
@@ -226,28 +348,30 @@ func rescueWithCAPTCHA(e *testEnv, form url.Values) (string, url.Values) {
 	return anon, form
 }
 
-// A-534: the rescue path charges no budget a stranger can spend. Wrong passwords, however many, leave the sole
-// administrator's factor budget (shared with /challenge) and TOTP step untouched, so the right password and the
-// current code still sign in.
-func TestSoleAdminRescueWrongPasswordsSpendNoFactorBudget(t *testing.T) {
+// A-534 signaling and main's throttling share the recovery path: solved CAPTCHAs do not exempt wrong
+// passwords from the factor budget, and valid recovery still works within its remaining allowance.
+func TestSoleAdminRescueWrongPasswordsSpendFactorBudgetWithCAPTCHA(t *testing.T) {
 	e := newTestApp(t)
 	id, _ := e.user("sole_admin", "admin")
 	key, _ := agEnableTOTP(e, id)
 	pauseSignIn(t, e, "sole_admin")
 	agExec(e, "UPDATE settings SET value='true' WHERE key='captcha_required'")
-	for i := range 20 {
+	for i := range 9 {
 		anon, form := rescueWithCAPTCHA(e, rescueForm("sole_admin", "wrong-rescue-password-"+string(rune('a'+i)), agTOTPNow(key)))
 		agExpect(e, "/login", anon, form, 401, "Invalid handle or password")
 	}
-	if agLimited(e, "totp-verify:"+id) || agInt(e, "SELECT totp_last_step FROM users WHERE id=$1", id) != 0 || agUserSessions(e, id) != 1 {
-		t.Fatal("wrong rescue passwords spent factor budget, a TOTP step or made a session")
+	e.A.mu.Lock()
+	count := e.A.limits["totp-verify:"+id].Count
+	e.A.mu.Unlock()
+	if count != 9 || agInt(e, "SELECT totp_last_step FROM users WHERE id=$1", id) != 0 || agUserSessions(e, id) != 1 {
+		t.Fatal("wrong rescue passwords escaped their factor budget, spent a TOTP step or made a session")
 	}
 	anon, form := rescueWithCAPTCHA(e, rescueForm("sole_admin", testPassword, agTOTPNow(key)))
 	w := e.do("POST", "/login", anon, form)
 	e.check(w, 303)
 	e.session(w)
-	if agUserSessions(e, id) != 2 || !e.A.limited(signInKey("sole_admin"), 10) {
-		t.Fatal("rescue after wrong passwords did not sign in, or lifted the sign-in pause")
+	if agUserSessions(e, id) != 2 || !e.A.limited(signInKey("sole_admin"), 10) || !e.A.limited("totp-verify:"+id, 10) {
+		t.Fatal("rescue within remaining allowance did not sign in, escaped the factor cap or lifted the sign-in pause")
 	}
 }
 
@@ -275,6 +399,14 @@ func TestSoleAdminRescueRefusalsIndistinguishable(t *testing.T) {
 	}
 	if agUserSessions(e, id) != 1 {
 		t.Fatal("a refusal signed in")
+	}
+	for range 8 {
+		agExpect(e, "/login", browser, rescueForm("sole_admin", "wrong-long-password", agTOTPNow(key)), 401, "Invalid handle or password")
+	}
+	exhausted := e.do("POST", "/login", browser, rescueForm("sole_admin", testPassword, agTOTPNow(key)))
+	if exhausted.Code != wrongPassword.Code || !bytes.Equal(exhausted.Body.Bytes(), wrongPassword.Body.Bytes()) ||
+		!reflect.DeepEqual(exhausted.Header(), wrongPassword.Header()) {
+		t.Fatal("exhausted recovery budget exposed a different refusal")
 	}
 }
 
@@ -307,6 +439,17 @@ func TestSoleAdminRescueRefusalsLogged(t *testing.T) {
 	agExpect(e, "/login", randomToken(), rescueForm("sole_admin", testPassword, e.wrongTOTP(id)), 401, "Invalid handle or password")
 	if got := logs.lines(line); len(got) != 2 || got[1] != line+"3" {
 		t.Fatalf("after a minute: %q", got)
+	}
+	// Pre-bcrypt exhaustion remains a count-only operator signal and is charged only once.
+	for range 6 {
+		agExpect(e, "/login", randomToken(), rescueForm("sole_admin", "wrong-long-password", agTOTPNow(key)), 401, "Invalid handle or password")
+	}
+	e.A.mu.Lock()
+	e.A.rescueLogAt = time.Now().Add(-61 * time.Second)
+	e.A.mu.Unlock()
+	agExpect(e, "/login", randomToken(), rescueForm("sole_admin", testPassword, agTOTPNow(key)), 401, "Invalid handle or password")
+	if got := logs.lines(line); len(got) != 3 || got[2] != line+"7" {
+		t.Fatalf("exhausted recovery refusal was missing or double counted: %q", got)
 	}
 	all := strings.ToLower(logs.String())
 	for _, s := range []string{"sole_admin", strings.ToLower(id)} {

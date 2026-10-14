@@ -53,9 +53,9 @@ onion_hostname=/var/lib/tor/marketplace/hostname
 onion_pattern='^[a-z2-7]{56}\.onion$'
 project_pattern='^[a-z0-9][a-z0-9_-]*$'
 env_key_pattern='^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*='
-# Every key .env.example documents, and MONERO_NETWORK_FLAG, which it deliberately does not list (a copied blank line
-# would run a mainnet daemon). Commands unset them (and COMPOSE_ENV_FILES) once .env exists, so Docker Compose reads
-# .env alone rather than a value left in the operator's shell.
+# Every documented setting and optional Compose override. Commands unset them and Compose's environment-file
+# controls so validation and startup both read this checkout's .env rather than the operator's shell.
+# MONERO_NETWORK_FLAG is documented without an assignment: a copied blank line would select mainnet.
 env_keys='DATABASE_URL POSTGRES_PASSWORD APP_SECRET_KEY SETUP_TOKEN APP_MODE COOKIE_SECURE APP_PORT
 DATABASE_CONNECT_TIMEOUT MIGRATION_LOCK_TIMEOUT MIGRATION_TIMEOUT COMPOSE_PROJECT_NAME COMPOSE_FILE COMPOSE_PROFILES
 BITCOIN_RPC_URL BITCOIN_WALLET BITCOIN_CHAIN PAYMENT_CONFIRMATIONS_BTC MONERO_RPC_URL MONERO_WALLET_RPC_URL
@@ -65,7 +65,7 @@ CLAMD_ADDRESS CLAMAV_IMAGE CLAMAV_IMAGE_DEFAULT SCANNER_MAX_SIGNATURE_AGE_DAYS I
 ESCROW_BTC_ARBITER_WALLET ESCROW_BTC_WATCH_WALLET ESCROW_BTC_FEE_BPS ESCROW_BTC_FEE_ADDRESS ESCROW_BTC_FEE_RATE
 ESCROW_XMR ESCROW_XMR_WALLET_RPC_URL ESCROW_XMR_DAEMON_URL ESCROW_XMR_FEE_BPS ESCROW_XMR_FEE_ADDRESS ESCROW_XMR_SLOTS
 ESCROW_XMR_MAX_FEE ESCROW_XMR_SEED_KEY ESCROW_XMR_TOR_RELAY MONERO_WALLET_SECRET ESCROW_XMR_WALLET_RPC_PASSWORD ESCROW_SIGNER_SOCKET
-ESCROW_SIGNER_RPC_URL'
+ESCROW_SIGNER_RPC_URL LOG_DRIVER TOR_VERSION'
 # What `upgrade` writes for a key missing from .env: the value Compose already uses when the key is absent, so
 # adding it changes nothing but makes it visible. APP_MODE, APP_PORT, COMPOSE_PROJECT_NAME, COMPOSE_PROFILES and
 # COMPOSE_FILE are derived from the install instead; secrets are never invented (APP_SECRET_KEY is copied from
@@ -266,7 +266,7 @@ lock_env_or_die() {
 
 isolate_env() {
   local key
-  for key in $env_keys COMPOSE_ENV_FILES; do unset "$key"; done
+  for key in $env_keys COMPOSE_ENV_FILES COMPOSE_DISABLE_ENV_FILE COMPOSE_PATH_SEPARATOR; do unset "$key"; done
 }
 
 has_item() { [[ ,$1, == *,"$2",* ]]; }  # has_item LIST ITEM: comma-separated list membership

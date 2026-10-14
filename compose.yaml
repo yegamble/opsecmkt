@@ -33,9 +33,8 @@ services:
       BITCOIN_RPC_URL: ${BITCOIN_RPC_URL:-}
       # Keep obsolete mappings blank by default so old values reach the startup guard.
       BITCOIN_WALLET: ${BITCOIN_WALLET:-}
-      # .env picks the network class. Blank chain/network: accept whichever test network the node reports (a mainnet node
-      # is refused). BITCOIN_CHAIN=main or MONERO_NETWORK=mainnet makes this a mainnet market, an operator opt-in with
-      # real funds (A-460; docs/operator-guide.md#mainnet).
+      # Blank chain/network accepts supported test networks. Mainnet requires the coin's explicit opt-in
+      # (BITCOIN_CHAIN=main or MONERO_NETWORK=mainnet); mixed network classes and mismatched held escrows are refused.
       BITCOIN_CHAIN: ${BITCOIN_CHAIN:-}
       PAYMENT_CONFIRMATIONS_BTC: ${PAYMENT_CONFIRMATIONS_BTC:-3}
       MONERO_RPC_URL: ${MONERO_RPC_URL:-}
@@ -105,14 +104,15 @@ services:
     pids_limit: 512
     logging: *logging
   db:
-    image: postgres:17-alpine
+    image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
     profiles: [internal-db]
     restart: unless-stopped
     networks: [backend]
     environment:
       POSTGRES_DB: opsecmkt
       POSTGRES_USER: opsecmkt
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-unused-external-db}
+      # A fresh internal database must refuse a missing password; external-db installs leave this profile off.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
       POSTGRES_INITDB_ARGS: --encoding=UTF8
     volumes: [postgres_data:/var/lib/postgresql/data]
     healthcheck:

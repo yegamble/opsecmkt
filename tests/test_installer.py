@@ -931,6 +931,24 @@ time.sleep(60)
             for key in ('DATABASE_URL', 'BITCOIN_RPC_URL', 'COMPOSE_PROFILES', 'APP_PORT'):
                 self.assertNotIn(key, environment)
 
+    def test_compose_overrides_come_from_checked_env_not_the_callers_shell(self):
+        # An exported blank flag used to make the checked stagenet daemon start on mainnet instead.
+        values = installed_env(COMPOSE_PROFILES='internal-db,monero', MONERO_NETWORK='stagenet',
+                               MONERO_NETWORK_FLAG='--stagenet', LOG_DRIVER='local', TOR_VERSION='env-tor-package')
+        original = self.write_env(values)
+        overrides = {'MONERO_NETWORK_FLAG': '', 'LOG_DRIVER': 'none', 'TOR_VERSION': 'shell-tor-package',
+                     'COMPOSE_ENV_FILES': '/unrelated.env', 'COMPOSE_DISABLE_ENV_FILE': 'true',
+                     'COMPOSE_PATH_SEPARATOR': ';'}
+        for command in ('check', 'status'):
+            with self.subTest(command=command):
+                result = self.command(command, extra_env=overrides)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual((self.root / '.env').read_bytes(), original)
+                for line in Path(str(self.log) + '.env').read_text().splitlines():
+                    environment = json.loads(line)
+                    for key in overrides:
+                        self.assertNotIn(key, environment)
+
     def test_unhealthy_local_app_does_not_report_ready(self):
         result = self.run_installer([], arguments=['--local'], extra_env={'INSTALLER_TEST_UNHEALTHY': '1'})
         self.assertNotEqual(result.returncode, 0)
@@ -3707,9 +3725,23 @@ time.sleep(60)
         # Commands unset these so Compose reads .env alone; the installer also keeps one bookkeeping-only key.
         keys = re.search(r"^env_keys='([^']*)'", INSTALLER.read_text(), re.M)[1].split()
         self.assertIn('CLAMAV_IMAGE_DEFAULT', keys)
-        # MONERO_NETWORK_FLAG is isolated but never listed in .env.example: a copied blank line would run a mainnet daemon.
-        retired_internal = {'CLAMAV_IMAGE_DEFAULT', 'MONERO_WALLET_RPC_PASSWORD', 'MONERO_NETWORK_FLAG'}
-        self.assertEqual(sorted(key for key in keys if key not in retired_internal), sorted(example_values()))
+        retired_internal = {'CLAMAV_IMAGE_DEFAULT', 'MONERO_WALLET_RPC_PASSWORD'}
+        # Optional overrides are documented without assignments; a blank network flag would select mainnet.
+        optional_compose = {'MONERO_NETWORK_FLAG', 'LOG_DRIVER', 'TOR_VERSION'}
+        self.assertEqual(sorted(key for key in keys if key not in retired_internal | optional_compose),
+                         sorted(example_values()))
+
+    def test_isolated_keys_cover_compose_interpolation_and_inherited_build_args(self):
+        keys = set(re.search(r"^env_keys='([^']*)'", INSTALLER.read_text(), re.M)[1].split())
+        for path in REPOSITORY.glob('compose*.yaml'):
+            with self.subTest(compose=path.name):
+                # Ignore explanatory comments and $$-escaped container-side shell variables.
+                text = '\n'.join(line.split('#', 1)[0] for line in path.read_text().splitlines())
+                interpolated = set(re.findall(r'(?<!\$)\$(?:\{)?([A-Za-z_][A-Za-z0-9_]*)', text))
+                inherited_build_args = set()
+                for arguments in re.findall(r'args:\s*\[([A-Z0-9_,\s]+)\]', text):
+                    inherited_build_args.update(argument.strip() for argument in arguments.split(','))
+                self.assertFalse((interpolated | inherited_build_args) - keys)
 
 
 if __name__ == '__main__':

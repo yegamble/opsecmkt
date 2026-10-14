@@ -55,9 +55,13 @@ saved password, verified the same primary address and **0.01985132 sXMR fully un
 transaction. The empty escrow's keys/recovery were preserved too. See the public
 [backup summary](final-recovery-public-summary.json) and [read-only reopen check](final-recovery-reopen-public.json);
 they contain no wallet keys, password or address. Private recovery stays gitignored, outside this public record.
-Only task droplet **607700697** was deleted, after evidence and recovery verification. Its absence and the
+Only the task droplet was deleted, after evidence and recovery verification. Its absence and the
 continued presence of known unrelated droplets were checked at 17:52:01Z; see [cleanup](cloud-cleanup.json).
 The observed resource rate was $0.07143/hour. No blockchain files were downloaded locally.
+The supplemental resource and cleanup records list removed fields in their `redaction` objects.
+Provider IDs, resource name and tags, public host address and region are omitted for operator privacy.
+The proof manifest, transcript and measured results are unchanged; the public cleanup record no longer
+identifies the provider resource.
 
 ## Limits
 

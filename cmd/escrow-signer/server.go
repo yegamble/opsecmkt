@@ -32,9 +32,7 @@ const (
 	maxLine         = 1 << 20 // bytes per request line; a settlement PSBT is far smaller
 	idleTimeout     = 2 * time.Minute
 	signTimeout     = 2 * time.Minute
-	// maxConns bounds the connections served at once (A-537). Only the app connects and dials one connection per
-	// request (about 16 concurrent info calls and one sign at peak), so 32 is slack, not a tuned limit.
-	maxConns = 32
+	maxSignerConns  = 8 // one serial request per connection also bounds in-flight Core RPCs
 )
 
 type request struct {
@@ -124,13 +122,16 @@ func listenSocket(path string) (net.Listener, error) {
 	return ln, nil
 }
 
-// serveSocket accepts connections until ctx ends or the listener is closed, and waits for open ones to finish. At most
-// maxConns are served at once; one more is closed at once without a reply.
+// serveSocket admits at most maxSignerConns connections. Excess connections are closed before allocating a request
+// reader or starting a goroutine. Each connection handles requests serially, so Core calls have the same bound.
+// Cancellation or listener shutdown closes active connections and cancels their RPCs before waiting for them.
 func serveSocket(ctx context.Context, ln net.Listener, s *signer) {
+	ctx, cancel := context.WithCancel(ctx)
 	var wg sync.WaitGroup
-	defer wg.Wait()
-	slots := make(chan struct{}, maxConns)
-	go func() { <-ctx.Done(); ln.Close() }()
+	defer func() { cancel(); ln.Close(); wg.Wait() }()
+	stopListener := context.AfterFunc(ctx, func() { ln.Close() })
+	defer stopListener()
+	slots := make(chan struct{}, maxSignerConns)
 	for {
 		c, err := ln.Accept()
 		if err != nil {
@@ -140,8 +141,12 @@ func serveSocket(ctx context.Context, ln net.Listener, s *signer) {
 			time.Sleep(100 * time.Millisecond)
 			continue
 		}
-		// Try to take a slot without blocking. Over the cap the connection is closed with no reply: the app reads a
-		// closed connection as "signer unreachable" and waits, where a JSON error would be taken as a refusal.
+		if ctx.Err() != nil {
+			c.Close()
+			return
+		}
+		// Close excess connections without a JSON reply: the app treats EOF as signer unreachable
+		// and retries, while a JSON error is a signing refusal. Admission never queues work.
 		select {
 		case slots <- struct{}{}:
 		default:
@@ -167,6 +172,7 @@ func serveConn(ctx context.Context, c net.Conn, s *signer) {
 		c.SetReadDeadline(time.Now().Add(idleTimeout))
 		line, tooLong, err := readLine(r)
 		if tooLong {
+			c.SetWriteDeadline(time.Now().Add(idleTimeout))
 			enc.Encode(errorReply{"too-large"})
 			return
 		}
@@ -176,7 +182,9 @@ func serveConn(ctx context.Context, c net.Conn, s *signer) {
 		if len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}
-		if enc.Encode(s.handle(ctx, line)) != nil {
+		reply := s.handle(ctx, line)
+		c.SetWriteDeadline(time.Now().Add(idleTimeout))
+		if enc.Encode(reply) != nil {
 			return
 		}
 	}

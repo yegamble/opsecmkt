@@ -425,9 +425,9 @@ func authPrecheck(a *App, r *http.Request, token string) error {
 }
 
 // authGate admits one password-bearing request: input bounds, CAPTCHA, a free handle for /register and the
-// per-handle rate limit, then bounded bcrypt concurrency, all before any expensive work. On success the
-// caller must defer release().
-func authGate(c *actionCtx) (handle, password string, rescue bool, release func(), err error) {
+// per-handle rate limit (or a sole administrator's factor budget during recovery), then bounded bcrypt
+// concurrency, all before any expensive work. On success the caller must defer release().
+func authGate(c *actionCtx) (handle, password, rescueID string, release func(), err error) {
 	a, path := c.A, c.R.URL.Path
 	handle, password = strings.TrimSpace(c.Form.Get("handle")), c.Form.Get("password")
 	// Validate the input and the CAPTCHA before the rate limit, so malformed handles and failed CAPTCHAs
@@ -457,8 +457,9 @@ func authGate(c *actionCtx) (handle, password string, rescue bool, release func(
 	if err == nil && a.limited(key, 10) {
 		if path == "/login" && c.Form.Get("rescue_code") != "" {
 			if sixDigitTOTP(c.Form.Get("rescue_code")) {
-				// Reject arbitrary handles before bcrypt. There is no second attacker-spendable lockout:
-				// a sole administrator must retain this route while auth:<handle> is paused.
+				// Reject ineligible accounts before bcrypt. Recovery uses the existing per-account
+				// factor budget, including wrong passwords, so arbitrary six-digit codes cannot
+				// bypass the paused password budget. Bind the allowance to this account identity.
 				var account signInAccount
 				account, err = lookupSignInAccount(c.Ctx(), a.db, handle)
 				if errors.Is(err, sql.ErrNoRows) {
@@ -474,7 +475,11 @@ func authGate(c *actionCtx) (handle, password string, rescue bool, release func(
 					} else if admins != 1 {
 						err = errSoleAdminRecovery
 					} else {
-						rescue = true
+						rescueID = account.id
+						key, refused = "totp-verify:"+account.id, errSoleAdminRecovery
+						if a.limited(key, 10) {
+							err = refused
+						}
 					}
 				}
 			} else {
@@ -485,21 +490,29 @@ func authGate(c *actionCtx) (handle, password string, rescue bool, release func(
 		}
 	}
 	if err != nil {
-		return "", "", false, nil, err
+		if err == errSoleAdminRecovery && rescueID != "" {
+			a.logRescueRefusal()
+		}
+		return "", "", "", nil, err
 	}
 	// A password-check slot is taken only now, so requests refused above never hold one while real
 	// sign-ins wait. The attempt is counted after the slot, so a busy refusal spends no budget.
 	select {
 	case passwordWork <- struct{}{}:
 	default:
-		return "", "", false, nil, fail(503, "Authentication is busy. Try again shortly.")
+		return "", "", "", nil, fail(503, "Authentication is busy. Try again shortly.")
 	}
 	release = func() { <-passwordWork }
-	if !rescue && !a.allow(key, 10) {
+	// Reserve atomically before bcrypt, including recovery attempts. The earlier limited check
+	// only avoids taking a work slot for an already-exhausted budget; it cannot admit a race.
+	if !a.allow(key, 10) {
 		release()
-		return "", "", false, nil, refused
+		if rescueID != "" {
+			a.logRescueRefusal()
+		}
+		return "", "", "", nil, refused
 	}
-	return handle, password, rescue, release, nil
+	return handle, password, rescueID, release, nil
 }
 
 func sixDigitTOTP(code string) bool {
@@ -565,7 +578,7 @@ var errSignInPaused = fail(429, "Sign-in for this handle is paused for up to 10 
 // authAction serves /setup, /login and /register. bcrypt runs before any transaction is opened.
 func authAction(c *actionCtx) (actionResult, error) {
 	a, ctx, f, path, w := c.A, c.Ctx(), c.Form, c.R.URL.Path, c.W
-	handle, password, rescue, release, err := authGate(c)
+	handle, password, rescueID, release, err := authGate(c)
 	if err == errSignInPaused {
 		a.logSignInRefusals()
 	}
@@ -583,15 +596,19 @@ func authAction(c *actionCtx) (actionResult, error) {
 		if err != nil {
 			hash = dummyHash()
 		}
+		if rescueID != "" && account.id != rescueID {
+			a.logRescueRefusal()
+			return actionResult{}, errSoleAdminRecovery
+		}
 		check := bcrypt.CompareHashAndPassword(hash, []byte(password))
 		if err != nil || check != nil {
 			a.logSignInRefusals()
-			if rescue {
+			if rescueID != "" {
 				a.logRescueRefusal()
 			}
 			return actionResult{}, fail(401, "Invalid handle or password")
 		}
-		if rescue {
+		if rescueID != "" {
 			res, err := a.soleAdminRecovery(c, account.id, account.hash, f.Get("rescue_code"), a.signInNext(f.Get("next")))
 			if err == errSoleAdminRecovery {
 				a.logRescueRefusal()
@@ -655,6 +672,7 @@ func authAction(c *actionCtx) (actionResult, error) {
 // accounts, including suspended ones: suspension must not silently turn a multi-admin market into sole-admin
 // recovery. The account lock serializes this check with current admin-initiated role/suspension changes. The
 // TOTP replay guard and the session are committed together; no recovery-code branch is reachable here.
+// authGate has already charged this account's factor budget before checking the password.
 func (a *App) soleAdminRecovery(c *actionCtx, id, checkedHash, code, next string) (actionResult, error) {
 	ctx := c.Ctx()
 	tx, err := a.db.BeginTx(ctx, nil)
@@ -682,9 +700,9 @@ func (a *App) soleAdminRecovery(c *actionCtx, id, checkedHash, code, next string
 	if admins != 1 {
 		return actionResult{}, errSoleAdminRecovery
 	}
-	// Charge the existing per-account verification budget only after the password and current eligibility
-	// have passed. A wrong or reused code does not commit a TOTP step or a session.
-	if !a.allow("totp-verify:"+id, 10) || a.checkTOTP(ctx, tx, id, code) != nil {
+	// The gate already reserved the factor attempt. A wrong or reused code does not commit
+	// a TOTP step or a session; current account eligibility remains authoritative here.
+	if a.checkTOTP(ctx, tx, id, code) != nil {
 		return actionResult{}, errSoleAdminRecovery
 	}
 	if pending := pendingCookie(c.R); pending != "" {
