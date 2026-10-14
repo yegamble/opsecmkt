@@ -1,0 +1,13 @@
+# Developer harnesses, internal audit ledgers and design references are not release sources.
+/.claude export-ignore
+/.claude/** export-ignore
+/.ralph export-ignore
+/.ralph/** export-ignore
+/.ralphrc export-ignore
+/design-reference export-ignore
+/design-reference/** export-ignore
+/tests/test_claude_review_hook.py export-ignore
+
+# Wrangler's local caches and trace databases must not enter source archives.
+**/.wrangler export-ignore
+**/.wrangler/** export-ignore

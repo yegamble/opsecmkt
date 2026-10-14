@@ -15,6 +15,7 @@ umask 077
 unset COMPOSE_PROFILES COMPOSE_FILE
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
+source "$root/scripts/a144_source_archive.sh"
 from_ref=${UPGRADE_FROM_REF:-v0.1.0-alpha.1}
 intermediate_ref=${UPGRADE_INTERMEDIATE_REF:-329c7b2bf2e8741ff284256958aad55f5454fd53}
 for dependency in docker go git python3 age age-keygen; do
@@ -109,7 +110,7 @@ PY
 
 echo "Building $from_ref and the current server"
 mkdir -p "$work/old"
-git archive --format=tar "$from_ref" | tar -x -C "$work/old"
+git archive --format=tar "$from_ref" | extract_a144_source - "$work/old"
 (cd "$work/old" && GOWORK=off CGO_ENABLED=0 go build -trimpath -o "$work/old-server" ./cmd/server)
 GOWORK=off CGO_ENABLED=0 go build -trimpath -o "$work/new-server" ./cmd/server
 

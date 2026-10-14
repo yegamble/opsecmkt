@@ -32,6 +32,7 @@ const (
 	maxLine         = 1 << 20 // bytes per request line; a settlement PSBT is far smaller
 	idleTimeout     = 2 * time.Minute
 	signTimeout     = 2 * time.Minute
+	maxSignerConns  = 8 // one serial request per connection also bounds in-flight Core RPCs
 )
 
 type request struct {
@@ -121,11 +122,16 @@ func listenSocket(path string) (net.Listener, error) {
 	return ln, nil
 }
 
-// serveSocket accepts connections until ctx ends or the listener is closed, and waits for open ones to finish.
+// serveSocket admits at most maxSignerConns connections. Excess connections are closed before allocating a request
+// reader or starting a goroutine. Each connection handles requests serially, so Core calls have the same bound.
+// Cancellation or listener shutdown closes active connections and cancels their RPCs before waiting for them.
 func serveSocket(ctx context.Context, ln net.Listener, s *signer) {
+	ctx, cancel := context.WithCancel(ctx)
 	var wg sync.WaitGroup
-	defer wg.Wait()
-	go func() { <-ctx.Done(); ln.Close() }()
+	defer func() { cancel(); ln.Close(); wg.Wait() }()
+	stopListener := context.AfterFunc(ctx, func() { ln.Close() })
+	defer stopListener()
+	slots := make(chan struct{}, maxSignerConns)
 	for {
 		c, err := ln.Accept()
 		if err != nil {
@@ -135,9 +141,20 @@ func serveSocket(ctx context.Context, ln net.Listener, s *signer) {
 			time.Sleep(100 * time.Millisecond)
 			continue
 		}
+		if ctx.Err() != nil {
+			c.Close()
+			return
+		}
+		select {
+		case slots <- struct{}{}:
+		default:
+			c.Close()
+			continue
+		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			defer func() { <-slots }()
 			defer c.Close()
 			stop := context.AfterFunc(ctx, func() { c.Close() })
 			defer stop()
@@ -153,6 +170,7 @@ func serveConn(ctx context.Context, c net.Conn, s *signer) {
 		c.SetReadDeadline(time.Now().Add(idleTimeout))
 		line, tooLong, err := readLine(r)
 		if tooLong {
+			c.SetWriteDeadline(time.Now().Add(idleTimeout))
 			enc.Encode(errorReply{"too-large"})
 			return
 		}
@@ -162,7 +180,9 @@ func serveConn(ctx context.Context, c net.Conn, s *signer) {
 		if len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}
-		if enc.Encode(s.handle(ctx, line)) != nil {
+		reply := s.handle(ctx, line)
+		c.SetWriteDeadline(time.Now().Add(idleTimeout))
+		if enc.Encode(reply) != nil {
 			return
 		}
 	}
