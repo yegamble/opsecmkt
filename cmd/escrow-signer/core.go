@@ -14,7 +14,8 @@ import (
 // core is a minimal Bitcoin Core JSON-RPC client for the signer's own RPC user, which the operator whitelists to exactly
 // what it calls: decodepsbt, descriptorprocesspsbt and getdescriptorinfo (docs/operator-guide.md, "Escrow signer").
 // Every failure is one of two fixed errors; Core's error text is never kept, logged or returned, because it could quote
-// the descriptor and with it the account tprv.
+// the descriptor and with it the account tprv. Requests go directly to the configured node and never follow redirects:
+// their bodies carry account private keys, which must not reach an environment proxy or another endpoint.
 type core struct {
 	endpoint   string // the URL without its user information
 	user, pass string
@@ -39,7 +40,13 @@ func newCore(raw string) (*core, error) {
 	}
 	user := u.User.Username()
 	u.User = nil
-	return &core{endpoint: u.String(), user: user, pass: pass, client: &http.Client{Timeout: 2 * time.Minute}}, nil
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	return &core{endpoint: u.String(), user: user, pass: pass, client: &http.Client{
+		Timeout:       2 * time.Minute,
+		Transport:     transport,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}}, nil
 }
 
 // call runs one JSON-RPC 1.0 call and decodes its result into out (json.Number for numbers when out is *any).
