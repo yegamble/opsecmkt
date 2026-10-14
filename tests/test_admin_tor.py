@@ -106,6 +106,7 @@ class AdminClientAuthTests(unittest.TestCase):
         workflow = (REPOSITORY / '.github/workflows/ci.yaml').read_text()
         step = workflow.split('      - name: Private administrator onion configuration and authorization preflight\n', 1)[1].split('      - name:', 1)[0]
         for text in ('docker run --rm --network none --read-only --cap-drop ALL',
+                     '--tmpfs /tmp:rw,nosuid,nodev,noexec,mode=1777',
                      '--entrypoint /usr/local/bin/tor-admin-entrypoint opsecmkt-tor:ci',
                      '/run/tor-admin-clients /var/lib/tor/admin/authorized_clients tor -f /etc/tor/torrc-admin',
                      'if output=$("${tor[@]}" --verify-config 2>&1); then',
