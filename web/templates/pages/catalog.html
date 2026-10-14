@@ -16,7 +16,7 @@
 <div class="catalog-tools">
 <p>
 <span class="accent">{{if .Paging}}{{.Paging.Total}}{{else}}{{len .Products}}{{end}}</span> listings {{if .Query}}matching “{{.Query}}”{{else}}in the marketplace{{end}}{{if .Category}} / {{.Category}}{{end}}{{if and .Paging (gt .Paging.Pages 1) .Products}} · showing {{.Paging.First}}–{{.Paging.Last}}{{end}}</p>
-<span class="eyebrow">Test-network alpha · no real funds</span>
+<span class="eyebrow">{{if .LiveNetwork}}Mainnet · real funds{{else}}Test-network alpha · no real funds{{end}}</span>
 </div>{{template "products" .}}{{if not .Products}}<div class="empty">
 <span class="empty-icon">∅</span>
 {{if and .Paging (gt .Paging.Total 0)}}<h2>This page is empty</h2>

@@ -21,6 +21,10 @@ func paymentsGlobalLoader(_ context.Context, a *App, _ *http.Request, d *PageDat
 	d.EscrowOn, d.EscrowAvailable = a.escrowConfigured, a.escrow.Load() != nil
 	if a.escrowNetKnown() {
 		d.EscrowNet = a.escrowNetwork()
+	} else if a.live {
+		// A-540: a mainnet market's Bitcoin escrow can only run on main (startup refuses a test-network node on it), so
+		// before a node answers the pages still say mainnet, with real funds, not "a test network (chain not verified yet)".
+		d.EscrowNet = "main"
 	}
 	d.DispatchOn = !physicalEscrowOff(a)
 	d.XMREscrowOn, d.XMREscrowAvailable, d.XMRCustody, d.XMREscrowNet = a.escrowXMR != nil, a.xmrEscrowReady(), xmrCustody, a.xmrEscrowNetwork()

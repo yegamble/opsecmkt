@@ -170,6 +170,31 @@ into a temporary directory with its own `.env` and a uniquely named Compose proj
 The exit trap runs `docker compose down --volumes --remove-orphans` for the test project and removes the
 temporary directory, keys and dumps. It never reads the checkout's `.env` or touches other projects.
 
+## Onion identity import
+
+```sh
+docker build -t opsecmkt-tor:ci -f deploy/Dockerfile.tor deploy   # once; or set TOR_IMAGE to another tag
+./scripts/test-tor-identity-import.sh
+```
+
+Requires Docker and the Tor image; every container runs with `--network none`. The script sources
+`scripts/install.sh` and runs the functions `init --onion-key-dir` and `add-mirror --mirror-onion-key-dir` call
+(A-526):
+
+- Tor generates two identities offline, each laid out as `mkp224o` writes one, with a forged `hostname`. One, with
+  its public key, and the other, secret key only, are checked, dry-run and imported into scratch volumes carrying
+  Compose's labels. The files are owned by `debian-tor` (directories `0700`, keys `0600`), and Tor, started as
+  `compose.tor.yaml` runs it, serves the dry run's address with the same secret key (compared by digest).
+- A 95-byte copy of a secret key (from which Tor would silently create a new identity) and a secret key paired with
+  another identity's public key are refused, and no volume is created.
+- Tor in the dry run refuses a key with a wrong header, and an import into a volume Tor has used is refused and
+  leaves it unchanged.
+
+Removing the import's empty-volume check, its `chown` or the installer's size check makes the script fail.
+`tests/test_installer.py` covers the rest with a stubbed Docker: the order of calls in `init` and `add-mirror`, the
+refusals (symlinks, a directory inside the checkout, `--clearnet`, an unexpected address, the main onion's key for
+the mirror) and that no key byte reaches an argument, the environment or the output.
+
 ## Documented .env and onion identity backup and restore
 
 ```sh
@@ -246,6 +271,59 @@ image and temporary files. Forced termination (`SIGKILL`) or an unavailable Dock
 daemon can prevent cleanup; the unique project name is in the reported log path.
 Evidence is written to `artifacts/install-test/<project>/`. CI runs this same
 script as a required job and retains its logs and result for 14 days.
+
+## Bundled monerod RPC ports
+
+```sh
+./scripts/test-monerod-ports.sh
+```
+
+Requires Docker with Compose v2 and Python 3; pulls the pinned `simple-monerod` image if it is absent. monerod runs a
+core RPC server at the network's default port unless `--rpc-bind-port` pins it, and a restricted one on
+`--rpc-restricted-bind-port`; given one port for both it exits with `Failed to bind IPv4`. The bundled `monero`
+service's restricted port is 18081, mainnet's core default, so before A-524 it could not start on mainnet. The script
+renders the service's image and command with `docker compose config` (stagenet, no `.env`), forces the restricted port
+to 38081 (stagenet's core default, the same collision without mainnet), adds `--offline` (the command already has
+`--no-igd`, A-536) and runs it with `--network none` and the service's rendered user, capabilities, `no-new-privileges`,
+read-only root and tmpfs, on a scratch volume. It passes when monerod logs `core RPC server initialized OK` (bound to `127.0.0.1` on the pinned port)
+and `restricted RPC server initialized OK` on 38081, is still running five seconds later and logged no bind error; the
+exit trap removes the container. With compose's old command (no `--rpc-bind-port`) it fails before starting monerod;
+with that check removed, monerod on the old command exits with the bind error and the script fails (A-524's negative
+control, run by hand). It never starts mainnet, so a mainnet start of the bundled node remains unverified. CI's Tor
+image job runs it.
+
+## Hardened database and node containers
+
+```sh
+./scripts/test-service-hardening.sh
+```
+
+Requires Bash 5, Docker with Compose v2 and Python 3; pulls the pinned images if they are absent. `db`, `bitcoin`,
+`monero` and `monero-escrow-wallet` run with every capability dropped, `no-new-privileges` and a read-only root (A-536):
+`db` as `70:70` with `/var/run/postgresql` and `/tmp` in memory, both Monero services as `1000:1000`, and `bitcoin`
+from its image's root entrypoint (which gives `/data` and `/home/bitcoin`, in memory, to `bitcoin` on every start and
+then drops to it) keeping only `CHOWN`, `DAC_OVERRIDE`, `FOWNER`, `SETUID` and `SETGID`, with `/tmp` in memory for the
+[runbook's wallet backups](testnet-runbook.md#back-up-and-restore-the-escrow-arbiter-and-watch-only-wallets). The script renders the four
+services with `docker compose config --format json` (no `.env`; Bitcoin regtest, Monero stagenet), runs each with its
+rendered user, capabilities, security options, read-only root, tmpfs, environment, image and command, `--network none`
+and a test volume, then stops it and starts it again on the same volume. It requires: `db` to answer `pg_isready -h
+127.0.0.1` and a query, having initialised the new volume and found the existing database the second time; `bitcoind`
+to answer `bitcoin-cli getblockcount` as `bitcoin`, and `/data/bitcoin.conf` to take the installer's append as `bitcoin`,
+the operator guide's root `sh` append and its root `sed -i`, and the runbook's `backupwallet` to `/tmp`, read out as
+`bitcoin`, and `restorewallet` from a copy written there; monerod (`--offline`) to log both `RPC server initialized
+OK` lines and still run five seconds later with no bind or permission error; `monero-wallet-rpc` to log `Starting
+wallet RPC server`, still run five seconds later and be able to write its wallet directory. Each run prints the
+`uid:gid` the main process runs as. The exit trap removes every container and volume. Negative controls run by hand on
+this script: without the `db` tmpfs, with `db` as root, without `DAC_OVERRIDE`, `SETUID`/`SETGID`, the
+`/home/bitcoin` tmpfs or the `/tmp` tmpfs on `bitcoin`, or with either Monero service as another user, it fails. It proves startup on test
+networks only, on Docker's default seccomp and AppArmor profiles of the host it runs on; a node's sync, mainnet and an
+escrow payment are not exercised. CI's Tor image job runs it.
+
+`tests/test_compose_hardening.py` (no Docker daemon; the CI operations job) checks the configuration side for every
+service in every mode and profile combination of the Compose job: every capability dropped, `no-new-privileges`, a
+read-only root except `tor` and `tor-mirror` (left as they were, each with its reason in the test), `cap_add` only on
+`bitcoin` and only the five above, and a `user` for every service but `bitcoin` (or a `USER` in the image's
+Dockerfile for `app` and the Tor services). A service missing from its tables fails.
 
 ## Bundled-node escrow set-up from the installer's printed commands
 

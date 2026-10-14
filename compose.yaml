@@ -46,8 +46,8 @@ services:
       BITCOIN_MAX_TIP_AGE: ${BITCOIN_MAX_TIP_AGE:-2h}
       MONERO_MAX_TIP_AGE: ${MONERO_MAX_TIP_AGE:-1h}
       AUDIT_SIGNING_KEY: ${AUDIT_SIGNING_KEY:-}
-      # Bitcoin escrow: test networks only (regtest, signet, testnet4), off unless ESCROW_BTC=on; blank values use the app defaults
-      # (docs/operator-guide.md#bitcoin-escrow).
+      # Bitcoin escrow: test networks (regtest, signet, testnet4), or mainnet on a mainnet market (BITCOIN_CHAIN=main, A-460);
+      # off unless ESCROW_BTC=on; blank values use the app defaults (docs/operator-guide.md#bitcoin-escrow).
       ESCROW_BTC: ${ESCROW_BTC:-}
       ESCROW_BTC_RPC_URL: ${ESCROW_BTC_RPC_URL:-}
       ESCROW_BTC_ARBITER_WALLET: ${ESCROW_BTC_ARBITER_WALLET:-}
@@ -57,8 +57,8 @@ services:
       ESCROW_BTC_FEE_RATE: ${ESCROW_BTC_FEE_RATE:-}
       # The escrow signer's socket, as compose.nodes.yaml mounts it (/run/escrow-signer/signer.sock); blank = no signer.
       ESCROW_SIGNER_SOCKET: ${ESCROW_SIGNER_SOCKET:-}
-      # Monero escrow: a local Monero fakechain or stagenet only, off unless ESCROW_XMR=on; blank values use the app defaults
-      # (docs/operator-guide.md#monero-escrow). ESCROW_XMR_SEED_KEY is a path inside this
+      # Monero escrow: a local Monero fakechain or stagenet, or mainnet on a mainnet market (MONERO_NETWORK=mainnet, A-460);
+      # off unless ESCROW_XMR=on; blank values use the app defaults (docs/operator-guide.md#monero-escrow). ESCROW_XMR_SEED_KEY is a path inside this
       # container: mount the public key file read-only there (the app container has no volume for it by default).
       ESCROW_XMR: ${ESCROW_XMR:-}
       ESCROW_XMR_WALLET_RPC_URL: ${ESCROW_XMR_WALLET_RPC_URL:-}
@@ -115,17 +115,20 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
       POSTGRES_INITDB_ARGS: --encoding=UTF8
     volumes: [postgres_data:/var/lib/postgresql/data]
-    read_only: true
-    tmpfs: [/tmp, /var/run/postgresql]
-    cap_drop: [ALL]
-    # The upstream entrypoint fixes volume ownership as root, then drops to the postgres user.
-    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
-    security_opt: [no-new-privileges:true]
     healthcheck:
       test: [CMD-SHELL, 'pg_isready -h 127.0.0.1 -U opsecmkt -d opsecmkt']
       interval: 5s
       timeout: 5s
       retries: 20
+    # postgres (70:70) from the start, with a read-only root: no root entrypoint step, so the volume must already
+    # belong to 70:70 (a new volume does; after restoring one as root, see docs/operator-guide.md#troubleshooting).
+    # The socket, lock and temporary files go to memory (A-536; scripts/test-service-hardening.sh); the entrypoint's
+    # "chmod: /var/run/postgresql: Operation not permitted" at each start is harmless.
+    user: '70:70'
+    read_only: true
+    tmpfs: [/var/run/postgresql, /tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
     mem_limit: 1g
     cpu_period: 100000
     cpu_quota: 200000

@@ -314,3 +314,97 @@ func TestXMREscrowCheckoutOfferNamesNetwork(t *testing.T) {
 		})
 	}
 }
+
+// A-540: the escrow key page and the canary say where Bitcoin escrow runs and whether its coins are real exactly once.
+// On a mainnet market "Bitcoin mainnet, with real funds" is the whole statement: "no real funds" follows it nowhere. The
+// test-network sentences (regtest, signet, testnet4, and the chain not yet verified) are pinned byte for byte. The
+// mainnet market is the simulated Core on chain main (escrow_mainnet_test.go): copy checks, never a mainnet node.
+func TestEscrowKeyAndCanaryRealFundsWording(t *testing.T) {
+	const record = " The project's recorded public-network runs are listed in docs/verification.md; this market itself has not been checked on a public network."
+	for _, c := range []struct{ chain, challenge, key, canary string }{
+		{"regtest", "", "runs on regtest, a local test chain, with no real funds.", "It runs on regtest, a local test chain with no real funds." + record},
+		{"signet", "51", "runs on signet (the public signet, unless this operator runs a private one), with no real funds.", "It runs on signet (the public signet, unless this operator runs a private one) with no real funds." + record},
+		{"testnet4", "", "runs on testnet4, a public test network, with no real funds.", "It runs on testnet4, a public test network with no real funds." + record + " The project has no recorded run on public testnet4."},
+		{"main", "", "runs on Bitcoin mainnet, with real funds.", "It runs on Bitcoin mainnet, with real funds. The project has no recorded mainnet run: escrow on mainnet is the operator's choice, with real funds."},
+	} {
+		t.Run(c.chain, func(t *testing.T) {
+			x := newEscrowEnv(t)
+			switch c.chain {
+			case "regtest":
+			case "main":
+				mainnetCore(t, x.core)
+				t.Setenv("BITCOIN_CHAIN", "main")
+				x.restart()
+			default:
+				x.core.mu.Lock()
+				x.core.chain, x.core.challenge, x.core.peers, x.core.tipTime = c.chain, c.challenge, 8, time.Now().Unix()
+				x.core.mu.Unlock()
+				x.restart()
+			}
+			if e := x.A.escrow.Load(); e == nil || e.network != c.chain {
+				t.Fatalf("escrow did not start on %s", c.chain)
+			}
+			x.checkWording(c.key, c.canary, c.chain == "main")
+		})
+	}
+	// A-540: a mainnet market whose escrow node has not answered and whose chain was never pinned still says mainnet, with
+	// real funds, on /canary: never "a test network (chain not verified yet)" beside the catalog's "Mainnet · real funds".
+	t.Run("mainnet, chain not verified yet", func(t *testing.T) {
+		x := newEscrowEnv(t)
+		x.DB.Exec("DELETE FROM settings WHERE key=$1", escrowChainPin)
+		if _, err := x.DB.Exec(`UPDATE bitcoin_escrow_health SET enabled=false,disabled_class='not_checked',last_pass=NULL,
+			chain='unknown',height=NULL,pin_match=NULL,keypool_high_water=NULL,highest_market_index=0,updated_at=now() WHERE singleton`); err != nil {
+			t.Fatal(err)
+		}
+		mainnetCore(t, x.core)
+		t.Setenv("BITCOIN_CHAIN", "main")
+		srvDown(x, true)
+		x.restart()
+		if !x.A.live || x.A.escrowNetKnown() {
+			t.Fatalf("live %v, chain known %v: want a live market whose chain is not known yet", x.A.live, x.A.escrowNetKnown())
+		}
+		x.checkWording("", "It runs on Bitcoin mainnet, with real funds. The project has no recorded mainnet run: escrow on mainnet is the operator's choice, with real funds.", true)
+		if canary := pageLine(x.page("/canary", ""), "<li>Bitcoin escrow ("); strings.Contains(canary, "test network") || strings.Contains(canary, "not verified yet") {
+			t.Errorf("/canary on a mainnet market names a test network or an unverified chain:\n%s", canary)
+		}
+	})
+	t.Run("chain not verified yet", func(t *testing.T) {
+		x := newEscrowEnv(t)
+		x.DB.Exec("DELETE FROM settings WHERE key=$1", escrowChainPin)
+		if _, err := x.DB.Exec(`UPDATE bitcoin_escrow_health SET enabled=false,disabled_class='not_checked',last_pass=NULL,
+			chain='unknown',height=NULL,pin_match=NULL,keypool_high_water=NULL,highest_market_index=0,updated_at=now() WHERE singleton`); err != nil {
+			t.Fatal(err)
+		}
+		srvDown(x, true)
+		x.restart()
+		// The escrow key page has no such sentence while escrow is unavailable (its only way to an unverified chain).
+		x.checkWording("",
+			"It runs on a test network (chain not verified yet) with no real funds."+record, false)
+	})
+}
+
+// checkWording asserts the escrow key page's and the canary's statements of where Bitcoin escrow runs: key and canary
+// are the sentences expected, and mainnet says whether the market is on mainnet (then "no real funds" appears in
+// neither Bitcoin statement, and the real-funds wording does).
+func (x *escrowEnv) checkWording(key, canary string, mainnet bool) {
+	x.t.Helper()
+	keyLine := pageLine(x.page("/escrow-key", x.buyerSess), "Bitcoin escrow on this market runs on")
+	canaryLine := pageLine(x.page("/canary", ""), "<li>Bitcoin escrow (")
+	if key == "" && keyLine != "" || key != "" && !strings.Contains(keyLine, key) {
+		x.t.Errorf("/escrow-key lacks %q:\n%s", key, keyLine)
+	}
+	if !strings.Contains(canaryLine, canary) {
+		x.t.Errorf("/canary lacks %q:\n%s", canary, canaryLine)
+	}
+	for name, line := range map[string]string{"/escrow-key": keyLine, "/canary": canaryLine} {
+		if line == "" {
+			continue // an expected absence (key == "") was asserted above
+		}
+		if mainnet && strings.Contains(line, "no real funds") {
+			x.t.Errorf("%s says \"no real funds\" on a mainnet market:\n%s", name, line)
+		}
+		if mainnet && !strings.Contains(line, "Bitcoin mainnet, with real funds") {
+			x.t.Errorf("%s lacks the real-funds wording on a mainnet market:\n%s", name, line)
+		}
+	}
+}

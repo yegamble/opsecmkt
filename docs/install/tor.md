@@ -11,9 +11,13 @@ Run the market as a Tor onion service. No inbound port is opened on the host. Re
 
 | Choice | Result |
 | --- | --- |
-| `--nodes local` | Pruned Bitcoin signet and Monero stagenet nodes. 25–30 GB disk, hours to sync. |
+| `--nodes local` | Pruned **mainnet** Bitcoin and Monero nodes: real funds. About 30 GB (Bitcoin) and 45+ GB (Monero) of disk, days to sync (estimates). |
+| `--nodes local --bitcoin-network signet` | Pruned test-network nodes (signet and stagenet). About 8 + 20 GB, hours to sync. |
 | `--nodes custom` | Choose network, image and pruning per coin. |
 | `--nodes none` | No nodes. No payments with a bundled node. |
+
+> **Warning:** mainnet is the default and moves real funds. No mainnet run of this software is recorded; mainnet is
+> covered by unit, database and simulated-RPC tests only. See [Mainnet](../operator-guide.md#mainnet).
 
 ## Step 1: Get the release
 
@@ -72,6 +76,29 @@ Every service is healthy, setup is complete, and the onion address is listed.
 | Nodes over Tor | [Local nodes over Tor](../operator-guide.md#local-nodes-over-tor) |
 
 Onion DoS defences are on by default: [Onion-service defences](../operator-guide.md#onion-service-defences).
+
+## Use your own (vanity) onion address
+
+By default Tor creates a new, random address. To use one you already have, such as a vanity address, give its key
+directory at install time:
+
+```sh
+./scripts/install.sh init --tor --nodes local --onion-key-dir /root/onion-keys --onion-address ADDR.onion
+```
+
+`/root/onion-keys` holds `hs_ed25519_secret_key` and, optionally, `hs_ed25519_public_key`, as `mkp224o` writes them.
+Keep it outside the checkout.
+
+- **Generate it yourself, offline.** A key made by anyone else, including a vanity service, is held by them: they can
+  run your address. Use [mkp224o](https://github.com/cathugger/mkp224o) on a machine you control.
+- **Checked before use.** The installer checks both files byte for byte, has Tor derive the address offline and
+  compares it with `--onion-address` (or asks you to confirm it). A mismatch writes nothing.
+- **First install only.** The key goes into a new, empty `tor_identity` volume before Tor first starts. The
+  installer never replaces the address of a running install.
+- **Afterwards:** back up the volume as in Step 4, then securely delete `/root/onion-keys`.
+
+For the mirror: `./scripts/install.sh add-mirror --mirror-onion-key-dir DIR --mirror-onion-address ADDR.onion`,
+before the mirror first runs.
 
 ## Good to know
 

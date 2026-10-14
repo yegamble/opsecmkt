@@ -490,6 +490,9 @@ func authGate(c *actionCtx) (handle, password, rescueID string, release func(), 
 		}
 	}
 	if err != nil {
+		if err == errSoleAdminRecovery && rescueID != "" {
+			a.logRescueRefusal()
+		}
 		return "", "", "", nil, err
 	}
 	// A password-check slot is taken only now, so requests refused above never hold one while real
@@ -504,6 +507,9 @@ func authGate(c *actionCtx) (handle, password, rescueID string, release func(), 
 	// only avoids taking a work slot for an already-exhausted budget; it cannot admit a race.
 	if !a.allow(key, 10) {
 		release()
+		if rescueID != "" {
+			a.logRescueRefusal()
+		}
 		return "", "", "", nil, refused
 	}
 	return handle, password, rescueID, release, nil
@@ -591,15 +597,23 @@ func authAction(c *actionCtx) (actionResult, error) {
 			hash = dummyHash()
 		}
 		if rescueID != "" && account.id != rescueID {
+			a.logRescueRefusal()
 			return actionResult{}, errSoleAdminRecovery
 		}
 		check := bcrypt.CompareHashAndPassword(hash, []byte(password))
 		if err != nil || check != nil {
 			a.logSignInRefusals()
+			if rescueID != "" {
+				a.logRescueRefusal()
+			}
 			return actionResult{}, fail(401, "Invalid handle or password")
 		}
 		if rescueID != "" {
-			return a.soleAdminRecovery(c, account.id, account.hash, f.Get("rescue_code"), a.signInNext(f.Get("next")))
+			res, err := a.soleAdminRecovery(c, account.id, account.hash, f.Get("rescue_code"), a.signInNext(f.Get("next")))
+			if err == errSoleAdminRecovery {
+				a.logRescueRefusal()
+			}
+			return res, err
 		}
 		a.refund(signInKey(handle)) // a correct password spends no sign-in budget
 		if account.suspended {

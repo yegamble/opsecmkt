@@ -1,7 +1,8 @@
 # Upgrading from v0.1.0-alpha.1 to `v0.1.0-alpha.2`
 
-`v0.1.0-alpha.2` is a prerelease meant for test networks; mainnet (real funds) is an operator opt-in that no recorded
-run has exercised ([section 62](#62-mainnet-escrow-opt-in-and-the-fee-descriptor-migration-109-a-460)). Upgrade to the tag, not to `main`
+`v0.1.0-alpha.2` is a prerelease. Its installer now defaults new installs to mainnet (real funds), but an upgrade keeps
+your network ([section 64](#64-new-installs-default-to-mainnet-a-523)). No mainnet run is recorded; mainnet is covered
+by unit, database and simulated-RPC tests only ([section 62](#62-mainnet-escrow-opt-in-and-the-fee-descriptor-migration-109-a-460)). Upgrade to the tag, not to `main`
 (`git fetch --tags && git checkout v0.1.0-alpha.2`). Read this summary and the sections it names before you
 upgrade a running v0.1.0-alpha.1 deployment.
 
@@ -10,8 +11,9 @@ upgrade a running v0.1.0-alpha.1 deployment.
 **What changes for an operator**
 
 - **Payments are per-order escrow, off until you set them up.** Bitcoin uses 2-of-3 escrow on regtest, signet or
-  testnet4; Monero escrow is custodial, on a local fakechain or stagenet. Mainnet is an operator opt-in on a new
-  database ([section 62](#62-mainnet-escrow-opt-in-and-the-fee-descriptor-migration-109-a-460)); Bitcoin testnet3 and
+  testnet4; Monero escrow is custodial, on a local fakechain or stagenet. Mainnet needs a new database and is the
+  installer's default for new installs only ([section 64](#64-new-installs-default-to-mainnet-a-523); no mainnet run
+  is recorded; see also [section 62](#62-mainnet-escrow-opt-in-and-the-fee-descriptor-migration-109-a-460)). Bitcoin testnet3 and
   Monero testnet are refused. Upgrading turns no payment on ([per-order escrow](docs/escrow.md)).
 - **There is no pooled wallet.** The server refuses a non-blank `BITCOIN_RPC_URL`, `BITCOIN_WALLET`, `MONERO_RPC_URL`
   or `MONERO_WALLET_RPC_URL` and a database holding pooled payment history, and the installer also refuses the
@@ -21,9 +23,10 @@ upgrade a running v0.1.0-alpha.1 deployment.
   the database must be UTF8 ([section 42](#42-database-encoding-must-be-utf8-a-481)), and the server refuses a database
   that records a migration it does not include ([section 5](#5-rolling-back)).
 - **Optional local nodes** are pruned ([section 7](#7-local-nodes-are-now-pruned)) and pinned to release tags
-  ([section 8](#8-node-images-are-pinned-to-release-tags)). The bundled Bitcoin node defaults to signet
-  ([section 61](#61-the-bundled-bitcoin-node-defaults-to-signet-a-513)) and its RPC password is checked through a
-  salted verifier ([section 54](#54-local-bitcoin-rpc-uses-a-salted-verifier-a-144)).
+  ([section 8](#8-node-images-are-pinned-to-release-tags)). The bundled Bitcoin node defaults to signet when `BITCOIN_CHAIN` is blank
+  ([section 61](#61-the-bundled-bitcoin-node-defaults-to-signet-a-513); a new install writes mainnet, with no mainnet run recorded,
+  [section 64](#64-new-installs-default-to-mainnet-a-523)) and its RPC password is checked through a salted verifier
+  ([section 54](#54-local-bitcoin-rpc-uses-a-salted-verifier-a-144)).
 - Also new: signed audit exports, and listing photos and avatars (uploads stay off until a ClamAV scanner is set up).
 
 **Migrations:** `001_foundation` to `109_escrow_fee_descriptor`, 69 files (listed below). The server applies them
@@ -1976,3 +1979,68 @@ mainnet market, follow the operator guide's [Mainnet](docs/operator-guide.md#mai
 
 **Rollback.** As for any migration (section 5), an older binary refuses a database that records migration 109; restore
 the pre-upgrade backup instead.
+
+## 63. Pruned escrow nodes and the watch-only wallet repair (migration 110, A-527)
+
+**Add two read-only methods to the escrow user's `rpcwhitelist`:** `getblockhash` and `getblockheader`. The line now
+ends `…,gettransaction,listtransactions,listsinceblock,getblockhash,getblockheader` (the
+[operator guide](docs/operator-guide.md#bitcoin-escrow) has it, and `scripts/escrow-node-setup.sh` prints it); restart
+bitcoind after changing it. The app calls them only on a pruned node, and only when the watch-only wallet repair of
+per-order escrows is about to import. On a pruned node without them the repair waits and imports nothing, and the log
+repeats `escrow watcher: escrow: watch-only wallet repair waits: the node's prune height could not be read: getblockhash
+forbidden`; an unpruned node never calls them.
+
+**What changes.** Before the repair imports a per-order escrow the watch-only wallet lacks (a wallet restored from an
+older backup, say), it reads `getblockchaininfo` (`pruned`, `pruneheight`) and the time of the block at `pruneheight`.
+An escrow created before that block, or less than 2 hours (Bitcoin Core's rescan window) after it, is no longer imported:
+Core would keep its descriptor while answering the import failed, so a deposit made before that block was never seen and
+the next pass took the address as held (the order could expire unpaid with nothing refunded). Such an escrow is now listed
+on `/admin` (*Escrows the watch-only wallet cannot rescan*) with its order; so is an escrow whose import Core answers as
+failed for any other reason, which is then imported again on every pass instead of being taken as repaired. While any
+is listed its order does not expire and the orphan sweep leaves `escrow_sweep_required` set. Do not clear the restore gate
+until the list is empty; the [runbook](docs/testnet-runbook.md#an-escrow-the-watch-only-wallet-cannot-rescan) gives the
+two remedies (restore the whole `bitcoin_data` volume from a copy taken with bitcoind stopped, or run the node unpruned
+until the watcher has rescanned them). Unpruned nodes, and escrows newer than the prune height, are repaired as before.
+
+Migration `110_escrow_watch_unrepaired` adds the table `escrow_watch_unrepaired` (one row per listed escrow: its escrow
+ID, why it is listed and since when); it is empty until the repair lists an escrow. **Rollback.** As for any migration
+(section 5), an older binary refuses a database that records migration 110; restore the pre-upgrade backup instead.
+
+## 64. New installs default to mainnet (A-523)
+
+**An upgrade keeps your network.** `./scripts/install.sh upgrade` never changes a `BITCOIN_CHAIN` or `MONERO_NETWORK`
+value you have. For a key your `.env` lacks it adds only a blank line, and a blank network still means a test network
+(signet; stagenet). It never writes `MONERO_NETWORK_FLAG`: absent, the bundled Monero services run stagenet. Nothing in
+your `.env`, volumes or database changes because of this section. Only a **new** `init` behaves differently.
+
+**What changes for a new install.** No mainnet run of this software is recorded; mainnet is covered by unit, database
+and simulated-RPC tests only. With that said, `init` now writes mainnet for each coin whose local node it runs:
+
+| | Before | Now (new `init` with local nodes) |
+| --- | --- | --- |
+| Bitcoin | `BITCOIN_CHAIN=signet` | `BITCOIN_CHAIN=main`, `BITCOIN_PRUNE_MB=15000` (about two months of blocks, an estimate), `PAYMENT_CONFIRMATIONS_BTC=6` |
+| Monero | `MONERO_NETWORK=stagenet` | `MONERO_NETWORK=mainnet`, a blank `MONERO_NETWORK_FLAG=` line |
+| Test networks | the default | `--bitcoin-network signet\|testnet4\|regtest`, `--monero-network stagenet` |
+
+- **Test networks by option.** Name a test network for one coin and the other follows (signet or stagenet, with
+  `MONERO_NETWORK_FLAG=--stagenet`). Test chains keep `BITCOIN_PRUNE_MB=2000` and the Compose confirmation default.
+- **Mixed classes are refused** before `.env` is written, and `check` reports a mixed `.env`.
+- **Warnings are printed** before `.env` is written: real funds, the per-coin size and sync estimates, the prune window,
+  the Tor peer-to-peer caveat and the custodial Monero escrow note. Sizes are estimates: Bitcoin Core v31.1 chainparams
+  put a full mainnet node at about 856 GB of blocks + 14 GB of chain state, and Monero's README gave 45 GB pruned in
+  April 2022 (more today).
+- **The disk check only warns.** It compares Docker's data directory with the estimate and continues either way.
+- **Monero escrow on mainnet is custodial, with real funds, and off by default.** It needs `--monero-escrow yes` and
+  the seed key.
+- **A plain Bitcoin fee address is refused on mainnet**: give the fee wallet's watch-only descriptor
+  ([section 62](#62-mainnet-escrow-opt-in-and-the-fee-descriptor-migration-109-a-460)).
+- **Node images carry their tag's `@sha256` digest** (`BITCOIN_IMAGE`, `MONERO_IMAGE`, `MONERO_WALLET_IMAGE`). An
+  existing `.env` keeps the images it has, as before.
+
+**Checks before you rely on it.** Run `grep -E '^(BITCOIN_CHAIN|MONERO_NETWORK)=' .env`: an upgraded install shows what
+it showed before. If you meant a test market, install again with `--bitcoin-network signet --monero-network stagenet`.
+Do not reuse a test market's database, wallets or signer seed for mainnet
+([Enabling payments](docs/install/enable-payments.md#choose-a-network)).
+
+**Rollback.** No migration: nothing to roll back. Section 61 still describes the Compose fallback for a blank
+`BITCOIN_CHAIN`, which this section does not change.

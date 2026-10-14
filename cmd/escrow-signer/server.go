@@ -145,6 +145,8 @@ func serveSocket(ctx context.Context, ln net.Listener, s *signer) {
 			c.Close()
 			return
 		}
+		// Close excess connections without a JSON reply: the app treats EOF as signer unreachable
+		// and retries, while a JSON error is a signing refusal. Admission never queues work.
 		select {
 		case slots <- struct{}{}:
 		default:

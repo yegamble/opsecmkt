@@ -23,19 +23,23 @@ Read this once, before you form any opinion. Then read `CLAUDE.md`,
 
 1. **No browser JavaScript.** Every workflow is an HTML form + server response.
    A design that needs client script is a BLOCKER, not a preference.
-2. **Per-order escrow is the only payment path; test networks only.** Bitcoin is
+2. **Per-order escrow is the only payment path; one network class per market.** Bitcoin is
    2-of-3 multisig (buyer, vendor, market arbitrator keys; the server can never
    spend alone); Monero is a per-order account, custodial until multisig is
-   validated. Escrow is off by default (`ESCROW_BTC`, `ESCROW_XMR`) and runs on
-   Bitcoin regtest/signet/testnet4 and Monero stagenet/fakechain only (testnet3
-   and mainnet are refused, `escrow_rpc.go`);
-   a mainnet market refuses escrow at startup until A-460. The pooled wallet is
+   validated. Escrow is off by default (`ESCROW_BTC`, `ESCROW_XMR`). A market is
+   all mainnet (`BITCOIN_CHAIN=main`, `MONERO_NETWORK=mainnet`; A-460) or all test
+   networks (Bitcoin regtest/signet/testnet4, Monero stagenet/fakechain); mixed
+   classes, Bitcoin testnet3 and Monero testnet are refused (`escrow_runtime.go`,
+   `escrow_rpc.go`), and a mainnet market needs a new database. The installer
+   writes mainnet by default for the coins enabled and a test network only when
+   chosen (owner directive 2026-10-13, A-523); a blank network still means a test
+   network, so upgrades never switch a market. No mainnet run is recorded. The pooled wallet is
    removed (owner directive 2026-10-11: no pooled testing or drain): its history
    (`payouts`, `payment_addresses`) is read-only, migration 107 refuses a legacy
    database that still has pooled drain blockers, and migration 108
-   (A-492) refuses any pooled history rows and any new ones. Development, tests and war-room evidence
-   never use mainnet; never claim escrow for a path that is not implemented and
-   verified.
+   (A-492) refuses any pooled history rows and any new ones. Development, tests, CI and war-room evidence
+   never use mainnet (`tests/test_ci_never_mainnet.py` guards installer calls); never claim escrow for a path that
+   is not implemented and verified.
 3. **Orders move only through the server-side transition table**
    (`orders_state.go`) with row locks and compare-and-set; every move is logged
    in `order_events`. Nothing reports success without a recorded state change.

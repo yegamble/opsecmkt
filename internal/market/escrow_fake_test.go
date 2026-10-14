@@ -2,11 +2,14 @@ package market
 
 import (
 	"bytes"
+	"cmp"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"maps"
 	"math/big"
 	"regexp"
 	"slices"
@@ -158,6 +161,22 @@ type fakeEscrowCore struct {
 	// rescanRefuses gives that answer while getwalletinfo still reports false (a rescan that started between the two).
 	scanning, rescanRefuses, importing bool
 
+	// A-527: a pruned node. pruned makes getblockchaininfo report pruned true with pruneheight pruneHeight (an unpruned
+	// node reports pruned false and no pruneheight, as Core 31.1 does); getblockhash h answers a fake hash and
+	// getblockheader of it the time pruneTime+(h-pruneHeight)*600. An import into the watch wallet whose timestamp is not
+	// more than Core's 2-hour TIMESTAMP_WINDOW after the block at pruneheight (or not after rescanFloor, a node whose
+	// blocks before that time cannot be read for another reason, corruption say) is answered as Core 31.1 answers it,
+	// probed on a -prune=550 -fastprune regtest node (scripts/test-escrow-regtest.sh, TestEscrowRegtestPrunedRepair): that
+	// request success false with error code -1 ("Rescan failed for descriptor …"), its descriptor added all the same
+	// (labelled, ismine), and the requests of the same call with later timestamps successful. ASSUMED, not modelled: the
+	// fake keeps no block for a deposit, so every deposit to an address whose import failed counts as older than the
+	// prune height and stays unlisted (forgotten) until an import of it succeeds; and the exact boundary (Core's
+	// scanned_time is the last unreadable block's maximum time plus 7201 s) is approximated by the block at pruneheight.
+	pruned                 bool
+	pruneHeight, pruneTime int64
+	rescanFloor            int64
+	forbidden              map[string]bool // methods answered HTTP 403, as an rpcwhitelist written before them refuses them
+
 	// QA5W4-timing: every extended key fakeRealChild has parsed or derived, by ckdSkew, parent key and path, for the life
 	// of the fake. Public derivation in math/big is slow under -race, and a per-order checkout derives each order wallet's
 	// 30 indices for deriveaddresses and again for importdescriptors (a restart or restore imports them once more): with
@@ -280,7 +299,7 @@ func newFakeEscrowCore(t *testing.T) (*fakeEscrowCore, *payRPCServer) {
 	srv.forbid = func(method string) bool {
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		return method == "getnetworkinfo" && c.netInfoForbidden
+		return method == "getnetworkinfo" && c.netInfoForbidden || c.forbidden[method]
 	}
 	srv.mu.Unlock()
 	return c, srv
@@ -419,7 +438,10 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 		if blocks == 0 {
 			blocks = 200
 		}
-		info := map[string]any{"chain": c.chain, "blocks": blocks, "headers": max(c.headers, blocks), "initialblockdownload": c.ibd}
+		info := map[string]any{"chain": c.chain, "blocks": blocks, "headers": max(c.headers, blocks), "initialblockdownload": c.ibd, "pruned": c.pruned}
+		if c.pruned {
+			info["pruneheight"] = c.pruneHeight
+		}
 		if c.tipTime != 0 {
 			info["time"] = c.tipTime
 		}
@@ -427,6 +449,19 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 			info["signet_challenge"] = c.challenge
 		}
 		return info, 0, ""
+	case "getblockhash":
+		var h int64
+		json.Unmarshal(p[0], &h)
+		if blocks := cmp.Or(c.blocks, 200); h < 0 || h > blocks {
+			return nil, -8, "Block height out of range"
+		}
+		return fmt.Sprintf("%064x", h), 0, ""
+	case "getblockheader":
+		h, err := strconv.ParseInt(str(0), 16, 64)
+		if err != nil || len(str(0)) != 64 {
+			return nil, -5, "Block not found"
+		}
+		return map[string]any{"hash": str(0), "height": h, "time": c.pruneTime + (h-c.pruneHeight)*600, "mediantime": c.pruneTime + (h-c.pruneHeight)*600 - 1}, 0, ""
 	case "getnetworkinfo":
 		if c.netInfoErr != 0 {
 			return nil, c.netInfoErr, "Method not found"
@@ -701,9 +736,25 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 		if c.importFail {
 			return []map[string]any{{"success": false, "error": map[string]any{"code": -4, "message": "fake import failure"}}}, 0, ""
 		}
+		floor := c.rescanFloor
+		if c.pruned {
+			floor = max(floor, c.pruneTime+7200)
+		}
 		var replies []map[string]any
 		for _, req := range reqs {
-			replies = append(replies, c.importOne(path, req))
+			ts, dated := req["timestamp"].(float64)
+			if path != fakeWatchWallet || !dated || floor == 0 || int64(ts) > floor {
+				replies = append(replies, c.importOne(path, req))
+				continue
+			}
+			// A-527: the rescan could not read a block it needed. Core adds the descriptor anyway; what the address received
+			// before then stays unseen.
+			forgotten := maps.Clone(c.forgotten)
+			c.importOne(path, req)
+			for a := range forgotten {
+				c.forgotten[a] = true
+			}
+			replies = append(replies, map[string]any{"success": false, "error": map[string]any{"code": -1, "message": fmt.Sprintf("Rescan failed for descriptor with timestamp %d. There was an error reading a block from time %d, which is after or within 7200 seconds of key creation, and could contain transactions pertaining to the desc. As a result, transactions and coins using this desc may not appear in the wallet. This error could be caused by pruning or data corruption (see bitcoind log for details) and could be dealt with by downloading and rescanning the relevant blocks (see -reindex option and rescanblockchain RPC).", int64(ts), floor-7200)}})
 		}
 		return replies, 0, ""
 	case "getwalletinfo":

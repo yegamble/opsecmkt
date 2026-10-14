@@ -1,4 +1,5 @@
 """Exercise installer decisions in disposable directories with no real Docker."""
+import base64
 import hashlib
 import hmac
 import json
@@ -37,6 +38,8 @@ CLAMD_VERSION = 'ClamAV 1.5.4/28130/Mon Sep 21 06:24:29 2026'
 CLAMD_READ = 'compose exec -T clamd clamdscan --version'
 CLAMD_CONFIG_READ = 'compose exec -T clamd cat /etc/clamav/clamd.conf'
 MEMORY = 'info --format {{.MemTotal}}'
+# A-523: before writing .env for local nodes, init reads Docker's data directory and its free space (warn only).
+DOCKER_ROOT = 'info --format {{.DockerRootDir}}'
 CHECK_SCANNER = [*CHECK, 'compose config']
 # With the scanner on, `up --wait` names every service but clamd, which is then started without waiting: its
 # health never decides whether a command succeeds (ruling C1).
@@ -105,6 +108,65 @@ x-logging:
     max-file: "3"
     max-size: 10m
 '''
+# A-526: the oracle for onion identities made at test time, in tests only: Ed25519 public-key derivation (RFC 8032
+# arithmetic) from the expanded secret key Tor stores, and Tor's v3 onion address (rend-spec-v3 section 6). The
+# Docker stub imports the same code in place of Tor's dry run and of Tor reading an imported key.
+# scripts/test-tor-identity-import.sh checks the installer against real Tor.
+ONION_ORACLE = r'''
+import base64 as _onion_base64
+import hashlib as _onion_hashlib
+ONION_SECRET_HEADER = b'== ed25519v1-secret: type0 ==\0\0\0'
+ONION_PUBLIC_HEADER = b'== ed25519v1-public: type0 ==\0\0\0'
+_ED_P = 2**255 - 19
+_ED_D = -121665 * pow(121666, _ED_P - 2, _ED_P) % _ED_P
+
+
+def _ed_x(y):
+    xx = (y * y - 1) * pow(_ED_D * y * y + 1, _ED_P - 2, _ED_P) % _ED_P
+    x = pow(xx, (_ED_P + 3) // 8, _ED_P)
+    if (x * x - xx) % _ED_P:
+        x = x * pow(2, (_ED_P - 1) // 4, _ED_P) % _ED_P
+    return _ED_P - x if x % 2 else x
+
+
+def _ed_add(p, q):
+    (x1, y1), (x2, y2) = p, q
+    t = _ED_D * x1 * x2 * y1 * y2 % _ED_P
+    return ((x1 * y2 + x2 * y1) * pow(1 + t, _ED_P - 2, _ED_P) % _ED_P,
+            (y1 * y2 + x1 * x2) * pow(1 - t, _ED_P - 2, _ED_P) % _ED_P)
+
+
+def ed25519_public(expanded):
+    """The public key of a 64-byte expanded secret key (clamped scalar, then prefix): scalar times the base point."""
+    scalar, point, result = int.from_bytes(expanded[:32], 'little'), None, (0, 1)
+    base_y = 4 * pow(5, _ED_P - 2, _ED_P) % _ED_P
+    point = (_ed_x(base_y), base_y)
+    while scalar:
+        if scalar & 1:
+            result = _ed_add(result, point)
+        point = _ed_add(point, point)
+        scalar >>= 1
+    x, y = result
+    return (y | (x & 1) << 255).to_bytes(32, 'little')
+
+
+def onion_v3_address(public):
+    checksum = _onion_hashlib.sha3_256(b'.onion checksum' + public + b'\x03').digest()[:2]
+    return _onion_base64.b32encode(public + checksum + b'\x03').decode().lower() + '.onion'
+'''
+exec(ONION_ORACLE)
+
+
+def onion_identity(name):
+    """(hs_ed25519_secret_key bytes, hs_ed25519_public_key bytes, address) of a test identity seeded from NAME."""
+    expanded = bytearray(hashlib.sha512(hashlib.sha256(name.encode()).digest()).digest())
+    expanded[0] &= 248
+    expanded[31] &= 127
+    expanded[31] |= 64
+    public = ed25519_public(bytes(expanded))
+    return ONION_SECRET_HEADER + bytes(expanded), ONION_PUBLIC_HEADER + public, onion_v3_address(public)
+
+
 # Stubs write logs; a test that limits the installer's file size must not limit them.
 LIFT_FILE_SIZE_LIMIT = '''
 import resource
@@ -198,6 +260,15 @@ def alpha_env(**overrides):
     return {key: value for key, value in values.items() if value is not None}
 
 
+def installer_image_defaults():
+    """The node images the installer writes, as bash evaluates its assignments (a tag, then its digest)."""
+    lines = [line for line in INSTALLER.read_text().splitlines()
+             if re.match(r'^(bitcoin|monero|monero_wallet)_image_default\+?=', line)]
+    script = '\n'.join(lines) + '\nprintf "%s\\n" "$bitcoin_image_default" "$monero_image_default" "$monero_wallet_image_default"\n'
+    values = subprocess.run(['/bin/bash', '-c', script], capture_output=True, text=True, check=True).stdout.split()
+    return dict(zip(('BITCOIN_IMAGE', 'MONERO_IMAGE', 'MONERO_WALLET_IMAGE'), values))
+
+
 def example_values():
     """The key=value lines of .env.example, quotes removed."""
     values = {}
@@ -236,8 +307,10 @@ import sys
 args = sys.argv[1:]
 log = os.environ['INSTALLER_TEST_LOG']
 state = Path(os.environ['INSTALLER_TEST_STATE'])
+volumes = state / 'volumes'
 with Path(log).open('a') as out:
-    out.write(' '.join(args) + '\\n')
+    # One line per call: a container's shell script argument keeps its newlines escaped.
+    out.write(' '.join(arg.replace('\\n', '\\\\n') for arg in args) + '\\n')
 with Path(log + '.env').open('a') as out:
     out.write(json.dumps(dict(os.environ)) + '\\n')
 def flag(name):
@@ -320,6 +393,12 @@ if args[:3] == ['compose', 'exec', '-T']:
                                os.environ.get('INSTALLER_TEST_ONION_WAITS', '0'))
         if flag('INSTALLER_TEST_NO_ONION') or reads <= int(waits):
             sys.exit(1)
+        # Tor serves an imported key's address (A-526), unless a test has it ignore the key.
+        keys = volumes / ('opsecmkt_' + service.replace('-', '_') + '_identity') / 'keys'
+        if keys.exists() and not flag('INSTALLER_TEST_TOR_IGNORES_KEY'):
+            from onion_oracle import ed25519_public, onion_v3_address
+            print(onion_v3_address(ed25519_public(keys.read_bytes()[32:96])))
+            sys.exit(0)
         print(os.environ['INSTALLER_TEST_' + service.upper().replace('-', '_') + '_ONION'])
         sys.exit(0)
 if args[:4] == ['compose', 'run', '--rm', '-T']:
@@ -343,6 +422,13 @@ if args == ['compose', 'port', 'app', '8080']:
     print(published)
     sys.exit(0)
 # The malware scanner: the host's memory, the resolved Compose configuration, pulls and clamd's VERSION.
+if args == ['info', '--format', '{{.DockerRootDir}}']:
+    # Read before .env is written (A-523): the mainnet notice and the disk check come first.
+    assert not Path('.env').exists(), '.env was written before the disk check'
+    if flag('INSTALLER_TEST_DOCKER_ROOT_FAIL'):
+        sys.exit('Cannot connect to the Docker daemon')
+    print(os.environ.get('INSTALLER_TEST_DOCKER_ROOT', os.getcwd()))
+    sys.exit(0)
 if args == ['info', '--format', '{{.MemTotal}}']:
     if flag('INSTALLER_TEST_INFO_FAIL'):
         sys.exit('Cannot connect to the Docker daemon')
@@ -377,6 +463,47 @@ if args == ['compose', 'exec', '-T', 'clamd', 'cat', '/etc/clamav/clamd.conf']:
         sys.exit('service "clamd" is not running')
     config = os.environ.get('INSTALLER_TEST_CLAMD_CONFIG')
     sys.stdout.write(config if config is not None else Path('deploy/clamd.conf').read_text())
+    sys.exit(0)
+# Onion identity import (A-526): the project's Tor image and its build, the identity volume, and the two containers
+# that read the key on stdin (the dry run, and the import into the volume).
+if args[:2] == ['image', 'inspect']:
+    sys.exit(1 if flag('INSTALLER_TEST_NO_TOR_IMAGE') else 0)
+if args[:1] == ['compose'] and args[-2:] == ['build', 'tor']:
+    (state / 'tor-built').write_text(' '.join(args))
+    sys.exit(0)
+if args[:2] == ['compose', 'stop']:
+    sys.exit(0)
+if args[:2] == ['volume', 'inspect']:
+    name = args[-1]
+    if (volumes / name).exists() or name in os.environ.get('INSTALLER_TEST_EXISTING_VOLUMES', '').split():
+        print('[]')
+        sys.exit(0)
+    sys.exit(f'Error response from daemon: get {name}: no such volume')
+if args[:2] == ['volume', 'create']:
+    (volumes / args[-1]).mkdir(parents=True)
+    (volumes / (args[-1] + '.labels')).write_text(' '.join(args[2:-1]))
+    print(args[-1])
+    sys.exit(0)
+if args[:1] == ['run'] and '-i' in args:
+    data = sys.stdin.buffer.read()
+    if '-v' in args:
+        # The import: refuses a volume Tor has used, otherwise keeps what it read.
+        name = args[args.index('-v') + 1].split(':')[0]
+        if (volumes / name / 'keys').exists() or name in os.environ.get('INSTALLER_TEST_NONEMPTY_VOLUMES', '').split():
+            sys.exit(f'Refusing: volume {name} is not empty')
+        (volumes / name).mkdir(parents=True, exist_ok=True)
+        (volumes / name / 'keys').write_bytes(data)
+        sys.exit(0)
+    # The dry run: Tor derives the address from the secret key and dies on a public key that does not match it.
+    from onion_oracle import ONION_PUBLIC_HEADER, ONION_SECRET_HEADER, ed25519_public, onion_v3_address
+    (state / 'dry-run-saw-env').write_text(str(Path('.env').exists()))
+    if len(data) not in (96, 160) or data[:32] != ONION_SECRET_HEADER:
+        sys.exit('[warn] hs_ed25519_secret_key has wrong tag')
+    public = ed25519_public(data[32:96])
+    if len(data) == 160 and data[96:] != ONION_PUBLIC_HEADER + public:
+        print('[warn] hs_ed25519_public_key does not match hs_ed25519_secret_key!', file=sys.stderr)
+        sys.exit(3)
+    print(onion_v3_address(public))
     sys.exit(0)
 sys.exit('Unexpected docker command')
 ''')
@@ -420,6 +547,15 @@ print(value)
         # The installer fetches nothing itself: these record any call so a test can fail on it.
         for tool in ('curl', 'wget'):
             self.stub(tool, 'echo "$0 $*" >> "$INSTALLER_TEST_LOG.fetch"; exit 99', interpreter='/bin/sh')
+        # The onion oracle, imported by the Docker stub (beside it) only when a call needs it.
+        (self.bin / 'onion_oracle.py').write_text(ONION_ORACLE)
+        # Free space under Docker's data directory, as POSIX `df -Pk` prints it (KiB): plenty unless a test says.
+        self.stub('df', '''
+[ "$1" = -Pk ] || exit 64
+[ -z "$INSTALLER_TEST_DF_FAIL" ] || exit 1
+echo 'Filesystem 1024-blocks Used Available Capacity Mounted on'
+echo "/dev/test 4000000000 1000 ${INSTALLER_TEST_DF_KB:-3000000000} 1% /"
+''', interpreter='/bin/sh')
         # Onion waits poll up to 90 times; a trivial stub needs no interpreter startup under CI load.
         self.stub('sleep', 'exit 0', interpreter='/bin/sh')
         self.backup_stub()
@@ -577,10 +713,17 @@ time.sleep(60)
         config = self.config()
         onion = [f'compose exec -T tor {HOSTNAME}'] if config['APP_MODE'] == 'tor' else []
         probe = [] if re.search(r'@db[:/]', config['DATABASE_URL']) else [PROBE]
-        self.assertEqual(self.calls(), [*preflight_calls, *CHECK, *probe, UP, *onion])
+        self.assertEqual(self.calls(), [*preflight_calls, *self.disk_calls(config), *CHECK, *probe, UP, *onion])
         self.assertEqual(list(self.root.glob('.env.install.*')), [])
         self.assertEqual(list(self.root.glob('.env.edit.*')), [])
         self.assertFalse((self.root / '.env.lock').exists())
+
+    @staticmethod
+    def disk_calls(config):
+        """A-523: a local node on a chain with a size estimate (any but regtest) has its disk checked before .env."""
+        profiles = config.get('COMPOSE_PROFILES', '').split(',')
+        bitcoin = 'bitcoin' in profiles and config.get('BITCOIN_CHAIN') != 'regtest'
+        return [DOCKER_ROOT] if bitcoin or 'monero' in profiles else []
 
     def set_clamav_default(self, image):
         script = self.root / 'scripts' / 'install.sh'
@@ -601,7 +744,8 @@ time.sleep(60)
 
     def test_internal_clearnet_defaults(self):
         # Every question answered with Enter: mode, database, local HTTP, then for each coin the node
-        # choice, image, network and pruning. The defaults are pruned local test-network nodes.
+        # choice, image, network and pruning, then Monero escrow. The defaults are pruned local MAINNET nodes (A-523):
+        # written explicitly, never left to a blank (whose Compose fallback stays a test network).
         result = self.run_installer([''] * 12)
         self.assert_started(result)
         config = self.config()
@@ -618,15 +762,20 @@ time.sleep(60)
         self.assertEqual(len(config['AUDIT_SIGNING_KEY']), 64)
         self.assert_token_only_in_final_block(result, config['SETUP_TOKEN'])
         self.assert_no_secret_printed(result, config, allow_token=True)
-        self.assertEqual(config['BITCOIN_CHAIN'], 'signet')
-        self.assertEqual(config['MONERO_NETWORK'], 'stagenet')
-        images = self.compose_image_defaults()
+        self.assertEqual(config['BITCOIN_CHAIN'], 'main')
+        self.assertEqual(config['MONERO_NETWORK'], 'mainnet')
+        self.assertEqual(config['MONERO_NETWORK_FLAG'], '')
+        images = installer_image_defaults()
         self.assertEqual(config['BITCOIN_IMAGE'], images['BITCOIN_IMAGE'])
         self.assertEqual(config['MONERO_IMAGE'], images['MONERO_IMAGE'])
         self.assertEqual(config['MONERO_WALLET_IMAGE'], images['MONERO_WALLET_IMAGE'])
-        # Pruned by default, written explicitly so the operator can see and change it in .env.
-        self.assertEqual(config['BITCOIN_PRUNE_MB'], self.compose_bitcoin_prune_default())
+        # Pruned by default, written explicitly so the operator can see and change it in .env: on mainnet 15000 MiB
+        # (about two months of blocks, an estimate), with six confirmations.
+        self.assertEqual(config['BITCOIN_PRUNE_MB'], '15000')
+        self.assertEqual(config['PAYMENT_CONFIRMATIONS_BTC'], '6')
         self.assertEqual(config['MONERO_PRUNE_FLAGS'], PRUNED_MONERO_FLAGS)
+        self.assertIn('MAINNET', result.stdout)
+        self.assertNotIn('ESCROW_XMR', config)
         self.assertEqual(config['CLAMAV_IMAGE_DEFAULT'], 'clamav/clamav:1.5.4-debian')
         self.assertEqual(config['BITCOIN_RPC_URL'], '')
         self.assertEqual(config['BITCOIN_WALLET'], '')
@@ -674,9 +823,27 @@ time.sleep(60)
             self.assertNotIn(tag, ('', 'latest'), f'{variable} defaults to {image!r}, not a pinned release tag')
             tags[variable] = tag
         self.assertEqual(tags['MONERO_IMAGE'], tags['MONERO_WALLET_IMAGE'])
+        # The installer and the example carry the same release, with its digest beside the tag (A-523).
+        installer = installer_image_defaults()
+        self.assertEqual({key: image.partition('@')[0] for key, image in installer.items()}, defaults)
         example = dict(line.split('=', 1) for line in (REPOSITORY / '.env.example').read_text().splitlines()
                        if line.split('=', 1)[0] in defaults)
-        self.assertEqual(example, defaults)
+        self.assertEqual(example, installer)
+
+    def test_node_images_pinned_by_digest(self):
+        # A-523: each default node image is its reviewed release tag and that tag's multi-arch index digest, as
+        # `docker buildx imagetools inspect <tag>` printed it; check accepts the form and upgrade pins to it.
+        compose = self.compose_image_defaults()
+        installer = installer_image_defaults()
+        for key, image in installer.items():
+            with self.subTest(key=key):
+                self.assertRegex(image, '^' + re.escape(compose[key]) + r'@sha256:[0-9a-f]{64}$')
+        self.assertIn('docker buildx imagetools inspect', INSTALLER.read_text())
+        result = self.run_installer(None, arguments=['--tor', '--nodes', 'local'])
+        self.assert_started(result)
+        config = self.config()
+        self.assertEqual({key: config[key] for key in installer}, installer)
+        self.check_env(installed_env(**installer))
 
     def test_internal_clearnet_without_nodes(self):
         result = self.run_installer(['', '', '', 'disabled', 'disabled'])
@@ -695,21 +862,27 @@ time.sleep(60)
         self.assertNotIn('docs/testnet-runbook.md', result.stdout)
 
     def test_local_nodes_can_opt_out_of_pruning(self):
-        result = self.run_installer(['tor', '', 'local', '', 'signet', 'no', 'local', '', 'stagenet', 'no', ''])
-        self.assert_started(result)
-        config = self.config()
-        self.assertEqual(config['COMPOSE_PROFILES'], 'internal-db,bitcoin,monero')
-        # -prune=0 disables pruning in bitcoind; a blank flag list drops --prune-blockchain for monerod.
-        self.assertEqual(config['BITCOIN_PRUNE_MB'], '0')
-        self.assertEqual(config['MONERO_PRUNE_FLAGS'], '')
-        self.assertEqual(config['BITCOIN_CHAIN'], 'signet')
-        self.assertEqual(config['MONERO_NETWORK'], 'stagenet')
-        self.assertEqual(result.stdout.count('Full node'), 2)
-        # Compose reads an unquoted blank followed by a comment ("MONERO_PRUNE_FLAGS= # x") as the value "# x"
-        # (A-149): every line the installer writes is a single-quoted value with nothing after it.
-        for line in (self.root / '.env').read_text().splitlines():
-            self.assertRegex(line, r"^[A-Z0-9_]+='[^'\n]*'$")
-        self.assertIn("\nMONERO_PRUNE_FLAGS=''\n", (self.root / '.env').read_text())
+        # On either class of network: the full-node notice names the chain it sizes (A-523).
+        for chain, network, size in (('signet', 'stagenet', '28 GB on signet'), ('main', 'mainnet', '870 GB on mainnet')):
+            with self.subTest(chain=chain):
+                (self.root / '.env').unlink(missing_ok=True)
+                self.log.unlink(missing_ok=True)
+                result = self.run_installer(['tor', '', 'local', '', chain, 'no', 'local', '', network, 'no', ''])
+                self.assert_started(result)
+                config = self.config()
+                self.assertEqual(config['COMPOSE_PROFILES'], 'internal-db,bitcoin,monero')
+                # -prune=0 disables pruning in bitcoind; a blank flag list drops --prune-blockchain for monerod.
+                self.assertEqual(config['BITCOIN_PRUNE_MB'], '0')
+                self.assertEqual(config['MONERO_PRUNE_FLAGS'], '')
+                self.assertEqual(config['BITCOIN_CHAIN'], chain)
+                self.assertEqual(config['MONERO_NETWORK'], network)
+                self.assertEqual(result.stdout.count('Full node'), 2)
+                self.assertIn(size, result.stdout)
+                # Compose reads an unquoted blank followed by a comment ("MONERO_PRUNE_FLAGS= # x") as the value "# x"
+                # (A-149): every line the installer writes is a single-quoted value with nothing after it.
+                for line in (self.root / '.env').read_text().splitlines():
+                    self.assertRegex(line, r"^[A-Z0-9_]+='[^'\n]*'$")
+                self.assertIn("\nMONERO_PRUNE_FLAGS=''\n", (self.root / '.env').read_text())
 
     def test_env_example_value_lines_have_no_inline_comments(self):
         # Same Compose rule for the template operators copy and hand-edit (A-149).
@@ -718,12 +891,17 @@ time.sleep(60)
                 self.assertRegex(line, r'^[A-Z0-9_]+=[^#]*$')
 
     def test_local_node_prune_answer_yes_is_pruned(self):
-        result = self.run_installer(['tor', '', 'local', '', '', 'yes', 'local', '', '', 'yes', ''])
-        self.assert_started(result)
-        config = self.config()
-        self.assertEqual(config['BITCOIN_PRUNE_MB'], self.compose_bitcoin_prune_default())
-        self.assertEqual(config['MONERO_PRUNE_FLAGS'], PRUNED_MONERO_FLAGS)
-        self.assertNotIn('Full node', result.stdout)
+        # The default network is mainnet, pruned to 15000 MiB; a test chain keeps Compose's 2000 MiB default.
+        for chain, network, prune in (('', '', '15000'), ('signet', 'stagenet', self.compose_bitcoin_prune_default())):
+            with self.subTest(chain=chain):
+                (self.root / '.env').unlink(missing_ok=True)
+                self.log.unlink(missing_ok=True)
+                result = self.run_installer(['tor', '', 'local', '', chain, 'yes', 'local', '', network, 'yes', ''])
+                self.assert_started(result)
+                config = self.config()
+                self.assertEqual(config['BITCOIN_PRUNE_MB'], prune)
+                self.assertEqual(config['MONERO_PRUNE_FLAGS'], PRUNED_MONERO_FLAGS)
+                self.assertNotIn('Full node', result.stdout)
 
     def test_local_shortcut_needs_no_input_and_disables_inherited_wallets(self):
         result = self.run_installer([], arguments=['--local'], extra_env={
@@ -872,7 +1050,7 @@ time.sleep(60)
         self.assertEqual(config['COMPOSE_PROFILES'], 'internal-db,bitcoin,monero')
         self.assertEqual(config['BITCOIN_IMAGE'], 'reviewed-bitcoin:test')
         self.assertEqual(config['MONERO_IMAGE'], 'reviewed-monero:test')
-        self.assertEqual(config['MONERO_WALLET_IMAGE'], self.compose_image_defaults()['MONERO_WALLET_IMAGE'])
+        self.assertEqual(config['MONERO_WALLET_IMAGE'], installer_image_defaults()['MONERO_WALLET_IMAGE'])
         self.assertEqual(len(config['BITCOIN_RPC_PASSWORD']), 48)
         self.assertEqual(config['BITCOIN_RPC_URL'], '')
         self.assertRegex(config['BITCOIN_RPC_AUTH'], r'^marketplace:[0-9a-f]{32}\$[0-9a-f]{64}$')
@@ -971,16 +1149,289 @@ time.sleep(60)
         self.assert_started(result)
         config = self.config()
         self.assertEqual({key: config[key] for key in ('BITCOIN_IMAGE', 'MONERO_IMAGE', 'MONERO_WALLET_IMAGE')},
-                         self.compose_image_defaults())
+                         installer_image_defaults())
 
     def test_local_nodes_restrict_networks_to_escrow_support(self):
-        for flag, unsupported in (('--bitcoin-network', 'live'), ('--monero-network', 'testnet')):
+        # A-523: mainnet is main for Bitcoin Core and mainnet for Monero; a misnamed network is refused with the right
+        # name (as scripts/escrow-node-setup.sh does), before Docker is asked anything.
+        cases = (
+            ('--bitcoin-network', 'mainnet', 'give --bitcoin-network main'),
+            ('--bitcoin-network', 'testnet', 'testnet3 is not an escrow chain'),
+            ('--bitcoin-network', 'testnet3', 'testnet3 is not an escrow chain'),
+            ('--bitcoin-network', 'live', '--bitcoin-network takes one of: main signet testnet4 regtest'),
+            ('--monero-network', 'main', 'give --monero-network mainnet'),
+            ('--monero-network', 'testnet', 'give --monero-network stagenet'),
+            ('--monero-network', 'fakechain', '--monero-network takes one of: mainnet stagenet'),
+        )
+        for flag, unsupported, message in cases:
             with self.subTest(flag=flag, unsupported=unsupported):
+                self.log.unlink(missing_ok=True)
                 result = self.run_installer(None, arguments=['--tor', '--nodes', 'custom', '--bitcoin', 'disabled',
                                                               '--monero', 'disabled', flag, unsupported])
-                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn(message, result.stderr)
                 self.assertFalse((self.root / '.env').exists())
                 self.assertEqual(self.calls(), [])
+        # The same names are refused as answers.
+        for answers, message in ((['tor', '', 'local', '', 'mainnet'], 'give main'),
+                                 (['tor', '', 'disabled', 'local', '', 'testnet'], 'give stagenet')):
+            with self.subTest(answers=answers):
+                self.log.unlink(missing_ok=True)
+                result = self.run_installer(answers)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(message, result.stderr)
+                self.assertFalse((self.root / '.env').exists())
+                self.assertEqual(self.calls(), PREFLIGHT)
+
+    # ---- init: mainnet by default (A-523) ------------------------------------------------------------------
+    # Config strings only: Docker is a stub, so no node (and never a mainnet one) starts here.
+
+    def env_lines(self):
+        return (self.root / '.env').read_text().splitlines()
+
+    def test_default_writes_mainnet_explicitly(self):
+        # The bare interactive defaults and --nodes local write the mainnet class into .env, never a blank.
+        for answers, arguments in (([''] * 12, []), (None, ['--tor', '--nodes', 'local'])):
+            with self.subTest(arguments=arguments):
+                (self.root / '.env').unlink(missing_ok=True)
+                self.log.unlink(missing_ok=True)
+                self.assert_started(self.run_installer(answers, arguments=arguments))
+                lines = self.env_lines()
+                self.assertIn("BITCOIN_CHAIN='main'", lines)
+                self.assertIn("MONERO_NETWORK='mainnet'", lines)
+                self.assertIn("MONERO_NETWORK_FLAG=''", lines)
+        # Bitcoin alone: no Monero key says mainnet, and no network flag is written for a daemon that does not run.
+        (self.root / '.env').unlink()
+        self.log.unlink()
+        self.assert_started(self.run_installer([''], arguments=[
+            '--tor', '--bitcoin', 'local', '--bitcoin-image', 'reviewed-bitcoin:test', '--bitcoin-prune', 'yes',
+            '--monero', 'disabled']))
+        config = self.config()
+        self.assertEqual(config['BITCOIN_CHAIN'], 'main')
+        self.assertEqual(config['MONERO_NETWORK'], '')
+        self.assertNotIn('MONERO_NETWORK_FLAG', config)
+        self.assertNotIn('mainnet', [value for key, value in config.items() if key.startswith('MONERO')])
+
+    def test_monero_only_mainnet_leaves_bitcoin_chain_blank(self):
+        # The app reads a blank BITCOIN_CHAIN beside MONERO_NETWORK=mainnet as a mainnet market (marketLiveFromEnv).
+        result = self.run_installer(['', ''], arguments=[
+            '--tor', '--bitcoin', 'disabled', '--monero', 'local', '--monero-image', 'reviewed-monero:test',
+            '--monero-prune', 'yes'])
+        self.assert_started(result)
+        config = self.config()
+        self.assertEqual(config['BITCOIN_CHAIN'], '')
+        self.assertEqual(config['MONERO_NETWORK'], 'mainnet')
+        self.assertEqual(config['MONERO_NETWORK_FLAG'], '')
+        self.assertEqual(config['COMPOSE_PROFILES'], 'internal-db,monero')
+        for key in ('BITCOIN_PRUNE_MB', 'PAYMENT_CONFIRMATIONS_BTC', 'BITCOIN_IMAGE', 'ESCROW_XMR'):
+            self.assertNotIn(key, config)
+        self.assertIn('MAINNET', result.stdout)
+        self.assertNotIn('escrow-node-setup.sh', result.stdout)
+
+    def test_init_refuses_mixed_network_class(self):
+        # Two chosen networks of different classes (one mainnet, one a test network): refused before .env is written
+        # (errMixedNetworks), naming both options. A defaulted network follows the chosen one instead (below).
+        cases = [
+            (None, ['--tor', '--nodes', 'local', '--bitcoin-network', 'main', '--monero-network', 'stagenet']),
+            (None, ['--tor', '--nodes', 'local', '--bitcoin-network', 'regtest', '--monero-network', 'mainnet']),
+            (['tor', '', 'local', '', 'testnet4', '', 'local', '', 'mainnet', ''], []),
+        ]
+        for answers, arguments in cases:
+            with self.subTest(arguments=arguments, answers=answers):
+                self.log.unlink(missing_ok=True)
+                result = self.run_installer(answers, arguments=arguments)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('mix mainnet with a test network', result.stderr)
+                self.assertIn('--bitcoin-network', result.stderr)
+                self.assertIn('--monero-network', result.stderr)
+                self.assertIn('Nothing was written', result.stderr)
+                self.assertFalse((self.root / '.env').exists())
+                self.assertEqual(list(self.root.glob('.env.install.*')), [])
+                self.assertEqual(self.calls(), PREFLIGHT)
+                self.assertEqual(self.generated_secrets(), [])
+
+    def assert_test_class(self, result, chain, network):
+        self.assert_started(result)
+        config = self.config()
+        self.assertEqual(config['BITCOIN_CHAIN'], chain)
+        self.assertEqual(config['MONERO_NETWORK'], network)
+        self.assertEqual(config['MONERO_NETWORK_FLAG'], '--stagenet')
+        self.assertEqual(config['BITCOIN_PRUNE_MB'], self.compose_bitcoin_prune_default())
+        self.assertNotIn('PAYMENT_CONFIRMATIONS_BTC', config)
+        self.assertNotIn('MAINNET', result.stdout)
+        self.assertNotIn('No mainnet run', result.stdout)
+
+    def test_explicit_test_network_carries_the_other_coin(self):
+        # The market's class follows an explicitly chosen network: a Bitcoin test chain makes Monero default to stagenet.
+        self.assert_test_class(self.run_installer(None, arguments=['--tor', '--nodes', 'local', '--bitcoin-network', 'signet']),
+                               'signet', 'stagenet')
+        # So does an answer: Monero's network question then defaults to stagenet (Enter), as does its escrow question (no).
+        (self.root / '.env').unlink()
+        self.log.unlink()
+        self.assert_test_class(self.run_installer(['tor', '', 'local', '', 'testnet4', '', 'local', '', '', '', '']),
+                               'testnet4', 'stagenet')
+
+    def test_explicit_monero_test_network_carries_bitcoin(self):
+        self.assert_test_class(self.run_installer(None, arguments=['--tor', '--nodes', 'local', '--monero-network', 'stagenet']),
+                               'signet', 'stagenet')
+        # Asked interactively, Bitcoin's network question comes first: its default follows a --monero-network option...
+        (self.root / '.env').unlink()
+        self.log.unlink()
+        self.assert_test_class(self.run_installer([''] * 6, arguments=[
+            '--tor', '--nodes', 'custom', '--bitcoin', 'local', '--monero', 'local', '--monero-network', 'stagenet']),
+            'signet', 'stagenet')
+        # ...and a Monero test answer after a defaulted Bitcoin network moves Bitcoin to signet, saying so.
+        (self.root / '.env').unlink()
+        self.log.unlink()
+        result = self.run_installer(['tor', '', 'local', '', '', '', 'local', '', 'stagenet', '', ''])
+        self.assert_test_class(result, 'signet', 'stagenet')
+        self.assertIn('BITCOIN follows the Monero network', result.stdout)
+        # A coin disabled by its option chooses nothing: Monero alone stays on the mainnet default.
+        (self.root / '.env').unlink()
+        self.log.unlink()
+        result = self.run_installer([''], arguments=['--tor', '--bitcoin', 'disabled', '--bitcoin-network', 'signet',
+                                                     '--monero', 'local', '--monero-image', 'reviewed-monero:test',
+                                                     '--monero-prune', 'yes', '--monero-escrow', 'no'])
+        self.assert_started(result)
+        self.assertEqual(self.config()['MONERO_NETWORK'], 'mainnet')
+
+    def test_mainnet_prune_and_confirmations(self):
+        cases = (
+            (['--bitcoin-network', 'main'], dict(BITCOIN_PRUNE_MB='15000', PAYMENT_CONFIRMATIONS_BTC='6')),
+            (['--bitcoin-network', 'main', '--bitcoin-prune', 'no'], dict(BITCOIN_PRUNE_MB='0', PAYMENT_CONFIRMATIONS_BTC='6')),
+            (['--bitcoin-network', 'signet'], dict(BITCOIN_PRUNE_MB='2000', PAYMENT_CONFIRMATIONS_BTC=None)),
+            (['--bitcoin-network', 'testnet4', '--bitcoin-prune', 'no'], dict(BITCOIN_PRUNE_MB='0', PAYMENT_CONFIRMATIONS_BTC=None)),
+            (['--bitcoin-network', 'regtest'], dict(BITCOIN_PRUNE_MB='2000', PAYMENT_CONFIRMATIONS_BTC=None)),
+        )
+        for extra, expected in cases:
+            with self.subTest(extra=extra):
+                (self.root / '.env').unlink(missing_ok=True)
+                self.log.unlink(missing_ok=True)
+                arguments = ['--tor', '--nodes', 'local', '--monero', 'disabled', *extra]
+                self.assert_started(self.run_installer(None, arguments=arguments))
+                config = self.config()
+                self.assertEqual({key: config.get(key) for key in expected}, expected)
+
+    def test_mainnet_init_warns_real_funds_unrun(self):
+        result = self.run_installer(None, arguments=['--tor', '--nodes', 'local'])
+        self.assert_started(result)
+        out = result.stdout
+        for text in ('MAINNET', 'real funds', 'No mainnet run of this software is recorded',
+                     # Per coin, pruned size and multi-day first sync, each labelled an estimate.
+                     'Bitcoin mainnet', 'about 30 GB', '856 GB', '14 GB', 'Monero mainnet', '45 GB in April 2022',
+                     'more today', 'takes days', 'estimate',
+                     # The prune window and its backup consequence.
+                     'about two months', 'cannot be rescanned',
+                     # Tor with local nodes: their peer traffic leaves directly unless the overlay is added.
+                     'not routed through Tor', 'compose.nodes-tor.yaml',
+                     # Monero escrow on mainnet.
+                     'custodial'):
+            self.assertIn(text, out)
+        # Printed before .env is written: the stub refuses the disk check once .env exists, and the notice comes first.
+        self.assertLess(out.index('MAINNET'), out.index('Docker data directory'))
+        # Clearnet: nothing about Tor routing; test networks: no mainnet notice at all.
+        for arguments, mainnet in ((['--clearnet', '--behind-proxy', 'yes', '--nodes', 'local'], True),
+                                   (['--tor', '--nodes', 'local', '--bitcoin-network', 'signet',
+                                     '--monero-network', 'stagenet'], False)):
+            with self.subTest(arguments=arguments):
+                (self.root / '.env').unlink()
+                self.log.unlink()
+                result = self.run_installer(None, arguments=arguments)
+                self.assert_started(result)
+                self.assertNotIn('not routed through Tor', result.stdout)
+                self.assertEqual('MAINNET' in result.stdout, mainnet)
+                self.assertEqual('No mainnet run' in result.stdout, mainnet)
+
+    def test_local_node_disk_check_warns_and_never_refuses(self):
+        # A-523 (D-66): free space under Docker's data directory below the chain's estimate is a WARNING, never a
+        # refusal; an unreadable value is said and the install continues. The text names the chain it sizes.
+        mainnet = ['--tor', '--nodes', 'local']
+        cases = (
+            (mainnet, {}, 'has 2861 GB free', None),
+            (mainnet, {'INSTALLER_TEST_DF_KB': str(20 * 2**20)}, 'WARNING', 'about 75 GB'),
+            (['--tor', '--nodes', 'local', '--bitcoin-network', 'signet', '--monero-network', 'stagenet'],
+             {'INSTALLER_TEST_DF_KB': str(20 * 2**20)}, 'WARNING', 'about 28 GB'),
+            (mainnet, {'INSTALLER_TEST_DOCKER_ROOT_FAIL': '1'}, 'Could not read the free space', None),
+            (mainnet, {'INSTALLER_TEST_DF_FAIL': '1'}, 'Could not read the free space', None),
+            (mainnet, {'INSTALLER_TEST_DOCKER_ROOT': '/nonexistent/docker'}, 'Could not read the free space', None),
+        )
+        for arguments, extra, message, size in cases:
+            with self.subTest(extra=extra, arguments=arguments):
+                (self.root / '.env').unlink(missing_ok=True)
+                self.log.unlink(missing_ok=True)
+                result = self.run_installer(None, arguments=arguments, extra_env=extra)
+                self.assert_started(result)
+                self.assertIn(message, result.stdout + result.stderr)
+                if size:
+                    self.assertIn(size, result.stdout + result.stderr)
+                if message != 'WARNING':
+                    self.assertNotIn('WARNING', result.stdout + result.stderr)
+        # Regtest alone has no size to check: Docker is not asked.
+        (self.root / '.env').unlink()
+        self.log.unlink()
+        result = self.run_installer(None, arguments=['--tor', '--nodes', 'local', '--bitcoin-network', 'regtest',
+                                                     '--monero', 'disabled'])
+        self.assert_started(result)
+        self.assertNotIn(DOCKER_ROOT, self.calls())
+
+    def test_mainnet_prints_chain_main_setup(self):
+        result = self.run_installer(None, arguments=[
+            '--tor', '--bitcoin', 'local', '--bitcoin-image', 'reviewed-bitcoin:test', '--bitcoin-network', 'main',
+            '--bitcoin-prune', 'yes', '--monero', 'disabled'])
+        self.assert_started(result)
+        commands = [line.strip() for line in result.stdout.splitlines() if 'escrow-node-setup.sh' in line
+                    and not line.startswith('#')]
+        self.assertEqual(len(commands), 2, result.stdout)
+        self.assertTrue(commands[0].startswith('./scripts/escrow-node-setup.sh --chain main --rpc-port 8332 '), commands[0])
+        self.assertIn('--chain main --verify --via-compose app', commands[1])
+        block = result.stdout[result.stdout.index('Bitcoin escrow stays off'):]
+        for text in ('plain fee address is refused on mainnet', 'descriptor', 'wpkh(', 'sized on test chains',
+                     'PAYMENT_CONFIRMATIONS_BTC', 'ESCROW_BTC_FEE_RATE'):
+            self.assertIn(text, block)
+        # Every added line is a comment, safe to paste.
+        for line in block.splitlines():
+            if 'descriptor' in line or 'test chains' in line:
+                self.assertTrue(line.startswith('#'), line)
+        # A test chain's block is as it was.
+        (self.root / '.env').unlink()
+        self.log.unlink()
+        result = self.run_installer(None, arguments=[
+            '--tor', '--bitcoin', 'local', '--bitcoin-image', 'reviewed-bitcoin:test', '--bitcoin-network', 'signet',
+            '--bitcoin-prune', 'yes', '--monero', 'disabled'])
+        self.assert_started(result)
+        self.assertNotIn('plain fee address', result.stdout)
+        self.assertNotIn('sized on test chains', result.stdout)
+
+    def test_mainnet_monero_escrow_defaults_off(self):
+        # The question is asked on mainnet too, says real funds and custodial, and defaults to no.
+        result = self.run_installer(['tor', '', 'disabled', 'local', '', '', '', ''])
+        self.assert_started(result)
+        config = self.config()
+        self.assertEqual(config['MONERO_NETWORK'], 'mainnet')
+        for key in ('ESCROW_XMR', 'ESCROW_XMR_WALLET_RPC_PASSWORD', 'MONERO_WALLET_SECRET', 'ESCROW_XMR_SEED_KEY'):
+            self.assertNotIn(key, config)
+        self.assertIn('MONERO escrow (off by default)', result.stdout)
+        self.assertIn('real funds', result.stdout)
+        # Turned on: allowed on mainnet, with its seed key still required (asked, never defaulted).
+        (self.root / '.env').unlink()
+        self.log.unlink()
+        flags = ['--tor', '--bitcoin', 'disabled', '--monero', 'local', '--monero-image', 'reviewed-monero:test',
+                 '--monero-network', 'mainnet', '--monero-prune', 'yes', '--monero-escrow', 'yes']
+        result = self.run_installer(None, arguments=flags)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('end of input', result.stderr)
+        self.assertFalse((self.root / '.env').exists())
+        key = self.seed_key()
+        self.log.unlink()
+        result = self.run_installer(None, arguments=[*flags, '--monero-escrow-seed-key', str(key)])
+        self.assert_started(result)
+        config = self.config()
+        self.assertEqual(config['ESCROW_XMR'], 'on')
+        self.assertEqual(config['MONERO_NETWORK'], 'mainnet')
+        self.assertEqual(config['MONERO_NETWORK_FLAG'], '')
+        self.assertIn('Monero escrow is on (mainnet, custodial', result.stdout)
+        self.assertIn('real funds', result.stdout)
+        self.assert_no_secret_printed(result, config, allow_token=True)
 
     def seed_key(self, text=None):
         path = self.root / 'operator-seed-key.asc'
@@ -1049,8 +1500,8 @@ time.sleep(60)
         not_a_key.write_text('not a key\n')
         base = ['--tor', '--bitcoin', 'disabled', '--monero-image', 'reviewed-monero:test', '--monero-prune', 'yes', '--monero-escrow', 'yes']
         cases = [
-            (['--monero', 'local', '--monero-network', 'testnet', '--monero-escrow-seed-key', str(key)], '--monero-network takes one of: stagenet', []),
-            (['--monero', 'disabled', '--monero-escrow-seed-key', str(key)], 'Monero escrow needs the local Monero node on stagenet'),
+            (['--monero', 'local', '--monero-network', 'testnet', '--monero-escrow-seed-key', str(key)], 'give --monero-network stagenet', []),
+            (['--monero', 'disabled', '--monero-escrow-seed-key', str(key)], 'Monero escrow needs the local Monero node'),
             (['--monero', 'local', '--monero-network', 'stagenet', '--monero-escrow-seed-key', str(private)], 'holds a private key'),
             (['--monero', 'local', '--monero-network', 'stagenet', '--monero-escrow-seed-key', str(not_a_key)], 'not an armored OpenPGP public key'),
             (['--monero', 'local', '--monero-network', 'stagenet', '--monero-escrow-seed-key', str(self.root / 'missing.asc')], 'does not exist'),
@@ -1293,8 +1744,12 @@ time.sleep(60)
              dict(APP_MODE='tor', COOKIE_SECURE='false', COMPOSE_PROFILES='internal-db')),
             (['--clearnet', '--behind-proxy', 'no', '--nodes', 'local'],
              dict(APP_MODE='clearnet', COOKIE_SECURE='false', COMPOSE_PROFILES='internal-db,bitcoin,monero',
-                  BITCOIN_CHAIN='signet', MONERO_NETWORK='stagenet', BITCOIN_PRUNE_MB='2000',
-                  BITCOIN_IMAGE='bitcoin/bitcoin:31.1')),
+                  BITCOIN_CHAIN='main', MONERO_NETWORK='mainnet', MONERO_NETWORK_FLAG='', BITCOIN_PRUNE_MB='15000',
+                  PAYMENT_CONFIRMATIONS_BTC='6', BITCOIN_IMAGE=installer_image_defaults()['BITCOIN_IMAGE'])),
+            (['--clearnet', '--behind-proxy', 'no', '--nodes', 'local', '--bitcoin-network', 'signet',
+              '--monero-network', 'stagenet'],
+             dict(COMPOSE_PROFILES='internal-db,bitcoin,monero', BITCOIN_CHAIN='signet', MONERO_NETWORK='stagenet',
+                  MONERO_NETWORK_FLAG='--stagenet', BITCOIN_PRUNE_MB='2000', PAYMENT_CONFIRMATIONS_BTC=None)),
             (['init', '--clearnet', '--behind-proxy', 'yes', '--nodes', 'none'],
              dict(APP_MODE='clearnet', COOKIE_SECURE='true', COMPOSE_PROFILES='internal-db')),
             (['init', '--tor', '--external-db', 'postgres://market@database.example/market', '--nodes', 'custom',
@@ -1646,6 +2101,27 @@ time.sleep(60)
         self.check_env(installed_env(COMPOSE_PROFILES='internal-db,monero', MONERO_NETWORK='mainnet', MONERO_NETWORK_FLAG=''))
         self.check_env(installed_env(COMPOSE_PROFILES='internal-db,monero', MONERO_NETWORK='stagenet', MONERO_NETWORK_FLAG='--testnet'),
                        'MONERO_NETWORK_FLAG must be --stagenet (or absent)')
+        # A blank flag beside a stagenet (or blank) MONERO_NETWORK would run a mainnet daemon for a test market.
+        self.check_env(installed_env(COMPOSE_PROFILES='internal-db,monero', MONERO_NETWORK='stagenet', MONERO_NETWORK_FLAG=''),
+                       'MONERO_NETWORK_FLAG must be --stagenet (or absent)')
+        # What init writes (A-523): main and mainnet with a blank flag, or the test networks with --stagenet.
+        password = hex_value(48, 'rpc')
+        nodes = dict(COMPOSE_PROFILES='internal-db,bitcoin,monero', BITCOIN_RPC_PASSWORD=password)
+        self.check_env(installed_env(**nodes, BITCOIN_CHAIN='main', MONERO_NETWORK='mainnet', MONERO_NETWORK_FLAG=''))
+        self.check_env(installed_env(**nodes, BITCOIN_CHAIN='signet', MONERO_NETWORK='stagenet',
+                                     MONERO_NETWORK_FLAG='--stagenet'))
+
+    def test_check_refuses_mixed_class(self):
+        # Mirrors the app's errMixedNetworks (marketLiveFromEnv): a market is all mainnet or all test networks, whatever
+        # node profiles run; a blank network takes the other coin's class.
+        mixed = 'mix mainnet with a test network'
+        self.check_env(installed_env(BITCOIN_CHAIN='main', MONERO_NETWORK='stagenet'), mixed)
+        self.check_env(installed_env(BITCOIN_CHAIN='signet', MONERO_NETWORK='mainnet'), mixed)
+        self.check_env(installed_env(BITCOIN_CHAIN='regtest', MONERO_NETWORK='mainnet'), mixed)
+        self.check_env(installed_env(BITCOIN_CHAIN='main', MONERO_NETWORK='mainnet'))
+        self.check_env(installed_env(BITCOIN_CHAIN='main', MONERO_NETWORK=''))
+        self.check_env(installed_env(BITCOIN_CHAIN='', MONERO_NETWORK='mainnet'))
+        self.check_env(installed_env(BITCOIN_CHAIN='testnet4', MONERO_NETWORK='stagenet'))
 
     def test_check_refuses_legacy_pooled_values_and_profile(self):
         for key in ('BITCOIN_RPC_URL', 'BITCOIN_WALLET', 'MONERO_RPC_URL', 'MONERO_WALLET_RPC_URL'):
@@ -2017,6 +2493,358 @@ time.sleep(60)
         self.assertIn('Back up an onion identity', guide)
         self.assertIn('operator-signed verification document', result.stdout)
 
+    # ---- onion identity import (A-526) ------------------------------------------------------------------
+
+    def outside(self):
+        """A directory outside the checkout (the installer refuses key directories inside it)."""
+        directory = tempfile.TemporaryDirectory(prefix='opsecmkt-onion-key-')
+        self.addCleanup(directory.cleanup)
+        return Path(directory.name)
+
+    def onion_keys(self, name='vanity', secret=None, public=True, hostname=None, directory=None):
+        """A key directory laid out as mkp224o writes one; returns (directory, secret bytes, address)."""
+        secret_bytes, public_bytes, address = onion_identity(name)
+        directory = directory or self.outside() / name
+        directory.mkdir(parents=True)
+        (directory / 'hs_ed25519_secret_key').write_bytes(secret_bytes if secret is None else secret)
+        if public is True:
+            (directory / 'hs_ed25519_public_key').write_bytes(public_bytes)
+        elif public:
+            (directory / 'hs_ed25519_public_key').write_bytes(public)
+        (directory / 'hostname').write_text((hostname or address) + '\n')
+        return directory, secret_bytes, address
+
+    def import_init(self, directory, address=None, extra_env=None, more=()):
+        self.log.unlink(missing_ok=True)
+        arguments = ['--tor', '--nodes', 'none', '--onion-key-dir', str(directory), *more]
+        if address:
+            arguments += ['--onion-address', address]
+        self.temporary_dir = self.outside()
+        return self.run_installer(None, arguments=arguments,
+                                  extra_env={'TMPDIR': str(self.temporary_dir), **(extra_env or {})})
+
+    def import_mirror(self, directory, address=None, extra_env=None):
+        arguments = ['add-mirror', '--mirror-onion-key-dir', str(directory)]
+        if address:
+            arguments += ['--mirror-onion-address', address]
+        self.temporary_dir = self.outside()
+        return self.command(*arguments, extra_env={'TMPDIR': str(self.temporary_dir), **(extra_env or {})})
+
+    def volume_keys(self, name='opsecmkt_tor_identity'):
+        path = self.state / 'volumes' / name / 'keys'
+        return path.read_bytes() if path.exists() else None
+
+    def assert_import_refused(self, result, message, env_written=False):
+        """Refused with MESSAGE: nothing reached a volume, nothing started, no staged key copy is left."""
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn(message, result.stderr)
+        self.assertFalse((self.state / 'volumes').exists(), 'a volume was created or written')
+        self.assertFalse([call for call in self.calls() if call.startswith(('compose up', 'volume create'))
+                          or (call.startswith('run ') and ' -v ' in call)], self.calls())
+        if not env_written:
+            self.assertFalse((self.root / '.env').exists())
+        self.assertEqual(list(self.temporary_dir.iterdir()), [])
+        self.assertEqual(list(self.root.rglob('hs_ed25519_*')), [])
+
+    def test_onion_oracle(self):
+        # The address of a key Tor 0.4.9.14 generated offline (deploy/Dockerfile.tor; public data only): the
+        # oracle's checksum and encoding give it back from its public key.
+        tor_address = 'oeoziivyuscjbfolxqb3vuyip4wjv5bfzdjdyqrezm3ya3acvvhplxad.onion'
+        self.assertEqual(onion_v3_address(base64.b32decode(tor_address[:56].upper())[:32]), tor_address)
+        # RFC 8032 section 7.1, test 1: the public key of this seed.
+        seed = bytes.fromhex('9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60')
+        expanded = bytearray(hashlib.sha512(seed).digest())
+        expanded[0] &= 248
+        expanded[31] &= 127
+        expanded[31] |= 64
+        self.assertEqual(ed25519_public(bytes(expanded)).hex(),
+                         'd75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a')
+
+    def test_onion_import_refuses_truncated_key(self):
+        secret, public, _ = onion_identity('vanity')
+        for label, secret_bytes, public_bytes, message in (
+                ('95-byte secret', secret[:95], True, 'is 95 bytes; a Tor v3 onion secret key is exactly 96 bytes'),
+                ('97-byte secret', secret + b'\0', True, 'is 97 bytes; a Tor v3 onion secret key is exactly 96 bytes'),
+                ('empty secret', b'', True, 'is 0 bytes'),
+                ('63-byte public', None, public[:63], 'is 63 bytes; a Tor v3 onion public key is exactly 64 bytes')):
+            with self.subTest(label):
+                shutil.rmtree(self.state / 'volumes', ignore_errors=True)
+                directory, _, address = self.onion_keys(secret=secret_bytes, public=public_bytes)
+                result = self.import_init(directory, address)
+                self.assert_import_refused(result, message)
+                self.assertFalse([call for call in self.calls() if call.startswith('run ')], self.calls())
+
+    def test_onion_import_refuses_wrong_header(self):
+        secret, public, _ = onion_identity('vanity')
+        for label, secret_bytes, public_bytes, message in (
+                ('secret type1', secret.replace(b'type0', b'type1'), True, "does not start with Tor's secret key header"),
+                ('public header on the secret', b'== ed25519v1-public: type0 ==\0\0\0' + secret[32:], True,
+                 "does not start with Tor's secret key header"),
+                ('secret without NULs', secret[:29] + b'   ' + secret[32:], True, "does not start with Tor's secret key header"),
+                ('public type1', None, public.replace(b'type0', b'type1'), "does not start with Tor's public key header")):
+            with self.subTest(label):
+                directory, _, address = self.onion_keys(secret=secret_bytes, public=public_bytes)
+                result = self.import_init(directory, address)
+                self.assert_import_refused(result, message)
+                self.assertFalse([call for call in self.calls() if call.startswith('run ')], self.calls())
+
+    def test_onion_import_refuses_mismatched_pair(self):
+        _, other_public, _ = onion_identity('another')
+        directory, _, address = self.onion_keys(public=other_public)
+        result = self.import_init(directory, address)
+        self.assert_import_refused(result, 'hs_ed25519_public_key does not match hs_ed25519_secret_key')
+
+    def test_onion_import_refuses_symlink(self):
+        for name in ('hs_ed25519_secret_key', 'hs_ed25519_public_key'):
+            with self.subTest(name):
+                directory, _, address = self.onion_keys()
+                real = directory.parent / ('real-' + name)
+                (directory / name).rename(real)
+                (directory / name).symlink_to(real)
+                result = self.import_init(directory, address)
+                self.assert_import_refused(result, 'must be a regular file, not a symlink')
+        directory = self.outside() / 'no-secret'
+        directory.mkdir()
+        result = self.import_init(directory, onion_identity('vanity')[2])
+        self.assert_import_refused(result, 'must be a regular file, not a symlink')
+        result = self.import_init(self.outside() / 'missing', onion_identity('vanity')[2])
+        self.assert_import_refused(result, 'is not a directory')
+
+    def test_onion_import_refuses_dir_in_checkout(self):
+        _, _, address = onion_identity('vanity')
+        for directory in (self.root / 'keys', self.root / 'scripts' / 'keys'):
+            with self.subTest(directory=directory):
+                self.onion_keys(directory=directory)
+                result = self.import_init(directory, address)
+                shutil.rmtree(directory)
+                self.assert_import_refused(result, 'inside this checkout')
+        # A symlink outside the checkout that leads into it is inside too.
+        self.onion_keys(directory=self.root / 'keys')
+        link = self.outside() / 'link'
+        link.symlink_to(self.root / 'keys')
+        result = self.import_init(link, address)
+        shutil.rmtree(self.root / 'keys')
+        self.assert_import_refused(result, 'inside this checkout')
+
+    def test_onion_import_refuses_nonempty_volume(self):
+        directory, _, address = self.onion_keys()
+        # init: a volume under the identity's name that init's label check misses (created by hand) is refused
+        # before .env is written.
+        result = self.import_init(directory, address, extra_env={'INSTALLER_TEST_EXISTING_VOLUMES': 'opsecmkt_tor_identity'})
+        self.assert_import_refused(result, 'opsecmkt_tor_identity already exists')
+        # add-mirror: a mirror volume that Tor has used is refused by the import container, and .env is unchanged.
+        original = self.write_env(installed_env())
+        directory, _, address = self.onion_keys('mirror')
+        result = self.import_mirror(directory, address, extra_env={
+            'INSTALLER_TEST_EXISTING_VOLUMES': 'opsecmkt_tor_mirror_identity',
+            'INSTALLER_TEST_NONEMPTY_VOLUMES': 'opsecmkt_tor_mirror_identity'})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Refusing: volume opsecmkt_tor_mirror_identity is not empty', result.stderr)
+        self.assertIsNone(self.volume_keys('opsecmkt_tor_mirror_identity'))
+        self.assertEqual((self.root / '.env').read_bytes(), original)
+        self.assertFalse([call for call in self.calls() if call.startswith('compose up')], self.calls())
+        # A mirror that was set up (or whose container exists) already has an address: never replaced.
+        for env, extra, message in ((installed_env(COMPOSE_PROFILES='internal-db,mirror'), {}, 'already set up'),
+                                    (installed_env(), {'INSTALLER_TEST_MIRROR_CONTAINER': '1'}, 'a tor-mirror container exists')):
+            with self.subTest(message):
+                shutil.rmtree(self.state / 'volumes', ignore_errors=True)
+                original = self.write_env(env)
+                result = self.import_mirror(directory, address, extra_env=extra)
+                self.assert_import_refused(result, message, env_written=True)
+                self.assertEqual((self.root / '.env').read_bytes(), original)
+
+    def test_onion_import_refuses_clearnet(self):
+        directory, _, address = self.onion_keys()
+        for arguments in (['--clearnet', '--behind-proxy', 'yes', '--nodes', 'none'], ['--local']):
+            with self.subTest(arguments=arguments):
+                self.log.unlink(missing_ok=True)
+                result = self.run_installer(None, arguments=[*arguments, '--onion-key-dir', str(directory),
+                                                             '--onion-address', address])
+                self.assertEqual(result.returncode, 2)
+                self.assertIn('needs a Tor install', result.stderr)
+                self.assertEqual(self.calls(), [])
+                self.assertFalse((self.root / '.env').exists())
+        result = self.run_installer(None, arguments=['--tor', '--onion-address', address])
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('--onion-address needs --onion-key-dir', result.stderr)
+        # add-mirror on a clearnet install is refused before the key is read.
+        original = self.write_env(clearnet_env())
+        result = self.import_mirror(directory, address)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('needs a Tor install', result.stderr)
+        self.assertEqual((self.root / '.env').read_bytes(), original)
+        self.assertFalse([call for call in self.calls() if call.startswith(('run ', 'volume'))], self.calls())
+
+    def test_onion_import_refuses_unexpected_address(self):
+        directory, _, address = self.onion_keys()
+        _, _, other = onion_identity('another')
+        result = self.import_init(directory, other)
+        self.assert_import_refused(result, f'derives {address}, not {other}')
+        self.assertTrue([call for call in self.calls() if call.startswith('run ')], 'no dry run')
+        # Without --onion-address and with no terminal to confirm on, nothing is read or started.
+        result = self.import_init(directory)
+        self.assert_import_refused(result, '--onion-address')
+        self.assertEqual(result.returncode, 2)
+        # A malformed expected address is a usage error.
+        result = self.import_init(directory, 'not-an-onion.onion')
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('56 characters', result.stderr)
+
+    def test_onion_import_confirms_in_a_terminal(self):
+        # Without --onion-address, a terminal on stdin is shown the derived address and must type yes.
+        import pty
+        directory, secret, address = self.onion_keys()
+        for answer, accepted in (('no', False), ('yes', True)):
+            with self.subTest(answer=answer):
+                self.log.unlink(missing_ok=True)
+                temporary_dir = self.outside()
+                controller, terminal = pty.openpty()
+                env = {'PATH': str(self.bin) + os.pathsep + os.defpath, 'HOME': str(self.root),
+                       'INSTALLER_TEST_LOG': str(self.log), 'INSTALLER_TEST_STATE': str(self.state),
+                       'INSTALLER_TEST_TOR_ONION': MAIN_ONION, 'PYTHONDONTWRITEBYTECODE': '1', 'TMPDIR': str(temporary_dir)}
+                process = subprocess.Popen(
+                    ['/bin/bash', str(self.root / 'scripts' / 'install.sh'), '--tor', '--nodes', 'none',
+                     '--onion-key-dir', str(directory)],
+                    cwd=self.root, env=env, stdin=terminal, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    text=True, start_new_session=True)
+                os.close(terminal)
+                # Answer once the prompt is up, as an operator would.
+                prompt = ''
+                while not prompt.endswith('Type yes to use this onion address: '):
+                    character = process.stderr.read(1)
+                    self.assertTrue(character, 'the installer exited before asking: ' + prompt)
+                    prompt += character
+                os.write(controller, (answer + '\n').encode())
+                try:
+                    stdout, stderr = process.communicate(timeout=60)
+                finally:
+                    os.close(controller)
+                stderr = prompt + stderr
+                self.assertIn(f'The key is for {address}.', stdout)
+                if accepted:
+                    self.assertEqual(process.returncode, 0, stderr)
+                    self.assertEqual(self.volume_keys(), secret + onion_identity('vanity')[1])
+                    self.assertIn(f'Onion address: {address}\n', stdout)
+                else:
+                    self.assertNotEqual(process.returncode, 0)
+                    self.assertIn('Not confirmed. Nothing was written.', stderr)
+                    self.assertFalse((self.state / 'volumes').exists())
+                    self.assertFalse((self.root / '.env').exists())
+                self.assertEqual(list(temporary_dir.iterdir()), [])
+
+    def test_onion_import_stops_tor_serving_another_address(self):
+        directory, _, address = self.onion_keys()
+        result = self.import_init(directory, address, extra_env={'INSTALLER_TEST_TOR_IGNORES_KEY': '1'})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(f'Tor serves {MAIN_ONION}, not the imported {address}', result.stderr)
+        self.assertIn('compose stop tor', self.calls())
+        self.assertNotIn('Ready.', result.stdout)
+        self.write_env(installed_env())
+        mirror_dir, _, mirror = self.onion_keys('mirror')
+        result = self.import_mirror(mirror_dir, mirror, extra_env={'INSTALLER_TEST_TOR_IGNORES_KEY': '1'})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(f'Tor serves {MIRROR_ONION}, not the imported {mirror}', result.stderr)
+        self.assertIn('compose stop tor-mirror', self.calls())
+
+    def test_mirror_import_refuses_main_key(self):
+        original = self.write_env(installed_env())
+        directory, _, address = self.onion_keys()
+        result = self.import_mirror(directory, address, extra_env={'INSTALLER_TEST_TOR_ONION': address})
+        self.assert_import_refused(result, f"is the main onion's ({address})", env_written=True)
+        self.assertEqual((self.root / '.env').read_bytes(), original)
+
+    def test_mirror_import(self):
+        original = self.write_env(installed_env())
+        directory, secret, address = self.onion_keys('mirror', public=False)
+        result = self.import_mirror(directory, address)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.volume_keys('opsecmkt_tor_mirror_identity'), secret)
+        self.assertEqual((self.state / 'volumes' / 'opsecmkt_tor_mirror_identity.labels').read_text(),
+                         '--label com.docker.compose.project=opsecmkt --label com.docker.compose.volume=tor_mirror_identity')
+        self.assertEqual(self.config()['COMPOSE_PROFILES'], 'internal-db,mirror')
+        self.assertNotEqual((self.root / '.env').read_bytes(), original)
+        calls = self.calls()
+        self.assertLess(next(i for i, call in enumerate(calls) if call.startswith('run ') and ' -v ' in call),
+                        calls.index('compose up -d --wait'))
+        self.assertIn(f'Main onion:   {MAIN_ONION}\n', result.stdout)
+        self.assertIn(f'Mirror onion: {address}\n', result.stdout)
+        self.assertIn('identity=tor_mirror_identity AGE_RECIPIENT=age1', result.stdout)
+        self.assertIn('a key generated by anyone else, including a vanity service, is held by them', result.stdout)
+        self.assertEqual(list(self.temporary_dir.iterdir()), [])
+
+    def test_onion_import_never_puts_key_on_argv_env_or_output(self):
+        directory, secret, address = self.onion_keys()
+        result = self.import_init(directory, address)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # The key went in on stdin: the volume holds the secret key followed by the public key.
+        self.assertEqual(self.volume_keys(), secret + onion_identity('vanity')[1])
+        recorded = (self.log.read_bytes() + Path(str(self.log) + '.env').read_bytes()
+                    + result.stdout.encode('utf-8', 'surrogateescape') + result.stderr.encode('utf-8', 'surrogateescape'))
+        key = secret[32:]
+        for part in (key, key[:32], key[32:]):
+            for form in (part, part.hex().encode(), part.hex().upper().encode(), base64.b64encode(part),
+                         base64.urlsafe_b64encode(part), base64.b32encode(part), base64.b64encode(part).rstrip(b'=')):
+                self.assertNotIn(form, recorded)
+        # The staged copy is gone, and nothing key-like is left in the checkout.
+        self.assertEqual(list(self.temporary_dir.iterdir()), [])
+        self.assertEqual(list(self.root.rglob('hs_ed25519_*')), [])
+        self.assertIn(f'Onion address: {address}\n', result.stdout)
+
+    def test_onion_import_warns_third_party_vanity(self):
+        directory, _, address = self.onion_keys()
+        result = self.import_init(directory, address)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f'Onion address: {address}\n', result.stdout)
+        self.assertIn('identity=tor_identity AGE_RECIPIENT=age1', result.stdout)
+        self.assertIn('docs/operator-guide.md#secrets-env-and-onion-identities', result.stdout)
+        self.assertIn('a key generated by anyone else, including a vanity service, is held by them: generate vanity '
+                      'keys yourself (e.g. mkp224o, offline)', result.stdout)
+        self.assertIn(f'securely delete the plaintext keys in {directory}', result.stdout)
+        # Without an import none of this is printed.
+        self.log.unlink(missing_ok=True)
+        (self.root / '.env').unlink()
+        result = self.run_installer(None, arguments=['--tor', '--nodes', 'none'])
+        self.assert_started(result)
+        self.assertNotIn('vanity', result.stdout)
+
+    def test_onion_import_happens_before_first_up(self):
+        directory, secret, address = self.onion_keys(public=False, hostname=onion_identity('forged')[2])
+        result = self.import_init(directory, address, extra_env={'INSTALLER_TEST_NO_TOR_IMAGE': '1'})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.calls()
+
+        def index(predicate):
+            return next(i for i, call in enumerate(calls) if predicate(call))
+        build = index(lambda call: call.startswith('compose --env-file .env.install.') and call.endswith(' build tor'))
+        dry_run = index(lambda call: call.startswith('run ') and ' -v ' not in call)
+        inspect = calls.index('volume inspect opsecmkt_tor_identity')
+        create = index(lambda call: call.startswith('volume create '))
+        imported = index(lambda call: call.startswith('run ') and ' -v opsecmkt_tor_identity:/var/lib/tor ' in call)
+        check = calls.index('compose config --quiet')
+        self.assertLess(calls.index('image inspect opsecmkt-tor'), build)
+        self.assertLess(build, dry_run)
+        # An existing volume is refused before anything is asked or built.
+        self.assertLess(inspect, build)
+        # The dry run ran before .env was written; the volume is created and written after .env, before Compose
+        # starts anything.
+        self.assertEqual((self.state / 'dry-run-saw-env').read_text(), 'False')
+        self.assertLess(dry_run, check)
+        self.assertLess(check, create)
+        self.assertLess(create, imported)
+        self.assertLess(imported, calls.index(UP))
+        self.assertEqual(self.volume_keys(), secret)
+        # Both containers run without a network; the dry run as Tor's user with no capabilities, on a tmpfs.
+        self.assertIn('--network none --cap-drop ALL --security-opt no-new-privileges:true --tmpfs', calls[dry_run])
+        self.assertIn('--network none --user 0', calls[imported])
+        self.assertIn('--DisableNetwork 1', calls[dry_run])
+        self.assertNotIn('verify-config', calls[dry_run])
+        # The forged hostname in the key directory is ignored: the address is the one the key derives.
+        self.assertIn(f'Onion address: {address}\n', result.stdout)
+
+    def test_onion_key_files_are_ignored_by_git_and_docker(self):
+        for name in ('.gitignore', '.dockerignore'):
+            self.assertIn('hs_ed25519_*', (REPOSITORY / name).read_text().splitlines(), name)
+
     # ---- upgrade ----------------------------------------------------------------------------------------
 
     def upgrade(self, *arguments, extra_env=None):
@@ -2312,7 +3140,7 @@ time.sleep(60)
         result = self.upgrade()
         self.assertEqual(result.returncode, 0, result.stderr)
         config = self.config()
-        defaults = self.compose_image_defaults()
+        defaults = installer_image_defaults()
         for key in defaults:
             self.assertEqual(config[key], defaults[key], key)
         self.assertIn(f"pinned MONERO_WALLET_IMAGE to {defaults['MONERO_WALLET_IMAGE']}", result.stdout)
@@ -2363,6 +3191,63 @@ time.sleep(60)
         mirror = ('ps -a -q --filter label=com.docker.compose.project=opsecmkt '
                   '--filter label=com.docker.compose.service=tor-mirror')
         self.assertEqual(self.calls(), ['compose version', mirror, *CHECK, UP, STATUS])
+
+    def test_upgrade_never_switches_network(self):
+        # A-523 changes what init writes, never an existing install: upgrade keeps test-network and blank-network .env
+        # files on their networks (a blank still means Compose's test-network fallback) and never writes the flag.
+        password = hex_value(48, 'rpc')
+        nodes = dict(COMPOSE_PROFILES='internal-db,bitcoin,monero', BITCOIN_RPC_PASSWORD=password)
+        cases = (
+            ('test networks', installed_env(**nodes, BITCOIN_CHAIN='signet', MONERO_NETWORK='stagenet'), 'signet', 'stagenet'),
+            ('testnet4 with the flag', installed_env(**nodes, BITCOIN_CHAIN='testnet4', MONERO_NETWORK='stagenet',
+                                                     MONERO_NETWORK_FLAG='--stagenet'), 'testnet4', 'stagenet'),
+            ('blank networks', installed_env(**nodes), '', ''),
+            ('absent networks', alpha_env(), '', ''),
+            ('mainnet', installed_env(**nodes, BITCOIN_CHAIN='main', MONERO_NETWORK='mainnet', MONERO_NETWORK_FLAG=''),
+             'main', 'mainnet'),
+        )
+        for name, values, chain, network in cases:
+            with self.subTest(name=name):
+                self.write_env(values)
+                result = self.upgrade()
+                self.assertEqual(result.returncode, 0, result.stderr)
+                config = self.config()
+                self.assertEqual(config['BITCOIN_CHAIN'], chain)
+                self.assertEqual(config['MONERO_NETWORK'], network)
+                self.assertEqual(config.get('MONERO_NETWORK_FLAG'), values.get('MONERO_NETWORK_FLAG'))
+                self.assertEqual(config.get('BITCOIN_PRUNE_MB'), values.get('BITCOIN_PRUNE_MB', '2000'))
+                self.assertEqual(config.get('PAYMENT_CONFIRMATIONS_BTC'), values.get('PAYMENT_CONFIRMATIONS_BTC', '3'))
+                for copy in self.pre_upgrade_copies():
+                    copy.unlink()
+
+    def test_monero_network_flag_isolated(self):
+        # A shell MONERO_NETWORK_FLAG would override .env for Compose (a blank one runs a mainnet daemon): every
+        # command unsets it. upgrade never defaults it: absent means --stagenet, and a blank line means mainnet.
+        source = INSTALLER.read_text()
+        keys = re.search(r"^env_keys='([^']*)'", source, re.M)[1].split()
+        self.assertIn('MONERO_NETWORK_FLAG', keys)
+        defaults = re.search(r'^upgrade_defaults="([^"]*)"', source, re.M)[1]
+        self.assertNotIn('MONERO_NETWORK_FLAG', defaults)
+        stagenet = installed_env(COMPOSE_PROFILES='internal-db,monero', MONERO_NETWORK='stagenet')
+        for shell in ('', '--testnet'):
+            with self.subTest(shell=shell):
+                self.check_env(stagenet, extra_env={'MONERO_NETWORK_FLAG': shell})
+                self.write_env(stagenet)
+                self.assertEqual(self.upgrade(extra_env={'MONERO_NETWORK_FLAG': shell}).returncode, 0)
+                self.assertNotIn('MONERO_NETWORK_FLAG', self.config())
+                for copy in self.pre_upgrade_copies():
+                    copy.unlink()
+                for line in Path(str(self.log) + '.env').read_text().splitlines():
+                    self.assertNotIn('MONERO_NETWORK_FLAG', json.loads(line))
+        (self.root / '.env').unlink()
+        self.log.unlink()
+        Path(str(self.log) + '.env').unlink()
+        self.assert_started(self.run_installer(None, arguments=['--tor', '--nodes', 'local', '--bitcoin-network', 'signet',
+                                                                '--monero-network', 'stagenet'],
+                                               extra_env={'MONERO_NETWORK_FLAG': ''}))
+        self.assertEqual(self.config()['MONERO_NETWORK_FLAG'], '--stagenet')
+        for line in Path(str(self.log) + '.env').read_text().splitlines():
+            self.assertNotIn('MONERO_NETWORK_FLAG', json.loads(line))
 
     def test_upgrade_takes_the_project_name_from_this_directorys_containers(self):
         self.write_env(alpha_env())
@@ -2827,11 +3712,21 @@ time.sleep(60)
         # Secret scanners read KEY_PASSWORD='...' in a pattern as a hard-coded password.
         self.assertNotRegex(INSTALLER.read_text(), r"PASSWORD='")
 
+    def test_compose_fallbacks_stay_test_networks(self):
+        # A-523 writes mainnet explicitly; a blank or absent key keeps running test networks (A-513 precedent), so an
+        # existing install never moves to mainnet by itself. (These files belong to other items; read only.)
+        for name in ('compose.nodes.yaml', 'compose.nodes-tor.yaml'):
+            text = (REPOSITORY / name).read_text()
+            with self.subTest(name=name):
+                self.assertIn('${BITCOIN_CHAIN:-signet}', text)
+                self.assertIn('${MONERO_NETWORK_FLAG---stagenet}', text)
+
     def test_isolated_keys_cover_env_example(self):
         # Commands unset these so Compose reads .env alone; the installer also keeps one bookkeeping-only key.
         keys = re.search(r"^env_keys='([^']*)'", INSTALLER.read_text(), re.M)[1].split()
         self.assertIn('CLAMAV_IMAGE_DEFAULT', keys)
         retired_internal = {'CLAMAV_IMAGE_DEFAULT', 'MONERO_WALLET_RPC_PASSWORD'}
+        # Optional overrides are documented without assignments; a blank network flag would select mainnet.
         optional_compose = {'MONERO_NETWORK_FLAG', 'LOG_DRIVER', 'TOR_VERSION'}
         self.assertEqual(sorted(key for key in keys if key not in retired_internal | optional_compose),
                          sorted(example_values()))

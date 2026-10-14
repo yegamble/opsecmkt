@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -191,5 +192,70 @@ func TestSignerSocketFile(t *testing.T) {
 	}
 	if _, err := r.ReadBytes('\n'); err == nil {
 		t.Fatal("connection not closed after an over-long line")
+	}
+}
+
+// TestSignerSocketConnectionCap (A-537): at most maxSignerConns connections are served at once. One more is closed at once
+// with no reply byte (the app reads a closed connection as "signer unreachable" and waits; a JSON error would be taken
+// as a refusal), and a slot freed by a closed connection is usable again.
+func TestSignerSocketConnectionCap(t *testing.T) {
+	sock, _ := startServer(t)
+	const info = `{"version":1,"op":"info"}`
+	var idle []net.Conn
+	defer func() {
+		for _, c := range idle {
+			c.Close()
+		}
+	}()
+	for i := 0; i < maxSignerConns; i++ {
+		c, err := net.Dial("unix", sock)
+		if err != nil {
+			t.Fatal(err)
+		}
+		idle = append(idle, c)
+		// A reply proves the signer accepted this connection (a dial alone succeeds from the listen backlog).
+		c.SetDeadline(time.Now().Add(10 * time.Second))
+		if _, err := c.Write([]byte(info + "\n")); err != nil {
+			t.Fatal(err)
+		}
+		reply, err := bufio.NewReader(c).ReadBytes('\n')
+		if err != nil || bytes.Contains(reply, []byte("busy")) {
+			t.Fatalf("connection %d: %q, %v", i, reply, err)
+		}
+		c.SetDeadline(time.Time{})
+	}
+	over, err := net.Dial("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer over.Close()
+	over.SetReadDeadline(time.Now().Add(time.Second))
+	if b, err := io.ReadAll(over); err != nil || len(b) != 0 {
+		t.Fatalf("the connection over the cap got %q, %v (want EOF with no bytes within a second)", b, err)
+	}
+	// Closing one idle connection frees its slot once the signer notices (asynchronously, so the request is retried
+	// until then); the request is then served with a real info reply.
+	idle[0].Close()
+	idle = idle[1:]
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		c, err := net.Dial("unix", sock)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.SetDeadline(time.Now().Add(time.Second))
+		c.Write([]byte(info + "\n"))
+		reply, _ := bufio.NewReader(c).ReadBytes('\n')
+		c.Close()
+		if len(reply) > 0 {
+			if !bytes.Contains(reply, []byte(`"tpub"`)) || bytes.Contains(reply, []byte("busy")) {
+				t.Fatalf("reply after a slot was freed: %q", reply)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the slot of a closed connection was not released")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

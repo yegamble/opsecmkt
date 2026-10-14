@@ -1,11 +1,13 @@
 # Test-network payments runbook
 
-**Current build:** per-order escrow is the only payment path, off by default. This runbook is for test networks:
-Bitcoin regtest, signet and testnet4; Monero fakechain and stagenet. Mainnet is an operator opt-in with real funds
-(`BITCOIN_CHAIN=main`, `MONERO_NETWORK=mainnet`, on a new database), set up as the
-[operator guide's Mainnet section](operator-guide.md#mainnet) describes; no mainnet run is recorded. The backup,
-restore, gate and moderation steps below are written for test networks and have not been run on mainnet. A database
-from an older release with payment history this build does not support is refused at startup by migrations 107 and
+**Current build:** per-order escrow is the only payment path, off by default. This runbook is written for test networks:
+Bitcoin regtest, signet and testnet4; Monero fakechain and stagenet. The installer's local nodes now default to mainnet
+(`BITCOIN_CHAIN=main`, `MONERO_NETWORK=mainnet`, real funds, on a new database), set up as the
+[operator guide's Mainnet section](operator-guide.md#mainnet) describes. No mainnet run is recorded; mainnet is covered
+by unit, database and simulated-RPC tests only. The backup, restore, gate and moderation steps below were written for
+test networks and have not been run on mainnet; to rehearse them, install with
+`--bitcoin-network signet --monero-network stagenet` ([choose a network](install/enable-payments.md#choose-a-network)).
+A database from an older release with payment history this build does not support is refused at startup by migrations 107 and
 108 ([UPGRADING.md sections 58](../UPGRADING.md#58-pooled-wallet-removal-for-fresh-installs-a-448) and
 [59](../UPGRADING.md#59-pooled-history-refused-migration-108-a-492)).
 
@@ -119,7 +121,9 @@ the repair's own import, which rescans from the earliest per-order escrow's crea
 than its two minutes) the app waits and imports nothing; the log reads "watch-only wallet repair waits". Core refuses
 every import while it rescans, so an escrow checkout (of either kind) meanwhile is refused with "the market's escrow
 wallet is rescanning the chain … try again in a few minutes", the order still a draft and nothing stored (QA5W5A-2):
-after a restore, expect that for as long as the rescan takes. Then follow the reconciliation below.
+after a restore, expect that for as long as the rescan takes. On a pruned node, a per-order escrow older than the oldest
+block the node keeps cannot be rescanned: the app does not import it and lists it on `/admin`
+([below](#an-escrow-the-watch-only-wallet-cannot-rescan), A-527). Then follow the reconciliation below.
 
 The arbiter steps were rehearsed on Core 31.1 regtest by `TestEscrowRegtestArbiterRestore` (`scripts/test-escrow-regtest.sh`):
 `backupwallet` before any escrow, the wallet unloaded with a vendor-signed claim waiting, `restorewallet` under a new
@@ -275,7 +279,8 @@ db_sql() { docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U opsecmkt -d o
 
 ### Clear the gate
 
-Only after steps 1 to 6 above, with the app stopped and the reconciled database backed up. Clearing the gate is
+Only after steps 1 to 6 above, with the app stopped and the reconciled database backed up, and not while `/admin` lists
+an [escrow the watch-only wallet cannot rescan](#an-escrow-the-watch-only-wallet-cannot-rescan). Clearing the gate is
 your assertion that reconciliation is complete. It does not discover missing settlements or release individual holds.
 On a market running Bitcoin escrow it also lets escrow checkout run again, with only the address check
 described above under *Reconcile a restored database before enabling payouts*. Give your administrator handle: the SQL clears the gate and adds one audit row naming you ("Payout
@@ -403,6 +408,51 @@ Three limits of the key protection, each stated in [per-order escrow](escrow.md#
   again its next child index starts at `/0/1`, reusing child keys its lost escrows used. The market cannot detect
   this; it is inherent to restoring records that never saw the key. Tell every party who registers again after a
   restore to use a fresh wallet account.
+
+### An escrow the watch-only wallet cannot rescan
+
+For a market running [Bitcoin escrow](operator-guide.md#bitcoin-escrow) on a pruned node (the bundled node is pruned by
+default, [Local node pruning](operator-guide.md#local-node-pruning)). When the watch-only wallet lacks per-order escrows
+(restored from a backup older than them, say), the escrow watcher imports them again with a rescan from each escrow's
+creation ([above](#back-up-and-restore-the-escrow-arbiter-and-watch-only-wallets)). Bitcoin Core rescans only blocks it
+still holds, from 2 hours before an import's timestamp. So before that import the watcher reads `getblockchaininfo`
+(`pruned`, `pruneheight`) and, on a node that has pruned, the time of the block at `pruneheight` (`getblockhash` and
+`getblockheader`, on the escrow user's `rpcwhitelist` since A-527). An escrow created before that block, or less than
+2 hours after it, is not imported: Core 31.1 would add its descriptor and label but answer the import failed (observed on
+a pruned regtest node: `success` false, error code -1, "Rescan failed for descriptor …"), and a deposit made before that
+block would never be seen. The watcher lists it under *Admin → Escrow status and payment intake → Bitcoin escrow recovery
+and reconciliation → Escrows the watch-only wallet cannot rescan* by its order, and logs once, naming no address:
+
+```text
+escrow: order 1a2b3c4d: its escrow is older than the oldest block this pruned node keeps, so the watch-only wallet cannot rescan for it; …
+```
+
+An escrow whose import Core answers as failed for another reason (a block it needed could not be read) is listed too
+("Bitcoin Core reported that its rescan failed"). Core keeps its descriptor and label, so the watcher no longer trusts
+them: it imports it again on every pass, and the log repeats
+`escrow watcher: escrow: sibling import failed: importdescriptors import-failed`. A pruned node whose escrow user's
+whitelist lacks `getblockhash` or `getblockheader` makes the repair wait instead (the log repeats
+`escrow watcher: escrow: watch-only wallet repair waits: the node's prune height could not be read: getblockhash forbidden`):
+add both methods ([UPGRADING.md section 63](../UPGRADING.md#63-pruned-escrow-nodes-and-the-watch-only-wallet-repair-migration-110-a-527)).
+
+While any escrow is listed, its order does not expire, the orphan sweep leaves `escrow_sweep_required` set (escrow checkout
+stays paused after a restore), and the watcher checks again on every pass. The app never clears the recovery gate; do not
+clear it ([Clear the gate](#clear-the-gate)) while the list is not empty, because a deposit the wallet cannot see is not
+counted and its order cannot be settled correctly. Fix it in one of two ways:
+
+1. Restore the whole `bitcoin_data` volume from a copy taken with bitcoind stopped: the pruned chain and the wallets in it
+   then agree, and the node catches up from there. The next pass finds each escrow held, with its label, and removes it
+   from the list. This does not clear an escrow listed because Core answered its import failed: only an import that
+   succeeds does, so use the second way for those.
+2. Or run the node unpruned until the watcher has rescanned them: set `BITCOIN_PRUNE_MB=0` and reindex as
+   [Local node pruning](operator-guide.md#local-node-pruning) says (the node downloads and validates the whole chain
+   again). Once it has synced, the next watcher pass imports each listed escrow from its creation and removes it from
+   the list. Then set `BITCOIN_PRUNE_MB` back.
+
+The listing on a pruned node, and Core's answer to an import below `pruneheight`, are checked on a real Core 31.1 regtest
+node by `TestEscrowRegtestPrunedRepair` (`scripts/test-escrow-regtest.sh`, CI's `escrow-regtest` job); clearing the list
+by either remedy is checked only against a simulated node (`TestEscrowRepairBelowPruneHeight`,
+`TestEscrowRepairImportFailedNotHeld`), and neither remedy has been rehearsed on a real node.
 
 ## Handle a payment-review flag
 

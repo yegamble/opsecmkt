@@ -39,7 +39,9 @@ func KeyRootSource(getenv func(string) string) string {
 }
 
 // useKeyRoot derives the CSRF/CAPTCHA HMAC key and the CAPTCHA challenge-id key from root and keeps root for
-// sealing (crypto.go). The "csrf:" derivation string is the one used before APP_SECRET_KEY existed.
+// sealing (crypto.go). The "csrf:" derivation string is the one used before APP_SECRET_KEY existed. The CSRF token
+// is HMAC(a.key, cookie value) of a client-chosen 64-character value, so every new input HMAC'd with a.key must
+// carry a distinct prefix, as captchaSeed's "captcha:" does (SEC-3).
 func (a *App) useKeyRoot(root string) {
 	a.keyRoot = root
 	sum := sha256.Sum256([]byte("csrf:" + root))

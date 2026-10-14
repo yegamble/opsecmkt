@@ -117,6 +117,8 @@ jobs:
       BITCOIN_RPC_PORT: '18443'
       BITCOIN_PRIVATE_CONTAINER: escrow-regtest-private
       BITCOIN_PRIVATE_RPC_PORT: '18453'
+      BITCOIN_PRUNED_CONTAINER: escrow-regtest-pruned
+      BITCOIN_PRUNED_RPC_PORT: '18463'
       BITCOIN_IMAGE: bitcoin/bitcoin:31.1
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -133,10 +135,11 @@ jobs:
       # masked before they reach any output and handed to the next step only through GITHUB_ENV inside the URLs;
       # bitcoind learns them as salted HMACs (-rpcauth), so no password is on a command line or in the repository.
       # A second node with the same users (A-441) runs -privatebroadcast through a proxy nobody answers
-      # (-proxy=127.0.0.1:9 inside its container) for the private-broadcast leg; the two nodes are not connected.
+      # (-proxy=127.0.0.1:9 inside its container) for the private-broadcast leg; a third (A-527) runs -prune=550
+      # -fastprune for the pruned watch-only wallet repair leg. The nodes are not connected.
       - name: Start Bitcoin Core on regtest
         run: |
-          whitelist=getblockchaininfo,getnetworkinfo,getrawchangeaddress,getaddressinfo,createpsbt,utxoupdatepsbt,importdescriptors,getdescriptorinfo,deriveaddresses,gettxout,keypoolrefill,walletprocesspsbt,descriptorprocesspsbt,combinepsbt,finalizepsbt,testmempoolaccept,sendrawtransaction,getwalletinfo,listreceivedbyaddress,gettransaction,listtransactions,listsinceblock
+          whitelist=getblockchaininfo,getnetworkinfo,getrawchangeaddress,getaddressinfo,createpsbt,utxoupdatepsbt,importdescriptors,getdescriptorinfo,deriveaddresses,gettxout,keypoolrefill,walletprocesspsbt,descriptorprocesspsbt,combinepsbt,finalizepsbt,testmempoolaccept,sendrawtransaction,getwalletinfo,listreceivedbyaddress,gettransaction,listtransactions,listsinceblock,getblockhash,getblockheader
           operator_pass=$(openssl rand -hex 24)
           app_pass=$(openssl rand -hex 24)
           signer_pass=$(openssl rand -hex 24)
@@ -161,14 +164,17 @@ jobs:
           }
           node "$BITCOIN_CONTAINER" "$BITCOIN_RPC_PORT"
           node "$BITCOIN_PRIVATE_CONTAINER" "$BITCOIN_PRIVATE_RPC_PORT" -privatebroadcast -proxy=127.0.0.1:9 -listen=0
+          node "$BITCOIN_PRUNED_CONTAINER" "$BITCOIN_PRUNED_RPC_PORT" -prune=550 -fastprune
           {
             echo "ESCROW_REGTEST_OPERATOR_RPC_URL=http://operator:$operator_pass@127.0.0.1:$BITCOIN_RPC_PORT"
             echo "ESCROW_REGTEST_APP_RPC_URL=http://opsecmkt-escrow:$app_pass@127.0.0.1:$BITCOIN_RPC_PORT"
             echo "ESCROW_REGTEST_SIGNER_RPC_URL=http://opsecmkt-signer:$signer_pass@127.0.0.1:$BITCOIN_RPC_PORT"
             echo "ESCROW_REGTEST_PRIVATE_OPERATOR_RPC_URL=http://operator:$operator_pass@127.0.0.1:$BITCOIN_PRIVATE_RPC_PORT"
             echo "ESCROW_REGTEST_PRIVATE_APP_RPC_URL=http://opsecmkt-escrow:$app_pass@127.0.0.1:$BITCOIN_PRIVATE_RPC_PORT"
+            echo "ESCROW_REGTEST_PRUNED_OPERATOR_RPC_URL=http://operator:$operator_pass@127.0.0.1:$BITCOIN_PRUNED_RPC_PORT"
+            echo "ESCROW_REGTEST_PRUNED_APP_RPC_URL=http://opsecmkt-escrow:$app_pass@127.0.0.1:$BITCOIN_PRUNED_RPC_PORT"
           } >> "$GITHUB_ENV"
-          for port in "$BITCOIN_RPC_PORT" "$BITCOIN_PRIVATE_RPC_PORT"; do
+          for port in "$BITCOIN_RPC_PORT" "$BITCOIN_PRIVATE_RPC_PORT" "$BITCOIN_PRUNED_RPC_PORT"; do
             up=no
             for _ in $(seq 60); do
               if printf 'url = "http://operator:%s@127.0.0.1:%s"\n' "$operator_pass" "$port" |
@@ -184,6 +190,7 @@ jobs:
               echo "bitcoind on port $port did not answer on regtest within 60 seconds" >&2
               docker logs --tail 50 "$BITCOIN_CONTAINER" >&2
               docker logs --tail 50 "$BITCOIN_PRIVATE_CONTAINER" >&2
+              docker logs --tail 50 "$BITCOIN_PRUNED_CONTAINER" >&2
               exit 1
             fi
           done
@@ -201,6 +208,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/escrow-regtest"
           docker logs "$BITCOIN_CONTAINER" > "$RUNNER_TEMP/escrow-regtest/bitcoind.log" 2>&1 || true
           docker logs "$BITCOIN_PRIVATE_CONTAINER" > "$RUNNER_TEMP/escrow-regtest/bitcoind-private.log" 2>&1 || true
+          docker logs "$BITCOIN_PRUNED_CONTAINER" > "$RUNNER_TEMP/escrow-regtest/bitcoind-pruned.log" 2>&1 || true
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
@@ -210,7 +218,7 @@ jobs:
           retention-days: 14
       - name: Remove the nodes and their volumes
         if: always()
-        run: docker rm -f -v "$BITCOIN_CONTAINER" "$BITCOIN_PRIVATE_CONTAINER"
+        run: docker rm -f -v "$BITCOIN_CONTAINER" "$BITCOIN_PRIVATE_CONTAINER" "$BITCOIN_PRUNED_CONTAINER"
   # A-498: the real-chain Monero escrow legs. scripts/test-escrow-xmr-regtest.sh runs the app, inside go test, against a
   # real monerod and three real monero-wallet-rpc (all v0.18.5.1) on a local fakechain (--regtest, offline, difficulty 1:
   # a chain nobody else can reach) and a disposable PostgreSQL. The nodes are started with docker run, exactly as the
@@ -714,7 +722,8 @@ jobs:
   tor-image:
     name: Tor image and offline configuration
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    # 20: the hardened-container start test (A-536) pulls four images and starts each twice.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -789,6 +798,23 @@ jobs:
         run: bash scripts/test-tor-identity-restore.sh
         env:
           TOR_IMAGE: opsecmkt-tor:ci
+      # A-526: the installer's onion identity import (--onion-key-dir) against this image with networking disabled:
+      # identities from Tor imported and served with the same address and key; truncated and mismatched keys refused.
+      - name: Onion identity import (scripts/test-tor-identity-import.sh)
+        timeout-minutes: 5
+        run: bash scripts/test-tor-identity-import.sh
+        env:
+          TOR_IMAGE: opsecmkt-tor:ci
+      # A-524: the pinned monerod, with compose.nodes.yaml's command and networking disabled, starts both its core and
+      # restricted RPC servers (stagenet, with the restricted port on stagenet's core default to stand in for mainnet).
+      - name: Bundled monerod RPC ports start offline (scripts/test-monerod-ports.sh)
+        timeout-minutes: 5
+        run: bash scripts/test-monerod-ports.sh
+      # A-536: db, bitcoin, monero and monero-escrow-wallet with Compose's rendered user, capabilities, no-new-privileges,
+      # read-only root and tmpfs start offline on a new volume and again on the same one.
+      - name: Hardened database and node containers start offline (scripts/test-service-hardening.sh)
+        timeout-minutes: 10
+        run: bash scripts/test-service-hardening.sh
   browser:
     name: Playwright regressions
     runs-on: ubuntu-24.04

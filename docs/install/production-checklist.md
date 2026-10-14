@@ -28,7 +28,15 @@ Check every item before inviting users.
 
 ## Payments
 
-- [ ] Escrow is on a **test network** unless you deliberately opted in to [mainnet](../operator-guide.md#mainnet).
+- [ ] You know which network this market runs: `grep -E '^(BITCOIN_CHAIN|MONERO_NETWORK)=' .env`. The installer's
+  default is **mainnet (real funds)**; test networks need `--bitcoin-network` / `--monero-network`. No mainnet run is
+  recorded; mainnet is covered by unit, database and simulated-RPC tests only ([Mainnet](../operator-guide.md#mainnet)).
+- [ ] Mainnet only: you rehearsed set-up, backups and a restore on signet and stagenet first, on a database no test
+  market used.
+- [ ] Mainnet only: `ESCROW_BTC_FEE_ADDRESS` is the fee wallet's watch-only descriptor (a plain address is refused), and
+  `ESCROW_BTC_FEE_RATE` and `PAYMENT_CONFIRMATIONS_BTC` are reviewed.
+- [ ] Mainnet only: you accept that Monero escrow, if on, is custodial with real funds.
+- [ ] Mainnet only: the node disk had room (the installer's disk check only warns).
 - [ ] Bitcoin escrow: `escrow-node-setup.sh --verify` prints `PASS`.
 - [ ] Escrow signer fingerprint recorded and its seed backed up
   ([Escrow signer](../operator-guide.md#escrow-signer)).

@@ -12,6 +12,7 @@ REPOSITORY = Path(__file__).resolve().parents[1]
 SCRIPT = REPOSITORY / "scripts" / "test-tor-upgrade-rollback.sh"
 EXTRACTOR = REPOSITORY / "scripts" / "a144_source_archive.sh"
 ATTRIBUTES = REPOSITORY / ".gitattributes"
+INSTALLER_SOURCE = Path("scripts") / "install.sh"
 
 
 class TorArchivePermissionsTests(unittest.TestCase):
@@ -84,13 +85,13 @@ class SourceArchiveExclusionsTests(unittest.TestCase):
         )
         self.included = (
             "go.mod", "cmd/server/main.go", "compose.yaml", "Dockerfile",
-            "web/templates/pages/orders.html", "scripts/install.sh",
+            "web/templates/pages/orders.html", INSTALLER_SOURCE.as_posix(),
         )
         for name in self.excluded + self.included:
             path = self.repository / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("tracked fixture\n")
-        (self.repository / "scripts/install.sh").chmod(0o755)
+        (self.repository / INSTALLER_SOURCE).chmod(0o755)
         self.git("add", ".")
         self.git("-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "Historical source")
         self.historical_ref = self.git("rev-parse", "HEAD").strip()
@@ -142,7 +143,7 @@ class SourceArchiveExclusionsTests(unittest.TestCase):
                     )
                 self.assertTrue(all((destination / name).is_file() for name in self.included))
                 self.assertFalse(any((destination / name).exists() for name in self.excluded))
-                self.assertTrue(stat.S_IMODE((destination / "scripts/install.sh").stat().st_mode) & stat.S_IXOTH)
+                self.assertTrue(stat.S_IMODE((destination / INSTALLER_SOURCE).stat().st_mode) & stat.S_IXOTH)
                 self.assertTrue(stat.S_IMODE((destination / "web/templates/pages/orders.html").stat().st_mode) & stat.S_IROTH)
                 self.assertTrue(stat.S_IMODE((destination / "web/templates").stat().st_mode) & stat.S_IXOTH)
                 self.assertEqual(stat.S_IMODE(private_env.stat().st_mode), 0o600)

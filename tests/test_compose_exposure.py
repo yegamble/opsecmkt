@@ -12,6 +12,10 @@ checks the merged result:
 * in Tor mode nothing publishes a port (the onion service reaches `app` over the Compose network);
 * no service shares the host network, and nothing mounts the Docker socket.
 
+It also reads the monerod command each node overlay resolves to and checks that the core RPC server and the restricted
+one (the port the app and monero-escrow-wallet use) bind different ports on mainnet and on stagenet (A-524: with both
+on 18081, as on mainnet before, monerod exits at startup with "Failed to bind IPv4").
+
 The checks skip only when `docker compose` is absent; the CI operations job runs every test here and fails on any
 skip. They need no Docker daemon and start nothing.
 """
@@ -106,6 +110,27 @@ def exposure_problems(config, mode):
     return problems
 
 
+# monerod's core RPC port when --rpc-bind-port is not given (cryptonote_config.h, v0.18.5.1).
+MONEROD_DEFAULT_RPC_PORT = {'mainnet': 18081, 'stagenet': 38081, 'testnet': 28081}
+
+
+def monerod_rpc_ports(command):
+    """(network, core RPC address, core port, restricted port) that monerod binds for a resolved command list. The
+    address is None unless --rpc-bind-ip pins it: the image's monerod, given the old command, bound 0.0.0.0."""
+    options, network = {}, 'mainnet'
+    for index, argument in enumerate(command):
+        if argument in ('--stagenet', '--testnet'):
+            network = argument[2:]
+        elif argument.startswith('--rpc'):
+            name, separator, value = argument.partition('=')
+            if not separator and index + 1 < len(command) and not command[index + 1].startswith('--'):
+                value = command[index + 1]
+            options[name] = value
+    core = int(options.get('--rpc-bind-port') or MONEROD_DEFAULT_RPC_PORT[network])
+    restricted = int(options['--rpc-restricted-bind-port']) if '--rpc-restricted-bind-port' in options else None
+    return network, options.get('--rpc-bind-ip'), core, restricted
+
+
 class ExposureCheckTests(unittest.TestCase):
     """The check itself, on small configurations: it needs no Docker."""
 
@@ -132,6 +157,14 @@ class ExposureCheckTests(unittest.TestCase):
                      '- mode: clearnet\n            nodes_tor: \'on\''):
             self.assertIn(line, job)
 
+    def test_monerod_port_reader_sees_the_mainnet_collision(self):
+        """The command before A-524: on mainnet the core server's default port is the restricted one."""
+        before = ['--data-dir=/home/monero/.bitmonero', '--restricted-rpc', '--rpc-restricted-bind-ip=0.0.0.0',
+                  '--rpc-restricted-bind-port=18081', '--confirm-external-bind']
+        self.assertEqual(monerod_rpc_ports(before), ('mainnet', None, 18081, 18081))
+        self.assertEqual(monerod_rpc_ports(['--stagenet', *before]), ('stagenet', None, 38081, 18081))
+        self.assertEqual(monerod_rpc_ports(['--rpc-bind-port', '18089', *before])[2], 18089)
+
 
 @unittest.skipUnless(compose_available(), 'docker compose is not available')
 class ResolvedComposeExposureTests(unittest.TestCase):
@@ -150,7 +183,8 @@ class ResolvedComposeExposureTests(unittest.TestCase):
                         self.assertIs(service.get('read_only'), True, service_name)
                         self.assertEqual(service.get('cap_drop'), ['ALL'], service_name)
                         self.assertEqual(set(service.get('cap_add', [])),
-                                         {'CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'SETGID', 'SETUID'}, service_name)
+                                         {'CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'SETGID', 'SETUID'}
+                                         if service_name == 'bitcoin' else set(), service_name)
                         self.assertIn('no-new-privileges:true', service.get('security_opt', []), service_name)
                         self.assertIn('/tmp', service.get('tmpfs', []), service_name)
                         if service_name == 'monero-escrow-wallet':
@@ -160,6 +194,30 @@ class ResolvedComposeExposureTests(unittest.TestCase):
                             self.assertIn('--max-log-files=2', command)
                     seen += 1
         self.assertEqual(seen, 10 * 3, 'the combinations enumerated no longer match the compose job matrix')
+
+    def test_monerod_rpc_ports_distinct(self):
+        """A-524: monerod's core RPC (loopback only) and its restricted RPC never share a port, on mainnet (a blank
+        MONERO_NETWORK_FLAG) or stagenet, in compose.nodes.yaml and in compose.nodes-tor.yaml's repeat of its command.
+        The restricted port stays 18081, which the app (ESCROW_XMR_DAEMON_URL) and monero-escrow-wallet use."""
+        overlays = {'compose.nodes.yaml': 'clearnet, internal database',
+                    'compose.nodes-tor.yaml': 'tor, external database, nodes over Tor'}
+        matrix = {name: (files, profiles) for name, _, files, profiles in combinations()}
+        for overlay, combination in overlays.items():
+            for flag, network in (('', 'mainnet'), ('--stagenet', 'stagenet')):
+                with self.subTest(overlay=overlay, MONERO_NETWORK_FLAG=flag):
+                    files, profiles = matrix[combination]
+                    self.assertIn(overlay, files)
+                    services = resolved(files, profiles + ['--profile', 'monero-escrow-wallet'],
+                                        {'MONERO_NETWORK_FLAG': flag})['services']
+                    command = services['monero']['command']
+                    self.assertIn('--restricted-rpc', command)
+                    self.assertIn('--rpc-restricted-bind-ip=0.0.0.0', command)
+                    seen, core_ip, core, restricted = monerod_rpc_ports(command)
+                    self.assertEqual(seen, network)
+                    self.assertEqual((core_ip, core, restricted), ('127.0.0.1', 18089, 18081))
+                    self.assertNotEqual(core, restricted)
+                    wallet = services['monero-escrow-wallet']['command']
+                    self.assertEqual(wallet[wallet.index('--daemon-address') + 1], 'monero:18081')
 
     def test_internal_database_has_no_default_password_and_uses_a_digest(self):
         files = ['-f', 'compose.yaml', '-f', 'compose.internal-db.yaml']

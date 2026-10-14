@@ -165,10 +165,18 @@ func (a *App) restoreStatus(s *EscrowSettlementView, v *EscrowOrderView, state, 
 // EscrowRecoveryView is /admin's Bitcoin escrow recovery section: whether the restore gate pauses escrow, the
 // settlements whose stored transaction waits for an administrator's confirmation, and the reconciliation lists.
 type EscrowRecoveryView struct {
-	Gate    bool
-	On      bool // ESCROW_BTC is on: the rebroadcast confirmation exists (A-360)
-	Held    []EscrowHeldView
-	Orphans []EscrowOrphanView
+	Gate      bool
+	On        bool // ESCROW_BTC is on: the rebroadcast confirmation exists (A-360)
+	Held      []EscrowHeldView
+	Orphans   []EscrowOrphanView
+	Unwatched []EscrowUnwatchedView
+}
+
+// EscrowUnwatchedView is one escrow the watch-only wallet repair could not rescan for (escrow_watch_unrepaired, A-527):
+// older than the oldest block the pruned node keeps (Pruned), or its import answered as failed by Bitcoin Core.
+type EscrowUnwatchedView struct {
+	OrderID, Short, Since string
+	Pruned                bool
 }
 
 // EscrowHeldView is one settlement whose stored transaction is not broadcast until an administrator confirms it.
@@ -223,7 +231,25 @@ func escrowRecoveryLoader(ctx context.Context, a *App, _ *http.Request, d *PageD
 	if v.Orphans, err = escrowOrphans(ctx, a.db); err != nil {
 		return err
 	}
-	if !a.escrowConfigured && len(v.Held) == 0 && len(v.Orphans) == 0 {
+	urows, err := a.db.QueryContext(ctx, `SELECT es.order_id,u.pruned,to_char(u.since,'YYYY-MM-DD HH24:MI "UTC"') FROM escrow_watch_unrepaired u
+		JOIN escrows es ON es.id=u.escrow_id ORDER BY u.since,es.order_id LIMIT 200`)
+	if err != nil {
+		return err
+	}
+	for urows.Next() {
+		var u EscrowUnwatchedView
+		if err = urows.Scan(&u.OrderID, &u.Pruned, &u.Since); err != nil {
+			urows.Close()
+			return err
+		}
+		u.Short = shortID(u.OrderID)
+		v.Unwatched = append(v.Unwatched, u)
+	}
+	urows.Close()
+	if err = urows.Err(); err != nil {
+		return err
+	}
+	if !a.escrowConfigured && len(v.Held) == 0 && len(v.Orphans) == 0 && len(v.Unwatched) == 0 {
 		return nil
 	}
 	d.EscrowRecovery = v
@@ -558,6 +584,8 @@ func escrowOrderLabel(label string) string {
 // the previous list: an address that has an escrow row again, or that the wallet no longer holds, leaves it. It reserves
 // the keys of each orphan not yet in escrow_reserved_keys (the orphan sweep), and once every orphan's keys were read it
 // clears escrowSweepKey; an orphan whose keys could not be read leaves the setting as it was, and the error is returned.
+// The setting also stays until this process's watch-only wallet repair is done and lists no escrow it could not rescan
+// for (A-527).
 func (a *App) reconcileOrphans(ctx context.Context, e *escrowBTC) error {
 	watched, err := e.watchedAddresses(ctx)
 	if err != nil {
@@ -659,8 +687,12 @@ func (a *App) reconcileOrphans(ctx context.Context, e *escrowBTC) error {
 	if _, err = tx.ExecContext(ctx, "DELETE FROM escrow_orphans WHERE NOT (address=ANY($1))", orphans); err != nil {
 		return err
 	}
-	if sweepErr == nil {
-		if _, err = tx.ExecContext(ctx, "DELETE FROM settings WHERE key=$1", escrowSweepKey); err != nil {
+	// A-527: nor until this process's watch-only wallet repair is done (ensureSiblingWatch): while it lists an escrow it
+	// could not rescan for (escrow_watch_unrepaired), or could not yet tell which escrows it can rescan (a pruned node's
+	// prune height unread, say). On an unpruned node that adds only the repair's own rescan, during which Core refuses
+	// checkout's import anyway.
+	if sweepErr == nil && a.escrowSiblingsChecked.Load() {
+		if _, err = tx.ExecContext(ctx, "DELETE FROM settings WHERE key=$1 AND NOT EXISTS (SELECT 1 FROM escrow_watch_unrepaired)", escrowSweepKey); err != nil {
 			return err
 		}
 	}

@@ -40,6 +40,17 @@ Locked out? Reset from the host with `-reset-admin-password` or `-reset-admin-fa
 Expect every service healthy and setup complete. Otherwise: `docker compose logs app` and
 [Troubleshooting](troubleshooting.md).
 
+Confirm the network you meant. Installs with local nodes default to mainnet (real funds); no mainnet run is recorded;
+mainnet is covered by unit, database and simulated-RPC tests only. A mainnet market's pages say MAINNET:
+
+```sh
+grep -E '^(BITCOIN_CHAIN|MONERO_NETWORK)=' .env
+```
+
+`main` and `mainnet` are mainnet; `signet`, `testnet4`, `regtest`, `stagenet` and a blank value are test networks. Once
+escrow has pinned a network it does not change: start over on a new database
+([Choose a network](enable-payments.md#choose-a-network)).
+
 ## Step 4: Back up
 
 `.env` holds every secret. Without it, a database backup cannot be fully restored. On Tor, the onion address

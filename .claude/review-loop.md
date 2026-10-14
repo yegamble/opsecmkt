@@ -20,8 +20,8 @@ bounded Stop hook for this single Go/PostgreSQL repository.
 5. Where relevant, scrutinise denied access, invalid inputs, empty/error states,
    concurrent or repeated requests, migrations, payment-provider failure,
    no-JavaScript use, mobile/keyboard access, operator setup and documentation.
-   Exercise payments on test networks only; mainnet is an operator opt-in, never
-   used in development or tests. Never represent preview data, fake wallet
+   Exercise payments on test networks only: the installer defaults a market to
+   mainnet, but mainnet is never used in development, tests or CI. Never represent preview data, fake wallet
    tests or an unrun deployment check as live payment/deployment evidence.
 6. Record each finding with severity, file/line, reproducible trigger, user impact
    and a concrete verification step. Challenge speculative findings against the
