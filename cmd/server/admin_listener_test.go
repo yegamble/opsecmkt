@@ -102,11 +102,14 @@ func TestMainPrivateAdminSocketKeepsPublicRequestsOut(t *testing.T) {
 		bytes, _ := os.ReadFile(log.Name())
 		t.Fatalf("server did not become ready: %s", bytes)
 	}
+	// Readiness retries should be quick, but authenticated pages can use the app's 12-second request
+	// budget, especially with race/coverage instrumentation and concurrent PostgreSQL suites in CI.
+	public.Timeout = 15 * time.Second
 	transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "unix", socket)
 	}}
 	defer transport.CloseIdleConnections()
-	private := &http.Client{Timeout: time.Second, Transport: transport}
+	private := &http.Client{Timeout: 15 * time.Second, Transport: transport}
 	for _, path := range []string{"/admin", "/moderator", "/account"} {
 		for _, tc := range []struct {
 			client *http.Client
