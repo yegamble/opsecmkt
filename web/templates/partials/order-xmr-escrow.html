@@ -48,7 +48,7 @@
 <p role="status">{{.}}</p>{{end}}{{if .Ship}}
 <section class="order-action" id="xmr-escrow-ship" aria-labelledby="xmr-escrow-ship-heading">
 <h3 id="xmr-escrow-ship-heading">Mark shipped</h3>
-<p class="help" id="xmr-escrow-ship-help">Once you have sent the goods, give a fresh Monero address from your own wallet (a standard address or subaddress, 95 characters), used for nothing else. Marking the order shipped requests the release to you of the coins in this escrow{{if .Fee}}, less the market fee,{{end}} less the network fee, paid to this address; any amount paid above the price goes back to the buyer's refund address, except that one below 0.001 XMR goes to the vendor. Nothing is built or sent before the buyer confirms receipt or the release deadline passes. The address cannot be changed afterwards; integrated addresses and addresses this market already used are refused.</p>
+<p class="help" id="xmr-escrow-ship-help">Once you have sent the goods, give a fresh Monero address from your own wallet (a standard address or subaddress, 95 characters), used for nothing else. Marking the order shipped requests the release to you of the coins in this escrow{{if .Fee}}, less the market fee,{{end}} less the network fee, paid to this address; any amount paid above the price goes back to the buyer's refund address, except that one below 0.001 XMR goes to the vendor. Nothing is built or sent before the buyer confirms receipt or the release deadline passes. The address cannot be changed afterwards; integrated addresses, market addresses, this order's buyer refund address, and external addresses your account already used are refused.</p>
 <form class="stack" method="post" action="/escrow-xmr/ship">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="form_nonce" value="{{formNonce "/escrow-xmr/ship"}}">
@@ -72,7 +72,7 @@
 </section>{{end}}{{if .Claim}}
 <section class="order-action escrow-claim" id="xmr-escrow-claim" aria-labelledby="xmr-escrow-claim-heading">
 <h3 id="xmr-escrow-claim-heading">Claim the escrowed coins</h3>
-<p class="help" id="xmr-escrow-claim-help">Give a fresh Monero address from your own wallet (a standard address or subaddress, 95 characters), used for nothing else. The market builds a transaction from this order's escrow account paying it the coins in this escrow{{if .Fee}}, less the market fee,{{end}} less the network fee, and sends it; any amount paid above the price goes back to the buyer's refund address, except that one below 0.001 XMR goes to the vendor. The address cannot be changed once the claim is requested; integrated addresses and addresses this market already used are refused.</p>
+<p class="help" id="xmr-escrow-claim-help">Give a fresh Monero address from your own wallet (a standard address or subaddress, 95 characters), used for nothing else. The market builds a transaction from this order's escrow account paying it the coins in this escrow{{if .Fee}}, less the market fee,{{end}} less the network fee, and sends it; any amount paid above the price goes back to the buyer's refund address, except that one below 0.001 XMR goes to the vendor. The address cannot be changed once the claim is requested; integrated addresses, market addresses, this order's buyer refund address, and external addresses your account already used are refused.</p>
 <form class="stack" method="post" action="/escrow-xmr/claim">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="form_nonce" value="{{formNonce "/escrow-xmr/claim"}}">
@@ -113,7 +113,7 @@
 <input type="hidden" name="order_id" value="{{$.Order.ID}}">
 <label>Refund address<input name="refund_address" required minlength="95" maxlength="110" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="xmr-escrow-refund-help">
 </label>
-<span class="help" id="xmr-escrow-refund-help">A Monero standard address or subaddress from your own wallet (95 characters, starting with {{.Prefixes}} {{if eq .Net "mainnet"}}on Monero mainnet{{else if eq .Net "stagenet"}}on this test network{{else}}on this test chain{{end}}), used for nothing else. A refund of this escrow is paid there; it is fixed for this order and cannot be changed. Integrated addresses and addresses this market already used are refused.</span>
+<span class="help" id="xmr-escrow-refund-help">A Monero standard address or subaddress from your own wallet (95 characters, starting with {{.Prefixes}} {{if eq .Net "mainnet"}}on Monero mainnet{{else if eq .Net "stagenet"}}on this test network{{else}}on this test chain{{end}}), used for nothing else. A refund of this escrow is paid there; it is fixed for this order and cannot be changed. Integrated addresses, market addresses and external addresses your account already used are refused.</span>
 <button class="primary" type="submit">Pay into a Monero escrow</button>
 </form>{{end}}
 </section>{{end}}{{end}}

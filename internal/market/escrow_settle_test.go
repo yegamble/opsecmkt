@@ -822,12 +822,13 @@ func TestEscrowClaimRefusals(t *testing.T) {
 	if n := agInt(x.testEnv, "SELECT count(*) FROM settlements"); n != 0 {
 		t.Fatalf("%d settlements after refusals", n)
 	}
-	// A claim address is single-use across the market: another escrow's checkout refuses it as a refund address.
+	// Claim history is private to the vendor; another account's checkout accepts
+	// it, while the same vendor cannot claim to it twice.
 	if code, _ := x.claim(order, x.vendorSess, claimAddr); code != 303 {
 		t.Fatal("claim")
 	}
-	if w := x.checkout(x.draft(), claimAddr); w.Code != 409 {
-		t.Fatalf("a claim address reused as a refund address: %d", w.Code)
+	if w := x.checkout(x.draft(), claimAddr); w.Code != 303 {
+		t.Fatalf("another account's claim address disclosed at checkout: %d", w.Code)
 	}
 	order2 := x.completed("bcrt1qbuyerrefund00000000000000000000003", 100000)
 	if code, _ := x.claim(order2, x.vendorSess, claimAddr); code != 409 {

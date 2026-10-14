@@ -63,18 +63,16 @@ func releaseBeforeOutcome(kind, state string) bool {
 	return kind == "release" && (state == stateShipped || state == stateDisputed)
 }
 
-// checkClaimAddress applies the claim action's checks to a vendor's claim address dest: never used on this market (an
-// escrow address or a per-order escrow's sibling address, a refund or fee address, or another settlement's
-// destination) and valid on the escrow node's chain.
-func checkClaimAddress(c *actionCtx, e *escrowBTC, dest string) error {
+// checkClaimAddress refuses infrastructure addresses, this order's buyer refund
+// and the claimant account's previous destinations, and checks the node's chain.
+func checkClaimAddress(c *actionCtx, e *escrowBTC, orderID, dest string) error {
 	ctx := c.Ctx()
 	_, feeAddr, err := escrowFee(ctx, c.Tx, e)
 	if err != nil {
 		return err
 	}
-	var used bool
-	if err = c.Tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM escrows WHERE address=$1 OR refund_address=$1 OR fee_destination=$1) OR $1=$2
-		OR EXISTS(SELECT 1 FROM escrow_siblings WHERE address=$1) OR EXISTS(SELECT 1 FROM settlements WHERE destination=$1)`, dest, feeAddr).Scan(&used); err != nil {
+	used, err := bitcoinAddressUsed(ctx, c.Tx, dest, feeAddr, c.User.ID, orderID)
+	if err != nil {
 		return err
 	}
 	if used {
@@ -132,7 +130,7 @@ func escrowShipAction(c *actionCtx) (actionResult, error) {
 		case o.State != statePaid:
 			return actionResult{}, shipConflict(c, o.ID)
 		}
-		if err = checkClaimAddress(c, e, dest); err != nil {
+		if err = checkClaimAddress(c, e, o.ID, dest); err != nil {
 			return actionResult{}, err
 		}
 		// P2-R9: the buyer's shipped notice states the release deadline, the value release_at takes below (now() is the

@@ -184,7 +184,6 @@ func TestXMREscrowDigitalClaim(t *testing.T) {
 		{"an escrow wallet's primary address", primary, testPassword, 409, errXMRRefundWallet.Error()},
 		{"the fee address", fee, testPassword, 409, errXMRRefundFee.Error()},
 		{"the buyer's refund address", testXMRAddr("refund "+order, true), testPassword, 409, errXMRClaimRefund.Error()},
-		{"another order's refund address", testXMRAddr("refund "+other, true), testPassword, 409, errClaimAddressUsed.Error()},
 	} {
 		code, body := x.xmrClaim(order, x.vendorSess, c.addr, c.password)
 		if code != c.code || !strings.Contains(body, c.want) {

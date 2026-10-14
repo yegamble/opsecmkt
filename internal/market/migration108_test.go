@@ -18,6 +18,7 @@ const (
 // restoreSchema109 puts the database back as migration 109 left it: 110's stamp and table removed.
 func restoreSchema109(t *testing.T, e *testEnv) {
 	t.Helper()
+	restoreSchema110(t, e)
 	if _, err := e.DB.Exec(`DELETE FROM schema_migrations WHERE version=110; DROP TABLE escrow_watch_unrepaired`); err != nil {
 		t.Fatal(err)
 	}

@@ -236,8 +236,8 @@ func TestXMREscrowCancelRequestsRefund(t *testing.T) {
 }
 
 // Q28, Q24, Q25: physical Monero escrow checkout is refused (A-83) while the vendor cannot receive an encrypted
-// shipping address; a refund address already used as a Monero settlement destination or a pooled deposit address is
-// refused as used.
+// shipping address. Another account's claim history is private and cannot block
+// this buyer's refund address.
 func TestXMREscrowCheckoutRefusalsMore(t *testing.T) {
 	x := newXMREscrowEnv(t)
 	x.mustPoll()
@@ -254,7 +254,7 @@ func TestXMREscrowCheckoutRefusalsMore(t *testing.T) {
 	agExec(x.testEnv, "INSERT INTO xmr_settlements(order_id,kind,destination) VALUES($1,'release',$2)", first, claim)
 	for what, addr := range map[string]string{"a settlement destination": claim} {
 		order := x.draft(x.digital(x.vendor))
-		if w := x.checkout(x.buyerSess, order, addr); w.Code != 409 || !strings.Contains(w.Body.String(), errEscrowRefundUsed.Error()) || x.state(order) != stateDraft {
+		if w := x.checkout(x.buyerSess, order, addr); w.Code != 303 || x.state(order) != stateAwaitingPayment {
 			t.Fatalf("%s: %d %s", what, w.Code, w.Body.String())
 		}
 	}

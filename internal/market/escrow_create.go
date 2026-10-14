@@ -75,7 +75,7 @@ func errEscrowRefundInvalid(net string) error {
 }
 
 var (
-	errEscrowRefundUsed = fail(409, "That refund address was already used on this market. Give a fresh address from your wallet. Nothing was changed.")
+	errEscrowRefundUsed = fail(409, "That refund address is a market address or was already used on this market by your account. Give a fresh address from your wallet. Nothing was changed.")
 	errEscrowOnlyBuyer  = fail(403, "Only the buyer can pay for this order.")
 	errEscrowKind       = fail(409, "Bitcoin escrow is available only for digital listings with automatic delivery and for physical listings with a dispatch window. Nothing was changed.")
 	errEscrowCurrency   = fail(409, "Bitcoin escrow is for Bitcoin orders only. Nothing was changed.")
@@ -355,16 +355,14 @@ func escrowCheckoutAction(c *actionCtx) (actionResult, error) {
 	if !valid {
 		return actionResult{}, errEscrowRefundInvalid(c.A.escrowNetwork())
 	}
-	// Never an address the market already used (ES-5): an escrow address or a per-order escrow's sibling address
-	// (QA5W3A-4), another escrow's refund address, a settlement destination (a vendor's claim), or a fee destination
-	// snapshotted or configured.
+	// Infrastructure addresses remain forbidden globally; external addresses must
+	// be fresh for this account, without disclosing another account's wallet history.
 	feeBps, feeAddr, err := escrowFee(ctx, c.Tx, e)
 	if err != nil {
 		return actionResult{}, err
 	}
-	var used bool
-	if err = c.Tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM escrows WHERE address=$1 OR refund_address=$1 OR fee_destination=$1) OR $1=$2
-		OR EXISTS(SELECT 1 FROM escrow_siblings WHERE address=$1) OR EXISTS(SELECT 1 FROM settlements WHERE destination=$1)`, refund, feeAddr).Scan(&used); err != nil {
+	used, err := bitcoinAddressUsed(ctx, c.Tx, refund, feeAddr, c.User.ID, "")
+	if err != nil {
 		return actionResult{}, err
 	}
 	if used {
@@ -691,8 +689,8 @@ func insertEscrow(ctx context.Context, tx *sql.Tx, orderID, refund string, feeBp
 	err := tx.QueryRowContext(ctx, `INSERT INTO escrows(order_id,coin,address,market_index,refund_address,fee_bps,fee_destination,release_days,dispatch_days,fee_descriptor)
 		VALUES($1,'BTC',$2,$3,$4,$5,$6,NULLIF($7,0),NULLIF($8,0),$9) RETURNING id`, orderID, b.Address, b.MarketIndex, refund, feeBps, feeDest, releaseDays, dispatchDays, feeDesc).Scan(&id)
 	var pe *pgconn.PgError
-	if errors.As(err, &pe) && pe.Code == "23505" && pe.ConstraintName == "escrows_refund_address_key" {
-		return errEscrowRefundUsed // another checkout pinned it first
+	if errors.As(err, &pe) && pe.Code == "23505" && pe.ConstraintName == "escrow_external_addresses_pkey" {
+		return errEscrowRefundUsed // another checkout or claim for this account reserved it first
 	}
 	if err != nil {
 		return err

@@ -370,7 +370,7 @@ func TestXMREscrowMigration084(t *testing.T) {
 		t.Fatal(err)
 	}
 	other, _, _ := xmrEscrow(t, e, w, 10, buyer, product, stateCompleted)
-	xmrRefused(t, e, "another order's release to the same destination", "xmr_settlements_release_destination", xs, other, "release", xmrAddr("claim-3"), "requested")
+	xmrRefused(t, e, "the same vendor's release to the same destination", "escrow_external_addresses_pkey", xs, other, "release", xmrAddr("claim-3"), "requested")
 	var stray int64
 	if err := e.DB.QueryRow("INSERT INTO xmr_settlements(order_id,kind,destination) VALUES($1,'stray_refund',$2) RETURNING id", done, xmrAddr("refund-"+done)).Scan(&stray); err != nil {
 		t.Fatal(err)

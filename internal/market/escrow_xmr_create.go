@@ -17,7 +17,8 @@ import (
 //
 // POST /orders/escrow-xmr makes no RPC. The refund address is parsed offline (parseXMRAddress) and refused when it is
 // integrated, of another network, an address of this market's escrow wallets (a slot or a primary address), the fee
-// address, or already used on this market. The checkout transaction moves the order out of draft, claims a free slot of
+// address, or an external destination this buyer account already used. The checkout
+// transaction moves the order out of draft, claims a free slot of
 // the active wallet by compare-and-set (FOR UPDATE SKIP LOCKED: concurrent checkouts never wait for, or take, the same
 // slot) and inserts the escrow at the slot's address with the fee snapshot and, for a physical order, the release
 // deadline length and dispatch window. With no free slot, while the restore gate is set, after a restore until Monero
@@ -141,7 +142,7 @@ func xmrEscrowCheckoutAction(c *actionCtx) (actionResult, error) {
 	} else {
 		dispatchDays = 0 // a digital escrow has no dispatch window or release deadline
 	}
-	if err = checkXMRRefund(ctx, c.Tx, refund, x.feeAddress); err != nil {
+	if err = checkXMRRefund(ctx, c.Tx, refund, x.feeAddress, c.User.ID); err != nil {
 		return actionResult{}, err
 	}
 	if _, err = c.Tx.ExecContext(ctx, "UPDATE orders o SET amount=p.xmr FROM products p WHERE o.id=$1 AND o.state='draft' AND p.id=o.product_id", o.ID); err != nil {
@@ -169,8 +170,8 @@ func xmrEscrowCheckoutAction(c *actionCtx) (actionResult, error) {
 	_, err = c.Tx.ExecContext(ctx, `INSERT INTO escrows(order_id,coin,address,refund_address,fee_bps,fee_destination,release_days,dispatch_days,xmr_slot_id)
 		VALUES($1,'XMR',$2,$3,$4,$5,NULLIF($6,0),NULLIF($7,0),$8)`, o.ID, addr, refund, feeBps, feeAddr, releaseDays, dispatchDays, slot)
 	var pe *pgconn.PgError
-	if errors.As(err, &pe) && pe.Code == "23505" && pe.ConstraintName == "escrows_refund_address_key" {
-		return actionResult{}, errEscrowRefundUsed // another checkout pinned it first
+	if errors.As(err, &pe) && pe.Code == "23505" && pe.ConstraintName == "escrow_external_addresses_pkey" {
+		return actionResult{}, errEscrowRefundUsed // another checkout or claim for this account reserved it first
 	}
 	if err != nil {
 		return actionResult{}, err
@@ -179,10 +180,10 @@ func xmrEscrowCheckoutAction(c *actionCtx) (actionResult, error) {
 }
 
 // checkXMRRefund refuses a refund address this market already knows: an escrow or slot address, an escrow wallet's
-// primary address, the fee address (configured or snapshotted), or an address used before as a refund, settlement
-// destination or pooled deposit address (ES-5).
-func checkXMRRefund(ctx context.Context, q rowQuerier, refund, feeAddress string) error {
-	use, err := xmrAddressUse(ctx, q, refund, feeAddress, "")
+// primary address, the fee address (configured or snapshotted), or an external
+// destination this account already used. Other accounts' external history stays private.
+func checkXMRRefund(ctx context.Context, q rowQuerier, refund, feeAddress, userID string) error {
+	use, err := xmrAddressUse(ctx, q, refund, feeAddress, "", userID)
 	switch use {
 	case "escrow":
 		return errXMRRefundEscrow
@@ -198,16 +199,16 @@ func checkXMRRefund(ctx context.Context, q rowQuerier, refund, feeAddress string
 
 // xmrAddressUse names how this market already knows the Monero address addr: "escrow" (an escrow or slot address),
 // "wallet" (an escrow wallet's primary address), "fee" (the fee address feeAddress, or one an escrow snapshotted),
-// "refund" (the refund address of the escrow of order, when order is given), "used" (another refund address or a Monero
-// settlement's destination), or "".
-func xmrAddressUse(ctx context.Context, q rowQuerier, addr, feeAddress, order string) (string, error) {
+// "refund" (the refund address of the escrow of order, when order is given), "used"
+// (an external refund/claim address userID already used), or "".
+func xmrAddressUse(ctx context.Context, q rowQuerier, addr, feeAddress, order, userID string) (string, error) {
 	var use string
 	err := q.QueryRowContext(ctx, `SELECT CASE
 		WHEN EXISTS(SELECT 1 FROM xmr_escrow_slots WHERE address=$1) OR EXISTS(SELECT 1 FROM escrows WHERE address=$1) THEN 'escrow'
 		WHEN EXISTS(SELECT 1 FROM xmr_escrow_wallets WHERE primary_address=$1) THEN 'wallet'
 		WHEN $1=$2 OR EXISTS(SELECT 1 FROM escrows WHERE fee_destination=$1) THEN 'fee'
 		WHEN EXISTS(SELECT 1 FROM escrows WHERE order_id=$3 AND refund_address=$1) THEN 'refund'
-		WHEN EXISTS(SELECT 1 FROM escrows WHERE refund_address=$1) OR EXISTS(SELECT 1 FROM xmr_settlements WHERE destination=$1) THEN 'used'
-		ELSE '' END`, addr, feeAddress, order).Scan(&use)
+		WHEN EXISTS(SELECT 1 FROM escrow_external_addresses WHERE user_id=$4 AND coin='XMR' AND address=$1) THEN 'used'
+		ELSE '' END`, addr, feeAddress, order, userID).Scan(&use)
 	return use, err
 }
