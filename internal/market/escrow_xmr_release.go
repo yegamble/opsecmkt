@@ -68,9 +68,10 @@ func xmrClaimForm(c *actionCtx) (string, error) {
 }
 
 // xmrClaimAddress refuses a claim address for order that this market knows (an escrow, slot or wallet address, the fee
-// address, the buyer's refund address or any address used before), each with its own message.
+// address, this order's buyer refund address or an external address this vendor
+// account used before), each with its own message.
 func xmrClaimAddress(c *actionCtx, orderID, addr string) error {
-	use, err := xmrAddressUse(c.Ctx(), c.Tx, addr, c.A.escrowXMR.feeAddress, orderID)
+	use, err := xmrAddressUse(c.Ctx(), c.Tx, addr, c.A.escrowXMR.feeAddress, orderID, c.User.ID)
 	switch use { // the checkout's refusals of a refund address read the same for a claim address
 	case "escrow":
 		return errXMRRefundEscrow

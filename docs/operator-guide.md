@@ -1251,8 +1251,9 @@ again.
 
 On the order page of a BTC draft on a digital listing with automatic delivery (or, with Phase 2 below, a physical listing with a dispatch window), the buyer is offered *Pay into an
 escrow checkout once both the buyer's and the vendor's escrow keys are active. The buyer
-gives a refund address from their own wallet, fixed for the order; an address the market already used as an escrow,
-refund, fee or deposit address is refused. The app then builds the escrow: each party's next child key of the
+gives a refund address from their own wallet, fixed for the order. Market escrow, sibling and fee addresses are refused,
+as are external refund or claim addresses already used by that recipient account. Another account's external history
+does not affect acceptance (migration 111). The app then builds the escrow: each party's next child key of the
 registered key (`/0/1`, `/0/2`, …, one more than the highest index any of that account's escrows used, under any
 key or origin; `/0/0` is the practice child) and a fresh child of the arbiter key, expanded by the node, the
 witness script checked (three distinct keys, exactly one from the arbiter wallet) and the public descriptor
@@ -1277,7 +1278,8 @@ broadcast.
 
 - *Requesting.* The vendor of a completed escrow order requests the claim on the order page with a fresh address on
   the escrow chain from their own wallet, confirmed with their password (and authenticator code when enrolled); an address the
-  market already used (an escrow, refund, fee, deposit or other claim address) is refused, and it cannot be changed
+  market owns, the buyer's refund address for that order, or an external refund or claim address already used by the
+  vendor's account is refused, and it cannot be changed
   afterwards. A refund is requested when a funded escrow order is cancelled: by the buyer or the vendor while it
   awaits payment with a deposit (the cancel form states the escrowed amount and needs its confirmation), by the
   vendor once it is paid, or by the escrow watcher when every deposit has confirmed short of the price and a whole
@@ -2143,7 +2145,8 @@ the market (the order page says so); a destroyed wallet is never opened again.
 
 - *A refused address at checkout, claim or ship* tells the user at once, with the reason and nothing changed: an integrated
   address, another network's, keys that are not valid, or an address this market already knows (an escrow, slot or wallet
-  primary address, the fee address, or one used before).
+  primary address, the fee address, the buyer's refund address for that order, or an external address already used by
+  the recipient account). Another account's external address history is not exposed by these refusals.
 - *The wallet refuses a settlement's address when it builds* (`destination-refused`): the order is flagged for moderator review
   with a note naming whose address it was, the deposits are flagged and the settlement waits. A refused vendor claim or buyer
   refund address is never tried again for that settlement and this build has no tool to change it, so contact the user; the

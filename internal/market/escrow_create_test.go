@@ -441,8 +441,8 @@ func TestEscrowCheckoutWhileRescanning(t *testing.T) {
 	}
 }
 
-// Repeated and concurrent checkouts: one escrow per order, and one refund address per escrow even when two orders
-// race for it.
+// Repeated and concurrent checkouts: one escrow per order. Different accounts
+// using the same external refund address cannot observe or block each other.
 func TestEscrowCheckoutConcurrent(t *testing.T) {
 	x := newEscrowEnv(t)
 	var wg sync.WaitGroup
@@ -473,14 +473,9 @@ func TestEscrowCheckoutConcurrent(t *testing.T) {
 		c2 = x.do("POST", "/orders/escrow", sess2, url.Values{"order_id": {o2}, "refund_address": {shared}}).Code
 	}()
 	wg.Wait()
-	if (c1 == 303) == (c2 == 303) || agInt(x.testEnv, "SELECT count(*) FROM escrows WHERE refund_address=$1", shared) != 1 {
+	if c1 != 303 || c2 != 303 || agInt(x.testEnv, "SELECT count(*) FROM escrows WHERE refund_address=$1", shared) != 2 {
 		t.Fatalf("shared refund address: %d %d", c1, c2)
 	}
-	loser := o1
-	if c1 == 303 {
-		loser = o2
-	}
-	x.nothingWritten(loser)
 }
 
 // rotatedSecretKey provides a deterministic foreign key root for unreadable-row fixtures: 64 hex digits derived from

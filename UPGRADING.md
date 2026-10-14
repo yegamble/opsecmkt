@@ -2044,3 +2044,25 @@ Do not reuse a test market's database, wallets or signer seed for mainnet
 
 **Rollback.** No migration: nothing to roll back. Section 61 still describes the Compose fallback for a blank
 `BITCOIN_CHAIN`, which this section does not change.
+
+## 65. Authentication and escrow address privacy fixes (migration 111)
+
+Password-only sign-in now checks the account's current TOTP and PGP sign-in settings while holding its session-creation
+lock. If a second factor was enabled after the password step read those settings, sign-in is refused; sign in again
+to complete the new verification step. Existing authenticated sessions and normal factor challenges keep their behavior.
+
+External Bitcoin and Monero refund and claim addresses must be fresh **for the account receiving them**. Another
+account's prior use no longer prevents checkout or a claim, which otherwise reveals private payment history and lets
+someone reserve another person's addresses. Market escrow, sibling, wallet and fee addresses stay forbidden, and a
+vendor still cannot claim to the buyer's refund address for that order. Continue using a fresh address from your own
+wallet for every order; this change does not prove address ownership.
+
+Migration 111 backfills `escrow_external_addresses` from existing refund and settlement destinations, then replaces
+global external-address uniqueness with transactional reservations per account and currency. Order outcome, deposit
+ownership and escrow address constraints stay in place. The reservation records remain in the database and backups.
+Run the normal encrypted backup and upgrade procedure before applying it. An older binary refuses a database recording
+migration 111; rollback requires restoring the pre-upgrade backup, as in section 5.
+
+The Bitcoin escrow signer now connects directly to `ESCROW_SIGNER_RPC_URL`, ignores environment proxy variables, and
+refuses HTTP redirects. Its RPC bodies contain the signer's account private key. If the signer previously relied on
+`HTTP_PROXY`, `HTTPS_PROXY`, or a redirecting RPC endpoint, configure a directly reachable node URL before upgrading.

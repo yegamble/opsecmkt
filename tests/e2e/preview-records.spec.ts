@@ -23,7 +23,8 @@ test('/canary#records lists what the server keeps, who reads it and that nothing
   await expect(records).toContainText('records no IP address or browser details');
   await expect(records).toContainText('reverse proxy');
   for (const item of ['Handle', 'Password', 'Second factors', 'PGP public key', 'Messages', 'Notifications',
-    'Orders and drafts', 'Disputes', 'Reviews', 'Digital deliveries', 'Payments', 'Payout addresses', 'Activity log']) {
+    'Orders and drafts', 'Disputes', 'Reviews', 'Digital deliveries', 'Payments', 'External escrow address reservations',
+    'Payout addresses', 'Activity log']) {
     await expect(records.locator('li > strong', { hasText: new RegExp(`^${item}`) }), item).toHaveCount(1);
   }
   await expect(records).toContainText('never to be published');

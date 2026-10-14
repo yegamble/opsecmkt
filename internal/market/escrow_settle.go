@@ -114,7 +114,7 @@ func errClaimInvalid(net string) error {
 }
 
 var (
-	errClaimAddressUsed = fail(409, "That address was already used on this market. Give a fresh address from your wallet. Nothing was changed.")
+	errClaimAddressUsed = fail(409, "That address is a market address, this order's buyer refund address, or was already used on this market by your account. Give a fresh address from your wallet. Nothing was changed.")
 	errClaimOnlyVendor  = fail(403, "Only the vendor claims the escrow of this order.")
 	errClaimState       = fail(409, "The escrow is claimed once its order is completed (or its dispute is decided for the vendor). Reload the page. Nothing was changed.")
 	errClaimTwice       = fail(409, "This escrow already has its settlement. Reload the page. Nothing was changed.")
@@ -464,7 +464,7 @@ func escrowClaimAction(c *actionCtx) (actionResult, error) {
 		case !settlementFits("release", o.State, outcome):
 			return actionResult{}, errClaimState
 		}
-		if err = checkClaimAddress(c, e, dest); err != nil {
+		if err = checkClaimAddress(c, e, o.ID, dest); err != nil {
 			return actionResult{}, err
 		}
 		if err = insertRelease(c, o.ID, dest); err != nil {

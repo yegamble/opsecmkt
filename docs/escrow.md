@@ -83,6 +83,8 @@ the settlement waits for a signature again, with both parties told. (Bitcoin Cor
 signing an attacker's transaction.) Only the server broadcasts settlements; after that the page shows the
 final transaction, which is public, so you can rebroadcast it from your own wallet if you want.
 
+**Fresh refund and claim addresses.** Use a new address from your own wallet for each order. The market refuses its own escrow, sibling, wallet and fee addresses, and a vendor cannot claim to the buyer's refund address for that order. Previous external refund and claim addresses are checked only within the recipient account. An unrelated account's earlier use neither rejects the address nor reserves it against its owner, so checkout and claim responses cannot confirm another account's external wallet history. Migration 111 records these reservations atomically by account and currency, including an account acting as both buyer and vendor; a failed checkout or claim rolls its reservation back. Existing escrow inputs, one-outcome rules and pinned destinations remain unchanged.
+
 **Who signs each outcome.** The outputs of each settlement are fixed before anyone signs. Where the market
 co-signs, it needs one signature from either party whose key is in the escrow; if buyer and vendor both sign,
 the market does not sign at all.
@@ -528,7 +530,7 @@ market holds the wallet keys and builds, stores and sends every transaction itse
   at once, with no lead. The watcher keeps `ESCROW_XMR_SLOTS` (20 by default) free accounts ready on the active wallet.
   Account 0 of a wallet is never an escrow and is never spent from; coins that arrive there alert the administrators, once per episode.
 - **The slot claim at checkout.** The buyer of an XMR draft on an eligible listing pays into a Monero escrow, giving a refund address from their own wallet (a standard address or subaddress; integrated
-  addresses, other networks, addresses whose keys are not valid, and any address this market already knows are refused;
+  addresses, other networks, addresses whose keys are not valid, market-controlled addresses, and external addresses the buyer account already used are refused;
   it is checked in Go, with no wallet call, and cannot be changed afterwards). Checkout makes no RPC: in one
   transaction it moves the order out of draft, claims a free account of the active wallet by compare-and-set and pins the
   refund address, the market fee in force (`ESCROW_XMR_FEE_BPS`) and, for a physical order, the release deadline length and

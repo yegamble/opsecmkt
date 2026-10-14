@@ -870,8 +870,16 @@ func TestEscrowMigrationConstraints(t *testing.T) {
 	esc := "INSERT INTO escrows(order_id,address,market_index,refund_address,fee_bps,fee_destination) VALUES($1,$2,$3,$4,$5,$6)"
 	other := e.order(b, e.product(a, "digital"), "BTC", "awaiting_payment")
 	mustFail("a second escrow at the same address", esc, other, "bcrt1qa", 99, "bcrt1qr2", 0, "")
-	// P1-b: the refund address is pinned once (ES-5), never the escrow's own address; the fee is snapshotted.
-	mustFail("a refund address pinned twice", esc, other, "bcrt1qb", 99, "bcrt1qr", 0, "")
+	// Refund addresses remain single-use within the recipient account (migration
+	// 111), never the escrow's own address; the fee is still snapshotted.
+	sameAccount := e.order(a, e.product(b, "digital"), "BTC", "awaiting_payment")
+	mustFail("the same account's refund address pinned twice", esc, sameAccount, "bcrt1qb", 99, "bcrt1qr", 0, "")
+	// Another account cannot probe or reserve the external address against its
+	// owner. Use a separate order so `other` remains the non-escrow payout fixture.
+	crossAccount := e.order(b, e.product(a, "digital"), "BTC", "awaiting_payment")
+	if _, err := e.DB.Exec(esc, crossAccount, "bcrt1qc", 98, "bcrt1qr", 0, ""); err != nil {
+		t.Fatalf("a different account's external refund address: %v", err)
+	}
 	mustFail("the escrow address as its own refund address", esc, other, "bcrt1qb", 99, "bcrt1qb", 0, "")
 	mustFail("an empty refund address", esc, other, "bcrt1qb", 99, "", 0, "")
 	mustFail("a market fee without a destination", esc, other, "bcrt1qb", 99, "bcrt1qr2", 100, "")
