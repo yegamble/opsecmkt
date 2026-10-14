@@ -731,6 +731,10 @@ func (a *App) soleAdminRecovery(c *actionCtx, id, checkedHash, code, next string
 // errPasswordChanged refuses a sign-in whose password was checked before the account's password changed (A-157).
 var errPasswordChanged = fail(401, "Sign-in verification expired. Sign in again.")
 
+// errFactorsChanged refuses password-only sign-in when a factor was enabled after
+// secondFactor read the enrollment state. A new sign-in must use that factor.
+var errFactorsChanged = fail(401, "Sign-in verification changed. Sign in again.")
+
 // errSetupComplete refuses first-run setup once the market is installed.
 var errSetupComplete = fail(403, "Setup already complete")
 
@@ -844,7 +848,7 @@ func (a *App) secondFactor(c *actionCtx, userID, passwordHash, next string) (act
 	}
 	if len(names) == 0 {
 		var he *httpError
-		if err = a.login(ctx, c.W, userID, rotationSession(c), passwordHash); errors.As(err, &he) { // suspended or password changed
+		if err = a.login(ctx, c.W, userID, rotationSession(c), passwordHash); errors.As(err, &he) { // suspension, password or factor changed
 			return actionResult{}, err
 		} else if err != nil {
 			return actionResult{}, fail(500, "Unable to sign in")
@@ -1017,12 +1021,14 @@ func challengeLoader(ctx context.Context, a *App, r *http.Request, d *PageData) 
 // It refuses a suspended account (suspendedRefusal), and with errPasswordChanged a sign-in whose password was
 // checked against another hash than the account's current one (passwordDigest, the SHA-256 of that hash): a
 // password change ends every sign-in in progress, including one whose password was checked just before the change
-// committed (A-157). The account row is share-locked, so a suspension or password change committing concurrently
-// either is seen here or runs after this commit and deletes the new session.
+// committed (A-157). Password-only sign-in also rechecks both required factor flags: an enrollment may have
+// committed after secondFactor's unlocked reads, without changing the password. Check the raw PGP flag so an
+// enabled factor with an unreadable key cannot silently become password-only. The account row stays share-locked
+// through session creation: earlier suspension, password changes and enrollment are seen; later changes wait.
 func (a *App) startSession(ctx context.Context, tx *sql.Tx, id, old, method, passwordDigest string) (string, error) {
-	var suspended bool
+	var suspended, totp, pgp bool
 	var hash string
-	if err := tx.QueryRowContext(ctx, "SELECT suspended_at IS NOT NULL,password_hash FROM users WHERE id=$1 FOR SHARE", id).Scan(&suspended, &hash); err != nil {
+	if err := tx.QueryRowContext(ctx, "SELECT suspended_at IS NOT NULL,password_hash,totp_enabled,pgp_2fa FROM users WHERE id=$1 FOR SHARE", id).Scan(&suspended, &hash, &totp, &pgp); err != nil {
 		return "", err
 	}
 	if suspended {
@@ -1030,6 +1036,9 @@ func (a *App) startSession(ctx context.Context, tx *sql.Tx, id, old, method, pas
 	}
 	if subtle.ConstantTimeCompare([]byte(digest(hash)), []byte(passwordDigest)) != 1 {
 		return "", errPasswordChanged
+	}
+	if method == "password" && (totp || pgp) {
+		return "", errFactorsChanged
 	}
 	token := randomToken()
 	if _, err := tx.ExecContext(ctx, "DELETE FROM sessions WHERE token_hash=$1 OR expires<now()", digest(old)); err != nil {

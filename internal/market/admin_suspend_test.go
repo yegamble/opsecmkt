@@ -259,7 +259,7 @@ func TestSuspendDuringSignInLeavesNoSession(t *testing.T) {
 		blocked = agInt(e, `SELECT count(*) FROM pg_stat_activity
 			WHERE datname=current_database() AND wait_event_type='Lock'
 			AND $1=ANY(pg_blocking_pids(pid))
-			AND query LIKE 'SELECT suspended_at IS NOT NULL,password_hash FROM users WHERE id=$1 FOR SHARE%'`, suspensionPID) > 0
+			AND query LIKE 'SELECT suspended_at IS NOT NULL,password_hash%FROM users WHERE id=$1 FOR SHARE%'`, suspensionPID) > 0
 		if blocked {
 			break
 		}
