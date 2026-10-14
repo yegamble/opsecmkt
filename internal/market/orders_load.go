@@ -110,7 +110,7 @@ func eventActor(handle string, system bool, actorID string, o *Order) string {
 // payment flagged for review (payments.flagged, set by the watcher's flagOrder), and read an escrow order
 // while it has an open staff alert (escrowStaffAlert, A-470). orderReadable is the same rule in SQL.
 func staffReviewer(ctx context.Context, a *App, o *Order, u *User) (bool, error) {
-	if u == nil || u.ID == o.BuyerID || u.ID == o.VendorID || (u.Role != "moderator" && u.Role != "admin") {
+	if u == nil || u.RetentionRestricted || u.ID == o.BuyerID || u.ID == o.VendorID || (u.Role != "moderator" && u.Role != "admin") {
 		return false, nil
 	}
 	if disputeVisible(o) {
@@ -176,7 +176,7 @@ const escrowAlertLimit = 100
 // settlement. The requested-settlement candidate list is included explicitly because it has no Bitcoin settlement or
 // collision row.
 func loadEscrowAlerts(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
-	if d.User == nil || (d.User.Role != "moderator" && d.User.Role != "admin") {
+	if d.User == nil || d.User.RetentionRestricted || (d.User.Role != "moderator" && d.User.Role != "admin") {
 		return nil
 	}
 	rows, err := a.db.QueryContext(ctx, `SELECT o.id,o.state,
@@ -467,7 +467,7 @@ const resolveConfirm = "I checked the amount and who receives it for the outcome
 // party to: each escrow outcome's settlement (escrowDisputePreview).
 func (a *App) resolvePayouts(ctx context.Context, d *PageData) error {
 	d.DisputePayouts = map[string]PayoutPreview{}
-	if d.User == nil || (d.User.Role != "moderator" && d.User.Role != "admin") {
+	if d.User == nil || d.User.RetentionRestricted || (d.User.Role != "moderator" && d.User.Role != "admin") {
 		return nil
 	}
 	for _, v := range d.Disputes[:d.OpenDisputes] {
@@ -489,7 +489,7 @@ func (a *App) resolvePayouts(ctx context.Context, d *PageData) error {
 // reviewModerationLoader tells an administrator's hide and restore review forms (A-125), and listing takedown and
 // restore forms (A-163), whether to ask for an authenticator code.
 func reviewModerationLoader(ctx context.Context, a *App, r *http.Request, d *PageData) error {
-	if d.User == nil || d.User.Role != "admin" {
+	if d.User == nil || d.User.RetentionRestricted || d.User.Role != "admin" {
 		return nil
 	}
 	return adminConfirmLoader(ctx, a, r, d)
@@ -500,7 +500,7 @@ func reviewModerationLoader(ctx context.Context, a *App, r *http.Request, d *Pag
 // (A-125) is left out of the list and the rating; administrators see it listed, labelled, with a restore form.
 func loadPublicReviews(ctx context.Context, a *App, d *PageData, where, id string) error {
 	base := " FROM reviews r JOIN orders o ON o.id=r.order_id JOIN products p ON p.id=r.product_id WHERE o.state='completed' AND " + where
-	admin := d.User != nil && d.User.Role == "admin"
+	admin := d.User != nil && !d.User.RetentionRestricted && d.User.Role == "admin"
 	var sum ReviewSummary
 	var avg float64
 	if err := a.db.QueryRowContext(ctx, `SELECT count(*) FILTER (WHERE r.hidden_at IS NULL),
@@ -649,7 +649,11 @@ func loadDisputes(ctx context.Context, a *App, r *http.Request, d *PageData) err
 	}
 	d.DisputePartyFilter = ""
 	partyFilter := ""
-	queryArgs := []any{d.User.ID, d.User.Role}
+	staffRole := d.User.Role
+	if d.User.RetentionRestricted {
+		staffRole = "buyer"
+	}
+	queryArgs := []any{d.User.ID, staffRole}
 	resolvedLimitArg := "$3"
 	if d.Page == "moderator" {
 		d.DisputePartyFilter = strings.TrimSpace(r.URL.Query().Get("party"))
@@ -657,8 +661,8 @@ func loadDisputes(ctx context.Context, a *App, r *http.Request, d *PageData) err
 		queryArgs = append(queryArgs, d.DisputePartyFilter)
 		resolvedLimitArg = "$4"
 	}
-	scope := `SELECT d.id,d.order_id,d.reason,d.status,d.resolution,to_char(d.created,'YYYY-MM-DD HH24:MI "UTC"'),d.status='Open' AND NOT EXISTS(SELECT 1 FROM users s WHERE s.role IN ('moderator','admin') AND s.suspended_at IS NULL AND s.id<>o.buyer_id AND s.id<>p.vendor_id),` +
-		disputeRecordCols + ` FROM disputes d JOIN orders o ON o.id=d.order_id JOIN products p ON p.id=o.product_id` + disputeReplyJoin + ` WHERE (o.buyer_id=$1 OR p.vendor_id=$1 OR $2 IN ('admin','moderator'))` + partyFilter
+	scope := `SELECT d.id,d.order_id,d.reason,d.status,d.resolution,to_char(d.created,'YYYY-MM-DD HH24:MI "UTC"'),d.status='Open' AND NOT EXISTS(SELECT 1 FROM users s WHERE s.role IN ('moderator','admin') AND s.suspended_at IS NULL AND s.closed_at IS NULL AND s.retention_restricted_at IS NULL AND s.id<>o.buyer_id AND s.id<>p.vendor_id),` +
+		disputeRecordCols + ` FROM disputes d JOIN orders o ON o.id=d.order_id JOIN products p ON p.id=o.product_id` + disputeReplyJoin + ` WHERE (o.buyer_id=$1 OR p.vendor_id=$1 OR ($2 IN ('admin','moderator') AND EXISTS(SELECT 1 FROM users staff WHERE staff.id=$1 AND staff.suspended_at IS NULL AND staff.closed_at IS NULL AND staff.retention_restricted_at IS NULL)))` + partyFilter
 	open, err := queryDisputes(ctx, a, scope+" AND d.status='Open' ORDER BY d.created,d.id", queryArgs...)
 	if err != nil {
 		return err
@@ -742,7 +746,7 @@ const disputeEvidenceQuery = `WITH left_staff AS (SELECT user_id,max(created) AS
 // marked Suspended (A-280); so is one removed from staff after the message, marked Former (A-294).
 func (a *App) disputeEvidence(ctx context.Context, d *PageData) error {
 	d.DisputeEvidence = map[string]*DisputeEvidence{}
-	if d.User == nil || (d.User.Role != "moderator" && d.User.Role != "admin") {
+	if d.User == nil || d.User.RetentionRestricted || (d.User.Role != "moderator" && d.User.Role != "admin") {
 		return nil
 	}
 	var ids []string
@@ -857,7 +861,7 @@ const paymentReviewLimit = 100
 // watcher flag event for the deposit in order_events: flagOrder writes a system note naming it (truncate(txid, 20))
 // and ending "Moderator review required.".
 func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
-	if d.User == nil || (d.User.Role != "moderator" && d.User.Role != "admin") {
+	if d.User == nil || d.User.RetentionRestricted || (d.User.Role != "moderator" && d.User.Role != "admin") {
 		return nil
 	}
 	rows, err := a.db.QueryContext(ctx, `WITH v AS (SELECT pm.id,pm.order_id,o.state,pr.id AS product_id,CASE WHEN o.state='draft' THEN pr.title ELSE COALESCE(o.listing_title,'Listing terms were not recorded for this order') END AS title,pm.currency,pm.amount,pm.txid,pm.idx,pm.credited,pm.locked,pm.confirmations,

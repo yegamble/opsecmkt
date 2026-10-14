@@ -44,7 +44,7 @@ var escrowRPCMethods = []string{
 	"getblockchaininfo", "getnetworkinfo", "getrawchangeaddress", "getaddressinfo", "createpsbt", "utxoupdatepsbt",
 	"importdescriptors", "getdescriptorinfo", "deriveaddresses", "gettxout", "keypoolrefill", "walletprocesspsbt",
 	"descriptorprocesspsbt", "combinepsbt", "finalizepsbt", "testmempoolaccept", "sendrawtransaction", "getwalletinfo",
-	"listreceivedbyaddress", "gettransaction", "listtransactions", "listsinceblock", "getblockhash", "getblockheader",
+	"listreceivedbyaddress", "gettransaction", "listtransactions", "listsinceblock", "getblockhash", "getblockheader", "setlabel",
 }
 
 // escrowSighash is the only sighash type the market ever signs with (ES-2): a signature made with SIGHASH_NONE let
@@ -223,11 +223,21 @@ func newEscrowBTC(c escrowConfig) (*escrowBTC, error) {
 // fingerprint that differs from the pinned one leaves escrow disabled with one fixed line, and the market runs; the
 // escrow watcher then retries (retryEscrow).
 func (a *App) initEscrow(ctx context.Context) error {
+	if err := reconcileRetentionWalletAttestations(ctx, a.db); err != nil {
+		return err
+	}
 	cfg, err := escrowConfigFromEnv(os.Getenv)
 	if err != nil {
 		return err
 	}
 	if !cfg.on {
+		var pendingLabels bool
+		if err := a.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM retention_escrow_retired_addresses WHERE coin='BTC' AND NOT label_checked)`).Scan(&pendingLabels); err != nil {
+			return err
+		}
+		if pendingLabels {
+			return errors.New("retired Bitcoin wallet labels require a checked replacement watch-only wallet or exact-wallet host destruction attestation before traffic resumes")
+		}
 		healthCtx, cancelHealth := escrowHealthContext(ctx)
 		a.saveEscrowHealthAttempt(healthCtx, false, "off")
 		cancelHealth()
@@ -240,6 +250,19 @@ func (a *App) initEscrow(ctx context.Context) error {
 	}
 	a.escrowCfg = cfg
 	state, class, err := a.startEscrow(ctx)
+	var pendingLabels bool
+	// Optional arbiter verification may outlive the adapter startup budget and
+	// intentionally leave escrow waiting. The mandatory restore-label guard must
+	// still query with its own bounded context, like the health record below.
+	labelCtx, cancelLabels := escrowHealthContext(ctx)
+	queryErr := a.db.QueryRowContext(labelCtx, `SELECT EXISTS(SELECT 1 FROM retention_escrow_retired_addresses WHERE coin='BTC' AND NOT label_checked)`).Scan(&pendingLabels)
+	cancelLabels()
+	if queryErr != nil {
+		return queryErr
+	}
+	if pendingLabels {
+		return errors.New("retired Bitcoin wallet labels must be scrubbed before traffic resumes; check the configured replacement watch-only wallet and setlabel RPC permission, or attest verified destruction of the exact original wallet")
+	}
 	healthState := state
 	if errors.Is(err, errEscrowFeeAddress) {
 		healthState = errEscrowFeeAddress.Error()
@@ -325,6 +348,9 @@ func (a *App) startEscrow(ctx context.Context) (state, class string, err error) 
 	}
 	if err = e.checkWatchWallet(ctx); err != nil {
 		return escrowLogWatch, errorClassOf(err), nil
+	}
+	if err = a.scrubRetiredEscrowLabels(ctx, a.db, e); err != nil {
+		return "", "", errors.New("retired Bitcoin wallet labels must be scrubbed before escrow starts; check the watch-only wallet and its setlabel RPC permission")
 	}
 	if e.feeAddress != "" {
 		dest, plain, err := a.feeDestinationForm(e.network, e.feeAddress, e.fingerprint)
@@ -1087,6 +1113,11 @@ func (e *escrowBTC) watchedAddresses(ctx context.Context) ([]escrowWatched, erro
 		out = append(out, escrowWatched{Address: l.Address, Label: l.Label, Received: sats})
 	}
 	return out, nil
+}
+
+func (e *escrowBTC) retireAddressLabel(ctx context.Context, address string) error {
+	var result any
+	return e.call(ctx, e.watchWallet, "setlabel", []any{address, "retired"}, &result)
 }
 
 // errWatchUnsolvable is an escrow-shaped (P2WSH) address the watch-only wallet holds but reports solvable false: held by

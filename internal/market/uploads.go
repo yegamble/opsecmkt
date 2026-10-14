@@ -190,6 +190,10 @@ func (a *App) serveUpload(w http.ResponseWriter, r *http.Request, route uploadRo
 		u.refuse(errUploadSignedOut.Code, errUploadSignedOut.Msg)
 		return
 	}
+	if u.user.RetentionRestricted {
+		u.refuse(http.StatusForbidden, retentionRestrictedMessage)
+		return
+	}
 	if !slices.Contains(route.roles, u.user.Role) {
 		msg := "Photo not saved: only vendors and administrators can add listing photos."
 		if route.kind == uploadAvatar {
@@ -548,11 +552,28 @@ func (a *App) refuseMultipartElsewhere(w http.ResponseWriter, r *http.Request, t
 // is not suspended (a suspended account's sessions never authenticate; suspension also deletes them).
 func (a *App) sessionUser(ctx context.Context, session string) (*User, error) {
 	u := &User{}
-	err := a.db.QueryRowContext(ctx, `SELECT u.id,u.handle,u.role,u.pgp FROM users u JOIN sessions s ON s.user_id=u.id WHERE s.token_hash=$1 AND s.expires>now() AND u.suspended_at IS NULL`, digest(session)).Scan(&u.ID, &u.Handle, &u.Role, &u.PGP)
+	err := a.db.QueryRowContext(ctx, `SELECT u.id,u.handle,u.role,u.pgp,u.retention_restricted_at IS NOT NULL FROM users u JOIN sessions s ON s.user_id=u.id WHERE s.token_hash=$1 AND s.expires>now() AND u.suspended_at IS NULL AND u.closed_at IS NULL`, digest(session)).Scan(&u.ID, &u.Handle, &u.Role, &u.PGP, &u.RetentionRestricted)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
+		return nil, err
+	}
+	if err = a.touchRetentionActivity(ctx, u.ID); err != nil {
+		var he *httpError
+		if errors.As(err, &he) && he.Code == http.StatusUnauthorized {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if a.retention == nil {
+		return u, nil
+	}
+	if err = a.db.QueryRowContext(ctx, `SELECT retention_restricted_at IS NOT NULL,
+	 EXISTS(SELECT 1 FROM retention_account_exceptions x WHERE x.user_id=users.id AND x.reason='administrator_continuity' AND x.resolved_at IS NULL)
+	 FROM users WHERE id=$1 AND closed_at IS NULL`, u.ID).Scan(&u.RetentionRestricted, &u.RetentionContinuity); err == sql.ErrNoRows {
+		return nil, nil
+	} else if err != nil {
 		return nil, err
 	}
 	return u, nil
@@ -566,8 +587,8 @@ func (a *App) sessionUser(ctx context.Context, session string) (*User, error) {
 // in all. An avatar replaces the owner's earlier one (deleted in the same transaction). A photo belongs to the
 // listing's vendor, whoever added it.
 //
-// Lock order: the users rows of the actor and the listing's vendor (FOR KEY SHARE, which the inserts' foreign
-// keys take anyway), then the listing, then the advisory lock. An administrator's role change, suspension or
+// Lock order: the actor FOR SHARE (serializing restriction), then the listing's vendor FOR KEY SHARE,
+// then the listing, then the advisory lock. An administrator's role change, suspension or
 // takedown locks the users row and then the vendor's listings, so taking the listing first and the users rows
 // after (the foreign keys would) could deadlock with it (TestUploadStoreDoesNotDeadlockWithRoleChange). Taking
 // the users rows first also makes the role re-check wait for such a change and see its result.
@@ -582,12 +603,16 @@ func (a *App) storeImage(ctx context.Context, r *http.Request, session string, a
 		return "", err
 	}
 	var role string
-	err = tx.QueryRowContext(ctx, `SELECT u.role FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1 AND u.id=$2 AND s.expires>now() AND u.suspended_at IS NULL FOR KEY SHARE OF u`, digest(session), actor.ID).Scan(&role)
+	var restricted bool
+	err = tx.QueryRowContext(ctx, `SELECT u.role,u.retention_restricted_at IS NOT NULL FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1 AND u.id=$2 AND s.expires>now() AND u.suspended_at IS NULL AND u.closed_at IS NULL FOR SHARE OF u`, digest(session), actor.ID).Scan(&role, &restricted)
 	if err == sql.ErrNoRows {
 		return "", errUploadSignedOut
 	}
 	if err != nil {
 		return "", err
+	}
+	if restricted {
+		return "", fail(http.StatusForbidden, "Photo not saved: "+retentionRestrictedMessage)
 	}
 	// A staff avatar was admitted under the staff privacy rules (hidden unless listed); if the account is no
 	// longer staff it would be published as a vendor's avatar, so it is refused too (A-208(a),

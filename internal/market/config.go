@@ -7,16 +7,18 @@ import (
 	"errors"
 	"log"
 	"path"
+	"path/filepath"
 	"strings"
 )
 
 // startupConfig is what New checks in the environment before it opens the database (D8, I8). Every refusal
 // names the variable and how to fix it, never its value.
 type startupConfig struct {
-	appSecretKey string   // APP_SECRET_KEY: the root of every derived key when set
-	setupToken   string   // SETUP_TOKEN: authorizes /setup until installed; the legacy key root without APP_SECRET_KEY
-	secure       bool     // COOKIE_SECURE (unset = true)
-	adminSocket  string   // ADMIN_SOCKET: separate private administrator Unix listener; blank preserves one-listener installs
+	appSecretKey string // APP_SECRET_KEY: the root of every derived key when set
+	setupToken   string // SETUP_TOKEN: authorizes /setup until installed; the legacy key root without APP_SECRET_KEY
+	secure       bool   // COOKIE_SECURE (unset = true)
+	adminSocket  string // ADMIN_SOCKET: separate private administrator Unix listener; blank preserves one-listener installs
+	retention    retentionConfig
 	notes        []string // startup log lines (warnings and the legacy key-root notice); never a secret
 }
 
@@ -97,11 +99,30 @@ func loadStartupConfig(getenv func(string) string, mode string) (startupConfig, 
 	if c.adminSocket, err = adminSocketConfig(getenv, mode); err != nil {
 		return c, err
 	}
+	if c.retention, err = retentionConfigFromEnv(getenv); err != nil {
+		return c, err
+	}
 	if mode == "tor" && c.secure {
 		c.notes = append(c.notes, "warning: APP_MODE=tor with COOKIE_SECURE=true: the onion is served over plain HTTP, so only browsers that treat .onion addresses as secure keep the Secure session cookie. The installer writes COOKIE_SECURE=false for Tor; set that in .env unless you mean it")
 	}
 	if _, legacy := c.keyRoot(); legacy {
 		c.notes = append(c.notes, "keys: derived from SETUP_TOKEN (legacy); add APP_SECRET_KEY to .env with the same value to keep them, as UPGRADING.md describes")
+	}
+	return c, nil
+}
+
+func retentionConfigFromEnv(getenv func(string) string) (retentionConfig, error) {
+	var c retentionConfig
+	switch getenv("RETENTION_ENABLED") {
+	case "", "off", "false":
+	case "on", "true":
+		c.Enabled = true
+	default:
+		return c, errors.New("RETENTION_ENABLED must be on or off")
+	}
+	c.StateDir = getenv("RETENTION_STATE_DIR")
+	if c.Enabled && (!filepath.IsAbs(c.StateDir) || filepath.Clean(c.StateDir) != c.StateDir) {
+		return c, errors.New("RETENTION_STATE_DIR must be an absolute clean path to persistent external retention state")
 	}
 	return c, nil
 }

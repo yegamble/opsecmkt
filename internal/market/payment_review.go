@@ -199,7 +199,7 @@ func recordPaymentReview(c *actionCtx, id int64, outcome, note string) (actionRe
 	}
 	var admins []string
 	if outcome == "escalated" {
-		if admins, err = collectStrings(ctx, tx, "SELECT id FROM users WHERE role='admin' AND suspended_at IS NULL AND id<>$1 AND id<>$2", o.BuyerID, o.VendorID); err != nil {
+		if admins, err = collectStrings(ctx, tx, "SELECT id FROM users WHERE role='admin' AND suspended_at IS NULL AND closed_at IS NULL AND retention_restricted_at IS NULL AND id<>$1 AND id<>$2", o.BuyerID, o.VendorID); err != nil {
 			return actionResult{}, err
 		}
 		if len(admins) == 0 {

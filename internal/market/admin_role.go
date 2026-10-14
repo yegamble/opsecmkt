@@ -46,8 +46,8 @@ func SetRole(ctx context.Context, db *sql.DB, handle, role string) (string, erro
 		}
 	}
 	var id, old string
-	var suspended bool
-	err = tx.QueryRowContext(ctx, "SELECT id,role,suspended_at IS NOT NULL FROM users WHERE handle=$1 FOR UPDATE", handle).Scan(&id, &old, &suspended)
+	var suspended, closed, closing bool
+	err = tx.QueryRowContext(ctx, "SELECT id,role,suspended_at IS NOT NULL,closed_at IS NOT NULL OR password_hash='',deletion_requested_at IS NOT NULL OR retention_restricted_at IS NOT NULL FROM users WHERE handle=$1 FOR UPDATE", handle).Scan(&id, &old, &suspended, &closed, &closing)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", fmt.Errorf("no account has the handle %q (handles are exact and case-sensitive)", handle)
 	}
@@ -55,14 +55,18 @@ func SetRole(ctx context.Context, db *sql.DB, handle, role string) (string, erro
 		return "", err
 	}
 	switch {
+	case closed:
+		return "", fmt.Errorf("%q is closed; register a new active account instead of restoring erased sign-in material", handle)
 	case old == role:
 		return "", fmt.Errorf("%q is already a %s account; nothing was changed", handle, role)
 	case role == "admin" && suspended:
 		return "", fmt.Errorf("%q is suspended; restore it under Admin → Suspend or restore an account before making it an administrator", handle)
+	case role == "admin" && closing:
+		return "", fmt.Errorf("%q is awaiting account closure; choose a new active account as replacement administrator", handle)
 	}
 	if old == "admin" {
 		var others int
-		if err = tx.QueryRowContext(ctx, "SELECT count(*) FROM users WHERE role='admin' AND suspended_at IS NULL AND id<>$1", id).Scan(&others); err != nil {
+		if err = tx.QueryRowContext(ctx, "SELECT count(*) FROM users WHERE role='admin' AND suspended_at IS NULL AND closed_at IS NULL AND password_hash<>'' AND deletion_requested_at IS NULL AND retention_restricted_at IS NULL AND id<>$1", id).Scan(&others); err != nil {
 			return "", err
 		}
 		if others == 0 {

@@ -93,7 +93,8 @@ func settledAuditMax(ctx context.Context, db *sql.DB) (int64, error) {
 	return n, tx.Commit()
 }
 
-// auditExport renders audit_events with id <= upto as NDJSON ordered by id. Same upto, same bytes.
+// auditExport renders the currently retained events as NDJSON ordered by id.
+// Expiry and account erasure can change future bytes; issued signed exports stay unchanged.
 func auditExport(ctx context.Context, db *sql.DB, upto int64) ([]byte, error) {
 	return auditExportRange(ctx, db, 0, upto)
 }
@@ -223,6 +224,12 @@ func auditExportHandler(a *App, w http.ResponseWriter, r *http.Request, u *User)
 	}
 	name := AuditExportName(from, upto)
 	body := export
+	_, expires, err := AuditExportRetention(export)
+	if err != nil {
+		http.Error(w, "Unable to determine audit export expiry", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("X-Retention-Expires", expires.Format(time.RFC3339))
 	ext := ".jsonl"
 	contentType := "application/x-ndjson"
 	if q.Get("sig") == "1" {

@@ -49,11 +49,11 @@ func partyOrderLocked(c *actionCtx, id string) (Order, error) {
 	return o, err
 }
 
-const sellerIsVendorSQL = "SELECT u.role IN ('vendor','admin') FROM products p JOIN users u ON u.id=p.vendor_id WHERE p.id=$1"
+const sellerIsVendorSQL = "SELECT u.role IN ('vendor','admin') AND u.closed_at IS NULL AND u.retention_restricted_at IS NULL FROM products p JOIN users u ON u.id=p.vendor_id WHERE p.id=$1"
 
 // sellerIsVendorLocked is sellerIsVendor for a restore (A-70, A-163): it share-locks the owner's account row until
-// the transaction ends, so a concurrent role change either commits first and is seen here, or waits and then
-// archives the restored listing in its own archive statement.
+// the transaction ends, so a concurrent role change or retention closure either commits first and is seen
+// here, or waits and then archives the restored listing in its own archive statement.
 func sellerIsVendorLocked(c *actionCtx, productID string) (bool, error) {
 	var ok bool
 	err := c.Tx.QueryRowContext(c.Ctx(), sellerIsVendorSQL+" FOR SHARE OF u", productID).Scan(&ok)

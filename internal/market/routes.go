@@ -508,6 +508,10 @@ func roleRequired(roles []string) string {
 }
 
 func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string) {
+	if u != nil && u.RetentionRestricted && !retentionUserActionAllowed(u, r.URL.Path) {
+		a.refuse(w, r, u, http.StatusForbidden, retentionRestrictedMessage)
+		return
+	}
 	spec, ok := actions[r.URL.Path]
 	if !ok || spec.Off != nil && spec.Off(a) {
 		a.refuse(w, r, u, 404, "Unknown action")

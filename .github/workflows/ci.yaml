@@ -139,7 +139,7 @@ jobs:
       # -fastprune for the pruned watch-only wallet repair leg. The nodes are not connected.
       - name: Start Bitcoin Core on regtest
         run: |
-          whitelist=getblockchaininfo,getnetworkinfo,getrawchangeaddress,getaddressinfo,createpsbt,utxoupdatepsbt,importdescriptors,getdescriptorinfo,deriveaddresses,gettxout,keypoolrefill,walletprocesspsbt,descriptorprocesspsbt,combinepsbt,finalizepsbt,testmempoolaccept,sendrawtransaction,getwalletinfo,listreceivedbyaddress,gettransaction,listtransactions,listsinceblock,getblockhash,getblockheader
+          whitelist=getblockchaininfo,getnetworkinfo,getrawchangeaddress,getaddressinfo,createpsbt,utxoupdatepsbt,importdescriptors,getdescriptorinfo,deriveaddresses,gettxout,keypoolrefill,walletprocesspsbt,descriptorprocesspsbt,combinepsbt,finalizepsbt,testmempoolaccept,sendrawtransaction,getwalletinfo,listreceivedbyaddress,gettransaction,listtransactions,listsinceblock,getblockhash,getblockheader,setlabel
           operator_pass=$(openssl rand -hex 24)
           app_pass=$(openssl rand -hex 24)
           signer_pass=$(openssl rand -hex 24)
@@ -358,6 +358,7 @@ jobs:
       - name: Shell syntax and Python helper regressions
         run: |
           for script in scripts/*.sh; do bash -n "$script"; done
+          python3 scripts/test-backup-retention.py
           python3 -m unittest discover -s tests -p 'test_*.py' -v 2> "$RUNNER_TEMP/unittest.log" || { cat "$RUNNER_TEMP/unittest.log"; exit 1; }
           cat "$RUNNER_TEMP/unittest.log"
           if grep -E ' \.\.\. skipped' "$RUNNER_TEMP/unittest.log"; then echo 'Python tests were skipped' >&2; exit 1; fi
@@ -879,6 +880,15 @@ jobs:
       - run: npm run test:e2e
         env:
           E2E_DATABASE_URL: postgres://test:test-ci-only@127.0.0.1:5432/e2e?sslmode=disable
+      - name: Retention forms with JavaScript disabled on a fresh database
+        run: |
+          PGPASSWORD=test-ci-only createdb -h 127.0.0.1 -U test e2e_retention
+          install -d -m 700 "$RUNNER_TEMP/opsecmkt-retention"
+          npx playwright test tests/e2e/db-retention.spec.ts --project=database-chromium --output=test-results-retention
+        env:
+          E2E_DATABASE_URL: postgres://test:test-ci-only@127.0.0.1:5432/e2e_retention?sslmode=disable
+          E2E_RETENTION_STATE_DIR: ${{ runner.temp }}/opsecmkt-retention
+          PLAYWRIGHT_HTML_OUTPUT_DIR: playwright-retention-report
       - name: Preserve browser report and failure traces
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -887,6 +897,8 @@ jobs:
           path: |
             playwright-report/
             test-results/
+            playwright-retention-report/
+            test-results-retention/
           if-no-files-found: ignore
           retention-days: 14
   browser-escrow:

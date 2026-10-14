@@ -779,6 +779,15 @@ func (c *fakeEscrowCore) handle(path, method string, params json.RawMessage) (an
 			info[k] = v
 		}
 		return info, 0, ""
+	case "setlabel":
+		if path != fakeWatchWallet {
+			return nil, -4, "retention labels belong only to the watch-only wallet"
+		}
+		if c.labels == nil {
+			c.labels = map[string]string{}
+		}
+		c.labels[str(0)] = str(1)
+		return nil, 0, ""
 	case "listreceivedbyaddress":
 		if path != fakeWatchWallet {
 			return nil, -8, "unexpected fake wallet"

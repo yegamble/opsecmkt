@@ -142,7 +142,7 @@ func (a *App) escrowFeeAddress(ctx context.Context, e *escrowBTC, orderID string
 	}
 	for range escrowFeeDescTries {
 		if !index.Valid {
-			if err = a.db.QueryRowContext(ctx, `UPDATE escrows SET fee_index=nextval('escrow_fee_index') WHERE id=$1 AND fee_index IS NULL RETURNING fee_index`,
+			if err = a.db.QueryRowContext(ctx, `UPDATE escrows SET fee_index=retention_next_escrow_index('fee') WHERE id=$1 AND fee_index IS NULL RETURNING fee_index`,
 				escrowID).Scan(&index); errors.Is(err, sql.ErrNoRows) {
 				err = a.db.QueryRowContext(ctx, `SELECT fee_index FROM escrows WHERE id=$1`, escrowID).Scan(&index)
 			}
@@ -163,11 +163,12 @@ func (a *App) escrowFeeAddress(ctx context.Context, e *escrowBTC, orderID string
 		}
 		var used bool
 		if err = a.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM escrows WHERE address=$1 OR refund_address=$1 OR fee_destination=$1)
-			OR EXISTS(SELECT 1 FROM escrow_siblings WHERE address=$1) OR EXISTS(SELECT 1 FROM settlements WHERE destination=$1)`, addr).Scan(&used); err != nil {
+			OR EXISTS(SELECT 1 FROM escrow_siblings WHERE address=$1) OR EXISTS(SELECT 1 FROM settlements WHERE destination=$1)
+			OR EXISTS(SELECT 1 FROM retention_escrow_retired_addresses WHERE coin='BTC' AND address_hash=encode(sha256(convert_to($1,'UTF8')),'hex'))`, addr).Scan(&used); err != nil {
 			return "", err
 		}
 		if used { // never pay a fee to an address the market used: move this escrow to the next index
-			if err = a.db.QueryRowContext(ctx, `UPDATE escrows SET fee_index=nextval('escrow_fee_index') WHERE id=$1 AND fee_index=$2 AND fee_destination='' RETURNING fee_index`,
+			if err = a.db.QueryRowContext(ctx, `UPDATE escrows SET fee_index=retention_next_escrow_index('fee') WHERE id=$1 AND fee_index=$2 AND fee_destination='' RETURNING fee_index`,
 				escrowID, index.Int64).Scan(&index); errors.Is(err, sql.ErrNoRows) {
 				return a.storedFeeAddress(ctx, escrowID)
 			} else if err != nil {
@@ -196,6 +197,6 @@ func (a *App) storedFeeAddress(ctx context.Context, escrowID int64) (string, err
 // highestFeeIndex is the highest fee index any escrow holds (-1 when none), for the admin page.
 func highestFeeIndex(ctx context.Context, q rowQuerier) (int64, error) {
 	var n int64
-	err := q.QueryRowContext(ctx, `SELECT COALESCE(max(fee_index),-1) FROM escrows`).Scan(&n)
+	err := q.QueryRowContext(ctx, `SELECT GREATEST(COALESCE(max(fee_index),-1),(SELECT allocation_next_index-1 FROM retention_escrow_global_floors WHERE kind='fee')) FROM escrows`).Scan(&n)
 	return n, err
 }

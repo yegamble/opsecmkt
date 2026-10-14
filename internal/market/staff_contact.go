@@ -91,7 +91,7 @@ func staffContactLoader(ctx context.Context, a *App, _ *http.Request, d *PageDat
 		return nil
 	}
 	var id string
-	err := a.db.QueryRowContext(ctx, "SELECT id FROM users WHERE handle=$1 AND role IN ('moderator','admin') AND suspended_at IS NULL AND id<>$2", contact, d.User.ID).Scan(&id)
+	err := a.db.QueryRowContext(ctx, "SELECT id FROM users WHERE handle=$1 AND role IN ('moderator','admin') AND suspended_at IS NULL AND closed_at IS NULL AND retention_restricted_at IS NULL AND id<>$2", contact, d.User.ID).Scan(&id)
 	if err == sql.ErrNoRows {
 		return nil
 	}

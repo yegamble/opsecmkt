@@ -23,6 +23,10 @@ import (
 const noticeCookie, noticeMaxAge = "notice", 60
 
 var notices = map[string]struct{ text, section, pages string }{
+	"retention-delete":  {"Account deletion requested. Save any records you need before the 30-day deadline.", "retention", "account"},
+	"retention-hold":    {"Preservation hold recorded. Review is due within 30 days.", "retention", "admin"},
+	"retention-release": {"Preservation hold released. Original retention deadlines apply.", "retention", "admin"},
+	"retention-review":  {"Financial retention blocker reviewed. No funds or recovery records were deleted.", "retention", "admin"},
 	// Account and sign-in
 	"profile":        {"Profile saved.", "", ""},
 	"password":       {"Password changed.", "", ""},

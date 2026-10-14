@@ -59,7 +59,7 @@ func loadRecentServerErrors(ctx context.Context, a *App, _ *http.Request, d *Pag
 	}
 	// Recheck the current role: the session was read before the page loaders ran.
 	var allowed bool
-	if err := a.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM users WHERE id=$1 AND role='admin' AND suspended_at IS NULL)", d.User.ID).Scan(&allowed); err != nil {
+	if err := a.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM users WHERE id=$1 AND role='admin' AND suspended_at IS NULL AND closed_at IS NULL AND retention_restricted_at IS NULL)", d.User.ID).Scan(&allowed); err != nil {
 		return err
 	}
 	if allowed {

@@ -1,0 +1,69 @@
+{{define "retention:summary"}}{{with .Retention}}{{if .Enabled}}
+{{if .MaintenanceError}}<p class="alert" role="alert">Retention maintenance needs operator attention. Deletion deadlines may be delayed.{{if eq .MaintenanceError "state_unavailable"}} Changes are paused because preservation state is unavailable.{{end}}</p>{{end}}
+<p>Retention maintenance is enabled: messages expire after 90 days, notifications after 30 days and activity records after 180 days. Private order content expires 30 days after verified financial closure. Scoped preservation duties can delay deletion.</p>
+<p>Accounts close after 12 months without authenticated use and 30 days' notice, or within 30 days of a verified deletion request. Necessary access for unresolved funds or administrator replacement can remain. Unfunded drafts expire after 30 days, closed order records 180 days after verified financial closure, and withdrawn listing content after 30 days unless needed for an open transaction.</p>
+<p class="help">Ordinary backups have a 30-day deadline; operator-controlled copies need separate expiry jobs. Initial enrollment gives historical records 30 days' grace and accounts without known activity a bounded 90-day reconfirmation period.</p>
+<p class="help">{{if .LastRun}}Last completed retention pass: {{.LastRun}}.{{else}}No retention pass has completed yet.{{end}} Initial enrollment includes notice periods. Escrow recovery records can remain while safe retirement is blocked. Backup expiry requires the operator's separate scheduled job.</p>
+{{else}}<p>Retention maintenance is not enabled. Accounts, messages and orders currently have no automatic deletion lifecycle on this instance.</p>{{end}}{{end}}{{end}}
+
+{{define "retention:order"}}{{with .Retention}}{{if .Enabled}}<p class="help" role="note">Save deliveries you need: private order content expires 30 days after verified financial closure and ordinary order records after 180 days, subject to preservation duties. Ordinary late-payment monitoring ends 90 days after the order closes. After financial retirement or wallet destruction, old addresses lose application recovery support; do not send further funds to them.</p>{{end}}{{end}}{{end}}
+
+{{define "retention:account"}}{{with .Retention}}
+<section class="panel" id="retention" aria-labelledby="retention-account-heading">
+<h2 id="retention-account-heading">Retention and account deletion</h2>
+{{if $.User.RetentionRestricted}}<p class="alert" role="status">{{if $.User.RetentionContinuity}}Administrator continuity keeps limited access while closure is pending. The operator must appoint a replacement administrator.{{else}}Unresolved funds require limited access while account deletion is pending. You can settle existing orders and secure your sign-in.{{end}} New transactions and media uploads are disabled. Sign-in and PGP security updates remain available.</p>{{end}}
+{{with $.NoticeIn "retention"}}<div class="alert" role="status">{{.}}</div>{{end}}
+{{template "retention:summary" $}}
+{{if .Enabled}}{{if .DeletionRequested}}<p>Your deletion request was accepted {{.DeletionRequested}}. Save any messages or deliveries you need. Signing in does not cancel this request.</p>
+{{else}}<form class="stack" method="post" action="/account/delete">
+<input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="form_nonce" value="{{formNonce "/account/delete"}}">
+<p>Request deletion of your profile and sign-in material within 30 days. Necessary records for unresolved transactions and preservation duties can remain. Deleting an account does not delete recipients' saved copies or blockchain records.</p>
+<label><input type="checkbox" name="confirm_delete" value="yes" required> I have saved the records I need and want to request account deletion.</label>
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}<button type="submit">Request account deletion</button>
+</form>{{end}}{{end}}</section>{{end}}{{end}}
+
+{{define "retention:admin"}}{{with .Retention}}
+<section class="panel" id="retention" aria-labelledby="retention-admin-heading">
+<h2 id="retention-admin-heading">Retention and preservation</h2>
+{{with $.NoticeIn "retention"}}<div class="alert" role="status">{{.}}</div>{{end}}
+{{template "retention:summary" $}}
+{{if .Enabled}}
+<p>Record only necessary preservation metadata. Keep private evidence in encrypted recipient channels. A review date alerts you to review a hold; it never automatically releases a legal duty.</p>
+<details><summary>Register a preservation hold</summary><form class="stack" method="post" action="/admin/retention/hold">
+<input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="form_nonce" value="{{formNonce "/admin/retention/hold"}}">
+<label>Scope<select name="scope"><option value="message">Message</option><option value="order">Order</option><option value="audit">Activity event</option><option value="account">Account</option></select></label>
+<label>Record identifier<input name="record_id" required maxlength="64"></label>
+<label>Applicable authority<input name="authority" required maxlength="1000"></label>
+<label>Reason<textarea name="reason" required maxlength="2000" rows="2"></textarea></label>
+<label>Authorized readers<input name="readers" required maxlength="1000"></label>
+<label>Release condition<textarea name="release_condition" required maxlength="2000" rows="2"></textarea></label>
+<label><input type="checkbox" name="confirm_hold" value="yes" required> I verified the duty and limited this hold to necessary records.</label>
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}<button type="submit">Register hold for review within 30 days</button>
+</form></details>
+<h3>Active preservation holds</h3>
+{{range .Holds}}<article class="panel">
+<p><strong>{{.Scope}}</strong> <span class="mono">{{.RecordID}}</span> · Review {{.Review}}{{if .Overdue}} <span class="badge danger">Review overdue</span>{{end}}</p>
+<p>{{.Authority}} · {{.Reason}}</p><p class="help">Owner: {{.Owner}}. Authorized readers: {{.Readers}}. Release condition: {{.ReleaseCondition}}.</p>
+<form class="stack" method="post" action="/admin/retention/hold">
+<input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="form_nonce" value="{{formNonce "/admin/retention/hold"}}">
+<input type="hidden" name="hold_id" value="{{.ID}}"><input type="hidden" name="scope" value="{{.Scope}}"><input type="hidden" name="record_id" value="{{.RecordID}}">
+<input type="hidden" name="authority" value="{{.Authority}}"><input type="hidden" name="reason" value="{{.Reason}}"><input type="hidden" name="readers" value="{{.Readers}}"><input type="hidden" name="release_condition" value="{{.ReleaseCondition}}">
+<label><input type="checkbox" name="confirm_hold" value="yes" required> I reviewed this hold and it is still required.</label>
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}<button type="submit">Renew review for 30 days</button></form>
+<details><summary>Release this hold</summary><form class="stack" method="post" action="/admin/retention/release">
+<input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="form_nonce" value="{{formNonce "/admin/retention/release"}}"><input type="hidden" name="hold_id" value="{{.ID}}">
+<label><input type="checkbox" name="confirm_release" value="yes" required> The duty has ended; the original deletion deadlines apply.</label>
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}<button type="submit">Release preservation hold</button></form></details>
+</article>{{else}}<p>No active preservation holds.</p>{{end}}
+<h3>Account-closure exceptions</h3>
+{{range .AccountExceptions}}<article class="panel"><p><span class="mono">{{.UserID}}</span>: {{.Reason}}{{if .Overdue}} <span class="badge danger">Review overdue</span>{{end}}</p><p class="help">Owner: {{.Owner}}. Review: {{.Review}}.</p>
+<form class="stack" method="post" action="/admin/retention/account-review"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="form_nonce" value="{{formNonce "/admin/retention/account-review"}}"><input type="hidden" name="user_id" value="{{.UserID}}">
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}<button type="submit">Record account-closure review</button></form></article>{{else}}<p>No account-closure exceptions recorded.</p>{{end}}
+<h3>Financial retention blockers</h3><p class="help">Reviewing a blocker records responsibility for another 30 days. It does not authorize deleting funds, disabling escrow guards or wiping a wallet.</p>
+{{range .EscrowExceptions}}<article class="panel"><p><span class="mono">{{.OrderID}}</span>: {{.Reason}}{{if .ReviewOverdue}} <span class="badge danger">Review overdue</span>{{end}}</p>
+<p class="help">Next review: {{.ReviewDue.UTC.Format "2006-01-02 15:04 UTC"}}.</p>
+<form class="stack" method="post" action="/admin/retention/review"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="form_nonce" value="{{formNonce "/admin/retention/review"}}"><input type="hidden" name="order_id" value="{{.OrderID}}">
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}<button type="submit">Record financial retention review</button></form></article>{{else}}<p>No financial retention blockers recorded.</p>{{end}}
+<h3>Physical wallet cleanup</h3><p class="help">Database retirement does not delete imported Bitcoin descriptors or wallet files and copies. The operator must verify safe rotation or destruction and record completion from the host. Review within 30 days; a review does not extend the original deadline.</p>
+{{range .WalletCleanup}}<article class="panel"><p>{{.Coin}} · <span class="mono">{{.WalletName}}</span>{{if .Overdue}} <span class="badge danger">Cleanup overdue</span>{{end}}{{if .ReviewOverdue}} <span class="badge danger">Review overdue</span>{{end}}</p><p class="help">Owner: instance operator. Cleanup due: {{.DueAt.UTC.Format "2006-01-02 15:04 UTC"}}. Review: {{.ReviewDue.UTC.Format "2006-01-02 15:04 UTC"}}.</p></article>{{else}}<p>No outstanding wallet cleanup recorded.</p>{{end}}
+{{end}}</section>{{end}}{{end}}

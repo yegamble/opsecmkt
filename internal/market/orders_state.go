@@ -116,7 +116,7 @@ func actorRoles(o *Order, u *User) []string {
 	if u.ID == o.VendorID {
 		roles = append(roles, roleVendor)
 	}
-	if roles == nil && (u.Role == "moderator" || u.Role == "admin") {
+	if roles == nil && !u.RetentionRestricted && (u.Role == "moderator" || u.Role == "admin") {
 		roles = append(roles, roleModerator)
 	}
 	return roles

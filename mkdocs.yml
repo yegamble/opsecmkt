@@ -89,6 +89,7 @@ nav:
       - Operator guide: operator-guide.md
       - Security and OPSEC: security-operations.md
       - Data retention and privacy policy: data-retention-privacy-policy.md
+      - Retention operations: retention.md
       - Upgrading: project/UPGRADING.md
       - Test-network payments: testnet-runbook.md
       - Per-order escrow: escrow.md

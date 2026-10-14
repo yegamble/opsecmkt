@@ -2,12 +2,14 @@
 # Integration test. Requires a disposable PostgreSQL server and a CREATEDB role.
 set -euo pipefail
 umask 077
+unset BACKUP_RECOVERY_SOURCE
 cd "$(dirname "$0")/.."
 : "${TEST_DATABASE_URL:?Set an explicit PostgreSQL test URL; its role must have CREATEDB}"
 for dependency in python3 psql pg_dump pg_restore age age-keygen go; do
   command -v "$dependency" >/dev/null || { echo "Missing dependency: $dependency" >&2; exit 1; }
 done
 work=$(mktemp -d "${TMPDIR:-/tmp}/opsecmkt-ops.XXXXXX")
+work=$(cd "$work" && pwd -P)
 export OPS_TEST_ROOT="$PWD"
 suffix=$(python3 -c 'import secrets; print(secrets.token_hex(8))')
 source_db="opsecmkt_ops_${suffix}_source"
@@ -105,10 +107,18 @@ python3 - "$backup" <<'PY_CHECK'
 from pathlib import Path
 import stat
 import sys
+import importlib.util
+import os
+from datetime import datetime, timedelta, timezone
 backup = Path(sys.argv[1])
 assert stat.S_IMODE(backup.stat().st_mode) == 0o600, 'Backup permissions must be 0600'
 with backup.open('rb') as stream:
     assert stream.read(22) == b'age-encryption.org/v1\n', 'Backup must be age-encrypted'
+spec = importlib.util.spec_from_file_location('backup_retention', Path(os.environ['OPS_TEST_ROOT']) / 'scripts/backup-retention.py')
+retention = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(retention)
+metadata, _, _ = retention.metadata_for(backup, datetime.now(timezone.utc))
+assert retention.timestamp(metadata['expires_at']) - retention.timestamp(metadata['created_at']) == timedelta(days=30)
 PY_CHECK
 
 # Existing backups must be preserved byte for byte.
@@ -156,6 +166,12 @@ legacy_backup="$work/legacy.dump.age"
 scripts/backup.sh "$legacy_backup"
 scripts/restore.sh "$legacy_backup" <<< 'RESTORE' > "$work/legacy-restore.log"
 [[ $(pg "$target_db" -Atq -c "SELECT value FROM settings WHERE key='payments_recovery_required'") == true ]]
+[[ $(pg "$target_db" -Atq -c "SELECT value FROM settings WHERE key='retention_restore_required'") == true ]]
+if BACKUP_DATABASE_URL=$(connection_url "$target_db") scripts/backup.sh "$work/unreplayed.dump.age" > "$work/unreplayed-backup.log" 2>&1; then
+  echo 'Backup created a fresh archive before retention replay' >&2; exit 1
+fi
+grep -q 'before current external retention state has been replayed' "$work/unreplayed-backup.log"
+if compgen -G "$work/unreplayed.dump.age*" >/dev/null; then echo 'An unreplayed backup left a file behind' >&2; exit 1; fi
 [[ $(pg "$target_db" -Atq -c "SELECT value FROM settings WHERE key='escrow_release_recheck'") == true ]]
 [[ $(pg "$target_db" -Atq -c "SELECT to_regclass('payouts') IS NULL") == t ]]
 # A database without the Monero escrow tables (before migrations 084 and 085) restores, and the script says nothing of it.
@@ -167,9 +183,13 @@ if grep -q 'Monero escrow' "$work/legacy-restore.log"; then echo 'restore.sh rep
 # start_app DATABASE: runs the server from this checkout with a clean environment and waits for /healthz.
 CGO_ENABLED=0 go build -trimpath -o "$work/server" ./cmd/server
 app_port=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+source_retention_state="$work/source-retention-state"
+restored_retention_state="$work/current-restored-retention-state"
 start_app() {
+  local current_retention_state=$source_retention_state
+  [[ $1 == "$app_source_db" ]] || current_retention_state=$restored_retention_state
   (exec env -i PATH="$PATH" DATABASE_URL="$(connection_url "$1")" SETUP_TOKEN='ops-restore-test-bootstrap-token-0123456789' \
-    COOKIE_SECURE=false ADDR="127.0.0.1:$app_port" "$work/server") >> "$work/app.log" 2>&1 &
+    RETENTION_ENABLED=on RETENTION_STATE_DIR="$current_retention_state" COOKIE_SECURE=false ADDR="127.0.0.1:$app_port" "$work/server") >> "$work/app.log" 2>&1 &
   server_pid=$!
   python3 - "http://127.0.0.1:$app_port/healthz" "$server_pid" <<'PY'
 import os, sys, time, urllib.request
@@ -270,6 +290,9 @@ app_backup="$work/app.dump.age"
 # pg_restore --list labels it with its own, so both scripts run those tools in UTC.
 backup_started=$(date -u +%s)
 TZ=Asia/Tokyo BACKUP_DATABASE_URL=$(connection_url "$app_source_db") scripts/backup.sh "$app_backup"
+# The deletion ledger is current external state copied separately, never restored
+# from the rolled-back database backup. A missing current ledger must fail closed.
+cp -R "$source_retention_state" "$restored_retention_state"
 backup_finished=$(date -u +%s)
 TZ=America/New_York RESTORE_DATABASE_URL=$(connection_url "$app_target_db") scripts/restore.sh "$app_backup" <<< 'RESTORE' > "$work/app-restore.log"
 grep -q 'Held 1 restored Bitcoin escrow settlement(s) with a stored transaction' "$work/app-restore.log"
@@ -321,10 +344,34 @@ restore_audit="-:Payout recovery gate set by scripts/restore.sh; held 1 restored
 [[ $(pg "$app_source_db" -Atq -c "SELECT count(*) FROM settlement_bumps WHERE send_error<>''") == 0 ]]
 [[ $(pg "$app_target_db" -Atq -c "$audit_all") == "$source_audit|$restore_audit" ]]
 [[ $(pg "$app_target_db" -Atq -c "SELECT string_agg(version || ':' || name || '@' || applied, ',' ORDER BY version) FROM schema_migrations") == "$migrations" ]]
+# A missing current ledger and an attempt to switch retention off both refuse
+# startup before any user/payment traffic; neither clears the restore gate.
+for retention_mode in missing disabled; do
+  if [[ $retention_mode == missing ]]; then enabled=on; else enabled=off; fi
+  env -i PATH="$PATH" DATABASE_URL="$(connection_url "$app_target_db")" SETUP_TOKEN='ops-restore-test-bootstrap-token-0123456789' \
+    RETENTION_ENABLED="$enabled" RETENTION_STATE_DIR="$work/missing-retention-state" COOKIE_SECURE=false ADDR="127.0.0.1:$app_port" \
+    python3 - "$work/server" "$work/refused-retention.log" <<'PY'
+from pathlib import Path
+import subprocess, sys
+try:
+    result = subprocess.run([sys.argv[1]], capture_output=True, text=True, timeout=10)
+except subprocess.TimeoutExpired:
+    raise SystemExit('Restored application started without current retention state')
+Path(sys.argv[2]).write_text(result.stdout + result.stderr)
+assert result.returncode != 0, 'Restored application ignored the retention restore gate'
+assert 'retention' in result.stdout + result.stderr, 'Startup failed for a different reason'
+PY
+  [[ $(pg "$app_target_db" -Atq -c "SELECT value FROM settings WHERE key='retention_restore_required'") == true ]]
+done
 # The server starts on the restored database, applies nothing again and leaves the held settlements alone.
 start_app "$app_target_db"
 stop_app
+[[ $(pg "$app_target_db" -Atq -c "SELECT value FROM settings WHERE key='retention_restore_required'") == false ]]
 [[ $(pg "$app_target_db" -Atq -c "SELECT value FROM settings WHERE key='payments_recovery_required'") == true ]]
+# Actual application replay clears the backup-source gate while retaining payout
+# reconciliation. A fresh recovery backup is safe only after that replay.
+BACKUP_DATABASE_URL=$(connection_url "$app_target_db") scripts/backup.sh "$work/replayed.dump.age" > "$work/replayed-backup.log"
+[[ -s $work/replayed.dump.age && -s $work/replayed.dump.age.retention.json ]]
 [[ $(pg "$app_target_db" -Atq -c "SELECT string_agg(version || ':' || name || '@' || applied, ',' ORDER BY version) FROM schema_migrations") == "$migrations" ]]
 [[ $(pg "$app_target_db" -Atq -c "$settlements") == "$escrow_held" ]]
 [[ $(pg "$app_target_db" -Atq -c "$pooled_rows") == 0:0 ]]

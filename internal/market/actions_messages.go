@@ -45,6 +45,20 @@ func messageAction(c *actionCtx) (actionResult, error) {
 	if err != nil {
 		return actionResult{}, fail(400, "Recipient not found")
 	}
+	var restricted bool
+	if err = tx.QueryRowContext(ctx, `SELECT retention_restricted_at IS NOT NULL FROM users WHERE id=$1 FOR SHARE`, u.ID).Scan(&restricted); err != nil {
+		return actionResult{}, err
+	}
+	if restricted {
+		var necessary bool
+		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE id=$2 AND role IN('admin','moderator') AND suspended_at IS NULL AND closed_at IS NULL AND retention_restricted_at IS NULL)
+		 OR EXISTS(SELECT 1 FROM orders o JOIN products p ON p.id=o.product_id WHERE o.financial_closed_at IS NULL AND ((o.buyer_id=$1 AND p.vendor_id=$2) OR (o.buyer_id=$2 AND p.vendor_id=$1)))`, u.ID, recipient).Scan(&necessary); err != nil {
+			return actionResult{}, err
+		}
+		if !necessary {
+			return actionResult{}, fail(403, "While deletion waits for funds, messages may go only to an existing order partner or current staff.")
+		}
+	}
 	// P2: packet inspection rejects anything that is not OpenPGP-encrypted and records the recipient-key
 	// match; only the canonical re-armor of the packets is stored (A-67).
 	body, match, extraKeys, extraKeysKnown, err := inspectMessage(c, body, recipient)

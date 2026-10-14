@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/hex"
 	"errors"
 	"log"
@@ -62,6 +63,7 @@ const xmrClosedSQL = "('completed','cancelled','resolved')"
 // clock: destroy_after has passed, no order of it is open, and none of its settlements is live or still followed.
 const xmrDestroyableSQL = `w.destroy_after <= $2
 	AND NOT EXISTS (SELECT 1 FROM xmr_escrow_slots s JOIN orders o ON o.id=s.order_id WHERE s.wallet_id=w.id AND o.state NOT IN ` + xmrClosedSQL + `)
+	AND NOT EXISTS (SELECT 1 FROM xmr_escrow_slots sl JOIN orders o ON o.id=sl.order_id JOIN products p ON p.id=o.product_id JOIN retention_holds h ON h.released_at IS NULL AND ((h.scope='order' AND h.record_id=o.id) OR (h.scope='account' AND h.record_id IN(o.buyer_id,p.vendor_id))) WHERE sl.wallet_id=w.id)
 	AND NOT EXISTS (SELECT 1 FROM xmr_escrow_slots s JOIN xmr_settlements x ON x.order_id=s.order_id WHERE s.wallet_id=w.id
 		AND (x.state IN ('requested','built','relayed') OR x.state='confirmed' AND x.reorg_safe_at IS NULL))`
 
@@ -105,7 +107,7 @@ func (a *App) xmrDestroyIfDue(ctx context.Context, w xmrWalletRow, now time.Time
 	if !allowed || b.Balance != 0 || b.Unlocked != 0 || busy {
 		return false, a.xmrDestroyHeld(ctx, w)
 	}
-	return true, a.xmrDestroy(ctx, w, now)
+	return a.xmrDestroy(ctx, w, now)
 }
 
 // xmrDestroyHeldKey is the setting that records that the administrators were told retained wallet id is kept past its
@@ -131,7 +133,7 @@ func (a *App) xmrDestroyHeld(ctx context.Context, w xmrWalletRow) error {
 			funded = append(funded, "account "+strconv.FormatInt(acc.Index, 10)+" ("+amount(acc.Balance, 12)+" XMR)")
 		}
 	}
-	held := "No account holds coins, but a settlement of it is still in progress or a transfer of it is in the pool."
+	held := "No account holds coins, but a settlement, transfer in the pool, or an active preservation duty prevents destruction."
 	if len(funded) > 0 {
 		held = "Accounts holding coins: " + strings.Join(funded, ", ") + "."
 	}
@@ -162,37 +164,82 @@ func (a *App) xmrDestroyHeld(ctx context.Context, w xmrWalletRow) error {
 // its password by 32 random bytes that are never kept, stores and closes it, then records it destroyed with its seal
 // wiped. A failure after the new password took effect leaves the wallet unopenable, and the next pass destroys it again
 // on that record (xmrWalletUnopenable).
-func (a *App) xmrDestroy(ctx context.Context, w xmrWalletRow, now time.Time) error {
+func (a *App) xmrDestroy(ctx context.Context, w xmrWalletRow, now time.Time) (bool, error) {
 	x := a.escrowXMR
-	res, err := a.db.ExecContext(ctx, "UPDATE xmr_escrow_wallets SET destroy_started_at=COALESCE(destroy_started_at,$2),updated=now() WHERE id=$1 AND state='retained' AND destroy_after<=$2", w.id, now)
+	conn, err := a.db.Conn(ctx)
 	if err != nil {
-		return err
+		return false, err
+	}
+	defer conn.Close()
+	unlockWallet := func() {
+		unlock, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		if _, err := conn.ExecContext(unlock, `SELECT pg_advisory_unlock(hashtextextended('retention-xmr-wallet:'||$1::bigint::text,0))`, w.id); err != nil {
+			// A failed unlock must not return a session holding a destruction
+			// capability to the pool. Closing that driver session releases it.
+			conn.Raw(func(any) error { return driver.ErrBadConn })
+		}
+	}
+	var locked bool
+	if err = conn.QueryRowContext(ctx, `SELECT pg_try_advisory_lock(hashtextextended('retention-xmr-wallet:'||$1::bigint::text,0))`, w.id).Scan(&locked); err != nil {
+		unlockWallet() // the server may have acquired it before cancellation
+		return false, err
+	}
+	if !locked {
+		return false, nil
+	} // pending preservation owns the exact wallet
+	defer unlockWallet()
+	// A hold may have committed after the initial balance/settlement checks.
+	// Serialize this final read and every irreversible RPC with hold registration.
+	var allowed bool
+	if err = conn.QueryRowContext(ctx, `SELECT COALESCE(`+xmrDestroyableSQL+`,false) FROM xmr_escrow_wallets w WHERE w.id=$1 AND w.state='retained'`, w.id, now).Scan(&allowed); err != nil {
+		return false, err
+	}
+	if !allowed {
+		return false, a.xmrDestroyHeld(ctx, w)
+	}
+	res, err := conn.ExecContext(ctx, "UPDATE xmr_escrow_wallets SET destroy_started_at=COALESCE(destroy_started_at,$2),updated=now() WHERE id=$1 AND state='retained' AND destroy_after<=$2", w.id, now)
+	if err != nil {
+		return false, err
 	}
 	if n, _ := res.RowsAffected(); n != 1 {
-		return errXMRWalletNotWritten
+		return false, errXMRWalletNotWritten
+	}
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	opID, err := a.prepareRetentionXMRDestruction(ctx, tx, w.id, now)
+	if err != nil {
+		return false, err
 	}
 	secret := make([]byte, 32)
 	rand.Read(secret)
 	err = x.rpc.changeWalletPassword(ctx, xmrWalletPassword(x.secret, w.name), hex.EncodeToString(secret))
 	clear(secret)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if err = x.rpc.store(ctx); err != nil {
-		return err
+		return false, err
 	}
 	if err = x.rpc.closeWallet(ctx); err != nil {
-		return err
+		return false, err
 	}
-	res, err = a.db.ExecContext(ctx, "UPDATE xmr_escrow_wallets SET state='destroyed',seed_sealed=NULL,destroyed_at=$2,updated=now() WHERE id=$1 AND state='retained' AND destroy_after<=$2", w.id, now)
+	res, err = tx.ExecContext(ctx, "UPDATE xmr_escrow_wallets SET state='destroyed',seed_sealed=NULL,destroyed_at=$2,updated=now() WHERE id=$1 AND state='retained' AND destroy_after<=$2", w.id, now)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if n, _ := res.RowsAffected(); n != 1 {
-		return errXMRWalletNotWritten
+		return false, errXMRWalletNotWritten
 	}
+	if err = tx.Commit(); err != nil {
+		return false, err
+	}
+	a.finishRetentionXMRDestruction(ctx, opID)
 	log.Printf("escrow: Monero escrow wallet %s destroyed (90 days after its last order closed): its password was replaced by one never kept and its sealed seed wiped; delete its files from the escrow wallet volume", w.name)
-	return nil
+	return true, nil
 }
 
 // xmrWalletDenied reports a definite refusal by the wallet-rpc: it answered with an error (rpc:<code>), as opposed to a
@@ -213,6 +260,13 @@ func (a *App) xmrWalletUnopenable(ctx context.Context, w xmrWalletRow, now time.
 		return err
 	}
 	defer tx.Rollback()
+	locked, err := lockRetentionXMRWallet(ctx, tx, w.id)
+	if err != nil {
+		return err
+	}
+	if !locked {
+		return nil
+	} // preserve unchanged while registration owns wallet
 	var state string
 	var due bool
 	if err = tx.QueryRowContext(ctx, "SELECT w.state,COALESCE("+xmrDestroyableSQL+` AND w.destroy_started_at IS NOT NULL
@@ -220,9 +274,13 @@ func (a *App) xmrWalletUnopenable(ctx context.Context, w xmrWalletRow, now time.
 		return err
 	}
 	due = due && mayDestroy
+	opID := ""
 	switch {
 	case due:
 		// A wallet whose destruction began is retained or missing (migration 086), and moves to destroyed.
+		if opID, err = a.prepareRetentionXMRDestruction(ctx, tx, w.id, now); err != nil {
+			return err
+		}
 		if _, err = tx.ExecContext(ctx, "UPDATE xmr_escrow_wallets SET state='destroyed',seed_sealed=NULL,destroyed_at=$2,updated=now() WHERE id=$1", w.id, now); err != nil {
 			return err
 		}
@@ -242,7 +300,11 @@ func (a *App) xmrWalletUnopenable(ctx context.Context, w xmrWalletRow, now time.
 		}
 		log.Printf("escrow: Monero escrow wallet %s cannot be opened; marked missing, administrators notified", w.name)
 	}
-	return tx.Commit()
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	a.finishRetentionXMRDestruction(ctx, opID)
+	return nil
 }
 
 // xmrAfterDestroyText is the order page's line once the wallet that held the order's account was destroyed at at (ES-8).

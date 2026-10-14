@@ -591,6 +591,23 @@ func (a *App) reconcileOrphans(ctx context.Context, e *escrowBTC) error {
 	if err != nil {
 		return &watchError{label: "escrow", class: "orphan check failed: " + errorClassOf(err), err: err}
 	}
+	retired, err := retiredEscrowAddressHashes(ctx, a.db, watched)
+	if err != nil {
+		return err
+	}
+	kept := watched[:0]
+	for _, address := range watched {
+		if retired[retentionTechnicalHash(address.Address)] {
+			if address.Label != "retired" {
+				if err = e.retireAddressLabel(ctx, address.Address); err != nil {
+					return &watchError{label: "escrow", class: "retired address label cleanup failed", err: err}
+				}
+			}
+			continue
+		}
+		kept = append(kept, address)
+	}
+	watched = kept
 	addrs := make([]string, 0, len(watched))
 	for _, w := range watched {
 		if _, ok := escrowAddressForm(e.network, w.Address); ok {

@@ -10,6 +10,7 @@
 <span class="badge">Administrator</span>
 <p class="help">Database schema version {{.SchemaVersion}}{{if .ServerStarted}} · This server started {{.ServerStarted}} (UTC){{end}}.</p>
 </div>
+{{template "retention:admin" .}}
 <section class="panel" aria-labelledby="getting-started">
 <h2 id="getting-started">Get your marketplace ready</h2>
 <ol>

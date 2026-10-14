@@ -4,11 +4,44 @@ import (
 	"context"
 	"database/sql"
 	"net/http/httptest"
+	"net/url"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 )
+
+// A restore may predate the replacement administrator whose predecessor is
+// erased by the current manifest. Recovery creates a fresh identity; host role
+// assignment cannot revive closed or already-closing accounts.
+func TestRetentionAdministratorRecoveryUsesFreshAccount(t *testing.T) {
+	e, _ := uiRetentionEnv(t)
+	e.setup()
+	agExec(e, `UPDATE users SET closed_at=now(),password_hash='',handle='erased_admin',pgp='' WHERE role='admin'`)
+	agExec(e, `DELETE FROM sessions`)
+	if _, err := SetRole(t.Context(), e.DB, "erased_admin", "buyer"); err == nil || !strings.Contains(err.Error(), "closed") {
+		t.Fatalf("closed administrator revived: %v", err)
+	}
+	if err := ResetAdminPassword(t.Context(), e.DB, "erased_admin", testPassword); err == nil || !strings.Contains(err.Error(), "closed") {
+		t.Fatalf("erased administrator credentials recreated: %v", err)
+	}
+	w := e.do("POST", "/register", randomToken(), url.Values{"handle": {"recovery_operator"}, "password": {testPassword}})
+	e.check(w, 303)
+	if _, err := SetRole(t.Context(), e.DB, "recovery_operator", "admin"); err != nil {
+		t.Fatal(err)
+	}
+	if code, _ := loginStatus(e, "recovery_operator", testPassword); code != 303 {
+		t.Fatalf("replacement administrator cannot sign in: %d", code)
+	}
+	for _, column := range []string{"deletion_requested_at", "retention_restricted_at"} {
+		id, _ := e.user("closing_"+column[:8], "buyer")
+		agExec(e, "UPDATE users SET "+column+"=now() WHERE id=$1", id)
+		handle := agStr(e, `SELECT handle FROM users WHERE id=$1`, id)
+		if _, err := SetRole(t.Context(), e.DB, handle, "admin"); err == nil || !strings.Contains(err.Error(), "awaiting account closure") {
+			t.Fatalf("closing account became replacement administrator: %v", err)
+		}
+	}
+}
 
 // SetRole is the operator's host command for role changes (cmd/server -set-role, A-156): the only way to add or
 // remove an administrator. It refuses the last administrator, ends a removed administrator's sessions and pending

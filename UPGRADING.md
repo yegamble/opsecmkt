@@ -1484,7 +1484,23 @@ new as the server are installed. Each `psql` command runs through `scripts/postg
 exported first (`export OLD_DATABASE_URL NEW_DATABASE_URL`), which passes the URL's password in `PGPASSWORD` and not on
 the command line, where other users of the host can read it in the process list.
 
-1. Stop the market (`docker compose stop app`). It stays stopped until step 7, so nothing changes the data meanwhile.
+1. Stop the market (`docker compose stop app`) and pause provider snapshots and backup jobs. Keep public access and
+   payment sending disconnected until step 7. Preserve the **current** external retention directory independently of
+   the database being converted; see [retention recovery](docs/retention.md#restoring-without-reviving-deleted-data).
+   If this original database has never enrolled, announce retention and inventory preservation duties first, then
+   enroll it before taking its conversion backup. The host command can migrate a non-UTF8 original database without
+   serving requests, running expiry or touching wallets. With Go and this checkout available on the maintenance host:
+
+   ```sh
+   retention_tools=$(mktemp -d)
+   go build -o "$retention_tools/server" ./cmd/server
+   RETENTION_ENABLED=on RETENTION_STATE_DIR=/srv/opsecmkt-retention DATABASE_URL="$OLD_DATABASE_URL" "$retention_tools/server" -enroll-retention
+   ```
+
+   Keep `/srv/opsecmkt-retention` private (`0700`, files `0600`) and durable. For an already enrolled original, keep its
+   existing current directory and skip this enrollment command; a used ledger needs normal replay, never replacement.
+   The command refuses a restored database with a pending recovery gate. If only an old backup remains and the current
+   external state is unavailable, the later replay remains blocked; conversion cannot manufacture that missing state.
 2. Check the old database for text that is not valid UTF-8:
    `python3 scripts/postgres-tool.py OLD_DATABASE_URL psql -X -f scripts/check-utf8.sql`.
    Before this release nothing checked that form input was UTF-8, and a `SQL_ASCII` or `LATIN1` database stores any
@@ -1568,7 +1584,15 @@ the command line, where other users of the host can read it in the process list.
    age -d -i "$AGE_IDENTITY" backups/pre-upgrade-20260101T000000Z.dump.age | python3 scripts/postgres-tool.py LATIN1_DATABASE_URL pg_restore --dbname='' --no-owner --no-acl --exit-on-error
    ```
 
-   Then run step 2 and this step with `OLD_DATABASE_URL="$LATIN1_DATABASE_URL"`, go on from step 4, and drop
+   Then run step 2 and this step with `OLD_DATABASE_URL="$LATIN1_DATABASE_URL"`. For this intermediate backup only, also set
+   `BACKUP_RECOVERY_SOURCE=backups/pre-upgrade-20260101T000000Z.dump.age` on the `scripts/backup.sh` command.
+   The helper validates that original encrypted archive and its `.retention.json` digest and gives the converted copy
+   the **same original creation and expiry**, including an already-expired deadline. It does not grant a new 30 days or
+   bypass a pending restore gate. If the original archive predates sidecars, enroll its authentic original dump creation
+   time as [the retention guide describes](docs/retention.md#expiring-backups-and-signed-exports); missing evidence stops
+   this recovery path. If a preservation duty requires an expired original or derived copy, register each specific copy
+   under that duty before its expiry job can remove it. Keep the current external ledger from the original instance;
+   never initialize a replacement ledger from this restored database. Go on from step 4, and drop
    `opsecmkt_latin1` after step 6. Never start the market on it: this plain `pg_restore` applies none of `restore.sh`'s
    payout recovery protection, which step 5 applies to the backup taken of it.
 4. Create a UTF8 database next to it, as a role with `CREATEDB`. `opsecmkt_utf8` does not exist yet, so connect to the
@@ -1580,7 +1604,16 @@ the command line, where other users of the host can read it in the process list.
    including its payout recovery gate and reconciliation, applies unchanged). `pg_restore` does not check the bytes of a
    dump taken unconverted: it does not stop at bytes that are not UTF-8, so a clean step 2 and step 6 are what prove
    the text.
-6. Before you switch, prove that the new database's own backup restores, into a scratch database you drop afterwards:
+6. Supply the **current** external retention state from step 1 to the new UTF8 database, with the original installation's
+   `APP_SECRET_KEY` (or legacy `SETUP_TOKEN`) and other required secrets. Start the current server once in isolation with
+   `RETENTION_ENABLED=on`, `RETENTION_STATE_DIR=/srv/opsecmkt-retention`, `DATABASE_URL="$NEW_DATABASE_URL"`,
+   `ADDR=127.0.0.1:18080`, `ESCROW_BTC=off` and `ESCROW_XMR=off`. Wait for `http://127.0.0.1:18080/healthz` to answer `ok`, then stop
+   that isolated server. This is normal startup replay, not a new enrollment: it reapplies committed erasures, preservation
+   and expiry before clearing `retention_restore_required`; payout reconciliation gates remain set. Do not clear the gate
+   by hand. `scripts/backup.sh` refuses this new database until replay succeeds. Unset any temporary
+   `BACKUP_RECOVERY_SOURCE` before taking ordinary backups of the replayed database.
+
+   Before you switch, prove that the new database's own backup restores, into a scratch database you drop afterwards:
 
    ```sh
    export NEW_DATABASE_URL
@@ -2094,3 +2127,30 @@ migration 111; rollback requires restoring the pre-upgrade backup, as in section
 The Bitcoin escrow signer now connects directly to `ESCROW_SIGNER_RPC_URL`, ignores environment proxy variables, and
 refuses HTTP redirects. Its RPC bodies contain the signer's account private key. If the signer previously relied on
 `HTTP_PROXY`, `HTTPS_PROXY`, or a redirecting RPC endpoint, configure a directly reachable node URL before upgrading.
+
+## 66. Retention maintenance (migrations 112–117)
+
+Retention is off by default. An upgrade adds activity/closure clocks, scoped preservation and operational exceptions, restore-journal markers,
+financial-closure checks and narrowly authorized escrow retirement; it does not purge historical records until enrollment.
+Read [Enabling and operating retention](docs/retention.md), publish the deadlines, inventory copies and register preservation duties before setting
+`RETENTION_ENABLED=on`. The first enrollment gives ordinary historical data 30 days' grace and accounts without known activity a bounded 90-day reconfirmation period.
+
+Keep the current external state at `RETENTION_STATE_DIR` independently of PostgreSQL. Compose supplies a private persistent `retention_state` volume.
+For host expiry jobs, bind a private host directory and protect its manifest and `backup-preservations.json` register.
+Do not replace an enrolled instance's state with an empty or older directory or turn retention off. Startup refuses missing or foreign state,
+a sequence older than the database checkpoint and disabled retention; it cannot detect a database and matching ledger rolled back together. Always supply authoritative current state.
+
+Backups now include `.dump.age.retention.json`; copy each archive and sidecar unchanged. Host audit exports likewise include an expiry sidecar.
+Schedule `scripts/backup-retention.py expire ... --holds ... --delete` daily after an inventory dry run.
+Original deadlines survive copying and export; provider snapshots, log stores and remote locations require corresponding controls.
+
+The Bitcoin wallet RPC whitelist adds `setlabel` for guarded retirement. Regenerate the restricted whitelist with the documented node setup procedure
+before retiring Bitcoin escrows. New order retirement rechecks fresh wallet finality, preserves non-reuse floors and hashes, and removes original order labels.
+Imported Core descriptors and old wallet files remain an operator rotation/destruction task; destroyed Monero wallet files also require physical cleanup.
+Review the wallet cleanup register and preserve any specifically required evidence before destroying copies.
+
+Enroll the current original database and retain its external state before relying on a pre-enrollment rollback backup.
+Restore stays isolated and needs that current external retention state to reapply lifecycle deletion before traffic.
+It retains all payout and reconciliation gates. If an old snapshot predates a replacement administrator, use the documented fresh-account/host-role recovery;
+do not revive erased credentials. An older binary refuses these migrations. Rolling back application code does not authorize restoring deleted data:
+follow section 5 together with the current retention manifest and preservation duties.

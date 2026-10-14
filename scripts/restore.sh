@@ -164,6 +164,10 @@ SELECT to_regclass('settings') IS NOT NULL AS has_settings \gset
 \if :has_settings
 INSERT INTO settings(key,value) VALUES ('payments_recovery_required','true')
 ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
+-- The deletion ledger belongs to the CURRENT external state directory, not the
+-- backup set. Startup must replay it and sweep expiry before accepting traffic.
+INSERT INTO settings(key,value) VALUES ('retention_restore_required','true')
+ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
 INSERT INTO settings(key,value) VALUES ('escrow_release_recheck','true')
 ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
 INSERT INTO settings(key,value) VALUES ('escrow_xmr_release_recheck','true')
@@ -268,6 +272,7 @@ echo 'Application databases now require payout recovery reconciliation. All outb
 backup_time=$(age -d -i "$AGE_IDENTITY" "$1" 2>/dev/null | read_archive --list 2>/dev/null | sed -n 's/^;[[:space:]]*Archive created at //p' | head -n 1) || true
 printf '%s images restored from a backup taken %s; photo and avatar removals made after that time are undone — check /moderator Recent photos and remove them again\n' "$images" "${backup_time:-at an unknown time}"
 echo 'Restore completed. Validate the new database before switching application traffic.'
+echo 'Before starting an application database, set RETENTION_ENABLED=true and mount the CURRENT external RETENTION_STATE_DIR from outside this backup set. Startup must reapply its deletion manifest and preservation register and rerun retention before accepting traffic; the restore script sets retention_restore_required and does not clear it. Never replace current retention state with an older backup copy.'
 if [[ -n ${RESTORE_INTERNAL_DATABASE:-} ]]; then
   printf 'Restored into database %s in the internal-db Compose service. To switch the application to it, change only the database name after the port in DATABASE_URL in .env (no change if it already names %s), keeping your password:\n' "$database" "$database"
   printf "  DATABASE_URL='postgres://opsecmkt:YOUR_POSTGRES_PASSWORD@db:5432/%s?sslmode=disable'\n" "$database"

@@ -48,24 +48,29 @@ var sweepScopes = map[string][2]string{
 	"/register":      {scopePublic, "registration"},
 	"/setup":         {scopePublic, "first-run setup, gated by the installation secret"},
 
-	"/logout":                {scopeSelf, "ends the caller's own session"},
-	"/revoke-sessions":       {scopeSelf, "revokes the caller's other sessions"},
-	"/account":               {scopeSelf, "the caller's profile"},
-	"/account/password":      {scopeSelf, "the caller's password"},
-	"/account/avatar/remove": {scopeSelf, "deletes the caller's own avatar; the form carries no id"},
-	"/account/staff-list":    {scopeSelf, "the caller's own staff-list choice"},
-	"/totp/enroll":           {scopeSelf, "the caller's authenticator"},
-	"/totp/activate":         {scopeSelf, "the caller's authenticator"},
-	"/totp/recovery":         {scopeSelf, "the caller's recovery codes"},
-	"/totp/disable":          {scopeSelf, "the caller's authenticator"},
-	"/pgp/challenge":         {scopeSelf, "the caller's own PGP key"},
-	"/pgp/verify":            {scopeSelf, "the caller's own PGP key"},
-	"/pgp/2fa":               {scopeSelf, "the caller's own PGP sign-in setting"},
-	"/escrow-key":            {scopeSelf, "the caller's own escrow key"},
-	"/escrow-key/practice":   {scopeSelf, "the caller's own escrow key"},
-	"/orders":                {scopeSelf, "creates a draft for the caller from a public listing"},
-	"/messages":              {scopeSelf, "any signed-in account may write to any handle; stored for the sender"},
-	"/listings":              {scopeSelf, "creates a listing owned by the caller"},
+	"/logout":                         {scopeSelf, "ends the caller's own session"},
+	"/revoke-sessions":                {scopeSelf, "revokes the caller's other sessions"},
+	"/account":                        {scopeSelf, "the caller's profile"},
+	"/account/password":               {scopeSelf, "the caller's password"},
+	"/account/delete":                 {scopeSelf, "confirmed deletion of the caller's account"},
+	"/admin/retention/hold":           {scopeStaff, "registers a scoped preservation duty"},
+	"/admin/retention/release":        {scopeStaff, "confirmed release of preservation"},
+	"/admin/retention/review":         {scopeStaff, "reviews a financial retention blocker"},
+	"/admin/retention/account-review": {scopeStaff, "reviews an account closure blocker"},
+	"/account/avatar/remove":          {scopeSelf, "deletes the caller's own avatar; the form carries no id"},
+	"/account/staff-list":             {scopeSelf, "the caller's own staff-list choice"},
+	"/totp/enroll":                    {scopeSelf, "the caller's authenticator"},
+	"/totp/activate":                  {scopeSelf, "the caller's authenticator"},
+	"/totp/recovery":                  {scopeSelf, "the caller's recovery codes"},
+	"/totp/disable":                   {scopeSelf, "the caller's authenticator"},
+	"/pgp/challenge":                  {scopeSelf, "the caller's own PGP key"},
+	"/pgp/verify":                     {scopeSelf, "the caller's own PGP key"},
+	"/pgp/2fa":                        {scopeSelf, "the caller's own PGP sign-in setting"},
+	"/escrow-key":                     {scopeSelf, "the caller's own escrow key"},
+	"/escrow-key/practice":            {scopeSelf, "the caller's own escrow key"},
+	"/orders":                         {scopeSelf, "creates a draft for the caller from a public listing"},
+	"/messages":                       {scopeSelf, "any signed-in account may write to any handle; stored for the sender"},
+	"/listings":                       {scopeSelf, "creates a listing owned by the caller"},
 
 	"/admin":                        {scopeStaff, ""},
 	"/admin/canary":                 {scopeStaff, ""},
@@ -339,6 +344,9 @@ func TestActionRegistrySweepClassification(t *testing.T) {
 func TestActionRegistryRoleSweep(t *testing.T) {
 	w := newSweepWorld(t)
 	e := w.x.testEnv
+	if err := e.A.initRetention(t.Context(), retentionConfig{Enabled: true, StateDir: t.TempDir() + "/private-retention"}); err != nil {
+		t.Fatal(err)
+	}
 	var paths []string
 	for path, spec := range actions {
 		if !spec.Public {
@@ -347,6 +355,7 @@ func TestActionRegistryRoleSweep(t *testing.T) {
 	}
 	sort.Strings(paths)
 	a := e.sweepActors() // one account per role: a role gate answers before it spends the account's write budget of 100
+	agExec(e, `UPDATE users SET last_authenticated_at=now()`)
 	before := sweepFingerprint(e)
 	probes := 0
 	for _, path := range paths {

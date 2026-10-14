@@ -69,6 +69,7 @@ type App struct {
 	storageLimit     int64                     // IMAGE_STORAGE_LIMIT_MB in bytes (uploads.go); 0 = the default
 	stop             context.CancelFunc
 	background       sync.WaitGroup
+	retention        *retentionService // bounded expiry and external deletion/hold state
 
 	// The Bitcoin node sync guard and escrow chain pin (A-439, bitcoin_sync.go), in memory only.
 	escrowSync     atomic.Value                        // string: the reason class the escrow watcher last found its node not synced for ("" or unset = synced)
@@ -183,6 +184,10 @@ func New(ctx context.Context, preview bool) (*App, error) {
 		return nil, err
 	}
 	if err = a.checkNetworkClass(ctx); err != nil {
+		a.closeDB()
+		return nil, err
+	}
+	if err = a.initRetention(ctx, cfg.retention); err != nil {
 		a.closeDB()
 		return nil, err
 	}
@@ -475,6 +480,10 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r) // before reading a body, setting cookies, admission or any database work
 		return
 	}
+	if r.Method == "POST" && a.retentionMaintenanceError() == "state_unavailable" {
+		a.refuse(w, r, nil, 503, "Retention preservation state is unavailable. Changes are paused until the operator repairs it.")
+		return
+	}
 	if r.Method != "GET" && r.Method != "POST" && r.Method != "HEAD" {
 		w.Header().Set("Allow", "GET, HEAD, POST")
 		a.refuse(w, r, nil, 405, "Method not allowed")
@@ -502,6 +511,10 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	r = r.WithContext(ctx)
 	if r.URL.Path == "/healthz" {
+		if a.retentionMaintenanceError() == "state_unavailable" {
+			http.Error(w, "retention state unavailable", http.StatusServiceUnavailable)
+			return
+		}
 		probe := a.health
 		if probe == nil {
 			probe = a.db // an App built without New (tests)
@@ -669,6 +682,10 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if a.publicAdministrator(ctx, user) {
 		http.NotFound(w, r)
+		return
+	}
+	if user != nil && user.RetentionRestricted && (r.Method == "POST" && !retentionUserActionAllowed(user, r.URL.Path) || r.Method != "POST" && !retentionUserPageAllowed(user, r.URL.Path)) {
+		a.refuse(w, r, user, http.StatusForbidden, retentionRestrictedMessage)
 		return
 	}
 	if r.Method == "POST" {

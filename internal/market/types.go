@@ -4,6 +4,8 @@ package market
 
 type User struct {
 	ID, Handle, Role, PGP string
+	RetentionRestricted   bool   // only existing obligations and sign-in security while closure waits for funds
+	RetentionContinuity   bool   // sole administrator may appoint a replacement while closure waits
 	Factors               string // P1, PageData.FactorAccounts only: enrolled second factors, e.g. "TOTP and PGP sign-in"
 	Suspended             string // P1, PageData.SuspendedAccounts only: when the account was suspended
 	Avatar                string // A-189, vendor page and /canary staff list only: the avatar thumbnail on /img, "" when none may be shown
@@ -123,6 +125,7 @@ type SignInRefusal struct{ Handle, Until string }
 type PageData struct {
 	ServerStarted string
 	SchemaVersion int
+	Retention     *RetentionView
 
 	StaffRoster       []StaffRosterEntry
 	StaffRosterPaging *ActivityPaging
