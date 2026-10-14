@@ -781,7 +781,7 @@ jobs:
           trap 'rm -rf "$clients"' EXIT
           chmod 755 "$clients"
           tor=(docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges:true
-            --tmpfs /tmp:rw,nosuid,nodev,noexec,mode=1777
+            --tmpfs '/tmp:rw,nosuid,nodev,noexec,mode=1777'
             -v /var/lib/tor -v "$clients:/run/tor-admin-clients:ro"
             --entrypoint /usr/local/bin/tor-admin-entrypoint opsecmkt-tor:ci
             /run/tor-admin-clients /var/lib/tor/admin/authorized_clients tor -f /etc/tor/torrc-admin)
