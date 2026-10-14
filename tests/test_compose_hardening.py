@@ -1,7 +1,8 @@
 """Every container's privileges in the resolved Compose configuration (war room A-536, audit F4).
 
 For every mode and profile combination that .github/workflows/ci.yaml's compose job validates (the same matrix as
-tests/test_compose_exposure.py, each also with the malware scanner and with the Monero escrow wallet), each service
+tests/test_compose_exposure.py, each also with the malware scanner and with the Monero escrow wallet), and each Tor
+combination with private administrator ingress, each service
 must drop every capability, set no-new-privileges, run with a read-only root filesystem and run as a named user.
 The tables below list every service and say who it runs as; a service missing from them fails, so a new one is a
 review. What each image does at startup, and why these settings start it, was proved by starting the images offline
@@ -10,6 +11,7 @@ review. What each image does at startup, and why these settings start it, was pr
 The resolved checks skip only when `docker compose` is absent; the CI operations job fails on any skip.
 """
 from pathlib import Path
+import tempfile
 import unittest
 
 from test_compose_exposure import EXTRAS, combinations, compose_available, resolved
@@ -23,6 +25,7 @@ USERS = {
     'db': '70:70',
     'tor': (IMAGE_USER, 'deploy/Dockerfile.tor', 'USER debian-tor'),
     'tor-mirror': (IMAGE_USER, 'deploy/Dockerfile.tor', 'USER debian-tor'),
+    'tor-admin': (IMAGE_USER, 'deploy/Dockerfile.tor', 'USER debian-tor'),
     'tor-socks': (IMAGE_USER, 'deploy/Dockerfile.tor', 'USER debian-tor'),
     'clamd': 'clamav',
     'escrow-signer': '65533:65532',
@@ -119,16 +122,31 @@ class HardeningCheckTests(unittest.TestCase):
 @unittest.skipUnless(compose_available(), 'docker compose is not available')
 class ResolvedComposeHardeningTests(unittest.TestCase):
     def test_every_service_in_every_combination_is_hardened(self):
-        seen, services = 0, set()
-        for name, _, files, profiles in combinations():
-            variants = [('', [], [], {})] + [(f' + {extra}', f, p, e) for extra, (f, p, e) in EXTRAS.items()]
-            for suffix, extra_files, extra_profiles, environment in variants:
-                with self.subTest(name + suffix):
-                    config = resolved(files + extra_files, profiles + extra_profiles, environment)
-                    self.assertEqual(hardening_problems(config), [])
-                    services |= set(config['services'])
-                    seen += 1
+        seen, private_seen, services = 0, 0, set()
+        with tempfile.TemporaryDirectory() as directory:
+            # Synthetic public authorization material, as in the private Tor image preflight.
+            (Path(directory) / 'operator.auth').write_text(
+                'descriptor:x25519:N2NU7BSRL6YODZCYPN4CREB54TYLKGIE2KYOQWLFYC23ZJVCE5DQ\n')
+            for name, mode, files, profiles in combinations():
+                variants = [('', [], [], {})] + [(f' + {extra}', f, p, e) for extra, (f, p, e) in EXTRAS.items()]
+                for suffix, extra_files, extra_profiles, environment in variants:
+                    with self.subTest(name + suffix):
+                        config = resolved(files + extra_files, profiles + extra_profiles, environment)
+                        self.assertEqual(hardening_problems(config), [])
+                        services |= set(config['services'])
+                        seen += 1
+                    if mode == 'tor':
+                        with self.subTest(name + suffix + ' + private administrator ingress'):
+                            config = resolved(files + extra_files + ['-f', 'compose.admin-tor.yaml'],
+                                              profiles + extra_profiles,
+                                              {**environment, 'TOR_ADMIN_AUTH_DIR': directory})
+                            self.assertEqual(hardening_problems(config), [])
+                            self.assertIn('tor-admin', config['services'])
+                            self.assertEqual(config['services']['tor-admin']['tmpfs'], ['/tmp'])
+                            services |= set(config['services'])
+                            private_seen += 1
         self.assertEqual(seen, 10 * 3, 'the combinations enumerated no longer match the compose job matrix')
+        self.assertEqual(private_seen, 8 * 3, 'private administrator ingress must cover every Tor combination')
         self.assertEqual(services, set(USERS), 'USERS lists a service no combination has, or misses one')
 
     def test_tmpfs_for_what_the_read_only_images_write(self):

@@ -35,18 +35,19 @@
 <section class="panel" aria-labelledby="audit-export-title">
 <h2 id="audit-export-title">Signed audit export</h2>
 <p class="help">An export names every account’s handle and activity (sign-ins, account changes, orders, key fingerprints, transaction IDs). It is private operator evidence: store it like a database backup and never publish it. The key is shown on <a class="text-link" href="/canary">/canary</a> only so that you can prove an export you hold came from this server.</p>
-{{with .AuditExport}}{{if .Available}}<p><span class="badge green">Available</span></p>
+{{with .AuditExport}}{{if .Available}}<p><span class="badge green">Available{{if .Encrypted}} · encrypted{{end}}</span></p>
 <p>Ed25519 public key (also published on /canary): <span class="fingerprint mono">{{.PublicKey}}</span></p>
 {{if .UpTo}}<form class="stack" method="get" action="/admin/audit-export">
 <label>Include events after id<input name="from" type="number" min="0" max="{{.UpTo}}" value="0" required></label>
 <label>Include events up to id<input name="upto" type="number" min="1" max="{{.UpTo}}" value="{{.UpTo}}" required>
 </label>
-<p class="help">The lower ID is excluded and the upper ID is included. Leave the lower ID at 0 for all history up to the upper ID. Adjacent ranges concatenate to the whole export. The same range always produces byte-identical export and signature files. Verify offline with <span class="mono">verify-audit -pub {{.PublicKey}} export.jsonl export.sig</span>. The signature proves origin from this server's key only; whoever controls the server can also sign an altered history. A download cut short (a dropped connection or Tor circuit) leaves a partial file that fails verification with "sha256 does not match"; download the same range again. Large exports over Tor can take minutes: the server allows 20 seconds plus one second per 32 KB. The server sends one export at a time; if it is busy, wait for that download to finish before retrying. Limited to 10 downloads per 10 minutes.</p>
+<p class="help">The lower ID is excluded and the upper ID is included. Leave the lower ID at 0 for all history up to the upper ID. {{if .Encrypted}}Decrypt both downloaded files offline with the recipient's private OpenPGP key, saving them as export.jsonl and export.sig. Encrypted downloads vary; the decrypted export and signature bytes are identical for the same range. Adjacent decrypted ranges concatenate to the whole export.{{else}}Adjacent ranges concatenate to the whole export. The same range always produces byte-identical export and signature files.{{end}} Verify offline with <span class="mono">verify-audit -pub {{.PublicKey}} export.jsonl export.sig</span>. The signature proves origin from this server's key only; whoever controls the server can also sign an altered history.</p>
+<p class="help">A download cut short (a dropped connection or Tor circuit) {{if .Encrypted}}fails decryption or verification{{else}}leaves a partial file that fails verification with "sha256 does not match"{{end}}; download the same range again. Large exports over Tor can take minutes: the server allows 20 seconds plus one second per 32 KB. The server sends one export at a time; if it is busy, wait for that download to finish before retrying. Limited to 10 downloads per 10 minutes.</p>
 <div class="actions">
-<button type="submit">Download export (.jsonl)</button>
-<button type="submit" name="sig" value="1">Download signature (.sig)</button>
+<button type="submit">Download export (.jsonl{{if .Encrypted}}.asc{{end}})</button>
+<button type="submit" name="sig" value="1">Download signature (.sig{{if .Encrypted}}.asc{{end}})</button>
 </div>
 </form>{{else}}<p>No audit events recorded yet.</p>{{end}}{{else}}<p><span class="badge neutral">Unavailable</span></p>
 <p>{{.Error}}</p>
-<p class="help">Set AUDIT_SIGNING_KEY to 64 hexadecimal characters (for example <span class="mono">openssl rand -hex 32</span>) and restart the application.</p>{{end}}{{end}}
+<p class="help">Correct the configuration named above on the host and restart the application. Keep private recipient keys offline.</p>{{end}}{{end}}
 </section>{{end}}

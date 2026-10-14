@@ -48,6 +48,7 @@ type App struct {
 	templates        *template.Template
 	preview, secure  bool
 	mode, setupToken string // setupToken authorizes /setup only, and only until installed
+	adminSocket      string // when set, administrator HTTP requests require the separate private socket
 	keyRoot          string // APP_SECRET_KEY, or SETUP_TOKEN (legacy): the root of key and the sealing keys
 	key              []byte // CSRF/CAPTCHA HMAC key, sha256("csrf:"+keyRoot)
 	captchaIDKey     []byte // CAPTCHA challenge-id MAC key, sha256("captcha-id:"+keyRoot); empty = no challenges
@@ -125,6 +126,7 @@ func New(ctx context.Context, preview bool) (*App, error) {
 		return nil, err
 	}
 	a.secure, a.setupToken = cfg.secure, cfg.setupToken
+	a.adminSocket = cfg.adminSocket
 	if a.live, err = marketLiveFromEnv(os.Getenv); err != nil {
 		return nil, err
 	}
@@ -469,6 +471,10 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if a.secure {
 		w.Header().Set("Strict-Transport-Security", "max-age=31536000")
 	}
+	if a.adminSocket != "" && !privateAdminIngress(r.Context()) && privateAdminRoute(r.URL.Path) {
+		http.NotFound(w, r) // before reading a body, setting cookies, admission or any database work
+		return
+	}
 	if r.Method != "GET" && r.Method != "POST" && r.Method != "HEAD" {
 		w.Header().Set("Allow", "GET, HEAD, POST")
 		a.refuse(w, r, nil, 405, "Method not allowed")
@@ -660,6 +666,10 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		user = u
+	}
+	if a.publicAdministrator(ctx, user) {
+		http.NotFound(w, r)
+		return
 	}
 	if r.Method == "POST" {
 		a.post(w, r, user, token)

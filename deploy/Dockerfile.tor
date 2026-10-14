@@ -46,5 +46,8 @@ RUN set -eu; \
     tor --list-modules; \
     tor --list-modules | grep -qx 'pow: yes' || { echo 'this tor lacks the pow module (HiddenServicePoWDefensesEnabled)' >&2; exit 1; }
 COPY torrc /etc/tor/torrc
+COPY torrc-admin /etc/tor/torrc-admin
+COPY tor-admin-entrypoint.sh /usr/local/bin/tor-admin-entrypoint
+RUN chmod 0755 /usr/local/bin/tor-admin-entrypoint
 USER debian-tor
 ENTRYPOINT ["tor", "-f", "/etc/tor/torrc"]

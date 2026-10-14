@@ -4,6 +4,9 @@ Deployment, feature configuration, migrations and recovery reference. Start with
 [the README](../README.md) for product context and local development. Commands
 below run from the repository root.
 
+For threat boundaries, offline keys, private administrator ingress and reviewed
+deployment packages, read [Security and OPSEC operations](security-operations.md).
+
 **Current build:** per-order escrow is the only way to request payment (Bitcoin
 regtest, signet and testnet4; Monero fakechain and stagenet; or mainnet, with real funds,
 as described under [Mainnet](#mainnet), which the installer chooses by default for new installs with local nodes;
@@ -329,6 +332,7 @@ Every service has a memory, CPU and process ceiling, so a flood, a leak or a run
 | `app` | 512m | 2 | 512 | `GOMEMLIMIT=400MiB` makes Go's garbage collector work harder before the memory limit is reached; Go sizes its scheduler to the 2-CPU limit. |
 | `db` | 1g | 2 | 256 | Internal database only. Every PostgreSQL connection is a process; 256 leaves room above the default 100 connections. |
 | `tor`, `tor-mirror` | 256m | 1 | 64 | `MaxMemInQueues 128 MB` in `deploy/torrc` keeps Tor's queues inside this ([Onion-service defences](#onion-service-defences)). |
+| `tor-admin` | 256m | 1 | 64 | Optional client-authorized admin onion; `MaxMemInQueues 128 MB` in `deploy/torrc-admin`. |
 | `tor-socks` | 256m | 1 | 64 | The nodes' Tor client, only with [`compose.nodes-tor.yaml`](#local-nodes-over-tor); `MaxMemInQueues 128 MB` in `deploy/torrc-socks`. |
 | `bitcoin` | 2g | 2 | 256 | A pruned test-network node: its database cache and mempool (at most 300 MB by default) plus headroom for the initial sync. Raise it for an unpruned node or a larger `-dbcache`. |
 | `monero` | 2g | 2 | 512 | monerod starts threads per core for sync and verification. |
@@ -438,6 +442,12 @@ The effects on an already-synced chain above come from reading the upstream sour
 **Mirrors, development and CI stay pruned.** The `mirror` profile runs a second Tor gateway, not a node. Keep the pruned defaults on a Tor-mirror deployment, a secondary or test instance, and any development or CI configuration: `.env.example`, the Compose defaults and CI's Compose check all use them. Choose a full node only where you want to keep the whole chain for your own reasons. The regtest and offline stagenet chains used by the [local chain tests](local-chain-testing.md) are tiny and are left unpruned.
 
 ### Local nodes over Tor
+
+The node SOCKS listener explicitly isolates streams by SOCKS credentials,
+client address, destination address and destination port. Its bind address and
+source-network policy remain restricted to the internal node network. These
+settings reduce circuit sharing; they do not defeat timing correlation or turn
+host package downloads, image pulls or operator activity into Tor traffic.
 
 `compose.nodes-tor.yaml` (A-442) sends the local nodes' peer traffic through a Tor client of their own. It is for `APP_MODE=tor` only, and does nothing for an external node.
 
@@ -2255,7 +2265,7 @@ simulated RPC, not chain evidence), and `tests/e2e/db-escrow-cutover.spec.ts` (t
 go run ./cmd/verify-audit -pub <pinned-hex-key> audit-events-upto-N.jsonl audit-events-upto-N.sig
 ```
 
-The server prepares and sends one export at a time, retaining its slot until the download completes or fails. Another export receives 503 with `Retry-After: 5`; wait for the active download to finish before retrying. This bounds concurrent export buffers. The export for a given `upto` is byte-for-byte reproducible, so two downloads can be compared. Web exports accept an exclusive `from` and inclusive `upto`; `from=0` preserves the original whole-history export bytes and signature. When the audit log has not changed between requests, adjacent ranges can be concatenated in ID order to reproduce the bounded whole export, but verify each range against its own signature before concatenating. A download cut short leaves a partial file that fails verification with "export sha256 does not match the signature file", the same failure as an altered file: download the same `upto` again (each attempt counts against the 10 downloads per 10 minutes). The export route has its own time limits instead of the server's 12 s request bound and 20 s write timeout: up to one minute to read the events from the database, then 20 seconds plus one second per 32 KB to send the file (a 50 MB export gets about 27 minutes; onion throughput measured 0.19–0.45 MB/s). Every other route keeps the server's limits. **A server compromise can produce validly signed exports**: whoever controls the server or `AUDIT_SIGNING_KEY` can sign an altered history. The signature proves origin from the configured key, not that the log is complete or untampered.
+The server prepares and sends one export at a time, retaining its slot until the download completes or fails. Another export receives 503 with `Retry-After: 5`; wait for the active download to finish before retrying. This bounds concurrent export buffers. The unencrypted export for a given `upto` is byte-for-byte reproducible, so two downloads can be compared. Web exports accept an exclusive `from` and inclusive `upto`; `from=0` preserves the original whole-history export bytes and signature. When the audit log has not changed between requests, adjacent ranges can be concatenated in ID order to reproduce the bounded whole export, but verify each range against its own signature before concatenating. A download cut short leaves a partial file that fails verification with "export sha256 does not match the signature file", the same failure as an altered file: download the same `upto` again (each attempt counts against the 10 downloads per 10 minutes). The export route has its own time limits instead of the server's 12 s request bound and 20 s write timeout: up to one minute to read the events from the database, then 20 seconds plus one second per 32 KB to send the file (a 50 MB export gets about 27 minutes; onion throughput measured 0.19–0.45 MB/s). Every other route keeps the server's limits. **A server compromise can produce validly signed exports**: whoever controls the server or `AUDIT_SIGNING_KEY` can sign an altered history. The signature proves origin from the configured key, not that the log is complete or untampered.
 
 
 **Host-only ranged export.** For an export from event ID 800 exclusive through 900 inclusive, run the command on the server host from the release checkout. The directory must already exist and should be restricted to the operator (for example `install -d -m 700 /secure/audit`). The JSONL and signature files are created with mode 0600 and refuse to overwrite existing files. Standard output reports the saved paths and reminds you to keep both files private; keep both files private. This command makes a read-only database query and reads the signing key, but starts no HTTP server or wallet:
@@ -2270,6 +2280,61 @@ go run ./cmd/server -export-audit 900 -export-audit-from 800 -export-audit-dir /
 `-export-audit-from` is an exclusive lower bound and `-export-audit N` is the inclusive upper bound; omit `-export-audit-from` to export from the beginning. Keep `DATABASE_URL` and `AUDIT_SIGNING_KEY` in the environment and never put their values in shell arguments or logs. The `-export-audit` command validates its arguments before connecting and writes the range as `800 < event ID <= 900`. Verify the pair with the pinned public key as above.
 
 **Warrant canary.** In the admin page, paste the operator's OpenPGP public key, then paste a statement the operator wrote and signed offline (`gpg --clearsign canary.txt`). The application stores it as pasted only if it verifies, re-verifies it on every view of `/canary`, and shows INVALID with the reason if the key changes or the stored text is altered. Keep the operator's private key off the server; the application never writes or signs canary text.
+
+#### Encrypted audit exports
+
+`AUDIT_EXPORT_RECIPIENT` is optional: set it to the path, inside the application
+container, of one armored OpenPGP public key with a currently usable encryption
+subkey. Export that public key from your offline operator environment; transfer
+only the public file. Keep its private key apart from the server and from the
+exports. The key file must be at most 64 KiB; private, revoked, expired,
+signing-only and malformed keys refuse an export without falling back to
+plaintext. The host command checks the recipient before connecting to the
+database.
+
+For Compose, create a separate override, for example `compose.audit-export.yaml`:
+
+```yaml
+services:
+  app:
+    volumes:
+      - type: bind
+        source: /srv/opsecmkt-public-keys/audit-export-recipient.asc
+        target: /run/audit-export-recipient.asc
+        read_only: true
+        bind:
+          create_host_path: false
+```
+
+Make the public file readable by the app's UID 65532. Set
+`AUDIT_EXPORT_RECIPIENT='/run/audit-export-recipient.asc'` in `.env` and append
+`:compose.audit-export.yaml` to its existing `COMPOSE_FILE` value, preserving all
+other overlays and profiles. Recreate the application, then check the export
+availability on `/admin`. A missing file or unusable key makes exports
+unavailable; it does not stop the rest of the market.
+
+Both the HTTP download and `-export-audit` produce `.jsonl.asc` and `.sig.asc`
+files. The server signs the original JSONL bytes, then encrypts each output in
+memory before writing it. No plaintext host export file is created in this mode.
+Ciphertext differs on repeated downloads because encryption uses fresh
+randomness; decrypted JSONL and signature bytes retain their original format.
+
+Decrypt the pair on the offline operator workstation, in a private directory:
+
+```sh
+umask 077
+gpg --output audit-events-upto-900.jsonl --decrypt audit-events-upto-900.jsonl.asc
+gpg --output audit-events-upto-900.sig --decrypt audit-events-upto-900.sig.asc
+go run ./cmd/verify-audit -pub YOUR_PINNED_ED25519_PUBLIC_KEY \
+  audit-events-upto-900.jsonl audit-events-upto-900.sig
+```
+
+For the host-only command, `AUDIT_EXPORT_RECIPIENT` must name a file readable on
+that host, rather than the container's mount path. Preserve the original signing
+public-key pin when verifying. This setting protects exported files only:
+database audit rows and the online signing key remain accessible to a host
+administrator. Public-recipient replacement affects future exports; keep old
+private keys until their retained exports no longer need recovery.
 
 ## Backups and recovery
 
@@ -2471,7 +2536,7 @@ http 5xx kind=page name=catalog status=500 ref=0bbdc379 cause=22021
 - `57014` (statement timeout, 8 s) or `55P03` (lock timeout, 3 s) with status 503 means the application pool's [session timeouts](#migrations) stopped a query: the database is overloaded or a row stayed locked. Occasional lines under load are expected; a steady stream on one route points at a slow query.
 - `57P01`, `57P02` or `57P03` (the database is shutting down, crashed or still starting), `53300` (too many connections), `08000`, `08001`, `08003`, `08004` or `08006` (a connection exception) or `db-connection`, with status 503, means the request's database connection was lost or refused, for example during a PostgreSQL restart or failover; the user is shown "The market is busy" or, when the first query of the request already failed, "Service unavailable", both with `Retry-After: 5`. A steady stream outside a restart points at the database's health or its `max_connections`.
 
-**Overload.** The app accepts at most 2048 connections at once and serves at most 64 pages, 16 form posts that change a signed-in account's data and 16 public ones (sign-in, registration, the sign-in challenge, whoever sends them), 16 requests for public images (`/img/`, which take no page place, so a page of thumbnails or a flood of image requests cannot crowd out pages), 8 CAPTCHA images and 4 password checks at a time. A form post takes its place only after its body has been read (at most 64 KiB and 64 fields, within the 15 s read timeout) and its origin and form token have been checked, so a client that sends its body slowly, or posts junk, holds only a connection (a post that carries a session cookie then looks it up in one of 16 lookup places, waiting its turn for up to 2 s; pages never use them); sign-in and registration posts with a malformed handle or password, or a CAPTCHA that was not issued to that browser or has expired, are refused before they take a place. Public posts, anonymous or from a signed-in account, therefore cannot crowd out a signed-in user's or an administrator's changes (each account's own changes stop at its budget of 100 in ten minutes), but a flood of well-formed public posts can still delay real sign-ins. While all 2048 connections are taken, HTTP keep-alive is switched off (idle connections are closed) until no more than 1536 are in use. A request beyond the other limits is answered at once with 503 "The market is busy. Try again in a few seconds." and `Retry-After: 5`, and its connection is closed; these refusals are **not logged**, so a flood shows up as users reporting that message, not as log lines. Every other 503 also carries `Retry-After: 5`, and every 429 `Retry-After: 600`, except the one refusing a second payment request while the same account's first is still in progress, which carries `Retry-After: 5`. That one-at-a-time limit is per app process: with several app instances against one database, each allows one. `/healthz` takes no slot and pings the database on its own connection, so the container stays healthy under a flood of pages; it still waits for one of the 2048 connections. These limits are fixed in the code; on Tor they sit behind the onion service's own defences.
+**Overload.** The public listener accepts at most 2048 connections at once, plus 64 on the optional private administrator Unix listener. Application admission and database budgets are shared across those listeners. The app serves at most 64 pages, 16 form posts that change a signed-in account's data and 16 public ones (sign-in, registration, the sign-in challenge, whoever sends them), 16 requests for public images (`/img/`, which take no page place, so a page of thumbnails or a flood of image requests cannot crowd out pages), 8 CAPTCHA images and 4 password checks at a time. A form post takes its place only after its body has been read (at most 64 KiB and 64 fields, within the 15 s read timeout) and its origin and form token have been checked, so a client that sends its body slowly, or posts junk, holds only a connection (a post that carries a session cookie then looks it up in one of 16 lookup places, waiting its turn for up to 2 s; pages never use them); sign-in and registration posts with a malformed handle or password, or a CAPTCHA that was not issued to that browser or has expired, are refused before they take a place. Public posts, anonymous or from a signed-in account, therefore cannot crowd out a signed-in user's or an administrator's changes (each account's own changes stop at its budget of 100 in ten minutes), but a flood of well-formed public posts can still delay real sign-ins. While all 2048 connections are taken, HTTP keep-alive is switched off (idle connections are closed) until no more than 1536 are in use. A request beyond the other limits is answered at once with 503 "The market is busy. Try again in a few seconds." and `Retry-After: 5`, and its connection is closed; these refusals are **not logged**, so a flood shows up as users reporting that message, not as log lines. Every other 503 also carries `Retry-After: 5`, and every 429 `Retry-After: 600`, except the one refusing a second payment request while the same account's first is still in progress, which carries `Retry-After: 5`. That one-at-a-time limit is per app process: with several app instances against one database, each allows one. `/healthz` takes no slot and pings the database on its own connection, so the container stays healthy under a flood of pages; it still waits for one of the 2048 connections. These limits are fixed in the code; on Tor they sit behind the onion service's own defences.
 
 The escrow watchers log what they do to an escrow in lines that start `escrow:` and name the order by its first 8 characters and a class, never the node's text (which can quote an address): for example `escrow: settlement of order 1b4d8036 not sent yet: <class>`, `escrow: Bitcoin escrow node not synced (<reason>); escrow watcher passes skipped until it is` and `escrow: Bitcoin escrow on`. A state change is logged once, not on every retry. `db-connection` (or `timeout`) alone means the watcher could not reach the database, or could not finish its pass within 5 minutes (for example while the pool was exhausted); the next pass picks up what it left; the line never holds `DATABASE_URL`, its user, database name, host or port. The recovery code reveal sweep logs `recovery code reveal sweep: <class>` the same way.
 

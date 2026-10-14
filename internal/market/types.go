@@ -569,6 +569,7 @@ type CanaryView struct {
 }
 type AuditExportView struct {
 	Available bool
+	Encrypted bool // downloads require offline recipient-key decryption before signature verification
 	PublicKey string
 	UpTo      int64
 	Error     string // why the signed export is unavailable

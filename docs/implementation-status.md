@@ -2,6 +2,22 @@
 
 The Figma reference is adapted to Go-rendered HTML and CSS. The browser loads no JavaScript or third-party resources. A listing without photos shows a decorative CSS illustration labelled "ILLUSTRATION"; a listing with photos its vendor uploaded shows those instead (A-189): the first as a decorative thumbnail on its catalog and vendor-page card and at full size on its product page, which then says "Photos are supplied by the vendor; the market does not verify them." The original `[OPSECMKT]` wordmark is retained.
 
+## Security hardening boundary
+
+Optional Tor administrator ingress uses a separate Unix HTTP socket and a
+client-authorized admin onion; when enabled, the public listener refuses setup,
+administrative endpoints and administrator sessions. `AUDIT_EXPORT_RECIPIENT`
+optionally encrypts audit export and signature bytes to an offline-held OpenPGP
+private key before download or host file creation. Deployment packaging can
+exclude evidence, CI and cloud documentation tooling without changing public
+source history. See [Security and OPSEC operations](security-operations.md).
+
+These controls do not encrypt the whole database, remove online wallet keys,
+make Docker environment secrets RAM-only, or guarantee anonymity. Live Tor
+client-authorization and container startup require separate operator rehearsal;
+code and configuration tests alone do not prove them.
+
+
 ## Fresh-install payment boundary
 
 Purchases use per-order escrow, with both adapters off by default. A database

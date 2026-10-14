@@ -8,6 +8,11 @@ design-reference
 .claude
 .ralph
 .ralphrc
+.codex
+.agents
+CLAUDE.md
+AGENTS.md
+security_best_practices_report.md
 *.dump
 *.age
 # Plaintext onion keys
@@ -30,3 +35,7 @@ site
 
 # Wrangler local caches, databases, and observability traces.
 **/.wrangler
+
+# Public proof records and docs-site infrastructure are not application build inputs.
+docs/evidence
+deploy/docs

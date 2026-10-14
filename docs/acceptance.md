@@ -1,5 +1,20 @@
 # Acceptance checklist and capability boundaries
 
+## Optional security hardening
+
+Use the [focused security checks](operations-tests.md#optional-security-controls)
+for private administrator ingress, encrypted audit exports and deployment
+packages. Their test coverage must include header spoofing, public administrator
+session denial on shared staff routes, ordinary moderator access, absent or
+malformed client authorization, socket lifecycle, ciphertext round-trip and
+signature verification, and package runtime sources and exclusions.
+
+Code and Compose tests do not establish deployed Tor client authorization.
+Require the [operator access rehearsal](install/tor.md#verify-access-and-maintain-credentials)
+and offline export verification before activating these optional controls in
+production. Keep live Tor reachability, image builds and container mount behavior
+marked unverified until a run records them.
+
 This is a verification plan, not a declaration that every check has passed. Record actual results separately. A ticked line names the tests or CI job that prove it and rests on a row of the [evidence table](verification.md#evidence-table) or on a green CI run named here; an unticked line names a real gap or an owner or external item, which does not mean it is unimplemented. The latest green runs are [38145160678](https://github.com/yegamble/opsecmkt/actions/runs/38145160678) on `5c780c4` (all 23 jobs, after migration 108 and with A-493's escrow tests) and [38141035056](https://github.com/yegamble/opsecmkt/actions/runs/38141035056) on `e617fe0` (all 23 jobs, the first with the "Monero escrow on a real fakechain" job); both are pull-request runs of the development branch, not of `main`. The older rows of the evidence table rest on the CI run on `main` at `7048c2e` (2026-09-26). The escrow sections name the CI job that proves each tier. A later change to the code a line covers needs a new green run before the tick still holds. `tests/test_doc_test_names.py` (CI operations job) fails when a ticked line here, or any line of `implementation-status.md`, cites a Go test that no longer exists. The application uses Go server-rendered HTML and CSS with PostgreSQL; React is not required.
 
 Per-order escrow is the only payment path (A-448, A-492). Checks of payment code removed before it are deleted rather than kept as history. A database from an older release with payment history this build does not support is refused at startup by migrations 107 and 108: see [Legacy database refusal](#legacy-database-refusal-a-448-a-492) and [UPGRADING sections 58](../UPGRADING.md#58-pooled-wallet-removal-for-fresh-installs-a-448) and [59](../UPGRADING.md#59-pooled-history-refused-migration-108-a-492).

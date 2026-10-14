@@ -289,6 +289,7 @@ class InstallerTests(unittest.TestCase):
         # check reads clamd's configuration file, which clamd reads as its own user (A-184).
         (self.root / 'deploy').mkdir()
         shutil.copyfile(REPOSITORY / 'deploy' / 'clamd.conf', self.root / 'deploy' / 'clamd.conf')
+        shutil.copyfile(REPOSITORY / 'deploy' / 'tor-admin-entrypoint.sh', self.root / 'deploy' / 'tor-admin-entrypoint.sh')
         (self.root / 'deploy' / 'clamd.conf').chmod(0o644)
         self.bin = self.root / 'bin'
         self.bin.mkdir()
@@ -2088,6 +2089,23 @@ time.sleep(60)
         self.check_env(installed_env(SETUP_TOKEN=None))  # after setup
         self.check_env(installed_env(APP_SECRET_KEY=None))  # legacy key root
         self.check_env(installed_env(COMPOSE_PROFILES='internal-db,mirror'))
+
+    def test_check_private_admin_onion_requires_valid_public_client_authorization(self):
+        files = installed_env()['COMPOSE_FILE'] + ':compose.admin-tor.yaml'
+        clients = self.root / 'admin-clients'
+        clients.mkdir()
+        values = installed_env(COMPOSE_FILE=files, TOR_ADMIN_AUTH_DIR=str(clients))
+        self.check_env(values, 'TOR_ADMIN_AUTH_DIR must be an absolute readable directory')
+        key = clients / 'operator.auth'
+        key.write_text('descriptor:x25519:' + base64.b32encode(bytes(range(32))).decode().rstrip('=') + '\n')
+        self.check_env(values)
+        self.check_env({**values, 'ADMIN_SOCKET': '/run/market-admin/http.sock'})
+        self.check_env({**values, 'ADMIN_SOCKET': '/tmp/public.sock'}, 'ADMIN_SOCKET must be blank or')
+        self.check_env({**values, 'APP_MODE': 'clearnet'}, 'compose.admin-tor.yaml requires APP_MODE=tor')
+        self.check_env(installed_env(TOR_ADMIN_AUTH_DIR=str(clients)), 'require compose.admin-tor.yaml')
+        self.check_env(installed_env(ADMIN_SOCKET='/run/market-admin/http.sock'), 'require compose.admin-tor.yaml')
+        key.write_text('descriptor:x25519:bad\n')
+        self.check_env(values, 'TOR_ADMIN_AUTH_DIR must be an absolute readable directory')
 
     def test_check_restricts_local_nodes_to_escrow_networks(self):
         # A-460: main is the mainnet opt-in; testnet3 stays refused.

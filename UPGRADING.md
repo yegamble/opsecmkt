@@ -8,6 +8,34 @@ upgrade a running v0.1.0-alpha.1 deployment.
 
 ## Summary
 
+### Unreleased security hardening
+
+These optional controls require the updated source; earlier alpha tags do not
+include them. They add no migration and do not change existing networks,
+escrow pins or payment settings:
+
+- `compose.admin-tor.yaml` adds a client-authorized admin onion and a separate
+  Unix HTTP socket. Enable it after reviewing
+  [the private administrator procedure](docs/install/tor.md#private-administrator-onion).
+  Public setup and administrator sessions then receive 404; use the admin onion
+  for sign-in and shared staff workflows. Keep the existing storefront and
+  mirror addresses and back up the new admin identity separately.
+- `AUDIT_EXPORT_RECIPIENT` optionally encrypts downloaded and host-exported
+  audit JSONL and detached signature files. It changes their suffixes to
+  `.jsonl.asc` and `.sig.asc`; decrypt both offline before verification.
+  [Encrypted audit exports](docs/operator-guide.md#encrypted-audit-exports)
+  describes the public-key mount and failure behavior.
+- `scripts/package-deployment.py` creates an optional deployment source
+  archive, manifest and checksums from a committed revision. Public release
+  archives and upgrade rehearsal extraction retain their existing behavior.
+
+Leaving the controls unconfigured preserves existing behavior. Disabling
+private admin ingress deliberately reopens administrative routes on the public
+listener: remove both its configuration and overlay only after reviewing that
+access change. Removing the audit recipient restores plaintext exports; existing
+ciphertext still needs its original private key. Do not treat either rollback as
+a recovery procedure for a compromised host.
+
 **What changes for an operator**
 
 - **Payments are per-order escrow, off until you set them up.** Bitcoin uses 2-of-3 escrow on regtest, signet or

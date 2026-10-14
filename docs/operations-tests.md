@@ -1,5 +1,33 @@
 # Installer, backup, restore and upgrade regression tests
 
+## Optional security controls
+
+The private administrator ingress, encrypted audit exports and optional
+deployment package have distinct acceptance checks. Use a disposable UTF8
+PostgreSQL database, and keep node and wallet tests on test networks only:
+
+```sh
+TEST_DATABASE_URL=YOUR_DISPOSABLE_DATABASE_URL go test -race -count=1 -timeout 10m \
+  -run '^(TestAdmin|TestPrivateAdmin|TestPublicAdmin|TestMainPrivateAdmin|TestServeAll|TestAudit|TestExportAudit)' \
+  ./internal/market ./cmd/server
+python3 -m unittest discover -s tests -p 'test_admin_tor.py'
+python3 -m unittest discover -s tests -p 'test_tor_archive_permissions.py'
+.venv-docs/bin/mkdocs build --strict
+```
+
+The Go tests check session and role denials, header spoofing, Unix socket
+permissions and shutdown, public-key encryption, signature verification and
+plaintext compatibility. Python checks the client allowlist wrapper, Compose
+exposure and deployment source inventory. No database URL means the database
+tests skip; a Compose configuration pass proves no live Tor connection.
+
+Before production activation, separately rehearse authorized and unauthorized
+Tor access, socket mounts, app recreation, operator sign-in and revocation using
+[the private administrator procedure](install/tor.md#private-administrator-onion).
+Decrypt an encrypted audit pair offline and verify against the pinned signing
+key. Record the exact revision and actual outcomes; retain live deployment
+checks as unverified until they have been exercised.
+
 Run the URL/credential tests without any external service or third-party Python package:
 
 ```sh

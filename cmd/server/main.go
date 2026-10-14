@@ -140,14 +140,26 @@ func main() {
 	srv := newServer(addr, app)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	app.Start(ctx)
 	ln, err := listen(srv)
 	if err != nil {
 		app.Close()
 		log.Fatal(err)
 	}
+	servers, listeners := []*http.Server{srv}, []net.Listener{ln}
+	if socket := app.AdminSocket(); socket != "" {
+		admin := newServer(socket, app.AdminHandler())
+		adminListener, err := listenAdmin(admin)
+		if err != nil {
+			ln.Close()
+			app.Close()
+			log.Fatal(err)
+		}
+		servers, listeners = append(servers, admin), append(listeners, adminListener)
+		log.Print("private administrator Unix listener enabled; public administrator access denied")
+	}
+	app.Start(ctx)
 	log.Printf("OPSMKT listening on %s (preview=%v)", addr, *preview)
-	err = serve(ctx, srv, func() error { return srv.Serve(ln) }, 10*time.Second)
+	err = serveAll(ctx, servers, listeners, 10*time.Second)
 	// Only after in-flight requests have finished: stop the payment watcher (Close waits for an in-flight
 	// payout, which runs on its own bounded context) and close the database.
 	app.Close()
@@ -158,8 +170,10 @@ func main() {
 
 // serve runs listen until ctx is cancelled, then shuts srv down gracefully. It returns only after Shutdown
 // has finished (in-flight requests completed or grace elapsed), so the caller can then release what the
-// handlers use. A listen error other than http.ErrServerClosed is returned at once.
+// handlers use. A listen error other than http.ErrServerClosed initiates shutdown and is returned after it finishes.
 func serve(ctx context.Context, srv *http.Server, listen func() error, grace time.Duration) error {
+	ctx, cancelServe := context.WithCancel(ctx)
+	defer cancelServe()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -170,9 +184,13 @@ func serve(ctx context.Context, srv *http.Server, listen func() error, grace tim
 			log.Printf("shutdown: %v", err)
 		}
 	}()
-	if err := listen(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	err := listen()
+	// A listener may fail while already accepted requests are still running. Initiate and await this
+	// server's own shutdown even on that path, before its caller closes application resources.
+	cancelServe()
+	<-done
+	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
-	<-done
 	return nil
 }

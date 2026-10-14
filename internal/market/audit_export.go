@@ -60,7 +60,11 @@ func auditExportStatus() *AuditExportView {
 	case key == nil:
 		return &AuditExportView{Error: "AUDIT_SIGNING_KEY is not configured; signed audit export is unavailable."}
 	}
-	return &AuditExportView{Available: true, PublicKey: hex.EncodeToString(key.Public().(ed25519.PublicKey))}
+	recipient, err := LoadAuditExportRecipient(os.Getenv("AUDIT_EXPORT_RECIPIENT"))
+	if err != nil {
+		return &AuditExportView{Error: err.Error() + "; signed audit export is unavailable."}
+	}
+	return &AuditExportView{Available: true, Encrypted: recipient != nil, PublicKey: hex.EncodeToString(key.Public().(ed25519.PublicKey))}
 }
 
 type auditLine struct {
@@ -158,6 +162,11 @@ func auditExportHandler(a *App, w http.ResponseWriter, r *http.Request, u *User)
 		http.Error(w, auditExportStatus().Error+" Set a 64-hex-character AUDIT_SIGNING_KEY and restart the application.", 409)
 		return
 	}
+	recipient, err := LoadAuditExportRecipient(os.Getenv("AUDIT_EXPORT_RECIPIENT"))
+	if err != nil {
+		http.Error(w, err.Error()+"; signed audit export is unavailable.", http.StatusConflict)
+		return
+	}
 	q := r.URL.Query()
 	upto, err := strconv.ParseInt(q.Get("upto"), 10, 64)
 	if err != nil || upto < 1 {
@@ -214,14 +223,23 @@ func auditExportHandler(a *App, w http.ResponseWriter, r *http.Request, u *User)
 	}
 	name := AuditExportName(from, upto)
 	body := export
+	ext := ".jsonl"
+	contentType := "application/x-ndjson"
 	if q.Get("sig") == "1" {
 		body = auditSignature(key, export)
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.Header().Set("Content-Disposition", `attachment; filename="`+name+`.sig"`)
-	} else {
-		w.Header().Set("Content-Type", "application/x-ndjson")
-		w.Header().Set("Content-Disposition", `attachment; filename="`+name+`.jsonl"`)
+		ext = ".sig"
+		contentType = "text/plain; charset=utf-8"
 	}
+	body, err = recipient.Encrypt(body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	if recipient != nil {
+		contentType = "application/pgp-encrypted"
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Disposition", `attachment; filename="`+name+ext+recipient.Suffix()+`"`)
 	extend(auditExportWriteWindow(len(body)))
 	w.Write(body)
 }

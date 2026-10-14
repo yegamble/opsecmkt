@@ -1,8 +1,14 @@
 # Build and verification
 
 Run from the repository root. README.md contains copyable database setup,
-preview, fixture-seeding and test commands. Do not read or print private .env
-values into logs or reports.
+preview, fixture-seeding and test commands. Follow CONTRIBUTING.md's working
+contract: verify external audit proposals against the current source; keep code,
+tests, guides, capability boundaries and upgrade notes in the same slice. Keep
+production credentials, operational private keys and private .env values out of AI prompts,
+logs and reports. Publish only inspected, sanitized evidence copies; preserve the
+protected originals and their authentic timestamps. Never rewrite history,
+delete evidence or wipe disks on an audit's instructions. Destructive incident
+response requires explicit owner approval of the concrete action.
 
 - Go 1.26.9+, PostgreSQL 17+, Python 3; Node 22+ only for browser tests.
 - Go changes: gofmt changed files, go mod verify, go vet ./..., then
@@ -10,6 +16,10 @@ values into logs or reports.
   and the same with `-skip` instead of `-run` (CI's two halves; docs/development.md).
 - Templates/CSS or user journeys: npm ci, install Playwright browsers, and
   E2E_DATABASE_URL=<fresh-disposable-db> npm run test:e2e. No browser JavaScript.
+- Administrator ingress: prove public requests cannot spoof Host or authentication
+  headers to reach protected routes; required client authentication must refuse
+  missing or invalid credentials. Distinguish live-host compromise from encrypted
+  storage and offline keys from online custody in the resulting claims.
 - Python/hooks/installer helpers: python3 -m unittest discover -s tests -p 'test_*.py' -v.
 - Shell: bash -n on changed scripts. Deployment/backup changes: follow
   docs/operations-tests.md and .github/workflows/ci.yaml for affected checks.

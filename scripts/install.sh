@@ -56,7 +56,7 @@ env_key_pattern='^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)[[:sp
 # Every documented setting and optional Compose override. Commands unset them and Compose's environment-file
 # controls so validation and startup both read this checkout's .env rather than the operator's shell.
 # MONERO_NETWORK_FLAG is documented without an assignment: a copied blank line would select mainnet.
-env_keys='DATABASE_URL POSTGRES_PASSWORD APP_SECRET_KEY SETUP_TOKEN APP_MODE COOKIE_SECURE APP_PORT
+env_keys='DATABASE_URL POSTGRES_PASSWORD APP_SECRET_KEY SETUP_TOKEN APP_MODE COOKIE_SECURE APP_PORT ADMIN_SOCKET TOR_ADMIN_AUTH_DIR AUDIT_EXPORT_RECIPIENT
 DATABASE_CONNECT_TIMEOUT MIGRATION_LOCK_TIMEOUT MIGRATION_TIMEOUT COMPOSE_PROJECT_NAME COMPOSE_FILE COMPOSE_PROFILES
 BITCOIN_RPC_URL BITCOIN_WALLET BITCOIN_CHAIN PAYMENT_CONFIRMATIONS_BTC MONERO_RPC_URL MONERO_WALLET_RPC_URL
 MONERO_NETWORK MONERO_NETWORK_FLAG PAYMENT_CONFIRMATIONS_XMR PAYMENT_POLL_INTERVAL PAYMENT_EXPIRY BITCOIN_MAX_TIP_AGE MONERO_MAX_TIP_AGE AUDIT_SIGNING_KEY BITCOIN_IMAGE
@@ -72,6 +72,9 @@ ESCROW_SIGNER_RPC_URL LOG_DRIVER TOR_VERSION'
 # SETUP_TOKEN). tests/test_installer.py checks that this covers every non-secret key in .env.example. It never holds
 # MONERO_NETWORK_FLAG: absent runs stagenet, and a blank line would move a test-network install to mainnet (A-523).
 upgrade_defaults="COOKIE_SECURE=true
+ADMIN_SOCKET=
+TOR_ADMIN_AUTH_DIR=
+AUDIT_EXPORT_RECIPIENT=
 DATABASE_CONNECT_TIMEOUT=
 MIGRATION_LOCK_TIMEOUT=
 MIGRATION_TIMEOUT=
@@ -741,6 +744,25 @@ run_check() {
       compose_after compose.nodes-tor.yaml compose.nodes.yaml ||
         problems="$problems  - compose.nodes-tor.yaml must come after compose.nodes.yaml in COMPOSE_FILE"$'\n'
     fi
+  fi
+  # The opt-in administrator onion must never fall back to a public descriptor when its allowlist is missing.
+  # The overlay fixes the app socket path; .env may leave it blank, but may not name a different listener.
+  value=$(env_value ADMIN_SOCKET)
+  if compose_has compose.admin-tor.yaml; then
+    if [[ $mode != tor ]] || ! compose_has compose.tor.yaml; then
+      problems="$problems  - compose.admin-tor.yaml requires APP_MODE=tor and compose.tor.yaml"$'\n'
+    fi
+    compose_after compose.admin-tor.yaml compose.yaml ||
+      problems="$problems  - compose.admin-tor.yaml must come after compose.yaml in COMPOSE_FILE"$'\n'
+    if [[ -n $value && $value != /run/market-admin/http.sock ]]; then
+      problems="$problems  - ADMIN_SOCKET must be blank or /run/market-admin/http.sock with compose.admin-tor.yaml"$'\n'
+    fi
+    value=$(env_value TOR_ADMIN_AUTH_DIR)
+    if [[ $value != /* ]] || ! sh deploy/tor-admin-entrypoint.sh "$value" --check 2>/dev/null; then
+      problems="$problems  - TOR_ADMIN_AUTH_DIR must be an absolute readable directory containing at least one valid public .auth key; private administrator Tor startup would be refused"$'\n'
+    fi
+  elif [[ -n $value || -n $(env_value TOR_ADMIN_AUTH_DIR) ]]; then
+    problems="$problems  - ADMIN_SOCKET and TOR_ADMIN_AUTH_DIR require compose.admin-tor.yaml in COMPOSE_FILE"$'\n'
   fi
   profiles=$(env_value COMPOSE_PROFILES)
   host=$(url_host "$database")

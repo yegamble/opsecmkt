@@ -770,11 +770,37 @@ jobs:
           "${tor[@]}" --verify-config
           config=$("${tor[@]}" --dump-config short)
           echo "$config"
-          for line in 'SocksPort 10.199.42.2:9050' 'SocksPolicy reject 10.199.42.1' 'SocksPolicy accept 10.199.42.0/28' \
+          for line in 'SocksPort 10.199.42.2:9050 IsolateSOCKSAuth IsolateClientAddr IsolateDestAddr IsolateDestPort' 'SocksPolicy reject 10.199.42.1' 'SocksPolicy accept 10.199.42.0/28' \
             'SocksPolicy reject *' 'ControlPort 0' 'DataDirectory /var/lib/tor'; do
             grep -qxF "$line" <<< "$config" || { echo "tor did not load: $line" >&2; exit 1; }
           done
           if grep -q '^HiddenService' <<< "$config"; then echo 'torrc-socks must run no onion service' >&2; exit 1; fi
+      - name: Private administrator onion configuration and authorization preflight
+        run: |
+          clients=$(mktemp -d)
+          trap 'rm -rf "$clients"' EXIT
+          chmod 755 "$clients"
+          tor=(docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges:true
+            --tmpfs '/tmp:rw,nosuid,nodev,noexec,mode=1777'
+            -v /var/lib/tor -v "$clients:/run/tor-admin-clients:ro"
+            --entrypoint /usr/local/bin/tor-admin-entrypoint opsecmkt-tor:ci
+            /run/tor-admin-clients /var/lib/tor/admin/authorized_clients tor -f /etc/tor/torrc-admin)
+          if output=$("${tor[@]}" --verify-config 2>&1); then
+            echo 'private administrator Tor accepted an empty authorization source' >&2; exit 1
+          fi
+          if ! grep -qF 'refusing to start Tor.' <<< "$output"; then
+            printf '%s\n' "$output" >&2
+            echo 'private administrator preflight failed before testing authorization' >&2; exit 1
+          fi
+          # Synthetic public fixture only; no private client key or live onion network is used.
+          printf '%s\n' 'descriptor:x25519:N2NU7BSRL6YODZCYPN4CREB54TYLKGIE2KYOQWLFYC23ZJVCE5DQ' > "$clients/operator.auth"
+          chmod 644 "$clients/operator.auth"
+          "${tor[@]}" --verify-config
+          config=$("${tor[@]}" --dump-config short)
+          for line in 'SocksPort 0' 'ControlPort 0' 'HiddenServiceDir /var/lib/tor/admin' \
+            'HiddenServiceVersion 3' 'HiddenServicePort 80 unix:/run/market-admin/http.sock'; do
+            grep -qxF "$line" <<< "$config" || { echo "private tor did not load: $line" >&2; exit 1; }
+          done
       # compose.tor.yaml's healthcheck passes once Tor has written its onion address. Tor does that at startup,
       # before it reaches the network; `up --wait` and scripts/install.sh rely on it.
       - name: Onion address written offline (the Tor healthcheck)

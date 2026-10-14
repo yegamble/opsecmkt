@@ -181,6 +181,11 @@ func (a *App) serveUpload(w http.ResponseWriter, r *http.Request, route uploadRo
 		}
 		u.user = user
 	}
+	if a.publicAdministrator(r.Context(), u.user) {
+		u.drain()
+		http.NotFound(w, r)
+		return
+	}
 	if u.user == nil {
 		u.refuse(errUploadSignedOut.Code, errUploadSignedOut.Msg)
 		return

@@ -21,6 +21,8 @@ services:
       APP_SECRET_KEY: ${APP_SECRET_KEY:-}
       SETUP_TOKEN: ${SETUP_TOKEN:-}
       APP_MODE: ${APP_MODE:-clearnet}
+      # Blank preserves the existing single-listener install. compose.admin-tor.yaml sets a private Unix socket.
+      ADMIN_SOCKET: ${ADMIN_SOCKET:-}
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
       # Only read to check that APP_MODE matches the exposure overlay (compose.tor.yaml or compose.clearnet.yaml).
       COMPOSE_FILE: ${COMPOSE_FILE:-}
@@ -46,6 +48,8 @@ services:
       BITCOIN_MAX_TIP_AGE: ${BITCOIN_MAX_TIP_AGE:-2h}
       MONERO_MAX_TIP_AGE: ${MONERO_MAX_TIP_AGE:-1h}
       AUDIT_SIGNING_KEY: ${AUDIT_SIGNING_KEY:-}
+      # Optional public OpenPGP recipient key file inside this container; mount it read-only in an override.
+      AUDIT_EXPORT_RECIPIENT: ${AUDIT_EXPORT_RECIPIENT:-}
       # Bitcoin escrow: test networks (regtest, signet, testnet4), or mainnet on a mainnet market (BITCOIN_CHAIN=main, A-460);
       # off unless ESCROW_BTC=on; blank values use the app defaults (docs/operator-guide.md#bitcoin-escrow).
       ESCROW_BTC: ${ESCROW_BTC:-}
