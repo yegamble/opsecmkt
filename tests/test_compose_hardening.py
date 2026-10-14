@@ -23,6 +23,7 @@ USERS = {
     'db': '70:70',
     'tor': (IMAGE_USER, 'deploy/Dockerfile.tor', 'USER debian-tor'),
     'tor-mirror': (IMAGE_USER, 'deploy/Dockerfile.tor', 'USER debian-tor'),
+    'tor-admin': (IMAGE_USER, 'deploy/Dockerfile.tor', 'USER debian-tor'),
     'tor-socks': (IMAGE_USER, 'deploy/Dockerfile.tor', 'USER debian-tor'),
     'clamd': 'clamav',
     'escrow-signer': '65533:65532',

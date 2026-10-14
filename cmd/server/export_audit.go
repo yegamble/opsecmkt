@@ -28,6 +28,10 @@ func exportAudit(ctx context.Context, from, upto int64, dir string, given func(s
 	if dir == "" {
 		return errors.New("-export-audit-dir must name an existing output directory")
 	}
+	recipient, err := market.LoadAuditExportRecipient(os.Getenv("AUDIT_EXPORT_RECIPIENT"))
+	if err != nil {
+		return err
+	}
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
 		return errors.New("DATABASE_URL required")
@@ -37,8 +41,16 @@ func exportAudit(ctx context.Context, from, upto int64, dir string, given func(s
 		if err != nil {
 			return err
 		}
+		// Signatures are over plaintext; encrypt both in memory before creating
+		// either output so a configured recipient never leaves plaintext files.
+		if data, err = recipient.Encrypt(data); err != nil {
+			return err
+		}
+		if sig, err = recipient.Encrypt(sig); err != nil {
+			return err
+		}
 		name := filepath.Join(dir, market.AuditExportName(from, upto))
-		jsonPath, sigPath := name+".jsonl", name+".sig"
+		jsonPath, sigPath := name+".jsonl"+recipient.Suffix(), name+".sig"+recipient.Suffix()
 		jsonFile, err := os.OpenFile(jsonPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 		if err != nil {
 			return errors.New("cannot create export file; use an existing writable directory and a new range")
@@ -79,7 +91,11 @@ func exportAudit(ctx context.Context, from, upto int64, dir string, given func(s
 			return errors.New("unable to write complete audit export and signature")
 		}
 		complete = true
-		_, err = fmt.Fprintf(out, "Saved %s and %s. Keep both private; verify with verify-audit and your pinned public key.\n", jsonPath, sigPath)
+		instruction := "Keep both private; verify with verify-audit and your pinned public key."
+		if recipient != nil {
+			instruction = "Decrypt both offline, then verify with verify-audit and your pinned signing public key."
+		}
+		_, err = fmt.Fprintf(out, "Saved %s and %s. %s\n", jsonPath, sigPath, instruction)
 		return err
 	})
 }

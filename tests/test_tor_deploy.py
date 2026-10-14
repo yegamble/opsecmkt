@@ -293,7 +293,8 @@ class NodesTorComposeTests(unittest.TestCase):
         self.assertNotIn(gateway, dynamic, 'the gateway must not be an address a node could have')
         self.assertNotEqual(address, gateway)
         lines = torrc_lines(TORRC_SOCKS)
-        self.assertEqual([value for keyword, value in lines if keyword == 'SocksPort'], [f'{address}:9050'])
+        self.assertEqual([value for keyword, value in lines if keyword == 'SocksPort'],
+                         [f'{address}:9050 IsolateSOCKSAuth IsolateClientAddr IsolateDestAddr IsolateDestPort'])
         self.assertEqual([value for keyword, value in lines if keyword == 'SocksPolicy'],
                          [f'reject {gateway}', f'accept {subnet}', 'reject *'])
         self.assertIn(f'/dev/tcp/{address}/9050', ' '.join(self.socks['healthcheck']['test']))

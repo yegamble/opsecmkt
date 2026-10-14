@@ -187,7 +187,7 @@ func (a *App) serveDeskImage(w http.ResponseWriter, r *http.Request, rest string
 		writeDBFailure(w, r, err)
 		return
 	}
-	if u == nil {
+	if u == nil || a.publicAdministrator(r.Context(), u) {
 		http.NotFound(w, r)
 		return
 	}

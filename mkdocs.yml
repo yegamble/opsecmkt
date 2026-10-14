@@ -87,6 +87,7 @@ nav:
       - Troubleshooting: install/troubleshooting.md
   - Operate:
       - Operator guide: operator-guide.md
+      - Security and OPSEC: security-operations.md
       - Upgrading: project/UPGRADING.md
       - Test-network payments: testnet-runbook.md
       - Per-order escrow: escrow.md

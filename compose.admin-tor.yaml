@@ -1,0 +1,55 @@
+# Optional addition to compose.yaml + compose.tor.yaml. Preserve the existing profiles/overlays.
+# The public onions continue forwarding to app:8080, whose administrator ingress now answers 404.
+# Only this Tor service sees the private Unix socket; its onion requires a client authorization key.
+x-logging: &logging
+  driver: ${LOG_DRIVER:-json-file}
+  options:
+    max-size: 10m
+    max-file: '3'
+services:
+  app:
+    environment:
+      ADMIN_SOCKET: /run/market-admin/http.sock
+    volumes:
+      - admin_socket:/run/market-admin
+  tor-admin:
+    build:
+      context: deploy
+      dockerfile: Dockerfile.tor
+      args: [TOR_VERSION]
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+        restart: true
+    entrypoint: [/usr/local/bin/tor-admin-entrypoint]
+    command: [/run/tor-admin-clients, /var/lib/tor/admin/authorized_clients, tor, -f, /etc/tor/torrc-admin]
+    group_add: ['65532']
+    networks: [tor_egress]
+    volumes:
+      - tor_admin_identity:/var/lib/tor
+      - admin_socket:/run/market-admin:ro
+      - type: bind
+        source: ${TOR_ADMIN_AUTH_DIR:?Set an absolute TOR_ADMIN_AUTH_DIR containing at least one public .auth key}
+        target: /run/tor-admin-clients
+        read_only: true
+        bind:
+          create_host_path: false
+    healthcheck:
+      test: [CMD-SHELL, 'test -s /var/lib/tor/admin/hostname']
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 1m
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 256m
+    cpu_period: 100000
+    cpu_quota: 100000
+    pids_limit: 64
+    logging: *logging
+volumes:
+  tor_admin_identity:
+  admin_socket:

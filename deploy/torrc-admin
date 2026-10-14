@@ -1,0 +1,12 @@
+# A separate onion identity, client authorization allowlist and Unix backend. No public TCP backend.
+DataDirectory /var/lib/tor
+SocksPort 0
+ControlPort 0
+Log notice stdout
+HeartbeatPeriod 30 minutes
+MaxMemInQueues 128 MB
+HiddenServiceDir /var/lib/tor/admin
+HiddenServiceVersion 3
+HiddenServicePort 80 unix:/run/market-admin/http.sock
+HiddenServiceMaxStreams 16
+HiddenServiceMaxStreamsCloseCircuit 1

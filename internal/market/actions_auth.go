@@ -608,6 +608,9 @@ func authAction(c *actionCtx) (actionResult, error) {
 			}
 			return actionResult{}, fail(401, "Invalid handle or password")
 		}
+		if a.publicAdministrator(ctx, &User{Role: account.role}) {
+			return actionResult{}, fail(404, pageNotFound)
+		}
 		if rescueID != "" {
 			res, err := a.soleAdminRecovery(c, account.id, account.hash, f.Get("rescue_code"), a.signInNext(f.Get("next")))
 			if err == errSoleAdminRecovery {
@@ -1027,9 +1030,12 @@ func challengeLoader(ctx context.Context, a *App, r *http.Request, d *PageData) 
 // through session creation: earlier suspension, password changes and enrollment are seen; later changes wait.
 func (a *App) startSession(ctx context.Context, tx *sql.Tx, id, old, method, passwordDigest string) (string, error) {
 	var suspended, totp, pgp bool
-	var hash string
-	if err := tx.QueryRowContext(ctx, "SELECT suspended_at IS NOT NULL,password_hash,totp_enabled,pgp_2fa FROM users WHERE id=$1 FOR SHARE", id).Scan(&suspended, &hash, &totp, &pgp); err != nil {
+	var hash, role string
+	if err := tx.QueryRowContext(ctx, "SELECT suspended_at IS NOT NULL,password_hash,totp_enabled,pgp_2fa,role FROM users WHERE id=$1 FOR SHARE", id).Scan(&suspended, &hash, &totp, &pgp, &role); err != nil {
 		return "", err
+	}
+	if a.publicAdministrator(ctx, &User{Role: role}) {
+		return "", fail(404, pageNotFound)
 	}
 	if suspended {
 		return "", suspendedRefusal(ctx, tx)

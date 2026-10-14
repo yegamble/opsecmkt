@@ -128,6 +128,7 @@ Start at the [documentation home](docs/README.md). To browse it as a site, see
 | --- | --- |
 | [Installation guide](docs/install/README.md) | Methods, requirements, first steps, payments, troubleshooting |
 | [Operator guide](docs/operator-guide.md) | HTTPS and Tor, mirrors, configuration, backups, recovery |
+| [Security and OPSEC](docs/security-operations.md) | Private admin ingress, offline export keys, deployment packages and compromise limits |
 | [Upgrading](UPGRADING.md) | Upgrading from v0.1.0-alpha.1 |
 | [Per-order escrow](docs/escrow.md) | Escrow design, guarantees and limits |
 | [Test-network payments](docs/testnet-runbook.md) | Escrow wallet backups, restores, the recovery gate |

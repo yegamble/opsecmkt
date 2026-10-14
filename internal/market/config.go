@@ -16,6 +16,7 @@ type startupConfig struct {
 	appSecretKey string   // APP_SECRET_KEY: the root of every derived key when set
 	setupToken   string   // SETUP_TOKEN: authorizes /setup until installed; the legacy key root without APP_SECRET_KEY
 	secure       bool     // COOKIE_SECURE (unset = true)
+	adminSocket  string   // ADMIN_SOCKET: separate private administrator Unix listener; blank preserves one-listener installs
 	notes        []string // startup log lines (warnings and the legacy key-root notice); never a secret
 }
 
@@ -90,6 +91,10 @@ func loadStartupConfig(getenv func(string) string, mode string) (startupConfig, 
 		return c, errors.New("DATABASE_URL still contains a placeholder (REPLACE_ME, CHANGEME or similar, as in .env.example); set the real database password and host in .env (scripts/install.sh generates them)")
 	}
 	if err := checkComposeOverlay(mode, getenv("COMPOSE_FILE")); err != nil {
+		return c, err
+	}
+	var err error
+	if c.adminSocket, err = adminSocketConfig(getenv, mode); err != nil {
 		return c, err
 	}
 	if mode == "tor" && c.secure {

@@ -8,7 +8,9 @@ MaxMemInQueues 128 MB
 ControlPort 0
 # Only tor-socks's own address on the node network (node_egress, internal; compose.nodes-tor.yaml pins the subnet
 # 10.199.42.0/28 and this address), so its egress network reaches no SOCKS port. Change both files together.
-SocksPort 10.199.42.2:9050
+# Keep node/client addresses, supplied SOCKS credentials and peer destination addresses/ports on separate
+# circuits. This is stream isolation within this Tor process, not a guarantee against traffic correlation.
+SocksPort 10.199.42.2:9050 IsolateSOCKSAuth IsolateClientAddr IsolateDestAddr IsolateDestPort
 # Only the nodes: the node network, except its gateway (the host's bridge address); everything else is refused.
 SocksPolicy reject 10.199.42.1
 SocksPolicy accept 10.199.42.0/28

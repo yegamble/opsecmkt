@@ -4,6 +4,13 @@ OPSEC Market is an alpha. It is developed and tested on test networks only;
 mainnet escrow is an operator opt-in that has never been run or verified. It has
 no bounty programme and makes no promise about response time.
 
+Deployment controls and their limits are documented in
+[Security and OPSEC operations](docs/security-operations.md). Encrypted backups,
+PGP messages and sealed recovery seeds protect specific payloads; they do not
+make every database row confidential after a live host compromise. Optional
+private administrator ingress and encrypted audit exports require explicit
+configuration and operator verification.
+
 ## Report a vulnerability privately
 
 Use GitHub's private vulnerability reporting:

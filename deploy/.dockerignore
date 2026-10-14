@@ -1,0 +1,5 @@
+# The Tor build has its own context; it does not inherit the root .dockerignore.
+docs
+testdata
+.wrangler
+**/.wrangler

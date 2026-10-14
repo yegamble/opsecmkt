@@ -49,7 +49,7 @@ class TorSocksConfigStepTest(unittest.TestCase):
         self.assertNotIn('deploy/torrc:', self.flat, "the onion service's torrc is checked by the steps above")
 
     def test_step_checks_the_loaded_socks_values_against_the_torrc(self):
-        socks = re.search(r'^SocksPort (\S+)$', TORRC_SOCKS, re.M).group(1)
+        socks = re.search(r'^SocksPort (.+)$', TORRC_SOCKS, re.M).group(1)
         policy = re.findall(r'^SocksPolicy (.+)$', TORRC_SOCKS, re.M)
         self.assertIn('--dump-config short', self.flat)
         for line in [f'SocksPort {socks}', 'ControlPort 0'] + [f'SocksPolicy {value}' for value in policy]:
