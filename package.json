@@ -11,7 +11,7 @@
     "test:e2e:escrow-xmr": "playwright test --config=playwright.escrow-xmr.config.ts"
   },
   "devDependencies": {
-    "@playwright/test": "1.63.0"
+    "@playwright/test": "1.64.0"
   },
   "engines": {
     "node": ">=22"
