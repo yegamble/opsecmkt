@@ -111,10 +111,14 @@ an existing install's network ([UPGRADING](UPGRADING.md#64-new-installs-default-
 - PostgreSQL holds all state and migrates on startup.
 - Escrow, when on, uses a dedicated Bitcoin signer with 2-of-3 PSBT signing, or a Monero escrow wallet RPC.
 
-**What the server keeps.** Nothing is deleted: accounts, messages and orders stay, readable by the operator or
-anyone with a decrypted backup. Shipping addresses are sent PGP-encrypted to the vendor, but an address typed into a plaintext field is not
-protected. Reviews, dispute reasons, order notes and digital deliveries are plaintext. Photos are re-encoded JPEGs without metadata. Full list:
+**What the server keeps.** Accounts, messages and orders have no deletion lifecycle. The operator or anyone with a
+decrypted backup can read retained plaintext and metadata and obtain ciphertext; properly recipient-encrypted content
+requires a recipient's private key to decrypt. Shipping addresses are sent PGP-encrypted to the vendor, but an address typed into a plaintext field is not
+protected. Reviews, dispute reasons and order notes are plaintext. Manual digital delivery accepts plaintext or pasted
+ciphertext; automatic delivery content is server-readable. Photos are re-encoded JPEGs without metadata. Full list:
 [what the server keeps](docs/implementation-status.md#what-the-server-keeps).
+The [data retention and private information policy](docs/data-retention-privacy-policy.md) defines expiry, preservation
+exceptions and recipient-encryption requirements; enforcement is pending.
 
 **Account recovery.** No password-reset email. Recovery codes replace a lost authenticator. Administrators are
 reset from the host ([Authentication](docs/operator-guide.md#authentication)).
@@ -129,6 +133,7 @@ Start at the [documentation home](docs/README.md). To browse it as a site, see
 | [Installation guide](docs/install/README.md) | Methods, requirements, first steps, payments, troubleshooting |
 | [Operator guide](docs/operator-guide.md) | HTTPS and Tor, mirrors, configuration, backups, recovery |
 | [Security and OPSEC](docs/security-operations.md) | Private admin ingress, offline export keys, deployment packages and compromise limits |
+| [Data retention and privacy policy](docs/data-retention-privacy-policy.md) | Retention deadlines, preservation, recipient encryption and operator access; enforcement pending |
 | [Upgrading](UPGRADING.md) | Upgrading from v0.1.0-alpha.1 |
 | [Per-order escrow](docs/escrow.md) | Escrow design, guarantees and limits |
 | [Test-network payments](docs/testnet-runbook.md) | Escrow wallet backups, restores, the recovery gate |

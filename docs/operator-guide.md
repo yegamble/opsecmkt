@@ -2338,6 +2338,11 @@ private keys until their retained exports no longer need recovery.
 
 ## Backups and recovery
 
+The [data retention and private information policy](data-retention-privacy-policy.md) requires a 30-day maximum for
+ordinary recovery copies, including off-host backups, snapshots, WAL archives and upgrade copies. A registered
+preservation exception or dedicated escrow recovery material follows the policy's separate safeguards. The scripts
+below encrypt and restore data; they do not enforce expiry or reapply an account/message deletion manifest.
+
 Install [age](https://age-encryption.org/) and Python 3, then generate an identity offline (`age-keygen -o backup-key.txt`). Store the private key separately from backups and use its public recipient for encryption:
 
 ```sh
@@ -2352,10 +2357,10 @@ Run database backups on a schedule that matches your recovery-point needs. For e
 15 2 * * * cd /srv/opsecmkt && AGE_RECIPIENT=age1YOUR_PUBLIC_RECIPIENT ./scripts/backup.sh "backups/market-$(date -u +\%Y\%m\%dT\%H\%M\%SZ).dump.age" >> backups/backup.log 2>&1
 ```
 
-For an external database, keep `BACKUP_DATABASE_URL` in a root-owned mode-0600 environment file or wrapper and have the cron job invoke that; do not put its credential in the crontab. Copy completed `.age` files unchanged to an approved off-host encrypted-storage location, for example `rsync -a -- backups/market-YYYYMMDDTHHMMSSZ.dump.age backup-host:/srv/opsecmkt/backups/` using the exact archive name. Periodically verify an off-host copy by restoring it to a new disposable database as shown below. Choose a retention period to match your needs. This example only lists old candidates; review the list and confirm a verified off-host copy before manually removing anything. It does not delete backups:
+For an external database, keep `BACKUP_DATABASE_URL` in a root-owned mode-0600 environment file or wrapper and have the cron job invoke that; do not put its credential in the crontab. Copy completed `.age` files unchanged to an approved off-host encrypted-storage location, for example `rsync -a -- backups/market-YYYYMMDDTHHMMSSZ.dump.age backup-host:/srv/opsecmkt/backups/` using the exact archive name. Periodically verify an off-host copy by restoring it to a new disposable database as shown below. Choose a recovery window of at most 30 days under the policy, unless a scoped preservation exception applies. This example only lists rough candidates by filesystem modification age; `-mtime +30` begins matching after 31 whole days and does not enforce the policy deadline. Track original creation and exact expiry separately for every copy. Review the list and confirm an unexpired verified recovery copy before manually removing anything. It does not delete backups:
 
 ```sh
-KEEP_DAYS=90
+KEEP_DAYS=30
 find backups -maxdepth 1 -type f -name 'market-*.dump.age' -mtime "+$KEEP_DAYS" -print
 ```
 

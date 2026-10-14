@@ -23,7 +23,7 @@ service or behind HTTPS.
 ## Sections
 
 - **Get started**: install, first steps, payments.
-- **Operate**: [operator guide](operator-guide.md), [security and OPSEC](security-operations.md), upgrades, backups, escrow runbooks.
+- **Operate**: [operator guide](operator-guide.md), [security and OPSEC](security-operations.md), [data retention and privacy policy](data-retention-privacy-policy.md), upgrades, backups, escrow runbooks.
 - **Reference**: [installer](install/installer-reference.md), [escrow design](escrow.md), status and evidence.
 - **Contribute**: [development](development.md), tests, [contributing](../CONTRIBUTING.md).
 
