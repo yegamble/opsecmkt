@@ -137,7 +137,8 @@ class PrivateAdminComposeTests(unittest.TestCase):
             self.assertEqual(len(binds), 1)
             self.assertEqual(binds[0]['source'], directory)
             self.assertTrue(binds[0]['read_only'])
-            self.assertFalse(binds[0]['bind']['create_host_path'])
+            # Compose versions may omit false fields from their normalized JSON.
+            self.assertFalse(binds[0]['bind'].get('create_host_path', False))
             self.assertEqual(binds[0]['target'], '/run/tor-admin-clients')
             socket = next(v for v in private['volumes'] if v.get('source') == 'admin_socket')
             self.assertTrue(socket['read_only'])
