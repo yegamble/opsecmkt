@@ -204,7 +204,7 @@ func disputeReplyAction(c *actionCtx) (actionResult, error) {
 // A suspended account cannot sign in, so it counts as neither a resolver nor a recipient (A-118).
 func notifyDisputeStaff(c *actionCtx, o *Order) error {
 	ctx, tx := c.Ctx(), c.Tx
-	staff, err := collectStrings(ctx, tx, "SELECT id FROM users WHERE role IN ('moderator','admin') AND suspended_at IS NULL AND id<>$1 AND id<>$2", o.BuyerID, o.VendorID)
+	staff, err := collectStrings(ctx, tx, "SELECT id FROM users WHERE role IN ('moderator','admin') AND suspended_at IS NULL AND closed_at IS NULL AND retention_restricted_at IS NULL AND id<>$1 AND id<>$2", o.BuyerID, o.VendorID)
 	if err != nil {
 		return err
 	}
@@ -213,7 +213,7 @@ func notifyDisputeStaff(c *actionCtx, o *Order) error {
 		if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", o.ID, stateDisputed, noResolverNote); err != nil {
 			return err
 		}
-		if staff, err = collectStrings(ctx, tx, "SELECT id FROM users WHERE role='admin' AND suspended_at IS NULL"); err != nil {
+		if staff, err = collectStrings(ctx, tx, "SELECT id FROM users WHERE role='admin' AND suspended_at IS NULL AND closed_at IS NULL AND retention_restricted_at IS NULL"); err != nil {
 			return err
 		}
 		body = "Dispute opened on order " + shortID(o.ID) + " needs an unsuspended moderator who is not a party to resolve it; no independent resolver was available when it opened."

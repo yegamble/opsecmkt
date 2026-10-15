@@ -8,6 +8,8 @@ command -v age >/dev/null || { echo 'Install age first.' >&2; exit 1; }
 command -v python3 >/dev/null || { echo 'Python 3 is required for safe backup-space checks.' >&2; exit 1; }
 output=$1
 [[ ! -e $output ]] || { echo 'Refusing to overwrite backup.' >&2; exit 1; }
+[[ $output == *.dump.age ]] || { echo 'Backup names must end in .dump.age so their retention metadata can be managed safely.' >&2; exit 1; }
+[[ ! -e $output.retention.json && ! -L $output.retention.json ]] || { echo 'Refusing to overwrite original backup retention metadata.' >&2; exit 1; }
 # url_database URL: the database (path) of a PostgreSQL URL, cut as Go's net/url does. Never prints the URL.
 url_database() {
   local url=${1%%#*} pattern='^postgres(ql)?://[^/]*/([^/]+)$'
@@ -72,17 +74,36 @@ esac
 # any temporary archive or pg_dump output is created.
 output_dir=$(dirname "$output")
 mkdir -p "$output_dir"
+source_psql() {
+  if [[ -n ${BACKUP_DATABASE_URL:-} ]]; then
+    python3 scripts/postgres-tool.py BACKUP_DATABASE_URL psql -X -q -A -t -v ON_ERROR_STOP=1 "$@"
+  else
+    docker compose exec -T db psql -X -q -A -t -v ON_ERROR_STOP=1 -U opsecmkt -d "$database" "$@"
+  fi
+}
 if [[ -n ${BACKUP_DATABASE_URL:-} ]]; then
   command -v pg_dump >/dev/null || { echo 'Install PostgreSQL client tools for external backups.' >&2; exit 1; }
   command -v psql >/dev/null || { echo 'Install PostgreSQL client tools for external backups.' >&2; exit 1; }
-  database_bytes=$(python3 scripts/postgres-tool.py BACKUP_DATABASE_URL psql -X -q -A -t -v ON_ERROR_STOP=1 \
-    -c 'SELECT pg_database_size(current_database())') || {
-      echo 'Could not determine the source database size; refusing to create a backup.' >&2; exit 1; }
-else
-  database_bytes=$(docker compose exec -T db psql -X -q -A -t -v ON_ERROR_STOP=1 -U opsecmkt -d "$database" \
-    -c 'SELECT pg_database_size(current_database())') || {
-      echo 'Could not determine the source database size; refusing to create a backup.' >&2; exit 1; }
 fi
+# A newly restored snapshot can contain records erased since its original dump.
+# Giving it a fresh backup clock before current-state replay could outlive their
+# deletion manifest. No archive may be created while that replay is outstanding.
+restore_required=$(source_psql --file=- <<'SQL'
+SELECT to_regclass('settings') IS NOT NULL AS has_settings \gset
+\if :has_settings
+SELECT COALESCE((SELECT value FROM settings WHERE key='retention_restore_required'),'false');
+\else
+SELECT 'false';
+\endif
+SQL
+) || { echo 'Could not verify the source retention restore gate; refusing to create a backup.' >&2; exit 1; }
+case $restore_required in
+  false) ;;
+  true) echo 'Refusing to back up a restored database before current external retention state has been replayed. Start the isolated application with the current RETENTION_STATE_DIR and let it clear retention_restore_required first.' >&2; exit 1 ;;
+  *) echo 'Invalid source retention restore gate; refusing to create a backup.' >&2; exit 1 ;;
+esac
+database_bytes=$(source_psql -c 'SELECT pg_database_size(current_database())') || {
+  echo 'Could not determine the source database size; refusing to create a backup.' >&2; exit 1; }
 database_bytes=${database_bytes//[$'\t\r\n ']/}
 available_kib=$(df -PkP "$output_dir" | awk 'NR == 2 && $4 ~ /^[0-9]+$/ { print $4; found = 1 } END { if (!found) exit 1 }') || {
   echo 'Could not determine free space on the backup destination filesystem.' >&2; exit 1; }
@@ -104,7 +125,10 @@ if ! python3 scripts/postgres-policy.py compatible "$dump_client_version" "$dump
   exit 1
 fi
 temporary=$(mktemp "${output}.tmp.XXXXXX")
-trap 'rm -f "$temporary"' EXIT
+metadata_created=false
+trap 'rm -f "$temporary"; if [[ $metadata_created == true ]]; then rm -f "$output.retention.json"; fi' EXIT
+# Use the original dump start, never filesystem mtime or a later copy/restore time.
+created_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 if [[ -n ${BACKUP_DATABASE_URL:-} ]]; then
   # TZ=UTC here and below: a custom-format dump records its creation time as wall-clock fields of pg_dump's zone,
   # and restore.sh reads them back as UTC.
@@ -116,5 +140,22 @@ else
   docker compose exec -T -e TZ=UTC db pg_dump -U opsecmkt -d "$database" --format=custom --no-owner --no-acl ${dump_encoding[@]+"${dump_encoding[@]}"} | age -r "$AGE_RECIPIENT" > "$temporary"
   dumped="internal database $database"
 fi
-mv "$temporary" "$output"
+if [[ -n ${BACKUP_RECOVERY_SOURCE:-} ]]; then
+  # Encoding repair can need a non-serving intermediate restored database. It
+  # cannot create a new recovery window for old records; validate the original
+  # encrypted archive/sidecar and inherit its deadline, including an expired one.
+  python3 scripts/backup-retention.py record "$temporary" "$output" --copy-of "$BACKUP_RECOVERY_SOURCE"
+else
+  python3 scripts/backup-retention.py record "$temporary" "$output" --created-at "$created_at"
+fi
+metadata_created=true
+# The temporary file is beside the destination. Exclusive publication prevents a
+# concurrent backup from overwriting an archive after the earlier existence check.
+ln "$temporary" "$output"
+metadata_created=false
+rm -f "$temporary"
 printf 'Encrypted backup of %s saved to %s (client: %s)\n' "$dumped" "$output" "$dump_client_version"
+printf 'Copy %s.retention.json with every archive copy; its original 30-day expiry must not be reset.\n' "$output"
+if [[ -n ${BACKUP_RECOVERY_SOURCE:-} ]]; then
+  printf 'Derived recovery copy: validated original archive creation and expiry were inherited; no new retention period.\n'
+fi

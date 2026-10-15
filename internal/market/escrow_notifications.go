@@ -41,7 +41,7 @@ func (a *App) flagOrder(ctx context.Context, tx *sql.Tx, o *Order, note, party s
 			}
 		}
 	}
-	staff, err := collectStrings(ctx, tx, "SELECT id FROM users WHERE role IN ('moderator','admin') AND suspended_at IS NULL AND id<>ALL($1)", parties)
+	staff, err := collectStrings(ctx, tx, "SELECT id FROM users WHERE role IN ('moderator','admin') AND suspended_at IS NULL AND closed_at IS NULL AND retention_restricted_at IS NULL AND id<>ALL($1)", parties)
 	if err != nil {
 		return err
 	}

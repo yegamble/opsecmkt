@@ -628,3 +628,26 @@ func TestStaffAvatarRefusedAfterScanDemotion(t *testing.T) {
 		t.Fatal("the demotion did not apply")
 	}
 }
+
+func TestRetentionUploadAdmittedBeforeRestrictionIsRefused(t *testing.T) {
+	for _, kind := range []string{"avatar", "photo"} {
+		t.Run(kind, func(t *testing.T) {
+			e, scanner := uploadEnv(t)
+			id, session := e.user("retention_upload_vendor", "vendor")
+			listing := e.product(id, "physical")
+			entered, release := stallScans(t, scanner)
+			path, parts := "/account/avatar", e.avatarParts(session, smallJPEG(t))
+			if kind == "photo" {
+				path, parts = "/listings/photo", e.photoParts(session, listing, smallJPEG(t))
+			}
+			done := e.uploadAsync(path, session, parts...)
+			waitEntered(t, entered)
+			agExec(e, `UPDATE users SET deletion_requested_at=now()-interval '31 days',retention_restricted_at=now() WHERE id=$1`, id)
+			release()
+			checkPage(t, <-done, 403, "Account closure")
+			if e.imageCount() != 0 {
+				t.Fatal("an upload admitted before restriction recreated profile content")
+			}
+		})
+	}
+}

@@ -90,6 +90,13 @@ func (a *App) xmrSweepProbe(ctx context.Context, now time.Time) error {
 	month:
 		for n++; n <= 99; n++ {
 			name := fmt.Sprintf("escrow-%s-%02d", m.Format("200601"), n)
+			var retired bool
+			if err := a.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM retention_xmr_retired_wallets WHERE name_hash=$1)`, retentionTechnicalHash(name)).Scan(&retired); err != nil {
+				return err
+			}
+			if retired {
+				continue
+			} // Never re-seal a deliberately destroyed seed from a stale wallet-volume copy.
 			found, err := x.rpc.probeWallet(ctx, name, xmrWalletPassword(x.secret, name))
 			switch {
 			case err == nil && !found:
@@ -390,35 +397,46 @@ func xmrConfirmDestroyedAction(c *actionCtx) (actionResult, error) {
 	if c.Form.Get("gone") != "confirmed" {
 		return actionResult{}, fail(400, "Check the escrow wallet volume and its backups first, then confirm that the wallet's files are gone and that nothing in it is owed to anyone. Nothing was changed.")
 	}
-	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
+	return retentionConfirmedMutation(c, func(c *actionCtx) (string, actionResult, error) {
 		ctx := c.Ctx()
 		now := c.A.escrowXMR.clock()
+		locked, err := lockRetentionXMRWallet(ctx, c.Tx, id)
+		if err != nil {
+			return "", actionResult{}, err
+		}
+		if !locked {
+			return "", actionResult{}, fail(409, "Preservation registration is in progress for this wallet. Retry after it completes; no wallet recovery state was erased.")
+		}
 		var name, state string
 		var allowed, party, paused bool
-		err := c.Tx.QueryRowContext(ctx, `SELECT w.name,w.state,COALESCE(`+xmrDestroyableSQL+`,false),
+		err = c.Tx.QueryRowContext(ctx, `SELECT w.name,w.state,COALESCE(`+xmrDestroyableSQL+`,false),
 				EXISTS(SELECT 1 FROM xmr_escrow_slots s JOIN orders o ON o.id=s.order_id JOIN products p ON p.id=o.product_id WHERE s.wallet_id=w.id AND (o.buyer_id=$3 OR p.vendor_id=$3)),
 				`+restoreGateSQL+` OR EXISTS(SELECT 1 FROM settings WHERE key=$4 AND value='true')
 			FROM xmr_escrow_wallets w WHERE w.id=$1 FOR UPDATE`, id, now, c.User.ID, xmrEscrowSweepKey).Scan(&name, &state, &allowed, &party, &paused)
 		if err == sql.ErrNoRows {
-			return actionResult{}, fail(404, "Wallet not found")
+			return "", actionResult{}, fail(404, "Wallet not found")
 		}
 		if err != nil {
-			return actionResult{}, err
+			return "", actionResult{}, err
 		}
 		switch {
 		case party:
-			return actionResult{}, fail(403, "You are a party to an order of this wallet, so you cannot confirm its destruction.")
+			return "", actionResult{}, fail(403, "You are a party to an order of this wallet, so you cannot confirm its destruction.")
 		case state != "missing":
-			return actionResult{}, fail(409, "Only a missing escrow wallet's destruction is confirmed here. Reload the admin page. Nothing was changed.")
+			return "", actionResult{}, fail(409, "Only a missing escrow wallet's destruction is confirmed here. Reload the admin page. Nothing was changed.")
 		case paused:
-			return actionResult{}, fail(409, "The market is reconciling a restore from backup: no escrow wallet is destroyed until it has finished. Nothing was changed.")
+			return "", actionResult{}, fail(409, "The market is reconciling a restore from backup: no escrow wallet is destroyed until it has finished. Nothing was changed.")
 		case !allowed:
-			return actionResult{}, fail(409, "This wallet is not past its destruction date, or an order or settlement of it is still open. Nothing was changed.")
+			return "", actionResult{}, fail(409, "This wallet is not past its destruction date, or an order or settlement of it is still open. Nothing was changed.")
+		}
+		opID, err := c.A.prepareRetentionXMRDestruction(ctx, c.Tx, id, now)
+		if err != nil {
+			return "", actionResult{}, err
 		}
 		if _, err = c.Tx.ExecContext(ctx, "UPDATE xmr_escrow_wallets SET state='destroyed',seed_sealed=NULL,destroyed_at=$2,updated=now() WHERE id=$1 AND state='missing'", id, now); err != nil {
-			return actionResult{}, err
+			return opID, actionResult{}, err
 		}
 		audit := "Confirmed the destruction of Monero escrow wallet " + name + ", missing and past its destruction date: the administrator checked that its files are gone and that nothing in it is owed; its sealed seed was wiped (" + c.A.xmrEscrowNetwork() + ")"
-		return actionResult{Redirect: "/admin", Notice: "escrow-xmr-gone", Audit: audit}, nil
+		return opID, actionResult{Redirect: "/admin", Notice: "escrow-xmr-gone", Audit: audit}, nil
 	})
 }

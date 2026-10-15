@@ -119,7 +119,7 @@ func listingUpdateAction(c *actionCtx) (actionResult, error) {
 	saved := in
 	saved.Stock = stock
 	err = c.Tx.QueryRowContext(ctx, `UPDATE products SET title=$2,description=$3,category=$4,region=$5,kind=$6,btc=$7,xmr=$8,stock=$9,delivery_content=$10,
-		dispatch_days=CASE WHEN $6<>'physical' THEN NULL ELSE COALESCE(NULLIF($11,0),dispatch_days,$12) END,updated=now() WHERE id=$1
+		dispatch_days=CASE WHEN $6<>'physical' THEN NULL ELSE COALESCE(NULLIF($11,0),dispatch_days,$12) END,private_expired_at=NULL,updated=now() WHERE id=$1
 		RETURNING coalesce(dispatch_days,0)`,
 		l.ID, in.Title, in.Description, in.Category, in.Region, in.Kind, in.BTC, in.XMR, stock, in.DeliveryContent, in.DispatchDays, defaultDispatchDays).Scan(&saved.DispatchDays)
 	if err != nil {
@@ -197,12 +197,12 @@ func listingArchiveAction(c *actionCtx, archive bool) (actionResult, error) {
 	if !archive {
 		if ok, err := sellerIsVendorLocked(c, l.ID); err != nil || !ok {
 			if err == nil {
-				err = fail(409, "This listing's owner is no longer a vendor, so it cannot be restored.")
+				err = fail(409, "This listing's owner is no longer a vendor or is closing their account, so it cannot be restored.")
 			}
 			return actionResult{}, err
 		}
 	}
-	if _, err = c.Tx.ExecContext(c.Ctx(), `UPDATE products SET archived=$2,archived_at=CASE WHEN $2 THEN now() END,updated=now() WHERE id=$1`, l.ID, archive); err != nil {
+	if _, err = c.Tx.ExecContext(c.Ctx(), `UPDATE products SET archived=$2,archived_at=CASE WHEN $2 THEN now() END,private_expired_at=NULL,updated=now() WHERE id=$1`, l.ID, archive); err != nil {
 		return actionResult{}, err
 	}
 	action, res := "Restored", actionResult{Redirect: "/vendor-dashboard", Notice: "listing-restored"}
@@ -276,7 +276,7 @@ func adminListingAction(c *actionCtx) (actionResult, error) {
 			if current != "" {
 				return actionResult{}, fail(409, "This listing is already taken down; nothing was changed.")
 			}
-			if _, err = tx.ExecContext(ctx, "UPDATE products SET archived=true,archived_at=now(),admin_archive_reason=$2,updated=now() WHERE id=$1", id, reason); err != nil {
+			if _, err = tx.ExecContext(ctx, "UPDATE products SET archived=true,archived_at=now(),admin_archive_reason=$2,private_expired_at=NULL,updated=now() WHERE id=$1", id, reason); err != nil {
 				return actionResult{}, err
 			}
 			audit = "Took down listing " + short + " of " + handle + ": " + reason
@@ -288,11 +288,11 @@ func adminListingAction(c *actionCtx) (actionResult, error) {
 			}
 			if ok, err := sellerIsVendorLocked(c, id); err != nil || !ok {
 				if err == nil {
-					err = fail(409, "This listing's owner is no longer a vendor, so it cannot be restored. Nothing was changed.")
+					err = fail(409, "This listing's owner is no longer a vendor or is closing their account, so it cannot be restored. Nothing was changed.")
 				}
 				return actionResult{}, err
 			}
-			if _, err = tx.ExecContext(ctx, "UPDATE products SET archived=false,archived_at=NULL,admin_archive_reason=NULL,updated=now() WHERE id=$1", id); err != nil {
+			if _, err = tx.ExecContext(ctx, "UPDATE products SET archived=false,archived_at=NULL,admin_archive_reason=NULL,private_expired_at=NULL,updated=now() WHERE id=$1", id); err != nil {
 				return actionResult{}, err
 			}
 			audit = "Restored listing " + short + " of " + handle + " after a takedown"

@@ -41,7 +41,7 @@ func loadStaffAttention(ctx context.Context, a *App, _ *http.Request, d *PageDat
 	    AND (pm.disposition<>'escalated' OR $2='admin')),
 	 (SELECT count(*) FROM orders o JOIN products pr ON pr.id=o.product_id
 	  WHERE ` + escrowStaffAlertCandidates("o.id") + ` AND ` + escrowStaffAlert("o.id") + ` AND o.buyer_id<>$1 AND pr.vendor_id<>$1)
-	FROM users WHERE id=$1 AND role=$2 AND role IN ('moderator','admin') AND suspended_at IS NULL`
+	FROM users WHERE id=$1 AND role=$2 AND role IN ('moderator','admin') AND suspended_at IS NULL AND closed_at IS NULL AND retention_restricted_at IS NULL`
 	err = tx.QueryRowContext(ctx, query, d.User.ID, d.User.Role).Scan(&v.Disputes, &v.PaymentReviews, &v.EscrowAlerts)
 	if err != nil {
 		if err == sql.ErrNoRows {

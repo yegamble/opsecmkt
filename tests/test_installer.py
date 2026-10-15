@@ -211,6 +211,7 @@ def installed_env(**overrides):
         'APP_SECRET_KEY': hex_value(64, 'key'),
         'SETUP_TOKEN': hex_value(64, 'token'),
         'APP_MODE': 'tor',
+        'RETENTION_ENABLED': 'off',
         'COOKIE_SECURE': 'false',
         'APP_PORT': '8080',
         'COMPOSE_PROJECT_NAME': 'opsecmkt',
@@ -1737,6 +1738,13 @@ time.sleep(60)
         self.assertNotEqual(config['APP_SECRET_KEY'], config['SETUP_TOKEN'])
         self.assertNotIn(config['APP_SECRET_KEY'], result.stdout + result.stderr)
 
+    def test_init_retention_stays_off_despite_exported_opt_in(self):
+        result = self.run_installer([], arguments=['--local'], extra_env={'RETENTION_ENABLED': 'on'})
+        self.assert_started(result)
+        self.assertEqual(self.config()['RETENTION_ENABLED'], 'off')
+        for line in Path(str(self.log) + '.env').read_text().splitlines():
+            self.assertNotIn('RETENTION_ENABLED', json.loads(line))
+
     def test_init_flags_need_no_prompt(self):
         # Empty input: a question would stop the installer at "end of input".
         wallet = 'http://user:wallet-secret@wallet.example.test:18083'
@@ -2995,7 +3003,7 @@ time.sleep(60)
         config = self.config()
         example = example_values()
         for key in ('PAYMENT_EXPIRY', 'PAYMENT_POLL_INTERVAL', 'PAYMENT_CONFIRMATIONS_BTC', 'BITCOIN_WALLET',
-                    'MIGRATION_TIMEOUT', 'BITCOIN_IMAGE', 'MONERO_WALLET_IMAGE', 'BITCOIN_PRUNE_MB', 'MONERO_PRUNE_FLAGS'):
+                    'MIGRATION_TIMEOUT', 'BITCOIN_IMAGE', 'MONERO_WALLET_IMAGE', 'BITCOIN_PRUNE_MB', 'MONERO_PRUNE_FLAGS', 'RETENTION_ENABLED'):
             self.assertEqual(config[key], example[key], key)
         self.assertEqual(config['APP_PORT'], '18092')  # the port the caller runs it on
         self.assertEqual(config['COMPOSE_PROJECT_NAME'], 'opsecmkt')
@@ -3008,6 +3016,26 @@ time.sleep(60)
         self.assertRegex(result.stdout, r'added, with the values Compose already used: [A-Z_, ]*PAYMENT_EXPIRY')
         self.assert_no_secret_printed(result, values)
         self.assertEqual(self.calls()[-3:], [UP, STATUS, 'compose up -d --wait --force-recreate tor'])
+
+    def test_upgrade_preserves_explicit_retention_opt_in_despite_shell_override(self):
+        values = alpha_env(RETENTION_ENABLED='on')
+        self.write_env(values)
+        result = self.upgrade(extra_env={'RETENTION_ENABLED': 'off'})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.config()['RETENTION_ENABLED'], 'on')
+        for line in Path(str(self.log) + '.env').read_text().splitlines():
+            self.assertNotIn('RETENTION_ENABLED', json.loads(line))
+
+    def test_check_retention_setting_matches_application_values(self):
+        for value in ('', 'off', 'false', 'on', 'true', 'ON', 'yes'):
+            with self.subTest(value=value):
+                self.write_env(installed_env(RETENTION_ENABLED=value))
+                result = self.command('check')
+                if value in ('', 'off', 'false', 'on', 'true'):
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn('RETENTION_ENABLED must be on or off', result.stderr)
 
     def test_upgrade_takes_app_port_from_the_app_container(self):
         clearnet = dict(APP_MODE='clearnet', COMPOSE_FILE='compose.yaml:compose.clearnet.yaml:compose.nodes.yaml:compose.internal-db.yaml')

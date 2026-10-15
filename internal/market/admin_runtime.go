@@ -14,7 +14,7 @@ func loadAdminRuntime(ctx context.Context, a *App, _ *http.Request, d *PageData)
 		return nil
 	}
 	var version int
-	err := a.db.QueryRowContext(ctx, `SELECT COALESCE((SELECT max(version) FROM schema_migrations),0) FROM users WHERE id=$1 AND role='admin' AND suspended_at IS NULL`, d.User.ID).Scan(&version)
+	err := a.db.QueryRowContext(ctx, `SELECT COALESCE((SELECT max(version) FROM schema_migrations),0) FROM users WHERE id=$1 AND role='admin' AND suspended_at IS NULL AND closed_at IS NULL AND retention_restricted_at IS NULL`, d.User.ID).Scan(&version)
 	if err == sql.ErrNoRows {
 		return nil
 	}

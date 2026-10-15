@@ -104,12 +104,12 @@ func notifyConcededStaff(ctx context.Context, tx *sql.Tx, orderID, status string
 	if err := tx.QueryRowContext(ctx, `SELECT o.buyer_id,p.vendor_id FROM orders o JOIN products p ON p.id=o.product_id WHERE o.id=$1`, orderID).Scan(&buyerID, &vendorID); err != nil {
 		return err
 	}
-	staff, err := collectStrings(ctx, tx, "SELECT id FROM users WHERE role IN ('moderator','admin') AND suspended_at IS NULL AND id<>$1 AND id<>$2", buyerID, vendorID)
+	staff, err := collectStrings(ctx, tx, "SELECT id FROM users WHERE role IN ('moderator','admin') AND suspended_at IS NULL AND closed_at IS NULL AND retention_restricted_at IS NULL AND id<>$1 AND id<>$2", buyerID, vendorID)
 	if err != nil {
 		return err
 	}
 	if len(staff) == 0 {
-		staff, err = collectStrings(ctx, tx, "SELECT id FROM users WHERE role='admin' AND suspended_at IS NULL")
+		staff, err = collectStrings(ctx, tx, "SELECT id FROM users WHERE role='admin' AND suspended_at IS NULL AND closed_at IS NULL AND retention_restricted_at IS NULL")
 		if err != nil {
 			return err
 		}

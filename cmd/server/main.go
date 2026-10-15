@@ -60,7 +60,19 @@ func main() {
 	exportAuditFlag := flag.Int64("export-audit", 0, "host-only: export settled audit events up to this ID and their detached signature, then exit; starts no server or wallets")
 	exportAuditFrom := flag.Int64("export-audit-from", 0, "with -export-audit: exclude event IDs at or below this lower bound (default 0)")
 	exportAuditDir := flag.String("export-audit-dir", ".", "with -export-audit: existing directory for private export/signature files; refuses overwrite")
+	enrollRetentionFlag := flag.Bool("enroll-retention", false, "host-only: enroll the current original database and external retention state before backup or encoding migration; starts no server, replay, expiry or wallets")
 	flag.Parse()
+	if flagGiven("enroll-retention") {
+		if !*enrollRetentionFlag {
+			fmt.Fprintln(os.Stderr, "enroll-retention: use -enroll-retention without =false")
+			os.Exit(2)
+		}
+		if err := enrollRetention(context.Background(), flagGiven, flag.Args(), os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "enroll-retention:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if flagGiven("export-audit") || flagGiven("export-audit-from") || flagGiven("export-audit-dir") {
 		if err := exportAudit(context.Background(), *exportAuditFrom, *exportAuditFlag, *exportAuditDir, flagGiven, flag.Args(), os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, "export-audit:", err)

@@ -48,7 +48,7 @@
 </aside>{{end}}<main id="main" tabindex="-1">{{if .Preview}}<div class="notice preview-strip">
 <p>
 <strong>READ-ONLY PREVIEW</strong> · Sample data</p>
-</div>{{end}}{{if .Error}}<div class="alert error" role="alert">{{.Error}}</div>{{end}}{{if and .Notice (not .NoticeAt)}}<div class="alert" role="status">{{.Notice}}</div>{{end}}{{end}}
+</div>{{end}}{{if and .User .User.RetentionRestricted}}<div class="notice" role="status">Account closure is pending. Access is limited to existing orders and sign-in security{{if .User.RetentionContinuity}}; the operator must appoint a replacement administrator{{end}}. <a href="/account#retention">View retention status</a>.</div>{{end}}{{if .Error}}<div class="alert error" role="alert">{{.Error}}</div>{{end}}{{if and .Notice (not .NoticeAt)}}<div class="alert" role="status">{{.Notice}}</div>{{end}}{{end}}
 {{define "footer"}}</main>
 </div>
 <footer class="footer">

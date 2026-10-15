@@ -50,6 +50,9 @@ services:
       AUDIT_SIGNING_KEY: ${AUDIT_SIGNING_KEY:-}
       # Optional public OpenPGP recipient key file inside this container; mount it read-only in an override.
       AUDIT_EXPORT_RECIPIENT: ${AUDIT_EXPORT_RECIPIENT:-}
+      # Opt in after announcing retention and inventorying holds/backups; state must survive database rollback.
+      RETENTION_ENABLED: ${RETENTION_ENABLED:-off}
+      RETENTION_STATE_DIR: /var/lib/opsecmkt-retention
       # Bitcoin escrow: test networks (regtest, signet, testnet4), or mainnet on a mainnet market (BITCOIN_CHAIN=main, A-460);
       # off unless ESCROW_BTC=on; blank values use the app defaults (docs/operator-guide.md#bitcoin-escrow).
       ESCROW_BTC: ${ESCROW_BTC:-}
@@ -97,6 +100,7 @@ services:
     stop_grace_period: 60s
     read_only: true
     tmpfs: [/tmp]
+    volumes: [retention_state:/var/lib/opsecmkt-retention]
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     # Resource ceilings, so a flood or a leak in one container cannot starve the host (sizes and how to change
@@ -140,6 +144,7 @@ services:
     logging: *logging
 volumes:
   postgres_data:
+  retention_state:
 
 networks:
   backend:

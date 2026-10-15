@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 RUN install -d -o 65533 -g 65533 -m 0700 /var/lib/escrow-signer && install -d -o 65533 -g 65532 -m 0750 /run/escrow-signer
 # Only app writes the private administrator socket; tor-admin receives read/traverse access via group 65532.
 RUN install -d -o 65532 -g 65532 -m 0750 /run/market-admin
+RUN install -d -o 65532 -g 65532 -m 0700 /var/lib/opsecmkt-retention
 WORKDIR /app
 COPY --from=build /server /app/server
 COPY --from=build /escrow-signer /app/escrow-signer

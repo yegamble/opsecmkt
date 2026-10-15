@@ -12,15 +12,100 @@ import (
 	"io"
 	"opsecmkt/internal/market"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ProtonMail/go-crypto/openpgp"
 	"github.com/ProtonMail/go-crypto/openpgp/armor"
 	"github.com/ProtonMail/go-crypto/openpgp/packet"
 )
+
+func checkAuditRetentionMetadata(t *testing.T, dataPath, sigPath string, expectedCreated time.Time) {
+	t.Helper()
+	metadataPath := dataPath + ".retention.json"
+	content, err := os.ReadFile(metadataPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var metadata struct {
+		Version int    `json:"version"`
+		Kind    string `json:"kind"`
+		SHA256  string `json:"sha256"`
+		Created string `json:"created_at"`
+		Expires string `json:"expires_at"`
+		Files   []struct {
+			Name   string `json:"name"`
+			SHA256 string `json:"sha256"`
+		} `json:"files"`
+	}
+	if err = json.Unmarshal(content, &metadata); err != nil {
+		t.Fatal(err)
+	}
+	if metadata.Version != 1 || metadata.Kind != "audit_export" || metadata.Created != expectedCreated.Format(time.RFC3339) ||
+		metadata.Expires != expectedCreated.Add(180*24*time.Hour).Format(time.RFC3339) || len(metadata.Files) != 2 {
+		t.Fatalf("audit retention did not inherit the earliest event deadline: %+v", metadata)
+	}
+	var hashes []string
+	for i, path := range []string{dataPath, sigPath} {
+		issued, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		hash := sha256.Sum256(issued)
+		digest := hex.EncodeToString(hash[:])
+		if metadata.Files[i].Name != filepath.Base(path) || metadata.Files[i].SHA256 != digest {
+			t.Fatal("retention digest does not bind the original issued data/signature bytes")
+		}
+		hashes = append(hashes, digest)
+	}
+	pairHash := sha256.Sum256([]byte(hashes[0] + "\n" + hashes[1]))
+	if metadata.SHA256 != hex.EncodeToString(pairHash[:]) {
+		t.Fatal("retention pair digest is incompatible with host expiry")
+	}
+	info, err := os.Stat(metadataPath)
+	if err != nil || info.Mode().Perm() != 0600 {
+		t.Fatalf("metadata is not private: %v %v", info, err)
+	}
+	// Exercise the actual independent host expiry reader on the issued Go output,
+	// including encrypted bytes; matching field names alone is insufficient.
+	realDirectory, err := filepath.EvalSymlinks(filepath.Dir(dataPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	output, err := exec.Command("python3", "scripts/backup-retention.py", "expire", realDirectory).CombinedOutput()
+	if err != nil {
+		t.Fatalf("host expiry refused the issued audit pair: %v %s", err, output)
+	}
+	var counts map[string]int
+	if err = json.Unmarshal(output, &counts); err != nil || counts["expired"]+counts["retained"] != 1 || counts["deleted"] != 0 {
+		t.Fatalf("host expiry did not identify one issued pair in its dry run: %s %v", output, err)
+	}
+}
+
+func checkAuditMetadataCollision(t *testing.T, env []string, upto, base, suffix string) {
+	t.Helper()
+	dir := t.TempDir()
+	metadataPath := filepath.Join(dir, base+".jsonl"+suffix+".retention.json")
+	const existing = "keep the original retention clock"
+	if err := os.WriteFile(metadataPath, []byte(existing), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, stderr, code := runServer(t, env, "-export-audit", upto, "-export-audit-dir", dir); code == 0 || !strings.Contains(stderr, "cannot create audit retention metadata") {
+		t.Fatalf("metadata collision accepted: exit=%d stderr=%q", code, stderr)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 1 || entries[0].Name() != filepath.Base(metadataPath) {
+		t.Fatalf("metadata collision left partial pair: %v %v", entries, err)
+	}
+	preserved, err := os.ReadFile(metadataPath)
+	if err != nil || string(preserved) != existing {
+		t.Fatal("metadata collision rewrote the original clock")
+	}
+}
 
 func TestExportAuditCLIIsPrivateReadOnlyAndVerifiable(t *testing.T) {
 	dsn := cliSchema(t)
@@ -53,6 +138,7 @@ func TestExportAuditCLIIsPrivateReadOnlyAndVerifiable(t *testing.T) {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", code, out, stderr)
 	}
 	dataPath, sigPath := filepath.Join(dir, base+".jsonl"), filepath.Join(dir, base+".sig")
+	checkAuditRetentionMetadata(t, dataPath, sigPath, time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC))
 	data, err := os.ReadFile(dataPath)
 	if err != nil {
 		t.Fatal(err)
@@ -135,6 +221,11 @@ func TestExportAuditCLIIsPrivateReadOnlyAndVerifiable(t *testing.T) {
 	if string(saved) != "keep" {
 		t.Fatal("failed pair changed existing signature")
 	}
+	entries, err := os.ReadDir(blocked)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("failed pair left partial retention metadata: %v %v", entries, err)
+	}
+	checkAuditMetadataCollision(t, env, upto, base, "")
 }
 
 func TestExportAuditRefusesInvalidInvocationBeforeConnecting(t *testing.T) {
@@ -188,6 +279,35 @@ func TestExportAuditRecipientRefusedBeforeDatabaseLookup(t *testing.T) {
 	}
 }
 
+func TestExportAuditCLIEmptyRangeCreatesNoArtifacts(t *testing.T) {
+	dsn := cliSchema(t)
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var upto int64
+	var before int
+	if err = db.QueryRow("SELECT max(id),count(*) FROM audit_events").Scan(&upto, &before); err != nil {
+		t.Fatal(err)
+	}
+	const seed = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+	dir := t.TempDir()
+	boundary := strconv.FormatInt(upto, 10)
+	stdout, stderr, code := runServer(t, []string{"AUDIT_SIGNING_KEY=" + seed}, "-export-audit", boundary, "-export-audit-from", boundary, "-export-audit-dir", dir)
+	if code != 0 || stderr != "" || stdout != "No retained audit events in the requested range; no files created.\n" {
+		t.Fatalf("empty export: exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("empty export created timestamp artifacts: %v %v", entries, err)
+	}
+	var after int
+	if err = db.QueryRow("SELECT count(*) FROM audit_events").Scan(&after); err != nil || after != before {
+		t.Fatal("empty export changed retained audit records")
+	}
+}
+
 func TestExportAuditCLIEncryptedPairIsPrivateAndVerifiable(t *testing.T) {
 	dsn := cliSchema(t)
 	db, err := sql.Open("pgx", dsn)
@@ -196,7 +316,7 @@ func TestExportAuditCLIEncryptedPairIsPrivateAndVerifiable(t *testing.T) {
 	}
 	defer db.Close()
 	var upto int64
-	if err := db.QueryRow("INSERT INTO audit_events(action) VALUES('encrypted-private-event-marker') RETURNING id").Scan(&upto); err != nil {
+	if err := db.QueryRow("INSERT INTO audit_events(action,created) VALUES('encrypted-private-event-marker','2026-02-02T03:04:05Z') RETURNING id").Scan(&upto); err != nil {
 		t.Fatal(err)
 	}
 	const seed = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
@@ -232,6 +352,7 @@ func TestExportAuditCLIEncryptedPairIsPrivateAndVerifiable(t *testing.T) {
 		t.Fatalf("encrypted CLI: %d %q %q", code, out, stderr)
 	}
 	base := fmt.Sprintf("audit-events-upto-%d", upto)
+	checkAuditRetentionMetadata(t, filepath.Join(dir, base+".jsonl.asc"), filepath.Join(dir, base+".sig.asc"), time.Date(2026, time.February, 2, 3, 4, 5, 0, time.UTC))
 	decrypt := func(ciphertext []byte) []byte {
 		t.Helper()
 		block, err := armor.Decode(bytes.NewReader(ciphertext))
@@ -271,7 +392,7 @@ func TestExportAuditCLIEncryptedPairIsPrivateAndVerifiable(t *testing.T) {
 		}
 	}
 	entries, err := os.ReadDir(dir)
-	if err != nil || len(entries) != 2 {
+	if err != nil || len(entries) != 3 {
 		t.Fatalf("encrypted export created unexpected files: %v %v", entries, err)
 	}
 	// The decrypted detached signature is still Ed25519 over the exact plaintext.
@@ -309,4 +430,9 @@ func TestExportAuditCLIEncryptedPairIsPrivateAndVerifiable(t *testing.T) {
 	if string(saved) != "keep" {
 		t.Fatal("failed pair changed existing encrypted signature")
 	}
+	entries, err = os.ReadDir(blocked)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("failed encrypted pair left partial retention metadata: %v %v", entries, err)
+	}
+	checkAuditMetadataCollision(t, env, fmt.Sprint(upto), base, ".asc")
 }

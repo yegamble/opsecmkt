@@ -433,9 +433,11 @@ func (a *App) xmrEnsureWallets(ctx context.Context, now time.Time) error {
 			// The month's next number: an orphan row keeps its name, and the next wallet takes the one after it.
 			var id int64
 			var name string
-			if err = a.db.QueryRowContext(ctx, `INSERT INTO xmr_escrow_wallets(name,month,state)
-				SELECT 'escrow-'||to_char($1::date,'YYYYMM')||'-'||lpad((COALESCE(max(substr(name,15,2)::int),0)+1)::text,2,'0'),$1::date,'creating'
-				FROM xmr_escrow_wallets WHERE month=$1::date RETURNING id,name`, month).Scan(&id, &name); err != nil {
+			if err = a.db.QueryRowContext(ctx, `WITH allocation AS (
+				INSERT INTO retention_xmr_wallet_names(month,next_n) VALUES($1::date,2)
+				ON CONFLICT(month) DO UPDATE SET next_n=retention_xmr_wallet_names.next_n+1 WHERE retention_xmr_wallet_names.next_n<=99 RETURNING next_n-1 AS n)
+				INSERT INTO xmr_escrow_wallets(name,month,state)
+				SELECT 'escrow-'||to_char($1::date,'YYYYMM')||'-'||lpad(n::text,2,'0'),$1::date,'creating' FROM allocation RETURNING id,name`, month).Scan(&id, &name); err != nil {
 				return err
 			}
 			if err = a.xmrCreateWallet(ctx, id, name, false); err != nil {

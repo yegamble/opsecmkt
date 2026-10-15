@@ -296,13 +296,16 @@ func confirmedTxWith(c *actionCtx, opts *confirmation, run func(c *actionCtx) (a
 	// The account row is locked, with or without a confirmation, and its role and suspension read again: a demotion
 	// or suspension committed after this request's session was loaded refuses the change (A-156). Either one locks
 	// this row too, so it is waited for.
-	var totp, suspended bool
+	var totp, suspended, retentionRestricted bool
 	var role, currentHash string
-	if err = tx.QueryRowContext(ctx, "SELECT totp_enabled,role,suspended_at IS NOT NULL,password_hash FROM users WHERE id=$1 FOR NO KEY UPDATE", uid).Scan(&totp, &role, &suspended, &currentHash); err != nil {
+	if err = tx.QueryRowContext(ctx, "SELECT totp_enabled,role,suspended_at IS NOT NULL OR closed_at IS NOT NULL,password_hash,retention_restricted_at IS NOT NULL FROM users WHERE id=$1 FOR NO KEY UPDATE", uid).Scan(&totp, &role, &suspended, &currentHash, &retentionRestricted); err != nil {
 		return actionResult{}, err
 	}
 	if role != c.User.Role || suspended {
 		return actionResult{}, errAccountChanged
+	}
+	if retentionRestricted && (c.R == nil || !retentionActionAllowed(c.R.URL.Path)) {
+		return actionResult{}, fail(403, retentionRestrictedMessage)
 	}
 	if receipt {
 		if confirm && subtle.ConstantTimeCompare([]byte(verifiedHash), []byte(currentHash)) != 1 {
@@ -539,12 +542,12 @@ type signInAccount struct {
 func lookupSignInAccount(ctx context.Context, db *sql.DB, handle string) (signInAccount, error) {
 	var account signInAccount
 	err := db.QueryRowContext(ctx, `SELECT id,password_hash,role,suspended_at IS NOT NULL,totp_enabled
-		FROM users WHERE handle=$1`, handle).Scan(&account.id, &account.hash, &account.role, &account.suspended, &account.totpEnabled)
+		FROM users WHERE handle=$1 AND closed_at IS NULL`, handle).Scan(&account.id, &account.hash, &account.role, &account.suspended, &account.totpEnabled)
 	if !errors.Is(err, sql.ErrNoRows) {
 		return account, err
 	}
 	rows, err := db.QueryContext(ctx, `SELECT id,password_hash,role,suspended_at IS NOT NULL,totp_enabled
-		FROM users WHERE lower(handle)=lower($1) LIMIT 2`, handle)
+		FROM users WHERE lower(handle)=lower($1) AND closed_at IS NULL LIMIT 2`, handle)
 	if err != nil {
 		return signInAccount{}, err
 	}
@@ -1031,7 +1034,7 @@ func challengeLoader(ctx context.Context, a *App, r *http.Request, d *PageData) 
 func (a *App) startSession(ctx context.Context, tx *sql.Tx, id, old, method, passwordDigest string) (string, error) {
 	var suspended, totp, pgp bool
 	var hash, role string
-	if err := tx.QueryRowContext(ctx, "SELECT suspended_at IS NOT NULL,password_hash,totp_enabled,pgp_2fa,role FROM users WHERE id=$1 FOR SHARE", id).Scan(&suspended, &hash, &totp, &pgp, &role); err != nil {
+	if err := tx.QueryRowContext(ctx, "SELECT suspended_at IS NOT NULL OR closed_at IS NOT NULL,password_hash,totp_enabled,pgp_2fa,role FROM users WHERE id=$1 FOR NO KEY UPDATE", id).Scan(&suspended, &hash, &totp, &pgp, &role); err != nil {
 		return "", err
 	}
 	if a.publicAdministrator(ctx, &User{Role: role}) {
@@ -1051,6 +1054,9 @@ func (a *App) startSession(ctx context.Context, tx *sql.Tx, id, old, method, pas
 		return "", err
 	}
 	if _, err := tx.ExecContext(ctx, "INSERT INTO sessions(token_hash,user_id,expires) VALUES($1,$2,now()+interval '12 hours')", digest(token), id); err != nil {
+		return "", err
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE users SET last_authenticated_at=now(),inactivity_notified_at=NULL WHERE id=$1 AND deletion_requested_at IS NULL", id); err != nil {
 		return "", err
 	}
 	if _, err := tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", id, "Signed in with "+method); err != nil {

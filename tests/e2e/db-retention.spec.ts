@@ -1,0 +1,71 @@
+import { execFileSync } from 'node:child_process';
+import { expect, test } from '@playwright/test';
+import { ADMIN, uniqueHandle } from './db-fixtures';
+import { waitForStyles } from './styles';
+import { signedIn, submitStatus } from './db-helpers';
+
+test('retention disclosure and confirmed account deletion work without JavaScript', async ({ browser, baseURL }) => {
+  const password = 'browser-retention-password-123';
+  const buyer = await signedIn(browser, baseURL, uniqueHandle('retention'), password, true, 320);
+  await buyer.goto('/account');
+  const section = buyer.getByRole('region', { name: 'Retention and account deletion' });
+  if (!process.env.E2E_RETENTION_STATE_DIR) {
+    await expect(section).toContainText('Retention maintenance is not enabled');
+    await expect(section.getByRole('button', { name: 'Request account deletion' })).toHaveCount(0);
+    await buyer.context().close();
+    return;
+  }
+  await expect(section).toContainText('messages expire after 90 days');
+  await section.getByLabel('I have saved the records I need').check();
+  await section.getByLabel('Current password').fill('wrong-retention-password');
+  expect(await submitStatus(buyer, () => section.getByRole('button', { name: 'Request account deletion' }).click())).toBe(401);
+  await buyer.goto('/account');
+  await section.getByLabel('I have saved the records I need').check();
+  await section.getByLabel('Current password').fill(password);
+  expect(await submitStatus(buyer, () => section.getByRole('button', { name: 'Request account deletion' }).click())).toBe(303);
+  await expect(section).toContainText('Your deletion request was accepted');
+  await buyer.reload();
+  await expect(section).toContainText('Signing in does not cancel this request');
+  await expect(section.getByRole('button', { name: 'Request account deletion' })).toHaveCount(0);
+  await waitForStyles(buyer);
+  expect(await buyer.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
+  await buyer.context().close();
+});
+
+test('preservation confirmation stays private and can be released without JavaScript', async ({ browser, baseURL }) => {
+  test.skip(!process.env.E2E_RETENTION_STATE_DIR, 'Run with an isolated E2E_RETENTION_STATE_DIR to enable retention');
+  const handle = uniqueHandle('held');
+  const buyer = await signedIn(browser, baseURL, handle, 'browser-held-password-123', true);
+  const recordID = execFileSync('psql', [process.env.E2E_DATABASE_URL!, '-v', 'ON_ERROR_STOP=1', '-qtAc', `SELECT id FROM users WHERE handle='${handle}'`], { encoding: 'utf8' }).trim();
+  await buyer.context().close();
+  const admin = await signedIn(browser, baseURL, ADMIN.handle, ADMIN.password, false, 320);
+  await admin.goto('/admin');
+  const section = admin.getByRole('region', { name: 'Retention and preservation' });
+  await section.getByText('Register a preservation hold', { exact: true }).click();
+  const form = section.locator('form[action="/admin/retention/hold"]').first();
+  await form.getByRole('combobox', { name: 'Scope', exact: true }).selectOption('account');
+  await form.getByLabel('Record identifier').fill(recordID);
+  await form.getByLabel('Applicable authority').fill('Specific test preservation duty');
+  await form.getByLabel('Reason', { exact: true }).fill('Private case reason for browser regression');
+  await form.getByLabel('Authorized readers').fill('Assigned case handler');
+  await form.getByLabel('Release condition').fill('Written release of test duty');
+  await form.getByLabel('I verified the duty').check();
+  await form.getByLabel('Current password').fill(ADMIN.password);
+  expect(await submitStatus(admin, () => form.getByRole('button', { name: 'Register hold for review within 30 days' }).click())).toBe(303);
+  const hold = section.locator('article').filter({ hasText: recordID });
+  await expect(hold).toContainText('Private case reason for browser regression');
+  await waitForStyles(admin);
+  expect(await admin.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
+  const visitor = await browser.newContext({ baseURL, javaScriptEnabled: false });
+  const page = await visitor.newPage();
+  await page.goto('/canary');
+  await expect(page.locator('body')).not.toContainText('Private case reason for browser regression');
+  await visitor.close();
+  await hold.getByText('Release this hold', { exact: true }).click();
+  const release = hold.locator('form[action="/admin/retention/release"]');
+  await release.getByLabel('The duty has ended').check();
+  await release.getByLabel('Current password').fill(ADMIN.password);
+  expect(await submitStatus(admin, () => release.getByRole('button', { name: 'Release preservation hold' }).click())).toBe(303);
+  await expect(section).toContainText('No active preservation holds');
+  await admin.context().close();
+});

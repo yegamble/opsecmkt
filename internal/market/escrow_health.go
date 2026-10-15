@@ -135,7 +135,7 @@ func (a *App) saveEscrowHealthUnavailable(ctx context.Context, class string) {
 func highestEscrowMarketIndex(ctx context.Context, db *sql.DB) (int64, error) {
 	var index int64
 	err := db.QueryRowContext(ctx, `SELECT GREATEST(COALESCE((SELECT max(market_index) FROM escrows WHERE coin='BTC'),0),
-		(SELECT last_value FROM escrow_market_index))`).Scan(&index)
+		(SELECT last_value FROM escrow_market_index),(SELECT allocation_next_index-1 FROM retention_escrow_global_floors WHERE kind='market'))`).Scan(&index)
 	return index, err
 }
 

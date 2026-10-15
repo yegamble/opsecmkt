@@ -31,7 +31,7 @@
 # touched.
 set -euo pipefail
 umask 077
-unset COMPOSE_PROFILES COMPOSE_FILE
+unset COMPOSE_PROFILES COMPOSE_FILE BACKUP_RECOVERY_SOURCE
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
 for dependency in docker go python3 age age-keygen; do
@@ -44,6 +44,7 @@ if docker container inspect "$container" >/dev/null 2>&1; then
   exit 1
 fi
 work=$(mktemp -d "${TMPDIR:-/tmp}/opsecmkt-utf8.XXXXXX")
+work=$(cd "$work" && pwd -P)
 server_pid=''
 
 stop_server() {
@@ -152,11 +153,21 @@ while IFS= read -r line; do step6+=("$line"); done < <(doc_lines round_trip)
 
 # backup DATABASE FILE: scripts/backup.sh of DATABASE (BACKUP_DUMP_ENCODING passes through from the caller).
 backup() {
-  PATH="$work/bin:$PATH" BACKUP_DATABASE_URL=$(url "$1") AGE_RECIPIENT=$recipient scripts/backup.sh "$2" > "$work/backup.log" 2>&1
+  PATH="$work/bin:$PATH" BACKUP_DATABASE_URL=$(url "$1") AGE_RECIPIENT=$recipient scripts/backup.sh "$2" > "$work/backup.log" 2>&1 || return "$?"
+  # Test-only locator for the CURRENT external state. The state itself is never
+  # bundled into the database backup or rolled back with that archive.
+  if [[ -f $work/retention-$1/retention-state.json ]]; then
+    printf '%s\n' "$work/retention-$1" > "$2.current-retention-location"
+  fi
 }
 # restore_into FILE DATABASE: scripts/restore.sh into the existing, empty DATABASE; its status.
 restore_into() {
-  PATH="$work/bin:$PATH" RESTORE_DATABASE_URL=$(url "$2") AGE_IDENTITY="$work/identity" scripts/restore.sh "$1" <<< RESTORE > "$work/restore-$2.log" 2>&1
+  PATH="$work/bin:$PATH" RESTORE_DATABASE_URL=$(url "$2") AGE_IDENTITY="$work/identity" scripts/restore.sh "$1" <<< RESTORE > "$work/restore-$2.log" 2>&1 || return "$?"
+  if [[ -f $1.current-retention-location ]]; then
+    local current
+    IFS= read -r current < "$1.current-retention-location"
+    cp -R "$current" "$work/retention-$2"
+  fi
 }
 # restore FILE DATABASE: creates DATABASE (UTF8, section 42 step 4's statement) and restores FILE into it; its status.
 restore() {
@@ -187,6 +198,7 @@ step6_command() {
 round_trip() {
   local index
   : > "$work/round-trip.log"
+  replay_restored "$1" || return "$?"
   for index in 0 1 2; do
     step6_command "$index" "$1" "$work/$1-check.dump.age" >> "$work/round-trip.log" 2>&1 || {
       sql postgres -c 'DROP DATABASE IF EXISTS opsecmkt_utf8_check' >/dev/null 2>&1 || true
@@ -227,6 +239,23 @@ PY
 wait_healthy
 stop_server
 
+# Enrollment of an ORIGINAL non-UTF8 database starts no server, replay, expiry or
+# wallet. Restored UTF8 databases then replay the separately supplied CURRENT
+# state through normal isolated startup before becoming new backup sources.
+enroll_original() {
+  env -i PATH="$PATH" DATABASE_URL="$(url "$1")" RETENTION_ENABLED=on RETENTION_STATE_DIR="$work/retention-$1" \
+    "$work/server" -enroll-retention > "$work/enroll-$1.log" 2>&1
+}
+replay_restored() {
+  [[ -f $work/retention-$1/retention-state.json ]] || { echo "Missing current retention state for $1" >&2; return 1; }
+  (exec env -i PATH="$PATH" DATABASE_URL="$(url "$1")" SETUP_TOKEN=utf8-migration-test-token-only-0123456789 COOKIE_SECURE=false \
+    RETENTION_ENABLED=on RETENTION_STATE_DIR="$work/retention-$1" ADDR="127.0.0.1:$app_port" "$work/server") > "$work/server-replay-$1.log" 2>&1 &
+  server_pid=$!
+  wait_healthy || { stop_server; return 1; }
+  stop_server
+  [[ $(sql "$1" -c "SELECT value FROM settings WHERE key='retention_restore_required'") == false ]]
+}
+
 title='Crème brûlée — 東京 🔒'
 title_hex=$(hex "$title")
 bad_hex=477265617420fffe2073656c6c6572  # "Great \xff\xfe seller"
@@ -250,6 +279,7 @@ SQL
   # The section's own command for it (before you upgrade), with DATABASE_URL exported: psql prints the encoding in a table.
   [[ $(env DATABASE_URL="$(url "$1")" PATH="$work/bin:$PATH" bash -euo pipefail -c "$show_encoding_cmd" | grep -cw "$2") == 1 ]] ||
     fail "section 42's SHOW server_encoding did not print $2 for $1"
+  enroll_original "$1"
 }
 
 echo 'SQL_ASCII: a review with bytes that are not UTF-8'
@@ -307,6 +337,7 @@ end_round_trip ascii_fixed || fail 'step 6 could not drop its scratch database'
 [[ $(text_hex ascii_fixed "SELECT title FROM products WHERE id='utf8mixed'") == "$(hex 'Crème brûlée')" ]] || fail 'the typed title'
 [[ $(text_hex ascii_fixed "SELECT description FROM products WHERE id='utf8mixed'") == "$(hex 'été')" ]] || fail 'the corrected description'
 (exec env -i PATH="$PATH" DATABASE_URL="$(url ascii_fixed)" SETUP_TOKEN=utf8-migration-test-token-only-0123456789 COOKIE_SECURE=false \
+  RETENTION_ENABLED=on RETENTION_STATE_DIR="$work/retention-ascii_fixed" \
   ADDR="127.0.0.1:$app_port" "$work/server") > "$work/server-ascii.log" 2>&1 &
 server_pid=$!
 wait_healthy || fail 'the server did not start on the new database'
@@ -405,7 +436,10 @@ grep -q 'restore it into a temporary LATIN1 database' "$work/restore-latin1_set.
 sql postgres -c "CREATE DATABASE latin1_set_tmp ENCODING 'LATIN1' LC_COLLATE 'C' LC_CTYPE 'C' TEMPLATE template0"
 age -d -i "$work/identity" "$work/latin1-set.dump.age" | PATH="$work/bin:$PATH" TMP_DATABASE_URL=$(url latin1_set_tmp) \
   python3 scripts/postgres-tool.py TMP_DATABASE_URL pg_restore --dbname='' --exit-on-error --no-owner --no-acl
-BACKUP_DUMP_ENCODING=SQL_ASCII backup latin1_set_tmp "$work/latin1-set-again.dump.age"
+# This isolated encoding-conversion database inherits the original's identity;
+# keep its CURRENT state, never invent a new enrollment for a restored copy.
+cp -R "$work/retention-latin1_old" "$work/retention-latin1_set_tmp"
+BACKUP_RECOVERY_SOURCE="$work/latin1-set.dump.age" BACKUP_DUMP_ENCODING=SQL_ASCII backup latin1_set_tmp "$work/latin1-set-again.dump.age"
 restore "$work/latin1-set-again.dump.age" latin1_set_escape || fail 'restore.sh refused the backup of the temporary LATIN1 database (UTF8 dump)'
 for column in "title FROM products WHERE id='utf8product'" "body FROM reviews WHERE id='utf8review'"; do
   [[ $(text_hex latin1_set_escape "SELECT $column") == "$title_hex" ]] || fail "LATIN1 dumped as UTF8, through a temporary LATIN1 database: $column"
@@ -445,7 +479,15 @@ PATH="$work/bin:$PATH" NEW_DATABASE_URL=$(url opsecmkt_utf8) LATIN1_DATABASE_URL
   AGE_IDENTITY="$work/identity" bash -euo pipefail -c "$escape_block" > "$work/escape.log" 2>&1 ||
   fail "section 42's way out, run as printed before step 4, failed"
 check opsecmkt_latin1 || fail 'check-utf8.sql failed on the temporary LATIN1 database'
-BACKUP_DUMP_ENCODING=SQL_ASCII backup opsecmkt_latin1 "$work/latin1-again.dump.age"
+cp -R "$work/retention-latin1_old" "$work/retention-opsecmkt_latin1"
+BACKUP_RECOVERY_SOURCE="$work/latin1.dump.age" BACKUP_DUMP_ENCODING=SQL_ASCII backup opsecmkt_latin1 "$work/latin1-again.dump.age"
+# The encoding-conversion derivative keeps the old archive's deadline rather
+# than acquiring the temporary database's new pg_dump creation time.
+python3 - "$work/latin1.dump.age.retention.json" "$work/latin1-again.dump.age.retention.json" <<'PY'
+import json,sys
+original,derived=[json.load(open(path)) for path in sys.argv[1:]]
+assert (original['created_at'],original['expires_at']) == (derived['created_at'],derived['expires_at'])
+PY
 # Steps 4 and 5: opsecmkt_utf8 created, the backup of the temporary database restored into it with restore.sh.
 # (Step 4 as printed, through the maintenance database; restore.sh is then run into the database it made.)
 env MAINTENANCE_DATABASE_URL="$(url postgres)" PATH="$work/bin:$PATH" bash -euo pipefail -c "$create_utf8_cmd" > "$work/create-utf8.log" 2>&1 ||

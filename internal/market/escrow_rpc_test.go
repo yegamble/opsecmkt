@@ -109,6 +109,7 @@ func TestEscrowRPCPinsParams(t *testing.T) {
 		// P1-d1: reconciliation reads the watch-only wallet only: the spender of an escrow deposit and its address book.
 		{"listtransactions", fakeWatchWallet, `["*",100,0,true]`, func() error { _, err := e.walletSpenders(ctx, map[string]bool{"txw:1": true}); return err }},
 		{"listreceivedbyaddress", fakeWatchWallet, `[0,true,true]`, func() error { _, err := e.watchedAddresses(ctx); return err }},
+		{"setlabel", fakeWatchWallet, `["bcrt1qretired00000000","retired"]`, func() error { return e.retireAddressLabel(ctx, "bcrt1qretired00000000") }},
 		// QA4W4A-1: the start check reads the arbiter wallet's entries (everything, or since a checkpoint block), with
 		// include_change.
 		{"listsinceblock", arb, `["",1,true,false,true]`, func() error { _, _, err := e.arbiterSends(ctx, ""); return err }},

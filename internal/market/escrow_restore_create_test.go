@@ -74,6 +74,10 @@ func (x *escrowEnv) escrowKeys(order string) (int64, []string) {
 func TestEscrowCheckoutSkipsAddressTheWalletWatches(t *testing.T) {
 	logs := captureLog(t)
 	x := newEscrowEnv(t)
+	var backupAllocation int64
+	if err := x.DB.QueryRow(`SELECT allocation_next_index FROM retention_escrow_global_floors WHERE kind='market'`).Scan(&backupAllocation); err != nil {
+		t.Fatal(err)
+	}
 	want := func(party, market int64) []string {
 		p := "/0/" + strconv.FormatInt(party, 10)
 		return []string{"buyer " + p, "market /0/" + strconv.FormatInt(market, 10), "vendor " + p}
@@ -90,6 +94,10 @@ func TestEscrowCheckoutSkipsAddressTheWalletWatches(t *testing.T) {
 	if _, err := x.DB.Exec("SELECT setval('escrow_market_index',$1,false)", lostIdx); err != nil {
 		t.Fatal(err)
 	}
+	// The old database snapshot also predates the transactional allocation
+	// highwater. Keep any irreversible retirement floor, but restore the normal
+	// allocation counter so this test reaches the watched-address collision.
+	agExec(x.testEnv, `UPDATE retention_escrow_global_floors SET allocation_next_index=GREATEST(next_index,$1) WHERE kind='market'`, backupAllocation)
 	asked := len(x.watchInfoCalls())
 	imports := len(x.core.importedDescriptors())
 

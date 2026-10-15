@@ -2,13 +2,17 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"opsecmkt/internal/market"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // exportAudit writes a private, detached-signature pair from the existing database. No application starts.
@@ -41,6 +45,14 @@ func exportAudit(ctx context.Context, from, upto int64, dir string, given func(s
 		if err != nil {
 			return err
 		}
+		if len(data) == 0 {
+			_, err = fmt.Fprintln(out, "No retained audit events in the requested range; no files created.")
+			return err
+		}
+		created, expires, err := market.AuditExportRetention(data)
+		if err != nil {
+			return err
+		}
 		// Signatures are over plaintext; encrypt both in memory before creating
 		// either output so a configured recipient never leaves plaintext files.
 		if data, err = recipient.Encrypt(data); err != nil {
@@ -62,6 +74,37 @@ func exportAudit(ctx context.Context, from, upto int64, dir string, given func(s
 				os.Remove(jsonPath)
 			}
 		}()
+		metadataPath := jsonPath + ".retention.json"
+		metadataFile, err := os.OpenFile(metadataPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		if err != nil {
+			return errors.New("cannot create audit retention metadata; use a new output range")
+		}
+		defer func() {
+			metadataFile.Close()
+			if !complete {
+				os.Remove(metadataPath)
+			}
+		}()
+		fileHash := func(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(h[:]) }
+		dataHash, sigHash := fileHash(data), fileHash(sig)
+		metadata := struct {
+			Version int                 `json:"version"`
+			Kind    string              `json:"kind"`
+			SHA256  string              `json:"sha256"`
+			Created string              `json:"created_at"`
+			Expires string              `json:"expires_at"`
+			Files   []map[string]string `json:"files"`
+		}{1, "audit_export", fileHash([]byte(dataHash + "\n" + sigHash)), created.Format(time.RFC3339), expires.Format(time.RFC3339),
+			[]map[string]string{{"name": filepath.Base(jsonPath), "sha256": dataHash}, {"name": filepath.Base(sigPath), "sha256": sigHash}}}
+		if err = json.NewEncoder(metadataFile).Encode(metadata); err == nil {
+			err = metadataFile.Sync()
+		}
+		if err == nil {
+			err = metadataFile.Close()
+		}
+		if err != nil {
+			return errors.New("unable to write audit retention metadata")
+		}
 		sigFile, err := os.OpenFile(sigPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 		if err != nil {
 			return errors.New("cannot create signature file; use an existing writable directory and a new range")
@@ -95,7 +138,7 @@ func exportAudit(ctx context.Context, from, upto int64, dir string, given func(s
 		if recipient != nil {
 			instruction = "Decrypt both offline, then verify with verify-audit and your pinned signing public key."
 		}
-		_, err = fmt.Fprintf(out, "Saved %s and %s. %s\n", jsonPath, sigPath, instruction)
+		_, err = fmt.Fprintf(out, "Saved %s and %s with retention metadata %s (expires %s). %s\n", jsonPath, sigPath, metadataPath, expires.Format(time.RFC3339), instruction)
 		return err
 	})
 }

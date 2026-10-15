@@ -2,6 +2,7 @@ package market
 
 import (
 	"context"
+	"database/sql"
 	"net/url"
 	"strings"
 	"testing"
@@ -14,14 +15,45 @@ func clearObsoletePooledEnv(t *testing.T) {
 	}
 }
 
-// restoreSchema106 puts the database back as migration 106 left it (107 changes intake, not table layout), so a test
-// can seed pooled rows that migration 108 now refuses.
-func restoreSchema106(t *testing.T, e *testEnv) {
+// newPooledHistoricalFixture builds the actual historical schema before adding
+// test rows. Undoing a fixed tail of the current schema leaves newer migration
+// markers and guards behind as soon as another migration is added.
+func newPooledHistoricalFixture(t *testing.T, upto int) *testEnv {
 	t.Helper()
-	restoreSchema107(t, e)
-	if _, err := e.DB.Exec("DELETE FROM schema_migrations WHERE version=107"); err != nil {
+	db, err := sql.Open("pgx", testSchemaDSN(t))
+	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { db.Close() })
+	list, err := loadMigrations(migrationFiles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var historical []migration
+	for _, m := range list {
+		if m.Version <= upto {
+			historical = append(historical, m)
+		}
+	}
+	tx, err := db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(t.Context(), schema); err == nil {
+		err = applyMigrations(t.Context(), tx, historical)
+	}
+	if err == nil {
+		err = tx.Commit()
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := &testEnv{t: t, DB: db}
+	if version := agInt(e, "SELECT max(version) FROM schema_migrations"); version != upto {
+		t.Fatalf("historical fixture version %d, want %d", version, upto)
+	}
+	return e
 }
 
 func applyLatestMigrations(t *testing.T, e *testEnv) error {
@@ -83,7 +115,7 @@ func TestFreshEscrowOnlyInstallCannotFallBackToPooledPayments(t *testing.T) {
 
 func TestMigration107RefusesUndrainedLegacyWithoutChangesThenRestoredRerunPasses(t *testing.T) {
 	clearObsoletePooledEnv(t)
-	e := newTestApp(t)
+	e := newPooledHistoricalFixture(t, 106)
 	buyer, _ := e.user("migration107_buyer", "buyer")
 	vendor, _ := e.user("migration107_vendor", "vendor")
 	product := e.product(vendor, "digital")
@@ -92,7 +124,6 @@ func TestMigration107RefusesUndrainedLegacyWithoutChangesThenRestoredRerunPasses
 	if _, err := e.DB.Exec(`UPDATE orders SET updated=now()-interval '40 days' WHERE id=$1`, closed); err != nil {
 		t.Fatal(err)
 	}
-	restoreSchema106(t, e)
 	if _, err := e.DB.Exec(`INSERT INTO payment_addresses(order_id,currency,address,provider,created)
 		VALUES($1,'BTC','bcrt1qlegacy107history00000000000000000000','btc-regtest',now()-interval '40 days')`, closed); err != nil {
 		t.Fatal(err)
@@ -182,11 +213,10 @@ func TestMigration107RefusesUndrainedLegacyWithoutChangesThenRestoredRerunPasses
 
 func TestMigration107RefusesMainnetAddressHistory(t *testing.T) {
 	clearObsoletePooledEnv(t)
-	e := newTestApp(t)
+	e := newPooledHistoricalFixture(t, 106)
 	buyer, _ := e.user("migration107_mainnet_buyer", "buyer")
 	vendor, _ := e.user("migration107_mainnet_vendor", "vendor")
 	order := e.order(buyer, e.product(vendor, "digital"), "BTC", "draft")
-	restoreSchema106(t, e)
 	if _, err := e.DB.Exec(`INSERT INTO payment_addresses(order_id,currency,address,provider)
 		VALUES($1,'BTC','bc1qlegacy107mainnet000000000000000000000','btc-main')`, order); err != nil {
 		t.Fatal(err)
@@ -208,7 +238,7 @@ func TestMigration107RefusesMainnetAddressHistory(t *testing.T) {
 
 func TestMigration107RefusesUnknownFutureBlockerKindsWithoutReferences(t *testing.T) {
 	clearObsoletePooledEnv(t)
-	e := newTestApp(t)
+	e := newPooledHistoricalFixture(t, 106)
 	if _, err := e.DB.Exec(`CREATE OR REPLACE FUNCTION pooled_drain_blockers()
 		RETURNS TABLE(kind text, ref text, order_id text, currency text, detail text)
 		LANGUAGE SQL STABLE AS $$
@@ -216,7 +246,6 @@ func TestMigration107RefusesUnknownFutureBlockerKindsWithoutReferences(t *testin
 		$$`); err != nil {
 		t.Fatal(err)
 	}
-	restoreSchema106(t, e)
 	err := applyLatestMigrations(t, e)
 	if err == nil || !strings.Contains(err.Error(), "future_kind") || strings.Contains(err.Error(), "private-reference") || strings.Contains(err.Error(), "private detail") {
 		t.Fatalf("future blocker refusal = %v, want only its kind and no ref/detail", err)

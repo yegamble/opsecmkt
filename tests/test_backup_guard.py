@@ -19,15 +19,20 @@ EOF'''
 
 class BackupGuardTests(unittest.TestCase):
     def run_backup(self, headroom, database_size='1024', invalid_df=False, mount_with_spaces=False,
-                   available_kib=800):
+                   available_kib=800, restore_gate='false', gate_probe_fails=False, recovery_source=None):
         work = tempfile.TemporaryDirectory()
         self.addCleanup(work.cleanup)
         bin_dir = Path(work.name) / 'bin'
         bin_dir.mkdir()
+        gate_response = 'exit 9' if gate_probe_fails else f'printf "{restore_gate}\\n"'
         stubs = {
-            'psql': f'printf "{database_size}\\n"',
+            'psql': f'''case " $* " in
+  *"--file=-"*) cat >/dev/null; {gate_response} ;;
+  *"pg_database_size(current_database())"*) printf "{database_size}\\n" ;;
+  *) exit 8 ;;
+esac''',
             'pg_dump': 'if [ "$1" = --version ]; then echo "pg_dump (PostgreSQL) 17.6"; else echo "archive pg_dump invoked" >&2; echo synthetic-archive; fi',
-            'age': 'cat',
+            'age': 'printf "age-encryption.org/v1\\n"; cat',
             'df': 'echo "unknown filesystem capacity"' if invalid_df else df_stub(available_kib, mount_with_spaces),
         }
         for name, body in stubs.items():
@@ -40,6 +45,9 @@ class BackupGuardTests(unittest.TestCase):
                    AGE_RECIPIENT='age1test',
                    BACKUP_DATABASE_URL=f'postgres://user:{secret}@127.0.0.1:1/db',
                    BACKUP_SPACE_HEADROOM_BYTES=headroom)
+        env.pop('BACKUP_RECOVERY_SOURCE', None)
+        if recovery_source:
+            env['BACKUP_RECOVERY_SOURCE'] = recovery_source
         result = subprocess.run(['bash', str(BACKUP), str(output)], cwd=ROOT,
                                 env=env, capture_output=True, text=True)
         return result, output, Path(work.name), secret
@@ -97,6 +105,30 @@ class BackupGuardTests(unittest.TestCase):
         self.assertNotIn(secret, result.stdout + result.stderr)
         self.assertNotIn('postgres://', result.stdout + result.stderr)
 
+    def test_unreplayed_restore_fails_before_archive_temp_or_pg_dump(self):
+        # Even an explicit derived-copy clock cannot bypass mandatory replay.
+        result, output, work, secret = self.run_backup('0', restore_gate='true', recovery_source='/unread-original.dump.age')
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn('before current external retention state has been replayed', result.stderr)
+        self.assertIn('retention_restore_required', result.stderr)
+        self.assertNotIn('archive pg_dump invoked', result.stderr)
+        self.assertFalse(output.exists())
+        self.assertEqual(list(work.glob('backups/market.dump.age*')), [])
+        self.assertNotIn(secret, result.stdout + result.stderr)
+
+    def test_unverifiable_restore_gate_fails_before_archive_temp_or_pg_dump(self):
+        for options, expected in [
+                ({'restore_gate': 'unknown'}, 'Invalid source retention restore gate'),
+                ({'gate_probe_fails': True}, 'Could not verify the source retention restore gate')]:
+            with self.subTest(options=options):
+                result, output, work, secret = self.run_backup('0', **options)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn(expected, result.stderr)
+                self.assertNotIn('archive pg_dump invoked', result.stderr)
+                self.assertFalse(output.exists())
+                self.assertEqual(list(work.glob('backups/market.dump.age*')), [])
+                self.assertNotIn(secret, result.stdout + result.stderr)
+
     def test_internal_compose_path_checks_size_before_dump_and_reports_version(self):
         with tempfile.TemporaryDirectory() as work:
             bin_dir = Path(work) / 'bin'
@@ -106,6 +138,7 @@ class BackupGuardTests(unittest.TestCase):
             docker.write_text('''#!/bin/sh
 printf '%s\\n' "$*" >> "$DOCKER_LOG"
 case " $* " in
+  *"--file=-"*) cat >/dev/null; echo "${RESTORE_GATE:-false}" ;;
   *" pg_dump --version "*) echo "pg_dump (PostgreSQL) 17.6" ;;
   *"pg_database_size(current_database())"*) echo 1024 ;;
   *"--format=custom"*) echo synthetic-archive ;;
@@ -114,7 +147,7 @@ esac
 ''')
             docker.chmod(0o700)
             age = bin_dir / 'age'
-            age.write_text('#!/bin/sh\ncat\n')
+            age.write_text('#!/bin/sh\nprintf "age-encryption.org/v1\\n"\ncat\n')
             age.chmod(0o700)
             df = bin_dir / 'df'
             df.write_text('#!/bin/sh\n' + df_stub() + '\n')
@@ -129,9 +162,17 @@ esac
             self.assertIn('internal database market', result.stdout)
             self.assertIn('client: pg_dump (PostgreSQL) 17.6', result.stdout)
             invocations = log.read_text().splitlines()
+            restore_check = next(i for i, line in enumerate(invocations) if '--file=-' in line)
             size_check = next(i for i, line in enumerate(invocations) if 'pg_database_size(current_database())' in line)
             archive_dump = next(i for i, line in enumerate(invocations) if '--format=custom' in line)
+            self.assertLess(restore_check, size_check)
             self.assertLess(size_check, archive_dump)
+            blocked_output = Path(work) / 'backups' / 'blocked.dump.age'
+            blocked = subprocess.run(['bash', str(BACKUP), str(blocked_output)], cwd=ROOT,
+                                     env={**env, 'RESTORE_GATE': 'true'}, capture_output=True, text=True)
+            self.assertEqual(blocked.returncode, 1, blocked.stderr)
+            self.assertIn('before current external retention state has been replayed', blocked.stderr)
+            self.assertEqual(list(blocked_output.parent.glob('blocked.dump.age*')), [])
 
     def test_internal_backup_refuses_exported_database_url_override(self):
         with tempfile.TemporaryDirectory() as work:
@@ -159,7 +200,7 @@ esac
             age = bin_dir / 'age'
             age.write_text('#!/bin/sh\ncat\n')
             age.chmod(0o700)
-            output = root / 'backup.age'
+            output = root / 'backup.dump.age'
             env = dict(os.environ, PATH=f'{bin_dir}:{os.environ["PATH"]}', AGE_RECIPIENT='age1test',
                        DATABASE_URL='postgres://app:export-secret@db:5432/exported?sslmode=disable',
                        BACKUP_SPACE_HEADROOM_BYTES='0', CALL_LOG=str(log))

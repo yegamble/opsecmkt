@@ -92,6 +92,7 @@
 </li>{{end}}</ol>
 <p class="help">Your latest sign-ins and account changes, as recorded in the server-side audit log.</p>
 </section>
+{{template "retention:account" $}}
 <section class="panel" id="sessions" aria-labelledby="sessions-heading">
 <h2 id="sessions-heading">Sessions</h2>{{$n := $.SessionsTotal}}
 <p class="session-count">{{$n}} active session{{if ne $n 1}}s{{end}}</p>

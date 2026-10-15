@@ -5,9 +5,10 @@ Version 1.0 · Policy date: 2026-10-14 · Owner: the instance operator.
 This policy sets requirements for limiting retained data and server-readable private information on an OPSEC Market instance.
 It covers PostgreSQL, application records, audit exports, logs, wallet files, replicas, backups, snapshots and recovery copies.
 
-**Implementation status: enforcement pending.** This document defines required controls; it does not add deletion jobs or encryption enforcement.
-The current release has no account, message or order deletion lifecycle. Disputes, order notes and automatic digital delivery remain plaintext.
-Operators must disclose these gaps until the acceptance checks below pass for their deployed instance.
+**Implementation status: retention is opt-in.** [Retention maintenance](retention.md) implements database expiry, authenticated deletion requests,
+scoped preservation, guarded escrow retirement and restore replay. Backup and host audit-export tools record original deadlines and validate expiry.
+Operators must enable the service, schedule copy expiry and track external wallet, log, snapshot and media cleanup before claiming instance-wide enforcement.
+Disputes, order notes and automatic digital delivery remain plaintext; recipient-encryption enforcement for these fields is pending.
 See [current storage and access](implementation-status.md#what-the-server-keeps) and [current backup behavior](operator-guide.md#backups-and-recovery).
 
 ## Ownership and rules

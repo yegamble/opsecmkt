@@ -56,7 +56,7 @@ env_key_pattern='^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)[[:sp
 # Every documented setting and optional Compose override. Commands unset them and Compose's environment-file
 # controls so validation and startup both read this checkout's .env rather than the operator's shell.
 # MONERO_NETWORK_FLAG is documented without an assignment: a copied blank line would select mainnet.
-env_keys='DATABASE_URL POSTGRES_PASSWORD APP_SECRET_KEY SETUP_TOKEN APP_MODE COOKIE_SECURE APP_PORT ADMIN_SOCKET TOR_ADMIN_AUTH_DIR AUDIT_EXPORT_RECIPIENT
+env_keys='DATABASE_URL POSTGRES_PASSWORD APP_SECRET_KEY SETUP_TOKEN APP_MODE RETENTION_ENABLED COOKIE_SECURE APP_PORT ADMIN_SOCKET TOR_ADMIN_AUTH_DIR AUDIT_EXPORT_RECIPIENT
 DATABASE_CONNECT_TIMEOUT MIGRATION_LOCK_TIMEOUT MIGRATION_TIMEOUT COMPOSE_PROJECT_NAME COMPOSE_FILE COMPOSE_PROFILES
 BITCOIN_RPC_URL BITCOIN_WALLET BITCOIN_CHAIN PAYMENT_CONFIRMATIONS_BTC MONERO_RPC_URL MONERO_WALLET_RPC_URL
 MONERO_NETWORK MONERO_NETWORK_FLAG PAYMENT_CONFIRMATIONS_XMR PAYMENT_POLL_INTERVAL PAYMENT_EXPIRY BITCOIN_MAX_TIP_AGE MONERO_MAX_TIP_AGE AUDIT_SIGNING_KEY BITCOIN_IMAGE
@@ -72,6 +72,7 @@ ESCROW_SIGNER_RPC_URL LOG_DRIVER TOR_VERSION'
 # SETUP_TOKEN). tests/test_installer.py checks that this covers every non-secret key in .env.example. It never holds
 # MONERO_NETWORK_FLAG: absent runs stagenet, and a blank line would move a test-network install to mainnet (A-523).
 upgrade_defaults="COOKIE_SECURE=true
+RETENTION_ENABLED=off
 ADMIN_SOCKET=
 TOR_ADMIN_AUTH_DIR=
 AUDIT_EXPORT_RECIPIENT=
@@ -719,6 +720,10 @@ run_check() {
   case $secure in
     ''|true|false) ;;
     *) problems="$problems  - COOKIE_SECURE must be exactly true or false"$'\n' ;;
+  esac
+  case $(env_value RETENTION_ENABLED) in
+    ''|off|false|on|true) ;;
+    *) problems="$problems  - RETENTION_ENABLED must be on or off"$'\n' ;;
   esac
   if [[ $mode == tor && $secure != false ]]; then
     warnings="${warnings}warning: APP_MODE=tor with COOKIE_SECURE=true: only browsers that treat .onion as secure keep the session cookie; the installer writes false for Tor"$'\n'
@@ -1392,6 +1397,9 @@ cmd_init() {
   put APP_SECRET_KEY "$app_key"
   put SETUP_TOKEN "$setup_token"
   put APP_MODE "$mode"
+  # Retention enrollment requires the operator's preservation and backup plan.
+  # A caller's exported setting must not enable a deletion lifecycle implicitly.
+  put RETENTION_ENABLED off
   put COOKIE_SECURE "$secure"
   put APP_PORT "${caller_app_port:-8080}"
   # Remember the image this installer manages as its default. Future upgrades can advance it without rewriting

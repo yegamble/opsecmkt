@@ -11,12 +11,12 @@ done
 docker compose version >/dev/null
 # Only the temporary .env written below may configure Compose or the scripts.
 unset COMPOSE_FILE COMPOSE_PROFILES COMPOSE_PROJECT_NAME COMPOSE_ENV_FILES DATABASE_URL SETUP_TOKEN POSTGRES_PASSWORD \
-  BACKUP_DATABASE_URL BACKUP_INTERNAL_DATABASE RESTORE_DATABASE_URL RESTORE_INTERNAL_DATABASE AGE_RECIPIENT AGE_IDENTITY
+  BACKUP_DATABASE_URL BACKUP_INTERNAL_DATABASE BACKUP_RECOVERY_SOURCE RESTORE_DATABASE_URL RESTORE_INTERNAL_DATABASE AGE_RECIPIENT AGE_IDENTITY
 work=$(mktemp -d "${TMPDIR:-/tmp}/opsecmkt-internal-restore.XXXXXX")
 root="$work/deploy"
 mkdir -p "$root/scripts"
 cp compose.yaml compose.internal-db.yaml "$root/"
-cp scripts/backup.sh scripts/restore.sh scripts/postgres-tool.py scripts/postgres-policy.py "$root/scripts/"
+cp scripts/backup.sh scripts/restore.sh scripts/postgres-tool.py scripts/postgres-policy.py scripts/backup-retention.py "$root/scripts/"
 suffix=$(python3 -c 'import secrets; print(secrets.token_hex(6))')
 project="opsecmkt-restore-test-$suffix"
 password=$(python3 -c 'import secrets; print(secrets.token_hex(16))')
@@ -148,65 +148,79 @@ last_line=$(tail -n 1 "$work/restore.log")
   echo "restore.sh's last line does not name SETUP_TOKEN and AUDIT_SIGNING_KEY: $last_line" >&2; exit 1; }
 [[ $(sql opsecmkt_restored 'SELECT note FROM notes WHERE id = 1') == 'Crème brûlée — 東京 🔒' ]]
 [[ $(sql opsecmkt_restored "$gate") == true ]]
+[[ $(sql opsecmkt_restored "SELECT value FROM settings WHERE key='retention_restore_required'") == true ]]
+grep -q 'CURRENT external RETENTION_STATE_DIR' "$work/restore.log"
 # The live database is untouched.
 [[ $(sql opsecmkt "$gate") == false ]]
 grep -q 'Restored into database opsecmkt_restored' "$work/restore.log"
 grep -q "DATABASE_URL='postgres://opsecmkt:YOUR_POSTGRES_PASSWORD@db:5432/opsecmkt_restored?sslmode=disable'" "$work/restore.log"
 grep -q 'later backups follow DATABASE_URL' "$work/restore.log"
 
-# After switching DATABASE_URL to the restored database (the documented recovery), backups dump the live
-# database, not the abandoned opsecmkt. compose_database is the name Compose itself resolves for the app.
+# Switching DATABASE_URL to an unreplayed restored database must not create a
+# fresh backup clock for its old records. This fixture has no application schema
+# and cannot run real manifest replay; test that path in test-backup-restore.sh.
 compose_database() {
   compose config --format json 2>/dev/null | python3 -c 'import json, sys, urllib.parse
 print(urllib.parse.urlsplit(json.load(sys.stdin)["services"]["app"]["environment"]["DATABASE_URL"]).path[1:])'
 }
 set_database_url "DATABASE_URL='postgres://opsecmkt:$password@db:5432/opsecmkt_restored?sslmode=disable'"
 [[ $(compose_database) == opsecmkt_restored ]]
-sql opsecmkt_restored "INSERT INTO notes VALUES (2, 'written after the switch')" >/dev/null
+if AGE_RECIPIENT=$AGE_RECIPIENT backup "$work/unreplayed.dump.age" > "$work/unreplayed-backup.log" 2>&1; then
+  echo 'Backup created a fresh archive before retention replay' >&2; exit 1
+fi
+grep -q 'before current external retention state has been replayed' "$work/unreplayed-backup.log"
+if compgen -G "$work/unreplayed.dump.age*" >/dev/null; then echo 'An unreplayed backup left a file behind' >&2; exit 1; fi
+# Use a separate fresh synthetic source to prove subsequent backups follow the
+# configured database. Do not bypass the restored database's retention gate.
+sql postgres "CREATE DATABASE opsecmkt_backup_ready ENCODING 'UTF8' TEMPLATE template0" >/dev/null
+sql opsecmkt_backup_ready "CREATE TABLE notes (id integer PRIMARY KEY, note text NOT NULL); INSERT INTO notes VALUES (2, 'written after the switch');
+CREATE TABLE settings (key text PRIMARY KEY, value text NOT NULL); INSERT INTO settings VALUES ('retention_restore_required','false');" >/dev/null
+set_database_url "DATABASE_URL='postgres://opsecmkt:$password@db:5432/opsecmkt_backup_ready?sslmode=disable'"
+[[ $(compose_database) == opsecmkt_backup_ready ]]
 AGE_RECIPIENT=$AGE_RECIPIENT backup "$work/switched.dump.age" > "$work/switched-backup.log"
-grep -q 'of internal database opsecmkt_restored saved to' "$work/switched-backup.log"
+grep -q 'of internal database opsecmkt_backup_ready saved to' "$work/switched-backup.log"
 RESTORE_INTERNAL_DATABASE=opsecmkt_check restore "$work/switched.dump.age" <<< RESTORE > "$work/check-restore.log"
 [[ $(sql opsecmkt_check 'SELECT note FROM notes WHERE id = 2') == 'written after the switch' ]]
 
 # Other ways operators write the same .env line; Compose must agree on the database for each.
 forms=(
-  "DATABASE_URL=\"postgres://opsecmkt:$password@db:5432/opsecmkt_restored?sslmode=disable\""
-  "export DATABASE_URL=postgresql://opsecmkt:$password@db/opsecmkt_restored # switched after a restore"
-  "DATABASE_URL='postgres://opsecmkt:p%40ss%2Fw%3Fx@db:5432/opsecmkt_restored?sslmode=disable&application_name=market'"
-  "DATABASE_URL='postgres://opsecmkt:$password@db:5432/opsecmkt_restored?sslmode=disable'"$'\r'
+  "DATABASE_URL=\"postgres://opsecmkt:$password@db:5432/opsecmkt_backup_ready?sslmode=disable\""
+  "export DATABASE_URL=postgresql://opsecmkt:$password@db/opsecmkt_backup_ready # switched source"
+  "DATABASE_URL='postgres://opsecmkt:p%40ss%2Fw%3Fx@db:5432/opsecmkt_backup_ready?sslmode=disable&application_name=market'"
+  "DATABASE_URL='postgres://opsecmkt:$password@db:5432/opsecmkt_backup_ready?sslmode=disable'"$'\r'
   "# DATABASE_URL='postgres://opsecmkt:$password@db:5432/opsecmkt?sslmode=disable'
 DATABASE_URL='postgres://opsecmkt:$password@db:5432/opsecmkt?sslmode=disable'
-DATABASE_URL='postgres://opsecmkt:$password@db:5432/opsecmkt_restored?sslmode=disable'"
+DATABASE_URL='postgres://opsecmkt:$password@db:5432/opsecmkt_backup_ready?sslmode=disable'"
 )
 for index in "${!forms[@]}"; do
   set_database_url "${forms[index]}"
-  [[ $(compose_database) == opsecmkt_restored ]] || { echo "Compose resolves another database for .env form $index" >&2; exit 1; }
+  [[ $(compose_database) == opsecmkt_backup_ready ]] || { echo "Compose resolves another database for .env form $index" >&2; exit 1; }
   AGE_RECIPIENT=$AGE_RECIPIENT backup "$work/form-$index.dump.age" > "$work/form-backup.log"
-  grep -q 'of internal database opsecmkt_restored saved to' "$work/form-backup.log" || { echo "backup.sh chose another database for .env form $index" >&2; exit 1; }
+  grep -q 'of internal database opsecmkt_backup_ready saved to' "$work/form-backup.log" || { echo "backup.sh chose another database for .env form $index" >&2; exit 1; }
   # Neither the URL nor its password is printed.
   if grep -q -e "$password" -e 'p%40ss' -e 'postgres' "$work/form-backup.log"; then echo 'backup.sh printed the connection URL' >&2; exit 1; fi
 done
 
 # A BACKUP_INTERNAL_DATABASE that contradicts DATABASE_URL is refused before anything is written.
-set_database_url "DATABASE_URL='postgres://opsecmkt:$password@db:5432/opsecmkt_restored?sslmode=disable'"
+set_database_url "DATABASE_URL='postgres://opsecmkt:$password@db:5432/opsecmkt_backup_ready?sslmode=disable'"
 if BACKUP_INTERNAL_DATABASE=opsecmkt AGE_RECIPIENT=$AGE_RECIPIENT backup "$work/refused.dump.age" > "$work/refused.log" 2>&1; then
   echo 'backup.sh dumped a database other than the one in DATABASE_URL' >&2; exit 1
 fi
-grep -q 'BACKUP_INTERNAL_DATABASE (opsecmkt) differs from the database in DATABASE_URL in .env (opsecmkt_restored)' "$work/refused.log"
+grep -q 'BACKUP_INTERNAL_DATABASE (opsecmkt) differs from the database in DATABASE_URL in .env (opsecmkt_backup_ready)' "$work/refused.log"
 if compgen -G "$work/refused.dump.age*" >/dev/null; then echo 'A refused backup left a file behind' >&2; exit 1; fi
-BACKUP_INTERNAL_DATABASE=opsecmkt_restored AGE_RECIPIENT=$AGE_RECIPIENT backup "$work/agreed.dump.age" > "$work/agreed.log"
-grep -q 'of internal database opsecmkt_restored saved to' "$work/agreed.log"
+BACKUP_INTERNAL_DATABASE=opsecmkt_backup_ready AGE_RECIPIENT=$AGE_RECIPIENT backup "$work/agreed.dump.age" > "$work/agreed.log"
+grep -q 'of internal database opsecmkt_backup_ready saved to' "$work/agreed.log"
 # A database name the script cannot read literally (here Compose interpolation) needs the explicit override.
-set_database_url "MARKET_DATABASE=opsecmkt_restored" "DATABASE_URL=\"postgres://opsecmkt:$password@db:5432/\${MARKET_DATABASE}?sslmode=disable\""
-[[ $(compose_database) == opsecmkt_restored ]]
+set_database_url "MARKET_DATABASE=opsecmkt_backup_ready" "DATABASE_URL=\"postgres://opsecmkt:$password@db:5432/\${MARKET_DATABASE}?sslmode=disable\""
+[[ $(compose_database) == opsecmkt_backup_ready ]]
 if AGE_RECIPIENT=$AGE_RECIPIENT backup "$work/unreadable.dump.age" > "$work/unreadable.log" 2>&1; then
   echo 'backup.sh guessed a database from an unreadable DATABASE_URL' >&2; exit 1
 fi
 grep -q 'set BACKUP_INTERNAL_DATABASE' "$work/unreadable.log"
-BACKUP_INTERNAL_DATABASE=opsecmkt_restored AGE_RECIPIENT=$AGE_RECIPIENT backup "$work/override.dump.age" > "$work/override.log"
-grep -q 'of internal database opsecmkt_restored saved to' "$work/override.log"
+BACKUP_INTERNAL_DATABASE=opsecmkt_backup_ready AGE_RECIPIENT=$AGE_RECIPIENT backup "$work/override.dump.age" > "$work/override.log"
+grep -q 'of internal database opsecmkt_backup_ready saved to' "$work/override.log"
 # Two sources at once are ambiguous.
-if BACKUP_INTERNAL_DATABASE=opsecmkt_restored BACKUP_DATABASE_URL='postgres://x@127.0.0.1/x' AGE_RECIPIENT=$AGE_RECIPIENT \
+if BACKUP_INTERNAL_DATABASE=opsecmkt_backup_ready BACKUP_DATABASE_URL='postgres://x@127.0.0.1/x' AGE_RECIPIENT=$AGE_RECIPIENT \
   backup "$work/both.dump.age" > "$work/both-backup.log" 2>&1; then
   echo 'backup.sh accepted two sources' >&2; exit 1
 fi
@@ -237,4 +251,4 @@ if RESTORE_INTERNAL_DATABASE=opsecmkt_other restore "$work/backup.dump.age" <<< 
   echo 'Restore succeeded without a running database service' >&2; exit 1
 fi
 grep -q 'docker compose up -d --wait db' "$work/stopped.log"
-echo 'Internal-db Compose backup/restore regressions passed (no published port, typed confirmation, wrong key, side-by-side and fresh-volume restores, backups following DATABASE_URL after a switch, conflict rollback, payout recovery gate, the restored-images line).'
+echo 'Internal-db Compose backup/restore regressions passed (no published port, typed confirmation, wrong key, side-by-side and fresh-volume restores, unreplayed backup refusal, backups following DATABASE_URL after a switch, conflict rollback, payout recovery gate, the restored-images line).'

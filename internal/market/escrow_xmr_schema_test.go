@@ -845,7 +845,7 @@ func TestXMREscrowMigration084Upgrade(t *testing.T) {
 			"SELECT to_jsonb(t) FROM settlement_outputs t ORDER BY settlement_id,n",
 			"SELECT to_jsonb(t) FROM settlement_bumps t ORDER BY id",
 			"SELECT to_jsonb(t) FROM escrow_pubkeys t ORDER BY pubkey",
-			"SELECT to_jsonb(t) - 'listing_title' - 'listing_description' - 'listing_kind' FROM orders t ORDER BY id",
+			"SELECT to_jsonb(t) - 'listing_title' - 'listing_description' - 'listing_kind' - 'financial_closed_at' - 'financial_checked_at' - 'financial_retirement_checked_at' - 'private_expired_at' FROM orders t ORDER BY id", // columns added after the Phase 1/2 rows
 			"SELECT to_jsonb(t) FROM escrow_orphans t",
 		} {
 			rows, err := db.Query(q)
@@ -868,6 +868,10 @@ func TestXMREscrowMigration084Upgrade(t *testing.T) {
 	var inventedSnapshots int
 	if err = db.QueryRow("SELECT count(*) FROM orders WHERE listing_title IS NOT NULL OR listing_description IS NOT NULL OR listing_kind IS NOT NULL").Scan(&inventedSnapshots); err != nil || inventedSnapshots != 0 {
 		t.Fatalf("historical listing terms were invented during upgrade: %d %v", inventedSnapshots, err)
+	}
+	var inventedRetention int
+	if err = db.QueryRow("SELECT count(*) FROM orders WHERE financial_closed_at IS NOT NULL OR financial_checked_at IS NOT NULL OR financial_retirement_checked_at IS NOT NULL OR private_expired_at IS NOT NULL").Scan(&inventedRetention); err != nil || inventedRetention != 0 {
+		t.Fatalf("historical financial closure or expiry was invented during upgrade: %d %v", inventedRetention, err)
 	}
 	if after := dump(); after != before {
 		t.Fatalf("migration 084 changed Phase 1 and 2 rows:\nbefore\n%s\nafter\n%s", before, after)

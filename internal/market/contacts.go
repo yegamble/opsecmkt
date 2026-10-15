@@ -63,7 +63,7 @@ func disputeStaffLoader(ctx context.Context, a *App, _ *http.Request, d *PageDat
 		(u.ID != o.BuyerID && u.ID != o.VendorID) {
 		return nil
 	}
-	rows, err := a.db.QueryContext(ctx, `SELECT id,handle,role FROM users WHERE role IN ('moderator','admin') AND suspended_at IS NULL AND id<>$1 AND id<>$2 ORDER BY handle`, o.BuyerID, o.VendorID)
+	rows, err := a.db.QueryContext(ctx, `SELECT id,handle,role FROM users WHERE role IN ('moderator','admin') AND suspended_at IS NULL AND closed_at IS NULL AND retention_restricted_at IS NULL AND id<>$1 AND id<>$2 ORDER BY handle`, o.BuyerID, o.VendorID)
 	if err != nil {
 		return err
 	}

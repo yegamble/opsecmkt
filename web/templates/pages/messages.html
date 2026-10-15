@@ -10,7 +10,7 @@
 </div>
 <div class="notice">
 <p>
-<strong>ENCRYPT BEFORE SENDING.</strong> This page does not encrypt messages. Paste only an ASCII-armored PGP encrypted message; the server rejects plaintext, signed-only and malformed messages. The server keeps each encrypted message with its sender, recipient and time until the operator removes it; messages cannot be deleted. <a class="text-link" href="/canary#records">What this server keeps</a></p>
+<strong>ENCRYPT BEFORE SENDING.</strong> This page does not encrypt messages. Paste only an ASCII-armored PGP encrypted message; the server rejects plaintext, signed-only and malformed messages. {{if and .Retention .Retention.Enabled}}Each message, including sender, recipient and time, is scheduled for deletion 90 days after creation unless a scoped preservation duty applies. Save any local copy you need.{{else}}The server keeps each encrypted message with its sender, recipient and time until the operator removes it; messages cannot be deleted.{{end}} <a class="text-link" href="/canary#records">What this server keeps</a></p>
 </div>
 <div class="grid-two">
 <section class="panel">
@@ -40,6 +40,7 @@
 <div class="message-meta">
 <span>{{.Sender}} → {{.Recipient}}</span>
 <time>{{.Created}}</time>
+{{if and $.Retention $.Retention.Enabled}}<span class="help">Preservation reference: <span class="mono">{{.ID}}</span></span>{{end}}
 </div>
 <p class="pgp-message-status">{{if .Encrypted}}{{if eq .RecipientMatch "yes"}}<span class="badge green">Encrypted (to recipient’s key)</span>{{else if eq .RecipientMatch "no"}}<span class="badge pgp-danger">Encrypted (NOT to recipient’s key)</span>{{else}}<span class="badge neutral">Encrypted (recipient unknown)</span>{{end}}{{if and .RecipientExtraKeysSet (gt .RecipientExtraKeys 0)}} <span class="badge pgp-danger">+ {{.RecipientExtraKeys}} other visible key(s)</span><span class="help">These additional visible keys may also be able to read this message; hidden recipients may also exist.</span>{{end}}{{else}}<span class="badge pgp-danger">Not encrypted (plaintext or invalid OpenPGP)</span>{{end}}</p>
 <label class="help">Encrypted message<textarea class="code-block" rows="9" readonly aria-label="Encrypted message from {{.Sender}} to {{.Recipient}}">

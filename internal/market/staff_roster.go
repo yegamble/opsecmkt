@@ -22,7 +22,7 @@ func loadStaffRoster(ctx context.Context, a *App, r *http.Request, d *PageData) 
 	}
 	defer tx.Rollback()
 	var allowed bool
-	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE id=$1 AND role='admin' AND suspended_at IS NULL)`, d.User.ID).Scan(&allowed); err != nil {
+	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE id=$1 AND role='admin' AND suspended_at IS NULL AND closed_at IS NULL AND retention_restricted_at IS NULL)`, d.User.ID).Scan(&allowed); err != nil {
 		return err
 	}
 	if !allowed {

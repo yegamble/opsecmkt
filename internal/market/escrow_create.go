@@ -236,7 +236,8 @@ func (a *App) escrowParties(ctx context.Context, tx *sql.Tx, o *Order) (buyer, v
 // (escrow_index_floors, P2-R10) and never below $2. scripts/restore.sh's floor reads the highest index the same way.
 const escrowNextChildSQL = `SELECT GREATEST(COALESCE(max(CASE WHEN derivation_suffix LIKE '/0/%' THEN split_part(derivation_suffix,'/',3)
 		ELSE split_part(derivation_suffix,'/',2) END::bigint),0)+1,
-	COALESCE((SELECT next_index FROM escrow_index_floors WHERE user_id=$1),1),$2::bigint) FROM escrow_pubkeys
+	COALESCE((SELECT next_index FROM escrow_index_floors WHERE user_id=$1),1),
+	COALESCE((SELECT f.next_index FROM retention_escrow_key_floors f JOIN user_escrow_keys k ON k.xpub_hmac=f.key_hmac WHERE k.user_id=$1),1),$2::bigint) FROM escrow_pubkeys
 	WHERE user_id=$1 AND (derivation_suffix ~ '^/0/[1-9][0-9]{0,9}$' OR derivation_suffix ~ '^/[1-9][0-9]{0,9}/0/0$')`
 
 // escrowCheckoutAction: the buyer moves a draft to awaiting_payment into a new escrow (see the file comment). The
@@ -522,7 +523,7 @@ func (p *escrowParty) next() error {
 func nextMarketParty(ctx context.Context, tx *sql.Tx, e *escrowBTC, signer *escrowKey) (escrowParty, error) {
 	for {
 		var index int64
-		if err := tx.QueryRowContext(ctx, "SELECT nextval('escrow_market_index')").Scan(&index); err != nil {
+		if err := tx.QueryRowContext(ctx, "SELECT retention_next_escrow_index('market')").Scan(&index); err != nil {
 			return escrowParty{}, err
 		}
 		if signer == nil {
@@ -551,7 +552,8 @@ func heldEscrowKeys(ctx context.Context, tx *sql.Tx, keys map[string][]byte) (ma
 		party[h] = p
 		hexes = append(hexes, h)
 	}
-	found, err := collectStrings(ctx, tx, "SELECT pubkey FROM escrow_pubkeys WHERE pubkey=ANY($1) UNION SELECT pubkey FROM escrow_reserved_keys WHERE pubkey=ANY($1)", hexes)
+	found, err := collectStrings(ctx, tx, `SELECT pubkey FROM escrow_pubkeys WHERE pubkey=ANY($1) UNION SELECT pubkey FROM escrow_reserved_keys WHERE pubkey=ANY($1)
+		UNION SELECT key FROM unnest($1::text[]) AS key WHERE EXISTS(SELECT 1 FROM retention_escrow_retired_keys WHERE pubkey_hash=encode(sha256(convert_to(key,'UTF8')),'hex'))`, hexes)
 	if err != nil {
 		return nil, err
 	}

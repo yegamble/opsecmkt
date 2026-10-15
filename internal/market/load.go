@@ -209,7 +209,7 @@ func pageSlice(d *PageData, all []Product, raw string) []Product {
 // (escrowStaffAlert, A-470).
 // An archived listing's product page uses the same rule (A-164).
 func orderReadable(viewer, role string) string {
-	return "(o.buyer_id=" + viewer + " OR p.vendor_id=" + viewer + " OR (" + role + " IN ('moderator','admin') AND (EXISTS(SELECT 1 FROM disputes d WHERE d.order_id=o.id) OR EXISTS(SELECT 1 FROM payments pm WHERE pm.order_id=o.id AND pm.flagged) OR " +
+	return "(o.buyer_id=" + viewer + " OR p.vendor_id=" + viewer + " OR (" + role + " IN ('moderator','admin') AND EXISTS(SELECT 1 FROM users staff WHERE staff.id=" + viewer + " AND staff.suspended_at IS NULL AND staff.closed_at IS NULL AND staff.retention_restricted_at IS NULL) AND (EXISTS(SELECT 1 FROM disputes d WHERE d.order_id=o.id) OR EXISTS(SELECT 1 FROM payments pm WHERE pm.order_id=o.id AND pm.flagged) OR " +
 		escrowStaffAlert("o.id") + ")))"
 }
 

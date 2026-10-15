@@ -36,12 +36,16 @@ func ResetAdminPassword(ctx context.Context, db *sql.DB, handle, password string
 		return err
 	}
 	var id, role string
-	err = tx.QueryRowContext(ctx, "SELECT id,role FROM users WHERE handle=$1 FOR UPDATE", handle).Scan(&id, &role)
+	var closed bool
+	err = tx.QueryRowContext(ctx, "SELECT id,role,closed_at IS NOT NULL OR password_hash='' FROM users WHERE handle=$1 FOR UPDATE", handle).Scan(&id, &role, &closed)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("no account has the handle %q (handles are exact and case-sensitive)", handle)
 	}
 	if err != nil {
 		return err
+	}
+	if closed {
+		return fmt.Errorf("%q is closed; register a fresh account instead of recreating erased credentials", handle)
 	}
 	if role != "admin" {
 		return fmt.Errorf("%q is a %s account, not an administrator; this tool resets administrator passwords only", handle, role)
