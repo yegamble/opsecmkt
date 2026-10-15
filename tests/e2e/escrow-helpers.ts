@@ -1,4 +1,4 @@
-import { expect, type type Browser, type Locator, type Page, type TestInfo } from '@playwright/test';
+import { expect, type Browser, type Locator, type Page, type TestInfo } from '@playwright/test';
 import { waitForStyles } from './styles';
 
 // Shared keyboard, viewport and session helpers for the Monero escrow journey.

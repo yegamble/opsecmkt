@@ -140,7 +140,7 @@ grep -q 'Cannot read the database dump in this backup' "$work/wrong-key.log"
 # Side-by-side rollback target: a new database next to the live one, created by the script.
 RESTORE_INTERNAL_DATABASE=opsecmkt_restored restore "$work/backup.dump.age" <<< RESTORE > "$work/restore.log"
 grep -q 'Created empty database opsecmkt_restored' "$work/restore.log"
-grep -q 'do not contain the escrow wallets' "$work/restore.log"
+grep -Fq 'Database dumps do not contain wallet-RPC volumes.' "$work/restore.log"
 grep -Eq "$images_line" "$work/restore.log"
 # The last line names the .env secrets a restored database needs (A-136).
 last_line=$(tail -n 1 "$work/restore.log")

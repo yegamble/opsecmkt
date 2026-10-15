@@ -1274,3 +1274,11 @@ UI/OPS EVIDENCE: Chromium with JavaScript disabled passed 172 preview checks, 40
 LIMITS: Local working-tree evidence only; no new CI run, commit, deployment, real-chain run, Tor circuit or encrypted backup rehearsal. Docker daemon and age binaries were unavailable. Monero's on-chain privacy does not remove the market's custody or host/network threat boundaries. No live cutover or transaction conversion work was needed.
 
 FINAL DOCUMENTATION GATE: Strict MkDocs build passed after pinning historical links to their pre-removal revision, preserving the old notes without restoring Bitcoin product sections. The current Monero restore reminder and backup-test assertions agree with the runbook heading; 46 documentation/recovery checks passed after that correction. The disposable PostgreSQL test server was stopped.
+
+## Iteration 64 — Monero-only CI integration corrections
+
+TRIGGER: PR #60's first CI run, [38690338126](https://github.com/yegamble/opsecmkt/actions/runs/38690338126), found four failed jobs with three causes: a duplicate TypeScript `type` token prevented escrow browser collection; the shortened recovery runbook omitted mirror stop/start/status commands checked by two Compose jobs; the internal-database restore harness still expected the removed Bitcoin wallet warning after a successful restore.
+
+DECISION: Correct the browser import, restore the actual mirror recovery workflow with preserved Compose profiles and isolated reconciliation, and match the internal restore assertion to the current Monero wallet-volume reminder. Keep the existing profile, recovery and refusal assertions intact. No production payment behavior changes are required.
+
+VERIFICATION: Final-source Playwright collection passed for 560 regular tests and eight Monero escrow tests; all eight Monero browser journeys then passed (1.7 minutes, local Playwright 1.63.0). All four mirror configurations resolved with the real Compose CLI and an empty scratch-project container-inventory fixture; exact unmocked harness execution requires the unavailable local Docker daemon. Forty-six documentation/recovery tests passed (13.428 s), both affected shell scripts passed syntax checks, and the strict MkDocs build passed. Full GitHub Actions verification is pending the correction commit; this entry does not claim a green CI gate.

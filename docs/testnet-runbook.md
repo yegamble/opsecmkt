@@ -14,12 +14,17 @@ The [operator guide](operator-guide.md#monero-escrow) describes monthly wallets,
 
 `scripts/restore.sh` sets `payments_recovery_required`, holds restored settlements with a stored transaction and retires free accounts. Checkout waits for the watcher to inspect wallets, including wallets created after the backup. Preserve these guards until the records, daemon and wallet agree.
 
-1. Keep public access and XMR intake paused while restoring the database and wallet copies.
-2. Restore the original wallet secret and seed-recipient configuration. Before app startup, set `RETENTION_ENABLED=true` and mount the **current** external `RETENTION_STATE_DIR`, separate from the database backup. Startup must replay its deletion and preservation state before accepting traffic; never replace it with an older copy. See [retention restore safeguards](retention.md). Then start the daemon, wallet-rpc and app on their pinned network.
-3. Wait for the Monero wallet sweep. Admin shows wallets missing from disk and settlements held for review. An unresolved wallet or balance remains a recovery blocker.
-4. For every held settlement, check its transaction and key images in the daemon and its transfer history in the wallet. Admin's password-confirmed relay check sends the stored transaction unchanged; it never builds a replacement after an ambiguous send.
-5. Check orders funded or settled after the backup, compare balances and transaction history, and make another encrypted backup of the reconciled state.
-6. Stop the app before clearing the recovery gate, then verify Admin readiness before reopening access. Clearing the gate asserts that reconciliation is complete; it does not discover missing obligations or release individual holds.
+Run Compose commands from the deployment directory with its restored `.env`. Preserve `COMPOSE_FILE` and every entry in `COMPOSE_PROFILES`; a deployment with an onion mirror must keep `mirror` in that list.
+
+1. Pause XMR intake and stop public access before restoring. On Tor deployments, run `docker compose stop tor app`; if the mirror is enabled, also run `docker compose stop tor-mirror`. On clearnet deployments, stop the public reverse proxy and app. Keep public ingress stopped throughout reconciliation.
+2. Restore the database and wallet copies, with the dedicated escrow wallet-rpc stopped while replacing its volume. Restore the original wallet secret and seed-recipient configuration.
+3. Before app startup, set `RETENTION_ENABLED=true` and mount the **current** external `RETENTION_STATE_DIR`, separate from the database backup. Startup must replay its deletion and preservation state before accepting traffic; never replace it with an older copy. See [retention restore safeguards](retention.md).
+4. Start only the daemon, wallet-rpc and app on their pinned network. Keep the public Tor gateways or clearnet proxy stopped; use the protected administrator connection for reconciliation.
+5. Wait for the Monero wallet sweep. Admin shows wallets missing from disk and settlements held for review. An unresolved wallet or balance remains a recovery blocker.
+6. For every held settlement, check its transaction and key images in the daemon and its transfer history in the wallet. Admin's password-confirmed relay check sends the stored transaction unchanged; it never builds a replacement after an ambiguous send.
+7. Check orders funded or settled after the backup, compare balances and transaction history, and make another encrypted backup of the reconciled state.
+8. Stop the app before clearing the recovery gate below, then start only the app again and verify Admin readiness. Clearing the gate asserts that reconciliation is complete; it does not discover missing obligations or release individual holds.
+9. Once reconciliation and readiness checks pass, run `docker compose up -d` with the preserved profiles to restart public Tor ingress and the enabled mirror. On mirror deployments, check `docker compose ps tor-mirror` and confirm its saved onion address answers. On clearnet deployments, reopen the reverse proxy after these checks.
 
 ### Clear the gate
 
