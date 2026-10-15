@@ -46,7 +46,7 @@ test('administrator publishes a staff contact that every promised page shows as 
       UPDATE users SET role='moderator' WHERE handle='${modHandle}';
       UPDATE users SET suspended_at=now() WHERE handle='${suspectHandle}';
       INSERT INTO notifications(id,user_id,body) SELECT md5(random()::text)||md5(random()::text), id,
-        'Your BTC payout address was changed. If you did not make this change, someone else may know your password: change it and contact the market staff.'
+        'Your XMR payout address was changed. If you did not make this change, someone else may know your password: change it and contact the market staff.'
         FROM users WHERE handle='${buyerHandle}';`);
 
     // The moderator saves a key that can receive encrypted messages.
@@ -81,7 +81,7 @@ test('administrator publishes a staff contact that every promised page shows as 
     await expect(contact.locator('b, a')).toHaveCount(0);
     await noOverflow(visitor);
     await buyer.goto('/notifications');
-    const notice = buyer.locator('article', { hasText: 'Your BTC payout address was changed' });
+    const notice = buyer.locator('article', { hasText: 'Your XMR payout address was changed' });
     await expect(notice.locator('.staff-contact')).toHaveText(`Contact the market staff: ${hostile}.`);
     await expect(notice.locator('.staff-contact b')).toHaveCount(0);
     await noOverflow(buyer);

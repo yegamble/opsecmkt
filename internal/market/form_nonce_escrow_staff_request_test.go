@@ -13,54 +13,6 @@ func staffRequestEffects(e *testEnv, order, actor string) [4]int {
 		agInt(e, "SELECT count(*) FROM notifications"), agInt(e, "SELECT count(*) FROM form_submissions")}
 }
 
-func TestEscrowDecisionReceiptPreservesNewerOutcomeAndCurrentEligibility(t *testing.T) {
-	x := newEscrowEnv(t)
-	adminID, admin := x.user("decision_receipt_admin", "admin")
-	order, dispute := x.disputedEscrow(regtestAddr("decision-receipt-refund"))
-	if code, body := x.resolve(admin, dispute, "refund", testPassword); code != 303 {
-		t.Fatalf("resolve: %d %s", code, body)
-	}
-	page := x.page("/order?id="+order, admin)
-	before := submissionCount(t, x.testEnv)
-	f := url.Values{"order_id": {order}, "outcome": {"release"}, "reason": {"New evidence establishes that the vendor delivered the item."}, "password": {testPassword}, formNonceField: {renderedFormNonce(t, page, "/escrow/decision")}}
-	if submissionCount(t, x.testEnv) != before {
-		t.Fatal("decision GET wrote receipt")
-	}
-	lost := loseNextActionCommit(t, x.testEnv)
-	w := x.do("POST", "/escrow/decision", admin, f)
-	assertStaffRequestLostAck(t, w.Code, w.Header().Get("Retry-After"), w.Body.String(), lost.Load())
-	x.check(x.do("POST", "/escrow/decision", admin, f), 303)
-	newer := copyFormValues(f)
-	newer.Set(formNonceField, randomToken()[:32])
-	newer.Set("outcome", "refund")
-	newer.Set("reason", "Further evidence requires a refund to the buyer after all.")
-	x.check(x.do("POST", "/escrow/decision", admin, newer), 303)
-	effects := staffRequestEffects(x.testEnv, order, adminID)
-	settlements := agInt(x.testEnv, "SELECT count(*) FROM settlements WHERE order_id=$1", order)
-	x.check(x.do("POST", "/escrow/decision", admin, f), 303)
-	if agStr(x.testEnv, "SELECT outcome FROM disputes WHERE id=$1", dispute) != "refund" || staffRequestEffects(x.testEnv, order, adminID) != effects || agInt(x.testEnv, "SELECT count(*) FROM settlements WHERE order_id=$1", order) != settlements {
-		t.Fatal("saved decision reverted newer outcome or repeated effects")
-	}
-	changed := copyFormValues(f)
-	changed.Set("reason", "Another reason cannot use this same receipt identifier.")
-	x.check(x.do("POST", "/escrow/decision", admin, changed), 409)
-	x.check(x.do("POST", "/escrow/decision", agSession(x.testEnv, adminID), f), 409)
-	wrong := copyFormValues(f)
-	wrong.Set("password", "wrong password")
-	x.check(x.do("POST", "/escrow/decision", admin, wrong), 401)
-	fresh := copyFormValues(newer)
-	fresh.Set(formNonceField, randomToken()[:32])
-	x.check(x.do("POST", "/escrow/decision", admin, fresh), 409) // original same-decision guard
-	if agInt(x.testEnv, "SELECT count(*) FROM form_submissions WHERE nonce=$1", fresh.Get(formNonceField)) != 0 {
-		t.Fatal("refused decision retained nonce")
-	}
-	agExec(x.testEnv, "UPDATE orders SET buyer_id=$2 WHERE id=$1", order, adminID)
-	x.check(x.do("POST", "/escrow/decision", admin, f), 403)
-	if staffRequestEffects(x.testEnv, order, adminID) != effects {
-		t.Fatal("decision refusals repeated effects")
-	}
-}
-
 func assertStaffRequestLostAck(t *testing.T, status int, retry, body string, pending bool) {
 	t.Helper()
 	if pending || status != 500 || retry != "" || !strings.Contains(body, "Escrow administration outcome unknown") || !strings.Contains(body, "may have been saved") || !strings.Contains(body, "resubmit it unchanged") {
@@ -153,24 +105,4 @@ func TestXMRSettlementRequestReceiptsDoNotRepeatWatcherRequests(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestEscrowStaffRequestReceiptReplaysSpentTOTPOnlyForExactSavedForm(t *testing.T) {
-	x := newEscrowEnv(t)
-	adminID, admin := x.user("decision_receipt_totp", "admin")
-	order, dispute := x.disputedEscrow(regtestAddr("decision-receipt-totp"))
-	if code, body := x.resolve(admin, dispute, "refund", testPassword); code != 303 {
-		t.Fatalf("resolve: %d %s", code, body)
-	}
-	key, _ := agEnableTOTP(x.testEnv, adminID)
-	f := url.Values{"order_id": {order}, "outcome": {"release"}, "reason": {"Evidence establishes that the seller fulfilled this order."}, "password": {testPassword}, "code": {agTOTPNow(key)}, formNonceField: {randomToken()[:32]}}
-	x.check(x.do("POST", "/escrow/decision", admin, f), 303)
-	step := agInt(x.testEnv, "SELECT totp_last_step FROM users WHERE id=$1", adminID)
-	x.check(x.do("POST", "/escrow/decision", admin, f), 303)
-	if agInt(x.testEnv, "SELECT totp_last_step FROM users WHERE id=$1", adminID) != step {
-		t.Fatal("decision replay spent TOTP again")
-	}
-	f.Set(formNonceField, randomToken()[:32])
-	f.Set("outcome", "refund")
-	x.check(x.do("POST", "/escrow/decision", admin, f), 401)
 }

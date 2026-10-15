@@ -142,6 +142,10 @@ func xmrEscrowClaimAction(c *actionCtx) (actionResult, error) {
 // xmrEscrowShipAction: the vendor of a paid physical Monero escrow order marks it shipped (step 2 of the file comment).
 func xmrEscrowShipAction(c *actionCtx) (actionResult, error) {
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
+		note, err := formNote(c, "Marked shipped")
+		if err != nil {
+			return actionResult{}, err
+		}
 		dest, err := xmrClaimForm(c)
 		if err != nil {
 			return actionResult{}, err
@@ -172,7 +176,7 @@ func xmrEscrowShipAction(c *actionCtx) (actionResult, error) {
 		}
 		ctx = withNoticeDetail(ctx, o.ID, stateShipped, "Release deadline: "+utcUntil(deadline)+". Confirm receipt on the order page once the goods have arrived; if they have not arrived, open a dispute before then. "+
 			"If you do neither, the order completes at that time and the market releases the coins in this Monero escrow to the vendor: if you cannot confirm receipt, you need do nothing.")
-		if _, err = c.A.transition(ctx, c.Tx, o.ID, statePaid, stateShipped, c.User, "Marked shipped"); err == errConflict {
+		if _, err = c.A.transition(ctx, c.Tx, o.ID, statePaid, stateShipped, c.User, note); err == errConflict {
 			return actionResult{}, shipConflict(c, o.ID) // P2-R5: the buyer's no-ship cancel took the order row first
 		} else if err != nil {
 			return actionResult{}, err

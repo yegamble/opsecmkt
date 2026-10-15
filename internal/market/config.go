@@ -62,6 +62,9 @@ var dbPlaceholderMarkers = []string{"replace_me", "replace-me", "replace_with", 
 // that disagrees with the Compose overlay in COMPOSE_FILE.
 func loadStartupConfig(getenv func(string) string, mode string) (startupConfig, error) {
 	c := startupConfig{appSecretKey: getenv("APP_SECRET_KEY"), setupToken: getenv("SETUP_TOKEN")}
+	if err := refuseBitcoinEnv(getenv); err != nil {
+		return c, err
+	}
 	if err := refuseObsoletePooledEnv(getenv); err != nil {
 		return c, err
 	}
@@ -238,4 +241,29 @@ func Status(ctx context.Context, dsn string) (installed bool, schema int, err er
 		return false, 0, errors.New("database status query failed: " + connectErrorClass(err))
 	}
 	return installed, schema, nil
+}
+
+// refuseBitcoinEnv fails before database migrations or node connections. Passive
+// image/prune/confirmation/freshness settings from an old XMR-only install are
+// harmless; credentials, chain selection, signer configuration and profiles are not.
+func refuseBitcoinEnv(getenv func(string) string) error {
+	var configured []string
+	for _, name := range []string{"ESCROW_BTC", "BITCOIN_RPC_URL", "BITCOIN_WALLET", "BITCOIN_CHAIN", "BITCOIN_RPC_PASSWORD", "BITCOIN_RPC_AUTH",
+		"ESCROW_BTC_RPC_URL", "ESCROW_BTC_ARBITER_WALLET", "ESCROW_BTC_WATCH_WALLET", "ESCROW_BTC_FEE_BPS", "ESCROW_BTC_FEE_ADDRESS", "ESCROW_BTC_FEE_RATE",
+		"ESCROW_SIGNER_SOCKET", "ESCROW_SIGNER_RPC_URL", "ESCROW_SIGNER_SEED_FILE"} {
+		value := strings.TrimSpace(getenv(name))
+		if value == "" || name == "ESCROW_BTC" && (value == "off" || value == "false") {
+			continue
+		}
+		configured = append(configured, name)
+	}
+	for _, profile := range strings.FieldsFunc(getenv("COMPOSE_PROFILES"), func(r rune) bool { return r == ',' || r == ' ' || r == '\t' || r == '\n' }) {
+		if profile == "bitcoin" || profile == "escrow-signer" {
+			configured = append(configured, "COMPOSE_PROFILES ("+profile+")")
+		}
+	}
+	if len(configured) > 0 {
+		return errors.New("Bitcoin is removed: this market accepts Monero (XMR) only; remove obsolete Bitcoin configuration (" + strings.Join(configured, ", ") + ") before restarting. No database changes were made")
+	}
+	return nil
 }

@@ -28,7 +28,7 @@ func TestGetRefusesInvalidQueryText(t *testing.T) {
 	vendorID, vendor := e.user("getq_vendor", "vendor")
 	buyerID, buyer := e.user("getq_buyer", "buyer")
 	_, mod := e.user("getq_mod", "moderator")
-	e.order(buyerID, e.product(vendorID, "physical"), "BTC", "paid")
+	e.order(buyerID, e.product(vendorID, "physical"), "XMR", "paid")
 	var paths []string
 	for p := range pages {
 		paths = append(paths, "/"+p)
@@ -96,7 +96,7 @@ func TestGetRefusesInvalidQueryText(t *testing.T) {
 // The buyer's review (orders_actions.go reviewAction) of a completed order: neither value reaches the handler.
 func TestFormRefusesInvalidTextReview(t *testing.T) {
 	w := newOrderWorld(t)
-	done := w.e.order(w.buyerID, w.e.product(w.vendorID, "physical"), "BTC", stateCompleted)
+	done := w.e.order(w.buyerID, w.e.product(w.vendorID, "physical"), "XMR", stateCompleted)
 	for name, body := range map[string]string{"0xff": "Great \xff\xfe seller", "NUL": "Great \x00 seller"} {
 		w.expect("/reviews", w.buyer, form("order_id", done, "rating", "5", "body", body), 400, invalidTextMsg)
 		if n := w.count("SELECT count(*) FROM reviews WHERE order_id=$1", done); n != 0 {

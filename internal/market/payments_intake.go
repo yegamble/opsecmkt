@@ -12,8 +12,8 @@ const (
 
 func paymentIntakeAction(c *actionCtx) (actionResult, error) {
 	cur, value := c.Form.Get("currency"), c.Form.Get("enabled")
-	if (cur != "BTC" && cur != "XMR") || (value != intakeEscrow && value != intakePaused) {
-		return actionResult{}, fail(400, "Choose BTC or XMR and escrow or paused for new payments")
+	if cur != "XMR" || (value != intakeEscrow && value != intakePaused) {
+		return actionResult{}, fail(400, "Choose XMR and escrow or paused for new payments")
 	}
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
 		if err := waitForWalletLocks(c.Ctx(), c.Tx); err != nil {
@@ -38,6 +38,9 @@ func paymentIntakeAction(c *actionCtx) (actionResult, error) {
 // lockPaymentIntake refuses (409) a new escrow checkout in currency while the administrator has paused its intake, and
 // holds the setting (FOR SHARE) until the checkout's transaction ends.
 func lockPaymentIntake(c *actionCtx, currency string) error {
+	if currency != "XMR" {
+		return fail(400, "This market accepts Monero (XMR) only")
+	}
 	var value string
 	if err := c.Tx.QueryRowContext(c.Ctx(), "SELECT value FROM settings WHERE key=$1 FOR SHARE", paymentIntakeKey(currency)).Scan(&value); err != nil {
 		return err

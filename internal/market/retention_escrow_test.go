@@ -52,8 +52,8 @@ func TestRetentionFinancialClosureUnfunded(t *testing.T) {
 	vendor, _ := e.user("retention_closure_vendor", "vendor")
 	buyer, _ := e.user("retention_closure_buyer", "buyer")
 	product := e.product(vendor, "digital")
-	closed := e.order(buyer, product, "BTC", stateCancelled)
-	open := e.order(buyer, product, "BTC", stateDraft)
+	closed := e.order(buyer, product, "XMR", stateCancelled)
+	open := e.order(buyer, product, "XMR", stateDraft)
 	now := time.Now().UTC()
 	at := now.Add(-200 * 24 * time.Hour).Truncate(time.Microsecond)
 	ageRetentionOrder(t, e, closed, at)
@@ -70,97 +70,6 @@ func TestRetentionFinancialClosureUnfunded(t *testing.T) {
 	runRetentionClosure(t, e, now.Add(time.Hour))
 	if got := retentionClosureAt(t, e, closed); !got.Time.Equal(at) {
 		t.Fatal("a preservation hold moved the established financial deadline")
-	}
-}
-
-func TestRetentionFinancialClosureBTCRequiresFreshProof(t *testing.T) {
-	x := newEscrowEnv(t)
-	admin, _ := x.user("retention_btc_admin", "admin")
-	order, settlement := x.broadcastRefund("retention-closure", 40000)
-	now := time.Now().UTC().Truncate(time.Microsecond)
-	ageRetentionOrder(t, x.testEnv, order, now.Add(-100*24*time.Hour))
-	runRetentionClosure(t, x.testEnv, now)
-	if retentionClosureAt(t, x.testEnv, order).Valid || retentionExceptionReason(t, x.testEnv, order) != "settlement_pending" {
-		t.Fatal("broadcast settlement was considered final")
-	}
-	txid := x.settleByID(settlement).TxID
-	x.core.setTxConfs(txid, 3, "")
-	x.poll()
-	runRetentionClosure(t, x.testEnv, now)
-	if retentionClosureAt(t, x.testEnv, order).Valid {
-		t.Fatal("three confirmations were mistaken for completed reorganisation monitoring")
-	}
-	x.core.setTxConfs(txid, 110, "")
-	x.poll()
-	beforeSends, beforeSigns := x.core.count("sendrawtransaction"), x.core.count("walletprocesspsbt")
-	runRetentionClosure(t, x.testEnv, now)
-	at := retentionClosureAt(t, x.testEnv, order)
-	if !at.Valid || !at.Time.Equal(now) {
-		t.Fatalf("freshly checked settled escrow not closed: %v", at)
-	}
-	if x.core.count("sendrawtransaction") != beforeSends || x.core.count("walletprocesspsbt") != beforeSigns {
-		t.Fatal("retention performed a payment or signing operation")
-	}
-	// Loss of the adapter cannot prove that funds reopened or move a deadline.
-	adapter := x.A.escrow.Load()
-	x.A.escrow.Store(nil)
-	runRetentionClosure(t, x.testEnv, now.Add(time.Hour))
-	if got := retentionClosureAt(t, x.testEnv, order); !got.Valid || !got.Time.Equal(at.Time) {
-		t.Fatal("a temporary wallet outage restarted the closure deadline")
-	}
-	if retentionExceptionReason(t, x.testEnv, order) != "wallet_unavailable" {
-		t.Fatal("unavailable wallet did not create a scoped operational exception")
-	}
-	x.A.escrow.Store(adapter)
-	// A late deposit not yet in PostgreSQL is detected by the fresh wallet read.
-	address := agStrings(t, x.testEnv, "SELECT address FROM escrows WHERE order_id=$1", order)[0]
-	x.core.deposit(address, "retention-late", 0, 7000, 1)
-	runRetentionClosure(t, x.testEnv, now.Add(2*time.Hour))
-	if retentionClosureAt(t, x.testEnv, order).Valid || retentionExceptionReason(t, x.testEnv, order) != "deposit_unreconciled" {
-		t.Fatal("a fresh unrecorded deposit did not reopen financial work")
-	}
-	if agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND txid='retention-late'", order) != 0 {
-		t.Fatal("retention silently wrote the escrow payment ledger")
-	}
-	if agInt(x.testEnv, "SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE '%retention is overdue%'", admin) != 3 {
-		t.Fatal("operational reasons were not notified once per change")
-	}
-}
-
-func TestRetentionEscrowExceptionReviewAndRetirement(t *testing.T) {
-	x := newEscrowEnv(t)
-	order, settlement := x.broadcastRefund("retention-review", 40000)
-	now := time.Now().UTC().Truncate(time.Microsecond)
-	ageRetentionOrder(t, x.testEnv, order, now.Add(-100*24*time.Hour))
-	x.core.setTxConfs(x.settleByID(settlement).TxID, 110, "")
-	x.poll()
-	x.poll()
-	runRetentionClosure(t, x.testEnv, now)
-	runRetentionClosure(t, x.testEnv, now.Add(181*24*time.Hour))
-	if retentionExceptionReason(t, x.testEnv, order) != "bitcoin_wallet_retirement_required" {
-		t.Fatal("overdue wallet retirement was invisible")
-	}
-	due := now.Add(212 * 24 * time.Hour)
-	list, err := LoadRetentionEscrowExceptions(context.Background(), x.DB, due, 100)
-	if err != nil || len(list) != 1 || !list[0].ReviewOverdue {
-		t.Fatalf("review alert %+v, %v", list, err)
-	}
-	if err := ReviewRetentionEscrowException(context.Background(), x.DB, order, due); err != nil {
-		t.Fatal(err)
-	}
-	list, err = LoadRetentionEscrowExceptions(context.Background(), x.DB, due, 100)
-	if err != nil || len(list) != 1 || list[0].ReviewOverdue {
-		t.Fatalf("review renewal %+v, %v", list, err)
-	}
-	if err := ReviewRetentionEscrowException(context.Background(), x.DB, "unknown-order", due); err == nil {
-		t.Fatal("an unknown exception was renewed")
-	}
-	// Review receipt permits no deletion, rebroadcast or allocation reset.
-	if _, err := x.DB.Exec("DELETE FROM escrows WHERE order_id=$1", order); err == nil {
-		t.Fatal("retention weakened the escrow deletion guard")
-	}
-	if !retentionClosureAt(t, x.testEnv, order).Time.Equal(now) {
-		t.Fatal("review renewed the financial retention deadline")
 	}
 }
 

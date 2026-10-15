@@ -28,17 +28,12 @@ USERS = {
     'tor-admin': (IMAGE_USER, 'deploy/Dockerfile.tor', 'USER debian-tor'),
     'tor-socks': (IMAGE_USER, 'deploy/Dockerfile.tor', 'USER debian-tor'),
     'clamd': 'clamav',
-    'escrow-signer': '65533:65532',
     'monero': '1000:1000',
     'monero-escrow-wallet': '1000:1000',
-    # Starts as root: bitcoin/bitcoin's /entrypoint.sh chmods and chowns /data and /home/bitcoin on every start, then
-    # runs bitcoind as bitcoin with gosu. A `user:` fails on a fresh volume, and a volume restored as root relies on that
-    # chown. The documented root `sh` commands that append to /data/bitcoin.conf need DAC_OVERRIDE (CAP_ADD below).
-    'bitcoin': None,
+
 }
-# The only capabilities a service may add back after dropping them all. gosu needs SETUID and SETGID (it is not
-# setuid, so no-new-privileges does not stop it).
-CAP_ADD = {'bitcoin': {'CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'SETUID', 'SETGID'}}
+# No service needs capabilities added after dropping ALL.
+CAP_ADD = {}
 # Services whose root filesystem stays writable, and why.
 EXCEPTIONS = {
     'tor': 'the onion service; never started with a read-only root here (its CI offline start and the identity '
@@ -75,11 +70,9 @@ class HardeningCheckTests(unittest.TestCase):
     """The check itself, on small configurations: it needs no Docker."""
 
     DB = {'user': '70:70', 'cap_drop': ['ALL'], 'security_opt': ['no-new-privileges:true'], 'read_only': True}
-    BITCOIN = {'cap_drop': ['ALL'], 'cap_add': ['CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'SETUID', 'SETGID'],
-               'security_opt': ['no-new-privileges:true'], 'read_only': True}
 
     def test_passes_a_hardened_service(self):
-        self.assertEqual(hardening_problems({'services': {'db': self.DB, 'bitcoin': self.BITCOIN}}), [])
+        self.assertEqual(hardening_problems({'services': {'db': self.DB}}), [])
         tor = {'cap_drop': ['ALL'], 'security_opt': ['no-new-privileges:true']}
         self.assertEqual(hardening_problems({'services': {'tor': tor}}), [])
 
@@ -95,10 +88,6 @@ class HardeningCheckTests(unittest.TestCase):
             with self.subTest(change=change):
                 self.assertTrue(hardening_problems({'services': {'db': {**self.DB, **change}}}))
 
-    def test_bitcoin_adds_only_its_allow_list_and_no_user(self):
-        for change in ({'cap_add': [*self.BITCOIN['cap_add'], 'SYS_ADMIN']}, {'user': 'bitcoin'}, {'read_only': False}):
-            with self.subTest(change=change):
-                self.assertTrue(hardening_problems({'services': {'bitcoin': {**self.BITCOIN, **change}}}))
 
     def test_fails_for_an_unlisted_service(self):
         self.assertTrue(hardening_problems({'services': {'new-service': self.DB}}))
@@ -150,12 +139,11 @@ class ResolvedComposeHardeningTests(unittest.TestCase):
         self.assertEqual(services, set(USERS), 'USERS lists a service no combination has, or misses one')
 
     def test_tmpfs_for_what_the_read_only_images_write(self):
-        """postgres writes its socket and lock to /var/run/postgresql; bitcoin's entrypoint chowns /home/bitcoin, and
-        docs/testnet-runbook.md has bitcoind write wallet backups to /tmp."""
+        """Postgres writes its socket and lock to /var/run/postgresql."""
         files, profiles = dict((name, (f, p)) for name, _, f, p in combinations())['clearnet, internal database']
         services = resolved(files, profiles)['services']
         self.assertEqual(services['db']['tmpfs'], ['/var/run/postgresql', '/tmp'])
-        self.assertEqual(services['bitcoin']['tmpfs'], ['/home/bitcoin', '/tmp'])
+        self.assertEqual(services['monero']['tmpfs'], ['/tmp'])
 
 
 if __name__ == '__main__':

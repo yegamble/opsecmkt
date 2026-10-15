@@ -12,7 +12,7 @@ running server.
 | Public visitor, including someone who knows the storefront onion | Application authorization, CSRF, admission limits, optional private administrator ingress | Public listings and published information remain public. Tor does not authenticate an application account. |
 | Copy of an encrypted backup or encrypted audit export | Encryption to a public recipient whose private key stays offline | File size, filenames and anything published separately remain visible. |
 | Database dump or unlocked host disk | Messages encrypted by their senders; Monero seed sealing; host disk encryption while locked | Account, order, dispute and audit metadata, plaintext notes, deliveries and images remain readable. |
-| Root, Docker administrator or live application compromise | Separation of operator workstations, restricted signer access, independent offline records | An attacker can inspect memory, alter future requests or keys, access mounted files and use online wallet services. |
+| Root, Docker administrator or live application compromise | Separation of operator workstations, restricted wallet access, independent offline records | An attacker can inspect memory, alter future requests or keys, access mounted files and use online wallet services. |
 | Source repository | Secret-free source and reviewed publication copies | Public code, generic deployment templates and public verification evidence are intentionally readable. |
 
 Read [what the server keeps](implementation-status.md#what-the-server-keeps)
@@ -40,10 +40,7 @@ replacing everyone else's credential.
 
 Several secrets remain online. `APP_SECRET_KEY` decrypts TOTP and other sealed
 application state; `AUDIT_SIGNING_KEY` signs audit exports; RPC credentials and
-`MONERO_WALLET_SECRET` authorize online services. Bitcoin's bundled signer holds
-its seed while running, and Monero escrow wallet RPC holds spend-capable wallets.
-Sealing a Monero recovery seed does not make that running wallet watch-only.
-Do not describe either deployment as an air-gapped signing system.
+`MONERO_WALLET_SECRET` authorize online services. The dedicated Monero wallet-rpc holds online escrow keys. Database seed encryption to an offline recipient protects the sealed recovery copy; it does not make the live wallet noncustodial.
 
 ## Restrict administrator ingress
 
@@ -190,7 +187,7 @@ guarantees:
 | Only offline keys can read all stored state | Not implemented. Many application records are plaintext, and online secrets decrypt other records. |
 | `MARKET_ADMIN_SEAL_PUBKEY` seals all records | No such setting exists. Use the scoped `AUDIT_EXPORT_RECIPIENT` and existing `ESCROW_XMR_SEED_KEY`; broader sealing needs a design for readers, search, disputes, retention and recovery. |
 | Argon2id passwords and hash-chained audit history | Passwords use bcrypt; audit exports use a detached Ed25519 signature. |
-| Arbitrary remote or air-gapped arbiter signing | The bundled signer uses an authenticated-by-socket-access Unix service and holds online keys. A remote or offline arbiter needs a separate protocol and verification. |
+| Noncustodial or air-gapped Monero escrow | The dedicated wallet-rpc holds online spend-capable wallets. Seed encryption protects recovery copies, not the running wallet. |
 | Erase evidence, normalize dates, wipe disks on suspicion | Preserve truthful verification and use reviewed publication packages and owner-approved incident response. |
 | Rewrite every guide with stronger guarantees | Update the affected guides, tests and capability boundaries together, with explicit unverified deployment checks. |
 

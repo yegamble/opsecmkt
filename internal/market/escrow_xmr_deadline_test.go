@@ -11,11 +11,6 @@ import (
 	"time"
 )
 
-// Escrow Phase 3, slice X-e (WR-escrow A-248, P3-R7 with the Phase 2 rules P2-R3 to P2-R5 and P2-R9): the clocks of a
-// physical Monero escrow order, run by the Monero escrow watcher with ESCROW_BTC off; dispute decisions on Monero
-// escrow orders. DB integration tests against the simulated wallet-rpc of escrow_xmr_fake_test.go (simulated RPC, not
-// chain evidence).
-
 // P3-R7: each watcher runs the deadline step for its own coin's orders, so with ESCROW_BTC off and ESCROW_XMR on the
 // Monero escrow watcher completes a shipped order with no dispute at its release deadline (release_at <= now()) and
 // makes no RPC to do it; the release requested at shipment then becomes buildable. Before the deadline, under the
@@ -446,66 +441,6 @@ func TestXMREscrowRestoreExtendsDeadline(t *testing.T) {
 	}
 	if panel := x.panel(passed, x.vendorSess); !containsAll(panel, utcUntil(got), "moved after the market restored its records from a backup") {
 		t.Fatalf("the panel after the recheck:\n%s", panel)
-	}
-}
-
-// P3-R7: the Bitcoin escrow watcher's deadline step (escrowDeadlines) handles Bitcoin escrow orders only, and the Monero
-// escrow watcher's (xmrDeadlines) Monero ones only: the release, the reminder and the restore recheck, each with its own
-// coin's recheck request.
-func TestXMREscrowDeadlinesSplitByCoin(t *testing.T) {
-	x := newEscrowEnv(t)
-	ctx := context.Background()
-	w := xmrWallet(t, x.testEnv, 1, "active")
-	physical := x.physicalListing(x.vendor, 3)
-	xmrShipped := func(account int64, set string) string {
-		order, _, _ := xmrEscrow(t, x.testEnv, w, account, x.buyer, physical, stateShipped)
-		x.forceDeadline(order, set)
-		return order
-	}
-	btcShipped := func(label, set string) string {
-		order, _ := x.shippedPhysical(regtestAddr(label+"-refund"), regtestAddr(label+"-claim"), 100000)
-		x.forceDeadline(order, set)
-		return order
-	}
-	due, soon := "release_at=now()-interval '1 minute'", "release_at=now()+interval '10 hours'"
-	btcDue, btcSoon := btcShipped("split-due", due), btcShipped("split-soon", soon)
-	xmrDue, xmrSoon := xmrShipped(1, due), xmrShipped(2, soon)
-	reminded := func(order string) bool {
-		return agInt(x.testEnv, "SELECT count(*) FROM escrows WHERE order_id=$1 AND reminded_at IS NOT NULL", order) == 1
-	}
-	if err := x.A.escrowDeadlines(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if x.state(btcDue) != stateCompleted || !reminded(btcSoon) || x.state(xmrDue) != stateShipped || reminded(xmrSoon) {
-		t.Fatalf("the Bitcoin step: Bitcoin %s reminded %v, Monero %s reminded %v", x.state(btcDue), reminded(btcSoon), x.state(xmrDue), reminded(xmrSoon))
-	}
-	btcDue2 := btcShipped("split-due-2", due)
-	if err := x.A.xmrDeadlines(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if x.state(xmrDue) != stateCompleted || !reminded(xmrSoon) || x.state(btcDue2) != stateShipped {
-		t.Fatalf("the Monero step: Monero %s reminded %v, Bitcoin %s", x.state(xmrDue), reminded(xmrSoon), x.state(btcDue2))
-	}
-	// The restore recheck: each step consumes its own coin's request and moves its own coin's deadlines.
-	xmrPassed := xmrShipped(3, "release_at=now()-interval '2 days'")
-	for _, key := range []string{releaseRecheckKey, xmrReleaseRecheckKey} {
-		agExec(x.testEnv, "INSERT INTO settings(key,value) VALUES($1,'true') ON CONFLICT (key) DO UPDATE SET value='true'", key)
-	}
-	rechecked := func(order string) bool {
-		return agInt(x.testEnv, "SELECT count(*) FROM escrows WHERE order_id=$1 AND release_recheck", order) == 1
-	}
-	pending := func(key string) bool { return agInt(x.testEnv, "SELECT count(*) FROM settings WHERE key=$1", key) == 1 }
-	if err := x.A.escrowDeadlines(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if !rechecked(btcDue2) || rechecked(xmrPassed) || pending(releaseRecheckKey) || !pending(xmrReleaseRecheckKey) {
-		t.Fatalf("the Bitcoin recheck: Bitcoin %v, Monero %v", rechecked(btcDue2), rechecked(xmrPassed))
-	}
-	if err := x.A.xmrDeadlines(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if !rechecked(xmrPassed) || pending(xmrReleaseRecheckKey) || x.state(xmrPassed) != stateShipped || x.state(btcDue2) != stateShipped {
-		t.Fatalf("the Monero recheck: Monero %v %s", rechecked(xmrPassed), x.state(xmrPassed))
 	}
 }
 

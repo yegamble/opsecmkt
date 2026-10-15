@@ -17,8 +17,8 @@ docker compose logs app
 | `The malware scanner needs a Docker host with at least 3 GiB of memory` | Add memory, or drop `--uploads yes`. |
 | `Refusing to install: the external database already belongs to a market` | Use an empty database, or restore that market's `.env`. |
 | `The services did not become healthy.` | See [First install failed](#first-install-failed). |
-| `Refusing: --bitcoin-network … and --monero-network … mix mainnet with a test network` | A market is all mainnet or all test networks. Give both test networks, both mainnet, or disable one coin. Nothing was written. |
-| `Bitcoin Core names mainnet "main"` / `Monero names mainnet "mainnet"` / `testnet3 is not an escrow chain` | Use `main` for Bitcoin, `mainnet` for Monero; `signet` or `testnet4` instead of testnet3; `stagenet` instead of Monero testnet. |
+| Retired Bitcoin installer option | This source accepts Monero only. Remove the Bitcoin option; choose `--monero-network mainnet` for real funds or `--monero-network stagenet` for a test market. |
+| Unsupported network | Use `mainnet` for Monero real funds, or `stagenet` for a test market. |
 | `WARNING: the Docker data directory … has … GB free` | Not a refusal; the install continues. Free space before the nodes sync, or they stop when the disk is full ([estimates](requirements.md#disk-for-nodes)). |
 
 ## First install failed

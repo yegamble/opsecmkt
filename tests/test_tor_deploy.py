@@ -19,14 +19,13 @@ PROBE = REPOSITORY / 'scripts' / 'onion-probe.sh'
 TORRC_SOCKS = REPOSITORY / 'deploy' / 'torrc-socks'
 BASE_FILES = ('compose.yaml', 'compose.tor.yaml', 'compose.nodes.yaml')
 NODES_TOR = 'compose.nodes-tor.yaml'
-NODE_SERVICES = ('bitcoin', 'monero')
+NODE_SERVICES = ('monero',)
 # Everything deploy/torrc-socks may set (NIT-2: an allowlist, not a denylist).
 TORRC_SOCKS_KEYWORDS = {'DataDirectory', 'Log', 'MaxMemInQueues', 'ControlPort', 'SocksPort', 'SocksPolicy'}
 # Every key tor-socks may have once Compose has resolved it (`command` resolves to null: the entrypoint runs tor).
 TOR_SOCKS_KEYS = {'build', 'cap_drop', 'command', 'cpu_period', 'cpu_quota', 'entrypoint', 'healthcheck', 'logging',
                   'mem_limit', 'networks', 'pids_limit', 'profiles', 'read_only', 'restart', 'security_opt', 'volumes'}
 # The two flags compose.nodes-tor.yaml adds to each node command; everything before them is compose.nodes.yaml's.
-BITCOIN_FLAGS = ['-proxy=tor-socks:9050', '-privatebroadcast']
 MONERO_FLAG = ' --proxy=10.199.42.2:9050'
 # Overlays an install can add beside the node overlay (database, scanner, Monero escrow), with the profiles they need.
 OTHER_OVERLAYS = (
@@ -198,7 +197,7 @@ def compose_available():
     return subprocess.run(['docker', 'compose', 'version'], capture_output=True).returncode == 0
 
 
-def compose_config(*files, profiles=('bitcoin', 'monero'), interpolate=True, bitcoin_rpc_auth=True):
+def compose_config(*files, profiles=('monero',), interpolate=True):
     """`docker compose config` as parsed JSON, reading no .env and no COMPOSE_*, BITCOIN_* or MONERO_* variable;
     interpolate=False keeps every ${...} as written (--no-interpolate)."""
     arguments = ['docker', 'compose', '--env-file', os.devnull, '-p', 'opsecmkt-nodes-tor-test']
@@ -209,8 +208,6 @@ def compose_config(*files, profiles=('bitcoin', 'monero'), interpolate=True, bit
     environment = {key: value for key, value in os.environ.items()
                    if not key.startswith(('COMPOSE_', 'BITCOIN_', 'MONERO_'))}
     environment['DATABASE_URL'] = 'postgres://unused@db/unused'
-    if bitcoin_rpc_auth:
-        environment['BITCOIN_RPC_AUTH'] = ('marketplace:' + '01' * 16 + '$' + 'ab' * 32)
     command = ['config', '--format', 'json'] + ([] if interpolate else ['--no-interpolate'])
     result = subprocess.run(arguments + command, cwd=REPOSITORY, env=environment,
                             capture_output=True, text=True, check=False, timeout=60)
@@ -255,7 +252,7 @@ class NodesTorComposeTests(unittest.TestCase):
                 'restart': 'unless-stopped', 'entrypoint': ['tor', '-f', '/etc/tor/torrc-socks']}
         for key, value in want.items():
             self.assertEqual(socks.get(key), value, key)
-        self.assertEqual(sorted(socks['profiles']), ['bitcoin', 'monero'])
+        self.assertEqual(sorted(socks['profiles']), ['monero'])
         self.assertTrue(socks['healthcheck']['test'])
         self.assertFalse(socks['healthcheck'].get('disable'))
         # The onion container's pinned build, with its own torrc mounted read-only; the onion's torrc is not touched.
@@ -271,11 +268,11 @@ class NodesTorComposeTests(unittest.TestCase):
 
     def test_only_the_nodes_reach_tor_socks_and_only_tor_socks_reaches_out(self):
         self.assertEqual(sorted(self.socks['networks']), [self.node_network, 'tor_socks_egress'])
-        self.assertEqual(self.members(self.node_network), ['bitcoin', 'monero', 'tor-socks'])
+        self.assertEqual(self.members(self.node_network), ['monero', 'tor-socks'])
         self.assertEqual(self.members('tor_socks_egress'), ['tor-socks'])
         networks = self.config['networks']
         self.assertIsNot(networks['tor_socks_egress'].get('internal'), True)
-        for name in ('app', 'tor', 'db', 'escrow-signer', 'monero-escrow-wallet'):
+        for name in ('app', 'tor', 'db', 'monero-escrow-wallet'):
             if name in self.services:
                 self.assertFalse(set(self.services[name].get('networks') or {}) & set(self.socks['networks']), name)
         for name in NODE_SERVICES:
@@ -299,52 +296,8 @@ class NodesTorComposeTests(unittest.TestCase):
                          [f'reject {gateway}', f'accept {subnet}', 'reject *'])
         self.assertIn(f'/dev/tcp/{address}/9050', ' '.join(self.socks['healthcheck']['test']))
 
-    def test_bitcoin_verifier_gate_is_profile_scoped(self):
-        # Compose must still render external/disabled-node installs with no local verifier. A bitcoin-profile
-        # service with no verifier fails before it could start with cookie-only RPC.
-        for files in (('compose.yaml', 'compose.clearnet.yaml', 'compose.nodes.yaml'),
-                      (*BASE_FILES, NODES_TOR)):
-            with self.subTest(files=files):
-                compose_config(*files, profiles=(), bitcoin_rpc_auth=False)
-                with self.assertRaisesRegex(AssertionError, 'BITCOIN_RPC_AUTH-is-blank'):
-                    compose_config(*files, profiles=('bitcoin',), bitcoin_rpc_auth=False)
 
-    def test_private_dotenv_verifier_config_escapes_dollar_without_password(self):
-        verifier = 'marketplace:' + '01' * 16 + '$' + 'ab' * 32
-        password = 'disposable-test-password'
-        with tempfile.TemporaryDirectory(prefix='opsecmkt-rpcauth-compose-') as directory:
-            dotenv = Path(directory) / '.env'
-            dotenv.write_text(f"DATABASE_URL='postgres://unused@db/unused'\n"
-                              f"BITCOIN_RPC_PASSWORD='{password}'\n"
-                              f"BITCOIN_RPC_AUTH='{verifier}'\n"
-                              f"BITCOIN_RPC_URL='http://marketplace:{password}@bitcoin:8332'\n")
-            for files in (('compose.yaml', 'compose.clearnet.yaml', 'compose.nodes.yaml'),
-                          (*BASE_FILES, NODES_TOR)):
-                with self.subTest(files=files):
-                    arguments = ['docker', 'compose', '--env-file', str(dotenv), '-p', 'opsecmkt-rpcauth-test']
-                    for name in files:
-                        arguments += ['-f', name]
-                    arguments += ['--profile', 'bitcoin', 'config', '--format', 'json']
-                    environment = {key: value for key, value in os.environ.items()
-                                   if not key.startswith(('COMPOSE_', 'BITCOIN_', 'MONERO_', 'DATABASE_URL'))}
-                    result = subprocess.run(arguments, cwd=REPOSITORY, env=environment,
-                                            capture_output=True, text=True, check=True)
-                    command = json.loads(result.stdout)['services']['bitcoin']['command']
-                    # Compose config re-escapes a literal dollar as $$ in its reusable rendered model.
-                    # The input .env still has one $, and the node process must be checked on a real launch.
-                    self.assertIn('-rpcauth=' + verifier.replace('$', '$$'), command)
-                    self.assertFalse(any(password in argument for argument in command))
-                    self.assertFalse(any(argument.startswith(('-rpcuser=', '-rpcpassword=')) for argument in command))
 
-    def test_bitcoind_sends_through_tor_socks(self):
-        base, nodes = self.base['services']['bitcoin']['command'], self.services['bitcoin']['command']
-        self.assertEqual(nodes, base + BITCOIN_FLAGS,
-                         "the overlay repeats compose.nodes.yaml's command and adds exactly the two flags")
-        self.assertEqual(len([arg for arg in nodes if arg.startswith('-rpcauth=marketplace:')]), 1)
-        self.assertFalse(any(arg.startswith(('-rpcuser=', '-rpcpassword=')) for arg in nodes))
-        for argument in nodes:
-            self.assertIsNone(re.match(r'-(no)?(connect|onlynet|onion|listenonion|seednode|addnode)\b', argument),
-                              f'{argument}: never -connect or -onlynet; -proxy alone covers every network')
 
     def test_monerod_sends_through_tor_socks(self):
         address, _, _ = self.socks_address()
@@ -358,7 +311,6 @@ class NodesTorComposeTests(unittest.TestCase):
         # while it resolves to the same default. Uninterpolated, each command must be compose.nodes.yaml's plus the flags.
         base = compose_config(*BASE_FILES, interpolate=False)['services']
         nodes = compose_config(*BASE_FILES, NODES_TOR, interpolate=False)['services']
-        self.assertEqual(nodes['bitcoin']['command'], base['bitcoin']['command'] + BITCOIN_FLAGS)
         self.assertIsInstance(base['monero']['command'], str)
         self.assertEqual(nodes['monero']['command'], base['monero']['command'] + MONERO_FLAG)
 
@@ -367,12 +319,12 @@ class NodesTorComposeTests(unittest.TestCase):
         for extra, profiles in OTHER_OVERLAYS:
             for files in ((*BASE_FILES, *extra, NODES_TOR), (*BASE_FILES, NODES_TOR, *extra)):
                 with self.subTest(files=files):
-                    config = compose_config(*files, profiles=('bitcoin', 'monero', *profiles))
+                    config = compose_config(*files, profiles=('monero', *profiles))
                     for name in NODE_SERVICES:
                         for network in config['services'][name]['networks']:
                             self.assertIs(config['networks'][network].get('internal'), True, f'{name} on {network}')
                     members = sorted(n for n, s in config['services'].items() if 'node_egress' in (s.get('networks') or {}))
-                    self.assertEqual(members, ['bitcoin', 'monero', 'tor-socks'])
+                    self.assertEqual(members, ['monero', 'tor-socks'])
 
     def test_overlay_changes_nothing_else(self):
         self.assertEqual(set(self.services), set(self.base['services']) | {'tor-socks'})

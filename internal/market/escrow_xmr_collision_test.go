@@ -323,7 +323,7 @@ func TestXMREscrowCollisionDeskCounted(t *testing.T) {
 	agExec(x.testEnv, "UPDATE orders SET created=now()+interval '30 days' WHERE id=$1", oldest)
 	refused(oldest, "-1 day")
 	for i := range escrowAlertLimit {
-		o := x.testEnv.order(x.buyer, x.product, "BTC", stateCompleted)
+		o := x.testEnv.order(x.buyer, x.product, "XMR", stateCompleted)
 		agExec(x.testEnv, "UPDATE orders SET created=now()+make_interval(secs => $2) WHERE id=$1", o, i)
 		agExec(x.testEnv, "INSERT INTO settlements(order_id,kind,state,build_error,updated) VALUES($1,'release','failed',$2,now()+make_interval(secs => $3))", o, settleTooSmall, i)
 	}

@@ -29,7 +29,7 @@ an archived listing opens by the order page's rule (A-164). */}}
 </div>{{end}}{{if $party}}<p class="order-unavailable" role="note">
 <strong>Unavailable.</strong> You are a party to this order; another moderator must resolve it.</p>{{else if ne $o.State "disputed"}}<p class="order-unavailable" role="note">
 <strong>Unavailable.</strong> This order is not in the Disputed state, so no outcome can be recorded.</p>{{else if not $o.Escrow}}<p class="order-unavailable" role="note"><strong>Unavailable.</strong> This order has no escrow, so no outcome can be recorded. Contact the operator about its recorded state.</p>{{else if and $o.Escrow (ne $.User.Role "admin")}}<p class="order-unavailable" role="note">
-<strong>Unavailable.</strong> Only an administrator decides a dispute on a {{if eq $o.Currency "XMR"}}Monero escrow order ({{template "payment-status:xmr-net" $}}){{else}}Bitcoin escrow order ({{template "btc-escrow-chain" $.EscrowNet}}){{end}}: the decision moves coins from the escrow.</p>{{else}}<form class="stack" method="post" action="/resolve">
+<strong>Unavailable.</strong> Only an administrator decides a dispute on a Monero escrow order ({{template "payment-status:xmr-net" $}}): the decision moves coins from the escrow.</p>{{else}}<form class="stack" method="post" action="/resolve">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="form_nonce" value="{{formNonce "/resolve"}}">
 <input type="hidden" name="id" value="{{.ID}}">
@@ -43,7 +43,7 @@ an archived listing opens by the order page's rule (A-164). */}}
 <input type="radio" name="outcome" value="refund" required> {{$p.Refund}}</label>
 </fieldset>{{if $p.Escrow}}
 <p class="help">{{$p.Escrow}}</p>{{else}}
-<p class="help">This is a Bitcoin escrow order ({{template "btc-escrow-chain" $.EscrowNet}}): the decision is paid from its escrow by a settlement the market builds, which the buyer or the vendor signs and the market co-signs (when both sign it, the market does not sign it and broadcasts what they signed). A refund goes to the buyer's refund address given at checkout; after a release the vendor gives a fresh address to claim to. Until that settlement has a final transaction, an administrator can change the decision on the order page.</p>{{end}}
+<p class="help">The market controls this Monero escrow and builds and sends its release or refund. A refund goes to the buyer's refund address given at checkout; a release uses the vendor's claim address.</p>{{end}}
 <label>Decision<textarea name="resolution" required minlength="20" maxlength="5000" aria-describedby="resolution-help-{{.ID}}">
 {{if eq $.ResolveDispute .ID}}{{$.ResolveText}}{{end}}</textarea>
 </label>

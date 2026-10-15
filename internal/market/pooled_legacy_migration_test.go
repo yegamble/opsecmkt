@@ -76,8 +76,8 @@ func TestMigration107FreshInstallUsesEscrowAndHasNoPooledHistory(t *testing.T) {
 	if got := agInt(e, "SELECT count(*) FROM schema_migrations WHERE version IN (107,108)"); got != 2 {
 		t.Fatalf("fresh schema records %d of migrations 107 and 108, want both", got)
 	}
-	if btc, xmr := agStr(e, "SELECT value FROM settings WHERE key='payment_intake_BTC'"), agStr(e, "SELECT value FROM settings WHERE key='payment_intake_XMR'"); btc != "escrow" || xmr != "escrow" {
-		t.Fatalf("fresh intake BTC=%q XMR=%q, want escrow/escrow", btc, xmr)
+	if btc, xmr := agStr(e, "SELECT value FROM settings WHERE key='payment_intake_BTC'"), agStr(e, "SELECT value FROM settings WHERE key='payment_intake_XMR'"); btc != "false" || xmr != "escrow" {
+		t.Fatalf("fresh intake BTC=%q XMR=%q, want false/escrow", btc, xmr)
 	}
 	if n := agInt(e, "SELECT count(*) FROM pooled_drain_blockers()"); n != 0 {
 		t.Fatalf("fresh database has %d pooled drain blockers", n)
@@ -98,13 +98,13 @@ func TestFreshEscrowOnlyInstallCannotFallBackToPooledPayments(t *testing.T) {
 		mustContain(t, page, "New payments paused")
 		mustNotContain(t, page, `class="badge testnet">Bitcoin escrow`, `class="badge testnet">Monero escrow`)
 	}
-	for _, currency := range []string{"BTC", "XMR"} {
+	for _, currency := range []string{"XMR"} {
 		// Neither currency has an enabled escrow. A fresh install must refuse a new
 		// order instead of silently falling back to the retired pooled payment path.
 		e.check(e.do("POST", "/orders", buyer, url.Values{"product_id": {product}, "currency": {currency}}), 409)
 	}
 	for _, route := range []string{"/orders/pay", "/account/payout", "/admin/payout", "/admin/payment-address-collisions"} {
-		e.check(e.do("POST", route, admin, url.Values{"currency": {"BTC"}, "address": {"bcrt1qretired"}}), 404)
+		e.check(e.do("POST", route, admin, url.Values{"currency": {"XMR"}, "address": {"bcrt1qretired"}}), 404)
 	}
 	for _, table := range []string{"orders", "payment_addresses", "payments", "payouts", "escrows"} {
 		if n := agInt(e, "SELECT count(*) FROM "+table); n != 0 {
@@ -119,17 +119,17 @@ func TestMigration107RefusesUndrainedLegacyWithoutChangesThenRestoredRerunPasses
 	buyer, _ := e.user("migration107_buyer", "buyer")
 	vendor, _ := e.user("migration107_vendor", "vendor")
 	product := e.product(vendor, "digital")
-	order := e.order(buyer, product, "BTC", stateAwaitingPayment)
-	closed := e.order(buyer, e.product(vendor, "physical"), "BTC", stateCompleted)
+	order := e.order(buyer, product, "XMR", stateAwaitingPayment)
+	closed := e.order(buyer, e.product(vendor, "physical"), "XMR", stateCompleted)
 	if _, err := e.DB.Exec(`UPDATE orders SET updated=now()-interval '40 days' WHERE id=$1`, closed); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := e.DB.Exec(`INSERT INTO payment_addresses(order_id,currency,address,provider,created)
-		VALUES($1,'BTC','bcrt1qlegacy107history00000000000000000000','btc-regtest',now()-interval '40 days')`, closed); err != nil {
+		VALUES($1,'XMR','bcrt1qlegacy107history00000000000000000000','btc-regtest',now()-interval '40 days')`, closed); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := e.DB.Exec(`INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations,credited)
-		VALUES($1,'BTC',$2,0,'bcrt1qlegacy107history00000000000000000000',100000,6,true)`, closed, strings.Repeat("a", 64)); err != nil {
+		VALUES($1,'XMR',$2,0,'bcrt1qlegacy107history00000000000000000000',100000,6,true)`, closed, strings.Repeat("a", 64)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := e.DB.Exec(`UPDATE settings SET value='true' WHERE key='payment_intake_BTC'`); err != nil {
@@ -203,8 +203,8 @@ func TestMigration107RefusesUndrainedLegacyWithoutChangesThenRestoredRerunPasses
 	if got := agInt(e, "SELECT count(*) FROM schema_migrations WHERE version IN (107,108)"); got != 2 {
 		t.Fatalf("rerun recorded %d of migrations 107 and 108, want both", got)
 	}
-	if btc, xmr := agStr(e, "SELECT value FROM settings WHERE key='payment_intake_BTC'"), agStr(e, "SELECT value FROM settings WHERE key='payment_intake_XMR'"); btc != "escrow" || xmr != "false" {
-		t.Fatalf("drained legacy intake BTC=%q XMR=%q, want escrow/false", btc, xmr)
+	if btc, xmr := agStr(e, "SELECT value FROM settings WHERE key='payment_intake_BTC'"), agStr(e, "SELECT value FROM settings WHERE key='payment_intake_XMR'"); btc != "false" || xmr != "false" {
+		t.Fatalf("drained legacy intake BTC=%q XMR=%q, want false/false", btc, xmr)
 	}
 	if got := agInt(e, "SELECT count(*) FROM payments WHERE txid=$1", strings.Repeat("a", 64)); got != 1 {
 		t.Fatal("successful migration changed historical payment")
@@ -216,9 +216,9 @@ func TestMigration107RefusesMainnetAddressHistory(t *testing.T) {
 	e := newPooledHistoricalFixture(t, 106)
 	buyer, _ := e.user("migration107_mainnet_buyer", "buyer")
 	vendor, _ := e.user("migration107_mainnet_vendor", "vendor")
-	order := e.order(buyer, e.product(vendor, "digital"), "BTC", "draft")
+	order := e.order(buyer, e.product(vendor, "digital"), "XMR", "draft")
 	if _, err := e.DB.Exec(`INSERT INTO payment_addresses(order_id,currency,address,provider)
-		VALUES($1,'BTC','bc1qlegacy107mainnet000000000000000000000','btc-main')`, order); err != nil {
+		VALUES($1,'XMR','bc1qlegacy107mainnet000000000000000000000','btc-main')`, order); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := e.DB.Exec(`UPDATE settings SET value='true' WHERE key='payment_intake_BTC'`); err != nil {

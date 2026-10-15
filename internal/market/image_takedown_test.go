@@ -567,7 +567,7 @@ func TestModeratorTakesDownOnlyVendorImages(t *testing.T) {
 	adminPhoto := e.image(adminID, e.product(adminID, "physical"), "photo")
 	// The other moderator decided a dispute, so every moderator sees their avatar on the desk route.
 	deciderAvatar := e.image(deciderID, "", "avatar")
-	order := e.order(buyerID, e.product(vendorID, "physical"), "BTC", "resolved")
+	order := e.order(buyerID, e.product(vendorID, "physical"), "XMR", "resolved")
 	if _, err := e.DB.Exec("INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,'disputed','resolved',$2,'Resolved — refund to buyer')", order, deciderID); err != nil {
 		t.Fatal(err)
 	}

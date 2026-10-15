@@ -436,18 +436,14 @@ func subFloorOrderGate(ctx context.Context, a *App, d *PageData) error {
 	if o == nil || o.State != stateDraft || d.OrderViewer != roleBuyer {
 		return nil
 	}
-	var btc, xmr int64
-	if err := a.db.QueryRowContext(ctx, "SELECT btc,xmr FROM products WHERE id=$1", o.ProductID).Scan(&btc, &xmr); err != nil {
+	var price int64
+	if err := a.db.QueryRowContext(ctx, "SELECT xmr FROM products WHERE id=$1", o.ProductID).Scan(&price); err != nil {
 		return err
-	}
-	price, otherPrice := btc, xmr
-	if o.Currency == "XMR" {
-		price, otherPrice = xmr, btc
 	}
 	if price >= payoutFloor(o.Currency, "release") {
 		return nil
 	}
-	message := subFloorListing(o.Currency, otherPrice)
+	message := subFloorListing(o.Currency, 0)
 	for i := range d.Transitions {
 		if d.Transitions[i].To != stateAwaitingPayment {
 			continue
@@ -1005,7 +1001,7 @@ func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageDat
 }
 
 func previewPaymentReviews(d *PageData) {
-	d.PaymentReviews = []PaymentReview{{OrderID: previewFlaggedID, OrderState: stateLabel(statePaid), Currency: "BTC", Amount: "0.001", ProductID: d.Products[0].ID, Title: d.Products[0].Title,
+	d.PaymentReviews = []PaymentReview{{OrderID: previewFlaggedID, OrderState: stateLabel(statePaid), Currency: "XMR", Amount: "0.02", ProductID: d.Products[0].ID, Title: d.Products[0].Title,
 		TxID: "a6fca84477376ef06de0fa66091d6435fbd7be1abe70d867cdcc06529fbc952b", Reason: "Credited deposit conflicted or missing", Flagged: "Sample", Open: true}}
 	d.PaymentReviewsOpen = 1
 }

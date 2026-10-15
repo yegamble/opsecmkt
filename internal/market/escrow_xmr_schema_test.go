@@ -5,18 +5,13 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"errors"
-	"net/url"
+
 	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgconn"
 )
-
-// Escrow Phase 3, slice X-a (WR-escrow A-248, P3-R1): migration 084's Monero escrow schema, and Bitcoin escrow code
-// that never touches a Monero escrow's rows. DB integration tests: no Monero wallet runs here, so the Monero rows are
-// written by SQL as the later slices' watcher and checkout will write them; the Bitcoin escrow runs against the
-// simulated Core of escrow_fake_test.go (simulated RPC, not chain evidence).
 
 // xmrEscrowIdx is the payments idx of a Monero escrow deposit to account of wallet (migration 084).
 func xmrEscrowIdx(wallet, account int64) int64 { return 1<<62 + wallet<<32 + account }
@@ -234,24 +229,14 @@ func TestXMREscrowMigration084(t *testing.T) {
 	xmrRefused(t, e, "a retired slot claimed", "never changes", "UPDATE xmr_escrow_slots SET state='claimed',order_id=$2 WHERE id=$1", notActive, pooled)
 	xmrRefused(t, e, "a second slot claimed for one order", "xmr_escrow_slots_order_id_key", "UPDATE xmr_escrow_slots SET state='claimed',order_id=$2 WHERE id=$1", free, order)
 
-	// Escrows: the coin is the order's currency and never changes; a Bitcoin escrow has a market index and no slot, a
-	// Monero escrow a slot (its own order's, at its address) and Monero refund and fee addresses.
-	btcOrder := e.order(buyer, product, "BTC", stateAwaitingPayment)
-	var btcEscrow int64
-	if err := e.DB.QueryRow("INSERT INTO escrows(order_id,address,market_index,refund_address,fee_bps,fee_destination) VALUES($1,'bcrt1qx84escrow',nextval('escrow_market_index'),'bcrt1qx84refund',0,'') RETURNING id", btcOrder).Scan(&btcEscrow); err != nil {
-		t.Fatalf("a Bitcoin escrow as Phase 1 writes it: %v", err)
-	}
-	if got := agStrings(t, e, "SELECT coin||':'||(xmr_slot_id IS NULL) FROM escrows WHERE id=$1", btcEscrow); len(got) != 1 || got[0] != "BTC:true" {
-		t.Fatalf("a Bitcoin escrow inserted as Phase 1 does: %v", got)
-	}
+	// Monero escrows keep their order and slot, and Bitcoin financial rows are refused.
+	xmrRefused(t, e, "a new Bitcoin order", "orders_monero_only",
+		"INSERT INTO orders(id,buyer_id,product_id,currency,amount,state) VALUES($1,$2,$3,'BTC',100000,'awaiting_payment')", randomToken(), buyer, product)
 	xmrOrder := e.order(buyer, product, "XMR", stateAwaitingPayment)
 	xSlot := xmrSlot(t, e, w, 7)
 	xAddr := agStrings(t, e, "UPDATE xmr_escrow_slots SET state='claimed',order_id=$2 WHERE id=$1 RETURNING address", xSlot, xmrOrder)[0]
 	esc := "INSERT INTO escrows(order_id,coin,address,market_index,refund_address,fee_bps,fee_destination,xmr_slot_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8)"
-	otherBTC := e.order(buyer, product, "BTC", stateAwaitingPayment)
 	xmrRefused(t, e, "a Bitcoin escrow of an XMR order", "the coin of an escrow is its order's currency", esc, xmrOrder, "BTC", "bcrt1qx84xmr", 7, "bcrt1qx84xmrrefund", 0, "", nil)
-	xmrRefused(t, e, "a Monero escrow of a BTC order", "the coin of an escrow is its order's currency", esc, otherBTC, "XMR", xAddr, nil, xmrAddr("r1"), 0, "", xSlot)
-	xmrRefused(t, e, "a Bitcoin escrow without a market index", "escrows_market_index_btc", esc, otherBTC, "BTC", "bcrt1qx84nomi", nil, "bcrt1qx84nomirefund", 0, "", nil)
 	xmrRefused(t, e, "a Monero escrow with a market index", "escrows_market_index_btc", esc, xmrOrder, "XMR", xAddr, 99, xmrAddr("r1"), 0, "", xSlot)
 	xmrRefused(t, e, "a Monero escrow without a slot", "escrows_xmr_slot_xmr", esc, xmrOrder, "XMR", xAddr, nil, xmrAddr("r1"), 0, "", nil)
 	third := e.order(buyer, product, "XMR", stateAwaitingPayment)
@@ -261,34 +246,20 @@ func TestXMREscrowMigration084(t *testing.T) {
 	xmrRefused(t, e, "a Monero escrow away from its slot's address", `constraint "escrows_xmr_slot"`, esc, xmrOrder, "XMR", xmrAddr("elsewhere"), nil, xmrAddr("r1"), 0, "", xSlot)
 	xmrRefused(t, e, "a Monero escrow refunding to a Bitcoin address", "escrows_xmr_addresses", esc, xmrOrder, "XMR", xAddr, nil, "bcrt1qx84xmrrefund", 0, "", xSlot)
 	xmrRefused(t, e, "a Monero escrow's fee to a Bitcoin address", "escrows_xmr_addresses", esc, xmrOrder, "XMR", xAddr, nil, xmrAddr("r1"), 100, "bcrt1qx84fee", xSlot)
-	xmrRefused(t, e, "a Bitcoin escrow on a slot", "escrows_xmr_slot_xmr", esc, otherBTC, "BTC", "bcrt1qx84slot", 98, "bcrt1qx84slotrefund", 0, "", xSlot)
 	if _, err := e.DB.Exec(esc, xmrOrder, "XMR", xAddr, nil, xmrAddr("r1"), 100, xmrAddr("fee"), xSlot); err != nil {
 		t.Fatalf("a Monero escrow with a market fee: %v", err)
 	}
-	// A Bitcoin escrow converted whole to a Monero one passes every CHECK and the slot's foreign key; only the coin rule
-	// refuses it.
-	convert := xmrSlot(t, e, w, 8)
-	cAddr := agStrings(t, e, "UPDATE xmr_escrow_slots SET state='claimed',order_id=$2 WHERE id=$1 RETURNING address", convert, btcOrder)[0]
-	xmrRefused(t, e, "a Bitcoin escrow's coin changed", "keeps its coin", "UPDATE escrows SET coin='XMR',market_index=NULL,xmr_slot_id=$2,address=$3,refund_address=$4 WHERE id=$1",
-		btcEscrow, convert, cAddr, xmrAddr("convert-refund"))
+
 	xmrRefused(t, e, "a Monero escrow's coin changed", "keeps its coin", "UPDATE escrows SET coin='BTC' WHERE order_id=$1", order)
-	xmrRefused(t, e, "an escrow moved to another order", "keeps its coin", "UPDATE escrows SET order_id=$2 WHERE id=$1", btcEscrow, otherBTC)
+	xmrRefused(t, e, "an escrow moved to another order", "keeps its coin", "UPDATE escrows SET order_id=$2 WHERE order_id=$1", order, third)
 	xmrRefused(t, e, "the currency of a Monero escrow order changed", "its currency, the escrow's coin, never changes", "UPDATE orders SET currency='BTC' WHERE id=$1", order)
-	xmrRefused(t, e, "the currency of a Bitcoin escrow order changed", "its currency, the escrow's coin, never changes", "UPDATE orders SET currency='XMR' WHERE id=$1", btcOrder)
-	if _, err := e.DB.Exec("UPDATE orders SET currency='BTC' WHERE id=$1", e.order(buyer, product, "XMR", stateDraft)); err != nil {
-		t.Fatalf("the currency of an order without an escrow: %v", err)
-	}
+	xmrRefused(t, e, "a draft changed to Bitcoin", "orders_monero_only", "UPDATE orders SET currency='BTC' WHERE id=$1", e.order(buyer, product, "XMR", stateDraft))
 	xmrRefused(t, e, "a Monero escrow deleted", "escrow records are never deleted", "DELETE FROM escrows WHERE order_id=$1", order)
-	xmrRefused(t, e, "a Bitcoin escrow deleted", "escrow records are never deleted", "DELETE FROM escrows WHERE id=$1", btcEscrow)
 
 	// Each settlements table takes its own coin's escrows only.
 	xmrRefused(t, e, "a Bitcoin settlement of a Monero escrow", "has a Monero escrow", "INSERT INTO settlements(order_id,kind) VALUES($1,'refund')", order)
-	if _, err := e.DB.Exec("INSERT INTO settlements(order_id,kind) VALUES($1,'refund')", btcOrder); err != nil {
-		t.Fatalf("a Bitcoin settlement of a Bitcoin escrow: %v", err)
-	}
-	xmrRefused(t, e, "a Bitcoin settlement moved to a Monero escrow", "has a Monero escrow", "UPDATE settlements SET order_id=$2 WHERE order_id=$1", btcOrder, order)
+
 	xs := "INSERT INTO xmr_settlements(order_id,kind,destination,state) VALUES($1,$2,$3,$4)"
-	xmrRefused(t, e, "a Monero settlement of a Bitcoin escrow", "has no Monero escrow", xs, btcOrder, "refund", xmrAddr("d1"), "requested")
 	xmrRefused(t, e, "a Monero settlement of an order with no escrow", "has no Monero escrow", xs, pooled, "refund", xmrAddr("d1"), "requested")
 	xmrRefused(t, e, "a Monero settlement to a Bitcoin address", "xmr_settlements_destination_check", xs, order, "refund", "bcrt1qx84dest", "requested")
 	xmrRefused(t, e, "a Monero settlement to an integrated address", "xmr_settlements_destination_check", xs, order, "refund", xmrAddr("d106")+xmrAddr("y")[:11], "requested")
@@ -488,8 +459,7 @@ func TestXMREscrowMigration084(t *testing.T) {
 
 	// payments: a Monero settlement claims only Monero escrow rows, and an escrow-range idx names its own order's account.
 	agExec(e, "INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations) VALUES($1,'XMR',$2,$3,$4,100000,12)", order, txidOf("x84-dep"), xmrEscrowIdx(w, 5), addr)
-	agExec(e, "INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations) VALUES($1,'BTC',$2,0,'bcrt1qx84escrow',100000,3)", btcOrder, txidOf("x84-btc"))
-	xmrRefused(t, e, "a Bitcoin row claimed by a Monero settlement", "payments_xmr_settlement", "UPDATE payments SET xmr_settlement_id=$2 WHERE order_id=$1", btcOrder, rel)
+	xmrRefused(t, e, "a Bitcoin payment", "payments_monero_only", "INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations) VALUES($1,'BTC',$2,0,'retired-btc-address',100000,3)", order, txidOf("x84-btc"))
 	if _, err := e.DB.Exec("UPDATE payments SET xmr_settlement_id=$2 WHERE order_id=$1", order, rel); err != nil {
 		t.Fatalf("a Monero escrow row claimed by its settlement: %v", err)
 	}
@@ -597,194 +567,6 @@ func TestXMREscrowIdxNoCollision(t *testing.T) {
 	}
 }
 
-// Bitcoin escrow code never reads or writes a Monero escrow's rows (P3-R1: every Bitcoin escrow query that could read
-// a Monero row filters coin='BTC'), and works as before beside them. Monero escrow orders in every state a Bitcoin pass
-// acts on (funded while awaiting payment with an old escrow, shipped past and near its release deadline with a restore
-// recheck pending, closed with a late deposit and a recovery request, completed with a requested settlement) sit beside
-// Bitcoin escrow orders that are funded, claimed, co-signed, broadcast and confirmed, and released at their deadline,
-// with the daily check (strays and orphans) due. Afterwards no Monero row changed, no RPC named a Monero address, order
-// or transaction, the order page shows nothing of the Bitcoin escrow (nor the pooled panel) for a Monero escrow order,
-// and the vendor desk counts Bitcoin escrow orders only.
-func TestEscrowBTCIgnoresXMRRows(t *testing.T) {
-	x := newEscrowEnv(t)
-	physical := x.physicalListing(x.vendor, 3)
-	w := xmrWallet(t, x.testEnv, 1, "active")
-	funded, fundedAddr, _ := xmrEscrow(t, x.testEnv, w, 1, x.buyer, x.product, stateAwaitingPayment)
-	agExec(x.testEnv, "UPDATE escrows SET created=now()-interval '20 days' WHERE order_id=$1", funded)
-	agExec(x.testEnv, "INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations) VALUES($1,'XMR',$2,$3,$4,100000,50)", funded, txidOf("xmr-fund"), xmrEscrowIdx(w, 1), fundedAddr)
-	due, dueAddr, _ := xmrEscrow(t, x.testEnv, w, 2, x.buyer, physical, stateShipped)
-	soon, soonAddr, _ := xmrEscrow(t, x.testEnv, w, 3, x.buyer, physical, stateShipped)
-	agExec(x.testEnv, "UPDATE escrows SET release_days=14,dispatch_days=3,ship_by=now()-interval '10 days',release_at=now()-interval '1 hour' WHERE order_id=$1", due)
-	agExec(x.testEnv, "UPDATE escrows SET release_days=14,dispatch_days=3,ship_by=now()-interval '10 days',release_at=now()+interval '24 hours' WHERE order_id=$1", soon)
-	closed, closedAddr, _ := xmrEscrow(t, x.testEnv, w, 4, x.buyer, x.product, stateCancelled)
-	agExec(x.testEnv, "UPDATE escrows SET recover_requested=now() WHERE order_id=$1", closed)
-	agExec(x.testEnv, "INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations,after_close) VALUES($1,'XMR',$2,$3,$4,70000,50,true)", closed, txidOf("xmr-late"), xmrEscrowIdx(w, 4), closedAddr)
-	done, doneAddr, _ := xmrEscrow(t, x.testEnv, w, 5, x.buyer, x.product, stateCompleted)
-	agExec(x.testEnv, "INSERT INTO xmr_settlements(order_id,kind,destination,requested_by) VALUES($1,'release',$2,$3)", done, xmrAddr("xmr-claim"), x.vendor)
-	xmrOrders := []string{funded, due, soon, closed, done}
-	monero := append([]string{fundedAddr, dueAddr, soonAddr, closedAddr, doneAddr, xmrAddr("xmr-claim"), txidOf("xmr-fund"), txidOf("xmr-late")}, xmrOrders...)
-	// Every row of the Monero escrow orders, as the later slices will read them.
-	snapshot := func() string {
-		x.t.Helper()
-		var parts []string
-		for _, q := range []string{
-			"SELECT to_jsonb(o) FROM orders o WHERE id=ANY($1) ORDER BY id",
-			"SELECT to_jsonb(es) FROM escrows es WHERE order_id=ANY($1) ORDER BY id",
-			"SELECT to_jsonb(s) FROM xmr_escrow_slots s ORDER BY id",
-			"SELECT to_jsonb(xw) FROM xmr_escrow_wallets xw ORDER BY id",
-			"SELECT to_jsonb(p) FROM payments p WHERE order_id=ANY($1) ORDER BY id",
-			"SELECT to_jsonb(s) FROM xmr_settlements s ORDER BY id",
-			"SELECT count(*)::text FROM settlements WHERE order_id=ANY($1)",
-			"SELECT count(*)::text FROM order_events WHERE order_id=ANY($1)",
-			"SELECT count(*)::text FROM payouts WHERE order_id=ANY($1)",
-		} {
-			args := []any{xmrOrders}
-			if !strings.Contains(q, "$1") {
-				args = nil
-			}
-			parts = append(parts, strings.Join(agStrings(x.t, x.testEnv, q, args...), "\n"))
-		}
-		for _, o := range xmrOrders {
-			parts = append(parts, strconv.Itoa(agInt(x.testEnv, "SELECT count(*) FROM notifications WHERE strpos(body,$1)>0", shortID(o))))
-		}
-		return strings.Join(parts, "\n--\n")
-	}
-	before := snapshot()
-
-	// The Bitcoin escrow, beside them: a digital order funded, claimed, signed, co-signed, broadcast and confirmed; a
-	// physical one shipped and released at its deadline, after a restore recheck and with the daily check due.
-	claimOrder, claimID := x.confirmedSettlement("ign")
-	order, rel := x.shippedPhysical(regtestAddr("ign-refund"), regtestAddr("ign-claim"), 100000)
-	x.signAs(order, roleVendor, rel)
-	agExec(x.testEnv, "INSERT INTO settings(key,value) VALUES($1,'true') ON CONFLICT (key) DO UPDATE SET value='true'", releaseRecheckKey)
-	agExec(x.testEnv, "UPDATE settings SET value='2000-01-01T00:00:00Z' WHERE key=$1", escrowStrayCheckSetting)
-	x.poll()
-	if x.state(order) != stateShipped || agInt(x.testEnv, "SELECT count(*) FROM settings WHERE key=$1", releaseRecheckKey) != 0 {
-		t.Fatalf("the restore recheck pass: order %s", x.state(order))
-	}
-	x.forceDeadline(order, "release_at=now()-interval '1 minute'")
-	x.poll()
-	x.poll()
-	if x.state(order) != stateCompleted || x.settleByID(rel).State != "broadcast" {
-		t.Fatalf("the Bitcoin release at its deadline: order %s, release %+v", x.state(order), x.settleByID(rel))
-	}
-	if r := x.settleByID(claimID); r.State != "confirmed" || x.state(claimOrder) != stateCompleted {
-		t.Fatalf("the Bitcoin claim: %+v", r)
-	}
-	// The buyer's notice of a release deadline under 72 hours (/orders) and the reminder: Bitcoin escrow copy, so none
-	// for the Monero order whose deadline is a day away.
-	if err := x.A.remindDeadlines(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	// Since X-e the Monero order has its own banner, with Monero escrow copy (TestXMREscrowOrdersBannerUnder72h).
-	if body := x.page("/orders", x.buyerSess); strings.Contains(body, "sign the release") || strings.Contains(body, "co-signs") {
-		t.Error("/orders shows a Bitcoin release deadline banner for a Monero escrow order")
-	}
-
-	if after := snapshot(); after != before {
-		t.Errorf("Bitcoin escrow passes changed Monero escrow rows:\nbefore\n%s\nafter\n%s", before, after)
-	}
-	x.core.mu.Lock()
-	for _, call := range x.core.calls {
-		for _, m := range monero {
-			if strings.Contains(string(call.Params), m) {
-				t.Errorf("RPC %s named %s: %.200s", call.Method, m, call.Params)
-			}
-		}
-	}
-	x.core.mu.Unlock()
-
-	// The order page of a Monero escrow order: nothing of the Bitcoin escrow (panel, descriptor, PSBT and claim forms)
-	// and not the pooled payment panel either, which would say the funds are in the market's pooled wallet.
-	for _, o := range xmrOrders {
-		for _, sess := range []string{x.buyerSess, x.vendorSess} {
-			body := x.page("/order?id="+o, sess)
-			for _, bad := range []string{"<h2>Bitcoin escrow", "/escrow-descriptor", "/escrow-psbt", `action="/escrow/`, "<h2>Payment", "<h2>No payment record", "no funds are held"} {
-				if strings.Contains(body, bad) {
-					t.Errorf("order page of Monero escrow order %s shows %q", shortID(o), bad)
-				}
-			}
-		}
-	}
-	if w := x.do("GET", "/escrow-descriptor?id="+funded, x.buyerSess, nil); w.Code != 404 {
-		t.Errorf("the Bitcoin escrow descriptor of a Monero escrow order: %d", w.Code)
-	}
-	// The Bitcoin escrow forms and downloads refuse a Monero escrow order before any check or RPC. legacy holds Bitcoin
-	// settlement and fee-bump rows written before its Monero escrow existed (settlements_btc_only refuses only rows
-	// written after), so for sign, bump, bump-sign and the PSBT download nothing but the Order.btcEscrow guard refuses;
-	// decided is a resolved Monero escrow order whose changed decision would otherwise reach escrowSettleTerminal.
-	legacy := x.testEnv.order(x.buyer, x.product, "XMR", stateCompleted)
-	var legacyRel, legacyStray, legacyBump int64
-	if err := x.DB.QueryRow(`INSERT INTO settlements(order_id,kind,state,destination,fee_rate,network_fee,input_total,psbt,txid,raw_tx,cosigned,final_at,broadcast_at)
-		VALUES($1,'release','broadcast',$2,2,300,100000,'cHNidP8=',$3,'0200','market',now(),now()) RETURNING id`, legacy, regtestAddr("legacy-claim"), txidOf("legacy-rel")).Scan(&legacyRel); err != nil {
-		t.Fatal(err)
-	}
-	if err := x.DB.QueryRow(`INSERT INTO settlements(order_id,kind,state,destination,fee_rate,network_fee,input_total,psbt,txid)
-		VALUES($1,'stray_refund','awaiting_signature',$2,2,300,100000,'cHNidP8=',$3) RETURNING id`, legacy, regtestAddr("legacy-refund"), txidOf("legacy-stray")).Scan(&legacyStray); err != nil {
-		t.Fatal(err)
-	}
-	if err := x.DB.QueryRow("INSERT INTO settlement_bumps(settlement_id,n,requested_by,fee_rate) VALUES($1,1,$2,5) RETURNING id", legacyRel, x.vendor).Scan(&legacyBump); err != nil {
-		t.Fatal(err)
-	}
-	agExec(x.testEnv, "UPDATE settlement_bumps SET state='awaiting_signature',psbt='cHNidP8=',txid=$2,network_fee=900 WHERE id=$1", legacyBump, txidOf("legacy-bump"))
-	xmrEscrowOf(t, x.testEnv, w, 6, legacy)
-	decided, decidedAddr, _ := xmrEscrow(t, x.testEnv, w, 7, x.buyer, x.product, stateResolved)
-	agExec(x.testEnv, "INSERT INTO disputes(id,order_id,reason) VALUES($1,$2,'The licence key does not work at all.')", randomToken(), decided)
-	agExec(x.testEnv, "UPDATE disputes SET outcome='release',status='Resolved — release to vendor' WHERE order_id=$1", decided)
-	agExec(x.testEnv, "INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations) VALUES($1,'XMR',$2,$3,$4,100000,50)", decided, txidOf("xmr-decided"), xmrEscrowIdx(w, 7), decidedAddr)
-	_, adminSess := x.testEnv.user("ign_admin_"+randomToken()[:6], "admin")
-	guarded := func() string {
-		return strings.Join(agStrings(t, x.testEnv, `SELECT 's'||id||state FROM settlements WHERE order_id=$1 UNION ALL SELECT 'b'||id||state FROM settlement_bumps WHERE settlement_id=$2
-			UNION ALL SELECT 'd'||outcome FROM disputes WHERE order_id=$3 UNION ALL SELECT 'o'||state FROM orders WHERE id=$3 ORDER BY 1`, legacy, legacyRel, decided), ",")
-	}
-	guardedBefore, formsBefore := guarded(), snapshot()
-	calls := len(x.core.methods())
-	sid, bid := strconv.FormatInt(legacyStray, 10), strconv.FormatInt(legacyBump, 10)
-	for _, f := range []struct {
-		path string
-		sess string
-		form url.Values
-	}{
-		{"/escrow/claim", x.vendorSess, url.Values{"order_id": {done}, "address": {regtestAddr("ign-x")}, "password": {testPassword}}},
-		{"/escrow/ship", x.vendorSess, url.Values{"order_id": {due}, "address": {regtestAddr("ign-y")}, "password": {testPassword}, "note": {"Sent."}}},
-		{"/escrow/recover", x.buyerSess, url.Values{"order_id": {closed}, "password": {testPassword}}},
-		{"/escrow/sign", x.buyerSess, url.Values{"order_id": {legacy}, "settlement_id": {sid}, "psbt": {"cHNidP8="}}},
-		{"/escrow/bump", x.vendorSess, url.Values{"order_id": {legacy}, "settlement_id": {strconv.FormatInt(legacyRel, 10)}, "fee_rate": {"5"}, "password": {testPassword}}},
-		{"/escrow/bump-sign", x.vendorSess, url.Values{"order_id": {legacy}, "bump_id": {bid}, "psbt": {"cHNidP8="}}},
-		{"/escrow/decision", adminSess, url.Values{"order_id": {decided}, "outcome": {"refund"}, "reason": {"The buyer showed that the key never worked."}, "password": {testPassword}}},
-	} {
-		if w := x.do("POST", f.path, f.sess, f.form); w.Code != 404 || !strings.Contains(w.Body.String(), "Order not found") {
-			t.Errorf("%s on a Monero escrow order: %d %.200s", f.path, w.Code, w.Body.String())
-		}
-	}
-	for _, get := range []struct{ path, sess string }{
-		{"/escrow-psbt?id=" + legacy + "&s=" + sid, x.buyerSess},
-		{"/escrow-psbt?id=" + legacy + "&s=" + strconv.FormatInt(legacyRel, 10) + "&b=" + bid, x.vendorSess},
-	} {
-		if w := x.do("GET", get.path, get.sess, nil); w.Code != 404 {
-			t.Errorf("GET %s of a Monero escrow order: %d %.200s", get.path, w.Code, w.Body.String())
-		}
-	}
-	if n := len(x.core.methods()); n != calls {
-		t.Errorf("the Bitcoin escrow forms made %d RPCs for Monero escrow orders", n-calls)
-	}
-	if after := snapshot(); after != formsBefore {
-		t.Fatalf("Bitcoin escrow forms changed Monero escrow rows:\nbefore\n%s\nafter\n%s", formsBefore, after)
-	}
-	if after := guarded(); after != guardedBefore {
-		t.Fatalf("Bitcoin escrow forms changed a Monero escrow order's rows: %s, was %s", after, guardedBefore)
-	}
-
-	// The vendor desk's escrow tile counts the vendor's Bitcoin escrow orders only.
-	d := &PageData{User: x.loadUser(x.vendor)}
-	if err := escrowOrdersLoader(context.Background(), x.A, nil, d); err != nil {
-		t.Fatal(err)
-	}
-	if want := agInt(x.testEnv, "SELECT count(*) FROM escrows WHERE coin='BTC'"); d.EscrowOrders != want || want == 0 {
-		t.Fatalf("vendor desk counts %d escrow orders, want the %d Bitcoin ones", d.EscrowOrders, want)
-	}
-}
-
 // Migration 084 on a database that already holds Phase 1 and Phase 2 rows (Bitcoin escrows, digital and physical, with
 // keys, settlements in every final state, outputs, signatures, a fee bump and claimed payments): it applies, every row
 // reads back unchanged (each escrow is coin 'BTC' with no slot), and the Bitcoin rules still hold.
@@ -795,6 +577,13 @@ func TestXMREscrowMigration084Upgrade(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var through117 []migration
+	for _, m := range list {
+		if m.Version < 118 {
+			through117 = append(through117, m)
+		}
+	}
+	list = through117 // Historical084 behavior is tested before the Monero-only118 migration.
 	var upTo083 []migration
 	for _, m := range list {
 		if m.Version < 84 {

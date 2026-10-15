@@ -26,9 +26,9 @@ func TestArchivedListingVisibleThroughOrder(t *testing.T) {
 	// paid: a listing with an ordinary paid order (staff may not read it) and, later, a flagged payment.
 	disputed, paid := e.titledListing(vendorID, "A164 disputed listing"), e.titledListing(vendorID, "A164 paid listing")
 	e.mustExec(`UPDATE products SET kind='digital',description='A164 full description of what was sold',delivery_content='A164-SECRET-DELIVERY' WHERE id=$1`, disputed)
-	disputedOrder := e.order(buyerID, disputed, "BTC", stateDisputed)
+	disputedOrder := e.order(buyerID, disputed, "XMR", stateDisputed)
 	addOpenDisputeFixture(t, e, disputedOrder)
-	paidOrder := e.order(otherBuyerID, paid, "BTC", statePaid)
+	paidOrder := e.order(otherBuyerID, paid, "XMR", statePaid)
 
 	// The order page names the listing and links to it as it is now, for each viewer allowed to read the order.
 	for _, s := range []string{buyer, vendor, moderator, admin} {
@@ -81,7 +81,7 @@ func TestArchivedListingVisibleThroughOrder(t *testing.T) {
 	}
 
 	// A flagged payment opens the order, and so the listing, to staff (the order page's rule).
-	e.mustExec(`INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations,flagged) VALUES($1,'BTC','a164-flagged',0,'tb1qa164',1,1,true)`, paidOrder)
+	e.mustExec(`INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations,flagged) VALUES($1,'XMR','a164-flagged',0,'tb1qa164',1,1,true)`, paidOrder)
 	for _, s := range []string{moderator, admin} {
 		e.body("GET", "/order?id="+paidOrder, s, nil, 200)
 		mustContain(t, e.body("GET", "/product?id="+paid, s, nil, 200), archivedListingBadge)
@@ -131,9 +131,9 @@ func TestArchivedListingPhotosThroughOrder(t *testing.T) {
 	e.mustExec("UPDATE images SET created=created+interval '1 second' WHERE id=$1", second.id)
 	paidPhoto := e.image(vendorID, paid, "photo")
 	avatar := e.image(vendorID, "", "avatar")
-	disputedOrder := e.order(buyerID, disputed, "BTC", stateDisputed)
+	disputedOrder := e.order(buyerID, disputed, "XMR", stateDisputed)
 	addOpenDisputeFixture(t, e, disputedOrder)
-	e.order(otherBuyerID, paid, "BTC", statePaid)
+	e.order(otherBuyerID, paid, "XMR", statePaid)
 
 	// Live: public route, public URLs on the page; the desk route adds nothing for the order's buyer or staff.
 	e.wantPublic(photo, "live listing")
@@ -202,14 +202,14 @@ func TestDeskOrderRowsLinkTheirListing(t *testing.T) {
 	e.mustExec("UPDATE products SET title='A265 disputed listing' WHERE id=$1", disputed)
 	e.mustExec("UPDATE orders SET listing_title='A265 disputed listing' WHERE id=$1", disputedOrder)
 	flagged := e.titledListing(w.vendorID, "A265 flagged listing")
-	if code, body := w.x.shipEscrow(disputedOrder, w.vendor, regtestAddr("a265-claim"), testPassword); code != 303 {
+	if code, body := w.x.xmrShip(disputedOrder, w.vendor, testXMRAddr("a265-claim", true), testPassword); code != 303 {
 		t.Fatalf("ship disputed escrow: %d %s", code, body)
 	}
 	w.openDispute(disputedOrder, w.buyer, "The parcel never arrived at the agreed place.")
-	flaggedOrder := e.order(w.otherID, flagged, "BTC", stateCancelled)
+	flaggedOrder := e.order(w.otherID, flagged, "XMR", stateCancelled)
 	// This direct fixture represents a legacy cancelled order whose purchase-time listing terms were never recorded.
 	e.mustExec(`UPDATE orders SET listing_title=NULL,listing_description=NULL,listing_kind=NULL WHERE id=$1`, flaggedOrder)
-	e.mustExec(`INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations,flagged,after_close) VALUES($1,'BTC','a265-flagged',0,'tb1qa265',1,1,true,true)`, flaggedOrder)
+	e.mustExec(`INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations,flagged,after_close) VALUES($1,'XMR','a265-flagged',0,'tb1qa265',1,1,true,true)`, flaggedOrder)
 	e.mustExec(`UPDATE products SET archived=true,archived_at=now() WHERE id=ANY($1::text[])`, "{"+disputed+","+flagged+"}")
 
 	// segment returns the part of page from the last start before marker to the next end after it.

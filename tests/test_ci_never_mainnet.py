@@ -1,8 +1,8 @@
 """Development, tests and CI never run the installer on mainnet (A-523, owner directive 2026-10-13).
 
-`scripts/install.sh init` defaults to mainnet for the coins it runs local nodes for, so every real invocation in
+`scripts/install.sh init` defaults to mainnet for its local Monero daemon, so every real invocation in
 .github/, scripts/ or tests/ must say it is not one: `--local`, `--nodes none`, or an explicit test network (for a
-coin its options do not disable; the other coin follows its class) and no explicit mainnet. tests/test_installer.py is the one exception, and only because its Docker is a stub (checked
+Monero daemon its options do not disable) and no explicit mainnet. tests/test_installer.py is the one exception, and only because its Docker is a stub (checked
 below): it checks the configuration strings a mainnet install writes and never starts a node.
 """
 import ast
@@ -17,10 +17,9 @@ STUBBED = REPOSITORY / 'tests' / 'test_installer.py'
 SELF = Path(__file__).resolve()
 INSTALLER = REPOSITORY / 'scripts' / 'install.sh'  # the program itself: its messages name commands, it runs none
 SUFFIXES = ('.py', '.sh', '.bash', '.yaml', '.yml', '.ts', '.js', '.mjs')
-TEST_NETWORKS = {'--bitcoin-network': {'signet', 'testnet4', 'regtest'}, '--monero-network': {'stagenet'}}
-COINS = (('--bitcoin', '--bitcoin-network'), ('--monero', '--monero-network'))
+TEST_NETWORKS = {'stagenet'}
 # Options that decide whether init runs a mainnet node: their names and values must be literal to be checked.
-GOVERNING = {'--local', '--nodes', '--bitcoin', '--monero', '--bitcoin-network', '--monero-network'}
+GOVERNING = {'--local', '--nodes', '--monero', '--monero-network'}
 # install.sh as a word of a shell command (a path ending in it), not part of another name.
 SHELL_INVOCATION = re.compile(r'''(?:^|[\s;&|(`'"])(?:[\w./$-]*/)?install\.sh(?=$|[\s;&|)'"])(.*)$''')
 # install.sh sourced (`source` or `.`) for its functions (scripts/test-tor-identity-import.sh): it returns before its
@@ -50,10 +49,9 @@ def mainnet_problem(arguments):
                if word is not None and word.startswith('--')}
     if options.get('--nodes') == 'none':
         return None
-    # The installer's class follows an explicitly chosen network: one test network, for a coin its option does not
-    # disable, makes the other coin default to its own test network. Any other chosen network (mainnet) disqualifies.
-    chosen = [network for coin, network in COINS if options.get(coin) != 'disabled' and network in options]
-    if chosen and all(options[network] in TEST_NETWORKS[network] for network in chosen):
+    if options.get('--monero') == 'disabled':
+        return None
+    if options.get('--monero-network') in TEST_NETWORKS:
         return None
     return f'no --local, --nodes none or explicit test network ({" ".join(map(str, arguments)) or "no options"})'
 
@@ -163,21 +161,14 @@ class NeverMainnetTests(unittest.TestCase):
     def test_classifier_accepts_only_non_mainnet_inits(self):
         accepted = (['--local'], ['init', '--local', '--admin', 'a'], ['--tor', '--nodes', 'none'], ['check'],
                     ['upgrade', '--no-backup'], ['status'], ['--help'],
-                    ['init', '--clearnet', '--bitcoin', 'local', '--bitcoin-network', 'regtest', '--monero', 'disabled'],
-                    ['--tor', '--nodes', 'local', '--bitcoin-network', 'signet', '--monero-network', 'stagenet'],
-                    ['--tor', '--bitcoin', 'disabled', '--monero', 'local', '--monero-network', 'stagenet'],
-                    ['--tor', '--bitcoin-image', None, '--nodes', 'none'],
-                    # One explicit test network carries the other coin (the class follows it).
-                    ['--tor', '--nodes', 'local', '--bitcoin-network', 'signet'],
+                    ['--tor', '--monero', 'disabled'],
+                    ['--tor', '--monero', 'local', '--monero-network', 'stagenet'],
+                    ['--tor', '--monero-image', None, '--nodes', 'none'],
                     ['--tor', '--nodes', 'local', '--monero-network', 'stagenet'])
         refused = ([], ['init'], ['--tor'], ['--tor', '--nodes', 'local'], ['--nodes', 'custom'],
-                   ['--tor', '--nodes', 'local', '--bitcoin-network', 'signet', '--monero-network', 'mainnet'],
-                   ['--tor', '--bitcoin', 'disabled', '--bitcoin-network', 'signet', '--monero', 'local'],
-                   ['--tor', '--bitcoin', 'local', '--bitcoin-network', 'main', '--monero', 'disabled'],
-                   ['--tor', '--bitcoin', 'disabled', '--monero', 'local', '--monero-network', 'mainnet'],
-                   ['--tor', '--bitcoin', 'local', '--monero', 'disabled'],
-                   [None], [None, '--local'], ['--tor', '--nodes', None],
-                   ['--tor', '--bitcoin-network', None, '--monero', 'disabled'], ['--tor', None, None, '--nodes', 'none'])
+                   ['--tor', '--nodes', 'local', '--monero-network', 'mainnet'],
+                   ['--tor', '--monero', 'local'], [None], [None, '--local'], ['--tor', '--nodes', None],
+                   ['--tor', '--monero-network', None], ['--tor', None, None, '--nodes', 'none'])
         for arguments in accepted:
             with self.subTest(accepted=arguments):
                 self.assertIsNone(mainnet_problem(arguments))
@@ -219,7 +210,6 @@ class NeverMainnetTests(unittest.TestCase):
         inits = {path.relative_to(REPOSITORY).as_posix() for path, _, words in checked
                  if not words or words[0] == 'init' or (words[0] or '').startswith('--')}
         self.assertIn('scripts/test-install.py', inits)
-        self.assertIn('scripts/test-escrow-node-rehearsal.py', inits)
 
     def test_sourced_installer_runs_no_command(self):
         # The exception for a sourced install.sh above holds only while it returns before it dispatches any command.

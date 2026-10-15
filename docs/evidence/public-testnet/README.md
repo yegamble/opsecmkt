@@ -4,7 +4,7 @@
 testnet4: `<UTC date>-<commit, 12 hex>/<chain>/manifest.json` and `transcript.log`. The manifest names the full
 commit, chain and `signet_challenge`, the node's version, image and digest, start and end heights, each leg's txids and
 the transcript's sha256; both files passed the script's secret scan before they were written. How to run it:
-[Escrow node set-up and the public-network smoke](../../operator-guide.md#escrow-node-set-up-and-the-public-network-smoke).
+[Escrow node set-up and the public-network smoke](https://github.com/yegamble/opsecmkt/blob/e1c082db8eff76e25516e23362a5b9a101751a68/docs/operator-guide.md#escrow-node-set-up-and-the-public-network-smoke).
 
 [Public signet — 2026-10-09, frozen 9885beef29d3](2026-10-09-9885beef29d3/signet/README.md): practice signing, funded claim and buyer refund passed with real confirmations. Supplemental records measure sync/storage and Tor private-broadcast observations. Public testnet4 remains unrun.
 

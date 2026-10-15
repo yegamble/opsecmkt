@@ -77,7 +77,7 @@ func newOrderFixture(t *testing.T, kind, state string) *orderFixture {
 	v, _ := e.user("vendor_"+randomToken()[:6], "vendor")
 	x, _ := e.user("other_"+randomToken()[:6], "buyer")
 	f := &orderFixture{e: e, buyer: e.loadUser(b), vendor: e.loadUser(v), other: e.loadUser(x)}
-	f.order = e.order(b, e.product(v, kind), "BTC", state)
+	f.order = e.order(b, e.product(v, kind), "XMR", state)
 	return f
 }
 

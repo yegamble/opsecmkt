@@ -237,7 +237,7 @@ func TestObjectTitles(t *testing.T) {
 	vendorID, vendorSess := e.user("title_vendor", "vendor")
 	buyerID, buyerSess := e.user("title_buyer", "buyer")
 	p := e.product(vendorID, "physical")
-	o := e.order(buyerID, p, "BTC", "awaiting_payment")
+	o := e.order(buyerID, p, "XMR", "awaiting_payment")
 	for _, c := range []struct{ path, sess, want string }{
 		{"/", "", "<title>Marketplace · "},
 		{"/canary", "", "<title>Transparency · "},

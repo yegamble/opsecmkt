@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { expect, test } from '@playwright/test';
 import { uniqueHandle } from './db-fixtures';
-import { seedRecordedEscrowKeys, signedIn, submitAndLoad, withinViewport } from './db-helpers';
+import { seedRecordedMoneroEscrow, signedIn, submitAndLoad, withinViewport } from './db-helpers';
 
 // A-253 (A-31): the moderator's payment-review disposition forms, submitted with JavaScript disabled against a real
 // database. No wallet runs here, so the flags are seeded in SQL: two escrow deposits
@@ -29,12 +29,11 @@ test('a moderator reviews escrow flags at 320 px; a hand refund is refused and a
       INSERT INTO products(id,vendor_id,title,description,category,region,kind,btc,xmr,stock,archived)
         VALUES ('${productID}',(SELECT id FROM users WHERE handle='${vendorHandle}'),'Payment review fixture','Seeded by db-payment-review.spec.ts','Other','Worldwide','digital',100000,500000000000,0,true);
       INSERT INTO orders(id,buyer_id,product_id,currency,amount,state)
-        VALUES ('${order}',(SELECT id FROM users WHERE handle='${buyerHandle}'),'${productID}','BTC',100000,'cancelled');
-      INSERT INTO escrows(order_id,address,market_index,refund_address,fee_bps,fee_destination) VALUES ('${order}','${address}',nextval('escrow_market_index'),'tb1qbrowserreviewrefund',0,'');
+        VALUES ('${order}',(SELECT id FROM users WHERE handle='${buyerHandle}'),'${productID}','XMR',100000,'cancelled');
       INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations,flagged,after_close) VALUES
-        ('${order}','BTC','${noActionTx}',0,'${address}',20000,3,true,true),('${order}','BTC','${refundedTx}',0,'${address}',30000,3,true,true);`);
+        ('${order}','XMR','${noActionTx}',0,'${address}',20000,3,true,true),('${order}','XMR','${refundedTx}',0,'${address}',30000,3,true,true);`);
 
-    seedRecordedEscrowKeys(sql, order, buyerHandle, vendorHandle);
+    seedRecordedMoneroEscrow(sql, order);
 
     await mod.goto('/moderator');
     const desk = mod.getByRole('region', { name: 'Payment review' });

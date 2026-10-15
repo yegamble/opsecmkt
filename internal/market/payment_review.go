@@ -191,11 +191,7 @@ func recordPaymentReview(c *actionCtx, id int64, outcome, note string) (actionRe
 		// A-330: every reviewed deposit is an escrow deposit (the order row above joins escrows), in the order's escrow,
 		// never in a wallet staff could refund it from; a credited one left out of its settlement no longer counts for the
 		// order (QA462D-2), so this is the reason.
-		coin := "Bitcoin"
-		if o.Currency == "XMR" {
-			coin = "Monero"
-		}
-		return actionResult{}, fail(409, "This deposit is in the order's "+coin+" escrow, not in a market wallet, so it is never refunded by hand: a stray refund from the escrow returns it to the buyer's refund address. Record no action, or escalate. Nothing was changed.")
+		return actionResult{}, fail(409, "This deposit is in the order's Monero escrow, not in a market wallet, so it is never refunded by hand: a stray refund from the escrow returns it to the buyer's refund address. Record no action, or escalate. Nothing was changed.")
 	}
 	var admins []string
 	if outcome == "escalated" {

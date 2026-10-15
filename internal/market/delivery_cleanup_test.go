@@ -6,7 +6,6 @@ import (
 	"net/url"
 	"strings"
 	"testing"
-	"time"
 )
 
 func cleanupDemote(t *testing.T, e *testEnv, handle, role string) (string, string) {
@@ -116,7 +115,7 @@ func TestDeliveryCleanupPaginationAndAwaitingPaymentGuard(t *testing.T) {
 		t.Fatal(err)
 	}
 	buyer, _ := e.user("cleanup_awaiting_buyer", "buyer")
-	e.order(buyer, awaitingID, "BTC", stateAwaitingPayment)
+	e.order(buyer, awaitingID, "XMR", stateAwaitingPayment)
 
 	first := e.body("GET", "/delivery-cleanup", session, nil, 200)
 	mustContain(t, first, "Showing 1–50 of 51", "Next →")
@@ -150,12 +149,12 @@ func TestDeliveryCleanupPreservesExistingDeliveredSnapshotAndHidesOtherOwners(t 
 	other, _ := e.user("cleanup_history_other", "vendor")
 	otherProduct := cleanupListing(t, e, other, "Other owner title", "other-template-secret")
 	otherBuyer, _ := e.user("cleanup_history_order_buyer", "buyer")
-	order := e.order(otherBuyer, otherProduct, "BTC", "delivered")
+	order := e.order(otherBuyer, otherProduct, "XMR", "delivered")
 	if _, err := e.DB.Exec("INSERT INTO deliveries(order_id,content) VALUES($1,$2)", order, "historical-delivery-snapshot"); err != nil {
 		t.Fatal(err)
 	}
 	ownerBuyer, _ := e.user("cleanup_owner_order_buyer", "buyer")
-	ownerOrder := e.order(ownerBuyer, product, "BTC", "delivered")
+	ownerOrder := e.order(ownerBuyer, product, "XMR", "delivered")
 	if _, err := e.DB.Exec("INSERT INTO deliveries(order_id,content) VALUES($1,$2)", ownerOrder, "existing-owner-delivery-snapshot"); err != nil {
 		t.Fatal(err)
 	}
@@ -175,64 +174,5 @@ func TestDeliveryCleanupPreservesExistingDeliveredSnapshotAndHidesOtherOwners(t 
 	}
 	if got := agStr(e, "SELECT content FROM deliveries WHERE order_id=$1", order); got != "historical-delivery-snapshot" {
 		t.Fatalf("other historical snapshot changed: %q", got)
-	}
-}
-
-func TestDeliveryCleanupSerializesWithAutomaticDelivery(t *testing.T) {
-	x := newEscrowEnv(t)
-	e := x.testEnv
-	owner, session, product, order := x.vendor, x.vendorSess, x.product, x.order
-	e.mustExec("UPDATE products SET title='Archived race listing',delivery_content='automatic-delivery-snapshot-secret' WHERE id=$1", product)
-	x.mustCheckout(order, regtestAddr("cleanup-race-refund"))
-	ownerHandle := agStr(e, "SELECT handle FROM users WHERE id=$1", owner)
-	if _, err := SetRole(context.Background(), e.DB, ownerHandle, "buyer"); err != nil {
-		t.Fatal(err)
-	}
-
-	// Run the real awaiting-payment -> paid transition and automatic-delivery hook, then hold its transaction open
-	// after the hook has taken the listing's FOR KEY SHARE lock and saved the per-order snapshot.
-	payTx, err := e.DB.Begin()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = e.A.transition(context.Background(), payTx, order, stateAwaitingPayment, statePaid, nil, "Confirmed payment"); err != nil {
-		payTx.Rollback()
-		t.Fatal(err)
-	}
-	finished := make(chan int, 1)
-	go func() {
-		w := e.do("POST", "/delivery-cleanup", session, url.Values{"id": {product}, "password": {testPassword}})
-		finished <- w.Code
-	}()
-
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		waiting := agInt(e, `SELECT count(*) FROM pg_stat_activity WHERE datname=current_database()
-			AND wait_event_type='Lock' AND query LIKE 'SELECT vendor_id,kind,stock,archived,%'`)
-		if waiting > 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			payTx.Rollback()
-			t.Fatal("cleanup did not block behind automatic delivery's listing lock")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if err = payTx.Commit(); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case code := <-finished:
-		if code != 303 {
-			t.Fatalf("cleanup status=%d, want success after delivery commits", code)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("cleanup did not resume after automatic delivery committed")
-	}
-	if got := agStr(e, "SELECT content FROM deliveries WHERE order_id=$1", order); got != "automatic-delivery-snapshot-secret" {
-		t.Fatalf("automatic delivery snapshot changed: %q", got)
-	}
-	if got := agStr(e, "SELECT delivery_content FROM products WHERE id=$1", product); got != "" {
-		t.Fatalf("listing template remains after delivery: %q", got)
 	}
 }

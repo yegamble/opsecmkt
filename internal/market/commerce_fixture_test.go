@@ -28,7 +28,7 @@ func newPayEnv(t *testing.T, supplied ...*testEnv) *payEnv {
 	e.setKey(v, key)
 	p := &payEnv{testEnv: e, t: t, buyer: e.loadUser(b), vendor: e.loadUser(v), mod: e.loadUser(m), buyerSess: bs, vendorSess: vs, adminSess: as}
 	p.productID = e.product(v, "physical")
-	p.order = e.order(b, p.productID, "BTC", stateDraft)
+	p.order = e.order(b, p.productID, "XMR", stateDraft)
 	return p
 }
 func (p *payEnv) state(order string) string {
@@ -55,7 +55,7 @@ func (p *payEnv) page(path, session string) string {
 }
 func (p *payEnv) newOrder(state string) (string, string) {
 	p.t.Helper()
-	return p.testEnv.order(p.buyer.ID, p.productID, "BTC", state), ""
+	return p.testEnv.order(p.buyer.ID, p.productID, "XMR", state), ""
 }
 
 func (p *payEnv) str(query string, args ...any) string {

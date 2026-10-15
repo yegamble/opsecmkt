@@ -24,8 +24,8 @@ covered by unit, database and simulated-RPC tests only.
 
 | You want | Pass | Writes |
 | --- | --- | --- |
-| Mainnet (default) | nothing | `BITCOIN_CHAIN=main`, `MONERO_NETWORK=mainnet`, blank `MONERO_NETWORK_FLAG=` |
-| Test networks | `--bitcoin-network signet` and `--monero-network stagenet` | `signet`, `stagenet`, `MONERO_NETWORK_FLAG=--stagenet` |
+| Mainnet (default) | nothing | `MONERO_NETWORK=mainnet`, blank `MONERO_NETWORK_FLAG=` |
+| Test networks | `--monero-network stagenet` | `MONERO_NETWORK=stagenet`, `MONERO_NETWORK_FLAG=--stagenet` |
 | No nodes | `--nodes none`, or `--local` | Nothing for payments |
 
 Details and the other options: [Enabling payments](enable-payments.md#choose-a-network). Upgrading never changes an

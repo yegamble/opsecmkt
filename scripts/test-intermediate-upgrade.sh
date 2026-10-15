@@ -192,7 +192,7 @@ vendor.post('/account', '/listings', {'title': 'Intermediate-era item', 'descrip
                                       'category': 'Hardware', 'region': 'Worldwide', 'kind': 'physical',
                                       'price_btc': '0.00150000', 'price_xmr': '0.250000000000', 'stock': '5'})
 product_id = sql("SELECT id FROM products WHERE title='Intermediate-era item'")
-buyer.post('/account', '/orders', {'product_id': product_id, 'currency': 'BTC'})
+buyer.post('/account', '/orders', {'product_id': product_id, 'currency': 'XMR'})
 source = os.path.join(os.environ['UPGRADE_OLD_SOURCE'], 'internal/market/pgp_integration_test.go')
 text = open(source, encoding='utf-8').read()
 match = re.search(r'const gpgFixtureMessage = `(.+?)`', text, re.S)

@@ -93,6 +93,8 @@ Evidence tier as in `repo-map.md`.
 | 61 | 2026-10-13 | /war-room-loop, targeted: owner directive (mainnet installer default; pruned nodes; onion identity import). Rounds 0, A, D (B/C skipped: disputes narrow and settled by seat experiments) | payments, infrastructure, security, devil's advocate (Opus) | SRE-2 reproduced by the chair (monerod stagenet, offline): core and restricted RPC on one port → `F Error starting server: Failed to bind IPv4`; new P0 A-523, A-524, A-525, A-527; P1 A-526, A-528; P2 A-529–A-532; P3 A-533; A-460 and A-510 rows corrected |
 | 62 | 2026-10-13 | /war-room on an external audit (F1–F5), owner: "fix these issues". Rounds 0, A, D (B/C skipped: four seats converged independently; infrastructure seat's offline image starts settle F4) | security, backend, infrastructure, devil's advocate (Opus) | F3's proposed fix and F2/F5 declined (D-67); A-534, A-536, A-537 accepted (P2, implemented this session at the owner's request); A-535, A-539 P3; A-538 P2 Outcome: A-534, A-536, A-537, A-540 VERIFIED (CI 38487381809 on b5696c5; QA iteration 62); QA61V-2/3 doc NITs fixed; local gate: Go escrow half pass, non-escrow half two 503 load flakes (pass in CI), Python 430 OK. PR #50 green, ready for the owner. |
 
+| 63 | 2026-10-15 | Owner directive: remove Bitcoin; Monero only. Owner confirmed no live deployment, so no cutover work. | payments, infrastructure, Tor OPSEC/privacy/product; independent review, implementation and cross-review | Source changes in this workspace: XMR-only runtime, UI, schema, installer, Compose and current guides; shared security/dispute tests ported to Monero. Unit tests and 172 no-JavaScript preview checks passed; final database/race and browser gates recorded below. No deployment or CI run claimed. |
+
 ## P0 — release blockers
 
 | ID | Item | Area | Evidence | Status |
@@ -1253,3 +1255,22 @@ Waves: wave 1 A-523 (Opus), A-524 (Opus), A-527 (Opus); wave 2 A-526 (Opus), A-5
 | C-1 | CI red on main: `pg_isready` Unix-socket init race | PR #5, main CI run 35891255332 green |
 | C-2 | Go toolchain drift (tests 1.26.8, ships 1.27.1); govulncheck 1.1.4 panics on Go 1.27 | PR #5 |
 | C-3 | Release workflow required a private repo; action pin drift; duplicate CI runs | PR #5 |
+
+## Iteration 63 — Monero-only product ruling
+
+DECISION: ACCEPT — remove Bitcoin from every supported purchase, setup and deployment surface.
+WHY: Explicit owner request; this application is not live anywhere.
+DISSENTING VIEW: Payments and infrastructure initially recommended a guarded legacy cutover. The owner's undeployed clarification removes that requirement; no currency-conversion or drain workflow was added.
+USER IMPACT: Buyers order only in XMR; vendors publish one XMR price; administrators have only XMR intake and recovery.
+OPERATOR IMPACT: Installer provisions only Monero node/wallet services, and the production image has no Bitcoin signer binary.
+TECHNICAL COST/RISK: Immutable old migrations and dated evidence remain historical; dormant parser/schema helpers remain where shared code needs them. Monero escrow remains custodial.
+ACCEPTANCE CRITERIA: Direct BTC order/intake requests fail without writes; XMR listing create/edit works without a BTC price; only XMR appears in public pages and no-JavaScript forms; Bitcoin services cannot be enabled; Monero escrow and shared authorization/dispute/recovery checks pass.
+TEST PLAN: New Monero-only HTTP/config/schema regressions, real PostgreSQL race tests, Chromium with JavaScript disabled, installer/Compose/restore/Python checks, modules/format/vet, and manual preview inspection. Actual results are appended after completion. Docker daemon and age binaries are unavailable locally, so real-image/fakechain and encrypted backup rehearsal are not claimed.
+
+RESULTS: Monero-only runtime, UI, schema, installer and deployment configuration/static checks passed. The current full `TestXMREscrow*` PostgreSQL/simulated-RPC run passed 173 top-level groups (267 including subtests), with 20 explicitly environment-gated real-chain/public tests skipped. The earlier broad non-escrow race run found stale Bitcoin fixtures; all 21 retained failing groups passed the final combined race rerun (16.810 s), and five Bitcoin-only groups were retired. Independent focused race runs preserved authorization, disputes, confirmation budgets, inventory, wallet retirement, access obligations and restore guards. Fourteen validation/shipping/nonce groups passed (9.402 s), including the discovered Monero shipping-note parity fix: reject over 500 characters before effects and store valid Unicode notes intact.
+
+UI/OPS EVIDENCE: Chromium with JavaScript disabled passed 172 preview checks, 40 runnable DB journeys and eight simulated Monero escrow journeys, using focused reruns after fixture and local-timeout corrections; one environment-gated DB check skipped. All 156 installer tests were verified across the full run and corrected focused reruns; another 220 Python checks passed. Documentation checks, shell/heredoc syntax, module verification, formatting, vet and actionlint passed. Pinned govulncheck found zero vulnerabilities affecting called code. The Tor OPSEC agent's static web audit and manual 320 px preview inspection passed. Final read-only war-room review found no runtime/deployment omission; obsolete operations-test descriptions were synchronized.
+
+LIMITS: Local working-tree evidence only; no new CI run, commit, deployment, real-chain run, Tor circuit or encrypted backup rehearsal. Docker daemon and age binaries were unavailable. Monero's on-chain privacy does not remove the market's custody or host/network threat boundaries. No live cutover or transaction conversion work was needed.
+
+FINAL DOCUMENTATION GATE: Strict MkDocs build passed after pinning historical links to their pre-removal revision, preserving the old notes without restoring Bitcoin product sections. The current Monero restore reminder and backup-test assertions agree with the runbook heading; 46 documentation/recovery checks passed after that correction. The disposable PostgreSQL test server was stopped.

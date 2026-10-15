@@ -181,7 +181,7 @@ func newTestApp(t *testing.T) *testEnv {
 	// leaves those migration settings untouched. Escrow fixtures configure their
 	// nodes before startup and retain escrow intake for checkout coverage.
 	if !e.A.escrowConfigured && e.A.escrowXMR == nil {
-		if _, err := e.DB.Exec("UPDATE settings SET value=$1 WHERE key IN ($2,$3)", intakePaused, paymentIntakeKey("BTC"), paymentIntakeKey("XMR")); err != nil {
+		if _, err := e.DB.Exec("UPDATE settings SET value=$1 WHERE key IN ($2,$3)", intakePaused, paymentIntakeKey("XMR"), paymentIntakeKey("XMR")); err != nil {
 			t.Fatal(err)
 		}
 	}

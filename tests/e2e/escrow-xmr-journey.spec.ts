@@ -78,7 +78,7 @@ async function draft(buyer: Page, title: string) {
   await tabTo(buyer, buyer.getByRole('link', { name: 'Review order draft' }));
   await Promise.all([buyer.waitForEvent('load'), buyer.keyboard.press('Enter')]);
   await tabTo(buyer, buyer.getByLabel('Pay with'));
-  // Native-select typeahead chooses the Monero reference price without relying on platform popup key behavior.
+  // Native-select typeahead chooses the Monero price without relying on platform popup key behavior.
   await buyer.keyboard.type('0.5');
   await expect(buyer.getByLabel('Pay with')).toHaveValue('XMR');
   await pressSubmit(buyer, buyer.getByRole('button', { name: 'Create unfunded draft' }));
@@ -186,8 +186,7 @@ test('Monero escrow: checkout with the custody copy, funding at 9 and 10 confirm
     await tabTo(vendor, vendor.getByLabel('Stock', { exact: true }));
     await vendor.keyboard.press('ControlOrMeta+A');
     await vendor.keyboard.type('40');
-    await typeInto(vendor, vendor.getByLabel(/Price \(BTC, (?:test network|main network|not configured|not yet known)\)/), '0.001');
-    await typeInto(vendor, vendor.getByLabel('Monero reference price'), '0.5');
+    await typeInto(vendor, vendor.getByLabel('Price (XMR)'), '0.5');
     if (kind === 'digital') await typeInto(vendor, vendor.getByLabel('Automatic delivery content'), 'LICENCE-XMR-ESCROW-0001');
     await pressSubmit(vendor, vendor.getByRole('button', { name: 'Publish listing' }));
   }

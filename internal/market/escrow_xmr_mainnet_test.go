@@ -92,7 +92,7 @@ func TestXMREscrowMainnetTags(t *testing.T) {
 
 // A-460: which daemon a market's class accepts, at startup. With MONERO_NETWORK=mainnet a test-network daemon is
 // refused with the mainnet market's fixed refusal; on a test-network market a mainnet daemon is refused as before; a
-// mainnet market from BITCOIN_CHAIN=main alone refuses ESCROW_XMR=on until MONERO_NETWORK=mainnet is set; and a database
+// retired Bitcoin configuration is refused before any node call; and a database
 // pinned to mainnet never starts as a test-network market. The fee address must be a mainnet one.
 func TestXMREscrowMainnetStartup(t *testing.T) {
 	x := newXMREscrowEnvWith(t, onMainnet)
@@ -122,11 +122,12 @@ func TestXMREscrowMainnetStartup(t *testing.T) {
 	t.Setenv("ESCROW_XMR_FEE_BPS", "")
 	t.Setenv("ESCROW_XMR_FEE_ADDRESS", "")
 
-	// BITCOIN_CHAIN=main alone: a mainnet market without Monero's own opt-in.
+	// BITCOIN_CHAIN can no longer choose a market's network class.
 	t.Setenv("MONERO_NETWORK", "")
 	t.Setenv("BITCOIN_CHAIN", "main")
-	if err := start(); !errors.Is(err, errXMRMainnetOptIn) {
-		t.Fatalf("BITCOIN_CHAIN=main without MONERO_NETWORK=mainnet: %v", err)
+	bitcoinCalls := x.fake.count()
+	if err := start(); err == nil || !strings.Contains(err.Error(), "Bitcoin is removed") || x.fake.count() != bitcoinCalls {
+		t.Fatalf("obsolete Bitcoin network setting was not refused before RPC: %v (%d calls)", err, x.fake.count()-bitcoinCalls)
 	}
 	// A test-network market: a database holding Monero escrow state pinned to mainnet is refused before any node is
 	// asked (checkNetworkClass; a pin alone, with no escrow state, may still be rewritten, so a wallet row is held).

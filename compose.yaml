@@ -35,17 +35,14 @@ services:
       BITCOIN_RPC_URL: ${BITCOIN_RPC_URL:-}
       # Keep obsolete mappings blank by default so old values reach the startup guard.
       BITCOIN_WALLET: ${BITCOIN_WALLET:-}
-      # Blank chain/network accepts supported test networks. Mainnet requires the coin's explicit opt-in
-      # (BITCOIN_CHAIN=main or MONERO_NETWORK=mainnet); mixed network classes and mismatched held escrows are refused.
+      # Retired Bitcoin keys remain guard inputs only. Monero mainnet needs an explicit network choice.
       BITCOIN_CHAIN: ${BITCOIN_CHAIN:-}
-      PAYMENT_CONFIRMATIONS_BTC: ${PAYMENT_CONFIRMATIONS_BTC:-3}
       MONERO_RPC_URL: ${MONERO_RPC_URL:-}
       MONERO_WALLET_RPC_URL: ${MONERO_WALLET_RPC_URL:-}
       MONERO_NETWORK: ${MONERO_NETWORK:-}
       PAYMENT_CONFIRMATIONS_XMR: ${PAYMENT_CONFIRMATIONS_XMR:-10}
       PAYMENT_POLL_INTERVAL: ${PAYMENT_POLL_INTERVAL:-30s}
       PAYMENT_EXPIRY: ${PAYMENT_EXPIRY:-24h}
-      BITCOIN_MAX_TIP_AGE: ${BITCOIN_MAX_TIP_AGE:-2h}
       MONERO_MAX_TIP_AGE: ${MONERO_MAX_TIP_AGE:-1h}
       AUDIT_SIGNING_KEY: ${AUDIT_SIGNING_KEY:-}
       # Optional public OpenPGP recipient key file inside this container; mount it read-only in an override.
@@ -53,8 +50,7 @@ services:
       # Opt in after announcing retention and inventorying holds/backups; state must survive database rollback.
       RETENTION_ENABLED: ${RETENTION_ENABLED:-off}
       RETENTION_STATE_DIR: /var/lib/opsecmkt-retention
-      # Bitcoin escrow: test networks (regtest, signet, testnet4), or mainnet on a mainnet market (BITCOIN_CHAIN=main, A-460);
-      # off unless ESCROW_BTC=on; blank values use the app defaults (docs/operator-guide.md#bitcoin-escrow).
+      # Retired Bitcoin inputs reach the startup refusal; this build supports Monero only.
       ESCROW_BTC: ${ESCROW_BTC:-}
       ESCROW_BTC_RPC_URL: ${ESCROW_BTC_RPC_URL:-}
       ESCROW_BTC_ARBITER_WALLET: ${ESCROW_BTC_ARBITER_WALLET:-}
@@ -62,7 +58,7 @@ services:
       ESCROW_BTC_FEE_BPS: ${ESCROW_BTC_FEE_BPS:-}
       ESCROW_BTC_FEE_ADDRESS: ${ESCROW_BTC_FEE_ADDRESS:-}
       ESCROW_BTC_FEE_RATE: ${ESCROW_BTC_FEE_RATE:-}
-      # The escrow signer's socket, as compose.nodes.yaml mounts it (/run/escrow-signer/signer.sock); blank = no signer.
+      # Reject a legacy signer configuration; no signer is shipped or mounted.
       ESCROW_SIGNER_SOCKET: ${ESCROW_SIGNER_SOCKET:-}
       # Monero escrow: a local Monero fakechain or stagenet, or mainnet on a mainnet market (MONERO_NETWORK=mainnet, A-460);
       # off unless ESCROW_XMR=on; blank values use the app defaults (docs/operator-guide.md#monero-escrow). ESCROW_XMR_SEED_KEY is a path inside this

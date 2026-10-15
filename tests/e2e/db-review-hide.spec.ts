@@ -27,7 +27,7 @@ test('administrator hides a review from the public pages and restores it', async
       INSERT INTO products(id,vendor_id,title,description,category,region,kind,btc,xmr,stock)
         VALUES ('${productID}','${vendorID}','Review moderation fixture','Seeded by db-review-hide.spec.ts','Other','Worldwide','physical',100000,500000000000,1);
       INSERT INTO orders(id,buyer_id,product_id,currency,amount,state)
-        VALUES ('${badOrder}','${buyerID}','${productID}','BTC',100000,'completed'),('${goodOrder}','${buyerID}','${productID}','BTC',100000,'completed');
+        VALUES ('${badOrder}','${buyerID}','${productID}','XMR',100000,'completed'),('${goodOrder}','${buyerID}','${productID}','XMR',100000,'completed');
       INSERT INTO reviews(id,order_id,product_id,buyer_id,rating,body)
         VALUES ('${hex(32)}','${badOrder}','${productID}','${buyerID}',1,'${doxx}'),('${hex(32)}','${goodOrder}','${productID}','${buyerID}',5,'${kept}');`);
     const productURL = `/product?id=${productID}`;

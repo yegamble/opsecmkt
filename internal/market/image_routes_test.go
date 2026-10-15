@@ -584,8 +584,8 @@ func TestStaffAvatarVisibleToOrderParties(t *testing.T) {
 	listing := e.product(vendorID, "physical")
 	avatar := e.image(modID, "", "avatar")
 
-	decided := e.order(buyerID, listing, "BTC", "resolved")
-	other := e.order(buyer2ID, listing, "BTC", "resolved")
+	decided := e.order(buyerID, listing, "XMR", "resolved")
+	other := e.order(buyer2ID, listing, "XMR", "resolved")
 	for _, ev := range [][3]string{{decided, "paid", "disputed"}, {other, "paid", "disputed"}} {
 		if _, err := e.DB.Exec("INSERT INTO order_events(order_id,from_state,to_state,actor_id) VALUES($1,$2,$3,$4)", ev[0], ev[1], ev[2], buyerID); err != nil {
 			t.Fatal(err)

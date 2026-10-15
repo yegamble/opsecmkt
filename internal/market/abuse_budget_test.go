@@ -114,7 +114,7 @@ func TestAdminListingEditNotifiesVendor(t *testing.T) {
 		t.Fatalf("own edit: notifications=%d vendor audits=%d", n, a)
 	}
 	// An administrator's edit: one notification naming the changed fields, one audit row on the vendor.
-	e.check(e.do("POST", "/listings/update", adminS, inventoryForm(p, map[string]string{"title": "Admin retitled", "price_btc": "0.003", "stock": "7"})), 303)
+	e.check(e.do("POST", "/listings/update", adminS, inventoryForm(p, map[string]string{"title": "Admin retitled", "price_xmr": "0.8", "stock": "7"})), 303)
 	if n, a := adminNotices(), vendorAudits(); n != 1 || a != 1 {
 		t.Fatalf("admin edit: notifications=%d vendor audits=%d, want 1 each", n, a)
 	}
@@ -126,8 +126,8 @@ func TestAdminListingEditNotifiesVendor(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, s := range []string{note, audit} {
-		mustContain(t, s, p[:8], "title, Bitcoin price, stock")
-		mustNotContain(t, s, "description", "category", "region", "Monero price", "fulfillment", "dispatch")
+		mustContain(t, s, p[:8], "title, Monero price, stock")
+		mustNotContain(t, s, "description", "category", "region", "Bitcoin price", "fulfillment", "dispatch")
 	}
 	mustContain(t, note, "“Edited listing”")
 	mustContain(t, audit, "edit_notice_admin")
@@ -135,7 +135,7 @@ func TestAdminListingEditNotifiesVendor(t *testing.T) {
 		t.Fatal("the administrator's own audit row is missing")
 	}
 	// An administrator's save that changes nothing tells the vendor nothing.
-	e.check(e.do("POST", "/listings/update", adminS, inventoryForm(p, map[string]string{"title": "Admin retitled", "price_btc": "0.003", "stock": "7", "stock_seen": "7"})), 303)
+	e.check(e.do("POST", "/listings/update", adminS, inventoryForm(p, map[string]string{"title": "Admin retitled", "price_xmr": "0.8", "stock": "7", "stock_seen": "7"})), 303)
 	if n, a := adminNotices(), vendorAudits(); n != 1 || a != 1 {
 		t.Fatalf("unchanged admin save: notifications=%d vendor audits=%d, want 1 each", n, a)
 	}

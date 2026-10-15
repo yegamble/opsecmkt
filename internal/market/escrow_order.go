@@ -30,6 +30,18 @@ const strayHeldLine = "held at the escrow address, because the coins there are t
 // escrow order (migration 084) gets its Monero escrow panel instead (xmrEscrowOrder), and an XMR draft the Monero
 // escrow checkout offer (xmrEscrowCheckoutOffer).
 func (a *App) escrowOrder(ctx context.Context, d *PageData) error {
+	if d.Order.Currency != "XMR" {
+		return nil
+	}
+	if !d.Order.Escrow {
+		return a.xmrEscrowCheckoutOffer(ctx, d)
+	}
+	return a.xmrEscrowOrder(ctx, d)
+}
+
+// Kept only as an implementation reference for immutable Bitcoin history.
+// This build never registers Bitcoin handlers or calls this loader.
+func (a *App) legacyBTCEscrowOrder(ctx context.Context, d *PageData) error {
 	o := d.Order
 	if !o.Escrow {
 		if err := a.xmrEscrowCheckoutOffer(ctx, d); err != nil || !a.escrowConfigured {

@@ -32,16 +32,6 @@ Built for a visitor on Tor Browser with scripts off, and an operator who runs ev
 
 Not yet tried in Tor Browser: the [manual pass](docs/verification.md#manual-tor-browser-pass-owner) is pending.
 
-<table>
-  <tr>
-    <td width="72%"><img alt="Catalog page of the read-only preview, showing sample listings, category filters and the read-only preview banner" src="docs/assets/screenshot-catalog.png"></td>
-    <td width="28%"><img alt="The same catalog at phone width, with navigation wrapped and filters collapsed" src="docs/assets/screenshot-mobile.png"></td>
-  </tr>
-  <tr>
-    <td colspan="2" align="center"><sub>Read-only preview with sample data and JavaScript disabled. Desktop and 390 px phone width.</sub></td>
-  </tr>
-</table>
-
 ## Install
 
 | Method | Use it to | Command |
@@ -63,7 +53,7 @@ Open the printed setup link, paste the token, create the administrator.
 
 > **Warning:** the local nodes of `init --tor` and `init --clearnet` default to **mainnet**. Real funds; no mainnet run
 > is recorded; mainnet is covered by unit, database and simulated-RPC tests only. For a test market add
-> `--bitcoin-network signet --monero-network stagenet` ([why](docs/install/enable-payments.md#choose-a-network)).
+> `--monero-network stagenet` ([why](docs/install/enable-payments.md#choose-a-network)).
 
 **[Full installation guide →](docs/install/README.md)**
 
@@ -82,34 +72,28 @@ content.
 
 ## Payments
 
+Monero only. Monero conceals sender, recipient and amount details on-chain. That reduces public blockchain exposure; it does not guarantee anonymity. The market still sees order and payment metadata, controls custodial escrow keys, and can be exposed by a compromised host or traffic correlation.
+
 Per-order escrow, off by default. A node alone does not turn it on.
 
 | Coin | Model | Networks | Evidence |
 | --- | --- | --- | --- |
-| Bitcoin | 2-of-3 multisig: buyer, vendor, market | mainnet (installer default), regtest, signet, testnet4 | CI on regtest; public signet run [recorded](docs/evidence/public-testnet/2026-10-09-9885beef29d3/signet/README.md). testnet4, mainnet and hardware-wallet signing unverified. |
 | Monero | Custodial: market holds keys | mainnet (installer default), fakechain, stagenet | CI on fakechain; one public stagenet claim [recorded](docs/evidence/public-testnet/2026-10-10-ac71878dfde4/stagenet-xmr/README.md). Mainnet unrun. |
 
-Bitcoin testnet3 and Monero testnet are refused. A market is all mainnet or all test networks.
+Only Monero (XMR) is supported for listing prices, checkout and settlement. Monero testnet is refused.
 
-**Mainnet default.** The installer's local nodes run mainnet unless you pass `--bitcoin-network
-signet|testnet4|regtest` or `--monero-network stagenet`. No mainnet run is recorded; mainnet is covered by unit,
+**Mainnet default.** The installer's local nodes run mainnet unless you pass `--monero-network stagenet`. No mainnet run is recorded; mainnet is covered by unit,
 database and simulated-RPC tests only. Monero escrow on mainnet is custodial with real funds. Upgrading never changes
 an existing install's network ([UPGRADING](UPGRADING.md#64-new-installs-default-to-mainnet-a-523)). Full evidence:
 [Verification](docs/verification.md) and [Per-order escrow](docs/escrow.md).
 
 ## How it works
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/architecture-dark.svg">
-  <source media="(prefers-color-scheme: light)" srcset="docs/assets/architecture-light.svg">
-  <img alt="OPSEC Market architecture: a browser reaches the Go server through Tor or HTTPS. PostgreSQL keeps application and historical payment records. Optional Bitcoin 2-of-3 escrow is shown on regtest, signet and testnet4; custodial Monero escrow on fakechain or stagenet. Both are off by default. The installer's local nodes default to mainnet (real funds); no mainnet run is recorded." src="docs/assets/architecture-light.svg" width="880">
-</picture>
-
 - A browser reaches the Go server through a Tor onion service or the operator's HTTPS proxy.
 - The server renders every page, checks CSRF and origin on every form, and audits each action in the same
   transaction.
 - PostgreSQL holds all state and migrates on startup.
-- Escrow, when on, uses a dedicated Bitcoin signer with 2-of-3 PSBT signing, or a Monero escrow wallet RPC.
+- Escrow, when on, uses a dedicated Monero escrow wallet RPC. The market controls the keys.
 
 **What the server keeps.** Opt-in [retention maintenance](docs/retention.md) expires accounts, messages, orders and audit records, with scoped preservation and financial safeguards. It is off by default; operators must enable it and schedule expiry of recovery copies. The operator or anyone with a
 decrypted backup can read retained plaintext and metadata and obtain ciphertext; properly recipient-encrypted content

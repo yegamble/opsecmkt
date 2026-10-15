@@ -7,10 +7,6 @@ import (
 	"testing"
 )
 
-// QA462F: every note that flags a deposit names it, so the desk dates the flag by the latest such note; a reviewed flag
-// that a new event flags again (newFlagSQL) reopens with no review, a form, and the new note's date. The order history
-// and the audit log keep the earlier review.
-
 // latestFlagNote is the latest system note on order that names txid ("… <truncate(txid, 20)> …") and asks for review:
 // the note the moderation desk dates txid's flag by (loadPaymentReviews), or "" when there is none.
 func latestFlagNote(t *testing.T, e *testEnv, order, txid string) string {
@@ -48,105 +44,6 @@ func reopened(t *testing.T, e *testEnv, page func(path, sess string) string, ses
 		t.Fatalf("%d review events in the order history, want %d", n, reviews)
 	}
 	reviewFlag(t, e, sess, pid, "no_action", "Recorded after the new event.")
-}
-
-// QA462F-1 (markOutsideSpend): a credited escrow deposit spent by a transaction the market did not make is dated on the
-// desk by its own note, which names it.
-func TestEscrowOutsideSpendDeskDate(t *testing.T) {
-	x := newEscrowEnv(t)
-	_, mod := x.user("odmod_"+randomToken()[:6], "moderator")
-	order := x.completed(regtestAddr("outside spend date"), 100000)
-	funded := txidOf(order)
-	x.coSpend(funded, 0, 1)
-	x.poll()
-	if agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND txid=$2 AND spent_outside AND flagged", order, funded) != 1 {
-		t.Fatalf("the deposit spent outside: events %q", x.events(order))
-	}
-	if row := deskRow(html.UnescapeString(x.page("/moderator", mod)), funded); !flaggedAt.MatchString(row) || !strings.Contains(latestFlagNote(t, x.testEnv, order, funded), "spent by a transaction this market did not make") {
-		t.Fatalf("the spent-outside flag on the desk: %s\nevents %q", row, x.events(order))
-	}
-	// The parties' notice asks nothing of staff.
-	if agInt(x.testEnv, "SELECT count(*) FROM notifications n JOIN users u ON u.id=n.user_id WHERE u.role NOT IN ('moderator','admin') AND strpos(n.body,'Moderator review required')>0") != 0 {
-		t.Fatal("a party's notice asks for a moderator review")
-	}
-}
-
-// QA462F-1, QA462F-2 (markOutsideSpend, FM1): a top-up left out of a built release, whose review staff recorded (no
-// action, or escalated), is then spent outside the market. It is a new flag: open, unreviewed, dated by the
-// spent-outside note, with a form; later passes do not flag it again, and the history and audit keep the first review.
-func TestEscrowReviewedLeftOutThenSpentOutside(t *testing.T) {
-	for _, first := range []string{"no_action", "escalated"} {
-		t.Run(first, func(t *testing.T) {
-			x := newEscrowEnv(t)
-			_, mod := x.user("rlmod_"+randomToken()[:6], "moderator")
-			x.user("rladm_"+randomToken()[:6], "admin")
-			order := x.paidPhysical(regtestAddr("reviewed left out "+first), 100000)
-			addr := physString(t, x.testEnv, "SELECT address FROM escrows WHERE order_id=$1", order)
-			if code, body := x.shipEscrow(order, x.vendorSess, regtestAddr("reviewed left out claim "+first), testPassword); code != 303 {
-				t.Fatalf("ship: %d %s", code, body)
-			}
-			x.poll()
-			top := txidOf("reviewed left out top-up " + first + order)
-			x.core.deposit(addr, top, 0, 30000, 3)
-			x.poll()
-			x.poll()
-			pid := agStrings(t, x.testEnv, "SELECT id::text FROM payments WHERE order_id=$1 AND txid=$2 AND escrow_left_out AND flagged", order, top)[0]
-			reviewFlag(t, x.testEnv, mod, pid, first, "Recorded before the outside spend.")
-			x.coSpend(top, 0, 1)
-			x.poll()
-			staff := agInt(x.testEnv, "SELECT count(*) FROM notifications WHERE strpos(body,$1)=1", "Payment review needed for order "+shortID(order))
-			for range 3 {
-				x.poll()
-			}
-			if n := agInt(x.testEnv, "SELECT count(*) FROM notifications WHERE strpos(body,$1)=1", "Payment review needed for order "+shortID(order)); n != staff {
-				t.Fatalf("later passes told staff again: %d then %d", staff, n)
-			}
-			reopened(t, x.testEnv, x.page, mod, order, top, pid, "spent by a transaction this market did not make", 1)
-			if n := agInt(x.testEnv, "SELECT count(*) FROM audit_events WHERE strpos(action,'Recorded payment review')=1"); n != 2 {
-				t.Fatalf("%d review audit rows, want both", n)
-			}
-		})
-	}
-}
-
-// QA462F-1, QA462F-2 (markExternal: building FM2, past building FM3): the stray refund of a deposit after the close
-// is still being built, or waits for signatures; staff recorded no action on the deposit's flag; another transaction
-// spends the deposit, so the stray refund is external: the deposit's flag reopens, dated by the external note, which
-// names it.
-func TestEscrowReviewedStrayThenExternal(t *testing.T) {
-	for _, leg := range []string{"building", "awaiting_signature"} {
-		t.Run(leg, func(t *testing.T) {
-			x := newEscrowEnv(t)
-			_, mod := x.user("semod_"+randomToken()[:6], "moderator")
-			order := x.completed(regtestAddr("reviewed stray external "+leg), 100000)
-			addr := agStrings(t, x.testEnv, "SELECT address FROM escrows WHERE order_id=$1", order)[0]
-			late := txidOf("reviewed stray external late " + leg + order)
-			x.core.deposit(addr, late, 0, 30000, 3)
-			if leg == "building" {
-				x.setGate(true) // builds pause (restore gate): the stray refund stays being built
-			}
-			x.poll() // recorded after the close and flagged; its stray refund is requested (and built)
-			sid, state := x.stray(order)
-			if state != leg {
-				t.Fatalf("stray refund %d %s; events %q", sid, state, x.events(order))
-			}
-			pid := agStrings(t, x.testEnv, "SELECT id::text FROM payments WHERE order_id=$1 AND txid=$2 AND flagged", order, late)[0]
-			reviewFlag(t, x.testEnv, mod, pid, "no_action", "The stray refund returns it.")
-			x.coSpend(late, 0, 1)
-			x.poll()
-			x.setGate(false)
-			x.poll() // a build over a spent input waits one pass first
-			x.poll()
-			if got := agStrings(t, x.testEnv, "SELECT state FROM settlements WHERE id=$1", sid); got[0] != "external" {
-				t.Fatalf("stray refund %s; events %q", got[0], x.events(order))
-			}
-			phrase := "before any party signed it"
-			if leg == "building" {
-				phrase = "so the market cannot build it"
-			}
-			reopened(t, x.testEnv, x.page, mod, order, late, pid, phrase, 1)
-		})
-	}
 }
 
 // QA462F-1, QA462F-2 (markXMRExternal FM4, failXMRSettlement FM5): the stray refund of a Monero deposit after the close

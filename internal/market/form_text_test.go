@@ -26,7 +26,7 @@ func TestListingCharacterLimitsAndCRLFNormalization(t *testing.T) {
 func TestDisputeCharacterLimitsAndCRLFStorage(t *testing.T) {
 	w := newDisputeOrderWorld(t)
 	o := w.fundedPhysicalFor(w.buyerID, w.buyer, w.vendorID, w.vendor)
-	if code, body := w.x.shipEscrow(o, w.vendor, regtestAddr("form-text-claim"), testPassword); code != 303 {
+	if code, body := w.x.xmrShip(o, w.vendor, testXMRAddr("form-text-claim", true), testPassword); code != 303 {
 		t.Fatalf("ship physical escrow: %d %s", code, body)
 	}
 	// Twenty Unicode characters are valid despite occupying more than twenty bytes.
@@ -41,7 +41,7 @@ func TestDisputeCharacterLimitsAndCRLFStorage(t *testing.T) {
 	}
 	decision := strings.Repeat("決", 4998) + "\r\n終"
 	_, admin := w.e.user("form_text_admin", "admin")
-	w.expect("/resolve", admin, resolveConfirmed(form("id", id, "outcome", "refund", "resolution", decision), 100000), 303, "")
+	w.expect("/resolve", admin, resolveConfirmed(form("id", id, "outcome", "refund", "resolution", decision), xmrListingPrice), 303, "")
 	if err := w.e.DB.QueryRow("SELECT resolution FROM disputes WHERE id=$1", id).Scan(&stored); err != nil || stored != normalizedFormText(decision) {
 		t.Fatalf("stored decision differs: %v", err)
 	}

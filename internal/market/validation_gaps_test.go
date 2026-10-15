@@ -15,9 +15,6 @@ import (
 	"github.com/ProtonMail/go-crypto/openpgp/packet"
 )
 
-// Validation negatives (audit finding B10): each refusal is checked for its reason and for leaving the
-// database unchanged.
-
 func TestOrderDraftValidation(t *testing.T) {
 	e := newTestApp(t)
 	buyerID, buyer := e.user("val_buyer", "buyer")
@@ -25,13 +22,13 @@ func TestOrderDraftValidation(t *testing.T) {
 	product := e.product(vendorID, "physical")
 	draft := func(p, cur string) url.Values { return url.Values{"product_id": {p}, "currency": {cur}} }
 
-	agExpect(e, "/orders", vendor, draft(product, "BTC"), 400, "cannot order your own listing")
-	for _, cur := range []string{"", "ETH", "btc"} {
-		agExpect(e, "/orders", buyer, draft(product, cur), 400, "Choose BTC or XMR")
+	agExpect(e, "/orders", vendor, draft(product, "XMR"), 400, "cannot order your own listing")
+	for _, cur := range []string{"", "ETH", "btc", "BTC"} {
+		agExpect(e, "/orders", buyer, draft(product, cur), 400, "This market accepts Monero (XMR) only")
 	}
-	agExpect(e, "/orders", buyer, draft("missing", "BTC"), 400, "Product unavailable")
+	agExpect(e, "/orders", buyer, draft("missing", "XMR"), 400, "Product unavailable")
 	agExec(e, "UPDATE products SET stock=0 WHERE id=$1", product)
-	agExpect(e, "/orders", buyer, draft(product, "BTC"), 400, "Product unavailable")
+	agExpect(e, "/orders", buyer, draft(product, "XMR"), 400, "Product unavailable")
 	if n := agInt(e, "SELECT count(*) FROM orders"); n != 0 {
 		t.Fatalf("refused drafts created %d orders", n)
 	}
@@ -121,13 +118,14 @@ func TestResolveResolutionBounds(t *testing.T) {
 	w := newDisputeOrderWorld(t)
 	order, dispute := w.disputedFor(w.buyerID, w.buyer, w.vendorID, w.vendor, w.buyer, "The parcel never arrived at all.")
 	_, admin := w.e.user("resolve_bounds_admin", "admin")
+	amount := int64(agInt(w.e, "SELECT amount FROM orders WHERE id=$1", order))
 	for _, text := range []string{"", "too short", strings.Repeat("r", 19), strings.Repeat("r", 5001)} {
 		w.expect("/resolve", admin, form("id", dispute, "outcome", "refund", "resolution", text), 400, "20–5000")
 	}
 	if agStr(w.e, "SELECT status||'|'||outcome||'|'||resolution FROM disputes WHERE id=$1", dispute) != "Open||" || w.state(order) != stateDisputed {
 		t.Fatal("refused resolution changed the dispute")
 	}
-	w.expect("/resolve", admin, resolveConfirmed(form("id", dispute, "outcome", "refund", "resolution", strings.Repeat("r", 5000)), 100000), 303, "")
+	w.expect("/resolve", admin, resolveConfirmed(form("id", dispute, "outcome", "refund", "resolution", strings.Repeat("r", 5000)), amount), 303, "")
 	if agStr(w.e, "SELECT outcome FROM disputes WHERE id=$1", dispute) != "refund" || w.state(order) != stateResolved {
 		t.Fatal("5000-character resolution not accepted")
 	}
@@ -137,43 +135,18 @@ func TestOrderNoteLength(t *testing.T) {
 	w := newDisputeOrderWorld(t)
 	order := w.fundedPhysicalFor(w.buyerID, w.buyer, w.vendorID, w.vendor)
 	beforeEvents := w.count("SELECT count(*) FROM order_events WHERE order_id=$1", order)
-	w.expect("/escrow/ship", w.vendor, form("order_id", order, "address", regtestAddr("note-length-claim"), "password", testPassword, "note", strings.Repeat("n", 501)), 400, "under 500 characters")
+	beforeSettlements := w.count("SELECT count(*) FROM xmr_settlements WHERE order_id=$1", order)
+	w.expect("/escrow-xmr/ship", w.vendor, form("order_id", order, "address", testXMRAddr("note-length-claim", true), "password", testPassword, "note", strings.Repeat("n", 501)), 400, "under 500 characters")
 	w.expect("/orders/cancel", w.buyer, form("order_id", order, "from", statePaid, "note", strings.Repeat("n", 501)), 400, "under 500 characters")
-	if w.state(order) != statePaid || w.count("SELECT count(*) FROM order_events WHERE order_id=$1", order) != beforeEvents {
+	if w.state(order) != statePaid || w.count("SELECT count(*) FROM order_events WHERE order_id=$1", order) != beforeEvents ||
+		w.count("SELECT count(*) FROM xmr_settlements WHERE order_id=$1", order) != beforeSettlements {
 		t.Fatal("refused note changed the order")
 	}
 	// The limit counts characters, not bytes: 500 two-byte characters are accepted and stored intact.
 	note := strings.Repeat("é", 500)
-	w.expect("/escrow/ship", w.vendor, form("order_id", order, "address", regtestAddr("note-length-claim"), "password", testPassword, "note", note), 303, "")
-	if w.state(order) != stateShipped || agStr(w.e, "SELECT note FROM order_events WHERE order_id=$1 AND to_state='shipped'", order) != note {
+	w.expect("/escrow-xmr/ship", w.vendor, form("order_id", order, "address", testXMRAddr("note-length-claim", true), "password", testPassword, "note", note), 303, "")
+	if w.state(order) != stateShipped || agStr(w.e, "SELECT note FROM order_events WHERE order_id=$1 AND from_state='paid' AND to_state='shipped'", order) != note {
 		t.Fatal("500-character note not recorded")
-	}
-}
-
-func TestCompleteFromWrongState(t *testing.T) {
-	w := newOrderWorld(t)
-	physical := w.e.product(w.vendorID, "physical")
-	for _, state := range []string{stateDraft, stateAwaitingPayment, statePaid, stateDisputed, stateCompleted} {
-		order := w.e.order(w.buyerID, physical, "BTC", state)
-		w.expect("/orders/complete", w.buyer, payoutConfirmed(form("order_id", order), 0), 409, "")
-		if w.state(order) != state || w.count("SELECT count(*) FROM order_events WHERE order_id=$1", order) != 0 {
-			t.Fatalf("legacy completion changed historical %s order", state)
-		}
-	}
-	// The legacy completion action cannot complete a historical digital order either.
-	digital := w.e.product(w.vendorID, "digital")
-	order := w.e.order(w.buyerID, digital, "BTC", statePaid)
-	w.expect("/orders/complete", w.buyer, payoutConfirmed(form("order_id", order), 0), 409, "")
-	// A real shipped Bitcoin escrow order uses the escrow settlement path. The old completion form
-	// cannot queue a pooled payout for it, and vendor/stranger authorization remains enforced.
-	x := newEscrowEnv(t)
-	shipped, _ := x.shippedPhysical(regtestAddr("wrong-state-refund"), regtestAddr("wrong-state-claim"), 100000)
-	_, stranger := x.user("wrong_state_stranger", "buyer")
-	agExpect(x.testEnv, "/orders/complete", x.vendorSess, payoutConfirmed(form("order_id", shipped), 0), 403, "")
-	agExpect(x.testEnv, "/orders/complete", stranger, payoutConfirmed(form("order_id", shipped), 0), 404, "")
-	agExpect(x.testEnv, "/orders/complete", x.buyerSess, payoutConfirmed(form("order_id", shipped), 0), 409, "")
-	if w.state(order) != statePaid || x.state(shipped) != stateShipped || agInt(x.testEnv, "SELECT count(*) FROM payouts WHERE order_id=$1", shipped) != 0 {
-		t.Fatal("refused completion changed historical or escrow data")
 	}
 }
 
@@ -209,7 +182,7 @@ func TestUnknownAndMissingResources404(t *testing.T) {
 	vendorID, _ := e.user("val_seller", "vendor")
 	otherID, _ := e.user("val_other", "buyer")
 	product := e.product(vendorID, "physical")
-	foreign := e.order(otherID, product, "BTC", stateDraft)
+	foreign := e.order(otherID, product, "XMR", stateDraft)
 	for _, path := range []string{"/no-such-page", "/admin/../secret", "/product?id=missing", "/product", "/vendor?id=missing", "/vendor?id=" + buyerID, "/checkout?id=missing", "/order?id=missing", "/order?id=" + foreign} {
 		// A-514: the shared refusal page, the same for every kind of missing page.
 		if w := e.do("GET", path, buyer, nil); w.Code != 404 || !strings.HasPrefix(w.Header().Get("Content-Type"), "text/html") ||

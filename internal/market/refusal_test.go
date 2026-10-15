@@ -11,10 +11,6 @@ import (
 	"testing"
 )
 
-// A-514: a refused form post or an unknown page answers with the shared HTML refusal page (layout, title, one h1,
-// the reason in an alert and a link back), keeping the status code, and a refused post shows its long text fields
-// read-only so the typed text is not lost. Nothing secret is echoed.
-
 // refusalPost is e.do with a Referer header (httptest's Host is example.com).
 func refusalPost(e *testEnv, method, path, token string, form url.Values, referer string) *httptest.ResponseRecorder {
 	e.t.Helper()
@@ -204,8 +200,8 @@ func TestRefusedListingNamesFieldAndKeepsText(t *testing.T) {
 	base := form("title", "My <b>own</b> listing", "description", "A long description I typed & do not want to lose.", "category", "Hardware",
 		"region", "Worldwide", "kind", "physical", "stock", "3", "price_btc", "0.001", "price_xmr", "0.5")
 	for _, c := range []struct{ field, value, msg string }{
-		{"price_btc", "0.123456789", "Bitcoin price: use a positive amount with at most 8 decimal places."},
-		{"price_xmr", "abc", "Monero reference price: use a positive amount with at most 12 decimal places."},
+		{"price_xmr", "0.1234567890123", "Monero price: use a positive amount with at most 12 decimal places."},
+		{"price_xmr", "abc", "Monero price: use a positive amount with at most 12 decimal places."},
 		{"stock", "-1", "Stock: use a whole number from 0 to 1000000."},
 		{"category", "Weapons", "Category: choose Hardware, Digital or Services."},
 		{"title", "  ", "Listing title: use 3 to 140 characters."},
@@ -222,22 +218,12 @@ func TestRefusedListingNamesFieldAndKeepsText(t *testing.T) {
 	}
 	// Two problems are both named.
 	f := cloneValues(base)
-	f.Set("price_btc", "1.123456789")
+	f.Set("price_xmr", "1.1234567890123")
 	f.Set("stock", "x")
 	w := refusalPost(p.testEnv, "POST", "/listings", p.vendorSess, f, "")
-	mustContain(t, w.Body.String(), "Bitcoin price: use a positive amount", "Stock: use a whole number")
+	mustContain(t, w.Body.String(), "Monero price: use a positive amount", "Stock: use a whole number")
 	if n := p.count("SELECT count(*) FROM products WHERE vendor_id=$1", p.vendor.ID); n != 1 {
 		t.Fatalf("refused listings wrote %d products", n-1)
-	}
-}
-
-func TestEscrowRefusedPSBTIsEchoed(t *testing.T) {
-	x := newEscrowEnv(t)
-	psbt := "cHNidP8BAHECAAAAAf<script>typed-psbt</script>"
-	w := refusalPost(x.testEnv, "POST", "/escrow/sign", x.vendorSess, form("order_id", randomToken(), "settlement_id", "1", "psbt", psbt), "http://example.com/order?id="+x.order)
-	b := checkRefusalPage(t, w, 404, "Order not found", "/order?id="+x.order)
-	if !echoed(b, "Signed PSBT", psbt) || strings.Contains(b, "<script>typed") {
-		t.Fatalf("the refused PSBT is not echoed:\n%s", b)
 	}
 }
 

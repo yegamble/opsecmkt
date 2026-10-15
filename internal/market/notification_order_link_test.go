@@ -17,13 +17,13 @@ func TestOrderNotificationsLinkOnlyTheirExplicitOrder(t *testing.T) {
 
 	page := e.do("GET", orderPage(order), vendor, nil)
 	e.check(page, 200)
-	nonce := renderedFormNonce(t, page.Body.String(), "/escrow/ship")
-	e.check(e.do("POST", "/escrow/ship", vendor, url.Values{"order_id": {order}, "address": {regtestAddr("notice-link-claim")}, "password": {testPassword}, formNonceField: {nonce}}), 303)
+	nonce := renderedFormNonce(t, page.Body.String(), "/escrow-xmr/ship")
+	e.check(e.do("POST", "/escrow-xmr/ship", vendor, url.Values{"order_id": {order}, "address": {testXMRAddr("notice-link-claim", true)}, "password": {testPassword}, formNonceField: {nonce}}), 303)
 	if got := agStr(e, "SELECT COALESCE(order_id,'') FROM notifications WHERE user_id=$1 ORDER BY created DESC,id DESC LIMIT 1", buyerID); got != order {
 		t.Fatalf("state-change notice order_id=%q, want %q", got, order)
 	}
 
-	strangerOrder := e.order(strangerID, product, "BTC", statePaid)
+	strangerOrder := e.order(strangerID, product, "XMR", statePaid)
 	if _, err := e.DB.Exec(`INSERT INTO notifications(id,user_id,body) VALUES('a37-legacy-no-order',$1,'Legacy notice stays unlinked')`, buyerID); err != nil {
 		t.Fatal(err)
 	}

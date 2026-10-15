@@ -92,133 +92,6 @@ jobs:
           name: go-escrow-coverage
           path: coverage-escrow.out
           retention-days: 14
-  # A-438 (P4-R11): the real-chain Bitcoin escrow legs. scripts/test-escrow-regtest.sh runs the app, inside go test,
-  # against a real Bitcoin Core 31.1 node on regtest (a local chain nobody else can reach) and a disposable PostgreSQL.
-  # bitcoind is started with docker run because a service container cannot take command arguments. Parallel to `go`,
-  # so the Go job's time is unchanged. No public network: the script refuses any node that is not on regtest.
-  escrow-regtest:
-    name: Bitcoin escrow on a real regtest node
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    services:
-      postgres:
-        image: postgres:17-alpine
-        env:
-          POSTGRES_USER: test
-          POSTGRES_PASSWORD: test-ci-only
-          POSTGRES_DB: postgres
-        ports: ['5432:5432']
-        options: >-
-          --health-cmd "pg_isready -h 127.0.0.1 -U test -d postgres"
-          --health-interval 5s --health-timeout 5s --health-retries 20
-    env:
-      TEST_DATABASE_URL: postgres://test:test-ci-only@127.0.0.1:5432/postgres?sslmode=disable
-      BITCOIN_CONTAINER: escrow-regtest
-      BITCOIN_RPC_PORT: '18443'
-      BITCOIN_PRIVATE_CONTAINER: escrow-regtest-private
-      BITCOIN_PRIVATE_RPC_PORT: '18453'
-      BITCOIN_PRUNED_CONTAINER: escrow-regtest-pruned
-      BITCOIN_PRUNED_RPC_PORT: '18463'
-      BITCOIN_IMAGE: bitcoin/bitcoin:31.1
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
-          cache: true
-      # The same node the script's header documents: an operator user with full rights (the buyer's and vendor's own
-      # nodes), the app's user restricted by rpcwhitelist to what docs/operator-guide.md lists,
-      # and the escrow signer's user restricted to decodepsbt,
-      # descriptorprocesspsbt and getdescriptorinfo (A-454, QA4W2-1). The passwords are generated for this run,
-      # masked before they reach any output and handed to the next step only through GITHUB_ENV inside the URLs;
-      # bitcoind learns them as salted HMACs (-rpcauth), so no password is on a command line or in the repository.
-      # A second node with the same users (A-441) runs -privatebroadcast through a proxy nobody answers
-      # (-proxy=127.0.0.1:9 inside its container) for the private-broadcast leg; a third (A-527) runs -prune=550
-      # -fastprune for the pruned watch-only wallet repair leg. The nodes are not connected.
-      - name: Start Bitcoin Core on regtest
-        run: |
-          whitelist=getblockchaininfo,getnetworkinfo,getrawchangeaddress,getaddressinfo,createpsbt,utxoupdatepsbt,importdescriptors,getdescriptorinfo,deriveaddresses,gettxout,keypoolrefill,walletprocesspsbt,descriptorprocesspsbt,combinepsbt,finalizepsbt,testmempoolaccept,sendrawtransaction,getwalletinfo,listreceivedbyaddress,gettransaction,listtransactions,listsinceblock,getblockhash,getblockheader,setlabel
-          operator_pass=$(openssl rand -hex 24)
-          app_pass=$(openssl rand -hex 24)
-          signer_pass=$(openssl rand -hex 24)
-          echo "::add-mask::$operator_pass"
-          echo "::add-mask::$app_pass"
-          echo "::add-mask::$signer_pass"
-          rpcauth() { # rpcauth <user> <password>: user:salt$HMAC-SHA256(salt, password), the form bitcoind reads
-            local salt hash
-            salt=$(openssl rand -hex 16)
-            hash=$(printf %s "$2" | openssl dgst -sha256 -hmac "$salt" | sed 's/^.* //')
-            printf '%s:%s$%s' "$1" "$salt" "$hash"
-          }
-          node() { # node <container> <port> [extra bitcoind arguments]
-            local name=$1 port=$2
-            shift 2
-            docker run -d --name "$name" -p "127.0.0.1:$port:18443" "$BITCOIN_IMAGE" \
-              bitcoind -regtest -fallbackfee=0.0002 -server=1 -rpcbind=0.0.0.0 -rpcallowip=0.0.0.0/0 "$@" \
-              "-rpcauth=$(rpcauth operator "$operator_pass")" "-rpcauth=$(rpcauth opsecmkt-escrow "$app_pass")" \
-              "-rpcauth=$(rpcauth opsecmkt-signer "$signer_pass")" \
-              -rpcwhitelistdefault=0 "-rpcwhitelist=opsecmkt-escrow:$whitelist" \
-              -rpcwhitelist=opsecmkt-signer:decodepsbt,descriptorprocesspsbt,getdescriptorinfo
-          }
-          node "$BITCOIN_CONTAINER" "$BITCOIN_RPC_PORT"
-          node "$BITCOIN_PRIVATE_CONTAINER" "$BITCOIN_PRIVATE_RPC_PORT" -privatebroadcast -proxy=127.0.0.1:9 -listen=0
-          node "$BITCOIN_PRUNED_CONTAINER" "$BITCOIN_PRUNED_RPC_PORT" -prune=550 -fastprune
-          {
-            echo "ESCROW_REGTEST_OPERATOR_RPC_URL=http://operator:$operator_pass@127.0.0.1:$BITCOIN_RPC_PORT"
-            echo "ESCROW_REGTEST_APP_RPC_URL=http://opsecmkt-escrow:$app_pass@127.0.0.1:$BITCOIN_RPC_PORT"
-            echo "ESCROW_REGTEST_SIGNER_RPC_URL=http://opsecmkt-signer:$signer_pass@127.0.0.1:$BITCOIN_RPC_PORT"
-            echo "ESCROW_REGTEST_PRIVATE_OPERATOR_RPC_URL=http://operator:$operator_pass@127.0.0.1:$BITCOIN_PRIVATE_RPC_PORT"
-            echo "ESCROW_REGTEST_PRIVATE_APP_RPC_URL=http://opsecmkt-escrow:$app_pass@127.0.0.1:$BITCOIN_PRIVATE_RPC_PORT"
-            echo "ESCROW_REGTEST_PRUNED_OPERATOR_RPC_URL=http://operator:$operator_pass@127.0.0.1:$BITCOIN_PRUNED_RPC_PORT"
-            echo "ESCROW_REGTEST_PRUNED_APP_RPC_URL=http://opsecmkt-escrow:$app_pass@127.0.0.1:$BITCOIN_PRUNED_RPC_PORT"
-          } >> "$GITHUB_ENV"
-          for port in "$BITCOIN_RPC_PORT" "$BITCOIN_PRIVATE_RPC_PORT" "$BITCOIN_PRUNED_RPC_PORT"; do
-            up=no
-            for _ in $(seq 60); do
-              if printf 'url = "http://operator:%s@127.0.0.1:%s"\n' "$operator_pass" "$port" |
-                curl -sS --max-time 5 --noproxy '*' -H 'Content-Type: application/json' --config - \
-                  --data '{"jsonrpc":"1.0","id":"ci","method":"getblockchaininfo","params":[]}' 2>/dev/null |
-                grep -q '"chain":"regtest"'; then
-                up=yes
-                break
-              fi
-              sleep 1
-            done
-            if [ "$up" != yes ]; then
-              echo "bitcoind on port $port did not answer on regtest within 60 seconds" >&2
-              docker logs --tail 50 "$BITCOIN_CONTAINER" >&2
-              docker logs --tail 50 "$BITCOIN_PRIVATE_CONTAINER" >&2
-              docker logs --tail 50 "$BITCOIN_PRUNED_CONTAINER" >&2
-              exit 1
-            fi
-          done
-      # A-144: the image above is already cached. A separate owned Compose project with internal-only networks
-      # proves the local-node rpcauth argument and successful/refused credentials; it pulls no other image.
-      - name: Local Bitcoin Compose RPC verifier on isolated regtest (A-144)
-        run: python3 scripts/test-bitcoin-rpcauth.py
-      - name: Escrow legs on a real regtest node (scripts/test-escrow-regtest.sh)
-        run: bash scripts/test-escrow-regtest.sh
-        env:
-          ESCROW_REGTEST_LOG: ${{ runner.temp }}/escrow-regtest/transcript.log
-      - name: Collect the node's log
-        if: always()
-        run: |
-          mkdir -p "$RUNNER_TEMP/escrow-regtest"
-          docker logs "$BITCOIN_CONTAINER" > "$RUNNER_TEMP/escrow-regtest/bitcoind.log" 2>&1 || true
-          docker logs "$BITCOIN_PRIVATE_CONTAINER" > "$RUNNER_TEMP/escrow-regtest/bitcoind-private.log" 2>&1 || true
-          docker logs "$BITCOIN_PRUNED_CONTAINER" > "$RUNNER_TEMP/escrow-regtest/bitcoind-pruned.log" 2>&1 || true
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: always()
-        with:
-          name: escrow-regtest-results
-          path: ${{ runner.temp }}/escrow-regtest/
-          if-no-files-found: ignore
-          retention-days: 14
-      - name: Remove the nodes and their volumes
-        if: always()
-        run: docker rm -f -v "$BITCOIN_CONTAINER" "$BITCOIN_PRIVATE_CONTAINER" "$BITCOIN_PRUNED_CONTAINER"
   # A-498: the real-chain Monero escrow legs. scripts/test-escrow-xmr-regtest.sh runs the app, inside go test, against a
   # real monerod and three real monero-wallet-rpc (all v0.18.5.1) on a local fakechain (--regtest, offline, difficulty 1:
   # a chain nobody else can reach) and a disposable PostgreSQL. The nodes are started with docker run, exactly as the
@@ -401,14 +274,12 @@ jobs:
           NODES_TOR: ${{ matrix.nodes_tor }}
           DATABASE_URL: postgres://test:test@db/test
           SETUP_TOKEN: ci-validation-only-not-a-real-bootstrap-secret
-          # The bitcoin profile requires a verifier; this is a public synthetic value for config validation only.
-          BITCOIN_RPC_AUTH: marketplace:0123456789abcdef0123456789abcdef$f25a796e58dd70ff7eb5b96b54de079cc7e3d6f40eb8a0fa55fd05f26a53635e
           # Compose refuses the Monero escrow wallet-rpc profile with a blank password (A-466;
           # tests/test_compose_wallet_passwords.py checks the refusal).
           ESCROW_XMR_WALLET_RPC_PASSWORD: ci-validation-only
         run: |
           files=(-f compose.yaml -f "compose.$MODE.yaml" -f compose.nodes.yaml)
-          profiles=(--profile bitcoin --profile monero --profile escrow-signer)
+          profiles=(--profile monero)
           if [ "$DATABASE" = internal ]; then
             files+=(-f compose.internal-db.yaml)
             profiles+=(--profile internal-db)
@@ -464,9 +335,9 @@ jobs:
           # service: (mem_limit, CPUs as cpu_quota / cpu_period, pids_limit). Not cpus: Docker refuses to create a
           # container whose cpus exceed the host CPU count, which would break 1-CPU hosts.
           limits = {"app": ("512m", 2, 512), "db": ("1g", 2, 256), "tor": ("256m", 1, 64), "tor-mirror": ("256m", 1, 64),
-                    "bitcoin": ("2g", 2, 256), "monero": ("2g", 2, 512),
+                    "monero": ("2g", 2, 512),
                     "monero-escrow-wallet": ("1g", 1, 128),
-                    "clamd": ("3g", 2, 256), "escrow-signer": ("128m", 1, 64), "tor-socks": ("256m", 1, 64)}
+                    "clamd": ("3g", 2, 256), "tor-socks": ("256m", 1, 64)}
           logging = {"driver": sys.argv[1] or "json-file", "options": {"max-size": "10m", "max-file": "3"}}
           for name, service in sorted(services.items()):
               if name not in limits:
@@ -532,48 +403,24 @@ jobs:
               sys.exit(f"clamd image must be one ClamAV release with signatures, not {image!r}")
           print("scanner:", image, "on the internal scanner network with", ", ".join(members))
           '
-          # The escrow signer (A-454): its own user in the app's group, hardened, publishing nothing; its seed volume is
-          # mounted in it alone and its socket volume only in it and the app; the seed is never in any environment.
+          # Bitcoin services and signer secrets are retired; the app receives legacy variables only to refuse them.
           docker compose "${files[@]}" "${profiles[@]}" config --format json | python3 -c '
           import json, sys
-          services = json.load(sys.stdin)["services"]
-          signer = services["escrow-signer"]
-          want = {"user": "65533:65532", "read_only": True, "cap_drop": ["ALL"], "security_opt": ["no-new-privileges:true"],
-                  "entrypoint": ["/app/escrow-signer"], "command": ["serve"], "profiles": ["escrow-signer"], "restart": "unless-stopped"}
-          for key, value in want.items():
-              if signer.get(key) != value:
-                  sys.exit(f"escrow-signer must have {key} {value!r}, got {signer.get(key)!r}")
-          if any(key in signer for key in ("ports", "expose", "network_mode")):
-              sys.exit("escrow-signer must publish nothing")
-          mounts = {name: sorted((v.get("source"), v["target"]) for v in service.get("volumes", []) if v.get("type") == "volume")
-                    for name, service in services.items()}
-          seed = sorted(name for name, m in mounts.items() if any(src == "escrow_signer_seed" for src, _ in m))
-          socket = sorted(name for name, m in mounts.items() if any(src == "escrow_signer_socket" for src, _ in m))
-          if seed != ["escrow-signer"] or socket != ["app", "escrow-signer"]:
-              sys.exit(f"the seed volume must be mounted only in escrow-signer and the socket volume only in it and app; got {seed!r}, {socket!r}")
-          allowed = {"app": {"ESCROW_SIGNER_SOCKET"}, "escrow-signer": {"ESCROW_SIGNER_SOCKET", "ESCROW_SIGNER_SEED_FILE", "ESCROW_SIGNER_RPC_URL"}}
-          for name, service in services.items():
-              for key in (service.get("environment") or {}):
-                  if key.startswith("ESCROW_SIGNER") and key not in allowed.get(name, set()):
-                      sys.exit(f"{name} must not take {key} (the signer seed is never in an environment; its RPC URL is for the signer only)")
-          if signer["environment"].get("ESCROW_SIGNER_SOCKET") != "/run/escrow-signer/signer.sock":
-              sys.exit("escrow-signer must listen on /run/escrow-signer/signer.sock")
-          print("escrow-signer: user", signer["user"], "seed volume in", seed, "socket volume in", socket)
+          config = json.load(sys.stdin)
+          if {"bitcoin", "escrow-signer"} & config["services"].keys():
+              sys.exit("Monero-only deployments must not start Bitcoin services")
+          for name, service in config["services"].items():
+              if any(v.get("source") in {"escrow_signer_seed", "escrow_signer_socket", "bitcoin_data"}
+                     for v in service.get("volumes", [])):
+                  sys.exit(f"{name} still mounts a retired Bitcoin volume")
           '
-          # Local nodes are pruned by default; BITCOIN_PRUNE_MB=0 and a blank MONERO_PRUNE_FLAGS run full nodes.
+          # The local Monero node is pruned by default; blank MONERO_PRUNE_FLAGS runs a full node.
           check_nodes() {
             docker compose "${files[@]}" "${profiles[@]}" config --format json | python3 -c '
           import json, sys
           services = json.load(sys.stdin)["services"]
-          bitcoin, monero = services["bitcoin"]["command"], services["monero"]["command"]
+          monero = services["monero"]["command"]
           pruned = sys.argv[1] == "pruned"
-          if "-datadir=/data" not in bitcoin:
-              sys.exit(f"bitcoin must run with -datadir=/data, got {bitcoin!r}")
-          prune = [arg for arg in bitcoin if arg.startswith("-prune")]
-          if pruned and not (len(prune) == 1 and prune[0].startswith("-prune=") and prune[0][7:].isdigit() and int(prune[0][7:]) >= 550):
-              sys.exit(f"bitcoin must run pruned with -prune=<MiB >= 550>, got {prune!r}")
-          if not pruned and prune != ["-prune=0"]:
-              sys.exit(f"a full bitcoin node must run with -prune=0, got {prune!r}")
           for flag in ("--stagenet", "--data-dir=/home/monero/.bitmonero", "--restricted-rpc", "--confirm-external-bind"):
               if flag not in monero:
                   sys.exit(f"monero lost {flag}: {monero!r}")
@@ -582,11 +429,11 @@ jobs:
           want = ["--prune-blockchain", "--sync-pruned-blocks"] if pruned else []
           if [arg for arg in monero if "prune" in arg] != want:
               sys.exit(f"monero prune flags must be {want!r}, got {monero!r}")
-          print(sys.argv[1], "nodes:", prune[0], " ".join(want) or "no monero prune flags")
+          print(sys.argv[1], "Monero node:", " ".join(want) or "no prune flags")
           ' "$1"
           }
           check_nodes pruned
-          BITCOIN_PRUNE_MB=0 MONERO_PRUNE_FLAGS='' check_nodes full
+          MONERO_PRUNE_FLAGS='' check_nodes full
           # Local nodes over Tor (A-442; tests/test_tor_deploy.py checks the rest): the proxy flags and never -connect
           # or -onlynet; the node network is internal and holds only the nodes and tor-socks, which publishes nothing;
           # every network of a node is internal. tests/test_ci_tor_socks.py checks that this block stays.
@@ -595,21 +442,19 @@ jobs:
           import json, sys
           config = json.load(sys.stdin)
           services, networks = config["services"], config["networks"]
-          bitcoin, monero, socks = services["bitcoin"]["command"], services["monero"]["command"], services["tor-socks"]
-          if bitcoin[-2:] != ["-proxy=tor-socks:9050", "-privatebroadcast"] or any(a.startswith(("-connect", "-onlynet")) for a in bitcoin):
-              sys.exit(f"bitcoin must end with -proxy=tor-socks:9050 -privatebroadcast and have no -connect or -onlynet, got {bitcoin!r}")
+          monero, socks = services["monero"]["command"], services["tor-socks"]
           if monero[-1:] != ["--proxy=10.199.42.2:9050"]:
               sys.exit(f"monero must end with --proxy=10.199.42.2:9050, got {monero!r}")
           members = sorted(name for name, service in services.items() if "node_egress" in (service.get("networks") or {}))
-          if (members != ["bitcoin", "monero", "tor-socks"] or networks["node_egress"].get("internal") is not True
+          if (members != ["monero", "tor-socks"] or networks["node_egress"].get("internal") is not True
                   or sorted(socks["networks"]) != ["node_egress", "tor_socks_egress"] or "ports" in socks or "expose" in socks):
-              sys.exit(f"node_egress must be internal and hold only bitcoin, monero and tor-socks, and tor-socks publish nothing; got {members!r}")
+              sys.exit(f"node_egress must be internal and hold only monero and tor-socks, and tor-socks publish nothing; got {members!r}")
           # Whatever other overlay is in the list, no network of a node may have a route out (only tor-socks has one).
-          routes = sorted(f"{name} on {network}" for name in ("bitcoin", "monero") for network in services[name]["networks"]
+          routes = sorted(f"{name} on {network}" for name in ("monero",) for network in services[name]["networks"]
                           if networks[network].get("internal") is not True)
           if routes:
-              sys.exit(f"every network of bitcoin and monero must be internal, got {routes!r}")
-          print("nodes over Tor:", bitcoin[-2:], monero[-1], "on internal node_egress with", ", ".join(members))
+              sys.exit(f"every network of monero must be internal, got {routes!r}")
+          print("nodes over Tor:", monero[-1], "on internal node_egress with", ", ".join(members))
           '
           fi
           # Node and wallet images default to the release tags the payment error tables were verified against
@@ -617,7 +462,7 @@ jobs:
           docker compose "${files[@]}" "${profiles[@]}" config --format json | python3 -c '
           import json, sys
           services = json.load(sys.stdin)["services"]
-          for name in ("bitcoin", "monero"):
+          for name in ("monero",):
               image = services[name]["image"]
               reference, _, digest = image.partition("@")
               tag = reference.rpartition("/")[2].partition(":")[2]
@@ -680,26 +525,6 @@ jobs:
         with:
           name: installer-results
           path: artifacts/install-test/
-          if-no-files-found: ignore
-          retention-days: 14
-  escrow-node-rehearsal:
-    name: Bundled-node escrow set-up, run from the installer's printed commands
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      # install.sh init with a local regtest node in a throwaway Compose project, then the escrow commands it prints, run
-      # verbatim: set-up, bitcoin.conf append, .env append, node restart, --verify --via-compose app (PASS), the signer's
-      # seed, docker compose up -d (A-513). Regtest only; the evidence log holds no password.
-      - name: Rehearse the installer-printed escrow set-up on regtest
-        run: python3 scripts/test-escrow-node-rehearsal.py
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: always()
-        with:
-          name: escrow-node-rehearsal-results
-          path: artifacts/escrow-node-rehearsal/
           if-no-files-found: ignore
           retention-days: 14
   upgrade:
@@ -837,7 +662,7 @@ jobs:
       - name: Bundled monerod RPC ports start offline (scripts/test-monerod-ports.sh)
         timeout-minutes: 5
         run: bash scripts/test-monerod-ports.sh
-      # A-536: db, bitcoin, monero and monero-escrow-wallet with Compose's rendered user, capabilities, no-new-privileges,
+      # A-536: db, monero and monero-escrow-wallet with Compose's rendered user, capabilities, no-new-privileges,
       # read-only root and tmpfs start offline on a new volume and again on the same one.
       - name: Hardened database and node containers start offline (scripts/test-service-hardening.sh)
         timeout-minutes: 10
@@ -935,21 +760,14 @@ jobs:
           # Use its existing official Ubuntu archive/security fallbacks directly.
           sudo sed -i '\|^http://azure\.archive\.ubuntu\.com/ubuntu/|d' /etc/apt/apt-mirrors.txt
           npx playwright install --with-deps chromium
-      # Each suite owns a fresh database: both move clocks through SQL and the Bitcoin suites share one setup.
+      # The Monero journey owns a fresh database because it moves clocks through SQL.
       - name: Create the escrow databases
         env:
           POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
         run: |
-          docker exec "$POSTGRES_CONTAINER" createdb -U test e2e_escrow
           docker exec "$POSTGRES_CONTAINER" createdb -U test e2e_escrow_xmr
       # Simulated escrow nodes (tests/e2e/fixtures): application integration evidence, not chain evidence.
-      - name: Bitcoin escrow journeys (simulated escrow node)
-        env:
-          E2E_ESCROW_DATABASE_URL: postgres://test:test-ci-only@127.0.0.1:5432/e2e_escrow?sslmode=disable
-        run: npm run test:e2e:escrow
       - name: Monero escrow journey (simulated escrow wallet-rpc)
-        # Run even when the Bitcoin suite failed, so one run reports both.
-        if: ${{ !cancelled() }}
         env:
           E2E_ESCROW_XMR_DATABASE_URL: postgres://test:test-ci-only@127.0.0.1:5432/e2e_escrow_xmr?sslmode=disable
         run: npm run test:e2e:escrow-xmr
@@ -959,8 +777,6 @@ jobs:
         with:
           name: playwright-escrow-results
           path: |
-            playwright-escrow-report/
-            test-results-escrow/
             playwright-escrow-xmr-report/
             test-results-escrow-xmr/
           if-no-files-found: ignore
@@ -984,7 +800,7 @@ jobs:
   required:
     name: CI passed
     if: always()
-    needs: [go, go-escrow, escrow-regtest, escrow-xmr-regtest, operations, installer, escrow-node-rehearsal, upgrade, compose, container, tor-image, browser, browser-escrow, docs]
+    needs: [go, go-escrow, escrow-xmr-regtest, operations, installer, upgrade, compose, container, tor-image, browser, browser-escrow, docs]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:

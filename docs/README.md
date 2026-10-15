@@ -31,4 +31,4 @@ service or behind HTTPS.
 
 - A Linux shell, Docker and Docker Compose.
 - Tor Browser (onion installs) or an HTTPS reverse proxy (public domain).
-- Bitcoin or Monero wallets, to take payments.
+- A dedicated Monero escrow wallet-rpc, to take payments.

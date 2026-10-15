@@ -7,94 +7,22 @@ import (
 	"time"
 )
 
-// A-274: the per-account password-confirmation budget is spent only by failed confirmations. Escrow disputes are
-// resolved by administrators in these funded simulated-escrow fixtures.
-
 const confirmPausedText = "Too many failed password confirmations"
 
-func budgetDispute(x *escrowEnv) (order, dispute string) {
+func budgetDispute(x *xmrEscrowEnv) (order, dispute string) {
 	x.t.Helper()
-	return x.disputedEscrow(regtestAddr("budget-refund-" + randomToken()[:8]))
+	order, buyer := x.undeliveredXMR()
+	if code, body := x.xmrDispute(order, buyer); code != 303 {
+		x.t.Fatalf("open funded Monero dispute: %d %s", code, body)
+	}
+	return order, agStr(x.testEnv, "SELECT id FROM disputes WHERE order_id=$1", order)
 }
 
 // resolveWith is a /resolve refund of an empty dispute confirmed with password.
 func resolveWith(dispute, password string) url.Values {
-	v := resolveConfirmed(url.Values{"id": {dispute}, "outcome": {"refund"}, "resolution": {"Refund the funded order to the buyer."}}, 100000)
+	v := resolveConfirmed(url.Values{"id": {dispute}, "outcome": {"refund"}, "resolution": {"Refund the funded order to the buyer."}}, xmrListingPrice)
 	v.Set("password", password)
 	return v
-}
-
-func TestCorrectConfirmationsSpendNoBudget(t *testing.T) {
-	x := newEscrowEnv(t)
-	modID, mod := x.user("a274_admin", "admin")
-	for i := range 12 {
-		order, dispute := budgetDispute(x)
-		w := x.do("POST", "/resolve", mod, resolveWith(dispute, testPassword))
-		if w.Code != 303 || x.state(order) != stateResolved {
-			t.Fatalf("correct confirmation %d: status=%d state=%s body=%q", i+1, w.Code, x.state(order), w.Body.String())
-		}
-	}
-	if agLimited(x.testEnv, "confirm:"+modID) {
-		t.Fatal("correct confirmations left a limiter entry")
-	}
-}
-
-func TestFailedConfirmationsPauseConfirmation(t *testing.T) {
-	x := newEscrowEnv(t)
-	e := x.testEnv
-	modID, mod := x.user("a274_wrong", "admin")
-	order, dispute := budgetDispute(x)
-	for i := range 10 {
-		agExpect(e, "/resolve", mod, resolveWith(dispute, "wrong-password-"+string(rune('a'+i))), 401, "Password incorrect")
-	}
-	agExpect(e, "/resolve", mod, resolveWith(dispute, "wrong-password-k"), 429, confirmPausedText)
-	// The right password is refused too for the rest of the window, and it runs no bcrypt: it is refused even while
-	// every password slot is busy (429, not 503).
-	agExpect(e, "/resolve", mod, resolveWith(dispute, testPassword), 429, confirmPausedText)
-	release := agHoldPasswordWork(t)
-	agExpect(e, "/resolve", mod, resolveWith(dispute, testPassword), 429, confirmPausedText)
-	release()
-	if x.state(order) != stateDisputed || e.auditHas(modID, "Resolved") {
-		t.Fatal("a refused confirmation resolved the dispute")
-	}
-	// Another account is unaffected.
-	_, other := x.user("a274_other", "admin")
-	agExpect(e, "/resolve", other, resolveWith(dispute, testPassword), 303, "")
-	// Once the window has passed, the right password works again.
-	e.A.mu.Lock()
-	b := e.A.limits["confirm:"+modID]
-	b.Until = time.Now().Add(-time.Second)
-	e.A.limits["confirm:"+modID] = b
-	e.A.mu.Unlock()
-	order2, dispute2 := budgetDispute(x)
-	agExpect(e, "/resolve", mod, resolveWith(dispute2, testPassword), 303, "")
-	if x.state(order2) != stateResolved {
-		t.Fatal("confirmation after the window did not resolve the dispute")
-	}
-}
-
-// A correct confirmation between failures neither spends nor resets them: five wrong, twelve right, five wrong
-// make ten failures, after which the right password is refused.
-func TestMixedConfirmationsCountOnlyFailures(t *testing.T) {
-	x := newEscrowEnv(t)
-	e := x.testEnv
-	_, mod := x.user("a274_mixed", "admin")
-	_, open := budgetDispute(x)
-	wrong := func(n int) {
-		t.Helper()
-		for i := range n {
-			agExpect(e, "/resolve", mod, resolveWith(open, "wrong-password-"+string(rune('a'+i))), 401, "Password incorrect")
-		}
-	}
-	wrong(5)
-	for i := range 12 {
-		order, dispute := budgetDispute(x)
-		if w := x.do("POST", "/resolve", mod, resolveWith(dispute, testPassword)); w.Code != 303 || x.state(order) != stateResolved {
-			t.Fatalf("correct confirmation %d after failures: status=%d body=%q", i+1, w.Code, w.Body.String())
-		}
-	}
-	wrong(5)
-	agExpect(e, "/resolve", mod, resolveWith(open, testPassword), 429, confirmPausedText)
 }
 
 // A wrong authenticator code after a correct password is a failed confirmation too: otherwise someone holding a
@@ -222,3 +150,82 @@ func TestConcurrentFailedConfirmationsStayWithinBudget(t *testing.T) {
 		t.Fatal("a refused confirmation changed the setting")
 	}
 }
+
+func TestCorrectConfirmationsSpendNoBudget(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	modID, mod := x.user("a274_admin", "admin")
+	for i := range 12 {
+		order, dispute := budgetDispute(x)
+		w := x.do("POST", "/resolve", mod, resolveWith(dispute, testPassword))
+		if w.Code != 303 || x.state(order) != stateResolved {
+			t.Fatalf("correct confirmation %d: status=%d state=%s body=%q", i+1, w.Code, x.state(order), w.Body.String())
+		}
+	}
+	if agLimited(x.testEnv, "confirm:"+modID) {
+		t.Fatal("correct confirmations left a limiter entry")
+	}
+}
+
+func TestFailedConfirmationsPauseConfirmation(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	e := x.testEnv
+	modID, mod := x.user("a274_wrong", "admin")
+	order, dispute := budgetDispute(x)
+	for i := range 10 {
+		agExpect(e, "/resolve", mod, resolveWith(dispute, "wrong-password-"+string(rune('a'+i))), 401, "Password incorrect")
+	}
+	agExpect(e, "/resolve", mod, resolveWith(dispute, "wrong-password-k"), 429, confirmPausedText)
+	// The right password is refused too for the rest of the window, and it runs no bcrypt: it is refused even while
+	// every password slot is busy (429, not 503).
+	agExpect(e, "/resolve", mod, resolveWith(dispute, testPassword), 429, confirmPausedText)
+	release := agHoldPasswordWork(t)
+	agExpect(e, "/resolve", mod, resolveWith(dispute, testPassword), 429, confirmPausedText)
+	release()
+	if x.state(order) != stateDisputed || e.auditHas(modID, "Resolved") {
+		t.Fatal("a refused confirmation resolved the dispute")
+	}
+	// Another account is unaffected.
+	_, other := x.user("a274_other", "admin")
+	agExpect(e, "/resolve", other, resolveWith(dispute, testPassword), 303, "")
+	// Once the window has passed, the right password works again.
+	e.A.mu.Lock()
+	b := e.A.limits["confirm:"+modID]
+	b.Until = time.Now().Add(-time.Second)
+	e.A.limits["confirm:"+modID] = b
+	e.A.mu.Unlock()
+	order2, dispute2 := budgetDispute(x)
+	agExpect(e, "/resolve", mod, resolveWith(dispute2, testPassword), 303, "")
+	if x.state(order2) != stateResolved {
+		t.Fatal("confirmation after the window did not resolve the dispute")
+	}
+}
+
+// A correct confirmation between failures neither spends nor resets them: five wrong, twelve right, five wrong
+// make ten failures, after which the right password is refused.
+func TestMixedConfirmationsCountOnlyFailures(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	e := x.testEnv
+	_, mod := x.user("a274_mixed", "admin")
+	_, open := budgetDispute(x)
+	wrong := func(n int) {
+		t.Helper()
+		for i := range n {
+			agExpect(e, "/resolve", mod, resolveWith(open, "wrong-password-"+string(rune('a'+i))), 401, "Password incorrect")
+		}
+	}
+	wrong(5)
+	for i := range 12 {
+		order, dispute := budgetDispute(x)
+		if w := x.do("POST", "/resolve", mod, resolveWith(dispute, testPassword)); w.Code != 303 || x.state(order) != stateResolved {
+			t.Fatalf("correct confirmation %d after failures: status=%d body=%q", i+1, w.Code, w.Body.String())
+		}
+	}
+	wrong(5)
+	agExpect(e, "/resolve", mod, resolveWith(open, testPassword), 429, confirmPausedText)
+}
+
+// A wrong authenticator code after a correct password is a failed confirmation too: otherwise someone holding a
+// session and the password could guess codes with no limit but the write limit. A right code spends nothing.

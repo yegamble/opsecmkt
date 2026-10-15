@@ -44,10 +44,10 @@ Confirm the network you meant. Installs with local nodes default to mainnet (rea
 mainnet is covered by unit, database and simulated-RPC tests only. A mainnet market's pages say MAINNET:
 
 ```sh
-grep -E '^(BITCOIN_CHAIN|MONERO_NETWORK)=' .env
+grep -E '^MONERO_NETWORK=' .env
 ```
 
-`main` and `mainnet` are mainnet; `signet`, `testnet4`, `regtest`, `stagenet` and a blank value are test networks. Once
+`mainnet` selects real funds; `stagenet` and a blank Monero network select test funds. Once
 escrow has pinned a network it does not change: start over on a new database
 ([Choose a network](enable-payments.md#choose-a-network)).
 

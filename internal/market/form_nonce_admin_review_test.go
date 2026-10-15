@@ -12,7 +12,7 @@ func TestAdminReviewNonceBindsReplayToFormActorAndSession(t *testing.T) {
 	buyerID, buyer := e.user("review_nonce_buyer", "buyer")
 	vendorID, _ := e.user("review_nonce_vendor", "vendor")
 	product := e.product(vendorID, "physical")
-	order := e.order(buyerID, product, "BTC", stateCompleted)
+	order := e.order(buyerID, product, "XMR", stateCompleted)
 	e.check(e.do("POST", "/reviews", buyer, url.Values{"order_id": {order}, "rating": {"1"}, "body": {"Needs review."}}), 303)
 	reviewID := agStr(e, "SELECT id FROM reviews WHERE order_id=$1", order)
 
@@ -83,7 +83,7 @@ func TestAdminReviewNonceLostCommitAcknowledgementReplays(t *testing.T) {
 	buyerID, buyer := e.user("review_nonce_lost_buyer", "buyer")
 	vendorID, _ := e.user("review_nonce_lost_vendor", "vendor")
 	product := e.product(vendorID, "physical")
-	order := e.order(buyerID, product, "BTC", stateCompleted)
+	order := e.order(buyerID, product, "XMR", stateCompleted)
 	e.check(e.do("POST", "/reviews", buyer, url.Values{"order_id": {order}, "rating": {"1"}, "body": {"Needs review."}}), 303)
 	reviewID := agStr(e, "SELECT id FROM reviews WHERE order_id=$1", order)
 	form := reviewForm(t, e.body("GET", "/product?id="+product, admin, nil, 200), "hide", reviewID)

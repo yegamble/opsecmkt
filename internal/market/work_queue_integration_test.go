@@ -15,7 +15,7 @@ import (
 func (w *orderWorld) bulkOrders(prefix, buyerID, productID, state string, n int) {
 	w.e.t.Helper()
 	if _, err := w.e.DB.Exec(`INSERT INTO orders(id,buyer_id,product_id,currency,amount,state,created)
-		SELECT $1||lpad(g::text,3,'0'),$2,$3,'BTC',100000,$4,now()-interval '1 day'+g*interval '1 second' FROM generate_series(1,$5) g`,
+		SELECT $1||lpad(g::text,3,'0'),$2,$3,'XMR',100000,$4,now()-interval '1 day'+g*interval '1 second' FROM generate_series(1,$5) g`,
 		prefix, buyerID, productID, state, n); err != nil {
 		w.e.t.Fatal(err)
 	}
@@ -92,19 +92,19 @@ func TestModeratorDeskListsEveryOpenDisputeFirst(t *testing.T) {
 func TestVendorDeskListsEveryActiveOrderByLastChangeAndCapsOnlyTerminalHistory(t *testing.T) {
 	w := newOrderWorld(t)
 	product := w.e.product(w.vendorID, "physical")
-	paidOld := w.e.order(w.buyerID, product, "BTC", statePaid)
-	paidOlder := w.e.order(w.otherID, product, "BTC", statePaid)
+	paidOld := w.e.order(w.buyerID, product, "XMR", statePaid)
+	paidOlder := w.e.order(w.otherID, product, "XMR", statePaid)
 	shippedNew := w.e.order(w.buyerID, product, "XMR", stateShipped)
-	shippedOld := w.e.order(w.buyerID, product, "BTC", stateShipped)
-	oldActive := w.e.order(w.otherID, product, "BTC", stateDelivered)
+	shippedOld := w.e.order(w.buyerID, product, "XMR", stateShipped)
+	oldActive := w.e.order(w.otherID, product, "XMR", stateDelivered)
 	for _, item := range []struct{ id, age string }{{paidOld, "2 hours"}, {paidOlder, "90 minutes"}, {shippedNew, "1 minute"}, {oldActive, "3 hours"}, {shippedOld, "4 hours"}} {
 		if _, err := w.e.DB.Exec("UPDATE orders SET updated=now()-$2::interval WHERE id=$1", item.id, item.age); err != nil {
 			t.Fatal(err)
 		}
 	}
 	// The vendor's own purchase from someone else is not their work.
-	elsewhere := w.e.order(w.vendorID, w.e.product(w.otherID, "physical"), "BTC", statePaid)
-	openDispute := w.e.order(w.buyerID, product, "BTC", stateDisputed)
+	elsewhere := w.e.order(w.vendorID, w.e.product(w.otherID, "physical"), "XMR", statePaid)
+	openDispute := w.e.order(w.buyerID, product, "XMR", stateDisputed)
 	if _, err := w.e.DB.Exec("INSERT INTO disputes(id,order_id,reason) VALUES('vendor-open-dispute',$1,'The parcel did not arrive.')", openDispute); err != nil {
 		t.Fatal(err)
 	}
@@ -152,12 +152,12 @@ func TestVendorDeskHistoryCapCountsEveryTerminalKindAtTheLimit(t *testing.T) {
 	terminals := func(from, to int) {
 		t.Helper()
 		agExec(w.e, `INSERT INTO orders(id,buyer_id,product_id,currency,amount,state,created,updated)
-			SELECT 'term-'||lpad(g::text,3,'0'),$1,$2,'BTC',100000,
+			SELECT 'term-'||lpad(g::text,3,'0'),$1,$2,'XMR',100000,
 			  CASE g%3 WHEN 1 THEN 'completed' WHEN 2 THEN 'resolved' ELSE 'cancelled' END,
 			  now()-interval '1 day', now()-interval '1 day'+g*interval '1 second' FROM generate_series($3::int,$4::int) g`,
 			w.buyerID, product, from, to)
 		agExec(w.e, `INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations)
-			SELECT id,'BTC',encode(sha256(convert_to(id,'UTF8')),'hex'),0,'bcrt1qterm'||right(id,3),100000,3
+			SELECT id,'XMR',encode(sha256(convert_to(id,'UTF8')),'hex'),0,'bcrt1qterm'||right(id,3),100000,3
 			FROM orders WHERE id LIKE 'term-%' AND state='cancelled' AND id NOT IN (SELECT order_id FROM payments)`)
 	}
 	listed := func() (ids []string, limit int) {
@@ -173,14 +173,14 @@ func TestVendorDeskHistoryCapCountsEveryTerminalKindAtTheLimit(t *testing.T) {
 	}
 	const note = "Showing the 100 most recent completed, resolved or funded-cancelled orders as history"
 	active := []string{
-		w.e.order(w.buyerID, product, "BTC", statePaid),
-		w.e.order(w.buyerID, product, "BTC", stateShipped),
-		w.e.order(w.buyerID, product, "BTC", stateAwaitingPayment),
+		w.e.order(w.buyerID, product, "XMR", statePaid),
+		w.e.order(w.buyerID, product, "XMR", stateShipped),
+		w.e.order(w.buyerID, product, "XMR", stateAwaitingPayment),
 	}
 	// Abandoned drafts (cancelled, no escrow, no payment) are not customer work: they neither show nor count.
 	var abandoned []string
 	for range 5 {
-		abandoned = append(abandoned, w.e.order(w.buyerID, product, "BTC", stateCancelled))
+		abandoned = append(abandoned, w.e.order(w.buyerID, product, "XMR", stateCancelled))
 	}
 
 	// Exactly historyLimit terminal orders of three kinds: everything is listed, nothing is announced as cut.
@@ -223,7 +223,7 @@ func TestVendorDeskHistoryCapCountsEveryTerminalKindAtTheLimit(t *testing.T) {
 func TestDraftCancelDoesNotNotifyVendor(t *testing.T) {
 	w := newOrderWorld(t)
 	product := w.e.product(w.vendorID, "physical")
-	draft := w.e.order(w.buyerID, product, "BTC", stateDraft)
+	draft := w.e.order(w.buyerID, product, "XMR", stateDraft)
 	page := w.page("/order?id="+draft, w.buyer, 200)
 	nonce := renderedFormNonce(t, page, "/orders/cancel")
 	before := w.count("SELECT count(*) FROM notifications WHERE user_id=$1", w.vendorID)
@@ -239,16 +239,16 @@ func TestDraftCancelDoesNotNotifyVendor(t *testing.T) {
 func TestVendorRowsExcludeUnfundedDraftsButKeepBuyerHistory(t *testing.T) {
 	w := newOrderWorld(t)
 	product := w.e.product(w.vendorID, "physical")
-	draft := w.e.order(w.buyerID, product, "BTC", stateDraft)
+	draft := w.e.order(w.buyerID, product, "XMR", stateDraft)
 	cancelledDraft := w.e.order(w.buyerID, product, "XMR", stateCancelled)
-	fundedCancelled := w.e.order(w.otherID, product, "BTC", stateCancelled)
+	fundedCancelled := w.e.order(w.otherID, product, "XMR", stateCancelled)
 	// A cancellation that received a payment is customer work its vendor keeps seeing (A-494, cancelledCustomerWork).
-	if _, err := w.e.DB.Exec("INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations) VALUES($1,'BTC',$2,0,'bcrt1qtestfundedcancelled',100000,3)", fundedCancelled, txidOf("funded-cancelled")); err != nil {
+	if _, err := w.e.DB.Exec("INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations) VALUES($1,'XMR',$2,0,'bcrt1qtestfundedcancelled',100000,3)", fundedCancelled, txidOf("funded-cancelled")); err != nil {
 		t.Fatal(err)
 	}
 	w.bulkOrders("bulk-funded-cancel-", w.otherID, product, stateCancelled, 51)
 	if _, err := w.e.DB.Exec(`INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations)
-		SELECT id,'BTC',encode(sha256(convert_to(id,'UTF8')),'hex'),0,'bcrt1qaddress'||right(id,3),100000,3 FROM orders WHERE id LIKE 'bulk-funded-cancel-%'`); err != nil {
+		SELECT id,'XMR',encode(sha256(convert_to(id,'UTF8')),'hex'),0,'bcrt1qaddress'||right(id,3),100000,3 FROM orders WHERE id LIKE 'bulk-funded-cancel-%'`); err != nil {
 		t.Fatal(err)
 	}
 	w.bulkOrders("bulk-unfunded-cancel-", w.otherID, product, stateCancelled, 51)

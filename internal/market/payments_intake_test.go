@@ -10,7 +10,7 @@ func TestEscrowIntakeOnlyAllowsEscrowOrPaused(t *testing.T) {
 	change := func(session, cur, value, password string) int {
 		return p.do("POST", "/admin/payment-intake", session, url.Values{"currency": {cur}, "enabled": {value}, "password": {password}}).Code
 	}
-	for _, cur := range []string{"BTC", "XMR"} {
+	for _, cur := range []string{"XMR"} {
 		if got := p.str("SELECT value FROM settings WHERE key=$1", paymentIntakeKey(cur)); got != intakeEscrow {
 			t.Fatalf("%s default %q", cur, got)
 		}

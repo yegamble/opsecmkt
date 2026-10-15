@@ -1,5 +1,17 @@
 # Verification
 
+The current source is Monero only. Historical rows below describe the exact revisions recorded at the time, including retired Bitcoin workflows; they do not claim current Bitcoin support or verify the Monero-only change. Current Monero limits include unverified mainnet and Tor delivery, plus unverified public-network refunds and physical deadlines.
+
+## Monero-only working tree — 2026-10-15
+
+Local checks for the undeployed Monero-only change passed:
+
+- PostgreSQL and simulated wallet RPC: all 173 `TestXMREscrow*` groups passed (267 pass events including subtests); 20 real-chain/public-network groups skipped because their required services were absent. Changed schema, configuration, collision and confirmation-budget checks also passed with the race detector.
+- Chromium with JavaScript disabled: 172 preview checks, all 40 runnable database journeys, and eight simulated Monero escrow journeys passed. Database journeys required focused reruns after fixing fixtures and local timeout failures; one separate environment-gated database check skipped.
+- Installer: all 156 tests verified across the full run and corrected focused reruns. Another 220 Python checks passed, including Compose, CI and recovery-script assertions; 46 documentation/recovery checks also passed after the final reminder update. Documentation checks and a strict MkDocs build, shell syntax, Go formatting, module verification, vet and actionlint passed. The pinned govulncheck found no vulnerabilities affecting called code.
+
+These are working-tree results, not a new CI run or a release. The broad non-escrow race run exposed stale Bitcoin fixtures; retained failures were corrected and checked in focused race reruns, while Bitcoin-only cases were retired. Docker and age were unavailable, so this change has no new real-image, real-chain or encrypted backup rehearsal evidence. Existing dated chain evidence below remains evidence only for its recorded revision.
+
 ## Evidence table
 
 Updated 2026-10-11 UTC. Each row is evidence that can be cited: a GitHub Actions run (its commit and conclusion confirmed with `gh run view <id>`) or a local log. Ticks in [acceptance.md](acceptance.md) point here. Evidence tiers are those of the war room: unit, DB integration, browser preview, browser DB, simulated wallet RPC, real local chain, public test network, deployed instance. A simulated wallet RPC or the in-process fake provider is not chain evidence. Merged is not released and released is not deployed.

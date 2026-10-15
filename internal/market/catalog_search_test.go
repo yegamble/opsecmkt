@@ -115,7 +115,7 @@ func TestCatalogPagingBoundaries(t *testing.T) {
 	if p.PrevURL != "/?category=Hardware&currency=XMR&q=usb+drive&region=Europe" || !strings.HasSuffix(p.NextURL, "&page=3&q=usb+drive&region=Europe") {
 		t.Errorf("paging links: %q %q", p.PrevURL, p.NextURL)
 	}
-	if bare := catalogPaging(&PageData{Currency: "BTC"}, 60, "2"); bare.PrevURL != "/" || bare.NextURL != "/?page=3" {
+	if bare := catalogPaging(&PageData{Currency: "XMR"}, 60, "2"); bare.PrevURL != "/?currency=XMR" || bare.NextURL != "/?currency=XMR&page=3" {
 		t.Errorf("unfiltered paging links: %q %q", bare.PrevURL, bare.NextURL)
 	}
 }

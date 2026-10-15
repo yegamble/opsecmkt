@@ -760,7 +760,7 @@ func TestStoredPhotoIDNeverShown(t *testing.T) {
 		}
 		return legacy.String()
 	}
-	order := e.order(buyerID, e.product(vendorID, "physical"), "BTC", statePaid)
+	order := e.order(buyerID, e.product(vendorID, "physical"), "XMR", statePaid)
 	want := armorPackets(t, plain)
 	variants := testPhotoIDVariants(t, key)
 	variants["as first saved"] = photoIDVariant{armored: photo}
@@ -819,7 +819,7 @@ func TestStoredSplitKeyShownUnreadable(t *testing.T) {
 	_, fp, _ := parsePublicKey(plain)
 	vendorID, vendor := e.user("split_vendor", "vendor")
 	buyerID, buyer := e.user("split_buyer", "buyer")
-	order := e.order(buyerID, e.product(vendorID, "physical"), "BTC", statePaid)
+	order := e.order(buyerID, e.product(vendorID, "physical"), "XMR", statePaid)
 	for variant, armored := range testSplitKeyVariants(t, key) {
 		b := html.UnescapeString(e.body("POST", "/account", vendor, url.Values{"pgp": {armored}, "password": {testPassword}}, 400))
 		mustContain(t, b, "PGP key rejected: it contains an OpenPGP packet type this market does not publish", "gpg --armor --export "+fp)

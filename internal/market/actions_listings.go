@@ -34,10 +34,9 @@ const (
 // validateListing checks every listing field. Only physical and digital fulfillment exist: the order
 // state machine has no fulfillment step for any other kind. Automatic delivery content is digital-only.
 func validateListing(f url.Values) (listingInput, error) {
-	btc, e1 := parseAmount(f.Get("price_btc"), 8)
 	xmr, e2 := parseAmount(f.Get("price_xmr"), 12)
 	stock, e3 := strconv.Atoi(f.Get("stock"))
-	in := listingInput{Title: normalizedFormText(f.Get("title")), Description: normalizedFormText(f.Get("description")), Category: f.Get("category"), Region: f.Get("region"), Kind: f.Get("kind"), DeliveryContent: f.Get("delivery_content"), BTC: btc, XMR: xmr, Stock: stock}
+	in := listingInput{Title: normalizedFormText(f.Get("title")), Description: normalizedFormText(f.Get("description")), Category: f.Get("category"), Region: f.Get("region"), Kind: f.Get("kind"), DeliveryContent: f.Get("delivery_content"), XMR: xmr, Stock: stock}
 	// A-514: each field in error is named, by its form label, in form order.
 	var problems []string
 	for _, p := range []struct {
@@ -50,8 +49,7 @@ func validateListing(f url.Values) (listingInput, error) {
 		{!textLength(in.Region, 2, 80), "Region: use 2 to 80 characters."},
 		{in.Kind != "digital" && in.Kind != "physical", "Fulfillment type: choose physical or digital."},
 		{e3 != nil || stock < 0 || stock > 1000000, "Stock: use a whole number from 0 to 1000000."},
-		{e1 != nil, "Bitcoin price: use a positive amount with at most 8 decimal places."},
-		{e2 != nil, "Monero reference price: use a positive amount with at most 12 decimal places."},
+		{e2 != nil, "Monero price: use a positive amount with at most 12 decimal places."},
 	} {
 		if p.bad {
 			problems = append(problems, p.msg)
@@ -61,9 +59,6 @@ func validateListing(f url.Values) (listingInput, error) {
 		return listingInput{}, fail(400, strings.Join(problems, " "))
 	}
 	// A payout below its currency's floor is never sent (A-99, A-232), so no order may be priced below it.
-	if in.BTC < minPayoutBTC {
-		return listingInput{}, fail(400, "The Bitcoin price must be at least "+amount(minPayoutBTC, 8)+" BTC: a smaller Bitcoin payout cannot cover the network fee.")
-	}
 	if in.XMR < minPayoutXMR {
 		return listingInput{}, fail(400, "The Monero price must be at least "+amount(minPayoutXMR, 12)+" XMR: the network fee is deducted from every payout and would take too large a share of a smaller one.")
 	}

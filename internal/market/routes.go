@@ -35,6 +35,9 @@ var pages = map[string]pageSpec{}
 
 // registerPage makes GET /<name> render template "page:<name>" (web/templates/pages/<name>.html).
 func registerPage(name string, s pageSpec) {
+	if retiredBitcoinRoute("/" + name) {
+		return
+	}
 	if _, dup := pages[name]; dup {
 		panic("duplicate page " + name)
 	}
@@ -166,6 +169,9 @@ var actions = map[string]actionSpec{}
 
 // registerAction handles POST <path> (CSRF and origin already verified by ServeHTTP).
 func registerAction(path string, s actionSpec) {
+	if retiredBitcoinRoute(path) {
+		return
+	}
 	if _, dup := actions[path]; dup {
 		panic("duplicate action " + path)
 	}
@@ -414,6 +420,9 @@ var raws = map[string]rawHandler{}
 // registerRaw serves GET/HEAD <path> without the HTML layout (PNG, downloads). It runs before the
 // installed/page checks and also in preview mode (a.db is nil there); handlers enforce their own access.
 func registerRaw(path string, h rawHandler) {
+	if retiredBitcoinRoute(path) {
+		return
+	}
 	if _, dup := raws[path]; dup {
 		panic("duplicate raw handler " + path)
 	}
@@ -726,4 +735,12 @@ func init() {
 	} {
 		registerPage(name, s)
 	}
+}
+
+// Retired Bitcoin handlers remain as historical implementation references, but
+// are never registered in this Monero-only build, even for a manually built App.
+func retiredBitcoinRoute(path string) bool {
+	return path == "/orders/escrow" || path == "/escrow-key" || strings.HasPrefix(path, "/escrow-key/") ||
+		path == "/escrow-setup" || path == "/escrow-descriptor" || path == "/escrow-psbt" || strings.HasPrefix(path, "/escrow/") ||
+		path == "/admin/escrow-fee" || path == "/admin/escrow-rebroadcast"
 }

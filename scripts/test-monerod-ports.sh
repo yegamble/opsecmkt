@@ -35,7 +35,6 @@ trap 'exit 130' INT TERM HUP
 : >"$work/env"
 env -i PATH="$PATH" HOME="$HOME" DATABASE_URL=postgres://test:test@db/test \
   SETUP_TOKEN=ci-validation-only-not-a-real-bootstrap-secret \
-  BITCOIN_RPC_AUTH='marketplace:0123456789abcdef0123456789abcdef$f25a796e58dd70ff7eb5b96b54de079cc7e3d6f40eb8a0fa55fd05f26a53635e' \
   MONERO_NETWORK_FLAG=--stagenet \
   docker compose --env-file "$work/env" -f compose.yaml -f compose.nodes.yaml --profile monero config --format json \
   >"$work/config.json"

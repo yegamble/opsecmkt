@@ -3,7 +3,7 @@ package market
 import (
 	"bytes"
 	"html"
-	"net/url"
+
 	"testing"
 	"time"
 
@@ -11,10 +11,6 @@ import (
 	"github.com/ProtonMail/go-crypto/openpgp/armor"
 	"github.com/ProtonMail/go-crypto/openpgp/packet"
 )
-
-// A-68 and A-83: a saved key nothing can be encrypted to (expired, revoked or signing-only) is not offered as a
-// contact key, and a buyer cannot pay for a physical order whose vendor has no key that can receive encrypted
-// messages, since the shipping address could then not be sent.
 
 const (
 	noUsableKeyNote  = "cannot receive encrypted messages"
@@ -144,8 +140,8 @@ func TestHuntUnusableEncryptionKeyShownAsUsableContact(t *testing.T) {
 		e.setKey(modID, armored)
 		_, fp, _ := parsePublicKey(armored)
 		product := e.product(vendorID, "physical")
-		paid := e.order(buyerID, product, "BTC", statePaid)
-		disputed := e.order(buyerID, product, "BTC", stateDisputed)
+		paid := e.order(buyerID, product, "XMR", statePaid)
+		disputed := e.order(buyerID, product, "XMR", stateDisputed)
 		for name, page := range map[string]string{
 			"vendor page":     e.body("GET", "/vendor?id="+vendorID, "", nil, 200),
 			"messages":        e.body("GET", "/messages?to=hunt_vendor_"+suffix, buyer, nil, 200),
@@ -172,35 +168,6 @@ func TestHuntUnusableEncryptionKeyShownAsUsableContact(t *testing.T) {
 	page := e.body("GET", "/vendor?id="+vendorID, "", nil, 200)
 	mustContain(t, page, formatFingerprint(fp))
 	mustNotContain(t, page, "No usable key.")
-}
-
-// A physical escrow checkout requires a vendor key able to receive the buyer's shipping details.
-func TestPhysicalEscrowRefusedWithoutUsableVendorKey(t *testing.T) {
-	x := newEscrowEnv(t)
-	unusable := testUnusableKeys(t, "vendor")
-	for variant, armored := range map[string]string{"no key": "", "expired key": unusable["expired key"], "signing-only key": unusable["signing-only key"]} {
-		x.setKey(x.vendor, armored)
-		product := x.physicalListing(x.vendor, 3)
-		draft := x.testEnv.order(x.buyer, product, "BTC", stateDraft)
-		page := html.UnescapeString(x.page("/checkout?id="+product, x.buyerSess))
-		mustContain(t, page, "no usable encryption key")
-		before := agInt(x.testEnv, "SELECT stock FROM products WHERE id=$1", product)
-		w := x.do("POST", "/orders/escrow", x.buyerSess, url.Values{"order_id": {draft}, "refund_address": {regtestAddr("unusable-key-" + variant)}})
-		if w.Code != 409 {
-			t.Fatalf("%s: checkout status %d: %s", variant, w.Code, w.Body.String())
-		}
-		if x.state(draft) != stateDraft || agInt(x.testEnv, "SELECT stock FROM products WHERE id=$1", product) != before || agInt(x.testEnv, "SELECT count(*) FROM escrows WHERE order_id=$1", draft) != 0 {
-			t.Fatalf("%s changed draft or stock", variant)
-		}
-	}
-	_, usable := testPGPKey(t, "vendor")
-	x.setKey(x.vendor, usable)
-	product := x.physicalListing(x.vendor, 3)
-	draft := x.testEnv.order(x.buyer, product, "BTC", stateDraft)
-	w := x.do("POST", "/orders/escrow", x.buyerSess, url.Values{"order_id": {draft}, "refund_address": {regtestAddr("usable-key")}})
-	if w.Code != 303 {
-		t.Fatalf("usable key checkout: %d %s", w.Code, w.Body.String())
-	}
 }
 
 // TestPaidOrderVendorKeyStopsBeingUsable (A-83): once a physical order is paid, a vendor key that expires (or is
@@ -230,7 +197,7 @@ func TestPaidOrderVendorKeyStopsBeingUsable(t *testing.T) {
 	mustContain(t, vendorPage, "The buyer sends their shipping address to you as an encrypted message.")
 	mustNotContain(t, vendorPage, "Buyers cannot encrypt their shipping address to your saved PGP key.")
 	// A digital paid order never shows the shipping prompt.
-	digital := p.testEnv.order(p.buyer.ID, p.product(p.vendor.ID, "digital"), "BTC", statePaid)
+	digital := p.testEnv.order(p.buyer.ID, p.product(p.vendor.ID, "digital"), "XMR", statePaid)
 	b = html.UnescapeString(p.body("GET", "/order?id="+digital, p.buyerSess, nil, 200))
 	mustNotContain(t, b, noUsableKeyPaid, sendAddressLabel)
 }

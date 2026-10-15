@@ -4,22 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"net/url"
-	"os"
+
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 )
 
-// The public-network escrow smoke (A-446, P4-R16): scripts/test-escrow-public.sh runs TestEscrowPublicSmoke against an
-// operator's own Bitcoin Core node on public signet or testnet4 and writes the manifest. Never in CI, never on
-// mainnet, and never on regtest or a private signet: those are refused here as in the script, before any wallet call.
-// The legs (practice signing, one funded escrow claimed to confirmation, one refund) share their body with
-// TestEscrowRegtestSmoke, which runs them on regtest (scripts/test-escrow-regtest.sh), so the body the owner runs on
-// a public network is the one the regtest harness checks; only the chain refusal, the funding and the waiting differ.
-
-// publicSignetChallenge is public signet's signet_challenge: Bitcoin Core's default (a 1-of-2 multisig), as Core 31.1's
-// getblockchaininfo reports it on -signet with no -signetchallenge. Any other challenge is a private signet.
 const publicSignetChallenge = "512103ad5e0edad18cb1f0fc0d28a3d4f1f3e445640337489abb10404f2d1e086be430210359ef5021964fe22d6f8e05b2463c9540ce96883fe3b278760f048f5189f2e6c452ae"
 
 // publicChainRefusal says why the smoke refuses a node reporting chain (and, on signet, challenge), or "" for the two
@@ -44,23 +35,6 @@ func publicChainRefusal(chain, challenge string) string {
 	return "not a chain escrow runs on"
 }
 
-func TestEscrowPublicChainRefusal(t *testing.T) {
-	for _, c := range []struct{ chain, challenge string }{{"testnet4", ""}, {"signet", publicSignetChallenge}} {
-		if why := publicChainRefusal(c.chain, c.challenge); why != "" {
-			t.Errorf("%s refused: %s", c.chain, why)
-		}
-	}
-	for _, c := range []struct{ chain, challenge string }{
-		{"regtest", ""}, {"main", ""}, {"test", ""}, {"signet", "51"}, {"signet", ""},
-		{"signet", strings.ToUpper(publicSignetChallenge)}, {"testnet3", ""}, {"", ""},
-	} {
-		if publicChainRefusal(c.chain, c.challenge) == "" {
-			t.Errorf("%s (challenge %q) accepted", c.chain, c.challenge)
-		}
-	}
-}
-
-// escrowSmokeChain is what differs between the chains the smoke body runs on.
 type escrowSmokeChain struct {
 	op            *rpcClient
 	funder        string // the wallet that pays the escrows and receives every settlement
@@ -351,111 +325,4 @@ func runEscrowSmoke(t *testing.T, appURL string, c escrowSmokeChain) {
 	if agInt(e, "SELECT count(*) FROM payouts") != 0 {
 		t.Fatal("a payouts row for an escrow order")
 	}
-}
-
-// TestEscrowRegtestSmoke runs the public smoke's body on regtest (scripts/test-escrow-regtest.sh), mining the
-// confirmations, so the legs the owner runs on a public network are checked on every regtest run.
-func TestEscrowRegtestSmoke(t *testing.T) {
-	appURL, opURL := os.Getenv("ESCROW_REGTEST_APP_RPC_URL"), os.Getenv("ESCROW_REGTEST_OPERATOR_RPC_URL")
-	if appURL == "" || opURL == "" {
-		t.Skip("set ESCROW_REGTEST_APP_RPC_URL and ESCROW_REGTEST_OPERATOR_RPC_URL (scripts/test-escrow-regtest.sh) to run against bitcoind -regtest")
-	}
-	call, op := regtestOperator(t, opURL, map[string]string{"app": appURL})
-	ctx := context.Background()
-	funder := "escrow-smoke-funder-" + randomToken()[:8]
-	call("", "createwallet", nil, funder)
-	var mineTo string
-	call(funder, "getnewaddress", &mineTo)
-	matureFunds(t, ctx, op, mineTo)
-	runEscrowSmoke(t, appURL, escrowSmokeChain{
-		op: op, funder: funder, confirmations: 3, feeRate: 2, passes: time.Minute,
-		confirm: func(t *testing.T, _ ...string) { t.Helper(); mustMine(t, ctx, op, 3, mineTo) },
-	})
-}
-
-// TestEscrowPublicSmoke is the owner's public-network run (scripts/test-escrow-public.sh; never CI): the smoke's legs
-// on public signet or testnet4, funded from the operator's wallet ESCROW_PUBLIC_FUNDING_WALLET (test coins from a
-// faucet; at least 0.0016), each settlement paid back to it. ESCROW_PUBLIC_CONFIRMATIONS (1 to 100, default 1) is what
-// funding and settlements wait for; ESCROW_PUBLIC_FEE_RATE (sat/vB, 1 to 100, default 2) the rate of the funding sends
-// and of every settlement; ESCROW_PUBLIC_WAIT_MINUTES (default 240) how long each wait for confirmations may take.
-func TestEscrowPublicSmoke(t *testing.T) {
-	appURL, opURL, funder := os.Getenv("ESCROW_PUBLIC_APP_RPC_URL"), os.Getenv("ESCROW_PUBLIC_OPERATOR_RPC_URL"), os.Getenv("ESCROW_PUBLIC_FUNDING_WALLET")
-	if appURL == "" || opURL == "" || funder == "" {
-		t.Skip("set ESCROW_PUBLIC_APP_RPC_URL, ESCROW_PUBLIC_OPERATOR_RPC_URL and ESCROW_PUBLIC_FUNDING_WALLET (scripts/test-escrow-public.sh) to run on public signet or testnet4")
-	}
-	ctx := context.Background()
-	number := func(name string, def, lo, hi int) int {
-		v := os.Getenv(name)
-		if v == "" {
-			return def
-		}
-		n, err := strconv.Atoi(v)
-		if err != nil || n < lo || n > hi {
-			t.Fatalf("%s must be a whole number from %d to %d", name, lo, hi)
-		}
-		return n
-	}
-	confirmations := number("ESCROW_PUBLIC_CONFIRMATIONS", 1, 1, 100)
-	feeRate := number("ESCROW_PUBLIC_FEE_RATE", 2, 1, 100)
-	wait := time.Duration(number("ESCROW_PUBLIC_WAIT_MINUTES", 240, 10, 1440)) * time.Minute
-	var op *rpcClient
-	for name, u := range map[string]string{"operator": opURL, "app": appURL} {
-		c, err := newRPCClient("public "+name, u, "1.0", false)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var info struct {
-			Chain     string `json:"chain"`
-			Challenge string `json:"signet_challenge"`
-		}
-		if err := c.call(ctx, "", "getblockchaininfo", []any{}, &info); err != nil {
-			t.Fatalf("refusing: the %s node URL did not answer getblockchaininfo: %v", name, err)
-		}
-		if why := publicChainRefusal(info.Chain, info.Challenge); why != "" {
-			t.Fatalf("refusing: the %s node URL reports chain %q: %s", name, info.Chain, why)
-		}
-		if name == "operator" {
-			op = c
-		}
-	}
-	var balance json.Number
-	if err := op.callWithin(ctx, regtestOperatorTimeout, "/wallet/"+funder, "getbalance", []any{}, &balance); err != nil {
-		t.Fatalf("the funding wallet %s: %v", funder, err)
-	}
-	if sats, _ := parseAmount(string(balance), 8); sats < 160000 {
-		t.Fatalf("the funding wallet %s holds %s; the smoke needs at least 0.0016 (0.0014 into two escrows, most of it paid back, plus fees)", funder, balance)
-	}
-	runEscrowSmoke(t, appURL, escrowSmokeChain{
-		op: op, funder: funder, confirmations: confirmations, feeRate: feeRate, passes: 30 * time.Minute,
-		confirm: func(t *testing.T, txids ...string) {
-			t.Helper()
-			deadline := time.Now().Add(wait)
-			for _, txid := range txids {
-				for {
-					var tx struct {
-						Confirmations int `json:"confirmations"`
-					}
-					if err := op.callWithin(ctx, regtestOperatorTimeout, "/wallet/"+funder, "gettransaction", []any{txid}, &tx); err != nil {
-						t.Logf("escrow-public: gettransaction %s: %v", txid, err)
-					} else if tx.Confirmations >= confirmations {
-						break
-					}
-					if time.Now().After(deadline) {
-						t.Fatalf("%s did not reach %d confirmation(s) within %s", txid, confirmations, wait)
-					}
-					time.Sleep(30 * time.Second)
-				}
-			}
-			var height int64
-			op.call(ctx, "", "getblockcount", []any{}, &height)
-			t.Logf("escrow-public: confirmed %s at height %d", strings.Join(txids, ", "), height)
-		},
-		cleanup: func(wallets []string) {
-			for _, w := range wallets { // left on disk; unloaded so the operator's node does not keep them open
-				if err := op.callWithin(ctx, regtestOperatorTimeout, "", "unloadwallet", []any{w}, nil); err != nil {
-					t.Logf("escrow-public: unloadwallet %s: %v", w, err)
-				}
-			}
-		},
-	})
 }

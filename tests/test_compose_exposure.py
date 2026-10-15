@@ -35,7 +35,6 @@ REPOSITORY = Path(__file__).resolve().parents[1]
 ENVIRONMENT = {
     'DATABASE_URL': 'postgres://test:test@db/test',
     'SETUP_TOKEN': 'ci-validation-only-not-a-real-bootstrap-secret',
-    'BITCOIN_RPC_AUTH': 'marketplace:0123456789abcdef0123456789abcdef$f25a796e58dd70ff7eb5b96b54de079cc7e3d6f40eb8a0fa55fd05f26a53635e',
     'ESCROW_XMR_WALLET_RPC_PASSWORD': 'ci-validation-only',
 }
 EXTRAS = {
@@ -58,7 +57,7 @@ def combinations():
         if mode == 'clearnet' and (mirror or nodes_tor):
             continue
         files = ['-f', 'compose.yaml', '-f', f'compose.{mode}.yaml', '-f', 'compose.nodes.yaml']
-        profiles = ['--profile', 'bitcoin', '--profile', 'monero', '--profile', 'escrow-signer']
+        profiles = ['--profile', 'monero']
         if database == 'internal':
             files += ['-f', 'compose.internal-db.yaml']
             profiles += ['--profile', 'internal-db']
@@ -176,15 +175,13 @@ class ResolvedComposeExposureTests(unittest.TestCase):
                 with self.subTest(name + suffix):
                     config = resolved(files + extra_files, profiles + extra_profiles, environment)
                     self.assertEqual(exposure_problems(config, mode), [])
-                    for service_name in ('db', 'bitcoin', 'monero', 'monero-escrow-wallet'):
+                    for service_name in ('db', 'monero', 'monero-escrow-wallet'):
                         if service_name not in config['services']:
                             continue
                         service = config['services'][service_name]
                         self.assertIs(service.get('read_only'), True, service_name)
                         self.assertEqual(service.get('cap_drop'), ['ALL'], service_name)
-                        self.assertEqual(set(service.get('cap_add', [])),
-                                         {'CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'SETGID', 'SETUID'}
-                                         if service_name == 'bitcoin' else set(), service_name)
+                        self.assertEqual(set(service.get('cap_add', [])), set(), service_name)
                         self.assertIn('no-new-privileges:true', service.get('security_opt', []), service_name)
                         self.assertIn('/tmp', service.get('tmpfs', []), service_name)
                         if service_name == 'monero-escrow-wallet':

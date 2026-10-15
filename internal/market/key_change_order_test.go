@@ -20,8 +20,8 @@ func TestVendorKeyChangedAfterOrderWarnsBuyer(t *testing.T) {
 	order, _ := p.newOrder(statePaid)
 	// Placed at the same time: a paid digital order and a physical order past paid (shipped), neither of which takes
 	// an address now, so neither is warned about the key changes below.
-	digital := p.testEnv.order(p.buyer.ID, p.product(p.vendor.ID, "digital"), "BTC", statePaid)
-	shipped := p.testEnv.order(p.buyer.ID, p.productID, "BTC", stateShipped)
+	digital := p.testEnv.order(p.buyer.ID, p.product(p.vendor.ID, "digital"), "XMR", statePaid)
+	shipped := p.testEnv.order(p.buyer.ID, p.productID, "XMR", stateShipped)
 	today := agStr(p.testEnv, "SELECT to_char(now() AT TIME ZONE 'UTC','YYYY-MM-DD')")
 	warning := "This key was changed or re-verified on " + today + " UTC" + keyChangedAfterOrder
 	orderPage := func(id, sess string) string {

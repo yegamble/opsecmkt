@@ -270,9 +270,9 @@ old_database() {
   docker exec "$container" sh -c "pg_dump -U utf8 --encoding=SQL_ASCII --format=custom seed | pg_restore -U utf8 --exit-on-error --no-owner -d $1"
   sql "$1" -v title="$title_hex" -v body="$3" <<'SQL'
 INSERT INTO users(id,handle,password_hash,role) VALUES ('utf8buyer','utf8_buyer','x','buyer'),('utf8vendor','utf8_vendor','x','vendor');
-INSERT INTO products(id,vendor_id,title,description,category,region,kind,btc,xmr,stock)
-  VALUES ('utf8product','utf8vendor',convert_from(decode(:'title','hex'),'SQL_ASCII'),'Kept as written.','Hardware','Worldwide','digital',100000,1,5);
-INSERT INTO orders(id,buyer_id,product_id,currency,amount,state) VALUES ('utf8order','utf8buyer','utf8product','BTC',100000,'completed');
+INSERT INTO products(id,vendor_id,title,description,category,region,kind,xmr,stock)
+  VALUES ('utf8product','utf8vendor',convert_from(decode(:'title','hex'),'SQL_ASCII'),'Kept as written.','Hardware','Worldwide','digital',1,5);
+INSERT INTO orders(id,buyer_id,product_id,currency,amount,state) VALUES ('utf8order','utf8buyer','utf8product','XMR',1,'completed');
 INSERT INTO reviews(id,order_id,product_id,buyer_id,rating,body) VALUES ('utf8review','utf8order','utf8product','utf8buyer',5,convert_from(decode(:'body','hex'),'SQL_ASCII'));
 SQL
   [[ $(sql "$1" -c 'SHOW server_encoding') == "$2" ]] || fail "$1 is not $2"
@@ -304,8 +304,8 @@ grep -qF "not valid UTF-8: table public.reviews, column body, row where id = 'ut
 # A listing whose title mixes UTF-8 with a stray byte and whose description is LATIN1: the check tells which reading is
 # safe (QA5W4B-3) and names the row by its key (QA5W4B-4).
 sql ascii_old -v title="$mixed_hex" -v description="$latin1_hex" <<'SQL'
-INSERT INTO products(id,vendor_id,title,description,category,region,kind,btc,xmr,stock)
-  VALUES ('utf8mixed','utf8vendor',convert_from(decode(:'title','hex'),'SQL_ASCII'),convert_from(decode(:'description','hex'),'SQL_ASCII'),'Hardware','Worldwide','digital',100000,1,5);
+INSERT INTO products(id,vendor_id,title,description,category,region,kind,xmr,stock)
+  VALUES ('utf8mixed','utf8vendor',convert_from(decode(:'title','hex'),'SQL_ASCII'),convert_from(decode(:'description','hex'),'SQL_ASCII'),'Hardware','Worldwide','digital',1,5);
 SQL
 if check ascii_old; then fail 'check-utf8.sql passed the mixed listing'; fi
 grep -q "not valid UTF-8: table public.products, column title, row where id = 'utf8mixed' (ctid ([0-9]*,[0-9]*)); it also holds valid multibyte UTF-8, which reading it as LATIN1 would double-encode: type the text it should hold; starting: Cr\\\\303\\\\250me \\\\377 br" \

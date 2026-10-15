@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 )
 
 // A-518 (a): a sweep of the whole action registry (routes.go registerAction, and the two upload routes) with sessions
@@ -33,7 +32,7 @@ import (
 // account (scopeSelf: they take no identifier of another account's data), and the staff-only actions (scopeStaff:
 // their roles exclude buyers and vendors; each has its own tests for guessed identifiers and forged fields).
 //
-// Fake escrow Core and fake Monero escrow wallet: simulated RPC, not chain evidence.
+// Fake Monero escrow wallet: simulated RPC, not chain evidence.
 
 const (
 	scopePublic = "public" // reachable without a session by design
@@ -66,8 +65,6 @@ var sweepScopes = map[string][2]string{
 	"/pgp/challenge":                  {scopeSelf, "the caller's own PGP key"},
 	"/pgp/verify":                     {scopeSelf, "the caller's own PGP key"},
 	"/pgp/2fa":                        {scopeSelf, "the caller's own PGP sign-in setting"},
-	"/escrow-key":                     {scopeSelf, "the caller's own escrow key"},
-	"/escrow-key/practice":            {scopeSelf, "the caller's own escrow key"},
 	"/orders":                         {scopeSelf, "creates a draft for the caller from a public listing"},
 	"/messages":                       {scopeSelf, "any signed-in account may write to any handle; stored for the sender"},
 	"/listings":                       {scopeSelf, "creates a listing owned by the caller"},
@@ -75,8 +72,6 @@ var sweepScopes = map[string][2]string{
 	"/admin":                        {scopeStaff, ""},
 	"/admin/canary":                 {scopeStaff, ""},
 	"/admin/captcha":                {scopeStaff, ""},
-	"/admin/escrow-fee":             {scopeStaff, ""},
-	"/admin/escrow-rebroadcast":     {scopeStaff, ""},
 	"/admin/escrow-release-days":    {scopeStaff, ""},
 	"/admin/escrow-xmr-destroyed":   {scopeStaff, ""},
 	"/admin/escrow-xmr-rebroadcast": {scopeStaff, ""},
@@ -90,7 +85,6 @@ var sweepScopes = map[string][2]string{
 	"/admin/staff-contact":          {scopeStaff, ""},
 	"/admin/staff-list":             {scopeStaff, ""},
 	"/admin/suspend":                {scopeStaff, ""},
-	"/escrow/decision":              {scopeStaff, ""},
 	"/images/remove":                {scopeStaff, ""},
 	"/moderator/payment-review":     {scopeStaff, ""},
 	"/moderator/xmr-collision":      {scopeStaff, ""},
@@ -148,27 +142,18 @@ type sweepCase struct {
 
 type sweepWorld struct {
 	t  *testing.T
-	x  *escrowEnv
+	x  *xmrEscrowEnv
 	xe *xmrEscrowEnv
 }
 
 func newSweepWorld(t *testing.T) *sweepWorld {
 	t.Helper()
-	fake := newFakeXMREscrow(t)
-	key, pub := testSeedKey(t, nil)
-	keyPath := writeSeedKey(t, pub)
-	fake.setEnv(t, keyPath)
-	x := newEscrowEnv(t)
-	if x.A.escrow.Load() == nil || x.A.escrowXMR == nil {
-		t.Fatal("the sweep needs Bitcoin and Monero escrow both on, or the escrow actions answer 404 as unknown")
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	if x.A.escrow.Load() != nil || x.A.escrowXMR == nil {
+		t.Fatal("the sweep needs Monero escrow on and Bitcoin removed")
 	}
-	_, vendorKey := testPGPKey(t, "sweepvendor"+randomToken()[:6])
-	x.setKey(x.vendor, vendorKey) // a physical escrow needs a vendor who can receive the buyer's encrypted address
-	xe := &xmrEscrowEnv{testEnv: x.testEnv, fake: fake, seedKey: key, keyPath: keyPath, buyer: x.buyer, buyerSess: x.buyerSess,
-		vendor: x.vendor, vendorSess: x.vendorSess, now: time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)}
-	xe.clock()
-	xe.mustPoll() // prepares the Monero escrow accounts a checkout takes
-	return &sweepWorld{t: t, x: x, xe: xe}
+	return &sweepWorld{t: t, x: x, xe: x}
 }
 
 // sweepCases builds, for each party-scoped action, a fresh resource and the form that acts on it.
@@ -180,10 +165,29 @@ func (w *sweepWorld) sweepCases() map[string]func() sweepCase {
 		return "sweep-" + what + "-" + strconv.Itoa(n) + "-" + randomToken()[:6]
 	}
 	xmrAddr := func(l string) string { return testXMRAddrOn(xe.refundNet(), l, true) }
-	paid := func() string { return x.paidPhysical(regtestAddr(label("refund")), 100000) }
+	funded := func(physical bool) string {
+		product := x.digital(x.vendor)
+		if physical {
+			product = x.physical(x.vendor)
+		}
+		order := x.draft(product)
+		address := x.mustCheckout(order)
+		x.fake.payAddress(address, hex64("fund "+order), xmrListingPrice, 10)
+		x.mustPoll()
+		return order
+	}
+	paid := func() string { return funded(true) }
+	completed := func() string { return funded(false) }
+	disputed := func() (string, string) {
+		order := paid()
+		if code, body := x.xmrDispute(order, x.buyerSess); code != 303 {
+			w.t.Fatalf("dispute: %d %s", code, body)
+		}
+		return order, agStr(x.testEnv, "SELECT id FROM disputes WHERE order_id=$1", order)
+	}
 	cases := map[string]func() sweepCase{
 		"/orders/cancel": func() sweepCase {
-			return sweepCase{form: payoutConfirmed(url.Values{"order_id": {x.draft()}, "from": {stateDraft}}, 100000), owner: x.buyerSess, counter: x.vendorSess, ownerWant: 303}
+			return sweepCase{form: payoutConfirmed(url.Values{"order_id": {x.draft(x.digital(x.vendor))}, "from": {stateDraft}}, xmrListingPrice), owner: x.buyerSess, counter: x.vendorSess, ownerWant: 303}
 		},
 		// The retired order forms refuse their own party with a 409 on an escrow order; a stranger is told 404.
 		"/orders/ship": func() sweepCase {
@@ -191,55 +195,31 @@ func (w *sweepWorld) sweepCases() map[string]func() sweepCase {
 		},
 		"/orders/deliver": func() sweepCase {
 			// A paid digital order inserted directly (no escrow), as the retired order form's historical rows are.
-			order := x.testEnv.order(x.buyer, x.testEnv.product(x.vendor, "digital"), "BTC", statePaid)
+			order := x.testEnv.order(x.buyer, x.testEnv.product(x.vendor, "digital"), "XMR", statePaid)
 			return sweepCase{form: url.Values{"order_id": {order}, "content": {"Delivered by the vendor."}}, owner: x.vendorSess, counter: x.buyerSess, ownerWant: 409}
 		},
 		"/orders/complete": func() sweepCase {
-			return sweepCase{form: payoutConfirmed(url.Values{"order_id": {paid()}}, 100000), owner: x.buyerSess, counter: x.vendorSess}
+			return sweepCase{form: payoutConfirmed(url.Values{"order_id": {paid()}}, xmrListingPrice), owner: x.buyerSess, counter: x.vendorSess}
 		},
 		"/reviews": func() sweepCase {
-			order := x.completed(regtestAddr(label("refund")), 100000)
+			order := completed()
 			return sweepCase{form: url.Values{"order_id": {order}, "rating": {"5"}, "body": {"Arrived as described."}}, owner: x.buyerSess, counter: x.vendorSess, ownerWant: 303}
 		},
 		"/disputes": func() sweepCase {
 			return sweepCase{form: url.Values{"order_id": {paid()}, "reason": {"The parcel has not arrived and the vendor does not answer."}}, owner: x.buyerSess, ownerWant: 303}
 		},
 		"/disputes/reply": func() sweepCase {
-			order, _ := x.disputedEscrow(regtestAddr(label("refund"))) // opened by the buyer: the vendor replies
+			order, _ := disputed() // opened by the buyer: the vendor replies
 			return sweepCase{form: url.Values{"order_id": {order}, "reply": {"The parcel was handed to the carrier on the day it was paid."}}, owner: x.vendorSess, counter: x.buyerSess, ownerWant: 303}
 		},
 		"/disputes/concede": func() sweepCase {
-			_, dispute := x.disputedEscrow(regtestAddr(label("refund")))
+			_, dispute := disputed()
 			// The vendor concedes to the buyer (a refund); the buyer may not concede on the vendor's behalf.
-			return sweepCase{form: concessionForm(dispute, "refund", randomToken()[:32], 100000), owner: x.vendorSess, counter: x.buyerSess, ownerWant: 303, stranger: 403} // concede says "not yours" to any non-party
-		},
-		"/orders/escrow": func() sweepCase {
-			return sweepCase{form: url.Values{"order_id": {x.draft()}, "refund_address": {regtestAddr(label("refund"))}}, owner: x.buyerSess, counter: x.vendorSess, ownerWant: 303}
+			return sweepCase{form: concessionForm(dispute, "refund", randomToken()[:32], xmrListingPrice), owner: x.vendorSess, counter: x.buyerSess, ownerWant: 303, stranger: 403} // concede says "not yours" to any non-party
 		},
 		"/orders/escrow-xmr": func() sweepCase {
 			return sweepCase{form: url.Values{"order_id": {xe.draft(xe.digital(x.vendor))}, "refund_address": {xmrAddr(label("xrefund"))}}, owner: x.buyerSess, counter: x.vendorSess, ownerWant: 303}
 		},
-		"/escrow/ship": func() sweepCase {
-			return sweepCase{form: url.Values{"order_id": {paid()}, "address": {regtestAddr(label("claim"))}, "password": {testPassword}, "note": {"Sent by tracked post."}},
-				owner: x.vendorSess, counter: x.buyerSess, ownerWant: 303}
-		},
-		"/escrow/claim": func() sweepCase {
-			order := x.completed(regtestAddr(label("refund")), 100000)
-			return sweepCase{form: url.Values{"order_id": {order}, "address": {regtestAddr(label("claim"))}, "password": {testPassword}}, owner: x.vendorSess, counter: x.buyerSess, ownerWant: 303}
-		},
-		"/escrow/recover": func() sweepCase {
-			order := x.completed(regtestAddr(label("refund")), 100000)
-			return sweepCase{form: url.Values{"order_id": {order}, "password": {testPassword}}, owner: x.buyerSess, counter: x.vendorSess, ownerWant: 303}
-		},
-		"/escrow/bump": func() sweepCase {
-			order, id := x.broadcastClaim(label("bump"), 100000)
-			return sweepCase{form: url.Values{"order_id": {order}, "settlement_id": {strconv.FormatInt(id, 10)}, "fee_rate": {"5"}, "password": {testPassword}},
-				owner: x.vendorSess, counter: x.buyerSess, ownerWant: 303}
-		},
-		"/escrow/sign":               func() sweepCase { return w.signCase() },
-		"/escrow/hardware-sign":      func() sweepCase { return w.signCase() },
-		"/escrow/bump-sign":          func() sweepCase { return w.bumpSignCase() },
-		"/escrow/hardware-bump-sign": func() sweepCase { return w.bumpSignCase() },
 		"/escrow-xmr/claim": func() sweepCase {
 			order, _, _ := xe.completed()
 			return sweepCase{form: url.Values{"order_id": {order}, "address": {xmrAddr(label("xclaim"))}, "password": {testPassword}}, owner: x.vendorSess, counter: xe.sessOf(order, roleBuyer), ownerWant: 303}
@@ -268,7 +248,7 @@ func (w *sweepWorld) sweepCases() map[string]func() sweepCase {
 			return sweepCase{form: url.Values{"id": {x.testEnv.image(x.vendor, p, "photo").id}}, owner: x.vendorSess, ownerWant: 303, allow: []string{"admin"}}
 		},
 		"/delivery-cleanup": func() sweepCase {
-			p := x.autoListing(x.vendor)
+			p := x.digital(x.vendor)
 			agExec(x.testEnv, "UPDATE products SET archived=true WHERE id=$1", p)
 			// Administrators may manage any listing, but this cleanup is the owner's alone.
 			return sweepCase{form: url.Values{"id": {p}, "password": {testPassword}}, owner: x.vendorSess, ownerWant: 303}
@@ -282,27 +262,6 @@ func (w *sweepWorld) sweepCases() map[string]func() sweepCase {
 	return cases
 }
 
-func (w *sweepWorld) signCase() sweepCase {
-	x := w.x
-	order, id := x.built(regtestAddr("sweep-refund-"+randomToken()[:8]), regtestAddr("sweep-claim-"+randomToken()[:8]), 100000)
-	sess, fp := x.partySess(roleVendor)
-	return sweepCase{form: url.Values{"order_id": {order}, "settlement_id": {strconv.FormatInt(id, 10)}, "psbt": {walletSign(w.t, x.partyCopy(order, sess, id), fp, 1)}},
-		owner: x.vendorSess, ownerWant: 303}
-}
-
-func (w *sweepWorld) bumpSignCase() sweepCase {
-	x := w.x
-	order, id := x.broadcastClaim("sweep-bumpsign-"+randomToken()[:8], 100000)
-	b := x.mustBump(order, x.vendorSess, id, "5")
-	sess, fp := x.partySess(roleVendor)
-	code, cp := x.bumpCopy(order, sess, id, b.ID)
-	if code != 200 {
-		w.t.Fatalf("copy of the fee bump: %d", code)
-	}
-	return sweepCase{form: url.Values{"order_id": {order}, "bump_id": {strconv.FormatInt(b.ID, 10)}, "psbt": {walletSign(w.t, cp, fp, 1)}},
-		owner: x.vendorSess, ownerWant: 303}
-}
-
 func sweepPost(e *testEnv, path, session string, form url.Values) *httptest.ResponseRecorder {
 	return e.do("POST", path, session, form)
 }
@@ -310,7 +269,7 @@ func sweepPost(e *testEnv, path, session string, form url.Values) *httptest.Resp
 func TestActionRegistrySweepClassification(t *testing.T) {
 	var cases map[string]func() sweepCase
 	// The case table is keyed without building anything: a throwaway world is not needed to list its keys.
-	cases = (&sweepWorld{t: t, x: &escrowEnv{}, xe: &xmrEscrowEnv{}}).sweepCases()
+	cases = (&sweepWorld{t: t, x: &xmrEscrowEnv{}, xe: &xmrEscrowEnv{}}).sweepCases()
 	for path, spec := range actions {
 		scope, ok := sweepScopes[path]
 		_, hasCase := cases[path]

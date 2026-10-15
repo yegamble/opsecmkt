@@ -106,14 +106,14 @@ func TestRetentionRestrictedAccountSettlesButCannotStartNewObligations(t *testin
 	product := e.product(vendor, "physical")
 	agExec(e, `UPDATE users SET deletion_requested_at=now()-interval '31 days',retention_restricted_at=now() WHERE id=$1`, uid)
 	e.check(e.do("GET", "/orders", session, nil), 200)
-	e.check(e.do("POST", "/orders", session, url.Values{"id": {product}, "currency": {"BTC"}}), 403)
+	e.check(e.do("POST", "/orders", session, url.Values{"id": {product}, "currency": {"XMR"}}), 403)
 	_, public := testPGPKey(t, "retention_rotation")
 	e.check(e.do("POST", "/account", session, url.Values{"pgp": {public}, "password": {"wrong-password"}}), 401)
 	e.check(e.do("POST", "/account", session, url.Values{"pgp": {public}, "password": {testPassword}}), 303)
 	if agStr(e, `SELECT pgp FROM users WHERE id=$1`, uid) == "" || agInt(e, `SELECT count(*) FROM users WHERE id=$1 AND deletion_requested_at IS NOT NULL`, uid) != 1 {
 		t.Fatal("PGP security update was lost or cancelled the deletion request")
 	}
-	if _, err := e.DB.Exec(`INSERT INTO orders(id,buyer_id,product_id,currency,amount,state) VALUES($1,$2,$3,'BTC',100000,'draft')`, randomToken(), uid, product); err == nil {
+	if _, err := e.DB.Exec(`INSERT INTO orders(id,buyer_id,product_id,currency,amount,state) VALUES($1,$2,$3,'XMR',100000,'draft')`, randomToken(), uid, product); err == nil {
 		t.Fatal("database accepted a new obligation from a stale restricted session")
 	}
 	if !retentionPageAllowed("/escrow/psbt") || !retentionActionAllowed("/escrow/sign") || retentionActionAllowed("/escrow/checkout") {
@@ -126,9 +126,9 @@ func TestRetentionRestrictedStaffOnlyReadTheirOwnDisputes(t *testing.T) {
 	staffID, staff := e.user("retention_restricted_staff", "admin")
 	buyer, _ := e.user("retention_unrelated_buyer", "buyer")
 	vendor, _ := e.user("retention_unrelated_vendor", "vendor")
-	order := e.order(buyer, e.product(vendor, "physical"), "BTC", stateDisputed)
+	order := e.order(buyer, e.product(vendor, "physical"), "XMR", stateDisputed)
 	agExec(e, `INSERT INTO disputes(id,order_id,reason,status) VALUES($1,$2,'Unrelated private dispute evidence','Open')`, randomToken(), order)
-	own := e.order(staffID, e.product(vendor, "physical"), "BTC", stateDisputed)
+	own := e.order(staffID, e.product(vendor, "physical"), "XMR", stateDisputed)
 	agExec(e, `INSERT INTO disputes(id,order_id,reason,status) VALUES($1,$2,'Own dispute evidence','Open')`, randomToken(), own)
 	e.check(e.do("GET", "/order?id="+order, staff, nil), 200)
 	agExec(e, `UPDATE users SET deletion_requested_at=now()-interval '31 days',retention_restricted_at=now() WHERE id=$1`, staffID)

@@ -220,7 +220,7 @@ func TestRetentionCrossVendorObligationsRefuseLockContentionWithoutDeadlock(t *t
 		buyer, product string
 	}{{one, first, secondProduct}, {two, second, firstProduct}} {
 		go func() {
-			_, err := draft.tx.ExecContext(ctx, `INSERT INTO orders(id,buyer_id,product_id,currency,amount) VALUES($1,$2,$3,'BTC',100000)`, randomToken(), draft.buyer, draft.product)
+			_, err := draft.tx.ExecContext(ctx, `INSERT INTO orders(id,buyer_id,product_id,currency,amount) VALUES($1,$2,$3,'XMR',100000)`, randomToken(), draft.buyer, draft.product)
 			results <- err
 		}()
 	}

@@ -25,6 +25,9 @@ func TestXMREscrowOnlyReleaseDaysAndDispatch(t *testing.T) {
 	if w := x.do("POST", "/admin/escrow-release-days", admin, url.Values{"release_days": {"21"}, "password": {testPassword}}); w.Code != 303 {
 		t.Fatalf("saving the release deadline with only Monero escrow on: %d %s", w.Code, w.Body.String())
 	}
+	if got := agStr(x.testEnv, "SELECT action FROM audit_events WHERE action LIKE 'Changed the % escrow release deadline%' ORDER BY id DESC LIMIT 1"); !strings.Contains(got, "Changed the Monero escrow release deadline (fakechain)") || strings.Contains(got, "Bitcoin") {
+		t.Fatalf("Monero release deadline audit named the wrong currency: %q", got)
+	}
 	if days, err := escrowReleaseDays(t.Context(), x.DB); err != nil || days != 21 {
 		t.Fatalf("release deadline %d (%v), want 21", days, err)
 	}
