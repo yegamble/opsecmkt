@@ -116,8 +116,8 @@ func (a *App) maySend(ctx context.Context, sendErr string) (bool, error) {
 
 // sentOnce uses up an administrator's rebroadcast confirmation once the transaction it allowed was sent: while the
 // restore gate is set it becomes sendRebroadcastSent, otherwise it is cleared.
-func (a *App) sentOnce(ctx context.Context, id int64) error {
-	_, err := a.db.ExecContext(ctx, "UPDATE settlements SET send_error="+sentOnceSQL+",updated=now() WHERE id=$1 AND send_error=$2", id, sendRebroadcastOK, sendRebroadcastSent)
+func (a *App) sentOnce(ctx context.Context, id int64, orderID string) error {
+	_, err := a.execEscrowOrder(ctx, orderID, "UPDATE settlements SET send_error="+sentOnceSQL+",updated=now() WHERE id=$1 AND send_error=$2", id, sendRebroadcastOK, sendRebroadcastSent)
 	return err
 }
 
@@ -294,6 +294,9 @@ func escrowRebroadcastAction(c *actionCtx) (actionResult, error) {
 	}
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
 		ctx := c.Ctx()
+		if _, err := c.Tx.ExecContext(ctx, "SELECT o.id FROM orders o JOIN settlements s ON s.order_id=o.id WHERE s.id=$1 FOR NO KEY UPDATE OF o", id); err != nil {
+			return actionResult{}, err
+		}
 		var orderID, kind, state, sendErr string
 		var raw sql.NullString
 		err := c.Tx.QueryRowContext(ctx, "SELECT order_id,kind,state,send_error,raw_tx FROM settlements WHERE id=$1 FOR UPDATE", id).Scan(&orderID, &kind, &state, &sendErr, &raw)
@@ -351,7 +354,7 @@ func (a *App) seenWhilePaused(ctx context.Context, e *escrowBTC, id int64, order
 	if err != nil || !w.Found || w.Confirmations < 0 {
 		return err
 	}
-	tx, err := a.db.BeginTx(ctx, nil)
+	tx, err := a.beginEscrowOrderTx(ctx, orderID)
 	if err != nil {
 		return err
 	}

@@ -515,7 +515,7 @@ func (a *App) ensureArbiterKey(ctx context.Context, e *escrowBTC, b *settleBuild
 // settlementSendWaits records why a settlement is not sent yet; it stays where it is and is tried again next pass.
 // The class is logged once, when it changes.
 func (a *App) settlementSendWaits(ctx context.Context, id int64, orderID, class string) error {
-	res, err := a.db.ExecContext(ctx, "UPDATE settlements SET send_error=$2,updated=now() WHERE id=$1 AND send_error<>$2", id, class)
+	res, err := a.execEscrowOrder(ctx, orderID, "UPDATE settlements SET send_error=$2,updated=now() WHERE id=$1 AND send_error<>$2", id, class)
 	if err != nil {
 		return err
 	}
@@ -563,7 +563,7 @@ func discardedNote(party, kind string) string {
 // its order's outcome (P2-R2) is stored only while the order, locked first, is still shipped with no dispute, and the
 // order is completed in the same transaction.
 func (a *App) storeFinal(ctx context.Context, b *settleBuild, rawHex, cosigned string, used, discard []string) error {
-	tx, err := a.db.BeginTx(ctx, nil)
+	tx, err := a.beginEscrowOrderTx(ctx, b.OrderID)
 	if err != nil {
 		return err
 	}
@@ -639,7 +639,7 @@ func (a *App) revertSettlement(ctx context.Context, b *settleBuild, bad []string
 // revertSettlementWith is revertSettlement with its notes: each is an order note, and the last carries a notice of all
 // of them to both parties.
 func (a *App) revertSettlementWith(ctx context.Context, b *settleBuild, bad, notes []string) error {
-	tx, err := a.db.BeginTx(ctx, nil)
+	tx, err := a.beginEscrowOrderTx(ctx, b.OrderID)
 	if err != nil {
 		return err
 	}
@@ -745,7 +745,7 @@ func (a *App) broadcastSettlement(ctx context.Context, e *escrowBTC, id int64) e
 		}
 		// Its own outputs are spent by this very transaction: the node has it after all.
 	}
-	tx, err := a.db.BeginTx(ctx, nil)
+	tx, err := a.beginEscrowOrderTx(ctx, orderID)
 	if err != nil {
 		return err
 	}
@@ -918,7 +918,7 @@ func (a *App) trackBroadcast(ctx context.Context, e *escrowBTC, id int64) error 
 // settlement's own frozen columns stay as they are); an open fee bump is closed. A restore's hold on it, or a
 // confirmation not yet used, ends here.
 func (a *App) confirmSettlement(ctx context.Context, id int64, orderID, kind string, at bumpAttempt, confirmations int64) error {
-	tx, err := a.db.BeginTx(ctx, nil)
+	tx, err := a.beginEscrowOrderTx(ctx, orderID)
 	if err != nil {
 		return err
 	}
@@ -1020,7 +1020,7 @@ func (a *App) storeSeen(ctx context.Context, b *settleBuild, rawHex string) erro
 	case 1:
 		who = "it carries the " + seen[0] + "'s signature; who signed it besides the " + seen[0] + " is not recorded"
 	}
-	tx, err := a.db.BeginTx(ctx, nil)
+	tx, err := a.beginEscrowOrderTx(ctx, b.OrderID)
 	if err != nil {
 		return err
 	}
@@ -1105,7 +1105,7 @@ func (a *App) trackConfirmed(ctx context.Context, e *escrowBTC, id int64) error 
 	case w.Confirmations < 0 && !ownConflict:
 		return a.markExternal(ctx, id, orderID, firstTxID(w.Conflicts), nil)
 	case w.Confirmations >= escrowReorgDepth:
-		_, err = a.db.ExecContext(ctx, "UPDATE settlements SET reorg_safe_at=now(),updated=now() WHERE id=$1 AND state='confirmed' AND reorg_safe_at IS NULL", id)
+		_, err = a.execEscrowOrder(ctx, orderID, "UPDATE settlements SET reorg_safe_at=now(),updated=now() WHERE id=$1 AND state='confirmed' AND reorg_safe_at IS NULL", id)
 		return err
 	case w.Confirmations > 0:
 		return nil // still in a block (a shallower reorganisation may have lowered its count)
@@ -1116,7 +1116,7 @@ func (a *App) trackConfirmed(ctx context.Context, e *escrowBTC, id int64) error 
 	if err != nil {
 		return err
 	}
-	tx, err := a.db.BeginTx(ctx, nil)
+	tx, err := a.beginEscrowOrderTx(ctx, orderID)
 	if err != nil {
 		return err
 	}
@@ -1158,7 +1158,7 @@ func (a *App) trackConfirmed(ctx context.Context, e *escrowBTC, id int64) error 
 // deposits names the deposits the build found spent, with the transaction that spent each one ("" when the wallet
 // does not name it), and each is marked spent outside the market as markOutsideSpend marks one.
 func (a *App) markExternal(ctx context.Context, id int64, orderID, spentBy string, deposits map[int64]string) error {
-	tx, err := a.db.BeginTx(ctx, nil)
+	tx, err := a.beginEscrowOrderTx(ctx, orderID)
 	if err != nil {
 		return err
 	}

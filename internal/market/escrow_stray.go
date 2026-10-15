@@ -150,7 +150,7 @@ func (a *App) requestStrays(ctx context.Context, threshold, rate int64, orders [
 // coins it left out the same way until a stray refund requested after it, or one that spends a deposit it left out
 // (strayLatestSQL).
 func (a *App) requestStray(ctx context.Context, threshold, rate int64, orderID string) error {
-	tx, err := a.db.BeginTx(ctx, nil)
+	tx, err := a.beginEscrowOrderTx(ctx, orderID)
 	if err != nil {
 		return err
 	}
@@ -223,7 +223,7 @@ func escrowRecoverAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, errEscrowDown
 		}
 		ctx := c.Ctx()
-		o, err := partyOrder(c, c.Form.Get("order_id"))
+		o, err := partyOrderLocked(c, c.Form.Get("order_id"))
 		switch {
 		case err != nil:
 			return actionResult{}, err
