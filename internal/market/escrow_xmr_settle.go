@@ -798,7 +798,7 @@ func (a *App) xmrSettleWaits(ctx context.Context, s *xmrSettleRow, class string)
 	if s.Wait == class {
 		return nil
 	}
-	tx, err := a.db.BeginTx(ctx, nil)
+	tx, err := a.beginEscrowOrderTx(ctx, s.OrderID)
 	if err != nil {
 		return err
 	}
@@ -856,7 +856,7 @@ func (a *App) xmrSettleWaits(ctx context.Context, s *xmrSettleRow, class string)
 // A lost race (the settlement changed, or a deposit was claimed meanwhile) stores nothing and reports false; the
 // transaction, never relayed, is then discarded.
 func (a *App) storeXMRBuilt(ctx context.Context, s *xmrSettleRow, built xmrBuiltTx, plan settlePlan, deposits []xmrDeposit, total int64) (bool, error) {
-	tx, err := a.db.BeginTx(ctx, nil)
+	tx, err := a.beginEscrowOrderTx(ctx, s.OrderID)
 	if err != nil {
 		return false, err
 	}
@@ -1062,7 +1062,7 @@ func (a *App) sendXMRBuilt(ctx context.Context, s *xmrSettleRow, gate bool) erro
 // markXMRRelayed records s as relayed (built -> relayed by compare-and-set), with a note and a notice to both parties.
 // seen: the daemon already had it (a relay whose answer was lost).
 func (a *App) markXMRRelayed(ctx context.Context, s *xmrSettleRow, seen bool) error {
-	tx, err := a.db.BeginTx(ctx, nil)
+	tx, err := a.beginEscrowOrderTx(ctx, s.OrderID)
 	if err != nil {
 		return err
 	}
@@ -1098,7 +1098,7 @@ func (a *App) trackXMRRelayed(ctx context.Context, s *xmrSettleRow, gate bool) e
 	found, confirmations, err := a.xmrOnNetwork(ctx, s)
 	if err == nil && found && strings.HasPrefix(s.Wait, xmrRelayRefusing+" ") {
 		// The daemon has it after all: the count of refusals ends.
-		if _, err = a.db.ExecContext(ctx, "UPDATE xmr_settlements SET send_error='',updated=now() WHERE id=$1 AND send_error=$2", s.ID, s.Wait); err != nil {
+		if _, err = a.execEscrowOrder(ctx, s.OrderID, "UPDATE xmr_settlements SET send_error='',updated=now() WHERE id=$1 AND send_error=$2", s.ID, s.Wait); err != nil {
 			return err
 		}
 	}
@@ -1127,7 +1127,7 @@ func (a *App) trackXMRRelayed(ctx context.Context, s *xmrSettleRow, gate bool) e
 		log.Printf("escrow: Monero escrow settlement of order %s: the daemon had lost its transaction; the stored transaction was relayed again", shortID(s.OrderID))
 		// An administrator's confirmation allowed this one relay (escrow_xmr_restore.go); a relay that took effect ends a
 		// count of refusals.
-		_, err = a.db.ExecContext(ctx, "UPDATE xmr_settlements SET send_error='',updated=now() WHERE id=$1 AND (send_error=$2 OR send_error LIKE $3)", s.ID, sendRebroadcastOK, xmrRelayRefusing+" %")
+		_, err = a.execEscrowOrder(ctx, s.OrderID, "UPDATE xmr_settlements SET send_error='',updated=now() WHERE id=$1 AND (send_error=$2 OR send_error LIKE $3)", s.ID, sendRebroadcastOK, xmrRelayRefusing+" %")
 		return err
 	case err == nil:
 		return xmrBadReply("wallet", "relay_tx")
@@ -1142,7 +1142,7 @@ func (a *App) trackXMRRelayed(ctx context.Context, s *xmrSettleRow, gate bool) e
 // confirmXMRSettlement records s as confirmed (relayed -> confirmed) at confirmations, with a note and a notice to both
 // parties.
 func (a *App) confirmXMRSettlement(ctx context.Context, s *xmrSettleRow, confirmations int64) error {
-	tx, err := a.db.BeginTx(ctx, nil)
+	tx, err := a.beginEscrowOrderTx(ctx, s.OrderID)
 	if err != nil {
 		return err
 	}
@@ -1172,7 +1172,7 @@ func (a *App) trackXMRConfirmed(ctx context.Context, s *xmrSettleRow) error {
 	case err != nil:
 		return err
 	case confirmations >= escrowReorgDepth:
-		_, err = a.db.ExecContext(ctx, "UPDATE xmr_settlements SET reorg_safe_at=now(),updated=now() WHERE id=$1 AND state='confirmed' AND reorg_safe_at IS NULL", s.ID)
+		_, err = a.execEscrowOrder(ctx, s.OrderID, "UPDATE xmr_settlements SET reorg_safe_at=now(),updated=now() WHERE id=$1 AND state='confirmed' AND reorg_safe_at IS NULL", s.ID)
 		return err
 	case found && confirmations > 0:
 		return nil // still in a block (a shallower reorganisation may have lowered its count)
@@ -1181,7 +1181,7 @@ func (a *App) trackXMRConfirmed(ctx context.Context, s *xmrSettleRow) error {
 	if err != nil {
 		return err
 	}
-	tx, err := a.db.BeginTx(ctx, nil)
+	tx, err := a.beginEscrowOrderTx(ctx, s.OrderID)
 	if err != nil {
 		return err
 	}
@@ -1213,7 +1213,7 @@ func (a *App) trackXMRConfirmed(ctx context.Context, s *xmrSettleRow) error {
 // confirmed -> external): its deposits are flagged so staff can open the order, with a note and a notice to the
 // parties and to the staff.
 func (a *App) markXMRExternal(ctx context.Context, s *xmrSettleRow) error {
-	tx, err := a.db.BeginTx(ctx, nil)
+	tx, err := a.beginEscrowOrderTx(ctx, s.OrderID)
 	if err != nil {
 		return err
 	}
@@ -1256,7 +1256,7 @@ func (a *App) markXMRExternal(ctx context.Context, s *xmrSettleRow) error {
 // it and are flagged, so an administrator can open the order and re-request it (A-401); the staff and the parties are
 // told. The coins stay in the escrow account.
 func (a *App) failXMRSettlement(ctx context.Context, s *xmrSettleRow, class string) error {
-	tx, err := a.db.BeginTx(ctx, nil)
+	tx, err := a.beginEscrowOrderTx(ctx, s.OrderID)
 	if err != nil {
 		return err
 	}
@@ -1327,7 +1327,7 @@ func (a *App) xmrRequestStrays(ctx context.Context, w xmrWalletRow) error {
 }
 
 func (a *App) xmrRequestStray(ctx context.Context, orderID string) error {
-	tx, err := a.db.BeginTx(ctx, nil)
+	tx, err := a.beginEscrowOrderTx(ctx, orderID)
 	if err != nil {
 		return err
 	}

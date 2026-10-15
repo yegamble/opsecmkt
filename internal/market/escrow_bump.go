@@ -342,7 +342,7 @@ func escrowBumpAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, errEscrowDown
 		}
 		ctx := c.Ctx()
-		o, err := partyOrder(c, c.Form.Get("order_id"))
+		o, err := partyOrderLocked(c, c.Form.Get("order_id"))
 		if err != nil {
 			return actionResult{}, err
 		}
@@ -452,7 +452,7 @@ func settlementOutputs(ctx context.Context, q rowsQuerier, id int64) ([]settleOu
 // written, and only the party's signature on each input is kept, never the pasted PSBT.
 func escrowBumpSignAction(c *actionCtx) (actionResult, error) {
 	ctx := c.Ctx()
-	o, err := partyOrder(c, c.Form.Get("order_id"))
+	o, err := partyOrderLocked(c, c.Form.Get("order_id"))
 	if err != nil {
 		return actionResult{}, err
 	}
@@ -598,7 +598,7 @@ func (a *App) buildBump(ctx context.Context, e *escrowBTC, sid int64) error {
 	if got, class := checkBump(e.network, p.Stored.Tx, bp.Tx, p.Outputs, p.InputTotal, prev.Fee, floor); class != "" || got != fee {
 		return errors.New("escrow: a built fee bump failed its own check: " + class)
 	}
-	tx, err := a.db.BeginTx(ctx, nil)
+	tx, err := a.beginEscrowOrderTx(ctx, orderID)
 	if err != nil {
 		return err
 	}
@@ -624,7 +624,7 @@ func (a *App) buildBump(ctx context.Context, e *escrowBTC, sid int64) error {
 // failBump ends a fee bump that cannot be built (building -> failed), with an order note and a notice to the claimant's
 // counterparty and the claimant.
 func (a *App) failBump(ctx context.Context, bid int64, orderID, class string) error {
-	tx, err := a.db.BeginTx(ctx, nil)
+	tx, err := a.beginEscrowOrderTx(ctx, orderID)
 	if err != nil {
 		return err
 	}
@@ -829,7 +829,7 @@ func (a *App) acceptBump(ctx context.Context, e *escrowBTC, b *bumpBuild, rawHex
 // compare-and-set under the settlement's row lock (which must still be broadcast), the signatures of each party in
 // discard removed first, an order note and a notice to both parties.
 func (a *App) storeBumpFinal(ctx context.Context, b *bumpBuild, rawHex, cosigned string, used, discard []string) error {
-	tx, err := a.db.BeginTx(ctx, nil)
+	tx, err := a.beginEscrowOrderTx(ctx, b.OrderID)
 	if err != nil {
 		return err
 	}
@@ -887,7 +887,7 @@ func discardedBumpNote(party string) string {
 // signature on it is removed (the other party's cannot complete it without the claimant's), the signer cleared, a fixed
 // note and a notice to both parties.
 func (a *App) revertBump(ctx context.Context, b *bumpBuild) error {
-	tx, err := a.db.BeginTx(ctx, nil)
+	tx, err := a.beginEscrowOrderTx(ctx, b.OrderID)
 	if err != nil {
 		return err
 	}
@@ -928,7 +928,7 @@ func (a *App) revertBump(ctx context.Context, b *bumpBuild) error {
 // bumpSendWaits records why a fee bump is not sent yet (it stays where it is and is tried again next pass), never over
 // a restore's hold. The class is logged once, when it changes.
 func (a *App) bumpSendWaits(ctx context.Context, bid int64, orderID, class string) error {
-	res, err := a.db.ExecContext(ctx, "UPDATE settlement_bumps SET send_error=$2,updated=now() WHERE id=$1 AND send_error<>$2 AND send_error NOT LIKE $3", bid, class, restoredHoldPrefix+"%")
+	res, err := a.execEscrowOrder(ctx, orderID, "UPDATE settlement_bumps SET send_error=$2,updated=now() WHERE id=$1 AND send_error<>$2 AND send_error NOT LIKE $3", bid, class, restoredHoldPrefix+"%")
 	if err != nil {
 		return err
 	}
@@ -1000,7 +1000,7 @@ func (a *App) storeSeenBump(ctx context.Context, sid, bid int64, rawHex string) 
 	case 1:
 		who = "It carries the " + seen[0] + "'s signature; who signed it besides the " + seen[0] + " is not recorded"
 	}
-	tx, err := a.db.BeginTx(ctx, nil)
+	tx, err := a.beginEscrowOrderTx(ctx, b.OrderID)
 	if err != nil {
 		return false, err
 	}
@@ -1040,13 +1040,13 @@ func (a *App) broadcastBumps(ctx context.Context, e *escrowBTC) error {
 // (sentOnce), a fee bump sent for the first time moves signed -> broadcast with an order note and a notice, and a bump
 // the node refused records why.
 func (a *App) attemptSent(ctx context.Context, id int64, orderID, kind string, at bumpAttempt, sent bool) error {
-	if err := a.sentOnce(ctx, id); err != nil || at.Bump == 0 {
+	if err := a.sentOnce(ctx, id, orderID); err != nil || at.Bump == 0 {
 		return err
 	}
 	if !sent {
 		return a.bumpSendWaits(ctx, at.Bump, orderID, sendRejected)
 	}
-	tx, err := a.db.BeginTx(ctx, nil)
+	tx, err := a.beginEscrowOrderTx(ctx, orderID)
 	if err != nil {
 		return err
 	}

@@ -21,6 +21,49 @@ func enrollmentTestEnv(dir string) func(string) string {
 	}
 }
 
+func TestHostRetentionEnrollmentClientEncodingIsTransactionLocal(t *testing.T) {
+	for _, encoding := range []string{"SQL_ASCII", "LATIN1", "UTF8"} {
+		t.Run(encoding, func(t *testing.T) {
+			db, err := OpenDB(encodingTestDB(t, encoding))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			db.SetMaxOpenConns(1)
+			db.SetMaxIdleConns(1)
+			var originalPID int
+			if err = db.QueryRow(`SELECT pg_backend_pid()`).Scan(&originalPID); err != nil {
+				t.Fatal(err)
+			}
+			checkConnection := func() {
+				t.Helper()
+				var client string
+				var pid int
+				if err := db.QueryRow(`SELECT current_setting('client_encoding'),pg_backend_pid()`).Scan(&client, &pid); err != nil {
+					t.Fatal(err)
+				}
+				if client != "UTF8" || pid != originalPID {
+					t.Fatalf("enrollment left pooled connection encoding=%s pid=%d, want UTF8 pid=%d", client, pid, originalPID)
+				}
+			}
+			dir := retentionPrivateTestDir(t)
+			if err = EnrollRetention(t.Context(), db, enrollmentTestEnv(dir)); err != nil {
+				t.Fatal(err)
+			}
+			checkConnection()
+			// Refuse an unknown migration after the local encoding change, then
+			// prove rollback also restores the same pooled session's UTF8 setting.
+			if _, err = db.Exec(`INSERT INTO schema_migrations(version,name) VALUES(999,'from_a_newer_release')`); err != nil {
+				t.Fatal(err)
+			}
+			if err = EnrollRetention(t.Context(), db, enrollmentTestEnv(dir)); err == nil || !strings.Contains(err.Error(), "newer release") {
+				t.Fatalf("unknown migration enrollment: %v", err)
+			}
+			checkConnection()
+		})
+	}
+}
+
 func TestHostRetentionEnrollmentMigratesOriginalWithoutMaintenance(t *testing.T) {
 	e := newPooledHistoricalFixture(t, 111)
 	agExec(e, `INSERT INTO users(id,handle,password_hash,role) VALUES('enroll_sender','enroll_sender','x','buyer'),('enroll_recipient','enroll_recipient','x','buyer')`)

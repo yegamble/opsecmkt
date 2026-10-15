@@ -51,7 +51,7 @@ jobs:
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
       - name: Reachable Go vulnerabilities
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: go-coverage
           path: coverage.out
@@ -87,7 +87,7 @@ jobs:
           cache: true
       - name: Escrow and Monero races (including real PostgreSQL)
         run: go test -race -count=1 -timeout 17m -run '^(TestEscrow|TestXMR|FuzzEscrow)' -coverprofile=coverage-escrow.out ./...
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: go-escrow-coverage
           path: coverage-escrow.out
@@ -209,7 +209,7 @@ jobs:
           docker logs "$BITCOIN_CONTAINER" > "$RUNNER_TEMP/escrow-regtest/bitcoind.log" 2>&1 || true
           docker logs "$BITCOIN_PRIVATE_CONTAINER" > "$RUNNER_TEMP/escrow-regtest/bitcoind-private.log" 2>&1 || true
           docker logs "$BITCOIN_PRUNED_CONTAINER" > "$RUNNER_TEMP/escrow-regtest/bitcoind-pruned.log" 2>&1 || true
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: escrow-regtest-results
@@ -304,7 +304,7 @@ jobs:
           for c in xmr-escrow-monerod xmr-escrow-wallet-escrow xmr-escrow-wallet-funder xmr-escrow-wallet-restore; do
             docker logs "$c" > "artifacts/escrow-xmr-regtest/$c.log" 2>&1 || true
           done
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: escrow-xmr-regtest-results
@@ -676,7 +676,7 @@ jobs:
         run: python3 scripts/test-install.py
       - name: Preserve installer evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: installer-results
           path: artifacts/install-test/
@@ -695,7 +695,7 @@ jobs:
       # seed, docker compose up -d (A-513). Regtest only; the evidence log holds no password.
       - name: Rehearse the installer-printed escrow set-up on regtest
         run: python3 scripts/test-escrow-node-rehearsal.py
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: escrow-node-rehearsal-results
@@ -865,7 +865,7 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
           cache: npm
@@ -891,7 +891,7 @@ jobs:
           PLAYWRIGHT_HTML_OUTPUT_DIR: playwright-retention-report
       - name: Preserve browser report and failure traces
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: playwright-results
           path: |
@@ -924,7 +924,7 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
           cache: npm
@@ -955,7 +955,7 @@ jobs:
         run: npm run test:e2e:escrow-xmr
       - name: Preserve escrow browser reports and failure traces
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: playwright-escrow-results
           path: |

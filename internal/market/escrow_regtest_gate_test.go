@@ -500,6 +500,10 @@ func TestEscrowRegtestGate(t *testing.T) {
 		e.DB.QueryRow("SELECT market_index FROM escrows WHERE order_id=$1", order).Scan(&n)
 		return n
 	}
+	var backupAllocation int64
+	if err := e.DB.QueryRow(`SELECT allocation_next_index FROM retention_escrow_global_floors WHERE kind='market'`).Scan(&backupAllocation); err != nil {
+		t.Fatal(err)
+	}
 	var backupLast int64
 	var backupCalled bool
 	if err := e.DB.QueryRow("SELECT last_value,is_called FROM escrow_market_index").Scan(&backupLast, &backupCalled); err != nil {
@@ -512,6 +516,9 @@ func TestEscrowRegtestGate(t *testing.T) {
 	if _, err := e.DB.Exec("SELECT setval('escrow_market_index',$1,$2)", backupLast, backupCalled); err != nil {
 		t.Fatal(err)
 	}
+	// The restored snapshot also predates the transactional allocation highwater.
+	// Preserve the irreversible retirement floor while reaching the watched-address collision.
+	agExec(e, `UPDATE retention_escrow_global_floors SET allocation_next_index=GREATEST(next_index,$1) WHERE kind='market'`, backupAllocation)
 	gateOn(true)
 	draftR := e.order(buyer, e.product(vendor, "digital"), "BTC", stateDraft)
 	if _, err := e.DB.Exec("UPDATE products SET delivery_content='regtest licence p1d3' WHERE id=(SELECT product_id FROM orders WHERE id=$1)", draftR); err != nil {

@@ -109,7 +109,7 @@ func xmrEscrowClaimAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, err
 		}
 		ctx := c.Ctx()
-		o, err := partyOrder(c, c.Form.Get("order_id"))
+		o, err := partyOrderLocked(c, c.Form.Get("order_id"))
 		if err != nil {
 			return actionResult{}, err
 		}

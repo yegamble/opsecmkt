@@ -448,7 +448,7 @@ func escrowClaimAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, errClaimAddress(c.A.escrowNetwork())
 		}
 		ctx := c.Ctx()
-		o, err := partyOrder(c, c.Form.Get("order_id"))
+		o, err := partyOrderLocked(c, c.Form.Get("order_id"))
 		if err != nil {
 			return actionResult{}, err
 		}
@@ -890,7 +890,7 @@ func settlementInputsFilled(p *psbtPacket, ins []settleInput, ws []byte) bool {
 // A lost race (another build stored first, an output already claimed, or a stray refund's input counted for the order
 // again meanwhile) changes nothing.
 func (a *App) storeSettlement(ctx context.Context, id int64, orderID, kind, psbt, txid string, total, rate int64, plan settlePlan, ins, left []settleInput) error {
-	tx, err := a.db.BeginTx(ctx, nil)
+	tx, err := a.beginEscrowOrderTx(ctx, orderID)
 	if err != nil {
 		return err
 	}
@@ -1042,7 +1042,7 @@ func settlementClaimant(kind string) string {
 // settlementWaits records why a settlement is not built yet; it stays building and is tried again next pass. The
 // class is logged once, when it changes.
 func (a *App) settlementWaits(ctx context.Context, id int64, orderID, class string) error {
-	res, err := a.db.ExecContext(ctx, "UPDATE settlements SET build_error=$2,updated=now() WHERE id=$1 AND state='building' AND build_error<>$2", id, class)
+	res, err := a.execEscrowOrder(ctx, orderID, "UPDATE settlements SET build_error=$2,updated=now() WHERE id=$1 AND state='building' AND build_error<>$2", id, class)
 	if err != nil {
 		return err
 	}
@@ -1062,7 +1062,7 @@ func (a *App) settlementWaits(ctx context.Context, id int64, orderID, class stri
 // stay counted, and its too-small failure also tells staff (A-461), flagging the credited deposits it tried so staff
 // can open the order (QA462-3, QA462B-1).
 func (a *App) failSettlement(ctx context.Context, id int64, orderID, class string, could, rate int64, tried []settleInput, left ...settleInput) error {
-	tx, err := a.db.BeginTx(ctx, nil)
+	tx, err := a.beginEscrowOrderTx(ctx, orderID)
 	if err != nil {
 		return err
 	}

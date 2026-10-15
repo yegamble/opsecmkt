@@ -351,6 +351,9 @@ func xmrRebroadcastAction(c *actionCtx) (actionResult, error) {
 	}
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
 		ctx := c.Ctx()
+		if _, err := c.Tx.ExecContext(ctx, "SELECT o.id FROM orders o JOIN xmr_settlements s ON s.order_id=o.id WHERE s.id=$1 FOR NO KEY UPDATE OF o", id); err != nil {
+			return actionResult{}, err
+		}
 		var orderID, kind, state, sendErr string
 		err := c.Tx.QueryRowContext(ctx, "SELECT order_id,kind,state,send_error FROM xmr_settlements WHERE id=$1 FOR UPDATE", id).Scan(&orderID, &kind, &state, &sendErr)
 		if err == sql.ErrNoRows {
