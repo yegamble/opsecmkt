@@ -26,10 +26,8 @@ umask 077
 # index digest beside the tag (A-523), as `docker buildx imagetools inspect <tag>` printed it (its Digest: line,
 # 2026-10-13). Change the tags together with compose.nodes.yaml (tags only) and .env.example (tag and digest), and
 # resolve the new digests the same way (docs/operator-guide.md#node-image-versions).
-bitcoin_image_default='bitcoin/bitcoin:31.1'
 monero_image_default='ghcr.io/sethforprivacy/simple-monerod:v0.18.5.1'
 monero_wallet_image_default='ghcr.io/sethforprivacy/simple-monero-wallet-rpc:v0.18.5.1'
-bitcoin_image_default+='@sha256:da25cedc66b1daefff9f412ee196c901a899c3fa68a33b20849c3e08b5c40d63'
 monero_image_default+='@sha256:0329465ffc599048efd57712d91d3b4b7d66380bd7205d5d0992cd9faf668e38'
 monero_wallet_image_default+='@sha256:09ff81f470d6d37811e3fde808c5cd1158a8cd2c42abbfb935b33f26f91e879d'
 # The malware scanner's image: a ClamAV release with signatures (never _base or latest). Change it together with
@@ -42,13 +40,8 @@ clamd_address='clamd:3310'
 escrow_seed_key_file=escrow-xmr-seed-key.asc
 xmr_seed_key_path=/etc/opsecmkt/escrow-xmr-seed-key.asc
 # Local nodes are pruned unless the operator says no. Keep these equal to compose.nodes.yaml's defaults.
-bitcoin_prune_default=2000
 monero_prune_default='--prune-blockchain --sync-pruned-blocks'
-# A-523: init writes mainnet (main, mainnet) for the coins it runs local nodes for unless a test network is chosen. On
-# mainnet bitcoind keeps 15000 MiB of blocks (the owner's choice: about two months, an estimate) and an escrow counts
-# as funded after 6 confirmations. Compose's blank fallbacks stay test networks, so existing installs never move.
-bitcoin_mainnet_prune_mb=15000
-bitcoin_mainnet_confirmations=6
+# Init writes the selected Monero network explicitly; upgrades preserve the installed network.
 onion_hostname=/var/lib/tor/marketplace/hostname
 onion_pattern='^[a-z2-7]{56}\.onion$'
 project_pattern='^[a-z0-9][a-z0-9_-]*$'
@@ -65,7 +58,7 @@ CLAMD_ADDRESS CLAMAV_IMAGE CLAMAV_IMAGE_DEFAULT SCANNER_MAX_SIGNATURE_AGE_DAYS I
 ESCROW_BTC_ARBITER_WALLET ESCROW_BTC_WATCH_WALLET ESCROW_BTC_FEE_BPS ESCROW_BTC_FEE_ADDRESS ESCROW_BTC_FEE_RATE
 ESCROW_XMR ESCROW_XMR_WALLET_RPC_URL ESCROW_XMR_DAEMON_URL ESCROW_XMR_FEE_BPS ESCROW_XMR_FEE_ADDRESS ESCROW_XMR_SLOTS
 ESCROW_XMR_MAX_FEE ESCROW_XMR_SEED_KEY ESCROW_XMR_TOR_RELAY MONERO_WALLET_SECRET ESCROW_XMR_WALLET_RPC_PASSWORD ESCROW_SIGNER_SOCKET
-ESCROW_SIGNER_RPC_URL LOG_DRIVER TOR_VERSION'
+ESCROW_SIGNER_RPC_URL ESCROW_SIGNER_SEED_FILE LOG_DRIVER TOR_VERSION'
 # What `upgrade` writes for a key missing from .env: the value Compose already uses when the key is absent, so
 # adding it changes nothing but makes it visible. APP_MODE, APP_PORT, COMPOSE_PROJECT_NAME, COMPOSE_PROFILES and
 # COMPOSE_FILE are derived from the install instead; secrets are never invented (APP_SECRET_KEY is copied from
@@ -79,36 +72,20 @@ AUDIT_EXPORT_RECIPIENT=
 DATABASE_CONNECT_TIMEOUT=
 MIGRATION_LOCK_TIMEOUT=
 MIGRATION_TIMEOUT=
-BITCOIN_RPC_URL=
-BITCOIN_WALLET=
-BITCOIN_CHAIN=
-PAYMENT_CONFIRMATIONS_BTC=3
 MONERO_RPC_URL=
 MONERO_WALLET_RPC_URL=
 MONERO_NETWORK=
 PAYMENT_CONFIRMATIONS_XMR=10
 PAYMENT_POLL_INTERVAL=30s
 PAYMENT_EXPIRY=24h
-BITCOIN_MAX_TIP_AGE=2h
 MONERO_MAX_TIP_AGE=1h
-BITCOIN_IMAGE=$bitcoin_image_default
 MONERO_IMAGE=$monero_image_default
 MONERO_WALLET_IMAGE=$monero_wallet_image_default
-BITCOIN_PRUNE_MB=$bitcoin_prune_default
 MONERO_PRUNE_FLAGS=$monero_prune_default
 CLAMD_ADDRESS=
 CLAMAV_IMAGE=$clamav_image_default
 SCANNER_MAX_SIGNATURE_AGE_DAYS=
 IMAGE_STORAGE_LIMIT_MB=
-ESCROW_BTC=
-ESCROW_BTC_RPC_URL=
-ESCROW_BTC_ARBITER_WALLET=
-ESCROW_BTC_WATCH_WALLET=
-ESCROW_BTC_FEE_BPS=
-ESCROW_BTC_FEE_ADDRESS=
-ESCROW_BTC_FEE_RATE=
-ESCROW_SIGNER_SOCKET=
-ESCROW_SIGNER_RPC_URL=
 ESCROW_XMR=
 ESCROW_XMR_WALLET_RPC_URL=
 ESCROW_XMR_DAEMON_URL=
@@ -156,9 +133,7 @@ init options (each answers one question; a question without its option is asked)
   --local                          loopback HTTP, internal database, no nodes, no questions
   --external-db URL                external PostgreSQL (with any option given: an internal database otherwise)
   --behind-proxy yes|no            clearnet: behind an HTTPS reverse proxy (secure cookies), or local HTTP only
-  --nodes local|none|custom        pruned local Bitcoin and Monero escrow-support nodes, none, or per coin
-  --bitcoin local|disabled         --bitcoin-image IMAGE  --bitcoin-network main|signet|testnet4|regtest
-  --bitcoin-prune yes|no
+  --nodes local|none|custom        pruned local Monero escrow-support node, none, or custom
   --monero local|disabled           --monero-image IMAGE   --monero-network mainnet|stagenet
   --monero-prune yes|no
   --monero-escrow yes|no           Monero escrow on the local Monero node (custodial; default no)
@@ -170,9 +145,8 @@ init options (each answers one question; a question without its option is asked)
                                    hs_ed25519_secret_key and optionally hs_ed25519_public_key, outside this checkout
   --onion-address ADDR.onion       with it: the address the key must have (otherwise it is shown for you to confirm)
 add-mirror's two options do the same for the mirror, before it first starts.
-Local nodes run MAINNET (main, mainnet: real funds) unless a network option names a test network; the other coin then
-defaults to its own (signet, stagenet): a market is all mainnet or all test networks. No mainnet run of this software
-is recorded (docs/operator-guide.md#mainnet).
+Local Monero nodes run MAINNET (real funds) unless --monero-network stagenet is chosen.
+No mainnet run of this software is recorded (docs/operator-guide.md#mainnet).
 Values given as options (URLs with passwords) are visible to other local users while the installer runs.
 USAGE
 }
@@ -656,24 +630,27 @@ retire_setup_token() {
   echo 'Removed SETUP_TOKEN from .env: setup is complete, so it grants nothing now.'
 }
 
-# Bitcoin Core's rpcauth verifier: a random salt and HMAC of the existing private RPC password. The password
-# goes through stdin, never an external program argument; only the salt appears in openssl's argv. Supplying a
-# salt verifies an existing .env entry without changing it. Core's share/rpcauth/rpcauth.py uses this format.
-bitcoin_rpcauth() {
-  local password=$1 salt=${2:-} hash
-  if [[ -z $salt ]]; then
-    salt=$(openssl rand -hex 16) || return 1
-  fi
-  [[ $salt =~ ^[0-9a-f]{32}$ ]] || return 1
-  hash=$(printf '%s' "$password" | openssl dgst -sha256 -hmac "$salt" | sed 's/^.* //') || return 1
-  [[ $hash =~ ^[0-9a-f]{64}$ ]] || return 1
-  printf 'marketplace:%s$%s' "$salt" "$hash"
-}
-
-# mixed_networks BITCOIN_CHAIN MONERO_NETWORK: one coin is on mainnet and the other names a test network (as the
-# app's marketLiveFromEnv reads them; a blank is neither).
-mixed_networks() {
-  [[ $1 == main && -n $2 && $2 != mainnet || $2 == mainnet && -n $1 && $1 != main ]]
+# Refuse active retired Bitcoin configuration before copying .env, backing up or invoking Compose.
+# Passive old defaults (image/prune/confirmations/tip age) do not prove a Bitcoin deployment.
+bitcoin_removed_guard() {
+  local key value failed=false
+  for key in BITCOIN_RPC_URL BITCOIN_WALLET BITCOIN_CHAIN BITCOIN_RPC_PASSWORD BITCOIN_RPC_AUTH \
+    ESCROW_BTC_RPC_URL ESCROW_BTC_ARBITER_WALLET ESCROW_BTC_WATCH_WALLET ESCROW_BTC_FEE_BPS \
+    ESCROW_BTC_FEE_ADDRESS ESCROW_BTC_FEE_RATE ESCROW_SIGNER_SOCKET ESCROW_SIGNER_RPC_URL ESCROW_SIGNER_SEED_FILE; do
+    if [[ -n $(env_value "$key") ]]; then
+      printf 'Refusing: %s configures retired Bitcoin support. This build is Monero-only; remove this unsupported setting. Nothing was changed.\n' "$key" >&2
+      failed=true
+    fi
+  done
+  value=$(env_value ESCROW_BTC)
+  case $value in ''|off|false) ;; *) echo 'Refusing: ESCROW_BTC configures retired Bitcoin support. This build is Monero-only; remove this unsupported setting. Nothing was changed.' >&2; failed=true ;; esac
+  for key in bitcoin escrow-signer; do
+    if has_item "$(env_value COMPOSE_PROFILES)" "$key"; then
+      printf 'Refusing: COMPOSE_PROFILES includes retired %s. This build is Monero-only; remove this unsupported profile. Nothing was changed.\n' "$key" >&2
+      failed=true
+    fi
+  done
+  [[ $failed == false ]]
 }
 
 # ---- check ------------------------------------------------------------------------------------------------
@@ -698,8 +675,8 @@ legacy_pooled_guard() {
 # run_check: the app's startup refusals (D8) plus what only the host can see. Messages name keys, never values.
 run_check() {
   local problems='' warnings='' key value problem mode secure files profiles database host project listing
-  local entry entry_project entry_dir foreign='' moved='' elsewhere='' rpc_password rpc_auth salt expected_auth
-  local rpc_auth_pattern='^marketplace:[0-9a-f]{32}\$[0-9a-f]{64}$'
+  local entry entry_project entry_dir foreign='' moved='' elsewhere=''
+  bitcoin_removed_guard || return 1
   legacy_pooled_guard || return 1
   for key in APP_SECRET_KEY SETUP_TOKEN; do
     value=$(env_value "$key")
@@ -783,31 +760,6 @@ run_check() {
   if has_item "$profiles" mirror && [[ $mode != tor ]]; then
     problems="$problems  - COMPOSE_PROFILES includes mirror, which needs APP_MODE=tor"$'\n'
   fi
-  if has_item "$profiles" bitcoin; then
-    value=$(env_value BITCOIN_CHAIN)
-    case $value in
-      ''|regtest|testnet4|signet|main) ;;
-      *) problems="$problems  - BITCOIN_CHAIN must be regtest, testnet4, signet or main (mainnet, real funds) for the local escrow-support node"$'\n' ;;
-    esac
-    rpc_password=$(env_value BITCOIN_RPC_PASSWORD)
-    rpc_auth=$(env_value BITCOIN_RPC_AUTH)
-    if [[ -z $rpc_password ]]; then
-      problems="$problems  - the local Bitcoin node (bitcoin profile) needs BITCOIN_RPC_PASSWORD"$'\n'
-    fi
-    if [[ -z $rpc_auth ]]; then
-      problems="$problems  - the local Bitcoin node (bitcoin profile) needs BITCOIN_RPC_AUTH; run upgrade or generate a verifier from the existing password"$'\n'
-    elif ! [[ $rpc_auth =~ $rpc_auth_pattern ]]; then
-      problems="$problems  - BITCOIN_RPC_AUTH must be a marketplace salted HMAC verifier; do not place the password in it"$'\n'
-    elif [[ -n $rpc_password ]]; then
-      salt=${rpc_auth#marketplace:}
-      salt=${salt%%\$*}
-      expected_auth=$(bitcoin_rpcauth "$rpc_password" "$salt") ||
-        die 'Could not check the local Bitcoin RPC verifier; nothing was started.'
-      if [[ $rpc_auth != "$expected_auth" ]]; then
-        problems="$problems  - BITCOIN_RPC_AUTH does not match BITCOIN_RPC_PASSWORD; repair the verifier before starting the local node"$'\n'
-      fi
-    fi
-  fi
   if has_item "$profiles" monero; then
     value=$(env_value MONERO_NETWORK)
     case $value in
@@ -821,11 +773,6 @@ run_check() {
         fi ;;
       *) problems="$problems  - MONERO_NETWORK must be stagenet or mainnet (real funds) for the local escrow-support daemon"$'\n' ;;
     esac
-  fi
-  # The app's errMixedNetworks (marketLiveFromEnv), whatever nodes run: a market is all mainnet or all test networks,
-  # and a blank network takes the other coin's class.
-  if mixed_networks "$(env_value BITCOIN_CHAIN)" "$(env_value MONERO_NETWORK)"; then
-    problems="$problems  - BITCOIN_CHAIN and MONERO_NETWORK mix mainnet with a test network, so the app refuses to start: a market runs on mainnet or on test networks, never both. BITCOIN_CHAIN=main needs MONERO_NETWORK=mainnet or blank, and MONERO_NETWORK=mainnet needs BITCOIN_CHAIN=main or blank (docs/operator-guide.md#mainnet)"$'\n'
   fi
   if has_item "$profiles" monero-escrow-wallet && [[ -z $(env_value ESCROW_XMR_WALLET_RPC_PASSWORD) ]]; then
     problems="$problems  - the Monero escrow wallet (monero-escrow-wallet profile) needs ESCROW_XMR_WALLET_RPC_PASSWORD"$'\n'
@@ -845,7 +792,7 @@ run_check() {
   if [[ -n $files ]] && compose_has compose.escrow-xmr.yaml && ! [[ -f $escrow_seed_key_file && ! -L $escrow_seed_key_file ]]; then
     problems="$problems  - COMPOSE_FILE includes compose.escrow-xmr.yaml but $escrow_seed_key_file (the Monero escrow seed key it mounts) is missing"$'\n'
   fi
-  for key in BITCOIN_IMAGE MONERO_IMAGE MONERO_WALLET_IMAGE; do
+  for key in MONERO_IMAGE MONERO_WALLET_IMAGE; do
     value=$(env_value "$key")
     if [[ -n $value ]] && ! image_pinned "$value"; then
       problems="$problems  - $key must name a release tag or @sha256 digest, not latest (./scripts/install.sh upgrade pins the default images; see docs/operator-guide.md#node-image-versions)"$'\n'
@@ -964,13 +911,11 @@ one_of() {
   exit 2
 }
 
-# refuse_network_name COIN VALUE PREFIX: a usage error naming the right network when VALUE misnames one (as
-# scripts/escrow-node-setup.sh does); PREFIX is the option that took it ('--bitcoin-network '), or nothing for an answer.
+# refuse_network_name COIN VALUE PREFIX: name the supported Monero network when a value misnames it.
+# PREFIX is the option that took it, or blank for an interactive answer.
 refuse_network_name() {
   local message=''
   case $1:$2 in
-    BITCOIN:mainnet) message="Bitcoin Core names mainnet \"main\": give ${3}main." ;;
-    BITCOIN:test|BITCOIN:testnet|BITCOIN:testnet3) message="testnet3 is not an escrow chain; give ${3}testnet4 or ${3}signet." ;;
     MONERO:main) message="Monero names mainnet \"mainnet\": give ${3}mainnet." ;;
     MONERO:testnet) message="Monero testnet is not an escrow network; give ${3}stagenet." ;;
   esac
@@ -1015,7 +960,7 @@ EOF
 
 cmd_init() {
   local bare=true local_mode=false mode='' database='' proxy='' nodes='' admin='' site_name='' site_given=false
-  local btc='' xmr='' btc_image='' xmr_image='' btc_network='' xmr_network='' btc_prune='' xmr_prune=''
+  local xmr='' xmr_image='' xmr_network='' xmr_prune=''
   local detail=false local_http='' password1='' password2='' uploads=''
   local xmr_escrow='' xmr_seed_key='' onion_dir='' onion_given='' onion_expected=''
   (($# == 0)) || bare=false
@@ -1023,21 +968,17 @@ cmd_init() {
     case $1 in
       --local) local_mode=true ;;
       --tor|--clearnet) [[ -z $mode ]] || usage; mode=${1#--} ;;
-      --external-db|--behind-proxy|--nodes|--bitcoin|--monero|--bitcoin-image|--monero-image|--bitcoin-network|\
-      --monero-network|--bitcoin-prune|--monero-prune|\
+      --bitcoin|--bitcoin-*) die 'Bitcoin support was removed. This build is Monero-only; no configuration was written.' ;;
+      --external-db|--behind-proxy|--nodes|--monero|--monero-image|--monero-network|--monero-prune|\
       --monero-escrow|--monero-escrow-seed-key|--admin|--site-name|--uploads|--onion-key-dir|--onion-address)
         (($# >= 2)) || usage
         case $1 in
           --external-db) database=$2; [[ -n $database ]] || usage ;;
           --behind-proxy) proxy=$(one_of "$1" "$2" yes no) ;;
           --nodes) nodes=$(one_of "$1" "$2" local none custom) ;;
-          --bitcoin) btc=$(one_of "$1" "$2" local disabled) ;;
           --monero) xmr=$(one_of "$1" "$2" local disabled) ;;
-          --bitcoin-image) btc_image=$2 ;;
           --monero-image) xmr_image=$2 ;;
-          --bitcoin-network) refuse_network_name BITCOIN "$2" "$1 "; btc_network=$(one_of "$1" "$2" main signet testnet4 regtest) ;;
           --monero-network) refuse_network_name MONERO "$2" "$1 "; xmr_network=$(one_of "$1" "$2" mainnet stagenet) ;;
-          --bitcoin-prune) btc_prune=$(one_of "$1" "$2" yes no) ;;
           --monero-prune) xmr_prune=$(one_of "$1" "$2" yes no) ;;
           --monero-escrow) xmr_escrow=$(one_of "$1" "$2" yes no) ;;
           --monero-escrow-seed-key) xmr_seed_key=$2; [[ -n $xmr_seed_key ]] || usage ;;
@@ -1066,7 +1007,7 @@ cmd_init() {
       exit 2
     fi
   fi
-  if [[ $local_mode == true && -n $mode$database$proxy$nodes$btc$xmr$btc_image$xmr_image$btc_network$xmr_network$btc_prune$xmr_prune$uploads$xmr_escrow ]]; then
+  if [[ $local_mode == true && -n $mode$database$proxy$nodes$xmr$xmr_image$xmr_network$xmr_prune$uploads$xmr_escrow ]]; then
     echo '--local answers every question itself; combine it only with --admin and --site-name.' >&2
     exit 2
   fi
@@ -1077,7 +1018,7 @@ cmd_init() {
     [[ $site_name != *$'\n'* ]] && (($(printf '%s' "$site_name" | LC_ALL=C wc -c) <= 80)) ||
       { echo '--site-name must be at most 80 bytes on one line.' >&2; exit 2; }
   fi
-  if [[ -n $btc$xmr && -z $nodes ]]; then nodes=custom; fi
+  if [[ -n $xmr && -z $nodes ]]; then nodes=custom; fi
 
   require_docker
   lock_env_or_die
@@ -1158,7 +1099,7 @@ cmd_init() {
     if [[ $bare == true ]]; then
       nodes=custom
     elif [[ -z $nodes ]]; then
-      printf '%s\n' "Nodes: 'local' (the default) runs pruned Bitcoin Core and Monero nodes in Docker on MAINNET (real funds) unless --bitcoin-network or --monero-network names a test network (the other coin then follows). Pruned, Bitcoin mainnet keeps about 30 GB and Monero mainnet 45 GB or more on disk, and their first sync takes days; on test networks (Bitcoin signet or testnet4, Monero stagenet) about 5-8 GB and 20 GB, synced in hours (all estimates). 'none' leaves payments off. 'custom' asks per coin."
+      printf '%s\n' "Nodes: 'local' (the default) runs a pruned Monero daemon in Docker on MAINNET (real funds) unless --monero-network stagenet is chosen. Mainnet needs 45 GB or more and a first sync of days; stagenet needs about 20 GB and hours (estimates). 'none' leaves payments off. 'custom' asks for the Monero settings."
       ask nodes 'Nodes (local/none/custom) [local]: '
       nodes=${nodes:-local}
       [[ $nodes == local || $nodes == none || $nodes == custom ]] || die 'Choose local, none or custom.'
@@ -1169,96 +1110,36 @@ cmd_init() {
     [[ ${caller_app_port:-8080} =~ ^[0-9]{1,5}$ ]] && ((10#${caller_app_port:-8080} > 0 && 10#${caller_app_port:-8080} <= 65535)) ||
       die 'APP_PORT must be between 1 and 65535.'
   fi
-  # Per-coin answers. local: pruned node with the default image on mainnet (A-523) unless a network is chosen; none:
-  # disabled; custom: every question without an option is asked. The market's class follows an explicitly chosen
-  # network (an option, or an answer): a test network for one coin makes the other default to its own (signet,
-  # stagenet). A coin disabled by its option chooses nothing.
-  local btc_explicit=false xmr_explicit=false
-  if [[ -n $btc_network && $btc != disabled ]]; then btc_explicit=true; fi
-  if [[ -n $xmr_network && $xmr != disabled ]]; then xmr_explicit=true; fi
-  local coin choice image network prune default_image value
-  local btc_choice='' xmr_choice='' bitcoin_chain='' monero_network='' btc_prune_mb='' xmr_prune_flags=$monero_prune_default
-  for coin in BITCOIN MONERO; do
-    if [[ $coin == BITCOIN ]]; then
-      choice=$btc image=$btc_image network=$btc_network prune=$btc_prune default_image=$bitcoin_image_default
-    else
-      choice=$xmr image=$xmr_image network=$xmr_network prune=$xmr_prune default_image=$monero_image_default
-    fi
-    if [[ -z $choice ]]; then
-      case $nodes in
-        local) choice=local ;;
-        none) choice=disabled ;;
-        custom)
-          # Sizes are upstream estimates (docs/operator-guide.md#local-node-pruning) and grow with each chain.
-          case $coin in
-            BITCOIN) printf '%s\n' "BITCOIN: 'local' (the default) runs a pruned Bitcoin Core node for operator-managed escrow setup. On mainnet (the default network) it keeps about 30 GB on disk (${bitcoin_mainnet_prune_mb} MiB of recent blocks plus about 14 GB of chain state) and its first sync downloads the whole chain, which takes days; on signet or testnet4 about 5-8 GB (${bitcoin_prune_default} MiB plus the chain state), synced in hours (all estimates). 'disabled' leaves it out." ;;
-            MONERO) printf '%s\n' "MONERO: 'local' (the default) runs a pruned Monero daemon for operator-managed escrow setup. Pruning keeps about a third of the chain: on mainnet (the default network) 45 GB in April 2022 and more today, with a first sync of days; on stagenet keep 20 GB free, synced in hours (all estimates). 'disabled' leaves it out." ;;
-          esac
-          ask choice "$coin node (local/disabled) [local]: "
-          choice=${choice:-local} ;;
-      esac
-    fi
-    case $choice in
-      disabled) ;;
-      local)
-        if [[ -z $image && $detail == true ]]; then ask image "$coin Docker image [$default_image; blank uses this default]: "; fi
-        image=${image:-$default_image}
-        check_image "$image"
-        if [[ $coin == BITCOIN ]]; then
-          value=main
-          if [[ $xmr_explicit == true && $xmr_network == stagenet ]]; then value=signet; fi
-          if [[ -z $network && $detail == true ]]; then ask network "BITCOIN network (main = mainnet, real funds; or signet/testnet4/regtest) [$value]: "; fi
-          refuse_network_name BITCOIN "$network" ''
-          if [[ -n $network ]]; then btc_explicit=true btc_network=$network; fi
-          case ${network:-$value} in
-            main|signet|testnet4|regtest) network=${network:-$value} ;;
-            *) die 'Choose main, signet, testnet4 or regtest.' ;;
-          esac
-          if [[ -z $prune && $detail == true ]]; then ask prune 'Prune the BITCOIN node to save disk? (yes/no) [yes]: '; fi
-        else
-          value=mainnet
-          if [[ $btc_explicit == true && $btc_network != main ]]; then value=stagenet; fi
-          if [[ -z $network && $detail == true ]]; then ask network "MONERO network (mainnet = real funds; or stagenet) [$value]: "; fi
-          refuse_network_name MONERO "$network" ''
-          if [[ -n $network ]]; then xmr_explicit=true xmr_network=$network; fi
-          case ${network:-$value} in
-            mainnet|stagenet) network=${network:-$value} ;;
-            *) die 'Choose mainnet or stagenet.' ;;
-          esac
-          if [[ -z $prune && $detail == true ]]; then ask prune 'Prune the MONERO node to save disk? (yes/no) [yes]: '; fi
-        fi
-        case ${prune:-yes} in yes|no) prune=${prune:-yes} ;; *) die 'Answer yes or no.' ;; esac
-        ;;
-      *) die 'Invalid node choice' ;;
+  # Monero node settings. A new local node defaults to mainnet; test installations choose stagenet.
+  local choice=$xmr image=$xmr_image network=$xmr_network prune=$xmr_prune value
+  local xmr_choice='' monero_network='' xmr_prune_flags=$monero_prune_default
+  if [[ -z $choice ]]; then
+    case $nodes in
+      local) choice=local ;;
+      none) choice=disabled ;;
+      custom)
+        printf '%s\n' "MONERO: 'local' runs a pruned daemon for operator-managed escrow setup. Mainnet needs 45 GB or more with a first sync of days; stagenet needs about 20 GB and hours (estimates). 'disabled' leaves it out."
+        ask choice 'MONERO node (local/disabled) [local]: '
+        choice=${choice:-local} ;;
     esac
-    if [[ $coin == BITCOIN ]]; then
-      btc_choice=$choice btc_image=$image
-      if [[ $choice == local ]]; then bitcoin_chain=$network btc_prune=$prune; fi
-    else
-      xmr_choice=$choice xmr_image=$image
-      if [[ $choice == local ]]; then monero_network=$network; if [[ $prune == no ]]; then xmr_prune_flags=''; fi; fi
-    fi
-  done
-  # A market is all mainnet or all test networks (the app's errMixedNetworks). Two chosen networks that conflict are
-  # refused here, before anything else is asked or written. A defaulted one follows the chosen one: Bitcoin's default,
-  # asked first, can only conflict with a Monero network answered after it.
-  if mixed_networks "$bitcoin_chain" "$monero_network"; then
-    if [[ $btc_explicit == true && $xmr_explicit == true ]]; then
-      die "Refusing: --bitcoin-network $bitcoin_chain and --monero-network $monero_network mix mainnet with a test network. A market runs on mainnet or on test networks, never both (the app refuses to start otherwise)." \
-        'Give both test networks (--bitcoin-network signet|testnet4|regtest with --monero-network stagenet), both mainnet (main, mainnet), or disable one coin. Nothing was written.'
-    elif [[ $btc_explicit == false ]]; then
-      if [[ $monero_network == mainnet ]]; then bitcoin_chain=main; else bitcoin_chain=signet; fi
-      echo "BITCOIN follows the Monero network's class: $bitcoin_chain (--bitcoin-network chooses another)."
-    else
-      if [[ $bitcoin_chain == main ]]; then monero_network=mainnet; else monero_network=stagenet; fi
-      echo "MONERO follows the Bitcoin network's class: $monero_network (--monero-network chooses another)."
-    fi
   fi
-  if [[ $btc_choice == local ]]; then
-    btc_prune_mb=$bitcoin_prune_default
-    if [[ $bitcoin_chain == main ]]; then btc_prune_mb=$bitcoin_mainnet_prune_mb; fi
-    if [[ $btc_prune == no ]]; then btc_prune_mb=0; fi
-  fi
+  case $choice in
+    disabled) ;;
+    local)
+      if [[ -z $image && $detail == true ]]; then ask image "MONERO Docker image [$monero_image_default; blank uses this default]: "; fi
+      image=${image:-$monero_image_default}
+      check_image "$image"
+      if [[ -z $network && $detail == true ]]; then ask network 'MONERO network (mainnet = real funds; or stagenet) [mainnet]: '; fi
+      refuse_network_name MONERO "$network" ''
+      case ${network:-mainnet} in mainnet|stagenet) network=${network:-mainnet} ;; *) die 'Choose mainnet or stagenet.' ;; esac
+      if [[ -z $prune && $detail == true ]]; then ask prune 'Prune the MONERO node to save disk? (yes/no) [yes]: '; fi
+      case ${prune:-yes} in yes|no) prune=${prune:-yes} ;; *) die 'Answer yes or no.' ;; esac
+      monero_network=$network
+      if [[ $prune == no ]]; then xmr_prune_flags=''; fi
+      ;;
+    *) die 'Invalid node choice' ;;
+  esac
+  xmr_choice=$choice xmr_image=$image
   # Monero escrow (A-449): only beside the local Monero node, on stagenet or (A-523) mainnet, whose daemon its own
   # wallet-RPC service (monero-escrow-wallet) shares. Off unless chosen; asked where the Monero questions are asked.
   # Its secret and its wallet-RPC password are generated below; the seed key (a public key whose private half the
@@ -1310,7 +1191,7 @@ cmd_init() {
   fi
 
   # Secrets and the configuration.
-  local password app_key setup_token audit_key rpc_password rpc_auth profiles='' external_egress=false secure=true
+  local password app_key setup_token audit_key profiles='' external_egress=false secure=true
   local external_database=false
   local compose_files="compose.yaml:compose.${mode}.yaml:compose.nodes.yaml"
   password=$(secret 24) || exit 1
@@ -1319,10 +1200,6 @@ cmd_init() {
   setup_token=$(secret 32) || exit 1
   # Ed25519 seed for signed audit exports.
   audit_key=$(secret 32) || exit 1
-  if [[ $btc_choice == local ]]; then
-    rpc_password=$(secret 24) || exit 1
-    rpc_auth=$(bitcoin_rpcauth "$rpc_password") || die 'Could not generate the Bitcoin RPC verifier; nothing was written or started.'
-  fi
   local escrow_wallet_password='' wallet_secret=''
   if [[ $xmr_escrow == yes ]]; then
     escrow_wallet_password=$(secret 24) || exit 1
@@ -1340,14 +1217,8 @@ cmd_init() {
   fi
   if [[ $mode == tor || $local_http == yes ]]; then secure=false; fi
   # A-523: before .env is written, a mainnet install says what that means, per coin.
-  if [[ $bitcoin_chain == main || $monero_network == mainnet ]]; then
-    printf '\n%s\n' "MAINNET: the local nodes run on mainnet, so this market's payments move real funds. No mainnet run of this software is recorded: mainnet is covered by unit, database and simulated-RPC tests only (docs/operator-guide.md#mainnet). For a test market, start again with --bitcoin-network signet|testnet4|regtest and --monero-network stagenet."
-    if [[ $bitcoin_chain == main && $btc_prune_mb != 0 ]]; then
-      echo "Bitcoin mainnet, pruned: about 30 GB on disk ($btc_prune_mb MiB of recent blocks plus about 14 GB of chain state; a full node is about 856 GB of blocks + 14 GB, Bitcoin Core v31.1's estimates). Its first sync downloads the whole chain and takes days (an estimate)."
-      echo 'Prune window: the node keeps about two months of blocks (an estimate). A wallet restore or backup older than that cannot be rescanned on it: restore the whole bitcoin_data volume instead, or run an unpruned node (docs/operator-guide.md#local-node-pruning).'
-    elif [[ $bitcoin_chain == main ]]; then
-      echo "Bitcoin mainnet, full: about 870 GB on disk (856 GB of blocks + 14 GB of chain state, Bitcoin Core v31.1's estimates). Its first sync takes days (an estimate)."
-    fi
+  if [[ $monero_network == mainnet ]]; then
+    printf '\n%s\n' "MAINNET: the local nodes run on mainnet, so this market's payments move real funds. No mainnet run of this software is recorded: mainnet is covered by unit, database and simulated-RPC tests only (docs/operator-guide.md#mainnet). For a test market, start again with --monero-network stagenet."
     if [[ $monero_network == mainnet ]]; then
       if [[ -n $xmr_prune_flags ]]; then
         echo 'Monero mainnet, pruned: 45 GB in April 2022 (the Monero README), more today (an estimate). Its first sync takes days (an estimate).'
@@ -1367,17 +1238,6 @@ cmd_init() {
   # The local nodes' size on disk, per chain (estimates; docs/operator-guide.md#local-node-pruning), checked against
   # Docker's free space. A regtest node holds only what it mines.
   local disk_gb=0 disk_text=''
-  if [[ $btc_choice == local && $bitcoin_chain != regtest ]]; then
-    case $bitcoin_chain:$btc_prune_mb in
-      main:0) disk_gb=870 ;;
-      main:*) disk_gb=30 ;;
-      signet:0) disk_gb=28 ;;
-      testnet4:0) disk_gb=33 ;;
-      signet:*) disk_gb=8 ;;
-      *) disk_gb=5 ;;
-    esac
-    disk_text="Bitcoin ${bitcoin_chain/#main/mainnet} $([[ $btc_prune_mb == 0 ]] && echo full || echo pruned) about $disk_gb GB"
-  fi
   if [[ $xmr_choice == local ]]; then
     case $monero_network:$xmr_prune_flags in
       mainnet:) disk_gb=$((disk_gb + 130)) disk_text="${disk_text:+$disk_text, }Monero mainnet full 130 GB or more" ;;
@@ -1409,30 +1269,10 @@ cmd_init() {
   # existing install: Compose would start it on new, empty volumes.
   put COMPOSE_PROJECT_NAME "$project"
   # These Compose mappings remain blank so a copied legacy .env reaches the guard instead of being ignored.
-  put BITCOIN_RPC_URL ''
-  put BITCOIN_WALLET ''
   put MONERO_RPC_URL ''
   put MONERO_WALLET_RPC_URL ''
   put AUDIT_SIGNING_KEY "$audit_key"
   # Network pins are for local escrow-support nodes; enabling the nodes alone never turns payments on.
-  case $btc_choice in
-    local)
-      put BITCOIN_IMAGE "$btc_image"
-      # A local node never runs without a generated RPC password (secret exits otherwise).
-      put BITCOIN_RPC_PASSWORD "$rpc_password"
-      put BITCOIN_RPC_AUTH "$rpc_auth"
-      if [[ $btc_prune_mb == 0 ]]; then
-        case $bitcoin_chain in
-          main) value='about 870 GB on mainnet (856 GB of blocks + 14 GB of chain state)' ;;
-          signet) value='about 28 GB on signet' ;;
-          testnet4) value='about 33 GB on testnet4' ;;
-          *) value='on regtest only the blocks you mine' ;;
-        esac
-        echo "Full node: BITCOIN keeps every block, $value today (Bitcoin Core v31.1's estimates, growing), with the same first sync. BITCOIN_PRUNE_MB=0 in .env; see docs/operator-guide.md#local-node-pruning to change it later."
-      fi
-      put BITCOIN_PRUNE_MB "$btc_prune_mb"
-      profiles="${profiles:+$profiles,}bitcoin" ;;
-  esac
   case $xmr_choice in
     local)
       put MONERO_IMAGE "$xmr_image"
@@ -1459,15 +1299,10 @@ cmd_init() {
     echo "Monero escrow is on ($monero_network, custodial: the market holds every escrow wallet's keys).$value Back up .env (MONERO_WALLET_SECRET) and the monero_escrow_wallet volume; keep the seed key's private half offline (docs/operator-guide.md#monero-escrow)."
   fi
   # Written explicitly (A-523): blank keeps Compose's test-network fallbacks, so a mainnet install never relies on it.
-  put BITCOIN_CHAIN "$bitcoin_chain"
-  if [[ $bitcoin_chain == main ]]; then put PAYMENT_CONFIRMATIONS_BTC "$bitcoin_mainnet_confirmations"; fi
   put MONERO_NETWORK "$monero_network"
   # The bundled Monero services' network flag: a blank line runs mainnet (monerod has no --mainnet), --stagenet stagenet.
   if [[ $xmr_choice == local ]]; then
     if [[ $monero_network == mainnet ]]; then put MONERO_NETWORK_FLAG ''; else put MONERO_NETWORK_FLAG --stagenet; fi
-  fi
-  if [[ ,$profiles, == *,bitcoin,* ]] && ! [[ $(env_get BITCOIN_RPC_PASSWORD "$config") =~ ^[0-9a-f]{48}$ ]]; then
-    die 'Refusing to enable the local Bitcoin node without a generated RPC password.'
   fi
   if [[ $mode == tor && $external_egress == true ]]; then
     compose_files="${compose_files}:compose.external-egress.yaml"
@@ -1599,37 +1434,7 @@ cmd_init() {
     echo 'and then the "Back up an onion identity" commands in docs/operator-guide.md#secrets-env-and-onion-identities.'
     onion_import_notes "$onion_dir"
   fi
-  # A local Bitcoin node is infrastructure only (D-58): say how escrow is turned on, and change nothing for it.
-  if [[ $btc_choice == local ]]; then
-    local escrow_chain=${bitcoin_chain:-signet}
-    echo
-    echo 'Bitcoin escrow stays off until you set it up; this installer edits no file for it. Run these in this directory, once the local Bitcoin'
-    echo 'node has synced its chain (a regtest node is ready at once). Lines starting with # are comments, safe to paste.'
-    if [[ $escrow_chain == main ]]; then
-      echo '# Mainnet, real funds (docs/operator-guide.md#mainnet): a plain fee address is refused on mainnet, so with a market fee above 0 give'
-      echo '# ESCROW_BTC_FEE_ADDRESS the fee wallet'"'"'s watch-only receiving descriptor, wpkh([fingerprint/path]xpub/0/*), and never a test wallet'"'"'s.'
-      echo '# The fee rate (ESCROW_BTC_FEE_RATE) and confirmation (PAYMENT_CONFIRMATIONS_BTC) defaults were sized on test chains; review them first.'
-    fi
-    echo '# 1. Wallets and RPC users; prints bitcoin.conf and .env lines once and writes no file. Copy its output.'
-    echo "./scripts/escrow-node-setup.sh --chain $escrow_chain --rpc-port 8332 --signer --cli 'docker compose exec -T -u bitcoin bitcoin bitcoin-cli -datadir=/data -rpcport=8332'"
-    echo '# 2. Append its rpcauth=, rpcwhitelistdefault= and rpcwhitelist= lines to the node'"'"'s bitcoin.conf (quoted EOF keeps the $ in rpcauth literal):'
-    echo "docker compose exec -T -u bitcoin bitcoin sh -c 'cat >> /data/bitcoin.conf' <<'EOF'"
-    echo '# paste the printed rpcauth, rpcwhitelistdefault and rpcwhitelist lines here'
-    echo 'EOF'
-    echo '# 3. Append its ESCROW_* lines to .env, turn escrow on, and add the signer service. If .env already has any of these keys, the last line wins.'
-    echo "cat >> .env <<'EOF'"
-    echo 'ESCROW_BTC=on'
-    echo "COMPOSE_PROFILES=$profiles,escrow-signer"
-    echo '# paste the printed ESCROW_* lines here'
-    echo 'EOF'
-    echo '# 4. Restart the node, then check it from the Compose network (the bundled node publishes no port). It must print PASS.'
-    echo 'docker compose restart bitcoin'
-    echo "ESCROW_BTC_RPC_URL='<the URL it printed>' ./scripts/escrow-node-setup.sh --chain $escrow_chain --verify --via-compose app --wait 120"
-    echo '# 5. Make the escrow signer'"'"'s seed (write down the fingerprint it prints, then back the seed up), and start everything with the new settings.'
-    echo 'docker compose run --rm --no-deps escrow-signer init'
-    echo 'docker compose up -d'
-    echo 'Details: docs/operator-guide.md#escrow-node-set-up-and-the-public-network-smoke'
-  fi
+
 }
 
 # ---- status, setup-token, add-mirror ---------------------------------------------------------------------
@@ -1746,6 +1551,7 @@ cmd_add_mirror() {
   done
   if [[ -n $given && -z $key_dir ]]; then echo '--mirror-onion-address needs --mirror-onion-key-dir DIR.' >&2; exit 2; fi
   require_env
+  bitcoin_removed_guard || exit 1
   legacy_pooled_guard || exit 1
   lock_env_or_die
   local profiles mirror main state
@@ -1934,6 +1740,7 @@ scanner_config_changed() {
 cmd_add_scanner() {
   [[ $# -eq 0 ]] || usage
   require_env
+  bitcoin_removed_guard || exit 1
   legacy_pooled_guard || exit 1
   lock_env_or_die
   local staged previous files profiles version
@@ -1996,6 +1803,7 @@ cmd_upgrade() {
     *) usage ;;
   esac
   require_env
+  bitcoin_removed_guard || exit 1
   legacy_pooled_guard || exit 1
   lock_env_or_die
   # backup.sh dumps the internal database through Compose; an external one only from BACKUP_DATABASE_URL.
@@ -2016,7 +1824,6 @@ cmd_upgrade() {
   database_url=''
   local project listing entry candidates='' count stamp copy changes='' key value default mode files profiles token database host egress
   local recorded_clamav_default
-  local auth_profiles bitcoin_auth_to_add=''
   # The project whose volumes hold this install: COMPOSE_PROJECT_NAME, else the one its containers were created
   # under from this directory, else the caller's COMPOSE_PROJECT_NAME or Compose's default.
   if ! env_get COMPOSE_PROJECT_NAME >/dev/null; then
@@ -2054,20 +1861,6 @@ cmd_upgrade() {
   cat .env > "$copy" && chmod 600 "$copy" || die "Could not copy .env to $copy (is the disk full?); nothing was changed."
   temporaries=${temporaries% "$copy"}
 
-  # Decide whether an old install has a local Bitcoin profile before changing .env. Legacy installs infer the
-  # profile from the app URL. A failed salt/HMAC operation leaves every current setting untouched.
-  auth_profiles=$(env_value COMPOSE_PROFILES)
-  if ! env_get COMPOSE_PROFILES >/dev/null && [[ -n $(env_value BITCOIN_RPC_PASSWORD) ]]; then
-    auth_profiles="${auth_profiles:+$auth_profiles,}bitcoin"
-  fi
-  if has_item "$auth_profiles" bitcoin && [[ -z $(env_value BITCOIN_RPC_AUTH) ]]; then
-    value=$(env_value BITCOIN_RPC_PASSWORD)
-    [[ -n $value ]] || die 'The local Bitcoin node needs BITCOIN_RPC_PASSWORD; nothing was changed or restarted.'
-    bitcoin_auth_to_add=$(bitcoin_rpcauth "$value") ||
-      die 'Could not generate the local Bitcoin RPC verifier; nothing was changed or restarted.'
-    value=''
-  fi
-
   if ! env_get COMPOSE_PROJECT_NAME >/dev/null; then
     env_set COMPOSE_PROJECT_NAME "$project"
     changes="$changes  added COMPOSE_PROJECT_NAME ($project, the project its containers and volumes use)"$'\n'
@@ -2091,20 +1884,12 @@ cmd_upgrade() {
   if ! env_get COMPOSE_PROFILES >/dev/null; then
     profiles=''
     if [[ $(url_host "$database") == db ]]; then profiles=internal-db; fi
-    if [[ -n $(env_value BITCOIN_RPC_PASSWORD) ]]; then profiles="${profiles:+$profiles,}bitcoin"; fi
     if [[ -n $(env_value MONERO_IMAGE) ]]; then profiles="${profiles:+$profiles,}monero"; fi
     if [[ $(url_host "$(env_value ESCROW_XMR_WALLET_RPC_URL)") == monero-escrow-wallet ]]; then profiles="${profiles:+$profiles,}monero-escrow-wallet"; fi
     env_set COMPOSE_PROFILES "$profiles"
     changes="$changes  added COMPOSE_PROFILES (from the database and node URLs)"$'\n'
   fi
   profiles=$(env_value COMPOSE_PROFILES)
-  # Old local-node installs have only the private password and URL. Add its verifier after profile inference,
-  # without rotating either value; an existing mismatched verifier is left untouched and check refuses startup.
-  if [[ -n $bitcoin_auth_to_add ]]; then
-    env_set BITCOIN_RPC_AUTH "$bitcoin_auth_to_add"
-    changes="$changes  added BITCOIN_RPC_AUTH for the existing local Bitcoin password (password and RPC URL unchanged)"$'\n'
-    bitcoin_auth_to_add=''
-  fi
   if [[ -z $files ]] && ! env_get COMPOSE_FILE >/dev/null; then
     files="compose.yaml:compose.$mode.yaml:compose.nodes.yaml"
     if has_item "$profiles" internal-db; then files="$files:compose.internal-db.yaml"; fi
@@ -2163,9 +1948,8 @@ cmd_upgrade() {
     changes="$changes  recorded the current ClamAV image default for future upgrades"$'\n'
   fi
   # Installs from before A-100 float the node and wallet images on :latest (A-174): pin the verified releases.
-  for key in BITCOIN_IMAGE MONERO_IMAGE MONERO_WALLET_IMAGE; do
+  for key in MONERO_IMAGE MONERO_WALLET_IMAGE; do
     case $key in
-      BITCOIN_IMAGE) default=$bitcoin_image_default ;;
       MONERO_IMAGE) default=$monero_image_default ;;
       MONERO_WALLET_IMAGE) default=$monero_wallet_image_default ;;
     esac

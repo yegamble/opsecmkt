@@ -33,7 +33,7 @@ func TestPostgresMarketplaceFlow(t *testing.T) {
 	if err = a.db.QueryRow("SELECT id FROM products").Scan(&product); err != nil {
 		t.Fatal(err)
 	}
-	order := url.Values{"product_id": {product}, "currency": {"BTC"}}
+	order := url.Values{"product_id": {product}, "currency": {"XMR"}}
 	w = do("POST", "/orders", buyer, order)
 	check(w, 303)
 	location := w.Header().Get("Location")

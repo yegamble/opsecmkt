@@ -47,7 +47,7 @@ func TestFormNonceRenderedWithoutGETWrites(t *testing.T) {
 	e := newTestApp(t)
 	vendor, vendorSession := e.user("nonce_vendor", "vendor")
 	buyer, buyerSession := e.user("nonce_buyer", "buyer")
-	order := e.order(buyer, e.product(vendor, "digital"), "BTC", stateDraft)
+	order := e.order(buyer, e.product(vendor, "digital"), "XMR", stateDraft)
 	if got := submissionCount(t, e); got != 0 {
 		t.Fatalf("new database has %d form submissions", got)
 	}
@@ -117,13 +117,13 @@ func TestFormNonceListingSuccessReplayAndRollback(t *testing.T) {
 	}
 
 	// A refused first submission rolls back its claim; the corrected form may reuse the nonce.
-	invalid := inventoryForm("", map[string]string{"price_btc": "0"})
+	invalid := inventoryForm("", map[string]string{"price_xmr": "0"})
 	invalid.Set(formNonceField, randomToken()[:32])
 	e.check(e.do("POST", "/listings", session, invalid), 400)
 	if submissionCount(t, e) != 1 {
 		t.Fatal("refused form kept its nonce")
 	}
-	invalid.Set("price_btc", "0.002")
+	invalid.Set("price_xmr", "0.5")
 	e.check(e.do("POST", "/listings", session, invalid), 303)
 	if submissionCount(t, e) != 2 {
 		t.Fatal("corrected form was not stored")
@@ -190,7 +190,7 @@ func TestFormNonceMessageAndOrderTransition(t *testing.T) {
 	if messages != 1 || notifications != 1 || audits != 1 {
 		t.Fatalf("message repeat stored messages=%d notices=%d audits=%d", messages, notifications, audits)
 	}
-	order := e.order(buyer, e.product(vendor, "digital"), "BTC", stateDraft)
+	order := e.order(buyer, e.product(vendor, "digital"), "XMR", stateDraft)
 	cancel := url.Values{"order_id": {order}, "from": {stateDraft}, formNonceField: {randomToken()[:32]}}
 	first = e.do("POST", "/orders/cancel", buyerSession, cancel)
 	e.check(first, 303)
@@ -208,55 +208,6 @@ func TestFormNonceMessageAndOrderTransition(t *testing.T) {
 	e.check(e.do("POST", "/orders/cancel", buyerSession, changed), 409)
 	// A newly rendered form carries a different nonce, so the existing state-machine 409 still applies.
 	e.check(e.do("POST", "/orders/cancel", buyerSession, url.Values{"order_id": {order}, "from": {stateDraft}}), 409)
-}
-
-func TestFormNonceOtherOrderTransitionsReplayOnce(t *testing.T) {
-	// Shipping and buyer receipt confirmation are escrow-specific actions with
-	// dedicated replay/lost-ack coverage. Digital escrow normally delivers and
-	// completes in the funding watcher; when a listing is taken down, its vendor
-	// can still deliver by hand through the existing order action. Exercise that
-	// real escrow exception here rather than constructing a pooled order.
-	x := newEscrowEnv(t)
-	order := x.draft()
-	addr := x.mustCheckout(order, regtestAddr("nonce-manual-delivery-refund"))
-	if _, err := x.DB.Exec("UPDATE products SET archived=true,archived_at=now(),admin_archive_reason='test takedown' WHERE id=(SELECT product_id FROM orders WHERE id=$1)", order); err != nil {
-		t.Fatal(err)
-	}
-	x.core.deposit(addr, txidOf("nonce-manual-delivery"), 0, 100000, 3)
-	x.poll()
-	if x.state(order) != statePaid {
-		t.Fatalf("taken-down funded escrow was not left paid for manual delivery: %s", x.state(order))
-	}
-	page := x.page("/order?id="+order, x.vendorSess)
-	nonce := renderedFormNonce(t, page, "/orders/deliver")
-	if got := agInt(x.testEnv, "SELECT count(*) FROM form_submissions WHERE action_path='/orders/deliver'"); got != 0 {
-		t.Fatalf("GET wrote %d delivery receipts", got)
-	}
-	f := url.Values{"order_id": {order}, "content": {"One-time licence"}, formNonceField: {nonce}}
-	first := x.do("POST", "/orders/deliver", x.vendorSess, f)
-	x.check(first, 303)
-	if x.state(order) != stateCompleted {
-		t.Fatalf("manual escrow delivery did not complete through the system hook: %s", x.state(order))
-	}
-	repeat := x.do("POST", "/orders/deliver", x.vendorSess, f)
-	x.check(repeat, 303)
-	if first.Header().Get("Location") != repeat.Header().Get("Location") ||
-		noticeSetCookie(repeat) == nil || noticeSetCookie(repeat).Value != "order-delivered" {
-		t.Fatal("manual delivery replay changed its recorded response")
-	}
-	var delivered, completed, content, receipts int
-	if err := x.DB.QueryRow("SELECT count(*) FILTER (WHERE to_state='delivered'), count(*) FILTER (WHERE to_state='completed') FROM order_events WHERE order_id=$1", order).Scan(&delivered, &completed); err != nil {
-		t.Fatal(err)
-	}
-	if err := x.DB.QueryRow("SELECT count(*) FROM deliveries WHERE order_id=$1", order).Scan(&content); err != nil {
-		t.Fatal(err)
-	}
-	if err := x.DB.QueryRow("SELECT count(*) FROM form_submissions WHERE action_path='/orders/deliver'").Scan(&receipts); err != nil {
-		t.Fatal(err)
-	}
-	if delivered != 1 || completed != 1 || content != 1 || receipts != 1 {
-		t.Fatalf("manual delivery replay wrote delivered=%d completed=%d deliveries=%d receipts=%d", delivered, completed, content, receipts)
-	}
 }
 
 func TestFormNonceLostCommitAcknowledgementCanReplayRecordedSuccess(t *testing.T) {

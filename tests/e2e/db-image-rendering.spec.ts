@@ -134,7 +134,7 @@ test('vendor page image budget and cache', async ({ browser, baseURL }) => {
     await pager.getByRole('link', { name: 'Next page, page 2 of 2' }).click();
     await expect(visitor.locator('.listings-grid .product-card')).toHaveCount(5);
     await expect(pager.locator('[aria-current="page"]')).toHaveText('Page 2 of 2');
-    await expect(pager.getByRole('link', { name: 'Previous page, page 1 of 2' })).toHaveAttribute('href', page1);
+    await expect(pager.getByRole('link', { name: 'Previous page, page 1 of 2' })).toHaveAttribute('href', page1.replace('/vendor?', '/vendor?currency=XMR&'));
     await waitForStyles(visitor);
     expect(await visitor.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
   } finally {
@@ -189,7 +189,7 @@ test('public staff list and decision avatar when shown', async ({ browser, baseU
       INSERT INTO products(id,vendor_id,title,description,category,region,kind,btc,xmr,stock)
         VALUES ('${productID}','${vendorID}','Decision avatar fixture','Seeded by db-image-rendering.spec.ts','Hardware','Worldwide','physical',100000,500000000000,1);
       INSERT INTO orders(id,buyer_id,product_id,currency,amount,state)
-        SELECT '${orderID}',id,'${productID}','BTC',100000,'resolved' FROM users WHERE handle='${buyerHandle}';
+        SELECT '${orderID}',id,'${productID}','XMR',100000,'resolved' FROM users WHERE handle='${buyerHandle}';
       INSERT INTO disputes(id,order_id,reason,status,resolution,outcome)
         VALUES ('${hex(32)}','${orderID}','The parcel never arrived at the agreed place','Resolved — refund to buyer','No proof of shipping was provided by the vendor.','refund');
       INSERT INTO order_events(order_id,from_state,to_state,actor_id,note)

@@ -3,7 +3,7 @@ package market
 import (
 	"encoding/json"
 	"errors"
-	"net/url"
+
 	"os"
 	"path/filepath"
 	"sync"
@@ -259,7 +259,7 @@ func TestRetentionAuthenticationAndDraftExpiry(t *testing.T) {
 	vendor, _ := e.user("retention_auth_vendor", "vendor")
 	buyer, _ := e.user("retention_auth_buyer", "buyer")
 	product := e.product(vendor, "physical")
-	draft := e.order(buyer, product, "BTC", stateDraft)
+	draft := e.order(buyer, product, "XMR", stateDraft)
 	agExec(e, `UPDATE orders SET created=now()-interval '31 days' WHERE id=$1`, draft)
 	agExec(e, `INSERT INTO pending_logins(token_hash,user_id,expires) VALUES('retention_expired_pending',$1,now()-interval '1 minute')`, buyer)
 	agExec(e, `INSERT INTO captcha_spent(id,expires) VALUES('retention_expired_captcha',now()-interval '1 minute')`)
@@ -587,7 +587,7 @@ func TestRetentionPrivateReplayPreservesLaterResolutionAndResetsExpiryMarker(t *
 	vendor, _ := e.user("retention_epoch_vendor", "vendor")
 	buyer, _ := e.user("retention_epoch_buyer", "buyer")
 	product := e.product(vendor, "digital")
-	order := e.order(buyer, product, "BTC", stateResolved)
+	order := e.order(buyer, product, "XMR", stateResolved)
 	agExec(e, `INSERT INTO disputes(id,order_id,reason,status,outcome,resolution,created) VALUES('retention_old_dispute',$1,'old private evidence','Resolved — release to vendor','release','old private decision',now()-interval '60 days')`, order)
 	agExec(e, `UPDATE orders SET financial_closed_at=now()-interval '31 days' WHERE id=$1`, order)
 	ageRetentionEnrollment(t, e.A, time.Now().UTC().Add(-31*24*time.Hour))
@@ -615,34 +615,6 @@ func TestRetentionPrivateReplayPreservesLaterResolutionAndResetsExpiryMarker(t *
 	}
 }
 
-func TestRetentionRestrictedClosureKeepsExistingEscrowPartySigning(t *testing.T) {
-	x := newEscrowEnv(t)
-	order, settlement := x.shippedPhysical("bcrt1qretentionbuyerrefund000000000001", "bcrt1qretentionvendorclaim000000000001", 100000)
-	cfg := retentionConfig{Enabled: true, StateDir: retentionPrivateTestDir(t)}
-	if err := x.A.initRetention(t.Context(), cfg); err != nil {
-		t.Fatal(err)
-	}
-	agExec(x.testEnv, `UPDATE users SET deletion_requested_at=now()-interval '31 days',totp_pending='unused pending material',recovery_reveal='unused reveal',payout_btc='unrelated address' WHERE id=$1`, x.buyer)
-	now := time.Now().UTC()
-	ageRetentionEnrollment(t, x.A, now.Add(-31*24*time.Hour))
-	runRetentionAt(t, x.A, now)
-	if agInt(x.testEnv, `SELECT count(*) FROM users WHERE id=$1 AND closed_at IS NULL AND retention_restricted_at IS NOT NULL AND profile_scrubbed_at IS NOT NULL AND password_hash<>'' AND totp_pending='' AND recovery_reveal='' AND payout_btc=''`, x.buyer) != 1 {
-		t.Fatal("closure either retained unrelated profile or stranded party authentication")
-	}
-	if agInt(x.testEnv, `SELECT count(*) FROM retention_account_exceptions WHERE user_id=$1 AND reason='open_escrow' AND resolved_at IS NULL`, x.buyer) != 1 {
-		t.Fatal("continued authentication has no reviewable scoped basis")
-	}
-	copy := x.partyCopy(order, x.buyerSess, settlement)
-	k, err := parseEscrowKey(x.buyerKey, keyNetTest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if code, body := x.sign(order, x.buyerSess, settlement, walletSign(t, copy, k.Fingerprint, 1)); code != 303 {
-		t.Fatalf("restricted buyer could not sign existing settlement: %d %s", code, body)
-	}
-	x.check(x.do("POST", "/orders", x.buyerSess, url.Values{"product_id": {x.product}, "currency": {"BTC"}}), 403)
-}
-
 func TestRetentionUserForeignKeyInventoryIsExplicit(t *testing.T) {
 	e := newTestApp(t)
 	tx, err := e.DB.BeginTx(t.Context(), nil)
@@ -664,4 +636,29 @@ func TestRetentionUserForeignKeyInventoryIsExplicit(t *testing.T) {
 	if err != nil || !unknown {
 		t.Fatalf("new unreviewed dependency was not protected: %t %v", unknown, err)
 	}
+}
+
+func TestRetentionRestrictedClosureKeepsExistingMoneroEscrowConfirmation(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	order, buyerSession, _ := x.shippedXMR(x.physical(x.vendor))
+	buyer := agStr(x.testEnv, "SELECT buyer_id FROM orders WHERE id=$1", order)
+	cfg := retentionConfig{Enabled: true, StateDir: retentionPrivateTestDir(t)}
+	if err := x.A.initRetention(t.Context(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	agExec(x.testEnv, `UPDATE users SET deletion_requested_at=now()-interval '31 days',totp_pending='unused pending material',recovery_reveal='unused reveal',payout_btc='unrelated address' WHERE id=$1`, buyer)
+	now := time.Now().UTC()
+	ageRetentionEnrollment(t, x.A, now.Add(-31*24*time.Hour))
+	runRetentionAt(t, x.A, now)
+	if agInt(x.testEnv, `SELECT count(*) FROM users WHERE id=$1 AND closed_at IS NULL AND retention_restricted_at IS NOT NULL AND profile_scrubbed_at IS NOT NULL AND password_hash<>'' AND totp_pending='' AND recovery_reveal='' AND payout_btc=''`, buyer) != 1 {
+		t.Fatal("closure either retained unrelated profile or stranded party authentication")
+	}
+	if agInt(x.testEnv, `SELECT count(*) FROM retention_account_exceptions WHERE user_id=$1 AND reason='open_escrow' AND resolved_at IS NULL`, buyer) != 1 {
+		t.Fatal("continued authentication has no reviewable scoped basis")
+	}
+	if code, body := x.xmrConfirm(order, buyerSession, testPassword); code != 303 {
+		t.Fatalf("restricted buyer could not confirm existing Monero escrow: %d %s", code, body)
+	}
+	x.check(x.do("POST", "/orders", buyerSession, form("product_id", x.product, "currency", "XMR")), 403)
 }

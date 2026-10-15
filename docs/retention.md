@@ -100,8 +100,7 @@ Monero wallet destruction retains its existing zero-balance, empty-pool and sett
 When retention is enabled, the service records a durable destruction intent in the external state before the irreversible wallet-password change.
 An ambiguous RPC result keeps recovery pending and blocks normal startup until it is reconciled; a later database restore must replay the destruction record.
 Destroyed wallet files and their copies still require operator cleanup; a database purge cannot remove files on another wallet host.
-Bitcoin descriptors retained by the node likewise need a separately verified wallet cleanup procedure.
-Guarded database retirement removes order/payment mappings, addresses, keys, signatures and original Bitcoin wallet labels.
+Guarded database retirement removes order/payment mappings, addresses, keys, signatures and original wallet labels.
 It preserves allocation high-water marks and global key/address hashes solely to prevent reuse or resurrection from stale wallets.
 These hashes can still be linked using outside information; they are not anonymous data. Retain them only while this service or its recovery lineage
 can reuse those keys or wallets, then destroy the guard state within 30 days of permanent decommissioning after all obligations and preservation duties end.
@@ -111,13 +110,9 @@ Publish the payment cutoff: funds sent after retirement or wallet destruction ma
 ### Physical wallet cleanup register
 
 **Control room → Retention and preservation → Physical wallet cleanup** shows the protected wallet name, original cleanup deadline and next review.
-Bitcoin obligations are due 180 days after financial closure. Monero obligations are registered when the existing guarded 90-day destruction occurs.
+Monero obligations are registered when the existing guarded 90-day destruction occurs.
 A shared wallet uses its earliest outstanding deadline; reviewing it does not restart that clock.
 
-For Bitcoin, pause new allocation and settlement sending, inventory all still-required descriptors and addresses, and verify their funds and recovery duties.
-Rebuild a separate watch wallet containing only necessary live/recovery descriptors; validate imports, balances, history and active-order monitoring before switching configuration.
-Preserve the application's allocation floors and key guards. Only after verifying the replacement and all scoped duties may the operator remove the retired wallet's descriptors,
-files, snapshots and recovery copies. This release provides guarded database retirement and tracking; it does not automate or certify that wallet rebuild.
 For Monero, remove the already-destroyed wallet's `NAME`, `NAME.keys` and all corresponding copies only after the existing destruction checks and preservation review.
 
 Using the operator's protected database administration connection, record a review of the exact row:
@@ -125,15 +120,15 @@ Using the operator's protected database administration connection, record a revi
 ```sql
 UPDATE retention_wallet_cleanup
 SET review_due=clock_timestamp()+interval '30 days'
-WHERE coin='BTC' AND wallet_name='EXACT_OLD_WALLET_NAME' AND confirmed_at IS NULL;
+WHERE coin='XMR' AND wallet_name='EXACT_OLD_WALLET_NAME' AND confirmed_at IS NULL;
 ```
 
-After verifying actual cleanup in every location, record completion on that same row; substitute `XMR` for a Monero wallet:
+After verifying actual cleanup in every location, record completion on that same row:
 
 ```sql
 UPDATE retention_wallet_cleanup
 SET confirmed_at=clock_timestamp(), confirmed_by='RESPONSIBLE_OPERATOR'
-WHERE coin='BTC' AND wallet_name='EXACT_OLD_WALLET_NAME' AND confirmed_at IS NULL;
+WHERE coin='XMR' AND wallet_name='EXACT_OLD_WALLET_NAME' AND confirmed_at IS NULL;
 ```
 
 An acknowledgement records an operator attestation; it does not delete or inspect files. Completed register entries expire after 180 days.

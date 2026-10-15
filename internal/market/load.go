@@ -323,11 +323,9 @@ func (a *App) load(r *http.Request, d *PageData) error {
 			}
 			p.PriceBTC = amount(btc, 8)
 			p.PriceXMR = amount(xmr, 12)
-			if btc < payoutFloor("BTC", "release") {
-				p.BTCOrderUnavailable = subFloorListing("BTC", xmr)
-			}
+
 			if xmr < payoutFloor("XMR", "release") {
-				p.XMROrderUnavailable = subFloorListing("XMR", btc)
+				p.XMROrderUnavailable = subFloorListing("XMR", 0)
 			}
 			d.Products = append(d.Products, p)
 		}
@@ -538,12 +536,12 @@ func (a *App) load(r *http.Request, d *PageData) error {
 
 func previewData(page string) PageData {
 	p := []Product{
-		{ID: "encrypted-drive", Title: "Encrypted USB Drive — 256GB", Description: "Hardware-encrypted storage with a tamper-evident enclosure. A practical place for your offline backups and private documents.", Category: "Hardware", Region: "Europe", Kind: "physical", Vendor: "ghost_circuit", VendorID: "ghost", PriceBTC: "0.00412", PriceXMR: "0.271", Stock: 7},
-		{ID: "security-research", Title: "Security Research — Q3 Report", Description: "Defensive analysis of patched vulnerabilities, mitigation recommendations, and a clear guide to keeping your systems up to date.", Category: "Digital", Region: "Worldwide", Kind: "digital", Vendor: "null_ptr", VendorID: "null", PriceBTC: "0.00089", PriceXMR: "0.058", Stock: 99},
-		{ID: "privacy-course", Title: "Practical Privacy — Field Guide", Description: "An independent guide to device hygiene, threat modeling, and safer everyday communication.", Category: "Digital", Region: "Worldwide", Kind: "digital", Vendor: "cipher_monk", VendorID: "cipher", PriceBTC: "0.00031", PriceXMR: "0.020", Stock: 99},
-		{ID: "faraday-bag", Title: "Faraday Laptop Bag — 15 inch", Description: "A signal-shielding sleeve designed for storing your laptop and small devices. Check manufacturer specifications before purchase.", Category: "Hardware", Region: "Worldwide", Kind: "physical", Vendor: "iron_cage", VendorID: "iron", PriceBTC: "0.00156", PriceXMR: "0.103", Stock: 23},
-		{ID: "node-guide", Title: "Self-hosting — Node Setup Guide", Description: "Documentation for maintaining your own infrastructure, with monitoring and backup planning.", Category: "Digital", Region: "Worldwide", Kind: "digital", Vendor: "null_ptr", VendorID: "null", PriceBTC: "0.00042", PriceXMR: "0.028", Stock: 99},
-		{ID: "consulting", Title: "Personal Security Consultation", Description: "A one-hour review of your everyday privacy requirements and a practical plan for reducing unnecessary data exposure.", Category: "Services", Region: "Worldwide", Kind: "digital", Vendor: "cipher_monk", VendorID: "cipher", PriceBTC: "0.0012", PriceXMR: "0.079", Stock: 4},
+		{ID: "encrypted-drive", Title: "Encrypted USB Drive — 256GB", Description: "Hardware-encrypted storage with a tamper-evident enclosure. A practical place for your offline backups and private documents.", Category: "Hardware", Region: "Europe", Kind: "physical", Vendor: "ghost_circuit", VendorID: "ghost", PriceXMR: "0.271", Stock: 7},
+		{ID: "security-research", Title: "Security Research — Q3 Report", Description: "Defensive analysis of patched vulnerabilities, mitigation recommendations, and a clear guide to keeping your systems up to date.", Category: "Digital", Region: "Worldwide", Kind: "digital", Vendor: "null_ptr", VendorID: "null", PriceXMR: "0.058", Stock: 99},
+		{ID: "privacy-course", Title: "Practical Privacy — Field Guide", Description: "An independent guide to device hygiene, threat modeling, and safer everyday communication.", Category: "Digital", Region: "Worldwide", Kind: "digital", Vendor: "cipher_monk", VendorID: "cipher", PriceXMR: "0.020", Stock: 99},
+		{ID: "faraday-bag", Title: "Faraday Laptop Bag — 15 inch", Description: "A signal-shielding sleeve designed for storing your laptop and small devices. Check manufacturer specifications before purchase.", Category: "Hardware", Region: "Worldwide", Kind: "physical", Vendor: "iron_cage", VendorID: "iron", PriceXMR: "0.103", Stock: 23},
+		{ID: "node-guide", Title: "Self-hosting — Node Setup Guide", Description: "Documentation for maintaining your own infrastructure, with monitoring and backup planning.", Category: "Digital", Region: "Worldwide", Kind: "digital", Vendor: "null_ptr", VendorID: "null", PriceXMR: "0.028", Stock: 99},
+		{ID: "consulting", Title: "Personal Security Consultation", Description: "A one-hour review of your everyday privacy requirements and a practical plan for reducing unnecessary data exposure.", Category: "Services", Region: "Worldwide", Kind: "digital", Vendor: "cipher_monk", VendorID: "cipher", PriceXMR: "0.079", Stock: 4},
 	}
 	u := &User{ID: "preview", Handle: "preview_user", Role: "buyer"}
 	if page == "admin" {
@@ -555,6 +553,6 @@ func previewData(page string) PageData {
 	if page == "vendor-dashboard" {
 		u.Role = "vendor"
 	}
-	o := Order{ID: previewDraftID, ProductID: p[0].ID, Title: p[0].Title, Buyer: u.Handle, Vendor: p[0].Vendor, Currency: "BTC", Amount: p[0].PriceBTC, State: stateDraft, Status: stateLabel(stateDraft), Kind: p[0].Kind, BuyerID: u.ID, VendorID: p[0].VendorID, Created: "Sample order", Updated: "Sample order"}
-	return PageData{Page: page, Title: strings.ReplaceAll(strings.Title(page), "-", " "), Preview: true, User: u, Products: p, Product: &p[0], Orders: []Order{o}, Order: &o, Currency: "BTC", BitcoinPriceLabel: "Price (BTC, test network)", Settings: map[string]string{"site_name": "OPSMKT"}, Users: []User{{ID: "ghost", Handle: "ghost_circuit", Role: "vendor"}}, Events: []Event{{Handle: u.Handle, Action: "Preview only — no real activity", Created: "—"}}}
+	o := Order{ID: previewDraftID, ProductID: p[0].ID, Title: p[0].Title, Buyer: u.Handle, Vendor: p[0].Vendor, Currency: "XMR", Amount: p[0].PriceXMR, State: stateDraft, Status: stateLabel(stateDraft), Kind: p[0].Kind, BuyerID: u.ID, VendorID: p[0].VendorID, Created: "Sample order", Updated: "Sample order"}
+	return PageData{Page: page, Title: strings.ReplaceAll(strings.Title(page), "-", " "), Preview: true, User: u, Products: p, Product: &p[0], Orders: []Order{o}, Order: &o, Currency: "XMR", Settings: map[string]string{"site_name": "OPSMKT"}, Users: []User{{ID: "ghost", Handle: "ghost_circuit", Role: "vendor"}}, Events: []Event{{Handle: u.Handle, Action: "Preview only — no real activity", Created: "—"}}}
 }

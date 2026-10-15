@@ -233,49 +233,6 @@ func cloneValues(in url.Values) url.Values {
 	return out
 }
 
-func TestBitcoinEscrowRebroadcastConfirmedReceipt(t *testing.T) {
-	x := newEscrowEnv(t)
-	adminID, admin := x.user("nonce_btc_rebroadcast_admin", "admin")
-	order, id := x.built(regtestAddr("nonce-rebroadcast-refund"), regtestAddr("nonce-rebroadcast-claim"), 100000)
-	order2, id2 := x.built(regtestAddr("nonce-rebroadcast-refund-2"), regtestAddr("nonce-rebroadcast-claim-2"), 100000)
-	// Broadcast the second transaction normally and confirm it, then kill the first broadcast so it stays signed.
-	// This leaves two independently listed held forms without another watcher send racing the fixture.
-	x.signAs(order2, roleVendor, id2)
-	x.poll()
-	broadcast := x.settleByID(id2)
-	if broadcast.State != "broadcast" {
-		t.Fatalf("broadcast fixture: %+v", broadcast)
-	}
-	x.core.setTxConfs(broadcast.TxID, 1, "")
-	x.signAs(order, roleVendor, id)
-	x.A.escrowPollOnce(x.killAtSend())
-	x.sendNormally()
-	if got := x.settleByID(id); got.State != "signed" || got.Raw == "" {
-		t.Fatalf("signed fixture: %+v", got)
-	}
-	if got := x.settleByID(id2); got.State != "broadcast" || got.Raw == "" {
-		t.Fatalf("second broadcast fixture: %+v", got)
-	}
-	x.setGate(true)
-	raw := x.settleByID(id).Raw
-	caseInfo := rebroadcastReceiptCase{
-		e: x.testEnv, path: "/admin/escrow-rebroadcast", settlementID: fmtInt(id), orderID: order, adminID: adminID, adminSession: admin, settlementTable: "settlements", renderedForms: 2, savedRedirect: "/admin#escrow-recovery",
-		auditLike:   "Confirmed the rebroadcast of escrow settlement " + fmtInt(id) + "%",
-		eventLike:   "%checked that this escrow settlement's transaction was not already sent or replaced after the market restored%",
-		lostAckText: "Bitcoin escrow rebroadcast outcome unknown", rpcCount: func() int { return x.core.count("sendrawtransaction") }, heldValue: restoredSettlementHold,
-		clearAndRehold: func() {
-			x.setGate(false)
-			x.poll()
-			// sendsOf includes the earlier killed attempt as well as this one real send.
-			if got := x.settleByID(id); got.State != "broadcast" || got.Error != "" || x.sendsOf(raw) != 2 {
-				t.Fatalf("watcher did not clear and send confirmed settlement exactly once after the killed attempt: %+v sends=%d", got, x.sendsOf(raw))
-			}
-			x.restoreHold(id)
-		},
-	}
-	runRebroadcastReceiptContract(t, caseInfo)
-}
-
 func TestMoneroEscrowRebroadcastConfirmedReceipt(t *testing.T) {
 	x := newXMREscrowEnv(t)
 	x.mustPoll()

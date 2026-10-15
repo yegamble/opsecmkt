@@ -1,3 +1,9 @@
+# Current source: Monero only
+
+The current source supports only Monero (XMR). Bitcoin checkout, key registration, signing, node provisioning and payment controls have been removed. Listing forms and new orders use XMR. Monero escrow remains custodial and off by default; its network and wallet safeguards remain in place.
+
+There is no live deployment or payment cutover for this change. The release notes below describe earlier alpha versions and are historical.
+
 # Upgrading from v0.1.0-alpha.1 to `v0.1.0-alpha.2`
 
 `v0.1.0-alpha.2` is a prerelease. Its installer now defaults new installs to mainnet (real funds), but an upgrade keeps
@@ -491,30 +497,16 @@ not know are seen.
 BEGIN;
 INSERT INTO settings(key,value) VALUES ('payments_recovery_required','true')
 ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
-INSERT INTO settings(key,value) VALUES ('escrow_release_recheck','true')
+INSERT INTO settings(key,value) VALUES ('retention_restore_required','true')
 ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
 INSERT INTO settings(key,value) VALUES ('escrow_xmr_release_recheck','true')
 ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
-INSERT INTO settings(key,value) VALUES ('escrow_sweep_required','true')
-ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
 INSERT INTO settings(key,value) VALUES ('xmr_escrow_sweep_required','true')
 ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
-UPDATE settlements SET send_error='Restored from backup: check that this escrow settlement''s transaction was not already sent or replaced, then confirm its rebroadcast on the admin page.', updated=now()
-WHERE raw_tx IS NOT NULL AND state IN ('signed','broadcast');
-UPDATE settlement_bumps SET send_error='Restored from backup: check that this escrow settlement''s transaction was not already sent or replaced, then confirm its rebroadcast on the admin page.', updated=now()
-WHERE raw_tx IS NOT NULL AND state IN ('signed','broadcast');
 UPDATE xmr_settlements SET send_error='Restored from backup: check that this escrow settlement''s transaction was not already sent or replaced, then confirm its rebroadcast on the admin page.', updated=now()
 WHERE state IN ('built','relayed');
 UPDATE xmr_escrow_slots SET state='retired', updated=now() WHERE state='free';
 UPDATE xmr_escrow_wallets SET state='closing', updated=now() WHERE state IN ('active','sealed');
-INSERT INTO escrow_index_floors(user_id,next_index)
-SELECT k.user_id, GREATEST(COALESCE(max(CASE WHEN p.derivation_suffix LIKE '/0/%' THEN split_part(p.derivation_suffix,'/',3) ELSE split_part(p.derivation_suffix,'/',2) END::bigint),0)+1, COALESCE(max(f.next_index),1))+50
-FROM user_escrow_keys k
-LEFT JOIN escrow_pubkeys p ON p.user_id=k.user_id AND (p.derivation_suffix ~ '^/0/[1-9][0-9]{0,9}$' OR p.derivation_suffix ~ '^/[1-9][0-9]{0,9}/0/0$')
-LEFT JOIN escrow_index_floors f ON f.user_id=k.user_id
-GROUP BY k.user_id
-ON CONFLICT (user_id) DO UPDATE SET next_index=EXCLUDED.next_index;
-DO $$ BEGIN PERFORM setval('escrow_market_index', nextval('escrow_market_index')+49); END $$;
 INSERT INTO audit_events(user_id,action) VALUES (NULL, 'Payout recovery gate set manually (UPGRADING.md section 6); all outbound payouts paused until an administrator clears the gate');
 COMMIT;
 ```
@@ -989,7 +981,7 @@ escrow's pinned refund address and market-fee snapshot, `escrow_pubkeys`, `settl
 `escrow_market_index`), the column `payments.settlement_id`, and a trigger, `payouts_not_escrow`, that refuses a
 `payouts` row for an order that has an escrow (an escrow order is settled from its escrow, never by a pooled payout).
 The tables stay empty unless `ESCROW_BTC=on`, a regtest-only setting that is off by default ([operator
-guide](docs/operator-guide.md#bitcoin-escrow)), and the trigger changes nothing for pooled orders; nothing
+guide](https://github.com/yegamble/opsecmkt/blob/e1c082db8eff76e25516e23362a5b9a101751a68/docs/operator-guide.md#bitcoin-escrow)), and the trigger changes nothing for pooled orders; nothing
 changes for users or payments. No action is needed. Rolling back past this release needs the pre-upgrade backup, as
 for every migration (section 5).
 
@@ -1003,7 +995,7 @@ party's signature per input; the pasted PSBT is never stored), and two triggers:
 change to a settlement's transaction once a party has signed it, and `settlement_outputs_frozen` allows outputs to be
 written only while their settlement is being built. Like migration 074 it changes nothing unless `ESCROW_BTC=on`
 (regtest only, off by default); the new optional key `ESCROW_BTC_FEE_RATE` (sat/vB, default 2) sets the network fee
-rate of settlements ([operator guide](docs/operator-guide.md#bitcoin-escrow)). No action is needed.
+rate of settlements ([operator guide](https://github.com/yegamble/opsecmkt/blob/e1c082db8eff76e25516e23362a5b9a101751a68/docs/operator-guide.md#bitcoin-escrow)). No action is needed.
 Rolling back past this release needs the pre-upgrade backup, as for every migration (section 5).
 
 ## 21. Bitcoin escrow co-signing, broadcast, dispute decisions and stray refunds (migration 076)
@@ -1023,7 +1015,7 @@ escrow disputes, and writes three `settings` keys when used: `escrow_btc_fee_bps
 market fee an administrator saves on `/admin`, which then overrides `ESCROW_BTC_FEE_BPS` and
 `ESCROW_BTC_FEE_ADDRESS`) and `escrow_btc_stray_check` (the daily stray-refund check). Escrow now also stays disabled
 unless the arbiter wallet is an unencrypted descriptor wallet with private keys that has never spent (A-471, section 38; [operator
-guide](docs/operator-guide.md#bitcoin-escrow)). No action is needed. Rolling back past this release needs
+guide](https://github.com/yegamble/opsecmkt/blob/e1c082db8eff76e25516e23362a5b9a101751a68/docs/operator-guide.md#bitcoin-escrow)). No action is needed. Rolling back past this release needs
 the pre-upgrade backup, as for every migration (section 5): the earlier release refuses to start on a database that
 records migration 076.
 
@@ -1046,7 +1038,7 @@ market broadcasts it again. While the gate is set, escrow checkout is also refus
 a draft. The escrow RPC user's `rpcwhitelist` needs one more method, `listtransactions` (it reads the
 watch-only wallet only; the escrow watcher uses it to name the transaction that spent an escrow deposit): add it before
 upgrading, or that lookup is refused and such a deposit is flagged without the transaction ID ([operator
-guide](docs/operator-guide.md#bitcoin-escrow)). No other action is needed. Rolling back past this release
+guide](https://github.com/yegamble/opsecmkt/blob/e1c082db8eff76e25516e23362a5b9a101751a68/docs/operator-guide.md#bitcoin-escrow)). No other action is needed. Rolling back past this release
 needs the pre-upgrade backup, as for every migration (section 5): the earlier release refuses to start on a database
 that records migration 077.
 
@@ -1079,7 +1071,7 @@ escrow columns, and the only visible effect is that a physical listing created o
 dispatch window (3 days unless its vendor gives another; the listing form shows the field only while escrow is on).
 With escrow on, this release also offers escrow checkout for physical listings, adds the administrator's release
 deadline length to `/admin` (setting `escrow_release_days`, default 14, 7 to 30 days; [operator
-guide](docs/operator-guide.md#bitcoin-escrow)) and a ship-by time and a release deadline to each physical
+guide](https://github.com/yegamble/opsecmkt/blob/e1c082db8eff76e25516e23362a5b9a101751a68/docs/operator-guide.md#bitcoin-escrow)) and a ship-by time and a release deadline to each physical
 escrow order. A physical listing that exists before the upgrade has no dispatch window and takes no escrow checkout
 until its vendor saves it; a save stores the default of 3 days even while escrow is off (the field is then hidden),
 so once escrow is turned on such a listing takes escrow checkout with a 3-day window its vendor did not choose. A
@@ -1140,7 +1132,7 @@ index 50 past the restored records; with escrow on, checkout then answers 503 un
 keys of every orphan address, so that no escrow key is handed out twice (A-366). A dump taken before this migration has
 no `escrow_index_floors` table when `scripts/restore.sh` runs, so that restore gets the sweep and the
 recheck but not the margin. If an orphan's keys cannot be read, checkout stays paused until an operator deals with it:
-see the [test-network runbook](docs/testnet-runbook.md#an-orphan-whose-keys-cannot-be-read-escrow-checkout-stays-paused).
+see the [test-network runbook](https://github.com/yegamble/opsecmkt/blob/e1c082db8eff76e25516e23362a5b9a101751a68/docs/testnet-runbook.md#an-orphan-whose-keys-cannot-be-read-escrow-checkout-stays-paused).
 No action is needed at upgrade. Rolling back past this release needs the pre-upgrade backup, as for every migration
 (section 5): the earlier release refuses to start on a database that records migration 083.
 
@@ -1240,7 +1232,7 @@ later"): the guard needs Bitcoin Core 31.1 (the version the installer pins; earl
 node is unaffected. With `ESCROW_BTC=on` the escrow watcher applies the
 same rule, the app pins the escrow node's chain in `settings` (`escrow_btc_chain`; an existing regtest escrow database
 is pinned at the first start), and the escrow user's `rpcwhitelist` gains `getnetworkinfo`
-([operator guide](docs/operator-guide.md#bitcoin-escrow)); on regtest the app does not call it, so the old
+([operator guide](https://github.com/yegamble/opsecmkt/blob/e1c082db8eff76e25516e23362a5b9a101751a68/docs/operator-guide.md#bitcoin-escrow)); on regtest the app does not call it, so the old
 whitelist keeps working, but add it. No action is needed otherwise.
 
 ## 34. Bitcoin escrow refuses a pooled RPC user that can read the arbiter wallet (A-440)
@@ -1254,9 +1246,9 @@ line on the escrow node (unrestricted under `rpcwhitelistdefault=0`, as the guid
 market's escrow key, so escrow now stays disabled with "escrow: Bitcoin escrow disabled: the pooled Bitcoin RPC user
 (BITCOIN_RPC_URL) was not refused listdescriptors, gethdkeys or walletprocesspsbt on the arbiter wallet, …" (with the
 method that answered and its class, such as `(gethdkeys answered)`) and a line on `/admin`. Before upgrading,
-give that user the pooled whitelist line of the [operator guide](docs/operator-guide.md#bitcoin-escrow)
+give that user the pooled whitelist line of the [operator guide](https://github.com/yegamble/opsecmkt/blob/e1c082db8eff76e25516e23362a5b9a101751a68/docs/operator-guide.md#bitcoin-escrow)
 (*The pooled RPC user*) and restart bitcoind, or move escrow to a node of its own. The guide and the
-[runbook](docs/testnet-runbook.md#back-up-and-restore-the-escrow-arbiter-and-watch-only-wallets) now also describe the
+[runbook](https://github.com/yegamble/opsecmkt/blob/e1c082db8eff76e25516e23362a5b9a101751a68/docs/testnet-runbook.md#back-up-and-restore-the-escrow-arbiter-and-watch-only-wallets) now also describe the
 arbiter and watch-only wallet backup and restore. Pooled payments are unaffected.
 
 ## 35. Monero daemon sync guard, Monero escrow on stagenet and its network pin (A-449)
@@ -1317,7 +1309,7 @@ order note and a "Payment review needed" notification) and is listed on `/admin`
 IPv4 and IPv6 on Bitcoin Core 31.1 or later; otherwise they wait, with a line on `/admin`. A Tor-mode market using escrow
 therefore needs `getnetworkinfo` on the escrow user's `rpcwhitelist` (it is called on regtest too in Tor mode) and the
 escrow node started with `-proxy=<Tor SOCKS address>`, never `-connect` or `-onlynet`
-([operator guide](docs/operator-guide.md#bitcoin-escrow), *Tor mode*). Clearnet mode and pooled payouts
+([operator guide](https://github.com/yegamble/opsecmkt/blob/e1c082db8eff76e25516e23362a5b9a101751a68/docs/operator-guide.md#bitcoin-escrow), *Tor mode*). Clearnet mode and pooled payouts
 are unchanged.
 
 ## 37. Escrow-only payment intake and the readiness panel (A-444)
@@ -1359,7 +1351,7 @@ this database's migrations does not start against it at all ([Rolling back](#5-r
 ## 38. Bitcoin escrow: a payment to the arbiter wallet no longer disables escrow (A-471)
 
 No migration, no new key. Only with `ESCROW_BTC=on`. **Action: add `listsinceblock` to the escrow user's
-`rpcwhitelist`** (the line in the [operator guide](docs/operator-guide.md#bitcoin-escrow) ends
+`rpcwhitelist`** (the line in the [operator guide](https://github.com/yegamble/opsecmkt/blob/e1c082db8eff76e25516e23362a5b9a101751a68/docs/operator-guide.md#bitcoin-escrow) ends
 `…,gettransaction,listtransactions,listsinceblock`) and restart bitcoind; without it escrow stays disabled with
 "escrow: Bitcoin escrow disabled: the arbiter wallet's transactions could not be read …" and a line on `/admin`. It is
 read-only and exports nothing.
@@ -1422,7 +1414,7 @@ lets a user register a per-order wallet key (the BIP48 multisig account key, `m/
 transaction in a per-order practice wallet, and listings and vendor profiles show the vendor's key type. Escrows with
 per-order wallets are not built yet: a checkout where either party's active key is a per-order wallet key is refused
 with nothing written, and while BTC intake is escrow only (section 37) such a vendor's listings are not available for
-purchase in BTC and the readiness panel lists the vendor ([per-order escrow](docs/escrow.md#per-order-key-layout-registration-and-practice-a-455-shape-b)).
+purchase in BTC and the readiness panel lists the vendor ([per-order escrow](https://github.com/yegamble/opsecmkt/blob/e1c082db8eff76e25516e23362a5b9a101751a68/docs/escrow.md#per-order-key-layout-registration-and-practice-a-455-shape-b)).
 No action is needed at upgrade. Rolling back past this release needs the pre-upgrade backup, as for every migration
 (section 5): the earlier release refuses to start on a database that records migration 088.
 
@@ -1435,8 +1427,8 @@ as `regtest`; mainnet and testnet3 are still refused, and `BITCOIN_CHAIN`, when 
 database). The startup refusals now name the chains escrow runs on ("refusing to start: ESCROW_BTC=on runs only on
 regtest, signet or testnet4 …") and the log line reads "escrow: Bitcoin escrow on (test networks only)" where they said
 regtest only; a log filter matching the old text needs updating. The operator guide's
-section is now Bitcoin escrow (test networks only) (since section 62, [Bitcoin escrow](docs/operator-guide.md#bitcoin-escrow)), and the
-[runbook](docs/testnet-runbook.md#11-bitcoin-escrow-on-signet-or-testnet4) lists what a signet or testnet4 market needs
+section is now Bitcoin escrow (test networks only) (since section 62, [Bitcoin escrow](https://github.com/yegamble/opsecmkt/blob/e1c082db8eff76e25516e23362a5b9a101751a68/docs/operator-guide.md#bitcoin-escrow)), and the
+[runbook](https://github.com/yegamble/opsecmkt/blob/e1c082db8eff76e25516e23362a5b9a101751a68/docs/testnet-runbook.md#11-bitcoin-escrow-on-signet-or-testnet4) lists what a signet or testnet4 market needs
 first. An escrow refund, claim, release or fee address given in capitals is now stored in lower case by the chain's
 prefix (`TB1…` on signet and testnet4, as `BCRT1…` already was on regtest). The escrow pages name the chain. **No run on
 public signet or testnet4 is recorded**: the real-chain legs ran on regtest and on a private signet
@@ -1677,7 +1669,7 @@ make the Bitcoin Core escrow as before; a buyer and a vendor whose keys are of d
 Bitcoin escrow key is for a per-order wallet and yours is for Bitcoin Core" (or the reverse) instead of the "not
 available on this market yet" refusal; two per-order wallet keys are still refused with that refusal. Per-order escrows
 are built in this release but switched off in the code until the market can co-sign them through the escrow signer
-(A-456b); see [per-order escrow](docs/escrow.md#per-order-escrow-creation-and-watching-a-456a-shape-b). The restore floor
+(A-456b); see [per-order escrow](https://github.com/yegamble/opsecmkt/blob/e1c082db8eff76e25516e23362a5b9a101751a68/docs/escrow.md#per-order-escrow-creation-and-watching-a-456a-shape-b). The restore floor
 of `scripts/restore.sh` and of the restore-protection SQL in section 6 now reads an account's highest escrow index in both
 shapes (`/0/<i>` and `/<i>/0/0`), one counter: if you keep a copy of that SQL, take the new one. The escrow RPC user's
 `rpcwhitelist` needs no new method (per-order escrows use `deriveaddresses` with a range, `getdescriptorinfo`,
@@ -1690,7 +1682,7 @@ from the earliest escrow's creation (up to two minutes; it waits while the walle
 kind: the buyer reads "The escrow could not be created: the market's escrow wallet is rescanning the chain. Nothing was
 changed and your order is still a draft; try again in a few minutes", and nothing is written. Expect that after
 restoring the watch-only wallet, for as long as the repair's rescan (or your `rescanblockchain`) runs
-([testnet runbook](docs/testnet-runbook.md#back-up-and-restore-the-escrow-arbiter-and-watch-only-wallets)).
+([testnet runbook](https://github.com/yegamble/opsecmkt/blob/e1c082db8eff76e25516e23362a5b9a101751a68/docs/testnet-runbook.md#back-up-and-restore-the-escrow-arbiter-and-watch-only-wallets)).
 Rolling back past this release
 needs the pre-upgrade backup, as for every migration (section 5): the earlier release refuses to start on a database
 that records migration 089.
@@ -1715,7 +1707,7 @@ and one log line; the next pass tries again and nothing is rebuilt. No per-order
 checkout, which stores them: the market contacts it at checkout (for its key), to co-sign, and in its health check (its
 key, read at startup and on every watcher pass). While it is down the order pages, setup pages and copies of per-order
 escrows are still served and the parties can still sign, a sibling address's stray refund included. Set up the signer
-first: see the [operator guide](docs/operator-guide.md#escrow-signer). The signer's RPC user needs no new method. A deposit to one of a per-order
+first: see the [operator guide](https://github.com/yegamble/opsecmkt/blob/e1c082db8eff76e25516e23362a5b9a101751a68/docs/operator-guide.md#escrow-signer). The signer's RPC user needs no new method. A deposit to one of a per-order
 escrow's sibling addresses is now returned by a stray refund spending that address's own script, co-signed by the
 signer.
 
@@ -1725,7 +1717,7 @@ most 64 KB) beside the paste; it is now a `multipart/form-data` form, the only o
 pasted or uploaded PSBT is no longer refused for a derivation entry under the market's key (Electrum and Sparrow write
 one for every key); a signature under the market's key is still refused. No real Electrum, Sparrow or hardware wallet
 has been tried with a per-order escrow (ledger items A-457 and A-458); see [per-order
-escrow](docs/escrow.md#per-order-escrow-settlement-setup-and-upload-a-456b-shape-b). Rolling back past this release
+escrow](https://github.com/yegamble/opsecmkt/blob/e1c082db8eff76e25516e23362a5b9a101751a68/docs/escrow.md#per-order-escrow-settlement-setup-and-upload-a-456b-shape-b). Rolling back past this release
 needs the pre-upgrade backup (section 5) once a per-order escrow exists: the earlier release cannot settle it.
 
 ## 46. Pooled wallet drain gate and hand settlement of a blocked payout (migration 091, A-445)
@@ -1829,7 +1821,7 @@ escrow even when the fingerprint matches. The configured escrow signer's account
 the original arbiter/signer wallet keys and original `APP_SECRET_KEY` (or legacy `SETUP_TOKEN` key root): changing the
 root changes both HMACs and disables escrow. Never remove or replace these pins while escrows exist. Party-key rows
 can be re-registered only after the original root is restored and startup has verified the pinned node and, when configured, signer.
-No environment keys are added; see [the arbiter pin](docs/operator-guide.md#bitcoin-escrow).
+No environment keys are added; see [the arbiter pin](https://github.com/yegamble/opsecmkt/blob/e1c082db8eff76e25516e23362a5b9a101751a68/docs/operator-guide.md#bitcoin-escrow).
 
 ## 50. Removed XMPP profile values (migration 098)
 
@@ -2001,7 +1993,7 @@ made by it is unchanged. An `.env` with the `bitcoin` profile and a blank `BITCO
 stays in the volume), and a market whose escrow already pinned testnet4 would refuse that node. Set `BITCOIN_CHAIN=testnet4` in `.env`
 first if that node is yours. The installer's printed escrow commands now carry `-rpcport=8332` for `bitcoin-cli`
 (the bundled node's pinned RPC port) and `--via-compose app` for the `--verify` check; see the
-[operator guide](docs/operator-guide.md#escrow-node-set-up-and-the-public-network-smoke).
+[operator guide](https://github.com/yegamble/opsecmkt/blob/e1c082db8eff76e25516e23362a5b9a101751a68/docs/operator-guide.md#escrow-node-set-up-and-the-public-network-smoke).
 
 ## 62. Mainnet escrow opt-in and the fee descriptor (migration 109, A-460)
 
@@ -2012,7 +2004,7 @@ fixed fee address. A market with blank `BITCOIN_CHAIN` and a `MONERO_NETWORK` ot
 regtest, signet, testnet4, a local Monero fakechain and stagenet keep every check they had. Testnet3 and Monero testnet
 are still refused. The Bitcoin escrow startup log line now reads "escrow: Bitcoin escrow on" (it said "escrow: Bitcoin
 escrow on (test networks only)"), and the startup refusals name mainnet as the opt-in; update a log filter that matched
-the old text. The operator guide's escrow sections are now [Bitcoin escrow](docs/operator-guide.md#bitcoin-escrow) and
+the old text. The operator guide's escrow sections are now [Bitcoin escrow](https://github.com/yegamble/opsecmkt/blob/e1c082db8eff76e25516e23362a5b9a101751a68/docs/operator-guide.md#bitcoin-escrow) and
 [Monero escrow](docs/operator-guide.md#monero-escrow).
 
 **Opting in to mainnet moves real funds, and no mainnet run is recorded.** Mainnet is covered only by unit and database
@@ -2045,7 +2037,7 @@ the pre-upgrade backup instead.
 
 **Add two read-only methods to the escrow user's `rpcwhitelist`:** `getblockhash` and `getblockheader`. The line now
 ends `…,gettransaction,listtransactions,listsinceblock,getblockhash,getblockheader` (the
-[operator guide](docs/operator-guide.md#bitcoin-escrow) has it, and `scripts/escrow-node-setup.sh` prints it); restart
+[operator guide](https://github.com/yegamble/opsecmkt/blob/e1c082db8eff76e25516e23362a5b9a101751a68/docs/operator-guide.md#bitcoin-escrow) has it, and `scripts/escrow-node-setup.sh` prints it); restart
 bitcoind after changing it. The app calls them only on a pruned node, and only when the watch-only wallet repair of
 per-order escrows is about to import. On a pruned node without them the repair waits and imports nothing, and the log
 repeats `escrow watcher: escrow: watch-only wallet repair waits: the node's prune height could not be read: getblockhash
@@ -2059,7 +2051,7 @@ the next pass took the address as held (the order could expire unpaid with nothi
 on `/admin` (*Escrows the watch-only wallet cannot rescan*) with its order; so is an escrow whose import Core answers as
 failed for any other reason, which is then imported again on every pass instead of being taken as repaired. While any
 is listed its order does not expire and the orphan sweep leaves `escrow_sweep_required` set. Do not clear the restore gate
-until the list is empty; the [runbook](docs/testnet-runbook.md#an-escrow-the-watch-only-wallet-cannot-rescan) gives the
+until the list is empty; the [runbook](https://github.com/yegamble/opsecmkt/blob/e1c082db8eff76e25516e23362a5b9a101751a68/docs/testnet-runbook.md#an-escrow-the-watch-only-wallet-cannot-rescan) gives the
 two remedies (restore the whole `bitcoin_data` volume from a copy taken with bitcoind stopped, or run the node unpruned
 until the watcher has rescanned them). Unpruned nodes, and escrows newer than the prune height, are repaired as before.
 

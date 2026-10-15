@@ -11,9 +11,9 @@ Run the market as a Tor onion service. No inbound port is opened on the host. Re
 
 | Choice | Result |
 | --- | --- |
-| `--nodes local` | Pruned **mainnet** Bitcoin and Monero nodes: real funds. About 30 GB (Bitcoin) and 45+ GB (Monero) of disk, days to sync (estimates). |
-| `--nodes local --bitcoin-network signet` | Pruned test-network nodes (signet and stagenet). About 8 + 20 GB, hours to sync. |
-| `--nodes custom` | Choose network, image and pruning per coin. |
+| `--nodes local` | A pruned **mainnet** Monero node: real funds. At least 45 GB of disk, days to sync (estimates). |
+| `--nodes local --monero-network stagenet` | A pruned Monero stagenet node. About 20 GB, hours to sync. |
+| `--nodes custom` | Choose Monero network, image and pruning. |
 | `--nodes none` | No nodes. No payments with a bundled node. |
 
 > **Warning:** mainnet is the default and moves real funds. No mainnet run of this software is recorded; mainnet is
@@ -47,8 +47,7 @@ Ready. Open http://abcdef….onion/setup in Tor Browser to name your marketplace
 Setup token: 3f1c…
 ```
 
-With a Bitcoin node, escrow commands follow. Skip them for now. [Enabling payments](enable-payments.md) repeats
-them.
+Payments remain paused unless you enabled Monero escrow. Follow [Enabling Monero payments](enable-payments.md) for setup and readiness checks.
 
 ## Step 3: Open the setup page
 

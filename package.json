@@ -7,7 +7,6 @@
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
     "test:e2e:report": "playwright show-report",
-    "test:e2e:escrow": "playwright test --config=playwright.escrow.config.ts",
     "test:e2e:escrow-xmr": "playwright test --config=playwright.escrow-xmr.config.ts"
   },
   "devDependencies": {

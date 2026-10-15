@@ -8,11 +8,6 @@ import (
 	"time"
 )
 
-// An administrator can suspend a compromised or abusive account and later restore it (A-27): suspension ends
-// the account's sessions and pending sign-ins and blocks every path that creates a session; the counterparty's
-// open orders and the account's listings are untouched.
-
-// With no staff contact set (A-119), the refusal points to the operator.
 const suspendedMsg = "This account is suspended. Ask the operator of this market."
 
 // signedOut reports whether session no longer authenticates (a protected page redirects to /login).
@@ -24,113 +19,6 @@ func signedOut(e *testEnv, session string) bool {
 
 func suspendForm(action, handle string, extra ...string) url.Values {
 	return form(append([]string{"action", action, "handle", handle, "password", testPassword}, extra...)...)
-}
-
-func TestAdminSuspendsAccount(t *testing.T) {
-	x := newEscrowEnv(t)
-	e := x.testEnv
-	world := &disputeOrderWorld{orderWorld: &orderWorld{e: e}, x: x, keySalt: 2}
-	adminID, admin := e.user("susp_admin", "admin")
-	vendorID, vendor := e.user("susp_vendor", "vendor")
-	other := agSession(e, vendorID)
-	agPending(e, vendorID)
-	buyerID, buyer := e.user("susp_buyer", "buyer")
-	shipped := world.fundedPhysicalFor(buyerID, buyer, vendorID, vendor)
-	disputed := world.fundedPhysicalFor(buyerID, buyer, vendorID, vendor)
-	for _, order := range []string{shipped, disputed} {
-		if code, body := x.shipEscrow(order, vendor, regtestAddr("suspend-claim-"+order[:8]), testPassword); code != 303 {
-			t.Fatalf("ship escrow before suspension: %d %s", code, body)
-		}
-	}
-
-	page := e.body("GET", "/admin", admin, nil, 200)
-	f := adminForm(t, page, "/admin/suspend", "")
-	mustContain(t, f, `name="handle"`, `pattern="[a-zA-Z0-9_]{3,32}"`, `name="password" required`, `value="suspend"`, `value="restore"`)
-	mustContain(t, page, "No account is suspended.")
-
-	agExpect(e, "/admin/suspend", admin, suspendForm("suspend", " susp_vendor "), 303, "")
-	w := e.do("POST", "/admin/suspend", admin, suspendForm("suspend", "susp_vendor"))
-	if w.Code != 409 || !strings.Contains(w.Body.String(), "already suspended") {
-		t.Fatalf("second suspension: %d %q", w.Code, w.Body.String())
-	}
-	if agInt(e, "SELECT count(*) FROM users WHERE id=$1 AND suspended_at IS NOT NULL", vendorID) != 1 {
-		t.Fatal("account not suspended")
-	}
-	// Every session and pending sign-in ended; the next request with an old cookie is signed out.
-	if agUserSessions(e, vendorID) != 0 || agInt(e, "SELECT count(*) FROM pending_logins WHERE user_id=$1", vendorID) != 0 {
-		t.Fatal("sessions or pending sign-ins survived suspension")
-	}
-	for _, s := range []string{vendor, other} {
-		if !signedOut(e, s) {
-			t.Fatal("old session still authenticates after suspension")
-		}
-	}
-	if !e.auditExact(adminID, "Suspended account susp_vendor; ended 2 session(s) and any pending sign-ins (confirmed with password)") ||
-		!e.auditExact(vendorID, "Account suspended by administrator susp_admin; ended 2 session(s) and any pending sign-ins") {
-		t.Fatal("suspension not audited on both accounts")
-	}
-	if agInt(e, "SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE 'An administrator suspended your account%' AND body NOT LIKE '%http%'", vendorID) != 1 {
-		t.Fatal("suspended account not notified")
-	}
-	page = e.body("GET", "/admin", admin, nil, 200)
-	mustContain(t, page, "susp_vendor · vendor · suspended ", "factors: none (password only)", "Restoring hands the account back to whoever has its password")
-	mustNotContain(t, page, "No account is suspended.")
-
-	// Password sign-in: a wrong password answers exactly as before (no handle oracle); the right one is refused
-	// with the reason, and no session or pending sign-in is created.
-	agExpect(e, "/login", randomToken(), form("handle", "susp_vendor", "password", "not-the-password-at-all"), 401, "Invalid handle or password")
-	w = e.do("POST", "/login", randomToken(), form("handle", "susp_vendor", "password", testPassword))
-	if w.Code != 403 || refusalText(w.Body.String()) != suspendedMsg || e.cookie(w, "session") != "" || e.cookie(w, "pending") != "" {
-		t.Fatalf("suspended password sign-in: %d %q", w.Code, w.Body.String())
-	}
-	// TOTP challenge: a pending sign-in that survived (created in a race with the suspension) cannot finish.
-	key, _ := agEnableTOTP(e, vendorID)
-	agExpect(e, "/login", randomToken(), form("handle", "susp_vendor", "password", testPassword), 403, suspendedMsg)
-	agExpect(e, "/challenge", randomToken(), form("method", "totp", "code", agTOTPNow(key)), 403, suspendedMsg, agPending(e, vendorID))
-	// PGP sign-in challenge, likewise.
-	agExec(e, "UPDATE users SET totp_enabled=false WHERE id=$1", vendorID)
-	alice, alicePub := testPGPKey(t, "alice")
-	agEnablePGP(e, vendorID, alicePub)
-	agExec(e, "UPDATE users SET totp_enabled=true WHERE id=$1", vendorID)
-	page = e.body("GET", "/admin", admin, nil, 200)
-	mustContain(t, page, "susp_vendor · vendor · suspended ", "factors: TOTP and PGP sign-in")
-	agExec(e, "UPDATE users SET totp_enabled=false WHERE id=$1", vendorID)
-	pc := agPending(e, vendorID)
-	anon := randomToken()
-	e.check(e.do("POST", "/challenge/pgp", anon, nil, pc), 303)
-	code := testDecrypt(t, alice, agStr(e, "SELECT pgp_challenge FROM pending_logins WHERE token_hash=$1", digest(pc.Value)))
-	agExpect(e, "/challenge", anon, form("method", "pgp", "pgp_code", code), 403, suspendedMsg, pc)
-	if agUserSessions(e, vendorID) != 0 {
-		t.Fatal("a suspended account got a session")
-	}
-	agExec(e, "UPDATE users SET pgp_2fa=false WHERE id=$1", vendorID)
-	agExec(e, "DELETE FROM pending_logins WHERE user_id=$1", vendorID)
-
-	// The buyer's open escrow orders with the suspended vendor remain readable and disputable; listings are unchanged.
-	e.check(e.do("GET", "/order?id="+shipped, buyer, nil), 200)
-	agExpect(e, "/disputes", buyer, form("order_id", disputed, "reason", "The parcel never arrived at the agreed drop."), 303, "")
-	if agStr(e, "SELECT state FROM orders WHERE id=$1", shipped) != stateShipped || agStr(e, "SELECT state FROM orders WHERE id=$1", disputed) != stateDisputed {
-		t.Fatal("buyer could not continue orders with a suspended vendor")
-	}
-	if agInt(e, "SELECT count(*) FROM products WHERE vendor_id=$1 AND NOT archived", vendorID) != 2 || agStr(e, "SELECT role FROM users WHERE id=$1", vendorID) != "vendor" {
-		t.Fatal("suspension changed the vendor's listings or role")
-	}
-
-	// Restore re-enables sign-in and is audited and notified; restoring again changes nothing.
-	agExpect(e, "/admin/suspend", admin, suspendForm("restore", "susp_vendor"), 303, "")
-	agExpect(e, "/admin/suspend", admin, suspendForm("restore", "susp_vendor"), 409, "is not suspended")
-	if !e.auditExact(adminID, "Restored account susp_vendor (confirmed with password)") ||
-		!e.auditExact(vendorID, "Account restored by administrator susp_admin") {
-		t.Fatal("restore not audited on both accounts")
-	}
-	if agInt(e, "SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE 'An administrator restored your account%'", vendorID) != 1 {
-		t.Fatal("restored account not notified")
-	}
-	w = e.do("POST", "/login", randomToken(), form("handle", "susp_vendor", "password", testPassword))
-	e.check(w, 303)
-	s := e.session(w)
-	e.check(e.do("GET", "/account", s, nil), 200)
-	mustContain(t, e.body("GET", "/admin", admin, nil, 200), "No account is suspended.")
 }
 
 // Session load refuses a suspended account even if a session row exists (defence in depth).
@@ -292,3 +180,118 @@ func TestSuspendDuringSignInLeavesNoSession(t *testing.T) {
 		t.Fatalf("suspension left %d session(s) after sign-in completed", n)
 	}
 }
+
+func TestAdminSuspendsAccount(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	e := x.testEnv
+	adminID, admin := e.user("susp_admin", "admin")
+	vendorID, vendor := e.user("susp_vendor", "vendor")
+	other := agSession(e, vendorID)
+	agPending(e, vendorID)
+	buyerID, buyer := e.user("susp_buyer", "buyer")
+	funded := func() string {
+		order := e.order(buyerID, x.physical(vendorID), "XMR", stateDraft)
+		w := x.checkout(buyer, order, testXMRAddr("suspend refund "+order, true))
+		e.check(w, 303)
+		address := agStr(e, "SELECT address FROM escrows WHERE order_id=$1", order)
+		x.fake.payAddress(address, hex64("suspend funding "+order), xmrListingPrice, 10)
+		x.mustPoll()
+		if code, body := x.xmrShip(order, vendor, testXMRAddr("suspend claim "+order, true), testPassword); code != 303 {
+			t.Fatalf("ship escrow before suspension: %d %s", code, body)
+		}
+		return order
+	}
+	shipped, disputed := funded(), funded()
+
+	page := e.body("GET", "/admin", admin, nil, 200)
+	f := adminForm(t, page, "/admin/suspend", "")
+	mustContain(t, f, `name="handle"`, `pattern="[a-zA-Z0-9_]{3,32}"`, `name="password" required`, `value="suspend"`, `value="restore"`)
+	mustContain(t, page, "No account is suspended.")
+
+	agExpect(e, "/admin/suspend", admin, suspendForm("suspend", " susp_vendor "), 303, "")
+	w := e.do("POST", "/admin/suspend", admin, suspendForm("suspend", "susp_vendor"))
+	if w.Code != 409 || !strings.Contains(w.Body.String(), "already suspended") {
+		t.Fatalf("second suspension: %d %q", w.Code, w.Body.String())
+	}
+	if agInt(e, "SELECT count(*) FROM users WHERE id=$1 AND suspended_at IS NOT NULL", vendorID) != 1 {
+		t.Fatal("account not suspended")
+	}
+	// Every session and pending sign-in ended; the next request with an old cookie is signed out.
+	if agUserSessions(e, vendorID) != 0 || agInt(e, "SELECT count(*) FROM pending_logins WHERE user_id=$1", vendorID) != 0 {
+		t.Fatal("sessions or pending sign-ins survived suspension")
+	}
+	for _, s := range []string{vendor, other} {
+		if !signedOut(e, s) {
+			t.Fatal("old session still authenticates after suspension")
+		}
+	}
+	if !e.auditExact(adminID, "Suspended account susp_vendor; ended 2 session(s) and any pending sign-ins (confirmed with password)") ||
+		!e.auditExact(vendorID, "Account suspended by administrator susp_admin; ended 2 session(s) and any pending sign-ins") {
+		t.Fatal("suspension not audited on both accounts")
+	}
+	if agInt(e, "SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE 'An administrator suspended your account%' AND body NOT LIKE '%http%'", vendorID) != 1 {
+		t.Fatal("suspended account not notified")
+	}
+	page = e.body("GET", "/admin", admin, nil, 200)
+	mustContain(t, page, "susp_vendor · vendor · suspended ", "factors: none (password only)", "Restoring hands the account back to whoever has its password")
+	mustNotContain(t, page, "No account is suspended.")
+
+	// Password sign-in: a wrong password answers exactly as before (no handle oracle); the right one is refused
+	// with the reason, and no session or pending sign-in is created.
+	agExpect(e, "/login", randomToken(), form("handle", "susp_vendor", "password", "not-the-password-at-all"), 401, "Invalid handle or password")
+	w = e.do("POST", "/login", randomToken(), form("handle", "susp_vendor", "password", testPassword))
+	if w.Code != 403 || refusalText(w.Body.String()) != suspendedMsg || e.cookie(w, "session") != "" || e.cookie(w, "pending") != "" {
+		t.Fatalf("suspended password sign-in: %d %q", w.Code, w.Body.String())
+	}
+	// TOTP challenge: a pending sign-in that survived (created in a race with the suspension) cannot finish.
+	key, _ := agEnableTOTP(e, vendorID)
+	agExpect(e, "/login", randomToken(), form("handle", "susp_vendor", "password", testPassword), 403, suspendedMsg)
+	agExpect(e, "/challenge", randomToken(), form("method", "totp", "code", agTOTPNow(key)), 403, suspendedMsg, agPending(e, vendorID))
+	// PGP sign-in challenge, likewise.
+	agExec(e, "UPDATE users SET totp_enabled=false WHERE id=$1", vendorID)
+	alice, alicePub := testPGPKey(t, "alice")
+	agEnablePGP(e, vendorID, alicePub)
+	agExec(e, "UPDATE users SET totp_enabled=true WHERE id=$1", vendorID)
+	page = e.body("GET", "/admin", admin, nil, 200)
+	mustContain(t, page, "susp_vendor · vendor · suspended ", "factors: TOTP and PGP sign-in")
+	agExec(e, "UPDATE users SET totp_enabled=false WHERE id=$1", vendorID)
+	pc := agPending(e, vendorID)
+	anon := randomToken()
+	e.check(e.do("POST", "/challenge/pgp", anon, nil, pc), 303)
+	code := testDecrypt(t, alice, agStr(e, "SELECT pgp_challenge FROM pending_logins WHERE token_hash=$1", digest(pc.Value)))
+	agExpect(e, "/challenge", anon, form("method", "pgp", "pgp_code", code), 403, suspendedMsg, pc)
+	if agUserSessions(e, vendorID) != 0 {
+		t.Fatal("a suspended account got a session")
+	}
+	agExec(e, "UPDATE users SET pgp_2fa=false WHERE id=$1", vendorID)
+	agExec(e, "DELETE FROM pending_logins WHERE user_id=$1", vendorID)
+
+	// The buyer's open escrow orders with the suspended vendor remain readable and disputable; listings are unchanged.
+	e.check(e.do("GET", "/order?id="+shipped, buyer, nil), 200)
+	agExpect(e, "/disputes", buyer, form("order_id", disputed, "reason", "The parcel never arrived at the agreed drop."), 303, "")
+	if agStr(e, "SELECT state FROM orders WHERE id=$1", shipped) != stateShipped || agStr(e, "SELECT state FROM orders WHERE id=$1", disputed) != stateDisputed {
+		t.Fatal("buyer could not continue orders with a suspended vendor")
+	}
+	if agInt(e, "SELECT count(*) FROM products WHERE vendor_id=$1 AND NOT archived", vendorID) != 2 || agStr(e, "SELECT role FROM users WHERE id=$1", vendorID) != "vendor" {
+		t.Fatal("suspension changed the vendor's listings or role")
+	}
+
+	// Restore re-enables sign-in and is audited and notified; restoring again changes nothing.
+	agExpect(e, "/admin/suspend", admin, suspendForm("restore", "susp_vendor"), 303, "")
+	agExpect(e, "/admin/suspend", admin, suspendForm("restore", "susp_vendor"), 409, "is not suspended")
+	if !e.auditExact(adminID, "Restored account susp_vendor (confirmed with password)") ||
+		!e.auditExact(vendorID, "Account restored by administrator susp_admin") {
+		t.Fatal("restore not audited on both accounts")
+	}
+	if agInt(e, "SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE 'An administrator restored your account%'", vendorID) != 1 {
+		t.Fatal("restored account not notified")
+	}
+	w = e.do("POST", "/login", randomToken(), form("handle", "susp_vendor", "password", testPassword))
+	e.check(w, 303)
+	s := e.session(w)
+	e.check(e.do("GET", "/account", s, nil), 200)
+	mustContain(t, e.body("GET", "/admin", admin, nil, 200), "No account is suspended.")
+}
+
+// Session load refuses a suspended account even if a session row exists (defence in depth).

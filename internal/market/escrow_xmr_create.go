@@ -38,8 +38,6 @@ func (a *App) xmrEscrowReady() bool { return a.escrowXMR != nil && a.escrowXMR.r
 // escrowReady reports whether escrow in coin can take a checkout now.
 func (a *App) escrowReady(coin string) bool {
 	switch coin {
-	case "BTC":
-		return a.escrow.Load() != nil
 	case "XMR":
 		return a.xmrEscrowReady()
 	}

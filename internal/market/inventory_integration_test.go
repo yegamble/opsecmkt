@@ -4,16 +4,16 @@ import (
 	"context"
 	"html"
 	"net/http/httptest"
-	"net/url"
 	"regexp"
+
+	"net/url"
+
 	"strings"
 	"testing"
 )
 
-// P4 Inventory integration tests (TEST_DATABASE_URL). Fixtures use e.user/e.product (fast, no /setup flow).
-
 func inventoryForm(id string, overrides map[string]string) url.Values {
-	f := url.Values{"id": {id}, "title": {"Edited listing"}, "description": {"Edited description"}, "category": {"Digital"}, "region": {"Europe"}, "kind": {"physical"}, "price_btc": {"0.002"}, "price_xmr": {"0.75"}, "stock": {"5"}, "stock_seen": {"5"}}
+	f := url.Values{"id": {id}, "title": {"Edited listing"}, "description": {"Edited description"}, "category": {"Digital"}, "region": {"Europe"}, "kind": {"physical"}, "price_xmr": {"0.75"}, "stock": {"5"}, "stock_seen": {"5"}}
 	for k, v := range overrides {
 		f.Set(k, v)
 	}
@@ -41,7 +41,7 @@ func TestListingEditOwnership(t *testing.T) {
 	// Edit page: owner and admin only; other vendors cannot confirm the listing exists.
 	w := e.do("GET", "/listing-edit?id="+p, ownerS, nil)
 	e.check(w, 200)
-	for _, want := range []string{`value="Test listing"`, `name="stock_seen" value="5"`, `value="0.001"`, `value="0.5"`, "Automatic delivery requires a payment provider", "Stored unencrypted on the server"} {
+	for _, want := range []string{`value="Test listing"`, `name="stock_seen" value="5"`, `value="0.5"`, "Automatic delivery requires a payment provider", "Stored unencrypted on the server"} {
 		if !strings.Contains(w.Body.String(), want) {
 			t.Errorf("edit page missing %q", want)
 		}
@@ -73,7 +73,7 @@ func TestListingEditOwnership(t *testing.T) {
 	if err := e.DB.QueryRow("SELECT title,category,region,btc,xmr,stock FROM products WHERE id=$1", p).Scan(&title, &cat, &region, &btc, &xmr, &stock); err != nil {
 		t.Fatal(err)
 	}
-	if title != "Edited listing" || cat != "Digital" || region != "Europe" || btc != 200000 || xmr != 750000000000 || stock != 5 {
+	if title != "Edited listing" || cat != "Digital" || region != "Europe" || btc != 0 || xmr != 750000000000 || stock != 5 {
 		t.Fatalf("update not stored: %s %s %s %d %d %d", title, cat, region, btc, xmr, stock)
 	}
 	if inventoryAudits(e, "Updated listing "+p[:8]) != 1 {
@@ -86,45 +86,6 @@ func TestListingEditOwnership(t *testing.T) {
 	e.check(e.do("POST", "/listings/update", ownerS, inventoryForm("missing", nil)), 404)
 }
 
-func TestListingReservationSummaryExcludesDraftsAndShowsPaymentExpiry(t *testing.T) {
-	t.Setenv("PAYMENT_EXPIRY", "24h")
-	x := newEscrowEnv(t)
-	e := x.testEnv
-	product, buyer, vendor := x.product, x.buyer, x.vendorSess
-	draftBuyer, _ := e.user("reservation_draft_"+randomToken()[:8], "buyer")
-	e.order(draftBuyer, product, "BTC", stateDraft)
-	awaiting := x.order
-	x.mustCheckout(awaiting, regtestAddr("reservation-awaiting"))
-	paid := e.order(buyer, product, "BTC", stateDraft)
-	x.mustCheckout(paid, regtestAddr("reservation-paid"))
-	// A takedown keeps this funded escrow order paid and open, so it reserves stock without exposing delivery.
-	if _, err := e.DB.Exec("UPDATE products SET archived=true,admin_archive_reason='reservation fixture takedown' WHERE id=$1", product); err != nil {
-		t.Fatal(err)
-	}
-	x.fund(paid, "reservation-paid", 3, 100000)
-	e.order(buyer, product, "BTC", stateCancelled)
-	if _, err := e.DB.Exec("UPDATE escrows SET created=now()-interval '23 hours' WHERE order_id=$1", awaiting); err != nil {
-		t.Fatal(err)
-	}
-	wantExpiry := agStr(e, `SELECT to_char(GREATEST(created,COALESCE((SELECT max(pm.created) FROM payments pm WHERE pm.order_id=$1
-		AND pm.confirmations>=0 AND NOT pm.locked),created))+make_interval(secs=>$2),'YYYY-MM-DD HH24:MI "UTC"') FROM escrows WHERE order_id=$1`, awaiting, expiryWindow().Seconds())
-	edit := e.do("GET", "/listing-edit?id="+product, vendor, nil)
-	e.check(edit, 200)
-	for _, want := range []string{"2 units are reserved", "The earliest awaiting-payment payment window ends " + wantExpiry, "deposits waiting for confirmations can keep an order open beyond this time", "unfunded drafts do not reserve stock"} {
-		if !strings.Contains(edit.Body.String(), want) {
-			t.Errorf("listing editor missing %q in:\n%s", want, edit.Body.String())
-		}
-	}
-	desk := e.do("GET", "/vendor-dashboard", vendor, nil)
-	e.check(desk, 200)
-	card := cardFor(desk.Body.String(), "Test listing")
-	for _, want := range []string{"2 units are reserved", wantExpiry} {
-		if !strings.Contains(card, want) {
-			t.Errorf("vendor listing card missing %q", want)
-		}
-	}
-}
-
 func TestListingUpdateValidation(t *testing.T) {
 	e := newTestApp(t)
 	owner, s := e.user("inv_valid", "vendor")
@@ -132,7 +93,7 @@ func TestListingUpdateValidation(t *testing.T) {
 	for name, bad := range map[string]map[string]string{
 		"service kind":            {"kind": "service"},
 		"unknown kind":            {"kind": "weapon"},
-		"price precision":         {"price_btc": "0.000000001"},
+		"price precision":         {"price_xmr": "0.0000000000001"},
 		"zero price":              {"price_xmr": "0"},
 		"negative stock":          {"stock": "-1"},
 		"short title":             {"title": "ab"},
@@ -232,56 +193,20 @@ func TestListingStockEditDoesNotOverwriteReservations(t *testing.T) {
 	}
 }
 
-func TestListingKindLockedWhileOrdersOpen(t *testing.T) {
-	x := newEscrowEnv(t)
-	e := x.testEnv
-	p := x.physicalListing(x.vendor, 3)
-	e.usableKey(x.vendor)
-	o := e.order(x.buyer, p, "BTC", stateDraft)
-	addr := x.mustCheckout(o, regtestAddr("inventory-kind-refund"))
-	x.core.deposit(addr, txidOf("inventory-kind-funded"), 0, 100000, 3)
-	x.poll()
-	if x.state(o) != statePaid {
-		t.Fatalf("funded escrow order state: %s", x.state(o))
-	}
-	w := e.do("POST", "/listings/update", x.vendorSess, inventoryForm(p, map[string]string{"kind": "digital"}))
-	e.check(w, 409)
-	var kind string
-	e.DB.QueryRow("SELECT kind FROM products WHERE id=$1", p).Scan(&kind)
-	if kind != "physical" {
-		t.Fatalf("kind changed under an open order: %s", kind)
-	}
-	if !strings.Contains(e.do("GET", "/listing-edit?id="+p, x.vendorSess, nil).Body.String(), "1 open order(s)") {
-		t.Fatal("edit page does not explain the open order")
-	}
-	// Other fields still save; the order keeps its recorded amount.
-	e.check(e.do("POST", "/listings/update", x.vendorSess, inventoryForm(p, map[string]string{"price_btc": "0.5"})), 303)
-	var amt int64
-	var state string
-	if err := e.DB.QueryRow("SELECT amount,state FROM orders WHERE id=$1", o).Scan(&amt, &state); err != nil || amt != 100000 || state != statePaid {
-		t.Fatalf("existing order changed: %d %s %v", amt, state, err)
-	}
-	if _, err := e.DB.Exec("UPDATE orders SET state='completed' WHERE id=$1", o); err != nil {
-		t.Fatal(err)
-	}
-	e.check(e.do("POST", "/listings/update", x.vendorSess, inventoryForm(p, map[string]string{"kind": "digital"})), 303)
-}
-
 func TestUnfundedDraftDoesNotLockListingKind(t *testing.T) {
-	e := newTestApp(t)
-	owner, session := e.user("draft_kind_vendor", "vendor")
-	buyer, _ := e.user("draft_kind_buyer", "buyer")
-	p := e.product(owner, "physical")
-	draft := e.order(buyer, p, "BTC", stateDraft)
-	e.check(e.do("POST", "/listings/update", session, inventoryForm(p, map[string]string{"kind": "digital"})), 303)
+	x := newXMREscrowEnv(t)
+	e := x.testEnv
+	x.mustPoll()
+	session := x.vendorSess
+	p := x.physical(x.vendor)
+	draft := x.draft(p)
+	e.check(e.do("POST", "/listings/update", session, inventoryForm(p, map[string]string{"kind": "digital", "delivery_content": "draft fixture"})), 303)
 	if agStr(e, "SELECT state FROM orders WHERE id=$1", draft) != stateDraft || agInt(e, "SELECT stock FROM products WHERE id=$1", p) != 5 {
 		t.Fatal("editing fulfillment changed a draft or reserved stock")
 	}
 	// A historical anomalous draft that has an escrow record retains the conservative guard.
-	if _, err := e.DB.Exec(`INSERT INTO escrows(order_id,address,market_index,refund_address,fee_bps,fee_destination)
-		VALUES($1,'bcrt1qdraftkindescrow000000000000000000',nextval('escrow_market_index'),'bcrt1qdraftkindrefund0000000000000000000',0,'')`, draft); err != nil {
-		t.Fatal(err)
-	}
+	x.mustCheckout(draft)
+	agExec(e, "UPDATE orders SET state='draft' WHERE id=$1", draft)
 	e.check(e.do("POST", "/listings/update", session, inventoryForm(p, map[string]string{"kind": "physical"})), 409)
 	if agStr(e, "SELECT kind FROM products WHERE id=$1", p) != "digital" {
 		t.Fatal("payment-record draft did not retain the fulfillment guard")
@@ -315,7 +240,7 @@ func TestLegacyServiceListingRequiresExplicitSupportedKind(t *testing.T) {
 			}
 		})
 	}
-	open := e.order(buyer, service, "BTC", statePaid)
+	open := e.order(buyer, service, "XMR", statePaid)
 	w := e.do("POST", "/listings/update", s, inventoryForm(service, map[string]string{"kind": "physical"}))
 	if w.Code != 409 || !strings.Contains(w.Body.String(), "cannot change while this listing has open orders") {
 		t.Fatalf("conversion with open service order: %d %s", w.Code, w.Body.String())
@@ -344,7 +269,7 @@ func TestArchiveHidesListingAndRefusesDrafts(t *testing.T) {
 	if _, err := e.DB.Exec("UPDATE products SET title='Still listed' WHERE id=$1", keep); err != nil {
 		t.Fatal(err)
 	}
-	existing := e.order(buyer, p, "BTC", stateAwaitingPayment)
+	existing := e.order(buyer, p, "XMR", stateAwaitingPayment)
 	draft := url.Values{"product_id": {p}, "currency": {"XMR"}}
 
 	w := e.do("POST", "/listings/archive", s, url.Values{"id": {p}})
@@ -453,11 +378,11 @@ func TestAutoDeliveryCopyFollowsEscrowConfiguration(t *testing.T) {
 			t.Fatalf("%s: unavailable copy missing without providers", path)
 		}
 	}
-	e.A.escrowConfigured = true
-	for _, path := range []string{"/listing-edit?id=" + p, "/vendor-dashboard"} {
-		w := e.do("GET", path, s, nil)
-		e.check(w, 200)
-		if strings.Contains(w.Body.String(), "Automatic delivery requires a payment provider") || !strings.Contains(w.Body.String(), "Payment confirmation is configured for BTC") {
+	x := newXMREscrowEnv(t)
+	for _, path := range []string{"/listing-edit?id=" + x.product, "/vendor-dashboard"} {
+		w := x.do("GET", path, x.vendorSess, nil)
+		x.check(w, 200)
+		if strings.Contains(w.Body.String(), "Automatic delivery requires a payment provider") || !strings.Contains(w.Body.String(), "Payment confirmation is configured for XMR") {
 			t.Fatalf("%s: provider copy wrong", path)
 		}
 	}
@@ -474,12 +399,84 @@ func TestInventoryMigrationColumns(t *testing.T) {
 	}
 }
 
-// A-72: automatic delivery content is what every buyer of the listing receives. Only the listing's vendor
-// may read or change it on /listing-edit; an administrator editing another vendor's listing sees whether it
-// is set, and their saves keep the stored content whatever the form sends.
-func TestAdminListingEditKeepsDeliveryContentHidden(t *testing.T) {
-	x := newEscrowEnv(t)
+func TestListingReservationSummaryExcludesDraftsAndShowsPaymentExpiry(t *testing.T) {
+	t.Setenv("PAYMENT_EXPIRY", "24h")
+	x := newXMREscrowEnv(t)
 	e := x.testEnv
+	product, buyer, vendor := x.product, x.buyer, x.vendorSess
+	x.mustPoll()
+	draftBuyer, _ := e.user("reservation_draft_"+randomToken()[:8], "buyer")
+	e.order(draftBuyer, product, "XMR", stateDraft)
+	awaiting := x.draft(product)
+	x.mustCheckout(awaiting)
+	paid := e.order(buyer, product, "XMR", stateDraft)
+	paidAddress := x.mustCheckout(paid)
+	// A takedown keeps this funded escrow order paid and open, so it reserves stock without exposing delivery.
+	if _, err := e.DB.Exec("UPDATE products SET archived=true,admin_archive_reason='reservation fixture takedown' WHERE id=$1", product); err != nil {
+		t.Fatal(err)
+	}
+	x.fake.payAddress(paidAddress, hex64("reservation-paid"), xmrListingPrice, 10)
+	x.mustPoll()
+	e.order(buyer, product, "XMR", stateCancelled)
+	if _, err := e.DB.Exec("UPDATE escrows SET created=now()-interval '23 hours' WHERE order_id=$1", awaiting); err != nil {
+		t.Fatal(err)
+	}
+	wantExpiry := agStr(e, `SELECT to_char(GREATEST(created,COALESCE((SELECT max(pm.created) FROM payments pm WHERE pm.order_id=$1
+		AND pm.confirmations>=0 AND NOT pm.locked),created))+make_interval(secs=>$2),'YYYY-MM-DD HH24:MI "UTC"') FROM escrows WHERE order_id=$1`, awaiting, expiryWindow().Seconds())
+	edit := e.do("GET", "/listing-edit?id="+product, vendor, nil)
+	e.check(edit, 200)
+	for _, want := range []string{"2 units are reserved", "The earliest awaiting-payment payment window ends " + wantExpiry, "deposits waiting for confirmations can keep an order open beyond this time", "unfunded drafts do not reserve stock"} {
+		if !strings.Contains(edit.Body.String(), want) {
+			t.Errorf("listing editor missing %q in:\n%s", want, edit.Body.String())
+		}
+	}
+	desk := e.do("GET", "/vendor-dashboard", vendor, nil)
+	e.check(desk, 200)
+	card := cardFor(desk.Body.String(), "Test listing")
+	for _, want := range []string{"2 units are reserved", wantExpiry} {
+		if !strings.Contains(card, want) {
+			t.Errorf("vendor listing card missing %q", want)
+		}
+	}
+}
+
+func TestListingKindLockedWhileOrdersOpen(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	e := x.testEnv
+	x.mustPoll()
+	p := x.physical(x.vendor)
+	o, _ := x.paidXMRPhysical(p)
+	originalAmount := agInt(e, "SELECT amount FROM orders WHERE id=$1", o)
+	if x.state(o) != statePaid {
+		t.Fatalf("funded escrow order state: %s", x.state(o))
+	}
+	w := e.do("POST", "/listings/update", x.vendorSess, inventoryForm(p, map[string]string{"kind": "digital"}))
+	e.check(w, 409)
+	var kind string
+	e.DB.QueryRow("SELECT kind FROM products WHERE id=$1", p).Scan(&kind)
+	if kind != "physical" {
+		t.Fatalf("kind changed under an open order: %s", kind)
+	}
+	if !strings.Contains(e.do("GET", "/listing-edit?id="+p, x.vendorSess, nil).Body.String(), "1 open order(s)") {
+		t.Fatal("edit page does not explain the open order")
+	}
+	// Other fields still save; the order keeps its recorded amount.
+	e.check(e.do("POST", "/listings/update", x.vendorSess, inventoryForm(p, map[string]string{"price_xmr": "0.75"})), 303)
+	var amt int64
+	var state string
+	if err := e.DB.QueryRow("SELECT amount,state FROM orders WHERE id=$1", o).Scan(&amt, &state); err != nil || amt != int64(originalAmount) || state != statePaid {
+		t.Fatalf("existing order changed: %d %s %v", amt, state, err)
+	}
+	if _, err := e.DB.Exec("UPDATE orders SET state='completed' WHERE id=$1", o); err != nil {
+		t.Fatal(err)
+	}
+	e.check(e.do("POST", "/listings/update", x.vendorSess, inventoryForm(p, map[string]string{"kind": "digital"})), 303)
+}
+
+func TestAdminListingEditKeepsDeliveryContentHidden(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	e := x.testEnv
+	x.mustPoll()
 	adminID, adminSess := e.user("padmin_"+randomToken()[:8], "admin")
 	secret := "LICENSE-KEY-A72-" + randomToken()[:8]
 	digital := e.product(x.vendor, "digital")
@@ -555,9 +552,10 @@ func TestAdminListingEditKeepsDeliveryContentHidden(t *testing.T) {
 	}
 
 	// The next order is delivered the vendor's content.
-	o := e.order(x.buyer, digital, "BTC", stateDraft)
-	x.mustCheckout(o, regtestAddr("admin-delivery-refund"))
-	x.fund(o, "admin-delivery", 3, int64(agInt(e, "SELECT amount FROM orders WHERE id=$1", o)))
+	o := e.order(x.buyer, digital, "XMR", stateDraft)
+	address := x.mustCheckout(o)
+	x.fake.payAddress(address, hex64("admin-delivery"), int64(agInt(e, "SELECT amount FROM orders WHERE id=$1", o)), 10)
+	x.mustPoll()
 	var got string
 	if err := e.DB.QueryRow("SELECT content FROM deliveries WHERE order_id=$1", o).Scan(&got); err != nil || got != secret {
 		t.Fatalf("next order delivered %q (%v), want the vendor's content", got, err)

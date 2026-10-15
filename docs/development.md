@@ -28,8 +28,8 @@ export DATABASE_URL='postgres://opsecmkt:local-dev-only@127.0.0.1:55432/opsecmkt
 export SETUP_TOKEN="$(openssl rand -hex 32)"
 export ADDR='127.0.0.1:8080'
 export COOKIE_SECURE=false
-# Optional: must be clearnet (default) or tor, otherwise startup stops; tor also holds Bitcoin escrow broadcasts
-# unless the escrow node sends through a proxy (A-441, docs/operator-guide.md).
+# Optional: must be clearnet (default) or tor. Tor mode holds Monero settlement relay
+# until explicit node Tor configuration or acceptance of direct exposure.
 export APP_MODE=clearnet
 # Keep local development independent of any configured wallets:
 unset BITCOIN_RPC_URL MONERO_RPC_URL MONERO_WALLET_RPC_URL
@@ -64,8 +64,7 @@ A normal installation starts with an **empty catalog**. There is no standalone
 
 1. Complete `/setup` on your local instance to create an administrator.
 2. Open `/vendor-dashboard`, choose **+ Publish a new listing**, and add a physical
-   listing with stock, a description and reference prices (for example `0.001`
-   BTC and `0.5` XMR). Add a digital listing to exercise its editor too.
+   listing with stock, a description and a Monero price (for example `0.5 XMR`). Add a digital listing to exercise its editor too.
 3. In separate browser profiles, register a buyer and a prospective vendor at
    `/register`. As administrator, use **Assign an account role** on `/admin`
    (enter the account's handle) to give the vendor account its role. Publish
@@ -242,8 +241,8 @@ databases behind: drop leftover `opsecmkt_cmd_server_*`, `opsecmkt_tmpl_*` and
 `opsecmkt_copy_*` databases that have no connections (no later run uses them). Each half of the
 `internal/market` race run takes longer than `go test`'s default 10-minute timeout on a busy host, so both commands
 set `-timeout 30m`. Fake RPC tests cover payment behavior; they do not
-prove live node integration. The real-chain Bitcoin escrow check is
-[`scripts/test-escrow-regtest.sh`](../scripts/test-escrow-regtest.sh) (CI's `escrow-regtest` job).
+prove live node integration. The real-chain Monero check is
+[`scripts/test-escrow-xmr-regtest.sh`](../scripts/test-escrow-xmr-regtest.sh), using a local fakechain.
 
 ### Browser regression tests
 
@@ -276,54 +275,6 @@ creates its own accounts and listings. Recreate the E2E database before every fu
 run, including after a setup-only seed. Playwright starts its own servers on
 loopback ports **18080** and **18081**, and refuses to reuse existing servers.
 Never set either test database URL to a deployed instance.
-
-### Bitcoin escrow paste journey (simulated escrow node)
-
-`tests/e2e/escrow-journey.spec.ts` drives Bitcoin escrow (a simulated regtest node, `ESCROW_BTC=on`;
-see [escrow](escrow.md)) through the real server and PostgreSQL in Chromium at 320 px with
-JavaScript disabled, every form by keyboard alone: two escrow keys registered and activated
-by practice signing, an escrow checkout funded and completed on funding (automatic delivery),
-the vendor's claim (copy downloaded, a SIGHASH_NONE paste refused with its error, the signed
-copy pasted, co-signed by the market, broadcast and confirmed), and a refund of an underpaid
-order the buyer cancels, with the order page checked and photographed at each state. The
-escrow node is **simulated**: `tests/e2e/fixtures/escrow_rpc.py`, served by
-`escrow-simulators.py --escrow-port`, answers the escrow adapter's PSBT methods with real PSBT and
-transaction bytes but its own fake signatures, and plays each party's wallet. It knows
-regtest only and refuses mainnet and other-network addresses and keys. This is not chain
-evidence; real Bitcoin Core legs are `scripts/test-escrow-regtest.sh`, and
-`scripts/test-escrow-wallets.sh` checks which real wallets (Bitcoin Core, Electrum 4.8.2) sign the
-escrow transactions, by hand on a regtest node with P2P disabled and RPC bound to host loopback. With a disposable
-`TEST_DATABASE_URL`, its A-457 leg also runs both BIP39 Electrum parties through registration, practice, checkout,
-funding, release and sibling refund with the real escrow signer. It is not run in CI.
-
-```sh
-docker exec opsecmkt-dev-db createdb -U opsecmkt opsecmkt_escrow_e2e
-export E2E_ESCROW_DATABASE_URL='postgres://opsecmkt:local-dev-only@127.0.0.1:55432/opsecmkt_escrow_e2e?sslmode=disable'
-npm run test:e2e:escrow
-```
-
-`tests/e2e/escrow-per-order-journey.spec.ts` (A-455) runs next on the same database: a vendor registers a
-per-order wallet key and signs its practice transaction (the simulated node derives rooted keys by real BIP32 public
-derivation), a buyer sees the vendor's key type on the listing and the vendor page, and the order page names the
-vendor's per-order wallet key beside the buyer's Bitcoin Core key (a mixed pair, refused since A-456a).
-`tests/e2e/escrow-per-order-settle-journey.spec.ts` (A-456b) follows: both parties register per-order wallet keys and
-sign their practice, the buyer pays into a per-order escrow, each party reads its own order wallet setup page, the escrow
-is funded, and the vendor's claim is signed and uploaded as a binary PSBT file, co-signed through a simulated escrow
-signer (`escrow-simulators.py --signer-socket`, a Unix socket named by the config for its run) and confirmed.
-`tests/e2e/escrow-physical-journey.spec.ts` runs after it on the same database and follows a
-physical escrow order (WR-escrow Phase 2): shipped with a claim address, signed by the vendor and
-the buyer, released at its deadline, a dispute that cancels the deadline, the buyer's no-ship
-cancel and its race with the shipment, a buyer who never signs (the shipped and 72-hour notices,
-the `/orders` banner) and the administrator's release deadline length. The test moves the release
-and ship-by clocks through SQL (with `psql` on `PATH`, using the connection in
-`E2E_ESCROW_DATABASE_URL`); the simulated node is the same, so this is not chain evidence.
-
-Use a fresh database for every run. It owns loopback ports 18090–18092, writes
-`playwright-escrow-report/` and `test-results-escrow/` (with one screenshot per order-page
-state), and is not part of `npm run test:e2e`. CI runs it, with the Monero suite below, in the
-`browser-escrow` job ("Escrow browser journeys (simulated nodes, real application)", A-474; see
-[CI and release delivery](ci-cd.md)). `python3 -m unittest tests.test_escrow_rpc_fixture`
-checks the simulator alone.
 
 ### Monero escrow journey (simulated escrow wallet-rpc)
 
@@ -359,14 +310,9 @@ npm run test:e2e:escrow-xmr
 Use a fresh database for every run; the test moves clocks and restore settings through SQL with
 `psql` on `PATH`. It owns loopback ports 18093–18097, writes `playwright-escrow-xmr-report/` and
 `test-results-escrow-xmr/` (one screenshot per order-page state), and is not part of
-`npm run test:e2e`; the `browser-escrow` CI job runs it after the Bitcoin escrow suite, each on its
-own database.
+`npm run test:e2e`; the escrow browser CI job runs it on its own disposable database.
 
-For actual local Bitcoin Core escrow transactions, use
-`scripts/test-escrow-regtest.sh` with a disposable PostgreSQL database
-([real-chain escrow tests](local-chain-testing.md) lists every real-chain script
-and what CI runs). Neither local procedure proves public-network behavior; public
-records identify their own frozen sources in [verification](verification.md).
+For actual local Monero transactions, use the fakechain procedure below. Browser simulation and local fakechain checks do not prove public-network behavior. Recorded public journeys identify their frozen source revision in [verification](verification.md).
 
 ### Monero escrow on a local fakechain (real monerod and monero-wallet-rpc)
 
@@ -402,6 +348,6 @@ go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
 [CI](../.github/workflows/ci.yaml) also validates Compose profiles, container startup,
 upgrades, encrypted backup/restore, dependencies and browser regressions with
 PostgreSQL (the `browser` job: preview, database and wallet journeys; the `browser-escrow` job:
-the Bitcoin and Monero escrow journeys). See [operations tests](operations-tests.md) for local rehearsals
+the Monero escrow journeys). See [operations tests](operations-tests.md) for local rehearsals
 and [CI/release instructions](ci-cd.md). Version tags produce CI-gated
 draft release artifacts; they do not deploy a live instance.

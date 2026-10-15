@@ -89,11 +89,10 @@ class ComposeNodesTorJobTest(unittest.TestCase):
         self.assertTrue(self.step[second + len(condition):].startswith(
             '            docker compose "${files[@]}" "${profiles[@]}" config --format json | python3 -c \''))
         check = self.step[second:self.step.index('\n          fi\n', second)]
-        for text in ('bitcoin[-2:] != ["-proxy=tor-socks:9050", "-privatebroadcast"]',
-                     'monero[-1:] != ["--proxy=10.199.42.2:9050"]',
-                     'if (members != ["bitcoin", "monero", "tor-socks"] or networks["node_egress"].get("internal") is not True',
+        for text in ('monero[-1:] != ["--proxy=10.199.42.2:9050"]',
+                     'if (members != ["monero", "tor-socks"] or networks["node_egress"].get("internal") is not True',
                      'sorted(socks["networks"]) != ["node_egress", "tor_socks_egress"]',
-                     'for name in ("bitcoin", "monero") for network in services[name]["networks"]',
+                     'for name in ("monero",) for network in services[name]["networks"]',
                      'if networks[network].get("internal") is not True)\n          if routes:\n              sys.exit('):
             self.assertIn(text, check, text)
 

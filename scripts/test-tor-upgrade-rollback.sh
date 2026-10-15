@@ -318,7 +318,7 @@ opener.open(base + '/login', data=data, timeout=10).read()
 page = opener.open(base + '/account', timeout=10).read().decode()
 token = re.search(r'name="csrf"\s+value="([^"]+)"', page)
 assert token, 'legacy account page did not render CSRF'
-data = urllib.parse.urlencode({'csrf': token.group(1), 'product_id': os.environ['A144_PRODUCT_ID'], 'currency': 'BTC'}).encode()
+data = urllib.parse.urlencode({'csrf': token.group(1), 'product_id': os.environ['A144_PRODUCT_ID'], 'currency': 'XMR'}).encode()
 opener.open(base + '/orders', data=data, timeout=10).read()
 print('alpha.1 HTTP fixtures created')
 PY
@@ -430,7 +430,7 @@ opener.open(base + '/login', data=data, timeout=10).read()
 orders = opener.open(base + '/orders', timeout=10).read().decode()
 assert os.environ['A144_TITLE'] in orders, 'alpha.1 did not serve its restored buyer order'
 PY
-[[ $(db_sql a144_rollback -c "SELECT count(*) FROM orders o JOIN users u ON u.id=o.buyer_id JOIN products p ON p.id=o.product_id WHERE u.handle='${seed}_buyer' AND p.title='${seed} alpha.1 item' AND o.currency='BTC' AND o.status='Draft — payment unavailable'") == 1 ]]
+[[ $(db_sql a144_rollback -c "SELECT count(*) FROM orders o JOIN users u ON u.id=o.buyer_id JOIN products p ON p.id=o.product_id WHERE u.handle='${seed}_buyer' AND p.title='${seed} alpha.1 item' AND o.currency='XMR' AND o.status='Draft — payment unavailable'") == 1 ]]
 [[ $(db_sql a144_rollback -c "SELECT count(*) FROM products WHERE title='${seed} alpha.1 item'") == 1 ]]
 compose stop app tor
 [[ $(database_hash opsecmkt) == "$upgraded_snapshot" ]]

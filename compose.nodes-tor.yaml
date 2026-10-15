@@ -2,16 +2,12 @@
 # compose.tor.yaml and compose.nodes.yaml in COMPOSE_FILE (`./scripts/install.sh check` refuses it otherwise):
 #   COMPOSE_FILE=compose.yaml:compose.tor.yaml:compose.nodes.yaml:<database overlay>:compose.nodes-tor.yaml
 # It adds tor-socks, a Tor client of the nodes' own (deploy/torrc-socks: one SOCKS port, no onion service, no control
-# port; the onion container keeps SocksPort 0), and turns node_egress internal: bitcoind and monerod lose their direct
+# port; the onion container keeps SocksPort 0), and turns node_egress internal: monerod lose their direct
 # route out and reach peers only through tor-socks, which alone has an egress network (tor_socks_egress). The app is not
 # on node_egress and cannot reach tor-socks.
-# Bitcoin Core: -proxy sends every outbound peer connection (IPv4, IPv6, onion) through Tor, DNS seeds included (by
-# name, through the proxy); -privatebroadcast sends sendrawtransaction (escrow settlements) over short-lived Tor
-# connections only. Never -connect or -onlynet: they stall the node's sync. Escrow settlement broadcasts use
-# Bitcoin Core's private-broadcast path when escrow is enabled (docs/operator-guide.md#bitcoin-escrow).
 # monerod: --proxy as `monerod --help` documents it (an IP address, not a host name). UNVERIFIED: nothing here has run
 # monerod through Tor; treat Monero traffic as not private.
-# The two commands repeat compose.nodes.yaml's and add only the proxy flags (tests/test_tor_deploy.py checks that they
+# The command repeats compose.nodes.yaml's and add only the proxy flags (tests/test_tor_deploy.py checks that they
 # still match). The node network's subnet and tor-socks's address are pinned because deploy/torrc-socks names them and
 # monerod needs an address; if 10.199.42.0/28 is in use on the host, change it here and in deploy/torrc-socks together.
 # Same log rotation as compose.yaml (anchors do not cross files; CI checks every service has it).
@@ -27,7 +23,7 @@ services:
       dockerfile: Dockerfile.tor
       # The onion container's pinned tor release (docs/operator-guide.md#tor-image).
       args: [TOR_VERSION]
-    profiles: [bitcoin, monero]
+    profiles: [monero]
     restart: unless-stopped
     entrypoint: [tor, -f, /etc/tor/torrc-socks]
     networks:
@@ -54,24 +50,6 @@ services:
     cpu_quota: 100000
     pids_limit: 64
     logging: *logging
-  bitcoin:
-    depends_on:
-      tor-socks:
-        condition: service_started
-    command:
-      - -chain=${BITCOIN_CHAIN:-signet}
-      - -datadir=/data
-      - -prune=${BITCOIN_PRUNE_MB:-2000}
-      - -server=1
-      - -printtoconsole=1
-      - -rpcbind=0.0.0.0
-      - -rpcport=8332
-      - -rpcallowip=172.16.0.0/12
-      - -rpcallowip=192.168.0.0/16
-      - -rpcauth=${BITCOIN_RPC_AUTH:-}
-      - -fallbackfee=0.0002
-      - -proxy=tor-socks:9050
-      - -privatebroadcast
   monero:
     depends_on:
       tor-socks:

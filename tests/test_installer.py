@@ -193,9 +193,6 @@ def hex_value(length=64, seed='x'):
     return value[:length]
 
 
-def bitcoin_rpcauth(password, salt='0123456789abcdef0123456789abcdef'):
-    digest = hmac.new(salt.encode(), password.encode(), hashlib.sha256).hexdigest()
-    return f'marketplace:{salt}${digest}'
 
 
 def env_text(values):
@@ -216,9 +213,6 @@ def installed_env(**overrides):
         'APP_PORT': '8080',
         'COMPOSE_PROJECT_NAME': 'opsecmkt',
         'AUDIT_SIGNING_KEY': hex_value(64, 'audit'),
-        'BITCOIN_RPC_URL': '',
-        'BITCOIN_WALLET': '',
-        'BITCOIN_CHAIN': '',
         'MONERO_RPC_URL': '',
         'MONERO_WALLET_RPC_URL': '',
         'MONERO_NETWORK': '',
@@ -226,9 +220,6 @@ def installed_env(**overrides):
         'COMPOSE_PROFILES': 'internal-db',
     }
     values.update(overrides)
-    if ('bitcoin' in (values.get('COMPOSE_PROFILES') or '').split(',') and values.get('BITCOIN_RPC_PASSWORD')
-            and 'BITCOIN_RPC_AUTH' not in overrides):
-        values['BITCOIN_RPC_AUTH'] = bitcoin_rpcauth(values['BITCOIN_RPC_PASSWORD'])
     return {key: value for key, value in values.items() if value is not None}
 
 
@@ -262,12 +253,11 @@ def alpha_env(**overrides):
 
 
 def installer_image_defaults():
-    """The node images the installer writes, as bash evaluates its assignments (a tag, then its digest)."""
     lines = [line for line in INSTALLER.read_text().splitlines()
-             if re.match(r'^(bitcoin|monero|monero_wallet)_image_default\+?=', line)]
-    script = '\n'.join(lines) + '\nprintf "%s\\n" "$bitcoin_image_default" "$monero_image_default" "$monero_wallet_image_default"\n'
+             if re.match(r'^(monero|monero_wallet)_image_default\+?=', line)]
+    script = '\n'.join(lines) + '\nprintf "%s\\n" "$monero_image_default" "$monero_wallet_image_default"\n'
     values = subprocess.run(['/bin/bash', '-c', script], capture_output=True, text=True, check=True).stdout.split()
-    return dict(zip(('BITCOIN_IMAGE', 'MONERO_IMAGE', 'MONERO_WALLET_IMAGE'), values))
+    return dict(zip(('MONERO_IMAGE', 'MONERO_WALLET_IMAGE'), values))
 
 
 def example_values():
@@ -670,7 +660,7 @@ echo "/dev/test 4000000000 1000 ${INSTALLER_TEST_DF_KB:-3000000000} 1% /"
         index = next(i for i, line in enumerate(lines) if token in line)
         self.assertEqual(lines[index], 'Setup token: ' + token)
         self.assertTrue(lines[index - 1].startswith('Ready. Open '), lines[index - 1])
-        # After the token come the two reminders and, with a local Bitcoin node, the escrow set-up commands (A-495, A-513).
+        # After the token come the two backup and status reminders.
         self.assertGreaterEqual(index, len(lines) - 40)
 
     def test_timeout_stops_stub_descendants_without_bytecode_writes(self):
@@ -724,8 +714,7 @@ time.sleep(60)
     def disk_calls(config):
         """A-523: a local node on a chain with a size estimate (any but regtest) has its disk checked before .env."""
         profiles = config.get('COMPOSE_PROFILES', '').split(',')
-        bitcoin = 'bitcoin' in profiles and config.get('BITCOIN_CHAIN') != 'regtest'
-        return [DOCKER_ROOT] if bitcoin or 'monero' in profiles else []
+        return [DOCKER_ROOT] if 'monero' in profiles else []
 
     def set_clamav_default(self, image):
         script = self.root / 'scripts' / 'install.sh'
@@ -742,6 +731,15 @@ time.sleep(60)
         # Nothing was asked: the refusal comes before the first question.
         self.assertEqual(result.stdout, '')
 
+    def test_bitcoin_options_are_rejected_before_writes(self):
+        for option, value in (('--bitcoin', 'local'), ('--bitcoin', 'disabled'), ('--bitcoin-network', 'regtest'),
+                              ('--bitcoin-image', 'reviewed:test'), ('--bitcoin-prune', 'yes')):
+            result = self.run_installer(None, arguments=['--tor', option, value])
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('Monero-only', result.stderr)
+            self.assertFalse((self.root / '.env').exists())
+            self.assertEqual(self.calls(), [])
+
     # ---- init: questions, answers and the .env it writes ------------------------------------------------
 
     def test_internal_clearnet_defaults(self):
@@ -755,7 +753,7 @@ time.sleep(60)
         self.assertEqual(config['COOKIE_SECURE'], 'true')
         # Existing installs have no COMPOSE_PROJECT_NAME and use compose.yaml's name; new ones keep that default.
         self.assertEqual(config['COMPOSE_PROJECT_NAME'], 'opsecmkt')
-        self.assertEqual(config['COMPOSE_PROFILES'], 'internal-db,bitcoin,monero')
+        self.assertEqual(config['COMPOSE_PROFILES'], 'internal-db,monero')
         self.assertEqual(config['COMPOSE_FILE'],
                          'compose.yaml:compose.clearnet.yaml:compose.nodes.yaml:compose.internal-db.yaml')
         self.assertIn('@db:5432/opsecmkt', config['DATABASE_URL'])
@@ -764,33 +762,22 @@ time.sleep(60)
         self.assertEqual(len(config['AUDIT_SIGNING_KEY']), 64)
         self.assert_token_only_in_final_block(result, config['SETUP_TOKEN'])
         self.assert_no_secret_printed(result, config, allow_token=True)
-        self.assertEqual(config['BITCOIN_CHAIN'], 'main')
         self.assertEqual(config['MONERO_NETWORK'], 'mainnet')
         self.assertEqual(config['MONERO_NETWORK_FLAG'], '')
         images = installer_image_defaults()
-        self.assertEqual(config['BITCOIN_IMAGE'], images['BITCOIN_IMAGE'])
         self.assertEqual(config['MONERO_IMAGE'], images['MONERO_IMAGE'])
         self.assertEqual(config['MONERO_WALLET_IMAGE'], images['MONERO_WALLET_IMAGE'])
-        # Pruned by default, written explicitly so the operator can see and change it in .env: on mainnet 15000 MiB
-        # (about two months of blocks, an estimate), with six confirmations.
-        self.assertEqual(config['BITCOIN_PRUNE_MB'], '15000')
-        self.assertEqual(config['PAYMENT_CONFIRMATIONS_BTC'], '6')
+        # Pruning is written explicitly so the operator can inspect and change it.
         self.assertEqual(config['MONERO_PRUNE_FLAGS'], PRUNED_MONERO_FLAGS)
         self.assertIn('MAINNET', result.stdout)
         self.assertNotIn('ESCROW_XMR', config)
         self.assertEqual(config['CLAMAV_IMAGE_DEFAULT'], 'clamav/clamav:1.5.4-debian')
-        self.assertEqual(config['BITCOIN_RPC_URL'], '')
-        self.assertEqual(config['BITCOIN_WALLET'], '')
-        self.assertRegex(config['BITCOIN_RPC_AUTH'], r'^marketplace:[0-9a-f]{32}\$[0-9a-f]{64}$')
-        self.assertEqual(config['BITCOIN_RPC_AUTH'], bitcoin_rpcauth(
-            config['BITCOIN_RPC_PASSWORD'], config['BITCOIN_RPC_AUTH'].split(':', 1)[1].split('$', 1)[0]))
         self.assertEqual(config['MONERO_RPC_URL'], '')
         self.assertEqual(config['MONERO_WALLET_RPC_URL'], '')
         self.assertNotIn('MONERO_WALLET_RPC_PASSWORD', config)
         self.assertNotIn('compose.external-egress.yaml', config['COMPOSE_FILE'])
         # The node question states the disk and first-sync cost before the operator answers.
-        self.assertIn('pruned Bitcoin Core node', result.stdout)
-        self.assertIn('pruned Monero daemon', result.stdout)
+        self.assertIn('pruned daemon', result.stdout)
         self.assertIn('first sync', result.stdout)
         self.assertNotIn('Full node', result.stdout)
         self.assertNotIn('docs/testnet-runbook.md', result.stdout)
@@ -800,20 +787,11 @@ time.sleep(60)
         self.assertIn('proxy_set_header Host $host;', result.stdout)
         self.assertIn('https://YOUR-DOMAIN/setup', result.stdout)
 
-    def compose_bitcoin_prune_default(self):
-        # The installer writes the same default the Compose file falls back to for an .env without it.
-        text = (REPOSITORY / 'compose.nodes.yaml').read_text()
-        match = re.search(r'-prune=\$\{BITCOIN_PRUNE_MB:-([0-9]+)\}', text)
-        self.assertIsNotNone(match, 'compose.nodes.yaml must run bitcoind with -prune=${BITCOIN_PRUNE_MB:-N}')
-        self.assertGreaterEqual(int(match.group(1)), 550)
-        self.assertIn('${MONERO_PRUNE_FLAGS-' + PRUNED_MONERO_FLAGS + '}', text)
-        return match.group(1)
 
     def compose_image_defaults(self):
         # The installer and .env.example write the image each compose.nodes.yaml service falls back to.
         text = (REPOSITORY / 'compose.nodes.yaml').read_text()
         defaults = dict(re.findall(r'^    image: \$\{([A-Z_]+_IMAGE):-([^}]+)\}$', text, re.MULTILINE))
-        self.assertEqual(sorted(defaults), ['BITCOIN_IMAGE', 'MONERO_IMAGE', 'MONERO_WALLET_IMAGE'])
         return defaults
 
     def test_node_images_default_to_supported_release_tags(self):
@@ -853,38 +831,23 @@ time.sleep(60)
         config = self.config()
         self.assertEqual(config['COMPOSE_PROFILES'], 'internal-db')
         # No node chosen: nothing forces a chain, so a node added later may use any test network.
-        self.assertEqual(config['BITCOIN_CHAIN'], '')
         self.assertEqual(config['MONERO_NETWORK'], '')
-        self.assertEqual(config['BITCOIN_RPC_URL'], '')
-        self.assertEqual(config['BITCOIN_WALLET'], '')
         self.assertEqual(config['MONERO_RPC_URL'], '')
         self.assertEqual(config['MONERO_WALLET_RPC_URL'], '')
-        self.assertNotIn('BITCOIN_PRUNE_MB', config)
         self.assertNotIn('MONERO_PRUNE_FLAGS', config)
         self.assertNotIn('docs/testnet-runbook.md', result.stdout)
 
     def test_local_nodes_can_opt_out_of_pruning(self):
-        # On either class of network: the full-node notice names the chain it sizes (A-523).
-        for chain, network, size in (('signet', 'stagenet', '28 GB on signet'), ('main', 'mainnet', '870 GB on mainnet')):
-            with self.subTest(chain=chain):
+        for network in ('stagenet', 'mainnet'):
+            with self.subTest(network=network):
                 (self.root / '.env').unlink(missing_ok=True)
                 self.log.unlink(missing_ok=True)
-                result = self.run_installer(['tor', '', 'local', '', chain, 'no', 'local', '', network, 'no', ''])
+                result = self.run_installer(['tor', '', 'local', '', network, 'no', ''])
                 self.assert_started(result)
-                config = self.config()
-                self.assertEqual(config['COMPOSE_PROFILES'], 'internal-db,bitcoin,monero')
-                # -prune=0 disables pruning in bitcoind; a blank flag list drops --prune-blockchain for monerod.
-                self.assertEqual(config['BITCOIN_PRUNE_MB'], '0')
-                self.assertEqual(config['MONERO_PRUNE_FLAGS'], '')
-                self.assertEqual(config['BITCOIN_CHAIN'], chain)
-                self.assertEqual(config['MONERO_NETWORK'], network)
-                self.assertEqual(result.stdout.count('Full node'), 2)
-                self.assertIn(size, result.stdout)
-                # Compose reads an unquoted blank followed by a comment ("MONERO_PRUNE_FLAGS= # x") as the value "# x"
-                # (A-149): every line the installer writes is a single-quoted value with nothing after it.
-                for line in (self.root / '.env').read_text().splitlines():
-                    self.assertRegex(line, r"^[A-Z0-9_]+='[^'\n]*'$")
-                self.assertIn("\nMONERO_PRUNE_FLAGS=''\n", (self.root / '.env').read_text())
+                self.assertEqual(self.config()['COMPOSE_PROFILES'], 'internal-db,monero')
+                self.assertEqual(self.config()['MONERO_PRUNE_FLAGS'], '')
+                self.assertEqual(self.config()['MONERO_NETWORK'], network)
+                self.assertEqual(result.stdout.count('Full node'), 1)
 
     def test_env_example_value_lines_have_no_inline_comments(self):
         # Same Compose rule for the template operators copy and hand-edit (A-149).
@@ -893,17 +856,13 @@ time.sleep(60)
                 self.assertRegex(line, r'^[A-Z0-9_]+=[^#]*$')
 
     def test_local_node_prune_answer_yes_is_pruned(self):
-        # The default network is mainnet, pruned to 15000 MiB; a test chain keeps Compose's 2000 MiB default.
-        for chain, network, prune in (('', '', '15000'), ('signet', 'stagenet', self.compose_bitcoin_prune_default())):
-            with self.subTest(chain=chain):
-                (self.root / '.env').unlink(missing_ok=True)
-                self.log.unlink(missing_ok=True)
-                result = self.run_installer(['tor', '', 'local', '', chain, 'yes', 'local', '', network, 'yes', ''])
-                self.assert_started(result)
-                config = self.config()
-                self.assertEqual(config['BITCOIN_PRUNE_MB'], prune)
-                self.assertEqual(config['MONERO_PRUNE_FLAGS'], PRUNED_MONERO_FLAGS)
-                self.assertNotIn('Full node', result.stdout)
+        for network in ('stagenet', 'mainnet'):
+            (self.root / '.env').unlink(missing_ok=True)
+            self.log.unlink(missing_ok=True)
+            result = self.run_installer(['tor', '', 'local', '', network, 'yes', ''])
+            self.assert_started(result)
+            self.assertEqual(self.config()['MONERO_PRUNE_FLAGS'], PRUNED_MONERO_FLAGS)
+            self.assertNotIn('Full node', result.stdout)
 
     def test_local_shortcut_needs_no_input_and_disables_inherited_wallets(self):
         result = self.run_installer([], arguments=['--local'], extra_env={
@@ -916,14 +875,13 @@ time.sleep(60)
         self.assertEqual(config['APP_PORT'], '18085')
         self.assertEqual(config['COMPOSE_PROFILES'], 'internal-db')
         self.assertIn('@db:5432/opsecmkt', config['DATABASE_URL'])
-        for key in ('BITCOIN_RPC_URL', 'MONERO_RPC_URL', 'MONERO_WALLET_RPC_URL'):
+        for key in ('MONERO_RPC_URL', 'MONERO_WALLET_RPC_URL'):
             self.assertEqual(config[key], '')
         self.assertIn('Ready. Open http://127.0.0.1:18085/setup', result.stdout)
         self.assertNotIn('docs/testnet-runbook.md', result.stdout)
         # Developer mode never starts nodes, so it writes no node images or pruning settings.
-        for key in ('BITCOIN_IMAGE', 'MONERO_IMAGE', 'BITCOIN_PRUNE_MB', 'MONERO_PRUNE_FLAGS'):
+        for key in ('MONERO_IMAGE', 'MONERO_PRUNE_FLAGS'):
             self.assertNotIn(key, config)
-        self.assertEqual(config['BITCOIN_CHAIN'], '')
         self.assertEqual(config['MONERO_NETWORK'], '')
         self.assertNotIn('pruned', result.stdout)
         self.assert_token_only_in_final_block(result, config['SETUP_TOKEN'])
@@ -1001,9 +959,9 @@ time.sleep(60)
         script = (REPOSITORY / 'scripts' / 'test-mirror-commands.sh').read_text()
         external = 'postgres://test@database/scratch'
         cases = [
-            ('internal', ['tor', ''] + [''] * 9, 'internal-db,bitcoin,monero'),
+            ('internal', ['tor', ''] + [''] * 9, 'internal-db,monero'),
             ('internal', ['tor', '', 'disabled', 'disabled'], 'internal-db'),
-            ('external', ['tor', external] + [''] * 9, 'bitcoin,monero'),
+            ('external', ['tor', external] + [''] * 9, 'monero'),
             ('external', ['tor', external, 'disabled', 'disabled'], ''),
         ]
         for database, answers, profiles in cases:
@@ -1026,7 +984,7 @@ time.sleep(60)
         self.assertNotIn('--profile', INSTALLER.read_text())
         guide = (REPOSITORY / 'docs' / 'operator-guide.md').read_text()
         self.assertEqual(guide.count('<!-- ops-cmd: onion-mirror -->'), 1)
-        self.assertIn("COMPOSE_PROFILES='internal-db,bitcoin,monero,mirror'", guide)
+        self.assertIn("COMPOSE_PROFILES='internal-db,monero,mirror'", guide)
         self.assertIn('./scripts/install.sh add-mirror', guide)
 
     def test_legacy_external_wallet_options_are_rejected_before_writes(self):
@@ -1043,70 +1001,19 @@ time.sleep(60)
                 self.assertEqual(self.calls(), [])
 
     def test_local_node_profiles_and_images(self):
-        result = self.run_installer([
-            'tor', '', 'local', 'reviewed-bitcoin:test', 'testnet4', 'yes',
-            'local', 'reviewed-monero:test', 'stagenet', 'yes', '',
-        ])
+        result = self.run_installer(['tor', '', 'local', 'reviewed-monero:test', 'stagenet', 'yes', ''])
         self.assert_started(result)
         config = self.config()
-        self.assertEqual(config['COMPOSE_PROFILES'], 'internal-db,bitcoin,monero')
-        self.assertEqual(config['BITCOIN_IMAGE'], 'reviewed-bitcoin:test')
+        self.assertEqual(config['COMPOSE_PROFILES'], 'internal-db,monero')
         self.assertEqual(config['MONERO_IMAGE'], 'reviewed-monero:test')
         self.assertEqual(config['MONERO_WALLET_IMAGE'], installer_image_defaults()['MONERO_WALLET_IMAGE'])
-        self.assertEqual(len(config['BITCOIN_RPC_PASSWORD']), 48)
-        self.assertEqual(config['BITCOIN_RPC_URL'], '')
-        self.assertRegex(config['BITCOIN_RPC_AUTH'], r'^marketplace:[0-9a-f]{32}\$[0-9a-f]{64}$')
-        self.assertEqual(config['BITCOIN_RPC_AUTH'], bitcoin_rpcauth(
-            config['BITCOIN_RPC_PASSWORD'], config['BITCOIN_RPC_AUTH'].split(':', 1)[1].split('$', 1)[0]))
-        self.assertEqual(config['BITCOIN_CHAIN'], 'testnet4')
         self.assertEqual(config['MONERO_NETWORK'], 'stagenet')
-        self.assertEqual(config['MONERO_RPC_URL'], '')
-        self.assertEqual(config['MONERO_WALLET_RPC_URL'], '')
-        self.assertNotIn('MONERO_WALLET_RPC_PASSWORD', config)
         self.assert_no_secret_printed(result, config, allow_token=True)
-        self.assertNotIn('compose.external-egress.yaml', config['COMPOSE_FILE'])
 
-    def test_local_bitcoin_node_ends_with_the_runnable_escrow_setup_commands(self):
-        # A-495 (D-58), A-513: the installer only tells the operator how Bitcoin escrow is turned on; it edits no file.
-        # The commands are the ones scripts/test-escrow-node-rehearsal.py runs verbatim in CI.
-        for network in ('regtest', 'signet', 'testnet4'):
-            with self.subTest(network=network):
-                (self.root / '.env').unlink(missing_ok=True)
-                self.log.unlink(missing_ok=True)
-                result = self.run_installer(None, arguments=[
-                    '--tor', '--bitcoin', 'local', '--bitcoin-image', 'reviewed-bitcoin:test',
-                    '--bitcoin-network', network, '--bitcoin-prune', 'yes', '--monero', 'disabled'])
-                self.assert_started(result)
-                config = self.config()
-                commands = [line.strip() for line in result.stdout.splitlines() if 'escrow-node-setup.sh' in line
-                            and not line.startswith('#')]
-                self.assertEqual(len(commands), 2, result.stdout)
-                setup, verify = commands
-                # bitcoind listens on 8332 (compose.nodes.yaml -rpcport) and bitcoin-cli defaults to the chain's own
-                # port, so the cli must say -rpcport=8332 too (SRE60-1).
-                self.assertEqual(setup, f"./scripts/escrow-node-setup.sh --chain {network} --rpc-port 8332 --signer --cli "
-                                        "'docker compose exec -T -u bitcoin bitcoin bitcoin-cli -datadir=/data -rpcport=8332'")
-                self.assertNotIn('--verify', setup)
-                self.assertEqual(verify, "ESCROW_BTC_RPC_URL='<the URL it printed>' ./scripts/escrow-node-setup.sh "
-                                         f'--chain {network} --verify --via-compose app --wait 120')
-                # The conf append quotes its heredoc so the $ in rpcauth stays literal (SRE60-3), then restarts the node.
-                self.assertIn("docker compose exec -T -u bitcoin bitcoin sh -c 'cat >> /data/bitcoin.conf' <<'EOF'\n",
-                              result.stdout)
-                self.assertIn("cat >> .env <<'EOF'\nESCROW_BTC=on\nCOMPOSE_PROFILES=internal-db,bitcoin,escrow-signer\n",
-                              result.stdout)
-                self.assertLess(result.stdout.index('cat >> /data/bitcoin.conf'), result.stdout.index('docker compose restart bitcoin'))
-                self.assertLess(result.stdout.index('docker compose restart bitcoin'), result.stdout.index('--verify'))
-                self.assertIn('docker compose run --rm --no-deps escrow-signer init', result.stdout)
-                self.assertGreater(result.stdout.index('escrow-node-setup.sh'), result.stdout.index('Setup token:'))
-                self.assertIn('docs/operator-guide.md#escrow-node-set-up-and-the-public-network-smoke', result.stdout)
-                self.assertIn('off until', result.stdout)
-                # Nothing is written for it, and no escrow setting or secret appears in the output.
-                self.assertFalse([key for key in config if key.startswith('ESCROW_')], config)
-                self.assert_no_secret_printed(result, config, allow_token=True)
 
-    def test_no_local_bitcoin_node_prints_no_escrow_setup_commands(self):
+    def test_installer_prints_no_retired_escrow_setup_commands(self):
         for arguments in (['--tor', '--nodes', 'none'],
-                          ['--tor', '--bitcoin', 'disabled', '--monero', 'local', '--monero-image', 'reviewed-monero:test',
+                          ['--tor', '--monero', 'local', '--monero-image', 'reviewed-monero:test',
                            '--monero-network', 'stagenet', '--monero-prune', 'yes']):
             with self.subTest(arguments=arguments):
                 (self.root / '.env').unlink(missing_ok=True)
@@ -1115,20 +1022,6 @@ time.sleep(60)
                 self.assert_started(result)
                 self.assertNotIn('escrow-node-setup.sh', result.stdout)
 
-    def test_local_bitcoin_verifier_crypto_failure_leaves_no_install(self):
-        for key, value in (('INSTALLER_TEST_OPENSSL_BAD_SALT', 'fail'),
-                           ('INSTALLER_TEST_OPENSSL_BAD_SALT', 'empty'),
-                           ('INSTALLER_TEST_OPENSSL_BAD_SALT', 'malformed'),
-                           ('INSTALLER_TEST_OPENSSL_BAD_DGST', 'fail'),
-                           ('INSTALLER_TEST_OPENSSL_BAD_DGST', 'malformed')):
-            with self.subTest(key=key, value=value):
-                self.log.unlink(missing_ok=True)
-                result = self.run_installer([''] * 12, extra_env={key: value})
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn('Could not generate the Bitcoin RPC verifier', result.stderr)
-                self.assertFalse((self.root / '.env').exists())
-                self.assertEqual(list(self.root.glob('.env.install.*')), [])
-                self.assertFalse(any('compose up' in call for call in self.calls()))
 
     def test_local_node_rejects_incomplete_or_malformed_image_before_compose(self):
         for image in ('@sha256', 'vendor/node@sha256:deadbeef', 'vendor/node:'):
@@ -1141,49 +1034,23 @@ time.sleep(60)
                 self.assertFalse((self.root / '.env').exists())
 
     def test_local_node_accepts_a_complete_digest_pinned_reference(self):
-        digest_image = 'registry.example:5000/bitcoin/core@sha256:' + ('a' * 64)
-        result = self.run_installer(['clearnet', '', 'yes', 'local', digest_image, 'testnet4', '', 'disabled'])
+        digest_image = 'registry.example:5000/monero/node@sha256:' + ('a' * 64)
+        result = self.run_installer(['clearnet', '', 'yes', 'local', digest_image, 'stagenet', '', ''])
         self.assert_started(result)
-        self.assertEqual(self.config()['BITCOIN_IMAGE'], digest_image)
 
     def test_local_node_defaults_to_current_trusted_images(self):
-        result = self.run_installer(['tor', '', 'local', '', 'testnet4', '', 'local', '', 'stagenet', '', ''])
+        result = self.run_installer(['tor', '', 'local', '', 'stagenet', '', ''])
         self.assert_started(result)
         config = self.config()
-        self.assertEqual({key: config[key] for key in ('BITCOIN_IMAGE', 'MONERO_IMAGE', 'MONERO_WALLET_IMAGE')},
-                         installer_image_defaults())
 
     def test_local_nodes_restrict_networks_to_escrow_support(self):
-        # A-523: mainnet is main for Bitcoin Core and mainnet for Monero; a misnamed network is refused with the right
-        # name (as scripts/escrow-node-setup.sh does), before Docker is asked anything.
-        cases = (
-            ('--bitcoin-network', 'mainnet', 'give --bitcoin-network main'),
-            ('--bitcoin-network', 'testnet', 'testnet3 is not an escrow chain'),
-            ('--bitcoin-network', 'testnet3', 'testnet3 is not an escrow chain'),
-            ('--bitcoin-network', 'live', '--bitcoin-network takes one of: main signet testnet4 regtest'),
-            ('--monero-network', 'main', 'give --monero-network mainnet'),
-            ('--monero-network', 'testnet', 'give --monero-network stagenet'),
-            ('--monero-network', 'fakechain', '--monero-network takes one of: mainnet stagenet'),
-        )
-        for flag, unsupported, message in cases:
-            with self.subTest(flag=flag, unsupported=unsupported):
-                self.log.unlink(missing_ok=True)
-                result = self.run_installer(None, arguments=['--tor', '--nodes', 'custom', '--bitcoin', 'disabled',
-                                                              '--monero', 'disabled', flag, unsupported])
-                self.assertEqual(result.returncode, 2)
-                self.assertIn(message, result.stderr)
-                self.assertFalse((self.root / '.env').exists())
-                self.assertEqual(self.calls(), [])
-        # The same names are refused as answers.
-        for answers, message in ((['tor', '', 'local', '', 'mainnet'], 'give main'),
-                                 (['tor', '', 'disabled', 'local', '', 'testnet'], 'give stagenet')):
-            with self.subTest(answers=answers):
-                self.log.unlink(missing_ok=True)
-                result = self.run_installer(answers)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn(message, result.stderr)
-                self.assertFalse((self.root / '.env').exists())
-                self.assertEqual(self.calls(), PREFLIGHT)
+        for network, message in (('main', 'give --monero-network mainnet'), ('testnet', 'give --monero-network stagenet'),
+                                 ('fakechain', '--monero-network takes one of: mainnet stagenet')):
+            result = self.run_installer(None, arguments=['--tor', '--nodes', 'none', '--monero-network', network])
+            self.assertEqual(result.returncode, 2)
+            self.assertIn(message, result.stderr)
+            self.assertFalse((self.root / '.env').exists())
+            self.assertEqual(self.calls(), [])
 
     # ---- init: mainnet by default (A-523) ------------------------------------------------------------------
     # Config strings only: Docker is a stub, so no node (and never a mainnet one) starts here.
@@ -1192,221 +1059,52 @@ time.sleep(60)
         return (self.root / '.env').read_text().splitlines()
 
     def test_default_writes_mainnet_explicitly(self):
-        # The bare interactive defaults and --nodes local write the mainnet class into .env, never a blank.
-        for answers, arguments in (([''] * 12, []), (None, ['--tor', '--nodes', 'local'])):
-            with self.subTest(arguments=arguments):
-                (self.root / '.env').unlink(missing_ok=True)
-                self.log.unlink(missing_ok=True)
-                self.assert_started(self.run_installer(answers, arguments=arguments))
-                lines = self.env_lines()
-                self.assertIn("BITCOIN_CHAIN='main'", lines)
-                self.assertIn("MONERO_NETWORK='mainnet'", lines)
-                self.assertIn("MONERO_NETWORK_FLAG=''", lines)
-        # Bitcoin alone: no Monero key says mainnet, and no network flag is written for a daemon that does not run.
-        (self.root / '.env').unlink()
-        self.log.unlink()
-        self.assert_started(self.run_installer([''], arguments=[
-            '--tor', '--bitcoin', 'local', '--bitcoin-image', 'reviewed-bitcoin:test', '--bitcoin-prune', 'yes',
-            '--monero', 'disabled']))
-        config = self.config()
-        self.assertEqual(config['BITCOIN_CHAIN'], 'main')
-        self.assertEqual(config['MONERO_NETWORK'], '')
-        self.assertNotIn('MONERO_NETWORK_FLAG', config)
-        self.assertNotIn('mainnet', [value for key, value in config.items() if key.startswith('MONERO')])
+        for answers, arguments in (([''] * 8, []), (None, ['--tor', '--nodes', 'local'])):
+            (self.root / '.env').unlink(missing_ok=True)
+            self.log.unlink(missing_ok=True)
+            self.assert_started(self.run_installer(answers, arguments=arguments))
+            self.assertIn("MONERO_NETWORK='mainnet'", self.env_lines())
+            self.assertIn("MONERO_NETWORK_FLAG=''", self.env_lines())
 
-    def test_monero_only_mainnet_leaves_bitcoin_chain_blank(self):
-        # The app reads a blank BITCOIN_CHAIN beside MONERO_NETWORK=mainnet as a mainnet market (marketLiveFromEnv).
-        result = self.run_installer(['', ''], arguments=[
-            '--tor', '--bitcoin', 'disabled', '--monero', 'local', '--monero-image', 'reviewed-monero:test',
-            '--monero-prune', 'yes'])
+    def test_monero_only_mainnet_omits_bitcoin_settings(self):
+        result = self.run_installer(None, arguments=['--tor', '--nodes', 'local'])
         self.assert_started(result)
         config = self.config()
-        self.assertEqual(config['BITCOIN_CHAIN'], '')
         self.assertEqual(config['MONERO_NETWORK'], 'mainnet')
-        self.assertEqual(config['MONERO_NETWORK_FLAG'], '')
         self.assertEqual(config['COMPOSE_PROFILES'], 'internal-db,monero')
-        for key in ('BITCOIN_PRUNE_MB', 'PAYMENT_CONFIRMATIONS_BTC', 'BITCOIN_IMAGE', 'ESCROW_XMR'):
-            self.assertNotIn(key, config)
-        self.assertIn('MAINNET', result.stdout)
+        retired = [key for key in config if key.startswith(('BITCOIN_', 'ESCROW_BTC', 'ESCROW_SIGNER_'))]
+        self.assertEqual(retired, [])
         self.assertNotIn('escrow-node-setup.sh', result.stdout)
 
-    def test_init_refuses_mixed_network_class(self):
-        # Two chosen networks of different classes (one mainnet, one a test network): refused before .env is written
-        # (errMixedNetworks), naming both options. A defaulted network follows the chosen one instead (below).
-        cases = [
-            (None, ['--tor', '--nodes', 'local', '--bitcoin-network', 'main', '--monero-network', 'stagenet']),
-            (None, ['--tor', '--nodes', 'local', '--bitcoin-network', 'regtest', '--monero-network', 'mainnet']),
-            (['tor', '', 'local', '', 'testnet4', '', 'local', '', 'mainnet', ''], []),
-        ]
-        for answers, arguments in cases:
-            with self.subTest(arguments=arguments, answers=answers):
-                self.log.unlink(missing_ok=True)
-                result = self.run_installer(answers, arguments=arguments)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn('mix mainnet with a test network', result.stderr)
-                self.assertIn('--bitcoin-network', result.stderr)
-                self.assertIn('--monero-network', result.stderr)
-                self.assertIn('Nothing was written', result.stderr)
-                self.assertFalse((self.root / '.env').exists())
-                self.assertEqual(list(self.root.glob('.env.install.*')), [])
-                self.assertEqual(self.calls(), PREFLIGHT)
-                self.assertEqual(self.generated_secrets(), [])
 
-    def assert_test_class(self, result, chain, network):
-        self.assert_started(result)
-        config = self.config()
-        self.assertEqual(config['BITCOIN_CHAIN'], chain)
-        self.assertEqual(config['MONERO_NETWORK'], network)
-        self.assertEqual(config['MONERO_NETWORK_FLAG'], '--stagenet')
-        self.assertEqual(config['BITCOIN_PRUNE_MB'], self.compose_bitcoin_prune_default())
-        self.assertNotIn('PAYMENT_CONFIRMATIONS_BTC', config)
-        self.assertNotIn('MAINNET', result.stdout)
-        self.assertNotIn('No mainnet run', result.stdout)
 
-    def test_explicit_test_network_carries_the_other_coin(self):
-        # The market's class follows an explicitly chosen network: a Bitcoin test chain makes Monero default to stagenet.
-        self.assert_test_class(self.run_installer(None, arguments=['--tor', '--nodes', 'local', '--bitcoin-network', 'signet']),
-                               'signet', 'stagenet')
-        # So does an answer: Monero's network question then defaults to stagenet (Enter), as does its escrow question (no).
-        (self.root / '.env').unlink()
-        self.log.unlink()
-        self.assert_test_class(self.run_installer(['tor', '', 'local', '', 'testnet4', '', 'local', '', '', '', '']),
-                               'testnet4', 'stagenet')
 
-    def test_explicit_monero_test_network_carries_bitcoin(self):
-        self.assert_test_class(self.run_installer(None, arguments=['--tor', '--nodes', 'local', '--monero-network', 'stagenet']),
-                               'signet', 'stagenet')
-        # Asked interactively, Bitcoin's network question comes first: its default follows a --monero-network option...
-        (self.root / '.env').unlink()
-        self.log.unlink()
-        self.assert_test_class(self.run_installer([''] * 6, arguments=[
-            '--tor', '--nodes', 'custom', '--bitcoin', 'local', '--monero', 'local', '--monero-network', 'stagenet']),
-            'signet', 'stagenet')
-        # ...and a Monero test answer after a defaulted Bitcoin network moves Bitcoin to signet, saying so.
-        (self.root / '.env').unlink()
-        self.log.unlink()
-        result = self.run_installer(['tor', '', 'local', '', '', '', 'local', '', 'stagenet', '', ''])
-        self.assert_test_class(result, 'signet', 'stagenet')
-        self.assertIn('BITCOIN follows the Monero network', result.stdout)
-        # A coin disabled by its option chooses nothing: Monero alone stays on the mainnet default.
-        (self.root / '.env').unlink()
-        self.log.unlink()
-        result = self.run_installer([''], arguments=['--tor', '--bitcoin', 'disabled', '--bitcoin-network', 'signet',
-                                                     '--monero', 'local', '--monero-image', 'reviewed-monero:test',
-                                                     '--monero-prune', 'yes', '--monero-escrow', 'no'])
-        self.assert_started(result)
-        self.assertEqual(self.config()['MONERO_NETWORK'], 'mainnet')
 
-    def test_mainnet_prune_and_confirmations(self):
-        cases = (
-            (['--bitcoin-network', 'main'], dict(BITCOIN_PRUNE_MB='15000', PAYMENT_CONFIRMATIONS_BTC='6')),
-            (['--bitcoin-network', 'main', '--bitcoin-prune', 'no'], dict(BITCOIN_PRUNE_MB='0', PAYMENT_CONFIRMATIONS_BTC='6')),
-            (['--bitcoin-network', 'signet'], dict(BITCOIN_PRUNE_MB='2000', PAYMENT_CONFIRMATIONS_BTC=None)),
-            (['--bitcoin-network', 'testnet4', '--bitcoin-prune', 'no'], dict(BITCOIN_PRUNE_MB='0', PAYMENT_CONFIRMATIONS_BTC=None)),
-            (['--bitcoin-network', 'regtest'], dict(BITCOIN_PRUNE_MB='2000', PAYMENT_CONFIRMATIONS_BTC=None)),
-        )
-        for extra, expected in cases:
-            with self.subTest(extra=extra):
-                (self.root / '.env').unlink(missing_ok=True)
-                self.log.unlink(missing_ok=True)
-                arguments = ['--tor', '--nodes', 'local', '--monero', 'disabled', *extra]
-                self.assert_started(self.run_installer(None, arguments=arguments))
-                config = self.config()
-                self.assertEqual({key: config.get(key) for key in expected}, expected)
 
     def test_mainnet_init_warns_real_funds_unrun(self):
         result = self.run_installer(None, arguments=['--tor', '--nodes', 'local'])
         self.assert_started(result)
-        out = result.stdout
-        for text in ('MAINNET', 'real funds', 'No mainnet run of this software is recorded',
-                     # Per coin, pruned size and multi-day first sync, each labelled an estimate.
-                     'Bitcoin mainnet', 'about 30 GB', '856 GB', '14 GB', 'Monero mainnet', '45 GB in April 2022',
-                     'more today', 'takes days', 'estimate',
-                     # The prune window and its backup consequence.
-                     'about two months', 'cannot be rescanned',
-                     # Tor with local nodes: their peer traffic leaves directly unless the overlay is added.
-                     'not routed through Tor', 'compose.nodes-tor.yaml',
-                     # Monero escrow on mainnet.
-                     'custodial'):
-            self.assertIn(text, out)
-        # Printed before .env is written: the stub refuses the disk check once .env exists, and the notice comes first.
-        self.assertLess(out.index('MAINNET'), out.index('Docker data directory'))
-        # Clearnet: nothing about Tor routing; test networks: no mainnet notice at all.
-        for arguments, mainnet in ((['--clearnet', '--behind-proxy', 'yes', '--nodes', 'local'], True),
-                                   (['--tor', '--nodes', 'local', '--bitcoin-network', 'signet',
-                                     '--monero-network', 'stagenet'], False)):
-            with self.subTest(arguments=arguments):
-                (self.root / '.env').unlink()
-                self.log.unlink()
-                result = self.run_installer(None, arguments=arguments)
-                self.assert_started(result)
-                self.assertNotIn('not routed through Tor', result.stdout)
-                self.assertEqual('MAINNET' in result.stdout, mainnet)
-                self.assertEqual('No mainnet run' in result.stdout, mainnet)
+        for text in ('MAINNET', 'real funds', 'No mainnet run of this software is recorded', 'Monero mainnet',
+                     'takes days', 'estimate', 'not routed through Tor', 'compose.nodes-tor.yaml', 'custodial'):
+            self.assertIn(text, result.stdout)
+        self.assertNotIn('Bitcoin', result.stdout)
+        self.assertLess(result.stdout.index('MAINNET'), result.stdout.index('Docker data directory'))
 
     def test_local_node_disk_check_warns_and_never_refuses(self):
-        # A-523 (D-66): free space under Docker's data directory below the chain's estimate is a WARNING, never a
-        # refusal; an unreadable value is said and the install continues. The text names the chain it sizes.
-        mainnet = ['--tor', '--nodes', 'local']
-        cases = (
-            (mainnet, {}, 'has 2861 GB free', None),
-            (mainnet, {'INSTALLER_TEST_DF_KB': str(20 * 2**20)}, 'WARNING', 'about 75 GB'),
-            (['--tor', '--nodes', 'local', '--bitcoin-network', 'signet', '--monero-network', 'stagenet'],
-             {'INSTALLER_TEST_DF_KB': str(20 * 2**20)}, 'WARNING', 'about 28 GB'),
-            (mainnet, {'INSTALLER_TEST_DOCKER_ROOT_FAIL': '1'}, 'Could not read the free space', None),
-            (mainnet, {'INSTALLER_TEST_DF_FAIL': '1'}, 'Could not read the free space', None),
-            (mainnet, {'INSTALLER_TEST_DOCKER_ROOT': '/nonexistent/docker'}, 'Could not read the free space', None),
-        )
-        for arguments, extra, message, size in cases:
-            with self.subTest(extra=extra, arguments=arguments):
-                (self.root / '.env').unlink(missing_ok=True)
-                self.log.unlink(missing_ok=True)
-                result = self.run_installer(None, arguments=arguments, extra_env=extra)
-                self.assert_started(result)
-                self.assertIn(message, result.stdout + result.stderr)
-                if size:
-                    self.assertIn(size, result.stdout + result.stderr)
-                if message != 'WARNING':
-                    self.assertNotIn('WARNING', result.stdout + result.stderr)
-        # Regtest alone has no size to check: Docker is not asked.
-        (self.root / '.env').unlink()
-        self.log.unlink()
-        result = self.run_installer(None, arguments=['--tor', '--nodes', 'local', '--bitcoin-network', 'regtest',
-                                                     '--monero', 'disabled'])
-        self.assert_started(result)
-        self.assertNotIn(DOCKER_ROOT, self.calls())
+        for flags, extra, message in (([], {'INSTALLER_TEST_DF_KB': str(20 * 2**20)}, 'WARNING'),
+                                      (['--monero-network', 'stagenet'], {'INSTALLER_TEST_DF_KB': str(10 * 2**20)}, 'WARNING'),
+                                      ([], {'INSTALLER_TEST_DOCKER_ROOT_FAIL': '1'}, 'Could not read the free space'),
+                                      ([], {'INSTALLER_TEST_DF_FAIL': '1'}, 'Could not read the free space')):
+            (self.root / '.env').unlink(missing_ok=True)
+            self.log.unlink(missing_ok=True)
+            result = self.run_installer(None, arguments=['--tor', '--nodes', 'local', *flags], extra_env=extra)
+            self.assert_started(result)
+            self.assertIn(message, result.stdout + result.stderr)
 
-    def test_mainnet_prints_chain_main_setup(self):
-        result = self.run_installer(None, arguments=[
-            '--tor', '--bitcoin', 'local', '--bitcoin-image', 'reviewed-bitcoin:test', '--bitcoin-network', 'main',
-            '--bitcoin-prune', 'yes', '--monero', 'disabled'])
-        self.assert_started(result)
-        commands = [line.strip() for line in result.stdout.splitlines() if 'escrow-node-setup.sh' in line
-                    and not line.startswith('#')]
-        self.assertEqual(len(commands), 2, result.stdout)
-        self.assertTrue(commands[0].startswith('./scripts/escrow-node-setup.sh --chain main --rpc-port 8332 '), commands[0])
-        self.assertIn('--chain main --verify --via-compose app', commands[1])
-        block = result.stdout[result.stdout.index('Bitcoin escrow stays off'):]
-        for text in ('plain fee address is refused on mainnet', 'descriptor', 'wpkh(', 'sized on test chains',
-                     'PAYMENT_CONFIRMATIONS_BTC', 'ESCROW_BTC_FEE_RATE'):
-            self.assertIn(text, block)
-        # Every added line is a comment, safe to paste.
-        for line in block.splitlines():
-            if 'descriptor' in line or 'test chains' in line:
-                self.assertTrue(line.startswith('#'), line)
-        # A test chain's block is as it was.
-        (self.root / '.env').unlink()
-        self.log.unlink()
-        result = self.run_installer(None, arguments=[
-            '--tor', '--bitcoin', 'local', '--bitcoin-image', 'reviewed-bitcoin:test', '--bitcoin-network', 'signet',
-            '--bitcoin-prune', 'yes', '--monero', 'disabled'])
-        self.assert_started(result)
-        self.assertNotIn('plain fee address', result.stdout)
-        self.assertNotIn('sized on test chains', result.stdout)
 
     def test_mainnet_monero_escrow_defaults_off(self):
         # The question is asked on mainnet too, says real funds and custodial, and defaults to no.
-        result = self.run_installer(['tor', '', 'disabled', 'local', '', '', '', ''])
+        result = self.run_installer(['tor', '', 'local', '', '', '', ''])
         self.assert_started(result)
         config = self.config()
         self.assertEqual(config['MONERO_NETWORK'], 'mainnet')
@@ -1417,7 +1115,7 @@ time.sleep(60)
         # Turned on: allowed on mainnet, with its seed key still required (asked, never defaulted).
         (self.root / '.env').unlink()
         self.log.unlink()
-        flags = ['--tor', '--bitcoin', 'disabled', '--monero', 'local', '--monero-image', 'reviewed-monero:test',
+        flags = ['--tor', '--monero', 'local', '--monero-image', 'reviewed-monero:test',
                  '--monero-network', 'mainnet', '--monero-prune', 'yes', '--monero-escrow', 'yes']
         result = self.run_installer(None, arguments=flags)
         self.assertNotEqual(result.returncode, 0)
@@ -1462,20 +1160,20 @@ time.sleep(60)
 
     def test_monero_escrow_on_stagenet_is_asked_with_the_monero_questions(self):
         key = self.seed_key()
-        result = self.run_installer(['tor', '', 'disabled', 'local', '', 'stagenet', '', 'yes', str(key)])
+        result = self.run_installer(['tor', '', 'local', '', 'stagenet', '', 'yes', str(key)])
         self.assert_monero_escrow(result, key)
         self.assertIn('custodial', result.stdout)
 
     def test_monero_escrow_flags_need_no_prompt(self):
         key = self.seed_key()
-        result = self.run_installer(None, arguments=['--tor', '--bitcoin', 'disabled', '--monero', 'local', '--monero-image', 'reviewed-monero:test',
+        result = self.run_installer(None, arguments=['--tor', '--monero', 'local', '--monero-image', 'reviewed-monero:test',
                                                      '--monero-network', 'stagenet', '--monero-prune', 'yes',
                                                      '--monero-escrow', 'yes', '--monero-escrow-seed-key', str(key)])
         self.assert_monero_escrow(result, key)
 
     def test_monero_escrow_off_by_default_and_never_defaulted(self):
         # The default answer is no, and nothing of Monero escrow is written.
-        result = self.run_installer(['tor', '', 'disabled', 'local', '', 'stagenet', '', ''])
+        result = self.run_installer(['tor', '', 'local', '', 'stagenet', '', ''])
         self.assert_started(result)
         config = self.config()
         for key in ('ESCROW_XMR', 'ESCROW_XMR_WALLET_RPC_PASSWORD', 'MONERO_WALLET_SECRET', 'ESCROW_XMR_SEED_KEY'):
@@ -1487,7 +1185,7 @@ time.sleep(60)
         # bash prints no prompt without a terminal), so empty input stops the installer before anything is written.
         (self.root / '.env').unlink()
         self.log.unlink()
-        result = self.run_installer(None, arguments=['--tor', '--bitcoin', 'disabled', '--monero', 'local', '--monero-image', 'reviewed-monero:test',
+        result = self.run_installer(None, arguments=['--tor', '--monero', 'local', '--monero-image', 'reviewed-monero:test',
                                                      '--monero-network', 'stagenet', '--monero-prune', 'yes',
                                                      '--monero-escrow', 'yes'])
         self.assertNotEqual(result.returncode, 0)
@@ -1500,7 +1198,7 @@ time.sleep(60)
         private.write_text('-----BEGIN PGP PRIVATE KEY BLOCK-----\nxx\n-----END PGP PRIVATE KEY BLOCK-----\n')
         not_a_key = self.root / 'notes.txt'
         not_a_key.write_text('not a key\n')
-        base = ['--tor', '--bitcoin', 'disabled', '--monero-image', 'reviewed-monero:test', '--monero-prune', 'yes', '--monero-escrow', 'yes']
+        base = ['--tor', '--monero-image', 'reviewed-monero:test', '--monero-prune', 'yes', '--monero-escrow', 'yes']
         cases = [
             (['--monero', 'local', '--monero-network', 'testnet', '--monero-escrow-seed-key', str(key)], 'give --monero-network stagenet', []),
             (['--monero', 'disabled', '--monero-escrow-seed-key', str(key)], 'Monero escrow needs the local Monero node'),
@@ -1530,39 +1228,16 @@ time.sleep(60)
                        'escrow-xmr-seed-key.asc (the Monero escrow seed key it mounts) is missing')
 
     def test_secret_generation_failure_starts_nothing(self):
-        # openssl rand calls: 1 database password, 2 APP_SECRET_KEY, 3 setup token, 4 audit key; local Bitcoin
-        # adds 5 its RPC password and 6 the verifier salt; Monero escrow adds its wallet-RPC password and
-        # MONERO_WALLET_SECRET. A Monero daemon without escrow needs no wallet credentials.
-        seed_key = self.seed_key()
-        bitcoin = ['--tor', '--bitcoin', 'local', '--bitcoin-image', 'reviewed-bitcoin:test',
-                   '--bitcoin-network', 'testnet4', '--bitcoin-prune', 'yes', '--monero', 'disabled']
-        monero_escrow = ['--tor', '--bitcoin', 'disabled', '--monero', 'local', '--monero-image', 'reviewed-monero:test',
-                         '--monero-network', 'stagenet', '--monero-prune', 'yes', '--monero-escrow', 'yes',
-                         '--monero-escrow-seed-key', str(seed_key)]
-        both_escrows = ['--tor', '--bitcoin', 'local', '--bitcoin-image', 'reviewed-bitcoin:test',
-                        '--bitcoin-network', 'testnet4', '--bitcoin-prune', 'yes', '--monero', 'local',
-                        '--monero-image', 'reviewed-monero:test', '--monero-network', 'stagenet',
-                        '--monero-prune', 'yes', '--monero-escrow', 'yes', '--monero-escrow-seed-key', str(seed_key)]
-        scenarios = [
-            (1, 'random secret', ['clearnet', '', '', 'disabled', 'disabled'], []),
-            (2, 'random secret', ['clearnet', '', '', 'disabled', 'disabled'], []),
-            (3, 'random secret', ['clearnet', '', '', 'disabled', 'disabled'], []),
-            (5, 'random secret', [], monero_escrow),  # Monero escrow wallet-RPC password.
-            (6, 'random secret', [], monero_escrow),  # Monero escrow wallet-seed sealing secret.
-            (5, 'random secret', [], bitcoin),        # Local Bitcoin RPC password.
-            (6, 'Bitcoin RPC verifier', [], bitcoin), # Salt for the local Bitcoin RPC verifier.
-            (7, 'random secret', [], both_escrows),   # Monero escrow wallet-RPC password after Bitcoin setup.
-            (8, 'random secret', [], both_escrows),   # Monero escrow wallet-seed sealing secret.
-        ]
-        for call, message, answers, arguments in scenarios:
-            with self.subTest(call=call, arguments=arguments):
-                self.log.unlink(missing_ok=True)
-                result = self.run_installer(answers, arguments=arguments, openssl_empty_call=call)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn(message, result.stderr)
-                self.assertEqual(self.calls(), PREFLIGHT)
-                self.assertFalse((self.root / '.env').exists())
-                self.assertEqual(list(self.root.glob('.env.install.*')), [])
+        key = self.seed_key()
+        flags = ['--tor', '--nodes', 'local', '--monero-network', 'stagenet', '--monero-escrow', 'yes',
+                 '--monero-escrow-seed-key', str(key)]
+        for call in range(1, 7):
+            self.log.unlink(missing_ok=True)
+            result = self.run_installer(None, arguments=flags, openssl_empty_call=call)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('random secret', result.stderr)
+            self.assertFalse((self.root / '.env').exists())
+            self.assertFalse(any('compose up' in command for command in self.calls()))
 
     def test_containers_from_another_checkout_are_refused_before_anything_is_written(self):
         # A second checkout under the same project name would recreate the other installation's containers
@@ -1675,7 +1350,7 @@ time.sleep(60)
             ['tor', '', 'custom', 'disabled', 'external'],
             ['tor', '', 'local', ''],
             ['tor', '', 'local', '', 'testnet4', 'maybe', 'disabled'],
-            ['tor', '', 'disabled', 'local', '', 'stagenet', 'maybe'],
+            ['tor', '', 'local', '', 'stagenet', 'maybe'],
             ['tor', "postgres://test:quote'@database/scratch", 'disabled', 'disabled'],
             # I8: a placeholder database URL is refused before .env is written.
             ['tor', 'postgres://opsecmkt:REPLACE_ME@database/scratch', 'disabled', 'disabled'],
@@ -1715,7 +1390,7 @@ time.sleep(60)
     def test_init_prints_no_secret_but_the_setup_token(self):
         cases = [
             ([''] * 12, []),
-            (['tor', '', 'local', '', 'testnet4', '', 'local', '', 'stagenet', '', ''], []),
+            (['tor', '', 'local', '', 'stagenet', '', ''], []),
             ([], ['--local']),
         ]
         for answers, arguments in cases:
@@ -1746,37 +1421,20 @@ time.sleep(60)
             self.assertNotIn('RETENTION_ENABLED', json.loads(line))
 
     def test_init_flags_need_no_prompt(self):
-        # Empty input: a question would stop the installer at "end of input".
-        wallet = 'http://user:wallet-secret@wallet.example.test:18083'
-        cases = [
-            (['init', '--tor', '--nodes', 'none'],
-             dict(APP_MODE='tor', COOKIE_SECURE='false', COMPOSE_PROFILES='internal-db')),
-            (['--clearnet', '--behind-proxy', 'no', '--nodes', 'local'],
-             dict(APP_MODE='clearnet', COOKIE_SECURE='false', COMPOSE_PROFILES='internal-db,bitcoin,monero',
-                  BITCOIN_CHAIN='main', MONERO_NETWORK='mainnet', MONERO_NETWORK_FLAG='', BITCOIN_PRUNE_MB='15000',
-                  PAYMENT_CONFIRMATIONS_BTC='6', BITCOIN_IMAGE=installer_image_defaults()['BITCOIN_IMAGE'])),
-            (['--clearnet', '--behind-proxy', 'no', '--nodes', 'local', '--bitcoin-network', 'signet',
-              '--monero-network', 'stagenet'],
-             dict(COMPOSE_PROFILES='internal-db,bitcoin,monero', BITCOIN_CHAIN='signet', MONERO_NETWORK='stagenet',
-                  MONERO_NETWORK_FLAG='--stagenet', BITCOIN_PRUNE_MB='2000', PAYMENT_CONFIRMATIONS_BTC=None)),
-            (['init', '--clearnet', '--behind-proxy', 'yes', '--nodes', 'none'],
-             dict(APP_MODE='clearnet', COOKIE_SECURE='true', COMPOSE_PROFILES='internal-db')),
-            (['init', '--tor', '--external-db', 'postgres://market@database.example/market', '--nodes', 'custom',
-              '--bitcoin', 'local', '--bitcoin-image', 'reviewed-bitcoin:test', '--bitcoin-network', 'signet',
-              '--bitcoin-prune', 'no', '--monero', 'disabled'],
-             dict(APP_MODE='tor', DATABASE_URL='postgres://market@database.example/market', COMPOSE_PROFILES='bitcoin',
-                  BITCOIN_IMAGE='reviewed-bitcoin:test', BITCOIN_CHAIN='signet', BITCOIN_PRUNE_MB='0',
-                  COMPOSE_FILE='compose.yaml:compose.tor.yaml:compose.nodes.yaml:compose.external-egress.yaml')),
-        ]
-        for arguments, expected in cases:
-            with self.subTest(arguments=arguments):
-                (self.root / '.env').unlink(missing_ok=True)
-                self.log.unlink(missing_ok=True)
-                result = self.run_installer(None, arguments=arguments)
-                self.assert_started(result)
-                config = self.config()
-                self.assertEqual({key: config.get(key) for key in expected}, expected)
-                self.assert_no_secret_printed(result, config, allow_token=True)
+        cases = [(['--tor', '--nodes', 'none'], 'internal-db', ''),
+                 (['--clearnet', '--behind-proxy', 'no', '--nodes', 'local'], 'internal-db,monero', 'mainnet'),
+                 (['--tor', '--nodes', 'local', '--monero-network', 'stagenet'], 'internal-db,monero', 'stagenet'),
+                 (['--tor', '--external-db', 'postgres://market@database.example/market', '--monero', 'local',
+                   '--monero-image', 'reviewed:test', '--monero-network', 'stagenet', '--monero-prune', 'no',
+                   '--monero-escrow', 'no'], 'monero', 'stagenet')]
+        for arguments, profiles, network in cases:
+            (self.root / '.env').unlink(missing_ok=True)
+            self.log.unlink(missing_ok=True)
+            result = self.run_installer(None, arguments=arguments)
+            self.assert_started(result)
+            self.assertEqual(self.config()['COMPOSE_PROFILES'], profiles)
+            self.assertEqual(self.config()['MONERO_NETWORK'], network)
+            self.assert_no_secret_printed(result, self.config(), allow_token=True)
 
     def test_init_flags_ask_only_what_they_leave_open(self):
         # --tor alone asks one question: the nodes.
@@ -1792,7 +1450,7 @@ time.sleep(60)
 
     def test_init_rejects_bad_options_before_docker(self):
         cases = [['--nodes', 'maybe'], ['--tor', '--clearnet'], ['--local', '--tor'], ['--site-name', 'Market'],
-                 ['--admin', 'no'], ['--bitcoin'], ['--unknown'], ['init', 'extra']]
+                 ['--admin', 'no'], ['--unknown'], ['init', 'extra']]
         for arguments in cases:
             with self.subTest(arguments=arguments):
                 self.log.unlink(missing_ok=True)
@@ -1803,7 +1461,7 @@ time.sleep(60)
         self.log.unlink(missing_ok=True)
         result = self.run_installer(None, arguments=['--tor', '--nodes', 'local', '--bitcoin', 'external'])
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn('takes one of: local disabled', result.stderr)
+        self.assertIn('Monero-only', result.stderr)
         self.assertEqual(self.calls(), [])
         self.assertFalse((self.root / '.env').exists())
 
@@ -2116,41 +1774,16 @@ time.sleep(60)
         self.check_env(values, 'TOR_ADMIN_AUTH_DIR must be an absolute readable directory')
 
     def test_check_restricts_local_nodes_to_escrow_networks(self):
-        # A-460: main is the mainnet opt-in; testnet3 stays refused.
-        self.check_env(installed_env(COMPOSE_PROFILES='internal-db,bitcoin', BITCOIN_CHAIN='test'),
-                       'BITCOIN_CHAIN must be regtest, testnet4, signet or main')
-        self.check_env(installed_env(COMPOSE_PROFILES='internal-db,monero', MONERO_NETWORK='testnet'),
-                       'MONERO_NETWORK must be stagenet or mainnet')
-        # A local mainnet daemon needs a blank MONERO_NETWORK_FLAG= line (monerod has no --mainnet).
-        self.check_env(installed_env(COMPOSE_PROFILES='internal-db,monero', MONERO_NETWORK='mainnet'),
-                       'MONERO_NETWORK=mainnet needs a blank MONERO_NETWORK_FLAG= line')
-        self.check_env(installed_env(COMPOSE_PROFILES='internal-db,monero', MONERO_NETWORK='mainnet', MONERO_NETWORK_FLAG=''))
-        self.check_env(installed_env(COMPOSE_PROFILES='internal-db,monero', MONERO_NETWORK='stagenet', MONERO_NETWORK_FLAG='--testnet'),
-                       'MONERO_NETWORK_FLAG must be --stagenet (or absent)')
-        # A blank flag beside a stagenet (or blank) MONERO_NETWORK would run a mainnet daemon for a test market.
-        self.check_env(installed_env(COMPOSE_PROFILES='internal-db,monero', MONERO_NETWORK='stagenet', MONERO_NETWORK_FLAG=''),
-                       'MONERO_NETWORK_FLAG must be --stagenet (or absent)')
-        # What init writes (A-523): main and mainnet with a blank flag, or the test networks with --stagenet.
-        password = hex_value(48, 'rpc')
-        nodes = dict(COMPOSE_PROFILES='internal-db,bitcoin,monero', BITCOIN_RPC_PASSWORD=password)
-        self.check_env(installed_env(**nodes, BITCOIN_CHAIN='main', MONERO_NETWORK='mainnet', MONERO_NETWORK_FLAG=''))
-        self.check_env(installed_env(**nodes, BITCOIN_CHAIN='signet', MONERO_NETWORK='stagenet',
-                                     MONERO_NETWORK_FLAG='--stagenet'))
+        nodes = dict(COMPOSE_PROFILES='internal-db,monero')
+        self.check_env(installed_env(**nodes, MONERO_NETWORK='testnet'), 'MONERO_NETWORK must be stagenet or mainnet')
+        self.check_env(installed_env(**nodes, MONERO_NETWORK='mainnet'), 'MONERO_NETWORK=mainnet needs a blank MONERO_NETWORK_FLAG= line')
+        self.check_env(installed_env(**nodes, MONERO_NETWORK='mainnet', MONERO_NETWORK_FLAG=''))
+        self.check_env(installed_env(**nodes, MONERO_NETWORK='stagenet', MONERO_NETWORK_FLAG='--stagenet'))
+        self.check_env(installed_env(**nodes, MONERO_NETWORK='stagenet', MONERO_NETWORK_FLAG=''), 'MONERO_NETWORK_FLAG must be --stagenet (or absent)')
 
-    def test_check_refuses_mixed_class(self):
-        # Mirrors the app's errMixedNetworks (marketLiveFromEnv): a market is all mainnet or all test networks, whatever
-        # node profiles run; a blank network takes the other coin's class.
-        mixed = 'mix mainnet with a test network'
-        self.check_env(installed_env(BITCOIN_CHAIN='main', MONERO_NETWORK='stagenet'), mixed)
-        self.check_env(installed_env(BITCOIN_CHAIN='signet', MONERO_NETWORK='mainnet'), mixed)
-        self.check_env(installed_env(BITCOIN_CHAIN='regtest', MONERO_NETWORK='mainnet'), mixed)
-        self.check_env(installed_env(BITCOIN_CHAIN='main', MONERO_NETWORK='mainnet'))
-        self.check_env(installed_env(BITCOIN_CHAIN='main', MONERO_NETWORK=''))
-        self.check_env(installed_env(BITCOIN_CHAIN='', MONERO_NETWORK='mainnet'))
-        self.check_env(installed_env(BITCOIN_CHAIN='testnet4', MONERO_NETWORK='stagenet'))
 
     def test_check_refuses_legacy_pooled_values_and_profile(self):
-        for key in ('BITCOIN_RPC_URL', 'BITCOIN_WALLET', 'MONERO_RPC_URL', 'MONERO_WALLET_RPC_URL'):
+        for key in ('MONERO_RPC_URL', 'MONERO_WALLET_RPC_URL'):
             with self.subTest(key=key):
                 result = self.check_env(installed_env(**{key: 'legacy-value'}), f'{key} is a retired pooled-payment setting')
                 self.assertNotIn('legacy-value', result.stdout + result.stderr)
@@ -2169,7 +1802,7 @@ time.sleep(60)
         # before it, compose.nodes.yaml's commands would win and drop the proxy), and it is for Tor mode only.
         base = 'compose.yaml:compose.tor.yaml:compose.nodes.yaml:compose.internal-db.yaml'
         self.check_env(installed_env(COMPOSE_FILE=base + ':compose.nodes-tor.yaml',
-                                     COMPOSE_PROFILES='internal-db,bitcoin', BITCOIN_RPC_PASSWORD=hex_value(48, 'rpc')))
+                                     COMPOSE_PROFILES='internal-db,monero'))
         self.check_env(installed_env(COMPOSE_FILE='compose.yaml:compose.tor.yaml:compose.nodes.yaml:compose.nodes-tor.yaml:'
                                                   'compose.internal-db.yaml'))
         after = 'compose.nodes-tor.yaml must come after compose.nodes.yaml in COMPOSE_FILE'
@@ -2207,32 +1840,13 @@ time.sleep(60)
                       'registry.example:5000/node'):
             with self.subTest(image=image):
                 self.check_env(installed_env(MONERO_WALLET_IMAGE=image), 'MONERO_WALLET_IMAGE must name a release tag')
-        self.check_env(installed_env(BITCOIN_IMAGE='registry.example:5000/node@sha256:' + 'a' * 64))
-        self.check_env(installed_env(BITCOIN_IMAGE='bitcoin/bitcoin:31.1'))
 
-    def test_check_local_bitcoin_verifier_and_inactive_profile(self):
-        password = hex_value(48, 'rpc')
-        local = installed_env(COMPOSE_PROFILES='internal-db,bitcoin', BITCOIN_RPC_PASSWORD=password,
-                              BITCOIN_RPC_URL='')
-        self.check_env(local)
-        self.check_env({**local, 'BITCOIN_RPC_AUTH': ''}, 'needs BITCOIN_RPC_AUTH')
-        self.check_env({**local, 'BITCOIN_RPC_AUTH': password}, 'must be a marketplace salted HMAC verifier')
-        self.check_env({**local, 'BITCOIN_RPC_AUTH': bitcoin_rpcauth('wrong')},
-                       'does not match BITCOIN_RPC_PASSWORD')
-        original = self.write_env(local)
-        result = self.command('check', extra_env={'INSTALLER_TEST_OPENSSL_BAD_DGST': 'fail'})
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('Could not check the local Bitcoin RPC verifier', result.stderr)
-        self.assertEqual((self.root / '.env').read_bytes(), original)
-        # A disabled Bitcoin node requires no local verifier.
-        self.check_env(clearnet_env(BITCOIN_RPC_AUTH=None))
 
     def test_check_refuses_postgres_password_mismatch(self):
         self.check_env(installed_env(POSTGRES_PASSWORD=hex_value(48, 'other')), 'POSTGRES_PASSWORD differs')
         self.check_env(installed_env(DATABASE_URL='postgres://market@database.example/market'),
                        'COMPOSE_PROFILES runs the internal database (internal-db) but DATABASE_URL points elsewhere')
         self.check_env(installed_env(COMPOSE_PROFILES=''), 'COMPOSE_PROFILES lacks internal-db')
-        self.check_env(installed_env(COMPOSE_PROFILES='internal-db,bitcoin'), 'needs BITCOIN_RPC_PASSWORD')
 
     def test_check_decodes_the_database_url_password(self):
         # DATABASE_URL percent-encodes reserved characters; POSTGRES_PASSWORD holds them as they are.
@@ -2463,10 +2077,10 @@ time.sleep(60)
     # ---- add-mirror -------------------------------------------------------------------------------------
 
     def test_add_mirror_appends_profile_keeping_existing(self):
-        for profiles, expected in (('internal-db,bitcoin,monero', 'internal-db,bitcoin,monero,mirror'),
+        for profiles, expected in (('internal-db,monero', 'internal-db,monero,mirror'),
                                    ('internal-db', 'internal-db,mirror'), ('', 'mirror')):
             with self.subTest(profiles=profiles):
-                values = installed_env(COMPOSE_PROFILES=profiles, BITCOIN_RPC_PASSWORD=hex_value(48, 'rpc'))
+                values = installed_env(COMPOSE_PROFILES=profiles)
                 if 'internal-db' not in profiles:
                     values['DATABASE_URL'] = 'postgres://market@database.example/market'
                 original = self.write_env(values)
@@ -2926,62 +2540,7 @@ time.sleep(60)
                 self.assertFalse(Path(str(self.log) + '.backup').exists())
                 self.assertFalse((self.root / '.env.lock').exists())
 
-    def test_upgrade_adds_local_bitcoin_verifier_without_password_rotation(self):
-        password = hex_value(48, 'old-rpc')
-        legacy = installed_env(COMPOSE_PROFILES=None, BITCOIN_RPC_PASSWORD=password,
-                               BITCOIN_RPC_AUTH=None)
-        self.write_env(legacy)
-        result = self.upgrade()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        config = self.config()
-        self.assertIn('bitcoin', config['COMPOSE_PROFILES'].split(','))
-        self.assertEqual(config['BITCOIN_RPC_PASSWORD'], password)
-        self.assertEqual(config['BITCOIN_RPC_URL'], '')
-        salt = config['BITCOIN_RPC_AUTH'].split(':', 1)[1].split('$', 1)[0]
-        self.assertEqual(config['BITCOIN_RPC_AUTH'], bitcoin_rpcauth(password, salt))
-        self.assertEqual(stat.S_IMODE((self.root / '.env').stat().st_mode), 0o600)
-        self.assertIn('added BITCOIN_RPC_AUTH', result.stdout)
-        self.assert_no_secret_printed(result, config)
-        first = (self.root / '.env').read_bytes()
-        result = self.upgrade()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual((self.root / '.env').read_bytes(), first)
-        self.assertEqual(self.config()['BITCOIN_RPC_AUTH'], config['BITCOIN_RPC_AUTH'])
-        # A manually changed password with stale verifier is refused without auto-rotation or node restart.
-        stale = {**config, 'BITCOIN_RPC_PASSWORD': hex_value(48, 'new-rpc')}
-        original = self.write_env(stale)
-        result = self.upgrade()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('does not match BITCOIN_RPC_PASSWORD', result.stderr)
-        self.assertEqual((self.root / '.env').read_bytes(), original)
-        self.assertNotIn(UP, self.calls())
-        self.assert_no_secret_printed(result, stale)
 
-    def test_upgrade_repairs_blank_local_verifier_and_failed_crypto_preserves_env(self):
-        password = hex_value(48, 'old-rpc')
-        base = installed_env(COMPOSE_PROFILES='internal-db,bitcoin', BITCOIN_RPC_PASSWORD=password,
-                             BITCOIN_RPC_AUTH='')
-        for key, value in (('INSTALLER_TEST_OPENSSL_BAD_SALT', 'empty'),
-                           ('INSTALLER_TEST_OPENSSL_BAD_SALT', 'malformed'),
-                           ('INSTALLER_TEST_OPENSSL_BAD_DGST', 'fail'),
-                           ('INSTALLER_TEST_OPENSSL_BAD_DGST', 'malformed')):
-            with self.subTest(key=key, value=value):
-                original = self.write_env(base)
-                result = self.upgrade(extra_env={key: value})
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn('Could not generate the local Bitcoin RPC verifier', result.stderr)
-                self.assertEqual((self.root / '.env').read_bytes(), original)
-                self.assertNotIn(UP, self.calls())
-                self.assert_no_secret_printed(result, base)
-        self.write_env(base)
-        result = self.upgrade()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        config = self.config()
-        self.assertEqual(config['BITCOIN_RPC_PASSWORD'], password)
-        self.assertEqual(config['BITCOIN_RPC_URL'], '')
-        self.assertEqual(config['BITCOIN_RPC_AUTH'], bitcoin_rpcauth(
-            password, config['BITCOIN_RPC_AUTH'].split(':', 1)[1].split('$', 1)[0]))
-        self.assert_no_secret_printed(result, config)
 
     def test_upgrade_writes_pre_upgrade_copy_0600(self):
         original = self.write_env(alpha_env(), mode=0o644)
@@ -3002,8 +2561,8 @@ time.sleep(60)
         self.assertEqual(result.returncode, 0, result.stderr)
         config = self.config()
         example = example_values()
-        for key in ('PAYMENT_EXPIRY', 'PAYMENT_POLL_INTERVAL', 'PAYMENT_CONFIRMATIONS_BTC', 'BITCOIN_WALLET',
-                    'MIGRATION_TIMEOUT', 'BITCOIN_IMAGE', 'MONERO_WALLET_IMAGE', 'BITCOIN_PRUNE_MB', 'MONERO_PRUNE_FLAGS', 'RETENTION_ENABLED'):
+        for key in ('PAYMENT_EXPIRY', 'PAYMENT_POLL_INTERVAL', 'PAYMENT_CONFIRMATIONS_XMR',
+                    'MIGRATION_TIMEOUT', 'MONERO_IMAGE', 'MONERO_WALLET_IMAGE', 'MONERO_PRUNE_FLAGS', 'RETENTION_ENABLED'):
             self.assertEqual(config[key], example[key], key)
         self.assertEqual(config['APP_PORT'], '18092')  # the port the caller runs it on
         self.assertEqual(config['COMPOSE_PROJECT_NAME'], 'opsecmkt')
@@ -3180,24 +2739,18 @@ time.sleep(60)
                 self.assertEqual(self.config()['SETUP_TOKEN'], values['SETUP_TOKEN'])
 
     def test_upgrade_rewrites_latest_images(self):
-        values = alpha_env(BITCOIN_IMAGE='bitcoin/bitcoin:latest',
-                           MONERO_WALLET_IMAGE='ghcr.io/sethforprivacy/simple-monero-wallet-rpc:latest')
-        self.write_env(values)
+        self.write_env(alpha_env(MONERO_WALLET_IMAGE='ghcr.io/sethforprivacy/simple-monero-wallet-rpc:latest'))
         result = self.upgrade()
         self.assertEqual(result.returncode, 0, result.stderr)
-        config = self.config()
-        defaults = installer_image_defaults()
-        for key in defaults:
-            self.assertEqual(config[key], defaults[key], key)
-        self.assertIn(f"pinned MONERO_WALLET_IMAGE to {defaults['MONERO_WALLET_IMAGE']}", result.stdout)
-        # A reviewed image of another publisher is kept as it is; on :latest, check refuses it.
-        self.write_env(alpha_env(BITCOIN_IMAGE='registry.example/bitcoin:26.0'))
+        for key, value in installer_image_defaults().items():
+            self.assertEqual(self.config()[key], value)
+        self.write_env(alpha_env(MONERO_IMAGE='registry.example/monero:1.0'))
         self.assertEqual(self.upgrade().returncode, 0)
-        self.assertEqual(self.config()['BITCOIN_IMAGE'], 'registry.example/bitcoin:26.0')
-        self.write_env(alpha_env(BITCOIN_IMAGE='registry.example/bitcoin:latest'))
+        self.assertEqual(self.config()['MONERO_IMAGE'], 'registry.example/monero:1.0')
+        self.write_env(alpha_env(MONERO_IMAGE='registry.example/monero:latest'))
         result = self.upgrade()
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn('BITCOIN_IMAGE must name a release tag', result.stderr)
+        self.assertIn('MONERO_IMAGE must name a release tag', result.stderr)
         self.assertNotIn(UP, self.calls())
 
     def test_upgrade_syncs_mirror_profile(self):
@@ -3239,32 +2792,15 @@ time.sleep(60)
         self.assertEqual(self.calls(), ['compose version', mirror, *CHECK, UP, STATUS])
 
     def test_upgrade_never_switches_network(self):
-        # A-523 changes what init writes, never an existing install: upgrade keeps test-network and blank-network .env
-        # files on their networks (a blank still means Compose's test-network fallback) and never writes the flag.
-        password = hex_value(48, 'rpc')
-        nodes = dict(COMPOSE_PROFILES='internal-db,bitcoin,monero', BITCOIN_RPC_PASSWORD=password)
-        cases = (
-            ('test networks', installed_env(**nodes, BITCOIN_CHAIN='signet', MONERO_NETWORK='stagenet'), 'signet', 'stagenet'),
-            ('testnet4 with the flag', installed_env(**nodes, BITCOIN_CHAIN='testnet4', MONERO_NETWORK='stagenet',
-                                                     MONERO_NETWORK_FLAG='--stagenet'), 'testnet4', 'stagenet'),
-            ('blank networks', installed_env(**nodes), '', ''),
-            ('absent networks', alpha_env(), '', ''),
-            ('mainnet', installed_env(**nodes, BITCOIN_CHAIN='main', MONERO_NETWORK='mainnet', MONERO_NETWORK_FLAG=''),
-             'main', 'mainnet'),
-        )
-        for name, values, chain, network in cases:
-            with self.subTest(name=name):
-                self.write_env(values)
-                result = self.upgrade()
-                self.assertEqual(result.returncode, 0, result.stderr)
-                config = self.config()
-                self.assertEqual(config['BITCOIN_CHAIN'], chain)
-                self.assertEqual(config['MONERO_NETWORK'], network)
-                self.assertEqual(config.get('MONERO_NETWORK_FLAG'), values.get('MONERO_NETWORK_FLAG'))
-                self.assertEqual(config.get('BITCOIN_PRUNE_MB'), values.get('BITCOIN_PRUNE_MB', '2000'))
-                self.assertEqual(config.get('PAYMENT_CONFIRMATIONS_BTC'), values.get('PAYMENT_CONFIRMATIONS_BTC', '3'))
-                for copy in self.pre_upgrade_copies():
-                    copy.unlink()
+        for network, flag in (('stagenet', '--stagenet'), ('', None), ('mainnet', '')):
+            values = installed_env(COMPOSE_PROFILES='internal-db,monero', MONERO_NETWORK=network, MONERO_NETWORK_FLAG=flag)
+            self.write_env(values)
+            result = self.upgrade()
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(self.config()['MONERO_NETWORK'], network)
+            self.assertEqual(self.config().get('MONERO_NETWORK_FLAG'), flag)
+            for copy in self.pre_upgrade_copies():
+                copy.unlink()
 
     def test_monero_network_flag_isolated(self):
         # A shell MONERO_NETWORK_FLAG would override .env for Compose (a blank one runs a mainnet daemon): every
@@ -3288,8 +2824,7 @@ time.sleep(60)
         (self.root / '.env').unlink()
         self.log.unlink()
         Path(str(self.log) + '.env').unlink()
-        self.assert_started(self.run_installer(None, arguments=['--tor', '--nodes', 'local', '--bitcoin-network', 'signet',
-                                                                '--monero-network', 'stagenet'],
+        self.assert_started(self.run_installer(None, arguments=['--tor', '--nodes', 'local',                                                                 '--monero-network', 'stagenet'],
                                                extra_env={'MONERO_NETWORK_FLAG': ''}))
         self.assertEqual(self.config()['MONERO_NETWORK_FLAG'], '--stagenet')
         for line in Path(str(self.log) + '.env').read_text().splitlines():
@@ -3340,9 +2875,9 @@ time.sleep(60)
         self.assert_scanner_added(self.config(), 'internal-db', installed_env()['COMPOSE_FILE'])
 
     def test_add_scanner_idempotent(self):
-        for profiles in ('internal-db,bitcoin', ''):
+        for profiles in ('internal-db,monero', ''):
             with self.subTest(profiles=profiles):
-                values = installed_env(COMPOSE_PROFILES=profiles, BITCOIN_RPC_PASSWORD=hex_value(48, 'rpc'))
+                values = installed_env(COMPOSE_PROFILES=profiles)
                 if 'internal-db' not in profiles:
                     values['DATABASE_URL'] = 'postgres://market@database.example/market'
                 # A comment, a CRLF line and an unrelated key stay byte for byte.
@@ -3491,9 +3026,8 @@ time.sleep(60)
             with self.subTest(mode=mode):
                 files = f'compose.yaml:compose.{mode}.yaml:compose.nodes.yaml:compose.internal-db.yaml:compose.scanner.yaml'
                 environment = {key: value for key, value in os.environ.items() if not key.startswith('COMPOSE_')}
-                environment.update(COMPOSE_FILE=files, COMPOSE_PROFILES='internal-db,scanner,bitcoin,monero',
-                                   DATABASE_URL='postgres://unused@db/unused',
-                                   BITCOIN_RPC_AUTH=bitcoin_rpcauth('unused'))
+                environment.update(COMPOSE_FILE=files, COMPOSE_PROFILES='internal-db,scanner,monero',
+                                   DATABASE_URL='postgres://unused@db/unused')
                 rendered = subprocess.run(['docker', 'compose', '--env-file', os.devnull, 'config'], cwd=REPOSITORY,
                                           env=environment, capture_output=True, text=True, check=True).stdout
                 values = scanner_env(COMPOSE_FILE=files)
@@ -3764,14 +3298,14 @@ time.sleep(60)
         for name in ('compose.nodes.yaml', 'compose.nodes-tor.yaml'):
             text = (REPOSITORY / name).read_text()
             with self.subTest(name=name):
-                self.assertIn('${BITCOIN_CHAIN:-signet}', text)
                 self.assertIn('${MONERO_NETWORK_FLAG---stagenet}', text)
 
     def test_isolated_keys_cover_env_example(self):
         # Commands unset these so Compose reads .env alone; the installer also keeps one bookkeeping-only key.
         keys = re.search(r"^env_keys='([^']*)'", INSTALLER.read_text(), re.M)[1].split()
         self.assertIn('CLAMAV_IMAGE_DEFAULT', keys)
-        retired_internal = {'CLAMAV_IMAGE_DEFAULT', 'MONERO_WALLET_RPC_PASSWORD'}
+        retired_internal = {'CLAMAV_IMAGE_DEFAULT', 'MONERO_WALLET_RPC_PASSWORD', 'PAYMENT_CONFIRMATIONS_BTC'}
+        retired_internal.update(key for key in keys if key.startswith(('BITCOIN_', 'ESCROW_BTC', 'ESCROW_SIGNER_')))
         # Optional overrides are documented without assignments; a blank network flag would select mainnet.
         optional_compose = {'MONERO_NETWORK_FLAG', 'LOG_DRIVER', 'TOR_VERSION'}
         self.assertEqual(sorted(key for key in keys if key not in retired_internal | optional_compose),

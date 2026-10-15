@@ -15,28 +15,29 @@ func TestStaffAttentionCountsActionableWorkWithoutCapsOrCrossCategorySums(t *tes
 	mod, modSession := e.user("mod_"+suffix, "moderator")
 	admin, adminSession := e.user("admin_"+suffix, "admin")
 	product := e.product(vendor, "physical")
+	wallet := xmrWallet(t, e, 1, "active")
+	walletName := agStr(e, "SELECT name FROM xmr_escrow_wallets WHERE id=$1", wallet)
 	orders := make([]string, 101)
+	addresses := make([]string, len(orders))
 	for i := range orders {
-		orders[i] = e.order(buyer, product, "BTC", stateDisputed)
-		if _, err := e.DB.Exec(`INSERT INTO escrows(order_id,address,market_index,refund_address,fee_bps,fee_destination)
-			VALUES($1,$2,nextval('escrow_market_index'),$3,0,'')`, orders[i], fmt.Sprintf("test-escrow-%d", i), fmt.Sprintf("test-refund-%d", i)); err != nil {
-			t.Fatal(err)
-		}
+		orders[i] = e.order(buyer, product, "XMR", stateDisputed)
+		account := int64(i + 1)
+		addresses[i], _ = xmrEscrowOf(t, e, wallet, account, orders[i])
 		if _, err := e.DB.Exec("INSERT INTO disputes(id,order_id,reason) VALUES($1,$2,'The buyer says the parcel never arrived.')", randomToken(), orders[i]); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := e.DB.Exec(`INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations,flagged,locked)
-			VALUES($1,'BTC',$2,0,'test-address',1000,3,true,true)`, orders[i], fmt.Sprintf("%064x", i+1)); err != nil {
+			VALUES($1,'XMR',$2,$3,$4,1000,3,true,true)`, orders[i], fmt.Sprintf("%064x", i+1), xmrEscrowIdx(wallet, account), addresses[i]); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := e.DB.Exec(`INSERT INTO xmr_escrow_collisions(order_id,wallet_name,account,txid)
-			VALUES($1,'test-wallet',$2,$3)`, orders[i], i+1, fmt.Sprintf("%064x", i+1)); err != nil {
+			VALUES($1,$2,$3,$4)`, orders[i], walletName, account, fmt.Sprintf("%064x", i+1)); err != nil {
 			t.Fatal(err)
 		}
 	}
 	// Two open deposits for one order still represent one review order. An escalated review is actionable only by an admin.
 	if _, err := e.DB.Exec(`INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations,flagged,locked)
-		VALUES($1,'BTC',$2,1,'test-address',1000,3,true,true)`, orders[0], strings.Repeat("a", 64)); err != nil {
+		VALUES($1,'XMR',$2,$3,$4,1000,3,true,true)`, orders[0], strings.Repeat("a", 64), xmrEscrowIdx(wallet, 1), addresses[0]); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := e.DB.Exec("UPDATE payments SET disposition='escalated' WHERE order_id=$1", orders[1]); err != nil {
@@ -44,19 +45,16 @@ func TestStaffAttentionCountsActionableWorkWithoutCapsOrCrossCategorySums(t *tes
 	}
 
 	// A staff member who is a party cannot count any of the three moderator-desk categories on that order.
-	partyOrder := e.order(mod, product, "BTC", stateDisputed)
-	if _, err := e.DB.Exec(`INSERT INTO escrows(order_id,address,market_index,refund_address,fee_bps,fee_destination)
-		VALUES($1,'test-party-escrow',nextval('escrow_market_index'),'test-party-refund',0,'')`, partyOrder); err != nil {
-		t.Fatal(err)
-	}
+	partyOrder := e.order(mod, product, "XMR", stateDisputed)
+	partyAddress, _ := xmrEscrowOf(t, e, wallet, 1000, partyOrder)
 	if _, err := e.DB.Exec("INSERT INTO disputes(id,order_id,reason) VALUES($1,$2,'The staff buyer says the parcel never arrived.')", randomToken(), partyOrder); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := e.DB.Exec(`INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations,flagged,locked)
-		VALUES($1,'BTC',$2,0,'test-address',1000,3,true,true)`, partyOrder, strings.Repeat("b", 64)); err != nil {
+		VALUES($1,'XMR',$2,$3,$4,1000,3,true,true)`, partyOrder, strings.Repeat("b", 64), xmrEscrowIdx(wallet, 1000), partyAddress); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.DB.Exec("INSERT INTO xmr_escrow_collisions(order_id,wallet_name,account,txid) VALUES($1,'test-wallet',1000,$2)", partyOrder, strings.Repeat("c", 64)); err != nil {
+	if _, err := e.DB.Exec("INSERT INTO xmr_escrow_collisions(order_id,wallet_name,account,txid) VALUES($1,$2,1000,$3)", partyOrder, walletName, strings.Repeat("c", 64)); err != nil {
 		t.Fatal(err)
 	}
 

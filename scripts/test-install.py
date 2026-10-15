@@ -157,6 +157,8 @@ def exercise(repo, environment, second, second_environment, third, third_environ
     browser = Browser('http://127.0.0.1:' + environment['APP_PORT'])
     wait_for(lambda: browser.page('/healthz') == 'ok', 'Application did not become healthy')
     configuration = env_values(repo)
+    require(not any(key.startswith(('BITCOIN_', 'ESCROW_BTC', 'ESCROW_SIGNER_')) for key in configuration),
+            'fresh installer wrote retired Bitcoin configuration')
     token = configuration['SETUP_TOKEN']
     # The installer printed the token from .env once, in its final block, with the setup URL; nothing else secret.
     printed = re.findall(r'^Setup token: ([0-9a-f]{64})$', output, re.M)

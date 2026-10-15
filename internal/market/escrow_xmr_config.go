@@ -44,9 +44,8 @@ var (
 // so the wallet could build no settlement paying it.
 var errXMRFeeAddressKeys = errors.New("ESCROW_XMR_FEE_ADDRESS is not a valid Monero address: its checksum matches but its keys are not valid, so no Monero escrow settlement could pay it. Copy the fee wallet's address again")
 
-// errXMRMainnetOptIn (A-460): a market configured for mainnet by BITCOIN_CHAIN=main alone runs Monero escrow only with
-// Monero's own opt-in.
-var errXMRMainnetOptIn = errors.New("refusing to start: this market is configured for mainnet (BITCOIN_CHAIN=main), and Monero escrow on mainnet holds real funds: it needs its own opt-in. Set MONERO_NETWORK=mainnet to run Monero escrow on mainnet, or set ESCROW_XMR=off")
+// errXMRMainnetOptIn refuses an inconsistent live App that lacks Monero's explicit mainnet opt-in.
+var errXMRMainnetOptIn = errors.New("refusing to start: this market is configured for mainnet, and Monero escrow on mainnet holds real funds: it needs its own opt-in. Set MONERO_NETWORK=mainnet to run Monero escrow on mainnet, or set ESCROW_XMR=off")
 
 // Fixed operator lines for Monero escrow's state at startup: nothing in them comes from a node. xmrLogOn is logged
 // with the verified network type as its class: "escrow: Monero escrow on (stagenet)".
@@ -94,8 +93,8 @@ const xmrLogTorHold = "escrow: APP_MODE=tor: Monero escrow relays held (%s): set
 // (checkXMRWalletSecret), ESCROW_XMR_SEED_KEY (a path, read by initEscrowXMR) and ESCROW_XMR_TOR_RELAY (blank or
 // xmrTorRelayAccepted; blank, COMPOSE_FILE decides whether APP_MODE=tor relays: xmrRelayHold, A-515). The market's
 // class is read as New reads it (marketLiveFromEnv, A-460): MONERO_NETWORK=mainnet is Monero escrow's mainnet opt-in
-// (mainnet), and a mainnet market without it (BITCOIN_CHAIN=main alone) is refused (errXMRMainnetOptIn). Nothing is
-// opened or contacted, and with ESCROW_XMR off nothing else is read.
+// (mainnet). Retired Bitcoin configuration is refused before any node is contacted.
+// With ESCROW_XMR off nothing else is read.
 func escrowXMRConfigFromEnv(getenv func(string) string) (escrowXMRConfig, error) {
 	var c escrowXMRConfig
 	switch strings.TrimSpace(getenv("ESCROW_XMR")) {
@@ -298,7 +297,7 @@ func (a *App) xmrEscrowNetShort() string {
 	return "local fakechain"
 }
 
-// initEscrowXMR runs in New after Bitcoin escrow. ESCROW_XMR=off does nothing. On, a configuration error, an
+// initEscrowXMR initializes the market's sole payment adapter in New. ESCROW_XMR=off does nothing. On, a configuration error, an
 // unusable seed key file, a mainnet market without MONERO_NETWORK=mainnet (errXMRMainnetOptIn), or an escrow node that answers but fails the network check
 // (errXMRStartDaemon, errXMRStartWallet) stops startup. A changed secret, a changed seed key (wallet creation only),
 // an unreachable node or a timeout leaves Monero escrow configured but unavailable with one fixed line, and the market

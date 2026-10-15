@@ -13,7 +13,7 @@ func TestAdminPageReadsNoOrders(t *testing.T) {
 	adminID, admin := e.user("orders_admin", "admin")
 	vendorID, _ := e.user("orders_vendor", "vendor")
 	buyerID, _ := e.user("orders_buyer", "buyer")
-	id := e.order(buyerID, e.product(vendorID, "physical"), "BTC", "shipped")
+	id := e.order(buyerID, e.product(vendorID, "physical"), "XMR", "shipped")
 	d := &PageData{Page: "admin", User: e.loadUser(adminID), Settings: map[string]string{}}
 	if err := e.A.load(httptest.NewRequest("GET", "/admin", nil), d); err != nil {
 		t.Fatal(err)

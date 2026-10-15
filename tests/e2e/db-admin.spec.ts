@@ -109,32 +109,31 @@ test('promoting a buyer to vendor opens the vendor desk; the listing form shows 
   await vendorNav.getByRole('link', { name: 'Vendor desk' }).click();
   await expect(vendor).toHaveURL(/\/vendor-dashboard$/);
 
-  const publish = async (fields: { title: string; btc: string; kind?: string; delivery?: string }) => {
+  const publish = async (fields: { title: string; xmr: string; kind?: string; delivery?: string }) => {
     await vendor.goto('/vendor-dashboard');
     await vendor.getByText('+ Publish a new listing', { exact: true }).click();
     await vendor.getByLabel('Listing title').fill(fields.title);
     await vendor.getByLabel('Description', { exact: true }).fill('Listing validation regression.');
     await vendor.getByLabel('Fulfillment type').selectOption(fields.kind ?? 'physical');
-    await vendor.getByLabel(/Price \(BTC, (?:test network|main network|not configured|not yet known)\)/).fill(fields.btc);
-    await vendor.getByLabel('Monero reference price').fill('0.5');
+    await vendor.getByLabel('Price (XMR)').fill(fields.xmr);
     if (fields.delivery) await vendor.getByLabel('Automatic delivery content').fill(fields.delivery);
     return submitStatus(vendor, () => vendor.getByRole('button', { name: 'Publish listing ↗' }).click());
   };
-  // Nine decimal places for BTC (satoshi precision is eight). The refusal names the field and keeps the typed text (A-514).
-  expect(await publish({ title, btc: '0.123456789' })).toBe(400);
-  await expect(vendor.getByRole('alert')).toHaveText('Bitcoin price: use a positive amount with at most 8 decimal places.');
+  // Thirteen decimal places exceed Monero precision. The refusal names the field and keeps the typed text (A-514).
+  expect(await publish({ title, xmr: '0.1234567890123' })).toBe(400);
+  await expect(vendor.getByRole('alert')).toHaveText('Monero price: use a positive amount with at most 12 decimal places.');
   await expect(vendor.getByLabel('Description', { exact: true })).toHaveValue('Listing validation regression.');
   await expect(vendor.getByLabel('Listing title', { exact: true })).toHaveValue(title);
   await expect(vendor.getByRole('link', { name: 'Back to Vendor Dashboard' })).toHaveAttribute('href', '/vendor-dashboard');
   // Whitespace passes the browser's minlength but not the server's trimmed title check.
-  expect(await publish({ title: '     ', btc: '0.001' })).toBe(400);
+  expect(await publish({ title: '     ', xmr: '0.5' })).toBe(400);
   await expect(vendor.getByRole('alert')).toHaveText('Listing title: use 3 to 140 characters.');
-  expect(await publish({ title, btc: '0.001', delivery: 'secret-download-link' })).toBe(400);
+  expect(await publish({ title, xmr: '0.5', delivery: 'secret-download-link' })).toBe(400);
   await expect(vendor.getByRole('alert')).toHaveText('Automatic delivery content is only available for digital listings.');
   await vendor.goto('/vendor-dashboard');
   await expect(vendor.getByText('You have not published any listings yet.')).toBeVisible();
 
-  expect(await publish({ title, btc: '0.001' })).toBe(303);
+  expect(await publish({ title, xmr: '0.5' })).toBe(303);
   await expect(vendor.getByLabel('Listing title')).toHaveValue(title); // A-188: publishing lands on its edit page
   await vendor.goto('/vendor-dashboard');
   await expect(vendor.locator('.listings-grid')).toContainText(title);
@@ -153,11 +152,11 @@ test('promoting a buyer to vendor opens the vendor desk; the listing form shows 
   await expect(vendor.getByRole('alert')).toHaveText('Stock changed to 5 while you were editing (orders reserve stock). Reload and try again.');
   await vendor.goto(editURL);
   await expect(vendor.getByLabel('Stock')).toHaveValue('5');
-  await vendor.getByLabel('Monero reference price').fill('0.1234567890123');
+  await vendor.getByLabel('Price (XMR)').fill('0.1234567890123');
   expect(await submitStatus(vendor, () => vendor.getByRole('button', { name: 'Save changes' }).click())).toBe(400);
-  await expect(vendor.getByRole('alert')).toHaveText('Monero reference price: use a positive amount with at most 12 decimal places.');
+  await expect(vendor.getByRole('alert')).toHaveText('Monero price: use a positive amount with at most 12 decimal places.');
   await vendor.goto(editURL);
-  await expect(vendor.getByLabel('Monero reference price')).toHaveValue(/^0\.5/);
+  await expect(vendor.getByLabel('Price (XMR)')).toHaveValue(/^0\.5/);
   await vendor.context().close();
 });
 

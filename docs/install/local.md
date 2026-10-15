@@ -55,7 +55,7 @@ Open the setup link, then follow [First steps](first-steps.md).
 - No nodes, and none can be added. To try payments, reinstall with [Tor](tor.md) or
   [public domain](clearnet.md). Their local nodes default to mainnet (real funds; no mainnet run is recorded; mainnet
   is covered by unit, database and simulated-RPC tests only), so add
-  `--bitcoin-network signet --monero-network stagenet` to try test coins.
+  `--monero-network stagenet` to try test coins.
 - Plain HTTP: cookies are not Secure.
 
 ## What now?

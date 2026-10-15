@@ -80,7 +80,6 @@ func (a *App) escrowNetKnown() bool {
 }
 
 func init() {
-	registerBackground(escrowWatcher)
 	registerTransitionHook(escrowTransitionHook)
 	registerLoader("admin", escrowNodeLoader)
 }

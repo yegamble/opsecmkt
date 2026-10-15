@@ -21,13 +21,12 @@ are Go handlers, SQL migrations, templates and CSS.
   scripts disabled, from 320 px to desktop.
 - **Test networks only for development, tests and CI.** Never run a test against
   mainnet or with real funds. The installer's local nodes now default to mainnet
-  (`BITCOIN_CHAIN=main`, `MONERO_NETWORK=mainnet`), so every `install.sh init` in
+  (`MONERO_NETWORK=mainnet`), so every `install.sh init` in
   scripts, tests and CI needs `--local`, `--nodes none` or explicit test networks
-  (`--bitcoin-network signet|testnet4|regtest`, `--monero-network stagenet`);
+  (`--monero-network stagenet`);
   `tests/test_ci_never_mainnet.py` fails otherwise. No mainnet run of this
   software is recorded. A change to mainnet must keep its refusals: a market
-  mixing mainnet and test networks, keys or addresses of the other network
-  class, Bitcoin testnet3 and Monero testnet.
+  using keys or addresses of another network class or Monero testnet is refused.
 - **Migrations are append-only.** Add a new file in `internal/market/migrations/`;
   never rewrite a merged one.
 - **Test first.** Add or change the Go test, database test or browser test that
@@ -75,7 +74,6 @@ go vet ./...
 TEST_DATABASE_URL=… go test -race -count=1 -timeout 30m -run '^(TestEscrow|TestXMR|FuzzEscrow)' ./...
 TEST_DATABASE_URL=… go test -race -count=1 -timeout 30m -skip '^(TestEscrow|TestXMR|FuzzEscrow)' ./...
 npm run test:e2e                              # with E2E_DATABASE_URL for database journeys
-npm run test:e2e:escrow                       # with E2E_ESCROW_DATABASE_URL (own fresh database); CI job browser-escrow
 npm run test:e2e:escrow-xmr                   # with E2E_ESCROW_XMR_DATABASE_URL (own fresh database); CI job browser-escrow
 python3 -m unittest discover -s tests -p 'test_*.py'
 ```

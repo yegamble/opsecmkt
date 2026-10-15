@@ -1,71 +1,13 @@
-# Default images: bitcoin/bitcoin (unofficial image, with upstream binary signature checks) and
-# Seth for Privacy's Monero daemon and escrow wallet-RPC images. Override *_IMAGE in .env to use reviewed
-# alternatives. The defaults are pinned, supported releases (Bitcoin Core 31.1, Monero v0.18.5.1). Never change
-# them to latest: follow the bump checklist in docs/operator-guide.md#node-image-versions. Add @sha256:<digest>
-# for reproducible deployments.
-# No RPC or peer ports are published to the host. The local Bitcoin node defaults to signet; BITCOIN_CHAIN also
-# selects regtest, testnet4 or explicit mainnet. The escrow chain pin makes the selected network sticky.
-# Monero defaults to stagenet; mainnet requires MONERO_NETWORK=mainnet and a blank MONERO_NETWORK_FLAG.
-# Mainnet is only for a mainnet market, an operator opt-in with real funds (docs/operator-guide.md#mainnet).
-# RPC ports are pinned across those networks.
-# The installer keeps the Bitcoin RPC password in private .env for operator setup and puts only its salted HMAC
-# verifier in bitcoind's -rpcauth argument. Compose refuses a bitcoin-profile service with blank
-# BITCOIN_RPC_AUTH; otherwise an unset verifier would leave only cookie authentication. Compose also refuses
-# to create or start monero-escrow-wallet without ESCROW_XMR_WALLET_RPC_PASSWORD.
-# Same log rotation as compose.yaml (anchors do not cross files; CI checks every service has it).
+# Monero daemon and escrow wallet-RPC images. Override *_IMAGE in .env with reviewed pinned releases.
+# No RPC or peer ports are published. Blank MONERO_NETWORK_FLAG runs mainnet; absent runs stagenet.
+# Mainnet is an explicit operator choice with real funds. See docs/operator-guide.md#mainnet.
+# Escrow wallet startup requires ESCROW_XMR_WALLET_RPC_PASSWORD. Log rotation matches compose.yaml.
 x-logging: &logging
   driver: ${LOG_DRIVER:-json-file}
   options:
     max-size: 10m
     max-file: '3'
 services:
-  bitcoin:
-    image: ${BITCOIN_IMAGE:-bitcoin/bitcoin:31.1}
-    profiles: [bitcoin]
-    restart: unless-stopped
-    networks: [backend, node_egress]
-    environment:
-      BITCOIN_DATA: /data
-    command:
-      - -chain=${BITCOIN_CHAIN:-signet}
-      # Explicit, so the data directory does not depend on the image entrypoint reading BITCOIN_DATA.
-      - -datadir=/data
-      # Pruned by default: bitcoind keeps about BITCOIN_PRUNE_MB MiB of recent block and undo files (at least
-      # 550) and deletes older ones. 2000 leaves a margin over the minimum for rescanning recent wallet
-      # backups; BITCOIN_PRUNE_MB=0 runs an unpruned full node. See docs/operator-guide.md#local-node-pruning.
-      - -prune=${BITCOIN_PRUNE_MB:-2000}
-      - -server=1
-      - -printtoconsole=1
-      - -rpcbind=0.0.0.0
-      - -rpcport=8332
-      - -rpcallowip=172.16.0.0/12
-      - -rpcallowip=192.168.0.0/16
-      - -rpcauth=${BITCOIN_RPC_AUTH:-}
-      # Test networks often have too little fee data for estimation; without a fallback fee escrow transactions
-      # can fail. 0.0002 BTC/kvB (20 sat/vB) is deliberately generous so test transactions confirm.
-      - -fallbackfee=0.0002
-    # Compose interpolates even inactive profiles, so an unconditional ${VAR:?} would break installs without
-    # bundled nodes. This missing-file gate is evaluated only when the bitcoin profile starts.
-    env_file:
-      - BITCOIN_RPC_AUTH-is-blank${BITCOIN_RPC_AUTH:+/../../../../../../../../../../../../../../../../../../../../../../../../../../../../../../../../dev/null}
-    volumes: [bitcoin_data:/data]
-    # The image's entrypoint starts as root: it chmods and chowns /data and /home/bitcoin on every start (a volume
-    # restored as root needs that), then runs bitcoind as bitcoin with gosu; it keeps only the capabilities for that.
-    # DAC_OVERRIDE also lets the documented root `sh` commands edit /data/bitcoin.conf. The home directory is in memory,
-    # and so is /tmp, where docs/testnet-runbook.md has bitcoind write wallet backups before they are encrypted out of
-    # the container (A-536; scripts/test-service-hardening.sh).
-    read_only: true
-    tmpfs: [/home/bitcoin, /tmp]
-    cap_drop: [ALL]
-    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID]
-    security_opt: [no-new-privileges:true]
-    # Sized for a pruned test-network node: its database cache and mempool (at most 300 MB by default) plus
-    # headroom for the initial sync (docs/operator-guide.md#resource-limits-and-log-rotation).
-    mem_limit: 2g
-    cpu_period: 100000
-    cpu_quota: 200000
-    pids_limit: 256
-    logging: *logging
   monero:
     image: ${MONERO_IMAGE:-ghcr.io/sethforprivacy/simple-monerod:v0.18.5.1}
     profiles: [monero]
@@ -135,49 +77,11 @@ services:
     cpu_quota: 100000
     pids_limit: 128
     logging: *logging
-  escrow-signer:
-    # The market's dedicated signer for per-order (shape (b)) Bitcoin escrows (A-454). Same image
-    # as the app, run as its own user (65533, in the app's group 65532 so the app can open its mode-0660 socket). Its
-    # seed lives only in escrow_signer_seed, mounted nowhere else (never in .env, the database or scripts/backup.sh's
-    # output: back it up with `escrow-signer backup`). It publishes no port and listens on no network; it joins backend
-    # only to reach the escrow node's RPC as its own whitelisted user (ESCROW_SIGNER_RPC_URL). The app reaches it through
-    # the escrow_signer_socket volume alone. docs/operator-guide.md#escrow-signer.
-    build: .
-    profiles: [escrow-signer]
-    restart: unless-stopped
-    networks: [backend]
-    user: '65533:65532'
-    entrypoint: [/app/escrow-signer]
-    command: [serve]
-    environment:
-      ESCROW_SIGNER_SEED_FILE: /var/lib/escrow-signer/seed
-      ESCROW_SIGNER_SOCKET: /run/escrow-signer/signer.sock
-      ESCROW_SIGNER_RPC_URL: ${ESCROW_SIGNER_RPC_URL:-}
-      BITCOIN_CHAIN: ${BITCOIN_CHAIN:-} # main: the signer's mainnet keys (xprv/xpub, m/48h/0h/0h/2h; A-460)
-    volumes:
-      - escrow_signer_seed:/var/lib/escrow-signer
-      - escrow_signer_socket:/run/escrow-signer
-    read_only: true
-    cap_drop: [ALL]
-    security_opt: [no-new-privileges:true]
-    mem_limit: 128m
-    cpu_period: 100000
-    cpu_quota: 100000
-    pids_limit: 64
-    logging: *logging
-  app:
-    # The escrow signer's socket (ESCROW_SIGNER_SOCKET=/run/escrow-signer/signer.sock); an empty volume until the
-    # escrow-signer profile runs.
-    volumes:
-      - escrow_signer_socket:/run/escrow-signer
 volumes:
-  bitcoin_data:
   monero_data:
   # Retained for recovery of retired pooled wallets; no running service mounts it.
   monero_wallet:
   monero_escrow_wallet:
-  escrow_signer_seed:
-  escrow_signer_socket:
 
 networks:
   node_egress:

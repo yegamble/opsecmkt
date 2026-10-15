@@ -36,9 +36,6 @@ func init() {
 // automatic delivery only happens when a payment is confirmed.
 func (a *App) autoDeliveryCurrencies() string {
 	var list []string
-	if a.escrowConfigured {
-		list = append(list, "BTC")
-	}
 	if a.escrowXMR != nil {
 		list = append(list, "XMR")
 	}

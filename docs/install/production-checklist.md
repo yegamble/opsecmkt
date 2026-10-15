@@ -43,21 +43,13 @@ encrypt every database record or protect secrets on a running compromised host.
 
 ## Payments
 
-- [ ] You know which network this market runs: `grep -E '^(BITCOIN_CHAIN|MONERO_NETWORK)=' .env`. The installer's
-  default is **mainnet (real funds)**; test networks need `--bitcoin-network` / `--monero-network`. No mainnet run is
-  recorded; mainnet is covered by unit, database and simulated-RPC tests only ([Mainnet](../operator-guide.md#mainnet)).
-- [ ] Mainnet only: you rehearsed set-up, backups and a restore on signet and stagenet first, on a database no test
-  market used.
-- [ ] Mainnet only: `ESCROW_BTC_FEE_ADDRESS` is the fee wallet's watch-only descriptor (a plain address is refused), and
-  `ESCROW_BTC_FEE_RATE` and `PAYMENT_CONFIRMATIONS_BTC` are reviewed.
-- [ ] Mainnet only: you accept that Monero escrow, if on, is custodial with real funds.
-- [ ] Mainnet only: the node disk had room (the installer's disk check only warns).
-- [ ] Bitcoin escrow: `escrow-node-setup.sh --verify` prints `PASS`.
-- [ ] Escrow signer fingerprint recorded and its seed backed up
-  ([Escrow signer](../operator-guide.md#escrow-signer)).
-- [ ] Escrow wallets backed up
-  ([runbook](../testnet-runbook.md#back-up-and-restore-the-escrow-arbiter-and-watch-only-wallets)).
-- [ ] You have read [what escrow protects and what it does not](../escrow.md).
+- [ ] Only Monero prices, checkout and intake controls are shown.
+- [ ] You know the network in `MONERO_NETWORK`: mainnet has real funds; stagenet is for rehearsal. No mainnet run is recorded.
+- [ ] You accept that escrow is custodial: the market holds every wallet's keys and sees order and payment metadata.
+- [ ] The daemon and dedicated escrow wallet-rpc pass readiness checks, and XMR intake is configured in Admin.
+- [ ] Tor mode: the local nodes over Tor overlay is enabled before relay. Its presence is configuration evidence; Monero Tor delivery remains unverified.
+- [ ] Wallet files, `.env`, database and the offline seed-decryption key have separate encrypted backups and a tested recovery procedure.
+- [ ] You have read [what Monero escrow protects](../escrow.md).
 
 ## Publishing
 

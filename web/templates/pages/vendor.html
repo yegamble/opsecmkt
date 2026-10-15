@@ -14,8 +14,7 @@
 </div>{{with .AvatarTakedown}}{{template "image-takedown" .}}{{end}}
 <div class="notice">
 <p>Vendor identity and reputation have not been independently verified by this application.</p>
-</div>{{with .VendorEscrowKey}}{{/* A-455, P4-R18: the vendor's key type, before checkout */}}
-<p>Bitcoin escrow key: {{template "vendor-escrow-key" .}}</p>{{end}}{{range .Contacts}}<section class="panel" aria-labelledby="vendor-key">
+</div>{{range .Contacts}}<section class="panel" aria-labelledby="vendor-key">
 <h2 id="vendor-key">PGP public key</h2>
 <p class="help">Messages on this market must be encrypted to the recipient’s key in your own PGP application. Physical orders: send your shipping address only this way. The market has no address field; it keeps the encrypted message and who sent it to whom and when, but cannot read it.</p>
 {{template "contact-key" .}}</section>{{end}}{{template "products" .}}{{if not .Products}}<div class="empty">

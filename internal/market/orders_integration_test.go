@@ -77,7 +77,7 @@ func form(kv ...string) url.Values {
 func TestPausedDraftCanBeReadAndCancelledWithoutPayment(t *testing.T) {
 	w := newOrderWorld(t)
 	product := w.e.product(w.vendorID, "physical")
-	order := w.e.order(w.buyerID, product, "BTC", stateDraft)
+	order := w.e.order(w.buyerID, product, "XMR", stateDraft)
 	if body := w.page("/order?id="+order, w.buyer, 200); !strings.Contains(body, "Unfunded draft") {
 		t.Fatalf("draft page: %s", body)
 	}
@@ -118,7 +118,7 @@ func TestHistoricalDeliveryReaderRestrictsContentToParties(t *testing.T) {
 func TestHistoricalDisputeStaysReadableWithoutResolveForm(t *testing.T) {
 	w := newOrderWorld(t)
 	product := w.e.product(w.vendorID, "physical")
-	order := w.e.order(w.buyerID, product, "BTC", stateDisputed)
+	order := w.e.order(w.buyerID, product, "XMR", stateDisputed)
 	dispute := randomToken()
 	w.e.mustExec("INSERT INTO disputes(id,order_id,reason) VALUES($1,$2,'Historical parcel dispute')", dispute, order)
 	for _, session := range []string{w.buyer, w.vendor, w.mod} {
@@ -138,8 +138,8 @@ func TestHistoricalDisputeStaysReadableWithoutResolveForm(t *testing.T) {
 func TestReviewsRequireACompletedOrder(t *testing.T) {
 	w := newOrderWorld(t)
 	product := w.e.product(w.vendorID, "physical")
-	shipped := w.e.order(w.buyerID, product, "BTC", stateShipped)
-	done := w.e.order(w.buyerID, product, "BTC", stateCompleted)
+	shipped := w.e.order(w.buyerID, product, "XMR", stateShipped)
+	done := w.e.order(w.buyerID, product, "XMR", stateCompleted)
 	review := func(order, rating, body string) url.Values {
 		return form("order_id", order, "rating", rating, "body", body)
 	}

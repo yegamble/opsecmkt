@@ -3,10 +3,9 @@ package market
 import (
 	"bufio"
 	"bytes"
-	"encoding/base64"
-	"encoding/hex"
+
 	"encoding/json"
-	"fmt"
+
 	"html"
 	"io"
 	"net/url"
@@ -15,14 +14,12 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
-	"slices"
+
 	"strconv"
 	"strings"
 	"testing"
 )
 
-// This manual leg is invoked only by scripts/test-escrow-wallets.sh with a verified Electrum source and a real
-// isolated Core regtest. The bridge keeps both BIP39 roots in its memory; Core only funds and observes the chain.
 type electrumBridge struct {
 	cmd    *exec.Cmd
 	in     io.WriteCloser
@@ -161,116 +158,4 @@ func electrumSettlement(t *testing.T, c *shapeBChain, b *electrumBridge, order s
 		t.Fatalf("%s signed paste: %d %s", party, w.Code, w.Body.String())
 	}
 	t.Logf("%s Electrum order wallet at index %d /0/%d signed downloaded PSBT; paste accepted", party, index, child)
-}
-
-func TestEscrowRegtestElectrumMarketJourney(t *testing.T) {
-	b := startElectrumBridge(t)
-	var account struct {
-		Keys    map[string]string `json:"keys"`
-		Version string            `json:"version"`
-	}
-	b.request(t, map[string]any{"op": "keys"}, &account)
-	if account.Version != os.Getenv("ESCROW_WALLETS_ELECTRUM_VERSION") || len(account.Keys) != 2 {
-		t.Fatal("Electrum bridge did not supply both expected public keys")
-	}
-	c := newShapeBChainWithPartyKeys(t, "a457", account.Keys, func(c *shapeBChain) {
-		for _, party := range []struct{ name, uid, sess string }{{roleBuyer, c.buyer, c.buyerSess}, {roleVendor, c.vendor, c.vendorSess}} {
-			key := account.Keys[party.name]
-			if code, body := registerKey(c.e, party.sess, key, "layout", "per_order"); code != 303 {
-				t.Fatalf("%s register: %d %s", party.name, code, body)
-			}
-			psbt, cosigners, address, path := perOrderPractice(t, c.e, party.sess)
-			parsed := mustParseKey(t, key)
-			if path != fmt.Sprintf("[%s/48h/1h/0h/2h/2147483647]", parsed.Fingerprint) {
-				t.Fatalf("%s practice path %s", party.name, path)
-			}
-			signed := b.sign(t, party.name, 2147483647, 0, cosigners, address, psbt)
-			if code, body := submitPractice(c.e, party.sess, signed); code != 303 {
-				t.Fatalf("%s practice: %d %s", party.name, code, body)
-			}
-			if agInt(c.e, "SELECT count(*) FROM user_escrow_keys WHERE user_id=$1 AND active_at IS NOT NULL AND layout='per_order'", party.uid) != 1 {
-				t.Fatalf("%s practice did not activate", party.name)
-			}
-			t.Logf("%s registered public BIP39/BIP48 key and Electrum practice signature activated it", party.name)
-		}
-	})
-	order, addr := c.paidEscrow()
-	var claimTo string
-	c.call(c.funder, "getnewaddress", &claimTo)
-	if w := c.e.do("POST", "/escrow/claim", c.vendorSess, url.Values{"order_id": {order}, "address": {claimTo}, "password": {testPassword}}); w.Code != 303 {
-		t.Fatalf("vendor claim: %d %s", w.Code, w.Body.String())
-	}
-	c.pass()
-	var release int64
-	var state string
-	if err := c.e.DB.QueryRow("SELECT id,state FROM settlements WHERE order_id=$1 AND kind='release'", order).Scan(&release, &state); err != nil || state != "awaiting_signature" {
-		t.Fatalf("release: %s %v", state, err)
-	}
-	// A-459: the real watch wallet supplies the funding transaction on the optional hardware download. No physical
-	// signing device is involved in this leg; Electrum signs its ordinary copy below.
-	hw := c.e.do("GET", "/escrow-psbt?id="+order+"&s="+strconv.FormatInt(release, 10)+"&hardware=1", c.vendorSess, nil)
-	if hw.Code != 200 || hw.Header().Get("Content-Type") != "application/octet-stream" {
-		t.Fatalf("hardware release copy: %d %s", hw.Code, hw.Body.String())
-	}
-	hp, err := decodeHardwarePSBT(base64.StdEncoding.EncodeToString(hw.Body.Bytes()))
-	if err != nil || len(hp.Inputs) == 0 {
-		t.Fatalf("hardware release PSBT: %v", err)
-	}
-	for i, input := range hp.Inputs {
-		if len(input.NonWitnessUTXO) == 0 || input.WitnessUTXO == nil || len(input.Derivations) != 1 {
-			t.Fatalf("hardware input %d missing verified funding or the reader's origin", i)
-		}
-		id := hp.Tx.In[i].TxID
-		slices.Reverse(id[:])
-		txid := hex.EncodeToString(id[:])
-		out, err := fundingTxOutput(hex.EncodeToString(input.NonWitnessUTXO), txid, hp.Tx.In[i].Vout)
-		if err != nil || out.Value != input.WitnessUTXO.Value || !bytes.Equal(out.Script, input.WitnessUTXO.Script) {
-			t.Fatalf("hardware input %d does not match its Core funding transaction: %v", i, err)
-		}
-	}
-	t.Logf("vendor hardware release copy: %d real Core funding transaction(s) verified as non_witness_utxo", len(hp.Inputs))
-	electrumSettlement(t, c, b, order, release, roleVendor, 0, addr)
-	c.settled(release, "Electrum vendor release")
-
-	siblingOrder, _ := c.paidEscrow()
-	var sibling string
-	if err := c.e.DB.QueryRow("SELECT s.address FROM escrow_siblings s JOIN escrows es ON es.id=s.escrow_id WHERE es.order_id=$1 AND s.branch=0 AND s.idx=3", siblingOrder).Scan(&sibling); err != nil {
-		t.Fatal(err)
-	}
-	var deposit string
-	c.call(c.funder, "sendtoaddress", &deposit, sibling, json.Number("0.0007"))
-	mustMine(t, c.ctx, c.op, int(c.e.A.escrow.Load().confirmations), c.mine)
-	c.pass()
-	c.pass()
-	var refund int64
-	if err := c.e.DB.QueryRow("SELECT id,state FROM settlements WHERE order_id=$1 AND kind='stray_refund'", siblingOrder).Scan(&refund, &state); err != nil || state != "awaiting_signature" {
-		t.Fatalf("sibling refund: %s %v", state, err)
-	}
-	keys, err := c.e.A.settlementKeys(c.ctx, c.e.DB, siblingOrder, refund)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var stored string
-	c.e.DB.QueryRow("SELECT psbt FROM settlements WHERE id=$1", refund).Scan(&stored)
-	p, err := decodePSBT(stored)
-	if err != nil || len(p.Inputs) != 1 || !bytes.Equal(p.Inputs[0].WitnessScript, sortedMultisigScript(keys[roleBuyer].PubKey, keys[roleVendor].PubKey, keys["market"].PubKey)) || !strings.HasSuffix(keys["market"].Suffix, "/0/3") {
-		t.Fatal("refund PSBT does not spend the funded sibling's script")
-	}
-	electrumSettlement(t, c, b, siblingOrder, refund, roleBuyer, 3, sibling)
-	c.settled(refund, "Electrum buyer sibling refund")
-	t.Logf("sibling /0/3 deposit %s refunded on chain", deposit)
-
-	// A mixed pair must not create an escrow, even after both Electrum keys proved usable above.
-	if _, err := c.e.DB.Exec("UPDATE user_escrow_keys SET layout='core' WHERE user_id=$1", c.vendor); err != nil {
-		t.Fatal(err)
-	}
-	mixed := c.e.order(c.buyer, c.product, "BTC", stateDraft)
-	var refundAddr string
-	c.call(c.funder, "getnewaddress", &refundAddr)
-	w := c.e.do("POST", "/orders/escrow", c.buyerSess, url.Values{"order_id": {mixed}, "refund_address": {refundAddr}})
-	if w.Code != 409 || !strings.Contains(html.UnescapeString(w.Body.String()), "per-order wallet") || agInt(c.e, "SELECT count(*) FROM escrows WHERE order_id=$1", mixed) != 0 {
-		t.Fatalf("mixed pair: %d, escrow rows %d", w.Code, agInt(c.e, "SELECT count(*) FROM escrows WHERE order_id=$1", mixed))
-	}
-	c.noSecrets()
-	t.Log("mixed per-order/Core pair refused before escrow creation; no Core party key signed either settlement")
 }

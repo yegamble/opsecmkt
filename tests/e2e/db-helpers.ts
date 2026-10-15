@@ -119,15 +119,18 @@ export async function withinViewport(details: Locator, width: number) {
   expect(outside, `form parts outside 0..${width} px`).toEqual([]);
 }
 
-// Seed public escrow keys for database-only order readers. These on-curve keys have
-// no known private halves and are never signing or payment evidence.
-export function seedRecordedEscrowKeys(sql: (query: string) => string, order: string, buyer: string, vendor: string) {
-  const keys = JSON.parse(execFileSync('python3', ['-c',
-    "import json,sys; sys.path.insert(0,'tests/e2e/fixtures'); from escrow_rpc import point; print(json.dumps([point(sys.argv[1]+p).hex() for p in ('buyer','vendor','market')]))", order], { encoding: 'utf8' })) as string[];
-  for (const [index, party] of ['buyer', 'vendor', 'market'].entries()) {
-    const user = party === 'market' ? 'NULL' : `(SELECT id FROM users WHERE handle='${party === 'buyer' ? buyer : vendor}')`;
-    const hmac = party === 'market' ? 'NULL' : "repeat('0',64)";
-    sql(`INSERT INTO escrow_pubkeys(pubkey,escrow_id,party,user_id,key_hmac,origin_fingerprint,origin_path,derivation_suffix)
-      SELECT '${keys[index]}',id,'${party}',${user},${hmac},'00000000','/48h/1h/0h/2h','/0/1' FROM escrows WHERE order_id='${order}'`);
-  }
+// Seed a Monero escrow record for database-only page tests. Addresses and sealed
+// seed are format fixtures; no wallet RPC or chain runs in these tests.
+export function seedRecordedMoneroEscrow(sql: (query: string) => string, order: string) {
+  const address = '8' + order.replace(/0/g, 'A').padEnd(94, 'B').slice(0, 94);
+  const primary = '4' + order.replace(/0/g, 'A').padEnd(94, 'C').slice(0, 94);
+  const count = Number(sql('SELECT count(*) FROM xmr_escrow_wallets')) + 1;
+  const wallet = `escrow-202610-${String(count).padStart(2, '0')}`;
+  sql(`INSERT INTO xmr_escrow_wallets(name,month,primary_address,restore_height,seed_sealed,seed_key_fpr,sealed_at,state)
+    VALUES ('${wallet}','2026-10-01','${primary}',100,'format-only-fixture',repeat('A',40),now(),'active');
+    INSERT INTO xmr_escrow_slots(wallet_id,account_index,address)
+    SELECT id,1,'${address}' FROM xmr_escrow_wallets WHERE name='${wallet}';
+    UPDATE xmr_escrow_slots SET state='claimed',order_id='${order}' WHERE address='${address}';
+    INSERT INTO escrows(order_id,address,coin,xmr_slot_id,refund_address,fee_bps,fee_destination)
+    SELECT '${order}',address,'XMR',id,'8'||repeat('D',94),0,'' FROM xmr_escrow_slots WHERE order_id='${order}';`);
 }

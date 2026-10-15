@@ -38,7 +38,7 @@ INSTALLER_SOURCE = PurePosixPath("scripts") / "install.sh"
 REQUIRED_FILES = frozenset({
     "Dockerfile", ".dockerignore", ".env.example", "go.mod", "go.sum", "LICENSE",
     "compose.yaml", "compose.tor.yaml", "cmd/server/main.go",
-    "cmd/escrow-signer/main.go", "internal/market/schema.sql", INSTALLER_SOURCE.as_posix(),
+    "internal/market/schema.sql", INSTALLER_SOURCE.as_posix(),
     "scripts/backup.sh", "scripts/restore.sh", "scripts/postgres-tool.py",
     "scripts/postgres-policy.py", "deploy/Dockerfile.tor", "deploy/torrc",
 })

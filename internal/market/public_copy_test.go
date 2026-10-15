@@ -1,24 +1,19 @@
 package market
 
 import (
+	"context"
 	"html"
+	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 )
-
-// A-512 (iteration 60): public copy follows the evidence and the mechanism. The transparency, escrow key and order
-// pages name the configured network (stagenet, signet and testnet4 as public test networks; regtest and fakechain as
-// local) and never claim that nothing has run on a public network: the project's recorded public-network runs are in
-// docs/verification.md and this market itself has not been checked. With neither escrow on, the pages say once that
-// payments are off and give no how-to-pay instructions. DB integration with simulated nodes: copy checks, not chain
-// evidence.
 
 const (
 	publicRecordNote = "The project's recorded public-network runs are listed in docs/verification.md; this market itself has not been checked on a public network."
 	paymentsOffText  = "This market is not accepting payments right now"
 )
 
-// stalePublicNetworkClaims are sentences that were unconditional (or per-instance) claims about public networks.
 var stalePublicNetworkClaims = []string{
 	"not verified on any public network",
 	"has not been verified on any public network",
@@ -89,78 +84,14 @@ func TestCanaryMoneroCopyFollowsConfiguredNetwork(t *testing.T) {
 	}
 }
 
-func TestCanaryBitcoinCopyFollowsConfiguredNetwork(t *testing.T) {
-	x := newEscrowEnv(t)
-	canary := html.UnescapeString(x.page("/canary", ""))
-	li := pageLine(canary, "<li>Bitcoin escrow (")
-	if want := "It runs on regtest, a local test chain with no real funds. " + publicRecordNote; !strings.Contains(li, want) {
-		t.Errorf("canary on regtest lacks %q:\n%s", want, li)
-	}
-	rejectStaleClaims(t, "canary on regtest", canary)
-	s := signetEscrowEnv(t)
-	li = pageLine(html.UnescapeString(s.page("/canary", "")), "<li>Bitcoin escrow (")
-	if want := "It runs on signet (the public signet, unless this operator runs a private one) with no real funds. " + publicRecordNote; !strings.Contains(li, want) {
-		t.Errorf("canary on signet lacks %q:\n%s", want, li)
-	}
-}
-
-func TestEscrowKeyPageNamesConfiguredNetwork(t *testing.T) {
-	for _, c := range []struct {
-		name string
-		env  func(t *testing.T, env ...string) *escrowEnv
-		want string
-	}{
-		{"signet", signetEscrowEnv, "Bitcoin escrow on this market runs on signet (the public signet, unless this operator runs a private one), with no real funds."},
-		{"regtest", newEscrowEnv, "Bitcoin escrow on this market runs on regtest, a local test chain, with no real funds."},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			x := c.env(t)
-			page := html.UnescapeString(x.page("/escrow-key", x.buyerSess))
-			if !strings.Contains(page, "Bitcoin escrow · "+c.name+" only") {
-				t.Fatalf("escrow key page lacks its eyebrow:\n%s", page)
-			}
-			if !strings.Contains(page, c.want) {
-				t.Errorf("escrow key page on %s lacks %q:\n%s", c.name, c.want, pageLine(page, "Compare the origin"))
-			}
-			rejectStaleClaims(t, "escrow key page on "+c.name, page)
-		})
-	}
-}
-
-func TestOrderPanelNamesConfiguredBitcoinNetwork(t *testing.T) {
-	for _, c := range []struct {
-		name string
-		env  func(t *testing.T, env ...string) *escrowEnv
-		want string
-	}{
-		{"signet", signetEscrowEnv, "Bitcoin escrow on this market runs on signet (the public signet, unless this operator runs a private one); its coins have no value. " + publicRecordNote},
-		{"regtest", newEscrowEnv, "Bitcoin escrow on this market runs on regtest, a local test chain; its coins have no value. " + publicRecordNote},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			x := c.env(t)
-			order, _ := x.built(x.netAddr("copy-refund"), x.netAddr("copy-claim"), 100000)
-			page := html.UnescapeString(x.page("/order?id="+order, x.buyerSess))
-			if !strings.Contains(page, c.want) {
-				t.Errorf("order panel on %s lacks %q:\n%s", c.name, c.want, pageLine(page, "Bitcoin escrow on this market runs on"))
-			}
-			rejectStaleClaims(t, "order page on "+c.name, page)
-			// The checkout offer on a draft: "Pay into", not "Or pay into" (A-512; the heading stands alone).
-			draft := html.UnescapeString(x.page("/order?id="+x.order, x.buyerSess))
-			if !strings.Contains(draft, "Pay into a Bitcoin escrow ("+c.name+" only)") || strings.Contains(draft, "Or pay into a Bitcoin escrow") {
-				t.Errorf("checkout offer on %s:\n%s", c.name, pageLine(draft, "pay into a Bitcoin escrow"))
-			}
-		})
-	}
-}
-
-// With neither Bitcoin nor Monero escrow on, the catalog, product, checkout and the order's draft panel say once that
+// With Monero escrow off, the catalog, product, checkout and the order's draft panel say once that
 // the market is not accepting payments and give no instruction about paying or completing an escrow checkout.
 func TestEscrowOffPagesSayPaymentsAreOffOnce(t *testing.T) {
-	v := newCopyEnv(t, false, false)
+	v := newCopyEnv(t, false)
 	buyerID, buyerSess := v.user("copybuyer_"+randomToken()[:6], "buyer")
 	vendorID, _ := v.user("copyvendor_"+randomToken()[:6], "vendor")
 	product := v.testEnv.product(vendorID, "digital")
-	order := v.order(buyerID, product, "BTC", stateDraft)
+	order := v.order(buyerID, product, "XMR", stateDraft)
 	howTo := []string{
 		"can be paid through per-order escrow", "complete it under Next steps", "Open the order and complete",
 		"escrow checkout is available", "complete it; send nothing until", "Checkout availability is shown",
@@ -179,10 +110,10 @@ func TestEscrowOffPagesSayPaymentsAreOffOnce(t *testing.T) {
 			}
 		}
 	}
-	// With Bitcoin escrow on the sentence is gone and the instructions are back.
-	on := newCopyEnv(t, true, false)
+	// With Monero escrow on the sentence is gone and the instructions are back.
+	on := newCopyEnv(t, true)
 	onBuyerID, onSess := on.user("copybuyer2_"+randomToken()[:6], "buyer")
-	onOrder := on.order(onBuyerID, on.product, "BTC", stateDraft)
+	onOrder := on.order(onBuyerID, on.product, "XMR", stateDraft)
 	for _, path := range []string{"/", "/product?id=" + on.product, "/checkout?id=" + on.product, "/order?id=" + onOrder} {
 		if page := html.UnescapeString(on.page(path, onSess)); strings.Contains(page, paymentsOffText) {
 			t.Errorf("%s with escrow on says payments are off", path)
@@ -194,7 +125,7 @@ func TestEscrowOffPagesSayPaymentsAreOffOnce(t *testing.T) {
 }
 
 func TestCatalogEyebrowIsNotAProductClaim(t *testing.T) {
-	v := newCopyEnv(t, false, false)
+	v := newCopyEnv(t, false)
 	page := html.UnescapeString(v.page("/", v.buyerSess))
 	for _, bad := range []string{"Purpose-built for privacy", "more private digital life"} {
 		if strings.Contains(page, bad) {
@@ -206,17 +137,17 @@ func TestCatalogEyebrowIsNotAProductClaim(t *testing.T) {
 	}
 }
 
-// A-525: a mainnet market (BITCOIN_CHAIN=main) must not tell visitors the alpha has no real funds. Env only: escrow
+// A-525: a mainnet market (MONERO_NETWORK=mainnet) must not tell visitors the alpha has no real funds. Env only: escrow
 // stays off, so no node is contacted.
 func TestCatalogEyebrowMainnet(t *testing.T) {
 	for _, k := range []string{"ESCROW_BTC", "ESCROW_XMR", "BITCOIN_RPC_URL", "MONERO_WALLET_RPC_URL", "MONERO_NETWORK"} {
 		t.Setenv(k, "")
 	}
-	t.Setenv("BITCOIN_CHAIN", "main")
+	t.Setenv("MONERO_NETWORK", "mainnet")
 	e := newTestApp(t)
 	e.user("mainnet_buyer", "buyer") // completes first-run setup so "/" renders the catalog
 	if !e.A.live {
-		t.Fatal("BITCOIN_CHAIN=main did not make the market live")
+		t.Fatal("MONERO_NETWORK=mainnet did not make the market live")
 	}
 	page := html.UnescapeString(e.body("GET", "/", "", nil, 200))
 	mustNotContain(t, page, "no real funds", "Test-network")
@@ -245,5 +176,30 @@ func TestAccountSaysSellingNeedsTheVendorRole(t *testing.T) {
 	e.check(w, 200)
 	if strings.Contains(w.Body.String(), "Selling needs an administrator") {
 		t.Errorf("a vendor's account explains how to get the vendor role")
+	}
+}
+
+// Preview is read-only layout evidence. The same templates must expose only XMR without browser scripting.
+func TestPreviewMoneroOnlyPublicPages(t *testing.T) {
+	a, err := New(context.Background(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retired := regexp.MustCompile(`(?i)\bbitcoin\b|\bBTC\b|name="price_btc"|/escrow-key|/escrow/setup`)
+	for _, path := range []string{"/", "/?currency=BTC", "/product?id=encrypted-drive", "/checkout?id=encrypted-drive", "/listing-edit?id=encrypted-drive", "/vendor-dashboard", "/account", "/admin", "/canary", "/order?id=" + previewDraftID} {
+		t.Run(path, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			a.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
+			if w.Code != 200 {
+				t.Fatalf("status %d: %s", w.Code, w.Body.String())
+			}
+			body := w.Body.String()
+			if retired.MatchString(body) {
+				t.Errorf("retired Bitcoin interface rendered on %s", path)
+			}
+			if strings.Contains(body, "<script") {
+				t.Error("page contains a browser script")
+			}
+		})
 	}
 }

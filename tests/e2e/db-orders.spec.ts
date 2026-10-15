@@ -16,7 +16,7 @@ test('draft cannot be paid without a wallet, cancellation is recorded, vendor se
   await page.goto(`/?q=${encodeURIComponent(FIXTURE_LISTING)}`);
   await page.getByRole('link', { name: FIXTURE_LISTING, exact: true }).click();
   await page.getByRole('link', { name: 'Review order draft' }).click();
-  await page.getByLabel('Pay with').selectOption('BTC');
+  await page.getByLabel('Pay with').selectOption('XMR');
   await page.getByRole('button', { name: 'Create unfunded draft' }).click();
   await expect(page).toHaveURL(/\/order\?id=/);
   const orderURL = page.url();

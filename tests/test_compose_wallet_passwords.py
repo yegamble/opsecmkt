@@ -11,11 +11,20 @@ class WalletPasswordTextTests(unittest.TestCase):
         text = NODES.read_text()
         header = text.split('\nservices:\n', 1)[0]
         flat = ' '.join(line.lstrip('# ') for line in header.splitlines())
-        self.assertIn('BITCOIN_RPC_AUTH', flat)
-        self.assertIn('monero-escrow-wallet without ESCROW_XMR_WALLET_RPC_PASSWORD', flat)
+        self.assertNotIn('bitcoin:', text)
+        self.assertIn('Escrow wallet startup requires ESCROW_XMR_WALLET_RPC_PASSWORD', flat)
         self.assertNotIn('monero-wallet:', text)
         self.assertNotIn('MONERO_WALLET_RPC_PASSWORD', text)
         self.assertIn('ESCROW_XMR_WALLET_RPC_PASSWORD-is-blank', text)
+
+    def test_no_bitcoin_services_or_signer_binary_are_shipped(self):
+        for filename in ('compose.nodes.yaml', 'compose.nodes-tor.yaml'):
+            text = (REPOSITORY / filename).read_text()
+            self.assertNotIn('  bitcoin:', text)
+            self.assertNotIn('  escrow-signer:', text)
+            self.assertNotIn('escrow_signer_socket:', text)
+        self.assertNotIn('/app/escrow-signer', (REPOSITORY / 'Dockerfile').read_text())
+        self.assertFalse((REPOSITORY / 'cmd/escrow-signer').exists())
 
     def test_escrow_wallet_login_follows_its_password(self):
         text = NODES.read_text()

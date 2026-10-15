@@ -10,12 +10,12 @@ Read this once, before you form any opinion. Then read `CLAUDE.md`,
 |---|---|
 | `cmd/server` | process entry: config, startup, graceful shutdown |
 | `cmd/verify-audit` | offline verifier for signed audit exports (released as binaries) |
-| `internal/market` | the whole application: routes/actions, auth, TOTP, CAPTCHA, PGP, orders state machine, inventory, messaging, contacts, payments (per-order escrow: Bitcoin Core watch wallet and escrow signer, monero-wallet-rpc escrow accounts, watchers, settlements, recovery), canary, audit export, migrations |
+| `internal/market` | the whole application: routes/actions, auth, TOTP, CAPTCHA, PGP, orders state machine, inventory, messaging, contacts, payments (per-order escrow: monero-wallet-rpc escrow accounts, watchers, settlements, recovery), canary, audit export, migrations |
 | `internal/market/migrations` | numbered, append-only SQL migrations applied at startup under an advisory lock (`migrate.go`) |
 | `web/templates`, `web/static` | server-rendered HTML pages/partials and CSS — the entire UI |
 | `scripts/` | installer, backup/restore, CI smoke, upgrade test, local chains |
 | `compose*.yaml`, `Dockerfile`, `deploy/` | Docker Compose deployment (clearnet/Tor, internal/external PostgreSQL, optional nodes, Tor mirror) |
-| `tests/e2e` | Playwright: `preview*.spec.ts` (read-only preview), `db-*.spec.ts` (real PostgreSQL), `escrow-*journey.spec.ts` (Bitcoin and Monero escrow against simulated nodes and signer; `playwright.escrow*.config.ts`) |
+| `tests/e2e` | Playwright: `preview*.spec.ts` (read-only preview), `db-*.spec.ts` (real PostgreSQL), `escrow-*journey.spec.ts` (Monero escrow against simulated wallet RPC; `playwright.escrow*.config.ts`) |
 | `tests/*.py` | installer, PostgreSQL helper and hook regressions |
 | `docs/` | `implementation-status.md` (capability claims), `acceptance.md`, `operator-guide.md`, `testnet-runbook.md`, `ci-cd.md`, `operations-tests.md`, `local-chain-testing.md`, `project-review.md` |
 
@@ -23,31 +23,23 @@ Read this once, before you form any opinion. Then read `CLAUDE.md`,
 
 1. **No browser JavaScript.** Every workflow is an HTML form + server response.
    A design that needs client script is a BLOCKER, not a preference.
-2. **Per-order escrow is the only payment path; one network class per market.** Bitcoin is
-   2-of-3 multisig (buyer, vendor, market arbitrator keys; the server can never
-   spend alone); Monero is a per-order account, custodial until multisig is
-   validated. Escrow is off by default (`ESCROW_BTC`, `ESCROW_XMR`). A market is
-   all mainnet (`BITCOIN_CHAIN=main`, `MONERO_NETWORK=mainnet`; A-460) or all test
-   networks (Bitcoin regtest/signet/testnet4, Monero stagenet/fakechain); mixed
-   classes, Bitcoin testnet3 and Monero testnet are refused (`escrow_runtime.go`,
-   `escrow_rpc.go`), and a mainnet market needs a new database. The installer
-   writes mainnet by default for the coins enabled and a test network only when
-   chosen (owner directive 2026-10-13, A-523); a blank network still means a test
-   network, so upgrades never switch a market. No mainnet run is recorded. The pooled wallet is
-   removed (owner directive 2026-10-11: no pooled testing or drain): its history
-   (`payouts`, `payment_addresses`) is read-only, migration 107 refuses a legacy
-   database that still has pooled drain blockers, and migration 108
-   (A-492) refuses any pooled history rows and any new ones. Development, tests, CI and war-room evidence
-   never use mainnet (`tests/test_ci_never_mainnet.py` guards installer calls); never claim escrow for a path that
-   is not implemented and verified.
+2. **Monero is the only supported payment currency** (owner directive 2026-10-15).
+   Per-order custodial accounts use a dedicated Monero wallet RPC; escrow is off
+   by default (`ESCROW_XMR`). No Bitcoin node, signer, checkout or intake control
+   exists in the active product. Unsupported Bitcoin configuration is rejected.
+   Migration 118 enforces XMR-only orders, escrows and payments; older migrations
+   and dated evidence remain historical. The owner confirmed this is undeployed,
+   so no live cutover or currency conversion is required. `MONERO_NETWORK=mainnet`
+   opts into real funds; blank/stagenet remains a test network and fakechain is
+   accepted only by test harnesses. Development, tests and CI never use mainnet.
+   Monero escrow is custodial; on-chain privacy does not hide application records
+   from a running-host compromise or guarantee network anonymity. Preserve the
+   Tor relay guard and current one-outcome and restore protections.
 3. **Orders move only through the server-side transition table**
    (`orders_state.go`) with row locks and compare-and-set; every move is logged
    in `order_events`. Nothing reports success without a recorded state change.
 4. **Payments never pay twice.** One settlement per escrow: a release or a
-   refund, enforced by the one-outcome partial unique indexes
-   `settlements_one_outcome` (076, Bitcoin) and `xmr_settlements_one_outcome`
-   (084, Monero), with bumps held to one open and one confirmed
-   (`settlement_bumps_one_open`, `settlement_bumps_one_confirmed`, 080). Sends are
+   refund, enforced by `xmr_settlements_one_outcome` (084, Monero). Sends are
    one wallet or node call, never retried automatically; the restore gate
    (`payments_recovery_required`) pauses settlement building, co-signing and
    broadcast. (Historical `payouts` constraints, 064–073, only guard the
@@ -65,7 +57,7 @@ Read this once, before you form any opinion. Then read `CLAUDE.md`,
 |---|---|
 | Go | `"$(go env GOROOT)/bin/gofmt" -l cmd internal` empty · `go mod verify` · `go vet ./...` · `TEST_DATABASE_URL=<dedicated db> go test -race -count=1 -timeout 30m -run '^(TestEscrow|TestXMR|FuzzEscrow)' ./...` and the same with `-skip` in place of `-run` (CI's two halves; one race process for all of `internal/market` no longer fits 30 minutes on a loaded host) · `go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...` |
 | Templates/CSS/journeys | `npx playwright test` (preview projects) and `E2E_DATABASE_URL=<fresh db> npm run test:e2e` |
-| Escrow UI journeys | `E2E_ESCROW_DATABASE_URL=<fresh db> npm run test:e2e:escrow` and `E2E_ESCROW_XMR_DATABASE_URL=<fresh db> npm run test:e2e:escrow-xmr` |
+| Escrow UI journeys | `E2E_ESCROW_XMR_DATABASE_URL=<fresh db> npm run test:e2e:escrow-xmr` |
 | Shell/installer/ops | `for f in scripts/*.sh; do bash -n "$f"; done` (a single `bash -n a b` checks only `a`), `python3 -m unittest discover -s tests -p 'test_*.py'`, the matching `scripts/test-*.sh` |
 | Workflows | `go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12` |
 | Everything | GitHub Actions **CI passed** (required on `main`) |
@@ -103,10 +95,8 @@ are **not** live-chain evidence. Merged is not released is not deployed.
   other agents' test runs (QA22a and QA22b each lost a race run this way).
 - A single Playwright failure under load is not a finding until re-run
   unloaded; navigation races (click → re-query before load) have caused flakes.
-- The pooled `scripts/regtest-smoke.sh` was deleted with the pooled runtime (A-492). Real-chain Bitcoin escrow legs
-  run in CI via `scripts/test-escrow-regtest.sh`; Monero's real-wallet legs run
-  on a fakechain in CI too (`escrow-xmr-regtest` job, A-498, via
-  `scripts/test-escrow-xmr-regtest.sh`).
+- Real-chain escrow checks use `scripts/test-escrow-xmr-regtest.sh` on an isolated Monero fakechain. No Bitcoin harness or signer is shipped.
+
 - **macOS `/bin/bash` is 3.2**: a failing `[[ ]]` does not stop a `set -e` script, so
   `scripts/test-*.sh` can pass falsely there. Run them with bash 5 (Homebrew) or rely on CI (Ubuntu).
 - **govulncheck may need the toolchain pinned locally**: when the tool binary is

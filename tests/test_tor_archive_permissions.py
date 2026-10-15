@@ -173,11 +173,11 @@ class DeploymentArchiveTests(SourceArchiveFixture, unittest.TestCase):
             "compose.clearnet.yaml", "compose.internal-db.yaml", "compose.nodes.yaml",
             "compose.nodes-tor.yaml", "compose.external-egress.yaml", "compose.scanner.yaml",
             "compose.admin-tor.yaml", "deploy/torrc-admin", "deploy/tor-admin-entrypoint.sh",
-            "compose.escrow-xmr.yaml", "cmd/escrow-signer/main.go", "internal/market/app.go",
+            "compose.escrow-xmr.yaml", "internal/market/app.go",
             "internal/market/schema.sql", "internal/market/migrations/001_fixture.sql",
             "deploy/.dockerignore", "deploy/Dockerfile.tor", "deploy/torrc", "deploy/torrc-socks", "deploy/clamd.conf",
             "scripts/backup.sh", "scripts/restore.sh", "scripts/postgres-tool.py",
-            "scripts/postgres-policy.py", "scripts/escrow-node-setup.sh",
+            "scripts/postgres-policy.py", "scripts/tor_network_address.py",
             "docs/operator-guide.md", "docs/install/tor.md", "docs/install/clearnet.md",
             "docs/testnet-runbook.md", "docs/escrow.md", "SECURITY.md", "UPGRADING.md",
         )

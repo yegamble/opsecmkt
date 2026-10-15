@@ -11,8 +11,8 @@ import (
 // payment_addresses row) is refused before anything changes, and both tables refuse every new row.
 
 const (
-	pooledPayoutInsert  = "INSERT INTO payouts(order_id,kind,user_id,currency,amount,address,state) VALUES($1,'release',$2,'BTC',100000,'legacy-payout-address','sent')"
-	pooledAddressInsert = "INSERT INTO payment_addresses(order_id,currency,address,provider) VALUES($1,'BTC','bcrt1qlegacy108address0000000000000000000','btc-regtest')"
+	pooledPayoutInsert  = "INSERT INTO payouts(order_id,kind,user_id,currency,amount,address,state) VALUES($1,'release',$2,'XMR',100000,'legacy-payout-address','sent')"
+	pooledAddressInsert = "INSERT INTO payment_addresses(order_id,currency,address,provider) VALUES($1,'XMR','bcrt1qlegacy108address0000000000000000000','btc-regtest')"
 )
 
 // restoreSchema109 puts the database back as migration 109 left it: 110's stamp and table removed.
@@ -81,7 +81,7 @@ func TestMigration108FreshDatabaseMigratesAndRefusesPooledRows(t *testing.T) {
 	}
 	buyer, _ := e.user("m108_fresh_buyer", "buyer")
 	vendor, _ := e.user("m108_fresh_vendor", "vendor")
-	order := e.order(buyer, e.product(vendor, "digital"), "BTC", stateCompleted)
+	order := e.order(buyer, e.product(vendor, "digital"), "XMR", stateCompleted)
 	for table, insert := range map[string]struct {
 		q    string
 		args []any
@@ -110,7 +110,7 @@ func TestMigration108RefusesPooledHistoryUnchanged(t *testing.T) {
 			buyer, _ := e.user("m108_"+tc.table+"_buyer", "buyer")
 			vendor, _ := e.user("m108_"+tc.table+"_vendor", "vendor")
 			// Closed long ago: no migration 107 drain blocker, so only 108 refuses it.
-			order := e.order(buyer, e.product(vendor, "digital"), "BTC", stateCompleted)
+			order := e.order(buyer, e.product(vendor, "digital"), "XMR", stateCompleted)
 			agExec(e, "UPDATE orders SET updated=now()-interval '40 days' WHERE id=$1", order)
 			if tc.table == "payouts" {
 				agExec(e, pooledPayoutInsert, order, vendor)

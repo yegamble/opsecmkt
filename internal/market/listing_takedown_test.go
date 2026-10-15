@@ -7,11 +7,6 @@ import (
 	"testing"
 )
 
-// A-163: an administrator takes down another vendor's listing with a reason (10–500 characters), confirmed with
-// their password. The vendor is notified and sees the reason on /listing-edit and the vendor desk card, can still
-// edit the listing but cannot restore it; only an administrator's restore clears it. A takedown stops automatic
-// delivery; archiving by a role change never sets a reason.
-
 const takedownReason = "Counterfeit goods: the listing copies a trademarked product."
 
 // takedownForm returns the fields of the /admin/listing form on page for op (takedown or restore) of listing id, as
@@ -213,62 +208,6 @@ func TestAdminTakedownSurvivesVendorRestore(t *testing.T) {
 	agExpect(e, "/admin/listing", admin, withField(withField(take, "reason", takedownReason), "id", own), 400, "your own listing")
 }
 
-func TestAdminTakedownStopsAutoDelivery(t *testing.T) {
-	x := newEscrowEnv(t)
-	e := x.testEnv
-	_, admin := e.user("td_auto_admin", "admin")
-	const secret = "AUTO-DELIVERY-SECRET-A163"
-	product := x.product
-	if _, err := e.DB.Exec("UPDATE products SET delivery_content=$2 WHERE id=$1", product, secret); err != nil {
-		t.Fatal(err)
-	}
-	deliver := x.order
-	deliverAddr := x.mustCheckout(deliver, regtestAddr("takedown-deliver-refund"))
-	cancel := e.order(x.buyer, product, "BTC", stateDraft)
-	cancelAddr := x.mustCheckout(cancel, regtestAddr("takedown-cancel-refund"))
-
-	take := takedownForm(t, e.body("GET", "/listing-edit?id="+product, admin, nil, 200), "takedown", product)
-	e.check(e.do("POST", "/admin/listing", admin, withField(take, "reason", takedownReason)), 303)
-
-	// Escrow funding confirms: the orders become paid, but no digital content is delivered automatically.
-	x.core.deposit(deliverAddr, txidOf("a163-deliver"), 0, 100000, 3)
-	x.core.deposit(cancelAddr, txidOf("a163-cancel"), 0, 100000, 3)
-	x.poll()
-	for _, o := range []string{deliver, cancel} {
-		if x.state(o) != statePaid {
-			t.Fatalf("order %s: %s", o[:8], x.state(o))
-		}
-		if n := agInt(e, "SELECT count(*) FROM deliveries WHERE order_id=$1", o); n != 0 {
-			t.Fatalf("taken-down listing released its content for %s", o[:8])
-		}
-		if n := agInt(e, "SELECT count(*) FROM order_events WHERE order_id=$1 AND actor_id IS NULL AND note LIKE 'Not delivered automatically%'", o); n != 1 {
-			t.Fatalf("withheld-delivery note for %s: %d", o[:8], n)
-		}
-		mustNotContain(t, x.page("/order?id="+o, x.buyerSess), secret, takedownReason)
-	}
-
-	// The vendor delivers one by hand and requests an escrow refund for the other.
-	e.check(e.do("POST", "/orders/deliver", x.vendorSess, form("order_id", deliver, "content", "Delivered by hand.")), 303)
-	if x.state(deliver) != stateCompleted || agStr(e, "SELECT content FROM deliveries WHERE order_id=$1", deliver) != "Delivered by hand." {
-		t.Fatal("manual delivery after a takedown failed")
-	}
-	e.check(e.do("POST", "/orders/cancel", x.vendorSess, payoutConfirmed(form("order_id", cancel, "from", statePaid), 100000)), 303)
-	if x.state(cancel) != stateCancelled || agInt(e, "SELECT count(*) FROM settlements WHERE order_id=$1 AND kind='refund'", cancel) != 1 {
-		t.Fatalf("escrow refund request after a takedown: %s", x.state(cancel))
-	}
-
-	// Once an administrator restores the listing, automatic delivery works again.
-	restore := takedownForm(t, e.body("GET", "/listing-edit?id="+product, admin, nil, 200), "restore", product)
-	e.check(e.do("POST", "/admin/listing", admin, restore), 303)
-	again := e.order(x.buyer, product, "BTC", stateDraft)
-	againAddr := x.mustCheckout(again, regtestAddr("takedown-restored-refund"))
-	x.core.deposit(againAddr, txidOf("a163-again"), 0, 100000, 3)
-	x.poll()
-	if x.state(again) != stateCompleted || agStr(e, "SELECT content FROM deliveries WHERE order_id=$1", again) != secret {
-		t.Fatalf("restored listing not delivered automatically: %s", x.state(again))
-	}
-}
-
 func TestDemotionArchiveIsNotATakedown(t *testing.T) {
 	e := newTestApp(t)
 	_, admin := e.user("tdd_admin", "admin")
@@ -338,5 +277,62 @@ func TestAdminTakedownDoesNotDeadlockWithRoleChange(t *testing.T) {
 	}
 	if archived, reason := takenDown(e, p); !archived || reason != takedownReason {
 		t.Fatalf("after the takedown: archived=%v reason=%q", archived, reason)
+	}
+}
+
+func TestAdminTakedownStopsAutoDelivery(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	e := x.testEnv
+	_, admin := e.user("td_auto_admin", "admin")
+	const secret = "AUTO-DELIVERY-SECRET-A163"
+	product := x.product
+	if _, err := e.DB.Exec("UPDATE products SET delivery_content=$2 WHERE id=$1", product, secret); err != nil {
+		t.Fatal(err)
+	}
+	deliver := x.draft(product)
+	deliverAddr := x.mustCheckout(deliver)
+	cancel := e.order(x.buyer, product, "XMR", stateDraft)
+	cancelAddr := x.mustCheckout(cancel)
+
+	take := takedownForm(t, e.body("GET", "/listing-edit?id="+product, admin, nil, 200), "takedown", product)
+	e.check(e.do("POST", "/admin/listing", admin, withField(take, "reason", takedownReason)), 303)
+
+	// Escrow funding confirms: the orders become paid, but no digital content is delivered automatically.
+	x.fake.payAddress(deliverAddr, hex64("a163-deliver"), xmrListingPrice, 10)
+	x.fake.payAddress(cancelAddr, hex64("a163-cancel"), xmrListingPrice, 10)
+	x.mustPoll()
+	for _, o := range []string{deliver, cancel} {
+		if x.state(o) != statePaid {
+			t.Fatalf("order %s: %s", o[:8], x.state(o))
+		}
+		if n := agInt(e, "SELECT count(*) FROM deliveries WHERE order_id=$1", o); n != 0 {
+			t.Fatalf("taken-down listing released its content for %s", o[:8])
+		}
+		if n := agInt(e, "SELECT count(*) FROM order_events WHERE order_id=$1 AND actor_id IS NULL AND note LIKE 'Not delivered automatically%'", o); n != 1 {
+			t.Fatalf("withheld-delivery note for %s: %d", o[:8], n)
+		}
+		mustNotContain(t, x.page("/order?id="+o, x.buyerSess), secret, takedownReason)
+	}
+
+	// The vendor delivers one by hand and requests an escrow refund for the other.
+	e.check(e.do("POST", "/orders/deliver", x.vendorSess, form("order_id", deliver, "content", "Delivered by hand.")), 303)
+	if x.state(deliver) != stateCompleted || agStr(e, "SELECT content FROM deliveries WHERE order_id=$1", deliver) != "Delivered by hand." {
+		t.Fatal("manual delivery after a takedown failed")
+	}
+	e.check(e.do("POST", "/orders/cancel", x.vendorSess, payoutConfirmed(form("order_id", cancel, "from", statePaid), xmrListingPrice)), 303)
+	if x.state(cancel) != stateCancelled || agInt(e, "SELECT count(*) FROM xmr_settlements WHERE order_id=$1 AND kind='refund'", cancel) != 1 {
+		t.Fatalf("escrow refund request after a takedown: %s", x.state(cancel))
+	}
+
+	// Once an administrator restores the listing, automatic delivery works again.
+	restore := takedownForm(t, e.body("GET", "/listing-edit?id="+product, admin, nil, 200), "restore", product)
+	e.check(e.do("POST", "/admin/listing", admin, restore), 303)
+	again := e.order(x.buyer, product, "XMR", stateDraft)
+	againAddr := x.mustCheckout(again)
+	x.fake.payAddress(againAddr, hex64("a163-again"), xmrListingPrice, 10)
+	x.mustPoll()
+	if x.state(again) != stateCompleted || agStr(e, "SELECT content FROM deliveries WHERE order_id=$1", again) != secret {
+		t.Fatalf("restored listing not delivered automatically: %s", x.state(again))
 	}
 }

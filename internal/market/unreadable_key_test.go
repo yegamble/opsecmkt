@@ -115,7 +115,7 @@ func TestUnreadableStoredKeyPagesRender(t *testing.T) {
 	vendorID, vendor := e.user("a266_vendor", "vendor")
 	armored, fp := mixedRevokedUserIDsKey(t, "a266_vendor")
 	storeKeyBySQL(e, vendorID, armored, fp)
-	paid := e.order(buyerID, e.product(vendorID, "physical"), "BTC", statePaid)
+	paid := e.order(buyerID, e.product(vendorID, "physical"), "XMR", statePaid)
 	for name, page := range map[string]string{
 		"vendor page": e.body("GET", "/vendor?id="+vendorID, "", nil, 200),
 		"messages":    e.body("GET", "/messages?to=a266_vendor", buyer, nil, 200),

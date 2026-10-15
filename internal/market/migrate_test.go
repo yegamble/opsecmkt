@@ -181,7 +181,7 @@ func TestUpgradeFromBaselineSchema(t *testing.T) {
 		for _, q := range []string{
 			"INSERT INTO users(id,handle,password_hash,role) VALUES('b','buyer_x','x','buyer'),('v','vendor_x','x','vendor')",
 			"INSERT INTO products(id,vendor_id,title,description,category,region,kind,btc,xmr,stock) VALUES('p','v','T','D','Hardware','Worldwide','physical',1,1,1)",
-			"INSERT INTO orders(id,buyer_id,product_id,currency,amount) VALUES('o','b','p','BTC',1)",
+			"INSERT INTO orders(id,buyer_id,product_id,currency,amount) VALUES('o','b','p','XMR',1)",
 		} {
 			if _, err := tx.Exec(q); err != nil {
 				return err
@@ -203,13 +203,13 @@ func TestUpgradeFromBaselineSchema(t *testing.T) {
 	if n != 1 {
 		t.Fatal("partial one-draft index missing")
 	}
-	if _, err := db.Exec("INSERT INTO orders(id,buyer_id,product_id,currency,amount) VALUES('o2','b','p','BTC',1)"); err == nil {
+	if _, err := db.Exec("INSERT INTO orders(id,buyer_id,product_id,currency,amount) VALUES('o2','b','p','XMR',1)"); err == nil {
 		t.Fatal("second draft for the same buyer/product/currency accepted")
 	}
 	if _, err := db.Exec("UPDATE orders SET state='cancelled' WHERE id='o'"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec("INSERT INTO orders(id,buyer_id,product_id,currency,amount) VALUES('o2','b','p','BTC',1)"); err != nil {
+	if _, err := db.Exec("INSERT INTO orders(id,buyer_id,product_id,currency,amount) VALUES('o2','b','p','XMR',1)"); err != nil {
 		t.Fatalf("new draft after cancellation rejected: %v", err)
 	}
 	if _, err := db.Exec("UPDATE orders SET state='bogus' WHERE id='o'"); err == nil {

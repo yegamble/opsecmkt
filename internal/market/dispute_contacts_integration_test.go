@@ -19,7 +19,7 @@ func TestDisputeStaffContacts(t *testing.T) {
 		t.Fatal(err)
 	}
 	product := e.product(w.vendorID, "physical")
-	order := e.order(w.buyerID, product, "BTC", stateDisputed)
+	order := e.order(w.buyerID, product, "XMR", stateDisputed)
 	body := w.page("/order?id="+order, w.buyer, 200)
 	if !strings.Contains(body, "Contact dispute staff") || !strings.Contains(body, "Ownership not verified") || !strings.Contains(body, "contact_admin has not added a PGP public key") {
 		t.Fatal("staff keys and honest missing/verification states were not rendered")

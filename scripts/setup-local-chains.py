@@ -55,7 +55,7 @@ def main():
         stop(state)
         print('Registered local chain processes stopped; data preserved.')
     else:
-        parser.error('Pooled-chain setup is retired; use scripts/test-escrow-regtest.sh or scripts/test-escrow-xmr-regtest.sh. Historical tests require the prior drain-capable release. --stop STATE_DIR preserves existing data.')
+        parser.error('Pooled-chain setup is retired; use scripts/test-escrow-xmr-regtest.sh. Historical tests require the prior drain-capable release. --stop STATE_DIR preserves existing data.')
 
 
 def interrupted(_signal, _frame):

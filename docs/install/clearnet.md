@@ -13,9 +13,9 @@ Run the market on your domain. The app listens on `127.0.0.1:8080`. Your HTTPS r
 
 | Choice | Result |
 | --- | --- |
-| `--nodes local` (default) | Pruned Bitcoin and Monero nodes on **mainnet (real funds)**. 75 GB or more of disk, days to sync (estimates). |
-| `--nodes local --bitcoin-network signet --monero-network stagenet` | Pruned test-network nodes. 25–30 GB disk, hours to sync. |
-| `--nodes custom` | Choose network, image and pruning per coin. |
+| `--nodes local` (default) | A pruned Monero node on **mainnet (real funds)**. 45 GB or more of disk, days to sync (estimates). |
+| `--nodes local --monero-network stagenet` | A pruned Monero stagenet node. About 20 GB disk, hours to sync. |
+| `--nodes custom` | Choose Monero network, image and pruning. |
 | `--nodes none` | No nodes. No payments with a bundled node. |
 
 No mainnet run is recorded; mainnet is covered by unit, database and simulated-RPC tests only. Before it writes
@@ -38,7 +38,7 @@ git checkout v0.1.0-alpha.2
 ./scripts/install.sh init --clearnet --behind-proxy yes --nodes local
 ```
 
-For a test market add `--bitcoin-network signet --monero-network stagenet`. Another port: prefix `APP_PORT=PORT`. External database: add `--external-db URL`
+For a test market add `--monero-network stagenet`. Another port: prefix `APP_PORT=PORT`. External database: add `--external-db URL`
 ([details](external-database.md)).
 
 Output:

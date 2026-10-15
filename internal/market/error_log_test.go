@@ -23,11 +23,6 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// A-141: every 5xx response writes one log line naming the route key, status, a reference and a cause class,
-// and the user sees the same reference; the line never carries error text or anything about the request or
-// its sender (acceptance.md: no secrets in logs; A-93's TestLogsContainNoSecrets).
-
-// lockedBuffer is a log destination safe to read while background goroutines may still log.
 type lockedBuffer struct {
 	mu sync.Mutex
 	b  bytes.Buffer
@@ -101,36 +96,6 @@ func waitForLine(t *testing.T, logs *lockedBuffer, prefix string) string {
 		if time.Now().After(deadline) {
 			t.Fatalf("no log line starting with %q: %q", prefix, logs.String())
 		}
-	}
-}
-
-// A-170 on escrow (A-493): the running escrow watcher's error line names its label and the error class only, never the
-// node's error text, which may quote an address. Here the watch-only wallet refuses listreceivedbyaddress with a message
-// carrying a marker and an address; the line keeps "wallet read failed", the method and the RPC code.
-func TestLogsContainNoSecretsFromEscrowWatcher(t *testing.T) {
-	x := newEscrowEnv(t)
-	refund := regtestAddr("elog-refund")
-	escrowAddr := x.mustCheckout(x.order, refund)
-	const marker = "A493-NODE-MARKER"
-	leaked := regtestAddr("elog-leaked-address")
-	x.core.mu.Lock()
-	x.core.txErr, x.core.txErrMsg = -5, marker+" Fixture refused to list "+leaked+" and "+escrowAddr
-	x.core.mu.Unlock()
-	logs := captureLog(t)
-	stop := runBackground(t, x.A)
-	defer stop()
-	line := waitForLine(t, logs, "escrow watcher: ")
-	stop()
-	if line != "escrow watcher: escrow: wallet read failed: listreceivedbyaddress rpc:-5" {
-		t.Fatalf("escrow watcher line %q", line)
-	}
-	for _, s := range []string{marker, leaked, escrowAddr, refund, x.order, "Fixture refused"} {
-		if strings.Contains(logs.String(), s) {
-			t.Fatalf("log contains %q: %q", s, logs.String())
-		}
-	}
-	if x.state(x.order) != stateAwaitingPayment {
-		t.Fatalf("an unread escrow moved its order to %s", x.state(x.order))
 	}
 }
 
@@ -320,10 +285,10 @@ func TestErrorCauseDroppedConnection(t *testing.T) {
 func TestWatcherCause(t *testing.T) {
 	pass := errors.Join(
 		&watchError{label: "XMR", class: "wallet check failed: rpc:-13", err: errors.New("secret wallet text")},
-		&watchError{label: "BTC", err: errors.Join(&watchError{class: "wallet read failed: rpc:-5", err: errors.New("secret node text")}, &watchError{label: "order 5f2c9e7a", err: &pgconn.PgError{Code: "40001", Message: "secret"}})},
+		&watchError{label: "XMR", err: errors.Join(&watchError{class: "wallet read failed: rpc:-5", err: errors.New("secret node text")}, &watchError{label: "order 5f2c9e7a", err: &pgconn.PgError{Code: "40001", Message: "secret"}})},
 	)
 	got := watcherCause(pass)
-	for _, want := range []string{"XMR: wallet check failed: rpc:-13", "BTC: wallet read failed: rpc:-5", "order 5f2c9e7a: 40001"} {
+	for _, want := range []string{"XMR: wallet check failed: rpc:-13", "XMR: wallet read failed: rpc:-5", "order 5f2c9e7a: 40001"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("cause %q lacks %q", got, want)
 		}

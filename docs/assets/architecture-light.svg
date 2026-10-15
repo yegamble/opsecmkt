@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="510" viewBox="0 0 1100 510" role="img" aria-label="Browser through Tor or HTTPS to the Go server and PostgreSQL. Optional Bitcoin 2-of-3 escrow: regtest, signet or testnet4. Optional custodial Monero escrow: fakechain or stagenet. Escrow is off by default. The diagram shows the test networks; the installer's local nodes default to mainnet (real funds; no mainnet run is recorded). First released in v0.1.0-alpha.2. Historical pooled records retained; undrained legacy upgrades refused.">
-<title>OPSEC Market architecture and supported networks</title>
-<desc>Browser through Tor or HTTPS to the Go server and PostgreSQL. Optional Bitcoin 2-of-3 escrow: regtest, signet or testnet4. Optional custodial Monero escrow: fakechain or stagenet. Escrow is off by default. The diagram shows the test networks; the installer's local nodes default to mainnet (real funds; no mainnet run is recorded). First released in v0.1.0-alpha.2. Historical pooled records retained; undrained legacy upgrades refused.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="510" viewBox="0 0 1100 510" role="img" aria-label="Browser through Tor or HTTPS to the Go server and PostgreSQL. Monero (XMR) is the only payment currency. Optional custodial escrow uses a dedicated wallet RPC and per-order accounts. The market holds online wallet keys and order/payment metadata. Local nodes default to mainnet with real funds; no mainnet run is recorded. Stagenet and local fakechain are test networks. Monero delivery through Tor remains unverified.">
+<title>OPSEC Market architecture: Monero only</title>
+<desc>Browser through Tor or HTTPS to the Go server and PostgreSQL. Monero (XMR) is the only payment currency. Optional custodial escrow uses a dedicated wallet RPC and per-order accounts. The market holds online wallet keys and order/payment metadata. Local nodes default to mainnet with real funds; no mainnet run is recorded. Stagenet and local fakechain are test networks. Monero delivery through Tor remains unverified.</desc>
 <defs><marker id="alight" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#57534e"/></marker></defs>
 <rect width="1100" height="510" fill="#ffffff"/>
 <rect x="20" y="200" width="150" height="95" rx="10" fill="#f6f5f1" stroke="#c9c5bb" stroke-width="1.5"/>
@@ -23,20 +23,20 @@
 <rect x="660" y="30" width="415" height="110" rx="10" fill="#f6f5f1" stroke="#c9c5bb" stroke-width="1.5"/>
 <text x="867.5" y="59" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="16" font-weight="700" fill="#1a1a18">PostgreSQL</text>
 <text x="867.5" y="80" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13" font-weight="400" fill="#57534e">migrations on start</text>
-<text x="867.5" y="101" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13" font-weight="400" fill="#57534e">historical pooled records retained</text>
-<text x="867.5" y="122" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13" font-weight="400" fill="#57534e">undrained legacy upgrade refused</text>
+<text x="867.5" y="101" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13" font-weight="400" fill="#57534e">orders · messages · payment metadata</text>
+<text x="867.5" y="122" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13" font-weight="400" fill="#57534e">retention and recovery state</text>
 <rect x="660" y="170" width="415" height="130" rx="10" fill="#f6f5f1" stroke="#c9c5bb" stroke-width="1.5"/>
-<text x="867.5" y="199" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="16" font-weight="700" fill="#1a1a18">Bitcoin 2-of-3 escrow</text>
-<text x="867.5" y="220" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13" font-weight="400" fill="#57534e">regtest / signet / testnet4</text>
-<text x="867.5" y="241" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13" font-weight="400" fill="#57534e">dedicated signer + party PSBTs</text>
-<text x="867.5" y="262" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13" font-weight="400" fill="#57534e">public signet proof recorded</text>
-<text x="867.5" y="283" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13" font-weight="400" fill="#57534e">testnet4 &amp; device signing unverified</text>
+<text x="867.5" y="199" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="16" font-weight="700" fill="#1a1a18">Monero daemon</text>
+<text x="867.5" y="220" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13" font-weight="400" fill="#57534e">mainnet / stagenet / local fakechain</text>
+<text x="867.5" y="241" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13" font-weight="400" fill="#57534e">restricted RPC · no published port</text>
+<text x="867.5" y="262" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13" font-weight="400" fill="#57534e">explicit node Tor overlay</text>
+<text x="867.5" y="283" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13" font-weight="400" fill="#57534e">Monero Tor delivery unverified</text>
 <rect x="660" y="330" width="415" height="130" rx="10" fill="#f6f5f1" stroke="#c9c5bb" stroke-width="1.5"/>
 <text x="867.5" y="359" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="16" font-weight="700" fill="#1a1a18">Monero custodial escrow</text>
-<text x="867.5" y="380" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13" font-weight="400" fill="#57534e">fakechain / stagenet</text>
-<text x="867.5" y="401" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13" font-weight="400" fill="#57534e">separate escrow wallet RPC</text>
+<text x="867.5" y="380" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13" font-weight="400" fill="#57534e">per-order accounts · monthly wallets</text>
+<text x="867.5" y="401" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13" font-weight="400" fill="#57534e">online keys · dedicated wallet RPC</text>
 <text x="867.5" y="422" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13" font-weight="400" fill="#57534e">public stagenet digital claim recorded</text>
-<text x="867.5" y="443" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13" font-weight="400" fill="#57534e">other public journeys unverified</text>
+<text x="867.5" y="443" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13" font-weight="400" fill="#57534e">mainnet &amp; Tor delivery unverified</text>
 <line x1="170" y1="215" x2="218" y2="147" stroke="#57534e" stroke-width="1.5" marker-end="url(#alight)"/>
 <line x1="170" y1="280" x2="218" y2="322" stroke="#57534e" stroke-width="1.5" marker-end="url(#alight)"/>
 <line x1="390" y1="147" x2="438" y2="223" stroke="#57534e" stroke-width="1.5" marker-end="url(#alight)"/>
@@ -44,5 +44,5 @@
 <line x1="615" y1="218" x2="658" y2="85" stroke="#57534e" stroke-width="1.5" marker-end="url(#alight)"/>
 <line x1="615" y1="255" x2="658" y2="235" stroke="#57534e" stroke-width="1.5" marker-end="url(#alight)" stroke-dasharray="5 4"/>
 <line x1="615" y1="285" x2="658" y2="392" stroke="#57534e" stroke-width="1.5" marker-end="url(#alight)" stroke-dasharray="5 4"/>
-<text x="550" y="492" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13" fill="#57534e">Escrow: off by default · test coins only · first released in v0.1.0-alpha.2</text>
+<text x="550" y="492" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13" fill="#57534e">Monero only · escrow off by default · mainnet uses real funds</text>
 </svg>

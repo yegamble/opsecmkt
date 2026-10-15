@@ -175,7 +175,7 @@ func TestDisputeCounterpartyResponse(t *testing.T) {
 	// The vendor can open a dispute too; the buyer then replies. After resolution no reply is offered (409).
 	other, disputeID := w.disputedFor(w.buyerID, w.buyer, w.vendorID, w.vendor, w.vendor, "The buyer confirmed receipt by message and then stopped answering.")
 	mustContain(t, w.page("/order?id="+other, w.buyer, 200), `action="/disputes/reply"`, "The vendor reads it on this order")
-	w.expect("/resolve", admin, resolveConfirmed(form("id", disputeID, "outcome", "release", "resolution", "Delivery confirmed by the courier; release."), 100000), 303, "")
+	w.expect("/resolve", admin, resolveConfirmed(form("id", disputeID, "outcome", "release", "resolution", "Delivery confirmed by the courier; release."), xmrListingPrice), 303, "")
 	mustNotContain(t, w.page("/order?id="+other, w.buyer, 200), `action="/disputes/reply"`, "may put one reply")
 	w.expect("/disputes/reply", w.buyer, form("order_id", other, "reply", reply), 409, "resolved")
 	if n := w.replyEvents(other); n != 0 {
@@ -184,14 +184,14 @@ func TestDisputeCounterpartyResponse(t *testing.T) {
 
 	// A dispute with no recorded opener (a fixture or old import) offers no reply and refuses one.
 	product := w.e.product(w.vendorID, "physical")
-	bare := w.e.order(w.buyerID, product, "BTC", stateDisputed)
+	bare := w.e.order(w.buyerID, product, "XMR", stateDisputed)
 	if _, err := w.e.DB.Exec("INSERT INTO disputes(id,order_id,reason) VALUES($1,$2,'Imported dispute with no opening event.')", randomToken(), bare); err != nil {
 		t.Fatal(err)
 	}
 	mustNotContain(t, w.page("/order?id="+bare, w.vendor, 200), `action="/disputes/reply"`)
 	w.expect("/disputes/reply", w.vendor, form("order_id", bare, "reply", reply), 409, "")
 	// No dispute at all: 409.
-	noDispute := w.x.draft()
+	noDispute := w.x.draft(w.x.digital(w.vendorID))
 	w.expect("/disputes/reply", w.vendor, form("order_id", noDispute, "reply", reply), 409, "")
 }
 
@@ -487,7 +487,7 @@ func TestResolveRefusesFormLoadedBeforeReply(t *testing.T) {
 		}
 	}
 	decision := "Refund: the courier has no record of delivery at the agreed place."
-	stale := resolveConfirmed(form("id", disputeID, "outcome", "refund", "resolution", decision, "reply_seen", "0"), 100000)
+	stale := resolveConfirmed(form("id", disputeID, "outcome", "refund", "resolution", decision, "reply_seen", "0"), xmrListingPrice)
 	events := w.count("SELECT count(*) FROM order_events WHERE order_id=$1", order)
 
 	reply := "The parcel was handed over at the agreed place; the courier has a signature."
@@ -513,14 +513,14 @@ func TestResolveRefusesFormLoadedBeforeReply(t *testing.T) {
 	}
 	refused(stale)
 	// A post without the field counts as a form that showed no reply.
-	missing := resolveConfirmed(form("id", disputeID, "outcome", "refund", "resolution", decision), 100000)
+	missing := resolveConfirmed(form("id", disputeID, "outcome", "refund", "resolution", decision), xmrListingPrice)
 	refused(missing)
 	// Another resolver's desk is unaffected: it shows the reply and its form says so.
 	if v := seen(w.page("/moderator", admin, 200), disputeID); v != "1" {
 		t.Fatalf("reply_seen=%s after the reply", v)
 	}
 	// The reloaded form resolves.
-	w.expect("/resolve", admin, resolveConfirmed(form("id", disputeID, "outcome", "refund", "resolution", decision, "reply_seen", "1"), 100000), 303, "")
+	w.expect("/resolve", admin, resolveConfirmed(form("id", disputeID, "outcome", "refund", "resolution", decision, "reply_seen", "1"), xmrListingPrice), 303, "")
 	if w.state(order) != stateResolved {
 		t.Fatalf("state %s after resolving with the reloaded form", w.state(order))
 	}
@@ -542,7 +542,7 @@ func TestResolveRefusesFormLoadedBeforeReply(t *testing.T) {
 	}
 	result := make(chan agResult, 1)
 	go func() {
-		r := w.post("/resolve", admin, resolveConfirmed(form("id", otherID, "outcome", "release", "resolution", "Release: the courier record shows delivery.", "reply_seen", "0"), 100000))
+		r := w.post("/resolve", admin, resolveConfirmed(form("id", otherID, "outcome", "release", "resolution", "Release: the courier record shows delivery.", "reply_seen", "0"), xmrListingPrice))
 		result <- agResult{r.Code, r.Body.String()}
 	}()
 	for deadline := time.Now().Add(20 * time.Second); ; time.Sleep(10 * time.Millisecond) {

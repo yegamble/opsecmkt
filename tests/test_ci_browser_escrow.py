@@ -1,4 +1,4 @@
-"""The CI job that runs both escrow browser journeys (A-474).
+"""The CI job that runs the Monero escrow browser journey (A-474).
 
 Static checks on .github/workflows/ci.yaml (text only, so no YAML library is needed on the runner). No CI job ran an
 escrow Playwright config, so a wallet-fixture fault that stopped Bitcoin escrow from starting failed every escrow
@@ -16,8 +16,6 @@ PACKAGE = json.loads((REPOSITORY / 'package.json').read_text())
 JOB = 'browser-escrow'
 SUITES = (
     # npm script, config file, database variable the config reads, database, report and trace directories it writes
-    ('test:e2e:escrow', 'playwright.escrow.config.ts', 'E2E_ESCROW_DATABASE_URL', 'e2e_escrow',
-     'playwright-escrow-report', 'test-results-escrow'),
     ('test:e2e:escrow-xmr', 'playwright.escrow-xmr.config.ts', 'E2E_ESCROW_XMR_DATABASE_URL', 'e2e_escrow_xmr',
      'playwright-escrow-xmr-report', 'test-results-escrow-xmr'),
 )

@@ -17,7 +17,7 @@ func TestFormNonceDraftDisputeReplyAndReviewFormsReplay(t *testing.T) {
 
 	checkout := e.do("GET", "/checkout?id="+product, buyer, nil)
 	e.check(checkout, 200)
-	draftForm := url.Values{"product_id": {product}, "currency": {"BTC"}, formNonceField: {renderedFormNonce(t, checkout.Body.String(), "/orders")}}
+	draftForm := url.Values{"product_id": {product}, "currency": {"XMR"}, formNonceField: {renderedFormNonce(t, checkout.Body.String(), "/orders")}}
 	if submissionCount(t, e) != 0 {
 		t.Fatal("rendering checkout wrote a form receipt")
 	}
@@ -88,7 +88,10 @@ func TestFormNonceDraftDisputeReplyAndReviewFormsReplay(t *testing.T) {
 		t.Fatalf("reply replay wrote %d audits", n)
 	}
 
-	completed := w.x.completed(regtestAddr("nonce-completed-"+randomToken()[:8]), 100000)
+	completed := w.x.draft(w.x.digital(vendorID))
+	address := w.x.mustCheckout(completed)
+	w.x.fake.payAddress(address, hex64("nonce-completed-"+completed), xmrListingPrice, 10)
+	w.x.mustPoll()
 	beforeReviewPage := submissionCount(t, e)
 	completedPage := e.do("GET", orderPage(completed), buyer, nil)
 	e.check(completedPage, 200)

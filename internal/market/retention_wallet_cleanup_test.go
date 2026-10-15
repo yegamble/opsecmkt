@@ -2,7 +2,6 @@ package market
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"strings"
 	"sync/atomic"
@@ -14,15 +13,15 @@ func TestRetentionWalletCleanupKeepsOriginalDeadlineAndExpiresConfirmation(t *te
 	e := newTestApp(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	due := now.Add(-24 * time.Hour)
-	agExec(e, `SELECT retention_wallet_cleanup_register('BTC','protected-watch',$1,$2)`, due, now)
-	agExec(e, `SELECT retention_wallet_cleanup_register('BTC','protected-watch',$1,$2)`, now.Add(24*time.Hour), now.Add(time.Hour))
+	agExec(e, `SELECT retention_wallet_cleanup_register('XMR','protected-watch',$1,$2)`, due, now)
+	agExec(e, `SELECT retention_wallet_cleanup_register('XMR','protected-watch',$1,$2)`, now.Add(24*time.Hour), now.Add(time.Hour))
 	rows, err := LoadRetentionWalletCleanup(t.Context(), e.DB, now.Add(31*24*time.Hour), 100)
 	if err != nil || len(rows) != 1 || !rows[0].DueAt.Equal(due) || !rows[0].Overdue || !rows[0].ReviewOverdue {
 		t.Fatalf("original deadline/review changed: %+v %v", rows, err)
 	}
 	// A review does not assert files or descriptors were destroyed.
-	agExec(e, `UPDATE retention_wallet_cleanup SET review_due=$1 WHERE coin='BTC' AND wallet_name='protected-watch'`, now.Add(60*24*time.Hour))
-	agExec(e, `UPDATE retention_wallet_cleanup SET confirmed_at=$1,confirmed_by='test host operator' WHERE coin='BTC' AND wallet_name='protected-watch'`, now)
+	agExec(e, `UPDATE retention_wallet_cleanup SET review_due=$1 WHERE coin='XMR' AND wallet_name='protected-watch'`, now.Add(60*24*time.Hour))
+	agExec(e, `UPDATE retention_wallet_cleanup SET confirmed_at=$1,confirmed_by='test host operator' WHERE coin='XMR' AND wallet_name='protected-watch'`, now)
 	runRetentionClosure(t, e, now.Add(179*24*time.Hour))
 	if agInt(e, `SELECT count(*) FROM retention_wallet_cleanup`) != 1 {
 		t.Fatal("confirmation expired before180days")
@@ -30,11 +29,11 @@ func TestRetentionWalletCleanupKeepsOriginalDeadlineAndExpiresConfirmation(t *te
 	// A genuinely later certificate restores the unresolved obligation while its
 	// original deadline stays fixed. An old certificate replay cannot undo a
 	// newer verified confirmation still present in the database.
-	agExec(e, `SELECT retention_wallet_cleanup_register('BTC','protected-watch',$1,$2)`, due, now.Add(-time.Hour))
+	agExec(e, `SELECT retention_wallet_cleanup_register('XMR','protected-watch',$1,$2)`, due, now.Add(-time.Hour))
 	if agInt(e, `SELECT count(*) FROM retention_wallet_cleanup WHERE confirmed_at IS NOT NULL`) != 1 {
 		t.Fatal("old replay undid later physical confirmation")
 	}
-	agExec(e, `SELECT retention_wallet_cleanup_register('BTC','protected-watch',$1,$2)`, now, now.Add(time.Hour))
+	agExec(e, `SELECT retention_wallet_cleanup_register('XMR','protected-watch',$1,$2)`, now, now.Add(time.Hour))
 	if agInt(e, `SELECT count(*) FROM retention_wallet_cleanup WHERE confirmed_at IS NULL AND due_at=$1`, due) != 1 {
 		t.Fatal("later certificate failed to reopen original obligation")
 	}
@@ -46,7 +45,7 @@ func TestRetentionWalletCleanupKeepsOriginalDeadlineAndExpiresConfirmation(t *te
 }
 
 func TestRetentionEscrowJournalReconstitutesPreOrderRestoreState(t *testing.T) {
-	x, order, r, tx := certifiedBTCRetirement(t)
+	x, order, r, tx := certifiedXMRRetirement(t)
 	tx.Rollback()
 	if err := x.A.initRetention(t.Context(), retentionConfig{Enabled: true, StateDir: retentionPrivateTestDir(t)}); err != nil {
 		t.Fatal(err)
@@ -63,12 +62,14 @@ func TestRetentionEscrowJournalReconstitutesPreOrderRestoreState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	previousTombstones := len(s.state.Tombstones)
+	opens := x.opens(r.WalletName)
 	op := retentionOperation{ID: randomToken(), At: r.CertifiedAt, Tombstones: []retentionTombstone{{Kind: "escrow_order", ID: order, At: r.CertifiedAt, Retirement: r}}}
 	if err = x.A.prepareRetentionOperation(t.Context(), tx, op); err != nil {
 		t.Fatal(err)
 	}
-	if x.core.count("setlabel") != 0 {
-		t.Fatal("journal preparation changed the wallet")
+	if x.opens(r.WalletName) != opens {
+		t.Fatal("journal preparation accessed the destroyed wallet")
 	}
 	if err = x.A.applyRetentionEscrowRetirement(t.Context(), tx, r); err != nil {
 		t.Fatal(err)
@@ -81,15 +82,13 @@ func TestRetentionEscrowJournalReconstitutesPreOrderRestoreState(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A snapshot from before this order existed has none of its financial rows,
-	// labels, sparse guards or counters. The external committed certificate must
+	// sparse guards or wallet-name allocation counters. The external committed certificate must
 	// reconstruct guards and protected physical-cleanup inventory before traffic.
 	agExec(x.testEnv, `DELETE FROM retention_escrow_retired_addresses`)
-	agExec(x.testEnv, `DELETE FROM retention_escrow_retired_keys`)
-	agExec(x.testEnv, `DELETE FROM retention_escrow_key_floors`)
+	agExec(x.testEnv, `DELETE FROM retention_xmr_retired_wallets`)
+	agExec(x.testEnv, `DELETE FROM retention_xmr_wallet_names`)
 	agExec(x.testEnv, `DELETE FROM retention_wallet_cleanup`)
-	agExec(x.testEnv, `UPDATE retention_escrow_global_floors SET next_index=0,allocation_next_index=0`)
-	agExec(x.testEnv, `SELECT setval('escrow_market_index',0,false)`)
-	x.A.escrow.Store(nil)
+	x.A.escrowXMR = nil
 	unlock, err = s.lock()
 	if err != nil {
 		t.Fatal(err)
@@ -98,7 +97,14 @@ func TestRetentionEscrowJournalReconstitutesPreOrderRestoreState(t *testing.T) {
 	if err = s.read(); err != nil {
 		t.Fatal(err)
 	}
-	if len(s.state.Pending) != 0 || len(s.state.Tombstones) != 1 || s.state.Tombstones[0].CommittedAt == nil {
+	var committed *retentionTombstone
+	for i := range s.state.Tombstones {
+		marker := &s.state.Tombstones[i]
+		if marker.Kind == "escrow_order" && marker.ID == order {
+			committed = marker
+		}
+	}
+	if len(s.state.Pending) != 0 || len(s.state.Tombstones) != previousTombstones+1 || committed == nil || committed.CommittedAt == nil {
 		t.Fatal("committed certificate missing from durable journal")
 	}
 	tx, err = x.DB.BeginTx(t.Context(), nil)
@@ -106,29 +112,29 @@ func TestRetentionEscrowJournalReconstitutesPreOrderRestoreState(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
-	if err = x.A.applyRetentionTombstone(t.Context(), tx, s.state.Tombstones[0]); err != nil {
+	if err = x.A.applyRetentionTombstone(t.Context(), tx, *committed); err != nil {
 		t.Fatal(err)
 	}
 	if err = tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	if agInt(x.testEnv, `SELECT count(*) FROM retention_wallet_cleanup WHERE coin='BTC' AND wallet_name=$1 AND due_at=$2`, r.WatchWalletName, r.CleanupDue) != 1 {
+	if agInt(x.testEnv, `SELECT count(*) FROM retention_wallet_cleanup WHERE coin='XMR' AND wallet_name=$1 AND due_at=$2`, r.WalletName, r.CleanupDue) != 1 {
 		t.Fatal("old restore lost physical cleanup obligation")
 	}
-	if agInt(x.testEnv, `SELECT count(*) FROM retention_escrow_retired_addresses WHERE coin='BTC' AND NOT label_checked`) == 0 {
-		t.Fatal("restore traffic can bypass wallet label reconciliation")
+	if agInt(x.testEnv, `SELECT count(*) FROM retention_escrow_retired_addresses WHERE coin='XMR'`) != len(r.AddressHashes) {
+		t.Fatal("old restore lost retired address non-reuse hashes")
 	}
-	var next int64
-	if err = x.DB.QueryRow(`SELECT retention_next_escrow_index('market')`).Scan(&next); err != nil || next < r.MarketNextIndex {
-		t.Fatalf("restore reused old market index%d: %v", next, err)
+	if agInt(x.testEnv, `SELECT count(*) FROM retention_xmr_retired_wallets WHERE name_hash=$1`, retentionTechnicalHash(r.WalletName)) != 1 {
+		t.Fatal("old restore lost destroyed wallet non-reuse guard")
 	}
-	if agInt(x.testEnv, `SELECT count(*) FROM retention_escrow_key_floors`) == 0 {
-		t.Fatal("old restore lost party root allocation floors")
+	var next int
+	if err = x.DB.QueryRow(`SELECT next_n FROM retention_xmr_wallet_names WHERE month=$1::date`, r.WalletMonth).Scan(&next); err != nil || next < r.WalletNextN {
+		t.Fatalf("restore reused old Monero wallet sequence %d: %v", next, err)
 	}
 }
 
 func TestRetentionEscrowPreparedCrashDoesNotInventRetirement(t *testing.T) {
-	x, order, r, tx := certifiedBTCRetirement(t)
+	x, order, r, tx := certifiedXMRRetirement(t)
 	tx.Rollback()
 	if err := x.A.initRetention(t.Context(), retentionConfig{Enabled: true, StateDir: retentionPrivateTestDir(t)}); err != nil {
 		t.Fatal(err)
@@ -146,6 +152,8 @@ func TestRetentionEscrowPreparedCrashDoesNotInventRetirement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	beforeCleanup := agInt(x.testEnv, `SELECT count(*) FROM retention_wallet_cleanup`)
+	opens := x.opens(r.WalletName)
 	op := retentionOperation{ID: randomToken(), At: r.CertifiedAt, Tombstones: []retentionTombstone{{Kind: "escrow_order", ID: order, At: r.CertifiedAt, Retirement: r}}}
 	if err = x.A.prepareRetentionOperation(t.Context(), tx, op); err != nil {
 		t.Fatal(err)
@@ -157,13 +165,13 @@ func TestRetentionEscrowPreparedCrashDoesNotInventRetirement(t *testing.T) {
 	if err = x.A.resolveRetentionPending(t.Context()); err == nil || !strings.Contains(err.Error(), "unresolved retention commit") {
 		t.Fatalf("ambiguous prepared retirement guessed committed: %v", err)
 	}
-	if agInt(x.testEnv, `SELECT count(*) FROM orders WHERE id=$1`, order) != 1 || agInt(x.testEnv, `SELECT count(*) FROM retention_wallet_cleanup`) != 0 || x.core.count("setlabel") != 0 {
+	if agInt(x.testEnv, `SELECT count(*) FROM orders WHERE id=$1`, order) != 1 || agInt(x.testEnv, `SELECT count(*) FROM retention_wallet_cleanup`) != beforeCleanup || x.opens(r.WalletName) != opens {
 		t.Fatal("ambiguous pending journal erased rows or asserted wallet cleanup")
 	}
 }
 
 func TestRetentionEscrowEmptyRecoveryDoesNotRestartClosure(t *testing.T) {
-	x, order, r, tx := certifiedBTCRetirement(t)
+	x, order, r, tx := certifiedXMRRetirement(t)
 	tx.Rollback()
 	agExec(x.testEnv, `UPDATE escrows SET recover_requested=$2 WHERE order_id=$1`, order, r.ClosedAt.Add(time.Minute))
 	if got := retentionClosureAt(t, x.testEnv, order); !got.Valid || !got.Time.Equal(r.ClosedAt) {
@@ -175,69 +183,6 @@ func TestRetentionEscrowEmptyRecoveryDoesNotRestartClosure(t *testing.T) {
 	}
 	if agInt(x.testEnv, `SELECT count(*) FROM retention_escrow_exceptions WHERE order_id=$1 AND reason='pending_recovery' AND resolved_at IS NULL`, order) != 1 {
 		t.Fatal("pending recovery did not pause due retirement for review")
-	}
-}
-
-func TestRetentionWalletCleanupAttestationAllowsDestroyedOriginalWalletOff(t *testing.T) {
-	x, _, r, tx := certifiedBTCRetirement(t)
-	if err := x.A.applyRetentionEscrowRetirement(t.Context(), tx, r); err != nil {
-		t.Fatal(err)
-	}
-	if err := tx.Commit(); err != nil {
-		t.Fatal(err)
-	}
-	x.A.escrow.Store(nil)
-	agExec(x.testEnv, `UPDATE retention_escrow_retired_addresses SET label_checked=false WHERE coin='BTC'`)
-	x.core.mu.Lock()
-	x.core.watchInfo = nil
-	x.core.mu.Unlock() // original wallet physically gone
-	t.Setenv("ESCROW_BTC", "off")
-	agExec(x.testEnv, `SELECT retention_wallet_cleanup_register('BTC','another-wallet',$1,$2)`, r.CleanupDue, r.CertifiedAt)
-	agExec(x.testEnv, `UPDATE retention_wallet_cleanup SET confirmed_at=$1,confirmed_by='verified host operator' WHERE wallet_name='another-wallet'`, r.CertifiedAt.Add(time.Hour))
-	if err := x.A.initEscrow(t.Context()); err == nil {
-		t.Fatal("unrelated wallet destruction bypassed exact-wallet pending guard")
-	}
-	agExec(x.testEnv, `UPDATE retention_wallet_cleanup SET confirmed_at=$1,confirmed_by='verified host operator' WHERE coin='BTC' AND wallet_name=$2`, r.CertifiedAt.Add(time.Hour), r.WatchWalletName)
-	before := x.core.count("getwalletinfo")
-	if err := x.A.initEscrow(t.Context()); err != nil {
-		t.Fatalf("exact verified physical destruction required resurrecting original wallet: %v", err)
-	}
-	if x.core.count("getwalletinfo") != before || agInt(x.testEnv, `SELECT count(*) FROM retention_escrow_retired_addresses WHERE coin='BTC' AND NOT label_checked`) != 0 {
-		t.Fatal("BTC-off proof accessed destroyed original or left startup pending")
-	}
-}
-
-func TestRetentionWalletCleanupReplacementDoesNotAccessDestroyedOriginal(t *testing.T) {
-	x, _, r, tx := certifiedBTCRetirement(t)
-	if err := x.A.applyRetentionEscrowRetirement(t.Context(), tx, r); err != nil {
-		t.Fatal(err)
-	}
-	if err := tx.Commit(); err != nil {
-		t.Fatal(err)
-	}
-	x.A.escrow.Store(nil)
-	agExec(x.testEnv, `UPDATE retention_escrow_retired_addresses SET label_checked=false WHERE coin='BTC'`)
-	core, _ := newFakeEscrowCore(t)
-	const replacement = "/wallet/replacement-watch"
-	var oldAccess atomic.Bool
-	srv := newPayRPCServer(t, "escrowapp", "escrow-rpc-pass", false, func(path, method string, p json.RawMessage) (any, int, string) {
-		if path == fakeWatchWallet {
-			oldAccess.Store(true)
-			return nil, -18, "original wallet destroyed"
-		}
-		if path == replacement {
-			path = fakeWatchWallet
-		}
-		return core.handle(path, method, p)
-	})
-	x.A.escrowCfg.rpcURL = srv.url("")
-	x.A.escrowCfg.watchWallet = "replacement-watch"
-	state, _, err := x.A.startEscrow(t.Context())
-	if err != nil || state != escrowLogOn || oldAccess.Load() || core.count("setlabel") != 0 {
-		t.Fatalf("replacement startup reopened original wallet: %q %v old=%v", state, err, oldAccess.Load())
-	}
-	if agInt(x.testEnv, `SELECT count(*) FROM retention_escrow_retired_addresses WHERE coin='BTC' AND NOT label_checked`) != 0 {
-		t.Fatal("checked replacement failed to resolve replay label-pending")
 	}
 }
 
@@ -392,33 +337,43 @@ func TestRetentionMoneroHoldRegistrationSerializesWithPasswordDestruction(t *tes
 }
 
 func TestRetentionFinancialProofOutagePreservesPartyAccess(t *testing.T) {
-	x, _, r, tx := certifiedBTCRetirement(t)
-	needed, err := retentionAccountObligations(t.Context(), tx, x.buyer, r.CertifiedAt)
-	if err != nil || needed {
-		t.Fatalf("verified closed historical record required live account: %v %v", needed, err)
-	}
-	tx.Rollback()
-	e := x.A.escrow.Load()
-	x.A.escrow.Store(nil)
-	runRetentionClosure(t, x.testEnv, r.CertifiedAt)
-	tx, err = x.DB.BeginTx(t.Context(), nil)
-	if err != nil {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	order, _ := x.settled()
+	name := x.walletOf(order)
+	party := agStr(x.testEnv, `SELECT buyer_id FROM orders WHERE id=$1`, order)
+	var terminal time.Time
+	if err := x.DB.QueryRow(`SELECT updated FROM orders WHERE id=$1`, order).Scan(&terminal); err != nil {
 		t.Fatal(err)
 	}
-	needed, err = retentionAccountObligations(t.Context(), tx, x.buyer, r.CertifiedAt)
-	tx.Rollback()
-	if err != nil || !needed {
-		t.Fatalf("proof outage erased access needed for unseen late funds: %v %v", needed, err)
+	at := terminal.Add(90 * 24 * time.Hour)
+	obligations := func(want bool, at time.Time) {
+		t.Helper()
+		runRetentionClosure(t, x.testEnv, at)
+		tx, err := x.DB.BeginTx(t.Context(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback()
+		needed, err := retentionAccountObligations(t.Context(), tx, party, at)
+		if err != nil || needed != want {
+			t.Fatalf("party access obligation = %v, want %v: %v", needed, want, err)
+		}
 	}
-	x.A.escrow.Store(e)
-	runRetentionClosure(t, x.testEnv, r.CertifiedAt.Add(31*time.Minute))
-	tx, err = x.DB.BeginTx(t.Context(), nil)
-	if err != nil {
-		t.Fatal(err)
+	// Confirmed settlement alone cannot retire an account while its wallet still
+	// holds recoverable keys. Losing the RPC adapter must preserve that access.
+	obligations(true, at)
+	rpc := x.A.escrowXMR
+	x.A.escrowXMR = nil
+	obligations(true, at.Add(31*time.Minute))
+	x.A.escrowXMR = rpc
+	// Guarded password destruction supplies the Monero closure proof. Once it is
+	// recorded, a historical account no longer depends on the unavailable wallet.
+	x.rotate()
+	x.days(name, 91)
+	x.mustPoll()
+	if x.walletState(name) != "destroyed" {
+		t.Fatal("restored RPC did not complete guarded wallet destruction")
 	}
-	defer tx.Rollback()
-	needed, err = retentionAccountObligations(t.Context(), tx, x.buyer, r.CertifiedAt.Add(31*time.Minute))
-	if err != nil || needed {
-		t.Fatalf("restored proof turned temporary outage into indefinite credential retention: %v %v", needed, err)
-	}
+	obligations(false, x.now)
 }

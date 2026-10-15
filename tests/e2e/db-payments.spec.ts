@@ -30,7 +30,7 @@ test('fresh payment surfaces offer escrow only and removed pooled routes cannot 
     await admin.getByRole('button', { name: 'Sign in' }).click();
     await admin.goto('/admin');
     await expect(admin.getByRole('heading', { name: 'Escrow status and payment intake' })).toBeVisible();
-    for (const currency of ['BTC', 'XMR']) {
+    for (const currency of ['XMR']) {
       const form = admin.locator('form', { has: admin.getByRole('button', { name: `Save ${currency} intake` }) });
       await expect(form.getByRole('radio')).toHaveCount(2);
       await expect(form.getByRole('radio', { name: /^Escrow$/ })).toHaveAttribute('value', 'escrow');

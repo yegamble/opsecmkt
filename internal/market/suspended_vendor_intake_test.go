@@ -8,25 +8,7 @@ import (
 	"time"
 )
 
-func TestSuspendedVendorRefusesBothEscrowCheckouts(t *testing.T) {
-	t.Run("BTC", func(t *testing.T) {
-		x := newEscrowEnv(t)
-		order := x.draft()
-		agExec(x.testEnv, "UPDATE users SET suspended_at=now() WHERE id=$1", x.vendor)
-		page := x.page("/order?id="+order, x.buyerSess)
-		if !strings.Contains(page, "<strong>Unavailable.</strong> "+sellerSuspended) || strings.Contains(page, `action="/orders/escrow"`) {
-			t.Fatal("BTC draft page offered escrow after suspension")
-		}
-		before := len(x.core.calls)
-		w := x.checkout(order, regtestAddr("suspended refund"))
-		if w.Code != 409 || !strings.Contains(w.Body.String(), "Unavailable. "+sellerSuspended) {
-			t.Fatalf("BTC checkout: %d %s", w.Code, w.Body.String())
-		}
-		x.nothingWritten(order)
-		if len(x.core.calls) != before {
-			t.Fatal("BTC escrow called Core after suspension")
-		}
-	})
+func TestSuspendedVendorRefusesMoneroEscrowCheckout(t *testing.T) {
 	t.Run("XMR", func(t *testing.T) {
 		x := newXMREscrowEnv(t)
 		x.mustPoll()
@@ -61,10 +43,12 @@ type intakeResponse struct {
 // checkout's first row, as the old pooled test (TestAdminSuspensionDoesNotDeadlockWithNewIntake) did, so the checkout
 // meets it before the administrator's. Leg "seller": the administrator sells and suspends the buyer (buyer row first);
 // leg "buyer": the administrator buys and suspends the vendor (vendor row first). Fake escrow Core: simulated RPC.
+
 func TestAdminSuspensionDoesNotDeadlockWithEscrowCheckout(t *testing.T) {
 	for _, leg := range []string{"seller", "buyer"} {
 		t.Run(leg, func(t *testing.T) {
-			x := newEscrowEnv(t)
+			x := newXMREscrowEnv(t)
+			x.mustPoll()
 			// The checkout's first row is the administrator's counterparty (the buyer the administrator sells to, or the
 			// vendor the administrator buys from): accounts are made in pairs until its id sorts before the administrator's.
 			role := map[string]string{"seller": "buyer", "buyer": "vendor"}[leg]
@@ -78,14 +62,13 @@ func TestAdminSuspensionDoesNotDeadlockWithEscrowCheckout(t *testing.T) {
 			if first >= adminID {
 				t.Fatal("could not arrange the counterparty's account before the administrator's")
 			}
-			x.activeKey(first, altEscrowKey(t, testBIP48Key, "c0ffee01", 4))
-			x.activeKey(adminID, altEscrowKey(t, testBIP48Key, "ad31ad31", 3))
-			order, checkoutSess := x.testEnv.order(first, x.autoListing(adminID), "BTC", stateDraft), firstSess
+
+			order, checkoutSess := x.testEnv.order(first, x.digital(adminID), "XMR", stateDraft), firstSess
 			if leg == "buyer" {
-				order, checkoutSess = x.testEnv.order(adminID, x.autoListing(first), "BTC", stateDraft), admin
+				order, checkoutSess = x.testEnv.order(adminID, x.digital(first), "XMR", stateDraft), admin
 			}
 			target := agStr(x.testEnv, "SELECT handle FROM users WHERE id=$1", first)
-			calls := len(x.core.methods())
+			calls := x.fake.count()
 			tx, err := x.DB.BeginTx(context.Background(), nil)
 			if err != nil {
 				t.Fatal(err)
@@ -96,7 +79,7 @@ func TestAdminSuspensionDoesNotDeadlockWithEscrowCheckout(t *testing.T) {
 			}
 			intake := make(chan intakeResponse, 1)
 			go func() {
-				w := x.do("POST", "/orders/escrow", checkoutSess, url.Values{"order_id": {order}, "refund_address": {regtestAddr("erace-refund-" + leg)}})
+				w := x.do("POST", "/orders/escrow-xmr", checkoutSess, url.Values{"order_id": {order}, "refund_address": {testXMRAddr("erace-refund-"+leg, true)}})
 				intake <- intakeResponse{w.Code, w.Body.String()}
 			}()
 			// Give the checkout the first attempt at the held row; a waiting lock would queue it there.
@@ -149,12 +132,14 @@ func TestAdminSuspensionDoesNotDeadlockWithEscrowCheckout(t *testing.T) {
 			case <-time.After(15 * time.Second):
 				t.Fatal("the checkout blocked the administrator's suspension")
 			}
-			x.nothingWritten(order)
+			if x.state(order) != stateDraft || agInt(x.testEnv, "SELECT count(*) FROM escrows WHERE order_id=$1", order) != 0 {
+				t.Fatal("refused Monero checkout wrote an escrow")
+			}
 			if agInt(x.testEnv, "SELECT count(*) FROM users WHERE id=$1 AND suspended_at IS NOT NULL", first) != 1 {
 				t.Fatal("the suspension did not take effect")
 			}
-			if got := x.core.methods()[calls:]; len(got) != 0 {
-				t.Fatalf("the refused checkout asked the escrow node %v", got)
+			if got := x.fake.count(); got != calls {
+				t.Fatalf("refused Monero checkout made %d wallet calls", got-calls)
 			}
 		})
 	}

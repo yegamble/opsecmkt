@@ -154,7 +154,6 @@ func changedListingFields(was, now listingInput) []string {
 		{"category", was.Category != now.Category},
 		{"region", was.Region != now.Region},
 		{"fulfillment type", was.Kind != now.Kind},
-		{"Bitcoin price", was.BTC != now.BTC},
 		{"Monero price", was.XMR != now.XMR},
 		{"stock", was.Stock != now.Stock},
 		{"dispatch window", was.DispatchDays != now.DispatchDays},

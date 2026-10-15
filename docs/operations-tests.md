@@ -38,7 +38,7 @@ The installer tests cover the noninteractive `--local` shortcut, inherited-walle
 
 The connection tests mock process execution and check decoded credentials, IPv6 hosts, ports, supported TLS/query settings, rejected target overrides and null bytes, removal of inherited libpq settings, and errors that do not expose connection secrets. They also verify that PostgreSQL client arguments contain no URL or password.
 
-`tests/test_compose_wallet_passwords.py` (A-466) checks, with Docker Compose installed, that Compose refuses the `monero-wallet` and `monero-escrow-wallet` profiles while `MONERO_WALLET_RPC_PASSWORD` or `ESCROW_XMR_WALLET_RPC_PASSWORD` is blank or missing, renders each wallet's `--rpc-login` with its user and password once set, and needs neither password for installs whose profiles leave the wallets out; without Docker only its text checks run.
+`tests/test_compose_wallet_passwords.py` (A-466) checks the Compose source without Docker. It verifies that `monero-escrow-wallet` is the only wallet-RPC service, its startup requires `ESCROW_XMR_WALLET_RPC_PASSWORD`, and its `--rpc-login` uses that password. It also checks that the historical pooled-wallet volume is unmounted, the obsolete connection mappings default to blank for startup refusal, and no Bitcoin service or signer binary is shipped.
 
 Run the encrypted round-trip integration test against a **disposable PostgreSQL server**, using a role with `CREATEDB` permission:
 
@@ -52,7 +52,7 @@ Required executables are Bash, Python 3, Go (to build the server from this check
 The script creates five uniquely named `opsecmkt_ops_*` databases, generates temporary encryption identities, and verifies:
 
 - Actual encrypted dump and restore with Unicode text and primary keys preserved; the backup's success line names the `BACKUP_DATABASE_URL` database without printing the URL, and the restore says to point `BACKUP_DATABASE_URL` at the restored database.
-- The restore's wallet reminder names the runbook section [Back up and restore the escrow arbiter and watch-only wallets](testnet-runbook.md#back-up-and-restore-the-escrow-arbiter-and-watch-only-wallets) (A-142, A-497), and that heading exists.
+- The restore's wallet reminder names the runbook section [Back up and restore Monero escrow wallets](testnet-runbook.md#back-up-and-restore-monero-escrow-wallets) (A-142, A-497), and that heading exists.
 - An age-encrypted output file with mode `0600`.
 - Refusal to overwrite an existing backup, with its contents unchanged.
 - A wrong decryption identity fails without creating tables.
@@ -60,8 +60,9 @@ The script creates five uniquely named `opsecmkt_ops_*` databases, generates tem
 - The restore reports no restored payouts: this build has none, and migration 108 refuses a database that holds any.
 - A legacy settings-only dump receives the recovery gate even when its saved value was false.
 - The restored-images line (A-190, ruling D4): "0 images restored from a backup taken <time>; …" for a dump without an images table, and for the application schema the stored count with the time the backup was taken, in UTC, although the backup runs under `TZ=Asia/Tokyo` and the restore under `TZ=America/New_York`.
-- The real application schema: the server built from this checkout migrates an empty database, which then refuses a `payouts` and a `payment_addresses` row (migration 108); two Bitcoin escrow settlements that have a stored transaction (one `broadcast`, one `confirmed`) and a fee bump are added, and the encrypted dump is restored into another empty database. `payments_recovery_required=true` pauses all outbound sends (the source database is unchanged), and `escrow_release_recheck=true` and `escrow_xmr_release_recheck=true` ask for the Bitcoin and Monero escrow release deadline rechecks (as does the manual protection); the broadcast escrow settlement and its broadcast fee bump are held with the restore marker (the confirmed one is not), and the manual UPGRADING.md protection holds them the same way; a Monero escrow (an active monthly escrow wallet with a free account and an account whose completed order has a built release) comes back with the release held by the same marker, the free account retired, the wallet closing and `xmr_escrow_sweep_required=true`, the same after the manual protection, and a dump without the Monero escrow tables restores with no Monero line; the script reports 1 held escrow settlement, 1 held fee bump and 1 held Monero escrow settlement, and adds exactly one audit row with no user naming those counts, leaving the audit row from before the backup unchanged; `schema_migrations` is identical, and the server then starts on the restored database, answers `/healthz`, applies no migration again and leaves the held settlements alone.
-- A restore not done by `scripts/restore.sh`: the same application database is copied with plain `pg_dump`/`pg_restore` (standing in for a volume snapshot or point-in-time recovery). The copy has no recovery gate and its broadcast escrow settlement is not held, so the escrow watcher would send it again; the UPGRADING.md section 6 SQL, run verbatim, prints `INSERT 0 1` five times, `UPDATE 1` five times, `INSERT 0 2`, `DO`, `INSERT 0 1` and `COMMIT` and leaves the gate, the escrow holds, the Monero escrow state and the escrow key margins exactly as `scripts/restore.sh` does, plus one audit row with no user ("Payout recovery gate set manually ...").
+- The real application schema: the server built from this checkout migrates an empty database, which then refuses a `payouts` and a `payment_addresses` row (migration 108). The fixture has an active monthly Monero escrow wallet, a free account, and a claimed account whose completed order has a built release. After encrypted restore, `payments_recovery_required=true` pauses outbound sends, `escrow_xmr_release_recheck=true` requests deadline rechecks, and `xmr_escrow_sweep_required=true` requests a sweep. The built release is held, the free account is retired, and the wallet moves to closing; the source database is unchanged. The script reports one held Monero escrow settlement and adds one audit row with no user, preserving earlier audit rows. A dump without the Monero escrow tables restores without a Monero line.
+- Retention recovery: startup refuses a restored application database when its current external deletion ledger is missing or retention is disabled. With the current ledger copied separately, startup replays it and clears `retention_restore_required`, while leaving the payment recovery gate and settlement hold intact. The server answers `/healthz`, applies no migration again, and can make a fresh backup after replay.
+- A restore not done by `scripts/restore.sh`: the same application database is copied with plain `pg_dump`/`pg_restore` (standing in for a volume snapshot or point-in-time recovery). The copy has no recovery gate and its built Monero settlement is unheld. The UPGRADING.md section 6 SQL runs verbatim and sets the payment and retention recovery gates, the Monero deadline and sweep flags, and the same settlement hold, account retirement and wallet closing state as `scripts/restore.sh`. It adds one audit row with no user ("Payout recovery gate set manually ..."). The test checks these stored results rather than PostgreSQL command-tag counts.
 - The gate ([runbook](testnet-runbook.md#reconcile-a-restored-database-before-enabling-payouts)): the test extracts the runbook's `clear-gate` SQL and the `restore-protection` SQL of [UPGRADING.md section 6](../UPGRADING.md#6-backups-now-need-the-wallets-too) (the blocks after `<!-- runbook-sql: NAME -->`) and runs them verbatim with `psql`. The gate SQL refuses an unknown and a non-administrator handle ("Refused; nothing was changed: no administrator with that handle", rolled back: the gate stays set, no audit row); with the administrator's handle it clears the gate and adds one audit row by that administrator ("Payout recovery gate cleared by ops_admin ..."), and run again it is refused because the gate is not set; earlier audit rows are unchanged. After the server restarts the gate stays cleared and the escrow holds remain. This is database-level evidence: no wallet is involved.
 
 Only the newly generated database names are used as backup/restore targets. The server runs on a free loopback port with an empty environment apart from the scratch database URL. An exit trap stops it, drops every scratch database and removes temporary keys, dumps, and logs. Use a dedicated local/CI server: the test role necessarily has database-creation permissions, and terminating the script with `SIGKILL` can prevent cleanup. The original database named in `TEST_DATABASE_URL` is used only as a connection for creating and dropping the scratch databases.
@@ -326,53 +327,36 @@ image job runs it.
 ./scripts/test-service-hardening.sh
 ```
 
-Requires Bash 5, Docker with Compose v2 and Python 3; pulls the pinned images if they are absent. `db`, `bitcoin`,
-`monero` and `monero-escrow-wallet` run with every capability dropped, `no-new-privileges` and a read-only root (A-536):
-`db` as `70:70` with `/var/run/postgresql` and `/tmp` in memory, both Monero services as `1000:1000`, and `bitcoin`
-from its image's root entrypoint (which gives `/data` and `/home/bitcoin`, in memory, to `bitcoin` on every start and
-then drops to it) keeping only `CHOWN`, `DAC_OVERRIDE`, `FOWNER`, `SETUID` and `SETGID`, with `/tmp` in memory for the
-[runbook's wallet backups](testnet-runbook.md#back-up-and-restore-the-escrow-arbiter-and-watch-only-wallets). The script renders the four
-services with `docker compose config --format json` (no `.env`; Bitcoin regtest, Monero stagenet), runs each with its
+Requires Bash 5, Docker with Compose v2 and Python 3; pulls the pinned images if they are absent. `db`, `monero`
+and `monero-escrow-wallet` run with every capability dropped, no added capabilities, `no-new-privileges` and a
+read-only root (A-536): `db` as `70:70` with `/var/run/postgresql` and `/tmp` in memory, and both Monero services
+as `1000:1000`. The script renders these three
+services with `docker compose config --format json` (no `.env`; Monero stagenet), runs each with its
 rendered user, capabilities, security options, read-only root, tmpfs, environment, image and command, `--network none`
 and a test volume, then stops it and starts it again on the same volume. It requires: `db` to answer `pg_isready -h
-127.0.0.1` and a query, having initialised the new volume and found the existing database the second time; `bitcoind`
-to answer `bitcoin-cli getblockcount` as `bitcoin`, and `/data/bitcoin.conf` to take the installer's append as `bitcoin`,
-the operator guide's root `sh` append and its root `sed -i`, and the runbook's `backupwallet` to `/tmp`, read out as
-`bitcoin`, and `restorewallet` from a copy written there; monerod (`--offline`) to log both `RPC server initialized
-OK` lines and still run five seconds later with no bind or permission error; `monero-wallet-rpc` to log `Starting
+127.0.0.1` and a query, having initialised the new volume and found the existing database the second time; monerod
+(`--offline`) to log both `RPC server initialized OK` lines and still run five seconds later with no bind or permission
+error; `monero-wallet-rpc` to log `Starting
 wallet RPC server`, still run five seconds later and be able to write its wallet directory. Each run prints the
-`uid:gid` the main process runs as. The exit trap removes every container and volume. Negative controls run by hand on
-this script: without the `db` tmpfs, with `db` as root, without `DAC_OVERRIDE`, `SETUID`/`SETGID`, the
-`/home/bitcoin` tmpfs or the `/tmp` tmpfs on `bitcoin`, or with either Monero service as another user, it fails. It proves startup on test
+`uid:gid` the main process runs as. The exit trap removes every container and volume. It proves startup on test
 networks only, on Docker's default seccomp and AppArmor profiles of the host it runs on; a node's sync, mainnet and an
 escrow payment are not exercised. CI's Tor image job runs it.
 
 `tests/test_compose_hardening.py` (no Docker daemon; the CI operations job) checks the configuration side for every
 service in every mode and profile combination of the Compose job: every capability dropped, `no-new-privileges`, a
-read-only root except `tor` and `tor-mirror` (left as they were, each with its reason in the test), `cap_add` only on
-`bitcoin` and only the five above, and a `user` for every service but `bitcoin` (or a `USER` in the image's
+read-only root except `tor` and `tor-mirror` (left as they were, each with its reason in the test), no added
+capabilities, and a `user` for every service (or a `USER` in the image's
 Dockerfile for `app` and the Tor services). A service missing from its tables fails.
 
-## Bundled-node escrow set-up from the installer's printed commands
+## Monero installer boundary
+
+The installer provisions Monero only and rejects retired Bitcoin options. Its static regressions are in `tests/test_installer.py`; Compose exposure and Tor tests verify the dedicated wallet-rpc and node networks. Run:
 
 ```sh
-python3 scripts/test-escrow-node-rehearsal.py
+python3 -m unittest discover -s tests -p 'test_installer.py' -v
 ```
 
-Requires Docker Engine with Compose v2, Python 3, Bash and OpenSSL (CI job `escrow-node-rehearsal`, A-513). The script
-runs `install.sh init` with a local **regtest** Bitcoin node and no Monero node in a uniquely named Compose project, takes
-the escrow commands the installer prints at its end and runs them verbatim in order: `escrow-node-setup.sh --signer` with
-the printed `--cli` (`-rpcport=8332` included), the `bitcoin.conf` append through the printed quoted heredoc, the `.env`
-append, `docker compose restart bitcoin`, `escrow-node-setup.sh --verify --via-compose app --wait 120` (it must print
-`PASS`), `docker compose run --rm --no-deps escrow-signer init` and `docker compose up -d`. Only the lines the printed text
-asks you to paste (taken from the set-up script's output) and the URL it printed are filled in. It then requires `bitcoin.conf`
-in the node to hold the printed `rpcauth` lines unchanged (the `$` survives), the app's log to say `escrow: Bitcoin
-escrow on` and the signer ready, no generated RPC password in the app or signer logs, and
-`install.sh check` to accept `.env`. The evidence log under `artifacts/escrow-node-rehearsal/` holds commands and exit
-codes, never the set-up output. This proves the command path on a private regtest chain; it says nothing about a synced
-signet or testnet4 node, a payment, a published port or Tor. The Docker bridge subnet must fall in the node's
-`-rpcallowip` ranges (172.16.0.0/12, 192.168.0.0/16), as Docker's default does; a daemon with another address pool gets
-HTTP 403 from the node.
+This checks configuration behavior. The real-wallet fakechain suite separately verifies Monero payment behavior; a local daemon being configured or started is not a successful escrow journey.
 
 ## Upgrade from v0.1.0-alpha.1
 
@@ -383,7 +367,7 @@ HTTP 403 from the node.
 Requires Docker, Go, Git with the `v0.1.0-alpha.1` tag present (`git fetch origin tag v0.1.0-alpha.1` in a shallow clone), and Python 3. `UPGRADE_FROM_REF` selects another starting tag. The script:
 
 1. Starts a disposable `postgres:17-alpine` container on a random loopback port.
-2. Builds the alpha.1 server from `git archive` of the tag, runs it once and populates it through alpha.1's own forms: first-admin setup, a vendor (role assigned by the admin) and two buyers, a listing, BTC and XMR order drafts carrying the old status text `Draft — payment unavailable`, and an armored message.
+2. Builds the alpha.1 server from `git archive` of the tag, runs it once and populates it through alpha.1's own forms: first-admin setup, a vendor (role assigned by the admin) and two buyers, a listing, two XMR order drafts (one per buyer) carrying the old status text `Draft — payment unavailable`, and an armored message. Repeating the first buyer's order reuses that buyer's draft.
 3. Stops it and starts the server built from this checkout against the same database, then checks: `/healthz` answers `ok`; `schema_migrations` lists exactly the files in `internal/market/migrations` by version and name; every order keeps its id, buyer, currency and amount, is in state `draft`, and the `status` column and old unique constraint are gone; the partial unique index `orders_one_draft` refuses a second draft for the same buyer, product and currency but allows one once the first leaves `draft`; messages, users and settings are unchanged. With the CAPTCHA switched off in settings (migration 010 turns it on), the alpha.1 buyer signs in with the alpha.1 password, sees the migrated order as `Draft — unfunded`, and ordering the same product and currency again returns that draft rather than creating another.
 4. Starts the current server a second time and checks that no migration is applied again.
 5. Rollback rehearsal: records a migration `999_from_a_newer_release` that this checkout does not include, as a newer release would, and checks that the current server exits non-zero within 30 seconds (it stops before listening), that its error names `999_from_a_newer_release` and points to `UPGRADING.md` "Rolling back", and that `schema_migrations` is unchanged. With that row removed again the server starts and answers `/healthz`.
@@ -434,12 +418,8 @@ wrappers put first on `PATH`). `UTF8_MIGRATION_CONTAINER` names the container. I
 The container and temporary directory are always removed; on failure the logs are printed. CI runs it in the
 operations job.
 
-## Real Bitcoin and Monero local chains
+## Real Monero local chains
 
-Current Bitcoin escrow uses `scripts/test-escrow-regtest.sh` against a real
-isolated regtest node; Monero uses `scripts/test-escrow-xmr-regtest.sh` on a
-local fakechain. Neither uses real funds or establishes public-network proof.
-[Real-chain escrow tests](local-chain-testing.md) lists every real-chain script
-and which of them CI runs (`escrow-regtest`, `escrow-xmr-regtest`).
-`scripts/setup-local-chains.py` only stops processes an older harness
-registered, without deleting their data, and sets nothing up.
+Current escrow uses `scripts/test-escrow-xmr-regtest.sh` with a real Monero daemon and wallet-rpc on a local fakechain. It uses test coins and establishes no public-network or mainnet result. [Real-chain tests](local-chain-testing.md) lists the current scripts and CI scope.
+
+`scripts/setup-local-chains.py` only stops processes an older harness registered, without deleting their data; it sets nothing up.

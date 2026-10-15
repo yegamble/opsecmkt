@@ -30,7 +30,7 @@ func TestModeratorViewsDisputedOrderReadOnly(t *testing.T) {
 	w := newOrderWorld(t)
 	_, admin := w.e.user("admin_"+randomToken()[:6], "admin")
 	digital := w.e.product(w.vendorID, "digital")
-	order := w.e.order(w.buyerID, digital, "BTC", stateDisputed)
+	order := w.e.order(w.buyerID, digital, "XMR", stateDisputed)
 	if _, err := w.e.DB.Exec("INSERT INTO deliveries(order_id,content) VALUES($1,$2)", order, "licence-key-ABC-123"); err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +40,7 @@ func TestModeratorViewsDisputedOrderReadOnly(t *testing.T) {
 	if _, err := w.e.DB.Exec("INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,'draft','disputed',$2,'Buyer opened a dispute')", order, w.buyerID); err != nil {
 		t.Fatal(err)
 	}
-	notDisputed := w.e.order(w.buyerID, w.e.product(w.vendorID, "physical"), "BTC", statePaid)
+	notDisputed := w.e.order(w.buyerID, w.e.product(w.vendorID, "physical"), "XMR", statePaid)
 
 	// A moderator who is not party to this historical order can read its dispute, but neither staff role can write to it.
 	w.page("/order?id="+order, w.mod, 200)
@@ -124,7 +124,7 @@ func TestCounterpartyKeysAndMessagePrefill(t *testing.T) {
 	mustContain(t, w.page("/product?id="+physical, w.buyer, 200), `href="/messages?to=`+vendorHandle+`"`)
 
 	// Order page: each party sees the other's key status; the buyer of a draft gets no shipping prompt.
-	draft := w.e.order(w.buyerID, physical, "BTC", stateDraft)
+	draft := w.e.order(w.buyerID, physical, "XMR", stateDraft)
 	body = w.page("/order?id="+draft, w.buyer, 200)
 	mustContain(t, body, formatFingerprint(fp), "Ownership verified", `href="/messages?to=`+vendorHandle+`"`)
 	mustNotContain(t, body, "shipping address")
@@ -132,7 +132,7 @@ func TestCounterpartyKeysAndMessagePrefill(t *testing.T) {
 	mustContain(t, body, buyerHandle+" has not added a PGP public key", `href="/messages?to=`+buyerHandle+`"`)
 
 	// Paid physical order: the buyer is told to send shipping details encrypted to the vendor's key.
-	paid := w.e.order(w.buyerID, w.e.product(w.vendorID, "physical"), "BTC", statePaid)
+	paid := w.e.order(w.buyerID, w.e.product(w.vendorID, "physical"), "XMR", statePaid)
 	body = w.page("/order?id="+paid, w.buyer, 200)
 	// A-81: the market has no address field but keeps the encrypted message and who sent it to whom and when.
 	mustContain(t, body, "Send your shipping address", "encrypted to "+vendorHandle, "no address field", "keeps the encrypted message and who sent it to whom and when", `href="/messages?to=`+vendorHandle+`"`)
@@ -141,7 +141,7 @@ func TestCounterpartyKeysAndMessagePrefill(t *testing.T) {
 	mustContain(t, body, "shipping address", "encrypted message", "keeps the encrypted message and who sent it to whom and when")
 	mustNotContain(t, body, "never stores")
 	// Paid digital orders need no address.
-	paidDigital := w.e.order(w.buyerID, w.e.product(w.vendorID, "digital"), "BTC", statePaid)
+	paidDigital := w.e.order(w.buyerID, w.e.product(w.vendorID, "digital"), "XMR", statePaid)
 	mustNotContain(t, w.page("/order?id="+paidDigital, w.buyer, 200), "Send your shipping address")
 
 	// Messages: ?to prefills a valid handle and shows that recipient's key; invalid values are ignored.
@@ -199,8 +199,8 @@ func TestVendorDemotionArchivesListingsAndRefusesNewOrders(t *testing.T) {
 	b := w.e.product(w.vendorID, "physical")
 	old := w.e.product(w.vendorID, "digital")
 	w.e.DB.Exec("UPDATE products SET archived=true,archived_at=now() WHERE id=$1", old)
-	paid := w.e.order(w.buyerID, a, "BTC", statePaid)
-	draft := w.e.order(w.buyerID, b, "BTC", stateDraft)
+	paid := w.e.order(w.buyerID, a, "XMR", statePaid)
+	draft := w.e.order(w.buyerID, b, "XMR", stateDraft)
 
 	// Promoting or keeping a vendor archives nothing.
 	w.expect("/admin", admin, form("action", "role", "password", testPassword, "role", "vendor", "handle", w.e.loadUser(w.vendorID).Handle), 303, "")
@@ -223,11 +223,11 @@ func TestVendorDemotionArchivesListingsAndRefusesNewOrders(t *testing.T) {
 	}
 
 	// Archived: new drafts and payment requests are refused; the product page is gone from the catalog.
-	w.expect("/orders", w.other, form("product_id", a, "currency", "BTC"), 400, "archived")
+	w.expect("/orders", w.other, form("product_id", a, "currency", "XMR"), 400, "archived")
 	w.expect("/orders/pay", w.buyer, form("order_id", draft), 404, "Unknown action")
 	// Even if a listing is active again (restored directly in the database), the non-vendor owner blocks orders.
 	w.e.DB.Exec("UPDATE products SET archived=false WHERE id=$1", a)
-	w.expect("/orders", w.other, form("product_id", a, "currency", "BTC"), 400, "no longer a vendor")
+	w.expect("/orders", w.other, form("product_id", a, "currency", "XMR"), 400, "no longer a vendor")
 	// An administrator cannot restore a listing whose owner is not a vendor.
 	w.expect("/listings/restore", admin, form("id", old), 409, "no longer a vendor")
 	if w.state(draft) != stateDraft {

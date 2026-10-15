@@ -191,12 +191,6 @@ func New(ctx context.Context, preview bool) (*App, error) {
 		a.closeDB()
 		return nil, err
 	}
-	escrowCtx, cancelEscrow := context.WithTimeout(ctx, paymentStartupTimeout)
-	defer cancelEscrow()
-	if err = a.initEscrow(escrowCtx); err != nil {
-		a.closeDB()
-		return nil, err
-	}
 	xmrCtx, cancelXMR := context.WithTimeout(ctx, paymentStartupTimeout)
 	defer cancelXMR()
 	if err = a.initEscrowXMR(xmrCtx); err != nil {
@@ -877,10 +871,7 @@ func objectTitle(d *PageData) {
 
 // pageData is the state a page render starts from, before a.load fills it.
 func (a *App) pageData(r *http.Request, page, token string, user *User) PageData {
-	d := PageData{Page: page, Title: pageTitle(page), CSRF: a.csrf(token), User: user, Mode: a.mode, Query: r.URL.Query().Get("q"), Category: r.URL.Query().Get("category"), Region: r.URL.Query().Get("region"), Currency: r.URL.Query().Get("currency"), BitcoinPriceLabel: "Price (BTC, network not configured)", Settings: map[string]string{}}
-	if d.Currency != "XMR" {
-		d.Currency = "BTC"
-	}
+	d := PageData{Page: page, Title: pageTitle(page), CSRF: a.csrf(token), User: user, Mode: a.mode, Query: r.URL.Query().Get("q"), Category: r.URL.Query().Get("category"), Region: r.URL.Query().Get("region"), Currency: "XMR", Settings: map[string]string{}}
 	return d
 }
 

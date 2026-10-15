@@ -41,7 +41,7 @@ func TestViewerTransitionsFollowTheStateTable(t *testing.T) {
 		{stateCancelled, "physical", vendor, nil},
 		{stateResolved, "physical", buyer, nil},
 	} {
-		o := &Order{State: tc.state, Kind: tc.kind, BuyerID: "b", VendorID: "v", Currency: "BTC"}
+		o := &Order{State: tc.state, Kind: tc.kind, BuyerID: "b", VendorID: "v", Currency: "XMR"}
 		got := viewerTransitions(o, tc.u)
 		if !slices.Equal(targets(got), tc.want) {
 			t.Errorf("%s/%s as %s: got %v want %v", tc.state, tc.kind, tc.u.ID, targets(got), tc.want)

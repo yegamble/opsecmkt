@@ -24,7 +24,7 @@ broken-image icon in Chromium and WebKit); otherwise the CSS illustration. Thumb
 <p class="help staff-contact">Only an administrator can restore it. If you think this is wrong, ask an administrator to review it. {{template "staff-contact" $}}</p>{{end}}
 <p class="product-description">{{.Excerpt}}</p>{{if eq $.Page "vendor-dashboard"}}{{with index $.Inventory.Reservations .ID}}<p class="help inventory-reservation">{{.Units}} {{if eq .Units 1}}unit is{{else}}units are{{end}} reserved by orders past draft; drafts do not reserve stock.{{if .PaymentExpiry}} Earliest payment window ends {{.PaymentExpiry}}; deposits waiting for confirmations can keep an order open beyond this time.{{end}}</p>{{else}}<p class="help inventory-reservation">0 units are reserved; drafts do not reserve stock.</p>{{end}}{{end}}
 <div class="product-bottom">
-<span class="price">{{if eq $.Currency "XMR"}}{{.PriceXMR}}<small>XMR</small>{{else}}{{.PriceBTC}}<small>BTC</small>{{end}}</span>
+<span class="price">{{.PriceXMR}}<small>XMR</small></span>
 <span class="stock">{{if lt .Stock 1}}OUT OF STOCK{{else}}{{.Stock}} AVAILABLE{{end}}</span>
 </div>{{if eq $.Page "vendor-dashboard"}}
 <div class="inventory-actions">

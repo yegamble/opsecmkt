@@ -27,14 +27,14 @@ func resolveConfirmLoader(ctx context.Context, a *App, r *http.Request, d *PageD
 func orderDraftAction(c *actionCtx) (actionResult, error) {
 	ctx, f, tx := c.Ctx(), c.Form, c.Tx
 	currency := f.Get("currency")
-	if currency != "BTC" && currency != "XMR" {
-		return actionResult{}, fail(400, "Choose BTC or XMR")
+	if currency != "XMR" {
+		return actionResult{}, fail(400, "This market accepts Monero (XMR) only")
 	}
-	var btc, xmr int64
+	var xmr int64
 	var vendor, kind string
 	var stock int
 	var archived bool
-	err := tx.QueryRowContext(ctx, "SELECT btc,xmr,vendor_id,kind,stock,archived FROM products WHERE id=$1", f.Get("product_id")).Scan(&btc, &xmr, &vendor, &kind, &stock, &archived)
+	err := tx.QueryRowContext(ctx, "SELECT xmr,vendor_id,kind,stock,archived FROM products WHERE id=$1", f.Get("product_id")).Scan(&xmr, &vendor, &kind, &stock, &archived)
 	if err != nil || stock < 1 {
 		return actionResult{}, fail(400, "Product unavailable")
 	}
@@ -57,49 +57,29 @@ func orderDraftAction(c *actionCtx) (actionResult, error) {
 	if err = c.A.purchaseBlock(ctx, tx, f.Get("product_id"), currency); err != nil {
 		return actionResult{}, err
 	}
-	total := btc
-	if currency == "XMR" {
-		total = xmr
-	}
+	total := xmr
 	if total < payoutFloor(currency, "release") {
-		otherPrice := btc
-		if currency == "BTC" {
-			otherPrice = xmr
-		}
-		return actionResult{}, fail(400, subFloorListing(currency, otherPrice))
+		return actionResult{}, fail(400, subFloorListing(currency, 0))
 	}
 	id := randomToken()
 	err = tx.QueryRowContext(ctx, `INSERT INTO orders(id,buyer_id,product_id,currency,amount) VALUES($1,$2,$3,$4,$5) ON CONFLICT(buyer_id,product_id,currency) WHERE state='draft' DO UPDATE SET amount=excluded.amount RETURNING id`, id, c.User.ID, f.Get("product_id"), currency, total).Scan(&id)
 	return actionResult{Redirect: "/order?id=" + id, Audit: "Saved unfunded order draft"}, err
 }
 
-// subFloorListing refuses an order in currency on a listing priced below that currency's settlement floor (payoutFloor) (A-216 for
-// Bitcoin, A-232 for Monero). validateListing refuses such prices (Bitcoin since A-99, Monero since A-232), but a
-// listing priced earlier keeps its price: an escrow release of it would leave the vendor an output below the floor,
-// which planSettlement and the Monero settlement refuse.
+// subFloorListing explains a listing's Monero settlement floor without offering
+// another currency. Old listings can retain a price below the current minimum.
+
 func subFloorListing(currency string, otherPrice int64) string {
-	coin, other := "Bitcoin", "XMR"
-	otherCurrency := "XMR"
-	if currency == "XMR" {
-		coin, other = "Monero", "BTC"
-		otherCurrency = "BTC"
-	}
-	message := "This listing's " + coin + " price is below the escrow settlement minimum of " + amount(payoutFloor(currency, "release"), currencyDecimals(currency)) + " " + currency +
-		" (it was priced before that minimum applied), so it cannot be ordered in " + currency + "."
-	if otherPrice >= payoutFloor(otherCurrency, "release") {
-		message += " Order in " + other + ", or ask the vendor to raise the " + coin + " price."
-	} else {
-		message += " Ask the vendor to raise the " + coin + " price."
-	}
+	message := "This listing's Monero price is below the escrow settlement minimum of " + amount(payoutFloor("XMR", "release"), 12) + " XMR (it was priced before that minimum applied), so it cannot be ordered in XMR. Ask the vendor to raise the Monero price."
 	return message + " Nothing was changed."
 }
 
 func subFloorListingForProduct(ctx context.Context, q rowQuerier, productID, currency string) (string, error) {
-	var otherPrice int64
-	if err := q.QueryRowContext(ctx, "SELECT CASE WHEN $2='XMR' THEN btc ELSE xmr END FROM products WHERE id=$1", productID, currency).Scan(&otherPrice); err != nil {
+	var present int
+	if err := q.QueryRowContext(ctx, "SELECT 1 FROM products WHERE id=$1", productID).Scan(&present); err != nil {
 		return "", err
 	}
-	return subFloorListing(currency, otherPrice), nil
+	return subFloorListing(currency, 0), nil
 }
 
 // disputeAction opens a dispute by moving a paid, shipped or delivered order to disputed (P3).

@@ -6,11 +6,6 @@ import (
 	"testing"
 )
 
-// A-517 (iteration 60): the default image CAPTCHA has no audio or text alternative. While it is required and the
-// staff contact is unset or a bare handle (a handle can be messaged only from an account), /admin warns and
-// /login and /register say honestly that there is no way in without the image, instead of a dead link. With a
-// contact that works without an account they say to write to it and ask for the CAPTCHA to be turned off.
-
 const (
 	captchaWarningMark    = "captcha-contact-warning"
 	captchaWarningUnset   = "the CAPTCHA is on, but no staff contact is set."
@@ -100,18 +95,4 @@ func TestLayoutDescriptionStatesTheMechanism(t *testing.T) {
 	page := html.UnescapeString(e.body("GET", "/login", "", nil, 200))
 	mustContain(t, page, `<meta name="description" content="Test-network marketplace with PGP-based accounts and messages and no browser JavaScript.">`)
 	mustNotContain(t, page, "privacy-minded")
-}
-
-func TestSignetCopyDoesNotClaimThePublicSignet(t *testing.T) {
-	x := signetEscrowEnv(t)
-	const named = "signet (the public signet, unless this operator runs a private one)"
-	for name, page := range map[string]string{
-		"/canary":     html.UnescapeString(x.page("/canary", "")),
-		"/escrow-key": html.UnescapeString(x.page("/escrow-key", x.buyerSess)),
-	} {
-		mustContain(t, page, named)
-		if strings.Contains(page, "signet, a public test network") {
-			t.Errorf("%s still calls signet a public test network", name)
-		}
-	}
 }

@@ -112,7 +112,7 @@ func (unreadAdminBody) Close() error { return nil }
 func TestPublicAdminIngressDeniesBeforeRequestWork(t *testing.T) {
 	a := testHTTPApp(true)
 	a.adminSocket = "/run/market-admin/http.sock"
-	paths := []string{"/admin", "/admin/audit-export?upto=1", "/admin/reset-factors", "/administrator", "/%61dmin", "/setup", "/escrow/decision"}
+	paths := []string{"/admin", "/admin/audit-export?upto=1", "/admin/reset-factors", "/administrator", "/%61dmin", "/setup"}
 	// Every administrator-only action is covered even when a future feature puts it outside /admin.
 	for path, spec := range actions {
 		if adminOnlyRoles(spec.Roles) {

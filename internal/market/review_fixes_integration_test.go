@@ -8,43 +8,6 @@ import (
 	"testing"
 )
 
-// Regression tests for the 2026-09-23 review findings (one test per finding).
-
-// F1: a draft keeps the price it was created at; resubmitting checkout and requesting escrow both use the
-// current listing price.
-func TestDraftRepricedOnResubmitAndEscrowCheckout(t *testing.T) {
-	x := newEscrowEnv(t)
-	p := x.testEnv
-	draftAt := func() (string, int64) {
-		w := p.do("POST", "/orders", x.buyerSess, url.Values{"product_id": {x.product}, "currency": {"BTC"}})
-		p.check(w, 303)
-		id := strings.TrimPrefix(w.Header().Get("Location"), "/order?id=")
-		var amt int64
-		if err := p.DB.QueryRow("SELECT amount FROM orders WHERE id=$1", id).Scan(&amt); err != nil {
-			t.Fatal(err)
-		}
-		return id, amt
-	}
-	id, amt := draftAt()
-	if amt != 100000 {
-		t.Fatalf("draft amount %d", amt)
-	}
-	p.DB.Exec("UPDATE products SET btc=1000000 WHERE id=$1", x.product)
-	if again, amt := draftAt(); again != id || amt != 1000000 {
-		t.Fatalf("resubmitted draft %s amount %d, want same draft at 1000000", again[:8], amt)
-	}
-	// Price changes again without a resubmit: requesting payment records the current price.
-	p.DB.Exec("UPDATE products SET btc=2000000 WHERE id=$1", x.product)
-	if got := x.mustCheckout(id, regtestAddr("repriced-checkout")); got == "" {
-		t.Fatal("escrow checkout returned no address")
-	}
-	var st string
-	p.DB.QueryRow("SELECT amount,state FROM orders WHERE id=$1", id).Scan(&amt, &st)
-	if st != stateAwaitingPayment || amt != 2000000 {
-		t.Fatalf("order %s at %d, listing price 2000000", st, amt)
-	}
-}
-
 // F2: attacker-chosen rate-limit keys neither fill the shared table nor lock out real users.
 func TestLimiterFloodDoesNotLockOutUsers(t *testing.T) {
 	a := &App{limits: map[string]bucket{}}

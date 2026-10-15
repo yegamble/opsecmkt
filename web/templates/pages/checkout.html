@@ -32,21 +32,20 @@
 <h2>Order summary</h2>{{if eq .Kind "service"}}<p class="order-unavailable" role="note">This legacy service listing is no longer available for new orders. Existing orders and their history remain readable; ask the vendor to offer a supported physical or digital listing instead.</p>{{else}}{{if $.VendorKeyUnusable}}
 <p class="order-unavailable" role="note">
 <strong>No usable key.</strong> {{.Vendor}} has no usable encryption key, so you could not send a shipping address. You can save a draft, but payment stays unavailable until they add one.</p>{{end}}{{with $.VendorSuspensionReason}}<p class="order-unavailable" role="note">{{.}}</p>{{end}}{{template "purchase-blocks" $}}{{if not $.NoPurchase}}
-{{if .BTCOrderUnavailable}}<p class="order-unavailable" role="note">{{.BTCOrderUnavailable}}</p>{{end}}{{if .XMROrderUnavailable}}<p class="order-unavailable" role="note">{{.XMROrderUnavailable}}</p>{{end}}
-{{if or (and (not .BTCOrderUnavailable) (not (index $.PurchaseBlocked "BTC"))) (and (not .XMROrderUnavailable) (not (index $.PurchaseBlocked "XMR")))}}
+{{if .XMROrderUnavailable}}<p class="order-unavailable" role="note">{{.XMROrderUnavailable}}</p>{{end}}
+{{if and (not .XMROrderUnavailable) (not (index $.PurchaseBlocked "XMR"))}}
 <form class="stack" method="post" action="/orders">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="form_nonce" value="{{formNonce "/orders"}}">
 <input type="hidden" name="product_id" value="{{.ID}}">
-<label>Pay with<select name="currency">{{if and (not .BTCOrderUnavailable) (not (index $.PurchaseBlocked "BTC"))}}
-<option value="BTC">{{.PriceBTC}} BTC{{if eq (index $.Settings "payment_intake_BTC") "false"}} — new payments paused{{else if eq (index $.Settings "payment_intake_BTC") "escrow"}} — escrow only{{end}}</option>{{end}}{{if and (not .XMROrderUnavailable) (not (index $.PurchaseBlocked "XMR"))}}
-<option value="XMR">{{.PriceXMR}} XMR{{if eq (index $.Settings "payment_intake_XMR") "false"}} — new payments paused{{else if eq (index $.Settings "payment_intake_XMR") "escrow"}} — escrow only{{end}}</option>{{end}}
+<label>Pay with<select name="currency">
+<option value="XMR">{{.PriceXMR}} XMR{{if eq (index $.Settings "payment_intake_XMR") "false"}} — new payments paused{{else if eq (index $.Settings "payment_intake_XMR") "escrow"}} — escrow only{{end}}</option>
 </select>
 </label>
-<p class="help">The listed price is recorded in your unfunded draft. A draft reserves no stock and requests no payment.{{if or $.EscrowOn $.XMREscrowOn}} If an escrow checkout is available for this currency, open the order page to complete it; send nothing until that page shows the escrow address.{{end}}</p>
-{{if and (or $.EscrowOn $.XMREscrowOn) (or (eq (index $.Settings "payment_intake_BTC") "false") (eq (index $.Settings "payment_intake_XMR") "false"))}}<p class="help">A paused currency still allows an unfunded draft. Its escrow checkout waits until the administrator enables it.</p>{{end}}
+<p class="help">The listed price is recorded in your unfunded draft. A draft reserves no stock and requests no payment.{{if $.XMREscrowOn}} If an escrow checkout is available for this currency, open the order page to complete it; send nothing until that page shows the escrow address.{{end}}</p>
+{{if and $.XMREscrowOn (eq (index $.Settings "payment_intake_XMR") "false")}}<p class="help">A paused currency still allows an unfunded draft. Its escrow checkout waits until the administrator enables it.</p>{{end}}
 <button class="primary" type="submit">Create unfunded draft <span class="action-icon">↗</span></button>
-</form>{{else}}<p class="order-unavailable" role="note">Neither BTC nor XMR is available for this listing. Review the currency and escrow reasons above.</p>{{end}}{{end}}{{end}}
+</form>{{else}}<p class="order-unavailable" role="note">Monero is unavailable for this listing. Review the escrow reasons above.</p>{{end}}{{end}}{{end}}
 </section>
 </div>{{end}}
 {{template "footer" .}}{{end}}

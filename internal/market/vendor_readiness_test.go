@@ -12,25 +12,20 @@ func TestVendorReadinessTracksEscrowIntakeWithoutLeakingHistoricalAddress(t *tes
 		t.Fatal(err)
 	}
 	initial := html.UnescapeString(p.page("/vendor-dashboard", p.vendorSess))
-	mustContain(t, initial, `id="seller-readiness"`, "Physical orders:", "BTC", "XMR", "New intake:", "Escrow:")
+	mustContain(t, initial, `id="seller-readiness"`, "Physical orders:", "XMR", "New intake:", "Escrow:")
 	mustNotContain(t, initial, "sentinel-private-payout-address", "Pooled provider:")
 	if _, err := p.DB.Exec("UPDATE settings SET value=$1 WHERE key=$2", intakePaused, paymentIntakeKey("XMR")); err != nil {
 		t.Fatal(err)
 	}
-	p.A.escrowConfigured = true
-	if _, err := p.DB.Exec("UPDATE settings SET value=$1 WHERE key=$2", intakeEscrow, paymentIntakeKey("BTC")); err != nil {
-		t.Fatal(err)
-	}
 	body := html.UnescapeString(p.page("/vendor-dashboard", p.vendorSess))
-	mustContain(t, body, "Bitcoin escrow account key:</strong> Needed to accept Bitcoin escrow checkouts", "No current checkout: intake is paused")
-	if _, err := p.DB.Exec(`INSERT INTO user_escrow_keys(user_id,xpub_sealed,xpub_hmac,origin_fingerprint,origin_path,active_at,layout)
- VALUES($1,'opaque-sealed-value',$2,'7450f935','/48h/1h/0h/2h',now(),'per_order')`, p.vendor.ID, strings.Repeat("ab", 32)); err != nil {
+	mustContain(t, body, "No current checkout: intake is paused")
+	mustNotContain(t, body, "Bitcoin", "BTC", "escrow account key")
+	if _, err := p.DB.Exec("UPDATE settings SET value=$1 WHERE key=$2", intakeEscrow, paymentIntakeKey("XMR")); err != nil {
 		t.Fatal(err)
 	}
-	p.A.escrow.Store(&escrowBTC{})
 	active := html.UnescapeString(p.page("/vendor-dashboard", p.vendorSess))
-	mustContain(t, active, "Bitcoin escrow account key:</strong> Active", "per-order signer is not ready")
-	mustNotContain(t, active, "opaque-sealed-value", "sentinel-private-payout-address")
+	mustContain(t, active, "No current checkout: escrow is not ready")
+	mustNotContain(t, active, "sentinel-private-payout-address", "Bitcoin", "BTC")
 	if _, err := p.DB.Exec("UPDATE users SET pgp='',pgp_fingerprint='' WHERE id=$1", p.vendor.ID); err != nil {
 		t.Fatal(err)
 	}

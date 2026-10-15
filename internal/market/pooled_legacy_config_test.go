@@ -25,7 +25,7 @@ func TestObsoletePooledEnvironmentIsRefusedWithoutEchoingValues(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), name) {
 				t.Fatalf("obsolete pooled setting %s was not refused: %v", name, err)
 			}
-			if strings.Contains(err.Error(), secret) || !strings.Contains(err.Error(), "no database changes were made") {
+			if strings.Contains(err.Error(), secret) || !strings.Contains(strings.ToLower(err.Error()), "no database changes were made") {
 				t.Fatalf("refusal exposed a value or omitted the no-change guarantee: %v", err)
 			}
 		})
@@ -49,13 +49,9 @@ func TestSharedEscrowEnvironmentIsAccepted(t *testing.T) {
 	values := map[string]string{
 		"APP_SECRET_KEY":            testSetupToken,
 		"DATABASE_URL":              "postgres://market:example@db/market",
-		"ESCROW_BTC_RPC_URL":        "http://escrow-user:secret@bitcoin:38332",
 		"ESCROW_XMR_WALLET_RPC_URL": "http://escrow-wallet:secret@monero:18083",
-		"BITCOIN_CHAIN":             "signet",
 		"MONERO_NETWORK":            "stagenet",
-		"BITCOIN_MAX_TIP_AGE":       "2h",
 		"MONERO_MAX_TIP_AGE":        "2h",
-		"PAYMENT_CONFIRMATIONS_BTC": "3",
 		"PAYMENT_CONFIRMATIONS_XMR": "10",
 		"PAYMENT_EXPIRY":            "24h",
 		"PAYMENT_POLL_INTERVAL":     "30s",

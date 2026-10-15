@@ -8,9 +8,9 @@ import (
 	"strings"
 )
 
-// The Bitcoin escrow release deadline length (WR-escrow Phase 2, slice P2-a; P2-R3, owner decision ES-11): how many
-// days after a physical order is marked shipped the market may co-sign the vendor's claim when the buyer has not
-// signed and no dispute is open. An administrator sets it on /admin (setting escrow_release_days: 7 to 30 whole days,
+// The Monero escrow release deadline length (WR-escrow Phase 2, slice P2-a; P2-R3, owner decision ES-11): how many
+// days after a physical order is marked shipped the market may release the vendor's claim when the buyer has not
+// confirmed receipt and no dispute is open. An administrator sets it on /admin (setting escrow_release_days: 7 to 30 whole days,
 // default 14; password step-up; the audit row names the old and the new days only). Each physical escrow snapshots the
 // days in force at checkout (escrows.release_days, frozen by migration 079's trigger), so a change affects only later
 // escrows. The deadline itself, the reminder and the release are later slices.
@@ -57,7 +57,7 @@ func escrowReleaseDays(ctx context.Context, q rowQuerier) (int, error) {
 	return n, nil
 }
 
-// escrowReleaseDaysLoader shows the length in force and its form on /admin while ESCROW_BTC or ESCROW_XMR is on.
+// escrowReleaseDaysLoader shows the length in force and its form on /admin while Monero escrow is on.
 func escrowReleaseDaysLoader(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
 	if physicalEscrowOff(a) || d.User == nil || d.User.Role != "admin" {
 		return nil
@@ -93,7 +93,11 @@ func escrowReleaseDaysAction(c *actionCtx) (actionResult, error) {
 		if err = setSetting(c, escrowReleaseDaysSetting, strconv.Itoa(days)); err != nil {
 			return actionResult{}, err
 		}
-		audit := "Changed the Bitcoin escrow release deadline (" + c.A.escrowNetwork() + "): " + strconv.Itoa(old) + " → " + strconv.Itoa(days) + " days"
+		network := c.A.xmrEscrowNetKnown()
+		if network == "" {
+			network = "network not verified"
+		}
+		audit := "Changed the Monero escrow release deadline (" + network + "): " + strconv.Itoa(old) + " → " + strconv.Itoa(days) + " days"
 		return actionResult{Redirect: "/admin", Notice: "escrow-release-days", Audit: audit}, nil
 	})
 }

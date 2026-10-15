@@ -52,3 +52,18 @@ test('preview paid sample shows no pooled payment record', async ({ page }) => {
   await expect(page.getByRole('heading', { name: 'No payment record' })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(page.viewportSize()!.width);
 });
+
+// The current payment product has one currency in every role's server-rendered forms.
+test('Monero is the only listing and checkout currency', async ({ page }) => {
+  for (const path of ['/', '/?currency=BTC', '/product?id=encrypted-drive', '/checkout?id=encrypted-drive', '/listing-edit?id=encrypted-drive', '/vendor-dashboard', '/account', '/admin', '/canary']) {
+    expect((await page.goto(path))?.status()).toBe(200);
+    await expect(page.locator('body')).not.toContainText(/\bBitcoin\b|\bBTC\b/);
+    await expect(page.locator('input[name="price_btc"], option[value="BTC"], a[href="/escrow-key"]')).toHaveCount(0);
+    await expect(page.locator('script')).toHaveCount(0);
+  }
+  await page.goto('/checkout?id=encrypted-drive');
+  await expect(page.locator('select[name="currency"] option')).toHaveCount(1);
+  await expect(page.locator('select[name="currency"]')).toHaveValue('XMR');
+  await page.goto('/listing-edit?id=encrypted-drive');
+  await expect(page.getByLabel('Price (XMR)')).toHaveValue('0.271');
+});

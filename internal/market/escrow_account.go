@@ -46,12 +46,12 @@ func init() {
 	registerAction("/escrow-key/practice", actionSpec{Roles: keyRoles, OwnTx: true, OwnFormNonce: true, OneAtATime: true, Off: escrowOff, Run: escrowPracticeAction})
 }
 
-// escrowOff is ESCROW_BTC off: the escrow page and actions do not exist.
-func escrowOff(a *App) bool { return !a.escrowConfigured }
+// escrowOff permanently disables retired Bitcoin pages and actions.
+func escrowOff(_ *App) bool { return true }
 
 // physicalEscrowOff is escrowOff for what both coins' physical escrow orders use: the release deadline length and a
-// listing's dispatch window (P2-R3, P2-R5, P3-R7). Either ESCROW_BTC or ESCROW_XMR on offers them.
-func physicalEscrowOff(a *App) bool { return !a.escrowConfigured && a.escrowXMR == nil }
+// listing's dispatch window (P2-R3, P2-R5, P3-R7). Monero escrow offers them.
+func physicalEscrowOff(a *App) bool { return a.escrowXMR == nil }
 
 var (
 	errEscrowDown      = fail(409, "Bitcoin escrow is unavailable on this market right now: the operator must fix its Bitcoin node or arbiter wallet. Nothing was changed.")

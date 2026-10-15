@@ -78,7 +78,7 @@ func TestDisplayedTimesAreUTCWhateverTheDatabaseZone(t *testing.T) {
 	}
 	buyerID, buyer := e.user("tz_buyer", "buyer")
 	vendorID, _ := e.user("tz_vendor", "vendor")
-	order := e.order(buyerID, e.product(vendorID, "digital"), "BTC", stateDraft)
+	order := e.order(buyerID, e.product(vendorID, "digital"), "XMR", stateDraft)
 	if _, err := e.DB.Exec("INSERT INTO messages(id,sender_id,recipient_id,body) VALUES($1,$2,$3,'tz message')", randomToken(), vendorID, buyerID); err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,7 @@ func TestRenderedTimestampSurfacesAreUTCWhateverTheDatabaseZone(t *testing.T) {
 	vendorID, vendor := e.user("tz_surface_vendor", "vendor")
 	_, admin := e.user("tz_surface_admin", "admin")
 	product := e.product(vendorID, "digital")
-	order := e.order(buyerID, product, "BTC", stateDisputed)
+	order := e.order(buyerID, product, "XMR", stateDisputed)
 	const created = "2025-04-05 06:07 UTC"
 	const changed = "2025-04-06 07:08 UTC"
 	const notificationAt = "2025-04-07 08:09 UTC"

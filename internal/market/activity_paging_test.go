@@ -18,12 +18,12 @@ func TestAccountActivityPagesAreBoundedPrivateAndStable(t *testing.T) {
 
 	// Give all rows the same timestamp so the ID tie-breaker alone determines page boundaries.
 	if _, err := e.DB.Exec(`INSERT INTO orders(id,buyer_id,product_id,currency,amount,state,created)
-		SELECT lpad(to_hex(g),32,'0'),$1,$2,'BTC',100000,'awaiting_payment',now()
+		SELECT lpad(to_hex(g),32,'0'),$1,$2,'XMR',100000,'awaiting_payment',now()
 		FROM generate_series(1,101) g`, viewer, product); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := e.DB.Exec(`INSERT INTO orders(id,buyer_id,product_id,currency,amount,state,created)
-		SELECT lpad(to_hex(1000+g),32,'0'),$1,$2,'BTC',100000,'awaiting_payment',now()
+		SELECT lpad(to_hex(1000+g),32,'0'),$1,$2,'XMR',100000,'awaiting_payment',now()
 		FROM generate_series(1,2) g`, other, product); err != nil {
 		t.Fatal(err)
 	}

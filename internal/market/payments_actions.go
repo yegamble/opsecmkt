@@ -17,15 +17,6 @@ func paymentsGlobalLoader(_ context.Context, a *App, _ *http.Request, d *PageDat
 	d.PaymentsEnabled = false
 	d.PaymentNetworks = ""
 	d.LiveNetwork = a.live
-	d.BitcoinPriceLabel = a.bitcoinPriceLabel()
-	d.EscrowOn, d.EscrowAvailable = a.escrowConfigured, a.escrow.Load() != nil
-	if a.escrowNetKnown() {
-		d.EscrowNet = a.escrowNetwork()
-	} else if a.live {
-		// A-540: a mainnet market's Bitcoin escrow can only run on main (startup refuses a test-network node on it), so
-		// before a node answers the pages still say mainnet, with real funds, not "a test network (chain not verified yet)".
-		d.EscrowNet = "main"
-	}
 	d.DispatchOn = !physicalEscrowOff(a)
 	d.XMREscrowOn, d.XMREscrowAvailable, d.XMRCustody, d.XMREscrowNet = a.escrowXMR != nil, a.xmrEscrowReady(), xmrCustody, a.xmrEscrowNetwork()
 	d.XMREscrowNetKnown = a.escrowXMR != nil && a.escrowXMR.formNet() != ""
@@ -36,14 +27,6 @@ func paymentsGlobalLoader(_ context.Context, a *App, _ *http.Request, d *PageDat
 func escrowOrdersLoader(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
 	if d.User == nil {
 		return nil
-	}
-	// The viewer's escrow orders (as buyer or vendor), whatever ESCROW_BTC says now (QA31-2): all but a cancelled one
-	// with nothing recorded, and that one too while escrow is not enabled, since its deposits are then not read.
-	if err := a.db.QueryRowContext(ctx, `SELECT count(*) FROM escrows es JOIN orders o ON o.id=es.order_id JOIN products p ON p.id=o.product_id
-		WHERE es.coin='BTC' AND (o.buyer_id=$1 OR p.vendor_id=$1) AND ($2 OR o.state<>'cancelled'
-			OR EXISTS(SELECT 1 FROM payments pm WHERE pm.order_id=o.id AND pm.confirmations>=0 AND NOT pm.locked AND pm.settlement_id IS NULL))`,
-		d.User.ID, a.escrow.Load() == nil).Scan(&d.EscrowOrders); err != nil {
-		return err
 	}
 	// The same for the viewer's Monero escrow orders (A-423): all but a cancelled one with no deposit recorded.
 	return a.db.QueryRowContext(ctx, `SELECT count(*) FROM escrows es JOIN orders o ON o.id=es.order_id JOIN products p ON p.id=o.product_id

@@ -25,7 +25,7 @@ func TestA60OwnListingAndInvalidDisputeCopy(t *testing.T) {
 		t.Fatal("vendor account page has no onboarding link to the vendor desk")
 	}
 
-	order := e.order(buyerID, product, "BTC", stateDisputed)
+	order := e.order(buyerID, product, "XMR", stateDisputed)
 	form := url.Values{"order_id": {order}, "reason": {strings.Repeat("x", 30)}, formNonceField: {randomToken()[:32]}}
 	refused := e.do("POST", "/disputes", buyer, form)
 	if refused.Code != 409 || !strings.Contains(refused.Body.String(), "cannot be disputed from its current state") || strings.Contains(refused.Body.String(), "Draft orders contain no funds") {

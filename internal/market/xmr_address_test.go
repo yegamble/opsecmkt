@@ -75,7 +75,7 @@ func testXMRSmallOrderKey() []byte {
 var xmrAddressRun = regexp.MustCompile(`[1-9A-HJ-NP-Za-km-z]{95,106}`)
 
 // withoutXMRAddresses removes Monero addresses from s before a banned-word check. Test addresses derive from labels
-// holding random order ids, so one can contain "BTC" or "sign" by chance and fail a check that meant the page's
+// holding random order ids, so one can contain "XMR" or "sign" by chance and fail a check that meant the page's
 // own words.
 func withoutXMRAddresses(s string) string { return xmrAddressRun.ReplaceAllString(s, "<xmr-address>") }
 
@@ -471,11 +471,11 @@ func TestXMRAddressKeysRefused(t *testing.T) {
 }
 
 // A test address that happens to contain a banned word is removed before the check, and the page's own words stay:
-// TestXMREscrowOrderPanel once failed on a random escrow address containing "BTC".
+// TestXMREscrowOrderPanel once failed on a random escrow address containing "XMR".
 func TestWithoutXMRAddresses(t *testing.T) {
 	var addr string
 	for i := 0; addr == ""; i++ {
-		if a := testXMRAddr("banned "+strconv.Itoa(i), true); strings.Contains(a, "BTC") {
+		if a := testXMRAddr("banned "+strconv.Itoa(i), true); strings.Contains(a, "XMR") {
 			addr = a
 		}
 	}

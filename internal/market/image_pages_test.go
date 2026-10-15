@@ -150,31 +150,24 @@ func TestProductPagePhotos(t *testing.T) {
 	}
 }
 
-func TestProductDescriptionAndBitcoinPriceLabel(t *testing.T) {
+func TestProductDescriptionAndMoneroPriceLabel(t *testing.T) {
 	e := newTestApp(t)
 	vendorID, vendor := e.user("product_copy_vendor", "vendor")
 	product := e.product(vendorID, "physical")
 	if _, err := e.DB.Exec("UPDATE products SET description=$2 WHERE id=$1", product, "First line\nSecond line"); err != nil {
 		t.Fatal(err)
 	}
-	// The shared price label follows the configured escrow network, including when it is not yet verified.
-	e.A.escrowConfigured = true
-	network := "regtest"
-	e.A.escrowNet.Store(&network)
-	testnet := e.do("GET", "/product?id="+product, "", nil)
-	e.check(testnet, 200)
-	if body := testnet.Body.String(); !strings.Contains(body, "First line\nSecond line</p>") || !strings.Contains(body, "Price (BTC, test network)") {
-		t.Fatalf("escrow product label: %s", body)
+	body := e.do("GET", "/product?id="+product, "", nil)
+	e.check(body, 200)
+	mustContain(t, body.Body.String(), "First line\nSecond line</p>", "XMR")
+	mustNotContain(t, body.Body.String(), "BTC", "Bitcoin")
+	for _, route := range []string{"/listing-edit?id=" + product, "/vendor-dashboard"} {
+		page := e.do("GET", route, vendor, nil)
+		e.check(page, 200)
+		mustContain(t, page.Body.String(), "Price (XMR)")
+		mustNotContain(t, page.Body.String(), "BTC", "price_btc")
 	}
-	for _, path := range []string{"/listing-edit?id=" + product, "/vendor-dashboard"} {
-		if body := e.do("GET", path, vendor, nil).Body.String(); !strings.Contains(body, "Price (BTC, test network)") {
-			t.Fatalf("%s lacks escrow network label: %s", path, body)
-		}
-	}
-	e.A.escrowConfigured = false
-	if body := e.do("GET", "/product?id="+product, "", nil).Body.String(); !strings.Contains(body, "Price (BTC, not configured)") {
-		t.Fatalf("unconfigured BTC label: %s", body)
-	}
+
 }
 
 // The vendor page: the vendor's avatar thumbnail, decorative, at 58×58 (else the text glyph), and 25 listings a
@@ -312,7 +305,7 @@ func TestStaffAvatarVisibleToOrderPartiesOnOrderPage(t *testing.T) {
 	listing := e.product(vendorID, "physical")
 	avatar := e.image(modID, "", "avatar")
 	vendorAvatar := e.image(vendorID, "", "avatar")
-	order := e.order(buyerID, listing, "BTC", "resolved")
+	order := e.order(buyerID, listing, "XMR", "resolved")
 	for _, ev := range [][4]string{{"paid", "shipped", vendorID, ""}, {"shipped", "disputed", buyerID, ""}, {"disputed", "resolved", modID, "Resolved — refund to buyer"}} {
 		e.mustExec("INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$3,$4,$5)", order, ev[0], ev[1], ev[2], ev[3])
 	}

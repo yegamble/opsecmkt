@@ -17,9 +17,9 @@ process.env.E2E_XMR_FEE_ADDRESS = feeAddress;
 const market = {
   DATABASE_URL: databaseURL, COOKIE_SECURE: 'false', APP_MODE: 'clearnet',
   SETUP_TOKEN: 'e2e-escrow-xmr-local-setup-token-at-least-32-characters',
-  BITCOIN_RPC_URL: '', BITCOIN_CHAIN: 'regtest', BITCOIN_WALLET: '',
+  BITCOIN_RPC_URL: '', BITCOIN_CHAIN: '', BITCOIN_WALLET: '',
   ESCROW_BTC: '', MONERO_RPC_URL: '', MONERO_WALLET_RPC_URL: '', MONERO_NETWORK: 'stagenet',
-  PAYMENT_CONFIRMATIONS_BTC: '3', PAYMENT_CONFIRMATIONS_XMR: '3', PAYMENT_POLL_INTERVAL: '1s', PAYMENT_EXPIRY: '24h', AUDIT_SIGNING_KEY: '',
+  PAYMENT_CONFIRMATIONS_XMR: '3', PAYMENT_POLL_INTERVAL: '1s', PAYMENT_EXPIRY: '24h', AUDIT_SIGNING_KEY: '',
 };
 export default defineConfig({
   testDir: './tests/e2e', testMatch: /escrow-xmr-journey\.spec\.ts$/, workers: 1, retries: 0,
