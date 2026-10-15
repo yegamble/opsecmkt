@@ -38,9 +38,9 @@ func partyOrder(c *actionCtx, id string) (Order, error) {
 
 // partyOrderLocked is partyOrder with the order row locked until the transaction ends, before any other row of the
 // order (the lock order of transition and storeFinal), for an action whose checks must see the order as it commits.
-// FOR NO KEY UPDATE still serialises against another such action, transition's UPDATE and lockShipped's FOR UPDATE,
-// but not against the KEY SHARE an order_events insert's foreign key takes, so the watcher's storeSettlement and
-// storeFinal (settlement row, then an order note) never deadlock with a paste (QA-F2-1).
+// FOR NO KEY UPDATE serialises against another such action, transition's UPDATE and lockShipped's FOR UPDATE,
+// while permitting foreign-key KEY SHARE checks. Escrow watchers take the same order-first lock because retention
+// invalidation triggers on financial rows also update the order (QA-F2-1).
 func partyOrderLocked(c *actionCtx, id string) (Order, error) {
 	o, err := scanOrder(c.Tx.QueryRowContext(c.Ctx(), orderQuery+" WHERE o.id=$1 AND (o.buyer_id=$2 OR p.vendor_id=$2) FOR NO KEY UPDATE OF o", id, c.User.ID))
 	if err == sql.ErrNoRows {

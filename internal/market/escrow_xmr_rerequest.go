@@ -65,6 +65,9 @@ func xmrReRequestAction(c *actionCtx) (actionResult, error) {
 	}
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
 		ctx := c.Ctx()
+		if _, err := c.Tx.ExecContext(ctx, "SELECT o.id FROM orders o JOIN xmr_settlements s ON s.order_id=o.id WHERE s.id=$1 FOR NO KEY UPDATE OF o", id); err != nil {
+			return actionResult{}, err
+		}
 		var orderID, kind, state string
 		var stored bool
 		err := c.Tx.QueryRowContext(ctx, "SELECT order_id,kind,state,tx_hash IS NOT NULL FROM xmr_settlements WHERE id=$1 FOR UPDATE", id).Scan(&orderID, &kind, &state, &stored)
@@ -115,6 +118,9 @@ func xmrRetryBuildAction(c *actionCtx) (actionResult, error) {
 	}
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
 		ctx := c.Ctx()
+		if _, err := c.Tx.ExecContext(ctx, "SELECT o.id FROM orders o JOIN xmr_settlements s ON s.order_id=o.id WHERE s.id=$1 FOR NO KEY UPDATE OF o", id); err != nil {
+			return actionResult{}, err
+		}
 		var orderID, kind, state, wait string
 		err := c.Tx.QueryRowContext(ctx, "SELECT order_id,kind,state,send_error FROM xmr_settlements WHERE id=$1 FOR UPDATE", id).Scan(&orderID, &kind, &state, &wait)
 		if err == sql.ErrNoRows {
@@ -202,7 +208,7 @@ func (a *App) xmrReRequest(ctx context.Context, id int64, s *xmrSettleRow, admin
 	if slices.ContainsFunc(spent, func(n int) bool { return n != 0 }) {
 		return a.refuseXMRReRequest(ctx, id, s, admin, xmrReRequestSpent)
 	}
-	tx, err := a.db.BeginTx(ctx, nil)
+	tx, err := a.beginEscrowOrderTx(ctx, s.OrderID)
 	if err != nil {
 		return err
 	}
@@ -244,7 +250,7 @@ func (a *App) xmrReRequest(ctx context.Context, id int64, s *xmrSettleRow, admin
 // refuseXMRReRequest records a refused re-request with its class, an order note and a notice to the administrator who
 // asked; it may be asked again.
 func (a *App) refuseXMRReRequest(ctx context.Context, id int64, s *xmrSettleRow, admin, class string) error {
-	tx, err := a.db.BeginTx(ctx, nil)
+	tx, err := a.beginEscrowOrderTx(ctx, s.OrderID)
 	if err != nil {
 		return err
 	}
