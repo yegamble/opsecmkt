@@ -1057,9 +1057,6 @@ td a {
   .filter-details[open]>summary:after {
     content:' −'
   }
-  .filter-details:not([open]) .filter-content {
-    display:none
-  }
   .filter-content {
     padding:4px 16px 20px;
     display:grid;
@@ -1299,9 +1296,8 @@ td a {
 .filter-details[open]>summary:after {
   content:' −'
 }
-.filter-details:not([open])>.filter-content {
-  display:none
-}
+/* Native <details> hides collapsed content. Toggling display:none here leaves WebKit form controls hidden
+   from visibility checks after the panel opens. */
 .filter-content {
   padding:4px 16px 20px;
   display:block

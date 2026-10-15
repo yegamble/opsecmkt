@@ -39,7 +39,14 @@ func TestEnrollRetentionRefusesBadInvocation(t *testing.T) {
 	}
 }
 
-func TestEnrollRetentionCLISQLASCIIOriginal(t *testing.T) {
+func TestEnrollRetentionCLILegacyOriginal(t *testing.T) {
+	for _, encoding := range []string{"SQL_ASCII", "LATIN1"} {
+		t.Run(encoding, func(t *testing.T) { testEnrollRetentionCLIOriginal(t, encoding) })
+	}
+}
+
+func testEnrollRetentionCLIOriginal(t *testing.T, encoding string) {
+	t.Helper()
 	base := os.Getenv("TEST_DATABASE_URL")
 	if base == "" {
 		t.Skip("set TEST_DATABASE_URL for disposable PostgreSQL integration tests")
@@ -50,8 +57,8 @@ func TestEnrollRetentionCLISQLASCIIOriginal(t *testing.T) {
 	}
 	var salt [8]byte
 	rand.Read(salt[:])
-	name := "opsecmkt_enroll_ascii_" + hex.EncodeToString(salt[:])
-	if _, err = admin.Exec("CREATE DATABASE " + name + " ENCODING 'SQL_ASCII' LC_COLLATE 'C' LC_CTYPE 'C' TEMPLATE template0"); err != nil {
+	name := "opsecmkt_enroll_" + strings.ToLower(encoding) + "_" + hex.EncodeToString(salt[:])
+	if _, err = admin.Exec("CREATE DATABASE " + name + " ENCODING '" + encoding + "' LC_COLLATE 'C' LC_CTYPE 'C' TEMPLATE template0"); err != nil {
 		admin.Close()
 		t.Fatal(err)
 	}
@@ -70,7 +77,7 @@ func TestEnrollRetentionCLISQLASCIIOriginal(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if _, err = db.Exec(`CREATE TABLE private_fixture(id integer PRIMARY KEY, body text); INSERT INTO private_fixture VALUES(1,convert_from(decode('fffe','hex'),'SQL_ASCII'))`); err != nil {
+	if _, err = db.Exec(`CREATE TABLE private_fixture(id integer PRIMARY KEY, body text); INSERT INTO private_fixture VALUES(1,convert_from(decode('fffee28094','hex'),'SQL_ASCII'))`); err != nil {
 		t.Fatal(err)
 	}
 	dir, err := filepath.EvalSymlinks(t.TempDir())
@@ -88,15 +95,27 @@ func TestEnrollRetentionCLISQLASCIIOriginal(t *testing.T) {
 	t.Setenv("ESCROW_XMR", "invalid-must-not-be-read")
 	stdout, stderr, code := runServer(t, nil, "-enroll-retention")
 	if code != 0 || stderr != "" || !strings.Contains(stdout, "Original database retention enrolled") {
-		t.Fatalf("SQL_ASCII host enrollment: %d %q %q", code, stdout, stderr)
+		t.Fatalf("%s host enrollment: %d %q %q", encoding, code, stdout, stderr)
 	}
 	var body string
-	var runs, instance, version int
-	if err = db.QueryRow(`SELECT encode(convert_to(body,'SQL_ASCII'),'hex'),(SELECT count(*) FROM retention_runs),(SELECT count(*) FROM settings WHERE key='retention_instance_id'),(SELECT max(version) FROM schema_migrations) FROM private_fixture WHERE id=1`).Scan(&body, &runs, &instance, &version); err != nil {
+	var runs, notices, instance, version int
+	if err = db.QueryRow(`SELECT encode(convert_to(body,'SQL_ASCII'),'hex'),(SELECT count(*) FROM retention_runs),(SELECT count(*) FROM notifications),(SELECT count(*) FROM settings WHERE key='retention_instance_id'),(SELECT max(version) FROM schema_migrations) FROM private_fixture WHERE id=1`).Scan(&body, &runs, &notices, &instance, &version); err != nil {
 		t.Fatal(err)
 	}
-	if body != "fffe" || runs != 0 || instance != 1 || version < 116 {
-		t.Fatalf("enrollment changed content or ran maintenance: body=%s runs=%d instance=%d version=%d", body, runs, instance, version)
+	if body != "fffee28094" || runs != 0 || notices != 0 || instance != 1 || version < 116 {
+		t.Fatalf("enrollment changed content or ran maintenance: body=%s runs=%d notices=%d instance=%d version=%d", body, runs, notices, instance, version)
+	}
+	before, err := os.ReadFile(filepath.Join(dir, "retention-state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, code = runServer(t, nil, "-enroll-retention")
+	if code != 0 || stderr != "" || !strings.Contains(stdout, "Original database retention enrolled") {
+		t.Fatalf("%s repeated host enrollment: %d %q %q", encoding, code, stdout, stderr)
+	}
+	after, err := os.ReadFile(filepath.Join(dir, "retention-state.json"))
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("repeated enrollment changed original identity or clocks: %v", err)
 	}
 	if err = db.PingContext(context.Background()); err != nil {
 		t.Fatal(err)

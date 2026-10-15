@@ -88,6 +88,14 @@ func EnrollRetention(ctx context.Context, db *sql.DB, getenv func(string) string
 	if _, err = s.backupRegister(); err != nil {
 		return err
 	}
+	// Legacy originals can hold UTF-8 bytes under a single-byte database
+	// encoding. Send the frozen schema and migrations byte for byte, as the old
+	// server did, rather than converting their literals to that encoding. This
+	// host-only transaction reads no private content; LOCAL restores OpenDB's
+	// UTF8 client setting on both commit and rollback.
+	if _, err = tx.ExecContext(ctx, `SET LOCAL client_encoding = 'SQL_ASCII'`); err != nil {
+		return err
+	}
 	if err = migrate(ctx, tx); err != nil {
 		return err
 	}
