@@ -109,7 +109,7 @@ func (a *App) applyIncoming(ctx context.Context, cur string, incoming []Incoming
 // (escrow_siblings, A-456a) is recorded left out from the start: it never counts for the order and the stray refund
 // returns it once the order is closed.
 func (a *App) upsertIncoming(ctx context.Context, cur, order string, in Incoming) (bool, error) {
-	res, err := a.db.ExecContext(ctx, `INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations,locked,late_notice,after_close,escrow_left_out)
+	res, err := a.execEscrowOrder(ctx, order, `INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations,locked,late_notice,after_close,escrow_left_out)
 		VALUES($1,$2,$3,$4,$5,$6,$7,$8,EXISTS(SELECT 1 FROM orders WHERE id=$1 AND state IN (`+fundedOpenStates+`)),
 			EXISTS(SELECT 1 FROM orders WHERE id=$1 AND state IN ('cancelled','resolved','completed')),
 			$2='BTC' AND EXISTS(SELECT 1 FROM escrow_siblings WHERE address=$5))

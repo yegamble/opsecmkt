@@ -794,7 +794,7 @@ func (a *App) xmrRecordTransfers(ctx context.Context, w xmrWalletRow, slots map[
 // met again completes it and writes nothing else. While the record is open, the order has an escrow staff alert
 // (escrowStaffAlert). Nothing is written to the ledger for it.
 func (a *App) xmrFlagCollision(ctx context.Context, w xmrWalletRow, account int64, orderID, txid string) error {
-	tx, err := a.db.BeginTx(ctx, nil)
+	tx, err := a.beginEscrowOrderTx(ctx, orderID)
 	if err != nil {
 		return err
 	}

@@ -47,11 +47,19 @@ restore_runtime() {
 }
 
 cleanup() {
-  local status=$? containers='' volumes='' networks=''
+  local status=$? containers='' volumes='' networks='' volume
   trap - EXIT INT TERM
   if [[ -d $deploy ]]; then
     restore_runtime || status=1
     compose down --rmi local --volumes --remove-orphans >"$cleanup_log" 2>&1 || status=1
+    # Rollback restores alpha.1's Compose files, which do not declare volumes
+    # added by later releases (retention_state, for example). Remove only this
+    # disposable rehearsal project's remaining volumes; Docker refuses any
+    # still in use. Keep failures and the final resource check as evidence.
+    volumes=$(docker volume ls -q --filter "label=com.docker.compose.project=$project" 2>>"$cleanup_log") || status=1
+    while IFS= read -r volume; do
+      [[ -z $volume ]] || docker volume rm "$volume" >>"$cleanup_log" 2>&1 || status=1
+    done <<< "$volumes"
     containers=$(docker ps -aq --filter "label=com.docker.compose.project=$project" 2>/dev/null || true)
     volumes=$(docker volume ls -q --filter "label=com.docker.compose.project=$project" 2>/dev/null || true)
     networks=$(docker network ls -q --filter "label=com.docker.compose.project=$project" 2>/dev/null || true)
