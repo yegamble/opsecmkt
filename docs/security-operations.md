@@ -101,7 +101,7 @@ hash chain or proof that the live host never changed earlier records.
 
 ## Protect the host and runtime secrets
 
-The supported installer stores a mode-0600 `.env` on disk. Encrypt its backups,
+The legacy shell installer stores a mode-0600 `.env` on disk. Encrypt its backups,
 restrict host and Docker access, and keep it out of source archives and AI
 prompts. Full-disk encryption protects a powered-off locked disk; choose and
 test unlock, reboot and restore procedures before depending on it.
@@ -111,8 +111,25 @@ Compose puts the configured values into container environments and Docker can
 retain them in its metadata. The installer and maintenance scripts also expect
 the checkout's `.env`. Removing it after startup breaks that maintenance path
 and does not erase Docker metadata. Docker recommends file-based secrets for
-sensitive values; the bundled stack does not yet support a complete file-based
-secret lifecycle. See [Docker's environment guidance](https://docs.docker.com/compose/how-tos/environment-variables/set-environment-variables/).
+sensitive values. The [native deployment controller](install/binary.md) now
+mounts private secret files read-only and uses allowlisted `_FILE` inputs for
+application secrets. It validates every file before loading any value, rejects
+conflicting environment inputs and refuses unsafe permissions. The source files
+still persist as plaintext unless the host protects their storage. Values exist
+in the live process after loading, and Docker/host administrators can read them.
+PostgreSQL's development container still receives its password through a private
+environment file. Ordinary disk-based initialization is not a complete RAM-only
+deployment. See
+[Docker's environment guidance](https://docs.docker.com/compose/how-tos/environment-variables/set-environment-variables/).
+
+For a production runtime configuration on hardened Linux tmpfs, use the native
+[`secrets pack`, `mount` and `unlock` procedure](install/ram-secrets-and-emergency.md).
+The administrator decrypts an OpenPGP bundle on a trusted workstation and streams
+it over authenticated SSH through Tor. The server checks actual tmpfs flags and
+publishes a private instance without overwriting existing state. Persistent
+retention records and onion identity volumes stay outside this RAM configuration.
+This does not prevent swap, snapshots, crash dumps or live-root access, and power
+loss cannot be advertised as guaranteed secret destruction.
 
 Choose swap, crash-dump, disk and snapshot policies at the host level. Audit
 them with the host administrator and verify recovery; do not run a generic
@@ -126,6 +143,33 @@ Tor storefront ingress does not route node traffic automatically. Use
 and review the documented Monero relay and verification limits. Image pulls,
 package downloads, host administration, provider billing and public source
 hosting can still identify or correlate a deployment.
+
+## Detect errors without collecting request contents
+
+The administrator panel keeps at most 20 recent HTTP error entries in memory:
+fixed route keys, status, time and the reference shown to the requester. It stores
+no error text, query string, account, cookie, request headers or client address.
+The loader rechecks the current administrator role before showing this panel.
+Restarting the app clears this diagnostic ring.
+
+The native HTTP server also sanitizes the standard library's transport and panic
+logger. It emits only fixed panic, TLS-handshake or transport classes, limited to
+one line per class per 30 seconds. Panic text, stack traces and peer addresses
+are suppressed. This prevents the default HTTP logger from bypassing the app's
+existing error classification.
+
+Generated production app containers use Docker's `none` logging driver; `deploy
+logs` explains that persistent container logs are disabled. Development keeps
+bounded rotating logs for diagnosis. Check database, Monero, Tor, scanner, proxy,
+host journal and provider logging independently: the app controller does not
+configure those separate production hosts. Native processes still have stdout
+and stderr; their supervisor controls retention. Disabling Docker app logs is
+not a guarantee of zero metadata or protection from live host inspection.
+
+The separate version worker polls fixed official release feeds, without order or
+account information, and signs a report read locally by the app. It does not send
+error-triggered external alerts. Operators pull admin diagnostics and service
+health over their authenticated administration path.
 
 ## Package and publish deliberately
 
@@ -171,9 +215,13 @@ rotation with existing escrow pins and encrypted records; replacing
 An expired or missing canary calls for investigation and signature verification;
 it does not by itself establish the cause.
 
-Disk erasure, volume deletion, force-pushed history, emergency reboot and public
-revocation notices require an owner-approved plan naming the targets and
-consequences. This guide provides no automatic disk-wipe or dead-man switch.
+The native [manual emergency commands](install/ram-secrets-and-emergency.md#review-an-emergency-action-before-running-it)
+implement explicit project stopping, optional selected tmpfs cleanup and targeted
+LUKS keyslot erasure. They require exact project/device confirmations and refuse
+cleanup or erasure if containers cannot be stopped. The optional immediate reboot
+is explicit and follows successful erasure. There is no automatic disk-wipe or
+canary-triggered dead-man switch. Public revocation publishing, arbitrary evidence
+deletion and Git history rewriting are separate operations, outside these commands.
 
 ## Applying outside audits
 
@@ -190,6 +238,9 @@ guarantees:
 | Noncustodial or air-gapped Monero escrow | The dedicated wallet-rpc holds online spend-capable wallets. Seed encryption protects recovery copies, not the running wallet. |
 | Erase evidence, normalize dates, wipe disks on suspicion | Preserve truthful verification and use reviewed publication packages and owner-approved incident response. |
 | Rewrite every guide with stronger guarantees | Update the affected guides, tests and capability boundaries together, with explicit unverified deployment checks. |
+| Rotate wallet passwords or wallet roots on every boot | Refused: stable wallet-password derivation and database fingerprint pins are recovery invariants. Import and preserve the original independent secret. |
+| Trust `Host` or `X-Tor-Onion-Role` as administrator proof | Refused: use the existing private socket capability or verified service identity, with account authorization still required. |
+| Encrypt raw error text into padded persistent log envelopes | Not needed for the existing minimized RAM ring. Avoid collecting request contents; the HTTP logger now emits fixed bounded classes. |
 
 The [production checklist](install/production-checklist.md) covers operator
 acceptance. [Contributing](../CONTRIBUTING.md) describes the code, guide and

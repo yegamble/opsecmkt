@@ -76,6 +76,9 @@ nav:
   - Get started:
       - install/README.md
       - Requirements: install/requirements.md
+      - Native binary and separated services: install/binary.md
+      - Service topology and sizing: install/service-topology.md
+      - RAM secrets and emergency response: install/ram-secrets-and-emergency.md
       - Read-only preview: install/preview.md
       - Local marketplace: install/local.md
       - Onion service (Tor): install/tor.md
@@ -94,6 +97,7 @@ nav:
       - Test-network payments: testnet-runbook.md
       - Per-order escrow: escrow.md
   - Reference:
+      - Native CLI reference: install/cli-reference.md
       - Installer reference: install/installer-reference.md
       - Implementation status: implementation-status.md
       - Acceptance checks: acceptance.md

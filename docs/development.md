@@ -40,8 +40,9 @@ go run ./cmd/server
 Open <http://127.0.0.1:8080/setup> and use the generated `SETUP_TOKEN` to bootstrap
 your administrator. Save that token privately and reuse it across restarts:
 TOTP secrets are encrypted with a key derived from it. The server reads environment
-variables directly; it does **not** automatically load `.env`. Run from the repo
-root so it can find `web/` templates and assets. Schema and migrations apply on
+variables directly; it does **not** automatically load `.env`. Templates and
+static assets are embedded in the executable, so a built binary can run from
+any directory. Rebuild after editing UI files. Schema and migrations apply on
 startup; the database user needs permission to create them.
 
 Stop/start this database with `docker stop opsecmkt-dev-db` and

@@ -635,9 +635,10 @@ func TestScanCountsWindow(t *testing.T) {
 	}
 }
 
-// There is no switch that lets an upload skip the scan: the only scanner settings are the address and the
-// signature age limit.
+// There is no switch that lets an upload skip the scan. The extra upload
+// settings only select the isolated service and authenticate its transport.
 func TestNoScannerSkipSwitch(t *testing.T) {
+	allowed := map[string]bool{"CLAMD_ADDRESS": true, "SCANNER_MAX_SIGNATURE_AGE_DAYS": true, "UPLOAD_MODE": true, "UPLOAD_BACKEND_ADDR": true, "UPLOAD_CA": true, "UPLOAD_CERT": true, "UPLOAD_KEY": true}
 	files, _ := filepath.Glob("internal/market/*.go")
 	main, _ := filepath.Glob("cmd/server/*.go")
 	getenv := regexp.MustCompile(`Getenv\("([A-Z0-9_]+)"\)|getenv\("([A-Z0-9_]+)"\)`)
@@ -648,7 +649,7 @@ func TestNoScannerSkipSwitch(t *testing.T) {
 		src, _ := os.ReadFile(name)
 		for _, m := range getenv.FindAllStringSubmatch(string(src), -1) {
 			v := m[1] + m[2]
-			if (strings.Contains(v, "SCAN") || strings.Contains(v, "CLAM") || strings.Contains(v, "UPLOAD")) && v != "CLAMD_ADDRESS" && v != "SCANNER_MAX_SIGNATURE_AGE_DAYS" {
+			if (strings.Contains(v, "SCAN") || strings.Contains(v, "CLAM") || strings.Contains(v, "UPLOAD")) && !allowed[v] {
 				t.Errorf("%s reads %s", name, v)
 			}
 		}

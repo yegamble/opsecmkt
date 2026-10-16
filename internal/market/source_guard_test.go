@@ -25,7 +25,7 @@ import (
 //     SQL at all. The sites in sqlBuildAllowlist are the exceptions, each with the reason it is safe;
 //   - nothing reads or writes a X-Forwarded-*, Forwarded, X-Real-IP, True-Client-IP or CF-Connecting-IP header, or
 //     RemoteAddr. The sign-in and write limiters key on accounts, handles and the one shared anonymous class, never on
-//     an address the client or a proxy could choose.
+//     an address the client or a proxy could choose. Removing one of those headers with Header.Del is allowed.
 //
 // Fixedness is a small syntactic analysis, not type checking: an expression is fixed when it is a string literal, a
 // constant, a package variable initialised from fixed text, a local variable every assignment of which is fixed
@@ -441,12 +441,18 @@ func sourceFindings(fset *token.FileSet, files []sourceFile) ([]sourceFinding, m
 				out = append(out, sourceFinding{fset.Position(pos).String() + " (" + site + ")", what})
 			}
 			concatSeen := map[ast.Node]bool{}
+			deletedHeaders := map[*ast.BasicLit]bool{}
 			ast.Inspect(decl, func(n ast.Node) bool {
 				switch v := n.(type) {
 				case *ast.CallExpr:
 					sel, ok := v.Fun.(*ast.SelectorExpr)
 					if !ok {
 						break
+					}
+					if header, ok := sel.X.(*ast.SelectorExpr); ok && header.Sel.Name == "Header" && sel.Sel.Name == "Del" && len(v.Args) == 1 {
+						if literal, ok := v.Args[0].(*ast.BasicLit); ok && literal.Kind == token.STRING {
+							deletedHeaders[literal] = true
+						}
 					}
 					if id, ok := sel.X.(*ast.Ident); ok && htmlTemplate != "" && id.Name == htmlTemplate && trustedTemplateTypes[sel.Sel.Name] {
 						add(v.Pos(), false, "template."+sel.Sel.Name+" conversion marks text as trusted and skips html/template escaping")
@@ -477,7 +483,7 @@ func sourceFindings(fset *token.FileSet, files []sourceFile) ([]sourceFinding, m
 					}
 				case *ast.BasicLit:
 					if v.Kind == token.STRING {
-						if s, err := strconv.Unquote(v.Value); err == nil && untrustedHeader.MatchString(s) {
+						if s, err := strconv.Unquote(v.Value); err == nil && untrustedHeader.MatchString(s) && !deletedHeaders[v] {
 							add(v.Pos(), false, "header "+s+" is read or written: forwarded address and scheme headers are not trusted")
 						}
 					}
@@ -593,6 +599,15 @@ func headers(r *http.Request) {
 	_ = r.Header.Get("x-real-ip")
 	_ = r.RemoteAddr
 }
+
+func deleteHeaders(r *http.Request) {
+	r.Header.Del("Forwarded")
+	r.Header.Del("X-Forwarded-For")
+}
+
+func writeHeaders(r *http.Request) {
+	r.Header.Set("X-Forwarded-For", "forged")
+}
 `
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, "p.go", src, 0)
@@ -606,7 +621,7 @@ func headers(r *http.Request) {
 		got[site]++
 	}
 	want := map[string]int{"p.go:casts": 3, "p.go:sprintf": 2, "p.go:concat": 2, "p.go:variable": 1, "p.go:headers": 3,
-		"p.go:exported": 1, "p.go:Exported": 1, "p.go:helper2": 1}
+		"p.go:exported": 1, "p.go:Exported": 1, "p.go:helper2": 1, "p.go:writeHeaders": 1}
 	if len(got) != len(want) {
 		t.Errorf("findings by function = %v, want %v", got, want)
 	}

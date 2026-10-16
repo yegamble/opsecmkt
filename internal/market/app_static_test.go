@@ -11,6 +11,12 @@ import (
 
 func TestStaticFilesDoNotExposeDirectoriesOrModificationTimes(t *testing.T) {
 	a := testHTTPApp(false)
+	// Put hostile filesystem fixtures outside the source tree: concurrent builds
+	// must never accidentally embed a temporary test asset.
+	t.Chdir(t.TempDir())
+	if err := os.MkdirAll("web/static", 0700); err != nil {
+		t.Fatal(err)
+	}
 	hidden, err := os.CreateTemp("web/static", ".a93-hidden-*")
 	if err != nil {
 		t.Fatal(err)
@@ -58,7 +64,8 @@ func TestStaticFilesDoNotExposeDirectoriesOrModificationTimes(t *testing.T) {
 		a.ServeHTTP(w, r)
 		return w
 	}
-	for _, target := range []string{"/static/", "/static/" + filepath.Base(dir), "/static/../go.mod", "/static/" + hiddenName, "/static/missing.css"} {
+	// Files added beside a deployed executable are never part of its embedded public assets.
+	for _, target := range []string{"/static/", "/static/" + filepath.Base(dir), "/static/../go.mod", "/static/" + hiddenName, "/static/" + svgName, "/static/missing.css"} {
 		w := request(http.MethodGet, target, nil)
 		if w.Code != http.StatusNotFound || w.Header().Get("Cache-Control") != "no-store" {
 			t.Errorf("GET %s: status=%d Cache-Control=%q body=%q", target, w.Code, w.Header().Get("Cache-Control"), w.Body.String())
@@ -72,7 +79,6 @@ func TestStaticFilesDoNotExposeDirectoriesOrModificationTimes(t *testing.T) {
 		method, target, contentType string
 	}{
 		{http.MethodGet, "/static/auth.css", "text/css"},
-		{http.MethodGet, "/static/" + svgName, "image/svg+xml"},
 		{http.MethodHead, "/static/auth.css", "text/css"},
 	} {
 		w := request(tc.method, tc.target, nil)

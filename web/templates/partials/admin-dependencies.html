@@ -1,0 +1,13 @@
+{{define "admin-dependencies"}}{{with .DependencyStatus}}
+<section class="panel" id="dependency-status" aria-labelledby="dependency-status-heading">
+<h2 id="dependency-status-heading">Service isolation and updates</h2>
+<p>Deployment profile: <strong>{{.Profile}}</strong>.</p>
+{{if .NeedsAttention}}<p class="help" role="status"><strong>Review required: service isolation or dependency status needs attention.</strong> Open the notices and check the version table below.</p>{{else}}<p class="help">No known local-service or version warnings in the declared configuration. Actual host separation still requires operational verification.</p>{{end}}
+<details><summary>Review service OPSEC notices</summary><ul>{{range .Warnings}}<li>{{.}}</li>{{end}}</ul></details>
+<p class="help">{{.ReportState}}{{if .Checked}} Last worker check: {{.Checked}} (UTC).{{end}}{{if .Stale}} <strong>Report stale.</strong>{{end}}</p>
+{{if .Rows}}<div class="table-wrap" tabindex="0" role="region" aria-labelledby="dependency-status-heading"><table>
+<thead><tr><th scope="col">Service</th><th scope="col">Installed</th><th scope="col">Latest upstream</th><th scope="col">Status</th></tr></thead>
+<tbody>{{range .Rows}}<tr><th scope="row">{{.Service}}</th><td>{{.Current}}<br><span class="help">{{.Evidence}}</span></td><td>{{.Latest}}</td><td>{{if .Update}}<strong>{{.Status}}</strong>{{else}}{{.Status}}{{end}}</td></tr>{{end}}</tbody>
+</table></div>{{end}}
+<p class="help">Only the separate versions worker contacts official release feeds. The app reads its local signed report. Reported inventory needs operator verification; a newer upstream release may be a different major version. Review compatibility and security advisories before upgrading. Software is never upgraded automatically.</p>
+</section>{{end}}{{end}}

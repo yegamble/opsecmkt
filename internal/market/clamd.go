@@ -614,6 +614,7 @@ func (s *imageScanner) counts() scanCounts {
 
 // ScannerView is the admin page's Image scanner panel (/admin#image-scanner), built from the cached state.
 type ScannerView struct {
+	External                 bool   // isolated gateway owns scanner checks; local metrics do not apply
 	State, Detail            string // "Signatures stale", "31 days, limit 30"
 	Disabled, Ready, Stale   bool
 	Engine, Daily, DailyDate string
@@ -627,6 +628,9 @@ type ScannerView struct {
 func init() {
 	registerLoader("admin", func(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
 		v := scannerView(a.scanner.State(), a.scanner.counts())
+		if a.isolatedUploads {
+			v.External, v.Disabled, v.State = true, false, "Separate upload gateway"
+		}
 		if err := a.db.QueryRowContext(ctx, "SELECT pg_size_pretty(pg_database_size(current_database()))").Scan(&v.DatabaseSize); err != nil {
 			return err
 		}

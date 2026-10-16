@@ -23,7 +23,8 @@ Server-rendered Go and PostgreSQL, PGP identity, Tor-first deployment.
 
 ## Why OPSEC Market
 
-Built for a visitor on Tor Browser with scripts off, and an operator who runs everything on one host.
+Built for a visitor on Tor Browser with scripts off. Development can use one host;
+production separates the app, database, payment services and upload gateway.
 
 - **Nothing runs in the browser.** Plain HTML and CSS, a strict Content Security Policy, no third-party assets.
 - **Identity is PGP.** Sign in with a PGP challenge or TOTP. Messages are PGP ciphertext the server cannot read.
@@ -34,14 +35,27 @@ Not yet tried in Tor Browser: the [manual pass](docs/verification.md#manual-tor-
 
 ## Install
 
+The native **`opsecmkt` binary** includes the UI and provides `serve`, `keys`,
+`upload-gateway` and `deploy` commands. It can run from any directory. Build it
+with `go build -o opsecmkt ./cmd/server`, then run `./opsecmkt` in a terminal for
+guided setup, or `./opsecmkt --help` for explicit commands. `./opsecmkt setup`
+selects the guide explicitly. It previews actions, confirms writes and explains
+which keys were generated or imported and what to back up.
+The [binary installation guide](docs/install/binary.md) covers generated or
+imported keys, single-host development and separated production services.
+Docker deployments still require Docker Compose and reviewed image digests.
+The existing shell installer remains available for compatibility.
+
 | Method | Use it to | Command |
 | --- | --- | --- |
+| [Native guided setup](docs/install/cli-reference.md#guided-interactive-setup) | Configure a deployment, generate/import onion keys, or manage an existing installation | `./opsecmkt` |
 | [Read-only preview](docs/install/preview.md) | Look around. Needs only Go 1.26.9+. | `go run ./cmd/server -preview` |
 | [Local marketplace](docs/install/local.md) | Try the full app on `127.0.0.1` | `./scripts/install.sh --local` |
 | [Onion service](docs/install/tor.md) | Run a market over Tor (recommended) | `./scripts/install.sh init --tor` |
 | [Public domain](docs/install/clearnet.md) | Run a market behind HTTPS | `./scripts/install.sh init --clearnet` |
 
-Needs Git, Docker with Compose v2 (2.17+ for Tor) and OpenSSL. Use a
+The source-checkout walkthrough below needs Git, Docker with Compose v2
+(2.17+ for Tor) and OpenSSL. Use a
 [release tag](https://github.com/yegamble/opsecmkt/releases), not `main`:
 
 ```sh

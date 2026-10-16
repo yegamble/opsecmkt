@@ -131,13 +131,14 @@ var (
 
 // upload is one request to an upload route.
 type upload struct {
-	a     *App
-	w     http.ResponseWriter
-	r     *http.Request
-	route uploadRoute
-	token string // the request's token (session cookie, or the anonymous one)
-	user  *User
-	back  string // where the refusal page links back to
+	a            *App
+	w            http.ResponseWriter
+	r            *http.Request
+	route        uploadRoute
+	token        string // the request's token (session cookie, or the anonymous one)
+	user         *User
+	back         string             // where the refusal page links back to
+	validateCSRF func([]byte) error // separate gateway delegates admission before reading the photo
 }
 
 // serveUpload handles POST to an upload route; ServeHTTP calls it before reading any of the body. session is the
@@ -146,6 +147,12 @@ func (a *App) serveUpload(w http.ResponseWriter, r *http.Request, route uploadRo
 	u := &upload{a: a, w: w, r: r, route: route, token: token, back: "/account#avatar"}
 	if route.kind == uploadListing {
 		u.back = "/vendor-dashboard"
+	}
+	if a.isolatedUploads {
+		// Do not drain: originals must never enter this process in isolated mode.
+		w.Header().Set("Connection", "close")
+		u.render(http.StatusUnsupportedMediaType, "Photo not saved: uploads must use the separate upload gateway. Nothing was stored.")
+		return
 	}
 	if msg := postOriginError(r, a.secure); msg != "" {
 		u.refuse(http.StatusForbidden, msg)
@@ -379,7 +386,11 @@ func (u *upload) readForm() (uploadForm, error) {
 	if err != nil {
 		return f, failed(err)
 	}
-	if subtle.ConstantTimeCompare(sent, []byte(u.a.csrf(u.token))) != 1 {
+	if u.validateCSRF != nil {
+		if err := u.validateCSRF(sent); err != nil {
+			return f, err
+		}
+	} else if subtle.ConstantTimeCompare(sent, []byte(u.a.csrf(u.token))) != 1 {
 		return f, errUploadCSRF
 	}
 	for seen := ""; ; {

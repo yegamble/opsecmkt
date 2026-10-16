@@ -3,6 +3,11 @@
 What the host needs. The installer checks Docker, Compose and OpenSSL. With local nodes it also compares the free
 space of Docker's data directory with the estimate below and **warns only**: it never refuses for disk.
 
+These commands describe the legacy shell installer. The
+[native binary](binary.md) needs no Git checkout or OpenSSL at runtime; Docker
+deployments still require Docker and Compose. For production host roles and
+starting hardware estimates, use [Service topology and sizing](service-topology.md).
+
 ## Software
 
 | Software | Needed for | Version |
@@ -35,10 +40,13 @@ database and simulated-RPC tests only. All figures are estimates.
 
 | Node | Pruned (default) | Full | First sync |
 | --- | --- | --- | --- |
-| Monero mainnet (default) | 45 GB or more (45 GB in April 2022 per Monero's README, more today) | 130 GB or more (April 2022) | Days |
+| Monero mainnet (legacy installer default) | Allocate from current chain size plus growth and sync headroom | Allocate from current chain size plus growth and sync headroom | Depends on disk, CPU and connectivity |
 | Monero stagenet | ~20 GB | Not published | Hours |
 
-Monero chain sizes grow over time. Reserve more than the historical mainnet figure; stagenet needs about 20 GB as an unverified estimate.
+Monero chain sizes grow over time; the old April 2022 mainnet estimates are no
+longer a suitable provisioning budget. Use the dated official figures and
+headroom in [Service topology and sizing](service-topology.md). Stagenet's 20 GB
+figure remains an unverified estimate.
 Details: [Local node pruning](../operator-guide.md#local-node-pruning).
 
 > **Warning:** a full disk stops the nodes. The installer prints `WARNING` when Docker's data directory has less free

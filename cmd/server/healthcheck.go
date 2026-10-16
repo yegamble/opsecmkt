@@ -1,11 +1,15 @@
 package main
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 )
 
@@ -33,9 +37,19 @@ func healthcheck(addr string, timeout time.Duration) error {
 	if err != nil {
 		return err
 	}
+	transport := &http.Transport{Proxy: nil, DisableKeepAlives: true}
+	if certFile := os.Getenv("TLS_CERT"); certFile != "" {
+		certificate, err := os.ReadFile(certFile)
+		pool := x509.NewCertPool()
+		if err != nil || len(certificate) > 1<<20 || !pool.AppendCertsFromPEM(certificate) {
+			return errors.New("healthcheck cannot read TLS_CERT")
+		}
+		transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: pool, ServerName: os.Getenv("OPSECMKT_APP_HOST")}
+		u = strings.Replace(u, "http:", "https:", 1)
+	}
 	client := &http.Client{
 		Timeout:       timeout,
-		Transport:     &http.Transport{Proxy: nil, DisableKeepAlives: true},
+		Transport:     transport,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 	resp, err := client.Get(u)

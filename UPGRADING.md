@@ -1,5 +1,31 @@
 # Current source: Monero only
 
+The current source also adds a native `opsecmkt` executable with embedded UI,
+deployment commands, key generation/import, isolated upload gateway and a signed
+dependency-version worker. Build with `go build -o opsecmkt ./cmd/server`; see
+[Binary installation](docs/install/binary.md). Existing server flags and the shell
+installer remain supported. The native server now defaults to `127.0.0.1:8080`;
+containers continue to set `ADDR=:8080` explicitly. Rebuild after changing UI files.
+
+The new deployment controller initializes a new private directory and refuses
+overwrites. It does not automatically adopt existing Compose volumes or migrate
+an old installer directory. Import existing secrets explicitly when preparing a
+deployment; preserve the Monero wallet secret, seed recipient, database, retention
+state and Tor identities. Do not initialize a second instance against live payment
+state as an upgrade procedure. Backups/restores and upgrade adoption still use the
+existing documented operations workflow.
+
+`OPSECMKT_PROFILE=prod` refuses integrated uploads and known local dependency
+endpoints, requires PostgreSQL TLS with certificate validation and authenticated HTTPS Monero services,
+and requires both app TLS and a private mutual-TLS upload listener. Switching to
+isolated uploads requires routing browser traffic through the separate upload
+gateway before enabling this profile. The gateway processes originals and forwards
+normalized JPEGs only. Administrators protected by `ADMIN_SOCKET` cannot upload
+through the public gateway; preserve private administrator ingress. Dependency and
+service-placement notices appear only in the administrator panel. The dependency
+worker needs its own signing seed; mount only its public verification key and
+signed report into the application. The app does not fetch release information.
+
 The current source supports only Monero (XMR). Bitcoin checkout, key registration, signing, node provisioning and payment controls have been removed. Listing forms and new orders use XMR. Monero escrow remains custodial and off by default; its network and wallet safeguards remain in place.
 
 There is no live deployment or payment cutover for this change. The release notes below describe earlier alpha versions and are historical.

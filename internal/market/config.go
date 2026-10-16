@@ -62,6 +62,9 @@ var dbPlaceholderMarkers = []string{"replace_me", "replace-me", "replace_with", 
 // that disagrees with the Compose overlay in COMPOSE_FILE.
 func loadStartupConfig(getenv func(string) string, mode string) (startupConfig, error) {
 	c := startupConfig{appSecretKey: getenv("APP_SECRET_KEY"), setupToken: getenv("SETUP_TOKEN")}
+	if err := CheckDeploymentProfile(getenv); err != nil {
+		return c, err
+	}
 	if err := refuseBitcoinEnv(getenv); err != nil {
 		return c, err
 	}

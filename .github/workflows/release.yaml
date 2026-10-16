@@ -53,6 +53,18 @@ jobs:
           if ./verify-audit-linux-amd64 2> usage.txt; then exit 1; fi
           grep -q 'usage: verify-audit -pub' usage.txt
           rm usage.txt
+      - name: Build standalone application and deployment CLI
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          for goarch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH=$goarch go build -trimpath -buildvcs=false -ldflags="-s -w -buildid= -X main.buildVersion=$RELEASE_TAG" \
+              -o "opsecmkt-linux-$goarch" ./cmd/server
+          done
+          ./opsecmkt-linux-amd64 --help > application-usage.txt
+          grep -q 'upload-gateway' application-usage.txt
+          grep -q 'deploy' application-usage.txt
+          rm application-usage.txt
       - name: Package checksums and build record
         env:
           RELEASE_TAG: ${{ github.ref_name }}
@@ -61,10 +73,10 @@ jobs:
           python3 - <<'PY'
           import json, os
           with open('build.json', 'w') as output:
-              json.dump({'repository': os.environ['GITHUB_REPOSITORY'], 'commit': os.environ['GITHUB_SHA'], 'tag': os.environ['RELEASE_TAG'], 'run': os.environ['GITHUB_SERVER_URL'] + '/' + os.environ['GITHUB_REPOSITORY'] + '/actions/runs/' + os.environ['GITHUB_RUN_ID'], 'platform': 'linux/amd64', 'format': 'OCI image archive; embedded BuildKit SBOM and provenance', 'verify_audit': sorted(name for name in os.listdir('.') if name.startswith('verify-audit-'))}, output, indent=2)
+              json.dump({'repository': os.environ['GITHUB_REPOSITORY'], 'commit': os.environ['GITHUB_SHA'], 'tag': os.environ['RELEASE_TAG'], 'run': os.environ['GITHUB_SERVER_URL'] + '/' + os.environ['GITHUB_REPOSITORY'] + '/actions/runs/' + os.environ['GITHUB_RUN_ID'], 'platform': 'linux/amd64', 'format': 'OCI image archive; embedded BuildKit SBOM and provenance', 'application_binaries': sorted(name for name in os.listdir('.') if name.startswith('opsecmkt-linux-')), 'verify_audit': sorted(name for name in os.listdir('.') if name.startswith('verify-audit-'))}, output, indent=2)
               output.write('\n')
           PY
-          sha256sum opsecmkt.oci.tar.gz build.json verify-audit-* > SHA256SUMS
+          sha256sum opsecmkt.oci.tar.gz build.json opsecmkt-linux-* verify-audit-* > SHA256SUMS
       - name: Create private draft release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -73,6 +85,8 @@ jobs:
           printf 'Pre-release. Test networks only. No real funds. Install: git checkout %s; see UPGRADING.md.\n\n' "$RELEASE_TAG" > release-notes.md
           cat >> release-notes.md <<'NOTES'
           Built after CI verification: Linux amd64 OCI image archive. Verify SHA256SUMS before importing with an OCI-aware tool such as Skopeo. The archive embeds BuildKit provenance and an SBOM. These are build metadata, not a cryptographic signature. See docs/ci-cd.md for import and rollback instructions. No production deployment is performed.
+
+          opsecmkt-linux-amd64 and opsecmkt-linux-arm64 are standalone application and deployment CLI binaries with embedded UI assets and migrations. Copy the matching binary to the server, verify SHA256SUMS, and run --help. Native serve uses an external PostgreSQL service; deploy manages explicit pinned Docker images without requiring a source checkout or Go compiler. See docs/install/binary.md for initialization, key import and production layer separation. Deployment infrastructure and remote-service readiness still require operator verification.
 
           The default image CAPTCHA has no audio or text alternative.
 
@@ -83,5 +97,5 @@ jobs:
           echo "Go version: $(go version)" >> release-notes.md
           flags=()
           if [[ "$RELEASE_TAG" == *-* ]]; then flags=(--prerelease); fi
-          gh release create "$RELEASE_TAG" opsecmkt.oci.tar.gz SHA256SUMS build.json verify-audit-* \
+          gh release create "$RELEASE_TAG" opsecmkt.oci.tar.gz SHA256SUMS build.json opsecmkt-linux-* verify-audit-* \
             --verify-tag --draft "${flags[@]}" --title "$RELEASE_TAG" --notes-file release-notes.md

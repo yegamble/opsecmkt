@@ -20,6 +20,11 @@ The pipeline creates a **draft GitHub release** with:
 
 - `opsecmkt.oci.tar.gz`: Linux amd64 OCI image archive, with embedded BuildKit provenance and SBOM.
 - `build.json`: exact source commit, tag, platform and Actions run URL.
+- `opsecmkt-linux-amd64` and `opsecmkt-linux-arm64`: native application/operator
+  binaries built from `cmd/server`, including public UI assets, key management,
+  the upload gateway and the separate dependency-version worker. Follow
+  [Binary installation](install/binary.md); Docker services still need reviewed
+  image digests. These binaries are included in `SHA256SUMS`.
 - `verify-audit-linux-amd64`, `verify-audit-linux-arm64`, `verify-audit-darwin-amd64`, `verify-audit-darwin-arm64`, `verify-audit-windows-amd64.exe`: static builds of `cmd/verify-audit`, the offline checker for signed audit exports (standard library only, no network access).
 - `SHA256SUMS`: checksums for the archive, build record and every verifier binary.
 

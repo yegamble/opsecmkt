@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"opsecmkt/internal/market"
+	"opsecmkt/internal/secretfile"
 	"os"
 	"os/signal"
 	"syscall"
@@ -34,7 +35,7 @@ const maxConns = market.MaxConns
 
 // newServer is the HTTP server with its read and write bounds.
 func newServer(addr string, h http.Handler) *http.Server {
-	return &http.Server{Addr: addr, Handler: h, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 20 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16384}
+	return &http.Server{Addr: addr, Handler: h, ErrorLog: httpErrorLogger(log.Writer()), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 20 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16384}
 }
 
 // listen opens srv's address with at most maxConns open connections (A-178); later clients wait in the kernel's
@@ -49,12 +50,27 @@ func listen(srv *http.Server) (net.Listener, error) {
 }
 
 func main() {
+	handled, err := command(os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
+	if errors.Is(err, flag.ErrHelp) {
+		return
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "opsecmkt:", err)
+		os.Exit(1)
+	}
+	if handled {
+		return
+	}
+	if err := secretfile.LoadEnvironment(); err != nil {
+		fmt.Fprintln(os.Stderr, "opsecmkt:", err)
+		os.Exit(1)
+	}
 	healthcheckFlag := flag.Bool("healthcheck", false, "probe the local server's /healthz (ADDR's port, default 8080) and exit 0 only when it answers ok; prints nothing on success (the Compose healthcheck)")
 	statusFlag := flag.Bool("status", false, "print installed=true|false schema=NNN keyroot=app_secret_key|setup_token for DATABASE_URL and exit (read-only; starts no server; prints no secret)")
 	preview := flag.Bool("preview", false, "read-only UI preview with sample data, binds loopback only")
 	resetAdmin := flag.String("reset-admin-password", "", "host-only break-glass: read a new password for this administrator handle from stdin, end its sessions and exit (starts no server)")
 	bootstrap := flag.String("bootstrap-admin", "", "host-only first-run setup: create the first administrator with this handle, reading its password from stdin, mark the market installed and exit (starts no server; no setup token needed)")
-	siteName := flag.String("site-name", "", "with -bootstrap-admin: the marketplace name (default OPSMKT, at most 80 bytes)")
+	siteName := flag.String("site-name", "", "with -bootstrap-admin: the marketplace name (default OPSMKT, at most 80 characters)")
 	setRoleFlag := flag.String("set-role", "", "host-only: -set-role HANDLE ROLE changes that account's role to buyer, vendor, moderator or admin (the only way to add or remove an administrator; removing one ends its sessions) and exits (starts no server)")
 	resetFactors := flag.String("reset-admin-factors", "", "host-only break-glass: turn off this administrator's TOTP, recovery codes and PGP sign-in, end its sessions and exit (reads no stdin; starts no server)")
 	exportAuditFlag := flag.Int64("export-audit", 0, "host-only: export settled audit events up to this ID and their detached signature, then exit; starts no server or wallets")
@@ -129,13 +145,22 @@ func main() {
 		}
 		return
 	}
+	if len(flag.Args()) != 0 {
+		fmt.Fprintln(os.Stderr, "unexpected arguments; run opsecmkt --help")
+		os.Exit(2)
+	}
+	if !*preview {
+		if err := checkListenerSettings(); err != nil {
+			log.Fatal(err)
+		}
+	}
 	app, err := market.New(context.Background(), *preview)
 	if err != nil {
 		log.Fatal(err)
 	}
 	addr := os.Getenv("ADDR")
 	if addr == "" {
-		addr = ":8080"
+		addr = "127.0.0.1:8080"
 	}
 	if *preview {
 		addr = os.Getenv("PREVIEW_ADDR")
@@ -157,7 +182,28 @@ func main() {
 		app.Close()
 		log.Fatal(err)
 	}
+	if !*preview {
+		plain := ln
+		ln, err = publicTLSListener(plain)
+		if err != nil {
+			plain.Close()
+			app.Close()
+			log.Fatal(err)
+		}
+	}
 	servers, listeners := []*http.Server{srv}, []net.Listener{ln}
+	if !*preview {
+		media, mediaListener, err := privateUploadListener(app)
+		if err != nil {
+			ln.Close()
+			app.Close()
+			log.Fatal(err)
+		}
+		if media != nil {
+			servers, listeners = append(servers, media), append(listeners, mediaListener)
+			log.Print("private upload listener enabled with required client certificates")
+		}
+	}
 	if socket := app.AdminSocket(); socket != "" {
 		admin := newServer(socket, app.AdminHandler())
 		adminListener, err := listenAdmin(admin)
