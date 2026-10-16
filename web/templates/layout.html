@@ -6,7 +6,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
 <meta name="description" content="{{if $membersGuest}}Sign in to access this marketplace.{{else if .LiveNetwork}}Marketplace with PGP-based accounts and messages and no browser JavaScript. Mainnet payments are real funds.{{else}}Test-network marketplace with PGP-based accounts and messages and no browser JavaScript.{{end}}">
-<title>{{if .Error}}Error: {{end}}{{with .Notice}}{{.}} – {{end}}{{.Title}} · {{if .Preview}}OPSEC Market{{else}}{{with index .Settings "site_name"}}{{.}}{{else}}OPSEC Market{{end}}{{end}}</title>
+<title>{{if .Error}}Error: {{end}}{{with .Notice}}{{.}} – {{end}}{{.Title}} · {{or (index .Settings "site_name") "OPSEC Market"}}</title>
 <link rel="stylesheet" href="/static/style.css">
 <link rel="stylesheet" href="/static/auth.css">
 <link rel="stylesheet" href="/static/pgp.css">
@@ -20,8 +20,8 @@
 <a class="skip-link" href="#main">Skip to main content</a>
 <header>
 <div class="topbar">
-<a class="brand" href="/" aria-label="OPSEC Market home">
-<span class="wordmark-bracket">[</span>OPSEC<span class="wordmark-accent">MKT]</span>
+<a class="brand" href="/" aria-label="{{or (index .Settings "site_name") "OPSEC Market"}} home">
+{{template "market-wordmark" .}}
 </a>
 {{if not $membersGuest}}<form class="header-search" action="/" method="get" role="search">
 <label class="sr-only" for="header-search">Search listings</label>
@@ -54,7 +54,7 @@
 </div>
 <footer class="footer">
 <div class="footer-identity">
-<span class="footer-wordmark"><span class="wordmark-bracket">[</span>OPSEC<span class="wordmark-accent">MKT]</span></span>
+<span class="footer-wordmark">{{template "market-wordmark" .}}</span>
 <span>Independent by design</span>
 </div>
 {{if not $membersGuest}}<nav class="footer-links" aria-label="Footer">

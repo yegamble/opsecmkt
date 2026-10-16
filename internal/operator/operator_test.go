@@ -754,3 +754,43 @@ func TestOlderOperatorConfigWithoutInitialAccessSettingsRemainsValid(t *testing.
 		t.Fatal(plan.String())
 	}
 }
+
+func TestBrandingUploadOriginInitializationRenderingAndPlan(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "install")
+	if output, err := invoke(t, "init", "--dir", dir, "--mode", "dev", "--app-image", testImage, "--branding-upload-origin", "https://UPLOAD.MARKET.EXAMPLE:443"); err != nil {
+		t.Fatalf("init: %v (%s)", err, output)
+	}
+	c, err := loadConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, env, err := render(dir, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Settings["BRANDING_UPLOAD_ORIGIN"] != "https://upload.market.example" || env["BRANDING_UPLOAD_ORIGIN"] != "https://upload.market.example" {
+		t.Fatal("fixed origin not normalized, persisted and forwarded")
+	}
+	plan, err := invoke(t, "plan", "--dir", dir)
+	if err != nil || !strings.Contains(plan, "branding upload origin: https://upload.market.example") {
+		t.Fatalf("origin missing from plan: %v %s", err, plan)
+	}
+	c.Settings["BRANDING_UPLOAD_ORIGIN"] = "http://127.0.0.1:8080"
+	c.Mode = "prod"
+	if err := validate(dir, c); err == nil || !strings.Contains(err.Error(), "BRANDING_UPLOAD_ORIGIN") {
+		t.Fatalf("production accepted HTTP loopback: %v", err)
+	}
+}
+
+func TestBrandingUploadOriginInitRejectsInvalidFlagsAndSetWithoutWriting(t *testing.T) {
+	for _, flags := range [][]string{{"--branding-upload-origin", "http://public.example"}, {"--branding-upload-origin", "https://user:private-value@public.example"}, {"--set", "BRANDING_UPLOAD_ORIGIN=https://public.example/path"}} {
+		dir := filepath.Join(t.TempDir(), "install")
+		args := append([]string{"init", "--dir", dir, "--mode", "dev", "--app-image", testImage}, flags...)
+		if output, err := invoke(t, args...); err == nil || !strings.Contains(err.Error(), "BRANDING_UPLOAD_ORIGIN") || strings.Contains(output+err.Error(), "private-value") {
+			t.Fatalf("invalid origin not safely refused: %v %s", err, output)
+		}
+		if _, err := os.Lstat(dir); !os.IsNotExist(err) {
+			t.Fatal("invalid origin wrote installation")
+		}
+	}
+}

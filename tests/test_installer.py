@@ -897,6 +897,7 @@ time.sleep(60)
                                MONERO_NETWORK_FLAG='--stagenet', LOG_DRIVER='local', TOR_VERSION='env-tor-package')
         original = self.write_env(values)
         overrides = {'MONERO_NETWORK_FLAG': '', 'LOG_DRIVER': 'none', 'TOR_VERSION': 'shell-tor-package',
+                     'BRANDING_UPLOAD_ORIGIN': 'https://unreviewed-shell-origin.example',
                      'COMPOSE_ENV_FILES': '/unrelated.env', 'COMPOSE_DISABLE_ENV_FILE': 'true',
                      'COMPOSE_PATH_SEPARATOR': ';'}
         for command in ('check', 'status'):

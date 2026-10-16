@@ -437,9 +437,10 @@ are audited and take effect without a restart. Closing registration does not
 delete accounts or end existing sessions. First-administrator setup remains
 available until initialization is complete.
 
-Members-only mode protects listings, search, vendor pages, images and transparency
+Members-only mode protects listings, search, vendor pages, listing photos, avatars and transparency
 pages. Sign-in, allowed registration, setup and their required resources remain
-reachable. An account provides access; these controls do not add an approval
+reachable. The market name and logo remain public so visitors can identify the
+site before signing in. An account provides access; these controls do not add an approval
 process for new members. Previously downloaded or publicly cached content cannot
 be recalled by changing the setting.
 
@@ -454,6 +455,59 @@ editing an initial value does not override them. See the
 After changing access, check a signed-out session and an existing account.
 Members-only content should lead to sign-in, while closed `/register` shows a
 notice without a form. Existing accounts should still be able to sign in.
+
+### Changing the market name and logo
+
+An administrator manages the site's identity under **Admin → Market name and logo**.
+The saved name labels browser tabs and the home link, and supplies the text
+wordmark when no custom logo is set. A name change does not rewrite lettering
+inside an uploaded image.
+
+1. Enter the **Market name** and select **Save market name**.
+2. To replace the logo, enter your password and second factor when enabled, then
+   select **Authorize logo upload**.
+3. On the next page, choose a JPEG, PNG or self-contained SVG and select the
+   upload button. Authorization expires after 10 minutes and accepts one upload.
+4. Reopen the market and check the header, footer and sign-in page. Reload the
+   admin page to confirm the saved logo and audit event.
+5. To remove the custom image, confirm **Use text wordmark**. The saved name is
+   retained.
+
+The logo always fits a fixed box: 224 × 56 CSS pixels in the desktop header,
+192 × 48 in the mobile header and footer. Its proportions are preserved, so tall
+or wide artwork leaves space inside the box instead of stretching the layout.
+Long text names are visually shortened to fit; the full name remains available
+to assistive technology and in browser titles.
+
+JPEG and PNG inputs are limited to 4 MiB and pass the existing scanner and
+re-encoding limits. They are stored as JPEG, with transparency flattened onto
+white; use SVG when the artwork needs a transparent background.
+SVG inputs are limited to 256 KiB and normalized to a small
+set of static shapes and text. Scripts, CSS styles, links, embedded images,
+external resources, animations and document declarations are refused. Export
+complex artwork as simple outlined paths or as a PNG. Raster metadata is removed;
+SVG presentation, visible text and supported accessibility labels may remain.
+ClamAV checks uploads for known malware; it does not review picture content.
+
+For a separate private administrator onion with isolated uploads, configure
+`BRANDING_UPLOAD_ORIGIN` on the application with the public upload-gateway origin,
+then restart the application. Native `serve` and `deploy init` accept
+`--branding-upload-origin`. Use a verified HTTPS origin or an HTTP v3 onion
+origin, without credentials, a path, query or fragment. Keep the private admin
+onion's client authorization in place. A blank value disables this upload flow
+on that topology; it does not prevent existing services from starting.
+
+The confirmation stays on the private admin connection. The next form sends only
+a short-lived logo authorization token and the file to the configured gateway;
+it sends no admin password, second-factor code or admin session field. The gateway
+may learn the private admin onion's hostname through the browser's Origin header.
+The token authorizes only this logo upload and grants no general administrator
+access. The gateway processes originals; the app accepts only normalized logo data.
+Update both processes to a supporting release before using the feature.
+
+The name and logo are public even when browsing requires sign-in. Replacing or
+removing a logo cannot recall downloaded copies. Database recovery copies can
+retain earlier logos until their normal expiry; removal is not forensic erasure.
 
 ### Authentication
 

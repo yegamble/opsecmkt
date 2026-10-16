@@ -25,17 +25,7 @@
 <p class="help">Wallet connections and encrypted backups are configured on the server. This control room does not install nodes or expose their RPC credentials.</p>
 </section>
 <div class="grid-two">
-<section class="panel">
-<h2>Marketplace settings</h2>
-<form class="stack" method="post" action="/admin">
-<input type="hidden" name="csrf" value="{{.CSRF}}">
-<input type="hidden" name="form_nonce" value="{{formNonce "/admin"}}">
-<input type="hidden" name="action" value="settings">
-<label>Site name<input name="site_name" value="{{index .Settings "site_name"}}" required maxlength="80">
-</label>
-<button class="primary" type="submit">Save settings</button>
-</form>
-</section>
+{{template "admin-branding" .}}
 <section class="panel" id="assign-role" aria-labelledby="assign-role-heading">
 <h2 id="assign-role-heading">Assign an account role</h2>
 <form class="stack" method="post" action="/admin">

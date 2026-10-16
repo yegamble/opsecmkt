@@ -157,7 +157,7 @@ With `ADMIN_SOCKET` enabled, administrator photo/avatar uploads are unavailable
 in isolated mode, including through the existing private socket. Those actions
 need a dedicated authenticated administrator upload ingress; the public gateway
 cannot grant that capability. Other private administration workflows remain
-available.
+available. Logo uploads use a separately confirmed, one-use handoff to the configured gateway; see [market branding](../operator-guide.md#changing-the-market-name-and-logo).
 
 ## Receiving dependency update warnings
 

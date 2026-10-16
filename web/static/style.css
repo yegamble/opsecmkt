@@ -1798,3 +1798,50 @@ img.vendor-avatar {
   font-size:1.375rem
 }
 /* end A-189 image rendering */
+
+/* Branding always occupies the same box, regardless of the uploaded image's proportions. */
+.brand,.footer-wordmark,.branding-preview {
+  display:flex;
+  align-items:center;
+  width:192px;
+  height:48px;
+  max-width:100%;
+  min-width:0;
+  overflow:hidden;
+  flex:0 0 auto
+}
+.market-logo {
+  display:block;
+  width:100%;
+  height:100%;
+  max-width:100%;
+  object-fit:contain;
+  object-position:left center;
+  overflow:hidden
+}
+.market-wordmark {
+  display:flex;
+  align-items:center;
+  min-width:0;
+  max-width:100%;
+  white-space:nowrap
+}
+.market-wordmark-name {
+  min-width:0;
+  overflow:hidden;
+  text-overflow:ellipsis
+}
+.wordmark-bracket,.wordmark-accent {
+  flex:0 0 auto
+}
+.branding-preview {
+  border:1px solid var(--line);
+  background:var(--bg);
+  font:600 1.125rem var(--mono)
+}
+@media(min-width:641px) {
+  .brand,.branding-preview {
+    width:224px;
+    height:56px
+  }
+}

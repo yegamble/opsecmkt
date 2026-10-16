@@ -30,7 +30,9 @@ for (const [path, heading] of routes) {
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(page.viewportSize()!.width);
     const brand = page.getByRole('link', { name: 'OPSEC Market home' });
     await expect(brand).toHaveText('[OPSECMKT]');
-    await expect(brand.locator('.wordmark-bracket')).toHaveCSS('color', 'rgb(245, 158, 11)');
+    const brackets = brand.locator('.wordmark-bracket');
+    await expect(brackets).toHaveCount(2);
+    for (const bracket of await brackets.all()) await expect(bracket).toHaveCSS('color', 'rgb(245, 158, 11)');
     await expect(brand.locator('.wordmark-accent')).toHaveCSS('color', 'rgb(245, 158, 11)');
     const box = await brand.boundingBox();
     expect(box!.x).toBeGreaterThanOrEqual(0);

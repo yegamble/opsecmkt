@@ -124,6 +124,7 @@ type SignInRefusal struct{ Handle, Until string }
 
 type PageData struct {
 	Access           *SiteAccessView
+	Branding         *BrandingView
 	DependencyStatus *DependencyStatusView // Administrator-only local version report and topology notices.
 
 	ServerStarted string

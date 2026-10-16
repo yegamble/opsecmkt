@@ -638,7 +638,8 @@ func TestScanCountsWindow(t *testing.T) {
 // There is no switch that lets an upload skip the scan. The extra upload
 // settings only select the isolated service and authenticate its transport.
 func TestNoScannerSkipSwitch(t *testing.T) {
-	allowed := map[string]bool{"CLAMD_ADDRESS": true, "SCANNER_MAX_SIGNATURE_AGE_DAYS": true, "UPLOAD_MODE": true, "UPLOAD_BACKEND_ADDR": true, "UPLOAD_CA": true, "UPLOAD_CERT": true, "UPLOAD_KEY": true}
+	// BRANDING_UPLOAD_ORIGIN selects the file-handoff destination; it cannot bypass scanning.
+	allowed := map[string]bool{"CLAMD_ADDRESS": true, "SCANNER_MAX_SIGNATURE_AGE_DAYS": true, "UPLOAD_MODE": true, "UPLOAD_BACKEND_ADDR": true, "UPLOAD_CA": true, "UPLOAD_CERT": true, "UPLOAD_KEY": true, "BRANDING_UPLOAD_ORIGIN": true}
 	files, _ := filepath.Glob("internal/market/*.go")
 	main, _ := filepath.Glob("cmd/server/*.go")
 	getenv := regexp.MustCompile(`Getenv\("([A-Z0-9_]+)"\)|getenv\("([A-Z0-9_]+)"\)`)

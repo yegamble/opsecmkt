@@ -22,11 +22,12 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// A-186 (war room 2026-09-27, rulings C3, C5, C6 and D10): the only two routes that take a file. POST
+// A-186 (war room 2026-09-27, rulings C3, C5, C6 and D10): the two listing/avatar routes that take a file. POST
 // /listings/photo (vendors and administrators; the listing's id in the form) adds a photo to a listing, and POST
 // /account/avatar (vendors, administrators and moderators — the owner's staff avatar decision; always the
-// actor's own) sets the actor's avatar, replacing any earlier one. Besides them the escrow sign form, POST
-// /escrow/sign, and A-459's bounded hardware sign forms take multipart PSBT files (psbt_upload.go); any other POST
+// actor's own) sets the actor's avatar, replacing any earlier one. Branding's separately preauthorized file
+// handoff is bounded in branding_upload.go. The escrow sign form, POST /escrow/sign, and A-459's bounded
+// hardware sign forms take multipart PSBT files (psbt_upload.go); any other POST
 // with a multipart body is refused with a 415 page before its body is read (ServeHTTP), and every other route keeps
 // its 64 KiB form cap.
 //

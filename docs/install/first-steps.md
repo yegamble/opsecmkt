@@ -87,6 +87,12 @@ native `deploy init` or `serve` command. These are first-start defaults; later
 administrator choices are stored in PostgreSQL and survive restarts. See
 [the CLI reference](cli-reference.md#additional-runtime-settings).
 
+To change the site's identity, open **Admin → Market name and logo**. Save the
+market name, then authorize and upload a custom logo if wanted. The header and
+footer use the same fixed display bounds. See
+[changing the market name and logo](../operator-guide.md#changing-the-market-name-and-logo)
+for SVG support and private-admin gateway setup.
+
 ## What now?
 
 - [Enabling payments](enable-payments.md)

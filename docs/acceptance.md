@@ -54,13 +54,28 @@ Per-order escrow is the only payment path (A-448, A-492). Checks of payment code
 
 ## Authentication and request security
 
+- [x] Administrators can change the market name and replace/reset the shared
+  header/footer logo. The real no-JavaScript Chromium journey covers SVG and a
+  narrow portrait PNG, 80-character names, doubled text sizing, public and
+  members-only sign-in branding, stale asset URLs and fixed 320/1280 px layout
+  (`tests/e2e/db-branding.spec.ts`). Logo responses are deliberately public;
+  catalog photos and avatars retain the member gate.
+- [x] Logo uploads use password/TOTP-confirmed, expiring one-use capabilities.
+  The actual mTLS gateway journey scans originals outside the isolated app,
+  sends no administrator session/password, rechecks revocation and saves/audits
+  atomically. Static SVG canonicalization and bounded rendering reject active
+  content and resources (`TestBrandingPrivateAuthorizationHandoffAndPublicLogo`,
+  `TestBrandingIsolatedGatewayNormalizationAndRevocation`,
+  `TestBrandingGatewayRefusalsAndAtomicAudit`,
+  `TestBrandingAuthorizationRequiresCurrentTOTPAndExactNonce`,
+  `TestBrandingSVGStrictInertCanonicalization`).
 - [x] Site access and registration are independent: public/open, public/closed,
   members/open and members/closed work for guests and existing accounts. Closed
   registration hides signup links and forms and refuses a real signup form
   opened before closure. Verified in Chromium at 320 px with JavaScript disabled
   (`tests/e2e/db-access.spec.ts`), including fresh member sign-in while closed
   and restoration to public/open in `finally`.
-- [x] Members-only mode protects catalog/search, products, vendor pages, images
+- [x] Members-only mode protects catalog/search, products, vendor pages, listing photos and avatars
   and transparency content before rendering or serving bytes; authentication,
   enabled registration, first setup and essential resources remain available.
   Guest authentication pages reveal no search, categories or protected metadata.

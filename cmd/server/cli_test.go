@@ -199,3 +199,33 @@ func TestServeInvalidInitialAccessFlagsFailBeforeMutatingEnvironment(t *testing.
 		})
 	}
 }
+
+func TestServeBrandingUploadOriginFlag(t *testing.T) {
+	for _, tc := range []struct {
+		profile, origin, want string
+		valid                 bool
+	}{
+		{"prod", "https://UPLOAD.MARKET.EXAMPLE:443", "https://upload.market.example", true},
+		{"dev", "http://127.0.0.1:8080", "http://127.0.0.1:8080", true},
+		{"prod", "", "", true},
+		{"prod", "http://127.0.0.1:8080", "", false},
+		{"dev", "https://operator:private-value@public.example", "", false},
+		{"dev", "https://public.example/path", "", false},
+	} {
+		t.Run(tc.profile+"/"+tc.origin, func(t *testing.T) {
+			t.Setenv("BRANDING_UPLOAD_ORIGIN", "https://existing.example")
+			t.Setenv("OPSECMKT_PROFILE", "prod")
+			t.Setenv("ADDR", "unchanged")
+			originalArgs := os.Args
+			t.Cleanup(func() { os.Args = originalArgs })
+			err := configureServe([]string{"--addr", "changed", "--branding-upload-origin", tc.origin, "--profile", tc.profile}, io.Discard)
+			if tc.valid {
+				if err != nil || os.Getenv("BRANDING_UPLOAD_ORIGIN") != tc.want {
+					t.Fatalf("flag not forwarded canonically: %v %q", err, os.Getenv("BRANDING_UPLOAD_ORIGIN"))
+				}
+			} else if err == nil || !strings.Contains(err.Error(), "BRANDING_UPLOAD_ORIGIN") || strings.Contains(err.Error(), "private-value") || os.Getenv("BRANDING_UPLOAD_ORIGIN") != "https://existing.example" || os.Getenv("ADDR") != "unchanged" {
+				t.Fatalf("invalid flag mutated environment or leaked value: %v", err)
+			}
+		})
+	}
+}
