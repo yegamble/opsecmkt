@@ -94,6 +94,27 @@ func TestAdminTorUsesValidatedPublicSnapshotAndPrivateSocket(t *testing.T) {
 	if err != nil || !strings.Contains(string(config), "HiddenServicePort 80 unix:/run/market-admin/http.sock") || strings.Contains(string(config), "app:8080") {
 		t.Fatalf("unsafe admin config: %s %v", config, err)
 	}
+	// Control access stays in Tor's private DataDirectory, with no TCP listener
+	// or group-readable authentication material.
+	settings := map[string]string{}
+	for _, line := range strings.Split(string(config), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 2 {
+			if _, duplicate := settings[fields[0]]; duplicate {
+				t.Fatalf("duplicate Tor setting: %s", fields[0])
+			}
+			settings[fields[0]] = fields[1]
+		}
+	}
+	for option, want := range map[string]string{
+		"ControlPort": "0", "ControlSocket": "/tmp/tor/control.sock",
+		"ControlSocketsGroupWritable": "0", "CookieAuthentication": "1",
+		"CookieAuthFile": "/tmp/tor/control_auth_cookie", "CookieAuthFileGroupReadable": "0",
+	} {
+		if settings[option] != want {
+			t.Fatalf("unsafe or missing control option %s", option)
+		}
+	}
 	info, err := os.Stat(c.AdminSocketDir)
 	if err != nil || info.Mode().Perm() != 0750 {
 		t.Fatalf("socket directory mode: %v %v", info, err)

@@ -71,6 +71,10 @@ from historical findings; proposed controls must not be marked as deployed.
   connect; every public onion or mirror returns `404` for `/setup`, `/admin`,
   encoded protected paths and private audit routes. Empty or invalid client
   allowlists refuse administrator Tor startup.
+  Verify fresh authorized and unauthorized clients. A nonempty hostname, app
+  health or a previous successful test does not establish current publication.
+  Descriptor-unavailable and timeout results are inconclusive; retain their exact
+  codes and timestamps rather than marking unauthorized refusal passed.
 - [ ] Forged Host or role headers cannot grant private access. Administrator
   sessions are refused on public shared staff routes; moderator workflows still
   work. The current isolated private-admin path's image-upload limitation is
