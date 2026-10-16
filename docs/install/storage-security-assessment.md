@@ -19,14 +19,39 @@ exact offline image/platform checks passed on all three; the private database
 TLS/ordinary-role permission probe passed. Five on-host TLS leaf keys have public
 certificates signed locally. Application bootstrap, private administrator TOTP
 enrollment and audited XMR-intake pause reached independent read-only SQL
-acceptance. Full gateway/scanner and client-authorization acceptance, coordinated
-backup/restore, wallet recovery and runtime cold-boot return remain pending.
+acceptance. Native gateway and container units are now active; loopback health
+returned `200` and the isolated-scanner relay returned PONG. The actual relay
+runs under an unprivileged UID/GID with no supplementary groups and zero
+effective, permitted and ambient capabilities. The gateway certificate directory
+has verified root ownership, intended service-group access and final mode `0750`;
+TLS file bytes, ownership and modes were preserved. Five coordinated encrypted
+captures passed off-host age EOF authentication and isolated logical PostgreSQL
+restore, including exact table rows, live schema/sequence contracts, retention,
+reboot-ledger and paused-intake checks. All three roles explicitly resumed after
+fresh paused-intake/private-health verification. Independent Tor clients passed
+public access, authorized private admin login and explicit unauthorized-client
+refusal; guest homepage/navigation checks and owned-resource cleanup passed.
+The operator desktop browser failed local signature verification, so its sign-in
+and MFA/recovery-code journey remain unaccepted. Real uploads and wallet/full-service
+recovery remain pending. All-role runtime cold-boot acceptance is recorded below.
+
+Docker and containerd are now verified enabled as well as active on all three
+hosts after a reviewed enable-only correction. No daemon restart or workload
+change was performed by enablement. All three hosts subsequently passed actual
+runtime reboots, one manual unlock each and automatic service return, followed by
+fresh paused-intake SQL. The gateway’s first runtime boot exposed a socket cycle;
+its controlled repair and second actual locked boot passed separately. The first
+failed proof is preserved. A separate native acknowledgement bound app reboot
+readiness to its new boot, with GET-only agent verification and an unchanged empty
+receipt ledger. Restore instructions must apply the final socket correction and
+reinstall boot enablement; the earlier role archive predates both.
 
 Narrow boot-package holds/exclusions, explicit no automatic reboot, immutable
 boot hashes and conservative pre-transaction app-readiness revocation are now
 installed and verified on all three hosts. Public policy copies were matched
-and retained off-host. This installation performed no package upgrade, reboot
-or service change; it does not satisfy the pending runtime recovery rehearsal.
+and retained off-host. Policy installation itself performed no package upgrade,
+reboot or service change. The separate runtime rehearsals above prove service
+return for the recorded boots, not full service/wallet disaster recovery.
 
 The [current deployment checkpoint](deployment-notes.md#evidence-and-remaining-gates)
 records the remaining gates. Earlier migration and storage observations below

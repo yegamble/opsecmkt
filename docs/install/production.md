@@ -227,6 +227,21 @@ review other workloads before using a shared host. The saved Docker context
 defaults to `default`; a selected production context must still use this host's
 local engine.
 
+After the storage/core/firewall startup guards are installed, enable persistent
+Docker and containerd startup on every role host that runs them:
+
+```sh
+systemctl enable docker.service containerd.service
+systemctl is-enabled docker.service containerd.service
+systemctl is-active docker.service containerd.service
+```
+
+Expect both `enabled` and `active` before the locked reboot rehearsal. `enable`
+does not restart running services; Docker may also enable its packaged socket.
+An active daemon alone does not prove next-boot startup. Follow the
+[complete guarded-startup check](server-hardening.md#keep-services-stopped-until-storage-is-ready)
+on each separate host before enabling it.
+
 Expect the application to become healthy after it connects, applies migrations and enrolls the current retention state. This configuration creates no local database or Monero node and leaves `ESCROW_XMR=off`. It generates distinct application, setup and audit secrets. Retain them; recreating the directory with new keys is not a recovery method.
 
 ### Tor storefront
@@ -249,6 +264,12 @@ upload authorization and the file pass through the gateway. See
 [market branding](../operator-guide.md#changing-the-market-name-and-logo).
 
 These are additional arguments to the single `deploy init` command. Do not run a second initialization. The public Tor service runs on the gateway; the separate administrator Tor service runs on the application host and uses its private Unix socket. Production Tor refuses startup without the authorized administrator ingress. Use separate public and administrator identities and keep their private keys and client authorization keys in encrypted recovery storage.
+
+Independent Tor probes verify only the clients used in that test. Separately
+launch a signature-verified desktop Tor Browser, import the bound administrator
+client token, and complete owner sign-in/MFA. A browser signature failure must be
+resolved through a verified installation; it is not a reason to disable signature
+checks, onion authorization or the private administrator boundary.
 
 ### Optional application-host reboot control
 

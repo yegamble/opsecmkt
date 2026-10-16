@@ -570,10 +570,11 @@ three layers before claiming protection:
 An ordinary reboot, including the private admin reboot control, does not
 guarantee RAM sanitization. It does not erase disk keys or provide automatic
 destruction. The [recorded storage assessment](storage-security-assessment.md)
-does not establish hardware memory encryption or confidential-VM protection for
-the current deployment; it also records Apport enabled on all three hosts.
-The controls above are required review work, not a claim that those live settings
-have already changed.
+does not establish hardware memory encryption or confidential-VM protection.
+Its Apport-enabled finding describes the retired plaintext hosts. Fresh guest
+crash/core results belong to the [current checkpoint](deployment-notes.md#evidence-and-remaining-gates)
+and require verification after changes. Confirm the actual kernel, service and
+container settings; historical results do not attest to a new host.
 
 ## 6. Verify encryption before restoring state
 
@@ -714,6 +715,44 @@ for native gateway, payment and backup services; the automatic daemon drop-ins
 do not supervise them. Configure required mount ordering through the operating
 system before enabling services, then test a missing/locked mount on a disposable
 host. No command here provides automatic disk unlocking.
+
+After the encrypted-storage, core-limit and firewall startup guards are installed,
+explicitly enable the daemons on each host that uses them:
+
+```sh
+systemctl enable docker.service containerd.service
+systemctl is-enabled docker.service containerd.service
+systemctl is-active docker.service containerd.service
+```
+
+Expect both units to be `enabled` and `active` before reboot rehearsal. Enabling
+boot startup does not start or restart them. Docker's packaged `Also=` dependency
+may enable `docker.socket` too; inspect that unit and its guarded service ordering.
+A daemon can be active in the current session while remaining disabled for the
+next boot. Repeat this check on the application, gateway and payment hosts after
+their own guards are installed; the app's automatic drop-ins do not cover another
+host. Keep the web reboot control disabled until the actual locked-boot return
+passes.
+
+### Checking socket startup ordering
+
+An enabled socket can still prevent startup if its dependency graph cycles.
+Socket units normally start before `sockets.target` and inherit initialization
+and shutdown ordering; see [systemd's socket dependency reference](https://www.freedesktop.org/software/systemd/man/255/systemd.socket.html#Default%20Dependencies).
+A custom socket ordered after Docker can conflict with those defaults when
+Docker starts after `basic.target`.
+
+Inspect the actual graph and preserve a failed reboot's evidence. For the
+observed Docker-dependent relay, the reviewed correction uses
+`DefaultDependencies=no` on that socket, explicitly restores
+`Requires=`/`After=sysinit.target` and `Before=`/`Conflicts=shutdown.target`, and
+keeps Docker, encrypted-storage, container ordering and loopback restrictions.
+Review each dependency instead of applying this exception to every socket.
+
+Restore matching authoritative and installed unit copies before daemon reload.
+Check effective properties and `systemd-analyze verify`, then test an actual
+locked-root boot, manual unlock and automatic service return. A successful
+controlled start on the already unlocked host does not prove boot ordering.
 
 ### Enabling an attended administrator reboot
 
