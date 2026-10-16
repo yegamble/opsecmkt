@@ -1,7 +1,7 @@
 {{define "page:register"}}{{template "header" .}}
 <div class="form-narrow">
 <div class="panel">
-<div class="eyebrow">Your independent marketplace</div>
+<div class="eyebrow">Your secure marketplace</div>
 {{if and .Access (not .Access.RegistrationOpen)}}<h1>Registration is closed<span class="accent">.</span></h1>
 <p>This market is not accepting new accounts. Existing members can still sign in.</p>
 <p class="form-footer"><a href="/login{{with .Next}}?next={{. | urlquery}}{{end}}">Sign in</a></p>
