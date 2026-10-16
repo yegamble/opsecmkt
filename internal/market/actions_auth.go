@@ -581,6 +581,15 @@ var errSignInPaused = fail(429, "Sign-in for this handle is paused for up to 10 
 // authAction serves /setup, /login and /register. bcrypt runs before any transaction is opened.
 func authAction(c *actionCtx) (actionResult, error) {
 	a, ctx, f, path, w := c.A, c.Ctx(), c.Form, c.R.URL.Path, c.W
+	if path == "/register" {
+		policy, err := a.readSiteAccess(ctx)
+		if err != nil {
+			return actionResult{}, err
+		}
+		if !policy.RegistrationOpen {
+			return actionResult{}, fail(http.StatusForbidden, registrationClosedMessage)
+		}
+	}
 	handle, password, rescueID, release, err := authGate(c)
 	if err == errSignInPaused {
 		a.logSignInRefusals()
@@ -650,6 +659,9 @@ func authAction(c *actionCtx) (actionResult, error) {
 	} else {
 		if _, err = tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(782493)"); err != nil {
 			return actionResult{}, fail(503, "Service unavailable")
+		}
+		if err = registrationAllowedTx(ctx, tx); err != nil {
+			return actionResult{}, err
 		}
 		if err = refuseTakenHandle(ctx, tx, handle); err != nil {
 			return actionResult{}, err

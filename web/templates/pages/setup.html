@@ -6,6 +6,7 @@
 <p>Your application and database are ready. Finish installation by naming your marketplace and creating its administrator.</p>
 <ol><li>Copy the setup token from your private deployment configuration.</li><li>Choose the marketplace name and your administrator credentials below.</li><li>Continue to the control room to configure payments, publish listings and invite users.</li></ol>
 <p class="help">Installation runs once. The setup token proves you control this deployment; it is not your account password. Payments stay unavailable until a wallet is configured.</p>
+<p class="help">First-administrator setup works even when registration is closed or the site is members only.</p>
 <form class="stack" method="post" action="/setup">
 <input type="hidden" name="csrf" value="{{.CSRF}}"><label>Setup token<input name="token" type="text" required autocomplete="off" spellcheck="false">
 </label>

@@ -126,6 +126,10 @@ func (g *uploadGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	if r.URL.Path == brandingUploadPath && r.Method == http.MethodPost {
+		g.serveBrandingUpload(w, r)
+		return
+	}
 	route, isUpload := uploadRoutes[r.URL.Path]
 	if r.Method != http.MethodPost || !isUpload {
 		if isMultipart(r) {
@@ -384,6 +388,10 @@ func (a *App) UploadBackendHandler() http.Handler {
 			a.admitGatewayUpload(w, r)
 		case "/v1/uploads/finish":
 			a.finishGatewayUpload(w, r)
+		case "/v1/uploads/branding-admit":
+			a.admitGatewayBranding(w, r)
+		case "/v1/uploads/branding-finish":
+			a.finishGatewayBranding(w, r)
 		default:
 			http.NotFound(w, r)
 		}

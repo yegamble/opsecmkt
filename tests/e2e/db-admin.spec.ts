@@ -167,10 +167,10 @@ test('site settings, account suspension, operator key, canary signature checks a
   const suspect = await signedIn(browser, baseURL, suspectHandle, suspectPassword, true);
   const admin = await signedIn(browser, baseURL, ADMIN.handle, ADMIN.password, false);
   await admin.goto('/admin');
-  const siteName = admin.getByLabel('Site name');
+  const siteName = admin.getByLabel('Market name', { exact: true });
   const original = await siteName.inputValue();
   const renamed = `E2E ${uniqueHandle('market')}`.slice(0, 40);
-  const saveSettings = () => admin.getByRole('button', { name: 'Save settings' }).click();
+  const saveSettings = () => admin.getByRole('button', { name: 'Save market name' }).click();
 
   await siteName.fill(renamed);
   expect(await submitStatus(admin, saveSettings)).toBe(303);

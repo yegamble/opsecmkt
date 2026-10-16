@@ -12,7 +12,10 @@ export default defineConfig({
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
-  workers: 2,
+  // Database projects share one administrator and global market settings. A
+  // per-project limit does not stop Chromium and Firefox from racing each other.
+  // Serialize the shared database run; preview-only runs keep two workers.
+  workers: databaseURL ? 1 : 2,
   reporter: [['list'], ['html', { open: 'never' }]],
   use: {
     baseURL: previewURL,
@@ -35,8 +38,8 @@ export default defineConfig({
     })),
     // db-setup initializes the fresh database exactly once; every other db-*.spec.ts depends on it and
     // creates its own uniquely named users/listings (tests/e2e/db-fixtures.ts). The db files still share one
-    // admin account, the global CAPTCHA setting and the per-handle login limit, so each database project runs
-    // on a single worker (per-project workers, Playwright >= 1.52); preview projects keep the global pool.
+    // admin account, global settings and the per-handle login limit, so database
+    // projects and the global pool use one worker when this shared database is enabled.
     ...(databaseURL ? [{
       name: 'db-setup',
       retries: 0,

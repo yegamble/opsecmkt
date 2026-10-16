@@ -32,6 +32,9 @@ func captchaRequired(settings map[string]string) bool { return settings["captcha
 // view. Issuing is stateless (captcha.go) and writes nothing, so anonymous page views cannot grow a table or
 // hold a pool connection for it (A-176).
 func captchaLoader(_ context.Context, a *App, r *http.Request, d *PageData) error {
+	if d.Page == "register" && d.Access != nil && !d.Access.RegistrationOpen {
+		return nil
+	}
 	if !captchaRequired(d.Settings) {
 		return nil
 	}

@@ -21,8 +21,13 @@ services:
       APP_SECRET_KEY: ${APP_SECRET_KEY:-}
       SETUP_TOKEN: ${SETUP_TOKEN:-}
       APP_MODE: ${APP_MODE:-clearnet}
+      # First-start defaults only; saved administrator choices take precedence on later starts.
+      INITIAL_SITE_ACCESS: ${INITIAL_SITE_ACCESS:-public}
+      INITIAL_REGISTRATIONS: ${INITIAL_REGISTRATIONS:-open}
       # Blank preserves the existing single-listener install. compose.admin-tor.yaml sets a private Unix socket.
       ADMIN_SOCKET: ${ADMIN_SOCKET:-}
+      # Fixed public gateway origin for administrator-authorized logo uploads; blank preserves existing installs.
+      BRANDING_UPLOAD_ORIGIN: ${BRANDING_UPLOAD_ORIGIN:-}
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
       # Only read to check that APP_MODE matches the exposure overlay (compose.tor.yaml or compose.clearnet.yaml).
       COMPOSE_FILE: ${COMPOSE_FILE:-}

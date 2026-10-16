@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"opsecmkt/internal/brandingconfig"
 )
 
 const usage = `Usage: opsecmkt deploy COMMAND [options]
@@ -196,6 +198,9 @@ func initialize(ctx context.Context, args []string, out, errOut io.Writer) error
 	clamImage := f.String("clamav-image", "", "development ClamAV image including digest (must include signatures)")
 	moneroImage := f.String("monero-image", "", "development monerod image including digest")
 	walletImage := f.String("monero-wallet-image", "", "development monero-wallet-rpc image including digest")
+	brandingOrigin := f.String("branding-upload-origin", "", "fixed public upload gateway origin for logo handoff; HTTPS or HTTP v3 onion; blank keeps the existing topology")
+	siteAccess := f.String("site-access", "public", "initial visitor access: public or members; saved administrator settings take precedence after first start")
+	registrations := f.String("registrations", "open", "initial new registrations: open or closed; saved administrator settings take precedence after first start")
 	exposure := f.String("exposure", "clearnet", "clearnet or tor; production Tor ingress runs on the gateway host")
 	bind := f.String("app-bind", "127.0.0.1:8080", "host app listener; explicit loopback/private IP:port")
 	backendBind := f.String("backend-bind", "127.0.0.1:8443", "production upload backend listener; explicit private IP:port")
@@ -261,7 +266,7 @@ func initialize(ctx context.Context, args []string, out, errOut io.Writer) error
 		*project = "opsecmkt-" + suffix[:12]
 	}
 	cfg := Config{DockerContext: *dockerContext, Version: configVersion, Mode: *mode, Project: *project, AppImage: *appImage, Exposure: *exposure, AppBind: *bind, AppHost: *appHost, GatewayURL: *gateway, RuntimeUID: *runtimeUID, RuntimeGID: *runtimeGID, RetentionDir: filepath.Join(dir, "retention"),
-		Settings: map[string]string{"MONERO_NETWORK": *network, "ESCROW_XMR": "off", "RETENTION_ENABLED": "off"}, SecretFiles: map[string]string{}, PublicFiles: map[string]string{}, TLSFiles: map[string]string{}}
+		Settings: map[string]string{"MONERO_NETWORK": *network, "ESCROW_XMR": "off", "RETENTION_ENABLED": "off", "INITIAL_SITE_ACCESS": *siteAccess, "INITIAL_REGISTRATIONS": *registrations, "BRANDING_UPLOAD_ORIGIN": *brandingOrigin}, SecretFiles: map[string]string{}, PublicFiles: map[string]string{}, TLSFiles: map[string]string{}}
 	if *retentionDir != "" {
 		cfg.RetentionDir = *retentionDir
 	}
@@ -287,6 +292,9 @@ func initialize(ctx context.Context, args []string, out, errOut io.Writer) error
 			return errors.New("--set requires a supported non-secret KEY=VALUE")
 		}
 		cfg.Settings[key] = val
+	}
+	if cfg.Settings["BRANDING_UPLOAD_ORIGIN"], err = brandingconfig.ParseOrigin(cfg.Settings["BRANDING_UPLOAD_ORIGIN"], cfg.Mode == "dev"); err != nil {
+		return err
 	}
 	if *mode == "dev" {
 		cfg.TorImage = *torImage
@@ -566,9 +574,25 @@ func printPlan(out io.Writer, c Config) error {
 	if c.MoneroImage != "" {
 		services = append(services, "monero", "monero-wallet")
 	}
-	_, err := fmt.Fprintf(out, "mode: %s\nproject: %s\nDocker context: %s\nservices: %s\napp listener: %s\nMonero network: %s; escrow: %s\nsecret values: private files, omitted\n", mode, c.Project, c.DockerContext, strings.Join(services, ", "), c.AppBind, c.Settings["MONERO_NETWORK"], c.Settings["ESCROW_XMR"])
+	siteAccess, registrations := c.Settings["INITIAL_SITE_ACCESS"], c.Settings["INITIAL_REGISTRATIONS"]
+	if siteAccess == "" {
+		siteAccess = "public"
+	}
+	if registrations == "" {
+		registrations = "open"
+	}
+	_, err := fmt.Fprintf(out, "mode: %s\nproject: %s\nDocker context: %s\nservices: %s\napp listener: %s\nMonero network: %s; escrow: %s\ninitial visitor access: %s; new registrations: %s (saved administrator settings take precedence)\nsecret values: private files, omitted\n", mode, c.Project, c.DockerContext, strings.Join(services, ", "), c.AppBind, c.Settings["MONERO_NETWORK"], c.Settings["ESCROW_XMR"], siteAccess, registrations)
 	if err != nil {
 		return err
+	}
+	origin, err := brandingconfig.ParseOrigin(c.Settings["BRANDING_UPLOAD_ORIGIN"], c.Mode == "dev")
+	if err != nil {
+		return err
+	}
+	if origin != "" {
+		if _, err := fmt.Fprintln(out, "branding upload origin:", origin); err != nil {
+			return err
+		}
 	}
 	return printOnionPlan(out, c)
 }

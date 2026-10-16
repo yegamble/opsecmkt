@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"opsecmkt/internal/brandingconfig"
 	"opsecmkt/internal/dependencies"
 	"opsecmkt/internal/emergency"
 	"opsecmkt/internal/interactive"
@@ -159,6 +160,8 @@ func configureServe(args []string, errOut io.Writer) error {
 	f.SetOutput(errOut)
 	preview := f.Bool("preview", false, "read-only sample UI, no database")
 	options := map[string]string{
+		"branding-upload-origin": "BRANDING_UPLOAD_ORIGIN",
+		"site-access":            "INITIAL_SITE_ACCESS", "registrations": "INITIAL_REGISTRATIONS",
 		"addr": "ADDR", "app-mode": "APP_MODE", "database-url-file": "DATABASE_URL_FILE",
 		"app-secret-key-file": "APP_SECRET_KEY_FILE", "setup-token-file": "SETUP_TOKEN_FILE",
 		"monero-wallet-secret-file": "MONERO_WALLET_SECRET_FILE", "monero-wallet-rpc-url-file": "ESCROW_XMR_WALLET_RPC_URL_FILE",
@@ -173,13 +176,50 @@ func configureServe(args []string, errOut io.Writer) error {
 	}
 	values := make(map[string]*string)
 	for name, env := range options {
-		values[name] = f.String(name, "", "set "+env+" (existing environment is used when omitted)")
+		help := "set " + env + " (existing environment is used when omitted)"
+		if name == "branding-upload-origin" {
+			help = "fixed public upload gateway origin: HTTPS or HTTP v3 onion; HTTP loopback is development-only (existing environment used when omitted)"
+		} else if name == "site-access" {
+			help = "initial visitor access: public or members (default public); saved administrator settings take precedence"
+		} else if name == "registrations" {
+			help = "initial new registrations: open or closed (default open); saved administrator settings take precedence"
+		}
+		values[name] = f.String(name, "", help)
 	}
 	if err := f.Parse(args); err != nil {
 		return err
 	}
 	if f.NArg() != 0 {
 		return errors.New("serve takes flags only")
+	}
+	profile := os.Getenv("OPSECMKT_PROFILE")
+	f.Visit(func(fl *flag.Flag) {
+		if fl.Name == "profile" {
+			profile = *values[fl.Name]
+		}
+	})
+	var invalidAccess error
+	f.Visit(func(fl *flag.Flag) {
+		switch fl.Name {
+		case "branding-upload-origin":
+			value, err := brandingconfig.ParseOrigin(*values[fl.Name], profile == "" || profile == "dev")
+			if err != nil {
+				invalidAccess = err
+			} else {
+				*values[fl.Name] = value
+			}
+		case "site-access":
+			if *values[fl.Name] != "public" && *values[fl.Name] != "members" {
+				invalidAccess = errors.New("--site-access must be public or members")
+			}
+		case "registrations":
+			if *values[fl.Name] != "open" && *values[fl.Name] != "closed" {
+				invalidAccess = errors.New("--registrations must be open or closed")
+			}
+		}
+	})
+	if invalidAccess != nil {
+		return invalidAccess
 	}
 	f.Visit(func(fl *flag.Flag) {
 		if env := options[fl.Name]; env != "" {

@@ -49,7 +49,7 @@ env_key_pattern='^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)[[:sp
 # Every documented setting and optional Compose override. Commands unset them and Compose's environment-file
 # controls so validation and startup both read this checkout's .env rather than the operator's shell.
 # MONERO_NETWORK_FLAG is documented without an assignment: a copied blank line would select mainnet.
-env_keys='DATABASE_URL POSTGRES_PASSWORD APP_SECRET_KEY SETUP_TOKEN APP_MODE RETENTION_ENABLED COOKIE_SECURE APP_PORT ADMIN_SOCKET TOR_ADMIN_AUTH_DIR AUDIT_EXPORT_RECIPIENT
+env_keys='DATABASE_URL POSTGRES_PASSWORD APP_SECRET_KEY SETUP_TOKEN APP_MODE RETENTION_ENABLED COOKIE_SECURE APP_PORT ADMIN_SOCKET TOR_ADMIN_AUTH_DIR AUDIT_EXPORT_RECIPIENT INITIAL_SITE_ACCESS INITIAL_REGISTRATIONS BRANDING_UPLOAD_ORIGIN
 DATABASE_CONNECT_TIMEOUT MIGRATION_LOCK_TIMEOUT MIGRATION_TIMEOUT COMPOSE_PROJECT_NAME COMPOSE_FILE COMPOSE_PROFILES
 BITCOIN_RPC_URL BITCOIN_WALLET BITCOIN_CHAIN PAYMENT_CONFIRMATIONS_BTC MONERO_RPC_URL MONERO_WALLET_RPC_URL
 MONERO_NETWORK MONERO_NETWORK_FLAG PAYMENT_CONFIRMATIONS_XMR PAYMENT_POLL_INTERVAL PAYMENT_EXPIRY BITCOIN_MAX_TIP_AGE MONERO_MAX_TIP_AGE AUDIT_SIGNING_KEY BITCOIN_IMAGE
@@ -65,6 +65,9 @@ ESCROW_SIGNER_RPC_URL ESCROW_SIGNER_SEED_FILE LOG_DRIVER TOR_VERSION'
 # SETUP_TOKEN). tests/test_installer.py checks that this covers every non-secret key in .env.example. It never holds
 # MONERO_NETWORK_FLAG: absent runs stagenet, and a blank line would move a test-network install to mainnet (A-523).
 upgrade_defaults="COOKIE_SECURE=true
+INITIAL_SITE_ACCESS=public
+INITIAL_REGISTRATIONS=open
+BRANDING_UPLOAD_ORIGIN=
 RETENTION_ENABLED=off
 ADMIN_SOCKET=
 TOR_ADMIN_AUTH_DIR=
@@ -701,6 +704,14 @@ run_check() {
   case $(env_value RETENTION_ENABLED) in
     ''|off|false|on|true) ;;
     *) problems="$problems  - RETENTION_ENABLED must be on or off"$'\n' ;;
+  esac
+  case $(env_value INITIAL_SITE_ACCESS) in
+    ''|public|members) ;;
+    *) problems="$problems  - INITIAL_SITE_ACCESS must be public or members"$'\n' ;;
+  esac
+  case $(env_value INITIAL_REGISTRATIONS) in
+    ''|open|closed) ;;
+    *) problems="$problems  - INITIAL_REGISTRATIONS must be open or closed"$'\n' ;;
   esac
   if [[ $mode == tor && $secure != false ]]; then
     warnings="${warnings}warning: APP_MODE=tor with COOKIE_SECURE=true: only browsers that treat .onion as secure keep the session cookie; the installer writes false for Tor"$'\n'

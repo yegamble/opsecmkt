@@ -20,8 +20,10 @@ endpoints, requires PostgreSQL TLS with certificate validation and authenticated
 and requires both app TLS and a private mutual-TLS upload listener. Switching to
 isolated uploads requires routing browser traffic through the separate upload
 gateway before enabling this profile. The gateway processes originals and forwards
-normalized JPEGs only. Administrators protected by `ADMIN_SOCKET` cannot upload
-through the public gateway; preserve private administrator ingress. Dependency and
+normalized JPEGs for listing photos and avatars, and normalized JPEG or restricted
+static SVG for logos. Administrators protected by `ADMIN_SOCKET` cannot upload
+listing photos or avatars through the public gateway. Logo uploads use a separate
+preconfirmed, one-use authorization; preserve private administrator ingress. Dependency and
 service-placement notices appear only in the administrator panel. The dependency
 worker needs its own signing seed; mount only its public verification key and
 signed report into the application. The app does not fetch release information.
@@ -29,6 +31,47 @@ signed report into the application. The app does not fetch release information.
 The current source supports only Monero (XMR). Bitcoin checkout, key registration, signing, node provisioning and payment controls have been removed. Listing forms and new orders use XMR. Monero escrow remains custodial and off by default; its network and wallet safeguards remain in place.
 
 There is no live deployment or payment cutover for this change. The release notes below describe earlier alpha versions and are historical.
+
+## Site access and registration
+
+Supporting releases initialize missing database settings for site access and new
+registrations. The defaults are `public` and `open`; set `INITIAL_SITE_ACCESS`
+and `INITIAL_REGISTRATIONS` before the first supporting startup to choose other
+initial values. Existing saved settings are preserved. These variables, and the
+equivalent native `--site-access` and `--registrations` flags, seed missing values
+only; they do not override later administrator choices on restart.
+
+Upgrade every application replica before relying on members-only access or
+closed registration. Older binaries ignore these policies, so a rollback can
+reopen guest browsing and account creation. Keep an external maintenance or
+access gate in place while an older binary can serve requests during rollback.
+Changing access cannot recall content already downloaded or publicly cached.
+
+After upgrading, review **Admin → Site access and registration** and verify both
+a signed-out session and an existing account. Follow
+[site access and registration](docs/operator-guide.md#site-access-and-registration)
+for the choices and checks.
+
+## Market branding
+
+Migration 120 adds the current logo and temporary logo-upload authorizations.
+Existing market names remain unchanged, and no custom logo is installed by the
+upgrade. The header and footer now follow the saved name when using the text
+wordmark. Back up the database before upgrading; older binaries that do not know
+this migration refuse startup. Follow the existing database rollback procedure
+rather than deleting migration records.
+
+Update the application and upload gateway to the same supporting release before
+uploading logos. For isolated uploads from a private administrator onion, set
+`BRANDING_UPLOAD_ORIGIN` to the fixed public gateway origin. A blank setting
+leaves that new upload flow unavailable while the existing app continues to run.
+Logo confirmation stays private; only a scoped, expiring upload authorization and
+the file go to the gateway. General private-admin ingress stays unchanged.
+
+The name and logo are public even on a members-only site. Verify the header,
+footer and sign-in page after an upgrade, name change, logo replacement or reset.
+See [market branding](docs/operator-guide.md#changing-the-market-name-and-logo)
+for the supported files, size limits and upload steps.
 
 # Upgrading from v0.1.0-alpha.1 to `v0.1.0-alpha.2`
 

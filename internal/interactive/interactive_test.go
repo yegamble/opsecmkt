@@ -27,7 +27,7 @@ func testDir(t *testing.T) string {
 }
 func input(lines []string) io.Reader { return strings.NewReader(strings.Join(lines, "\n") + "\n") }
 func development(dir string) []string {
-	return []string{"1", "dev", dir, "default", testImage, "clearnet", "127.0.0.1:8080", "", "", "", "", "", "", "", "n"}
+	return []string{"1", "dev", dir, "default", testImage, "clearnet", "127.0.0.1:8080", "", "public", "open", "", "", "", "", "", "", "n"}
 }
 func fakeRunners(calls *[][]string) runners {
 	return runners{
@@ -84,7 +84,7 @@ func TestCreateUsesOnlyReviewedFlagsThenPlan(t *testing.T) {
 	if len(calls) != 2 || calls[0][0] != "init" || calls[1][0] != "plan" {
 		t.Fatalf("unexpected commands: %#v", calls)
 	}
-	for key, want := range map[string]string{"mode": "dev", "dir": dir, "docker-context": "default", "app-image": testImage, "exposure": "clearnet"} {
+	for key, want := range map[string]string{"mode": "dev", "dir": dir, "docker-context": "default", "app-image": testImage, "exposure": "clearnet", "site-access": "public", "registrations": "open"} {
 		if got := flagValue(calls[0], key); got != want {
 			t.Fatalf("%s=%q, want%q", key, got, want)
 		}
@@ -98,7 +98,7 @@ func TestReviewEditKeepsDefaultsAndReplacesOnlySelectedAnswer(t *testing.T) {
 	dir := filepath.Join(testDir(t), "new")
 	other := strings.Replace(testImage, "aaaa", "bbbb", 1)
 	answers := append(development(dir), "edit")
-	second := make([]string, 14)
+	second := make([]string, 16)
 	second[3] = other // mode, dir, context, app image
 	answers = append(answers, second...)
 	answers = append(answers, "y", "n")
@@ -118,10 +118,10 @@ func TestReviewEditCanClearAnOptionalImport(t *testing.T) {
 		t.Fatal(err)
 	}
 	answers := development(filepath.Join(base, "new"))
-	answers[11] = source
+	answers[13] = source
 	answers = append(answers, "edit")
-	second := make([]string, 14)
-	second[10] = ":clear"
+	second := make([]string, 16)
+	second[12] = ":clear"
 	answers = append(answers, second...)
 	answers = append(answers, "y", "n")
 	var calls [][]string
@@ -196,7 +196,7 @@ func TestProductionCollectsPathsWithoutPrintingSecretContents(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := filepath.Join(base, "new")
-	answers := []string{"1", "prod", dir, "default", testImage, "clearnet", "10.20.0.10:8080", filepath.Join(base, "retention"), secret, "", "app.internal", "https://market.example", "10.20.0.10:8443", secret, secret, secret, secret, secret, "", "", "", "n", "y", "n"}
+	answers := []string{"1", "prod", dir, "default", testImage, "clearnet", "10.20.0.10:8080", filepath.Join(base, "retention"), "members", "closed", secret, "", "app.internal", "https://market.example", "10.20.0.10:8443", secret, secret, secret, secret, secret, "", "", "", "n", "y", "n"}
 	var calls [][]string
 	var out, errOut bytes.Buffer
 	if err := run(context.Background(), input(answers), &out, &errOut, fakeRunners(&calls)); err != nil {
@@ -331,5 +331,24 @@ func TestRealDevelopmentSaveDoesNotInvokeDocker(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "compose.json")); !os.IsNotExist(err) {
 		t.Fatal("wizard installed runtime without permission")
+	}
+}
+
+func TestGuidedInitialAccessChoicesAreValidatedAndReviewed(t *testing.T) {
+	answers := development(filepath.Join(testDir(t), "new"))
+	answers[8], answers[9] = "members", "closed"
+	// Reject an unsupported policy before accepting the selected members setting.
+	answers = append(append(append([]string{}, answers[:8]...), "private"), answers[8:]...)
+	answers = append(answers, "y", "n")
+	var calls [][]string
+	var out, errOut bytes.Buffer
+	if err := run(context.Background(), input(answers), &out, &errOut, fakeRunners(&calls)); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 2 || flagValue(calls[0], "site-access") != "members" || flagValue(calls[0], "registrations") != "closed" {
+		t.Fatalf("access choices not saved: %#v", calls)
+	}
+	if !strings.Contains(errOut.String(), "Choose one of the displayed values.") || !strings.Contains(out.String(), "'--site-access' 'members'") || !strings.Contains(out.String(), "'--registrations' 'closed'") {
+		t.Fatalf("missing validation or review: %s %s", out.String(), errOut.String())
 	}
 }

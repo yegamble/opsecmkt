@@ -1,0 +1,28 @@
+{{define "admin-branding"}}<section class="panel" id="branding" aria-labelledby="branding-heading">
+<h2 id="branding-heading">Market name and logo</h2>
+<form class="stack" method="post" action="/admin">
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/admin"}}">
+<input type="hidden" name="action" value="settings">
+<label>Market name<input name="site_name" value="{{index .Settings "site_name"}}" required maxlength="80"></label>
+<p class="help">Used in browser tabs, the home link and the text wordmark when no custom logo is set. Changing the name does not change lettering inside an uploaded image.</p>
+<button class="primary" type="submit">Save market name</button>
+</form>
+<h3>Logo</h3>
+<div class="branding-preview" aria-label="Current market logo">{{template "market-wordmark" .}}</div>
+<p class="help">The same logo appears in the header and footer throughout the site, including sign-in pages. JPEG, PNG and self-contained SVG logos fit a fixed box without stretching or changing the layout.</p>
+{{if and .Branding .Branding.UploadEnabled}}<form class="stack" method="post" action="/admin/branding/authorize">
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/admin/branding/authorize"}}">
+{{template "confirm-fields" (and .Security .Security.TOTPEnabled)}}
+<p class="help">Confirm first, then choose a logo on the next page. Upload authorization expires after 10 minutes and can be used once.</p>
+<button type="submit">Authorize logo upload</button>
+</form>{{else}}<p class="help">{{if .Preview}}Logo uploads are unavailable in the read-only preview.{{else if .Branding}}{{.Branding.UploadUnavailable}}{{else}}Logo uploads are unavailable.{{end}}</p>{{end}}
+{{if and .Branding .Branding.LogoURL}}<form class="stack" method="post" action="/admin/branding/reset">
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/admin/branding/reset"}}">
+{{template "confirm-fields" (and .Security .Security.TOTPEnabled)}}
+<button type="submit">Use text wordmark</button>
+<p class="help">Removes the custom logo and displays the saved market name. The market name stays unchanged.</p>
+</form>{{end}}
+</section>{{end}}

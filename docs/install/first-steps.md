@@ -63,8 +63,35 @@ exists only as keys in the `tor_identity` volume.
 
 ## Step 5: Configure
 
-Open `/admin` for roles, users, CAPTCHA, the staff list, the canary and audit exports.
+Open `/admin` for access, registration, roles, users, CAPTCHA, the staff list, the canary and audit exports.
 Details: [Feature configuration](../operator-guide.md#feature-configuration).
+
+Before sharing the address, choose who can browse and create accounts:
+
+1. Open **Admin → Site access and registration**.
+2. Select **Public** for guest browsing, or **Members only** to require sign-in
+   for listings and other site content.
+3. Set **New registrations** to **Open** or **Closed** independently.
+4. Enter your current password and authenticator code, if enabled, then select
+   **Save access settings**.
+
+The settings take effect without restarting. Closing registration keeps existing
+accounts working; first-administrator setup is always available before
+initialization. Verify the result in a signed-out browser session: members-only
+pages should lead to sign-in, and closed registration should show a notice
+without an account-creation form. Then verify that an existing account can sign
+in and browse.
+
+For automated setup, pass `--site-access members --registrations closed` to the
+native `deploy init` or `serve` command. These are first-start defaults; later
+administrator choices are stored in PostgreSQL and survive restarts. See
+[the CLI reference](cli-reference.md#additional-runtime-settings).
+
+To change the site's identity, open **Admin → Market name and logo**. Save the
+market name, then authorize and upload a custom logo if wanted. The header and
+footer use the same fixed display bounds. See
+[changing the market name and logo](../operator-guide.md#changing-the-market-name-and-logo)
+for SVG support and private-admin gateway setup.
 
 ## What now?
 

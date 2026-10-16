@@ -85,8 +85,9 @@ func scannerConfigFromEnv(getenv func(string) string) (scannerConfig, error) {
 type uploadKind string
 
 const (
-	uploadListing uploadKind = "listing"
-	uploadAvatar  uploadKind = "avatar"
+	uploadListing  uploadKind = "listing"
+	uploadAvatar   uploadKind = "avatar"
+	uploadBranding uploadKind = "branding"
 )
 
 // scannedUpload holds bytes clamd answered exactly "stream: OK" for. Only Scan builds one; read the bytes

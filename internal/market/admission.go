@@ -77,7 +77,7 @@ func admitClass(r *http.Request) chan struct{} {
 	if r.Method == "POST" || r.URL.Path == "/healthz" || strings.HasPrefix(r.URL.Path, "/static/") {
 		return nil
 	}
-	if imageRoute(r.URL.Path) == "/img/" {
+	if imageRoute(r.URL.Path) == "/img/" || strings.HasPrefix(r.URL.Path, "/branding/logo/") && r.URL.Path != brandingUploadPath {
 		return imageWork
 	}
 	return pageWork

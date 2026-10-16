@@ -120,18 +120,23 @@ a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,te
   gap:0
 }
 .header-search input {
+  flex:1;
   border-right:0;
   border-radius:2px 0 0 2px;
   min-width:0
 }
 .header-search button {
-  flex:0 0 82px;
+  flex:0 0 auto;
   display:flex;
   align-items:center;
   justify-content:center;
-  gap:6px;
-  padding:8px;
-  border-radius:0 2px 2px 0
+  padding:10px 16px;
+  border-color:#77756b;
+  border-radius:0 2px 2px 0;
+  white-space:nowrap
+}
+.header-search button:hover {
+  border-color:var(--amber)
 }
 /* Inset indicators stay on the focused control, without crossing its neighbour. */
 .header-search input:focus-visible,.header-search button:focus-visible,
@@ -1793,3 +1798,50 @@ img.vendor-avatar {
   font-size:1.375rem
 }
 /* end A-189 image rendering */
+
+/* Branding always occupies the same box, regardless of the uploaded image's proportions. */
+.brand,.footer-wordmark,.branding-preview {
+  display:flex;
+  align-items:center;
+  width:192px;
+  height:48px;
+  max-width:100%;
+  min-width:0;
+  overflow:hidden;
+  flex:0 0 auto
+}
+.market-logo {
+  display:block;
+  width:100%;
+  height:100%;
+  max-width:100%;
+  object-fit:contain;
+  object-position:left center;
+  overflow:hidden
+}
+.market-wordmark {
+  display:flex;
+  align-items:center;
+  min-width:0;
+  max-width:100%;
+  white-space:nowrap
+}
+.market-wordmark-name {
+  min-width:0;
+  overflow:hidden;
+  text-overflow:ellipsis
+}
+.wordmark-bracket,.wordmark-accent {
+  flex:0 0 auto
+}
+.branding-preview {
+  border:1px solid var(--line);
+  background:var(--bg);
+  font:600 1.125rem var(--mono)
+}
+@media(min-width:641px) {
+  .brand,.branding-preview {
+    width:224px;
+    height:56px
+  }
+}

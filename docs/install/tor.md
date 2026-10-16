@@ -15,7 +15,7 @@ The two ingress paths are:
 | Public storefront | Tor on the separate upload host → loopback upload gateway → verified HTTPS app listener | Ordinary customer/moderator routes and gateway-scanned uploads. The app refuses `/setup`, `/admin*`, administrator-only actions and administrator sessions through public ingress when the private socket is enabled. |
 | Private administrator | Separate `tor-admin` service → `/run/market-admin/http.sock` | Requires Tor v3 client authorization before application login. Normal role, session, CSRF and step-up checks remain. |
 
-Public encoded/escaped forms of protected paths must also be refused. Do not route the private socket or its backend through the public gateway, and do not trust Host/forwarding headers as administrator authentication. Verify denials through the actual public onion after deployment. Administrator photo/avatar uploads are unavailable through the current isolated private-admin path; no public upload route grants that private capability.
+Public encoded/escaped forms of protected paths must also be refused. Do not route the private socket or its backend through the public gateway, and do not trust Host/forwarding headers as administrator authentication. Verify denials through the actual public onion after deployment. Administrator photo/avatar uploads are unavailable through the current isolated private-admin path; no public upload route grants general private administrator ingress. Logo uploads use a separately confirmed, one-use handoff to the configured public gateway; see [market branding](../operator-guide.md#changing-the-market-name-and-logo).
 
 ### Choose and retain separate service identities
 

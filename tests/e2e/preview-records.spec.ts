@@ -38,6 +38,8 @@ test('/canary#records lists what the server keeps, who reads it and that nothing
 // browser cache and what deleting one leaves behind, plus what the malware scanner does and does not do.
 test('records list photos and avatars', async ({ page }) => {
   expect((await page.goto('/canary#records'))?.status()).toBe(200);
+  await expect(page.locator('#site-access')).toContainText('Public browsing:');
+  await expect(page.locator('#site-access')).toContainText('New registrations are open.');
   const item = page.locator('section#records li', { has: page.locator('strong', { hasText: /^Photos and avatars\.$/ }) });
   await expect(item).toHaveCount(1);
   await expect(item).toBeVisible();
@@ -60,6 +62,7 @@ test('records list photos and avatars', async ({ page }) => {
     await expect(item).toContainText(text);
   }
   await expect(item).not.toContainText(/\b(safe|clean|virus-free|malware-free|verified|harmless)\b/i);
+  await expect(item).not.toContainText('no-store');
   await expect(page.locator('section#records > p').first()).toContainText('except photos and avatars (below)');
   await noScriptsNoOverflow(page);
 });

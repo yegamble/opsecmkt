@@ -45,35 +45,36 @@ type App struct {
 	startedAt    time.Time       // this process instance, never a persisted heartbeat
 	recentErrors serverErrorRing // A-143: last 20 referenced HTTP errors, in memory only
 
-	db               *sql.DB
-	health           *sql.DB // one connection for /healthz, apart from the application pool (A-178)
-	templates        *template.Template
-	preview, secure  bool
-	mode, setupToken string // setupToken authorizes /setup only, and only until installed
-	adminSocket      string // when set, administrator HTTP requests require the separate private socket
-	keyRoot          string // APP_SECRET_KEY, or SETUP_TOKEN (legacy): the root of key and the sealing keys
-	key              []byte // CSRF/CAPTCHA HMAC key, sha256("csrf:"+keyRoot)
-	captchaIDKey     []byte // CAPTCHA challenge-id MAC key, sha256("captcha-id:"+keyRoot); empty = no challenges
-	mu               sync.Mutex
-	limits           map[string]bucket         // authentication and factor budgets
-	writeLimits      map[string]bucket         // independent per-account write budgets (A-75)
-	inFlight         map[string]int            // OneAtATime actions in progress, by path and account (enterOneAtATime)
-	signInLogAt      time.Time                 // last "sign-in limiter refusing" log line (guarded by mu)
-	rescueRefused    int                       // sole-admin rescue refusals not yet logged (guarded by mu)
-	rescueLogAt      time.Time                 // last "sole-admin rescue refused" log line (guarded by mu)
-	live             bool                      // a mainnet market: BITCOIN_CHAIN=main or MONERO_NETWORK=mainnet (marketLiveFromEnv, A-460)
-	escrowConfigured bool                      // ESCROW_BTC=on (escrow_rpc.go); escrow may still be disabled
-	escrowCfg        escrowConfig              // the ESCROW_BTC settings read at startup, for the escrow watcher's retries
-	escrowStartState string                    // the escrow state line logged at startup (escrowRetry starts from it)
-	escrow           atomic.Pointer[escrowBTC] // the Bitcoin escrow adapter once ESCROW_BTC=on passed its checks, at startup or on a watcher retry (A-316); nil = no escrow; never cleared once set
-	escrowXMR        *escrowXMR                // Monero escrow while ESCROW_XMR=on (escrow_xmr_config.go), ready or not; nil = off; set once in New
-	scanner          *imageScanner             // clamd client for uploads (clamd.go); nil = Disabled
-	storageLimit     int64                     // IMAGE_STORAGE_LIMIT_MB in bytes (uploads.go); 0 = the default
-	isolatedUploads  bool                      // raw upload bytes terminate at the separate gateway
-	uploadTickets    uploadTicketStore
-	stop             context.CancelFunc
-	background       sync.WaitGroup
-	retention        *retentionService // bounded expiry and external deletion/hold state
+	db                   *sql.DB
+	health               *sql.DB // one connection for /healthz, apart from the application pool (A-178)
+	templates            *template.Template
+	preview, secure      bool
+	mode, setupToken     string // setupToken authorizes /setup only, and only until installed
+	adminSocket          string // when set, administrator HTTP requests require the separate private socket
+	keyRoot              string // APP_SECRET_KEY, or SETUP_TOKEN (legacy): the root of key and the sealing keys
+	key                  []byte // CSRF/CAPTCHA HMAC key, sha256("csrf:"+keyRoot)
+	captchaIDKey         []byte // CAPTCHA challenge-id MAC key, sha256("captcha-id:"+keyRoot); empty = no challenges
+	mu                   sync.Mutex
+	limits               map[string]bucket         // authentication and factor budgets
+	writeLimits          map[string]bucket         // independent per-account write budgets (A-75)
+	inFlight             map[string]int            // OneAtATime actions in progress, by path and account (enterOneAtATime)
+	signInLogAt          time.Time                 // last "sign-in limiter refusing" log line (guarded by mu)
+	rescueRefused        int                       // sole-admin rescue refusals not yet logged (guarded by mu)
+	rescueLogAt          time.Time                 // last "sole-admin rescue refused" log line (guarded by mu)
+	live                 bool                      // a mainnet market: BITCOIN_CHAIN=main or MONERO_NETWORK=mainnet (marketLiveFromEnv, A-460)
+	escrowConfigured     bool                      // ESCROW_BTC=on (escrow_rpc.go); escrow may still be disabled
+	escrowCfg            escrowConfig              // the ESCROW_BTC settings read at startup, for the escrow watcher's retries
+	escrowStartState     string                    // the escrow state line logged at startup (escrowRetry starts from it)
+	escrow               atomic.Pointer[escrowBTC] // the Bitcoin escrow adapter once ESCROW_BTC=on passed its checks, at startup or on a watcher retry (A-316); nil = no escrow; never cleared once set
+	escrowXMR            *escrowXMR                // Monero escrow while ESCROW_XMR=on (escrow_xmr_config.go), ready or not; nil = off; set once in New
+	scanner              *imageScanner             // clamd client for uploads (clamd.go); nil = Disabled
+	storageLimit         int64                     // IMAGE_STORAGE_LIMIT_MB in bytes (uploads.go); 0 = the default
+	isolatedUploads      bool                      // raw upload bytes terminate at the separate gateway
+	uploadTickets        uploadTicketStore
+	brandingUploadOrigin string // fixed public gateway origin; no administrator credential is forwarded
+	stop                 context.CancelFunc
+	background           sync.WaitGroup
+	retention            *retentionService // bounded expiry and external deletion/hold state
 
 	// The Bitcoin node sync guard and escrow chain pin (A-439, bitcoin_sync.go), in memory only.
 	escrowSync     atomic.Value                        // string: the reason class the escrow watcher last found its node not synced for ("" or unset = synced)
@@ -132,6 +133,7 @@ func New(ctx context.Context, preview bool) (*App, error) {
 	}
 	a.secure, a.setupToken = cfg.secure, cfg.setupToken
 	a.adminSocket = cfg.adminSocket
+	a.brandingUploadOrigin = cfg.brandingUploadOrigin
 	if a.live, err = marketLiveFromEnv(os.Getenv); err != nil {
 		return nil, err
 	}
@@ -192,6 +194,10 @@ func New(ctx context.Context, preview bool) (*App, error) {
 	a.health.SetMaxIdleConns(1)
 	a.health.SetConnMaxLifetime(30 * time.Minute)
 	if err = a.checkInstallState(ctx, legacy); err != nil {
+		a.closeDB()
+		return nil, err
+	}
+	if err = a.initializeSiteAccess(ctx, cfg.initialAccess); err != nil {
 		a.closeDB()
 		return nil, err
 	}
@@ -552,8 +558,16 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		a.serveStatic(w, r)
 		return
 	}
-	// The image routes (image_routes.go) branch here, before any cookie is read or set: the public one reads no
-	// session at all, the desk one only the session cookie.
+	if rest, ok := strings.CutPrefix(r.URL.Path, "/branding/logo/"); ok && rest != "upload" {
+		a.serveBrandingLogo(w, r, rest)
+		return
+	}
+	if r.URL.Path == "/branding/logo/upload" && r.Method == http.MethodPost {
+		a.serveBrandingUpload(w, r.WithContext(base))
+		return
+	}
+	// Image routes set no cookies. Public-mode /img needs no session; members-only /img and /desk/img
+	// verify the session cookie themselves before reading image bytes.
 	if rest, ok := strings.CutPrefix(r.URL.Path, "/img/"); ok {
 		a.servePublicImage(w, r, rest)
 		return
@@ -703,6 +717,18 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h, ok := raws[r.URL.Path]; ok {
+		if !a.preview && r.URL.Path != "/captcha" {
+			policy, err := a.readSiteAccess(ctx)
+			if err != nil {
+				writeDBFailure(w, r, err)
+				return
+			}
+			r = accessRequest(r, policy)
+			if policy.MembersOnly && user == nil {
+				a.refuse(w, r, nil, 401, "Sign in to access this market.")
+				return
+			}
+		}
 		h(a, w, r, user)
 		return
 	}
@@ -783,11 +809,27 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if protected(page) && user == nil {
-		login := "/login"
-		if next := a.signInNext(r.URL.RequestURI()); next != "" {
-			login += "?next=" + url.QueryEscape(next) // signing in returns here (A-126)
+		a.redirectForSiteSignIn(w, r)
+		return
+	}
+	policy, err := a.readSiteAccess(ctx)
+	if err != nil {
+		writeDBFailure(w, r, err)
+		return
+	}
+	r = accessRequest(r, policy)
+	if policy.MembersOnly && user == nil && !authenticationPage(page) {
+		a.redirectForSiteSignIn(w, r)
+		return
+	}
+	if page == "register" && !policy.RegistrationOpen {
+		d := a.pageData(r, page, token, user)
+		if err := a.load(r, &d); err != nil {
+			writeDBFailure(w, r, err)
+			return
 		}
-		http.Redirect(w, r, login, 303)
+		d.Error = registrationClosedMessage
+		a.renderStatus(w, r, d, http.StatusForbidden)
 		return
 	}
 	if !authorized(page, user) {
@@ -888,6 +930,10 @@ func objectTitle(d *PageData) {
 // pageData is the state a page render starts from, before a.load fills it.
 func (a *App) pageData(r *http.Request, page, token string, user *User) PageData {
 	d := PageData{Page: page, Title: pageTitle(page), CSRF: a.csrf(token), User: user, Mode: a.mode, Query: r.URL.Query().Get("q"), Category: r.URL.Query().Get("category"), Region: r.URL.Query().Get("region"), Currency: "XMR", Settings: map[string]string{}}
+	d.Access = requestSiteAccess(r)
+	if d.Access == nil && !a.preview {
+		d.Access = siteAccessFromSettings(nil)
+	}
 	return d
 }
 

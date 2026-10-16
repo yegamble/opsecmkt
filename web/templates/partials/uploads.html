@@ -1,4 +1,4 @@
-{{/* A-188: the upload forms (upload_forms.go). "uploads:photos" is listing-edit's Photos panel, "uploads:avatar" and "uploads:staff-list" are /account's avatar panel and staff list choice; each is called with PageData. The two upload forms are the only multipart forms in the market; every other form, the remove forms here included, stays urlencoded. */}}
+{{/* A-188: the listing/avatar forms (upload_forms.go). "uploads:photos" is listing-edit's Photos panel, "uploads:avatar" and "uploads:staff-list" are /account's avatar panel and staff list choice; each is called with PageData. Photo and avatar uploads use multipart; the remove forms here stay urlencoded. Branding uses its own preauthorized file handoff. */}}
 {{define "uploads:privacy-lists"}}<p><strong>Removed:</strong> location, camera and date (EXIF, XMP, IPTC), colour profiles, embedded previews and the file name.</p>
 <p><strong>Not removed:</strong> anything visible in the picture — faces, hands, tattoos, reflections, windows, the room, packaging, handwriting, screens, logos — and the sensor noise that can link photos taken with one camera.</p>
 <p>Screenshots can show your clock and timezone, language, username, file paths, other tabs and notifications. Crop them before uploading.</p>
@@ -44,7 +44,8 @@
 </ul>
 <div class="notice upload-privacy" id="photo-privacy">
 <div>
-<p><strong>Before you upload:</strong> listing photos are public to anyone, including visitors who are not signed in, while the listing is published.</p>
+<p><strong>Before you upload:</strong> listing photos are {{if and $.Access $.Access.MembersOnly}}visible to signed-in viewers{{else}}public to anyone, including visitors who are not signed in{{end}}, while the listing is published.</p>
+{{if and $.Access $.Access.MembersOnly}}<p>An administrator can later make the site public; published listing photos could then be viewed without signing in.</p>{{end}}
 {{template "uploads:privacy-lists"}}
 </div>
 </div>
@@ -86,7 +87,8 @@
 </ul>
 <div class="notice upload-privacy" id="avatar-privacy">
 <div>
-<p><strong>Before you upload:</strong> {{if .Staff}}your avatar is shown beside your dispute decisions to the buyer and vendor of each order and to moderators and administrators, so a staff photo links your identity across every dispute decision. It is public, to anyone including visitors who are not signed in, only on the public staff list, when an administrator turns that list on and you have not hidden yourself from it.{{else}}your avatar is public to anyone, including visitors who are not signed in, on your vendor page.{{end}}</p>
+<p><strong>Before you upload:</strong> {{if .Staff}}your avatar is shown beside your dispute decisions to the buyer and vendor of each order and to moderators and administrators, so a staff photo links your identity across every dispute decision. It is {{if and $.Access $.Access.MembersOnly}}visible to signed-in viewers{{else}}public, to anyone including visitors who are not signed in,{{end}} only on the public staff list, when an administrator turns that list on and you have not hidden yourself from it.{{else}}your avatar is {{if and $.Access $.Access.MembersOnly}}visible to signed-in viewers{{else}}public to anyone, including visitors who are not signed in,{{end}} on your vendor page.{{end}}</p>
+{{if and $.Access $.Access.MembersOnly}}<p>An administrator can later make the site public. If your avatar is shown on your vendor page or the staff list, signed-out visitors could then see it.</p>{{end}}
 {{template "uploads:privacy-lists"}}
 </div>
 </div>

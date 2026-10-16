@@ -90,7 +90,7 @@
 <section id="recent-photos" aria-labelledby="recent-photos-title">{{/* A-190: image_takedown.go */}}
 <h2 class="section-title" id="recent-photos-title">Recent photos</h2>{{with $.NoticeIn "recent-photos"}}
 <div class="alert" role="status">{{.}}</div>{{end}}
-<p class="help">The 50 newest {{if eq .User.Role "moderator"}}vendors' {{end}}listing photos and avatars that anyone can see, newest first. Remove one that breaks the market's rules: it is deleted at once and its owner is told your reason. After the operator restores the database from a backup, photos and avatars removed after that backup are back: check this list and remove them again.</p>{{if .RecentImages}}
+<p class="help">The 50 newest {{if eq .User.Role "moderator"}}vendors' {{end}}listing photos and avatars that {{if and .Access .Access.MembersOnly}}signed-in viewers can see{{else}}anyone can see{{end}}, newest first. Remove one that breaks the market's rules: it is deleted at once and its owner is told your reason. After the operator restores the database from a backup, photos and avatars removed after that backup are back: check this list and remove them again.</p>{{if .RecentImages}}
 <ol class="photo-list recent-photos">{{range .RecentImages}}
 <li class="photo-item">
 <a class="photo-thumb" href="{{.Full}}"><img src="{{.Thumb}}" alt="" width="{{.Width}}" height="{{.Height}}"><span class="sr-only">{{if .Photo}}Photo{{else}}Avatar{{end}} at full size</span></a>

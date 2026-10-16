@@ -1,0 +1,21 @@
+{{define "admin-access"}}{{$members := and .Access .Access.MembersOnly}}{{$closed := and .Access (not .Access.RegistrationOpen)}}<section class="panel admin-access" id="access" aria-labelledby="access-heading">
+<h2 id="access-heading">Site access and registration</h2>{{with $.NoticeIn "access"}}
+<div class="alert" role="status">{{.}}</div>{{end}}
+<p>Choose who can view the site and whether new accounts can be created. These settings are independent.</p>
+<form class="stack" method="post" action="/admin/access">
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/admin/access"}}">
+<fieldset><legend>Site access</legend>
+<label class="check"><input type="radio" name="site_access" value="public" required{{if not $members}} checked{{end}}> Public: visitors can browse without signing in</label>
+<label class="check"><input type="radio" name="site_access" value="members" required{{if $members}} checked{{end}}> Members only: sign-in required to view site content</label>
+</fieldset>
+<fieldset><legend>New registrations</legend>
+<label class="check"><input type="radio" name="registrations" value="open" required{{if not $closed}} checked{{end}}> Open: visitors can create an account</label>
+<label class="check"><input type="radio" name="registrations" value="closed" required{{if $closed}} checked{{end}}> Closed: no new accounts</label>
+</fieldset>
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
+<button type="submit">Save access settings</button>
+</form>
+<p class="help">Closing registration does not remove existing accounts or prevent them from signing in. First-administrator setup stays available before the market is initialized. Changes take effect without a restart and are recorded in the audit trail.</p>
+<p class="help">Members-only access covers listings, search, vendor pages, listing photos, avatars and transparency pages. The market name and logo remain visible before sign-in. Changing access cannot recall content someone has already downloaded or cached.</p>
+</section>{{end}}

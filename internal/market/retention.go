@@ -222,7 +222,7 @@ func (s *retentionService) removePending(id string) {
 }
 
 func retentionAuthSweep(ctx context.Context, tx *sql.Tx, now time.Time) error {
-	for _, table := range []string{"sessions", "pending_logins", "captcha_spent", "pgp_challenges", "form_submissions"} {
+	for _, table := range []string{"sessions", "pending_logins", "captcha_spent", "pgp_challenges", "form_submissions", "branding_upload_tickets"} {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE expires<=$1`, now); err != nil {
 			return err
 		}
@@ -470,6 +470,8 @@ func retentionUnknownUserReferences(ctx context.Context, tx *sql.Tx) (bool, erro
  ('reviews'::regclass,'buyer_id'),
  ('payouts'::regclass,'user_id'),
  ('images'::regclass,'owner_user_id'),
+ ('market_branding'::regclass,'updated_by'),
+ ('branding_upload_tickets'::regclass,'user_id'),
  ('user_escrow_keys'::regclass,'user_id'),
  ('escrow_pubkeys'::regclass,'user_id'),
  ('escrow_index_floors'::regclass,'user_id'),
@@ -513,7 +515,8 @@ SELECT EXISTS(SELECT 1 FROM sessions WHERE user_id=$1)
  OR EXISTS(SELECT 1 FROM xmr_settlements WHERE requested_by=$1)
  OR EXISTS(SELECT 1 FROM xmr_settlement_rerequests WHERE requested_by=$1)
  OR EXISTS(SELECT 1 FROM xmr_escrow_collisions WHERE disposed_by=$1)
- OR EXISTS(SELECT 1 FROM provider_episode_deliveries WHERE user_id=$1)`, id).Scan(&referenced)
+ OR EXISTS(SELECT 1 FROM provider_episode_deliveries WHERE user_id=$1)
+ OR EXISTS(SELECT 1 FROM branding_upload_tickets WHERE user_id=$1)`, id).Scan(&referenced)
 	return referenced, err
 }
 
@@ -603,7 +606,7 @@ func applyRetentionTombstone(ctx context.Context, tx *sql.Tx, t retentionTombsto
 		if err := retentionExecQuery(ctx, tx, `SELECT retention_erase_legacy_profile($1)`, t.ID); err != nil {
 			return err
 		}
-		for _, table := range []string{"sessions", "pending_logins", "pgp_challenges", "recovery_codes", "form_submissions", "provider_episode_deliveries"} {
+		for _, table := range []string{"sessions", "pending_logins", "pgp_challenges", "recovery_codes", "form_submissions", "provider_episode_deliveries", "branding_upload_tickets"} {
 			if err := retentionExecQuery(ctx, tx, `DELETE FROM `+table+` WHERE user_id=$1`, t.ID); err != nil {
 				return err
 			}

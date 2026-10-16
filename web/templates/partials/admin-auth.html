@@ -1,5 +1,5 @@
 {{/* P1 Authentication owns. Admin panels after the settings grid */}}
-{{define "admin-auth"}}{{$off := eq (index .Settings "captcha_required") "false"}}<section class="panel admin-auth">
+{{define "admin-auth"}}{{template "admin-access" .}}{{$off := eq (index .Settings "captcha_required") "false"}}<section class="panel admin-auth">
 <h2>Sign-in protection</h2>{{if .CaptchaNoContact}}
 <p class="alert captcha-contact-warning" role="note"><strong>Warning:</strong> the CAPTCHA is on, but {{if index .Settings "staff_contact"}}the staff contact is only a handle, which can be messaged only from an account{{else}}no staff contact is set{{end}}. The image has no audio or text alternative, so someone who cannot read it cannot sign in or register and has no way to ask for help. Fix it by saving an onion, XMPP or other address that works without an account under Staff contact below, or by turning the CAPTCHA off here.</p>{{end}}
 <dl class="key-values">

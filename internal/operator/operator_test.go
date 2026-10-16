@@ -659,3 +659,138 @@ func TestProductionLogsExplainDisabledLoggingWithoutCallingDocker(t *testing.T) 
 		t.Fatalf("production logs invoked Docker or omitted guidance: %v (%s)", err, out)
 	}
 }
+
+func TestInitialAccessSettingsPersistRenderAndDescribeDefaults(t *testing.T) {
+	for _, policy := range []struct {
+		name, siteAccess, registrations string
+		flags                           []string
+	}{
+		{"defaults", "public", "open", nil},
+		{"members-open", "members", "open", []string{"--site-access", "members"}},
+		{"public-closed", "public", "closed", []string{"--registrations", "closed"}},
+		{"members-closed", "members", "closed", []string{"--site-access", "members", "--registrations", "closed"}},
+	} {
+		t.Run(policy.name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "install")
+			args := append([]string{"init", "--dir", dir, "--mode", "dev", "--app-image", testImage}, policy.flags...)
+			if output, err := invoke(t, args...); err != nil {
+				t.Fatalf("init: %v (%s)", err, output)
+			}
+			c, err := loadConfig(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, env, err := render(dir, c)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for key, want := range map[string]string{"INITIAL_SITE_ACCESS": policy.siteAccess, "INITIAL_REGISTRATIONS": policy.registrations} {
+				if c.Settings[key] != want || env[key] != want {
+					t.Fatalf("%s: saved=%q rendered=%q want=%q", key, c.Settings[key], env[key], want)
+				}
+			}
+			plan, err := invoke(t, "plan", "--dir", dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(plan, "initial visitor access: "+policy.siteAccess+"; new registrations: "+policy.registrations+" (saved administrator settings take precedence)") {
+				t.Fatal("plan did not describe first-start defaults:", plan)
+			}
+		})
+	}
+}
+
+func TestInitialAccessSettingsRejectInvalidValuesWithoutPublishing(t *testing.T) {
+	for _, setting := range []struct {
+		flag, key, value string
+	}{
+		{"site-access", "INITIAL_SITE_ACCESS", "PUBLIC"},
+		{"site-access", "INITIAL_SITE_ACCESS", ""},
+		{"site-access", "INITIAL_SITE_ACCESS", "members "},
+		{"registrations", "INITIAL_REGISTRATIONS", "enabled"},
+		{"registrations", "INITIAL_REGISTRATIONS", ""},
+		{"registrations", "INITIAL_REGISTRATIONS", "closed "},
+	} {
+		for _, useSet := range []bool{false, true} {
+			name := setting.flag + "=" + setting.value
+			if useSet {
+				name += "/set"
+			}
+			t.Run(name, func(t *testing.T) {
+				dir := filepath.Join(t.TempDir(), "install")
+				args := []string{"init", "--dir", dir, "--mode", "dev", "--app-image", testImage}
+				if useSet {
+					args = append(args, "--set", setting.key+"="+setting.value)
+				} else {
+					args = append(args, "--"+setting.flag, setting.value)
+				}
+				if _, err := invoke(t, args...); err == nil || !strings.Contains(err.Error(), setting.key+" must be") {
+					t.Fatalf("invalid policy accepted or wrong error: %v", err)
+				}
+				if _, err := os.Lstat(dir); !os.IsNotExist(err) {
+					t.Fatal("invalid policy published installation")
+				}
+			})
+		}
+	}
+}
+
+func TestOlderOperatorConfigWithoutInitialAccessSettingsRemainsValid(t *testing.T) {
+	dir := initDev(t)
+	c, err := loadConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delete(c.Settings, "INITIAL_SITE_ACCESS")
+	delete(c.Settings, "INITIAL_REGISTRATIONS")
+	if _, _, err := render(dir, c); err != nil {
+		t.Fatalf("existing configuration became invalid: %v", err)
+	}
+	var plan bytes.Buffer
+	if err := printPlan(&plan, c); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(plan.String(), "initial visitor access: public; new registrations: open") {
+		t.Fatal(plan.String())
+	}
+}
+
+func TestBrandingUploadOriginInitializationRenderingAndPlan(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "install")
+	if output, err := invoke(t, "init", "--dir", dir, "--mode", "dev", "--app-image", testImage, "--branding-upload-origin", "https://UPLOAD.MARKET.EXAMPLE:443"); err != nil {
+		t.Fatalf("init: %v (%s)", err, output)
+	}
+	c, err := loadConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, env, err := render(dir, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Settings["BRANDING_UPLOAD_ORIGIN"] != "https://upload.market.example" || env["BRANDING_UPLOAD_ORIGIN"] != "https://upload.market.example" {
+		t.Fatal("fixed origin not normalized, persisted and forwarded")
+	}
+	plan, err := invoke(t, "plan", "--dir", dir)
+	if err != nil || !strings.Contains(plan, "branding upload origin: https://upload.market.example") {
+		t.Fatalf("origin missing from plan: %v %s", err, plan)
+	}
+	c.Settings["BRANDING_UPLOAD_ORIGIN"] = "http://127.0.0.1:8080"
+	c.Mode = "prod"
+	if err := validate(dir, c); err == nil || !strings.Contains(err.Error(), "BRANDING_UPLOAD_ORIGIN") {
+		t.Fatalf("production accepted HTTP loopback: %v", err)
+	}
+}
+
+func TestBrandingUploadOriginInitRejectsInvalidFlagsAndSetWithoutWriting(t *testing.T) {
+	for _, flags := range [][]string{{"--branding-upload-origin", "http://public.example"}, {"--branding-upload-origin", "https://user:private-value@public.example"}, {"--set", "BRANDING_UPLOAD_ORIGIN=https://public.example/path"}} {
+		dir := filepath.Join(t.TempDir(), "install")
+		args := append([]string{"init", "--dir", dir, "--mode", "dev", "--app-image", testImage}, flags...)
+		if output, err := invoke(t, args...); err == nil || !strings.Contains(err.Error(), "BRANDING_UPLOAD_ORIGIN") || strings.Contains(output+err.Error(), "private-value") {
+			t.Fatalf("invalid origin not safely refused: %v %s", err, output)
+		}
+		if _, err := os.Lstat(dir); !os.IsNotExist(err) {
+			t.Fatal("invalid origin wrote installation")
+		}
+	}
+}

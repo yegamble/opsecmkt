@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"opsecmkt/internal/brandingconfig"
 )
 
 type service map[string]any
@@ -32,6 +34,14 @@ func render(dir string, c Config) ([]byte, map[string]string, error) {
 	}
 	for key, value := range c.Settings {
 		env[key] = value
+	}
+	// Existing edited configurations are also rendered with a canonical origin.
+	if origin, ok := c.Settings["BRANDING_UPLOAD_ORIGIN"]; ok {
+		canonical, err := brandingconfig.ParseOrigin(origin, c.Mode == "dev")
+		if err != nil {
+			return nil, nil, err
+		}
+		env["BRANDING_UPLOAD_ORIGIN"] = canonical
 	}
 	for key, path := range c.SecretFiles {
 		if key == "POSTGRES_PASSWORD" || key == "ESCROW_XMR_WALLET_RPC_PASSWORD" {
