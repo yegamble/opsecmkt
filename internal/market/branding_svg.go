@@ -15,7 +15,7 @@ import (
 
 const brandingSVGCap = 256 << 10
 
-var errBrandingSVG = &httpError{Code: 415, Msg: "Logo not saved: use a JPEG, PNG, or a self-contained SVG with simple shapes and text. SVG scripts, styles, links, images, references, animations and document declarations are not accepted."}
+var errBrandingSVG = &httpError{Code: 415, Msg: "Logo not saved: use a JPEG, PNG, or a self-contained SVG with simple shapes and text. SVG scripts, styles, links, embedded images, references, animations and document declarations are not accepted."}
 
 var svgNumber = regexp.MustCompile(`^[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$`)
 var svgNumberToken = regexp.MustCompile(`[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?`)
