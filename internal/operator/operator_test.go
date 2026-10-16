@@ -591,6 +591,7 @@ func TestRedeployFailureRetainsDesiredImageWithoutRollback(t *testing.T) {
 
 func initProduction(t *testing.T) string {
 	t.Helper()
+	fakeEncryptedProductionHost(t)
 	inputs := t.TempDir()
 	cert, key := testTLSMaterial(t, false)
 	for name, body := range map[string][]byte{"database.url": []byte("postgres://market:dedicated-password@db.internal/market?sslmode=verify-full"), "ca.pem": cert, "server.pem": cert, "server.key": key} {

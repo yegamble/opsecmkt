@@ -1026,10 +1026,10 @@ const xmrTorRelayHeld = "Tor mode without the node Tor overlay"
 
 // xmrRelayHold is why Monero escrow relays wait ("" = they may be sent), as broadcastHold is Bitcoin escrow's (A-441):
 // in APP_MODE=tor, monero-wallet-rpc's relay_tx goes out through its daemon from this host's IP address, so nothing is
-// relayed unless COMPOSE_FILE has xmrNodeTorOverlay or ESCROW_XMR_TOR_RELAY=clearnet-accepted (A-515; Monero over Tor
-// is unverified, A-95). Settlements are still built, checked and stored; once a restart with either relays, the stored
+// relayed unless COMPOSE_FILE has xmrNodeTorOverlay or the operator explicitly selects remote-tor in production or
+// clearnet-accepted (A-515; declarations cannot verify remote routing). Settlements are still built, checked and stored; once a restart permits relay, the stored
 // transaction is relayed unchanged (sendXMRBuilt). An administrator's confirmation after a restore (sendRebroadcastOK)
-// waits too, unused. Both conditions are read at startup only.
+// waits too, unused. Relay configuration is read at startup only.
 func (a *App) xmrRelayHold() string {
 	if a.mode != "tor" || a.escrowXMR == nil || a.escrowXMR.torRelayOK {
 		return ""

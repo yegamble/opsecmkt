@@ -79,7 +79,8 @@
 <li>Shows a warrant canary only as the operator's PGP-clearsigned text, re-verified against the configured operator key on every page view; it never writes or edits canary text.</li>
 </ul>
 <h2>What remains unavailable</h2>
-<p>{{if $.XMREscrowOn}}Noncustodial Monero escrow,{{else}}Payments (Monero escrow is off unless the operator configures it), noncustodial escrow,{{end}} XMPP delivery, automatic mirror orchestration, QR-code TOTP enrollment, and an audio CAPTCHA alternative are not available.</p>
+<p>TOTP enrollment works by entering the setup key manually in your authenticator, then confirming with its code. QR-code TOTP enrollment is not available. When enabled, Monero escrow is custodial: the market controls its wallet keys.</p>
+<p>{{if $.XMREscrowOn}}Noncustodial Monero escrow,{{else}}Payments (Monero escrow is off unless the operator configures it), noncustodial escrow,{{end}} XMPP delivery, automatic mirror orchestration, and an audio CAPTCHA alternative are not available.</p>
 </section>
 <a class="button" href="/">Return to marketplace <span class="action-icon">↗</span></a>
 </div>

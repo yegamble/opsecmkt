@@ -76,6 +76,8 @@ nav:
   - Get started:
       - install/README.md
       - Requirements: install/requirements.md
+      - Production deployment: install/production.md
+      - Server hardening: install/server-hardening.md
       - Native binary and separated services: install/binary.md
       - Service topology and sizing: install/service-topology.md
       - RAM secrets and emergency response: install/ram-secrets-and-emergency.md
@@ -87,6 +89,9 @@ nav:
       - First steps: install/first-steps.md
       - Enabling payments: install/enable-payments.md
       - Production checklist: install/production-checklist.md
+      - Deployment decisions and evidence: install/deployment-notes.md
+      - Production security review: install/security-review.md
+      - Storage security assessment: install/storage-security-assessment.md
       - Troubleshooting: install/troubleshooting.md
   - Operate:
       - Operator guide: operator-guide.md

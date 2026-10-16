@@ -472,6 +472,7 @@ func retentionUnknownUserReferences(ctx context.Context, tx *sql.Tx) (bool, erro
  ('images'::regclass,'owner_user_id'),
  ('market_branding'::regclass,'updated_by'),
  ('branding_upload_tickets'::regclass,'user_id'),
+ ('host_reboot_requests'::regclass,'user_id'),
  ('user_escrow_keys'::regclass,'user_id'),
  ('escrow_pubkeys'::regclass,'user_id'),
  ('escrow_index_floors'::regclass,'user_id'),

@@ -5,13 +5,14 @@ then follow the printed administrator setup instructions. The shell installer re
 
 > **Prerelease software.** The native CLI changes are unreleased; build the current checkout to use them.
 > New installs take **no payments** until escrow is configured and enabled. Native setup defaults to stagenet;
-> the legacy shell installer's local nodes default to **mainnet (real funds)**. No mainnet run is recorded;
-> mainnet is covered by unit, database and simulated-RPC tests only. See [Implementation status](../implementation-status.md).
+> the legacy shell installer's local nodes default to **mainnet (real funds)**. Mainnet payment and settlement workflows remain unverified;
+> deployment and readiness checks do not establish real-funds settlement. See [Implementation status](../implementation-status.md).
 
 ## Choose a method
 
 | Method | Use it to | Start |
 | --- | --- | --- |
+| [Production with managed PostgreSQL](production.md) | Deploy prepared separate services with verified TLS, encrypted storage, backups and recovery | Follow the production procedure |
 | [Guided native setup](cli-reference.md#guided-interactive-setup) | Create a development or prepared production deployment, import/generate keys, or manage an installation | Run `./opsecmkt` in a terminal |
 | [Native flags](binary.md) | Automate deployment or run directly against existing services | Run `./opsecmkt --help` |
 | [Read-only preview](preview.md) | Look around with sample data and no database | Run `./opsecmkt serve --preview` |
@@ -28,10 +29,13 @@ it does not embed dependency servers or provision remote hosts. See [binary requ
 Native setup defaults to stagenet and disabled escrow. Select mainnet explicitly only when you intend real funds;
 development and verification use test networks. Preserve the selected network when reusing wallets or upgrading.
 
+For production, [harden the servers](server-hardening.md) and prepare remote service endpoints before initialization.
+If escrow is needed, include the payment flags in that single initialization; configuring escrow and enabling intake are separate steps.
+
 ### Legacy shell installer defaults
 
-`scripts/install.sh init --tor` and `init --clearnet` with local nodes (the default) write mainnet. No mainnet run
-is recorded; mainnet is covered by unit, database and simulated-RPC tests only.
+`scripts/install.sh init --tor` and `init --clearnet` with local nodes (the default) write mainnet. Mainnet payment and settlement workflows remain unverified;
+deployment and readiness checks do not establish real-funds settlement.
 
 | You want | Pass | Writes |
 | --- | --- | --- |
@@ -48,12 +52,15 @@ independently prepared services.
 
 ## The path
 
-1. Read [binary requirements](binary.md) and, for production, [service topology and sizing](service-topology.md).
-2. Follow guided setup or your method's flag-based procedure.
-3. Complete the printed administrator setup instructions, check health and verify backups. For production Tor,
-   setup uses the private administrator onion; [legacy first steps](first-steps.md) describe the older installer.
-4. [Enabling payments](enable-payments.md) (optional)
-5. [Production checklist](production-checklist.md) before inviting users
+For production, follow [the complete deployment procedure](production.md) in order:
+
+1. Choose separate roles and a private managed PostgreSQL endpoint. Record exact approved operator and service source addresses.
+2. [Harden each host](server-hardening.md), install encrypted roots and prove off-host manual unlock before transferring production secrets.
+3. Verify private TLS and database permissions. Prepare payment services now if needed; select their network before the single initialization.
+4. [Build, publish and inspect the application image](binary.md#building-and-publishing-the-application-image). Pass its full repository/digest reference as `--app-image`, then initialize the app once.
+5. Complete [private administrator setup](first-steps.md#native-production-deployment), enroll MFA and keep payments disabled or verify paused intake before opening public ingress. Choose [browsing, registration and branding](first-steps.md#choose-browsing-registration-and-branding).
+6. Verify public and private allowed/denied paths, uploads, coordinated encrypted backups, isolated restore and runtime return after a locked reboot.
+7. Complete the [production checklist](production-checklist.md). [Enable payment intake deliberately](enable-payments.md) only after its separate readiness and recovery checks pass.
 
 ## Reference
 
@@ -61,6 +68,10 @@ independently prepared services.
 - [Worker reuse and app-only redeployment](service-topology.md#reusing-services-when-rebuilding-the-app)
 - [RAM secrets and manual incident response](ram-secrets-and-emergency.md)
 - [Legacy installer reference](installer-reference.md)
+- [Production deployment](production.md)
+- [Server hardening](server-hardening.md)
+- [Existing deployment security review](security-review.md)
+- [Existing deployment storage assessment](storage-security-assessment.md)
 - [External PostgreSQL](external-database.md)
 - [Troubleshooting](troubleshooting.md)
 - [Upgrading](../../UPGRADING.md)

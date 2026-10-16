@@ -1,12 +1,21 @@
 # External PostgreSQL
 
-Use your own PostgreSQL server instead of the internal container.
+Use a managed PostgreSQL service or a separate PostgreSQL server instead of the internal container.
+
+For production, follow the [step-by-step production deployment](production.md).
+It covers private direct endpoints, database roles, CA certificates,
+`sslmode=verify-full`, network allowlists and host-side backup connections. The
+shell-installer example below remains available for existing single-host workflows.
 
 ## Requirements
 
 - **Empty** database (or the one belonging to the market you are restoring).
 - **UTF8** encoding. Other encodings are refused at startup.
 - Reachable from the app container. CI tests PostgreSQL 17.
+- For native production: a separate remote endpoint, verified TLS and firewall
+  access limited to the app and approved backup/recovery hosts. Import a private
+  CA with `deploy init --database-ca FILE`; the URL stays in a protected
+  `--database-url-file FILE` rather than a command argument.
 
 Create it:
 
@@ -47,4 +56,5 @@ Works with `--tor` or `--clearnet`. Not with `--local`.
 
 ## What now?
 
-- Back to [Onion service](tor.md) or [Public domain](clearnet.md).
+- Continue with [Production deployment](production.md), or return to the legacy
+  [Onion service](tor.md) or [Public domain](clearnet.md) procedure.

@@ -1,5 +1,11 @@
 # Public domain (HTTPS)
 
+For a production instance with separate hosts and managed PostgreSQL, use
+[Deploying a production instance](production.md). Public HTTPS terminates on the
+upload gateway, which proxies the entire site to the private application host.
+
+The procedure below uses the legacy shell installer on one host.
+
 Run the market on your domain. The app listens on `127.0.0.1:8080`. Your HTTPS reverse proxy forwards to it.
 
 **Time:** about 15 minutes, plus node sync. **Result:** a market at `https://YOUR-DOMAIN` with an administrator.
@@ -18,7 +24,7 @@ Run the market on your domain. The app listens on `127.0.0.1:8080`. Your HTTPS r
 | `--nodes custom` | Choose Monero network, image and pruning. |
 | `--nodes none` | No nodes. No payments with a bundled node. |
 
-No mainnet run is recorded; mainnet is covered by unit, database and simulated-RPC tests only. Before it writes
+Mainnet payment and settlement workflows remain unverified; deployment and readiness checks do not establish real-funds settlement. Before it writes
 `.env`, a mainnet install prints that notice, the disk estimates and a `WARNING` if Docker's data directory is short of
 space. It only warns. Which to pick: [Enabling payments](enable-payments.md#choose-a-network).
 
