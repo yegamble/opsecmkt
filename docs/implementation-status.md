@@ -4,6 +4,34 @@ The Figma reference is adapted to Go-rendered HTML and CSS. The browser loads no
 
 ## Security hardening boundary
 
+The native executable embeds its UI and provides deployment, key generation/import,
+application and upload-gateway roles. Interactive terminals open a guided setup
+when no arguments are supplied; explicit `setup` provides the same path, while
+headless serving and flag-based automation remain compatible. The guide previews
+commands, confirms configuration/start separately and identifies generated or
+imported key files without printing their values. Native Tor identities can be
+imported with their matching full address/keypair or generated with an optional
+prefix of up to six characters. Restart and app replacement retain selected keys.
+`OPSECMKT_PROFILE=prod` requires an external
+database with TLS certificate validation, a separate upload gateway, app/backend TLS and authenticated
+HTTPS Monero services when escrow is enabled. The application refuses original
+uploads in isolated mode; only its separate mutual-TLS listener accepts bounded
+normalized images, with final session, role, ownership and quota checks. The gateway
+receives original files and performs scanning and image decoding. Its same-origin
+proxy sees browser credentials and sessions, so it remains a trusted service.
+Different endpoint names are declarations of separation, not proof of physical
+host placement. See [Binary installation](install/binary.md).
+
+The administrator-only service panel reports isolation notices and installed/latest
+versions for PostgreSQL, Monero daemon/wallet RPC, Tor, ClamAV and Go. A separate
+`versions-worker` polls fixed official release feeds and signs a local report;
+the application verifies it without internet release requests. Go and PostgreSQL
+versions are observed locally, and integrated ClamAV uses its cached engine version;
+other inventory is operator-reported. Missing, invalid, stale and unknown states
+remain warnings. The worker never installs updates. The deployment controller
+retains existing service references for application-only redeployment; see
+[Service topology and sizing](install/service-topology.md).
+
 Optional Tor administrator ingress uses a separate Unix HTTP socket and a
 client-authorized admin onion; when enabled, the public listener refuses setup,
 administrative endpoints and administrator sessions. `AUDIT_EXPORT_RECIPIENT`
@@ -12,10 +40,21 @@ private key before download or host file creation. Deployment packaging can
 exclude evidence, CI and cloud documentation tooling without changing public
 source history. See [Security and OPSEC operations](security-operations.md).
 
+Native production Tor requires that private ingress. Its networkless preparation
+helper validates public client records and preserves the separate onion identity
+volume. The CLI also encrypts an offline installation bundle, checks a hardened
+Linux tmpfs and unlocks administrator-decrypted input without a plaintext bundle
+file. Retention remains on persistent external storage. Manual emergency commands
+confirm the saved project/context, stop and inventory its containers, and permit
+explicitly targeted LUKS keyslot erasure only after successful stopping. No
+automatic event invokes an erase or reboot. See the
+[RAM and emergency procedure](install/ram-secrets-and-emergency.md).
+
 These controls do not encrypt the whole database, remove online wallet keys,
-make Docker environment secrets RAM-only, or guarantee anonymity. Live Tor
-client-authorization and container startup require separate operator rehearsal;
-code and configuration tests alone do not prove them.
+guarantee memory destruction or guarantee anonymity. Local Docker deployment,
+app-only replacement, RAM unlock and offline Tor startup have
+[working-tree evidence](evidence/native-cli-2026-10-15.md). Live public Tor client
+authorization, remote hosts and production policy still require operator rehearsal.
 
 
 ## Fresh-install payment boundary

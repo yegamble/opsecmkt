@@ -92,7 +92,7 @@ func loadPhotoPanel(ctx context.Context, a *App, _ *http.Request, d *PageData) e
 		return nil
 	}
 	v := &UploadsView{PhotoLimit: photosPerListing, Quota: strconv.FormatInt(uploaderQuota>>20, 10)}
-	uploadState(v, a.scanner.State())
+	uploadState(v, a.uploadScannerState())
 	rows, err := a.db.QueryContext(ctx, `SELECT id,width,height,octet_length("full"),description FROM images WHERE product_id=$1 AND kind='photo' ORDER BY created,id`, d.Product.ID)
 	if err != nil {
 		return err
@@ -135,7 +135,7 @@ func loadPhotoPanel(ctx context.Context, a *App, _ *http.Request, d *PageData) e
 func loadAvatarPanel(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
 	role := d.User.Role
 	v := &UploadsView{AvatarForm: slices.Contains(uploadRoutes["/account/avatar"].roles, role), Staff: role == "admin" || role == "moderator"}
-	uploadState(v, a.scanner.State())
+	uploadState(v, a.uploadScannerState())
 	v.Notice = strings.TrimSuffix(v.Notice, listingNoticeTail)
 	var id sql.NullString
 	var w, h, size sql.NullInt64

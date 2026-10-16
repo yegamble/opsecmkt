@@ -5,6 +5,7 @@ go 1.26.9
 toolchain go1.27.2
 
 require (
+	filippo.io/edwards25519 v1.2.0
 	github.com/ProtonMail/go-crypto v1.5.2
 	github.com/jackc/pgx/v5 v5.11.0
 	golang.org/x/crypto v0.58.0

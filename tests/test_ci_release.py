@@ -61,6 +61,18 @@ class ReleaseNotesStaticTest(unittest.TestCase):
         self.assertIn(BUILD_LINE, self.step)
         self.assertIn('go version', self.step)
 
+    def test_application_binaries_are_standalone_and_checksummed(self):
+        build = WORKFLOW[WORKFLOW.index('Build standalone application'):WORKFLOW.index('Package checksums')]
+        self.assertIn('for goarch in amd64 arm64', build)
+        self.assertIn('CGO_ENABLED=0 GOOS=linux GOARCH=$goarch', build)
+        self.assertIn('./cmd/server', build)
+        self.assertIn('"opsecmkt-linux-$goarch"', build)
+        self.assertIn('./opsecmkt-linux-amd64 --help', build)
+        self.assertIn('build.json opsecmkt-linux-* verify-audit-* > SHA256SUMS', WORKFLOW)
+        self.assertIn('build.json opsecmkt-linux-* verify-audit-*', self.step)
+        self.assertIn('docs/install/binary.md', self.step)
+        self.assertIn('application_binaries', WORKFLOW)
+
     def test_notes_state_the_captcha_limit(self):
         self.assertIn(CAPTCHA_LINE, self.step)
 

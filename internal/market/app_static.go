@@ -1,9 +1,11 @@
 package market
 
 import (
+	"bytes"
+	"io"
 	"io/fs"
 	"net/http"
-	"os"
+	"opsecmkt/web"
 	"path"
 	"strings"
 	"time"
@@ -24,14 +26,7 @@ func (a *App) serveStatic(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	root, err := os.OpenRoot("web/static")
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	defer root.Close()
-
-	file, err := root.Open(name)
+	file, err := web.Assets.Open("static/" + name)
 	if err != nil {
 		http.NotFound(w, r)
 		return
@@ -45,5 +40,10 @@ func (a *App) serveStatic(w http.ResponseWriter, r *http.Request) {
 
 	// Zero modtime prevents filesystem timestamps from becoming a client-visible validator. Conditional requests
 	// can still use HTTP semantics (for example If-None-Match: *), without adding Last-Modified.
-	http.ServeContent(w, r, path.Base(name), time.Time{}, file)
+	data, err := io.ReadAll(file)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	http.ServeContent(w, r, path.Base(name), time.Time{}, bytes.NewReader(data))
 }

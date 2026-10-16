@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -68,8 +69,18 @@ func newRPCClient(name, raw, version string, digest bool) (*rpcClient, error) {
 	u.User = nil
 	u.RawQuery, u.Fragment = "", ""
 	c.endpoint = strings.TrimRight(u.String(), "/")
+	transport := &http.Transport{Proxy: nil, MaxIdleConnsPerHost: 2, IdleConnTimeout: 90 * time.Second}
+	if digest {
+		transport.TLSClientConfig, err = moneroRPCTLS(os.Getenv)
+		if err != nil {
+			return nil, err
+		}
+		if transport.TLSClientConfig != nil && u.Scheme != "https" {
+			return nil, errors.New("Monero RPC TLS files require an HTTPS endpoint")
+		}
+	}
 	c.http = &http.Client{
-		Transport:     &http.Transport{Proxy: nil, MaxIdleConnsPerHost: 2, IdleConnTimeout: 90 * time.Second},
+		Transport:     transport,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 	return c, nil

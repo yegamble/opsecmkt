@@ -28,6 +28,8 @@ import (
 	"sync/atomic"
 	"time"
 	"unicode/utf8"
+
+	"opsecmkt/web"
 )
 
 //go:embed schema.sql
@@ -67,6 +69,8 @@ type App struct {
 	escrowXMR        *escrowXMR                // Monero escrow while ESCROW_XMR=on (escrow_xmr_config.go), ready or not; nil = off; set once in New
 	scanner          *imageScanner             // clamd client for uploads (clamd.go); nil = Disabled
 	storageLimit     int64                     // IMAGE_STORAGE_LIMIT_MB in bytes (uploads.go); 0 = the default
+	isolatedUploads  bool                      // raw upload bytes terminate at the separate gateway
+	uploadTickets    uploadTicketStore
 	stop             context.CancelFunc
 	background       sync.WaitGroup
 	retention        *retentionService // bounded expiry and external deletion/hold state
@@ -96,9 +100,9 @@ type App struct {
 // parseTemplates loads layout (web/templates/*.html), pages/<page>.html ("page:<page>") and partials/<hook>.html.
 func parseTemplates() (*template.Template, error) {
 	t := template.New("").Funcs(template.FuncMap{"formNonce": formNonceFor})
-	for _, pattern := range []string{"web/templates/*.html", "web/templates/pages/*.html", "web/templates/partials/*.html"} {
+	for _, pattern := range []string{"templates/*.html", "templates/pages/*.html", "templates/partials/*.html"} {
 		var err error
-		if t, err = t.ParseGlob(pattern); err != nil {
+		if t, err = t.ParseFS(web.Assets, pattern); err != nil {
 			return nil, err
 		}
 	}
@@ -146,6 +150,14 @@ func New(ctx context.Context, preview bool) (*App, error) {
 		return nil, err
 	}
 	a.scanner = newImageScanner(scanCfg)
+	switch os.Getenv("UPLOAD_MODE") {
+	case "", "integrated":
+	case "isolated":
+		a.isolatedUploads = true
+		a.scanner = nil // the application never contacts clamd in this mode
+	default:
+		return nil, errors.New("UPLOAD_MODE must be integrated or isolated")
+	}
 	if a.storageLimit, err = imageStorageLimitFromEnv(os.Getenv); err != nil {
 		return nil, err
 	}
@@ -460,7 +472,7 @@ func (a *App) limited(key string, n int) bool {
 	b, ok := a.limits[key]
 	return ok && !time.Now().After(b.Until) && b.Count >= n
 }
-func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (a *App) responseSecurityHeaders(w http.ResponseWriter) {
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'self'; img-src 'self'; font-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Referrer-Policy", "same-origin")
@@ -470,6 +482,10 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if a.secure {
 		w.Header().Set("Strict-Transport-Security", "max-age=31536000")
 	}
+}
+
+func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	a.responseSecurityHeaders(w)
 	if a.adminSocket != "" && !privateAdminIngress(r.Context()) && privateAdminRoute(r.URL.Path) {
 		http.NotFound(w, r) // before reading a body, setting cookies, admission or any database work
 		return
