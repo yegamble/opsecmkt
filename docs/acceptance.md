@@ -54,6 +54,48 @@ Per-order escrow is the only payment path (A-448, A-492). Checks of payment code
 
 ## Authentication and request security
 
+- [x] Site access and registration are independent: public/open, public/closed,
+  members/open and members/closed work for guests and existing accounts. Closed
+  registration hides signup links and forms and refuses a real signup form
+  opened before closure. Verified in Chromium at 320 px with JavaScript disabled
+  (`tests/e2e/db-access.spec.ts`), including fresh member sign-in while closed
+  and restoration to public/open in `finally`.
+- [x] Members-only mode protects catalog/search, products, vendor pages, images
+  and transparency content before rendering or serving bytes; authentication,
+  enabled registration, first setup and essential resources remain available.
+  Guest authentication pages reveal no search, categories or protected metadata.
+  Proven by `TestSiteAccessAllContentGuardAndEssentialEndpoints`,
+  `TestSiteAccessImagesRequireLiveMembership`,
+  `TestSiteAccessAnonymousImagesNeverReadImageBytes`,
+  `TestSiteAccessPrivateAdministratorRemainsPrivate` and
+  `TestSiteAccessClosedRegistrationDoesNotPreventFirstAdministratorSetup`.
+- [x] Only an administrator can change both settings with CSRF, a submission
+  nonce, current password and TOTP when enabled; invalid/replayed requests change
+  nothing, accepted changes are audited, and other roles cannot alter settings.
+  `TestSiteAccessAdministratorAuthorizationConfirmationAndReplay` and
+  `TestSiteAccessAuditFailureRollsBackPolicyAndNonce` verify authorization,
+  confirmation, replay behavior and atomic rollback when auditing fails.
+- [x] First-start environment defaults initialize missing
+  settings without overriding saved choices on restart. Invalid initial values
+  are refused and runtime missing or malformed settings fail closed
+  (`TestSiteAccessInitialConfiguration`,
+  `TestSiteAccessSavedChoicesSurviveRestartAndAreSharedBetweenApps`,
+  `TestSiteAccessRuntimeMissingOrInvalidSettingsFailClosed`).
+- [x] Native `serve` and `deploy init` accept validated initial access and
+  registration flags, preserve an omitted environment default, and retain older
+  operator configurations (`TestServeInitialAccessFlagsRespectExistingEnvironmentWhenOmitted`,
+  `TestServeInvalidInitialAccessFlagsFailBeforeMutatingEnvironment`,
+  `TestInitialAccessSettingsPersistRenderAndDescribeDefaults`,
+  `TestInitialAccessSettingsRejectInvalidValuesWithoutPublishing`,
+  `TestOlderOperatorConfigWithoutInitialAccessSettingsRemainsValid`).
+- [x] The administrator's radio groups work with keyboard navigation and their
+  forms fit 320 px with JavaScript disabled. Canary access/registration status
+  and image-cache disclosures follow all four policy combinations
+  (`tests/e2e/db-access.spec.ts`).
+- [ ] An actual app-only container redeployment preserves the saved access and
+  registration settings. Rehearse the retained database and image replacement;
+  process-restart tests do not prove the container lifecycle.
+
 - [ ] Passwords use adaptive hashing; password and username bounds are enforced before expensive work. No production default credentials exist. Partial evidence: bcrypt cost 12, bounds on password change and admin reset, CAPTCHA and taken-handle checks before hashing, and weak setup tokens refused (`TestResetAdminPasswordCLI`, `TestPasswordChangeRevokesOtherSessions`, `TestResetAdminPassword`, `TestRegisterTakenHandleSkipsPasswordWork`, `TestCaptchaOnRegisterAndLogin`, `TestCheckSetupTokenRefusesPlaceholdersAndLowVariety`, `TestEnvExampleSetupTokenIsNotUsable`, `TestNewRefusesPlaceholderSetupToken`); no over-long password or handle is sent to `/login` or `/register`, and `compose.yaml` falls back to a fixed database password when `POSTGRES_PASSWORD` is unset (the installer always generates one), which nothing tests.
 - [ ] Sessions use cryptographic randomness, expire server-side, rotate on authentication, and are revoked on logout. Cookies are HttpOnly, have an explicit SameSite policy, and use Secure unless `COOKIE_SECURE=false` (the installer writes `true` for clearnet behind HTTPS and `false` for local HTTP and Tor). Partial evidence: expiry, rotation, revocation and cookie attributes are tested (`TestExpiredSessionIsSignedOut`, `TestLoginRotatesSessionToken`, `TestLogoutAndRevokeSessionsDeleteRows`, `TestSessionCookieSecurityAttributes`, `TestPreLoginCookieSeparateFromSession`; installer: `tests/test_installer.py`); nothing tests the source of randomness.
 - [x] The SameSite=Strict `session` cookie is set only at sign-in; pre-login CSRF/CAPTCHA state lives in a separate Strict `anon` cookie. Following a link from another site never overwrites `session`: a direct reload of `/account` afterwards is still signed in, and the sign-in form rendered on that cookieless landing page still submits, served anonymously (`TestCrossSiteLinkClobbersSessionCookie`, `TestAnonymousLandingFormPostsWhileSignedIn`, `TestPreLoginCookieSeparateFromSession`, `db-identity.spec.ts` cross-site link case).

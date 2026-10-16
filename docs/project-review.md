@@ -128,8 +128,9 @@ The screenshot review found an input focus ring crossing the search button, tiny
 arrow glyphs, category selection that only highlighted “All listings,” and footer
 content with mismatched alignment. The search uses a centered text button,
 matching idle input/button borders and inset keyboard focus; all categories share
-the active style and `aria-current`. Signed-out navigation shows Marketplace and
-Transparency; account links appear after sign-in.
+the active style and `aria-current`. In public mode, signed-out navigation shows
+Marketplace and Transparency; account links appear after sign-in. Members-only
+sign-in screens hide content navigation.
 The footer separates identity, navigation and payment status, with a stacked mobile
 layout. Action icons scale separately from their labels.
 

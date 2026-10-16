@@ -410,6 +410,13 @@ func (w *wizard) collect() ([]string, string, error) {
 		return nil, "", err
 	}
 
+	if _, err = w.flag(&args, "site-access", "Initial visitor access: public or members", "public", "public permits signed-out browsing; members requires an account to view the site and listings. This seeds the saved administrator setting only on first start.", oneOf("public", "members")); err != nil {
+		return nil, "", err
+	}
+	if _, err = w.flag(&args, "registrations", "Initial new registrations: open or closed", "open", "closed refuses new account creation; existing accounts can still sign in. The administrator can change this saved setting later.", oneOf("open", "closed")); err != nil {
+		return nil, "", err
+	}
+
 	fmt.Fprintln(w.out, "\n2. Database, TLS and upload boundary")
 	dbCheck := optional(file(true))
 	if mode == "prod" {

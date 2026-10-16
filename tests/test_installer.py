@@ -1797,6 +1797,14 @@ time.sleep(60)
         self.check_env(installed_env(APP_MODE='onion'), 'APP_MODE must be clearnet or tor')
         self.check_env(installed_env(COOKIE_SECURE='TRUE'), 'COOKIE_SECURE must be exactly true or false')
 
+    def test_check_validates_initial_access_settings(self):
+        for access in ('public', 'members'):
+            for registrations in ('open', 'closed'):
+                with self.subTest(access=access, registrations=registrations):
+                    self.check_env(installed_env(INITIAL_SITE_ACCESS=access, INITIAL_REGISTRATIONS=registrations))
+        self.check_env(installed_env(INITIAL_SITE_ACCESS='PUBLIC'), 'INITIAL_SITE_ACCESS must be public or members')
+        self.check_env(installed_env(INITIAL_REGISTRATIONS='false'), 'INITIAL_REGISTRATIONS must be open or closed')
+
     def test_check_takes_the_node_tor_overlay_only_after_tor_and_the_nodes(self):
         # A-442: compose.nodes-tor.yaml replaces the node commands, so it must follow compose.nodes.yaml (listed
         # before it, compose.nodes.yaml's commands would win and drop the proxy), and it is for Tor mode only.

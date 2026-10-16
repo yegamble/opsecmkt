@@ -151,3 +151,51 @@ func TestEmbeddedPreviewRunsOutsideCheckout(t *testing.T) {
 		t.Fatalf("startup failed before embedded templates loaded: %v %s", err, output.String())
 	}
 }
+
+func TestServeInitialAccessFlagsRespectExistingEnvironmentWhenOmitted(t *testing.T) {
+	for _, policy := range []struct {
+		name, siteAccess, registrations string
+		args                            []string
+	}{
+		{"omitted", "members", "closed", nil},
+		{"explicit-public-open", "public", "open", []string{"--site-access", "public", "--registrations", "open"}},
+		{"explicit-members-closed", "members", "closed", []string{"--site-access", "members", "--registrations", "closed"}},
+	} {
+		t.Run(policy.name, func(t *testing.T) {
+			t.Setenv("INITIAL_SITE_ACCESS", "members")
+			t.Setenv("INITIAL_REGISTRATIONS", "closed")
+			originalArgs := os.Args
+			t.Cleanup(func() { os.Args = originalArgs })
+			if err := configureServe(policy.args, io.Discard); err != nil {
+				t.Fatal(err)
+			}
+			if got := os.Getenv("INITIAL_SITE_ACCESS"); got != policy.siteAccess {
+				t.Fatalf("INITIAL_SITE_ACCESS=%q want %q", got, policy.siteAccess)
+			}
+			if got := os.Getenv("INITIAL_REGISTRATIONS"); got != policy.registrations {
+				t.Fatalf("INITIAL_REGISTRATIONS=%q want %q", got, policy.registrations)
+			}
+		})
+	}
+}
+
+func TestServeInvalidInitialAccessFlagsFailBeforeMutatingEnvironment(t *testing.T) {
+	for _, args := range [][]string{
+		{"--site-access", ""}, {"--site-access", "private"}, {"--site-access", "Members"}, {"--site-access", "members "},
+		{"--registrations", ""}, {"--registrations", "off"}, {"--registrations", "CLOSED"}, {"--registrations", " closed"},
+	} {
+		t.Run(strings.Join(args, "="), func(t *testing.T) {
+			t.Setenv("INITIAL_SITE_ACCESS", "public")
+			t.Setenv("INITIAL_REGISTRATIONS", "open")
+			t.Setenv("ADDR", "original")
+			originalArgs := os.Args
+			err := configureServe(append([]string{"--addr", "changed"}, args...), io.Discard)
+			if err == nil || !strings.Contains(err.Error(), args[0]+" must be") {
+				t.Fatalf("invalid option accepted or wrong error: %v", err)
+			}
+			if os.Getenv("ADDR") != "original" || os.Getenv("INITIAL_SITE_ACCESS") != "public" || os.Getenv("INITIAL_REGISTRATIONS") != "open" || len(os.Args) != len(originalArgs) {
+				t.Fatal("invalid option changed process settings")
+			}
+		})
+	}
+}

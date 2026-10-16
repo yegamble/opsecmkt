@@ -241,6 +241,10 @@ func (a *App) load(r *http.Request, d *PageData) error {
 	if err != nil {
 		return err
 	}
+	d.Access = siteAccessFromSettings(d.Settings)
+	if d.Access.MembersOnly && d.User == nil && !authenticationPage(d.Page) {
+		return fail(http.StatusUnauthorized, "Sign in to access this market.")
+	}
 	normaliseCatalogFilters(d)
 	if d.Page == "catalog" || d.Page == "product" || d.Page == "vendor" || d.Page == "checkout" || d.Page == "vendor-dashboard" {
 		// An administrator's takedown reason (A-163) is read only for the owner's vendor desk.

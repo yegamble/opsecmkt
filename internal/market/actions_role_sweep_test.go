@@ -53,6 +53,7 @@ var sweepScopes = map[string][2]string{
 	"/account/password":               {scopeSelf, "the caller's password"},
 	"/account/delete":                 {scopeSelf, "confirmed deletion of the caller's account"},
 	"/admin/retention/hold":           {scopeStaff, "registers a scoped preservation duty"},
+	"/admin/access":                   {scopeStaff, "confirmed site visibility and registration policy"},
 	"/admin/retention/release":        {scopeStaff, "confirmed release of preservation"},
 	"/admin/retention/review":         {scopeStaff, "reviews a financial retention blocker"},
 	"/admin/retention/account-review": {scopeStaff, "reviews an account closure blocker"},

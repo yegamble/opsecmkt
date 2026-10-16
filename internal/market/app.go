@@ -195,6 +195,10 @@ func New(ctx context.Context, preview bool) (*App, error) {
 		a.closeDB()
 		return nil, err
 	}
+	if err = a.initializeSiteAccess(ctx, cfg.initialAccess); err != nil {
+		a.closeDB()
+		return nil, err
+	}
 	if err = a.checkNetworkClass(ctx); err != nil {
 		a.closeDB()
 		return nil, err
@@ -552,8 +556,8 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		a.serveStatic(w, r)
 		return
 	}
-	// The image routes (image_routes.go) branch here, before any cookie is read or set: the public one reads no
-	// session at all, the desk one only the session cookie.
+	// Image routes set no cookies. Public-mode /img needs no session; members-only /img and /desk/img
+	// verify the session cookie themselves before reading image bytes.
 	if rest, ok := strings.CutPrefix(r.URL.Path, "/img/"); ok {
 		a.servePublicImage(w, r, rest)
 		return
@@ -703,6 +707,18 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h, ok := raws[r.URL.Path]; ok {
+		if !a.preview && r.URL.Path != "/captcha" {
+			policy, err := a.readSiteAccess(ctx)
+			if err != nil {
+				writeDBFailure(w, r, err)
+				return
+			}
+			r = accessRequest(r, policy)
+			if policy.MembersOnly && user == nil {
+				a.refuse(w, r, nil, 401, "Sign in to access this market.")
+				return
+			}
+		}
 		h(a, w, r, user)
 		return
 	}
@@ -783,11 +799,27 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if protected(page) && user == nil {
-		login := "/login"
-		if next := a.signInNext(r.URL.RequestURI()); next != "" {
-			login += "?next=" + url.QueryEscape(next) // signing in returns here (A-126)
+		a.redirectForSiteSignIn(w, r)
+		return
+	}
+	policy, err := a.readSiteAccess(ctx)
+	if err != nil {
+		writeDBFailure(w, r, err)
+		return
+	}
+	r = accessRequest(r, policy)
+	if policy.MembersOnly && user == nil && !authenticationPage(page) {
+		a.redirectForSiteSignIn(w, r)
+		return
+	}
+	if page == "register" && !policy.RegistrationOpen {
+		d := a.pageData(r, page, token, user)
+		if err := a.load(r, &d); err != nil {
+			writeDBFailure(w, r, err)
+			return
 		}
-		http.Redirect(w, r, login, 303)
+		d.Error = registrationClosedMessage
+		a.renderStatus(w, r, d, http.StatusForbidden)
 		return
 	}
 	if !authorized(page, user) {
@@ -888,6 +920,10 @@ func objectTitle(d *PageData) {
 // pageData is the state a page render starts from, before a.load fills it.
 func (a *App) pageData(r *http.Request, page, token string, user *User) PageData {
 	d := PageData{Page: page, Title: pageTitle(page), CSRF: a.csrf(token), User: user, Mode: a.mode, Query: r.URL.Query().Get("q"), Category: r.URL.Query().Get("category"), Region: r.URL.Query().Get("region"), Currency: "XMR", Settings: map[string]string{}}
+	d.Access = requestSiteAccess(r)
+	if d.Access == nil && !a.preview {
+		d.Access = siteAccessFromSettings(nil)
+	}
 	return d
 }
 

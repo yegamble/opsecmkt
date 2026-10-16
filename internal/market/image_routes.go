@@ -14,7 +14,8 @@ import (
 // pages list image ids and link here.
 //
 //   - GET/HEAD /img/<id>-t|-f, the public route: ServeHTTP branches to it before any cookie or session code, so
-//     it reads no session and sets no cookie, and it takes an imageWork slot (admitClass) instead of a page slot.
+//     it reads no session in public mode and sets no cookie. Members-only mode verifies a live session first.
+//     It takes an imageWork slot (admitClass) instead of a page slot.
 //     One primary-key read joined to the public predicate (imagePublicWhere).
 //   - GET/HEAD /desk/img/<id>-t|-f, the authenticated route, for the owner's own images whatever their state
 //     (an archived listing's on listing-edit), any image for an administrator, and a staff member's avatar for
@@ -151,7 +152,7 @@ func imageSelect(full, head bool) string {
 	return "SELECT octet_length(" + col + ")," + col + " FROM "
 }
 
-// servePublicImage answers GET/HEAD /img/<rest>. ServeHTTP calls it before reading any cookie.
+// servePublicImage reads a session only when the current site policy requires membership.
 func (a *App) servePublicImage(w http.ResponseWriter, r *http.Request, rest string) {
 	if r.Method == "POST" {
 		http.Error(w, "Method not allowed", 405)
@@ -165,6 +166,28 @@ func (a *App) servePublicImage(w http.ResponseWriter, r *http.Request, rest stri
 	if !ok || a.db == nil {
 		http.NotFound(w, r)
 		return
+	}
+	policy, err := a.readSiteAccess(r.Context())
+	if err != nil {
+		writeDBFailure(w, r, err)
+		return
+	}
+	r = accessRequest(r, policy)
+	if policy.MembersOnly {
+		cookie, err := r.Cookie("session")
+		if err != nil || len(cookie.Value) != 64 {
+			http.NotFound(w, r)
+			return
+		}
+		user, err := a.sessionUser(r.Context(), cookie.Value)
+		if err != nil {
+			writeDBFailure(w, r, err)
+			return
+		}
+		if user == nil || a.publicAdministrator(r.Context(), user) {
+			http.NotFound(w, r)
+			return
+		}
 	}
 	a.serveImage(w, r, imageBytes, ref, imagePublicFrom+` WHERE i.id=$1 AND `+imagePublicWhere, ref.id)
 }
@@ -191,6 +214,12 @@ func (a *App) serveDeskImage(w http.ResponseWriter, r *http.Request, rest string
 		http.NotFound(w, r)
 		return
 	}
+	policy, err := a.readSiteAccess(r.Context())
+	if err != nil {
+		writeDBFailure(w, r, err)
+		return
+	}
+	r = accessRequest(r, policy)
 	a.serveImage(w, r, deskImageBytes, ref, `images i JOIN users o ON o.id=i.owner_user_id WHERE i.id=$1 AND `+imageDeskWhere, ref.id, u.ID, u.Role)
 }
 
@@ -247,6 +276,9 @@ func writeImage(w http.ResponseWriter, r *http.Request, n int64, b []byte, err e
 	h.Set("Content-Security-Policy", "default-src 'none'; sandbox")
 	// D7: a day in the browser's private cache, not revalidated (no validators: an id's bytes never change).
 	h.Set("Cache-Control", "private, max-age=86400, immutable")
+	if policy := requestSiteAccess(r); policy != nil && policy.MembersOnly {
+		h.Set("Cache-Control", "no-store")
+	}
 	h.Set("Cross-Origin-Resource-Policy", "same-origin")
 	h.Set("Content-Disposition", `inline; filename="image.jpg"`)
 	w.WriteHeader(http.StatusOK)

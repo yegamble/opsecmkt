@@ -64,6 +64,12 @@ Development defaults to loopback HTTP, stagenet and disabled escrow. Managed dep
 Compose 2.17+ and reviewed images pinned by digest**. Production also needs prepared dependency hosts and TLS
 identities; the CLI does not provision remote servers or install their services.
 
+For a members-only site with registration closed, add
+`--site-access members --registrations closed` to `deploy init` or `serve`.
+The defaults are `public` and `open`. Administrators can later change them
+independently without restarting under **Admin → Site access and registration**.
+See [site access and registration](docs/operator-guide.md#site-access-and-registration).
+
 | Task | Guide | Command |
 | --- | --- | --- |
 | Configure a deployment, manage it, or prepare onion keys | [Guided setup](docs/install/cli-reference.md#guided-interactive-setup) | `./opsecmkt setup` |
@@ -92,8 +98,8 @@ and daemon authority; they are suitable for single-host development but do not e
 | Upload/scanner | Public gateway, ClamAV, and public Tor or HTTPS ingress |
 | Version worker | `opsecmkt versions-worker`, with its own report-signing key and version inventory |
 
-The production profile rejects known local or matching configured service hosts and requires verified TLS,
-authenticated Monero RPC and isolated uploads over mutual TLS. Hostnames cannot prove physical separation;
+The production profile rejects known local or matching configured service hosts and requires verified TLS
+and authenticated Monero RPC. Uploads use a separate gateway over mutual TLS. Hostnames cannot prove physical separation;
 verify the actual placement and firewall rules. Raw uploads are scanned and normalized on the gateway host
 before the app accepts bounded JPEGs. The gateway handles browser sessions and remains a trusted component.
 
@@ -125,11 +131,11 @@ have separate recovery requirements; Tor identity volumes and other persistent c
 | **Buyers** | Search and filters, vendor profiles, order tracking, disputes, reviews tied to paid orders |
 | **Vendors** | Physical and digital listings with up to 4 photos, stock, automatic digital delivery, an order desk |
 | **Moderators** | Dispute desk, payment-review flags, photo and avatar takedowns |
-| **Administrators** | Roles, suspensions, second-factor resets, takedowns, CAPTCHA, payment intake, escrow recovery, canary, signed audit exports, OPSEC and dependency notices |
+| **Administrators** | Site access and registration, roles, suspensions, second-factor resets, takedowns, CAPTCHA, payment intake, escrow recovery, canary, signed audit exports, OPSEC and dependency notices |
 | **Operators** | Guided or flagged setup, generated/imported keys, separated services, retained workers through app rebuilds, encrypted backups |
 
 Photo uploads require ClamAV. Development can use integrated scanning; production requires the separate
-upload/scanner gateway. ClamAV checks for known malware; it does not review picture content or guarantee safety.
+upload/scanner gateway. ClamAV checks uploads for known malware; it does not review picture content.
 
 ## Payments
 

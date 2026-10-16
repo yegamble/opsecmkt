@@ -44,7 +44,7 @@ The guide uses numbered task choices and plain text:
 
 | Task | Guided behavior |
 | --- | --- |
-| New deployment | Choose dev/prod, private directory, Docker context, digest-pinned app image and exposure. Production asks for prepared database/TLS/gateway inputs; development optionally adds ClamAV. Import stable key files or generate independent new secrets, optionally configure dedicated Monero RPC and select each managed Tor identity. |
+| New deployment | Choose dev/prod, private directory, Docker context, digest-pinned app image, exposure, initial site access and registration. Production asks for prepared database/TLS/gateway inputs; development optionally adds ClamAV. Import stable key files or generate independent new secrets, optionally configure dedicated Monero RPC and select each managed Tor identity. |
 | Onion identity | Generate random/prefix identity files or import the complete expected address and matching native files into a new private directory. No Tor service is started. |
 | Existing installation | Default to `plan`, or choose `status`, `up`, `down` or app-only `redeploy` using the retained directory. Lifecycle changes require a separate review; they do not regenerate keys or remote workers. |
 
@@ -64,7 +64,7 @@ The process starts database checks/migrations before serving, then runs until st
 
 ### Configuration precedence and private files
 
-`serve` overrides an environment variable only when its corresponding flag is explicitly supplied. An omitted flag preserves the inherited environment, and an explicit empty string clears that flag's variable. Application defaults apply after this step. There is no `serve --config`, automatic `.env` reader or general `serve --set` flag. Guided setup creates the operator configuration; `operator.json` is read by `deploy`, not by `serve`.
+`serve` overrides an environment variable only when its corresponding flag is explicitly supplied. An omitted flag preserves the inherited environment. An explicit empty string clears that flag's variable, except `--site-access` and `--registrations`, which require one of their listed choices. Application defaults apply after this step. There is no `serve --config`, automatic `.env` reader or general `serve --set` flag. Guided setup creates the operator configuration; `operator.json` is read by `deploy`, not by `serve`.
 
 The application and legacy host commands load these private file inputs before startup:
 
@@ -97,6 +97,8 @@ Every flag in this table takes a string unless marked boolean. Defaults describe
 | `--database-url-file` | `DATABASE_URL_FILE` | Unset; required database connection via this file or `DATABASE_URL`, except preview. Production requires a separate host and `sslmode=verify-full`. |
 | `--app-secret-key-file` | `APP_SECRET_KEY_FILE` | Unset; stable application key root for CSRF and sealed account secrets. Legacy `SETUP_TOKEN` fallback remains supported. |
 | `--setup-token-file` | `SETUP_TOKEN_FILE` | Unset; first-run browser setup authorization. Required for browser setup until installed; ignored as authorization afterwards. |
+| `--site-access` | `INITIAL_SITE_ACCESS` | `public`; first-start default: `public` or `members` (sign-in required for site content). Stored in PostgreSQL. |
+| `--registrations` | `INITIAL_REGISTRATIONS` | `open`; independent first-start default: `open` or `closed`. Existing accounts can still sign in when closed. |
 | `--cookie-secure` | `COOKIE_SECURE` | `true`; string `true` or `false`. Native Tor setup does not automatically set it to `false`; choose the value for your actual browser-facing origin. |
 | `--admin-socket` | `ADMIN_SOCKET` | Unset; optional private administrator Unix listener. Requires Tor mode and a clean absolute path in a private directory; see [private admin ingress](tor.md#private-administrator-onion). |
 | `--audit-signing-key-file` | `AUDIT_SIGNING_KEY_FILE` | Unset; independent 64-hex Ed25519 signing seed. Signed audit export is unavailable without it. |
@@ -358,6 +360,8 @@ Only `init` accepts these flags. Unless a default is shown, a flag is unset/opti
 | `--monero-image` | Unset | Development pruned stagenet daemon image. Requires wallet image and escrow. |
 | `--monero-wallet-image` | Unset | Development dedicated escrow wallet-RPC image. Requires daemon image and escrow. |
 | `--exposure` | `clearnet` | `clearnet` or `tor`; production Tor ingress runs on the separate gateway host. |
+| `--site-access` | `public` | First-start site access: `public` or `members`. Saved as `INITIAL_SITE_ACCESS` for initialization in PostgreSQL. |
+| `--registrations` | `open` | First-start registration policy: `open` or `closed`. Saved as `INITIAL_REGISTRATIONS`; independent of site access. |
 | `--app-bind` | `127.0.0.1:8080` | Host app listener, explicit loopback/private IP and port. |
 | `--backend-bind` | `127.0.0.1:8443` | Production upload backend host listener, explicit loopback/private IP and port. |
 | `--app-host` | Unset | Required production app host identity. |
@@ -430,10 +434,25 @@ The selected native identity and administrator records are validated before use.
 
 ### Additional runtime settings
 
+Choose initial access and registration when creating an installation. For example,
+add `--site-access members --registrations closed` to `deploy init` for a site
+that requires sign-in and accepts no new accounts. The same flags are available
+on `serve`; its environment equivalents are `INITIAL_SITE_ACCESS=members` and
+`INITIAL_REGISTRATIONS=closed`.
+
+These values initialize database settings only when absent. Later changes under
+**Admin → Site access and registration** survive application restarts and
+redeployments; changing an initial flag or environment value does not replace
+them. First-administrator setup remains available. See
+[managing site access](../operator-guide.md#site-access-and-registration) for the
+four combinations and verification steps.
+
 For managed deployments, use repeated `init --set KEY=VALUE`, or deliberately edit the corresponding `settings` entry in private `operator.json` before `plan` and `up`. For native `serve`, use the same environment variable names. `serve` does not accept `--set`.
 
 | Variable | Default | Accepted setting |
 | --- | --- | --- |
+| `INITIAL_SITE_ACCESS` | `public` | `public` or `members`; initializes the saved site-access setting only when absent. |
+| `INITIAL_REGISTRATIONS` | `open` | `open` or `closed`; initializes the saved registration setting only when absent. |
 | `MONERO_NETWORK` | Managed: `stagenet` | `stagenet` or explicit `mainnet`; development remains stagenet. |
 | `ESCROW_XMR` | `off` | `on` or `off`, with all escrow prerequisites. |
 | `PAYMENT_CONFIRMATIONS_XMR` | `10` | Integer `1`–`1000`; effective deposit threshold is at least `10`. |

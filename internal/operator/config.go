@@ -58,6 +58,7 @@ type Config struct {
 }
 
 var settingKeys = map[string]bool{
+	"INITIAL_SITE_ACCESS": true, "INITIAL_REGISTRATIONS": true,
 	"MONERO_NETWORK": true, "ESCROW_XMR": true, "PAYMENT_CONFIRMATIONS_XMR": true,
 	"PAYMENT_POLL_INTERVAL": true, "PAYMENT_EXPIRY": true, "MONERO_MAX_TIP_AGE": true,
 	"ESCROW_XMR_FEE_BPS": true, "ESCROW_XMR_FEE_ADDRESS": true, "ESCROW_XMR_SLOTS": true,
@@ -235,6 +236,12 @@ func validate(dir string, c Config) error {
 		if !settingKeys[key] || strings.ContainsAny(value, "\x00\r\n'") {
 			return fmt.Errorf("unsupported or invalid setting %s", key)
 		}
+	}
+	if value, ok := c.Settings["INITIAL_SITE_ACCESS"]; ok && value != "public" && value != "members" {
+		return errors.New("INITIAL_SITE_ACCESS must be public or members")
+	}
+	if value, ok := c.Settings["INITIAL_REGISTRATIONS"]; ok && value != "open" && value != "closed" {
+		return errors.New("INITIAL_REGISTRATIONS must be open or closed")
 	}
 	if c.Settings["MONERO_NETWORK"] != "stagenet" && c.Settings["MONERO_NETWORK"] != "mainnet" {
 		return errors.New("MONERO_NETWORK must be stagenet or mainnet")

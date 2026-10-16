@@ -123,6 +123,7 @@ type Event struct{ Handle, Action, Created string } // Handle: account the audit
 type SignInRefusal struct{ Handle, Until string }
 
 type PageData struct {
+	Access           *SiteAccessView
 	DependencyStatus *DependencyStatusView // Administrator-only local version report and topology notices.
 
 	ServerStarted string

@@ -30,6 +30,26 @@ The current source supports only Monero (XMR). Bitcoin checkout, key registratio
 
 There is no live deployment or payment cutover for this change. The release notes below describe earlier alpha versions and are historical.
 
+## Site access and registration
+
+Supporting releases initialize missing database settings for site access and new
+registrations. The defaults are `public` and `open`; set `INITIAL_SITE_ACCESS`
+and `INITIAL_REGISTRATIONS` before the first supporting startup to choose other
+initial values. Existing saved settings are preserved. These variables, and the
+equivalent native `--site-access` and `--registrations` flags, seed missing values
+only; they do not override later administrator choices on restart.
+
+Upgrade every application replica before relying on members-only access or
+closed registration. Older binaries ignore these policies, so a rollback can
+reopen guest browsing and account creation. Keep an external maintenance or
+access gate in place while an older binary can serve requests during rollback.
+Changing access cannot recall content already downloaded or publicly cached.
+
+After upgrading, review **Admin → Site access and registration** and verify both
+a signed-out session and an existing account. Follow
+[site access and registration](docs/operator-guide.md#site-access-and-registration)
+for the choices and checks.
+
 # Upgrading from v0.1.0-alpha.1 to `v0.1.0-alpha.2`
 
 `v0.1.0-alpha.2` is a prerelease. Its installer now defaults new installs to mainnet (real funds), but an upgrade keeps

@@ -101,6 +101,7 @@ var notices = map[string]struct{ text, section, pages string }{
 	"image-removed-page": {"Image removed. Its owner was notified with your reason.", "", ""},
 	// Administration
 	"settings":      {"Marketplace settings saved.", "", ""},
+	"access":        {"Site access and registration settings saved.", "access", "admin"},
 	"role":          {"Account role saved.", "", ""},
 	"captcha":       {"CAPTCHA setting saved.", "", ""},
 	"suspended":     {"Account suspended.", "suspend", "admin"},

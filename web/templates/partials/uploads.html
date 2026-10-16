@@ -44,7 +44,8 @@
 </ul>
 <div class="notice upload-privacy" id="photo-privacy">
 <div>
-<p><strong>Before you upload:</strong> listing photos are public to anyone, including visitors who are not signed in, while the listing is published.</p>
+<p><strong>Before you upload:</strong> listing photos are {{if and $.Access $.Access.MembersOnly}}visible to signed-in viewers{{else}}public to anyone, including visitors who are not signed in{{end}}, while the listing is published.</p>
+{{if and $.Access $.Access.MembersOnly}}<p>An administrator can later make the site public; published listing photos could then be viewed without signing in.</p>{{end}}
 {{template "uploads:privacy-lists"}}
 </div>
 </div>
@@ -86,7 +87,8 @@
 </ul>
 <div class="notice upload-privacy" id="avatar-privacy">
 <div>
-<p><strong>Before you upload:</strong> {{if .Staff}}your avatar is shown beside your dispute decisions to the buyer and vendor of each order and to moderators and administrators, so a staff photo links your identity across every dispute decision. It is public, to anyone including visitors who are not signed in, only on the public staff list, when an administrator turns that list on and you have not hidden yourself from it.{{else}}your avatar is public to anyone, including visitors who are not signed in, on your vendor page.{{end}}</p>
+<p><strong>Before you upload:</strong> {{if .Staff}}your avatar is shown beside your dispute decisions to the buyer and vendor of each order and to moderators and administrators, so a staff photo links your identity across every dispute decision. It is {{if and $.Access $.Access.MembersOnly}}visible to signed-in viewers{{else}}public, to anyone including visitors who are not signed in,{{end}} only on the public staff list, when an administrator turns that list on and you have not hidden yourself from it.{{else}}your avatar is {{if and $.Access $.Access.MembersOnly}}visible to signed-in viewers{{else}}public to anyone, including visitors who are not signed in,{{end}} on your vendor page.{{end}}</p>
+{{if and $.Access $.Access.MembersOnly}}<p>An administrator can later make the site public. If your avatar is shown on your vendor page or the staff list, signed-out visitors could then see it.</p>{{end}}
 {{template "uploads:privacy-lists"}}
 </div>
 </div>
