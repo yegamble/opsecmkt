@@ -120,18 +120,23 @@ a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,te
   gap:0
 }
 .header-search input {
+  flex:1;
   border-right:0;
   border-radius:2px 0 0 2px;
   min-width:0
 }
 .header-search button {
-  flex:0 0 82px;
+  flex:0 0 auto;
   display:flex;
   align-items:center;
   justify-content:center;
-  gap:6px;
-  padding:8px;
-  border-radius:0 2px 2px 0
+  padding:10px 16px;
+  border-color:#77756b;
+  border-radius:0 2px 2px 0;
+  white-space:nowrap
+}
+.header-search button:hover {
+  border-color:var(--amber)
 }
 /* Inset indicators stay on the focused control, without crossing its neighbour. */
 .header-search input:focus-visible,.header-search button:focus-visible,
