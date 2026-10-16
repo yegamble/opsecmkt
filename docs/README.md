@@ -1,20 +1,24 @@
 # OPSEC Market documentation
 
-Self-hosted marketplace software that needs no browser JavaScript. Go renders every page as HTML and CSS,
-PostgreSQL stores the data, users identify with PGP, and one Docker Compose install runs it all, as a Tor onion
-service or behind HTTPS.
+Self-hosted marketplace software that needs no browser JavaScript. Go renders HTML and CSS, PostgreSQL stores
+marketplace data, users identify with PGP, and payments use Monero. The standalone Go CLI supports guided setup,
+explicit flags, key tools and application/worker roles. Development may use one host; production separates services.
 
-> **Prerelease:** `v0.1.0-alpha.2`. The installer's local nodes default to **mainnet (real funds)**; test networks are
-> an option. No mainnet run is recorded; mainnet is covered by unit, database and simulated-RPC tests only. See
-> [Implementation status](implementation-status.md).
+> **Prerelease software.** The native CLI changes are unreleased; build the current checkout to use them.
+> Native setup defaults to stagenet with escrow disabled. The legacy shell installer's bundled nodes default to
+> **mainnet (real funds)**. No mainnet run is recorded; mainnet is covered by unit, database and simulated-RPC tests
+> only. See [Implementation status](implementation-status.md).
 
 ## Start here
 
 | I want to | Go to |
 | --- | --- |
+| Set up using guided prompts or flags | [Standalone binary](install/binary.md) and [complete CLI reference](install/cli-reference.md) |
 | See it in one minute | [Read-only preview](install/preview.md) |
-| Try it on my machine | [Local marketplace](install/local.md) |
-| Run a market | [Onion service](install/tor.md) or [Public domain](install/clearnet.md) |
+| Try a single-host development deployment | [Native development setup](install/binary.md#initializing-a-development-deployment) |
+| Prepare production services | [Service separation, sizing and worker reuse](install/service-topology.md) |
+| Configure Tor and onion keys | [Public and private administrator onions](install/tor.md) |
+| Use the legacy shell installer | [Local marketplace](install/local.md) or [public domain](install/clearnet.md) |
 | Take payments | [Enabling payments](install/enable-payments.md) |
 | Go live | [Production checklist](install/production-checklist.md) |
 | Upgrade | [Upgrading](../UPGRADING.md) |
@@ -22,13 +26,14 @@ service or behind HTTPS.
 
 ## Sections
 
-- **Get started**: install, first steps, payments.
+- **Get started**: [native setup](install/binary.md), [installation methods](install/README.md), first steps, payments.
 - **Operate**: [operator guide](operator-guide.md), [security and OPSEC](security-operations.md), [retention operations](retention.md), [data retention and privacy policy](data-retention-privacy-policy.md), upgrades, backups, escrow runbooks.
-- **Reference**: [installer](install/installer-reference.md), [escrow design](escrow.md), status and evidence.
+- **Reference**: [CLI](install/cli-reference.md), [legacy installer](install/installer-reference.md), [escrow design](escrow.md), status and evidence.
 - **Contribute**: [development](development.md), tests, [contributing](../CONTRIBUTING.md).
 
 ## You should know
 
-- A Linux shell, Docker and Docker Compose.
+- A Linux shell; Docker and Compose 2.17+ for managed deployments, or prepared PostgreSQL for direct serving.
 - Tor Browser (onion installs) or an HTTPS reverse proxy (public domain).
 - A dedicated Monero escrow wallet-rpc, to take payments.
+- Prepared remote services and TLS identities for production; the CLI does not provision those hosts.
