@@ -21,6 +21,7 @@ type startupConfig struct {
 	secure               bool   // COOKIE_SECURE (unset = true)
 	brandingUploadOrigin string // BRANDING_UPLOAD_ORIGIN: fixed public gateway origin; optional for existing installations
 	adminSocket          string // ADMIN_SOCKET: separate private administrator Unix listener; blank preserves one-listener installs
+	hostControlSocket    string // HOST_CONTROL_SOCKET: fixed local host-agent socket; never selected by a web request
 	retention            retentionConfig
 	initialAccess        initialSiteAccess
 	notes                []string // startup log lines (warnings and the legacy key-root notice); never a secret
@@ -111,6 +112,9 @@ func loadStartupConfig(getenv func(string) string, mode string) (startupConfig, 
 		return c, err
 	}
 	if c.adminSocket, err = adminSocketConfig(getenv, mode); err != nil {
+		return c, err
+	}
+	if c.hostControlSocket, err = hostControlSocketConfig(getenv); err != nil {
 		return c, err
 	}
 	if c.retention, err = retentionConfigFromEnv(getenv); err != nil {

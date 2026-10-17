@@ -83,6 +83,7 @@ var sweepScopes = map[string][2]string{
 	"/admin/listing":                {scopeStaff, ""},
 	"/admin/operator-key":           {scopeStaff, ""},
 	"/admin/payment-intake":         {scopeStaff, ""},
+	"/admin/reboot":                 {scopeStaff, "private administrator host-control capability; dedicated private-ingress role tests"},
 	"/admin/reset-factors":          {scopeStaff, ""},
 	"/admin/review":                 {scopeStaff, ""},
 	"/admin/staff-contact":          {scopeStaff, ""},
@@ -334,6 +335,9 @@ func TestActionRegistryRoleSweep(t *testing.T) {
 		}
 		for _, p := range ps {
 			probes++
+			if path == "/admin/reboot" {
+				p.want = http.StatusNotFound // This capability is hidden on every public listener.
+			}
 			// An empty form: the gate refuses before the form is read, so nothing a valid form could add matters.
 			if rec := sweepPost(e, path, p.session, nil); rec.Code != p.want {
 				t.Errorf("POST %s as %s: status %d, want %d (roles %v): %s", path, p.who, rec.Code, p.want, spec.Roles, strings.TrimSpace(rec.Body.String()))

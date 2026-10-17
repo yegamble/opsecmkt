@@ -49,11 +49,12 @@ type App struct {
 	health               *sql.DB // one connection for /healthz, apart from the application pool (A-178)
 	templates            *template.Template
 	preview, secure      bool
-	mode, setupToken     string // setupToken authorizes /setup only, and only until installed
-	adminSocket          string // when set, administrator HTTP requests require the separate private socket
-	keyRoot              string // APP_SECRET_KEY, or SETUP_TOKEN (legacy): the root of key and the sealing keys
-	key                  []byte // CSRF/CAPTCHA HMAC key, sha256("csrf:"+keyRoot)
-	captchaIDKey         []byte // CAPTCHA challenge-id MAC key, sha256("captcha-id:"+keyRoot); empty = no challenges
+	mode, setupToken     string               // setupToken authorizes /setup only, and only until installed
+	adminSocket          string               // when set, administrator HTTP requests require the separate private socket
+	hostControl          hostRebootController // immutable local app-host reboot capability; nil when unconfigured
+	keyRoot              string               // APP_SECRET_KEY, or SETUP_TOKEN (legacy): the root of key and the sealing keys
+	key                  []byte               // CSRF/CAPTCHA HMAC key, sha256("csrf:"+keyRoot)
+	captchaIDKey         []byte               // CAPTCHA challenge-id MAC key, sha256("captcha-id:"+keyRoot); empty = no challenges
 	mu                   sync.Mutex
 	limits               map[string]bucket         // authentication and factor budgets
 	writeLimits          map[string]bucket         // independent per-account write budgets (A-75)
@@ -134,6 +135,9 @@ func New(ctx context.Context, preview bool) (*App, error) {
 	a.secure, a.setupToken = cfg.secure, cfg.setupToken
 	a.adminSocket = cfg.adminSocket
 	a.brandingUploadOrigin = cfg.brandingUploadOrigin
+	if cfg.hostControlSocket != "" {
+		a.hostControl = newHostRebootController(cfg.hostControlSocket)
+	}
 	if a.live, err = marketLiveFromEnv(os.Getenv); err != nil {
 		return nil, err
 	}
@@ -492,7 +496,7 @@ func (a *App) responseSecurityHeaders(w http.ResponseWriter) {
 
 func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	a.responseSecurityHeaders(w)
-	if a.adminSocket != "" && !privateAdminIngress(r.Context()) && privateAdminRoute(r.URL.Path) {
+	if !privateAdminIngress(r.Context()) && (a.adminSocket != "" && privateAdminRoute(r.URL.Path) || r.URL.Path == "/admin/reboot") {
 		http.NotFound(w, r) // before reading a body, setting cookies, admission or any database work
 		return
 	}

@@ -123,6 +123,19 @@ docker --context SAVED_CONTEXT compose \
 
 The native path is `/var/lib/tor/hostname`; the later legacy overlay uses `/var/lib/tor/admin/hostname`. Do not interchange them.
 
+The native `tor-admin` health check tests only that its hostname file is nonempty.
+That file can exist before Tor connects. A matching hostname and healthy app do
+not prove descriptor publication or onion reachability. Verify both routes
+through fresh independent Tor clients and record when they passed; earlier
+success does not establish current availability.
+
+The generated native configuration also provides a private Unix control socket
+under Tor's `0700` RAM data directory, `/tmp/tor`. Use a reviewed local collector
+that verifies the socket peer and authenticates with SAFECOOKIE. Group access to
+the socket and cookie is disabled. `ControlPort 0` keeps TCP control disabled. Keep cookie contents,
+raw control replies, descriptors and circuit identifiers private. This diagnostic
+channel does not establish remote onion reachability.
+
 ### Bind the client key and verify ingress
 
 Back on the administrator's trusted machine, bind its saved private key to the actual administrator onion address, using new output paths:
@@ -134,11 +147,73 @@ opsecmkt keys import tor-client --in ./admin-private/operator.key \
   --onion YOUR_ACTUAL_ADMINISTRATOR_V3_ONION.onion
 ```
 
-The command validates the v3 onion checksum. Install only the `.auth_private` file in the administrator Tor client's authorization configuration. Keep that file private and preserve it with the administrator's recovery material. A client without a valid authorization key must fail to connect. An authorized client must still sign in as the correct application account. Storefront and administrator onions have distinct browser cookie scopes.
+The command validates the v3 onion checksum. Keep the resulting `.auth_private`
+file private and preserve it with the administrator's recovery material. For an
+existing installation, recover its saved client credential rather than generating
+a replacement that the service has not authorized.
+
+To authorize **desktop Tor Browser** on the trusted administrator machine:
+
+1. Open `http://YOUR_ACTUAL_ADMINISTRATOR_V3_ONION.onion/login`. Tor Browser
+   requests a private key; select the gray key icon beside the address if needed
+   to open the authentication prompt.
+2. Read the saved `.auth_private` record locally. Its format is
+   `ONION_ADDRESS:descriptor:x25519:PRIVATE_KEY`. Enter **only the final
+   52-character Base32 private key** in the browser prompt. Do not enter the whole
+   record, the public `.auth` file, an onion service identity, or an OpenPGP
+   recovery key. Keep the key out of chat and logs.
+3. After Tor connects, sign in with the application administrator account. For a
+   new market whose setup has not completed, open `/setup` instead and follow
+   [First steps](first-steps.md#native-production-deployment).
+
+Tor's `0xF4` error means no authorization key was provided; `0xF5` means the key
+was incorrect or revoked. See the
+[Tor Browser authentication instructions and error codes](https://support.torproject.org/tor-browser/features/onion-services/#onion-service-authentication).
+Tor Browser for Android currently lists client authorization as unsupported in
+its [known limitations](https://support.torproject.org/tor-browser/encountering-issues/known-issues/).
+
+For a standalone Tor client using persistent configuration, install the **whole
+`.auth_private` file** in the private directory configured by `ClientOnionAuthDir`,
+then restart that Tor client. This file-based method differs from entering only
+the key in Tor Browser's prompt; see
+[Tor's client authorization reference](https://community.torproject.org/onion-services/advanced/client-auth/).
+A client without a valid authorization key must fail to connect. An authorized
+client must still sign in as the correct application account. Storefront and
+administrator onions have distinct browser cookie scopes.
 
 Preserve the selected `onion-admin/` files and protect the matching `tor_admin_identity` volume. An app-only `deploy redeploy` leaves the running Tor service unchanged. On a replacement app host, restore/unlock the retained managed identity or migrate its matching volume, retain external retention state, and run `install`/`up` before app-only redeployment. The helper can initialize a fresh volume from the same selected identity; it never replaces a populated volume with different keys. Legacy configurations without managed files require preservation/export/adoption of their already-valid identity through an explicitly reviewed recovery procedure; an empty legacy volume refuses startup.
 
 New encrypted RAM bundles include configured managed identity triples, not whole Tor volumes. Tor runtime keys remain in persistent Docker volumes even when the operator directory is unlocked into tmpfs. Emergency RAM cleanup and ordinary container removal do not remove those volume keys. Keep their storage/recovery protections separate from the controller's RAM placement. There is no automatic live-volume export, identity rotation, remote migration or volume-backup command.
+
+### Diagnosing a timeout after entering the client key
+
+A timeout after entering the 52-character key does not establish that the key is
+wrong. Preserve the existing bound credential and full onion address.
+
+1. Confirm the intended administrator address and saved client record's address
+   binding locally. Keep the key out of chat and diagnostic logs.
+2. Record the exact error. `0xF0` means the descriptor was not found; it does not
+   establish a bad client key. `0xF4` means authorization is missing; `0xF5` means
+   the supplied authorization failed. A circuit TTL error or timeout is
+   inconclusive, not proof of access denial. See
+   [Tor's extended error definitions](https://spec.torproject.org/socks-extensions.html#extended-error-codes).
+3. Check the application backend separately through its intended private listener
+   and service identity. A local login response does not prove remote onion access.
+4. Collect bounded, sanitized server observations: clock, current process,
+   resource pressure, bootstrap and consensus validity. A valid cached consensus
+   need not be the newest one; account for the installed version's download
+   schedule before inferring a fault. Open introduction circuits alone do not
+   prove descriptor availability. Keep the generated `ControlPort 0`; do not
+   expose a control port or export raw circuit logs, peer identifiers or key files.
+5. Preserve evidence before remediation. Review any reload/restart for the
+   installed Tor version and exact scope. Do not repeatedly reboot, rotate keys,
+   relax ingress or replay an uncertain action to clear the error. After an
+   approved action, perform one bounded fresh authorized/unauthorized check and
+   retain failed or inconclusive results too.
+
+Accept private ingress only when the authorized client reaches the intended
+login page and an independent unauthorized client receives explicit authorization
+refusal. Application password/MFA and owner-browser acceptance remain separate.
 
 ## Legacy single-host checkout walkthrough
 

@@ -15,6 +15,44 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## Native production encryption prerequisite
+
+The native production controller now verifies guest-managed LUKS2 storage before
+initialization writes private state. It requires an encrypted Linux
+operating-system root, local Docker/containerd storage, the installation, private
+inputs and persistent retention state. It records expected LUKS identities and
+rechecks them on `install`, `up`, `redeploy` and `doctor`. Development behavior is
+unchanged. The standalone `serve` process and legacy shell installer do not
+configure operating-system encryption or replace these host controls.
+
+Production starts now require Linux root, systemd, no active swap and a
+persistent root-owned operator binary. They install per-project Docker and
+containerd pre-start storage checks and reload systemd without restarting those
+daemons. The former tmpfs/RAM-unlocked production operator directory is no longer
+accepted; restore retained configuration onto persistent encrypted storage after
+the reviewed migration. Development RAM workflows remain available. A RAM-only
+production boot/unlock design needs separate implementation and verification.
+
+Upgrading the executable does not convert an existing unencrypted root. Such an
+installation can still use `plan`, `status`, `logs` and `down` for inspection or
+shutdown, but must complete a reviewed migration before the new production
+controller starts it. Prepare a fresh encrypted root, verify recovery and restore
+the retained configuration, stable keys, onion/wallet state and current retention
+ledger. Then run:
+
+```sh
+./opsecmkt deploy storage bind --dir /srv/opsecmkt/market-prod
+./opsecmkt deploy doctor --dir /srv/opsecmkt/market-prod
+```
+
+`storage bind` updates verified storage bindings while retaining the installation
+receipt and existing keys; it is not a force bypass or data-copy command. Install
+and test storage-dependent startup before resuming. Review
+[encryption setup and migration](docs/install/server-hardening.md#prepare-encryption-before-running-setup)
+and the [restart/recovery runbook](docs/operator-guide.md#native-production-storage-and-restarts).
+Agree replacement resources, temporary overlap cost, downtime and rollback before
+cutover. Do not format the authoritative root or rerun `init` as an upgrade step.
+
 `OPSECMKT_PROFILE=prod` refuses integrated uploads and known local dependency
 endpoints, requires PostgreSQL TLS with certificate validation and authenticated HTTPS Monero services,
 and requires both app TLS and a private mutual-TLS upload listener. Switching to

@@ -6,8 +6,8 @@ explicit flags, key tools and application/worker roles. Development may use one 
 
 > **Prerelease software.** The native CLI changes are unreleased; build the current checkout to use them.
 > Native setup defaults to stagenet with escrow disabled. The legacy shell installer's bundled nodes default to
-> **mainnet (real funds)**. No mainnet run is recorded; mainnet is covered by unit, database and simulated-RPC tests
-> only. See [Implementation status](implementation-status.md).
+> **mainnet (real funds)**. Mainnet payment and settlement workflows remain unverified; deployment and readiness checks do not
+> establish real-funds settlement. See [Implementation status](implementation-status.md).
 
 ## Start here
 
@@ -19,8 +19,10 @@ explicit flags, key tools and application/worker roles. Development may use one 
 | Prepare production services | [Service separation, sizing and worker reuse](install/service-topology.md) |
 | Configure Tor and onion keys | [Public and private administrator onions](install/tor.md) |
 | Use the legacy shell installer | [Local marketplace](install/local.md) or [public domain](install/clearnet.md) |
+| Deploy a production market | [Production deployment with managed PostgreSQL](install/production.md) |
+| Restrict server access and protect stored data | [Server hardening](install/server-hardening.md) |
 | Take payments | [Enabling payments](install/enable-payments.md) |
-| Go live | [Production checklist](install/production-checklist.md) |
+| Check launch readiness | [Production checklist](install/production-checklist.md) |
 | Upgrade | [Upgrading](../UPGRADING.md) |
 | Fix a problem | [Troubleshooting](install/troubleshooting.md) |
 
@@ -37,3 +39,9 @@ explicit flags, key tools and application/worker roles. Development may use one 
 - Tor Browser (onion installs) or an HTTPS reverse proxy (public domain).
 - A dedicated Monero escrow wallet-rpc, to take payments.
 - Prepared remote services and TLS identities for production; the CLI does not provision those hosts.
+
+The [deployment checkpoint](install/deployment-notes.md#evidence-and-remaining-gates),
+[storage assessment](install/storage-security-assessment.md) and
+[production security review](install/security-review.md) separate measured results,
+historical findings and open checks. Follow the hardening guide, then record
+actual outcomes before marking the production checklist complete.

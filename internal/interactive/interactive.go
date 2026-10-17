@@ -389,6 +389,9 @@ func (w *wizard) collect() ([]string, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
+	if mode == "prod" {
+		fmt.Fprintln(w.out, "Production storage comes first: run on the Linux Docker host after installing an encrypted LUKS2 root. Initialization verifies root, Docker/containerd state, retention and private inputs before creating keys. A new data volume cannot encrypt an existing root; use opsecmkt deploy storage --help for additional disks. Plain or unverifiable storage is refused.")
+	}
 	dir, err := w.flag(&args, "dir", "New private installation directory", "./opsecmkt-deployment", "The parent must exist. init refuses an existing directory and preserves all existing installations.", newDirectory)
 	if err != nil {
 		return nil, "", err

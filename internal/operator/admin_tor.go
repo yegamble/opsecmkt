@@ -166,6 +166,11 @@ func renderAdminTor(dir string, c Config, app service, services map[string]servi
 const adminTorConfig = `DataDirectory /tmp/tor
 SocksPort 0
 ControlPort 0
+ControlSocket /tmp/tor/control.sock
+ControlSocketsGroupWritable 0
+CookieAuthentication 1
+CookieAuthFile /tmp/tor/control_auth_cookie
+CookieAuthFileGroupReadable 0
 Log notice stdout
 HeartbeatPeriod 30 minutes
 MaxMemInQueues 128 MB

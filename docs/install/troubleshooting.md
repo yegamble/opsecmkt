@@ -45,9 +45,17 @@ Cookies are Secure. Use `https://YOUR-DOMAIN`, not `http://127.0.0.1:8080`.
 
 ## Onion doesn't answer
 
-- Just installed: wait 1–3 minutes.
-- After an upgrade or `.env` change: `docker compose up -d --force-recreate tor`. The address stays.
-- `docker compose version` must be 2.17+.
+First distinguish an application failure from Tor publication or client
+authorization. A saved hostname or healthy container does not prove onion
+reachability. For native production, follow
+[the onion timeout procedure](tor.md#diagnosing-a-timeout-after-entering-the-client-key).
+Record the exact error before changing a key or restarting a service.
+
+The checkout's `.env`/Compose lifecycle applies only to the legacy installer.
+After an intentional configuration change, use its reviewed
+[Tor restart procedure](../operator-guide.md#clearnet-and-onion-deployment),
+then verify both routes again. Do not use forced-recreation loops as a general
+remedy for descriptor errors. Preserve the existing identities and authorization.
 
 ## Lost setup token
 

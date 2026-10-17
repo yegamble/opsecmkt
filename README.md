@@ -18,13 +18,14 @@ Server-rendered Go and PostgreSQL, PGP identity, Monero payments, and a standalo
 
 > **Prerelease software.** New installations take **no payments** until escrow is configured and enabled.
 > The native CLI defaults to **stagenet**; the legacy shell installer's bundled nodes default to **mainnet
-> (real funds)**. No mainnet run is recorded; mainnet is covered by unit, database and simulated-RPC tests only.
-> Tor protects inbound connections; it does not guarantee anonymity. See [Payments](#payments) before enabling escrow.
+> (real funds)**. Mainnet payment and settlement workflows remain unverified; deployment and readiness checks
+> do not establish real-funds settlement. Tor protects inbound connections; it does not guarantee anonymity.
+> See [Payments](#payments) before enabling escrow.
 
 ## Why OPSEC Market
 
 Built for a visitor on Tor Browser with scripts off. Development can use one host;
-production separates the app, database, payment services and upload gateway.
+production separates the app, managed or self-hosted database, payment services and upload gateway.
 
 - **Nothing runs in the browser.** Plain HTML and CSS, a strict Content Security Policy, no third-party assets.
 - **Identity is PGP.** Sign in with a PGP challenge or TOTP. Messages are PGP ciphertext the server cannot read.
@@ -40,6 +41,32 @@ Not yet tried in Tor Browser: the [manual pass](docs/verification.md#manual-tor-
 The **`opsecmkt` binary** embeds the UI and database migrations. Copy it to the server and run it from any
 directory; a source checkout and Go compiler are unnecessary on the target server. PostgreSQL, Monero, Tor and
 ClamAV remain separate services.
+
+For a production instance, follow [Deploying a production instance](docs/install/production.md).
+It walks through separate application and upload hosts, managed PostgreSQL,
+private TLS, Tor or HTTPS ingress, first-run setup, backups and recovery.
+Complete [server hardening](docs/install/server-hardening.md) before launch:
+approve exact operator/service source addresses, verify both firewall layers,
+and install Linux with an independently unlocked LUKS2-encrypted root before
+copying production credentials or creating keys. Native production setup verifies
+the local host's encrypted storage before writing installation state, then pins
+its LUKS identities for later starts. The Go tool can prepare an additional new
+data disk; converting an existing root requires a planned migration.
+The [storage assessment](docs/install/storage-security-assessment.md) separates
+historical findings from the fresh encrypted-host checkpoint. Guest encryption
+protects locked storage; it does not establish protection from a running host,
+hypervisor or physical memory access.
+The [security review](docs/install/security-review.md) separates verified
+perimeter controls from the hardening work still required.
+After encrypted-root setup and a real manual-unlock/service-return rehearsal,
+operators can enable the private administrator's
+[application-host OS reboot control](docs/operator-guide.md#enabling-the-private-application-host-reboot-control).
+It requires a current password and enrolled authenticator, records the request
+before dispatch, and leaves disk unlocking with the operator. Keep this optional
+control disabled until the actual host's recovery checks pass. The
+[deployment checkpoint](docs/install/deployment-notes.md#evidence-and-remaining-gates)
+records measured results and open launch gates separately from these instructions.
+
 
 **The native CLI changes are unreleased; build this checkout to use them.** Go 1.27.2 is recommended; the module
 minimum is 1.26.9, with automatic toolchain selection using the pinned version in `go.mod`.
@@ -63,6 +90,10 @@ complete administrator setup. Secrets are supplied through private files rather 
 Development defaults to loopback HTTP, stagenet and disabled escrow. Managed deployments need **Docker Engine,
 Compose 2.17+ and reviewed images pinned by digest**. Production also needs prepared dependency hosts and TLS
 identities; the CLI does not provision remote servers or install their services.
+The native binary runs deployment commands; `--app-image` takes the container's
+full registry repository and `@sha256:` digest, not a binary filename or Git
+commit. Follow the [build, push, pull and inspect steps](docs/install/binary.md#building-and-publishing-the-application-image)
+to obtain that value.
 
 For a members-only site with registration closed, add
 `--site-access members --registrations closed` to `deploy init` or `serve`.
@@ -133,7 +164,7 @@ have separate recovery requirements; Tor identity volumes and other persistent c
 | **Buyers** | Search and filters, vendor profiles, order tracking, disputes, reviews tied to paid orders |
 | **Vendors** | Physical and digital listings with up to 4 photos, stock, automatic digital delivery, an order desk |
 | **Moderators** | Dispute desk, payment-review flags, photo and avatar takedowns |
-| **Administrators** | Market name and logo, site access and registration, roles, suspensions, second-factor resets, takedowns, CAPTCHA, payment intake, escrow recovery, canary, signed audit exports, OPSEC and dependency notices |
+| **Administrators** | Market name and logo, site access and registration, roles, suspensions, second-factor resets, takedowns, CAPTCHA, payment intake, escrow recovery, canary, signed audit exports, OPSEC and dependency notices, optional private app-host reboot |
 | **Operators** | Guided or flagged setup, generated/imported keys, separated services, retained workers through app rebuilds, encrypted backups |
 
 Photo uploads require ClamAV. Development can use integrated scanning; production requires the separate
@@ -147,14 +178,14 @@ Per-order escrow, off by default. A node alone does not turn it on.
 
 | Coin | Model | Networks | Evidence |
 | --- | --- | --- | --- |
-| Monero | Custodial: market holds keys | stagenet (native default), fakechain (CI/test harness), mainnet | CI on fakechain; one public stagenet claim [recorded](docs/evidence/public-testnet/2026-10-10-ac71878dfde4/stagenet-xmr/README.md). Mainnet unrun. |
+| Monero | Custodial: market holds keys | stagenet (native default), fakechain (CI/test harness), mainnet | CI on fakechain; one public stagenet claim [recorded](docs/evidence/public-testnet/2026-10-10-ac71878dfde4/stagenet-xmr/README.md). Mainnet payment and settlement workflows remain unverified. |
 
 Only Monero (XMR) is supported for listing prices, checkout and settlement. Monero testnet is refused.
 
 **Network selection.** Native setup defaults to stagenet; choose mainnet explicitly for real funds. The legacy
 `scripts/install.sh init --tor` and `init --clearnet` local nodes default to mainnet; use
-`--monero-network stagenet` for a test market, or `--local` for no nodes. No mainnet run is recorded; mainnet is
-covered by unit, database and simulated-RPC tests only. Monero escrow on mainnet is custodial with real funds.
+`--monero-network stagenet` for a test market, or `--local` for no nodes. Mainnet payment and settlement workflows remain unverified; deployment and readiness checks do not
+establish real-funds settlement. Monero escrow on mainnet is custodial with real funds.
 Upgrading never changes an existing install's network ([UPGRADING](UPGRADING.md#64-new-installs-default-to-mainnet-a-523)). Full evidence:
 [Verification](docs/verification.md) and [Per-order escrow](docs/escrow.md).
 
@@ -192,6 +223,8 @@ Start at the [documentation home](docs/README.md). To browse it as a site, see
 | [Tor and onion identities](docs/install/tor.md) | Separate public/admin services, client authorization and native key import/generation |
 | [RAM secrets and incident response](docs/install/ram-secrets-and-emergency.md) | Encrypted offline bundles, tmpfs unlock, targeted manual shutdown and recovery limits |
 | [Installation guide](docs/install/README.md) | Methods, requirements, first steps, payments, troubleshooting |
+| [Production deployment](docs/install/production.md) | Provider-agnostic managed database, separate hosts, TLS, supervision, verification and recovery |
+| [Server hardening](docs/install/server-hardening.md) | Approved source addresses, Tor-only ingress, SSH, Docker firewalls, encrypted storage and safe migration |
 | [Operator guide](docs/operator-guide.md) | HTTPS and Tor, mirrors, configuration, backups, recovery |
 | [Security and OPSEC](docs/security-operations.md) | Private admin ingress, offline export keys, deployment packages and compromise limits |
 | [Retention operations](docs/retention.md) | Enable expiry, manage holds, expire copies and restore current deletion state |

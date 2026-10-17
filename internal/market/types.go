@@ -126,6 +126,7 @@ type PageData struct {
 	Access           *SiteAccessView
 	Branding         *BrandingView
 	DependencyStatus *DependencyStatusView // Administrator-only local version report and topology notices.
+	HostControl      *HostControlView      // Private administrator app-host reboot readiness and receipts.
 
 	ServerStarted string
 	SchemaVersion int
