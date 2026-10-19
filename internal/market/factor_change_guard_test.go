@@ -203,7 +203,7 @@ func TestSignInAuditNamesMethodAndRecoverySignInNotifies(t *testing.T) {
 	anon, pc = e.pendingSignIn("a152_signin")
 	e.check(e.do("POST", "/challenge/pgp", anon, nil, pc), 303)
 	armored := agStr(e, "SELECT pgp_challenge FROM pending_logins WHERE token_hash=$1", digest(pc.Value))
-	e.check(e.do("POST", "/challenge", anon, url.Values{"method": {"pgp"}, "pgp_code": {testDecrypt(t, alice, armored)}}, pc), 303)
+	e.check(e.do("POST", "/challenge", anon, url.Values{"method": {"pgp"}, "pgp_code": {testSignInCode(t, alice, armored)}}, pc), 303)
 	if a152Audits(e, uid, "Signed in with password and PGP code") != 1 {
 		t.Fatal("PGP sign-in does not name its method")
 	}

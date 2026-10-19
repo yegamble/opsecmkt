@@ -65,3 +65,35 @@ func TestParseOriginRefusesAmbiguousOrUnsafeOriginsWithoutEchoingInput(t *testin
 		}
 	}
 }
+
+func TestParseOfficialAddresses(t *testing.T) {
+	a, err := onionidentity.Generate(context.Background(), "", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := onionidentity.Generate(context.Background(), "", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := ParseOfficialAddresses("http://"+strings.ToUpper(a.Address)+", http://"+b.Address+":80,HTTPS://Market.Example:443, https://market.example", false)
+	want := []string{"http://" + a.Address, "http://" + b.Address, "https://market.example"}
+	if err != nil || strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("got %q, %v; want %q", got, err, want)
+	}
+	if got, err := ParseOfficialAddresses(" ", false); err != nil || got != nil {
+		t.Fatalf("blank: %q, %v", got, err)
+	}
+	nine := "https://market.example" // and eight more: one over the limit
+	for i := 1; i <= MaxOfficialAddresses; i++ {
+		nine += ",https://m" + string(rune('a'+i)) + ".example"
+	}
+	for _, raw := range []string{nine, "https://market.example,", ",https://market.example", "https://market.example https://other.example",
+		"http://market.example", "https://market.example/", "http://" + strings.Repeat("a", 56) + ".onion", "https://market.example\n", "market.example"} {
+		if got, err := ParseOfficialAddresses(raw, false); err == nil || got != nil || err.Error() != officialAddressesError {
+			t.Fatalf("accepted or echoed %q: %q, %v", raw, got, err)
+		}
+	}
+	if got, err := ParseOfficialAddresses("http://127.0.0.1:8080", true); err != nil || len(got) != 1 {
+		t.Fatalf("development loopback refused: %v", err)
+	}
+}

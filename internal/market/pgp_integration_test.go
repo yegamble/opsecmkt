@@ -192,7 +192,7 @@ func TestPGPKeyOwnershipAndSecondFactor(t *testing.T) {
 	if page = e.body("GET", "/challenge", anon, nil, 200, pc); !strings.Contains(page, "BEGIN PGP MESSAGE") || !strings.Contains(page, `name="pgp_code"`) || !strings.Contains(page, `readonly aria-label="Encrypted sign-in code"`) {
 		t.Fatal("encrypted code not shown")
 	}
-	code := testDecrypt(t, alice, loginCT)
+	code := testSignInCode(t, alice, loginCT)
 	if loginHash == code || len(loginHash) != 64 {
 		t.Fatal("login code stored in plaintext")
 	}

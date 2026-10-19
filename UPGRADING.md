@@ -15,6 +15,19 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## Official addresses in PGP sign-in codes (A-572)
+
+The encrypted PGP sign-in code now reads, after decryption, "Sign-in code for HANDLE at MARKET NAME", the UTC time
+it was requested and until when it is valid (at most 10 minutes), the market's official addresses and an instruction
+to enter the code only on one of them, then `Code: …` on its last line. Users paste only that code, as before;
+verification is unchanged. The addresses come from the new optional `OFFICIAL_ADDRESSES` setting, never from the
+request: a comma-separated list of at most 8 HTTPS or HTTP v3 onion origins (your onion, your mirror onion, your
+clearnet origin), for example `OFFICIAL_ADDRESSES=http://<56 characters>.onion,https://market.example`. Add it to
+`.env` (Compose), `--set OFFICIAL_ADDRESSES=…` (native `init`) or `--official-addresses` / the environment (native
+`serve`), then recreate the app. Never list the private administrator onion; a native configuration that records the administrator onion's address refuses it, but nothing else checks the list.
+Left blank (the upgrade default), the code says "no official address configured". An invalid value stops startup
+with a message naming the variable. No migration.
+
 ## Messages their recipient cannot read are refused (A-569)
 
 No migration and no new setting. `/messages` now refuses, storing and notifying nothing, a message to an account

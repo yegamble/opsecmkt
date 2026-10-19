@@ -229,3 +229,32 @@ func TestServeBrandingUploadOriginFlag(t *testing.T) {
 		})
 	}
 }
+
+// --official-addresses forwards the canonical list to OFFICIAL_ADDRESSES (A-572); an invalid list changes nothing.
+func TestServeOfficialAddressesFlag(t *testing.T) {
+	for _, tc := range []struct {
+		raw, want string
+		valid     bool
+	}{
+		{"HTTPS://Market.Example:443, https://mirror.example", "https://market.example,https://mirror.example", true},
+		{"", "", true},
+		{"https://private-value.example/path", "", false},
+		{"http://private-value.example", "", false},
+	} {
+		t.Run(tc.raw, func(t *testing.T) {
+			t.Setenv("OFFICIAL_ADDRESSES", "https://existing.example")
+			t.Setenv("OPSECMKT_PROFILE", "prod")
+			t.Setenv("ADDR", "unchanged")
+			originalArgs := os.Args
+			t.Cleanup(func() { os.Args = originalArgs })
+			err := configureServe([]string{"--addr", "changed", "--official-addresses", tc.raw}, io.Discard)
+			if tc.valid {
+				if err != nil || os.Getenv("OFFICIAL_ADDRESSES") != tc.want {
+					t.Fatalf("flag not forwarded canonically: %v %q", err, os.Getenv("OFFICIAL_ADDRESSES"))
+				}
+			} else if err == nil || !strings.Contains(err.Error(), "OFFICIAL_ADDRESSES") || strings.Contains(err.Error(), "private-value") || os.Getenv("OFFICIAL_ADDRESSES") != "https://existing.example" || os.Getenv("ADDR") != "unchanged" {
+				t.Fatalf("invalid flag mutated environment or leaked value: %v", err)
+			}
+		})
+	}
+}

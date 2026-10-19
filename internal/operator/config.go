@@ -62,8 +62,8 @@ type Config struct {
 }
 
 var settingKeys = map[string]bool{
-	"BRANDING_UPLOAD_ORIGIN": true,
-	"INITIAL_SITE_ACCESS":    true, "INITIAL_REGISTRATIONS": true,
+	"BRANDING_UPLOAD_ORIGIN": true, "OFFICIAL_ADDRESSES": true,
+	"INITIAL_SITE_ACCESS": true, "INITIAL_REGISTRATIONS": true,
 	"MONERO_NETWORK": true, "ESCROW_XMR": true, "PAYMENT_CONFIRMATIONS_XMR": true,
 	"PAYMENT_POLL_INTERVAL": true, "PAYMENT_EXPIRY": true, "MONERO_MAX_TIP_AGE": true,
 	"ESCROW_XMR_FEE_BPS": true, "ESCROW_XMR_FEE_ADDRESS": true, "ESCROW_XMR_SLOTS": true,
@@ -248,6 +248,9 @@ func validate(dir string, c Config) error {
 		}
 	}
 	if _, err := brandingconfig.ParseOrigin(c.Settings["BRANDING_UPLOAD_ORIGIN"], c.Mode == "dev"); err != nil {
+		return err
+	}
+	if _, err := brandingconfig.ParseOfficialAddresses(c.Settings["OFFICIAL_ADDRESSES"], c.Mode == "dev"); err != nil {
 		return err
 	}
 	if value, ok := c.Settings["INITIAL_SITE_ACCESS"]; ok && value != "public" && value != "members" {

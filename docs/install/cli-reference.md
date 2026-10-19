@@ -106,6 +106,7 @@ Every flag in this table takes a string unless marked boolean. Defaults describe
 | `--site-access` | `INITIAL_SITE_ACCESS` | `public`; first-start default: `public` or `members` (sign-in required for site content). Stored in PostgreSQL. |
 | `--registrations` | `INITIAL_REGISTRATIONS` | `open`; independent first-start default: `open` or `closed`. Existing accounts can still sign in when closed. |
 | `--branding-upload-origin` | `BRANDING_UPLOAD_ORIGIN` | Unset; fixed public upload-gateway origin for private-admin logo uploads. Verified HTTPS or HTTP v3 onion, without credentials, path, query or fragment. Blank disables that upload flow with a separate private admin listener. |
+| `--official-addresses` | `OFFICIAL_ADDRESSES` | Unset; comma-separated public market addresses (at most 8 HTTPS or HTTP v3 onion origins: onion, mirror, clearnet) named in every encrypted PGP sign-in code. Never the private administrator onion. Blank makes the code say no official address is configured. |
 | `--cookie-secure` | `COOKIE_SECURE` | `true`; string `true` or `false`. Native Tor setup does not automatically set it to `false`; choose the value for your actual browser-facing origin. |
 | `--admin-socket` | `ADMIN_SOCKET` | Unset; optional private administrator Unix listener. Requires Tor mode and a clean absolute path in a private directory; see [private admin ingress](tor.md#private-administrator-onion). |
 | `--audit-signing-key-file` | `AUDIT_SIGNING_KEY_FILE` | Unset; independent 64-hex Ed25519 signing seed. Signed audit export is unavailable without it. |
@@ -561,6 +562,7 @@ For managed deployments, use repeated `init --set KEY=VALUE`, or deliberately ed
 | `INITIAL_SITE_ACCESS` | `public` | `public` or `members`; initializes the saved site-access setting only when absent. |
 | `INITIAL_REGISTRATIONS` | `open` | `open` or `closed`; initializes the saved registration setting only when absent. |
 | `BRANDING_UPLOAD_ORIGIN` | Unset | Fixed public gateway origin for private-admin logo uploads. Unlike the `INITIAL_*` policy settings, this runtime routing value is read on each application startup. |
+| `OFFICIAL_ADDRESSES` | Unset | Comma-separated public market addresses (at most 8 HTTPS or HTTP v3 onion origins), read on each startup and named in every encrypted PGP sign-in code. `init` and every command that loads `operator.json` refuse the private administrator onion. |
 | `MONERO_NETWORK` | Managed: `stagenet` | `stagenet` or explicit `mainnet`; development remains stagenet. |
 | `ESCROW_XMR` | `off` | `on` or `off`, with all escrow prerequisites. |
 | `PAYMENT_CONFIRMATIONS_XMR` | `10` | Integer `1`–`1000`; effective deposit threshold is at least `10`. |

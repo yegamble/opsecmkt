@@ -259,7 +259,7 @@ func TestAdminSuspendsAccount(t *testing.T) {
 	pc := agPending(e, vendorID)
 	anon := randomToken()
 	e.check(e.do("POST", "/challenge/pgp", anon, nil, pc), 303)
-	code := testDecrypt(t, alice, agStr(e, "SELECT pgp_challenge FROM pending_logins WHERE token_hash=$1", digest(pc.Value)))
+	code := testSignInCode(t, alice, agStr(e, "SELECT pgp_challenge FROM pending_logins WHERE token_hash=$1", digest(pc.Value)))
 	agExpect(e, "/challenge", anon, form("method", "pgp", "pgp_code", code), 403, suspendedMsg, pc)
 	if agUserSessions(e, vendorID) != 0 {
 		t.Fatal("a suspended account got a session")

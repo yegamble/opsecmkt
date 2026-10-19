@@ -209,7 +209,7 @@ func TestSignInReturnThroughChallenge(t *testing.T) {
 		if loc := w.Header().Get("Location"); loc != "/challenge?next="+url.QueryEscape(checkout) {
 			t.Fatalf("code request went to %q", loc)
 		}
-		code := testDecrypt(t, key, agStr(e, "SELECT pgp_challenge FROM pending_logins WHERE token_hash=$1", digest(pc.Value)))
+		code := testSignInCode(t, key, agStr(e, "SELECT pgp_challenge FROM pending_logins WHERE token_hash=$1", digest(pc.Value)))
 		w = e.do("POST", "/challenge", anon, url.Values{"method": {"pgp"}, "pgp_code": {code}}, pc)
 		e.check(w, 303)
 		if loc := w.Header().Get("Location"); loc != checkout || e.cookie(w, "session") == "" {

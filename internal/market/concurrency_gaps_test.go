@@ -127,7 +127,7 @@ func TestConcurrentPGPLoginCodeIsSingleUse(t *testing.T) {
 	agEnablePGP(e, id, pub)
 	p := agPending(e, id)
 	e.check(e.do("POST", "/challenge/pgp", randomToken(), nil, p), 303)
-	code := testDecrypt(t, key, agStr(e, "SELECT pgp_challenge FROM pending_logins WHERE token_hash=$1", digest(p.Value)))
+	code := testSignInCode(t, key, agStr(e, "SELECT pgp_challenge FROM pending_logins WHERE token_hash=$1", digest(p.Value)))
 	const n = 8
 	rs := agRace(n, func(int) (int, string) {
 		w := e.do("POST", "/challenge", randomToken(), url.Values{"method": {"pgp"}, "pgp_code": {code}}, p)

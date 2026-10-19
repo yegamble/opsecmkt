@@ -37,7 +37,7 @@ func TestPGPLoginCodeRejectedAfterKeyRotation(t *testing.T) {
 	if err := e.DB.QueryRow("SELECT pgp_challenge FROM pending_logins WHERE token_hash=$1", digest(pending.Value)).Scan(&challenge); err != nil {
 		t.Fatal(err)
 	}
-	oldCode := testDecrypt(t, first, challenge)
+	oldCode := testSignInCode(t, first, challenge)
 	saveAndVerify(second, secondPub)
 	e.check(e.do("POST", "/challenge", anon, form("method", "pgp", "pgp_code", oldCode), pending), 401)
 	// Restoring the original public key creates a new ownership proof; an old
@@ -49,7 +49,7 @@ func TestPGPLoginCodeRejectedAfterKeyRotation(t *testing.T) {
 	if err := e.DB.QueryRow("SELECT pgp_challenge FROM pending_logins WHERE token_hash=$1", digest(pending.Value)).Scan(&challenge); err != nil {
 		t.Fatal(err)
 	}
-	e.check(e.do("POST", "/challenge", anon, form("method", "pgp", "pgp_code", testDecrypt(t, first, challenge)), pending), 303)
+	e.check(e.do("POST", "/challenge", anon, form("method", "pgp", "pgp_code", testSignInCode(t, first, challenge)), pending), 303)
 }
 
 // Factor enrollment must serialize with password-confirmed changes: it cannot

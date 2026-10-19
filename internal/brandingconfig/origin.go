@@ -1,11 +1,13 @@
-// Package brandingconfig validates the fixed browser-facing origin used to hand
-// administrator-authorized logo uploads to the public upload gateway.
+// Package brandingconfig validates fixed browser-facing origins from operator
+// configuration: the public upload gateway that administrator-authorized logo
+// uploads are handed to, and the market's official addresses (A-572).
 package brandingconfig
 
 import (
 	"errors"
 	"net"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -13,6 +15,34 @@ import (
 )
 
 const originError = "BRANDING_UPLOAD_ORIGIN must be an HTTPS origin or an HTTP v3 onion origin, without credentials, path, query or fragment; HTTP loopback is development-only"
+
+const officialAddressesError = "OFFICIAL_ADDRESSES must be a comma-separated list of at most 8 HTTPS origins or HTTP v3 onion origins, without credentials, path, query or fragment; HTTP loopback is development-only"
+
+// MaxOfficialAddresses bounds OFFICIAL_ADDRESSES so the list stays readable in a sign-in message.
+const MaxOfficialAddresses = 8
+
+// ParseOfficialAddresses accepts OFFICIAL_ADDRESSES, the market's public addresses (its onion, mirror and clearnet
+// origins) as a comma-separated list, and returns their canonical forms in order without duplicates. Each entry
+// follows ParseOrigin's rules; blank means none is configured. The error never repeats the input.
+func ParseOfficialAddresses(raw string, development bool) ([]string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	var out []string
+	for _, entry := range strings.Split(raw, ",") {
+		origin, err := ParseOrigin(strings.Trim(entry, " "), development)
+		if err != nil || origin == "" {
+			return nil, errors.New(officialAddressesError)
+		}
+		if !slices.Contains(out, origin) {
+			out = append(out, origin)
+		}
+	}
+	if len(out) > MaxOfficialAddresses {
+		return nil, errors.New(officialAddressesError)
+	}
+	return out, nil
+}
 
 // ParseOrigin accepts an optional origin and returns its canonical browser-facing
 // form. It performs no lookup or request. Blank preserves existing deployments;

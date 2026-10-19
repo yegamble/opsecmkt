@@ -4,7 +4,7 @@
 <p>Decrypt this message with your private key, then paste the code it contains. It was encrypted to the verified public key on your account.</p>
 <label class="help">Encrypted sign-in code<textarea class="code-block pgp-armor" rows="8" readonly aria-label="Encrypted sign-in code">
 {{.EncryptedChallenge}}</textarea></label>
-<p class="help">Save the encrypted message as <code>challenge.asc</code>, then run <code>gpg --decrypt challenge.asc</code> and paste the code it prints.</p>
+<p class="help">Save the encrypted message as <code>challenge.asc</code>, then run <code>gpg --decrypt challenge.asc</code>. It names your handle, this market, when the code was requested, until when it is valid and the market's official addresses. Paste only the code from its last line, and only if your browser's address bar shows one of those addresses (a code requested on the private administrator connection says so instead): a look-alike site that relays this page cannot change the encrypted text. If it says no official address is configured, check the address with the market's staff another way.</p>
 <form class="stack" method="post" action="/challenge{{with $.Next}}?next={{. | urlquery}}{{end}}">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="method" value="pgp">
