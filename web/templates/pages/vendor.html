@@ -6,14 +6,15 @@
 {{$avatar := ""}}{{range .Users}}{{$avatar = .Avatar}}{{end}}{{if $avatar}}<img class="vendor-avatar" src="{{$avatar}}" alt="" width="58" height="58">{{else}}<div class="vendor-avatar" aria-hidden="true">V/</div>{{end}}
 <div>
 <div class="eyebrow">Vendor profile</div>
-<h1>{{range .Users}}{{.Handle}}{{else}}{{.Title}}{{end}}</h1>
+<h1>{{range .Users}}{{.Handle}}{{else}}{{.Title}}{{end}}</h1>{{range .Users}}{{if .VendorVerified}}
+<p><span class="badge green verified-vendor">Verified vendor</span></p>{{end}}{{end}}
 <p>Explore this vendor’s current listings.{{with .Paging}}{{if gt .Pages 1}} {{.Total}} listings · showing {{.First}}–{{.Last}}.{{end}}{{end}}</p>
 </div>
 </div>
 {{range .Users}}<a class="button" href="/messages?to={{.Handle}}">Send encrypted message <span class="action-icon">↗</span></a>{{end}}
 </div>{{with .AvatarTakedown}}{{template "image-takedown" .}}{{end}}
 <div class="notice">
-<p>Vendor identity and reputation have not been independently verified by this application.</p>
+<p>Vendor identity and reputation have not been independently verified by this application.{{range .Users}}{{if .VendorVerified}} “Verified vendor” means an administrator of this market marked this vendor: it is the staff's judgment, not an identity check.{{end}}{{end}}</p>
 </div>{{range .Contacts}}<section class="panel" aria-labelledby="vendor-key">
 <h2 id="vendor-key">PGP public key</h2>
 <p class="help">Messages on this market must be encrypted to the recipient’s key in your own PGP application. Physical orders: send your shipping address only this way. The market has no address field; it keeps the encrypted message and who sent it to whom and when, but cannot read it.</p>

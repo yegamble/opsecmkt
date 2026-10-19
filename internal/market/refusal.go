@@ -142,7 +142,7 @@ func (a *App) refuse(w http.ResponseWriter, r *http.Request, user *User, code in
 	if post && (r.URL.Path == "/login" || r.URL.Path == "/register") {
 		d := a.pageData(r, strings.TrimPrefix(r.URL.Path, "/"), sessionToken(r), user)
 		if a.loadRefusalPage(r, &d) {
-			d.Error, d.FormHandle = msg, a.typedHandle(r)
+			d.Error, d.FormHandle, d.FormVendor = msg, a.typedHandle(r), r.PostForm.Get("account_type") == "vendor"
 			a.renderRefusal(w, r, d, code, msg)
 			return
 		}

@@ -134,7 +134,7 @@ func captchaRetry(c *actionCtx) error {
 			a.refuse(w, c.R, c.User, 400, "CAPTCHA answer incorrect. Go back, reload the page and enter the new image's characters.")
 			return
 		}
-		d.Error, d.FormHandle = msg, a.typedHandle(c.R)
+		d.Error, d.FormHandle, d.FormVendor = msg, a.typedHandle(c.R), c.R.PostForm.Get("account_type") == "vendor"
 		a.renderStatus(w, c.R, d, 400)
 	}}
 }

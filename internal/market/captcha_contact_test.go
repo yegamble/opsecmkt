@@ -79,10 +79,10 @@ func TestCaptchaFallbackCopyNamesTheWayInOrSaysThereIsNone(t *testing.T) {
 func TestRegisterSaysSellingNeedsTheVendorRole(t *testing.T) {
 	e := newTestApp(t)
 	e.user("regsell_buyer", "buyer")
-	const sentence = "Selling needs an administrator to give your account the vendor role. "
+	const sentence = "Selling needs an approved vendor application. "
 	page := html.UnescapeString(e.body("GET", "/register", "", nil, 200))
 	mustContain(t, page, sentence+askOperatorLine)
-	if strings.Count(page, "Selling needs an administrator") != 1 {
+	if strings.Count(page, "Selling needs an approved vendor application") != 1 {
 		t.Errorf("register repeats the vendor-role sentence")
 	}
 	agExec(e, "INSERT INTO settings(key,value) VALUES('staff_contact',$1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", staffContactValue)

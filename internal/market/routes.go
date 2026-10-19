@@ -638,9 +638,9 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 				msg = "Resolution outcome unknown: it may have been saved. Check the dispute, order and payout state before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
 			case "/disputes/concede":
 				msg = "Concession outcome unknown: it may have been saved. Check the dispute, order and payout or escrow settlement before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
-			case "/admin/suspend", "/admin/reset-factors":
+			case "/admin/suspend", "/admin/reset-factors", "/admin/vendor-applications", "/admin/vendor-verify":
 				msg = "Staff action outcome unknown: it may have been saved. Check the account's current state and audit trail before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
-			case "/admin/access", "/admin/captcha", "/admin/staff-contact", "/admin/staff-list", "/admin/operator-key", "/admin/canary":
+			case "/admin/access", "/admin/captcha", "/admin/staff-contact", "/admin/staff-list", "/admin/operator-key", "/admin/canary", "/admin/vendor-policy":
 				msg = "Admin setting outcome unknown: it may have been saved. Reload the admin page and check the setting and audit trail before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
 			case "/admin/escrow-release-days":
 				msg = "Escrow release deadline setting outcome unknown: it may have been saved. Reload the admin page and check the current deadline and audit trail before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."

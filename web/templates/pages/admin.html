@@ -19,7 +19,7 @@
 <li><a class="text-link" href="/totp">Protect your administrator account with two-factor sign-in</a>.</li>
 <li><a class="text-link" href="/account">Add your public PGP key</a>, then <a class="text-link" href="/pgp">verify ownership</a> so users can contact you securely.</li>
 <li><a class="text-link" href="#payment-providers">Check Monero escrow status</a> and choose whether to accept new Monero payments. {{if $.LiveNetwork}}This market is on mainnet: payments are real funds.{{else}}This market is on test networks.{{end}}</li>
-<li><a class="text-link" href="/vendor-dashboard">Publish your first listing</a>, or invite a user to register and assign them the vendor role below.</li>
+<li><a class="text-link" href="/vendor-dashboard">Publish your first listing</a>, or invite a user to register as a vendor and decide their application under <a class="text-link" href="#vendors">Vendor applications</a>.</li>
 <li>Assign a trusted moderator below and ask them to add and verify their PGP key for dispute messages.</li>
 <li><a class="text-link" href="/">Open the marketplace</a> in another browser profile to test the buyer journey.</li>
 </ol>
@@ -54,7 +54,9 @@
 {{with .AdminUsersPaging}}{{if gt .Pages 1}}<nav class="pagination" aria-label="Account picker pages">{{if .PrevURL}}<a href="{{.PrevURL}}" rel="prev" aria-label="Previous account page, page {{.PrevPage}} of {{.Pages}}">← Previous</a>{{end}}<span class="current" aria-current="page">Page {{.Page}} of {{.Pages}}</span>{{if .NextURL}}<a href="{{.NextURL}}" rel="next" aria-label="Next account page, page {{.NextPage}} of {{.Pages}}">Next →</a>{{end}}</nav>{{end}}{{end}}
 </details>{{end}}
 </section>
-</div>{{template "admin-auth" .}}{{template "admin-staff-contact" .}}{{template "admin-staff-list" .}}{{template "admin-staff-roster" .}}{{template "admin-payments" .}}{{template "admin-scanner" .}}{{template "admin-transparency" .}}
+</div>{{template "admin-auth" .}}{{template "admin-staff-contact" .}}{{template "admin-staff-list" .}}{{template "admin-staff-roster" .}}{{template "admin-payments" .}}
+{{template "admin-vendors" .}}
+{{template "admin-scanner" .}}{{template "admin-transparency" .}}
 <section class="panel" aria-labelledby="recent-server-errors">
 <h2 id="recent-server-errors">Recent server errors</h2>
 <p class="help">The last 20 responses carrying an error reference, newest first, from this server process. This list is kept in memory and cleared on restart. It keeps the time, registered route, status and reference, without request contents. Use the reference to find the error class in the server log; log throttling may suppress a line during a burst.</p>

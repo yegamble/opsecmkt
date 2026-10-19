@@ -11,8 +11,12 @@
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{with .Next}}<input type="hidden" name="next" value="{{.}}">{{end}}<label>Handle<input name="handle"{{with .FormHandle}} value="{{.}}"{{end}} required minlength="3" maxlength="32" autocomplete="username" spellcheck="false" autocapitalize="none" placeholder="your_handle" aria-describedby="handle-help">
 </label><span class="help" id="handle-help">Your handle cannot be changed later. It is shown to your trading partners and market staff, and {{if and .Access .Access.MembersOnly}}to signed-in accounts{{else}}publicly{{end}} if you sell. Do not reuse a name you use anywhere else.</span>
 <label>Password<input type="password" name="password" required minlength="12" autocomplete="new-password">
-</label><span class="help">Use at least 12 characters and at most 72 UTF-8 bytes. No email address is required.</span>{{template "auth-captcha" .}}<button class="primary" type="submit">Create account <span class="action-icon">↗</span></button>
-</form><p class="help">There is no password reset. If you lose this password, you cannot sign in to this account.</p><p class="help staff-contact">Selling needs an administrator to give your account the vendor role. {{template "staff-contact" .}}</p><p class="form-footer">Already a member? <a href="/login{{with .Next}}?next={{.}}{{end}}">Sign in</a>
+</label><span class="help">Use at least 12 characters and at most 72 UTF-8 bytes. No email address is required.</span>
+<fieldset class="account-type" aria-describedby="account-type-help"><legend>Account type</legend>
+<label class="check"><input type="radio" name="account_type" value="buyer"{{if not .FormVendor}} checked{{end}}> Buyer account</label>
+<label class="check"><input type="radio" name="account_type" value="vendor"{{if .FormVendor}} checked{{end}}> Vendor account</label>
+</fieldset><span class="help" id="account-type-help">A vendor account is a buyer account with a vendor application; you can also apply later from your account. {{with .VendorPolicy}}{{template "vendor-policy-text" .}}{{end}}</span>{{template "auth-captcha" .}}<button class="primary" type="submit">Create account <span class="action-icon">↗</span></button>
+</form><p class="help">There is no password reset. If you lose this password, you cannot sign in to this account.</p><p class="help staff-contact">Selling needs an approved vendor application. {{template "staff-contact" .}}</p><p class="form-footer">Already a member? <a href="/login{{with .Next}}?next={{.}}{{end}}">Sign in</a>
 </p>{{end}}</div>
 <p class="muted help">Keep your account credentials private. An account is not an anonymity guarantee.</p>
 </div>

@@ -1,0 +1,38 @@
+{{/* A-544 vendor onboarding (vendor_applications.go). vendor-policy-text: one sentence describing a VendorPolicyView,
+used on /register, /account and the admin vendors panel. account-vendor: the /account section of a buyer or vendor,
+with the latest application, the bond and the administrator's payment instructions, and the apply/withdraw form. */}}
+{{define "vendor-policy-text"}}{{if .HasBond}}Vendor applications need a bond of {{.Bond}} XMR, a non-refundable fee, {{if .Automatic}}and are approved once an administrator records the bond as received.{{else}}and then an administrator's approval.{{end}}{{else if .Automatic}}Vendor applications need no bond and are approved at once.{{else}}Vendor applications need no bond, only an administrator's approval.{{end}}{{end}}
+{{define "account-vendor"}}{{with .VendorAccount}}<section class="panel" id="vendor-application" aria-labelledby="vendor-application-heading">
+<h2 id="vendor-application-heading">Sell on this market</h2>{{with $.NoticeIn "vendor-application"}}
+<div class="alert" role="status">{{.}}</div>{{end}}{{if .Verified}}
+<p><span class="badge green verified-vendor">Verified vendor</span> An administrator marked your account as a verified vendor. It is the staff's judgment, not an identity check.</p>{{end}}{{with .Latest}}
+<dl class="key-values">
+<div><dt>Vendor application</dt><dd>{{.Status}}</dd></div>
+<div><dt>Submitted</dt><dd>{{.Created}}</dd></div>{{if .HasBond}}
+<div><dt>Bond</dt><dd>{{.Bond}} XMR, a non-refundable fee</dd></div>{{end}}{{if .BondReceived}}
+<div><dt>Bond received</dt><dd>{{.BondReceived}}, {{.BondHow}}</dd></div>{{end}}{{if .Decided}}
+<div><dt>Decided</dt><dd>{{.Decided}}</dd></div>{{end}}{{if .Note}}
+<div><dt>Note</dt><dd>{{.Note}}</dd></div>{{end}}
+</dl>{{if .AwaitingBond}}
+<p>Pay the bond of <strong>{{.Bond}} XMR</strong> as the instructions below say. The bond is a non-refundable fee: it is not returned if your application is rejected or withdrawn, or when you stop selling. The market does not detect the payment: an administrator records it as received, and this page then shows the next step. {{if .Automatic}}Your application is approved once the bond is recorded.{{else}}An administrator then reviews your application.{{end}}</p>{{with $.VendorAccount.Policy.Instructions}}
+<div class="vendor-instructions">
+<h3>Bond payment instructions</h3>
+<p>{{.}}</p>
+</div>{{else}}
+<p class="help staff-contact">This market has not published bond payment instructions. {{template "staff-contact" $}}</p>{{end}}{{end}}{{if .AwaitingApproval}}
+<p>An administrator reviews your application. You are notified of the decision.</p>{{end}}{{if .Open}}
+<form class="stack" method="post" action="/account/vendor-application">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/account/vendor-application"}}">
+<input type="hidden" name="action" value="withdraw">
+<p class="help">Withdrawing ends this application. It does not refund a bond you have paid.</p>
+<button type="submit">Withdraw application</button>
+</form>{{end}}{{end}}{{if .CanApply}}
+<p>Your account is a buyer account. {{template "vendor-policy-text" .Policy}} Only approved vendors can publish listings.</p>
+<form class="stack" method="post" action="/account/vendor-application">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/account/vendor-application"}}">
+<input type="hidden" name="action" value="apply">
+<button type="submit">Apply to sell</button>
+</form>{{end}}
+</section>{{end}}{{end}}

@@ -473,6 +473,10 @@ func retentionUnknownUserReferences(ctx context.Context, tx *sql.Tx) (bool, erro
  ('market_branding'::regclass,'updated_by'),
  ('branding_upload_tickets'::regclass,'user_id'),
  ('host_reboot_requests'::regclass,'user_id'),
+ ('vendor_applications'::regclass,'user_id'),
+ ('vendor_applications'::regclass,'bond_received_by'),
+ ('vendor_applications'::regclass,'decided_by'),
+ ('users'::regclass,'vendor_verified_set_by'),
  ('user_escrow_keys'::regclass,'user_id'),
  ('escrow_pubkeys'::regclass,'user_id'),
  ('escrow_index_floors'::regclass,'user_id'),
@@ -613,6 +617,11 @@ func applyRetentionTombstone(ctx context.Context, tx *sql.Tx, t retentionTombsto
 			}
 		}
 		if err := retentionExecQuery(ctx, tx, `DELETE FROM images WHERE owner_user_id=$1 AND kind='avatar'`, t.ID); err != nil {
+			return err
+		}
+		// A-544: a closed account leaves the vendor queue. Its application history (ON DELETE CASCADE) and the
+		// administrators named on it or on a verified mark (ON DELETE SET NULL) never block account erasure.
+		if err := retentionExecQuery(ctx, tx, `UPDATE vendor_applications SET state='withdrawn',decided_at=$2 WHERE user_id=$1 AND state IN `+vendorOpenStates, t.ID, t.At); err != nil {
 			return err
 		}
 		if err := retentionExecQuery(ctx, tx, `UPDATE products SET archived=true,archived_at=COALESCE(archived_at,$2) WHERE vendor_id=$1`, t.ID, t.At); err != nil {

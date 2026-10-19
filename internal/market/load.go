@@ -262,7 +262,7 @@ func (a *App) load(r *http.Request, d *PageData) error {
 		if d.Page == "catalog" || d.Page == "vendor" || d.Page == "vendor-dashboard" {
 			description = "left(p.description," + strconv.Itoa(excerptRunes+1) + ")"
 		}
-		query := `SELECT p.id,p.title,` + description + `,p.category,p.region,p.kind,u.handle,p.vendor_id,p.btc,p.xmr,p.stock,p.archived,` + takedown + ` FROM products p JOIN users u ON u.id=p.vendor_id WHERE true`
+		query := `SELECT p.id,p.title,` + description + `,p.category,p.region,p.kind,u.handle,p.vendor_id,p.btc,p.xmr,p.stock,p.archived,` + takedown + `,u.vendor_verified FROM products p JOIN users u ON u.id=p.vendor_id WHERE true`
 		args := []any{}
 		limit := " LIMIT 100"
 		switch d.Page {
@@ -325,7 +325,7 @@ func (a *App) load(r *http.Request, d *PageData) error {
 		for rows.Next() {
 			var p Product
 			var btc, xmr int64
-			if err = rows.Scan(&p.ID, &p.Title, &p.Description, &p.Category, &p.Region, &p.Kind, &p.Vendor, &p.VendorID, &btc, &xmr, &p.Stock, &p.Archived, &p.TakedownReason); err != nil {
+			if err = rows.Scan(&p.ID, &p.Title, &p.Description, &p.Category, &p.Region, &p.Kind, &p.Vendor, &p.VendorID, &btc, &xmr, &p.Stock, &p.Archived, &p.TakedownReason, &p.VendorVerified); err != nil {
 				rows.Close()
 				return err
 			}
@@ -350,7 +350,7 @@ func (a *App) load(r *http.Request, d *PageData) error {
 		}
 		if d.Page == "vendor" {
 			var u User
-			err = a.db.QueryRowContext(ctx, "SELECT id,handle,role,pgp FROM users WHERE id=$1 AND role IN ('vendor','admin')", r.URL.Query().Get("id")).Scan(&u.ID, &u.Handle, &u.Role, &u.PGP)
+			err = a.db.QueryRowContext(ctx, "SELECT id,handle,role,pgp,vendor_verified FROM users WHERE id=$1 AND role IN ('vendor','admin')", r.URL.Query().Get("id")).Scan(&u.ID, &u.Handle, &u.Role, &u.PGP, &u.VendorVerified)
 			if err != nil {
 				return err
 			}
@@ -544,7 +544,7 @@ func (a *App) load(r *http.Request, d *PageData) error {
 
 func previewData(page string) PageData {
 	p := []Product{
-		{ID: "encrypted-drive", Title: "Encrypted USB Drive — 256GB", Description: "Hardware-encrypted storage with a tamper-evident enclosure. A practical place for your offline backups and private documents.", Category: "Hardware", Region: "Europe", Kind: "physical", Vendor: "ghost_circuit", VendorID: "ghost", PriceXMR: "0.271", Stock: 7},
+		{ID: "encrypted-drive", Title: "Encrypted USB Drive — 256GB", Description: "Hardware-encrypted storage with a tamper-evident enclosure. A practical place for your offline backups and private documents.", Category: "Hardware", Region: "Europe", Kind: "physical", Vendor: "ghost_circuit", VendorID: "ghost", PriceXMR: "0.271", Stock: 7, VendorVerified: true},
 		{ID: "security-research", Title: "Security Research — Q3 Report", Description: "Defensive analysis of patched vulnerabilities, mitigation recommendations, and a clear guide to keeping your systems up to date.", Category: "Digital", Region: "Worldwide", Kind: "digital", Vendor: "null_ptr", VendorID: "null", PriceXMR: "0.058", Stock: 99},
 		{ID: "privacy-course", Title: "Practical Privacy — Field Guide", Description: "An independent guide to device hygiene, threat modeling, and safer everyday communication.", Category: "Digital", Region: "Worldwide", Kind: "digital", Vendor: "cipher_monk", VendorID: "cipher", PriceXMR: "0.020", Stock: 99},
 		{ID: "faraday-bag", Title: "Faraday Laptop Bag — 15 inch", Description: "A signal-shielding sleeve designed for storing your laptop and small devices. Check manufacturer specifications before purchase.", Category: "Hardware", Region: "Worldwide", Kind: "physical", Vendor: "iron_cage", VendorID: "iron", PriceXMR: "0.103", Stock: 23},
@@ -562,5 +562,5 @@ func previewData(page string) PageData {
 		u.Role = "vendor"
 	}
 	o := Order{ID: previewDraftID, ProductID: p[0].ID, Title: p[0].Title, Buyer: u.Handle, Vendor: p[0].Vendor, Currency: "XMR", Amount: p[0].PriceXMR, State: stateDraft, Status: stateLabel(stateDraft), Kind: p[0].Kind, BuyerID: u.ID, VendorID: p[0].VendorID, Created: "Sample order", Updated: "Sample order"}
-	return PageData{Page: page, Title: strings.ReplaceAll(strings.Title(page), "-", " "), Preview: true, User: u, Products: p, Product: &p[0], Orders: []Order{o}, Order: &o, Currency: "XMR", Settings: map[string]string{"site_name": "OPSEC Market"}, Users: []User{{ID: "ghost", Handle: "ghost_circuit", Role: "vendor"}}, Events: []Event{{Handle: u.Handle, Action: "Preview only — no real activity", Created: "—"}}}
+	return PageData{Page: page, Title: strings.ReplaceAll(strings.Title(page), "-", " "), Preview: true, User: u, Products: p, Product: &p[0], Orders: []Order{o}, Order: &o, Currency: "XMR", Settings: map[string]string{"site_name": "OPSEC Market"}, Users: []User{{ID: "ghost", Handle: "ghost_circuit", Role: "vendor", VendorVerified: true}}, Events: []Event{{Handle: u.Handle, Action: "Preview only — no real activity", Created: "—"}}}
 }

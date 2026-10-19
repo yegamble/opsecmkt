@@ -556,6 +556,14 @@ main {
 .vendor-line a {
   color:#d1ccbf
 }
+/* A-544: the verified vendor badge sits beside the handle; the line wraps rather than overflow a narrow card. */
+.vendor-line {
+  flex-wrap:wrap
+}
+.vendor-instructions p {
+  white-space:pre-line;
+  overflow-wrap:anywhere
+}
 .product-bottom {
   display:flex;
   align-items:center;

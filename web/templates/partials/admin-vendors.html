@@ -1,0 +1,64 @@
+{{/* A-544 vendor onboarding (vendor_applications.go): the vendor policy, the open application queue and the verified
+vendor mark. Every form posts to its own /admin/vendor-* path and confirms with the administrator's password. */}}
+{{define "admin-vendors"}}{{with .VendorAdmin}}<section class="panel" id="vendors" aria-labelledby="vendors-heading">
+<h2 id="vendors-heading">Vendor applications</h2>{{with $.NoticeIn "vendors"}}
+<div class="alert" role="status">{{.}}</div>{{end}}
+<p>Sign-up offers a buyer or a vendor account, and buyers can apply later from their account. Only approved vendors can publish listings: approving makes the account a vendor (an audited role change), while rejected and withdrawn applicants stay buyers. The bond is a non-refundable fee. This market does not watch for bond payments: check your own wallet, then record the bond as received below.</p>
+<h3 id="vendor-policy">Vendor policy</h3>
+<p>Now: {{template "vendor-policy-text" .Policy}} A change applies to new applications only; open applications keep the bond and approval mode they were submitted under.</p>
+<form class="stack" method="post" action="/admin/vendor-policy">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/admin/vendor-policy"}}">
+<label>Bond in XMR<input name="vendor_bond_xmr" value="{{.Policy.Bond}}" required inputmode="decimal" maxlength="24" pattern="[0-9]+(\.[0-9]{1,12})?" title="An amount in XMR with at most 12 decimals; 0 for no bond" autocomplete="off" spellcheck="false" aria-describedby="vendor-bond-help">
+</label>
+<span class="help" id="vendor-bond-help">0 for no bond. A bond is a non-refundable fee: it is not returned on rejection, withdrawal or when a vendor stops selling. Use test-network coins while testing.</span>
+<fieldset><legend>Approval</legend>
+<label class="check"><input type="radio" name="vendor_approval" value="manual" required{{if not .Policy.Automatic}} checked{{end}}> Manual: an administrator approves or rejects each application</label>
+<label class="check"><input type="radio" name="vendor_approval" value="automatic" required{{if .Policy.Automatic}} checked{{end}}> Automatic: approved as soon as no bond is due</label>
+</fieldset>
+<label>Bond payment instructions<textarea name="vendor_bond_instructions" rows="4" maxlength="2000" aria-describedby="vendor-instructions-help">{{.Policy.Instructions}}</textarea>
+</label>
+<span class="help" id="vendor-instructions-help">Shown on the account page of every applicant waiting for a bond, as text: where to send it and how to tell the staff it was sent. At most 2000 characters. Changing them changes what open applicants see. Confirm with your own password{{if and $.Security $.Security.TOTPEnabled}} and authenticator code{{end}}; the change is recorded in the audit trail.</span>
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
+<button type="submit">Save vendor policy</button>
+</form>
+<h3 id="vendor-queue">Open applications</h3>{{if .Queue}}{{if gt .QueueTotal (len .Queue)}}
+<p class="help">Showing the oldest {{len .Queue}} of {{.QueueTotal}} open applications.</p>{{end}}{{range .Queue}}
+<div class="order-action vendor-application">
+<h4>{{.Handle}}: {{.Status}}</h4>
+<p>Submitted {{.Created}}. Bond: {{if .HasBond}}{{.Bond}} XMR, a non-refundable fee{{if .BondReceived}}, {{.BondHow}} {{.BondReceived}}{{end}}{{else}}none{{end}}. Approval: {{if .Automatic}}automatic{{else}}manual{{end}}, as when it was submitted.</p>
+<form class="stack" method="post" action="/admin/vendor-applications">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/admin/vendor-applications"}}">
+<input type="hidden" name="id" value="{{.ID}}">
+<fieldset><legend>Decision for {{.Handle}}</legend>{{if .AwaitingBond}}
+<label class="check"><input type="radio" name="action" value="bond" required> Record bond received: I checked that {{.Bond}} XMR arrived</label>
+<label class="check"><input type="radio" name="action" value="waive" required> Waive the bond</label>{{else}}
+<label class="check"><input type="radio" name="action" value="approve" required> Approve: make {{.Handle}} a vendor</label>{{end}}
+<label class="check"><input type="radio" name="action" value="reject" required> Reject</label>
+</fieldset>
+<label>Note to the applicant (optional)<input name="note" maxlength="500" autocomplete="off">
+</label>
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
+<button type="submit">Record decision for {{.Handle}}</button>
+</form>
+</div>{{end}}{{else}}
+<p>No open vendor applications.</p>{{end}}
+<h3 id="vendor-verified">Verified vendors</h3>
+<p>The verified vendor badge appears on the vendor's page and listings. It is your judgment as staff, not an identity check by this application; the vendor is notified and the change is audited.</p>{{if .Verified}}
+<ul>{{range .Verified}}<li>{{.}}</li>{{end}}</ul>{{else}}
+<p>No vendor is marked verified.</p>{{end}}
+<form class="stack" method="post" action="/admin/vendor-verify">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/admin/vendor-verify"}}">
+<label>Vendor handle<input name="handle" required minlength="3" maxlength="32" pattern="[a-zA-Z0-9_]{3,32}" title="3–32 letters, digits or underscores" autocomplete="off" autocapitalize="none" spellcheck="false">
+</label>
+<label>Mark<select name="action">
+<option value="verify">Mark as verified</option>
+<option value="unverify">Remove the verified mark</option>
+</select>
+</label>
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
+<button type="submit">Save verified mark</button>
+</form>
+</section>{{end}}{{end}}
