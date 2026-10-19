@@ -4,7 +4,7 @@ The current source is Monero only. Historical rows below describe the exact revi
 
 ## Monero-only working tree — 2026-10-15
 
-Local checks for the undeployed Monero-only change passed:
+Local checks for the Monero-only change, before any deployment of it, passed:
 
 - PostgreSQL and simulated wallet RPC: all 173 `TestXMREscrow*` groups passed (267 pass events including subtests); 20 real-chain/public-network groups skipped because their required services were absent. Changed schema, configuration, collision and confirmation-budget checks also passed with the race detector.
 - Chromium with JavaScript disabled: 172 preview checks, all 40 runnable database journeys, and eight simulated Monero escrow journeys passed. Database journeys required focused reruns after fixing fixtures and local timeout failures; one separate environment-gated database check skipped.
@@ -14,12 +14,13 @@ These are working-tree results, not a new CI run or a release. The broad non-esc
 
 ## Evidence table
 
-Updated 2026-10-11 UTC. Each row is evidence that can be cited: a GitHub Actions run (its commit and conclusion confirmed with `gh run view <id>`) or a local log. Ticks in [acceptance.md](acceptance.md) point here. Evidence tiers are those of the war room: unit, DB integration, browser preview, browser DB, simulated wallet RPC, real local chain, public test network, deployed instance. A simulated wallet RPC or the in-process fake provider is not chain evidence. Merged is not released and released is not deployed.
+Updated 2026-10-19 UTC. Each row is evidence that can be cited: a GitHub Actions run (its commit and conclusion confirmed with `gh run view <id>`) or a local log. Ticks in [acceptance.md](acceptance.md) point here. Evidence tiers are those of the war room: unit, DB integration, browser preview, browser DB, simulated wallet RPC, real local chain, public test network, deployed instance. A simulated wallet RPC or the in-process fake provider is not chain evidence. Merged is not released and released is not deployed.
 
 Every CI row is the `CI` workflow ([`.github/workflows/ci.yaml`](../.github/workflows/ci.yaml)), including the required **CI passed** job. The earlier runs had 15 jobs, then 16 with the A-438 `escrow-regtest` job; later runs include additional escrow, installer and Compose jobs. The required gate checks every configured test job. Its tiers are: unit and DB integration (`go test -race -count=1 ./...` with `TEST_DATABASE_URL` on PostgreSQL 17); browser preview and browser DB (Playwright `npm run test:e2e`: preview projects in Chromium, Firefox and WebKit, database projects in Chromium); simulated escrow nodes (`npm run test:e2e:escrow` and `npm run test:e2e:escrow-xmr`); and operations (encrypted backup/restore, restore through the internal-db Compose service, upgrade from `v0.1.0-alpha.1`, the local installer followed by the setup wizard over HTTP and an app restart (`scripts/test-install.py`), the production image with internal and external PostgreSQL, the Compose configuration matrix and the offline Tor image check). The DB test helper skips only when `TEST_DATABASE_URL` is unset ([`testenv_test.go`](../internal/market/testenv_test.go)), and CI sets it, so the database tests ran. `go test` prints individual test names only on failure, so a named test counts as passed because its package reported `ok` in that run.
 
 | Check | Evidence tier | Commit | CI run or log | Date (UTC) |
 |---|---|---|---|---|
+| Push to `main` (merge of PR #64) on the Monero-only source: all 23 workflow jobs passed, including both Go race halves with PostgreSQL 17, the simulated-node escrow browser journeys and the Monero escrow job on a real fakechain (all 15 `TestXMREscrowRegtest*` legs PASS). Checked 2026-10-19: no Go source under `internal/` or `cmd/` changed from this commit to `517d149f` | unit, full PG17 race suites, browser preview/DB, simulated escrow wallet RPC, real Monero fakechain, operations/upgrades/Tor containers | `580055fdb5b11f2c8098dc2e6a41f4d834722862` | [39003912303](https://github.com/yegamble/opsecmkt/actions/runs/39003912303); success, job "Monero escrow on a real fakechain" 04:48:00–04:56:05Z. The fakechain reorg leg (`TestXMREscrowRegtestReorg`) reorganises a relayed settlement only; no real-chain leg reorganises a funding deposit yet (war-room A-554). Not mainnet, not public-network, not the deployed market. | 2026-10-17 |
 | Completion PR #43 at `e617fe0`: the first run of the Monero escrow job on a real fakechain (all 15 `TestXMREscrowRegtest*` legs PASS, 0 skipped, the job took 499 s) and the Compose alpha.1/Tor upgrade and rollback rehearsal; all 23 workflow jobs passed | unit, full PG17 race suites, browser preview/DB, simulated escrow nodes, real Core regtest, real Monero fakechain, operations/upgrades/Tor containers | `e617fe074019fa66b794ec48e55d3f92be0da9b3` | [38141035056](https://github.com/yegamble/opsecmkt/actions/runs/38141035056); job "Monero escrow on a real fakechain" 12:54:32–13:02:51Z; job "Upgrade from alpha.1 and an intermediate migrated release" (runs `scripts/test-upgrade.sh`, which ends with `scripts/test-tor-upgrade-rollback.sh`) success. The Tor rehearsal uses a loopback app and an internal network; it establishes no Tor circuit or onion service. Not mainnet, not public-network, no deployed market. | 2026-10-11 |
 | Completion PR #43 at `8bfebc0` (Sparrow PSBT evidence wording): all required checks passed, 22 workflow jobs, before the Monero fakechain job existed | unit, full PG17 race suites, browser preview/DB, simulated escrow nodes, real Core regtest, operations/upgrades/Tor containers | `8bfebc08661364d03e2ddc0bdefa609b31bbd59d` | [38115165718](https://github.com/yegamble/opsecmkt/actions/runs/38115165718); success, 22 jobs including CI passed and the upgrade job with the Tor rehearsal | 2026-10-11 |
 | Sparrow 2.5.5 GUI per-order practice and settlement: buyer/vendor practice accepted; release of 99,682 sat (318 sat fee, 3 confirmations) uploaded with the ordinary PSBT; sibling `/0/3` refund of 69,682 sat (318 sat fee, 3 confirmations) uploaded from the hardware-format PSBT, signed with a software key; every output matched Core | real local chain, isolated Bitcoin Core 31.1 regtest; source harness review passed | frozen app `f229a1a65172986065bbab4f3aa24a09725695ad` | [Transcript and manifest](evidence/sparrow/2026-10-11-f229a1a65172/README.md). The signing journey used native Sparrow wallet JSON. A separate GUI import of the supplied descriptor saved a watch-only wallet whose receive address matched the funded escrow; no signing from that imported wallet was tested. Physical Ledger signing, fee bumps and public Sparrow signing were not tested. | 2026-10-11 |
@@ -56,13 +57,19 @@ Mainnet support was added for Bitcoin and Monero escrow as an operator opt-in: `
 ([operator guide](operator-guide.md#mainnet)). It supersedes the 2026-10-11 note under *Not verified* that mainnet is
 refused; that note is kept as it was written.
 
-**No mainnet run is recorded.** Nothing has been run against a mainnet node or wallet, with real funds, or as a
-deployment. The evidence is unit and DB integration tests with a simulated Bitcoin Core RPC and published key vectors,
-none of which contacts a network: `TestMarketLiveFromEnv`, `TestEscrowKeyClasses`, `TestEscrowAddressScriptMainnet`,
-`TestEscrowChainAllowed`, `TestFeeDescriptorAddressVector`, `TestEscrowConfigMainnet`, `TestEscrowStartupMainnet` and
-`TestEscrowFeeDescriptorIndex` (`internal/market/escrow_mainnet_test.go`). No CI run of them is recorded here yet.
-Monero mainnet tests: pending. The real-chain and public-network evidence in the table above remains test-network
-only (regtest, signet, a local Monero fakechain, stagenet).
+*Updated 2026-10-19:* Bitcoin is removed from the current source, so the Bitcoin mainnet tests this section first
+cited are no longer the evidence. **No real-funds mainnet transaction is recorded.** The owner's deployment runs a
+Monero mainnet configuration with payment intake paused, and its read-only RPC checks are recorded in the
+[deployment checkpoint](install/deployment-notes.md#evidence-and-remaining-gates); that is not payment or settlement
+evidence. The Monero mainnet evidence is DB integration and unit tests against a simulated wallet-rpc and `monerod`,
+none of which contacts a network: `TestXMREscrowConfigMainnetOptIn` and `TestXMREscrowRefusedOnLiveMarket` (the
+`MONERO_NETWORK=mainnet` opt-in and the mainnet fee-address rule), `TestXMREscrowMainnetTags` (mainnet pin, addresses
+and page copy), `TestXMREscrowMainnetStartup` and `TestXMREscrowNetworkCheckMainnetMarket` (stagenet, fakechain and
+testnet daemons refused on a mainnet market), and `TestXMREscrowNetworkPinMainnet`, `TestXMREscrowNetworkPinMismatch`
+and `TestXMREscrowNetworkPinBackfillAndRepin` (a pinned database never crosses networks while escrow state exists).
+They passed in CI run [39003912303](https://github.com/yegamble/opsecmkt/actions/runs/39003912303) at `580055f`
+(job "Go escrow and Monero tests", package `internal/market` `ok`). The real-chain and public-network evidence in the
+table above remains test-network only (regtest, signet, a local Monero fakechain, stagenet).
 
 ## Manual Tor Browser pass (owner)
 

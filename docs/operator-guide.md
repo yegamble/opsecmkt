@@ -7,7 +7,7 @@ below run from the repository root.
 For threat boundaries, offline keys, private administrator ingress and reviewed
 deployment packages, read [Security and OPSEC operations](security-operations.md).
 
-**Current build:** Monero (XMR) per-order custodial escrow is the only payment path. It is off by default. The installer chooses mainnet for local nodes unless stagenet is selected; mainnet has real funds and no recorded run. Monero testnet is unsupported. Start with [Enabling Monero payments](install/enable-payments.md).
+**Current build:** Monero (XMR) per-order custodial escrow is the only payment path. It is off by default. Native `opsecmkt deploy init` defaults to stagenet; the legacy `scripts/install.sh` chooses mainnet for local nodes unless stagenet is selected. Mainnet has real funds and no recorded real-funds transaction. Monero testnet is unsupported. Start with [Enabling Monero payments](install/enable-payments.md).
 
 ## Native production storage and restarts
 

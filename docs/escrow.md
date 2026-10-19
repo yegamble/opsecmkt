@@ -4,7 +4,7 @@ The marketplace supports Monero (XMR) only. Each order claims a dedicated accoun
 
 Monero conceals sender, recipient and amount details on-chain, reducing exposure to public blockchain observers. It does not hide order or payment metadata from the operator, prevent traffic correlation, or protect keys on a compromised host. Tor relay configuration and the wallet's custody model remain separate requirements.
 
-Escrow is off by default. The installer uses mainnet unless stagenet is chosen; mainnet has real funds and no recorded run. See [Enabling Monero payments](install/enable-payments.md), [operator configuration](operator-guide.md#monero-escrow) and [verification evidence](verification.md). The details below describe the implemented Monero lifecycle; older phase names are retained as anchors for evidence links.
+Escrow is off by default. Native `opsecmkt deploy init` defaults to stagenet; the legacy `scripts/install.sh` bundled nodes default to mainnet unless stagenet is chosen. Mainnet has real funds and no recorded real-funds transaction. See [Enabling Monero payments](install/enable-payments.md), [operator configuration](operator-guide.md#monero-escrow) and [verification evidence](verification.md). The details below describe the implemented Monero lifecycle; older phase names are retained as anchors for evidence links.
 
 ## Phase 3: Monero escrow on a local fakechain
 

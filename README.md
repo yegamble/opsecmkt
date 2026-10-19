@@ -65,7 +65,8 @@ It requires a current password and enrolled authenticator, records the request
 before dispatch, and leaves disk unlocking with the operator. Keep this optional
 control disabled until the actual host's recovery checks pass. The
 [deployment checkpoint](docs/install/deployment-notes.md#evidence-and-remaining-gates)
-records measured results and open launch gates separately from these instructions.
+records measured results and open launch gates separately from these instructions. It records one deployed
+instance on a Monero mainnet configuration with payment intake paused; no real-funds transaction is recorded.
 
 
 **The native CLI changes are unreleased; build this checkout to use them.** Go 1.27.2 is recommended; the module

@@ -563,8 +563,8 @@ the **upgraded** checkout: its `scripts/restore.sh` can restore into the interna
 
 ## 6. Backups now need the wallets too
 
-Once payments are on, the marketplace is custodial for test coins: the Bitcoin wallet lives in the
-`bitcoin_data` volume and the Monero wallet in `monero_wallet`. **Database dumps do not include them.** Back
+Once payments are on, the marketplace is custodial: the Monero escrow wallets live in the `monero_escrow_wallet`
+volume (bundled nodes) or on the payment host (native production). **Database dumps do not include them.** Back
 them up separately (see the runbook). `scripts/restore.sh` now pauses all outbound sends with a persistent recovery
 gate, holds every restored escrow settlement with a stored transaction and adds an audit row recording the gate and
 those counts. (Pooled payouts are removed: migration 108 refuses a database that holds any, section 59.) Follow the
@@ -584,34 +584,32 @@ not set to UTC, it is off by that zone's offset from UTC.
 **Any restore not done by `scripts/restore.sh` skips this protection.** A host or volume snapshot, a
 managed-database point-in-time recovery or a manual `pg_restore` brings escrow settlements back with no gate and
 no holds, and the escrow watchers would broadcast or relay them as soon as the application starts, even if they
-were sent after that point in time. After such a restore, and whenever the script reports that recovery protection failed, keep the
-application stopped (`docker compose stop app`; for a volume snapshot start only the database with
-`docker compose up -d --wait db`) and apply the protection below to the restored application database
-**before starting the application**, then follow the same reconciliation procedure. It runs in one
-transaction and adds one audit row ("set manually"); existing audit rows are not changed. Omit the `settlements`
-line if the database has no `settlements.send_error` column (before migration 076, when no escrow settlement could
-have a stored transaction). That line holds every restored Bitcoin escrow
-settlement with a stored transaction until an administrator confirms its rebroadcast on `/admin`; the
-`settlement_bumps` line holds every restored fee bump of one with a stored transaction until that confirmation of its
-settlement (omit it if the database has no `settlement_bumps` table, before migration 080). The
-`escrow_release_recheck` line asks the escrow watcher's next pass to move every release deadline of a shipped physical
-escrow order that has passed in the restored records to 72 hours later, telling each buyer; the
-`escrow_xmr_release_recheck` line asks the same of the Monero escrow watcher for Monero escrow orders, on its first pass
-after the restore gate is cleared (both lines act only while that escrow is on). The `escrow_sweep_required`
-line makes escrow checkout wait until the escrow watcher has reserved the keys of every escrow its watch-only wallet
-holds and the restored records lack, and the `escrow_index_floors` and `setval` lines move every account's next escrow
-child index and the market's escrow key index 50 past the restored records, so no escrow key is handed out twice (A-366;
-omit those two lines if the database has no `escrow_index_floors` table, before migration 083). For Monero escrow
-(`ESCROW_XMR`, local fakechain only), the `xmr_settlements` line holds every restored Monero escrow settlement with a
-stored transaction (built or relayed) with the same marker until an administrator confirms its relay on `/admin`, the
-`xmr_escrow_slots` line retires every free Monero escrow account and the `xmr_escrow_wallets` line moves every active or
-sealed Monero escrow wallet to closing, so no restored wallet takes an order again (omit those three lines if the
-database has no `xmr_settlements.send_error` column, before migration 085); the `xmr_escrow_sweep_required` line makes
-Monero escrow checkout wait until the Monero escrow watcher has found the escrow wallets created after the backup
-(each is sealed to the seed key and kept, never offered to a new order) and checked every escrow wallet. After restoring
-only the escrow wallet volume from an older backup, run that settings line alone: the watcher then also raises the
-subaddress lookahead of each escrow wallet older than the database and rescans it, so deposits to the accounts it does
-not know are seen.
+were sent after that point in time. Free escrow accounts that the live wallet handed out after that point would
+also be offered again. After such a restore, and whenever the script reports that recovery protection failed, keep the
+application stopped and apply the protection below to the restored application database **before starting the
+application**, then follow the same reconciliation procedure. On a Compose deployment run `docker compose stop app`
+(for a volume snapshot start only the database with `docker compose up -d --wait db`). On a native deployment run
+`./opsecmkt deploy down --dir DIR`, or stop a directly supervised `opsecmkt serve` through its service manager, and do
+not run `deploy up` until the protection has committed. The block runs in one transaction; each line does the following:
+
+- `payments_recovery_required` sets the persistent recovery gate, which pauses Monero escrow checkout, settlement
+  building and relay until an administrator clears it after reconciliation.
+- `retention_restore_required` makes startup replay the current external retention state before accepting traffic
+  (start with `RETENTION_ENABLED=true` and the current `RETENTION_STATE_DIR`; see [retention](docs/retention.md)).
+- `escrow_xmr_release_recheck` asks the Monero escrow watcher, on its first pass after the gate is cleared, to move every
+  release deadline of a shipped Monero escrow order that has passed in the restored records to 72 hours later, telling
+  each buyer.
+- `xmr_escrow_sweep_required` makes Monero escrow checkout wait until the Monero escrow watcher has found the escrow
+  wallets created after the backup (each is sealed to the seed key and kept, never offered to a new order) and checked
+  every escrow wallet. After restoring only the escrow wallet volume from an older backup, run that settings line alone:
+  the watcher then also raises the subaddress lookahead of each escrow wallet older than the database and rescans it, so
+  deposits to the accounts it does not know are seen.
+- The `xmr_settlements` line holds every restored Monero escrow settlement with a stored transaction (built or relayed)
+  with the `Restored from backup:` marker until an administrator confirms its relay on `/admin`.
+- The `xmr_escrow_slots` line retires every free Monero escrow account, and the `xmr_escrow_wallets` line moves every
+  active or sealed Monero escrow wallet to closing, so no restored account or wallet takes an order again. Omit these
+  three table lines if the database has no `xmr_settlements.send_error` column (before migration 085).
+- The final line adds one audit row ("set manually"); existing audit rows are not changed.
 
 <!-- runbook-sql: restore-protection -->
 ```sql
@@ -634,8 +632,15 @@ COMMIT;
 
 Save it as `restore-protection.sql` and run it with `psql` against the restored database, for the internal
 database `docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U opsecmkt -d opsecmkt_restored < restore-protection.sql`
-(the database name in `DATABASE_URL`). It must end with `INSERT 0 1` and `COMMIT`; on an error nothing is
-changed.
+(the database name in `DATABASE_URL`). For a managed database, run the same file with `psql -X -v ON_ERROR_STOP=1`
+over the operator's protected, certificate-verified connection to the restored database. It must end with `INSERT 0 1`
+and `COMMIT`; on an error nothing is changed.
+
+The restore also rolls back every setting an administrator saved after the backup or recovery point, such as **New escrow
+checkouts**, site access, registrations and the vendor application policy (the bond amount `vendor_bond_xmr` and the
+approval mode in **Admin → Vendor applications**), and undoes bonds recorded as received after that point. Before
+clearing the gate, re-check them on `/admin` against your operator record. The market fee address and rate (`ESCROW_XMR_FEE_ADDRESS`, `ESCROW_XMR_FEE_BPS`) are host configuration, not
+database rows, so a database restore does not roll them back; confirm the host values are the ones you intend.
 
 The payout gate is enforced by this release. An older application image may not understand it; keep wallet
 RPC configuration disabled when inspecting a restored database with older code. Alpha.1 has no payment
