@@ -20,7 +20,7 @@ import (
 // A-287 moved the other outcome flags here (?photo=, ?avatar=, ?image=removed, ?key= and ?signin=). The query
 // parameters pages still read select what to show, not what just happened: id, q, category, region, currency and
 // page (the listing, search and paging), to (the message recipient), next (where signing in returns, A-126; on
-// /totp shown only beside a signin- notice, totpLoader), scanner (the preview's upload states) and the audit
+// /totp shown only beside a signin- notice, totpLoader), scanner (the preview's upload and admin scanner states) and the audit
 // export's range.
 const noticeCookie, noticeMaxAge = "notice", 60
 

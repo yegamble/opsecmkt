@@ -78,7 +78,20 @@ func loadDependencyStatus(ctx context.Context, a *App, _ *http.Request, d *PageD
 		}
 	}
 	cancel()
-	if a.scanner != nil {
+	evidence := map[string]string{}
+	if a.isolatedUploads { // A-552: the upload gateway's latest scanner report
+		g, err := a.gatewayScanner(ctx)
+		if err != nil {
+			return err
+		}
+		if fields := strings.Fields(g.report.Engine); !g.received.IsZero() && len(fields) == 2 {
+			observed["clamav"] = dependencies.Normalize(fields[1])
+			evidence["clamav"] = "Reported by the upload gateway's scanner check"
+			if !g.fresh {
+				evidence["clamav"] += "; that report is stale"
+			}
+		}
+	} else if a.scanner != nil {
 		if fields := strings.Fields(a.scanner.State().Engine); len(fields) == 2 {
 			observed["clamav"] = dependencies.Normalize(fields[1])
 		}
@@ -89,6 +102,9 @@ func loadDependencyStatus(ctx context.Context, a *App, _ *http.Request, d *PageD
 		if current := observed[service]; current != "" {
 			row.Current = current
 			row.Evidence = "Observed on this app connection or process"
+			if e := evidence[service]; e != "" {
+				row.Evidence = e
+			}
 		}
 		if row.Current == "" {
 			row.Current = "Unknown"

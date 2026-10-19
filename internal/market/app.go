@@ -795,6 +795,9 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		d.CSRF = a.csrf(token)
 		d.Mode = a.mode
 		applyPreviews(&d)
+		if d.Page == "admin" {
+			previewGatewayScanner(&d, q.Get("scanner"))
+		}
 		objectTitle(&d)
 		a.render(w, r, d)
 		return

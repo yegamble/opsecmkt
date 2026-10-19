@@ -40,6 +40,17 @@ Per-order escrow is the only payment path (A-448, A-492). Checks of payment code
   malware/stale signatures, session revocation during scanning, replayed tickets,
   final authorization and metadata-free JPEG storage. This does not prove a real
   scanner or distinct physical hosts; rehearse those separately.
+- With isolated uploads, the gateway reports its scanner state over the mutual-TLS
+  upload backend; the app accepts it only with the gateway's client identity,
+  refuses malformed, unknown-field and oversized reports, keeps the latest in
+  PostgreSQL with the database's receipt time, and shows "Scanner status unknown —
+  gateway not reporting" on `/admin/system` and paused avatar and listing-photo
+  forms when no report arrived in 3 minutes or the scanner is unhealthy; two app
+  processes on one database show the same state, the ClamAV dependency row uses the
+  reported engine, and no page or stored report names a host, address or URL
+  (`TestGatewayScannerReport`, `TestUploadGatewayScannerReportSender`,
+  `TestIntegratedModeIgnoresGatewayScannerReport`; layout in `preview-scanner.spec.ts`
+  at 320 and 1280 px). Simulated clamd and test PKI only; not a deployed gateway.
 
 - [x] A fresh install with no external database starts the PostgreSQL Compose service, waits for readiness, and applies migrations (CI installer job: `scripts/test-install.py`).
 - [x] External database configuration starts no PostgreSQL container; connection failures stop setup with a useful, secret-free error (`TestStartupDatabaseErrorNamesItsClass`, `TestConnectErrorClassTLSRequired`; CI container job: `scripts/ci-smoke.sh external` finds no `db` container; installer: `tests/test_installer.py` `test_external_clearnet_local_http`).
