@@ -390,6 +390,11 @@ type PageData struct {
 	NoPurchase      bool
 	// A-109: product/checkout and a buyer's draft-order page explain why a suspended vendor takes no new intake.
 	VendorSuspensionReason string
+	// SellerClosed (A-546): the product page of a banned vendor's listing (archived by the ban) says the account is
+	// closed rather than only archived.
+	SellerClosed bool
+	// OrderClosedParties (A-546): like OrderSuspendedParties, for a banned buyer or vendor (not also listed there).
+	OrderClosedParties []string
 	// EscrowReadiness (A-444): /admin, the escrow-only readiness panel (escrow_readiness.go).
 	EscrowReadiness *EscrowReadinessView
 	// VendorEscrowKey (A-455, P4-R18): the product and vendor pages' vendor's Bitcoin escrow key type while ESCROW_BTC is

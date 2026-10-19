@@ -1,6 +1,7 @@
 package market
 
 import (
+	"html"
 	"net/url"
 	"strconv"
 	"strings"
@@ -129,9 +130,23 @@ func TestBanAccount(t *testing.T) {
 	if agInt(e, "SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE 'An administrator closed your account permanently%'", vendorID) != 1 {
 		t.Fatal("banned account not notified")
 	}
-	if agInt(e, "SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE 'The account ban_vendor, with which you have an active order, is suspended and cannot sign in.%'", buyerID) != 1 {
+	if agInt(e, "SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE 'The account ban_vendor, with which you have an active order, is closed and cannot sign in.%'", buyerID) != 1 {
 		t.Fatal("order counterparty not told")
 	}
+
+	if agInt(e, "SELECT count(*) FROM banned_handles WHERE handle='ban_vendor'") != 1 {
+		t.Fatal("handle not reserved")
+	}
+	// The listing and order pages say the seller's account is closed, not suspended.
+	orderBody := e.body("GET", orderPage(resolvedOrder), buyer, nil, 200)
+	mustContain(t, orderBody, "The vendor account is closed and cannot sign in.")
+	mustNotContain(t, orderBody, "account is suspended")
+	productBody := e.body("GET", "/product?id="+agStr(e, "SELECT product_id FROM orders WHERE id=$1", resolvedOrder), buyer, nil, 200)
+	mustContain(t, productBody, "<strong>Archived.</strong> The seller's account is closed, so this listing accepts no new orders.")
+	mustNotContain(t, productBody, "suspended")
+	draftBody := e.body("GET", orderPage(draft), buyer, nil, 200)
+	mustContain(t, draftBody, "<strong>Unavailable.</strong> "+html.EscapeString(sellerClosed))
+	mustNotContain(t, draftBody, html.EscapeString(sellerSuspended))
 
 	// Banned state on /admin/users: in its own list, not among the suspended accounts.
 	page = e.body("GET", "/admin/users", admin, nil, 200)
@@ -182,7 +197,7 @@ func TestBanAccount(t *testing.T) {
 		t.Fatalf("new draft with a banned vendor: %d %s", w.Code, refusalText(w.Body.String()))
 	}
 	w = x.checkout(buyer, draft, testXMRAddr("ban draft "+draft, true))
-	if w.Code != 409 || agStr(e, "SELECT state FROM orders WHERE id=$1", draft) != stateDraft {
+	if w.Code != 409 || agStr(e, "SELECT state FROM orders WHERE id=$1", draft) != stateDraft || strings.Contains(w.Body.String(), "suspended") {
 		t.Fatalf("checkout with a banned vendor: %d %s", w.Code, refusalText(w.Body.String()))
 	}
 	// Suspension controls do not lift or repeat a ban.
@@ -241,6 +256,9 @@ func TestBanAccount(t *testing.T) {
 	if agInt(e, "SELECT count(*) FROM users WHERE id=$1 AND banned_at IS NULL AND banned_by IS NULL AND ban_reason IS NULL AND suspended_at IS NULL", vendorID) != 1 {
 		t.Fatal("ban not lifted")
 	}
+	if agInt(e, "SELECT count(*) FROM banned_handles WHERE handle='ban_vendor'") != 0 {
+		t.Fatal("lifting the ban kept the handle reservation")
+	}
 	if !e.auditExact(adminID, "Lifted the ban on ban_vendor: "+testLiftReason+" (confirmed with password)") ||
 		!e.auditExact(vendorID, "Ban lifted by administrator ban_admin: "+testLiftReason) {
 		t.Fatal("lifted ban not audited on both accounts")
@@ -259,17 +277,20 @@ func TestBanAccount(t *testing.T) {
 	mustNotContain(t, page, "ban_vendor · vendor · banned ")
 }
 
-// Migration 123: a ban needs its reason and implies a suspension.
+// Migration 123: a ban needs its reason and implies a suspension; the prior suspension needs a ban; reserved handles
+// are lower case.
 func TestBanMigration(t *testing.T) {
 	e := newTestApp(t)
 	id, _ := e.user("ban_mig", "buyer")
 	adminID, _ := e.user("ban_mig_admin", "admin")
 	agExec(e, `DELETE FROM schema_migrations WHERE version=123;
-		ALTER TABLE users DROP COLUMN banned_at, DROP COLUMN banned_by, DROP COLUMN ban_reason`)
+		DROP TABLE banned_handles;
+		ALTER TABLE users DROP COLUMN banned_at, DROP COLUMN banned_by, DROP COLUMN ban_reason, DROP COLUMN ban_prior_suspended_at`)
 	if err := applyLatestMigrations(t, e); err != nil {
 		t.Fatal(err)
 	}
-	if agInt(e, "SELECT count(*) FROM users WHERE banned_at IS NOT NULL OR banned_by IS NOT NULL OR ban_reason IS NOT NULL") != 0 {
+	if agInt(e, "SELECT count(*) FROM users WHERE banned_at IS NOT NULL OR banned_by IS NOT NULL OR ban_reason IS NOT NULL OR ban_prior_suspended_at IS NOT NULL") != 0 ||
+		agInt(e, "SELECT count(*) FROM banned_handles") != 0 {
 		t.Fatal("migration banned an existing account")
 	}
 	for _, bad := range []string{
@@ -278,9 +299,15 @@ func TestBanMigration(t *testing.T) {
 		"UPDATE users SET banned_at=now(),ban_reason='A reason long enough.' WHERE id=$1",            // not suspended
 		"UPDATE users SET banned_at=now(),ban_reason='   short   ',suspended_at=now() WHERE id=$1",   // too short
 		"UPDATE users SET banned_at=now(),ban_reason=repeat('x',501),suspended_at=now() WHERE id=$1", // too long
+		"UPDATE users SET ban_prior_suspended_at=now(),suspended_at=now() WHERE id=$1",               // a prior suspension without a ban
 	} {
 		if _, err := e.DB.Exec(bad, id); err == nil {
 			t.Fatalf("accepted %s", bad)
+		}
+	}
+	for _, bad := range []string{"Mixed_Case", ""} { // reserved handles are lower case and not empty
+		if _, err := e.DB.Exec("INSERT INTO banned_handles(handle) VALUES($1)", bad); err == nil {
+			t.Fatalf("reserved handle %q accepted", bad)
 		}
 	}
 	agExec(e, "UPDATE users SET banned_at=now(),banned_by=$2,ban_reason='A reason long enough.',suspended_at=now() WHERE id=$1", id, adminID)
@@ -296,14 +323,17 @@ func TestBanMigration(t *testing.T) {
 	}
 }
 
-// Retention: closing a banned account erases the ban's reason with the profile (it stays suspended and closed), and
-// the administrator named as banned_by never blocks their own erasure (ON DELETE SET NULL).
+// Retention: closing a banned account erases the ban's reason with the profile (it stays suspended and closed) but its
+// handle stays reserved, through the rename and after the row itself is erased; the administrator named as banned_by
+// never blocks their own erasure (ON DELETE SET NULL).
 func TestBanRetentionClosure(t *testing.T) {
 	e := newTestApp(t)
-	adminID, _ := e.user("ban_ret_admin", "admin")
+	_, admin := e.user("ban_ret_admin", "admin")
+	erasedAdminID, _ := e.user("ban_ret_erased", "admin")
 	bannedID, _ := e.user("ban_ret_target", "vendor")
 	otherID, _ := e.user("ban_ret_other", "buyer")
-	agExec(e, "UPDATE users SET banned_at=now(),banned_by=$2,ban_reason=$3,suspended_at=now() WHERE id IN ($1,$4)", bannedID, adminID, testBanReason, otherID)
+	agExpect(e, "/admin/ban", admin, banForm("ban", "ban_ret_target", testBanReason), 303, "")
+	agExec(e, "UPDATE users SET banned_at=now(),banned_by=$2,ban_reason=$3,suspended_at=now() WHERE id=$1", otherID, erasedAdminID, testBanReason)
 	tx, err := e.DB.BeginTx(t.Context(), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -313,21 +343,119 @@ func TestBanRetentionClosure(t *testing.T) {
 		t.Fatal(err)
 	}
 	var cleared bool
-	if err = tx.QueryRow("SELECT banned_at IS NULL AND banned_by IS NULL AND ban_reason IS NULL AND suspended_at IS NOT NULL AND closed_at IS NOT NULL FROM users WHERE id=$1", bannedID).Scan(&cleared); err != nil || !cleared {
+	if err = tx.QueryRow(`SELECT banned_at IS NULL AND banned_by IS NULL AND ban_reason IS NULL AND ban_prior_suspended_at IS NULL AND suspended_at IS NOT NULL
+		AND closed_at IS NOT NULL AND handle='closed_'||id FROM users WHERE id=$1`, bannedID).Scan(&cleared); err != nil || !cleared {
 		t.Fatalf("closed banned account kept its ban: %t %v", cleared, err)
 	}
-	if _, err = tx.Exec("DELETE FROM sessions WHERE user_id=$1", adminID); err != nil {
+	// The records that keep a closed account's row expire later; erase it as retention eventually does.
+	if _, err = tx.Exec("SELECT set_config('opsecmkt.retention_purge','on',true)"); err != nil {
 		t.Fatal(err)
 	}
-	needed, err := retentionUserReferenced(t.Context(), tx, adminID)
+	for _, q := range []string{"DELETE FROM sessions WHERE user_id=$1", "DELETE FROM audit_events WHERE user_id=$1", "DELETE FROM notifications WHERE user_id=$1"} {
+		if _, err = tx.Exec(q, bannedID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if needed, err := retentionUserReferenced(t.Context(), tx, bannedID); err != nil || needed {
+		t.Fatalf("closed banned account still referenced: %t %v", needed, err)
+	}
+	if err = e.A.applyRetentionTombstone(t.Context(), tx, retentionTombstone{Kind: "account", ID: bannedID, At: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.Exec("DELETE FROM sessions WHERE user_id=$1", erasedAdminID); err != nil {
+		t.Fatal(err)
+	}
+	needed, err := retentionUserReferenced(t.Context(), tx, erasedAdminID)
 	if err != nil || needed {
 		t.Fatalf("banned_by blocked the administrator's purge: %t %v", needed, err)
 	}
-	if err = e.A.applyRetentionTombstone(t.Context(), tx, retentionTombstone{Kind: "account", ID: adminID, At: time.Now()}); err != nil {
+	if err = e.A.applyRetentionTombstone(t.Context(), tx, retentionTombstone{Kind: "account", ID: erasedAdminID, At: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	var kept bool
 	if err = tx.QueryRow("SELECT banned_at IS NOT NULL AND banned_by IS NULL AND ban_reason IS NOT NULL FROM users WHERE id=$1", otherID).Scan(&kept); err != nil || !kept {
 		t.Fatalf("erasing the administrator changed another ban: %t %v", kept, err)
 	}
+	if err = tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if agInt(e, "SELECT count(*) FROM users WHERE id=$1", bannedID) != 0 || agInt(e, "SELECT count(*) FROM banned_handles WHERE handle='ban_ret_target'") != 1 {
+		t.Fatal("the account was not erased, or its handle reservation went with it")
+	}
+	for _, h := range []string{"ban_ret_target", "Ban_Ret_Target"} {
+		agExpect(e, "/register", randomToken(), url.Values{"handle": {h}, "password": {"a-new-long-password"}}, 400, "Handle unavailable")
+	}
+	if agInt(e, "SELECT count(*) FROM users WHERE lower(handle)='ban_ret_target'") != 0 {
+		t.Fatal("the erased banned handle was registered again")
+	}
+}
+
+// A-546 rulings: banning a moderator makes them a buyer (audited, same transaction), and lifting the ban gives no staff
+// role back; lifting a ban restores the suspension the account had before it, with its own time.
+func TestBanModeratorAndPriorSuspension(t *testing.T) {
+	e := newTestApp(t)
+	_, admin := e.user("banmod_admin", "admin")
+	adminID := agStr(e, "SELECT id FROM users WHERE handle='banmod_admin'")
+	modID, _ := e.user("banmod_mod", "moderator")
+	agExec(e, "UPDATE users SET staff_hidden=false WHERE id=$1", modID)
+	agExpect(e, "/admin/ban", admin, banForm("ban", "banmod_mod", testBanReason), 303, "")
+	if agStr(e, "SELECT role FROM users WHERE id=$1", modID) != "buyer" || agStr(e, "SELECT staff_hidden::text FROM users WHERE id=$1", modID) != "true" {
+		t.Fatal("banned moderator kept the staff role or the public staff listing")
+	}
+	if !e.auditExact(modID, "Role changed from moderator to buyer by administrator banmod_admin (account banned)") ||
+		!e.auditExact(adminID, "Banned account banmod_mod: "+testBanReason+"; ended 1 session(s) and any pending sign-ins; changed role from moderator to buyer (confirmed with password)") {
+		t.Fatal("moderator demotion not audited on both accounts")
+	}
+	if agInt(e, "SELECT count(*) FROM notifications WHERE user_id=$1 AND body='Your account role changed from moderator to buyer.'", modID) != 1 {
+		t.Fatal("demoted moderator not notified")
+	}
+	agExpect(e, "/admin/ban", admin, banForm("unban", "banmod_mod", testLiftReason), 303, "")
+	if agStr(e, "SELECT role FROM users WHERE id=$1", modID) != "buyer" {
+		t.Fatal("lifting the ban restored the staff role")
+	}
+
+	// A vendor already suspended when banned is suspended again, from the same time, once the ban is lifted.
+	vendorID, _ := e.user("banmod_vendor", "vendor")
+	buyerID, buyer := e.user("banmod_buyer", "buyer")
+	order := e.order(buyerID, e.product(vendorID, "physical"), "XMR", stateShipped)
+	agExpect(e, "/admin/suspend", admin, suspendForm("suspend", "banmod_vendor"), 303, "")
+	since := agStr(e, "SELECT suspended_at::text FROM users WHERE id=$1", vendorID)
+	suspendedNote := "The vendor account is suspended and cannot sign in."
+	closedNote := "The vendor account is closed and cannot sign in."
+	page := e.body("GET", orderPage(order), buyer, nil, 200)
+	mustContain(t, page, suspendedNote)
+	mustNotContain(t, page, closedNote)
+
+	agExpect(e, "/admin/ban", admin, banForm("ban", "banmod_vendor", testBanReason), 303, "")
+	if agStr(e, "SELECT ban_prior_suspended_at::text FROM users WHERE id=$1", vendorID) != since || agStr(e, "SELECT suspended_at::text FROM users WHERE id=$1", vendorID) != since {
+		t.Fatal("ban did not keep the earlier suspension")
+	}
+	page = e.body("GET", orderPage(order), buyer, nil, 200)
+	mustContain(t, page, closedNote)
+	mustNotContain(t, page, suspendedNote)
+	if agInt(e, "SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE 'The account banmod_vendor, with which you have an active order, is closed and cannot sign in.%'", buyerID) != 1 {
+		t.Fatal("counterparty not told the account is closed")
+	}
+
+	agExpect(e, "/admin/ban", admin, banForm("unban", "banmod_vendor", testLiftReason), 303, "")
+	if agStr(e, "SELECT suspended_at::text FROM users WHERE id=$1", vendorID) != since ||
+		agInt(e, "SELECT count(*) FROM users WHERE id=$1 AND banned_at IS NULL AND ban_reason IS NULL AND ban_prior_suspended_at IS NULL", vendorID) != 1 {
+		t.Fatal("lifting the ban did not restore the earlier suspension")
+	}
+	if !e.auditExact(vendorID, "Ban lifted by administrator banmod_admin: "+testLiftReason+"; it stays suspended, as it was before the ban") ||
+		!e.auditExact(adminID, "Lifted the ban on banmod_vendor: "+testLiftReason+"; it stays suspended, as it was before the ban (confirmed with password)") {
+		t.Fatal("lifting the ban over a suspension not audited")
+	}
+	if agInt(e, "SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE 'An administrator lifted the ban on your account. It stays suspended%'", vendorID) != 1 ||
+		agInt(e, "SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE '%banmod_vendor%was restored%'", buyerID) != 0 ||
+		agInt(e, "SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE 'The account banmod_vendor, with which you have an active order, is suspended and cannot sign in.%'", buyerID) != 2 {
+		t.Fatal("wrong notices after lifting a ban over a suspension")
+	}
+	agExpect(e, "/login", randomToken(), form("handle", "banmod_vendor", "password", testPassword), 403, suspendedMsg)
+	page = e.body("GET", orderPage(order), buyer, nil, 200)
+	mustContain(t, page, suspendedNote)
+	mustNotContain(t, page, closedNote)
+	mustContain(t, e.body("GET", "/admin/users", admin, nil, 200), "banmod_vendor · vendor · suspended ")
+	agExpect(e, "/admin/suspend", admin, suspendForm("restore", "banmod_vendor"), 303, "")
+	e.check(e.do("POST", "/login", randomToken(), form("handle", "banmod_vendor", "password", testPassword)), 303)
 }

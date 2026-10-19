@@ -823,10 +823,11 @@ func installFirstAdmin(ctx context.Context, tx *sql.Tx, handle, hash, siteName s
 }
 
 // refuseTakenHandle runs under creation advisory lock 782493 for both HTTP and CLI account creation.
-// The index is deliberately non-unique: a legacy database may already contain case variants.
+// The index is deliberately non-unique: a legacy database may already contain case variants. A banned account's
+// handle stays taken after the account is closed and erased (banned_handles, A-546).
 func refuseTakenHandle(ctx context.Context, tx *sql.Tx, handle string) error {
 	var taken bool
-	if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM users WHERE lower(handle)=lower($1))", handle).Scan(&taken); err != nil {
+	if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM users WHERE lower(handle)=lower($1)) OR EXISTS(SELECT 1 FROM banned_handles WHERE handle=lower($1))", handle).Scan(&taken); err != nil {
 		return fail(503, "Service unavailable")
 	}
 	if taken {

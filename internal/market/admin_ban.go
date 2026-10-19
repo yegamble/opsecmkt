@@ -16,11 +16,13 @@ import (
 // banned one: sign-in (refused with a neutral message once the password is correct), sessions, new drafts and payment
 // requests (lockNewIntake), messages (activeVendorSQL; messageRecipient also refuses every other route to it), dispute
 // resolvers and staff notices, and public images. A ban also ends the account's sessions and pending sign-ins,
-// archives its active listings, withdraws an open vendor application and removes a verified vendor mark. The account
-// row and so its handle stay, so registration refuses the handle (refuseTakenHandle). Open orders are left alone:
+// archives its active listings, withdraws an open vendor application and removes a verified vendor mark; a banned
+// moderator becomes a buyer. Its handle, in lower case, is kept in banned_handles, so registration and setup refuse it
+// (refuseTakenHandle) even after retention closes and erases the account. Open orders are left alone:
 // the other party can still complete, concede or dispute them, an independent administrator decides disputes, and
-// settlements proceed. Lifting a ban (unban) allows sign-in again; listings stay archived and the verified mark stays
-// off. Both need a reason and the administrator's password (and authenticator code when enrolled); both accounts are
+// settlements proceed. Lifting a ban (unban) restores the suspension the account had before it (ban_prior_suspended_at)
+// or, with none, allows sign-in again; listings stay archived, the verified mark stays off and no staff role returns.
+// Both need a reason and the administrator's password (and authenticator code when enrolled); both accounts are
 // audited, with the reason. Administrator accounts, the caller's own included, cannot be banned, so neither can the
 // last administrator.
 
@@ -117,9 +119,9 @@ func adminBanAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, err
 		}
 		var role string
-		var suspended, banned, closed, verified bool
-		err := tx.QueryRowContext(ctx, "SELECT role,suspended_at IS NOT NULL,banned_at IS NOT NULL,closed_at IS NOT NULL,vendor_verified FROM users WHERE id=$1 FOR NO KEY UPDATE", target).
-			Scan(&role, &suspended, &banned, &closed, &verified)
+		var banned, closed, verified bool
+		err := tx.QueryRowContext(ctx, "SELECT role,banned_at IS NOT NULL,closed_at IS NOT NULL,vendor_verified FROM users WHERE id=$1 FOR NO KEY UPDATE", target).
+			Scan(&role, &banned, &closed, &verified)
 		if err == sql.ErrNoRows {
 			return actionResult{}, notFound
 		}
@@ -140,20 +142,36 @@ func adminBanAction(c *actionCtx) (actionResult, error) {
 			case closed: // a closed account stays suspended (retention.go); lifting its ban would not reopen it
 				return actionResult{}, fail(409, handle+" is closed; nothing was changed.")
 			}
-			if _, err = tx.ExecContext(ctx, "UPDATE users SET banned_at=NULL,banned_by=NULL,ban_reason=NULL,suspended_at=NULL WHERE id=$1", target); err != nil {
+			// The suspension the account had before the ban (if any) comes back with its own time; otherwise none.
+			var stillSuspended bool
+			if err = tx.QueryRowContext(ctx, `UPDATE users SET suspended_at=ban_prior_suspended_at,banned_at=NULL,banned_by=NULL,ban_reason=NULL,ban_prior_suspended_at=NULL
+				WHERE id=$1 RETURNING suspended_at IS NOT NULL`, target).Scan(&stillSuspended); err != nil {
 				return actionResult{}, err
 			}
-			if err = audit("Ban lifted by " + by + ": " + reason); err != nil {
+			// The reservation goes unless a case variant of the handle (a legacy database) is banned too.
+			if _, err = tx.ExecContext(ctx, `DELETE FROM banned_handles h WHERE h.handle=lower($1)
+				AND NOT EXISTS(SELECT 1 FROM users u WHERE lower(u.handle)=h.handle AND u.banned_at IS NOT NULL AND u.id<>$2)`, handle, target); err != nil {
 				return actionResult{}, err
 			}
-			note := "An administrator lifted the ban on your account. You can sign in again. Your listings stay archived: publish them again from the vendor desk if you still sell."
+			summary, note := "", "An administrator lifted the ban on your account. You can sign in again. Your listings stay archived: publish them again from the vendor desk if you still sell."
+			if stillSuspended {
+				summary = "; it stays suspended, as it was before the ban"
+				note = "An administrator lifted the ban on your account. It stays suspended, as it was before the ban, so it cannot sign in until an administrator restores it. Your listings stay archived."
+			}
+			if err = audit("Ban lifted by " + by + ": " + reason + summary); err != nil {
+				return actionResult{}, err
+			}
 			if _, err = insertNotification(ctx, tx, target, note, ""); err != nil {
 				return actionResult{}, err
 			}
-			if err = notifyActiveCounterparties(ctx, tx, target, handle, false); err != nil {
+			status := accountRestoredStatus // order partners were told the account is closed
+			if stillSuspended {
+				status = accountSuspendedStatus
+			}
+			if err = notifyActiveCounterparties(ctx, tx, target, handle, status); err != nil {
 				return actionResult{}, err
 			}
-			return actionResult{Redirect: "/admin/users", Notice: "unbanned", Audit: "Lifted the ban on " + handle + ": " + reason}, nil
+			return actionResult{Redirect: "/admin/users", Notice: "unbanned", Audit: "Lifted the ban on " + handle + ": " + reason + summary}, nil
 		}
 		switch {
 		case banned:
@@ -161,7 +179,7 @@ func adminBanAction(c *actionCtx) (actionResult, error) {
 		case closed:
 			return actionResult{}, fail(409, handle+" is already closed; nothing was changed.")
 		}
-		if _, err = tx.ExecContext(ctx, `UPDATE users SET banned_at=now(),banned_by=$2,ban_reason=$3,suspended_at=COALESCE(suspended_at,now()),
+		if _, err = tx.ExecContext(ctx, `UPDATE users SET banned_at=now(),banned_by=$2,ban_reason=$3,ban_prior_suspended_at=suspended_at,suspended_at=COALESCE(suspended_at,now()),
 			vendor_verified=false,vendor_verified_set_by=CASE WHEN vendor_verified THEN $2 ELSE vendor_verified_set_by END,
 			vendor_verified_set_at=CASE WHEN vendor_verified THEN now() ELSE vendor_verified_set_at END WHERE id=$1`, target, c.User.ID, reason); err != nil {
 			return actionResult{}, err
@@ -174,6 +192,22 @@ func adminBanAction(c *actionCtx) (actionResult, error) {
 		summary := "; ended " + strconv.FormatInt(n, 10) + " session(s) and any pending sign-ins"
 		if err = audit("Account banned by " + by + ": " + reason + summary); err != nil {
 			return actionResult{}, err
+		}
+		if _, err = tx.ExecContext(ctx, "INSERT INTO banned_handles(handle) VALUES(lower($1)) ON CONFLICT DO NOTHING", handle); err != nil {
+			return actionResult{}, err
+		}
+		if role == "moderator" { // a banned moderator leaves staff for good, as the admin role form does it
+			if _, err = tx.ExecContext(ctx, "UPDATE users SET role='buyer' WHERE id=$1", target); err != nil {
+				return actionResult{}, err
+			}
+			if err = audit("Role changed from moderator to buyer by " + by + " (account banned)"); err != nil {
+				return actionResult{}, err
+			}
+			more, err := roleChanged(ctx, tx, target, "moderator", "buyer", by)
+			if err != nil {
+				return actionResult{}, err
+			}
+			summary += "; changed role from moderator to buyer" + more
 		}
 		var archived string
 		if err = tx.QueryRowContext(ctx, "WITH a AS (UPDATE products SET archived=true,archived_at=now(),updated=now() WHERE vendor_id=$1 AND NOT archived RETURNING 1) SELECT count(*)::text FROM a", target).Scan(&archived); err != nil {
@@ -206,10 +240,8 @@ func adminBanAction(c *actionCtx) (actionResult, error) {
 		if _, err = insertNotification(ctx, tx, target, note, ""); err != nil {
 			return actionResult{}, err
 		}
-		if !suspended { // a suspension already told them
-			if err = notifyActiveCounterparties(ctx, tx, target, handle, true); err != nil {
-				return actionResult{}, err
-			}
+		if err = notifyActiveCounterparties(ctx, tx, target, handle, accountClosedStatus); err != nil {
+			return actionResult{}, err
 		}
 		return actionResult{Redirect: "/admin/users", Notice: "banned", Audit: "Banned account " + handle + ": " + reason + summary}, nil
 	})

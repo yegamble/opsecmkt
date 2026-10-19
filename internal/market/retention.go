@@ -629,8 +629,8 @@ func applyRetentionTombstone(ctx context.Context, tx *sql.Tx, t retentionTombsto
 			return err
 		}
 		// A-546: a ban's reason goes with the profile (the audit rows keep it for the audit trail's own period); the
-		// account stays suspended and closed.
-		return retentionExecQuery(ctx, tx, `UPDATE users SET handle='closed_'||id,password_hash='',pgp='',pgp_fingerprint='',pgp_verified_at=NULL,pgp_2fa=false,pgp_changed_at=NULL,pgp_expiry_notice='',totp_secret='',totp_pending='',totp_enabled=false,totp_last_step=0,recovery_reveal='',recovery_reveal_until=NULL,staff_hidden=true,suspended_at=COALESCE(suspended_at,$2),closed_at=COALESCE(closed_at,$2),profile_scrubbed_at=COALESCE(profile_scrubbed_at,$2),retention_restricted_at=NULL,banned_at=NULL,banned_by=NULL,ban_reason=NULL WHERE id=$1`, t.ID, t.At)
+		// account stays suspended and closed, and banned_handles keeps its old handle reserved after this rename.
+		return retentionExecQuery(ctx, tx, `UPDATE users SET handle='closed_'||id,password_hash='',pgp='',pgp_fingerprint='',pgp_verified_at=NULL,pgp_2fa=false,pgp_changed_at=NULL,pgp_expiry_notice='',totp_secret='',totp_pending='',totp_enabled=false,totp_last_step=0,recovery_reveal='',recovery_reveal_until=NULL,staff_hidden=true,suspended_at=COALESCE(suspended_at,$2),closed_at=COALESCE(closed_at,$2),profile_scrubbed_at=COALESCE(profile_scrubbed_at,$2),retention_restricted_at=NULL,banned_at=NULL,banned_by=NULL,ban_reason=NULL,ban_prior_suspended_at=NULL WHERE id=$1`, t.ID, t.At)
 	case "account_restrict":
 		if err := retentionExecQuery(ctx, tx, `SELECT retention_erase_legacy_profile($1)`, t.ID); err != nil {
 			return err

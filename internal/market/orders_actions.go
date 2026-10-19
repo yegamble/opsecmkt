@@ -62,6 +62,16 @@ func sellerIsVendorLocked(c *actionCtx, productID string) (bool, error) {
 
 const sellerNotVendor = "The seller of this listing is no longer a vendor, so it accepts no new orders."
 const sellerSuspended = "The seller of this listing is suspended, so it accepts no new orders. Existing orders continue."
+const sellerClosed = "The seller's account is closed, so this listing accepts no new orders. Existing orders continue."
+
+// sellerHeld is the reason a suspended seller takes no new intake: sellerClosed for a banned one (A-546), whose
+// suspension is the ban's, else sellerSuspended.
+func sellerHeld(banned bool) string {
+	if banned {
+		return sellerClosed
+	}
+	return sellerSuspended
+}
 
 // lockNewIntake serializes a new draft or payment request with suspension and role changes. A suspension updates the
 // vendor's account under FOR NO KEY UPDATE, which conflicts with this FOR SHARE until the new intake commits. The
@@ -75,9 +85,9 @@ func lockNewIntake(c *actionCtx, buyerID, vendorID string, draft bool) error {
 		return c.Tx.QueryRowContext(c.Ctx(), "SELECT 1 FROM users WHERE id=$1 FOR NO KEY UPDATE NOWAIT", buyerID).Scan(&one)
 	}
 	var role string
-	var suspended bool
+	var suspended, banned bool
 	lockVendor := func() error {
-		return c.Tx.QueryRowContext(c.Ctx(), "SELECT role,suspended_at IS NOT NULL FROM users WHERE id=$1 FOR SHARE NOWAIT", vendorID).Scan(&role, &suspended)
+		return c.Tx.QueryRowContext(c.Ctx(), "SELECT role,suspended_at IS NOT NULL,banned_at IS NOT NULL FROM users WHERE id=$1 FOR SHARE NOWAIT", vendorID).Scan(&role, &suspended, &banned)
 	}
 	if buyerID != "" && buyerID < vendorID {
 		if err := lockBuyer(); err != nil {
@@ -100,9 +110,9 @@ func lockNewIntake(c *actionCtx, buyerID, vendorID string, draft bool) error {
 	}
 	if suspended {
 		if draft {
-			return fail(409, "Unavailable. "+sellerSuspended+" Nothing was changed.")
+			return fail(409, "Unavailable. "+sellerHeld(banned)+" Nothing was changed.")
 		}
-		return fail(409, "Unavailable. "+sellerSuspended+" Cancel this draft.")
+		return fail(409, "Unavailable. "+sellerHeld(banned)+" Cancel this draft.")
 	}
 	return nil
 }

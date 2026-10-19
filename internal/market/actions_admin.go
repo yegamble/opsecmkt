@@ -155,7 +155,7 @@ func adminSuspendAction(c *actionCtx) (actionResult, error) {
 			if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), target, note); err != nil {
 				return actionResult{}, err
 			}
-			if err = notifyActiveCounterparties(ctx, tx, target, handle, false); err != nil {
+			if err = notifyActiveCounterparties(ctx, tx, target, handle, accountRestoredStatus); err != nil {
 				return actionResult{}, err
 			}
 			return actionResult{Redirect: "/admin/users", Notice: "restored", Audit: "Restored account " + handle}, nil
@@ -179,7 +179,7 @@ func adminSuspendAction(c *actionCtx) (actionResult, error) {
 		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), target, note); err != nil {
 			return actionResult{}, err
 		}
-		if err = notifyActiveCounterparties(ctx, tx, target, handle, true); err != nil {
+		if err = notifyActiveCounterparties(ctx, tx, target, handle, accountSuspendedStatus); err != nil {
 			return actionResult{}, err
 		}
 		return actionResult{Redirect: "/admin/users", Notice: "suspended", Audit: "Suspended account " + handle + "; ended " + sessions}, nil

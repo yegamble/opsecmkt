@@ -179,9 +179,10 @@ SELECT id, order_id, kind, state FROM xmr_settlements WHERE send_error = 'nothin
 
 ## Account bans (A-546)
 
-Migration 123 adds `users.banned_at`, `banned_by` and `ban_reason`, with checks
-that a ban has a 10–500 character reason and that a banned account is also
-suspended. No existing account is banned or changed. *Admin → Users* gains
+Migration 123 adds `users.banned_at`, `banned_by`, `ban_reason` and
+`ban_prior_suspended_at`, with checks that a ban has a 10–500 character reason
+and that a banned account is also suspended, and the `banned_handles` table of
+handles that stay reserved after a banned account is erased. No existing account is banned or changed. *Admin → Users* gains
 *Ban or unban an account* (`POST /admin/ban`, administrators only): permanent
 closure, distinct from suspension. Older binaries that do not know this
 migration refuse startup; back up the database first and follow the existing
