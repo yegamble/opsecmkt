@@ -96,15 +96,12 @@ or echo its reasoning to this protocol or to any seat prompt — it silently
 reroutes Fable to Opus. "What would change your mind" is a falsification
 condition, not a reasoning echo, and is allowed.
 
-The chair picks each seat's, implementer's and verifier's model by risk tier
-(`model-tiering.md`):
-- T1 (money or attack surface): Opus.
-- T2 (bounded): Sonnet.
-- T3 (mechanical): Haiku, or the chair directly with no agent.
-
-The chair states the tier in every dispatch and escalates a cheaper agent's
-UNVERIFIED or money/security claim to T1. Quality gates are the same at every
-tier.
+The chair saves usage by spending fewer agent turns, never by downgrading a
+seat. The rules are in `usage-budget.md`:
+- seat 3 by default;
+- continue seats with `SendMessage`;
+- do mechanical work without an agent;
+- watch CI in Bash.
 
 ## Implementation rules (only when the owner has authorised implementation)
 

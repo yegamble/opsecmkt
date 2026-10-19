@@ -43,16 +43,13 @@ Typical shapes:
 `opsec-security` (what an attacker can do) and `opsec-privacy` (what the system
 reveals) are not interchangeable; seat both only when the scope has both faces.
 
-**Usage budget** (`.claude/war-room/model-tiering.md`). Seat **3** by default
-and add a 4th or 5th only for a genuinely different perspective. Give each seat
-a model by risk tier with the Agent `model` parameter:
-- **T1, `opus`:** money, escrow, restore, authentication, admin ingress, Tor,
-  PGP or crypto. Keep the challenger on Opus.
-- **T2, `sonnet`:** persona, UI, copy or other bounded work.
-- **T3:** never seat a reviewer for mechanical work; do it yourself.
+**Usage budget** (`.claude/war-room/usage-budget.md`):
+- Seat **3** by default. Add a 4th or 5th seat only for a genuinely different
+  perspective.
+- Seats keep their own models; never downgrade one.
+- Do mechanical work yourself, with no agent.
 
-State the team, each seat's model, and a one-line reason per seat before
-spawning.
+State the team and a one-line reason per seat before spawning.
 
 ## Round 0 — evidence pack
 
