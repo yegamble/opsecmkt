@@ -34,6 +34,11 @@ type UploadsView struct {
 	// it inside a disabled fieldset with Notice; Off (no CLAMD_ADDRESS) shows only Notice, no file input.
 	Paused, Off bool
 	Notice      string
+	// A-551, the separated topology's private administrator connection (privateUploadPath): Authorize replaces the
+	// multipart form with a confirmation that authorizes one upload through the gateway; NoPath, when set, says why
+	// no upload is possible there and replaces the form.
+	Authorize bool
+	NoPath    string
 	// Listing-edit: the listing's photos, oldest first; how many of photosPerListing; the megabytes the listing's
 	// vendor's photos and avatar use against uploaderQuota; and why no photo can be added ("" when one can).
 	Photos      []StoredImage
@@ -97,6 +102,11 @@ func loadPhotoPanel(ctx context.Context, a *App, _ *http.Request, d *PageData) e
 		return err
 	}
 	uploadState(v, st)
+	if v.Authorize, v.NoPath = a.privateUploadPath(ctx, d.User); v.Authorize && d.Security == nil {
+		if d.Security, _, _, err = a.securityView(ctx, d.User.ID); err != nil { // the confirmation asks for a code with TOTP on
+			return err
+		}
+	}
 	rows, err := a.db.QueryContext(ctx, `SELECT id,width,height,octet_length("full"),description FROM images WHERE product_id=$1 AND kind='photo' ORDER BY created,id`, d.Product.ID)
 	if err != nil {
 		return err
@@ -145,6 +155,7 @@ func loadAvatarPanel(ctx context.Context, a *App, _ *http.Request, d *PageData) 
 	}
 	uploadState(v, st)
 	v.Notice = strings.TrimSuffix(v.Notice, listingNoticeTail)
+	v.Authorize, v.NoPath = a.privateUploadPath(ctx, d.User) // the account page loads Security (TOTP)
 	var id sql.NullString
 	var w, h, size sql.NullInt64
 	err = a.db.QueryRowContext(ctx, `SELECT i.id,i.width,i.height,octet_length(i."full"),u.staff_hidden FROM users u LEFT JOIN images i ON i.owner_user_id=u.id AND i.kind='avatar' WHERE u.id=$1`, d.User.ID).Scan(&id, &w, &h, &size, &v.StaffHidden)
@@ -260,6 +271,14 @@ func previewUploads(d *PageData, scanner string) {
 	}
 	v := &UploadsView{PhotoLimit: photosPerListing, Used: "0", Quota: strconv.FormatInt(uploaderQuota>>20, 10), AvatarForm: true}
 	uploadState(v, st)
+	// A-551: ?scanner=private is the private administrator connection's authorization form in the separated
+	// topology; ?scanner=private-none the same connection without a configured gateway origin.
+	switch scanner {
+	case "private":
+		v.Authorize = true
+	case "private-none":
+		v.NoPath = staffUploadNoOrigin
+	}
 	if d.Page == "account" {
 		v.Notice = strings.TrimSuffix(v.Notice, listingNoticeTail)
 	}

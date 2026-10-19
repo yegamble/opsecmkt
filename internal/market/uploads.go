@@ -26,7 +26,8 @@ import (
 // /listings/photo (vendors and administrators; the listing's id in the form) adds a photo to a listing, and POST
 // /account/avatar (vendors, administrators and moderators — the owner's staff avatar decision; always the
 // actor's own) sets the actor's avatar, replacing any earlier one. Branding's separately preauthorized file
-// handoff is bounded in branding_upload.go. The escrow sign form, POST /escrow/sign, and A-459's bounded
+// handoff is bounded in branding_upload.go; staff uploads from the private administrator connection with isolated
+// uploads use a preauthorized gateway form too (staff_upload.go). The escrow sign form, POST /escrow/sign, and A-459's bounded
 // hardware sign forms take multipart PSBT files (psbt_upload.go); any other POST
 // with a multipart body is refused with a 415 page before its body is read (ServeHTTP), and every other route keeps
 // its 64 KiB form cap.
@@ -140,6 +141,8 @@ type upload struct {
 	user         *User
 	back         string             // where the refusal page links back to
 	validateCSRF func([]byte) error // separate gateway delegates admission before reading the photo
+	ticketPart   bool               // a staff upload capability's form (staff_upload.go): ticket first, no id part
+	capability   bool               // finishing a capability upload: standalone result pages (staffUploadResult)
 }
 
 // serveUpload handles POST to an upload route; ServeHTTP calls it before reading any of the body. session is the
@@ -380,7 +383,11 @@ func (u *upload) readForm() (uploadForm, error) {
 	if err != nil {
 		return f, failed(err)
 	}
-	if p.FormName() != "csrf" {
+	first := "csrf"
+	if u.ticketPart {
+		first = "ticket"
+	}
+	if p.FormName() != first {
 		return f, errUploadCSRF
 	}
 	sent, err := readSmallPart(p, csrfPartLimit)
@@ -403,7 +410,7 @@ func (u *upload) readForm() (uploadForm, error) {
 		}
 		name := p.FormName()
 		switch {
-		case name == "id" && seen == "":
+		case name == "id" && seen == "" && !u.ticketPart:
 			v, err := readSmallPart(p, idPartLimit)
 			if err != nil {
 				return f, failed(err)
@@ -477,6 +484,10 @@ func (u *upload) refuse(code int, msg string) {
 // render answers with the refusal page: the sign-in page when the sender is not (or no longer) signed in,
 // else the upload refusal page linking back to where the form was.
 func (u *upload) render(code int, msg string) {
+	if u.capability {
+		staffUploadResult(u.w, u.route.kind, code, msg)
+		return
+	}
 	if code == http.StatusUnauthorized {
 		d := u.a.pageData(u.r, "login", u.token, nil)
 		d.Title, d.Error = "Sign in", msg
@@ -512,7 +523,7 @@ func (u *upload) serverErrorMessage(code int, cause, msg, title string) {
 		u.w.Header().Set("Retry-After", busyRetryAfter)
 	}
 	msg += " Reference: " + ref
-	if title == "" {
+	if title == "" || u.capability {
 		u.render(code, msg)
 		return
 	}

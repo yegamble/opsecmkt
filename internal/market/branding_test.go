@@ -155,7 +155,7 @@ func TestBrandingPrivateAuthorizationHandoffAndPublicLogo(t *testing.T) {
 	if err := e.A.finishBranding(t.Context(), ticket, normalizedBranding{"image/svg+xml", clean, wid, hei}, false); err != nil {
 		t.Fatal(err)
 	}
-	view, err := e.A.loadBranding(t.Context())
+	view, err := e.A.loadBranding(t.Context(), false)
 	if err != nil {
 		t.Fatal(err)
 	}

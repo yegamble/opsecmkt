@@ -5,6 +5,8 @@
 <p>Never reuse a photo you have used anywhere else.</p>{{end}}
 {{define "uploads:limits"}}<li>Uploading can take up to 90 seconds over Tor; press Upload once and wait for the page to change.</li>
 <li>Each file is checked by the ClamAV malware scanner; a match is refused and nothing is stored. ClamAV checks uploads for known malware; it does not review picture content.</li>{{end}}
+{{define "uploads:authorize"}}{{template "confirm-fields" (and .Security .Security.TOTPEnabled)}}
+<p class="help">This private connection does not take files. Confirm here, then choose the picture on the next page: it goes straight to the market's separate upload gateway with a one-use authorization that expires after 10 minutes. Your password, authenticator code and session stay on this connection.</p>{{end}}
 {{define "uploads:photos"}}{{with .Uploads}}<section class="panel upload-panel" id="photos" aria-labelledby="photos-title">
 <h2 id="photos-title">Photos</h2>{{with $.NoticeIn "photos"}}
 <div class="alert" role="status">{{.}}</div>{{end}}
@@ -28,12 +30,19 @@
 <p class="help">Removing a photo deletes it at once; you cannot undo this.</p>{{else}}
 <p>No photos yet.</p>{{end}}{{if .Off}}
 <p class="notice upload-state">{{.Notice}}</p>{{else if .Blocked}}
-<p class="upload-state">{{.Blocked}}</p>{{else}}{{if .Paused}}
-<p class="notice upload-state">{{.Notice}}</p>{{end}}
+<p class="upload-state">{{.Blocked}}</p>{{else if .NoPath}}
+<p class="notice upload-state">{{.NoPath}}</p>{{else}}{{if .Paused}}
+<p class="notice upload-state">{{.Notice}}</p>{{end}}{{if .Authorize}}
+{{/* A-551: on the private administrator connection with isolated uploads, the file goes to the separate gateway with a one-use authorization confirmed here (staff_upload.go). */}}
+<form class="stack upload-form" method="post" action="/admin/uploads/authorize">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/admin/uploads/authorize"}}">
+<input type="hidden" name="kind" value="photo">
+<input type="hidden" name="id" value="{{$.Product.ID}}">{{else}}
 <form class="stack upload-form" method="post" action="/listings/photo" enctype="multipart/form-data">
 {{/* csrf must be the first field: the server reads this multipart body in order and checks the token before it reads anything else, so a forged or expired form is refused before any of the photo is read (uploads.go). */}}
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
-<input type="hidden" name="id" value="{{$.Product.ID}}">
+<input type="hidden" name="id" value="{{$.Product.ID}}">{{end}}
 <fieldset{{if .Paused}} disabled{{end}}>
 <legend>Add a photo</legend>
 <ul class="help upload-limits" id="photo-help">
@@ -49,12 +58,13 @@
 {{template "uploads:privacy-lists"}}
 </div>
 </div>
-<label>Photo description (optional)<input name="description" maxlength="250" aria-describedby="photo-description-help">
+{{if .Authorize}}{{template "uploads:authorize" $}}
+<button type="submit">Authorize photo upload</button>{{else}}<label>Photo description (optional)<input name="description" maxlength="250" aria-describedby="photo-description-help">
 </label>
 <p class="help" id="photo-description-help">Read aloud to blind buyers by their screen readers: say what the photo shows.</p>
 <label>Photo<input type="file" name="photo" required accept="image/jpeg,image/png" aria-describedby="photo-help photo-privacy">
 </label>
-<button type="submit">Upload photo</button>
+<button type="submit">Upload photo</button>{{end}}
 </fieldset>
 </form>{{end}}
 </section>{{end}}{{end}}
@@ -73,11 +83,16 @@
 </div>
 </div>{{else}}
 <p>No avatar.</p>{{end}}{{if .AvatarForm}}{{if .Off}}
-<p class="notice upload-state">{{.Notice}}</p>{{else}}{{if .Paused}}
-<p class="notice upload-state">{{.Notice}}</p>{{end}}
+<p class="notice upload-state">{{.Notice}}</p>{{else if .NoPath}}
+<p class="notice upload-state">{{.NoPath}}</p>{{else}}{{if .Paused}}
+<p class="notice upload-state">{{.Notice}}</p>{{end}}{{if .Authorize}}
+<form class="stack upload-form" method="post" action="/admin/uploads/authorize">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/admin/uploads/authorize"}}">
+<input type="hidden" name="kind" value="avatar">{{else}}
 <form class="stack upload-form" method="post" action="/account/avatar" enctype="multipart/form-data">
 {{/* csrf must be the first field: the server reads this multipart body in order and checks the token before it reads anything else, so a forged or expired form is refused before any of the picture is read (uploads.go). */}}
-<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">{{end}}
 <fieldset{{if .Paused}} disabled{{end}}>
 <legend>{{if .Avatar}}Replace your avatar{{else}}Add an avatar{{end}}</legend>
 <ul class="help upload-limits" id="avatar-help">
@@ -92,9 +107,10 @@
 {{template "uploads:privacy-lists"}}
 </div>
 </div>
-<label>Avatar<input type="file" name="photo" required accept="image/jpeg,image/png" aria-describedby="avatar-help avatar-privacy">
+{{if .Authorize}}{{template "uploads:authorize" $}}
+<button type="submit">Authorize avatar upload</button>{{else}}<label>Avatar<input type="file" name="photo" required accept="image/jpeg,image/png" aria-describedby="avatar-help avatar-privacy">
 </label>
-<button type="submit">Upload avatar</button>
+<button type="submit">Upload avatar</button>{{end}}
 </fieldset>
 </form>{{end}}{{end}}
 </section>{{end}}{{end}}{{end}}

@@ -131,7 +131,8 @@ func (g *uploadGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	route, isUpload := uploadRoutes[r.URL.Path]
-	if r.Method != http.MethodPost || !isUpload {
+	staff := r.URL.Path == staffUploadPath // A-551: the kind comes from the capability (staff_upload.go)
+	if r.Method != http.MethodPost || !isUpload && !staff {
 		if isMultipart(r) {
 			gatewayRefusal(w, http.StatusUnsupportedMediaType, "This form cannot take files. Nothing was changed.")
 			return
@@ -162,8 +163,28 @@ func (g *uploadGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	r = r.WithContext(ctx)
 	var ticket string
 	var refusal *gatewayReply
-	u := &upload{r: r, route: route}
+	u := &upload{r: r, route: route, ticketPart: staff}
 	u.validateCSRF = func(csrf []byte) error {
+		if staff {
+			resp, err := g.call(ctx, "/v1/uploads/staff-admit", staffGatewayAdmission{Ticket: string(csrf)})
+			if err != nil {
+				return &httpError{Code: 503, Msg: "Photo not saved: the market is temporarily unavailable. Nothing was stored."}
+			}
+			if resp.status != http.StatusOK {
+				refusal = &resp
+				return errUploadCSRF
+			}
+			var admitted struct {
+				Ticket string `json:"ticket"`
+				Kind   string `json:"kind"`
+			}
+			if json.Unmarshal(resp.body, &admitted) != nil || len(admitted.Ticket) != 64 || staffUploadKinds[admitted.Kind] == "" {
+				return &httpError{Code: 503, Msg: "Photo not saved: the market did not authorize this upload. Nothing was stored."}
+			}
+			ticket, u.route = admitted.Ticket, uploadRoutes[staffUploadKinds[admitted.Kind]]
+			rc.SetReadDeadline(time.Now().Add(uploadReadWindow))
+			return nil
+		}
 		session := ""
 		if c, err := r.Cookie("session"); err == nil {
 			session = c.Value
@@ -207,11 +228,11 @@ func (g *uploadGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		info, err = inspectImage(form.photo)
 		if err == nil {
 			var clean scannedUpload
-			clean, err = g.scanner.Scan(ctx, route.kind, form.photo)
+			clean, err = g.scanner.Scan(ctx, u.route.kind, form.photo)
 			form.photo = nil
 			if err == nil {
 				var img encodedImage
-				img, err = decodeInSlot(ctx, clean, info, route.kind)
+				img, err = decodeInSlot(ctx, clean, info, u.route.kind)
 				if err == nil {
 					result.Full, result.Thumb, result.Width, result.Height = img.full, img.thumb, img.width, img.height
 				}
@@ -305,11 +326,13 @@ type uploadFinish struct {
 	Ref                     string
 }
 type uploadTicket struct {
-	admission uploadAdmission
-	actor     *User
-	expires   time.Time
-	release   func()
-	timer     *time.Timer
+	admission  uploadAdmission
+	actor      *User
+	expires    time.Time
+	release    func()
+	timer      *time.Timer
+	capability bool   // admitted with a staff upload capability (staff_upload.go): answered with standalone pages
+	listing    string // a capability photo's bound listing; the gateway names none
 }
 type uploadTicketStore struct {
 	mu      sync.Mutex
@@ -385,6 +408,8 @@ func (a *App) UploadBackendHandler() http.Handler {
 			a.admitGatewayBranding(w, r)
 		case "/v1/uploads/branding-finish":
 			a.finishGatewayBranding(w, r)
+		case "/v1/uploads/staff-admit":
+			a.admitGatewayStaffUpload(w, r)
 		case gatewayScannerReportPath:
 			a.receiveGatewayScannerReport(w, r)
 		default:
@@ -501,7 +526,15 @@ func (a *App) finishGatewayUpload(w http.ResponseWriter, r *http.Request) {
 	defer ticket.release()
 	browser := uploadBrowserRequest(r.Context(), ticket.admission)
 	route := uploadRoutes[ticket.admission.Path]
-	u := &upload{a: a, w: w, r: browser, route: route, token: ticket.admission.Session, user: ticket.actor, back: "/account#avatar"}
+	u := &upload{a: a, w: w, r: browser, route: route, token: ticket.admission.Session, user: ticket.actor, back: "/account#avatar", capability: ticket.capability}
+	if ticket.capability {
+		// A staff capability names its listing (staff_upload.go); the gateway names none.
+		if v.ID != "" {
+			http.Error(w, "Invalid normalized upload", 400)
+			return
+		}
+		v.ID = ticket.listing
+	}
 	if route.kind == uploadListing {
 		u.back = "/listing-edit?id=" + url.QueryEscape(v.ID) + "#photos"
 	}
@@ -544,6 +577,12 @@ func (a *App) finishGatewayUpload(w http.ResponseWriter, r *http.Request) {
 	redirect, err := a.storeImage(r.Context(), browser, ticket.admission.Session, ticket.actor, route, uploadForm{id: v.ID, description: v.Description}, img)
 	var he *httpError
 	switch {
+	case err == nil && ticket.capability:
+		title, msg := "Photo saved", "The photo is added to the listing. Reload the listing on the private administrator connection to see it."
+		if route.kind == uploadAvatar {
+			title, msg = "Avatar saved", "Your new avatar is saved. Reload your account on the private administrator connection to see it."
+		}
+		brandingResultPage(w, http.StatusOK, title, msg)
 	case err == nil:
 		notice := "photo-saved"
 		if route.kind == uploadAvatar {

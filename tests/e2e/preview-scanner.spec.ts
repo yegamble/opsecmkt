@@ -66,3 +66,38 @@ for (const width of [320, 1280]) {
     await expect(page.locator('script')).toHaveCount(0);
   });
 }
+
+// A-551: the private administrator connection with isolated uploads. ?scanner=private is the confirmation that
+// authorizes one upload through the separate gateway (no file input, no multipart form); ?scanner=private-none is
+// the same connection without a configured gateway origin, which says why instead of offering a form. Layout and
+// copy only: TestStaffAvatarViaGatewayCapability and TestStaffListingPhotoViaGatewayCapability prove the capability
+// against PostgreSQL and the mutual-TLS gateway.
+for (const width of [320, 1280]) {
+  test(`private-connection staff upload panels at ${width} px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    for (const [path, name, button] of [
+      ['/listing-edit?id=encrypted-drive&scanner=private', 'Photos', 'Authorize photo upload'],
+      ['/account?scanner=private', 'Avatar', 'Authorize avatar upload'],
+    ]) {
+      await page.goto(path);
+      const uploads = page.getByRole('region', { name });
+      await expect(uploads.locator('form[action="/admin/uploads/authorize"]')).toHaveCount(1);
+      await expect(uploads.locator('form[enctype="multipart/form-data"]')).toHaveCount(0);
+      await expect(uploads.locator('input[type="file"]')).toHaveCount(0);
+      await expect(uploads.getByLabel('Current password')).toBeVisible();
+      await expect(uploads).toContainText('This private connection does not take files.');
+      const submit = uploads.getByRole('button', { name: button });
+      await expect(submit).toBeEnabled();
+      expect((await submit.boundingBox())!.height).toBeGreaterThanOrEqual(24);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+
+      await page.goto(path.replace('scanner=private', 'scanner=private-none'));
+      const none = page.getByRole('region', { name });
+      await expect(none).toContainText('Uploads from the private administrator connection are unavailable');
+      await expect(none.locator('form.upload-form')).toHaveCount(0);
+      await expect(none.locator('input[type="file"]')).toHaveCount(0);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+    }
+    await expect(page.locator('script')).toHaveCount(0);
+  });
+}
