@@ -26,8 +26,9 @@ func (totpFactor) Enrolled(ctx context.Context, q rowQuerier, userID string) (bo
 
 func (totpFactor) Verify(c *actionCtx, userID string) error {
 	// Per account, independent of the pending-login token, so repeated password logins do not multiply guesses.
+	// passwordAndCodeSignIn (A-549) charges the same budget for a code typed on /login.
 	if !c.A.allow("totp-verify:"+userID, 10) {
-		return fail(429, "Too many verification attempts. Try again in ten minutes.")
+		return errTOTPBudget
 	}
 	ctx, tx := c.Ctx(), c.Tx
 	if code := c.Form.Get("recovery"); code != "" {
@@ -68,6 +69,9 @@ func turnOffTOTPAtSignIn(f url.Values) bool {
 }
 
 var errTOTPWrong = fail(401, "Verification code incorrect, expired or already used")
+
+// errTOTPBudget refuses a sign-in code once the account's totp-verify budget is spent.
+var errTOTPBudget = fail(429, "Too many verification attempts. Try again in ten minutes.")
 
 // checkTOTP verifies code against the user's active secret inside tx and advances the replay guard.
 func (a *App) checkTOTP(ctx context.Context, tx *sql.Tx, userID, code string) error {

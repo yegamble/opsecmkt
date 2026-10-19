@@ -151,3 +151,45 @@ test('anonymous checkout returns to the checkout after registering and after the
   await expect(page.getByRole('button', { name: 'Create unfunded draft' })).toBeVisible();
   await page.context().close();
 });
+
+// A-549: the authenticator code typed on /login with the password signs a TOTP-only account in at once, landing on
+// next; a wrong code moves the sign-in on to /challenge, which says the code was not accepted. No JavaScript.
+test('sign in with the authenticator code on the sign-in page in one step', async ({ browser, baseURL }) => {
+  const handle = uniqueHandle('onestep');
+  const password = `${handle}-long-enough`;
+  const context = await browser.newContext({ baseURL, javaScriptEnabled: false });
+  const page = await context.newPage();
+  await page.goto('/register');
+  await page.getByLabel('Handle', { exact: true }).fill(handle);
+  await page.getByLabel('Password', { exact: true }).fill(password);
+  await page.getByRole('button', { name: 'Create account' }).click();
+  await expect(page.locator('.account-name')).toHaveText(handle);
+  const secret = await enrollTOTP(page, password);
+
+  const signIn = async (code: string) => {
+    await page.goto('/account');
+    await submitAndLoad(page, page.getByRole('button', { name: 'Sign out', exact: true }));
+    await page.goto(`/login?next=${encodeURIComponent('/orders')}`);
+    await page.getByLabel('Handle', { exact: true }).fill(handle);
+    await page.getByLabel('Password', { exact: true }).fill(password);
+    await expect(page.locator('#signin-code-help')).toContainText('Enter it now to skip the verification step.');
+    await page.getByLabel('Authenticator code (if you use one)').fill(code);
+    await submitAndLoad(page, page.getByRole('button', { name: 'Sign in' }));
+  };
+
+  // The enrollment's step is spent (replay guard); the next step's code completes sign-in without /challenge.
+  await signIn(totp(secret, currentStep() + 1));
+  await expect(page).toHaveURL('/orders');
+  await expect(page.locator('.account-name')).toHaveText(handle);
+  await page.goto('/account');
+  await expect(page.locator('main')).toContainText('Signed in with password and TOTP');
+
+  const step = currentStep();
+  const wrong = ['000000', '111111', '222222', '333333'].find(c => ![-2, -1, 0, 1, 2].some(d => totp(secret, step + d) === c))!;
+  await signIn(wrong);
+  await expect(page).toHaveURL(`/challenge?next=${encodeURIComponent('/orders')}`);
+  await expect(page.getByRole('alert')).toContainText('The authenticator code was not accepted');
+  await expect(page.getByLabel('6-digit code', { exact: true })).toBeVisible();
+  await expect(page.locator('.account-name')).toHaveCount(0);
+  await context.close();
+});
