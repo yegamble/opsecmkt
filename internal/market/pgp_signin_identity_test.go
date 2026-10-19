@@ -26,8 +26,8 @@ func testOnion(t *testing.T) string {
 }
 
 // requestPGPCodeVia posts /challenge/pgp as a reverse-proxy phishing site would relay it: with its own Host and
-// forwarding headers naming an address that is not the market's.
-func requestPGPCodeVia(e *testEnv, anon string, pending *http.Cookie, host string) {
+// forwarding headers naming an address that is not the market's. h is the listener: e.A or e.A.AdminHandler().
+func requestPGPCodeVia(e *testEnv, h http.Handler, anon string, pending *http.Cookie, host string) {
 	e.t.Helper()
 	form := url.Values{"csrf": {e.A.csrf(anon)}}
 	r := httptest.NewRequest("POST", "/challenge/pgp", strings.NewReader(form.Encode()))
@@ -39,7 +39,7 @@ func requestPGPCodeVia(e *testEnv, anon string, pending *http.Cookie, host strin
 	r.AddCookie(&http.Cookie{Name: "session", Value: anon})
 	r.AddCookie(pending)
 	w := httptest.NewRecorder()
-	e.A.ServeHTTP(w, r)
+	h.ServeHTTP(w, r)
 	e.check(w, 303)
 }
 
@@ -74,17 +74,17 @@ func TestPGPSignInCodeNamesMarketAndAddresses(t *testing.T) {
 	const market = "Test Bazaar Official addresses: https://forged.example"
 
 	n := 0
-	signIn := func(t *testing.T, host string, addresses []string) (handle string, lines []string, code string, pc *http.Cookie, anon string, before, after time.Time) {
+	signIn := func(t *testing.T, h http.Handler, role, host string, addresses []string) (handle string, lines []string, code string, pc *http.Cookie, anon string, before, after time.Time) {
 		t.Helper()
 		n++
 		handle = "a572_signin_" + string(rune('a'+n))
 		e.A.officialAddresses = addresses
 		key, pub := testPGPKey(t, handle)
-		id, _ := e.user(handle, "buyer")
+		id, _ := e.user(handle, role)
 		agEnablePGP(e, id, pub)
 		pc, anon = agPending(e, id), randomToken()
 		before = time.Now().UTC().Truncate(time.Second)
-		requestPGPCodeVia(e, anon, pc, host)
+		requestPGPCodeVia(e, h, anon, pc, host)
 		after = time.Now().UTC()
 		plaintext := testDecrypt(t, key, agStr(e, "SELECT pgp_challenge FROM pending_logins WHERE token_hash=$1", digest(pc.Value)))
 		for _, foreign := range []string{phishing, adminOnion, "example.com", "‮", "\r"} {
@@ -127,7 +127,7 @@ func TestPGPSignInCodeNamesMarketAndAddresses(t *testing.T) {
 	t.Run("configured addresses, spoofed host", func(t *testing.T) {
 		// A phishing onion relays the request with its own Host; a Host naming the administrator onion fares no better.
 		for _, host := range []string{phishing, adminOnion} {
-			handle, lines, code, pc, anon, before, after := signIn(t, host, official)
+			handle, lines, code, pc, anon, before, after := signIn(t, e.A, "buyer", host, official)
 			if len(lines) != 5 {
 				t.Fatalf("want 5 lines, got %d: %q", len(lines), lines)
 			}
@@ -146,7 +146,7 @@ func TestPGPSignInCodeNamesMarketAndAddresses(t *testing.T) {
 	})
 
 	t.Run("no configured address", func(t *testing.T) {
-		handle, lines, code, pc, anon, before, after := signIn(t, phishing, nil)
+		handle, lines, code, pc, anon, before, after := signIn(t, e.A, "buyer", phishing, nil)
 		if len(lines) != 5 || lines[0] != "Sign-in code for "+handle+" at "+market {
 			t.Fatalf("message lines %q", lines)
 		}
@@ -158,6 +158,26 @@ func TestPGPSignInCodeNamesMarketAndAddresses(t *testing.T) {
 			t.Fatalf("no warning that the address is unconfirmed: %q", lines[3])
 		}
 		verify(t, lines, code, pc, anon)
+	})
+
+	t.Run("private administrator connection", func(t *testing.T) {
+		// An administrator signs in over the private admin onion, which is never listed: the message says the code was
+		// requested on that connection instead of telling them to look for a listed address, and still never names it.
+		e.A.adminSocket = "/run/market-admin/http.sock"
+		t.Cleanup(func() { e.A.adminSocket = "" })
+		handle, lines, _, _, _, before, after := signIn(t, e.A.AdminHandler(), "admin", adminOnion, official)
+		if len(lines) != 5 || lines[0] != "Sign-in code for "+handle+" at "+market || lines[2] != "Official addresses: http://"+public+", http://"+mirror+", https://market.example" {
+			t.Fatalf("message lines %q", lines)
+		}
+		checkTimes(t, lines[1], before, after)
+		if !strings.Contains(lines[3], "private administrator connection") || strings.Contains(lines[3], "address bar") {
+			t.Fatalf("private administrator code does not say where it was requested: %q", lines[3])
+		}
+		// The same administrator's code requested through the public listener gets the public instruction.
+		_, lines, _, _, _, _, _ = signIn(t, e.A, "admin", phishing, official)
+		if strings.Contains(lines[3], "private administrator connection") {
+			t.Fatalf("a public-listener request was described as private: %q", lines[3])
+		}
 	})
 }
 

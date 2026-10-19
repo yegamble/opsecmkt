@@ -104,7 +104,7 @@ func pgpLoginCodeAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, err
 	}
 	code := randomToken()[:32]
-	armored, err := encryptTo(p.Key, pgpSignInText(handle, market, c.A.officialAddresses, requested, expires, code))
+	armored, err := encryptTo(p.Key, pgpSignInText(handle, market, c.A.officialAddresses, privateAdminIngress(ctx), requested, expires, code))
 	if err != nil {
 		return actionResult{}, expiredKeyRefusal(c, userID)
 	}
@@ -117,8 +117,11 @@ func pgpLoginCodeAction(c *actionCtx) (actionResult, error) {
 // was requested and until when it is valid (the pending sign-in's expiry, at most 10 minutes after the password), and
 // the official addresses: OFFICIAL_ADDRESSES from the operator's configuration, never the request's Host or any
 // header, so never the private administrator onion unless an operator lists it (the native installer refuses that).
-// The market name is flattened to one line so it cannot forge another. Only the code on the last line is accepted.
-func pgpSignInText(handle, market string, addresses []string, requested, expires time.Time, code string) string {
+// The market name is flattened to one line so it cannot forge another. A code requested over the private
+// administrator listener (privateAdminIngress, set only by that socket's handler) says so instead of telling the
+// administrator to look for a listed address, still without naming that onion. Only the code on the last line is
+// accepted.
+func pgpSignInText(handle, market string, addresses []string, privateAdmin bool, requested, expires time.Time, code string) string {
 	market = strings.Join(strings.FieldsFunc(market, func(r rune) bool {
 		return unicode.IsSpace(r) || unicode.IsControl(r) || unicode.Is(unicode.Cf, r)
 	}), " ")
@@ -130,6 +133,9 @@ func pgpSignInText(handle, market string, addresses []string, requested, expires
 	if len(addresses) > 0 {
 		list = strings.Join(addresses, ", ")
 		check = "Enter the code only if your browser's address bar shows one of these addresses; on any other address, do not enter it."
+	}
+	if privateAdmin {
+		check = "You requested this code on the market's private administrator connection, which is never listed here: enter it only on that connection's private address."
 	}
 	const layout = "2006-01-02 15:04:05 UTC"
 	return "Sign-in code for " + handle + " at " + market + "\n" +
