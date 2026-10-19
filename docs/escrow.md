@@ -368,7 +368,7 @@ wallet takes an order again and no settlement is relayed until an administrator 
       bond wallet on the escrow wallet-rpc (its seal restores to its primary address) and gives the application a real
       account's address 0; the bond is not recorded one block short of the threshold and is recorded at it, approving the
       account as a vendor; `pop_blocks` then takes the deposit below the threshold: flagged to the administrators once,
-      nothing revoked; mined again, nothing changes. The market makes no transfer from the bond wallet. A bond wallet an
+      nothing revoked; mined again, nothing changes. The bond wallet lists no outgoing, pending or failed transfer. A bond wallet an
       earlier run left on the same wallet-rpc is recorded as an orphan and the next name is used.
 
   Every settlement the daemon holds is decoded (RingCT type 6, 16 ring members per input, a fee above zero, the stored one,
@@ -454,7 +454,7 @@ again on a fakechain (`scripts/test-escrow-xmr-regtest.sh`), and on an **offline
 (`scripts/test-escrow-xmr-stagenet.sh`: stagenet daemons built from the genesis block with the local monerod 0.18.5.1
 image, peered only with each other on a Docker network with no route out, local mining at fixed difficulty) the legs such
 a chain can run. Built from genesis it is at hard fork version 1 (version 16 starts at height 1,151,720), so Monero escrow
-refuses to start on it, as it must, and none of the sixteen legs can run there; the stagenet legs show that refusal names
+refuses to start on it, as it must, and none of the seventeen legs can run there; the stagenet legs show that refusal names
 the hard fork, not the network; that a real stagenet wallet's primary address, subaddress and integrated address are read
 under the stagenet tags (the integrated one refused) and refused under the fakechain's, by the parser and by the adapter;
 and that the escrow sync guard reads a restricted stagenet daemon with a peer and a fresh tip as synced and an

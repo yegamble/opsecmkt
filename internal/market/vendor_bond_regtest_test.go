@@ -1,6 +1,8 @@
 package market
 
 import (
+	"context"
+	"encoding/json"
 	"strconv"
 	"strings"
 	"testing"
@@ -14,7 +16,7 @@ import (
 // as received on the Monero network and the account becomes a vendor. pop_blocks then takes the deposit's blocks off
 // the chain (the transaction goes back to the pool): the deposit falls below the threshold and the administrators are
 // told once, with the application still approved and the account still a vendor; mined again, nothing changes. The
-// market makes no transfer from the bond wallet. A bond wallet an earlier run left on the shared wallet-rpc is recorded
+// bond wallet lists no outgoing, pending or failed transfer: the market made no send from it. A bond wallet an earlier run left on the shared wallet-rpc is recorded
 // as an orphan and the next name is used.
 func TestXMREscrowRegtestBond(t *testing.T) {
 	r := newXMRRegtest(t)
@@ -85,5 +87,20 @@ func TestXMREscrowRegtestBond(t *testing.T) {
 	if r.appState(app) != "approved:xmr" || r.adminsTold(bondReorgNotice) != 1 || agInt(r.testEnv, "SELECT count(*) FROM vendor_bond_deposits") != 1 {
 		t.Fatalf("mined again: %s, notices %d, deposits %q", r.appState(app), r.adminsTold(bondReorgNotice), confs())
 	}
-	t.Logf("mined again to %d confirmations: nothing changed; no transfer was made from the bond wallet", thr)
+	// No send: the bond wallet itself lists no outgoing, pending or failed transfer on any account.
+	ctx := context.Background()
+	x := r.A.escrowXMR
+	if err := x.rpc.openWallet(ctx, name, xmrWalletPassword(testXMRSecret, name)); err != nil {
+		t.Fatalf("open_wallet %s: %v", name, err)
+	}
+	var sent map[string][]json.RawMessage
+	if err := x.rpc.walletCall(ctx, "get_transfers", map[string]any{"out": true, "pending": true, "failed": true, "all_accounts": true}, &sent); err != nil {
+		t.Fatal(err)
+	}
+	for kind, list := range sent {
+		if len(list) > 0 {
+			t.Fatalf("the bond wallet lists %d %s transfer(s)", len(list), kind)
+		}
+	}
+	t.Logf("mined again to %d confirmations: nothing changed; the bond wallet lists no out, pending or failed transfer", thr)
 }

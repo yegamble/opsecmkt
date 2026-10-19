@@ -1497,7 +1497,7 @@ escrow stays off; it adds no escrow wallet-rpc, no fakechain daemon and no mount
 checked with `docker compose config` only.
 
 **What was checked.** [Per-order escrow, Phase 3](escrow.md#phase-3-monero-escrow-on-a-local-fakechain) lists each tier: unit and `httptest` tests, Go
-tests with PostgreSQL against a fake wallet-rpc, sixteen legs against a real fakechain `monerod` and `monero-wallet-rpc`
+tests with PostgreSQL against a fake wallet-rpc, seventeen legs against a real fakechain `monerod` and `monero-wallet-rpc`
 0.18.5.1 (`scripts/test-escrow-xmr-regtest.sh`, run by the `escrow-xmr-regtest` CI job;
 [runbook](testnet-runbook.md#9-manual-monero-escrow-fakechain-check)), and a simulated-RPC browser journey added in this
 phase. Nothing has run on stagenet, testnet or mainnet, with Monero multisig, or as a deployment.
@@ -1506,7 +1506,7 @@ phase. Nothing has run on stagenet, testnet or mainnet, with Monero multisig, or
 
 A-547. With a vendor bond set ([Vendor applications](#vendor-applications)), the Monero escrow watcher creates one
 long-lived **bond wallet** on the escrow wallet-rpc when the first applicant needs an address: `bond-01` (a later
-`bond-NN` only when a file of that name already exists), with the password derived from `MONERO_WALLET_SECRET` as an
+`bond-NN` when a file of that name already exists, or after a restore closed the one in use), with the password derived from `MONERO_WALLET_SECRET` as an
 escrow wallet's (the HMAC of the name, as in the offline seed check above) and its seed sealed to `ESCROW_XMR_SEED_KEY`
 (`xmr_bond_wallets.seed_sealed`, with `primary_address` and `restore_height`). Each application gets its own account
 of it, never reused; deposits count from the escrow confirmation threshold. It lives in the escrow wallet volume, so
@@ -1516,11 +1516,12 @@ the volume backups above cover it, and the database dump holds its sealed seed.
 address is never involved: bonds accumulate there until you move them. To collect them, sweep it **offline from its
 sealed seed**, never through the escrow wallet-rpc:
 
-1. Copy its sealed seed, primary address and restore height out of the database:
+1. List the bond wallets that may hold bonds (in use `sealed`, `closed` by a restore, or an `orphan` whose seed was
+   sealed), then copy one wallet's sealed seed out of the database; repeat the steps below for each:
 
    ```sh
-   db_sql -X -At -c "SELECT seed_sealed FROM xmr_bond_wallets WHERE state='sealed'" > bond-seed.asc
-   db_sql -X -At -F ' ' -c "SELECT name, restore_height, primary_address FROM xmr_bond_wallets WHERE state='sealed'"
+   db_sql -X -At -F ' ' -c "SELECT name, state, restore_height, primary_address FROM xmr_bond_wallets WHERE seed_sealed IS NOT NULL ORDER BY id"
+   db_sql -X -At -c "SELECT seed_sealed FROM xmr_bond_wallets WHERE name = 'bond-NN'" > bond-seed.asc
    ```
 
 2. On the offline machine with the private seed key, `gpg --decrypt bond-seed.asc` prints the 25 words; delete
@@ -1529,16 +1530,23 @@ sealed seed**, never through the escrow wallet-rpc:
    wallet-rpc), check that its primary address is the one from step 1, let it sync, and send the bonds where you
    choose. The market notices nothing: deposits already counted stay counted, and the bond addresses keep working.
 
-Under the restore gate or the sweep, and while new XMR payments are paused, no bond wallet or account is created and no
-address shown; deposits are still read, but no bond is recorded and nothing is approved until both clear.
-`scripts/restore.sh` needs no step of its own for bonds: an account is made only for one application, so none is left
-unused, and the sweep that `xmr_escrow_sweep_required` starts also probes `bond-NN` names after the newest recorded one
-(a bond wallet created after the backup is recorded as an orphan, its seed sealed and its funded accounts listed to the
-administrators) and raises the bond wallet's lookahead past its highest recorded account. An account the records lack
-(created after the backup, or a lost `create_account` answer) is recorded for no application and reported; coins there
-fund nothing, so record such a bond by hand. A bond wallet that does not open is reported and never replaced (it may hold
-bonds): restore it from its sealed seed with its name and derived password, as for an escrow wallet, and set the sweep
-marker again.
+While new XMR payments are paused, or under the restore gate or the sweep, no bond wallet or account is created and no
+address shown; an applicant who already has an address is told that payments to it still count. Deposits are always
+read; only the restore gate and the sweep hold recording: no bond is recorded and nothing is approved until both clear.
+
+**Restore.** A restored database may lack bond addresses the bond wallet gave out after the backup, and a restored wallet
+file would give those account numbers again. So `scripts/restore.sh` (and the manual SQL of
+[UPGRADING.md section 6](../UPGRADING.md#6-backups-now-need-the-wallets-too)) moves the bond wallet in use to `closed`:
+it is still read every pass, and payments to the addresses its records hold still credit their applications (an
+applicant keeps the address it was shown), but it never gives an address again; new addresses come from a fresh
+`bond-NN`. The sweep that `xmr_escrow_sweep_required` starts also probes `bond-NN` names after the newest recorded one (a
+bond wallet created after the backup is recorded as an orphan, its seed sealed and its funded accounts listed to the
+administrators, and read from then on like a closed wallet) and raises each bond wallet's lookahead past its highest
+recorded account. An account the records lack (given out after the backup, or a lost `create_account` answer) is
+recorded for no application and reported, as is a later deposit to it or to any orphan account; coins there fund
+nothing, so record such a bond by hand. A bond wallet that does not open is reported and never replaced (it may hold
+bonds), and while the one in use does not open no address is promised: restore it from its sealed seed with its name
+and derived password, as for an escrow wallet, and set the sweep marker again.
 
 #### Escrow checkouts and readiness
 

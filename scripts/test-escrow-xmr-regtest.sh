@@ -71,7 +71,8 @@
 #     the escrow wallet-rpc (its sealed seed restores to its primary address) and gives the application a real account's
 #     address 0; the funder pays the bond: one block short of the threshold nothing is recorded, at the threshold the
 #     bond is recorded and the account approved as a vendor; pop_blocks takes the deposit below the threshold again:
-#     flagged to the administrators once, nothing revoked; mined again, nothing changes. No transfer from the bond wallet.
+#     flagged to the administrators once, nothing revoked; mined again, nothing changes. The bond wallet lists no
+#     outgoing, pending or failed transfer.
 #
 # Needs a fakechain monerod and three monero-wallet-rpc instances attached to it (the App's escrow wallet-rpc, a funder
 # standing in for the buyer's wallet, and one used only to restore a sealed seed), plus a disposable PostgreSQL database.

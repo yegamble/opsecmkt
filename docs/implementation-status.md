@@ -138,8 +138,12 @@ and never reused. No page or form makes an RPC: `/account` says the address is b
 pass. `/account` shows, without JavaScript and **before** the address, that the bond is a non-refundable fee and that
 anything paid above it or after the application stops waiting is kept too (the market asks for no refund address and
 never sends coins back); then the address, the XMR received with at least the threshold, the XMR still confirming with
-its confirmations, and what is still to pay. While issuance is not allowed the address is not shown and the page says
-the bond is recorded by hand by an administrator, with the administrator's instructions.
+its confirmations, and what is still to pay. While issuance is not allowed the address is not shown: an application
+with no address yet is told the bond is recorded by hand by an administrator, with the administrator's instructions;
+one that already has an address is told that payments sent to it are still counted automatically and that new
+addresses are not being issued right now. An application opened before migration 124 (`before_bond_addresses`) is told
+beside its new address not to pay again if it already paid as the instructions said, and to ask an administrator to
+record it.
 
 Deposits (`vendor_bond_deposits`, one row per transaction and account, unique on `(txid, account_id)`) count from the
 Monero escrow threshold (`max(PAYMENT_CONFIRMATIONS_XMR, 10)`) with no unlock time and no `double_spend_seen`. Once the
@@ -149,7 +153,8 @@ approval, or under automatic approval is approved (an active buyer account only;
 waits for an administrator). An under-payment waits with no time limit (an administrator may still record or waive
 the bond); an over-payment is kept and the administrators told; a deposit with an unlock time, and a deposit the
 application did not count because it had stopped waiting for its bond (withdrawn, rejected, waived, recorded by hand
-or approved), is kept and flagged to the administrators once, and changes nothing. A counted deposit that later falls
+or approved), is kept and flagged to the administrators once it has confirmed (as an over-payment when the bond was
+recorded from earlier deposits), and changes nothing. A counted deposit that later falls
 below the threshold or disappears (a reorganisation) is flagged once; nothing is revoked and no role changes. The
 administrators' *Vendors* queue and the account page in the user directory show the bond address, the XMR received
 and these flags.
@@ -159,19 +164,26 @@ and these flags.
 ([operator guide](operator-guide.md#vendor-bond-wallet)). An account of the bond wallet with no row (a lost
 `create_account` answer, or a database restored to an earlier point) is recorded for no application and the
 administrators are told once; coins there, at account 0 or at an account whose application was erased fund nothing and
-are reported once. Under the restore gate or sweep no bond wallet or account is created and no address shown;
-deposits are still read, but no bond is recorded and nothing approved until both clear. The sweep opens the bond wallet
-names after the newest row (a bond wallet created after the backup is recorded as an orphan with its seed sealed and
-its funded accounts listed) and raises the bond wallet's lookahead past its highest recorded account. A bond wallet is
+are reported once. While XMR intake is paused, or under the restore gate or sweep, no bond wallet or account is
+created and no address shown; deposits are always read, and only the gate and sweep hold recording: no bond is
+recorded and nothing approved until both clear. A restore (`scripts/restore.sh` and UPGRADING.md section 6) moves the
+bond wallet in use to `closed`: it is still read and its recorded addresses still credit their applications, but it
+never issues again, so an account it gave out after the backup is never given to another applicant; addresses come
+from a new `bond-NN` (PE-1). The sweep opens the bond wallet names after the newest row (a bond wallet created after the
+backup is recorded as an orphan with its seed sealed and its funded accounts listed, then read like a closed wallet, so
+a later deposit to it is reported) and raises each bond wallet's lookahead past its highest recorded account. While the
+bond wallet in use does not open, no address is promised. A bond wallet is
 Monero escrow state for the network pin (`pinXMRNetwork`), and its addresses are parsed for the verified network.
 
 Tests: `vendor_bond_test.go` (DB integration against the simulated wallet-rpc: `TestVendorBondFundsApplication` with
 exact, automatic, under, over, late after withdrawal, rejection, waiver, recording and approval, and locked deposits;
 `TestVendorBondReorgAfterApprovalFlagsOnly`; `TestVendorBondWatcherIdempotent`;
 `TestVendorBondGateHoldsIssuanceAndApproval`; `TestVendorBondNetworkPin`; `TestVendorBondRowlessAccountRetired`;
-`TestVendorBondRestoreSweep`), the real-chain leg `TestXMREscrowRegtestBond` in
+`TestVendorBondRestoreSweep`), `vendor_bond_cases_test.go` (`TestVendorBondRestoreClosesWallet` with restore.sh's own
+SQL, suspended applicant, ban, administrator-opened application, address access, re-application, retention erasure and
+migration 124 on a populated database), the real-chain leg `TestXMREscrowRegtestBond` in
 `scripts/test-escrow-xmr-regtest.sh` (a bond funded at the threshold on a local fakechain, then `pop_blocks`: flagged,
-not revoked) and the last test of `tests/e2e/escrow-xmr-journey.spec.ts` (simulated wallet-rpc, JavaScript off,
+not revoked; the bond wallet lists no outgoing transfer) and the last test of `tests/e2e/escrow-xmr-journey.spec.ts` (simulated wallet-rpc, JavaScript off,
 320 px).
 
 ## Market name and logo
@@ -316,7 +328,7 @@ copies cannot be recalled by changing access.
 - **Handle and role** (`users.handle`, `role`, `created`; `suspended_at`, migration 011). The handle cannot be changed (`/register` and `/setup` say so). Shown to trading and messaging partners, moderators and administrators, and publicly with a vendor's listings and vendor page. Moderators' and administrators' handles and roles are public on `/canary#staff` only while an administrator has turned the public staff list on and that account has chosen to be listed (A-189). Administrators see every handle and role and the suspended accounts with their time.
 - **Account bans** (`users.banned_at`, `banned_by`, `ban_reason`, `ban_prior_suspended_at`, and `banned_handles`, migration 123, A-546): when an administrator banned the account, which administrator (unlinked when that account is erased), their reason (10–500 characters) and the time of any suspension the account already had (restored if the ban is lifted); and the banned handle in lower case, kept with the time it was reserved. Administrators see them on `/admin/users`; the reason is also written to the audit rows of both accounts (the account sees its own audit rows on `/account`, so it reads the reason only if the ban is lifted) and so into the signed audit export. Lifting the ban clears the four columns and the reserved handle; retention closure of the account clears the columns with the profile, and the audit rows follow the audit trail's own retention. The reserved handle is never removed by retention: it outlives the account's erasure, so the handle is never registered again, and it is the only thing kept about the account then.
 - **Vendor applications and the verified mark** (`vendor_applications`, `users.vendor_verified*`, migration 121, A-544): each application's state, the bond and approval mode it was created under, when and by which administrator the bond was recorded or waived and the application decided, and the administrator's note. The applicant sees their latest on `/account`; administrators see open applications, and each account's latest on its page in the user directory (A-545). Closing an account withdraws its open application; erasing the account deletes its applications, and erasing an administrator unlinks their id from applications and verified marks (the audit rows on both accounts follow the audit trail's own retention).
-- **Vendor bond wallet, addresses and deposits** (`xmr_bond_wallets`, `vendor_bond_accounts`, `vendor_bond_deposits`, migration 124, A-547): the bond wallet's name, primary address, restore height and seed sealed to `ESCROW_XMR_SEED_KEY`; each bond address with its account and the application it was issued for; and each deposit's transaction ID, amount, confirmations and flags (locked, late, credited, flagged, reorganised). The applicant sees their own address and totals on `/account`; administrators see them in the vendor queue and the user directory. Erasing an account deletes its applications and leaves its bond address and deposits with no application (financial records kept with the bond wallet); nothing in them names the account.
+- **Vendor bond wallet, addresses and deposits** (`xmr_bond_wallets`, `vendor_bond_accounts`, `vendor_bond_deposits`, migration 124, A-547): each bond wallet's name, state (in use, closed by a restore, or orphan), primary address, restore height and seed sealed to `ESCROW_XMR_SEED_KEY`; whether an application predates bond addresses (`vendor_applications.before_bond_addresses`); each bond address with its account and the application it was issued for; and each deposit's transaction ID, amount, confirmations and flags (locked, late, credited, flagged, reorganised). The applicant sees their own address and totals on `/account`; administrators see them in the vendor queue and the user directory. Erasing an account deletes its applications and leaves its bond address and deposits with no application (financial records kept with the bond wallet); nothing in them names the account.
 - **Password** (`users.password_hash`, bcrypt).
 - **Second factors** (migrations 010, 012, 013, 020): TOTP secret and pending secret sealed with AES-256-GCM under a key derived from `APP_SECRET_KEY` (or `SETUP_TOKEN` on a legacy installation, so the database plus that secret opens them); recovery codes as SHA-256 hashes, with newly issued codes sealed in `users.recovery_reveal` for at most about 11 minutes; `pgp_2fa`; `pending_logins.factor_failed` marks a pending sign-in whose second factor already failed once (migration 012); `pending_logins.password_digest` is the SHA-256 of the password hash the sign-in's password was checked against (migration 013, A-157), so a password change also ends a sign-in whose password was checked just before it. The account and administrators (second-factor reset list) see which factors are on.
 - **PGP public key** (`users.pgp`, stored canonically; `pgp_fingerprint`, `pgp_verified_at`, migration 020; `pgp_changed_at`, when the key was last added, replaced, removed or updated without keeping its proof, and `pgp_expiry_notice`, the last expiry notice sent, migration 067). Shown to staff, to trading partners and accounts the owner has messaged, to any signed-in account when the owner is an active vendor, a listed staff member or the staff contact, to both parties of every disputed or resolved order when the owner is a moderator or administrator (A-543), and publicly on a vendor page (see P2).

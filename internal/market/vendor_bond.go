@@ -44,7 +44,11 @@ import (
 // threshold (a reorganisation) is flagged once; nothing is revoked and no role changes.
 //
 // Under the restore gate or the sweep, no bond wallet or account is created and no address shown; deposits are still
-// read, but no bond is recorded and nothing is approved until both clear. An account of the bond wallet with no row (a
+// read, but no bond is recorded and nothing is approved until both clear. A restore (scripts/restore.sh, UPGRADING.md
+// section 6) moves the bond wallet in use to closed: the restored records may lack accounts it gave out after the
+// backup, so it never issues again (PE-1). Every sealed, closed and sealed-orphan bond wallet is read in each pass, so an
+// application recorded on a closed wallet keeps its address and is credited from it; the next address comes from a new
+// bond-NN. An account of the bond wallet with no row (a
 // create_account answer lost, or a database restored to an earlier point) is added with no application and the
 // administrators are told (xmrRetireRowless's rule); coins at it, or at an account whose application was erased, are
 // reported once and fund nothing. The bond wallet's addresses are of the verified network: createAccount and
