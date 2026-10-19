@@ -115,28 +115,28 @@ func (a *App) xmrBondPass(ctx context.Context, paused, sweep bool) (checked bool
 			return false, err
 		}
 	}
+	checked = true
+	var walletErr error
 	if w.state == "sealed" {
-		err = x.rpc.openWallet(ctx, w.name, xmrWalletPassword(x.secret, w.name))
+		walletErr = x.rpc.openWallet(ctx, w.name, xmrWalletPassword(x.secret, w.name))
 		switch {
-		case err == nil:
-			if err = a.xmrBondUnopenable(ctx, w, false); err != nil {
-				return false, err
+		case walletErr == nil:
+			if walletErr = a.xmrBondUnopenable(ctx, w, false); walletErr == nil {
+				walletErr = a.xmrBondWalletPass(ctx, w, sweep, issue)
 			}
-			if err = a.xmrBondWalletPass(ctx, w, sweep, issue); err != nil {
-				return false, err
-			}
-		case xmrWalletDenied(err) && xmrOpenRefusal(err) != xmrOpenLocked:
+			checked = walletErr == nil
+		case xmrWalletDenied(walletErr) && xmrOpenRefusal(walletErr) != xmrOpenLocked:
 			// It does not open (its file missing, or another password): reported once while it lasts, never replaced,
 			// since it may hold bonds. The sweep goes on, as for a missing escrow wallet.
 			if alertErr := a.xmrBondUnopenable(ctx, w, true); alertErr != nil {
-				return false, alertErr
+				return false, errors.Join(walletErr, alertErr)
 			}
-			return true, err
 		default:
-			return false, err
+			checked = false
 		}
 	}
-	return true, a.xmrBondSettle(ctx, paused)
+	// The deposits as last read apply in the database even when the wallet was not read in this pass.
+	return checked, errors.Join(walletErr, a.xmrBondSettle(ctx, paused))
 }
 
 // xmrBondWallet reads the bond wallet in use; id 0 when there is none.
@@ -347,7 +347,9 @@ func (a *App) xmrBondSweepProbe(ctx context.Context) error {
 }
 
 // xmrBondUnopenableKey is the setting that marks an open episode of bond wallet id refusing to open.
-func xmrBondUnopenableKey(id int64) string { return "vendor_bond_wallet_unopenable_" + strconv.FormatInt(id, 10) }
+func xmrBondUnopenableKey(id int64) string {
+	return "vendor_bond_wallet_unopenable_" + strconv.FormatInt(id, 10)
+}
 
 // xmrBondUnopenable tells the administrators once while bond wallet w does not open (refused), and ends the episode
 // when it opens again.
@@ -637,9 +639,9 @@ func (a *App) xmrBondSettle(ctx context.Context, paused bool) error {
 	const who = `SELECT d.id,d.txid,d.amount,u.handle,va.state FROM vendor_bond_deposits d JOIN vendor_bond_accounts c ON c.id=d.account_id
 		JOIN vendor_applications va ON va.id=c.application_id JOIN users u ON u.id=va.user_id `
 	type flag struct {
-		id                   int64
-		txid, handle, state  string
-		amount               int64
+		id                  int64
+		txid, handle, state string
+		amount              int64
 	}
 	read := func(where string, args ...any) ([]flag, error) {
 		rows, err := a.db.QueryContext(ctx, who+where+" ORDER BY d.id", args...)
