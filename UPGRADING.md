@@ -625,7 +625,9 @@ not set to UTC, it is off by that zone's offset from UTC.
 managed-database point-in-time recovery or a manual `pg_restore` brings escrow settlements back with no gate and
 no holds, and the escrow watchers would broadcast or relay them as soon as the application starts, even if they
 were sent after that point in time. Free escrow accounts that the live wallet handed out after that point would
-also be offered again. After such a restore, and whenever the script reports that recovery protection failed, keep the
+also be offered again: the escrow watcher retires a wallet's free accounts itself only when the wallet holds an
+account the restored records lack, which misses a claim made after that point with no account created after it
+(checkout opens only after the watcher's first full pass after each start, so its check covers checkouts from then on). After such a restore, and whenever the script reports that recovery protection failed, keep the
 application stopped and apply the protection below to the restored application database **before starting the
 application**, then follow the same reconciliation procedure. On a Compose deployment run `docker compose stop app`
 (for a volume snapshot start only the database with `docker compose up -d --wait db`). On a native deployment run

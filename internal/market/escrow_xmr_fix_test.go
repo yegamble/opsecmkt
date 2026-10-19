@@ -113,6 +113,10 @@ func TestXMREscrowReconcileGuards(t *testing.T) {
 	if got := agStrings(t, x.testEnv, "SELECT state FROM xmr_escrow_slots WHERE account_index=$1", lost); !slices.Equal(got, []string{"retired"}) {
 		t.Fatalf("an unrecorded account reconciled under the gate is %v", got)
 	}
+	// Under the gate the free slots are left as they are (restore.sh retires them) and nobody is told (A-556).
+	if x.slots("escrow-202610-01", "free") != 4 || x.notified(x.admin, rowlessNotice) != 0 {
+		t.Fatalf("under the gate: free %d, notices %d", x.slots("escrow-202610-01", "free"), x.notified(x.admin, rowlessNotice))
+	}
 	agExec(x.testEnv, "UPDATE settings SET value='false' WHERE key='payments_recovery_required'")
 
 	// Another unrecorded account whose get_address answer differs from its base address.

@@ -288,7 +288,8 @@ func TestXMREscrowWalletRotation(t *testing.T) {
 
 // P3-R3 crash safety: a create_wallet that took effect without an answer leaves the row creating, and the next pass
 // opens that file (never creates it again) and seals it; a create_account that took effect without an answer leaves an
-// account with no row, which the next pass checks against get_address and adds as a free slot. A wallet file that
+// account with no row, which the next pass checks against get_address and adds as a retired slot, never a free one
+// (A-556; escrow_xmr_rowless_test.go). A wallet file that
 // exists without a row (left by a restored database) is not adopted: its row is marked orphan and the month's next name
 // is used.
 func TestXMREscrowCreatingResumed(t *testing.T) {
@@ -319,7 +320,11 @@ func TestXMREscrowCreatingResumed(t *testing.T) {
 		t.Fatalf("accounts %d, slot rows %v", len(accounts.accounts), rows)
 	}
 	for i, r := range rows {
-		if r != strconv.Itoa(i+1)+" "+accounts.accounts[i+1]+" free" {
+		state := " free"
+		if i == 0 {
+			state = " retired"
+		}
+		if r != strconv.Itoa(i+1)+" "+accounts.accounts[i+1]+state {
 			t.Fatalf("slot row %q, account %d at %s", r, i+1, accounts.accounts[i+1])
 		}
 	}

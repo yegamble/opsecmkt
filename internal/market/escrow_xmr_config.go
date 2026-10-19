@@ -235,6 +235,11 @@ type escrowXMR struct {
 	locked    sync.Map                 // wallet names another wallet program has open, logged once while it lasts (escrow_xmr_watch.go)
 	belowFee  sync.Map                 // settlement ID -> the refusal xmrRefundBelowFee last found too few (escrow_xmr_settle.go, QA5W1-6)
 
+	// reconciled is the id of the active wallet the watcher last reconciled in this process with nothing paused (0 =
+	// none since startEscrowXMR): checkout claims only that wallet's slots, so no account the wallet gave out after a
+	// restore point is offered before the reconcile has seen it (A-556, PAY66-9).
+	reconciled atomic.Int64
+
 	// The network pin and the sync guard (A-449), in memory only.
 	pinned   atomic.Value                        // string: the network pin as initEscrowXMR read it, for display before the daemon is verified
 	mismatch atomic.Pointer[EscrowChainMismatch] // set while startEscrowXMR refuses the daemon's network against the pin; nil = none
@@ -411,6 +416,7 @@ func (a *App) startEscrowXMR(ctx context.Context) (state, class string, err erro
 		return "", "", errXMRRefusedUntilRestart
 	}
 	x.mismatch.Store(nil) // shown on /admin only while the latest attempt found the daemon on another network
+	x.reconciled.Store(0)
 	ok, err := pinXMRSetting(ctx, a.db, xmrVerifierSetting, xmrSecretVerifier(x.secret))
 	if err != nil {
 		return "", "", err
