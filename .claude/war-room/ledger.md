@@ -94,6 +94,7 @@ Evidence tier as in `repo-map.md`.
 | 62 | 2026-10-13 | /war-room on an external audit (F1–F5), owner: "fix these issues". Rounds 0, A, D (B/C skipped: four seats converged independently; infrastructure seat's offline image starts settle F4) | security, backend, infrastructure, devil's advocate (Opus) | F3's proposed fix and F2/F5 declined (D-67); A-534, A-536, A-537 accepted (P2, implemented this session at the owner's request); A-535, A-539 P3; A-538 P2 Outcome: A-534, A-536, A-537, A-540 VERIFIED (CI 38487381809 on b5696c5; QA iteration 62); QA61V-2/3 doc NITs fixed; local gate: Go escrow half pass, non-escrow half two 503 load flakes (pass in CI), Python 430 OK. PR #50 green, ready for the owner. |
 
 | 63 | 2026-10-15 | Owner directive: remove Bitcoin; Monero only. Owner confirmed no live deployment, so no cutover work. | payments, infrastructure, Tor OPSEC/privacy/product; independent review, implementation and cross-review | Source changes in this workspace: XMR-only runtime, UI, schema, installer, Compose and current guides; shared security/dispute tests ported to Monero. Unit tests and 172 no-JavaScript preview checks passed; final database/race and browser gates recorded below. No deployment or CI run claimed. |
+| 66 | 2026-10-18 | /war-room-loop resume: payments sweep (rotation start after iterations 63–65) + owner directive (admin navigation, user directory, messaging policy, vendor onboarding/bond, ban) | payments, qa-release, staff, devil's advocate (Round A); implementers wave 1 A-542, A-543, A-544 | In progress: owner answers recorded; A-542–A-546 ruled P1, A-547 blocked on payments design |
 
 ## P0 — release blockers
 
@@ -223,6 +224,12 @@ Evidence tier as in `repo-map.md`.
 | A-526 | Onion identity import (owner directive 2026-10-13): `init --onion-key-dir DIR` and `add-mirror --mirror-onion-key-dir DIR` (+ optional expected `--onion-address`) import an existing v3 identity (e.g. a vanity key) into an empty volume before Tor first starts, validated by byte-exact structure, a network-less Tor dry run and the expected address, re-checked after start (SEC-1/2/3/4, SRE-5, DA-8) | ops/identity | security seat experiment: Tor silently mints a new identity for a 95-byte key and overwrites a forged hostname; mismatched pair dies | verified (PR #50, CI run 38473254151; opsec-qa-release iteration 61; war-room/A-526-onion-import cd078a9, merged d7b2b2d; "mirror ≠ docs onion" N/A: the docs onion must run on a separate host) |
 | A-528 | Docs and binding context for the mainnet default: README, docs/README, docs/install/*, operator guide (#mainnet, pruning window, mainnet disk rows marked estimate), escrow.md, implementation-status, acceptance (mainnet journey stays unticked), UPGRADING (new installs default to mainnet; upgrade keeps the network), testnet-runbook header, CONTRIBUTING, architecture SVG labels, repo-map invariant 2, review-loop; every mainnet-default sentence beside "no mainnet run is recorded" (DA-5, DA-7, PAY-5, SRE-6) | ops | grep (DA-5 list) | verified (PR #50, CI run 38473254151; opsec-qa-release iteration 61; war-room/A-528-docs 9c71c3e + chair d34a51a, e009a24; merged into war-room/integration) |
 | A-540 | `/escrow-key` and `/canary` say "Bitcoin mainnet, with real funds, with no real funds" on a mainnet market: "no real funds" is outside the `btc-escrow-net` branch (escrow-key.html:30, canary.html:69, partials/escrow-net.html:2) (QA61V-1) | ui | QA iteration 61, code read | verified (PR #50, CI run 38487381809; opsec-qa-release re-verify; 42767fd + 682c4d4 for QA62V-1: a live market with an unknown chain renders EscrowNet "main"; merged into war-room/integration) |
+| A-542 | Owner directive 2026-10-18: `/admin` is one very long page and hard to navigate. Split it into an overview plus section pages under `/admin/<section>` (Overview, Users, Vendors, Payments, Security & access, Site & branding, Transparency, System & audit) with a persistent no-JS section nav (`aria-current`). Every existing admin form keeps its POST path; every admin redirect, anchor and notice lands on the section that holds the form | ui/staff | owner directive (screenshot of /admin, 2026-10-18) | in-progress (war-room/A-542-admin-sections) |
+| A-543 | Owner directive 2026-10-18 (OPSEC): users must not search or message arbitrary accounts. A non-staff sender may start a message only to an approved active vendor (from the vendor profile or listing "Message vendor" link), to an order partner, to someone who has already messaged them (reply), or to staff on the public staff list; staff may message anyone. Unknown and not-permitted recipients get an identical refusal. The handle-lookup box on /messages is removed for non-staff | messaging/privacy | owner decision (AskUserQuestion 2026-10-18: "Vendors + order partners") | in-progress (war-room/A-543-message-policy) |
+| A-544 | Owner directive 2026-10-18: sign-up chooses a buyer or vendor account; vendor applications follow an admin policy — bond amount in XMR (0 = none) × approval (manual or automatic): bond+approval, bond+automatic, no bond+approval, no bond+automatic. Bond is a non-refundable fee. Admins record a bond received manually, approve or reject applications, and mark a vendor verified. Only approved vendors list | commerce/identity | owner decisions (AskUserQuestion 2026-10-18: bond automatic XMR + manual; non-refundable) | in-progress (war-room/A-544-vendor-onboarding) |
+| A-545 | Owner directive 2026-10-18: admin user directory `/admin/users` — search, filters, per-user details and stats (role, vendor status/verified, suspended/banned, 2FA/PGP state, order counts by state as buyer and vendor, disputes, listings), actions: suspend/unsuspend, ban/unban (A-546), role change to buyer / vendor applicant / approved vendor / moderator, verify vendor, "Message user". Depends on A-542, A-544, A-546 | staff | owner directive | open (after A-542, A-544, A-546) |
+| A-546 | Owner decision 2026-10-18: ban = permanent closure, distinct from reversible suspension. Ban refuses sign-in, revokes sessions, withdraws listings, reserves the handle; open escrow orders still settle through disputes. Only an administrator unbans, with a reason | identity/staff | owner decision (AskUserQuestion 2026-10-18) | open |
+| A-547 | Owner decision 2026-10-18: automatic XMR vendor bond — with Monero escrow on and a bond set, an applicant gets a one-time watched deposit address; the bond is credited after confirmations. Needs a payments design ruling (wallet/account placement, under/over/late payment, restore gate, network pin, no send path) before implementation | payments | owner decision | blocked (payments design ruling) |
 
 ### Iteration 3 rulings (chair) — acceptance criteria
 
@@ -767,6 +774,76 @@ Waves: wave 1 A-523 (Opus), A-524 (Opus), A-527 (Opus); wave 2 A-526 (Opus), A-5
 - **F2. DECISION: REJECT (D-67).** HKDF changes no attacker-observable property (constant distinct labels, ≥32-byte root, secret suffix) and would silently re-key every TOTP/recovery/xpub/fee-descriptor seal and CSRF/CAPTCHA (invariant 6). `clear(seed)` is not a control: the account tprv lives as a string for the process and is sent to bitcoind on every sign by design (A-454).
 - **F5. DECISION: REJECT (D-67).** A nil-map read returns 0 under `a.mu`; style only.
 - **P2 A-538** node file logs (bitcoind debug.log, monerod and wallet-rpc logs) not covered by the log-rotation claim (SRE-5). **P3 A-535** measure the rescue path's right-password timing delta (SEC-2/BE-2/DA-3); **P3 A-539** signer connection flood under compose limits (SRE-6).
+
+### Owner directive (2026-10-18) — admin navigation, user directory, messaging policy, vendor onboarding (iteration 66, chair ruling)
+
+Owner request with two screenshots (the full /admin page; /messages "Find a recipient"). Owner answers (AskUserQuestion):
+bond paid automatically in XMR when escrow is on, plus manual admin recording; bond is a non-refundable fee;
+messaging "vendors + order partners" with replies; ban = permanent closure. Payments sweep (iteration 66 Round A)
+continues in parallel; these items take implementation priority.
+
+DECISION: ACCEPT A-542–A-546; A-547 BLOCKED until the payments seat rules on the bond wallet design.
+WHY: Explicit owner directive; today any account can message any handle (actions_messages.go:46), the role form is
+the only user control, and there is no vendor application, bond, verified flag or ban.
+DISSENTING VIEW: none recorded yet (no council round; the payments seat reviews A-547 and qa-release verifies all).
+USER IMPACT: buyers can no longer enumerate or cold-message accounts; vendors apply at sign-up; staff manage users in one place.
+OPERATOR IMPACT: new admin policy settings; existing vendors are grandfathered as approved (not verified).
+TECHNICAL COST/RISK: new append-only migrations (vendor applications, verified flag, ban, bond policy); every /admin
+redirect moves. No browser JavaScript.
+
+ACCEPTANCE CRITERIA AND TEST PLAN
+- A-542: `/admin` overview shows the staff attention summary, readiness checklist and section links only. Each
+  section is a GET page reachable by keyboard from the nav on every admin page, with `aria-current` on the current
+  one. Every admin panel that exists today is in exactly one section. Every POST under /admin redirects to its
+  section (+ the existing anchor/notice). Non-admins get the same refusal as /admin today. 320 px and 1280 px layouts
+  have no horizontal page scroll. Grep `/admin#` and `/admin?` across internal, web, scripts (ci-smoke.sh), tests,
+  docs and deploy and update every reference. Tests: Go `TestAdminSections` (each section 200 for an admin, refused
+  for buyer/vendor/moderator/anonymous, each known panel id present in exactly one section) and
+  `TestAdminActionRedirectsToSection` over every admin action; Playwright preview spec over all sections at 320/1280;
+  db-admin journeys updated; ci-smoke updated.
+- A-543: `messageAction` enforces the rule server-side in the send transaction: allowed iff sender is moderator/admin;
+  or recipient is an active (not suspended/banned/closed) vendor (approved, once A-544 lands); or the two share an
+  order; or the recipient has previously sent a message to the sender; or the recipient is staff shown on the public
+  staff list. The retention-restricted rule (actions_messages.go:50-60) still applies on top. Unknown handle and
+  not-permitted handle return the same status and body and write nothing; budget is spent before lookup as today.
+  `/messages?to=` key loading follows the same rule and leaks nothing for a not-permitted handle. Non-staff /messages
+  has no free handle search; compose is prefilled from "Message vendor" on vendor and product pages, from the order
+  page counterparty/staff contacts, and from "Reply" on a received message. Docs (privacy/what-the-server-keeps,
+  implementation-status, acceptance) updated. Tests: Go `TestMessageContactPolicy` matrix (buyer→vendor ok,
+  buyer→buyer refused, vendor→buyer without order refused, with order ok, reply ok, staff→anyone ok, anyone→listed
+  staff ok, suspended vendor refused, unknown ≡ forbidden byte-identical); Playwright db-messages updated and a preview
+  check that buyer /messages has no handle search while vendor and product pages show "Message vendor".
+- A-544: append-only migration: vendor applications (user, state awaiting_bond | awaiting_approval | approved |
+  rejected | withdrawn, bond amount captured at creation in atomic XMR, bond_received_at/by/how manual|xmr, decided
+  by/at, note), users verified-vendor flag (set by/at), settings vendor_bond_xmr (default 0) and vendor_approval
+  (manual | automatic, default manual). Existing vendors get an approved application, not verified. Register form
+  offers Buyer account / Vendor account (radio, no JS); a vendor choice creates a buyer account plus an application
+  and lands on /account showing status, bond amount and the admin's payment instructions; with no bond and automatic
+  approval the account becomes vendor at once. Bond received + automatic → approved; bond received + manual →
+  awaiting_approval. A buyer can apply later from /account and withdraw a pending application. Only role vendor
+  (approved) can create or publish listings (existing gate). Admin Vendors controls (new partial
+  partials/admin-vendors.html and new POST paths, not /admin's action switch): policy form, payment-instruction
+  text, application queue with approve/reject (note), "record bond received" (password step-up, audited), verify /
+  unverify. Verified badge on vendor profile and listing cards. Policy changes apply to new applications; an admin
+  may waive a pending bond. Notifications to the applicant on each decision; audit rows on both accounts. Docs:
+  implementation-status, acceptance, operator-guide. Tests: Go `TestVendorApplicationModes` (4 policy modes ×
+  sign-up and /account apply), `TestVendorApplicationAuthz` (non-admin refused on every new path, applicant cannot
+  self-approve, rejected cannot list), `TestVendorMigrationGrandfathers`; Playwright db journey: sign up as vendor
+  under bond+approval → admin records bond → approves → vendor publishes a listing; preview checks for register and
+  the vendors panel.
+- A-546: append-only migration adds banned_at/by/reason. Ban (admin only, password step-up, reason required) refuses
+  sign-in with a neutral message, deletes sessions, archives listings, keeps the handle reserved, refuses new drafts
+  and messages to the account; open escrow orders and disputes keep settling. An admin cannot ban themselves,
+  another admin or the last admin. Unban requires a reason. Audit rows on both accounts. Tests: Go `TestBanAccount`
+  (sign-in refused, sessions gone, listings archived, open escrow order still resolvable by staff, self/admin ban
+  refused, unban restores sign-in but not listings).
+- A-545: `/admin/users` (admin only) with case-insensitive handle search (escaped `%`/`_`, A-60), role/status
+  filters and pagination; `/admin/users/<handle>` or `?handle=` detail with the stats listed in the row, using only
+  data already stored (no new tracking of IPs or visits); action forms for suspend/unsuspend, ban/unban, role,
+  vendor approval/verified, and a "Message user" link to /messages?to=. Replaces the old "Assign an account role"
+  panel (which links here). Tests: Go `TestAdminUserDirectory` (search, filters, stats counts against fixtures, each
+  action round trip, non-admin refused); Playwright db journey search → suspend → reload shows Suspended.
+- A-547: payments seat proposes the bond deposit design; chair rules before implementation.
 
 ## P2 — high-value improvements
 
