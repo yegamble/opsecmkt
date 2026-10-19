@@ -188,7 +188,7 @@ func TestAccountSignOutIsNearTopAndKeepsItsCSRF(t *testing.T) {
 	w := e.do("GET", "/account", session, nil)
 	e.check(w, 200)
 	body := w.Body.String()
-	logout := strings.Index(body, `action="/logout"`)
+	logout := strings.Index(body, `class="account-signout" method="post" action="/logout"`) // the page's own, not the header's (A-548)
 	sessions := strings.Index(body, `id="sessions"`)
 	revoke := strings.Index(body, `action="/revoke-sessions"`)
 	if logout < 0 || sessions < 0 || revoke < 0 || logout >= sessions || sessions >= revoke {

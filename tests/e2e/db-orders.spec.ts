@@ -61,7 +61,7 @@ test('draft cannot be paid without a wallet, cancellation is recorded, vendor se
 
   // The listing owner can still read the cancelled draft, which stays off incoming work.
   await page.goto('/account');
-  await submitAndLoad(page, page.getByRole('button', { name: 'Sign out', exact: true }));
+  await submitAndLoad(page, page.getByRole('main').getByRole('button', { name: 'Sign out', exact: true }));
   await page.goto('/login');
   await page.getByLabel('Handle', { exact: true }).fill(ADMIN.handle);
   await page.getByLabel('Password', { exact: true }).fill(ADMIN.password);

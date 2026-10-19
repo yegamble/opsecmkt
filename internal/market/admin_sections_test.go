@@ -118,7 +118,7 @@ func TestAdminSections(t *testing.T) {
 		"dependency-status", "host-control", "image-scanner", "retention", "recent-server-errors", "audit-trail"})
 	overview := bodies["/admin"]
 	mustContain(t, overview, "Get your marketplace ready", `href="/admin/payments#payment-providers"`, `href="/admin/users#assign-role"`, `aria-label="Staff attention counts"`)
-	mustNotContain(t, overview, `action="/admin/`, `method="post"`, "The CAPTCHA is on without a staff contact")
+	mustNotContain(t, withoutSiteHeader(overview), `action="/admin/`, `method="post"`, "The CAPTCHA is on without a staff contact") // the header keeps its sign-out (A-548)
 	// A warning inside a section is flagged beside its link on the overview: no signed dependency report here, and
 	// the CAPTCHA on with no staff contact.
 	mustContain(t, overview, "Review required: service isolation or dependency status needs attention.")

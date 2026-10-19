@@ -86,7 +86,7 @@ func TestFormNoncePGPChallengeAndVerificationReplay(t *testing.T) {
 	if _, err := e.DB.Exec("INSERT INTO sessions(token_hash,user_id,expires) VALUES($1,$2,now()+interval '1 hour')", digest(otherSession), uid); err != nil {
 		t.Fatal(err)
 	}
-	if got := e.do("POST", "/pgp/verify", otherSession, verifyForm); got.Code != 409 || got.Body.String() != bodyMismatch.Body.String() {
+	if got := e.do("POST", "/pgp/verify", otherSession, verifyForm); got.Code != 409 || sessionNeutralBody(e, got, otherSession) != sessionNeutralBody(e, bodyMismatch, session) {
 		t.Fatalf("same actor with a different session got a distinguishable response: %d %q", got.Code, got.Body.String())
 	}
 	if listingFormCount(t, e, "SELECT count(*) FROM pgp_challenges WHERE user_id=$1", uid) != 0 || listingFormCount(t, e, "SELECT count(*) FROM users WHERE id=$1 AND pgp_verified_at IS NOT NULL", uid) != 1 {

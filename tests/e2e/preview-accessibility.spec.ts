@@ -296,3 +296,66 @@ test('footer identity, navigation and payment status stay separate and usable at
     await fits(page);
   }
 });
+
+// A-548: Sign out follows the signed-in handle in the header: a plain POST form, reached by Tab after the search and the
+// handle and before the main navigation, quieter than the handle, a 44 px target with a visible focus ring, and within
+// the viewport at every width and at doubled text. The preview refuses it as it refuses every form.
+test('header sign out follows the handle, is keyboard reachable and fits every width', async ({ page, browserName }, testInfo) => {
+  await page.goto('/orders');
+  await waitForStyles(page);
+  const header = page.getByRole('banner');
+  const handle = header.getByRole('link', { name: 'preview_user', exact: true });
+  const signOut = header.getByRole('button', { name: 'Sign out', exact: true });
+  const form = header.locator('form[action="/logout"]');
+  await expect(form).toHaveCount(1);
+  await expect(form).toHaveAttribute('method', 'post');
+  await expect(form.locator('input[type="hidden"][name="csrf"]')).toHaveCount(1);
+  await expect(handle).toHaveAttribute('href', '/account');
+  await expect(signOut).toBeVisible();
+  const width = page.viewportSize()!.width;
+  await header.screenshot({ path: testInfo.outputPath(`header-${width}.png`) });
+
+  // Quieter than the handle: no fill, muted text, no heavier weight; still AA text contrast.
+  const style = (control: Locator, property: string) => control.evaluate((element, name) => getComputedStyle(element).getPropertyValue(name), property);
+  expect(await style(signOut, 'background-color')).toBe('rgba(0, 0, 0, 0)');
+  expect(await style(signOut, 'color')).not.toBe(await style(handle, 'color'));
+  expect(Number(await style(signOut, 'font-weight'))).toBeLessThanOrEqual(Number(await style(handle, 'font-weight')));
+  expect(parseFloat(await style(signOut, 'font-size'))).toBeGreaterThanOrEqual(14);
+  expect(await contrast(signOut)).toBeGreaterThanOrEqual(4.5);
+
+  // Tab order: [search field, search button,] handle, Sign out, the first main-navigation link.
+  const allControls = browserName === 'webkit' && process.platform === 'darwin';
+  const search = header.locator('form[role="search"]');
+  const order = [
+    ...(await search.isVisible() ? [search.getByRole('textbox'), search.getByRole('button')] : []),
+    handle, signOut, page.getByRole('navigation', { name: 'Main navigation' }).getByRole('link').first(),
+  ];
+  await page.locator('.brand').focus();
+  for (const control of order) {
+    await page.keyboard.press(allControls ? 'Alt+Tab' : 'Tab');
+    await expect(control).toBeFocused();
+    if (control === signOut) {
+      await expect(signOut).toHaveCSS('outline-style', 'solid');
+      await expect(signOut).toHaveCSS('outline-width', '3px');
+      expect(await contrast(signOut, 'outline-color')).toBeGreaterThanOrEqual(3);
+      await header.screenshot({ path: testInfo.outputPath(`header-${width}-focus.png`) });
+    }
+  }
+
+  for (const scale of ['100%', '200%']) {
+    await page.locator('html').evaluate((element, size) => { element.style.fontSize = size; }, scale);
+    for (const control of [handle, signOut]) {
+      const box = (await control.boundingBox())!;
+      expect(box.width, `${scale} target width`).toBeGreaterThanOrEqual(24);
+      expect(box.height, `${scale} target height`).toBeGreaterThanOrEqual(44);
+      expect(box.x).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width, `${scale} inside the viewport`).toBeLessThanOrEqual(width);
+    }
+    await fits(page);
+  }
+  await header.screenshot({ path: testInfo.outputPath(`header-${width}-text-200.png`) });
+
+  await signOut.click();
+  await expect(page.getByRole('alert')).toHaveText('Read-only preview. Start with PostgreSQL to save changes.');
+  await expect(page.locator('script')).toHaveCount(0);
+});

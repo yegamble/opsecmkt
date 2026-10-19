@@ -1884,3 +1884,31 @@ img.vendor-avatar {
     height:56px
   }
 }
+
+/* A-548: Sign out follows the signed-in handle as a quiet outlined control (muted text, no fill), a 44px tap target.
+   On a phone the handle and Sign out move together to their own row under the brand rather than squeezing beside
+   it; a handle too long for that row puts Sign out on the next line instead of widening the page. */
+@media(max-width:640px) {
+  .header-actions.signed-in {
+    flex:1 1 auto
+  }
+}
+.header-signout {
+  display:flex;
+  margin:0
+}
+.header-signout button {
+  min-height:44px;
+  padding:0 12px;
+  background:transparent;
+  border-color:var(--line);
+  color:var(--muted);
+  font:400 0.875rem/1.2 var(--mono);
+  letter-spacing:.02em;
+  text-transform:none;
+  white-space:nowrap
+}
+.header-signout button:hover {
+  border-color:var(--amber);
+  color:var(--amber)
+}
