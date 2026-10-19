@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { expect, test, type Page } from '@playwright/test';
 import { uniqueHandle } from './db-fixtures';
-import { enrollTOTP, expectNotice, pgpFixture, RECIPIENT_FINGERPRINT, setRole, signedIn, submitStatus, totp } from './db-helpers';
+import { enrollTOTP, expectNotice, OTHER_FINGERPRINT, pgpFixture, RECIPIENT_FINGERPRINT, setRole, signedIn, submitStatus, totp } from './db-helpers';
 
 // PGP identity, encrypted messages and message notifications against a real database, JavaScript disabled.
 // Each test registers its own accounts; keys and messages come from committed fixtures (see db-helpers.ts).
@@ -192,20 +192,36 @@ test('only OpenPGP-encrypted messages are accepted; status badges and the unread
   await s.goto('/messages');
   await expect(s.getByRole('heading', { name: 'No messages yet' })).toBeVisible();
 
-  // The same real ciphertext (encrypted to the recipient fixture key) sent to three recipients.
-  for (const to of [withKey, otherKey, noKey]) {
-    await s.goto(`/messages?to=${to}`);
-    await body.fill(pgpFixture('message-to-recipient.asc'));
-    expect(await submitStatus(s, send)).toBe(303);
-    await expectNotice(s, 'Message sent.');
-  }
+  // A-569: the compose page says a recipient without a usable key cannot be sent to, and a send is refused (409).
+  await s.goto(`/messages?to=${noKey}`);
+  await expect(s.getByRole('status').filter({ hasText: 'cannot be sent' })).toHaveText(`Messages to ${noKey} cannot be sent until they save a PGP public key that can receive encrypted messages. The server refuses a message to an account without one and stores nothing.`);
+  await expect(s.locator('.contact-key')).toContainText(`${noKey} has not added a PGP public key.`);
+  await body.fill(pgpFixture('message-to-recipient.asc'));
+  expect(await submitStatus(s, send)).toBe(409);
+  await expect(s.getByRole('alert')).toHaveText(`Message not sent: ${noKey} has not saved a PGP public key, so nothing can be encrypted to them. Nothing was stored. Ask ${noKey} to add a public key that can receive encrypted messages, then encrypt to it.`);
+
+  // Ciphertext the recipient could not read is refused with what to do instead: the real ciphertext encrypted to the
+  // recipient fixture key, sent to the account holding the other key, and a passphrase-only message.
+  await s.goto(`/messages?to=${otherKey}`);
+  await body.fill(pgpFixture('message-to-recipient.asc'));
+  expect(await submitStatus(s, send)).toBe(400);
+  await expect(s.getByRole('alert')).toContainText(`it names only other keys, so ${otherKey} could not read it. Nothing was stored. Encrypt it to ${otherKey}’s key ${OTHER_FINGERPRINT} and paste the result.`);
+  await s.goto(`/messages?to=${withKey}`);
+  await body.fill(pgpFixture('message-passphrase-only.asc'));
+  expect(await submitStatus(s, send)).toBe(400);
+  await expect(s.getByRole('alert')).toContainText(`Message not sent: it is encrypted with a passphrase only and names no recipient key, so ${withKey} could not read it without that passphrase. Nothing was stored. Encrypt it to ${withKey}’s key ${RECIPIENT_FINGERPRINT} and paste the result.`);
+  await s.goto('/messages');
+  await expect(s.getByRole('heading', { name: 'No messages yet' })).toBeVisible();
+
+  // The same ciphertext sent to the account holding the recipient key is stored and badged as such.
+  await s.goto(`/messages?to=${withKey}`);
+  await body.fill(pgpFixture('message-to-recipient.asc'));
+  expect(await submitStatus(s, send)).toBe(303);
+  await expectNotice(s, 'Message sent.');
   await s.waitForLoadState();
   await s.reload();
-  const sent = (to: string) => s.locator('article.message', { hasText: `${sender} → ${to}` }).locator('.pgp-message-status .badge').first();
-  await expect(sent(withKey)).toHaveText('Encrypted (to recipient’s key)');
-  await expect(sent(otherKey)).toHaveText('Encrypted (NOT to recipient’s key)');
-  await expect(s.locator('article.message', { hasText: `${sender} → ${otherKey}` }).locator('.pgp-message-status .badge').nth(1)).toHaveText('+ 1 other visible key(s)');
-  await expect(sent(noKey)).toHaveText('Encrypted (recipient unknown)');
+  await expect(s.locator('article.message')).toHaveCount(1);
+  await expect(s.locator('article.message', { hasText: `${sender} → ${withKey}` }).locator('.pgp-message-status')).toHaveText('Encrypted (to recipient’s key)');
   await expect(s.locator('article.message').first().locator('textarea[readonly]')).toHaveValue(/-----BEGIN PGP MESSAGE-----/);
 
   // The recipient sees the message with the same status and one unread notification in the navigation.
@@ -237,6 +253,8 @@ test('staff find any account by handle; a buyer replies with encrypted evidence 
   const buyer = await signedIn(browser, baseURL, buyerHandle, 'browser-evidence-password-123', true);
   const admin = await signedIn(browser, baseURL, ADMIN.handle, ADMIN.password, false);
   expect(await saveKey(staff, pgpFixture('recipient.pub.asc'), 'browser-staff-password-123')).toBe(303);
+  // Messages go only to an account with a usable key (A-569): the buyer saves the same fixture key.
+  expect(await saveKey(buyer, pgpFixture('recipient.pub.asc'), 'browser-evidence-password-123')).toBe(303);
   await setRole(admin, handle, 'moderator');
 
   // A buyer has no handle search, and an unlisted moderator is not someone it may start a message to (A-543).
@@ -271,4 +289,67 @@ test('staff find any account by handle; a buyer replies with encrypted evidence 
   await buyer.goto('/messages?to=no_such_staff_handle');
   await expect(buyer.getByRole('status')).toHaveText(NOT_PERMITTED);
   for (const page of [staff, buyer, admin]) await page.context().close();
+});
+
+test('hidden recipient IDs are sent only after the sender confirms, the ciphertext kept without scripts', async ({ browser, baseURL }) => {
+  const sender = uniqueHandle('hidfrom');
+  const recipient = uniqueHandle('hidto');
+  const s = await signedIn(browser, baseURL, sender, 'browser-hidden-sender-123', true);
+  const r = await signedIn(browser, baseURL, recipient, 'browser-hidden-recipient-123', true);
+  // A buyer may start a message to a vendor (A-543); the vendor holds the recipient fixture key.
+  execFileSync('psql', [process.env.E2E_DATABASE_URL!, '-v', 'ON_ERROR_STOP=1', '-qtAc', `UPDATE users SET role='vendor' WHERE handle='${recipient}'`]);
+  expect(await saveKey(r, pgpFixture('recipient.pub.asc'), 'browser-hidden-recipient-123')).toBe(303);
+  const body = s.getByLabel('PGP encrypted message');
+  const send = () => s.getByRole('button', { name: 'Send encrypted text ↗' }).click();
+
+  // The ordinary compose form asks for no confirmation.
+  await s.goto(`/messages?to=${recipient}`);
+  await expect(s.locator('input[name="hidden_recipients"]')).toHaveCount(0);
+
+  // `gpg --throw-keyids` output names no key, so the server cannot check it: the compose form comes back with the
+  // explanation, the recipient and its key, the ciphertext kept, and an unticked confirmation the browser requires.
+  await body.fill(pgpFixture('message-to-recipient-hidden.asc'));
+  expect(await submitStatus(s, send)).toBe(400);
+  await expect(s.getByRole('alert')).toHaveText(`Message not sent yet. The recipient key IDs are hidden (as gpg --throw-keyids writes them), so the server cannot check that it is encrypted to ${recipient}’s key with fingerprint ${RECIPIENT_FINGERPRINT}. Nothing was stored. If you encrypted it to that key, tick the confirmation below and send again; it will be marked “recipient unknown”.`);
+  await expect(s.locator('.message-to')).toHaveText(`To: ${recipient}`);
+  await expect(s.locator('input[name="recipient"]')).toHaveValue(recipient);
+  await expect(s.locator('.contact-key .pgp-fingerprint')).toHaveText(RECIPIENT_FINGERPRINT);
+  const kept = await body.inputValue();
+  expect(kept).toMatch(/^-----BEGIN PGP MESSAGE-----\n\nhE4DAAAAAAAAAAAS/);
+  expect(kept.replace(/\s+/g, '')).toBe(pgpFixture('message-to-recipient-hidden.asc').replace(/\s+/g, ''));
+  const confirm = s.getByRole('checkbox', { name: `I encrypted this message to ${recipient}’s key shown above, with its recipient key IDs hidden. The server cannot check that ${recipient} can read it; it will be marked “recipient unknown”.` });
+  await expect(confirm).not.toBeChecked();
+  await expect(confirm).toHaveAttribute('required', '');
+  // Nothing was stored or notified yet.
+  await r.goto('/messages');
+  await expect(r.getByRole('heading', { name: 'No messages yet' })).toBeVisible();
+  await r.goto('/notifications');
+  await expect(r.locator('article.message', { hasText: `New message from ${sender}` })).toHaveCount(0);
+
+  // Ticked on the returned form, the kept ciphertext is sent and marked "recipient unknown".
+  await confirm.check();
+  expect(await submitStatus(s, send)).toBe(303);
+  await expectNotice(s, 'Message sent.');
+
+  // Ciphertext naming the recipient key and another visible key needs no confirmation and warns about the other key.
+  await s.goto(`/messages?to=${recipient}`);
+  await body.fill(pgpFixture('message-to-recipient-and-other.asc'));
+  expect(await submitStatus(s, send)).toBe(303);
+  await expectNotice(s, 'Message sent.');
+  await s.waitForLoadState();
+  await s.reload();
+  const sent = s.locator('article.message', { hasText: `${sender} → ${recipient}` });
+  await expect(sent).toHaveCount(2);
+  const unknown = sent.filter({ hasText: 'Encrypted (recipient unknown)' });
+  await expect(unknown.locator('.pgp-message-status')).toHaveText('Encrypted (recipient unknown)');
+  await expect(unknown.locator('textarea[readonly]')).toHaveValue(kept);
+  await expect(sent.filter({ hasText: '+ 1 other visible key(s)' }).locator('.pgp-message-status .badge')).toHaveText(['Encrypted (to recipient’s key)', '+ 1 other visible key(s)']);
+
+  // The recipient sees both, with the same statuses, and was notified of each.
+  await r.goto('/messages');
+  await expect(r.locator('article.message', { hasText: `${sender} → ${recipient}` })).toHaveCount(2);
+  await expect(r.locator('.pgp-message-status', { hasText: 'Encrypted (recipient unknown)' })).toHaveCount(1);
+  await r.goto('/notifications');
+  await expect(r.locator('article.message', { hasText: `New message from ${sender}` })).toHaveCount(2);
+  for (const p of [s, r]) await p.context().close();
 });

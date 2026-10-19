@@ -58,7 +58,11 @@ func TestPostgresMarketplaceFlow(t *testing.T) {
 	check(do("POST", "/disputes", buyer, url.Values{"order_id": {id}, "reason": {"This is an unfunded draft, so a dispute must not open."}}), 409)
 	check(do("POST", "/messages", buyer, url.Values{"recipient": {"admin_user"}, "body": {"plaintext must not be sent"}}), 400)
 	check(do("POST", "/messages", buyer, url.Values{"recipient": {"admin_user"}, "body": {"-----BEGIN PGP MESSAGE-----\nSample encrypted armor for the storage boundary test only.\n-----END PGP MESSAGE-----"}}), 400)
-	msgKey, _ := testPGPKey(t, "recipient")
+	msgKey, msgPub := testPGPKey(t, "recipient")
+	// The recipient needs a usable key before anything can be sent to it (A-569).
+	if _, err = a.db.Exec("UPDATE users SET pgp=$1 WHERE handle='admin_user'", msgPub); err != nil {
+		t.Fatal(err)
+	}
 	body, err := encryptTo(msgKey, "storage boundary test")
 	if err != nil {
 		t.Fatal(err)

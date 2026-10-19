@@ -152,6 +152,8 @@ func TestCounterpartyKeysAndMessagePrefill(t *testing.T) {
 	mustNotContain(t, body, "&lt;script&gt;", `name="recipient"`, `name="to"`)
 	body = w.page("/messages?to="+buyerHandle, w.vendor, 200)
 	mustContain(t, body, `value="`+buyerHandle+`"`, buyerHandle+" has not added a PGP public key")
+	// A-569: the page also says that the server refuses a message to an account without a usable key.
+	mustContain(t, body, "Messages to "+buyerHandle+" cannot be sent until they save a PGP public key")
 	// A well-formed handle with no account reveals no key and offers no compose form.
 	body = w.page("/messages?to=nobody_here", w.buyer, 200)
 	mustContain(t, body, messageNotPermitted)

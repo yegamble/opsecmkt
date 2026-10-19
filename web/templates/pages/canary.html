@@ -74,7 +74,7 @@
 <ul>
 <li>Renders HTML and CSS on the server without requiring client-side JavaScript.</li>
 <li>Supports account sessions with optional TOTP or PGP second factors, marketplace listings, and orders that move only through a server-enforced state machine.</li>
-<li>Accepts only OpenPGP-encrypted messages and shows whether each was encrypted to the recipient's saved key. It does not encrypt or decrypt messages.</li>
+<li>Accepts only OpenPGP-encrypted messages that name the recipient’s usable saved key, and shows whether each was. It refuses a message to an account without a usable key, a passphrase-only message and one that names only other keys; one whose recipient key IDs are all hidden is accepted only after the sender confirms, and is marked as recipient unknown. It does not encrypt or decrypt messages.</li>
 <li>Marks a PGP key verified only after its holder signs or decrypts a server challenge.</li>
 <li>When the operator runs the ClamAV malware scanner, accepts listing photos and avatars and stores them only as re-encoded JPEGs without metadata. ClamAV checks uploads for known malware; it does not review picture content.</li>
 <li>New payments use Monero escrow only when the operator enables and verifies the escrow service.</li>{{if $.XMREscrowOn}}

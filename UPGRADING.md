@@ -15,6 +15,15 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## Messages their recipient cannot read are refused (A-569)
+
+No migration and no new setting. `/messages` now refuses, storing and notifying nothing, a message to an account
+without a PGP key that can receive encrypted messages (409), a passphrase-only message and one whose visible recipient
+key IDs are all other keys (400); each refusal says what to do. Ciphertext with every recipient key ID hidden
+(`gpg --throw-keyids`) is sent only after the sender ticks a confirmation on the returned compose form, and is marked
+"recipient unknown". Messages already stored keep their status, including "NOT to recipient’s key". An account without
+a usable key can still send but can no longer receive messages, so ask staff and vendors to keep a current key saved.
+
 ## Staff uploads from the private administrator connection (A-551, A-590)
 
 With isolated uploads and a private admin onion (`ADMIN_SOCKET`), the avatar panel (administrators and moderators)

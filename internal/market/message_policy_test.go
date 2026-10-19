@@ -36,7 +36,10 @@ func TestMessageContactPolicy(t *testing.T) {
 	// A message stored before the policy: policy_other_buyer wrote to policy_buyer, who may now reply.
 	agExec(e, `INSERT INTO messages(id,sender_id,recipient_id,body,encrypted) VALUES($1,$2,$3,'legacy inbound',true)`, randomToken(), otherBuyerID, buyerID)
 
-	key, _ := testPGPKey(t, "policy-recipient")
+	key, pub := testPGPKey(t, "policy-recipient")
+	// Every account can receive the matrix's message, so only the contact policy decides (A-569 refuses a recipient
+	// without a usable key).
+	agExec(e, "UPDATE users SET pgp=$1", pub)
 	body, err := encryptTo(key, "policy matrix message")
 	if err != nil {
 		t.Fatal(err)
@@ -169,7 +172,8 @@ func TestMessageVendorToBuyerNeedsAVisibleOrder(t *testing.T) {
 	e := newTestApp(t)
 	buyerID, buyer := e.user("vis_buyer", "buyer")
 	vendorID, vendor := e.user("vis_vendor", "vendor")
-	key, _ := testPGPKey(t, "vis-recipient")
+	key, pub := testPGPKey(t, "vis-recipient")
+	agExec(e, "UPDATE users SET pgp=$1", pub) // both can receive it (A-569), so only the contact policy decides
 	body, err := encryptTo(key, "visibility message")
 	if err != nil {
 		t.Fatal(err)

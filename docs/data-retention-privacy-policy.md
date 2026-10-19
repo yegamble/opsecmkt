@@ -157,9 +157,13 @@ require explicit sender confirmation and disclose that the server could not vali
 Packet inspection cannot prove that the recipient can decrypt or that the payload is safe.
 Do not silently add an operator or moderator as an encryption recipient.
 
-Current messages reject plaintext but can accept ciphertext that does not match the selected recipient or whose recipient cannot be checked.
-Current manual delivery accepts arbitrary text, and automatic delivery copies server-readable listing content.
-These validation gaps require implementation before the instance can claim the policy's private channels are enforced.
+Messages enforce these rules (A-569): a message to an account without a usable encryption key is refused, and so are
+plaintext, passphrase-only messages and messages whose visible recipient key IDs are all other keys; nothing is stored.
+A message whose recipient key IDs are all hidden is stored only after the sender ticks a confirmation that the server
+could not check the recipient, and is marked "recipient unknown". Messages stored before these checks keep their
+recorded status. Current manual delivery accepts arbitrary text, and automatic delivery copies server-readable listing
+content. These delivery gaps require implementation before the instance can claim all of the policy's private channels
+are enforced.
 
 PGP does not conceal sender, recipient, time, message length or visible encryption-key identifiers.
 The server also stores recipient-match status and a count of additional visible recipient keys.

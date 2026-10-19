@@ -18,7 +18,13 @@ import { ADMIN } from './db-fixtures';
 //   stale-challenge.signed.asc  the recipient key's clearsignature over an ownership challenge for another handle
 //   canary.recipient-key.asc    a canary statement clearsigned by the recipient key (valid for that operator key)
 //   canary.other-key.asc        the same statement clearsigned by the other key (invalid for the recipient key)
+// Three more messages (A-569) were encrypted with GnuPG 2.2.41 to the two public keys above, so no private key was
+// needed, and nobody holds a private key for the two public-key ones:
+//   message-to-recipient-hidden.asc     `gpg --throw-keyids -r <recipient>`: one public-key packet, wildcard key ID
+//   message-to-recipient-and-other.asc  `gpg -r <recipient> -r <other>`: both key IDs visible
+//   message-passphrase-only.asc         `gpg --symmetric`: no public-key packet
 export const RECIPIENT_FINGERPRINT = 'CB92 A044 56D0 95A3 5DE4 C354 770D ADF2 A2D7 0ABB';
+export const OTHER_FINGERPRINT = 'CE7B E300 397B 08EE D7FB 04A3 F714 24FF 9C2C FB33';
 
 export function pgpFixture(name: string): string {
   return readFileSync(join(__dirname, 'fixtures', 'pgp', name), 'utf8');
