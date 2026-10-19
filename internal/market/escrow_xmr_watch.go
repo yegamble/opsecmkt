@@ -901,6 +901,12 @@ func (a *App) xmrReconcile(ctx context.Context, w xmrWalletRow, slots map[int64]
 			continue
 		}
 		if s := slots[acc.Index]; s != nil {
+			if s.state == "retired" && funded[acc.Index] {
+				// Coins at an account no order claimed (PAY66-10): told once per account.
+				if err := a.xmrFundedAccountAlert(ctx, w, acc.Index); err != nil {
+					return err
+				}
+			}
 			if s.state != "free" || !funded[acc.Index] {
 				continue
 			}
@@ -925,18 +931,22 @@ func (a *App) xmrReconcile(ctx context.Context, w xmrWalletRow, slots map[int64]
 		}
 		rowless = append(rowless, acc)
 	}
-	if len(rowless) == 0 {
-		return nil
-	}
-	if err := a.xmrRetireRowless(ctx, w, slots, rowless, w.state == "active" && !paused); err != nil {
-		return err
-	}
-	for _, acc := range rowless {
-		if funded[acc.Index] {
-			if err := a.xmrFundedAccountAlert(ctx, w, acc.Index); err != nil {
-				return err
+	if len(rowless) > 0 {
+		if err := a.xmrRetireRowless(ctx, w, slots, rowless, w.state == "active" && !paused); err != nil {
+			return err
+		}
+		for _, acc := range rowless {
+			if funded[acc.Index] {
+				if err := a.xmrFundedAccountAlert(ctx, w, acc.Index); err != nil {
+					return err
+				}
 			}
 		}
+	}
+	if w.state == "active" && !paused {
+		// Checkout may claim this wallet's slots from now on (PAY66-9). Under the gate or the sweep it is closed anyway;
+		// a start under them waits for a pass after they clear.
+		x.reconciled.Store(w.id)
 	}
 	return nil
 }
@@ -993,13 +1003,26 @@ func (a *App) xmrRetireRowless(ctx context.Context, w xmrWalletRow, slots map[in
 	return nil
 }
 
-// xmrFundedAccountAlert tells the administrators about coins at an account no order claimed (now retired).
+// xmrFundedAccountKey is the setting that records the administrators were told of coins at account of wallet id.
+func xmrFundedAccountKey(id, account int64) string {
+	return "escrow_xmr_funded_" + strconv.FormatInt(id, 10) + "_" + strconv.FormatInt(account, 10)
+}
+
+// xmrFundedAccountAlert tells the administrators about coins at an account no order claimed (now retired), once per
+// account (xmrFundedAccountKey).
 func (a *App) xmrFundedAccountAlert(ctx context.Context, w xmrWalletRow, account int64) error {
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, "INSERT INTO settings(key,value) VALUES($1,'true') ON CONFLICT (key) DO NOTHING", xmrFundedAccountKey(w.id, account))
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return nil
+	}
 	if err = notifyAdmins(ctx, tx, fmt.Sprintf("Monero escrow wallet %s: account %d, which no order had claimed, has received coins. It was retired, so no order uses it; the coins stay there.", w.name, account)); err != nil {
 		return err
 	}

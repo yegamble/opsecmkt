@@ -31,14 +31,21 @@ market holds the wallet keys and builds, stores and sends every transaction itse
   given that account, and accounts the records show free, to buyers. On the active wallet, outside a restore, the watcher
   then retires every free account of that wallet with the unrecorded ones in one transaction and tells the administrators
   once (a notification and an audit row); the next pass creates fresh accounts. A lost answer costs one batch of free
-  accounts, never a pause.
+  accounts, never a pause. After each start of the market, checkout claims no account until the watcher's first full
+  pass has read and reconciled the active wallet (PAY66-9), so the protection covers every checkout from then on; while
+  the escrow daemon is not synced or the wallet cannot be opened, checkout stays closed. The mark is held in memory, so a
+  second application process on the same database whose watcher never holds the watcher lock refuses Monero escrow
+  checkout, and so does a new process during a redeploy until the old one has stopped. It does not detect an account
+  claimed after a restore point when the wallet created none after it: after a restore not done by `scripts/restore.sh`,
+  the protection in UPGRADING.md section 6 is still required. Coins at a retired account (one no order claimed) alert the
+  administrators once per account.
   Account 0 of a wallet is never an escrow and is never spent from; coins that arrive there alert the administrators, once per episode.
 - **The slot claim at checkout.** The buyer of an XMR draft on an eligible listing pays into a Monero escrow, giving a refund address from their own wallet (a standard address or subaddress; integrated
   addresses, other networks, addresses whose keys are not valid, market-controlled addresses, and external addresses the buyer account already used are refused;
   it is checked in Go, with no wallet call, and cannot be changed afterwards). Checkout makes no RPC: in one
   transaction it moves the order out of draft, claims a free account of the active wallet by compare-and-set and pins the
   refund address, the market fee in force (`ESCROW_XMR_FEE_BPS`) and, for a physical order, the release deadline length and
-  dispatch window. With no free account, while the restore gate is set, after a restore until the sweep below has run, or
+  dispatch window. With no free account, before the watcher's first full pass after a start, while the restore gate is set, after a restore until the sweep below has run, or
   while Monero escrow is unavailable, it answers 503 and the order stays a draft.
 - **Funding at 10 or more confirmations.** The watcher reads each wallet's incoming transfers (`get_transfers` over all
   accounts). A deposit counts from 10 confirmations (or `PAYMENT_CONFIRMATIONS_XMR` when that is higher) with no unlock
@@ -301,7 +308,8 @@ wallet takes an order again and no settlement is relayed until an administrator 
   `TestXMREscrowRestoredPastDestroy`, `TestXMREscrowUnopenableKeepsSeal`, `TestXMREscrowConfirmDestroyed`,
   `TestXMREscrowRestoreRetiresSlots`, `TestXMREscrowRestoreNoUnrecordedSlot`,
   `TestXMREscrowRowlessAccountRetiresFreeSlots`, `TestXMREscrowRowlessAccountNormalCrashBurnsBatch`,
-  `TestXMREscrowRecordedAccountsKeepFreeSlots`, `TestXMREscrowOrphanSwept`, `TestXMREscrowLookaheadForOlderWallet`, `TestXMREscrowHeldSettlementConfirm`.
+  `TestXMREscrowRecordedAccountsKeepFreeSlots`, `TestXMREscrowRestoredCheckoutWaitsForReconcile`,
+  `TestXMREscrowCheckoutWaitsForFirstPass`, `TestXMREscrowRetiredAccountDepositAlerts`, `TestXMREscrowOrphanSwept`, `TestXMREscrowLookaheadForOlderWallet`, `TestXMREscrowHeldSettlementConfirm`.
   `scripts/test-backup-restore.sh` (run in CI) restores a real dump through `scripts/restore.sh` with Monero escrow rows
   and checks the holds, the retired slots, the closed wallets and the sweep marker.
 - Real `monerod` and `monero-wallet-rpc` 0.18.5.1 on a local fakechain, run by the `escrow-xmr-regtest` CI job (A-498) or by hand

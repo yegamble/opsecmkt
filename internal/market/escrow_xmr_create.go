@@ -21,7 +21,8 @@ import (
 // transaction moves the order out of draft, claims a free slot of
 // the active wallet by compare-and-set (FOR UPDATE SKIP LOCKED: concurrent checkouts never wait for, or take, the same
 // slot) and inserts the escrow at the slot's address with the fee snapshot and, for a physical order, the release
-// deadline length and dispatch window. With no free slot, while the restore gate is set, after a restore until Monero
+// deadline length and dispatch window. With no free slot (none counts before the watcher has reconciled the active
+// wallet after this process started, PAY66-9), while the restore gate is set, after a restore until Monero
 // escrow's sweep (xmrEscrowSweepKey) or while Monero escrow is unavailable it answers a fixed 503 and the order stays a
 // draft. The escrow watcher made each slot ahead of time (escrow_xmr_watch.go).
 
@@ -149,12 +150,14 @@ func xmrEscrowCheckoutAction(c *actionCtx) (actionResult, error) {
 	if _, err = a.transition(withCheckoutPrice(context.WithValue(ctx, escrowCheckoutCtx{}, true)), c.Tx, o.ID, stateDraft, stateAwaitingPayment, c.User, "Monero escrow address requested"); err != nil {
 		return actionResult{}, err
 	}
-	// The claim: a free slot of the active wallet, by compare-and-set; a slot another checkout holds is skipped.
+	// The claim: a free slot of the active wallet, by compare-and-set; a slot another checkout holds is skipped. Only
+	// once the watcher has reconciled that wallet in this process (PAY66-9): before, a restored database's free slot
+	// may be an account the wallet already gave out.
 	var slot int64
 	var addr string
 	err = c.Tx.QueryRowContext(ctx, `UPDATE xmr_escrow_slots SET state='claimed',order_id=$1,updated=now() WHERE id=(
-		SELECT s.id FROM xmr_escrow_slots s JOIN xmr_escrow_wallets w ON w.id=s.wallet_id WHERE s.state='free' AND w.state='active'
-		ORDER BY s.id LIMIT 1 FOR UPDATE OF s SKIP LOCKED) AND state='free' RETURNING id,address`, o.ID).Scan(&slot, &addr)
+		SELECT s.id FROM xmr_escrow_slots s JOIN xmr_escrow_wallets w ON w.id=s.wallet_id WHERE s.state='free' AND w.state='active' AND w.id=$2
+		ORDER BY s.id LIMIT 1 FOR UPDATE OF s SKIP LOCKED) AND state='free' RETURNING id,address`, o.ID, x.reconciled.Load()).Scan(&slot, &addr)
 	if err == sql.ErrNoRows {
 		return actionResult{}, errXMREscrowNoSlot
 	}

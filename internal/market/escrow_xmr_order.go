@@ -257,7 +257,8 @@ func (a *App) xmrEscrowCheckoutOffer(ctx context.Context, d *PageData) error {
 	}
 	var gate, sweep, free bool
 	if err = a.db.QueryRowContext(ctx, `SELECT `+restoreGateSQL+`,EXISTS(SELECT 1 FROM settings WHERE key=$1 AND value='true'),
-		EXISTS(SELECT 1 FROM xmr_escrow_slots s JOIN xmr_escrow_wallets w ON w.id=s.wallet_id WHERE s.state='free' AND w.state='active')`, xmrEscrowSweepKey).Scan(&gate, &sweep, &free); err != nil {
+		EXISTS(SELECT 1 FROM xmr_escrow_slots s JOIN xmr_escrow_wallets w ON w.id=s.wallet_id WHERE s.state='free' AND w.state='active' AND w.id=$2)`,
+		xmrEscrowSweepKey, a.escrowXMR.reconciled.Load()).Scan(&gate, &sweep, &free); err != nil {
 		return err
 	}
 	switch {
