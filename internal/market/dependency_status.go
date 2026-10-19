@@ -1,6 +1,7 @@
 package market
 
 import (
+	"cmp"
 	"context"
 	"net"
 	"net/http"
@@ -14,18 +15,30 @@ import (
 )
 
 // DependencyStatusView is populated only after current administrator authorization.
-// It contains service labels and version strings, never service endpoint identities.
+// It contains service labels, version strings, fixed health text, error classes and times, never service endpoint
+// identities.
 type DependencyStatusView struct {
 	Profile, ReportState, Checked string
 	Stale                         bool
 	NeedsAttention                bool
+	WorkerMissing                 bool // no authenticated report: the panel names the operator step (A-553)
 	Rows                          []DependencyStatusRow
 	Warnings                      []string
 }
 type DependencyStatusRow struct {
 	Service, Current, Latest, Evidence, Status string
 	Update                                     bool
+	// Health (A-553): reachable, synced, last successful check and last error class, as this app observed them; no
+	// URL, host, address or credential. HealthAttention marks a failing service.
+	Health          []string
+	HealthAttention bool
 }
+
+const (
+	// marketServiceLabel is the dependency table's row for this market's own build (A-553).
+	marketServiceLabel = "OPSEC Market (this app)"
+	dependencyNoReport = "No authenticated dependency report is available, so installed versions are not compared with upstream releases."
+)
 
 func init() { registerLoader("admin", loadDependencyStatus) }
 
@@ -55,8 +68,8 @@ func loadDependencyStatus(ctx context.Context, a *App, _ *http.Request, d *PageD
 	report, err := dependencies.ReadVerified(os.Getenv("DEPENDENCY_REPORT_FILE"), os.Getenv("DEPENDENCY_REPORT_PUBLIC_KEY"), time.Now())
 	entries := map[string]dependencies.Entry{}
 	if err != nil {
-		view.NeedsAttention = true
-		view.ReportState = "No authenticated dependency report is available. Configure the separate versions worker and its pinned public verification key."
+		view.NeedsAttention, view.WorkerMissing = true, true
+		view.ReportState = dependencyNoReport
 	} else {
 		view.ReportState = "Signature verified against the configured worker key."
 		view.Checked = report.GeneratedAt.UTC().Format(time.RFC3339)
@@ -69,16 +82,23 @@ func loadDependencyStatus(ctx context.Context, a *App, _ *http.Request, d *PageD
 			entries[entry.Service] = entry
 		}
 	}
+	now := time.Now()
 	observed := map[string]string{"go": dependencies.Normalize(runtime.Version())}
+	evidence := map[string]string{"go": "Observed by this app (its own process)", "postgresql": "Observed by this app (its database connection)"}
+	health := map[string][]string{"go": {"Running in this process"}, "tor": {"Not observed by this app: it has no connection to Tor"}}
+	attention := map[string]bool{}
 	var postgres string
 	queryCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	if a.db.QueryRowContext(queryCtx, `SHOW server_version`).Scan(&postgres) == nil {
-		if fields := strings.Fields(postgres); len(fields) > 0 {
-			observed["postgresql"] = dependencies.Normalize(fields[0])
-		}
-	}
+	pgErr := a.db.QueryRowContext(queryCtx, `SHOW server_version`).Scan(&postgres)
 	cancel()
-	evidence := map[string]string{}
+	if fields := strings.Fields(postgres); pgErr == nil && len(fields) > 0 {
+		observed["postgresql"] = dependencies.Normalize(fields[0])
+	}
+	health["postgresql"] = []string{"Reachable: answered this page's queries, " + now.UTC().Format(scannerStamp)}
+	if pgErr != nil {
+		health["postgresql"] = append(health["postgresql"], "Version query failed ("+errorCause(pgErr)+")")
+		attention["postgresql"] = true
+	}
 	if a.isolatedUploads { // A-552: the upload gateway's latest scanner report
 		g, err := a.gatewayScanner(ctx)
 		if err != nil {
@@ -91,26 +111,80 @@ func loadDependencyStatus(ctx context.Context, a *App, _ *http.Request, d *PageD
 				evidence["clamav"] += "; that report is stale"
 			}
 		}
-	} else if a.scanner != nil {
-		if fields := strings.Fields(a.scanner.State().Engine); len(fields) == 2 {
-			observed["clamav"] = dependencies.Normalize(fields[1])
+		if g.received.IsZero() {
+			health["clamav"], attention["clamav"] = []string{"No scanner report from the upload gateway yet"}, true
+		} else {
+			state := g.report.State
+			if g.report.Cause != "" {
+				state += " (" + g.report.Cause + ")"
+			}
+			health["clamav"] = []string{"Upload gateway reports: " + state, "Report received: " + healthStamp(g.received, now)}
+			attention["clamav"] = !g.fresh || g.report.State != scannerReady
+			if !g.fresh {
+				health["clamav"] = append(health["clamav"], "Report stale: none received for over 3 minutes")
+			}
 		}
+	} else if a.scanner != nil {
+		st := a.scanner.State()
+		if fields := strings.Fields(st.Engine); len(fields) == 2 {
+			observed["clamav"] = dependencies.Normalize(fields[1])
+			evidence["clamav"] = "Observed by this app (its clamd connection)"
+		}
+		health["clamav"] = []string{"Scanner: " + describeState(st)}
+		if !st.Checked.IsZero() {
+			health["clamav"] = append(health["clamav"], "Last checked by this app: "+healthStamp(st.Checked, now))
+		}
+		attention["clamav"] = st.Name != scannerReady && st.Name != scannerDisabled
+	} else {
+		health["clamav"] = []string{"No scanner on this app"}
 	}
+	// A-553: the Monero nodes as this app's watcher last saw them over their RPC (escrow_xmr_health.go). monerod
+	// reports its release in get_info except on a restricted RPC; get_version gives only the RPC interface version,
+	// the only version monero-wallet-rpc reports.
+	rpcOnly := map[string]string{}
+	if a.escrowXMR == nil {
+		for _, service := range []string{"monerod", "monero-wallet-rpc"} {
+			health[service] = []string{"Monero escrow is off on this app (ESCROW_XMR): not checked"}
+		}
+	} else {
+		h, err := a.xmrHealth(ctx)
+		if err != nil {
+			return err
+		}
+		if s := h.rec.Daemon; s.Release != "" {
+			observed["monerod"], evidence["monerod"] = s.Release, "Observed by this app (monerod get_info)"
+		} else if s.RPC != "" {
+			rpcOnly["monerod"] = "Observed by this app: RPC interface " + s.RPC + "; this daemon's restricted RPC does not report its release number"
+		}
+		if s := h.rec.Wallet; s.RPC != "" {
+			rpcOnly["monero-wallet-rpc"] = "Observed by this app: wallet RPC interface " + s.RPC + "; monero-wallet-rpc does not report its release number over RPC"
+		}
+		health["monerod"], attention["monerod"] = h.nodeHealth(true)
+		health["monero-wallet-rpc"], attention["monero-wallet-rpc"] = h.nodeHealth(false)
+	}
+	view.Rows = append(view.Rows, marketBuildRow())
 	for _, service := range []string{"postgresql", "monerod", "monero-wallet-rpc", "tor", "clamav", "go"} {
 		entry := entries[service]
-		row := DependencyStatusRow{Service: dependencyLabel(service), Current: entry.Current, Latest: entry.Latest, Evidence: "Reported by operator inventory", Status: "Unknown"}
+		row := DependencyStatusRow{Service: dependencyLabel(service), Current: entry.Current, Latest: entry.Latest, Evidence: "Reported by operator inventory", Status: "Unknown",
+			Health: health[service], HealthAttention: attention[service]}
 		if current := observed[service]; current != "" {
 			row.Current = current
-			row.Evidence = "Observed on this app connection or process"
-			if e := evidence[service]; e != "" {
-				row.Evidence = e
-			}
+			row.Evidence = cmp.Or(evidence[service], "Observed by this app")
 		}
 		if row.Current == "" {
 			row.Current = "Unknown"
 			row.Evidence = "Installed version has not been reported"
 		}
-		if row.Latest == "" {
+		if note := rpcOnly[service]; note != "" && observed[service] == "" {
+			row.Evidence = note
+			if entry.Current != "" {
+				row.Evidence += "; the release shown is reported by operator inventory"
+			}
+		}
+		if row.Latest == "" && view.WorkerMissing {
+			row.Latest = "Not checked"
+			row.Status = "Not compared: versions worker not configured"
+		} else if row.Latest == "" {
 			row.Latest = "Unknown"
 			row.Status = "Release check unavailable"
 		} else if row.Current == "Unknown" {
@@ -126,13 +200,74 @@ func loadDependencyStatus(ctx context.Context, a *App, _ *http.Request, d *PageD
 		if view.Stale {
 			row.Status += "; report stale"
 		}
-		if row.Update || row.Current == "Unknown" || row.Latest == "Unknown" {
+		if row.Update || row.Current == "Unknown" || entry.Latest == "" || row.HealthAttention {
 			view.NeedsAttention = true
 		}
 		view.Rows = append(view.Rows, row)
 	}
 	d.DependencyStatus = view
 	return nil
+}
+
+// previewStatusPanels gives the read-only preview's System and Payments panels a labelled sample (A-553): ?status=sample
+// healthy services and watcher, ?status=attention a failing watcher pass with an unreachable daemon, wallet creation
+// stopped and no versions worker. Layout and copy only: TestDependencyStatusObservesMonero and
+// TestXMREscrowAdminShowsPassFailures prove the observations against PostgreSQL and simulated Monero RPC.
+func previewStatusPanels(d *PageData, status string) {
+	at := func(h, m int) time.Time { return time.Date(2026, 1, 17, h, m, 0, 0, time.UTC) }
+	h := xmrHealthStatus{found: true, now: at(9, 2), rec: xmrHealthRecord{Checked: at(9, 1), Good: at(9, 1),
+		Daemon: xmrSeen{OK: at(9, 1), Release: "0.18.5.1", InfoAt: at(9, 1), Height: 3312480, Synchronized: true},
+		Wallet: xmrSeen{OK: at(9, 1), RPC: "1.31"}}}
+	attention := status == "attention"
+	switch {
+	case attention:
+		h.rec.Good, h.rec.CreationStopped = at(8, 31), true
+		h.rec.Cause = "monero escrow: daemon check failed: get_info timeout"
+		h.rec.Daemon.OK, h.rec.Daemon.Error, h.rec.Daemon.ErrorAt = at(8, 31), "get_info timeout", at(9, 1)
+	case status != "sample":
+		return
+	}
+	d.XMREscrowHealth = h.view()
+	v := &DependencyStatusView{Profile: "Preview sample", ReportState: "Preview sample: no dependency report is read.", NeedsAttention: attention, WorkerMissing: attention,
+		Warnings: []string{"Preview sample: the read-only preview inspects no deployment configuration, service or dependency report."}}
+	if attention {
+		v.ReportState = dependencyNoReport
+	}
+	row := func(service, current, evidence, latest string, health []string, bad bool) DependencyStatusRow {
+		r := DependencyStatusRow{Service: service, Current: current, Evidence: evidence, Latest: latest, Status: "Matches reported upstream release", Health: health, HealthAttention: bad}
+		if attention {
+			r.Latest, r.Status = "Not checked", "Not compared: versions worker not configured"
+		}
+		return r
+	}
+	market := marketBuildRow()
+	market.Current, market.Evidence = "v0.0.0-preview", "Preview sample build; commit 0123456789ab"
+	daemonHealth, daemonBad := h.nodeHealth(true)
+	walletHealth, walletBad := h.nodeHealth(false)
+	v.Rows = []DependencyStatusRow{market,
+		row("PostgreSQL", "17.6", "Observed by this app (its database connection)", "17.6", []string{"Reachable: answered this page's queries, 2026-01-17 09:02 UTC"}, false),
+		row("Monero daemon", "0.18.5.1", "Observed by this app (monerod get_info)", "0.18.5.1", daemonHealth, daemonBad),
+		row("Monero wallet RPC", "0.18.5.1", "Observed by this app: wallet RPC interface 1.31; monero-wallet-rpc does not report its release number over RPC; the release shown is reported by operator inventory", "0.18.5.1", walletHealth, walletBad),
+		row("Tor", "0.4.8.17", "Reported by operator inventory", "0.4.8.17", []string{"Not observed by this app: it has no connection to Tor"}, false),
+		row("ClamAV", "1.4.3", "Reported by the upload gateway's scanner check", "1.4.3", []string{"Upload gateway reports: Ready", "Report received: 2026-01-17 09:01 UTC (1 minute ago)"}, false),
+		row("Go application runtime", "1.27.2", "Observed by this app (its own process)", "1.27.2", []string{"Running in this process"}, false),
+	}
+	d.DependencyStatus = v
+}
+
+// marketBuildRow is the dependency table's row for this market's own build: its version and commit (A-553). The
+// versions worker does not track the market's releases.
+func marketBuildRow() DependencyStatusRow {
+	version, commit, modified := marketBuild()
+	row := DependencyStatusRow{Service: marketServiceLabel, Current: version, Latest: "Not checked", Status: "Not tracked by the versions worker",
+		Evidence: "This running build; commit not recorded in it", Health: []string{"Serving this page"}}
+	if len(commit) >= 12 && strings.Trim(commit, "0123456789abcdef") == "" {
+		row.Evidence = "This running build; commit " + commit[:12]
+		if modified {
+			row.Evidence += ", built with uncommitted changes"
+		}
+	}
+	return row
 }
 
 func dependencyTopologyNeedsAttention(getenv func(string) string) bool {

@@ -655,7 +655,7 @@ current one is marked for screen readers). Where this guide says
 | Overview | `/admin` | Staff attention, *Get your marketplace ready*, section links |
 | Users | `/admin/users` | *Assign an account role* (with *Newest accounts*), *Reset a user's second factors*, *Suspend or restore an account*, *Staff roster* |
 | Vendors | `/admin/vendors` | *Vendor applications*: vendor policy, open applications awaiting a bond or decision, verified-vendor mark |
-| Payments | `/admin/payments` | *Escrow status and payment intake*: Monero escrow alerts, release deadline, *Monero escrow recovery and retention*, *New escrow checkouts*, *Escrow readiness* |
+| Payments | `/admin/payments` | *Escrow status and payment intake*: Monero escrow alerts, *Monero escrow watcher health*, release deadline, *Monero escrow recovery and retention*, *New escrow checkouts*, *Escrow readiness* |
 | Security & access | `/admin/security` | *Site access and registration*, *Sign-in protection* (CAPTCHA), *Handles with paused sign-in* |
 | Site & branding | `/admin/site` | *Market name and logo*, *Staff contact* |
 | Transparency | `/admin/transparency` | *Operator PGP key*, *Warrant canary*, *Signed audit export*, *Public staff list* |
@@ -668,6 +668,57 @@ unknown handle shows the Users section again. Each section page refuses buyers,
 vendors and moderators exactly as `/admin` does, and is reachable only through
 the private administrator ingress when one is configured. Bookmarks to an old
 `/admin#panel` fragment open the overview; follow its section link.
+
+### Service status and health
+
+**Admin → Service isolation and updates** (`/admin/system#dependency-status`)
+lists each service with its installed version, the latest upstream release, a
+status and a **Health** column (war room A-553). Health is only what this app
+observes itself, never a service's address, host or credentials:
+
+| Row | Installed version | Health |
+|---|---|---|
+| OPSEC Market (this app) | This build's version and commit: release binaries carry both; `go build` in a git checkout shows `development` with the checkout's commit; the Docker image build excludes `.git`, so it shows `development` with no commit | Serving this page |
+| PostgreSQL | Observed on the app's database connection | Reachable when this page's queries answered |
+| Monero daemon | Observed by this app: the release from monerod's `get_info`; a restricted RPC hides it, so the row shows the RPC interface version from `get_version` and the release from operator inventory, if any | Reachable or the failing class (for example `get_info timeout`), synced at a height or not synced (height against target, or the watcher's sync guard reason), the last successful check and the last error class with their times |
+| Monero wallet RPC | Observed by this app: monero-wallet-rpc's `get_version` reports only its RPC interface version (for example `1.31`), never its release, so the release comes from operator inventory | Reachable or the failing class, the last successful check and the last error class |
+| Tor | Operator inventory only | Not observed: the app has no connection to Tor |
+| ClamAV | The engine from the app's clamd state, or from the upload gateway's report with isolated uploads (A-552) | The scanner state and when it was checked or reported |
+| Go application runtime | Observed in this process | Running |
+
+The Monero rows come from the Monero escrow watcher, not from the page: the
+watcher records what its calls to the daemon and the wallet-rpc showed after
+every pass, and, once the daemon is synced, asks the wallet-rpc (and a daemon
+whose `get_info` hid its release) for `get_version` at most once an hour per app
+process, on the RPC connections Monero escrow already uses (no other outbound
+connection). With Monero escrow off they read *Monero escrow is off on this
+app*. Before the first pass they read *No Monero escrow watcher pass recorded
+yet*.
+
+**Latest upstream** still needs the separate versions worker. Without its
+signed report every row reads *Not compared: versions worker not configured*
+and the panel names the step: run `opsecmkt versions-worker` on its own host
+and give the app the report and its pinned key (`DEPENDENCY_REPORT_FILE` and
+`DEPENDENCY_REPORT_PUBLIC_KEY`, or `--dependency-report-dir` and
+`--dependency-report-public-key` with `deploy init`), as
+[Version-worker host](install/service-topology.md#version-worker-host)
+describes. The market's own row is not tracked by the worker; compare it with
+the release notes and `UPGRADING.md` before upgrading.
+
+**Admin → Monero escrow watcher health** (`/admin/payments#xmr-escrow-health`,
+while `ESCROW_XMR=on`) shows the latest pass and whether it completed without
+errors, otherwise **Last pass failed** with its error class (for example
+`monero escrow wallet escrow-202610-01: open_wallet unreachable`, or the
+not-ready or not-synced state), and the time and age of the last good pass. When
+`ESCROW_XMR_SEED_KEY` is not the seed key pinned in the database it shows
+**Monero escrow wallet creation stopped** (existing wallets are still read; see
+[Monero escrow](#monero-escrow) to restore or re-pin the key). With no pass
+recorded for 15 minutes it says the watcher may have stopped. The watcher
+writes all of this to one database row (`settings` key `escrow_xmr_health`)
+after each pass, so every app process shows the same state and a restart or
+redeploy keeps it. The overview flags the Payments section while the last pass
+failed, the record is stale or wallet creation is stopped, and the 10-minute
+provider outage notice points here instead of to the server logs.
 
 ### Site access and registration
 

@@ -154,6 +154,7 @@ func main() {
 			log.Fatal(err)
 		}
 	}
+	market.BuildVersion, market.BuildCommit = buildVersion, buildCommit // the admin dependency table's own row (A-553)
 	app, err := market.New(context.Background(), *preview)
 	if err != nil {
 		log.Fatal(err)

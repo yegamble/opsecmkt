@@ -797,6 +797,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		applyPreviews(&d)
 		if d.Page == "admin" {
 			previewGatewayScanner(&d, q.Get("scanner"))
+			previewStatusPanels(&d, q.Get("status"))
 		}
 		objectTitle(&d)
 		a.render(w, r, d)

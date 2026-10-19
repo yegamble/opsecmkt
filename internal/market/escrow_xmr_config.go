@@ -368,6 +368,17 @@ func (a *App) initEscrowXMR(ctx context.Context) error {
 	return nil
 }
 
+// seedKeyMismatch reports that ESCROW_XMR_SEED_KEY was checked against the seed key pinned in this database and is
+// not it: no new escrow wallet is created (xmrLogSeedKey). False before that check ran: with a changed secret
+// (xmrLogSecret) or a database error first (xmrLogUnrecorded) canCreate was never set.
+func (x *escrowXMR) seedKeyMismatch() bool {
+	if x.canCreate.Load() {
+		return false
+	}
+	s := x.state.Load()
+	return s != nil && s.line != xmrLogSecret && s.line != xmrLogUnrecorded
+}
+
 // xmrState is one of the fixed state lines of Monero escrow's startup checks with its error class ("" for none; for
 // xmrLogRefused, the refusal's fixed reason). Nothing in it comes from a node.
 type xmrState struct{ line, class string }

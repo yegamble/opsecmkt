@@ -227,7 +227,9 @@ func (a *App) xmrEscrowPollOnce(ctx context.Context) (outcome error) {
 	}()
 	providerSynced, providerUnread := false, false
 	defer func() {
-		a.noteProviderEpisode(ctx, "escrow_XMR", !x.ready.Load() || !providerSynced || providerUnread || outcome != nil)
+		cause := a.xmrPassCause(providerSynced, providerUnread, outcome) // "" exactly when the provider is good
+		a.noteProviderEpisode(ctx, "escrow_XMR", cause != "")
+		a.noteXMRHealth(ctx, cause) // A-553: the persisted health Admin → Payments and System show
 	}()
 	// Monero escrow configured but not ready (its node unreachable, or refused): no wallet is touched, but the deadlines,
 	// which make no RPC, still apply, as escrowPollOnce applies Bitcoin escrow's when its node check fails (P3-R7).
@@ -251,6 +253,7 @@ func (a *App) xmrEscrowPollOnce(ctx context.Context) (outcome error) {
 			return a.xmrDeadlines(ctx)
 		}
 		providerSynced = true
+		x.rpc.observeVersions(ctx) // A-553: get_version at most hourly; a failure only shows in the Health column
 	}
 	var gate, sweep bool
 	if err = a.db.QueryRowContext(ctx, "SELECT "+restoreGateSQL+",EXISTS(SELECT 1 FROM settings WHERE key=$1 AND value='true')", xmrEscrowSweepKey).Scan(&gate, &sweep); err != nil {

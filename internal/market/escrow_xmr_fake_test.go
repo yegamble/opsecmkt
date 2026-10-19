@@ -87,6 +87,9 @@ type fakeXMREscrow struct {
 	faults              map[string][]fakeXMRFault
 	hooks               map[string]func()
 	handlers            map[string]func(f *fakeXMREscrow, params json.RawMessage) (any, int64, string) // wallet methods, by name
+	// release is get_info's version on an unrestricted RPC ("" on a restricted one, as monerod hides it there);
+	// get_version answers the RPC interface versions 0.18.5.1 reports: the daemon's 3.16, the wallet-rpc's 1.31 (A-553).
+	release string
 
 	txs         map[string]*fakeXMRTx // transactions the daemon knows, by hash: in the pool (height 0) or mined
 	built       map[string]*fakeXMRTx // transactions transfer built, by metadata
@@ -214,7 +217,7 @@ const (
 
 func newFakeXMREscrow(t *testing.T) *fakeXMREscrow {
 	t.Helper()
-	f := &fakeXMREscrow{t: t, height: 120, nettype: "fakechain", files: map[string]*fakeXMRWalletFile{}, faults: map[string][]fakeXMRFault{}, hooks: map[string]func(){},
+	f := &fakeXMREscrow{t: t, height: 120, nettype: "fakechain", release: "0.18.5.1-release", files: map[string]*fakeXMRWalletFile{}, faults: map[string][]fakeXMRFault{}, hooks: map[string]func(){},
 		handlers: map[string]func(*fakeXMREscrow, json.RawMessage) (any, int64, string){}, txs: map[string]*fakeXMRTx{}, built: map[string]*fakeXMRTx{}, invalid: map[string]bool{}, crash: map[string]bool{}}
 	for name, h := range fakeXMRWalletMethods {
 		f.handlers[name] = h
@@ -296,7 +299,7 @@ func (f *fakeXMREscrow) serve(w http.ResponseWriter, r *http.Request, wallet boo
 		switch {
 		case h == nil:
 			code, msg = -32601, "Method not found"
-		case f.open == nil && !slices.Contains([]string{"create_wallet", "open_wallet", "close_wallet"}, req.Method):
+		case f.open == nil && !slices.Contains([]string{"create_wallet", "open_wallet", "close_wallet", "get_version"}, req.Method):
 			code, msg = -13, "No wallet file"
 		default:
 			result, code, msg = h(f, req.Params)
@@ -325,11 +328,11 @@ func (f *fakeXMREscrow) daemonMethod(method string) (any, int64, string) {
 		if f.targetAhead > 0 {
 			target = f.height + f.targetAhead
 		}
-		peers := f.peers
+		peers, release := f.peers, f.release
 		if f.restricted {
-			peers = 0
+			peers, release = 0, ""
 		}
-		return map[string]any{"nettype": f.nettype, "mainnet": f.nettype == "mainnet", "stagenet": f.nettype == "stagenet", "testnet": f.nettype == "testnet",
+		return map[string]any{"version": release, "nettype": f.nettype, "mainnet": f.nettype == "mainnet", "stagenet": f.nettype == "stagenet", "testnet": f.nettype == "testnet",
 			"height": f.height, "target_height": target, "synchronized": !f.unsynced, "outgoing_connections_count": peers, "incoming_connections_count": 0,
 			"offline": f.offline, "restricted": f.restricted, "status": "OK"}, 0, ""
 	case "get_last_block_header":
@@ -339,6 +342,8 @@ func (f *fakeXMREscrow) daemonMethod(method string) (any, int64, string) {
 		return map[string]any{"block_header": map[string]any{"height": f.height - 1, "timestamp": time.Now().Add(-f.tipAge).Unix()}, "status": "OK"}, 0, ""
 	case "hard_fork_info":
 		return map[string]any{"version": cmp.Or(f.hardFork, 16), "enabled": true, "status": "OK"}, 0, ""
+	case "get_version":
+		return map[string]any{"version": 3<<16 | 16, "release": true, "current_height": f.height, "untrusted": false, "status": "OK"}, 0, ""
 	case "get_fee_estimate":
 		if f.feeErr {
 			return nil, -5, "Internal error"
@@ -513,6 +518,9 @@ var fakeXMRWalletMethods = map[string]func(f *fakeXMREscrow, params json.RawMess
 	},
 	"get_height": func(f *fakeXMREscrow, _ json.RawMessage) (any, int64, string) {
 		return map[string]any{"height": f.height + f.walletLag}, 0, ""
+	},
+	"get_version": func(f *fakeXMREscrow, _ json.RawMessage) (any, int64, string) {
+		return map[string]any{"version": 1<<16 | 31, "release": true}, 0, ""
 	},
 	"query_key": func(f *fakeXMREscrow, _ json.RawMessage) (any, int64, string) {
 		return map[string]any{"key": f.open.mnemonic}, 0, ""

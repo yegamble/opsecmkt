@@ -56,7 +56,7 @@ func (a *App) observeProviderEpisode(ctx context.Context, provider string, bad b
 				return err
 			}
 		}
-		if err = deliverProviderEpisode(ctx, tx, provider, episode, "outage", name+" has been unavailable for about 10 minutes. Existing escrow deposits and settlements may be delayed; check escrow health and the watcher logs."); err != nil {
+		if err = deliverProviderEpisode(ctx, tx, provider, episode, "outage", name+" has been unavailable for about 10 minutes. Existing escrow deposits and settlements may be delayed. Admin → Payments (/admin/payments#xmr-escrow-health) shows the failing check and the last good pass."); err != nil {
 			return err
 		}
 	case !bad && badSince.Valid:

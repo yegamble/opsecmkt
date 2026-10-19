@@ -37,6 +37,20 @@ row naming the old and new rate and address and notifies every administrator onc
 has no record yet, so it announces the configured fee once ("none recorded before"). No migration and no new setting.
 See the operator guide's *Market fee* paragraph under Monero escrow.
 
+## Service status and Monero escrow health (A-553)
+
+*Service isolation and updates* gains a row for the market's own build and a
+Health column, and Admin → Payments shows the Monero escrow watcher's health
+([Service status and health](docs/operator-guide.md#service-status-and-health)).
+No migration and no new setting: the watcher stores its health in one `settings`
+row (`escrow_xmr_health`) after each pass, so the Monero rows read "No Monero
+escrow watcher pass recorded yet" for the first seconds after the upgrade. The
+app makes no new outbound connection; once an hour per process the watcher also
+calls `get_version` on the escrow wallet-rpc (and on a restricted daemon RPC).
+Release binaries now carry their commit; a Docker image built from source shows
+`development` without one. The 10-minute payment-provider outage notice now
+points to `/admin/payments#xmr-escrow-health` instead of the watcher logs.
+
 ## Native production encryption prerequisite
 
 The native production controller now verifies guest-managed LUKS2 storage before

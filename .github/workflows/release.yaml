@@ -58,7 +58,7 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           for goarch in amd64 arm64; do
-            CGO_ENABLED=0 GOOS=linux GOARCH=$goarch go build -trimpath -buildvcs=false -ldflags="-s -w -buildid= -X main.buildVersion=$RELEASE_TAG" \
+            CGO_ENABLED=0 GOOS=linux GOARCH=$goarch go build -trimpath -buildvcs=false -ldflags="-s -w -buildid= -X main.buildVersion=$RELEASE_TAG -X main.buildCommit=$GITHUB_SHA" \
               -o "opsecmkt-linux-$goarch" ./cmd/server
           done
           ./opsecmkt-linux-amd64 --help > application-usage.txt

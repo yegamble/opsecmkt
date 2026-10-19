@@ -10,8 +10,11 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
+
+	"opsecmkt/internal/dependencies"
 )
 
 // Monero escrow (WR-escrow Phase 3, A-248): the adapter for the escrow's own monero-wallet-rpc and monerod. It is
@@ -180,6 +183,109 @@ type xmrEscrowRPC struct {
 	// mainnet: the market is configured for mainnet with MONERO_NETWORK=mainnet (App.live; initEscrowXMR, A-460):
 	// checkDaemon accepts a mainnet daemon only. False, it accepts a fakechain or stagenet one only. Set before use.
 	mainnet bool
+
+	// What this process's calls last showed of each node (A-553, escrow_xmr_health.go): kept under seenMu, and
+	// stored in the database by the watcher after each pass. versionsAt is when a pass last asked for versions.
+	seenMu              sync.Mutex
+	daemonSeen, walSeen xmrSeen
+	versionsAt          time.Time
+}
+
+// xmrSeen is what one escrow node's calls in this process last showed (A-553): when it last answered (a result, or a
+// JSON-RPC error: the node is reachable), the method and class of its last failed call (xmrErrorClass: unreachable,
+// timeout, credentials, forbidden or bad-reply) and when, and the versions and sync state it last reported. Only
+// fixed classes, version numbers, heights and times: nothing a node sent as text, and no URL or host.
+type xmrSeen struct {
+	OK           time.Time `json:"ok,omitzero"`
+	Error        string    `json:"error,omitempty"`
+	ErrorAt      time.Time `json:"error_at,omitzero"`
+	Release      string    `json:"release,omitempty"` // the daemon's get_info version, numeric ("" on a restricted RPC)
+	RPC          string    `json:"rpc,omitempty"`     // get_version: the RPC interface version, major.minor
+	InfoAt       time.Time `json:"info_at,omitzero"`  // when get_info last answered: Release, Height, Target and Synchronized are from then
+	Height       int64     `json:"height,omitempty"`
+	Target       int64     `json:"target,omitempty"`
+	Synchronized bool      `json:"synchronized,omitempty"`
+	Sync         string    `json:"sync,omitempty"` // the watcher's sync guard reason (moneroNode.notSynced), "" when synced or not run
+}
+
+// note records the outcome of one call to service ("wallet" or "daemon"): a result or a JSON-RPC error is an answer;
+// anything else (classifyXMRRPC's transport classes) a failure. A call cut short by shutdown records nothing.
+func (r *xmrEscrowRPC) note(ctx context.Context, service string, err error) {
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return
+	}
+	var re *xmrRPCError
+	answered := err == nil || errors.As(err, &re) && (strings.HasPrefix(re.Class, "rpc:") || re.Class == escrowClassRescanning)
+	r.seenMu.Lock()
+	defer r.seenMu.Unlock()
+	s := &r.daemonSeen
+	if service == "wallet" {
+		s = &r.walSeen
+	}
+	if answered {
+		s.OK = time.Now().UTC()
+	} else {
+		s.Error, s.ErrorAt = xmrErrorClass(err), time.Now().UTC()
+	}
+}
+
+// seen is a copy of what this process last saw of the daemon and the wallet-rpc.
+func (r *xmrEscrowRPC) seen() (daemon, wallet xmrSeen) {
+	r.seenMu.Lock()
+	defer r.seenMu.Unlock()
+	return r.daemonSeen, r.walSeen
+}
+
+// xmrVersionEvery is how often a watcher pass in one process asks the escrow nodes for their versions.
+const xmrVersionEvery = time.Hour
+
+// rpcVersion is service's get_version: the RPC interface version (major<<16 | minor) as "major.minor". Neither node
+// reports its release number there; monerod reports it in get_info, except on a restricted RPC.
+func (r *xmrEscrowRPC) rpcVersion(ctx context.Context, service string) (string, error) {
+	var res struct {
+		Version json.Number `json:"version"`
+	}
+	call := r.daemonCall
+	if service == "wallet" {
+		call = r.walletCall
+	}
+	if err := call(ctx, "get_version", nil, &res); err != nil {
+		return "", err
+	}
+	v, ok := xmrCount(res.Version)
+	if !ok || v > math.MaxUint32 {
+		return "", xmrBadReply(service, "get_version")
+	}
+	return strconv.FormatInt(v>>16, 10) + "." + strconv.FormatInt(v&0xffff, 10), nil
+}
+
+// observeVersions asks the wallet-rpc, and the daemon when its get_info carried no release (a restricted RPC), for
+// get_version, at most once per xmrVersionEvery in this process (the watcher's pass, once the daemon is synced). A
+// failure is only recorded (note): it never fails the pass.
+func (r *xmrEscrowRPC) observeVersions(ctx context.Context) {
+	r.seenMu.Lock()
+	due := r.versionsAt.IsZero() || time.Since(r.versionsAt) >= xmrVersionEvery
+	release := r.daemonSeen.Release
+	if due {
+		r.versionsAt = time.Now()
+	}
+	r.seenMu.Unlock()
+	if !due {
+		return
+	}
+	set := func(s *xmrSeen, v string) {
+		r.seenMu.Lock()
+		s.RPC = v
+		r.seenMu.Unlock()
+	}
+	if v, err := r.rpcVersion(ctx, "wallet"); err == nil {
+		set(&r.walSeen, v)
+	}
+	if release == "" {
+		if v, err := r.rpcVersion(ctx, "daemon"); err == nil {
+			set(&r.daemonSeen, v)
+		}
+	}
 }
 
 // nettype is the verified network type, or "" before startEscrowXMR verified it.
@@ -206,11 +312,15 @@ func (r *xmrEscrowRPC) walletCall(ctx context.Context, method string, params, ou
 }
 
 func (r *xmrEscrowRPC) walletCallWithin(ctx context.Context, timeout time.Duration, method string, params, out any) error {
-	return classifyXMRRPC("wallet", method, r.wallet.callWithin(ctx, timeout, "/json_rpc", method, params, out))
+	err := classifyXMRRPC("wallet", method, r.wallet.callWithin(ctx, timeout, "/json_rpc", method, params, out))
+	r.note(ctx, "wallet", err)
+	return err
 }
 
 func (r *xmrEscrowRPC) daemonCall(ctx context.Context, method string, params, out any) error {
-	return classifyXMRRPC("daemon", method, r.daemon.call(ctx, "/json_rpc", method, params, out))
+	err := classifyXMRRPC("daemon", method, r.daemon.call(ctx, "/json_rpc", method, params, out))
+	r.note(ctx, "daemon", err)
+	return err
 }
 
 // daemonOther posts req as plain JSON to one of monerod's other endpoints (path, e.g. /get_transactions), which
@@ -222,8 +332,11 @@ func (r *xmrEscrowRPC) daemonOther(ctx context.Context, path string, req, out an
 	}
 	raw, status, err := r.daemon.exchange(ctx, rpcTimeout, path, path, body)
 	if err != nil {
-		return classifyXMRRPC("daemon", path, err)
+		err = classifyXMRRPC("daemon", path, err)
+		r.note(ctx, "daemon", err)
+		return err
 	}
+	r.note(ctx, "daemon", nil)
 	var st struct {
 		Status string `json:"status"`
 	}
@@ -286,7 +399,9 @@ func (r *xmrEscrowRPC) openWallet(ctx context.Context, name, password string) er
 	if !xmrWalletNameOK(name) {
 		return errXMRWalletName
 	}
-	return classifyXMROpen(r.wallet.callWithin(ctx, xmrWalletSlowTimeout, "/json_rpc", "open_wallet", map[string]any{"filename": name, "password": password}, nil))
+	err := classifyXMROpen(r.wallet.callWithin(ctx, xmrWalletSlowTimeout, "/json_rpc", "open_wallet", map[string]any{"filename": name, "password": password}, nil))
+	r.note(ctx, "wallet", err)
+	return err
 }
 
 // closeWallet stores and closes the open wallet.
@@ -347,6 +462,7 @@ func (r *xmrEscrowRPC) probeWallet(ctx context.Context, name, password string) (
 		return false, errXMRWalletName
 	}
 	err = classifyXMROpen(r.wallet.callWithin(ctx, xmrWalletSlowTimeout, "/json_rpc", "open_wallet", map[string]any{"filename": name, "password": password, "autosave_current": false}, nil))
+	r.note(ctx, "wallet", err)
 	if xmrOpenRefusal(err) == xmrOpenNoFile {
 		return false, nil
 	}
@@ -884,6 +1000,7 @@ func (r *xmrEscrowRPC) daemonInfo(ctx context.Context) (xmrDaemonInfo, error) {
 		Restricted   bool        `json:"restricted"`
 		Outgoing     json.Number `json:"outgoing_connections_count"`
 		Incoming     json.Number `json:"incoming_connections_count"`
+		Version      string      `json:"version"` // "0.18.5.1-release"; "" on a restricted RPC
 	}
 	if err := r.daemonCall(ctx, "get_info", nil, &res); err != nil {
 		return xmrDaemonInfo{}, err
@@ -893,8 +1010,16 @@ func (r *xmrEscrowRPC) daemonInfo(ctx context.Context) (xmrDaemonInfo, error) {
 	out, ok3 := xmrCount(orZero(res.Outgoing))
 	in, ok4 := xmrCount(orZero(res.Incoming))
 	if !ok || !ok2 || !ok3 || !ok4 {
-		return xmrDaemonInfo{}, xmrBadReply("daemon", "get_info")
+		err := xmrBadReply("daemon", "get_info")
+		r.note(ctx, "daemon", err)
+		return xmrDaemonInfo{}, err
 	}
+	// A-553: the release (numeric only: anything else is dropped), height and sync flags for the admin Health column.
+	release, _, _ := strings.Cut(res.Version, "-")
+	r.seenMu.Lock()
+	r.daemonSeen.Release, r.daemonSeen.InfoAt = dependencies.Normalize(release), time.Now().UTC()
+	r.daemonSeen.Height, r.daemonSeen.Target, r.daemonSeen.Synchronized = h, target, res.Synchronized
+	r.seenMu.Unlock()
 	return xmrDaemonInfo{NetType: res.NetType, Mainnet: res.Mainnet, Stagenet: res.Stagenet, Testnet: res.Testnet, Height: h, TargetHeight: target,
 		Synchronized: res.Synchronized, Offline: res.Offline, Restricted: res.Restricted, Connections: out + in}, nil
 }
