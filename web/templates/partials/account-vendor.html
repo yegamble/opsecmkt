@@ -13,7 +13,8 @@ with the latest application, the bond and the administrator's payment instructio
 <div><dt>Bond received</dt><dd>{{.BondReceived}}, {{.BondHow}}</dd></div>{{end}}{{if .Decided}}
 <div><dt>Decided</dt><dd>{{.Decided}}</dd></div>{{end}}{{if .Note}}
 <div><dt>Note</dt><dd>{{.Note}}</dd></div>{{end}}
-</dl>{{if .AwaitingBond}}
+</dl>{{if .RoleRemoved}}
+<p>Your vendor role was removed by an administrator, so your account cannot publish listings. You can apply again.</p>{{end}}{{if .AwaitingBond}}
 <p>Pay the bond of <strong>{{.Bond}} XMR</strong> as the instructions below say. The bond is a non-refundable fee: it is not returned if your application is rejected or withdrawn, or when you stop selling. The market does not detect the payment: an administrator records it as received, and this page then shows the next step. {{if .Automatic}}Your application is approved once the bond is recorded.{{else}}An administrator then reviews your application.{{end}}</p>{{with $.VendorAccount.Policy.Instructions}}
 <div class="vendor-instructions">
 <h3>Bond payment instructions</h3>

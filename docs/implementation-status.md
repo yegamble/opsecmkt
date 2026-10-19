@@ -106,7 +106,12 @@ vendor by administrator H" or "… by automatic vendor approval"). Rejected and 
 cannot reach the listing actions (403). At most one open application per account (partial unique index; a second →
 409). Every admin vendor form needs the administrator's password (and authenticator code when enrolled), records a
 submission receipt and is audited on both accounts; every decision notifies the applicant. *Admin → Assign an
-account role* and the `-set-role` host command still set the vendor role directly, without an application.
+account role* and the `-set-role` host command can still set the vendor role directly; a promotion to vendor closes
+any open application (withdrawn) and records an approved one without a bond, decided by that administrator (none for
+the host command) with the note "Role assigned by an administrator". A demotion keeps the approved application:
+`/account` then shows "Vendor role removed by an administrator" and "Your vendor role was removed by an
+administrator", and the account may apply again (an approved application never counts as open)
+(`TestVendorRoleFormKeepsApplicationsConsistent`).
 
 *Verified vendor* (POST `/admin/vendor-verify`; `users.vendor_verified`, with `vendor_verified_set_by`/`_set_at` for
 the latest change): an administrator marks a vendor account verified, or removes the mark. The badge shows on the

@@ -292,6 +292,62 @@ func TestVendorApplicationWithdrawAndVerify(t *testing.T) {
 	}
 }
 
+// The admin role form and the -set-role host command keep vendor applications consistent: a direct promotion records
+// an approved application (closing an open one); a demotion keeps it, /account says the role was removed, and the
+// account can apply again.
+func TestVendorRoleFormKeepsApplicationsConsistent(t *testing.T) {
+	e := newTestApp(t)
+	admin := e.setup()
+	adminID := agStr(e, "SELECT id FROM users WHERE handle='admin_user'")
+	setVendorPolicy(e, "0", "manual", "")
+	id, session := e.user("va_roleform", "buyer")
+	e.check(e.do("POST", "/account/vendor-application", session, url.Values{"action": {"apply"}}), 303)
+	open := latestVendorApp(e, id).ID
+	setRoleForm := func(role string) {
+		t.Helper()
+		e.check(e.do("POST", "/admin", admin, url.Values{"action": {"role"}, "role": {role}, "handle": {"va_roleform"}, "password": {testPassword}}), 303)
+	}
+	setRoleForm("vendor")
+	app := latestVendorApp(e, id)
+	if app.State != "approved" || app.ID == open || agStr(e, "SELECT coalesce(decided_by,'')||'|'||note FROM vendor_applications WHERE id=$1", app.ID) != adminID+"|Role assigned by an administrator" {
+		t.Fatalf("role form promotion: %+v", app)
+	}
+	if agStr(e, "SELECT state FROM vendor_applications WHERE id=$1", open) != "withdrawn" || agInt(e, "SELECT count(*) FROM vendor_applications WHERE user_id=$1 AND state IN "+vendorOpenStates, id) != 0 {
+		t.Fatal("the open application was not closed by the promotion")
+	}
+	if !hasAudit(e, id, "Role changed from buyer to vendor by administrator admin_user") {
+		t.Errorf("promotion audit missing: %v", e.audits(id))
+	}
+	removed := func() {
+		t.Helper()
+		page := html.UnescapeString(e.body("GET", "/account", session, nil, 200))
+		mustContain(t, page, "Your vendor role was removed by an administrator", "Apply to sell")
+		mustNotContain(t, page, "<dd>Approved</dd>")
+	}
+	setRoleForm("buyer")
+	if latestVendorApp(e, id).State != "approved" {
+		t.Fatal("demotion changed the approved application")
+	}
+	removed()
+	e.check(e.do("POST", "/account/vendor-application", session, url.Values{"action": {"apply"}}), 303)
+	if latestVendorApp(e, id).State != "awaiting_approval" {
+		t.Fatal("a demoted vendor could not apply again")
+	}
+	// The host command does the same, decided by no account.
+	if _, err := SetRole(t.Context(), e.DB, "va_roleform", "vendor"); err != nil {
+		t.Fatal(err)
+	}
+	app = latestVendorApp(e, id)
+	if app.State != "approved" || agStr(e, "SELECT coalesce(decided_by,'none')||'|'||note FROM vendor_applications WHERE id=$1", app.ID) != "none|Role assigned by an administrator (host command)" {
+		t.Fatalf("host command promotion: %+v", app)
+	}
+	if _, err := SetRole(t.Context(), e.DB, "va_roleform", "buyer"); err != nil {
+		t.Fatal(err)
+	}
+	removed()
+	mustContain(t, html.UnescapeString(e.body("GET", "/account", session, nil, 200)), "Vendor role removed by an administrator")
+}
+
 func TestVendorApplicationAuthz(t *testing.T) {
 	e := newTestApp(t)
 	admin := e.setup()

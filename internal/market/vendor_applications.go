@@ -55,9 +55,10 @@ type VendorPolicyView struct {
 }
 
 // VendorApplicationView is one application: the applicant's latest on /account, or an open one in the admin queue.
+// RoleRemoved (/account only): it was approved, but the account is no longer a vendor.
 type VendorApplicationView struct {
 	ID, Handle, State, Status, Bond, Created, BondReceived, BondHow, Decided, Note string
-	HasBond, Automatic, Open, AwaitingBond, AwaitingApproval                       bool
+	HasBond, Automatic, Open, AwaitingBond, AwaitingApproval, RoleRemoved          bool
 }
 
 // VendorAccountView is the /account vendor section (buyers and vendors only).
@@ -214,6 +215,21 @@ func submitVendorApplication(ctx context.Context, tx *sql.Tx, userID string) (st
 		}
 	}
 	return state, nil
+}
+
+// vendorRoleAssigned keeps the applications consistent when the admin role form or the -set-role host command makes
+// an account a vendor directly, in tx after the account row is locked and its role set: any open application is
+// closed (withdrawn) and an approved application without a bond records the assignment, decided by adminID ("" for
+// the host command) with note. A demotion leaves the approved application; /account then says the role was removed,
+// and the account may apply again (an approved application never counts as open).
+func vendorRoleAssigned(ctx context.Context, tx *sql.Tx, userID, adminID, note string) error {
+	if _, err := tx.ExecContext(ctx, `UPDATE vendor_applications SET state='withdrawn',decided_by=NULLIF($2,''),decided_at=now(),note=$3
+		WHERE user_id=$1 AND state IN `+vendorOpenStates, userID, adminID, note); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `INSERT INTO vendor_applications(id,user_id,state,approval,bond_piconero,decided_by,decided_at,note)
+		VALUES($1,$2,'approved','manual',0,NULLIF($3,''),now(),$4)`, randomToken(), userID, adminID, note)
+	return err
 }
 
 var errVendorApplicationOpen = fail(http.StatusConflict, "You already have an open vendor application. Withdraw it first to apply again.")
@@ -603,6 +619,9 @@ func vendorAccountLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 		return err
 	}
 	if err == nil {
+		if latest.State == "approved" && d.User.Role != "vendor" {
+			latest.RoleRemoved, latest.Status = true, "Vendor role removed by an administrator"
+		}
 		view.Latest = &latest
 	}
 	view.CanApply = d.User.Role == "buyer" && (view.Latest == nil || !view.Latest.Open)

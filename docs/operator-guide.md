@@ -687,7 +687,9 @@ see, and confirm with your password (and authenticator code when enabled). A cha
   approval, recording or waiving the bond approves it; with no bond and automatic approval every vendor sign-up is a
   vendor at once, so use that only where anyone may sell.
 - Approval gives the vendor role (audited like *Assign an account role*); rejected or withdrawn applicants stay buyers.
-  *Assign an account role* and `-set-role` still change roles directly, without an application.
+  *Assign an account role* and `-set-role` still change roles directly: making an account a vendor records an
+  approved application ("Role assigned by an administrator") and closes any open one. A removed vendor keeps its
+  approved application, sees that its vendor role was removed and may apply again.
 - *Verified vendors* marks a vendor with a badge on its page and listings. It is your judgment as staff, not an
   identity check; the vendor is notified and the change is audited.
 
