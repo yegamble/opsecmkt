@@ -45,6 +45,7 @@ test('the other party replies once and the desk names who holds encrypted eviden
     // The buyer opens the dispute from the order page (a <details> form, no script), with a two-line reason.
     expect((await buyer.goto(`/order?id=${orderID}`))?.status()).toBe(200);
     await buyer.locator('summary', { hasText: 'Open a dispute' }).click();
+    await expect(buyer.locator('#dispute-help')).toContainText('An administrator who is not party to this order decides it and records a release or refund outcome.');
     await buyer.getByLabel('Describe the issue').fill('The parcel arrived empty.\nThe seal on the box was broken.');
     await submitAndLoad(buyer, buyer.getByRole('button', { name: 'Submit dispute' }));
     await expect(buyer).toHaveURL(/\/disputes$/);
@@ -58,7 +59,12 @@ test('the other party replies once and the desk names who holds encrypted eviden
     await buyer.goto(`/order?id=${orderID}`);
     await expect(buyer.locator('form[action="/disputes/reply"]')).toHaveCount(0);
     await expect(buyer.locator('#order-dispute').locator('..')).toContainText('The vendor may put one reply on record');
-    await expect(buyer.locator('#dispute-contacts').locator('..')).toContainText('Other moderators and administrators can see which staff member you messaged and when, never what.');
+    const contacts = buyer.locator('#dispute-contacts').locator('..');
+    await expect(contacts).toContainText('Other moderators and administrators can see which staff member you messaged and when, never what.');
+    // A-584: only an administrator decides an escrow dispute; the panel says so and labels each staff member by role.
+    await expect(contacts).toContainText('Only an administrator decides a dispute on this escrow order. Send sensitive evidence as an encrypted message to an independent administrator first; a moderator can keep it and pass it on to an administrator.');
+    await expect(contacts.locator('summary', { hasText: resolverHandle })).toHaveText(`${resolverHandle} · administrator: decides escrow disputes`);
+    await expect(contacts.locator('summary', { hasText: holderHandle })).toHaveText(`${holderHandle} · moderator: can pass evidence on to an administrator`);
 
     // A-280: the resolver opens the desk before the vendor replies and fills in the resolve form, which says the
     // vendor has not replied; it is submitted after the reply (below).
@@ -79,7 +85,8 @@ test('the other party replies once and the desk names who holds encrypted eviden
     await expect(reason).toHaveText('The parcel arrived empty.\nThe seal on the box was broken.');
     await expect(reason).toHaveCSS('white-space', 'pre-wrap');
     const field = vendor.getByLabel('Your reply to the dispute');
-    await expect(field).toHaveAccessibleDescription(/No independent moderator or administrator has a usable PGP key yet.*Stored unencrypted\. The buyer reads it on this order.*Never include an address, real name or tracking number/);
+    await expect(field).toHaveAccessibleDescription(/No independent moderator or administrator has a usable PGP key yet.*The administrator who decides this dispute reads your reply beside the buyer’s reason\..*Stored unencrypted\. The buyer reads it on this order.*Never include an address, real name or tracking number/);
+    await expect(vendor.locator('#order-dispute').locator('..')).not.toContainText('The moderator who resolves');
     await fitsAndNoScripts(vendor, 'vendor order page with the reply form at 320 px');
     await field.fill('The parcel left sealed.\nThe courier photo shows the box intact.');
     await submitAndLoad(vendor, vendor.getByRole('button', { name: 'Put reply on record' }));

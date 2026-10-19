@@ -166,3 +166,63 @@ func TestXMREscrowDisputeNoAdminResolver(t *testing.T) {
 		t.Fatal("no-resolver note written although an independent administrator exists")
 	}
 }
+
+// A-584 (STAFF66-V1): a party's page says who decides the dispute. On a Monero escrow order only an administrator
+// decides, so the open-dispute help (here and on /disputes), the reply help, the contact panel and the decision heading say so, label each
+// listed staff member by what they can do and advise messaging an independent administrator first; the panel lists
+// the same staff as before. A historical order without escrow, which a moderator may still decide, keeps the
+// moderator wording.
+func TestXMREscrowDisputePartyCopy(t *testing.T) {
+	w := newDisputeOrderWorld(t) // w.mod is an independent moderator
+	e := w.e
+	modHandle := agStr(e, "SELECT handle FROM users WHERE id=$1", w.modID)
+	adminHandle := "copy_admin_" + randomToken()[:6]
+	adminID, admin := e.user(adminHandle, "admin")
+	_, public := testPGPKey(t, "staff") // a usable staff key: the reply help then points to the contact panel
+	agExec(e, "UPDATE users SET pgp=$1 WHERE id=$2", public, adminID)
+	const (
+		escrowPanel    = "Only an administrator decides a dispute on this escrow order. Send sensitive evidence as an encrypted message to an independent administrator first"
+		escrowPassOn   = "a moderator can keep it and pass it on to an administrator"
+		escrowReply    = "The administrator who decides this dispute reads your reply beside the buyer’s reason."
+		moderatorReply = "The moderator who resolves this dispute reads your reply beside the buyer’s reason."
+		historicPanel  = "Send sensitive evidence as an encrypted message to an independent moderator or administrator."
+	)
+	adminLabel := adminHandle + " · administrator: decides escrow disputes</summary>"
+	modLabel := modHandle + " · moderator: can pass evidence on to an administrator</summary>"
+
+	order := w.fundedFor(w.buyerID, w.buyer, w.vendorID, w.vendor)
+	open := w.page("/order?id="+order, w.buyer, 200)
+	mustContain(t, open, "An administrator who is not party to this order decides it and records a release or refund outcome.",
+		"send those encrypted to an independent administrator listed under Contact dispute staff")
+	mustNotContain(t, open, "A moderator who is not party to this order reviews it", "The moderator can read")
+	disputesPage := w.page("/disputes", w.buyer, 200)
+	mustContain(t, disputesPage, "on an escrow order only an administrator who is not a party decides it",
+		"until staff record an outcome (on an escrow order, only an administrator)")
+	mustNotContain(t, disputesPage, "for moderator review", "until a moderator records an outcome")
+	dispute := w.openDispute(order, w.buyer, "The licence key was never delivered to me.")
+
+	buyerPage := w.page("/order?id="+order, w.buyer, 200)
+	mustContain(t, buyerPage, escrowPanel, escrowPassOn, adminLabel, modLabel)
+	mustNotContain(t, buyerPage, historicPanel, "The moderator who resolves")
+	vendorPage := w.page("/order?id="+order, w.vendor, 200)
+	mustContain(t, vendorPage, escrowReply, "message an independent administrator listed under Contact dispute staff", adminLabel, modLabel)
+	mustNotContain(t, vendorPage, moderatorReply, "The moderator who resolves", "message an independent moderator or administrator")
+
+	e.check(e.do("POST", "/resolve", admin, resolverForm(dispute, "refund", resolverSeen(w, order))), 303)
+	resolved := w.page("/order?id="+order, w.buyer, 200)
+	mustContain(t, resolved, "<h3>Administrator decision</h3>", escrowPanel, adminLabel, modLabel)
+	mustNotContain(t, resolved, "Moderator decision")
+
+	// A historical order without escrow, opened by the buyer: the moderator wording stays, and the roles are as before.
+	historical := e.order(w.buyerID, e.product(w.vendorID, "digital"), "XMR", stateDisputed)
+	agExec(e, "INSERT INTO disputes(id,order_id,reason) VALUES($1,$2,'Imported dispute on an order without escrow.')", randomToken(), historical)
+	agExec(e, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$3,$4,'')", historical, statePaid, stateDisputed, w.buyerID)
+	oldBuyer := w.page("/order?id="+historical, w.buyer, 200)
+	mustContain(t, oldBuyer, historicPanel, adminHandle+" · admin</summary>", modHandle+" · moderator</summary>")
+	mustNotContain(t, oldBuyer, escrowPanel, "decides escrow disputes", "can pass evidence on")
+	oldVendor := w.page("/order?id="+historical, w.vendor, 200)
+	mustContain(t, oldVendor, moderatorReply, "message an independent moderator or administrator listed under Contact dispute staff")
+	mustNotContain(t, oldVendor, escrowReply)
+	agExec(e, "UPDATE disputes SET resolution='Imported decision.' WHERE order_id=$1", historical)
+	mustContain(t, w.page("/order?id="+historical, w.buyer, 200), "<h3>Moderator decision</h3>")
+}
