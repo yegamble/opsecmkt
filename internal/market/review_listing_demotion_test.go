@@ -49,8 +49,9 @@ func TestReviewDemotionWaitsForListingCreationThenArchivesIt(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	blocked := false
 	for time.Now().Before(deadline) {
-		// The role change locks the account row (FOR UPDATE) before reading its current role for the audit rows.
-		if agInt(e, "SELECT count(*) FROM pg_stat_activity WHERE query LIKE 'SELECT id,role FROM users WHERE handle=$1 AND role<>''admin'' FOR UPDATE%' AND wait_event_type='Lock'") > 0 {
+		// The role change locks the account row (FOR UPDATE) before reading its current role (and ban, A-546) for the
+		// audit rows; the probe matches adminChange's exact statement.
+		if agInt(e, "SELECT count(*) FROM pg_stat_activity WHERE query LIKE 'SELECT id,role,banned_at IS NOT NULL FROM users WHERE handle=$1 AND role<>''admin'' FOR UPDATE%' AND wait_event_type='Lock'") > 0 {
 			blocked = true
 			break
 		}
