@@ -139,6 +139,7 @@ test('only OpenPGP-encrypted messages are accepted; status badges and the unread
   const otherKey = uniqueHandle('msgother');
   const noKey = uniqueHandle('msgnokey');
   const stranger = uniqueHandle('msgstranger');
+  test.setTimeout(90_000); // five registrations and three saved keys before the message legs
   const s = await signedIn(browser, baseURL, sender, 'browser-msg-sender-123', true);
   const r = await signedIn(browser, baseURL, withKey, 'browser-msg-recipient-123', true);
   const o = await signedIn(browser, baseURL, otherKey, 'browser-msg-other-123', true);
