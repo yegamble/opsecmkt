@@ -34,7 +34,7 @@ func TestAdminChangesRoleOfAnyAccountByHandle(t *testing.T) {
 	agExec(e, `INSERT INTO users(id,handle,password_hash,role,created)
 		SELECT 'newer-'||g, 'newer_buyer_'||g, 'x', 'buyer', now()+g*interval '1 second' FROM generate_series(1,101) g`)
 
-	page := e.body("GET", "/admin", admin, nil, 200)
+	page := e.body("GET", "/admin/users", admin, nil, 200)
 	f := adminForm(t, page, "/admin", "role")
 	mustContain(t, f, `name="handle"`, `pattern="[a-zA-Z0-9_]{3,32}"`, "Account handle")
 	mustNotContain(t, f, `name="user_id"`, "<option value=\"\">Select an account")
@@ -60,7 +60,7 @@ func TestAdminChangesRoleOfAnyAccountByHandle(t *testing.T) {
 			t.Fatalf("unknown handle %q: status %d (%s)", typed, w.Code, w.Header().Get("Content-Type"))
 		}
 		body := w.Body.String()
-		mustContain(t, body, `<div class="alert error" role="alert">No buyer, vendor or moderator has the handle`, "Control room")
+		mustContain(t, body, `<div class="alert error" role="alert">No buyer, vendor or moderator has the handle`, `href="/admin/users" aria-current="page"`)
 		rf := adminForm(t, body, "/admin", "role")
 		mustContain(t, rf, `value="`+html.EscapeString(typed)+`"`, `<option value="moderator" selected>`)
 		mustNotContain(t, adminForm(t, body, "/admin/reset-factors", ""), `value="`+html.EscapeString(typed)+`"`)
@@ -83,7 +83,7 @@ func TestAdminResetsFactorsOfAnyAccountByHandle(t *testing.T) {
 	agExec(e, "UPDATE users SET totp_enabled=true WHERE id=$1", lockedID)
 	e.user("zz_no_factor", "buyer")
 
-	page := e.body("GET", "/admin", admin, nil, 200)
+	page := e.body("GET", "/admin/users", admin, nil, 200)
 	f := adminForm(t, page, "/admin/reset-factors", "")
 	mustContain(t, f, `name="handle"`, `pattern="[a-zA-Z0-9_]{3,32}"`, "Account handle", `name="password" required`)
 	mustNotContain(t, f, `name="user_id"`)
@@ -97,7 +97,7 @@ func TestAdminResetsFactorsOfAnyAccountByHandle(t *testing.T) {
 		t.Fatalf("unknown handle: status %d", w.Code)
 	}
 	body := w.Body.String()
-	mustContain(t, body, `<div class="alert error" role="alert">No account has the handle`, "Control room")
+	mustContain(t, body, `<div class="alert error" role="alert">No account has the handle`, `href="/admin/users" aria-current="page"`)
 	mustContain(t, adminForm(t, body, "/admin/reset-factors", ""), `value="zz_nobody"`)
 	mustNotContain(t, adminForm(t, body, "/admin", "role"), `value="zz_nobody"`)
 	agExpect(e, "/admin/reset-factors", admin, form("handle", "zz_no_factor", "password", testPassword), 409, "no second factor enrolled")

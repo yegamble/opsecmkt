@@ -67,7 +67,7 @@ A normal installation starts with an **empty catalog**. There is no standalone
 2. Open `/vendor-dashboard`, choose **+ Publish a new listing**, and add a physical
    listing with stock, a description and a Monero price (for example `0.5 XMR`). Add a digital listing to exercise its editor too.
 3. In separate browser profiles, register a buyer and a prospective vendor at
-   `/register`. As administrator, use **Assign an account role** on `/admin`
+   `/register`. As administrator, use **Assign an account role** on `/admin/users`
    (enter the account's handle) to give the vendor account its role. Publish
    another listing as that vendor.
 4. Sign in as the buyer, browse a listing and create an order draft. Check the

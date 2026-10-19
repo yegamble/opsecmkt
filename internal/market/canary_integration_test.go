@@ -99,7 +99,7 @@ func TestCanaryIntegration(t *testing.T) {
 	if strings.Contains(body, "No signed canary published") || strings.Contains(body, "INVALID") {
 		t.Fatal("verified page shows another state too")
 	}
-	if admin := e.do("GET", "/admin", admin, nil).Body.String(); !strings.Contains(admin, "Signature verified") || !strings.Contains(admin, groupFingerprint(fp)) {
+	if admin := e.do("GET", "/admin/transparency", admin, nil).Body.String(); !strings.Contains(admin, "Signature verified") || !strings.Contains(admin, groupFingerprint(fp)) {
 		t.Fatal("admin page lacks canary status")
 	}
 
@@ -168,9 +168,9 @@ func TestOperatorKeyPacketPrivacy(t *testing.T) {
 	// Simulate a pre-refusal database row. Public and administrator views show only allowed packets.
 	e.mustExec("UPDATE settings SET value=$1 WHERE key='operator_pgp_key'", photo)
 	e.check(e.do("POST", "/admin/canary", admin, url.Values{"password": {testPassword}, "canary": {signed}}), 303)
-	for _, path := range []string{"/canary", "/admin"} {
+	for _, path := range []string{"/canary", "/admin/transparency"} {
 		session := ""
-		if path == "/admin" {
+		if path == "/admin/transparency" {
 			session = admin
 		}
 		page := e.body("GET", path, session, nil, 200)

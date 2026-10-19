@@ -351,7 +351,7 @@ func TestIsolatedUploadModeStartsWithoutAppScanner(t *testing.T) {
 		t.Fatal("isolated application must not have a scanner connection")
 	}
 	_, admin := e.user("isolated_scanner_admin", "admin")
-	w := e.do("GET", "/admin", admin, nil)
+	w := e.do("GET", "/admin/system", admin, nil)
 	if w.Code != 200 || !strings.Contains(w.Body.String(), "Separate upload gateway") || strings.Contains(w.Body.String(), "Photo uploads are off:") {
 		t.Fatalf("isolated admin scanner state: %d %s", w.Code, w.Body.String())
 	}

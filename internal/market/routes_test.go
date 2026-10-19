@@ -102,6 +102,10 @@ func TestRegistriesHaveTemplatesAndHooks(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name := range pages {
+		// An administration section (A-542) renders page:admin with its section.
+		if base, section := adminSectionPage(name); section != "" {
+			name = base
+		}
 		if tmpl.Lookup("page:"+name) == nil {
 			t.Errorf("registered page %q has no web/templates/pages/%s.html", name, name)
 		}

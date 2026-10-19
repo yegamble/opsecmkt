@@ -55,12 +55,12 @@ func TestRecentServerErrorsAreBoundedPrivateAndAdminOnly(t *testing.T) {
 	if e.A.recentErrors.snapshot()[0].Reference != refs[24] {
 		t.Fatal("snapshot changed the retained memory")
 	}
-	page := e.do("GET", "/admin", admin, nil)
+	page := e.do("GET", "/admin/system", admin, nil)
 	if page.Code != 200 || !strings.Contains(page.Body.String(), refs[24]) || strings.Contains(page.Body.String(), refs[0]) {
 		t.Fatalf("admin view: %d", page.Code)
 	}
 	for _, token := range []string{buyer, mod, ""} {
-		page := e.do("GET", "/admin", token, nil)
+		page := e.do("GET", "/admin/system", token, nil)
 		if page.Code == 200 || strings.Contains(page.Body.String(), refs[24]) {
 			t.Fatalf("unauthorized view: status%d", page.Code)
 		}

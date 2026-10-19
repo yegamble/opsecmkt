@@ -9,7 +9,7 @@ import { waitForStyles } from './styles';
 // involved: the bond is recorded by hand) and approves; the vendor then publishes a listing, and the
 // administrator's verified mark shows on it. A fresh account is made administrator for this test only, so the
 // shared administrator's password budget is untouched; the vendor policy is reset to its default at the end. The
-// admin page is reopened as /admin, not /admin#vendors: after a post lands on that URL, going to it again is a
+// Vendors section is reopened as /admin/vendors, not /admin/vendors#vendors: after a post lands on that URL, going to it again is a
 // same-document fragment navigation that does not reload the page.
 
 async function noOverflow(page: Page) {
@@ -29,7 +29,7 @@ test('vendor sign-up under bond and approval, bond recorded, approved, then publ
   const panel = admin.getByRole('region', { name: 'Vendor applications' });
   try {
     sql(`UPDATE users SET role='admin' WHERE handle='${adminHandle}'`);
-    await admin.goto('/admin');
+    await admin.goto('/admin/vendors');
     await panel.getByLabel('Bond in XMR').fill('0.25');
     await panel.getByRole('radio', { name: /Manual/ }).check();
     await panel.getByLabel('Bond payment instructions').fill('Send the bond on stagenet to the address in the canary.\nThen message the staff contact.');
@@ -37,7 +37,7 @@ test('vendor sign-up under bond and approval, bond recorded, approved, then publ
     await policy.getByLabel('Current password').fill(password);
     await policy.getByRole('button', { name: 'Save vendor policy' }).click();
     await expectNotice(admin, 'Vendor policy saved. It applies to new applications; open applications keep their bond and approval mode.');
-    await expect(admin).toHaveURL(/\/admin#vendors$/);
+    await expect(admin).toHaveURL(/\/admin\/vendors#vendors$/);
     await noOverflow(admin);
 
     // Sign up as a vendor account, with JavaScript off.
@@ -61,7 +61,7 @@ test('vendor sign-up under bond and approval, bond recorded, approved, then publ
 
     // The administrator records the bond as received, then approves.
     const decide = async (choice: RegExp, note: string) => {
-      await admin.goto('/admin');
+      await admin.goto('/admin/vendors');
       const form = panel.locator('form', { has: admin.getByRole('group', { name: `Decision for ${vendorHandle}` }) });
       await form.getByRole('radio', { name: choice }).check();
       await form.getByLabel('Note to the applicant (optional)').fill(note);
@@ -69,7 +69,7 @@ test('vendor sign-up under bond and approval, bond recorded, approved, then publ
       expect(await submitStatus(admin, () => form.getByRole('button', { name: `Record decision for ${vendorHandle}` }).click())).toBe(303);
       await expectNotice(admin, 'Vendor application updated. The applicant was notified.');
     };
-    await admin.goto('/admin');
+    await admin.goto('/admin/vendors');
     await expect(panel).toContainText(`${vendorHandle}: Waiting for bond`);
     await decide(/Record bond received/, '');
     await expect(panel).toContainText(`${vendorHandle}: Waiting for administrator approval`);
@@ -98,7 +98,7 @@ test('vendor sign-up under bond and approval, bond recorded, approved, then publ
     const product = new URL(vendor.url()).searchParams.get('id')!;
 
     // The administrator marks the vendor verified: the badge shows on the product page.
-    await admin.goto('/admin');
+    await admin.goto('/admin/vendors');
     const verify = panel.locator('form', { has: admin.getByRole('button', { name: 'Save verified mark' }) });
     await verify.getByLabel('Vendor handle').fill(vendorHandle);
     await verify.getByLabel('Mark').selectOption('verify');

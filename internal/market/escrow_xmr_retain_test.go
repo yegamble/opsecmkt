@@ -386,7 +386,7 @@ func TestXMREscrowDestroyShreds(t *testing.T) {
 		t.Fatal("a destroyed wallet was opened again")
 	}
 	_, adminSess := x.user("xf_admin_"+randomToken()[:6], "admin")
-	page := html.UnescapeString(x.page("/admin", adminSess))
+	page := html.UnescapeString(x.page("/admin/payments", adminSess))
 	if !strings.Contains(page, name) || !strings.Contains(page, "Destroyed Monero escrow wallets") || !strings.Contains(page, name+".keys") {
 		t.Fatalf("/admin does not list the destroyed wallet's files:\n%s", page)
 	}
@@ -438,7 +438,7 @@ func TestXMREscrowRestoredPastDestroy(t *testing.T) {
 		t.Fatalf("restored past its destruction: %s, %d notices", x.walletState(name), x.notified(x.admin, name))
 	}
 	_, adminSess := x.user("xf_admin_"+randomToken()[:6], "admin")
-	if p := html.UnescapeString(x.page("/admin", adminSess)); !strings.Contains(p, `action="/admin/escrow-xmr-destroyed"`) || !strings.Contains(p, name) {
+	if p := html.UnescapeString(x.page("/admin/payments", adminSess)); !strings.Contains(p, `action="/admin/escrow-xmr-destroyed"`) || !strings.Contains(p, name) {
 		t.Fatalf("/admin does not list the missing wallet:\n%s", p)
 	}
 	if f, _ := x.fake.file(name); f.password != "replaced after the backup" {
@@ -608,7 +608,7 @@ func TestXMREscrowHeldSettlementConfirm(t *testing.T) {
 	}
 	adminID, adminSess := x.user("xf_admin_"+randomToken()[:6], "admin")
 	_, modSess := x.user("xf_mod_"+randomToken()[:6], "moderator")
-	page := html.UnescapeString(x.page("/admin", adminSess))
+	page := html.UnescapeString(x.page("/admin/payments", adminSess))
 	if !strings.Contains(page, `action="/admin/escrow-xmr-rebroadcast"`) || !strings.Contains(page, shortID(order)) || !strings.Contains(page, shortID(lost)) {
 		t.Fatalf("/admin does not list the held settlements:\n%s", page)
 	}
@@ -979,7 +979,7 @@ func TestXMREscrowConfirmDestroyed(t *testing.T) {
 	if code := confirm(adminSess, id, nil); code != 409 {
 		t.Fatalf("before destroy_after: %d", code)
 	}
-	if p := html.UnescapeString(x.page("/admin", adminSess)); strings.Contains(p, `action="/admin/escrow-xmr-destroyed"`) {
+	if p := html.UnescapeString(x.page("/admin/payments", adminSess)); strings.Contains(p, `action="/admin/escrow-xmr-destroyed"`) {
 		t.Fatal("/admin offers the confirmation before destroy_after")
 	}
 	x.days(name, 91)
@@ -1007,7 +1007,7 @@ func TestXMREscrowConfirmDestroyed(t *testing.T) {
 	if x.walletState(name) != "missing" || agInt(x.testEnv, "SELECT count(*) FROM xmr_escrow_wallets WHERE name=$1 AND seed_sealed IS NOT NULL", name) != 1 {
 		t.Fatal("a refused confirmation changed the wallet")
 	}
-	if p := html.UnescapeString(x.page("/admin", adminSess)); !strings.Contains(p, `action="/admin/escrow-xmr-destroyed"`) || !strings.Contains(p, name) {
+	if p := html.UnescapeString(x.page("/admin/payments", adminSess)); !strings.Contains(p, `action="/admin/escrow-xmr-destroyed"`) || !strings.Contains(p, name) {
 		t.Fatalf("/admin does not list the missing wallet:\n%s", p)
 	}
 	if code := confirm(adminSess, id, nil); code != 303 {

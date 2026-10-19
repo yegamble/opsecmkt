@@ -154,6 +154,6 @@ func staffContactAction(c *actionCtx) (actionResult, error) {
 			}
 			return "“" + v + "”"
 		}
-		return actionResult{Redirect: "/admin", Notice: "staff-contact", Audit: "Staff contact changed from " + quoted(old) + " to " + quoted(want)}, nil
+		return actionResult{Redirect: "/admin/site", Notice: "staff-contact", Audit: "Staff contact changed from " + quoted(old) + " to " + quoted(want)}, nil
 	})
 }

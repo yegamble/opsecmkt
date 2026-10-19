@@ -916,6 +916,9 @@ func pageTitle(page string) string {
 	case "canary":
 		return "Transparency"
 	}
+	if _, section := adminSectionPage(page); section != "" {
+		return "Admin: " + adminSectionName(section)
+	}
 	return strings.ReplaceAll(strings.Title(page), "-", " ")
 }
 
@@ -933,7 +936,9 @@ func objectTitle(d *PageData) {
 
 // pageData is the state a page render starts from, before a.load fills it.
 func (a *App) pageData(r *http.Request, page, token string, user *User) PageData {
-	d := PageData{Page: page, Title: pageTitle(page), CSRF: a.csrf(token), User: user, Mode: a.mode, Query: r.URL.Query().Get("q"), Category: r.URL.Query().Get("category"), Region: r.URL.Query().Get("region"), Currency: "XMR", Settings: map[string]string{}}
+	title := pageTitle(page)
+	page, section := adminSectionPage(page)
+	d := PageData{Page: page, AdminSection: section, Title: title, CSRF: a.csrf(token), User: user, Mode: a.mode, Query: r.URL.Query().Get("q"), Category: r.URL.Query().Get("category"), Region: r.URL.Query().Get("region"), Currency: "XMR", Settings: map[string]string{}}
 	d.Access = requestSiteAccess(r)
 	if d.Access == nil && !a.preview {
 		d.Access = siteAccessFromSettings(nil)

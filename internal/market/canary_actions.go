@@ -74,7 +74,7 @@ func operatorKeyAction(c *actionCtx) (actionResult, error) {
 		if err := setSetting(c, settingOperatorFingerprint, fp); err != nil {
 			return actionResult{}, err
 		}
-		return actionResult{Redirect: "/admin", Notice: "operator-key", Audit: "Set operator PGP key " + fp + " for canary verification"}, nil
+		return actionResult{Redirect: "/admin/transparency", Notice: "operator-key", Audit: "Set operator PGP key " + fp + " for canary verification"}, nil
 	})
 }
 

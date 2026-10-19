@@ -1,6 +1,7 @@
 package market
 
 import (
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -30,20 +31,31 @@ func adminSettingForms(t *testing.T, e *testEnv) ([]adminSettingFormCase, string
 	statement := "No warrants as of 2026-10-08.\nNext update by 2026-11-08."
 	signed := canarySign(t, operator, statement, canaryKeyTime.Add(time.Hour))
 	return []adminSettingFormCase{
-		{path: "/admin/captcha", field: "captcha_required", value: "false", changed: "true", form: url.Values{"captcha_required": {"false"}}, redirect: "/admin"},
-		{path: "/admin/staff-contact", field: "staff_contact", value: "security@example.test", changed: "changed@example.test", form: url.Values{"staff_contact": {"security@example.test"}}, redirect: "/admin#staff-contact"},
-		{path: "/admin/staff-list", field: "staff_list_public", value: "true", changed: "false", form: url.Values{"staff_list_public": {"true"}}, redirect: "/admin#staff-list"},
+		{path: "/admin/captcha", field: "captcha_required", value: "false", changed: "true", form: url.Values{"captcha_required": {"false"}}, redirect: "/admin/security"},
+		{path: "/admin/staff-contact", field: "staff_contact", value: "security@example.test", changed: "changed@example.test", form: url.Values{"staff_contact": {"security@example.test"}}, redirect: "/admin/site#staff-contact"},
+		{path: "/admin/staff-list", field: "staff_list_public", value: "true", changed: "false", form: url.Values{"staff_list_public": {"true"}}, redirect: "/admin/transparency#staff-list"},
 		{path: "/admin/canary", field: "clearsigned", value: signed, changed: signed + "\nchanged", form: url.Values{"canary": {signed}}, redirect: "/canary"},
-		{path: "/admin/operator-key", field: settingOperatorKey, value: otherCanonical, changed: operatorCanonical, form: url.Values{"operator_key": {otherPub}}, redirect: "/admin#transparency"},
+		{path: "/admin/operator-key", field: settingOperatorKey, value: otherCanonical, changed: operatorCanonical, form: url.Values{"operator_key": {otherPub}}, redirect: "/admin/transparency#transparency"},
 	}, adminID, admin
+}
+
+// adminSettingPages renders the administration sections holding the setting forms (A-542) as one body.
+func adminSettingPages(t *testing.T, e *testEnv, admin string) *httptest.ResponseRecorder {
+	t.Helper()
+	all := httptest.NewRecorder()
+	for _, path := range []string{"/admin/security", "/admin/site", "/admin/transparency"} {
+		w := e.do("GET", path, admin, nil)
+		e.check(w, 200)
+		all.Body.WriteString(w.Body.String())
+	}
+	return all
 }
 
 func TestAdminSettingsConfirmedFormsRenderWithoutWrites(t *testing.T) {
 	e := newTestApp(t)
 	cases, _, admin := adminSettingForms(t, e)
 	beforeAudits := listingFormCount(t, e, "SELECT count(*) FROM audit_events")
-	page := e.do("GET", "/admin", admin, nil)
-	e.check(page, 200)
+	page := adminSettingPages(t, e, admin)
 	seen := map[string]bool{}
 	for _, tc := range cases {
 		nonce := renderedFormNonce(t, page.Body.String(), tc.path)
@@ -69,8 +81,7 @@ func TestAdminSettingsConfirmedFormsReplayOnlyExactRequest(t *testing.T) {
 	if _, err := e.DB.Exec("INSERT INTO sessions(token_hash,user_id,expires) VALUES($1,$2,now()+interval '1 hour')", digest(otherSession), adminID); err != nil {
 		t.Fatal(err)
 	}
-	page := e.do("GET", "/admin", admin, nil)
-	e.check(page, 200)
+	page := adminSettingPages(t, e, admin)
 	var oldCanaryForm url.Values
 	var oldCanaryPosted time.Time
 	for _, tc := range cases {
@@ -148,7 +159,7 @@ func TestAdminSettingsConfirmedFormsReplayOnlyExactRequest(t *testing.T) {
 	if got := listingFormCount(t, e, "SELECT count(*) FROM audit_events WHERE user_id=$1", adminID); got != beforeAudit {
 		t.Fatalf("old receipt replay added audit rows: before=%d after=%d", beforeAudit, got)
 	}
-	freshPage := e.do("GET", "/admin", admin, nil)
+	freshPage := e.do("GET", "/admin/transparency", admin, nil)
 	e.check(freshPage, 200)
 	fresh := url.Values{"canary": {oldCanaryForm.Get("canary")}, "password": {testPassword}, formNonceField: {renderedFormNonce(t, freshPage.Body.String(), "/admin/canary")}}
 	if w := e.do("POST", "/admin/canary", admin, fresh); w.Code != 400 || !strings.Contains(w.Body.String(), "does not verify") {
@@ -179,7 +190,7 @@ func TestAdminCanaryRefusalRollsBackNonceForCorrection(t *testing.T) {
 	statement := "No warrants as of 2026-10-08.\nNext update by 2026-11-08."
 	wrong := canarySign(t, other, statement, canaryKeyTime.Add(time.Hour))
 	good := canarySign(t, operator, statement, canaryKeyTime.Add(time.Hour))
-	page := e.do("GET", "/admin", admin, nil)
+	page := e.do("GET", "/admin/transparency", admin, nil)
 	e.check(page, 200)
 	form := url.Values{"canary": {wrong}, "password": {testPassword}, formNonceField: {renderedFormNonce(t, page.Body.String(), "/admin/canary")}}
 	if w := e.do("POST", "/admin/canary", admin, form); w.Code != 400 || !strings.Contains(w.Body.String(), "does not verify") {
@@ -202,7 +213,7 @@ func TestAdminCanaryLostCommitAcknowledgementCanReplaySavedResponse(t *testing.T
 	agExec(e, "INSERT INTO settings(key,value) VALUES($1,$2)", settingOperatorKey, operatorPub)
 	statement := "No warrants as of 2026-10-08.\nNext update by 2026-11-08."
 	signed := canarySign(t, operator, statement, canaryKeyTime.Add(time.Hour))
-	page := e.do("GET", "/admin", admin, nil)
+	page := e.do("GET", "/admin/transparency", admin, nil)
 	e.check(page, 200)
 	form := url.Values{"canary": {signed}, "password": {testPassword}, formNonceField: {renderedFormNonce(t, page.Body.String(), "/admin/canary")}}
 	lost := loseNextActionCommit(t, e)

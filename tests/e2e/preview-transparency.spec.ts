@@ -63,7 +63,7 @@ test('canary shows no staff list by default; the admin switch is off', async ({ 
   await expect(page.locator('#staff')).toHaveCount(0);
   await expect(page.getByRole('heading', { name: 'Market staff' })).toHaveCount(0);
   await expect(page.locator('main img')).toHaveCount(0);
-  await page.goto('/admin');
+  await page.goto('/admin/transparency');
   const panel = page.locator('#staff-list');
   await expect(panel).toContainText('Show a public staff list: Off');
   const form = panel.locator('form[method="post"][action="/admin/staff-list"]');
@@ -74,7 +74,7 @@ test('canary shows no staff list by default; the admin switch is off', async ({ 
 });
 
 test('admin transparency panels are server-rendered forms and export is visibly unavailable', async ({ page }) => {
-  await page.goto('/admin');
+  await page.goto('/admin/transparency');
   await expect(page.getByRole('heading', { name: 'Transparency', level: 2 })).toBeVisible();
   const keyPanel = page.locator('section', { has: page.getByRole('heading', { name: 'Operator PGP key' }) });
   await expect(keyPanel.locator('.fingerprint')).toHaveText(/^([0-9A-F]{4} ){9}[0-9A-F]{4}$/);

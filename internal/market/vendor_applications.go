@@ -392,7 +392,7 @@ func vendorPolicyAction(c *actionCtx) (actionResult, error) {
 				return actionResult{}, err
 			}
 		}
-		return actionResult{Redirect: "/admin", Notice: "vendor-policy", Audit: "Vendor policy changed: " + strings.Join(changes, "; ") + " (applies to new applications)"}, nil
+		return actionResult{Redirect: "/admin/vendors", Notice: "vendor-policy", Audit: "Vendor policy changed: " + strings.Join(changes, "; ") + " (applies to new applications)"}, nil
 	})
 }
 
@@ -522,7 +522,7 @@ func vendorDecisionAction(c *actionCtx) (actionResult, error) {
 				return actionResult{}, err
 			}
 		}
-		return actionResult{Redirect: "/admin", Notice: "vendor-decision", Audit: actorAudit}, nil
+		return actionResult{Redirect: "/admin/vendors", Notice: "vendor-decision", Audit: actorAudit}, nil
 	})
 }
 
@@ -583,7 +583,7 @@ func vendorVerifyAction(c *actionCtx) (actionResult, error) {
 		if _, err = insertNotification(ctx, tx, target, body, ""); err != nil {
 			return actionResult{}, err
 		}
-		return actionResult{Redirect: "/admin", Notice: "vendor-verify", Audit: actor}, nil
+		return actionResult{Redirect: "/admin/vendors", Notice: "vendor-verify", Audit: actor}, nil
 	})
 }
 

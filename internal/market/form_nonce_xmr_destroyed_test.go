@@ -49,7 +49,7 @@ func TestXMREscrowDestroyedConfirmedNonceReplayAfterRecoveryGate(t *testing.T) {
 	path := "/admin/escrow-xmr-destroyed"
 
 	callsBeforeGET := len(x.fake.callLog())
-	page := html.UnescapeString(x.page("/admin", admin))
+	page := html.UnescapeString(x.page("/admin/payments", admin))
 	nonce := xmrDestroyedFormNonce(t, page, walletID)
 	if len(x.fake.callLog()) != callsBeforeGET || agInt(x.testEnv, "SELECT count(*) FROM form_submissions WHERE action_path=$1", path) != 0 {
 		t.Fatal("admin GET wrote a receipt or made a wallet RPC")
@@ -151,7 +151,7 @@ func TestXMREscrowDestroyedConfirmedNonceReplayAfterRecoveryGate(t *testing.T) {
 	agExec(x.testEnv, "UPDATE users SET role='admin' WHERE id=$1", adminID)
 	replay := x.do("POST", path, admin, form)
 	x.check(replay, 303)
-	if replay.Header().Get("Location") != "/admin#xmr-escrow-recovery" || len(x.fake.callLog()) != callsBeforeConfirm {
+	if replay.Header().Get("Location") != "/admin/payments#xmr-escrow-recovery" || len(x.fake.callLog()) != callsBeforeConfirm {
 		t.Fatalf("saved replay changed its recorded redirect or made wallet RPC: location=%q calls=%d/%d", replay.Header().Get("Location"), len(x.fake.callLog()), callsBeforeConfirm)
 	}
 	if _, exists := x.fake.file(name); exists {

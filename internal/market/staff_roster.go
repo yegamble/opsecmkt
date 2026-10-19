@@ -32,7 +32,7 @@ func loadStaffRoster(ctx context.Context, a *App, r *http.Request, d *PageData) 
 	if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM users WHERE role IN ('admin','moderator')`).Scan(&total); err != nil {
 		return err
 	}
-	paging := activityPagingWithKey("/admin", "staff_page", total, r.URL.Query().Get("staff_page"), nil)
+	paging := activityPagingWithKey("/admin/users", "staff_page", total, r.URL.Query().Get("staff_page"), nil)
 	rows, err := tx.QueryContext(ctx, `SELECT handle,role,COALESCE(to_char(suspended_at AT TIME ZONE 'UTC','YYYY-MM-DD HH24:MI "UTC"'),''),pgp FROM users WHERE role IN ('admin','moderator') ORDER BY CASE role WHEN 'admin' THEN 0 ELSE 1 END,handle,id LIMIT $1 OFFSET $2`, activityPageSize, paging.Offset())
 	if err != nil {
 		return err

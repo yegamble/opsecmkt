@@ -159,7 +159,7 @@ func TestXMREscrowDisputeAndAdminNameNetwork(t *testing.T) {
 				{"moderator's refusal", "/disputes", mod, "Only an administrator decides a dispute on a Monero escrow order (" + c.net + "): the decision moves coins from the escrow."},
 				{"administrator's preview", "/disputes", admin, "This is a Monero escrow order (" + c.net + "): its coins are " + xmrCustody + "."},
 				{"administrator's amounts", "/disputes", admin, "the escrowed " + c.amount},
-				{"recovery heading", "/admin", admin, "Monero escrow recovery and retention (" + c.net + ")"},
+				{"recovery heading", "/admin/payments", admin, "Monero escrow recovery and retention (" + c.net + ")"},
 			} {
 				page := html.UnescapeString(x.page(p.path, p.sess))
 				if !strings.Contains(page, p.want) {

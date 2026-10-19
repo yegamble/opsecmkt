@@ -26,7 +26,7 @@ func paymentIntakeAction(c *actionCtx) (actionResult, error) {
 		if n, _ := res.RowsAffected(); n != 1 {
 			return actionResult{}, fail(409, "Payment intake settings are unavailable; restart after applying migrations")
 		}
-		out := actionResult{Redirect: "/admin", Notice: "intake-paused", Audit: "Paused new " + cur + " escrow checkouts"}
+		out := actionResult{Redirect: "/admin/payments", Notice: "intake-paused", Audit: "Paused new " + cur + " escrow checkouts"}
 		if value == intakeEscrow {
 			out.Notice = "intake-escrow"
 			out.Audit = "Enabled new " + cur + " escrow checkouts"

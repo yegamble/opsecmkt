@@ -144,14 +144,14 @@ func TestNoticeRendersInItsSection(t *testing.T) {
 	e.user("notice_target", "buyer")
 	w := e.do("POST", "/admin/suspend", admin, url.Values{"handle": {"notice_target"}, "action": {"suspend"}, "password": {testPassword}})
 	e.check(w, 303)
-	if loc := w.Header().Get("Location"); loc != "/admin#suspend" {
+	if loc := w.Header().Get("Location"); loc != "/admin/users#suspend" {
 		t.Fatalf("Location=%q", loc)
 	}
 	c := noticeSetCookie(w)
 	if c == nil || c.Value != "suspended" {
 		t.Fatalf("notice=%+v", c)
 	}
-	w = e.do("GET", "/admin", admin, nil, c)
+	w = e.do("GET", "/admin/users", admin, nil, c)
 	e.check(w, 200)
 	b := w.Body.String()
 	section := b[strings.Index(b, `id="suspend"`):]
@@ -159,8 +159,15 @@ func TestNoticeRendersInItsSection(t *testing.T) {
 	if !strings.Contains(section, `role="status">Account suspended.</div>`) || strings.Count(b, "Account suspended.") != 2 { // the section and the title
 		t.Fatalf("suspend notice not (only) in its section:\n%s", section)
 	}
-	if !strings.Contains(b, "<title>Account suspended. – Admin · ") {
+	if !strings.Contains(b, "<title>Account suspended. – Admin: Users · ") {
 		t.Fatal("title not prefixed")
+	}
+	// A-542: consumed on another administration section, it renders at the top of that section once.
+	w = e.do("GET", "/admin/system", admin, nil, c)
+	e.check(w, 200)
+	b = w.Body.String()
+	if !strings.Contains(b, `<div class="alert" role="status">Account suspended.</div>`) || strings.Count(b, "Account suspended.") != 2 {
+		t.Fatalf("suspend notice on /admin/system not shown at the top:\n%s", b)
 	}
 
 	// A-291: consumed on a page without its section (the 303 unfollowed and /login loaded in another tab), the
@@ -184,7 +191,7 @@ func TestNoticeRendersInItsSection(t *testing.T) {
 	// A failing form's page says Error in its title.
 	w = e.do("POST", "/admin/suspend", admin, url.Values{"handle": {"notice_nobody"}, "action": {"suspend"}, "password": {testPassword}})
 	e.check(w, 404)
-	if !strings.Contains(w.Body.String(), "<title>Error: Admin · ") {
+	if !strings.Contains(w.Body.String(), "<title>Error: Admin: Users · ") {
 		t.Fatal("error page title lacks the Error prefix")
 	}
 }
@@ -197,6 +204,11 @@ func TestNoticeCodesKnown(t *testing.T) {
 			t.Errorf("notice %q = %+v", k, n)
 		}
 		for _, page := range strings.Fields(n.pages) { // A-291: the pages that render the section exist
+			if base, section := adminSectionPage(page); section != "" { // A-542: admin/<slug> is a section of page:admin
+				page = base
+			} else if strings.HasPrefix(page, "admin/") {
+				t.Errorf("notice %q names unknown administration section %q", k, page)
+			}
 			if _, err := os.Stat(filepath.Join("web/templates/pages", page+".html")); err != nil {
 				t.Errorf("notice %q names page %q: %v", k, page, err)
 			}

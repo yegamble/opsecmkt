@@ -163,6 +163,7 @@ test('search has a readable keyboard focus indicator and usable text controls', 
 });
 
 test('seeded catalog text remains readable and reflows at doubled text size', async ({ page }) => {
+  test.setTimeout(90_000); // it loads every preview route, the A-542 administration sections included
   await page.goto('/');
   const panel = await filters(page);
   expect(parseFloat(await page.locator('body').evaluate(element => getComputedStyle(element).fontSize))).toBeGreaterThanOrEqual(16);

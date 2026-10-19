@@ -52,14 +52,14 @@ func TestAdminSuspendRefusals(t *testing.T) {
 	agExpect(e, "/admin/suspend", target, suspendForm("suspend", "susp_admin"), 403, "")
 	unchanged("non-admin")
 
-	// An unknown handle answers 404 with the admin page, the form keeping what was typed.
+	// An unknown handle answers 404 with the Users section (A-542), the form keeping what was typed.
 	for _, typed := range []string{"no_such_account", "Susp_Target"} {
 		w := e.do("POST", "/admin/suspend", admin, suspendForm("restore", typed))
 		if w.Code != 404 || !strings.HasPrefix(w.Header().Get("Content-Type"), "text/html") {
 			t.Fatalf("unknown handle %q: status %d", typed, w.Code)
 		}
 		body := w.Body.String()
-		mustContain(t, body, `<div class="alert error" role="alert">No account has the handle &#34;`+typed+`&#34;`, "Control room")
+		mustContain(t, body, `<div class="alert error" role="alert">No account has the handle &#34;`+typed+`&#34;`, `href="/admin/users" aria-current="page"`)
 		mustContain(t, adminForm(t, body, "/admin/suspend", ""), `value="`+typed+`"`)
 		mustNotContain(t, adminForm(t, body, "/admin/reset-factors", ""), `value="`+typed+`"`)
 	}
@@ -204,7 +204,7 @@ func TestAdminSuspendsAccount(t *testing.T) {
 	}
 	shipped, disputed := funded(), funded()
 
-	page := e.body("GET", "/admin", admin, nil, 200)
+	page := e.body("GET", "/admin/users", admin, nil, 200)
 	f := adminForm(t, page, "/admin/suspend", "")
 	mustContain(t, f, `name="handle"`, `pattern="[a-zA-Z0-9_]{3,32}"`, `name="password" required`, `value="suspend"`, `value="restore"`)
 	mustContain(t, page, "No account is suspended.")
@@ -233,7 +233,7 @@ func TestAdminSuspendsAccount(t *testing.T) {
 	if agInt(e, "SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE 'An administrator suspended your account%' AND body NOT LIKE '%http%'", vendorID) != 1 {
 		t.Fatal("suspended account not notified")
 	}
-	page = e.body("GET", "/admin", admin, nil, 200)
+	page = e.body("GET", "/admin/users", admin, nil, 200)
 	mustContain(t, page, "susp_vendor · vendor · suspended ", "factors: none (password only)", "Restoring hands the account back to whoever has its password")
 	mustNotContain(t, page, "No account is suspended.")
 
@@ -253,7 +253,7 @@ func TestAdminSuspendsAccount(t *testing.T) {
 	alice, alicePub := testPGPKey(t, "alice")
 	agEnablePGP(e, vendorID, alicePub)
 	agExec(e, "UPDATE users SET totp_enabled=true WHERE id=$1", vendorID)
-	page = e.body("GET", "/admin", admin, nil, 200)
+	page = e.body("GET", "/admin/users", admin, nil, 200)
 	mustContain(t, page, "susp_vendor · vendor · suspended ", "factors: TOTP and PGP sign-in")
 	agExec(e, "UPDATE users SET totp_enabled=false WHERE id=$1", vendorID)
 	pc := agPending(e, vendorID)
@@ -291,7 +291,7 @@ func TestAdminSuspendsAccount(t *testing.T) {
 	e.check(w, 303)
 	s := e.session(w)
 	e.check(e.do("GET", "/account", s, nil), 200)
-	mustContain(t, e.body("GET", "/admin", admin, nil, 200), "No account is suspended.")
+	mustContain(t, e.body("GET", "/admin/users", admin, nil, 200), "No account is suspended.")
 }
 
 // Session load refuses a suspended account even if a session row exists (defence in depth).

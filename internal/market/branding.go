@@ -125,7 +125,7 @@ func resetBranding(c *actionCtx) (actionResult, error) {
 		if _, err := c.Tx.ExecContext(c.Ctx(), `DELETE FROM branding_upload_tickets`); err != nil {
 			return actionResult{}, err
 		}
-		return actionResult{Redirect: "/admin#branding", Audit: "Reset marketplace logo to the default; pending logo uploads revoked"}, nil
+		return actionResult{Redirect: "/admin/site#branding", Audit: "Reset marketplace logo to the default; pending logo uploads revoked"}, nil
 	})
 }
 
@@ -134,7 +134,7 @@ var brandingHandoffTemplate = template.Must(template.New("branding-handoff").Par
 <body><main class="auth-panel"><h1>Upload market logo</h1><p>Your authorization lasts 10 minutes and allows one upload. Choose a JPEG, PNG, or simple self-contained SVG. JPEG and PNG inputs are resized and re-encoded as JPEG with a white background; their metadata is removed. Use SVG for transparent artwork. The site always fits the logo inside its fixed display box.</p>
 {{if .External}}<p>This file goes directly to the market's separate upload gateway. Your administrator password, authentication code and administrator session are not included in this form.</p>{{end}}
 <form method="post" action="{{.Action}}" enctype="multipart/form-data"><input type="hidden" name="ticket" value="{{.Ticket}}"><label for="market-logo-file">Logo file (maximum 4 MiB; SVG maximum 256 KiB)</label><input id="market-logo-file" type="file" name="logo" required accept="image/jpeg,image/png,image/svg+xml,.jpg,.jpeg,.png,.svg"><button type="submit">Upload logo</button></form>
-<p>SVG scripts, styles, linked or embedded images, animations and external resources are refused. A failed or interrupted upload may need a new authorization.</p><p><a href="/admin#branding">Back to branding settings</a></p></main></body></html>`))
+<p>SVG scripts, styles, linked or embedded images, animations and external resources are refused. A failed or interrupted upload may need a new authorization.</p><p><a href="/admin/site#branding">Back to branding settings</a></p></main></body></html>`))
 
 func brandingHandoff(a *App, w http.ResponseWriter, r *http.Request, u *User) {
 	if a.preview || u == nil || u.Role != "admin" {

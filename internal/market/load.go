@@ -483,7 +483,7 @@ func (a *App) load(r *http.Request, d *PageData) error {
 			if err = a.db.QueryRowContext(ctx, "SELECT count(*) FROM users").Scan(&total); err != nil {
 				return err
 			}
-			d.AdminUsersPaging = activityPagingWithKey("/admin", "users_page", total, r.URL.Query().Get("users_page"), nil)
+			d.AdminUsersPaging = activityPagingWithKey("/admin/users", "users_page", total, r.URL.Query().Get("users_page"), nil)
 			rows, err = a.db.QueryContext(ctx, "SELECT id,handle,role,pgp FROM users ORDER BY created DESC,id DESC LIMIT $1 OFFSET $2", activityPageSize, d.AdminUsersPaging.Offset())
 			if err != nil {
 				return err
@@ -560,6 +560,11 @@ func previewData(page string) PageData {
 		{ID: "consulting", Title: "Personal Security Consultation", Description: "A one-hour review of your everyday privacy requirements and a practical plan for reducing unnecessary data exposure.", Category: "Services", Region: "Worldwide", Kind: "digital", Vendor: "cipher_monk", VendorID: "cipher", PriceXMR: "0.079", Stock: 4},
 	}
 	u := &User{ID: "preview", Handle: "preview_user", Role: "buyer"}
+	title := strings.ReplaceAll(strings.Title(page), "-", " ")
+	page, section := adminSectionPage(page)
+	if section != "" {
+		title = pageTitle("admin/" + section)
+	}
 	if page == "admin" {
 		u.Role = "admin"
 	}
@@ -570,5 +575,5 @@ func previewData(page string) PageData {
 		u.Role = "vendor"
 	}
 	o := Order{ID: previewDraftID, ProductID: p[0].ID, Title: p[0].Title, Buyer: u.Handle, Vendor: p[0].Vendor, Currency: "XMR", Amount: p[0].PriceXMR, State: stateDraft, Status: stateLabel(stateDraft), Kind: p[0].Kind, BuyerID: u.ID, VendorID: p[0].VendorID, Created: "Sample order", Updated: "Sample order"}
-	return PageData{Page: page, Title: strings.ReplaceAll(strings.Title(page), "-", " "), Preview: true, User: u, Products: p, Product: &p[0], Orders: []Order{o}, Order: &o, Currency: "XMR", Settings: map[string]string{"site_name": "OPSEC Market"}, Users: []User{{ID: "ghost", Handle: "ghost_circuit", Role: "vendor", VendorVerified: true}}, Events: []Event{{Handle: u.Handle, Action: "Preview only — no real activity", Created: "—"}}}
+	return PageData{Page: page, AdminSection: section, Title: title, Preview: true, User: u, Products: p, Product: &p[0], Orders: []Order{o}, Order: &o, Currency: "XMR", Settings: map[string]string{"site_name": "OPSEC Market"}, Users: []User{{ID: "ghost", Handle: "ghost_circuit", Role: "vendor", VendorVerified: true}}, Events: []Event{{Handle: u.Handle, Action: "Preview only — no real activity", Created: "—"}}}
 }

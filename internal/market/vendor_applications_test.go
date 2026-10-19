@@ -65,8 +65,8 @@ func adminVendorPost(e *testEnv, admin, path string, form url.Values, want int) 
 	if w.Code != want {
 		e.t.Fatalf("POST %s %v: status=%d want %d body=%s", path, form, w.Code, want, w.Body.String())
 	}
-	if want == 303 && w.Header().Get("Location") != "/admin#vendors" {
-		e.t.Fatalf("POST %s redirected to %q, want /admin#vendors", path, w.Header().Get("Location"))
+	if want == 303 && w.Header().Get("Location") != "/admin/vendors#vendors" {
+		e.t.Fatalf("POST %s redirected to %q, want /admin/vendors#vendors", path, w.Header().Get("Location"))
 	}
 }
 
@@ -209,7 +209,7 @@ func TestVendorApplicationPolicyAppliesToNewApplicationsAndWaiver(t *testing.T) 
 	} {
 		adminVendorPost(e, admin, "/admin/vendor-policy", bad, 400)
 	}
-	page := html.UnescapeString(e.body("GET", "/admin", admin, nil, 200))
+	page := html.UnescapeString(e.body("GET", "/admin/vendors", admin, nil, 200))
 	mustContain(t, page, `id="vendors"`, "Vendor applications", "non-refundable fee")
 	id, session := e.user("va_policy_buyer", "buyer")
 	e.check(e.do("POST", "/account/vendor-application", session, url.Values{"action": {"apply"}}), 303)
@@ -219,7 +219,7 @@ func TestVendorApplicationPolicyAppliesToNewApplicationsAndWaiver(t *testing.T) 
 	if app.State != "awaiting_bond" || app.Bond != 500000000000 || app.Approval != "manual" {
 		t.Fatalf("policy change altered an existing application: %+v", app)
 	}
-	mustContain(t, html.UnescapeString(e.body("GET", "/admin", admin, nil, 200)), "va_policy_buyer", "Waiting for bond")
+	mustContain(t, html.UnescapeString(e.body("GET", "/admin/vendors", admin, nil, 200)), "va_policy_buyer", "Waiting for bond")
 	// The administrator waives the bond: recorded as waived, then approval (manual, as captured) is still needed.
 	adminVendorPost(e, admin, "/admin/vendor-applications", url.Values{"id": {app.ID}, "action": {"waive"}, "note": {"Long-standing member"}}, 303)
 	app = latestVendorApp(e, id)

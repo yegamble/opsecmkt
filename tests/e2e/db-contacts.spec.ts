@@ -91,6 +91,7 @@ test('vendor contact, unread notifications and demotion archive', async ({ brows
   // Demoting the vendor archives the listing: it leaves the catalog and the product page is gone for anyone who
   // cannot read an order on it (the administrator is not a party to the draft, which is not disputed).
   await setRole(admin, vendorHandle, 'buyer');
+  await admin.goto('/admin/system'); // A-542: the audit trail is on System & audit
   await expect(admin.locator('main')).toContainText(`Changed role of ${vendorHandle} from vendor to buyer; archived 1 active listing(s)`);
   // The actual demotion notice remains a usable unread notification at 320px; drafts above did not create one.
   await vendor.goto('/');

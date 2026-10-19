@@ -153,7 +153,7 @@ func adminSuspendAction(c *actionCtx) (actionResult, error) {
 			if err = notifyActiveCounterparties(ctx, tx, target, handle, false); err != nil {
 				return actionResult{}, err
 			}
-			return actionResult{Redirect: "/admin", Notice: "restored", Audit: "Restored account " + handle}, nil
+			return actionResult{Redirect: "/admin/users", Notice: "restored", Audit: "Restored account " + handle}, nil
 		}
 		if suspended {
 			return actionResult{}, fail(409, handle+" is already suspended; nothing was changed.")
@@ -177,7 +177,7 @@ func adminSuspendAction(c *actionCtx) (actionResult, error) {
 		if err = notifyActiveCounterparties(ctx, tx, target, handle, true); err != nil {
 			return actionResult{}, err
 		}
-		return actionResult{Redirect: "/admin", Notice: "suspended", Audit: "Suspended account " + handle + "; ended " + sessions}, nil
+		return actionResult{Redirect: "/admin/users", Notice: "suspended", Audit: "Suspended account " + handle + "; ended " + sessions}, nil
 	})
 }
 
@@ -340,16 +340,16 @@ func adminResetFactorsAction(c *actionCtx) (actionResult, error) {
 		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), target, note); err != nil {
 			return actionResult{}, err
 		}
-		return actionResult{Redirect: "/admin", Notice: "factors-reset", Audit: "Reset second factors of " + handle + ": " + off + " turned off; ended " + sessions}, nil
+		return actionResult{Redirect: "/admin/users", Notice: "factors-reset", Audit: "Reset second factors of " + handle + ": " + off + " turned off; ended " + sessions}, nil
 	})
 }
 
-// adminHandleError answers an admin form whose handle matched no eligible account with 404 and the admin
-// page again: msg in its error alert and what was typed kept in the form (set by keep).
+// adminHandleError answers an admin form whose handle matched no eligible account with 404 and the Users section
+// that holds every such form (A-542) again: msg in its error alert and what was typed kept in the form (set by keep).
 func adminHandleError(c *actionCtx, msg string, keep func(d *PageData)) error {
 	return &httpError{Code: 404, Msg: msg, Render: func(w http.ResponseWriter) {
 		a := c.A
-		d := a.pageData(c.R, "admin", c.Token, c.User)
+		d := a.pageData(c.R, "admin/users", c.Token, c.User)
 		if err := a.load(c.R, &d); err != nil {
 			a.refuse(w, c.R, c.User, 404, msg)
 			return
@@ -471,11 +471,14 @@ func adminChange(c *actionCtx) (actionResult, error) {
 	default:
 		return actionResult{}, fail(400, "Unknown action")
 	}
+	// Each form returns to the section that holds it (A-542): the role form to Users, the market name to Site & branding.
 	notice := "role"
+	back := "/admin/users"
 	if f.Get("action") == "settings" {
 		notice = "settings"
+		back = "/admin/site"
 	}
-	return actionResult{Redirect: "/admin", Notice: notice, Audit: action}, err
+	return actionResult{Redirect: back, Notice: notice, Audit: action}, err
 }
 
 // roleChanged does what an account's new role entails, in tx after its users row is locked and its role set from

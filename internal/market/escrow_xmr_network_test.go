@@ -21,7 +21,7 @@ func onStagenet(f *fakeXMREscrow) { f.nettype, f.peers = "stagenet", 8 }
 func (x *xmrEscrowEnv) adminPage() string {
 	x.t.Helper()
 	_, as := x.user("xnetadmin_"+randomToken()[:6], "admin")
-	return html.UnescapeString(x.page("/admin", as))
+	return html.UnescapeString(x.page("/admin/payments", as))
 }
 
 // xmrAdminLines reads the Monero escrow readiness alert and status row from the admin page.
@@ -45,14 +45,14 @@ func xmrAdminLines(t *testing.T, page string) (alert, readiness string) {
 	return alert, readiness
 }
 
-// adminOf is /admin, unescaped, as a new administrator of a's market.
+// adminOf is /admin/payments (A-542), unescaped, as a new administrator of a's market.
 func adminOf(t *testing.T, a *App) string {
 	t.Helper()
 	e := &testEnv{t: t, A: a, DB: a.db}
 	_, sess := e.user("xwaitadmin_"+randomToken()[:6], "admin")
-	w := e.do("GET", "/admin", sess, nil)
+	w := e.do("GET", "/admin/payments", sess, nil)
 	if w.Code != 200 {
-		t.Fatalf("GET /admin: %d", w.Code)
+		t.Fatalf("GET /admin/payments: %d", w.Code)
 	}
 	return html.UnescapeString(w.Body.String())
 }

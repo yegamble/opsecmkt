@@ -190,6 +190,6 @@ func captchaToggle(c *actionCtx) (actionResult, error) {
 			audit = "Turned off CAPTCHA for sign-in and registration"
 		}
 		audit += "; required changed from " + previous + " to " + v
-		return actionResult{Redirect: "/admin", Notice: "captcha", Audit: audit}, nil
+		return actionResult{Redirect: "/admin/security", Notice: "captcha", Audit: audit}, nil
 	})
 }

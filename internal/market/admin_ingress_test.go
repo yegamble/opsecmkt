@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -64,11 +65,16 @@ func TestPrivateAdminIngressSessionsAndSharedStaffRoutes(t *testing.T) {
 			t.Fatalf("public administrator %s: status=%d", path, w.Code)
 		}
 	}
-	if w := request(true, "GET", "/admin", admin, nil); w.Code != 200 {
-		t.Fatalf("private administrator: status=%d body=%s", w.Code, w.Body)
-	}
-	if w := request(true, "GET", "/admin", moderator, nil); w.Code != 403 {
-		t.Fatalf("private onion granted admin role to moderator: status=%d", w.Code)
+	for _, path := range adminSectionPaths {
+		if w := request(false, "GET", path, admin, nil); w.Code != 404 {
+			t.Fatalf("public administrator %s: status=%d", path, w.Code)
+		}
+		if w := request(true, "GET", path, admin, nil); w.Code != 200 {
+			t.Fatalf("private administrator %s: status=%d body=%s", path, w.Code, w.Body)
+		}
+		if w := request(true, "GET", path, moderator, nil); w.Code != 403 {
+			t.Fatalf("private onion granted admin role to moderator on %s: status=%d", path, w.Code)
+		}
 	}
 	if w := request(false, "GET", "/moderator", moderator, nil); w.Code != 200 {
 		t.Fatalf("public moderator lost desk access: status=%d", w.Code)
@@ -119,6 +125,15 @@ func TestPublicAdminIngressDeniesBeforeRequestWork(t *testing.T) {
 			paths = append(paths, path)
 		}
 	}
+	// And every administrator-only page, the administration sections (A-542) included.
+	for name, spec := range pages {
+		if adminOnlyRoles(spec.Roles) {
+			paths = append(paths, "/"+name)
+		}
+	}
+	if !slices.Contains(paths, "/admin/system") || !slices.Contains(paths, "/admin/users") {
+		t.Fatal("administration sections are not administrator-only pages")
+	}
 	for _, path := range paths {
 		for _, method := range []string{"GET", "HEAD", "POST", "PUT"} {
 			t.Run(method+path, func(t *testing.T) {
@@ -142,7 +157,7 @@ func TestPrivateAdminIngressDoesNotGrantAccountAuthorization(t *testing.T) {
 	e.setup()
 	a := e.A
 	a.adminSocket = "/run/market-admin/http.sock"
-	for _, path := range []string{"/admin", "/admin/audit-export?upto=1"} {
+	for _, path := range append([]string{"/admin/audit-export?upto=1"}, adminSectionPaths...) {
 		w := httptest.NewRecorder()
 		a.AdminHandler().ServeHTTP(w, httptest.NewRequest("GET", path, nil))
 		if w.Code != http.StatusSeeOther && w.Code != http.StatusForbidden {

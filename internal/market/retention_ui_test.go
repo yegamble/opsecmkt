@@ -53,7 +53,7 @@ func TestRetentionHoldIsPrivateConfirmedAndReplayable(t *testing.T) {
 	uid, buyer := e.user("retention_held_buyer", "buyer")
 	form := url.Values{"scope": {"account"}, "record_id": {uid}, "authority": {"Specific preservation obligation"}, "reason": {"Necessary case records"}, "readers": {"Assigned case handlers"}, "release_condition": {"Written confirmation that case ended"}, "confirm_hold": {"yes"}, "password": {testPassword}}
 	e.check(e.do("POST", "/admin/retention/hold", buyer, form), 403)
-	page := e.body("GET", "/admin", admin, nil, 200)
+	page := e.body("GET", "/admin/system", admin, nil, 200)
 	form.Set(formNonceField, renderedFormNonce(t, page, "/admin/retention/hold"))
 	e.check(e.do("POST", "/admin/retention/hold", admin, form), 303)
 	e.check(e.do("POST", "/admin/retention/hold", admin, form), 303)

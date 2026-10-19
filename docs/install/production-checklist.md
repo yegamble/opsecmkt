@@ -212,7 +212,7 @@ Leave intake paused when payments are not enabled or a required check is pending
   identifiers or unnecessary operator details. Protected originals and
   authentic verification dates are retained.
 - [ ] Tor only: the complete onion address and any mirrors are published in an
-  operator-signed document. Canary is published from `/admin`.
+  operator-signed document. Canary is published from `/admin/transparency`.
 
 ## Maintenance
 

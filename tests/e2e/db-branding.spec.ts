@@ -74,12 +74,12 @@ async function fixedBranding(page: Page, name: string, logoURL: string | null) {
 test('administrator branding reaches the whole site and awkward images keep fixed layout boxes', async ({ page: guest, browser, baseURL }) => {
   test.setTimeout(120_000);
   const admin = await signedIn(browser, baseURL, ADMIN.handle, ADMIN.password, false, 320);
-  await admin.goto('/admin');
+  await admin.goto('/admin/site');
   const originalName = await admin.getByLabel('Market name', { exact: true }).inputValue();
   const longName = 'Very Long Market Name '.repeat(4).slice(0, 80);
 
   async function saveName(name: string) {
-    await admin.goto('/admin#branding');
+    await admin.goto('/admin/site#branding');
     const panel = admin.locator('#branding');
     await panel.getByLabel('Market name', { exact: true }).fill(name);
     expect(await submitStatus(admin, () => panel.getByRole('button', { name: 'Save market name' }).click())).toBe(303);
@@ -87,7 +87,7 @@ test('administrator branding reaches the whole site and awkward images keep fixe
     await expect(panel.getByLabel('Market name', { exact: true })).toHaveValue(name);
   }
   async function saveAccess(mode: 'public' | 'members', registrations: 'open' | 'closed') {
-    await admin.goto('/admin');
+    await admin.goto('/admin/security');
     const panel = admin.locator('#access');
     await panel.locator(`input[name="site_access"][value="${mode}"]`).check();
     await panel.locator(`input[name="registrations"][value="${registrations}"]`).check();
@@ -96,7 +96,7 @@ test('administrator branding reaches the whole site and awkward images keep fixe
     await expectNotice(admin, 'Site access and registration settings saved.');
   }
   async function upload(name: string, mimeType: string, buffer: Buffer): Promise<string> {
-    await admin.goto('/admin#branding');
+    await admin.goto('/admin/site#branding');
     const authorization = admin.locator('form[action="/admin/branding/authorize"]');
     await authorization.getByLabel('Current password', { exact: true }).fill(ADMIN.password);
     expect(await submitStatus(admin, () => authorization.getByRole('button', { name: 'Authorize logo upload' }).click())).toBe(303);
@@ -108,19 +108,19 @@ test('administrator branding reaches the whole site and awkward images keep fixe
     await admin.getByLabel('Logo file (maximum 4 MiB; SVG maximum 256 KiB)', { exact: true }).setInputFiles({ name, mimeType, buffer });
     expect(await submitStatus(admin, () => admin.getByRole('button', { name: 'Upload logo', exact: true }).click())).toBe(200);
     await expect(admin.getByRole('heading', { name: 'Logo saved', exact: true })).toBeVisible();
-    await admin.goto('/admin#branding');
+    await admin.goto('/admin/site#branding');
     await withinViewport(admin.locator('#branding'), 320);
     const url = (await admin.locator('.brand .market-logo').getAttribute('src'))!;
     expect(url).toMatch(/^\/branding\/logo\/[0-9a-f]{32}$/);
     return url;
   }
   async function reset() {
-    await admin.goto('/admin#branding');
+    await admin.goto('/admin/site#branding');
     const resetForm = admin.locator('form[action="/admin/branding/reset"]');
     if (await resetForm.count() === 0) return;
     await resetForm.getByLabel('Current password', { exact: true }).fill(ADMIN.password);
     expect(await submitStatus(admin, () => resetForm.getByRole('button', { name: 'Use text wordmark' }).click())).toBe(303);
-    await expect(admin).toHaveURL(/\/admin#branding$/);
+    await expect(admin).toHaveURL(/\/admin\/site#branding$/);
     await expect(admin.locator('.brand .market-logo')).toHaveCount(0);
   }
 

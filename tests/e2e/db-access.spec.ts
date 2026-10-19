@@ -13,7 +13,7 @@ test('site access and registration are independent, including existing accounts 
   const memberPassword = 'browser-access-member-password-123';
 
   async function saveAccess(siteAccess: 'public' | 'members', registrations: 'open' | 'closed') {
-    await admin.goto('/admin');
+    await admin.goto('/admin/security');
     const panel = admin.locator('#access');
     await panel.locator(`input[name="site_access"][value="${siteAccess}"]`).check();
     await panel.locator(`input[name="registrations"][value="${registrations}"]`).check();
@@ -50,7 +50,7 @@ test('site access and registration are independent, including existing accounts 
 
   try {
     await test.step('access controls work with the keyboard at 320 px', async () => {
-      await admin.goto('/admin');
+      await admin.goto('/admin/security');
       const panel = admin.locator('#access');
       await panel.locator('input[name="site_access"][value="public"]').focus();
       await admin.keyboard.press('ArrowDown');

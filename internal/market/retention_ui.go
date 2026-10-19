@@ -165,7 +165,7 @@ func retentionHoldAction(c *actionCtx) (actionResult, error) {
 	}
 	return retentionConfirmedMutation(c, func(c *actionCtx) (string, actionResult, error) {
 		id, err := c.A.setRetentionHoldTx(c.Ctx(), c.Tx, h)
-		return id, actionResult{Redirect: "/admin", Notice: "retention-hold", Audit: "Registered or reviewed a scoped preservation hold"}, err
+		return id, actionResult{Redirect: "/admin/system", Notice: "retention-hold", Audit: "Registered or reviewed a scoped preservation hold"}, err
 	})
 }
 
@@ -175,20 +175,20 @@ func retentionReleaseAction(c *actionCtx) (actionResult, error) {
 	}
 	return retentionConfirmedMutation(c, func(c *actionCtx) (string, actionResult, error) {
 		id, err := c.A.releaseRetentionHoldTx(c.Ctx(), c.Tx, c.Form.Get("hold_id"), c.User.ID)
-		return id, actionResult{Redirect: "/admin", Notice: "retention-release", Audit: "Released a scoped preservation hold"}, err
+		return id, actionResult{Redirect: "/admin/system", Notice: "retention-release", Audit: "Released a scoped preservation hold"}, err
 	})
 }
 
 func retentionReviewAction(c *actionCtx) (actionResult, error) {
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
 		err := reviewRetentionEscrowExceptionTx(c.Ctx(), c.Tx, c.Form.Get("order_id"), time.Now().UTC())
-		return actionResult{Redirect: "/admin", Notice: "retention-review", Audit: "Reviewed a financial retention blocker; funds remain protected"}, err
+		return actionResult{Redirect: "/admin/system", Notice: "retention-review", Audit: "Reviewed a financial retention blocker; funds remain protected"}, err
 	})
 }
 
 func retentionAccountReviewAction(c *actionCtx) (actionResult, error) {
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
 		err := reviewRetentionAccountException(c.Ctx(), c.Tx, c.Form.Get("user_id"), c.User.ID)
-		return actionResult{Redirect: "/admin", Notice: "retention-review", Audit: "Reviewed an account-closure exception; necessary access remains"}, err
+		return actionResult{Redirect: "/admin/system", Notice: "retention-review", Audit: "Reviewed an account-closure exception; necessary access remains"}, err
 	})
 }

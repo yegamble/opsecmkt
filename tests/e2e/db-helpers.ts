@@ -38,14 +38,14 @@ export async function signedIn(browser: Browser, baseURL: string | undefined, ha
 
 // Submits the admin "Assign an account role" form for handle (a text input looked up on the server).
 export async function setRole(admin: Page, handle: string, role: string, adminPassword = ADMIN.password) {
-  await admin.goto('/admin');
+  await admin.goto('/admin/users');
   const form = admin.locator('form', { has: admin.getByRole('button', { name: 'Update role' }) });
   await form.getByLabel('Account handle').fill(handle);
   await form.getByLabel('Role').selectOption(role);
   await form.getByLabel('Current password').fill(adminPassword);
   await form.getByRole('button', { name: 'Update role' }).click();
   await expectNotice(admin, 'Account role saved.');
-  await expect(admin).toHaveURL(/\/admin$/);
+  await expect(admin).toHaveURL(/\/admin\/users$/);
 }
 
 // A-117: the one-shot notice a successful form post leaves on the page it returns to, and the title it prefixes.

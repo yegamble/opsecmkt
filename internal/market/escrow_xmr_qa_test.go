@@ -258,7 +258,7 @@ func TestXMREscrowRelayRefusalRetried(t *testing.T) {
 	if s := x.settlement(id); s.State != "built" || !strings.HasPrefix(x.waitClass(id), xmrRelayRefusing+" 1") || !xmrRelayConfirmed(x.waitClass(id)) || len(relayed()) != relays+1 {
 		t.Fatalf("a confirmed relay refused once under the gate: %s %q, relay_tx %d", s.State, x.waitClass(id), len(relayed())-relays)
 	}
-	if page := html.UnescapeString(x.page("/admin", adminSess)); !strings.Contains(page, shortID(order)) || !strings.Contains(page, "Confirmed: the market relays it") {
+	if page := html.UnescapeString(x.page("/admin/payments", adminSess)); !strings.Contains(page, shortID(order)) || !strings.Contains(page, "Confirmed: the market relays it") {
 		t.Fatal("the confirmed settlement left the /admin held list")
 	}
 	if code, body := confirm(); code != 409 || !strings.Contains(body, "already confirmed") {

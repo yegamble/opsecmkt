@@ -107,7 +107,7 @@ Open the setup link the installer printed:
 Fill in:
 
 - **Setup token**: from the installer. Lost it? `./scripts/install.sh setup-token`.
-- **Marketplace name**: up to 80 characters. Changeable later in `/admin`.
+- **Marketplace name**: up to 80 characters. Changeable later in `/admin/site`.
 - **Handle**: 3–32 characters. **Permanent** and visible to others. Don't reuse one from elsewhere.
 - **Password**: 12–72 bytes. No reset email exists, so use a password manager.
 
@@ -156,7 +156,7 @@ retain any imported source identity too. A database dump does not include them.
 
 ### Step 5: Configure
 
-Open `/admin` for access, registration, roles, users, CAPTCHA, the staff list, the canary and audit exports.
+Open `/admin` for the setup checklist and the administration sections: Users (roles, second-factor resets, suspension), Payments, Security & access (site access, registration, CAPTCHA), Site & branding, Transparency (staff list, canary, audit exports) and System & audit. See [Administration sections](../operator-guide.md#administration-sections).
 Details: [Feature configuration](../operator-guide.md#feature-configuration).
 
 Use [the shared access and branding steps](#choose-browsing-registration-and-branding)

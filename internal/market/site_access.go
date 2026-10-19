@@ -140,7 +140,7 @@ func saveSiteAccess(c *actionCtx) (actionResult, error) {
 		if _, err := c.Tx.ExecContext(c.Ctx(), `INSERT INTO settings(key,value) VALUES ('site_access',$1),('registrations',$2) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, mode, registrations); err != nil {
 			return actionResult{}, err
 		}
-		return actionResult{Redirect: "/admin", Notice: "access", Audit: fmt.Sprintf("Changed site access from %s to %s; registrations from %s to %s", previous[settingSiteAccess], mode, previous[settingRegistrations], registrations)}, nil
+		return actionResult{Redirect: "/admin/security", Notice: "access", Audit: fmt.Sprintf("Changed site access from %s to %s; registrations from %s to %s", previous[settingSiteAccess], mode, previous[settingRegistrations], registrations)}, nil
 	})
 }
 

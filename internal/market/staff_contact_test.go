@@ -38,7 +38,7 @@ func TestStaffContactSettingIsPasswordConfirmedAndAudited(t *testing.T) {
 		return v
 	}
 
-	f := adminForm(t, e.body("GET", "/admin", admin, nil, 200), "/admin/staff-contact", "")
+	f := adminForm(t, e.body("GET", "/admin/site", admin, nil, 200), "/admin/staff-contact", "")
 	mustContain(t, f, `name="staff_contact"`, `maxlength="200"`, `name="password" required`)
 
 	e.check(e.do("POST", "/admin/staff-contact", mod, staffContactForm(staffContactValue)), 403)
@@ -53,7 +53,7 @@ func TestStaffContactSettingIsPasswordConfirmedAndAudited(t *testing.T) {
 
 	w := e.do("POST", "/admin/staff-contact", admin, staffContactForm("  "+staffContactValue+"  "))
 	e.check(w, 303)
-	if loc := w.Header().Get("Location"); loc != "/admin#staff-contact" {
+	if loc := w.Header().Get("Location"); loc != "/admin/site#staff-contact" {
 		t.Fatalf("redirect %q", loc)
 	}
 	if setting() != staffContactValue || !e.auditExact(adminID, "Staff contact changed from (not set) to “"+staffContactValue+"” (confirmed with password)") {
@@ -65,7 +65,7 @@ func TestStaffContactSettingIsPasswordConfirmedAndAudited(t *testing.T) {
 	if setting() != long || !e.auditExact(adminID, "Staff contact changed from “"+staffContactValue+"” to “"+long+"” (confirmed with password)") {
 		t.Fatal("staff contact change not audited old→new")
 	}
-	mustContain(t, adminForm(t, e.body("GET", "/admin", admin, nil, 200), "/admin/staff-contact", ""), `value="`+long+`"`)
+	mustContain(t, adminForm(t, e.body("GET", "/admin/site", admin, nil, 200), "/admin/staff-contact", ""), `value="`+long+`"`)
 	e.check(e.do("POST", "/admin/staff-contact", admin, staffContactForm("")), 303)
 	if setting() != "" || !e.auditExact(adminID, "Staff contact changed from “"+long+"” to (not set) (confirmed with password)") {
 		t.Fatal("clearing the staff contact not audited")

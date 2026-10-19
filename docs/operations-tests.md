@@ -147,7 +147,7 @@ runs with `CLAMD_ADDRESS=clamd:3310` and the default 30-day signature age limit,
   `Opsecmkt.Test.Marker`, matching the marker string the Go and browser tests' fake clamd also looks for.
   The script packs it inside the pinned image, with no network, into an unsigned `daily.cud` built at that
   moment (`sigtool --build=daily.cud --unsigned`). Checked with ClamAV 1.5.4: clamd then answers `VERSION` with
-  `ClamAV 1.5.4/1/<the .cud's build time>`, so `/admin` shows the database 0 days old and uploads are Ready on
+  `ClamAV 1.5.4/1/<the .cud's build time>`, so `/admin/system` shows the database 0 days old and uploads are Ready on
   any calendar day. (Had it not, the fallback was the image's own signatures plus the test signature with
   `SCANNER_MAX_SIGNATURE_AGE_DAYS=90`; it is not needed.) The EICAR test string, assembled at run time and
   sent over `INSTREAM` inside the clamd container, is `stream: OK`: the image's own signatures are not loaded.
@@ -169,7 +169,7 @@ runs with `CLAMD_ADDRESS=clamd:3310` and the default 30-day signature age limit,
 - From inside clamd: `getent hosts app` resolves (the control) but `getent hosts db` does not; `nc` reaches
   `app:8080` (the control) but not the database's address on the backend network or `1.1.1.1:443`; and there
   is no default route.
-- `/admin#image-scanner` shows Ready, `daily database 1` built during the run, 0 days old (limit 30), the counts
+- `/admin/system#image-scanner` shows Ready, `daily database 1` built during the run, 0 days old (limit 30), the counts
   "3 stored · 1 refused as infected · 1 refused because the scanner failed", and the signature in the table.
 
 CI runs the leg in the container job for both database modes, after the plain smoke test. It proves the app's

@@ -63,7 +63,7 @@ test('account and admin state TOTP and CAPTCHA status truthfully', async ({ page
   const status = page.locator('.key-values div', { hasText: 'TOTP authentication' });
   await expect(status.locator('dd')).toHaveText('Not enrolled');
   await expect(page.getByRole('link', { name: 'Manage TOTP' })).toBeVisible();
-  await page.goto('/admin');
+  await page.goto('/admin/security');
   await expect(page.locator('.admin-auth')).toContainText('Sign-in protection');
   await expect(page.locator('.admin-auth')).toContainText('no audio or text alternative');
   await noScriptsNoOverflow(page);
@@ -103,15 +103,18 @@ test('password change and second-factor reset are plain POST forms and the previ
   await password.getByRole('button', { name: 'Change password' }).click();
   await expect(page.getByRole('alert')).toHaveText('Read-only preview. Start with PostgreSQL to save changes.');
 
-  await page.goto('/admin');
+  await page.goto('/admin/users');
   const reset = page.getByRole('region', { name: "Reset a user's second factors" });
   await expect(reset).toContainText('Administrator accounts cannot be reset here');
   const form = reset.locator('form[action="/admin/reset-factors"]');
   await expect(form).toHaveAttribute('method', 'post');
   await expect(form.getByLabel('Account handle')).toHaveAttribute('pattern', '[a-zA-Z0-9_]{3,32}');
   await expect(reset.locator('.account-list li', { hasText: 'ghost_circuit · TOTP' })).toHaveCount(1);
-  await expect(page.locator('table').last().locator('thead')).toContainText('Account');
   await noScriptsNoOverflow(page);
+  // The audit trail is on System & audit (A-542), its last table.
+  await page.goto('/admin/system');
+  await expect(page.locator('table').last().locator('thead')).toContainText('Account');
+  await page.goto('/admin/users');
   await form.getByLabel('Account handle').fill('ghost_circuit');
   await form.getByLabel('Current password').fill('preview-password-123');
   await form.getByRole('button', { name: 'Reset second factors' }).click();
@@ -119,7 +122,7 @@ test('password change and second-factor reset are plain POST forms and the previ
 
   // Suspend / restore: a handle, a required suspend-or-restore choice and the administrator's password; the
   // suspended accounts are listed so they can be restored.
-  await page.goto('/admin');
+  await page.goto('/admin/users');
   const suspension = page.getByRole('region', { name: 'Suspend or restore an account' });
   const suspend = suspension.locator('form[action="/admin/suspend"]');
   await expect(suspend).toHaveAttribute('method', 'post');

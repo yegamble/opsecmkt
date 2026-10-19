@@ -3,7 +3,7 @@ import { waitForStyles } from './styles';
 
 // A-544 vendor onboarding, read-only preview (layout evidence only; the preview refuses every POST). The sign-up
 // form offers a buyer or vendor account without scripts, /account shows a sample application waiting for its bond,
-// /admin shows the vendors panel, and the sample vendor carries the verified badge.
+// /admin/vendors (A-542) shows the vendors panel, and the sample vendor carries the verified badge.
 
 async function noScriptsNoOverflow(page: Page) {
   await expect(page.locator('script')).toHaveCount(0);
@@ -32,7 +32,7 @@ test('account shows a vendor application waiting for its bond', async ({ page })
 });
 
 test('admin vendors panel shows the policy, the queue and the verified mark', async ({ page }) => {
-  await page.goto('/admin');
+  await page.goto('/admin/vendors');
   const panel = page.getByRole('region', { name: 'Vendor applications' });
   await expect(panel.getByLabel('Bond in XMR')).toHaveValue('0.5');
   await expect(panel.getByRole('radio', { name: /Manual/ })).toBeChecked();

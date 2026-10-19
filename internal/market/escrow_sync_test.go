@@ -22,7 +22,7 @@ func (x *escrowEnv) onSignet() {
 func (x *escrowEnv) adminPage() string {
 	x.t.Helper()
 	_, as := x.user("syncadmin_"+randomToken()[:6], "admin")
-	return html.UnescapeString(x.page("/admin", as))
+	return html.UnescapeString(x.page("/admin/payments", as))
 }
 
 // windowPassedWording is the escrow order page's sentence for x.order past its payment window while the escrow node is

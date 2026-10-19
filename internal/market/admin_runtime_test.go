@@ -58,7 +58,7 @@ func TestAdminRuntimeUsesCurrentRoleAndProcessTime(t *testing.T) {
 	e := newTestApp(t)
 	id, token := e.user("runtime_admin", "admin")
 	e.A.startedAt = time.Date(2026, 10, 8, 12, 34, 56, 0, time.UTC)
-	w := e.do("GET", "/admin", token, nil)
+	w := e.do("GET", "/admin/system", token, nil)
 	e.check(w, 200)
 	if !strings.Contains(w.Body.String(), fmt.Sprintf("Database schema version %d", agInt(e, "SELECT max(version) FROM schema_migrations"))) || !strings.Contains(w.Body.String(), "2026-10-08T12:34:56Z") {
 		t.Fatal("missing runtime metadata")

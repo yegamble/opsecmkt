@@ -67,13 +67,13 @@ func TestDependencyStatusAdminOnlyAndNoEndpointDisclosure(t *testing.T) {
 	t.Setenv("ESCROW_XMR_DAEMON_URL", "https://secret-node.example/json_rpc")
 	t.Setenv("DEPENDENCY_REPORT_FILE", "/nonexistent-private-report")
 	t.Setenv("DEPENDENCY_REPORT_PUBLIC_KEY", "/nonexistent-pinned-key")
-	page := e.do("GET", "/admin", admin, nil)
+	page := e.do("GET", "/admin/system", admin, nil)
 	e.check(page, 200)
 	if !strings.Contains(page.Body.String(), "Service isolation and updates") || !strings.Contains(page.Body.String(), "Go application runtime") {
 		t.Fatal("admin panel missing")
 	}
 	installDependencyReportFixture(t)
-	page = e.do("GET", "/admin", admin, nil)
+	page = e.do("GET", "/admin/system", admin, nil)
 	e.check(page, 200)
 	for _, text := range []string{"Signature verified", "Report stale", "Newer upstream release available", "Review required: service isolation or dependency status needs attention."} {
 		if !strings.Contains(page.Body.String(), text) {
@@ -86,7 +86,7 @@ func TestDependencyStatusAdminOnlyAndNoEndpointDisclosure(t *testing.T) {
 		}
 	}
 	for _, token := range []string{buyer, mod, ""} {
-		page = e.do("GET", "/admin", token, nil)
+		page = e.do("GET", "/admin/system", token, nil)
 		if page.Code == 200 || strings.Contains(page.Body.String(), "Service isolation and updates") {
 			t.Fatal("non-admin received panel")
 		}

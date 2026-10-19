@@ -83,7 +83,7 @@ func rebroadcastSettlementState(t *testing.T, c rebroadcastReceiptCase) string {
 func runRebroadcastReceiptContract(t *testing.T, c rebroadcastReceiptCase) {
 	t.Helper()
 	totpKey, _ := agEnableTOTP(c.e, c.adminID)
-	page := c.e.do("GET", "/admin", c.adminSession, nil)
+	page := c.e.do("GET", "/admin/payments", c.adminSession, nil)
 	if page.Code != 200 {
 		t.Fatalf("admin GET: %d %s", page.Code, page.Body.String())
 	}
@@ -249,7 +249,7 @@ func TestMoneroEscrowRebroadcastConfirmedReceipt(t *testing.T) {
 	agExec(x.testEnv, "INSERT INTO settings(key,value) VALUES('payments_recovery_required','true') ON CONFLICT (key) DO UPDATE SET value='true'")
 	agExec(x.testEnv, "UPDATE xmr_settlements SET send_error=$2 WHERE id=$1", id, restoredSettlementHold)
 	caseInfo := rebroadcastReceiptCase{
-		e: x.testEnv, path: "/admin/escrow-xmr-rebroadcast", settlementID: fmtInt(id), orderID: order, adminID: adminID, adminSession: admin, settlementTable: "xmr_settlements", renderedForms: 1, savedRedirect: "/admin#xmr-escrow-recovery",
+		e: x.testEnv, path: "/admin/escrow-xmr-rebroadcast", settlementID: fmtInt(id), orderID: order, adminID: adminID, adminSession: admin, settlementTable: "xmr_settlements", renderedForms: 1, savedRedirect: "/admin/payments#xmr-escrow-recovery",
 		auditLike:   "Confirmed the relay of Monero escrow settlement " + fmtInt(id) + "%",
 		eventLike:   "%checked that this Monero escrow settlement's transaction was not already relayed or replaced after the market restored%",
 		lostAckText: "Monero escrow relay outcome unknown", rpcCount: func() int { return x.fake.countOf("relay_tx") }, heldValue: restoredSettlementHold,

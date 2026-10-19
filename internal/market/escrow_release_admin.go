@@ -98,6 +98,6 @@ func escrowReleaseDaysAction(c *actionCtx) (actionResult, error) {
 			network = "network not verified"
 		}
 		audit := "Changed the Monero escrow release deadline (" + network + "): " + strconv.Itoa(old) + " → " + strconv.Itoa(days) + " days"
-		return actionResult{Redirect: "/admin", Notice: "escrow-release-days", Audit: audit}, nil
+		return actionResult{Redirect: "/admin/payments", Notice: "escrow-release-days", Audit: audit}, nil
 	})
 }

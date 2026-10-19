@@ -151,7 +151,7 @@ func TestA130TOTPRegenerationReceiptDoesNotSpendCurrentCodeTwice(t *testing.T) {
 func TestA130OwnFormRemembersOriginalAdminConfirmationAndDoesNotUndoNewerSetting(t *testing.T) {
 	e := newTestApp(t)
 	adminID, session := e.user("own_receipt_admin", "admin")
-	page := e.do("GET", "/admin", session, nil)
+	page := e.do("GET", "/admin/site", session, nil)
 	e.check(page, 200)
 	form := url.Values{"action": {"settings"}, "site_name": {"First Name"}, formNonceField: {renderedFormNonce(t, page.Body.String(), "/admin")}}
 	first := e.do("POST", "/admin", session, form)

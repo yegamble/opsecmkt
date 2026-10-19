@@ -69,7 +69,7 @@ market holds the wallet keys and builds, stores and sends every transaction itse
 - **Tor mode (A-515).** With `APP_MODE=tor`, `relay_tx` would send a settlement through the escrow daemon from the
   host's IP address, so nothing is relayed (a stored one is not relayed again either) unless `COMPOSE_FILE` includes
   `compose.nodes-tor.yaml` or `ESCROW_XMR_TOR_RELAY=clearnet-accepted`; settlements are still built, checked and stored,
-  with one startup log line and an `/admin` line ("Monero relays held: Tor mode without the node Tor overlay — see operator
+  with one startup log line and an `/admin/payments` line ("Monero relays held: Tor mode without the node Tor overlay — see operator
   guide"). Both are read at startup; after a restart with either, the stored transaction is relayed unchanged and never
   rebuilt. Monero over Tor itself is unverified (A-95). `TestXMREscrowTorModeWithoutNodeProxyHoldsRelay` (simulated
   wallet-rpc and PostgreSQL, not chain evidence) covers holding, both ways to resume, a lost relayed transaction while
@@ -148,11 +148,11 @@ market holds the wallet keys and builds, stores and sends every transaction itse
   on a later pass, once the wallet-rpc refuses that wallet as "Invalid password", provided staff were never flagged that
   it holds something and neither the restore gate nor the sweep marker is set. A retained wallet past its 90 days that
   still holds coins (an unclaimed paid account, coins at account 0, a failed settlement) is not destroyed, and staff are
-  flagged once. The market cannot reach the wallet volume: `/admin` lists each destroyed wallet's two files for the
+  flagged once. The market cannot reach the wallet volume: `/admin/payments` lists each destroyed wallet's two files for the
   operator to delete.
 - **Restore holds and the orphan sweep.** `scripts/restore.sh` (or the manual SQL in
   [UPGRADING.md](../UPGRADING.md#6-backups-now-need-the-wallets-too)) holds every restored Monero settlement that has a
-  stored transaction until an administrator confirms its relay on `/admin`; retires every free account; moves every
+  stored transaction until an administrator confirms its relay on `/admin/payments`; retires every free account; moves every
   active or sealed wallet to *closing*, so no account of a restored wallet, one the restored records lack included, is
   offered to a new order; asks for a release deadline recheck (the deadline of a shipped order that had passed in the
   restored records moves 72 hours later, and the buyer is told); and sets `xmr_escrow_sweep_required`. Until the
@@ -170,9 +170,9 @@ market holds the wallet keys and builds, stores and sends every transaction itse
   backup taken after that start keeps it, so such a wallet restored from its seed with a mistyped secret is recorded
   destroyed too once the gate and the sweep marker clear: the operator restores it only with the password derived from
   the unchanged secret and checks in a scratch wallet restored from the seed that it holds nothing before deleting the
-  files listed on `/admin`. A wallet another wallet program
+  files listed on `/admin/payments`. A wallet another wallet program
   has open is temporarily unavailable: it keeps its state and its accounts, waits, and is logged once until it is closed
-  there. A missing wallet past its 90 days is listed on `/admin`, where an administrator confirms its destruction
+  there. A missing wallet past its 90 days is listed on `/admin/payments`, where an administrator confirms its destruction
   (password step-up, audited) once the operator has checked that the file is gone and nothing is owed. A wallet that
   would not open while the sweep ran counts as checked, so after its file is restored the operator sets the sweep marker
   again for its lookahead. A changed `MONERO_WALLET_SECRET` disables Monero escrow with one fixed log line and no wallet
@@ -219,10 +219,10 @@ wallet takes an order again and no settlement is relayed until an administrator 
 - **Monero dispute decisions are final.** A wrong decision cannot be undone from the market.
 - **A buyer who neither confirms receipt nor disputes before the deadline loses the choice**, as described above
   (ES-11), and an administrator decides disputes from what the parties write; it does not check that goods exist or
-  arrived. The release deadline length is one setting for both coins: its form on `/admin`, like a physical listing's
+  arrived. The release deadline length is one setting for both coins: its form on `/admin/payments`, like a physical listing's
   dispatch window, is offered while `ESCROW_XMR` is on, and each escrow keeps the length in force at
   its checkout.
-- **The market fee is set only by `ESCROW_XMR_FEE_BPS` and `ESCROW_XMR_FEE_ADDRESS`** (no form on `/admin`); each escrow
+- **The market fee is set only by `ESCROW_XMR_FEE_BPS` and `ESCROW_XMR_FEE_ADDRESS`** (no form on any `/admin` page); each escrow
   keeps the fee in force at its checkout.
 - **One wallet is open at a time, and every wallet that may hold coins is opened on every pass**, until the wallet is
   destroyed. PAYE-E2 measured this on one host, on a local fakechain only ([verification](verification.md#monero-escrow-wallet-scale-paye-e2-war-room-a-429-p3-r12--2026-10-04)):
@@ -320,7 +320,7 @@ wallet takes an order again and no settlement is relayed until an administrator 
   the same nodes; no leg waits in real time for a deadline or a month.
 - A browser journey in Chromium at 320 px with JavaScript off against the real server and a **simulated** Monero escrow
   wallet-rpc and daemon is added in this phase (`tests/e2e/escrow-xmr-journey.spec.ts`), its last test covering a wallet
-  destroyed after its retention (the order page's ES-8 line) and a missing wallet confirmed destroyed on `/admin`; its
+  destroyed after its retention (the order page's ES-8 line) and a missing wallet confirmed destroyed on `/admin/payments`; its
   command and result are not recorded here. A simulation is not chain evidence.
 - PAYE-E2 (`scripts/test-escrow-xmr-payee2.sh`, manual) on a real `monerod` and `monero-wallet-rpc` 0.18.5.1 local
   fakechain, one host: one wallet of 10,000 accounts with 200 funded, its calls timed through the app's adapter, a seed
@@ -359,11 +359,11 @@ or refund-time bound. The public digital claim's request-to-confirmed sample was
   wallet's height (below 1,000,000). That is gone: the database pins the escrow daemon's network (`settings` key
   `escrow_xmr_network`). While the database holds no Monero escrow and no escrow wallet (a wallet's free accounts are
   addresses of one network) the pin follows the daemon. Once it holds either, a daemon on the other network leaves Monero
-  escrow disabled, writes nothing, logs one fixed line and shows both networks under *Escrow status and payment intake* on `/admin`; it
+  escrow disabled, writes nothing, logs one fixed line and shows both networks under *Escrow status and payment intake* on `/admin/payments`; it
   is retried every pass. A database from before the pin that holds Monero escrow state is pinned `fakechain` when the
   daemon reports fakechain, and refused otherwise. The wallet-rpc must still be within 10 blocks of the daemon.
 - **Public pages name the verified network (A-472).** The transparency page (`/canary`), the footer, catalog, listing and
-  draft notices and the vendor desk tile name the network by the rule `/admin` uses: "network not verified yet" until a
+  draft notices and the vendor desk tile name the network by the rule `/admin/payments` uses: "network not verified yet" until a
   daemon was verified or the pin was read, "Monero stagenet, a public test network" on stagenet, "a local Monero
   fakechain" on a fakechain. Public copy follows the configured Monero network and preserves the custody warning. `TestCanaryMoneroCopyFollowsConfiguredNetwork` checks stagenet and fakechain wording; browser previews check the XMR-only forms with JavaScript disabled. These are layout/simulated-RPC checks, not public-network evidence.
 

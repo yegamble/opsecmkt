@@ -111,7 +111,7 @@ test('vendor page says the market keeps the encrypted shipping message and its m
 });
 
 test('admin export panel frames the export as private operator evidence', async ({ page }) => {
-  await page.goto('/admin');
+  await page.goto('/admin/transparency');
   const exportPanel = page.locator('section', { has: page.getByRole('heading', { name: 'Signed audit export' }) });
   await expect(exportPanel).toContainText('private operator evidence');
   await expect(exportPanel).toContainText('never publish');

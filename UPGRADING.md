@@ -85,7 +85,7 @@ reopen guest browsing and account creation. Keep an external maintenance or
 access gate in place while an older binary can serve requests during rollback.
 Changing access cannot recall content already downloaded or publicly cached.
 
-After upgrading, review **Admin → Site access and registration** and verify both
+After upgrading, review **Admin → Security & access → Site access and registration** and verify both
 a signed-out session and an existing account. Follow
 [site access and registration](docs/operator-guide.md#site-access-and-registration)
 for the choices and checks.
@@ -120,10 +120,23 @@ offers a buyer or a vendor account; a vendor account is a buyer account with an
 application that an administrator decides. Older binaries that do not know this
 migration refuse startup; follow the existing database rollback procedure.
 
-After upgrading, review **Admin → Vendor applications**. A bond is a
+After upgrading, review **Admin → Vendors → Vendor applications** (`/admin/vendors`). A bond is a
 non-refundable fee that an administrator records by hand after checking their
 own wallet; the market does not detect bond payments. See
 [vendor applications](docs/operator-guide.md#vendor-applications).
+
+## Administration sections
+
+`/admin` is now an overview (staff attention, the setup checklist and section
+links), and each administration panel moved to one section page: `/admin/users`,
+`/admin/vendors`, `/admin/payments`, `/admin/security`, `/admin/site`,
+`/admin/transparency` and `/admin/system`. No migration or setting changes; every
+form keeps its POST address and a saved change returns to its section. Update
+bookmarks and runbooks that open `/admin#panel` (for example
+`/admin#image-scanner` is now `/admin/system#image-scanner`); an old fragment
+opens the overview. Private administrator ingress covers the new pages as it
+covers `/admin`. See
+[administration sections](docs/operator-guide.md#administration-sections).
 
 # Upgrading from v0.1.0-alpha.1 to `v0.1.0-alpha.2`
 

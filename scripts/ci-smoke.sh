@@ -270,10 +270,10 @@ PY
   ! awk 'NR > 1 && $2 == "00000000"' "$work/route" | grep -q . || fail 'clamd has a default route'
   echo "scanner: clamd resolves app but not db, and cannot connect to the database ($db_ip:5432) or outside (1.1.1.1:443)"
 
-  # /admin shows the test database's build date (so the age gate passed) and the counts; the log names the
+  # /admin/system (A-542) shows the test database's build date (so the age gate passed) and the counts; the log names the
   # signature with the reference only (ruling C4).
-  [[ $(get /admin) == 200 ]] || fail '/admin did not answer 200'
-  python3 - "$page" "$scanner_failed" <<'PY' || fail '/admin image scanner panel'
+  [[ $(get /admin/system) == 200 ]] || fail '/admin/system did not answer 200'
+  python3 - "$page" "$scanner_failed" <<'PY' || fail '/admin/system image scanner panel'
 import calendar, re, sys, time
 html = open(sys.argv[1], encoding='utf-8').read()
 raw = html[html.index('id="image-scanner"'):]
@@ -288,7 +288,7 @@ if missing or not signatures:
 built = calendar.timegm(time.strptime(signatures[1], '%Y-%m-%d %H:%M'))
 if not -120 <= time.time() - built <= 3600:
     sys.exit(f'the signatures were not built during this run: {signatures[0]}')
-print('scanner: /admin shows', signatures[0])
+print('scanner: /admin/system shows', signatures[0])
 PY
   "${compose[@]}" logs --no-color app > "$work/app.log" 2>&1
   grep -qE 'upload outcome=refused reason=infected sig=Opsecmkt\.Test\.Marker\.UNOFFICIAL ref=[0-9a-f]{8} kind=listing$' "$work/app.log" ||
@@ -385,10 +385,12 @@ for sheet in sheets:
     assert response.status == 200 and response.headers.get_content_type() == 'text/css', f'{sheet}: {response.status} {response.headers.get("Content-Type")}'
     assert body == (Path(os.environ['SMOKE_ROOT']) / 'web' / sheet.lstrip('/')).read_bytes(), f'{sheet} differs from web{sheet}'
 
-admin = client.open(base + '/admin').read().decode()
+# Every administration page (A-542: the overview and its sections), read as one document.
+admin_pages = ('/admin', '/admin/users', '/admin/vendors', '/admin/payments', '/admin/security', '/admin/site', '/admin/transparency', '/admin/system')
+admin = ''.join(client.open(base + path).read().decode() for path in admin_pages)
 # Pooled payments are removed (A-492): no pooled action form, payout table or payout count may be reachable.
 assert 'action="/admin/payout"' not in admin and 'action="/account/payout"' not in admin
-assert 'id="payouts"' not in admin and 'href="/admin#payouts"' not in admin and ' payouts)' not in admin
+assert 'id="payouts"' not in admin and '#payouts"' not in admin and ' payouts)' not in admin
 assert 'action="/orders/pay"' not in admin
 # Signed audit export: available with the pinned key, and the downloaded export verifies offline below.
 section = admin[admin.index('id="audit-export-title"'):]

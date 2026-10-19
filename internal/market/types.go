@@ -125,6 +125,9 @@ type Event struct{ Handle, Action, Created string } // Handle: account the audit
 type SignInRefusal struct{ Handle, Until string }
 
 type PageData struct {
+	// AdminSection is the administration section page /admin/<slug> shown with Page "admin"; "" is the overview
+	// (admin_sections.go).
+	AdminSection     string
 	Access           *SiteAccessView
 	Branding         *BrandingView
 	DependencyStatus *DependencyStatusView // Administrator-only local version report and topology notices.
