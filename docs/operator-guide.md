@@ -808,12 +808,17 @@ Accounts become vendors through an application decided under the policy in **Adm
 Choose a bond in XMR (0 for none) and manual or automatic approval, write the bond payment instructions applicants
 see, and confirm with your password (and authenticator code when enabled). A change applies to new applications only.
 
-- **The bond is a non-refundable fee.** Say so in your instructions and public terms. The market does not watch any
-  wallet for it: check your own wallet (on a test network while testing), then choose *Record bond received* on the
-  application. *Waive the bond* records that no bond was paid. Automatic detection is not available.
+- **The bond is a non-refundable fee.** Say so in your instructions and public terms. With Monero escrow on and ready
+  and new XMR payments on, each applicant waiting for a bond gets a one-time address of the market's
+  [bond wallet](#vendor-bond-wallet), and the bond is recorded as received once deposits covering it have the escrow
+  confirmations; the queue shows each address, the XMR received and any flagged deposit. Otherwise (escrow off or not
+  ready, intake paused, or a restore being checked) no address is shown and the applicants follow your instructions:
+  check your own wallet (on a test network while testing), then choose *Record bond received*. *Record bond received*
+  and *Waive the bond* stay available in both cases.
 - With manual approval, approve or reject each application with an optional note the applicant sees. With automatic
-  approval, recording or waiving the bond approves it; with no bond and automatic approval every vendor sign-up is a
-  vendor at once, so use that only where anyone may sell.
+  approval, the bond received on the Monero network, recording it or waiving it approves the application (an account
+  that is suspended, closed or closing waits for you instead); with no bond and automatic approval every vendor sign-up
+  is a vendor at once, so use that only where anyone may sell.
 - Approval gives the vendor role (audited like *Assign an account role*); rejected or withdrawn applicants stay buyers.
   *Assign an account role* and `-set-role` still change roles directly: making an account a vendor records an
   approved application ("Role assigned by an administrator") and closes any open one. A removed vendor keeps its
@@ -1496,6 +1501,44 @@ tests with PostgreSQL against a fake wallet-rpc, sixteen legs against a real fak
 0.18.5.1 (`scripts/test-escrow-xmr-regtest.sh`, run by the `escrow-xmr-regtest` CI job;
 [runbook](testnet-runbook.md#9-manual-monero-escrow-fakechain-check)), and a simulated-RPC browser journey added in this
 phase. Nothing has run on stagenet, testnet or mainnet, with Monero multisig, or as a deployment.
+
+#### Vendor bond wallet
+
+A-547. With a vendor bond set ([Vendor applications](#vendor-applications)), the Monero escrow watcher creates one
+long-lived **bond wallet** on the escrow wallet-rpc when the first applicant needs an address: `bond-01` (a later
+`bond-NN` only when a file of that name already exists), with the password derived from `MONERO_WALLET_SECRET` as an
+escrow wallet's (the HMAC of the name, as in the offline seed check above) and its seed sealed to `ESCROW_XMR_SEED_KEY`
+(`xmr_bond_wallets.seed_sealed`, with `primary_address` and `restore_height`). Each application gets its own account
+of it, never reused; deposits count from the escrow confirmation threshold. It lives in the escrow wallet volume, so
+the volume backups above cover it, and the database dump holds its sealed seed.
+
+**The market never sends from the bond wallet.** There is no refund, forward or transfer of any kind, and the market fee
+address is never involved: bonds accumulate there until you move them. To collect them, sweep it **offline from its
+sealed seed**, never through the escrow wallet-rpc:
+
+1. Copy its sealed seed, primary address and restore height out of the database:
+
+   ```sh
+   db_sql -X -At -c "SELECT seed_sealed FROM xmr_bond_wallets WHERE state='sealed'" > bond-seed.asc
+   db_sql -X -At -F ' ' -c "SELECT name, restore_height, primary_address FROM xmr_bond_wallets WHERE state='sealed'"
+   ```
+
+2. On the offline machine with the private seed key, `gpg --decrypt bond-seed.asc` prints the 25 words; delete
+   `bond-seed.asc` and the terminal history afterwards.
+3. Restore the words from that restore height in a wallet of your own (a wallet you run yourself, not the escrow
+   wallet-rpc), check that its primary address is the one from step 1, let it sync, and send the bonds where you
+   choose. The market notices nothing: deposits already counted stay counted, and the bond addresses keep working.
+
+Under the restore gate or the sweep, and while new XMR payments are paused, no bond wallet or account is created and no
+address shown; deposits are still read, but no bond is recorded and nothing is approved until both clear.
+`scripts/restore.sh` needs no step of its own for bonds: an account is made only for one application, so none is left
+unused, and the sweep that `xmr_escrow_sweep_required` starts also probes `bond-NN` names after the newest recorded one
+(a bond wallet created after the backup is recorded as an orphan, its seed sealed and its funded accounts listed to the
+administrators) and raises the bond wallet's lookahead past its highest recorded account. An account the records lack
+(created after the backup, or a lost `create_account` answer) is recorded for no application and reported; coins there
+fund nothing, so record such a bond by hand. A bond wallet that does not open is reported and never replaced (it may hold
+bonds): restore it from its sealed seed with its name and derived password, as for an escrow wallet, and set the sweep
+marker again.
 
 #### Escrow checkouts and readiness
 

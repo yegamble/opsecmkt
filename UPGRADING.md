@@ -225,6 +225,19 @@ migration refuse startup; back up the database first and follow the existing
 database rollback procedure to go back. See *Account ban* under
 [authentication](docs/operator-guide.md#authentication) in the operator guide.
 
+## Vendor bond paid in XMR (A-547)
+
+Migration 124 adds `xmr_bond_wallets`, `vendor_bond_accounts` and `vendor_bond_deposits`. With `ESCROW_XMR=on`,
+Monero escrow ready, new XMR payments on and a vendor bond set, the Monero escrow watcher now creates one more wallet
+on the escrow wallet-rpc, `bond-01`, sealed to `ESCROW_XMR_SEED_KEY` like an escrow wallet, and gives each application
+waiting for a bond a one-time address of it; the bond is recorded as received (`how='xmr'`) once deposits covering it
+have the escrow confirmations. Applications opened before the upgrade get an address on the first pass after it; the
+manual *Record bond received* and *Waive the bond* stay. The market never sends from the bond wallet: sweep it offline
+from its sealed seed ([vendor bond wallet](docs/operator-guide.md#vendor-bond-wallet)). Back up the escrow wallet volume
+as before (it now holds the bond wallet too). A database holding a bond wallet is pinned to its network like one
+holding escrow wallets. No new setting and no change to `scripts/restore.sh`. Older binaries that do not know this
+migration refuse startup; back up the database first and follow the existing database rollback procedure to go back.
+
 # Upgrading from v0.1.0-alpha.1 to `v0.1.0-alpha.2`
 
 `v0.1.0-alpha.2` is a prerelease. Its installer now defaults new installs to mainnet (real funds), but an upgrade keeps
