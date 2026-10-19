@@ -180,7 +180,7 @@ hosts do not meet these prerequisites.
      --dir /srv/opsecmkt/market-prod
    ```
 
-   Open **Admin > Application host** through the client-authorized private
+   Open **Admin > System & audit > Application host** (`/admin/system`) through the client-authorized private
    administrator onion. Expect an unavailable reboot button until the host
    policy and the administrator's authenticator are ready.
 3. Complete the [full host reboot and manual-unlock rehearsal](#recovering-after-a-full-host-reboot)
@@ -200,7 +200,7 @@ hosts do not meet these prerequisites.
    later OS reboot or replacement host needs a new acknowledgement after manual
    unlock and verification. The agent checks storage, boot identity and policy
    again before accepting a request and before executing it.
-5. Reload **Admin > Application host**. Expect the enabled form only when the
+5. Reload **Admin > System & audit > Application host**. Expect the enabled form only when the
    local agent reports readiness and the administrator has TOTP enrolled.
    Review and retain the displayed request ID before submitting.
 
@@ -350,9 +350,9 @@ Publish both addresses in an operator-signed verification document distributed t
 
 Listing photos and vendor and staff avatars need ClamAV's malware scanner, `clamd`, an optional service in [`compose.scanner.yaml`](../compose.scanner.yaml). The app stores an upload only after `clamd` has scanned the file it received and found nothing, and refuses uploads whenever it cannot ask. There is no setting that accepts uploads without it: with `CLAMD_ADDRESS` blank, uploads are off. Vendors (and administrators, on any listing) add up to 4 photos on each listing's edit page, under **Photos**, and vendors, moderators and administrators set an avatar on `/account`; each owner can remove their own there (war room A-188). Catalog, product and vendor pages show a published listing's photos and a vendor's avatar to anyone in public mode, or to signed-in viewers in members-only mode; staff avatars follow the staff list rules below (war room A-189). ClamAV checks uploads for known malware; it does not review picture content: staff take down pictures that break the market's rules (below). What an image row keeps and who can see it is in [What the server keeps](implementation-status.md#what-the-server-keeps), which `/canary#records` tells users.
 
-What uploaders see follows the scanner's state on `/admin#image-scanner`: *Ready* shows the upload forms; *Unavailable* or *Signatures stale* keeps them on the page but disabled, with "Photo uploads are paused: …" and the reason (never the signature date); *Disabled* (no `CLAMD_ADDRESS`) replaces them with "Photo uploads are off on this market: they require the ClamAV malware scanner, which the operator has not set up." Listing details still save in every state, and stored photos and avatars can still be removed.
+What uploaders see follows the scanner's state on `/admin/system#image-scanner`: *Ready* shows the upload forms; *Unavailable* or *Signatures stale* keeps them on the page but disabled, with "Photo uploads are paused: …" and the reason (never the signature date); *Disabled* (no `CLAMD_ADDRESS`) replaces them with "Photo uploads are off on this market: they require the ClamAV malware scanner, which the operator has not set up." Listing details still save in every state, and stored photos and avatars can still be removed.
 
-Moderators and administrators also choose on `/account` whether to **hide themselves from the public staff list**; everyone is hidden until they untick it, and each change is recorded in their activity log. A hidden staff member's avatar can be shown only to the buyer and vendor of orders whose dispute they decided (and to moderators and administrators). The public staff list itself is off until an administrator turns it on (war room A-189). Changing a moderator's role on `/admin` deletes their avatar, which was uploaded under these rules, tells them so and resets their choice to hidden; a vendor you make a moderator, or a former moderator you promote again, starts hidden (PR #28 review).
+Moderators and administrators also choose on `/account` whether to **hide themselves from the public staff list**; everyone is hidden until they untick it, and each change is recorded in their activity log. A hidden staff member's avatar can be shown only to the buyer and vendor of orders whose dispute they decided (and to moderators and administrators). The public staff list itself is off until an administrator turns it on (war room A-189). Changing a moderator's role on `/admin/users` deletes their avatar, which was uploaded under these rules, tells them so and resets their choice to hidden; a vendor you make a moderator, or a former moderator you promote again, starts hidden (PR #28 review).
 
 **Taking a photo down.** Moderators remove a vendor's listing photo or avatar that breaks the market's rules, and administrators any listing photo or avatar (staff avatars and administrators' own listings included), from the moderation desk's **Recent photos** (`/moderator#recent-photos`: the 50 newest images available under the current site-access policy; a moderator sees vendors' only), or from the *Remove photo N* and *Remove this avatar* forms on the product and vendor pages, with a reason of 10–500 characters. The image is deleted from the database at once (there is no hidden copy to restore; the vendor uploads another), the owner is notified with the reason, the vendor sees "Photo removed by staff: <reason>" on the listing's edit page, and both accounts' activity logs record it. Moderators can do nothing else to listings. Copies remain in backups made before the takedown: restoring one brings the image back (see [Backups and recovery](#backups-and-recovery)). Until PostgreSQL reuses the space, the deleted image's bytes also remain in PostgreSQL's data files and write-ahead log, readable by anyone with access to the database server's disk (the `postgres_data` volume for the internal database); the same holds for an owner's removal or an avatar replaced by a new one.
 
@@ -637,10 +637,40 @@ Migration 001 replaces the free-text order status with a checked `state` column 
 Environment settings are listed in `.env.example`. Unless a feature states
 otherwise, blank or absent values keep it disabled.
 
+### Administration sections
+
+`/admin` (the **Admin** link) is an overview: the staff attention counts, the
+*Get your marketplace ready* checklist and a link to each section, flagged when
+something in it needs you (for example open vendor applications, a Monero escrow
+alert or a paused image scanner). Every
+administration panel is on exactly one section page, and every admin page starts
+with the same section navigation (plain links that wrap on a narrow screen; the
+current one is marked for screen readers). Where this guide says
+**Admin → panel**, open the section that holds it:
+
+| Section | Address | Panels |
+|---|---|---|
+| Overview | `/admin` | Staff attention, *Get your marketplace ready*, section links |
+| Users | `/admin/users` | *Assign an account role* (with *Newest accounts*), *Reset a user's second factors*, *Suspend or restore an account*, *Staff roster* |
+| Vendors | `/admin/vendors` | *Vendor applications*: vendor policy, open applications awaiting a bond or decision, verified-vendor mark |
+| Payments | `/admin/payments` | *Escrow status and payment intake*: Monero escrow alerts, release deadline, *Monero escrow recovery and retention*, *New escrow checkouts*, *Escrow readiness* |
+| Security & access | `/admin/security` | *Site access and registration*, *Sign-in protection* (CAPTCHA), *Handles with paused sign-in* |
+| Site & branding | `/admin/site` | *Market name and logo*, *Staff contact* |
+| Transparency | `/admin/transparency` | *Operator PGP key*, *Warrant canary*, *Signed audit export*, *Public staff list* |
+| System & audit | `/admin/system` | Schema version and server start, *Service isolation and updates*, *Application host*, *Image scanner*, *Retention and preservation*, *Recent server errors*, *Audit trail* |
+
+Every form keeps its address (`POST /admin`, `/admin/suspend`, `/admin/access`
+and so on); a successful change returns to the section holding its form, at the
+panel when the change has one, with its one-shot notice. A form refused with an
+unknown handle shows the Users section again. Each section page refuses buyers,
+vendors and moderators exactly as `/admin` does, and is reachable only through
+the private administrator ingress when one is configured. Bookmarks to an old
+`/admin#panel` fragment open the overview; follow its section link.
+
 ### Site access and registration
 
 An administrator controls browsing and account creation separately under
-**Admin → Site access and registration**:
+**Admin → Security & access → Site access and registration** (`/admin/security`):
 
 | Site access | New registrations | Result |
 | --- | --- | --- |
@@ -676,7 +706,7 @@ notice without a form. Existing accounts should still be able to sign in.
 
 ### Vendor applications
 
-Accounts become vendors through an application decided under the policy in **Admin → Vendor applications**.
+Accounts become vendors through an application decided under the policy in **Admin → Vendors → Vendor applications** (`/admin/vendors`).
 Choose a bond in XMR (0 for none) and manual or automatic approval, write the bond payment instructions applicants
 see, and confirm with your password (and authenticator code when enabled). A change applies to new applications only.
 
@@ -698,7 +728,7 @@ a verified mark.
 
 ### Changing the market name and logo
 
-An administrator manages the site's identity under **Admin → Market name and logo**.
+An administrator manages the site's identity under **Admin → Site & branding → Market name and logo** (`/admin/site`).
 The saved name labels browser tabs and the home link, and supplies the text
 wordmark when no custom logo is set. A name change does not rewrite lettering
 inside an uploaded image.
@@ -780,7 +810,7 @@ Second-factor secrets are encrypted with a key derived from `APP_SECRET_KEY` (on
   docker compose run --rm app -bootstrap-admin ADMIN_HANDLE -site-name "My Market"
   ```
 
-  It connects with `DATABASE_URL`, starts no web server and needs no setup token. It prompts twice for the administrator's password without showing it (12–72 bytes, as on `/setup`; valid UTF-8 without a NUL byte, as the sign-in form sends, so a terminal set to `LATIN1` is refused) and then, in one transaction under the same lock as `/setup` (so it cannot race the browser form or another run), creates that one administrator, records the marketplace name (default `OPSMKT`, at most 80 characters; change it later on `/admin`), marks the market installed and writes the same audit row as `/setup` ("Account created: admin"). It prints only the handle; sign in on `/login` with that handle and password. From then on `/setup` refuses every token. It refuses, changing nothing, when the market is already set up (by `/setup` or an earlier run), a handle, password or name that breaks the rules above, a database the server has never started against, and a database upgraded by a newer release. Arguments go after the service name, as for `-reset-admin-password` below. Without a terminal, for example from a script, add `-T` and pipe the password as a single line on standard input (`docker compose run --rm -T app -bootstrap-admin ADMIN_HANDLE`); it is never accepted as an argument. Anyone who can run this command with the deployment's `.env` can create the first administrator, just as they could read `SETUP_TOKEN` from it; there is no web equivalent.
+  It connects with `DATABASE_URL`, starts no web server and needs no setup token. It prompts twice for the administrator's password without showing it (12–72 bytes, as on `/setup`; valid UTF-8 without a NUL byte, as the sign-in form sends, so a terminal set to `LATIN1` is refused) and then, in one transaction under the same lock as `/setup` (so it cannot race the browser form or another run), creates that one administrator, records the marketplace name (default `OPSMKT`, at most 80 characters; change it later on `/admin/site`), marks the market installed and writes the same audit row as `/setup` ("Account created: admin"). It prints only the handle; sign in on `/login` with that handle and password. From then on `/setup` refuses every token. It refuses, changing nothing, when the market is already set up (by `/setup` or an earlier run), a handle, password or name that breaks the rules above, a database the server has never started against, and a database upgraded by a newer release. Arguments go after the service name, as for `-reset-admin-password` below. Without a terminal, for example from a script, add `-T` and pipe the password as a single line on standard input (`docker compose run --rm -T app -bootstrap-admin ADMIN_HANDLE`); it is never accepted as an argument. Anyone who can run this command with the deployment's `.env` can create the first administrator, just as they could read `SETUP_TOKEN` from it; there is no web equivalent.
 - **Forgotten administrator password**: the application has no web password reset. An operator on the host, in the deployment directory (with its `.env`), runs (replace `ADMIN_HANDLE`, exact and case-sensitive):
 
   ```sh
@@ -804,7 +834,7 @@ It connects with `DATABASE_URL`, starts no web server and reads nothing from sta
 - **Contain a compromised administrator** (someone else knows its password, or its owner acts against the market):
   1. Demote it at once: `docker compose run --rm app -set-role HANDLE buyer`. This ends its sessions and pending sign-ins, and a password-confirmed change of its own that is not yet saved when the demotion commits (a suspension, factor reset, review or listing takedown, payment intake or staff list switch) is refused with 403, changing nothing. Whoever has the password can still sign in as a buyer until the next step.
   2. As another administrator, suspend it on the web: *Admin → Suspend or restore an account*, choose *Suspend* and confirm with your own password. A suspended account cannot sign in (see *Account suspension* above).
-  3. Review what it did. On `/admin`, enter the exact case-sensitive handle in *Filter audit by account*; the page shows at most its 100 newest matching events, or says when none are recorded. Invalid handles are refused rather than trimmed or truncated. The filter is account-scoped, so it shows events recorded on that account; also inspect rows on accounts it changed, or download the *Signed audit export* (when `AUDIT_SIGNING_KEY` is set, see [Transparency](#transparency)) and search it. Role-change rows on the target account identify the acting administrator by handle; older rows retain their original text. Check the escrow decisions and settings it made, marketplace settings, sign-in protection, operator key and canary, and undo what it changed.
+  3. Review what it did. On `/admin/system`, enter the exact case-sensitive handle in *Filter audit by account*; the page shows at most its 100 newest matching events, or says when none are recorded. Invalid handles are refused rather than trimmed or truncated. The filter is account-scoped, so it shows events recorded on that account; also inspect rows on accounts it changed, or download the *Signed audit export* (when `AUDIT_SIGNING_KEY` is set, see [Transparency](#transparency)) and search it. Role-change rows on the target account identify the acting administrator by handle; older rows retain their original text. Check the escrow decisions and settings it made, marketplace settings, sign-in protection, operator key and canary, and undo what it changed.
   4. To reinstate the account later: restore it on the web, run `-set-role HANDLE admin`, then give it a new password with `-reset-admin-password` (which works on administrators only) and, if someone else may know its second factors, reset them with `-reset-admin-factors HANDLE` (see [Authentication](#authentication)).
 
 ### PGP identity
@@ -875,14 +905,14 @@ mine. On stagenet the public network mines blocks about every 2 minutes; the dae
 
 **Settings.** All are read at startup, from `.env` through Compose. With `ESCROW_XMR` blank or `off` the escrow configuration
 is not used, no seed-key file is opened and no escrow node is contacted. Historical Monero escrow recovery state remains visible
-under `/admin` when present; turning escrow off does not delete wallets, orders or settlements.
+under `/admin/payments` when present; turning escrow off does not delete wallets, orders or settlements.
 
 | Setting | Default | What it takes |
 | --- | --- | --- |
 | `ESCROW_XMR` | blank (off) | `on` or `off`; any other value stops startup. On a mainnet market (`MONERO_NETWORK=mainnet`) it runs on mainnet only; without `MONERO_NETWORK=mainnet` a mainnet daemon is refused ([Mainnet](#mainnet)). |
 | `ESCROW_XMR_WALLET_RPC_URL` | none; required when on | `http(s)://[user:password@]host:port` of the dedicated Monero escrow wallet-rpc (credentials are answered with HTTP Digest). Keep it dedicated to escrow wallets and attach it to the daemon configured below. A non-blank `MONERO_WALLET_RPC_URL` (an older release's setting) is refused before startup. |
 | `ESCROW_XMR_DAEMON_URL` | none; required when on | The same form, for the fakechain, stagenet or (opted in) mainnet `monerod` used by this escrow wallet-rpc. The bundled `monero` service may be used when configured for stagenet (or, with a blank `MONERO_NETWORK_FLAG=`, mainnet) and can serve restricted RPC; set this key to `http://monero:18081` rather than the retired `MONERO_RPC_URL`. |
-| `ESCROW_XMR_FEE_BPS` | `0` | The market fee on a fulfilled order, a whole number of basis points from 0 to 10000 (250 = 2.5%). Each escrow keeps the fee in force at its checkout. There is no form for it on `/admin`. |
+| `ESCROW_XMR_FEE_BPS` | `0` | The market fee on a fulfilled order, a whole number of basis points from 0 to 10000 (250 = 2.5%). Each escrow keeps the fee in force at its checkout. There is no form for it on any `/admin` page. |
 | `ESCROW_XMR_FEE_ADDRESS` | none | Required above 0 basis points, ignored at 0: a standard address or subaddress of the escrow daemon's network (95 characters; stagenet ones start with 5 or 7, fakechain and mainnet ones with 4 or 8; integrated addresses are refused; a mainnet market needs a mainnet address) whose keys are valid, checked in Go at startup: one of the other network stops startup once the daemon is reached. A fee below 0.001 XMR is added to the vendor's output instead. |
 | `ESCROW_XMR_SLOTS` | `20` | The free accounts the watcher keeps ready on the active wallet, a whole number from 5 to 200. Checkout takes one; none free is a 503 until the watcher makes more. |
 | `ESCROW_XMR_MAX_FEE` | `10000000000` (0.01 XMR) | The highest network fee a settlement may pay, in piconero, a whole number from 1 to `100000000000` (0.1 XMR). A transaction the wallet builds above it is discarded unrelayed and its settlement waits. A young fakechain charged about 0.0018 XMR for a one-input, two-output transfer. |
@@ -914,7 +944,7 @@ reached leaves Monero escrow not ready with `escrow: Monero escrow disabled: the
 checked at startup (<class>)` while the market runs; the escrow watcher retries every `PAYMENT_POLL_INTERVAL` and logs
 `escrow: Monero escrow on (stagenet)` (or `(fakechain)`) when it passes. A line is logged when the state changes. A node that
 answers as another network after startup disables Monero escrow until the app is restarted. While Monero escrow is
-configured but not ready, for any of these reasons, `/admin` also shows an alert under *Escrow status and payment intake* ("Monero escrow
+configured but not ready, for any of these reasons, `/admin/payments` also shows an alert under *Escrow status and payment intake* ("Monero escrow
 not ready: …") with the current failed check and its remedy. The escrow-only readiness panel reads `XMR escrow: on (not ready: …)`,
 and *Escrow status and payment intake* names no Monero escrow network until a daemon was verified on one; the alert goes once Monero
 escrow is ready (QA4W4B-1). Two more lines mean the pins below have
@@ -927,7 +957,7 @@ pinned in this database …` (existing wallets are still read and their orders f
 follows the daemon and may change. Once it holds either (a wallet counts: its free accounts are addresses of one network),
 a daemon on the other network leaves Monero escrow disabled and changes nothing, with one line, `escrow: Monero escrow
 disabled: the escrow daemon is not on the network this database's Monero escrows are on (escrow_xmr_network) …`, and a line
-under *Escrow status and payment intake* on `/admin` naming both networks; the check is retried every `PAYMENT_POLL_INTERVAL`, so pointing
+under *Escrow status and payment intake* on `/admin/payments` naming both networks; the check is retried every `PAYMENT_POLL_INTERVAL`, so pointing
 `ESCROW_XMR_DAEMON_URL` (and the escrow wallet-rpc) back at the pinned network brings it back. A new network needs a new
 database: there is no supported way to move a database's Monero escrows to another network. A database from before A-449
 that holds Monero escrow state and no pin is pinned `fakechain` at the first start against a fakechain daemon (the only
@@ -939,7 +969,7 @@ no peers (`offline`, or no connections on an unrestricted RPC; a restricted RPC 
 `MONERO_MAX_TIP_AGE` (default 1h; [Payments](#payments)), the pass opens no wallet, creates or destroys none, reads no
 deposit, funds or expires no order and builds, relays or follows no settlement; release deadlines still apply. One line is
 logged when this starts (`escrow: Monero escrow daemon not synced (<reason>); Monero escrow watcher passes skipped until it
-is`) and one when it ends (`escrow: Monero escrow daemon synced; Monero escrow watcher passes resumed`), and `/admin` shows
+is`) and one when it ends (`escrow: Monero escrow daemon synced; Monero escrow watcher passes resumed`), and `/admin/payments` shows
 the reason under *Escrow status and payment intake*. Nothing is stored for this. A fakechain is exempt from the peer and tip-age checks.
 If the daemon cannot be read at all, or its top block cannot (`get_last_block_header` fails), the pass applies only the
 deadlines and logs `monero escrow watcher: monero escrow: daemon check failed: <class>`. On a restricted RPC (the bundled
@@ -1060,7 +1090,7 @@ watcher creates every wallet, named `escrow-YYYYMM-NN`, on its first pass. The e
 
 **The seed key.** Every wallet's 25-word seed is encrypted to this key when the wallet is created, so that the database never
 holds a seed in the clear. Generate it **offline**, on a machine that never runs the market, and keep its private half offline.
-It must never be the canary's operator key: that key can be changed from `/admin`, and taking over an administrator account
+It must never be the canary's operator key: that key can be changed from `/admin/transparency`, and taking over an administrator account
 must not be able to redirect future seeds. The app reads only a file, so only the public half goes to the server.
 
 ```sh
@@ -1177,7 +1207,7 @@ rest of a destroyed wallet's records.
 [reconciliation procedure](testnet-runbook.md#reconcile-a-restored-database-before-enabling-payouts), with the app stopped and
 the `.env` (the same `MONERO_WALLET_SECRET`, `ESCROW_XMR_SEED_KEY`) from the backup set. `scripts/restore.sh` then, for
 Monero escrow: holds every restored settlement that has a stored transaction (built or relayed) until you confirm it on
-`/admin` (below); retires every free account; moves every active or sealed wallet to closing, so that no account of a
+`/admin/payments` (below); retires every free account; moves every active or sealed wallet to closing, so that no account of a
 restored wallet, one the restored records lack included, is offered to a new order; asks for the release deadline recheck
 (`escrow_xmr_release_recheck`: on the watcher's first pass after the gate is cleared, every passed deadline of a shipped
 order moves 72 hours later and its buyer is told); and sets `xmr_escrow_sweep_required`, which makes Monero escrow checkout
@@ -1252,12 +1282,12 @@ unless staff were flagged that it holds something or the restore gate or the swe
 a backup taken after the market began destroying a wallet keeps that start: restore such a wallet from its seed only with
 the derived password from the unchanged `MONERO_WALLET_SECRET` (the `openssl` line above), because with a mistyped one it is
 refused alike and recorded destroyed once the gate and the sweep marker clear, and check in a scratch wallet restored from
-the seed (step 3 above) that it holds nothing before you delete the files `/admin` then lists. A retained wallet past its 90
+the seed (step 3 above) that it holds nothing before you delete the files `/admin/payments` then lists. A retained wallet past its 90
 days that still holds coins (an unclaimed paid account, coins at account 0, a failed settlement) is not destroyed, and staff
 are flagged once. Any other wallet that will not open keeps its sealed seed and is recorded missing: its file gone, or "Invalid
 password" when the market did not begin destroying it (for example a wallet you restored from its seed with a mistyped
 `MONERO_WALLET_SECRET`, another install's file of the same name, or a damaged keys file). A missing wallet past its 90 days is
-listed on `/admin`, where an administrator confirms its destruction (password step-up, audited) once you have checked that its
+listed on `/admin/payments`, where an administrator confirms its destruction (password step-up, audited) once you have checked that its
 file is gone and nothing is owed on it; that is refused while the restore gate or the sweep marker is set. **Do not keep an
 escrow wallet open in another wallet program** (for example `monero-wallet-cli` on the same files): a wallet "opened by another
 wallet program" keeps its state and its accounts, but the market cannot read its deposits or send its settlements until you
@@ -1288,7 +1318,7 @@ the market (the order page says so); a destroyed wallet is never opened again.
   retired and it takes no order, and its sealed seed is kept. The market tries it again on every pass; once it opens it is
   closing again, or retained when the market had begun destroying it, to be destroyed once every precondition holds again.
   Restore its files from a backup of the volume, or restore it from its sealed seed as above, then set the sweep
-  marker again (*Restore*, above) so that the sweep raises its lookahead. Past its 90 days it is listed on `/admin` for an
+  marker again (*Restore*, above) so that the sweep raises its lookahead. Past its 90 days it is listed on `/admin/payments` for an
   administrator to confirm its destruction, as under *Destruction* above. A file the market did not create that is
   found under a wallet's name, and does not open with the derived password, is recorded as an orphan, never opened, and
   announced the same way.
@@ -1394,7 +1424,7 @@ Make the public file readable by the app's UID 65532. Set
 `AUDIT_EXPORT_RECIPIENT='/run/audit-export-recipient.asc'` in `.env` and append
 `:compose.audit-export.yaml` to its existing `COMPOSE_FILE` value, preserving all
 other overlays and profiles. Recreate the application, then check the export
-availability on `/admin`. A missing file or unusable key makes exports
+availability on `/admin/transparency`. A missing file or unusable key makes exports
 unavailable; it does not stop the rest of the market.
 
 Both the HTTP download and `-export-audit` produce `.jsonl.asc` and `.sig.asc`
@@ -1657,7 +1687,7 @@ docker compose up -d db
 
 For `opsecmkt_monero_data` or `opsecmkt_monero_escrow_wallet` use `-R 1000:1000` (with the monerod image, for example). The line `chmod: /var/run/postgresql: Operation not permitted` at every start of `db` is harmless: that directory is in memory and PostgreSQL can write to it.
 
-**Image scanner.** Photo and avatar uploads need the ClamAV scanner: `CLAMD_ADDRESS` is clamd's `host:port` on the scanner network (the installer writes `clamd:3310`; empty turns uploads off), and `SCANNER_MAX_SIGNATURE_AGE_DAYS` (default 30, from 7 to 90) is how old the daily signatures may be before uploads pause. The app refuses to start with a malformed value of either, naming the variable. No setting lets an upload skip the scan. The app asks clamd for `PING` and `VERSION` every 30 seconds; `/admin#image-scanner` shows the result, and each change of state writes one line:
+**Image scanner.** Photo and avatar uploads need the ClamAV scanner: `CLAMD_ADDRESS` is clamd's `host:port` on the scanner network (the installer writes `clamd:3310`; empty turns uploads off), and `SCANNER_MAX_SIGNATURE_AGE_DAYS` (default 30, from 7 to 90) is how old the daily signatures may be before uploads pause. The app refuses to start with a malformed value of either, naming the variable. No setting lets an upload skip the scan. The app asks clamd for `PING` and `VERSION` every 30 seconds; `/admin/system#image-scanner` shows the result, and each change of state writes one line:
 
 ```text
 image scanner: Ready
@@ -1685,8 +1715,8 @@ upload outcome=refused reason=timeout ref=0bbdc379 kind=avatar
 
 `reason` is `infected` (a signature matched; `sig` is its name), `unavailable` (no connection, or clamd closed it without answering), `timeout` or `error` (clamd answered anything other than `stream: OK` or a match, such as `INSTREAM size limit exceeded`, or closed the connection before reading the whole upload; this refuses that upload only and does not pause the scanner). `kind` is `listing` or `avatar`. The line never holds a handle, user id, listing id, file name or size, and the reference is stored nowhere else: a vendor who believes a refusal was a false positive can quote it, and you find the signature with `docker compose logs app | grep ref=3f9a0c12`. The uploader is never shown the signature name, and their activity log records only "Upload refused by the malware scanner". The admin panel counts refusals by signature over about the last 24 hours, in memory (the counts start again when the app restarts) and never linked to accounts. Uploads refused because the scanner is off or its signatures are stale are not logged; the admin panel says why.
 
-**Photo storage and upload limits** (A-186). Stored photos and avatars are re-encoded JPEGs in the `images` table, so they are in every database backup. `IMAGE_STORAGE_LIMIT_MB` (default 2048, from 1 to 1048576; the app refuses to start with anything else) caps what all of them may use together; once an upload would pass it, uploaders see "Photo storage on this market is full; contact the operator" and nothing is stored. `/admin#image-scanner` shows how many are stored and the megabytes they use against the limit. The other limits are fixed: 4 MB a file, 4096 pixels a side and 4096×3072 pixels in all (about 12.6 megapixels, so a 4032×3024 phone photo fits), 64 MiB of estimated decode memory (a progressive colour JPEG reaches it at about 4.4 megapixels with full-resolution colour, 7.4 with the usual 4:2:0), 100 JPEG scans, 4 photos a listing, one avatar an account, 50 MB of photos and avatar an account, 20 uploads an account in 10 minutes and one at a time, and 2 uploads (one being decoded) at once for the whole app; a busy upload slot answers 503 with `Retry-After: 5`. An admitted upload may take 90 seconds to arrive, longer than the server's 15-second limit for other requests. Upload memory is budgeted beside `maxConns` in `cmd/server/main.go`: about 220 MiB at most (the 64 MiB decode estimate bounds what the decoder allocates), plus at most 96 MiB of image bytes held by image responses being written (A-187: 64 MiB on `/img`, 32 MiB on `/desk/img`), about 320 MiB in all, inside the app's 400 MiB `GOMEMLIMIT`. A refused or failed upload stores nothing and logs no file name; a failure of the database while storing one logs the usual `http 5xx kind=action name=/listings/photo` (or `/account/avatar`) line with the reference the uploader sees.
+**Photo storage and upload limits** (A-186). Stored photos and avatars are re-encoded JPEGs in the `images` table, so they are in every database backup. `IMAGE_STORAGE_LIMIT_MB` (default 2048, from 1 to 1048576; the app refuses to start with anything else) caps what all of them may use together; once an upload would pass it, uploaders see "Photo storage on this market is full; contact the operator" and nothing is stored. `/admin/system#image-scanner` shows how many are stored and the megabytes they use against the limit. The other limits are fixed: 4 MB a file, 4096 pixels a side and 4096×3072 pixels in all (about 12.6 megapixels, so a 4032×3024 phone photo fits), 64 MiB of estimated decode memory (a progressive colour JPEG reaches it at about 4.4 megapixels with full-resolution colour, 7.4 with the usual 4:2:0), 100 JPEG scans, 4 photos a listing, one avatar an account, 50 MB of photos and avatar an account, 20 uploads an account in 10 minutes and one at a time, and 2 uploads (one being decoded) at once for the whole app; a busy upload slot answers 503 with `Retry-After: 5`. An admitted upload may take 90 seconds to arrive, longer than the server's 15-second limit for other requests. Upload memory is budgeted beside `maxConns` in `cmd/server/main.go`: about 220 MiB at most (the 64 MiB decode estimate bounds what the decoder allocates), plus at most 96 MiB of image bytes held by image responses being written (A-187: 64 MiB on `/img`, 32 MiB on `/desk/img`), about 320 MiB in all, inside the app's 400 MiB `GOMEMLIMIT`. A refused or failed upload stores nothing and logs no file name; a failure of the database while storing one logs the usual `http 5xx kind=action name=/listings/photo` (or `/account/avatar`) line with the reference the uploader sees.
 
 **Serving images** (A-187). Stored images are served only at `/img/<id>-t` or `-f` (public: a published listing's photos, vendors' avatars, and staff avatars only while the public staff list is on and that account is not hidden, both off by default) and `/desk/img/<id>-t` or `-f` (signed in: the owner's own, any for an administrator, a staff avatar for the parties of an order that staff member decided and for moderators, once that member has decided a dispute, and an archived listing's photos for whoever may open that listing's page through an order on it). Anything else gets the same 404 as an unknown image id, and a POST gets 405. Responses still being written hold at most 64 MiB of image bytes on `/img` and, separately, 32 MiB on `/desk/img`, so signed-in requests cannot use up the public route's share; beyond that an image request gets the busy 503 with `Retry-After: 5` (not logged), so visitors reading slowly, or not at all, cannot exhaust the app's memory, while pages are unaffected. A visitor's browser may reuse a response for a day without asking again and keep it on disk until its cache is cleared (`Cache-Control: private, max-age=86400, immutable`; `max-age` sets freshness, not how long a copy stays); a reverse proxy in front of the app should not cache them (`private`) and must not add `ETag` or cookies. A database failure while serving one logs `http 5xx kind=page name=/img/` (or `/desk/img/`), never the image id.
 
-**Public staff list** (A-189). `/admin#staff-list` has one switch, "Show a public staff list", off on every install until you turn it on (with your password, and authenticator code when enrolled; each change is in the audit trail as "Public staff list changed from off to on" or back). While it is off, `/canary` lists no staff and no staff avatar is served on the public image route. While it is on, `/canary#staff` lists each moderator and administrator who is not suspended and has chosen to be listed, with their handle, role and avatar; every staff account starts hidden, and a hidden member is not listed at all. Whatever the switch, the staff member who records a dispute decision has their avatar shown beside it on that order's page, to its buyer and vendor and to staff. Tell staff before they upload an avatar that a photo links them to every decision they make.
+**Public staff list** (A-189). `/admin/transparency#staff-list` has one switch, "Show a public staff list", off on every install until you turn it on (with your password, and authenticator code when enrolled; each change is in the audit trail as "Public staff list changed from off to on" or back). While it is off, `/canary` lists no staff and no staff avatar is served on the public image route. While it is on, `/canary#staff` lists each moderator and administrator who is not suspended and has chosen to be listed, with their handle, role and avatar; every staff account starts hidden, and a hidden member is not listed at all. Whatever the switch, the staff member who records a dispute decision has their avatar shown beside it on that order's page, to its buyer and vendor and to staff. Tell staff before they upload an avatar that a photo links them to every decision they make.

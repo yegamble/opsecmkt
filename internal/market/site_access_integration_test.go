@@ -18,7 +18,7 @@ func accessSettingsState(e *testEnv) string {
 
 func accessSaveForm(t *testing.T, e *testEnv, session, mode, registrations string) url.Values {
 	t.Helper()
-	page := e.do("GET", "/admin", session, nil)
+	page := e.do("GET", "/admin/security", session, nil)
 	e.check(page, http.StatusOK)
 	return url.Values{"site_access": {mode}, "registrations": {registrations}, "password": {testPassword}, formNonceField: {renderedFormNonce(t, page.Body.String(), "/admin/access")}}
 }
@@ -132,7 +132,7 @@ func TestSiteAccessAdministratorAuthorizationConfirmationAndReplay(t *testing.T)
 	unchanged()
 	key, _ := agEnableTOTP(e, adminID)
 	f = accessSaveForm(t, e, admin, "members", "closed")
-	adminForm := adminForm(t, e.body("GET", "/admin", admin, nil, http.StatusOK), "/admin/access", "")
+	adminForm := adminForm(t, e.body("GET", "/admin/security", admin, nil, http.StatusOK), "/admin/access", "")
 	mustContain(t, adminForm, `name="password" required`, `name="code" required`)
 	good := agTOTPNow(key)
 	bad := e.wrongTOTP(adminID)
@@ -144,7 +144,7 @@ func TestSiteAccessAdministratorAuthorizationConfirmationAndReplay(t *testing.T)
 	f.Set("code", good)
 	first := e.do("POST", "/admin/access", admin, f)
 	e.check(first, http.StatusSeeOther)
-	if first.Header().Get("Location") != "/admin#access" || noticeSetCookie(first) == nil || noticeSetCookie(first).Value != "access" || accessSettingsState(e) != "registrations=closed,site_access=members" {
+	if first.Header().Get("Location") != "/admin/security#access" || noticeSetCookie(first) == nil || noticeSetCookie(first).Value != "access" || accessSettingsState(e) != "registrations=closed,site_access=members" {
 		t.Fatal("confirmed setting did not redirect, notify and persist")
 	}
 	wantAudit := "Changed site access from public to members; registrations from open to closed (confirmed with password and authenticator code)"

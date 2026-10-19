@@ -233,7 +233,7 @@ func TestStaffListOffByDefault(t *testing.T) {
 	if strings.Contains(body, `id="staff"`) || strings.Contains(body, "Market staff") || strings.Contains(body, "default_list_moderator") || strings.Contains(body, avatar.id) {
 		t.Fatalf("/canary shows a staff list while the setting is off:\n%s", body)
 	}
-	body = e.body("GET", "/admin", admin, nil, 200)
+	body = e.body("GET", "/admin/transparency", admin, nil, 200)
 	if !strings.Contains(body, `action="/admin/staff-list"`) || !strings.Contains(body, "Show a public staff list: <strong>Off</strong>") || !strings.Contains(body, `name="staff_list_public" value="true"`) {
 		t.Fatalf("admin page staff list control:\n%s", body)
 	}
@@ -373,13 +373,13 @@ func TestStaffListToggleAudited(t *testing.T) {
 	}
 	w := e.do("POST", "/admin/staff-list", admin, on)
 	e.check(w, 303)
-	if loc := w.Header().Get("Location"); loc != "/admin#staff-list" {
+	if loc := w.Header().Get("Location"); loc != "/admin/transparency#staff-list" {
 		t.Fatalf("redirect %q", loc)
 	}
 	if v := setting(); v != "true" || !e.auditExact(adminID, "Public staff list changed from off to on (confirmed with password)") {
 		t.Fatalf("setting %q, or no audit row", v)
 	}
-	if body := e.body("GET", "/admin", admin, nil, 200); !strings.Contains(body, "Show a public staff list: <strong>On</strong>") || !strings.Contains(body, `name="staff_list_public" value="false"`) {
+	if body := e.body("GET", "/admin/transparency", admin, nil, 200); !strings.Contains(body, "Show a public staff list: <strong>On</strong>") || !strings.Contains(body, `name="staff_list_public" value="false"`) {
 		t.Fatalf("admin page after turning it on:\n%s", body)
 	}
 	if body := e.body("GET", "/canary", randomToken(), nil, 200); !strings.Contains(body, `id="staff"`) {

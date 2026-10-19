@@ -162,7 +162,7 @@ func TestAuditExportHTTPEncryptedAndFailClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plainPage := e.do("GET", "/admin", admin, nil)
+	plainPage := e.do("GET", "/admin/transparency", admin, nil)
 	e.check(plainPage, http.StatusOK)
 	if body := plainPage.Body.String(); !strings.Contains(body, "Download export (.jsonl)") || !strings.Contains(body, "Download signature (.sig)") || !strings.Contains(body, "same range always produces byte-identical") || strings.Contains(body, "Decrypt both downloaded files offline") {
 		t.Fatal("plaintext export controls or verification guidance changed")
@@ -193,7 +193,7 @@ func TestAuditExportHTTPEncryptedAndFailClosed(t *testing.T) {
 	if v := auditExportStatus(); !v.Available || !v.Encrypted || v.Error != "" {
 		t.Fatalf("valid recipient disabled exports: %+v", v)
 	}
-	encryptedPage := e.do("GET", "/admin", admin, nil)
+	encryptedPage := e.do("GET", "/admin/transparency", admin, nil)
 	e.check(encryptedPage, http.StatusOK)
 	if body := encryptedPage.Body.String(); !strings.Contains(body, "Download export (.jsonl.asc)") || !strings.Contains(body, "Download signature (.sig.asc)") || !strings.Contains(body, "Decrypt both downloaded files offline") || !strings.Contains(body, "Encrypted downloads vary") || strings.Contains(body, "same range always produces byte-identical") {
 		t.Fatal("encrypted export controls misstated filenames or verification procedure")
@@ -211,7 +211,7 @@ func TestAuditExportHTTPEncryptedAndFailClosed(t *testing.T) {
 			t.Fatalf("invalid recipient response leaked data: %d %v %s", w.Code, w.Header(), w.Body)
 		}
 	}
-	page := e.do("GET", "/admin", admin, nil)
+	page := e.do("GET", "/admin/transparency", admin, nil)
 	e.check(page, http.StatusOK)
 	if !strings.Contains(page.Body.String(), "AUDIT_EXPORT_RECIPIENT") || !strings.Contains(page.Body.String(), "Correct the configuration named above") || strings.Contains(page.Body.String(), "Set AUDIT_SIGNING_KEY") || strings.Contains(page.Body.String(), "Download export") || strings.Contains(page.Body.String(), path) {
 		t.Fatal("admin page did not report recipient unavailability safely")

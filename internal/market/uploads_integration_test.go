@@ -392,7 +392,7 @@ func TestNoTransactionHeldDuringScan(t *testing.T) {
 func TestAdminPanelImageStorage(t *testing.T) {
 	e, _ := uploadEnv(t)
 	_, admin := e.user("storage_admin", "admin")
-	panel := scannerPanel(e.do("GET", "/admin", admin, nil).Body.String())
+	panel := scannerPanel(e.do("GET", "/admin/system", admin, nil).Body.String())
 	if !strings.Contains(panel, "Stored photos and avatars: 0, using 0.0 MB of the 2048 MB limit (<code>IMAGE_STORAGE_LIMIT_MB</code>)") {
 		t.Fatalf("empty:\n%s", panel)
 	}
@@ -400,7 +400,7 @@ func TestAdminPanelImageStorage(t *testing.T) {
 		t.Fatal(w.Code)
 	}
 	e.A.storageLimit = 100 << 20
-	panel = scannerPanel(e.do("GET", "/admin", admin, nil).Body.String())
+	panel = scannerPanel(e.do("GET", "/admin/system", admin, nil).Body.String())
 	if !regexp.MustCompile(`Stored photos and avatars: 1, using 0\.\d MB of the 100 MB limit`).MatchString(panel) {
 		t.Fatalf("one avatar:\n%s", panel)
 	}

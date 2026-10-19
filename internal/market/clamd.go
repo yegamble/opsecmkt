@@ -613,7 +613,7 @@ func (s *imageScanner) counts() scanCounts {
 	return c
 }
 
-// ScannerView is the admin page's Image scanner panel (/admin#image-scanner), built from the cached state.
+// ScannerView is the System & audit section's Image scanner panel (/admin/system#image-scanner), built from the cached state.
 type ScannerView struct {
 	External                 bool   // isolated gateway owns scanner checks; local metrics do not apply
 	State, Detail            string // "Signatures stale", "31 days, limit 30"

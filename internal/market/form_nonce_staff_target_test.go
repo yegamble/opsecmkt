@@ -91,7 +91,7 @@ func staffTargetCounts(t *testing.T, e *testEnv, path, actorID, targetID string)
 func TestStaffTargetConfirmedFormsRenderDistinctNoncesWithoutWrites(t *testing.T) {
 	e := newTestApp(t)
 	_, admin := e.user("nonce_staff_admin", "admin")
-	page := e.body("GET", "/admin", admin, nil, 200)
+	page := e.body("GET", "/admin/users", admin, nil, 200)
 	suspend := renderedFormNonce(t, page, "/admin/suspend")
 	reset := renderedFormNonce(t, page, "/admin/reset-factors")
 	if suspend == reset || submissionCount(t, e) != 0 {

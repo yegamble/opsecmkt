@@ -5,7 +5,7 @@ import { expect, test } from '@playwright/test';
 // real app's cached state from a fake clamd.
 
 test('admin image scanner panel: state, signature age warning and counts by signature', async ({ page }) => {
-  await page.goto('/admin');
+  await page.goto('/admin/system');
   const panel = page.getByRole('region', { name: 'Image scanner' });
   await expect(panel.getByRole('heading', { name: 'Image scanner', level: 2 })).toBeVisible();
   await expect(panel.locator('strong').first()).toHaveText('Ready');

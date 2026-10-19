@@ -28,7 +28,7 @@ test('fresh payment surfaces offer escrow only and removed pooled routes cannot 
     await admin.getByLabel('Handle', { exact: true }).fill(ADMIN.handle);
     await admin.getByLabel('Password', { exact: true }).fill(ADMIN.password);
     await admin.getByRole('button', { name: 'Sign in' }).click();
-    await admin.goto('/admin');
+    await admin.goto('/admin/payments');
     await expect(admin.getByRole('heading', { name: 'Escrow status and payment intake' })).toBeVisible();
     for (const currency of ['XMR']) {
       const form = admin.locator('form', { has: admin.getByRole('button', { name: `Save ${currency} intake` }) });
@@ -37,9 +37,11 @@ test('fresh payment surfaces offer escrow only and removed pooled routes cannot 
       await expect(form.getByRole('radio', { name: /^Paused/ })).toHaveAttribute('value', 'false');
     }
     await expect(admin.locator('form[action="/admin/payout"]')).toHaveCount(0);
-    // A-492: no payout table, count or link on the admin page.
+    // A-492: no payout table, count or link on the admin pages (A-542: the payments section and the overview).
     await expect(admin.locator('#payouts')).toHaveCount(0);
-    await expect(admin.locator('a[href="/admin#payouts"]')).toHaveCount(0);
+    await expect(admin.locator('a[href*="#payouts"]')).toHaveCount(0);
+    await admin.goto('/admin');
+    await expect(admin.locator('#payouts, a[href*="#payouts"]')).toHaveCount(0);
     await expect(admin.getByRole('navigation', { name: 'Main navigation' })).not.toContainText('payouts');
     await admin.context().close();
   } finally { await buyer.context().close(); }

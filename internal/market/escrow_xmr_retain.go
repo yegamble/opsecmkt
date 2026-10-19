@@ -295,7 +295,7 @@ func (a *App) xmrWalletUnopenable(ctx context.Context, w xmrWalletRow, now time.
 			return err
 		}
 		if err = notifyAdmins(ctx, tx, "Monero escrow wallet "+w.name+" cannot be opened on the escrow wallet-rpc (its file is gone or no longer opens with the market's password), so the market cannot read its accounts or send its settlements; it is marked missing and takes no order, and its sealed seed is kept. "+
-			"Restore its files from a backup of the wallet volume, or restore it from its sealed seed; the market tries it again on every pass. Once it is past its destruction date, the admin page lets you confirm its destruction."); err != nil {
+			"Restore its files from a backup of the wallet volume, or restore it from its sealed seed; the market tries it again on every pass. Once it is past its destruction date, Admin → Payments (/admin/payments) lets you confirm its destruction."); err != nil {
 			return err
 		}
 		log.Printf("escrow: Monero escrow wallet %s cannot be opened; marked missing, administrators notified", w.name)

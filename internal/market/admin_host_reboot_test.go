@@ -147,7 +147,7 @@ func TestHostRebootCommitsAuditBeforeOneDispatchAndNeverReplays(t *testing.T) {
 	form := hostRebootForm(key)
 	w := privateHostRequest(e, "POST", "/admin/reboot", session, form, true)
 	e.check(w, 303)
-	if w.Header().Get("Location") != "/admin#host-control" || len(fake.requests) != 1 {
+	if w.Header().Get("Location") != "/admin/system#host-control" || len(fake.requests) != 1 {
 		t.Fatalf("missing receipt redirect or one dispatch: %v, %d", w.Header(), len(fake.requests))
 	}
 	if agStr(e, "SELECT state FROM host_reboot_requests WHERE id=$1", form.Get(formNonceField)) != "accepted" {
@@ -227,7 +227,7 @@ func TestHostRebootRequiresEnrollmentAndReadyAgent(t *testing.T) {
 				e.A.hostControl = nil
 				want = 404
 			}
-			page := privateHostRequest(e, "GET", "/admin", session, nil, true)
+			page := privateHostRequest(e, "GET", "/admin/system", session, nil, true)
 			e.check(page, 200)
 			if strings.Contains(page.Body.String(), `action="/admin/reboot"`) || !strings.Contains(page.Body.String(), "Reboot application host OS unavailable") || strings.Contains(page.Body.String(), "private diagnostic") {
 				t.Fatal("unready or unenrolled admin received active reboot form or private diagnostic")
@@ -285,7 +285,7 @@ func TestHostRebootUncertainAgentResponseNeverRetries(t *testing.T) {
 		t.Fatal("uncertain host response not recorded truthfully")
 	}
 	e.check(privateHostRequest(e, "POST", "/admin/reboot", session, form, true), 303)
-	page := privateHostRequest(e, "GET", "/admin", session, nil, true)
+	page := privateHostRequest(e, "GET", "/admin/system", session, nil, true)
 	e.check(page, 200)
 	if len(fake.requests) != 1 || !strings.Contains(page.Body.String(), "Outcome unconfirmed") || strings.Contains(page.Body.String(), "private detail") {
 		t.Fatal("uncertain result was retried, hidden or exposed private diagnostics")
@@ -295,7 +295,7 @@ func TestHostRebootUncertainAgentResponseNeverRetries(t *testing.T) {
 func TestHostRebootAdminPageReadyAndReadOnly(t *testing.T) {
 	e, id, session, _, fake := prepareHostRebootTest(t, true)
 	before := agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1", id)
-	page := privateHostRequest(e, "GET", "/admin", session, nil, true)
+	page := privateHostRequest(e, "GET", "/admin/system", session, nil, true)
 	e.check(page, 200)
 	mustContain(t, page.Body.String(), `action="/admin/reboot"`, `name="password" required`, `name="code" required`, `name="confirm_reboot"`, "manual disk unlock")
 	if len(fake.requests) != 0 || agInt(e, "SELECT count(*) FROM host_reboot_requests") != 0 || agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1", id) != before {

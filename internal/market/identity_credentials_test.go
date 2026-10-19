@@ -39,7 +39,7 @@ func TestAdminRoleChangeAuditsBothAccountsAndGuards(t *testing.T) {
 	}
 
 	// The admin audit trail shows the account each row is recorded on.
-	body := e.body("GET", "/admin", admin, nil, 200)
+	body := e.body("GET", "/admin/system", admin, nil, 200)
 	mustContain(t, body, `<th scope="col">Account</th>`,
 		"<td>role_admin</td>\n<td>Changed role of role_target from buyer to vendor (confirmed with password)</td>",
 		"<td>role_target</td>\n<td>Role changed from buyer to vendor by administrator role_admin</td>")
@@ -238,7 +238,7 @@ func TestAdminResetsSecondFactors(t *testing.T) {
 	// The reset panel lists only non-administrator accounts that have a second factor.
 	resetOptions := func() string {
 		t.Helper()
-		_, f, ok := strings.Cut(e.body("GET", "/admin", admin, nil, 200), `action="/admin/reset-factors"`)
+		_, f, ok := strings.Cut(e.body("GET", "/admin/users", admin, nil, 200), `action="/admin/reset-factors"`)
 		if !ok {
 			t.Fatal("reset form missing")
 		}
@@ -246,7 +246,7 @@ func TestAdminResetsSecondFactors(t *testing.T) {
 		return f
 	}
 	opts := resetOptions()
-	mustContain(t, e.body("GET", "/admin", admin, nil, 200), "account holder can still use their verified PGP key", "sign a fresh message and verify it against the key already saved on their account")
+	mustContain(t, e.body("GET", "/admin/users", admin, nil, 200), "account holder can still use their verified PGP key", "sign a fresh message and verify it against the key already saved on their account")
 	mustContain(t, opts, "reset_target · TOTP and PGP sign-in", `name="password" required`)
 	mustNotContain(t, opts, "reset_admin2", "reset_plain", "reset_admin ", `name="code"`)
 
@@ -337,5 +337,5 @@ func TestAdminResetsSecondFactors(t *testing.T) {
 		t.Fatal("repeated reset wrote audit rows")
 	}
 	// Nobody is left to reset: the form is replaced by a note.
-	mustContain(t, e.body("GET", "/admin", admin, nil, 200), "No other account has a second factor enrolled.")
+	mustContain(t, e.body("GET", "/admin/users", admin, nil, 200), "No other account has a second factor enrolled.")
 }

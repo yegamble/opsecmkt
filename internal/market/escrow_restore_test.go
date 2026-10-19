@@ -60,7 +60,7 @@ func TestEscrowRecoverySectionHiddenWithoutEscrow(t *testing.T) {
 	if _, err := e.DB.Exec("INSERT INTO settings(key,value) VALUES('payments_recovery_required','true') ON CONFLICT (key) DO UPDATE SET value='true'"); err != nil {
 		t.Fatal(err)
 	}
-	w := e.do("GET", "/admin", admin, nil)
+	w := e.do("GET", "/admin/payments", admin, nil)
 	e.check(w, 200)
 	if body := w.Body.String(); strings.Contains(body, "escrow-recovery") || strings.Contains(body, "Bitcoin escrow paused") {
 		t.Fatalf("/admin on a market without escrow, gate set:\n%s", body)

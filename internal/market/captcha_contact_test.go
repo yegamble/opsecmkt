@@ -21,7 +21,7 @@ func TestAdminWarnsWhenCaptchaHasNoAccountFreeContact(t *testing.T) {
 	setting := func(key, value string) {
 		agExec(e, "INSERT INTO settings(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", key, value)
 	}
-	adminPage := func() string { return html.UnescapeString(e.body("GET", "/admin", admin, nil, 200)) }
+	adminPage := func() string { return html.UnescapeString(e.body("GET", "/admin/security", admin, nil, 200)) }
 
 	// CAPTCHA off (the test default): nothing to warn about, whatever the contact.
 	mustNotContain(t, adminPage(), captchaWarningMark)

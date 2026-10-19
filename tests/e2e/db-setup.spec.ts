@@ -49,7 +49,7 @@ test('initialize the market and publish the fixture listing', async ({ page, bro
   await expect(anon.locator('.captcha .captcha-fallback')).toContainText('This market lists no contact that works without an account');
   await visitor.close();
   // Turn it off so the other db-*.spec.ts files can register and sign in without solving images.
-  await page.goto('/admin');
+  await page.goto('/admin/security');
   // A-517: the CAPTCHA is on and there is no staff contact, so the administrator is warned.
   await expect(page.locator('.admin-auth .captcha-contact-warning')).toContainText('the CAPTCHA is on, but no staff contact is set.');
   await page.locator('.admin-auth').getByLabel('Current password').fill(ADMIN.password);

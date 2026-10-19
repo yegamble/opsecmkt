@@ -11,7 +11,8 @@ import (
 // cookie, so a reload, Back or a crafted link never shows a success that did not just happen. The cookie holds only
 // a code, never user text; a code not in the table shows nothing. A notice with a section renders inside that
 // section, and the 303 goes to its fragment; one without renders at the top of the page, with no fragment. pages
-// names the pages (PageData.Page, space-separated) that render the section: a notice consumed on any other page
+// names the pages (PageData.Page, space-separated; admin/<slug> for an administration section, A-542) that render
+// the section: a notice consumed on any other page
 // (its 303 left unfollowed while another tab loaded, A-291) renders at the top there instead. A code in
 // noticeErrors reports a success that needs the owner's attention and renders as the page's error alert.
 //
@@ -24,9 +25,9 @@ const noticeCookie, noticeMaxAge = "notice", 60
 
 var notices = map[string]struct{ text, section, pages string }{
 	"retention-delete":  {"Account deletion requested. Save any records you need before the 30-day deadline.", "retention", "account"},
-	"retention-hold":    {"Preservation hold recorded. Review is due within 30 days.", "retention", "admin"},
-	"retention-release": {"Preservation hold released. Original retention deadlines apply.", "retention", "admin"},
-	"retention-review":  {"Financial retention blocker reviewed. No funds or recovery records were deleted.", "retention", "admin"},
+	"retention-hold":    {"Preservation hold recorded. Review is due within 30 days.", "retention", "admin/system"},
+	"retention-release": {"Preservation hold released. Original retention deadlines apply.", "retention", "admin/system"},
+	"retention-review":  {"Financial retention blocker reviewed. No funds or recovery records were deleted.", "retention", "admin/system"},
 	// Account and sign-in
 	"profile":        {"Profile saved.", "", ""},
 	"password":       {"Password changed.", "", ""},
@@ -60,11 +61,11 @@ var notices = map[string]struct{ text, section, pages string }{
 	"escrow-bump-signed":   {"Signature accepted. The fee bump is signed by you; the signature's validity is checked when the market finalizes the transaction. Nothing has been sent yet: the market co-signs it and broadcasts it on its next pass, in place of the transaction already sent.", "", ""},
 	"escrow-bump-both":     {"Signature accepted. Both parties have now signed the fee bump; the signature's validity is checked when the market finalizes the transaction. Nothing has been sent yet: the market does not sign it, and broadcasts it on its next pass, in place of the transaction already sent.", "", ""},
 	"escrow-decision":      {"Dispute decision changed. The order page shows the settlement that pays it.", "", ""},
-	"escrow-fee":           {"Market fee saved. It applies to escrows created from now on; existing escrows keep the fee they started with.", "escrow-fee", "admin"},
-	"escrow-release-days":  {"Release deadline saved. It applies to escrow orders placed from now on; existing orders keep theirs.", "escrow-release-days", "admin"},
-	"escrow-rebroadcast":   {"Rebroadcast confirmed. The market broadcasts the settlement's stored transaction once on its next pass.", "escrow-recovery", "admin"},
-	"escrow-xmr-gone":      {"Destruction confirmed. The wallet's sealed seed was wiped; delete its files from the escrow wallet volume if any are left.", "xmr-escrow-recovery", "admin"},
-	"escrow-xmr-relay":     {"Relay confirmed. The market relays the settlement's stored transaction once on its next pass.", "xmr-escrow-recovery", "admin"},
+	"escrow-fee":           {"Market fee saved. It applies to escrows created from now on; existing escrows keep the fee they started with.", "escrow-fee", "admin/payments"},
+	"escrow-release-days":  {"Release deadline saved. It applies to escrow orders placed from now on; existing orders keep theirs.", "escrow-release-days", "admin/payments"},
+	"escrow-rebroadcast":   {"Rebroadcast confirmed. The market broadcasts the settlement's stored transaction once on its next pass.", "escrow-recovery", "admin/payments"},
+	"escrow-xmr-gone":      {"Destruction confirmed. The wallet's sealed seed was wiped; delete its files from the escrow wallet volume if any are left.", "xmr-escrow-recovery", "admin/payments"},
+	"escrow-xmr-relay":     {"Relay confirmed. The market relays the settlement's stored transaction once on its next pass.", "xmr-escrow-recovery", "admin/payments"},
 	"escrow-xmr-created":   {"Monero escrow created. Send the amount shown below to its escrow address.", "", ""},
 	"escrow-xmr-claim":     {"Claim requested. The market builds the release from this order's escrow account and sends it; nothing is sent yet.", "", ""},
 	"escrow-xmr-confirmed": {"Receipt confirmed. The order is completed; the market builds the release of the coins in this escrow to the vendor and sends it.", "", ""},
@@ -101,24 +102,24 @@ var notices = map[string]struct{ text, section, pages string }{
 	"image-removed-page": {"Image removed. Its owner was notified with your reason.", "", ""},
 	// Administration
 	"settings":      {"Marketplace settings saved.", "", ""},
-	"access":        {"Site access and registration settings saved.", "access", "admin"},
+	"access":        {"Site access and registration settings saved.", "access", "admin/security"},
 	"role":          {"Account role saved.", "", ""},
 	"captcha":       {"CAPTCHA setting saved.", "", ""},
-	"suspended":     {"Account suspended.", "suspend", "admin"},
-	"restored":      {"Account restored.", "suspend", "admin"},
-	"factors-reset": {"Second factors reset.", "reset-factors", "admin"},
-	"staff-contact": {"Staff contact saved.", "staff-contact", "admin"},
-	"staff-list":    {"Public staff list saved.", "staff-list", "admin"},
-	"intake-paused": {"New payment addresses paused.", "payment-intake", "admin"},
-	"intake-escrow": {"New payments set to escrow only.", "payment-intake", "admin"},
-	"operator-key":  {"Operator PGP key saved.", "transparency", "admin"},
+	"suspended":     {"Account suspended.", "suspend", "admin/users"},
+	"restored":      {"Account restored.", "suspend", "admin/users"},
+	"factors-reset": {"Second factors reset.", "reset-factors", "admin/users"},
+	"staff-contact": {"Staff contact saved.", "staff-contact", "admin/site"},
+	"staff-list":    {"Public staff list saved.", "staff-list", "admin/transparency"},
+	"intake-paused": {"New payment addresses paused.", "payment-intake", "admin/payments"},
+	"intake-escrow": {"New payments set to escrow only.", "payment-intake", "admin/payments"},
+	"operator-key":  {"Operator PGP key saved.", "transparency", "admin/transparency"},
 	// Vendor onboarding (vendor_applications.go, A-544)
 	"vendor-applied":   {"Vendor application submitted. Its status is shown below.", "vendor-application", "account"},
 	"vendor-approved":  {"Vendor application approved: your account is now a vendor account.", "vendor-application", "account"},
 	"vendor-withdrawn": {"Vendor application withdrawn.", "vendor-application", "account"},
-	"vendor-policy":    {"Vendor policy saved. It applies to new applications; open applications keep their bond and approval mode.", "vendors", "admin"},
-	"vendor-decision":  {"Vendor application updated. The applicant was notified.", "vendors", "admin"},
-	"vendor-verify":    {"Verified vendor mark saved. The vendor was notified.", "vendors", "admin"},
+	"vendor-policy":    {"Vendor policy saved. It applies to new applications; open applications keep their bond and approval mode.", "vendors", "admin/vendors"},
+	"vendor-decision":  {"Vendor application updated. The applicant was notified.", "vendors", "admin/vendors"},
+	"vendor-verify":    {"Verified vendor mark saved. The vendor was notified.", "vendors", "admin/vendors"},
 }
 
 // noticeErrors are the codes shown as the page's error alert rather than a status notice.
@@ -155,7 +156,7 @@ func (a *App) takeNotice(w http.ResponseWriter, r *http.Request, d *PageData) {
 			return
 		}
 		d.Notice, d.NoticeAt = n.text, n.section
-		if !slices.Contains(strings.Fields(n.pages), d.Page) {
+		if !slices.Contains(strings.Fields(n.pages), d.noticePage()) {
 			d.NoticeAt = ""
 		}
 	}

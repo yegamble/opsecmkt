@@ -150,7 +150,7 @@ func TestSiteAccessPrivateAdministratorRemainsPrivate(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.A.adminSocket = "/run/test-private-admin.sock"
-	for _, path := range []string{"/admin", "/admin/access", publicImageURL(photo.id, false)} {
+	for _, path := range []string{"/admin", "/admin/security", "/admin/access", publicImageURL(photo.id, false)} {
 		r := httptest.NewRequest("GET", path, nil)
 		r.AddCookie(sessionCookie(admin))
 		r.Header.Set("X-Admin-Authenticated", "true")
@@ -159,7 +159,7 @@ func TestSiteAccessPrivateAdministratorRemainsPrivate(t *testing.T) {
 		e.A.ServeHTTP(w, r)
 		e.check(w, 404)
 	}
-	r := httptest.NewRequest("GET", "/admin", nil)
+	r := httptest.NewRequest("GET", "/admin/security", nil)
 	r.AddCookie(sessionCookie(admin))
 	w := httptest.NewRecorder()
 	e.A.AdminHandler().ServeHTTP(w, r)

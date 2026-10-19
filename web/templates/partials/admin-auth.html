@@ -1,7 +1,7 @@
-{{/* P1 Authentication owns. Admin panels after the settings grid */}}
-{{define "admin-auth"}}{{template "admin-access" .}}{{$off := eq (index .Settings "captcha_required") "false"}}<section class="panel admin-auth">
-<h2>Sign-in protection</h2>{{if .CaptchaNoContact}}
-<p class="alert captcha-contact-warning" role="note"><strong>Warning:</strong> the CAPTCHA is on, but {{if index .Settings "staff_contact"}}the staff contact is only a handle, which can be messaged only from an account{{else}}no staff contact is set{{end}}. The image has no audio or text alternative, so someone who cannot read it cannot sign in or register and has no way to ask for help. Fix it by saving an onion, XMPP or other address that works without an account under Staff contact below, or by turning the CAPTCHA off here.</p>{{end}}
+{{/* P1 Authentication owns. Security & access section (/admin/security): site access, CAPTCHA and paused sign-ins */}}
+{{define "admin-auth"}}{{template "admin-access" .}}{{$off := eq (index .Settings "captcha_required") "false"}}<section class="panel admin-auth" id="sign-in-protection" aria-labelledby="sign-in-protection-heading">
+<h2 id="sign-in-protection-heading">Sign-in protection</h2>{{if .CaptchaNoContact}}
+<p class="alert captcha-contact-warning" role="note"><strong>Warning:</strong> the CAPTCHA is on, but {{if index .Settings "staff_contact"}}the staff contact is only a handle, which can be messaged only from an account{{else}}no staff contact is set{{end}}. The image has no audio or text alternative, so someone who cannot read it cannot sign in or register and has no way to ask for help. Fix it by saving an onion, XMPP or other address that works without an account under <a class="text-link" href="/admin/site#staff-contact">Site &amp; branding: Staff contact</a>, or by turning the CAPTCHA off here.</p>{{end}}
 <dl class="key-values">
 <div>
 <dt>CAPTCHA on sign-in and registration</dt>
@@ -24,8 +24,9 @@
 </form>
 <p class="help">The CAPTCHA is an image only, with no audio or text alternative (it fails WCAG 3.3.8 for people who cannot read it); first-run setup never asks for it. Changes are recorded in the audit trail.</p>
 </section>
-{{template "signin-protection" .}}
-<section class="panel admin-reset-factors" id="reset-factors" aria-labelledby="reset-factors-heading">
+{{template "signin-protection" .}}{{end}}
+{{/* Users section (/admin/users): second-factor reset and suspension, after the role form */}}
+{{define "admin-accounts"}}<section class="panel admin-reset-factors" id="reset-factors" aria-labelledby="reset-factors-heading">
 <h2 id="reset-factors-heading">Reset a user's second factors</h2>{{with $.NoticeIn "reset-factors"}}
 <div class="alert" role="status">{{.}}</div>{{end}}
 <p>For a user who lost their authenticator and recovery codes, or their PGP private key. This turns off TOTP (deleting its secret and recovery codes) and PGP sign-in verification; their saved PGP key and its verification stay. They are signed out everywhere, notified, and sign in next with their password only.</p>
@@ -78,5 +79,5 @@
 </ul>
 </details>{{else}}
 <p class="help">No account is suspended.</p>{{end}}
-<p class="help">Administrator accounts cannot be suspended here, including your own. To take away a staff role instead, assign the buyer role above (that also archives a vendor's listings).</p>
+<p class="help">Administrator accounts cannot be suspended here, including your own. To take away a staff role instead, assign the buyer role under <a class="text-link" href="#assign-role">Assign an account role</a> (that also archives a vendor's listings).</p>
 </section>{{end}}

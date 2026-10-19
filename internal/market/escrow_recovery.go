@@ -329,7 +329,7 @@ func escrowRebroadcastAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, err
 		}
 		if n, _ := res.RowsAffected(); n != 1 {
-			return actionResult{}, fail(409, "The settlement changed meanwhile. Reload the admin page. Nothing was changed.")
+			return actionResult{}, fail(409, "The settlement changed meanwhile. Reload Admin → Payments (/admin/payments). Nothing was changed.")
 		}
 		// P2-d: the confirmation covers the settlement's fee bumps too; the market then sends the highest-fee stored
 		// transaction once (trackBroadcast).
@@ -342,7 +342,7 @@ func escrowRebroadcastAction(c *actionCtx) (actionResult, error) {
 		}
 		audit := "Confirmed the rebroadcast of escrow settlement " + strconv.FormatInt(id, 10) + " (" + settlementKind(kind) + ") of order " + shortID(orderID) +
 			" after a restore from backup: the administrator checked that its transaction was not already sent or replaced (" + c.A.escrowNetwork() + ")"
-		return actionResult{Redirect: "/admin", Notice: "escrow-rebroadcast", Audit: audit}, nil
+		return actionResult{Redirect: "/admin/payments", Notice: "escrow-rebroadcast", Audit: audit}, nil
 	})
 }
 

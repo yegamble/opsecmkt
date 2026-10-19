@@ -18,6 +18,10 @@ export const previewRoutes: [path: string, heading: string][] = [
   ['/account', 'Your account.'], ['/vendor-dashboard', 'Vendor desk.'],
   ['/listing-edit?id=encrypted-drive', 'Edit listing.'],
   ['/moderator', 'Moderation desk.'], ['/admin', 'Control room.'],
+  // A-542: the administration sections, each its own page.
+  ['/admin/users', 'Users.'], ['/admin/vendors', 'Vendors.'], ['/admin/payments', 'Payments.'],
+  ['/admin/security', 'Security & access.'], ['/admin/site', 'Site & branding.'],
+  ['/admin/transparency', 'Transparency.'], ['/admin/system', 'System & audit.'],
   ['/pgp', 'PGP verification.'], ['/totp', 'Two-factor authentication.'],
   ['/canary', 'Trust is verifiable.'], ['/setup', 'Initialize your market.'],
   ['/login', 'Welcome back.'], ['/register', 'Create an account.'],

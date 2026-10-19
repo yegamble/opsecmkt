@@ -3,7 +3,7 @@ import { PREVIEW_DRAFT_ID, PREVIEW_PAID_ID } from './preview-routes';
 
 // The preview server has no payment provider: every payment surface must say so and show no address.
 test('preview pages state that payments are disabled', async ({ page }) => {
-  for (const path of ['/', '/checkout?id=encrypted-drive', `/order?id=${PREVIEW_DRAFT_ID}`, `/order?id=${PREVIEW_PAID_ID}`, '/account', '/vendor-dashboard', '/admin']) {
+  for (const path of ['/', '/checkout?id=encrypted-drive', `/order?id=${PREVIEW_DRAFT_ID}`, `/order?id=${PREVIEW_PAID_ID}`, '/account', '/vendor-dashboard', '/admin', '/admin/payments']) {
     expect((await page.goto(path))?.status()).toBe(200);
     await expect(page.locator('footer')).toContainText('New payments paused');
     await expect(page.locator('body')).not.toContainText('TESTNET payments');
@@ -18,7 +18,7 @@ test('preview pages state that payments are disabled', async ({ page }) => {
   // A-508: the saved pooled payout addresses are no longer read or shown.
   await expect(page.locator('main')).not.toContainText('payout address');
   await expect(page.getByLabel('Bitcoin payout address')).toHaveCount(0);
-  await page.goto('/admin');
+  await page.goto('/admin/payments');
   const providers = page.locator('.admin-payments');
   await expect(providers.getByRole('heading', { name: 'Escrow status and payment intake' })).toBeVisible();
   // A-492: the pooled payout table is removed with pooled payments.

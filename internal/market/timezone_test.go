@@ -154,7 +154,7 @@ func TestRenderedTimestampSurfacesAreUTCWhateverTheDatabaseZone(t *testing.T) {
 		{"dispute reply", "/order?id=" + order, buyer, replyAt},
 		{"delivery and order events", "/order?id=" + order, buyer, deliveryAt},
 		{"listing edit", "/listing-edit?id=" + product, vendor, listingAt},
-		{"admin audit trail", "/admin", admin, auditAt},
+		{"admin audit trail", "/admin/system", admin, auditAt},
 	}
 	for _, check := range checks {
 		t.Run(check.name, func(t *testing.T) {

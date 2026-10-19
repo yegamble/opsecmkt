@@ -12,7 +12,7 @@ import { pgpFixture } from './db-helpers';
 // one fresh database (playwright.escrow-xmr.config.ts); a second server on it runs with ESCROW_XMR off.
 //
 // The last test covers retention (slice X-f, P3-R9): a wallet past its 90 days is destroyed and its order's page says a
-// later deposit cannot be recovered (ES-8), and a missing wallet past them is confirmed destroyed on /admin. The 90 days
+// later deposit cannot be recovered (ES-8), and a missing wallet past them is confirmed destroyed on /admin/payments. The 90 days
 // are moved through SQL; nothing waits in real time.
 
 const sim = process.env.E2E_XMR_SIM!;
@@ -152,13 +152,14 @@ test('Monero escrow: checkout with the custody copy, funding at 9 and 10 confirm
   await typeInto(admin, admin.getByLabel('Password', { exact: true }), password);
   await pressSubmit(admin, admin.getByRole('button', { name: 'Initialize marketplace' }));
   await expect(admin).toHaveURL(/\/admin\?welcome=1$/);
+  await admin.goto('/admin/security'); // A-542: the CAPTCHA switch is on Security & access
   await typeInto(admin, admin.locator('.admin-auth').getByLabel('Current password'), password);
   await pressSubmit(admin, admin.locator('.admin-auth').getByRole('button', { name: 'Turn CAPTCHA off' }));
   const buyer = await context(browser, baseURL);
   const vendor = await context(browser, baseURL);
   await register(buyer, 'xmr_buyer', buyerPassword);
   await register(vendor, 'xmr_vendor', vendorPassword);
-  await admin.goto('/admin');
+  await admin.goto('/admin/users');
   const role = admin.locator('form', { has: admin.getByRole('button', { name: 'Update role' }) });
   await typeInto(admin, role.getByLabel('Account handle'), 'xmr_vendor');
   await tabTo(admin, role.getByLabel('Role'));
@@ -487,7 +488,7 @@ function past90Days(name: string) {
     ALTER TABLE xmr_escrow_wallets ENABLE TRIGGER xmr_escrow_wallets_kept; COMMIT;`);
 }
 
-test('Monero escrow retention: a wallet past its 90 days destroyed, a later deposit unrecoverable (ES-8), a missing wallet confirmed destroyed on /admin', async ({ browser, baseURL, request }, info) => {
+test('Monero escrow retention: a wallet past its 90 days destroyed, a later deposit unrecoverable (ES-8), a missing wallet confirmed destroyed on /admin/payments', async ({ browser, baseURL, request }, info) => {
   const admin = await signIn(browser, baseURL, 'xmr_admin', password);
   const buyer = await signIn(browser, baseURL, 'xmr_buyer', buyerPassword);
   const vendor = await signIn(browser, baseURL, 'xmr_vendor', vendorPassword);
@@ -520,7 +521,7 @@ test('Monero escrow retention: a wallet past its 90 days destroyed, a later depo
   await expect(buyer.locator('.payment-deposits tbody tr')).toHaveCount(deposits);
   await shot(buyer, info, 'k02-destroyed-order');
 
-  // A wallet with no order, retained when it closes, whose files are gone: missing. Past its 90 days, /admin lists it,
+  // A wallet with no order, retained when it closes, whose files are gone: missing. Past its 90 days, /admin/payments lists it,
   // and an administrator confirms its destruction by keyboard with the password.
   const gone = await nextWallet();
   await nextWallet();
@@ -528,7 +529,7 @@ test('Monero escrow retention: a wallet past its 90 days destroyed, a later depo
   await simPost(request, '/test/xmr/remove-wallet', { name: gone });
   await expect.poll(() => walletState(gone), { timeout: 60_000 }).toBe('missing');
   past90Days(gone);
-  await admin.goto('/admin');
+  await admin.goto('/admin/payments');
   const missing = admin.locator('[aria-labelledby="xmr-escrow-missing"] tbody tr', { hasText: gone });
   await expect(missing).toBeVisible();
   const destroyed = admin.locator('[aria-labelledby="xmr-escrow-destroyed"] tbody tr');
@@ -539,7 +540,7 @@ test('Monero escrow retention: a wallet past its 90 days destroyed, a later depo
   await typeInto(admin, confirm.getByLabel('Current password'), 'not-the-admin-password');
   expect(await pressSubmit(admin, confirm.getByRole('button', { name: 'Confirm destruction' }))).toBe(401);
   expect(walletState(gone)).toBe('missing');
-  await admin.goto('/admin');
+  await admin.goto('/admin/payments');
   await check(admin, confirm.getByRole('checkbox', { name: /this wallet's files are gone, and nothing in it is owed to anyone$/ }));
   await typeInto(admin, confirm.getByLabel('Current password'), password);
   expect(await pressSubmit(admin, confirm.getByRole('button', { name: 'Confirm destruction' }))).toBe(303);

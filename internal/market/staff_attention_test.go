@@ -103,7 +103,7 @@ func TestStaffAttentionCountsActionableWorkWithoutCapsOrCrossCategorySums(t *tes
 	}
 	// A-492: pooled payouts are removed, so no page counts or links them.
 	for _, page := range []string{modPage.Body.String(), adminPage.Body.String()} {
-		mustNotContain(t, page, " payouts)", "payouts</a>", `href="/admin#payouts"`)
+		mustNotContain(t, page, " payouts)", "payouts</a>", `#payouts"`)
 	}
 
 	// Each category clears independently as its underlying work is resolved or disposed.

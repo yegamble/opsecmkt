@@ -375,7 +375,7 @@ func xmrRebroadcastAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, err
 		}
 		if n, _ := res.RowsAffected(); n != 1 {
-			return actionResult{}, fail(409, "The settlement changed meanwhile. Reload the admin page. Nothing was changed.")
+			return actionResult{}, fail(409, "The settlement changed meanwhile. Reload Admin → Payments (/admin/payments). Nothing was changed.")
 		}
 		if _, err = c.Tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) SELECT id,state,state,$2,$3 FROM orders WHERE id=$1", orderID, c.User.ID,
 			"An administrator checked that this Monero escrow settlement's transaction was not already relayed or replaced after the market restored its records from a backup; the market relays it once on its next pass."); err != nil {
@@ -383,7 +383,7 @@ func xmrRebroadcastAction(c *actionCtx) (actionResult, error) {
 		}
 		audit := "Confirmed the relay of Monero escrow settlement " + strconv.FormatInt(id, 10) + " (" + settlementKind(kind) + ") of order " + shortID(orderID) +
 			" after a restore from backup: the administrator checked that its transaction was not already relayed or replaced (" + c.A.xmrEscrowNetwork() + ")"
-		return actionResult{Redirect: "/admin", Notice: "escrow-xmr-relay", Audit: audit}, nil
+		return actionResult{Redirect: "/admin/payments", Notice: "escrow-xmr-relay", Audit: audit}, nil
 	})
 }
 
@@ -426,7 +426,7 @@ func xmrConfirmDestroyedAction(c *actionCtx) (actionResult, error) {
 		case party:
 			return "", actionResult{}, fail(403, "You are a party to an order of this wallet, so you cannot confirm its destruction.")
 		case state != "missing":
-			return "", actionResult{}, fail(409, "Only a missing escrow wallet's destruction is confirmed here. Reload the admin page. Nothing was changed.")
+			return "", actionResult{}, fail(409, "Only a missing escrow wallet's destruction is confirmed here. Reload Admin → Payments (/admin/payments). Nothing was changed.")
 		case paused:
 			return "", actionResult{}, fail(409, "The market is reconciling a restore from backup: no escrow wallet is destroyed until it has finished. Nothing was changed.")
 		case !allowed:
@@ -440,6 +440,6 @@ func xmrConfirmDestroyedAction(c *actionCtx) (actionResult, error) {
 			return opID, actionResult{}, err
 		}
 		audit := "Confirmed the destruction of Monero escrow wallet " + name + ", missing and past its destruction date: the administrator checked that its files are gone and that nothing in it is owed; its sealed seed was wiped (" + c.A.xmrEscrowNetwork() + ")"
-		return opID, actionResult{Redirect: "/admin", Notice: "escrow-xmr-gone", Audit: audit}, nil
+		return opID, actionResult{Redirect: "/admin/payments", Notice: "escrow-xmr-gone", Audit: audit}, nil
 	})
 }

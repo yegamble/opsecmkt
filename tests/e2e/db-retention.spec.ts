@@ -39,7 +39,7 @@ test('preservation confirmation stays private and can be released without JavaSc
   const recordID = execFileSync('psql', [process.env.E2E_DATABASE_URL!, '-v', 'ON_ERROR_STOP=1', '-qtAc', `SELECT id FROM users WHERE handle='${handle}'`], { encoding: 'utf8' }).trim();
   await buyer.context().close();
   const admin = await signedIn(browser, baseURL, ADMIN.handle, ADMIN.password, false, 320);
-  await admin.goto('/admin');
+  await admin.goto('/admin/system');
   const section = admin.getByRole('region', { name: 'Retention and preservation' });
   await section.getByText('Register a preservation hold', { exact: true }).click();
   const form = section.locator('form[action="/admin/retention/hold"]').first();

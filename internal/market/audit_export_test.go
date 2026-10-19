@@ -212,7 +212,7 @@ func TestAuditExportIntegration(t *testing.T) {
 			t.Fatalf("%q: %d", bad, w.Code)
 		}
 	}
-	page := e.do("GET", "/admin", admin, nil)
+	page := e.do("GET", "/admin/transparency", admin, nil)
 	e.check(page, 200)
 	if body := page.Body.String(); !strings.Contains(body, f["public_key"]) || !strings.Contains(body, fmt.Sprintf(`value="%d"`, upto+1)) || !strings.Contains(body, "Download signature") {
 		t.Fatal("admin page lacks export controls")
@@ -237,7 +237,7 @@ func TestAuditExportUnavailableWithoutKey(t *testing.T) {
 	if w.Code != 409 || !strings.Contains(w.Body.String(), "AUDIT_SIGNING_KEY") || strings.Contains(w.Body.String(), "{") {
 		t.Fatalf("export without key: %d %s", w.Code, w.Body)
 	}
-	page := e.do("GET", "/admin", admin, nil).Body.String()
+	page := e.do("GET", "/admin/transparency", admin, nil).Body.String()
 	if !strings.Contains(page, "AUDIT_SIGNING_KEY is not configured") || strings.Contains(page, "Download export") {
 		t.Fatal("admin page must show export as unavailable")
 	}
@@ -419,7 +419,7 @@ func TestAuditExportOutlivesServerTimeouts(t *testing.T) {
 	if out, err := exec.Command(bin, "-pub", pub, partial, sigPath).CombinedOutput(); err == nil || !strings.Contains(string(out), "sha256 does not match") {
 		t.Fatalf("a partial download must fail with sha256 does not match: %v %s", err, out)
 	}
-	if page := e.do("GET", "/admin", admin, nil).Body.String(); !strings.Contains(page, `A download cut short (a dropped connection or Tor circuit) leaves a partial file that fails verification with "sha256 does not match"`) {
+	if page := e.do("GET", "/admin/transparency", admin, nil).Body.String(); !strings.Contains(page, `A download cut short (a dropped connection or Tor circuit) leaves a partial file that fails verification with "sha256 does not match"`) {
 		t.Fatal("the admin export help does not say how a partial download fails")
 	}
 

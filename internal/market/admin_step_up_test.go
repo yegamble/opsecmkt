@@ -63,7 +63,10 @@ func TestAdminStepUpRequiresPasswordAndTOTP(t *testing.T) {
 				}
 			}
 			key, _ := agEnableTOTP(e, adminID)
-			page := e.body("GET", "/admin", admin, nil, 200)
+			// A-542: each form is on its own administration section.
+			section := map[string]string{"/admin": "/admin/users", "/admin/captcha": "/admin/security", "/admin/staff-contact": "/admin/site",
+				"/admin/staff-list": "/admin/transparency", "/admin/operator-key": "/admin/transparency", "/admin/canary": "/admin/transparency"}[path]
+			page := e.body("GET", section, admin, nil, 200)
 			var renderedForm string
 			if path == "/admin" {
 				renderedForm = adminForm(t, page, path, "role")

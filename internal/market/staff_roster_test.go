@@ -23,9 +23,9 @@ func TestStaffRosterPagesAllHiddenSuspendedStaffAndKeyStatus(t *testing.T) {
 		count       int
 		first, last string
 	}{
-		{"/admin", 50, "admin_user", "private_staff_049"},
-		{"/admin?staff_page=2", 50, "private_staff_050", "private_staff_099"},
-		{"/admin?staff_page=3", 3, "private_staff_100", "roster_viewer"},
+		{"/admin/users", 50, "admin_user", "private_staff_049"},
+		{"/admin/users?staff_page=2", 50, "private_staff_050", "private_staff_099"},
+		{"/admin/users?staff_page=3", 3, "private_staff_100", "roster_viewer"},
 	} {
 		w := e.do("GET", tc.path, admin, nil)
 		e.check(w, 200)
@@ -45,7 +45,7 @@ func TestStaffRosterPagesAllHiddenSuspendedStaffAndKeyStatus(t *testing.T) {
 		if strings.Contains(s, "roster_private_identity") || strings.Contains(s, "BEGIN PGP") || strings.Contains(s, "roster_buyer") {
 			t.Fatal("roster leaked extra data")
 		}
-		if tc.path == "/admin" {
+		if tc.path == "/admin/users" {
 			for _, text := range []string{"Can receive encrypted messages", "Cannot receive encrypted messages", "No saved key", "Suspended", "#staff-roster"} {
 				if !strings.Contains(s, text) {
 					t.Errorf("missing %q", text)
@@ -54,7 +54,7 @@ func TestStaffRosterPagesAllHiddenSuspendedStaffAndKeyStatus(t *testing.T) {
 		}
 	}
 	for _, token := range []string{buyer, mod, ""} {
-		w := e.do("GET", "/admin?staff_page=3", token, nil)
+		w := e.do("GET", "/admin/users?staff_page=3", token, nil)
 		if w.Code == 200 || strings.Contains(w.Body.String(), "private_staff_100") {
 			t.Fatal("unauthorized roster")
 		}

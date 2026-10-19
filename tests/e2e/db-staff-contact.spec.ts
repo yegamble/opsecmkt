@@ -4,7 +4,7 @@ import { uniqueHandle } from './db-fixtures';
 import { expectNotice, pgpFixture, signedIn, submitAndLoad, submitStatus } from './db-helpers';
 import { waitForStyles } from './styles';
 
-// A-119: an administrator saves the "Staff contact" on /admin with their password; /canary, the suspended sign-in
+// A-119: an administrator saves the "Staff contact" on /admin/site (A-542) with their password; /canary, the suspended sign-in
 // refusal and a notification that tells its reader to contact the staff show it as text (a hostile value stays
 // text), at 320 px without horizontal scrolling; a moderator's handle whose key can receive encrypted messages
 // also links a signed-in reader to /messages. A fresh account is made administrator for this test only, so the
@@ -36,7 +36,7 @@ test('administrator publishes a staff contact that every promised page shows as 
   const visitor = await visitorContext.newPage();
   const panel = admin.getByRole('region', { name: 'Staff contact' });
   const saveContact = async (value: string) => {
-    await admin.goto('/admin');
+    await admin.goto('/admin/site');
     await panel.getByLabel('Staff contact').fill(value);
     await panel.getByLabel('Current password').fill(password);
     return submitStatus(admin, () => panel.getByRole('button', { name: 'Save staff contact' }).click());
@@ -64,17 +64,18 @@ test('administrator publishes a staff contact that every promised page shows as 
     await expect(contact).toHaveText('Ask the operator of this market.');
 
     // The administrator's form needs the password; the hostile value is saved and audited as text.
-    await admin.goto('/admin');
+    await admin.goto('/admin/site');
     await expect(panel.getByLabel('Staff contact')).toHaveAttribute('maxlength', '200');
     await noOverflow(admin);
     expect(await saveContact(hostile)).toBe(303);
-    await expect(admin).toHaveURL(/\/admin#staff-contact$/);
+    await expect(admin).toHaveURL(/\/admin\/site#staff-contact$/);
     await expect(panel.getByRole('status')).toHaveText('Staff contact saved.');
     await admin.waitForLoadState();
     await admin.reload();
     await expect(panel.getByLabel('Staff contact')).toHaveValue(hostile);
-    await expect(admin.locator('table').last().locator('tbody tr').filter({ hasText: `Staff contact changed from (not set) to “${hostile}” (confirmed with password)` })).toHaveCount(1);
     await noOverflow(admin);
+    await admin.goto('/admin/system');
+    await expect(admin.locator('table').last().locator('tbody tr').filter({ hasText: `Staff contact changed from (not set) to “${hostile}” (confirmed with password)` })).toHaveCount(1);
 
     await visitor.goto('/canary');
     await expect(contact).toHaveText(`Contact the market staff: ${hostile}.`);

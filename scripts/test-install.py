@@ -274,7 +274,8 @@ def exercise(repo, environment, second, second_environment, third, third_environ
     require(third_browser.post('/setup', dict(csrf=third_browser.csrf('/setup'), token=alpha_token, handle='alpha_admin',
                                               password='alpha-layout-test-password', site_name='Alpha Layout Market'))
             == '/admin', 'Setup on the alpha-layout installation failed')
-    csrf_before = third_browser.csrf('/admin')
+    # The /admin overview holds no form (A-542); the Users section's role form carries the session's CSRF token.
+    csrf_before = third_browser.csrf('/admin/users')
     code, output = installer(third, third_environment, log_path, ['upgrade'], 60)
     require(code == 1 and 'AGE_RECIPIENT' in output, 'upgrade ran without a backup or --no-backup')
     # Without APP_PORT in the shell, upgrade records the port the running app container publishes.
@@ -294,7 +295,7 @@ def exercise(repo, environment, second, second_environment, third, third_environ
     require(len(list(third.glob('.env.pre-upgrade-*'))) == 1, 'upgrade wrote no pre-upgrade copy')
     wait_for(lambda: 'Get your marketplace ready' in third_browser.page('/admin'),
              'The session did not survive the upgrade')
-    require(third_browser.csrf('/admin') == csrf_before, 'The CSRF token changed across the upgrade')
+    require(third_browser.csrf('/admin/users') == csrf_before, 'The CSRF token changed across the upgrade')
     require(third_browser.post('/logout', dict(csrf=csrf_before)) == '/login',
             'The CSRF token issued before the upgrade was refused')
     after = (third / '.env').read_bytes()

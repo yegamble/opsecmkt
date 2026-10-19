@@ -515,7 +515,7 @@ func TestMarketHealthyWhileScannerDown(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	before := len(f.Commands())
-	w := e.do("GET", "/admin", admin, nil)
+	w := e.do("GET", "/admin/system", admin, nil)
 	e.check(w, 200)
 	if body := w.Body.String(); !strings.Contains(body, "Unavailable (timed out)") || !strings.Contains(body, "Signatures: not read yet.") || !strings.Contains(body, "docker compose logs clamd") {
 		t.Fatalf("admin page does not show the scanner unavailable:\n%s", scannerPanel(w.Body.String()))
@@ -543,13 +543,13 @@ func TestAdminScannerPanel(t *testing.T) {
 	_, admin := e.user("panel_admin", "admin")
 	_, vendor := e.user("panel_vendor", "vendor")
 	// Disabled (no CLAMD_ADDRESS in the test environment).
-	w := e.do("GET", "/admin", admin, nil)
+	w := e.do("GET", "/admin/system", admin, nil)
 	e.check(w, 200)
 	panel := scannerPanel(w.Body.String())
 	if !strings.Contains(panel, "Disabled") || !strings.Contains(panel, "CLAMD_ADDRESS") {
 		t.Fatalf("disabled panel:\n%s", panel)
 	}
-	if w = e.do("GET", "/admin", vendor, nil); w.Code != 403 {
+	if w = e.do("GET", "/admin/system", vendor, nil); w.Code != 403 {
 		t.Fatalf("vendor /admin = %d", w.Code)
 	}
 
@@ -557,7 +557,7 @@ func TestAdminScannerPanel(t *testing.T) {
 	f.SetVersion(fakeClamdVersion(31*24*time.Hour - time.Hour))
 	e.withScanner(f)
 	st := e.A.scanner.State()
-	panel = scannerPanel(e.do("GET", "/admin", admin, nil).Body.String())
+	panel = scannerPanel(e.do("GET", "/admin/system", admin, nil).Body.String())
 	for _, want := range []string{"Signatures stale (31 days, limit 30)", "ClamAV 1.4.3", "27999", st.DailyDate.Format("2006-01-02 15:04 UTC"), "install.sh refresh-scanner", "No successful scan since the app started"} {
 		if !strings.Contains(panel, want) {
 			t.Fatalf("stale panel lacks %q:\n%s", want, panel)
@@ -577,7 +577,7 @@ func TestAdminScannerPanel(t *testing.T) {
 	e.A.scanner.Scan(ctx, uploadListing, []byte("photo"))
 	e.A.scanner.poll(ctx) // back to Ready after the failed scan
 	before := len(f.Commands())
-	panel = scannerPanel(e.do("GET", "/admin", admin, nil).Body.String())
+	panel = scannerPanel(e.do("GET", "/admin/system", admin, nil).Body.String())
 	if len(f.Commands()) != before {
 		t.Fatal("rendering /admin contacted clamd")
 	}
@@ -593,7 +593,7 @@ func TestAdminScannerPanel(t *testing.T) {
 	// Fresh signatures: no warning.
 	f.SetVersion(fakeClamdVersion(2 * 24 * time.Hour))
 	e.A.scanner.poll(ctx)
-	if panel = scannerPanel(e.do("GET", "/admin", admin, nil).Body.String()); strings.Contains(panel, "refresh-scanner") || !strings.Contains(panel, "2 days old") {
+	if panel = scannerPanel(e.do("GET", "/admin/system", admin, nil).Body.String()); strings.Contains(panel, "refresh-scanner") || !strings.Contains(panel, "2 days old") {
 		t.Fatalf("fresh panel:\n%s", panel)
 	}
 }

@@ -22,7 +22,7 @@ test('Monero-only intake, forged Bitcoin refusals and unavailable escrow work wi
       UPDATE users SET role='vendor' WHERE handle='${vendorHandle}';
       INSERT INTO products(id,vendor_id,title,description,category,region,kind,xmr,stock)
       SELECT '${product}',id,'${title}','Monero-only fixture','Digital','Worldwide','digital',500000000000,3 FROM users WHERE handle='${vendorHandle}';`);
-    await admin.goto('/admin');
+    await admin.goto('/admin/payments');
     await expect(admin.getByRole('button', { name: 'Save BTC intake' })).toHaveCount(0);
     let intake = admin.locator('form[action="/admin/payment-intake"]');
     await expect(intake).toHaveCount(1);
@@ -47,12 +47,12 @@ test('Monero-only intake, forged Bitcoin refusals and unavailable escrow work wi
     expect(sql(`SELECT currency FROM orders WHERE product_id='${product}'`)).toBe('XMR');
     expect(sql(`SELECT count(*) FROM escrows e JOIN orders o ON o.id=e.order_id WHERE o.product_id='${product}'`)).toBe('0');
 
-    await admin.goto('/admin');
+    await admin.goto('/admin/payments');
     intake = admin.locator('form[action="/admin/payment-intake"]');
     await intake.getByRole('radio', { name: /^Escrow$/ }).check();
     await intake.getByLabel('Current password', { exact: true }).fill('incorrect-password');
     expect(await submitStatus(admin, () => intake.getByRole('button', { name: 'Save XMR intake' }).click())).toBe(401);
-    await admin.goto('/admin');
+    await admin.goto('/admin/payments');
     intake = admin.locator('form[action="/admin/payment-intake"]');
     await intake.getByRole('radio', { name: /^Escrow$/ }).check();
     await intake.getByLabel('Current password', { exact: true }).fill(password);

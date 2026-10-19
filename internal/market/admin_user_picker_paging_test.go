@@ -39,20 +39,20 @@ func TestAdminUserPickerPagesNewestAccountsAndKeepsOtherRolesReachable(t *testin
 		}
 		return rows
 	}
-	firstBody, firstList := page("/admin")
+	firstBody, firstList := page("/admin/users")
 	first := accounts(firstList)
-	if len(first) != 50 || first[0] != "paged_user_101 · moderator" || !strings.Contains(firstList, "Showing 1–50 of 102 accounts") || !strings.Contains(firstList, `href="/admin?users_page=2"`) || strings.Contains(firstList, `rel="prev"`) {
+	if len(first) != 50 || first[0] != "paged_user_101 · moderator" || !strings.Contains(firstList, "Showing 1–50 of 102 accounts") || !strings.Contains(firstList, `href="/admin/users?users_page=2"`) || strings.Contains(firstList, `rel="prev"`) {
 		t.Fatalf("first picker page rows=%d body=%s", len(first), firstList)
 	}
 	if !strings.Contains(firstBody, `name="handle"`) || !strings.Contains(firstBody, `pattern="[a-zA-Z0-9_]{3,32}"`) {
 		t.Fatal("paging replaced or changed the exact-handle role form")
 	}
-	secondBody, secondList := page("/admin?users_page=2")
+	secondBody, secondList := page("/admin/users?users_page=2")
 	second := accounts(secondList)
-	if len(second) != 50 || second[0] != "paged_user_051 · vendor" || !strings.Contains(secondList, "paged_user_050 · moderator") || !strings.Contains(secondList, `href="/admin?users_page=3"`) || !strings.Contains(secondList, `href="/admin" rel="prev"`) || !strings.Contains(secondBody, `<details class="account-list" open>`) {
+	if len(second) != 50 || second[0] != "paged_user_051 · vendor" || !strings.Contains(secondList, "paged_user_050 · moderator") || !strings.Contains(secondList, `href="/admin/users?users_page=3"`) || !strings.Contains(secondList, `href="/admin/users" rel="prev"`) || !strings.Contains(secondBody, `<details class="account-list" open>`) {
 		t.Fatalf("second picker page rows=%d body=%s", len(second), secondList)
 	}
-	lastBody, lastList := page("/admin?users_page=3")
+	lastBody, lastList := page("/admin/users?users_page=3")
 	last := accounts(lastList)
 	if len(last) != 2 || last[0] != "paged_user_001 · buyer" || last[1] != "admin_user · admin" || !strings.Contains(lastList, "Showing 101–102 of 102 accounts") || strings.Contains(lastList, `rel="next"`) || !strings.Contains(lastBody, `<details class="account-list" open>`) {
 		t.Fatalf("last picker page rows=%d body=%s", len(last), lastList)
@@ -61,12 +61,12 @@ func TestAdminUserPickerPagesNewestAccountsAndKeepsOtherRolesReachable(t *testin
 		t.Fatal("picker pages did not cover every account")
 	}
 	for _, tc := range []struct{ path, page string }{
-		{"/admin?users_page=bad", "Page 1 of 3"},
-		{"/admin?users_page=0", "Page 1 of 3"},
-		{"/admin?users_page=-2", "Page 1 of 3"},
-		{"/admin?users_page=999999999999999999999999", "Page 3 of 3"},
+		{"/admin/users?users_page=bad", "Page 1 of 3"},
+		{"/admin/users?users_page=0", "Page 1 of 3"},
+		{"/admin/users?users_page=-2", "Page 1 of 3"},
+		{"/admin/users?users_page=999999999999999999999999", "Page 3 of 3"},
 		// The generic catalog query parameter must not change the admin picker page.
-		{"/admin?page=3", "Page 1 of 3"},
+		{"/admin/users?page=3", "Page 1 of 3"},
 	} {
 		body, _ := page(tc.path)
 		if !strings.Contains(body, tc.page) {
@@ -74,7 +74,7 @@ func TestAdminUserPickerPagesNewestAccountsAndKeepsOtherRolesReachable(t *testin
 		}
 	}
 	_, buyer := e.user("picker_nonadmin", "buyer")
-	w := e.do("GET", "/admin?users_page=2", buyer, nil)
+	w := e.do("GET", "/admin/users?users_page=2", buyer, nil)
 	e.check(w, 403)
 	if strings.Contains(w.Body.String(), fmt.Sprintf("paged_user_%03d", 51)) {
 		t.Fatal("non-admin received account-picker rows")

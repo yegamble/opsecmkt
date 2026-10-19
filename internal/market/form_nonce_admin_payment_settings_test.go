@@ -35,7 +35,7 @@ func TestPaymentIntakeConfirmedReceiptAndLostAcknowledgement(t *testing.T) {
 	e := newFreshTestApp(t)
 	adminID, admin := e.user("nonce_intake_admin", "admin")
 	otherSession := agSession(e, adminID)
-	page := e.do("GET", "/admin", admin, nil)
+	page := e.do("GET", "/admin/payments", admin, nil)
 	e.check(page, 200)
 	firstNonce := renderedCurrencyIntakeNonce(t, page.Body.String(), "XMR")
 	if strings.Contains(page.Body.String(), `name="currency" value="BTC"`) {
@@ -61,11 +61,11 @@ func TestPaymentIntakeConfirmedReceiptAndLostAcknowledgement(t *testing.T) {
 	}
 	replay := e.do("POST", "/admin/payment-intake", admin, firstForm)
 	e.check(replay, 303)
-	if replay.Header().Get("Location") != "/admin#payment-intake" || noticeSetCookie(replay) == nil || noticeSetCookie(replay).Value != "intake-paused" {
+	if replay.Header().Get("Location") != "/admin/payments#payment-intake" || noticeSetCookie(replay) == nil || noticeSetCookie(replay).Value != "intake-paused" {
 		t.Fatalf("payment-intake replay did not return saved response: location=%q notice=%v", replay.Header().Get("Location"), noticeSetCookie(replay))
 	}
 
-	newerPage := e.do("GET", "/admin", admin, nil)
+	newerPage := e.do("GET", "/admin/payments", admin, nil)
 	e.check(newerPage, 200)
 	newerForm := url.Values{"currency": {"XMR"}, "enabled": {intakeEscrow}, "password": {testPassword}, formNonceField: {renderedCurrencyIntakeNonce(t, newerPage.Body.String(), "XMR")}}
 	e.check(e.do("POST", "/admin/payment-intake", admin, newerForm), 303)
@@ -87,7 +87,7 @@ func TestPaymentIntakeConfirmedReceiptAndLostAcknowledgement(t *testing.T) {
 func TestPaymentIntakeInvalidChoiceRollsBackNonceForCorrection(t *testing.T) {
 	e := newFreshTestApp(t)
 	id, admin := e.user("nonce_intake_invalid", "admin")
-	page := e.do("GET", "/admin", admin, nil)
+	page := e.do("GET", "/admin/payments", admin, nil)
 	e.check(page, 200)
 	form := url.Values{"currency": {"XMR"}, "enabled": {"true"}, "password": {testPassword}, formNonceField: {renderedCurrencyIntakeNonce(t, page.Body.String(), "XMR")}}
 	if w := e.do("POST", "/admin/payment-intake", admin, form); w.Code != 400 {

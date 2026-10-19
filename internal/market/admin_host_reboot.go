@@ -99,7 +99,7 @@ func adminHostRebootAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, err
 		}
 		created = true
-		return actionResult{Redirect: "/admin#host-control", Audit: "Requested application-host OS reboot; request " + request.RequestID + "; acknowledged downtime and manual disk unlock"}, nil
+		return actionResult{Redirect: "/admin/system#host-control", Audit: "Requested application-host OS reboot; request " + request.RequestID + "; acknowledged downtime and manual disk unlock"}, nil
 	})
 	if err != nil || !created {
 		// This also covers a lost database Commit acknowledgement. There is no
@@ -118,7 +118,7 @@ func adminHostRebootAction(c *actionCtx) (actionResult, error) {
 		}
 	}
 	if markErr != nil {
-		return actionResult{}, fail(500, "The reboot request was recorded, but dispatch could not be confirmed. Check its request ID on the admin page; it will not be retried automatically.")
+		return actionResult{}, fail(500, "The reboot request was recorded, but dispatch could not be confirmed. Check its request ID under Admin → System & audit (/admin/system); it will not be retried automatically.")
 	}
 	receipt, dispatchErr := c.A.hostControl.RequestReboot(c.Ctx(), request)
 	state := "unknown"

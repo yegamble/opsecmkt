@@ -16,13 +16,13 @@ func TestXMREscrowOnlyReleaseDaysAndDispatch(t *testing.T) {
 		t.Fatal("the Monero escrow environment has Bitcoin escrow on")
 	}
 	_, admin := x.user("xadmin2_"+randomToken()[:6], "admin")
-	page := x.page("/admin", admin)
+	page := x.page("/admin/payments", admin)
 	for _, want := range []string{`action="/admin/escrow-release-days"`, `name="release_days"`, "14 days"} {
 		if !strings.Contains(page, want) {
 			t.Fatalf("admin page lacks %q with only Monero escrow on", want)
 		}
 	}
-	if w := x.do("POST", "/admin/escrow-release-days", admin, url.Values{"release_days": {"21"}, "password": {testPassword}}); w.Code != 303 {
+	if w := x.do("POST", "/admin/escrow-release-days", admin, url.Values{"release_days": {"21"}, "password": {testPassword}}); w.Code != 303 || w.Header().Get("Location") != "/admin/payments#escrow-release-days" {
 		t.Fatalf("saving the release deadline with only Monero escrow on: %d %s", w.Code, w.Body.String())
 	}
 	if got := agStr(x.testEnv, "SELECT action FROM audit_events WHERE action LIKE 'Changed the % escrow release deadline%' ORDER BY id DESC LIMIT 1"); !strings.Contains(got, "Changed the Monero escrow release deadline (fakechain)") || strings.Contains(got, "Bitcoin") {

@@ -281,7 +281,7 @@ func TestCaptchaOnRegisterAndLogin(t *testing.T) {
 	e.check(e.do("POST", "/admin/captcha", buyer, url.Values{"captcha_required": {"true"}}), 403)
 	e.check(e.do("POST", "/admin/captcha", admin, url.Values{"captcha_required": {"maybe"}}), 400)
 	e.check(e.do("POST", "/admin/captcha", admin, url.Values{"captcha_required": {"true"}, "password": {testPassword}}), 303)
-	if !e.auditHas(adminID, "Turned on CAPTCHA") || !strings.Contains(e.do("GET", "/admin", admin, nil).Body.String(), "Turn CAPTCHA off") {
+	if !e.auditHas(adminID, "Turned on CAPTCHA") || !strings.Contains(e.do("GET", "/admin/security", admin, nil).Body.String(), "Turn CAPTCHA off") {
 		t.Fatal("captcha toggle not audited or not shown")
 	}
 

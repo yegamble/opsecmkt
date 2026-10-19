@@ -176,13 +176,44 @@ a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,te
   text-transform:uppercase;
   border-bottom:2px solid transparent
 }
-.nav a[aria-current=page] {
+.nav a[aria-current=page],.nav a[aria-current=true] {
   border-color:var(--amber);
   color:var(--amber)
 }
 .nav .nav-end {
   margin-left:auto;
   color:var(--green)
+}
+/* A-542: administration section navigation, on every admin page. Links wrap onto further rows on a narrow screen,
+   so neither the page nor the list scrolls sideways; each link keeps a 44px target. */
+.admin-nav {
+  margin:0 0 22px;
+  border-bottom:1px solid var(--line)
+}
+.admin-nav ul {
+  display:flex;
+  flex-wrap:wrap;
+  gap:0 22px;
+  margin:0;
+  padding:0;
+  list-style:none
+}
+.admin-nav a {
+  display:inline-flex;
+  align-items:center;
+  min-height:44px;
+  border-bottom:2px solid transparent;
+  font:0.875rem var(--mono);
+  letter-spacing:.03em;
+  text-transform:uppercase;
+  overflow-wrap:anywhere
+}
+.admin-nav a[aria-current=page] {
+  border-color:var(--amber);
+  color:var(--amber)
+}
+.admin-section-list li {
+  margin:6px 0
 }
 .shell {
   max-width:1660px;

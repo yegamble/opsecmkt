@@ -625,7 +625,7 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 			msg := "Change outcome unknown: it may have been saved. Reload the relevant page and check the recorded state before taking further action."
 			switch r.URL.Path {
 			case "/admin/escrow-xmr-destroyed":
-				msg = "Escrow wallet destruction outcome unknown: the confirmation may have been saved. Check the wallet record and sealed-seed status on the admin page, and verify the wallet files and backups before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
+				msg = "Escrow wallet destruction outcome unknown: the confirmation may have been saved. Check the wallet record and sealed-seed status under Admin → Payments (/admin/payments), and verify the wallet files and backups before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
 			case "/admin/review":
 				msg = "Review change outcome unknown: it may have been saved. Check the review on the product or vendor page before starting another form. If the original form is still open, resubmit it unchanged to retrieve the saved response."
 			case "/admin/listing":
@@ -641,11 +641,11 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 			case "/admin/suspend", "/admin/reset-factors", "/admin/vendor-applications", "/admin/vendor-verify":
 				msg = "Staff action outcome unknown: it may have been saved. Check the account's current state and audit trail before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
 			case "/admin/access", "/admin/captcha", "/admin/staff-contact", "/admin/staff-list", "/admin/operator-key", "/admin/canary", "/admin/vendor-policy":
-				msg = "Admin setting outcome unknown: it may have been saved. Reload the admin page and check the setting and audit trail before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
+				msg = "Admin setting outcome unknown: it may have been saved. Reload the administration section holding the form and check the setting and audit trail before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
 			case "/admin/escrow-release-days":
-				msg = "Escrow release deadline setting outcome unknown: it may have been saved. Reload the admin page and check the current deadline and audit trail before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
+				msg = "Escrow release deadline setting outcome unknown: it may have been saved. Reload Admin → Payments (/admin/payments) and check the current deadline and audit trail before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
 			case "/admin/payment-intake":
-				msg = "Payment intake setting outcome unknown: it may have been saved. Reload the admin page and check the currency's current intake and audit trail before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
+				msg = "Payment intake setting outcome unknown: it may have been saved. Reload Admin → Payments (/admin/payments) and check the currency's current intake and audit trail before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
 			case "/moderator/payment-review", "/moderator/xmr-collision":
 				msg = "Staff disposition outcome unknown: it may have been saved. Check the moderation desk and order record before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
 			case "/pgp/2fa":
@@ -655,7 +655,7 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 			case "/admin/escrow-rebroadcast":
 				msg = "Bitcoin escrow rebroadcast outcome unknown: the confirmation may have been saved. Check the settlement on the admin page and verify its transaction against the chain and the watch-only wallet before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
 			case "/admin/escrow-xmr-rebroadcast":
-				msg = "Monero escrow relay outcome unknown: the confirmation may have been saved. Check the settlement on the admin page and verify its transaction with the escrow daemon and wallet before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
+				msg = "Monero escrow relay outcome unknown: the confirmation may have been saved. Check the settlement under Admin → Payments (/admin/payments) and verify its transaction with the escrow daemon and wallet before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
 			case "/escrow/claim", "/escrow/ship", "/escrow/recover", "/escrow/bump", "/escrow-xmr/claim", "/escrow-xmr/ship", "/escrow-xmr/confirm":
 				msg = "Escrow action outcome unknown: it may have been saved. Check the order and settlement state before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
 			case "/totp/disable", "/totp/activate", "/totp/recovery":
