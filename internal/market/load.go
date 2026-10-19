@@ -249,7 +249,7 @@ func (a *App) load(r *http.Request, d *PageData) error {
 	if err != nil {
 		return err
 	}
-	d.Branding, err = a.loadBranding(ctx)
+	d.Branding, err = a.loadBranding(ctx, d.Page == "admin" && d.AdminSection == "site")
 	if err != nil {
 		return err
 	}

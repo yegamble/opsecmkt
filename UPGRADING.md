@@ -15,6 +15,18 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## Staff uploads from the private administrator connection (A-551, A-590)
+
+With isolated uploads and a private admin onion (`ADMIN_SOCKET`), the avatar panel (administrators and moderators)
+and an administrator's listing Photos panel on the private connection now authorize one upload with the account
+password (and authenticator code) and send the file to the upload gateway origin in `BRANDING_UPLOAD_ORIGIN`, the
+setting the logo upload already uses. Upgrade the gateway binary on the upload host together with the app: an older
+gateway does not know the new `/uploads/staff` form and refuses it, storing nothing. Without
+`BRANDING_UPLOAD_ORIGIN` those panels now say why no upload is possible instead of offering a form that always
+failed. The logo form now also follows the gateway's scanner report and pauses while it is missing, stale or not
+*Ready*. No migration and no new setting; unused authorizations are held in memory and end with an app restart.
+Uploads on the public address and integrated (single-host) uploads are unchanged.
+
 ## Upload gateway scanner reports (A-552)
 
 With isolated uploads, the app now shows the upload gateway's scanner state and

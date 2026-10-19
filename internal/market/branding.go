@@ -65,21 +65,38 @@ func (a *App) sweepBrandingTickets(ctx context.Context) error {
 	return err
 }
 
-func (a *App) brandingUploadAvailability() (bool, string) {
+// brandingUploadAvailability follows the upload forms' scanner state (uploadScannerState): the app's own clamd,
+// or in the separated topology the gateway's latest report, so a missing, stale or unhealthy report pauses the
+// logo form before a file is chosen (A-590).
+func (a *App) brandingUploadAvailability(ctx context.Context) (bool, string, error) {
 	if a.isolatedUploads && a.adminSocket != "" && a.brandingUploadOrigin == "" {
-		return false, "The operator must configure BRANDING_UPLOAD_ORIGIN with the public upload gateway origin before uploading a logo. Originals must not reach the private application listener."
+		return false, "The operator must configure BRANDING_UPLOAD_ORIGIN with the public upload gateway origin before uploading a logo. Originals must not reach the private application listener.", nil
 	}
-	if !a.isolatedUploads && a.scanner.State().Name != scannerReady {
-		return false, "Logo uploads require a ready malware scanner. Configure ClamAV and wait for current signatures."
+	st, err := a.uploadScannerState(ctx)
+	if err != nil {
+		return false, "", err
 	}
-	return true, ""
+	if st.Name != scannerReady {
+		if a.isolatedUploads {
+			return false, "Logo uploads are paused: the upload gateway's malware scanner is unavailable or has not reported recently. Check the image scanner under Admin → System & audit.", nil
+		}
+		return false, "Logo uploads require a ready malware scanner. Configure ClamAV and wait for current signatures.", nil
+	}
+	return true, "", nil
 }
 
-func (a *App) loadBranding(ctx context.Context) (*BrandingView, error) {
+// loadBranding reads the logo every page shows; withUpload adds the logo form's availability, which only the
+// branding panel (Admin → Site & branding) shows.
+func (a *App) loadBranding(ctx context.Context, withUpload bool) (*BrandingView, error) {
 	v := &BrandingView{}
-	v.UploadEnabled, v.UploadUnavailable = a.brandingUploadAvailability()
+	var err error
+	if withUpload {
+		if v.UploadEnabled, v.UploadUnavailable, err = a.brandingUploadAvailability(ctx); err != nil {
+			return nil, err
+		}
+	}
 	var version string
-	err := a.db.QueryRowContext(ctx, `SELECT version FROM market_branding WHERE singleton`).Scan(&version)
+	err = a.db.QueryRowContext(ctx, `SELECT version FROM market_branding WHERE singleton`).Scan(&version)
 	if err == sql.ErrNoRows {
 		return v, nil
 	}
@@ -91,7 +108,9 @@ func (a *App) loadBranding(ctx context.Context) (*BrandingView, error) {
 }
 
 func authorizeBrandingUpload(c *actionCtx) (actionResult, error) {
-	if ready, message := c.A.brandingUploadAvailability(); !ready {
+	if ready, message, err := c.A.brandingUploadAvailability(c.Ctx()); err != nil {
+		return actionResult{}, err
+	} else if !ready {
 		return actionResult{}, fail(http.StatusServiceUnavailable, message)
 	}
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {

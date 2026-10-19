@@ -72,6 +72,7 @@ type App struct {
 	storageLimit         int64                     // IMAGE_STORAGE_LIMIT_MB in bytes (uploads.go); 0 = the default
 	isolatedUploads      bool                      // raw upload bytes terminate at the separate gateway
 	uploadTickets        uploadTicketStore
+	staffUploads         staffUploadStore
 	brandingUploadOrigin string // fixed public gateway origin; no administrator credential is forwarded
 	stop                 context.CancelFunc
 	background           sync.WaitGroup

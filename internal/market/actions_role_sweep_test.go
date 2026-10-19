@@ -56,6 +56,7 @@ var sweepScopes = map[string][2]string{
 	"/admin/access":                   {scopeStaff, "confirmed site visibility and registration policy"},
 	"/admin/branding/authorize":       {scopeStaff, "confirmed single-use market-logo upload capability"},
 	"/admin/branding/reset":           {scopeStaff, "confirmed market-logo reset and ticket revocation"},
+	"/admin/uploads/authorize":        {scopeStaff, "confirmed single-use staff avatar or admin listing-photo upload capability"},
 	"/admin/retention/release":        {scopeStaff, "confirmed release of preservation"},
 	"/admin/retention/review":         {scopeStaff, "reviews a financial retention blocker"},
 	"/admin/retention/account-review": {scopeStaff, "reviews an account closure blocker"},

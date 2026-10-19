@@ -181,6 +181,7 @@ var adminRedirectsCoveredElsewhere = map[string]string{
 	"/admin/escrow-xmr-rerequest":   "escrow_xmr_rerequest tests: the order page's settlement, where its form is",
 	"/admin/escrow-xmr-retry-build": "escrow_xmr_rerequest tests: the order page's settlement, where its form is",
 	"/admin/branding/authorize":     "branding_test.go: /admin/branding/upload, the upload hand-off",
+	"/admin/uploads/authorize":      "staff_upload_test.go (staffAuthorize): /admin/uploads/upload, the upload hand-off",
 	"/admin/canary":                 "form_nonce_admin_settings_test.go: /canary, where the statement is published",
 	"/admin/review":                 "review tests: the product or vendor page the form is on",
 	"/admin/listing":                "inventory tests: the listing edit page the form is on",

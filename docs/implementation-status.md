@@ -136,11 +136,20 @@ rewrites supported static shapes and text. SVGs are served as images with a
 restrictive CSP, never inserted as page markup. Name and logo changes are shared
 across application replicas through PostgreSQL.
 
-Private-admin uploads use a confirmed, expiring, one-use branding capability and
-a fixed configured gateway origin. Originals stay on the processing gateway;
-passwords and second-factor codes stay on the private admin connection. This
-capability does not enable administrator listing-photo or avatar uploads through
-the public gateway. See [changing market branding](operator-guide.md#changing-the-market-name-and-logo).
+Private-admin uploads use a confirmed, expiring, one-use capability and a fixed
+configured gateway origin (`BRANDING_UPLOAD_ORIGIN`): for the logo, and (A-551)
+for staff avatars and administrator listing photos uploaded from the private
+administrator connection when uploads are isolated. Originals stay on the
+processing gateway; passwords, second-factor codes and the session stay on the
+private admin connection. A staff upload capability is bound to the account, its
+session, the upload kind and (for a photo) the listing, lasts 10 minutes and is
+spent on first use; it is held in the app's memory, so an app restart revokes
+unused ones. Administrator sessions are still refused on the public gateway.
+Without a configured origin, the private connection's avatar and photo panels say
+why no upload is possible instead of offering a form. In the separated topology
+the logo form follows the gateway's scanner report like the other upload forms
+(A-590). See [changing market branding](operator-guide.md#changing-the-market-name-and-logo)
+and [photo uploads](operator-guide.md#photo-uploads-and-the-malware-scanner).
 
 ## Administration sections
 

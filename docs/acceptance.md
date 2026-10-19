@@ -94,7 +94,21 @@ Per-order escrow is the only payment path (A-448, A-492). Checks of payment code
   `TestBrandingIsolatedGatewayNormalizationAndRevocation`,
   `TestBrandingGatewayRefusalsAndAtomicAudit`,
   `TestBrandingAuthorizationRequiresCurrentTOTPAndExactNonce`,
-  `TestBrandingSVGStrictInertCanonicalization`).
+  `TestBrandingSVGStrictInertCanonicalization`). With isolated uploads the logo
+  form and its authorization follow the gateway's scanner report (A-590,
+  `TestBrandingFollowsGatewayScannerReport`).
+- [x] Staff avatars and administrator listing photos uploaded from the private
+  admin connection with isolated uploads use the same kind of confirmed,
+  expiring one-use capability (A-551), bound to the account, its session, the
+  upload kind and the listing. Through the actual mTLS gateway the original is
+  scanned and normalized outside the app, which never reads it; replay, expiry,
+  replacement, session revocation, a rolled-back confirmation, a listing id from
+  the gateway and a result of the wrong kind are refused, and the result page
+  carries no cookie or session token. Without a gateway origin the panels say why
+  instead of showing a form; single-host mode is unchanged
+  (`TestStaffAvatarViaGatewayCapability`, `TestStaffListingPhotoViaGatewayCapability`,
+  `TestUploadFormHiddenWithoutPath`). Database integration evidence only; no
+  browser journey crosses the two origins.
 - [x] Site access and registration are independent: public/open, public/closed,
   members/open and members/closed work for guests and existing accounts. Closed
   registration hides signup links and forms and refuses a real signup form
@@ -380,7 +394,7 @@ A database from an older release with payment history this build does not suppor
 
 ### Photo and avatar uploads (A-186; the forms are A-188, serving is A-187)
 
-- [ ] Only `/listings/photo`, `/account/avatar` and the ticketed logo upload `/branding/logo/upload` accept multipart bodies; any other multipart post gets a 415 page with its body unread, and every other route keeps the 64 KiB form cap (`TestUploadRefusesMultipartElsewhere`, `TestNonUploadRoutesKeep64KiBCap`, `TestUploadDoesNotUseParseMultipartForm`, `TestUploadNoTempFiles`). Open gap: the retired Bitcoin signing paths (`/escrow/sign`, `/escrow/hardware-sign`, `/escrow/hardware-bump-sign`) are no longer routes, but `psbtUploadRoutes` still exempts them from the 415 refusal, so their bounded multipart body is read before the request is refused.
+- [ ] Only `/listings/photo`, `/account/avatar` and the ticketed logo upload `/branding/logo/upload` accept multipart bodies (with isolated uploads the separate gateway also takes the ticketed staff upload `/uploads/staff`, which the app refuses unread); any other multipart post gets a 415 page with its body unread, and every other route keeps the 64 KiB form cap (`TestUploadRefusesMultipartElsewhere`, `TestNonUploadRoutesKeep64KiBCap`, `TestUploadDoesNotUseParseMultipartForm`, `TestUploadNoTempFiles`). Open gap: the retired Bitcoin signing paths (`/escrow/sign`, `/escrow/hardware-sign`, `/escrow/hardware-bump-sign`) are no longer routes, but `psbtUploadRoutes` still exempts them from the 415 refusal, so their bounded multipart body is read before the request is refused.
 - [x] Refusals are HTML pages after the rest of the body is read into nothing: a vendor over the cap gets the 413 page naming 4 MB and an anonymous sender the sign-in page, without a connection reset; `Content-Length` over the ceiling or absent is refused unread; an anonymous drain holds no slot, keeps the unextended read deadline and buffers nothing (`TestUploadRefusalReadsRestOfBody`, `TestUploadContentLengthOverCeilingUnread`, `TestUploadAnonDrainHoldsNoSlot`, `TestUploadAnonFloodHoldsNoPostSlot`, `TestUploadSignedOutGetsSignInPage`; loopback), and in Firefox with JavaScript off a file just over 4 MB gets the 413 page naming the limit, not a connection reset (`db-listing-photos.spec.ts` "oversized photo shows the limit without JS", `database-firefox` project).
 - [x] An admitted upload may outlast the server's read and write timeouts and gets its 303; a client slower than the upload window gets a page saying so; a client that goes away frees its account's upload lock at once (`TestSlowUploadResponseArrives`, `TestUploadSlowClientTimeoutMessage`, `TestUploadLockReleasedOnClientAbort`; with the windows scaled down).
 - [x] csrf is the first part, parts come in order and nothing follows the photo; buyers, and moderators on listing photos, are refused before anything is scanned (`TestUploadCSRFFirstPart`, `TestUploadPartOrderAndExtraPartsRefused`, `TestUploadBuyerRefused`, `TestPhotoModeratorRefused`).
