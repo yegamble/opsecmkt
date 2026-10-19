@@ -75,9 +75,10 @@ func (a *App) xmrBondIssuable(ctx context.Context, q rowQuerier) (bool, error) {
 	if !a.xmrEscrowReady() {
 		return false, nil
 	}
+	// With no bond wallet yet, one can be created only while ESCROW_XMR_SEED_KEY is the pinned key.
 	var ok bool
-	err := q.QueryRowContext(ctx, "SELECT NOT "+restoreGateSQL+" AND NOT EXISTS(SELECT 1 FROM settings WHERE key=$1 AND value='true') AND EXISTS(SELECT 1 FROM settings WHERE key=$2 AND value=$3)",
-		xmrEscrowSweepKey, paymentIntakeKey("XMR"), intakeEscrow).Scan(&ok)
+	err := q.QueryRowContext(ctx, "SELECT NOT "+restoreGateSQL+" AND NOT EXISTS(SELECT 1 FROM settings WHERE key=$1 AND value='true') AND EXISTS(SELECT 1 FROM settings WHERE key=$2 AND value=$3)"+
+		" AND ($4 OR EXISTS(SELECT 1 FROM xmr_bond_wallets WHERE state='sealed'))", xmrEscrowSweepKey, paymentIntakeKey("XMR"), intakeEscrow, a.escrowXMR.canCreate.Load()).Scan(&ok)
 	return ok, err
 }
 

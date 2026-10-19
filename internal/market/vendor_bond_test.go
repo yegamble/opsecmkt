@@ -354,6 +354,12 @@ func TestVendorBondGateHoldsIssuanceAndApproval(t *testing.T) {
 		t.Fatal("the page promised an address under the gate")
 	}
 	agExec(x.testEnv, "DELETE FROM settings WHERE key='payments_recovery_required'")
+	// With no bond wallet yet and ESCROW_XMR_SEED_KEY not the pinned key, none could be created: no address is promised.
+	x.A.escrowXMR.canCreate.Store(false)
+	if page := x.accountPage(sess); strings.Contains(page, "preparing a bond address") || !strings.Contains(page, manual) {
+		t.Fatal("an address was promised while no bond wallet can be created")
+	}
+	x.A.escrowXMR.canCreate.Store(true)
 	x.mustPoll()
 	addr := x.mustBondAddress(app)
 	mustContain(t, x.accountPage(sess), addr)
@@ -491,6 +497,13 @@ func TestVendorBondRowlessAccountRetired(t *testing.T) {
 	}
 	if x.adminsTold(bondUnclaimed) != 2 || x.adminsTold(bondRowless) != 2 {
 		t.Fatalf("unclaimed notices %d", x.adminsTold(bondUnclaimed))
+	}
+	// Coins at the bond wallet's account 0 are reported once while they are there.
+	x.fake.pay(testBondWallet, 0, hex64("bond to account 0"), testBondPico, 12)
+	x.mustPoll()
+	x.mustPoll()
+	if n := x.adminsTold("coins arrived at its primary account (account 0)"); n != 2 || agInt(x.testEnv, "SELECT count(*) FROM vendor_bond_deposits") != 0 {
+		t.Fatalf("account 0 notices %d", n)
 	}
 	// A create_account whose answer is lost: the account is found row-less on the next pass, and the application waiting
 	// for an address gets a fresh one.
