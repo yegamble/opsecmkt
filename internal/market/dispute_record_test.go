@@ -229,7 +229,14 @@ func TestDeskShowsWhoHoldsDisputeEvidence(t *testing.T) {
 		return stored
 	}
 
-	// A message before the dispute opened does not count.
+	// A message before the dispute opened does not count. Before it, the buyer reaches moderator A only on the public
+	// staff list (A-543); once it opens, any current staff member.
+	if _, err := w.e.DB.Exec("UPDATE users SET staff_hidden=false WHERE id=$1", w.modID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.e.DB.Exec("INSERT INTO settings(key,value) VALUES('staff_list_public','true') ON CONFLICT(key) DO UPDATE SET value=excluded.value"); err != nil {
+		t.Fatal(err)
+	}
 	order := w.fundedFor(w.buyerID, w.buyer, w.vendorID, w.vendor)
 	send(w.buyer, modA, keyA)
 	if _, err := w.e.DB.Exec("UPDATE messages SET created=created-interval '1 hour'"); err != nil {

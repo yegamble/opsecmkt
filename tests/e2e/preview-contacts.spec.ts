@@ -33,10 +33,15 @@ test('vendor page shows the vendor key and links to a prefilled message', async 
   await expect(key).toContainText('Ownership not verified');
   await expect(key.getByRole('textbox', { name: /ghost_circuit’s public key/ })).toHaveValue(/BEGIN PGP PUBLIC KEY BLOCK/);
   await fits(page);
-  const message = page.getByRole('link', { name: 'Send encrypted message' });
+  const message = page.getByRole('link', { name: 'Message vendor' });
   await expect(message).toHaveAttribute('href', '/messages?to=ghost_circuit');
   await message.click();
-  await expect(page.getByLabel('Recipient handle')).toHaveValue('ghost_circuit');
+  // A buyer has no free handle search: the recipient comes from the link and is named, not typed (A-543).
+  await expect(page.locator('input[name="recipient"]')).toHaveValue('ghost_circuit');
+  await expect(page.locator('.message-to')).toHaveText('To: ghost_circuit');
+  await expect(page.getByLabel('Find a recipient')).toHaveCount(0);
+  await expect(page.getByLabel('Recipient handle')).toHaveCount(0);
+  await expect(page.locator('#who-can-be-messaged')).toContainText('You can write to active vendors, people you share an order with, people who have messaged you, and market staff');
   await expect(page.locator('main .pgp-fingerprint')).toBeVisible();
   await fits(page);
 });
@@ -50,9 +55,9 @@ test('order page names the counterparty key state and message link', async ({ pa
   await fits(page);
 });
 
-test('product page contact link prefills the vendor', async ({ page }) => {
+test('product page Message vendor link prefills the vendor', async ({ page }) => {
   await page.goto('/product?id=encrypted-drive');
-  await expect(page.getByRole('link', { name: 'Contact vendor' })).toHaveAttribute('href', '/messages?to=ghost_circuit');
+  await expect(page.getByRole('link', { name: 'Message vendor' })).toHaveAttribute('href', '/messages?to=ghost_circuit');
 });
 
 test('moderator desk links each dispute to its order page', async ({ page }) => {

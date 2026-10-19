@@ -65,9 +65,10 @@ test('vendor contact, unread notifications and demotion archive', async ({ brows
     await fits(page, `${url} at 200% text`);
   }
   await buyer.goto(vendorURL);
-  await buyer.getByRole('link', { name: 'Send encrypted message' }).click();
+  await buyer.getByRole('link', { name: 'Message vendor' }).click();
   await expect(buyer).toHaveURL(new RegExp(`/messages\\?to=${vendorHandle}$`));
-  await expect(buyer.getByLabel('Recipient handle')).toHaveValue(vendorHandle);
+  await expect(buyer.locator('input[name="recipient"]')).toHaveValue(vendorHandle);
+  await expect(buyer.locator('.message-to')).toHaveText(`To: ${vendorHandle}`);
   await expect(buyer.locator('main')).toContainText('Ask them to add a public key, or obtain and confirm their key through a trusted channel before encrypting.');
 
   // Cancelling an unfunded draft does not create vendor noise; the buyer can still read its order history.

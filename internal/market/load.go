@@ -221,6 +221,14 @@ func cancelledCustomerWork(order string) string {
 	return "(EXISTS(SELECT 1 FROM escrows es WHERE es.order_id=" + order + ".id) OR EXISTS(SELECT 1 FROM payments pm WHERE pm.order_id=" + order + ".id))"
 }
 
+// vendorSeesOrder is the SQL test, over an orders alias, for an order its vendor sees as customer work: not a draft,
+// and not cancelled unless cancelledCustomerWork holds (A-165, A-494). The vendor's /orders list and the message rule's
+// vendor-to-buyer side (messageRecipient, A-543) share it, so a vendor never reaches a buyer through an order it is not
+// shown.
+func vendorSeesOrder(order string) string {
+	return "(" + order + ".state<>'draft' AND (" + order + ".state<>'cancelled' OR " + cancelledCustomerWork(order) + "))"
+}
+
 // load fills generic page data, then runs registered loaders (routes.go).
 func (a *App) load(r *http.Request, d *PageData) error {
 	ctx := r.Context()
@@ -364,7 +372,7 @@ func (a *App) load(r *http.Request, d *PageData) error {
 			// is flagged (A-24, /canary#records) or it is an escrow order with an open staff alert (A-470).
 			// Buyers keep their full order history. Vendor-side activity excludes drafts and
 			// cancelled orders that never had an escrow or a payment: those are not customer work.
-			activityVisible := "(o.buyer_id=$1 OR (p.vendor_id=$1 AND o.state<>'draft' AND (o.state<>'cancelled' OR " + cancelledCustomerWork("o") + ")))"
+			activityVisible := "(o.buyer_id=$1 OR (p.vendor_id=$1 AND " + vendorSeesOrder("o") + "))"
 			query := orderQuery + " WHERE " + activityVisible
 			args := []any{d.User.ID}
 			if d.Page == "order" {

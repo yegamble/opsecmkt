@@ -103,7 +103,7 @@ test('administrator publishes a staff contact that every promised page shows as 
     await noOverflow(buyer);
     await submitAndLoad(buyer, buyerContact.getByRole('link', { name: `Send ${modHandle} an encrypted message` }));
     await expect(buyer).toHaveURL(new RegExp(`/messages\\?to=${modHandle}$`));
-    await expect(buyer.getByLabel('Recipient handle')).toHaveValue(modHandle);
+    await expect(buyer.locator('input[name="recipient"]')).toHaveValue(modHandle);
     await buyer.goto('/notifications');
     await expect(notice.locator('.staff-contact a')).toHaveAttribute('href', `/messages?to=${modHandle}`);
   } finally {

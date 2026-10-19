@@ -65,7 +65,7 @@ func TestMessageRecipientLookupBudget(t *testing.T) {
 		_, pub := testPGPKey(t, handle)
 		e.check(e.do("POST", "/account", session, url.Values{"pgp": {pub}, "password": {testPassword}}), 303)
 	}
-	const keyShown, missing, paused = `class="contact-key"`, "No other account found", "can look up at most 60 different handles"
+	const keyShown, missing, paused = `class="contact-key"`, messageNotPermitted, "can look up at most 60 different handles"
 	lookup := func(session, handle string) string {
 		t.Helper()
 		return e.body("GET", "/messages?to="+url.QueryEscape(handle), session, nil, 200)

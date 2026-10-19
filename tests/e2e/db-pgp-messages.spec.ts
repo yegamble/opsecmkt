@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { expect, test, type Page } from '@playwright/test';
 import { uniqueHandle } from './db-fixtures';
 import { enrollTOTP, expectNotice, pgpFixture, RECIPIENT_FINGERPRINT, setRole, signedIn, submitStatus, totp } from './db-helpers';
@@ -13,6 +14,9 @@ async function saveKey(page: Page, armored: string, password?: string): Promise<
   if (password !== undefined) await form.getByLabel('Current password').fill(password);
   return submitStatus(page, () => form.getByRole('button', { name: 'Save profile' }).click());
 }
+
+// The words /messages shows for an unknown handle and for one the viewer may not write to (messageNotPermitted).
+const NOT_PERMITTED = 'No account you can message has this handle. You can write to active vendors, people you share an order with, people who have messaged you, and listed market staff.';
 
 const pgpRow = (page: Page) => page.locator('.key-values div', { hasText: 'PGP sign-in verification' }).locator('dd');
 
@@ -33,7 +37,7 @@ test('save a PGP key, see its fingerprint unverified, and fail ownership proofs 
   await expect(page.locator('.pgp-summary')).toHaveCount(0);
 
   // The note above the key field says who can see it. Text around the block and armor headers are not kept.
-  await expect(page.locator('#pgp-visibility')).toHaveText('Shown to every signed-in account that looks up your handle, to every vendor or buyer you trade with, and publicly on your vendor page if you sell — with its user IDs and creation date. Use a key made only for this market.');
+  await expect(page.locator('#pgp-visibility')).toHaveText('Shown to market staff, to every vendor or buyer you trade with and anyone you have messaged, to every signed-in account if you sell, appear on the public staff list or are named as the staff contact, to both parties of every disputed or resolved order if you are a moderator or administrator, and publicly on your vendor page if you sell — with its user IDs and creation date. Use a key made only for this market.');
   const withHeaders = 'Leading note\n' + pgpFixture('recipient.pub.asc').replace('-----BEGIN PGP PUBLIC KEY BLOCK-----\n', '-----BEGIN PGP PUBLIC KEY BLOCK-----\nComment: e2e header\n');
   expect(await saveKey(page, withHeaders, password)).toBe(303);
   await expect(page).toHaveURL(/\/account$/);
@@ -134,12 +138,20 @@ test('only OpenPGP-encrypted messages are accepted; status badges and the unread
   const withKey = uniqueHandle('msgkey');
   const otherKey = uniqueHandle('msgother');
   const noKey = uniqueHandle('msgnokey');
+  const stranger = uniqueHandle('msgstranger');
+  test.setTimeout(90_000); // five registrations and three saved keys before the message legs
   const s = await signedIn(browser, baseURL, sender, 'browser-msg-sender-123', true);
   const r = await signedIn(browser, baseURL, withKey, 'browser-msg-recipient-123', true);
   const o = await signedIn(browser, baseURL, otherKey, 'browser-msg-other-123', true);
   const n = await signedIn(browser, baseURL, noKey, 'browser-msg-nokey-123', true);
+  const x = await signedIn(browser, baseURL, stranger, 'browser-msg-stranger-123', true);
+  // A buyer starts a message only to a vendor, an order partner, someone who wrote first or listed staff (A-543):
+  // the three recipients sell; the stranger stays a buyer the sender may not write to.
+  const database = process.env.E2E_DATABASE_URL!;
+  execFileSync('psql', [database, '-v', 'ON_ERROR_STOP=1', '-qtAc', `UPDATE users SET role='vendor' WHERE handle IN ('${withKey}','${otherKey}','${noKey}')`]);
   expect(await saveKey(r, pgpFixture('recipient.pub.asc'), 'browser-msg-recipient-123')).toBe(303);
   expect(await saveKey(o, pgpFixture('other.pub.asc'), 'browser-msg-other-123')).toBe(303);
+  expect(await saveKey(x, pgpFixture('other.pub.asc'), 'browser-msg-stranger-123')).toBe(303);
 
   // Adding the key notified the recipient (A-152); once that is read the navigation shows no unread count.
   const rNav = r.getByRole('navigation', { name: 'Main navigation' });
@@ -152,7 +164,9 @@ test('only OpenPGP-encrypted messages are accepted; status badges and the unread
 
   // The compose form names the recipient and shows the key it must be encrypted to.
   await s.goto(`/messages?to=${withKey}`);
-  await expect(s.getByLabel('Recipient handle')).toHaveValue(withKey);
+  await expect(s.locator('input[name="recipient"]')).toHaveValue(withKey);
+  await expect(s.locator('.message-to')).toHaveText(`To: ${withKey}`);
+  await expect(s.getByLabel('Recipient handle')).toHaveCount(0);
   await expect(s.locator('.contact-key .pgp-fingerprint')).toHaveText(RECIPIENT_FINGERPRINT);
   const body = s.getByLabel('PGP encrypted message');
   const send = () => s.getByRole('button', { name: 'Send encrypted text ↗' }).click();
@@ -166,10 +180,13 @@ test('only OpenPGP-encrypted messages are accepted; status badges and the unread
   expect(await submitStatus(s, send)).toBe(400);
   await expect(s.locator('body')).toContainText('This is not an OpenPGP-encrypted message');
 
-  await s.goto('/messages?to=nobody_with_this_handle');
-  await body.fill(pgpFixture('message-to-recipient.asc'));
-  expect(await submitStatus(s, send)).toBe(400);
-  await expect(s.getByRole('alert')).toHaveText('Recipient not found');
+  // An unknown handle and a buyer the sender may not write to look alike: the same words, no key, no compose form.
+  for (const to of ['nobody_with_this_handle', stranger]) {
+    await s.goto(`/messages?to=${to}`);
+    await expect(s.getByRole('status')).toHaveText(NOT_PERMITTED);
+    await expect(s.locator('.contact-key')).toHaveCount(0);
+    await expect(body).toHaveCount(0);
+  }
 
   // Nothing was stored for the refused attempts.
   await s.goto('/messages');
@@ -209,31 +226,49 @@ test('only OpenPGP-encrypted messages are accepted; status badges and the unread
   await expect(note.getByRole('button', { name: 'Mark as read' })).toHaveCount(0);
   await expect(rNav.locator('.nav-count')).toHaveCount(0);
 
-  for (const p of [s, r, o, n]) await p.context().close();
+  for (const p of [s, r, o, n, x]) await p.context().close();
 });
 
-test('find a moderator key and exchange encrypted dispute evidence without scripts', async ({ browser, baseURL }) => {
+test('staff find any account by handle; a buyer replies with encrypted evidence without scripts', async ({ browser, baseURL }) => {
   const { ADMIN } = await import('./db-fixtures');
   const handle = uniqueHandle('staffkey');
+  const buyerHandle = uniqueHandle('evidence');
   const staff = await signedIn(browser, baseURL, handle, 'browser-staff-password-123', true);
-  const buyer = await signedIn(browser, baseURL, uniqueHandle('evidence'), 'browser-evidence-password-123', true);
+  const buyer = await signedIn(browser, baseURL, buyerHandle, 'browser-evidence-password-123', true);
   const admin = await signedIn(browser, baseURL, ADMIN.handle, ADMIN.password, false);
   expect(await saveKey(staff, pgpFixture('recipient.pub.asc'), 'browser-staff-password-123')).toBe(303);
   await setRole(admin, handle, 'moderator');
+
+  // A buyer has no handle search, and an unlisted moderator is not someone it may start a message to (A-543).
   await buyer.goto('/messages');
-  await buyer.getByLabel('Find a recipient', { exact: true }).fill(handle);
-  await buyer.getByRole('button', { name: 'Load recipient’s public key' }).click();
-  await expect(buyer.getByLabel('Recipient handle', { exact: true })).toHaveValue(handle);
+  await expect(buyer.getByLabel('Find a recipient')).toHaveCount(0);
+  await expect(buyer.locator('#who-can-be-messaged')).toContainText('There is no search');
+  await buyer.goto(`/messages?to=${handle}`);
+  await expect(buyer.getByRole('status')).toHaveText(NOT_PERMITTED);
+  await expect(buyer.locator('.contact-key')).toHaveCount(0);
+
+  // Staff keep the handle search and may write to any account.
+  await staff.goto('/messages');
+  await staff.getByLabel('Find a recipient', { exact: true }).fill(buyerHandle);
+  await staff.getByRole('button', { name: 'Load recipient’s public key' }).click();
+  await expect(staff.getByLabel('Recipient handle', { exact: true })).toHaveValue(buyerHandle);
+  await staff.getByLabel('PGP encrypted message').fill(pgpFixture('message-to-recipient.asc'));
+  expect(await submitStatus(staff, () => staff.getByRole('button', { name: 'Send encrypted text ↗' }).click())).toBe(303);
+
+  // The buyer replies from the received message: the moderator's key loads and the evidence is sent.
+  await buyer.goto('/messages');
+  await buyer.getByRole('link', { name: `Reply to ${handle}` }).click();
+  await expect(buyer).toHaveURL(new RegExp(`/messages\\?to=${handle}$`));
+  await expect(buyer.locator('input[name="recipient"]')).toHaveValue(handle);
   await expect(buyer.locator('.contact-key .pgp-fingerprint')).toHaveText(RECIPIENT_FINGERPRINT);
   await expect(buyer.locator('.contact-key')).toContainText('Ownership not verified');
   await buyer.getByLabel('PGP encrypted message').fill(pgpFixture('message-to-recipient.asc'));
   expect(await submitStatus(buyer, () => buyer.getByRole('button', { name: 'Send encrypted text ↗' }).click())).toBe(303);
   await staff.goto('/messages');
-  await expect(staff.locator('article.message textarea[readonly]')).toHaveValue(pgpFixture('message-to-recipient.asc').trim());
-  await expect(staff.locator('.pgp-message-status')).toHaveText('Encrypted (to recipient’s key)');
-  await buyer.goto('/messages');
-  await buyer.getByLabel('Find a recipient', { exact: true }).fill('no_such_staff_handle');
-  await buyer.getByRole('button', { name: 'Load recipient’s public key' }).click();
-  await expect(buyer.getByRole('status')).toContainText('No other account found');
+  const evidence = staff.locator('article.message', { hasText: `${buyerHandle} → ${handle}` });
+  await expect(evidence.locator('textarea[readonly]')).toHaveValue(pgpFixture('message-to-recipient.asc').trim());
+  await expect(evidence.locator('.pgp-message-status')).toHaveText('Encrypted (to recipient’s key)');
+  await buyer.goto('/messages?to=no_such_staff_handle');
+  await expect(buyer.getByRole('status')).toHaveText(NOT_PERMITTED);
   for (const page of [staff, buyer, admin]) await page.context().close();
 });

@@ -155,7 +155,7 @@ func TestMessageRecipientNotFound(t *testing.T) {
 	id, s := e.user("val_sender", "buyer")
 	body := "-----BEGIN PGP MESSAGE-----\n\n" + strings.Repeat("A", 80) + "\n-----END PGP MESSAGE-----"
 	for _, r := range []string{"ghost_user", "", "VAL_SENDER "} {
-		agExpect(e, "/messages", s, url.Values{"recipient": {r}, "body": {body}}, 400, "Recipient not found")
+		agExpect(e, "/messages", s, url.Values{"recipient": {r}, "body": {body}}, 403, messageNotPermitted)
 	}
 	if agInt(e, "SELECT count(*) FROM messages") != 0 || agInt(e, "SELECT count(*) FROM notifications") != 0 || e.auditHas(id, "Sent OpenPGP") {
 		t.Fatal("message to an unknown recipient stored data")

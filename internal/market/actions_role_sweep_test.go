@@ -70,7 +70,7 @@ var sweepScopes = map[string][2]string{
 	"/pgp/verify":                     {scopeSelf, "the caller's own PGP key"},
 	"/pgp/2fa":                        {scopeSelf, "the caller's own PGP sign-in setting"},
 	"/orders":                         {scopeSelf, "creates a draft for the caller from a public listing"},
-	"/messages":                       {scopeSelf, "any signed-in account may write to any handle; stored for the sender"},
+	"/messages":                       {scopeSelf, "the recipient rule is its own test (TestMessageContactPolicy, A-543); stored for the sender"},
 	"/listings":                       {scopeSelf, "creates a listing owned by the caller"},
 
 	"/admin":                        {scopeStaff, ""},

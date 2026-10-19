@@ -202,8 +202,10 @@ func orderContacts(ctx context.Context, a *App, o *Order, viewer string) ([]Cont
 const lookupBudget = 60
 
 // messageRecipientLoader prefills the recipient from ?to=<handle> (ignored unless it matches the handle
-// pattern) and shows that user's key when the handle exists and is not the viewer. Past the account's lookup budget
-// it shows neither a key nor whether the handle exists, only that lookups are paused (A-516, A-92).
+// pattern) and shows that user's key when the viewer may write to them (messageRecipient) and they are not the
+// viewer. An unknown handle and one the viewer may not write to show the same messageNotPermitted words, with no key
+// (A-543). Past the account's lookup budget it shows neither a key nor whether the handle exists, only that lookups
+// are paused (A-516, A-92).
 func messageRecipientLoader(ctx context.Context, a *App, r *http.Request, d *PageData) error {
 	to := r.URL.Query().Get("to")
 	if !handlePattern.MatchString(to) || d.User == nil {
@@ -214,15 +216,11 @@ func messageRecipientLoader(ctx context.Context, a *App, r *http.Request, d *Pag
 		d.MessageLookupPaused = true
 		return nil
 	}
-	var id, handle string
-	err := a.db.QueryRowContext(ctx, "SELECT id,handle FROM users WHERE handle=$1", to).Scan(&id, &handle)
-	if err == sql.ErrNoRows || err == nil && id == d.User.ID {
-		return nil
-	}
-	if err != nil {
+	id, err := messageRecipient(ctx, a.db, d.User, to)
+	if err != nil || id == "" || id == d.User.ID {
 		return err
 	}
-	k, err := contactKey(ctx, a.db, id, handle, "")
+	k, err := contactKey(ctx, a.db, id, to, "")
 	if err == nil {
 		d.Contacts = []ContactKey{k}
 	}

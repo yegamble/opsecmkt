@@ -147,15 +147,15 @@ func TestCounterpartyKeysAndMessagePrefill(t *testing.T) {
 	// Messages: ?to prefills a valid handle and shows that recipient's key; invalid values are ignored.
 	body = w.page("/messages?to="+vendorHandle, w.buyer, 200)
 	mustContain(t, body, `name="recipient" value="`+vendorHandle+`"`, formatFingerprint(fp))
+	// A buyer has no free handle field (A-543): without a valid recipient there is no compose form at all.
 	body = w.page("/messages?to=%3Cscript%3E", w.buyer, 200)
-	mustContain(t, body, `name="recipient" value=""`)
-	mustNotContain(t, body, "&lt;script&gt;")
+	mustNotContain(t, body, "&lt;script&gt;", `name="recipient"`, `name="to"`)
 	body = w.page("/messages?to="+buyerHandle, w.vendor, 200)
 	mustContain(t, body, `value="`+buyerHandle+`"`, buyerHandle+" has not added a PGP public key")
-	// A well-formed handle with no account is prefilled but reveals no key.
+	// A well-formed handle with no account reveals no key and offers no compose form.
 	body = w.page("/messages?to=nobody_here", w.buyer, 200)
-	mustContain(t, body, `value="nobody_here"`)
-	mustNotContain(t, body, "BEGIN PGP PUBLIC KEY BLOCK")
+	mustContain(t, body, messageNotPermitted)
+	mustNotContain(t, body, "BEGIN PGP PUBLIC KEY BLOCK", `name="recipient"`)
 }
 
 func TestUnreadNotificationCountInNavigation(t *testing.T) {
