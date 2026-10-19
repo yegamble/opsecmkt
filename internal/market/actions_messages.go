@@ -88,17 +88,10 @@ func messageAction(c *actionCtx) (actionResult, error) {
 // to (A-543): both alike, so neither reveals whether the handle exists. The messages page shows the same words.
 const messageNotPermitted = "No account you can message has this handle. You can write to active vendors, people you share an order with, people who have messaged you, and listed market staff."
 
-// activeVendorWhere is the condition, on the users row aliased u, for a vendor any account may start a message to
-// (A-543): the vendor role on an account that is not suspended, closed or waiting for deletion. Vendor applications
-// (A-544) tighten it to approved vendors here, in one place.
-func activeVendorWhere(u string) string {
-	return u + ".role='vendor' AND " + u + ".suspended_at IS NULL AND " + u + ".closed_at IS NULL AND " + u + ".retention_restricted_at IS NULL"
-}
-
 // messageRecipient returns the id of the account with handle that sender may start a message to, or "" when there is
 // no such account or sender may not write to it (A-543, owner directive 2026-10-18). Moderators and administrators
 // write to anyone. Any other account writes only to:
-//   - an active vendor (activeVendorWhere), reached from "Message vendor" on the vendor and listing pages;
+//   - an active, approved vendor (activeVendorSQL, A-544), reached from "Message vendor" on the vendor and listing pages;
 //   - an order partner: a buyer writes to the vendor of any order it placed, drafts included; a vendor writes to a
 //     buyer only through an order its /orders list shows (vendorSeesOrder: not a draft, and not cancelled before
 //     checkout), so a saved or abandoned draft never hands the vendor the buyer's key (QA543-1);
@@ -111,7 +104,7 @@ func activeVendorWhere(u string) string {
 func messageRecipient(ctx context.Context, q rowQuerier, sender *User, handle string) (string, error) {
 	var id string
 	err := q.QueryRowContext(ctx, `SELECT r.id FROM users r WHERE r.handle=$2 AND ($3::boolean
-		OR (`+activeVendorWhere("r")+`)
+		OR `+activeVendorSQL("r")+`
 		OR EXISTS(SELECT 1 FROM orders o JOIN products p ON p.id=o.product_id WHERE (o.buyer_id=$1 AND p.vendor_id=r.id) OR (o.buyer_id=r.id AND p.vendor_id=$1 AND `+vendorSeesOrder("o")+`))
 		OR EXISTS(SELECT 1 FROM messages m WHERE m.recipient_id=$1 AND m.sender_id=r.id)
 		OR (r.role IN ('moderator','admin') AND r.suspended_at IS NULL AND r.closed_at IS NULL AND r.retention_restricted_at IS NULL AND (
