@@ -67,7 +67,7 @@ func (v *AdminUserView) Actionable() bool { return !v.Self && v.Role != "admin" 
 
 // CanApply reports whether an administrator can open a vendor application for the account (vendorApplyForAction).
 func (v *AdminUserView) CanApply() bool {
-	return v.Actionable() && v.Role == "buyer" && !v.IsBanned && !v.IsClosing && !v.IsClosed && (v.Application == nil || !v.Application.Open)
+	return v.Actionable() && v.Role == "buyer" && !v.IsBanned && !v.IsSuspended && !v.IsClosing && !v.IsClosed && (v.Application == nil || !v.Application.Open)
 }
 
 var directoryRoles = []string{"buyer", "vendor", "moderator", "admin"}

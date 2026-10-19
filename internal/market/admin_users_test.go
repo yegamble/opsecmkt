@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -207,18 +208,19 @@ func TestAdminUserDirectory(t *testing.T) {
 	mustContain(t, page, "<dt>Role</dt>\n<dd>buyer</dd>")
 	// Vendor: an application opened on the account's behalf under the current policy, then the bond, approval and mark.
 	setVendorPolicy(e, halfXMR, "manual", "Send it to the address the staff gave you.")
-	page = userPageNotice(t, e, post("/admin/vendor-apply", form("handle", "dir_alpha")), admin, back+"#vendors")
+	mustContain(t, adminForm(t, e.body("GET", back, admin, nil, 200), "/admin/vendor-apply", ""), `name="start" value="awaiting_bond"`, `name="start" value="awaiting_approval"`, "Waiting for the bond of 0.5 XMR")
+	page = userPageNotice(t, e, post("/admin/vendor-apply", form("handle", "dir_alpha", "start", "awaiting_bond")), admin, back+"#vendors")
 	mustContain(t, page, "Vendor application opened for this account", "Waiting for bond")
 	app := latestVendorApp(e, alphaID)
 	if app.State != "awaiting_bond" || app.Bond != 500000000000 || app.Approval != "manual" {
 		t.Fatalf("application on the account's behalf: %+v", app)
 	}
-	if !e.auditExact(alphaID, "Vendor application opened on the account's behalf by administrator dir_admin") ||
-		!e.auditExact(adminID, "Opened a vendor application for dir_alpha: waiting for bond (confirmed with password)") ||
+	if !e.auditExact(alphaID, "Vendor application opened on the account's behalf by administrator dir_admin: waiting for bond, bond 0.5 XMR, manual approval") ||
+		!e.auditExact(adminID, "Opened a vendor application for dir_alpha: waiting for bond, bond 0.5 XMR, manual approval (confirmed with password)") ||
 		agInt(e, "SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE 'An administrator opened a vendor application for your account.%'", alphaID) != 1 {
 		t.Fatal("vendor application on the account's behalf not audited or notified")
 	}
-	agExpect(e, "/admin/vendor-apply", admin, form("handle", "dir_alpha", "password", testPassword), 409, "dir_alpha already has an open vendor application")
+	agExpect(e, "/admin/vendor-apply", admin, form("handle", "dir_alpha", "start", "awaiting_approval", "password", testPassword), 409, "dir_alpha already has an open vendor application")
 	page = userPageNotice(t, e, post("/admin/vendor-applications", form("id", app.ID, "action", "bond")), admin, back+"#vendors")
 	mustContain(t, page, "Vendor application updated.", "Waiting for administrator approval")
 	page = userPageNotice(t, e, post("/admin/vendor-applications", form("id", app.ID, "action", "approve")), admin, back+"#vendors")
@@ -246,15 +248,19 @@ func TestAdminUserDirectory(t *testing.T) {
 	// The application form refuses what the account's own form would: not a buyer, banned, closing; and
 	// administrators, the caller included.
 	for handle, msg := range map[string]string{"dir_mod": "only a buyer account can apply", "dir_banned": "dir_banned is banned", "dir_closing": "dir_closing is closed or closing",
+		"dir_susp":  "dir_susp is suspended: restore the account first",
 		"dir_admin": "You cannot open a vendor application for your own account", "dir_admin2": "only a buyer account can apply"} {
 		code := 409
 		if handle == "dir_admin" {
 			code = 400
 		}
-		agExpect(e, "/admin/vendor-apply", admin, form("handle", handle, "password", testPassword), code, msg)
+		agExpect(e, "/admin/vendor-apply", admin, form("handle", handle, "start", "awaiting_approval", "password", testPassword), code, msg)
 	}
-	agExpect(e, "/admin/vendor-apply", admin, form("handle", "no_such_account", "password", testPassword), 404, "No account has the handle")
-	agExpect(e, "/admin/vendor-apply", moderator, form("handle", "dir_x_y", "password", testPassword), 403, "")
+	agExpect(e, "/admin/vendor-apply", admin, form("handle", "no_such_account", "start", "awaiting_approval", "password", testPassword), 404, "No account has the handle")
+	agExpect(e, "/admin/vendor-apply", moderator, form("handle", "dir_x_y", "start", "awaiting_approval", "password", testPassword), 403, "")
+	// The suspended account's page offers no application form; the banned and closed ones offer no message link.
+	mustNotContain(t, e.body("GET", "/admin/users?handle=dir_susp", admin, nil, 200), `action="/admin/vendor-apply"`)
+	mustContain(t, e.body("GET", "/admin/users?handle=dir_susp", admin, nil, 200), "restore the account first")
 	if latestVendorApp(e, suspID).State != "" || latestVendorApp(e, closingID).State != "" {
 		t.Fatal("a refused application was stored")
 	}
@@ -323,4 +329,64 @@ func TestAdminUserDirectoryPreview(t *testing.T) {
 	page := get("/admin/users?handle=ghost_circuit", 200)
 	mustContain(t, page, `<h2 id="user-account-heading">ghost_circuit</h2>`, "Opened against this account", `href="/messages?to=ghost_circuit"`, "Preview only")
 	get("/admin/users?handle=nobody_here", 404)
+}
+
+// Owner decision 2026-10-19 ("Admin picks"): an application opened from the account page starts where the
+// administrator chooses, whatever the policy's approval mode, and is never approved on this path: waiting for the
+// bond takes the policy's bond (refused while it sets none), waiting for approval asks for none; both record manual
+// approval, so recording the bond later still leaves it waiting for approval.
+func TestAdminVendorApplyStartState(t *testing.T) {
+	e := newTestApp(t)
+	adminID, admin := e.user("start_admin", "admin")
+	n := 0
+	for _, policy := range []struct{ bond, approval string }{{halfXMR, "manual"}, {halfXMR, "automatic"}, {"0", "manual"}, {"0", "automatic"}} {
+		setVendorPolicy(e, policy.bond, policy.approval, "")
+		for _, start := range []string{"awaiting_bond", "awaiting_approval"} {
+			n++
+			handle := "start_buyer_" + strconv.Itoa(n)
+			id, _ := e.user(handle, "buyer")
+			name := policy.bond + "/" + policy.approval + "/" + start
+			f := form("handle", handle, "start", start, "password", testPassword, "from", "user")
+			if start == "awaiting_bond" && policy.bond == "0" {
+				before := agInt(e, "SELECT count(*) FROM audit_events")
+				agExpect(e, "/admin/vendor-apply", admin, f, 409, "The vendor policy sets no bond")
+				if latestVendorApp(e, id).State != "" || agInt(e, "SELECT count(*) FROM audit_events") != before {
+					t.Fatalf("%s: a refused application changed state", name)
+				}
+				continue
+			}
+			w := e.do("POST", "/admin/vendor-apply", admin, f)
+			if w.Code != 303 || w.Header().Get("Location") != "/admin/users?handle="+handle+"#vendors" {
+				t.Fatalf("%s: %d %q %s", name, w.Code, w.Header().Get("Location"), refusalText(w.Body.String()))
+			}
+			app := latestVendorApp(e, id)
+			wantBond := int64(0)
+			if start == "awaiting_bond" {
+				wantBond = 500000000000
+			}
+			if app.State != start || app.Approval != "manual" || app.Bond != wantBond || agStr(e, "SELECT role FROM users WHERE id=$1", id) != "buyer" {
+				t.Fatalf("%s: application %+v", name, app)
+			}
+			label := map[string]string{"awaiting_bond": "waiting for bond, bond 0.5 XMR", "awaiting_approval": "waiting for administrator approval, bond none"}[start]
+			if !e.auditExact(id, "Vendor application opened on the account's behalf by administrator start_admin: "+label+", manual approval") ||
+				!e.auditExact(adminID, "Opened a vendor application for "+handle+": "+label+", manual approval (confirmed with password)") ||
+				agInt(e, "SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE 'An administrator opened a vendor application for your account.%'", id) != 1 {
+				t.Fatalf("%s: audit rows or notification missing", name)
+			}
+			if start == "awaiting_bond" { // even under automatic approval the bond leads to waiting for approval
+				agExpect(e, "/admin/vendor-applications", admin, form("id", app.ID, "action", "bond", "password", testPassword), 303, "")
+				if s := latestVendorApp(e, id).State; s != "awaiting_approval" || agStr(e, "SELECT role FROM users WHERE id=$1", id) != "buyer" {
+					t.Fatalf("%s: after the bond: %s", name, s)
+				}
+			}
+		}
+	}
+	e.user("start_other", "buyer")
+	for _, start := range []string{"", "approved", "awaiting"} {
+		agExpect(e, "/admin/vendor-apply", admin, form("handle", "start_other", "start", start, "password", testPassword), 400, "Choose whether the application starts")
+	}
+	// The form offers waiting for approval alone while the policy sets no bond.
+	page := e.body("GET", "/admin/users?handle=start_other", admin, nil, 200)
+	mustContain(t, adminForm(t, page, "/admin/vendor-apply", ""), `name="start" value="awaiting_approval"`)
+	mustNotContain(t, adminForm(t, page, "/admin/vendor-apply", ""), `value="awaiting_bond"`)
 }

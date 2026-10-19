@@ -750,11 +750,18 @@ The page carries the account's actions, each the same form as elsewhere with the
 same password confirmation, audit rows and notices, returning to the account's
 page: suspend or restore, ban or lift the ban (with a reason), reset second factors,
 change the role (buyer, vendor approved at once, or moderator), open a vendor
-application on the account's behalf under the current vendor policy (it then waits
-for the bond or approval like any other, or is approved at once under *no bond,
-automatic*), record the bond, waive it, approve or reject an open application, and
-set or remove the verified-vendor mark. **Message user** opens `/messages?to=HANDLE`
-(staff may message any account except a banned one). Your own account and other
+application on the account's behalf, record the bond, waive it, approve or reject an
+open application, and set or remove the verified-vendor mark. When you open an
+application you choose where it starts, whatever the vendor policy's approval mode
+(owner decision 2026-10-19): *waiting for the bond* asks for the policy's current
+bond (offered only while the policy sets one; set it under *Vendors* first), and
+*waiting for approval* asks for no bond. It is never approved on this path, even
+under automatic approval: after the bond is recorded it waits for your approval like
+a manually approved application, so you can always hold an account at "not approved
+yet". It is not offered for a suspended account (restore it first; the form is
+refused with 409 and nothing is stored) or a banned, closed or closing one.
+**Message user** opens `/messages?to=HANDLE` (staff may message any account except
+a banned one; it is not shown for a banned or closed account). Your own account and other
 administrators' pages show the details only: administrators are managed on the host
 ([Administrators](#administrators)).
 

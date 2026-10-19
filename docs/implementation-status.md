@@ -189,13 +189,19 @@ suspend/restore, ban/unban, the second-factor reset, the role form, the vendor
 decision and the verified mark keep their checks, password step-up, receipts, audit
 rows and notifications and return to the account's page with their notice (posted
 from elsewhere they return where they did). `POST /admin/vendor-apply` opens a
-vendor application for a buyer on its behalf through the applicant's own
-`submitVendorApplication` (so under the current policy: waiting for the bond, for
-approval, or approved at once), refusing a non-buyer, a banned, closed or closing
-account, an open application and the caller's own account; both accounts are
-audited and the account notified. The page offers no account form for the viewer's
-own account or another administrator, and a *Message user* link to
-`/messages?to=` except for the viewer and a banned account. Administrators only,
+vendor application for a buyer on its behalf at the starting state the
+administrator picks (owner decision 2026-10-19, field `start`): `awaiting_bond`
+with the current policy's bond (409 while the policy sets none) or
+`awaiting_approval` with no bond, whatever the policy's approval mode, always
+recorded with manual approval, so this path never approves (recording the bond
+leads to waiting for approval). It refuses a non-buyer, a suspended (409 "restore the
+account first"), banned, closed or closing account, an open application and the
+caller's own account, storing nothing; both accounts are audited with the chosen
+state and bond and the account notified (`TestAdminVendorApplyStartState` covers
+both states under each of the four policy modes). The page offers no account form
+for the viewer's own account or another administrator, no application form for a
+suspended account, and a *Message user* link to `/messages?to=` except for the
+viewer and a banned or closed account. Administrators only,
 over the private administrator ingress like every `/admin` path (`TestAdminUserDirectory`,
 `TestAdminUserDirectoryPreview`, `TestAdminUserDirectoryPagesNewestAccountsAndKeepsOtherRolesReachable`;
 browser: `preview-admin-users.spec.ts` at 320 and 1280 px, `db-admin.spec.ts` search →

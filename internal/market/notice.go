@@ -126,7 +126,7 @@ var notices = map[string]struct{ text, section, pages string }{
 	"vendor-decision":  {"Vendor application updated. The applicant was notified.", "vendors", "admin/vendors admin/user"},
 	"vendor-verify":    {"Verified vendor mark saved. The vendor was notified.", "vendors", "admin/vendors admin/user"},
 	// The user directory's account page (admin_users.go, A-545): an application opened on the account's behalf.
-	"vendor-opened": {"Vendor application opened for this account under the current vendor policy. The account was notified.", "vendors", "admin/user"},
+	"vendor-opened": {"Vendor application opened for this account. The account was notified.", "vendors", "admin/user"},
 }
 
 // noticeErrors are the codes shown as the page's error alert rather than a status notice.

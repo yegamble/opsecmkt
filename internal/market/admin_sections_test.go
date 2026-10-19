@@ -231,7 +231,7 @@ func TestAdminActionRedirectsToSection(t *testing.T) {
 		{"/admin/vendor-verify", url.Values{"action": {"verify"}, "handle": {"redirect_vendor"}}, "/admin/vendors#vendors"},
 		// A-545: posted from an account's page in the user directory (from=user), every account form returns there.
 		{"/admin", url.Values{"action": {"role"}, "handle": {"redirect_role"}, "role": {"buyer"}, "from": {"user"}}, "/admin/users?handle=redirect_role"},
-		{"/admin/vendor-apply", url.Values{"handle": {"redirect_role"}}, "/admin/users?handle=redirect_role#vendors"},
+		{"/admin/vendor-apply", url.Values{"handle": {"redirect_role"}, "start": {"awaiting_approval"}}, "/admin/users?handle=redirect_role#vendors"},
 		{"/admin/suspend", url.Values{"action": {"restore"}, "handle": {"redirect_suspend"}, "from": {"user"}}, "/admin/users?handle=redirect_suspend#suspend"},
 		{"/admin/vendor-policy", url.Values{"vendor_bond_xmr": {"0.1"}, "vendor_approval": {"manual"}}, "/admin/vendors#vendors"},
 		{"/admin/retention/hold", hold, "/admin/system#retention"},

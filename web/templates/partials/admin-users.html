@@ -46,7 +46,7 @@
 <h2 id="user-account-heading">{{.Handle}}</h2>{{if $.Preview}}
 <p class="help">Preview only: sample account data.</p>{{end}}
 <p class="help">What this market already stores about the account. It keeps no sign-in times, network addresses or page visits for this page, and second-factor secrets are never shown.</p>
-{{if .Self}}<p>This is your own account.</p>{{else if .IsBanned}}<p class="help">A banned account cannot be messaged.</p>{{else}}<p><a class="button" href="/messages?to={{.Handle}}">Message user <span class="action-icon">↗</span></a></p>{{end}}
+{{if .Self}}<p>This is your own account.</p>{{else if .IsBanned}}<p class="help">A banned account cannot be messaged.</p>{{else if .IsClosed}}<p class="help">A closed account cannot be messaged.</p>{{else}}<p><a class="button" href="/messages?to={{.Handle}}">Message user <span class="action-icon">↗</span></a></p>{{end}}
 <dl class="key-values">
 <div><dt>Role</dt>
 <dd>{{.Role}}</dd></div>
@@ -174,11 +174,16 @@
 {{template "confirm-fields" $totp}}
 <button type="submit">Record decision for {{.Handle}}</button>
 </form>{{end}}{{end}}{{if .CanApply}}
-<p>Open a vendor application for {{.Handle}} under the current policy: {{template "vendor-policy-text" .Policy}} The account is notified and the application is decided here or under <a class="text-link" href="/admin/vendors#vendors">Vendors</a>.</p>
+<p>Open a vendor application for {{.Handle}}. You choose where it starts, whatever the vendor policy's approval mode; it is never approved here: after the bond (if any) it waits for an administrator's approval, here or under <a class="text-link" href="/admin/vendors#vendors">Vendors</a>. The account is notified.</p>
 <form class="stack" method="post" action="/admin/vendor-apply">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="form_nonce" value="{{formNonce "/admin/vendor-apply"}}">
 {{template "admin-user-target" .Handle}}
+<fieldset><legend>Start the application</legend>{{if .Policy.HasBond}}
+<label class="check"><input type="radio" name="start" value="awaiting_bond" required> Waiting for the bond of {{.Policy.Bond}} XMR (the vendor policy's bond, a non-refundable fee)</label>{{end}}
+<label class="check"><input type="radio" name="start" value="awaiting_approval" required> Waiting for approval, with no bond</label>
+</fieldset>{{if not .Policy.HasBond}}
+<p class="help">The vendor policy sets no bond; set one under <a class="text-link" href="/admin/vendors#vendor-policy">Vendors</a> to ask this account for one.</p>{{end}}
 {{template "confirm-fields" $totp}}
 <button type="submit">Open a vendor application</button>
 </form>{{end}}{{if or .Verified (and (eq .Role "vendor") (not .IsBanned))}}
@@ -191,5 +196,5 @@
 {{template "confirm-fields" $totp}}
 <button type="submit">{{if .Verified}}Remove the verified mark{{else}}Mark as a verified vendor{{end}}</button>
 </form>{{end}}{{if and (not .CanApply) (ne .Role "vendor") (not .Verified) (not (and .Application .Application.Open))}}
-<p class="help">Only an open buyer account can apply to sell{{if eq .Role "moderator"}}: change the role to buyer first{{end}}.</p>{{end}}
+<p class="help">Only an open buyer account can apply to sell{{if eq .Role "moderator"}}: change the role to buyer first{{else if and .IsSuspended (not .IsBanned)}}: restore the account first{{end}}.</p>{{end}}
 </section>{{end}}{{end}}{{end}}
