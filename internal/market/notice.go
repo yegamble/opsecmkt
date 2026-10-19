@@ -14,7 +14,8 @@ import (
 // names the pages (PageData.Page, space-separated; admin/<slug> for an administration section, A-542) that render
 // the section: a notice consumed on any other page
 // (its 303 left unfollowed while another tab loaded, A-291) renders at the top there instead. A code in
-// noticeErrors reports a success that needs the owner's attention and renders as the page's error alert.
+// noticeErrors reports a success that needs the owner's attention, or (signin-code-wrong, A-549) a sign-in that
+// moved on to /challenge because its authenticator code was refused, and renders as the page's error alert.
 //
 // A-287 moved the other outcome flags here (?photo=, ?avatar=, ?image=removed, ?key= and ?signin=). The query
 // parameters pages still read select what to show, not what just happened: id, q, category, region, currency and
@@ -48,6 +49,8 @@ var notices = map[string]struct{ text, section, pages string }{
 	// A recovery-code sign-in (/challenge, A-154): /totp details it from the current state (recoverySignInNotice).
 	"signin-recovery": {"You signed in with a recovery code.", "", ""},
 	"signin-totp-off": {"You signed in with a recovery code and turned off two-step sign-in with an authenticator app (TOTP); your other recovery codes were deleted.", "", ""},
+	// A wrong, expired or reused authenticator code typed on /login with a correct password (A-549); an error alert.
+	"signin-code-wrong": {"The authenticator code was not accepted: it was incorrect, expired or already used. Enter the current code from your app below, or use a recovery code.", "", ""},
 
 	// Bitcoin escrow key (escrow_account.go)
 	"escrow-key":           {"Escrow key saved. It is inactive until you sign its practice transaction.", "", ""},
@@ -123,7 +126,7 @@ var notices = map[string]struct{ text, section, pages string }{
 }
 
 // noticeErrors are the codes shown as the page's error alert rather than a status notice.
-var noticeErrors = map[string]bool{"key-revocation": true, "key-subkey": true}
+var noticeErrors = map[string]bool{"key-revocation": true, "key-subkey": true, "signin-code-wrong": true}
 
 // setNotice sets the one-shot notice for code on a successful signed-in post's 303 (an action's, an upload's, or
 // the recovery-code sign-in's with the session it starts) and returns redirect with the notice's section as its

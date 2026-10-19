@@ -36,6 +36,12 @@ for (const path of ['/login', '/register']) {
     await expect(page.locator('.captcha .staff-contact')).toHaveText('Can’t read the image? Ask the operator of this market.');
     // A-517: with no staff contact the fallback says honestly that there is no way in without the image.
     await expect(page.locator('.captcha .captcha-fallback')).toHaveText('This market lists no contact that works without an account, so there is no way to get one without the image. Only the operator of this market can turn the CAPTCHA off.');
+    if (path === '/login') {
+      // A-549: the code typed with the password completes the second step; the paused sole-administrator rescue stays.
+      await expect(page.getByLabel('Authenticator code (if you use one)')).toHaveAttribute('autocomplete', 'one-time-code');
+      await expect(page.locator('#signin-code-help')).toContainText('Enter it now to skip the verification step.');
+      await expect(page.locator('#signin-code-help')).toContainText("If the only administrator's handle is temporarily paused");
+    }
     if (path === '/register') {
       // A-512, A-544: selling needs an approved vendor application.
       await expect(page.locator('main p.staff-contact')).toHaveText('Selling needs an approved vendor application. Ask the operator of this market.');

@@ -643,7 +643,7 @@ func authAction(c *actionCtx) (actionResult, error) {
 		if account.suspended {
 			return actionResult{}, suspendedRefusal(ctx, a.db)
 		}
-		return a.secondFactor(c, account.id, account.hash, a.signInNext(f.Get("next")))
+		return a.secondFactor(c, account.id, account.hash, strings.TrimSpace(f.Get("rescue_code")), a.signInNext(f.Get("next")))
 	}
 	if path == "/setup" && (installed || a.setupToken == "" || subtle.ConstantTimeCompare([]byte(f.Get("token")), []byte(a.setupToken)) != 1) {
 		return actionResult{}, fail(403, "Setup unavailable or token incorrect")
@@ -862,8 +862,10 @@ func (a *App) enrolledFactors(ctx context.Context, userID string) ([]string, err
 // secondFactor finishes a password login checked against passwordHash: a session when no factor is enrolled,
 // otherwise a 10-minute pending login (cookie "pending") completed by POST /challenge. Either is refused once the
 // password has changed since it was checked (startSession, A-157). next (signInNext, "" for /) is where the sign-in
-// lands; a pending login keeps it for /challenge (A-126).
-func (a *App) secondFactor(c *actionCtx, userID, passwordHash, next string) (actionResult, error) {
+// lands; a pending login keeps it for /challenge (A-126). code is the authenticator code typed on /login ("" for
+// none): when TOTP is the only enrolled factor it completes the sign-in here (passwordAndCodeSignIn, A-549); with
+// another factor enrolled it is ignored, so it never skips that factor.
+func (a *App) secondFactor(c *actionCtx, userID, passwordHash, code, next string) (actionResult, error) {
 	ctx := c.Ctx()
 	names, err := a.enrolledFactors(ctx, userID)
 	if err != nil {
@@ -890,12 +892,76 @@ func (a *App) secondFactor(c *actionCtx, userID, passwordHash, next string) (act
 		}
 		return actionResult{Redirect: orHome(next)}, nil
 	}
+	if code != "" && len(names) == 1 && names[0] == "totp" {
+		return a.passwordAndCodeSignIn(c, userID, passwordHash, code, next)
+	}
 	pending := randomToken()
 	if _, err = a.db.ExecContext(ctx, "INSERT INTO pending_logins(token_hash,user_id,expires,password_digest,next) VALUES($1,$2,now()+interval '10 minutes',$3,$4)", digest(pending), userID, digest(passwordHash), next); err != nil {
 		return actionResult{}, fail(500, "Unable to sign in")
 	}
 	a.cookie(c.W, "pending", pending, 600)
 	return actionResult{Redirect: challengePath(next)}, nil
+}
+
+// passwordAndCodeSignIn finishes a /login whose password was checked against passwordHash and which carried an
+// authenticator code for an account whose only second factor is TOTP (A-549). It charges the same per-account factor
+// budget as /challenge (totpFactor.Verify) and checks the code with checkTOTP, whose replay guard is committed with the
+// session (startSession: rotation, suspension and password-change refusal, the "Signed in with password and TOTP"
+// audit row). A wrong, expired or reused code opens the usual pending sign-in instead, recorded as its first failed
+// second step (recordFactorFailure, A-152), and /challenge says the code was not accepted: a correct password reaches
+// /challenge anyway, so this answers nothing a password guess could not already learn. Recovery codes are /challenge's.
+func (a *App) passwordAndCodeSignIn(c *actionCtx, userID, passwordHash, code, next string) (actionResult, error) {
+	ctx := c.Ctx()
+	if !a.allow("totp-verify:"+userID, 10) {
+		return actionResult{}, errTOTPBudget
+	}
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		return actionResult{}, fail(503, "Service unavailable")
+	}
+	defer tx.Rollback()
+	if pending := pendingCookie(c.R); pending != "" {
+		// This browser's earlier two-step sign-in is replaced by this one either way (its cookie is overwritten);
+		// other browsers' pending sign-ins remain. Deleted first: /challenge's lock order is pending sign-in, then
+		// the account row (checkTOTP).
+		if _, err = tx.ExecContext(ctx, "DELETE FROM pending_logins WHERE token_hash=$1", digest(pending)); err != nil {
+			return actionResult{}, fail(500, "Unable to sign in")
+		}
+	}
+	var he *httpError
+	if err = a.checkTOTP(ctx, tx, userID, code); errors.As(err, &he) && he.Code == 401 {
+		// checkTOTP wrote nothing; tx still holds the account row, so the record below cannot race a sign-in.
+		pending := randomToken()
+		if _, err = tx.ExecContext(ctx, "INSERT INTO pending_logins(token_hash,user_id,expires,password_digest,next,factor_failed) VALUES($1,$2,now()+interval '10 minutes',$3,$4,true)", digest(pending), userID, digest(passwordHash), next); err != nil {
+			return actionResult{}, fail(500, "Unable to sign in")
+		}
+		if err = recordFirstFactorFailure(ctx, tx, userID, "TOTP"); err != nil {
+			return actionResult{}, fail(500, "Unable to sign in")
+		}
+		if err = tx.Commit(); err != nil {
+			return actionResult{}, fail(500, "Unable to sign in")
+		}
+		a.cookie(c.W, "pending", pending, 600)
+		notice := "signin-code-wrong"
+		a.setNotice(c.W, notice, "")
+		return actionResult{Redirect: challengePath(next)}, nil
+	} else if he != nil {
+		return actionResult{}, err // TOTP turned off meanwhile, or a secret this server cannot read
+	} else if err != nil {
+		return actionResult{}, fail(503, "Service unavailable")
+	}
+	token, err := a.startSession(ctx, tx, userID, rotationSession(c), "password and TOTP", digest(passwordHash))
+	if errors.As(err, &he) {
+		return actionResult{}, err // suspension, password changed or public administrator
+	} else if err != nil {
+		return actionResult{}, fail(500, "Unable to sign in")
+	}
+	if err = tx.Commit(); err != nil {
+		return actionResult{}, fail(500, "Unable to sign in")
+	}
+	a.cookie(c.W, "session", token, 43200)
+	a.cookie(c.W, "pending", "", -1)
+	return actionResult{Redirect: orHome(next)}, nil
 }
 
 func pendingCookie(r *http.Request) string {
@@ -1005,16 +1071,22 @@ func recordFactorFailure(c *actionCtx, pending, userID, method string, err error
 	if n, _ := res.RowsAffected(); n != 1 {
 		return err
 	}
-	if _, uerr = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", userID, "Correct password but failed second sign-in step ("+method+")"); uerr != nil {
-		return uerr
-	}
-	if uerr = notifyOwner(ctx, tx, userID, "Someone entered your password correctly but failed the second sign-in step ("+method+")."); uerr != nil {
+	if uerr = recordFirstFactorFailure(ctx, tx, userID, method); uerr != nil {
 		return uerr
 	}
 	if uerr = tx.Commit(); uerr != nil {
 		return uerr
 	}
 	return err
+}
+
+// recordFirstFactorFailure writes, in tx, the audit row and owner notice of a pending sign-in's first failed second
+// step (A-152): at /challenge (recordFactorFailure) or with a code typed on /login (passwordAndCodeSignIn).
+func recordFirstFactorFailure(ctx context.Context, tx *sql.Tx, userID, method string) error {
+	if _, err := tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", userID, "Correct password but failed second sign-in step ("+method+")"); err != nil {
+		return err
+	}
+	return notifyOwner(ctx, tx, userID, "Someone entered your password correctly but failed the second sign-in step ("+method+").")
 }
 
 func challengeLoader(ctx context.Context, a *App, r *http.Request, d *PageData) error {
