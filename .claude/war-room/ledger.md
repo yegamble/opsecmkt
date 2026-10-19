@@ -230,6 +230,7 @@ Evidence tier as in `repo-map.md`.
 | A-545 | Owner directive 2026-10-18: admin user directory `/admin/users` — search, filters, per-user details and stats (role, vendor status/verified, suspended/banned, 2FA/PGP state, order counts by state as buyer and vendor, disputes, listings), actions: suspend/unsuspend, ban/unban (A-546), role change to buyer / vendor applicant / approved vendor / moderator, verify vendor, "Message user". Depends on A-542, A-544, A-546 | staff | owner directive | open (after A-542, A-544, A-546) |
 | A-546 | Owner decision 2026-10-18: ban = permanent closure, distinct from reversible suspension. Ban refuses sign-in, revokes sessions, withdraws listings, reserves the handle; open escrow orders still settle through disputes. Only an administrator unbans, with a reason | identity/staff | owner decision (AskUserQuestion 2026-10-18) | open |
 | A-547 | Owner decision 2026-10-18: automatic XMR vendor bond — with Monero escrow on and a bond set, an applicant gets a one-time watched deposit address; the bond is credited after confirmations. Needs a payments design ruling (wallet/account placement, under/over/late payment, restore gate, network pin, no send path) before implementation | payments | owner decision | blocked (payments design ruling) |
+| A-548 | Owner directive 2026-10-18 (screenshot of the header): add a Sign out control next to the signed-in handle in the site header. It is a POST form to the existing `/logout` with CSRF (no JS), reads "Sign out", is visually secondary to the handle, keyboard-reachable in a logical order, ≥24×24 px target (WCAG 2.5.8), fits the 320 px phone header without horizontal scroll, and is absent when signed out and in read-only preview where POSTs are refused | ui | owner directive | open (wave 2) |
 
 ### Iteration 3 rulings (chair) — acceptance criteria
 
@@ -844,6 +845,7 @@ ACCEPTANCE CRITERIA AND TEST PLAN
   panel (which links here). Tests: Go `TestAdminUserDirectory` (search, filters, stats counts against fixtures, each
   action round trip, non-admin refused); Playwright db journey search → suspend → reload shows Suspended.
 - A-547: payments seat proposes the bond deposit design; chair rules before implementation.
+- A-548: layout.html header renders the handle (link to /account) followed by a `<form method=post action=/logout>` with the CSRF field and a `<button>` styled as a secondary/ghost control; the existing /account sign-out stays. Focus order: search → handle → Sign out → main nav. Tests: Go render test that signed-in pages carry exactly one header sign-out form with a CSRF field and anonymous pages none; POST from the header signs out and lands on the existing post-logout page; Playwright preview check at 320 and 1280 px (no horizontal scroll, button ≥24 px, visible focus) and a db journey clicking it.
 
 ## P2 — high-value improvements
 
