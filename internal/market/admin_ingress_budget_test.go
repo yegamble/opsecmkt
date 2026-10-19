@@ -171,7 +171,7 @@ func TestPublicListenerCannotPauseAdminIngressSignIn(t *testing.T) {
 	// The security panel, still served with every public class full, lists both pauses, the private one marked.
 	w = ingressDo(e, true, "GET", "/admin/security", session, nil)
 	body := w.Body.String()
-	if w.Code != 200 || !strings.Contains(body, "<strong>onion_admin</strong> — paused until") || !strings.Contains(body, "on the private administrator onion</li>") {
+	if w.Code != 200 || strings.Count(body, "<strong>onion_admin</strong> — paused until") != 2 || strings.Count(body, "on the private administrator onion</li>") != 1 {
 		t.Fatalf("security panel: %d %q", w.Code, body)
 	}
 }
