@@ -190,3 +190,103 @@ func TestXMREscrowDoubleSpentDepositBoundedWait(t *testing.T) {
 		t.Fatal("the deposit the release was built without has no open flag for staff")
 	}
 }
+
+// PAY66-6: a refund is built without a credited deposit read as double-spent past the bounded wait; when the wallet
+// lists that deposit again it is the buyer's, so it is left out (with a note saying it was credited and listed again,
+// never "arrived after") and one stray refund returns it to the buyer's refund address. For a refund decided in a
+// dispute and for a vendor's cancellation of a paid order. (A release keeps it for staff:
+// TestXMREscrowDoubleSpentDepositBoundedWait.)
+func TestXMREscrowRefundWithoutMissingDepositReturnsIt(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	thr := x.A.escrowXMR.confirmations
+	half := int64(xmrListingPrice / 2)
+	for _, c := range []struct {
+		name   string
+		refund func(order string)
+	}{
+		{"dispute decided for the buyer", func(order string) { x.disputeAndResolve(order, "refund") }},
+		{"vendor cancels the paid order", func(order string) {
+			vsess := x.sessOf(order, roleVendor)
+			var cancel *pageForm
+			for _, f := range x.orderForms(order, vsess) {
+				if f.action == "/orders/cancel" {
+					cancel = &f
+				}
+			}
+			if cancel == nil {
+				t.Fatal("no cancel form for the vendor")
+			}
+			if w := x.do("POST", cancel.action, vsess, cancel.values); w.Code != 303 || x.state(order) != stateCancelled {
+				t.Fatalf("cancel: %d %s", w.Code, w.Body.String())
+			}
+		}},
+	} {
+		order, addr := x.freshCheckout(x.physical(x.vendor))
+		first, second := hex64("refund first "+order), hex64("refund second "+order)
+		x.fake.payAddress(addr, first, half, thr+10)
+		x.fake.payAddress(addr, second, xmrListingPrice-half, thr+2)
+		x.mustPoll()
+		if x.state(order) != statePaid {
+			t.Fatalf("%s: funded order %s", c.name, x.state(order))
+		}
+		c.refund(order)
+		x.fake.setTransfer(second, func(t *fakeXMRTransfer) { t.DoubleSpend = true })
+		x.mustPoll()
+		x.fake.mine(int(2 * thr))
+		x.mustPoll()
+		refundAddr := agStrings(t, x.testEnv, "SELECT refund_address FROM escrows WHERE order_id=$1", order)[0]
+		r := x.settlementOf(order, "refund")
+		if r.State != "relayed" || r.InputTotal != half || !slices.Equal(x.outputsOf(r.ID), []string{"claimant:" + refundAddr + ":" + strconv.FormatInt(half-r.Fee, 10)}) {
+			t.Fatalf("%s: the refund after the bounded wait: %+v %v; deposits %v", c.name, r, x.outputsOf(r.ID), x.creditedRows(order))
+		}
+		x.fake.setTransfer(second, func(t *fakeXMRTransfer) { t.DoubleSpend = false })
+		for range 3 {
+			x.mustPoll()
+		}
+		if got := x.creditedRows(order); !slices.Equal(got, []string{"20 true false false false true", "12 true true true true true"}) {
+			t.Fatalf("%s: deposits once the missing one is listed again: %v", c.name, got)
+		}
+		stray := x.settlementOf(order, "stray_refund")
+		if stray.State != "relayed" || stray.InputTotal != xmrListingPrice-half ||
+			!slices.Equal(x.outputsOf(stray.ID), []string{"claimant:" + refundAddr + ":" + strconv.FormatInt(xmrListingPrice-half-stray.Fee, 10)}) || len(x.xmrSettlements(order)) != 2 {
+			t.Fatalf("%s: stray refund %+v %v; settlements %v", c.name, stray, x.outputsOf(stray.ID), x.xmrSettlements(order))
+		}
+		ev := strings.Join(x.events(order), "\n")
+		if !strings.Contains(ev, "1 deposit ("+amount(xmrListingPrice-half, 12)+" XMR, TESTNET fakechain) credited toward this order's funding, were listed again by the escrow wallet after its refund to the buyer was built without them") ||
+			strings.Contains(ev, "arrived at this order's Monero escrow after") {
+			t.Fatalf("%s: the order notes do not say why the deposit was left out:\n%s", c.name, ev)
+		}
+	}
+}
+
+// PAY66-8: a credited deposit listed again ends its missing episode, so going missing again restarts the bounded wait
+// from the new height: 2 × threshold − 1 blocks after the second disappearance the release still waits, though the first
+// disappearance was longer ago than that; one block later it is built from the other deposit.
+func TestXMREscrowMissingDepositWaitRestartsWhenListed(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	order, _, second, id := x.fundedTwice()
+	addr := agStrings(t, x.testEnv, "SELECT address FROM escrows WHERE order_id=$1", order)[0]
+	thr := int(x.A.escrowXMR.confirmations)
+	x.dropTransfer(second)
+	x.mustPoll()
+	x.fake.mine(thr + 5)
+	x.fake.payAddress(addr, second, xmrListingPrice-xmrListingPrice/2, 3)
+	x.mustPoll()
+	if s := x.settlement(id); s.State != "requested" || x.waitClass(id) != xmrWaitConfirm {
+		t.Fatalf("listed again at 3 confirmations: %+v %q; deposits %v", s, x.waitClass(id), x.creditedRows(order))
+	}
+	x.dropTransfer(second)
+	x.mustPoll()
+	x.fake.mine(2*thr - 1)
+	x.mustPoll()
+	if s := x.settlement(id); s.State != "requested" || x.waitClass(id) != xmrWaitMissing || x.fake.countOf("transfer") != 0 {
+		t.Fatalf("%d blocks after it went missing again: %+v %q", 2*thr-1, s, x.waitClass(id))
+	}
+	x.fake.mine(1)
+	x.mustPoll()
+	if s := x.settlement(id); s.State != "relayed" || s.InputTotal != xmrListingPrice/2 {
+		t.Fatalf("%d blocks after it went missing again: %+v; deposits %v", 2*thr, s, x.creditedRows(order))
+	}
+}

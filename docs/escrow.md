@@ -81,19 +81,29 @@ market holds the wallet keys and builds, stores and sends every transaction itse
   (also added to the vendor's output when below 0.001 XMR). A settlement spends the deposits that count when it is built; a
   top-up (a deposit not credited toward the funding) still confirming then, or arriving after the build, is left out and
   returned to the buyer's refund address by a *stray refund* once the order has closed. A deposit credited toward the
-  funding is never left out (A-554): while a reorganisation has one below the confirmation threshold again, the release
-  or refund is not built (*waiting-confirmations*), so it never pays from the confirmed part of the funding. One the
-  wallet no longer lists (popped and not mined again, or read as a double spend) is waited on (*deposit-missing*) for
-  twice the threshold in blocks from the escrow wallet's height when it was first found missing; the settlement is then
-  built from the deposits that remain, with an order note naming the one it was built without, and that deposit stays in
-  the escrow account for staff: no stray refund returns it. Each such deposit is flagged to staff once per episode.
+  funding is handled differently (A-554): while a reorganisation has one below the confirmation threshold again, the
+  release or refund is not built (*waiting-confirmations*), so it never pays from the confirmed part of the funding. One
+  the wallet no longer lists (popped and not mined again, or read as a double spend) is waited on (*deposit-missing*)
+  for twice the threshold in blocks from the escrow wallet's height when it was first found missing; a listing in
+  between ends that episode, so a later disappearance waits the full time again. The settlement is then built from the
+  deposits that remain, with an order note naming the one it was built without. Should the wallet list that deposit
+  again, what happens depends on the settlement: after a release it stays in the escrow account for staff (it is never
+  left out, so no stray refund pays the vendor's coins to the buyer); after a refund the coins were the buyer's anyway,
+  so it is left out, with a note that it was credited and listed again, and the stray refund returns it to the buyer's
+  refund address (PAY66-6). Each such deposit is flagged to staff once per episode.
   Limits: a regression is noticed and flagged only once a release or refund of the order is being built (not while the
   order is paid or shipped and no settlement is due); and once staff have recorded *no action* on the flag, a later
   regression of the same deposit writes a new order note and staff notice but does not reopen the flag on the
   payment-review desk. A
   settlement whose credited deposits are all missing waits for them rather than failing *nothing-to-settle*, which is
   left for a settlement with no credited deposit at all (a failed settlement without a transaction cannot be
-  re-requested). A deposit that did not count when its order was cancelled (the wallet read it as a double spend, or
+  re-requested). Such a settlement stays requested (*deposit-missing*) for as long as none of those deposits returns,
+  and while it does, its order's monthly wallet is never destroyed: the wallet and its sealed seed are kept past their
+  90 days. There is no web action that ends it; staff see it as the order's wait line, an open flag of the missing
+  deposit on the payment-review desk ("Credited deposit conflicted or missing"), the moderator desk's alert for a
+  settlement requested for more than 24 hours, and, past the 90 days, the administrators' notice that a retained
+  wallet is kept. Resolving it is an operator decision taken by hand (PAY66-7; a code change is a separate ledger item).
+  A deposit that did not count when its order was cancelled (the wallet read it as a double spend, or
   no longer listed it) and has confirmed since is left out and returned by a stray refund too, when no refund spends it: it is flagged
   and the buyer told. The order page lists a left-out deposit on its own line, not counted as received, and a cancelled
   order's status follows the stray refund that returns it: requested or built, sent, confirmed (A-435). A
@@ -277,7 +287,8 @@ wallet takes an order again and no settlement is relayed until an administrator 
   `TestXMREscrowBuildSetAside`, `TestXMREscrowGatePauses`, `TestXMREscrowConflictedDepositThroughExpiry`,
   `TestXMREscrowStraysPerWallet`, `TestXMREscrowLeftOutDepositLine`, `TestXMREscrowStrayTooSmallOnce`,
   `TestXMREscrowCreditedRegressionHoldsRelease`, `TestXMREscrowMissingDepositHoldsRelease`,
-  `TestXMREscrowDoubleSpentDepositBoundedWait`. Releases, deadlines and
+  `TestXMREscrowDoubleSpentDepositBoundedWait`, `TestXMREscrowRefundWithoutMissingDepositReturnsIt`,
+  `TestXMREscrowMissingDepositWaitRestartsWhenListed`. Releases, deadlines and
   disputes: `TestXMREscrowNoBuildBeforeOutcome`, `TestXMREscrowConfirmReceiptStepUp`, `TestXMREscrowShipStepUp`,
   `TestXMREscrowDeadlineWithBTCOff`, `TestXMREscrowDisputeSupersedes`, `TestXMREscrowNoShipCancel`,
   `TestXMREscrowRestoreExtendsDeadline`. Retention and restore: `TestXMREscrowDestroyPreconditions`,

@@ -443,10 +443,19 @@ func (a *App) xmrCreditedHold(ctx context.Context, s *xmrSettleRow) (xmrHold, er
 			return h, nil
 		}
 		h.dropped = append(h.dropped, fmt.Sprintf("This %s was built without %s, which was credited toward this order's funding: the escrow wallet has not listed it for %d blocks "+
-			"(a reorganisation or a double spend took it out of the chain). It is not left out for a stray refund: should it be listed again, it stays in this order's escrow account, flagged for staff.",
-			s.Kind, m.name, tip-m.since))
+			"(a reorganisation or a double spend took it out of the chain). %s",
+			s.Kind, m.name, tip-m.since, xmrMissingFate(s.Kind)))
 	}
 	return h, nil
+}
+
+// xmrMissingFate says what becomes of a credited deposit a settlement of kind was built without, should the wallet list
+// it again (xmrLeaveOutTopUps): after a release it stays for staff; after a refund the stray refund returns it.
+func xmrMissingFate(kind string) string {
+	if kind == "refund" {
+		return "Should the wallet list it again, it is left out for a stray refund, which returns it, less the network fee, to the buyer's refund address."
+	}
+	return "It is not left out for a stray refund: should it be listed again, it stays in this order's escrow account, flagged for staff."
 }
 
 // xmrFlagRegressed flags to staff, once per episode, each deposit of release or refund s's order credited toward its
@@ -477,8 +486,8 @@ func (a *App) xmrFlagRegressed(ctx context.Context, s *xmrSettleRow) error {
 		verb = "are"
 	}
 	note := fmt.Sprintf("Monero escrow %s, credited toward this order's funding, %s below %d confirmations again on %s %s: a reorganisation took it back, or the escrow wallet no longer lists it. "+
-		"The %s is not built while such a deposit confirms; one the wallet no longer lists is waited on for %d blocks, then the %s is built without it and the deposit stays in this order's escrow account for staff (no stray refund returns it). Moderator review required.",
-		strings.Join(named, ", "), verb, threshold, a.netTag(), a.xmrEscrowNetwork(), s.Kind, xmrMissingWait*threshold, s.Kind)
+		"The %s is not built while such a deposit confirms; one the wallet no longer lists is waited on for %d blocks, then the %s is built without it. %s Moderator review required.",
+		strings.Join(named, ", "), verb, threshold, a.netTag(), a.xmrEscrowNetwork(), s.Kind, xmrMissingWait*threshold, s.Kind, xmrMissingFate(s.Kind))
 	if err = a.flagOrder(ctx, tx, &o, note, ""); err != nil {
 		return err
 	}
@@ -1516,8 +1525,10 @@ func (a *App) xmrRequestStray(ctx context.Context, orderID string) error {
 // deposit that counts and that no settlement spends as left out (leaveOutTopUps's rule, A-374, P3-R8), in tx under the
 // order row lock: one order note, a notice to the buyer and to staff, only for the deposits newly marked. The stray
 // refund returns them to the buyer's refund address once the order is closed and they are confirmed. A deposit
-// credited toward the order's funding is never left out (A-554): it did not arrive after the settlement was built, and
-// it is not the buyer's to get back. One the settlement was built without (xmrCreditedHold) stays flagged for staff.
+// credited toward the order's funding that a release was built without (xmrCreditedHold) is never left out (A-554): it
+// did not arrive after the release was built and it is not the buyer's to get back, so it stays flagged for staff. One
+// a refund was built without is the buyer's (PAY66-6): once it is listed again it is left out like a top-up, so the
+// stray refund returns it, with its own note.
 func (a *App) xmrLeaveOutTopUps(ctx context.Context, tx *sql.Tx, o *Order) error {
 	var kind string
 	err := tx.QueryRowContext(ctx, "SELECT kind FROM xmr_settlements WHERE order_id=$1 AND kind IN ('release','refund') AND state IN ('built','relayed','confirmed')", o.ID).Scan(&kind)
@@ -1528,31 +1539,62 @@ func (a *App) xmrLeaveOutTopUps(ctx context.Context, tx *sql.Tx, o *Order) error
 		return err
 	}
 	rows, err := tx.QueryContext(ctx, `UPDATE payments SET escrow_left_out=true,`+newFlagSQL+`,updated=now() WHERE order_id=$1 AND xmr_settlement_id IS NULL AND confirmations>=0
-		AND NOT credited AND NOT locked AND NOT after_close AND NOT escrow_left_out AND NOT spent_outside RETURNING txid,amount`, o.ID)
+		AND (NOT credited OR $2='refund') AND NOT locked AND NOT after_close AND NOT escrow_left_out AND NOT spent_outside RETURNING txid,amount,credited`, o.ID, kind)
 	if err != nil {
 		return err
 	}
-	named, sum, err := scanNamed(rows, "XMR")
-	if err != nil || len(named) == 0 {
+	var topUps, funding []string
+	var topUpSum, fundingSum int64
+	for rows.Next() {
+		var txid string
+		var amt int64
+		var credited bool
+		if err = rows.Scan(&txid, &amt, &credited); err != nil {
+			rows.Close()
+			return err
+		}
+		if credited {
+			funding, fundingSum = append(funding, depositName(txid, amt, "XMR")), fundingSum+amt
+		} else {
+			topUps, topUpSum = append(topUps, depositName(txid, amt, "XMR")), topUpSum+amt
+		}
+	}
+	rows.Close()
+	if err = rows.Err(); err != nil {
 		return err
 	}
 	what := "its release to the vendor"
 	if kind == "refund" {
 		what = "its refund to the buyer"
 	}
-	count := "1 deposit"
-	if n := len(named); n > 1 {
-		count = strconv.Itoa(n) + " deposits"
+	for _, g := range []struct {
+		named []string
+		sum   int64
+		why   string
+	}{
+		{topUps, topUpSum, "arrived at this order's Monero escrow after " + what + " was built, so that settlement does not spend them."},
+		{funding, fundingSum, "credited toward this order's funding, were listed again by the escrow wallet after " + what + " was built without them, so that settlement does not spend them."},
+	} {
+		if len(g.named) == 0 {
+			continue
+		}
+		slices.Sort(g.named)
+		count := "1 deposit"
+		if n := len(g.named); n > 1 {
+			count = strconv.Itoa(n) + " deposits"
+		}
+		// Named, and the order note asks for review, so the desk dates the flags (QA462E-2); the buyer's notice does not ask.
+		note := count + " (" + amount(g.sum, 12) + " XMR, " + a.netTag() + " " + a.xmrEscrowNetwork() + ") " + g.why + " " +
+			"They stay in the escrow account; once the order is closed and they are confirmed, a stray refund returns them, less the network fee, to the buyer's refund address. Do not send more coins to this escrow. " +
+			"The deposits: " + strings.Join(g.named, ", ") + "."
+		if err = a.flagOrder(ctx, tx, o, note+" Moderator review required.", ""); err != nil {
+			return err
+		}
+		if _, err = insertNotification(ctx, tx, o.BuyerID, "Order "+shortID(o.ID)+": "+note, o.ID); err != nil {
+			return err
+		}
 	}
-	// Named, and the order note asks for review, so the desk dates the flags (QA462E-2); the buyer's notice does not ask.
-	note := count + " (" + amount(sum, 12) + " XMR, " + a.netTag() + " " + a.xmrEscrowNetwork() + ") arrived at this order's Monero escrow after " + what + " was built, so that settlement does not spend them. " +
-		"They stay in the escrow account; once the order is closed and they are confirmed, a stray refund returns them, less the network fee, to the buyer's refund address. Do not send more coins to this escrow. " +
-		"The deposits: " + strings.Join(named, ", ") + "."
-	if err = a.flagOrder(ctx, tx, o, note+" Moderator review required.", ""); err != nil {
-		return err
-	}
-	_, err = insertNotification(ctx, tx, o.BuyerID, "Order "+shortID(o.ID)+": "+note, o.ID)
-	return err
+	return nil
 }
 
 // xmrLeaveOutUncounted marks, for a Monero escrow order whose coins go back to the buyer (coinsToBuyer: cancelled, or

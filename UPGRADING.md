@@ -144,8 +144,11 @@ Migration 122 adds `payments.missing_height`: the escrow wallet's height when a
 deposit credited toward an order's funding was first found missing. From this
 release a Monero release or refund is not built while such a deposit is below the
 confirmation threshold again, waits up to twice the threshold in blocks for one
-that is missing, and never leaves a credited deposit out for a stray refund to the
-buyer ([escrow](docs/escrow.md), *Refunds and strays*). Older binaries that do not
+that is missing, and never leaves a credited deposit a release was built without
+out for a stray refund to the buyer (one a refund was built without is returned to
+the buyer when it is listed again; [escrow](docs/escrow.md), *Refunds and
+strays*). A settlement whose credited deposits are all gone stays requested and
+keeps its wallet from destruction until it is resolved by hand. Older binaries that do not
 know this migration refuse startup; back up the database first.
 
 The upgrade does not revisit settlements built before it. Before taking Monero

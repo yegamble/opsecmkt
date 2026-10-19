@@ -1331,8 +1331,14 @@ the market (the order page says so); a destroyed wallet is never opened again.
   A deposit credited toward an order's funding that a reorganisation takes below the confirmation threshold again, or
   that the wallet no longer lists, is flagged once on the payment-review desk and holds the order's release or refund
   (A-554): it waits while the deposit confirms again, and for one that is missing twice the threshold in blocks, then
-  is built without it, with an order note naming it. That deposit stays in the escrow account (no stray refund returns
-  it); should it be listed again, decide by hand what happens to it and record the review on the desk. The market
+  is built without it, with an order note naming it. Should the wallet list that deposit again after a release, it
+  stays in the escrow account (no stray refund returns it): decide by hand what happens to it and record the review on
+  the desk. After a refund it is the buyer's: it is left out, noted as credited and listed again, and the stray refund
+  returns it to the buyer's refund address (PAY66-6). A release or refund whose credited deposits are all gone for good
+  stays requested (*deposit-missing*) and keeps its monthly wallet, with its sealed seed, from destruction past the 90
+  days until you resolve it by hand; there is no web action for it. You see it on the order page's wait line, as an
+  open "Credited deposit conflicted or missing" flag on the payment-review desk, in the desk's alert for a settlement
+  requested for more than 24 hours, and, past the 90 days, in the notice that a retained wallet is kept (PAY66-7). The market
   notices such a regression only once the order's release or refund is being built, not while the order is paid or
   shipped; and after you record *no action* on the flag, a later regression of the same deposit sends a new note and
   notice but does not reopen the flag on the desk.
