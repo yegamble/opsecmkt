@@ -25,7 +25,7 @@
 <p class="help">The CAPTCHA is an image only, with no audio or text alternative (it fails WCAG 3.3.8 for people who cannot read it); first-run setup never asks for it. Changes are recorded in the audit trail.</p>
 </section>
 {{template "signin-protection" .}}{{end}}
-{{/* Users section (/admin/users): second-factor reset and suspension, after the role form */}}
+{{/* Users section (/admin/users): second-factor reset, suspension and ban (A-546), after the role form */}}
 {{define "admin-accounts"}}<section class="panel admin-reset-factors" id="reset-factors" aria-labelledby="reset-factors-heading">
 <h2 id="reset-factors-heading">Reset a user's second factors</h2>{{with $.NoticeIn "reset-factors"}}
 <div class="alert" role="status">{{.}}</div>{{end}}
@@ -79,5 +79,39 @@
 </ul>
 </details>{{else}}
 <p class="help">No account is suspended.</p>{{end}}
-<p class="help">Administrator accounts cannot be suspended here, including your own. To take away a staff role instead, assign the buyer role under <a class="text-link" href="#assign-role">Assign an account role</a> (that also archives a vendor's listings).</p>
+<p class="help">Administrator accounts cannot be suspended here, including your own. To take away a staff role instead, assign the buyer role under <a class="text-link" href="#assign-role">Assign an account role</a> (that also archives a vendor's listings). To close an account for good, ban it below.</p>
+</section>
+<section class="panel admin-ban" id="ban" aria-labelledby="ban-heading">
+<h2 id="ban-heading">Ban or unban an account</h2>{{with $.NoticeIn "ban"}}
+<div class="alert" role="status">{{.}}</div>{{end}}
+<p><strong>A ban is permanent closure</strong>, for an account that must not use this market again; a suspension is the reversible hold above. Banning signs the account out everywhere and refuses its sign-in, archives its active listings, withdraws an open vendor application, removes a verified vendor mark, and stops new orders and messages to it. Its handle stays reserved for good, even after retention erases the account, so nobody can register it again. A moderator also becomes a buyer. Its open orders keep going: the other party can still complete, concede or dispute them, an administrator who is not a party decides disputes, and releases and refunds are still paid (a release that still needs a banned vendor's payout address waits until the ban is lifted). The account is notified, and both accounts record the change with your reason.</p>
+<p class="help">Lifting a ban lets whoever has the password sign in again, unless the account was suspended before the ban: that suspension comes back. Its listings stay archived, the verified mark stays off and no staff role returns: the vendor publishes listings again, and an administrator decides whether to verify them or assign a role again.</p>
+<form class="stack" method="post" action="/admin/ban">
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/admin/ban"}}">
+<label>Account handle<input name="handle" value="{{.BanHandle}}" required minlength="3" maxlength="32" pattern="[a-zA-Z0-9_]{3,32}" title="Use 3 to 32 letters, numbers, or underscores." autocomplete="off" autocapitalize="none" spellcheck="false"{{if .BanHandle}} aria-invalid="true"{{end}}>
+</label>
+<fieldset>
+<legend>Action</legend>
+<label class="check">
+<input type="radio" name="action" value="ban" required{{if eq .BanChoice "ban"}} checked{{end}}> Ban: close the account permanently</label>
+<label class="check">
+<input type="radio" name="action" value="unban" required{{if eq .BanChoice "unban"}} checked{{end}}> Unban: allow sign-in again</label>
+</fieldset>
+<label>Reason<input name="reason" required minlength="10" maxlength="500" value="{{.BanReason}}" autocomplete="off" aria-describedby="ban-reason-help">
+</label>
+<span class="help" id="ban-reason-help">Required for a ban and for lifting one: 10–500 characters on one line. It is kept with the ban, shown to administrators here and recorded in the audit trail of both accounts; the account sees it in its own activity only if the ban is lifted. Do not include anything you would not want in the audit export.</span>
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
+<span class="help">Enter the handle exactly (it is case-sensitive). Confirm with your own password{{if and $.Security $.Security.TOTPEnabled}} and authenticator code{{end}}.</span>
+<button type="submit">Ban or unban</button>
+</form>{{if .BannedAccounts}}
+<details class="account-list" open>
+<summary>Banned accounts</summary>
+<p class="help">Up to 100 accounts, most recently banned first; any other banned account is unbanned the same way by entering its handle above.</p>
+<ul>{{range .BannedAccounts}}
+<li>{{.Handle}} · {{.Role}} · banned {{.Banned}}{{if .BannedBy}} by {{.BannedBy}}{{end}} · reason: {{.BanReason}}</li>{{end}}
+</ul>
+</details>{{else}}
+<p class="help">No account is banned.</p>{{end}}
+<p class="help">Administrator accounts cannot be banned, including your own, so a market always keeps its last administrator. To ban a former administrator, first assign them another role on the host (-set-role).</p>
 </section>{{end}}

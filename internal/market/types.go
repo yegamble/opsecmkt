@@ -10,6 +10,9 @@ type User struct {
 	Suspended             string // P1, PageData.SuspendedAccounts only: when the account was suspended
 	Avatar                string // A-189, vendor page and /canary staff list only: the avatar thumbnail on /img, "" when none may be shown
 	VendorVerified        bool   // A-544, vendor page only: an administrator marked this vendor verified
+	// A-546, PageData.BannedAccounts only: when the account was banned, by which administrator ("" once that account
+	// is erased) and why.
+	Banned, BannedBy, BanReason string
 }
 type Product struct {
 	ID, Title, Description, Category, Region, Kind, Vendor, VendorID, PriceBTC, PriceXMR string
@@ -222,9 +225,14 @@ type PageData struct {
 	SuspendedAccounts []User
 	SignInRefusals    []SignInRefusal
 	RecentSignIns     []Event // account only: latest five successful sign-ins, including legacy audit rows.
+	// BannedAccounts: admin page, up to 100 banned accounts, most recently banned first (A-546; User.Banned, BannedBy
+	// and BanReason); the ban/unban form itself takes any handle.
+	BannedAccounts []User
 	// RoleHandle, RoleChoice, ResetHandle, SuspendHandle and SuspendChoice: admin page re-rendered after a
 	// handle matched no account, keeping what was typed into the role, second-factor reset or suspension form.
 	RoleHandle, RoleChoice, ResetHandle, SuspendHandle, SuspendChoice string
+	// BanHandle, BanChoice and BanReason: likewise for the ban/unban form (A-546).
+	BanHandle, BanChoice, BanReason string
 	// ResolveDispute and ResolveText: the desk re-rendered after a resolve form loaded before the other party's
 	// reply was refused (A-280), keeping the decision typed for that dispute.
 	ResolveDispute, ResolveText string
@@ -384,6 +392,11 @@ type PageData struct {
 	NoPurchase      bool
 	// A-109: product/checkout and a buyer's draft-order page explain why a suspended vendor takes no new intake.
 	VendorSuspensionReason string
+	// SellerClosed (A-546): the product page of a banned vendor's listing (archived by the ban) says the account is
+	// closed rather than only archived; the vendor page says so instead of offering "Message vendor" and the key.
+	SellerClosed bool
+	// OrderClosedParties (A-546): like OrderSuspendedParties, for a banned buyer or vendor (not also listed there).
+	OrderClosedParties []string
 	// EscrowReadiness (A-444): /admin, the escrow-only readiness panel (escrow_readiness.go).
 	EscrowReadiness *EscrowReadinessView
 	// VendorEscrowKey (A-455, P4-R18): the product and vendor pages' vendor's Bitcoin escrow key type while ESCROW_BTC is

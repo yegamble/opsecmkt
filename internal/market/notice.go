@@ -110,6 +110,8 @@ var notices = map[string]struct{ text, section, pages string }{
 	"captcha":       {"CAPTCHA setting saved.", "", ""},
 	"suspended":     {"Account suspended.", "suspend", "admin/users"},
 	"restored":      {"Account restored.", "suspend", "admin/users"},
+	"banned":        {"Account banned.", "ban", "admin/users"},
+	"unbanned":      {"Ban lifted.", "ban", "admin/users"},
 	"factors-reset": {"Second factors reset.", "reset-factors", "admin/users"},
 	"staff-contact": {"Staff contact saved.", "staff-contact", "admin/site"},
 	"staff-list":    {"Public staff list saved.", "staff-list", "admin/transparency"},

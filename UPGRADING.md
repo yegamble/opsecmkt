@@ -187,6 +187,18 @@ SELECT p.order_id, p.txid, p.amount, p.confirmations, p.xmr_settlement_id FROM p
 SELECT id, order_id, kind, state FROM xmr_settlements WHERE send_error = 'nothing-to-settle';
 ```
 
+## Account bans (A-546)
+
+Migration 123 adds `users.banned_at`, `banned_by`, `ban_reason` and
+`ban_prior_suspended_at`, with checks that a ban has a 10–500 character reason
+and that a banned account is also suspended, and the `banned_handles` table of
+handles that stay reserved after a banned account is erased. No existing account is banned or changed. *Admin → Users* gains
+*Ban or unban an account* (`POST /admin/ban`, administrators only): permanent
+closure, distinct from suspension. Older binaries that do not know this
+migration refuse startup; back up the database first and follow the existing
+database rollback procedure to go back. See *Account ban* under
+[authentication](docs/operator-guide.md#authentication) in the operator guide.
+
 # Upgrading from v0.1.0-alpha.1 to `v0.1.0-alpha.2`
 
 `v0.1.0-alpha.2` is a prerelease. Its installer now defaults new installs to mainnet (real funds), but an upgrade keeps

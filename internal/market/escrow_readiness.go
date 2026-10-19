@@ -100,15 +100,19 @@ func (a *App) purchaseBlock(ctx context.Context, q rowQuerier, productID, coin s
 // purchaseGateLoader: the product and checkout pages of a listing, per coin whose intake is escrow only, say why the
 // listing cannot be bought in it; with every coin blocked it is not available for purchase at all.
 func purchaseGateLoader(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
-	if d.Product == nil || d.Product.Archived {
+	if d.Product == nil {
 		return nil
 	}
-	var suspended bool
-	if err := a.db.QueryRowContext(ctx, "SELECT suspended_at IS NOT NULL FROM users WHERE id=$1", d.Product.VendorID).Scan(&suspended); err != nil {
+	var suspended, banned bool
+	if err := a.db.QueryRowContext(ctx, "SELECT suspended_at IS NOT NULL,banned_at IS NOT NULL FROM users WHERE id=$1", d.Product.VendorID).Scan(&suspended, &banned); err != nil {
 		return err
 	}
+	d.SellerClosed = banned
+	if d.Product.Archived {
+		return nil
+	}
 	if suspended {
-		d.VendorSuspensionReason = "Unavailable. " + sellerSuspended
+		d.VendorSuspensionReason = "Unavailable. " + sellerHeld(banned)
 		d.NoPurchase = true
 		return nil
 	}

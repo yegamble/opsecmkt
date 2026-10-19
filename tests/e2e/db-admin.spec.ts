@@ -379,3 +379,59 @@ test('admin sees scanner status and signature date', async ({ browser, baseURL }
   }
   await admin.context().close();
 });
+
+// A-546: a ban is permanent closure. The administrator bans a vendor from /admin/users with a reason and their
+// password; the vendor's open page is signed out and its correct password is refused neutrally (never the reason);
+// a reload lists it as banned with the reason. Unbanning, with a reason, lets it sign in again.
+test('an administrator bans a vendor from the Users section and the vendor cannot sign in', async ({ browser, baseURL }) => {
+  const vendorHandle = uniqueHandle('banned');
+  const vendorPassword = 'browser-banned-password-123';
+  const reason = 'Took payment for orders and shipped nothing.';
+  const vendor = await signedIn(browser, baseURL, vendorHandle, vendorPassword, true);
+  const admin = await signedIn(browser, baseURL, ADMIN.handle, ADMIN.password, false);
+  await setRole(admin, vendorHandle, 'vendor');
+
+  const panel = admin.getByRole('region', { name: 'Ban or unban an account' });
+  const submitBan = async (action: 'Ban' | 'Unban', why: string) => {
+    await admin.goto('/admin/users');
+    await panel.getByLabel('Account handle').fill(vendorHandle);
+    await panel.getByRole('radio', { name: new RegExp(`^${action}:`) }).check();
+    await panel.getByLabel('Reason').fill(why);
+    await panel.getByLabel('Current password').fill(ADMIN.password);
+    return submitStatus(admin, () => panel.getByRole('button', { name: 'Ban or unban' }).click());
+  };
+  await admin.goto('/admin/users');
+  await expect(panel).toContainText('A ban is permanent closure');
+  const listed = panel.locator('.account-list li', { hasText: `${vendorHandle} ·` });
+  await expect(listed).toHaveCount(0);
+
+  expect(await submitBan('Ban', reason)).toBe(303);
+  await expect(admin).toHaveURL(/\/admin\/users#ban$/);
+  await expectNotice(admin, 'Account banned.');
+  await admin.reload();
+  await expect(listed).toHaveText(new RegExp(`^${vendorHandle} · vendor · banned \\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2} UTC by ${ADMIN.handle} · reason: ${reason.replace(/\./g, '\\.')}$`));
+  await expect(admin.getByRole('region', { name: 'Suspend or restore an account' }).locator('.account-list li', { hasText: `${vendorHandle} ·` })).toHaveCount(0);
+
+  await vendor.goto('/account');
+  await expect(vendor).toHaveURL(/\/login\?next=%2Faccount$/);
+  const vendorSignIn = async (password: string) => {
+    await vendor.goto('/login');
+    await vendor.getByLabel('Handle', { exact: true }).fill(vendorHandle);
+    await vendor.getByLabel('Password', { exact: true }).fill(password);
+    return submitStatus(vendor, () => vendor.getByRole('button', { name: 'Sign in' }).click());
+  };
+  expect(await vendorSignIn('wrong-banned-password-1')).toBe(401);
+  await expect(vendor.getByRole('alert')).toHaveText('Invalid handle or password');
+  expect(await vendorSignIn(vendorPassword)).toBe(403);
+  await expect(vendor.getByRole('alert')).toHaveText(/^This account is closed and cannot sign in\. /);
+  await expect(vendor.locator('main')).not.toContainText(reason);
+
+  expect(await submitBan('Unban', 'Appeal upheld after review.')).toBe(303);
+  await expectNotice(admin, 'Ban lifted.');
+  await admin.reload();
+  await expect(listed).toHaveCount(0);
+  expect(await vendorSignIn(vendorPassword)).toBe(303);
+  await expect(vendor.locator('.account-name')).toHaveText(vendorHandle);
+  await vendor.context().close();
+  await admin.context().close();
+});

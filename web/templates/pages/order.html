@@ -10,7 +10,7 @@
 <span class="badge {{template "order-badge-class" .State}}">{{.Status}}</span>
 </div>{{with $.Overpaid}}<div class="alert" role="note">
 <strong>Overpaid.</strong> {{.}}</div>{{end}}
-{{range $.OrderSuspendedParties}}<p class="alert" role="note">The {{.}} account is suspended and cannot sign in. Existing orders remain on record; use the available order actions or contact dispute staff.</p>{{end}}
+{{range $.OrderSuspendedParties}}<p class="alert" role="note">The {{.}} account is suspended and cannot sign in. Existing orders remain on record; use the available order actions or contact dispute staff.</p>{{end}}{{range $.OrderClosedParties}}<p class="alert" role="note">The {{.}} account is closed and cannot sign in. Existing orders remain on record; use the available order actions or contact dispute staff.</p>{{end}}
 {{template "retention:order" $}}
 <div class="grid-two">
 <div>

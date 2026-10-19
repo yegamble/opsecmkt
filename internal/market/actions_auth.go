@@ -533,20 +533,20 @@ func sixDigitTOTP(code string) bool {
 var errSoleAdminRecovery = fail(401, "Invalid handle or password")
 
 type signInAccount struct {
-	id, hash, role         string
-	suspended, totpEnabled bool
+	id, hash, role                 string
+	suspended, banned, totpEnabled bool
 }
 
 // lookupSignInAccount preserves exact handles on legacy installations. A fallback may resolve only one
 // account; two case variants are indistinguishable and therefore have no fallback sign-in identity.
 func lookupSignInAccount(ctx context.Context, db *sql.DB, handle string) (signInAccount, error) {
 	var account signInAccount
-	err := db.QueryRowContext(ctx, `SELECT id,password_hash,role,suspended_at IS NOT NULL,totp_enabled
-		FROM users WHERE handle=$1 AND closed_at IS NULL`, handle).Scan(&account.id, &account.hash, &account.role, &account.suspended, &account.totpEnabled)
+	err := db.QueryRowContext(ctx, `SELECT id,password_hash,role,suspended_at IS NOT NULL,banned_at IS NOT NULL,totp_enabled
+		FROM users WHERE handle=$1 AND closed_at IS NULL`, handle).Scan(&account.id, &account.hash, &account.role, &account.suspended, &account.banned, &account.totpEnabled)
 	if !errors.Is(err, sql.ErrNoRows) {
 		return account, err
 	}
-	rows, err := db.QueryContext(ctx, `SELECT id,password_hash,role,suspended_at IS NOT NULL,totp_enabled
+	rows, err := db.QueryContext(ctx, `SELECT id,password_hash,role,suspended_at IS NOT NULL,banned_at IS NOT NULL,totp_enabled
 		FROM users WHERE lower(handle)=lower($1) AND closed_at IS NULL LIMIT 2`, handle)
 	if err != nil {
 		return signInAccount{}, err
@@ -555,7 +555,7 @@ func lookupSignInAccount(ctx context.Context, db *sql.DB, handle string) (signIn
 	matches := 0
 	for rows.Next() {
 		matches++
-		if err = rows.Scan(&account.id, &account.hash, &account.role, &account.suspended, &account.totpEnabled); err != nil {
+		if err = rows.Scan(&account.id, &account.hash, &account.role, &account.suspended, &account.banned, &account.totpEnabled); err != nil {
 			return signInAccount{}, err
 		}
 	}
@@ -641,7 +641,7 @@ func authAction(c *actionCtx) (actionResult, error) {
 		}
 		a.refund(signInKey(handle)) // a correct password spends no sign-in budget
 		if account.suspended {
-			return actionResult{}, suspendedRefusal(ctx, a.db)
+			return actionResult{}, suspendedRefusal(ctx, a.db, account.banned)
 		}
 		return a.secondFactor(c, account.id, account.hash, strings.TrimSpace(f.Get("rescue_code")), a.signInNext(f.Get("next")))
 	}
@@ -823,10 +823,11 @@ func installFirstAdmin(ctx context.Context, tx *sql.Tx, handle, hash, siteName s
 }
 
 // refuseTakenHandle runs under creation advisory lock 782493 for both HTTP and CLI account creation.
-// The index is deliberately non-unique: a legacy database may already contain case variants.
+// The index is deliberately non-unique: a legacy database may already contain case variants. A banned account's
+// handle stays taken after the account is closed and erased (banned_handles, A-546).
 func refuseTakenHandle(ctx context.Context, tx *sql.Tx, handle string) error {
 	var taken bool
-	if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM users WHERE lower(handle)=lower($1))", handle).Scan(&taken); err != nil {
+	if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM users WHERE lower(handle)=lower($1)) OR EXISTS(SELECT 1 FROM banned_handles WHERE handle=lower($1))", handle).Scan(&taken); err != nil {
 		return fail(503, "Service unavailable")
 	}
 	if taken {
@@ -1126,7 +1127,7 @@ func challengeLoader(ctx context.Context, a *App, r *http.Request, d *PageData) 
 
 // startSession rotates the caller's session inside tx and records the sign-in with how it was made (method, e.g.
 // "password and TOTP"); the caller sets the cookie after commit.
-// It refuses a suspended account (suspendedRefusal), and with errPasswordChanged a sign-in whose password was
+// It refuses a suspended or banned account (suspendedRefusal), and with errPasswordChanged a sign-in whose password was
 // checked against another hash than the account's current one (passwordDigest, the SHA-256 of that hash): a
 // password change ends every sign-in in progress, including one whose password was checked just before the change
 // committed (A-157). Password-only sign-in also rechecks both required factor flags: an enrollment may have
@@ -1134,16 +1135,16 @@ func challengeLoader(ctx context.Context, a *App, r *http.Request, d *PageData) 
 // enabled factor with an unreadable key cannot silently become password-only. The account row stays share-locked
 // through session creation: earlier suspension, password changes and enrollment are seen; later changes wait.
 func (a *App) startSession(ctx context.Context, tx *sql.Tx, id, old, method, passwordDigest string) (string, error) {
-	var suspended, totp, pgp bool
+	var suspended, banned, totp, pgp bool
 	var hash, role string
-	if err := tx.QueryRowContext(ctx, "SELECT suspended_at IS NOT NULL OR closed_at IS NOT NULL,password_hash,totp_enabled,pgp_2fa,role FROM users WHERE id=$1 FOR NO KEY UPDATE", id).Scan(&suspended, &hash, &totp, &pgp, &role); err != nil {
+	if err := tx.QueryRowContext(ctx, "SELECT suspended_at IS NOT NULL OR closed_at IS NOT NULL,password_hash,totp_enabled,pgp_2fa,role,banned_at IS NOT NULL FROM users WHERE id=$1 FOR NO KEY UPDATE", id).Scan(&suspended, &hash, &totp, &pgp, &role, &banned); err != nil {
 		return "", err
 	}
 	if a.publicAdministrator(ctx, &User{Role: role}) {
 		return "", fail(404, pageNotFound)
 	}
 	if suspended {
-		return "", suspendedRefusal(ctx, tx)
+		return "", suspendedRefusal(ctx, tx, banned)
 	}
 	if subtle.ConstantTimeCompare([]byte(digest(hash)), []byte(passwordDigest)) != 1 {
 		return "", errPasswordChanged

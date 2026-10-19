@@ -406,25 +406,26 @@ func suspendedVendorOrderGate(ctx context.Context, a *App, d *PageData) error {
 	if d.Order == nil || d.Order.State != stateDraft || d.OrderViewer != roleBuyer {
 		return nil
 	}
-	var suspended bool
-	if err := a.db.QueryRowContext(ctx, "SELECT suspended_at IS NOT NULL FROM users WHERE id=$1", d.Order.VendorID).Scan(&suspended); err != nil {
+	var suspended, banned bool
+	if err := a.db.QueryRowContext(ctx, "SELECT suspended_at IS NOT NULL,banned_at IS NOT NULL FROM users WHERE id=$1", d.Order.VendorID).Scan(&suspended, &banned); err != nil {
 		return err
 	}
 	if !suspended {
 		return nil
 	}
-	d.VendorSuspensionReason = "Unavailable. " + sellerSuspended
+	reason := sellerHeld(banned)
+	d.VendorSuspensionReason = "Unavailable. " + reason
 	for i := range d.Transitions {
 		if d.Transitions[i].To == stateAwaitingPayment {
 			d.Transitions[i].Action = ""
-			d.Transitions[i].Label = sellerSuspended + " You can cancel this draft."
+			d.Transitions[i].Label = reason + " You can cancel this draft."
 		}
 	}
 	if d.EscrowCheckout != nil {
-		d.EscrowCheckout.Reason = sellerSuspended
+		d.EscrowCheckout.Reason = reason
 	}
 	if d.XMREscrowCheckout != nil {
-		d.XMREscrowCheckout.Reason = sellerSuspended
+		d.XMREscrowCheckout.Reason = reason
 	}
 	return nil
 }
@@ -720,7 +721,7 @@ func isDisputeReply(from, to, actorID, note string, o *Order) bool {
 
 // disputeEvidenceQuery counts, per open dispute in $1, the messages each party sent to each moderator or administrator
 // since the dispute opened. left_staff: when each account was last recorded leaving staff, from its role-change audit
-// row (A-294; both writers, adminAction and SetRole, word it "Role changed from OLD to NEW by …"). A message counts
+// row (A-294; its writers, adminAction, SetRole and a ban (admin_ban.go), word it "Role changed from OLD to NEW by …"). A message counts
 // when its recipient is staff now, or left staff after the message was sent (listed as no longer staff). A-301: the
 // first LIKE is the predicate of the partial index audit_events_role_change (migration 072); without it the planner
 // cannot use the index and scans every audit row, one per sign-in. The recipients are one UNION of current and former

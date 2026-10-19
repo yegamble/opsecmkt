@@ -136,7 +136,7 @@ func testHTTPApp(preview bool) *App {
 
 func TestPreviewRejectsStateChanges(t *testing.T) {
 	a := testHTTPApp(true)
-	for _, path := range []string{"/setup", "/login", "/register", "/account", "/orders", "/messages", "/listings", "/disputes", "/resolve", "/admin", "/logout", "/revoke-sessions", "/notifications", "/account/password", "/admin/reset-factors", "/admin/suspend"} {
+	for _, path := range []string{"/setup", "/login", "/register", "/account", "/orders", "/messages", "/listings", "/disputes", "/resolve", "/admin", "/logout", "/revoke-sessions", "/notifications", "/account/password", "/admin/reset-factors", "/admin/suspend", "/admin/ban"} {
 		t.Run(path, func(t *testing.T) {
 			r := httptest.NewRequest(http.MethodPost, path, strings.NewReader("csrf=anything"))
 			w := httptest.NewRecorder()
