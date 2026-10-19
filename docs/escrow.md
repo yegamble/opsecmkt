@@ -26,6 +26,12 @@ market holds the wallet keys and builds, stores and sends every transaction itse
   takes an order; it becomes active at the start of the month (UTC), and the old one becomes *closing*, with its free
   accounts retired. A first run, or a market that was down past a month's start, creates and activates that month's wallet
   at once, with no lead. The watcher keeps `ESCROW_XMR_SLOTS` (20 by default) free accounts ready on the active wallet.
+  An account the wallet lists with no row in the database is never made free (A-556): a `create_account` whose answer was
+  lost, or a database restored to an earlier point without `scripts/restore.sh`, after which the wallet may already have
+  given that account, and accounts the records show free, to buyers. On the active wallet, outside a restore, the watcher
+  then retires every free account of that wallet with the unrecorded ones in one transaction and tells the administrators
+  once (a notification and an audit row); the next pass creates fresh accounts. A lost answer costs one batch of free
+  accounts, never a pause.
   Account 0 of a wallet is never an escrow and is never spent from; coins that arrive there alert the administrators, once per episode.
 - **The slot claim at checkout.** The buyer of an XMR draft on an eligible listing pays into a Monero escrow, giving a refund address from their own wallet (a standard address or subaddress; integrated
   addresses, other networks, addresses whose keys are not valid, market-controlled addresses, and external addresses the buyer account already used are refused;
@@ -294,7 +300,8 @@ wallet takes an order again and no settlement is relayed until an administrator 
   `TestXMREscrowRestoreExtendsDeadline`. Retention and restore: `TestXMREscrowDestroyPreconditions`,
   `TestXMREscrowRestoredPastDestroy`, `TestXMREscrowUnopenableKeepsSeal`, `TestXMREscrowConfirmDestroyed`,
   `TestXMREscrowRestoreRetiresSlots`, `TestXMREscrowRestoreNoUnrecordedSlot`,
-  `TestXMREscrowOrphanSwept`, `TestXMREscrowLookaheadForOlderWallet`, `TestXMREscrowHeldSettlementConfirm`.
+  `TestXMREscrowRowlessAccountRetiresFreeSlots`, `TestXMREscrowRowlessAccountNormalCrashBurnsBatch`,
+  `TestXMREscrowRecordedAccountsKeepFreeSlots`, `TestXMREscrowOrphanSwept`, `TestXMREscrowLookaheadForOlderWallet`, `TestXMREscrowHeldSettlementConfirm`.
   `scripts/test-backup-restore.sh` (run in CI) restores a real dump through `scripts/restore.sh` with Monero escrow rows
   and checks the holds, the retired slots, the closed wallets and the sweep marker.
 - Real `monerod` and `monero-wallet-rpc` 0.18.5.1 on a local fakechain, run by the `escrow-xmr-regtest` CI job (A-498) or by hand

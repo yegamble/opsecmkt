@@ -887,12 +887,15 @@ func (a *App) xmrAccountZero(ctx context.Context, w xmrWalletRow, funded bool) e
 	return nil
 }
 
-// xmrReconcile matches the wallet's accounts with its slot rows. An account with no row (create_account's answer was
-// lost) is checked against get_address and added: free on the active wallet, retired when it has seen coins, its
-// wallet is not active or creation is paused. A free slot that has seen coins is retired, so no order starts funded.
-// Account 0 is never a slot.
+// xmrReconcile matches the wallet's accounts with its slot rows. An account with no row is checked against get_address
+// and added retired, never free: create_account's answer may have been lost, or the database restored to an earlier
+// point without scripts/restore.sh, so that the wallet made it, and perhaps gave it and some slots the records show
+// free to buyers, after that point (A-556). On the active wallet while nothing is paused, every free slot is therefore
+// retired with it in one transaction and the administrators are told once (xmrRetireRowless); the top-up makes fresh
+// accounts. A free slot that has seen coins is retired, so no order starts funded. Account 0 is never a slot.
 func (a *App) xmrReconcile(ctx context.Context, w xmrWalletRow, slots map[int64]*xmrSlotRow, accounts []xmrAccount, funded map[int64]bool, paused bool) error {
 	x := a.escrowXMR
+	var rowless []xmrAccount
 	for _, acc := range accounts {
 		if acc.Index == 0 {
 			continue
@@ -920,20 +923,72 @@ func (a *App) xmrReconcile(ctx context.Context, w xmrWalletRow, slots map[int64]
 		if addr != acc.BaseAddress {
 			return errXMRAccountMismatch
 		}
-		state := "free"
-		if funded[acc.Index] || paused || w.state != "active" {
-			state = "retired"
-		}
-		var id int64
-		if err = a.db.QueryRowContext(ctx, "INSERT INTO xmr_escrow_slots(wallet_id,account_index,address,state) VALUES($1,$2,$3,$4) RETURNING id", w.id, acc.Index, addr, state).Scan(&id); err != nil {
-			return err
-		}
-		slots[acc.Index] = &xmrSlotRow{id: id, state: state, address: addr}
+		rowless = append(rowless, acc)
+	}
+	if len(rowless) == 0 {
+		return nil
+	}
+	if err := a.xmrRetireRowless(ctx, w, slots, rowless, w.state == "active" && !paused); err != nil {
+		return err
+	}
+	for _, acc := range rowless {
 		if funded[acc.Index] {
-			if err = a.xmrFundedAccountAlert(ctx, w, acc.Index); err != nil {
+			if err := a.xmrFundedAccountAlert(ctx, w, acc.Index); err != nil {
 				return err
 			}
 		}
+	}
+	return nil
+}
+
+// xmrRetireRowless adds the accounts of wallet w that have no row as retired slots, in one transaction. With burn (the
+// active wallet, nothing paused) it also retires every free slot of w, by compare-and-set against checkout's claim, and
+// tells the administrators with a notification and an audit row (the rows added make it once per discovery). Under the
+// restore gate or the sweep, restore.sh has already retired the free slots, and a wallet that is not active offers none.
+// The watcher's advisory lock serialises it with the top-up; slots is the pass's copy, discarded if this fails.
+func (a *App) xmrRetireRowless(ctx context.Context, w xmrWalletRow, slots map[int64]*xmrSlotRow, rowless []xmrAccount, burn bool) error {
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var retired int64
+	if burn {
+		res, err := tx.ExecContext(ctx, "UPDATE xmr_escrow_slots SET state='retired',updated=now() WHERE wallet_id=$1 AND state='free'", w.id)
+		if err != nil {
+			return err
+		}
+		if retired, err = res.RowsAffected(); err != nil {
+			return err
+		}
+	}
+	for _, s := range slots {
+		if burn && s.state == "free" {
+			s.state = "retired"
+		}
+	}
+	for _, acc := range rowless {
+		var id int64
+		if err = tx.QueryRowContext(ctx, "INSERT INTO xmr_escrow_slots(wallet_id,account_index,address,state) VALUES($1,$2,$3,'retired') RETURNING id", w.id, acc.Index, acc.BaseAddress).Scan(&id); err != nil {
+			return err
+		}
+		slots[acc.Index] = &xmrSlotRow{id: id, state: "retired", address: acc.BaseAddress}
+	}
+	if burn {
+		if err = notifyAdmins(ctx, tx, fmt.Sprintf("Monero escrow wallet %s holds %d account(s) the market has no record of: a wallet answer lost in a crash, or a database restored to an earlier point without scripts/restore.sh. "+
+			"So that no account the wallet may already have given to a buyer is offered again, the market retired them and the wallet's %d free account(s); new accounts are created on the next pass. "+
+			"If the database was restored to an earlier point, follow UPGRADING.md section 6 now: orders, deposits and settlements made after that point are unknown to it.", w.name, len(rowless), retired)); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES(NULL,$1)", fmt.Sprintf("Monero escrow wallet %s: retired %d free account(s) and %d account(s) the records lacked", w.name, retired, len(rowless))); err != nil {
+			return err
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	if burn {
+		log.Printf("escrow: Monero escrow wallet %s holds %d account(s) with no slot row; retired them and its %d free slot(s), administrators notified", w.name, len(rowless), retired)
 	}
 	return nil
 }
