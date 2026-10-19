@@ -22,7 +22,9 @@ import (
 //     address; incoming_transfers of the account; the outputs the settlement claims are those of its deposits (a
 //     release or refund: every deposit that counts with the confirmation threshold and no settlement; a stray refund:
 //     the deposits after close or left out; a re-request: exactly the stored key images of the settlement it
-//     supersedes); every other output of the account is frozen and the claimed ones thawed; the claimed outputs must
+//     supersedes); a release or refund waits while a deposit credited toward the order's funding is below the
+//     threshold again, and for a bounded time while one is missing (xmrCreditedHold, A-554), so it never builds from a
+//     confirmed subset after a reorganisation; every other output of the account is frozen and the claimed ones thawed; the claimed outputs must
 //     all be unlocked and sum to the deposits claimed, or the build waits (and staff are told if it persists); the
 //     plan is planXMRSettlement's (Bitcoin's planSettlement for the same kind) or, for a re-request, the stored plan;
 //     transfer with do_not_relay takes the network fee from the claimant's output alone. The reply is checked
@@ -69,7 +71,8 @@ const (
 	xmrFeeCap          = "fee-cap"               // the network fee is above ESCROW_XMR_MAX_FEE: flagged
 	xmrTooSmall        = "too-small"             // the claimant's output would be below the Monero floor: flagged
 	xmrBadBuild        = "build-mismatch"        // the wallet's transaction failed the market's checks: flagged
-	xmrNothing         = "nothing-to-settle"     // no deposit is left to spend: failed
+	xmrNothing         = "nothing-to-settle"     // no deposit is left to spend and none is credited: failed
+	xmrWaitMissing     = "deposit-missing"       // a credited deposit is no longer listed by the wallet (A-554)
 	xmrRelayRefused    = "relay-refused"         // the daemon refused the stored transaction xmrRelayAttempts times in a row: failed
 	xmrBadMetadata     = "bad-metadata"          // relay_tx cannot parse the stored metadata (-27; only a corrupted row): failed
 	// relay_tx refused the stored transaction (-4) while the daemon does not have it and no other transaction spent its
@@ -167,6 +170,9 @@ func xmrSettleWaitText(class, kind string, threshold int64) string {
 	switch {
 	case class == xmrWaitConfirm:
 		return "Waiting until a deposit to this escrow has " + strconv.FormatInt(threshold, 10) + " confirmations."
+	case class == xmrWaitMissing:
+		return "A deposit credited toward this order's funding is no longer listed by the escrow wallet (a reorganisation or a double spend took it out of the chain). The market waits for it for up to " +
+			strconv.FormatInt(xmrMissingWait*threshold, 10) + " blocks, then builds this settlement from the deposits that remain, if there are any. Market staff were notified."
 	case class == xmrWaitOutputs:
 		return "The escrow wallet does not show this escrow's deposits as spendable yet; the market tries again on its next pass."
 	case class == xmrOutputsMismatch:
@@ -348,6 +354,141 @@ func (a *App) xmrDeposits(ctx context.Context, s *xmrSettleRow) ([]xmrDeposit, b
 	return out, pending, rows.Err()
 }
 
+// xmrMissingWait is how many blocks, as multiples of the confirmation threshold, a release or refund waits for a
+// credited deposit the wallet no longer lists, from the wallet's height when it was first found missing (A-554).
+const xmrMissingWait = 2
+
+// xmrHold is what xmrCreditedHold found for a release or refund.
+type xmrHold struct {
+	class    string   // xmrWaitConfirm or xmrWaitMissing while it waits for a credited deposit; "" otherwise
+	credited bool     // the order has a credited deposit no settlement spends (not left out, not spent outside)
+	dropped  []string // the order notes of credited deposits missing past the bounded wait, which it is built without
+}
+
+// xmrCreditedHold decides whether release or refund s waits for a deposit credited toward its order's funding (A-554,
+// PAY66-1/-2), one that no settlement spends, not left out and not spent outside. xmrDeposits claims only the deposits
+// at the threshold, so after a reorganisation took a funding deposit below it, the settlement would be built short and
+// xmrLeaveOutTopUps would leave that deposit out for the stray refund to the buyer. So it waits (xmrWaitConfirm) while
+// such a deposit is at 0 to threshold-1 confirmations. One at -1 (no longer listed, or read as double-spent) may never
+// return: it waits for it (xmrWaitMissing) until the wallet's height is xmrMissingWait × threshold blocks past the height
+// recorded when it was first found missing (xmrMissingHeights), and is then built without it, with an order note saying
+// so. A deposit with no height recorded yet is waited on. Each credited deposit below the threshold is flagged to
+// staff once per episode (regress_notice; xmrFlagRegressed); one at the threshold again ends its episode. A credited
+// deposit, missing or not, means the settlement is never failed nothing-to-settle. Uncredited deposits (top-ups after
+// the funding) keep xmrDeposits' rule.
+func (a *App) xmrCreditedHold(ctx context.Context, s *xmrSettleRow) (xmrHold, error) {
+	x := a.escrowXMR
+	var h xmrHold
+	rows, err := a.db.QueryContext(ctx, `SELECT p.txid,p.amount,p.confirmations,COALESCE(p.missing_height,-1),p.regress_notice FROM payments p WHERE p.order_id=$1 AND p.credited
+		AND p.xmr_settlement_id IS NULL AND NOT p.locked AND NOT p.after_close AND NOT p.escrow_left_out AND NOT p.spent_outside ORDER BY p.created,p.id`, s.OrderID)
+	if err != nil {
+		return h, err
+	}
+	type miss struct {
+		name  string
+		since int64 // -1: no height recorded yet
+	}
+	var misses []miss
+	confirming, unflagged, recovered := false, false, false
+	for rows.Next() {
+		var txid string
+		var amt, confs, since int64
+		var told bool
+		if err = rows.Scan(&txid, &amt, &confs, &since, &told); err != nil {
+			rows.Close()
+			return h, err
+		}
+		h.credited = true
+		switch {
+		case confs >= x.confirmations:
+			recovered = recovered || told
+			continue
+		case confs >= 0:
+			confirming = true
+		default:
+			misses = append(misses, miss{depositName(txid, amt, "XMR"), since})
+		}
+		unflagged = unflagged || !told
+	}
+	rows.Close()
+	if err = rows.Err(); err != nil {
+		return h, err
+	}
+	if recovered {
+		// Confirmed again: its episode ends (its flag is no longer open), and a later regression is flagged again.
+		if _, err = a.execEscrowOrder(ctx, s.OrderID, "UPDATE payments SET regress_notice=false,updated=now() WHERE order_id=$1 AND credited AND regress_notice AND xmr_settlement_id IS NULL AND confirmations>=$2",
+			s.OrderID, x.confirmations); err != nil {
+			return h, err
+		}
+	}
+	if unflagged {
+		if err = a.xmrFlagRegressed(ctx, s); err != nil {
+			return h, err
+		}
+	}
+	if confirming {
+		h.class = xmrWaitConfirm
+		return h, nil
+	}
+	if len(misses) == 0 {
+		return h, nil
+	}
+	tip, err := x.rpc.height(ctx)
+	if err != nil {
+		return h, err
+	}
+	for _, m := range misses {
+		if m.since < 0 || tip-m.since < xmrMissingWait*x.confirmations {
+			h.class, h.dropped = xmrWaitMissing, nil
+			return h, nil
+		}
+		h.dropped = append(h.dropped, fmt.Sprintf("This %s was built without %s, which was credited toward this order's funding: the escrow wallet has not listed it for %d blocks "+
+			"(a reorganisation or a double spend took it out of the chain). It is not left out for a stray refund: should it be listed again, it stays in this order's escrow account, flagged for staff.",
+			s.Kind, m.name, tip-m.since))
+	}
+	return h, nil
+}
+
+// xmrFlagRegressed flags to staff, once per episode, each deposit of release or refund s's order credited toward its
+// funding that is below the confirmation threshold again (regress_notice, which keeps its flag open on the desk), in
+// one transaction under the order row lock, with one order note naming them (the desk dates their flags from it).
+func (a *App) xmrFlagRegressed(ctx context.Context, s *xmrSettleRow) error {
+	threshold := a.escrowXMR.confirmations
+	tx, err := a.beginEscrowOrderTx(ctx, s.OrderID)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	o, err := scanOrder(tx.QueryRowContext(ctx, orderQuery+" WHERE o.id=$1 FOR UPDATE OF o", s.OrderID))
+	if err != nil {
+		return err
+	}
+	rows, err := tx.QueryContext(ctx, `UPDATE payments SET flagged=true,regress_notice=true,updated=now() WHERE order_id=$1 AND credited AND NOT regress_notice AND confirmations<$2
+		AND xmr_settlement_id IS NULL AND NOT locked AND NOT after_close AND NOT escrow_left_out AND NOT spent_outside RETURNING txid,amount`, s.OrderID, threshold)
+	if err != nil {
+		return err
+	}
+	named, _, err := scanNamed(rows, "XMR")
+	if err != nil || len(named) == 0 {
+		return err
+	}
+	verb := "is"
+	if len(named) > 1 {
+		verb = "are"
+	}
+	note := fmt.Sprintf("Monero escrow %s, credited toward this order's funding, %s below %d confirmations again on %s %s: a reorganisation took it back, or the escrow wallet no longer lists it. "+
+		"The %s is not built while such a deposit confirms; one the wallet no longer lists is waited on for %d blocks, then the %s is built without it and the deposit stays in this order's escrow account for staff (no stray refund returns it). Moderator review required.",
+		strings.Join(named, ", "), verb, threshold, a.netTag(), a.xmrEscrowNetwork(), s.Kind, xmrMissingWait*threshold, s.Kind)
+	if err = a.flagOrder(ctx, tx, &o, note, ""); err != nil {
+		return err
+	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	log.Printf("escrow: Monero escrow order %s: %d credited deposit(s) below the confirmation threshold again; its %s waits", shortID(s.OrderID), len(named), s.Kind)
+	return nil
+}
+
 // xmrStoredPlan is the stored transaction and plan of a settlement: what its re-request spends and pays.
 type xmrStoredPlan struct {
 	KeyImages  []string
@@ -494,9 +635,21 @@ func (a *App) buildXMRSettlement(ctx context.Context, s *xmrSettleRow) error {
 			return err
 		}
 	}
+	var hold xmrHold
+	if s.Supersedes == 0 && (s.Kind == "release" || s.Kind == "refund") {
+		if hold, err = a.xmrCreditedHold(ctx, s); err != nil {
+			return err
+		}
+	}
 	switch {
+	case hold.class != "":
+		return a.xmrSettleWaits(ctx, s, hold.class)
 	case len(deposits) == 0 && pending:
 		return a.xmrSettleWaits(ctx, s, xmrWaitConfirm)
+	case len(deposits) == 0 && hold.credited:
+		// Every credited deposit is missing past the bounded wait: nothing to build, but failing would end the
+		// settlement for good (a failed one without a transaction is never re-requested); it builds if one returns.
+		return a.xmrSettleWaits(ctx, s, xmrWaitMissing)
 	case len(deposits) == 0:
 		return a.failXMRSettlement(ctx, s, xmrNothing)
 	}
@@ -580,6 +733,7 @@ func (a *App) buildXMRSettlement(ctx context.Context, s *xmrSettleRow) error {
 	if feeReplaced {
 		plan.Folded = append(plan.Folded, "The escrow wallet had refused the market fee address recorded when this escrow was created, so the market fee was paid to the fee address the operator configured since.")
 	}
+	plan.Folded = append(plan.Folded, hold.dropped...)
 	ok, err := a.storeXMRBuilt(ctx, s, tx, plan, deposits, total)
 	if err != nil || !ok {
 		return err
@@ -1361,7 +1515,9 @@ func (a *App) xmrRequestStray(ctx context.Context, orderID string) error {
 // xmrLeaveOutTopUps marks, for a Monero escrow order whose release or refund is built (or relayed or confirmed), every
 // deposit that counts and that no settlement spends as left out (leaveOutTopUps's rule, A-374, P3-R8), in tx under the
 // order row lock: one order note, a notice to the buyer and to staff, only for the deposits newly marked. The stray
-// refund returns them to the buyer's refund address once the order is closed and they are confirmed.
+// refund returns them to the buyer's refund address once the order is closed and they are confirmed. A deposit
+// credited toward the order's funding is never left out (A-554): it did not arrive after the settlement was built, and
+// it is not the buyer's to get back. One the settlement was built without (xmrCreditedHold) stays flagged for staff.
 func (a *App) xmrLeaveOutTopUps(ctx context.Context, tx *sql.Tx, o *Order) error {
 	var kind string
 	err := tx.QueryRowContext(ctx, "SELECT kind FROM xmr_settlements WHERE order_id=$1 AND kind IN ('release','refund') AND state IN ('built','relayed','confirmed')", o.ID).Scan(&kind)
@@ -1372,7 +1528,7 @@ func (a *App) xmrLeaveOutTopUps(ctx context.Context, tx *sql.Tx, o *Order) error
 		return err
 	}
 	rows, err := tx.QueryContext(ctx, `UPDATE payments SET escrow_left_out=true,`+newFlagSQL+`,updated=now() WHERE order_id=$1 AND xmr_settlement_id IS NULL AND confirmations>=0
-		AND NOT locked AND NOT after_close AND NOT escrow_left_out AND NOT spent_outside RETURNING txid,amount`, o.ID)
+		AND NOT credited AND NOT locked AND NOT after_close AND NOT escrow_left_out AND NOT spent_outside RETURNING txid,amount`, o.ID)
 	if err != nil {
 		return err
 	}

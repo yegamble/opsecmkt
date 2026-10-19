@@ -356,6 +356,108 @@ func TestXMREscrowRegtestReorg(t *testing.T) {
 	t.Logf("order %s: transaction %s confirmed, taken out by pop_blocks (every block mined since it was relayed) and a flushed pool, relayed again and confirmed again", shortID(order), s.TxHash)
 }
 
+// fundedByTwoReal is a digital order funded with its price in two transactions mined in separate blocks, the first
+// thr+6 confirmations deep when the second is paid and the second mined to exactly thr+xmrMineMargin confirmations: both
+// credited, the order completed. It returns the order and the two transactions.
+func (r *xmrRegtest) fundedByTwoReal() (order, deep, shallow string) {
+	r.t.Helper()
+	thr := r.A.escrowXMR.confirmations
+	order, addr := r.checkoutReal()
+	deep = r.pay(map[string]int64{addr: xmrListingPrice / 2})
+	r.mineTo(deep, thr+6)
+	shallow = r.pay(map[string]int64{addr: xmrListingPrice - xmrListingPrice/2})
+	r.mineTo(shallow, thr+xmrMineMargin)
+	r.mustPoll()
+	if r.state(order) != stateCompleted || agInt(r.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND credited", order) != 2 {
+		r.t.Fatalf("funded by two transactions: %s (deposits %v)", r.state(order), r.depositConfs(order))
+	}
+	return order, deep, shallow
+}
+
+// popPast pops every block from the one that mined tx (pop_blocks: its transactions go back to the daemon's pool).
+func (r *xmrRegtest) popPast(tx string) {
+	r.t.Helper()
+	txs, _, err := r.A.escrowXMR.rpc.transactions(context.Background(), []string{tx})
+	if err != nil || len(txs) != 1 || txs[0].InPool || txs[0].Confirmations <= 0 {
+		r.t.Fatalf("transaction %s is not mined: %+v %v", tx, txs, err)
+	}
+	var popped map[string]any
+	r.daemonPost("/pop_blocks", map[string]any{"nblocks": txs[0].Confirmations}, &popped)
+}
+
+// TestXMREscrowRegtestFundingReorg (A-554): a reorganisation takes a credited funding deposit back below the threshold
+// after the vendor's release was requested. Kept in the pool, the deposit is mined again: the release is not built
+// while it confirms (no transfer call, no stray refund), then spends both funding deposits, the price. Flushed from the
+// pool (a deposit that never returns), the release waits 2 × threshold blocks, then is built from the other deposit
+// alone with an order note saying so; the missing deposit is never left out for a stray refund.
+func TestXMREscrowRegtestFundingReorg(t *testing.T) {
+	r, p := newXMRSettleRegtest(t)
+	thr := r.A.escrowXMR.confirmations
+	noStray := func(order string) {
+		t.Helper()
+		if n := agInt(r.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND escrow_left_out", order); n != 0 || len(r.xmrSettlements(order)) != 1 {
+			t.Fatalf("order %s: %d deposits left out, settlements %v (deposits %v)", shortID(order), n, r.xmrSettlements(order), r.depositConfs(order))
+		}
+	}
+
+	// Kept in the pool.
+	order, _, shallow := r.fundedByTwoReal()
+	id := r.releaseReal(order) // requested while the watcher is held: no pass runs before the reorganisation
+	r.popPast(shallow)
+	r.mine(xmrMineMargin) // the wallet-rpc stays within 10 blocks of the daemon (P3-R2)
+	r.mustPoll()
+	r.mustPoll()
+	if s := r.settlement(id); s.State != "requested" || r.waitClass(id) != xmrWaitConfirm || p.count("transfer") != 0 {
+		t.Fatalf("the shallower funding deposit below the threshold again: %+v %q, transfer %d (deposits %v)", s, r.waitClass(id), p.count("transfer"), r.depositConfs(order))
+	}
+	if agInt(r.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND txid=$2 AND credited AND regress_notice AND confirmations BETWEEN 0 AND $3", order, shallow, thr-1) != 1 {
+		t.Fatalf("the regressed deposit is not flagged: %v", r.depositConfs(order))
+	}
+	noStray(order)
+	r.mineTo(shallow, thr+xmrMineMargin)
+	r.mustPoll()
+	s := r.settlement(id)
+	if s.State != "relayed" || s.InputTotal != xmrListingPrice || len(s.KeyImages) != 2 || p.count("transfer") != 1 {
+		t.Fatalf("confirmed again: %+v, transfer %d (deposits %v)", s, p.count("transfer"), r.depositConfs(order))
+	}
+	r.xmrShape(s) // two inputs of ring 16
+	r.confirmReal(id)
+	noStray(order)
+	t.Logf("order %s: release %s held while funding deposit %s was mined again after pop_blocks, then spent both deposits", shortID(order), s.TxHash, shallow)
+
+	// Flushed from the pool: the deposit is missing for good. Last in the leg: the funder's wallet still counts it.
+	order2, deep2, shallow2 := r.fundedByTwoReal()
+	id2 := r.releaseReal(order2)
+	r.popPast(shallow2)
+	var flushed map[string]any
+	r.call(r.daemon, "flush_txpool", map[string]any{"txids": []string{shallow2}}, &flushed)
+	r.mine(xmrMineMargin)
+	r.mustPoll()
+	transfers := p.count("transfer")
+	r.mine(int(2*thr) - xmrMineMargin)
+	r.mustPoll()
+	if s := r.settlement(id2); s.State != "requested" || r.waitClass(id2) != xmrWaitMissing || p.count("transfer") != transfers {
+		t.Fatalf("a funding deposit missing, before the bounded wait ends: %+v %q (deposits %v)", s, r.waitClass(id2), r.depositConfs(order2))
+	}
+	noStray(order2)
+	r.mine(xmrMineMargin + 1)
+	r.mustPoll()
+	s2 := r.settlement(id2)
+	if s2.State != "relayed" || s2.InputTotal != xmrListingPrice/2 || len(s2.KeyImages) != 1 {
+		t.Fatalf("after the bounded wait: %+v (deposits %v)", s2, r.depositConfs(order2))
+	}
+	r.xmrShape(s2)
+	if agInt(r.testEnv, "SELECT count(*) FROM order_events WHERE order_id=$1 AND strpos(note,$2)>0", order2, "This release was built without deposit "+truncate(shallow2, 20)) != 1 {
+		t.Fatalf("no note for the deposit the release was built without: %q", r.events(order2))
+	}
+	r.confirmReal(id2)
+	noStray(order2)
+	if agInt(r.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND txid=$2 AND credited AND confirmations<0 AND regress_notice AND xmr_settlement_id IS NULL", order2, shallow2) != 1 {
+		t.Fatalf("the missing deposit: %v", r.depositConfs(order2))
+	}
+	t.Logf("order %s: funding deposit %s popped and flushed; release %s built from deposit %s alone after %d blocks", shortID(order2), shallow2, s2.TxHash, deep2, 2*thr)
+}
+
 // TestXMREscrowRegtestExternal: a wallet restored from the sealed seed spends the escrow's output outside the market
 // while the market's release is built but not relayed; the daemon refuses the market's transaction and the settlement
 // is recorded external and flagged for staff.

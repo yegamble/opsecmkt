@@ -783,7 +783,30 @@ func (a *App) xmrRecordTransfers(ctx context.Context, w xmrWalletRow, slots map[
 			touched[s.order] = true
 		}
 	}
-	return funded, a.markMissing(ctx, "XMR", addresses, seen)
+	if err := a.markMissing(ctx, "XMR", addresses, seen); err != nil {
+		return nil, err
+	}
+	return funded, a.xmrMissingHeights(ctx, addresses)
+}
+
+// xmrMissingHeights records the open wallet's height on each deposit at addresses credited toward its order's funding
+// that is at -1 (no longer listed, or read as double-spent) with no height yet: from it the order's release or refund
+// waits a bounded number of blocks (xmrCreditedHold, A-554). A deposit listed again loses its height, so a later
+// disappearance starts a new wait. The wallet is asked only when such a deposit exists.
+func (a *App) xmrMissingHeights(ctx context.Context, addresses []string) error {
+	if _, err := a.db.ExecContext(ctx, "UPDATE payments SET missing_height=NULL WHERE currency='XMR' AND address=ANY($1) AND confirmations>=0 AND missing_height IS NOT NULL", addresses); err != nil {
+		return err
+	}
+	var due bool
+	if err := a.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM payments WHERE currency='XMR' AND address=ANY($1) AND credited AND confirmations<0 AND missing_height IS NULL)", addresses).Scan(&due); err != nil || !due {
+		return err
+	}
+	height, err := a.escrowXMR.rpc.height(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = a.db.ExecContext(ctx, "UPDATE payments SET missing_height=$2 WHERE currency='XMR' AND address=ANY($1) AND credited AND confirmations<0 AND missing_height IS NULL", addresses, height)
+	return err
 }
 
 // xmrFlagCollision flags a deposit the database refused as another order's escrow account (payments_xmr_escrow_idx):

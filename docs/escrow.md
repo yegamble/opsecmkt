@@ -79,9 +79,22 @@ market holds the wallet keys and builds, stores and sends every transaction itse
   A release pays the vendor's claim address the escrow less the market fee (fixed at checkout; a fee below 0.001 XMR is
   added to the vendor's output) and less any amount paid above the price, which goes back to the buyer's refund address
   (also added to the vendor's output when below 0.001 XMR). A settlement spends the deposits that count when it is built; a
-  deposit still confirming then, or arriving after the build, is left out and returned to the buyer's refund address by a
-  *stray refund* once the order has closed. So is a deposit that did not count when its order was cancelled (the wallet
-  read it as a double spend, or no longer listed it) and has confirmed since, when no refund spends it: it is flagged
+  top-up (a deposit not credited toward the funding) still confirming then, or arriving after the build, is left out and
+  returned to the buyer's refund address by a *stray refund* once the order has closed. A deposit credited toward the
+  funding is never left out (A-554): while a reorganisation has one below the confirmation threshold again, the release
+  or refund is not built (*waiting-confirmations*), so it never pays from the confirmed part of the funding. One the
+  wallet no longer lists (popped and not mined again, or read as a double spend) is waited on (*deposit-missing*) for
+  twice the threshold in blocks from the escrow wallet's height when it was first found missing; the settlement is then
+  built from the deposits that remain, with an order note naming the one it was built without, and that deposit stays in
+  the escrow account for staff: no stray refund returns it. Each such deposit is flagged to staff once per episode.
+  Limits: a regression is noticed and flagged only once a release or refund of the order is being built (not while the
+  order is paid or shipped and no settlement is due); and once staff have recorded *no action* on the flag, a later
+  regression of the same deposit writes a new order note and staff notice but does not reopen the flag on the
+  payment-review desk. A
+  settlement whose credited deposits are all missing waits for them rather than failing *nothing-to-settle*, which is
+  left for a settlement with no credited deposit at all (a failed settlement without a transaction cannot be
+  re-requested). A deposit that did not count when its order was cancelled (the wallet read it as a double spend, or
+  no longer listed it) and has confirmed since is left out and returned by a stray refund too, when no refund spends it: it is flagged
   and the buyer told. The order page lists a left-out deposit on its own line, not counted as received, and a cancelled
   order's status follows the stray refund that returns it: requested or built, sent, confirmed (A-435). A
   stray refund whose coins are too few for the network fee and an output of at least 0.001 XMR stays requested,
@@ -262,7 +275,9 @@ wallet takes an order again and no settlement is relayed until an administrator 
   `TestXMREscrowFeeCapAndFloor`, `TestXMREscrowReorgRelaysAgain`, `TestXMREscrowExternalSpend`,
   `TestXMREscrowReRequestGuards`, `TestXMREscrowReRequestWaitsForGate`, `TestXMREscrowRelayRefusalRetried`,
   `TestXMREscrowBuildSetAside`, `TestXMREscrowGatePauses`, `TestXMREscrowConflictedDepositThroughExpiry`,
-  `TestXMREscrowStraysPerWallet`, `TestXMREscrowLeftOutDepositLine`, `TestXMREscrowStrayTooSmallOnce`. Releases, deadlines and
+  `TestXMREscrowStraysPerWallet`, `TestXMREscrowLeftOutDepositLine`, `TestXMREscrowStrayTooSmallOnce`,
+  `TestXMREscrowCreditedRegressionHoldsRelease`, `TestXMREscrowMissingDepositHoldsRelease`,
+  `TestXMREscrowDoubleSpentDepositBoundedWait`. Releases, deadlines and
   disputes: `TestXMREscrowNoBuildBeforeOutcome`, `TestXMREscrowConfirmReceiptStepUp`, `TestXMREscrowShipStepUp`,
   `TestXMREscrowDeadlineWithBTCOff`, `TestXMREscrowDisputeSupersedes`, `TestXMREscrowNoShipCancel`,
   `TestXMREscrowRestoreExtendsDeadline`. Retention and restore: `TestXMREscrowDestroyPreconditions`,
@@ -274,7 +289,7 @@ wallet takes an order again and no settlement is relayed until an administrator 
 - Real `monerod` and `monero-wallet-rpc` 0.18.5.1 on a local fakechain, run by the `escrow-xmr-regtest` CI job (A-498) or by hand
   (`scripts/test-escrow-xmr-regtest.sh`, [runbook](testnet-runbook.md#9-manual-monero-escrow-fakechain-check); the app
   runs inside the Go test against the real daemon and wallet-rpc, and the script refuses any daemon that is not a
-  fakechain). Fifteen legs, each a Go test:
+  fakechain). Sixteen legs, each a Go test:
   1. `TestXMREscrowRegtestWallets`: the first pass creates the month's wallet, seals its seed (the seal decrypts, and a
      wallet restored from it at the stored restore height has the stored primary address), activates it and keeps its free
      accounts; account 0 holds nothing; the next month's wallet is created sealed ahead of its month and becomes active at
@@ -314,6 +329,12 @@ wallet takes an order again and no settlement is relayed until an administrator 
       refused by the wallet (-17, -17, -16: the coins are at or below the network fee); each ends too few on the
       market's fee estimate, its deposit is left out, and the one stray refund returns it with a later deposit, relayed
       and confirmed; no note says the outputs mismatched or the wallet refused.
+  16. `TestXMREscrowRegtestFundingReorg` (A-554): an order funded by two transactions in separate blocks has its release
+      requested, then `pop_blocks` takes out the block of the shallower funding deposit. Kept in the pool and mined
+      again, that deposit holds the release (no `transfer`) until it has 10 confirmations; the release then spends both
+      deposits. Flushed from the pool, it holds a second order's release for 20 blocks, after which the release is built
+      from the other deposit alone with a note naming the missing one; no deposit is left out and no stray refund is
+      requested. Added with A-554; its evidence is the `escrow-xmr-regtest` CI job.
 
   Every settlement the daemon holds is decoded (RingCT type 6, 16 ring members per input, a fee above zero, the stored one,
   within `ESCROW_XMR_MAX_FEE`). Each leg puts the watcher's clock in a month of its own, so the legs may run again against
@@ -398,7 +419,7 @@ again on a fakechain (`scripts/test-escrow-xmr-regtest.sh`), and on an **offline
 (`scripts/test-escrow-xmr-stagenet.sh`: stagenet daemons built from the genesis block with the local monerod 0.18.5.1
 image, peered only with each other on a Docker network with no route out, local mining at fixed difficulty) the legs such
 a chain can run. Built from genesis it is at hard fork version 1 (version 16 starts at height 1,151,720), so Monero escrow
-refuses to start on it, as it must, and none of the fifteen legs can run there; the stagenet legs show that refusal names
+refuses to start on it, as it must, and none of the sixteen legs can run there; the stagenet legs show that refusal names
 the hard fork, not the network; that a real stagenet wallet's primary address, subaddress and integrated address are read
 under the stagenet tags (the integrated one refused) and refused under the fakechain's, by the parser and by the adapter;
 and that the escrow sync guard reads a restricted stagenet daemon with a peer and a fresh tip as synced and an

@@ -1328,6 +1328,14 @@ the market (the order page says so); a destroyed wallet is never opened again.
   it on the order page, which clears its escrow alert, A-480), coins at an account no order claimed or at account 0 (which the
   market never spends), a settlement whose build failed a check (the fee above `ESCROW_XMR_MAX_FEE`, a claimant output below
   0.001 XMR, a transaction that does not match its plan, an address mismatch) and a settlement spent outside the market.
+  A deposit credited toward an order's funding that a reorganisation takes below the confirmation threshold again, or
+  that the wallet no longer lists, is flagged once on the payment-review desk and holds the order's release or refund
+  (A-554): it waits while the deposit confirms again, and for one that is missing twice the threshold in blocks, then
+  is built without it, with an order note naming it. That deposit stays in the escrow account (no stray refund returns
+  it); should it be listed again, decide by hand what happens to it and record the review on the desk. The market
+  notices such a regression only once the order's release or refund is being built, not while the order is paid or
+  shipped; and after you record *no action* on the flag, a later regression of the same deposit sends a new note and
+  notice but does not reopen the flag on the desk.
   A refund whose claimant output would be below 0.001 XMR (on a cancelled order or one decided for the buyer, with no
   deposit it would spend still confirming) does not wait: it ends (failed, too-small) and its deposits are left out for
   the stray refund, which returns them with any later deposit once together they pay the fee; the parties and staff
@@ -1354,7 +1362,7 @@ escrow stays off; it adds no escrow wallet-rpc, no fakechain daemon and no mount
 checked with `docker compose config` only.
 
 **What was checked.** [Per-order escrow, Phase 3](escrow.md#phase-3-monero-escrow-on-a-local-fakechain) lists each tier: unit and `httptest` tests, Go
-tests with PostgreSQL against a fake wallet-rpc, fifteen legs against a real fakechain `monerod` and `monero-wallet-rpc`
+tests with PostgreSQL against a fake wallet-rpc, sixteen legs against a real fakechain `monerod` and `monero-wallet-rpc`
 0.18.5.1 (`scripts/test-escrow-xmr-regtest.sh`, run by the `escrow-xmr-regtest` CI job;
 [runbook](testnet-runbook.md#9-manual-monero-escrow-fakechain-check)), and a simulated-RPC browser journey added in this
 phase. Nothing has run on stagenet, testnet or mainnet, with Monero multisig, or as a deployment.
