@@ -70,6 +70,9 @@ import (
 // Under the restore gate, and after a restore until Monero escrow's sweep (xmrEscrowSweepKey, escrow_xmr_restore.go),
 // no wallet or slot is created, no wallet activated and none destroyed; funding is still read. Each pass also keeps the
 // wallets' retention dates (xmrRetain, escrow_xmr_retain.go).
+//
+// After the escrow wallets, each pass reads the vendor bond wallet (A-547, vendor_bond.go): the same open-check-read
+// sequence, one wallet open at a time, and no send.
 
 // xmrMinConfirmations is the least number of confirmations at which a Monero escrow deposit counts (P3-R5): the
 // 10-block lock of a received output, so a release can spend what funded it.
@@ -322,6 +325,17 @@ func (a *App) xmrEscrowPollOnce(ctx context.Context) (outcome error) {
 		if err != nil {
 			errs = append(errs, &watchError{label: "monero escrow wallet " + w.name, class: xmrErrorClass(err), err: err})
 		}
+	}
+	// A-547: the vendor bond wallet's turn, after the escrow wallets (vendor_bond.go).
+	if ctx.Err() == nil && !x.refused.Load() {
+		checked, err := a.xmrBondPass(ctx, paused, sweep)
+		swept = swept && checked
+		if err != nil {
+			providerUnread = true
+			errs = append(errs, &watchError{label: "monero vendor bond wallet", class: xmrErrorClass(err), err: err})
+		}
+	} else {
+		swept = false
 	}
 	if sweep && swept {
 		if _, err = a.db.ExecContext(ctx, "DELETE FROM settings WHERE key=$1", xmrEscrowSweepKey); err != nil {

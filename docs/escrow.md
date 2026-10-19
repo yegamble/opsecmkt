@@ -318,7 +318,7 @@ wallet takes an order again and no settlement is relayed until an administrator 
 - Real `monerod` and `monero-wallet-rpc` 0.18.5.1 on a local fakechain, run by the `escrow-xmr-regtest` CI job (A-498) or by hand
   (`scripts/test-escrow-xmr-regtest.sh`, [runbook](testnet-runbook.md#9-manual-monero-escrow-fakechain-check); the app
   runs inside the Go test against the real daemon and wallet-rpc, and the script refuses any daemon that is not a
-  fakechain). Sixteen legs, each a Go test:
+  fakechain). Seventeen legs, each a Go test:
   1. `TestXMREscrowRegtestWallets`: the first pass creates the month's wallet, seals its seed (the seal decrypts, and a
      wallet restored from it at the stored restore height has the stored primary address), activates it and keeps its free
      accounts; account 0 holds nothing; the next month's wallet is created sealed ahead of its month and becomes active at
@@ -364,13 +364,19 @@ wallet takes an order again and no settlement is relayed until an administrator 
       deposits. Flushed from the pool, it holds a second order's release for 20 blocks, after which the release is built
       from the other deposit alone with a note naming the missing one; no deposit is left out and no stray refund is
       requested. Added with A-554; its evidence is the `escrow-xmr-regtest` CI job.
+  17. `TestXMREscrowRegtestBond` (A-547): under a vendor bond with automatic approval, the first pass creates the vendor
+      bond wallet on the escrow wallet-rpc (its seal restores to its primary address) and gives the application a real
+      account's address 0; the bond is not recorded one block short of the threshold and is recorded at it, approving the
+      account as a vendor; `pop_blocks` then takes the deposit below the threshold: flagged to the administrators once,
+      nothing revoked; mined again, nothing changes. The bond wallet lists no outgoing, pending or failed transfer. A bond wallet an
+      earlier run left on the same wallet-rpc is recorded as an orphan and the next name is used.
 
   Every settlement the daemon holds is decoded (RingCT type 6, 16 ring members per input, a fee above zero, the stored one,
   within `ESCROW_XMR_MAX_FEE`). Each leg puts the watcher's clock in a month of its own, so the legs may run again against
   the same nodes; no leg waits in real time for a deadline or a month.
 - A browser journey in Chromium at 320 px with JavaScript off against the real server and a **simulated** Monero escrow
-  wallet-rpc and daemon is added in this phase (`tests/e2e/escrow-xmr-journey.spec.ts`), its last test covering a wallet
-  destroyed after its retention (the order page's ES-8 line) and a missing wallet confirmed destroyed on `/admin/payments`; its
+  wallet-rpc and daemon is added in this phase (`tests/e2e/escrow-xmr-journey.spec.ts`), its retention test covering a wallet
+  destroyed after its retention (the order page's ES-8 line) and a missing wallet confirmed destroyed on `/admin/payments`, and its last test the vendor bond paid in XMR (A-547); its
   command and result are not recorded here. A simulation is not chain evidence.
 - PAYE-E2 (`scripts/test-escrow-xmr-payee2.sh`, manual) on a real `monerod` and `monero-wallet-rpc` 0.18.5.1 local
   fakechain, one host: one wallet of 10,000 accounts with 200 funded, its calls timed through the app's adapter, a seed
@@ -448,7 +454,7 @@ again on a fakechain (`scripts/test-escrow-xmr-regtest.sh`), and on an **offline
 (`scripts/test-escrow-xmr-stagenet.sh`: stagenet daemons built from the genesis block with the local monerod 0.18.5.1
 image, peered only with each other on a Docker network with no route out, local mining at fixed difficulty) the legs such
 a chain can run. Built from genesis it is at hard fork version 1 (version 16 starts at height 1,151,720), so Monero escrow
-refuses to start on it, as it must, and none of the sixteen legs can run there; the stagenet legs show that refusal names
+refuses to start on it, as it must, and none of the seventeen legs can run there; the stagenet legs show that refusal names
 the hard fork, not the network; that a real stagenet wallet's primary address, subaddress and integrated address are read
 under the stagenet tags (the integrated one refused) and refused under the fakechain's, by the parser and by the adapter;
 and that the escrow sync guard reads a restricted stagenet daemon with a peer and a fresh tip as synced and an

@@ -233,7 +233,8 @@ for pooled in "INSERT INTO payouts(order_id,kind,user_id,currency,amount,address
 done
 # Monero escrow (migrations 084 and 085; ESCROW_XMR, local fakechain only): an active monthly escrow wallet with a
 # free account and one claimed by a completed order whose release is built (its transaction stored, not relayed yet).
-# The restore holds the built release, retires the free account, moves the wallet to closing and asks for the sweep.
+# The restore holds the built release, retires the free account, moves the wallet to closing and asks for the sweep;
+# it also closes the vendor bond wallet in use (A-547), which then never issues a bond address again.
 pg "$app_source_db" -q -c "
 INSERT INTO xmr_escrow_wallets(name,month,primary_address,restore_height,seed_sealed,seed_key_fpr,sealed_at,state) VALUES
  ('escrow-202610-01','2026-10-01','4'||repeat('A',94),100,'-----BEGIN PGP MESSAGE-----','0123456789ABCDEF0123456789ABCDEF01234567',now(),'sealed');
@@ -244,10 +245,14 @@ UPDATE xmr_escrow_slots SET state='claimed',order_id='ops-order-xmr-escrow' WHER
 INSERT INTO escrows(order_id,address,coin,xmr_slot_id,refund_address,fee_bps,fee_destination)
  SELECT order_id,address,'XMR',id,'8'||repeat('D',94),0,'' FROM xmr_escrow_slots WHERE account_index=1;
 INSERT INTO xmr_settlements(order_id,kind,destination) VALUES ('ops-order-xmr-escrow','release','8'||repeat('E',94));
-UPDATE xmr_settlements SET state='built',tx_hash=repeat('f1',32),tx_metadata='0a0b',tx_blob='0c0d',fee=1874400000,input_total=250000000000,key_images=ARRAY[repeat('a2',32)];"
+UPDATE xmr_settlements SET state='built',tx_hash=repeat('f1',32),tx_metadata='0a0b',tx_blob='0c0d',fee=1874400000,input_total=250000000000,key_images=ARRAY[repeat('a2',32)];
+INSERT INTO xmr_bond_wallets(name,state) VALUES ('bond-01','creating');
+UPDATE xmr_bond_wallets SET state='sealed',primary_address='4'||repeat('B',94),restore_height=100,seed_sealed='-----BEGIN PGP MESSAGE-----',
+ seed_key_fpr='0123456789ABCDEF0123456789ABCDEF01234567',sealed_at=now() WHERE name='bond-01';"
 xmr_state="SELECT (SELECT string_agg(state || ':' || (send_error LIKE 'Restored from backup:%'), ',') FROM xmr_settlements) || ' ' ||
- (SELECT string_agg(account_index || ':' || state, ',' ORDER BY account_index) FROM xmr_escrow_slots) || ' ' || (SELECT string_agg(name || ':' || state, ',') FROM xmr_escrow_wallets)"
-xmr_restored='built:true 1:claimed,2:retired escrow-202610-01:closing'
+ (SELECT string_agg(account_index || ':' || state, ',' ORDER BY account_index) FROM xmr_escrow_slots) || ' ' || (SELECT string_agg(name || ':' || state, ',') FROM xmr_escrow_wallets) || ' ' ||
+ (SELECT string_agg(name || ':' || state, ',') FROM xmr_bond_wallets)"
+xmr_restored='built:true 1:claimed,2:retired escrow-202610-01:closing bond-01:closed'
 app_backup="$work/app.dump.age"
 # The backup is taken in one time zone and restored in another (PR #27 SHOULD-3): the restore line must still show
 # when it was taken, in UTC. A custom-format dump keeps the wall-clock time of the zone pg_dump ran in, and
@@ -279,7 +284,7 @@ PY
 grep -q 'release deadlines that passed in the restored records move to 72 hours' "$work/app-restore.log"
 # P3-R10: the restored Monero escrow is held, its free account retired, its wallet closing, and the sweep asked for.
 [[ $(pg "$app_target_db" -Atq -c "$xmr_state") == "$xmr_restored" ]]
-[[ $(pg "$app_source_db" -Atq -c "$xmr_state") == 'built:false 1:claimed,2:free escrow-202610-01:active' ]]
+[[ $(pg "$app_source_db" -Atq -c "$xmr_state") == 'built:false 1:claimed,2:free escrow-202610-01:active bond-01:sealed' ]]
 [[ $(pg "$app_target_db" -Atq -c "SELECT value FROM settings WHERE key='xmr_escrow_sweep_required'") == true ]]
 [[ $(pg "$app_source_db" -Atq -c "SELECT count(*) FROM settings WHERE key='xmr_escrow_sweep_required'") == 0 ]]
 pooled_rows="SELECT (SELECT count(*) FROM payouts) || ':' || (SELECT count(*) FROM payment_addresses)"

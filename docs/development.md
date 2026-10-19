@@ -319,7 +319,7 @@ For actual local Monero transactions, use the fakechain procedure below. Browser
 ### Monero escrow on a local fakechain (real monerod and monero-wallet-rpc)
 
 Monero escrow (WR-escrow Phase 3, `ESCROW_XMR=on`, custodial, off by default; see [escrow](escrow.md#phase-3-monero-escrow-on-a-local-fakechain))
-has sixteen legs that run the real server code (a Go test per leg, with its own App and Monero escrow watcher) against a real
+has seventeen legs that run the real server code (a Go test per leg, with its own App and Monero escrow watcher) against a real
 `monerod --regtest` and three real `monero-wallet-rpc` 0.18.5.1 instances: `scripts/test-escrow-xmr-regtest.sh`. It runs in
 CI (the `escrow-xmr-regtest` job, A-498), refuses any daemon that is not a fakechain with hard fork 16 or later before any wallet call, and needs a
 disposable PostgreSQL database in `TEST_DATABASE_URL` (the legs create their own databases from it, as the other database

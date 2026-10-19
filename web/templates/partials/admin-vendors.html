@@ -3,7 +3,7 @@ vendor mark. Every form posts to its own /admin/vendor-* path and confirms with 
 {{define "admin-vendors"}}{{with .VendorAdmin}}<section class="panel" id="vendors" aria-labelledby="vendors-heading">
 <h2 id="vendors-heading">Vendor applications</h2>{{with $.NoticeIn "vendors"}}
 <div class="alert" role="status">{{.}}</div>{{end}}
-<p>Sign-up offers a buyer or a vendor account, and buyers can apply later from their account. Only approved vendors can publish listings: approving makes the account a vendor (an audited role change), while rejected and withdrawn applicants stay buyers. The bond is a non-refundable fee. This market does not watch for bond payments: check your own wallet, then record the bond as received below.</p>
+<p>Sign-up offers a buyer or a vendor account, and buyers can apply later from their account. Only approved vendors can publish listings: approving makes the account a vendor (an audited role change), while rejected and withdrawn applicants stay buyers. The bond is a non-refundable fee.{{if .AutoBond}} Each applicant waiting for a bond gets a one-time Monero address of the market's bond wallet ({{template "payment-status:xmr-net" $}}), and the bond is recorded once deposits covering it have the escrow confirmations; the market never sends from the bond wallet, so sweep it offline from its sealed seed (operator guide). You may still record or waive a bond below.{{else}} Bond addresses are not issued right now (Monero escrow is off or not ready, new XMR payments are paused, or a restore is being checked): check your own wallet, then record the bond as received below.{{end}}</p>
 <h3 id="vendor-policy">Vendor policy</h3>
 <p>Now: {{template "vendor-policy-text" .Policy}} A change applies to new applications only; open applications keep the bond and approval mode they were submitted under.</p>
 <form class="stack" method="post" action="/admin/vendor-policy">
@@ -26,7 +26,9 @@ vendor mark. Every form posts to its own /admin/vendor-* path and confirms with 
 <p class="help">Showing the oldest {{len .Queue}} of {{.QueueTotal}} open applications.</p>{{end}}{{range .Queue}}
 <div class="order-action vendor-application">
 <h4>{{.Handle}}: {{.Status}}</h4>
-<p>Submitted {{.Created}}. Bond: {{if .HasBond}}{{.Bond}} XMR, a non-refundable fee{{if .BondReceived}}, {{.BondHow}} {{.BondReceived}}{{end}}{{else}}none{{end}}. Approval: {{if .Automatic}}automatic{{else}}manual{{end}}, as when it was submitted.</p>
+<p>Submitted {{.Created}}. Bond: {{if .HasBond}}{{.Bond}} XMR, a non-refundable fee{{if .BondReceived}}, {{.BondHow}} {{.BondReceived}}{{end}}{{else}}none{{end}}. Approval: {{if .Automatic}}automatic{{else}}manual{{end}}, as when it was submitted.</p>{{if .BondAddress}}
+<p class="vendor-bond">Monero bond address <code class="address">{{.BondAddress}}</code>: {{.BondConfirmed}} XMR received with at least {{.BondThreshold}} confirmations{{if .BondPendingAny}}, {{.BondPending}} XMR still confirming{{end}}.</p>{{end}}{{range .BondFlags}}
+<p class="alert vendor-bond-flag">{{.}}</p>{{end}}
 <form class="stack" method="post" action="/admin/vendor-applications">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="form_nonce" value="{{formNonce "/admin/vendor-applications"}}">

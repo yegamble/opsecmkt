@@ -370,8 +370,12 @@ func xmrHexBlob(s string) bool {
 // xmrAccountOK: an escrow account index (monero-wallet-rpc's indices are uint32; 0 is the primary account).
 func xmrAccountOK(account int64) bool { return account >= 1 && account <= math.MaxUint32 }
 
-// xmrWalletNameOK: escrow-YYYYMM-NN, so the adapter can never open or create the pooled wallet or a path.
+// xmrWalletNameOK: escrow-YYYYMM-NN, or the vendor bond wallet's bond-NN (A-547), so the adapter can never open or
+// create the pooled wallet or a path.
 func xmrWalletNameOK(name string) bool {
+	if n, ok := strings.CutPrefix(name, "bond-"); ok {
+		return len(n) == 2 && n[0] >= '0' && n[0] <= '9' && n[1] >= '0' && n[1] <= '9'
+	}
 	rest, ok := strings.CutPrefix(name, "escrow-")
 	if !ok || len(rest) != 9 || rest[6] != '-' {
 		return false

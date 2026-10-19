@@ -11,9 +11,10 @@ import { pgpFixture } from './db-helpers';
 // is not chain evidence (that is scripts/test-escrow-xmr-regtest.sh, on a real fakechain). The tests run in order on
 // one fresh database (playwright.escrow-xmr.config.ts); a second server on it runs with ESCROW_XMR off.
 //
-// The last test covers retention (slice X-f, P3-R9): a wallet past its 90 days is destroyed and its order's page says a
+// The retention test (slice X-f, P3-R9) covers: a wallet past its 90 days is destroyed and its order's page says a
 // later deposit cannot be recovered (ES-8), and a missing wallet past them is confirmed destroyed on /admin/payments. The 90 days
-// are moved through SQL; nothing waits in real time.
+// are moved through SQL; nothing waits in real time. The last test covers the vendor bond paid in XMR (A-547): the
+// applicant's one-time address, amounts and confirmations, and the bond recorded at the threshold.
 
 const sim = process.env.E2E_XMR_SIM!;
 const offURL = process.env.E2E_XMR_OFF_URL!;
@@ -549,4 +550,58 @@ test('Monero escrow retention: a wallet past its 90 days destroyed, a later depo
   await expect(destroyed.filter({ hasText: `${gone} ${gone}.keys` })).toBeVisible();
   await expect(destroyed.filter({ hasText: `${kept} ${kept}.keys` })).toBeVisible();
   await shot(admin, info, 'k04-admin-destroyed');
+});
+
+test('Vendor bond in XMR (A-547): the non-refundable terms before the one-time address, amounts and confirmations without JavaScript', async ({ browser, baseURL, request }, info) => {
+  // A 0.25 XMR bond with manual approval, set through SQL (the policy form is covered by db-vendor-onboarding.spec.ts).
+  sql("UPDATE settings SET value='250000000000' WHERE key='vendor_bond_xmr'; UPDATE settings SET value='manual' WHERE key='vendor_approval'");
+  try {
+    const applicant = await context(browser, baseURL);
+    await register(applicant, 'xmr_bond_applicant', buyerPassword);
+    await applicant.goto('/account');
+    const section = applicant.getByRole('region', { name: 'Sell on this market' });
+    expect(await pressSubmit(applicant, section.getByRole('button', { name: 'Apply to sell' }))).toBe(303);
+    await expect(section).toContainText('Waiting for bond');
+    const value = (label: string) => section.locator('.vendor-bond div').filter({ has: applicant.getByText(label, { exact: true }) }).locator('dd');
+    // The watcher issues the address on its next pass; until then the page says it is being prepared.
+    await reloadUntil(applicant, async () => { await expect(value('Bond address')).toHaveText(moneroAddress, { timeout: 500 }); });
+    const bond = (await value('Bond address').innerText()).trim();
+    expect(bond.startsWith('8')).toBeTruthy(); // an account's address 0 is a subaddress
+    const text = await section.innerText();
+    for (const notice of ['a non-refundable fee', 'Anything you pay above the bond', 'never sends coins back']) {
+      expect(text.indexOf(notice), notice).toBeGreaterThanOrEqual(0);
+      expect(text.indexOf(notice), `${notice} before the address`).toBeLessThan(text.indexOf(bond));
+    }
+    await expect(value('Received')).toHaveText('0 XMR with at least 10 confirmations');
+    await expect(value('Still to pay')).toHaveText('0.25 XMR');
+    await expect(section.locator('.vendor-instructions')).toHaveCount(0);
+    await shot(applicant, info, 'v01-bond-address');
+
+    // Under-payment: 0.1 XMR confirmed, and the rest still to pay with no time limit.
+    await deposit(request, bond, 100_000_000_000);
+    await mine(request, 10);
+    await reloadUntil(applicant, async () => { await expect(value('Received')).toHaveText('0.1 XMR with at least 10 confirmations', { timeout: 500 }); });
+    await expect(value('Still to pay')).toHaveText('0.15 XMR');
+    await expect(section).toContainText('Waiting for bond');
+    // The rest, still confirming.
+    await deposit(request, bond, 150_000_000_000);
+    await mine(request, 3);
+    await reloadUntil(applicant, async () => { await expect(value('Waiting for confirmations')).toHaveText(/^0\.15 XMR, \d of 10 confirmations$/, { timeout: 500 }); });
+    await shot(applicant, info, 'v02-bond-confirming');
+    await mine(request, 10);
+    await reloadUntil(applicant, async () => { await expect(section).toContainText('Waiting for administrator approval', { timeout: 500 }); });
+    await expect(section).toContainText('detected on the Monero network');
+    await expect(section.locator('.vendor-bond')).toHaveCount(0);
+    await shot(applicant, info, 'v03-bond-received');
+
+    const admin = await signIn(browser, baseURL, 'xmr_admin', password);
+    await admin.goto('/admin/vendors');
+    const queued = admin.locator('.vendor-application', { hasText: 'xmr_bond_applicant' });
+    await expect(queued).toContainText(bond);
+    await expect(queued).toContainText('0.25 XMR received with at least 10 confirmations');
+    await expect(queued).toContainText('detected on the Monero network');
+    await shot(admin, info, 'v04-admin-bond');
+  } finally {
+    sql("UPDATE settings SET value='0' WHERE key='vendor_bond_xmr'");
+  }
 });
