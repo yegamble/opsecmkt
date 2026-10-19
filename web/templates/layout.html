@@ -30,7 +30,7 @@
 </form>{{end}}
 <div class="header-actions{{if .User}} signed-in{{end}}">{{if .User}}<a class="account-name" href="/account">{{.User.Handle}}</a>
 <form class="header-signout" method="post" action="/logout">
-<input type="hidden" name="csrf" value="{{.CSRF}}">
+<input type="hidden" name="csrf" value="{{or .HeaderCSRF .CSRF}}">
 <button type="submit">Sign out</button>
 </form>{{else}}<a href="/login{{with .Next}}?next={{. | urlquery}}{{end}}">Sign in</a>
 {{if or (not .Access) .Access.RegistrationOpen}}<a class="button primary" href="/register">Join market</a>{{end}}{{end}}</div>

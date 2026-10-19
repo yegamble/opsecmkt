@@ -82,22 +82,39 @@ test('register, draft, removed XMPP field and session boundaries', async ({ page
 });
 
 // A-548: Sign out in the site header, clicked on a 320 px phone and pressed with the keyboard on a 1280 px desktop
-// (JavaScript off), ends the session from a page other than /account and lands on the sign-in page's notice.
+// (JavaScript off), ends the session from a page other than /account and lands on the sign-in page's notice. With the
+// longest handle (32 characters) at 100% and 200% text, the header never scrolls sideways and Sign out stays inside
+// the viewport from 320 to 1280 px, including 641-740 and 1100-1200 px where the search shares the header (UIA-1).
 test('header sign out ends the session from any page', async ({ browser, baseURL }) => {
-  const handle = uniqueHandle('signout_with_a_long_handle'); // 32 characters, the longest handle
+  test.setTimeout(90_000);
+  const handle = uniqueHandle('signout').padEnd(32, '_long'); // the longest handle; a long prefix would cut the unique part
   expect(handle).toHaveLength(32);
   const password = 'browser-signout-password-123';
+  const widths = { 320: [320, 390, 641, 700, 740, 768], 1280: [1100, 1150, 1200, 1280] };
   for (const [width, register] of [[320, true], [1280, false]] as const) {
     const page = await signedIn(browser, baseURL, handle, password, register, width);
-    await page.goto('/orders');
+    // Measured on /account: the empty /orders page's "Explore the marketplace" button is wider than 320 px at 200%
+    // text whatever the header does.
+    await page.goto('/account');
     await waitForStyles(page);
     const header = page.getByRole('banner');
     await expect(header.getByRole('link', { name: handle, exact: true })).toHaveAttribute('href', '/account');
-    const signOut = header.getByRole('button', { name: 'Sign out', exact: true });
-    const box = (await signOut.boundingBox())!;
-    expect(box.height).toBeGreaterThanOrEqual(44);
-    expect(box.x + box.width).toBeLessThanOrEqual(width);
-    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+    let signOut = header.getByRole('button', { name: 'Sign out', exact: true });
+    for (const scale of ['100%', '200%']) {
+      await page.locator('html').evaluate((element, size) => { element.style.fontSize = size; }, scale);
+      for (const viewport of widths[width]) {
+        await page.setViewportSize({ width: viewport, height: 900 });
+        const box = (await signOut.boundingBox())!;
+        expect(box.height, `${viewport} px, ${scale}`).toBeGreaterThanOrEqual(44);
+        expect(box.x, `${viewport} px, ${scale}`).toBeGreaterThanOrEqual(0);
+        expect(box.x + box.width, `Sign out inside ${viewport} px at ${scale}`).toBeLessThanOrEqual(viewport);
+        const wide = await page.evaluate(() => [...document.querySelectorAll('body *')].filter(e => e.getBoundingClientRect().right > document.documentElement.clientWidth + 0.5).map(e => `${e.tagName.toLowerCase()}.${e.className}`).slice(0, 4).join(', '));
+        expect(await page.evaluate(() => document.documentElement.scrollWidth), `page width at ${viewport} px, ${scale} (${wide})`).toBeLessThanOrEqual(viewport);
+      }
+    }
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto('/orders');
+    signOut = page.getByRole('banner').getByRole('button', { name: 'Sign out', exact: true });
     if (width === 320) {
       await submitAndLoad(page, signOut);
     } else {

@@ -150,3 +150,39 @@ func TestPreviewHeaderSignOutIsRefusedReadOnly(t *testing.T) {
 		t.Fatalf("preview header sign-out: %d %s", w.Code, w.Body)
 	}
 }
+
+// A-548 (UIA-2): a refusal made before ServeHTTP puts the session on the request (invalid query text), or a refused
+// sign-in post served as the anonymous page it was rendered for, still shows the signed-in header (A-514); its
+// Sign out carries that session's CSRF token and works, while the page's own sign-in form keeps the anon token.
+func TestHeaderSignOutWorksOnEarlyRefusalPages(t *testing.T) {
+	e := newTestApp(t)
+	signOut := func(stage, session, body string) {
+		t.Helper()
+		fields := headerSignOut(t, stage, siteHeader(body), e.A.csrf(session))
+		w := headerPost(e.A, "/logout", session, fields)
+		if w.Code != 303 || w.Header().Get("Location") != "/login" {
+			t.Fatalf("%s: header sign-out answered %d %s %s", stage, w.Code, w.Header().Get("Location"), w.Body.String())
+		}
+		if agInt(e, "SELECT count(*) FROM sessions WHERE token_hash=$1", digest(session)) != 0 {
+			t.Fatalf("%s: the header sign-out left its session", stage)
+		}
+	}
+	for _, path := range []string{"/?q=%ff", "/orders?q=%ff", "/product?id=%ff"} {
+		_, session := e.user("a548_early_"+randomToken()[:6], "buyer")
+		w := e.do("GET", path, session, nil)
+		e.check(w, 400)
+		signOut(path, session, w.Body.String())
+	}
+
+	handle := "a548_login_" + randomToken()[:6]
+	_, session := e.user(handle, "buyer")
+	anon := randomToken()
+	form := url.Values{"csrf": {e.A.csrf(anon)}, "handle": {handle}, "password": {"a-wrong-password-for-a548"}}
+	w := a48Do(e, "POST", "/login", form, map[string]string{"session": session, "anon": anon}, "Origin", "http://example.com", "Sec-Fetch-Site", "same-origin")
+	e.check(w, 401)
+	body := w.Body.String()
+	if !strings.Contains(withoutSiteHeader(body), `name="csrf" value="`+e.A.csrf(anon)+`"`) {
+		t.Fatal("the refused sign-in form lost the anon token it was rendered with")
+	}
+	signOut("refused anon /login post", session, body)
+}

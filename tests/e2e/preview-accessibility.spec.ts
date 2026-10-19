@@ -359,3 +359,20 @@ test('header sign out follows the handle, is keyboard reachable and fits every w
   await expect(page.getByRole('alert')).toHaveText('Read-only preview. Start with PostgreSQL to save changes.');
   await expect(page.locator('script')).toHaveCount(0);
 });
+
+// A-548: unfocused, the skip link is wholly above the page even when its text wraps at doubled text (it covered the
+// wordmark at 320 px); focused, it is shown inside the viewport.
+test('skip link stays out of sight until focused, at doubled text', async ({ page, browserName }) => {
+  await page.goto('/orders');
+  await waitForStyles(page);
+  const skip = page.getByRole('link', { name: 'Skip to main content' });
+  for (const scale of ['100%', '200%']) {
+    await page.locator('html').evaluate((element, size) => { element.style.fontSize = size; }, scale);
+    const hidden = (await skip.boundingBox())!;
+    expect(hidden.y + hidden.height, `unfocused skip link bottom at ${scale}`).toBeLessThanOrEqual(0);
+  }
+  await page.locator('.brand').focus();
+  await page.keyboard.press(browserName === 'webkit' && process.platform === 'darwin' ? 'Alt+Shift+Tab' : 'Shift+Tab');
+  await expect(skip).toBeFocused();
+  await expect(skip).toBeInViewport({ ratio: 1 });
+});
