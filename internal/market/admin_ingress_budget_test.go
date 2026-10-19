@@ -51,6 +51,9 @@ func ingressDo(e *testEnv, private bool, method, path, token string, form url.Va
 	}
 	if method == "POST" {
 		form.Set("csrf", e.A.csrf(token))
+		if spec, ok := actions[path]; ok && (spec.FormNonce || spec.ConfirmedFormNonce || spec.OwnFormNonce) && !form.Has(formNonceField) {
+			form.Set(formNonceField, formNonceFor(path))
+		}
 	}
 	r := httptest.NewRequest(method, path, strings.NewReader(form.Encode()))
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -362,5 +365,45 @@ func TestAdminIngressLimiterTableIsSeparate(t *testing.T) {
 	}
 	if _, ok := a.adminLimits["adm:totp-verify:u1"]; !ok {
 		t.Fatal("a private code budget was evicted")
+	}
+}
+
+// A public limiter table full of blocking entries refuses every new public key, as documented, but no step of an
+// administrator's sign-in or password-confirmed change through the private ingress: its pending-login, code and
+// confirmation budgets are namespaced too.
+func TestFullPublicLimiterTableRefusesNoAdminIngressStep(t *testing.T) {
+	e := newTestApp(t)
+	e.A.adminSocket = "/run/market-admin/http.sock"
+	id, _ := e.user("table_admin", "admin")
+	key, _ := agEnableTOTP(e, id)
+	e.user("table_buyer", "buyer")
+	until := time.Now().Add(10 * time.Minute)
+	e.A.mu.Lock()
+	for i := range 4096 {
+		e.A.limits["auth:junk_"+strconv.Itoa(i)] = bucket{Count: 10, Limit: 10, Until: until}
+	}
+	e.A.mu.Unlock()
+	if w := ingressDo(e, false, "POST", "/login", randomToken(), url.Values{"handle": {"table_buyer"}, "password": {testPassword}}); w.Code != 429 {
+		t.Fatalf("public sign-in with the public table full: %d", w.Code)
+	}
+	w := ingressDo(e, true, "POST", "/login", randomToken(), url.Values{"handle": {"table_admin"}, "password": {testPassword}})
+	pending := e.cookie(w, "pending")
+	if w.Code != 303 || pending == "" {
+		t.Fatalf("private password step: %d %q", w.Code, w.Body.String())
+	}
+	w = ingressDo(e, true, "POST", "/challenge", randomToken(), url.Values{"method": {"totp"}, "code": {agTOTPNow(key)}}, &http.Cookie{Name: "pending", Value: pending})
+	session := e.cookie(w, "session")
+	if w.Code != 303 || session == "" {
+		t.Fatalf("private /challenge: %d %q", w.Code, w.Body.String())
+	}
+	code, _ := e.totpCodeFor(id, 1)
+	if w = ingressDo(e, true, "POST", "/account/password", session, pwForm(testPassword, testPassword+"-changed", "code", code)); w.Code != 303 {
+		t.Fatalf("private password change: %d %q", w.Code, w.Body.String())
+	}
+	e.A.mu.Lock()
+	public := len(e.A.limits)
+	e.A.mu.Unlock()
+	if public != 4096 {
+		t.Fatalf("private steps wrote to the public table: %d entries", public)
 	}
 }

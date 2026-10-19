@@ -37,10 +37,11 @@ import (
 // of a request but not the time a slow client takes to read the response.
 //
 // A request through the private administrator ingress (AdminHandler) takes the matching class below instead
-// (A-570), so a flood on the public listener, which fills only the public classes, cannot refuse or delay an
-// administrator's sign-in or work on the client-authorized onion. The private classes are small and bounded in
-// the same way, so a client holding that onion's authorization key is still limited. Only the context
-// AdminHandler sets selects them (workFor); no Host, header, cookie or form field can.
+// (A-570), so a flood on the public listener, which fills only the public classes, cannot refuse an
+// administrator's sign-in or work on the client-authorized onion (both still share the database pool and CPU).
+// The private classes are small and bounded in the same way, so a client holding that onion's authorization key
+// is still limited. Only the context AdminHandler sets selects them (workFor); no Host, header, cookie or form
+// field can.
 var (
 	pageWork     = make(chan struct{}, 64)
 	anonPostWork = make(chan struct{}, 16)

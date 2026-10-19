@@ -145,7 +145,7 @@ func (a *App) confirmPasswordHash(ctx context.Context, userID, password string) 
 		return "", fail(400, "Enter your current password to confirm this change.")
 	}
 	// A spent budget is refused before a slot is taken, so it never runs bcrypt or keeps other checks waiting.
-	key := "confirm:" + userID
+	key := ingressKey(ctx, "confirm:"+userID)
 	if a.limited(key, 10) {
 		return "", errConfirmPaused
 	}
@@ -177,8 +177,8 @@ func (a *App) confirmPasswordHash(ctx context.Context, userID, password string) 
 // confirmCode runs check, the authenticator or recovery code of a confirmation whose password was correct. A code is
 // a guess too (A-274): it reserves one attempt of the budget the correct password gave back, and only a wrong code
 // (401) keeps it spent. Call it under the account row lock, so concurrent guesses cannot exceed the budget.
-func (a *App) confirmCode(userID string, check func() error) error {
-	key := "confirm:" + userID
+func (a *App) confirmCode(ctx context.Context, userID string, check func() error) error {
+	key := ingressKey(ctx, "confirm:"+userID)
 	if !a.allow(key, 10) {
 		return errConfirmPaused
 	}
@@ -346,16 +346,16 @@ func confirmedTxWith(c *actionCtx, opts *confirmation, run func(c *actionCtx) (a
 			if c.FactorFormNonce {
 				// Before locked the recovery rows before the user row. Consume
 				// only for a NEW receipt; an exact completed replay returns above.
-				err = a.confirmCode(uid, func() error {
+				err = a.confirmCode(ctx, uid, func() error {
 					_, useErr := a.useRecoveryCode(ctx, tx, uid, code)
 					return useErr
 				})
 			} else {
-				err = a.confirmCode(uid, func() error { return codeErr })
+				err = a.confirmCode(ctx, uid, func() error { return codeErr })
 			}
 			how = "password and recovery code"
 		} else {
-			err = a.confirmCode(uid, func() error { return a.checkTOTP(ctx, tx, uid, code) })
+			err = a.confirmCode(ctx, uid, func() error { return a.checkTOTP(ctx, tx, uid, code) })
 			how = "password and authenticator code"
 		}
 		if err != nil {
@@ -1006,7 +1006,7 @@ func challengeAction(c *actionCtx) (actionResult, error) {
 	if err != nil {
 		return actionResult{}, err
 	}
-	if !a.allow("challenge:"+digest(pending), 10) {
+	if !a.allow(ingressKey(ctx, "challenge:"+digest(pending)), 10) {
 		return actionResult{}, fail(429, "Too many attempts. Try again in ten minutes.")
 	}
 	p := factorByName(c.Form.Get("method"))
