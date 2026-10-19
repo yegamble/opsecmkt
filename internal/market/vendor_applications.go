@@ -40,8 +40,9 @@ const (
 
 // activeVendorSQL is the SQL condition "alias is an approved, active vendor": the vendor role (given only by an
 // approved application, the admin role form or the -set-role host command; migration 121 grandfathered earlier
-// vendors with an approved application) on an account that is not suspended, closed or restricted for closure.
-// alias names a users row in the caller's query.
+// vendors with an approved application) on an account that is not suspended, closed or restricted for closure. A
+// banned account is always suspended too (migration 123, A-546), so the suspension test excludes it. alias names a
+// users row in the caller's query.
 func activeVendorSQL(alias string) string {
 	return "(" + alias + ".role='vendor' AND " + alias + ".suspended_at IS NULL AND " + alias + ".closed_at IS NULL AND " +
 		alias + ".retention_restricted_at IS NULL)"
@@ -552,8 +553,8 @@ func vendorVerifyAction(c *actionCtx) (actionResult, error) {
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
 		ctx, tx, admin := c.Ctx(), c.Tx, c.User
 		var role string
-		var verified bool
-		err := tx.QueryRowContext(ctx, "SELECT role,vendor_verified FROM users WHERE id=$1 FOR NO KEY UPDATE", target).Scan(&role, &verified)
+		var verified, banned bool
+		err := tx.QueryRowContext(ctx, "SELECT role,vendor_verified,banned_at IS NOT NULL FROM users WHERE id=$1 FOR NO KEY UPDATE", target).Scan(&role, &verified, &banned)
 		if err == sql.ErrNoRows {
 			return actionResult{}, notFound
 		}
@@ -561,6 +562,8 @@ func vendorVerifyAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, err
 		}
 		switch {
+		case verify && banned: // A-546: a ban removed the mark; lifting it does not bring it back by itself
+			return actionResult{}, fail(409, handle+" is banned; nothing was changed.")
 		case verify && role != "vendor":
 			return actionResult{}, fail(409, handle+" is not a vendor account; nothing was changed.")
 		case verify && verified:

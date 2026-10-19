@@ -55,12 +55,15 @@ func staffContactRefusal(ctx context.Context, q rowQuerier) (string, error) {
 	return staffContactSentence(contact), nil
 }
 
-// suspendedRefusal refuses sign-in to an account an administrator suspended. It is only returned once the password
-// is correct, so it reveals nothing to someone who does not know it.
-func suspendedRefusal(ctx context.Context, q rowQuerier) error {
+// suspendedRefusal refuses sign-in to an account an administrator suspended, or banned (A-546: closed, without the
+// reason). It is only returned once the password is correct, so it reveals nothing to someone who does not know it.
+func suspendedRefusal(ctx context.Context, q rowQuerier, banned bool) error {
 	contact, err := staffContactRefusal(ctx, q)
 	if err != nil {
 		return err
+	}
+	if banned {
+		return fail(403, "This account is closed and cannot sign in. "+contact)
 	}
 	return fail(403, "This account is suspended. "+contact)
 }

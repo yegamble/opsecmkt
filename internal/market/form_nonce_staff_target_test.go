@@ -9,9 +9,12 @@ import (
 
 func staffTargetForm(path, handle, operation, nonce string) url.Values {
 	var f url.Values
-	if path == "/admin/suspend" {
+	switch path {
+	case "/admin/suspend":
 		f = suspendForm(operation, handle)
-	} else {
+	case "/admin/ban": // A-546
+		f = banForm(operation, handle, testBanReason)
+	default:
 		f = resetForm(handle)
 	}
 	f.Set(formNonceField, nonce)
@@ -104,14 +107,19 @@ func TestStaffTargetNonceReplaysOnlyExactSuccessfulOperation(t *testing.T) {
 		{"suspend", "/admin/suspend", "suspend"},
 		{"restore", "/admin/suspend", "restore"},
 		{"reset factors", "/admin/reset-factors", ""},
+		{"ban", "/admin/ban", "ban"},
+		{"unban", "/admin/ban", "unban"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newTestApp(t)
 			adminID, admin := e.user("nonce_staff_admin", "admin")
 			targetID, _ := e.user("nonce_staff_target", "buyer")
 			e.user("nonce_staff_other", "buyer")
-			if tc.operation == "restore" {
+			switch tc.operation {
+			case "restore":
 				agExec(e, "UPDATE users SET suspended_at=now() WHERE id=$1", targetID)
+			case "unban":
+				agExec(e, "UPDATE users SET suspended_at=now(),banned_at=now(),ban_reason=$2 WHERE id=$1", targetID, testBanReason)
 			}
 			if tc.path == "/admin/reset-factors" {
 				agEnableTOTP(e, targetID)
@@ -131,8 +139,13 @@ func TestStaffTargetNonceReplaysOnlyExactSuccessfulOperation(t *testing.T) {
 			}
 			changed := staffTargetForm(tc.path, "nonce_staff_other", tc.operation, f.Get(formNonceField))
 			e.check(e.do("POST", tc.path, admin, changed), 409)
-			if tc.path == "/admin/suspend" {
-				changed = staffTargetForm(tc.path, "nonce_staff_target", map[string]string{"suspend": "restore", "restore": "suspend"}[tc.operation], f.Get(formNonceField))
+			if tc.path != "/admin/reset-factors" {
+				changed = staffTargetForm(tc.path, "nonce_staff_target", map[string]string{"suspend": "restore", "restore": "suspend", "ban": "unban", "unban": "ban"}[tc.operation], f.Get(formNonceField))
+				e.check(e.do("POST", tc.path, admin, changed), 409)
+			}
+			if tc.path == "/admin/ban" { // the reason is part of the confirmed form
+				changed = staffTargetForm(tc.path, "nonce_staff_target", tc.operation, f.Get(formNonceField))
+				changed.Set("reason", testLiftReason)
 				e.check(e.do("POST", tc.path, admin, changed), 409)
 			}
 			_, otherAdmin := e.user("nonce_staff_other_admin", "admin")

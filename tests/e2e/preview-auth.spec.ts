@@ -154,4 +154,18 @@ test('password change and second-factor reset are plain POST forms and the previ
   await suspend.getByLabel('Current password').fill('preview-password-123');
   await suspend.getByRole('button', { name: 'Suspend or restore' }).click();
   await expect(page.getByRole('alert')).toHaveText('Read-only preview. Start with PostgreSQL to save changes.');
+
+  // A-546: ban / unban beside it, with a required reason and copy that says a ban is permanent.
+  await page.goto('/admin/users');
+  const banPanel = page.getByRole('region', { name: 'Ban or unban an account' });
+  const ban = banPanel.locator('form[action="/admin/ban"]');
+  await expect(ban).toHaveAttribute('method', 'post');
+  await expect(ban.locator('input[name="csrf"]')).toHaveCount(1);
+  await expect(ban.getByRole('group', { name: 'Action' }).getByRole('radio')).toHaveCount(2);
+  await expect(ban.getByRole('radio', { name: /^Ban:/ })).not.toBeChecked();
+  await expect(ban.getByLabel('Reason')).toHaveAttribute('required', '');
+  await expect(ban.getByLabel('Reason')).toHaveAttribute('maxlength', '500');
+  await expect(banPanel).toContainText('A ban is permanent closure');
+  await expect(banPanel.locator('.account-list li')).toHaveText(['closed_vendor · vendor · banned 2026-01-02 00:00 UTC by admin · reason: Took payment for orders and shipped nothing.']);
+  await noScriptsNoOverflow(page);
 });

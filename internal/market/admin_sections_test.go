@@ -19,7 +19,7 @@ var adminSectionPaths = []string{"/admin", "/admin/users", "/admin/vendors", "/a
 // (dependency report, retention, Monero escrow) must still appear on no other page.
 var adminPanelSection = map[string]string{
 	"getting-started": "/admin", "admin-sections": "/admin",
-	"assign-role": "/admin/users", "reset-factors": "/admin/users", "suspend": "/admin/users", "staff-roster": "/admin/users",
+	"assign-role": "/admin/users", "reset-factors": "/admin/users", "suspend": "/admin/users", "ban": "/admin/users", "staff-roster": "/admin/users",
 	"vendors": "/admin/vendors", "vendor-policy": "/admin/vendors", "vendor-queue": "/admin/vendors", "vendor-verified": "/admin/vendors",
 	"payment-providers": "/admin/payments", "xmr-escrow-node": "/admin/payments", "escrow-release-days": "/admin/payments",
 	"xmr-escrow-recovery": "/admin/payments", "payment-intake": "/admin/payments", "escrow-readiness": "/admin/payments",
@@ -83,7 +83,7 @@ func TestAdminSectionsPreview(t *testing.T) {
 		}
 		bodies[path] = w.Body.String()
 	}
-	checkAdminSectionPages(t, bodies, []string{"getting-started", "admin-sections", "assign-role", "reset-factors", "suspend", "staff-roster",
+	checkAdminSectionPages(t, bodies, []string{"getting-started", "admin-sections", "assign-role", "reset-factors", "suspend", "ban", "staff-roster",
 		"vendors", "vendor-policy", "vendor-queue", "vendor-verified", "payment-providers", "payment-intake", "escrow-readiness", "access", "sign-in-protection", "paused-handles-heading",
 		"branding", "staff-contact", "transparency", "operator-key-title", "canary-admin-title", "audit-export-title", "staff-list",
 		"host-control", "image-scanner", "recent-server-errors", "audit-trail"})
@@ -112,7 +112,7 @@ func TestAdminSections(t *testing.T) {
 	for _, path := range adminSectionPaths {
 		bodies[path] = e.body("GET", path, admin, nil, 200)
 	}
-	checkAdminSectionPages(t, bodies, []string{"getting-started", "admin-sections", "assign-role", "reset-factors", "suspend", "staff-roster",
+	checkAdminSectionPages(t, bodies, []string{"getting-started", "admin-sections", "assign-role", "reset-factors", "suspend", "ban", "staff-roster",
 		"vendors", "vendor-policy", "vendor-queue", "vendor-verified", "payment-providers", "payment-intake", "escrow-readiness", "access", "sign-in-protection", "paused-handles-heading",
 		"branding", "staff-contact", "transparency", "operator-key-title", "canary-admin-title", "audit-export-title", "staff-list",
 		"dependency-status", "host-control", "image-scanner", "retention", "recent-server-errors", "audit-trail"})
@@ -195,6 +195,7 @@ func TestAdminActionRedirectsToSection(t *testing.T) {
 	factorsID, _ := e.user("redirect_factors", "buyer")
 	agExec(e, "UPDATE users SET totp_enabled=true WHERE id=$1", factorsID)
 	e.user("redirect_suspend", "buyer")
+	e.user("redirect_ban", "buyer")
 	vendorID, _ := e.user("redirect_vendor", "vendor")
 	closingID, _ := e.user("redirect_closing", "buyer")
 	order := e.order(closingID, e.product(vendorID, "physical"), "XMR", "shipped")
@@ -217,6 +218,7 @@ func TestAdminActionRedirectsToSection(t *testing.T) {
 		{"/admin", url.Values{"action": {"settings"}, "site_name": {"Redirect Market"}}, "/admin/site"},
 		{"/admin/reset-factors", url.Values{"handle": {"redirect_factors"}}, "/admin/users#reset-factors"},
 		{"/admin/suspend", url.Values{"action": {"suspend"}, "handle": {"redirect_suspend"}}, "/admin/users#suspend"},
+		{"/admin/ban", url.Values{"action": {"ban"}, "handle": {"redirect_ban"}, "reason": {"Redirect check reason."}}, "/admin/users#ban"},
 		{"/admin/payment-intake", url.Values{"currency": {"XMR"}, "enabled": {"false"}}, "/admin/payments#payment-intake"},
 		{"/admin/access", url.Values{"site_access": {"public"}, "registrations": {"closed"}}, "/admin/security#access"},
 		{"/admin/captcha", url.Values{"captcha_required": {"true"}}, "/admin/security"},
@@ -258,6 +260,7 @@ func TestAdminActionRedirectsToSection(t *testing.T) {
 	}{
 		{"/admin", url.Values{"action": {"role"}, "handle": {"nobody_here"}, "role": {"vendor"}}},
 		{"/admin/suspend", url.Values{"action": {"suspend"}, "handle": {"nobody_here"}}},
+		{"/admin/ban", url.Values{"action": {"ban"}, "handle": {"nobody_here"}, "reason": {"Redirect check reason."}}},
 		{"/admin/reset-factors", url.Values{"handle": {"nobody_here"}}},
 	} {
 		body := e.body("POST", tc.path, admin, tc.form, 404)

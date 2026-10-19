@@ -89,8 +89,9 @@ func messageAction(c *actionCtx) (actionResult, error) {
 const messageNotPermitted = "No account you can message has this handle. You can write to active vendors, people you share an order with, people who have messaged you, and listed market staff."
 
 // messageRecipient returns the id of the account with handle that sender may start a message to, or "" when there is
-// no such account or sender may not write to it (A-543, owner directive 2026-10-18). Moderators and administrators
-// write to anyone. Any other account writes only to:
+// no such account or sender may not write to it (A-543, owner directive 2026-10-18). Nobody writes to a banned account
+// (A-546): it cannot sign in, and a ban is meant to be permanent. Otherwise moderators and administrators write to
+// anyone, and any other account writes only to:
 //   - an active, approved vendor (activeVendorSQL, A-544), reached from "Message vendor" on the vendor and listing pages;
 //   - an order partner: a buyer writes to the vendor of any order it placed, drafts included; a vendor writes to a
 //     buyer only through an order its /orders list shows (vendorSeesOrder: not a draft, and not cancelled before
@@ -103,7 +104,7 @@ const messageNotPermitted = "No account you can message has this handle. You can
 // q is the send transaction or, for the /messages?to= key, the database.
 func messageRecipient(ctx context.Context, q rowQuerier, sender *User, handle string) (string, error) {
 	var id string
-	err := q.QueryRowContext(ctx, `SELECT r.id FROM users r WHERE r.handle=$2 AND ($3::boolean
+	err := q.QueryRowContext(ctx, `SELECT r.id FROM users r WHERE r.handle=$2 AND r.banned_at IS NULL AND ($3::boolean
 		OR `+activeVendorSQL("r")+`
 		OR EXISTS(SELECT 1 FROM orders o JOIN products p ON p.id=o.product_id WHERE (o.buyer_id=$1 AND p.vendor_id=r.id) OR (o.buyer_id=r.id AND p.vendor_id=$1 AND `+vendorSeesOrder("o")+`))
 		OR EXISTS(SELECT 1 FROM messages m WHERE m.recipient_id=$1 AND m.sender_id=r.id)

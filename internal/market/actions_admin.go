@@ -23,14 +23,15 @@ func init() {
 	})
 }
 
-// suspendedAccountsLoader lists up to 100 suspended accounts, most recently suspended first, so they can be
-// restored without remembering the handle; the form takes any handle, so accounts past the list work the same.
+// suspendedAccountsLoader lists up to 100 suspended accounts that are not banned (bannedAccountsLoader lists those),
+// most recently suspended first, so they can be restored without remembering the handle; the form takes any handle,
+// so accounts past the list work the same.
 func suspendedAccountsLoader(ctx context.Context, a *App, r *http.Request, d *PageData) error {
 	rows, err := a.db.QueryContext(ctx, `SELECT id,handle,role,to_char(suspended_at,'YYYY-MM-DD HH24:MI "UTC"'),
 		CASE WHEN totp_enabled AND pgp_2fa THEN 'TOTP and PGP sign-in'
 			WHEN totp_enabled THEN 'TOTP' WHEN pgp_2fa THEN 'PGP sign-in' ELSE '' END
 		FROM users
-		WHERE suspended_at IS NOT NULL ORDER BY suspended_at DESC, handle LIMIT 100`)
+		WHERE suspended_at IS NOT NULL AND banned_at IS NULL ORDER BY suspended_at DESC, handle LIMIT 100`)
 	if err != nil {
 		return err
 	}
@@ -46,12 +47,13 @@ func suspendedAccountsLoader(ctx context.Context, a *App, r *http.Request, d *Pa
 }
 
 // The target must still be a different, non-administrator account before a
-// confirmed staff receipt can be replayed. A successful suspend/restore or
-// factor reset changes the very state their callbacks require on first use,
+// confirmed staff receipt can be replayed (self and admin are the refusals). A
+// successful suspend/restore, ban/unban or factor reset changes the very state
+// their callbacks require on first use,
 // so this check intentionally does not require the former suspended/factor
 // state. It takes no target lock: replay changes nothing, while a first use
 // repeats all target checks under the callback's established lock order.
-func adminTargetReceiptAuthorize(c *actionCtx, reset bool) error {
+func adminTargetReceiptAuthorize(c *actionCtx, self, admin error) error {
 	handle := strings.TrimSpace(c.Form.Get("handle"))
 	var target, role string
 	err := c.Tx.QueryRowContext(c.Ctx(), "SELECT id,role FROM users WHERE handle=$1", handle).Scan(&target, &role)
@@ -62,22 +64,22 @@ func adminTargetReceiptAuthorize(c *actionCtx, reset bool) error {
 		return err
 	}
 	if target == c.User.ID {
-		if reset {
-			return fail(400, "You cannot reset your own second factors here. Use your recovery codes, or follow the operator procedure for administrator lockout.")
-		}
-		return fail(400, "You cannot suspend your own account.")
+		return self
 	}
 	if role == "admin" {
-		if reset {
-			return fail(403, "Administrator second factors cannot be reset here; administrator lockout is an operator procedure.")
-		}
-		return fail(403, "Administrator accounts cannot be suspended or restored here.")
+		return admin
 	}
 	return nil
 }
 
-func adminSuspendReceiptAuthorize(c *actionCtx) error { return adminTargetReceiptAuthorize(c, false) }
-func adminResetReceiptAuthorize(c *actionCtx) error   { return adminTargetReceiptAuthorize(c, true) }
+func adminSuspendReceiptAuthorize(c *actionCtx) error {
+	return adminTargetReceiptAuthorize(c, fail(400, "You cannot suspend your own account."), fail(403, "Administrator accounts cannot be suspended or restored here."))
+}
+
+func adminResetReceiptAuthorize(c *actionCtx) error {
+	return adminTargetReceiptAuthorize(c, fail(400, "You cannot reset your own second factors here. Use your recovery codes, or follow the operator procedure for administrator lockout."),
+		fail(403, "Administrator second factors cannot be reset here; administrator lockout is an operator procedure."))
+}
 
 // adminSuspendAction suspends or restores a non-administrator account, looked up by handle. Suspending ends
 // the account's sessions and pending sign-ins and blocks sign-in (checked at the password step, when a
@@ -125,8 +127,8 @@ func adminSuspendAction(c *actionCtx) (actionResult, error) {
 		// FOR NO KEY UPDATE, not FOR UPDATE: it still excludes session starts (FOR SHARE), but not the key-share
 		// locks of inserts referencing the account (notifications, order events) that a watcher pass may hold.
 		var role string
-		var suspended bool
-		err := tx.QueryRowContext(ctx, "SELECT role,suspended_at IS NOT NULL FROM users WHERE id=$1 FOR NO KEY UPDATE", target).Scan(&role, &suspended)
+		var suspended, banned bool
+		err := tx.QueryRowContext(ctx, "SELECT role,suspended_at IS NOT NULL,banned_at IS NOT NULL FROM users WHERE id=$1 FOR NO KEY UPDATE", target).Scan(&role, &suspended, &banned)
 		if err == sql.ErrNoRows {
 			return actionResult{}, notFound
 		}
@@ -135,6 +137,9 @@ func adminSuspendAction(c *actionCtx) (actionResult, error) {
 		}
 		if role == "admin" {
 			return actionResult{}, fail(403, "Administrator accounts cannot be suspended or restored here.")
+		}
+		if banned { // A-546: a ban is lifted only with its own form and a reason (admin_ban.go)
+			return actionResult{}, fail(409, handle+" is banned; nothing was changed. Lift the ban under Ban or unban an account, with a reason, to let it sign in again.")
 		}
 		if !suspend {
 			if !suspended {

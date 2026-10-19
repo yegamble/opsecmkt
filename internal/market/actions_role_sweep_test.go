@@ -74,6 +74,7 @@ var sweepScopes = map[string][2]string{
 	"/listings":                       {scopeSelf, "creates a listing owned by the caller"},
 
 	"/admin":                        {scopeStaff, ""},
+	"/admin/ban":                    {scopeStaff, "TestBanAccount covers its refusals (self, administrators, unknown handles, missing reasons)"},
 	"/admin/canary":                 {scopeStaff, ""},
 	"/admin/captcha":                {scopeStaff, ""},
 	"/admin/escrow-release-days":    {scopeStaff, ""},
