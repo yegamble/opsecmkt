@@ -42,12 +42,20 @@ Typical shapes:
 
 `opsec-security` (what an attacker can do) and `opsec-privacy` (what the system
 reveals) are not interchangeable; seat both only when the scope has both faces.
+
+**Usage budget** (`.claude/war-room/usage-budget.md`):
+- Seat **3** by default. Add a 4th or 5th seat only for a genuinely different
+  perspective.
+- Seats keep their own models; never downgrade one.
+- Do mechanical work yourself, with no agent.
+
 State the team and a one-line reason per seat before spawning.
 
 ## Round 0 — evidence pack
 
-Build it per `protocol.md` with an `Explore` agent (cheap retrieval, not
-judgement). Include the relevant open ledger rows.
+Build it per `protocol.md` with one `Explore` agent at `model: "haiku"`, or
+`"sonnet"` when the scope spans many files. It does cheap retrieval, not
+judgement. Include the relevant open ledger rows.
 
 ## Round A — independent review
 
@@ -59,7 +67,9 @@ scope yourself so you referee on evidence, not confidence.
 
 ## Round B / C — cross-examination and rebuttal
 
-Send each seat (via `SendMessage`, keeping its context) the others' findings.
+Skip these rounds when Round A produced no disputed BLOCKER or REQUIRED item.
+Otherwise, send each seat (via `SendMessage`, keeping its context) the others'
+findings.
 Require CHALLENGE / OVER-ENGINEERED / MISSED / DEFENCE, then
 RETRACTED / REVISED / HELD lines. Reward arguments that survive scrutiny, not
 consensus.

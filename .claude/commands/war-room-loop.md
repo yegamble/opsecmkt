@@ -14,8 +14,16 @@ Default scope: *make OPSEC Market a complete, releasable test-network product.*
 Read first: `.claude/war-room/repo-map.md`, `finding-format.md`, `protocol.md`,
 `ledger.md`, `.claude/agents/README.md`, `CLAUDE.md`, `.claude/review-loop.md`.
 `git status` must be understood before anything else; never discard unrelated
-work. Tell the owner up front the rough cost: each iteration spawns ~8–10 Opus
-agents (3–5 seats, ≤3 implementers, 1–2 verifiers).
+work. Tell the owner up front the rough cost: a typical iteration spawns 3
+seats, up to 3 implementers and 1–2 verifiers. Every agent keeps its own model.
+
+**Usage budget** (`.claude/war-room/usage-budget.md`): be mindful of Claude
+usage limits. Save turns without downgrading any seat:
+- continue agents with `SendMessage` instead of respawning;
+- re-verify only the findings in question;
+- watch CI in Bash;
+- do ledger, PR and cleanup work yourself, with no agent.
+
 
 ## Sweep rotation
 
@@ -35,6 +43,7 @@ Seat choices per area are in `/war-room`. A targeted scope skips the rotation.
    do not overlap (group by the files they touch). Dispatch one
    `opsec-implementer` per item **in a single message**, each with
    `isolation: "worktree"`, the ledger row, acceptance criteria and test plan.
+   The chair makes decided wording or renumbering NITs directly, with no agent.
    Mark them `in-progress (<branch>)` in the ledger.
 4. **Integrate.** Merge each returned branch into `war-room/integration`
    (resolve doc conflicts yourself; re-dispatch the implementer for code
@@ -44,7 +53,8 @@ Seat choices per area are in `/war-room`. A targeted scope skips the rotation.
    **CI passed**; diagnose any red job from its log before acting.
 5. **Verify.** Dispatch `opsec-qa-release` (and, for disputed items, the seat
    that raised it) to check each item's acceptance criteria against the
-   integrated branch. VERIFIED → ledger `verified (<PR>, <CI run>)`;
+   integrated branch. For a fix round, resume the same verifier with
+   `SendMessage`. VERIFIED → ledger `verified (<PR>, <CI run>)`;
    NOT VERIFIED → back to `open` with the failing criterion.
 6. **Record.** Add an iteration-log row: sweep, seats, items verified/reopened,
    CI run, what remains. Commit the ledger on the integration branch.
