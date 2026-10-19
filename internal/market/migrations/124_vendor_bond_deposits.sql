@@ -11,7 +11,10 @@
 -- primary address and restore height: sealed). At most one wallet is creating or sealed: the one in use. A file that
 -- already had the name and opens with the market's password (a bond wallet this database lost, after a restore) is
 -- recorded as an orphan, its seed sealed so the operator can sweep it; one that does not open is an orphan with no
--- seal. Names, addresses and seals never change once set; states move only creating -> sealed | orphan.
+-- seal. A restore (scripts/restore.sh, UPGRADING.md section 6) moves the wallet in use to closed: the restored records
+-- may lack accounts it gave out after the backup, so it never issues an address again; its recorded accounts are still
+-- read and still credit their applications, and new addresses come from the next bond-NN. Names, addresses and seals
+-- never change once set; states move only creating -> sealed | orphan and sealed -> closed.
 CREATE TABLE xmr_bond_wallets (
  id bigserial PRIMARY KEY,
  name text NOT NULL UNIQUE CHECK (name ~ '^bond-[0-9]{2}$'),
@@ -20,10 +23,10 @@ CREATE TABLE xmr_bond_wallets (
  seed_sealed text CHECK (seed_sealed <> ''),
  seed_key_fpr text CHECK (seed_key_fpr ~ '^[0-9A-F]{40}([0-9A-F]{24})?$'),
  sealed_at timestamptz,
- state text NOT NULL DEFAULT 'creating' CHECK (state IN ('creating','sealed','orphan')),
+ state text NOT NULL DEFAULT 'creating' CHECK (state IN ('creating','sealed','closed','orphan')),
  created timestamptz NOT NULL DEFAULT now(),
  updated timestamptz NOT NULL DEFAULT now(),
- CONSTRAINT xmr_bond_wallets_sealed CHECK (state <> 'sealed' OR (seed_sealed IS NOT NULL AND primary_address IS NOT NULL AND restore_height IS NOT NULL)),
+ CONSTRAINT xmr_bond_wallets_sealed CHECK (state NOT IN ('sealed','closed') OR(seed_sealed IS NOT NULL AND primary_address IS NOT NULL AND restore_height IS NOT NULL)),
  CONSTRAINT xmr_bond_wallets_seal CHECK (seed_sealed IS NULL OR (seed_key_fpr IS NOT NULL AND sealed_at IS NOT NULL))
 );
 CREATE UNIQUE INDEX xmr_bond_wallets_in_use ON xmr_bond_wallets ((true)) WHERE state IN ('creating','sealed');
@@ -36,8 +39,9 @@ BEGIN
       OR (OLD.seed_sealed IS NOT NULL AND NEW.seed_sealed IS DISTINCT FROM OLD.seed_sealed)
       OR (OLD.seed_key_fpr IS NOT NULL AND NEW.seed_key_fpr IS DISTINCT FROM OLD.seed_key_fpr)
       OR (OLD.sealed_at IS NOT NULL AND NEW.sealed_at IS DISTINCT FROM OLD.sealed_at)
-      OR (NEW.state IS DISTINCT FROM OLD.state AND NOT (OLD.state = 'creating' AND NEW.state IN ('sealed','orphan'))) THEN
-    RAISE EXCEPTION 'xmr_bond_wallets: bond wallet % keeps its name, address, restore height and sealed seed, and moves only from creating to sealed or orphan', OLD.id
+      OR (NEW.state IS DISTINCT FROM OLD.state AND NOT (OLD.state = 'creating' AND NEW.state IN ('sealed','orphan')
+        OR OLD.state = 'sealed' AND NEW.state = 'closed')) THEN
+    RAISE EXCEPTION 'xmr_bond_wallets: bond wallet % keeps its name, address, restore height and sealed seed, and moves only from creating to sealed or orphan and from sealed to closed', OLD.id
       USING ERRCODE = 'check_violation';
   END IF;
   RETURN NEW;
@@ -84,3 +88,8 @@ CREATE TABLE vendor_bond_deposits (
  CHECK (NOT (credited AND (late OR locked)))
 );
 CREATE INDEX vendor_bond_deposits_account ON vendor_bond_deposits(account_id);
+
+-- An application that existed before this migration was told to pay its bond as the administrator's instructions said;
+-- /account tells it not to pay again at its new bond address if it already did. Existing rows are marked, new ones not.
+ALTER TABLE vendor_applications ADD COLUMN before_bond_addresses boolean NOT NULL DEFAULT true;
+ALTER TABLE vendor_applications ALTER COLUMN before_bond_addresses SET DEFAULT false;

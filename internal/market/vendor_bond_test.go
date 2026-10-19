@@ -189,6 +189,28 @@ func TestVendorBondFundsApplication(t *testing.T) {
 			t.Fatalf("over-payment notices: admins %d, applicant %v", x.adminsTold(bondOverNotice), x.notes(uid))
 		}
 	})
+	t.Run("over, still confirming", func(t *testing.T) {
+		x, adminSess := newVendorBondEnv(t, "manual")
+		uid, _, app := x.bondApplicant()
+		x.mustPoll()
+		addr := x.mustBondAddress(app)
+		extra := hex64("bond extra")
+		x.fake.payAddress(addr, hex64("bond full"), testBondPico, 12)
+		x.fake.payAddress(addr, extra, 50_000_000_000, 2)
+		x.mustPoll()
+		x.mustPoll()
+		if got := x.appState(app); got != "awaiting_approval:xmr" || x.adminsTold(bondOverNotice) != 0 {
+			t.Fatalf("the bond with 0.05 XMR still confirming: %s, over notices %d", got, x.adminsTold(bondOverNotice))
+		}
+		x.fake.setConfs(extra, 12)
+		x.mustPoll()
+		x.mustPoll()
+		if x.adminsTold("the 0.05 XMR "+bondOverNotice) != 2 || x.adminsTold(bondLateNotice) != 0 {
+			t.Fatalf("the extra 0.05 XMR confirmed: over notices %d", x.adminsTold(bondOverNotice))
+		}
+		admin := x.body("GET", adminUserURL(x.handleOf(uid)), adminSess, nil, 200)
+		mustContain(t, admin, "0.05 XMR arrived before the bond was recorded but was not counted toward it")
+	})
 	t.Run("late", func(t *testing.T) {
 		x, adminSess := newVendorBondEnv(t, "manual")
 		cases := []struct {
@@ -364,12 +386,16 @@ func TestVendorBondGateHoldsIssuanceAndApproval(t *testing.T) {
 	addr := x.mustBondAddress(app)
 	mustContain(t, x.accountPage(sess), addr)
 
+	// With an address already issued, the page hides it but says payments to it still count (QA67-1); it never says
+	// the bond is only recorded by hand.
 	hidden := func(why string) {
 		t.Helper()
 		page := x.accountPage(sess)
-		if strings.Contains(page, addr) || !strings.Contains(page, manual) {
-			t.Fatalf("%s: the bond address is shown, or the manual text is not", why)
+		if strings.Contains(page, addr) || strings.Contains(page, manual) {
+			t.Fatalf("%s: the bond address is shown, or the page says the bond is recorded by hand only", why)
 		}
+		mustContain(t, page, "Payments already sent to this application's bond address are still counted automatically",
+			"New bond addresses are not being issued right now", "Pay the bond by hand")
 	}
 	agExec(x.testEnv, "INSERT INTO settings(key,value) VALUES('payments_recovery_required','true')")
 	hidden("restore gate")
@@ -382,7 +408,7 @@ func TestVendorBondGateHoldsIssuanceAndApproval(t *testing.T) {
 	if agInt(x.testEnv, "SELECT count(*) FROM vendor_bond_deposits WHERE confirmations>=10 AND NOT credited") != 1 {
 		t.Fatal("the deposit was not read under the gate")
 	}
-	mustContain(t, x.accountPage(sess), "0.25 XMR with at least 10 confirmations")
+	mustContain(t, x.accountPage(sess), "so far 0.25 XMR has them")
 	// A second applicant under the gate gets no account.
 	_, _, app2 := x.bondApplicant()
 	x.mustPoll()
@@ -395,6 +421,7 @@ func TestVendorBondGateHoldsIssuanceAndApproval(t *testing.T) {
 	agExec(x.testEnv, "DELETE FROM settings WHERE key=$1", xmrEscrowSweepKey)
 	agExec(x.testEnv, "UPDATE settings SET value='false' WHERE key='payment_intake_XMR'")
 	hidden("intake paused")
+	// Intake paused holds issuance only: the deposit already sent is recorded and the held approval happens.
 	x.mustPoll()
 	if x.bondAddress(app2) != "" || x.appState(app) != "approved:xmr" {
 		t.Fatalf("intake paused: second address %q; the first application %s (held approval resumes once the gate clears)", x.bondAddress(app2), x.appState(app))
@@ -542,7 +569,7 @@ func TestVendorBondRestoreSweep(t *testing.T) {
 	// A bond wallet created after the backup.
 	x.fake.edit(func(f *fakeXMREscrow) {
 		w := f.newFile("bond-02", xmrWalletPassword(testXMRSecret, "bond-02"))
-		w.accounts = append(w.accounts, testXMRAddr("fake bond-02 account 1", true))
+		w.accounts = append(w.accounts, testXMRAddr("fake bond-02 account 1", true), testXMRAddr("fake bond-02 account 2", true))
 		w.transfers = append(w.transfers, &fakeXMRTransfer{TxID: hex64("lost bond"), Account: 1, Amount: testBondPico, Confs: 20})
 	})
 	agExec(x.testEnv, "INSERT INTO settings(key,value) VALUES($1,'true')", xmrEscrowSweepKey)
@@ -563,6 +590,17 @@ func TestVendorBondRestoreSweep(t *testing.T) {
 	if x.appState(app) != "awaiting_approval:xmr" {
 		t.Fatalf("after the sweep: %s", x.appState(app))
 	}
+	// PE-2: the orphan is read like a closed wallet. Its funded account was listed already and is not reported again; a
+	// later deposit to its other account is reported once to each administrator and funds nothing.
+	if x.adminsTold(bondUnclaimed) != 0 {
+		t.Fatal("the orphan's listed account was reported again")
+	}
+	x.fake.pay("bond-02", 2, hex64("later to the orphan"), testBondPico, 12)
+	x.mustPoll()
+	x.mustPoll()
+	if x.adminsTold(bondUnclaimed) != 2 || x.adminsTold("bond-02: account 2") != 2 || agInt(x.testEnv, "SELECT count(*) FROM vendor_bond_deposits") != 1 {
+		t.Fatalf("a later deposit to the orphan: %d notices", x.adminsTold(bondUnclaimed))
+	}
 	// The bond wallet stops opening (another password): reported once, and a sweep still completes.
 	x.fake.edit(func(f *fakeXMREscrow) { f.files[testBondWallet].password = "not the market's" })
 	agExec(x.testEnv, "INSERT INTO settings(key,value) VALUES($1,'true')", xmrEscrowSweepKey)
@@ -575,5 +613,10 @@ func TestVendorBondRestoreSweep(t *testing.T) {
 	}
 	if got := agStrings(t, x.testEnv, "SELECT name FROM xmr_bond_wallets WHERE state IN ('creating','sealed')"); !slices.Equal(got, []string{testBondWallet}) {
 		t.Fatalf("a replacement bond wallet was created: %v", got)
+	}
+	// PE-3: while the bond wallet in use does not open, no address is promised: a new applicant sees the manual text.
+	_, sess, _ := x.bondApplicant()
+	if page := x.accountPage(sess); strings.Contains(page, "preparing a bond address") || !strings.Contains(page, "The bond is recorded by hand") {
+		t.Fatal("an address was promised while the bond wallet does not open")
 	}
 }

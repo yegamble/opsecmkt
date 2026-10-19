@@ -235,7 +235,12 @@ have the escrow confirmations. Applications opened before the upgrade get an add
 manual *Record bond received* and *Waive the bond* stay. The market never sends from the bond wallet: sweep it offline
 from its sealed seed ([vendor bond wallet](docs/operator-guide.md#vendor-bond-wallet)). Back up the escrow wallet volume
 as before (it now holds the bond wallet too). A database holding a bond wallet is pinned to its network like one
-holding escrow wallets. No new setting and no change to `scripts/restore.sh`. Older binaries that do not know this
+holding escrow wallets. `scripts/restore.sh` and the manual protection SQL of [section 6](#6-backups-now-need-the-wallets-too)
+now also close the bond wallet in use (`closed`: still read and still crediting the applications recorded on it, but
+never issuing again), so an address it gave after the backup is never given to another applicant; a fresh `bond-NN`
+issues from then on. Applications opened before this upgrade (`vendor_applications.before_bond_addresses`) are told on
+`/account` not to pay again at their new address if they already paid as your instructions said; record those bonds by
+hand. No new setting. Older binaries that do not know this
 migration refuse startup; back up the database first and follow the existing database rollback procedure to go back.
 
 # Upgrading from v0.1.0-alpha.1 to `v0.1.0-alpha.2`
@@ -724,6 +729,9 @@ not run `deploy up` until the protection has committed. The block runs in one tr
 - The `xmr_escrow_slots` line retires every free Monero escrow account, and the `xmr_escrow_wallets` line moves every
   active or sealed Monero escrow wallet to closing, so no restored account or wallet takes an order again. Omit these
   three table lines if the database has no `xmr_settlements.send_error` column (before migration 085).
+- The `xmr_bond_wallets` line closes the vendor bond wallet in use (A-547): it may have given bond addresses after the
+  backup that the restored records lack, so it gives no new address; it is still read, and its recorded addresses still
+  credit their applications. Omit it if the database has no `xmr_bond_wallets` table (before migration 124).
 - The final line adds one audit row ("set manually"); existing audit rows are not changed.
 
 <!-- runbook-sql: restore-protection -->
@@ -741,6 +749,7 @@ UPDATE xmr_settlements SET send_error='Restored from backup: check that this esc
 WHERE state IN ('built','relayed');
 UPDATE xmr_escrow_slots SET state='retired', updated=now() WHERE state='free';
 UPDATE xmr_escrow_wallets SET state='closing', updated=now() WHERE state IN ('active','sealed');
+UPDATE xmr_bond_wallets SET state='closed', updated=now() WHERE state='sealed';
 INSERT INTO audit_events(user_id,action) VALUES (NULL, 'Payout recovery gate set manually (UPGRADING.md section 6); all outbound payouts paused until an administrator clears the gate');
 COMMIT;
 ```

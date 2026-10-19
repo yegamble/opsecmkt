@@ -75,10 +75,13 @@ func (a *App) xmrBondIssuable(ctx context.Context, q rowQuerier) (bool, error) {
 	if !a.xmrEscrowReady() {
 		return false, nil
 	}
-	// With no bond wallet yet, one can be created only while ESCROW_XMR_SEED_KEY is the pinned key.
+	// With no bond wallet in use, one can be created only while ESCROW_XMR_SEED_KEY is the pinned key; one in use that
+	// does not open (its unopenable episode, xmrBondUnopenable) issues nothing until it opens again.
 	var ok bool
 	err := q.QueryRowContext(ctx, "SELECT NOT "+restoreGateSQL+" AND NOT EXISTS(SELECT 1 FROM settings WHERE key=$1 AND value='true') AND EXISTS(SELECT 1 FROM settings WHERE key=$2 AND value=$3)"+
-		" AND ($4 OR EXISTS(SELECT 1 FROM xmr_bond_wallets WHERE state='sealed'))", xmrEscrowSweepKey, paymentIntakeKey("XMR"), intakeEscrow, a.escrowXMR.canCreate.Load()).Scan(&ok)
+		" AND ($4 OR EXISTS(SELECT 1 FROM xmr_bond_wallets WHERE state='sealed'))"+
+		" AND NOT EXISTS(SELECT 1 FROM xmr_bond_wallets w JOIN settings s ON s.key='vendor_bond_wallet_unopenable_'||w.id::text WHERE w.state='sealed')",
+		xmrEscrowSweepKey, paymentIntakeKey("XMR"), intakeEscrow, a.escrowXMR.canCreate.Load()).Scan(&ok)
 	return ok, err
 }
 
@@ -112,32 +115,62 @@ func (a *App) xmrBondPass(ctx context.Context, paused, sweep bool) (checked bool
 				return false, err
 			}
 		}
-		if w, err = a.xmrBondWallet(ctx); err != nil {
-			return false, err
-		}
+	}
+	// Every bond wallet that may hold bonds is read, one open at a time: the one in use (sealed, the only one that issues
+	// addresses), any a restore closed, and any orphan whose seed was sealed.
+	wallets, err := a.xmrBondWallets(ctx)
+	if err != nil {
+		return false, err
 	}
 	checked = true
-	var walletErr error
-	if w.state == "sealed" {
-		walletErr = x.rpc.openWallet(ctx, w.name, xmrWalletPassword(x.secret, w.name))
+	var errs []error
+	for _, w := range wallets {
+		if ctx.Err() != nil || x.refused.Load() {
+			checked = false
+			break
+		}
+		walletErr := x.rpc.openWallet(ctx, w.name, xmrWalletPassword(x.secret, w.name))
 		switch {
 		case walletErr == nil:
 			if walletErr = a.xmrBondUnopenable(ctx, w, false); walletErr == nil {
-				walletErr = a.xmrBondWalletPass(ctx, w, sweep, issue)
+				walletErr = a.xmrBondWalletPass(ctx, w, sweep, issue && w.state == "sealed")
 			}
-			checked = walletErr == nil
+			checked = checked && walletErr == nil
 		case xmrWalletDenied(walletErr) && xmrOpenRefusal(walletErr) != xmrOpenLocked:
 			// It does not open (its file missing, or another password): reported once while it lasts, never replaced,
 			// since it may hold bonds. The sweep goes on, as for a missing escrow wallet.
 			if alertErr := a.xmrBondUnopenable(ctx, w, true); alertErr != nil {
-				return false, errors.Join(walletErr, alertErr)
+				walletErr = errors.Join(walletErr, alertErr)
+				checked = false
 			}
 		default:
 			checked = false
 		}
+		if walletErr != nil {
+			errs = append(errs, fmt.Errorf("vendor bond wallet %s: %w", w.name, walletErr))
+		}
 	}
-	// The deposits as last read apply in the database even when the wallet was not read in this pass.
-	return checked, errors.Join(walletErr, a.xmrBondSettle(ctx, paused))
+	// The deposits as last read apply in the database even when a wallet was not read in this pass.
+	return checked, errors.Join(append(errs, a.xmrBondSettle(ctx, paused))...)
+}
+
+// xmrBondWallets lists the bond wallets a pass reads, oldest first: sealed (in use), closed, and orphans with a seal.
+func (a *App) xmrBondWallets(ctx context.Context) ([]xmrBondWalletRow, error) {
+	rows, err := a.db.QueryContext(ctx, `SELECT id,name,state,primary_address FROM xmr_bond_wallets
+		WHERE state IN ('sealed','closed') OR state='orphan' AND seed_sealed IS NOT NULL ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []xmrBondWalletRow
+	for rows.Next() {
+		var w xmrBondWalletRow
+		if err = rows.Scan(&w.id, &w.name, &w.state, &w.primary); err != nil {
+			return nil, err
+		}
+		out = append(out, w)
+	}
+	return out, rows.Err()
 }
 
 // xmrBondWallet reads the bond wallet in use; id 0 when there is none.
@@ -247,6 +280,7 @@ func (a *App) xmrBondOrphan(ctx context.Context, id int64, name string, opened b
 	x := a.escrowXMR
 	var primary, sealed, fpr string
 	var funded []string
+	var accounts []xmrAccount
 	if opened {
 		if !x.canCreate.Load() {
 			return errXMRSweepSeedKey
@@ -262,8 +296,7 @@ func (a *App) xmrBondOrphan(ctx context.Context, id int64, name string, opened b
 		if err != nil {
 			return err
 		}
-		accounts, err := x.rpc.accounts(ctx)
-		if err != nil {
+		if accounts, err = x.rpc.accounts(ctx); err != nil {
 			return err
 		}
 		if sealed, fpr, err = x.seedKey.sealSeed(mnemonic); err != nil {
@@ -282,8 +315,8 @@ func (a *App) xmrBondOrphan(ctx context.Context, id int64, name string, opened b
 	defer tx.Rollback()
 	seal := []any{primary, sealed, fpr}
 	if id == 0 {
-		_, err = tx.ExecContext(ctx, `INSERT INTO xmr_bond_wallets(name,state,primary_address,restore_height,seed_sealed,seed_key_fpr,sealed_at)
-			VALUES($1,'orphan',NULLIF($2,''),CASE WHEN $3<>'' THEN 0 END,NULLIF($3,''),NULLIF($4,''),CASE WHEN $3<>'' THEN now() END)`, append([]any{name}, seal...)...)
+		err = tx.QueryRowContext(ctx, `INSERT INTO xmr_bond_wallets(name,state,primary_address,restore_height,seed_sealed,seed_key_fpr,sealed_at)
+			VALUES($1,'orphan',NULLIF($2,''),CASE WHEN $3<>'' THEN 0 END,NULLIF($3,''),NULLIF($4,''),CASE WHEN $3<>'' THEN now() END) RETURNING id`, append([]any{name}, seal...)...).Scan(&id)
 	} else {
 		var res sql.Result
 		if res, err = tx.ExecContext(ctx, `UPDATE xmr_bond_wallets SET state='orphan',primary_address=NULLIF($2,''),restore_height=CASE WHEN $3<>'' THEN 0 END,
@@ -296,6 +329,17 @@ func (a *App) xmrBondOrphan(ctx context.Context, id int64, name string, opened b
 	if err != nil {
 		return err
 	}
+	// Its accounts are recorded for no application, those already funded as reported (listed below): read from now on
+	// like a closed wallet's, a later deposit to any of them is reported once and funds nothing.
+	for _, acc := range accounts {
+		if acc.Index == 0 {
+			continue
+		}
+		if _, err = tx.ExecContext(ctx, "INSERT INTO vendor_bond_accounts(wallet_id,account_index,address,unclaimed_alerted) VALUES($1,$2,$3,$4)",
+			id, acc.Index, acc.BaseAddress, acc.Balance > 0); err != nil {
+			return err
+		}
+	}
 	body := "Vendor bond wallet " + name + " exists on the escrow wallet-rpc and does not open with the market's password (a file left by another install?). The market recorded it as an orphan and never uses it; check that wallet yourself."
 	if opened {
 		coins := "None of its accounts holds coins."
@@ -303,7 +347,7 @@ func (a *App) xmrBondOrphan(ctx context.Context, id int64, name string, opened b
 			coins = "Funded accounts: " + strings.Join(funded, ", ") + ". Check them for vendor bonds this database lost and record those bonds by hand."
 		}
 		body = "Vendor bond wallet " + name + " was found on the escrow wallet-rpc with no record in this database (created after the backup it was restored from?). " +
-			"The market sealed its seed to the seed key so that you can sweep it offline, and never issues a bond address from it again; new bond addresses come from the next bond wallet. " + coins
+			"The market sealed its seed to the seed key so that you can sweep it offline, and never issues a bond address from it again; new bond addresses come from the next bond wallet. It keeps reading it, and tells you of a later deposit to any of its accounts. " + coins
 	}
 	if err = notifyAdmins(ctx, tx, body); err != nil {
 		return err
@@ -356,7 +400,7 @@ func xmrBondUnopenableKey(id int64) string {
 // when it opens again.
 func (a *App) xmrBondUnopenable(ctx context.Context, w xmrBondWalletRow, refused bool) error {
 	return a.xmrEpisodeAlert(ctx, xmrBondUnopenableKey(w.id), refused,
-		"Vendor bond wallet "+w.name+" does not open on the escrow wallet-rpc (its file is missing or no longer opens with the market's password). No bond address is issued and no bond deposit is read until it opens again; it may hold vendor bonds, so restore it from its sealed seed rather than letting the market create another one.",
+		"Vendor bond wallet "+w.name+" does not open on the escrow wallet-rpc (its file is missing or no longer opens with the market's password). No bond deposit to it is read, and no bond address is issued from it, until it opens again; it may hold vendor bonds, so restore it from its sealed seed rather than letting the market create another one.",
 		"escrow: vendor bond wallet "+w.name+" does not open; administrators notified")
 }
 
@@ -637,12 +681,13 @@ func (a *App) xmrBondIssue(ctx context.Context, w xmrBondWalletRow, rows map[int
 // records the bond of each application waiting for it whose counted deposits cover it (xmrBondCredit).
 func (a *App) xmrBondSettle(ctx context.Context, paused bool) error {
 	threshold := a.escrowXMR.confirmations
-	const who = `SELECT d.id,d.txid,d.amount,u.handle,va.state FROM vendor_bond_deposits d JOIN vendor_bond_accounts c ON c.id=d.account_id
+	const who = `SELECT d.id,d.txid,d.amount,u.handle,va.state,COALESCE(va.bond_received_how,''),d.late FROM vendor_bond_deposits d JOIN vendor_bond_accounts c ON c.id=d.account_id
 		JOIN vendor_applications va ON va.id=c.application_id JOIN users u ON u.id=va.user_id `
 	type flag struct {
-		id                  int64
-		txid, handle, state string
-		amount              int64
+		id                       int64
+		txid, handle, state, how string
+		amount                   int64
+		late                     bool
 	}
 	read := func(rows *sql.Rows, err error) ([]flag, error) {
 		if err != nil {
@@ -652,7 +697,7 @@ func (a *App) xmrBondSettle(ctx context.Context, paused bool) error {
 		var out []flag
 		for rows.Next() {
 			var f flag
-			if err = rows.Scan(&f.id, &f.txid, &f.amount, &f.handle, &f.state); err != nil {
+			if err = rows.Scan(&f.id, &f.txid, &f.amount, &f.handle, &f.state, &f.how, &f.late); err != nil {
 				return nil, err
 			}
 			out = append(out, f)
@@ -694,12 +739,21 @@ func (a *App) xmrBondSettle(ctx context.Context, paused bool) error {
 			return err
 		}
 	}
-	// A deposit the application did not count and no longer can: it was decided (or its bond recorded) without it.
-	uncounted, err := read(a.db.QueryContext(ctx, who+"WHERE NOT d.credited AND NOT d.locked AND NOT d.flagged AND va.state<>'awaiting_bond' ORDER BY d.id"))
+	// A deposit the application did not count and no longer can: it was decided (or its bond recorded) without it. It is
+	// told once it has confirmed, so a deposit that never arrives is never reported. After a bond recorded from Monero
+	// deposits, it is coins over the bond, told as an over-payment is (xmrBondCredit).
+	uncounted, err := read(a.db.QueryContext(ctx, who+"WHERE NOT d.credited AND NOT d.locked AND NOT d.flagged AND va.state<>'awaiting_bond' AND d.confirmations>=$1 ORDER BY d.id", threshold))
 	if err != nil {
 		return err
 	}
 	for _, f := range uncounted {
+		if f.how == "xmr" && !f.late {
+			if err = mark(f.id, false, fmt.Sprintf("Vendor bond: %s paid %s XMR more in deposit %s, which confirmed after the bond was recorded from earlier deposits; the %s XMR over the bond is kept in the bond wallet (non-refundable) and changes nothing about the application (now: %s).",
+				f.handle, amount(f.amount, 12), truncate(f.txid, 20), amount(f.amount, 12), strings.ToLower(vendorStateLabel(f.state)))); err != nil {
+				return err
+			}
+			continue
+		}
 		if err = mark(f.id, false, fmt.Sprintf("Vendor bond: deposit %s of %s XMR to the bond address of %s's vendor application was not counted toward the bond, because the application stopped waiting for its bond (now: %s) before the market counted it. It is kept, since the bond is non-refundable and the market sends nothing back, and it changes nothing about the application.",
 			truncate(f.txid, 20), amount(f.amount, 12), f.handle, strings.ToLower(vendorStateLabel(f.state)))); err != nil {
 			return err
@@ -865,15 +919,17 @@ func (a *App) fillVendorBond(ctx context.Context, v *VendorApplicationView, issu
 	}
 	v.BondAuto, v.BondThreshold = issuable && v.AwaitingBond, x.confirmations
 	var addr string
-	var bond, confirmed, pending, least, late, locked, reorg int64
+	var bond, confirmed, pending, least, late, early, locked, reorg int64
 	var deposits int
-	err := a.db.QueryRowContext(ctx, `SELECT c.address,va.bond_piconero,
+	err := a.db.QueryRowContext(ctx, `SELECT c.address,va.bond_piconero,va.before_bond_addresses,
 		COALESCE(sum(d.amount) FILTER (WHERE d.confirmations>=$2 AND NOT d.locked AND NOT d.late),0),
 		COALESCE(sum(d.amount) FILTER (WHERE d.confirmations BETWEEN 0 AND $2-1 AND NOT d.locked AND NOT d.late),0),
 		COALESCE(min(d.confirmations) FILTER (WHERE d.confirmations BETWEEN 0 AND $2-1 AND NOT d.locked AND NOT d.late),0),
-		COALESCE(sum(d.amount) FILTER (WHERE d.late),0),count(d.id) FILTER (WHERE d.locked),count(d.id) FILTER (WHERE d.reorg_flagged),count(d.id)
+		COALESCE(sum(d.amount) FILTER (WHERE d.late),0),COALESCE(sum(d.amount) FILTER (WHERE d.flagged AND NOT d.late AND NOT d.locked AND NOT d.credited),0),
+		count(d.id) FILTER (WHERE d.locked),count(d.id) FILTER (WHERE d.reorg_flagged),count(d.id)
 		FROM vendor_bond_accounts c JOIN vendor_applications va ON va.id=c.application_id LEFT JOIN vendor_bond_deposits d ON d.account_id=c.id
-		WHERE c.application_id=$1 GROUP BY c.address,va.bond_piconero`, v.ID, x.confirmations).Scan(&addr, &bond, &confirmed, &pending, &least, &late, &locked, &reorg, &deposits)
+		WHERE c.application_id=$1 GROUP BY c.address,va.bond_piconero,va.before_bond_addresses`, v.ID, x.confirmations).Scan(&addr, &bond, &v.BeforeBondAddresses,
+		&confirmed, &pending, &least, &late, &early, &locked, &reorg, &deposits)
 	if err == sql.ErrNoRows {
 		v.BondPreparing = v.BondAuto
 		return nil
@@ -885,12 +941,15 @@ func (a *App) fillVendorBond(ctx context.Context, v *VendorApplicationView, issu
 	if _, perr := parseXMRAddress(addr, x.formNet()); perr == nil && (admin || v.BondAuto) {
 		v.BondAddress = addr
 	}
-	v.HasDeposits = deposits > 0
+	v.BondIssued, v.HasDeposits = true, deposits > 0
 	v.BondConfirmed, v.BondPending, v.BondPendingAny, v.BondLeastConfs = amount(confirmed, 12), amount(pending, 12), pending > 0, least
 	v.BondRemaining = amount(max(bond-confirmed, 0), 12)
 	if admin {
 		if late > 0 {
 			v.BondFlags = append(v.BondFlags, amount(late, 12)+" XMR arrived after the application stopped waiting for its bond: kept, not counted.")
+		}
+		if early > 0 {
+			v.BondFlags = append(v.BondFlags, amount(early, 12)+" XMR arrived before the bond was recorded but was not counted toward it (it confirmed later, or the bond was recorded or waived by hand first): kept.")
 		}
 		if locked > 0 {
 			v.BondFlags = append(v.BondFlags, strconv.FormatInt(locked, 10)+" deposit(s) with an unlock time: kept, not counted.")

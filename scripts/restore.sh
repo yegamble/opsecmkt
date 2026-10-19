@@ -159,6 +159,18 @@ SELECT (SELECT count(*) FROM held) AS xmr_held, (SELECT count(*) FROM retired) A
 \else
 SELECT 0 AS xmr_held, 0 AS xmr_retired, 0 AS xmr_closed \gset
 \endif
+-- A-547: the vendor bond wallet in use may have given addresses after the backup that these records lack, so it is
+-- closed: read on, never issuing again; new bond addresses come from a fresh bond wallet.
+SELECT to_regclass('xmr_bond_wallets') IS NOT NULL AS has_bond \gset
+\if :has_bond
+-- xmr-bond-restore: begin
+WITH closed AS (UPDATE xmr_bond_wallets SET state='closed', updated=now() WHERE state='sealed' RETURNING 1)
+SELECT count(*) AS bond_closed FROM closed
+-- xmr-bond-restore: end
+\gset
+\else
+SELECT 0 AS bond_closed \gset
+\endif
 SELECT :'has_settings'::boolean AND to_regclass('audit_events') IS NOT NULL AS has_audit \gset
 \if :has_audit
 INSERT INTO audit_events(user_id,action) VALUES (NULL, 'Payout recovery gate set by scripts/restore.sh'
@@ -171,19 +183,22 @@ SELECT count(*) AS images FROM images \gset
 \else
 SELECT 0 AS images \gset
 \endif
-SELECT :'images' || ' ' || :'has_xmr' || ' ' || :'xmr_held' || ' ' || :'xmr_retired' || ' ' || :'xmr_closed';
+SELECT :'images' || ' ' || :'has_xmr' || ' ' || :'xmr_held' || ' ' || :'xmr_retired' || ' ' || :'xmr_closed' || ' ' || :'bond_closed';
 SQL
 ); then
   echo 'The database was restored, but payout recovery protection FAILED. Do not start the application on it; apply the recovery gate and holds by hand first (UPGRADING.md, section 6).' >&2
   exit 1
 fi
-read -r images xmr xmr_held xmr_retired xmr_closed <<< "$counts"
+read -r images xmr xmr_held xmr_retired xmr_closed bond_closed <<< "$counts"
 if [[ ${xmr_held:-0} != 0 ]]; then
   printf 'Held %s restored Monero escrow settlement(s) with a stored transaction; confirm each relay from the admin page only after checking the escrow daemon and the escrow wallet.\n' "$xmr_held"
 fi
 if [[ ${xmr:-f} == t ]]; then
   echo 'Monero escrow: release deadlines that passed in the restored records move to 72 hours after the Monero escrow watcher next runs, and each buyer is told.'
   printf 'Monero escrow (if used): retired %s free escrow account(s) and moved %s escrow wallet(s) to closing, so no restored wallet takes an order again; Monero escrow checkout waits until the Monero escrow watcher has found the escrow wallets created after the backup and checked every wallet.\n' "$xmr_retired" "$xmr_closed"
+fi
+if [[ ${bond_closed:-0} != 0 ]]; then
+  printf 'Vendor bonds: closed %s vendor bond wallet(s), which may have given addresses after the backup that these records lack: they are still read and still credit the applications recorded on them, but give no new address; applicants without an address get one from a new bond wallet once the Monero escrow watcher has checked the wallets and the gate is cleared.\n' "$bond_closed"
 fi
 echo 'Application databases now require payout recovery reconciliation. All outbound payouts remain paused until the recovery gate is explicitly cleared (see docs/testnet-runbook.md).'
 # A-190 (ruling D4): staff takedowns and owners' removals delete an image's row, so the restored database has every

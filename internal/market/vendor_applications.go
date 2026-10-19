@@ -67,9 +67,11 @@ type VendorApplicationView struct {
 	// the manual instructions). BondAddress: the one-time deposit address (to an administrator always; to the applicant
 	// only with BondAuto). BondConfirmed: XMR counted (at least BondThreshold confirmations); BondPending: XMR still
 	// confirming, the fewest at BondLeastConfs; BondRemaining: what the counted deposits leave of the bond. BondFlags:
-	// administrators only, late, locked and reorganised deposits.
+	// administrators only, late, locked and reorganised deposits. BondIssued: the application has a bond address (shown
+	// or not). BeforeBondAddresses: it was opened before migration 124, when the bond was paid as the instructions said.
 	BondAddress, BondConfirmed, BondPending, BondRemaining string
 	BondAuto, BondPreparing, BondPendingAny, HasDeposits   bool
+	BondIssued, BeforeBondAddresses                        bool
 	BondThreshold, BondLeastConfs                          int64
 	BondFlags                                              []string
 }
