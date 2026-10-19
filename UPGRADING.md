@@ -111,6 +111,20 @@ footer and sign-in page after an upgrade, name change, logo replacement or reset
 See [market branding](docs/operator-guide.md#changing-the-market-name-and-logo)
 for the supported files, size limits and upload steps.
 
+## Vendor onboarding
+
+Migration 121 adds vendor applications, the verified-vendor mark and the vendor
+policy settings (no bond, manual approval). Every existing vendor receives an
+approved application and keeps selling; none is marked verified. Sign-up now
+offers a buyer or a vendor account; a vendor account is a buyer account with an
+application that an administrator decides. Older binaries that do not know this
+migration refuse startup; follow the existing database rollback procedure.
+
+After upgrading, review **Admin → Vendor applications**. A bond is a
+non-refundable fee that an administrator records by hand after checking their
+own wallet; the market does not detect bond payments. See
+[vendor applications](docs/operator-guide.md#vendor-applications).
+
 # Upgrading from v0.1.0-alpha.1 to `v0.1.0-alpha.2`
 
 `v0.1.0-alpha.2` is a prerelease. Its installer now defaults new installs to mainnet (real funds), but an upgrade keeps

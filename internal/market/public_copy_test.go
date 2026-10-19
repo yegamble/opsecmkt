@@ -166,15 +166,15 @@ func TestAccountSaysSellingNeedsTheVendorRole(t *testing.T) {
 	e := newTestApp(t)
 	_, buyer := e.user("sellbuyer_"+randomToken()[:6], "buyer")
 	_, vendor := e.user("sellvendor_"+randomToken()[:6], "vendor")
-	const sentence = "Selling needs an administrator to give your account the vendor role. Ask the operator of this market."
+	const sentence = `Selling needs an approved vendor application: see <a class="text-link" href="#vendor-application">Sell on this market</a>. Ask the operator of this market.`
 	w := e.do("GET", "/account", buyer, nil)
 	e.check(w, 200)
-	if body := html.UnescapeString(w.Body.String()); strings.Count(body, "Selling needs an administrator") != 1 || !strings.Contains(body, sentence) {
+	if body := html.UnescapeString(w.Body.String()); strings.Count(body, "Selling needs an approved vendor application") != 1 || !strings.Contains(body, sentence) {
 		t.Errorf("buyer's account lacks %q:\n%s", sentence, body)
 	}
 	w = e.do("GET", "/account", vendor, nil)
 	e.check(w, 200)
-	if strings.Contains(w.Body.String(), "Selling needs an administrator") {
+	if strings.Contains(w.Body.String(), "Selling needs an approved vendor application") {
 		t.Errorf("a vendor's account explains how to get the vendor role")
 	}
 }

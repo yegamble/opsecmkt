@@ -444,6 +444,9 @@ func adminChange(c *actionCtx) (actionResult, error) {
 			}
 			actor := "administrator " + u.Handle
 			_, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", target, "Role changed from "+old+" to "+role+" by "+actor)
+			if err == nil && role == "vendor" { // A-544: the assignment is an approved vendor application
+				err = vendorRoleAssigned(ctx, tx, target, u.ID, "Role assigned by an administrator")
+			}
 		}
 		if err == nil {
 			var more string

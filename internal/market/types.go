@@ -9,12 +9,14 @@ type User struct {
 	Factors               string // P1, PageData.FactorAccounts only: enrolled second factors, e.g. "TOTP and PGP sign-in"
 	Suspended             string // P1, PageData.SuspendedAccounts only: when the account was suspended
 	Avatar                string // A-189, vendor page and /canary staff list only: the avatar thumbnail on /img, "" when none may be shown
+	VendorVerified        bool   // A-544, vendor page only: an administrator marked this vendor verified
 }
 type Product struct {
 	ID, Title, Description, Category, Region, Kind, Vendor, VendorID, PriceBTC, PriceXMR string
 	BTCOrderUnavailable, XMROrderUnavailable                                             string // legacy price below that currency's escrow settlement minimum
 	Stock                                                                                int
 	Archived                                                                             bool // Foundation; P4 uses
+	VendorVerified                                                                       bool // A-544: an administrator marked the vendor verified
 	// P4, vendor-dashboard only: an administrator's takedown reason (A-163); never loaded for public pages.
 	TakedownReason string
 	// A-189, catalog, vendor and product pages only: the listing's public photos, oldest first (image_pages.go),
@@ -170,6 +172,13 @@ type PageData struct {
 	Refusal *RefusalView
 	// FormHandle: /login and /register re-rendered after a refused post, the handle that was typed (A-514).
 	FormHandle string
+	// FormVendor: /register re-rendered after a refused post that chose a vendor account (A-544).
+	FormVendor bool
+	// A-544 vendor onboarding (vendor_applications.go). VendorPolicy: /register, the policy a vendor sign-up follows;
+	// VendorAccount: /account for a buyer or vendor; VendorAdmin: the admin vendors panel.
+	VendorPolicy  *VendorPolicyView
+	VendorAccount *VendorAccountView
+	VendorAdmin   *VendorAdminView
 	// ImageStorage: admin page, stored photos and avatars against IMAGE_STORAGE_LIMIT_MB (uploads.go).
 	ImageStorage *ImageStorageView
 	// A-189 (image_pages.go). StaffListPublic: /canary, the administrator's "Show a public staff list" is on;

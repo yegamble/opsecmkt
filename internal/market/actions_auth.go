@@ -581,7 +581,16 @@ var errSignInPaused = fail(429, "Sign-in for this handle is paused for up to 10 
 // authAction serves /setup, /login and /register. bcrypt runs before any transaction is opened.
 func authAction(c *actionCtx) (actionResult, error) {
 	a, ctx, f, path, w := c.A, c.Ctx(), c.Form, c.R.URL.Path, c.W
+	vendor := false
 	if path == "/register" {
+		// A-544: a vendor account is a buyer account with a vendor application under the current vendor policy.
+		switch f.Get("account_type") {
+		case "", "buyer":
+		case "vendor":
+			vendor = true
+		default:
+			return actionResult{}, fail(400, "Choose a buyer account or a vendor account")
+		}
 		policy, err := a.readSiteAccess(ctx)
 		if err != nil {
 			return actionResult{}, err
@@ -673,6 +682,11 @@ func authAction(c *actionCtx) (actionResult, error) {
 		if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", id, "Account created: buyer"); err != nil {
 			return actionResult{}, fail(500, "Audit failed")
 		}
+		if vendor {
+			if _, err = submitVendorApplication(ctx, tx, id); err != nil {
+				return actionResult{}, err
+			}
+		}
 	}
 	if err = tx.Commit(); err != nil {
 		return actionResult{}, fail(500, "Unable to save account")
@@ -682,6 +696,9 @@ func authAction(c *actionCtx) (actionResult, error) {
 	}
 	if path == "/setup" {
 		return actionResult{Redirect: "/admin?welcome=1"}, nil
+	}
+	if vendor {
+		return actionResult{Redirect: "/account#vendor-application"}, nil // where the application's status is shown
 	}
 	return actionResult{Redirect: orHome(a.signInNext(f.Get("next")))}, nil
 }

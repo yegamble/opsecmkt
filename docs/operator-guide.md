@@ -674,6 +674,28 @@ After changing access, check a signed-out session and an existing account.
 Members-only content should lead to sign-in, while closed `/register` shows a
 notice without a form. Existing accounts should still be able to sign in.
 
+### Vendor applications
+
+Accounts become vendors through an application decided under the policy in **Admin → Vendor applications**.
+Choose a bond in XMR (0 for none) and manual or automatic approval, write the bond payment instructions applicants
+see, and confirm with your password (and authenticator code when enabled). A change applies to new applications only.
+
+- **The bond is a non-refundable fee.** Say so in your instructions and public terms. The market does not watch any
+  wallet for it: check your own wallet (on a test network while testing), then choose *Record bond received* on the
+  application. *Waive the bond* records that no bond was paid. Automatic detection is not available.
+- With manual approval, approve or reject each application with an optional note the applicant sees. With automatic
+  approval, recording or waiving the bond approves it; with no bond and automatic approval every vendor sign-up is a
+  vendor at once, so use that only where anyone may sell.
+- Approval gives the vendor role (audited like *Assign an account role*); rejected or withdrawn applicants stay buyers.
+  *Assign an account role* and `-set-role` still change roles directly: making an account a vendor records an
+  approved application ("Role assigned by an administrator") and closes any open one. A removed vendor keeps its
+  approved application, sees that its vendor role was removed and may apply again.
+- *Verified vendors* marks a vendor with a badge on its page and listings. It is your judgment as staff, not an
+  identity check; the vendor is notified and the change is audited.
+
+Vendors that existed before this release keep selling: the upgrade records an approved application for each, without
+a verified mark.
+
 ### Changing the market name and logo
 
 An administrator manages the site's identity under **Admin → Market name and logo**.
@@ -809,7 +831,7 @@ Reviews are published as soon as the buyer writes them. To take one down (for ex
 
 ### Inventory
 
-No configuration. Vendors manage listings from the vendor desk (Edit / Archive / Restore). The vendor desk's readiness panel lists the current encryption-key and escrow-key setup needed for new orders; a vendor can also open it from the setup link on `/account`. Check the panel after changing a key or the market's escrow configuration. Automatic delivery content for digital listings is stored unencrypted in the database — include it in your threat model and backups — and is only released after an escrow is funded; with escrow off it is never released automatically. Administrators can edit other vendors' listings but cannot view or change their automatic delivery content: the editor shows only whether it is set, and only the vendor can change or remove it. A save that changes another vendor's listing notifies that vendor, naming the fields changed, and is recorded in the vendor's audit trail as well as yours (A-516).
+Only approved vendors (see [Vendor applications](#vendor-applications)) can list. Vendors manage listings from the vendor desk (Edit / Archive / Restore). The vendor desk's readiness panel lists the current encryption-key and escrow-key setup needed for new orders; a vendor can also open it from the setup link on `/account`. Check the panel after changing a key or the market's escrow configuration. Automatic delivery content for digital listings is stored unencrypted in the database — include it in your threat model and backups — and is only released after an escrow is funded; with escrow off it is never released automatically. Administrators can edit other vendors' listings but cannot view or change their automatic delivery content: the editor shows only whether it is set, and only the vendor can change or remove it. A save that changes another vendor's listing notifies that vendor, naming the fields changed, and is recorded in the vendor's audit trail as well as yours (A-516).
 
 To remove another vendor's listing (for example counterfeit or prohibited goods) while the vendor keeps selling everything else, open its edit page as an administrator, open *Take down listing*, give the vendor a reason of 10–500 characters and confirm with your password (and authenticator code when enrolled). The listing is archived; the vendor is notified with the reason and sees it on the listing and the vendor desk, can still edit the listing, but cannot restore it. The listing leaves the marketplace, but the buyers of its existing orders, and moderators and administrators reviewing those orders, can still open its page (marked Archived, without the reason) from the order. The reason is stored unencrypted and kept in both accounts' activity logs; it is never shown publicly, but do not put an address or real name in it. While the listing is taken down, paid orders on it are not delivered automatically: they wait for the vendor to deliver by hand or cancel and refund (cancelling a funded Monero escrow order requests its refund, which the market builds and sends). *Restore listing* on the same page, confirmed the same way, undoes it. To take away all of a vendor's listings, change their role instead (that archive carries no reason and the vendor can restore those listings if made a vendor again). Migration 041 adds `products.admin_archive_reason`.
 

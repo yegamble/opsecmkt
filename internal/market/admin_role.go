@@ -93,5 +93,10 @@ func SetRole(ctx context.Context, db *sql.DB, handle, role string) (string, erro
 	if err != nil {
 		return "", err
 	}
+	if role == "vendor" { // A-544: the assignment is an approved vendor application
+		if err = vendorRoleAssigned(ctx, tx, id, "", "Role assigned by an administrator (host command)"); err != nil {
+			return "", err
+		}
+	}
 	return summary + more, tx.Commit()
 }

@@ -28,7 +28,8 @@
 <div>
 <dt>Vendor</dt>
 <dd>
-<a class="text-link" href="/vendor?id={{.VendorID}}">{{.Vendor}}</a>
+<a class="text-link" href="/vendor?id={{.VendorID}}">{{.Vendor}}</a>{{if .VendorVerified}}
+<span class="badge green verified-vendor">Verified vendor</span>{{end}}
 </dd>
 </div>
 <div>

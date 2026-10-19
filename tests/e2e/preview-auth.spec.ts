@@ -37,8 +37,8 @@ for (const path of ['/login', '/register']) {
     // A-517: with no staff contact the fallback says honestly that there is no way in without the image.
     await expect(page.locator('.captcha .captcha-fallback')).toHaveText('This market lists no contact that works without an account, so there is no way to get one without the image. Only the operator of this market can turn the CAPTCHA off.');
     if (path === '/register') {
-      // A-512: selling needs the vendor role from an administrator.
-      await expect(page.locator('main p.staff-contact')).toHaveText('Selling needs an administrator to give your account the vendor role. Ask the operator of this market.');
+      // A-512, A-544: selling needs an approved vendor application.
+      await expect(page.locator('main p.staff-contact')).toHaveText('Selling needs an approved vendor application. Ask the operator of this market.');
     }
     await noScriptsNoOverflow(page);
   });

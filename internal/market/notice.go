@@ -112,6 +112,13 @@ var notices = map[string]struct{ text, section, pages string }{
 	"intake-paused": {"New payment addresses paused.", "payment-intake", "admin"},
 	"intake-escrow": {"New payments set to escrow only.", "payment-intake", "admin"},
 	"operator-key":  {"Operator PGP key saved.", "transparency", "admin"},
+	// Vendor onboarding (vendor_applications.go, A-544)
+	"vendor-applied":   {"Vendor application submitted. Its status is shown below.", "vendor-application", "account"},
+	"vendor-approved":  {"Vendor application approved: your account is now a vendor account.", "vendor-application", "account"},
+	"vendor-withdrawn": {"Vendor application withdrawn.", "vendor-application", "account"},
+	"vendor-policy":    {"Vendor policy saved. It applies to new applications; open applications keep their bond and approval mode.", "vendors", "admin"},
+	"vendor-decision":  {"Vendor application updated. The applicant was notified.", "vendors", "admin"},
+	"vendor-verify":    {"Verified vendor mark saved. The vendor was notified.", "vendors", "admin"},
 }
 
 // noticeErrors are the codes shown as the page's error alert rather than a status notice.
