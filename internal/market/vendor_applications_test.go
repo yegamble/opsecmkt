@@ -442,8 +442,11 @@ func TestVendorMigrationGrandfathers(t *testing.T) {
 	e := newTestApp(t)
 	vendorID, _ := e.user("mig_vendor", "vendor")
 	buyerID, _ := e.user("mig_buyer", "buyer")
-	// Put the database back as migration 120 left it.
-	agExec(e, `DELETE FROM schema_migrations WHERE version=121;
+	// Put the database back as migration 120 left it (migration 124's bond tables reference vendor_applications, so they
+	// go too and are made again after it).
+	agExec(e, `DELETE FROM schema_migrations WHERE version IN (121,124);
+		DROP TABLE vendor_bond_deposits, vendor_bond_accounts, xmr_bond_wallets;
+		DROP FUNCTION xmr_bond_wallets_kept();
 		DROP TABLE vendor_applications;
 		ALTER TABLE users DROP COLUMN vendor_verified, DROP COLUMN vendor_verified_set_by, DROP COLUMN vendor_verified_set_at;
 		DELETE FROM settings WHERE key IN ('vendor_bond_xmr','vendor_approval','vendor_bond_instructions')`)

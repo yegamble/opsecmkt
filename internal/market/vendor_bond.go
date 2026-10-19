@@ -644,8 +644,7 @@ func (a *App) xmrBondSettle(ctx context.Context, paused bool) error {
 		txid, handle, state string
 		amount              int64
 	}
-	read := func(where string, args ...any) ([]flag, error) {
-		rows, err := a.db.QueryContext(ctx, who+where+" ORDER BY d.id", args...)
+	read := func(rows *sql.Rows, err error) ([]flag, error) {
 		if err != nil {
 			return nil, err
 		}
@@ -660,14 +659,20 @@ func (a *App) xmrBondSettle(ctx context.Context, paused bool) error {
 		}
 		return out, rows.Err()
 	}
-	// mark sets column on deposit id once and tells the administrators body in the same transaction.
-	mark := func(id int64, column, body string) error {
+	// mark sets flagged (reorg_flagged with reorg) on deposit id once and tells the administrators body in the same
+	// transaction.
+	mark := func(id int64, reorg bool, body string) error {
 		tx, err := a.db.BeginTx(ctx, nil)
 		if err != nil {
 			return err
 		}
 		defer tx.Rollback()
-		res, err := tx.ExecContext(ctx, "UPDATE vendor_bond_deposits SET "+column+"=true,updated=now() WHERE id=$1 AND NOT "+column, id)
+		var res sql.Result
+		if reorg {
+			res, err = tx.ExecContext(ctx, "UPDATE vendor_bond_deposits SET reorg_flagged=true,updated=now() WHERE id=$1 AND NOT reorg_flagged", id)
+		} else {
+			res, err = tx.ExecContext(ctx, "UPDATE vendor_bond_deposits SET flagged=true,updated=now() WHERE id=$1 AND NOT flagged", id)
+		}
 		if err != nil {
 			return err
 		}
@@ -679,33 +684,33 @@ func (a *App) xmrBondSettle(ctx context.Context, paused bool) error {
 		}
 		return tx.Commit()
 	}
-	locked, err := read("WHERE d.locked AND NOT d.flagged")
+	locked, err := read(a.db.QueryContext(ctx, who+"WHERE d.locked AND NOT d.flagged ORDER BY d.id"))
 	if err != nil {
 		return err
 	}
 	for _, f := range locked {
-		if err = mark(f.id, "flagged", fmt.Sprintf("Vendor bond: deposit %s of %s XMR to the bond address of %s's vendor application has an unlock time. It is not counted toward the bond and is kept (the bond is non-refundable); record or waive the bond by hand if it should count.",
+		if err = mark(f.id, false, fmt.Sprintf("Vendor bond: deposit %s of %s XMR to the bond address of %s's vendor application has an unlock time. It is not counted toward the bond and is kept (the bond is non-refundable); record or waive the bond by hand if it should count.",
 			truncate(f.txid, 20), amount(f.amount, 12), f.handle)); err != nil {
 			return err
 		}
 	}
 	// A deposit the application did not count and no longer can: it was decided (or its bond recorded) without it.
-	uncounted, err := read("WHERE NOT d.credited AND NOT d.locked AND NOT d.flagged AND va.state<>'awaiting_bond'")
+	uncounted, err := read(a.db.QueryContext(ctx, who+"WHERE NOT d.credited AND NOT d.locked AND NOT d.flagged AND va.state<>'awaiting_bond' ORDER BY d.id"))
 	if err != nil {
 		return err
 	}
 	for _, f := range uncounted {
-		if err = mark(f.id, "flagged", fmt.Sprintf("Vendor bond: deposit %s of %s XMR to the bond address of %s's vendor application was not counted toward the bond, because the application stopped waiting for its bond (now: %s) before the market counted it. It is kept, since the bond is non-refundable and the market sends nothing back, and it changes nothing about the application.",
+		if err = mark(f.id, false, fmt.Sprintf("Vendor bond: deposit %s of %s XMR to the bond address of %s's vendor application was not counted toward the bond, because the application stopped waiting for its bond (now: %s) before the market counted it. It is kept, since the bond is non-refundable and the market sends nothing back, and it changes nothing about the application.",
 			truncate(f.txid, 20), amount(f.amount, 12), f.handle, strings.ToLower(vendorStateLabel(f.state)))); err != nil {
 			return err
 		}
 	}
-	reorged, err := read("WHERE d.credited AND d.confirmations<$1 AND NOT d.reorg_flagged", threshold)
+	reorged, err := read(a.db.QueryContext(ctx, who+"WHERE d.credited AND d.confirmations<$1 AND NOT d.reorg_flagged ORDER BY d.id", threshold))
 	if err != nil {
 		return err
 	}
 	for _, f := range reorged {
-		if err = mark(f.id, "reorg_flagged", fmt.Sprintf("Vendor bond: deposit %s of %s XMR, counted toward %s's vendor bond, now has fewer than %d confirmations or is no longer listed by the bond wallet (a chain reorganisation or a double spend). Nothing was changed: the application (now: %s) and the account's role stay as they are. Check the bond wallet and decide yourself.",
+		if err = mark(f.id, true, fmt.Sprintf("Vendor bond: deposit %s of %s XMR, counted toward %s's vendor bond, now has fewer than %d confirmations or is no longer listed by the bond wallet (a chain reorganisation or a double spend). Nothing was changed: the application (now: %s) and the account's role stay as they are. Check the bond wallet and decide yourself.",
 			truncate(f.txid, 20), amount(f.amount, 12), f.handle, threshold, strings.ToLower(vendorStateLabel(f.state)))); err != nil {
 			return err
 		}
