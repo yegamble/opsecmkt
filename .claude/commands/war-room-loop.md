@@ -14,8 +14,29 @@ Default scope: *make OPSEC Market a complete, releasable test-network product.*
 Read first: `.claude/war-room/repo-map.md`, `finding-format.md`, `protocol.md`,
 `ledger.md`, `.claude/agents/README.md`, `CLAUDE.md`, `.claude/review-loop.md`.
 `git status` must be understood before anything else; never discard unrelated
-work. Tell the owner up front the rough cost: each iteration spawns ~8–10 Opus
-agents (3–5 seats, ≤3 implementers, 1–2 verifiers).
+work. Tell the owner up front the rough cost, split by model tier
+(`.claude/war-room/model-tiering.md`). A typical iteration is 3 seats, up to 3
+implementers and 1–2 verifiers. Only work touching money, the attack surface or
+the challenger seat runs on Opus.
+
+**Usage budget.** Be mindful of Claude usage limits and give every dispatch the
+cheapest model that can do it safely, using the Agent `model` parameter:
+- **T1, `opus`:** payments, escrow, wallets, restore, authentication, admin
+  ingress, Tor, PGP/crypto, money or identity migrations, the devil's
+  advocate, and verification of P0/P1 items in those areas.
+- **T2, `sonnet`:** persona, UI, copy and documentation content, P2/P3
+  implementation outside T1 files, adding tests a verifier specified, and
+  re-checking T2 findings.
+- **T3, `haiku` or no agent:** ledger edits, renumbering, decided wording
+  swaps, path/link/line-reference checks and log summaries. Prefer doing these
+  yourself.
+
+Prefer fewer agents to smaller ones:
+- Continue an agent with `SendMessage` instead of spawning a new one.
+- Re-verify only the findings in question.
+- Watch CI in Bash, never in an agent.
+
+Escalate any cheaper agent's UNVERIFIED or money/security claim to T1.
 
 ## Sweep rotation
 
@@ -34,7 +55,9 @@ Seat choices per area are in `/war-room`. A targeted scope skips the rotation.
 3. **Implementation wave.** Pick up to **3** ready items, P0 first, whose files
    do not overlap (group by the files they touch). Dispatch one
    `opsec-implementer` per item **in a single message**, each with
-   `isolation: "worktree"`, the ledger row, acceptance criteria and test plan.
+   `isolation: "worktree"`, its model tier, the ledger row, acceptance criteria
+   and test plan. Pure T3 items (wording, renumbering, doc NITs) can be batched
+   into one `haiku` implementer, or done by the chair.
    Mark them `in-progress (<branch>)` in the ledger.
 4. **Integrate.** Merge each returned branch into `war-room/integration`
    (resolve doc conflicts yourself; re-dispatch the implementer for code
@@ -44,7 +67,9 @@ Seat choices per area are in `/war-room`. A targeted scope skips the rotation.
    **CI passed**; diagnose any red job from its log before acting.
 5. **Verify.** Dispatch `opsec-qa-release` (and, for disputed items, the seat
    that raised it) to check each item's acceptance criteria against the
-   integrated branch. VERIFIED → ledger `verified (<PR>, <CI run>)`;
+   integrated branch. Use the item's tier: a T1 item is verified on Opus, and a
+   T2 item on Sonnet. For a fix round, resume the same verifier with
+   `SendMessage`. VERIFIED → ledger `verified (<PR>, <CI run>)`;
    NOT VERIFIED → back to `open` with the failing criterion.
 6. **Record.** Add an iteration-log row: sweep, seats, items verified/reopened,
    CI run, what remains. Commit the ledger on the integration branch.

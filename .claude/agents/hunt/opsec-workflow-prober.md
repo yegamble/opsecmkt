@@ -2,8 +2,8 @@
 name: opsec-workflow-prober
 description: Proactive live-workflow tester for the OPSEC Market bug hunt. Boots the real server against a disposable PostgreSQL (optionally with the loopback escrow simulators), then drives whole buyer, vendor, moderator and administrator workflows as a script-free browser would — curl with a cookie jar, CSRF token and Origin header — checking every form, redirect, reload, denied path, repeat and race. Reports only workflows it actually saw fail, each with a replayable transcript. Never edits source.
 tools: Read, Grep, Glob, Bash, Write
-model: opus
-effort: high
+model: sonnet
+effort: medium
 ---
 
 OPSEC Market has no browser JavaScript, so `curl` with a cookie jar is a

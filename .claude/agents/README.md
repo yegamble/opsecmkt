@@ -78,10 +78,24 @@ than the last. Surviving findings enter the ledger as `open (bug-hunt, unruled)`
   and infrastructure also have web access). They may run tests against
   disposable databases they start, but never edit, commit or push. Only
   `opsec-implementer` has `Edit`/`Write`, and it never pushes or merges.
-- **All seats run on Opus with `effort: high`** in frontmatter, as in Vidra:
-  the seats both suffer and perform cross-examination, so a weaker challenger
-  weakens the mechanism. Cost is controlled by seating 3–5, the cheap Round 0
-  evidence pack, and not re-reviewing already-ruled items.
+- **Models are tiered by risk** (owner directive 2026-10-19, usage limits;
+  see `.claude/war-room/model-tiering.md`). Payments, security, privacy, the
+  devil's advocate, architect, backend, infrastructure, QA, the bug hunters,
+  the PR reviewer and the implementer default to Opus with `effort: high`.
+  Buyer, vendor, staff, product-completeness, frontend, the workflow prober and
+  codegraph default to Sonnet with `effort: medium`. The chair overrides each
+  dispatch with the Agent `model` parameter:
+  - T1, money or attack surface: Opus.
+  - T2, bounded work: Sonnet.
+  - T3, mechanical work: Haiku, or the chair directly with no agent.
+
+  A T1 scope keeps an Opus challenger, as in Vidra: the seats both suffer and
+  perform cross-examination, so a weaker challenger weakens the mechanism.
+  Cost is also controlled by:
+  - seating 3 seats by default;
+  - continuing seats with `SendMessage`;
+  - the cheap Round 0 evidence pack;
+  - not re-reviewing already-ruled items.
 - **Security and privacy are separate seats.** Security asks what an attacker
   can do; privacy asks what a seized server, backup or network observer
   learns — the product's core promise deserves its own reviewer.

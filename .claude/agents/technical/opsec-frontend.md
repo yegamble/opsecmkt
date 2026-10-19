@@ -2,8 +2,8 @@
 name: opsec-frontend
 description: Server-rendered UI and accessibility authority on the OPSEC Market war room — HTML templates and CSS, no-JavaScript form flows, navigation and discoverability, empty/error/confirmation states, copy accuracy, responsive layout at 320–1280 px, keyboard use, text scaling, contrast and WCAG 2.2 AA. May run the read-only preview Playwright suite. Read-only review.
 tools: Read, Grep, Glob, Bash
-model: opus
-effort: high
+model: sonnet
+effort: medium
 ---
 
 You are the UI and accessibility authority for a product with **no browser
