@@ -29,7 +29,9 @@ func TestAuthExpiryAndRecoveryCopyRenders(t *testing.T) {
 	mustNotContain(t, page, "Either your authenticator or your verified PGP key can complete sign-in.")
 	e.check(e.do("POST", "/challenge/pgp", anon, nil, pc), 303)
 	mustContain(t, e.body("GET", "/challenge", anon, nil, 200, pc),
-		"run <code>gpg --decrypt challenge.asc</code> and paste the code it prints.")
+		"run <code>gpg --decrypt challenge.asc</code>. It names your handle, this market, when the code was requested, until when it is valid and the market",
+		"Paste only the code from its last line, and only if your browser", "address bar shows one of those addresses",
+		"If it says no official address is configured, check the address with the market")
 	if secs := agInt(e, "SELECT EXTRACT(EPOCH FROM expires-now())::int FROM pending_logins WHERE token_hash=$1", digest(pc.Value)); secs < 540 || secs > 600 {
 		t.Fatalf("a pending sign-in lives %d s, but the page says it expires after ten minutes", secs)
 	}

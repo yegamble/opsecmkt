@@ -6,10 +6,12 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"opsecmkt/internal/brandingconfig"
 	"opsecmkt/internal/onionidentity"
 )
 
@@ -123,6 +125,18 @@ func validateOnionIdentities(dir string, c Config) error {
 	}
 	if c.OnionAddress != "" && c.OnionAddress == c.AdminOnionAddress {
 		return errors.New("public and administrator onion services require separate identities")
+	}
+	// Every user's encrypted PGP sign-in code lists OFFICIAL_ADDRESSES, so the private administrator onion never may.
+	if c.AdminOnionAddress != "" {
+		official, err := brandingconfig.ParseOfficialAddresses(c.Settings["OFFICIAL_ADDRESSES"], c.Mode == "dev")
+		if err != nil {
+			return err
+		}
+		for _, origin := range official {
+			if u, err := url.Parse(origin); err != nil || strings.EqualFold(u.Hostname(), c.AdminOnionAddress) {
+				return errors.New("OFFICIAL_ADDRESSES must not name the private administrator onion: every user's PGP sign-in code lists those addresses")
+			}
+		}
 	}
 	return nil
 }

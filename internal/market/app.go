@@ -73,7 +73,8 @@ type App struct {
 	isolatedUploads      bool                      // raw upload bytes terminate at the separate gateway
 	uploadTickets        uploadTicketStore
 	staffUploads         staffUploadStore
-	brandingUploadOrigin string // fixed public gateway origin; no administrator credential is forwarded
+	brandingUploadOrigin string   // fixed public gateway origin; no administrator credential is forwarded
+	officialAddresses    []string // OFFICIAL_ADDRESSES: the market's public origins, named in PGP sign-in codes (A-572); never the admin onion
 	stop                 context.CancelFunc
 	background           sync.WaitGroup
 	retention            *retentionService // bounded expiry and external deletion/hold state
@@ -136,6 +137,7 @@ func New(ctx context.Context, preview bool) (*App, error) {
 	a.secure, a.setupToken = cfg.secure, cfg.setupToken
 	a.adminSocket = cfg.adminSocket
 	a.brandingUploadOrigin = cfg.brandingUploadOrigin
+	a.officialAddresses = cfg.officialAddresses
 	if cfg.hostControlSocket != "" {
 		a.hostControl = newHostRebootController(cfg.hostControlSocket)
 	}

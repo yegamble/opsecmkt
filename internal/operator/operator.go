@@ -646,6 +646,17 @@ func printPlan(out io.Writer, c Config) error {
 			return err
 		}
 	}
+	official, err := brandingconfig.ParseOfficialAddresses(c.Settings["OFFICIAL_ADDRESSES"], c.Mode == "dev")
+	if err != nil {
+		return err
+	}
+	list := "none configured; PGP sign-in codes say no official address is configured"
+	if len(official) > 0 {
+		list = strings.Join(official, ", ")
+	}
+	if _, err := fmt.Fprintln(out, "official addresses (named in PGP sign-in codes):", list); err != nil {
+		return err
+	}
 	if strings.TrimSpace(c.Settings["ESCROW_XMR_TOR_RELAY"]) == "remote-tor" {
 		if _, err := fmt.Fprintln(out, "Monero relay: operator declares remote Tor egress; proxy and firewall behavior require verification on the payment host"); err != nil {
 			return err

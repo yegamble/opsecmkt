@@ -16,12 +16,13 @@ import (
 // startupConfig is what New checks in the environment before it opens the database (D8, I8). Every refusal
 // names the variable and how to fix it, never its value.
 type startupConfig struct {
-	appSecretKey         string // APP_SECRET_KEY: the root of every derived key when set
-	setupToken           string // SETUP_TOKEN: authorizes /setup until installed; the legacy key root without APP_SECRET_KEY
-	secure               bool   // COOKIE_SECURE (unset = true)
-	brandingUploadOrigin string // BRANDING_UPLOAD_ORIGIN: fixed public gateway origin; optional for existing installations
-	adminSocket          string // ADMIN_SOCKET: separate private administrator Unix listener; blank preserves one-listener installs
-	hostControlSocket    string // HOST_CONTROL_SOCKET: fixed local host-agent socket; never selected by a web request
+	appSecretKey         string   // APP_SECRET_KEY: the root of every derived key when set
+	setupToken           string   // SETUP_TOKEN: authorizes /setup until installed; the legacy key root without APP_SECRET_KEY
+	secure               bool     // COOKIE_SECURE (unset = true)
+	brandingUploadOrigin string   // BRANDING_UPLOAD_ORIGIN: fixed public gateway origin; optional for existing installations
+	officialAddresses    []string // OFFICIAL_ADDRESSES: the market's public origins (onion, mirror, clearnet), named in PGP sign-in codes (A-572)
+	adminSocket          string   // ADMIN_SOCKET: separate private administrator Unix listener; blank preserves one-listener installs
+	hostControlSocket    string   // HOST_CONTROL_SOCKET: fixed local host-agent socket; never selected by a web request
 	retention            retentionConfig
 	initialAccess        initialSiteAccess
 	notes                []string // startup log lines (warnings and the legacy key-root notice); never a secret
@@ -109,6 +110,9 @@ func loadStartupConfig(getenv func(string) string, mode string) (startupConfig, 
 	var err error
 	profile := getenv("OPSECMKT_PROFILE")
 	if c.brandingUploadOrigin, err = brandingconfig.ParseOrigin(getenv("BRANDING_UPLOAD_ORIGIN"), profile == "" || profile == "dev"); err != nil {
+		return c, err
+	}
+	if c.officialAddresses, err = brandingconfig.ParseOfficialAddresses(getenv("OFFICIAL_ADDRESSES"), profile == "" || profile == "dev"); err != nil {
 		return c, err
 	}
 	if c.adminSocket, err = adminSocketConfig(getenv, mode); err != nil {

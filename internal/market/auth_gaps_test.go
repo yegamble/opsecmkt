@@ -865,7 +865,7 @@ func TestPGPLoginCodeErrorPaths(t *testing.T) {
 	agExpect(e, "/challenge", anon, url.Values{"method": {"pgp"}, "pgp_code": {"guess"}}, 401, "Create an encrypted sign-in code first", p)
 	e.check(e.do("POST", "/challenge/pgp", anon, nil, p), 303)
 	armored := agStr(e, "SELECT pgp_challenge FROM pending_logins WHERE token_hash=$1", digest(p.Value))
-	code := testDecrypt(t, key, armored)
+	code := testSignInCode(t, key, armored)
 	wrong := "0" + code[1:]
 	if wrong == code {
 		wrong = "1" + code[1:]
@@ -947,7 +947,7 @@ func TestStolenSessionCannotAddPGPFactorToTOTPAccount(t *testing.T) {
 	e.do("POST", "/challenge/pgp", anon, nil, pc)
 	answer := "guess"
 	if armored := agStr(e, "SELECT COALESCE(pgp_challenge,'') FROM pending_logins WHERE token_hash=$1", digest(pc.Value)); armored != "" {
-		answer = testDecrypt(t, mallory, armored)
+		answer = testSignInCode(t, mallory, armored)
 	}
 	w := e.do("POST", "/challenge", anon, url.Values{"method": {"pgp"}, "pgp_code": {answer}}, pc)
 	if w.Code == 303 && e.cookie(w, "session") != "" {

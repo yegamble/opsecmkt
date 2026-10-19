@@ -153,6 +153,47 @@ func TestInitRefusesSharedPublicAdminIdentityAndMismatchedAddress(t *testing.T) 
 	}
 }
 
+// TestOfficialAddressesRefuseAdministratorOnion: OFFICIAL_ADDRESSES, which every user's PGP sign-in code lists, may
+// name the public onion but never the private administrator onion, at init or in an edited configuration (A-572).
+func TestOfficialAddressesRefuseAdministratorOnion(t *testing.T) {
+	admin, source := onionFixture(t)
+	refused := filepath.Join(t.TempDir(), "refused")
+	if _, err := invoke(t, "init", "--dir", refused, "--mode", "dev", "--app-image", testImage, "--exposure", "tor", "--tor-image", testImage,
+		"--admin-tor-image", testImage, "--admin-client-auth-dir", adminAuthInput(t), "--admin-onion-address", admin.Address,
+		"--admin-onion-public-key", filepath.Join(source, "hs_ed25519_public_key"), "--admin-onion-secret-key", filepath.Join(source, "hs_ed25519_secret_key"),
+		"--set", "OFFICIAL_ADDRESSES=https://market.example,http://"+strings.ToUpper(admin.Address)); err == nil || !strings.Contains(err.Error(), "administrator onion") {
+		t.Fatalf("init accepted the administrator onion as an official address: %v", err)
+	}
+	if _, err := os.Stat(refused); !os.IsNotExist(err) {
+		t.Fatal("refused official addresses published installation")
+	}
+
+	dir := initAdminTor(t)
+	c, err := loadConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Settings["OFFICIAL_ADDRESSES"] = "http://" + c.OnionAddress + ",https://market.example"
+	if err := validate(dir, c); err != nil {
+		t.Fatalf("public onion refused as an official address: %v", err)
+	}
+	if _, env, err := render(dir, c); err != nil || env["OFFICIAL_ADDRESSES"] != c.Settings["OFFICIAL_ADDRESSES"] {
+		t.Fatalf("official addresses not forwarded to the app: %v", err)
+	}
+	var plan bytes.Buffer
+	if err := printPlan(&plan, c); err != nil || !strings.Contains(plan.String(), "official addresses (named in PGP sign-in codes): http://"+c.OnionAddress+", https://market.example") {
+		t.Fatalf("plan omitted official addresses: %v %s", err, plan.String())
+	}
+	c.Settings["OFFICIAL_ADDRESSES"] = "http://" + c.OnionAddress + ",http://" + c.AdminOnionAddress
+	if err := validate(dir, c); err == nil || !strings.Contains(err.Error(), "administrator onion") {
+		t.Fatalf("edited configuration accepted the administrator onion: %v", err)
+	}
+	c.Settings["OFFICIAL_ADDRESSES"] = "https://market.example/private-value"
+	if err := validate(dir, c); err == nil || !strings.Contains(err.Error(), "OFFICIAL_ADDRESSES") || strings.Contains(err.Error(), "private-value") {
+		t.Fatalf("invalid official address not safely refused: %v", err)
+	}
+}
+
 func TestInitOnionGenerationHonorsCancellationAndRemovesStaging(t *testing.T) {
 	parent := t.TempDir()
 	ctx, cancel := context.WithCancel(context.Background())

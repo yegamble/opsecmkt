@@ -6,12 +6,15 @@ import (
 	"database/sql"
 	"net/http"
 	"strings"
+	"time"
+	"unicode"
 )
 
 // P2 PGP second factor. After the password step, the user asks for a one-time code (POST
 // /challenge/pgp; GET never changes state); the server encrypts a random code to the user's verified
 // key and stores only its sha256 in pending_logins. POST /challenge with method=pgp compares the
-// decrypted code. The pending row, and with it the code, is deleted when sign-in completes.
+// decrypted code. The pending row, and with it the code, is deleted when sign-in completes. The encrypted
+// message also names the account, the market and its official addresses (pgpSignInText, A-572).
 
 type pgpFactor struct{}
 
@@ -78,7 +81,8 @@ func pgpLoginCodeAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, fail(401, "Sign-in verification expired. Sign in again.")
 	}
 	var userID, next string
-	err := tx.QueryRowContext(ctx, "SELECT user_id,next FROM pending_logins WHERE token_hash=$1 AND expires>now() FOR UPDATE", digest(pending)).Scan(&userID, &next)
+	var requested, expires time.Time
+	err := tx.QueryRowContext(ctx, "SELECT user_id,next,now(),expires FROM pending_logins WHERE token_hash=$1 AND expires>now() FOR UPDATE", digest(pending)).Scan(&userID, &next, &requested, &expires)
 	if err == sql.ErrNoRows {
 		return actionResult{}, fail(401, "Sign-in verification expired. Sign in again.")
 	}
@@ -95,13 +99,44 @@ func pgpLoginCodeAction(c *actionCtx) (actionResult, error) {
 	if !p.TwoFactor {
 		return actionResult{}, fail(400, "PGP sign-in verification is not enabled for this account")
 	}
+	var handle, market string
+	if err = tx.QueryRowContext(ctx, "SELECT handle,COALESCE((SELECT value FROM settings WHERE key='site_name'),'') FROM users WHERE id=$1", userID).Scan(&handle, &market); err != nil {
+		return actionResult{}, err
+	}
 	code := randomToken()[:32]
-	armored, err := encryptTo(p.Key, code)
+	armored, err := encryptTo(p.Key, pgpSignInText(handle, market, c.A.officialAddresses, requested, expires, code))
 	if err != nil {
 		return actionResult{}, expiredKeyRefusal(c, userID)
 	}
 	_, err = tx.ExecContext(ctx, "UPDATE pending_logins SET pgp_nonce=$1,pgp_challenge=$2 WHERE token_hash=$3", pgpLoginDigest(code, p), armored, digest(pending))
 	return actionResult{Redirect: challengePath(c.A.signInNext(next))}, err
+}
+
+// pgpSignInText is the plaintext of an encrypted PGP sign-in code (A-572). A phishing site that relays this market
+// through its own address can relay the ciphertext too, so the message names the account, the market, when the code
+// was requested and until when it is valid (the pending sign-in's expiry, at most 10 minutes after the password), and
+// the official addresses: OFFICIAL_ADDRESSES from the operator's configuration, never the request's Host or any
+// header, so never the private administrator onion unless an operator lists it (the native installer refuses that).
+// The market name is flattened to one line so it cannot forge another. Only the code on the last line is accepted.
+func pgpSignInText(handle, market string, addresses []string, requested, expires time.Time, code string) string {
+	market = strings.Join(strings.FieldsFunc(market, func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsControl(r) || unicode.Is(unicode.Cf, r)
+	}), " ")
+	if market == "" {
+		market = "OPSEC Market" // the layout's name when none is saved
+	}
+	list := "no official address configured"
+	check := "This market's operator has not configured its official addresses, so this message cannot confirm the address you are using."
+	if len(addresses) > 0 {
+		list = strings.Join(addresses, ", ")
+		check = "Enter the code only if your browser's address bar shows one of these addresses; on any other address, do not enter it."
+	}
+	const layout = "2006-01-02 15:04:05 UTC"
+	return "Sign-in code for " + handle + " at " + market + "\n" +
+		"Requested: " + requested.UTC().Format(layout) + "; valid for at most 10 minutes, until " + expires.UTC().Format(layout) + "\n" +
+		"Official addresses: " + list + "\n" +
+		check + "\n" +
+		"Code: " + code + "\n"
 }
 
 // expiredKeyRefusal is /challenge/pgp's answer when no code can be encrypted to the verified key (A-155): usually it,

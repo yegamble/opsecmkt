@@ -170,8 +170,8 @@ func configureServe(args []string, errOut io.Writer) error {
 	f.SetOutput(errOut)
 	preview := f.Bool("preview", false, "read-only sample UI, no database")
 	options := map[string]string{
-		"branding-upload-origin": "BRANDING_UPLOAD_ORIGIN",
-		"site-access":            "INITIAL_SITE_ACCESS", "registrations": "INITIAL_REGISTRATIONS",
+		"branding-upload-origin": "BRANDING_UPLOAD_ORIGIN", "official-addresses": "OFFICIAL_ADDRESSES",
+		"site-access": "INITIAL_SITE_ACCESS", "registrations": "INITIAL_REGISTRATIONS",
 		"addr": "ADDR", "app-mode": "APP_MODE", "database-url-file": "DATABASE_URL_FILE",
 		"app-secret-key-file": "APP_SECRET_KEY_FILE", "setup-token-file": "SETUP_TOKEN_FILE",
 		"monero-wallet-secret-file": "MONERO_WALLET_SECRET_FILE", "monero-wallet-rpc-url-file": "ESCROW_XMR_WALLET_RPC_URL_FILE",
@@ -189,6 +189,8 @@ func configureServe(args []string, errOut io.Writer) error {
 		help := "set " + env + " (existing environment is used when omitted)"
 		if name == "branding-upload-origin" {
 			help = "fixed public upload gateway origin: HTTPS or HTTP v3 onion; HTTP loopback is development-only (existing environment used when omitted)"
+		} else if name == "official-addresses" {
+			help = "comma-separated public market addresses named in PGP sign-in codes (onion, mirror, clearnet; never the administrator onion); existing environment used when omitted"
 		} else if name == "site-access" {
 			help = "initial visitor access: public or members (default public); saved administrator settings take precedence"
 		} else if name == "registrations" {
@@ -217,6 +219,13 @@ func configureServe(args []string, errOut io.Writer) error {
 				invalidAccess = err
 			} else {
 				*values[fl.Name] = value
+			}
+		case "official-addresses":
+			value, err := brandingconfig.ParseOfficialAddresses(*values[fl.Name], profile == "" || profile == "dev")
+			if err != nil {
+				invalidAccess = err
+			} else {
+				*values[fl.Name] = strings.Join(value, ",")
 			}
 		case "site-access":
 			if *values[fl.Name] != "public" && *values[fl.Name] != "members" {
