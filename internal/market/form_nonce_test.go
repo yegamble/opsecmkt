@@ -59,7 +59,7 @@ func TestFormNonceRenderedWithoutGETWrites(t *testing.T) {
 	if first == renderedFormNonce(t, secondPage.Body.String(), "/listings") {
 		t.Fatal("two rendered listing forms shared a nonce")
 	}
-	messages := e.do("GET", "/messages", buyerSession, nil)
+	messages := e.do("GET", "/messages?to=nonce_vendor", buyerSession, nil) // a buyer's compose form needs a recipient (A-543)
 	e.check(messages, 200)
 	if first == renderedFormNonce(t, messages.Body.String(), "/messages") {
 		t.Fatal("listing and message form shared a nonce")
@@ -175,6 +175,8 @@ func TestFormNonceMessageAndOrderTransition(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The two share an order, so the vendor may write to the buyer (A-543).
+	order := e.order(buyer, e.product(vendor, "digital"), "XMR", stateDraft)
 	message := url.Values{"recipient": {"nonce_message_buyer"}, "body": {body}, formNonceField: {randomToken()[:32]}}
 	first := e.do("POST", "/messages", vendorSession, message)
 	e.check(first, 303)
@@ -190,7 +192,6 @@ func TestFormNonceMessageAndOrderTransition(t *testing.T) {
 	if messages != 1 || notifications != 1 || audits != 1 {
 		t.Fatalf("message repeat stored messages=%d notices=%d audits=%d", messages, notifications, audits)
 	}
-	order := e.order(buyer, e.product(vendor, "digital"), "XMR", stateDraft)
 	cancel := url.Values{"order_id": {order}, "from": {stateDraft}, formNonceField: {randomToken()[:32]}}
 	first = e.do("POST", "/orders/cancel", buyerSession, cancel)
 	e.check(first, 303)

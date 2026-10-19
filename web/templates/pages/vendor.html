@@ -11,7 +11,7 @@
 <p>Explore this vendor’s current listings.{{with .Paging}}{{if gt .Pages 1}} {{.Total}} listings · showing {{.First}}–{{.Last}}.{{end}}{{end}}</p>
 </div>
 </div>
-{{range .Users}}<a class="button" href="/messages?to={{.Handle}}">Send encrypted message <span class="action-icon">↗</span></a>{{end}}
+{{range .Users}}<a class="button" href="/messages?to={{.Handle}}">Message vendor <span class="action-icon">↗</span></a>{{end}}
 </div>{{with .AvatarTakedown}}{{template "image-takedown" .}}{{end}}
 <div class="notice">
 <p>Vendor identity and reputation have not been independently verified by this application.{{range .Users}}{{if .VendorVerified}} “Verified vendor” means an administrator of this market marked this vendor: it is the staff's judgment, not an identity check.{{end}}{{end}}</p>

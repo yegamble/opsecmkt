@@ -19,7 +19,7 @@
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <label>Handle<input value="{{.Handle}}" readonly>
 </label>
-<p class="help" id="pgp-visibility">Shown to every signed-in account that looks up your handle, to every vendor or buyer you trade with, and {{if and $.Access $.Access.MembersOnly}}to signed-in viewers on your vendor page{{else}}publicly on your vendor page{{end}} if you sell — with its user IDs and creation date.{{if and $.Access $.Access.MembersOnly}} An administrator can later make the site public, exposing your vendor-page key to visitors who are not signed in.{{end}} Use a key made only for this market.</p>
+<p class="help" id="pgp-visibility">Shown to market staff, to every vendor or buyer you trade with and anyone you have messaged, to every signed-in account if you sell or are listed as market staff, and {{if and $.Access $.Access.MembersOnly}}to signed-in viewers on your vendor page{{else}}publicly on your vendor page{{end}} if you sell — with its user IDs and creation date.{{if and $.Access $.Access.MembersOnly}} An administrator can later make the site public, exposing your vendor-page key to visitors who are not signed in.{{end}} Use a key made only for this market.</p>
 <label>PGP public key<textarea name="pgp" maxlength="16384" rows="8" spellcheck="false" placeholder="-----BEGIN PGP PUBLIC KEY BLOCK-----" aria-describedby="pgp-visibility">{{with $.PGP}}{{.Armored}}{{end}}</textarea>
 </label>
 <span class="help">At most 16 KiB (16,384 UTF-8 bytes). Browsers count characters in this box, so non-ASCII text may need fewer characters.</span>

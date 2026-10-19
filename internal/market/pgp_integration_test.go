@@ -632,7 +632,7 @@ func TestProfileKeyStoredCanonically(t *testing.T) {
 			mustNotContain(t, page, append(leaks, "05:06")...)
 		}
 		page := e.body("GET", "/account", u.session, nil, 200)
-		mustContain(t, page, "canon_key &lt;canon_key@example.test&gt;", "Shown to every signed-in account that looks up your handle",
+		mustContain(t, page, "canon_key &lt;canon_key@example.test&gt;", "Shown to market staff, to every vendor or buyer you trade with and anyone you have messaged, to every signed-in account if you sell or are listed as market staff,",
 			"Use a key made only for this market.", "Verified 2026-03-04 05:06 UTC")
 		mustNotContain(t, page, leaks...)
 		mustContain(t, e.body("GET", "/pgp", u.session, nil, 200), "Verified 2026-03-04 05:06 UTC")

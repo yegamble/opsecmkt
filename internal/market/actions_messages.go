@@ -1,6 +1,10 @@
 package market
 
-import "strings"
+import (
+	"context"
+	"database/sql"
+	"strings"
+)
 
 // messageBudget is how many messages an account may send in ten minutes (msg:<user>), apart from its general write
 // budget (A-516).
@@ -40,10 +44,14 @@ func messageAction(c *actionCtx) (actionResult, error) {
 	if !c.A.allowWriteBudget("msg:"+u.ID, messageBudget) {
 		return actionResult{}, fail(429, "Message not sent: an account can send at most 20 messages in 10 minutes. Nothing was stored. Try again later.")
 	}
-	var recipient string
-	err := tx.QueryRowContext(ctx, "SELECT id FROM users WHERE handle=$1", c.Form.Get("recipient")).Scan(&recipient)
+	// An unknown handle and one this sender may not write to are refused alike, so the refusal tells nothing about
+	// which handles exist (A-543).
+	recipient, err := messageRecipient(ctx, tx, u, c.Form.Get("recipient"))
 	if err != nil {
-		return actionResult{}, fail(400, "Recipient not found")
+		return actionResult{}, err
+	}
+	if recipient == "" {
+		return actionResult{}, fail(403, messageNotPermitted+" Nothing was stored.")
 	}
 	var restricted bool
 	if err = tx.QueryRowContext(ctx, `SELECT retention_restricted_at IS NOT NULL FROM users WHERE id=$1 FOR SHARE`, u.ID).Scan(&restricted); err != nil {
@@ -74,4 +82,43 @@ func messageAction(c *actionCtx) (actionResult, error) {
 		_, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), recipient, "New message from "+u.Handle)
 	}
 	return actionResult{Redirect: "/messages", Notice: "message-sent", Audit: "Sent OpenPGP-encrypted message (recipient key match: " + match + ")"}, err
+}
+
+// messageNotPermitted answers a send to, or a key lookup of, a handle that is unknown or that the account may not write
+// to (A-543): both alike, so neither reveals whether the handle exists. The messages page shows the same words.
+const messageNotPermitted = "No account you can message has this handle. You can write to active vendors, people you share an order with, people who have messaged you, and listed market staff."
+
+// activeVendorWhere is the condition, on the users row aliased u, for a vendor any account may start a message to
+// (A-543): the vendor role on an account that is not suspended, closed or waiting for deletion. Vendor applications
+// (A-544) tighten it to approved vendors here, in one place.
+func activeVendorWhere(u string) string {
+	return u + ".role='vendor' AND " + u + ".suspended_at IS NULL AND " + u + ".closed_at IS NULL AND " + u + ".retention_restricted_at IS NULL"
+}
+
+// messageRecipient returns the id of the account with handle that sender may start a message to, or "" when there is
+// no such account or sender may not write to it (A-543, owner directive 2026-10-18). Moderators and administrators
+// write to anyone. Any other account writes only to:
+//   - an active vendor (activeVendorWhere), reached from "Message vendor" on the vendor and listing pages;
+//   - an order partner: the two accounts share an order, either way round (the order page links each other);
+//   - an account that has sent it a message (the Reply link on a received message);
+//   - a current moderator or administrator it can see: one on the public staff list while it is shown
+//     (staffListLoader), the staff contact handle (staffContactLoader), or, for a party to a disputed or resolved
+//     order, any of them (disputeStaffLoader lists them all on that order page).
+//
+// q is the send transaction or, for the /messages?to= key, the database.
+func messageRecipient(ctx context.Context, q rowQuerier, sender *User, handle string) (string, error) {
+	var id string
+	err := q.QueryRowContext(ctx, `SELECT r.id FROM users r WHERE r.handle=$2 AND ($3::boolean
+		OR (`+activeVendorWhere("r")+`)
+		OR EXISTS(SELECT 1 FROM orders o JOIN products p ON p.id=o.product_id WHERE (o.buyer_id=$1 AND p.vendor_id=r.id) OR (o.buyer_id=r.id AND p.vendor_id=$1))
+		OR EXISTS(SELECT 1 FROM messages m WHERE m.recipient_id=$1 AND m.sender_id=r.id)
+		OR (r.role IN ('moderator','admin') AND r.suspended_at IS NULL AND r.closed_at IS NULL AND r.retention_restricted_at IS NULL AND (
+			(NOT r.staff_hidden AND EXISTS(SELECT 1 FROM settings WHERE key=$4 AND value='true'))
+			OR EXISTS(SELECT 1 FROM settings WHERE key=$5 AND value=r.handle)
+			OR EXISTS(SELECT 1 FROM orders o JOIN products p ON p.id=o.product_id WHERE o.state IN ($6,$7) AND (o.buyer_id=$1 OR p.vendor_id=$1)))))`,
+		sender.ID, handle, sender.Role == "moderator" || sender.Role == "admin", settingStaffListPublic, settingStaffContact, stateDisputed, stateResolved).Scan(&id)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return id, err
 }
