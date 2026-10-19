@@ -336,6 +336,8 @@ type PageData struct {
 	EscrowSigner *EscrowSignerView
 	// EscrowReleaseDays: /admin while ESCROW_BTC is on, the release deadline length in force and its form (escrow_release_admin.go)
 	EscrowReleaseDays *EscrowReleaseDaysView
+	// XMRFee: /admin, the Monero escrow market fee set on the server, read-only (escrow_xmr_fee.go, A-550)
+	XMRFee *XMRFeeView
 	// EscrowRecovery: /admin, the Bitcoin escrow restore gate, held settlements and orphan addresses (escrow_recovery.go)
 	EscrowRecovery *EscrowRecoveryView
 	// XMREscrowRecovery: /admin, Monero escrow settlements held by a restore and destroyed wallets' files
@@ -786,6 +788,14 @@ type EscrowSignerView struct {
 type EscrowReleaseDaysView struct {
 	Days     string
 	Min, Max int
+}
+
+// XMRFeeView is the Monero escrow market fee in force on Admin → Payments (escrow_xmr_fee.go): On while ESCROW_XMR is
+// on; Bps its basis points; Percent and the full Address only above 0; Network the escrow's network in short words.
+// It has no form: the fee is set on the server only (A-550).
+type XMRFeeView struct {
+	On                             bool
+	Bps, Percent, Address, Network string
 }
 
 // EscrowDecisionView is a resolved escrow order's dispute decision (escrow_decision.go): Outcome release or refund,

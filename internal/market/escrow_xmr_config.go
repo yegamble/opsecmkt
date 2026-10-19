@@ -348,6 +348,14 @@ func (a *App) initEscrowXMR(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// The fee passed its startup checks: a host change is recorded and announced to administrators (A-550). Its own
+	// deadline: a node that timed out above has spent ctx, and the market still starts then.
+	feeCtx, cancelFee := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	err = a.recordXMRFee(feeCtx)
+	cancelFee()
+	if err != nil {
+		return err
+	}
 	logEscrowState(state, class)
 	if why := a.xmrRelayHold(); why != "" {
 		log.Printf(xmrLogTorHold, why) // once per process: relay configuration is read at startup only

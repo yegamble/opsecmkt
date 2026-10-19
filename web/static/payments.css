@@ -57,6 +57,14 @@
   overflow-wrap:anywhere;
   word-break:break-all
 }
+/* A-550: the market fee address is shown in full and wraps at 320 px, as do the operator commands beside it. */
+.admin-payments .market-fee-address {
+  overflow-wrap:anywhere;
+  word-break:break-all
+}
+.admin-payments code {
+  overflow-wrap:anywhere
+}
 .payment-deposits td.mono,.admin-payments td.mono {
   min-width:16ch;
   overflow-wrap:anywhere;

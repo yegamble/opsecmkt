@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { PREVIEW_DRAFT_ID, PREVIEW_PAID_ID } from './preview-routes';
+import { waitForStyles } from './styles';
 
 // The preview server has no payment provider: every payment surface must say so and show no address.
 test('preview pages state that payments are disabled', async ({ page }) => {
@@ -67,3 +68,23 @@ test('Monero is the only listing and checkout currency', async ({ page }) => {
   await page.goto('/listing-edit?id=encrypted-drive');
   await expect(page.getByLabel('Price (XMR)')).toHaveValue('0.271');
 });
+
+// A-550: Admin → Payments shows the market fee read-only, says it is set on the server and names the operator command
+// that changes it; no fee field exists. The preview has no payment provider, so it shows the escrow-off state; the
+// rate and full address are proven by TestXMRFeeHostOnly. Layout only: the preview is read-only.
+for (const width of [320, 1280]) {
+  test(`market fee is read-only on Admin → Payments at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    expect((await page.goto('/admin/payments'))?.status()).toBe(200);
+    await waitForStyles(page);
+    const panel = page.locator('.admin-payments');
+    await expect(panel.getByRole('heading', { name: 'Market fee', level: 3 })).toBeVisible();
+    await expect(panel).toContainText('Set on the server; administrators cannot change it here.');
+    await expect(panel).toContainText('so no market fee is charged');
+    await expect(panel).toContainText('./opsecmkt deploy redeploy --dir DIR --app-image IMAGE@sha256:DIGEST');
+    await expect(page.locator('input[name*="fee" i], select[name*="fee" i], textarea[name*="fee" i]')).toHaveCount(0);
+    await expect(page.locator('form[action*="fee" i]')).toHaveCount(0);
+    await expect(page.locator('script')).toHaveCount(0);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+  });
+}

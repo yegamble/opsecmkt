@@ -567,7 +567,7 @@ For managed deployments, use repeated `init --set KEY=VALUE`, or deliberately ed
 | `PAYMENT_POLL_INTERVAL` | `30s` | Go duration `1s`–`1h`. |
 | `PAYMENT_EXPIRY` | `24h` | Go duration `10m`–`720h`. |
 | `MONERO_MAX_TIP_AGE` | `1h` | Go duration `20m`–`24h`. |
-| `ESCROW_XMR_FEE_BPS` | `0` | Integer `0`–`10000`; nonzero fee needs a matching valid fee address. |
+| `ESCROW_XMR_FEE_BPS` | `0` | Integer `0`–`10000`; nonzero fee needs a matching valid fee address. Host-only with the address: no admin form changes either, and a change is announced to administrators at the next start. |
 | `ESCROW_XMR_FEE_ADDRESS` | Unset | Monero fee address on the configured network. |
 | `ESCROW_XMR_SLOTS` | `20` | Integer `5`–`200`; ready escrow accounts. |
 | `ESCROW_XMR_MAX_FEE` | `10000000000` | Piconero, `1`–`100000000000`; default is `0.01 XMR`, maximum `0.1 XMR`. |
