@@ -95,16 +95,13 @@ func concedeAction(c *actionCtx) (actionResult, error) {
 }
 
 // Opening a dispute stores no durable recipient relation, only short-ID
-// notification text. Tell staff who can act now, with the same independent
-// unsuspended-staff predicate and no-resolver admin fallback as its opening
-// notice. A newly appointed staff member may hear the closure; a former or
-// suspended staff member does not.
+// notification text. Tell staff who can act now, with the same eligible-resolver
+// rule (eligibleResolverSQL: administrators only on an escrow order) and
+// no-resolver admin fallback as its opening notice. A newly appointed staff
+// member may hear the closure; a former or suspended staff member does not.
 func notifyConcededStaff(ctx context.Context, tx *sql.Tx, orderID, status string) error {
-	var buyerID, vendorID string
-	if err := tx.QueryRowContext(ctx, `SELECT o.buyer_id,p.vendor_id FROM orders o JOIN products p ON p.id=o.product_id WHERE o.id=$1`, orderID).Scan(&buyerID, &vendorID); err != nil {
-		return err
-	}
-	staff, err := collectStrings(ctx, tx, "SELECT id FROM users WHERE role IN ('moderator','admin') AND suspended_at IS NULL AND closed_at IS NULL AND retention_restricted_at IS NULL AND id<>$1 AND id<>$2", buyerID, vendorID)
+	staff, err := collectStrings(ctx, tx, `SELECT s.id FROM orders o JOIN products p ON p.id=o.product_id JOIN users s ON `+
+		eligibleResolverSQL("s", "o.id", "o.buyer_id", "p.vendor_id")+` WHERE o.id=$1`, orderID)
 	if err != nil {
 		return err
 	}

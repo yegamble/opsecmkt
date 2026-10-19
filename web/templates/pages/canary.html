@@ -60,7 +60,7 @@
 </section>{{if .StaffListPublic}}
 <section class="panel staff-list" id="staff" aria-labelledby="staff-title">{{/* A-189, owner decision 1: only while an administrator shows it; hidden staff are not listed */}}
 <h2 id="staff-title">Market staff</h2>
-<p>Moderators decide disputes; administrators run the market. Only staff who chose to be listed appear here.</p>
+<p>Moderators review disputes and payment cases; administrators decide disputes and run the market. Only staff who chose to be listed appear here.</p>
 {{if .StaffList}}<ul class="staff-members">{{range .StaffList}}
 <li>{{if .Avatar}}<img src="{{.Avatar}}" alt="" width="64" height="64">{{else}}<span class="staff-glyph" aria-hidden="true">◇</span>{{end}}
 <span><strong>{{.Handle}}</strong> <span class="muted">{{if eq .Role "admin"}}Administrator{{else}}Moderator{{end}}</span>{{if and $.User (ne $.User.Handle .Handle)}} <a class="text-link" href="/messages?to={{.Handle}}">Message {{.Handle}}</a>{{end}}</span>

@@ -11,6 +11,8 @@ import (
 func TestFormNonceDraftDisputeReplyAndReviewFormsReplay(t *testing.T) {
 	w := newDisputeOrderWorld(t)
 	e := w.e
+	// An escrow dispute's resolver is an independent administrator (A-558): it receives the one staff notice.
+	resolverID, _ := e.user("nonce_resolver_"+randomToken()[:6], "admin")
 	vendorID, vendor := w.vendorID, w.vendor
 	buyerID, buyer := w.buyerID, w.buyer
 	product := w.x.product
@@ -58,7 +60,7 @@ func TestFormNonceDraftDisputeReplyAndReviewFormsReplay(t *testing.T) {
 	if n := countFor(t, e, "SELECT count(*) FROM disputes WHERE order_id=$1", disputeOrder); n != 1 {
 		t.Fatalf("dispute replay stored %d dispute records", n)
 	}
-	if n := countFor(t, e, "SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE 'Dispute opened on order %'", w.modID); n != 1 {
+	if n := countFor(t, e, "SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE 'Dispute opened on order %'", resolverID); n != 1 {
 		t.Fatalf("dispute replay sent %d staff notices", n)
 	}
 	if n := countFor(t, e, "SELECT count(*) FROM audit_events WHERE user_id=$1 AND action LIKE 'Opened dispute on order %'", buyerID); n != 1 {
@@ -118,7 +120,8 @@ func TestFormNonceDraftDisputeReplyAndReviewFormsReplay(t *testing.T) {
 func TestFormNonceConcurrentDisputeAndLostAcknowledgement(t *testing.T) {
 	w := newDisputeOrderWorld(t)
 	e := w.e
-	vendorID, buyerID, buyer, vendor, modID := w.vendorID, w.buyerID, w.buyer, w.vendor, w.modID
+	vendorID, buyerID, buyer, vendor := w.vendorID, w.buyerID, w.buyer, w.vendor
+	resolverID, _ := e.user("nonce_resolver_"+randomToken()[:6], "admin") // the escrow dispute's resolver (A-558)
 
 	order := w.fundedFor(buyerID, buyer, vendorID, vendor)
 	f := url.Values{"order_id": {order}, "reason": {"The shipped goods arrived damaged and incomplete."}, formNonceField: {randomToken()[:32]}}
@@ -145,7 +148,7 @@ func TestFormNonceConcurrentDisputeAndLostAcknowledgement(t *testing.T) {
 	if n := countFor(t, e, "SELECT count(*) FROM disputes WHERE order_id=$1", order); n != 1 {
 		t.Fatalf("concurrent dispute stored %d records", n)
 	}
-	if n := countFor(t, e, "SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE 'Dispute opened on order %'", modID); n != 1 {
+	if n := countFor(t, e, "SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE 'Dispute opened on order %'", resolverID); n != 1 {
 		t.Fatalf("concurrent dispute sent %d staff notices", n)
 	}
 	if n := countFor(t, e, "SELECT count(*) FROM audit_events WHERE user_id=$1 AND action LIKE 'Opened dispute on order %'", buyerID); n != 1 {
