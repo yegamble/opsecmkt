@@ -245,7 +245,7 @@ Each package records its own acceptance checks here and edits only its subsectio
 
 ### P5 Payments
 
-Ticked lines passed in CI run [39003912303](https://github.com/yegamble/opsecmkt/actions/runs/39003912303) at `580055f` (DB integration with simulated wallet RPC, plus the real fakechain legs named).
+Ticked lines passed in CI run [39003912303](https://github.com/yegamble/opsecmkt/actions/runs/39003912303) at `580055f` (unit, read-only preview and DB integration tests with simulated wallet RPC, plus the real fakechain legs named; no mainnet or public-network run).
 
 - [x] Only XMR listing prices, checkout choices and payment-intake controls appear on current pages (`TestPreviewMoneroOnlyPublicPages`, `TestMoneroEscrowSiteCopyEnabledAndPaused`, `TestMoneroOnlyListingsOrdersAndIntake`).
 - [x] Invalid currencies are refused by the server; a display query cannot re-enable Bitcoin (`TestMoneroOnlyListingsOrdersAndIntake`, `TestMoneroOnlyBitcoinRoutesAreUnregistered`, `TestMoneroOnlyRefusesBitcoinConfigurationBeforeDatabase`, `TestPreviewMoneroOnlyPublicPages`).
