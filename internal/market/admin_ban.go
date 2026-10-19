@@ -98,6 +98,9 @@ func adminBanAction(c *actionCtx) (actionResult, error) {
 	if err != nil {
 		return actionResult{}, err
 	}
+	// The audit rows continue after the reason ("…: R; ended …"), so a final full stop is left out there (SEC-546-6);
+	// ban_reason keeps it as written.
+	said := strings.TrimSuffix(reason, ".")
 	// The handle is looked up before the password is checked, so a typo does not use a confirmation attempt.
 	notFound := adminHandleError(c, "No account has the handle \""+handle+"\". Check the spelling: handles are case-sensitive.", func(d *PageData) {
 		d.BanHandle, d.BanChoice, d.BanReason = handle, choice, reason
@@ -158,7 +161,7 @@ func adminBanAction(c *actionCtx) (actionResult, error) {
 				summary = "; it stays suspended, as it was before the ban"
 				note = "An administrator lifted the ban on your account. It stays suspended, as it was before the ban, so it cannot sign in until an administrator restores it. Your listings stay archived."
 			}
-			if err = audit("Ban lifted by " + by + ": " + reason + summary); err != nil {
+			if err = audit("Ban lifted by " + by + ": " + said + summary); err != nil {
 				return actionResult{}, err
 			}
 			if _, err = insertNotification(ctx, tx, target, note, ""); err != nil {
@@ -171,7 +174,7 @@ func adminBanAction(c *actionCtx) (actionResult, error) {
 			if err = notifyActiveCounterparties(ctx, tx, target, handle, status); err != nil {
 				return actionResult{}, err
 			}
-			return actionResult{Redirect: "/admin/users", Notice: "unbanned", Audit: "Lifted the ban on " + handle + ": " + reason + summary}, nil
+			return actionResult{Redirect: "/admin/users", Notice: "unbanned", Audit: "Lifted the ban on " + handle + ": " + said + summary}, nil
 		}
 		switch {
 		case banned:
@@ -190,7 +193,7 @@ func adminBanAction(c *actionCtx) (actionResult, error) {
 		}
 		n, _ := ended.RowsAffected()
 		summary := "; ended " + strconv.FormatInt(n, 10) + " session(s) and any pending sign-ins"
-		if err = audit("Account banned by " + by + ": " + reason + summary); err != nil {
+		if err = audit("Account banned by " + by + ": " + said + summary); err != nil {
 			return actionResult{}, err
 		}
 		if _, err = tx.ExecContext(ctx, "INSERT INTO banned_handles(handle) VALUES(lower($1)) ON CONFLICT DO NOTHING", handle); err != nil {
@@ -243,6 +246,6 @@ func adminBanAction(c *actionCtx) (actionResult, error) {
 		if err = notifyActiveCounterparties(ctx, tx, target, handle, accountClosedStatus); err != nil {
 			return actionResult{}, err
 		}
-		return actionResult{Redirect: "/admin/users", Notice: "banned", Audit: "Banned account " + handle + ": " + reason + summary}, nil
+		return actionResult{Redirect: "/admin/users", Notice: "banned", Audit: "Banned account " + handle + ": " + said + summary}, nil
 	})
 }

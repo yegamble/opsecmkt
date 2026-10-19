@@ -432,12 +432,16 @@ func adminChange(c *actionCtx) (actionResult, error) {
 			return actionResult{}, err
 		}
 		var target, old string
-		err = tx.QueryRowContext(ctx, "SELECT id,role FROM users WHERE handle=$1 AND role<>'admin' FOR UPDATE", handle).Scan(&target, &old)
+		var banned bool
+		err = tx.QueryRowContext(ctx, "SELECT id,role,banned_at IS NOT NULL FROM users WHERE handle=$1 AND role<>'admin' FOR UPDATE", handle).Scan(&target, &old, &banned)
 		if err == sql.ErrNoRows {
 			return actionResult{}, adminRoleHandleError(c, handle, role)
 		}
 		if err != nil {
 			return actionResult{}, err
+		}
+		if banned && role != "buyer" { // A-546: lifting the ban must not hand back a staff or vendor role (SEC-546-2)
+			return actionResult{}, fail(409, handle+" is banned; nothing was changed.")
 		}
 		// Both accounts get an audit row naming the change; an unchanged role is recorded for the administrator only.
 		// The account's row ("Role changed from OLD to NEW …") also tells disputeEvidence when it left staff (A-294).

@@ -391,7 +391,7 @@ type PageData struct {
 	// A-109: product/checkout and a buyer's draft-order page explain why a suspended vendor takes no new intake.
 	VendorSuspensionReason string
 	// SellerClosed (A-546): the product page of a banned vendor's listing (archived by the ban) says the account is
-	// closed rather than only archived.
+	// closed rather than only archived; the vendor page says so instead of offering "Message vendor" and the key.
 	SellerClosed bool
 	// OrderClosedParties (A-546): like OrderSuspendedParties, for a banned buyer or vendor (not also listed there).
 	OrderClosedParties []string

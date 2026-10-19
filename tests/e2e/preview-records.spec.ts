@@ -28,6 +28,11 @@ test('/canary#records lists what the server keeps, who reads it and that nothing
     await expect(records.locator('li > strong', { hasText: new RegExp(`^${item}`) }), item).toHaveCount(1);
   }
   await expect(records).toContainText('never to be published');
+  // A-546 (SEC-546-1): lifting a ban does not erase the audit rows that carry its reason.
+  const bans = records.locator('li', { has: page.locator('strong', { hasText: /^Account bans\./ }) });
+  await expect(bans).toContainText('Lifting the ban clears the ban record and the handle reservation');
+  await expect(bans).toContainText('The audit rows that carry the reason follow the audit trail’s retention.');
+  await expect(bans).not.toContainText('removes all of this');
   // Visitors are not told to "check exports": the key lets the operator prove an export they hold.
   await expect(page.locator('main')).not.toContainText('check exports');
   await expect(page.locator('section.audit-key')).toContainText('private operator evidence');

@@ -16,6 +16,9 @@ const (
 	bannedMsg      = "This account is closed and cannot sign in. Ask the operator of this market."
 	testBanReason  = "Took payment for three orders and shipped nothing."
 	testLiftReason = "Appeal upheld: the parcels were lost in the post."
+	// The reasons as audit rows quote them: without the final full stop, since the row goes on after it (SEC-546-6).
+	banAudit  = "Took payment for three orders and shipped nothing"
+	liftAudit = "Appeal upheld: the parcels were lost in the post"
 )
 
 func banForm(action, handle, reason string, extra ...string) url.Values {
@@ -116,8 +119,8 @@ func TestBanAccount(t *testing.T) {
 	}
 	archived := strconv.Itoa(listings)
 	for who, row := range map[string]string{
-		adminID:  "Banned account ban_vendor: " + testBanReason + "; ended 2 session(s) and any pending sign-ins; archived " + archived + " active listing(s); removed the verified vendor mark (confirmed with password)",
-		vendorID: "Account banned by administrator ban_admin: " + testBanReason + "; ended 2 session(s) and any pending sign-ins",
+		adminID:  "Banned account ban_vendor: " + banAudit + "; ended 2 session(s) and any pending sign-ins; archived " + archived + " active listing(s); removed the verified vendor mark (confirmed with password)",
+		vendorID: "Account banned by administrator ban_admin: " + banAudit + "; ended 2 session(s) and any pending sign-ins",
 	} {
 		if !e.auditExact(who, row) {
 			t.Fatalf("missing audit row %q", row)
@@ -147,6 +150,10 @@ func TestBanAccount(t *testing.T) {
 	draftBody := e.body("GET", orderPage(draft), buyer, nil, 200)
 	mustContain(t, draftBody, "<strong>Unavailable.</strong> "+html.EscapeString(sellerClosed))
 	mustNotContain(t, draftBody, html.EscapeString(sellerSuspended))
+	// The vendor profile says the account is closed and offers neither "Message vendor" nor the key (SEC-546-4).
+	vendorPage := e.body("GET", "/vendor?id="+vendorID, buyer, nil, 200)
+	mustContain(t, vendorPage, "This seller's account is closed. It accepts no new orders and cannot be messaged.")
+	mustNotContain(t, vendorPage, `href="/messages?to=ban_vendor"`, "Message vendor", `id="vendor-key"`)
 
 	// Banned state on /admin/users: in its own list, not among the suspended accounts.
 	page = e.body("GET", "/admin/users", admin, nil, 200)
@@ -244,7 +251,7 @@ func TestBanAccount(t *testing.T) {
 		t.Fatalf("application after the ban: %+v", app)
 	}
 	if !e.auditExact(applicantID, "Vendor application withdrawn: account banned by administrator ban_admin2") ||
-		!e.auditExact(admin2ID, "Banned account ban_applicant: "+testBanReason+"; ended 1 session(s) and any pending sign-ins; withdrew the open vendor application (confirmed with password and authenticator code)") {
+		!e.auditExact(admin2ID, "Banned account ban_applicant: "+banAudit+"; ended 1 session(s) and any pending sign-ins; withdrew the open vendor application (confirmed with password and authenticator code)") {
 		t.Fatal("application withdrawal not audited")
 	}
 
@@ -259,8 +266,8 @@ func TestBanAccount(t *testing.T) {
 	if agInt(e, "SELECT count(*) FROM banned_handles WHERE handle='ban_vendor'") != 0 {
 		t.Fatal("lifting the ban kept the handle reservation")
 	}
-	if !e.auditExact(adminID, "Lifted the ban on ban_vendor: "+testLiftReason+" (confirmed with password)") ||
-		!e.auditExact(vendorID, "Ban lifted by administrator ban_admin: "+testLiftReason) {
+	if !e.auditExact(adminID, "Lifted the ban on ban_vendor: "+liftAudit+" (confirmed with password)") ||
+		!e.auditExact(vendorID, "Ban lifted by administrator ban_admin: "+liftAudit) {
 		t.Fatal("lifted ban not audited on both accounts")
 	}
 	if agInt(e, "SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE 'An administrator lifted the ban on your account.%'", vendorID) != 1 {
@@ -403,11 +410,25 @@ func TestBanModeratorAndPriorSuspension(t *testing.T) {
 		t.Fatal("banned moderator kept the staff role or the public staff listing")
 	}
 	if !e.auditExact(modID, "Role changed from moderator to buyer by administrator banmod_admin (account banned)") ||
-		!e.auditExact(adminID, "Banned account banmod_mod: "+testBanReason+"; ended 1 session(s) and any pending sign-ins; changed role from moderator to buyer (confirmed with password)") {
+		!e.auditExact(adminID, "Banned account banmod_mod: "+banAudit+"; ended 1 session(s) and any pending sign-ins; changed role from moderator to buyer (confirmed with password)") {
 		t.Fatal("moderator demotion not audited on both accounts")
 	}
 	if agInt(e, "SELECT count(*) FROM notifications WHERE user_id=$1 AND body='Your account role changed from moderator to buyer.'", modID) != 1 {
 		t.Fatal("demoted moderator not notified")
+	}
+	// While banned, neither the role form nor the host command gives it a staff or vendor role back (SEC-546-2).
+	audits := agInt(e, "SELECT count(*) FROM audit_events")
+	for _, role := range []string{"moderator", "vendor"} {
+		agExpect(e, "/admin", admin, form("action", "role", "password", testPassword, "role", role, "handle", "banmod_mod"), 409, "banmod_mod is banned; nothing was changed.")
+		if _, err := SetRole(t.Context(), e.DB, "banmod_mod", role); err == nil || !strings.Contains(err.Error(), `"banmod_mod" is banned; nothing was changed`) {
+			t.Fatalf("-set-role %s for a banned account: %v", role, err)
+		}
+	}
+	if _, err := SetRole(t.Context(), e.DB, "banmod_mod", "admin"); err == nil {
+		t.Fatal("-set-role admin for a banned account succeeded")
+	}
+	if agStr(e, "SELECT role FROM users WHERE id=$1", modID) != "buyer" || agInt(e, "SELECT count(*) FROM audit_events") != audits {
+		t.Fatal("a refused role change for a banned account wrote something")
 	}
 	agExpect(e, "/admin/ban", admin, banForm("unban", "banmod_mod", testLiftReason), 303, "")
 	if agStr(e, "SELECT role FROM users WHERE id=$1", modID) != "buyer" {
@@ -425,6 +446,10 @@ func TestBanModeratorAndPriorSuspension(t *testing.T) {
 	page := e.body("GET", orderPage(order), buyer, nil, 200)
 	mustContain(t, page, suspendedNote)
 	mustNotContain(t, page, closedNote)
+	// A suspended (not banned) vendor keeps today's profile page (SEC-546-4).
+	vendorPage := e.body("GET", "/vendor?id="+vendorID, buyer, nil, 200)
+	mustContain(t, vendorPage, `href="/messages?to=banmod_vendor"`)
+	mustNotContain(t, vendorPage, "account is closed")
 
 	agExpect(e, "/admin/ban", admin, banForm("ban", "banmod_vendor", testBanReason), 303, "")
 	if agStr(e, "SELECT ban_prior_suspended_at::text FROM users WHERE id=$1", vendorID) != since || agStr(e, "SELECT suspended_at::text FROM users WHERE id=$1", vendorID) != since {
@@ -442,8 +467,8 @@ func TestBanModeratorAndPriorSuspension(t *testing.T) {
 		agInt(e, "SELECT count(*) FROM users WHERE id=$1 AND banned_at IS NULL AND ban_reason IS NULL AND ban_prior_suspended_at IS NULL", vendorID) != 1 {
 		t.Fatal("lifting the ban did not restore the earlier suspension")
 	}
-	if !e.auditExact(vendorID, "Ban lifted by administrator banmod_admin: "+testLiftReason+"; it stays suspended, as it was before the ban") ||
-		!e.auditExact(adminID, "Lifted the ban on banmod_vendor: "+testLiftReason+"; it stays suspended, as it was before the ban (confirmed with password)") {
+	if !e.auditExact(vendorID, "Ban lifted by administrator banmod_admin: "+liftAudit+"; it stays suspended, as it was before the ban") ||
+		!e.auditExact(adminID, "Lifted the ban on banmod_vendor: "+liftAudit+"; it stays suspended, as it was before the ban (confirmed with password)") {
 		t.Fatal("lifting the ban over a suspension not audited")
 	}
 	if agInt(e, "SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE 'An administrator lifted the ban on your account. It stays suspended%'", vendorID) != 1 ||
@@ -458,4 +483,55 @@ func TestBanModeratorAndPriorSuspension(t *testing.T) {
 	mustContain(t, e.body("GET", "/admin/users", admin, nil, 200), "banmod_vendor · vendor · suspended ")
 	agExpect(e, "/admin/suspend", admin, suspendForm("restore", "banmod_vendor"), 303, "")
 	e.check(e.do("POST", "/login", randomToken(), form("handle", "banmod_vendor", "password", testPassword)), 303)
+}
+
+// SEC-546-3, owner decision 2026-10-19: a release that still waits for the vendor's claim address is held while the
+// vendor is banned, never paid elsewhere, and claimed once the ban is lifted. Here the buyer concedes a dispute on an
+// undelivered digital Monero escrow order (completed for the vendor with no claim yet), then the vendor is banned.
+func TestBanHoldsUnclaimedRelease(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	e := x.testEnv
+	_, admin := e.user("banhold_admin", "admin")
+	vendorHandle := agStr(e, "SELECT handle FROM users WHERE id=$1", x.vendor)
+	order, buyerSess := x.undeliveredXMR()
+	if code, body := x.xmrDispute(order, buyerSess); code != 303 {
+		t.Fatalf("open dispute: %d %s", code, body)
+	}
+	dispute := agStr(e, "SELECT id FROM disputes WHERE order_id=$1", order)
+	page := e.body("GET", orderPage(order), buyerSess, nil, 200)
+	e.check(e.do("POST", "/disputes/concede", buyerSess, concessionForm(dispute, "release", renderedFormNonce(t, page, "/disputes/concede"), xmrListingPrice)), 303)
+	if x.state(order) != stateCompleted || len(x.xmrSettlements(order)) != 0 {
+		t.Fatalf("conceded order: %s %v", x.state(order), x.xmrSettlements(order))
+	}
+
+	agExpect(e, "/admin/ban", admin, banForm("ban", vendorHandle, testBanReason), 303, "")
+	x.mustPoll()
+	if got := x.xmrSettlements(order); len(got) != 0 {
+		t.Fatalf("a release was requested for a banned vendor: %v", got)
+	}
+	// The vendor's old session no longer works, so the claim is refused and nothing is written.
+	if !signedOut(e, x.vendorSess) {
+		t.Fatal("banned vendor's session still authenticates")
+	}
+	if code, _ := x.xmrClaim(order, x.vendorSess, testXMRAddr("banhold claim "+order, true), testPassword); code != 401 {
+		t.Fatalf("claim from a banned vendor's session: %d", code)
+	}
+	agExpect(e, "/login", randomToken(), form("handle", vendorHandle, "password", testPassword), 403, bannedMsg)
+	x.mustPoll()
+	if got := x.xmrSettlements(order); len(got) != 0 {
+		t.Fatalf("a release was requested while the vendor is banned: %v", got)
+	}
+
+	// Once the ban is lifted the vendor signs in and claims; the release is requested to their address.
+	agExpect(e, "/admin/ban", admin, banForm("unban", vendorHandle, testLiftReason), 303, "")
+	w := e.do("POST", "/login", randomToken(), form("handle", vendorHandle, "password", testPassword))
+	e.check(w, 303)
+	claim := testXMRAddr("banhold claim "+order, true)
+	if code, body := x.xmrClaim(order, e.session(w), claim, testPassword); code != 303 {
+		t.Fatalf("claim after the ban was lifted: %d %s", code, body)
+	}
+	if got := x.xmrSettlements(order); len(got) != 1 || got[0] != "release requested "+claim {
+		t.Fatalf("release after the claim: %v", got)
+	}
 }

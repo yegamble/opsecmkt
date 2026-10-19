@@ -46,8 +46,8 @@ func SetRole(ctx context.Context, db *sql.DB, handle, role string) (string, erro
 		}
 	}
 	var id, old string
-	var suspended, closed, closing bool
-	err = tx.QueryRowContext(ctx, "SELECT id,role,suspended_at IS NOT NULL,closed_at IS NOT NULL OR password_hash='',deletion_requested_at IS NOT NULL OR retention_restricted_at IS NOT NULL FROM users WHERE handle=$1 FOR UPDATE", handle).Scan(&id, &old, &suspended, &closed, &closing)
+	var suspended, closed, closing, banned bool
+	err = tx.QueryRowContext(ctx, "SELECT id,role,suspended_at IS NOT NULL,closed_at IS NOT NULL OR password_hash='',deletion_requested_at IS NOT NULL OR retention_restricted_at IS NOT NULL,banned_at IS NOT NULL FROM users WHERE handle=$1 FOR UPDATE", handle).Scan(&id, &old, &suspended, &closed, &closing, &banned)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", fmt.Errorf("no account has the handle %q (handles are exact and case-sensitive)", handle)
 	}
@@ -57,6 +57,8 @@ func SetRole(ctx context.Context, db *sql.DB, handle, role string) (string, erro
 	switch {
 	case closed:
 		return "", fmt.Errorf("%q is closed; register a new active account instead of restoring erased sign-in material", handle)
+	case banned && role != "buyer": // A-546: lifting the ban must not hand back a staff or vendor role (SEC-546-2)
+		return "", fmt.Errorf("%q is banned; nothing was changed", handle)
 	case old == role:
 		return "", fmt.Errorf("%q is already a %s account; nothing was changed", handle, role)
 	case role == "admin" && suspended:

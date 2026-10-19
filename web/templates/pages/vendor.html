@@ -11,14 +11,14 @@
 <p>Explore this vendor’s current listings.{{with .Paging}}{{if gt .Pages 1}} {{.Total}} listings · showing {{.First}}–{{.Last}}.{{end}}{{end}}</p>
 </div>
 </div>
-{{range .Users}}<a class="button" href="/messages?to={{.Handle}}">Message vendor <span class="action-icon">↗</span></a>{{end}}
+{{if .SellerClosed}}<p class="alert" role="note">This seller's account is closed. It accepts no new orders and cannot be messaged.</p>{{else}}{{range .Users}}<a class="button" href="/messages?to={{.Handle}}">Message vendor <span class="action-icon">↗</span></a>{{end}}{{end}}
 </div>{{with .AvatarTakedown}}{{template "image-takedown" .}}{{end}}
 <div class="notice">
 <p>Vendor identity and reputation have not been independently verified by this application.{{range .Users}}{{if .VendorVerified}} “Verified vendor” means an administrator of this market marked this vendor: it is the staff's judgment, not an identity check.{{end}}{{end}}</p>
-</div>{{range .Contacts}}<section class="panel" aria-labelledby="vendor-key">
+</div>{{if not .SellerClosed}}{{range .Contacts}}<section class="panel" aria-labelledby="vendor-key">
 <h2 id="vendor-key">PGP public key</h2>
 <p class="help">Messages on this market must be encrypted to the recipient’s key in your own PGP application. Physical orders: send your shipping address only this way. The market has no address field; it keeps the encrypted message and who sent it to whom and when, but cannot read it.</p>
-{{template "contact-key" .}}</section>{{end}}{{template "products" .}}{{if not .Products}}<div class="empty">
+{{template "contact-key" .}}</section>{{end}}{{end}}{{template "products" .}}{{if not .Products}}<div class="empty">
 <h2>No active listings</h2>
 <p>This vendor has no listings in the marketplace right now.</p>
 </div>{{end}}{{with .Paging}}{{if gt .Pages 1}}
