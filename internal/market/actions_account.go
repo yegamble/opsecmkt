@@ -136,7 +136,7 @@ func passwordChangeAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, fail(400, "Choose a new password that differs from your current one.")
 	}
 	var hash, token string
-	opts := &confirmation{Recovery: true, AfterPassword: func() (err error) { hash, err = hashPassword(next); return err },
+	opts := &confirmation{Recovery: true, AfterPassword: func() (err error) { hash, err = hashPasswordFor(c.Ctx(), next); return err },
 		// Pending sign-ins end before the account row is locked, in the order /challenge takes them (A-154).
 		Before: func(c *actionCtx) error {
 			_, err := c.Tx.ExecContext(c.Ctx(), "DELETE FROM pending_logins WHERE user_id=$1", c.User.ID)

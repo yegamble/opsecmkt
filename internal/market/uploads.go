@@ -221,7 +221,7 @@ func (a *App) serveUpload(w http.ResponseWriter, r *http.Request, route uploadRo
 		u.refuse(http.StatusTooManyRequests, "Photo not saved: an account can upload at most 20 photos or avatars in 10 minutes. Nothing was stored. Try again later.")
 		return
 	}
-	release, ok := tryTake(userPostWork)
+	release, ok := tryTake(workFor(r.Context(), userPostWork, adminUserPostWork))
 	if !ok {
 		u.refuse(http.StatusServiceUnavailable, errBusyMsg)
 		return
@@ -552,7 +552,7 @@ func (a *App) loadRefusalPage(r *http.Request, d *PageData) bool {
 	if a.db == nil {
 		return false
 	}
-	release, ok := tryTake(pageWork)
+	release, ok := tryTake(workFor(r.Context(), pageWork, adminPageWork))
 	if !ok {
 		return false
 	}

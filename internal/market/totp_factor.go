@@ -26,8 +26,9 @@ func (totpFactor) Enrolled(ctx context.Context, q rowQuerier, userID string) (bo
 
 func (totpFactor) Verify(c *actionCtx, userID string) error {
 	// Per account, independent of the pending-login token, so repeated password logins do not multiply guesses.
-	// passwordAndCodeSignIn (A-549) charges the same budget for a code typed on /login.
-	if !c.A.allow("totp-verify:"+userID, 10) {
+	// passwordAndCodeSignIn (A-549) charges the same budget for a code typed on /login. The private administrator
+	// ingress has its own (ingressKey, A-570).
+	if !c.A.allow(ingressKey(c.Ctx(), "totp-verify:"+userID), 10) {
 		return errTOTPBudget
 	}
 	ctx, tx := c.Ctx(), c.Tx

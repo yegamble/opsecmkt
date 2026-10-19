@@ -57,6 +57,7 @@ type App struct {
 	captchaIDKey         []byte               // CAPTCHA challenge-id MAC key, sha256("captcha-id:"+keyRoot); empty = no challenges
 	mu                   sync.Mutex
 	limits               map[string]bucket         // authentication and factor budgets
+	adminLimits          map[string]bucket         // the same budgets for the private administrator ingress, "adm:" keys (A-570)
 	writeLimits          map[string]bucket         // independent per-account write budgets (A-75)
 	inFlight             map[string]int            // OneAtATime actions in progress, by path and account (enterOneAtATime)
 	signInLogAt          time.Time                 // last "sign-in limiter refusing" log line (guarded by mu)
@@ -350,7 +351,33 @@ func (a *App) cookie(w http.ResponseWriter, name, value string, age int) {
 func (a *App) allow(key string, n int) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return allowIn(a.limits, key, n, time.Now())
+	return allowIn(a.limitTable(key), key, n, time.Now())
+}
+
+// adminIngressPrefix namespaces the sign-in and factor budgets of requests that came through the private
+// administrator ingress (A-570). Every limiter key starts with a fixed prefix of its own, never with request
+// data, so only ingressKey produces one.
+const adminIngressPrefix = "adm:"
+
+// ingressKey returns key in the private ingress's namespace for a request that came through AdminHandler, and
+// key unchanged otherwise. Such keys live in their own table (limitTable), so the public listener can neither
+// spend them nor fill the table they need.
+func ingressKey(ctx context.Context, key string) string {
+	if privateAdminIngress(ctx) {
+		return adminIngressPrefix + key
+	}
+	return key
+}
+
+// limitTable is the table key's budget lives in. Call it with a.mu held.
+func (a *App) limitTable(key string) map[string]bucket {
+	if !strings.HasPrefix(key, adminIngressPrefix) {
+		return a.limits
+	}
+	if a.adminLimits == nil {
+		a.adminLimits = make(map[string]bucket)
+	}
+	return a.adminLimits
 }
 
 // allowWrite reserves a separate bounded table for signed-in writes. Saturated authentication
@@ -402,7 +429,7 @@ func allowIn(limits map[string]bucket, key string, n int, now time.Time) bool {
 		if len(limits) >= 4096 {
 			victim, found := "", false
 			for k, v := range limits {
-				if v.Count >= v.Limit || strings.HasPrefix(k, "totp-verify:") {
+				if v.Count >= v.Limit || strings.HasPrefix(strings.TrimPrefix(k, adminIngressPrefix), "totp-verify:") {
 					continue
 				}
 				if w := limits[victim]; !found || v.Count < w.Count || (v.Count == w.Count && v.Until.Before(w.Until)) {
@@ -427,29 +454,35 @@ func allowIn(limits map[string]bucket, key string, n int, now time.Time) bool {
 func (a *App) refund(key string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	b, ok := a.limits[key]
+	limits := a.limitTable(key)
+	b, ok := limits[key]
 	if !ok {
 		return
 	}
 	if b.Count <= 1 {
-		delete(a.limits, key)
+		delete(limits, key)
 		return
 	}
 	b.Count--
-	a.limits[key] = b
+	limits[key] = b
 }
 
 // logSignInRefusals writes "sign-in limiter refusing handles=N", at most once a minute, while N > 0 handles
-// have spent their sign-in budget, so the operator can see a lockout without the log naming anyone.
+// have spent their sign-in budget, so the operator can see a lockout without the log naming anyone. A handle
+// paused on the private administrator ingress (A-570) counts as well.
 func (a *App) logSignInRefusals() {
 	a.mu.Lock()
 	now, n := time.Now(), 0
 	if now.Sub(a.signInLogAt) >= time.Minute {
-		for k, b := range a.limits {
-			if strings.HasPrefix(k, "auth:") && b.Count >= b.Limit && !now.After(b.Until) {
-				n++
+		paused := map[string]bool{} // a handle paused on both ingresses counts once
+		for _, limits := range []map[string]bucket{a.limits, a.adminLimits} {
+			for k, b := range limits {
+				if k = strings.TrimPrefix(k, adminIngressPrefix); strings.HasPrefix(k, "auth:") && b.Count >= b.Limit && !now.After(b.Until) {
+					paused[k] = true
+				}
 			}
 		}
+		n = len(paused)
 		if n > 0 {
 			a.signInLogAt = now
 		}
@@ -482,7 +515,7 @@ func (a *App) logRescueRefusal() {
 func (a *App) limited(key string, n int) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	b, ok := a.limits[key]
+	b, ok := a.limitTable(key)[key]
 	return ok && !time.Now().After(b.Until) && b.Count >= n
 }
 func (a *App) responseSecurityHeaders(w http.ResponseWriter) {
