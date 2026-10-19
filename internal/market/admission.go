@@ -35,13 +35,37 @@ import (
 //
 // A class slot is released when the response starts (admitWriter), so it bounds the database and render work
 // of a request but not the time a slow client takes to read the response.
+//
+// A request through the private administrator ingress (AdminHandler) takes the matching class below instead
+// (A-570), so a flood on the public listener, which fills only the public classes, cannot refuse an
+// administrator's sign-in or work on the client-authorized onion (both still share the database pool and CPU).
+// The private classes are small and bounded in the same way, so a client holding that onion's authorization key
+// is still limited. Only the context AdminHandler sets selects them (workFor); no Host, header, cookie or form
+// field can.
 var (
 	pageWork     = make(chan struct{}, 64)
 	anonPostWork = make(chan struct{}, 16)
 	userPostWork = make(chan struct{}, 16)
 	// sessionLookupWork admits 16 concurrent session lookups of form posts (ServeHTTP); see takeLookupSlot.
 	sessionLookupWork = make(chan struct{}, 16)
+
+	adminPageWork          = make(chan struct{}, 8)
+	adminImageWork         = make(chan struct{}, 8)
+	adminCaptchaWork       = make(chan struct{}, 2)
+	adminAnonPostWork      = make(chan struct{}, 4)
+	adminUserPostWork      = make(chan struct{}, 4)
+	adminSessionLookupWork = make(chan struct{}, 4)
+	adminPasswordWork      = make(chan struct{}, 2)
 )
+
+// workFor returns private, the administrator ingress's own class, for a request that came through
+// AdminHandler, and public otherwise.
+func workFor(ctx context.Context, public, private chan struct{}) chan struct{} {
+	if privateAdminIngress(ctx) {
+		return private
+	}
+	return public
+}
 
 // MaxConns is the connection cap cmd/server gives LimitListener, and the one the A-178 load check uses; its
 // memory budget is set out beside maxConns in cmd/server.
@@ -78,9 +102,9 @@ func admitClass(r *http.Request) chan struct{} {
 		return nil
 	}
 	if imageRoute(r.URL.Path) == "/img/" || strings.HasPrefix(r.URL.Path, "/branding/logo/") && r.URL.Path != brandingUploadPath {
-		return imageWork
+		return workFor(r.Context(), imageWork, adminImageWork)
 	}
-	return pageWork
+	return workFor(r.Context(), pageWork, adminPageWork)
 }
 
 // takeLookupSlot takes a sessionLookupWork slot for a form post's session lookup, waiting for up to
@@ -90,14 +114,15 @@ func admitClass(r *http.Request) chan struct{} {
 // losing a race for a slot that is refused at once. The class keeps those lookups to 16 of the pool's
 // connections, and pages (pageWork) never take it, so a flood of pages cannot refuse a signed-in post.
 func takeLookupSlot(ctx context.Context) (release func(), ok bool) {
-	if release, ok = tryTake(sessionLookupWork); ok {
+	sem := workFor(ctx, sessionLookupWork, adminSessionLookupWork)
+	if release, ok = tryTake(sem); ok {
 		return release, true
 	}
 	t := time.NewTimer(postLookupWait)
 	defer t.Stop()
 	select {
-	case sessionLookupWork <- struct{}{}:
-		return sync.OnceFunc(func() { <-sessionLookupWork }), true
+	case sem <- struct{}{}:
+		return sync.OnceFunc(func() { <-sem }), true
 	case <-t.C:
 	case <-ctx.Done():
 	}

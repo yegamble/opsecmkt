@@ -301,7 +301,11 @@ and `tor-admin`. The storefront and public mirrors continue to use `app:8080`;
 that listener refuses `/setup`, `/admin*`, other administrator-only actions,
 administrator sign-in and authenticated administrator requests on shared staff
 routes. Moderator accounts retain their public staff routes. Headers and host
-names cannot select the private listener.
+names cannot select the private listener. Sign-in through the private onion has
+its own failed-password, authenticator-code and PGP-code budgets and admission
+limits, so failures and floods on the public onion cannot pause or refuse it
+(A-570; uploads still share their limits; see the
+[operator guide](../operator-guide.md#authentication)).
 
 This procedure requires the updated source containing the overlay; older alpha
 tags do not include it. Finish ordinary first-run setup before enabling the

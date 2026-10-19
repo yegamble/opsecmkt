@@ -145,17 +145,18 @@ func (a *App) confirmPasswordHash(ctx context.Context, userID, password string) 
 		return "", fail(400, "Enter your current password to confirm this change.")
 	}
 	// A spent budget is refused before a slot is taken, so it never runs bcrypt or keeps other checks waiting.
-	key := "confirm:" + userID
+	key := ingressKey(ctx, "confirm:"+userID)
 	if a.limited(key, 10) {
 		return "", errConfirmPaused
 	}
 	// The slot is taken before the attempt is counted, so a busy refusal spends none of the user's budget.
+	sem := workFor(ctx, passwordWork, adminPasswordWork)
 	select {
-	case passwordWork <- struct{}{}:
+	case sem <- struct{}{}:
 	default:
 		return "", fail(503, "Authentication is busy. Try again shortly.")
 	}
-	defer func() { <-passwordWork }()
+	defer func() { <-sem }()
 	// One attempt is reserved before bcrypt and refunded when the password is correct, so only failures spend the
 	// budget and concurrent wrong passwords still cannot exceed it.
 	if !a.allow(key, 10) {
@@ -176,8 +177,8 @@ func (a *App) confirmPasswordHash(ctx context.Context, userID, password string) 
 // confirmCode runs check, the authenticator or recovery code of a confirmation whose password was correct. A code is
 // a guess too (A-274): it reserves one attempt of the budget the correct password gave back, and only a wrong code
 // (401) keeps it spent. Call it under the account row lock, so concurrent guesses cannot exceed the budget.
-func (a *App) confirmCode(userID string, check func() error) error {
-	key := "confirm:" + userID
+func (a *App) confirmCode(ctx context.Context, userID string, check func() error) error {
+	key := ingressKey(ctx, "confirm:"+userID)
 	if !a.allow(key, 10) {
 		return errConfirmPaused
 	}
@@ -194,13 +195,18 @@ func validPassword(p string) bool { return len(p) >= 12 && len(p) <= 72 }
 
 // hashPassword hashes a new password at bcryptCost within the bounded bcrypt concurrency. Call it before
 // opening a transaction.
-func hashPassword(p string) (string, error) {
+func hashPassword(p string) (string, error) { return hashPasswordFor(context.Background(), p) }
+
+// hashPasswordFor is hashPassword for a request: one through the private administrator ingress takes that
+// ingress's own password slots (A-570).
+func hashPasswordFor(ctx context.Context, p string) (string, error) {
+	sem := workFor(ctx, passwordWork, adminPasswordWork)
 	select {
-	case passwordWork <- struct{}{}:
+	case sem <- struct{}{}:
 	default:
 		return "", fail(503, "Authentication is busy. Try again shortly.")
 	}
-	defer func() { <-passwordWork }()
+	defer func() { <-sem }()
 	h, err := bcrypt.GenerateFromPassword([]byte(p), bcryptCost)
 	return string(h), err
 }
@@ -340,16 +346,16 @@ func confirmedTxWith(c *actionCtx, opts *confirmation, run func(c *actionCtx) (a
 			if c.FactorFormNonce {
 				// Before locked the recovery rows before the user row. Consume
 				// only for a NEW receipt; an exact completed replay returns above.
-				err = a.confirmCode(uid, func() error {
+				err = a.confirmCode(ctx, uid, func() error {
 					_, useErr := a.useRecoveryCode(ctx, tx, uid, code)
 					return useErr
 				})
 			} else {
-				err = a.confirmCode(uid, func() error { return codeErr })
+				err = a.confirmCode(ctx, uid, func() error { return codeErr })
 			}
 			how = "password and recovery code"
 		} else {
-			err = a.confirmCode(uid, func() error { return a.checkTOTP(ctx, tx, uid, code) })
+			err = a.confirmCode(ctx, uid, func() error { return a.checkTOTP(ctx, tx, uid, code) })
 			how = "password and authenticator code"
 		}
 		if err != nil {
@@ -452,10 +458,11 @@ func authGate(c *actionCtx) (handle, password, rescueID string, release func(), 
 	}
 	// Each path has its own per-handle budget, so registering or setting up a handle never spends its sign-in
 	// budget. Sign-in reserves one attempt here and authAction refunds it when the password is correct, so only
-	// failed passwords spend "auth:" and concurrent guesses still cannot exceed it (A-153).
-	key, refused := signInKey(handle), errSignInPaused
+	// failed passwords spend "auth:" and concurrent guesses still cannot exceed it (A-153). A request through the
+	// private administrator ingress spends that ingress's own budgets (ingressKey, A-570).
+	key, refused := ingressKey(c.Ctx(), signInKey(handle)), errSignInPaused
 	if path != "/login" {
-		key, refused = strings.TrimPrefix(path, "/")+":"+strings.ToLower(handle), fail(429, "Too many attempts. Try again in ten minutes.")
+		key, refused = ingressKey(c.Ctx(), strings.TrimPrefix(path, "/")+":"+strings.ToLower(handle)), fail(429, "Too many attempts. Try again in ten minutes.")
 	}
 	if err == nil && a.limited(key, 10) {
 		if path == "/login" && c.Form.Get("rescue_code") != "" {
@@ -479,7 +486,7 @@ func authGate(c *actionCtx) (handle, password, rescueID string, release func(), 
 						err = errSoleAdminRecovery
 					} else {
 						rescueID = account.id
-						key, refused = "totp-verify:"+account.id, errSoleAdminRecovery
+						key, refused = ingressKey(c.Ctx(), "totp-verify:"+account.id), errSoleAdminRecovery
 						if a.limited(key, 10) {
 							err = refused
 						}
@@ -500,12 +507,13 @@ func authGate(c *actionCtx) (handle, password, rescueID string, release func(), 
 	}
 	// A password-check slot is taken only now, so requests refused above never hold one while real
 	// sign-ins wait. The attempt is counted after the slot, so a busy refusal spends no budget.
+	sem := workFor(c.Ctx(), passwordWork, adminPasswordWork)
 	select {
-	case passwordWork <- struct{}{}:
+	case sem <- struct{}{}:
 	default:
 		return "", "", "", nil, fail(503, "Authentication is busy. Try again shortly.")
 	}
-	release = func() { <-passwordWork }
+	release = func() { <-sem }
 	// Reserve atomically before bcrypt, including recovery attempts. The earlier limited check
 	// only avoids taking a work slot for an already-exhausted budget; it cannot admit a race.
 	if !a.allow(key, 10) {
@@ -639,7 +647,7 @@ func authAction(c *actionCtx) (actionResult, error) {
 			}
 			return res, err
 		}
-		a.refund(signInKey(handle)) // a correct password spends no sign-in budget
+		a.refund(ingressKey(ctx, signInKey(handle))) // a correct password spends no sign-in budget
 		if account.suspended {
 			return actionResult{}, suspendedRefusal(ctx, a.db, account.banned)
 		}
@@ -913,7 +921,7 @@ func (a *App) secondFactor(c *actionCtx, userID, passwordHash, code, next string
 // /challenge anyway, so this answers nothing a password guess could not already learn. Recovery codes are /challenge's.
 func (a *App) passwordAndCodeSignIn(c *actionCtx, userID, passwordHash, code, next string) (actionResult, error) {
 	ctx := c.Ctx()
-	if !a.allow("totp-verify:"+userID, 10) {
+	if !a.allow(ingressKey(ctx, "totp-verify:"+userID), 10) {
 		return actionResult{}, errTOTPBudget
 	}
 	tx, err := a.db.BeginTx(ctx, nil)
@@ -998,7 +1006,7 @@ func challengeAction(c *actionCtx) (actionResult, error) {
 	if err != nil {
 		return actionResult{}, err
 	}
-	if !a.allow("challenge:"+digest(pending), 10) {
+	if !a.allow(ingressKey(ctx, "challenge:"+digest(pending)), 10) {
 		return actionResult{}, fail(429, "Too many attempts. Try again in ten minutes.")
 	}
 	p := factorByName(c.Form.Get("method"))

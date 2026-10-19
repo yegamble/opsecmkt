@@ -4,6 +4,10 @@
 <p class="help">This list applies to this application instance only. It is kept in memory and clears on restart. Entries can include handles without an account; a pause does not mean the account holder entered a wrong password.</p>
 {{if .SignInRefusals}}<ul class="stack">{{range .SignInRefusals}}
 <li><strong>{{.Handle}}</strong> — paused until {{.Until}}</li>
-{{end}}</ul>{{else}}<p>No handles are currently paused on this instance.</p>{{end}}
+{{end}}</ul>{{else if not .AdminIngressRefusals}}<p>No handles are currently paused on this instance.</p>{{end}}
+{{if .AdminIngressRefusals}}<p>Paused on the private administrator onion, which keeps sign-in limits of its own; only a client holding its authorization key can reach it:</p>
+<ul class="stack">{{range .AdminIngressRefusals}}
+<li><strong>{{.Handle}}</strong> — paused until {{.Until}} on the private administrator onion</li>
+{{end}}</ul>{{end}}
 </section>
 {{end}}

@@ -529,9 +529,9 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 	// Only a post that is charged to its account's write budget takes a signed-in slot: a public action (sign-in,
 	// registration, the sign-in challenge) is not, so a signed-in account posting one uses the anonymous class and
 	// cannot flood the class that staff changes use (PR #15 re-review).
-	class := anonPostWork
+	class := workFor(r.Context(), anonPostWork, adminAnonPostWork)
 	if !spec.Public || len(spec.Roles) > 0 {
-		class = userPostWork
+		class = workFor(r.Context(), userPostWork, adminUserPostWork)
 		if u == nil {
 			a.refuse(w, r, nil, 401, "Sign in required")
 			return

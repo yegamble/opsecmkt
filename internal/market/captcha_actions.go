@@ -69,9 +69,10 @@ func captchaPNG(a *App, w http.ResponseWriter, r *http.Request, _ *User) {
 			return
 		}
 	}
+	sem := workFor(r.Context(), captchaWork, adminCaptchaWork)
 	select {
-	case captchaWork <- struct{}{}:
-		defer func() { <-captchaWork }()
+	case sem <- struct{}{}:
+		defer func() { <-sem }()
 	default:
 		busy(w)
 		return

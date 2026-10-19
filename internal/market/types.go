@@ -228,7 +228,10 @@ type PageData struct {
 	// (User.Suspended says when); the suspend/restore form itself takes any handle.
 	SuspendedAccounts []User
 	SignInRefusals    []SignInRefusal
-	RecentSignIns     []Event // account only: latest five successful sign-ins, including legacy audit rows.
+	// AdminIngressRefusals: admin page, the handles paused on the private administrator ingress, whose sign-in
+	// budgets are separate from the public listener's (A-570).
+	AdminIngressRefusals []SignInRefusal
+	RecentSignIns        []Event // account only: latest five successful sign-ins, including legacy audit rows.
 	// BannedAccounts: admin page, up to 100 banned accounts, most recently banned first (A-546; User.Banned, BannedBy
 	// and BanReason); the ban/unban form itself takes any handle.
 	BannedAccounts []User

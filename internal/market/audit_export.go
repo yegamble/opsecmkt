@@ -154,7 +154,7 @@ func auditExportHandler(a *App, w http.ResponseWriter, r *http.Request, u *User)
 		http.Error(w, "Administrator access required", 403)
 		return
 	}
-	if !a.allow("export:"+u.ID, 10) {
+	if !a.allow(ingressKey(r.Context(), "export:"+u.ID), 10) {
 		http.Error(w, "Too many exports. Try again later.", 429)
 		return
 	}

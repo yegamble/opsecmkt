@@ -37,7 +37,7 @@ func init() {
 
 // totpLimit bounds code guesses by a signed-in session (e.g. a stolen session trying to disable TOTP).
 func totpLimit(c *actionCtx) error {
-	if !c.A.allow("totp:"+c.User.ID, 10) {
+	if !c.A.allow(ingressKey(c.Ctx(), "totp:"+c.User.ID), 10) {
 		return fail(429, "Too many attempts. Try again in ten minutes.")
 	}
 	return nil

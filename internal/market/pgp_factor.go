@@ -89,7 +89,7 @@ func pgpLoginCodeAction(c *actionCtx) (actionResult, error) {
 	if err != nil {
 		return actionResult{}, err
 	}
-	if !c.A.allow("pgp-login:"+digest(pending), 10) { // only after the pending login exists
+	if !c.A.allow(ingressKey(ctx, "pgp-login:"+digest(pending)), 10) { // only after the pending login exists
 		return actionResult{}, fail(429, "Too many codes requested. Try again in ten minutes.")
 	}
 	p, err := loadPGPAccount(ctx, tx, userID, true)
