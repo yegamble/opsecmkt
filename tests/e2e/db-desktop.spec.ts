@@ -47,7 +47,7 @@ test('desktop: register, draft, profile persistence and sign-out', async ({ page
   await page.goto('/account');
   await expect(page.getByLabel('XMPP address')).toHaveCount(0);
   await fits(page);
-  await submitAndLoad(page, page.getByRole('button', { name: 'Sign out', exact: true }));
+  await submitAndLoad(page, page.getByRole('main').getByRole('button', { name: 'Sign out', exact: true }));
   await page.goto('/account');
   await expect(page).toHaveURL(/\/login\?next=%2Faccount$/);
   await page.getByLabel('Handle', { exact: true }).fill(handle);

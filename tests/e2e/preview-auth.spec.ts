@@ -87,7 +87,7 @@ test('account sessions panel lists sessions without client data and explains sig
   await expect(sessions).toContainText('every sign-in still waiting for its second step');
   await expect(sessions).toContainText('Only changing your password stops them. A password change ends every other session and every sign-in in progress');
   for (const action of ['/logout', '/revoke-sessions']) {
-    const form = (action === '/logout' ? page : sessions).locator(`form[action="${action}"]`);
+    const form = (action === '/logout' ? page.getByRole('main') : sessions).locator(`form[action="${action}"]`);
     await expect(form).toHaveAttribute('method', 'post');
     await expect(form.locator('input[name="csrf"]')).toHaveCount(1);
   }

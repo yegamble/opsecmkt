@@ -1254,7 +1254,7 @@ func TestXMREscrowStaffHelpBesideAdminForm(t *testing.T) {
 		defer func() { x.A.escrowXMR = saved }()
 		admin := html.UnescapeString(x.page("/order?id="+crasher, adminSess))
 		help := staffHelp(admin)
-		if strings.Contains(admin, `method="post"`) || !strings.HasPrefix(help, "an administrator") || !strings.Contains(help, "Nothing can be changed from this page") ||
+		if strings.Contains(withoutSiteHeader(admin), `method="post"`) || !strings.HasPrefix(help, "an administrator") || !strings.Contains(help, "Nothing can be changed from this page") ||
 			!strings.Contains(admin, "Order record · Administrator review (read-only)") || strings.Contains(admin, "Moderator review (read-only)") {
 			t.Fatalf("%s: the administrator offered no form: %q", stage, help)
 		}

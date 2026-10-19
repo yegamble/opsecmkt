@@ -535,7 +535,8 @@ func (a *App) renderUploadPage(w http.ResponseWriter, r *http.Request, user *Use
 // so a flood of refused posts reads the database no more than a flood of pages. With every slot taken, or no
 // database, the page is rendered without them; it reports whether the page loaded. Without d.User, a session
 // cookie the request sent is looked up first (A-514: a refusal made before ServeHTTP's own lookup still shows
-// the signed-in header); a session that is not live leaves d.User nil.
+// the signed-in header); a session that is not live leaves d.User nil. That header's Sign out gets the session's own
+// CSRF token (HeaderCSRF, A-548): d.CSRF may be the anon token the refused page's forms were rendered with.
 func (a *App) loadRefusalPage(r *http.Request, d *PageData) bool {
 	if a.db == nil {
 		return false
@@ -548,8 +549,8 @@ func (a *App) loadRefusalPage(r *http.Request, d *PageData) bool {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 	if c, err := r.Cookie("session"); d.User == nil && err == nil && len(c.Value) == 64 {
-		if u, err := a.sessionUser(ctx, c.Value); err == nil {
-			d.User = u
+		if u, err := a.sessionUser(ctx, c.Value); err == nil && u != nil {
+			d.User, d.HeaderCSRF = u, a.csrf(c.Value)
 		}
 	}
 	return a.load(r.WithContext(ctx), d) == nil // best effort: the refusal is the point

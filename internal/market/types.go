@@ -144,6 +144,7 @@ type PageData struct {
 
 	Page, Title, CSRF, Error, Notice, Query, Category, Region, Currency, Mode string
 	NoticeAt                                                                  string // the section a one-shot notice renders in, "" = the top (notice.go)
+	HeaderCSRF                                                                string // the header sign-out's token when User came from the session cookie on a refusal page (A-548)
 	User                                                                      *User
 	Products                                                                  []Product
 	Product                                                                   *Product

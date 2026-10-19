@@ -69,7 +69,7 @@ func staffHelp(page string) string {
 // staffReadOnly fails when the order page staff are shown offers any form that changes something.
 func (x *escrowEnv) staffReadOnly(order, sess string) {
 	x.t.Helper()
-	if page := x.page("/order?id="+order, sess); strings.Contains(page, `method="post"`) || strings.Contains(page, escrowDelivery) {
+	if page := withoutSiteHeader(x.page("/order?id="+order, sess)); strings.Contains(page, `method="post"`) || strings.Contains(page, escrowDelivery) { // besides the header's sign-out (A-548)
 		x.t.Fatalf("the staff order page offers an action or shows the delivery:\n%s", page)
 	}
 }

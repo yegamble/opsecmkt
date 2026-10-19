@@ -100,9 +100,14 @@ func TestRefusalPageForRefusedPostEchoesText(t *testing.T) {
 	if strings.Contains(b, "<script>alert") || strings.Contains(b, "<img src=x") {
 		t.Fatalf("the echoed probe is not escaped:\n%s", b)
 	}
+	// The session's CSRF token appears once, in the header's sign-out form (A-548) as on every signed-in page,
+	// never as an echo of the post.
+	header := siteHeader(b)
+	headerSignOut(t, "refusal page", header, p.A.csrf(p.buyerSess))
+	unechoed := strings.Replace(b, headerSignOutForm.FindString(header), "", 1)
 	for _, secret := range []string{"marker-field-a1", "654321", "rcvy-code-9", "CAPT01", "marker-field-b2", "112233", "pgp-code-7", "setup-token-8",
 		p.A.csrf(p.buyerSess), nonce} {
-		if strings.Contains(b, secret) {
+		if strings.Contains(unechoed, secret) {
 			t.Fatalf("the refusal page echoes %q", secret)
 		}
 	}

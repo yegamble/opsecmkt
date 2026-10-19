@@ -32,7 +32,7 @@ const totpStatus = (page: Page) => page.locator('.key-values div', { hasText: 'T
 
 async function signOutAndIn(page: Page, handle: string, password: string) {
   await page.goto('/account');
-  await submitAndLoad(page, page.getByRole('button', { name: 'Sign out', exact: true }));
+  await submitAndLoad(page, page.getByRole('main').getByRole('button', { name: 'Sign out', exact: true }));
   await page.goto('/login');
   await page.getByLabel('Handle', { exact: true }).fill(handle);
   await page.getByLabel('Password', { exact: true }).fill(password);
@@ -168,7 +168,7 @@ test('sign in with the authenticator code on the sign-in page in one step', asyn
 
   const signIn = async (code: string) => {
     await page.goto('/account');
-    await submitAndLoad(page, page.getByRole('button', { name: 'Sign out', exact: true }));
+    await submitAndLoad(page, page.getByRole('main').getByRole('button', { name: 'Sign out', exact: true }));
     await page.goto(`/login?next=${encodeURIComponent('/orders')}`);
     await page.getByLabel('Handle', { exact: true }).fill(handle);
     await page.getByLabel('Password', { exact: true }).fill(password);

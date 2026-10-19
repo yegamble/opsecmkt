@@ -13,7 +13,7 @@ import { signedIn, submitAndLoad, submitStatus, totp } from './db-helpers';
 
 async function signOutAndChallenge(page: Page, handle: string, password: string) {
   await page.goto('/account');
-  await submitAndLoad(page, page.getByRole('button', { name: 'Sign out', exact: true }));
+  await submitAndLoad(page, page.getByRole('main').getByRole('button', { name: 'Sign out', exact: true }));
   await page.goto('/login');
   await page.getByLabel('Handle', { exact: true }).fill(handle);
   await page.getByLabel('Password', { exact: true }).fill(password);
@@ -123,7 +123,7 @@ test('replacing recovery codes invalidates the old ones; TOTP turns off with pas
   await expect(activity).toContainText('Signed in with password and recovery code');
 
   // Sign-in is password-only again.
-  await submitAndLoad(page, page.getByRole('button', { name: 'Sign out', exact: true }));
+  await submitAndLoad(page, page.getByRole('main').getByRole('button', { name: 'Sign out', exact: true }));
   await page.goto('/login');
   await page.getByLabel('Handle', { exact: true }).fill(handle);
   await page.getByLabel('Password', { exact: true }).fill(password);
@@ -175,7 +175,7 @@ test('a recovery code with "I lost my authenticator" turns TOTP off at sign-in',
   await expect(activity).toContainText('Signed in with password and recovery code');
 
   // The next sign-in is password only.
-  await submitAndLoad(page, page.getByRole('button', { name: 'Sign out', exact: true }));
+  await submitAndLoad(page, page.getByRole('main').getByRole('button', { name: 'Sign out', exact: true }));
   await page.goto('/login');
   await page.getByLabel('Handle', { exact: true }).fill(handle);
   await page.getByLabel('Password', { exact: true }).fill(password);

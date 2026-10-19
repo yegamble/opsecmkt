@@ -104,7 +104,7 @@ test('a success notice shows once: not on reload, not on Back after a failed cha
   await expect(page.locator('main')).not.toContainText('Password changed.');
 
   // Signing out says so on the sign-in page, once.
-  await page.getByRole('button', { name: 'Sign out', exact: true }).click();
+  await page.getByRole('main').getByRole('button', { name: 'Sign out', exact: true }).click();
   await expect(page).toHaveURL(/\/login$/);
   await expect(status).toHaveText('Signed out.');
   await expect(page).toHaveTitle(/^Signed out\. – Login · /);

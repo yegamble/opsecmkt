@@ -28,7 +28,11 @@
 <input id="header-search" name="q" value="{{.Query}}" maxlength="64" autocomplete="off" placeholder="Search the marketplace…">
 <button type="submit" aria-label="Search marketplace"><span>Search</span></button>
 </form>{{end}}
-<div class="header-actions">{{if .User}}<a class="account-name" href="/account">{{.User.Handle}}</a>{{else}}<a href="/login{{with .Next}}?next={{. | urlquery}}{{end}}">Sign in</a>
+<div class="header-actions{{if .User}} signed-in{{end}}">{{if .User}}<a class="account-name" href="/account">{{.User.Handle}}</a>
+<form class="header-signout" method="post" action="/logout">
+<input type="hidden" name="csrf" value="{{or .HeaderCSRF .CSRF}}">
+<button type="submit">Sign out</button>
+</form>{{else}}<a href="/login{{with .Next}}?next={{. | urlquery}}{{end}}">Sign in</a>
 {{if or (not .Access) .Access.RegistrationOpen}}<a class="button primary" href="/register">Join market</a>{{end}}{{end}}</div>
 </div>
 {{if not $membersGuest}}<nav class="nav" aria-label="Main navigation">

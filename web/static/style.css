@@ -68,17 +68,21 @@ a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,te
   outline:3px solid var(--amber);
   outline-offset:2px
 }
+/* Unfocused, the skip link sits wholly above the page at any text size (it moves up by more than its own height,
+   which grows when its text wraps at enlarged text); focused, it shows at the top left. */
 .skip-link {
   position:absolute;
   left:12px;
-  top:-90px;
+  top:0;
+  transform:translateY(-110%);
   z-index:10;
   background:var(--amber);
   color:#000;
   padding:12px
 }
 .skip-link:focus {
-  top:10px
+  top:10px;
+  transform:none
 }
 .sr-only {
   position:absolute;
@@ -1883,4 +1887,38 @@ img.vendor-avatar {
     width:224px;
     height:56px
   }
+}
+
+/* A-548: Sign out follows the signed-in handle as a quiet outlined control (muted text, no fill), a 44px tap target.
+   On a phone the handle and Sign out move together to their own row under the brand rather than squeezing beside
+   it; a handle too long for that row puts Sign out on the next line instead of widening the page. At any width the
+   signed-in actions may shrink below their content, so a long handle at enlarged text wraps Sign out under it. */
+.header-actions.signed-in {
+  flex-shrink:1;
+  min-width:0;
+  max-width:100%
+}
+@media(max-width:640px) {
+  .header-actions.signed-in {
+    flex:1 1 auto
+  }
+}
+.header-signout {
+  display:flex;
+  margin:0
+}
+.header-signout button {
+  min-height:44px;
+  padding:0 12px;
+  background:transparent;
+  border-color:var(--line);
+  color:var(--muted);
+  font:400 0.875rem/1.2 var(--mono);
+  letter-spacing:.02em;
+  text-transform:none;
+  white-space:nowrap
+}
+.header-signout button:hover {
+  border-color:var(--amber);
+  color:var(--amber)
 }

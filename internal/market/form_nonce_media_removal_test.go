@@ -101,7 +101,7 @@ func TestMediaRemovalReceiptsReplayAndBindActorSessionAndBody(t *testing.T) {
 	changedPhoto.Set("id", randomToken()[:32])
 	photoBodyMismatch := e.do("POST", "/listings/photo/remove", owner, changedPhoto)
 	e.check(photoBodyMismatch, 409)
-	if got := e.do("POST", "/listings/photo/remove", otherSession, photoForm); got.Code != 409 || got.Body.String() != photoBodyMismatch.Body.String() {
+	if got := e.do("POST", "/listings/photo/remove", otherSession, photoForm); got.Code != 409 || sessionNeutralBody(e, got, otherSession) != sessionNeutralBody(e, photoBodyMismatch, owner) {
 		t.Fatalf("same actor with a different session got a distinguishable response: %d %q", got.Code, got.Body.String())
 	}
 	// A new rendered submission after the removal follows the route's existing unknown-image 404 policy.
