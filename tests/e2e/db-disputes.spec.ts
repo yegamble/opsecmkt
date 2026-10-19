@@ -73,7 +73,7 @@ test('the other party replies once and the desk names who holds encrypted eviden
 
     // The vendor is told a reply exists, and puts one on record.
     await vendor.goto('/notifications');
-    await expect(vendor.locator('article.message', { hasText: `Order ${orderID.slice(0, 8)} is now Disputed` })).toContainText('You may put one reply to the dispute on record from the order page before a moderator decides.');
+    await expect(vendor.locator('article.message', { hasText: `Order ${orderID.slice(0, 8)} is now Disputed` })).toContainText('You may put one reply to the dispute on record from the order page before an administrator decides.');
     await vendor.goto(`/order?id=${orderID}`);
     const reason = vendor.locator('#order-dispute').locator('..').locator('.dispute-text').first();
     await expect(reason).toHaveText('The parcel arrived empty.\nThe seal on the box was broken.');

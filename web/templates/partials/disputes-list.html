@@ -1,7 +1,8 @@
-{{/* P3 Orders owns. Dispute list used by disputes and moderator; resolve form for moderators who are not party to the order,
+{{/* P3 Orders owns. Dispute list used by disputes and moderator; resolve form for an administrator who is not party to an escrow order,
 each outcome stating its payout from DisputePayouts (A-161) and confirmed with the resolver's password, plus an authenticator code
 when Security says TOTP is on (A-32; adminConfirmLoader on the desk, resolveConfirmLoader on /disputes);
-administrators see a "No eligible resolver" note on an open dispute with no unsuspended staff member who is not a party.
+administrators see a "No eligible resolver" note on an open dispute with no eligible resolver (NoResolver, eligibleResolverSQL:
+on an escrow order an unsuspended administrator who is not a party; A-558).
 Disputes holds every open dispute first (OpenDisputes of them, oldest first), then the most recent resolved ones.
 The resolve form's reply_seen says whether it showed the other party's reply (A-280: /resolve refuses a form that did
 not once a reply is on record). Whoever may open the order also gets its listing linked (A-265): the product page of
@@ -20,14 +21,14 @@ an archived listing opens by the order page's rule (A-164). */}}
 <p class="dispute-text">{{.Reply}}</p>{{end}}{{if .Resolution}}<p>
 <strong>Resolution:</strong></p>
 <p class="dispute-text">{{.Resolution}}</p>{{else}}{{if $.User}}{{if or (eq $.User.Role "moderator") (eq $.User.Role "admin")}}{{if and .NoResolver (eq $.User.Role "admin")}}<p class="order-unavailable" role="note">
-<strong>No eligible resolver.</strong> No unsuspended moderator or administrator who is not a party is available. An administrator can assign an unsuspended moderator who is not a party so it can be resolved.</p>{{end}}{{$ev := index $.DisputeEvidence .ID}}{{with $ev}}<div class="dispute-evidence" role="note">
+<strong>No eligible resolver.</strong> {{if $o.Escrow}}No unsuspended administrator who is not a party is available, and only an administrator decides a dispute on a Monero escrow order. It needs an administrator who is not a party; add one on the host with the role command (<code>-set-role HANDLE admin</code>).{{else}}No unsuspended moderator or administrator who is not a party is available. An administrator can assign an unsuspended moderator who is not a party so it can be resolved.{{end}}</p>{{end}}{{$ev := index $.DisputeEvidence .ID}}{{with $ev}}<div class="dispute-evidence" role="note">
 <p><strong>Encrypted evidence holders.</strong> Messages each party sent to a moderator or administrator since this dispute opened, counted from who sent them to whom and when; only the recipient can read them.</p>
 <ul>
 <li>Buyer → {{range $i, $h := .Buyer}}{{if $i}}, {{end}}{{$h.Handle}}{{if $h.Suspended}} (suspended){{end}}{{if $h.Former}} (no longer staff){{end}} ({{$h.Count}}, latest {{$h.Latest}}){{else}}none{{end}}</li>
 <li>Vendor → {{range $i, $h := .Vendor}}{{if $i}}, {{end}}{{$h.Handle}}{{if $h.Suspended}} (suspended){{end}}{{if $h.Former}} (no longer staff){{end}} ({{$h.Count}}, latest {{$h.Latest}}){{else}}none{{end}}</li>
 </ul>
 </div>{{end}}{{if $party}}<p class="order-unavailable" role="note">
-<strong>Unavailable.</strong> You are a party to this order; another moderator must resolve it.</p>{{else if ne $o.State "disputed"}}<p class="order-unavailable" role="note">
+<strong>Unavailable.</strong> You are a party to this order; {{if $o.Escrow}}an administrator who is not a party{{else}}another moderator{{end}} must resolve it.</p>{{else if ne $o.State "disputed"}}<p class="order-unavailable" role="note">
 <strong>Unavailable.</strong> This order is not in the Disputed state, so no outcome can be recorded.</p>{{else if not $o.Escrow}}<p class="order-unavailable" role="note"><strong>Unavailable.</strong> This order has no escrow, so no outcome can be recorded. Contact the operator about its recorded state.</p>{{else if and $o.Escrow (ne $.User.Role "admin")}}<p class="order-unavailable" role="note">
 <strong>Unavailable.</strong> Only an administrator decides a dispute on a Monero escrow order ({{template "payment-status:xmr-net" $}}): the decision moves coins from the escrow.</p>{{else}}<form class="stack" method="post" action="/resolve">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">

@@ -626,8 +626,8 @@ func queryDisputes(ctx context.Context, a *App, query string, args ...any) ([]Di
 
 // loadDisputes lists the viewer's disputes (on their own orders, or all of them for moderators and
 // administrators): every open dispute first, oldest first, then the most recent resolved ones up to
-// historyLimit. Each dispute gets its order summary; an open one is marked NoResolver when no unsuspended
-// moderator or administrator independent of the parties is available.
+// historyLimit. Each dispute gets its order summary; an open one is marked NoResolver when no eligible resolver
+// (eligibleResolverSQL: an administrator who is not a party, for an escrow order) is available.
 func loadDisputes(ctx context.Context, a *App, r *http.Request, d *PageData) error {
 	d.DisputeOrders = map[string]Order{}
 	if d.User == nil {
@@ -657,7 +657,7 @@ func loadDisputes(ctx context.Context, a *App, r *http.Request, d *PageData) err
 		queryArgs = append(queryArgs, d.DisputePartyFilter)
 		resolvedLimitArg = "$4"
 	}
-	scope := `SELECT d.id,d.order_id,d.reason,d.status,d.resolution,to_char(d.created,'YYYY-MM-DD HH24:MI "UTC"'),d.status='Open' AND NOT EXISTS(SELECT 1 FROM users s WHERE s.role IN ('moderator','admin') AND s.suspended_at IS NULL AND s.closed_at IS NULL AND s.retention_restricted_at IS NULL AND s.id<>o.buyer_id AND s.id<>p.vendor_id),` +
+	scope := `SELECT d.id,d.order_id,d.reason,d.status,d.resolution,to_char(d.created,'YYYY-MM-DD HH24:MI "UTC"'),d.status='Open' AND NOT EXISTS(SELECT 1 FROM users s WHERE ` + eligibleResolverSQL("s", "o.id", "o.buyer_id", "p.vendor_id") + `),` +
 		disputeRecordCols + ` FROM disputes d JOIN orders o ON o.id=d.order_id JOIN products p ON p.id=o.product_id` + disputeReplyJoin + ` WHERE (o.buyer_id=$1 OR p.vendor_id=$1 OR ($2 IN ('admin','moderator') AND EXISTS(SELECT 1 FROM users staff WHERE staff.id=$1 AND staff.suspended_at IS NULL AND staff.closed_at IS NULL AND staff.retention_restricted_at IS NULL)))` + partyFilter
 	open, err := queryDisputes(ctx, a, scope+" AND d.status='Open' ORDER BY d.created,d.id", queryArgs...)
 	if err != nil {

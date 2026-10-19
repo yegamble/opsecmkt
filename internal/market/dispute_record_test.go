@@ -29,7 +29,7 @@ func TestDisputeCounterpartyResponse(t *testing.T) {
 	events := w.count("SELECT count(*) FROM order_events WHERE order_id=$1", order)
 
 	// The dispute-opened notice tells the vendor (who did not open it) that a reply exists; the buyer gets none.
-	notice := "Order " + shortID(order) + " is now Disputed. You may put one reply to the dispute on record from the order page before a moderator decides."
+	notice := "Order " + shortID(order) + " is now Disputed. You may put one reply to the dispute on record from the order page before an administrator decides."
 	if n := w.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body=$2", w.vendorID, notice); n != 1 {
 		t.Fatalf("vendor dispute notices with the reply hint: %d", n)
 	}

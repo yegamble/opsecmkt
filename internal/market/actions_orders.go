@@ -178,25 +178,57 @@ func disputeReplyAction(c *actionCtx) (actionResult, error) {
 	return actionResult{Redirect: orderPage(o.ID), Notice: "dispute-reply", Audit: "Replied to the dispute on order " + shortID(o.ID)}, nil
 }
 
-// notifyDisputeStaff tells every moderator and administrator who is not a party to the order that a dispute
-// opened. If no unsuspended staff account is independent of the parties, the dispute still stands: the order
-// history records that no independent resolver was available and unsuspended administrators are told.
-// A suspended account cannot sign in, so it counts as neither a resolver nor a recipient (A-118).
+// eligibleResolverSQL is the SQL half of the dispute-resolver rule (A-558); disputeResolverRefusal is its Go half. A
+// resolver is an account that is not suspended, closed or retention-restricted and is neither the order's buyer nor its
+// vendor. On an order with an escrows row the decision moves coins from the escrow, so it must be an administrator
+// (ES-4, SEC-8); a historical order without one may also be decided by a moderator. s is the users alias; order, buyer
+// and vendor are SQL expressions for the order's id, buyer and vendor.
+func eligibleResolverSQL(s, order, buyer, vendor string) string {
+	return s + ".suspended_at IS NULL AND " + s + ".closed_at IS NULL AND " + s + ".retention_restricted_at IS NULL AND " +
+		s + ".id<>" + buyer + " AND " + s + ".id<>" + vendor + " AND (" + s + ".role='admin' OR " + s +
+		".role='moderator' AND NOT EXISTS(SELECT 1 FROM escrows resolver_escrow WHERE resolver_escrow.order_id=" + order + "))"
+}
+
+// disputeResolverRefusal is the Go half of eligibleResolverSQL's role rule for an account deciding a dispute: coin is
+// the order's escrow coin, "" for an order without escrow. A party, suspended or closed account is refused elsewhere
+// (transition, resolveReceiptAuthorize and confirmedTx).
+func disputeResolverRefusal(u *User, coin string) error {
+	switch {
+	case u.Role == "admin" || coin == "" && u.Role == "moderator":
+		return nil
+	case coin == "XMR":
+		return errXMREscrowResolveAdmin
+	case coin != "":
+		return errEscrowResolveAdmin
+	}
+	return errForbidden
+}
+
+// notifyDisputeStaff tells every eligible resolver (eligibleResolverSQL) that a dispute opened: for an escrow order
+// only administrators who are not a party, for a historical order without escrow moderators too. If there is none,
+// the dispute still stands: the order history records that no independent resolver was available and unsuspended
+// administrators are told what it needs. A suspended account cannot sign in, so it is neither a resolver nor a
+// recipient (A-118).
 func notifyDisputeStaff(c *actionCtx, o *Order) error {
 	ctx, tx := c.Ctx(), c.Tx
-	staff, err := collectStrings(ctx, tx, "SELECT id FROM users WHERE role IN ('moderator','admin') AND suspended_at IS NULL AND closed_at IS NULL AND retention_restricted_at IS NULL AND id<>$1 AND id<>$2", o.BuyerID, o.VendorID)
+	staff, err := collectStrings(ctx, tx, "SELECT s.id FROM users s WHERE "+eligibleResolverSQL("s", "$1", "$2", "$3"), o.ID, o.BuyerID, o.VendorID)
 	if err != nil {
 		return err
 	}
 	body := "Dispute opened on order " + shortID(o.ID) + ". Review it on the moderator desk."
 	if len(staff) == 0 {
-		if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", o.ID, stateDisputed, noResolverNote); err != nil {
+		note := noResolverNote
+		body = "Dispute opened on order " + shortID(o.ID) + " needs an unsuspended moderator who is not a party to resolve it; no independent resolver was available when it opened."
+		if o.Escrow {
+			note = noResolverEscrowNote
+			body = "Dispute opened on order " + shortID(o.ID) + " needs an administrator who is not a party to resolve it; add one on the host with the role command (-set-role). No independent resolver was available when it opened."
+		}
+		if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", o.ID, stateDisputed, note); err != nil {
 			return err
 		}
 		if staff, err = collectStrings(ctx, tx, "SELECT id FROM users WHERE role='admin' AND suspended_at IS NULL AND closed_at IS NULL AND retention_restricted_at IS NULL"); err != nil {
 			return err
 		}
-		body = "Dispute opened on order " + shortID(o.ID) + " needs an unsuspended moderator who is not a party to resolve it; no independent resolver was available when it opened."
 	}
 	for _, uid := range staff {
 		if _, err = insertNotification(ctx, tx, uid, body, o.ID); err != nil {
@@ -206,7 +238,11 @@ func notifyDisputeStaff(c *actionCtx, o *Order) error {
 	return nil
 }
 
+// noResolverNote is the history note of a dispute on a historical order without escrow that no one could resolve.
 const noResolverNote = "No independent resolver was available when this dispute opened: no unsuspended moderator or administrator who was not a party was available. An administrator must assign an unsuspended moderator who is not a party to resolve this dispute."
+
+// noResolverEscrowNote is noResolverNote for an order with an escrows row, which only an administrator decides (A-558).
+const noResolverEscrowNote = "No independent resolver was available when this dispute opened: no unsuspended administrator who was not a party was available, and only an administrator decides a dispute on a Monero escrow order. It needs an administrator who is not a party; the operator adds one on the host with the role command."
 
 var disputeOutcomes = map[string]string{"release": "Resolved — release to vendor", "refund": "Resolved — refund to buyer"}
 
@@ -217,23 +253,19 @@ var disputeOutcomes = map[string]string{"release": "Resolved — release to vend
 // resolveAction. This read takes no dispute/order/product row locks, avoiding
 // an inversion with escrow decision's order-then-dispute lock order.
 func resolveReceiptAuthorize(c *actionCtx) error {
-	var buyerID, vendorID, currency string
-	var escrow bool
-	err := c.Tx.QueryRowContext(c.Ctx(), `SELECT o.buyer_id,p.vendor_id,o.currency,
-		EXISTS(SELECT 1 FROM escrows e WHERE e.order_id=o.id)
+	var buyerID, vendorID, coin string
+	err := c.Tx.QueryRowContext(c.Ctx(), `SELECT o.buyer_id,p.vendor_id,
+		COALESCE((SELECT e.coin FROM escrows e WHERE e.order_id=o.id),'')
 		FROM disputes d JOIN orders o ON o.id=d.order_id
-		JOIN products p ON p.id=o.product_id WHERE d.id=$1`, c.Form.Get("id")).Scan(&buyerID, &vendorID, &currency, &escrow)
+		JOIN products p ON p.id=o.product_id WHERE d.id=$1`, c.Form.Get("id")).Scan(&buyerID, &vendorID, &coin)
 	if err == sql.ErrNoRows {
 		return fail(409, "Open dispute not found")
 	}
 	if err != nil {
 		return err
 	}
-	if escrow && c.User.Role != "admin" {
-		if currency == "XMR" {
-			return errXMREscrowResolveAdmin
-		}
-		return errEscrowResolveAdmin
+	if err = disputeResolverRefusal(c.User, coin); err != nil {
+		return err
 	}
 	if c.User.ID == buyerID || c.User.ID == vendorID {
 		return errForbidden
@@ -285,11 +317,8 @@ func resolveAction(c *actionCtx) (actionResult, error) {
 		if err = c.Tx.QueryRowContext(c.Ctx(), "SELECT COALESCE((SELECT coin FROM escrows WHERE order_id=$1),'')", orderID).Scan(&coin); err != nil {
 			return actionResult{}, err
 		}
-		switch {
-		case coin == "XMR" && c.User.Role != "admin":
-			return actionResult{}, errXMREscrowResolveAdmin
-		case coin != "" && c.User.Role != "admin":
-			return actionResult{}, errEscrowResolveAdmin
+		if err = disputeResolverRefusal(c.User, coin); err != nil {
+			return actionResult{}, err
 		}
 		_, err = c.A.transition(withPayoutSeen(c.Ctx(), orderID, seen), c.Tx, orderID, stateDisputed, stateResolved, c.User, status)
 		if err == errReleaseFinal && coin == "XMR" {

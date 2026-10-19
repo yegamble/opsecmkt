@@ -72,7 +72,7 @@ type StaffContactView struct {
 }
 type Dispute struct {
 	ID, OrderID, Reason, Status, Resolution, Created string
-	NoResolver                                       bool // open, and no unsuspended moderator or administrator is independent
+	NoResolver                                       bool // open, and no eligible resolver exists (eligibleResolverSQL)
 	// A-124: Opener is "buyer" or "vendor", the party who moved the order to disputed ("" when no such event is
 	// recorded). Reply is the other party's one reply (an order_events row, disputeReplyPrefix), ReplyRole its
 	// author's role and ReplyCreated its time.
