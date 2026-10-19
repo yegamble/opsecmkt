@@ -40,6 +40,8 @@ for (const path of ['/login', '/register']) {
       // A-549: the code typed with the password completes the second step; the paused sole-administrator rescue stays.
       await expect(page.getByLabel('Authenticator code (if you use one)')).toHaveAttribute('autocomplete', 'one-time-code');
       await expect(page.locator('#signin-code-help')).toContainText('Enter it now to skip the verification step.');
+      // Until A-571, a paused handle's pause explanation is shown only with this field blank (S-2).
+      await expect(page.locator('#signin-code-help')).toContainText('If sign-in for your handle is paused, leave this blank to see why.');
       await expect(page.locator('#signin-code-help')).toContainText("If the only administrator's handle is temporarily paused");
     }
     if (path === '/register') {

@@ -922,9 +922,10 @@ func (a *App) passwordAndCodeSignIn(c *actionCtx, userID, passwordHash, code, ne
 	defer tx.Rollback()
 	if pending := pendingCookie(c.R); pending != "" {
 		// This browser's earlier two-step sign-in is replaced by this one either way (its cookie is overwritten);
-		// other browsers' pending sign-ins remain. Deleted first: /challenge's lock order is pending sign-in, then
-		// the account row (checkTOTP).
-		if _, err = tx.ExecContext(ctx, "DELETE FROM pending_logins WHERE token_hash=$1", digest(pending)); err != nil {
+		// other browsers' pending sign-ins remain. Deleted first: /challenge's lock order is its live pending sign-in,
+		// then the account row (checkTOTP), then every expired pending sign-in (its cleanup). An expired row is left to
+		// that cleanup: locking it here before the account row would deadlock with a /challenge holding the account.
+		if _, err = tx.ExecContext(ctx, "DELETE FROM pending_logins WHERE token_hash=$1 AND expires>now()", digest(pending)); err != nil {
 			return actionResult{}, fail(500, "Unable to sign in")
 		}
 	}

@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"sync"
 	"testing"
+	"time"
 )
 
 // A-549: an authenticator code typed on /login with a correct password completes sign-in in one step for an account
@@ -149,6 +150,47 @@ func TestLoginWithAuthenticatorCode(t *testing.T) {
 		}
 		if signedIn != 1 || challenged != 3 || agUserSessions(e, id) != 2 || a152Audits(e, id, "Signed in with password and TOTP") != 1 {
 			t.Fatalf("one code signed in %d times (%v)", signedIn, locations)
+		}
+	})
+
+	// S-1: /challenge's cleanup deletes every expired pending sign-in while it holds the account row. The one-step
+	// path must not lock an expired row of its browser before the account row, or the two deadlock (a 503).
+	t.Run("expired pending cookie does not deadlock with a challenge", func(t *testing.T) {
+		e := newTestApp(t)
+		id, _ := e.user("a549_stale", "buyer")
+		key, _ := agEnableTOTP(e, id)
+		start := time.Now()
+		e.do("POST", "/login", randomToken(), loginWithCode("a549_stale", "", ""))
+		loginTime := time.Since(start)
+		agExec(e, "DELETE FROM pending_logins WHERE user_id=$1", id)
+		for i := range 40 {
+			agExec(e, "UPDATE users SET totp_last_step=0 WHERE id=$1", id)
+			e.A.mu.Lock()
+			delete(e.A.limits, "totp-verify:"+id)
+			e.A.mu.Unlock()
+			before := agUserSessions(e, id)
+			live := agPending(e, id)
+			stale := randomToken()
+			agExec(e, "INSERT INTO pending_logins(token_hash,user_id,expires,password_digest) VALUES($1,$2,now()-interval '1 minute',$3)", digest(stale), id, digest(passwordHash(e, id)))
+			code := agTOTPNow(key)
+			delay := time.Duration(i) * loginTime / 20
+			var wg sync.WaitGroup
+			var login, challenge int
+			wg.Add(2)
+			go func() {
+				defer wg.Done()
+				login = e.do("POST", "/login", randomToken(), loginWithCode("a549_stale", code, ""), &http.Cookie{Name: "pending", Value: stale}).Code
+			}()
+			go func() {
+				defer wg.Done()
+				time.Sleep(delay)
+				challenge = e.do("POST", "/challenge", randomToken(), url.Values{"method": {"totp"}, "code": {code}}, live).Code
+			}()
+			wg.Wait()
+			if n := agUserSessions(e, id) - before; n != 1 || login >= 500 || challenge >= 500 {
+				t.Fatalf("offset %d (%v): /login %d, /challenge %d, %d new sessions", i, delay, login, challenge, n)
+			}
+			agExec(e, "DELETE FROM pending_logins WHERE user_id=$1", id)
 		}
 	})
 
