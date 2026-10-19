@@ -163,30 +163,32 @@ func TestXMREscrowTooSmallRefundReturned(t *testing.T) {
 }
 
 // A-464 (QA437-4): the Monero decision line says the coins were too few only for a refund that ended too few. A refund
-// decided for the buyer that failed for another reason (here nothing to settle: the wallet reads the deposit as
-// conflicted before the refund is built, so no deposit counts) gets the ordinary line, never the too-few one.
+// decided for the buyer that failed for another reason (here its stored transaction refused xmrRelayAttempts times in
+// a row; a credited deposit read as conflicted no longer fails it nothing-to-settle but holds it, A-554) gets the
+// ordinary line, never the too-few one.
 func TestXMREscrowDecidedRefundFailedOtherwise(t *testing.T) {
 	x := newXMREscrowEnv(t)
 	x.mustPoll()
 	p := x.physical(x.vendor)
-	agExec(x.testEnv, "UPDATE products SET xmr=2000000000 WHERE id=$1", p)
+	agExec(x.testEnv, "UPDATE products SET xmr=20000000000 WHERE id=$1", p)
 	order, addr := x.freshCheckout(p)
-	paid := hex64("decided nothing " + order)
-	x.fake.payAddress(addr, paid, 2000000000, 10)
+	paid := hex64("decided refused " + order)
+	x.fake.payAddress(addr, paid, 20000000000, 10)
 	x.mustPoll()
 	if x.state(order) != statePaid {
 		t.Fatalf("funded order %s", x.state(order))
 	}
 	x.disputeAndResolve(order, "refund")
-	x.fake.setTransfer(paid, func(t *fakeXMRTransfer) { t.DoubleSpend = true })
-	x.mustPoll()
-	x.mustPoll()
-	if r := x.settlementOf(order, "refund"); r.State != "failed" || x.waitClass(r.ID) != xmrNothing {
+	for range xmrRelayAttempts {
+		x.fake.fault("relay_tx", fakeXMRRejected)
+		x.mustPoll()
+	}
+	if r := x.settlementOf(order, "refund"); r.State != "failed" || x.waitClass(r.ID) != xmrRelayRefused {
 		t.Fatalf("the refund %+v wait %q; settlements %v; events %q", r, x.waitClass(r.ID), x.xmrSettlements(order), x.events(order))
 	}
 	panel := x.panel(order, x.sessOf(order, roleBuyer))
 	if strings.Contains(panel, "too few") || !strings.Contains(panel, "The dispute was decided for the buyer: the coins in this escrow go back to the buyer's refund address by a refund the market builds and sends.") {
-		t.Fatalf("the decision line of a refund that failed with nothing to settle:\n%s", panel)
+		t.Fatalf("the decision line of a refund whose relay was refused:\n%s", panel)
 	}
 }
 

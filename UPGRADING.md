@@ -138,6 +138,33 @@ opens the overview. Private administrator ingress covers the new pages as it
 covers `/admin`. See
 [administration sections](docs/operator-guide.md#administration-sections).
 
+## Monero escrow funding deposits after a reorganisation (A-554)
+
+Migration 122 adds `payments.missing_height`: the escrow wallet's height when a
+deposit credited toward an order's funding was first found missing. From this
+release a Monero release or refund is not built while such a deposit is below the
+confirmation threshold again, waits up to twice the threshold in blocks for one
+that is missing, and never leaves a credited deposit a release was built without
+out for a stray refund to the buyer (one a refund was built without is returned to
+the buyer when it is listed again; [escrow](docs/escrow.md), *Refunds and
+strays*). A settlement whose credited deposits are all gone stays requested and
+keeps its wallet from destruction until it is resolved by hand. Older binaries that do not
+know this migration refuse startup; back up the database first.
+
+The upgrade does not revisit settlements built before it. Before taking Monero
+escrow orders again, an administrator can list the funding deposits an older
+binary left out of a release (its stray refund, if any, paid them to the buyer),
+and the settlements it failed as *nothing-to-settle*, and review those orders by
+hand:
+
+```sql
+SELECT p.order_id, p.txid, p.amount, p.confirmations, p.xmr_settlement_id FROM payments p
+ WHERE p.currency = 'XMR' AND p.credited AND p.escrow_left_out
+   AND EXISTS (SELECT 1 FROM xmr_settlements s WHERE s.order_id = p.order_id
+     AND s.kind = 'release' AND s.state IN ('built', 'relayed', 'confirmed'));
+SELECT id, order_id, kind, state FROM xmr_settlements WHERE send_error = 'nothing-to-settle';
+```
+
 # Upgrading from v0.1.0-alpha.1 to `v0.1.0-alpha.2`
 
 `v0.1.0-alpha.2` is a prerelease. Its installer now defaults new installs to mainnet (real funds), but an upgrade keeps
