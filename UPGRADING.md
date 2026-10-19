@@ -27,6 +27,16 @@ not delivered and otherwise works as before. No migration and no new setting:
 reports use the existing upload backend address and client certificate.
 Integrated (single-host) scanning is unchanged.
 
+## Market fee shown read-only; host changes announced (A-550)
+
+The Monero escrow market fee stays host configuration (`ESCROW_XMR_FEE_BPS`, `ESCROW_XMR_FEE_ADDRESS`); no
+administrator form or settings row changes it. **Admin → Payments** now shows the rate and the full fee address
+read-only with the command that changes them. With `ESCROW_XMR=on`, each start compares the configured fee with the
+last values it recorded (settings row `escrow_xmr_fee_seen`, never read as the fee) and, on a change, writes one audit
+row naming the old and new rate and address and notifies every administrator once. The first start after this upgrade
+has no record yet, so it announces the configured fee once ("none recorded before"). No migration and no new setting.
+See the operator guide's *Market fee* paragraph under Monero escrow.
+
 ## Native production encryption prerequisite
 
 The native production controller now verifies guest-managed LUKS2 storage before
@@ -694,7 +704,8 @@ The restore also rolls back every setting an administrator saved after the backu
 checkouts**, site access, registrations and the vendor application policy (the bond amount `vendor_bond_xmr` and the
 approval mode in **Admin → Vendor applications**), and undoes bonds recorded as received after that point. Before
 clearing the gate, re-check them on `/admin` against your operator record. The market fee address and rate (`ESCROW_XMR_FEE_ADDRESS`, `ESCROW_XMR_FEE_BPS`) are host configuration, not
-database rows, so a database restore does not roll them back; confirm the host values are the ones you intend.
+database rows, so a database restore does not roll them back; confirm the host values are the ones you intend. The restore can
+roll back the record of the last fee seen, so the next start may announce the current fee to administrators once more.
 
 The payout gate is enforced by this release. An older application image may not understand it; keep wallet
 RPC configuration disabled when inspecting a restored database with older code. Alpha.1 has no payment

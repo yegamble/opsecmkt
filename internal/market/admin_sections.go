@@ -17,7 +17,7 @@ var adminSections = []AdminSection{
 	{"", "Overview", "Staff attention, the setup checklist and links to every section."},
 	{"users", "Users", "Account roles, second-factor resets, suspensions and the staff roster."},
 	{"vendors", "Vendors", "Vendor policy, the application queue and the verified-vendor mark."},
-	{"payments", "Payments", "Monero escrow status, release deadline, recovery and new escrow checkouts."},
+	{"payments", "Payments", "Monero escrow status, release deadline, the market fee (read-only), recovery and new escrow checkouts."},
 	{"security", "Security & access", "Site access, registrations, the sign-in CAPTCHA and paused sign-ins."},
 	{"site", "Site & branding", "Market name, logo and staff contact."},
 	{"transparency", "Transparency", "Operator PGP key, warrant canary, public staff list and signed audit export."},

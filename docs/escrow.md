@@ -258,8 +258,11 @@ wallet takes an order again and no settlement is relayed until an administrator 
   arrived. The release deadline length is one setting for both coins: its form on `/admin/payments`, like a physical listing's
   dispatch window, is offered while `ESCROW_XMR` is on, and each escrow keeps the length in force at
   its checkout.
-- **The market fee is set only by `ESCROW_XMR_FEE_BPS` and `ESCROW_XMR_FEE_ADDRESS`** (no form on any `/admin` page); each escrow
-  keeps the fee in force at its checkout.
+- **The market fee is set only by `ESCROW_XMR_FEE_BPS` and `ESCROW_XMR_FEE_ADDRESS`** on the app host (no form or settings row
+  on any `/admin` page, so an administrator web account cannot change or redirect it; A-550); each escrow keeps the fee in
+  force at its checkout. *Admin → Payments* shows the rate and full address read-only, and each start that finds them
+  changed from the last values it recorded writes one audit row and notifies every administrator once
+  ([operator guide](operator-guide.md#monero-escrow), *Market fee*).
 - **One wallet is open at a time, and every wallet that may hold coins is opened on every pass**, until the wallet is
   destroyed. PAYE-E2 measured this on one host, on a local fakechain only ([verification](verification.md#monero-escrow-wallet-scale-paye-e2-war-room-a-429-p3-r12--2026-10-04)):
   a pass over 5 wallets of 10,000 accounts each took 27.6 s against the 10-minute pass timeout, but a catch-up refresh

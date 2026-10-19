@@ -836,7 +836,7 @@ It connects with `DATABASE_URL`, starts no web server and reads nothing from sta
 - **Contain a compromised administrator** (someone else knows its password, or its owner acts against the market):
   1. Demote it at once: `docker compose run --rm app -set-role HANDLE buyer`. This ends its sessions and pending sign-ins, and a password-confirmed change of its own that is not yet saved when the demotion commits (a suspension, factor reset, review or listing takedown, payment intake or staff list switch) is refused with 403, changing nothing. Whoever has the password can still sign in as a buyer until the next step.
   2. As another administrator, suspend it on the web: *Admin → Suspend or restore an account*, choose *Suspend* and confirm with your own password. A suspended account cannot sign in (see *Account suspension* above).
-  3. Review what it did. On `/admin/system`, enter the exact case-sensitive handle in *Filter audit by account*; the page shows at most its 100 newest matching events, or says when none are recorded. Invalid handles are refused rather than trimmed or truncated. The filter is account-scoped, so it shows events recorded on that account; also inspect rows on accounts it changed, or download the *Signed audit export* (when `AUDIT_SIGNING_KEY` is set, see [Transparency](#transparency)) and search it. Role-change rows on the target account identify the acting administrator by handle; older rows retain their original text. Check the escrow decisions and settings it made, marketplace settings, sign-in protection, operator key and canary, and undo what it changed.
+  3. Review what it did. On `/admin/system`, enter the exact case-sensitive handle in *Filter audit by account*; the page shows at most its 100 newest matching events, or says when none are recorded. Invalid handles are refused rather than trimmed or truncated. The filter is account-scoped, so it shows events recorded on that account; also inspect rows on accounts it changed, or download the *Signed audit export* (when `AUDIT_SIGNING_KEY` is set, see [Transparency](#transparency)) and search it. Role-change rows on the target account identify the acting administrator by handle; older rows retain their original text. Check the escrow decisions and settings it made, marketplace settings, sign-in protection, operator key and canary, and undo what it changed. An administrator web account cannot change the market fee or the address it is paid to (they are host configuration: *Market fee* under [Monero escrow](#monero-escrow)), so there is no fee change to undo on the web; a market-fee change notice in the audit trail or the administrators' notifications that no operator made points to the host, not to this account.
   4. To reinstate the account later: restore it on the web, run `-set-role HANDLE admin`, then give it a new password with `-reset-admin-password` (which works on administrators only) and, if someone else may know its second factors, reset them with `-reset-admin-factors HANDLE` (see [Authentication](#authentication)).
 
 ### PGP identity
@@ -914,7 +914,7 @@ under `/admin/payments` when present; turning escrow off does not delete wallets
 | `ESCROW_XMR` | blank (off) | `on` or `off`; any other value stops startup. On a mainnet market (`MONERO_NETWORK=mainnet`) it runs on mainnet only; without `MONERO_NETWORK=mainnet` a mainnet daemon is refused ([Mainnet](#mainnet)). |
 | `ESCROW_XMR_WALLET_RPC_URL` | none; required when on | `http(s)://[user:password@]host:port` of the dedicated Monero escrow wallet-rpc (credentials are answered with HTTP Digest). Keep it dedicated to escrow wallets and attach it to the daemon configured below. A non-blank `MONERO_WALLET_RPC_URL` (an older release's setting) is refused before startup. |
 | `ESCROW_XMR_DAEMON_URL` | none; required when on | The same form, for the fakechain, stagenet or (opted in) mainnet `monerod` used by this escrow wallet-rpc. The bundled `monero` service may be used when configured for stagenet (or, with a blank `MONERO_NETWORK_FLAG=`, mainnet) and can serve restricted RPC; set this key to `http://monero:18081` rather than the retired `MONERO_RPC_URL`. |
-| `ESCROW_XMR_FEE_BPS` | `0` | The market fee on a fulfilled order, a whole number of basis points from 0 to 10000 (250 = 2.5%). Each escrow keeps the fee in force at its checkout. There is no form for it on any `/admin` page. |
+| `ESCROW_XMR_FEE_BPS` | `0` | The market fee on a fulfilled order, a whole number of basis points from 0 to 10000 (250 = 2.5%). Each escrow keeps the fee in force at its checkout. Host-only: there is no form or settings row for it (see *Market fee* below). |
 | `ESCROW_XMR_FEE_ADDRESS` | none | Required above 0 basis points, ignored at 0: a standard address or subaddress of the escrow daemon's network (95 characters; stagenet ones start with 5 or 7, fakechain and mainnet ones with 4 or 8; integrated addresses are refused; a mainnet market needs a mainnet address) whose keys are valid, checked in Go at startup: one of the other network stops startup once the daemon is reached. A fee below 0.001 XMR is added to the vendor's output instead. |
 | `ESCROW_XMR_SLOTS` | `20` | The free accounts the watcher keeps ready on the active wallet, a whole number from 5 to 200. Checkout takes one; none free is a 503 until the watcher makes more. |
 | `ESCROW_XMR_MAX_FEE` | `10000000000` (0.01 XMR) | The highest network fee a settlement may pay, in piconero, a whole number from 1 to `100000000000` (0.1 XMR). A transaction the wallet builds above it is discarded unrelayed and its settlement waits. A young fakechain charged about 0.0018 XMR for a one-input, two-output transfer. |
@@ -922,6 +922,27 @@ under `/admin/payments` when present; turning escrow off does not delete wallets
 | `ESCROW_XMR_SEED_KEY` | none; required when on | The path, inside the app container, of a file holding one armored OpenPGP public key (at most 64 KiB). A private key block, several keys, a revoked key or one with no encryption key usable now (signing-only, expired) stops startup. |
 | `PAYMENT_CONFIRMATIONS_XMR` | `10` | A whole number from 1 to 1000. A Monero escrow deposit counts from the larger of it and 10. |
 | `ESCROW_XMR_TOR_RELAY` | blank | Blank or `clearnet-accepted`; any other value stops startup. With `APP_MODE=tor`, `clearnet-accepted` lets Monero escrow settlements be relayed without the node Tor overlay (*Tor mode*, below). Ignored in clearnet mode. |
+
+**Market fee (host-only).** The fee rate and the address it is paid to are set only on the app host, by
+`ESCROW_XMR_FEE_BPS` and `ESCROW_XMR_FEE_ADDRESS`: no `/admin` page, form or settings row changes them, so an
+administrator web account, even one someone else has taken over, cannot change or redirect the fee. *Admin → Payments*
+(*Market fee*) shows the rate and the full address read-only, labelled "Set on the server; administrators cannot change it
+here", says that no market fee is charged at 0 basis points or while Monero escrow is off, and names the command that
+changes it. On a native installation, edit the two keys in the `settings` of the private `operator.json`, check with
+`./opsecmkt deploy plan --dir DIR`, then restart only the app with
+`./opsecmkt deploy redeploy --dir DIR --app-image IMAGE@sha256:DIGEST`, giving the `app_image` already recorded in
+`operator.json`; `redeploy` keeps keys, endpoints, workers and volumes ([Binary installation](install/binary.md#rebuilding-or-replacing-only-the-application)).
+A Compose installation edits `.env` and runs `docker compose up -d app`. The values pass the startup checks above; then
+each start with Monero escrow on compares them with the last values it recorded (the settings row `escrow_xmr_fee_seen`, a
+record that is never read as the fee). On a change it records the new values, writes one audit row naming the old and new
+rate and address ("Monero escrow market fee changed on the server (seen at startup): ...") and notifies every
+administrator who is not suspended once; an unchanged restart writes nothing. The first start of this release, or of a
+database that has no record, announces the configured fee once the same way. A notice whose new rate or address no
+operator configured means someone changed the host's configuration: treat it as a compromise of the app host, not of an
+administrator account. A database restore cannot change the fee in force, which is host configuration; it can roll the
+record back, so the next start after a restore may announce the host's current, unchanged fee once more (as does an
+edited record). While `ESCROW_XMR` is off the fee is not read and nothing is compared. A refused fee
+destination on a settlement is repaired with the host's current `ESCROW_XMR_FEE_ADDRESS` after a restart (below).
 
 `PAYMENT_EXPIRY` (the payment window), `PAYMENT_POLL_INTERVAL` and `MONERO_MAX_TIP_AGE` apply to Monero escrow. The
 refusal messages name the setting and never quote its value.

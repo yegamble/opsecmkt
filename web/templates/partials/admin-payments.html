@@ -15,7 +15,14 @@
 <span class="help" id="escrow-release-days-help">Applies to escrow orders placed from now on; existing orders keep theirs.</span>
 {{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
 <button type="submit">Save the release deadline</button>
-</form>{{end}}
+</form>{{end}}{{with $.XMRFee}}
+<h3 id="market-fee">Market fee</h3>
+<p><strong>Set on the server; administrators cannot change it here.</strong> No page or form of this market changes the market fee or the address it is paid to, so an administrator account, even one someone else has taken over, cannot redirect it.</p>{{if not .On}}
+<p>Monero escrow is off on this market (<code>ESCROW_XMR</code>), so no market fee is charged: no new escrow is created. Existing escrows keep the fee fixed at their checkout.</p>{{else if eq .Bps "0"}}
+<p>Rate: <strong>0 basis points</strong>. No market fee is charged on escrows created now.</p>{{else}}
+<p>Rate: <strong>{{.Bps}} basis points ({{.Percent}} of the price)</strong>, taken from each release to the vendor. Paid to this address ({{.Network}}):</p>
+<p class="mono market-fee-address" id="market-fee-address">{{.Address}}</p>{{end}}
+<p>Each escrow keeps the fee in force at its checkout. To change the fee, the operator edits <code>ESCROW_XMR_FEE_BPS</code> and <code>ESCROW_XMR_FEE_ADDRESS</code> in the <code>settings</code> of the installation's private <code>operator.json</code> on the app host, checks it with <code>./opsecmkt deploy plan --dir DIR</code>, then restarts only the app with <code>./opsecmkt deploy redeploy --dir DIR --app-image IMAGE@sha256:DIGEST</code>, giving the <code>app_image</code> already recorded there; keys, endpoints and workers are kept. A Docker Compose installation edits <code>.env</code> and runs <code>docker compose up -d app</code>. The next start with Monero escrow on writes the change to the audit trail and notifies every administrator. See <code>docs/operator-guide.md#monero-escrow</code>.</p>{{end}}
 {{with $.XMREscrowRecovery}}<h3 id="xmr-escrow-recovery">Monero escrow recovery and retention ({{template "payment-status:xmr-net" $}})</h3>{{with $.NoticeIn "xmr-escrow-recovery"}}
 <div class="alert" role="status">{{.}}</div>{{end}}{{if .Sweep}}
 <div class="alert" role="status"><strong>Monero escrow checkout is paused after a restore from backup</strong> until the Monero escrow watcher has looked for escrow wallets created after the backup and checked every escrow wallet; it reopens by itself once that check completes and the recovery lock is cleared.</div>{{end}}
