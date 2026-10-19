@@ -84,6 +84,7 @@ func init() {
 	registerAction("/admin/vendor-policy", actionSpec{Roles: []string{"admin"}, OwnTx: true, ConfirmedFormNonce: true, Run: vendorPolicyAction})
 	registerAction("/admin/vendor-applications", actionSpec{Roles: []string{"admin"}, OwnTx: true, ConfirmedFormNonce: true, Run: vendorDecisionAction})
 	registerAction("/admin/vendor-verify", actionSpec{Roles: []string{"admin"}, OwnTx: true, ConfirmedFormNonce: true, Run: vendorVerifyAction})
+	registerAction("/admin/vendor-apply", actionSpec{Roles: []string{"admin"}, OwnTx: true, ConfirmedFormNonce: true, Run: vendorApplyForAction})
 	registerLoader("register", func(_ context.Context, _ *App, _ *http.Request, d *PageData) error {
 		p := vendorPolicyFromSettings(d.Settings)
 		d.VendorPolicy = &p
@@ -347,6 +348,79 @@ func vendorApplicantAction(c *actionCtx) (actionResult, error) {
 	return actionResult{Redirect: "/account", Notice: notice}, nil
 }
 
+// vendorApplyForAction opens a vendor application for a buyer account on its behalf, from the account's page in the
+// user directory (A-545: "vendor, not approved yet or bond unpaid"). It follows the current policy exactly as the
+// account's own form does (submitVendorApplication): waiting for the bond, waiting for approval or, with no bond and
+// automatic approval, approved at once; the application is then decided as any other. It refuses what that form
+// refuses (not a buyer account, an open application) and a banned, closed or closing account; administrators,
+// the caller included, are never buyers. The administrator confirms with their password (and authenticator code when
+// enrolled); both accounts are audited and the account is notified.
+func vendorApplyForAction(c *actionCtx) (actionResult, error) {
+	handle := strings.TrimSpace(c.Form.Get("handle"))
+	if handle == "" {
+		return actionResult{}, fail(400, "Enter an account handle")
+	}
+	if handle == c.User.Handle {
+		return actionResult{}, fail(400, "You cannot open a vendor application for your own account.")
+	}
+	notFound := fail(404, "No account has the handle \""+handle+"\". Check the spelling: handles are case-sensitive.")
+	// The handle is looked up before the password is checked, so a typo does not use a confirmation attempt.
+	var target string
+	err := c.A.db.QueryRowContext(c.Ctx(), "SELECT id FROM users WHERE handle=$1", handle).Scan(&target)
+	if err == sql.ErrNoRows {
+		return actionResult{}, notFound
+	}
+	if err != nil {
+		return actionResult{}, err
+	}
+	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
+		ctx, tx := c.Ctx(), c.Tx
+		// The account row, then its application: the order the account's own form locks them in.
+		var role string
+		var banned, closed bool
+		err := tx.QueryRowContext(ctx, `SELECT role,banned_at IS NOT NULL,closed_at IS NOT NULL OR deletion_requested_at IS NOT NULL OR retention_restricted_at IS NOT NULL
+			FROM users WHERE id=$1 FOR NO KEY UPDATE`, target).Scan(&role, &banned, &closed)
+		if err == sql.ErrNoRows {
+			return actionResult{}, notFound
+		}
+		if err != nil {
+			return actionResult{}, err
+		}
+		switch {
+		case banned:
+			return actionResult{}, fail(409, handle+" is banned; nothing was changed.")
+		case closed:
+			return actionResult{}, fail(409, handle+" is closed or closing; nothing was changed.")
+		case role != "buyer":
+			return actionResult{}, fail(409, handle+" is a "+role+" account: only a buyer account can apply to sell. Nothing was changed.")
+		}
+		var open bool
+		if err = tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM vendor_applications WHERE user_id=$1 AND state IN "+vendorOpenStates+")", target).Scan(&open); err != nil {
+			return actionResult{}, err
+		}
+		if open {
+			return actionResult{}, fail(409, handle+" already has an open vendor application; decide it on this page. Nothing was changed.")
+		}
+		if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", target, "Vendor application opened on the account's behalf by administrator "+c.User.Handle); err != nil {
+			return actionResult{}, err
+		}
+		state, err := submitVendorApplication(ctx, tx, target)
+		if err != nil {
+			return actionResult{}, err
+		}
+		if state != "approved" { // an approval at once has notified the account already (approveVendor)
+			body := "An administrator opened a vendor application for your account. Its status: " + strings.ToLower(vendorStateLabel(state)) + "."
+			if state == "awaiting_bond" {
+				body += " Your account page says how to pay the bond, a non-refundable fee."
+			}
+			if _, err = insertNotification(ctx, tx, target, body, ""); err != nil {
+				return actionResult{}, err
+			}
+		}
+		return actionResult{Redirect: adminUserURL(handle), Notice: "vendor-opened", Audit: "Opened a vendor application for " + handle + ": " + strings.ToLower(vendorStateLabel(state))}, nil
+	})
+}
+
 // vendorPolicyAction saves the vendor policy (bond, approval mode and bond payment instructions) for new applications.
 // The administrator confirms with their password (and authenticator code when enrolled); the change is audited.
 func vendorPolicyAction(c *actionCtx) (actionResult, error) {
@@ -523,7 +597,7 @@ func vendorDecisionAction(c *actionCtx) (actionResult, error) {
 				return actionResult{}, err
 			}
 		}
-		return actionResult{Redirect: "/admin/vendors", Notice: "vendor-decision", Audit: actorAudit}, nil
+		return actionResult{Redirect: adminUserBack(c, handle, "/admin/vendors"), Notice: "vendor-decision", Audit: actorAudit}, nil
 	})
 }
 
@@ -586,7 +660,7 @@ func vendorVerifyAction(c *actionCtx) (actionResult, error) {
 		if _, err = insertNotification(ctx, tx, target, body, ""); err != nil {
 			return actionResult{}, err
 		}
-		return actionResult{Redirect: "/admin/vendors", Notice: "vendor-verify", Audit: actor}, nil
+		return actionResult{Redirect: adminUserBack(c, handle, "/admin/vendors"), Notice: "vendor-verify", Audit: actor}, nil
 	})
 }
 

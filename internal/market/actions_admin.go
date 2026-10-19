@@ -158,7 +158,7 @@ func adminSuspendAction(c *actionCtx) (actionResult, error) {
 			if err = notifyActiveCounterparties(ctx, tx, target, handle, accountRestoredStatus); err != nil {
 				return actionResult{}, err
 			}
-			return actionResult{Redirect: "/admin/users", Notice: "restored", Audit: "Restored account " + handle}, nil
+			return actionResult{Redirect: adminUserBack(c, handle, "/admin/users"), Notice: "restored", Audit: "Restored account " + handle}, nil
 		}
 		if suspended {
 			return actionResult{}, fail(409, handle+" is already suspended; nothing was changed.")
@@ -182,7 +182,7 @@ func adminSuspendAction(c *actionCtx) (actionResult, error) {
 		if err = notifyActiveCounterparties(ctx, tx, target, handle, accountSuspendedStatus); err != nil {
 			return actionResult{}, err
 		}
-		return actionResult{Redirect: "/admin/users", Notice: "suspended", Audit: "Suspended account " + handle + "; ended " + sessions}, nil
+		return actionResult{Redirect: adminUserBack(c, handle, "/admin/users"), Notice: "suspended", Audit: "Suspended account " + handle + "; ended " + sessions}, nil
 	})
 }
 
@@ -345,7 +345,7 @@ func adminResetFactorsAction(c *actionCtx) (actionResult, error) {
 		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), target, note); err != nil {
 			return actionResult{}, err
 		}
-		return actionResult{Redirect: "/admin/users", Notice: "factors-reset", Audit: "Reset second factors of " + handle + ": " + off + " turned off; ended " + sessions}, nil
+		return actionResult{Redirect: adminUserBack(c, handle, "/admin/users"), Notice: "factors-reset", Audit: "Reset second factors of " + handle + ": " + off + " turned off; ended " + sessions}, nil
 	})
 }
 
@@ -480,9 +480,10 @@ func adminChange(c *actionCtx) (actionResult, error) {
 	default:
 		return actionResult{}, fail(400, "Unknown action")
 	}
-	// Each form returns to the section that holds it (A-542): the role form to Users, the market name to Site & branding.
+	// Each form returns to the section that holds it (A-542): the role form to Users (or the account's page in the user
+	// directory it was posted from, A-545), the market name to Site & branding.
 	notice := "role"
-	back := "/admin/users"
+	back := adminUserBack(c, strings.TrimSpace(f.Get("handle")), "/admin/users")
 	if f.Get("action") == "settings" {
 		notice = "settings"
 		back = "/admin/site"

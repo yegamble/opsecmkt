@@ -30,7 +30,7 @@ func TestAdminChangesRoleOfAnyAccountByHandle(t *testing.T) {
 	e.user("lookup_admin2", "admin")
 	product := e.product(vendorID, "physical")
 	agExec(e, "UPDATE users SET created=now()-interval '1 day' WHERE id=$1", vendorID)
-	// 101 accounts registered after the vendor push it out of the page's list of newest accounts.
+	// 101 accounts registered after the vendor push it off the user directory's first page (A-545).
 	agExec(e, `INSERT INTO users(id,handle,password_hash,role,created)
 		SELECT 'newer-'||g, 'newer_buyer_'||g, 'x', 'buyer', now()+g*interval '1 second' FROM generate_series(1,101) g`)
 
@@ -38,8 +38,8 @@ func TestAdminChangesRoleOfAnyAccountByHandle(t *testing.T) {
 	f := adminForm(t, page, "/admin", "role")
 	mustContain(t, f, `name="handle"`, `pattern="[a-zA-Z0-9_]{3,32}"`, "Account handle")
 	mustNotContain(t, f, `name="user_id"`, "<option value=\"\">Select an account")
-	mustContain(t, page, "newer_buyer_101 · buyer", "Showing 1–50 of 104 accounts")
-	mustNotContain(t, page, "lookup_old_vendor ·")
+	mustContain(t, page, `href="/admin/users?handle=newer_buyer_101"`, "Showing 1–50 of 104 accounts")
+	mustNotContain(t, page, `href="/admin/users?handle=lookup_old_vendor"`)
 
 	// The vendor is demoted by handle; its listing is archived and both accounts are audited as before.
 	agExpect(e, "/admin", admin, form("action", "role", "password", testPassword, "role", "buyer", "handle", " lookup_old_vendor "), 303, "")

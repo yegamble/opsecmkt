@@ -93,6 +93,7 @@ var sweepScopes = map[string][2]string{
 	"/admin/staff-list":             {scopeStaff, ""},
 	"/admin/suspend":                {scopeStaff, ""},
 	"/admin/vendor-applications":    {scopeStaff, ""},
+	"/admin/vendor-apply":           {scopeStaff, ""},
 	"/admin/vendor-policy":          {scopeStaff, ""},
 	"/admin/vendor-verify":          {scopeStaff, ""},
 	"/images/remove":                {scopeStaff, ""},

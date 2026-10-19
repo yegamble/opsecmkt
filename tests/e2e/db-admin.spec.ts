@@ -24,11 +24,15 @@ test('promoting a buyer to vendor opens the vendor desk; the listing form shows 
   await enrollTOTP(locked, lockedPassword);
 
   const admin = await signedIn(browser, baseURL, ADMIN.handle, ADMIN.password, false);
+  // A-545: the user directory (which replaced the role form's "Newest accounts" list) shows the account's role.
+  const directoryRole = async () => {
+    await admin.goto(`/admin/users?find=${vendorHandle}`);
+    return admin.getByRole('region', { name: 'User directory' }).first().locator('tbody tr', { hasText: vendorHandle }).locator('td').nth(1);
+  };
+  await expect(await directoryRole()).toHaveText('buyer');
   await admin.goto('/admin/users');
   const roleSection = admin.getByRole('region', { name: 'Assign an account role' });
   const roleForm = roleSection.locator('form');
-  const newest = roleSection.locator('.account-list li', { hasText: `${vendorHandle} ·` });
-  await expect(newest).toHaveText(`${vendorHandle} · buyer`);
   // The form takes a handle looked up on the server. An unknown one answers 404 with the page again: the
   // reason in an alert, the handle and role kept for correction, nothing changed.
   const unknown = uniqueHandle('nobody');
@@ -46,8 +50,8 @@ test('promoting a buyer to vendor opens the vendor desk; the listing form shows 
   await expect(admin.getByRole('alert')).toHaveText('Cannot change your own administrator role');
   await setRole(admin, vendorHandle, 'vendor');
   await admin.waitForLoadState();
-  await admin.reload();
-  await expect(newest).toHaveText(`${vendorHandle} · vendor`);
+  await expect(await directoryRole()).toHaveText('vendor');
+  await admin.goto('/admin/users');
   // Only roles the server can assign are offered; administrator remains setup-only.
   await expect(roleForm.getByLabel('Role').locator('option[value="admin"]')).toHaveCount(0);
   // The administrator's row names the account and both roles; the account gets its own row, and the
@@ -434,4 +438,60 @@ test('an administrator bans a vendor from the Users section and the vendor canno
   await expect(vendor.locator('.account-name')).toHaveText(vendorHandle);
   await vendor.context().close();
   await admin.context().close();
+});
+
+// A-545: an administrator finds an account in the user directory (any part of the handle, any case, with a filter),
+// opens its page, suspends it from there and, after a reload, sees it suspended; restoring returns there too. The
+// page links to /messages for this account.
+test('user directory: search, open an account, suspend and restore it from its page', async ({ browser, baseURL }) => {
+  const handle = uniqueHandle('dirsusp');
+  const account = await signedIn(browser, baseURL, handle, 'browser-directory-password-123', true);
+  const admin = await signedIn(browser, baseURL, ADMIN.handle, ADMIN.password, false);
+  await admin.goto('/admin/users');
+  const search = admin.getByRole('search', { name: 'Search and filter accounts' });
+  await search.getByLabel('Handle contains').fill(handle.toUpperCase());
+  await search.locator('select[name="role"]').selectOption('buyer');
+  await search.locator('select[name="status"]').selectOption('active');
+  await search.getByRole('button', { name: 'Search' }).click();
+  await expect(admin).toHaveURL(`/admin/users?find=${handle.toUpperCase()}&role=buyer&status=active&vendor=`);
+  const directory = admin.getByRole('region', { name: 'User directory' }).first();
+  await expect(directory.locator('tbody tr')).toHaveCount(1);
+  await expect(directory.locator('tbody tr')).toContainText('Active');
+  await expect(search.getByLabel('Handle contains')).toHaveValue(handle.toUpperCase());
+  await directory.getByRole('link', { name: handle }).click();
+  await expect(admin).toHaveURL(`/admin/users?handle=${handle}`);
+  await expect(admin.getByRole('heading', { level: 2, name: handle })).toBeVisible();
+  await expect(admin.getByRole('link', { name: /Message user/ })).toHaveAttribute('href', `/messages?to=${handle}`);
+  const status = admin.locator('.key-values div').filter({ has: admin.locator('dt', { hasText: /^Status$/ }) }).locator('dd');
+  await expect(status).toHaveText('Active');
+
+  const suspend = admin.getByRole('region', { name: 'Suspend this account' });
+  await suspend.getByLabel('Current password').fill(ADMIN.password);
+  await suspend.getByRole('button', { name: `Suspend ${handle}` }).click();
+  await expectNotice(admin, 'Account suspended.');
+  await expect(admin).toHaveURL(`/admin/users?handle=${handle}#suspend`);
+  await expect(admin.getByRole('region', { name: 'Restore this account' }).getByRole('status')).toHaveText('Account suspended.');
+  await admin.reload();
+  await expect(status).toHaveText('Suspended');
+  await expect(admin.locator('.key-values div').filter({ has: admin.locator('dt', { hasText: /^Suspended$/ }) }).locator('dd')).toContainText(`by ${ADMIN.handle}`);
+  await account.goto('/account');
+  await expect(account).toHaveURL(/\/login\?next=%2Faccount$/);
+  await admin.goto(`/admin/users?status=suspended&find=${handle}`);
+  await expect(directory.locator('tbody tr')).toContainText('Suspended');
+  await directory.getByRole('link', { name: handle }).click();
+
+  const restore = admin.getByRole('region', { name: 'Restore this account' });
+  await restore.getByLabel('Current password').fill(ADMIN.password);
+  await restore.getByRole('button', { name: `Restore ${handle}` }).click();
+  await expectNotice(admin, 'Account restored.');
+  await expect(admin).toHaveURL(`/admin/users?handle=${handle}#suspend`);
+  await expect(status).toHaveText('Active');
+  await waitForStyles(admin);
+  expect(await admin.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(admin.viewportSize()!.width);
+  // The message link opens the staff message form addressed to the account.
+  await admin.getByRole('link', { name: /Message user/ }).click();
+  await expect(admin).toHaveURL(`/messages?to=${handle}`);
+  await expect(admin.getByLabel('Recipient handle')).toHaveValue(handle);
+  await admin.context().close();
+  await account.context().close();
 });

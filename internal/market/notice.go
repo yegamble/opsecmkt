@@ -11,8 +11,8 @@ import (
 // cookie, so a reload, Back or a crafted link never shows a success that did not just happen. The cookie holds only
 // a code, never user text; a code not in the table shows nothing. A notice with a section renders inside that
 // section, and the 303 goes to its fragment; one without renders at the top of the page, with no fragment. pages
-// names the pages (PageData.Page, space-separated; admin/<slug> for an administration section, A-542) that render
-// the section: a notice consumed on any other page
+// names the pages (PageData.Page, space-separated; admin/<slug> for an administration section, A-542, and admin/user
+// for an account's page in the user directory, A-545) that render the section: a notice consumed on any other page
 // (its 303 left unfollowed while another tab loaded, A-291) renders at the top there instead. A code in
 // noticeErrors reports a success that needs the owner's attention, or (signin-code-wrong, A-549) a sign-in that
 // moved on to /challenge because its authenticator code was refused, and renders as the page's error alert.
@@ -108,11 +108,11 @@ var notices = map[string]struct{ text, section, pages string }{
 	"access":        {"Site access and registration settings saved.", "access", "admin/security"},
 	"role":          {"Account role saved.", "", ""},
 	"captcha":       {"CAPTCHA setting saved.", "", ""},
-	"suspended":     {"Account suspended.", "suspend", "admin/users"},
-	"restored":      {"Account restored.", "suspend", "admin/users"},
-	"banned":        {"Account banned.", "ban", "admin/users"},
-	"unbanned":      {"Ban lifted.", "ban", "admin/users"},
-	"factors-reset": {"Second factors reset.", "reset-factors", "admin/users"},
+	"suspended":     {"Account suspended.", "suspend", "admin/users admin/user"},
+	"restored":      {"Account restored.", "suspend", "admin/users admin/user"},
+	"banned":        {"Account banned.", "ban", "admin/users admin/user"},
+	"unbanned":      {"Ban lifted.", "ban", "admin/users admin/user"},
+	"factors-reset": {"Second factors reset.", "reset-factors", "admin/users admin/user"},
 	"staff-contact": {"Staff contact saved.", "staff-contact", "admin/site"},
 	"staff-list":    {"Public staff list saved.", "staff-list", "admin/transparency"},
 	"intake-paused": {"New payment addresses paused.", "payment-intake", "admin/payments"},
@@ -123,8 +123,10 @@ var notices = map[string]struct{ text, section, pages string }{
 	"vendor-approved":  {"Vendor application approved: your account is now a vendor account.", "vendor-application", "account"},
 	"vendor-withdrawn": {"Vendor application withdrawn.", "vendor-application", "account"},
 	"vendor-policy":    {"Vendor policy saved. It applies to new applications; open applications keep their bond and approval mode.", "vendors", "admin/vendors"},
-	"vendor-decision":  {"Vendor application updated. The applicant was notified.", "vendors", "admin/vendors"},
-	"vendor-verify":    {"Verified vendor mark saved. The vendor was notified.", "vendors", "admin/vendors"},
+	"vendor-decision":  {"Vendor application updated. The applicant was notified.", "vendors", "admin/vendors admin/user"},
+	"vendor-verify":    {"Verified vendor mark saved. The vendor was notified.", "vendors", "admin/vendors admin/user"},
+	// The user directory's account page (admin_users.go, A-545): an application opened on the account's behalf.
+	"vendor-opened": {"Vendor application opened for this account under the current vendor policy. The account was notified.", "vendors", "admin/user"},
 }
 
 // noticeErrors are the codes shown as the page's error alert rather than a status notice.

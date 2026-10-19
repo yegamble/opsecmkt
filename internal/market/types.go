@@ -167,8 +167,12 @@ type PageData struct {
 	Paging *CatalogPaging
 	// ActivityPaging: signed-in user's orders, messages or notifications (A-16, load.go).
 	ActivityPaging *ActivityPaging
-	// AdminUsersPaging: the admin role form's newest-account picker (A-16, load.go).
-	AdminUsersPaging *ActivityPaging
+	// A-545 (admin_users.go). AdminUserHandle: /admin/users?handle=, the account whose page is shown (set from the
+	// request before the notice is taken, so an account-page notice renders there); UserDirectory: the directory on
+	// /admin/users; AdminUser: the account page.
+	AdminUserHandle string
+	UserDirectory   *UserDirectoryView
+	AdminUser       *AdminUserView
 	// DeliveryCleanup lists only this account's archived listings that still hold automatic-delivery text; the text itself is never loaded.
 	DeliveryCleanup       []DeliveryCleanupListing
 	DeliveryCleanupPaging *ActivityPaging
