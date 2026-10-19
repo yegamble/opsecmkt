@@ -11,8 +11,10 @@ since that ref, plus their callers.
 Read first: `.claude/war-room/repo-map.md`, `.claude/war-room/finding-format.md`,
 `.claude/bug-hunt/rules.md`, the open rows of `.claude/war-room/ledger.md`.
 Check `git status`; never discard unrelated work. Tell the owner the cost up
-front: one indexer (Sonnet), 1–2 probers and 2–3 hunters (Opus, in
-parallel), and one verifier per batch of findings.
+front, split by model tier (`.claude/war-room/model-tiering.md`): one indexer
+and 1–2 probers (Sonnet), 2–3 hunters (Opus, in parallel; Sonnet for an area
+outside the T1 files), and one verifier per batch of findings (Opus for
+money/auth findings, Sonnet otherwise).
 
 Agent definitions load when a session starts. If `opsec-codegraph` and the
 other hunt agents are not in this session's agent list yet, dispatch
