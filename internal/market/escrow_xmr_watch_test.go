@@ -159,7 +159,12 @@ func (x *xmrEscrowEnv) notified(uid, part string) int {
 // unseal decrypts a wallet row's sealed seed with the test's private seed key.
 func (x *xmrEscrowEnv) unseal(name string) string {
 	x.t.Helper()
-	sealed := agStrings(x.t, x.testEnv, "SELECT seed_sealed FROM xmr_escrow_wallets WHERE name=$1", name)[0]
+	return x.unsealArmored(agStrings(x.t, x.testEnv, "SELECT seed_sealed FROM xmr_escrow_wallets WHERE name=$1", name)[0])
+}
+
+// unsealArmored decrypts an armored seed seal with the test's private seed key.
+func (x *xmrEscrowEnv) unsealArmored(sealed string) string {
+	x.t.Helper()
 	block, err := armor.Decode(strings.NewReader(sealed))
 	if err != nil {
 		x.t.Fatal(err)

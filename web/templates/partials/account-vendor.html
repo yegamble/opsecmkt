@@ -1,7 +1,7 @@
 {{/* A-544 vendor onboarding (vendor_applications.go). vendor-policy-text: one sentence describing a VendorPolicyView,
 used on /register, /account and the admin vendors panel. account-vendor: the /account section of a buyer or vendor,
 with the latest application, the bond and the administrator's payment instructions, and the apply/withdraw form. */}}
-{{define "vendor-policy-text"}}{{if .HasBond}}Vendor applications need a bond of {{.Bond}} XMR, a non-refundable fee, {{if .Automatic}}and are approved once an administrator records the bond as received.{{else}}and then an administrator's approval.{{end}}{{else if .Automatic}}Vendor applications need no bond and are approved at once.{{else}}Vendor applications need no bond, only an administrator's approval.{{end}}{{end}}
+{{define "vendor-policy-text"}}{{if .HasBond}}Vendor applications need a bond of {{.Bond}} XMR, a non-refundable fee, {{if .Automatic}}and are approved once the bond is received.{{else}}and then an administrator's approval.{{end}}{{else if .Automatic}}Vendor applications need no bond and are approved at once.{{else}}Vendor applications need no bond, only an administrator's approval.{{end}}{{end}}
 {{define "account-vendor"}}{{with .VendorAccount}}<section class="panel" id="vendor-application" aria-labelledby="vendor-application-heading">
 <h2 id="vendor-application-heading">Sell on this market</h2>{{with $.NoticeIn "vendor-application"}}
 <div class="alert" role="status">{{.}}</div>{{end}}{{if .Verified}}
@@ -14,8 +14,18 @@ with the latest application, the bond and the administrator's payment instructio
 <div><dt>Decided</dt><dd>{{.Decided}}</dd></div>{{end}}{{if .Note}}
 <div><dt>Note</dt><dd>{{.Note}}</dd></div>{{end}}
 </dl>{{if .RoleRemoved}}
-<p>Your vendor role was removed by an administrator, so your account cannot publish listings. You can apply again.</p>{{end}}{{if .AwaitingBond}}
-<p>Pay the bond of <strong>{{.Bond}} XMR</strong> as the instructions below say. The bond is a non-refundable fee: it is not returned if your application is rejected or withdrawn, or when you stop selling. The market does not detect the payment: an administrator records it as received, and this page then shows the next step. {{if .Automatic}}Your application is approved once the bond is recorded.{{else}}An administrator then reviews your application.{{end}}</p>{{with $.VendorAccount.Policy.Instructions}}
+<p>Your vendor role was removed by an administrator, so your account cannot publish listings. You can apply again.</p>{{end}}{{if and .AwaitingBond .BondAuto}}
+<p class="vendor-bond-terms">Pay the bond of <strong>{{.Bond}} XMR</strong> in Monero ({{template "payment-status:xmr-net" $}}). The bond is a non-refundable fee: it is not returned if your application is rejected or withdrawn, or when you stop selling. Anything you pay above the bond, or after this application stops waiting for it, is kept too: the market asks for no refund address and never sends coins back.</p>{{if .BondAddress}}
+<dl class="key-values vendor-bond">
+<div><dt>Bond address</dt><dd><code class="address">{{.BondAddress}}</code></dd></div>
+<div><dt>Received</dt><dd>{{.BondConfirmed}} XMR with at least {{.BondThreshold}} confirmations</dd></div>{{if .BondPendingAny}}
+<div><dt>Waiting for confirmations</dt><dd>{{.BondPending}} XMR, {{.BondLeastConfs}} of {{.BondThreshold}} confirmations</dd></div>{{end}}
+<div><dt>Still to pay</dt><dd>{{.BondRemaining}} XMR</dd></div>
+</dl>
+<p class="help">This address is for this application only. Send an ordinary transfer, with no unlock time, from your own wallet; one or several payments may make up the bond, with no time limit. A payment counts once it has {{.BondThreshold}} confirmations; {{if .Automatic}}your application is then approved{{else}}an administrator then reviews your application{{end}}. Reload this page to see new payments.</p>{{else}}
+<p role="status">The market is preparing a bond address for this application. Reload this page in a minute.</p>{{end}}{{else if .AwaitingBond}}
+<p>Pay the bond of <strong>{{.Bond}} XMR</strong> as the instructions below say. The bond is a non-refundable fee: it is not returned if your application is rejected or withdrawn, or when you stop selling. The bond is recorded by hand: an administrator records it as received, and this page then shows the next step. {{if .Automatic}}Your application is approved once the bond is recorded.{{else}}An administrator then reviews your application.{{end}}</p>{{if .HasDeposits}}
+<p>Received at this application's earlier bond address so far: {{.BondConfirmed}} XMR with at least {{.BondThreshold}} confirmations{{if .BondPendingAny}}, and {{.BondPending}} XMR still confirming{{end}}. Bond addresses are not issued right now, so do not pay that address again unless an administrator asks you to.</p>{{end}}{{with $.VendorAccount.Policy.Instructions}}
 <div class="vendor-instructions">
 <h3>Bond payment instructions</h3>
 <p>{{.}}</p>

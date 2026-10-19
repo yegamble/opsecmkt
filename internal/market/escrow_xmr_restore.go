@@ -214,11 +214,18 @@ func (a *App) xmrSealOrphan(ctx context.Context, id int64, name string) error {
 // the database), a subaddress lookahead past that slot and rescans, so a deposit to an account it does not know is
 // seen (see the file comment). The lookahead is written into the wallet's keys file, so later refreshes keep it.
 func (a *App) xmrLookahead(ctx context.Context, w xmrWalletRow) error {
-	x := a.escrowXMR
 	var highest int64
 	if err := a.db.QueryRowContext(ctx, "SELECT COALESCE(max(account_index),0) FROM xmr_escrow_slots WHERE wallet_id=$1", w.id).Scan(&highest); err != nil {
 		return err
 	}
+	return a.xmrRaiseLookahead(ctx, w.name, highest)
+}
+
+// xmrRaiseLookahead gives the open wallet name, when it knows fewer accounts than highest (the highest account its
+// records name), a subaddress lookahead past it and rescans: xmrLookahead for an escrow wallet, and the vendor bond
+// wallet's turn in the sweep (vendor_bond.go).
+func (a *App) xmrRaiseLookahead(ctx context.Context, name string, highest int64) error {
+	x := a.escrowXMR
 	accounts, err := x.rpc.accounts(ctx)
 	if err != nil {
 		return err
@@ -227,10 +234,10 @@ func (a *App) xmrLookahead(ctx context.Context, w xmrWalletRow) error {
 	if highest <= known {
 		return nil
 	}
-	if err = x.rpc.setSubaddressLookahead(ctx, xmrWalletPassword(x.secret, w.name), max(highest-known+1, xmrLookaheadMajor), 1); err != nil {
+	if err = x.rpc.setSubaddressLookahead(ctx, xmrWalletPassword(x.secret, name), max(highest-known+1, xmrLookaheadMajor), 1); err != nil {
 		return err
 	}
-	log.Printf("escrow: Monero escrow wallet %s knows %d account(s) and its slots name account %d: lookahead raised past it, rescanning", w.name, known, highest)
+	log.Printf("escrow: Monero wallet %s knows %d account(s) and its records name account %d: lookahead raised past it, rescanning", name, known, highest)
 	return x.rpc.rescan(ctx)
 }
 

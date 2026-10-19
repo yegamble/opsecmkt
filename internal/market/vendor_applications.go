@@ -16,10 +16,11 @@ import (
 // A-544: vendor onboarding (migration 121). Sign-up chooses a buyer or a vendor account; a vendor account is a buyer
 // account with a vendor application, decided under the administrator's vendor policy:
 //
-//   - vendor_bond_xmr: the bond in atomic piconero, 0 for none. The bond is a NON-REFUNDABLE fee paid as the
-//     administrator's instructions (vendor_bond_instructions, free text) say. In this release an administrator records
-//     it as received (how 'manual') or waives it ('waived'); the market runs no wallet code for it. 'xmr' is reserved
-//     for automatic deposit detection (A-547).
+//   - vendor_bond_xmr: the bond in atomic piconero, 0 for none. The bond is a NON-REFUNDABLE fee. While Monero escrow
+//     is ready and new XMR payments are on, the escrow watcher gives each application a one-time deposit address and
+//     records the bond once deposits covering it confirm (how 'xmr', A-547, vendor_bond.go); otherwise it is paid as
+//     the administrator's instructions (vendor_bond_instructions, free text) say. Either way an administrator may
+//     record it as received (how 'manual') or waive it ('waived').
 //   - vendor_approval: 'manual' (an administrator approves or rejects) or 'automatic' (approved once no bond is due).
 //
 // Each application captures the bond and approval mode in force when it is created, so a policy change applies to new
@@ -60,6 +61,17 @@ type VendorPolicyView struct {
 type VendorApplicationView struct {
 	ID, Handle, State, Status, Bond, Created, BondReceived, BondHow, Decided, Note string
 	HasBond, Automatic, Open, AwaitingBond, AwaitingApproval, RoleRemoved          bool
+
+	// A-547, the automatic XMR bond (fillVendorBond, vendor_bond.go). BondAuto: on /account, the application waits for
+	// its bond and bond addresses may be issued now (the address, or BondPreparing until the watcher made it, replaces
+	// the manual instructions). BondAddress: the one-time deposit address (to an administrator always; to the applicant
+	// only with BondAuto). BondConfirmed: XMR counted (at least BondThreshold confirmations); BondPending: XMR still
+	// confirming, the fewest at BondLeastConfs; BondRemaining: what the counted deposits leave of the bond. BondFlags:
+	// administrators only, late, locked and reorganised deposits.
+	BondAddress, BondConfirmed, BondPending, BondRemaining string
+	BondAuto, BondPreparing, BondPendingAny, HasDeposits   bool
+	BondThreshold, BondLeastConfs                          int64
+	BondFlags                                              []string
 }
 
 // VendorAccountView is the /account vendor section (buyers and vendors only).
@@ -77,6 +89,7 @@ type VendorAdminView struct {
 	Queue      []VendorApplicationView
 	QueueTotal int
 	Verified   []string
+	AutoBond   bool // A-547: bond addresses are issued now (xmrBondIssuable)
 }
 
 func init() {
@@ -721,6 +734,13 @@ func vendorAccountLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 		if latest.State == "approved" && d.User.Role != "vendor" {
 			latest.RoleRemoved, latest.Status = true, "Vendor role removed by an administrator"
 		}
+		issuable, err := a.xmrBondIssuable(ctx, a.db)
+		if err != nil {
+			return err
+		}
+		if err = a.fillVendorBond(ctx, &latest, issuable, false); err != nil {
+			return err
+		}
 		view.Latest = &latest
 	}
 	view.CanApply = d.User.Role == "buyer" && (view.Latest == nil || !view.Latest.Open)
@@ -749,6 +769,15 @@ func vendorAdminLoader(ctx context.Context, a *App, _ *http.Request, d *PageData
 	}
 	if err = rows.Err(); err != nil {
 		return err
+	}
+	rows.Close()
+	if view.AutoBond, err = a.xmrBondIssuable(ctx, a.db); err != nil {
+		return err
+	}
+	for i := range view.Queue {
+		if err = a.fillVendorBond(ctx, &view.Queue[i], view.AutoBond, true); err != nil {
+			return err
+		}
 	}
 	verified, err := a.db.QueryContext(ctx, "SELECT u.handle FROM users u WHERE u.vendor_verified AND "+activeVendorSQL("u")+" ORDER BY u.handle LIMIT 100")
 	if err != nil {

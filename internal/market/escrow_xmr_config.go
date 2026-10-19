@@ -492,7 +492,8 @@ const (
 
 // pinXMRNetwork checks nettype (the escrow daemon's verified network type) against the network pinned in settings
 // (xmrNetworkPin) and reports the pinned value and whether Monero escrow may use the daemon. While the database holds
-// no Monero escrow state (no Monero escrow and no escrow wallet: a wallet's slots are addresses of one network) the pin
+// no Monero escrow state (no Monero escrow, no escrow wallet and no vendor bond wallet, A-547: a wallet's accounts are
+// addresses of one network) the pin
 // is written, or rewritten, to nettype: a database may change network until it holds such state, never after (a new
 // network needs a new database). A database that holds state and no pin (one from before A-449) is pinned when the
 // daemon reports fakechain, the only network Monero escrow ran on before; on any other it is refused. A refusal writes
@@ -508,7 +509,7 @@ func pinXMRNetwork(ctx context.Context, db *sql.DB, nettype string) (pinned stri
 	}
 	var held bool
 	if err = tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT value FROM settings WHERE key=$1),''),
-		EXISTS (SELECT 1 FROM escrows WHERE coin='XMR') OR EXISTS (SELECT 1 FROM xmr_escrow_wallets)`, xmrNetworkPin).Scan(&pinned, &held); err != nil {
+		EXISTS (SELECT 1 FROM escrows WHERE coin='XMR') OR EXISTS (SELECT 1 FROM xmr_escrow_wallets) OR EXISTS (SELECT 1 FROM xmr_bond_wallets)`, xmrNetworkPin).Scan(&pinned, &held); err != nil {
 		return "", false, err
 	}
 	switch {

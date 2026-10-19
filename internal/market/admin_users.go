@@ -235,6 +235,9 @@ func adminUserLoader(ctx context.Context, a *App, d *PageData) error {
 		if app.State == "approved" && v.Role != "vendor" {
 			app.RoleRemoved, app.Status = true, "Approved; the vendor role was removed later"
 		}
+		if err = a.fillVendorBond(ctx, &app, false, true); err != nil { // A-547: XMR received and flags
+			return err
+		}
 		v.Application = &app
 	}
 	counts := map[string]UserStateCount{}

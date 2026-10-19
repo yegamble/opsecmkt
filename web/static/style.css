@@ -619,6 +619,12 @@ main {
   white-space:pre-line;
   overflow-wrap:anywhere
 }
+/* A-547: a 95-character bond address wraps anywhere rather than widen the page at 320 px. */
+.vendor-bond code.address, .bond-address {
+  font-family:var(--mono);
+  overflow-wrap:anywhere;
+  word-break:break-all
+}
 .product-bottom {
   display:flex;
   align-items:center;
