@@ -637,8 +637,9 @@ over the operator's protected, certificate-verified connection to the restored d
 and `COMMIT`; on an error nothing is changed.
 
 The restore also rolls back every setting an administrator saved after the backup or recovery point, such as **New escrow
-checkouts**, site access and registrations. Before clearing the gate, re-check them on `/admin` against your operator
-record. The market fee address and rate (`ESCROW_XMR_FEE_ADDRESS`, `ESCROW_XMR_FEE_BPS`) are host configuration, not
+checkouts**, site access, registrations and the vendor application policy (the bond amount `vendor_bond_xmr` and the
+approval mode in **Admin → Vendor applications**), and undoes bonds recorded as received after that point. Before
+clearing the gate, re-check them on `/admin` against your operator record. The market fee address and rate (`ESCROW_XMR_FEE_ADDRESS`, `ESCROW_XMR_FEE_BPS`) are host configuration, not
 database rows, so a database restore does not roll them back; confirm the host values are the ones you intend.
 
 The payout gate is enforced by this release. An older application image may not understand it; keep wallet
