@@ -51,7 +51,9 @@ Legacy server flags such as -preview, -bootstrap-admin and -status remain suppor
 With no arguments in an interactive terminal, guided setup opens automatically.
 `
 
-var buildVersion = "development"
+// buildVersion and buildCommit are set at link time by release builds (-X main.buildVersion=<tag>
+// -X main.buildCommit=<commit>); the admin dependency table shows both (A-553).
+var buildVersion, buildCommit = "development", ""
 
 // command handles operator commands before legacy server flags are parsed.
 // serve sets the documented environment inputs and then uses the existing startup path.

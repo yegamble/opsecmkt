@@ -51,6 +51,21 @@ Per-order escrow is the only payment path (A-448, A-492). Checks of payment code
   (`TestGatewayScannerReport`, `TestUploadGatewayScannerReportSender`,
   `TestIntegratedModeIgnoresGatewayScannerReport`; layout in `preview-scanner.spec.ts`
   at 320 and 1280 px). Simulated clamd and test PKI only; not a deployed gateway.
+- `/admin/system` shows the market's own build version and commit, the monerod
+  release from `get_info` (the RPC interface version from `get_version` on a
+  restricted RPC) and monero-wallet-rpc's RPC interface version, labelled
+  "Observed by this app", and a Health column (reachable, synced height against
+  target, last successful check, last error class) that names no URL, host or
+  credential; with no versions worker the panel names the setup step instead of a
+  per-row "Release check unavailable". `/admin/payments` shows the Monero escrow
+  watcher's last pass, last good pass and failing class, and "wallet creation
+  stopped" for a seed key that is not the pinned one, from one database row that a
+  second app process and a restarted one show the same; the 10-minute outage notice
+  points there (`TestDependencyStatusObservesMonero`, `TestDependencyStatusMoneroOff`,
+  `TestXMREscrowAdminShowsPassFailures`,
+  `TestXMREscrowProviderEpisodeTracksSyncSkipAndRecovery`; layout in
+  `preview-status.spec.ts` at 320 and 1280 px). Simulated Monero RPC only; not a
+  deployed node or a real chain.
 
 - [x] A fresh install with no external database starts the PostgreSQL Compose service, waits for readiness, and applies migrations (CI installer job: `scripts/test-install.py`).
 - [x] External database configuration starts no PostgreSQL container; connection failures stop setup with a useful, secret-free error (`TestStartupDatabaseErrorNamesItsClass`, `TestConnectErrorClassTLSRequired`; CI container job: `scripts/ci-smoke.sh external` finds no `db` container; installer: `tests/test_installer.py` `test_external_clearnet_local_http`).

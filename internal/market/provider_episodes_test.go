@@ -32,6 +32,10 @@ func TestXMREscrowProviderEpisodeTracksSyncSkipAndRecovery(t *testing.T) {
 	if got := providerNoticeCount(t, x.testEnv, x.admin, "has been unavailable"); got != 1 {
 		t.Fatalf("Monero escrow outage notices = %d", got)
 	}
+	// A-553 (STAFF66-3): the notice points to the persisted watcher health on Admin → Payments, not to server logs.
+	if providerNoticeCount(t, x.testEnv, x.admin, "Admin → Payments (/admin/payments#xmr-escrow-health)") != 1 || providerNoticeCount(t, x.testEnv, x.admin, "watcher logs") != 0 {
+		t.Fatal("the outage notice does not point to the Payments health panel")
+	}
 	x.fake.edit(func(f *fakeXMREscrow) { f.unsynced = false })
 	x.mustPoll()
 	if got := providerNoticeCount(t, x.testEnv, x.admin, "is available again"); got != 1 {

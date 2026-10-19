@@ -340,6 +340,8 @@ type PageData struct {
 	// XMREscrowNode: /admin while ESCROW_XMR is on and the escrow daemon is not synced or not on the pinned network
 	// (A-449; Mismatch names networks, not chains), or Monero escrow is not ready for another reason (NotReady, QA4W4B-1)
 	XMREscrowNode *EscrowNodeView
+	// XMREscrowHealth: /admin while ESCROW_XMR is on, the Monero escrow watcher's persisted health (A-553, STAFF66-3)
+	XMREscrowHealth *XMREscrowHealthView
 	// EscrowSigner: /admin while ESCROW_SIGNER_SOCKET is set and the escrow signer is not ready (A-454)
 	EscrowSigner *EscrowSignerView
 	// EscrowReleaseDays: /admin while ESCROW_BTC is on, the release deadline length in force and its form (escrow_release_admin.go)
@@ -584,9 +586,6 @@ type ProviderStatus struct {
 	Status            string // Enabled, Unavailable (retried), Refused, Disabled
 	Error             string
 	Confirmations     int
-	LastPoll          string
-	LastPollAge       string
-	PollStale         bool
 	Version           string // wallet or node version its last check read (versionReporter)
 	VersionWarning    string // set when send errors are all ambiguous because Version is not the verified one
 	// AddressCollisions: payment requests refused because the wallet returned an address already issued (A-288),

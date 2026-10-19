@@ -84,7 +84,7 @@ func (d PageData) AdminSectionAlert(slug string) string {
 			alerts = append(alerts, strconv.Itoa(v.QueueTotal)+" open vendor application(s) await a decision or bond.")
 		}
 	case "payments":
-		if n := d.XMREscrowNode; n != nil && (n.Mismatch != nil || n.NotReady != "" || n.NotSynced != "" || n.TorHold != "") {
+		if n := d.XMREscrowNode; n != nil && (n.Mismatch != nil || n.NotReady != "" || n.NotSynced != "" || n.TorHold != "") || d.XMREscrowHealth.Attention() {
 			alerts = append(alerts, "Monero escrow needs attention.")
 		}
 	case "security":
