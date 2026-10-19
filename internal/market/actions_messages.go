@@ -68,8 +68,10 @@ func messageAction(c *actionCtx) (actionResult, error) {
 		}
 	}
 	// P2: packet inspection rejects anything that is not OpenPGP-encrypted and records the recipient-key
-	// match; only the canonical re-armor of the packets is stored (A-67).
-	body, match, extraKeys, extraKeysKnown, err := inspectMessage(c, body, recipient)
+	// match; only the canonical re-armor of the packets is stored (A-67). A-569: a recipient without a usable key,
+	// passphrase-only ciphertext and ciphertext naming only other keys are refused; hidden recipients need the
+	// sender's confirmation.
+	body, match, extraKeys, extraKeysKnown, err := inspectMessage(c, body, recipient, c.Form.Get("recipient"))
 	if err != nil {
 		return actionResult{}, err
 	}

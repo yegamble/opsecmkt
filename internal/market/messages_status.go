@@ -3,8 +3,11 @@ package market
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"net/http"
+	"net/url"
 	"slices"
+	"time"
 
 	"github.com/ProtonMail/go-crypto/openpgp"
 )
@@ -97,19 +100,73 @@ func recipientExtraKeyCount(ids []uint64, key *openpgp.Entity) (int, bool) {
 // inspectMessage is called by the /messages action before storing: it rejects bodies that are not
 // OpenPGP-encrypted and returns the body to store - a canonical re-armor of the pasted packets, without
 // armor headers or anything around the block - and the recipient-key match computed from that body.
-func inspectMessage(c *actionCtx, body, recipientID string) (stored, match string, extraKeys int, extraKeysKnown bool, err error) {
-	var key string
-	if err = c.Tx.QueryRowContext(c.Ctx(), "SELECT pgp FROM users WHERE id=$1", recipientID).Scan(&key); err != nil {
+//
+// A-569 (policy: docs/data-retention-privacy-policy.md, private channels): only ciphertext the recipient can be
+// expected to read is stored. A recipient whose saved key cannot receive encrypted messages now (canReceiveEncrypted)
+// is refused with 409; a passphrase-only message (no public-key session packet) and one whose visible recipient key
+// IDs are all other keys with 400. A message whose recipient IDs are all hidden (gpg --throw-keyids) cannot be checked:
+// it is stored as matchUnknown only when the sender ticked hidden_recipients, and otherwise the compose form comes
+// back with the ciphertext kept (hiddenRecipientsForm). The match recorded is therefore yes or unknown, never no.
+func inspectMessage(c *actionCtx, body, recipientID, handle string) (stored, match string, extraKeys int, extraKeysKnown bool, err error) {
+	p, err := loadPGPAccount(c.Ctx(), c.Tx, recipientID, false)
+	if err != nil {
 		return "", "", 0, false, err
 	}
+	const ask = " Nothing was stored. Ask %[1]s to add a public key that can receive encrypted messages, then encrypt to it."
+	switch {
+	case canReceiveEncrypted(p.Key, time.Now()):
+	case p.Key != nil:
+		return "", "", 0, false, fail(409, fmt.Sprintf("Message not sent: %[1]s’s saved PGP key cannot receive encrypted messages (it has expired, or has no current encryption subkey)."+ask, handle))
+	case p.Armored != "":
+		return "", "", 0, false, fail(409, fmt.Sprintf("Message not sent: %[1]s’s saved PGP key can no longer be read."+ask, handle))
+	default:
+		return "", "", 0, false, fail(409, fmt.Sprintf("Message not sent: %[1]s has not saved a PGP public key, so nothing can be encrypted to them."+ask, handle))
+	}
+	var ids []uint64
 	encrypted := false
 	if stored, err = canonicalMessage(body); err == nil {
-		encrypted, match, extraKeys, extraKeysKnown = messageStatusDetails(stored, key)
+		ids, encrypted, err = inspectEncrypted(stored)
 	}
-	if !encrypted {
+	if err != nil || !encrypted {
 		return "", "", 0, false, fail(400, "This is not an OpenPGP-encrypted message (plaintext, signed-only and malformed armor are rejected). Encrypt it locally to the recipient's public key, then paste the armored result.")
 	}
+	fingerprint := formatFingerprint(p.Fingerprint)
+	redo := fmt.Sprintf(" Nothing was stored. Encrypt it to %s’s key %s and paste the result.", handle, fingerprint)
+	match = recipientMatch(ids, p.Key)
+	switch {
+	case len(ids) == 0:
+		return "", "", 0, false, fail(400, "Message not sent: it is encrypted with a passphrase only and names no recipient key, so "+handle+" could not read it without that passphrase."+redo)
+	case match == matchYes:
+	case slices.ContainsFunc(ids, func(id uint64) bool { return id != 0 }):
+		// A visible key ID that is not the recipient's: a hidden one beside it does not make the message checkable.
+		return "", "", 0, false, fail(400, "Message not sent: its visible recipient keys are not "+handle+"’s; it names only other keys, so "+handle+" could not read it."+redo+
+			" To hide recipients, hide every recipient key ID (gpg --throw-keyids).")
+	case c.Form.Get("hidden_recipients") != "confirmed":
+		return "", "", 0, false, hiddenRecipientsForm(c, handle, fingerprint, stored)
+	}
+	extraKeys, extraKeysKnown = recipientExtraKeyCount(ids, p.Key)
 	return stored, match, extraKeys, extraKeysKnown, nil
+}
+
+// hiddenRecipientsForm answers a message whose recipient key IDs are all hidden, sent without the confirmation, with
+// 400 and the compose form again (A-569): the explanation in its error alert, the recipient chosen and the ciphertext
+// kept (canonical, as it would be stored), and a confirmation box to tick, so a browser without JavaScript sends it
+// with one more submission. When the page cannot be loaded, the shared refusal page explains and echoes the text.
+func hiddenRecipientsForm(c *actionCtx, handle, fingerprint, body string) error {
+	msg := "Message not sent yet. The recipient key IDs are hidden (as gpg --throw-keyids writes them), so the server cannot check that it is encrypted to " +
+		handle + "’s key with fingerprint " + fingerprint + ". Nothing was stored. If you encrypted it to that key, tick the confirmation below and send again; it will be marked “recipient unknown”."
+	return &httpError{Code: 400, Msg: msg, Render: func(w http.ResponseWriter) {
+		a := c.A
+		r := c.R.Clone(c.R.Context())
+		r.URL.RawQuery = url.Values{"to": {handle}}.Encode()
+		d := a.pageData(r, "messages", c.Token, c.User)
+		if err := a.load(r, &d); err != nil {
+			a.refuse(w, c.R, c.User, 400, msg)
+			return
+		}
+		d.Error, d.MessageBody, d.MessageHiddenRecipients = msg, body, true
+		a.renderStatus(w, c.R, d, 400)
+	}}
 }
 
 // messageStatusLoader adds the stored inspection result to each listed message. Messages stored before
