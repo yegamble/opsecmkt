@@ -28,8 +28,12 @@ Read this once, before you form any opinion. Then read `CLAUDE.md`,
    by default (`ESCROW_XMR`). No Bitcoin node, signer, checkout or intake control
    exists in the active product. Unsupported Bitcoin configuration is rejected.
    Migration 118 enforces XMR-only orders, escrows and payments; older migrations
-   and dated evidence remain historical. The owner confirmed this is undeployed,
-   so no live cutover or currency conversion is required. `MONERO_NETWORK=mainnet`
+   and dated evidence remain historical. The owner's market was rebuilt empty on
+   2026-10-16 with no imported market, wallet or chain state (its deployed build
+   predates current `main`) and runs a Monero mainnet configuration with payment
+   intake paused and no real-funds transaction recorded
+   (`docs/install/deployment-notes.md`), so no live cutover or currency
+   conversion is required; treat it as deployed when ruling. `MONERO_NETWORK=mainnet`
    opts into real funds; blank/stagenet remains a test network and fakechain is
    accepted only by test harnesses. Development, tests and CI never use mainnet.
    Monero escrow is custodial; on-chain privacy does not hide application records
@@ -60,7 +64,7 @@ Read this once, before you form any opinion. Then read `CLAUDE.md`,
 | Escrow UI journeys | `E2E_ESCROW_XMR_DATABASE_URL=<fresh db> npm run test:e2e:escrow-xmr` |
 | Shell/installer/ops | `for f in scripts/*.sh; do bash -n "$f"; done` (a single `bash -n a b` checks only `a`), `python3 -m unittest discover -s tests -p 'test_*.py'`, the matching `scripts/test-*.sh` |
 | Workflows | `go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12` |
-| Everything | GitHub Actions **CI passed** (required on `main`) |
+| Everything | GitHub Actions **CI passed** (required on `main` for non-admins only: branch protection has `enforce_admins=false`, and a red push run has followed an admin merge, e.g. 38836427647 after PR #62). Cite the actual run ID and commit; never infer green CI from a merge |
 
 ## Evidence tiers — never promote one to another
 
@@ -106,4 +110,5 @@ are **not** live-chain evidence. Merged is not released is not deployed.
 - Migration 073's constraint trigger `payouts_return_needs_release` is deferred to COMMIT: a later migration
   that writes `payouts` rows and then alters or indexes `payouts` in the same startup transaction fails with
   "pending trigger events" unless it runs `SET CONSTRAINTS payouts_return_needs_release IMMEDIATE` first.
-- Merging to `main` requires the owner; CI's **CI passed** check is required.
+- Merging to `main` requires the owner; CI's **CI passed** check is required for non-admins, but an
+  administrator can merge past it (`enforce_admins=false`), so check the run itself.

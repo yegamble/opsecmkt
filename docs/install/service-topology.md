@@ -65,11 +65,13 @@ The following matrix is the intended production policy. Ports are examples from 
 | Gateway | App upload backend, e.g. `8443` | Mutual TLS using the dedicated gateway client identity and trusted backend certificate | Missing, invalid or unrelated client identities; routing this listener through public ingress. |
 | App | PostgreSQL, commonly `5432` | Private route, database role authentication and `sslmode=verify-full` | Gateway/scanner/version-worker access and public database ingress. |
 | App | Dedicated Monero wallet and restricted daemon RPC | Private HTTPS with verified certificate names and credentials or a configured mutual TLS identity | Public RPC access and gateway/scanner/version-worker access. |
-| Wallet RPC | Its Monero daemon | Loopback or an explicitly authenticated private service connection | Unrelated wallets controlling the market's escrow wallet files. |
+| Wallet RPC | Its Monero daemon: start `monero-wallet-rpc` with `--daemon-address` naming the same `monerod` that `ESCROW_XMR_DAEMON_URL` reaches | Loopback or an explicitly authenticated private service connection | Unrelated wallets controlling the market's escrow wallet files; a wallet attached to a different daemon. |
 | Gateway | ClamAV, commonly `3310` | Loopback or an unpublished scanner-only container network on the upload host | Internet or application-host access to unauthenticated clamd TCP. |
 | Monero daemon | Monero peers | Deliberately configured peer transport and egress policy | Treating the storefront's Tor mode as proof that Monero peer traffic uses Tor. |
 | Version worker | Official release sources | HTTPS to the fixed PostgreSQL, Go, Tor and official GitHub release endpoints; optional explicit Tor SOCKS5 | Application/database/payment RPC credentials or access, and arbitrary configured release URLs. |
 | Reviewed report-transfer job | App report directory | Transfer only signed `report.json`; stage and atomically replace it with a narrowly authorized identity | Access to app secrets, the Docker socket, the worker seed or the separately pinned verification key. |
+
+The escrow wallet RPC relays settlements through the daemon named by its `--daemon-address`, while the application reads transaction locations and key-image spends from `ESCROW_XMR_DAEMON_URL`. They must be the same `monerod`. The application refuses a wallet more than 10 blocks from that daemon but cannot prove that both use one daemon, and a payment-host Tor egress check made for one daemon says nothing about another.
 
 Keep administrator ingress on its [separate authorized path](tor.md#private-administrator-onion). The public gateway does not authenticate an administrator merely because it forwards a request. Service operators also need deliberate DNS, time synchronization, package/image maintenance and backup paths; document those exceptions separately from runtime application traffic.
 

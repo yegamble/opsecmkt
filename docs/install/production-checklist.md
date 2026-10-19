@@ -190,6 +190,10 @@ Leave intake paused when payments are not enabled or a required check is pending
   HTTPS over narrowly authorized private routes. Network pin, daemon and wallet
   synchronization, stable wallet secret and public seed-encryption key pass the
   application's readiness checks.
+- [ ] The escrow `monero-wallet-rpc` runs with `--daemon-address` set to the same
+  `monerod` that `ESCROW_XMR_DAEMON_URL` reaches. The application only checks that
+  the wallet is within 10 blocks of that daemon; it cannot tell two daemons apart
+  ([payment flows](service-topology.md#allowing-only-required-service-flows)).
 - [ ] Tor mode: payment-host Tor egress and blocked direct fallback have been
   checked at the actual daemon network boundary. Only after those checks is
   `ESCROW_XMR_TOR_RELAY=remote-tor` declared. The application cannot verify the

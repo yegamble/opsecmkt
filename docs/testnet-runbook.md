@@ -1,6 +1,6 @@
 # Monero test-network payments runbook
 
-This runbook covers Monero escrow on a local fakechain or stagenet. Mainnet is the installer's default for local nodes and moves real funds; no mainnet run is recorded. Use `--monero-network stagenet` for rehearsal. Escrow is custodial and off by default. See [Enabling Monero payments](install/enable-payments.md).
+This runbook covers Monero escrow on a local fakechain or stagenet. Mainnet moves real funds and is the legacy `scripts/install.sh` default for local nodes (native `opsecmkt deploy init` defaults to stagenet); no real-funds mainnet transaction is recorded. Use `--monero-network stagenet` for rehearsal. Escrow is custodial and off by default. See [Enabling Monero payments](install/enable-payments.md).
 
 ## Back up and restore Monero escrow wallets
 
@@ -12,7 +12,7 @@ The [operator guide](operator-guide.md#monero-escrow) describes monthly wallets,
 
 ## Reconcile a restored database before enabling payouts
 
-`scripts/restore.sh` sets `payments_recovery_required`, holds restored settlements with a stored transaction and retires free accounts. Checkout waits for the watcher to inspect wallets, including wallets created after the backup. Preserve these guards until the records, daemon and wallet agree.
+`scripts/restore.sh` sets `payments_recovery_required`, holds restored settlements with a stored transaction and retires free accounts. Checkout waits for the watcher to inspect wallets, including wallets created after the backup. Preserve these guards until the records, daemon and wallet agree. A restore made any other way (a provider point-in-time recovery or snapshot, or a manual `pg_restore`) has none of them until you apply the protection in [UPGRADING.md section 6](../UPGRADING.md#6-backups-now-need-the-wallets-too) before the application starts.
 
 Run Compose commands from the deployment directory with its restored `.env`. Preserve `COMPOSE_FILE` and every entry in `COMPOSE_PROFILES`; a deployment with an onion mirror must keep `mirror` in that list.
 
@@ -22,7 +22,7 @@ Run Compose commands from the deployment directory with its restored `.env`. Pre
 4. Start only the daemon, wallet-rpc and app on their pinned network. Keep the public Tor gateways or clearnet proxy stopped; use the protected administrator connection for reconciliation.
 5. Wait for the Monero wallet sweep. Admin shows wallets missing from disk and settlements held for review. An unresolved wallet or balance remains a recovery blocker.
 6. For every held settlement, check its transaction and key images in the daemon and its transfer history in the wallet. Admin's password-confirmed relay check sends the stored transaction unchanged; it never builds a replacement after an ambiguous send.
-7. Check orders funded or settled after the backup, compare balances and transaction history, and make another encrypted backup of the reconciled state.
+7. Check orders funded or settled after the backup, compare balances and transaction history, and make another encrypted backup of the reconciled state. Re-check the Admin settings against your operator record: the restore rolls back every setting saved after the backup or recovery point, such as **New escrow checkouts**, site access and registrations. The fee address and rate (`ESCROW_XMR_FEE_ADDRESS`, `ESCROW_XMR_FEE_BPS`) are host configuration, so a database restore does not roll them back; confirm the host values instead.
 8. Stop the app before clearing the recovery gate below, then start only the app again and verify Admin readiness. Clearing the gate asserts that reconciliation is complete; it does not discover missing obligations or release individual holds.
 9. Once reconciliation and readiness checks pass, run `docker compose up -d` with the preserved profiles to restart public Tor ingress and the enabled mirror. On mirror deployments, check `docker compose ps tor-mirror` and confirm its saved onion address answers. On clearnet deployments, reopen the reverse proxy after these checks.
 
