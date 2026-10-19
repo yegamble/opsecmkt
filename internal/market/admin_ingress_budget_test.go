@@ -375,7 +375,7 @@ func TestFullPublicLimiterTableRefusesNoAdminIngressStep(t *testing.T) {
 	e := newTestApp(t)
 	e.A.adminSocket = "/run/market-admin/http.sock"
 	id, _ := e.user("table_admin", "admin")
-	key, _ := agEnableTOTP(e, id)
+	agEnableTOTP(e, id)
 	e.user("table_buyer", "buyer")
 	until := time.Now().Add(10 * time.Minute)
 	e.A.mu.Lock()
@@ -391,12 +391,18 @@ func TestFullPublicLimiterTableRefusesNoAdminIngressStep(t *testing.T) {
 	if w.Code != 303 || pending == "" {
 		t.Fatalf("private password step: %d %q", w.Code, w.Body.String())
 	}
-	w = ingressDo(e, true, "POST", "/challenge", randomToken(), url.Values{"method": {"totp"}, "code": {agTOTPNow(key)}}, &http.Cookie{Name: "pending", Value: pending})
+	code, _ := e.totpCodeFor(id, -1)
+	w = ingressDo(e, true, "POST", "/challenge", randomToken(), url.Values{"method": {"totp"}, "code": {code}}, &http.Cookie{Name: "pending", Value: pending})
 	session := e.cookie(w, "session")
 	if w.Code != 303 || session == "" {
 		t.Fatalf("private /challenge: %d %q", w.Code, w.Body.String())
 	}
-	code, _ := e.totpCodeFor(id, 1)
+	// TOTP management (totp:) and a password-confirmed change (confirm:), each with its code.
+	code, _ = e.totpCodeFor(id, 0)
+	if w = ingressDo(e, true, "POST", "/totp/recovery", session, url.Values{"code": {code}, "password": {testPassword}}); w.Code != 303 {
+		t.Fatalf("private recovery-code replacement: %d %q", w.Code, refusalText(w.Body.String()))
+	}
+	code, _ = e.totpCodeFor(id, 1)
 	if w = ingressDo(e, true, "POST", "/account/password", session, pwForm(testPassword, testPassword+"-changed", "code", code)); w.Code != 303 {
 		t.Fatalf("private password change: %d %q", w.Code, w.Body.String())
 	}
@@ -405,5 +411,90 @@ func TestFullPublicLimiterTableRefusesNoAdminIngressStep(t *testing.T) {
 	e.A.mu.Unlock()
 	if public != 4096 {
 		t.Fatalf("private steps wrote to the public table: %d entries", public)
+	}
+}
+
+// fillPublicLimiter fills the public limiter table with blocking entries, so it refuses every new public key.
+func fillPublicLimiter(e *testEnv) {
+	until := time.Now().Add(10 * time.Minute)
+	e.A.mu.Lock()
+	defer e.A.mu.Unlock()
+	for i := range 4096 {
+		e.A.limits["challenge:junk_"+strconv.Itoa(i)] = bucket{Count: 10, Limit: 10, Until: until}
+	}
+}
+
+// A PGP-only administrator's sign-in code and key-ownership steps through the private ingress use its namespace
+// too (pgp-login:, pgp-challenge:, pgp-verify:), so a saturated public table refuses none of them.
+func TestFullPublicLimiterTableRefusesNoAdminIngressPGPStep(t *testing.T) {
+	e := newTestApp(t)
+	e.A.adminSocket = "/run/market-admin/http.sock"
+	id, _ := e.user("pgp_admin", "admin")
+	_, pub := testPGPKey(t, "pgp_admin")
+	agEnablePGP(e, id, pub)
+	fillPublicLimiter(e)
+	w := ingressDo(e, true, "POST", "/login", randomToken(), url.Values{"handle": {"pgp_admin"}, "password": {testPassword}})
+	pending := &http.Cookie{Name: "pending", Value: e.cookie(w, "pending")}
+	if w.Code != 303 || pending.Value == "" {
+		t.Fatalf("private password step: %d %q", w.Code, refusalText(w.Body.String()))
+	}
+	if w = ingressDo(e, true, "POST", "/challenge/pgp", randomToken(), nil, pending); w.Code != 303 {
+		t.Fatalf("private PGP sign-in code with the public table full: %d %q", w.Code, refusalText(w.Body.String()))
+	}
+	if agStr(e, "SELECT coalesce(pgp_challenge,'') FROM pending_logins WHERE token_hash=$1", digest(pending.Value)) == "" {
+		t.Fatal("no PGP sign-in code was encrypted")
+	}
+	session := agSession(e, id)
+	if w = ingressDo(e, true, "POST", "/pgp/challenge", session, url.Values{"kind": {"sign"}}); w.Code != 303 {
+		t.Fatalf("private PGP ownership challenge with the public table full: %d %q", w.Code, refusalText(w.Body.String()))
+	}
+	if w = ingressDo(e, true, "POST", "/pgp/verify", session, url.Values{"signature": {"not a signature"}}); w.Code != 400 || !strings.Contains(refusalText(w.Body.String()), "Not verified") {
+		t.Fatalf("private PGP proof with the public table full: %d %q", w.Code, refusalText(w.Body.String()))
+	}
+	e.A.mu.Lock()
+	public := len(e.A.limits)
+	e.A.mu.Unlock()
+	if public != 4096 {
+		t.Fatalf("private PGP steps wrote to the public table: %d entries", public)
+	}
+}
+
+// A-159(a) through the private ingress: the public listener has spent the handle's sign-in budget and the
+// account's code budget, and the private ingress's sign-in budget is spent too; the sole administrator's rescue on
+// the private onion charges only the private code budget and signs in.
+func TestSoleAdminRescueThroughAdminIngress(t *testing.T) {
+	e := newTestApp(t)
+	e.A.adminSocket = "/run/market-admin/http.sock"
+	id, _ := e.user("rescue_onion", "admin")
+	agEnableTOTP(e, id)
+	login := func(private bool, password, code string) *httptest.ResponseRecorder {
+		return ingressDo(e, private, "POST", "/login", randomToken(), url.Values{"handle": {"rescue_onion"}, "password": {password}, "rescue_code": {code}})
+	}
+	wrong := e.wrongTOTP(id)
+	for i := range 10 {
+		if w := login(false, "wrong-password-"+string(rune('a'+i)), ""); w.Code != 401 {
+			t.Fatalf("public wrong password: %d", w.Code)
+		}
+	}
+	for range 10 {
+		if w := login(false, "wrong-password-z", wrong); w.Code != 401 {
+			t.Fatalf("public rescue guess: %d", w.Code)
+		}
+	}
+	for i := range 10 {
+		if w := login(true, "wrong-password-"+string(rune('a'+i)), ""); w.Code != 401 {
+			t.Fatalf("private wrong password: %d", w.Code)
+		}
+	}
+	if !e.A.limited("totp-verify:"+id, 10) || !e.A.limited("adm:"+signInKey("rescue_onion"), 10) || e.A.limited("adm:totp-verify:"+id, 1) {
+		t.Fatal("budgets not in the expected state before the rescue")
+	}
+	code, _ := e.totpCodeFor(id, 0)
+	w := login(true, testPassword, code)
+	if w.Code != 303 || e.cookie(w, "session") == "" {
+		t.Fatalf("private sole-administrator rescue: %d %q", w.Code, refusalText(w.Body.String()))
+	}
+	if !e.A.limited("adm:totp-verify:"+id, 1) || e.A.limited("adm:totp-verify:"+id, 2) || e.A.limited("totp-verify:"+id, 11) {
+		t.Fatal("the private rescue did not charge exactly one private code attempt")
 	}
 }

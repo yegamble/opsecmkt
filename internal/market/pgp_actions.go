@@ -324,7 +324,7 @@ func pgpChallengeAction(c *actionCtx) (actionResult, error) {
 	if kind != "sign" && kind != "decrypt" {
 		return actionResult{}, fail(400, "Choose to sign a text or to decrypt a message")
 	}
-	if !c.A.allow("pgp-challenge:"+u.ID, 20) {
+	if !c.A.allow(ingressKey(ctx, "pgp-challenge:"+u.ID), 20) {
 		return actionResult{}, fail(429, "Too many challenges. Try again in ten minutes.")
 	}
 	p, err := loadPGPAccount(ctx, tx, u.ID, true)
@@ -374,7 +374,7 @@ func checkSignedProof(challenge, submission string, key *openpgp.Entity) error {
 
 func pgpVerifyAction(c *actionCtx) (actionResult, error) {
 	ctx, tx, u := c.Ctx(), c.Tx, c.User
-	if !c.A.allow("pgp-verify:"+u.ID, 10) {
+	if !c.A.allow(ingressKey(ctx, "pgp-verify:"+u.ID), 10) {
 		return actionResult{}, fail(429, "Too many attempts. Try again in ten minutes.")
 	}
 	p, err := loadPGPAccount(ctx, tx, u.ID, true)
