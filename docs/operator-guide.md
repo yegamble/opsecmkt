@@ -655,7 +655,7 @@ current one is marked for screen readers). Where this guide says
 | Section | Address | Panels |
 |---|---|---|
 | Overview | `/admin` | Staff attention, *Get your marketplace ready*, section links |
-| Users | `/admin/users` | *Assign an account role* (with *Newest accounts*), *Reset a user's second factors*, *Suspend or restore an account*, *Ban or unban an account*, *Staff roster* |
+| Users | `/admin/users` | *User directory* (each account's page at `/admin/users?handle=`), *Assign an account role*, *Reset a user's second factors*, *Suspend or restore an account*, *Ban or unban an account*, *Staff roster* |
 | Vendors | `/admin/vendors` | *Vendor applications*: vendor policy, open applications awaiting a bond or decision, verified-vendor mark |
 | Payments | `/admin/payments` | *Escrow status and payment intake*: Monero escrow alerts, *Monero escrow watcher health*, release deadline, *Monero escrow recovery and retention*, *New escrow checkouts*, *Escrow readiness* |
 | Security & access | `/admin/security` | *Site access and registration*, *Sign-in protection* (CAPTCHA), *Handles with paused sign-in* |
@@ -721,6 +721,49 @@ after each pass, so every app process shows the same state and a restart or
 redeploy keeps it. The overview flags the Payments section while the last pass
 failed, the record is stale or wallet creation is stopped, and the 10-minute
 provider outage notice points here instead of to the server logs.
+
+### User directory
+
+*Admin → Users* starts with the **User directory** (A-545): search for any part of
+a handle, in upper or lower case (`%` and `_` are matched as typed, not as
+wildcards), and filter by role (buyer, vendor, moderator, administrator), status
+(active, suspended, banned, closed or closing) and vendor state (applicant waiting
+for a bond, applicant waiting for approval, approved vendor, verified vendor). The
+newest accounts come first, 50 to a page, and every account is reachable through
+the page links, which keep the search. It replaces the old *Newest accounts* list;
+*Assign an account role* below still takes a handle typed exactly.
+
+Select a handle to open the account's page, `/admin/users?handle=HANDLE` (the
+handle exactly, case-sensitive). It shows only what the market already stores for
+other reasons: the role and status; the account's creation date; when it was
+suspended and by which administrator (from the audit trail), or banned, by whom
+and the ban reason (administrators only); retention state (closure requested,
+restricted or closed); whether TOTP and PGP sign-in are on, and the saved PGP key's
+fingerprint and verification date, never a secret; the latest vendor application
+with its bond; the verified-vendor mark and who set it; active and archived listing
+counts; order counts by state as buyer and as vendor; and disputes opened by and
+against the account, still open, released to the vendor or refunded to the buyer.
+It shows no sign-in times, network addresses or page visits, and the market does not
+collect them for it.
+
+The page carries the account's actions, each the same form as elsewhere with the
+same password confirmation, audit rows and notices, returning to the account's
+page: suspend or restore, ban or lift the ban (with a reason), reset second factors,
+change the role (buyer, vendor approved at once, or moderator), open a vendor
+application on the account's behalf, record the bond, waive it, approve or reject an
+open application, and set or remove the verified-vendor mark. When you open an
+application you choose where it starts, whatever the vendor policy's approval mode
+(owner decision 2026-10-19): *waiting for the bond* asks for the policy's current
+bond (offered only while the policy sets one; set it under *Vendors* first), and
+*waiting for approval* asks for no bond. It is never approved on this path, even
+under automatic approval: after the bond is recorded it waits for your approval like
+a manually approved application, so you can always hold an account at "not approved
+yet". It is not offered for a suspended account (restore it first; the form is
+refused with 409 and nothing is stored) or a banned, closed or closing one.
+**Message user** opens `/messages?to=HANDLE` (staff may message any account except
+a banned one; it is not shown for a banned or closed account). Your own account and other
+administrators' pages show the details only: administrators are managed on the host
+([Administrators](#administrators)).
 
 ### Site access and registration
 
@@ -881,7 +924,7 @@ Second-factor secrets are encrypted with a key derived from `APP_SECRET_KEY` (on
 
 ### Administrators
 
-The web page never adds, removes or changes an administrator: *Admin → Assign an account role* offers only buyer, vendor and moderator and refuses administrators' handles, and suspension, the ban and the second-factor reset refuse administrators too. Administrators are managed from the host with `-set-role`, by an operator in the deployment directory (with its `.env`). Replace `HANDLE` (exact and case-sensitive) and `ROLE` (`buyer`, `vendor`, `moderator` or `admin`):
+The web page never adds, removes or changes an administrator: *Admin → Assign an account role* and the role form on an account's page in the *User directory* offer only buyer, vendor and moderator and refuse administrators' handles, and suspension, the ban and the second-factor reset refuse administrators too. Administrators are managed from the host with `-set-role`, by an operator in the deployment directory (with its `.env`). Replace `HANDLE` (exact and case-sensitive) and `ROLE` (`buyer`, `vendor`, `moderator` or `admin`):
 
 ```sh
 docker compose run --rm app -set-role HANDLE ROLE

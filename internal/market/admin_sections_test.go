@@ -19,7 +19,7 @@ var adminSectionPaths = []string{"/admin", "/admin/users", "/admin/vendors", "/a
 // (dependency report, retention, Monero escrow) must still appear on no other page.
 var adminPanelSection = map[string]string{
 	"getting-started": "/admin", "admin-sections": "/admin",
-	"assign-role": "/admin/users", "reset-factors": "/admin/users", "suspend": "/admin/users", "ban": "/admin/users", "staff-roster": "/admin/users",
+	"user-directory": "/admin/users", "assign-role": "/admin/users", "reset-factors": "/admin/users", "suspend": "/admin/users", "ban": "/admin/users", "staff-roster": "/admin/users",
 	"vendors": "/admin/vendors", "vendor-policy": "/admin/vendors", "vendor-queue": "/admin/vendors", "vendor-verified": "/admin/vendors",
 	"payment-providers": "/admin/payments", "xmr-escrow-node": "/admin/payments", "escrow-release-days": "/admin/payments",
 	"xmr-escrow-recovery": "/admin/payments", "payment-intake": "/admin/payments", "escrow-readiness": "/admin/payments",
@@ -83,7 +83,7 @@ func TestAdminSectionsPreview(t *testing.T) {
 		}
 		bodies[path] = w.Body.String()
 	}
-	checkAdminSectionPages(t, bodies, []string{"getting-started", "admin-sections", "assign-role", "reset-factors", "suspend", "ban", "staff-roster",
+	checkAdminSectionPages(t, bodies, []string{"getting-started", "admin-sections", "user-directory", "assign-role", "reset-factors", "suspend", "ban", "staff-roster",
 		"vendors", "vendor-policy", "vendor-queue", "vendor-verified", "payment-providers", "payment-intake", "escrow-readiness", "access", "sign-in-protection", "paused-handles-heading",
 		"branding", "staff-contact", "transparency", "operator-key-title", "canary-admin-title", "audit-export-title", "staff-list",
 		"host-control", "image-scanner", "recent-server-errors", "audit-trail"})
@@ -112,7 +112,7 @@ func TestAdminSections(t *testing.T) {
 	for _, path := range adminSectionPaths {
 		bodies[path] = e.body("GET", path, admin, nil, 200)
 	}
-	checkAdminSectionPages(t, bodies, []string{"getting-started", "admin-sections", "assign-role", "reset-factors", "suspend", "ban", "staff-roster",
+	checkAdminSectionPages(t, bodies, []string{"getting-started", "admin-sections", "user-directory", "assign-role", "reset-factors", "suspend", "ban", "staff-roster",
 		"vendors", "vendor-policy", "vendor-queue", "vendor-verified", "payment-providers", "payment-intake", "escrow-readiness", "access", "sign-in-protection", "paused-handles-heading",
 		"branding", "staff-contact", "transparency", "operator-key-title", "canary-admin-title", "audit-export-title", "staff-list",
 		"dependency-status", "host-control", "image-scanner", "retention", "recent-server-errors", "audit-trail"})
@@ -229,6 +229,10 @@ func TestAdminActionRedirectsToSection(t *testing.T) {
 		{"/admin/operator-key", url.Values{"operator_key": {operatorPub}}, "/admin/transparency#transparency"},
 		{"/admin/vendor-applications", url.Values{"id": {application}, "action": {"approve"}}, "/admin/vendors#vendors"},
 		{"/admin/vendor-verify", url.Values{"action": {"verify"}, "handle": {"redirect_vendor"}}, "/admin/vendors#vendors"},
+		// A-545: posted from an account's page in the user directory (from=user), every account form returns there.
+		{"/admin", url.Values{"action": {"role"}, "handle": {"redirect_role"}, "role": {"buyer"}, "from": {"user"}}, "/admin/users?handle=redirect_role"},
+		{"/admin/vendor-apply", url.Values{"handle": {"redirect_role"}, "start": {"awaiting_approval"}}, "/admin/users?handle=redirect_role#vendors"},
+		{"/admin/suspend", url.Values{"action": {"restore"}, "handle": {"redirect_suspend"}, "from": {"user"}}, "/admin/users?handle=redirect_suspend#suspend"},
 		{"/admin/vendor-policy", url.Values{"vendor_bond_xmr": {"0.1"}, "vendor_approval": {"manual"}}, "/admin/vendors#vendors"},
 		{"/admin/retention/hold", hold, "/admin/system#retention"},
 		{"/admin/retention/review", url.Values{"order_id": {order}}, "/admin/system#retention"},

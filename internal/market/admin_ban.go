@@ -174,7 +174,7 @@ func adminBanAction(c *actionCtx) (actionResult, error) {
 			if err = notifyActiveCounterparties(ctx, tx, target, handle, status); err != nil {
 				return actionResult{}, err
 			}
-			return actionResult{Redirect: "/admin/users", Notice: "unbanned", Audit: "Lifted the ban on " + handle + ": " + said + summary}, nil
+			return actionResult{Redirect: adminUserBack(c, handle, "/admin/users"), Notice: "unbanned", Audit: "Lifted the ban on " + handle + ": " + said + summary}, nil
 		}
 		switch {
 		case banned:
@@ -246,6 +246,6 @@ func adminBanAction(c *actionCtx) (actionResult, error) {
 		if err = notifyActiveCounterparties(ctx, tx, target, handle, accountClosedStatus); err != nil {
 			return actionResult{}, err
 		}
-		return actionResult{Redirect: "/admin/users", Notice: "banned", Audit: "Banned account " + handle + ": " + said + summary}, nil
+		return actionResult{Redirect: adminUserBack(c, handle, "/admin/users"), Notice: "banned", Audit: "Banned account " + handle + ": " + said + summary}, nil
 	})
 }

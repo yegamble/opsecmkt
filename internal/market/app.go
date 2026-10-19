@@ -800,6 +800,10 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			previewGatewayScanner(&d, q.Get("scanner"))
 			previewStatusPanels(&d, q.Get("status"))
 		}
+		if d.AdminSection == "users" && q.Get("handle") != "" && !previewAdminUser(&d, q.Get("handle")) {
+			a.refuse(w, r, user, 404, pageNotFound)
+			return
+		}
 		objectTitle(&d)
 		a.render(w, r, d)
 		return
@@ -936,6 +940,8 @@ func objectTitle(d *PageData) {
 		d.Title = "Order " + shortID(d.Order.ID) + " – " + d.Order.Title
 	case d.Page == "vendor" && len(d.Users) == 1:
 		d.Title = "Vendor " + d.Users[0].Handle
+	case d.Page == "admin" && d.AdminUser != nil:
+		d.Title = "Account " + d.AdminUser.Handle + " – " + d.Title
 	}
 }
 
@@ -944,6 +950,9 @@ func (a *App) pageData(r *http.Request, page, token string, user *User) PageData
 	title := pageTitle(page)
 	page, section := adminSectionPage(page)
 	d := PageData{Page: page, AdminSection: section, Title: title, CSRF: a.csrf(token), User: user, Mode: a.mode, Query: r.URL.Query().Get("q"), Category: r.URL.Query().Get("category"), Region: r.URL.Query().Get("region"), Currency: "XMR", Settings: map[string]string{}}
+	if section == "users" {
+		d.AdminUserHandle = cleanParam(r.URL.Query().Get("handle"), 64) // A-545: an account's page in the directory
+	}
 	d.Access = requestSiteAccess(r)
 	if d.Access == nil && !a.preview {
 		d.Access = siteAccessFromSettings(nil)

@@ -15,7 +15,7 @@ type AdminSection struct{ Slug, Name, Summary string }
 
 var adminSections = []AdminSection{
 	{"", "Overview", "Staff attention, the setup checklist and links to every section."},
-	{"users", "Users", "Account roles, second-factor resets, suspensions and the staff roster."},
+	{"users", "Users", "The user directory with each account's details, roles, second-factor resets, suspensions, bans and the staff roster."},
 	{"vendors", "Vendors", "Vendor policy, the application queue and the verified-vendor mark."},
 	{"payments", "Payments", "Monero escrow status, release deadline, the market fee (read-only), recovery and new escrow checkouts."},
 	{"security", "Security & access", "Site access, registrations, the sign-in CAPTCHA and paused sign-ins."},
@@ -149,6 +149,9 @@ func (d PageData) AdminNav() []AdminNavLink {
 // noticePage is the page name a notice's pages list matches: "admin/<slug>" on an administration section.
 func (d PageData) noticePage() string {
 	if d.Page == "admin" && d.AdminSection != "" {
+		if d.AdminUserHandle != "" {
+			return "admin/user" // an account's page in the user directory (A-545)
+		}
 		return "admin/" + d.AdminSection
 	}
 	return d.Page
