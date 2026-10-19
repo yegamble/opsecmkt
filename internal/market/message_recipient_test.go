@@ -35,6 +35,8 @@ func TestMessageRecipientEnforcement(t *testing.T) {
 	unusableID, _ := e.user("enforce_unusable", "vendor")
 	e.setKey(keyedID, alicePub)
 	e.setKey(unusableID, testUnusableKeys(t, "enforce_unusable")["signing-only key"])
+	unreadableID, _ := e.user("enforce_unreadable", "vendor")
+	agExec(e, "UPDATE users SET pgp=$1 WHERE id=$2", "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nbm90IGEga2V5\n-----END PGP PUBLIC KEY BLOCK-----", unreadableID)
 
 	toAlice, err := encryptTo(alice, "for alice")
 	if err != nil {
@@ -47,6 +49,7 @@ func TestMessageRecipientEnforcement(t *testing.T) {
 	toBoth := encryptToRecipients(t, "for alice and bob", alice, bob)
 	hidden := hideRecipientIDs(t, toAlice, alice)
 	bobAndHidden := hideRecipientIDs(t, encryptToRecipients(t, "bob visible, alice hidden", bob, alice), alice, alice.PrimaryKey.KeyId, alice.Subkeys[0].PublicKey.KeyId)
+	aliceAndHidden := hideRecipientIDs(t, encryptToRecipients(t, "alice visible, bob hidden", alice, bob), bob, bob.PrimaryKey.KeyId, bob.Subkeys[0].PublicKey.KeyId)
 	passphrase := symmetricMessage(t, "passphrase only")
 
 	fingerprint := formatFingerprint(alicePrint)
@@ -65,6 +68,7 @@ func TestMessageRecipientEnforcement(t *testing.T) {
 		{"no key saved", sender, "enforce_nokey", toAlice, false, 409, "enforce_nokey has not saved a PGP public key", ""},
 		{"no key saved, from staff", moderator, "enforce_nokey", toAlice, false, 409, "Ask enforce_nokey to add a public key that can receive encrypted messages", ""},
 		{"no usable key", sender, "enforce_unusable", toAlice, false, 409, "enforce_unusable’s saved PGP key cannot receive encrypted messages", ""},
+		{"unreadable saved key", sender, "enforce_unreadable", toAlice, false, 409, "enforce_unreadable’s saved PGP key can no longer be read", ""},
 		{"no usable key, confirmation ticked", sender, "enforce_unusable", hidden, true, 409, "cannot receive encrypted messages", ""},
 		{"passphrase only", sender, "enforce_keyed", passphrase, false, 400, "encrypted with a passphrase only", ""},
 		{"passphrase only, confirmation ticked", sender, "enforce_keyed", passphrase, true, 400, toKey, ""},
@@ -75,6 +79,7 @@ func TestMessageRecipientEnforcement(t *testing.T) {
 		{"hidden recipients, confirmed", sender, "enforce_keyed", hidden, true, 303, "", matchUnknown},
 		{"recipient's key", sender, "enforce_keyed", toAlice, false, 303, "", matchYes},
 		{"recipient's key and another", sender, "enforce_keyed", toBoth, false, 303, "", matchYes},
+		{"recipient's key and a hidden one", sender, "enforce_keyed", aliceAndHidden, false, 303, "", matchYes},
 		{"recipient's key, confirmation ticked", sender, "enforce_keyed", toAlice, true, 303, "", matchYes},
 	} {
 		form := url.Values{"recipient": {c.to}, "body": {c.body}}
@@ -131,46 +136,60 @@ func TestMessageRecipientEnforcement(t *testing.T) {
 	}
 	// The ordinary compose form has no confirmation box.
 	mustNotContain(t, e.body("GET", "/messages?to=enforce_keyed", sender, nil, 200), `name="hidden_recipients"`)
-	// A recipient without a usable key is named on the compose page, and no ciphertext box is offered.
+	// The compose page says when the recipient has no usable key; one with a key has no such note.
 	for _, to := range []string{"enforce_nokey", "enforce_unusable"} {
-		compose := e.body("GET", "/messages?to="+to, sender, nil, 200)
-		mustContain(t, compose, "Messages to "+to+" cannot be sent until they save a PGP public key that can receive encrypted messages.")
-		mustNotContain(t, compose, `<textarea name="body"`)
+		mustContain(t, e.body("GET", "/messages?to="+to, sender, nil, 200), "Messages to "+to+" cannot be sent until they save a PGP public key that can receive encrypted messages.")
 	}
+	mustNotContain(t, e.body("GET", "/messages?to=enforce_keyed", sender, nil, 200), "cannot be sent until")
 
 	// The sender's page shows the stored statuses after reload; nothing was stored for the refused recipients.
 	list := e.body("GET", "/messages", sender, nil, 200)
-	if n := strings.Count(list, "Encrypted (to recipient’s key)"); n != 3 {
+	if n := strings.Count(list, "Encrypted (to recipient’s key)"); n != 4 {
 		t.Fatalf("to-recipient badges: %d", n)
 	}
 	if n := strings.Count(list, "Encrypted (recipient unknown)"); n != 1 {
 		t.Fatalf("recipient-unknown badges: %d", n)
 	}
-	mustNotContain(t, list, "Encrypted (NOT to recipient’s key)", "enforce_sender → enforce_nokey", "enforce_sender → enforce_unusable")
+	mustNotContain(t, list, "Encrypted (NOT to recipient’s key)", "enforce_sender → enforce_nokey", "enforce_sender → enforce_unusable", "enforce_sender → enforce_unreadable")
 }
 
 // hideRecipientIDs rewrites armored so that its public-key session packets name a wildcard key ID, as
 // `gpg --throw-keyids` writes them; with ids, only the packets naming one of those key IDs are hidden. key must
-// still decrypt the result, which proves the rewrite left a real hidden-recipient message.
+// (when given) must still decrypt the result, which proves the rewrite left a real hidden-recipient message.
 func hideRecipientIDs(t *testing.T, armored string, key *openpgp.Entity, ids ...uint64) string {
 	t.Helper()
 	data := armorPackets(t, armored)
 	out := []byte(data)
 	for i := 0; i < len(out); {
 		tag := out[i]
-		if tag&0xc0 != 0xc0 {
-			t.Fatalf("hideRecipientIDs expects new-format packets, got tag byte %#x", tag)
+		if tag&0x80 == 0 {
+			t.Fatalf("hideRecipientIDs: not a packet header: %#x", tag)
 		}
-		typ, length := tag&0x3f, int(out[i+1])
-		hdr := 2
-		switch {
-		case length < 192:
-		case length < 224:
-			hdr, length = 3, (length-192)<<8+int(out[i+2])+192
-		case length == 255:
-			hdr, length = 6, int(binary.BigEndian.Uint32(out[i+2:]))
-		default:
-			t.Fatal("hideRecipientIDs: a partial-length session key packet")
+		var typ byte
+		var hdr, length int
+		if tag&0x40 != 0 { // new format (go-crypto)
+			typ, length, hdr = tag&0x3f, int(out[i+1]), 2
+			switch {
+			case length < 192:
+			case length < 224:
+				hdr, length = 3, (length-192)<<8+int(out[i+2])+192
+			case length == 255:
+				hdr, length = 6, int(binary.BigEndian.Uint32(out[i+2:]))
+			default:
+				t.Fatal("hideRecipientIDs: a partial-length packet")
+			}
+		} else { // old format (GnuPG)
+			typ = tag >> 2 & 0x0f
+			switch tag & 3 {
+			case 0:
+				hdr, length = 2, int(out[i+1])
+			case 1:
+				hdr, length = 3, int(binary.BigEndian.Uint16(out[i+1:]))
+			case 2:
+				hdr, length = 5, int(binary.BigEndian.Uint32(out[i+1:]))
+			default:
+				t.Fatal("hideRecipientIDs: an indeterminate-length packet")
+			}
 		}
 		if typ != 1 { // the encrypted data follows the session key packets
 			break
@@ -191,12 +210,17 @@ func hideRecipientIDs(t *testing.T, armored string, key *openpgp.Entity, ids ...
 	if err = w.Close(); err != nil {
 		t.Fatal(err)
 	}
-	md, err := openpgp.ReadMessage(bytes.NewReader(out), openpgp.EntityList{key}, nil, nil)
-	if err != nil {
-		t.Fatalf("hidden-recipient message does not decrypt: %v", err)
+	if key != nil {
+		md, err := openpgp.ReadMessage(bytes.NewReader(out), openpgp.EntityList{key}, nil, nil)
+		if err != nil {
+			t.Fatalf("hidden-recipient message does not decrypt: %v", err)
+		}
+		if _, err = io.ReadAll(md.UnverifiedBody); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if _, err = io.ReadAll(md.UnverifiedBody); err != nil {
-		t.Fatal(err)
+	if ids, encrypted, err := inspectEncrypted(buf.String()); err != nil || !encrypted || len(ids) == 0 {
+		t.Fatalf("rewritten message: ids=%v encrypted=%v err=%v", ids, encrypted, err)
 	}
 	return buf.String()
 }

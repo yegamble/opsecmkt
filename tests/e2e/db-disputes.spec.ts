@@ -41,6 +41,9 @@ test('the other party replies once and the desk names who holds encrypted eviden
         SELECT '${orderID}',id,'${productID}','XMR',100000,'shipped' FROM users WHERE handle='${buyerHandle}';`);
 
     seedRecordedMoneroEscrow(sql, orderID);
+    // The holder can receive encrypted evidence: it holds the recipient fixture key (A-569 refuses a recipient without
+    // a usable key). Saved directly, as the holder's own browser session plays no part here.
+    sql(`UPDATE users SET pgp='${pgpFixture('recipient.pub.asc').trim()}' WHERE handle='${holderHandle}'`);
 
     // The buyer opens the dispute from the order page (a <details> form, no script), with a two-line reason.
     expect((await buyer.goto(`/order?id=${orderID}`))?.status()).toBe(200);
@@ -50,7 +53,7 @@ test('the other party replies once and the desk names who holds encrypted eviden
     await submitAndLoad(buyer, buyer.getByRole('button', { name: 'Submit dispute' }));
     await expect(buyer).toHaveURL(/\/disputes$/);
     await expectNotice(buyer, 'Dispute opened.');
-    // Evidence to one staff member, encrypted (the fixture ciphertext; the holder has no key, so it is "recipient unknown").
+    // Evidence to one staff member, encrypted to the holder's key (the fixture ciphertext).
     await buyer.goto(`/messages?to=${holderHandle}`);
     await buyer.getByLabel('PGP encrypted message').fill(pgpFixture('message-to-recipient.asc'));
     await submitAndLoad(buyer, buyer.getByRole('button', { name: 'Send encrypted text ↗' }));
@@ -85,7 +88,7 @@ test('the other party replies once and the desk names who holds encrypted eviden
     await expect(reason).toHaveText('The parcel arrived empty.\nThe seal on the box was broken.');
     await expect(reason).toHaveCSS('white-space', 'pre-wrap');
     const field = vendor.getByLabel('Your reply to the dispute');
-    await expect(field).toHaveAccessibleDescription(/No independent moderator or administrator has a usable PGP key yet.*The administrator who decides this dispute reads your reply beside the buyer’s reason\..*Stored unencrypted\. The buyer reads it on this order.*Never include an address, real name or tracking number/);
+    await expect(field).toHaveAccessibleDescription(/Send evidence encrypted first: message an independent administrator listed under Contact dispute staff on this page\..*The administrator who decides this dispute reads your reply beside the buyer’s reason\..*Stored unencrypted\. The buyer reads it on this order.*Never include an address, real name or tracking number/);
     await expect(vendor.locator('#order-dispute').locator('..')).not.toContainText('The moderator who resolves');
     await fitsAndNoScripts(vendor, 'vendor order page with the reply form at 320 px');
     await field.fill('The parcel left sealed.\nThe courier photo shows the box intact.');

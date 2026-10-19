@@ -270,7 +270,7 @@ func TestMessageEncryptionStatus(t *testing.T) {
 	bob, bobPub := testPGPKey(t, "bob")
 	senderID, sender := e.user("msg_sender", "buyer")
 	aliceID, aliceSession := e.user("msg_alice", "vendor")
-	e.user("msg_nokey", "vendor")
+	nokeyID, _ := e.user("msg_nokey", "vendor")
 	e.check(e.do("POST", "/account", aliceSession, url.Values{"pgp": {alicePub}, "password": {testPassword}}), 303)
 
 	toAlice, _ := encryptTo(alice, "for alice")
@@ -293,9 +293,17 @@ func TestMessageEncryptionStatus(t *testing.T) {
 		e.check(e.do("POST", "/messages", sender, url.Values{"recipient": {to}, "body": {body}}), 303)
 	}
 	send("msg_alice", toAlice)
-	send("msg_alice", toBob)
 	send("msg_alice", toAliceAndBob)
-	send("msg_nokey", toBob)
+	// A-569: a message naming only other keys, and one to a recipient without a usable key, are refused. Rows a send
+	// stored with those statuses before then are inserted as it stored them, so their display is still checked.
+	e.check(e.do("POST", "/messages", sender, url.Values{"recipient": {"msg_alice"}, "body": {toBob}}), 400)
+	e.check(e.do("POST", "/messages", sender, url.Values{"recipient": {"msg_nokey"}, "body": {toBob}}), 409)
+	storedToBob, err := canonicalMessage(toBob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agExec(e, `INSERT INTO messages(id,sender_id,recipient_id,body,encrypted,recipient_match,recipient_extra_keys) VALUES($1,$2,$3,$4,true,'no',1),($5,$2,$6,$4,true,'unknown',NULL)`,
+		randomToken(), senderID, aliceID, storedToBob, randomToken(), nokeyID)
 	rows, err := e.DB.Query("SELECT u.handle,m.encrypted,m.recipient_match,m.recipient_extra_keys FROM messages m JOIN users u ON u.id=m.recipient_id WHERE m.sender_id=$1", senderID)
 	if err != nil {
 		t.Fatal(err)
@@ -328,7 +336,7 @@ func TestMessageEncryptionStatus(t *testing.T) {
 	if extraCounts[0] != 1 || extraCounts[1] != 2 || unknownExtraCount != 1 {
 		t.Fatalf("send-time extra-key counts=%v unknown=%d", extraCounts, unknownExtraCount)
 	}
-	if !e.auditExact(senderID, "Sent OpenPGP-encrypted message (recipient key match: no)") {
+	if !e.auditExact(senderID, "Sent OpenPGP-encrypted message (recipient key match: yes)") || e.auditExact(senderID, "Sent OpenPGP-encrypted message (recipient key match: no)") {
 		t.Fatal("audit")
 	}
 
@@ -548,13 +556,15 @@ func TestMessageArmorCanonicalised(t *testing.T) {
 	}
 	sent := map[string]string{} // recipient/match -> packets of the pasted message
 	for _, m := range []struct{ to, body, match string }{
-		{"canon_alice", crlf, "yes"},                  // CRLF, Version and Comment headers, two recipients
-		{"canon_carol", gpgFixtureMessage, "yes"},     // gpg output naming carol
-		{"canon_alice", gpgFixtureMessage, "unknown"}, // only a hidden recipient could be alice
+		{"canon_alice", crlf, "yes"},                                            // CRLF, Version and Comment headers, two recipients
+		{"canon_carol", gpgFixtureMessage, "yes"},                               // gpg output naming carol
+		{"canon_carol", hideRecipientIDs(t, gpgFixtureMessage, nil), "unknown"}, // the same with every recipient hidden, confirmed
 	} {
-		e.check(e.do("POST", "/messages", sender, url.Values{"recipient": {m.to}, "body": {m.body}}), 303)
+		e.check(e.do("POST", "/messages", sender, url.Values{"recipient": {m.to}, "body": {m.body}, "hidden_recipients": {"confirmed"}}), 303)
 		sent[m.to+"/"+m.match] = packets(m.body)
 	}
+	// A-569: gpg output naming carol and one hidden recipient is refused for alice; its visible key is not hers.
+	e.check(e.do("POST", "/messages", sender, url.Values{"recipient": {"canon_alice"}, "body": {gpgFixtureMessage}, "hidden_recipients": {"confirmed"}}), 400)
 	rows, err := e.DB.Query("SELECT u.handle,m.body,m.recipient_match FROM messages m JOIN users u ON u.id=m.recipient_id WHERE m.sender_id=$1 AND m.encrypted", senderID)
 	if err != nil {
 		t.Fatal(err)

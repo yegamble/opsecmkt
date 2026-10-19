@@ -59,6 +59,7 @@ func TestFormNonceRenderedWithoutGETWrites(t *testing.T) {
 	if first == renderedFormNonce(t, secondPage.Body.String(), "/listings") {
 		t.Fatal("two rendered listing forms shared a nonce")
 	}
+	e.usableKey(vendor)                                                     // and one with a usable key (A-569)
 	messages := e.do("GET", "/messages?to=nonce_vendor", buyerSession, nil) // a buyer's compose form needs a recipient (A-543)
 	e.check(messages, 200)
 	if first == renderedFormNonce(t, messages.Body.String(), "/messages") {
@@ -170,7 +171,8 @@ func TestFormNonceMessageAndOrderTransition(t *testing.T) {
 	e := newTestApp(t)
 	vendor, vendorSession := e.user("nonce_message_vendor", "vendor")
 	buyer, buyerSession := e.user("nonce_message_buyer", "buyer")
-	key, _ := testPGPKey(t, "nonce-recipient")
+	key, keyPub := testPGPKey(t, "nonce-recipient")
+	e.setKey(buyer, keyPub) // a message is refused unless its recipient can read it (A-569)
 	body, err := encryptTo(key, "one encrypted message")
 	if err != nil {
 		t.Fatal(err)
