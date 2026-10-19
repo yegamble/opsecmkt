@@ -37,7 +37,7 @@ test('save a PGP key, see its fingerprint unverified, and fail ownership proofs 
   await expect(page.locator('.pgp-summary')).toHaveCount(0);
 
   // The note above the key field says who can see it. Text around the block and armor headers are not kept.
-  await expect(page.locator('#pgp-visibility')).toHaveText('Shown to market staff, to every vendor or buyer you trade with and anyone you have messaged, to every signed-in account if you sell or are listed as market staff, and publicly on your vendor page if you sell — with its user IDs and creation date. Use a key made only for this market.');
+  await expect(page.locator('#pgp-visibility')).toHaveText('Shown to market staff, to every vendor or buyer you trade with and anyone you have messaged, to every signed-in account if you sell, appear on the public staff list or are named as the staff contact, to both parties of every disputed or resolved order if you are a moderator or administrator, and publicly on your vendor page if you sell — with its user IDs and creation date. Use a key made only for this market.');
   const withHeaders = 'Leading note\n' + pgpFixture('recipient.pub.asc').replace('-----BEGIN PGP PUBLIC KEY BLOCK-----\n', '-----BEGIN PGP PUBLIC KEY BLOCK-----\nComment: e2e header\n');
   expect(await saveKey(page, withHeaders, password)).toBe(303);
   await expect(page).toHaveURL(/\/account$/);

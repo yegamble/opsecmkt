@@ -175,7 +175,9 @@ func TestFormNonceMessageAndOrderTransition(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The two share an order, so the vendor may write to the buyer (A-543).
+	// An order awaiting payment is customer work the vendor sees, so it may write to the buyer (A-543); a draft
+	// alone would not do (QA543-1). The draft is the one cancelled below.
+	e.order(buyer, e.product(vendor, "digital"), "XMR", stateAwaitingPayment)
 	order := e.order(buyer, e.product(vendor, "digital"), "XMR", stateDraft)
 	message := url.Values{"recipient": {"nonce_message_buyer"}, "body": {body}, formNonceField: {randomToken()[:32]}}
 	first := e.do("POST", "/messages", vendorSession, message)

@@ -99,7 +99,9 @@ func activeVendorWhere(u string) string {
 // no such account or sender may not write to it (A-543, owner directive 2026-10-18). Moderators and administrators
 // write to anyone. Any other account writes only to:
 //   - an active vendor (activeVendorWhere), reached from "Message vendor" on the vendor and listing pages;
-//   - an order partner: the two accounts share an order, either way round (the order page links each other);
+//   - an order partner: a buyer writes to the vendor of any order it placed, drafts included; a vendor writes to a
+//     buyer only through an order its /orders list shows (vendorSeesOrder: not a draft, and not cancelled before
+//     checkout), so a saved or abandoned draft never hands the vendor the buyer's key (QA543-1);
 //   - an account that has sent it a message (the Reply link on a received message);
 //   - a current moderator or administrator it can see: one on the public staff list while it is shown
 //     (staffListLoader), the staff contact handle (staffContactLoader), or, for a party to a disputed or resolved
@@ -110,7 +112,7 @@ func messageRecipient(ctx context.Context, q rowQuerier, sender *User, handle st
 	var id string
 	err := q.QueryRowContext(ctx, `SELECT r.id FROM users r WHERE r.handle=$2 AND ($3::boolean
 		OR (`+activeVendorWhere("r")+`)
-		OR EXISTS(SELECT 1 FROM orders o JOIN products p ON p.id=o.product_id WHERE (o.buyer_id=$1 AND p.vendor_id=r.id) OR (o.buyer_id=r.id AND p.vendor_id=$1))
+		OR EXISTS(SELECT 1 FROM orders o JOIN products p ON p.id=o.product_id WHERE (o.buyer_id=$1 AND p.vendor_id=r.id) OR (o.buyer_id=r.id AND p.vendor_id=$1 AND `+vendorSeesOrder("o")+`))
 		OR EXISTS(SELECT 1 FROM messages m WHERE m.recipient_id=$1 AND m.sender_id=r.id)
 		OR (r.role IN ('moderator','admin') AND r.suspended_at IS NULL AND r.closed_at IS NULL AND r.retention_restricted_at IS NULL AND (
 			(NOT r.staff_hidden AND EXISTS(SELECT 1 FROM settings WHERE key=$4 AND value='true'))

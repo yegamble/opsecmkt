@@ -161,18 +161,98 @@ func TestMessageContactPolicyKeepsRetentionAndBudget(t *testing.T) {
 	}
 }
 
+// QA543-1: a vendor reaches a buyer only through an order its /orders list shows (vendorSeesOrder). A draft the buyer
+// saved, or one cancelled before checkout, is not customer work: the vendor's send is refused exactly as an unknown
+// handle is, and nothing is written. Once the order awaits payment, or a cancelled one had a payment, it may write.
+// The buyer's side is any order, drafts included.
+func TestMessageVendorToBuyerNeedsAVisibleOrder(t *testing.T) {
+	e := newTestApp(t)
+	buyerID, buyer := e.user("vis_buyer", "buyer")
+	vendorID, vendor := e.user("vis_vendor", "vendor")
+	key, _ := testPGPKey(t, "vis-recipient")
+	body, err := encryptTo(key, "visibility message")
+	if err != nil {
+		t.Fatal(err)
+	}
+	written := func() int {
+		return abuseCount(e, "SELECT count(*) FROM messages") + abuseCount(e, "SELECT count(*) FROM notifications") +
+			abuseCount(e, "SELECT count(*) FROM audit_events WHERE action LIKE 'Sent OpenPGP-encrypted message%'")
+	}
+	send := func(session, recipient string) *bytesResult {
+		t.Helper()
+		w := e.do("POST", "/messages", session, url.Values{"recipient": {recipient}, "body": {body}})
+		return &bytesResult{code: w.Code, body: w.Body.Bytes()}
+	}
+	refusedLikeUnknown := func(name string) {
+		t.Helper()
+		before := written()
+		forbidden, unknown := send(vendor, "vis_buyer"), send(vendor, "vis_nobody_xx")
+		if forbidden.code != 403 || forbidden.code != unknown.code || !bytes.Equal(forbidden.body, unknown.body) {
+			t.Fatalf("%s: forbidden %d and unknown %d refusals differ:\n%s", name, forbidden.code, unknown.code, forbidden.body)
+		}
+		if written() != before {
+			t.Fatalf("%s: a refused message wrote %d rows", name, written()-before)
+		}
+	}
+	draftOn := func(product string) string {
+		t.Helper()
+		w := e.do("POST", "/orders", buyer, url.Values{"product_id": {product}, "currency": {"XMR"}})
+		e.check(w, 303)
+		return strings.TrimPrefix(w.Header().Get("Location"), "/order?id=")
+	}
+
+	// Vendor to buyer with only a draft: refused.
+	first := draftOn(e.product(vendorID, "digital"))
+	if n := abuseCount(e, "SELECT count(*) FROM orders WHERE id=$1 AND state='draft' AND buyer_id=$2", first, buyerID); n != 1 {
+		t.Fatalf("POST /orders made %d drafts", n)
+	}
+	refusedLikeUnknown("vendor to buyer with only a draft")
+	// The buyer's side is any order: it may write to the vendor of its draft.
+	if r := send(buyer, "vis_vendor"); r.code != 303 {
+		t.Fatalf("buyer to the vendor of its draft: %d %s", r.code, r.body)
+	}
+	agExec(e, "DELETE FROM messages")
+	agExec(e, "DELETE FROM notifications")
+
+	// After the draft was cancelled before checkout: still refused.
+	e.check(e.do("POST", "/orders/cancel", buyer, url.Values{"order_id": {first}, "from": {stateDraft}}), 303)
+	if n := abuseCount(e, "SELECT count(*) FROM orders WHERE id=$1 AND state='cancelled'", first); n != 1 {
+		t.Fatal("the draft was not cancelled")
+	}
+	refusedLikeUnknown("after the draft was cancelled")
+
+	// Once an order awaits payment, the vendor sees it and may write.
+	e.order(buyerID, e.product(vendorID, "digital"), "XMR", stateAwaitingPayment)
+	if r := send(vendor, "vis_buyer"); r.code != 303 {
+		t.Fatalf("vendor to buyer once awaiting_payment: %d %s", r.code, r.body)
+	}
+
+	// A cancelled order that had a recorded payment is customer work too.
+	lateVendorID, otherVendor := e.user("vis_late_vendor", "vendor")
+	third := e.order(buyerID, e.product(lateVendorID, "digital"), "XMR", stateCancelled)
+	if r := send(otherVendor, "vis_buyer"); r.code != 403 {
+		t.Fatalf("late vendor through a cancelled order with no escrow or payment: %d", r.code)
+	}
+	agExec(e, "INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations) VALUES($1,'XMR',$2,0,'vis-address',100000,12)", third, strings.Repeat("ab", 32))
+	if r := send(otherVendor, "vis_buyer"); r.code != 303 {
+		t.Fatalf("vendor to buyer through a cancelled order with a payment: %d %s", r.code, r.body)
+	}
+}
+
 // GET /messages?to= loads a key only for a handle the viewer may message; an unknown handle and a forbidden one render
 // the same page apart from the handle itself, with no key and no fingerprint.
 func TestMessageRecipientKeyFollowsContactPolicy(t *testing.T) {
 	e := newTestApp(t)
 	_, viewer := e.user("policy_viewer", "buyer")
 	_, moderator := e.user("policy_key_mod", "moderator")
+	sessions, ids := map[string]string{}, map[string]string{}
 	for _, handle := range []string{"policy_key_vendor", "policy_key_buyer"} {
 		role := "vendor"
 		if handle == "policy_key_buyer" {
 			role = "buyer"
 		}
-		_, session := e.user(handle, role)
+		id, session := e.user(handle, role)
+		sessions[handle], ids[handle] = session, id
 		_, pub := testPGPKey(t, handle)
 		e.check(e.do("POST", "/account", session, url.Values{"pgp": {pub}, "password": {testPassword}}), 303)
 	}
@@ -190,6 +270,27 @@ func TestMessageRecipientKeyFollowsContactPolicy(t *testing.T) {
 	if strings.ReplaceAll(forbidden, "policy_key_buyer", "HANDLE") != strings.ReplaceAll(unknown, "policy_key_nobody", "HANDLE") {
 		t.Fatal("the forbidden and unknown lookups render differently")
 	}
+	// QA543-1: the vendor loads the buyer's key only through an order its /orders list shows. With only a draft
+	// (made through POST /orders), or after that draft was cancelled before checkout, the page is the unknown one.
+	vendorView := func() string {
+		t.Helper()
+		return strings.ReplaceAll(lookup(sessions["policy_key_vendor"], "policy_key_buyer"), "policy_key_buyer", "HANDLE")
+	}
+	vendorUnknown := strings.ReplaceAll(lookup(sessions["policy_key_vendor"], "policy_key_nobody"), "policy_key_nobody", "HANDLE")
+	w := e.do("POST", "/orders", sessions["policy_key_buyer"], url.Values{"product_id": {e.product(ids["policy_key_vendor"], "digital")}, "currency": {"XMR"}})
+	e.check(w, 303)
+	draft := strings.TrimPrefix(w.Header().Get("Location"), "/order?id=")
+	for _, step := range []string{"with only a draft", "after the draft was cancelled"} {
+		if step == "after the draft was cancelled" {
+			e.check(e.do("POST", "/orders/cancel", sessions["policy_key_buyer"], url.Values{"order_id": {draft}, "from": {stateDraft}}), 303)
+		}
+		if page := vendorView(); page != vendorUnknown {
+			t.Fatalf("vendor ?to= buyer %s differs from an unknown handle", step)
+		}
+	}
+	e.order(ids["policy_key_buyer"], e.product(ids["policy_key_vendor"], "digital"), "XMR", stateAwaitingPayment)
+	mustContain(t, lookup(sessions["policy_key_vendor"], "policy_key_buyer"), keyShown, armor, `name="recipient" value="policy_key_buyer"`)
+
 	// A non-staff page has no free handle search; staff keep one and load any account's key.
 	mustNotContain(t, lookup(viewer, "policy_key_vendor"), "Find a recipient", `name="to"`)
 	mustNotContain(t, e.body("GET", "/messages", viewer, nil, 200), "Find a recipient", `name="to"`, `name="recipient"`)
