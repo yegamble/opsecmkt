@@ -107,7 +107,7 @@ func NewUploadGateway(ctx context.Context, cfg UploadGatewayConfig) (http.Handle
 	}, Transport: proxyTransport, ErrorHandler: func(w http.ResponseWriter, r *http.Request, _ error) {
 		gatewayRefusal(w, http.StatusServiceUnavailable, "The market is temporarily unavailable. Try again later.")
 	}}
-	go g.scanner.run(ctx)
+	go g.run(ctx) // polls clamd and reports its state to the app (gateway_scanner_report.go)
 	go func() { <-ctx.Done(); tr.CloseIdleConnections(); proxyTransport.CloseIdleConnections() }()
 	return g, nil
 }
@@ -358,13 +358,6 @@ func (s *uploadTicketStore) take(key string) (uploadTicket, bool) {
 	return v, ok
 }
 
-func (a *App) uploadScannerState() scannerState {
-	if a.isolatedUploads {
-		return scannerState{Name: scannerReady}
-	}
-	return a.scanner.State()
-}
-
 // UploadBackendHandler must be bound on a separate tls.RequireAndVerifyClientCert
 // listener. Its own certificate check remains mandatory: public Host/headers can
 // never select this handler or impersonate the gateway.
@@ -392,6 +385,8 @@ func (a *App) UploadBackendHandler() http.Handler {
 			a.admitGatewayBranding(w, r)
 		case "/v1/uploads/branding-finish":
 			a.finishGatewayBranding(w, r)
+		case gatewayScannerReportPath:
+			a.receiveGatewayScannerReport(w, r)
 		default:
 			http.NotFound(w, r)
 		}

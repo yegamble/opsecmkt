@@ -95,7 +95,9 @@ func (d PageData) AdminSectionAlert(slug string) string {
 		if d.DependencyStatus != nil && d.DependencyStatus.NeedsAttention {
 			alerts = append(alerts, "Review required: service isolation or dependency status needs attention.")
 		}
-		if s := d.Scanner; s != nil && !s.External && !s.Disabled && (s.Stale || !s.Ready) {
+		if s := d.Scanner; s != nil && s.Unknown {
+			alerts = append(alerts, gatewayScannerUnknown+".")
+		} else if s != nil && !s.Disabled && (s.Stale || !s.Ready) {
 			alerts = append(alerts, "Photo uploads are paused by the image scanner.")
 		}
 		if r := d.Retention; r != nil && (r.MaintenanceError != "" || retentionReviewOverdue(r)) {

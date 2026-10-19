@@ -76,6 +76,10 @@ func uploadTestGateway(t *testing.T, e *testEnv, f *fakeClamd) *uploadGateway {
 	app := httptest.NewServer(e.A)
 	t.Cleanup(app.Close)
 	backend, tc := uploadTestBackend(t, e.A.UploadBackendHandler())
+	var started time.Time
+	if err := e.DB.QueryRow("SELECT clock_timestamp()").Scan(&started); err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	h, err := NewUploadGateway(ctx, UploadGatewayConfig{AppURL: app.URL, BackendURL: backend.URL, TLSConfig: tc, ClamdAddress: f.Addr})
@@ -83,6 +87,22 @@ func uploadTestGateway(t *testing.T, e *testEnv, f *fakeClamd) *uploadGateway {
 		t.Fatal(err)
 	}
 	g := h.(*uploadGateway)
+	// A-552: the gateway polls clamd and reports to e.A at once. Wait for that report to be stored, then stop the
+	// background poller and reporter, so a test that changes e.A afterwards (its database, for one) does not race
+	// it; tests poll (and report) explicitly.
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		var stored bool
+		if err := e.DB.QueryRow(`SELECT EXISTS(SELECT 1 FROM settings WHERE key=$1 AND (value::jsonb->>'received')::timestamptz>=$2)`, settingGatewayScanner, started).Scan(&stored); err != nil {
+			t.Fatal(err)
+		}
+		if stored {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the upload gateway sent no scanner report at start")
+		}
+	}
+	cancel()
 	g.scanner.poll(context.Background())
 	return g
 }
@@ -352,7 +372,8 @@ func TestIsolatedUploadModeStartsWithoutAppScanner(t *testing.T) {
 	}
 	_, admin := e.user("isolated_scanner_admin", "admin")
 	w := e.do("GET", "/admin/system", admin, nil)
-	if w.Code != 200 || !strings.Contains(w.Body.String(), "Separate upload gateway") || strings.Contains(w.Body.String(), "Photo uploads are off:") {
+	// A-552: until the gateway reports, the scanner state is unknown (never "off" or "Ready").
+	if w.Code != 200 || !strings.Contains(w.Body.String(), "The separate upload gateway receives original files") || !strings.Contains(w.Body.String(), gatewayScannerUnknown) || strings.Contains(w.Body.String(), "Photo uploads are off:") {
 		t.Fatalf("isolated admin scanner state: %d %s", w.Code, w.Body.String())
 	}
 }

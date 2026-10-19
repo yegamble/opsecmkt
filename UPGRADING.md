@@ -15,6 +15,18 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## Upload gateway scanner reports (A-552)
+
+With isolated uploads, the app now shows the upload gateway's scanner state and
+pauses its avatar and listing-photo forms until the gateway reports a ready
+scanner. Upgrade the gateway binary on the upload host together with the app: an
+older gateway sends no reports, so the forms stay paused (the panel says
+"Scanner status unknown — gateway not reporting") although that gateway still
+scans uploads. A new gateway in front of an older app logs that its reports are
+not delivered and otherwise works as before. No migration and no new setting:
+reports use the existing upload backend address and client certificate.
+Integrated (single-host) scanning is unchanged.
+
 ## Native production encryption prerequisite
 
 The native production controller now verifies guest-managed LUKS2 storage before

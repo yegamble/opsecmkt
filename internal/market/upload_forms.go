@@ -92,7 +92,11 @@ func loadPhotoPanel(ctx context.Context, a *App, _ *http.Request, d *PageData) e
 		return nil
 	}
 	v := &UploadsView{PhotoLimit: photosPerListing, Quota: strconv.FormatInt(uploaderQuota>>20, 10)}
-	uploadState(v, a.uploadScannerState())
+	st, err := a.uploadScannerState(ctx)
+	if err != nil {
+		return err
+	}
+	uploadState(v, st)
 	rows, err := a.db.QueryContext(ctx, `SELECT id,width,height,octet_length("full"),description FROM images WHERE product_id=$1 AND kind='photo' ORDER BY created,id`, d.Product.ID)
 	if err != nil {
 		return err
@@ -135,11 +139,15 @@ func loadPhotoPanel(ctx context.Context, a *App, _ *http.Request, d *PageData) e
 func loadAvatarPanel(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
 	role := d.User.Role
 	v := &UploadsView{AvatarForm: slices.Contains(uploadRoutes["/account/avatar"].roles, role), Staff: role == "admin" || role == "moderator"}
-	uploadState(v, a.uploadScannerState())
+	st, err := a.uploadScannerState(ctx)
+	if err != nil {
+		return err
+	}
+	uploadState(v, st)
 	v.Notice = strings.TrimSuffix(v.Notice, listingNoticeTail)
 	var id sql.NullString
 	var w, h, size sql.NullInt64
-	err := a.db.QueryRowContext(ctx, `SELECT i.id,i.width,i.height,octet_length(i."full"),u.staff_hidden FROM users u LEFT JOIN images i ON i.owner_user_id=u.id AND i.kind='avatar' WHERE u.id=$1`, d.User.ID).Scan(&id, &w, &h, &size, &v.StaffHidden)
+	err = a.db.QueryRowContext(ctx, `SELECT i.id,i.width,i.height,octet_length(i."full"),u.staff_hidden FROM users u LEFT JOIN images i ON i.owner_user_id=u.id AND i.kind='avatar' WHERE u.id=$1`, d.User.ID).Scan(&id, &w, &h, &size, &v.StaffHidden)
 	if err != nil {
 		return err
 	}
@@ -237,8 +245,9 @@ func staffListWord(hidden bool) string {
 }
 
 // previewUploads fills the read-only preview's upload panels (listing-edit and account): a sample in the Ready
-// state with no stored photos, or with ?scanner=off or ?scanner=paused the Disabled or Unavailable state, so the
-// preview shows each layout. The preview has no scanner; posting is refused like every preview post.
+// state with no stored photos, or with ?scanner=off or ?scanner=paused the Disabled or Unavailable state, or with
+// ?scanner=gateway the separated topology's paused state (no fresh gateway report, A-552), so the preview shows each
+// layout. The preview has no scanner; posting is refused like every preview post.
 func previewUploads(d *PageData, scanner string) {
 	st := scannerState{Name: scannerReady}
 	switch scanner {
@@ -246,6 +255,8 @@ func previewUploads(d *PageData, scanner string) {
 		st.Name = scannerDisabled
 	case "paused":
 		st.Name = scannerUnavailable
+	case "gateway":
+		st = gatewayScannerStatus{}.state()
 	}
 	v := &UploadsView{PhotoLimit: photosPerListing, Used: "0", Quota: strconv.FormatInt(uploaderQuota>>20, 10), AvatarForm: true}
 	uploadState(v, st)

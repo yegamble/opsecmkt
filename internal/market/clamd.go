@@ -174,11 +174,15 @@ type scannerState struct {
 	DailyDate          time.Time // zero when unreadable
 	AgeDays, LimitDays int
 	Checked, LastScan  time.Time // last poll; last clean scan in this process
+	gateway            bool      // from the upload gateway's report (A-552), not this process's clamd
 }
 
 // VendorNotice is the copy the upload forms show instead of (Disabled) or over (Unavailable, stale) the file
 // input; "" when Ready.
 func (s scannerState) VendorNotice() string {
+	if s.gateway && s.Name != scannerReady {
+		return gatewayPausedNotice
+	}
 	switch s.Name {
 	case scannerDisabled:
 		return "Photo uploads are off on this market: they require the ClamAV malware scanner, which the operator has not set up."
@@ -613,9 +617,12 @@ func (s *imageScanner) counts() scanCounts {
 	return c
 }
 
-// ScannerView is the System & audit section's Image scanner panel (/admin/system#image-scanner), built from the cached state.
+// ScannerView is the System & audit section's Image scanner panel (/admin/system#image-scanner), built from the cached
+// state, or in the separated topology from the upload gateway's latest report (gatewayScannerView).
 type ScannerView struct {
-	External                 bool   // isolated gateway owns scanner checks; local metrics do not apply
+	External                 bool   // the isolated gateway owns scanner checks and reports them (A-552)
+	Unknown                  bool   // External, and no report within gatewayScannerStaleAfter
+	Received                 string // External: when the latest report arrived, by the database's clock
 	State, Detail            string // "Signatures stale", "31 days, limit 30"
 	Disabled, Ready, Stale   bool
 	Engine, Daily, DailyDate string
@@ -630,7 +637,11 @@ func init() {
 	registerLoader("admin", func(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
 		v := scannerView(a.scanner.State(), a.scanner.counts())
 		if a.isolatedUploads {
-			v.External, v.Disabled, v.State = true, false, "Separate upload gateway"
+			g, err := a.gatewayScanner(ctx)
+			if err != nil {
+				return err
+			}
+			v = gatewayScannerView(g)
 		}
 		if err := a.db.QueryRowContext(ctx, "SELECT pg_size_pretty(pg_database_size(current_database()))").Scan(&v.DatabaseSize); err != nil {
 			return err
@@ -646,9 +657,12 @@ func init() {
 	})
 }
 
+// scannerStamp is the admin panel's time format.
+const scannerStamp = "2006-01-02 15:04 UTC"
+
 // scannerView renders st and the 24-hour counts for the admin panel.
 func scannerView(st scannerState, c scanCounts) *ScannerView {
-	const stamp = "2006-01-02 15:04 UTC"
+	const stamp = scannerStamp
 	v := &ScannerView{State: st.Name, Disabled: st.Name == scannerDisabled, Ready: st.Name == scannerReady, Stale: st.Name == scannerStale,
 		Engine: st.Engine, Daily: st.Daily, HasDate: !st.DailyDate.IsZero(), AgeDays: st.AgeDays, LimitDays: st.LimitDays, Counts: c}
 	if d := describeState(st); d != st.Name {
