@@ -108,6 +108,7 @@
 <option value="digital" {{if eq .KindFilter "digital"}}selected{{end}}>Digital only</option>
 </select></label>
 <input type="hidden" name="sort" value="{{.Sort}}">
+<label class="check"><input type="checkbox" name="in_stock" value="1" {{if .InStockOnly}}checked{{end}}> Hide out of stock</label>
 
 <label>Display currency<select name="currency">
 <option value="XMR" selected>Monero · XMR</option>
@@ -120,6 +121,6 @@
 </div>{{end}}
 
 {{/* Search and sort preserve all active catalog filters while starting again at page one. */}}
-{{define "catalog-filter-state"}}{{if .Category}}<input type="hidden" name="category" value="{{.Category}}">{{end}}{{if .Subcategory}}<input type="hidden" name="subcategory" value="{{.Subcategory}}">{{end}}{{if .Region}}<input type="hidden" name="region" value="{{.Region}}">{{end}}{{if .KindFilter}}<input type="hidden" name="kind" value="{{.KindFilter}}">{{end}}{{if .Sort}}<input type="hidden" name="sort" value="{{.Sort}}">{{end}}{{end}}
+{{define "catalog-filter-state"}}{{if .Category}}<input type="hidden" name="category" value="{{.Category}}">{{end}}{{if .Subcategory}}<input type="hidden" name="subcategory" value="{{.Subcategory}}">{{end}}{{if .Region}}<input type="hidden" name="region" value="{{.Region}}">{{end}}{{if .KindFilter}}<input type="hidden" name="kind" value="{{.KindFilter}}">{{end}}{{if .Sort}}<input type="hidden" name="sort" value="{{.Sort}}">{{end}}{{if .InStockOnly}}<input type="hidden" name="in_stock" value="1">{{end}}{{end}}
 {{define "listing-subcategory-options"}}<option value="">Not specified</option>{{range .CatalogCategories}}<optgroup label="{{.Name}}">{{range .Subcategories}}<option {{if and $.Product (eq $.Product.Subcategory .)}}selected{{end}}>{{.}}</option>{{end}}</optgroup>{{end}}{{end}}
 {{define "listing-shipping-options"}}<details class="additional-shipping"><summary>Additional shipping regions</summary><p class="help">Optional destinations in addition to Region. Worldwide includes every destination.</p><div class="shipping-checkboxes">{{range .ShippingRegions}}<label><input type="checkbox" name="shipping_regions" value="{{.}}" {{if and $.Product ($.Product.AdditionalShipping .)}}checked{{end}}> {{.}}</label>{{end}}</div></details>{{end}}

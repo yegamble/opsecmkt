@@ -43,7 +43,7 @@ test('edit, archive and restore a listing without client scripts', async ({ page
   await expect(page).toHaveURL(/\/vendor-dashboard$/);
   await expectNotice(page, 'Listing archived.');
   const card = page.locator('.product-card', { hasText: `${title} v2` });
-  await expect(card.locator('.badge')).toHaveText('Archived');
+  await expect(card.locator('.inventory-state .badge')).toHaveText('Archived');
 
   await page.goto(`/?q=${encodeURIComponent(title)}`);
   await expect(page.getByRole('heading', { name: 'No listings found' })).toBeVisible();

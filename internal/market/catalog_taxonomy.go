@@ -38,6 +38,9 @@ func validSubcategory(category, subcategory string) bool {
 
 func (d PageData) catalogValues() url.Values {
 	v := url.Values{}
+	if d.InStockOnly {
+		v.Set("in_stock", "1")
+	}
 	for k, x := range map[string]string{"q": d.Query, "category": d.Category, "subcategory": d.Subcategory, "region": d.Region, "kind": d.KindFilter, "sort": d.Sort} {
 		if x != "" && !(k == "sort" && x == "newest") {
 			v.Set(k, x)

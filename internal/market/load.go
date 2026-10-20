@@ -324,8 +324,8 @@ func (a *App) load(r *http.Request, d *PageData) error {
 			 AND ($3='' OR p.region=$3 OR $3=ANY(p.shipping_regions) OR p.region='Worldwide' OR 'Worldwide'=ANY(p.shipping_regions)
 			 OR ($3='North America' AND (p.region='United States' OR 'United States'=ANY(p.shipping_regions)))
 			 OR ($3='United States' AND (p.region='North America' OR 'North America'=ANY(p.shipping_regions))))
-			 AND ($5='' OR p.subcategory=$5) AND ($6='' OR p.kind=$6)`
-			args = append(args, d.Query, d.Category, d.Region, likePattern(d.Query), d.Subcategory, d.KindFilter)
+			 AND ($5='' OR p.subcategory=$5) AND ($6='' OR p.kind=$6) AND (NOT $7::boolean OR p.stock>0)`
+			args = append(args, d.Query, d.Category, d.Region, likePattern(d.Query), d.Subcategory, d.KindFilter, d.InStockOnly)
 			var total int
 			if err = a.db.QueryRowContext(ctx, `SELECT count(*) FROM products p WHERE true`+filter, args...).Scan(&total); err != nil {
 				return err

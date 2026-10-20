@@ -40,7 +40,7 @@ test('order messages and replacement delivery remain on the correct order',async
   await vendor.getByLabel('Replacement content',{exact:true}).fill('Replacement download for this order only');
   await submitAndLoad(vendor,vendor.getByRole('button',{name:'Add delivery update',exact:true}));
   await buyer.goto(`/order?id=${order}`);
-  await expect(buyer.getByLabel('Digital delivery',{exact:true})).toHaveValue('Original delivery content');
+  await expect(buyer.getByRole('textbox',{name:'Digital delivery',exact:true})).toHaveValue('Original delivery content');
   await expect(buyer.getByLabel('Replacement delivery content',{exact:true})).toHaveValue('Replacement download for this order only');
   for(const width of [320,390,768,1280]) {
    await buyer.setViewportSize({width,height:900});await waitForStyles(buyer);

@@ -126,16 +126,18 @@ func TestCounterpartyKeysAndMessagePrefill(t *testing.T) {
 	// Order page: each party sees the other's key status; the buyer of a draft gets no shipping prompt.
 	draft := w.e.order(w.buyerID, physical, "XMR", stateDraft)
 	body = w.page("/order?id="+draft, w.buyer, 200)
-	mustContain(t, body, formatFingerprint(fp), "Ownership verified", `href="/messages?to=`+vendorHandle+`"`)
+	mustContain(t, body, formatFingerprint(fp), "Ownership verified")
+	mustNotContain(t, body, `href="/messages?to=`+vendorHandle+`"`, `action="/orders/message"`)
 	mustNotContain(t, body, "shipping address")
 	body = w.page("/order?id="+draft, w.vendor, 200)
-	mustContain(t, body, buyerHandle+" has not added a PGP public key", `href="/messages?to=`+buyerHandle+`"`)
+	mustContain(t, body, buyerHandle+" has not added a PGP public key")
+	mustNotContain(t, body, `href="/messages?to=`+buyerHandle+`"`, `action="/orders/message"`)
 
 	// Paid physical order: the buyer is told to send shipping details encrypted to the vendor's key.
 	paid := w.e.order(w.buyerID, w.e.product(w.vendorID, "physical"), "XMR", statePaid)
 	body = w.page("/order?id="+paid, w.buyer, 200)
 	// A-81: the market has no address field but keeps the encrypted message and who sent it to whom and when.
-	mustContain(t, body, "Send your shipping address", "encrypted to "+vendorHandle, "no address field", "keeps the encrypted message and who sent it to whom and when", `href="/messages?to=`+vendorHandle+`"`)
+	mustContain(t, body, "Send your shipping address", "encrypted to "+vendorHandle, "no address field", "keeps the encrypted message and who sent it to whom and when", `href="#order-messages"`)
 	mustNotContain(t, body, "never stores")
 	body = w.page("/order?id="+paid, w.vendor, 200)
 	mustContain(t, body, "shipping address", "encrypted message", "keeps the encrypted message and who sent it to whom and when")

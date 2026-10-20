@@ -45,7 +45,7 @@ func TestDisputeCounterpartyResponse(t *testing.T) {
 		// A-80 copy, and with no staff key usable, no pointer to encrypted staff messages.
 		`<a class="text-link" href="/canary#records">Stored unencrypted.</a> The buyer reads it on this order, as does every moderator and administrator, and the operator and anyone with a backup. Never include an address, real name or tracking number`,
 		"No independent moderator or administrator has a usable PGP key")
-	mustNotContain(t, vendorPage, "Send evidence encrypted first")
+	mustNotContain(t, vendorPage, "Upload image evidence in the")
 	buyerPage := w.page("/order?id="+order, w.buyer, 200)
 	mustNotContain(t, buyerPage, `action="/disputes/reply"`)
 	mustContain(t, buyerPage, "The vendor may put one reply on record")
@@ -57,12 +57,12 @@ func TestDisputeCounterpartyResponse(t *testing.T) {
 		t.Fatal(".dispute-text is not white-space:pre-wrap")
 	}
 
-	// With a usable staff key the help points to encrypted staff messages first.
+	// Image evidence stays on the order; usable staff keys allow separate private support.
 	_, public := testPGPKey(t, "staff")
 	if _, err := w.e.DB.Exec("UPDATE users SET pgp=$1 WHERE id=$2", public, w.modID); err != nil {
 		t.Fatal(err)
 	}
-	mustContain(t, w.page("/order?id="+order, w.vendor, 200), "Send evidence encrypted first")
+	mustContain(t, w.page("/order?id="+order, w.vendor, 200), "Upload image evidence in the")
 
 	// The desk says the vendor has not replied yet, in the entry and on the resolve form.
 	_, admin := w.e.user("reply_desk_admin_"+randomToken()[:6], "admin")
@@ -301,7 +301,7 @@ func TestDeskShowsWhoHoldsDisputeEvidence(t *testing.T) {
 	// The parties see no holders list; the dispute-contacts copy tells them what staff can see.
 	for _, s := range []string{w.buyer, w.vendor} {
 		mustNotContain(t, w.page("/disputes", s, 200), `class="dispute-evidence"`)
-		mustContain(t, w.page("/order?id="+order, s, 200), "Other moderators and administrators can see which staff member you messaged and when, never what.")
+		mustContain(t, w.page("/order?id="+order, s, 200), "Other staff can see whom you contacted and when.")
 	}
 
 	// With neither party having messaged staff since the dispute opened, the form says so.
