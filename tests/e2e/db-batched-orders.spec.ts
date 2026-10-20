@@ -154,6 +154,7 @@ test('automatic digital stock is imported as distinct private units through vend
     const entry = vendor.locator('form[action="/listings/digital-units"]', { has: vendor.getByRole('button', { name: 'Add digital unit', exact: true }) });
     await entry.getByRole('textbox', { name: 'Digital item text or link', exact: true }).fill(first);
     await submitAndLoad(vendor, entry.getByRole('button', { name: 'Add digital unit', exact: true }));
+    await vendor.getByText('Bulk import one unit per line', { exact: true }).click();
     const bulk = vendor.locator('form[action="/listings/digital-units"]', { has: vendor.getByRole('button', { name: 'Import digital units', exact: true }) });
     await bulk.getByRole('textbox', { name: 'Digital units (one per line)', exact: true }).fill(`${second}\n${third}`);
     await submitAndLoad(vendor, bulk.getByRole('button', { name: 'Import digital units', exact: true }));
