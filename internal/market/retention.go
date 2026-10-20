@@ -473,6 +473,7 @@ func retentionUnknownUserReferences(ctx context.Context, tx *sql.Tx) (bool, erro
  ('market_branding'::regclass,'updated_by'),
  ('branding_upload_tickets'::regclass,'user_id'),
  ('host_reboot_requests'::regclass,'user_id'),
+ ('moderation_reviews'::regclass,'reviewer_user_id'),
  ('vendor_applications'::regclass,'user_id'),
  ('vendor_applications'::regclass,'bond_received_by'),
  ('vendor_applications'::regclass,'decided_by'),
