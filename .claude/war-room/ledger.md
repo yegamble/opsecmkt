@@ -1773,7 +1773,7 @@ ITERATION 71 VERIFICATION: Independent security/release and privacy seats verifi
 
 ## Iteration 72 — PR #99 second external rating (Gemini 9.2/10) follow-up
 
-SCOPE: Owner request: war-room loop on PR #99, especially the LLM seat. The pasted Gemini review is a hypothesis source. Seats: opsec-llm, opsec-privacy, opsec-security (Round A; B/C skipped — no inter-seat dispute on a REQUIRED item). Base: PR head `826ff6a9` with current main merged (`216ea0da`, then `417c21d8` for main's 131–133); main's A-613 took 128 and open PR #104 claims 129/130, so the unmerged moderation capacity migration was renumbered **134** (backfill moved to 137 because main's 135 is A-616's stray-slot migration; hold mode 136) (chair; seat-verified functionally correct incl. the main-at-128 upgrade path). No merge to main is delegated.
+SCOPE: Owner request: war-room loop on PR #99, especially the LLM seat. The pasted Gemini review is a hypothesis source. Seats: opsec-llm, opsec-privacy, opsec-security (Round A; B/C skipped — no inter-seat dispute on a REQUIRED item). Base: PR head `826ff6a9` with current main merged (`216ea0da`, then `417c21d8` for main's 131–133); main's A-613 took 128 and open PR #104 claims 129/130, so the unmerged moderation capacity migration was renumbered **134** (backfill moved to 137 because main's 135 is A-616's stray-slot migration, then to 143 and hold mode to 142 after main's PR #111 took 136–141) (chair; seat-verified functionally correct incl. the main-at-128 upgrade path). No merge to main is delegated.
 
 CHAIR FIXES: renumbering (`216ea0da`), stale "128" references (`d2284ff9`, SEC72-N1), records inventory "Checked against … (001–129)" (`c54f1582`; CI 39440637131 failed only TestRecordsListPhotosAndAvatars on this).
 
@@ -1825,6 +1825,11 @@ STATUS: implemented (71cfb32f, merged): modelJSON escapes brackets inside JSON s
 DECISION: open (P2 SHOULD), found by the MOD72-6 implementer. `loadEscrowAlerts` takes ~5.5 s on an empty database (also on c53ec524 with the review loader disabled), so `/moderator` takes 4–5 s and exceeds the 8 s request timeout under -race plus parallel Playwright (500/503 "market is busy"). It is the common cause of desk-test flakes recorded throughout iteration 72. Not caused by PR #99.
 ACCEPTANCE: EXPLAIN-backed fix or index; /moderator under 1 s on an empty and a seeded test database; desk tests stable under -race.
 STATUS: open (outside PR #99's scope; candidate for its own PR).
+
+### MOD72-9 — Split the Go CI job again (owner decision: split, don't raise timeouts)
+
+DECISION: ACCEPT (P1 for PR #99's merge gate). Main's `go` job takes ~17 of its 20 minutes; PR #99's added tests pushed run 39498912726 to exactly 20 minutes (cancelled). Follow A-465: a third job with an exact, test-checked partition of top-level tests; nothing skipped, no timeout raised.
+STATUS: in-progress (war-room/mod72-9-ci-split). Also: CI 39498912726's one real failure (pre-129 fixture seeding pgp_access_key) fixed by the chair in b6a43b4d.
 
 ### MOD72-6 — Listing hold mode with per-vendor auto-approve (owner directive, LLM-8)
 
