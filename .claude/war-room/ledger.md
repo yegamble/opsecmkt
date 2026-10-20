@@ -1810,7 +1810,7 @@ STATUS: implemented (4c58155d, merged): destination/weak-marker → HUMAN_REVIEW
 
 DECISION: ACCEPT (P2 SHOULD). llama.cpp 3bb63cbc `/completion` tokenizes with parse_special=true (server-context.cpp:2461); JSON escaping covers `<`,`>`,`&` but not `[`/`]`, so bracket-style control tokens (e.g. Mistral `[INST]`) in vendor text could become real control tokens. Go should emit `\u005b`/`\u005d` in fenced field JSON (same JSON meaning; version bump). NIT: a test that deploy/moderation/entrypoint.sh's `--ctx-size` equals `modelContextTokens` (inference.go:47). Model vocabulary exposure UNVERIFIED (source reading only).
 ACCEPTANCE: no raw `[`/`]` inside fenced data in either prompt; decoding unchanged; ctx drift test fails on mismatch.
-STATUS: open (next wave).
+STATUS: implemented (71cfb32f, merged): modelJSON escapes brackets inside JSON strings for Stage A protocol, fenced data and Stage B view; moderation-v4, v3 pins refused; launcher ctx drift test (shown failing both ways). Implementer gate: gofmt/vet/mod verify, race moderation + cmd/server with DB, Moderation market tests, govulncheck exit 0. opsec-llm verification pending.
 
 ### MOD72-6 — Listing hold mode with per-vendor auto-approve (owner directive, LLM-8)
 
