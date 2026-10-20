@@ -12,8 +12,9 @@ CREATE TABLE moderation_backfill (
 );
 CREATE INDEX moderation_backfill_due ON moderation_backfill(last_missed,kind,target_id);
 
--- A per-actor 24-hour share of new lifetime allocations. Rows carry no target
--- and are deleted once their window expires (or with the account).
+-- A per-actor 24-hour share of new lifetime allocations. Rows carry no target.
+-- Expired rows are deleted by the next admission or worker pass, all rows when
+-- capture is disabled, and an account's row with the account.
 CREATE TABLE moderation_actor_allocations (
  actor_id text PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
  window_start timestamptz NOT NULL DEFAULT now(),
@@ -103,6 +104,7 @@ BEGIN
  IF b.allocated_records>=b.max_records OR b.allocated_bytes+524288>b.max_bytes THEN
   PERFORM moderation_mark_missed(NEW.kind,NEW.target_id,'retained_capacity'); RETURN NULL;
  END IF;
+ DELETE FROM moderation_actor_allocations WHERE window_start<=now()-interval '24 hours';
  SELECT * INTO a FROM moderation_actor_allocations WHERE actor_id=NEW.actor_id;
  IF FOUND AND a.window_start>now()-interval '24 hours' AND a.allocations>=GREATEST(8,b.max_records*2/100) THEN
   PERFORM moderation_mark_missed(NEW.kind,NEW.target_id,'actor_share'); RETURN NULL;

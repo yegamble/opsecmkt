@@ -950,6 +950,21 @@ func TestModerationActorShareOfLifetimeBudget(t *testing.T) {
 	if got := agInt(e, `SELECT count(*) FROM moderation_actor_allocations`); got != 0 {
 		t.Fatalf("expired actor counters remained: %d", got)
 	}
+	// Any admission also removes expired windows, without waiting for a pass.
+	e.product(vendor, "digital")
+	agExec(e, `UPDATE moderation_actor_allocations SET window_start=now()-interval '25 hours'`)
+	third, _ := e.user("share_third_vendor", "vendor")
+	e.product(third, "digital")
+	if agInt(e, `SELECT count(*) FROM moderation_actor_allocations WHERE actor_id=$1`, vendor) != 0 || agInt(e, `SELECT count(*) FROM moderation_actor_allocations`) != 1 {
+		t.Fatal("admission kept an expired actor window")
+	}
+	// Disabling capture removes every window; no pass would expire them.
+	if err := SetModerationEnabled(t.Context(), e.DB, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := agInt(e, `SELECT count(*) FROM moderation_actor_allocations`); got != 0 {
+		t.Fatalf("disabled capture kept %d actor windows", got)
+	}
 	if agInt(e, `SELECT count(*) FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='moderation_actor_allocations' AND column_name NOT IN ('actor_id','window_start','allocations')`) != 0 {
 		t.Fatal("actor counter gained a target or content column")
 	}

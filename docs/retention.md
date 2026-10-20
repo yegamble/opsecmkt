@@ -275,7 +275,8 @@ target's current revision is queued, or when the worker finds the source gone,
 archived, hidden or unflagged; while capture is disabled, rows wait until it is
 enabled again. At most 65536 rows exist. `moderation_actor_allocations` holds an
 account's 24-hour allocation window (account, window start, count) with no
-target; the worker deletes rows once their window expires, and account erasure
+target; an expired row is deleted by the next capture admission or worker pass,
+disabling capture deletes every row, and account erasure
 deletes the account's row (`ON DELETE CASCADE`, an enumerated relationship in the
 account-erasure inventory). New proposal inputs no longer contain per-field
 digests, and non-listing proposals no longer store a text fingerprint.

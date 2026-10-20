@@ -98,6 +98,17 @@ func SetModerationEnabled(ctx context.Context, db *sql.DB, enabled bool) error {
 		if _, err = tx.ExecContext(ctx, `UPDATE moderation_worker_status SET present=false,model_state='disabled',failure_class='',last_pass=now() WHERE singleton`); err != nil {
 			return err
 		}
+		// No worker pass will expire per-actor share windows while capture is
+		// off; they are meaningless then, so none outlives the switch.
+		var counters bool
+		if err = tx.QueryRowContext(ctx, `SELECT to_regclass('moderation_actor_allocations') IS NOT NULL`).Scan(&counters); err != nil {
+			return err
+		}
+		if counters {
+			if _, err = tx.ExecContext(ctx, `DELETE FROM moderation_actor_allocations`); err != nil {
+				return err
+			}
+		}
 	}
 	return tx.Commit()
 }
