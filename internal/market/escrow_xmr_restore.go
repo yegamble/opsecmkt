@@ -243,12 +243,47 @@ func (a *App) xmrRaiseLookahead(ctx context.Context, name string, highest int64)
 
 // XMREscrowRecoveryView is /admin's Monero escrow recovery section (escrow_xmr_restore.go, escrow_xmr_retain.go).
 type XMREscrowRecoveryView struct {
-	On        bool // ESCROW_XMR is on: the relay and destruction confirmations exist
-	Sweep     bool // a restore asked for the sweep, which has not completed
+	On        bool   // ESCROW_XMR is on: the relay and destruction confirmations exist
+	Gate      bool   // the restore gate is set (A-559)
+	Sweep     bool   // a restore asked for the sweep, which has not completed
+	Paused    string // what the gate and the sweep pause ("" for neither, xmrRestorePaused)
+	Refused   int64  // requests refused by a restore pause since this process started (App.pausedCount)
 	Held      []XMREscrowHeldView
 	Destroyed []XMRDestroyedWalletView
 	Missing   []XMRMissingWalletView
 }
+
+// xmrRestorePaused is the staff text naming what a restore pauses and what still runs (A-559, STAFF66-2), shown on the
+// staff attention summary (/admin, /moderator) and the Monero escrow recovery view: gate is the restore gate
+// (payments_recovery_required: escrow_xmr_create.go, escrow_xmr_settle.go, escrow_xmr_rerequest.go,
+// escrow_xmr_deadline.go, escrow_xmr_watch.go, escrow_xmr_retain.go, vendor_bond.go), sweep the restore sweep
+// (xmrEscrowSweepKey: checkout, wallet and slot creation, destruction and bond addresses only). "" for neither. Callers
+// pass neither while Monero escrow is off: it then pauses nothing, and a market that never ran escrow shows no restore.
+func xmrRestorePaused(gate, sweep bool) string {
+	switch {
+	case gate:
+		s := "Monero escrow is paused after a restore from backup (the restore gate is set): new Monero escrow checkouts are refused, " +
+			"and the market builds and relays no settlement (a held one an administrator confirms under Admin → Payments is relayed once), carries out no re-request, " +
+			"releases no order at its deadline and sends no deadline reminder, creates no escrow wallet, account or vendor bond address, records no vendor bond as paid and destroys no escrow wallet. " +
+			"It still watches deposits and follows relayed settlements to their confirmations. " +
+			"The operator clears the gate once the restored records are reconciled with the wallets (docs/testnet-runbook.md, Clear the gate)."
+		if sweep {
+			s += " The restore sweep has not completed yet: the market is still checking its escrow wallets."
+		}
+		return s
+	case sweep:
+		return "Monero escrow checkout is paused after a restore from backup until the market has checked its escrow wallets (the restore sweep): " +
+			"new Monero escrow checkouts are refused, no escrow wallet, account or vendor bond address is created, no vendor bond is recorded as paid and no escrow wallet is destroyed. " +
+			"Settlements, relays and release deadlines run as usual. Checkout reopens by itself once the sweep completes."
+	}
+	return ""
+}
+
+// xmrSweepDoneNotice tells the administrators, once, that the restore sweep completed while the restore gate is still
+// set (A-559): nothing reopens until the operator clears it.
+const xmrSweepDoneNotice = "Monero escrow's restore sweep is complete: every escrow wallet was checked and each one created after the backup was recorded and kept. " +
+	"The restore gate is still set, so new Monero escrow checkouts, settlement building and relay, re-requests, release deadlines and new escrow wallets stay paused " +
+	"until the operator clears it once the restored records are reconciled with the wallets (docs/testnet-runbook.md, Clear the gate). See Admin → Payments."
 
 // XMRMissingWalletView is one missing escrow wallet past its destroy_after: an administrator may confirm its destruction.
 type XMRMissingWalletView struct {
@@ -275,10 +310,11 @@ func xmrEscrowRecoveryLoader(ctx context.Context, a *App, _ *http.Request, d *Pa
 	if d.User == nil || d.User.Role != "admin" {
 		return nil
 	}
-	v := &XMREscrowRecoveryView{On: a.escrowXMR != nil}
-	if err := a.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM settings WHERE key=$1 AND value='true')", xmrEscrowSweepKey).Scan(&v.Sweep); err != nil {
+	v := &XMREscrowRecoveryView{On: a.escrowXMR != nil, Refused: a.pausedCount.Load()}
+	if err := a.db.QueryRowContext(ctx, "SELECT "+restoreGateSQL+",EXISTS(SELECT 1 FROM settings WHERE key=$1 AND value='true')", xmrEscrowSweepKey).Scan(&v.Gate, &v.Sweep); err != nil {
 		return err
 	}
+	v.Paused = xmrRestorePaused(v.Gate && v.On, v.Sweep && v.On) // with Monero escrow off nothing is paused, and nothing shows
 	rows, err := a.db.QueryContext(ctx, `SELECT id,order_id,kind,state,tx_hash,send_error FROM xmr_settlements
 		WHERE state IN ('built','relayed') AND (send_error LIKE $1 OR send_error=$2 OR send_error LIKE $3) ORDER BY id LIMIT 200`, restoredHoldPrefix+"%", sendRebroadcastOK,
 		xmrRelayRefusing+" % "+xmrRelayConfirmedMark)

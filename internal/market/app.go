@@ -47,6 +47,7 @@ type bucket struct {
 type App struct {
 	startedAt    time.Time       // this process instance, never a persisted heartbeat
 	recentErrors serverErrorRing // A-143: last 20 referenced HTTP errors, in memory only
+	pausedCount  atomic.Int64    // A-559: requests refused by a restore pause (httpError.Paused), in memory only
 
 	db               *sql.DB
 	health           *sql.DB // one connection for /healthz, apart from the application pool (A-178)

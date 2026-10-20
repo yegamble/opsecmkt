@@ -15,6 +15,17 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## A restore pause is shown to staff (A-559)
+
+No migration or setting. While a restore pauses Monero escrow (`ESCROW_XMR` on, and the restore gate
+`payments_recovery_required` or the restore sweep `xmr_escrow_sweep_required` set), `/admin` and `/moderator` show an alert naming what is paused,
+*Admin → Payments* flags it on the Monero escrow recovery view and *Escrow readiness* reads `intake: paused (restore)`.
+A Monero escrow checkout refused by the pause still answers 503, now on the refusal page with `Retry-After: 5` and no
+error reference; it is logged as `http paused kind=action name=/orders/escrow-xmr status=503 cause=restore-gate` (or
+`restore-sweep`) instead of an `http 5xx … cause=*market.httpError` line, so a log alert on `http 5xx` no longer fires on
+it, and it is no longer listed under *Recent server errors*. When the sweep completes while the gate is still set, each
+administrator is notified once. Clearing the gate is unchanged ([runbook](docs/testnet-runbook.md#clear-the-gate)).
+
 ## Marketplace browsing, selling capabilities and private case records
 
 Migrations 136–141 add listing taxonomy and additional shipping regions, independent vendor approval, order correspondence/replacement deliveries, order-bound dispute images, quantities and distinct digital inventory. Existing categories and primary shipping regions remain unchanged; new subcategories start blank. Existing vendors receive independent selling approval. Administrators derive verified selling access from their current role; moderator approval preserves moderation. Promoting an approved vendor to staff preserves selling; explicit Buyer assignment or selling revocation removes it and archives active listings.
