@@ -40,6 +40,9 @@ type xmrRPCProxy struct {
 	counts map[string]int
 	drop   map[string]bool
 	around map[string]func(forward func())
+
+	// transferError is a fakechain-only diagnostic; never retain requests or successful wallet results.
+	transferError *rpcError
 }
 
 func newXMRRPCProxy(t *testing.T, target string) *xmrRPCProxy {
@@ -73,6 +76,18 @@ func newXMRRPCProxy(t *testing.T, target string) *xmrRPCProxy {
 		}
 		defer resp.Body.Close()
 		answer, _ := io.ReadAll(resp.Body)
+		if req.Method == "transfer" {
+			var reply struct {
+				Error *rpcError `json:"error"`
+			}
+			json.Unmarshal(answer, &reply)
+			if reply.Error != nil {
+				reply.Error.Method = req.Method
+			}
+			p.mu.Lock()
+			p.transferError = reply.Error
+			p.mu.Unlock()
+		}
 		if drop {
 			if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
 				conn.Close()
@@ -91,6 +106,13 @@ func (p *xmrRPCProxy) count(method string) int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.counts[method]
+}
+
+// transferFailure returns the last transfer's raw error for fakechain failure messages only.
+func (p *xmrRPCProxy) transferFailure() *rpcError {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.transferError
 }
 
 func (p *xmrRPCProxy) dropNext(method string) {
@@ -611,7 +633,8 @@ func TestXMREscrowRegtestReRequest(t *testing.T) {
 	deposit := agStrings(t, r.testEnv, "SELECT txid FROM payments WHERE order_id=$1", order)[0]
 	var raw struct {
 		Txs []struct {
-			AsHex string `json:"as_hex"`
+			AsHex         string   `json:"as_hex"`
+			OutputIndices []uint64 `json:"output_indices"`
 		} `json:"txs"`
 	}
 	r.daemonPost("/get_transactions", map[string]any{"txs_hashes": []string{deposit}}, &raw)
@@ -647,12 +670,22 @@ func TestXMREscrowRegtestReRequest(t *testing.T) {
 		t.Fatalf("send_raw_transaction of funding deposit %s: %q", deposit, sent.Status)
 	}
 	r.mineTo(deposit, 10+xmrMineMargin)
+	var restored struct {
+		Txs []struct {
+			OutputIndices []uint64 `json:"output_indices"`
+		} `json:"txs"`
+	}
+	r.daemonPost("/get_transactions", map[string]any{"txs_hashes": []string{deposit}}, &restored)
+	if len(restored.Txs) != 1 {
+		t.Fatalf("the daemon does not give restored funding deposit %s", deposit)
+	}
+	t.Logf("funding deposit output indices before reorg %v, restored %v", raw.Txs[0].OutputIndices, restored.Txs[0].OutputIndices)
 	r.synced()
 	r.mustPoll()
 	next := r.settlementOf(order, "release")
 	if next.Supersedes != id || next.State != "relayed" || r.settlement(id).State != "superseded" || p.count("transfer") != 2 ||
 		!slices.Equal(slices.Sorted(slices.Values(next.KeyImages)), slices.Sorted(slices.Values(failed.KeyImages))) || next.InputTotal != failed.InputTotal {
-		t.Fatalf("re-requested: old %+v, new %+v, transfer %d", r.settlement(id), next, p.count("transfer"))
+		t.Fatalf("re-requested: old %+v, new %+v, transfer %d, wallet transfer error %+v", r.settlement(id), next, p.count("transfer"), p.transferFailure())
 	}
 	oldOuts, newOuts := r.outputsOf(id), r.outputsOf(next.ID)
 	claimant := func(s string, fee int64) (string, int64) {
