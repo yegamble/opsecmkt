@@ -125,7 +125,7 @@ func runModerationWorker(ctx context.Context, args []string, out io.Writer) erro
 		return nil
 	}
 	var migrated bool
-	if err = db.QueryRowContext(checkCtx, `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=129)`).Scan(&migrated); err != nil || !migrated {
+	if err = db.QueryRowContext(checkCtx, `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=134)`).Scan(&migrated); err != nil || !migrated {
 		return errors.New("moderation-worker: application migrations required before enabling queue")
 	}
 	cfg := moderation.DefaultConfig()

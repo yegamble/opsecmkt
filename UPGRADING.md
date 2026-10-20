@@ -126,7 +126,7 @@ again even when the deposit is listed again, and its coins are settled with the 
 in the market clears that alert, so the order stays on the desk and under retention's `escrow_alert` reason. To list
 them, use the query in the *Except while it still claims deposits* item below.
 
-## Optional moderation proposals (migrations 125 through 127 and 129)
+## Optional moderation proposals (migrations 125 through 127 and 134)
 
 Application startup applies the append-only moderation tables/triggers and
 offline review receipts. Enqueueing and inference remain off, so existing
@@ -144,7 +144,7 @@ Old gateways may omit dHash, preserving exact SHA256 duplicate comparison.
 Existing images are not decoded again or backfilled. Perceptual similarity
 is advisory and cannot establish whether a listing's claims match a photo.
 
-Migration 129 changes new capture to digests and limited metadata. The worker
+Migration 134 changes new capture to digests and limited metadata. The worker
 reads source prose into memory only for the unchanged captured revision; stale
 or removed sources receive HOLD. New archived inputs retain coded metadata only;
 completed new jobs remove their active raw actor link. Legacy snapshots and

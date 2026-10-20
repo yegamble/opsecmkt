@@ -67,7 +67,7 @@ acceptance requirements, not a declaration of deployed verification:
   source is removed; the photos item names the perceptual fingerprint
   (`TestNewAbuseReviewRecordNoticeIdenticalWithCaptureOnAndOff`,
   `TestRecordsListPhotosAndAvatars`, `preview-records.spec.ts`).
-- A database at 001–124 plus 128 takes 125–127 and 129 on upgrade; a recorded
+- A database at 001–124 plus 128 takes 125–127 and 134 on upgrade; a recorded
   migration whose name differs from this build's migration of that number is
   refused before any change (`TestModerationMigrationsAfterMain128`,
   `TestMigrationNameMismatchRefused`).
@@ -93,7 +93,7 @@ The strengthened v2 contract additionally requires:
 - New pending/completed captures and archived inputs contain no copied prose.
   All five kinds bind hydration to the captured digest, changed/deleted sources
   skip inference, and completed raw actor links are removed. Historical copies
-  survive an authentic pre-129 upgrade without rewritten bytes or timestamps.
+  survive an authentic pre-134 upgrade without rewritten bytes or timestamps.
 - Barrier-concurrent actor/global/slot/byte admissions remain within their
   bounds. Duplicates, rollback, leases, retries and legacy policy replay charge
   and release exactly once. Saturation keeps actual listing/dispute workflows
