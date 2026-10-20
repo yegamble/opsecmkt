@@ -150,6 +150,8 @@ Evidence tier as in `repo-map.md`.
 | 72 | 2026-10-20 | /war-room A-616, A-617 (owner: "finish off"); main red after A-614 | seats payments (resumed), staff, devils-advocate (both general agents following their repo role files: the opsec seat types were not loaded this session); implementers A-614 flake, A-616/A-617; payments verifier | Round B held: DA72-N1 DECLINE revised to ACCEPT (d) after the no-reorg carry-out collision (PAY72-3) and disjoint claims were confirmed; STAFF72-3 timer conceded; A-617 ruled as a suffix (DA72-2), not a new arm. Main CI red at 5a3b3a7e and bda222f0 (TestXMREscrowRegtestReRequest, stale ring, A-618); fixed by #107 (05bd8203, main CI green). Verified: A-616 (#108), A-617 (#109). Migration renumbered 129 to 134 to 135 for open PRs #99 and #104. New: A-618 (P2, unruled), A-619 (NIT). Remaining: A-618 ruling, A-559, A-611; owner-blocked A-555, A-562, A-573 |
 | WR-XMPP | 2026-10-20 | Owner-requested XMPP, encrypted contents/order delivery and separate support tickets; Rounds 0–D | independent application security, Tor/privacy INFOSEC, QA/release; Codex agents following repository roles | All required scoped findings fixed and independently verified, including retention/FK audience provenance and metadata-only escalation serialization. Local broad regression coverage and corrected-source focused gates complete; current-head CI required before merge. Migrations 131–133 reserve open PR #104's 129–130. Commit/push/merge explicitly delegated. |
 
+| 73 | 2026-10-20 | Focused quality/dead-code and CI tooling loop (owner delegated push and merge) | backend, infrastructure, QA/release; Codex agents following repository role profiles (Opus unavailable); three isolated implementers planned and reused seats for verification | Round A accepted independent required quality/security gates, shared pinned tools and Lefthook, analyzer-proven cleanup. No disputed REQUIRED finding, so B/C skipped per protocol. A-620–A-622 ruled; implementation and verification pending. Unrelated backlog remains outside scope. |
+
 ## P0 — release blockers
 
 | ID | Item | Area | Evidence | Status |
@@ -1672,3 +1674,20 @@ NOT WORTH DOING (all seats): a yield timer; an admin "abandon" action on a live 
   re-request wait; changing the flagLateDeposits episode rule (DA72-N3, out of scope).
 
 OUTCOME: A-616 merged as PR #108 (72bdfb40) and A-617 as PR #109 (4ad6706a); both payments-verified and green on all 24 CI checks.
+
+
+## Iteration 73 — quality and CI tooling ruling
+
+Owner scope: choose and implement useful Go quality/dead-code tooling and missing GitHub Actions checks; push and merge when verified. This explicitly delegates the merge for this focused loop.
+
+Round A: backend BE-QUALITY-1/2/3; infrastructure SRE-Q1/2/3/4; QA QA-1/2/3/4. Existing GitGuardian PR checks verified remotely; branch-protection and CodeQL APIs unavailable (403). No disputed REQUIRED finding; cross-examination rounds skipped under the protocol.
+
+| ID | Ruling and acceptance | Status |
+|---|---|---|
+| A-620 | ACCEPT shared pinned development tooling and Lefthook: check-only formatting/import and local secret checks pre-commit, package lint pre-push; Make/script entry points shared with CI; isolated tools module under Dependabot. Actual dirty-format/analyzer failures must return nonzero without restaging. Document installation, roots and intentional limitations. | in-progress (war-room/A-620-quality-tools) |
+| A-621 | ACCEPT independent required Go-quality, workflow/shell and vulnerability/image gates on PR/main/reusable release CI; weekly security scans without the integration matrix; preserve complementary PostgreSQL races and strict required aggregation. Include test dependencies and both npm/Python docs toolchains; pinned zizmor/ShellCheck/Trivy, fix findings without blanket suppression. Extend Dependabot. Bounded image fuzz and combined coverage reporting if practical. | in-progress (war-room/A-621-quality-ci) |
+| A-622 | ACCEPT all-package unused/ineffassign/staticcheck correctness enforcement and reviewed dead-code cleanup. Initial analyzer reports 484 unused declarations and four ineffective assignments; start with actual diagnostics, preserve template callbacks, platform variants, compatibility refusals and immutable migrations. Production-root deadcode report complements test-aware analysis and is advisory. Full PG race halves and existing release CI must remain green. Measure errcheck/gosec before adoption; no broad exclusions or new-only baseline. | in-progress (war-room/A-622-dead-code) |
+
+DECLINED: duplicate server-side Gitleaks (GitGuardian already checks PRs); enable-all lint; automatic deletion from grep/production deadcode alone; blanket test exclusions; arbitrary coverage thresholds; long DB/browser suites in commit hooks; whole integration suite scheduled just to refresh vulnerability data. Existing external/owner-blocked backlog stays outside this focused scope.
+
+Evidence pack: task-local /tmp/opsecmkt-quality/evidence.md at base c5b1e9d7. Baseline actual golangci-lint v2.15.0 and production-root deadcode executed; further tool results and final PR/CI evidence pending.
