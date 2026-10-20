@@ -38,6 +38,7 @@ function tallPhoto(): Buffer {
   ]);
 }
 
+// Uploaded images retain fixed letterboxes. Text identities reflow in full, including at enlarged text sizes.
 async function fixedBranding(page: Page, name: string, logoURL: string | null) {
   for (const width of [320, 1280]) {
     await page.setViewportSize({ width, height: 900 });
@@ -50,11 +51,12 @@ async function fixedBranding(page: Page, name: string, logoURL: string | null) {
     ] as const) {
       await expect(element).toBeVisible();
       const box = (await element.boundingBox())!;
-      expect(box.width).toBeCloseTo(expectedWidth, 2);
-      expect(box.height).toBeCloseTo(expectedHeight, 2);
       expect(box.x).toBeGreaterThanOrEqual(0);
       expect(box.x + box.width).toBeLessThanOrEqual(width);
       if (logoURL) {
+        // Image dimensions and containment remain exact, regardless of source aspect ratio.
+        expect(box.width).toBeCloseTo(expectedWidth, 2);
+        expect(box.height).toBeCloseTo(expectedHeight, 2);
         const image = element.getByRole('img', { name, exact: true });
         await expect(image).toHaveAttribute('src', logoURL);
         await expect(image).toHaveCSS('object-fit', 'contain');
@@ -64,7 +66,16 @@ async function fixedBranding(page: Page, name: string, logoURL: string | null) {
         expect(imageBox.height).toBeCloseTo(expectedHeight, 2);
       } else {
         await expect(element.locator('.market-logo')).toHaveCount(0);
-        await expect(element).toContainText(name);
+        await expect(element.locator('.market-wordmark')).toHaveText(`[${name}]`);
+        // DOM presence alone would miss the previous fixed-box truncation. Check every text box for clipping.
+        const textBoxes = await element.evaluate(node => [node, ...node.querySelectorAll('.market-wordmark, .market-wordmark-name')].map(box => ({
+          horizontal: box.scrollWidth <= box.clientWidth + 1,
+          vertical: box.scrollHeight <= box.clientHeight + 1,
+        })));
+        for (const textBox of textBoxes) {
+          expect(textBox.horizontal, `complete wordmark at ${width}px`).toBe(true);
+          expect(textBox.vertical, `complete wordmark height at ${width}px`).toBe(true);
+        }
       }
     }
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
@@ -72,7 +83,7 @@ async function fixedBranding(page: Page, name: string, logoURL: string | null) {
 }
 
 test('administrator branding reaches the whole site and awkward images keep fixed layout boxes', async ({ page: guest, browser, baseURL }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(180_000);
   const admin = await signedIn(browser, baseURL, ADMIN.handle, ADMIN.password, false, 320);
   await admin.goto('/admin/site');
   const originalName = await admin.getByLabel('Market name', { exact: true }).inputValue();
@@ -128,17 +139,28 @@ test('administrator branding reaches the whole site and awkward images keep fixe
     await saveName(longName);
     await guest.goto('/');
     await expect(guest).toHaveTitle(new RegExp(longName));
-    await fixedBranding(guest, longName, null);
-    // Enlarged text must truncate inside the same fixed box, rather than push
-    // sign-in/search controls offscreen. This changes text size, not page script.
-    // Extend the same-origin test stylesheet so the production CSP stays active.
-    await guest.route('**/static/style.css', async route => {
-      const stylesheet = await route.fetch();
-      await route.fulfill({ response: stylesheet, body: `${await stylesheet.text()}\nhtml { font-size: 200% !important; }` });
-    });
-    await guest.reload();
-    await fixedBranding(guest, longName, null);
-    await guest.unroute('**/static/style.css');
+    // The long text identity is complete on public, buyer, vendor and staff pages at 100% and 200% text.
+    // Extend the same-origin stylesheet rather than weakening the production CSP or enabling page scripts.
+    const textPages = [
+      { page: guest, paths: ['/', '/login', '/canary'] },
+      { page: admin, paths: ['/orders', '/messages', '/disputes', '/account', '/vendor-dashboard', '/moderator', '/admin/site'] },
+    ];
+    for (const scale of [100, 200]) {
+      if (scale === 200) {
+        for (const { page } of textPages) await page.route('**/static/style.css', async route => {
+          const stylesheet = await route.fetch();
+          await route.fulfill({ response: stylesheet, body: `${await stylesheet.text()}\nhtml { font-size: 200% !important; }` });
+        });
+      }
+      for (const { page, paths } of textPages) for (const path of paths) {
+        expect((await page.goto(path))?.status()).toBe(200);
+        await fixedBranding(page, longName, null);
+        await expect(page.locator('script')).toHaveCount(0);
+      }
+    }
+    for (const { page } of textPages) await page.unroute('**/static/style.css');
+    await admin.setViewportSize({ width: 320, height: 900 });
+    await admin.goto('/admin/site');
 
     const svgURL = await upload('wide-logo.svg', 'image/svg+xml', SVG);
     const svg = await guest.request.get(svgURL);
