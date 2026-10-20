@@ -10,7 +10,9 @@ import (
 	"time"
 )
 
-const PromptVersion = "moderation-v2"
+// PromptVersion names the prompts, grammars, allowlists and request limits.
+// v1 and v2 pins are refused; their stored decisions remain readable.
+const PromptVersion = "moderation-v3"
 
 const (
 	ActionNoAction       = "NO_ACTION"
@@ -34,8 +36,18 @@ func ModelActions() []string {
 	return []string{ActionNoAction, ActionFlagReview, ActionSuggestHide, ActionSuggestBan, ActionSuggestRelease, ActionSuggestRefund}
 }
 
+// ReasonCodes is the complete vocabulary of stored decisions, including codes
+// that only Go may add. Use ModelReasonCodes for what a model may assert.
 func ReasonCodes() []string {
 	return []string{"SPAM_TEMPLATE", "SCAM_TEMPLATE", "DUPLICATE_TEXT", "DUPLICATE_IMAGE", "PRICE_OUTLIER", "INCOMPLETE_LISTING", "INVALID_FIELDS", "ORDER_STATE_VIOLATION", "TIMER_DUE", "ABUSE_RATE", "INJECTION_SUSPECTED", "UNICODE_MIXED_SCRIPT", "ZERO_WIDTH_OBFUSCATION", "OFF_PLATFORM_CONTACT", "INPUT_TRUNCATED", "DETERMINISTIC_CONFLICT", "LOW_CONFIDENCE", "NEW_ACTOR", "MONEY_INVOLVED", "NOVEL_CASE", "MODEL_ABSENT", "MODEL_FAILURE", "INVALID_OUTPUT", "CANARY_MISMATCH", "NO_FINDING", "HUMAN_REVIEW", "POLICY_BOUNDARY", "SLA_EXPIRED"}
+}
+
+// ModelReasonCodes is the final-proposal allowlist: content observations a
+// model can ground in what it is shown, plus NO_FINDING (only alone) and
+// HUMAN_REVIEW. Deterministic, routing, failure, protocol and deadline codes are
+// added by Go alone, so a model cannot forge an audit record's provenance.
+func ModelReasonCodes() []string {
+	return []string{"SPAM_TEMPLATE", "SCAM_TEMPLATE", "OFF_PLATFORM_CONTACT", "INJECTION_SUSPECTED", "DETERMINISTIC_CONFLICT", "NO_FINDING", "HUMAN_REVIEW"}
 }
 
 type Disposition string

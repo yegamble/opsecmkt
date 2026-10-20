@@ -37,12 +37,21 @@ type modelProposal struct {
 // DecodeProposal rejects duplicate keys, missing/unknown fields, nulls and
 // trailing data before applying semantic checks. A grammar is a sampling aid;
 // this validator remains mandatory even with a trusted inference runtime.
+// The wire uses the item alias and evidence aliases from the request; Go maps
+// them back to trusted references, so a raw reference is refused.
 func DecodeProposal(raw []byte, in NormalizedInput, canary string) (Proposal, error) {
 	var wire modelProposal
 	if err := strictObject(raw, proposalKeys, &wire); err != nil {
 		return Proposal{}, err
 	}
-	p := Proposal{ItemID: wire.ItemID, Action: wire.Action, Confidence: wire.Confidence, ReasonCodes: wire.ReasonCodes, InjectionSuspected: wire.InjectionSuspected, EvidenceIDs: wire.EvidenceIDs, Canary: wire.Canary}
+	if wire.Canary != canary {
+		return Proposal{}, ErrCanaryMismatch
+	}
+	evidence, known := resolveEvidenceAliases(wire.EvidenceIDs, in.Context.EvidenceIDs)
+	if wire.ItemID != modelItemAlias || !known {
+		return Proposal{}, ErrInvalidOutput
+	}
+	p := Proposal{ItemID: in.ItemID, Action: wire.Action, Confidence: wire.Confidence, ReasonCodes: wire.ReasonCodes, InjectionSuspected: wire.InjectionSuspected, EvidenceIDs: evidence, Canary: wire.Canary}
 	if err := ValidateProposal(p, in, canary); err != nil {
 		return Proposal{}, err
 	}
@@ -58,7 +67,7 @@ func ValidateProposal(p Proposal, in NormalizedInput, canary string) error {
 	if p.ItemID != in.ItemID || !boundedText(p.ItemID, 128) || !slices.Contains(ModelActions(), p.Action) || math.IsNaN(p.Confidence) || math.IsInf(p.Confidence, 0) || p.Confidence < 0 || p.Confidence > 1 {
 		return ErrInvalidOutput
 	}
-	if p.ReasonCodes == nil || len(p.ReasonCodes) == 0 || len(p.ReasonCodes) > 32 || !uniqueSubset(p.ReasonCodes, ReasonCodes()) {
+	if p.ReasonCodes == nil || len(p.ReasonCodes) == 0 || len(p.ReasonCodes) > 32 || !uniqueSubset(p.ReasonCodes, ModelReasonCodes()) || !exclusiveNoFinding(p.ReasonCodes) {
 		return ErrInvalidOutput
 	}
 	if p.EvidenceIDs == nil || len(p.EvidenceIDs) > 32 || !uniqueSubset(p.EvidenceIDs, in.Context.EvidenceIDs) {
@@ -206,6 +215,11 @@ func renderTrustedProposal(p Proposal, in NormalizedInput) Proposal {
 		p.InjectionEvidence = p.InjectionEvidence[:16]
 	}
 	return p
+}
+
+// exclusiveNoFinding refuses a clean result that also asserts a finding.
+func exclusiveNoFinding(codes []string) bool {
+	return len(codes) == 1 || !slices.Contains(codes, "NO_FINDING")
 }
 
 func uniqueSubset(values, allowed []string) bool {

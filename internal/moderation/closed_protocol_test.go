@@ -11,9 +11,9 @@ import (
 
 func closedProtocolJSON(in NormalizedInput) []byte {
 	raw, _ := json.Marshal(map[string]any{
-		"item_id": in.ItemID, "action": ActionNoAction, "confidence": .93,
+		"item_id": modelItemAlias, "action": ActionNoAction, "confidence": .93,
 		"reason_codes": []string{"NO_FINDING"}, "injection_suspected": false,
-		"evidence_ids": in.Context.EvidenceIDs, "canary": CanaryFor(in.InputHash),
+		"evidence_ids": evidenceAliases(len(in.Context.EvidenceIDs)), "canary": CanaryFor(in.InputHash),
 	})
 	return raw
 }
@@ -71,10 +71,12 @@ func TestCustomModelCannotPersistFreeProse(t *testing.T) {
 }
 
 func TestOldPromptPinAndDraftReplyAreRefused(t *testing.T) {
-	cfg := DefaultConfig()
-	cfg.PromptVersion = "moderation-v1"
-	if _, err := (Engine{Config: cfg}).Evaluate(t.Context(), ordinaryInput()); err == nil {
-		t.Error("legacy prompt pin accepted by new protocol")
+	for _, retired := range []string{"moderation-v1", "moderation-v2"} {
+		cfg := DefaultConfig()
+		cfg.PromptVersion = retired
+		if _, err := (Engine{Config: cfg}).Evaluate(t.Context(), ordinaryInput()); err == nil {
+			t.Errorf("legacy prompt pin %s accepted by new protocol", retired)
+		}
 	}
 	in := protocolInput()
 	p := protocolProposal(in)
@@ -123,5 +125,119 @@ func TestEvidenceGrammarIsFiniteAndEmptyContextsEmitOnlyEmptyArrays(t *testing.T
 	}
 	if strings.Contains(grammar, "char") || strings.Contains(grammar, "string") || strings.Contains(proposalGrammar, `char*`) || strings.Contains(proposalGrammar, `summary`) || strings.Contains(proposalGrammar, `injection_evidence`) {
 		t.Fatal("model grammar retains a free-form text channel")
+	}
+}
+
+func TestModelCannotAssertSystemCodes(t *testing.T) {
+	var system []string
+	for _, code := range ReasonCodes() {
+		if !slices.Contains(ModelReasonCodes(), code) {
+			system = append(system, code)
+		}
+	}
+	for _, code := range ModelReasonCodes() {
+		if !slices.Contains(ReasonCodes(), code) {
+			t.Fatalf("model code %s lacks a trusted description", code)
+		}
+	}
+	for _, code := range stageAReasons() {
+		if !slices.Contains(ModelReasonCodes(), code) {
+			t.Fatalf("Stage A code %s cannot survive into the final proposal", code)
+		}
+	}
+	for _, owned := range []string{"MODEL_ABSENT", "MODEL_FAILURE", "INVALID_OUTPUT", "CANARY_MISMATCH", "SLA_EXPIRED", "LOW_CONFIDENCE", "NEW_ACTOR", "MONEY_INVOLVED", "POLICY_BOUNDARY", "DUPLICATE_TEXT", "DUPLICATE_IMAGE", "PRICE_OUTLIER", "INCOMPLETE_LISTING", "INVALID_FIELDS", "UNICODE_MIXED_SCRIPT", "ZERO_WIDTH_OBFUSCATION", "NOVEL_CASE", "INPUT_TRUNCATED", "ORDER_STATE_VIOLATION", "TIMER_DUE", "ABUSE_RATE"} {
+		if !slices.Contains(system, owned) {
+			t.Fatalf("Go-owned code %s is on the model allowlist", owned)
+		}
+	}
+
+	in := protocolInput()
+	canary := CanaryFor(in.InputHash)
+	aliases := evidenceAliases(len(in.Context.EvidenceIDs))
+	grammars := map[string]string{"stage A": stageAGrammarFor(canary, aliases), "stage B": proposalGrammarFor(canary, aliases)}
+	for name, grammar := range grammars {
+		for _, code := range system {
+			if strings.Contains(grammar, grammarLiteral(code)) {
+				t.Errorf("%s grammar permits Go-owned code %s", name, code)
+			}
+		}
+	}
+	for _, code := range stageAReasons() {
+		if !strings.Contains(grammars["stage A"], grammarLiteral(code)) {
+			t.Errorf("stage A grammar omits %s", code)
+		}
+	}
+	for _, code := range ModelReasonCodes() {
+		if !strings.Contains(grammars["stage B"], grammarLiteral(code)) {
+			t.Errorf("stage B grammar omits %s", code)
+		}
+	}
+	for _, code := range []string{"DETERMINISTIC_CONFLICT"} {
+		if strings.Contains(grammars["stage A"], grammarLiteral(code)) {
+			t.Errorf("stage A grammar permits %s, which needs trusted context", code)
+		}
+	}
+
+	wire := func(codes ...string) []byte {
+		raw, _ := json.Marshal(map[string]any{"item_id": modelItemAlias, "action": ActionNoAction, "confidence": .95, "reason_codes": codes, "injection_suspected": false, "evidence_ids": aliases, "canary": canary})
+		return raw
+	}
+	findings := func(codes ...string) []byte {
+		var list []codedFinding
+		for _, code := range codes {
+			list = append(list, codedFinding{ReasonCode: code, EvidenceIDs: aliases})
+		}
+		raw, _ := json.Marshal(extractedFindings{Findings: list, Canary: canary})
+		return raw
+	}
+	for _, code := range system {
+		if _, err := DecodeProposal(wire(code), in, canary); !errors.Is(err, ErrInvalidOutput) {
+			t.Errorf("Stage B accepted Go-owned %s: %v", code, err)
+		}
+		if _, err := decodeFindings(findings(code), in, canary); !errors.Is(err, ErrInvalidOutput) {
+			t.Errorf("Stage A accepted Go-owned %s: %v", code, err)
+		}
+		cfg := DefaultConfig()
+		cfg.Enabled = true
+		d, err := (Engine{Config: cfg, Model: modelFunc(func(_ context.Context, n NormalizedInput) (Proposal, error) {
+			p := baseProposal(n)
+			p.ReasonCodes = []string{code}
+			return p, nil
+		})}).Evaluate(t.Context(), ordinaryInput())
+		if err != nil || d.FailureClass != "invalid_output" || d.Disposition == AutoApply {
+			t.Errorf("custom adapter asserted Go-owned %s: %+v, %v", code, d, err)
+		}
+		if slices.Contains([]string{"MODEL_ABSENT", "CANARY_MISMATCH", "SLA_EXPIRED", "POLICY_BOUNDARY"}, code) && slices.Contains(d.ReasonCodes, code) {
+			t.Errorf("model-asserted %s reached the audit record: %v", code, d.ReasonCodes)
+		}
+	}
+	for _, code := range []string{"DETERMINISTIC_CONFLICT", "NOVEL_CASE", "DUPLICATE_TEXT"} {
+		if _, err := decodeFindings(findings(code), in, canary); !errors.Is(err, ErrInvalidOutput) {
+			t.Errorf("Stage A accepted %s: %v", code, err)
+		}
+	}
+	if _, err := DecodeProposal(wire("NO_FINDING", "SPAM_TEMPLATE"), in, canary); !errors.Is(err, ErrInvalidOutput) {
+		t.Error("Stage B mixed NO_FINDING with a finding")
+	}
+	if _, err := decodeFindings(findings("NO_FINDING", "SPAM_TEMPLATE"), in, canary); !errors.Is(err, ErrInvalidOutput) {
+		t.Error("Stage A mixed NO_FINDING with a finding")
+	}
+	for _, codes := range [][]string{{"NO_FINDING"}, {"SPAM_TEMPLATE", "DETERMINISTIC_CONFLICT", "HUMAN_REVIEW"}} {
+		if _, err := DecodeProposal(wire(codes...), in, canary); err != nil {
+			t.Errorf("model codes %v refused: %v", codes, err)
+		}
+	}
+
+	// Go-detected protocol failures are still recorded by Go.
+	cfg := DefaultConfig()
+	cfg.Enabled = true
+	d, err := (Engine{Config: cfg, Model: modelFunc(func(_ context.Context, n NormalizedInput) (Proposal, error) {
+		p := baseProposal(n)
+		p.ReasonCodes = []string{"NO_FINDING"}
+		p.Canary = "moderation-wrong"
+		return p, nil
+	})}).Evaluate(t.Context(), ordinaryInput())
+	if err != nil || !slices.Contains(d.ReasonCodes, "CANARY_MISMATCH") || d.Disposition != EscalateAdmin || !slices.Contains(d.Proposal.InjectionEvidence, "model:CANARY_MISMATCH") {
+		t.Fatalf("Go-detected canary mismatch lost: %+v, %v", d, err)
 	}
 }
