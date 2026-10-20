@@ -90,7 +90,7 @@ var notices = map[string]struct{ text, section, pages string }{
 	"payment-review":   {"Payment review recorded.", "payment-review", "moderator"},
 	"xmr-collision":    {"Recorded what was done about the refused Monero deposit.", "", ""},
 	// A-613: shown on the moderation desk, because the order may no longer be readable once its escrow alert clears.
-	"xmr-settled-by-hand": {"Recorded: the failed Monero escrow settlement is marked settled by hand, and its escrow alert is cleared.", "", ""},
+	"xmr-settled-by-hand": {"Recorded. The failed Monero escrow settlement's escrow alert is cleared; the market sends nothing for it.", "", ""},
 	// Listings
 	"listing-created":    {"Listing created. Add photos here.", "photos", "listing-edit"},
 	"listing-saved":      {"Listing saved.", "", ""},

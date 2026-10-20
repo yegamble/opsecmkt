@@ -27,8 +27,8 @@ type XMRSettlementView struct {
 	ReRequest, ReRequestPending      bool   // the administrator's form; a re-request waiting for the watcher
 	ReRequestRefused                 string // why the watcher refused the last re-request
 	RetryBuild                       bool   // the administrator's form for a settlement set aside (xmrBuildSetAside)
-	SettledByHand                    bool   // the administrator's form for a failed one that was never built (A-613)
-	HandSettled                      string // to staff only: who marked it settled by hand, when, and their note
+	SettledByHand                    bool   // the administrator's form closing a failed one the market never sends (A-613)
+	HandSettled                      string // to staff only: who dismissed it or marked it settled by hand, when, and their note
 	reorgSafe, stored, handSettled   bool
 	kind, state, wait, reRequestText string // reRequestText: the newest re-request's state and reason
 }
@@ -39,7 +39,7 @@ func (a *App) xmrSettlementViews(ctx context.Context, d *PageData, v *XMREscrowO
 	rows, err := a.db.QueryContext(ctx, `SELECT s.id,s.kind,s.state,COALESCE(s.tx_hash,''),COALESCE(s.fee,0),COALESCE(s.input_total,0),COALESCE(s.supersedes,0),
 		COALESCE((SELECT n.id FROM xmr_settlements n WHERE n.supersedes=s.id),0),s.reorg_safe_at IS NOT NULL,
 		s.send_error,COALESCE((SELECT r.state||' '||r.reason FROM xmr_settlement_rerequests r WHERE r.settlement_id=s.id ORDER BY r.id DESC LIMIT 1),''),
-		h.settlement_id IS NOT NULL,COALESCE(to_char(h.settled_at,'YYYY-MM-DD HH24:MI "UTC"')||' by '||COALESCE(u.handle,'an administrator')||': '||h.note,'')
+		h.settlement_id IS NOT NULL,COALESCE(h.kind,''),COALESCE(to_char(h.settled_at,'YYYY-MM-DD HH24:MI "UTC"')||' by '||COALESCE(u.handle,'an administrator')||': '||h.note,'')
 		FROM xmr_settlements s LEFT JOIN xmr_settlement_hand_settled h ON h.settlement_id=s.id LEFT JOIN users u ON u.id=h.settled_by
 		WHERE s.order_id=$1 ORDER BY s.id DESC LIMIT 20`, o.ID)
 	if err != nil {
@@ -50,12 +50,16 @@ func (a *App) xmrSettlementViews(ctx context.Context, d *PageData, v *XMREscrowO
 	for rows.Next() {
 		s := &XMRSettlementView{}
 		var fee, total int64
-		var record string
-		if err = rows.Scan(&s.ID, &s.kind, &s.state, &s.TxHash, &fee, &total, &s.Supersedes, &s.SupersededBy, &s.reorgSafe, &s.wait, &s.reRequestText, &s.handSettled, &record); err != nil {
+		var recordKind, record string
+		if err = rows.Scan(&s.ID, &s.kind, &s.state, &s.TxHash, &fee, &total, &s.Supersedes, &s.SupersededBy, &s.reorgSafe, &s.wait, &s.reRequestText, &s.handSettled, &recordKind, &record); err != nil {
 			rows.Close()
 			return nil, err
 		}
-		if staff && s.handSettled {
+		switch {
+		case !staff || !s.handSettled:
+		case recordKind == xmrNothingOwed:
+			s.HandSettled = "Dismissed (nothing owed now) " + record
+		default:
 			s.HandSettled = "Marked settled by hand " + record
 		}
 		if s.stored = s.TxHash != ""; s.stored {
@@ -93,10 +97,11 @@ func (a *App) xmrSettlementViews(ctx context.Context, d *PageData, v *XMREscrowO
 			s.ReRequest = admin && !s.handSettled
 		}
 		s.RetryBuild = admin && s.state == "requested" && s.wait == xmrBuildSetAside
-		// A-613: as xmrSettledByHandAction accepts (never built, other than a refund too few; or its stored transaction's
-		// last re-request refused); it needs no wallet, so it is offered while Monero escrow is off too.
+		// A-613: as xmrSettledByHandAction accepts (never built, other than a refund too few, dismissed as nothing owed;
+		// or its stored transaction's last re-request refused for good, marked settled by hand); it needs no wallet, so
+		// it is offered while Monero escrow is off too.
 		s.SettledByHand = staffAdmin && s.state == "failed" && !s.handSettled &&
-			(!s.stored && !(s.kind == "refund" && s.wait == xmrTooSmall) || s.stored && last == "refused")
+			(!s.stored && !(s.kind == "refund" && s.wait == xmrTooSmall) || s.stored && last == "refused" && xmrReRequestFinal(reason))
 		if !s.ReRequest && !s.RetryBuild && !s.SettledByHand {
 			continue
 		}

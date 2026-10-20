@@ -66,9 +66,12 @@ func xmrFailedStoredText(id int64, last string, off bool) string {
 	case state == "settled":
 		return "failed with its transaction stored, and an administrator marked it settled by hand after its re-request was refused"
 	case state == "refused": // the refusal may say the transaction was found in the chain, so not "not seen mined" (NIT-3)
-		return "failed with its transaction stored, and its last re-request was refused (" + strings.TrimSuffix(xmrReRequestRefusal(reason), ".") +
-			"): check the escrow wallet and the chain, because that transaction, or another spending the same coins, may have been sent; " +
-			"once checked, mark it settled by hand (Mark settlement " + n + " settled by hand)"
+		text := "failed with its transaction stored, and its last re-request was refused (" + strings.TrimSuffix(xmrReRequestRefusal(reason), ".") +
+			"): check the escrow wallet and the chain, because that transaction, or another spending the same coins, may have been sent; "
+		if !xmrReRequestFinal(reason) { // PAY613-3: in the pool it may still be mined or dropped
+			return text + "re-request it again later (Re-request settlement " + n + "); it can be marked settled by hand only once a re-request finds it in the chain or a coin it spends spent"
+		}
+		return text + "once checked, mark it settled by hand (Mark settlement " + n + " settled by hand)"
 	case state == "requested" && off:
 		return stored + ": an administrator's re-request waits for the escrow watcher, which runs only once the operator turns Monero escrow (ESCROW_XMR) back on"
 	case state == "requested":

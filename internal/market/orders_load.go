@@ -139,12 +139,13 @@ func staffReviewer(ctx context.Context, a *App, o *Order, u *User) (bool, error)
 //     settlement changes state. The threshold is for staff visibility, not a measured stagenet settlement bound.
 //   - a failed Monero escrow settlement (A-560, xmrFailedAlertSQL): state failed, which a superseded one has left. One
 //     with a stored transaction (relay-refused, bad-metadata) clears when an administrator's re-request supersedes it
-//     (escrow_xmr_rerequest.go); one whose last re-request was refused (its transaction, or another spending its
-//     coins, may have been sent) clears when an administrator who is not a party, having checked the wallet and the
+//     (escrow_xmr_rerequest.go); one whose last re-request was refused for good (on-chain or key-image-spent: its
+//     transaction, or another spending its coins, may have been sent; in-pool is re-requested again) clears when an administrator who is not a party, having checked the wallet and the
 //     chain, marks it settled by hand (xmrSettledByHandAction, A-613). One that failed before a transaction was built
 //     is never re-requested (A-613): a refund too few (too-small) raises none, as a Bitcoin refund too few does not,
 //     because its deposits are left out and flagged for payment review and a stray refund returns them
-//     (xmrRefundTooFew); any other (nothing-to-settle) clears when such an administrator marks it settled by hand.
+//     (xmrRefundTooFew); any other (nothing-to-settle: nothing was sent, no deposit counted) clears when such an
+//     administrator dismisses it as nothing owed, which never stops the market handling a deposit listed again.
 //   - a Monero escrow settlement set aside because building it made the escrow wallet stop responding (A-560,
 //     xmrBuildSetAside): it clears when an administrator asks for it to be built again (xmrRetryBuildAction).
 //
@@ -161,11 +162,13 @@ func escrowStaffAlert(order string) string {
 const xmrFailedAlertSQL = "(xs.state='failed' AND NOT (" + xmrFailedClosedSQL + ") OR xs.state='requested' AND xs.send_error='" + xmrBuildSetAside + "')"
 
 // xmrFailedClosedSQL is true for a failed Monero settlement xs that raises no escrow staff alert (A-613): a refund too
-// few without a stored transaction, which payment review and its stray refund cover, or one an administrator marked
-// settled by hand (xmr_settlement_hand_settled, migration 125: one that failed before a transaction was built, or whose
-// stored transaction's last re-request was refused; it accepts no other).
+// few without a stored transaction, which payment review and its stray refund cover, or one an administrator recorded
+// in xmr_settlement_hand_settled (migration 128, which accepts no other): dismissed as nothing owed, never built; or
+// marked settled by hand, its stored transaction's last re-request refused for good (xmrReRequestFinal, PAY613-3).
 const xmrFailedClosedSQL = "(xs.tx_hash IS NULL AND xs.kind='refund' AND xs.send_error='" + xmrTooSmall +
-	"' OR EXISTS(SELECT 1 FROM xmr_settlement_hand_settled h WHERE h.settlement_id=xs.id))"
+	"' OR EXISTS(SELECT 1 FROM xmr_settlement_hand_settled h WHERE h.settlement_id=xs.id AND (h.kind='" + xmrNothingOwed + "' AND xs.tx_hash IS NULL" +
+	" OR h.kind='" + xmrSettledByHand + "' AND xs.tx_hash IS NOT NULL AND (SELECT r.state||' '||r.reason FROM xmr_settlement_rerequests r WHERE r.settlement_id=xs.id ORDER BY r.id DESC LIMIT 1)" +
+	" IN ('refused " + xmrReRequestOnChain + "','refused " + xmrReRequestSpent + "'))))"
 
 // escrowStaffAlertCandidates bounds desk and badge scans to orders with a possible alert source; the detailed helper
 // decides whether any candidate is actually alerting now.

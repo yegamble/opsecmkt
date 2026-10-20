@@ -14,12 +14,13 @@ import (
 // A-560 escrow staff alert it raised never cleared: the staff badge never returned to zero, the desk listed it for
 // good and retention kept the order under escrow_alert. A refund too few (whose deposits are left out, flagged for
 // payment review and returned by a stray refund) is no longer an alert, as Bitcoin raises none for a refund too few;
-// any other unbuilt failure (nothing-to-settle) stays an alert until an administrator who is not a party marks it
-// settled by hand on the order page (POST /admin/escrow-xmr-settled-by-hand, migration 125). DB integration against
-// the simulated wallet RPC (not chain evidence).
+// any other unbuilt failure (nothing-to-settle) stays an alert until an administrator who is not a party dismisses it as
+// nothing owed on the order page (POST /admin/escrow-xmr-settled-by-hand, migration 128; never paid by hand, PAY613-1),
+// and a stored-transaction failure whose re-request was refused for good is marked settled by hand there. DB
+// integration against the simulated wallet RPC (not chain evidence).
 
-// settledByHand posts the administrator's "settled by hand" of settlement id as session (password testPassword unless
-// kv sets one), returning the status and the Location or body.
+// settledByHand posts the administrator's dismissal or "settled by hand" of settlement id as session (password
+// testPassword unless kv sets one), returning the status and the Location or body.
 func (x *xmrEscrowEnv) settledByHand(session string, id int64, note string, kv ...string) (int, string) {
 	x.t.Helper()
 	w := x.do("POST", "/admin/escrow-xmr-settled-by-hand", session, form(append([]string{"settlement_id", strconv.FormatInt(id, 10), "note", note, "password", testPassword}, kv...)...))
@@ -29,9 +30,19 @@ func (x *xmrEscrowEnv) settledByHand(session string, id int64, note string, kv .
 	return w.Code, w.Body.String()
 }
 
-// settledByHandAudits counts the audit rows of marking a Monero settlement settled by hand (of actor, or of anyone for "").
+// settledByHandAudits counts the audit rows of dismissing a Monero settlement or marking one settled by hand (of actor,
+// or of anyone for "").
 func (x *xmrEscrowEnv) settledByHandAudits(actor string) int {
-	return agInt(x.testEnv, "SELECT count(*) FROM audit_events WHERE ($1='' OR user_id=$1) AND action LIKE 'Marked the failed Monero escrow settlement % settled by hand%'", actor)
+	return agInt(x.testEnv, `SELECT count(*) FROM audit_events WHERE ($1='' OR user_id=$1) AND (action LIKE 'Marked the failed Monero escrow settlement % settled by hand%'
+		OR action LIKE 'Dismissed the failed Monero escrow settlement %: nothing owed now%')`, actor)
+}
+
+// unbuiltAlert is the escrow alert text of settlement n that failed before any transaction was built (PAY613-1).
+func unbuiltAlert(n string) string {
+	return "Monero escrow settlement " + n + " failed before any transaction was built because no deposit counted at that time, so nothing was sent and it cannot be re-requested: " +
+		"read why under the settlement on the order page. Do not pay anything by hand for it: if a deposit of this escrow is listed again, the market handles it automatically as usual " +
+		"(a stray refund returns it when the order's coins go back to the buyer) and it is flagged for review or raises its own alert. " +
+		"An administrator who is not a party dismisses it on the order page (Dismiss settlement " + n + " (nothing owed now))"
 }
 
 // alerting reports whether order has an open escrow staff alert (escrowStaffAlert).
@@ -168,10 +179,10 @@ func TestXMREscrowRefundTooFewNoStaffAlert(t *testing.T) {
 }
 
 // An unbuilt failure other than a refund too few (here nothing-to-settle) alerts until an administrator who is not a
-// party marks it settled by hand: the desk entry and the staff help name the action, only that administrator is offered
-// its form, and every refusal writes nothing. Recorded once (audit row, no order event, no party notice), the desk,
-// the badge, the order-page help and retention's escrow_alert all clear; a repeat is a clean 409. The parties never
-// see any of it.
+// party dismisses it as nothing owed: the desk entry, the staff help and the form say nothing was sent and must not be
+// paid by hand (PAY613-1), only that administrator is offered the form, and every refusal writes nothing. Recorded once
+// as nothing-owed (audit row, no order event, no party notice), the desk, the badge, the order-page help and
+// retention's escrow_alert all clear; a repeat is a clean 409. The parties never see any of it.
 func TestXMREscrowSettledByHand(t *testing.T) {
 	x := newXMREscrowEnv(t)
 	x.mustPoll()
@@ -192,8 +203,7 @@ func TestXMREscrowSettledByHand(t *testing.T) {
 	buyerID := agStrings(t, x.testEnv, "SELECT buyer_id FROM orders WHERE id=$1", order)[0]
 	parties := []string{x.sessOf(order, roleBuyer), x.sessOf(order, roleVendor)}
 	n := strconv.FormatInt(id, 10)
-	text := "Monero escrow settlement " + n + " failed before any transaction was built, so it cannot be re-requested: read why under the settlement on the order page, " +
-		"settle anything still owed by hand with the operator, then an administrator who is not a party marks it settled on the order page (Mark settlement " + n + " settled by hand)"
+	text := unbuiltAlert(n)
 	formAction := `action="/admin/escrow-xmr-settled-by-hand"`
 	if !x.alerting(order) || x.retentionReason(order) != "escrow_alert" {
 		t.Fatalf("before: alert %v, retention %q", x.alerting(order), x.retentionReason(order))
@@ -205,12 +215,14 @@ func TestXMREscrowSettledByHand(t *testing.T) {
 	if help := staffHelp(adminPage); !strings.Contains(help, "because its escrow has an open staff alert: "+text+".") {
 		t.Fatalf("the administrator's staff help: %q", help)
 	}
-	mustContain(t, adminPage, formAction, `name="settlement_id" value="`+n+`"`, `name="note"`, `name="password"`, "Mark settlement "+n+" settled by hand")
+	mustContain(t, adminPage, formAction, `name="settlement_id" value="`+n+`"`, `name="note"`, `name="password"`, "Dismiss settlement "+n+" (nothing owed now)",
+		"so nothing was sent and nothing is owed for it now. Do not pay anything by hand for it.", "dismissing this settlement does not stop that", "Why nothing is owed now")
+	mustNotContain(t, adminPage, "settle anything still owed", "Settle anything it still owed", "Mark settlement "+n+" settled by hand")
 	mustContain(t, staffHelp(adminPage), `href="#xmr-settlement-`+n+`"`)
 	modPage := html.UnescapeString(x.page("/order?id="+order, mod))
 	mustNotContain(t, modPage, formAction)
 	for _, sess := range parties {
-		mustNotContain(t, withoutSiteHeader(html.UnescapeString(x.page("/order?id="+order, sess))), formAction, "settled by hand", "open staff alert", text)
+		mustNotContain(t, withoutSiteHeader(html.UnescapeString(x.page("/order?id="+order, sess))), formAction, "settled by hand", "Dismiss", "open staff alert", text)
 	}
 	// A failed settlement with a stored transaction gets no such form (a relayed one raises no alert, so staff cannot
 	// open its order at all).
@@ -221,7 +233,7 @@ func TestXMREscrowSettledByHand(t *testing.T) {
 	mustContain(t, html.UnescapeString(x.page("/order?id="+order, admin)), formAction)
 	x.A.escrowXMR = saved
 
-	note := "Paid the vendor by hand with the operator in " + hex64("hand release") + "."
+	note := "No deposit counted when it was built; nothing is owed now, checked with the operator."
 	events := agInt(x.testEnv, "SELECT count(*) FROM order_events WHERE order_id=$1", order)
 	partyNotices := agInt(x.testEnv, "SELECT count(*) FROM notifications WHERE user_id IN ($1,$2) AND (order_id=$3 OR strpos(body,$4)>0)", buyerID, x.vendor, order, shortID(order))
 	for _, c := range []struct {
@@ -274,11 +286,11 @@ func TestXMREscrowSettledByHand(t *testing.T) {
 	if code, loc := x.settledByHand(admin, id, "  "+note+"  "); code != 303 || !strings.HasPrefix(loc, "/moderator") {
 		t.Fatalf("settled by hand: %d %s", code, loc)
 	}
-	if got := agStrings(t, x.testEnv, "SELECT note||'|'||settled_by||'|'||(settled_at IS NOT NULL) FROM xmr_settlement_hand_settled WHERE settlement_id=$1", id); !slices.Equal(got, []string{note + "|" + adminID + "|true"}) {
+	if got := agStrings(t, x.testEnv, "SELECT kind||'|'||note||'|'||settled_by||'|'||(settled_at IS NOT NULL) FROM xmr_settlement_hand_settled WHERE settlement_id=$1", id); !slices.Equal(got, []string{xmrNothingOwed + "|" + note + "|" + adminID + "|true"}) {
 		t.Fatalf("the record: %q", got)
 	}
 	if got := agStrings(t, x.testEnv, "SELECT action FROM audit_events WHERE user_id=$1 ORDER BY id DESC LIMIT 1", adminID)[0]; x.settledByHandAudits(adminID) != 1 ||
-		!strings.Contains(got, "settlement "+n+" (") || !strings.Contains(got, shortID(order)) || !strings.Contains(got, "(confirmed with password)") {
+		!strings.HasPrefix(got, "Dismissed the failed Monero escrow settlement "+n+" (") || !strings.Contains(got, shortID(order)+": nothing owed now") || !strings.Contains(got, "(confirmed with password)") {
 		t.Fatalf("the audit row (%d): %q", x.settledByHandAudits(adminID), got)
 	}
 	if e, p := agInt(x.testEnv, "SELECT count(*) FROM order_events WHERE order_id=$1", order), agInt(x.testEnv, "SELECT count(*) FROM notifications WHERE user_id IN ($1,$2) AND (order_id=$3 OR strpos(body,$4)>0)", buyerID, x.vendor, order, shortID(order)); e != events || p != partyNotices {
@@ -302,27 +314,28 @@ func TestXMREscrowSettledByHand(t *testing.T) {
 	if code, body := x.settledByHand(admin, id, "A second record, long enough."); code != 409 || !strings.Contains(body, "already") || x.settledByHandAudits("") != 1 {
 		t.Fatalf("a repeat: %d %s (%d audit rows)", code, body, x.settledByHandAudits(""))
 	}
-	// Migration 125 keeps the record as written, and accepts none for a settlement the action refuses.
+	// Migration 128 keeps the record as written, and accepts none for a settlement the action refuses.
 	for _, q := range []struct {
 		sql  string
 		args []any
 	}{
 		{"UPDATE xmr_settlement_hand_settled SET note='Rewritten note, long enough.' WHERE settlement_id=$1", []any{id}},
 		{"DELETE FROM xmr_settlement_hand_settled WHERE settlement_id=$1", []any{id}},
-		{"INSERT INTO xmr_settlement_hand_settled(settlement_id,note,settled_by) VALUES($1,'Direct insert, long enough.',$2)", []any{storedID, adminID}},
-		{"INSERT INTO xmr_settlement_hand_settled(settlement_id,note,settled_by) VALUES($1,'Direct insert, long enough.',$2)", []any{sentID, adminID}},
+		{"INSERT INTO xmr_settlement_hand_settled(settlement_id,kind,note,settled_by) VALUES($1,'settled-by-hand','Direct insert, long enough.',$2)", []any{storedID, adminID}},
+		{"INSERT INTO xmr_settlement_hand_settled(settlement_id,kind,note,settled_by) VALUES($1,'settled-by-hand','Direct insert, long enough.',$2)", []any{sentID, adminID}},
+		{"INSERT INTO xmr_settlement_hand_settled(settlement_id,kind,note,settled_by) VALUES($1,'nothing-owed','Direct insert, long enough.',$2)", []any{sentID, adminID}},
 	} {
-		if _, err := x.DB.Exec(q.sql, q.args...); err == nil || !strings.Contains(err.Error(), "xmr_settlement_hand_settled") {
+		if _, err := x.DB.Exec(q.sql, q.args...); err == nil || !strings.Contains(err.Error(), "is never changed") && !strings.Contains(err.Error(), "is recorded") {
 			t.Fatalf("%s: %v", q.sql, err)
 		}
 	}
 	// Staff who read the order for another reason (a dispute) see the record, with no form; the parties see none of it.
 	agExec(x.testEnv, "INSERT INTO disputes(id,order_id,reason) VALUES($1,$2,'The parties referred this order for staff review.')", randomToken(), order)
 	adminPage = html.UnescapeString(x.page("/order?id="+order, admin))
-	mustContain(t, adminPage, "Marked settled by hand", note)
-	mustNotContain(t, adminPage, formAction)
+	mustContain(t, adminPage, "Dismissed (nothing owed now)", note)
+	mustNotContain(t, adminPage, formAction, "Marked settled by hand")
 	for _, sess := range parties {
-		mustNotContain(t, withoutSiteHeader(html.UnescapeString(x.page("/order?id="+order, sess))), formAction, "settled by hand", note)
+		mustNotContain(t, withoutSiteHeader(html.UnescapeString(x.page("/order?id="+order, sess))), formAction, "settled by hand", "Dismissed", note)
 	}
 }
 
@@ -453,7 +466,7 @@ func TestXMREscrowSettledByHandRefusedReRequest(t *testing.T) {
 	}
 	adminPage := html.UnescapeString(x.page("/order?id="+order, admin))
 	mustContain(t, staffHelp(adminPage), "because its escrow has an open staff alert: "+text+".", `href="#xmr-settlement-`+n+`"`,
-		"As an administrator, build a Monero escrow settlement again, re-request it or mark it settled by hand under")
+		"As an administrator, build a Monero escrow settlement again, re-request it, dismiss it or mark it settled by hand under")
 	mustContain(t, adminPage, formAction, `name="settlement_id" value="`+n+`"`, "Mark settlement "+n+" settled by hand",
 		"may have been sent: check the escrow wallet and the chain first", `action="/admin/escrow-xmr-rerequest"`)
 	mustNotContain(t, html.UnescapeString(x.page("/order?id="+order, mod)), formAction)
@@ -469,8 +482,8 @@ func TestXMREscrowSettledByHandRefusedReRequest(t *testing.T) {
 	x.A.escrowXMR = nil
 	off := html.UnescapeString(x.page("/order?id="+order, admin))
 	x.A.escrowXMR = saved
-	mustContain(t, off, formAction, "This order is closed. An administrator can still mark a Monero escrow settlement settled by hand on this page.")
-	mustContain(t, staffHelp(off), "As an administrator, mark a Monero escrow settlement settled by hand under")
+	mustContain(t, off, formAction, "This order is closed. An administrator can still dismiss a Monero escrow settlement or mark it settled by hand on this page.")
+	mustContain(t, staffHelp(off), "As an administrator, dismiss a Monero escrow settlement or mark it settled by hand under")
 	mustNotContain(t, staffHelp(off), "re-request it or", "build a Monero escrow settlement again")
 	mustNotContain(t, off, `action="/admin/escrow-xmr-rerequest"`)
 
@@ -497,7 +510,7 @@ func TestXMREscrowSettledByHandRefusedReRequest(t *testing.T) {
 	if got := reviewReason(); !strings.Contains(got, "an administrator marked it settled by hand after its re-request was refused") || strings.Contains(got, "once checked") {
 		t.Fatalf("payment-review reason after: %q", got)
 	}
-	// Never re-requested again: the action refuses it, and so does migration 125.
+	// Never re-requested again: the action refuses it, and so does migration 128.
 	if code := x.reRequest(admin, order, id, testPassword); code != 409 {
 		t.Fatalf("re-request after settled by hand: %d", code)
 	}
@@ -506,5 +519,118 @@ func TestXMREscrowSettledByHandRefusedReRequest(t *testing.T) {
 	}
 	if got := x.reRequests(id); len(got) != 1 {
 		t.Fatalf("re-requests: %v", got)
+	}
+}
+
+// PAY613-1, the reviewer's probe: a stray refund fails nothing-to-settle because the deposit it was requested for is
+// missing (the wallet reads it as double-spent), and an administrator dismisses it as nothing owed. The deposit is
+// then listed again: the market requests and sends exactly one stray refund of it automatically, as before A-613, and
+// flags the deposit for review; the dismissal does not block that, and nothing told staff to pay it by hand.
+func TestXMREscrowDismissedDepositReturnsAutomatically(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	_, admin := x.user("sbhd_admin_"+randomToken()[:6], "admin")
+	order, addr := x.settled()
+	late := hex64("late " + order)
+	strays := func() []string {
+		return agStrings(t, x.testEnv, "SELECT id||' '||state||' '||send_error FROM xmr_settlements WHERE order_id=$1 AND kind='stray_refund' ORDER BY id", order)
+	}
+	x.fake.payAddress(addr, late, 4*minPayoutXMR, 0)
+	x.mustPoll()
+	x.fake.setTransfer(late, func(t *fakeXMRTransfer) { t.DoubleSpend = true })
+	x.mustPoll()
+	// The stray refund the watcher requests for it, here written directly: the window between its request and its
+	// build is too short to place the double spend in from a test.
+	var id int64
+	if err := x.DB.QueryRow("INSERT INTO xmr_settlements(order_id,kind,destination) SELECT order_id,'stray_refund',refund_address FROM escrows WHERE order_id=$1 RETURNING id", order).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	x.mustPoll()
+	n := strconv.FormatInt(id, 10)
+	if got := strays(); !slices.Equal(got, []string{n + " failed " + xmrNothing}) {
+		t.Fatalf("the stray refund: %v", got)
+	}
+	if got := deskAlertIn(html.UnescapeString(x.page("/moderator", admin)), order); !strings.Contains(got, unbuiltAlert(n)) {
+		t.Fatalf("desk alert: %q", got)
+	}
+	page := html.UnescapeString(x.page("/order?id="+order, admin))
+	mustContain(t, page, "Do not pay anything by hand for it.", "Dismiss settlement "+n+" (nothing owed now)")
+	mustNotContain(t, page, "Settle anything it still owed", "settle anything still owed")
+	if code, loc := x.settledByHand(admin, id, "The deposit was double-spent; nothing is owed now."); code != 303 || !strings.HasPrefix(loc, "/moderator") {
+		t.Fatalf("dismiss: %d %s", code, loc)
+	}
+	if x.alerting(order) || agStr(x.testEnv, "SELECT kind FROM xmr_settlement_hand_settled WHERE settlement_id=$1", id) != xmrNothingOwed {
+		t.Fatalf("after the dismissal: alert %v", x.alerting(order))
+	}
+
+	// Listed again: one automatic stray refund to the buyer's refund address, and the deposit flagged for review.
+	x.fake.setTransfer(late, func(t *fakeXMRTransfer) { t.DoubleSpend, t.Confs, t.Pool = false, 20, false })
+	x.mustPoll()
+	x.mustPoll()
+	got := strays()
+	if len(got) != 2 || got[0] != n+" failed "+xmrNothing || !strings.HasSuffix(got[1], " relayed ") {
+		t.Fatalf("stray refunds after the deposit came back: %v", got)
+	}
+	next := x.settlementOf(order, "stray_refund")
+	refund := agStr(x.testEnv, "SELECT refund_address FROM escrows WHERE order_id=$1", order)
+	if outs := x.outputsOf(next.ID); len(outs) != 1 || !strings.HasPrefix(outs[0], "claimant:"+refund+":") {
+		t.Fatalf("the stray refund's outputs: %v", outs)
+	}
+	if got := agStrings(t, x.testEnv, "SELECT flagged||' '||(xmr_settlement_id=$2) FROM payments WHERE order_id=$1 AND txid=$3", order, next.ID, late); !slices.Equal(got, []string{"true true"}) {
+		t.Fatalf("the deposit: %v", got)
+	}
+}
+
+// PAY613-3: a stored-transaction failure is marked settled by hand only once a re-request was refused for good. Refused
+// in-pool (the transaction may still be mined or dropped), the action refuses it (409, telling staff to re-request it
+// again later), no form is offered, the alert says to re-request it later, and migration 128 refuses the row; refused
+// key-image-spent (a coin it spends is spent elsewhere), it is accepted and the alert clears.
+func TestXMREscrowSettledByHandFinalRefusalsOnly(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	adminID, admin := x.user("sbhf_admin_"+randomToken()[:6], "admin")
+	order, id := x.failedRelease()
+	n := strconv.FormatInt(id, 10)
+	formAction := `action="/admin/escrow-xmr-settled-by-hand"`
+	note := "Checked the wallet and the chain: its coins went elsewhere; settled with the operator."
+	old := x.settlement(id)
+	x.fake.edit(func(f *fakeXMREscrow) { f.relay(f.built[hexMeta(f, old.TxHash)]) })
+	if code := x.reRequest(admin, order, id, testPassword); code != 303 {
+		t.Fatalf("re-request: %d", code)
+	}
+	x.mustPoll()
+	if got := x.reRequests(id); !slices.Equal(got, []string{"refused:" + xmrReRequestInPool + ":0"}) {
+		t.Fatalf("re-requests: %v", got)
+	}
+	if code, body := x.settledByHand(admin, id, note); code != 409 || !strings.Contains(body, "Re-request it again later") {
+		t.Fatalf("refused in-pool: %d %.300s", code, body)
+	}
+	page := html.UnescapeString(x.page("/order?id="+order, admin))
+	mustNotContain(t, page, formAction)
+	mustContain(t, page, `action="/admin/escrow-xmr-rerequest"`)
+	if got := deskAlertIn(html.UnescapeString(x.page("/moderator", admin)), order); !strings.Contains(got, "re-request it again later (Re-request settlement "+n+")") || strings.Contains(got, "Mark settlement") {
+		t.Fatalf("in-pool desk alert: %q", got)
+	}
+	if _, err := x.DB.Exec("INSERT INTO xmr_settlement_hand_settled(settlement_id,kind,note,settled_by) VALUES($1,'settled-by-hand','Direct insert, long enough.',$2)", id, adminID); err == nil {
+		t.Fatal("migration 128 accepted a record after an in-pool refusal")
+	}
+
+	// Out of the pool, and a coin it spends spent by another transaction: refused key-image-spent, which is final.
+	x.fake.flushPool(old.TxHash)
+	outside := x.fake.spendOutside(old.KeyImages...)
+	if code := x.reRequest(admin, order, id, testPassword); code != 303 {
+		t.Fatalf("re-request: %d", code)
+	}
+	x.mustPoll()
+	x.fake.flushPool(outside)
+	if got := x.reRequests(id); len(got) != 2 || got[1] != "refused:"+xmrReRequestSpent+":0" {
+		t.Fatalf("re-requests: %v", got)
+	}
+	mustContain(t, html.UnescapeString(x.page("/order?id="+order, admin)), formAction, "Mark settlement "+n+" settled by hand")
+	if code, loc := x.settledByHand(admin, id, note); code != 303 || !strings.HasPrefix(loc, "/moderator") {
+		t.Fatalf("settled by hand after key-image-spent: %d %s", code, loc)
+	}
+	if x.alerting(order) || agStr(x.testEnv, "SELECT kind FROM xmr_settlement_hand_settled WHERE settlement_id=$1", id) != xmrSettledByHand {
+		t.Fatalf("after: alert %v", x.alerting(order))
 	}
 }

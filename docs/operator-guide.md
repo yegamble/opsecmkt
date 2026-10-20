@@ -1408,11 +1408,13 @@ transaction, and a relayed settlement can fail on unreadable metadata), so the e
 the market would record one: while one waits for the watcher's next pass (or for a restore to finish) it says so; after
 a refusal it names the reason (the transaction in the pool or the chain, or a coin already spent) and asks you to check
 the escrow wallet and the chain instead; with `ESCROW_XMR` off it says the re-request is available once it is back
-on. A refused re-request may be asked again later, but while the transaction or its coins are in the pool or the chain
-it is refused again, so such a settlement may never be superseded (A-613): check the escrow wallet and the chain for
-what was actually sent, settle anything still owed by hand with the operator, and then an administrator who is not a
-party marks it settled by hand on the order page, as below. After that it is never re-requested again. Marking is
-refused before any re-request (re-request it first) and while one waits. One that failed before any
+on. A re-request refused *in-pool* is not final (the transaction may still be mined or dropped): re-request it again
+later. One refused *on-chain* (the transaction is in the chain) or *key-image-spent* (a coin it spends is spent) is
+refused every time, so the settlement is never superseded (A-613): check the escrow wallet and the chain for what was
+actually sent, settle anything still owed with the operator, and then an administrator who is not a party marks it
+settled by hand on the order page (*Mark settlement N settled by hand*), with the record described below. After that it
+is never re-requested again. Marking is refused (409) before any re-request (re-request it first), while one waits and
+after an *in-pool* refusal. One that failed before any
 transaction was built cannot be re-requested, and the market never builds that settlement again; a failed release or
 refund also stands in for the order's one release or refund, which is all the database allows (A-613):
 
@@ -1420,17 +1422,23 @@ refund also stands in for the order's one release or refund, which is all the da
   deposits are left out and flagged under *Payment review* (staff read the order while a flag is open), and a stray
   refund returns them, together with any later deposit, once together they can pay the network fee. A stray refund
   that keeps waiting is an alert once it has been requested for 24 hours.
-- Any other (*nothing-to-settle*: no confirmed deposit was left to spend) stays an alert. Read why under the settlement
-  on the order page and settle anything still owed by hand with the operator, outside the market. Then an
-  administrator who is not a party marks it settled on the order page (*Mark settlement N settled by hand*, under the
-  settlement): a note of 10–500 characters saying what was done, confirmed with the password (and the authenticator
-  code when enrolled), with an audit row. That clears the alert: the desk entry, the badge count, the staff help and
-  retention's `escrow_alert` reason. The note is for staff only (shown under the settlement to staff who can read the
-  order); the parties get no order note or notice. It can be recorded once per settlement (a second record is refused);
-  it works with `ESCROW_XMR` off, as recording a refused deposit's disposition does, and the market sends nothing for
-  the settlement either way. Moderators cannot record it. The same record, with the same rules, closes a failed
-  settlement with a stored transaction whose last re-request was refused (above); its note should say what the wallet
-  and the chain showed. With `ESCROW_XMR` off the order page offers only this action, and its staff help says so.
+- Any other (*nothing-to-settle*) stays an alert. Nothing was sent because no deposit of the escrow counted when the
+  market came to build it (none was left to spend, or the deposit it was for was missing, for example read as
+  double-spent). Nothing is owed for it now, and **you must not pay anything by hand for it**: if a deposit of that
+  escrow is listed again, the market handles it automatically as it does any deposit (on an order whose coins go back
+  to the buyer, a stray refund returns it), and the deposit is flagged under *Payment review* or raises its own escrow
+  alert. A payment by hand would pay twice. Read why under the settlement on the order page; then an administrator who
+  is not a party dismisses it there (*Dismiss settlement N (nothing owed now)*, under the settlement). Dismissing it
+  changes nothing the market does with later deposits; it only closes this alert.
+
+Either record (dismissed as nothing owed, or marked settled by hand) takes a note of 10–500 characters (why nothing is
+owed now; or what the wallet and the chain showed and what was done), confirmed with the password (and the
+authenticator code when enrolled), with an audit row. It clears the alert: the desk entry, the badge count, the staff
+help and retention's `escrow_alert` reason. The note is for staff only (shown under the settlement to staff who can
+read the order); the parties get no order note or notice. It can be recorded once per settlement (a second record is
+refused); it works with `ESCROW_XMR` off, as recording a refused deposit's disposition does (the order page then offers
+only these actions, and its staff help says so), and the market sends nothing for the settlement either way.
+Moderators cannot record it.
 
 A set-aside settlement (below) is an alert until an administrator asks for it to be built again.
 
