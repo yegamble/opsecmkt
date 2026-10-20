@@ -304,7 +304,7 @@ func TestModerationMigrationsAfterMain128(t *testing.T) {
 	}
 	var mainAfter613 []migration
 	for _, m := range list {
-		if m.Version != 125 && m.Version != 126 && m.Version != 127 && m.Version != 134 {
+		if m.Version != 125 && m.Version != 126 && m.Version != 127 && m.Version != 134 && m.Version != 143 {
 			mainAfter613 = append(mainAfter613, m)
 		}
 	}
@@ -327,6 +327,7 @@ func TestModerationMigrationsAfterMain128(t *testing.T) {
 	for _, check := range []string{
 		"SELECT count(*) FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='moderation_jobs' AND column_name='capture_version'",
 		"SELECT count(*) FROM information_schema.tables WHERE table_schema=current_schema() AND table_name='moderation_capacity'",
+		"SELECT count(*) FROM information_schema.tables WHERE table_schema=current_schema() AND table_name='moderation_backfill'",
 		"SELECT count(*) FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='images' AND column_name='perceptual_hash'",
 		"SELECT count(*) FROM information_schema.tables WHERE table_schema=current_schema() AND table_name='xmr_settlement_hand_settled'",
 	} {

@@ -30,6 +30,15 @@ func ConfigureModerationLimits(ctx context.Context, db *sql.DB, v ModerationLimi
 	return nil
 }
 
+// moderationBackfillSweep captures the current revision of up to limit targets
+// whose capture was refused, in one short transaction. The SQL function does
+// nothing while capture is disabled or the queue/budget lacks headroom.
+func moderationBackfillSweep(ctx context.Context, db *sql.DB, limit int) (int, error) {
+	var n int
+	err := db.QueryRowContext(ctx, `SELECT moderation_backfill_sweep($1)`, limit).Scan(&n)
+	return n, err
+}
+
 // Completed v2 captures are references, not archived source. Replaying them
 // against an edited source would silently change the evidence. Only legacy
 // snapshots can be queued by the explicit replay command, within active bounds.
@@ -45,6 +54,7 @@ func ReplayModerationJobs(ctx context.Context, db *sql.DB) (queued, skipped int6
 	}
 	res, err := tx.ExecContext(ctx, `WITH chosen AS(SELECT q.id FROM moderation_jobs q WHERE capture_version=0 AND completed_at IS NOT NULL
 	 AND (SELECT count(*) FROM(SELECT 1 FROM moderation_jobs a WHERE a.actor_id=q.actor_id AND a.completed_at IS NULL LIMIT 3) active)<3
+	 AND NOT EXISTS(SELECT 1 FROM moderation_jobs o WHERE o.kind=q.kind AND o.target_id=q.target_id AND o.content_hash=q.content_hash AND o.id<>q.id AND (o.completed_at IS NULL OR o.failure_class<>'stale_snapshot'))
 	 ORDER BY queued_at,id LIMIT $1 FOR UPDATE SKIP LOCKED) UPDATE moderation_jobs j SET completed_at=NULL FROM chosen WHERE j.id=chosen.id`, available)
 	if err != nil {
 		return 0, 0, err

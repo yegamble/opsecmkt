@@ -61,6 +61,23 @@ acceptance requirements, not a declaration of deployed verification:
 - Durable claims recover after interruption. Reprocessing one input/revision and
   policy reuses its decision identity. Stale entity revisions do not change
   marketplace state. Deadline expiry preserves state (`HOLD`).
+- A capture refused by capacity is not lost: the marketplace write commits, one
+  content-free marker per target remains, and the worker later captures that
+  target's current revision once capacity frees; deleted or archived sources are
+  dropped without an allocation, and the marker table stays within its bound
+  with a counted `backfill_capacity` warning beyond it. A revision that completed
+  stale does not suppress a later capture of the same content, while an evaluated
+  revision is still not queued twice. One actor cannot take more than its 24-hour
+  share of lifetime allocations. New proposals hold no per-field digests
+  (`TestModerationActorCapOverflowBackfilledAfterDrain`,
+  `TestModerationPendingSaturationBackfill`,
+  `TestModerationRetainedExhaustionBackfillAfterRaise`,
+  `TestModerationBackfillCoalescesAndDropsDeletedSource`,
+  `TestModerationBackfillTableBounded`, `TestModerationConcurrentBackfillSweep`,
+  `TestModerationStaleRevisionRecapturedOnRevert`,
+  `TestModerationActorShareOfLifetimeBudget`,
+  `TestModerationPrivacyV2NoFieldDigestsOrUnusedTextHash`; database integration,
+  fake model).
 - Proposal queues/status require an authenticated current administrator on the
   existing private ingress. The separate offline page accepts only a valid,
   revision-bound signed review token with CSRF/origin checks; it exposes no queue
