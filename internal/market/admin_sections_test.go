@@ -234,6 +234,9 @@ func TestAdminActionRedirectsToSection(t *testing.T) {
 		{"/admin/operator-key", url.Values{"operator_key": {operatorPub}}, "/admin/transparency#transparency"},
 		{"/admin/vendor-applications", url.Values{"id": {application}, "action": {"approve"}}, "/admin/vendors#vendors"},
 		{"/admin/vendor-verify", url.Values{"action": {"verify"}, "handle": {"redirect_vendor"}}, "/admin/vendors#vendors"},
+		// MOD72-6 listing review (listing_review.go).
+		{"/admin/listing-review", url.Values{"listing_review_mode": {"hold"}}, "/admin/vendors#listing-review"},
+		{"/admin/vendor-auto-approve", url.Values{"action": {"on"}, "handle": {"redirect_vendor"}}, "/admin/vendors#vendors"},
 		// A-545: posted from an account's page in the user directory (from=user), every account form returns there.
 		{"/admin", url.Values{"action": {"role"}, "handle": {"redirect_role"}, "role": {"buyer"}, "from": {"user"}}, "/admin/users?handle=redirect_role"},
 		{"/admin/vendor-apply", url.Values{"handle": {"redirect_role"}, "start": {"awaiting_approval"}}, "/admin/users?handle=redirect_role#vendors"},

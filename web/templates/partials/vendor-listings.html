@@ -49,6 +49,7 @@
 <label>Automatic delivery content<textarea name="delivery_content" maxlength="32000" rows="4" spellcheck="false" aria-describedby="delivery-help"></textarea>
 </label>
 {{if .Inventory}}{{template "vendor-listings:delivery-help" .Inventory.AutoDelivery}}{{else}}{{template "vendor-listings:delivery-help" ""}}{{end}}
+{{if .ListingHeld}}<p class="help listing-held">The market holds listings for review: a new listing stays hidden from buyers until a moderator or administrator approves it.</p>{{end}}
 <button class="primary" type="submit">Publish listing <span class="action-icon">↗</span></button>
 </form>
 </details>
