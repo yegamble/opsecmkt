@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { expect, test, type Page } from '@playwright/test';
 import { ADMIN, uniqueHandle } from './db-fixtures';
-import { signedIn, submitAndLoad } from './db-helpers';
+import { seedRecordedMoneroEscrow, signedIn, submitAndLoad } from './db-helpers';
 import { waitForStyles } from './styles';
 
 const sql = (query: string) => execFileSync('psql', [process.env.E2E_DATABASE_URL!, '-v', 'ON_ERROR_STOP=1', '-qtAc', query], { encoding: 'utf8' }).trim();
@@ -87,8 +87,9 @@ test('published empty stock is optional in discovery and drafts record a bounded
   }
 });
 
-// Funding is seeded, not simulated by submitting plaintext or connecting a
-// wallet. Fulfillment itself uses the vendor's real single-submission form.
+// The paid Monero escrow is a database fixture; no wallet or chain is connected.
+// Fulfillment itself uses the vendor's real single-submission form, and digital
+// escrow delivery completes the order under the existing settlement policy.
 test('a vendor delivers all manual digital units once on a scrolling order page', async ({ browser, baseURL }) => {
   test.setTimeout(90_000);
   const vendorHandle = uniqueHandle('manual_vendor');
@@ -103,6 +104,7 @@ test('a vendor delivers all manual digital units once on a scrolling order page'
       SELECT '${product}',id,'Manual digital batch','Disposable manual delivery browser fixture','Digital','Worldwide','digital',0,250000000000,0,'manual' FROM users WHERE handle='${vendorHandle}';
       INSERT INTO orders(id,buyer_id,product_id,currency,amount,quantity,state,listing_title,listing_description,listing_kind)
       SELECT '${order}',id,'${product}','XMR',500000000000,2,'paid','Manual digital batch','Disposable manual delivery browser fixture','digital' FROM users WHERE handle='${buyerHandle}';`);
+    seedRecordedMoneroEscrow(sql, order);
     await vendor.goto(`/order?id=${order}`);
     const form = vendor.locator('form[action="/orders/deliver"]');
     await expect(form).toHaveCount(1);
@@ -110,7 +112,7 @@ test('a vendor delivers all manual digital units once on a scrolling order page'
     await submitAndLoad(vendor, form.getByRole('button', { name: 'Deliver digital content', exact: true }));
     await expect(vendor.locator('form[action="/orders/deliver"]')).toHaveCount(0);
     expect(sql(`SELECT count(*) FROM deliveries WHERE order_id='${order}'`)).toBe('1');
-    expect(sql(`SELECT state FROM orders WHERE id='${order}'`)).toBe('delivered');
+    expect(sql(`SELECT state FROM orders WHERE id='${order}'`)).toBe('completed');
     await buyer.goto(`/order?id=${order}`);
     const delivered = buyer.getByRole('textbox', { name: 'Digital delivery', exact: true });
     await expect(delivered).toHaveCount(1);
