@@ -24,6 +24,8 @@ class QualityChecksTest(unittest.TestCase):
         go.write_text('''#!/bin/sh
 printf '%s\\n' "$*" >> "$QUALITY_TEST_LOG"
 case "$*" in
+  *'actionlint -version'*) exit "${QUALITY_TEST_ACTIONLINT_STATUS:-0}" ;;
+  *'goimports -h'*) printf '%s' "$QUALITY_TEST_IMPORTS_SMOKE_PREAMBLE"; printf 'usage: goimports [flags] [path ...]\\n'; exit "${QUALITY_TEST_IMPORTS_SMOKE_STATUS:-2}" ;;
   *'goimports -l'*) printf '%s' "$QUALITY_TEST_FORMATTED_FILES"; exit "${QUALITY_TEST_FORMAT_STATUS:-0}" ;;
   *'golangci-lint run'*) exit "${QUALITY_TEST_LINT_STATUS:-0}" ;;
   *'govulncheck -test'*) exit "${QUALITY_TEST_VULN_STATUS:-0}" ;;
@@ -98,6 +100,34 @@ exit 0
         result = self.run_check('lint', GO=str(self.root / 'missing-go'))
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('Go', result.stderr)
+
+    def test_workflow_linter_uses_its_compatible_isolated_module(self):
+        result = self.run_check('workflow-lint')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('tool -modfile=tools/actionlint/go.mod actionlint', self.log.read_text())
+
+    def test_module_checks_include_the_isolated_workflow_tool(self):
+        result = self.run_check('mod-tidy')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('-C tools/actionlint mod verify', self.log.read_text())
+        self.assertIn('-C tools/actionlint mod tidy -diff', self.log.read_text())
+
+    def test_smoke_executes_every_tool_and_propagates_bootstrap_failure(self):
+        result = self.run_check('tools-smoke')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        commands = self.log.read_text()
+        for command in ('goimports -h', 'golangci-lint version', 'lefthook version',
+                        'gitleaks version', 'deadcode -help', 'govulncheck -version',
+                        'actionlint -version'):
+            self.assertIn(command, commands)
+        result = self.run_check('tools-smoke', QUALITY_TEST_ACTIONLINT_STATUS='19')
+        self.assertEqual(result.returncode, 19)
+
+    def test_smoke_accepts_first_build_download_messages_and_rejects_compile_errors(self):
+        result = self.run_check('tools-smoke', QUALITY_TEST_IMPORTS_SMOKE_PREAMBLE='go: downloading a pinned dependency\n')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.run_check('tools-smoke', QUALITY_TEST_IMPORTS_SMOKE_STATUS='1')
+        self.assertEqual(result.returncode, 1)
 
     def test_unknown_command_fails(self):
         self.assertNotEqual(self.run_check('unknown-check').returncode, 0)

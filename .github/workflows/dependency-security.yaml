@@ -18,6 +18,7 @@ jobs:
           cache-dependency-path: |
             go.sum
             tools/go.sum
+            tools/actionlint/go.sum
       - run: make vuln
   npm-vulnerabilities:
     name: npm vulnerabilities (${{ matrix.directory }})
