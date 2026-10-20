@@ -48,7 +48,9 @@
 #     (pop_blocks, flush_txpool) and an administrator's re-request (password step-up) is carried out: the new settlement
 #     waits (deposit-missing), past twice the threshold in blocks too, with no transfer (A-614); once the same deposit
 #     transaction is mined again (send_raw_transaction) it builds a transaction spending exactly the stored key images
-#     (the stored row's and the daemon's decoded inputs) to the stored plan, which is relayed and confirms.
+#     (the stored row's and the daemon's decoded inputs) to the stored plan, which is relayed and confirms; the wallet
+#     may first refuse that build (-4) on a few passes, as the ring it stored for those key images predates the
+#     reorganisation, and each refusal must build and relay nothing.
 # Slice X-f legs (internal/market/escrow_xmr_regtest_restore_test.go), a restore simulated with scripts/restore.sh's own
 # Monero SQL:
 #   Restore: the restore holds a built release whose relay the daemon lost, retires the free slots and closes the wallet;
