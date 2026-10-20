@@ -284,9 +284,9 @@ func TestDeskShowsWhoHoldsDisputeEvidence(t *testing.T) {
 		mustContain(t, block, "Vendor → none</li>")
 		mustNotContain(t, page, "BEGIN PGP MESSAGE", ciphertext[40:120])
 		adminPage := w.page(path, evidenceAdmin, 200)
-		mustContain(t, entryFor(adminPage, order), "Before deciding, ask each staff member listed under Encrypted evidence holders")
+		mustContain(t, entryFor(adminPage, order), "For any earlier evidence sent privately, ask the staff members listed under Private staff correspondence")
 	}
-	mustContain(t, w.page("/moderator", evidenceAdmin, 200), "Before deciding, ask each staff member listed under Encrypted evidence holders")
+	mustContain(t, w.page("/moderator", evidenceAdmin, 200), "For any earlier evidence sent privately, ask the staff members listed under Private staff correspondence")
 	mustNotContain(t, w.page("/order?id="+order, modB, 200), "BEGIN PGP MESSAGE", ciphertext[40:120])
 
 	// A second buyer message and a vendor message to B.
@@ -378,7 +378,7 @@ func TestDeskShowsWhoHoldsDisputeEvidence(t *testing.T) {
 			t.Fatalf("%s: demoted holder not listed with the messages before the change, labelled: %s", path, block)
 		}
 		mustNotContain(t, block, "a294_plain")
-		mustNotContain(t, entry, "Before deciding, ask each staff member listed under Encrypted evidence holders")
+		mustNotContain(t, entry, "For any earlier evidence sent privately, ask the staff members listed under Private staff correspondence")
 		mustNotContain(t, entry, noHolders, "Neither party has messaged a moderator")
 	}
 

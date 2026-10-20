@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"html/template"
 	"net/http"
-	"slices"
 	"sync"
 	"time"
 )
@@ -128,7 +127,10 @@ func authorizeStaffUpload(c *actionCtx) (actionResult, error) {
 	if path == "" {
 		return actionResult{}, fail(http.StatusBadRequest, "Unknown upload kind. Reload the page and try again; nothing was changed.")
 	}
-	if !slices.Contains(uploadRoutes[path].roles, c.User.Role) {
+	if c.User.RetentionRestricted && path != "/orders/evidence" {
+		return actionResult{}, fail(http.StatusForbidden, retentionRestrictedMessage)
+	}
+	if !permitsRole(uploadRoutes[path].roles, c.User) {
 		return actionResult{}, fail(http.StatusForbidden, "Your account cannot upload this picture. Nothing was changed.")
 	}
 	st, err := c.A.uploadScannerState(c.Ctx())
@@ -203,6 +205,10 @@ func staffUploadHandoff(a *App, w http.ResponseWriter, r *http.Request, u *User)
 		a.refuse(w, r, u, http.StatusConflict, "No unused upload authorization remains. Return to the upload form and authorize a new upload.")
 		return
 	}
+	if u.RetentionRestricted && c.path != "/orders/evidence" {
+		a.refuse(w, r, u, http.StatusForbidden, retentionRestrictedMessage)
+		return
+	}
 	photo := c.path == "/listings/photo" || c.path == "/orders/evidence"
 	title, back := "Upload avatar", "/account#avatar"
 	if photo {
@@ -259,7 +265,7 @@ func (a *App) admitGatewayStaffUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	route := uploadRoutes[c.path]
-	if !committed || actor == nil || actor.ID != c.userID || (actor.Role != "admin" && actor.Role != "moderator") || !slices.Contains(route.roles, actor.Role) {
+	if !committed || actor == nil || actor.ID != c.userID || (actor.Role != "admin" && actor.Role != "moderator") || !permitsRole(route.roles, actor) {
 		refuse(http.StatusConflict, staffUploadTicketGone)
 		return
 	}

@@ -79,7 +79,8 @@ test('vendor contact, unread notifications and demotion archive', async ({ brows
   await buyer.waitForURL(/\/order\?id=/);
   const orderURL = buyer.url();
   await expect(buyer.getByRole('region', { name: 'Vendor’s PGP key' })).toContainText(`${vendorHandle} has not added a PGP public key`);
-  await expect(buyer.getByRole('link', { name: 'Message vendor' })).toHaveAttribute('href', `/messages?to=${vendorHandle}`);
+  await expect(buyer.locator(`a[href="/messages?to=${vendorHandle}"]`)).toHaveCount(0);
+  await expect(buyer.locator('form[action="/orders/message"]')).toHaveCount(0);
   await buyer.getByRole('button', { name: 'Cancel draft' }).click();
   await expect(buyer.locator('.page-head .badge')).toHaveText('Cancelled');
 

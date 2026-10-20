@@ -58,19 +58,19 @@ Legacy last-use dates are not invented from account creation dates.
 
 | Data | Live-system deadline |
 | --- | --- |
-| Individual messages, ciphertext and routing metadata | 90 days after creation |
+| Individual direct messages, ciphertext and routing metadata | 90 days after creation |
 | Notifications and closed outage-delivery receipts | 30 days |
 | Activity events | 180 days after creation |
 | Sessions, pending sign-ins, CAPTCHA receipts, PGP challenges and form receipts | Their existing validity deadline, followed by scheduled removal |
 | Unfunded drafts | 30 days after creation |
-| Private order text and delivered content | 30 days after verified financial closure |
+| Private order text, encrypted order correspondence, digital originals/replacements and dispute images | 30 days after verified financial closure |
 | Ordinary closed-order records | 180 days after verified financial closure |
 | Withdrawn listing content, images and reviews | 30 days after withdrawal, unless necessary for an open transaction or preserved case |
 | Accounts | 12 months without observed authenticated use, then 30 days' notice; a verified deletion request has a 30-day deadline |
 
 Closure removes sign-in capability, credentials and unrelated profile data. Open funded escrows or the last usable administrator defer credential erasure
 under a visible operational exception with a 30-day review. Unrelated profile data is scrubbed on schedule; a restricted account can settle existing orders
-and update sign-in or PGP security, while new obligations, unrelated messages and media uploads are blocked. Once the obligation ends, credentials are removed.
+add image evidence to an existing open dispute, and update sign-in or PGP security, while new obligations, unrelated direct messages and listing/avatar uploads are blocked. Once the obligation ends, credentials are removed.
 Necessary financial dependencies may retain a minimal account reference until the associated records can be safely retired.
 A preservation hold can retain its specified records.
 The jobs run bounded batches at startup and every 30 minutes, draining eligible backlogs. Failures retry after one minute.
@@ -84,9 +84,9 @@ For a user who cannot sign in, use the published staff contact and independently
 
 Administrators register and review scoped account, message, order or activity-event holds in **Control room → Retention and preservation**.
 Record the actual authority, reason, authorized readers and release condition. Prefer individual record scopes to an entire account.
-An order hold does not automatically identify encrypted messages about that order; preserve the relevant message IDs separately.
+An order hold covers the order-bound correspondence, delivery updates and dispute images. It cannot infer which earlier direct messages concerned that order; preserve those direct-message IDs separately.
 The recorded reader restrictions govern case handling; holds do not replace existing application permissions or encrypt plaintext records.
-Privileged operators can still read retained plaintext. Keep sensitive evidence in recipient-encrypted messages.
+Privileged operators can still read retained plaintext. Order correspondence requires local recipient encryption. Image evidence is unencrypted and visible to both parties and authorized case staff; only upload evidence intended for those viewers. Private staff support remains a separate direct channel.
 Review within 30 days. An overdue legal hold stays protected until its duty ends.
 Release requires password confirmation; the original deletion deadlines then apply. Released identifying register entries expire after 180 days.
 

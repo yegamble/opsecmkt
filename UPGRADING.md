@@ -15,6 +15,16 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## Marketplace browsing, selling capabilities and private case records
+
+Migrations 129–132 add listing taxonomy and additional shipping regions, independent vendor approval, order correspondence/replacement deliveries and order-bound dispute images. Existing categories and primary shipping regions remain unchanged; new subcategories start blank. Existing vendors receive independent selling approval. Administrators derive verified selling access from their current role; moderator approval preserves moderation. Promoting an approved vendor to staff preserves selling; explicit Buyer assignment or selling revocation removes it and archives active listings.
+
+Rebuild both the application and isolated upload gateway from this source before using dispute evidence. The new upload kind uses the existing JPEG/PNG scanner and normalization pipeline; originals remain on the gateway. It supports the password-confirmed private staff handoff and uses private, authorized image URLs. No new service or scanner setting is required.
+
+New order correspondence and replacement content remain on the order page and share order-private retention, preservation holds, deletion replay and final retirement. Existing direct messages remain direct messages; the upgrade cannot reliably infer which order an old message concerned. Automatic plaintext encryption is not added: messages must be encrypted in a trusted local PGP application, and valid pasted encrypted packets are preserved without a second encryption layer.
+
+Retention remains opt-in. With it enabled, new case content cannot extend the original financial-closure deadline. Existing purge markers always block resurrection. Keep the retention state when restoring backups. A build lacking these migrations refuses the upgraded database; rollback requires restoring the pre-upgrade database and matching retention state according to the documented recovery procedure.
+
 ## Stuck failed Monero settlements can be cleared (A-613)
 
 Migration 128 runs at startup and adds the table `xmr_settlement_hand_settled`, with triggers that refuse a
