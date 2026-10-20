@@ -1516,6 +1516,22 @@ listed to the administrators, who check them for coins of orders the database lo
 too, reads every wallet that may hold coins, and gives a wallet older than the database a longer subaddress lookahead and a
 rescan so that deposits to accounts it does not know are seen. Then [clear the gate](testnet-runbook.md#clear-the-gate) as the runbook describes.
 
+**What staff see while a restore pauses Monero escrow** (A-559). While the restore gate or the sweep is set and
+`ESCROW_XMR` is on (with it off a restore pauses nothing here and none of this shows), the staff
+summary on `/admin` and `/moderator` carries an alert, *Paused after a restore from backup*, naming what is paused and what
+still runs: under the gate, new Monero escrow checkouts, settlement building and relay (except a held settlement an
+administrator confirms, relayed once), re-requests, release deadlines and their reminders, wallet, account and vendor
+bond address creation, recording a vendor bond as paid and wallet destruction, while deposits are still watched and
+relayed settlements followed to their confirmations; under the sweep alone, checkout, wallet, account and bond address
+creation, bond recording and wallet destruction, while settlements, relays and release deadlines run as usual. *Admin → Payments* flags it on *Monero escrow recovery and
+retention* (`Restore gate: set|not set. Restore sweep: pending|not pending.`) with the count of Monero escrow checkouts
+refused while paused since the server started, and *Escrow readiness* reads `XMR escrow: on; intake: paused (restore).`
+even though the intake setting says escrow. A refused checkout answers 503 with `Retry-After: 5` and the reason on the
+refusal page; it is logged as `http paused kind=action name=/orders/escrow-xmr status=503 cause=restore-gate` (or
+`restore-sweep`), not as an `http 5xx` line, and is not listed under *Recent server errors*. When the sweep completes while
+the gate is still set, every administrator gets one notification ("Monero escrow's restore sweep is complete … The restore
+gate is still set …"); later passes send no other. The alert and flag clear once the gate is cleared and the sweep has run.
+
 If you restored **only the escrow wallet volume** from an older backup and the database is current, no restore script ran,
 so set the marker yourself before the app starts; the sweep then probes, reads and raises the lookahead as above. Set it
 again **whenever you later restore a missing wallet's file** (from a backup or from its seed): a wallet that would not open
@@ -2197,6 +2213,7 @@ http 5xx kind=page name=catalog status=500 ref=0bbdc379 cause=22021
 - `cause` is a class, never the error's text: a PostgreSQL SQLSTATE, followed by the table and constraint when PostgreSQL names them (`23505 payouts payouts_order_id_key`); `timeout` (the 12 s request bound; a PostgreSQL statement timeout shows as `57014`); `canceled` (the client went away); `db-connection` (the database was unreachable or the connection broke); `template:<name>` (a page failed to render); otherwise the Go type of the error (for example `*market.httpError`, a refusal the code raised itself such as "Authentication is busy").
 - The line never holds the URL path or query, form values, cookies, the client address, `Host`, `User-Agent`, a handle or user id. Reproduce the failure, or match the time and route, to learn more.
 - At most 10 such lines are written a second. Beyond that, one line counts the rest, `http 5xx suppressed=N (more than 10 lines in 1s)`, whose references are then not in the log.
+- A Monero escrow checkout refused because a restore paused Monero escrow is not a server error (A-559): it answers 503 on the refusal page without a reference and writes `http paused kind=action name=/orders/escrow-xmr status=503 cause=restore-gate` (or `cause=restore-sweep`), throttled the same way (`http paused suppressed=N`). *Admin → Payments* counts these refusals since the server started; they are not listed under *Recent server errors*.
 - `57014` (statement timeout, 8 s) or `55P03` (lock timeout, 3 s) with status 503 means the application pool's [session timeouts](#migrations) stopped a query: the database is overloaded or a row stayed locked. Occasional lines under load are expected; a steady stream on one route points at a slow query.
 - `57P01`, `57P02` or `57P03` (the database is shutting down, crashed or still starting), `53300` (too many connections), `08000`, `08001`, `08003`, `08004` or `08006` (a connection exception) or `db-connection`, with status 503, means the request's database connection was lost or refused, for example during a PostgreSQL restart or failover; the user is shown "The market is busy" or, when the first query of the request already failed, "Service unavailable", both with `Retry-After: 5`. A steady stream outside a restart points at the database's health or its `max_connections`.
 

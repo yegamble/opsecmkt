@@ -10,6 +10,14 @@ import (
 // The categories intentionally overlap: one order may need a dispute decision and a payment review.
 type StaffAttention struct {
 	Disputes, PaymentReviews, EscrowAlerts int
+	// RestoreGate and RestoreSweep are set while a restore pauses Monero escrow (A-559): the restore gate and the
+	// restore sweep. The summary then names what is paused (RestorePaused) until the gate is cleared and the sweep ran.
+	RestoreGate, RestoreSweep bool
+}
+
+// RestorePaused is the staff alert naming what a restore pauses ("" for none, xmrRestorePaused).
+func (v StaffAttention) RestorePaused() string {
+	return xmrRestorePaused(v.RestoreGate, v.RestoreSweep)
 }
 
 func init() { registerLoader("*", loadStaffAttention) }
@@ -40,9 +48,10 @@ func loadStaffAttention(ctx context.Context, a *App, _ *http.Request, d *PageDat
 	  WHERE ` + paymentFlagOpen("pm") + ` AND o.buyer_id<>$1 AND pr.vendor_id<>$1
 	    AND (pm.disposition<>'escalated' OR $2='admin')),
 	 (SELECT count(*) FROM orders o JOIN products pr ON pr.id=o.product_id
-	  WHERE ` + escrowStaffAlertCandidates("o.id") + ` AND ` + escrowStaffAlert("o.id") + ` AND o.buyer_id<>$1 AND pr.vendor_id<>$1)
+	  WHERE ` + escrowStaffAlertCandidates("o.id") + ` AND ` + escrowStaffAlert("o.id") + ` AND o.buyer_id<>$1 AND pr.vendor_id<>$1),
+	 ` + restoreGateSQL + `, EXISTS(SELECT 1 FROM settings WHERE key=$3 AND value='true')
 	FROM users WHERE id=$1 AND role=$2 AND role IN ('moderator','admin') AND suspended_at IS NULL AND closed_at IS NULL AND retention_restricted_at IS NULL`
-	err = tx.QueryRowContext(ctx, query, d.User.ID, d.User.Role).Scan(&v.Disputes, &v.PaymentReviews, &v.EscrowAlerts)
+	err = tx.QueryRowContext(ctx, query, d.User.ID, d.User.Role, xmrEscrowSweepKey).Scan(&v.Disputes, &v.PaymentReviews, &v.EscrowAlerts, &v.RestoreGate, &v.RestoreSweep)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil
@@ -51,6 +60,9 @@ func loadStaffAttention(ctx context.Context, a *App, _ *http.Request, d *PageDat
 	}
 	if err = tx.Commit(); err != nil {
 		return err
+	}
+	if a.escrowXMR == nil {
+		v.RestoreGate, v.RestoreSweep = false, false // Monero escrow is off: a restore pauses nothing (xmrRestorePaused)
 	}
 	d.StaffAttention = &v
 	return nil

@@ -338,7 +338,7 @@ func (a *App) xmrEscrowPollOnce(ctx context.Context) (outcome error) {
 		swept = false
 	}
 	if sweep && swept {
-		if _, err = a.db.ExecContext(ctx, "DELETE FROM settings WHERE key=$1", xmrEscrowSweepKey); err != nil {
+		if err = a.xmrSweepDone(ctx); err != nil {
 			errs = append(errs, err)
 		} else {
 			log.Print("escrow: Monero escrow's restore sweep is complete; Monero escrow checkout is open again once the restore gate is cleared")
@@ -351,6 +351,30 @@ func (a *App) xmrEscrowPollOnce(ctx context.Context) (outcome error) {
 		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
+}
+
+// xmrSweepDone clears the restore sweep's marker after a complete sweep and, in the same transaction, tells the
+// administrators once when the restore gate is still set (A-559): only the pass whose delete removed the marker
+// notifies, so no later pass, and no concurrent one, repeats it.
+func (a *App) xmrSweepDone(ctx context.Context) error {
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var gate bool
+	err = tx.QueryRowContext(ctx, "DELETE FROM settings WHERE key=$1 AND value='true' RETURNING "+restoreGateSQL, xmrEscrowSweepKey).Scan(&gate)
+	switch {
+	case err == sql.ErrNoRows:
+		return nil
+	case err != nil:
+		return err
+	case gate:
+		if err = notifyAdmins(ctx, tx, xmrSweepDoneNotice); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // noteXMREscrowSync records why (a moneroNode reason class, "" when synced) as the Monero escrow daemon's sync state for

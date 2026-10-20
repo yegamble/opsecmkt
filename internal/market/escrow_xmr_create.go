@@ -51,8 +51,8 @@ const xmrCustody = "held by this market in an account used only for this order, 
 var (
 	errXMREscrowDown      = fail(503, "Monero escrow is unavailable on this market right now. Nothing was charged and your order is still a draft; try again later.")
 	errXMREscrowNoSlot    = fail(503, "No Monero escrow account is free right now; the market prepares more within a minute. Nothing was charged and your order is still a draft; try again shortly.")
-	errXMREscrowRestoring = fail(503, "Monero escrow is paused while this market restores its records from a backup. Nothing was charged and your order is still a draft; try again later.")
-	errXMREscrowSweep     = fail(503, "Monero escrow is paused until this market has checked its escrow wallets after restoring its records from a backup. Nothing was charged and your order is still a draft; try again later.")
+	errXMREscrowRestoring = &httpError{Code: 503, Paused: "restore-gate", Msg: "Monero escrow is paused while this market restores its records from a backup. Nothing was charged and your order is still a draft; try again later."}
+	errXMREscrowSweep     = &httpError{Code: 503, Paused: "restore-sweep", Msg: "Monero escrow is paused until this market has checked its escrow wallets after restoring its records from a backup. Nothing was charged and your order is still a draft; try again later."}
 	errXMREscrowKind      = fail(409, "Monero escrow requires a deliverable digital listing or a physical listing with a dispatch window. Nothing was changed.")
 	errXMREscrowCurrency  = fail(409, "Monero escrow is for Monero (XMR) orders only. Nothing was changed.")
 	errXMREscrowSelf      = fail(409, "You cannot buy your own listing. Nothing was changed.")

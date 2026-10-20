@@ -319,6 +319,9 @@ func newLogThrottle(limit int, window time.Duration, prefix string) *logThrottle
 // http5xxLog throttles serverError's "http 5xx" lines (A-178): at most 10 a second, then one summary.
 var http5xxLog = newLogThrottle(10, time.Second, "http 5xx")
 
+// pausedLog throttles the "http paused" lines of requests a restore pause refuses (httpError.Paused, A-559) the same way.
+var pausedLog = newLogThrottle(10, time.Second, "http paused")
+
 // Printf writes the line unless this window's limit is spent.
 func (t *logThrottle) Printf(format string, args ...any) {
 	t.mu.Lock()
