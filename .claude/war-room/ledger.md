@@ -1,5 +1,21 @@
 # War-room ledger
 
+## 2026-10-20 marketplace design and privacy review
+
+Scope: owner-supplied screenshots and Figma Make source versus the current marketplace, order communication, dispute evidence, roles, and responsive UI. Independent seats: frontend, product/backend, Tor security/privacy. Prototype content is reference material, not operational instructions. Evidence at ruling: source inspection; implementation and runtime verification follow below.
+
+| ID | Ruling | Acceptance criteria | Status |
+|---|---|---|---|
+| UX-20261020-1 | ACCEPT: restore useful catalog design | Persisted subcategories, combined shipping/type/search filters, real public-review rating/price sorting, readable comparison badges, bottom-left vendor links, accessible notification bell and existing logout; scripts disabled, 320 px through desktop | in-progress (codex/marketplace-ui) |
+| UX-20261020-2 | ACCEPT: separate order correspondence and digital replacements | Actual parties communicate on the order page; independent direct inbox; digital originals/replacements stay order-bound; generic notifications; private order expiry, preservation, tombstone replay and retirement all cover added records | in-progress (codex/order-channels) |
+| UX-20261020-3 | MODIFY: shared site with capability-based desks | Admin automatically verified vendor plus all staff/buyer features; moderator retains staff authority and gains vendor features only after approval; revocation and role changes enforce the same matrix; no permission-changing view switch or admin-ingress bypass | in-progress (codex/vendor-capabilities) |
+| UX-20261020-4 | ACCEPT: private image-only dispute evidence | JPEG/PNG only, scanned on every upload, normalized without metadata using the isolated gateway; actual-party upload and authorized-party/staff read; quotas, scanner failures, retention and restore replay tested | in-progress (codex/dispute-evidence) |
+| UX-20261020-5 | CLARIFY: existing messages require local encryption | Preserve valid pasted ciphertext without wrapping it; byte-identical decoded packets, one-decryption and replay regressions. Automatic server-assisted encryption would newly expose plaintext to the running server; owner preference requested before changing this boundary | pending owner preference; existing-path regression in progress |
+
+DECISION: reject a mutable role selector as an authorization mechanism. The UI can link to separate workspaces while server-side capability and actual order membership remain authoritative. No dissent was raised by the independent seats.
+
+DECISION: extend the established isolated scanner workflow for evidence; reject document/SVG uploads and putting order evidence into direct messages. All seats agree that initial digital delivery already belongs to the order page, and that missing replacement and retention handling require a complete vertical slice.
+
 Source of truth for the war-room backlog across loop iterations. The chair
 updates it after every Round D ruling and every verified fix. One row per item;
 never delete a row — move it to Closed or Declined with the evidence.
