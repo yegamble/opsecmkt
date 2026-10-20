@@ -1521,3 +1521,34 @@ REVIEW: Tor OPSEC critic plus backend/infrastructure seats found and corrected p
 VERIFICATION: Monero/payment race suite passed (market 828.301 s); the fresh complete nonpayment market race suite passed (816.287 s), with focused final native/operator/security package race runs also green. Actual Docker app-only redeploy retained the DB container and all keys; real Linux tmpfs/GPG-stdin unlock and offline native Tor startup/identity preservation passed. Real emergency stop of only the disposable local market retained its volumes and blocked restart. No device erasure or reboot ran. Python failures were resolved as environment/runtime limits through unchanged fixture reruns; strict MkDocs, all 94 emitted CLI flags, release checks/actionlint, modules, vet, formatting and whitespace checks passed. Final review found no unresolved required in-scope issue. Remote hosts/firewalls, actual public Tor circuits, real destructive devices, browser end-to-end and a new CI run remain unclaimed.
 
 OWNER FOLLOW-UP: Added complete Tor v3 identity import/generation, optional prefixes capped at six, selected-volume identity matching/preservation, and managed identity inclusion in encrypted RAM bundles. Added researched guided setup for real-terminal no-argument use plus explicit setup, with path-only inputs, edit/clear/help/cancel, default-no save/start and concrete generated/imported material guidance. Existing headless serving and flags remain compatible. Native/crypto/operator/wizard race tests, actual offline Tor selected-identity proof for both roles, real PTY/pipe setup checks, 22 help interfaces/110 flags and pinned reachable-vulnerability scan passed. Independent review closed the optional-start context cancellation gap before PR creation. Runtime Tor key copies remain persistent and documented; no six-character search or actual device destruction ran. The owner requested a feature PR for the whole scope.
+
+
+## Iteration 69 — Moderation agent and coding-agent hardening
+
+SCOPE: The owner's tiered moderation request, supplied diagrams, and external Gemini proposal. The proposal explicitly states that its author could not inspect the repository; its code and claims are hypotheses. Security, privacy/Tor boundaries and infrastructure seats review independently; QA verifies ruled fixes. Existing unrelated backlog rows remain unchanged. The local session cannot select the Claude-specific models named by the role files, so it uses the available agents with the same read-only roles and protocol. No merging is delegated.
+
+EVIDENCE: Base `bc1463fd`; initial implementation commits `50166094`, `9c56ef94`, `4b245e01` on `war-room/moderation-agent`. Separate PostgreSQL-backed Go halves and no-JavaScript browser suites run locally. This entry does not claim deployment, actual model quality, live Tor circuits or new CI. Gemini text received as two formatting variants; latest SHA256 `92ebb9cb1852db72a5b9edb7101d8650323bd3827e0603de2c24fc61a2ad76b4`.
+
+### MOD69-1 — Preserve account erasure after moderation migration
+
+DECISION: ACCEPT (P1 REQUIRED), `opsec-privacy-1`.
+WHY: Migration 125 adds a nullable reviewer foreign key to users, but the retention schema inventory treats every unlisted relationship as a global deletion blocker. This prevents otherwise eligible account erasure even while moderation is disabled.
+DISSENTING VIEW: None so far; scrubbing sign-in material does not establish full account erasure.
+USER IMPACT: Existing account-erasure behavior must continue; retained moderation reviews may unlink their erased reviewer.
+OPERATOR IMPACT: No new policy, secrets or deployment step.
+TECHNICAL COST/RISK: Enumerate the reviewed ON DELETE SET NULL relationship, retain refusal for unknown foreign keys, prove the full deletion path.
+ACCEPTANCE CRITERIA: Fresh schema has no unknown user references; eligible accounts erase with moderation disabled; an eligible reviewer erases with the review retained and reviewer set NULL; unknown relationships still block erasure.
+TEST PLAN: Test-first PostgreSQL regressions plus affected retention/vendor-ban/host-reboot lifecycle cases with the race detector. A read-only reviewer or QA re-verifies integrated source.
+STATUS: ruled, ready for isolated implementation.
+
+### MOD69-2 — Disclose the actual moderation-copy lifecycle
+
+DECISION: ACCEPT (P1 REQUIRED), `opsec-privacy-2`.
+WHY: Moderation snapshots and inputs retain plaintext content beyond existing expiry sweeps; public records/account-deletion text must state this accurately. Operator-only warnings cannot correct an inconsistent public promise.
+DISSENTING VIEW: Moderation is disabled by default and the guide gates production enablement, but these do not inform users after capture starts or after it stops.
+USER IMPACT: Users can discover that routine expiry/account closure does not erase retained abuse-review copies, including historical copies after capture is disabled.
+OPERATOR IMPACT: Retention duration/purge policy remains an explicit operator decision. No arbitrary evidence deletion or new retention promises.
+TECHNICAL COST/RISK: Small server-rendered privacy-notice and policy-inventory change, using durable history evidence if conditional; never expose model names, endpoints, thresholds or secrets.
+ACCEPTANCE CRITERIA: Recorded content copies remain discoverably disclosed after original expiry and after capture is disabled; records and account-deletion notices agree with implemented behavior.
+TEST PLAN: Distinct-marker DB/template regression across capture, original expiry and disabled capture, plus relevant retention/public records/no-JavaScript layout checks.
+STATUS: ruled, ready for isolated implementation.
