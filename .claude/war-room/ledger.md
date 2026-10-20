@@ -1771,15 +1771,24 @@ STATUS: open (ready; next wave after MOD72-4 because LLM-7 touches engine routin
 ### MOD72 — LLM experiments and owner decisions
 
 - LLM-E1 measuring rig (≥300 labelled items, pinned build, shipped grammars; enablement threshold benign AUTO_APPLY ≥70% at ≥99% precision), E2 chat template, E3 bounded grammar whitespace, E4 latency at cpus:2, E5 calibration, E7 skip inference for money kinds, E8 field order — P3 EXPERIMENT. Instrument-tier note (llava-7B via Ollama, not production): the shipped raw prompt flagged 10/10 listings INJECTION_SUSPECTED; model value is unproven until E1.
-- LLM-8 pre-publication hold mode with per-vendor auto-approve — blocked (owner decision; scope change). Model output must never publish.
+- LLM-8 → MOD72-6 (owner chose to add it to PR #99).
 - NIT: worker never sets actor reputation (always 0 → +5 risk); omit until real.
+
+### MOD72-6 — Listing hold mode with per-vendor auto-approve (owner directive, LLM-8)
+
+DECISION: ACCEPT (P1, owner directive 2026-10-20: "Add to PR #99").
+DESIGN: settings `listing_review_mode` = `publish` (default; today's behaviour) | `hold`. Migration 131 adds `products.review_state` (`approved` | `pending`; existing rows `approved`) and a per-vendor auto-approve flag. In hold mode a new listing, or an edit to an approved one, by a vendor without auto-approve becomes `pending`: excluded from every buyer/guest path (browse, search, product page, vendor shop, order draft/checkout refuse it), shown to its vendor as "Awaiting review", existing orders unaffected. Moderators/administrators approve or reject from the staff desk (CSRF, confirmed, audited); only administrators change the mode and the per-vendor flag (password-confirmed, audited). Switching back to `publish` does not approve pending listings (fail closed). Moderation capture, overflow, AUTO_APPLY, confidence and the model never change `review_state`. No browser JavaScript.
+ACCEPTANCE: hold mode hides a new listing from buyers until staff approval, including after capture overflow; edits re-hold; auto-approved vendor publishes at once; publish mode unchanged; no model path writes review_state; no-JS forms work; retention/erasure inventories pass.
+TEST PLAN: Go DB tests via newTestApp (hold, approve, reject, edit re-hold, overflow stays held, trusted vendor, mode switch, authorization denials) and a db-*.spec.ts admin toggle + approval journey; preview layout at 320 px.
+STATUS: open (ready; next wave — migration 131 after MOD72-1's 130).
+- privacy-3: owner chose disclosure only (MOD72-2); no fingerprint clearing.
 
 ### Declined / deferred
 
 - Gemini: HMAC for `actor_ref` — REJECT (privacy). v2 `actor_ref` is sha256 of a random UUID; the legacy fallback hashes job id + content_hash from the same row; nothing is learned.
 - Gemini: HMAC for escalation `actor_key` — REJECT (privacy). `target_id` is plaintext in the joined jobs/suggestions rows; a key on the same host (SETUP_TOKEN-derived) adds nothing at rest or under live-host compromise and SETUP_TOKEN rotation would split coalescing.
 - Gemini: coarsen `moderation_reviews.created_at` / `moderation_jobs.completed_at` — REJECT, held from iteration 71 with new evidence: the same instant is recorded in byte-stable `audit_events` (invariant 8) and immutable receipts/suggestions; coarsening protects nothing.
-- privacy-3 (forward-only clearing of unused fingerprints of deleted images after a window) — DEFER (owner policy); MOD72-2 disclosure is the minimum.
+- privacy-3 (forward-only clearing of unused fingerprints) — DECLINED by owner (disclosure only, MOD72-2).
 - SEC72-E1 (singleton capacity lock contention with watcher flagging) — EXPERIMENT, unmeasured.
 - Gemini: 2-clause window and min(forward, mirror) dHash — REJECT as specified (opsec-llm measurements above); superseded by MOD72-5.
 - Sybil-specific registration hardening — NOT WORTH DOING (single-actor path supersedes; MOD72-1 closes both).
