@@ -21,7 +21,8 @@ No migration and no new setting. A failed Monero escrow settlement that was not 
 building it stopped the escrow wallet-rpc, are now escrow staff alerts: listed under *Escrow alerts* on the moderation
 desk, counted in the staff badge, readable by staff and named in the order page's staff help (also when its deposits are
 flagged, with a link to *Payment review*). The entry says whether the settlement can be re-requested (its transaction is
-stored: *Re-request settlement N*), built again (*Build settlement N again*), or neither, in which case anything still
+stored: *Re-request settlement N*; or that a re-request is waiting, that the last one was refused and why, so check the
+escrow wallet and the chain, or that Monero escrow is off), built again (*Build settlement N again*), or neither, in which case anything still
 owed is settled by hand with the operator ([operator guide](docs/operator-guide.md), *Failed and set-aside settlements
 are escrow alerts*). A payment-review row of a deposit that a failed settlement spends now says that it failed instead
 of "the order's release or refund settles it". The parties see no change. Settlements that failed before the upgrade

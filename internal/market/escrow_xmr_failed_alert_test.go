@@ -41,8 +41,13 @@ func TestXMREscrowFailedSettlementStaffAlert(t *testing.T) {
 		t.Fatalf("fixtures: set aside %s %q, unbuilt %s", x.settlement(asideID).State, x.waitClass(asideID), x.settlement(unbuiltID).State)
 	}
 	id := func(n int64) string { return strconv.FormatInt(n, 10) }
+	// PAY560-1: the stored transaction may have reached the network (relay_tx's -4 after a lost connection), so the text
+	// never says nothing was sent, and it offers the re-request only when the action would record one.
+	const storedFailed = "failed with its transaction stored, which the market has not seen mined"
+	storedOffer := storedFailed + ": an administrator who is not a party can re-request it on the order page (Re-request settlement " + id(storedID) +
+		"), and the market rebuilds it only if that transaction is in neither the daemon's pool nor the chain and none of its coins is spent"
 	want := map[string]string{
-		stored: "Monero escrow settlement " + id(storedID) + " failed and nothing was sent, but its transaction is stored: an administrator who is not a party can re-request it on the order page (Re-request settlement " + id(storedID) + ")",
+		stored: "Monero escrow settlement " + id(storedID) + " " + storedOffer,
 		unbuilt: "Monero escrow settlement " + id(unbuiltID) + " failed before any transaction was built, so it cannot be re-requested: read why under the settlement on the order page, " +
 			"and settle anything still owed by hand with the operator (a stray refund returns to the buyer any deposit it left out)",
 		aside: "Monero escrow settlement " + id(asideID) + " is set aside because building it made the escrow wallet stop responding: an administrator who is not a party can ask for it to be built again on the order page (Build settlement " + id(asideID) + " again)",
@@ -98,8 +103,34 @@ func TestXMREscrowFailedSettlementStaffAlert(t *testing.T) {
 	if n := badge(); n != 3 {
 		t.Errorf("staff badge counts %d escrow alerts, want 3", n)
 	}
-	if got := reviewReason(stored); !strings.Contains(got, "Monero escrow settlement "+id(storedID)+", which spends it, failed and was not sent") {
+	if got := reviewReason(stored); !strings.Contains(got, "Monero escrow settlement "+id(storedID)+", which spends it, "+storedOffer) {
 		t.Errorf("payment-review reason of the failed release's deposit: %q", got)
+	}
+	for _, text := range []string{deskAlertIn(desk, stored), reviewReason(stored), staffHelp(x.page("/order?id="+stored, adminSess))} {
+		mustNotContain(t, text, "nothing was sent", "was not sent")
+	}
+	// storedSays fails unless the desk entry and the staff help of the failed release say "Monero escrow settlement N
+	// "+clause and its payment-review reason "Monero escrow settlement N, which spends it, "+clause, and none of them says
+	// any of unwanted (the order page's own re-request form, A-401, may still be offered after a refusal: the watcher
+	// decides each request against the daemon).
+	storedSays := func(stage, clause string, unwanted ...string) {
+		t.Helper()
+		desk := html.UnescapeString(x.page("/moderator", modSess))
+		alert := "Monero escrow settlement " + id(storedID) + " " + clause
+		for name, text := range map[string]string{"desk": deskAlertIn(desk, stored), "help": staffHelp(x.page("/order?id="+stored, adminSess)), "reason": reviewReason(stored)} {
+			want := alert
+			if name == "reason" {
+				want = "Monero escrow settlement " + id(storedID) + ", which spends it, " + clause
+			}
+			if !strings.Contains(text, want) {
+				t.Errorf("%s: the %s does not say %q: %q", stage, name, want, text)
+			}
+			for _, u := range unwanted {
+				if strings.Contains(text, u) {
+					t.Errorf("%s: the %s says %q: %q", stage, name, u, text)
+				}
+			}
+		}
 	}
 	// Data retention keeps the escrow records of an order with an open alert (UPGRADING.md, A-560).
 	retention := func(order string) string {
@@ -118,6 +149,38 @@ func TestXMREscrowFailedSettlementStaffAlert(t *testing.T) {
 	if got := retention(unbuilt); got != "escrow_alert" {
 		t.Errorf("retention blocker of the order whose settlement failed unbuilt: %q", got)
 	}
+
+	// NIT-1: with Monero escrow off the re-request action and its form are disabled, so the text says so.
+	saved := x.A.escrowXMR
+	x.A.escrowXMR = nil
+	storedSays("escrow off", storedFailed+": Monero escrow (ESCROW_XMR) is off on this market, so it can be re-requested on the order page only once the operator turns it back on",
+		"(Re-request settlement")
+	x.A.escrowXMR = saved
+
+	// PAY560-1 (i): the stored transaction was relayed after all and mined; a re-request is refused (on-chain). The alert
+	// and the reason no longer offer the re-request; they name the refusal and tell staff to check the wallet and the chain.
+	old := x.settlement(storedID)
+	x.fake.edit(func(f *fakeXMREscrow) { f.relay(f.built[hexMeta(f, old.TxHash)]) })
+	x.fake.mine(1)
+	if code := x.reRequest(adminSess, stored, storedID, testPassword); code != 303 {
+		t.Fatalf("re-request: %d", code)
+	}
+	// PAY560-1 (ii): while it waits for the watcher's pass, the text says so and offers nothing (a second one is a 409).
+	storedSays("re-request waiting", storedFailed+": an administrator's re-request waits for the market's next pass over the escrow wallet",
+		"can re-request it", "(Re-request settlement")
+	saved = x.A.escrowXMR
+	x.A.escrowXMR = nil
+	storedSays("re-request waiting, escrow off", storedFailed+": an administrator's re-request waits for the escrow watcher, which runs only once the operator turns Monero escrow (ESCROW_XMR) back on", "can re-request it")
+	x.A.escrowXMR = saved
+	x.mustPoll()
+	if got := x.reRequests(storedID); len(got) != 1 || got[0] != "refused:"+xmrReRequestOnChain+":0" {
+		t.Fatalf("re-request of a mined transaction: %v", got)
+	}
+	storedSays("re-request refused on-chain", storedFailed+", and its last re-request was refused (its stored transaction is in the chain, so it was sent after all): "+
+		"check the escrow wallet and the chain, because that transaction, or another spending the same coins, may have been sent", "can re-request it", "(Re-request settlement")
+	// A reorganisation and a flushed pool put it back to nowhere, as in TestXMREscrowReRequestGuards.
+	x.fake.popBlocks(1)
+	x.fake.flushPool(old.TxHash)
 
 	// Superseded by the administrator's re-request, then relayed and confirmed: no alert, and the reason no longer says
 	// it failed. The confirmed release raises none either.

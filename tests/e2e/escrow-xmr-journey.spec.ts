@@ -382,7 +382,7 @@ test('Monero escrow administrator actions: re-request a failed settlement (A-401
   const failedID = await rerequest.locator('input[name="settlement_id"]').inputValue();
   // A-560: the failed claim is an escrow staff alert. The order page's staff help and the moderation desk say that it can
   // be re-requested because its transaction is stored; the vendor sees neither.
-  const reRequestable = `Monero escrow settlement ${failedID} failed and nothing was sent, but its transaction is stored: an administrator who is not a party can re-request it on the order page (Re-request settlement ${failedID})`;
+  const reRequestable = `Monero escrow settlement ${failedID} failed with its transaction stored, which the market has not seen mined: an administrator who is not a party can re-request it on the order page (Re-request settlement ${failedID}), and the market rebuilds it only if that transaction is in neither the daemon's pool nor the chain and none of its coins is spent`;
   await expect(admin.locator('main')).toContainText(`because its escrow has an open staff alert: ${reRequestable}.`);
   await expect(vendor.locator('main')).not.toContainText('open staff alert');
   const deskAlert = () => admin.getByRole('region', { name: 'Escrow alerts' }).locator('li', { hasText: orderID(failedOrder.url) });

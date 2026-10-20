@@ -153,7 +153,7 @@ func escrowStaffAlert(order string) string {
 }
 
 // xmrFailedAlertSQL is true for a Monero settlement xs that failed (unsuperseded) or is set aside (A-560).
-const xmrFailedAlertSQL = "xs.state='failed' OR xs.state='requested' AND xs.send_error='" + xmrBuildSetAside + "'"
+const xmrFailedAlertSQL = "(xs.state='failed' OR xs.state='requested' AND xs.send_error='" + xmrBuildSetAside + "')"
 
 // escrowStaffAlertCandidates bounds desk and badge scans to orders with a possible alert source; the detailed helper
 // decides whether any candidate is actually alerting now.
@@ -200,7 +200,7 @@ func loadEscrowAlerts(ctx context.Context, a *App, _ *http.Request, d *PageData)
 			(SELECT max(s.updated) FROM settlements s WHERE s.order_id=o.id AND s.kind='release' AND s.state='failed' AND s.build_error='`+settleTooSmall+`'),
 			(SELECT max(x.noted) FROM xmr_escrow_collisions x WHERE x.order_id=o.id AND x.disposed_at IS NULL),
 			(SELECT max(xs.created+interval '24 hours') FROM xmr_settlements xs WHERE xs.order_id=o.id AND xs.state='requested' AND xs.created<now()-interval '24 hours'),
-			(SELECT max(xs.updated) FROM xmr_settlements xs WHERE xs.order_id=o.id AND (`+xmrFailedAlertSQL+`))) DESC NULLS LAST,o.id DESC
+			(SELECT max(xs.updated) FROM xmr_settlements xs WHERE xs.order_id=o.id AND `+xmrFailedAlertSQL+`)) DESC NULLS LAST,o.id DESC
 		LIMIT $1`, escrowAlertLimit)
 	if err != nil {
 		return err
@@ -209,9 +209,11 @@ func loadEscrowAlerts(ctx context.Context, a *App, _ *http.Request, d *PageData)
 	var total int
 	for rows.Next() {
 		var v EscrowAlertView
-		if err = rows.Scan(&v.ID, &v.State, &v.Stall, &v.TooFew, &v.Refused, &v.Requested, &v.ReRequestable, &v.Unbuilt, &v.SetAside, &total); err != nil {
+		var last string
+		if err = rows.Scan(&v.ID, &v.State, &v.Stall, &v.TooFew, &v.Refused, &v.Requested, &v.ReRequestable, &v.Unbuilt, &v.SetAside, &last, &total); err != nil {
 			return err
 		}
+		v.storedText(last, a.escrowXMR == nil)
 		v.State = stateLabel(v.State)
 		d.EscrowAlerts = append(d.EscrowAlerts, v)
 	}
@@ -219,13 +221,24 @@ func loadEscrowAlerts(ctx context.Context, a *App, _ *http.Request, d *PageData)
 	return rows.Err()
 }
 
-// xmrFailedAlertIDs is SQL for three columns of the order whose id is the SQL expression order: its newest failed
-// Monero settlement with a stored transaction (re-requestable), its newest failed one without (never re-requested), and
-// its newest set-aside one, each 0 for none (A-560; EscrowAlertView).
+// xmrFailedAlertIDs is SQL for four columns of the order whose id is the SQL expression order: its newest failed
+// Monero settlement with a stored transaction, its newest failed one without (never re-requested) and its newest
+// set-aside one, each 0 for none, and the newest re-request of the first as "state reason" ("" for none; A-560,
+// EscrowAlertView).
 func xmrFailedAlertIDs(order string) string {
-	return "COALESCE((SELECT max(xs.id) FROM xmr_settlements xs WHERE xs.order_id=" + order + " AND xs.state='failed' AND xs.tx_hash IS NOT NULL),0)," +
+	stored := "(SELECT max(xs.id) FROM xmr_settlements xs WHERE xs.order_id=" + order + " AND xs.state='failed' AND xs.tx_hash IS NOT NULL)"
+	return "COALESCE(" + stored + ",0)," +
 		"COALESCE((SELECT max(xs.id) FROM xmr_settlements xs WHERE xs.order_id=" + order + " AND xs.state='failed' AND xs.tx_hash IS NULL),0)," +
-		"COALESCE((SELECT max(xs.id) FROM xmr_settlements xs WHERE xs.order_id=" + order + " AND xs.state='requested' AND xs.send_error='" + xmrBuildSetAside + "'),0)"
+		"COALESCE((SELECT max(xs.id) FROM xmr_settlements xs WHERE xs.order_id=" + order + " AND xs.state='requested' AND xs.send_error='" + xmrBuildSetAside + "'),0)," +
+		"COALESCE((SELECT r.state||' '||r.reason FROM xmr_settlement_rerequests r WHERE r.settlement_id=" + stored + " ORDER BY r.id DESC LIMIT 1),'')"
+}
+
+// storedText sets v.StoredText for its failed settlement with a stored transaction, whose newest re-request is last,
+// while Monero escrow is off or not (xmrFailedStoredText).
+func (v *EscrowAlertView) storedText(last string, off bool) {
+	if v.ReRequestable != 0 {
+		v.StoredText = xmrFailedStoredText(v.ReRequestable, last, off)
+	}
 }
 
 // disputeVisible: the order is or was disputed, so a reviewer may also read its digital delivery.
@@ -291,14 +304,16 @@ func loadOrderDetail(ctx context.Context, a *App, r *http.Request, d *PageData) 
 		// failed or set-aside Monero settlement (A-560) is named even when deposits are flagged too (a refused
 		// transaction's are), and the help then links Payment review as well.
 		v := EscrowAlertView{ID: o.ID}
+		var last string
 		if err = a.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM payments WHERE order_id=$1 AND flagged),
 			EXISTS(SELECT 1 FROM settlements s WHERE s.order_id=$1 AND s.state='broadcast' AND `+escrowStalledSQL+`),
 			EXISTS(SELECT 1 FROM settlements s WHERE s.order_id=$1 AND s.kind='release' AND s.state='failed' AND s.build_error='`+settleTooSmall+`'),
 			`+xmrCollisionOpen("$1")+`,
 			EXISTS(SELECT 1 FROM xmr_settlements xs WHERE xs.order_id=$1 AND xs.state='requested' AND xs.created<now()-interval '24 hours'),
-			`+xmrFailedAlertIDs("$1"), o.ID).Scan(&v.Flagged, &v.Stall, &v.TooFew, &v.Refused, &v.Requested, &v.ReRequestable, &v.Unbuilt, &v.SetAside); err != nil {
+			`+xmrFailedAlertIDs("$1"), o.ID).Scan(&v.Flagged, &v.Stall, &v.TooFew, &v.Refused, &v.Requested, &v.ReRequestable, &v.Unbuilt, &v.SetAside, &last); err != nil {
 			return err
 		}
+		v.storedText(last, a.escrowXMR == nil)
 		if v.ReRequestable != 0 || v.Unbuilt != 0 || v.SetAside != 0 || !v.Flagged && (v.Stall || v.TooFew || v.Refused || v.Requested) {
 			d.StaffAlert = &v
 		}
@@ -888,7 +903,8 @@ func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageDat
 			pm.regress_notice,pm.below_floor,`+paymentFlagOpen("pm")+` AS open,f.at,
 			pm.disposition='escalated' AS escalated,COALESCE(to_char(pm.disposed_at,'YYYY-MM-DD'),'') AS disposed,(o.buyer_id=$2 OR pr.vendor_id=$2) AS party,
 			c.escrow,pm.spent_outside,COALESCE(pm.spent_by,'') AS spent_by,c.counted,pm.escrow_left_out AND NOT pm.after_close AS left_out,
-			COALESCE((SELECT xs.id FROM xmr_settlements xs WHERE xs.id=pm.xmr_settlement_id AND xs.state='failed'),0) AS failed_by
+			COALESCE((SELECT xs.id FROM xmr_settlements xs WHERE xs.id=pm.xmr_settlement_id AND xs.state='failed'),0) AS failed_by,
+			COALESCE((SELECT r.state||' '||r.reason FROM xmr_settlement_rerequests r WHERE r.settlement_id=pm.xmr_settlement_id ORDER BY r.id DESC LIMIT 1),'') AS failed_rr
 		FROM payments pm JOIN orders o ON o.id=pm.order_id JOIN products pr ON pr.id=o.product_id
 		JOIN escrows esc ON esc.order_id=o.id
 		CROSS JOIN LATERAL (SELECT e.escrow,e.escrow AND NOT pm.after_close AND NOT pm.escrow_left_out AND NOT pm.spent_outside AS counted
@@ -909,7 +925,7 @@ func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageDat
 					AND strpos(e.note, ' '||CASE WHEN length(pm.txid)<=20 THEN pm.txid ELSE left(pm.txid,20)||'…' END||' ')>0))) f ON true
 		WHERE pm.flagged AND pm.disposition IN ('','escalated'))
 		SELECT id,order_id,state,product_id,title,currency,amount,txid,idx,credited,locked,confirmations,regress_notice,below_floor,open,COALESCE(to_char(at,'YYYY-MM-DD HH24:MI "UTC"'),''),
-			escalated,disposed,party,escrow,spent_outside,spent_by,counted,left_out,failed_by,(SELECT count(*) FROM v WHERE NOT open)
+			escalated,disposed,party,escrow,spent_outside,spent_by,counted,left_out,failed_by,failed_rr,(SELECT count(*) FROM v WHERE NOT open)
 		FROM (SELECT * FROM v WHERE open UNION ALL (SELECT * FROM v WHERE NOT open ORDER BY at DESC NULLS LAST,id DESC LIMIT $1)) s
 		ORDER BY open DESC,CASE WHEN open THEN at END ASC NULLS FIRST,CASE WHEN open THEN id END,at DESC NULLS LAST,id DESC`, paymentReviewLimit, d.User.ID)
 	if err != nil {
@@ -920,9 +936,9 @@ func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageDat
 		var v PaymentReview
 		var amt, confs, failedBy int64
 		var credited, locked, regressed, belowFloor, escrow, outside, counted, leftOut bool
-		var disposed, spentBy string
+		var disposed, spentBy, failedRR string
 		if err = rows.Scan(&v.ID, &v.OrderID, &v.OrderState, &v.ProductID, &v.Title, &v.Currency, &amt, &v.TxID, &v.Index, &credited, &locked, &confs, &regressed, &belowFloor, &v.Open, &v.Flagged,
-			&v.Escalated, &disposed, &v.Party, &escrow, &outside, &spentBy, &counted, &leftOut, &failedBy, &d.PaymentReviewOthers); err != nil {
+			&v.Escalated, &disposed, &v.Party, &escrow, &outside, &spentBy, &counted, &leftOut, &failedBy, &failedRR, &d.PaymentReviewOthers); err != nil {
 			return err
 		}
 		// The disposition form (paymentReviewAction): open flags of orders the viewer is not party to; an escalated
@@ -958,8 +974,9 @@ func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageDat
 			v.Reason = "Locked transfer (unlock time), not counted or paid out"
 		case failedBy != 0:
 			// A-560: the deposit is spent by a Monero settlement that failed after its transaction was stored (only a
-			// build claims a deposit), so an administrator may re-request it; it clears once superseded.
-			v.Reason = fmt.Sprintf("Escrow deposit counted for the order; Monero escrow settlement %d, which spends it, failed and was not sent: an administrator can re-request it on the order page", failedBy)
+			// build claims a deposit); what staff can do depends on its newest re-request (xmrFailedStoredText). It
+			// clears once the settlement is superseded.
+			v.Reason = fmt.Sprintf("Escrow deposit counted for the order; Monero escrow settlement %d, which spends it, %s", failedBy, xmrFailedStoredText(failedBy, failedRR, a.escrowXMR == nil))
 			if confs < 0 {
 				v.Reason += "; now conflicted or missing"
 			}
