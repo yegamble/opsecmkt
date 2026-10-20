@@ -88,6 +88,7 @@ Record the actual authority, reason, authorized readers and release condition. P
 An order hold covers the order-bound correspondence, delivery updates and dispute images. It cannot infer which earlier direct messages concerned that order; preserve those direct-message IDs separately.
 It also covers that order's reserved digital inventory. Unassigned unit contents follow listing withdrawal and preservation rules. Unit content and its fingerprint are erased together; a consumed unit remains unavailable until its record is retired. The application retains no permanent content-hash ledger after this erasure. Restored-backup deletion replay covers these records as well.
 The recorded reader restrictions govern case handling; holds do not replace existing application permissions or encrypt plaintext records.
+These holds protect lifecycle deletion, not an immutable archive. Explicit owner cleanup of undisclosed listing content follows its existing controls; preserve required evidence separately before permitting that cleanup.
 Privileged operators can still read retained plaintext. Order correspondence requires local recipient encryption. Image evidence is unencrypted and visible to both parties and authorized case staff; only upload evidence intended for those viewers. Private staff support remains a separate direct channel.
 Review within 30 days. An overdue legal hold stays protected until its duty ends.
 Release requires password confirmation; the original deletion deadlines then apply. Released identifying register entries expire after 180 days.

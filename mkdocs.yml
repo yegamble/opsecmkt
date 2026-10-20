@@ -105,6 +105,7 @@ nav:
       - Native CLI reference: install/cli-reference.md
       - Installer reference: install/installer-reference.md
       - Implementation status: implementation-status.md
+      - Marketplace design and case privacy: marketplace-design-review.md
       - Acceptance checks: acceptance.md
       - Verification: verification.md
       - Security policy: project/SECURITY.md
