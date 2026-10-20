@@ -234,7 +234,11 @@ them. A review record is not proof that its underlying allegation is true.
 
 New capture records retain source digests and allowlisted order/image metadata,
 not source prose. New proposal inputs retain coded metadata only. Completing a
-new job atomically records its decision and removes its active raw actor link;
+new job atomically records its decision and removes its active raw actor link
+from the live row; earlier backups, WAL and dead row versions can still hold
+the actor id until they are removed or overwritten. Pending jobs keep the raw
+link until a worker completes them; enqueueing continues while the worker is
+stopped, bounded by the global pending cap (256 by default);
 per-job opaque references do not make the remaining target references anonymous.
 Unkeyed digests can confirm guesses about predictable source values.
 Source prose exists in memory during evaluation and remains governed by the

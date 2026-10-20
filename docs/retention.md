@@ -263,7 +263,7 @@ E2E_DATABASE_URL=DISPOSABLE_DATABASE_URL E2E_RETENTION_STATE_DIR=PRIVATE_ABSOLUT
 The browser setup initializes that database; never point it at an existing market. Retention form checks run with JavaScript disabled at 320 px.
 
 New moderation capture (migration 129) stores digests and limited metadata, not
-source prose. Completed jobs remove the active raw actor link. This prospective
+source prose. Completed jobs remove the active raw actor link from the live row (backups, WAL and dead row versions can keep it until removed or overwritten); pending jobs keep it until a worker completes them, bounded by the pending cap. This prospective
 minimization does not erase legacy copies, immutable audit records or backups,
 and does not make retained target references anonymous. New records also have
 no automatic expiry. See the
