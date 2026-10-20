@@ -247,13 +247,24 @@ func TestVendorDemotionArchivesListingsAndRefusesNewOrders(t *testing.T) {
 		t.Fatalf("refused historical ship changed order: %s", w.state(paid))
 	}
 
-	// Demoting to moderator archives too (the new listing and the one reactivated above).
+	// Moving an approved vendor into moderation preserves genuine selling
+	// approval and its active listings; a later Buyer assignment revokes it.
 	w.expect("/admin", admin, form("action", "role", "password", testPassword, "role", "vendor", "handle", w.e.loadUser(w.vendorID).Handle), 303, "")
 	c := w.e.product(w.vendorID, "digital")
 	w.expect("/admin", admin, form("action", "role", "password", testPassword, "role", "moderator", "handle", w.e.loadUser(w.vendorID).Handle), 303, "")
 	var archived bool
 	w.e.DB.QueryRow("SELECT archived FROM products WHERE id=$1", c).Scan(&archived)
-	if !archived || !w.e.auditExact(w.vendorID, "Archived 2 active listing(s): role changed to moderator by administrator demotion_admin") {
-		t.Fatal("demotion to moderator left the listing active or unaudited")
+	if archived || w.count("SELECT count(*) FROM products WHERE vendor_id=$1 AND NOT archived", w.vendorID) != 2 ||
+		w.count("SELECT count(*) FROM users WHERE id=$1 AND role='moderator' AND vendor_approved", w.vendorID) != 1 ||
+		!w.e.auditExact(w.vendorID, "Role changed from vendor to moderator by administrator demotion_admin") ||
+		w.e.auditExact(w.vendorID, "Archived 2 active listing(s): role changed to moderator by administrator demotion_admin") {
+		t.Fatal("moving an approved vendor into moderation lost approval/listings or recorded the wrong audit")
+	}
+	w.expect("/orders", w.other, form("product_id", c, "currency", "XMR"), 303, "")
+	w.expect("/admin", admin, form("action", "role", "password", testPassword, "role", "buyer", "handle", w.e.loadUser(w.vendorID).Handle), 303, "")
+	if w.count("SELECT count(*) FROM products WHERE vendor_id=$1 AND NOT archived", w.vendorID) != 0 ||
+		w.count("SELECT count(*) FROM users WHERE id=$1 AND vendor_approved", w.vendorID) != 0 ||
+		!w.e.auditExact(w.vendorID, "Archived 2 active listing(s): role changed to buyer by administrator demotion_admin") {
+		t.Fatal("assigning Buyer did not remove selling approval and archive active listings")
 	}
 }

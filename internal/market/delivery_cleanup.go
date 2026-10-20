@@ -74,13 +74,21 @@ func deliveryCleanupAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, fail(400, "Choose an archived listing to clear.")
 	}
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
-		l, err := lockListing(c, id)
-		if err != nil {
+		// confirmedTx holds and revalidates the actual owner's account and
+		// session. Privacy cleanup remains available after selling approval is
+		// removed, unlike listing edits, so do not use selling-only lockListing.
+		if err := waitForWalletLocks(c.Ctx(), c.Tx); err != nil {
 			return actionResult{}, err
 		}
-		// Admins may manage listings elsewhere, but this privacy-sensitive cleanup is only for the actual owner.
-		if l.VendorID != c.User.ID || !l.Archived {
+		var archived bool
+		err := c.Tx.QueryRowContext(c.Ctx(), "SELECT archived FROM products WHERE id=$1 AND vendor_id=$2 FOR UPDATE", id, c.User.ID).Scan(&archived)
+		// Administrators have no bypass here: cleanup can erase only the
+		// caller's own archived template, never another vendor's secret.
+		if err == sql.ErrNoRows || err == nil && !archived {
 			return actionResult{}, fail(404, "Archived listing not found")
+		}
+		if err != nil {
+			return actionResult{}, err
 		}
 		var hasContent bool
 		if err = c.Tx.QueryRowContext(c.Ctx(), "SELECT delivery_content<>'' FROM products WHERE id=$1", id).Scan(&hasContent); err != nil {
