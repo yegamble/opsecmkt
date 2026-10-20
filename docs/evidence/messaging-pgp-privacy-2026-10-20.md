@@ -64,6 +64,17 @@ TECHNICAL COST/RISK: Thread loading locks the peer account through eligibility a
 ACCEPTANCE CRITERIA: Demotion followed by key replacement cannot disclose that new key through either ticket composition or thread loading. Active eligible staff keys remain usable; hidden staff are not exposed as a selectable roster. Creation/reply retains current-session decryption guards.
 TEST PLAN: Ticket UI demotion/replacement regressions, independent corrected-source security/Tor verification and required current-commit Go/PostgreSQL/browser CI. Final outcomes are recorded in PR #104.
 
+## Final Round D: WR-MPGP-5 — vendor accounts acting as order buyers
+
+DECISION: ACCEPT the actual-purchaser correction and MODIFY the reciprocal seller exception.
+WHY: Vendor accounts can buy, but the hidden/restricted-vendor contact exception accepted only accounts whose role was buyer. An actual vendor-role purchaser could lose communication about their own open order. The reverse seller-to-vendor-role-customer case had the same mismatch.
+DISSENTING VIEW: A broad historical-counterparty exception would weaken inactive-vendor privacy. The accepted correction uses actual order-party identity and keeps the narrower existing visibility and financial-closure rules; it adds no generic history-only reverse grant.
+USER IMPACT: A vendor account buying an item retains the same necessary order communication as a buyer account. A vendor can reach its vendor-role customer only through a real vendor-visible order. Away-message refusal still wins.
+OPERATOR IMPACT: No configuration change.
+TECHNICAL COST/RISK: The existing locked recipient query admits buyer/vendor purchaser roles and adds a current-vendor seller's actual customer order under the target-vendor branch. Drafts do not discover customers. Restricted targets require a financially open order; suspended, banned and closed targets remain unavailable.
+ACCEPTANCE CRITERIA: Both directions work for their actual open-order parties; unrelated accounts, non-visible drafts, financially closed restricted orders and opted-out away recipients remain denied. Current-session PGP proof and same-transaction role/key retrieval remain required.
+TEST PLAN: Focused two-direction order-role regressions with real PGP session proof, privacy/QA corrected-source review, and required fresh database/browser CI. Final outcomes are recorded in PR #104.
+
 ## Concurrent main integration
 
 Main's A-614 settlement re-request fix and XMPP/support-ticket changes were integrated before final verification. Migrations 131–133 remain intact alongside PGP/access migrations 129–130. New support-ticket create/reply mutations now take the same live session/account decryption guard as direct messages; unverified browsers retain permitted read/status actions and receive PGP authentication guidance. Order-context, encrypted delivery and notification audience protections are preserved. Operator documentation distinguishes saved encryption keys, current-session decryption and optional outbound forwarding preferences.

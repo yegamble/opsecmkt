@@ -47,7 +47,7 @@ func TestOrderPGPRequiredForEveryBuyerRoleAndRecheckedAtCheckout(t *testing.T) {
 			t.Fatalf("missing-key %s checkout changed payment or stock", role)
 		}
 		page = e.body("GET", orderPage(order), session, nil, 200)
-		mustContain(t, page, noBuyerOrderKeyReason)
+		mustContain(t, page, pgpAccessRequiredMessage)
 		mustNotContain(t, page, `action="/orders/escrow-xmr"`)
 		e.setKey(id, public)
 		e.pgpSessionKey(session)
@@ -77,7 +77,7 @@ func TestOrderPGPRefusesUnusableKeysAtDraftAndCheckout(t *testing.T) {
 	// An unreadable legacy value cannot act as a saved encryption key either.
 	id, session := e.user("unreadable_order_key", "buyer")
 	agExec(e, "UPDATE users SET pgp='not a public key' WHERE id=$1", id)
-	e.check(e.do("POST", "/orders", session, url.Values{"product_id": {product}, "currency": {"XMR"}}), 409)
+	e.check(e.do("POST", "/orders", session, url.Values{"product_id": {product}, "currency": {"XMR"}}), 403)
 }
 
 func deliveryDecryptsWith(key *openpgp.Entity, ciphertext string) bool {

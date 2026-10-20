@@ -115,8 +115,9 @@ const messageNotPermitted = "No account you can message has this handle. Contact
 // recipient preferences stable through a send transaction. NOWAIT avoids actor/target lock inversions with confirmed
 // role or availability changes; real contention is retried as a database-busy response.
 // Other accounts contact a public vendor or eligible staff; a vendor also answers known customers. An old inbound
-// message never grants buyer-to-buyer access. Hidden vendors remain reachable by existing buyers only when they
-// allow messages while away, and that preference applies even when an order or earlier message exists.
+// message never grants buyer-to-buyer access. Hidden vendors remain reachable by established purchasers, including
+// vendor accounts buying for themselves, and by sellers through vendor-visible customer orders. Restricted vendors
+// require an unresolved financial order. The recipient's away preference still applies to every non-staff path.
 // q is the send transaction or a short key-read transaction; display-only availability checks also use the database.
 func messageRecipient(ctx context.Context, q rowQuerier, sender *User, handle string) (string, error) {
 	var id string
@@ -126,10 +127,14 @@ func messageRecipient(ctx context.Context, q rowQuerier, sender *User, handle st
 		OR (r.role='vendor' AND r.suspended_at IS NULL AND r.closed_at IS NULL
 			AND `+vendorAcceptsBuyerMessagesSQL("r")+`
 			AND (`+activeVendorSQL("r")+`
-				OR (s.role='buyer' AND (
-					EXISTS(SELECT 1 FROM orders o JOIN products p ON p.id=o.product_id WHERE o.buyer_id=s.id AND p.vendor_id=r.id
-						AND (r.retention_restricted_at IS NULL OR o.financial_closed_at IS NULL))
-					OR (r.retention_restricted_at IS NULL AND EXISTS(SELECT 1 FROM messages m WHERE m.recipient_id=s.id AND m.sender_id=r.id))))))
+				OR (s.role IN ('buyer','vendor') AND EXISTS(SELECT 1 FROM orders o JOIN products p ON p.id=o.product_id
+					WHERE o.buyer_id=s.id AND p.vendor_id=r.id
+						AND (r.retention_restricted_at IS NULL OR o.financial_closed_at IS NULL)))
+				OR (s.role='buyer' AND r.retention_restricted_at IS NULL
+					AND EXISTS(SELECT 1 FROM messages m WHERE m.recipient_id=s.id AND m.sender_id=r.id))
+				OR (s.role='vendor' AND EXISTS(SELECT 1 FROM orders o JOIN products p ON p.id=o.product_id
+					WHERE o.buyer_id=r.id AND p.vendor_id=s.id AND `+vendorSeesOrder("o")+`
+						AND (r.retention_restricted_at IS NULL OR o.financial_closed_at IS NULL)))))
 		OR (s.role='vendor' AND r.role='buyer' AND r.suspended_at IS NULL AND r.closed_at IS NULL AND (
 			EXISTS(SELECT 1 FROM orders o JOIN products p ON p.id=o.product_id WHERE o.buyer_id=r.id AND p.vendor_id=s.id AND `+vendorSeesOrder("o")+`)
 			OR EXISTS(SELECT 1 FROM messages m WHERE m.recipient_id=s.id AND m.sender_id=r.id)))
