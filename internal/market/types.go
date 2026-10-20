@@ -22,6 +22,9 @@ type Product struct {
 	VendorVerified                                                                       bool // A-544: an administrator marked the vendor verified
 	// P4, vendor-dashboard only: an administrator's takedown reason (A-163); never loaded for public pages.
 	TakedownReason string
+	// MOD72-6: the listing awaits staff review (products.review_state='pending', listing_review.go). Public pages
+	// never load one; its vendor, staff and the parties to an earlier order see it marked.
+	Pending bool
 	// A-189, catalog, vendor and product pages only: the listing's public photos, oldest first (image_pages.go),
 	// and Thumb, the first one's thumbnail URL for its card ("" = the CSS illustration).
 	Photos []ProductPhoto
@@ -209,6 +212,13 @@ type PageData struct {
 	// vendor page, the staff remove form for the vendor's avatar.
 	RecentImages   []RecentImage
 	AvatarTakedown *ImageTakedown
+	// MOD72-6 (listing_review.go). ListingReviews: /moderator, the listings awaiting review, the longest waiting first
+	// (at most listingReviewLimit of ListingReviewsTotal); ListingReviewAdmin: admin Vendors section, the review mode
+	// panel; ListingHeld: vendor-dashboard and listing-edit, the vendor's next new listing or edit waits for review.
+	ListingReviews      []ListingReview
+	ListingReviewsTotal int
+	ListingReviewAdmin  *ListingReviewAdminView
+	ListingHeld         bool
 
 	// Foundation
 	Auth *AuthView

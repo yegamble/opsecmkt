@@ -15,8 +15,9 @@ import (
 // action's transaction: no stub, no hidden flag, no purge log (D4). It records one audit row for the actor and one
 // for the owner (fixed copy, a photo's listing by its short id, and the reason; never the image id) and notifies
 // the owner with the reason. An owner removes their own images with A-188's forms, never here. Moderators gain no
-// other listing capability: editing, archiving, taking down and restoring listings stay the vendor's and the
-// administrator's (inventory_actions.go).
+// other listing capability here: editing, archiving, taking down and restoring listings stay the vendor's and the
+// administrator's (inventory_actions.go); a moderator approves or rejects only a listing awaiting review
+// (listing_review.go, MOD72-6).
 //
 // The forms: /moderator "Recent photos" (the 50 newest images the public route serves, vendors' only for a
 // moderator; the list to re-check after a database restore, which brings removed images back), a <details> form

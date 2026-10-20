@@ -109,7 +109,8 @@ func imageSuffix(full bool) string {
 }
 
 // imagePublicFrom and imagePublicWhere are the public visibility predicate over images i, their owner o and a
-// photo's listing p. A photo: the listing is published (not archived, not taken down) and its vendor is still a
+// photo's listing p. A photo: the listing is published (not archived, not taken down, not awaiting staff review:
+// MOD72-6, listing_review.go) and its vendor is still a
 // vendor (or an administrator, whose own listings are public too) and not suspended. An avatar: a vendor's
 // that is not suspended; a moderator's or administrator's only while the "public staff list" setting is on and
 // that account has not hidden itself (owner decision 1(d); both are off/hidden by default, and any other value
@@ -118,7 +119,7 @@ func imageSuffix(full bool) string {
 const (
 	imagePublicFrom  = `images i JOIN users o ON o.id=i.owner_user_id LEFT JOIN products p ON p.id=i.product_id`
 	imagePublicWhere = `o.suspended_at IS NULL AND (
- (i.kind='photo' AND p.vendor_id=i.owner_user_id AND NOT p.archived AND p.admin_archive_reason IS NULL AND o.role IN ('vendor','admin'))
+ (i.kind='photo' AND p.vendor_id=i.owner_user_id AND NOT p.archived AND p.admin_archive_reason IS NULL AND p.review_state='approved' AND o.role IN ('vendor','admin'))
  OR (i.kind='avatar' AND (o.role='vendor' OR (o.role IN ('admin','moderator') AND NOT o.staff_hidden
    AND EXISTS(SELECT 1 FROM settings WHERE key='staff_list_public' AND value='true')))))`
 )
@@ -128,6 +129,8 @@ const (
 // buyer or vendor of an order on which that member moved the dispute to resolved, or a moderator (who may open
 // every resolved order, orders_load.go); or, for a photo of an archived listing, whoever may read an order placed
 // on that listing (orderReadable, the rule that opens the archived listing's product page, A-164 and A-264).
+// MOD72-6: a listing awaiting staff review is treated like an archived one for those order readers, and a
+// moderator also sees its photos while it is pending and not archived, to review it (listing_review.go).
 // Everyone else, moderators included for other vendors' images, is refused. Inside the last EXISTS, o and p are
 // the order and its listing (orderReadable's aliases), not the image's owner.
 var imageDeskWhere = `(i.owner_user_id=$2 OR $3='admin'
@@ -135,8 +138,10 @@ var imageDeskWhere = `(i.owner_user_id=$2 OR $3='admin'
    SELECT 1 FROM orders od JOIN products pr ON pr.id=od.product_id
    WHERE od.state='resolved' AND (od.buyer_id=$2 OR pr.vendor_id=$2 OR $3='moderator')
      AND EXISTS(SELECT 1 FROM order_events e WHERE e.order_id=od.id AND e.from_state='disputed' AND e.to_state='resolved' AND e.actor_id=i.owner_user_id)))
+ OR (i.kind='photo' AND $3='moderator' AND EXISTS(SELECT 1 FROM products pp
+   WHERE pp.id=i.product_id AND pp.review_state='pending' AND NOT pp.archived AND pp.vendor_id=i.owner_user_id))
  OR (i.kind='photo' AND EXISTS(SELECT 1 FROM products p JOIN orders o ON o.product_id=p.id
-   WHERE p.id=i.product_id AND p.archived AND p.vendor_id=i.owner_user_id AND ` + orderReadable("$2", "$3") + `)))`
+   WHERE p.id=i.product_id AND (p.archived OR (p.review_state='pending' AND o.state<>'draft')) AND p.vendor_id=i.owner_user_id AND ` + orderReadable("$2", "$3") + `)))`
 
 // imageSelect starts an image route's query: the length of one size of the image and, for a GET, its bytes (a
 // HEAD reads only the length). The only way a query reads image bytes; no other file may use it

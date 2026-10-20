@@ -852,6 +852,30 @@ see, and confirm with your password (and authenticator code when enabled). A cha
 Vendors that existed before this release keep selling: the upgrade records an approved application for each, without
 a verified mark.
 
+### Listing review
+
+**Admin → Vendors → Listing review** (`/admin/vendors#listing-review`) chooses whether new and edited listings are
+public at once (**publish at once**, the default and the value after upgrading) or wait for staff (**hold for
+review**). Confirm with your password (and authenticator code when enabled); the change is audited. In hold mode a
+vendor's new listing, its change to an approved listing's title, description, category, region, fulfillment type,
+price or dispatch window, and a new photo on it, hide the listing from buyers until a moderator or administrator
+approves it. Stock changes, automatic delivery content and your own edits do not hold a listing; your own listings
+are never held. Orders placed before an edit continue.
+
+- Review listings in **Listings awaiting review** on the moderation desk (`/moderator#listing-review`), the longest
+  waiting first. Open each to see it with its photos. **Approve** publishes it; **Reject** needs a reason of 10–500
+  characters that the vendor reads (never an address, real name or tracking number): the listing is archived with the
+  reason, like a takedown, and only an administrator's *Restore listing* on its edit page brings it back, into the
+  queue again. Both need the reviewer's password and are audited on both accounts; the vendor is notified.
+  Moderators review; only administrators change the mode or a vendor's flag.
+- **Vendors who publish without review**: enter a vendor's handle (or use the account's page in the user directory) to
+  let its new and edited listings publish at once, or to hold them again. It applies to the vendor's next save;
+  approved listings stay visible and listings already waiting still need staff.
+- Switching back to publish at once approves nothing: listings already waiting stay hidden until staff approve them.
+  The audit row says how many still wait.
+- Automated moderation (the optional moderation worker and model) never approves, holds or rejects a listing, and a
+  capture that overflowed leaves a held listing held.
+
 ### Changing the market name and logo
 
 An administrator manages the site's identity under **Admin → Site & branding → Market name and logo** (`/admin/site`).

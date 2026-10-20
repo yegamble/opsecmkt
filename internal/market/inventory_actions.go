@@ -2,6 +2,7 @@ package market
 
 import (
 	"database/sql"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -24,6 +25,7 @@ type managedListing struct {
 	Stock              int
 	Archived           bool
 	Takedown           string // an administrator's takedown reason; "" when not taken down
+	Pending            bool   // awaiting staff review (MOD72-6); with Takedown set, rejected in review
 }
 
 // lockListing row-locks a listing the actor may manage (its vendor, or any administrator).
@@ -45,7 +47,7 @@ func lockListing(c *actionCtx, id string) (managedListing, error) {
 	if _, err := c.Tx.ExecContext(c.Ctx(), `SELECT 1 FROM users WHERE id=$1 OR id=(SELECT vendor_id FROM products WHERE id=$2 AND (vendor_id=$1 OR $3='admin')) FOR KEY SHARE`, c.User.ID, id, c.User.Role); err != nil {
 		return l, err
 	}
-	err := c.Tx.QueryRowContext(c.Ctx(), `SELECT vendor_id,kind,stock,archived,coalesce(admin_archive_reason,'') FROM products WHERE id=$1 AND (vendor_id=$2 OR $3='admin') FOR UPDATE`, id, c.User.ID, c.User.Role).Scan(&l.VendorID, &l.Kind, &l.Stock, &l.Archived, &l.Takedown)
+	err := c.Tx.QueryRowContext(c.Ctx(), `SELECT vendor_id,kind,stock,archived,coalesce(admin_archive_reason,''),review_state='pending' FROM products WHERE id=$1 AND (vendor_id=$2 OR $3='admin') FOR UPDATE`, id, c.User.ID, c.User.Role).Scan(&l.VendorID, &l.Kind, &l.Stock, &l.Archived, &l.Takedown, &l.Pending)
 	if err == sql.ErrNoRows {
 		return l, fail(404, "Listing not found")
 	}
@@ -82,14 +84,17 @@ func listingUpdateAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, err
 	}
 	// was is the listing before an administrator's edit of another vendor's listing, for the vendor's notice (A-516).
+	// It also tells whether the vendor's own edit changed what buyers see, which re-holds it for review (MOD72-6).
 	was := listingInput{Kind: l.Kind, Stock: l.Stock}
+	var storedDelivery string
+	if err = c.Tx.QueryRowContext(ctx, `SELECT delivery_content,title,description,category,region,btc,xmr,coalesce(dispatch_days,0) FROM products WHERE id=$1`, l.ID).Scan(
+		&storedDelivery, &was.Title, &was.Description, &was.Category, &was.Region, &was.BTC, &was.XMR, &was.DispatchDays); err != nil {
+		return actionResult{}, err
+	}
 	if l.VendorID != c.User.ID {
 		// Automatic delivery content is what every buyer receives in the vendor's name. Other editors
 		// (administrators) never see it, so their saves keep the stored content whatever the form sends.
-		if err = c.Tx.QueryRowContext(ctx, `SELECT delivery_content,title,description,category,region,btc,xmr,coalesce(dispatch_days,0) FROM products WHERE id=$1`, l.ID).Scan(
-			&in.DeliveryContent, &was.Title, &was.Description, &was.Category, &was.Region, &was.BTC, &was.XMR, &was.DispatchDays); err != nil {
-			return actionResult{}, err
-		}
+		in.DeliveryContent = storedDelivery
 		if in.DeliveryContent != "" && in.Kind != "digital" {
 			return actionResult{}, fail(400, "This listing has automatic delivery content that only its vendor can remove, so it must stay digital.")
 		}
@@ -125,10 +130,24 @@ func listingUpdateAction(c *actionCtx) (actionResult, error) {
 	if err != nil {
 		return actionResult{}, err
 	}
+	changed := changedListingFields(was, saved)
+	notice := "listing-saved"
+	// MOD72-6: in hold mode the vendor's own change to what buyers see sends an approved listing back to staff review
+	// (listing_review.go); a stock-only change, automatic delivery content (staff never see it) and an
+	// administrator's edit do not.
+	if l.VendorID == c.User.ID && slices.ContainsFunc(changed, func(f string) bool { return f != "stock" }) {
+		held, err := holdListing(ctx, c.Tx, l.ID, l.VendorID)
+		if err != nil {
+			return actionResult{}, err
+		}
+		if held {
+			notice = "listing-saved-held"
+		}
+	}
 	// An administrator's change to another vendor's listing is told to the vendor, naming what changed, and kept in
 	// the vendor's audit trail too (A-516), as an administrator's photo change is (A-190). A save that changed
 	// nothing tells them nothing.
-	if changed := changedListingFields(was, saved); l.VendorID != c.User.ID && len(changed) > 0 {
+	if l.VendorID != c.User.ID && len(changed) > 0 {
 		short, fields := shortID(l.ID), strings.Join(changed, ", ")
 		if _, err = c.Tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", l.VendorID, "Listing "+short+" edited by administrator "+c.User.Handle+": changed "+fields); err != nil {
 			return actionResult{}, err
@@ -138,7 +157,7 @@ func listingUpdateAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, err
 		}
 	}
-	return actionResult{Redirect: "/listing-edit?id=" + l.ID, Notice: "listing-saved", Audit: listingAudit("Updated", c, l)}, nil
+	return actionResult{Redirect: "/listing-edit?id=" + l.ID, Notice: notice, Audit: listingAudit("Updated", c, l)}, nil
 }
 
 // changedListingFields names, in form order, the fields an edit changed (automatic delivery content excepted: an
@@ -184,6 +203,9 @@ func listingArchiveAction(c *actionCtx, archive bool) (actionResult, error) {
 		contact, err := staffContactRefusal(c.Ctx(), c.Tx)
 		if err != nil {
 			return actionResult{}, err
+		}
+		if l.Pending { // MOD72-6: rejected in review (listing_review.go)
+			return actionResult{}, fail(409, "The market staff rejected this listing in review with the reason “"+l.Takedown+"”. You can still edit it, but only an administrator can restore it, and it then waits for review again. If you think this is wrong, ask an administrator to review it. "+contact)
 		}
 		return actionResult{}, fail(409, "An administrator took this listing down with the reason “"+l.Takedown+"”. You can still edit it, but only an administrator can restore it. If you think this is wrong, ask an administrator to review it. "+contact)
 	}
@@ -264,8 +286,9 @@ func adminListingAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, err
 		}
 		var title, current, handle string
-		err := tx.QueryRowContext(ctx, `SELECT p.title,coalesce(p.admin_archive_reason,''),u.handle FROM products p JOIN users u ON u.id=p.vendor_id
-			WHERE p.id=$1 FOR UPDATE OF p`, id).Scan(&title, &current, &handle)
+		var pending bool
+		err := tx.QueryRowContext(ctx, `SELECT p.title,coalesce(p.admin_archive_reason,''),u.handle,p.review_state='pending' FROM products p JOIN users u ON u.id=p.vendor_id
+			WHERE p.id=$1 FOR UPDATE OF p`, id).Scan(&title, &current, &handle, &pending)
 		if err != nil {
 			return actionResult{}, err
 		}
@@ -297,6 +320,10 @@ func adminListingAction(c *actionCtx) (actionResult, error) {
 			audit = "Restored listing " + short + " of " + handle + " after a takedown"
 			vendorAudit = "Listing " + short + " restored by administrator " + c.User.Handle
 			note = "An administrator restored your listing “" + title + "” (" + short + "). It is visible in the marketplace again and accepts new orders."
+			if pending { // MOD72-6: a listing rejected in review, or taken down while held, waits for review again
+				audit += "; it waits for review"
+				note = "An administrator restored your listing “" + title + "” (" + short + "). It waits for review: buyers cannot see it until a moderator or administrator approves it."
+			}
 		}
 		if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", vendorID, vendorAudit); err != nil {
 			return actionResult{}, err

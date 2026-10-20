@@ -15,6 +15,15 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## Listing review (migration 136)
+
+Migration 136 adds `products.review_state` (every existing listing is `approved`), the per-vendor
+`users.listing_auto_approve` flag (off) and the `listing_review_mode` setting with the value `publish`. Nothing
+changes until an administrator chooses **hold for review** under *Admin → Vendors → Listing review*: listings stay
+public and new ones publish at once, as before. Rolling the application back to a build without this migration
+leaves the columns unused; a listing still pending would then be public again, so approve or reject pending listings
+before downgrading.
+
 ## Optional moderation proposals (migrations 125 through 127 and 129)
 
 Application startup applies the append-only moderation tables/triggers and
