@@ -1606,10 +1606,20 @@ the settlement itself, and a payment by hand would pay twice.
    ```
 
    A spent coin is not a stale ring: stop and follow the failed-settlement paragraphs below instead.
-2. *Remedy A (the default): move the ring database aside.* Precondition: the coins are unspent (step 1). The cost: the ring
+2. *Remedy A (the rehearsed one): move the ring database aside.* Preconditions: the coins are unspent (step 1), and no other settlement is in flight (below). The cost: the ring
    database is shared by every wallet on that wallet-rpc (each month's escrow wallet and the vendor bond wallets), so the
    stored rings of all their coins are dropped too, and a coin of any of them that is later rebuilt after a reorganisation
-   picks a new ring instead of reusing its old one. Stop the wallet-rpc, then move its `.shared-ringdb` to a dated
+   picks a new ring instead of reusing its old one. That is a privacy cost: a coin spent again with a different ring
+   than a transaction that already reached any node lets whoever saw both compare the two rings and find the real coin.
+   For the stuck coins themselves both remedies give a new ring (the old one no longer contains them); remedy A also
+   drops it for every other coin. So use remedy A only when no other Monero settlement may be built again, that is when
+   this answers 0, and otherwise use remedy B, which keeps every other coin's ring:
+
+   ```sh
+   db_sql -X -At -c "SELECT count(*) FROM xmr_settlements WHERE id <> SETTLEMENT_ID AND (state IN ('built','relayed') OR (state = 'failed' AND tx_hash IS NOT NULL) OR (state = 'requested' AND supersedes IS NOT NULL))"
+   ```
+
+   Stop the wallet-rpc, then move its `.shared-ringdb` to a dated
    directory with the pinned image as uid 1000 and no network; never delete it, and never touch the wallet files (with
    another `COMPOSE_PROJECT_NAME`, the volume is `<COMPOSE_PROJECT_NAME>_monero_escrow_wallet`; use the
    `MONERO_WALLET_IMAGE` your `.env` pins):
