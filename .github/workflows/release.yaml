@@ -6,12 +6,12 @@ permissions:
   contents: read
 jobs:
   verify:
-    uses: ./.github/workflows/ci.yaml
+    uses: ./.github/workflows/ci.yaml # zizmor: ignore[self-repository] -- verify the complete CI from the same tagged commit; retain supported local workflow syntax.
   package:
     name: Draft image release
     needs: verify
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 35
     permissions:
       contents: write
     steps:
@@ -34,6 +34,11 @@ jobs:
           sbom: true
           # Built from scratch: no Actions cache feeds a release image.
           no-cache: true
+      - name: Scan the actual release OCI archive
+        uses: ./.github/actions/scan-image # zizmor: ignore[self-repository] -- scan this tagged checkout's release artifact with its reviewed composite action.
+        with:
+          image-archive: opsecmkt.oci.tar
+          artifact-name: release-image-vulnerabilities
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -195,21 +194,6 @@ func escrowXMRConfigFromEnv(getenv func(string) string) (escrowXMRConfig, error)
 		return c, errors.New(`ESCROW_XMR_TOR_RELAY must be blank, "` + xmrTorRelayRemote + `" (production Tor with separately hosted HTTPS Monero services), or "` + xmrTorRelayAccepted + `" (accept direct relay exposure); see docs/operator-guide.md, "Monero escrow"`)
 	}
 	return c, nil
-}
-
-// sameRPCEndpoint reports whether two RPC URLs name the same endpoint, ignoring credentials, case in the scheme and
-// host, and a trailing slash. It compares spellings (localhost and 127.0.0.1 differ); startEscrowXMR backs it up by
-// checking the escrow wallet-rpc network (A-449).
-func sameRPCEndpoint(a, b string) bool {
-	norm := func(raw string) string {
-		u, err := url.Parse(strings.TrimSpace(raw))
-		if err != nil || u.Host == "" {
-			return ""
-		}
-		return strings.ToLower(u.Scheme+"://"+u.Host) + strings.TrimRight(u.Path, "/")
-	}
-	n := norm(a)
-	return n != "" && n == norm(b)
 }
 
 // escrowXMR is Monero escrow as configured at startup: App.escrowXMR, nil while ESCROW_XMR is off. The Monero escrow

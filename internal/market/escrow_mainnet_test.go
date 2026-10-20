@@ -5,7 +5,6 @@ import (
 
 	"strings"
 	"testing"
-	"time"
 
 	"opsecmkt/internal/btc"
 )
@@ -188,13 +187,4 @@ func TestEscrowConfigMainnet(t *testing.T) {
 			t.Errorf("%v: fee %q", tc.env, c.feeAddress)
 		}
 	}
-}
-
-// mainnetCore makes the simulated Core a mainnet node with a mainnet arbiter wallet (an xpub on 84h/0h/0h), peers
-// and a fresh tip.
-func mainnetCore(t *testing.T, c *fakeEscrowCore) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.chain, c.peers, c.tipTime = "main", 8, time.Now().Unix()
-	c.arbiterDesc = "wpkh(" + mainnetExpr(t, fakeArbiterExpr()) + "/1/*)#fakechk0"
 }

@@ -15,7 +15,7 @@ import (
 )
 
 const brandingLock = 782502
-const brandingTicketLifetime = 10 * time.Minute
+
 const brandingUploadPath = "/branding/logo/upload"
 
 var brandingTokenPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)

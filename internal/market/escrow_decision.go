@@ -127,62 +127,6 @@ func escrowDecisionAction(c *actionCtx) (actionResult, error) {
 	})
 }
 
-// escrowDecisionView shows a resolved escrow order's dispute decision, and offers an administrator who is not a party
-// the form to change it while its settlement has no final transaction.
-func (a *App) escrowDecisionView(ctx context.Context, d *PageData, v *EscrowOrderView) error {
-	o := d.Order
-	if o.State != stateResolved {
-		return nil
-	}
-	outcome, err := escrowDisputeOutcome(ctx, a.db, o.ID)
-	if err != nil || outcome == "" {
-		return err
-	}
-	dv := &EscrowDecisionView{Outcome: outcome, Text: "Dispute decided: " + decisionText(outcome) + "."}
-	var fixed bool
-	if err = a.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM settlements WHERE order_id=$1 AND kind IN ('release','refund')
-		AND state IN ('signed','broadcast','confirmed','external'))`, o.ID).Scan(&fixed); err != nil {
-		return err
-	}
-	if fixed {
-		dv.Text += " It is fixed: its settlement has a final transaction."
-	} else {
-		dv.Text += " An administrator may change it until its settlement has a final transaction."
-	}
-	// P2-R4: a live release older than the dispute is the one built when the order was shipped (a claim comes after).
-	// A-437: a failed refund is the live decision's (a refund a changed decision superseded, built or not, is in state
-	// superseded: migration 087), and only its too-small failure left the coins out.
-	var shipped, tooFew bool
-	if err = a.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM settlements s JOIN disputes d ON d.order_id=s.order_id WHERE s.order_id=$1
-		AND s.kind='release' AND s.state<>'superseded' AND s.created<d.created),
-		EXISTS(SELECT 1 FROM settlements WHERE order_id=$1 AND kind='refund' AND state='failed' AND build_error=$2)`, o.ID, settleTooSmall).Scan(&shipped, &tooFew); err != nil {
-		return err
-	}
-	switch {
-	case outcome == "release" && shipped:
-		// P2-R4: the release built when the order was shipped is the decision's settlement; no new claim is asked for.
-		v.NextStep = "The dispute was decided for the vendor: the release to the vendor built when the order was shipped pays the vendor; it is shown below. The release deadline no longer applies."
-	case outcome == "release":
-		v.NextStep = "The dispute was decided for the vendor: the vendor claims the escrowed coins from this page."
-	case tooFew:
-		// A-437: the refund's coins were left out for a stray refund (leaveOutTooFew); each deposit line says where it is.
-		v.NextStep = "The dispute was decided for the buyer, but the market could not build the refund: the coins in this escrow were too few to pay the network fee and an output of at least 0.0001 BTC. A stray refund returns them, together with any later deposit, to the buyer's refund address once together they can pay the network fee; each deposit below says where it stands."
-	default:
-		v.NextStep = "The dispute was decided for the buyer: the coins in this escrow go back to the buyer's refund address through the refund settlement below."
-	}
-	u := d.User
-	if !fixed && u != nil && u.Role == "admin" && u.ID != o.BuyerID && u.ID != o.VendorID && a.escrowConfigured {
-		dv.CanChange = true
-		if d.Security == nil {
-			if d.Security, _, _, err = a.securityView(ctx, u.ID); err != nil {
-				return err
-			}
-		}
-	}
-	v.Decision = dv
-	return nil
-}
-
 // escrowAmount states n atomic units of o's escrow coin with its network: the Bitcoin escrow node's chain, or the
 // network Monero escrow was verified on (none named before one was, A-472: it said fakechain, wrong on stagenet).
 func (a *App) escrowAmount(o *Order, n int64) string {

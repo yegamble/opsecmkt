@@ -1,95 +1,13 @@
 package market
 
 import (
-	"context"
-	"encoding/binary"
 	"encoding/hex"
-	"errors"
 	"fmt"
 
 	"slices"
 
 	"testing"
 )
-
-// pinsReshape rebuilds the PSBT b64 with its unsigned transaction and its input and output maps changed by mut (the
-// maps stay in step with the transaction, so the result still parses). The global map keeps only the transaction.
-func pinsReshape(t *testing.T, b64 string, mut func(tx *psbtTx, ins, outs *[][]byte)) string {
-	t.Helper()
-	p, err := decodePSBT(b64)
-	if err != nil {
-		t.Fatal(err)
-	}
-	r := &psbtReader{b: p.Raw, off: 5}
-	if _, _, err = r.readMap(); err != nil {
-		t.Fatal(err)
-	}
-	maps := func(n int) [][]byte {
-		var out [][]byte
-		for range n {
-			start := r.off
-			if _, _, err := r.readMap(); err != nil {
-				t.Fatal(err)
-			}
-			out = append(out, slices.Clone(p.Raw[start:r.off]))
-		}
-		return out
-	}
-	ins, outs := maps(len(p.Tx.In)), maps(len(p.Tx.Out))
-	tx := p.Tx
-	tx.In, tx.Out = slices.Clone(tx.In), slices.Clone(tx.Out)
-	mut(&tx, &ins, &outs)
-	all := append([][]byte{psbtMap(kv{[]byte{0}, pinsSerializeTx(tx)})}, ins...)
-	return encodePSBT(buildPSBT(append(all, outs...)...))
-}
-
-// pinsSerializeTx is the transaction without witnesses, as a PSBT's unsigned transaction field holds it.
-func pinsSerializeTx(tx psbtTx) []byte {
-	b := binary.LittleEndian.AppendUint32(nil, uint32(tx.Version))
-	b = append(b, compactSize(len(tx.In))...)
-	for _, in := range tx.In {
-		b = append(b, in.TxID[:]...)
-		b = binary.LittleEndian.AppendUint32(b, in.Vout)
-		b = append(b, 0)
-		b = binary.LittleEndian.AppendUint32(b, in.Sequence)
-	}
-	b = append(b, compactSize(len(tx.Out))...)
-	for _, o := range tx.Out {
-		b = binary.LittleEndian.AppendUint64(b, uint64(o.Value))
-		b = append(append(b, compactSize(len(o.Script))...), o.Script...)
-	}
-	return binary.LittleEndian.AppendUint32(b, tx.LockTime)
-}
-
-// pinsSkew sets what the fake node lies about (nil clears it).
-func (x *escrowEnv) pinsSkew(create, update func(string) string, utxo func(map[string]any)) {
-	x.core.mu.Lock()
-	defer x.core.mu.Unlock()
-	x.core.createSkew, x.core.updateSkew, x.core.utxoSkew = create, update, utxo
-}
-
-// pinsBuild runs one build of settlement id, as the watcher does, and returns its error.
-func (x *escrowEnv) pinsBuild(id int64) error {
-	return x.A.buildSettlement(context.Background(), x.A.escrow.Load(), id)
-}
-
-// pinsNothingStored asserts that settlement id is still building with no PSBT, no outputs and no claimed payment.
-func (x *escrowEnv) pinsNothingStored(what string, id int64) {
-	x.t.Helper()
-	if agInt(x.testEnv, "SELECT count(*) FROM settlements WHERE id=$1 AND state='building' AND psbt IS NULL AND txid IS NULL", id) != 1 ||
-		agInt(x.testEnv, "SELECT count(*) FROM settlement_outputs") != 0 || agInt(x.testEnv, "SELECT count(*) FROM payments WHERE settlement_id IS NOT NULL") != 0 {
-		x.t.Fatalf("%s: something was stored", what)
-	}
-}
-
-// pinsRPCError asserts err is the node-reply refusal of method with class.
-func pinsRPCError(t *testing.T, what string, err error, method, class string) {
-	t.Helper()
-	var re *escrowRPCError
-	if !errors.As(err, &re) || re.Method != method || re.Class != class {
-		t.Fatalf("%s: build returned %v, want %s %s", what, err, method, class)
-	}
-}
 
 // settlementTxMatches on a packet whose counts disagree (which parsePSBT never produces): more transaction inputs
 // than asked for is refused on the transaction's own count. Kills TM5 (input count compared with <), which no

@@ -185,31 +185,6 @@ type fakeEscrowCore struct {
 	ckdMemo map[string]bip32Key
 }
 
-// forgetWatched makes the watch wallet forget every address its imports added (bare-key, ranged and addr(…) alike) with
-// their labels, as a watch-only wallet restored from a backup older than them would: deposits to them are not listed
-// until they are imported again.
-func (c *fakeEscrowCore) forgetWatched() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.forgotten == nil {
-		c.forgotten = map[string]bool{}
-	}
-	for a := range c.watched {
-		c.forgotten[a] = true
-	}
-	for a := range c.labels {
-		c.forgotten[a] = true
-	}
-	c.labels, c.watched, c.watchPubkeys, c.rangedPubkeys = nil, nil, nil, nil
-}
-
-// importRequests is a copy of every importdescriptors request to the watch wallet.
-func (c *fakeEscrowCore) importRequests() []map[string]any {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return slices.Clone(c.importReqs)
-}
-
 // depositAt is the deposit the wallet reports at txid:vout.
 func (c *fakeEscrowCore) depositAt(txid string, vout int64) (fakeEscrowDeposit, bool) {
 	for _, d := range c.deposits {
@@ -231,24 +206,6 @@ func (c *fakeEscrowCore) spend(txid string, vout int64) {
 	delete(c.spentBy, txid+":"+strconv.FormatInt(vout, 10)) // spent by a transaction the fake never sent
 }
 
-// count is how many times method was called.
-func (c *fakeEscrowCore) count(method string) int {
-	return len(slices.DeleteFunc(c.methods(), func(m string) bool { return m != method }))
-}
-
-// countWith is how many times method was called with params containing part.
-func (c *fakeEscrowCore) countWith(method, part string) int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	n := 0
-	for _, call := range c.calls {
-		if call.Method == method && strings.Contains(string(call.Params), part) {
-			n++
-		}
-	}
-	return n
-}
-
 // fakeEscrowDeposit is one output the watch wallet reports as received.
 type fakeEscrowDeposit struct {
 	Address, TxID string
@@ -264,23 +221,6 @@ func (c *fakeEscrowCore) deposit(addr, txid string, vout, sats, confs int64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.deposits = append(c.deposits, fakeEscrowDeposit{addr, txid, vout, sats, confs})
-}
-
-// setConfs sets the confirmations of every output of txid.
-func (c *fakeEscrowCore) setConfs(txid string, confs int64) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	for i := range c.deposits {
-		if c.deposits[i].TxID == txid {
-			c.deposits[i].Confs = confs
-		}
-	}
-}
-
-func (c *fakeEscrowCore) importedDescriptors() []string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return slices.Clone(c.imports)
 }
 
 type fakeCall struct {
@@ -1156,19 +1096,6 @@ func (c *fakeEscrowCore) txFee(t *signedTx) int64 {
 	return fee
 }
 
-// setTxConfs sets the confirmations of a sent transaction (negative: conflicted, with the conflicting txid).
-func (c *fakeEscrowCore) setTxConfs(txid string, confs int64, conflict string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.txConfs[txid] = confs
-	if conflict != "" {
-		if c.conflicts == nil {
-			c.conflicts = map[string][]string{}
-		}
-		c.conflicts[txid] = []string{conflict}
-	}
-}
-
 // fakeFinalTx is finalizepsbt's raw transaction when every input of a multisig spend carries two valid signatures from
 // its witness script's keys and no invalid one: the unsigned transaction with each input's witness [empty, the
 // signatures in key order, witness script]. A PSBT with a finalized input, or any other shape, is not one (ok false).
@@ -1342,27 +1269,6 @@ func (c *fakeEscrowCore) utxoUpdate(b64, desc string) string {
 		}
 	}
 	return encodePSBT(raw)
-}
-
-// fakeOwnerSign is the owner's wallet in the fake: it adds a signature (sighash sh) from the practice PSBT's
-// derivation at fingerprint fp, the owner's practice child key.
-func fakeOwnerSign(t *testing.T, practice, fp string, sh byte) string {
-	t.Helper()
-	pk, err := decodePSBT(practice)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, d := range pk.Inputs[0].Derivations {
-		if hex.EncodeToString(d.Fingerprint[:]) == fp {
-			out, err := pk.withInputField(0, append([]byte{0x02}, d.PubKey...), fakeSig(d.PubKey, pk.TxID(), sh))
-			if err != nil {
-				t.Fatal(err)
-			}
-			return encodePSBT(out)
-		}
-	}
-	t.Fatalf("no derivation at fingerprint %s", fp)
-	return ""
 }
 
 // fakeKeyOf is the fake's reading of one key expression in a descriptor: "[fp/path]tpub…/suffix" (the fake child

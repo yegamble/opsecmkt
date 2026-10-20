@@ -93,11 +93,7 @@ func (c *lostCommitConn) CheckNamedValue(v *driver.NamedValue) error {
 }
 
 func (c *lostCommitConn) Begin() (driver.Tx, error) {
-	tx, err := c.Conn.Begin()
-	if err != nil {
-		return nil, err
-	}
-	return &committedThenLostTx{Tx: tx, lost: c.lost}, nil
+	return c.BeginTx(context.Background(), driver.TxOptions{})
 }
 
 func (c *lostCommitConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {

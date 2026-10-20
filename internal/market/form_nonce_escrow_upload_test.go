@@ -11,46 +11,6 @@ import (
 	"testing"
 )
 
-func multipartSigningPost(x *escrowEnv, path, session, order, id, nonce, field, psbt string) *httptest.ResponseRecorder {
-	x.t.Helper()
-	var body bytes.Buffer
-	mw := multipart.NewWriter(&body)
-	for name, value := range map[string]string{
-		"csrf": x.A.csrf(session), formNonceField: nonce, "order_id": order,
-	} {
-		if err := mw.WriteField(name, value); err != nil {
-			x.t.Fatal(err)
-		}
-	}
-	if path == "/escrow/hardware-bump-sign" {
-		if err := mw.WriteField("bump_id", id); err != nil {
-			x.t.Fatal(err)
-		}
-	} else if err := mw.WriteField("settlement_id", id); err != nil {
-		x.t.Fatal(err)
-	}
-	if field == psbtFileField {
-		part, err := mw.CreateFormFile(psbtFileField, "signed.psbt")
-		if err != nil {
-			x.t.Fatal(err)
-		}
-		if _, err := part.Write([]byte(psbt)); err != nil {
-			x.t.Fatal(err)
-		}
-	} else if err := mw.WriteField(field, psbt); err != nil {
-		x.t.Fatal(err)
-	}
-	if err := mw.Close(); err != nil {
-		x.t.Fatal(err)
-	}
-	r := httptest.NewRequest("POST", path, &body)
-	r.Header.Set("Content-Type", mw.FormDataContentType())
-	r.AddCookie(&http.Cookie{Name: "session", Value: session})
-	w := httptest.NewRecorder()
-	x.A.ServeHTTP(w, r)
-	return w
-}
-
 func TestPSBTMultipartFormNonceParserBounds(t *testing.T) {
 	makeRequest := func(fields [][2]string) *http.Request {
 		t.Helper()

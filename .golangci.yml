@@ -1,0 +1,54 @@
+version: "2"
+
+run:
+  timeout: 10m
+  tests: true
+
+linters:
+  default: none
+  enable:
+    - gosec
+    - govet
+    - ineffassign
+    - nolintlint
+    - staticcheck
+    - unused
+  settings:
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+    gosec:
+      # Network, SQL, TLS, cryptographic API and bounds checks. Filesystem,
+      # subprocess, cookie and conversion audits have separate threat models
+      # and remain available through the full advisory audit command.
+      includes:
+        - G108
+        - G109
+        - G110
+        - G111
+        - G112
+        - G113
+        - G114
+        - G201
+        - G402
+        - G403
+        - G405
+        - G406
+        - G407
+        - G501
+        - G502
+        - G503
+        - G505
+        - G601
+        - G602
+    staticcheck:
+      # Correctness diagnostics; stylistic and quick-fix rules create churn
+      # without improving the safety of the existing application.
+      checks: ["SA*"]
+  exclusions:
+    # Analyze existing code and test fixtures as well as new changes.
+    presets: []
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

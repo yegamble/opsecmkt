@@ -48,24 +48,6 @@ func (s *payRPCServer) url(path string) string {
 	return u + path
 }
 
-func (s *payRPCServer) called(method string) int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	n := 0
-	for _, c := range s.calls {
-		if c == method {
-			n++
-		}
-	}
-	return n
-}
-
-func (s *payRPCServer) lastParams(method string) json.RawMessage {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.params[method]
-}
-
 func (s *payRPCServer) authorized(r *http.Request) bool {
 	if s.user == "" {
 		return true

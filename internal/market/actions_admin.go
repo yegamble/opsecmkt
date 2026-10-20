@@ -497,8 +497,8 @@ func adminChange(c *actionCtx) (actionResult, error) {
 		if strings.TrimSpace(f.Get("site_name")) == "" {
 			return actionResult{}, fail(400, "Invalid settings")
 		}
-		name, err := setupSiteName(f.Get("site_name"))
-		if err != nil {
+		name, nameErr := setupSiteName(f.Get("site_name"))
+		if nameErr != nil {
 			return actionResult{}, fail(400, "Invalid settings")
 		}
 		var previous string

@@ -234,6 +234,8 @@ PY
   [[ $(rows) == 1 ]] || fail 'an upload with clamd stopped stored a row'
   [[ $(curl -sS "$base/healthz") == ok ]] || fail '/healthz failed with clamd stopped'
   [[ $(curl -sS -o /dev/null -w '%{http_code}' "$base/") == 200 ]] || fail 'the catalog failed with clamd stopped'
+  # Both prerequisites must succeed; failure of either takes the refusal path.
+  # shellcheck disable=SC2015
   [[ $(get "/listing-edit?id=$listing") == 200 ]] && grep -qF 'Photo uploads are paused: the malware scanner is not responding.' "$page" ||
     fail 'the Photos panel does not say uploads are paused'
   echo 'scanner: with clamd stopped an upload is refused (503, nothing stored); /healthz and the catalog answer'
@@ -244,6 +246,8 @@ PY
 
   # SHUTDOWN from the app container (the only other member of the scanner network) is refused; clamd keeps serving.
   clamd_command() {
+    # Expand these variables only inside the child shell.
+    # shellcheck disable=SC2016
     "${compose[@]}" exec -T app timeout 10 bash -c 'exec 3<>/dev/tcp/clamd/3310 && printf "z%s\0" "$1" >&3 && tr -d "\0" <&3' _ "$1"
   }
   reply=$(clamd_command SHUTDOWN)
@@ -332,7 +336,7 @@ if [[ "$mode" == external ]]; then
   docker run -d --name "${project}-db" --network "$network" --network-alias db \
     -e POSTGRES_USER=opsecmkt -e POSTGRES_DB=opsecmkt -e POSTGRES_PASSWORD -e POSTGRES_INITDB_ARGS=--encoding=UTF8 \
     postgres:17-alpine >/dev/null
-  for attempt in {1..60}; do
+  for _attempt in {1..60}; do
     if docker exec "${project}-db" pg_isready -h 127.0.0.1 -U opsecmkt -d opsecmkt; then break; fi
     sleep 1
   done

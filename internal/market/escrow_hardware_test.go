@@ -6,9 +6,6 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
-	"mime/multipart"
-	"net/http"
-	"net/http/httptest"
 	"slices"
 
 	"strings"
@@ -178,60 +175,4 @@ func TestHardwareFundingSegwitTxIDAndWitness(t *testing.T) {
 	if _, err := fundingTxOutput(hex.EncodeToString(segwit[:len(segwit)-5]), id, 0); err == nil {
 		t.Fatal("truncated witness accepted")
 	}
-}
-
-func hardwareSign(t *testing.T, b64, fp string) string {
-	t.Helper()
-	p, err := decodeHardwarePSBT(b64)
-	if err != nil {
-		t.Fatal(err)
-	}
-	raw := p.Raw
-	for i, in := range p.Inputs {
-		var pub []byte
-		for _, d := range in.Derivations {
-			if hex.EncodeToString(d.Fingerprint[:]) == fp {
-				pub = d.PubKey
-			}
-		}
-		if pub == nil {
-			t.Fatalf("no own derivation on input %d", i)
-		}
-		cur, err := parsePSBTLimit(raw, hardwareMaxBytes)
-		if err != nil {
-			t.Fatal(err)
-		}
-		raw, err = cur.withInputFieldLimit(i, append([]byte{2}, pub...), fakeSig(pub, p.TxID(), 1), hardwareMaxBytes)
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	return encodePSBT(raw)
-}
-
-func hardwareUpload(x *escrowEnv, path, session, order, id, psbt string) *httptest.ResponseRecorder {
-	return hardwareUploadWithNonce(x, path, session, order, id, randomToken()[:32], psbt)
-}
-
-func hardwareUploadWithNonce(x *escrowEnv, path, session, order, id, nonce, psbt string) *httptest.ResponseRecorder {
-	x.t.Helper()
-	var b bytes.Buffer
-	mw := multipart.NewWriter(&b)
-	mw.WriteField("csrf", x.A.csrf(session))
-	mw.WriteField(formNonceField, nonce)
-	mw.WriteField("order_id", order)
-	if path == "/escrow/hardware-bump-sign" {
-		mw.WriteField("bump_id", id)
-	} else {
-		mw.WriteField("settlement_id", id)
-	}
-	f, _ := mw.CreateFormFile("psbt_file", "signed.psbt.txt")
-	f.Write([]byte(psbt))
-	mw.Close()
-	r := httptest.NewRequest("POST", path, &b)
-	r.Header.Set("Content-Type", mw.FormDataContentType())
-	r.AddCookie(&http.Cookie{Name: "session", Value: session})
-	w := httptest.NewRecorder()
-	x.A.ServeHTTP(w, r)
-	return w
 }

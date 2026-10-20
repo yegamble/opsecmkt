@@ -198,6 +198,8 @@ to publish and Cloudflare still sees each request; the docs onion stays the addr
 
 ### Go and PostgreSQL
 
+Run `make go-quality` for the shared formatting/import, module, vet and lint gate; `make hooks-install` installs the optional local commit/push checks described in [Contributing](../CONTRIBUTING.md#gates).
+
 Fast checks run without a database, but database integration tests will **skip**:
 
 ```sh

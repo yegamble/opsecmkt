@@ -82,11 +82,17 @@ class GoSplitTest(unittest.TestCase):
                              re.findall(re.escape(action) + r'\S+ # \S+', escrow_block))
         self.assertRegex(escrow_block, r'(?m)^    timeout-minutes: \d+$')
 
-    def test_go_job_keeps_the_checks_that_run_once(self):
+    def test_expensive_database_jobs_leave_static_checks_to_independent_jobs(self):
         go_block, escrow_block = job_block(WORKFLOW, 'go'), job_block(WORKFLOW, 'go-escrow')
-        for fragment in ('gofmt -l cmd internal', 'go mod verify', 'go vet ./...', 'actionlint', 'govulncheck', 'libjpeg-turbo-progs'):
-            self.assertIn(fragment, go_block)
+        self.assertIn('libjpeg-turbo-progs', go_block)
+        self.assertNotIn('libjpeg-turbo-progs', escrow_block)
+        for fragment in ('gofmt -l cmd internal', 'go mod verify', 'go vet ./...', 'actionlint', 'govulncheck'):
+            self.assertNotIn(fragment, go_block)
             self.assertNotIn(fragment, escrow_block)
+        self.assertIn('make tools-smoke', job_block(WORKFLOW, 'quality'))
+        self.assertIn('make go-quality', job_block(WORKFLOW, 'quality'))
+        self.assertIn('make workflow-lint', job_block(WORKFLOW, 'workflow-safety'))
+        self.assertIn('uses: ./.github/workflows/dependency-security.yaml', job_block(WORKFLOW, 'security'))
 
     def test_the_only_cjpeg_test_stays_in_the_job_that_installs_cjpeg(self):
         images = (REPOSITORY / 'internal' / 'market' / 'images_test.go').read_text()

@@ -298,8 +298,11 @@ func TestEscrowRPCErrorClasses(t *testing.T) {
 
 func TestEscrowConfigFromEnv(t *testing.T) {
 	env := func(kv ...string) func(string) string {
+		if len(kv)%2 != 0 {
+			t.Fatal("environment fixture requires key/value pairs")
+		}
 		m := map[string]string{}
-		for i := 0; i < len(kv); i += 2 {
+		for i := 0; i+1 < len(kv); i += 2 {
 			m[kv[i]] = kv[i+1]
 		}
 		return func(k string) string { return m[k] }

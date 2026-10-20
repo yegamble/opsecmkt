@@ -2,7 +2,6 @@ package market
 
 import (
 	"bytes"
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 
@@ -15,131 +14,6 @@ import (
 func regtestAddr(label string) string {
 	h := sha256.Sum256([]byte("addr:" + label))
 	return segwitAddress("bcrt", 0, h[:20])
-}
-
-// netAddr is regtestAddr's address on the escrow node's chain (escrowChains, A-439): the same address on regtest.
-func (x *escrowEnv) netAddr(label string) string {
-	h := sha256.Sum256([]byte("addr:" + label))
-	return segwitAddress(escrowChains[x.A.escrowNetwork()], 0, h[:20])
-}
-
-type settleRow struct {
-	ID                                              int64
-	Kind, State, Signer, TxID, Raw, Cosigned, Error string
-	SpentBy                                         string
-}
-
-// settleByID reads a settlement row.
-func (x *escrowEnv) settleByID(id int64) settleRow {
-	x.t.Helper()
-	r := settleRow{ID: id}
-	if err := x.DB.QueryRow(`SELECT kind,state,COALESCE(signer,''),COALESCE(txid,''),COALESCE(raw_tx,''),COALESCE(cosigned,''),send_error,COALESCE(spent_by,'')
-		FROM settlements WHERE id=$1`, id).Scan(&r.Kind, &r.State, &r.Signer, &r.TxID, &r.Raw, &r.Cosigned, &r.Error, &r.SpentBy); err != nil {
-		x.t.Fatal(err)
-	}
-	return r
-}
-
-// built is a completed escrow order (refund address refund, funded with sats) whose vendor claimed it to claimTo, and
-// the claim built: the order and the settlement.
-func (x *escrowEnv) built(refund, claimTo string, sats ...int64) (string, int64) {
-	x.t.Helper()
-	order := x.completed(refund, sats...)
-	if code, body := x.claim(order, x.vendorSess, claimTo); code != 303 {
-		x.t.Fatalf("claim: %d %s", code, body)
-	}
-	x.poll()
-	id, _, state, class := x.settlement(order)
-	if state != "awaiting_signature" {
-		x.t.Fatalf("claim %s %s", state, class)
-	}
-	return order, id
-}
-
-// partySess is the session and key fingerprint of party.
-func (x *escrowEnv) partySess(party string) (string, string) {
-	key, sess := x.vendorKey, x.vendorSess
-	if party == roleBuyer {
-		key, sess = x.buyerKey, x.buyerSess
-	}
-	k, err := parseEscrowKey(key, keyNetTest)
-	if err != nil {
-		x.t.Fatal(err)
-	}
-	return sess, k.Fingerprint
-}
-
-// signAs pastes party's good signature (its wallet signing its own copy) and requires it accepted.
-func (x *escrowEnv) signAs(order, party string, id int64) {
-	x.t.Helper()
-	sess, fp := x.partySess(party)
-	if code, body := x.sign(order, sess, id, walletSign(x.t, x.partyCopy(order, sess, id), fp, 1)); code != 303 {
-		x.t.Fatalf("%s signs: %d %s", party, code, body)
-	}
-}
-
-var badSigs = map[string]func(pub []byte, txid string) []byte{
-	"over the wrong amount": func(pub []byte, txid string) []byte { return fakeSig(pub, "amount-0.0009:"+txid, 1) },
-	"r=s=1":                 func([]byte, string) []byte { return []byte{0x30, 0x06, 0x02, 0x01, 0x01, 0x02, 0x01, 0x01, 0x01} },
-}
-
-// signBad pastes party's copy carrying, on every input, a bad signature from the party's own key.
-func (x *escrowEnv) signBad(order, party string, id int64, bad func(pub []byte, txid string) []byte) {
-	x.t.Helper()
-	sess, _ := x.partySess(party)
-	cp := x.partyCopy(order, sess, id)
-	p, err := decodePSBT(cp)
-	if err != nil {
-		x.t.Fatal(err)
-	}
-	pub, _ := hex.DecodeString(x.keyHex(order, party))
-	raw := p.Raw
-	for i := range p.Inputs {
-		raw = addField(x.t, raw, i, append([]byte{0x02}, pub...), bad(pub, p.TxID()))
-	}
-	if code, body := x.sign(order, sess, id, encodePSBT(raw)); code != 303 {
-		x.t.Fatalf("%s's bad signature was not accepted as well-formed: %d %s", party, code, body)
-	}
-}
-
-// killAtSend makes the next broadcast end the pass as a process killed at that moment would: the pass's context is
-// cancelled and the node never receives the transaction. sendNormally undoes it.
-func (x *escrowEnv) killAtSend() context.Context {
-	ctx, kill := context.WithCancel(context.Background())
-	x.core.mu.Lock()
-	x.core.beforeSend = func() {
-		kill()
-		x.core.mu.Lock()
-		x.core.sendErr, x.core.beforeSend = -32603, nil
-		x.core.mu.Unlock()
-	}
-	x.core.mu.Unlock()
-	return ctx
-}
-
-func (x *escrowEnv) sendNormally() {
-	x.core.mu.Lock()
-	x.core.sendErr, x.core.beforeSend = 0, nil
-	x.core.mu.Unlock()
-}
-
-// cosignCalls is the co-sign and broadcast RPCs called since the n-th call.
-func (x *escrowEnv) cosignCalls(n int) []string {
-	return slices.DeleteFunc(x.core.methods()[n:], func(m string) bool {
-		return !slices.Contains([]string{"deriveaddresses", "getaddressinfo", "keypoolrefill", "walletprocesspsbt", "combinepsbt", "finalizepsbt", "testmempoolaccept", "sendrawtransaction"}, m)
-	})
-}
-
-// withGlobalField adds one field to the global map of a raw PSBT.
-func withGlobalField(t *testing.T, raw, key, value []byte) []byte {
-	t.Helper()
-	r := &psbtReader{b: raw, off: 5}
-	_, end, err := r.readMap()
-	if err != nil {
-		t.Fatal(err)
-	}
-	field := slices.Concat(compactSize(len(key)), key, compactSize(len(value)), value)
-	return slices.Concat(raw[:end], field, raw[end:])
 }
 
 // TestEscrowFinalTxChecks pins checkFinalTx on a transaction built by hand: the stored one passes; another lock time,

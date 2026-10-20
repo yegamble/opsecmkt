@@ -372,6 +372,8 @@ marker_outside_prior_build clear-gate docs/testnet-runbook.md
 # refused; one after it and a "#" comment inside a code fence are not; a missing marker is refused.
 printf '## Prior build only (never run with this build)\n\ntext\n\n<!-- runbook-sql: clear-gate -->\n' > "$work/prior-before.md"
 printf '# Title\n\n### Prior-build detail\n\nx\n\n## Next\n\n<!-- runbook-sql: clear-gate -->\n' > "$work/prior-nested.md"
+# The Markdown code fence is literal fixture content.
+# shellcheck disable=SC2016
 printf '# Title\n\n## Current\n\n```sh\n# prior build comment, not a heading\n```\n\n<!-- runbook-sql: clear-gate -->\n\n## Old (never run)\n' > "$work/prior-after.md"
 if marker_outside_prior_build clear-gate "$work/prior-before.md"; then echo 'prior-build check accepted a marker below a warning heading' >&2; exit 1; fi
 if marker_outside_prior_build clear-gate "$work/prior-nested.md"; then echo 'prior-build check accepted a marker below a nested warning heading' >&2; exit 1; fi

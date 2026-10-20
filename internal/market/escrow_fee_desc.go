@@ -2,9 +2,7 @@ package market
 
 import (
 	"context"
-	"database/sql"
 	"errors"
-	"strconv"
 	"strings"
 
 	"opsecmkt/internal/btc"
@@ -119,79 +117,6 @@ func (a *App) openFeeDescriptor(dest string) (escrowKey, error) {
 		return escrowKey{}, err
 	}
 	return parseEscrowKey(plain, a.keyNet())
-}
-
-// escrowFeeAddress is the fee address of the escrow of orderID whose fee went to a descriptor: the one stored at its
-// first release build, or, the first time, a fresh index from escrow_fee_index and the address Go derives from it and
-// Bitcoin Core confirms. An index whose address was already used on this market is skipped (at most
-// escrowFeeDescTries). The address is stored by compare-and-set, so two builds of one escrow agree on one index.
-func (a *App) escrowFeeAddress(ctx context.Context, e *escrowBTC, orderID string) (string, error) {
-	var escrowID int64
-	var sealed, dest string
-	var index sql.NullInt64
-	if err := a.db.QueryRowContext(ctx, `SELECT id,COALESCE(fee_descriptor,''),fee_destination,fee_index FROM escrows WHERE order_id=$1 AND coin='BTC'`,
-		orderID).Scan(&escrowID, &sealed, &dest, &index); err != nil {
-		return "", err
-	}
-	if sealed == "" || dest != "" {
-		return dest, nil
-	}
-	k, err := a.openFeeDescriptor(sealed)
-	if err != nil {
-		return "", errFeeDescUnusable
-	}
-	for range escrowFeeDescTries {
-		if !index.Valid {
-			if err = a.db.QueryRowContext(ctx, `UPDATE escrows SET fee_index=retention_next_escrow_index('fee') WHERE id=$1 AND fee_index IS NULL RETURNING fee_index`,
-				escrowID).Scan(&index); errors.Is(err, sql.ErrNoRows) {
-				err = a.db.QueryRowContext(ctx, `SELECT fee_index FROM escrows WHERE id=$1`, escrowID).Scan(&index)
-			}
-			if err != nil {
-				return "", err
-			}
-		}
-		addr, err := feeDescriptorAddress(k, e.network, uint32(index.Int64))
-		if err != nil {
-			return "", err
-		}
-		core, err := e.deriveAddresses(ctx, withChecksum("wpkh("+k.Expression()+"/0/"+strconv.FormatInt(index.Int64, 10)+")"), -1)
-		if err != nil {
-			return "", err
-		}
-		if len(core) != 1 || core[0] != addr {
-			return "", errFeeDescUnusable
-		}
-		var used bool
-		if err = a.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM escrows WHERE address=$1 OR refund_address=$1 OR fee_destination=$1)
-			OR EXISTS(SELECT 1 FROM escrow_siblings WHERE address=$1) OR EXISTS(SELECT 1 FROM settlements WHERE destination=$1)
-			OR EXISTS(SELECT 1 FROM retention_escrow_retired_addresses WHERE coin='BTC' AND address_hash=encode(sha256(convert_to($1,'UTF8')),'hex'))`, addr).Scan(&used); err != nil {
-			return "", err
-		}
-		if used { // never pay a fee to an address the market used: move this escrow to the next index
-			if err = a.db.QueryRowContext(ctx, `UPDATE escrows SET fee_index=retention_next_escrow_index('fee') WHERE id=$1 AND fee_index=$2 AND fee_destination='' RETURNING fee_index`,
-				escrowID, index.Int64).Scan(&index); errors.Is(err, sql.ErrNoRows) {
-				return a.storedFeeAddress(ctx, escrowID)
-			} else if err != nil {
-				return "", err
-			}
-			continue
-		}
-		if _, err = a.db.ExecContext(ctx, `UPDATE escrows SET fee_destination=$3 WHERE id=$1 AND fee_index=$2 AND fee_destination=''`, escrowID, index.Int64, addr); err != nil {
-			return "", err
-		}
-		return a.storedFeeAddress(ctx, escrowID)
-	}
-	return "", errFeeDescUnusable
-}
-
-// storedFeeAddress is the fee address stored on an escrow ("" while none is).
-func (a *App) storedFeeAddress(ctx context.Context, escrowID int64) (string, error) {
-	var dest string
-	err := a.db.QueryRowContext(ctx, `SELECT fee_destination FROM escrows WHERE id=$1`, escrowID).Scan(&dest)
-	if err == nil && dest == "" {
-		err = errFeeDescUnusable
-	}
-	return dest, err
 }
 
 // highestFeeIndex is the highest fee index any escrow holds (-1 when none), for the admin page.

@@ -11,12 +11,12 @@
 # Prints onion hostnames (public), never key material.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-image=${TOR_IMAGE:-opsecmkt-tor:ci}
+test_tor_image=${TOR_IMAGE:-opsecmkt-tor:ci}
 command -v docker >/dev/null || { echo 'Missing dependency: docker' >&2; exit 1; }
-docker image inspect "$image" >/dev/null 2>&1 || {
-  echo "Missing Tor image $image: docker build -t $image -f deploy/Dockerfile.tor deploy" >&2; exit 1; }
+docker image inspect "$test_tor_image" >/dev/null 2>&1 || {
+  echo "Missing Tor image $test_tor_image: docker build -t $test_tor_image -f deploy/Dockerfile.tor deploy" >&2; exit 1; }
 work=$(mktemp -d "${TMPDIR:-/tmp}/opsecmkt-tor-import.XXXXXX")
-project="opsecmkt-tor-import-$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
+test_project="opsecmkt-tor-import-$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
 containers=()
 fail() { echo "FAIL: $*" >&2; exit 1; }
 cleanup() {
@@ -27,7 +27,7 @@ cleanup() {
     ((status == 0)) || { echo "--- logs of $container ---" >&2; docker logs "$container" 2>&1 | tail -n 20 >&2 || true; }
     docker rm -f "$container" >/dev/null 2>&1 || true  # no -v: the Tor image declares no VOLUME; the named volumes go below
   done
-  for volume in $(docker volume ls -q --filter "name=^${project}_"); do docker volume rm -f "$volume" >/dev/null || true; done
+  for volume in $(docker volume ls -q --filter "name=^${test_project}_"); do docker volume rm -f "$volume" >/dev/null || true; done
   rm -rf "$work"
   exit "$status"
 }
@@ -38,7 +38,7 @@ trap 'exit 130' INT TERM HUP  # interrupted runs clean up through the EXIT trap 
 generate() {
   mkdir -p "$1"
   docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges:true --tmpfs /gen --entrypoint sh \
-    "$image" -euc '
+    "$test_tor_image" -euc '
       umask 077
       mkdir /gen/data /gen/data/hs
       : > /gen/torrc
@@ -52,7 +52,7 @@ generate() {
   [[ -s $1/hostname && -s $1/hs_ed25519_secret_key && -s $1/hs_ed25519_public_key ]] || fail "Tor generated no identity in $1"
 }
 # digest FILE: the SHA-256 of FILE, from the Tor image's sha256sum (the key is never printed).
-digest() { docker run --rm -i --network none --entrypoint sha256sum "$image" < "$1" | cut -d ' ' -f 1; }
+digest() { docker run --rm -i --network none --entrypoint sha256sum "$test_tor_image" < "$1" | cut -d ' ' -f 1; }
 # import_identity DIR NAME: what init does with --onion-key-dir DIR (onion_key_check, onion_dry_run, then onion_volume_create and
 # onion_import), into the project's volume NAME; prints the address the dry run derived. In a subshell that sources the
 # installer, whose own exit trap removes its staged key copy.
@@ -61,9 +61,9 @@ import_identity() {
     # shellcheck source=scripts/install.sh
     source scripts/install.sh
     onion_key_check "$1"
-    address=$(onion_dry_run "$image") || exit 1
-    onion_volume_create "$project" "$2"
-    onion_import "$image" "${project}_$2"
+    address=$(onion_dry_run "$test_tor_image") || exit 1
+    onion_volume_create "$test_project" "$2"
+    onion_import "$test_tor_image" "${test_project}_$2"
     printf '%s\n' "$address"
   )
 }
@@ -72,7 +72,7 @@ import_identity() {
 start_tor() {
   local container i
   container=$(docker run -d --network none --add-host app:127.0.0.1 --cap-drop ALL \
-    --security-opt no-new-privileges:true -v "$1:/var/lib/tor" "$image")
+    --security-opt no-new-privileges:true -v "$1:/var/lib/tor" "$test_tor_image")
   containers+=("$container")
   for ((i = 0; i < 100; i++)); do
     docker exec "$container" test -s /var/lib/tor/marketplace/hostname 2>/dev/null && break
@@ -84,10 +84,10 @@ start_tor() {
 }
 # owners VOLUME: owner, group and mode of the identity directory and its key files.
 owners() {
-  docker run --rm --network none --user 0 --entrypoint sh -v "$1:/var/lib/tor:ro" "$image" -c \
+  docker run --rm --network none --user 0 --entrypoint sh -v "$1:/var/lib/tor:ro" "$test_tor_image" -c \
     'cd /var/lib/tor && stat -c "%n %U:%G %a" . marketplace marketplace/hs_ed25519_*'
 }
-volume_exists() { docker volume inspect "${project}_$1" >/dev/null 2>&1; }
+volume_exists() { docker volume inspect "${test_project}_$1" >/dev/null 2>&1; }
 
 generate "$work/main"
 generate "$work/mirror"
@@ -102,13 +102,13 @@ printf '%s\n' "$main" > "$work/mirror/hostname"
 printed=$(import_identity "$work/main" tor_identity)
 [[ $printed == "$main" ]] || fail "the dry run derived $printed, expected $main"
 [[ $(docker volume inspect -f '{{index .Labels "com.docker.compose.project"}} {{index .Labels "com.docker.compose.volume"}}' \
-  "${project}_tor_identity") == "$project tor_identity" ]] || fail 'the volume lacks the Compose labels'
-expected=$(owners "${project}_tor_identity")
+  "${test_project}_tor_identity") == "$test_project tor_identity" ]] || fail 'the volume lacks the Compose labels'
+expected=$(owners "${test_project}_tor_identity")
 for line in '. debian-tor:debian-tor 700' 'marketplace debian-tor:debian-tor 700' \
   'marketplace/hs_ed25519_public_key debian-tor:debian-tor 600' 'marketplace/hs_ed25519_secret_key debian-tor:debian-tor 600'; do
   grep -qxF "$line" <<< "$expected" || fail "imported files: expected '$line' in: $expected"
 done
-[[ $(start_tor "${project}_tor_identity") == "$main"$'\n'"$(digest "$work/main/hs_ed25519_secret_key")" ]] ||
+[[ $(start_tor "${test_project}_tor_identity") == "$main"$'\n'"$(digest "$work/main/hs_ed25519_secret_key")" ]] ||
   fail 'Tor did not serve the imported main identity'
 echo "ok: identity with its public key imported (hostname forged and ignored); Tor started with $main and the same key"
 
@@ -116,7 +116,7 @@ echo "ok: identity with its public key imported (hostname forged and ignored); T
 rm "$work/mirror/hs_ed25519_public_key"
 printed=$(import_identity "$work/mirror" tor_mirror_identity)
 [[ $printed == "$mirror" ]] || fail "the dry run derived $printed, expected $mirror"
-[[ $(start_tor "${project}_tor_mirror_identity") == "$mirror"$'\n'"$(digest "$work/mirror/hs_ed25519_secret_key")" ]] ||
+[[ $(start_tor "${test_project}_tor_mirror_identity") == "$mirror"$'\n'"$(digest "$work/mirror/hs_ed25519_secret_key")" ]] ||
   fail 'Tor did not serve the imported mirror identity'
 echo "ok: secret key alone imported; Tor started with $mirror and the same key"
 
@@ -142,18 +142,18 @@ echo 'ok: a mismatched key pair is refused by Tor in the dry run before any volu
 mkdir "$work/header"
 { printf '== ed25519v1-secret: type1 ==\0\0\0'; tail -c 64 "$work/main/hs_ed25519_secret_key"; } > "$work/header/key"
 # shellcheck source=scripts/install.sh disable=SC2034  # onion_files is what onion_dry_run streams
-if (source scripts/install.sh; onion_files=("$work/header/key"); onion_dry_run "$image") > "$work/header.log" 2>&1; then
+if (source scripts/install.sh; onion_files=("$work/header/key"); onion_dry_run "$test_tor_image") > "$work/header.log" 2>&1; then
   fail "the dry run accepted a wrong header: $(cat "$work/header.log")"
 fi
 grep -q 'Tor did not accept the key' "$work/header.log" || fail "wrong header: $(cat "$work/header.log")"
 echo 'ok: the dry run refuses a key Tor does not load'
 
 # A volume Tor has used is never overwritten.
-before=$(start_tor "${project}_tor_identity")
+identity_before=$(start_tor "${test_project}_tor_identity")
 # shellcheck source=scripts/install.sh
-if (source scripts/install.sh; onion_key_check "$work/mirror"; onion_import "$image" "${project}_tor_identity") \
+if (source scripts/install.sh; onion_key_check "$work/mirror"; onion_import "$test_tor_image" "${test_project}_tor_identity") \
   > "$work/used.log" 2>&1; then fail 'an import overwrote a used volume'; fi
-grep -q "Refusing: volume ${project}_tor_identity is not empty" "$work/used.log" || fail "used volume: $(cat "$work/used.log")"
-[[ $(start_tor "${project}_tor_identity") == "$before" ]] || fail 'the refused import changed the volume'
+grep -q "Refusing: volume ${test_project}_tor_identity is not empty" "$work/used.log" || fail "used volume: $(cat "$work/used.log")"
+[[ $(start_tor "${test_project}_tor_identity") == "$identity_before" ]] || fail 'the refused import changed the volume'
 echo 'ok: an import into a volume Tor has used is refused and changes nothing'
 echo 'PASS: onion identity import'
