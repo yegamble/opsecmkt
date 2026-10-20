@@ -1396,7 +1396,12 @@ checks that the stored transaction is in neither the daemon's pool nor its chain
 is, the request is refused with the reason on the order page and in a notice to you, and may be asked again later. If none is,
 the failed settlement becomes *superseded* and a new one is built from exactly the same coins to exactly the same destinations
 (only the network fee, and so the claimant's output, may differ) and sent; the database refuses any other coins, so at most one
-of the two transactions can ever be mined.
+of the two transactions can ever be mined. If a deposit those coins came from is no longer listed by the escrow wallet (a
+reorganisation or a double spend took it out of the chain), the new settlement stays requested (*deposit-missing*) and builds
+nothing until the wallet lists that deposit again, however long that takes; it then builds and sends as above (A-614). Unlike
+a first release or refund (A-554, below) it has no bounded wait, because it can be built from no other coins. Staff are
+notified each time it starts waiting (once per episode); past 24 hours it is an escrow alert as any settlement still requested is, and its
+monthly wallet is kept from destruction while it waits.
 
 **Failed and set-aside settlements are escrow alerts (A-560).** Until it is superseded, a failed settlement is listed under
 *Escrow alerts* on the moderation desk, counted in the staff badge and named in the order page's staff help, and a
@@ -1432,10 +1437,13 @@ refund also stands in for the order's one release or refund, which is all the da
   changes nothing the market does with later deposits; it only closes this alert.
 - The exception: a failed settlement with no transaction built that still **claims deposits** (a re-request that failed
   *nothing-to-settle* after taking over the deposits of the settlement it superseded, for example when a claimed
-  deposit was read as double-spent). Its alert and the deposit's *Payment review* row say so: the coins are in the
-  escrow wallet and may still be owed, and the market does not settle them on its own. It cannot be dismissed (the
-  order page offers no form and the action refuses it); settle with the operator, outside the market. Its alert stays
-  open. Making such a settlement wait instead of failing is a separate change (A-614).
+  deposit was read as double-spent). The market no longer leaves one: since A-614 such a re-request waits for the
+  deposit (*deposit-missing*, above) instead of failing. A database whose market ran an earlier build may still hold
+  one. Its alert and the deposit's *Payment review* row say so: the coins are in the escrow wallet and may still be
+  owed, and the market does not settle them on its own, not even when that deposit is listed again (a failed
+  settlement is never built again). It cannot be dismissed (the order page offers no form and the action refuses it);
+  settle with the operator, outside the market. Nothing in the market clears its alert, so the order stays on the desk
+  and under retention's `escrow_alert` reason; UPGRADING.md lists such settlements.
 
 Either record (dismissed as nothing owed, or marked settled by hand) takes a note of 10–500 characters (why nothing is
 owed now; or what the wallet and the chain showed and what was done), confirmed with the password (and the
@@ -1523,7 +1531,10 @@ the market (the order page says so); a destroyed wallet is never opened again.
   requested for more than 24 hours, and, past the 90 days, in the notice that a retained wallet is kept (PAY66-7). The market
   notices such a regression only once the order's release or refund is being built, not while the order is paid or
   shipped; and after you record *no action* on the flag, a later regression of the same deposit sends a new note and
-  notice but does not reopen the flag on the desk.
+  notice but does not reopen the flag on the desk. A re-request (A-401) one of whose claimed deposits is no longer
+  listed waits the same way (*deposit-missing*), with no bounded wait, since it spends only the coins of the
+  transaction it replaces: staff get one order note and notice each time it starts waiting (A-614), and it builds
+  once the wallet lists that deposit again.
   A refund whose claimant output would be below 0.001 XMR (on a cancelled order or one decided for the buyer, with no
   deposit it would spend still confirming) does not wait: it ends (failed, too-small) and its deposits are left out for
   the stray refund, which returns them with any later deposit once together they pay the fee; the parties and staff
