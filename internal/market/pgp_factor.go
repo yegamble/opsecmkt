@@ -32,7 +32,8 @@ func init() {
 
 func (pgpFactor) Name() string { return "pgp" }
 
-// Enrolled requires PGP sign-in to be on and ownership of the currently saved key to be proven.
+// PGP is offered for an enrolled account, or required by the market login policy.
+// Strict login can prove a newly saved key for the first time by decryption.
 func (pgpFactor) Enrolled(ctx context.Context, q rowQuerier, userID string) (bool, error) {
 	p, err := loadPGPAccount(ctx, q, userID, false)
 	if err == sql.ErrNoRows {
@@ -41,13 +42,17 @@ func (pgpFactor) Enrolled(ctx context.Context, q rowQuerier, userID string) (boo
 	if err != nil {
 		return false, err
 	}
-	return p.TwoFactor, nil
+	required, err := pgpLoginRequired(ctx, q)
+	if err != nil {
+		return false, err
+	}
+	return p.TwoFactor || required && p.Key != nil && canReceiveEncrypted(p.Key, time.Now()), nil
 }
 
 // Bind the code to the exact key ownership proof. Replacing and re-verifying a
 // key invalidates old codes, including when the same key is later restored.
 func pgpLoginDigest(code string, p *pgpAccount) string {
-	return digest(code + "\x00" + p.Fingerprint + "\x00" + p.ProofVersion)
+	return digest(code + "\x00" + p.Fingerprint + "\x00" + p.ProofVersion + "\x00" + digest(p.Canonical) + "\x00" + p.KeyVersion)
 }
 
 func (pgpFactor) Verify(c *actionCtx, userID string) error {
@@ -55,8 +60,15 @@ func (pgpFactor) Verify(c *actionCtx, userID string) error {
 	if err != nil {
 		return err
 	}
-	if !p.TwoFactor {
+	required, err := pgpLoginRequired(c.Ctx(), c.Tx)
+	if err != nil {
+		return err
+	}
+	if !p.TwoFactor && !required {
 		return fail(401, "PGP sign-in verification is no longer enabled. Sign in again.")
+	}
+	if p.Key == nil || !canReceiveEncrypted(p.Key, time.Now()) {
+		return fail(401, "Your saved key cannot receive an encrypted sign-in code. Renew your public key or contact staff for recovery.")
 	}
 	var hash sql.NullString
 	err = c.Tx.QueryRowContext(c.Ctx(), "SELECT pgp_nonce FROM pending_logins WHERE token_hash=$1 AND user_id=$2", digest(pendingCookie(c.R)), userID).Scan(&hash)
@@ -96,8 +108,15 @@ func pgpLoginCodeAction(c *actionCtx) (actionResult, error) {
 	if err != nil {
 		return actionResult{}, err
 	}
-	if !p.TwoFactor {
+	required, err := pgpLoginRequired(ctx, tx)
+	if err != nil {
+		return actionResult{}, err
+	}
+	if !p.TwoFactor && !required {
 		return actionResult{}, fail(400, "PGP sign-in verification is not enabled for this account")
+	}
+	if p.Key == nil || !canReceiveEncrypted(p.Key, time.Now()) {
+		return actionResult{}, expiredKeyRefusal(c, userID)
 	}
 	var handle, market string
 	if err = tx.QueryRowContext(ctx, "SELECT handle,COALESCE((SELECT value FROM settings WHERE key='site_name'),'') FROM users WHERE id=$1", userID).Scan(&handle, &market); err != nil {
@@ -175,8 +194,15 @@ func pgpKeyRefusal(ctx context.Context, q rowQuerier, userID, problem, keeps, fi
 	if err != nil {
 		return err
 	}
+	required, err := pgpLoginRequired(ctx, q)
+	if err != nil {
+		return err
+	}
+	if required {
+		return fail(409, problem+"This market requires PGP decryption at every sign-in. An authenticator, recovery code or second-factor reset cannot replace it. Ask market staff for identity-verified replacement-public-key recovery using the factor-reset form. For a locked-out administrator, the server operator supplies a replacement public-key file with the existing reset-admin-factors command. Recovery leaves the login policy in force; decryption with the replacement key is still required. "+contact)
+	}
 	if totp {
-		return fail(409, problem+"Sign in with your authenticator code or a recovery code instead, then "+fix+". Lost your authenticator and recovery codes too? "+contact)
+		return fail(409, problem+"Sign in with your authenticator code or a recovery code instead, then "+fix+". Replacing the existing public-key binding also needs a fresh code from your previously enrolled authenticator or old-key decryption proof. If neither is available, ask for identity-verified replacement-key recovery. "+contact)
 	}
 	who := "A market administrator can turn it off for you with Reset a user's second factors"
 	if role == "admin" {
@@ -184,7 +210,7 @@ func pgpKeyRefusal(ctx context.Context, q rowQuerier, userID, problem, keeps, fi
 		who = "The operator can turn it off on the server with -reset-admin-factors"
 	}
 	return fail(409, problem+"PGP sign-in is the only verification method on this account, so this sign-in cannot be finished. "+who+
-		"; "+keeps+"you then sign in with your password, "+fix+". "+contact)
+		"; "+keeps+"you then sign in with your password. A reset alone cannot authorize replacing the protected key binding: renew a usable export of the same key where possible, or request identity-verified replacement-public-key recovery. "+contact)
 }
 
 // pgpSignInLost reports that PGP sign-in is turned on but cannot be used: the saved key cannot be read (or no longer
@@ -203,7 +229,7 @@ func pgpSignInLost(ctx context.Context, q rowQuerier, userID string) (bool, erro
 // unreadableKeyNotice tells the owner, after a correct password, that PGP sign-in was lost (A-272).
 var unreadableKeyNotice = ownerNotice("Someone entered your password correctly, but PGP sign-in could not be used because your saved PGP key can no longer be read. " +
 	"With an authenticator enrolled, sign-in asks for its code or a recovery code instead; without one, sign-in is refused until your second factors are turned off (by a market administrator; for an administrator account, by the operator on the server). " +
-	"Then paste a current export of your public key on your account page and prove you own it again.")
+	"The existing public-key binding remains protected. Renew the same key where possible; if it is lost or unreadable and no preexisting authenticator can confirm replacement, request identity-verified replacement-public-key recovery. A strict PGP login policy still requires decryption and is not weakened by a reset.")
 
 // notifyUnreadableKey sends unreadableKeyNotice once per saved key: not again while one sent since the key last
 // changed (users.pgp_changed_at; for a key saved before that was recorded, ever) exists. The account row is locked

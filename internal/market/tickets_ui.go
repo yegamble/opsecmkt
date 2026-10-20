@@ -103,6 +103,22 @@ func ticketUIReader(ctx context.Context, tx *sql.Tx, u *User) (*User, error) {
 	return &reader, nil
 }
 
+// Lock eligible staff before separately loading their current key. A stale ticket
+// assignment or recipient choice must never expose a demoted buyer's replacement key.
+// Peer locks are nonblocking because another reader may already hold a ticket lock.
+func ticketUIStaffEligible(ctx context.Context, tx *sql.Tx, id, openerID string, adminOnly, publicOnly bool) (bool, error) {
+	query := `SELECT EXISTS(SELECT 1 FROM users s WHERE s.id=$1 AND s.id<>$3
+		AND s.role IN ('moderator','admin') AND (NOT $2::boolean OR s.role='admin')
+		AND s.suspended_at IS NULL AND s.closed_at IS NULL AND s.retention_restricted_at IS NULL`
+	if publicOnly {
+		query += " AND " + ticketVisibleStaffSQL
+	}
+	query += " FOR SHARE OF s NOWAIT)"
+	var eligible bool
+	err := tx.QueryRowContext(ctx, query, id, adminOnly, openerID).Scan(&eligible)
+	return eligible, err
+}
+
 func ticketUIKey(ctx context.Context, q rowQuerier, id, handle, relation string) (ContactKey, error) {
 	k := ContactKey{Handle: handle, Relation: relation}
 	if id == "" {
@@ -194,6 +210,13 @@ func ticketListLoader(ctx context.Context, a *App, r *http.Request, d *PageData)
 		if v.Selected == nil {
 			return fail(404, "This support recipient is unavailable.")
 		}
+		eligible, err := ticketUIStaffEligible(ctx, tx, v.Selected.ID, reader.ID, false, !ticketStaffUser(reader))
+		if err != nil {
+			return err
+		}
+		if !eligible {
+			return fail(404, "This support recipient is unavailable.")
+		}
 		v.SelectedKey, err = ticketUIKey(ctx, tx, v.Selected.ID, v.Selected.Handle, v.Selected.Role)
 		if err != nil {
 			return err
@@ -204,7 +227,11 @@ func ticketListLoader(ctx context.Context, a *App, r *http.Request, d *PageData)
 		return err
 	}
 	v.KeyUsable = v.OpenerKey.Usable()
-	v.CanOpen = v.KeyUsable && v.Selected != nil && v.SelectedKey.Usable()
+	accessVerified, err := pgpAccessVerified(ctx, tx, reader.ID, sessionToken(r))
+	if err != nil {
+		return err
+	}
+	v.CanOpen = accessVerified && v.KeyUsable && v.Selected != nil && v.SelectedKey.Usable()
 	d.TicketList = v
 	return tx.Commit()
 }
@@ -232,7 +259,14 @@ func ticketThreadLoader(ctx context.Context, a *App, r *http.Request, d *PageDat
 		COALESCE((SELECT handle FROM users WHERE id=$2),'Former account')`, record.OpenerID, record.AssignedTo).Scan(&v.Opener, &v.Assignee); err != nil {
 		return err
 	}
-	for _, keyOwner := range []struct{ id, handle, relation string }{{record.OpenerID, v.Opener, "ticket opener"}, {record.AssignedTo, v.Assignee, "current assignee"}} {
+	v.AssigneeEligible, err = ticketUIStaffEligible(ctx, tx, record.AssignedTo, record.OpenerID, record.AdminOnly, false)
+	if err != nil {
+		return err
+	}
+	for i, keyOwner := range []struct{ id, handle, relation string }{{record.OpenerID, v.Opener, "ticket opener"}, {record.AssignedTo, v.Assignee, "current assignee"}} {
+		if i == 1 && !v.AssigneeEligible {
+			continue
+		}
 		key, err := ticketUIKey(ctx, tx, keyOwner.id, keyOwner.handle, keyOwner.relation)
 		if err != nil {
 			return err
@@ -244,14 +278,12 @@ func ticketThreadLoader(ctx context.Context, a *App, r *http.Request, d *PageDat
 	if err != nil {
 		return err
 	}
-	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE id=$1 AND id<>$3
-		AND role IN ('moderator','admin') AND (NOT $2::boolean OR role='admin')
-		AND suspended_at IS NULL AND closed_at IS NULL AND retention_restricted_at IS NULL)`,
-		record.AssignedTo, record.AdminOnly, record.OpenerID).Scan(&v.AssigneeEligible); err != nil {
+	v.ReplyKeysUsable = len(v.Keys) == 2 && v.Keys[0].Usable() && v.Keys[1].Usable() && viewerKeyUsable
+	accessVerified, err := pgpAccessVerified(ctx, tx, reader.ID, sessionToken(r))
+	if err != nil {
 		return err
 	}
-	v.ReplyKeysUsable = v.Keys[0].Usable() && v.Keys[1].Usable() && viewerKeyUsable
-	v.CanReply = record.Status == "open" && v.AssigneeEligible && v.ReplyKeysUsable
+	v.CanReply = accessVerified && record.Status == "open" && v.AssigneeEligible && v.ReplyKeysUsable
 	v.CanClose = record.Status == "open" && (v.CanManage || reader.ID == record.OpenerID)
 	if v.CanManage {
 		v.Choices, err = ticketStaffChoices(ctx, tx, reader, record.AdminOnly)

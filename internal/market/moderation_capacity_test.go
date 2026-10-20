@@ -350,7 +350,7 @@ func TestModerationStaleFinancialReferencesRemainPrivateEscalations(t *testing.T
 
 func TestModerationConcurrentLegacyReplayRespectsActorCap(t *testing.T) {
 	legacy := newPooledHistoricalFixture(t, 127)
-	vendor, _ := legacy.user("legacy_replay_cap_vendor", "vendor")
+	vendor, _ := legacy.keylessUser("legacy_replay_cap_vendor", "vendor") // schema 127 predates sessions.pgp_access_key (129)
 	agExec(legacy, `UPDATE settings SET value='true' WHERE key='moderation_enabled'`)
 	for range 8 {
 		legacy.product(vendor, "digital")
@@ -474,7 +474,7 @@ func TestModerationAllocationLeaseAndRetryExactlyOnce(t *testing.T) {
 
 func TestModerationLegacyPolicyReplayReservesBeforeInference(t *testing.T) {
 	legacy := newPooledHistoricalFixture(t, 127)
-	vendor, _ := legacy.user("legacy_policy_budget_vendor", "vendor")
+	vendor, _ := legacy.keylessUser("legacy_policy_budget_vendor", "vendor") // schema 127 predates sessions.pgp_access_key (129)
 	agExec(legacy, `UPDATE settings SET value='true' WHERE key='moderation_enabled'`)
 	legacy.product(vendor, "digital")
 	dsn, err := url.Parse(os.Getenv("TEST_DATABASE_URL"))

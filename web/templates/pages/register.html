@@ -12,6 +12,8 @@
 </label><span class="help" id="handle-help">Your handle cannot be changed later. It is shown to your trading partners and market staff, and {{if and .Access .Access.MembersOnly}}to signed-in accounts{{else}}publicly{{end}} if you sell. Do not reuse a name you use anywhere else.</span>
 <label>Password<input type="password" name="password" required minlength="12" autocomplete="new-password">
 </label><span class="help">Use at least 12 characters and at most 72 UTF-8 bytes. No email address is required.</span>
+<label>PGP public key<textarea name="pgp" maxlength="16384" rows="6" spellcheck="false" autocomplete="off" placeholder="-----BEGIN PGP PUBLIC KEY BLOCK-----"{{if ne (index .Settings "allow_login_without_pgp") "true"}} required{{end}}></textarea></label>
+<span class="help">Required for vendor registration{{if ne (index .Settings "allow_login_without_pgp") "true"}} and every account on this market{{else}}; optional to create a browse-only buyer account{{end}}. Purchasing and messages always require a usable public key and PGP decryption. Export your public key from your own PGP software. Never paste your private key. Add an authenticator after signing in to help prevent account takeover.</span>
 <fieldset class="account-type" aria-describedby="account-type-help"><legend>Account type</legend>
 <label class="check"><input type="radio" name="account_type" value="buyer"{{if not .FormVendor}} checked{{end}}> Buyer account</label>
 <label class="check"><input type="radio" name="account_type" value="vendor"{{if .FormVendor}} checked{{end}}> Vendor account</label>

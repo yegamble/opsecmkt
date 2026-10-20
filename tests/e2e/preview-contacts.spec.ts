@@ -41,7 +41,9 @@ test('vendor page shows the vendor key and links to a prefilled message', async 
   await expect(page.locator('.message-to')).toHaveText('To: ghost_circuit');
   await expect(page.getByLabel('Find a recipient')).toHaveCount(0);
   await expect(page.getByLabel('Recipient handle')).toHaveCount(0);
-  await expect(page.locator('#who-can-be-messaged')).toContainText('You can write to active vendors, people you share an order with, people who have messaged you, and market staff');
+  await expect(page.locator('#who-can-be-messaged')).toContainText('Vendors may answer their existing customers.');
+  await expect(page.locator('#who-can-be-messaged')).toContainText('Private buyers cannot be found or contacted by handle.');
+  await expect(page.locator('#who-can-be-messaged')).not.toContainText('people who have messaged you');
   await expect(page.locator('main .pgp-fingerprint')).toBeVisible();
   await fits(page);
 });

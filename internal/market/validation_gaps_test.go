@@ -42,7 +42,7 @@ func TestOrderDraftValidation(t *testing.T) {
 
 func TestProfileKeyRejectsRevokedAndPrivateMaterial(t *testing.T) {
 	e := newTestApp(t)
-	id, s := e.user("val_keys", "buyer")
+	id, s := e.keylessUser("val_keys", "buyer")
 
 	revoked, err := openpgp.NewEntity("revoked", "", "revoked@example.test", &packet.Config{Algorithm: packet.PubKeyAlgoEdDSA})
 	if err != nil {

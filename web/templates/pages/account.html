@@ -22,16 +22,17 @@
 <p class="help" id="pgp-visibility">Shown to market staff, to every vendor or buyer you trade with and anyone you have messaged, to people who share an authorized support ticket with you, to every signed-in account if you sell, appear on the public staff list or are named as the staff contact, to both parties of every disputed or resolved order if you are a moderator or administrator, and {{if and $.Access $.Access.MembersOnly}}to signed-in viewers on your vendor page{{else}}publicly on your vendor page{{end}} if you sell — with its user IDs and creation date.{{if and $.Access $.Access.MembersOnly}} An administrator can later make the site public, exposing your vendor-page key to visitors who are not signed in.{{end}} Use a key made only for this market.</p>
 <label>PGP public key<textarea name="pgp" maxlength="16384" rows="8" spellcheck="false" placeholder="-----BEGIN PGP PUBLIC KEY BLOCK-----" aria-describedby="pgp-visibility">{{with $.PGP}}{{.Armored}}{{end}}</textarea>
 </label>
+{{if eq .Role "vendor"}}<p class="help">Vendors must keep a usable PGP public key. The server never accepts your private key.</p>{{end}}
 <span class="help">At most 16 KiB (16,384 UTF-8 bytes). Browsers count characters in this box, so non-ASCII text may need fewer characters.</span>
 <span class="help">Only your public key belongs here. Saving a different key clears ownership verification and PGP sign-in. The same key renewed (same fingerprint, for example a new expiry) keeps them, unless it lacks a revocation your saved key has or would have others encrypt to an older subkey.</span>{{$totp := and $.Security $.Security.TOTPEnabled}}
 <label>Current password<input type="password" name="password" maxlength="72" autocomplete="current-password" aria-describedby="pgp-confirm-help">
 </label>{{if $totp}}
 <label>Authenticator code<input name="code" inputmode="numeric" pattern="[0-9]{6}" title="Enter the 6-digit code from your authenticator app." minlength="6" maxlength="6" autocomplete="one-time-code" aria-describedby="pgp-confirm-help">
 </label>{{end}}
-<span class="help" id="pgp-confirm-help">Adding, changing or removing the key needs your current password{{if $totp}} and an authenticator code{{end}}. Leave blank to keep the current key.</span>{{with $.PGP}}{{if .HasKey}}<dl class="key-values pgp-summary">
+<span class="help" id="pgp-confirm-help">Adding, changing or removing the key needs your current password{{if $totp}} and a current authenticator code{{end}}. Replacing or removing an existing key also needs decryption with that saved key in this browser or your previously enrolled authenticator. First key enrollment and safe same-fingerprint renewal remain available. If the saved key is lost, contact staff for identity-verified key recovery. Keep the public key field unchanged to keep the saved key.</span>{{with $.PGP}}{{if .HasKey}}<dl class="key-values pgp-summary">
 <div>
 <dt>Fingerprint</dt>
-<dd class="pgp-fingerprint">{{if .Fingerprint}}{{.Fingerprint}}{{else}}Unreadable — paste your key again{{end}}</dd>
+<dd class="pgp-fingerprint">{{if .Fingerprint}}{{.Fingerprint}}{{else}}Unreadable — use verified key recovery{{end}}</dd>
 </div>{{if .UserIDs}}
 <div>
 <dt>User IDs</dt>
@@ -51,7 +52,7 @@
 <button class="primary" type="submit">Save profile</button>
 </form>
 </section>
-{{template "account-xmpp" $}}{{template "account-vendor" $}}{{template "uploads:avatar" $}}{{template "uploads:staff-list" $}}
+{{template "account-xmpp" $}}{{template "vendor-availability:account" $}}{{template "account-vendor" $}}{{template "uploads:avatar" $}}{{template "uploads:staff-list" $}}
 </div>
 <section>
 <div class="panel">

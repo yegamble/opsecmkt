@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { expect, test, type Page } from '@playwright/test';
 import { ADMIN, uniqueHandle } from './db-fixtures';
-import { pgpFixture, saveEncryptionKey, setRole, signedIn, submitAndLoad } from './db-helpers';
+import { pgpFixture, saveEncryptionKey, seedPGPAccess, setRole, signedIn, submitAndLoad } from './db-helpers';
 import { waitForStyles } from './styles';
 
 // Real server/database forms with JavaScript disabled. Keep outgoing delivery off:
@@ -216,6 +216,10 @@ test('encrypted XMPP contents need administrator permission, recipient consent a
     await expect(preferences.getByLabel('Receive XMPP notifications')).toBeChecked();
     await expect(preferences.getByLabel('Include PGP-encrypted message contents')).toBeChecked();
 
+    // These existing staff sessions explicitly satisfy the decryption prerequisite for sending.
+    // The buyer's keyless summary and content-consent refusals above receive no fixture proof.
+    await seedPGPAccess(admin);
+    await seedPGPAccess(moderator);
     // Staff compose actual ciphertext addressed to this buyer. The frontend notice
     // remains a summary; the private message keeps the armored block.
     for (const staff of [admin, moderator]) {

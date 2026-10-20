@@ -1,0 +1,84 @@
+# Messaging, PGP and vendor privacy review — 2026-10-20
+
+Scope: [PR #104](https://github.com/yegamble/opsecmkt/pull/104). The owner authorized implementation, commit, push and merge after tests and war-room scrutiny.
+
+## Evidence and review method
+
+The scoped findings use unique `WR-MPGP-*` identifiers so they can coexist with concurrent payments reviews in the shared ledger. Their priorities and acceptance criteria are recorded below; final runtime closure is recorded in PR #104.
+
+The chair assembled source, test, documentation and ledger evidence before independent security, privacy and Tor/operations review. Seats completed blind review, cross-examination and rebuttal. A separate QA/release seat checks the integrated result. Reviewers used the available Codex agents; the repository's Claude-specific model bindings were unavailable. The managed execution environment failed provisioning, so source edits used immutable GitHub blobs, with only the chair updating the isolated branch. Local execution is unverified. Runtime evidence comes from GitHub Actions.
+
+Authentication sources: `internal/market/pgp_access.go`, `pgp_actions.go`, `pgp_factor.go`, `totp_actions.go`, `actions_auth.go`, `admin_factors.go`, `cmd/server`, migrations 129–130. Messaging: `actions_messages.go`, `contacts.go`, `load.go`, `types.go`. Commerce and obligations: `actions_orders.go`, `orders_actions.go`, `orders_load.go`, `escrow_readiness.go`. Vendor privacy: `vendor_availability.go`, `vendor_applications.go`, `image_routes.go`, `image_pages.go`, `retention.go`. Account, registration, PGP, vendor, product, checkout, message and order templates provide server-rendered flows.
+
+The existing private-administrator ingress stays in force. Challenges name the configured official addresses and account; private administration addresses are not published. Database, simulated-wallet, browser and fakechain tests do not establish public-Tor, deployed-host or real-funds behavior.
+
+## Round D: WR-MPGP-1 — live contact authorization and necessary order replies
+
+DECISION: ACCEPT security findings SEC1–SEC3.
+WHY: A stale sender role could retain access to private customers after demotion. Separate eligibility and key reads could expose a key after the recipient became private. Conversely, a blanket retention restriction denied necessary communication on financially open orders.
+DISSENTING VIEW: Applying retention exclusion to every vendor contact was simpler but would obstruct existing obligations; the exception must not expose unrelated buyers or historical contacts.
+USER IMPACT: Buyers and vendors retain communication for their own unresolved financial orders, while strangers and demoted staff cannot retrieve private contact keys. Away-message refusal still wins.
+OPERATOR IMPACT: No new service or configuration.
+TECHNICAL COST/RISK: Short transactions share-lock current sender and recipient rows for authorization and key retrieval. Lock contention is refused; transactions end before rendering.
+ACCEPTANCE CRITERIA: Current database role governs access; key retrieval shares its authorization transaction; public vendor and dispute staff loaders recheck eligibility; restricted vendors are reachable only by actual buyers of financially open orders, and only when their away-message preference allows it.
+TEST PLAN: `message_role_race_test.go` covers stale role snapshots, denied sends without writes, sender/recipient lock contention, public-profile key checks, existing-order keys, restricted-vendor replies and staff demotion.
+
+## Round D: WR-MPGP-2 — withdrawing activity sharing without a usable key
+
+DECISION: ACCEPT.
+WHY: An expired key prevented a vendor from turning off last-seen sharing while keeping the same availability mode.
+DISSENTING VIEW: Requiring a usable key for every settings save enforced a uniform vendor rule, but privacy withdrawal must remain possible.
+USER IMPACT: Vendors can stop sharing activity and reduce availability even when their key needs repair.
+OPERATOR IMPACT: No configuration change.
+TECHNICAL COST/RISK: Require a usable key only when resuming active business or publishing a hidden storefront; purchases independently enforce key usability.
+ACCEPTANCE CRITERIA: Same-mode privacy changes and availability reductions work without a usable key; reopening business requires one. Opt-out erases the saved last-seen time; restricted, closed and suspended accounts do not refresh it.
+TEST PLAN: `vendor_availability_test.go` and `vendor_retention_activity_test.go`.
+
+## Round D: WR-MPGP-3 — protect established PGP identity and recover explicitly
+
+DECISION: MODIFY and ACCEPT Tor/security finding; block merge until implemented and tested.
+WHY: A stolen password could replace the saved public key and then decrypt with the attacker's key. Allowing the same password to enroll a first authenticator would bypass a TOTP exception.
+DISSENTING VIEW: Mandatory MFA for all accounts was considered excessive. A usable-key-only guard was rejected because expiry or unreadable packets would weaken an established identity. A timed account-wide recovery grant was rejected because a password holder could race its consumption.
+USER IMPACT: Changing or removing any nonempty PGP binding requires current-session old-key decryption or fresh confirmation with an authenticator already enrolled before the operation. First authenticator enrollment, activation and access to pending MFA/recovery material on a bound account require old-key proof. First key enrollment clears inactive MFA pending material; migration clears legacy pending material on keyed accounts with MFA off. First key enrollment and safe same-fingerprint renewal remain possible; unsafe renewal is a key change. Purchases and messages always need decryption with the saved current key.
+OPERATOR IMPACT: Verify identity through a trusted recovery channel before directly replacing a lost public key in the existing privileged reset. Web reset still refuses administrator targets. The existing host reset accepts an optional public-key file for last-administrator recovery, without relaxing strict login.
+TECHNICAL COST/RISK: Recovery rejects private, mixed private-subkey and extra/photo packets and verifies the canonical public key can receive encryption. It accepts a bounded usable public key only, invalidates sessions, pending sign-ins and challenges, advances key generation and leaves ownership unverified. No private key, timed recovery grant or global policy bypass.
+ACCEPTANCE CRITERIA: Password-only replacement/removal and first-TOTP bootstrap fail for valid, expired and unreadable saved bindings; prior TOTP and current-key proof permit confirmed changes; safe renewal and first enrollment still work. Explicit privileged recovery works even with both optional factors off and preserves strict policy; replacement must pass real decryption.
+TEST PLAN: Auth key-binding/TOTP regressions, privileged-reset tests and integrated strict administrator host recovery; full Go/PostgreSQL race, browser, upgrade and operational CI.
+
+## Integration and evidence limits
+
+The first CI runs found fixture assumptions that predated mandatory PGP access. Corrections explicitly enroll/prove commerce fixtures, preserve keyless negative cases and keep refusal, side-effect and authorization assertions. No global request-helper bypass, test timeout increase or skipped required job is accepted. Source guards remain unchanged.
+
+The initial checkpoint CI run [39458740871](https://github.com/yegamble/opsecmkt/actions/runs/39458740871) tests commit `a630ba410aa944fb5d709f65c50313d5ea0440af`; that was an intermediate integration checkpoint. WR-MPGP-3 and all named regressions are integrated in `6e8ef976c5d70a6aaf9f12615e6d6fa3ab98cc7a`. Independent QA verified all three findings against that source; Tor independently verified the recovery and MFA protections. Final runtime closure is tracked in [PR #104](https://github.com/yegamble/opsecmkt/pull/104). The final exact-head CI result and reviewer verification must be recorded in the PR before merge. This record makes no deployment or live Tor claim.
+
+A-577 is amended to the owner's manual vacation/deactivation design; no automatic expiry or public note was requested. A-582's older ownership-verification proposal remains separate. A-608 closes only with integrated passing forbidden-keyless-recipient coverage. Unrelated A-575, A-578, A-609, A-615 and operator/mainnet prerequisites A-555/A-562 remain open.
+
+## Integration Round D: WR-MPGP-4 — ticket recipients becoming private buyers
+
+DECISION: ACCEPT both renewed security/Tor findings.
+WHY: A stale staff assignment displayed the assignee's newly replaced public key after demotion to a private buyer. Ticket target selection also authorized a staff snapshot and then independently reloaded the key, permitting the same role/key race.
+DISSENTING VIEW: An old ticket could be treated as an enduring counterparty relation. The chair rejected that interpretation because staff demotion already removes reply eligibility; history does not authorize discovery of the former staff member's future private identity.
+USER IMPACT: Existing ticket history and ciphertext remain readable to permitted participants, but an ineligible former assignee's current private key is withheld. Permitted staff can reassign the ticket.
+OPERATOR IMPACT: No new configuration or recovery process.
+TECHNICAL COST/RISK: Thread loading locks the peer account through eligibility and key retrieval, refusing contention; selected staff keys recheck current eligibility under the same target lock as key retrieval.
+ACCEPTANCE CRITERIA: Demotion followed by key replacement cannot disclose that new key through either ticket composition or thread loading. Active eligible staff keys remain usable; hidden staff are not exposed as a selectable roster. Creation/reply retains current-session decryption guards.
+TEST PLAN: Ticket UI demotion/replacement regressions, independent corrected-source security/Tor verification and required current-commit Go/PostgreSQL/browser CI. Final outcomes are recorded in PR #104.
+
+## Final Round D: WR-MPGP-5 — vendor accounts acting as order buyers
+
+DECISION: ACCEPT the actual-purchaser correction and MODIFY the reciprocal seller exception.
+WHY: Vendor accounts can buy, but the hidden/restricted-vendor contact exception accepted only accounts whose role was buyer. An actual vendor-role purchaser could lose communication about their own open order. The reverse seller-to-vendor-role-customer case had the same mismatch.
+DISSENTING VIEW: A broad historical-counterparty exception would weaken inactive-vendor privacy. The accepted correction uses actual order-party identity and keeps the narrower existing visibility and financial-closure rules; it adds no generic history-only reverse grant.
+USER IMPACT: A vendor account buying an item retains the same necessary order communication as a buyer account. A vendor can reach its vendor-role customer only through a real vendor-visible order. Away-message refusal still wins.
+OPERATOR IMPACT: No configuration change.
+TECHNICAL COST/RISK: The existing locked recipient query admits buyer/vendor purchaser roles and adds a current-vendor seller's actual customer order under the target-vendor branch. Drafts do not discover customers. Restricted targets require a financially open order; suspended, banned and closed targets remain unavailable.
+ACCEPTANCE CRITERIA: Both directions work for their actual open-order parties; unrelated accounts, non-visible drafts, financially closed restricted orders and opted-out away recipients remain denied. Current-session PGP proof and same-transaction role/key retrieval remain required.
+TEST PLAN: Focused two-direction order-role regressions with real PGP session proof, privacy/QA corrected-source review, and required fresh database/browser CI. Final outcomes are recorded in PR #104.
+
+## Concurrent main integration
+
+Main's A-614 settlement re-request fix and XMPP/support-ticket changes were integrated before final verification. Migrations 131–133 remain intact alongside PGP/access migrations 129–130. New support-ticket create/reply mutations now take the same live session/account decryption guard as direct messages; unverified browsers retain permitted read/status actions and receive PGP authentication guidance. Order-context, encrypted delivery and notification audience protections are preserved. Operator documentation distinguishes saved encryption keys, current-session decryption and optional outbound forwarding preferences.
+
+The renewed security and Tor/privacy seats review the combined source, and final independent QA checks the current commit and required CI in PR #104. A real-fakechain re-request/reorg refusal introduced by the concurrent A-614 integration was diagnosed in CI run 39471498336: funding output indices moved from `[1991 1992]` to `[2023 2024]`, and the pinned wallet refused transfer with `Daemon response did not include the requested real output`. This matches its saved-ring handling after an input moves. Main's concurrent PR #107 retains the moved-index case and bounds polling to ten passes. Every refusal must be the expected wallet RPC error with no built transaction, stored key images or relay; the final transaction must build and relay exactly once using the original key images, input total and payout plan. Those financial, decoded-input and confirmation checks remain intact. No production wallet, ring-history reset or timeout is changed. This establishes only the exercised fakechain behavior when the final runtime gate passes; it does not establish live-network fork choice or mainnet recovery.
+
+Current-commit runtime success is required before merge; earlier green runs are not substituted for it.

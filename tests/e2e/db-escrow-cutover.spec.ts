@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { expect, test } from '@playwright/test';
 import { uniqueHandle } from './db-fixtures';
-import { expectNotice, saveEncryptionKey, signedIn, submitStatus, withinViewport } from './db-helpers';
+import { expectNotice, saveEncryptionKey, signedIn, submitStatus, withinViewport, seedPGPAccess } from './db-helpers';
 
 // The application has no provider in this suite. Paused intake allows unfunded
 // Monero drafts; enabling escrow fails closed until the operator configures it.
@@ -19,6 +19,8 @@ test('Monero-only intake, forged Bitcoin refusals and unavailable escrow work wi
   try {
     await saveEncryptionKey(vendor, password);
     await saveEncryptionKey(buyer, password);
+    await seedPGPAccess(vendor);
+    await seedPGPAccess(buyer);
     sql(`UPDATE settings SET value='false' WHERE key='payment_intake_XMR';
       UPDATE users SET role='admin' WHERE handle='${adminHandle}';
       UPDATE users SET role='vendor' WHERE handle='${vendorHandle}';

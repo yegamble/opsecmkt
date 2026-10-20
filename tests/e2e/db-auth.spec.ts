@@ -1,7 +1,7 @@
 import { createHmac } from 'node:crypto';
 import { expect, test, type Page } from '@playwright/test';
 import { FIXTURE_LISTING, uniqueHandle } from './db-fixtures';
-import { enrollTOTP, saveEncryptionKey, submitAndLoad } from './db-helpers';
+import { enrollTOTP, saveEncryptionKey, seedPGPAccess, submitAndLoad } from './db-helpers';
 
 // RFC 6238 TOTP (SHA-1, 30 s, 6 digits) computed in the test runner, not in the browser.
 function base32Decode(input: string): Buffer {
@@ -134,8 +134,12 @@ test('anonymous checkout returns to the checkout after registering and after the
   await expect(page.getByRole('button', { name: 'Create unfunded draft' })).toHaveCount(0);
   await saveEncryptionKey(page, passphrase);
   await page.goto(checkout);
-  await expect(page.getByRole('button', { name: 'Create unfunded draft' })).toBeVisible();
+  // A saved public key alone does not authenticate PGP for this browser.
+  await expect(page.getByRole('button', { name: 'Create unfunded draft' })).toHaveCount(0);
 
+  // Preparing the existing owner's first authenticator requires their current-session PGP proof.
+  // The subsequent fresh sign-in below receives no fixture proof.
+  await seedPGPAccess(page);
   const secret = await enrollTOTP(page, passphrase);
   await page.context().close();
 
@@ -152,7 +156,8 @@ test('anonymous checkout returns to the checkout after registering and after the
   await page.getByRole('button', { name: 'Verify code' }).click();
   await expect(page).toHaveURL(checkout);
   await expect(page.locator('.account-name')).toHaveText(handle);
-  await expect(page.getByRole('button', { name: 'Create unfunded draft' })).toBeVisible();
+  // Returning to checkout does not authenticate PGP for this browser, even after TOTP.
+  await expect(page.getByRole('button', { name: 'Create unfunded draft' })).toHaveCount(0);
   await page.context().close();
 });
 

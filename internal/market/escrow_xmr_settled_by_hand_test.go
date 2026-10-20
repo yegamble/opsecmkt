@@ -642,6 +642,41 @@ func strandedAlert(n string) string {
 		"and the market does not settle them on its own. Settle them with the operator; it cannot be dismissed while it claims them"
 }
 
+// reviewReasons lists the payment-review reasons of order's flagged deposits, sorted, as an administrator's desk reads them.
+func (x *xmrEscrowEnv) reviewReasons(order string) []string {
+	x.t.Helper()
+	d := &PageData{User: &User{ID: x.admin, Role: "admin"}}
+	r := httptest.NewRequest("GET", "/", nil)
+	if err := loadPaymentReviews(r.Context(), x.A, r, d); err != nil {
+		x.t.Fatal(err)
+	}
+	var reasons []string
+	for _, v := range d.PaymentReviews {
+		if v.OrderID == order {
+			reasons = append(reasons, v.Reason)
+		}
+	}
+	slices.Sort(reasons)
+	return reasons
+}
+
+// waitingClaim is the clause the payment-review reason of a deposit claimed by re-request n of settlement m, still
+// requested, ends with (A-617): with the wait when the deposit is missing and n waits for it.
+func waitingClaim(n, m int64, missing bool) string {
+	s := "; Monero escrow settlement " + strconv.FormatInt(n, 10) + ", which re-requests settlement " + strconv.FormatInt(m, 10) + ", claims it"
+	if missing {
+		s += " and waits: the escrow wallet no longer lists this deposit, and the market sends settlement " + strconv.FormatInt(n, 10) + " on its own once it is listed again"
+	}
+	return s + ". Do not pay anything by hand for it, or it is paid twice"
+}
+
+// waitingAlert is the desk's line for a re-request n of settlement m requested for more than 24 hours while it waits
+// for a missing deposit (A-617).
+func waitingAlert(n, m int64) string {
+	return "Monero escrow settlement has been requested for more than 24 hours: settlement " + strconv.FormatInt(n, 10) + ", which re-requests settlement " + strconv.FormatInt(m, 10) +
+		", waits because the escrow wallet no longer lists a deposit it spends, and the market sends it on its own once that deposit is listed again. Do not pay anything by hand for it, or it is paid twice"
+}
+
 // supersededWaiting is the PAY613-4 probe up to its double spend: a release that failed relay-refused is re-requested,
 // the new settlement's first build is refused so it stays requested while it claims the deposit, and the wallet then
 // reads that deposit as double-spent. It returns the order, the deposit, and the failed and new settlements.
@@ -704,10 +739,15 @@ func TestXMREscrowReRequestWaitsForMissingDeposit(t *testing.T) {
 	if x.alerting(order) {
 		t.Fatal("a waiting re-request alerts before 24 hours")
 	}
+	// A-617: the deposit's payment-review reason keeps its base reason and says which re-request claims it, that it
+	// waits for this deposit to be listed again, and not to pay it by hand.
+	if got := x.reviewReasons(order); len(got) != 1 || !strings.HasSuffix(got[0], waitingClaim(second, first, true)) || strings.Count(got[0], "re-requests") != 1 {
+		t.Fatalf("payment-review reason while it waits:\n got %q\nwant suffix %q", got, waitingClaim(second, first, true))
+	}
 	agExec(x.testEnv, "UPDATE xmr_settlements SET created=now()-interval '25 hours' WHERE id=$1", second)
 	if desk := deskAlertIn(html.UnescapeString(x.page("/moderator", admin)), order); !x.alerting(order) ||
-		!strings.Contains(desk, "requested for more than 24 hours") || strings.Contains(desk, "failed before any transaction was built") {
-		t.Fatalf("desk alert after 24 hours: %v %q", x.alerting(order), desk)
+		!strings.Contains(desk, waitingAlert(second, first)) || strings.Contains(desk, "failed before any transaction was built") {
+		t.Fatalf("desk alert after 24 hours:\n got %v %q\nwant %q", x.alerting(order), desk, waitingAlert(second, first))
 	}
 	// Past twice the threshold in blocks it still waits: no other coins, no new notice, nothing built.
 	x.fake.mine(int(3 * x.A.escrowXMR.confirmations))
@@ -716,8 +756,22 @@ func TestXMREscrowReRequestWaitsForMissingDeposit(t *testing.T) {
 	if s := x.settlement(second); s.State != "requested" || x.waitClass(second) != xmrWaitMissing || x.fake.countOf("transfer") != transfers || x.staffFlags(order) != flags {
 		t.Fatalf("past the bounded wait: %+v %q, transfer %d (want %d), staff flags %d (want %d)", s, x.waitClass(second), x.fake.countOf("transfer"), transfers, x.staffFlags(order), flags)
 	}
-	// Listed again: built from exactly the stored key images to the stored plan, and relayed.
+	// Listed again: built from exactly the stored key images to the stored plan, and relayed. While a build is refused
+	// once more it is still requested: the reason drops the wait (the deposit is listed) and keeps the rest, and the
+	// desk's line is the generic one.
 	x.fake.setTransfer(deposit, func(t *fakeXMRTransfer) { t.DoubleSpend = false })
+	restore := x.refuseTransfer(-4, "transaction was rejected by daemon")
+	x.mustPoll()
+	restore()
+	if s := x.settlement(second); s.State != "requested" || x.waitClass(second) == xmrWaitMissing {
+		t.Fatalf("listed again, its build refused: %+v %q", s, x.waitClass(second))
+	}
+	if got := x.reviewReasons(order); len(got) != 1 || !strings.HasSuffix(got[0], waitingClaim(second, first, false)) || strings.Contains(got[0], "no longer lists") {
+		t.Fatalf("payment-review reason once listed again:\n got %q\nwant suffix %q", got, waitingClaim(second, first, false))
+	}
+	if desk := deskAlertIn(html.UnescapeString(x.page("/moderator", admin)), order); !strings.Contains(desk, "requested for more than 24 hours") || strings.Contains(desk, "re-requests") {
+		t.Fatalf("desk alert once listed again: %q", desk)
+	}
 	x.mustPoll()
 	x.mustPoll()
 	old, s := x.settlement(first), x.settlement(second)
@@ -730,6 +784,33 @@ func TestXMREscrowReRequestWaitsForMissingDeposit(t *testing.T) {
 	}
 	if x.alerting(order) {
 		t.Fatal("still alerting once the re-request is relayed")
+	}
+	if got := x.reviewReasons(order); len(got) != 1 || strings.Contains(got[0], "re-requests") || strings.Contains(got[0], "Do not pay") {
+		t.Fatalf("payment-review reason once relayed: %q", got)
+	}
+}
+
+// A-617 control (A-554): a first release waiting for its missing credited deposit keeps its reasons: the deposit's
+// payment-review reason and the desk's 24-hour line say nothing of a re-request.
+func TestXMREscrowFirstReleaseWaitReasonUnchanged(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	_, admin := x.user("a617c_admin_"+randomToken()[:6], "admin")
+	order, _, txid := x.completed()
+	id := x.claimed(order)
+	x.dropTransfer(txid)
+	x.mustPoll()
+	x.mustPoll()
+	if s := x.settlement(id); s.State != "requested" || x.waitClass(id) != xmrWaitMissing {
+		t.Fatalf("its deposit missing: %+v %q", s, x.waitClass(id))
+	}
+	if got := x.reviewReasons(order); !slices.Equal(got, []string{"Credited deposit conflicted or missing"}) {
+		t.Fatalf("payment-review reason: %q", got)
+	}
+	agExec(x.testEnv, "UPDATE xmr_settlements SET created=now()-interval '25 hours' WHERE id=$1", id)
+	if desk := deskAlertIn(html.UnescapeString(x.page("/moderator", admin)), order); !strings.Contains(desk, "Monero escrow settlement has been requested for more than 24 hours") ||
+		strings.Contains(desk, "re-requests") || strings.Contains(desk, "Do not pay") {
+		t.Fatalf("desk alert: %q", desk)
 	}
 }
 
