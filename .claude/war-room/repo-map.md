@@ -111,7 +111,7 @@ fake-model test never proves model quality
   `scripts/test-*.sh` can pass falsely there. Run them with bash 5 (Homebrew) or rely on CI (Ubuntu).
 - **govulncheck may need the toolchain pinned locally**: when the tool binary is
   built with an older Go than `go.mod`'s `toolchain` line, it exits 1 with
-  "requires newer Go version"; run `GOTOOLCHAIN=go1.27.1 go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...`
+  "requires newer Go version"; run `GOTOOLCHAIN=go1.27.2 go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...`
   and check the exit status (a piped `tail` hides the failure).
 - Migration 073's constraint trigger `payouts_return_needs_release` is deferred to COMMIT: a later migration
   that writes `payouts` rows and then alters or indexes `payouts` in the same startup transaction fails with
