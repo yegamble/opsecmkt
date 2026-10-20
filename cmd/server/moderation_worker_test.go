@@ -3,6 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"database/sql"
+	"encoding/hex"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -57,6 +61,52 @@ func TestModerationWorkerDisableOverridesInheritedEnabledSetting(t *testing.T) {
 	err := runModerationWorker(context.Background(), []string{"--disable"}, &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "database input required") {
 		t.Fatalf("disable did not override inherited enabled setting: %v", err)
+	}
+}
+
+// Every pass calls migration 130's backfill sweep, so the controller must not
+// enable capture against a database that lacks it.
+func TestModerationWorkerRequiresBackfillMigration(t *testing.T) {
+	base := os.Getenv("TEST_DATABASE_URL")
+	if base == "" {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+	db, err := sql.Open("pgx", base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	b := make([]byte, 6)
+	rand.Read(b)
+	schema := "modworker_" + hex.EncodeToString(b)
+	if _, err = db.Exec(`CREATE SCHEMA ` + schema); err != nil {
+		t.Fatal(err)
+	}
+	defer db.Exec(`DROP SCHEMA ` + schema + ` CASCADE`)
+	if _, err = db.Exec(`CREATE TABLE ` + schema + `.schema_migrations(version integer PRIMARY KEY, name text NOT NULL, applied timestamptz NOT NULL DEFAULT now());
+	 INSERT INTO ` + schema + `.schema_migrations(version,name) SELECT v,'m'||v FROM generate_series(1,129) v`); err != nil {
+		t.Fatal(err)
+	}
+	u, err := url.Parse(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := u.Query()
+	q.Set("search_path", schema)
+	u.RawQuery = q.Encode()
+	t.Setenv("MODERATION_ENABLED", "")
+	t.Setenv("DATABASE_URL_FILE", "")
+	t.Setenv("DATABASE_URL", u.String())
+	err = runModerationWorker(context.Background(), []string{"--enabled", "--once"}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "application migrations required") {
+		t.Fatalf("worker enabled without migration 130: %v", err)
+	}
+	if _, err = db.Exec(`INSERT INTO ` + schema + `.schema_migrations(version,name) VALUES(130,'130_moderation_backfill.sql')`); err != nil {
+		t.Fatal(err)
+	}
+	err = runModerationWorker(context.Background(), []string{"--enabled", "--once"}, &bytes.Buffer{})
+	if err == nil || strings.Contains(err.Error(), "application migrations required") {
+		t.Fatalf("migration 130 check did not pass once recorded: %v", err)
 	}
 }
 
