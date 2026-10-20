@@ -1730,3 +1730,56 @@ STATUS: fixed locally; independent QA and final-source CI tracked on PR #99.
 PRIVACY REVIEW FIX: New persisted/rendered injection evidence retains only fixed field/code vocabulary. Historical fallback is source-neutral, not a fabricated model attribution. Current source/pattern escalation coalescing avoids a new cross-target actor binding.
 
 ITERATION 71 VERIFICATION: Independent security/release and privacy seats verified the strengthened boundaries against the current worktree. No additional required finding remained. Overlay privacy/HTTP cases were adopted as permanent tests. Full local suites and exact-head CI outcomes are recorded on PR #99 so this preparation-time ledger does not infer them from older runs. No model/production deployment, historical purge or merge to main is delegated.
+
+## Iteration 72 — PR #99 second external rating (Gemini 9.2/10) follow-up
+
+SCOPE: Owner request: war-room loop on PR #99, especially the LLM seat. The pasted Gemini review is a hypothesis source. Seats: opsec-llm, opsec-privacy, opsec-security (Round A; B/C skipped — no inter-seat dispute on a REQUIRED item). Base: PR head `826ff6a9` with current main merged (`216ea0da`); main's A-613 took migration 128, so the unmerged moderation capacity migration was renumbered **129** (chair; seat-verified functionally correct incl. the main-at-128 upgrade path). No merge to main is delegated.
+
+CHAIR FIXES: renumbering (`216ea0da`), stale "128" references (`d2284ff9`, SEC72-N1), records inventory "Checked against … (001–129)" (`c54f1582`; CI 39440637131 failed only TestRecordsListPhotosAndAvatars on this).
+
+### MOD72-1 — Lossless, non-punitive moderation capture (SEC72-1, SEC72-2, SEC72-3, privacy-2)
+
+DECISION: MODIFY → ACCEPT (P1 REQUIRED).
+WHY: Gemini's 86-sybil saturation is real in mechanism but expensive (buyers cannot cheaply create jobs; 86 vendor approvals). The security seat reproduced cheaper evasions against PostgreSQL: one vendor drops its own capture via the 3-active cap (SEC72-1), a revert dance permanently suppresses a stale-held revision through UNIQUE(kind,target_id,content_hash) (SEC72-2, introduced by MOD71-3's metadata-only capture), and one actor can exhaust the never-reclaimed lifetime allocation pool for everyone (SEC72-3). Overflow targets are never re-captured. privacy-2: unused unkeyed per-field digests (rating 1–5 etc. reversible) go into permanent rows.
+DISSENTING VIEW: Security seat would accept SHOULD if the owner explicitly accepted lossy capture and the panel/docs said one actor controls it; chair rejects — a moderation layer one vendor can sidestep on demand does not do its job.
+USER IMPACT: none on marketplace writes (still always commit). OPERATOR: panel shows targets awaiting capture.
+DESIGN: migration 130 bounded content-free backfill markers (kind,target_id) upserted on every overflow; worker sweep captures the CURRENT live revision through the admission trigger at <50% pending; stale-aware partial unique index; per-actor 24 h share of lifetime allocations; no field_digests; text_hash only for listings.
+ACCEPTANCE/TEST PLAN: as dispatched (actor-cap backfill, saturation, retained exhaustion + raise, coalescing, deleted source, bounded markers, concurrent sweeps, revert dance, per-actor share, digest absence).
+STATUS: in-progress (war-room/mod72-1-lossless-capture).
+
+### MOD72-2 — Disclose new abuse-review records and photo fingerprints (privacy-1)
+
+DECISION: ACCEPT (P1 REQUIRED). Public records/retention text covers only legacy copies; v2 references, exact and perceptual image fingerprints have no expiry, and the photos item ("only … deletes it at once") is now untrue (uploads store perceptual_hash on every upload). Wording only; no purge.
+STATUS: in-progress (war-room/mod72-2-disclosure).
+
+### MOD72-3 — Refuse migration name mismatches (SEC72-4)
+
+DECISION: ACCEPT (P2 SHOULD). Migration identity by number only: a DB that ran the unmerged branch's 128 fails with a misleading error. Fail closed before DDL with a clear message; permanent main-at-128 upgrade test.
+STATUS: in-progress (war-room/mod72-2-disclosure).
+
+### MOD72-4 — Model-path fail-closed and closed code ownership (LLM-1, LLM-2, LLM-3, LLM-5)
+
+DECISION: ACCEPT (P1 REQUIRED; LLM-5 P2 folded in for the shared moderation-v3 bump). Fake-adapter evidence: runtime truncation/stop metadata is ignored, so a truncated completion can AUTO_APPLY on a truncating llama.cpp build (runtime unpinned; CJK/emoji/punctuation-heavy 4096-rune listings exceed ctx 4096) (LLM-1); Stage B can drop a validated Stage A finding and AUTO_APPLY (LLM-2); model allowlists let a model assert Go-owned/ungroundable codes (MODEL_ABSENT, CANARY_MISMATCH, SLA_EXPIRED…), producing false audit records (LLM-3); hashes/64-hex evidence IDs dominate Stage B tokens (LLM-5). Must be fixed before inference is enabled anywhere.
+ACCEPTANCE: truncated/limit/missing stop metadata and oversized prompts → MODEL_FAILURE, never AUTO_APPLY; Stage A findings survive into reason codes; grammar + Go reject system codes, v2 pins refused, historical rows byte-stable; no 64-hex in prompts, evidence aliases round-trip.
+STATUS: in-progress (war-room/mod72-4-model-path).
+
+### MOD72-5 — Detection and image-hash precision (LLM-4, LLM-6, LLM-7, LLM-E6)
+
+DECISION: ACCEPT (P2 SHOULD), next wave. Gemini cross-clause evasion is real but only loses the Tier-0 shortcut (the item still reaches the model or a human); its 2-clause window adds 4/11 positives with 3/8 constructed false positives. Instead: any recognised external destination adds HUMAN_REVIEW so it can never auto-clear (LLM-7). Gemini min(forward, mirror) storage is mathematically wrong (mirror = row-reverse AND complement) and breaks Hamming locality (12/60 near-duplicate pairs up to 38 bits); the measured gap is `draw.ApproxBiLinear` point-sampling (recompress/resize miss 30–60%) → `draw.BiLinear` (LLM-4); optional comparison-time mirror check (LLM-E6). Weak injection markers ("buy with confidence", "act as") escalate 16/20 benign sentences → split strong/weak, weak → HUMAN_REVIEW (LLM-6).
+STATUS: open (ready; next wave after MOD72-4 because LLM-7 touches engine routing).
+
+### MOD72 — LLM experiments and owner decisions
+
+- LLM-E1 measuring rig (≥300 labelled items, pinned build, shipped grammars; enablement threshold benign AUTO_APPLY ≥70% at ≥99% precision), E2 chat template, E3 bounded grammar whitespace, E4 latency at cpus:2, E5 calibration, E7 skip inference for money kinds, E8 field order — P3 EXPERIMENT. Instrument-tier note (llava-7B via Ollama, not production): the shipped raw prompt flagged 10/10 listings INJECTION_SUSPECTED; model value is unproven until E1.
+- LLM-8 pre-publication hold mode with per-vendor auto-approve — blocked (owner decision; scope change). Model output must never publish.
+- NIT: worker never sets actor reputation (always 0 → +5 risk); omit until real.
+
+### Declined / deferred
+
+- Gemini: HMAC for `actor_ref` — REJECT (privacy). v2 `actor_ref` is sha256 of a random UUID; the legacy fallback hashes job id + content_hash from the same row; nothing is learned.
+- Gemini: HMAC for escalation `actor_key` — REJECT (privacy). `target_id` is plaintext in the joined jobs/suggestions rows; a key on the same host (SETUP_TOKEN-derived) adds nothing at rest or under live-host compromise and SETUP_TOKEN rotation would split coalescing.
+- Gemini: coarsen `moderation_reviews.created_at` / `moderation_jobs.completed_at` — REJECT, held from iteration 71 with new evidence: the same instant is recorded in byte-stable `audit_events` (invariant 8) and immutable receipts/suggestions; coarsening protects nothing.
+- privacy-3 (forward-only clearing of unused fingerprints of deleted images after a window) — DEFER (owner policy); MOD72-2 disclosure is the minimum.
+- SEC72-E1 (singleton capacity lock contention with watcher flagging) — EXPERIMENT, unmeasured.
+- Gemini: 2-clause window and min(forward, mirror) dHash — REJECT as specified (opsec-llm measurements above); superseded by MOD72-5.
+- Sybil-specific registration hardening — NOT WORTH DOING (single-actor path supersedes; MOD72-1 closes both).
