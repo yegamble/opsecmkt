@@ -528,8 +528,12 @@ func sixDigitTOTP(code string) bool {
 var errRescueRefused = fail(401, "Invalid handle or password")
 
 // rescueAccount returns the account a paused /login's authenticator code may sign in (A-571): the handle's active
-// account with TOTP on, for which code is a current, unused code. It reads without locking and writes nothing (no
-// bcrypt, no budget, no TOTP step): rescueSignIn checks the code again under the account lock, with its replay guard.
+// account with TOTP on, for which code is a current, unused code. It reads without locking and writes no TOTP step:
+// rescueSignIn checks the code again under the account lock, with its replay guard. Each code it checks first
+// reserves one attempt of the account's rescue-code budget (10 per ten minutes, its own key, never the sign-in code
+// budget totp-verify), atomically, so concurrent guesses cannot exceed it; a right code gives the attempt back, a
+// wrong or used one keeps it spent, and once it is spent every code, right ones included, is refused here without
+// bcrypt (SEC-A571-1: otherwise someone holding the password could pause the handle and guess codes without limit).
 // Every refusal is errRescueRefused.
 func (a *App) rescueAccount(ctx context.Context, handle, code string) (string, error) {
 	if !sixDigitTOTP(code) {
@@ -544,20 +548,33 @@ func (a *App) rescueAccount(ctx context.Context, handle, code string) (string, e
 	if account.suspended || account.banned || !account.totpEnabled {
 		return "", errRescueRefused
 	}
+	budget := ingressKey(ctx, rescueCodeKey(account.id))
+	if !a.allow(budget, 10) {
+		return "", errRescueRefused
+	}
 	var sealed string
 	var enabled bool
 	var last int64
 	err = a.db.QueryRowContext(ctx, "SELECT totp_secret,totp_enabled,totp_last_step FROM users WHERE id=$1", account.id).Scan(&sealed, &enabled, &last)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", errRescueRefused
-	} else if err != nil {
+	if err != nil {
+		a.refund(budget) // no code was checked
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", errRescueRefused
+		}
 		return "", fail(503, "Service unavailable")
 	}
-	if _, err = a.matchTOTP(sealed, enabled, last, code); err != nil {
+	if _, err = checkRescueCode(a, sealed, enabled, last, code); err != nil {
 		return "", errRescueRefused
 	}
+	a.refund(budget) // a right code costs nothing here
 	return account.id, nil
 }
+
+// rescueCodeKey is the limiter key of an account's budget of codes checked by the paused-sign-in rescue (A-571).
+func rescueCodeKey(userID string) string { return "rescue-code:" + userID }
+
+// checkRescueCode is rescueAccount's code check; tests count its calls to prove a spent budget checks no code.
+var checkRescueCode = (*App).matchTOTP
 
 type signInAccount struct {
 	id, hash, role                 string

@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"reflect"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -14,8 +15,9 @@ import (
 
 // A-571: while a handle's sign-in budget is paused, any account with TOTP signs in with its password and current
 // authenticator code typed together on /login. The code is checked first: a wrong, used or absent code, an unknown
-// handle or an account without TOTP is refused with the same 401 before any bcrypt and without spending a budget; only
-// a right code reaches the password check, and that attempt spends the account's code budget (totp-verify:<id>).
+// handle or an account without TOTP is refused with the same 401 before any bcrypt and without spending the sign-in
+// code budget; a checked wrong or used code spends only the rescue path's own budget (rescue-code:<id>, SEC-A571-1).
+// Only a right code reaches the password check, and that attempt spends the account's code budget (totp-verify:<id>).
 
 // countSignInPasswordChecks counts /login's bcrypt comparisons until the test ends.
 func countSignInPasswordChecks(t *testing.T) *atomic.Int64 {
@@ -98,12 +100,16 @@ func TestPausedRescueRefusesBeforeBcryptWithoutBudget(t *testing.T) {
 	e.A.mu.Lock()
 	entries := len(e.A.limits)
 	e.A.mu.Unlock()
-	if n := checks.Load(); n != 0 || entries != 1 || agLimited(e, "totp-verify:"+id) {
-		t.Fatalf("refused codes ran bcrypt %d times or created limiter entries (%d entries)", n, entries)
+	// Besides the paused handle's own entry, only the two codes that were checked (wrong and used) spent anything: one
+	// attempt each of the rescue path's own budget, never the sign-in code budget.
+	if n := checks.Load(); n != 0 || entries != 2 || agLimited(e, "totp-verify:"+id) || limiterCount(e, rescueCodeKey(id)) != 2 {
+		t.Fatalf("refused codes ran bcrypt %d times or created other limiter entries (%d entries, rescue-code %d)", n, entries, limiterCount(e, rescueCodeKey(id)))
 	}
-	// The right code with a wrong password reaches bcrypt once and spends one attempt of the code budget.
+	// The right code with a wrong password reaches bcrypt once and spends one attempt of the code budget; the right
+	// code gives back its rescue-code attempt.
 	wrongPassword := probe("wrong-long-password", agTOTPNow(key))
-	if checks.Load() != 1 || factorBudgetCount(e, id) != 1 || agInt(e, "SELECT totp_last_step FROM users WHERE id=$1", id) != 0 || agUserSessions(e, id) != 1 {
+	if checks.Load() != 1 || factorBudgetCount(e, id) != 1 || agInt(e, "SELECT totp_last_step FROM users WHERE id=$1", id) != 0 || agUserSessions(e, id) != 1 ||
+		limiterCount(e, rescueCodeKey(id)) != 2 {
 		t.Fatal("right code with a wrong password was not checked once and charged once, or spent the code")
 	}
 	refusals["right code, wrong password"] = wrongPassword
@@ -232,5 +238,160 @@ func TestPausedRescueRacesSameBrowserChallenge(t *testing.T) {
 				rescue.Code, refusalText(rescue.Body.String()), challenge.Code, refusalText(challenge.Body.String()), n)
 		}
 		agExec(e, "DELETE FROM pending_logins WHERE user_id=$1", id)
+	}
+}
+
+// countRescueCodeChecks counts the codes rescueAccount checks until the test ends.
+func countRescueCodeChecks(t *testing.T) *atomic.Int64 {
+	t.Helper()
+	var n atomic.Int64
+	orig := checkRescueCode
+	checkRescueCode = func(a *App, sealed string, enabled bool, last int64, code string) (int64, error) {
+		n.Add(1)
+		return orig(a, sealed, enabled, last, code)
+	}
+	t.Cleanup(func() { checkRescueCode = orig })
+	return &n
+}
+
+// SEC-A571-1: someone who has the password can pause the handle, so the rescue path's code guesses need a limit of
+// their own. Wrong codes spend only the rescue path's budget (10 per account per ten minutes), never the sign-in code
+// budget /challenge uses; once it is spent, every rescue is refused before its code is checked, and /challenge and
+// sign-in after the pause still work.
+func TestPausedRescueWrongCodesSpendRescueBudgetOnly(t *testing.T) {
+	e := newTestApp(t)
+	id, _ := e.user("rescue_spent", "buyer")
+	key, _ := agEnableTOTP(e, id)
+	pauseSignIn(t, e, "rescue_spent")
+	checks, codeChecks := countSignInPasswordChecks(t), countRescueCodeChecks(t)
+	browser := randomToken() // one browser throughout, so the re-rendered form's CSRF token is the same
+	wrong := e.wrongTOTP(id)
+	var first *httptest.ResponseRecorder
+	for i := range 10 {
+		w := e.do("POST", "/login", browser, rescueForm("rescue_spent", testPassword, wrong))
+		if first == nil {
+			first = w
+		}
+		if w.Code != 401 || !bytes.Equal(w.Body.Bytes(), first.Body.Bytes()) || !reflect.DeepEqual(w.Header(), first.Header()) {
+			t.Fatalf("wrong code %d: %d %q", i+1, w.Code, refusalText(w.Body.String()))
+		}
+	}
+	if checks.Load() != 0 || codeChecks.Load() != 10 || agLimited(e, "totp-verify:"+id) || limiterCount(e, rescueCodeKey(id)) != 10 {
+		t.Fatalf("ten wrong codes: bcrypt %d, codes checked %d, rescue-code %d, sign-in code budget spent %v",
+			checks.Load(), codeChecks.Load(), limiterCount(e, rescueCodeKey(id)), agLimited(e, "totp-verify:"+id))
+	}
+	// The eleventh, even with the right code, gets the same refusal without its code or password being checked.
+	spent := e.do("POST", "/login", browser, rescueForm("rescue_spent", testPassword, agTOTPNow(key)))
+	if spent.Code != first.Code || !bytes.Equal(spent.Body.Bytes(), first.Body.Bytes()) || !reflect.DeepEqual(spent.Header(), first.Header()) {
+		t.Fatalf("spent rescue budget answered differently: %d %q", spent.Code, refusalText(spent.Body.String()))
+	}
+	if checks.Load() != 0 || codeChecks.Load() != 10 || agUserSessions(e, id) != 1 || agLimited(e, "totp-verify:"+id) ||
+		agInt(e, "SELECT totp_last_step FROM users WHERE id=$1", id) != 0 {
+		t.Fatal("a rescue with its budget spent checked a code or password, spent the code or signed in")
+	}
+	// A pending sign-in from before the pause still completes on /challenge with a right code.
+	code, _ := e.totpCodeFor(id, 0)
+	w := e.do("POST", "/challenge", randomToken(), url.Values{"method": {"totp"}, "code": {code}}, agPending(e, id))
+	e.check(w, http.StatusSeeOther)
+	e.session(w)
+	// Once the pause lapses, the one-step sign-in (A-549) and the two-step sign-in work again, and the spent rescue
+	// budget does not apply to them.
+	e.A.mu.Lock()
+	b := e.A.limits[signInKey("rescue_spent")]
+	b.Until = time.Now().Add(-time.Second)
+	e.A.limits[signInKey("rescue_spent")] = b
+	e.A.mu.Unlock()
+	code, _ = e.totpCodeFor(id, 1)
+	w = e.do("POST", "/login", randomToken(), loginWithCode("rescue_spent", code, ""))
+	e.check(w, http.StatusSeeOther)
+	e.session(w)
+	expectChallenge(t, e, e.do("POST", "/login", randomToken(), loginWithCode("rescue_spent", "", "")), "")
+	if agUserSessions(e, id) != 3 || factorBudgetCount(e, id) != 2 || !e.A.limited(rescueCodeKey(id), 10) {
+		t.Fatal("sign-in after the rescue budget was spent did not work, or reset that budget")
+	}
+}
+
+// Concurrent wrong codes cannot check more than the budget's ten: the attempt is reserved atomically before the code
+// is checked.
+func TestPausedRescueConcurrentWrongCodesStayWithinBudget(t *testing.T) {
+	e := newTestApp(t)
+	id, _ := e.user("rescue_flood", "buyer")
+	key, _ := agEnableTOTP(e, id)
+	pauseSignIn(t, e, "rescue_flood")
+	checks, codeChecks := countSignInPasswordChecks(t), countRescueCodeChecks(t)
+	wrong := e.wrongTOTP(id)
+	results := agRace(40, func(i int) (int, string) {
+		c := &actionCtx{A: e.A, W: httptest.NewRecorder(), R: httptest.NewRequest(http.MethodPost, "/login", nil),
+			Form: rescueForm("rescue_flood", testPassword, wrong), Token: randomToken()}
+		_, _, _, release, err := authGate(c)
+		if err == errRescueRefused {
+			return 401, "refused"
+		}
+		if err == nil {
+			release()
+			return 200, "admitted"
+		}
+		return 500, err.Error()
+	})
+	if got := agTally(t, results, 401); got[401] != 40 {
+		t.Fatalf("concurrent wrong codes: %+v", got)
+	}
+	if n := codeChecks.Load(); n != 10 || checks.Load() != 0 || agLimited(e, "totp-verify:"+id) {
+		t.Fatalf("40 concurrent wrong codes checked %d codes (want 10), ran bcrypt %d times or spent the sign-in code budget", n, checks.Load())
+	}
+	agExpect(e, "/login", randomToken(), rescueForm("rescue_flood", testPassword, agTOTPNow(key)), 401, "Invalid handle or password")
+	if codeChecks.Load() != 10 || agUserSessions(e, id) != 1 || len(passwordWork) != 0 {
+		t.Fatal("the right code was checked after the flood spent the rescue budget, signed in or leaked a work slot")
+	}
+}
+
+// Fresh handles cannot evict a partly spent rescue-code budget from a full limiter table and so restore its attempts,
+// as for the sign-in code budget (TestSoleAdminRecoveryBudgetSurvivesBogusHandleChurn).
+func TestPausedRescueCodeBudgetSurvivesBogusHandleChurn(t *testing.T) {
+	e := newTestApp(t)
+	id, _ := e.user("rescue_churn", "buyer")
+	key, _ := agEnableTOTP(e, id)
+	pauseSignIn(t, e, "rescue_churn")
+	wrong := e.wrongTOTP(id)
+	agExpect(e, "/login", randomToken(), rescueForm("rescue_churn", testPassword, wrong), 401, "Invalid handle or password")
+	budget := rescueCodeKey(id)
+	e.A.mu.Lock()
+	started := e.A.limits[budget]
+	e.A.mu.Unlock()
+	anon := randomToken()
+	for i := range 4096 + 32 {
+		agExpect(e, "/setup", anon, url.Values{"handle": {"churn_" + strconv.Itoa(i)}, "password": {testPassword}}, 403, "Setup unavailable")
+	}
+	e.A.mu.Lock()
+	retained, size := e.A.limits[budget], len(e.A.limits)
+	e.A.mu.Unlock()
+	if started.Count != 1 || retained.Count != started.Count || !retained.Until.Equal(started.Until) || size != 4096 {
+		t.Fatalf("bogus handles reset the rescue-code budget or grew the table: before=%+v after=%+v size=%d", started, retained, size)
+	}
+	for range 9 {
+		agExpect(e, "/login", randomToken(), rescueForm("rescue_churn", testPassword, wrong), 401, "Invalid handle or password")
+	}
+	codeChecks := countRescueCodeChecks(t)
+	agExpect(e, "/login", randomToken(), rescueForm("rescue_churn", testPassword, agTOTPNow(key)), 401, "Invalid handle or password")
+	if codeChecks.Load() != 0 || agUserSessions(e, id) != 1 || agInt(e, "SELECT totp_last_step FROM users WHERE id=$1", id) != 0 {
+		t.Fatal("churn restored rescue-code attempts")
+	}
+}
+
+// Rescue-code entries are protected from eviction in both limiter tables, the private ingress's included.
+func TestLimiterProtectsRescueCodeEntries(t *testing.T) {
+	now := time.Now()
+	until := now.Add(10 * time.Minute)
+	for _, prefix := range []string{"", adminIngressPrefix} {
+		limits := map[string]bucket{prefix + rescueCodeKey("u1"): {Count: 1, Limit: 10, Until: until}}
+		for i := range 4095 {
+			limits[prefix+"auth:junk_"+strconv.Itoa(i)] = bucket{Count: 1, Limit: 10, Until: until.Add(time.Minute)}
+		}
+		if !allowIn(limits, prefix+"setup:fresh", 10, now) || len(limits) != 4096 {
+			t.Fatalf("%q: a full table of non-blocking entries refused a new key or grew", prefix)
+		}
+		if b, ok := limits[prefix+rescueCodeKey("u1")]; !ok || b.Count != 1 || !b.Until.Equal(until) {
+			t.Fatalf("%q: the oldest, lowest rescue-code entry was evicted or reset: %+v", prefix, b)
+		}
 	}
 }

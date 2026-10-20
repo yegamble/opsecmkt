@@ -345,9 +345,9 @@ func (a *App) cookie(w http.ResponseWriter, name, value string, age int) {
 }
 
 // allow counts one request against key's budget of n per ten minutes. When the table is full it evicts
-// the non-blocking entry with the lowest count (earliest expiry breaks ties). Active TOTP verification
-// entries are protected even before exhaustion, so fresh handles cannot reset a recovery allowance.
-// If every entry is blocking or protected it refuses the new key instead.
+// the non-blocking entry with the lowest count (earliest expiry breaks ties). Active TOTP verification and
+// paused-sign-in rescue-code entries (A-571) are protected even before exhaustion, so fresh handles cannot reset a
+// recovery allowance. If every entry is blocking or protected it refuses the new key instead.
 func (a *App) allow(key string, n int) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -429,7 +429,7 @@ func allowIn(limits map[string]bucket, key string, n int, now time.Time) bool {
 		if len(limits) >= 4096 {
 			victim, found := "", false
 			for k, v := range limits {
-				if v.Count >= v.Limit || strings.HasPrefix(strings.TrimPrefix(k, adminIngressPrefix), "totp-verify:") {
+				if base := strings.TrimPrefix(k, adminIngressPrefix); v.Count >= v.Limit || strings.HasPrefix(base, "totp-verify:") || strings.HasPrefix(base, "rescue-code:") {
 					continue
 				}
 				if w := limits[victim]; !found || v.Count < w.Count || (v.Count == w.Count && v.Until.Before(w.Until)) {

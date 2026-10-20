@@ -40,9 +40,13 @@ SELECT id, order_id, kind, send_error, tx_hash IS NOT NULL AS stored FROM xmr_se
 No migration and no new setting. While a handle's sign-in is paused after failed passwords, any account with TOTP
 on, not only a sole administrator, now signs in with its password and current authenticator code typed together on
 `/login`. The code is checked before the password: a wrong or used code, an unknown handle or an account without TOTP
-gets "Invalid handle or password" with no password check and no budget spent, so guessing on this path can no longer
-spend an account's code budget without a current code (the behaviour since 2026-10-13 charged every attempt). A right
-code spends one of the account's ten code attempts per ten minutes whether the password is right or wrong. The refusal
+gets "Invalid handle or password" with no password check and never spends the account's sign-in code budget, so
+guessing on this path can no longer spend the codes `/challenge` needs without a current code (the behaviour since
+2026-10-13 charged every attempt). Wrong codes spend only the rescue path's own budget of ten per account per ten
+minutes; once it is spent, the rescue is closed for that account until the window ends, while `/challenge` and normal
+sign-in after the pause still work. Someone who knows the handle and keeps both the pause and that budget spent can
+block password sign-in for that account for as long as they keep it up. A right code spends one of the account's ten
+code attempts per ten minutes whether the password is right or wrong. The refusal
 log line is renamed from `sole-admin rescue refused attempts=N` to `paused sign-in rescue refused attempts=N` and now
 also counts wrong codes, unknown handles and accounts without TOTP; update any log alert that matches the old text
 (for example `grep 'sign-in rescue'`). The sign-in page's help under the authenticator field says so.

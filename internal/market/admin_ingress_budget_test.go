@@ -96,23 +96,24 @@ func TestPublicListenerCannotPauseAdminIngressSignIn(t *testing.T) {
 		expect(login(false, "wrong-password-"+string(rune('a'+i)), ""), 401, "Invalid handle or password", "public wrong password")
 	}
 	expect(login(false, testPassword, ""), 429, signInPausedText, "public right password once paused")
-	// ...and, through the paused sign-in's rescue, the account's code budget, both in the public namespace. Wrong
-	// codes are refused before the password check and spend nothing (A-571); the right code with wrong passwords does.
-	wrong := e.wrongTOTP(id)
-	for range 10 {
-		expect(login(false, testPassword, wrong), 401, "Invalid handle or password", "public rescue code guess")
-	}
-	if e.A.limited("totp-verify:"+id, 1) || e.A.limited("adm:totp-verify:"+id, 1) {
-		t.Fatal("wrong rescue codes spent a code budget")
-	}
+	// ...and, through the paused sign-in's rescue, the account's code budget (the right code with wrong passwords) and
+	// the rescue path's own wrong-code budget (A-571), all in the public namespace. Wrong codes are refused before the
+	// password check and never spend the code budget; once the rescue-code budget is spent, no code is checked.
 	publicCode, _ := e.totpCodeFor(id, 0)
 	for range 10 {
 		expect(login(false, "wrong-password-z", publicCode), 401, "Invalid handle or password", "public rescue password guess")
 	}
-	if !e.A.limited(signInKey("onion_admin"), 10) || !e.A.limited("totp-verify:"+id, 10) {
+	wrong := e.wrongTOTP(id)
+	for range 10 {
+		expect(login(false, testPassword, wrong), 401, "Invalid handle or password", "public rescue code guess")
+	}
+	if e.A.limited("totp-verify:"+id, 11) || e.A.limited("adm:totp-verify:"+id, 1) {
+		t.Fatal("wrong rescue codes spent a sign-in code budget")
+	}
+	if !e.A.limited(signInKey("onion_admin"), 10) || !e.A.limited("totp-verify:"+id, 10) || !e.A.limited(rescueCodeKey(id), 10) {
 		t.Fatal("the public listener did not spend the public budgets")
 	}
-	if e.A.limited("adm:"+signInKey("onion_admin"), 1) || e.A.limited("adm:totp-verify:"+id, 1) {
+	if e.A.limited("adm:"+signInKey("onion_admin"), 1) || e.A.limited("adm:totp-verify:"+id, 1) || e.A.limited("adm:"+rescueCodeKey(id), 1) {
 		t.Fatal("spoofed public requests spent the private ingress's budgets")
 	}
 	// Every public admission class is full as well; a post's session lookup gives up quickly here.
@@ -468,9 +469,10 @@ func TestFullPublicLimiterTableRefusesNoAdminIngressPGPStep(t *testing.T) {
 }
 
 // A-159(a) and A-571 through the private ingress, for an administrator of a market with more than one: the public
-// listener has spent the handle's sign-in budget and, with the right code and wrong passwords, the account's code
-// budget (wrong codes spend nothing there), and the private ingress's sign-in budget is spent too; the paused
-// sign-in's rescue on the private onion charges only the private code budget and signs in.
+// listener has spent the handle's sign-in budget, with the right code and wrong passwords the account's code budget,
+// and with wrong codes the rescue path's own wrong-code budget, and the private ingress's sign-in budget is spent too;
+// the paused sign-in's rescue on the private onion, whose wrong-code budget is its own, charges only private budgets
+// and signs in.
 func TestPausedRescueThroughAdminIngress(t *testing.T) {
 	e := newTestApp(t)
 	e.A.adminSocket = "/run/market-admin/http.sock"
@@ -486,19 +488,22 @@ func TestPausedRescueThroughAdminIngress(t *testing.T) {
 			t.Fatalf("public wrong password: %d", w.Code)
 		}
 	}
-	for range 10 {
-		if w := login(false, testPassword, wrong); w.Code != 401 {
-			t.Fatalf("public rescue code guess: %d", w.Code)
-		}
-	}
-	if e.A.limited("totp-verify:"+id, 1) || e.A.limited("adm:totp-verify:"+id, 1) {
-		t.Fatal("wrong rescue codes on the public listener spent a code budget")
-	}
 	publicCode, _ := e.totpCodeFor(id, 0)
 	for range 10 {
 		if w := login(false, "wrong-password-z", publicCode); w.Code != 401 {
 			t.Fatalf("public rescue password guess: %d", w.Code)
 		}
+	}
+	for range 10 {
+		if w := login(false, testPassword, wrong); w.Code != 401 {
+			t.Fatalf("public rescue code guess: %d", w.Code)
+		}
+	}
+	if e.A.limited("totp-verify:"+id, 11) || e.A.limited("adm:totp-verify:"+id, 1) {
+		t.Fatal("wrong rescue codes on the public listener spent a sign-in code budget")
+	}
+	if !e.A.limited(rescueCodeKey(id), 10) || e.A.limited("adm:"+rescueCodeKey(id), 1) {
+		t.Fatal("wrong rescue codes on the public listener did not spend only the public rescue-code budget")
 	}
 	for i := range 10 {
 		if w := login(true, "wrong-password-"+string(rune('a'+i)), ""); w.Code != 401 {
@@ -508,8 +513,9 @@ func TestPausedRescueThroughAdminIngress(t *testing.T) {
 	if !e.A.limited("totp-verify:"+id, 10) || !e.A.limited("adm:"+signInKey("rescue_onion"), 10) || e.A.limited("adm:totp-verify:"+id, 1) {
 		t.Fatal("budgets not in the expected state before the rescue")
 	}
-	// A wrong code on the private onion is refused without spending the private code budget either.
-	if w := login(true, testPassword, wrong); w.Code != 401 || e.A.limited("adm:totp-verify:"+id, 1) {
+	// A wrong code on the private onion is refused without spending the private code budget either; it spends one
+	// attempt of the private rescue-code budget, which the spent public one does not block.
+	if w := login(true, testPassword, wrong); w.Code != 401 || e.A.limited("adm:totp-verify:"+id, 1) || limiterCountIn(e, "adm:"+rescueCodeKey(id)) != 1 {
 		t.Fatalf("private rescue code guess: %d", w.Code)
 	}
 	code, _ := e.totpCodeFor(id, 0)
@@ -520,4 +526,14 @@ func TestPausedRescueThroughAdminIngress(t *testing.T) {
 	if !e.A.limited("adm:totp-verify:"+id, 1) || e.A.limited("adm:totp-verify:"+id, 2) || e.A.limited("totp-verify:"+id, 11) {
 		t.Fatal("the private rescue did not charge exactly one private code attempt")
 	}
+	if limiterCountIn(e, "adm:"+rescueCodeKey(id)) != 1 {
+		t.Fatal("the right code was charged to the private rescue-code budget")
+	}
+}
+
+// limiterCountIn is the number of attempts key holds in whichever limiter table it lives in (limitTable).
+func limiterCountIn(e *testEnv, key string) int {
+	e.A.mu.Lock()
+	defer e.A.mu.Unlock()
+	return e.A.limitTable(key)[key].Count
 }
