@@ -647,10 +647,10 @@ type EscrowReadinessView struct {
 }
 
 // ReadinessCoin: Intake is payment_intake_<COIN>; NotReady, why the coin's escrow, on, is not ready ("" when it is,
-// QA4W4B-1).
+// QA4W4B-1); Restore, the restore gate or sweep pauses its escrow checkout, whatever Intake says (A-559).
 type ReadinessCoin struct {
 	Currency, Intake, NotReady string
-	EscrowOn                   bool
+	EscrowOn, Restore          bool
 }
 type ReadinessListing struct{ ID, Title, Vendor, Kind, Reason string }
 

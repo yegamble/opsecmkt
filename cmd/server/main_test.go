@@ -21,7 +21,7 @@ func TestServeWaitsForInFlightRequests(t *testing.T) {
 	}
 	started := make(chan struct{})
 	var finished atomic.Bool
-	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := &http.Server{ReadHeaderTimeout: time.Second, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		close(started)
 		time.Sleep(300 * time.Millisecond)
 		finished.Store(true)
@@ -53,7 +53,7 @@ func TestServeWaitsForInFlightRequests(t *testing.T) {
 
 func TestServeReturnsListenErrors(t *testing.T) {
 	want := errors.New("address in use")
-	if err := serve(context.Background(), &http.Server{}, func() error { return want }, time.Second); !errors.Is(err, want) {
+	if err := serve(context.Background(), &http.Server{ReadHeaderTimeout: time.Second}, func() error { return want }, time.Second); !errors.Is(err, want) {
 		t.Fatalf("serve = %v", err)
 	}
 }

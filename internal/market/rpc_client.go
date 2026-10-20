@@ -3,7 +3,7 @@ package market
 import (
 	"bytes"
 	"context"
-	"crypto/md5"
+	"crypto/md5" // #nosec G501 -- Monero wallet RPC requires MD5 HTTP Digest authentication.
 	"encoding/hex"
 	"encoding/json"
 	"errors"

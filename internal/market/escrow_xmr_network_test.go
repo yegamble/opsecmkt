@@ -45,18 +45,6 @@ func xmrAdminLines(t *testing.T, page string) (alert, readiness string) {
 	return alert, readiness
 }
 
-// adminOf is /admin/payments (A-542), unescaped, as a new administrator of a's market.
-func adminOf(t *testing.T, a *App) string {
-	t.Helper()
-	e := &testEnv{t: t, A: a, DB: a.db}
-	_, sess := e.user("xwaitadmin_"+randomToken()[:6], "admin")
-	w := e.do("GET", "/admin/payments", sess, nil)
-	if w.Code != 200 {
-		t.Fatalf("GET /admin/payments: %d", w.Code)
-	}
-	return html.UnescapeString(w.Body.String())
-}
-
 func (x *xmrEscrowEnv) networkPin() []string {
 	return agStrings(x.t, x.testEnv, "SELECT value FROM settings WHERE key='escrow_xmr_network'")
 }

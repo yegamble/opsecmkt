@@ -15,41 +15,6 @@ const (
 	pooledAddressInsert = "INSERT INTO payment_addresses(order_id,currency,address,provider) VALUES($1,'XMR','bcrt1qlegacy108address0000000000000000000','btc-regtest')"
 )
 
-// restoreSchema109 puts the database back as migration 109 left it: 110's stamp and table removed.
-func restoreSchema109(t *testing.T, e *testEnv) {
-	t.Helper()
-	restoreSchema110(t, e)
-	if _, err := e.DB.Exec(`DELETE FROM schema_migrations WHERE version=110; DROP TABLE escrow_watch_unrepaired`); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// restoreSchema108 puts the database back as migration 108 left it: 109's stamp, columns, constraints and sequence
-// removed, and 074's fee destination check restored.
-func restoreSchema108(t *testing.T, e *testEnv) {
-	t.Helper()
-	restoreSchema109(t, e)
-	if _, err := e.DB.Exec(`DELETE FROM schema_migrations WHERE version=109;
-		ALTER TABLE escrows DROP CONSTRAINT escrows_fee_destination_or_descriptor, DROP CONSTRAINT escrows_fee_descriptor_btc,
-			DROP CONSTRAINT escrows_fee_index_descriptor, DROP COLUMN fee_descriptor, DROP COLUMN fee_index,
-			ADD CONSTRAINT escrows_fee_destination_check CHECK (fee_bps = 0 OR fee_destination <> '');
-		DROP SEQUENCE escrow_fee_index`); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// restoreSchema107 puts the database back as migration 107 left it: 108's stamp, triggers and function removed.
-func restoreSchema107(t *testing.T, e *testEnv) {
-	t.Helper()
-	restoreSchema108(t, e)
-	if _, err := e.DB.Exec(`DELETE FROM schema_migrations WHERE version=108;
-		DROP TRIGGER payouts_refuse_insert ON payouts;
-		DROP TRIGGER payment_addresses_refuse_insert ON payment_addresses;
-		DROP FUNCTION refuse_pooled_history()`); err != nil {
-		t.Fatal(err)
-	}
-}
-
 // withPooledHistoryWritable runs fn in a transaction with migration 108's triggers off, then rolls it back, so a test
 // can check the older constraints that still guard the pooled tables (such as 074's payouts_not_escrow).
 func withPooledHistoryWritable(t *testing.T, e *testEnv, fn func(tx *sql.Tx)) {

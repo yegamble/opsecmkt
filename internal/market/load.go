@@ -589,7 +589,7 @@ func previewData(page string) PageData {
 		{ID: "consulting", Title: "Personal Security Consultation", Description: "A one-hour review of your everyday privacy requirements and a practical plan for reducing unnecessary data exposure.", Category: "Services", Region: "Worldwide", Kind: "digital", Vendor: "cipher_monk", VendorID: "cipher", PriceXMR: "0.079", Stock: 4},
 	}
 	u := &User{ID: "preview", Handle: "preview_user", Role: "buyer"}
-	title := strings.ReplaceAll(strings.Title(page), "-", " ")
+	title := pageLabel(page)
 	page, section := adminSectionPage(page)
 	if section != "" {
 		title = pageTitle("admin/" + section)

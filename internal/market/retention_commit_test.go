@@ -88,11 +88,7 @@ func (c *retentionCommitConn) BeginTx(ctx context.Context, opts driver.TxOptions
 	return &retentionCommitTx{Tx: tx, after: c.after}, nil
 }
 func (c *retentionCommitConn) Begin() (driver.Tx, error) {
-	tx, err := c.Conn.Begin()
-	if err != nil {
-		return nil, err
-	}
-	return &retentionCommitTx{Tx: tx, after: c.after}, nil
+	return c.BeginTx(context.Background(), driver.TxOptions{})
 }
 
 type retentionCommitTx struct {

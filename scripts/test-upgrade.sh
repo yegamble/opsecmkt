@@ -75,6 +75,8 @@ launch_server() {
   chmod 600 "$database_url_file" "$setup_token_file"
   (
     cd "$directory"
+    # Expand these variables only inside the child shell.
+    # shellcheck disable=SC2016
     exec env -i PATH="$PATH" bash -c '
       IFS= read -r DATABASE_URL < "$1"
       IFS= read -r SETUP_TOKEN < "$2"

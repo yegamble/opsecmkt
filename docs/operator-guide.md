@@ -1412,8 +1412,12 @@ docker run -d --name opsecmkt-escrow-wallet --network opsecmkt_backend --restart
   -v opsecmkt_escrow_wallets:/home/monero/wallet \
   ghcr.io/sethforprivacy/simple-monero-wallet-rpc:v0.18.5.1 \
   --daemon-address FAKECHAIN_MONEROD_HOST:18081 --trusted-daemon --allow-mismatched-daemon-version \
-  --wallet-dir=/home/monero/wallet --rpc-bind-port=18083 --rpc-login 'marketplace:PASSWORD'
+  --wallet-dir=/home/monero/wallet --shared-ringdb-dir=/home/monero/wallet/.shared-ringdb \
+  --rpc-bind-port=18083 --rpc-login 'marketplace:PASSWORD'
 ```
+
+`--shared-ringdb-dir` keeps the wallet-rpc's ring database inside the wallet volume, as the `monero-escrow-wallet` service
+does, so that it is backed up with the wallets and the [stale-ring break-glass](#stale-ring-break-glass-a-618) finds it.
 
 Use the pinned wallet-rpc release the escrow checks used (0.18.5.1).
 The fakechain daemon is started as the header of `scripts/test-escrow-xmr-regtest.sh` starts one (`--regtest
@@ -1502,6 +1506,10 @@ seed can be recovered. It uses only the database, the private key and a scratch 
    printf 'opsecmkt xmr escrow wallet\0%s' escrow-YYYYMM-NN | openssl dgst -sha256 -hmac "$MONERO_WALLET_SECRET" -r | cut -d' ' -f1
    ```
 
+   A wallet restored from its seed into the same wallet-rpc keeps that wallet-rpc's ring database (`.shared-ringdb`),
+   which is not part of the wallet files: a restore from seed does **not** clear a stale ring
+   ([stale-ring break-glass](#stale-ring-break-glass-a-618)).
+
 **Backups.** Two things are backed up, and a wallet is lost only if both are lost:
 
 - **The database** holds each wallet's sealed seed, its primary address and every slot, order and settlement. Take a database
@@ -1522,7 +1530,10 @@ seed can be recovered. It uses only the database, the private key and a scratch 
   docker start opsecmkt-escrow-wallet
   ```
 
-Check that the file is not empty before you rely on it. While it is stopped, deposits are not read and nothing is built or sent; the watcher carries on when it is back. To restore the
+With `--shared-ringdb-dir` inside the wallet directory (the `monero-escrow-wallet` service and the example above), the copy
+also holds the wallet-rpc's ring database, `.shared-ringdb`, and any directory the
+[stale-ring break-glass](#stale-ring-break-glass-a-618) moved aside. Keep both: the stored rings are what make a coin
+respent after a reorganisation use the ring it used before. Check that the file is not empty before you rely on it. While it is stopped, deposits are not read and nothing is built or sent; the watcher carries on when it is back. To restore the
 volume from such a copy into an empty one (set `AGE_IDENTITY` to your age identity file and `backup` to the copy), with the
 wallet-rpc stopped or not yet started:
 
@@ -1552,6 +1563,22 @@ probes for wallets created after the backup and seals each it can open to the se
 listed to the administrators, who check them for coins of orders the database lost), records any it cannot open as an orphan
 too, reads every wallet that may hold coins, and gives a wallet older than the database a longer subaddress lookahead and a
 rescan so that deposits to accounts it does not know are seen. Then [clear the gate](testnet-runbook.md#clear-the-gate) as the runbook describes.
+
+**What staff see while a restore pauses Monero escrow** (A-559). While the restore gate or the sweep is set and
+`ESCROW_XMR` is on (with it off a restore pauses nothing here and none of this shows), the staff
+summary on `/admin` and `/moderator` carries an alert, *Paused after a restore from backup*, naming what is paused and what
+still runs: under the gate, new Monero escrow checkouts, settlement building and relay (except a held settlement an
+administrator confirms, relayed once), re-requests, release deadlines and their reminders, wallet, account and vendor
+bond address creation, recording a vendor bond as paid and wallet destruction, while deposits are still watched and
+relayed settlements followed to their confirmations; under the sweep alone, checkout, wallet, account and bond address
+creation, bond recording and wallet destruction, while settlements, relays and release deadlines run as usual. *Admin → Payments* flags it on *Monero escrow recovery and
+retention* (`Restore gate: set|not set. Restore sweep: pending|not pending.`) with the count of Monero escrow checkouts
+refused while paused since the server started, and *Escrow readiness* reads `XMR escrow: on; intake: paused (restore).`
+even though the intake setting says escrow. A refused checkout answers 503 with `Retry-After: 5` and the reason on the
+refusal page; it is logged as `http paused kind=action name=/orders/escrow-xmr status=503 cause=restore-gate` (or
+`restore-sweep`), not as an `http 5xx` line, and is not listed under *Recent server errors*. When the sweep completes while
+the gate is still set, every administrator gets one notification ("Monero escrow's restore sweep is complete … The restore
+gate is still set …"); later passes send no other. The alert and flag clear once the gate is cleared and the sweep has run.
 
 If you restored **only the escrow wallet volume** from an older backup and the database is current, no restore script ran,
 so set the marker yourself before the app starts; the sweep then probes, reads and raises the lookahead as above. Set it
@@ -1611,6 +1638,108 @@ status says two stray refunds are in progress. While a re-request is still reque
 deposit it claims keeps its usual text and adds which settlement re-requests which, and for a deposit no longer listed
 that it waits for it and is sent by the market on its own once the deposit is listed again, ending "Do not pay anything
 by hand for it, or it is paid twice"; the desk's 24-hour line for a re-request waiting so says the same in short (A-617).
+
+<a id="stale-ring-break-glass-a-618"></a>
+**A settlement refused for a stale ring: break-glass (A-618).** monero-wallet-rpc 0.18.5.1 stores the ring (the decoys and
+the real output, by global output index) of every transaction it builds in its ring database, also one built and never
+sent (the market builds with `do_not_relay`), and reuses that ring whenever the same coins are spent again. A
+reorganisation deeper than a deposit's confirmations that mines the deposit again gives its output another global index,
+which the stored ring lacks. Every later build of those coins (a re-request after a refused relay, or any settlement built
+once before) then fails, unless the wallet's random decoy picker happens to draw the new index, which on mainnet may take
+days or never happen (not measured). monero-wallet-rpc has no call to clear a ring. Nothing is built or sent, so nothing can be paid
+twice; the market tries again on every pass. The order page shows *wallet-refusing ring-stale*, then *wallet-refused
+ring-stale* (flagged to staff), as "The escrow wallet keeps refusing to build this transaction (ring-stale) …"; this market's versions
+before A-618 recorded the same refusal as `rpc:-4`. **Never pay it by hand**: once the ring is cleared the market sends
+the settlement itself, and a payment by hand would pay twice.
+
+1. *Diagnose, before any restart.* The wallet-rpc's log is on its tmpfs and a restart loses it, so copy it first and keep
+   it private (it names wallet addresses and key images), then look for the stale ring's warning:
+
+   ```sh
+   umask 077
+   docker compose exec -T monero-escrow-wallet sh -c 'cat /tmp/monero-wallet-rpc.log*' > "escrow-wallet-rpc-$(date -u +%Y%m%dT%H%M%SZ).log"
+   grep -n -e 'Known ring does not include the spent output' -e 'real_out_found' escrow-wallet-rpc-*.log
+   ```
+
+   Then check that none of the coins is spent. For a re-request they are the key images of the settlement it supersedes;
+   each must answer `spent_status` 0 (as under *Held settlements* above):
+
+   ```sh
+   db_sql -X -At -c "SELECT array_to_string(o.key_images, ' ') FROM xmr_settlements s JOIN xmr_settlements o ON o.id = s.supersedes WHERE s.id = SETTLEMENT_ID"
+   curl -s http://ESCROW_DAEMON/is_key_image_spent -d '{"key_images":["KEY_IMAGE"]}'
+   ```
+
+   A spent coin is not a stale ring: stop and follow the failed-settlement paragraphs below instead.
+2. *Remedy A (the rehearsed one): move the ring database aside.* Preconditions: the coins are unspent (step 1), and no other settlement is in flight (below). The cost: the ring
+   database is shared by every wallet on that wallet-rpc (each month's escrow wallet and the vendor bond wallets), so the
+   stored rings of all their coins are dropped too, and a coin of any of them that is later rebuilt after a reorganisation
+   picks a new ring instead of reusing its old one. That is a privacy cost: a coin spent again with a different ring
+   than a transaction that already reached any node lets whoever saw both compare the two rings and find the real coin.
+   For the stuck coins themselves both remedies give a new ring (the old one no longer contains them); remedy A also
+   drops it for every other coin. So use remedy A only when no other Monero settlement may be built again, that is when
+   this answers 0, and otherwise use remedy B, which keeps every other coin's ring:
+
+   ```sh
+   db_sql -X -At -c "SELECT count(*) FROM xmr_settlements WHERE id <> SETTLEMENT_ID AND (state IN ('built','relayed') OR (state = 'failed' AND tx_hash IS NOT NULL) OR (state = 'requested' AND supersedes IS NOT NULL))"
+   ```
+
+   Stop the wallet-rpc, then move its `.shared-ringdb` to a dated
+   directory with the pinned image as uid 1000 and no network; never delete it, and never touch the wallet files (with
+   another `COMPOSE_PROJECT_NAME`, the volume is `<COMPOSE_PROJECT_NAME>_monero_escrow_wallet`; use the
+   `MONERO_WALLET_IMAGE` your `.env` pins):
+
+   ```sh
+   docker compose stop monero-escrow-wallet
+   docker run --rm --network none --user 1000:1000 -v opsecmkt_monero_escrow_wallet:/home/monero/wallet --entrypoint mv \
+     ghcr.io/sethforprivacy/simple-monero-wallet-rpc:v0.18.5.1 \
+     /home/monero/wallet/.shared-ringdb "/home/monero/wallet/.shared-ringdb.stale-$(date -u +%Y%m%dT%H%M%SZ)"
+   docker compose start monero-escrow-wallet
+   ```
+
+   `mv` refusing with "No such file or directory" means the ring database is elsewhere: the wallet-rpc does not run with
+   `--shared-ringdb-dir=/home/monero/wallet/.shared-ringdb`, as `compose.nodes.yaml` runs it. A native deploy
+   (`opsecmkt deploy --escrow-xmr`, [binary.md](install/binary.md)) names the service `monero-wallet` and the volume
+   `<project>_monero_wallet` (same path inside it): run the same steps with those names, stopping and starting that one
+   service with `docker compose --project-name <project> --project-directory <deploy dir> --file <deploy dir>/compose.json`.
+   On a separate payment host
+   ([Enabling payments](install/enable-payments.md)) stop its wallet-rpc service and, as the user it runs as, move
+   `WALLET_DIR/.shared-ringdb` aside the same way. While it is stopped nothing is built or sent. On its next pass the
+   market opens the wallet and builds the settlement from the same coins to the same plan with a fresh ring, and sends
+   it; the order page then shows it relayed. The fakechain leg `TestXMREscrowRegtestStaleRing` rehearses exactly these
+   steps.
+3. *Remedy B (targeted): unset the rings of these coins only.* Use the official `monero-wallet-cli` 0.18.5.1 from
+   getmonero.org, its archive checked against the signed `hashes.txt` (the images ship no `monero-wallet-cli`). With the
+   wallet-rpc stopped, as in remedy A, write the wallet's derived password to a mode-0600 file on tmpfs, never on a
+   command line (it prompts for `MONERO_WALLET_SECRET` without echo; on a separate payment host, make the file on the app
+   host and copy only the file), then open the order's wallet offline with the **same** `--shared-ringdb-dir` the
+   wallet-rpc uses (add `--stagenet` on stagenet). Run the CLI, and make the password file, as the user the wallet-rpc
+   runs as (uid 1000 on Compose and the native deploy), never as root: the CLI saves the wallet file on exit and opens the
+   ring database's lock file, and a root-owned file there breaks the wallet-rpc, which then runs with no ring database at
+   all. On Compose, run it in a container like remedy A's (`--user 1000:1000`, `--network none`, the wallet volume at
+   `/home/monero/wallet` as `WALLET_DIR`, the checked CLI and the password file mounted read-only):
+
+   ```sh
+   db_sql -X -At -F ' ' -c "SELECT w.name, s.account_index FROM escrows e JOIN xmr_escrow_slots s ON s.address = e.address JOIN xmr_escrow_wallets w ON w.id = s.wallet_id WHERE e.order_id = 'ORDER_ID'"
+   umask 077
+   pw=$(mktemp /dev/shm/escrow-wallet-pass.XXXXXX)
+   python3 -I - escrow-YYYYMM-NN > "$pw" <<'PY'
+   import getpass, hashlib, hmac, sys
+   secret = getpass.getpass('MONERO_WALLET_SECRET: ').encode()
+   sys.stdout.write(hmac.new(secret, b'opsecmkt xmr escrow wallet\0' + sys.argv[1].encode(), hashlib.sha256).hexdigest())
+   PY
+   monero-wallet-cli --offline --wallet-file WALLET_DIR/escrow-YYYYMM-NN --password-file "$pw" \
+     --shared-ringdb-dir WALLET_DIR/.shared-ringdb --log-file /dev/null
+   ```
+
+   At its prompt, for each key image (not the transaction hash) run `print_ring KEY_IMAGE`, which must print the stored
+   ring (`KEY_IMAGE absolute …`); then `unset_ring KEY_IMAGE [KEY_IMAGE …]`; then `print_ring KEY_IMAGE` again, which must
+   now answer "Key image either not spent, or spent with ring size 1". The check before and after is mandatory: with a
+   wrong `--shared-ringdb-dir` the CLI opens an empty ring database and `unset_ring` "succeeds" without changing anything.
+   Then `exit`, `shred -u "$pw"`, and start the wallet-rpc again. Remedy B keeps every other coin's ring; it is not
+   rehearsed by any test.
+
+A restore from seed does **not** clear a stale ring: the ring database is not part of the wallet files, and a wallet
+restored into the same wallet-rpc reuses it. Restoring the wallet volume from a copy restores its `.shared-ringdb` too.
 
 **Failed and set-aside settlements are escrow alerts (A-560).** Until it is superseded, a failed settlement is listed under
 *Escrow alerts* on the moderation desk, counted in the staff badge and named in the order page's staff help, and a
@@ -1772,7 +1901,7 @@ escrow stays off; it adds no escrow wallet-rpc, no fakechain daemon and no mount
 checked with `docker compose config` only.
 
 **What was checked.** [Per-order escrow, Phase 3](escrow.md#phase-3-monero-escrow-on-a-local-fakechain) lists each tier: unit and `httptest` tests, Go
-tests with PostgreSQL against a fake wallet-rpc, seventeen legs against a real fakechain `monerod` and `monero-wallet-rpc`
+tests with PostgreSQL against a fake wallet-rpc, eighteen legs against a real fakechain `monerod` and `monero-wallet-rpc`
 0.18.5.1 (`scripts/test-escrow-xmr-regtest.sh`, run by the `escrow-xmr-regtest` CI job;
 [runbook](testnet-runbook.md#9-manual-monero-escrow-fakechain-check)), and a simulated-RPC browser journey added in this
 phase. Nothing has run on stagenet, testnet or mainnet, with Monero multisig, or as a deployment.
@@ -2132,6 +2261,7 @@ http 5xx kind=page name=catalog status=500 ref=0bbdc379 cause=22021
 - `cause` is a class, never the error's text: a PostgreSQL SQLSTATE, followed by the table and constraint when PostgreSQL names them (`23505 payouts payouts_order_id_key`); `timeout` (the 12 s request bound; a PostgreSQL statement timeout shows as `57014`); `canceled` (the client went away); `db-connection` (the database was unreachable or the connection broke); `template:<name>` (a page failed to render); otherwise the Go type of the error (for example `*market.httpError`, a refusal the code raised itself such as "Authentication is busy").
 - The line never holds the URL path or query, form values, cookies, the client address, `Host`, `User-Agent`, a handle or user id. Reproduce the failure, or match the time and route, to learn more.
 - At most 10 such lines are written a second. Beyond that, one line counts the rest, `http 5xx suppressed=N (more than 10 lines in 1s)`, whose references are then not in the log.
+- A Monero escrow checkout refused because a restore paused Monero escrow is not a server error (A-559): it answers 503 on the refusal page without a reference and writes `http paused kind=action name=/orders/escrow-xmr status=503 cause=restore-gate` (or `cause=restore-sweep`), throttled the same way (`http paused suppressed=N`). *Admin → Payments* counts these refusals since the server started; they are not listed under *Recent server errors*.
 - `57014` (statement timeout, 8 s) or `55P03` (lock timeout, 3 s) with status 503 means the application pool's [session timeouts](#migrations) stopped a query: the database is overloaded or a row stayed locked. Occasional lines under load are expected; a steady stream on one route points at a slow query.
 - `57P01`, `57P02` or `57P03` (the database is shutting down, crashed or still starting), `53300` (too many connections), `08000`, `08001`, `08003`, `08004` or `08006` (a connection exception) or `db-connection`, with status 503, means the request's database connection was lost or refused, for example during a PostgreSQL restart or failover; the user is shown "The market is busy" or, when the first query of the request already failed, "Service unavailable", both with `Retry-After: 5`. A steady stream outside a restart points at the database's health or its `max_connections`.
 

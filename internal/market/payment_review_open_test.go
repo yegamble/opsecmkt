@@ -1,7 +1,6 @@
 package market
 
 import (
-	"context"
 	"html"
 	"net/url"
 
@@ -9,54 +8,6 @@ import (
 	"strings"
 	"testing"
 )
-
-type flagCase struct {
-	name, cols, vals, reason string
-	open                     bool
-}
-
-// lateEpisodeOpen reports whether flagLateDeposits reads order's flags as an open notice episode: it records a new
-// confirmed deposit at addr after the order closed and runs flagLateDeposits, which tells the buyer and the staff only
-// when no flag of the order holds the episode.
-func lateEpisodeOpen(t *testing.T, e *testEnv, order, cur, addr string, threshold int64) bool {
-	t.Helper()
-	ctx := context.Background()
-	told := func() int {
-		return agInt(e, "SELECT count(*) FROM notifications n JOIN orders o ON o.buyer_id=n.user_id WHERE o.id=$1 AND strpos(n.body,'Order '||left(o.id,8)||':')=1 AND strpos(n.body,'after the order closed')>0", order)
-	}
-	staff := func() int {
-		return agInt(e, "SELECT count(*) FROM notifications n JOIN users u ON u.id=n.user_id WHERE u.role IN ('moderator','admin') AND strpos(n.body,'Payment review needed for order '||left($1::text,8))=1 AND (strpos(n.body,' after this order was ')>0 OR strpos(n.body,'after the order closed')>0)", order)
-	}
-	before, staffBefore := told(), staff()
-	agExec(e, "INSERT INTO payments(order_id,currency,txid,idx,address,amount,confirmations,after_close) VALUES($1,$2,$3,COALESCE((SELECT max(idx) FROM payments WHERE order_id=$1 AND currency='XMR'),0),$4,5000,$5,true)", order, cur, txidOf("episode probe "+order), addr, threshold)
-	tx, err := e.DB.BeginTx(ctx, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tx.Rollback()
-	o, err := scanOrder(tx.QueryRowContext(ctx, orderQuery+" WHERE o.id=$1 FOR UPDATE OF o", order))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = e.A.flagLateDeposits(ctx, tx, &o, threshold); err != nil {
-		t.Fatal(err)
-	}
-	if err = tx.Commit(); err != nil {
-		t.Fatal(err)
-	}
-	if (told() > before) != (staff() > staffBefore) {
-		t.Fatalf("the buyer was told %d times, the staff %d times", told()-before, staff()-staffBefore)
-	}
-	switch told() - before {
-	case 0:
-		return true
-	case 1:
-		return false
-	default:
-		t.Fatalf("the buyer was told %d times of one deposit", told()-before)
-		return false
-	}
-}
 
 // flagRow is the moderation desk's payment-review row of txid (any output: a Monero escrow deposit's index names its
 // account), or "" when it is not listed.
@@ -70,40 +21,6 @@ func flagRow(desk, txid string) string {
 		return ""
 	}
 	return desk[lo : i+hi]
-}
-
-// checkFlagCase seeds c on order (a fresh one: the episode is the order's) and checks the desk and the review against
-// c.open, and the episode against c.open and the flag's late type.
-func checkFlagCase(t *testing.T, e *testEnv, page func(path, sess string) string, mod, order, cur, addr string, threshold int64, c flagCase) {
-	t.Helper()
-	txid := txidOf("flag matrix " + c.name + " " + order)
-	var id string
-	if err := e.DB.QueryRow("INSERT INTO payments(order_id,currency,txid,idx,address,amount,flagged,"+c.cols+") VALUES($1,$2,$3,COALESCE((SELECT max(idx) FROM payments WHERE order_id=$1 AND currency='XMR'),0),$4,5000,true,"+c.vals+") RETURNING id::text",
-		order, cur, txid, addr).Scan(&id); err != nil {
-		t.Fatalf("%s: %v", c.name, err)
-	}
-	desk := html.UnescapeString(page("/moderator", mod))
-	row := flagRow(desk, txid)
-	open, form := strings.Contains(row, "<strong>Open:</strong>"), strings.Contains(desk, `name="payment_id" value="`+id+`"`)
-	if row == "" || open != c.open || form != c.open || !strings.Contains(row, c.reason) {
-		t.Errorf("%s: open %v, form %v (want %v), want reason %q; row: %s", c.name, open, form, c.open, c.reason, row)
-	}
-	late := agInt(e, "SELECT count(*) FROM payments WHERE id=$1 AND NOT credited AND NOT below_floor AND NOT locked AND NOT spent_outside", id) == 1
-	episode := lateEpisodeOpen(t, e, order, cur, addr, threshold)
-	if episode != (c.open && late) {
-		t.Errorf("%s: flagLateDeposits reads the flag as holding the episode %v (want %v)", c.name, episode, c.open && late)
-	}
-	if episode && !open {
-		t.Errorf("%s: a flag the desk does not open holds the late-deposit episode", c.name)
-	}
-	want := 409
-	if c.open {
-		want = 303
-	}
-	w := e.do("POST", "/moderator/payment-review", mod, url.Values{"payment_id": {id}, "outcome": {"no_action"}, "note": {"Recorded by the flag matrix."}, "password": {testPassword}})
-	if w.Code != want || (want == 409) != (agInt(e, "SELECT count(*) FROM payments WHERE id=$1 AND disposition=''", id) == 1) {
-		t.Errorf("%s: review answered %d (want %d): %s", c.name, w.Code, want, strings.TrimSpace(w.Body.String()))
-	}
 }
 
 // QA462C-1, QA462C-4 (A-211 on a Monero escrow): a deposit still in the pool at funding counts for the order but is

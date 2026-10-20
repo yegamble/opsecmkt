@@ -26,6 +26,8 @@ assert_args() {
   cmp "$expected_file" "$CAPTURE_ARGS"
 }
 for tool in pg_dump pg_restore psql; do
+  # Expand these variables only inside the child shell.
+  # shellcheck disable=SC2016
   probe=$(printf 'RESTORE\n' | env PATH="$work/fake-bin:$PATH" WRAPPER="$work/bin/$tool" bash -c '
     "$WRAPPER" --version
     IFS= read -r confirmation

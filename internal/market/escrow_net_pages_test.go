@@ -1,6 +1,7 @@
 package market
 
 import (
+	"context"
 	"html"
 	"net/url"
 	"strings"
@@ -68,7 +69,7 @@ func TestXMREscrowPagesNameNetwork(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			x := newXMREscrowEnvWith(t, c.edit)
 			d := &PageData{}
-			if err := paymentsGlobalLoader(nil, x.A, nil, d); err != nil || d.XMREscrowNetKnown != c.known {
+			if err := paymentsGlobalLoader(context.Background(), x.A, nil, d); err != nil || d.XMREscrowNetKnown != c.known {
 				t.Fatalf("the loader sets XMREscrowNetKnown = %v (%v), want %v", d.XMREscrowNetKnown, err, c.known)
 			}
 			product, checkout := "/product?id="+x.product, "/checkout?id="+x.product
@@ -259,31 +260,5 @@ func TestXMREscrowCheckoutOfferNamesNetwork(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-// checkWording asserts the escrow key page's and the canary's statements of where Bitcoin escrow runs: key and canary
-// are the sentences expected, and mainnet says whether the market is on mainnet (then "no real funds" appears in
-// neither Bitcoin statement, and the real-funds wording does).
-func (x *escrowEnv) checkWording(key, canary string, mainnet bool) {
-	x.t.Helper()
-	keyLine := pageLine(x.page("/escrow-key", x.buyerSess), "Bitcoin escrow on this market runs on")
-	canaryLine := pageLine(x.page("/canary", ""), "<li>Bitcoin escrow (")
-	if key == "" && keyLine != "" || key != "" && !strings.Contains(keyLine, key) {
-		x.t.Errorf("/escrow-key lacks %q:\n%s", key, keyLine)
-	}
-	if !strings.Contains(canaryLine, canary) {
-		x.t.Errorf("/canary lacks %q:\n%s", canary, canaryLine)
-	}
-	for name, line := range map[string]string{"/escrow-key": keyLine, "/canary": canaryLine} {
-		if line == "" {
-			continue // an expected absence (key == "") was asserted above
-		}
-		if mainnet && strings.Contains(line, "no real funds") {
-			x.t.Errorf("%s says \"no real funds\" on a mainnet market:\n%s", name, line)
-		}
-		if mainnet && !strings.Contains(line, "Bitcoin mainnet, with real funds") {
-			x.t.Errorf("%s lacks the real-funds wording on a mainnet market:\n%s", name, line)
-		}
 	}
 }

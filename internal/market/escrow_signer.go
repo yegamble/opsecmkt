@@ -5,12 +5,10 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"time"
@@ -39,11 +37,6 @@ const (
 	signerWaiting  = "waiting"      // the signer did not answer
 	signerMismatch = "pin-mismatch" // the signer's account key differs from the pinned one: shape (b) unavailable
 	signerBadReply = "bad-reply"    // the signer's reply was not understood (another protocol version?): shape (b) unavailable
-
-	escrowLogSignerReady    = "escrow: escrow signer ready (shape (b); its account key matches the pins in this database)"
-	escrowLogSignerWaiting  = "escrow: escrow signer not reachable at ESCROW_SIGNER_SOCKET; anything that needs it waits (nothing is rebuilt)"
-	escrowLogSignerMismatch = "escrow: shape (b) unavailable: the escrow signer's account key differs from the one pinned in this database (escrow_signer_fingerprint, escrow_signer_xpub_hmac); see docs/operator-guide.md, \"Escrow signer\""
-	escrowLogSignerBadReply = "escrow: shape (b) unavailable: the escrow signer's reply was not understood (another protocol version? upgrade the signer first); see docs/operator-guide.md, \"Escrow signer\""
 )
 
 // errSignerUnreachable is a signer that did not answer: nothing listens on the socket, or it timed out or hung up.
@@ -157,52 +150,6 @@ func (a *App) escrowXPubHMAC(chainCode [32]byte, pubKey [33]byte) string {
 	return hex.EncodeToString(m.Sum(nil))
 }
 
-// pinEscrowSigner records fp and mac as the signer's pins when none are recorded (one statement, so concurrent first
-// contacts agree on one signer) and reports whether both recorded pins equal them. A recorded pin is never changed.
-func pinEscrowSigner(ctx context.Context, db *sql.DB, fp, mac string) (bool, error) {
-	if _, err := db.ExecContext(ctx, "INSERT INTO settings(key,value) VALUES($1,$2),($3,$4) ON CONFLICT (key) DO NOTHING",
-		escrowSignerFingerprintPin, fp, escrowSignerXPubPin, mac); err != nil {
-		return false, err
-	}
-	var pinnedFP, pinnedMAC string
-	if err := db.QueryRowContext(ctx, "SELECT (SELECT value FROM settings WHERE key=$1),(SELECT value FROM settings WHERE key=$2)",
-		escrowSignerFingerprintPin, escrowSignerXPubPin).Scan(&pinnedFP, &pinnedMAC); err != nil {
-		return false, err
-	}
-	return pinnedFP == fp && pinnedMAC == mac, nil
-}
-
-// checkEscrowSigner asks the signer for its account key, checks it against the pins (written at first contact) and
-// records the state, logging one fixed line when it changes. No signer configured: nothing. A database failure leaves
-// the state as it was and is logged; the next pass checks again.
-func (a *App) checkEscrowSigner(ctx context.Context) {
-	if a.escrowSigner == nil || a.db == nil {
-		return
-	}
-	state := signerReady
-	info, err := a.escrowSigner.info(ctx)
-	var refused *signerRefusal
-	switch {
-	case errors.As(err, &refused):
-		state = signerBadReply
-	case err != nil:
-		state = signerWaiting
-	default:
-		ok, err := pinEscrowSigner(ctx, a.db, info.Fingerprint, a.escrowXPubHMAC(info.Key.ChainCode, info.Key.PubKey))
-		if err != nil {
-			log.Printf("escrow: escrow signer pins could not be checked: %s", errorCause(err))
-			return
-		}
-		if !ok {
-			state = signerMismatch
-		}
-	}
-	if prev, _ := a.escrowSignerStatus.Swap(state).(string); prev != state {
-		log.Print(map[string]string{signerReady: escrowLogSignerReady, signerWaiting: escrowLogSignerWaiting,
-			signerMismatch: escrowLogSignerMismatch, signerBadReply: escrowLogSignerBadReply}[state])
-	}
-}
-
 // errSignerNone is shape (b) with no escrow signer configured (ESCROW_SIGNER_SOCKET unset).
 var errSignerNone = errors.New("escrow signer: not configured")
 
@@ -244,21 +191,6 @@ func (a *App) isSignerKey(ctx context.Context, q rowQuerier, k escrowKey) (bool,
 		return false, err
 	}
 	return fp != "" && k.Fingerprint == fp || mac != "" && mac == a.escrowXPubHMAC(k.ChainCode, k.PubKey), nil
-}
-
-// errPerOrderUnavailable is why no per-order (shape (b)) escrow is offered: perOrderAvailable is false.
-const errPerOrderUnavailable = "Escrows with per-order wallets need the market's escrow signer, which is not available on this market right now."
-
-// perOrderAvailable reports whether per-order (shape (b)) escrows are offered (A-456b): an escrow signer is configured,
-// which co-signs their settlements, and its latest check did not find a key other than the pinned one or a reply it
-// could not understand (P4-R17: shape (b) unavailable). A signer that did not answer the latest check is still offered:
-// checkout asks it again and refuses, nothing written, while it does not answer (errEscrowSigner).
-func (a *App) perOrderAvailable() bool {
-	if a.escrowSigner == nil {
-		return false
-	}
-	s := a.escrowSignerState()
-	return s != signerMismatch && s != signerBadReply
 }
 
 // escrowSignerState is the signer's state as the latest check found it ("" = no signer configured, or not checked).

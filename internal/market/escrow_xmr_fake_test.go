@@ -213,6 +213,7 @@ const (
 	fakeXMRNotOpen                             // the call answers -13: no wallet open
 	fakeXMRWrongWallet                         // open_wallet opens another wallet file than the one asked for
 	fakeXMRRejected                            // the call answers -4: the daemon rejected the transaction (relay_tx)
+	fakeXMRStaleRing                           // the call answers -4 as transfer does for a stale ring (A-618)
 )
 
 func newFakeXMREscrow(t *testing.T) *fakeXMREscrow {
@@ -286,6 +287,8 @@ func (f *fakeXMREscrow) serve(w http.ResponseWriter, r *http.Request, wallet boo
 		code, msg = -13, "No wallet file"
 	case fault == fakeXMRRejected:
 		code, msg = -4, "transaction was rejected by daemon"
+	case fault == fakeXMRStaleRing:
+		code, msg = -4, "Daemon response did not include the requested real output"
 	case fault == fakeXMRWrongWallet && req.Method == "open_wallet":
 		for _, name := range slices.Sorted(maps.Keys(f.files)) {
 			if f.open == nil || name != f.open.name {
@@ -939,16 +942,6 @@ func (f *fakeXMREscrow) countOf(method string) int {
 		}
 	}
 	return n
-}
-
-// openName is the name of the open wallet, or "".
-func (f *fakeXMREscrow) openName() string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.open == nil {
-		return ""
-	}
-	return f.open.name
 }
 
 // mine adds n blocks: each mines every transaction in the pool and moves the daemon (and the wallet) up one block.

@@ -334,7 +334,7 @@ wallet takes an order again and no settlement is relayed until an administrator 
 - Real `monerod` and `monero-wallet-rpc` 0.18.5.1 on a local fakechain, run by the `escrow-xmr-regtest` CI job (A-498) or by hand
   (`scripts/test-escrow-xmr-regtest.sh`, [runbook](testnet-runbook.md#9-manual-monero-escrow-fakechain-check); the app
   runs inside the Go test against the real daemon and wallet-rpc, and the script refuses any daemon that is not a
-  fakechain). Seventeen legs, each a Go test:
+  fakechain). Eighteen legs, each a Go test:
   1. `TestXMREscrowRegtestWallets`: the first pass creates the month's wallet, seals its seed (the seal decrypts, and a
      wallet restored from it at the stored restore height has the stored primary address), activates it and keeps its free
      accounts; account 0 holds nothing; the next month's wallet is created sealed ahead of its month and becomes active at
@@ -361,7 +361,9 @@ wallet takes an order again and no settlement is relayed until an administrator 
       available; the funding deposit is then taken out of the chain (`pop_blocks`, `flush_txpool`) and an
       administrator's re-request is carried out: the new settlement waits (*deposit-missing*), past twice the threshold
       in blocks too, with no `transfer` (A-614); once the same deposit transaction is mined again it spends exactly the
-      stored key images (the daemon's decoded inputs) to the stored plan, and it confirms.
+      stored key images (the daemon's decoded inputs) to the stored plan, and it confirms. The wallet may first refuse
+      that build on a few passes (*wallet-refusing ring-stale*, A-618; leg 18), each refusal building and relaying
+      nothing.
   11. `TestXMREscrowRegtestRestore`: a restore (with `scripts/restore.sh`'s own Monero SQL) holds a built release, retires
       the free accounts and closes the wallet; the sweep finds a wallet created after the backup and seals it as an
       orphan; after an administrator's confirmation the held release is relayed once and confirms; the next checkout gets
@@ -388,6 +390,17 @@ wallet takes an order again and no settlement is relayed until an administrator 
       account as a vendor; `pop_blocks` then takes the deposit below the threshold: flagged to the administrators once,
       nothing revoked; mined again, nothing changes. The bond wallet lists no outgoing, pending or failed transfer. A bond wallet an
       earlier run left on the same wallet-rpc is recorded as an orphan and the next name is used.
+  18. `TestXMREscrowRegtestStaleRing` (A-618): a release funded by six deposits is built once, so the escrow wallet-rpc
+      stores the ring of each key image in its ring database, then refused at relay until it fails as in leg 10; its
+      deposits are taken out of the chain, it is re-requested, and the deposits are mined again at other global output
+      indices. 50 blocks later the re-request's build is refused (`transfer` -4, "Daemon response did not include the
+      requested real output", recorded *wallet-refusing ring-stale*; nothing built or relayed). The operator guide's
+      [stale-ring remedy A](operator-guide.md#stale-ring-break-glass-a-618) is then applied exactly as documented (the
+      wallet-rpc container stopped, `/home/monero/wallet/.shared-ringdb` moved aside on its volume by its own image as
+      uid 1000, started again), and the next pass builds the stored key images to the stored plan, relays it once, and it
+      confirms. Six deposits 50 blocks deep make the refusal certain in practice: the wallet rescues a stale ring only
+      when its decoy picker draws the real output's new index, for every input. Remedy B (`monero-wallet-cli`
+      `unset_ring`) is not rehearsed.
 
   Every settlement the daemon holds is decoded (RingCT type 6, 16 ring members per input, a fee above zero, the stored one,
   within `ESCROW_XMR_MAX_FEE`). Each leg puts the watcher's clock in a month of its own, so the legs may run again against
@@ -472,7 +485,7 @@ again on a fakechain (`scripts/test-escrow-xmr-regtest.sh`), and on an **offline
 (`scripts/test-escrow-xmr-stagenet.sh`: stagenet daemons built from the genesis block with the local monerod 0.18.5.1
 image, peered only with each other on a Docker network with no route out, local mining at fixed difficulty) the legs such
 a chain can run. Built from genesis it is at hard fork version 1 (version 16 starts at height 1,151,720), so Monero escrow
-refuses to start on it, as it must, and none of the seventeen legs can run there; the stagenet legs show that refusal names
+refuses to start on it, as it must, and none of the eighteen legs can run there; the stagenet legs show that refusal names
 the hard fork, not the network; that a real stagenet wallet's primary address, subaddress and integrated address are read
 under the stagenet tags (the integrated one refused) and refused under the fakechain's, by the parser and by the adapter;
 and that the escrow sync guard reads a restricted stagenet daemon with a peer and a fresh tip as synced and an

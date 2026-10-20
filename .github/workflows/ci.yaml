@@ -11,6 +11,59 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  quality:
+    name: Go quality and unused code
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            tools/go.sum
+            tools/actionlint/go.sum
+      - run: make tools-smoke
+      - run: make go-quality
+  workflow-safety:
+    name: Workflow security and shell analysis
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            tools/go.sum
+            tools/actionlint/go.sum
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Install pinned workflow and shell analyzers
+        run: |
+          python -m pip install --require-hashes --no-deps -r .github/requirements-security.txt
+          curl --fail --show-error --silent --location --proto '=https' --tlsv1.2 \
+            https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz \
+            -o "$RUNNER_TEMP/shellcheck.tar.xz"
+          printf '%s  %s\n' 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198 "$RUNNER_TEMP/shellcheck.tar.xz" | sha256sum --check
+          tar -xJf "$RUNNER_TEMP/shellcheck.tar.xz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/shellcheck-v0.11.0" >> "$GITHUB_PATH"
+      - name: Validate Actions definitions and embedded shell
+        run: make workflow-lint
+      - name: Audit Actions security
+        run: zizmor --offline --strict-collection .github/workflows .github/actions
+      - name: Analyze tracked repository shell scripts
+        run: git ls-files -z -- '*.sh' | xargs -0 --no-run-if-empty shellcheck
+  security:
+    name: Dependency vulnerability gates
+    uses: ./.github/workflows/dependency-security.yaml # zizmor: ignore[self-repository] -- same-commit reusable workflow, supported by actionlint.
   go:
     name: Go and PostgreSQL
     runs-on: ubuntu-24.04
@@ -42,17 +95,8 @@ jobs:
       # pattern here is exactly '^(' + go-escrow's -run alternatives + '|' + go-desk's -run alternatives + ')', and those
       # two sets of literal name prefixes are disjoint, so together the jobs run every top-level test exactly once
       # (tests/test_ci_go_split.py checks that). Never edit one pattern without the others.
-      - name: Formatting, modules, vet and races (including real PostgreSQL), without the escrow and desk tests
-        run: |
-          gofmt -d cmd internal
-          test -z "$(gofmt -l cmd internal)"
-          go mod verify
-          go vet ./...
-          go test -race -count=1 -timeout 17m -skip '^(TestEscrow|TestXMR|FuzzEscrow|TestAction|TestAdmin|TestBan|TestDesk|TestDispute|TestLimiter|TestListing|TestMedia|TestModeration|TestModerator|TestPaused|TestPerceptual|TestResolve|TestRetention|TestSoleAdmin|TestStaff|TestTicket|TestVendor)' -coverprofile=coverage.out ./...
-      - name: Validate workflow definitions
-        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
-      - name: Reachable Go vulnerabilities
-        run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
+      - name: Races (including real PostgreSQL), without the escrow, Monero and desk tests
+        run: go test -race -count=1 -timeout 17m -skip '^(TestEscrow|TestXMR|FuzzEscrow|TestAction|TestAdmin|TestBan|TestDesk|TestDispute|TestLimiter|TestListing|TestMedia|TestModeration|TestModerator|TestPaused|TestPerceptual|TestResolve|TestRetention|TestSoleAdmin|TestStaff|TestTicket|TestVendor)' -coverprofile=coverage.out ./...
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: go-coverage
@@ -134,7 +178,7 @@ jobs:
   # A-498: the real-chain Monero escrow legs. scripts/test-escrow-xmr-regtest.sh runs the app, inside go test, against a
   # real monerod and three real monero-wallet-rpc (all v0.18.5.1) on a local fakechain (--regtest, offline, difficulty 1:
   # a chain nobody else can reach) and a disposable PostgreSQL. The nodes are started with docker run, exactly as the
-  # script's header documents, because a service container cannot take command arguments and two legs stop and restart
+  # script's header documents, because a service container cannot take command arguments and three legs stop and restart
   # containers. Measured locally at 569 s for all 15 legs (go test 525 s), so the 25-minute limit leaves headroom.
   # Digests measured when the tags were checked (the repository pins these images by tag, as the installer does):
   # simple-monerod@sha256:0329465ffc599048efd57712d91d3b4b7d66380bd7205d5d0992cd9faf668e38 and
@@ -176,9 +220,9 @@ jobs:
             --rpc-bind-ip 0.0.0.0 --rpc-bind-port 18081 --confirm-external-bind --no-igd
           for w in escrow:28382 funder:28383 restore:28384; do
             docker run -d --name "xmr-escrow-wallet-${w%%:*}" --network xmr-escrow-regtest -p "127.0.0.1:${w##*:}:18083" \
-              -e RPC_EXPOSE_UNAUTHENTICATED=1 "$MONERO_WALLET_IMAGE" \
-              --daemon-address xmr-escrow-monerod:18081 --trusted-daemon --wallet-dir /tmp/w --disable-rpc-login \
-              --rpc-bind-port 18083 --allow-mismatched-daemon-version
+              -v "xmr-escrow-wallet-${w%%:*}:/home/monero/wallet" -e RPC_EXPOSE_UNAUTHENTICATED=1 "$MONERO_WALLET_IMAGE" \
+              --daemon-address xmr-escrow-monerod:18081 --trusted-daemon --wallet-dir /home/monero/wallet --disable-rpc-login \
+              --shared-ringdb-dir /home/monero/wallet/.shared-ringdb --rpc-bind-port 18083 --allow-mismatched-daemon-version
           done
           rpc() { # rpc <port> <method>: the JSON-RPC answer, or nothing
             curl -sS --max-time 5 --noproxy '*' -H 'Content-Type: application/json' \
@@ -227,6 +271,7 @@ jobs:
         if: always()
         run: |
           docker rm -f -v xmr-escrow-monerod xmr-escrow-wallet-escrow xmr-escrow-wallet-funder xmr-escrow-wallet-restore || true
+          docker volume rm xmr-escrow-wallet-escrow xmr-escrow-wallet-funder xmr-escrow-wallet-restore || true
           docker network rm xmr-escrow-regtest || true
   operations:
     name: Operations and encrypted restore
@@ -521,7 +566,7 @@ jobs:
   container:
     name: Container runtime (${{ matrix.database }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -538,6 +583,13 @@ jobs:
           tags: opsecmkt:ci
           cache-from: type=gha,scope=app
           cache-to: type=gha,mode=max,scope=app
+      # Both runtime matrix entries exercise this image; scan it once.
+      - name: Scan the built application image
+        if: matrix.database == 'internal'
+        uses: ./.github/actions/scan-image # zizmor: ignore[self-repository] -- scan this checkout's image with its reviewed composite action.
+        with:
+          image-ref: opsecmkt:ci
+          artifact-name: application-image-vulnerabilities
       - name: Bootstrap production image with a real database
         run: bash scripts/ci-smoke.sh "${{ matrix.database }}"
       # A-192: the app, the database and the pinned clamd of compose.scanner.yaml whose only signature database is
@@ -589,8 +641,8 @@ jobs:
   tor-image:
     name: Tor image and offline configuration
     runs-on: ubuntu-24.04
-    # 20: the hardened-container start test (A-536) pulls four images and starts each twice.
-    timeout-minutes: 20
+    # Include the full image report/CVE gate as well as the offline runtime checks.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -604,6 +656,11 @@ jobs:
           tags: opsecmkt-tor:ci
           cache-from: type=gha,scope=tor
           cache-to: type=gha,mode=max,scope=tor
+      - name: Scan the built Tor image
+        uses: ./.github/actions/scan-image # zizmor: ignore[self-repository] -- scan this checkout's image with its reviewed composite action.
+        with:
+          image-ref: opsecmkt-tor:ci
+          artifact-name: tor-image-vulnerabilities
       - name: Validate Tor configuration without network access
         run: docker run --rm --network none --add-host app:127.0.0.1 --cap-drop ALL --security-opt no-new-privileges:true opsecmkt-tor:ci --verify-config
       # A-179: proof-of-work needs tor 0.4.8 or later built with the pow module (the image build also refuses one
@@ -736,7 +793,6 @@ jobs:
           node-version: '24'
           cache: npm
       - run: npm ci
-      - run: npm audit --audit-level=high
       - name: Install Playwright browsers and system dependencies
         run: |
           # The runner prefers Azure's mirror, which took 22 minutes in a main run.
@@ -841,7 +897,7 @@ jobs:
   required:
     name: CI passed
     if: always()
-    needs: [go, go-escrow, go-desk, escrow-xmr-regtest, operations, installer, upgrade, compose, container, tor-image, browser, browser-escrow, docs]
+    needs: [quality, workflow-safety, security, go, go-escrow, go-desk, escrow-xmr-regtest, operations, installer, upgrade, compose, container, tor-image, browser, browser-escrow, docs]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:

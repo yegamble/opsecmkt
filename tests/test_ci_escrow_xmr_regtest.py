@@ -45,7 +45,8 @@ class EscrowXMRRegtestJobTest(unittest.TestCase):
         header = SCRIPT.split('set -euo pipefail')[0]
         for flag in ('--regtest --keep-fakechain --offline --fixed-difficulty 1', '--rpc-bind-ip 0.0.0.0 --rpc-bind-port 18081',
                      '--confirm-external-bind --no-igd', '--daemon-address xmr-escrow-monerod:18081', '--trusted-daemon',
-                     '--wallet-dir /tmp/w --disable-rpc-login', '--rpc-bind-port 18083', '--allow-mismatched-daemon-version',
+                     '--wallet-dir /home/monero/wallet --disable-rpc-login', '--shared-ringdb-dir /home/monero/wallet/.shared-ringdb',
+                     '-v "xmr-escrow-wallet-${w%%:*}:/home/monero/wallet"', '--rpc-bind-port 18083', '--allow-mismatched-daemon-version',
                      '-e RPC_EXPOSE_UNAUTHENTICATED=1', 'docker network create xmr-escrow-regtest',
                      '-p 127.0.0.1:28381:18081', 'for w in escrow:28382 funder:28383 restore:28384; do'):
             self.assertIn(flag, header, flag)
@@ -73,6 +74,8 @@ class EscrowXMRRegtestJobTest(unittest.TestCase):
         self.assertRegex(self.block, r'uses: actions/upload-artifact@[^\n]*\n\s+if: always\(\)\n')
         self.assertRegex(self.block, r'if: always\(\)\n(?:.*\n)*?\s+run: (?:\|\n\s+)?docker rm -f -v ')
         self.assertIn('docker network rm xmr-escrow-regtest', self.block)
+        # A-618: the wallet-rpcs keep their wallet directory and ring database on named volumes, removed with the nodes.
+        self.assertIn('docker volume rm xmr-escrow-wallet-escrow xmr-escrow-wallet-funder xmr-escrow-wallet-restore', self.block)
 
     def test_required_aggregator_waits_for_the_job(self):
         match = re.search(r'^    needs: \[([^\]]+)\]$', job_block(WORKFLOW, 'required'), re.M)

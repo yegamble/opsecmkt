@@ -578,32 +578,8 @@ func TestXMREscrowRegtestReRequest(t *testing.T) {
 		t.Skip("set ESCROW_XMR_REGTEST_DAEMON_CONTAINER to the monerod container's name (scripts/test-escrow-xmr-regtest.sh): this leg stops and starts it")
 	}
 	r, p := newXMRSettleRegtest(t)
-	// The relay call waits for the daemon's stop and start through the proxy.
 	order, addr := r.completedReal()
-	id := r.releaseReal(order)
-	p.wrap("relay_tx", r.daemonStoppedAround(container))
-	for n := 1; n <= xmrRelayAttempts; n++ {
-		heights := r.synced()
-		if err := r.poll(); err != nil || t.Failed() {
-			t.Fatalf("pass %d (%s): %v", n, heights, err)
-		}
-		want, class := "built", xmrRelayRefusing+" "+strconv.Itoa(n)
-		if n == xmrRelayAttempts {
-			want, class = "failed", xmrRelayRefused
-		}
-		if s := r.settlement(id); s.State != want || r.waitClass(id) != class || p.count("relay_tx") != n || p.count("transfer") != 1 {
-			t.Fatalf("relay refused %d time(s): %+v %q, relay_tx %d, transfer %d", n, s, r.waitClass(id), p.count("relay_tx"), p.count("transfer"))
-		}
-		t.Logf("pass %d: monerod stopped for the relay; relay_tx refused, the settlement is %s (%s)", n, want, class)
-	}
-	p.wrap("relay_tx", nil)
-	failed := r.settlement(id)
-	if r.staffFlags(order) == 0 {
-		t.Fatal("staff were not told of the failed release")
-	}
-	if found, _, err := r.A.xmrOnNetwork(context.Background(), &xmrSettleRow{TxHash: failed.TxHash}); err != nil || found {
-		t.Fatalf("the daemon has the refused transaction %s (%v)", failed.TxHash, err)
-	}
+	id, failed := r.relayFailedReal(p, container, order)
 
 	// The escrow wallet still lists the refused transaction's outputs as available.
 	ctx := context.Background()
@@ -633,24 +609,117 @@ func TestXMREscrowRegtestReRequest(t *testing.T) {
 	}
 	t.Logf("incoming_transfers available lists the refused transaction's %d output(s) unspent: %v", len(failed.KeyImages), failed.KeyImages)
 
-	// A-614: a reorganisation takes the funding deposit out of the chain (every block since it was mined popped, the
-	// pool flushed) before the re-request is carried out. The new settlement takes over the deposit's claim, builds
-	// nothing and waits (deposit-missing) rather than failing nothing-to-settle; once the same deposit transaction is
-	// mined again it is built from the stored key images as below.
-	deposit := agStrings(t, r.testEnv, "SELECT txid FROM payments WHERE order_id=$1", order)[0]
+	// A-614: a reorganisation takes the funding deposit out of the chain before the re-request is carried out (see
+	// reRequestMissingReal); once the same deposit transaction is mined again it is built from the stored key images.
+	r.reRequestMissingReal(p, order, id)
+	// The deposit is mined again at another global output index, while the escrow wallet's ring database still holds
+	// the ring the refused build used for its key image (wallet2::get_outs stores every build's rings, and reuses a
+	// known one). That ring no longer contains the real output, and monero-wallet-rpc 0.18.5.1 asks the daemon for it
+	// only when its decoy picker happens to draw its new index, so transfer may fail (-4, "Daemon response did not include
+	// the requested real output", recorded ring-stale, A-618) on a pass and succeed on a later one. Each refusal must be a
+	// wait that builds and relays nothing; the new settlement is then built and relayed exactly once.
+	// TestXMREscrowRegtestStaleRing makes that refusal certain and rehearses the operator's remedy.
+	relays := p.count("relay_tx")
+	var next xmrSettlement
+	refused := 0
+	for pass := 1; ; pass++ {
+		r.synced()
+		r.mustPoll()
+		next = r.settlementOf(order, "release")
+		if next.State != "requested" || pass == xmrReRequestPasses {
+			break
+		}
+		class := r.waitClass(next.ID)
+		if (class != xmrWalletRefusing+" "+xmrRingStale && class != xmrWalletRefused+" "+xmrRingStale) || next.TxHash != "" || len(next.KeyImages) != 0 ||
+			p.count("transfer") != 2+pass-1 || p.count("relay_tx") != relays {
+			t.Fatalf("re-requested, pass %d: new %+v %q, transfer %d, relay_tx %d (was %d), wallet transfer error %+v", pass, next, class, p.count("transfer"), p.count("relay_tx"), relays, p.transferFailure())
+		}
+		refused++
+		t.Logf("re-requested, pass %d: transfer refused (%s), nothing built or relayed; the market tries again (wallet transfer error %+v)", pass, class, p.transferFailure())
+	}
+	if next.Supersedes != id || next.State != "relayed" || r.settlement(id).State != "superseded" || p.count("transfer") != 2+refused || p.count("relay_tx") != relays+1 {
+		t.Fatalf("re-requested after %d refused pass(es): old %+v, new %+v, transfer %d, relay_tx %d (was %d), wallet transfer error %+v", refused, r.settlement(id), next, p.count("transfer"), p.count("relay_tx"), relays, p.transferFailure())
+	}
+	inputs := r.sameSpend(id, failed, next)
+	r.confirmReal(next.ID)
+	t.Logf("order %s: release %s refused %d times while monerod was stopped for its relay, failed; re-requested by an administrator, release %s spent the same key images %v to the same plan (fee %d, was %d) and confirmed",
+		shortID(order), failed.TxHash, xmrRelayAttempts, next.TxHash, inputs, next.Fee, failed.Fee)
+}
+
+// relayFailedReal requests order's release and stops the monerod container (run with --keep-fakechain) right before
+// each relay of its stored transaction and starts it again once the escrow wallet-rpc has answered, so the wallet-rpc
+// cannot commit it (-4) while the transaction is stored, the daemon never saw it and its key images are unspent. The
+// watcher relays the same stored metadata again on the next passes, never calls transfer again, and records the release
+// failed on the third refusal in a row; staff are told. It returns the release and its failed row.
+func (r *xmrRegtest) relayFailedReal(p *xmrRPCProxy, container, order string) (int64, xmrSettlement) {
+	t := r.t
+	t.Helper()
+	id := r.releaseReal(order)
+	// The relay call waits for the daemon's stop and start through the proxy.
+	p.wrap("relay_tx", r.daemonStoppedAround(container))
+	for n := 1; n <= xmrRelayAttempts; n++ {
+		heights := r.synced()
+		if err := r.poll(); err != nil || t.Failed() {
+			t.Fatalf("pass %d (%s): %v", n, heights, err)
+		}
+		want, class := "built", xmrRelayRefusing+" "+strconv.Itoa(n)
+		if n == xmrRelayAttempts {
+			want, class = "failed", xmrRelayRefused
+		}
+		if s := r.settlement(id); s.State != want || r.waitClass(id) != class || p.count("relay_tx") != n || p.count("transfer") != 1 {
+			t.Fatalf("relay refused %d time(s): %+v %q, relay_tx %d, transfer %d", n, s, r.waitClass(id), p.count("relay_tx"), p.count("transfer"))
+		}
+		t.Logf("pass %d: monerod stopped for the relay; relay_tx refused, the settlement is %s (%s)", n, want, class)
+	}
+	p.wrap("relay_tx", nil)
+	failed := r.settlement(id)
+	if r.staffFlags(order) == 0 {
+		t.Fatal("staff were not told of the failed release")
+	}
+	if found, _, err := r.A.xmrOnNetwork(context.Background(), &xmrSettleRow{TxHash: failed.TxHash}); err != nil || found {
+		t.Fatalf("the daemon has the refused transaction %s (%v)", failed.TxHash, err)
+	}
+	return id, failed
+}
+
+// reRequestMissingReal (A-614): a reorganisation takes every funding deposit of order out of the chain (every block
+// since the earliest was mined popped, the pool flushed) before an administrator re-requests failed settlement id (with
+// the password step-up). The new settlement takes over the deposits' claims, builds nothing and waits (deposit-missing)
+// rather than failing nothing-to-settle, past twice the threshold in blocks too (A-554's bounded wait, which a re-request
+// does not have), with no transfer. The same deposit transactions are then sent to the daemon again
+// (send_raw_transaction) and mined to the threshold and xmrMineMargin, each at another global output index. It returns
+// the deposits.
+func (r *xmrRegtest) reRequestMissingReal(p *xmrRPCProxy, order string, id int64) []string {
+	t := r.t
+	t.Helper()
+	deposits := agStrings(t, r.testEnv, "SELECT txid FROM payments WHERE order_id=$1 ORDER BY created,id", order)
+	before := r.outputIndices(deposits)
 	var raw struct {
 		Txs []struct {
-			AsHex         string   `json:"as_hex"`
-			OutputIndices []uint64 `json:"output_indices"`
+			TxHash string `json:"tx_hash"`
+			AsHex  string `json:"as_hex"`
 		} `json:"txs"`
 	}
-	r.daemonPost("/get_transactions", map[string]any{"txs_hashes": []string{deposit}}, &raw)
-	if len(raw.Txs) != 1 || raw.Txs[0].AsHex == "" {
-		t.Fatalf("the daemon does not give funding deposit %s", deposit)
+	r.daemonPost("/get_transactions", map[string]any{"txs_hashes": deposits}, &raw)
+	if len(raw.Txs) != len(deposits) {
+		t.Fatalf("the daemon gives %d of funding deposits %v", len(raw.Txs), deposits)
 	}
-	r.popPast(deposit)
+	txs, _, err := r.A.escrowXMR.rpc.transactions(context.Background(), deposits)
+	if err != nil || len(txs) != len(deposits) {
+		t.Fatalf("funding deposits %v: %+v %v", deposits, txs, err)
+	}
+	deepest := txs[0]
+	for _, tx := range txs {
+		if tx.InPool || tx.Confirmations <= 0 {
+			t.Fatalf("funding deposit %s is not mined: %+v", tx.Hash, tx)
+		}
+		if tx.Confirmations > deepest.Confirmations {
+			deepest = tx
+		}
+	}
+	r.popPast(deepest.Hash) // every later block too, so every deposit
 	var flushed map[string]any
-	r.call(r.daemon, "flush_txpool", map[string]any{"txids": []string{deposit}}, &flushed)
+	r.call(r.daemon, "flush_txpool", map[string]any{"txids": deposits}, &flushed)
 	r.mine(xmrMineMargin)
 	r.synced()
 	r.mustPoll()
@@ -665,55 +734,83 @@ func TestXMREscrowRegtestReRequest(t *testing.T) {
 	r.mustPoll()
 	waiting := r.settlementOf(order, "release")
 	if waiting.Supersedes != id || waiting.State != "requested" || r.waitClass(waiting.ID) != xmrWaitMissing || r.settlement(id).State != "superseded" || p.count("transfer") != 1 ||
-		agInt(r.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND xmr_settlement_id=$2 AND confirmations<0", order, waiting.ID) != 1 {
-		t.Fatalf("re-requested while its deposit is missing: old %+v, new %+v %q, transfer %d (deposits %v)", r.settlement(id), waiting, r.waitClass(waiting.ID), p.count("transfer"), r.depositConfs(order))
+		agInt(r.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND xmr_settlement_id=$2 AND confirmations<0", order, waiting.ID) != len(deposits) {
+		t.Fatalf("re-requested while its deposits are missing: old %+v, new %+v %q, transfer %d (deposits %v)", r.settlement(id), waiting, r.waitClass(waiting.ID), p.count("transfer"), r.depositConfs(order))
 	}
-	t.Logf("funding deposit %s popped and flushed: re-request %d waits (%s) past %d blocks, no transfer", deposit, waiting.ID, xmrWaitMissing, 3*r.A.escrowXMR.confirmations)
-	var sent struct {
-		Status string `json:"status"`
+	t.Logf("funding deposit(s) %v popped and flushed: re-request %d waits (%s) past %d blocks, no transfer", deposits, waiting.ID, xmrWaitMissing, 3*r.A.escrowXMR.confirmations)
+	for _, tx := range raw.Txs {
+		var sent struct {
+			Status string `json:"status"`
+		}
+		r.daemonPost("/send_raw_transaction", map[string]any{"tx_as_hex": tx.AsHex, "do_not_relay": false}, &sent)
+		if sent.Status != "OK" {
+			t.Fatalf("send_raw_transaction of funding deposit %s: %q", tx.TxHash, sent.Status)
+		}
 	}
-	r.daemonPost("/send_raw_transaction", map[string]any{"tx_as_hex": raw.Txs[0].AsHex, "do_not_relay": false}, &sent)
-	if sent.Status != "OK" {
-		t.Fatalf("send_raw_transaction of funding deposit %s: %q", deposit, sent.Status)
+	r.mineAllTo(deposits, 10+xmrMineMargin)
+	after := r.outputIndices(deposits)
+	for _, d := range deposits {
+		t.Logf("funding deposit %s output indices before reorg %v, restored %v", d, before[d], after[d])
 	}
-	r.mineTo(deposit, 10+xmrMineMargin)
-	var restored struct {
+	return deposits
+}
+
+// outputIndices gives each of txs's global output indices, as the daemon has them now.
+func (r *xmrRegtest) outputIndices(txs []string) map[string][]uint64 {
+	r.t.Helper()
+	var res struct {
 		Txs []struct {
+			TxHash        string   `json:"tx_hash"`
 			OutputIndices []uint64 `json:"output_indices"`
 		} `json:"txs"`
 	}
-	r.daemonPost("/get_transactions", map[string]any{"txs_hashes": []string{deposit}}, &restored)
-	if len(restored.Txs) != 1 {
-		t.Fatalf("the daemon does not give restored funding deposit %s", deposit)
+	r.daemonPost("/get_transactions", map[string]any{"txs_hashes": txs}, &res)
+	out := map[string][]uint64{}
+	for _, tx := range res.Txs {
+		out[tx.TxHash] = tx.OutputIndices
 	}
-	t.Logf("funding deposit output indices before reorg %v, restored %v", raw.Txs[0].OutputIndices, restored.Txs[0].OutputIndices)
-	// The deposit is mined again at another global output index, while the escrow wallet's ring database still holds
-	// the ring the refused build used for its key image (wallet2::get_outs stores every build's rings, and reuses a
-	// known one). That ring no longer contains the real output, and monero-wallet-rpc 0.18.5.1 asks the daemon for it
-	// only when its decoy picker happens to draw its new index, so transfer may fail (-4, "Daemon response did not include
-	// the requested real output") on a pass and succeed on a later one. Each refusal must be a wait that builds and
-	// relays nothing; the new settlement is then built and relayed exactly once.
-	relays := p.count("relay_tx")
-	var next xmrSettlement
-	refused := 0
-	for pass := 1; ; pass++ {
-		r.synced()
-		r.mustPoll()
-		next = r.settlementOf(order, "release")
-		if next.State != "requested" || pass == xmrReRequestPasses {
-			break
-		}
-		class := r.waitClass(next.ID)
-		if (class != xmrWalletRefusing+" rpc:-4" && class != xmrWalletRefused+" rpc:-4") || next.TxHash != "" || len(next.KeyImages) != 0 ||
-			p.count("transfer") != 2+pass-1 || p.count("relay_tx") != relays {
-			t.Fatalf("re-requested, pass %d: new %+v %q, transfer %d, relay_tx %d (was %d), wallet transfer error %+v", pass, next, class, p.count("transfer"), p.count("relay_tx"), relays, p.transferFailure())
-		}
-		refused++
-		t.Logf("re-requested, pass %d: transfer refused (%s), nothing built or relayed; the market tries again (wallet transfer error %+v)", pass, class, p.transferFailure())
+	if len(out) != len(txs) {
+		r.t.Fatalf("the daemon gives %d of transactions %v", len(out), txs)
 	}
-	if next.Supersedes != id || next.State != "relayed" || r.settlement(id).State != "superseded" || p.count("transfer") != 2+refused || p.count("relay_tx") != relays+1 ||
-		!slices.Equal(slices.Sorted(slices.Values(next.KeyImages)), slices.Sorted(slices.Values(failed.KeyImages))) || next.InputTotal != failed.InputTotal {
-		t.Fatalf("re-requested after %d refused pass(es): old %+v, new %+v, transfer %d, relay_tx %d (was %d), wallet transfer error %+v", refused, r.settlement(id), next, p.count("transfer"), p.count("relay_tx"), relays, p.transferFailure())
+	return out
+}
+
+// mineAllTo mines until the newest of txs, each mined in a block, has exactly confs confirmations (as mineTo does
+// for one; the others have at least as many).
+func (r *xmrRegtest) mineAllTo(txs []string, confs int64) {
+	r.t.Helper()
+	for range 20 {
+		got, _, err := r.A.escrowXMR.rpc.transactions(context.Background(), txs)
+		if err != nil {
+			r.t.Fatalf("/get_transactions: %v", err)
+		}
+		least := confs
+		for _, tx := range got {
+			if tx.InPool {
+				least = min(least, 0)
+			} else {
+				least = min(least, tx.Confirmations)
+			}
+		}
+		if len(got) != len(txs) {
+			least = 0
+		}
+		if least == confs {
+			return
+		}
+		r.mine(max(int(confs-least), 1))
+	}
+	r.t.Fatalf("transactions %v did not reach %d confirmations", txs, confs)
+}
+
+// sameSpend checks that settlement next, which re-requested failed settlement id, spends exactly failed's stored key
+// images (the stored rows and the inputs the daemon decodes) to the stored plan (only the fee, and so the claimant's
+// output, may differ), with xmrShape's shape. It returns the decoded inputs.
+func (r *xmrRegtest) sameSpend(id int64, failed, next xmrSettlement) []string {
+	t := r.t
+	t.Helper()
+	if !slices.Equal(slices.Sorted(slices.Values(next.KeyImages)), slices.Sorted(slices.Values(failed.KeyImages))) || next.InputTotal != failed.InputTotal {
+		t.Fatalf("other coins: old %+v, new %+v", failed, next)
 	}
 	oldOuts, newOuts := r.outputsOf(id), r.outputsOf(next.ID)
 	claimant := func(s string, fee int64) (string, int64) {
@@ -751,7 +848,119 @@ func TestXMREscrowRegtestReRequest(t *testing.T) {
 		t.Fatalf("the new transaction's inputs %v are not the stored key images %v", inputs, failed.KeyImages)
 	}
 	r.xmrShape(next)
+	return inputs
+}
+
+// The stale-ring rehearsal (A-618): xmrStaleRingDeposits deposits fund the order, so the release spends that many key
+// images, and the re-request's first build comes xmrStaleRingAge blocks after the deposits were mined again.
+// monero-wallet-rpc 0.18.5.1 can rescue a stale ring only when its decoy picker happens to draw the real output's new
+// index (59 draws an input on ring 16); the build needs that for every input, and the draws favour recent outputs, so
+// several deposits aged past the newest blocks make the refusal certain in practice (a simulation of wallet2's gamma
+// picker on a 2,000-block fakechain gives about 0.14 per input at this age: about 1 in 130,000 for all six).
+const (
+	xmrStaleRingDeposits = 6
+	xmrStaleRingAge      = 50
+)
+
+// xmrRingDBDir is the escrow wallet-rpc's ring database: --shared-ringdb-dir inside its wallet directory, as
+// compose.nodes.yaml, the native installer (internal/operator/render.go) and CI run it.
+const xmrRingDBDir = "/home/monero/wallet/.shared-ringdb"
+
+// moveRingDBAside applies the operator guide's stale-ring remedy A to the escrow wallet-rpc container (A-618): stop
+// it, move its ring database aside to a dated directory with its own image as uid 1000 and no network (the wallet
+// files are not touched), and start it again. The container must mount its wallet directory, /home/monero/wallet,
+// from a volume and run with --shared-ringdb-dir=/home/monero/wallet/.shared-ringdb.
+func (r *xmrRegtest) moveRingDBAside(container string) {
+	t := r.t
+	t.Helper()
+	docker := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command("docker", args...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("docker %s: %v %s", args[0], err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	image := docker("inspect", "-f", "{{.Config.Image}}", container)
+	volume := docker("inspect", "-f", `{{range .Mounts}}{{if eq .Destination "/home/monero/wallet"}}{{.Name}}{{end}}{{end}}`, container)
+	if volume == "" {
+		t.Fatalf("container %s mounts no volume at /home/monero/wallet: run the escrow wallet-rpc as scripts/test-escrow-xmr-regtest.sh says", container)
+	}
+	docker("stop", container)
+	aside := xmrRingDBDir + ".stale-" + time.Now().UTC().Format("20060102T150405Z")
+	docker("run", "--rm", "--network", "none", "--user", "1000:1000", "-v", volume+":/home/monero/wallet", "--entrypoint", "mv", image, xmrRingDBDir, aside)
+	docker("start", container)
+	http.DefaultTransport.(*http.Transport).CloseIdleConnections() // the proxy's connections to the stopped wallet-rpc
+	ctx := context.Background()
+	for range 120 {
+		if r.A.escrowXMR.rpc.wallet.call(ctx, "/json_rpc", "get_version", nil, nil) == nil {
+			t.Logf("escrow wallet-rpc container %s stopped, its ring database moved aside to %s (image %s as uid 1000), started again", container, aside, image)
+			return
+		}
+		time.Sleep(time.Second)
+	}
+	t.Fatalf("the escrow wallet-rpc container %s did not answer within 120 seconds of its start", container)
+}
+
+// TestXMREscrowRegtestStaleRing (A-618): the operator guide's stale-ring break-glass, rehearsed. A release funded by
+// xmrStaleRingDeposits deposits is built once (its rings stored in the escrow wallet-rpc's ring database), refused at
+// relay until it fails (relayFailedReal), and re-requested while a reorganisation has taken its deposits out of the
+// chain; mined again, each deposit is at another global output index, and xmrStaleRingAge blocks later the re-request's
+// build is refused: transfer -4, "Daemon response did not include the requested real output", recorded
+// wallet-refusing ring-stale, nothing built or relayed. Remedy A as documented (stop the escrow wallet-rpc, move its
+// .shared-ringdb aside as uid 1000, start it) and the next pass builds the stored key images to the stored plan and
+// relays it exactly once; it confirms.
+func TestXMREscrowRegtestStaleRing(t *testing.T) {
+	daemonC, walletC := os.Getenv("ESCROW_XMR_REGTEST_DAEMON_CONTAINER"), os.Getenv("ESCROW_XMR_REGTEST_WALLET_CONTAINER")
+	if daemonC == "" || walletC == "" {
+		t.Skip("set ESCROW_XMR_REGTEST_DAEMON_CONTAINER and ESCROW_XMR_REGTEST_WALLET_CONTAINER (scripts/test-escrow-xmr-regtest.sh): this leg stops and starts both")
+	}
+	r, p := newXMRSettleRegtest(t)
+	order, addr := r.checkoutReal()
+	var deposits []string
+	for i := range xmrStaleRingDeposits {
+		share := int64(xmrListingPrice / xmrStaleRingDeposits)
+		if i == xmrStaleRingDeposits-1 {
+			share = xmrListingPrice - share*(xmrStaleRingDeposits-1)
+		}
+		deposits = append(deposits, r.pay(map[string]int64{addr: share}))
+	}
+	r.mineAllTo(deposits, 10+xmrMineMargin)
+	r.synced()
+	r.mustPoll()
+	if r.state(order) != stateCompleted || agInt(r.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND credited", order) != xmrStaleRingDeposits {
+		t.Fatalf("funded by %d deposits: %s (deposits %v)", xmrStaleRingDeposits, r.state(order), r.depositConfs(order))
+	}
+	id, failed := r.relayFailedReal(p, daemonC, order)
+	if len(failed.KeyImages) != xmrStaleRingDeposits {
+		t.Fatalf("the release spends %d key images, want %d: %+v", len(failed.KeyImages), xmrStaleRingDeposits, failed)
+	}
+	r.reRequestMissingReal(p, order, id)
+	r.mine(xmrStaleRingAge)
+	relays := p.count("relay_tx")
+
+	// The stale ring: refused, nothing built or relayed.
+	r.synced()
+	r.mustPoll()
+	next := r.settlementOf(order, "release")
+	werr := p.transferFailure()
+	if next.Supersedes != id || next.State != "requested" || r.waitClass(next.ID) != xmrWalletRefusing+" "+xmrRingStale || next.TxHash != "" || len(next.KeyImages) != 0 ||
+		p.count("transfer") != 2 || p.count("relay_tx") != relays ||
+		werr == nil || werr.Code != -4 || werr.Message != "Daemon response did not include the requested real output" {
+		t.Fatalf("re-requested with a stale ring: new %+v %q, transfer %d, relay_tx %d (was %d), wallet transfer error %+v", next, r.waitClass(next.ID), p.count("transfer"), p.count("relay_tx"), relays, werr)
+	}
+	t.Logf("re-request %d after the reorganisation: transfer refused (%s; wallet transfer error %d %q), nothing built or relayed", next.ID, r.waitClass(next.ID), werr.Code, werr.Message)
+
+	// Remedy A, as docs/operator-guide.md documents it; the next pass builds and relays it once.
+	r.moveRingDBAside(walletC)
+	r.mustPoll()
+	next = r.settlementOf(order, "release")
+	if next.Supersedes != id || next.State != "relayed" || r.settlement(id).State != "superseded" || p.count("transfer") != 3 || p.count("relay_tx") != relays+1 {
+		t.Fatalf("after the ring database was moved aside: old %+v, new %+v %q, transfer %d, relay_tx %d (was %d), wallet transfer error %+v",
+			r.settlement(id), next, r.waitClass(next.ID), p.count("transfer"), p.count("relay_tx"), relays, p.transferFailure())
+	}
+	inputs := r.sameSpend(id, failed, next)
 	r.confirmReal(next.ID)
-	t.Logf("order %s: release %s refused %d times while monerod was stopped for its relay, failed; re-requested by an administrator, release %s spent the same key images %v to the same plan (fee %d, was %d) and confirmed",
-		shortID(order), failed.TxHash, xmrRelayAttempts, next.TxHash, inputs, next.Fee, failed.Fee)
+	t.Logf("order %s: re-request %d refused with a stale ring for %d key images; after remedy A it spent the same key images %v to the same plan in %s, relayed once, confirmed",
+		shortID(order), next.ID, len(inputs), inputs, next.TxHash)
 }

@@ -71,7 +71,8 @@
 </footer>
 </body>
 </html>{{end}}
-{{define "staff-attention-summary"}}{{with .StaffAttention}}<p class="help staff-attention" aria-label="Staff attention counts">Needs attention: <a href="/moderator">{{.Disputes}} open disputes</a> · <a href="/moderator#payment-review">{{.PaymentReviews}} orders under payment review</a> · <a href="/moderator{{if .EscrowAlerts}}#escrow-alerts{{end}}">{{.EscrowAlerts}} escrow alerts</a>.</p>{{end}}{{end}}
+{{define "staff-attention-summary"}}{{with .StaffAttention}}<p class="help staff-attention" aria-label="Staff attention counts">Needs attention: <a href="/moderator">{{.Disputes}} open disputes</a> · <a href="/moderator#payment-review">{{.PaymentReviews}} orders under payment review</a> · <a href="/moderator{{if .EscrowAlerts}}#escrow-alerts{{end}}">{{.EscrowAlerts}} escrow alerts</a>.</p>{{with .RestorePaused}}
+<div class="alert" role="status" id="restore-paused"><strong>Paused after a restore from backup.</strong> {{.}}</div>{{end}}{{end}}{{end}}
 {{define "filters"}}<div class="filter-content">
 <section class="sidebar-section">
 <h2>CATEGORIES</h2>

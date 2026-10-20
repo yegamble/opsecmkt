@@ -1,0 +1,16 @@
+# Checks preserve the index and worktree. Fixes are an explicit `make fmt` action.
+lefthook: go tool -modfile=tools/go.mod lefthook
+assert_lefthook_installed: true
+glob_matcher: doublestar
+pre-commit:
+  parallel: true
+  commands:
+    go-format:
+      glob: '**/*.go'
+      run: bash scripts/quality.sh fmt-check {staged_files}
+    secrets:
+      run: bash scripts/quality.sh secrets-staged
+pre-push:
+  commands:
+    go-quality:
+      run: bash scripts/quality.sh go-quality

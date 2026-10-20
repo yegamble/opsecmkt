@@ -250,22 +250,6 @@ func (f *fakeSigner) set(fn func(f *fakeSigner)) {
 	fn(f)
 }
 
-// signerApp is the escrow test app with ESCROW_SIGNER_SOCKET pointing at path.
-func signerApp(t *testing.T, path string) *escrowEnv {
-	t.Helper()
-	return newEscrowEnv(t, "ESCROW_SIGNER_SOCKET", path)
-}
-
-func signerPins(t *testing.T, e *testEnv) []string {
-	t.Helper()
-	return agStrings(t, e, "SELECT key||'='||value FROM settings WHERE key IN ($1,$2) ORDER BY key", escrowSignerFingerprintPin, escrowSignerXPubPin)
-}
-
-func wantPins(x *escrowEnv, k btc.ExtKey) []string {
-	fp := k.Fingerprint()
-	return []string{escrowSignerFingerprintPin + "=" + hex.EncodeToString(fp[:]), escrowSignerXPubPin + "=" + x.A.escrowXPubHMAC(k.ChainCode, k.PubKey)}
-}
-
 // TestEscrowSignerClient (fake signer, no database): sign sends exactly {"version":1,"op":"sign","psbt":…,"index":i} and
 // returns the PSBT; a refusal comes back as its class; a socket nobody listens on is errSignerUnreachable.
 func TestEscrowSignerClient(t *testing.T) {

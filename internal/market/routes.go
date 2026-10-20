@@ -199,6 +199,10 @@ type httpError struct {
 	// Render, when set on an action's error, writes the response (status Code) instead of the plain-text Msg,
 	// after the action's transaction is rolled back.
 	Render func(w http.ResponseWriter)
+	// Paused, when set on an action's 5xx, is the fixed log class of a pause the operator set up on purpose (a
+	// restore, A-559): the request is refused on the refusal page with Retry-After, logged with this class and
+	// counted on /admin's Monero escrow recovery view, not listed among the recent server errors (STAFF66-N3).
+	Paused string
 }
 
 func (e *httpError) Error() string { return e.Msg }
@@ -336,7 +340,7 @@ func dbConnectTransportFailure(err error) bool {
 		}
 	}
 	var ne net.Error
-	return errors.As(err, &ne) && (ne.Timeout() || ne.Temporary())
+	return errors.As(err, &ne) && (ne.Timeout() || ne.Temporary()) //nolint:staticcheck // SA1019: preserve classification of legacy network errors.
 }
 
 // dbConnLost reports a failed or lost database connection: errorCause's db-connection class.
@@ -609,13 +613,19 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 			he.Render(w)
 			return
 		}
-		if he.Code >= 500 {
+		if he.Code >= 500 && he.Paused == "" {
 			serverError(w, r, he.Code, he.Msg, errorCause(he))
 			return
 		}
 		// The refusal page reads the database (refuse): the action's transaction ends first, as for Render.
 		if c.Tx != nil {
 			c.Tx.Rollback()
+		}
+		if he.Paused != "" {
+			a.pausedCount.Add(1)
+			kind, name := routeOf(r)
+			pausedLog.Printf("http paused kind=%s name=%s status=%d cause=%s", kind, name, he.Code, he.Paused)
+			w.Header().Set("Retry-After", busyRetryAfter)
 		}
 		a.refuse(w, r, u, he.Code, he.Msg)
 		return

@@ -3,23 +3,7 @@ package market
 import (
 	"strings"
 	"testing"
-	"time"
 )
-
-// signetEscrowEnv is newEscrowEnv on a fake signet node (signet_challenge 51, 8 peers, a fresh tip), started the way
-// escrow starts on one: the market is restarted against it while it holds no escrow, so the chain pin moves to signet.
-func signetEscrowEnv(t *testing.T, env ...string) *escrowEnv {
-	t.Helper()
-	x := newEscrowEnv(t, env...)
-	x.core.mu.Lock()
-	x.core.chain, x.core.challenge, x.core.peers, x.core.tipTime = "signet", "51", 8, time.Now().Unix()
-	x.core.mu.Unlock()
-	x.restart()
-	if e := x.A.escrow.Load(); e == nil || e.network != "signet" || e.chainID != "signet:51" {
-		t.Fatal("escrow did not start on the fake signet node")
-	}
-	return x
-}
 
 // BITCOIN_CHAIN, when set beside ESCROW_BTC=on, may name an escrow chain only: testnet3 is refused before anything is
 // contacted; main is the mainnet opt-in (A-460, TestEscrowConfigMainnet).

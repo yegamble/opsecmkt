@@ -2,7 +2,6 @@ package market
 
 import (
 	"context"
-	"encoding/json"
 
 	"fmt"
 	"os"
@@ -49,23 +48,6 @@ func checkRealChain(t *testing.T, ctx context.Context, name string, c *rpcClient
 	}
 }
 
-const (
-	privateSignetSkipReorg = "it fakes a reorganisation with invalidateblock and reconsiderblock, test-only RPCs this harness treats as " +
-		"regtest-only: on two connected nodes the invalidated block stays on node A, so what runs would be a split network, not the " +
-		"single-node reorganisation the leg is written for"
-	privateSignetSkipPrivate = "it needs a node started with -privatebroadcast behind a dead proxy and mines the queued transaction " +
-		"with generateblock, which takes no maxtries: Core's fixed 1000000 tries do not find a signet block (\"Failed to make block.\")"
-)
-
-// skipOnPrivateSignet skips a leg that cannot run on the private signet, with the reason; the script lists it as not
-// run, never as a pass.
-func skipOnPrivateSignet(t *testing.T, reason string) {
-	t.Helper()
-	if realChainNet() == "signet" {
-		t.Skip("not run on the " + privateSignetLabel + ": " + reason)
-	}
-}
-
 // mineBlocks mines n blocks to addr with generatetoaddress on the node c reaches, on chain ("regtest" or "signet"), and
 // returns their hashes; it is an error unless exactly n were mined. Regtest needs one call. On signet every block needs
 // real proof of work: Core's default maxtries (1000000) returns [] without an error, and maxtries is one budget for
@@ -105,26 +87,6 @@ func mustMine(t *testing.T, ctx context.Context, c *rpcClient, n int, addr strin
 	return mined
 }
 
-// matureFunds gives the wallet owning addr spendable coins. On regtest it mines 101 blocks to addr, so the first
-// coinbase matures (as every leg did before A-443). On the private signet, where each block takes seconds, node A's
-// miner wallet (ESCROW_REGTEST_MINER_RPC_URL, matured once by TestEscrowPrivateSignetPrepare) pays addr 5 BTC, the
-// payment is awaited in the mempool of c's node (node B) and one block confirms it.
-func matureFunds(t *testing.T, ctx context.Context, c *rpcClient, addr string) {
-	t.Helper()
-	if realChainNet() != "signet" {
-		mustMine(t, ctx, c, 101, addr)
-		return
-	}
-	miner := privateSignetMiner(t, ctx)
-	var txid string
-	if err := miner.callWithin(ctx, regtestOperatorTimeout, "/wallet/"+privateSignetMinerWallet, "sendtoaddress", []any{addr, json.Number("5")}, &txid); err != nil {
-		t.Fatalf("%s: the miner wallet's sendtoaddress: %v", privateSignetLabel, err)
-	}
-	waitInMempool(t, ctx, c, txid)
-	mustMine(t, ctx, c, 1, addr)
-	t.Logf("%s: the miner wallet on node A paid 5 BTC (%s) to the leg's wallet on node B; 1 block mined", privateSignetLabel, txid)
-}
-
 // privateSignetMiner is the operator client of node A, the private signet's other node.
 func privateSignetMiner(t *testing.T, ctx context.Context) *rpcClient {
 	t.Helper()
@@ -134,25 +96,4 @@ func privateSignetMiner(t *testing.T, ctx context.Context) *rpcClient {
 	}
 	checkRealChain(t, ctx, "miner", miner)
 	return miner
-}
-
-// waitInMempool waits up to 90 seconds for txid to reach the mempool of c's node (relayed from the other node).
-func waitInMempool(t *testing.T, ctx context.Context, c *rpcClient, txid string) {
-	t.Helper()
-	for range 90 {
-		if c.call(ctx, "", "getmempoolentry", []any{txid}, nil) == nil {
-			return
-		}
-		time.Sleep(time.Second)
-	}
-	t.Fatalf("%s: %s did not reach node B's mempool within 90 seconds", privateSignetLabel, txid)
-}
-
-func mustStoredKey(t *testing.T, e *testEnv, uid string) *storedEscrowKey {
-	t.Helper()
-	k, err := loadEscrowKey(context.Background(), e.DB, uid)
-	if err != nil || k == nil {
-		t.Fatalf("stored key: %v", err)
-	}
-	return k
 }

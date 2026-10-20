@@ -15,7 +15,7 @@ delete evidence or wipe disks on an audit's instructions. Destructive incident
 response requires explicit owner approval of the concrete action.
 
 - Go 1.26.9+, PostgreSQL 17+, Python 3; Node 22+ only for browser tests.
-- Go changes: gofmt changed files, go mod verify, go vet ./..., then
+- Go changes: `make go-quality` (shared formatting/imports, modules, vet and lint), then
   `TEST_DATABASE_URL=<dedicated-test-db> go test -race -count=1 -timeout 30m -run '^(TestEscrow|TestXMR|FuzzEscrow)' ./...`
   and the same with `-skip` instead of `-run` (together every test once; CI splits the -skip half again: docs/ci-cd.md#go-test-jobs).
 - Templates/CSS or user journeys: npm ci, install Playwright browsers, and
@@ -27,7 +27,7 @@ response requires explicit owner approval of the concrete action.
 - Python/hooks/installer helpers: python3 -m unittest discover -s tests -p 'test_*.py' -v.
 - Shell: bash -n on changed scripts. Deployment/backup changes: follow
   docs/operations-tests.md and .github/workflows/ci.yaml for affected checks.
-- Dependencies: CI also runs govulncheck and npm audit; follow its pinned commands.
+- Dependencies: `make vuln` includes Go test dependencies; CI also audits both npm locks, Python locks and built images. Tool changes run `make tools-smoke`; keep the isolated tool manifests tidy.
 - Documentation/config-only changes: validate examples, local links, JSON and
   shell syntax; test hook control flow if changed. Do not claim unrun CI gates.
 

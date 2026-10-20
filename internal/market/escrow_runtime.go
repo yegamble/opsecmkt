@@ -3,9 +3,7 @@ package market
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -16,12 +14,7 @@ func (a *App) netTag() string {
 	}
 	return "TESTNET"
 }
-func (a *App) netName() string {
-	if a.live {
-		return "mainnet"
-	}
-	return "test network"
-}
+
 func (a *App) bitcoinPriceNetwork() string {
 	if !a.escrowConfigured {
 		return "not configured"
@@ -75,27 +68,6 @@ func (a *App) checkNetworkClass(ctx context.Context) error {
 	return nil
 }
 
-type nodeStatus struct {
-	Syncing     bool
-	Why, Remedy string
-	Tip         int64
-}
-type refusalError struct{ msg string }
-
-func (e *refusalError) Error() string          { return e.msg }
-func refusef(format string, args ...any) error { return &refusalError{fmt.Sprintf(format, args...)} }
-func isRefusal(err error) bool                 { var r *refusalError; return errors.As(err, &r) }
-func envConfirmations(key string, def int) (int, error) {
-	s := strings.TrimSpace(os.Getenv(key))
-	if s == "" {
-		return def, nil
-	}
-	n, err := strconv.Atoi(s)
-	if err != nil || n < 1 || n > 1000 {
-		return 0, fmt.Errorf("%s must be a whole number from 1 to 1000", key)
-	}
-	return n, nil
-}
 func paymentExpiry() (time.Duration, error) {
 	s := strings.TrimSpace(os.Getenv("PAYMENT_EXPIRY"))
 	if s == "" {
