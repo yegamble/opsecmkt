@@ -262,7 +262,7 @@ E2E_DATABASE_URL=DISPOSABLE_DATABASE_URL E2E_RETENTION_STATE_DIR=PRIVATE_ABSOLUT
 
 The browser setup initializes that database; never point it at an existing market. Retention form checks run with JavaScript disabled at 320 px.
 
-New moderation capture (migration 128) stores digests and limited metadata, not
+New moderation capture (migration 129) stores digests and limited metadata, not
 source prose. Completed jobs remove the active raw actor link. This prospective
 minimization does not erase legacy copies, immutable audit records or backups,
 and does not make retained target references anonymous. See the

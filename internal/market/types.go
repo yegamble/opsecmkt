@@ -306,6 +306,9 @@ type PageData struct {
 	// XMRSettlementForm: order page, the newest Monero escrow settlement shown with an administrator's form (re-request
 	// or build again, escrow_xmr_settle_view.go), 0 for none; the staff help then names and links it (QA5W4B-7).
 	XMRSettlementForm int64
+	// XMRSettlementActions: the administrator's settlement forms the order page offers, named for the staff help
+	// ("re-request it or mark it settled by hand"; xmrSettlementActions, A-613).
+	XMRSettlementActions string
 
 	// P4 Inventory (uses Product.Archived)
 	Listing   *ListingView
@@ -781,16 +784,17 @@ type EscrowStallView struct {
 // EscrowAlertView is an escrow order with an open staff alert on the moderation desk: its ID, its state's label, and
 // which alerts are open (a settlement queued or stuck, a release too few, a Monero deposit refused as another order's
 // escrow account with no disposition recorded, A-480, or a requested Monero settlement older than 24 hours). A-560: the
-// newest failed Monero settlement with a stored transaction (ReRequestable) and without one (Unbuilt), and the newest
-// set-aside one (SetAside), by settlement ID, 0 for none; StoredText: what staff are told of the first
+// newest failed Monero settlement with a stored transaction (ReRequestable), without one claiming no deposit (Unbuilt,
+// dismissed as nothing owed) and without one still claiming deposits (Stranded, PAY613-4: never dismissed), and the
+// newest set-aside one (SetAside), by settlement ID, 0 for none; StoredText: what staff are told of the first
 // (xmrFailedStoredText: whether a re-request waits, was refused or can be asked). Flagged (order page only): a deposit
 // is flagged as well.
 type EscrowAlertView struct {
-	ID, State                         string
-	Stall, TooFew, Refused, Requested bool
-	ReRequestable, Unbuilt, SetAside  int64
-	StoredText                        string
-	Flagged                           bool
+	ID, State                                  string
+	Stall, TooFew, Refused, Requested          bool
+	ReRequestable, Unbuilt, Stranded, SetAside int64
+	StoredText                                 string
+	Flagged                                    bool
 }
 
 // XMRCollisionView is one record of a Monero escrow deposit refused as another order's escrow account (A-480), as staff

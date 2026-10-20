@@ -47,12 +47,11 @@ func TestXMREscrowFailedSettlementStaffAlert(t *testing.T) {
 	storedOffer := storedFailed + ": an administrator who is not a party can re-request it on the order page (Re-request settlement " + id(storedID) +
 		"), and the market rebuilds it only if that transaction is in neither the daemon's pool nor the chain and none of its coins is spent"
 	want := map[string]string{
-		stored: "Monero escrow settlement " + id(storedID) + " " + storedOffer,
-		unbuilt: "Monero escrow settlement " + id(unbuiltID) + " failed before any transaction was built, so it cannot be re-requested: read why under the settlement on the order page, " +
-			"and settle anything still owed by hand with the operator (a stray refund returns to the buyer any deposit it left out)",
-		aside: "Monero escrow settlement " + id(asideID) + " is set aside because building it made the escrow wallet stop responding: an administrator who is not a party can ask for it to be built again on the order page (Build settlement " + id(asideID) + " again)",
+		stored:  "Monero escrow settlement " + id(storedID) + " " + storedOffer,
+		unbuilt: unbuiltAlert(id(unbuiltID)),
+		aside:   "Monero escrow settlement " + id(asideID) + " is set aside because building it made the escrow wallet stop responding: an administrator who is not a party can ask for it to be built again on the order page (Build settlement " + id(asideID) + " again)",
 	}
-	staffOnly := []string{"who is not a party", "cannot be re-requested", "settle anything still owed", "Escrow alerts", "open staff alert"}
+	staffOnly := []string{"who is not a party", "cannot be re-requested", "Do not pay anything by hand", "Escrow alerts", "open staff alert"}
 	badge := func() int {
 		t.Helper()
 		d := &PageData{User: &User{ID: modID, Role: "moderator"}}
@@ -177,7 +176,7 @@ func TestXMREscrowFailedSettlementStaffAlert(t *testing.T) {
 		t.Fatalf("re-request of a mined transaction: %v", got)
 	}
 	storedSays("re-request refused on-chain", "failed with its transaction stored, and its last re-request was refused (its stored transaction is in the chain, so it was sent after all): "+
-		"check the escrow wallet and the chain, because that transaction, or another spending the same coins, may have been sent", "can re-request it", "(Re-request settlement", "not seen mined")
+		"check the escrow wallet and the chain, because that transaction, or another spending the same coins, may have been sent; once checked, mark it settled by hand (Mark settlement "+id(storedID)+" settled by hand)", "can re-request it", "(Re-request settlement", "not seen mined")
 	// A reorganisation and a flushed pool put it back to nowhere, as in TestXMREscrowReRequestGuards.
 	x.fake.popBlocks(1)
 	x.fake.flushPool(old.TxHash)

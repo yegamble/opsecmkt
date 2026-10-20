@@ -73,6 +73,12 @@ DB · simulated wallet RPC · real local chain (regtest / offline stagenet fork)
 public test network · deployed instance. Fake-provider or simulated-RPC results
 are **not** live-chain evidence. Merged is not released is not deployed.
 
+Moderation model claims have their own ladder: fake model or httptest adapter ·
+native grammar-parser check · local runtime with pinned weights on a synthetic
+labelled set · the shipped launcher and limits · deployed rehearsal. A
+fake-model test never proves model quality
+(`.claude/agents/technical/opsec-llm.md`).
+
 ## Traps that have burned this project
 
 - **`gofmt` is aliased to `gofmt -w .` in the owner's shell.** Always run

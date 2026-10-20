@@ -7,7 +7,7 @@ engineer and a buyer advocate argue about the same object.
 FINDING <seat>-<n>: <one-line title>
 Severity:    BLOCKER | REQUIRED | SHOULD | EXPERIMENT | NIT
 Confidence:  high | medium | low
-Area:        identity | commerce | payments | messaging | transparency | ops | ui | tests
+Area:        identity | commerce | payments | messaging | moderation | transparency | ops | ui | tests
 
 Affected:
   files:     path:line, path:line — real paths you opened

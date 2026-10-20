@@ -264,6 +264,7 @@ func (a *App) applyRetentionEscrowRetirement(ctx context.Context, tx *sql.Tx, r 
 	for _, q := range []string{
 		`DELETE FROM xmr_escrow_collisions WHERE order_id=$1`,
 		`DELETE FROM xmr_settlement_rerequests WHERE settlement_id IN(SELECT id FROM xmr_settlements WHERE order_id=$1)`,
+		`DELETE FROM xmr_settlement_hand_settled WHERE settlement_id IN(SELECT id FROM xmr_settlements WHERE order_id=$1)`,
 		`DELETE FROM payments WHERE order_id=$1`,
 		`DELETE FROM settlement_bump_signatures WHERE bump_id IN(SELECT b.id FROM settlement_bumps b JOIN settlements s ON s.id=b.settlement_id WHERE s.order_id=$1)`,
 		`DELETE FROM settlement_bumps WHERE settlement_id IN(SELECT id FROM settlements WHERE order_id=$1)`,

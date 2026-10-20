@@ -1233,9 +1233,9 @@ func TestXMREscrowStaffHelpBesideAdminForm(t *testing.T) {
 	}
 	const (
 		closedFinal   = "This order is closed. No further changes are possible."
-		closedRetry   = "This order is closed. An administrator can still build a Monero escrow settlement again or re-request it on this page."
+		closedRetry   = "This order is closed. An administrator can still act on a Monero escrow settlement (build it again) on this page."
 		closedRefused = "This order is closed. Staff can still record what was done about a refused deposit on this page."
-		closedBoth    = closedRefused + " An administrator can also build a Monero escrow settlement again or re-request it on this page."
+		closedBoth    = closedRefused + " An administrator can also act on a Monero escrow settlement (build it again) on this page."
 	)
 	closedLines := func(stage, admin, mod, wantAdmin, wantMod string) {
 		t.Helper()
@@ -1269,7 +1269,7 @@ func TestXMREscrowStaffHelpBesideAdminForm(t *testing.T) {
 	agExec(x.testEnv, "INSERT INTO disputes(id,order_id,reason) VALUES($1,$2,'The content was never delivered to me at all.')", randomToken(), crasher)
 	admin, mod = check("escrow dispute")
 	mustNotContain(t, admin, "The order page is read-only for market staff.")
-	mustContain(t, admin, "An administrator can also build a Monero escrow settlement again or re-request it on this page.")
+	mustContain(t, admin, "An administrator can also act on a Monero escrow settlement (build it again) on this page.")
 	mustContain(t, mod, "The order page is read-only for market staff.")
 	agExec(x.testEnv, "UPDATE orders SET state='resolved' WHERE id=$1", crasher)
 	admin, mod = check("dispute resolved")
@@ -1296,7 +1296,7 @@ func TestXMREscrowStaffHelpBesideAdminForm(t *testing.T) {
 	agExec(x.testEnv, "INSERT INTO xmr_escrow_collisions(order_id,wallet_name,account,txid) VALUES($1,'escrow-help',7,$2)", crasher, hex64("help collision "+crasher))
 	admin = html.UnescapeString(x.page("/order?id="+crasher, adminSess))
 	mod = html.UnescapeString(x.page("/order?id="+crasher, modSess))
-	mustContain(t, staffHelp(admin), `Record what was done about each refused deposit under <a class="text-link" href="#refused-deposits">Refused Monero deposits</a>; as an administrator, also build a Monero escrow settlement again or re-request it under <a class="text-link" `+newest+`>Settlement `+strconv.FormatInt(b, 10)+`</a>; nothing else can be changed from this page`)
+	mustContain(t, staffHelp(admin), `Record what was done about each refused deposit under <a class="text-link" href="#refused-deposits">Refused Monero deposits</a>; as an administrator, also act on a Monero escrow settlement (build it again) under <a class="text-link" `+newest+`>Settlement `+strconv.FormatInt(b, 10)+`</a>; nothing else can be changed from this page`)
 	mustContain(t, staffHelp(mod), `href="#refused-deposits"`, "nothing else can be changed from this page")
 	mustNotContain(t, staffHelp(mod), "#xmr-settlement-", "As an administrator", "as an administrator")
 	closedLines("refused deposit and settlement", admin, mod, closedBoth, closedRefused)

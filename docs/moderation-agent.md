@@ -10,7 +10,7 @@ Read the [design and threat model](moderation-agent-design.md), the
 
 ## Enable the controller without a model
 
-Start the application once to apply migrations 125 through 128. The migration keeps
+Start the application once to apply migrations 125 through 127 and 129. The migration keeps
 moderation enqueueing disabled. No model, runtime download or worker is required
 for ordinary application startup.
 
@@ -249,7 +249,7 @@ legacy retention path exists. Restrict database and backup access.
 
 ## Capacity and overload
 
-Migration 128 serializes admission against a singleton capacity ledger. Each
+Migration 129 serializes admission against a singleton capacity ledger. Each
 actor has at most three active jobs; global pending, lifetime allocation and
 reserved logical-byte limits also apply. Each allocation prepays 512 KiB for its
 bounded lifecycle. With the default 256 MiB byte budget, bytes bind at 512

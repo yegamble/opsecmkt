@@ -187,6 +187,8 @@ var adminRedirectsCoveredElsewhere = map[string]string{
 	"/admin/canary":                 "form_nonce_admin_settings_test.go: /canary, where the statement is published",
 	"/admin/review":                 "review tests: the product or vendor page the form is on",
 	"/admin/listing":                "inventory tests: the listing edit page the form is on",
+
+	"/admin/escrow-xmr-settled-by-hand": "TestXMREscrowSettledByHand: /moderator, because the order page may no longer be readable once its alert clears",
 }
 
 // A-542: every admin post that succeeds returns to the section holding its form, with its notice's fragment, and a

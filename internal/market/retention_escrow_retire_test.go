@@ -68,6 +68,54 @@ func TestRetentionEscrowRetirementMoneroHoldRefuses(t *testing.T) {
 	}
 }
 
+// A-613: an order whose failed stray refund was dismissed as nothing owed (xmr_settlement_hand_settled, migration
+// 128) closes and retires like any other: the dismissed record no longer raises an escrow alert, and the certified
+// retirement deletes it with the rest of the order's escrow records (its trigger allows that under the permit only).
+func TestRetentionEscrowRetirementMoneroDeletesDismissedSettlement(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	order, _ := x.settled()
+	var stray int64
+	if err := x.DB.QueryRow("INSERT INTO xmr_settlements(order_id,kind,destination) SELECT order_id,'stray_refund',refund_address FROM escrows WHERE order_id=$1 RETURNING id", order).Scan(&stray); err != nil {
+		t.Fatal(err)
+	}
+	agExec(x.testEnv, "UPDATE xmr_settlements SET state='failed',send_error=$2 WHERE id=$1", stray, xmrNothing)
+	agExec(x.testEnv, "INSERT INTO xmr_settlement_hand_settled(settlement_id,kind,note,settled_by) VALUES($1,'nothing-owed','No deposit counted; nothing owed now.',$2)", stray, x.admin)
+	if _, err := x.DB.Exec("DELETE FROM xmr_settlement_hand_settled WHERE settlement_id=$1", stray); err == nil {
+		t.Fatal("the record was deleted without a retirement permit")
+	}
+	name := x.walletOf(order)
+	x.rotate()
+	x.days(name, 91)
+	x.mustPoll()
+	if x.walletState(name) != "destroyed" {
+		t.Fatal("fixture wallet not destroyed")
+	}
+	runRetentionClosure(t, x.testEnv, x.now)
+	tx, err := x.DB.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	at := x.now.Add(181 * 24 * time.Hour)
+	if err = x.A.retentionFinancialClosure(context.Background(), tx, at); err != nil {
+		t.Fatal(err)
+	}
+	r, err := x.A.prepareRetentionEscrowRetirement(context.Background(), tx, order, at)
+	if err != nil || r == nil {
+		t.Fatalf("XMR certificate with a dismissed settlement: %+v %v", r, err)
+	}
+	if err = x.A.applyRetentionEscrowRetirement(context.Background(), tx, r); err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if agInt(x.testEnv, `SELECT count(*) FROM xmr_settlement_hand_settled WHERE settlement_id=$1`, stray) != 0 || agInt(x.testEnv, `SELECT count(*) FROM xmr_settlements WHERE order_id=$1`, order) != 0 {
+		t.Fatal("the dismissed settlement's records remain after retirement")
+	}
+}
+
 func TestRetentionEscrowRetirementMoneroDeletesDestroyedFinancialState(t *testing.T) {
 	x := newXMREscrowEnv(t)
 	x.mustPoll()

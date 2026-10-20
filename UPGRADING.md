@@ -15,7 +15,7 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
-## Optional moderation proposals (migrations 125 through 128)
+## Optional moderation proposals (migrations 125 through 127 and 129)
 
 Application startup applies the append-only moderation tables/triggers and
 offline review receipts. Enqueueing and inference remain off, so existing
@@ -33,7 +33,7 @@ Old gateways may omit dHash, preserving exact SHA256 duplicate comparison.
 Existing images are not decoded again or backfilled. Perceptual similarity
 is advisory and cannot establish whether a listing's claims match a photo.
 
-Migration 128 changes new capture to digests and limited metadata. The worker
+Migration 129 changes new capture to digests and limited metadata. The worker
 reads source prose into memory only for the unchanged captured revision; stale
 or removed sources receive HOLD. New archived inputs retain coded metadata only;
 completed new jobs remove their active raw actor link. Legacy snapshots and
@@ -78,6 +78,56 @@ and OpenPGP export recipient. See the [moderation guide](docs/moderation-agent.m
 and [review runbook](docs/moderation-escalation-runbook.md) for setup, defaults,
 capability gaps and deployed-runtime acceptance gates.
 
+## Stuck failed Monero settlements can be cleared (A-613)
+
+Migration 128 runs at startup and adds the table `xmr_settlement_hand_settled`, with triggers that refuse a
+re-request of a settlement recorded there and a deposit claim (`payments.xmr_settlement_id`) moved onto one; there is no
+new setting. Versions 125 to 127 are left free for another
+branch; the startup migration applies any version it has not recorded, so they apply whenever they arrive. It fixes the
+A-560 alerts below that could never clear: a Monero settlement that failed before any transaction was built is never
+re-requested, and one with a stored transaction whose re-request was refused because that transaction is in the chain
+or a coin it spends is spent is never superseded, so their alerts kept the staff badge above zero, stayed on the desk
+and kept the order's escrow records under retention's `escrow_alert` reason for good.
+
+- **Refunds too few disappear at once.** A failed refund with `send_error = 'too-small'` is no longer an escrow alert,
+  as a Bitcoin refund too few never was: its deposits are already left out, flagged under *Payment review* and returned
+  by a stray refund. Their payment-review flags are unchanged.
+- **Nothing-to-settle failures are dismissed, never paid by hand.** One that failed `nothing-to-settle` sent nothing,
+  because no deposit of its escrow counted at that time, and nothing is owed for it now. Do **not** pay it by hand: if a
+  deposit of that escrow is listed again, the market handles it automatically as usual (a stray refund returns it when
+  the order's coins go back to the buyer) and flags it for review or raises its own alert, so a payment by hand would pay
+  twice. An administrator who is not a party opens the order (from *Escrow alerts*) and uses *Dismiss settlement N
+  (nothing owed now)* under the settlement, with a 10–500 character note and the password. That clears its alert; the
+  note is staff-only and recorded once (kind `nothing-owed`), with an audit row. It works while `ESCROW_XMR` is off.
+- **Except while it still claims deposits.** A failed settlement with no transaction built that still claims deposits
+  (`payments.xmr_settlement_id`; a re-request that failed `nothing-to-settle`) is never dismissed: its coins are in the
+  escrow wallet and may be owed, and the market does not settle them on its own. Its alert stays, and says to settle
+  with the operator. To list them:
+  `SELECT xs.id, xs.order_id FROM xmr_settlements xs WHERE xs.state = 'failed' AND xs.tx_hash IS NULL AND EXISTS (SELECT 1 FROM payments p WHERE p.xmr_settlement_id = xs.id);`
+- **Final re-request refusals are marked settled by hand.** For a failed settlement with a stored transaction whose last
+  re-request was refused `on-chain` or `key-image-spent`, the alert asks you to check the escrow wallet and the chain
+  (that transaction, or another spending the same coins, may have been sent), settle anything still owed with the
+  operator and then use *Mark settlement N settled by hand* the same way (kind `settled-by-hand`). It is never
+  re-requested again. One refused `in-pool` is re-requested again later instead, and one with no refused re-request is
+  re-requested first.
+- **Retention resumes.** Once an order has no open alert, retention's next financial check no longer reports
+  `escrow_alert` for it: the exception resolves, or the next blocker is reported, and the order's escrow records close
+  and expire on the normal schedule. Nothing is deleted at upgrade. Account erasure treats the administrator who
+  recorded a disposition as referenced, as it does other staff records.
+
+To list the failed settlements that still alert after the upgrade:
+
+```sql
+SELECT xs.id, xs.order_id, xs.kind, xs.send_error, xs.tx_hash IS NOT NULL AS stored,
+  (SELECT r.state || ' ' || r.reason FROM xmr_settlement_rerequests r WHERE r.settlement_id = xs.id ORDER BY r.id DESC LIMIT 1) AS last_rerequest
+ FROM xmr_settlements xs
+ WHERE xs.state = 'failed' AND NOT (xs.tx_hash IS NULL AND xs.kind = 'refund' AND xs.send_error = 'too-small')
+   AND NOT EXISTS (SELECT 1 FROM xmr_settlement_hand_settled h WHERE h.settlement_id = xs.id) ORDER BY xs.id;
+```
+
+Rolling back to a build without migration 128 is refused at startup (the database records a migration it does not
+know); restore the pre-upgrade backup instead.
+
 ## Failed Monero settlements are escrow alerts (A-560)
 
 No migration and no new setting. A failed Monero escrow settlement that was not superseded, and one set aside because
@@ -86,10 +136,12 @@ desk, counted in the staff badge, readable by staff and named in the order page'
 flagged, with a link to *Payment review*). The entry says whether the settlement can be re-requested (its transaction is
 stored: *Re-request settlement N*; or that a re-request is waiting, that the last one was refused and why, so check the
 escrow wallet and the chain, or that Monero escrow is off), built again (*Build settlement N again*), or neither, in which case anything still
-owed is settled by hand with the operator ([operator guide](docs/operator-guide.md), *Failed and set-aside settlements
+owed is settled by hand with the operator (since A-613, above, a *nothing-to-settle* failure is instead dismissed and
+never paid by hand; [operator guide](docs/operator-guide.md), *Failed and set-aside settlements
 are escrow alerts*). A payment-review row of a deposit that a failed settlement spends now says that it failed instead
 of "the order's release or refund settles it". The parties see no change. Settlements that failed before the upgrade
-appear at once. One that failed without a stored transaction is never re-requested, so its alert does not clear; as for
+appear at once. One that failed without a stored transaction is never re-requested, so its alert did not clear (A-613,
+above, makes a refund too few no alert and lets an administrator dismiss any other as nothing owed); as for
 every open escrow alert, data retention keeps that order's escrow records and lists it with the reason `escrow_alert`
 (reopening one whose financial records it had closed). To list them:
 
