@@ -25,7 +25,7 @@ func withCheckoutPrice(ctx context.Context) context.Context {
 	return context.WithValue(ctx, checkoutPriceCtx{}, true)
 }
 
-// stockHook reserves one unit when a buyer requests payment and returns it when a reserved order is
+// stockHook reserves the ordered quantity when a buyer requests payment and returns those units when a reserved order is
 // cancelled. Drafts never hold stock.
 func stockHook(ctx context.Context, a *App, tx *sql.Tx, o *Order, from, to string) error {
 	switch {
@@ -36,8 +36,8 @@ func stockHook(ctx context.Context, a *App, tx *sql.Tx, o *Order, from, to strin
 		var btc, xmr int64
 		// A listing awaiting staff review (MOD72-6, listing_review.go) takes no payment request, even from a draft saved
 		// before an edit sent it back to review.
-		err := tx.QueryRowContext(ctx, `UPDATE products SET stock=stock-1 WHERE id=$1 AND stock>0 AND NOT archived AND review_state='approved'
-			RETURNING title,description,kind,btc,xmr`, o.ProductID).Scan(&title, &description, &kind, &btc, &xmr)
+		err := tx.QueryRowContext(ctx, `UPDATE products SET stock=stock-$2 WHERE id=$1 AND stock>=$2 AND NOT archived AND review_state='approved'
+			RETURNING title,description,kind,btc,xmr`, o.ProductID, o.Units()).Scan(&title, &description, &kind, &btc, &xmr)
 		if err == sql.ErrNoRows {
 			return fail(409, "This listing is out of stock or no longer available")
 		}
@@ -56,7 +56,11 @@ func stockHook(ctx context.Context, a *App, tx *sql.Tx, o *Order, from, to strin
 			if err != nil {
 				return err
 			}
-			if recorded != price {
+			total, totalErr := checkedOrderTotal(price, o.Units())
+			if totalErr != nil {
+				return totalErr
+			}
+			if recorded != total {
 				return fail(409, "This listing price changed while payment was requested. Reload and try again; nothing was changed.")
 			}
 		}
@@ -69,13 +73,19 @@ func stockHook(ctx context.Context, a *App, tx *sql.Tx, o *Order, from, to strin
 			return errConflict
 		}
 		o.Title, o.Description, o.Kind, o.KindDisplay, o.ListingRecorded = title, description, kind, kind, true
+		if err := reserveDigitalUnits(ctx, tx, o); err != nil {
+			return err
+		}
 	case to == stateCancelled && (from == stateAwaitingPayment || from == statePaid):
 		// A checkout of the same listing may hold its row while it waits on the escrow node (escrowCheckoutAction).
 		if err := waitForWalletLocks(ctx, tx); err != nil {
 			return err
 		}
-		_, err := tx.ExecContext(ctx, "UPDATE products SET stock=stock+1 WHERE id=$1", o.ProductID)
-		return err
+		_, err := tx.ExecContext(ctx, "UPDATE products SET stock=stock+$2 WHERE id=$1", o.ProductID, o.Units())
+		if err != nil {
+			return err
+		}
+		return releaseDigitalUnits(ctx, tx, o)
 	}
 	return nil
 }
@@ -89,14 +99,17 @@ func autoDeliveryHook(ctx context.Context, a *App, tx *sql.Tx, o *Order, from, t
 	if to != statePaid || o.Kind != "digital" {
 		return nil
 	}
-	var content string
+	var content, mode string
 	var takenDown bool
 	// FOR KEY SHARE waits for a takedown in progress (it holds the listing row FOR UPDATE) and then reads its result,
 	// without blocking stock reservations on the same listing.
-	if err := tx.QueryRowContext(ctx, "SELECT delivery_content,admin_archive_reason IS NOT NULL FROM products WHERE id=$1 FOR KEY SHARE", o.ProductID).Scan(&content, &takenDown); err != nil {
+	if err := tx.QueryRowContext(ctx, "SELECT delivery_content,digital_delivery_mode,admin_archive_reason IS NOT NULL FROM products WHERE id=$1 FOR KEY SHARE", o.ProductID).Scan(&content, &mode, &takenDown); err != nil {
 		return err
 	}
-	if strings.TrimSpace(content) == "" || utf8.RuneCountInString(content) > maxDeliveryChars {
+	if mode == "manual" {
+		return nil
+	}
+	if mode == "reusable" && (strings.TrimSpace(content) == "" || utf8.RuneCountInString(content) > maxDeliveryChars) {
 		return nil
 	}
 	if takenDown {
@@ -110,6 +123,19 @@ func autoDeliveryHook(ctx context.Context, a *App, tx *sql.Tx, o *Order, from, t
 		_, err := tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", o.ID, statePaid, note)
 		return err
 	}
+	if mode == "inventory" {
+		var err error
+		content, err = reservedDigitalBatch(ctx, tx, o)
+		if err != nil {
+			// Invalid or expired stock must not prevent recording an observed payment.
+			if _, ok := err.(*httpError); !ok {
+				return err
+			}
+			_, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", o.ID, statePaid, "Automatic digital batch unavailable; the vendor must deliver or cancel this order.")
+			return err
+		}
+	}
+
 	if err := insertDelivery(ctx, tx, o, content); err != nil {
 		if !errors.Is(err, errDeliveryBuyerKey) && !errors.Is(err, errDeliveryCiphertext) && !errors.Is(err, errDeliveryEncryption) {
 			return err
@@ -141,49 +167,61 @@ var (
 	errDeliveryEncryption = fail(409, "Digital content could not be encrypted to the buyer's PGP key. Ask the buyer to update their encryption key and try again. Nothing was changed.")
 )
 
-// insertDelivery stores only recipient-specific ciphertext, then records a buyer-only notification pointing to
-// that delivery. Shared listing content stays in the inventory; it is encrypted separately for every paid order.
-func insertDelivery(ctx context.Context, tx *sql.Tx, o *Order, content string) error {
+// deliveryCiphertext binds both original deliveries and replacements to the buyer's current key.
+// Existing valid recipient ciphertext is canonicalized without encrypting its packets again.
+func deliveryCiphertext(ctx context.Context, tx *sql.Tx, o *Order, content string) (string, string, error) {
 	if strings.TrimSpace(content) == "" || utf8.RuneCountInString(content) > maxDeliveryChars {
-		return fail(400, "Delivery content must contain 1–32000 characters")
+		return "", "", fail(400, "Delivery content must contain 1–32000 characters")
 	}
 	var one int
 	// The order is locked before this account. NOWAIT avoids a cycle with an account action that already holds
 	// the buyer's row, while keeping its key stable through encryption, the delivery and notification inserts.
 	if err := tx.QueryRowContext(ctx, "SELECT 1 FROM users WHERE id=$1 FOR SHARE NOWAIT", o.BuyerID).Scan(&one); err != nil {
-		return err
+		return "", "", err
 	}
 	p, err := loadPGPAccount(ctx, tx, o.BuyerID, false)
 	if err != nil {
-		return err
+		return "", "", err
 	}
 	if !canReceiveEncrypted(p.Key, time.Now()) {
-		return errDeliveryBuyerKey
+		return "", "", errDeliveryBuyerKey
 	}
 	var ciphertext string
 	if strings.HasPrefix(strings.TrimSpace(content), "-----BEGIN PGP MESSAGE-----") {
 		ciphertext, err = canonicalMessage(content)
 		if err != nil {
-			return errDeliveryCiphertext
+			return "", "", errDeliveryCiphertext
 		}
 		ids, encrypted, err := inspectEncrypted(ciphertext)
 		selected, usable := p.Key.EncryptionKey(time.Now())
 		if err != nil || !encrypted || !usable || !slices.Contains(ids, selected.PublicKey.KeyId) || slices.Contains(ids, uint64(0)) {
-			return errDeliveryCiphertext
+			return "", "", errDeliveryCiphertext
 		}
 	} else {
 		ciphertext, err = encryptTo(p.Key, content)
 		if err != nil {
-			return errDeliveryEncryption
+			return "", "", errDeliveryEncryption
 		}
 	}
+	return ciphertext, p.Fingerprint, nil
+}
+
+// insertDelivery stores recipient-specific ciphertext and records a buyer-only linked notification.
+func insertDelivery(ctx context.Context, tx *sql.Tx, o *Order, content string) error {
+	ciphertext, fingerprint, err := deliveryCiphertext(ctx, tx, o, content)
+	if err != nil {
+		return err
+	}
 	res, err := tx.ExecContext(ctx, `INSERT INTO deliveries(order_id,content,encrypted,recipient_fingerprint)
-		VALUES($1,$2,true,$3) ON CONFLICT (order_id) DO NOTHING`, o.ID, ciphertext, p.Fingerprint)
+		VALUES($1,$2,true,$3) ON CONFLICT (order_id) DO NOTHING`, o.ID, ciphertext, fingerprint)
 	if err != nil {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n != 1 {
 		return fail(409, "Content was already delivered for this order")
+	}
+	if _, err = tx.ExecContext(ctx, "UPDATE digital_units SET delivered_at=now() WHERE order_id=$1 AND delivered_at IS NULL", o.ID); err != nil {
+		return err
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO notifications(id,user_id,body,order_id,delivery_order_id)
 		VALUES($1,$2,$3,$4,$4)`, randomToken(), o.BuyerID, "Order "+shortID(o.ID)+": encrypted digital delivery is available. Decrypt it with your PGP private key.", o.ID)

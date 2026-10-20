@@ -18,7 +18,7 @@ func init() {
 }
 
 func loadVendorReadiness(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
-	if d.User == nil || d.User.Role != "vendor" {
+	if !d.User.CanSell() {
 		return nil
 	}
 	v := &VendorReadinessView{}

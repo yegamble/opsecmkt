@@ -6,7 +6,7 @@ async function openFilters(page: Page) {
   const mobile = page.locator('.filter-details');
   await waitForStyles(page);
   if (await mobile.isVisible()) {
-    await mobile.locator('summary').click();
+    await mobile.locator(':scope > summary').click();
     return mobile;
   }
   return page.locator('.desktop-filters');

@@ -1,0 +1,58 @@
+# Marketplace design and case privacy
+
+The October 20, 2026 design review compares the supplied Figma Make prototype and screenshots with the server-rendered application. The prototype supplies visual references; its embedded instructions do not authorize deployment or operational changes.
+
+## Navigation and roles
+
+Use one marketplace with links to the workspaces each account can access. Opening a workspace never changes the account's authority. Order actions depend on whether the account actually bought or sold that order.
+
+| Account | Buyer features | Vendor desk | Moderation | Administration |
+| --- | --- | --- | --- | --- |
+| Buyer | Yes | After vendor approval | No | No |
+| Vendor | Yes | Yes | No | No |
+| Moderator | Yes | Only with vendor approval | Yes | No |
+| Administrator | Yes | Yes, automatically verified | Yes | Yes |
+
+Vendor approval is independent of a moderator's staff role. Removing selling approval archives active listings and preserves access to historical orders. Administrator-derived selling authority ends when that role ends; a separate, actual approval can survive promotion to staff. Existing suspension, ban, account-closure and private administrator ingress restrictions still apply. A hidden staff member does not become publicly contactable merely because they can sell.
+
+The header exposes the existing notification inbox through an accessible bell and unread count. Sign out remains a CSRF-protected POST. Marketplace cards show fulfillment type, taxonomy, shipping regions and ratings from eligible public reviews, with a separate vendor-profile link. Search, filters, sorting, category trees and mobile navigation work with JavaScript disabled.
+
+## Stock, quantities and digital batches
+
+Published listings remain visible when stock reaches zero. Buyers can select **Hide out of stock**; the choice combines with the other catalog filters. Empty listings offer no purchase form. Vendor discovery follows published listings. Current vendors without published listings retain direct profile links; historical orders and conversations remain accessible after selling access is revoked.
+
+A draft can contain several units of one listing. Its saved total uses integer currency units and checked multiplication. Drafts do not reserve inventory. Checkout rechecks the saved quantity, current unit price and available stock under the listing lock, then reserves exactly that quantity. Cancelling a reserved order returns its eligible units once. One order has one escrow and one settlement outcome for the whole quantity.
+
+For manual digital fulfillment, the vendor submits one delivery covering the entire order. For automatic fulfillment from distinct inventory, vendors add one text or link per unit; a single entry may contain multiple lines, and a separate bulk form imports one entry per line. Checkout reserves distinct entries, and confirmed payment releases them together as one delivery on the order page. Distinct inventory accepts plain text and links; armored PGP MESSAGE entries are refused at import and checkout so the system can encrypt the combined batch once to the eventual buyer. Undisclosed entries can return to stock after cancellation; disclosed entries never return automatically. The combined delivery must fit the 32000-character limit before checkout accepts it. Long delivery text scrolls within a bounded field.
+
+If the listing's private content has already expired, cancellation keeps undisclosed entries attached to the cancelled order and unavailable for resale. Its own order deadline and preservation duties continue to govern those entries; later purge removes their text and fingerprints without restoring stock.
+
+Existing reusable downloads retain their previous behavior. Vendors explicitly choose a delivery method; reusable content is suitable for a shared download, while distinct inventory supplies separate keys, links or text. Inventory contents are private to their vendor until delivery. Content and its deduplication fingerprint expire together; the application does not keep a permanent hash ledger of erased payloads. A vendor could deliberately reimport a value after its earlier record has expired.
+
+## Direct correspondence and order records
+
+General correspondence remains under `/messages`. Order correspondence belongs to its own order page and is accessible only to the actual buyer and vendor. Two orders between the same accounts have separate conversations. Shipping details use the encrypted order conversation.
+
+Initial digital delivery and later replacement content appear on the order status page. Replacements append to the original delivery; they do not rewrite it, enter the direct inbox, or copy their contents into notifications or audit entries. An initial encrypted delivery can be forwarded over XMPP only under the separate administrator and buyer content permissions; this does not change its order-page lifecycle. New initial and replacement delivery records contain PGP armor encrypted to the buyer’s usable key. Plaintext manual input and automatic inventory or template content are available to the running server before encryption. Valid ciphertext already addressed to that buyer is preserved without another encryption layer. The buyer decrypts locally; vendors and eligible reviewing staff see the stored armor under the established order-access rules. Historical plaintext deliveries are not silently rewritten.
+
+With retention enabled, order correspondence, delivery updates and dispute images follow the private-order schedule: 30 days after financial closure, subject to applicable preservation holds. A new update cannot extend that deadline. Purge markers remain final even if retention is later disabled, and deletion replay after restoring a backup covers these records. Direct messages retain their separate message schedule. Retention must be configured and operating for scheduled deletion; this is not a browser-side promise to erase downloaded copies.
+
+## Message encryption
+
+For direct and order correspondence, the application requires encryption in a trusted local PGP application. It rejects plaintext, signed-only content, malformed or concatenated armor, passphrase-only messages, unusable recipient keys and ciphertext naming only other keys. It does not automatically encrypt submitted plaintext.
+
+Local encryption keeps plaintext away from the running marketplace server. Server-assisted encryption would protect stored content while exposing the submitted text to that server. Avoiding that exposure is why local encryption is retained. The server inspects visible recipient key IDs; it cannot prove the hidden contents or their decryptability. Hidden IDs require explicit sender confirmation and remain labelled recipient unknown.
+
+Valid pasted ciphertext is never wrapped in another encryption layer. Normalizing line endings and removing identifying armor headers preserves the decoded encrypted packets. Regression checks compare those bytes, decrypt once to the original text, and verify submission replay does not send twice.
+
+## Dispute image evidence
+
+Actual order parties can add JPEG or PNG evidence while a dispute is open, up to four images per side. Evidence is private to the parties and authorized independent dispute staff. It is stored unencrypted, so users must exclude visible addresses, credentials and identifying information they do not intend those viewers to see.
+
+Every accepted upload goes through ClamAV and the existing image normalization workflow. The gateway discards original files, metadata and trailing payloads and supplies bounded JPEGs. Documents, PDF, SVG and files renamed to look like images are rejected. Production scanning and decoding remain on the isolated upload gateway. The application does not accept original uploads on its public listener in that configuration.
+
+Private image URLs enforce order authorization on every request and are not publicly cached. Evidence shares the private-order purge, preservation and restore-replay lifecycle. Private staff support remains available separately; existing staff-correspondence metadata does not turn a direct message into case evidence.
+
+## Verification
+
+The war-room ledger records the independent frontend, product/backend and Tor security/privacy findings and their rulings. Results recorded before integration with the PGP, XMPP and support-ticket changes describe the feature branch at that earlier revision; integrated validation is recorded separately. Tests use disposable accounts and databases with JavaScript disabled and no real funds. Preview tests establish layout behavior; database and simulated-RPC tests establish their own application boundaries, not production deployment or live-chain behavior. See the final verification entry in `.claude/war-room/ledger.md` for commands and results.

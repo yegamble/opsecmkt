@@ -8,7 +8,8 @@
 </h1>
 <p>No funds are collected at this step.</p>
 </div>
-</div>{{with .Product}}<div class="detail-layout">
+</div>{{with .Product}}
+{{if eq .Kind "digital"}}<p class="help">{{if eq .DigitalDeliveryMode "manual"}}The vendor delivers all purchased digital items together on the order status page after payment.{{else}}Digital items are delivered together on the order status page after payment confirmation.{{end}}</p>{{end}}<div class="detail-layout">
 <section class="panel">
 <h2>{{.Title}}</h2>
 <p>{{.Description}}</p>
@@ -22,8 +23,8 @@
 <dd>{{.Region}}</dd>
 </div>
 <div>
-<dt>Quantity</dt>
-<dd>1</dd>
+<dt>Available units</dt>
+<dd>{{.Stock}}</dd>
 </div>
 </dl>
 {{template "payment-status:checkout" $}}
@@ -33,19 +34,21 @@
 <p class="order-unavailable" role="note">
 <strong>No usable key.</strong> {{.Vendor}} needs a usable PGP encryption key before accepting new orders.</p>{{end}}{{if $.BuyerKeyUnusable}}<p class="order-unavailable" role="note">Add a usable PGP public key on your <a class="text-link" href="/account">account page</a> before creating an order. Order messages and digital deliveries use encrypted content.</p>{{end}}{{with $.VendorSuspensionReason}}<p class="order-unavailable" role="note">{{.}}</p>{{end}}{{template "purchase-blocks" $}}{{if not $.PGPAccessVerified}}<p class="order-unavailable" role="note">A usable public key and PGP decryption authentication are required before purchasing. <a class="text-link" href="/pgp">Authenticate this session with PGP decryption</a>. Add your public key in <a class="text-link" href="/account">your account</a> first if needed. Keep your private key on your own device.</p>{{else if not $.NoPurchase}}
 {{if .XMROrderUnavailable}}<p class="order-unavailable" role="note">{{.XMROrderUnavailable}}</p>{{end}}
-{{if and (not .XMROrderUnavailable) (not (index $.PurchaseBlocked "XMR"))}}
+{{if le .Stock 0}}<p class="order-unavailable" role="note">Out of stock. This listing remains published but cannot be purchased until the vendor adds stock.</p>{{else}}{{if and (not .XMROrderUnavailable) (not (index $.PurchaseBlocked "XMR"))}}
 <form class="stack" method="post" action="/orders">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="form_nonce" value="{{formNonce "/orders"}}">
 <input type="hidden" name="product_id" value="{{.ID}}">
+<label>Quantity<input type="number" name="quantity" min="1" max="{{.Stock}}" value="1" step="1" required inputmode="numeric" aria-describedby="quantity-help"></label>
+<p class="help" id="quantity-help">Order up to {{.Stock}} available units of this listing. The server calculates the total from the unit price; review it on the draft before requesting payment.</p>
 <label>Pay with<select name="currency">
-<option value="XMR">{{.PriceXMR}} XMR{{if eq (index $.Settings "payment_intake_XMR") "false"}} — new payments paused{{else if eq (index $.Settings "payment_intake_XMR") "escrow"}} — escrow only{{end}}</option>
+<option value="XMR">{{.PriceXMR}} XMR per unit{{if eq (index $.Settings "payment_intake_XMR") "false"}} — new payments paused{{else if eq (index $.Settings "payment_intake_XMR") "escrow"}} — escrow only{{end}}</option>
 </select>
 </label>
-<p class="help">The listed price is recorded in your unfunded draft. A draft reserves no stock and requests no payment.{{if $.XMREscrowOn}} If an escrow checkout is available for this currency, open the order page to complete it; send nothing until that page shows the escrow address.{{end}}</p>
+<p class="help">The selected quantity and total at the listed unit price are recorded in your unfunded draft. A draft reserves no stock and requests no payment.{{if $.XMREscrowOn}} If an escrow checkout is available for this currency, open the order page to complete it; send nothing until that page shows the escrow address.{{end}}</p>
 {{if and $.XMREscrowOn (eq (index $.Settings "payment_intake_XMR") "false")}}<p class="help">A paused currency still allows an unfunded draft. Its escrow checkout waits until the administrator enables it.</p>{{end}}
 <button class="primary" type="submit">Create unfunded draft <span class="action-icon">↗</span></button>
-</form>{{else}}<p class="order-unavailable" role="note">Monero is unavailable for this listing. Review the escrow reasons above.</p>{{end}}{{end}}{{end}}
+</form>{{else}}<p class="order-unavailable" role="note">Monero is unavailable for this listing. Review the escrow reasons above.</p>{{end}}{{end}}{{end}}{{end}}
 </section>
 </div>{{end}}
 {{template "footer" .}}{{end}}

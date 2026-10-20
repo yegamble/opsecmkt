@@ -380,11 +380,20 @@ func (a *App) escrowCheckoutOffer(ctx context.Context, d *PageData) error {
 	if o.State != stateDraft || d.OrderViewer != roleBuyer || o.Currency != "BTC" {
 		return nil
 	}
+	v := &EscrowCheckoutView{Physical: o.Kind == "physical"}
 	eligible, price, _, err := escrowEligible(ctx, a.db, o)
+	if refusal, ok := err.(*httpError); ok {
+		v.Reason = refusal.Msg
+		d.EscrowCheckout = v
+		return nil
+	}
 	if err != nil || !eligible {
 		return err
 	}
-	v := &EscrowCheckoutView{Physical: o.Kind == "physical"}
+	if v.Reason, err = quantityCheckoutReason(ctx, a.db, o); err != nil || v.Reason != "" {
+		d.EscrowCheckout = v
+		return err
+	}
 	if price < payoutFloor(o.Currency, "release") {
 		v.Reason, err = subFloorListingForProduct(ctx, a.db, o.ProductID, o.Currency)
 		if err != nil {

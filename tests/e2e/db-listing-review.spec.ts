@@ -61,7 +61,7 @@ test('administrator holds listings; a rejected listing is resubmitted by editing
     expect(id).toMatch(/^[0-9a-f]{64}$/);
     await expect(vendor.locator('.page-head .badge')).toHaveText('Awaiting review');
     await vendor.goto('/vendor-dashboard');
-    await expect(vendor.locator('.product-card', { hasText: title }).locator('.badge')).toHaveText('Awaiting review');
+    await expect(vendor.locator('.product-card', { hasText: title }).locator('.inventory-state .badge')).toHaveText('Awaiting review');
     await fits(vendor, 'vendor desk with a listing awaiting review');
 
     // The buyer can neither find nor open it.
@@ -90,7 +90,7 @@ test('administrator holds listings; a rejected listing is resubmitted by editing
     // The vendor reads the reason on the desk card, fixes the listing and so resubmits it.
     await vendor.goto('/vendor-dashboard');
     const card = vendor.locator('.product-card', { hasText: title });
-    await expect(card.locator('.badge')).toHaveText('Rejected');
+    await expect(card.locator('.inventory-state .badge')).toHaveText('Rejected');
     await expect(card.locator('.rejection-reason')).toHaveText(`Rejected — ${reason}`);
     await expect(card.getByRole('button', { name: `Restore ${title}` })).toHaveCount(0);
     await fits(vendor, 'vendor desk with a rejected listing');

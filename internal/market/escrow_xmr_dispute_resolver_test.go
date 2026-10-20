@@ -181,14 +181,14 @@ func TestXMREscrowDisputePartyCopy(t *testing.T) {
 	_, public := testPGPKey(t, "staff") // a usable staff key: the reply help then points to the contact panel
 	agExec(e, "UPDATE users SET pgp=$1 WHERE id=$2", public, adminID)
 	const (
-		escrowPanel    = "Only an administrator decides a dispute on this escrow order. Send sensitive evidence as an encrypted message to an independent administrator first"
-		escrowPassOn   = "a moderator can keep it and pass it on to an administrator"
+		escrowPanel    = "Only an independent administrator decides a dispute on this escrow order."
+		escrowPassOn   = "Direct support messages are separate from this order's evidence"
 		escrowReply    = "The administrator who decides this dispute reads your reply beside the buyer’s reason."
 		moderatorReply = "The moderator who resolves this dispute reads your reply beside the buyer’s reason."
-		historicPanel  = "Send sensitive evidence as an encrypted message to an independent moderator or administrator."
+		historicPanel  = "An independent moderator or administrator decides this dispute."
 	)
 	adminLabel := adminHandle + " · administrator: decides escrow disputes</summary>"
-	modLabel := modHandle + " · moderator: can pass evidence on to an administrator</summary>"
+	modLabel := modHandle + " · moderator: dispute support</summary>"
 
 	order := w.fundedFor(w.buyerID, w.buyer, w.vendorID, w.vendor)
 	open := w.page("/order?id="+order, w.buyer, 200)
@@ -205,7 +205,7 @@ func TestXMREscrowDisputePartyCopy(t *testing.T) {
 	mustContain(t, buyerPage, escrowPanel, escrowPassOn, adminLabel, modLabel)
 	mustNotContain(t, buyerPage, historicPanel, "The moderator who resolves")
 	vendorPage := w.page("/order?id="+order, w.vendor, 200)
-	mustContain(t, vendorPage, escrowReply, "message an independent administrator listed under Contact dispute staff", adminLabel, modLabel)
+	mustContain(t, vendorPage, escrowReply, "contact an independent administrator listed under Contact dispute staff", adminLabel, modLabel)
 	mustNotContain(t, vendorPage, moderatorReply, "The moderator who resolves", "message an independent moderator or administrator")
 
 	e.check(e.do("POST", "/resolve", admin, resolverForm(dispute, "refund", resolverSeen(w, order))), 303)
@@ -221,7 +221,7 @@ func TestXMREscrowDisputePartyCopy(t *testing.T) {
 	mustContain(t, oldBuyer, historicPanel, adminHandle+" · admin</summary>", modHandle+" · moderator</summary>")
 	mustNotContain(t, oldBuyer, escrowPanel, "decides escrow disputes", "can pass evidence on")
 	oldVendor := w.page("/order?id="+historical, w.vendor, 200)
-	mustContain(t, oldVendor, moderatorReply, "message an independent moderator or administrator listed under Contact dispute staff")
+	mustContain(t, oldVendor, moderatorReply, "contact an independent moderator or administrator listed under Contact dispute staff")
 	mustNotContain(t, oldVendor, escrowReply)
 	agExec(e, "UPDATE disputes SET resolution='Imported decision.' WHERE order_id=$1", historical)
 	mustContain(t, w.page("/order?id="+historical, w.buyer, 200), "<h3>Moderator decision</h3>")

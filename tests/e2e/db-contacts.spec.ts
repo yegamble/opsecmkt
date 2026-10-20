@@ -108,8 +108,8 @@ test('vendor contact, unread notifications and demotion archive', async ({ brows
   const orderKey = buyer.getByRole('region', { name: 'Vendor’s PGP key' });
   await expect(orderKey.locator('.pgp-fingerprint')).toHaveText(RECIPIENT_FINGERPRINT);
   await expect(orderKey).toContainText('Ownership not verified');
-  const orderID = new URL(orderURL).searchParams.get('id');
-  await expect(buyer.getByRole('link', { name: 'Message vendor' })).toHaveAttribute('href', `/messages?to=${vendorHandle}&order_id=${orderID}`);
+  await expect(buyer.locator(`a[href="/messages?to=${vendorHandle}"]`)).toHaveCount(0);
+  await expect(buyer.locator('form[action="/orders/message"]')).toHaveCount(0);
   await buyer.getByRole('button', { name: 'Cancel draft' }).click();
   await expect(buyer.locator('.page-head .badge')).toHaveText('Cancelled');
 

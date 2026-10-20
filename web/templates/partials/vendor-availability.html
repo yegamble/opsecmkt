@@ -10,7 +10,7 @@
 <option value="deactivated"{{if .Deactivated}} selected{{end}}>Deactivated</option>
 </select></label>
 <label><input type="checkbox" name="messages_off_while_away"{{if .MessagesOffWhileAway}} checked{{end}}> Do not receive buyer messages while on vacation or deactivated</label>
-<p class="help">This also blocks replies in existing buyer conversations while you are away. Staff support and dispute handling remain available.</p>
+<p class="help">This also blocks direct-message replies in existing buyer conversations while you are away. Existing order correspondence, staff support and dispute handling remain available.</p>
 <label><input type="checkbox" name="show_last_seen"{{if .ShowLastSeen}} checked{{end}}> Show my approximate last seen on my public vendor profile</label>
 <p class="help">Off by default. When enabled, the market records and displays the hour of your last page visit. Turning it off clears the saved time.{{if .LastSeen}} Last seen: {{.LastSeen}}.{{end}}</p>
 <p class="help">Vendors must keep a usable PGP public key. Keep the private key on your own device.</p>

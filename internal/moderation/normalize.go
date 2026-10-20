@@ -208,10 +208,14 @@ var compactInstructionMarkers = []string{
 	"forgetyourrules", "forgetyourinstructions", "forgetallprevious", "forgetpreviousinstructions",
 }
 
-var strongProtocolMarkers = append([]string{
-	"reason_codes", "injection_suspected", "injection_evidence", "evidence_ids",
-	"\"action\"", "\"decision\"", "\"confidence\"", "\"canary\"", "trusted block", "trusted instructions",
-}, protocolCodeNames()...)
+var strongProtocolMarkers = []string{"reason_codes", "injection_suspected", "injection_evidence", "evidence_ids", "trusted block", "trusted instructions"}
+
+// A quoted proposal field counts only as a JSON key ("action": …); a quoted
+// word in prose (Our "Canary" edition) does not.
+var protocolKey = regexp.MustCompile(`"(?:action|decision|confidence|canary)"[ \t]*:`)
+
+// Code names count as whole identifiers: NO_ACTION, not NO_ACTION_REQUIRED.
+var protocolCodeName = regexp.MustCompile(`(?:^|[^a-z0-9_])(?:` + strings.Join(protocolCodeNames(), "|") + `)(?:$|[^a-z0-9_])`)
 
 var delimiterMarkers = []string{"<<u ", "<<end", "</system", "<system", "[inst]", "[system]", "begin trusted", "end trusted"}
 
@@ -263,10 +267,10 @@ func injectionPatterns(value string) []string {
 func markerFindings(value string) []string {
 	lower := strings.ToLower(value)
 	var findings []string
-	if containsAny(lower, strongInstructionMarkers) || containsAny(compactLetters(lower, 'i'), compactInstructionMarkers) || containsAny(compactLetters(lower, 'l'), compactInstructionMarkers) {
+	if containsAny(lower, strongInstructionMarkers) || compactMarker(lower, 'i') || compactMarker(lower, 'l') {
 		findings = append(findings, "instruction_like")
 	}
-	if containsAny(lower, strongProtocolMarkers) || canaryToken.MatchString(lower) {
+	if containsAny(lower, strongProtocolMarkers) || protocolKey.MatchString(lower) || protocolCodeName.MatchString(lower) || canaryToken.MatchString(lower) {
 		findings = append(findings, "protocol_reference")
 	}
 	if containsAny(lower, delimiterMarkers) {
@@ -290,19 +294,25 @@ func containsAny(value string, markers []string) bool {
 	return false
 }
 
-// compactLetters keeps letters only, after folding a small leetspeak alphabet
-// (the digit 1 reads as the given letter, i or l). A line break, or sentence
+// compactMarker matches the letters-only instruction markers after folding a
+// small leetspeak alphabet (the digit 1 reads as the given letter, i or l).
+// This catches spaced letters ("i g n o r e"), punctuation inside words and
+// leetspeak. A match must begin where a word begins in the original text, so
+// "foreign ore previously" is not "ignore previous". A line break, or sentence
 // punctuation followed by a space, stays a boundary: "easy to ignore. Previous
-// owners…" must not read as "ignoreprevious".
-func compactLetters(lower string, one rune) string {
+// owners…" must not match either.
+func compactMarker(lower string, one rune) bool {
 	runes := []rune(lower)
 	var b strings.Builder
+	wordStart := map[int]bool{}
+	previousLetter := false
 	for i, r := range runes {
 		switch r {
 		case '\n', '.', '!', '?', ';':
 			if r == '\n' || i+1 < len(runes) && unicode.IsSpace(runes[i+1]) {
 				b.WriteByte('|')
 			}
+			previousLetter = false
 			continue
 		case '0':
 			r = 'o'
@@ -317,11 +327,29 @@ func compactLetters(lower string, one rune) string {
 		case '7':
 			r = 't'
 		}
-		if unicode.IsLetter(r) {
+		letter := unicode.IsLetter(r)
+		if letter {
+			if !previousLetter {
+				wordStart[b.Len()] = true
+			}
 			b.WriteRune(r)
 		}
+		previousLetter = letter
 	}
-	return b.String()
+	compact := b.String()
+	for _, marker := range compactInstructionMarkers {
+		for offset := 0; ; {
+			i := strings.Index(compact[offset:], marker)
+			if i < 0 {
+				break
+			}
+			if wordStart[offset+i] {
+				return true
+			}
+			offset += i + 1
+		}
+	}
+	return false
 }
 
 // Mixing visually confusable scripts in one word is suspicious; separate words

@@ -138,7 +138,7 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 			v.NextStep += " Ship by " + utcFrom(shipBy.Time) + " (the listing's dispatch window plus 48 hours, from payment): if the order is not marked shipped by then, the buyer may cancel it and the escrow is refunded to the buyer."
 		}
 	case o.State == statePaid:
-		v.Status, v.NextStep = "Funded", "The content could not be delivered automatically: the order completes when the vendor delivers it by hand. If the vendor cancels it instead, the escrow is refunded to the buyer."
+		v.Status, v.NextStep = "Funded", "The order completes when the vendor delivers its digital content. If the vendor cancels it instead, the escrow is refunded to the buyer."
 	case o.State == stateShipped:
 		v.Status = "Funded and shipped"
 	case o.State == stateCompleted:
@@ -241,12 +241,29 @@ func (a *App) xmrEscrowCheckoutOffer(ctx context.Context, d *PageData) error {
 	if a.escrowXMR == nil || o.State != stateDraft || d.OrderViewer != roleBuyer || o.Currency != "XMR" {
 		return nil
 	}
+	net := a.xmrEscrowNetwork()
+	v := &XMREscrowCheckoutView{Physical: o.Kind == "physical", Custody: xmrCustody, Net: net, Prefixes: xmrPrefixes(net), NetKnown: a.xmrEscrowNetKnown() != ""}
 	eligible, price, _, err := escrowEligible(ctx, a.db, o)
+	if refusal, ok := err.(*httpError); ok {
+		v.Reason = refusal.Msg
+		d.XMREscrowCheckout = v
+		return nil
+	}
 	if err != nil || !eligible {
 		return err
 	}
-	net := a.xmrEscrowNetwork()
-	v := &XMREscrowCheckoutView{Physical: o.Kind == "physical", Custody: xmrCustody, Net: net, Prefixes: xmrPrefixes(net), NetKnown: a.xmrEscrowNetKnown() != ""}
+	v.Total = amount(price, 12)
+	if v.Reason, err = quantityCheckoutReason(ctx, a.db, o); err != nil || v.Reason != "" {
+		d.XMREscrowCheckout = v
+		return err
+	}
+	if o.Kind == "digital" {
+		var mode string
+		if err = a.db.QueryRowContext(ctx, "SELECT digital_delivery_mode FROM products WHERE id=$1", o.ProductID).Scan(&mode); err != nil {
+			return err
+		}
+		v.ManualDigital = mode == "manual"
+	}
 	if price < payoutFloor(o.Currency, "release") {
 		v.Reason, err = subFloorListingForProduct(ctx, a.db, o.ProductID, o.Currency)
 		if err != nil {

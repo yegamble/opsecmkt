@@ -53,7 +53,7 @@ var (
 	errXMREscrowNoSlot    = fail(503, "No Monero escrow account is free right now; the market prepares more within a minute. Nothing was charged and your order is still a draft; try again shortly.")
 	errXMREscrowRestoring = fail(503, "Monero escrow is paused while this market restores its records from a backup. Nothing was charged and your order is still a draft; try again later.")
 	errXMREscrowSweep     = fail(503, "Monero escrow is paused until this market has checked its escrow wallets after restoring its records from a backup. Nothing was charged and your order is still a draft; try again later.")
-	errXMREscrowKind      = fail(409, "Monero escrow is available only for digital listings with automatic delivery and for physical listings with a dispatch window. Nothing was changed.")
+	errXMREscrowKind      = fail(409, "Monero escrow requires a deliverable digital listing or a physical listing with a dispatch window. Nothing was changed.")
 	errXMREscrowCurrency  = fail(409, "Monero escrow is for Monero (XMR) orders only. Nothing was changed.")
 	errXMREscrowSelf      = fail(409, "You cannot buy your own listing. Nothing was changed.")
 	errXMRRefundEscrow    = fail(409, "That is an escrow address of this market, not an address of your own wallet. Give a fresh address from your own wallet. Nothing was changed.")
@@ -144,7 +144,7 @@ func xmrEscrowCheckoutAction(c *actionCtx) (actionResult, error) {
 	if err = checkXMRRefund(ctx, c.Tx, refund, x.feeAddress, c.User.ID); err != nil {
 		return actionResult{}, err
 	}
-	if _, err = c.Tx.ExecContext(ctx, "UPDATE orders o SET amount=p.xmr FROM products p WHERE o.id=$1 AND o.state='draft' AND p.id=o.product_id", o.ID); err != nil {
+	if _, err = c.Tx.ExecContext(ctx, "UPDATE orders SET amount=$2 WHERE id=$1 AND state='draft'", o.ID, price); err != nil {
 		return actionResult{}, err
 	}
 	if _, err = a.transition(withCheckoutPrice(context.WithValue(ctx, escrowCheckoutCtx{}, true)), c.Tx, o.ID, stateDraft, stateAwaitingPayment, c.User, "Monero escrow address requested"); err != nil {

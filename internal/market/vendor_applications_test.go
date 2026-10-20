@@ -322,7 +322,7 @@ func TestVendorRoleFormKeepsApplicationsConsistent(t *testing.T) {
 	removed := func() {
 		t.Helper()
 		page := html.UnescapeString(e.body("GET", "/account", session, nil, 200))
-		mustContain(t, page, "Your vendor role was removed by an administrator", "Apply to sell")
+		mustContain(t, page, "Your selling approval was removed by an administrator", "Apply to sell")
 		mustNotContain(t, page, "<dd>Approved</dd>")
 	}
 	setRoleForm("buyer")
@@ -346,7 +346,7 @@ func TestVendorRoleFormKeepsApplicationsConsistent(t *testing.T) {
 		t.Fatal(err)
 	}
 	removed()
-	mustContain(t, html.UnescapeString(e.body("GET", "/account", session, nil, 200)), "Vendor role removed by an administrator")
+	mustContain(t, html.UnescapeString(e.body("GET", "/account", session, nil, 200)), "Selling approval removed by an administrator")
 }
 
 func TestVendorApplicationAuthz(t *testing.T) {
@@ -383,8 +383,9 @@ func TestVendorApplicationAuthz(t *testing.T) {
 			t.Errorf("applicant action %q: %d", action, w.Code)
 		}
 	}
-	// Only buyers apply.
-	for _, s := range []string{vendor, mod, admin} {
+	// Buyers and moderators without selling approval may apply.
+	e.check(e.do("POST", "/account/vendor-application", mod, url.Values{"action": {"apply"}}), 303)
+	for _, s := range []string{vendor, admin} {
 		if w := e.do("POST", "/account/vendor-application", s, url.Values{"action": {"apply"}}); w.Code != 403 {
 			t.Errorf("non-buyer apply: %d", w.Code)
 		}

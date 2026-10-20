@@ -217,7 +217,9 @@ test('public staff list and decision avatar when shown', async ({ browser, baseU
     expect(await avatar.evaluate(element => (element as HTMLImageElement).complete && (element as HTMLImageElement).naturalWidth)).toBe(64);
     await expect(buyer.locator('.order-timeline img')).toHaveCount(1);
     await fitsAt200(buyer, 'order page');
-    await focusVisible(buyer.getByRole('link', { name: 'Message vendor' }));
+    const correspondence = buyer.getByRole('link', { name: 'Order correspondence', exact: true });
+    await expect(correspondence).toHaveAttribute('href', '#order-messages');
+    await focusVisible(correspondence);
   } finally {
     sql(`UPDATE settings SET value='false' WHERE key='staff_list_public'`);
     for (const p of [moderator, buyer]) await p.context().close();

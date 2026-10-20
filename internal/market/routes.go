@@ -53,7 +53,7 @@ func (a *App) pageOn(page string) bool {
 func protected(page string) bool { return pages[page].Protected }
 func authorized(page string, u *User) bool {
 	s := pages[page]
-	return len(s.Roles) == 0 || u != nil && slices.Contains(s.Roles, u.Role)
+	return permitsRole(s.Roles, u)
 }
 
 type loaderFunc func(ctx context.Context, a *App, r *http.Request, d *PageData) error
@@ -452,6 +452,7 @@ func registerTransitionHook(f transitionHook) { transitionHooks = append(transit
 // transaction: a second pool connection there can wait on the pool while holding one (A-150).
 type rowQuerier interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }
 
 type factorProvider interface {
@@ -540,7 +541,7 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 			a.refuse(w, r, u, 429, "Too many changes. Try again later.")
 			return
 		}
-		if len(spec.Roles) > 0 && !slices.Contains(spec.Roles, u.Role) {
+		if !permitsRole(spec.Roles, u) {
 			a.refuse(w, r, u, 403, roleRequired(spec.Roles))
 			return
 		}
@@ -638,7 +639,7 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 				msg = "Resolution outcome unknown: it may have been saved. Check the dispute, order and payout state before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
 			case "/disputes/concede":
 				msg = "Concession outcome unknown: it may have been saved. Check the dispute, order and payout or escrow settlement before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
-			case "/admin/suspend", "/admin/reset-factors", "/admin/vendor-applications", "/admin/vendor-verify":
+			case "/admin/suspend", "/admin/reset-factors", "/admin/vendor-applications", "/admin/vendor-verify", "/admin/vendor-revoke":
 				msg = "Staff action outcome unknown: it may have been saved. Check the account's current state and audit trail before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
 			case "/admin/access", "/admin/captcha", "/admin/staff-contact", "/admin/staff-list", "/admin/operator-key", "/admin/canary", "/admin/vendor-policy":
 				msg = "Admin setting outcome unknown: it may have been saved. Reload the administration section holding the form and check the setting and audit trail before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."

@@ -18,7 +18,8 @@ func setMessageTestKey(e *testEnv, id, public string) {
 
 func TestMessageOrderContextIsExplicitAuthorizedAndForwardedAsCiphertext(t *testing.T) {
 	e := newTestApp(t)
-	buyerID, buyer := e.user("context_buyer", "buyer")
+	buyerID, _ := e.user("context_order_buyer", "buyer")
+	_, buyer := e.user("context_buyer", "moderator")
 	vendorID, vendor := e.user("context_vendor", "vendor")
 	otherID, other := e.user("context_other", "buyer")
 	_, buyerPub := testPGPKey(t, "context_buyer")
@@ -30,7 +31,8 @@ func TestMessageOrderContextIsExplicitAuthorizedAndForwardedAsCiphertext(t *test
 	e.pgpSessionKey(buyer)
 	e.pgpSessionKey(vendor)
 	e.pgpSessionKey(other)
-	order := e.order(buyerID, e.product(vendorID, "physical"), "XMR", statePaid)
+	order := e.order(buyerID, e.product(vendorID, "physical"), "XMR", stateDisputed)
+	agExec(e, "INSERT INTO disputes(id,order_id,reason) VALUES($1,$2,'Authorized staff context')", randomToken(), order)
 	enableXMPPDelivery(e)
 	agExec(e, `UPDATE settings SET value=(value::jsonb || '{"allow_contents":true,"content_policy_version":1}')::text WHERE key='xmpp_config'`)
 	xmppOptIn(e, vendorID)
@@ -42,7 +44,7 @@ func TestMessageOrderContextIsExplicitAuthorizedAndForwardedAsCiphertext(t *test
 	}
 	form := url.Values{"recipient": {"context_vendor"}, "body": {ciphertext}, "order_id": {order}}
 	e.check(e.do("POST", "/messages", buyer, form), 303)
-	if agStr(e, `SELECT order_id FROM messages WHERE sender_id=$1`, buyerID) != order {
+	if agStr(e, `SELECT order_id FROM messages WHERE recipient_id=$1`, vendorID) != order {
 		t.Fatal("authorized explicit order context was not persisted")
 	}
 	if agStr(e, `SELECT order_id FROM notifications WHERE user_id=$1`, vendorID) != order {
@@ -125,14 +127,16 @@ func TestStaffDisputeMessagesRequirePGPAndKeepPrivateContext(t *testing.T) {
 
 func TestHiddenRecipientConfirmationPreservesMessageContext(t *testing.T) {
 	e := newTestApp(t)
-	buyerID, buyer := e.user("context_hidden_buyer", "buyer")
+	buyerID, _ := e.user("context_hidden_order_buyer", "buyer")
+	_, buyer := e.user("context_hidden_buyer", "moderator")
 	vendorID, _ := e.user("context_hidden_vendor", "vendor")
 	_, buyerPub := testPGPKey(t, "context_hidden_buyer")
 	vendorKey, vendorPub := testPGPKey(t, "context_hidden_vendor")
 	setMessageTestKey(e, buyerID, buyerPub)
 	setMessageTestKey(e, vendorID, vendorPub)
 	e.pgpSessionKey(buyer)
-	order := e.order(buyerID, e.product(vendorID, "physical"), "XMR", statePaid)
+	order := e.order(buyerID, e.product(vendorID, "physical"), "XMR", stateDisputed)
+	agExec(e, "INSERT INTO disputes(id,order_id,reason) VALUES($1,$2,'Authorized staff context')", randomToken(), order)
 	ciphertext, err := encryptTo(vendorKey, "Hidden recipient order correspondence")
 	if err != nil {
 		t.Fatal(err)
@@ -175,5 +179,35 @@ func TestPrivateMessagesRequireUsableSenderKeyForEveryRole(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestDirectInboxRejectsExplicitOrderPartyContext(t *testing.T) {
+	e := newTestApp(t)
+	buyerID, buyer := e.user("isolated_context_buyer", "buyer")
+	vendorID, vendor := e.user("isolated_context_vendor", "vendor")
+	order := e.order(buyerID, e.product(vendorID, "physical"), "XMR", stateDisputed)
+	dispute := randomToken()
+	agExec(e, "INSERT INTO disputes(id,order_id,reason) VALUES($1,$2,'Context separation')", dispute, order)
+	for _, direction := range []struct{ session, handle string }{{buyer, "isolated_context_vendor"}, {vendor, "isolated_context_buyer"}} {
+		for _, context := range []struct{ field, id string }{{"order_id", order}, {"dispute_id", dispute}} {
+			body := encryptToRecipients(t, "transaction-specific correspondence", accountPGPFixture.key)
+			e.check(e.do("POST", "/messages", direction.session, url.Values{"recipient": {direction.handle}, "body": {body}, context.field: {context.id}}), 409)
+			e.check(e.do("GET", "/messages?to="+direction.handle+"&"+context.field+"="+context.id, direction.session, nil), 409)
+		}
+	}
+	if agInt(e, "SELECT count(*) FROM messages") != 0 || agInt(e, "SELECT count(*) FROM notifications") != 0 {
+		t.Fatal("explicit order-party context escaped into direct mail")
+	}
+	// Preserve pre-upgrade records, while their reply link takes the parties to
+	// the order channel instead of a direct form that rejects new order context.
+	agExec(e, "INSERT INTO messages(id,sender_id,recipient_id,body,order_id) VALUES($1,$2,$3,'historical ciphertext',$4)", randomToken(), buyerID, vendorID, order)
+	page := e.body("GET", "/messages", vendor, nil, 200)
+	mustContain(t, page, "/order?id="+order+"#order-messages", "Continue on the order status page")
+	mustNotContain(t, page, "/messages?to=isolated_context_buyer&amp;order_id=")
+	// General buyer/vendor conversations still have their independent inbox.
+	e.check(e.do("POST", "/messages", buyer, url.Values{"recipient": {"isolated_context_vendor"}, "body": {encryptToRecipients(t, "general vendor question", accountPGPFixture.key)}}), 303)
+	if agInt(e, "SELECT count(*) FROM messages WHERE order_id IS NULL AND dispute_id IS NULL") != 1 {
+		t.Fatal("ordinary direct conversation was disabled")
 	}
 }

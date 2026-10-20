@@ -137,9 +137,11 @@ review; they do not block a vendor or authorize punishment.
 
 Injection markers come in two strengths. Strong markers address the moderator
 itself: "ignore previous instructions" and its French, Spanish, Chinese and
-Russian forms, spaced-letter, punctuated or leetspeak spellings, "forget your
-rules", claimed operator instructions, "system prompt", protocol field names,
-underscore code names such as `NO_FINDING` or `AUTO_APPLY`, the canary format,
+Russian forms, spaced-letter, punctuated or leetspeak spellings that begin at
+a word start (so "foreign ore previously" does not count), "forget your rules",
+claimed operator instructions, "system prompt", protocol field names and quoted
+JSON keys such as `"action":`, whole underscore code names such as `NO_FINDING`
+or `AUTO_APPLY` (not `NO_ACTION_REQUIRED`), the canary format,
 imitation delimiters, and any of these inside a base64 token or split across two
 adjacent fields. A strong marker records `INJECTION_SUSPECTED`, skips the model
 and escalates. Weak markers are ordinary words that attacks also use ("you are",
@@ -147,7 +149,8 @@ and escalates. Weak markers are ordinary words that attacks also use ("you are",
 "schema", "canary", role labels, claimed staff approval): they add
 `HUMAN_REVIEW` only, so the model still runs but the item cannot reach automatic
 history. Likewise, any recognised external destination (onion, I2P, Telegram,
-Session, SimpleX or XMPP contact, Monero or Bitcoin-like address) adds
+Session, SimpleX or XMPP contact, Monero address, or Bitcoin address whose
+Base58Check or bech32/bech32m checksum verifies) adds
 `HUMAN_REVIEW`, wherever the solicitation is. `OFF_PLATFORM_CONTACT` remains the
 narrower finding for a destination and solicitation in the same clause.
 `tests/fixtures/injection/corpus.json` labels each case `escalate`,
@@ -164,7 +167,7 @@ authority. Structurally valid output can still be wrong or malicious, so an
 independent deterministic and authorization boundary remains necessary.
 
 The model never publishes a listing. Listing hold mode (*Admin → Vendors →
-Listing review*, `products.review_state`, migration 136) is independent of
+Listing review*, `products.review_state`, migration 142) is independent of
 capture: in hold mode a vendor's new or edited listing stays hidden until a
 moderator or administrator approves it on the moderation desk, whatever the
 proposal says. Capture, its overflow, `AUTO_APPLY`, confidence and the model
