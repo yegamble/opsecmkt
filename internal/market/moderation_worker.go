@@ -438,19 +438,22 @@ func ModerationSuggestionCurrent(ctx context.Context, tx *sql.Tx, id string) (bo
 }
 
 func moderationTargetCurrent(ctx context.Context, tx *sql.Tx, kind, target, hash string) (bool, error) {
-	queries := map[string]string{
-		"listing":      `SELECT jsonb_build_object('title',p.title,'description',p.description,'category',p.category,'region',p.region,'kind',p.kind,'price_atomic',p.xmr,'actor_id',p.vendor_id,'actor_created',u.created)::text FROM products p JOIN users u ON u.id=p.vendor_id WHERE p.id=$1 FOR UPDATE OF p`,
-		"upload":       `SELECT moderation_upload_snapshot($1)`,
-		"dispute":      `SELECT jsonb_build_object('reason',p.reason,'status',p.status,'resolution',p.resolution,'order_id',p.order_id,'order_state',o.state,'actor_id',o.buyer_id,'actor_created',u.created)::text FROM disputes p JOIN orders o ON o.id=p.order_id JOIN users u ON u.id=o.buyer_id WHERE p.id=$1 FOR UPDATE OF p,o`,
-		"review":       `SELECT jsonb_build_object('body',p.body,'rating',p.rating,'product_id',p.product_id,'order_id',p.order_id,'actor_id',p.buyer_id,'actor_created',u.created)::text FROM reviews p JOIN users u ON u.id=p.buyer_id WHERE p.id=$1 FOR UPDATE OF p`,
-		"payment_flag": `SELECT jsonb_build_object('order_id',p.order_id,'flagged',p.flagged,'disposition',p.disposition,'order_state',o.state,'actor_id',o.buyer_id,'actor_created',u.created)::text FROM payments p JOIN orders o ON o.id=p.order_id JOIN users u ON u.id=o.buyer_id WHERE p.id::text=$1 FOR UPDATE OF p,o`,
-	}
-	q, ok := queries[kind]
-	if !ok {
+	var body string
+	var err error
+	switch kind {
+	case "listing":
+		err = tx.QueryRowContext(ctx, `SELECT jsonb_build_object('title',p.title,'description',p.description,'category',p.category,'region',p.region,'kind',p.kind,'price_atomic',p.xmr,'actor_id',p.vendor_id,'actor_created',u.created)::text FROM products p JOIN users u ON u.id=p.vendor_id WHERE p.id=$1 FOR UPDATE OF p`, target).Scan(&body)
+	case "upload":
+		err = tx.QueryRowContext(ctx, `SELECT moderation_upload_snapshot($1)`, target).Scan(&body)
+	case "dispute":
+		err = tx.QueryRowContext(ctx, `SELECT jsonb_build_object('reason',p.reason,'status',p.status,'resolution',p.resolution,'order_id',p.order_id,'order_state',o.state,'actor_id',o.buyer_id,'actor_created',u.created)::text FROM disputes p JOIN orders o ON o.id=p.order_id JOIN users u ON u.id=o.buyer_id WHERE p.id=$1 FOR UPDATE OF p,o`, target).Scan(&body)
+	case "review":
+		err = tx.QueryRowContext(ctx, `SELECT jsonb_build_object('body',p.body,'rating',p.rating,'product_id',p.product_id,'order_id',p.order_id,'actor_id',p.buyer_id,'actor_created',u.created)::text FROM reviews p JOIN users u ON u.id=p.buyer_id WHERE p.id=$1 FOR UPDATE OF p`, target).Scan(&body)
+	case "payment_flag":
+		err = tx.QueryRowContext(ctx, `SELECT jsonb_build_object('order_id',p.order_id,'flagged',p.flagged,'disposition',p.disposition,'order_state',o.state,'actor_id',o.buyer_id,'actor_created',u.created)::text FROM payments p JOIN orders o ON o.id=p.order_id JOIN users u ON u.id=o.buyer_id WHERE p.id::text=$1 FOR UPDATE OF p,o`, target).Scan(&body)
+	default:
 		return false, nil
 	}
-	var body string
-	err := tx.QueryRowContext(ctx, q, target).Scan(&body)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
