@@ -29,6 +29,11 @@ runs:
         timeout: 10m
         # Scanner databases refresh on each run; cache only avoids repeated downloads.
         cache: true
+    - name: Annotate actionable image vulnerabilities
+      shell: bash
+      env:
+        REPORT_RENDERER: ${{ github.action_path }}/report.py
+      run: python3 "$REPORT_RENDERER" trivy-report.json
     - name: Reject fixable high or critical vulnerabilities
       shell: bash
       env:
