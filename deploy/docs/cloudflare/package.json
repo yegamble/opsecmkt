@@ -4,6 +4,6 @@
   "type": "module",
   "description": "Deploys the documentation site to a Cloudflare Worker (docs/development.md)",
   "devDependencies": {
-    "wrangler": "4.150.0"
+    "wrangler": "4.151.1"
   }
 }
