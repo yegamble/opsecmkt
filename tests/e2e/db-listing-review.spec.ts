@@ -5,8 +5,8 @@ import { expectNotice, signedIn, submitAndLoad } from './db-helpers';
 import { waitForStyles } from './styles';
 
 // MOD72-6 listing hold mode, with JavaScript off: a fresh administrator holds listings for review, a fresh vendor
-// publishes one, a buyer can neither find nor open it, a fresh moderator approves it on the desk and the buyer then
-// sees it. Fresh accounts are promoted in SQL so the shared administrator's password budget is untouched, and the
+// publishes one, a buyer can neither find nor open it, a fresh moderator rejects it with a reason, the vendor reads the
+// reason and edits it (resubmitting it), the moderator approves it on the desk and the buyer then sees it. Fresh accounts are promoted in SQL so the shared administrator's password budget is untouched, and the
 // mode is put back to publish afterwards because the database specs share global settings.
 async function fits(page: Page, label: string) {
   for (const width of [390, 320]) {
@@ -17,8 +17,8 @@ async function fits(page: Page, label: string) {
   await expect(page.locator('script')).toHaveCount(0);
 }
 
-test('administrator holds listings, a moderator approves one and only then buyers see it', async ({ browser, baseURL }) => {
-  test.setTimeout(120_000); // four sign-ups, three confirmed forms and the moderation desk
+test('administrator holds listings; a rejected listing is resubmitted by editing, approved and only then buyers see it', async ({ browser, baseURL }) => {
+  test.setTimeout(180_000); // four sign-ups, four confirmed forms and the moderation desk
   const database = process.env.E2E_DATABASE_URL!;
   const sql = (query: string) => execFileSync('psql', [database, '-v', 'ON_ERROR_STOP=1', '-qtAc', query], { encoding: 'utf8' }).trim();
   const adminPassword = 'browser-review-admin-password-123';
@@ -69,26 +69,60 @@ test('administrator holds listings, a moderator approves one and only then buyer
     await expect(buyer.getByRole('heading', { name: 'No listings found' })).toBeVisible();
     expect((await buyer.goto(`/product?id=${id}`))?.status()).toBe(404);
 
-    // The moderator approves it on the desk with their password.
+    // The moderator rejects it on the desk with a reason and their password. A rejection is not a takedown: the
+    // listing stays hidden, unarchived, and the vendor sees the reason.
+    const reason = `Photos do not match the description. Ref ${'X'.repeat(50)}`;
     await moderator.goto('/moderator#listing-review');
     const entry = moderator.locator('.listing-review', { hasText: title });
     await expect(entry).toContainText(vendorHandle);
-    await expect(entry.locator('summary')).toHaveText(`Reject ${title}`);
-    const approve = entry.locator('form', { has: moderator.getByRole('button', { name: `Approve ${title}` }) });
-    await approve.getByLabel('Current password').fill(modPassword);
-    await fits(moderator, 'moderation desk review queue');
-    await submitAndLoad(moderator, approve.getByRole('button', { name: `Approve ${title}` }));
+    await entry.locator('summary', { hasText: `Reject ${title}` }).click();
+    const reject = entry.locator('form', { has: moderator.getByRole('button', { name: `Reject ${title}` }) });
+    await reject.getByLabel('Reason for the vendor').fill(reason);
+    await reject.getByLabel('Current password').fill(modPassword);
+    await fits(moderator, 'moderation desk review queue with the reject form open');
+    await submitAndLoad(moderator, reject.getByRole('button', { name: `Reject ${title}` }));
     await expect(moderator).toHaveURL(/\/moderator#listing-review$/);
-    await expectNotice(moderator, 'Listing approved. It is visible in the marketplace; the vendor was notified.');
+    await expectNotice(moderator, 'Listing rejected. It stays hidden until the vendor edits it and it is reviewed again; the vendor was notified with your reason.');
     await expect(moderator.locator('.listing-review', { hasText: title })).toHaveCount(0);
+    expect((await buyer.goto(`/product?id=${id}`))?.status()).toBe(404);
+    expect(sql(`SELECT review_state||','||archived||','||coalesce(admin_archive_reason,'') FROM products WHERE id='${id}'`)).toBe('rejected,false,');
+
+    // The vendor reads the reason on the desk card, fixes the listing and so resubmits it.
+    await vendor.goto('/vendor-dashboard');
+    const card = vendor.locator('.product-card', { hasText: title });
+    await expect(card.locator('.badge')).toHaveText('Rejected');
+    await expect(card.locator('.rejection-reason')).toHaveText(`Rejected — ${reason}`);
+    await expect(card.getByRole('button', { name: `Restore ${title}` })).toHaveCount(0);
+    await fits(vendor, 'vendor desk with a rejected listing');
+    const fixed = `${title} fixed`;
+    await vendor.goto(`/listing-edit?id=${id}`);
+    await expect(vendor.locator('main .rejection-reason')).toHaveText(`Rejected — ${reason}`);
+    await vendor.getByLabel('Listing title').fill(fixed);
+    await submitAndLoad(vendor, vendor.getByRole('button', { name: 'Save changes' }));
+    await expectNotice(vendor, 'Listing saved. It waits for staff review again: buyers cannot see it until a moderator or administrator approves it. Existing orders are not changed.');
+    await expect(vendor.locator('.page-head .badge')).toHaveText('Awaiting review');
+    await expect(vendor.locator('main')).not.toContainText(reason);
+
+    // The moderator approves the resubmitted listing (a fresh load: /moderator#listing-review is the current URL, and
+    // going to it again would only scroll).
+    await moderator.goto('/moderator');
+    const again = moderator.locator('.listing-review', { hasText: fixed });
+    const approve = again.locator('form', { has: moderator.getByRole('button', { name: `Approve ${fixed}` }) });
+    await approve.getByLabel('Current password').fill(modPassword);
+    await submitAndLoad(moderator, approve.getByRole('button', { name: `Approve ${fixed}` }));
+    await expectNotice(moderator, 'Listing approved. It is visible in the marketplace; the vendor was notified.');
+    await expect(moderator.locator('.listing-review', { hasText: fixed })).toHaveCount(0);
 
     // Now the buyer finds and opens it.
-    await buyer.goto(`/?q=${encodeURIComponent(title)}`);
-    await expect(buyer.getByRole('link', { name: title, exact: true })).toBeVisible();
+    await buyer.goto(`/?q=${encodeURIComponent(fixed)}`);
+    await expect(buyer.getByRole('link', { name: fixed, exact: true })).toBeVisible();
     expect((await buyer.goto(`/product?id=${id}`))?.status()).toBe(200);
     await expect(buyer.locator('main')).not.toContainText('Awaiting review');
+    await expect(buyer.locator('main')).not.toContainText(reason);
 
-    expect(sql(`SELECT count(*) FROM audit_events a JOIN users u ON u.id=a.user_id WHERE u.handle='${modHandle}' AND a.action='Approved listing ${id.slice(0, 8)} of ${vendorHandle} (confirmed with password)'`)).toBe('1');
+    const short = id.slice(0, 8);
+    expect(sql(`SELECT count(*) FROM audit_events a JOIN users u ON u.id=a.user_id WHERE u.handle='${modHandle}' AND a.action IN ('Rejected listing ${short} of ${vendorHandle}: ${reason} (confirmed with password)','Approved listing ${short} of ${vendorHandle} (confirmed with password)')`)).toBe('2');
+    expect(sql(`SELECT count(*) FROM audit_events a JOIN users u ON u.id=a.user_id WHERE u.handle='${vendorHandle}' AND a.action='Resubmitted listing ${short} for review'`)).toBe('1');
     expect(sql(`SELECT count(*) FROM audit_events a JOIN users u ON u.id=a.user_id WHERE u.handle='${adminHandle}' AND a.action='Listing review mode changed from publish to hold (confirmed with password)'`)).toBe('1');
   } finally {
     // Put the shared setting back and leave no public fixture listing or extra staff for the other specs.

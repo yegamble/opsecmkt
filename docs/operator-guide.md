@@ -864,9 +864,11 @@ are never held. Orders placed before an edit continue.
 
 - Review listings in **Listings awaiting review** on the moderation desk (`/moderator#listing-review`), the longest
   waiting first. Open each to see it with its photos. **Approve** publishes it; **Reject** needs a reason of 10–500
-  characters that the vendor reads (never an address, real name or tracking number): the listing is archived with the
-  reason, like a takedown, and only an administrator's *Restore listing* on its edit page brings it back, into the
-  queue again. Both need the reviewer's password and are audited on both accounts; the vendor is notified.
+  characters that the vendor reads (never an address, real name or tracking number). A rejection is not a takedown:
+  the listing stays hidden but is not archived, the vendor sees "Rejected — <reason>" and edits it, and that edit (or
+  a new photo) puts it back in the queue; no administrator is needed. To remove a listing for good, take it down from
+  its edit page instead (administrators). Both need the reviewer's password and are audited on both accounts; the
+  vendor is notified. A form opened before the vendor changed the listing is refused: reload the desk.
   Moderators review; only administrators change the mode or a vendor's flag.
 - **Vendors who publish without review**: enter a vendor's handle (or use the account's page in the user directory) to
   let its new and edited listings publish at once, or to hold them again. It applies to the vendor's next save;

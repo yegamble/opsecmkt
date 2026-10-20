@@ -25,7 +25,6 @@ type managedListing struct {
 	Stock              int
 	Archived           bool
 	Takedown           string // an administrator's takedown reason; "" when not taken down
-	Pending            bool   // awaiting staff review (MOD72-6); with Takedown set, rejected in review
 }
 
 // lockListing row-locks a listing the actor may manage (its vendor, or any administrator).
@@ -47,7 +46,7 @@ func lockListing(c *actionCtx, id string) (managedListing, error) {
 	if _, err := c.Tx.ExecContext(c.Ctx(), `SELECT 1 FROM users WHERE id=$1 OR id=(SELECT vendor_id FROM products WHERE id=$2 AND (vendor_id=$1 OR $3='admin')) FOR KEY SHARE`, c.User.ID, id, c.User.Role); err != nil {
 		return l, err
 	}
-	err := c.Tx.QueryRowContext(c.Ctx(), `SELECT vendor_id,kind,stock,archived,coalesce(admin_archive_reason,''),review_state='pending' FROM products WHERE id=$1 AND (vendor_id=$2 OR $3='admin') FOR UPDATE`, id, c.User.ID, c.User.Role).Scan(&l.VendorID, &l.Kind, &l.Stock, &l.Archived, &l.Takedown, &l.Pending)
+	err := c.Tx.QueryRowContext(c.Ctx(), `SELECT vendor_id,kind,stock,archived,coalesce(admin_archive_reason,'') FROM products WHERE id=$1 AND (vendor_id=$2 OR $3='admin') FOR UPDATE`, id, c.User.ID, c.User.Role).Scan(&l.VendorID, &l.Kind, &l.Stock, &l.Archived, &l.Takedown)
 	if err == sql.ErrNoRows {
 		return l, fail(404, "Listing not found")
 	}
@@ -204,9 +203,6 @@ func listingArchiveAction(c *actionCtx, archive bool) (actionResult, error) {
 		if err != nil {
 			return actionResult{}, err
 		}
-		if l.Pending { // MOD72-6: rejected in review (listing_review.go)
-			return actionResult{}, fail(409, "The market staff rejected this listing in review with the reason “"+l.Takedown+"”. You can still edit it, but only an administrator can restore it, and it then waits for review again. If you think this is wrong, ask an administrator to review it. "+contact)
-		}
 		return actionResult{}, fail(409, "An administrator took this listing down with the reason “"+l.Takedown+"”. You can still edit it, but only an administrator can restore it. If you think this is wrong, ask an administrator to review it. "+contact)
 	}
 	if l.Archived == archive {
@@ -287,7 +283,7 @@ func adminListingAction(c *actionCtx) (actionResult, error) {
 		}
 		var title, current, handle string
 		var pending bool
-		err := tx.QueryRowContext(ctx, `SELECT p.title,coalesce(p.admin_archive_reason,''),u.handle,p.review_state='pending' FROM products p JOIN users u ON u.id=p.vendor_id
+		err := tx.QueryRowContext(ctx, `SELECT p.title,coalesce(p.admin_archive_reason,''),u.handle,p.review_state<>'approved' FROM products p JOIN users u ON u.id=p.vendor_id
 			WHERE p.id=$1 FOR UPDATE OF p`, id).Scan(&title, &current, &handle, &pending)
 		if err != nil {
 			return actionResult{}, err
@@ -320,9 +316,9 @@ func adminListingAction(c *actionCtx) (actionResult, error) {
 			audit = "Restored listing " + short + " of " + handle + " after a takedown"
 			vendorAudit = "Listing " + short + " restored by administrator " + c.User.Handle
 			note = "An administrator restored your listing “" + title + "” (" + short + "). It is visible in the marketplace again and accepts new orders."
-			if pending { // MOD72-6: a listing rejected in review, or taken down while held, waits for review again
-				audit += "; it waits for review"
-				note = "An administrator restored your listing “" + title + "” (" + short + "). It waits for review: buyers cannot see it until a moderator or administrator approves it."
+			if pending { // MOD72-6: a listing taken down while not approved stays hidden until staff approve it
+				audit += "; it is not approved for buyers"
+				note = "An administrator restored your listing “" + title + "” (" + short + "). Buyers still cannot see it until the market staff approve it in review."
 			}
 		}
 		if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", vendorID, vendorAudit); err != nil {

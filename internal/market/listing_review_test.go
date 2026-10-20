@@ -2,12 +2,19 @@ package market
 
 import (
 	"context"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io/fs"
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
+	"time"
+
+	"opsecmkt/internal/moderation"
 )
 
 // MOD72-6: listing hold mode with per-vendor auto-approve (listing_review.go, migration 136).
@@ -217,17 +224,14 @@ func TestListingReviewApproveAndReject(t *testing.T) {
 	// Approving again is refused: it is no longer awaiting review.
 	agExpect(e, "/moderator/listing-review", moderator, withField(approve, formNonceField, formNonceFor("/moderator/listing-review")), 409, "not awaiting review")
 
-	// The administrator rejects the other: archived with the reason (takedown semantics), still pending, never public.
+	// The administrator rejects the other: rejected with the reason, never public, and not a takedown: not archived,
+	// no takedown reason.
 	w = e.do("POST", "/moderator/listing-review", admin, reject)
 	e.check(w, 303)
-	var archived bool
-	var reason, state string
-	if err := e.DB.QueryRow("SELECT archived,coalesce(admin_archive_reason,''),review_state FROM products WHERE id=$1", rejectMe).Scan(&archived, &reason, &state); err != nil {
-		t.Fatal(err)
+	if loc := w.Header().Get("Location"); loc != "/moderator#listing-review" {
+		t.Fatalf("reject redirect %q", loc)
 	}
-	if !archived || reason != rejectReason || state != "pending" {
-		t.Fatalf("rejection stored archived=%v reason=%q state=%q", archived, reason, state)
-	}
+	assertRejected(e, rejectMe, rejectReason)
 	rshort := shortID(rejectMe)
 	if !e.auditExact(adminID, "Rejected listing "+rshort+" of rev_vendor: "+rejectReason+" (confirmed with password)") {
 		t.Fatal("administrator rejection audit missing")
@@ -240,12 +244,124 @@ func TestListingReviewApproveAndReject(t *testing.T) {
 	mustNotContain(t, note, "http", "?id=", "<")
 	buyerCannotReach(e, rejectMe, "Reject me lamp", vendorID, randomToken(), buyer)
 	mustNotContain(t, e.body("GET", "/moderator", moderator, nil, 200), "Reject me lamp")
-	// The vendor sees the rejection and its reason and cannot restore it; the reason stays off public pages.
+	// The vendor sees the rejection and its reason, with no takedown or restore control; buyers never see the reason.
 	deskPage := e.body("GET", "/vendor-dashboard", vendor, nil, 200)
-	mustContain(t, deskPage, "Rejected in review", rejectReason)
-	mustContain(t, e.body("GET", "/listing-edit?id="+rejectMe, vendor, nil, 200), "Rejected in review", rejectReason)
-	agExpect(e, "/listings/restore", vendor, form("id", rejectMe), 409, rejectReason)
+	mustContain(t, deskPage, "Rejected — "+rejectReason)
+	mustNotContain(t, deskPage, "Taken down", `action="/listings/restore"`)
+	mustContain(t, e.body("GET", "/listing-edit?id="+rejectMe, vendor, nil, 200), "Rejected — "+rejectReason)
+	mustContain(t, e.body("GET", "/product?id="+rejectMe, vendor, nil, 200), "Rejected — "+rejectReason)
+	mustNotContain(t, e.body("GET", "/vendor?id="+vendorID, buyer, nil, 200), rejectReason)
+	// Rejecting again, or approving, a rejected listing is refused: it is no longer awaiting review.
+	agExpect(e, "/moderator/listing-review", moderator, withField(reject, formNonceField, formNonceFor("/moderator/listing-review")), 409, "not awaiting review")
 	mustContain(t, e.body("GET", "/moderator", moderator, nil, 200), "No listings are waiting for review")
+}
+
+// assertRejected checks that listing id is rejected with reason and is not a takedown: not archived, no takedown reason.
+func assertRejected(e *testEnv, id, reason string) {
+	e.t.Helper()
+	var archived bool
+	var takedown, state, got string
+	if err := e.DB.QueryRow("SELECT archived,coalesce(admin_archive_reason,''),review_state,coalesce(review_rejection_reason,'') FROM products WHERE id=$1", id).Scan(&archived, &takedown, &state, &got); err != nil {
+		e.t.Fatal(err)
+	}
+	if archived || takedown != "" || state != "rejected" || got != reason {
+		e.t.Fatalf("rejection stored archived=%v takedown=%q state=%q reason=%q", archived, takedown, state, got)
+	}
+}
+
+func TestListingRejectedVendorEditsAndResubmits(t *testing.T) {
+	e := newTestApp(t)
+	_, admin := e.user("resub_admin", "admin")
+	vendorID, vendor := e.user("resub_vendor", "vendor")
+	_, buyer := e.user("resub_buyer", "buyer")
+	_, moderator := e.user("resub_mod", "moderator")
+	setListingReviewMode(e, "hold")
+	p := e.postListing(vendor, "Resubmit lamp")
+	reviewForm := func(action string) url.Values {
+		t.Helper()
+		f := formOn(t, e.body("GET", "/moderator", moderator, nil, 200), "/moderator/listing-review", `name="id" value="`+p+`"`, `name="action" value="`+action+`"`)
+		f.Set("password", testPassword)
+		f.Set("reason", rejectReason)
+		return f
+	}
+	edit := func(f url.Values) {
+		t.Helper()
+		f.Set("id", p)
+		f.Set("stock_seen", agStr(e, "SELECT stock::text FROM products WHERE id=$1", p))
+		e.check(e.do("POST", "/listings/update", vendor, f), 303)
+	}
+	// A reject form rendered before the vendor's change is stale, as an approve form is.
+	stale := reviewForm("reject")
+	changed := listingFields("Resubmit lamp")
+	changed.Set("description", "Changed before the moderator rejected it.")
+	edit(changed)
+	agExpect(e, "/moderator/listing-review", moderator, stale, 409, "changed this listing after you opened")
+	if reviewState(e, p) != "pending" {
+		t.Fatal("a stale rejection was stored")
+	}
+	e.check(e.do("POST", "/moderator/listing-review", moderator, reviewForm("reject")), 303)
+	assertRejected(e, p, rejectReason)
+	buyerCannotReach(e, p, "Resubmit lamp", vendorID, randomToken(), buyer)
+
+	// Switching to publish, or an administrator's edit, does not publish or resubmit it.
+	setListingReviewMode(e, "publish")
+	adminEdit := listingFields("Resubmit lamp")
+	adminEdit.Set("description", "An administrator's edit of a rejected listing.")
+	adminEdit.Set("id", p)
+	adminEdit.Set("stock_seen", agStr(e, "SELECT stock::text FROM products WHERE id=$1", p))
+	e.check(e.do("POST", "/listings/update", admin, adminEdit), 303)
+	assertRejected(e, p, rejectReason)
+	// A stock-only change by the vendor does not resubmit; the reason stays.
+	stock := listingFields("Resubmit lamp")
+	stock.Set("description", "An administrator's edit of a rejected listing.")
+	stock.Set("stock", "9")
+	edit(stock)
+	assertRejected(e, p, rejectReason)
+	mustContain(t, e.body("GET", "/listing-edit?id="+p, vendor, nil, 200), "Rejected — "+rejectReason)
+
+	// The vendor's change to what buyers see resubmits it, even in publish mode: pending, reason cleared, audited.
+	audits := agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1", vendorID)
+	fixed := listingFields("Resubmit lamp, fixed")
+	fixed.Set("stock", "9")
+	w := e.do("POST", "/listings/update", vendor, withField(withField(fixed, "id", p), "stock_seen", "9"))
+	e.check(w, 303)
+	if reviewState(e, p) != "pending" || agStr(e, "SELECT coalesce(review_rejection_reason,'') FROM products WHERE id=$1", p) != "" {
+		t.Fatal("the vendor's edit did not resubmit the rejected listing")
+	}
+	if !e.auditExact(vendorID, "Resubmitted listing "+shortID(p)+" for review") {
+		t.Fatal("resubmission audit missing")
+	}
+	if n := agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1", vendorID); n != audits+2 {
+		t.Fatalf("resubmitting edit wrote %d vendor audit rows, want 2 (the edit and the resubmission)", n-audits)
+	}
+	buyerCannotReach(e, p, "Resubmit lamp, fixed", vendorID, randomToken(), buyer)
+	page := e.body("GET", "/listing-edit?id="+p, vendor, nil, 200)
+	mustContain(t, page, "Awaiting review")
+	mustNotContain(t, page, rejectReason)
+	desk := e.body("GET", "/moderator", moderator, nil, 200)
+	mustContain(t, desk, "Resubmit lamp, fixed")
+
+	// Approved, it is visible to buyers.
+	e.check(e.do("POST", "/moderator/listing-review", moderator, reviewForm("approve")), 303)
+	if reviewState(e, p) != "approved" {
+		t.Fatal("approval of a resubmitted listing not stored")
+	}
+	mustContain(t, e.body("GET", "/?q="+url.QueryEscape("Resubmit lamp, fixed"), buyer, nil, 200), "/product?id="+p)
+	e.check(e.do("GET", "/product?id="+p, randomToken(), nil), 200)
+}
+
+func TestListingRejectionReasonFollowsListingRetention(t *testing.T) {
+	e, _ := uiRetentionEnv(t)
+	vendorID, _ := e.user("resub_retention_vendor", "vendor")
+	p := e.product(vendorID, "physical")
+	buyerID, _ := e.user("resub_retention_buyer", "buyer")
+	e.order(buyerID, p, "XMR", stateCompleted) // an order keeps the withdrawn listing row, so its purge is observable
+	agExec(e, `UPDATE products SET review_state='rejected',review_rejection_reason=$2,archived=true,archived_at=now()-interval '45 days',updated=now()-interval '45 days' WHERE id=$1`, p, rejectReason)
+	ageRetentionEnrollment(t, e.A, time.Now().UTC().Add(-31*24*time.Hour))
+	runRetentionAt(t, e.A, time.Now().UTC())
+	if n := agInt(e, `SELECT count(*) FROM products WHERE id=$1 AND private_expired_at IS NOT NULL AND review_rejection_reason IS NULL AND title='Withdrawn listing'`, p); n != 1 {
+		t.Fatal("retention kept a withdrawn listing's rejection reason")
+	}
 }
 
 func TestListingEditReholdsApprovedListing(t *testing.T) {
@@ -333,6 +449,56 @@ func TestListingPhotoOnApprovedListingReholds(t *testing.T) {
 	if n := agInt(e, "SELECT count(*) FROM "+imagePublicFrom+" WHERE i.product_id=$1 AND "+imagePublicWhere, p); n != 0 {
 		t.Fatal("the public image route serves a held listing's photo")
 	}
+}
+
+// QA72-1: a photo added to a listing that is still pending makes desk forms rendered before it stale, even when the
+// save itself is not held (publish mode here), so a moderator never approves or rejects a photo they have not seen.
+func TestListingPhotoOnPendingListingStalesDeskForms(t *testing.T) {
+	e, _ := uploadEnv(t)
+	_, vendor := e.user("photo_stale_vendor", "vendor")
+	_, moderator := e.user("photo_stale_mod", "moderator")
+	setListingReviewMode(e, "hold")
+	p := e.postListing(vendor, "Stale photo lamp")
+	desk := e.body("GET", "/moderator", moderator, nil, 200)
+	approve := formOn(t, desk, "/moderator/listing-review", `name="id" value="`+p+`"`, `name="action" value="approve"`)
+	approve.Set("password", testPassword)
+	reject := formOn(t, desk, "/moderator/listing-review", `name="id" value="`+p+`"`, `name="action" value="reject"`)
+	reject.Set("password", testPassword)
+	reject.Set("reason", rejectReason)
+	setListingReviewMode(e, "publish")
+	if w := e.upload("/listings/photo", vendor, e.photoParts(vendor, p, smallJPEG(t))...); w.Code != 303 {
+		t.Fatalf("photo upload: %d %s", w.Code, w.Body.String())
+	}
+	agExpect(e, "/moderator/listing-review", moderator, approve, 409, "changed this listing after you opened")
+	agExpect(e, "/moderator/listing-review", moderator, reject, 409, "changed this listing after you opened")
+	if reviewState(e, p) != "pending" {
+		t.Fatal("a stale review form changed the listing")
+	}
+}
+
+// QA72-2: an AUTO_APPLY moderation proposal for a pending listing leaves it pending and hidden.
+func TestListingHoldSurvivesAutoApply(t *testing.T) {
+	e := newTestApp(t)
+	vendorID, vendor := e.user("autoapply_vendor", "vendor")
+	_, buyer := e.user("autoapply_buyer", "buyer")
+	if err := SetModerationEnabled(t.Context(), e.DB, true); err != nil {
+		t.Fatal(err)
+	}
+	setListingReviewMode(e, "hold")
+	p := e.postListing(vendor, "Auto apply lamp")
+	cfg := moderation.DefaultConfig()
+	cfg.Enabled = true
+	worker := &ModerationWorker{DB: e.DB, Engine: moderation.Engine{Config: cfg, Model: benignModerationUIModel{}}}
+	if _, err := worker.Pass(t.Context(), 10); err != nil {
+		t.Fatal(err)
+	}
+	if got := agStr(e, "SELECT disposition FROM moderation_suggestions WHERE target_id=$1", p); got != string(moderation.AutoApply) {
+		t.Fatalf("the fake model's proposal was routed %s, not AUTO_APPLY", got)
+	}
+	if reviewState(e, p) != "pending" {
+		t.Fatal("an AUTO_APPLY proposal changed the listing's review state")
+	}
+	buyerCannotReach(e, p, "Auto apply lamp", vendorID, randomToken(), buyer)
 }
 
 func TestListingAutoApproveVendorPublishesAtOnce(t *testing.T) {
@@ -467,29 +633,86 @@ func TestListingHoldSurvivesModerationOverflowAndWorker(t *testing.T) {
 	}
 }
 
-// TestModerationNeverWritesReviewState: the moderation layer (capture triggers, the worker, the engine and the model
-// path) never names products.review_state, so no model output or capture outcome can publish or hold a listing.
+// TestModerationNeverWritesReviewState: the moderation layer (capture triggers, the worker in internal/market and its
+// cmd/server launcher, the engine and the model path) never names the review columns or settings, writes products, or
+// refers to anything listing_review.go declares (holdListing, listingReviewAction and every helper added there), so no
+// model output or capture outcome can publish, hold or reject a listing (QA72-2).
 func TestModerationNeverWritesReviewState(t *testing.T) {
-	root := "." // TestMain runs the package tests from the repository root
+	fset := token.NewFileSet()
+	writer, err := parser.ParseFile(fset, "internal/market/listing_review.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writers := map[string]bool{}
+	for _, d := range writer.Decls {
+		switch d := d.(type) {
+		case *ast.FuncDecl:
+			if d.Recv == nil && d.Name.Name != "init" {
+				writers[d.Name.Name] = true
+			}
+		case *ast.GenDecl:
+			for _, spec := range d.Specs {
+				switch spec := spec.(type) {
+				case *ast.ValueSpec:
+					for _, n := range spec.Names {
+						writers[n.Name] = true
+					}
+				case *ast.TypeSpec:
+					writers[spec.Name.Name] = true
+				}
+			}
+		}
+	}
+	for _, name := range []string{"holdListing", "listingHeld", "listingReviewAction", "listingReviewModeAction", "vendorAutoApproveAction"} {
+		if !writers[name] {
+			t.Fatalf("listing_review.go no longer declares %s: update this guard", name)
+		}
+	}
+	forbidden := regexp.MustCompile(`review_state|review_rejection_reason|listing_auto_approve|listing_review_mode|/moderator/listing-review|(?i:update\s+products\b)`)
+	scanned := map[string]int{}
 	var found []string
 	for _, dir := range []string{"internal", "cmd"} {
-		err := filepath.WalkDir(filepath.Join(root, dir), func(path string, d fs.DirEntry, err error) error {
+		err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 			if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 				return err
 			}
-			rel, _ := filepath.Rel(root, path)
-			rel = filepath.ToSlash(rel)
-			if !strings.HasPrefix(rel, "internal/moderation/") && !strings.HasPrefix(rel, "internal/market/moderation") {
+			rel := filepath.ToSlash(path)
+			group := ""
+			for _, prefix := range []string{"internal/moderation/", "internal/market/moderation", "cmd/server/moderation"} {
+				if strings.HasPrefix(rel, prefix) {
+					group = prefix
+				}
+			}
+			if group == "" {
 				return nil
 			}
-			b, err := os.ReadFile(path)
-			if err == nil && strings.Contains(string(b), "review_state") {
-				found = append(found, rel)
+			scanned[group]++
+			src, err := os.ReadFile(path)
+			if err != nil {
+				return err
 			}
-			return err
+			if m := forbidden.Find(src); m != nil {
+				found = append(found, rel+": "+string(m))
+			}
+			f, err := parser.ParseFile(fset, path, src, 0)
+			if err != nil {
+				return err
+			}
+			ast.Inspect(f, func(n ast.Node) bool {
+				if id, ok := n.(*ast.Ident); ok && writers[id.Name] {
+					found = append(found, rel+": "+id.Name)
+				}
+				return true
+			})
+			return nil
 		})
 		if err != nil {
 			t.Fatal(err)
+		}
+	}
+	for _, prefix := range []string{"internal/moderation/", "internal/market/moderation", "cmd/server/moderation"} {
+		if scanned[prefix] == 0 {
+			t.Fatalf("the guard scanned no %s* file", prefix)
 		}
 	}
 	migrations, err := filepath.Glob("internal/market/migrations/*.sql")
@@ -506,7 +729,7 @@ func TestModerationNeverWritesReviewState(t *testing.T) {
 		}
 	}
 	if len(found) > 0 {
-		t.Fatalf("moderation code or another migration names review_state: %v", found)
+		t.Fatalf("moderation code or another migration reaches listing review: %v", found)
 	}
 	e := newTestApp(t) // skips without TEST_DATABASE_URL, after the source checks above
 

@@ -713,8 +713,15 @@ func (a *App) storeImage(ctx context.Context, r *http.Request, session string, a
 	}
 	// MOD72-6: in hold mode a vendor's new photo is an edit of what buyers see, so it sends an approved listing back
 	// to staff review (listing_review.go); an administrator's does not.
-	if route.kind == uploadListing && owner == current.ID {
-		if _, err = holdListing(ctx, tx, f.id, owner); err != nil {
+	if route.kind == uploadListing {
+		if owner == current.ID {
+			if _, err = holdListing(ctx, tx, f.id, owner); err != nil {
+				return "", err
+			}
+		}
+		// QA72-1: any new photo on a listing still awaiting review, held save or not (publish mode, an auto-approved
+		// vendor, an administrator's photo), moves its review version, so a desk form rendered before it is stale.
+		if _, err = tx.ExecContext(ctx, `UPDATE products SET updated=now() WHERE id=$1 AND review_state='pending'`, f.id); err != nil {
 			return "", err
 		}
 	}

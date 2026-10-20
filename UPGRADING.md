@@ -17,12 +17,14 @@ existing documented operations workflow.
 
 ## Listing review (migration 136)
 
-Migration 136 adds `products.review_state` (every existing listing is `approved`), the per-vendor
-`users.listing_auto_approve` flag (off) and the `listing_review_mode` setting with the value `publish`. Nothing
+Migration 136 adds `products.review_state` (`approved`, `pending` or `rejected`; every existing listing is
+`approved`), `products.review_rejection_reason` (empty; a staff rejection's reason, shown to the vendor until their
+resubmitting edit), the per-vendor `users.listing_auto_approve` flag (off) and the `listing_review_mode` setting with
+the value `publish`. A rejection is not a takedown: it archives nothing and needs no administrator. Nothing
 changes until an administrator chooses **hold for review** under *Admin → Vendors → Listing review*: listings stay
 public and new ones publish at once, as before. Rolling the application back to a build without this migration
-leaves the columns unused; a listing still pending would then be public again, so approve or reject pending listings
-before downgrading.
+leaves the columns unused; a listing still pending or rejected would then be public again, so approve pending
+listings, and take down rejected ones you do not want public, before downgrading.
 
 ## Encrypted support tickets (migration 133)
 
