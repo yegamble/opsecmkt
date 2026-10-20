@@ -1581,8 +1581,8 @@ the real output, by global output index) of every transaction it builds in its r
 sent (the market builds with `do_not_relay`), and reuses that ring whenever the same coins are spent again. A
 reorganisation deeper than a deposit's confirmations that mines the deposit again gives its output another global index,
 which the stored ring lacks. Every later build of those coins (a re-request after a refused relay, or any settlement built
-once before) then fails, unless the wallet's random decoy picker happens to draw the new index, which on mainnet is
-unlikely ever to happen. monero-wallet-rpc has no call to clear a ring. Nothing is built or sent, so nothing can be paid
+once before) then fails, unless the wallet's random decoy picker happens to draw the new index, which on mainnet may take
+days or never happen (not measured). monero-wallet-rpc has no call to clear a ring. Nothing is built or sent, so nothing can be paid
 twice; the market tries again on every pass. The order page shows *wallet-refusing ring-stale*, then *wallet-refused
 ring-stale* (flagged to staff), as "The escrow wallet keeps refusing to build this transaction (ring-stale) …"; this market's versions
 before A-618 recorded the same refusal as `rpc:-4`. **Never pay it by hand**: once the ring is cleared the market sends
@@ -1623,7 +1623,11 @@ the settlement itself, and a payment by hand would pay twice.
    ```
 
    `mv` refusing with "No such file or directory" means the ring database is elsewhere: the wallet-rpc does not run with
-   `--shared-ringdb-dir=/home/monero/wallet/.shared-ringdb`, as `compose.nodes.yaml` runs it. On a separate payment host
+   `--shared-ringdb-dir=/home/monero/wallet/.shared-ringdb`, as `compose.nodes.yaml` runs it. A native deploy
+   (`opsecmkt deploy --escrow-xmr`, [binary.md](install/binary.md)) names the service `monero-wallet` and the volume
+   `<project>_monero_wallet` (same path inside it): run the same steps with those names, stopping and starting that one
+   service with `docker compose --project-name <project> --project-directory <deploy dir> --file <deploy dir>/compose.json`.
+   On a separate payment host
    ([Enabling payments](install/enable-payments.md)) stop its wallet-rpc service and, as the user it runs as, move
    `WALLET_DIR/.shared-ringdb` aside the same way. While it is stopped nothing is built or sent. On its next pass the
    market opens the wallet and builds the settlement from the same coins to the same plan with a fresh ring, and sends
@@ -1634,7 +1638,11 @@ the settlement itself, and a payment by hand would pay twice.
    wallet-rpc stopped, as in remedy A, write the wallet's derived password to a mode-0600 file on tmpfs, never on a
    command line (it prompts for `MONERO_WALLET_SECRET` without echo; on a separate payment host, make the file on the app
    host and copy only the file), then open the order's wallet offline with the **same** `--shared-ringdb-dir` the
-   wallet-rpc uses (add `--stagenet` on stagenet):
+   wallet-rpc uses (add `--stagenet` on stagenet). Run the CLI, and make the password file, as the user the wallet-rpc
+   runs as (uid 1000 on Compose and the native deploy), never as root: the CLI saves the wallet file on exit and opens the
+   ring database's lock file, and a root-owned file there breaks the wallet-rpc, which then runs with no ring database at
+   all. On Compose, run it in a container like remedy A's (`--user 1000:1000`, `--network none`, the wallet volume at
+   `/home/monero/wallet` as `WALLET_DIR`, the checked CLI and the password file mounted read-only):
 
    ```sh
    db_sql -X -At -F ' ' -c "SELECT w.name, s.account_index FROM escrows e JOIN xmr_escrow_slots s ON s.address = e.address JOIN xmr_escrow_wallets w ON w.id = s.wallet_id WHERE e.order_id = 'ORDER_ID'"
