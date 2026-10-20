@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { expect, test, type Page } from '@playwright/test';
 import { uniqueHandle } from './db-fixtures';
-import { signedIn, submitAndLoad, submitStatus } from './db-helpers';
+import { saveEncryptionKey, signedIn, submitAndLoad, submitStatus } from './db-helpers';
 import { waitForStyles } from './styles';
 
 async function fits(page: Page, width: number) {
@@ -24,7 +24,8 @@ test('moderator selling approval retains moderation and can be revoked independe
     sql(`UPDATE users SET role='admin' WHERE handle='${adminHandle}'; UPDATE users SET role='moderator' WHERE handle='${modHandle}';
       UPDATE settings SET value='manual' WHERE key='vendor_approval'; UPDATE settings SET value='0' WHERE key='vendor_bond_xmr'`);
     expect((await mod.goto('/vendor-dashboard'))?.status()).toBe(403);
-    await mod.goto('/account');
+    // Selling approval requires a usable encryption key, including for moderators.
+    await saveEncryptionKey(mod, password);
     await expect(mod.getByRole('navigation', { name: 'Main navigation' }).getByRole('link', { name: 'Moderation' })).toBeVisible();
     await mod.getByRole('button', { name: 'Apply to sell', exact: true }).click();
     await expect(mod.getByRole('region', { name: 'Sell on this market' })).toContainText('Waiting for administrator approval');
