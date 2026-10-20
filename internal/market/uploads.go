@@ -13,7 +13,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -208,7 +207,7 @@ func (a *App) serveUpload(w http.ResponseWriter, r *http.Request, route uploadRo
 		u.refuse(http.StatusForbidden, retentionRestrictedMessage)
 		return
 	}
-	if !slices.Contains(route.roles, u.user.Role) {
+	if !permitsRole(route.roles, u.user) {
 		msg := "Photo not saved: only vendors and administrators can add listing photos."
 		if route.kind == uploadAvatar {
 			msg = "Avatar not saved: avatars are for vendors and market staff."
@@ -585,7 +584,7 @@ func (a *App) refuseMultipartElsewhere(w http.ResponseWriter, r *http.Request, t
 // is not suspended (a suspended account's sessions never authenticate; suspension also deletes them).
 func (a *App) sessionUser(ctx context.Context, session string) (*User, error) {
 	u := &User{}
-	err := a.db.QueryRowContext(ctx, `SELECT u.id,u.handle,u.role,u.pgp,u.retention_restricted_at IS NOT NULL FROM users u JOIN sessions s ON s.user_id=u.id WHERE s.token_hash=$1 AND s.expires>now() AND u.suspended_at IS NULL AND u.closed_at IS NULL`, digest(session)).Scan(&u.ID, &u.Handle, &u.Role, &u.PGP, &u.RetentionRestricted)
+	err := a.db.QueryRowContext(ctx, `SELECT u.id,u.handle,u.role,u.pgp,u.retention_restricted_at IS NOT NULL,u.vendor_approved,u.vendor_verified OR u.role='admin' FROM users u JOIN sessions s ON s.user_id=u.id WHERE s.token_hash=$1 AND s.expires>now() AND u.suspended_at IS NULL AND u.closed_at IS NULL`, digest(session)).Scan(&u.ID, &u.Handle, &u.Role, &u.PGP, &u.RetentionRestricted, &u.VendorApproved, &u.VendorVerified)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -636,8 +635,8 @@ func (a *App) storeImage(ctx context.Context, r *http.Request, session string, a
 		return "", err
 	}
 	var role string
-	var restricted bool
-	err = tx.QueryRowContext(ctx, `SELECT u.role,u.retention_restricted_at IS NOT NULL FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1 AND u.id=$2 AND s.expires>now() AND u.suspended_at IS NULL AND u.closed_at IS NULL FOR SHARE OF u`, digest(session), actor.ID).Scan(&role, &restricted)
+	var restricted, approved bool
+	err = tx.QueryRowContext(ctx, `SELECT u.role,u.retention_restricted_at IS NOT NULL,u.vendor_approved FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1 AND u.id=$2 AND s.expires>now() AND u.suspended_at IS NULL AND u.closed_at IS NULL FOR SHARE OF u`, digest(session), actor.ID).Scan(&role, &restricted, &approved)
 	if err == sql.ErrNoRows {
 		return "", errUploadSignedOut
 	}
@@ -651,11 +650,11 @@ func (a *App) storeImage(ctx context.Context, r *http.Request, session string, a
 	// longer staff it would be published as a vendor's avatar, so it is refused too (A-208(a),
 	// TestStaffAvatarRefusedAfterScanDemotion).
 	staff := func(r string) bool { return r == "moderator" || r == "admin" }
-	if !slices.Contains(route.roles, role) || (route.kind == uploadAvatar && staff(actor.Role) && !staff(role)) {
+	if !permitsRole(route.roles, &User{Role: role, VendorApproved: approved}) || (route.kind == uploadAvatar && staff(actor.Role) && !staff(role)) {
 		return "", &httpError{Code: http.StatusForbidden, Msg: "Photo not saved: your account's role changed while it was uploading. Nothing was stored."}
 	}
 	current := *actor
-	current.Role = role
+	current.Role, current.VendorApproved = role, approved
 	owner, audit, ownerAudit, notify, redirect := current.ID, "", "", "", "/account"
 	var product, order any
 	if route.kind == uploadListing {

@@ -92,11 +92,12 @@ func listingAction(c *actionCtx) (actionResult, error) {
 	// The request's role snapshot can predate a concurrent demotion. Keep this
 	// share lock through creation so demotion either wins first or archives the
 	// newly committed listing in its subsequent archive statement.
-	var role string
-	if err = c.Tx.QueryRowContext(c.Ctx(), "SELECT role FROM users WHERE id=$1 FOR SHARE", c.User.ID).Scan(&role); err != nil {
+	var current User
+	var active bool
+	if err = c.Tx.QueryRowContext(c.Ctx(), "SELECT role,vendor_approved,suspended_at IS NULL AND closed_at IS NULL AND retention_restricted_at IS NULL FROM users WHERE id=$1 FOR SHARE", c.User.ID).Scan(&current.Role, &current.VendorApproved, &active); err != nil {
 		return actionResult{}, err
 	}
-	if role != "vendor" && role != "admin" {
+	if !current.CanSell() || !active {
 		return actionResult{}, fail(403, "Vendor access required")
 	}
 	id := randomToken()

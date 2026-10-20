@@ -270,7 +270,7 @@ func (a *App) load(r *http.Request, d *PageData) error {
 		if d.Page == "catalog" || d.Page == "vendor" || d.Page == "vendor-dashboard" {
 			description = "left(p.description," + strconv.Itoa(excerptRunes+1) + ")"
 		}
-		query := `SELECT p.id,p.title,` + description + `,p.category,p.region,p.kind,u.handle,p.vendor_id,p.btc,p.xmr,p.stock,p.archived,` + takedown + `,u.vendor_verified FROM products p JOIN users u ON u.id=p.vendor_id WHERE true`
+		query := `SELECT p.id,p.title,` + description + `,p.category,p.region,p.kind,u.handle,p.vendor_id,p.btc,p.xmr,p.stock,p.archived,` + takedown + `,(u.vendor_verified OR u.role='admin') FROM products p JOIN users u ON u.id=p.vendor_id WHERE true`
 		args := []any{}
 		limit := " LIMIT 100"
 		switch d.Page {
@@ -358,7 +358,7 @@ func (a *App) load(r *http.Request, d *PageData) error {
 		}
 		if d.Page == "vendor" {
 			var u User
-			err = a.db.QueryRowContext(ctx, "SELECT id,handle,role,pgp,vendor_verified,banned_at IS NOT NULL FROM users WHERE id=$1 AND role IN ('vendor','admin')", r.URL.Query().Get("id")).Scan(&u.ID, &u.Handle, &u.Role, &u.PGP, &u.VendorVerified, &d.SellerClosed)
+			err = a.db.QueryRowContext(ctx, "SELECT id,handle,role,pgp,(vendor_verified OR role='admin'),banned_at IS NOT NULL FROM users WHERE id=$1 AND (role IN ('vendor','admin') OR vendor_approved)", r.URL.Query().Get("id")).Scan(&u.ID, &u.Handle, &u.Role, &u.PGP, &u.VendorVerified, &d.SellerClosed)
 			if err != nil {
 				return err
 			}

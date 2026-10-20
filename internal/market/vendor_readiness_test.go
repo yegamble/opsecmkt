@@ -36,9 +36,9 @@ func TestVendorReadinessTracksEscrowIntakeWithoutLeakingHistoricalAddress(t *tes
 
 func TestVendorReadinessIsVendorScoped(t *testing.T) {
 	p := newPayEnv(t)
-	if admin := html.UnescapeString(p.page("/vendor-dashboard", p.adminSess)); strings.Contains(admin, `id="seller-readiness"`) {
-		t.Fatal("administrator dashboard rendered another user's seller readiness")
-	}
+	admin := html.UnescapeString(p.page("/vendor-dashboard", p.adminSess))
+	mustContain(t, admin, `id="seller-readiness"`, "Add a usable encryption key on")
+	mustNotContain(t, admin, "can receive shipping details")
 	otherID, otherSess := p.user("readiness_other", "vendor")
 	if _, err := p.DB.Exec("UPDATE users SET payout_btc=$1 WHERE id=$2", "other-private-address", otherID); err != nil {
 		t.Fatal(err)

@@ -26,8 +26,8 @@ import (
 // Each application captures the bond and approval mode in force when it is created, so a policy change applies to new
 // applications only. States: awaiting_bond → (bond recorded or waived) → awaiting_approval or, automatic, approved;
 // awaiting_approval → approved | rejected; either open state → withdrawn (the applicant) or rejected. Approval makes
-// the account a vendor through the audited role change the admin role form uses; rejected and withdrawn applicants
-// stay buyers, so they cannot list (/listings is role-gated). Every decision notifies the applicant and is audited on
+// selling approval independently of any moderator role; a buyer becomes a vendor through the audited role change.
+// Rejected and withdrawn applicants keep their role and gain no selling authority. Every decision notifies the applicant and is audited on
 // both accounts. An administrator may also mark a vendor verified: the staff's judgment, not an identity check.
 
 const (
@@ -39,13 +39,12 @@ const (
 	vendorOpenStates           = "('awaiting_bond','awaiting_approval')"
 )
 
-// activeVendorSQL is the SQL condition "alias is an approved, active vendor": the vendor role (given only by an
-// approved application, the admin role form or the -set-role host command; migration 121 grandfathered earlier
-// vendors with an approved application) on an account that is not suspended, closed or restricted for closure. A
+// activeVendorSQL is the SQL condition "alias may currently sell": a vendor, an administrator, or an account
+// with independent selling approval, which is not suspended, closed or restricted for closure. A
 // banned account is always suspended too (migration 123, A-546), so the suspension test excludes it. alias names a
 // users row in the caller's query.
 func activeVendorSQL(alias string) string {
-	return "(" + alias + ".role='vendor' AND " + alias + ".suspended_at IS NULL AND " + alias + ".closed_at IS NULL AND " +
+	return "((" + alias + ".role IN ('vendor','admin') OR " + alias + ".vendor_approved) AND " + alias + ".suspended_at IS NULL AND " + alias + ".closed_at IS NULL AND " +
 		alias + ".retention_restricted_at IS NULL)"
 }
 
@@ -76,7 +75,7 @@ type VendorApplicationView struct {
 	BondFlags                                              []string
 }
 
-// VendorAccountView is the /account vendor section (buyers and vendors only).
+// VendorAccountView is the /account selling section; moderators may apply without leaving staff.
 type VendorAccountView struct {
 	Policy   VendorPolicyView
 	Latest   *VendorApplicationView
@@ -95,7 +94,8 @@ type VendorAdminView struct {
 }
 
 func init() {
-	registerAction("/account/vendor-application", actionSpec{Roles: []string{"buyer"}, FormNonce: true, Run: vendorApplicantAction})
+	registerAction("/account/vendor-application", actionSpec{Roles: []string{"buyer", "moderator"}, FormNonce: true, Run: vendorApplicantAction})
+	registerAction("/admin/vendor-revoke", actionSpec{Roles: []string{"admin"}, OwnTx: true, ConfirmedFormNonce: true, Run: vendorRevokeAction})
 	registerAction("/admin/vendor-policy", actionSpec{Roles: []string{"admin"}, OwnTx: true, ConfirmedFormNonce: true, Run: vendorPolicyAction})
 	registerAction("/admin/vendor-applications", actionSpec{Roles: []string{"admin"}, OwnTx: true, ConfirmedFormNonce: true, Run: vendorDecisionAction})
 	registerAction("/admin/vendor-verify", actionSpec{Roles: []string{"admin"}, OwnTx: true, ConfirmedFormNonce: true, Run: vendorVerifyAction})
@@ -240,6 +240,9 @@ func submitVendorApplication(ctx context.Context, tx *sql.Tx, userID string) (st
 // the host command) with note. A demotion leaves the approved application; /account then says the role was removed,
 // and the account may apply again (an approved application never counts as open).
 func vendorRoleAssigned(ctx context.Context, tx *sql.Tx, userID, adminID, note string) error {
+	if _, err := tx.ExecContext(ctx, "UPDATE users SET vendor_approved=true WHERE id=$1", userID); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `UPDATE vendor_applications SET state='withdrawn',decided_by=NULLIF($2,''),decided_at=now(),note=$3
 		WHERE user_id=$1 AND state IN `+vendorOpenStates, userID, adminID, note); err != nil {
 		return err
@@ -260,6 +263,9 @@ func approveVendor(ctx context.Context, tx *sql.Tx, userID, by, lead, note strin
 	if err := tx.QueryRowContext(ctx, "SELECT role FROM users WHERE id=$1", userID).Scan(&role); err != nil {
 		return err
 	}
+	if _, err := tx.ExecContext(ctx, "UPDATE users SET vendor_approved=true WHERE id=$1", userID); err != nil {
+		return err
+	}
 	body := lead + "Your vendor application was approved. You can publish listings from the vendor desk."
 	if role == "buyer" {
 		if _, err := tx.ExecContext(ctx, "UPDATE users SET role='vendor' WHERE id=$1", userID); err != nil {
@@ -269,6 +275,10 @@ func approveVendor(ctx context.Context, tx *sql.Tx, userID, by, lead, note strin
 			return err
 		}
 		if _, err := roleChanged(ctx, tx, userID, "buyer", "vendor", by); err != nil {
+			return err
+		}
+	} else if role == "moderator" {
+		if _, err := tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", userID, "Vendor selling approval granted; moderator role retained by "+by); err != nil {
 			return err
 		}
 	}
@@ -327,10 +337,11 @@ func vendorApplicantAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, fail(400, "Choose apply or withdraw")
 	}
 	var role string
-	if err := tx.QueryRowContext(ctx, "SELECT role FROM users WHERE id=$1 FOR NO KEY UPDATE", uid).Scan(&role); err != nil {
+	var approved bool
+	if err := tx.QueryRowContext(ctx, "SELECT role,vendor_approved FROM users WHERE id=$1 FOR NO KEY UPDATE", uid).Scan(&role, &approved); err != nil {
 		return actionResult{}, err
 	}
-	if role != "buyer" {
+	if role != "buyer" && role != "moderator" || approved {
 		return actionResult{}, errAccountChanged
 	}
 	if choice == "withdraw" {
@@ -363,7 +374,7 @@ func vendorApplicantAction(c *actionCtx) (actionResult, error) {
 	return actionResult{Redirect: "/account", Notice: notice}, nil
 }
 
-// vendorApplyForAction opens a vendor application for a buyer account on its behalf, from the account's page in the
+// vendorApplyForAction opens a vendor application for an eligible buyer or moderator account on its behalf, from the account's page in the
 // user directory (A-545: "vendor, not approved yet or bond unpaid"). The administrator picks the starting state (owner
 // decision 2026-10-19, "Admin picks"), whatever the policy's approval mode: start=awaiting_bond asks for the current
 // policy's bond (refused while the policy sets none: set a bond under Vendors first), start=awaiting_approval asks for
@@ -398,10 +409,10 @@ func vendorApplyForAction(c *actionCtx) (actionResult, error) {
 		ctx, tx := c.Ctx(), c.Tx
 		// The account row, then its application: the order the account's own form locks them in.
 		var role string
-		var suspended, banned, closed bool
-		err := tx.QueryRowContext(ctx, `SELECT role,suspended_at IS NOT NULL,banned_at IS NOT NULL,
+		var suspended, banned, closed, approved bool
+		err := tx.QueryRowContext(ctx, `SELECT role,vendor_approved,suspended_at IS NOT NULL,banned_at IS NOT NULL,
 			closed_at IS NOT NULL OR deletion_requested_at IS NOT NULL OR retention_restricted_at IS NOT NULL
-			FROM users WHERE id=$1 FOR NO KEY UPDATE`, target).Scan(&role, &suspended, &banned, &closed)
+			FROM users WHERE id=$1 FOR NO KEY UPDATE`, target).Scan(&role, &approved, &suspended, &banned, &closed)
 		if err == sql.ErrNoRows {
 			return actionResult{}, notFound
 		}
@@ -415,8 +426,8 @@ func vendorApplyForAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, fail(409, handle+" is closed or closing; nothing was changed.")
 		case suspended:
 			return actionResult{}, fail(409, handle+" is suspended: restore the account first. Nothing was changed.")
-		case role != "buyer":
-			return actionResult{}, fail(409, handle+" is a "+role+" account: only a buyer account can apply to sell. Nothing was changed.")
+		case role != "buyer" && role != "moderator" || approved:
+			return actionResult{}, fail(409, handle+" already has selling access or cannot apply to sell. Nothing was changed.")
 		}
 		var open bool
 		if err = tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM vendor_applications WHERE user_id=$1 AND state IN "+vendorOpenStates+")", target).Scan(&open); err != nil {
@@ -578,8 +589,8 @@ func vendorDecisionAction(c *actionCtx) (actionResult, error) {
 			}
 			if approval == "automatic" {
 				next = "approved"
-				if role != "buyer" && role != "vendor" || closed {
-					return actionResult{}, fail(409, handle+" is no longer an active buyer account; reject the application instead.")
+				if role != "buyer" && role != "vendor" && role != "moderator" || closed {
+					return actionResult{}, fail(409, handle+" is no longer an eligible active account; reject the application instead.")
 				}
 			}
 			if _, err = tx.ExecContext(ctx, `UPDATE vendor_applications SET bond_received_at=now(),bond_received_by=$2,bond_received_how=$3,state=$4,
@@ -607,8 +618,8 @@ func vendorDecisionAction(c *actionCtx) (actionResult, error) {
 			if state != "awaiting_approval" {
 				return actionResult{}, fail(409, "Record or waive the bond before approving this vendor application; nothing was changed.")
 			}
-			if role != "buyer" && role != "vendor" || closed {
-				return actionResult{}, fail(409, handle+" is no longer an active buyer account; reject the application instead.")
+			if role != "buyer" && role != "vendor" && role != "moderator" || closed {
+				return actionResult{}, fail(409, handle+" is no longer an eligible active account; reject the application instead.")
 			}
 			if _, err = tx.ExecContext(ctx, "UPDATE vendor_applications SET state='approved',decided_by=$2,decided_at=now(),note=$3 WHERE id=$1", id, admin.ID, note); err != nil {
 				return actionResult{}, err
@@ -626,7 +637,7 @@ func vendorDecisionAction(c *actionCtx) (actionResult, error) {
 			if err = audit("Vendor application rejected by "+by, "Rejected vendor application of "+handle); err != nil {
 				return actionResult{}, err
 			}
-			body := "Your vendor application was rejected by an administrator. Your account stays a buyer account."
+			body := "Your vendor application was rejected by an administrator. Your existing account role is unchanged."
 			if bond > 0 {
 				body += " The bond is a non-refundable fee."
 			}
@@ -639,7 +650,7 @@ func vendorDecisionAction(c *actionCtx) (actionResult, error) {
 }
 
 // vendorVerifyAction marks a vendor verified or removes the mark, looked up by handle. Verifying needs the vendor
-// role; removing works on any account still marked. The administrator confirms with their password (and
+// capability; removing works on any non-administrator account still marked. The administrator confirms with their password (and
 // authenticator code when enrolled); both accounts are audited and the vendor is notified.
 func vendorVerifyAction(c *actionCtx) (actionResult, error) {
 	choice := c.Form.Get("action")
@@ -664,8 +675,8 @@ func vendorVerifyAction(c *actionCtx) (actionResult, error) {
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
 		ctx, tx, admin := c.Ctx(), c.Tx, c.User
 		var role string
-		var verified, banned bool
-		err := tx.QueryRowContext(ctx, "SELECT role,vendor_verified,banned_at IS NOT NULL FROM users WHERE id=$1 FOR NO KEY UPDATE", target).Scan(&role, &verified, &banned)
+		var verified, banned, approved bool
+		err := tx.QueryRowContext(ctx, "SELECT role,vendor_verified,banned_at IS NOT NULL,vendor_approved FROM users WHERE id=$1 FOR NO KEY UPDATE", target).Scan(&role, &verified, &banned, &approved)
 		if err == sql.ErrNoRows {
 			return actionResult{}, notFound
 		}
@@ -675,7 +686,9 @@ func vendorVerifyAction(c *actionCtx) (actionResult, error) {
 		switch {
 		case verify && banned: // A-546: a ban removed the mark; lifting it does not bring it back by itself
 			return actionResult{}, fail(409, handle+" is banned; nothing was changed.")
-		case verify && role != "vendor":
+		case role == "admin":
+			return actionResult{}, fail(409, "Administrators are automatically verified vendors while they hold that role.")
+		case verify && role != "vendor" && !approved:
 			return actionResult{}, fail(409, handle+" is not a vendor account; nothing was changed.")
 		case verify && verified:
 			return actionResult{}, fail(409, handle+" is already a verified vendor; nothing was changed.")
@@ -717,14 +730,14 @@ func scanVendorApp(rows interface{ Scan(...any) error }, extra ...any) (VendorAp
 	return v, err
 }
 
-// vendorAccountLoader fills the /account vendor section for a buyer or vendor: the latest application and the policy
+// vendorAccountLoader fills the /account selling section: the latest application and the policy
 // a new one would follow.
 func vendorAccountLoader(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
-	if d.User == nil || d.User.Role != "buyer" && d.User.Role != "vendor" {
+	if d.User == nil {
 		return nil
 	}
 	view := &VendorAccountView{Policy: vendorPolicyFromSettings(d.Settings)}
-	if err := a.db.QueryRowContext(ctx, "SELECT vendor_verified FROM users WHERE id=$1", d.User.ID).Scan(&view.Verified); err != nil {
+	if err := a.db.QueryRowContext(ctx, "SELECT vendor_verified OR role='admin' FROM users WHERE id=$1", d.User.ID).Scan(&view.Verified); err != nil {
 		return err
 	}
 	latest, err := scanVendorApp(a.db.QueryRowContext(ctx, "SELECT "+vendorAppColumns+` FROM vendor_applications a JOIN users u ON u.id=a.user_id
@@ -733,8 +746,8 @@ func vendorAccountLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 		return err
 	}
 	if err == nil {
-		if latest.State == "approved" && d.User.Role != "vendor" {
-			latest.RoleRemoved, latest.Status = true, "Vendor role removed by an administrator"
+		if latest.State == "approved" && !d.User.CanSell() {
+			latest.RoleRemoved, latest.Status = true, "Selling approval removed by an administrator"
 		}
 		issuable, err := a.xmrBondIssuable(ctx, a.db)
 		if err != nil {
@@ -745,7 +758,7 @@ func vendorAccountLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 		}
 		view.Latest = &latest
 	}
-	view.CanApply = d.User.Role == "buyer" && (view.Latest == nil || !view.Latest.Open)
+	view.CanApply = (d.User.Role == "buyer" || d.User.Role == "moderator") && !d.User.CanSell() && (view.Latest == nil || !view.Latest.Open)
 	d.VendorAccount = view
 	return nil
 }
@@ -781,7 +794,7 @@ func vendorAdminLoader(ctx context.Context, a *App, _ *http.Request, d *PageData
 			return err
 		}
 	}
-	verified, err := a.db.QueryContext(ctx, "SELECT u.handle FROM users u WHERE u.vendor_verified AND "+activeVendorSQL("u")+" ORDER BY u.handle LIMIT 100")
+	verified, err := a.db.QueryContext(ctx, "SELECT u.handle FROM users u WHERE (u.vendor_verified OR u.role='admin') AND "+activeVendorSQL("u")+" ORDER BY u.handle LIMIT 100")
 	if err != nil {
 		return err
 	}

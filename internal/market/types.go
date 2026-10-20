@@ -9,11 +9,34 @@ type User struct {
 	Factors               string // P1, PageData.FactorAccounts only: enrolled second factors, e.g. "TOTP and PGP sign-in"
 	Suspended             string // P1, PageData.SuspendedAccounts only: when the account was suspended
 	Avatar                string // A-189, vendor page and /canary staff list only: the avatar thumbnail on /img, "" when none may be shown
-	VendorVerified        bool   // A-544, vendor page only: an administrator marked this vendor verified
+	VendorVerified        bool   // administrator verification, or automatic verification for a current administrator
+	VendorApproved        bool   // selling approval independent of the account's moderator role
 	// A-546, PageData.BannedAccounts only: when the account was banned, by which administrator ("" once that account
 	// is erased) and why.
 	Banned, BannedBy, BanReason string
 }
+
+// CanSell describes the selling workspace, without changing the account's staff
+// role. Administrator access is derived so it ends when that role is removed.
+func (u *User) CanSell() bool {
+	return u != nil && (u.Role == "vendor" || u.Role == "admin" || u.VendorApproved)
+}
+
+func permitsRole(roles []string, u *User) bool {
+	if len(roles) == 0 {
+		return true
+	}
+	if u == nil {
+		return false
+	}
+	for _, role := range roles {
+		if role == u.Role || role == "vendor" && u.CanSell() {
+			return true
+		}
+	}
+	return false
+}
+
 type Product struct {
 	ID, Title, Description, Category, Region, Kind, Vendor, VendorID, PriceBTC, PriceXMR string
 	BTCOrderUnavailable, XMROrderUnavailable                                             string // legacy price below that currency's escrow settlement minimum
@@ -186,7 +209,7 @@ type PageData struct {
 	// FormVendor: /register re-rendered after a refused post that chose a vendor account (A-544).
 	FormVendor bool
 	// A-544 vendor onboarding (vendor_applications.go). VendorPolicy: /register, the policy a vendor sign-up follows;
-	// VendorAccount: /account for a buyer or vendor; VendorAdmin: the admin vendors panel.
+	// VendorAccount: /account selling approval and applications; VendorAdmin: the admin vendors panel.
 	VendorPolicy  *VendorPolicyView
 	VendorAccount *VendorAccountView
 	VendorAdmin   *VendorAdminView

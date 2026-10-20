@@ -130,8 +130,8 @@ func TestAdminUserDirectory(t *testing.T) {
 	expect("?status=closed", "dir_closing")
 	expect("?vendor=awaiting_bond", "dir_bond")
 	expect("?vendor=awaiting_approval", "dir_approval")
-	expect("?vendor=approved", "dir_stats", "Dir_Beta")
-	expect("?vendor=verified", "Dir_Beta")
+	expect("?vendor=approved", "dir_stats", "Dir_Beta", "dir_admin2", "dir_admin")
+	expect("?vendor=verified", "Dir_Beta", "dir_admin2", "dir_admin")
 	expect("?find=dir_&role=buyer&status=active&vendor=awaiting_bond", "dir_bond")
 	if _, got := directory("?status=active&role=buyer"); slices.Contains(got, "dir_susp") || slices.Contains(got, "dir_banned") || slices.Contains(got, "dir_closing") || len(got) != 50 {
 		t.Fatalf("active buyers: %v", got)
@@ -247,9 +247,9 @@ func TestAdminUserDirectory(t *testing.T) {
 	}
 	// The application form refuses what the account's own form would: not a buyer, banned, closing; and
 	// administrators, the caller included.
-	for handle, msg := range map[string]string{"dir_mod": "only a buyer account can apply", "dir_banned": "dir_banned is banned", "dir_closing": "dir_closing is closed or closing",
+	for handle, msg := range map[string]string{"dir_banned": "dir_banned is banned", "dir_closing": "dir_closing is closed or closing",
 		"dir_susp":  "dir_susp is suspended: restore the account first",
-		"dir_admin": "You cannot open a vendor application for your own account", "dir_admin2": "only a buyer account can apply"} {
+		"dir_admin": "You cannot open a vendor application for your own account", "dir_admin2": "already has selling access or cannot apply to sell"} {
 		code := 409
 		if handle == "dir_admin" {
 			code = 400
@@ -260,7 +260,7 @@ func TestAdminUserDirectory(t *testing.T) {
 	agExpect(e, "/admin/vendor-apply", moderator, form("handle", "dir_x_y", "start", "awaiting_approval", "password", testPassword), 403, "")
 	// The suspended account's page offers no application form; the banned and closed ones offer no message link.
 	mustNotContain(t, e.body("GET", "/admin/users?handle=dir_susp", admin, nil, 200), `action="/admin/vendor-apply"`)
-	mustContain(t, e.body("GET", "/admin/users?handle=dir_susp", admin, nil, 200), "restore the account first")
+	mustContain(t, e.body("GET", "/admin/users?handle=dir_susp", admin, nil, 200), "Restore suspended accounts first")
 	if latestVendorApp(e, suspID).State != "" || latestVendorApp(e, closingID).State != "" {
 		t.Fatal("a refused application was stored")
 	}

@@ -119,7 +119,7 @@ func imageSuffix(full bool) string {
 const (
 	imagePublicFrom  = `images i JOIN users o ON o.id=i.owner_user_id LEFT JOIN products p ON p.id=i.product_id`
 	imagePublicWhere = `o.suspended_at IS NULL AND (
- (i.kind='photo' AND p.vendor_id=i.owner_user_id AND NOT p.archived AND p.admin_archive_reason IS NULL AND o.role IN ('vendor','admin'))
+ (i.kind='photo' AND p.vendor_id=i.owner_user_id AND NOT p.archived AND p.admin_archive_reason IS NULL AND (o.role IN ('vendor','admin') OR o.vendor_approved))
  OR (i.kind='avatar' AND (o.role='vendor' OR (o.role IN ('admin','moderator') AND NOT o.staff_hidden
    AND EXISTS(SELECT 1 FROM settings WHERE key='staff_list_public' AND value='true')))))`
 )

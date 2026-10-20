@@ -42,6 +42,17 @@ func lockListing(c *actionCtx, id string) (managedListing, error) {
 	if err := waitForWalletLocks(c.Ctx(), c.Tx); err != nil { // a checkout may hold the row (escrowCheckoutAction)
 		return l, err
 	}
+	// Selling approval can be revoked without changing a moderator's role.
+	// Hold the actor's account through the mutation so stale forms cannot write
+	// after a concurrent revocation, including photo removal and listing edits.
+	var current User
+	var active bool
+	if err := c.Tx.QueryRowContext(c.Ctx(), "SELECT role,vendor_approved,suspended_at IS NULL AND closed_at IS NULL AND retention_restricted_at IS NULL FROM users WHERE id=$1 FOR SHARE", c.User.ID).Scan(&current.Role, &current.VendorApproved, &active); err != nil {
+		return l, err
+	}
+	if !current.CanSell() || !active {
+		return l, fail(403, "Vendor access required")
+	}
 	if _, err := c.Tx.ExecContext(c.Ctx(), `SELECT 1 FROM users WHERE id=$1 OR id=(SELECT vendor_id FROM products WHERE id=$2 AND (vendor_id=$1 OR $3='admin')) FOR KEY SHARE`, c.User.ID, id, c.User.Role); err != nil {
 		return l, err
 	}

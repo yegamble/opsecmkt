@@ -490,7 +490,7 @@ func (a *App) admitGatewayUpload(w http.ResponseWriter, r *http.Request) {
 		u.render(403, retentionRestrictedMessage)
 		return
 	}
-	if !slices.Contains(route.roles, actor.Role) {
+	if !permitsRole(route.roles, actor) {
 		u.render(403, "Photo not saved: your account cannot upload this picture. Nothing was stored.")
 		return
 	}

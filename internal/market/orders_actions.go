@@ -49,7 +49,7 @@ func partyOrderLocked(c *actionCtx, id string) (Order, error) {
 	return o, err
 }
 
-const sellerIsVendorSQL = "SELECT u.role IN ('vendor','admin') AND u.closed_at IS NULL AND u.retention_restricted_at IS NULL FROM products p JOIN users u ON u.id=p.vendor_id WHERE p.id=$1"
+const sellerIsVendorSQL = "SELECT (u.role IN ('vendor','admin') OR u.vendor_approved) AND u.closed_at IS NULL AND u.retention_restricted_at IS NULL FROM products p JOIN users u ON u.id=p.vendor_id WHERE p.id=$1"
 
 // sellerIsVendorLocked is sellerIsVendor for a restore (A-70, A-163): it share-locks the owner's account row until
 // the transaction ends, so a concurrent role change or retention closure either commits first and is seen
@@ -85,9 +85,9 @@ func lockNewIntake(c *actionCtx, buyerID, vendorID string, draft bool) error {
 		return c.Tx.QueryRowContext(c.Ctx(), "SELECT 1 FROM users WHERE id=$1 FOR NO KEY UPDATE NOWAIT", buyerID).Scan(&one)
 	}
 	var role string
-	var suspended, banned bool
+	var suspended, banned, approved bool
 	lockVendor := func() error {
-		return c.Tx.QueryRowContext(c.Ctx(), "SELECT role,suspended_at IS NOT NULL,banned_at IS NOT NULL FROM users WHERE id=$1 FOR SHARE NOWAIT", vendorID).Scan(&role, &suspended, &banned)
+		return c.Tx.QueryRowContext(c.Ctx(), "SELECT role,suspended_at IS NOT NULL,banned_at IS NOT NULL,vendor_approved FROM users WHERE id=$1 FOR SHARE NOWAIT", vendorID).Scan(&role, &suspended, &banned, &approved)
 	}
 	if buyerID != "" && buyerID < vendorID {
 		if err := lockBuyer(); err != nil {
@@ -102,7 +102,7 @@ func lockNewIntake(c *actionCtx, buyerID, vendorID string, draft bool) error {
 			return err
 		}
 	}
-	if role != "vendor" && role != "admin" {
+	if !(&User{Role: role, VendorApproved: approved}).CanSell() {
 		if draft {
 			return fail(400, sellerNotVendor)
 		}

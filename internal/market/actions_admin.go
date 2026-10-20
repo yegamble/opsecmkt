@@ -499,6 +499,17 @@ func roleChanged(ctx context.Context, tx *sql.Tx, target, old, role, by string) 
 	summary := ""
 	avatarRemoved := false
 	archivedListings := "0"
+	// A move into staff retains an existing vendor approval. Administrator
+	// access itself is derived from the current role and never creates approval.
+	if role == "vendor" || old == "vendor" && (role == "moderator" || role == "admin") {
+		if _, err := tx.ExecContext(ctx, "UPDATE users SET vendor_approved=true WHERE id=$1", target); err != nil {
+			return "", err
+		}
+	} else if role == "buyer" {
+		if _, err := tx.ExecContext(ctx, "UPDATE users SET vendor_approved=false,vendor_verified=false WHERE id=$1", target); err != nil {
+			return "", err
+		}
+	}
 	if old != role && (old == "moderator" || old == "admin") && role != "moderator" {
 		// PR #28 review: a staff avatar was uploaded under the staff rules (hidden unless listed); as a
 		// vendor's it would be public. It is deleted here (D4's hard delete), after the caller's users row lock.
@@ -519,7 +530,11 @@ func roleChanged(ctx context.Context, tx *sql.Tx, target, old, role, by string) 
 			}
 		}
 	}
-	if role != "vendor" {
+	var selling bool
+	if err := tx.QueryRowContext(ctx, "SELECT role IN ('vendor','admin') OR vendor_approved FROM users WHERE id=$1", target).Scan(&selling); err != nil {
+		return "", err
+	}
+	if !selling {
 		// A user who is no longer a vendor cannot manage listings, so their active listings are archived in
 		// this transaction (audited on the account). Existing orders are unaffected.
 		if err := tx.QueryRowContext(ctx, "WITH a AS (UPDATE products SET archived=true,archived_at=now(),updated=now() WHERE vendor_id=$1 AND NOT archived RETURNING 1) SELECT count(*)::text FROM a", target).Scan(&archivedListings); err != nil {

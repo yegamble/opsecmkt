@@ -36,7 +36,7 @@ import (
 // Deposits (vendor_bond_deposits), one row per transaction and account, count from the escrow threshold
 // (escrowXMR.confirmations) with no unlock time and no double_spend_seen. Once the counted deposits of an application
 // waiting for its bond cover the bond captured on it, it is recorded received (bond_received_how 'xmr') and moves to
-// waiting for approval, or with automatic approval is approved (an active buyer account only; otherwise it waits for
+// waiting for approval, or with automatic approval is approved (an active buyer or moderator account only; otherwise it waits for
 // an administrator), audited and notified. An under-payment waits with no time limit; an administrator may record or
 // waive the bond as before. An over-payment is kept and the administrators told. A deposit that is locked, or that is
 // not counted by an application no longer waiting for its bond (withdrawn, rejected, waived, recorded or approved) is
@@ -846,7 +846,7 @@ func (a *App) xmrBondCredit(ctx context.Context, id string) error {
 		return err
 	}
 	next := "awaiting_approval"
-	if approval == "automatic" && role == "buyer" && !held {
+	if approval == "automatic" && (role == "buyer" || role == "moderator") && !held {
 		next = "approved"
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE vendor_applications SET bond_received_at=now(),bond_received_by=NULL,bond_received_how='xmr',state=$2,

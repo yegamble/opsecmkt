@@ -123,7 +123,8 @@ var notices = map[string]struct{ text, section, pages string }{
 	"operator-key":  {"Operator PGP key saved.", "transparency", "admin/transparency"},
 	// Vendor onboarding (vendor_applications.go, A-544)
 	"vendor-applied":   {"Vendor application submitted. Its status is shown below.", "vendor-application", "account"},
-	"vendor-approved":  {"Vendor application approved: your account is now a vendor account.", "vendor-application", "account"},
+	"vendor-approved":  {"Vendor application approved. Selling access is available from the vendor desk.", "vendor-application", "account"},
+	"vendor-revoked":   {"Selling approval removed. Active listings were archived; existing orders and any moderator role remain available.", "vendors", "admin/vendors admin/user"},
 	"vendor-withdrawn": {"Vendor application withdrawn.", "vendor-application", "account"},
 	"vendor-policy":    {"Vendor policy saved. It applies to new applications; open applications keep their bond and approval mode.", "vendors", "admin/vendors"},
 	"vendor-decision":  {"Vendor application updated. The applicant was notified.", "vendors", "admin/vendors admin/user"},
