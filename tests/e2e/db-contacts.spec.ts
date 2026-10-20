@@ -79,7 +79,9 @@ test('vendor contact, unread notifications and demotion archive', async ({ brows
   await buyer.getByRole('button', { name: 'Create unfunded draft' }).click();
   await buyer.waitForURL(/\/order\?id=/);
   const orderURL = buyer.url();
-  await expect(buyer.getByRole('region', { name: 'Vendor’s PGP key' })).toContainText(`${vendorHandle} has not added a PGP public key`);
+  const orderKey = buyer.getByRole('region', { name: 'Vendor’s PGP key' });
+  await expect(orderKey.locator('.pgp-fingerprint')).toHaveText(RECIPIENT_FINGERPRINT);
+  await expect(orderKey).toContainText('Ownership not verified');
   await expect(buyer.getByRole('link', { name: 'Message vendor' })).toHaveAttribute('href', `/messages?to=${vendorHandle}`);
   await buyer.getByRole('button', { name: 'Cancel draft' }).click();
   await expect(buyer.locator('.page-head .badge')).toHaveText('Cancelled');

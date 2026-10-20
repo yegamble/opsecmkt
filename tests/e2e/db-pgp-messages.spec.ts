@@ -274,7 +274,7 @@ test('staff find any account by handle; a buyer replies with encrypted evidence 
   // A buyer has no handle search, and an unlisted moderator is not someone it may start a message to (A-543).
   await buyer.goto('/messages');
   await expect(buyer.getByLabel('Find a recipient')).toHaveCount(0);
-  await expect(buyer.locator('#who-can-be-messaged')).toContainText('There is no search');
+  await expect(buyer.locator('#who-can-be-messaged')).toContainText('Private buyers cannot be found or contacted by handle.');
   await buyer.goto(`/messages?to=${handle}`);
   await expect(buyer.getByRole('status')).toHaveText(NOT_PERMITTED);
   await expect(buyer.locator('.contact-key')).toHaveCount(0);

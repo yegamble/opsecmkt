@@ -5,6 +5,7 @@
 <h1>Two-factor authentication<span class="accent">.</span>
 </h1>
 <p>Time-based one-time codes (TOTP) from an authenticator app you control.</p>
+<p class="help">If your account already has a PGP key, enabling a first authenticator requires decryption with that existing key in this browser. This prevents someone who knows only your password from enrolling their authenticator and replacing your public key. If both trusted methods are lost, ask staff for identity-verified key recovery.</p>
 </div>{{with .Security}}{{if .TOTPEnabled}}<span class="badge green">Enabled</span>{{else}}<span class="badge neutral">Not enrolled</span>{{end}}{{end}}</div>{{with .Next}}
 <p><a class="button primary" href="{{.}}">Continue to {{$.NextTitle}}</a></p>{{end}}{{with .Security}}{{if .Error}}
 <div class="alert error" role="alert">{{.Error}}</div>{{end}}{{if .RecoveryCodes}}
@@ -26,10 +27,10 @@
 <dd>{{.RecoveryRemaining}} of 10</dd>
 </div>
 </dl>
-<p>After your password, every sign-in asks for a code from your authenticator or a recovery code.</p>
-<p class="help">If you lose your authenticator and all recovery codes, you cannot finish a TOTP sign-in. A market administrator can provide a second-factor reset for a non-administrator account; administrator accounts need the operator’s procedure on the server. A reset also turns off PGP sign-in if enabled, and the next sign-in uses your password only.</p>
+<p>When the market allows browse-only sign-in, your authenticator or a recovery code can verify it after your password. A strict PGP login policy still requires PGP decryption.</p>
+<p class="help">If you lose your authenticator and all recovery codes, you cannot finish a TOTP sign-in. A market administrator can provide a second-factor reset for a non-administrator account; administrator accounts need the operator’s procedure on the server. A reset also turns off optional PGP sign-in if enabled. The market's PGP login policy still applies. If the bound PGP key is lost too, identity-verified replacement-key recovery is needed.</p>
 <h2>Replace recovery codes</h2>
-<p class="help">Recovery codes and any pending authenticator secret are visible to every signed-in session on this account. Sign out everywhere before replacing recovery codes.</p>
+<p class="help">Recovery codes and pending authenticator secrets on a keyed account are visible only to a browser with existing-key PGP proof. Sign out everywhere before replacing recovery codes.</p>
 <form class="stack" method="post" action="/totp/recovery">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="form_nonce" value="{{formNonce "/totp/recovery"}}">
@@ -47,7 +48,7 @@
 </label>
 <label>Authenticator code or recovery code<input name="code" required maxlength="40" autocomplete="one-time-code" spellcheck="false">
 </label>
-<span class="help">Your recovery codes are deleted and sign-in returns to password only.</span>
+<span class="help">Your recovery codes are deleted. The market's PGP login policy and any optional PGP sign-in still apply.</span>
 <button type="submit">Turn off TOTP</button>
 </form>
 </section>
@@ -69,7 +70,7 @@
 <p class="help">Setup URI</p>
 <p class="code-block totp-uri">{{.OTPAuthURI}}</p>
 <p class="help">Anyone who sees this key can generate your codes. The server stores it encrypted with a key derived from its setup token. Some authenticator apps sync keys to a cloud account; someone who can access that account may also be able to generate your codes.</p>
-<p class="help">Every signed-in session on this account can view a pending authenticator secret. Sign out everywhere before replacing recovery codes.</p>
+<p class="help">On an account with a saved PGP key, only a browser that has proved possession of that key can view pending authenticator material. Keyless accounts retain password-based setup. Sign out everywhere before replacing recovery codes.</p>
 </section>
 <section class="panel">
 <h2>2. Confirm a code</h2>
@@ -92,8 +93,8 @@
 </div>{{else}}
 <section class="panel">
 <h2>Not enrolled</h2>
-<p>Sign-in currently uses your password only. Enrolling generates a secret key for an authenticator app; TOTP turns on only after you confirm a code from it.</p>
-<p class="help">If you later lose your authenticator and all recovery codes, you cannot finish a TOTP sign-in. A market administrator can provide a second-factor reset for a non-administrator account; administrator accounts need the operator’s procedure on the server. A reset also turns off PGP sign-in if enabled, and the next sign-in uses your password only.</p>
+<p>Sign-in follows the market's PGP policy and any enrolled PGP verification. Enrolling generates a secret key for an authenticator app; TOTP turns on only after you confirm a code from it.</p>
+<p class="help">If you later lose your authenticator and all recovery codes, you cannot finish a TOTP sign-in. A market administrator can provide a second-factor reset for a non-administrator account; administrator accounts need the operator’s procedure on the server. A reset also turns off PGP sign-in if enabled, and the market's PGP login policy still applies to the next sign-in.</p>
 <form method="post" action="/totp/enroll">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="form_nonce" value="{{formNonce "/totp/enroll"}}">

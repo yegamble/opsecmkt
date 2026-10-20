@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ProtonMail/go-crypto/openpgp"
 )
@@ -96,11 +97,12 @@ func TestPGPAccessClearsOnKeyChangesAndSessionRotation(t *testing.T) {
 	e := newTestApp(t)
 	userID, token := e.keylessUser("access_keychange", "buyer")
 	key, public := testPGPKey(t, "access-old-key")
-	_, replacement := testPGPKey(t, "access-replacement")
+	replacementKey, replacement := testPGPKey(t, "access-replacement")
 	e.check(e.do("POST", "/account", token, url.Values{"pgp": {public}, "password": {testPassword}}), 303)
 	proveAccess(e, userID, token, key)
 	e.check(e.do("POST", "/account", token, url.Values{"pgp": {replacement}, "password": {testPassword}}), 303)
 	assertPGPAccess(e, userID, token, false)
+	proveAccess(e, userID, token, replacementKey)
 	e.check(e.do("POST", "/account", token, url.Values{"pgp": {public}, "password": {testPassword}}), 303)
 	assertPGPAccess(e, userID, token, false) // restoring the original key cannot restore old proof
 	proveAccess(e, userID, token, key)
@@ -201,10 +203,13 @@ func TestPGPAccessRejectsExpiredSessionsAndUnusableKeys(t *testing.T) {
 }
 
 func TestPGPAccessIsRequiredForDisputeOpeningAndReplies(t *testing.T) {
-	e := newTestApp(t)
-	buyerID, buyer := e.keylessUser("access_dispute_buyer", "buyer")
-	vendorID, _ := e.user("access_dispute_vendor", "vendor")
-	orderID := e.order(buyerID, e.product(vendorID, "digital"), "XMR", statePaid)
+	w := newDisputeOrderWorld(t)
+	e := w.e
+	buyerID, buyer, vendorID := w.buyerID, w.buyer, w.vendorID
+	orderID := w.fundedFor(w.buyerID, w.buyer, w.vendorID, w.vendor)
+	// Model a legacy buyer missing a key after this existing order was funded.
+	agExec(e, "UPDATE users SET pgp='' WHERE id=$1", buyerID)
+	agExec(e, "UPDATE sessions SET pgp_access_key='' WHERE user_id=$1", buyerID)
 	reason := "This order was not delivered as described."
 	agExpect(e, "/disputes", buyer, url.Values{"order_id": {orderID}, "reason": {reason}}, 403, "This browser has not completed PGP authentication")
 	if agStr(e, "SELECT state FROM orders WHERE id=$1", orderID) != statePaid || agInt(e, "SELECT count(*) FROM disputes WHERE order_id=$1", orderID) != 0 {
@@ -215,11 +220,11 @@ func TestPGPAccessIsRequiredForDisputeOpeningAndReplies(t *testing.T) {
 	proveAccess(e, buyerID, buyer, buyerKey)
 	e.check(e.do("POST", "/disputes", buyer, url.Values{"order_id": {orderID}, "reason": {reason}}), 303)
 
+	vendorKey, vendorPublic := testPGPKey(t, "dispute-access-vendor")
+	e.check(e.do("POST", "/account", w.vendor, url.Values{"pgp": {vendorPublic}, "password": {testPassword}}), 303)
 	vendor := agSession(e, vendorID)
 	reply := "I can provide the delivery record for this order."
 	agExpect(e, "/disputes/reply", vendor, url.Values{"order_id": {orderID}, "reply": {reply}}, 403, "This browser has not completed PGP authentication")
-	vendorKey, vendorPublic := testPGPKey(t, "dispute-access-vendor")
-	e.check(e.do("POST", "/account", vendor, url.Values{"pgp": {vendorPublic}, "password": {testPassword}}), 303)
 	proveAccess(e, vendorID, vendor, vendorKey)
 	e.check(e.do("POST", "/disputes/reply", vendor, url.Values{"order_id": {orderID}, "reply": {reply}}), 303)
 }
@@ -250,6 +255,10 @@ func TestPGPStrictPendingCodeDoesNotReviveWhenUnverifiedKeyIsRestored(t *testing
 	key, public := testPGPKey(t, "access-restore-pending")
 	_, replacement := testPGPKey(t, "access-restore-other")
 	e.check(e.do("POST", "/account", token, url.Values{"pgp": {public}, "password": {testPassword}}), 303)
+	// Arrange a genuinely preexisting authenticator; this test isolates pending
+	// code generations, while first-enrollment bootstrap is covered separately.
+	totp, _ := agEnableTOTP(e, userID)
+	step := uint64(totpStep(time.Now()))
 	agExec(e, "UPDATE settings SET value='false' WHERE key=$1", settingAllowLoginWithoutPGP)
 	anon := randomToken()
 	w := e.do("POST", "/login", anon, url.Values{"handle": {"access_restore_pending"}, "password": {testPassword}})
@@ -257,8 +266,8 @@ func TestPGPStrictPendingCodeDoesNotReviveWhenUnverifiedKeyIsRestored(t *testing
 	pending := &http.Cookie{Name: "pending", Value: e.cookie(w, "pending")}
 	e.check(e.do("POST", "/challenge/pgp", anon, nil, pending), 303)
 	oldCode := testSignInCode(t, key, agStr(e, "SELECT pgp_challenge FROM pending_logins WHERE token_hash=$1", digest(pending.Value)))
-	e.check(e.do("POST", "/account", token, url.Values{"pgp": {replacement}, "password": {testPassword}}), 303)
-	e.check(e.do("POST", "/account", token, url.Values{"pgp": {public}, "password": {testPassword}}), 303)
+	e.check(e.do("POST", "/account", token, url.Values{"pgp": {replacement}, "password": {testPassword}, "code": {hotp(totp, step, totpDigits)}}), 303)
+	e.check(e.do("POST", "/account", token, url.Values{"pgp": {public}, "password": {testPassword}, "code": {hotp(totp, step+1, totpDigits)}}), 303)
 	agExpect(e, "/challenge", anon, url.Values{"method": {"pgp"}, "pgp_code": {oldCode}}, 401, "does not match", pending)
 	assertPGPAccess(e, userID, token, false)
 

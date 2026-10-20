@@ -54,6 +54,7 @@ func TestVendorKeyChangedAfterOrderWarnsBuyer(t *testing.T) {
 	// Changed after the order (the /account key-change path records when): warned, the new key unverified.
 	p.provePGPAt(p.vendor.ID, vendorPub, "1 day")
 	mustNotContain(t, page(p.buyerSess), keyChangedAfterOrder)
+	p.pgpSessionKey(p.vendorSess) // the owner authenticated the existing binding before replacing it
 	_, otherPub := testPGPKey(t, "a158_other")
 	p.check(p.do("POST", "/account", p.vendorSess, url.Values{"pgp": {otherPub}, "password": {testPassword}}), 303)
 	b = page(p.buyerSess)

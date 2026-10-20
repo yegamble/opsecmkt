@@ -658,6 +658,9 @@ func authAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, fail(400, "The PGP public key is too long (maximum 16 KB).")
 		}
 		if armored != "" {
+			if _, photos, other := keyExtraPackets(armored); photos > 0 || other > 0 {
+				return actionResult{}, fail(400, "Supply public key packets only, without photo IDs, private subkeys or unsupported packets.")
+			}
 			key, fp, canonical, err := parseCanonicalPublicKey(armored)
 			if err != nil || !canReceiveEncrypted(key, time.Now()) {
 				return actionResult{}, fail(400, "Save a valid PGP public key with a usable encryption subkey. Never submit a private key.")

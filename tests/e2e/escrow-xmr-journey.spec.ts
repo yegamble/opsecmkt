@@ -177,8 +177,13 @@ test('Monero escrow: checkout with the custody copy, funding at 9 and 10 confirm
   await expect(vendor.locator('.account-name')).toHaveText('xmr_vendor');
   const profile = vendor.locator('form[action="/account"]');
   await expect(profile).toHaveCount(1);
-  // The SSR textarea already contains the fixture key; its wrapping label text also includes that initial value.
-  await typeInto(vendor, profile.getByLabel('PGP public key'), pgpFixture('recipient.pub.asc'));
+  // The seeded key is already in the SSR textarea. Replace it with the keyboard instead of appending a second key.
+  // Its wrapping label text also includes that initial value, so the label match is not exact.
+  const publicKey = profile.getByLabel('PGP public key');
+  await expect(publicKey).toHaveValue(/-----BEGIN PGP PUBLIC KEY BLOCK-----/);
+  await tabTo(vendor, publicKey);
+  await vendor.keyboard.press('ControlOrMeta+A');
+  await vendor.keyboard.insertText(pgpFixture('recipient.pub.asc'));
   await typeInto(vendor, profile.getByLabel('Current password', { exact: true }), vendorPassword);
   expect(await pressSubmit(vendor, profile.getByRole('button', { name: 'Save profile' }))).toBe(303);
   for (const [title, kind] of [[digitalTitle, 'digital'], [physicalTitle, 'physical']]) {

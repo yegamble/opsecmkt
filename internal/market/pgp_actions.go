@@ -104,8 +104,18 @@ func saveProfileKey(c *actionCtx, armored string, confirmed bool) (string, strin
 		}
 		fp, canonical = parsed, text
 	}
+	if err := authorizeProfileKeyChange(c, p); err != nil {
+		return "", "", err
+	}
 	if err := clearPGPAccess(ctx, tx, uid); err != nil {
 		return "", "", err
+	}
+	if old == "" && fp != "" {
+		// A pending secret shown before the first key binding was password-only
+		// material; it must not become a trusted factor after the binding.
+		if _, err := tx.ExecContext(ctx, "UPDATE users SET totp_pending='' WHERE id=$1 AND NOT totp_enabled", uid); err != nil {
+			return "", "", err
+		}
 	}
 	if _, err := tx.ExecContext(ctx, "UPDATE users SET pgp=$1,pgp_fingerprint=$2,pgp_verified_at=NULL,pgp_2fa=false,pgp_changed_at=now() WHERE id=$3", canonical, fp, uid); err != nil {
 		return "", "", err
@@ -150,11 +160,16 @@ func keyChangedAlert(why string) string {
 // older subkey). Otherwise it is saved as a changed key: proof, PGP sign-in and any open challenge are cleared, the
 // change time is recorded (A-158) and the outcome names why. Either way the owner is notified.
 func renewProfileKey(c *actionCtx, p *pgpAccount, canonical string) (string, string, error) {
-	if err := clearPGPAccess(c.Ctx(), c.Tx, c.User.ID); err != nil {
-		return "", "", err
-	}
 	ctx, tx, uid := c.Ctx(), c.Tx, c.User.ID
 	why := renewalRefusal(p, canonical, time.Now())
+	if why != "" {
+		if err := authorizeProfileKeyChange(c, p); err != nil {
+			return "", "", err
+		}
+	}
+	if err := clearPGPAccess(ctx, tx, uid); err != nil {
+		return "", "", err
+	}
 	if why == "" {
 		if _, err := tx.ExecContext(ctx, "UPDATE users SET pgp=$1 WHERE id=$2", canonical, uid); err != nil {
 			return "", "", err

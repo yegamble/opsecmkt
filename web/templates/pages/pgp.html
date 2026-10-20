@@ -34,7 +34,7 @@
 </div>
 {{template "pgp-expiry:rows" .}}
 </dl>{{template "pgp-expiry:warning" .}}
-<p class="help">Compare this fingerprint with the one your own PGP software shows before relying on it. Saving a different key on the account page clears verification and turns PGP sign-in off; that needs your current password (and an authenticator code when TOTP is on). The same key renewed there (same fingerprint, for example a new expiry) keeps both, unless it lacks a revocation the saved key has or would have others encrypt to an older subkey.</p>
+<p class="help">Compare this fingerprint with the one your own PGP software shows before relying on it. Saving a different key on the account page clears verification and turns PGP sign-in off. It requires your current password and either decryption with the existing key in this browser or a fresh code from your previously enrolled authenticator. This protection also applies when the old key expires, is revoked or becomes unreadable; staff provide identity-verified replacement-key recovery if both methods are lost. The same key renewed there (same fingerprint, for example a new expiry) keeps both, unless it lacks a revocation the saved key has or would have others encrypt to an older subkey.</p>
 </section>
 <section class="panel">
 <h2>{{if .Verified}}Prove ownership again{{else}}Prove ownership{{end}}</h2>

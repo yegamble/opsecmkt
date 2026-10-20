@@ -215,7 +215,8 @@ func TestPGPKeyOwnershipAndSecondFactor(t *testing.T) {
 	if w2.Header().Get("Location") != "/" {
 		t.Fatal("reset 2FA still challenged")
 	}
-	// A challenge issued for bob's key cannot be answered after the key changes back.
+	// The owner has authenticated with Bob's key; an additional outstanding challenge is invalidated by rotation.
+	e.pgpSessionKey(s)
 	e.check(e.do("POST", "/pgp/challenge", s, url.Values{"kind": {"decrypt"}}), 303)
 	if err := e.DB.QueryRow("SELECT challenge FROM pgp_challenges WHERE user_id=$1", uid).Scan(&armored); err != nil {
 		t.Fatal(err)
@@ -224,7 +225,8 @@ func TestPGPKeyOwnershipAndSecondFactor(t *testing.T) {
 	e.check(e.do("POST", "/account", s, url.Values{"pgp": {alicePub}, "password": {testPassword}}), 303)
 	e.check(e.do("POST", "/pgp/verify", s, url.Values{"response": {bobNonce}}), 409)
 
-	// Removing the key clears everything.
+	// Removing the key after decryption authentication clears everything.
+	e.pgpSessionKey(s)
 	e.check(e.do("POST", "/account", s, url.Values{"pgp": {""}, "password": {testPassword}}), 303)
 	if fp, verified, _ := status(); fp != "" || verified {
 		t.Fatal("removed key kept state")
@@ -368,7 +370,8 @@ func TestMessageEncryptionStatus(t *testing.T) {
 	if !strings.Contains(page, `readonly aria-label="Encrypted message from msg_sender to msg_alice"`) {
 		t.Fatal("encrypted message was not rendered in a labeled readonly textarea")
 	}
-	// The extra-key count and match are historical send-time facts, not recomputed if the recipient changes keys.
+	// The extra-key count and match are historical facts even after an authenticated owner changes keys.
+	e.pgpSessionKey(aliceSession)
 	e.check(e.do("POST", "/account", aliceSession, url.Values{"pgp": {bobPub}, "password": {testPassword}}), 303)
 	page = e.body("GET", "/messages", sender, nil, 200)
 	if !strings.Contains(page, "+ 1 other visible key(s)") {

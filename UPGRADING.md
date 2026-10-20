@@ -25,6 +25,8 @@ All purchases and message sends now require a usable public key and successful c
 
 Vacation keeps profiles and products public but blocks new purchases. Deactivation hides profiles, products and photos from strangers while preserving authorized existing-order access. Vendors can refuse buyer messages while away, including replies through old conversations. Public last seen is off by default; opting out clears the stored activity timestamp. Buyer-to-buyer legacy conversations stay readable but cannot be continued.
 
+Existing nonempty PGP bindings, including expired or unreadable keys, require current-session old-key decryption or an already-enrolled authenticator before replacement or removal. First authenticator enrollment, activation and viewing pending authenticator/recovery material on a PGP-bound account also require that decryption proof. Inactive pending authenticator enrollments on already-keyed accounts are cleared during migration, because another existing browse session may have seen those secrets; active authenticators are preserved. First key enrollment and safe same-fingerprint renewal remain supported. For lost keys, use the existing administrator reset with an explicitly supplied replacement public key after verifying the owner. Last-administrator recovery uses `-reset-admin-factors HANDLE -reset-admin-pgp-key-file FILE`; it preserves the strict login setting and never accepts a private key.
+
 See [PGP access](docs/operator-guide.md#pgp-access-for-purchases-and-messages) and [vendor availability](docs/operator-guide.md#vendor-availability-and-activity-privacy) for the controls and recovery boundaries.
 
 ## Stuck failed Monero settlements can be cleared (A-613)

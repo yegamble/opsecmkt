@@ -186,6 +186,7 @@ func TestA130OwnFormOriginalAccountPasswordModeSurvivesNewerKey(t *testing.T) {
 	if n := agInt(e, "SELECT count(*) FROM form_submissions WHERE nonce=$1 AND confirmation_required=true", form.Get(formNonceField)); n != 1 {
 		t.Fatalf("original password mode not recorded: %d", n)
 	}
+	e.pgpSessionKey(session) // the legitimate owner has authenticated the first key before rotation
 	e.check(e.do("POST", "/account", session, url.Values{"pgp": {newerKey}, "password": {testPassword}}), 303)
 	audits := agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1 AND action LIKE '%PGP%'", uid)
 	e.check(e.do("POST", "/account", session, form), 303)
