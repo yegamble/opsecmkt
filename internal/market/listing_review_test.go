@@ -259,6 +259,8 @@ func TestListingEditReholdsApprovedListing(t *testing.T) {
 	done := e.order(reviewer, p, "XMR", stateCompleted)
 	agExec(e, "INSERT INTO reviews(id,order_id,product_id,buyer_id,rating,body) VALUES($1,$2,$3,$4,4,'Arrived as described')", randomToken(), done, p, reviewer)
 	draftBuyer, draftSess := e.user("rehold_draft", "buyer")
+	_, draftKey := testPGPKey(t, "reholddraft")
+	e.setKey(draftBuyer, draftKey) // a checkout needs a usable buyer key before it reaches the listing
 	draft := e.order(draftBuyer, p, "XMR", stateDraft)
 	setListingReviewMode(e, "hold")
 	edit := func(sess string, f url.Values) {
