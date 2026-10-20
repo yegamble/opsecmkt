@@ -12,6 +12,7 @@ ARG TOR_VERSION=0.4.9.13-1~d12.bookworm+1
 ARG TOR_ARCHIVE_FINGERPRINT=A3C4F0F979CAA22CDBA8F512EE8CBC9E886DDD89
 RUN set -eu; \
     apt-get update; \
+    apt-get upgrade -y --no-install-recommends; \
     apt-get install -y --no-install-recommends ca-certificates curl gnupg; \
     curl --fail --show-error --silent --location --proto '=https' --tlsv1.2 \
       "https://deb.torproject.org/torproject.org/${TOR_ARCHIVE_FINGERPRINT}.asc" -o /tmp/tor.asc; \

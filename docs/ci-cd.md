@@ -32,7 +32,8 @@ release workflow. A vulnerability in test or documentation tooling is included
 even when it cannot affect the shipped server. GitGuardian remains the remote
 PR secret check; local Gitleaks hooks provide earlier feedback.
 
-The built application and Tor images are scanned with pinned Trivy. Full JSON
+The built application and Tor images are scanned with pinned Trivy. Their builds
+apply Debian package updates between pinned base-image rebuilds. Full JSON
 reports retain all known vulnerabilities, including unfixed and lower-severity
 findings, for 14 days. Fixable HIGH or CRITICAL vulnerabilities fail the job;
 scanner/download errors also fail. The application scan reuses the internal

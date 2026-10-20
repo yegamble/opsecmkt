@@ -59,11 +59,11 @@ Read this once, before you form any opinion. Then read `CLAUDE.md`,
 
 | Change | Gate |
 |---|---|
-| Go | `"$(go env GOROOT)/bin/gofmt" -l cmd internal` empty · `go mod verify` · `go vet ./...` · `TEST_DATABASE_URL=<dedicated db> go test -race -count=1 -timeout 30m -run '^(TestEscrow|TestXMR|FuzzEscrow)' ./...` and the same with `-skip` in place of `-run` (CI's two halves; one race process for all of `internal/market` no longer fits 30 minutes on a loaded host) · `go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...` |
+| Go | `make go-quality` (format/imports, module integrity/tidiness, vet, reviewed lint including unused code and tests) · `"$(go env GOROOT)/bin/gofmt" -l cmd internal` empty · `go mod verify` · `go vet ./...` · `TEST_DATABASE_URL=<dedicated db> go test -race -count=1 -timeout 30m -run '^(TestEscrow|TestXMR|FuzzEscrow)' ./...` and the same with `-skip` in place of `-run` (CI's two halves; one race process for all of `internal/market` no longer fits 30 minutes on a loaded host) · `go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...` |
 | Templates/CSS/journeys | `npx playwright test` (preview projects) and `E2E_DATABASE_URL=<fresh db> npm run test:e2e` |
 | Escrow UI journeys | `E2E_ESCROW_XMR_DATABASE_URL=<fresh db> npm run test:e2e:escrow-xmr` |
 | Shell/installer/ops | `for f in scripts/*.sh; do bash -n "$f"; done` (a single `bash -n a b` checks only `a`), `python3 -m unittest discover -s tests -p 'test_*.py'`, the matching `scripts/test-*.sh` |
-| Workflows | `go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12` |
+| Workflows | `make workflow-lint` · required CI workflow/shell security checks; tool changes also run `make tools-smoke` |
 | Everything | GitHub Actions **CI passed** (required on `main` for non-admins only: branch protection has `enforce_admins=false`, and a red push run has followed an admin merge, e.g. 38836427647 after PR #62). Cite the actual run ID and commit; never infer green CI from a merge |
 
 ## Evidence tiers — never promote one to another
@@ -111,8 +111,8 @@ fake-model test never proves model quality
   `scripts/test-*.sh` can pass falsely there. Run them with bash 5 (Homebrew) or rely on CI (Ubuntu).
 - **govulncheck may need the toolchain pinned locally**: when the tool binary is
   built with an older Go than `go.mod`'s `toolchain` line, it exits 1 with
-  "requires newer Go version"; run `GOTOOLCHAIN=go1.27.1 go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...`
-  and check the exit status (a piped `tail` hides the failure).
+  "requires newer Go version"; run `make vuln` with the toolchain selected by
+  `go.mod` and check the exit status (a piped `tail` hides the failure).
 - Migration 073's constraint trigger `payouts_return_needs_release` is deferred to COMMIT: a later migration
   that writes `payouts` rows and then alters or indexes `payouts` in the same startup transaction fails with
   "pending trigger events" unless it runs `SET CONSTRAINTS payouts_return_needs_release IMMEDIATE` first.
