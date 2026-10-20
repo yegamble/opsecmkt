@@ -62,5 +62,36 @@ vendor mark. Every form posts to its own /admin/vendor-* path and confirms with 
 </label>
 {{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
 <button type="submit">Save verified mark</button>
+</form>{{with $.ListingReviewAdmin}}
+<h3 id="listing-review">Listing review</h3>{{with $.NoticeIn "listing-review"}}
+<div class="alert" role="status">{{.}}</div>{{end}}
+<p>Now: {{if .Hold}}<strong>hold for review</strong>. A vendor's new listing, and its own change to an approved listing's title, description, category, region, fulfillment type, price or dispatch window or a new photo, stays hidden from buyers until a moderator or administrator approves it on the moderation desk{{else}}<strong>publish at once</strong>. New and edited listings are visible to buyers as soon as they are saved{{end}}. {{if eq .Pending 1}}1 listing waits{{else}}{{.Pending}} listings wait{{end}} for review. Your own listings and those of vendors listed below are never held.</p>
+<form class="stack" method="post" action="/admin/listing-review">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/admin/listing-review"}}">
+<fieldset aria-describedby="listing-review-help"><legend>New and edited listings</legend>
+<label class="check"><input type="radio" name="listing_review_mode" value="publish" required{{if not .Hold}} checked{{end}}> Publish at once</label>
+<label class="check"><input type="radio" name="listing_review_mode" value="hold" required{{if .Hold}} checked{{end}}> Hold for review by a moderator or administrator</label>
+</fieldset>
+<span class="help" id="listing-review-help">Switching back to publish at once approves nothing: listings already waiting stay hidden until staff approve them. Automated moderation never approves or holds a listing. Confirm with your own password{{if and $.Security $.Security.TOTPEnabled}} and authenticator code{{end}}; the change is recorded in the audit trail.</span>
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
+<button type="submit">Save listing review</button>
 </form>
+<h4 id="listing-auto-approve">Vendors who publish without review</h4>{{if .AutoApproved}}
+<ul>{{range .AutoApproved}}<li>{{.}}</li>{{end}}</ul>{{else}}
+<p>No vendor publishes without review.</p>{{end}}
+<form class="stack" method="post" action="/admin/vendor-auto-approve">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/admin/vendor-auto-approve"}}">
+<label>Vendor handle<input name="handle" required minlength="3" maxlength="32" pattern="[a-zA-Z0-9_]{3,32}" title="3–32 letters, digits or underscores" autocomplete="off" autocapitalize="none" spellcheck="false">
+</label>
+<label>Review<select name="action">
+<option value="on">Publish this vendor's listings without review</option>
+<option value="off">Hold this vendor's listings for review</option>
+</select>
+</label>
+<p class="help">Applies to the vendor's next new listing or edit; listings already approved stay visible and listings already waiting still need staff. The vendor is notified and the change is audited.</p>
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
+<button type="submit">Save vendor review setting</button>
+</form>{{end}}
 </section>{{end}}{{end}}
