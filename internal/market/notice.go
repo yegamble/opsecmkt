@@ -101,6 +101,7 @@ var notices = map[string]struct{ text, section, pages string }{
 	"review-hidden":      {"Review hidden.", "reviews-title", "product vendor"},
 	"review-shown":       {"Review restored.", "reviews-title", "product vendor"},
 	"photo-saved":        {"Photo saved as a re-encoded JPEG; location, camera and other metadata were removed. Check the picture itself for anything that identifies you.", "photos", "listing-edit"},
+	"evidence-saved":     {"Dispute evidence saved as a scanned, re-encoded JPEG with metadata removed.", "dispute-evidence", "order"},
 	"photo-removed":      {"Photo removed.", "photos", "listing-edit"},
 	// A staff takedown (image_takedown.go), back on /moderator's Recent photos or on the product or vendor page.
 	"image-removed":      {"Image removed. Its owner was notified with your reason.", "recent-photos", "moderator"},
@@ -122,7 +123,8 @@ var notices = map[string]struct{ text, section, pages string }{
 	"operator-key":  {"Operator PGP key saved.", "transparency", "admin/transparency"},
 	// Vendor onboarding (vendor_applications.go, A-544)
 	"vendor-applied":   {"Vendor application submitted. Its status is shown below.", "vendor-application", "account"},
-	"vendor-approved":  {"Vendor application approved: your account is now a vendor account.", "vendor-application", "account"},
+	"vendor-approved":  {"Vendor application approved. Selling access is available from the vendor desk.", "vendor-application", "account"},
+	"vendor-revoked":   {"Selling approval removed. Active listings were archived; existing orders and any moderator role remain available.", "vendors", "admin/vendors admin/user"},
 	"vendor-withdrawn": {"Vendor application withdrawn.", "vendor-application", "account"},
 	"vendor-policy":    {"Vendor policy saved. It applies to new applications; open applications keep their bond and approval mode.", "vendors", "admin/vendors"},
 	"vendor-decision":  {"Vendor application updated. The applicant was notified.", "vendors", "admin/vendors admin/user"},

@@ -1,6 +1,7 @@
 package market
 
 import (
+	"context"
 	"database/sql"
 	"net/http"
 	"regexp"
@@ -118,7 +119,7 @@ func imageSuffix(full bool) string {
 const (
 	imagePublicFrom  = `images i JOIN users o ON o.id=i.owner_user_id LEFT JOIN products p ON p.id=i.product_id`
 	imagePublicWhere = `o.suspended_at IS NULL AND (
- (i.kind='photo' AND p.vendor_id=i.owner_user_id AND NOT p.archived AND NOT o.vendor_deactivated AND p.admin_archive_reason IS NULL AND o.role IN ('vendor','admin'))
+ (i.kind='photo' AND p.vendor_id=i.owner_user_id AND NOT p.archived AND NOT o.vendor_deactivated AND p.admin_archive_reason IS NULL AND (o.role IN ('vendor','admin') OR o.vendor_approved))
  OR (i.kind='avatar' AND ((o.role='vendor' AND NOT o.vendor_deactivated) OR (o.role IN ('admin','moderator') AND NOT o.staff_hidden
    AND EXISTS(SELECT 1 FROM settings WHERE key='staff_list_public' AND value='true')))))`
 )
@@ -130,7 +131,7 @@ const (
 // read an order placed on that listing (orderReadable, the rule that opens the archived listing's product page, A-164 and A-264).
 // Everyone else, moderators included for other vendors' images, is refused. Inside the last EXISTS, o and p are
 // the order and its listing (orderReadable's aliases), not the image's owner.
-var imageDeskWhere = `(i.owner_user_id=$2 OR $3='admin'
+var imageDeskWhere = `i.kind<>'evidence' AND (i.owner_user_id=$2 OR $3='admin'
  OR (i.kind='avatar' AND o.role IN ('admin','moderator') AND o.suspended_at IS NULL AND EXISTS(
    SELECT 1 FROM orders od JOIN products pr ON pr.id=od.product_id
    WHERE od.state='resolved' AND (od.buyer_id=$2 OR pr.vendor_id=$2 OR $3='moderator')
@@ -195,6 +196,15 @@ func (a *App) servePublicImage(w http.ResponseWriter, r *http.Request, rest stri
 // serveDeskImage answers GET/HEAD /desk/img/<rest> for the session in the request's session cookie. It reads no
 // other cookie and sets none.
 func (a *App) serveDeskImage(w http.ResponseWriter, r *http.Request, rest string) {
+	a.serveAuthenticatedImage(w, r, rest, false)
+}
+
+type evidenceImageContext struct{}
+
+func (a *App) serveEvidenceImage(w http.ResponseWriter, r *http.Request, rest string) {
+	a.serveAuthenticatedImage(w, r, rest, true)
+}
+func (a *App) serveAuthenticatedImage(w http.ResponseWriter, r *http.Request, rest string, evidence bool) {
 	if r.Method == "POST" {
 		http.Error(w, "Method not allowed", 405)
 		return
@@ -220,6 +230,16 @@ func (a *App) serveDeskImage(w http.ResponseWriter, r *http.Request, rest string
 		return
 	}
 	r = accessRequest(r, policy)
+	if evidence {
+		// Evidence is always private, including on a public market. Neither the image
+		// owner's identity nor administrator status alone grants access.
+		r = r.WithContext(context.WithValue(r.Context(), evidenceImageContext{}, true))
+		where := `i.kind='evidence' AND EXISTS(SELECT 1 FROM orders od JOIN products p ON p.id=od.product_id
+   WHERE od.id=i.order_id AND od.private_expired_at IS NULL AND EXISTS(SELECT 1 FROM disputes d WHERE d.order_id=od.id)
+   AND (od.buyer_id=$2 OR p.vendor_id=$2 OR ($3 IN ('moderator','admin') AND od.buyer_id<>$2 AND p.vendor_id<>$2 AND NOT $4)))`
+		a.serveImage(w, r, deskImageBytes, ref, `images i WHERE i.id=$1 AND `+where, ref.id, u.ID, u.Role, u.RetentionRestricted)
+		return
+	}
 	a.serveImage(w, r, deskImageBytes, ref, `images i JOIN users o ON o.id=i.owner_user_id WHERE i.id=$1 AND `+imageDeskWhere, ref.id, u.ID, u.Role)
 }
 
@@ -276,7 +296,7 @@ func writeImage(w http.ResponseWriter, r *http.Request, n int64, b []byte, err e
 	h.Set("Content-Security-Policy", "default-src 'none'; sandbox")
 	// D7: a day in the browser's private cache, not revalidated (no validators: an id's bytes never change).
 	h.Set("Cache-Control", "private, max-age=86400, immutable")
-	if policy := requestSiteAccess(r); policy != nil && policy.MembersOnly {
+	if policy := requestSiteAccess(r); (policy != nil && policy.MembersOnly) || r.Context().Value(evidenceImageContext{}) == true {
 		h.Set("Cache-Control", "no-store")
 	}
 	h.Set("Cross-Origin-Resource-Policy", "same-origin")
@@ -294,6 +314,8 @@ func imageRoute(path string) string {
 		return "/img/"
 	case strings.HasPrefix(path, "/desk/img/"):
 		return "/desk/img/"
+	case strings.HasPrefix(path, "/desk/evidence/"):
+		return "/desk/evidence/"
 	}
 	return ""
 }

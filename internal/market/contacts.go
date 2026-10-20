@@ -131,7 +131,7 @@ func publicVendorContactKey(ctx context.Context, db *sql.DB, userID string) (Con
 	}
 	defer tx.Rollback()
 	var handle string
-	if err = tx.QueryRowContext(ctx, `SELECT handle FROM users WHERE id=$1 AND role IN ('vendor','admin')
+	if err = tx.QueryRowContext(ctx, `SELECT handle FROM users WHERE id=$1 AND (role IN ('vendor','admin') OR vendor_approved)
 		AND NOT vendor_deactivated FOR SHARE NOWAIT`, userID).Scan(&handle); err != nil {
 		return ContactKey{}, err
 	}

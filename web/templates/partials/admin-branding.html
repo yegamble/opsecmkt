@@ -9,7 +9,7 @@
 <button class="primary" type="submit">Save market name</button>
 </form>
 <h3>Logo</h3>
-<div class="branding-preview" aria-label="Current market logo">{{template "market-wordmark" .}}</div>
+<div class="branding-preview{{if not (and .Branding .Branding.LogoURL)}} text-brand{{end}}" aria-label="Current market logo">{{template "market-wordmark" .}}</div>
 <p class="help">The same logo appears in the header and footer throughout the site, including sign-in pages. JPEG, PNG and self-contained SVG logos fit a fixed box without stretching or changing the layout.</p>
 {{if and .Branding .Branding.UploadEnabled}}<form class="stack" method="post" action="/admin/branding/authorize">
 <input type="hidden" name="csrf" value="{{.CSRF}}">

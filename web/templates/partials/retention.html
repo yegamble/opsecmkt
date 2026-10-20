@@ -11,7 +11,7 @@
 {{define "retention:account"}}{{with .Retention}}
 <section class="panel" id="retention" aria-labelledby="retention-account-heading">
 <h2 id="retention-account-heading">Retention and account deletion</h2>
-{{if $.User.RetentionRestricted}}<p class="alert" role="status">{{if $.User.RetentionContinuity}}Administrator continuity keeps limited access while closure is pending. The operator must appoint a replacement administrator.{{else}}Unresolved funds require limited access while account deletion is pending. You can settle existing orders and secure your sign-in.{{end}} New transactions and media uploads are disabled. Sign-in and PGP security updates remain available.</p>{{end}}
+{{if $.User.RetentionRestricted}}<p class="alert" role="status">{{if $.User.RetentionContinuity}}Administrator continuity keeps limited access while closure is pending. The operator must appoint a replacement administrator.{{else}}Unresolved funds require limited access while account deletion is pending. You can settle existing orders and secure your sign-in.{{end}} New transactions and listing or profile image uploads are disabled. Evidence uploads to existing open disputes, and sign-in and PGP security updates, remain available.</p>{{end}}
 {{with $.NoticeIn "retention"}}<div class="alert" role="status">{{.}}</div>{{end}}
 {{template "retention:summary" $}}
 {{if .Enabled}}{{if .DeletionRequested}}<p>Your deletion request was accepted {{.DeletionRequested}}. Save any messages or deliveries you need. Signing in does not cancel this request.</p>

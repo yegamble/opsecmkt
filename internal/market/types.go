@@ -9,19 +9,47 @@ type User struct {
 	Factors               string // P1, PageData.FactorAccounts only: enrolled second factors, e.g. "TOTP and PGP sign-in"
 	Suspended             string // P1, PageData.SuspendedAccounts only: when the account was suspended
 	Avatar                string // A-189, vendor page and /canary staff list only: the avatar thumbnail on /img, "" when none may be shown
-	VendorVerified        bool   // A-544, vendor page only: an administrator marked this vendor verified
+	VendorVerified        bool   // administrator verification, or automatic verification for a current administrator
+	VendorApproved        bool   // selling approval independent of the account's moderator role
 	// A-546, PageData.BannedAccounts only: when the account was banned, by which administrator ("" once that account
 	// is erased) and why.
 	Banned, BannedBy, BanReason string
 }
+
+// CanSell describes the selling workspace, without changing the account's staff
+// role. Administrator access is derived so it ends when that role is removed.
+func (u *User) CanSell() bool {
+	return u != nil && (u.Role == "vendor" || u.Role == "admin" || u.VendorApproved)
+}
+
+func permitsRole(roles []string, u *User) bool {
+	if len(roles) == 0 {
+		return true
+	}
+	if u == nil {
+		return false
+	}
+	for _, role := range roles {
+		if role == u.Role || role == "vendor" && u.CanSell() {
+			return true
+		}
+	}
+	return false
+}
+
 type Product struct {
 	ID, Title, Description, Category, Region, Kind, Vendor, VendorID, PriceBTC, PriceXMR string
 	BTCOrderUnavailable, XMROrderUnavailable                                             string // legacy price below that currency's escrow settlement minimum
 	Stock                                                                                int
 	Archived                                                                             bool // Foundation; P4 uses
 	VendorVerified                                                                       bool // A-544: an administrator marked the vendor verified
+	Subcategory                                                                          string
+	ShippingRegions                                                                      []string
+	RatingAverage                                                                        float64
+	RatingCount                                                                          int
 	// P4, vendor-dashboard only: an administrator's takedown reason (A-163); never loaded for public pages.
-	TakedownReason string
+	TakedownReason      string
+	DigitalDeliveryMode string
 	// A-189, catalog, vendor and product pages only: the listing's public photos, oldest first (image_pages.go),
 	// and Thumb, the first one's thumbnail URL for its card ("" = the CSS illustration).
 	Photos []ProductPhoto
@@ -45,6 +73,7 @@ type ProductPhoto struct {
 type Order struct {
 	ID, ProductID, Title, Buyer, Vendor, Currency, Amount, Status, Created string
 	State, Kind, BuyerID, VendorID, Updated                                string
+	Quantity                                                               int64
 	// Listing snapshot is captured only when the draft first requests payment. Kind remains
 	// operational (live for earlier orders with no snapshot); KindDisplay never invents
 	// historical terms for those orders. Description is rendered only on an authorized order.
@@ -65,7 +94,8 @@ type Message struct {
 	RecipientExtraKeys    int
 	RecipientExtraKeysSet bool
 
-	CanReply bool // current recipient policy permits replying to this incoming message
+	CanReply     bool   // current recipient policy permits replying to this incoming message
+	ReplyOrderID string // historical buyer/vendor contextual replies continue on this order
 }
 type Notification struct {
 	ID, Body, Created, OrderID, TicketID string
@@ -152,6 +182,8 @@ type PageData struct {
 	RecentServerErrors []ServerErrorEntry // administrator-only, volatile, no request contents
 
 	Page, Title, CSRF, Error, Notice, Query, Category, Region, Currency, Mode string
+	Subcategory, KindFilter, Sort                                             string
+	InStockOnly                                                               bool
 	NoticeAt                                                                  string // the section a one-shot notice renders in, "" = the top (notice.go)
 	HeaderCSRF                                                                string // the header sign-out's token when User came from the session cookie on a refusal page (A-548)
 	User                                                                      *User
@@ -198,7 +230,7 @@ type PageData struct {
 	// FormVendor: /register re-rendered after a refused post that chose a vendor account (A-544).
 	FormVendor bool
 	// A-544 vendor onboarding (vendor_applications.go). VendorPolicy: /register, the policy a vendor sign-up follows;
-	// VendorAccount: /account for a buyer or vendor; VendorAdmin: the admin vendors panel.
+	// VendorAccount: /account selling approval and applications; VendorAdmin: the admin vendors panel.
 	VendorPolicy  *VendorPolicyView
 	VendorAccount *VendorAccountView
 	VendorAdmin   *VendorAdminView
@@ -263,6 +295,14 @@ type PageData struct {
 
 	// P2 PGP
 	PGP *PGPView
+
+	// Order-only correspondence and append-only replacement deliveries.
+	OrderCorrespondence, CanOrderMessage, CanDeliveryUpdate, OrderPrivateExpired bool
+	OrderMessageRecipient                                                        string
+	OrderMessages                                                                []Message
+	OrderMessagesPaging                                                          *ActivityPaging
+	DeliveryUpdates                                                              []DeliveryUpdateView
+	DeliveryUpdatesPaging                                                        *ActivityPaging
 
 	// P3 Orders
 	OrderEvents   []OrderEvent
@@ -390,6 +430,7 @@ type PageData struct {
 	// the buyer's XMR draft on a listing that takes escrow, while ESCROW_XMR is on. Both nil otherwise.
 	XMREscrow         *XMREscrowOrderView
 	XMREscrowCheckout *XMREscrowCheckoutView
+	DigitalInventory  *DigitalInventoryView
 
 	// P6 Transparency
 	Canary      *CanaryView
@@ -398,7 +439,8 @@ type PageData struct {
 	// Scanner: admin page, the image scanner panel (clamd.go)
 	Scanner *ScannerView
 	// Uploads: listing-edit's Photos panel and /account's avatar panel and staff list choice (upload_forms.go)
-	Uploads *UploadsView
+	Uploads       *UploadsView
+	DisputeImages *DisputeEvidenceView
 
 	// Contacts (contacts.go): counterparty PGP keys, message recipient prefill, unread notifications
 	Contacts                []ContactKey // vendor page: the vendor; order page: the other party (both for a reviewer); messages: the ?to recipient
@@ -909,7 +951,9 @@ type XMREscrowOrderView struct {
 // be used now; Net is Monero escrow's network and Prefixes the first characters of its addresses (A-449).
 type XMREscrowCheckoutView struct {
 	Reason, Custody string
+	Total           string // current unit price times the draft's saved quantity, in XMR
 	Physical        bool
+	ManualDigital   bool
 	Net, Prefixes   string
 	NetKnown        bool // the network was verified (App.xmrEscrowNetKnown): the copy names none before that (QA5W1-3)
 }
@@ -937,4 +981,10 @@ type EscrowKeyView struct {
 	NextChild          int64 // the child index (/0/<n>) the account's next escrow uses (escrowNextChildSQL)
 	RangeAdvice        bool  // NextChild passed escrowRangeAdvice: the page advises keypoolrefill (P2-R10)
 	KeypoolSize        int64 // the keypoolrefill size it advises: 1000 keys past NextChild
+}
+
+// DeliveryUpdateView is an append-only replacement shown on its order.
+type DeliveryUpdateView struct {
+	Content, Created, Author, RecipientFingerprint string
+	Encrypted                                      bool
 }

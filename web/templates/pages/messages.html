@@ -4,7 +4,7 @@
 <div class="eyebrow">Private correspondence</div>
 <h1>Messages<span class="accent">.</span>
 </h1>
-<p>Contact a vendor or market staff with text encrypted in your own trusted PGP application.</p>
+<p>Direct correspondence with vendors and market staff, separate from your <a class="text-link" href="/orders">order conversations and digital deliveries</a>. Exchange text encrypted in your own trusted PGP application.</p>
 </div>
 <span class="badge neutral">Client encryption required</span>
 </div>
@@ -21,7 +21,7 @@
 <form class="stack" method="get" action="/messages" aria-label="Find recipient key">
 <label>Find a recipient<input name="to" value="{{.MessageTo}}" required minlength="3" maxlength="32" pattern="[a-zA-Z0-9_]{3,32}" title="Use the recipient's handle: 3 to 32 letters, numbers, or underscores." autocomplete="off" placeholder="any_handle"></label>
 <button type="submit">Load recipient’s public key</button>
-</form>{{else}}<p class="help" id="who-can-be-messaged">Start from “Message vendor” on a vendor’s page or listing, from the message links on your order, or from listed market staff on the <a class="text-link" href="/canary#staff">staff page</a> or the configured staff contact. Vendors may answer their existing customers. A vendor who stops receiving messages while away cannot be messaged. Private buyers cannot be found or contacted by handle.</p>{{end}}
+</form>{{else}}<p class="help" id="who-can-be-messaged">Start from “Message vendor” on a vendor’s page or listing, or from listed market staff on the <a class="text-link" href="/canary#staff">staff page</a> or the configured staff contact. Vendors may answer their existing customers. A vendor who stops receiving direct messages while away cannot be messaged here. Existing order correspondence stays on its order page. Private buyers cannot be found or contacted by handle.</p>{{end}}
 {{if .MessageLookupPaused}}<p role="status">Key not loaded: an account can look up at most 60 different handles in 10 minutes. Handles you looked up in that time still load; try others later.</p>{{else if and .MessageTo (not .Contacts)}}<p role="status">No account you can message has this handle. Contact an available vendor, your existing vendor or customer, or listed market staff for support.</p>{{end}}
 {{if or $staff (and .MessageTo (or .Contacts .MessageLookupPaused))}}<p class="help">Confirm the recipient’s key fingerprint through a trusted channel. To encrypt a text file with GnuPG, run <code>gpg --armor --encrypt --recipient &lt;fingerprint&gt; message.txt</code>, replacing <code>&lt;fingerprint&gt;</code> with the confirmed fingerprint. Paste the armored output below.{{if $staff}} Loading a key reloads this page; do it before composing.{{end}}</p>
 <form class="stack" method="post" action="/messages">
@@ -49,7 +49,7 @@
 <span>{{.Sender}} → {{.Recipient}}</span>
 <time>{{.Created}}</time>
 {{if and $.Retention $.Retention.Enabled}}<span class="help">Preservation reference: <span class="mono">{{.ID}}</span></span>{{end}}
-{{if .CanReply}}<a class="text-link" href="/messages?to={{.Sender}}{{if .DisputeID}}&amp;dispute_id={{.DisputeID}}{{else if .OrderID}}&amp;order_id={{.OrderID}}{{end}}">Reply to {{.Sender}}</a>{{end}}
+{{if .CanReply}}{{if .ReplyOrderID}}<a class="text-link" href="/order?id={{.ReplyOrderID}}#order-messages">Continue on the order status page</a>{{else}}<a class="text-link" href="/messages?to={{.Sender}}{{if .DisputeID}}&amp;dispute_id={{.DisputeID}}{{else if .OrderID}}&amp;order_id={{.OrderID}}{{end}}">Reply to {{.Sender}}</a>{{end}}{{end}}
 </div>
 <p class="pgp-message-status">{{if .Encrypted}}{{if eq .RecipientMatch "yes"}}<span class="badge green">Encrypted (to recipient’s key)</span>{{else if eq .RecipientMatch "no"}}<span class="badge pgp-danger">Encrypted (NOT to recipient’s key)</span>{{else}}<span class="badge neutral">Encrypted (recipient unknown)</span>{{end}}{{if and .RecipientExtraKeysSet (gt .RecipientExtraKeys 0)}} <span class="badge pgp-danger">+ {{.RecipientExtraKeys}} other visible key(s)</span><span class="help">These additional visible keys may also be able to read this message; hidden recipients may also exist.</span>{{end}}{{else}}<span class="badge pgp-danger">Not encrypted (plaintext or invalid OpenPGP)</span>{{end}}</p>
 <label class="help">Encrypted message<textarea class="code-block" rows="9" readonly aria-label="Encrypted message from {{.Sender}} to {{.Recipient}}">

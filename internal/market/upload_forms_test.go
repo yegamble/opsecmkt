@@ -538,7 +538,7 @@ func besideRoleChange(t *testing.T, e *testEnv, vendorID string, act func() *htt
 }
 
 // R24-1: removing a photo, as the vendor or as an administrator, beside the vendor's role change finishes (the
-// removal waits for the role change, then removes) instead of deadlocking.
+// removal waits for the role change, then removes for administrators or refuses the former vendor).
 func TestPhotoRemoveDoesNotDeadlockWithRoleChange(t *testing.T) {
 	for _, byAdmin := range []bool{false, true} {
 		t.Run(map[bool]string{false: "vendor's removal", true: "administrator's removal"}[byAdmin], func(t *testing.T) {
@@ -555,7 +555,11 @@ func TestPhotoRemoveDoesNotDeadlockWithRoleChange(t *testing.T) {
 			w := besideRoleChange(t, e, vendorID, func() *httptest.ResponseRecorder {
 				return e.do("POST", "/listings/photo/remove", remover, url.Values{"id": {id}})
 			})
-			if w.Code != 303 || e.imageCount() != 0 {
+			wantCode, wantImages := 403, 1
+			if byAdmin {
+				wantCode, wantImages = 303, 0
+			}
+			if w.Code != wantCode || e.imageCount() != wantImages {
 				t.Fatalf("removal: %d, %d images left", w.Code, e.imageCount())
 			}
 		})
@@ -573,8 +577,8 @@ func TestListingActionsDoNotDeadlockWithRoleChange(t *testing.T) {
 			w := besideRoleChange(t, e, vendorID, func() *httptest.ResponseRecorder {
 				return e.do("POST", path, vendor, inventoryForm(listing, nil))
 			})
-			// It ran after the role change: saved (303), or refused because the listing is already archived (409).
-			if w.Code != 303 && w.Code != 409 {
+			// The role change committed first: the former vendor has no selling authority.
+			if w.Code != 403 {
 				t.Fatalf("%s: %d %s", path, w.Code, w.Body.String())
 			}
 		})

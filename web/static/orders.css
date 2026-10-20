@@ -104,6 +104,8 @@
   padding:12px 14px;
   border:1px solid var(--line);
   display:grid;
+  grid-template-columns:minmax(0,1fr);
+  overflow-wrap:anywhere;
   gap:10px
 }
 .dispute-outcome legend {

@@ -125,7 +125,7 @@ func listingReservations(ctx context.Context, a *App, productIDs []string) (map[
 		return result, nil
 	}
 	rows, err := a.db.QueryContext(ctx, `SELECT o.product_id,
-		count(*) FILTER (WHERE o.state NOT IN ('draft','completed','resolved','cancelled')),
+		COALESCE(sum(o.quantity) FILTER (WHERE o.state NOT IN ('draft','completed','resolved','cancelled')),0),
 		COALESCE(to_char(min(CASE WHEN o.state='awaiting_payment' AND es.order_id IS NOT NULL THEN
 			GREATEST(es.created,COALESCE((SELECT max(pm.created) FROM payments pm WHERE pm.order_id=o.id
 				AND pm.confirmations>=0 AND NOT pm.locked AND (es.coin='XMR' OR NOT pm.escrow_left_out)),es.created))
@@ -163,17 +163,21 @@ func setInventoryURLs(d *PageData) {
 func loadListingEdit(ctx context.Context, a *App, r *http.Request, d *PageData) error {
 	var p Product
 	var btc, xmr int64
+	var regions string
 	v := &ListingView{AutoDelivery: a.autoDeliveryCurrencies()}
-	err := a.db.QueryRowContext(ctx, `SELECT p.id,p.title,p.description,p.category,p.region,p.kind,u.handle,p.vendor_id,p.btc,p.xmr,p.stock,p.archived,
+	err := a.db.QueryRowContext(ctx, `SELECT p.id,p.title,p.description,p.category,p.region,p.kind,u.handle,p.vendor_id,p.btc,p.xmr,p.stock,p.archived,p.subcategory,array_to_string(p.shipping_regions,'|'),
  CASE WHEN p.vendor_id=$2 THEN p.delivery_content ELSE '' END,p.delivery_content<>'',
  to_char(p.updated,'YYYY-MM-DD HH24:MI "UTC"'),coalesce(to_char(p.archived_at,'YYYY-MM-DD HH24:MI "UTC"'),''),
  (`+openOrdersSQL+`),coalesce(p.admin_archive_reason,''),coalesce(p.dispatch_days,$4)
  FROM products p JOIN users u ON u.id=p.vendor_id WHERE p.id=$1 AND (p.vendor_id=$2 OR $3='admin')`,
-		r.URL.Query().Get("id"), d.User.ID, d.User.Role, defaultDispatchDays).Scan(&p.ID, &p.Title, &p.Description, &p.Category, &p.Region, &p.Kind, &p.Vendor, &p.VendorID, &btc, &xmr, &p.Stock, &p.Archived, &v.DeliveryContent, &v.HasDeliveryContent, &v.Updated, &v.ArchivedAt, &v.OpenOrders, &v.TakedownReason, &v.DispatchDays)
+		r.URL.Query().Get("id"), d.User.ID, d.User.Role, defaultDispatchDays).Scan(&p.ID, &p.Title, &p.Description, &p.Category, &p.Region, &p.Kind, &p.Vendor, &p.VendorID, &btc, &xmr, &p.Stock, &p.Archived, &p.Subcategory, &regions, &v.DeliveryContent, &v.HasDeliveryContent, &v.Updated, &v.ArchivedAt, &v.OpenOrders, &v.TakedownReason, &v.DispatchDays)
 	if err != nil {
 		return err // sql.ErrNoRows -> 404
 	}
 	v.VendorEditor = p.VendorID == d.User.ID
+	if regions != "" {
+		p.ShippingRegions = strings.Split(regions, "|")
+	}
 	reservations, err := listingReservations(ctx, a, []string{p.ID})
 	if err != nil {
 		return err
@@ -181,5 +185,5 @@ func loadListingEdit(ctx context.Context, a *App, r *http.Request, d *PageData) 
 	v.Reservation = reservations[p.ID]
 	p.PriceBTC, p.PriceXMR = amount(btc, 8), amount(xmr, 12)
 	d.Product, d.Listing, d.Title = &p, v, "Edit listing"
-	return nil
+	return loadDigitalInventory(ctx, a, r, d)
 }

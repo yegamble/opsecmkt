@@ -86,23 +86,46 @@ func TestSetRoleCLI(t *testing.T) {
 		t.Fatalf("demotion: %d %q %q", code, stdout, stderr)
 	}
 	if role("a1") != "buyer" || count("SELECT count(*) FROM sessions WHERE user_id='a1'") != 0 || count("SELECT count(*) FROM pending_logins WHERE user_id='a1'") != 0 ||
-		count("SELECT count(*) FROM audit_events WHERE user_id='a1' AND action='Role changed from admin to buyer by host command'") != 1 {
+		count("SELECT count(*) FROM audit_events WHERE user_id='a1' AND action='Role changed from admin to buyer by host command'") != 1 ||
+		count("SELECT count(*) FROM users WHERE id='a1' AND vendor_approved") != 0 {
 		t.Fatal("demotion not applied, audited or its sessions not ended")
 	}
 
 	stdout, stderr, code = runServer(t, nil, "-set-role", "some_vendor", "admin")
-	if code != 0 || stdout != "Role of some_vendor changed from vendor to admin; archived 1 active listing(s).\n" {
+	if code != 0 || stderr != "" || stdout != "Role of some_vendor changed from vendor to admin.\n" {
 		t.Fatalf("promotion: %d %q %q", code, stdout, stderr)
 	}
-	if role("v1") != "admin" || count("SELECT count(*) FROM products WHERE vendor_id='v1' AND NOT archived") != 0 || count("SELECT count(*) FROM sessions WHERE user_id='v1'") != 1 {
-		t.Fatal("promotion from vendor did not archive the listing, or ended the sessions")
+	if role("v1") != "admin" || count("SELECT count(*) FROM products WHERE vendor_id='v1' AND NOT archived") != 1 || count("SELECT count(*) FROM sessions WHERE user_id='v1'") != 1 ||
+		count("SELECT count(*) FROM users WHERE id='v1' AND vendor_approved") != 1 {
+		t.Fatal("promotion from vendor lost its listing, sessions or independent selling approval")
 	}
 
 	if _, _, code = runServer(t, nil, "-set-role", "spare_admin", "moderator"); code != 0 {
 		t.Fatal("removing a second administrator failed")
 	}
+	if count("SELECT count(*) FROM users WHERE id='a2' AND vendor_approved") != 0 {
+		t.Fatal("administrator-derived selling access became moderator selling approval")
+	}
 	stdout, stderr, code = runServer(t, nil, "-set-role", "some_vendor", "buyer")
 	if code != 1 || stdout != "" || !strings.Contains(stderr, "last administrator") || role("v1") != "admin" {
 		t.Fatalf("last administrator: %d %q %q", code, stdout, stderr)
+	}
+
+	// Once another administrator exists, genuine vendor approval survives a
+	// move into moderation; assigning Buyer explicitly revokes it.
+	if _, _, code = runServer(t, nil, "-set-role", "spare_admin", "admin"); code != 0 {
+		t.Fatal("restoring the second administrator failed")
+	}
+	stdout, stderr, code = runServer(t, nil, "-set-role", "some_vendor", "moderator")
+	if code != 0 || stderr != "" || stdout != "Role of some_vendor changed from admin to moderator; ended 1 session(s) and any pending sign-ins.\n" ||
+		role("v1") != "moderator" || count("SELECT count(*) FROM products WHERE vendor_id='v1' AND NOT archived") != 1 ||
+		count("SELECT count(*) FROM users WHERE id='v1' AND vendor_approved") != 1 {
+		t.Fatalf("approved moderator: %d %q %q", code, stdout, stderr)
+	}
+	stdout, stderr, code = runServer(t, nil, "-set-role", "some_vendor", "buyer")
+	if code != 0 || stderr != "" || stdout != "Role of some_vendor changed from moderator to buyer; archived 1 active listing(s).\n" ||
+		role("v1") != "buyer" || count("SELECT count(*) FROM products WHERE vendor_id='v1' AND NOT archived") != 0 ||
+		count("SELECT count(*) FROM users WHERE id='v1' AND vendor_approved") != 0 {
+		t.Fatalf("selling revocation: %d %q %q", code, stdout, stderr)
 	}
 }

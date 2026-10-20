@@ -19,7 +19,7 @@
 <span class="art-badge">{{.Kind}}</span>
 </div>{{end}}
 <div class="detail-copy">
-<div class="eyebrow">{{.Category}} / {{.Region}}</div>
+<div class="eyebrow">{{.Category}}{{if .Subcategory}} / {{.Subcategory}}{{end}} / {{.ShippingLabel}}</div>
 <h1>{{.Title}}</h1>{{if .VendorVacation}}<p class="alert" role="note"><strong>On vacation.</strong> This vendor is not accepting purchases right now.</p>{{end}}{{if .VendorDeactivated}}<p class="alert" role="note">This vendor has deactivated their storefront. This listing remains visible to you through an existing order.</p>{{end}}{{if .Archived}}{{/* A-164: shown only to those who may read an order on it (load.go) */}}
 <p role="note"><span class="badge neutral">Archived</span> This listing is hidden from the marketplace and accepts no new orders. You can see it because you can read an order placed on it. It shows the listing as it is now, which may differ from what was bought.</p>{{end}}
 <p class="muted product-detail-description">{{.Description}}</p>
@@ -34,7 +34,7 @@
 </div>
 <div>
 <dt>Fulfillment</dt>
-<dd>{{.Kind}}</dd>
+<dd>{{.Kind}}{{if eq .Kind "digital"}} — {{if eq .DigitalDeliveryMode "manual"}}delivered by the vendor after payment{{else}}automatically delivered after payment confirmation{{end}}{{end}}</dd>
 </div>
 <div>
 <dt>Available stock</dt>
@@ -42,7 +42,7 @@
 </div>
 <div>
 <dt>Region</dt>
-<dd>{{.Region}}</dd>
+<dd>{{.ShippingLabel}}</dd>
 </div>
 </dl>
 </div>

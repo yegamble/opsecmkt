@@ -32,7 +32,7 @@ func orderDraftAction(c *actionCtx) (actionResult, error) {
 	}
 	var xmr int64
 	var vendor, kind string
-	var stock int
+	var stock int64
 	var archived bool
 	err := tx.QueryRowContext(ctx, "SELECT xmr,vendor_id,kind,stock,archived FROM products WHERE id=$1", f.Get("product_id")).Scan(&xmr, &vendor, &kind, &stock, &archived)
 	if err != nil || stock < 1 {
@@ -57,12 +57,33 @@ func orderDraftAction(c *actionCtx) (actionResult, error) {
 	if err = c.A.purchaseBlock(ctx, tx, f.Get("product_id"), currency); err != nil {
 		return actionResult{}, err
 	}
-	total := xmr
+	quantity, err := orderQuantity(f)
+	if err != nil {
+		return actionResult{}, err
+	}
+	if quantity > stock {
+		return actionResult{}, fail(400, "The requested quantity exceeds the available stock. Nothing was changed.")
+	}
+	if kind == "digital" {
+		var mode string
+		if err = tx.QueryRowContext(ctx, "SELECT digital_delivery_mode FROM products WHERE id=$1", f.Get("product_id")).Scan(&mode); err != nil {
+			return actionResult{}, err
+		}
+		if mode == "inventory" {
+			if _, err = availableDigitalBatch(ctx, tx, f.Get("product_id"), quantity); err != nil {
+				return actionResult{}, err
+			}
+		}
+	}
+	total, err := checkedOrderTotal(xmr, quantity)
+	if err != nil {
+		return actionResult{}, err
+	}
 	if total < payoutFloor(currency, "release") {
 		return actionResult{}, fail(400, subFloorListing(currency, 0))
 	}
 	id := randomToken()
-	err = tx.QueryRowContext(ctx, `INSERT INTO orders(id,buyer_id,product_id,currency,amount) VALUES($1,$2,$3,$4,$5) ON CONFLICT(buyer_id,product_id,currency) WHERE state='draft' DO UPDATE SET amount=excluded.amount RETURNING id`, id, c.User.ID, f.Get("product_id"), currency, total).Scan(&id)
+	err = tx.QueryRowContext(ctx, `INSERT INTO orders(id,buyer_id,product_id,currency,amount,quantity) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(buyer_id,product_id,currency) WHERE state='draft' DO UPDATE SET amount=excluded.amount,quantity=excluded.quantity,updated=now() RETURNING id`, id, c.User.ID, f.Get("product_id"), currency, total, quantity).Scan(&id)
 	return actionResult{Redirect: "/order?id=" + id, Audit: "Saved unfunded order draft"}, err
 }
 
