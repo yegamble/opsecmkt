@@ -30,7 +30,7 @@ test('vendor desk shows archived listings with a badge and restore control', asy
   await page.goto('/vendor-dashboard');
   const archived = page.locator('.product-card.is-archived');
   await expect(archived).toHaveCount(1);
-  await expect(archived.locator('.badge')).toHaveText('Archived');
+  await expect(archived.locator('.inventory-state .badge')).toHaveText('Archived');
   await expect(archived.getByRole('button', { name: /^Restore / })).toBeVisible();
   await expect(page.locator('.stats')).toContainText('1 archived');
   await expect(page.getByLabel('Fulfillment type')).not.toContainText('Service');

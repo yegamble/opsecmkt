@@ -323,12 +323,14 @@ test('header sign out follows the handle, is keyboard reachable and fits every w
   expect(parseFloat(await style(signOut, 'font-size'))).toBeGreaterThanOrEqual(14);
   expect(await contrast(signOut)).toBeGreaterThanOrEqual(4.5);
 
-  // Tab order: [search field, search button,] handle, Sign out, the first main-navigation link.
+  // Tab order: [search field, search button,] notification bell, handle, Sign out, main navigation.
   const allControls = browserName === 'webkit' && process.platform === 'darwin';
   const search = header.locator('form[role="search"]');
+  const bell = header.getByRole('link', { name: 'Notifications, 1 unread', exact: true });
+  await expect(bell).toHaveAttribute('href', '/notifications');
   const order = [
     ...(await search.isVisible() ? [search.getByRole('textbox'), search.getByRole('button')] : []),
-    handle, signOut, page.getByRole('navigation', { name: 'Main navigation' }).getByRole('link').first(),
+    bell, handle, signOut, page.getByRole('navigation', { name: 'Main navigation' }).getByRole('link').first(),
   ];
   await page.locator('.brand').focus();
   for (const control of order) {
