@@ -3,6 +3,7 @@ package market
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"net/url"
 	"strings"
 	"testing"
@@ -252,5 +253,131 @@ func TestMigration107RefusesUnknownFutureBlockerKindsWithoutReferences(t *testin
 	}
 	if got := agInt(e, "SELECT max(version) FROM schema_migrations"); got != 106 {
 		t.Fatalf("refused future blocker migration recorded version %d, want 106", got)
+	}
+}
+
+// newSelectedMigrationFixture applies the baseline and exactly the given migrations, in the given order and
+// under the given recorded names, as an older or divergent build would have left the database.
+func newSelectedMigrationFixture(t *testing.T, selected []migration) *testEnv {
+	t.Helper()
+	db, err := sql.Open("pgx", testSchemaDSN(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	tx, err := db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(t.Context(), schema); err == nil {
+		err = applyMigrations(t.Context(), tx, selected)
+	}
+	if err == nil {
+		err = tx.Commit()
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &testEnv{t: t, DB: db}
+}
+
+func embeddedMigrationsByVersion(t *testing.T) ([]migration, map[int]migration) {
+	t.Helper()
+	list, err := loadMigrations(migrationFiles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byVersion := map[int]migration{}
+	for _, m := range list {
+		byVersion[m.Version] = m
+	}
+	return list, byVersion
+}
+
+// MOD72-3: main gained A-613's migration 128 before the moderation migrations merged. A database at
+// 001–124 plus 128 must take 125, 126, 127 and 129 on upgrade, keeping 128's original record.
+func TestModerationMigrationsAfterMain128(t *testing.T) {
+	list, byVersion := embeddedMigrationsByVersion(t)
+	if byVersion[128].Name != "xmr_settlement_hand_settled" || byVersion[129].Name != "moderation_capacity" {
+		t.Fatalf("embedded 128/129 are %q/%q", byVersion[128].Name, byVersion[129].Name)
+	}
+	var mainAfter613 []migration
+	for _, m := range list {
+		if m.Version <= 124 || m.Version == 128 {
+			mainAfter613 = append(mainAfter613, m)
+		}
+	}
+	e := newSelectedMigrationFixture(t, mainAfter613)
+	applied128 := agStr(e, "SELECT applied::text FROM schema_migrations WHERE version=128")
+	if err := applyLatestMigrations(t, e); err != nil {
+		t.Fatalf("upgrade from main after A-613: %v", err)
+	}
+	var want []string
+	for _, m := range list {
+		want = append(want, fmt.Sprintf("%d:%s", m.Version, m.Name))
+	}
+	got := agStrings(t, e, "SELECT version || ':' || name FROM schema_migrations ORDER BY version")
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("recorded migrations %v, want %v", got, want)
+	}
+	if again := agStr(e, "SELECT applied::text FROM schema_migrations WHERE version=128"); again != applied128 {
+		t.Fatalf("migration 128 re-recorded: %s, was %s", again, applied128)
+	}
+	for _, check := range []string{
+		"SELECT count(*) FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='moderation_jobs' AND column_name='capture_version'",
+		"SELECT count(*) FROM information_schema.tables WHERE table_schema=current_schema() AND table_name='moderation_capacity'",
+		"SELECT count(*) FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='images' AND column_name='perceptual_hash'",
+		"SELECT count(*) FROM information_schema.tables WHERE table_schema=current_schema() AND table_name='xmr_settlement_hand_settled'",
+	} {
+		if agInt(e, check) != 1 {
+			t.Errorf("upgraded schema lacks: %s", check)
+		}
+	}
+	if err := applyLatestMigrations(t, e); err != nil {
+		t.Fatalf("second start: %v", err)
+	}
+}
+
+// MOD72-3: a database that an unmerged build recorded as 128_moderation_capacity is refused before any DDL,
+// naming both migrations, instead of skipping this build's 128 and failing inside 129.
+func TestMigrationNameMismatchRefused(t *testing.T) {
+	list, byVersion := embeddedMigrationsByVersion(t)
+	var divergent []migration
+	for _, m := range list {
+		if m.Version <= 127 {
+			divergent = append(divergent, m)
+		}
+	}
+	divergent = append(divergent, migration{128, "moderation_capacity", byVersion[129].SQL})
+	e := newSelectedMigrationFixture(t, divergent)
+	const recorded = "SELECT string_agg(version || ':' || name || '@' || applied, ',' ORDER BY version) FROM schema_migrations"
+	before := agStr(e, recorded)
+	err := applyLatestMigrations(t, e)
+	if err == nil {
+		t.Fatal("upgrade accepted a database whose migration 128 has a different name")
+	}
+	for _, want := range []string{"128_moderation_capacity", "128_xmr_settlement_hand_settled", "Nothing was changed", "Rolling back"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), "already exists") {
+		t.Errorf("refusal came from DDL, not the name check: %v", err)
+	}
+	if after := agStr(e, recorded); after != before {
+		t.Fatalf("refused upgrade changed schema_migrations:\n%s\nwas\n%s", after, before)
+	}
+	if agInt(e, "SELECT count(*) FROM information_schema.tables WHERE table_schema=current_schema() AND table_name='xmr_settlement_hand_settled'") != 0 {
+		t.Fatal("refused upgrade applied migration 128")
+	}
+	// The host-side administrator commands use the same check.
+	tx, err := e.DB.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if err = refuseUnknownMigrations(t.Context(), tx, list); err == nil || !strings.Contains(err.Error(), "128_moderation_capacity") {
+		t.Fatalf("refuseUnknownMigrations: %v", err)
 	}
 }

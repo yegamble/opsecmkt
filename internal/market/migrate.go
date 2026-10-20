@@ -91,34 +91,42 @@ func applyMigrations(ctx context.Context, tx *sql.Tx, list []migration) error {
 
 // refuseUnknownMigrations fails when the database records a migration this binary does not embed: a newer
 // release upgraded it, and this older code must not run (or migrate) against a schema it does not know.
-// It runs before any statement that could change the database.
+// It also fails when a recorded version carries a different name from this binary's migration of that
+// number: another build (for example an unmerged branch) used the number, so this build's migration was
+// never applied and must not be skipped. It runs before any statement that could change the database.
 func refuseUnknownMigrations(ctx context.Context, tx *sql.Tx, list []migration) error {
 	var exists bool
 	if err := tx.QueryRowContext(ctx, "SELECT to_regclass('schema_migrations') IS NOT NULL").Scan(&exists); err != nil || !exists {
 		return err
 	}
-	known := map[int]bool{}
+	known := map[int]string{}
 	for _, m := range list {
-		known[m.Version] = true
+		known[m.Version] = m.Name
 	}
 	rows, err := tx.QueryContext(ctx, "SELECT version, name FROM schema_migrations ORDER BY version")
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
-	var unknown []string
+	var unknown, mismatched []string
 	for rows.Next() {
 		var v int
 		var name string
 		if err = rows.Scan(&v, &name); err != nil {
 			return err
 		}
-		if !known[v] {
+		embedded, ok := known[v]
+		if !ok {
 			unknown = append(unknown, fmt.Sprintf("%03d_%s", v, name))
+		} else if name != embedded {
+			mismatched = append(mismatched, fmt.Sprintf("%03d_%s (this server's is %03d_%s)", v, name, v, embedded))
 		}
 	}
 	if err = rows.Err(); err != nil {
 		return err
+	}
+	if len(mismatched) > 0 {
+		return fmt.Errorf("the database was migrated by a different build: it records migration(s) %s under the same number with a different name. Nothing was changed. Start the build that migrated it, or restore a backup taken before that build ran, as described in UPGRADING.md, section \"Rolling back\"", strings.Join(mismatched, ", "))
 	}
 	if len(unknown) > 0 {
 		return fmt.Errorf("the database was upgraded by a newer release: it records migration(s) %s, which this server does not include. Nothing was changed. Start that newer release again, or roll back by restoring the pre-upgrade backup as described in UPGRADING.md, section \"Rolling back\"", strings.Join(unknown, ", "))
