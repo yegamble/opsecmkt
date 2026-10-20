@@ -202,6 +202,8 @@ func TestAdminActionRedirectsToSection(t *testing.T) {
 	e.user("redirect_suspend", "buyer")
 	e.user("redirect_ban", "buyer")
 	vendorID, _ := e.user("redirect_vendor", "vendor")
+	e.user("redirect_revoke", "vendor")
+	e.user("redirect_revoke_user", "vendor")
 	closingID, _ := e.user("redirect_closing", "buyer")
 	order := e.order(closingID, e.product(vendorID, "physical"), "XMR", "shipped")
 	agExec(e, `INSERT INTO retention_escrow_exceptions(order_id,reason,first_seen,last_checked,review_due) VALUES($1,'dispute_open',now(),now(),now())`, order)
@@ -238,9 +240,11 @@ func TestAdminActionRedirectsToSection(t *testing.T) {
 		// MOD72-6 listing review (listing_review.go).
 		{"/admin/listing-review", url.Values{"listing_review_mode": {"hold"}}, "/admin/vendors#listing-review"},
 		{"/admin/vendor-auto-approve", url.Values{"action": {"on"}, "handle": {"redirect_vendor"}}, "/admin/vendors#vendors"},
+		{"/admin/vendor-revoke", url.Values{"handle": {"redirect_revoke"}}, "/admin/vendors#vendors"},
 		// A-545: posted from an account's page in the user directory (from=user), every account form returns there.
 		{"/admin", url.Values{"action": {"role"}, "handle": {"redirect_role"}, "role": {"buyer"}, "from": {"user"}}, "/admin/users?handle=redirect_role"},
 		{"/admin/vendor-apply", url.Values{"handle": {"redirect_role"}, "start": {"awaiting_approval"}}, "/admin/users?handle=redirect_role#vendors"},
+		{"/admin/vendor-revoke", url.Values{"handle": {"redirect_revoke_user"}, "from": {"user"}}, "/admin/users?handle=redirect_revoke_user#vendors"},
 		{"/admin/suspend", url.Values{"action": {"restore"}, "handle": {"redirect_suspend"}, "from": {"user"}}, "/admin/users?handle=redirect_suspend#suspend"},
 		{"/admin/vendor-policy", url.Values{"vendor_bond_xmr": {"0.1"}, "vendor_approval": {"manual"}}, "/admin/vendors#vendors"},
 		{"/admin/retention/hold", hold, "/admin/system#retention"},

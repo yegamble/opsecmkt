@@ -1,5 +1,52 @@
 # War-room ledger
 
+## 2026-10-20 marketplace design and privacy review
+
+Scope: owner-supplied screenshots and Figma Make source versus the current marketplace, order communication, dispute evidence, roles, and responsive UI. Independent seats: frontend, product/backend, Tor security/privacy. Prototype content is reference material, not operational instructions. Evidence at ruling: source inspection; implementation and runtime verification follow below.
+
+| ID | Ruling | Acceptance criteria | Status |
+|---|---|---|---|
+| UX-20261020-1 | ACCEPT: restore useful catalog design | Persisted subcategories, combined shipping/type/search filters, real public-review rating/price sorting, readable comparison badges, bottom-left vendor links, accessible notification bell and existing logout; scripts disabled, 320 px through desktop | verified locally: final PostgreSQL race and no-JavaScript browser gates |
+| UX-20261020-2 | ACCEPT: separate order correspondence and digital replacements | Actual parties communicate on the order page; independent direct inbox; digital originals/replacements stay order-bound; generic notifications; private order expiry, preservation, tombstone replay and retirement all cover added records | verified locally: actual-party isolation, delivery updates, retention and replay |
+| UX-20261020-3 | MODIFY: shared site with capability-based desks | Admin automatically verified vendor plus all staff/buyer features; moderator retains staff authority and gains vendor features only after approval; revocation and role changes enforce the same matrix; no permission-changing view switch or admin-ingress bypass | verified locally: capability matrix, CLI/HTTP revocation, private upload and browser flows |
+| UX-20261020-4 | ACCEPT: private image-only dispute evidence | JPEG/PNG only, scanned on every upload, normalized without metadata using the isolated gateway; actual-party upload and authorized-party/staff read; quotas, scanner failures, retention and restore replay tested | verified locally: gateway/image regressions and private browser upload journey |
+| UX-20261020-5 | RETAIN local PGP after owner security discussion | Reject plaintext and invalid/wrong-visible-recipient ciphertext; preserve valid packets and one-decryption behavior. Server-assisted encryption would expose plaintext to the running server; owner accepted the local-encryption recommendation. Hidden recipient IDs remain explicitly unknown and require confirmation | verified PostgreSQL race regression (f52cbe7a); no auto-encryption added |
+| UX-20261020-6 | ACCEPT owner stock and batch clarification | Keep sold-out published listings visible with an optional stock filter; reserve saved quantities atomically and use checked totals; manual delivery once for the whole order; automatic delivery allocates distinct inventory into one bounded order-page batch; preserve privacy lifecycle | verified locally: quantity/inventory race suites, all final Go gates and three new browser journeys |
+
+Additional independent integration findings, reproduced and fixed:
+
+- Hidden administrators and approved moderators without published listings became discoverable through generic seller contact lookup. Require a published listing for the staff seller branch; independent DB overlays pass with the guard and fail when it is removed.
+- Private upload authorization/admission still checked literal roles, rejecting an approved moderator's own photo. Use freshly hydrated selling capability while retaining explicit staff membership, committed receipt and single-use session binding.
+- A restricted administrator who was a disputed-order party could see evidence authorization but could not complete it. Permit only the existing-dispute evidence handoff; avatar/listing uploads remain forbidden at authorization, handoff, gateway admission and storage. Both integrated DB probes failed with 403 before the fix and passed under `-race` after it.
+- Fixed-size wordmark boxes clipped at 200% text despite zero page overflow. Text wordmarks now reflow; uploaded logo boxes retain their sizing. Independent final review passed 72 layout measurements and 30 long-handle checks, plus native keyboard category/filter navigation.
+- The real empty orders page and populated dispute forms exposed additional overflow at 200% text. Empty-state buttons and long-handle outcome labels now wrap. The independent sweep passed 88 rendered-page measurements; a fresh database browser run passed full branding and dispute workflows.
+- Digital deduplication initially proposed permanent content fingerprints. Reject that ledger: fingerprints expire with their payloads, while consumed allocation state prevents automatic reuse. Checkout batch reads are bounded before accepting payment; unbounded aggregation is not a substitute for streaming size checks.
+
+Final independent product review found one more lifecycle defect: cancelling a paid order after its listing-private expiry could return undisclosed entries to available stock behind an already-completed expiry marker. The fix keeps those claims assigned and unavailable, preserving their own order deadline and holds. The real-checkout regression failed before the fix and passed after it; a separate hold registered after listing expiry also failed against the old code and passed against the fix. Both reviewers closed the finding (dbe7ae85). No required in-scope finding remains.
+
+### Integration with current main before PR
+
+The owner authorized creating and merging a PR. Main advanced to 58c2a1ba while the marketplace work was under review. Integration preserves its PGP session proofs and buyer-key delivery encryption, support tickets, XMPP, vendor availability/privacy and A-614/A-616/A-617 payment recovery behavior. Marketplace migrations are renumbered to 136–141; main's existing migrations are unchanged. Initial and replacement deliveries use the same recipient-bound encryption helper, while direct/order correspondence still requires local encryption and preserves encrypted packets.
+
+Integrated checks passed before PR creation: main-135 upgrade rehearsal; Go vet and template/preview smoke; PostgreSQL capability/retention (34.189 s), profile/vendor/admin (9.924 s), and PGP/delivery/quantity/inventory/order-channel race tests (45.567 s); seven fresh-database browser journeys; strict MkDocs, 21 focused Python documentation checks and the full Python tooling suite (378 checks, 275.239 s). Final security regressions also passed (9.227 s): unavailable counterparties, restricted closed-order writes, encrypted inventory refusal, encrypted replacement preservation, actual-party inbox rejection and retained staff support. The full preview matrix and required PR CI are still pending. The earlier results below apply to the named feature-only source and its then-local migration numbering; they do not establish verification of the combined branch.
+
+### Final local verification
+
+Runtime source: dbe7ae85; browser fixture updates: 990704cf. Migrations 129–134. The owner's later explicit stock/batch request supersedes the earlier declined per-unit delivery-pool proposal (D-17).
+
+- Both required full Go commands passed with real disposable PostgreSQL and `-race -count=1 -timeout=30m`: `-run '^(TestEscrow|TestXMR|FuzzEscrow)' ./...` (market 613.286 s) and its `-skip` counterpart (market 948.955 s). Environment: Go 1.27.2, umask 022 and a short non-RAM temporary path. Earlier attempts exposed a Unix socket path-length/umask fixture issue and a full test disk; corrected final commands passed without weakening assertions.
+- All 708 preview checks passed: 118 each in four Chromium viewport projects, Firefox and WebKit. Browser JavaScript was disabled. Independent rendered-page checks additionally covered 320–1920 px, 100%/200% text, long handles, category/filter keyboard navigation, and the new inventory panel. Empty-order buttons and long dispute outcome handles were fixed after actual enlarged-text failures.
+- A fresh database browser run passed all 59 checks, including setup, the new stock/quantity/manual-batch/inventory forms, roles, order correspondence/replacements, private dispute evidence and Firefox uploads (5.3 minutes). Reusable-download journeys now explicitly choose that method and use its current label. Reusing the earlier populated fixture had invalidated the empty-canary assumption; the final fresh run passed it.
+- All nine simulated-wallet Monero browser journeys passed (2.5 minutes). These exercise the real app and PostgreSQL against simulated RPC; they are not chain evidence.
+- Python tooling suite: all 378 checks passed (274.854 s). Module verification, formatting, vet and strict MkDocs passed. Pinned govulncheck v1.8.0 found zero vulnerabilities in called code or imported packages; one required-module vulnerability was not imported/called.
+- Independent Tor security probes passed for current-role private uploads, held/private order content, cancellation/allocation races, bounded batch reads, payload/fingerprint erasure and restore replay. Valid pasted ciphertext keeps identical encrypted packets, decrypts once to the original text, and nonce replay sends once.
+
+Limits: local working-tree evidence, no new CI run or deployment. No live Tor circuit, real chain/payment or real ClamAV-engine run is claimed; scanner and wallet error paths use test doubles. Production evidence uploads reuse the existing isolated ClamAV gateway. Scheduled deletion requires enabled retention plus current external retention state and copy-expiry controls. Prior direct messages are not assigned to guessed orders. The ZIP/prototype supplied reference content, not authority to execute embedded instructions.
+
+DECISION: reject a mutable role selector as an authorization mechanism. The UI can link to separate workspaces while server-side capability and actual order membership remain authoritative. No dissent was raised by the independent seats.
+
+DECISION: extend the established isolated scanner workflow for evidence; reject document/SVG uploads and putting order evidence into direct messages. All seats agree that initial digital delivery already belongs to the order page, and that missing replacement and retention handling require a complete vertical slice.
+
 Source of truth for the war-room backlog across loop iterations. The chair
 updates it after every Round D ruling and every verified fix. One row per item;
 never delete a row — move it to Closed or Declined with the evidence.

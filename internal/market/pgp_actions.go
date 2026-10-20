@@ -75,7 +75,13 @@ func saveProfileKey(c *actionCtx, armored string, confirmed bool) (string, strin
 	if err != nil {
 		return "", "", err
 	}
-	if c.User.Role == "vendor" {
+	// loadPGPAccount has locked this account. Read independent selling approval
+	// under that lock too: staff roles do not change when selling is granted.
+	var selling bool
+	if err := tx.QueryRowContext(ctx, "SELECT role IN ('vendor','admin') OR vendor_approved FROM users WHERE id=$1", uid).Scan(&selling); err != nil {
+		return "", "", err
+	}
+	if selling {
 		key, _, _, err := parseCanonicalPublicKey(armored)
 		if err != nil || !canReceiveEncrypted(key, time.Now()) {
 			return "", "", fail(409, "Vendors must keep a usable PGP public key. Save a public key with an active encryption subkey; never submit your private key.")

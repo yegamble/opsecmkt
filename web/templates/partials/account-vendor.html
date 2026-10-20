@@ -5,7 +5,7 @@ with the latest application, the bond and the administrator's payment instructio
 {{define "account-vendor"}}{{with .VendorAccount}}<section class="panel" id="vendor-application" aria-labelledby="vendor-application-heading">
 <h2 id="vendor-application-heading">Sell on this market</h2>{{with $.NoticeIn "vendor-application"}}
 <div class="alert" role="status">{{.}}</div>{{end}}{{if .Verified}}
-<p><span class="badge green verified-vendor">Verified vendor</span> An administrator marked your account as a verified vendor. It is the staff's judgment, not an identity check.</p>{{end}}{{with .Latest}}
+<p><span class="badge green verified-vendor">Verified vendor</span> {{if eq $.User.Role "admin"}}Administrators are automatically verified vendors while they hold that role.{{else}}An administrator marked your account as a verified vendor.{{end}} It is the staff's judgment, not an identity check.</p>{{end}}{{with .Latest}}
 <dl class="key-values">
 <div><dt>Vendor application</dt><dd>{{.Status}}</dd></div>
 <div><dt>Submitted</dt><dd>{{.Created}}</dd></div>{{if .HasBond}}
@@ -14,7 +14,7 @@ with the latest application, the bond and the administrator's payment instructio
 <div><dt>Decided</dt><dd>{{.Decided}}</dd></div>{{end}}{{if .Note}}
 <div><dt>Note</dt><dd>{{.Note}}</dd></div>{{end}}
 </dl>{{if .RoleRemoved}}
-<p>Your vendor role was removed by an administrator, so your account cannot publish listings. You can apply again.</p>{{end}}{{if and .AwaitingBond .BondAuto}}
+<p>Your selling approval was removed by an administrator, so your account cannot publish listings. You can apply again.</p>{{end}}{{if and .AwaitingBond .BondAuto}}
 <p class="vendor-bond-terms">Pay the bond of <strong>{{.Bond}} XMR</strong> in Monero ({{template "payment-status:xmr-net" $}}). The bond is a non-refundable fee: it is not returned if your application is rejected or withdrawn, or when you stop selling. Anything you pay above the bond, or after this application stops waiting for it, is kept too: the market asks for no refund address and never sends coins back.</p>{{if .BondAddress}}
 <dl class="key-values vendor-bond">
 <div><dt>Bond address</dt><dd><code class="address">{{.BondAddress}}</code></dd></div>
@@ -44,7 +44,7 @@ with the latest application, the bond and the administrator's payment instructio
 <p class="help">Withdrawing ends this application. It does not refund a bond you have paid.</p>
 <button type="submit">Withdraw application</button>
 </form>{{end}}{{end}}{{if .CanApply}}
-<p>Your account is a buyer account. {{template "vendor-policy-text" .Policy}} Only approved vendors can publish listings.</p>
+<p>Applying to sell keeps any moderator role you already hold. {{template "vendor-policy-text" .Policy}} Only approved vendors can publish listings.</p>
 <form class="stack" method="post" action="/account/vendor-application">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="form_nonce" value="{{formNonce "/account/vendor-application"}}">

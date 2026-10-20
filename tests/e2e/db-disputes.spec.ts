@@ -13,7 +13,11 @@ import { waitForStyles } from './styles';
 async function fitsAndNoScripts(page: Page, what: string) {
   await expect(page.locator('script')).toHaveCount(0);
   await waitForStyles(page);
-  expect(await page.evaluate(() => document.documentElement.scrollWidth), what).toBeLessThanOrEqual(page.viewportSize()!.width);
+  for (const scale of ['100%', '200%']) {
+    await page.locator('html').evaluate((element, size) => { element.style.fontSize = size; }, scale);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth), `${what}, ${scale} text`).toBeLessThanOrEqual(page.viewportSize()!.width);
+  }
+  await page.locator('html').evaluate(element => { element.style.fontSize = ''; });
 }
 
 test('the other party replies once and the desk names who holds encrypted evidence', async ({ browser, baseURL }) => {
@@ -66,11 +70,11 @@ test('the other party replies once and the desk names who holds encrypted eviden
     await expect(buyer.locator('form[action="/disputes/reply"]')).toHaveCount(0);
     await expect(buyer.locator('#order-dispute').locator('..')).toContainText('The vendor may put one reply on record');
     const contacts = buyer.locator('#dispute-contacts').locator('..');
-    await expect(contacts).toContainText('Other moderators and administrators can see which staff member you messaged and when, never what.');
+    await expect(contacts).toContainText('Other staff can see whom you contacted and when.');
     // A-584: only an administrator decides an escrow dispute; the panel says so and labels each staff member by role.
-    await expect(contacts).toContainText('Only an administrator decides a dispute on this escrow order. Send sensitive evidence as an encrypted message to an independent administrator first; a moderator can keep it and pass it on to an administrator.');
+    await expect(contacts).toContainText('Only an independent administrator decides a dispute on this escrow order.');
     await expect(contacts.locator('summary', { hasText: resolverHandle })).toHaveText(`${resolverHandle} · administrator: decides escrow disputes`);
-    await expect(contacts.locator('summary', { hasText: holderHandle })).toHaveText(`${holderHandle} · moderator: can pass evidence on to an administrator`);
+    await expect(contacts.locator('summary', { hasText: holderHandle })).toHaveText(`${holderHandle} · moderator: dispute support`);
 
     // A-280: the resolver opens the desk before the vendor replies and fills in the resolve form, which says the
     // vendor has not replied; it is submitted after the reply (below).
@@ -91,7 +95,7 @@ test('the other party replies once and the desk names who holds encrypted eviden
     await expect(reason).toHaveText('The parcel arrived empty.\nThe seal on the box was broken.');
     await expect(reason).toHaveCSS('white-space', 'pre-wrap');
     const field = vendor.getByLabel('Your reply to the dispute');
-    await expect(field).toHaveAccessibleDescription(/Send evidence encrypted first: message an independent administrator listed under Contact dispute staff on this page\..*The administrator who decides this dispute reads your reply beside the buyer’s reason\..*Stored unencrypted\. The buyer reads it on this order.*Never include an address, real name or tracking number/);
+    await expect(field).toHaveAccessibleDescription(/Upload image evidence in the dispute evidence panel\s*\. For sensitive text, contact an independent administrator listed under Contact dispute staff on this page\..*The administrator who decides this dispute reads your reply beside the buyer’s reason\..*Stored unencrypted\. The buyer reads it on this order.*Never include an address, real name or tracking number/);
     await expect(vendor.locator('#order-dispute').locator('..')).not.toContainText('The moderator who resolves');
     await fitsAndNoScripts(vendor, 'vendor order page with the reply form at 320 px');
     await field.fill('The parcel left sealed.\nThe courier photo shows the box intact.');
@@ -134,7 +138,7 @@ test('the other party replies once and the desk names who holds encrypted eviden
     await expect(entry.locator('.dispute-evidence li').nth(1)).toHaveText('Vendor → none');
     const form = entry.locator('form[action="/resolve"]');
     await expect(form).toContainText('The vendor replied; the reply is shown above.');
-    await expect(form).toContainText('Before deciding, ask each staff member listed under Encrypted evidence holders');
+    await expect(form).toContainText('For any earlier evidence sent privately, ask the staff members listed under Private staff correspondence');
     await expect(resolver.locator('main')).not.toContainText('BEGIN PGP MESSAGE');
     await fitsAndNoScripts(resolver, 'moderation desk at 320 px');
   } finally {

@@ -8,6 +8,7 @@
 </div>
 </div>
 <form class="mobile-search" action="/" method="get" role="search">
+{{template "catalog-filter-state" .}}
 <label class="sr-only" for="mobile-query">Search listings</label>
 <input id="mobile-query" name="q" value="{{.Query}}" maxlength="64" autocomplete="off" placeholder="Search listings…">
 <button type="submit">Search</button>
@@ -16,13 +17,22 @@
 <div class="catalog-tools">
 <p>
 <span class="accent">{{if .Paging}}{{.Paging.Total}}{{else}}{{len .Products}}{{end}}</span> listings {{if .Query}}matching “{{.Query}}”{{else}}in the marketplace{{end}}{{if .Category}} / {{.Category}}{{end}}{{if and .Paging (gt .Paging.Pages 1) .Products}} · showing {{.Paging.First}}–{{.Paging.Last}}{{end}}</p>
-<span class="eyebrow">{{if .LiveNetwork}}Mainnet · real funds{{else}}Test-network alpha · no real funds{{end}}</span>
-</div>{{template "products" .}}{{if not .Products}}<div class="empty">
+<form class="catalog-sort" method="get" action="/">
+<input type="hidden" name="q" value="{{.Query}}">
+{{if .Category}}<input type="hidden" name="category" value="{{.Category}}">{{end}}
+{{if .Subcategory}}<input type="hidden" name="subcategory" value="{{.Subcategory}}">{{end}}
+{{if .Region}}<input type="hidden" name="region" value="{{.Region}}">{{end}}
+{{if .KindFilter}}<input type="hidden" name="kind" value="{{.KindFilter}}">{{end}}
+{{if .InStockOnly}}<input type="hidden" name="in_stock" value="1">{{end}}
+<label>Sort listings<select name="sort"><option value="" {{if not .Sort}}selected{{end}}>Newest</option><option value="rating" {{if eq .Sort "rating"}}selected{{end}}>Top rated</option><option value="price-low" {{if eq .Sort "price-low"}}selected{{end}}>Price: Low</option><option value="price-high" {{if eq .Sort "price-high"}}selected{{end}}>Price: High</option></select></label>
+<button type="submit">Sort</button></form>
+</div><span class="eyebrow">{{if .LiveNetwork}}Mainnet · real funds{{else}}Test-network alpha · no real funds{{end}}</span>
+{{template "products" .}}{{if not .Products}}<div class="empty">
 <span class="empty-icon">∅</span>
 {{if and .Paging (gt .Paging.Total 0)}}<h2>This page is empty</h2>
 <p>Listings changed while you were browsing.</p>
 {{if .Paging.PrevURL}}<a class="button" href="{{.Paging.PrevURL}}">Previous page</a>{{else}}<a class="button" href="/">All listings</a>{{end}}
-{{else if or .Query .Category .Region}}<h2>No listings found</h2>
+{{else if or .Query .Category .Subcategory .Region .KindFilter .InStockOnly}}<h2>No listings found</h2>
 <p>Try another search term or remove a filter.</p>
 <a class="button" href="/">Clear filters</a>
 {{else}}<h2>No listings yet</h2>

@@ -24,7 +24,7 @@ test('plaintext order notes say who reads them and to send addresses encrypted',
   // database tests and the wallet journey.
   await page.goto(`/order?id=${PREVIEW_DRAFT_ID}`);
   await expect(page.getByLabel('Reason (optional)')).toHaveAccessibleDescription(
-    /^Stored unencrypted\. The vendor reads it in the order history, .*moderators and administrators if the order is disputed .*the operator and anyone with a backup\. Never include an address, real name or tracking number: send those encrypted with Message vendor on this page\.$/);
+    /^Stored unencrypted\. The vendor reads it in the order history, .*moderators and administrators if the order is disputed .*the operator and anyone with a backup\. Never include an address, real name or tracking number\. Order correspondence becomes available after checkout\.$/);
   await expect(page.locator('#note-help-cancelled').getByRole('link', { name: 'Stored unencrypted.', exact: true })).toHaveAttribute('href', '/canary#records');
 });
 
@@ -57,4 +57,17 @@ test('preview rejects order actions', async ({ page }) => {
   await page.goto(`/order?id=${PREVIEW_DRAFT_ID}`);
   await page.getByRole('button', { name: 'Cancel draft' }).click();
   await expect(page.locator('body')).toContainText('Read-only preview');
+});
+
+
+test('paid order keeps private correspondence and shipping links on the order page', async ({ page }) => {
+  await page.goto('/order?id=8cf1aaf1bfa545a92504cdfe264306ee5f9d9ac801736734b173d8631a891cd9');
+  await expect(page.getByRole('heading', { name: 'Order correspondence', exact: true })).toBeVisible();
+  const form=page.locator('form[action="/orders/message"]');
+  await expect(form.locator('input[name="order_id"]')).toHaveValue('8cf1aaf1bfa545a92504cdfe264306ee5f9d9ac801736734b173d8631a891cd9');
+  await expect(form.locator('input[name="form_nonce"]')).toHaveValue(/^[0-9a-f]{32}$/);
+  await expect(page.getByRole('link', { name: 'Send encrypted shipping details' })).toHaveAttribute('href','#order-messages');
+  await expect(page.getByRole('button', { name: 'Send order message' })).toBeVisible();
+  await expect(page.locator('script')).toHaveCount(0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(page.viewportSize()!.width);
 });

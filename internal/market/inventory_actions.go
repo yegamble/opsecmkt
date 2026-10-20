@@ -43,6 +43,17 @@ func lockListing(c *actionCtx, id string) (managedListing, error) {
 	if err := waitForWalletLocks(c.Ctx(), c.Tx); err != nil { // a checkout may hold the row (escrowCheckoutAction)
 		return l, err
 	}
+	// Selling approval can be revoked without changing a moderator's role.
+	// Hold the actor's account through the mutation so stale forms cannot write
+	// after a concurrent revocation, including photo removal and listing edits.
+	var current User
+	var active bool
+	if err := c.Tx.QueryRowContext(c.Ctx(), "SELECT role,vendor_approved,suspended_at IS NULL AND closed_at IS NULL AND retention_restricted_at IS NULL FROM users WHERE id=$1 FOR SHARE", c.User.ID).Scan(&current.Role, &current.VendorApproved, &active); err != nil {
+		return l, err
+	}
+	if !current.CanSell() || !active {
+		return l, fail(403, "Vendor access required")
+	}
 	if _, err := c.Tx.ExecContext(c.Ctx(), `SELECT 1 FROM users WHERE id=$1 OR id=(SELECT vendor_id FROM products WHERE id=$2 AND (vendor_id=$1 OR $3='admin')) FOR KEY SHARE`, c.User.ID, id, c.User.Role); err != nil {
 		return l, err
 	}
@@ -82,13 +93,31 @@ func listingUpdateAction(c *actionCtx) (actionResult, error) {
 	if err != nil {
 		return actionResult{}, err
 	}
+	var mode string
+	if err = c.Tx.QueryRowContext(ctx, "SELECT digital_delivery_mode FROM products WHERE id=$1", l.ID).Scan(&mode); err != nil {
+		return actionResult{}, err
+	}
+	if mode == "inventory" {
+		if in.Kind != "digital" {
+			return actionResult{}, fail(409, "Clear the available digital inventory and change its delivery method before changing fulfillment type.")
+		}
+		if in.Stock != seen {
+			return actionResult{}, fail(409, "Distinct digital stock is derived from available inventory. Add or remove digital units below.")
+		}
+		if err = c.Tx.QueryRowContext(ctx, "SELECT count(*) FROM digital_units WHERE product_id=$1 AND order_id IS NULL", l.ID).Scan(&l.Stock); err != nil {
+			return actionResult{}, err
+		}
+	}
 	// was is the listing before an administrator's edit of another vendor's listing, for the vendor's notice (A-516).
 	// It also tells whether the vendor's own edit changed what buyers see, which re-holds it for review (MOD72-6).
 	was := listingInput{Kind: l.Kind, Stock: l.Stock}
-	var storedDelivery string
-	if err = c.Tx.QueryRowContext(ctx, `SELECT delivery_content,title,description,category,region,btc,xmr,coalesce(dispatch_days,0) FROM products WHERE id=$1`, l.ID).Scan(
-		&storedDelivery, &was.Title, &was.Description, &was.Category, &was.Region, &was.BTC, &was.XMR, &was.DispatchDays); err != nil {
+	var storedDelivery, regions string
+	if err = c.Tx.QueryRowContext(ctx, `SELECT delivery_content,title,description,category,region,btc,xmr,coalesce(dispatch_days,0),subcategory,array_to_string(shipping_regions,'|') FROM products WHERE id=$1`, l.ID).Scan(
+		&storedDelivery, &was.Title, &was.Description, &was.Category, &was.Region, &was.BTC, &was.XMR, &was.DispatchDays, &was.Subcategory, &regions); err != nil {
 		return actionResult{}, err
+	}
+	if regions != "" {
+		was.ShippingRegions = strings.Split(regions, "|")
 	}
 	if l.VendorID != c.User.ID {
 		// Automatic delivery content is what every buyer receives in the vendor's name. Other editors
@@ -123,9 +152,9 @@ func listingUpdateAction(c *actionCtx) (actionResult, error) {
 	saved := in
 	saved.Stock = stock
 	err = c.Tx.QueryRowContext(ctx, `UPDATE products SET title=$2,description=$3,category=$4,region=$5,kind=$6,btc=$7,xmr=$8,stock=$9,delivery_content=$10,
-		dispatch_days=CASE WHEN $6<>'physical' THEN NULL ELSE COALESCE(NULLIF($11,0),dispatch_days,$12) END,private_expired_at=NULL,updated=now() WHERE id=$1
+		dispatch_days=CASE WHEN $6<>'physical' THEN NULL ELSE COALESCE(NULLIF($11,0),dispatch_days,$12) END,private_expired_at=NULL,updated=now(),subcategory=$13,shipping_regions=coalesce($14::text[],'{}') WHERE id=$1
 		RETURNING coalesce(dispatch_days,0)`,
-		l.ID, in.Title, in.Description, in.Category, in.Region, in.Kind, in.BTC, in.XMR, stock, in.DeliveryContent, in.DispatchDays, defaultDispatchDays).Scan(&saved.DispatchDays)
+		l.ID, in.Title, in.Description, in.Category, in.Region, in.Kind, in.BTC, in.XMR, stock, in.DeliveryContent, in.DispatchDays, defaultDispatchDays, in.Subcategory, in.ShippingRegions).Scan(&saved.DispatchDays)
 	if err != nil {
 		return actionResult{}, err
 	}
@@ -170,7 +199,9 @@ func changedListingFields(was, now listingInput) []string {
 		{"title", was.Title != now.Title},
 		{"description", was.Description != now.Description},
 		{"category", was.Category != now.Category},
+		{"subcategory", was.Subcategory != now.Subcategory},
 		{"region", was.Region != now.Region},
+		{"additional shipping regions", !slices.Equal(was.ShippingRegions, now.ShippingRegions)},
 		{"fulfillment type", was.Kind != now.Kind},
 		{"Monero price", was.XMR != now.XMR},
 		{"stock", was.Stock != now.Stock},

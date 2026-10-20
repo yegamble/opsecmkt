@@ -16,7 +16,7 @@
 <td>
 <a href="/order?id={{.ID}}">{{.Title}}</a>
 <br>
-<small class="muted mono">{{.ID}}</small>
+<small class="muted mono">{{.ID}}</small><br><small class="muted">{{.Units}} {{if eq .Units 1}}unit{{else}}units{{end}}</small>
 </td>
 <td>{{if eq .BuyerID $.User.ID}}Buying{{else}}Selling{{end}}</td>
 <td>{{if eq .BuyerID $.User.ID}}{{.Vendor}}{{else}}{{.Buyer}}{{end}}</td>

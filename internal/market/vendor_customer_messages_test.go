@@ -56,7 +56,7 @@ func TestVendorAccountsKeepExistingOrderMessages(t *testing.T) {
 				t.Helper()
 				before := counts()
 				w := e.do(http.MethodPost, "/messages", actor, url.Values{
-					"recipient": {targetHandle}, "body": {body}, "order_id": {orderID},
+					"recipient": {targetHandle}, "body": {body},
 				})
 				e.check(w, http.StatusSeeOther)
 				after := counts()
@@ -68,16 +68,17 @@ func TestVendorAccountsKeepExistingOrderMessages(t *testing.T) {
 				page := e.body(http.MethodGet, "/messages?to="+targetHandle, actor, nil, http.StatusOK)
 				mustContain(t, html.UnescapeString(page), canonical, formatFingerprint(fingerprint))
 				orderPage := e.body(http.MethodGet, "/order?id="+orderID, actor, nil, http.StatusOK)
-				mustContain(t, orderPage, "href=\"/messages?to="+targetHandle+"&amp;order_id="+orderID+"\"")
+				mustContain(t, orderPage, `href="#order-messages"`, `action="/orders/message"`)
+				mustNotContain(t, orderPage, "href=\"/messages?to="+targetHandle+"&amp;order_id="+orderID+"\"")
 			}
 			deny := func(session, when string) {
 				t.Helper()
 				before := counts()
 				known := e.do(http.MethodPost, "/messages", session, url.Values{
-					"recipient": {targetHandle}, "body": {body}, "order_id": {orderID},
+					"recipient": {targetHandle}, "body": {body},
 				})
 				unknown := e.do(http.MethodPost, "/messages", session, url.Values{
-					"recipient": {"vendor_contact_missing"}, "body": {body}, "order_id": {orderID},
+					"recipient": {"vendor_contact_missing"}, "body": {body},
 				})
 				e.check(known, http.StatusForbidden)
 				e.check(unknown, http.StatusForbidden)
@@ -141,6 +142,41 @@ func TestVendorAccountsKeepExistingOrderMessages(t *testing.T) {
 			_, admin := e.user("vendor_ban_admin_"+direction, "admin")
 			e.check(e.do(http.MethodPost, "/admin/ban", admin, banForm("ban", targetHandle, testBanReason)), http.StatusSeeOther)
 			deny(actor, "recipient banned")
+		})
+	}
+}
+
+// Keep this channel check separate from the availability matrix so its extra
+// submissions do not exhaust that matrix's independently tested message budget.
+func TestVendorCustomerOrderContextUsesOrderChannel(t *testing.T) {
+	for _, direction := range []string{"purchaser", "seller"} {
+		t.Run(direction, func(t *testing.T) {
+			e := newTestApp(t)
+			actorID, actor := e.user("channel_vendor_actor", "vendor")
+			targetID, _ := e.user("channel_vendor_target", "vendor")
+			buyerID, sellerID := actorID, targetID
+			if direction == "seller" {
+				buyerID, sellerID = targetID, actorID
+			}
+			orderID := e.order(buyerID, e.product(sellerID, "physical"), "XMR", statePaid)
+			body := encryptToRecipients(t, "transaction-specific vendor account correspondence", accountPGPFixture.key)
+			// General conversations retain their direct inbox. Explicit order
+			// correspondence belongs to its separate order-private channel.
+			e.check(e.do(http.MethodPost, "/messages", actor, url.Values{
+				"recipient": {"channel_vendor_target"}, "body": {body}, "order_id": {orderID},
+			}), http.StatusConflict)
+			e.check(e.do(http.MethodGet, "/messages?to=channel_vendor_target&order_id="+orderID, actor, nil), http.StatusConflict)
+			for _, table := range []string{"messages", "notifications", "audit_events", "form_submissions"} {
+				if agInt(e, "SELECT count(*) FROM "+table) != 0 {
+					t.Fatal("refused order-context direct message wrote " + table)
+				}
+			}
+			e.check(e.do(http.MethodPost, "/orders/message", actor, url.Values{
+				"order_id": {orderID}, "body": {body},
+			}), http.StatusSeeOther)
+			if agInt(e, "SELECT count(*) FROM order_messages WHERE order_id=$1", orderID) != 1 || agInt(e, "SELECT count(*) FROM messages") != 0 {
+				t.Fatal("order correspondence escaped into the direct inbox")
+			}
 		})
 	}
 }

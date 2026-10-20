@@ -52,6 +52,7 @@ type AdminUserView struct {
 	PGPFingerprint, PGPVerified                string
 	HasPGP                                     bool
 	Verified                                   bool
+	VendorApproved                             bool
 	VerifiedBy, VerifiedAt                     string
 	AutoApprove                                bool                   // MOD72-6: listings publish without staff review (listing_review.go)
 	Application                                *VendorApplicationView // the latest vendor application
@@ -68,7 +69,7 @@ func (v *AdminUserView) Actionable() bool { return !v.Self && v.Role != "admin" 
 
 // CanApply reports whether an administrator can open a vendor application for the account (vendorApplyForAction).
 func (v *AdminUserView) CanApply() bool {
-	return v.Actionable() && v.Role == "buyer" && !v.IsBanned && !v.IsSuspended && !v.IsClosing && !v.IsClosed && (v.Application == nil || !v.Application.Open)
+	return v.Actionable() && (v.Role == "buyer" || v.Role == "moderator") && !v.VendorApproved && !v.IsBanned && !v.IsSuspended && !v.IsClosing && !v.IsClosed && (v.Application == nil || !v.Application.Open)
 }
 
 var directoryRoles = []string{"buyer", "vendor", "moderator", "admin"}
@@ -139,7 +140,7 @@ func adminUsersLoader(ctx context.Context, a *App, r *http.Request, d *PageData)
 }
 
 // The account's vendor state in the directory: the vendor role, else an open application.
-const directoryVendorSQL = `CASE WHEN u.role='vendor' THEN 'Approved vendor' ELSE coalesce((SELECT CASE a.state WHEN 'awaiting_bond' THEN 'Applicant: waiting for bond'
+const directoryVendorSQL = `CASE WHEN u.role IN ('vendor','admin') OR u.vendor_approved THEN 'Approved vendor' ELSE coalesce((SELECT CASE a.state WHEN 'awaiting_bond' THEN 'Applicant: waiting for bond'
 	ELSE 'Applicant: waiting for approval' END FROM vendor_applications a WHERE a.user_id=u.id AND a.state IN ` + vendorOpenStates + ` LIMIT 1),'') END`
 
 // The directory's filter: $1 the search, $2 its literal ILIKE pattern, $3 role, $4 status, $5 vendor state ("" = any).
@@ -149,7 +150,7 @@ const directoryFilterSQL = ` WHERE ($1='' OR u.handle ILIKE $2 ESCAPE E'\\') AND
 		OR ($4='suspended' AND u.suspended_at IS NOT NULL AND u.banned_at IS NULL AND u.closed_at IS NULL)
 		OR ($4='banned' AND u.banned_at IS NOT NULL)
 		OR ($4='closed' AND (u.closed_at IS NOT NULL OR u.deletion_requested_at IS NOT NULL OR u.retention_restricted_at IS NOT NULL)))
-	AND ($5='' OR ($5='verified' AND u.vendor_verified) OR ($5='approved' AND u.role='vendor')
+	AND ($5='' OR ($5='verified' AND (u.vendor_verified OR u.role='admin')) OR ($5='approved' AND (u.role IN ('vendor','admin') OR u.vendor_approved))
 		OR ($5 IN ('awaiting_bond','awaiting_approval') AND EXISTS(SELECT 1 FROM vendor_applications a WHERE a.user_id=u.id AND a.state=$5)))`
 
 func userDirectoryLoader(ctx context.Context, a *App, r *http.Request, d *PageData) error {
@@ -169,7 +170,7 @@ func userDirectoryLoader(ctx context.Context, a *App, r *http.Request, d *PageDa
 	}
 	v.Paging = activityPagingWithKey("/admin/users", "users_page", total, q.Get("users_page"), keep)
 	rows, err := a.db.QueryContext(ctx, `SELECT u.handle,u.role,to_char(u.created,'YYYY-MM-DD HH24:MI "UTC"'),u.banned_at IS NOT NULL,u.closed_at IS NOT NULL,
-		u.deletion_requested_at IS NOT NULL OR u.retention_restricted_at IS NOT NULL,u.suspended_at IS NOT NULL,`+directoryVendorSQL+`,u.vendor_verified
+		u.deletion_requested_at IS NOT NULL OR u.retention_restricted_at IS NOT NULL,u.suspended_at IS NOT NULL,`+directoryVendorSQL+`,(u.vendor_verified OR u.role='admin')
 		FROM users u`+directoryFilterSQL+` ORDER BY u.created DESC,u.id DESC LIMIT $6 OFFSET $7`, append(args, activityPageSize, v.Paging.Offset())...)
 	if err != nil {
 		return err
@@ -200,11 +201,11 @@ func adminUserLoader(ctx context.Context, a *App, d *PageData) error {
 		coalesce(to_char(u.suspended_at,`+userTimeSQL+`),''),coalesce(to_char(u.banned_at,`+userTimeSQL+`),''),coalesce(b.handle,''),coalesce(u.ban_reason,''),
 		coalesce(to_char(u.deletion_requested_at,`+userTimeSQL+`),''),coalesce(to_char(u.retention_restricted_at,`+userTimeSQL+`),''),coalesce(to_char(u.closed_at,`+userTimeSQL+`),''),
 		u.totp_enabled,u.pgp_2fa,u.pgp<>'',u.pgp_fingerprint,coalesce(to_char(u.pgp_verified_at,`+userTimeSQL+`),''),
-		u.vendor_verified,coalesce(vb.handle,''),coalesce(to_char(u.vendor_verified_set_at,`+userTimeSQL+`),''),u.listing_auto_approve,
+		(u.vendor_verified OR u.role='admin'),u.vendor_approved,coalesce(vb.handle,''),coalesce(to_char(u.vendor_verified_set_at,`+userTimeSQL+`),''),u.listing_auto_approve,
 		(SELECT count(*) FROM products p WHERE p.vendor_id=u.id AND NOT p.archived),(SELECT count(*) FROM products p WHERE p.vendor_id=u.id AND p.archived)
 		FROM users u LEFT JOIN users b ON b.id=u.banned_by LEFT JOIN users vb ON vb.id=u.vendor_verified_set_by WHERE u.handle=$1`, d.AdminUserHandle).Scan(
 		&v.ID, &v.Handle, &v.Role, &v.Created, &v.Suspended, &v.Banned, &v.BannedBy, &v.BanReason, &v.DeletionRequested, &v.Restricted, &v.Closed,
-		&v.TOTP, &v.PGPSignIn, &v.HasPGP, &v.PGPFingerprint, &v.PGPVerified, &v.Verified, &v.VerifiedBy, &v.VerifiedAt, &v.AutoApprove, &v.ActiveListings, &v.ArchivedListings)
+		&v.TOTP, &v.PGPSignIn, &v.HasPGP, &v.PGPFingerprint, &v.PGPVerified, &v.Verified, &v.VendorApproved, &v.VerifiedBy, &v.VerifiedAt, &v.AutoApprove, &v.ActiveListings, &v.ArchivedListings)
 	if err == sql.ErrNoRows {
 		return fail(http.StatusNotFound, "No account has the handle \""+d.AdminUserHandle+"\". Check the spelling: handles are case-sensitive.")
 	}
@@ -233,8 +234,8 @@ func adminUserLoader(ctx context.Context, a *App, d *PageData) error {
 		return err
 	}
 	if err == nil {
-		if app.State == "approved" && v.Role != "vendor" {
-			app.RoleRemoved, app.Status = true, "Approved; the vendor role was removed later"
+		if app.State == "approved" && v.Role != "vendor" && v.Role != "admin" && !v.VendorApproved {
+			app.RoleRemoved, app.Status = true, "Approved; selling approval was removed later"
 		}
 		if err = a.fillVendorBond(ctx, &app, false, true); err != nil { // A-547: XMR received and flags
 			return err

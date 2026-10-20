@@ -210,7 +210,13 @@ test('Monero escrow: checkout with the custody copy, funding at 9 and 10 confirm
     await vendor.keyboard.press('ControlOrMeta+A');
     await vendor.keyboard.type('40');
     await typeInto(vendor, vendor.getByLabel('Price (XMR)'), '0.5');
-    if (kind === 'digital') await typeInto(vendor, vendor.getByLabel('Automatic delivery content'), 'LICENCE-XMR-ESCROW-0001');
+    if (kind === 'digital') {
+      const method = vendor.locator('select[name="digital_delivery_mode"]');
+      await tabTo(vendor, method);
+      await method.press('r');
+      await expect(method).toHaveValue('reusable');
+      await typeInto(vendor, vendor.getByLabel('Reusable download content'), 'LICENCE-XMR-ESCROW-0001');
+    }
     await pressSubmit(vendor, vendor.getByRole('button', { name: 'Publish listing' }));
   }
 

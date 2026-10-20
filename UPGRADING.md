@@ -15,9 +15,9 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
-## Listing review (migration 136)
+## Listing review (migration 142)
 
-Migration 136 adds `products.review_state` (`approved`, `pending` or `rejected`; every existing listing is
+Migration 142 adds `products.review_state` (`approved`, `pending` or `rejected`; every existing listing is
 `approved`), `products.review_rejection_reason` (empty; a staff rejection's reason, shown to the vendor until their
 resubmitting edit), the per-vendor `users.listing_auto_approve` flag (off) and the `listing_review_mode` setting with
 the value `publish`. A rejection is not a takedown: it archives nothing and needs no administrator. Nothing
@@ -25,6 +25,20 @@ changes until an administrator chooses **hold for review** under *Admin → Vend
 public and new ones publish at once, as before. Rolling the application back to a build without this migration
 leaves the columns unused; a listing still pending or rejected would then be public again, so approve pending
 listings, and take down rejected ones you do not want public, before downgrading.
+## Marketplace browsing, selling capabilities and private case records
+
+Migrations 136–141 add listing taxonomy and additional shipping regions, independent vendor approval, order correspondence/replacement deliveries, order-bound dispute images, quantities and distinct digital inventory. Existing categories and primary shipping regions remain unchanged; new subcategories start blank. Existing vendors receive independent selling approval. Administrators derive verified selling access from their current role; moderator approval preserves moderation. Promoting an approved vendor to staff preserves selling; explicit Buyer assignment or selling revocation removes it and archives active listings.
+
+Migration 140 gives existing orders quantity one, widens listing stock to bigint and prevents changing quantity after checkout. Draft totals and checkout use the current unit price multiplied by the saved quantity with overflow checks. Drafts do not reserve stock; checkout reserves the full quantity atomically. Published zero-stock listings remain visible unless the buyer selects **Hide out of stock**.
+
+Migration 141 adds manual, reusable and distinct-inventory digital delivery methods. Existing listings retain reusable delivery behavior. Vendors can select distinct inventory on the listing editor and import individual text/link entries; available stock then comes from that inventory. Checkout reserves separate entries and confirmed payment releases one combined order delivery. Manual fulfillment submits one delivery for the whole quantity. Finish or cancel open orders before changing a listing's delivery method. Save delivered text before its configured retention deadline.
+
+Rebuild both the application and isolated upload gateway from this source before using dispute evidence. The new upload kind uses the existing JPEG/PNG scanner and normalization pipeline; originals remain on the gateway. It supports the password-confirmed private staff handoff and uses private, authorized image URLs. No new service or scanner setting is required.
+
+New order correspondence and replacement content remain on the order page and share order-private retention, preservation holds, deletion replay and final retirement. Existing direct messages remain direct messages; the upgrade cannot reliably infer which order an old message concerned. Correspondence messages must be encrypted in a trusted local PGP application, and valid pasted encrypted packets are preserved without a second encryption layer. Initial and replacement digital fulfillment records follow the buyer-bound delivery encryption described below; combined inventory content is encrypted once as a single delivery.
+
+Retention remains opt-in. With it enabled, new case content cannot extend the original financial-closure deadline. Existing purge markers always block resurrection. Keep the retention state when restoring backups. A build lacking these migrations refuses the upgraded database; rollback requires restoring the pre-upgrade database and matching retention state according to the documented recovery procedure.
+
 ## A re-requested Monero stray refund no longer holds the stray refund slot (migration 135, A-616)
 
 Migration 135 runs at startup; there is no new setting. It recreates the index `xmr_settlements_one_open_stray` so that

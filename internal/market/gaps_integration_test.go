@@ -129,17 +129,19 @@ func TestCounterpartyKeysAndMessagePrefill(t *testing.T) {
 	// Order page: each party sees the other's key status; the buyer of a draft gets no shipping prompt.
 	draft := w.e.order(w.buyerID, physical, "XMR", stateDraft)
 	body = w.page("/order?id="+draft, w.buyer, 200)
-	mustContain(t, body, formatFingerprint(fp), "Ownership verified", `href="/messages?to=`+vendorHandle)
+	mustContain(t, body, formatFingerprint(fp), "Ownership verified")
+	mustNotContain(t, body, `href="/messages?to=`+vendorHandle+`"`, `action="/orders/message"`)
 	mustNotContain(t, body, "shipping address")
 	body = w.page("/order?id="+draft, w.vendor, 200)
 	mustContain(t, body, buyerHandle+" has not added a PGP public key")
-	mustNotContain(t, body, `href="/messages?to=`+buyerHandle) // an unfunded draft does not expose a customer contact
+	mustNotContain(t, body, `href="/messages?to=`+buyerHandle+`"`, `action="/orders/message"`)
 
 	// Paid physical order: the buyer is told to send shipping details encrypted to the vendor's key.
 	paid := w.e.order(w.buyerID, w.e.product(w.vendorID, "physical"), "XMR", statePaid)
 	body = w.page("/order?id="+paid, w.buyer, 200)
 	// A-81: the market has no address field but keeps the encrypted message and who sent it to whom and when.
-	mustContain(t, body, "Send your shipping address", "encrypted to "+vendorHandle, "no address field", "keeps the encrypted message and who sent it to whom and when", `href="/messages?to=`+vendorHandle)
+	mustContain(t, body, "Send your shipping address", "encrypted to "+vendorHandle, "no address field", "keeps the encrypted message and who sent it to whom and when", `href="#order-messages"`)
+
 	mustNotContain(t, body, "never stores")
 	body = w.page("/order?id="+paid, w.vendor, 200)
 	mustContain(t, body, "shipping address", "encrypted message", "keeps the encrypted message and who sent it to whom and when")
@@ -249,13 +251,24 @@ func TestVendorDemotionArchivesListingsAndRefusesNewOrders(t *testing.T) {
 		t.Fatalf("refused historical ship changed order: %s", w.state(paid))
 	}
 
-	// Demoting to moderator archives too (the new listing and the one reactivated above).
+	// Moving an approved vendor into moderation preserves genuine selling
+	// approval and its active listings; a later Buyer assignment revokes it.
 	w.expect("/admin", admin, form("action", "role", "password", testPassword, "role", "vendor", "handle", w.e.loadUser(w.vendorID).Handle), 303, "")
 	c := w.e.product(w.vendorID, "digital")
 	w.expect("/admin", admin, form("action", "role", "password", testPassword, "role", "moderator", "handle", w.e.loadUser(w.vendorID).Handle), 303, "")
 	var archived bool
 	w.e.DB.QueryRow("SELECT archived FROM products WHERE id=$1", c).Scan(&archived)
-	if !archived || !w.e.auditExact(w.vendorID, "Archived 2 active listing(s): role changed to moderator by administrator demotion_admin") {
-		t.Fatal("demotion to moderator left the listing active or unaudited")
+	if archived || w.count("SELECT count(*) FROM products WHERE vendor_id=$1 AND NOT archived", w.vendorID) != 2 ||
+		w.count("SELECT count(*) FROM users WHERE id=$1 AND role='moderator' AND vendor_approved", w.vendorID) != 1 ||
+		!w.e.auditExact(w.vendorID, "Role changed from vendor to moderator by administrator demotion_admin") ||
+		w.e.auditExact(w.vendorID, "Archived 2 active listing(s): role changed to moderator by administrator demotion_admin") {
+		t.Fatal("moving an approved vendor into moderation lost approval/listings or recorded the wrong audit")
+	}
+	w.expect("/orders", w.other, form("product_id", c, "currency", "XMR"), 303, "")
+	w.expect("/admin", admin, form("action", "role", "password", testPassword, "role", "buyer", "handle", w.e.loadUser(w.vendorID).Handle), 303, "")
+	if w.count("SELECT count(*) FROM products WHERE vendor_id=$1 AND NOT archived", w.vendorID) != 0 ||
+		w.count("SELECT count(*) FROM users WHERE id=$1 AND vendor_approved", w.vendorID) != 0 ||
+		!w.e.auditExact(w.vendorID, "Archived 2 active listing(s): role changed to buyer by administrator demotion_admin") {
+		t.Fatal("assigning Buyer did not remove selling approval and archive active listings")
 	}
 }

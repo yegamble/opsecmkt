@@ -18,6 +18,7 @@ test('edit, archive and restore a listing without client scripts', async ({ page
   await page.getByLabel('Listing title').fill(title);
   await page.getByLabel('Description', { exact: true }).fill('Inventory regression listing.');
   await page.getByLabel('Fulfillment type').selectOption('digital');
+  await page.locator('select[name="digital_delivery_mode"]').selectOption('reusable');
   await page.getByLabel('Price (XMR)').fill('0.5');
   await expect(page.locator('main')).toContainText('Automatic delivery requires a payment provider');
   await page.getByRole('button', { name: 'Publish listing' }).click();
@@ -32,18 +33,18 @@ test('edit, archive and restore a listing without client scripts', async ({ page
   await expect(page.locator('main')).toContainText('Stored unencrypted on the server');
   await page.getByLabel('Listing title').fill(`${title} v2`);
   await page.getByLabel('Stock').fill('3');
-  await page.getByLabel('Automatic delivery content').fill('download-token-e2e');
+  await page.getByLabel('Reusable download content').fill('download-token-e2e');
   await page.getByRole('button', { name: 'Save changes' }).click();
   await expectNotice(page, 'Listing saved.');
   await expect(page.getByLabel('Listing title')).toHaveValue(`${title} v2`);
   await expect(page.getByLabel('Stock')).toHaveValue('3');
-  await expect(page.getByLabel('Automatic delivery content')).toHaveValue('download-token-e2e');
+  await expect(page.getByLabel('Reusable download content')).toHaveValue('download-token-e2e');
 
   await page.getByRole('button', { name: 'Archive listing' }).click();
   await expect(page).toHaveURL(/\/vendor-dashboard$/);
   await expectNotice(page, 'Listing archived.');
   const card = page.locator('.product-card', { hasText: `${title} v2` });
-  await expect(card.locator('.badge')).toHaveText('Archived');
+  await expect(card.locator('.inventory-state .badge')).toHaveText('Archived');
 
   await page.goto(`/?q=${encodeURIComponent(title)}`);
   await expect(page.getByRole('heading', { name: 'No listings found' })).toBeVisible();
@@ -69,8 +70,9 @@ test('edit, archive and restore a listing without client scripts', async ({ page
   await vendor.getByLabel('Listing title').fill(vendorTitle);
   await vendor.getByLabel('Description', { exact: true }).fill('Administrator delivery-content regression.');
   await vendor.getByLabel('Fulfillment type').selectOption('digital');
+  await vendor.locator('select[name="digital_delivery_mode"]').selectOption('reusable');
   await vendor.getByLabel('Price (XMR)').fill('0.5');
-  await vendor.getByLabel('Automatic delivery content').fill(secret);
+  await vendor.getByLabel('Reusable download content').fill(secret);
   await vendor.getByRole('button', { name: 'Publish listing' }).click();
   await vendor.waitForURL(/\/listing-edit\?id=/); // A-188: publishing lands on the new listing's edit page
   await expect(vendor.getByLabel('Listing title')).toHaveValue(vendorTitle);
@@ -79,7 +81,7 @@ test('edit, archive and restore a listing without client scripts', async ({ page
   await page.goto(editURL);
   await expect(page.locator('main')).toContainText('Automatic delivery content is set; only the vendor can view or change it.');
   await expect(page.locator('main')).not.toContainText(secret);
-  await expect(page.getByLabel('Automatic delivery content')).toHaveCount(0);
+  await expect(page.getByLabel('Reusable download content')).toHaveCount(0);
   await page.getByLabel('Listing title').fill(`${vendorTitle} admin`);
   await page.getByRole('button', { name: 'Save changes' }).click();
   await expectNotice(page, 'Listing saved.');
@@ -90,6 +92,6 @@ test('edit, archive and restore a listing without client scripts', async ({ page
   await expect(vendor.locator('article.message', { hasText: `An administrator edited your listing “${vendorTitle}”` })).toContainText('and changed: title.');
 
   await vendor.goto(editURL);
-  await expect(vendor.getByLabel('Automatic delivery content')).toHaveValue(secret);
+  await expect(vendor.getByLabel('Reusable download content')).toHaveValue(secret);
   await vendor.context().close();
 });

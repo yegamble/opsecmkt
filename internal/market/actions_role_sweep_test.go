@@ -17,7 +17,7 @@ import (
 // author decides who may post it.
 //
 //   - Role gate. Each registered action is posted with a valid CSRF token and form nonce by an anonymous visitor
-//     (401) and by every role not in its Roles (403); the refusal is made before the form is read, so an empty form
+//     (401) and by every role without the required capability (403); the refusal is made before the form is read, so an empty form
 //     is the strongest test of it. The sweep also checks that none of those posts wrote a row anywhere.
 //   - Ownership. An action on someone else's order, dispute, settlement or listing is posted with a complete, valid
 //     form for a real resource by accounts that hold an allowed role but are not a party to it (another buyer,
@@ -106,12 +106,14 @@ var sweepScopes = map[string][2]string{
 	"/admin/vendor-verify":          {scopeStaff, ""},
 	"/admin/listing-review":         {scopeStaff, ""},
 	"/admin/vendor-auto-approve":    {scopeStaff, ""},
+	"/admin/vendor-revoke":          {scopeStaff, "confirmed removal of selling authority; moderator role preserved"},
 	"/admin/xmpp":                   {scopeStaff, "confirmed outgoing notification sender configuration"},
-	"/images/remove":                {scopeStaff, ""},
-	"/moderator/listing-review":     {scopeStaff, ""},
-	"/moderator/payment-review":     {scopeStaff, ""},
-	"/moderator/xmr-collision":      {scopeStaff, ""},
-	"/resolve":                      {scopeStaff, ""},
+
+	"/images/remove":            {scopeStaff, ""},
+	"/moderator/listing-review": {scopeStaff, ""},
+	"/moderator/payment-review": {scopeStaff, ""},
+	"/moderator/xmr-collision":  {scopeStaff, ""},
+	"/resolve":                  {scopeStaff, ""},
 
 	"/admin/escrow-xmr-settled-by-hand": {scopeStaff, "TestXMREscrowSettledByHand covers its party, moderator and state refusals"},
 }
@@ -237,6 +239,16 @@ func (w *sweepWorld) sweepCases() map[string]func() sweepCase {
 			order := x.testEnv.order(x.buyer, x.testEnv.product(x.vendor, "digital"), "XMR", statePaid)
 			return sweepCase{form: url.Values{"order_id": {order}, "content": {"Delivered by the vendor."}}, owner: x.vendorSess, counter: x.buyerSess, ownerWant: 409}
 		},
+		"/orders/message": func() sweepCase {
+			order := paid()
+			key, pub := testPGPKey(w.t, "sweep_order_recipient")
+			x.setKey(x.vendor, pub)
+			return sweepCase{form: url.Values{"order_id": {order}, "body": {encryptToRecipients(w.t, "Order-only correspondence.", key)}}, owner: x.buyerSess, ownerWant: 303}
+		},
+		"/orders/delivery-update": func() sweepCase {
+			order := completed()
+			return sweepCase{form: url.Values{"order_id": {order}, "content": {"Replacement content on the order only."}}, owner: x.vendorSess, counter: x.buyerSess, ownerWant: 303}
+		},
 		"/orders/complete": func() sweepCase {
 			return sweepCase{form: payoutConfirmed(url.Values{"order_id": {paid()}}, xmrListingPrice), owner: x.buyerSess, counter: x.vendorSess}
 		},
@@ -270,6 +282,27 @@ func (w *sweepWorld) sweepCases() map[string]func() sweepCase {
 		"/escrow-xmr/confirm": func() sweepCase {
 			order, buyer, _ := xe.shippedXMR(xe.physical(x.vendor))
 			return sweepCase{form: url.Values{"order_id": {order}, "password": {testPassword}}, owner: buyer, counter: x.vendorSess, ownerWant: 303}
+		},
+
+		"/listings/digital-mode": func() sweepCase {
+			return sweepCase{form: url.Values{"id": {x.testEnv.product(x.vendor, "digital")}, "mode": {"inventory"}}, owner: x.vendorSess, ownerWant: 303}
+		},
+		"/listings/digital-units": func() sweepCase {
+			p := x.testEnv.product(x.vendor, "digital")
+			agExec(x.testEnv, "UPDATE products SET digital_delivery_mode='inventory',stock=0 WHERE id=$1", p)
+			return sweepCase{form: url.Values{"id": {p}, "contents": {"distinct-unit"}}, owner: x.vendorSess, ownerWant: 303}
+		},
+		"/listings/digital-units/remove": func() sweepCase {
+			p := x.testEnv.product(x.vendor, "digital")
+			agExec(x.testEnv, "UPDATE products SET digital_delivery_mode='inventory',stock=1 WHERE id=$1", p)
+			id := randomToken()
+			agExec(x.testEnv, "INSERT INTO digital_units(id,product_id,content,fingerprint) VALUES($1,$2,'distinct-unit',$3)", id, p, digest("distinct-unit"))
+			return sweepCase{form: url.Values{"id": {p}, "unit_id": {id}}, owner: x.vendorSess, ownerWant: 303}
+		},
+		"/listings/digital-units/clear": func() sweepCase {
+			p := x.testEnv.product(x.vendor, "digital")
+			agExec(x.testEnv, "UPDATE products SET digital_delivery_mode='inventory',stock=0 WHERE id=$1", p)
+			return sweepCase{form: url.Values{"id": {p}, "confirm_clear": {"yes"}}, owner: x.vendorSess, ownerWant: 303}
 		},
 		"/listings/update": func() sweepCase {
 			return sweepCase{form: inventoryForm(x.testEnv.product(x.vendor, "physical"), nil), owner: x.vendorSess, ownerWant: 303, allow: []string{"admin"}}
@@ -364,7 +397,10 @@ func TestActionRegistryRoleSweep(t *testing.T) {
 		}
 		ps := []probe{{"anonymous", randomToken(), http.StatusUnauthorized}}
 		for _, p := range []probe{{"buyer", a.buyer, 403}, {"vendor", a.vendor, 403}, {"moderator", a.mod, 403}, {"admin", a.admin, 403}} {
-			if len(spec.Roles) > 0 && !slices.Contains(spec.Roles, p.who) {
+			// Administrators always have selling authority, including for a
+			// vendor-only self-service action such as availability preferences.
+			automaticSeller := p.who == "admin" && slices.Contains(spec.Roles, "vendor")
+			if len(spec.Roles) > 0 && !slices.Contains(spec.Roles, p.who) && !automaticSeller {
 				ps = append(ps, p)
 			}
 		}

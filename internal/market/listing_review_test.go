@@ -17,7 +17,7 @@ import (
 	"opsecmkt/internal/moderation"
 )
 
-// MOD72-6: listing hold mode with per-vendor auto-approve (listing_review.go, migration 136).
+// MOD72-6: listing hold mode with per-vendor auto-approve (listing_review.go, migration 142).
 
 const rejectReason = "Prohibited item: the description offers a weapon part."
 
@@ -479,6 +479,47 @@ func TestListingEditReholdsApprovedListing(t *testing.T) {
 	}
 }
 
+// PR #111's digital delivery method is shown to buyers as "delivered by the vendor" or "automatically delivered": a
+// vendor's change between the two re-holds an approved listing; one between the two automatic methods does not.
+func TestListingDigitalDeliveryModeChangeReholds(t *testing.T) {
+	e := newTestApp(t)
+	vendorID, vendor := e.user("digital_mode_vendor", "vendor")
+	p := e.product(vendorID, "digital")
+	agExec(e, "UPDATE products SET digital_delivery_mode='reusable' WHERE id=$1", p)
+	setListingReviewMode(e, "hold")
+	e.check(e.do("POST", "/listings/digital-mode", vendor, form("id", p, "mode", "inventory")), 303)
+	if reviewState(e, p) != "approved" {
+		t.Fatal("switching between automatic delivery methods re-held the listing")
+	}
+	e.check(e.do("POST", "/listings/digital-mode", vendor, form("id", p, "mode", "manual")), 303)
+	if reviewState(e, p) != "pending" {
+		t.Fatal("switching to vendor-delivered did not re-hold the listing")
+	}
+	buyerCannotReach(e, p, "Test listing", vendorID, randomToken())
+}
+
+// PR #111's taxonomy fields are part of what buyers see: changing only the additional shipping regions re-holds an
+// approved listing.
+func TestListingShippingRegionChangeReholds(t *testing.T) {
+	e := newTestApp(t)
+	vendorID, vendor := e.user("regions_vendor", "vendor")
+	p := e.product(vendorID, "physical")
+	setListingReviewMode(e, "hold")
+	f := listingFields("Test listing")
+	f.Set("description", "Fixture")
+	f.Set("stock", "5")
+	f.Set("id", p)
+	f.Set("stock_seen", "5")
+	f.Add("shipping_regions", "Europe")
+	e.check(e.do("POST", "/listings/update", vendor, f), 303)
+	if got := agStr(e, "SELECT array_to_string(shipping_regions,',') FROM products WHERE id=$1", p); got != "Europe" {
+		t.Fatalf("shipping regions saved %q", got)
+	}
+	if reviewState(e, p) != "pending" {
+		t.Fatal("a change to the additional shipping regions did not re-hold the listing")
+	}
+}
+
 // A vendor's new photo resubmits a rejected listing, as an edit does.
 func TestListingPhotoResubmitsRejectedListing(t *testing.T) {
 	e, _ := uploadEnv(t)
@@ -822,7 +863,7 @@ func TestModerationNeverWritesReviewState(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if strings.Contains(string(b), "review_state") && filepath.Base(m) != "136_listing_review.sql" {
+		if strings.Contains(string(b), "review_state") && filepath.Base(m) != "142_listing_review.sql" {
 			found = append(found, m)
 		}
 	}

@@ -167,7 +167,7 @@ authority. Structurally valid output can still be wrong or malicious, so an
 independent deterministic and authorization boundary remains necessary.
 
 The model never publishes a listing. Listing hold mode (*Admin → Vendors →
-Listing review*, `products.review_state`, migration 136) is independent of
+Listing review*, `products.review_state`, migration 142) is independent of
 capture: in hold mode a vendor's new or edited listing stays hidden until a
 moderator or administrator approves it on the moderation desk, whatever the
 proposal says. Capture, its overflow, `AUTO_APPLY`, confidence and the model
