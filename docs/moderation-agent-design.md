@@ -87,8 +87,8 @@ authority. No dead-man punitive or money action is introduced.
    constraints limit sampling syntax; they do not establish correctness.
    Truncation, interruption or a runtime failure can still return incomplete
    output, which Go must reject. Both current templates passed a pinned native
-   upstream parser check (three valid inputs accepted, nine invalid inputs
-   rejected); see the [validation evidence](evidence/moderation-agent-validation.md).
+   upstream parser check (moderation-v3: 25 cases, 6 accepted and 19 rejected,
+   plus an independent 22-case rebuild); see the [validation evidence](evidence/moderation-agent-validation.md).
    The selected deployed runtime's behavior remains an operator acceptance check.
 6. Recheck deterministic facts against the current database before recording or
    applying a result. Stale entity revisions must not mutate a newer entity.

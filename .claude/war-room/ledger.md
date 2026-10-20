@@ -1793,7 +1793,7 @@ STATUS: implemented (d705cd76: name-mismatch refusal before DDL, TestMigrationNa
 
 DECISION: ACCEPT (P1 REQUIRED; LLM-5 P2 folded in for the shared moderation-v3 bump). Fake-adapter evidence: runtime truncation/stop metadata is ignored, so a truncated completion can AUTO_APPLY on a truncating llama.cpp build (runtime unpinned; CJK/emoji/punctuation-heavy 4096-rune listings exceed ctx 4096) (LLM-1); Stage B can drop a validated Stage A finding and AUTO_APPLY (LLM-2); model allowlists let a model assert Go-owned/ungroundable codes (MODEL_ABSENT, CANARY_MISMATCH, SLA_EXPIRED…), producing false audit records (LLM-3); hashes/64-hex evidence IDs dominate Stage B tokens (LLM-5). Must be fixed before inference is enabled anywhere.
 ACCEPTANCE: truncated/limit/missing stop metadata and oversized prompts → MODEL_FAILURE, never AUTO_APPLY; Stage A findings survive into reason codes; grammar + Go reject system codes, v2 pins refused, historical rows byte-stable; no 64-hex in prompts, evidence aliases round-trip.
-STATUS: implemented (4b25d311, merged on war-room/moderation-agent): moderation-v3; truncation/stop metadata and /tokenize pre-flight fail closed (field names per pinned llama.cpp 3bb63cbc server-task.cpp:341-346); Stage A findings merged; ModelReasonCodes allowlists (chair: Stage B may assert DETERMINISTIC_CONFLICT — review-only); E-aliases, no 64-hex in prompts. Evidence: internal/moderation race 92.4% coverage, 8/8 mutants killed; native upstream GBNF validator 25/25 (6 accepted, 19 rejected; Stage A template sha256 89ee792d…, proposal 9b164c64…). Full internal/market DB halves failed only with load timeouts (A/B overlay showed order-dependence, not code). opsec-llm verification pending.
+STATUS: implemented (4b25d311, merged on war-room/moderation-agent): moderation-v3; truncation/stop metadata and /tokenize pre-flight fail closed (field names per pinned llama.cpp 3bb63cbc server-task.cpp:341-346); Stage A findings merged; ModelReasonCodes allowlists (chair: Stage B may assert DETERMINISTIC_CONFLICT — review-only); E-aliases, no 64-hex in prompts. Evidence: internal/moderation race 92.4% coverage, 8/8 mutants killed; native upstream GBNF validator 25/25 (6 accepted, 19 rejected; Stage A template sha256 89ee792d…, proposal 9b164c64…). Full internal/market DB halves failed only with load timeouts (A/B overlay showed order-dependence, not code). VERIFIED by opsec-llm at 4bb9c1f5 (fake adapter + independent native GBNF rebuild 22/22 and 25/25 reproduced; field names checked against 3bb63cbc); docs/evidence synced by chair.
 
 ### MOD72-5 — Detection and image-hash precision (LLM-4, LLM-6, LLM-7, LLM-E6)
 
@@ -1805,6 +1805,12 @@ STATUS: open (ready; next wave after MOD72-4 because LLM-7 touches engine routin
 - LLM-E1 measuring rig (≥300 labelled items, pinned build, shipped grammars; enablement threshold benign AUTO_APPLY ≥70% at ≥99% precision), E2 chat template, E3 bounded grammar whitespace, E4 latency at cpus:2, E5 calibration, E7 skip inference for money kinds, E8 field order — P3 EXPERIMENT. Instrument-tier note (llava-7B via Ollama, not production): the shipped raw prompt flagged 10/10 listings INJECTION_SUSPECTED; model value is unproven until E1.
 - LLM-8 → MOD72-6 (owner chose to add it to PR #99).
 - NIT: worker never sets actor reputation (always 0 → +5 risk); omit until real.
+
+### MOD72-7 — Escape bracket special tokens in model-facing data; pin ctx size (opsec-llm verification follow-up)
+
+DECISION: ACCEPT (P2 SHOULD). llama.cpp 3bb63cbc `/completion` tokenizes with parse_special=true (server-context.cpp:2461); JSON escaping covers `<`,`>`,`&` but not `[`/`]`, so bracket-style control tokens (e.g. Mistral `[INST]`) in vendor text could become real control tokens. Go should emit `\u005b`/`\u005d` in fenced field JSON (same JSON meaning; version bump). NIT: a test that deploy/moderation/entrypoint.sh's `--ctx-size` equals `modelContextTokens` (inference.go:47). Model vocabulary exposure UNVERIFIED (source reading only).
+ACCEPTANCE: no raw `[`/`]` inside fenced data in either prompt; decoding unchanged; ctx drift test fails on mismatch.
+STATUS: open (next wave).
 
 ### MOD72-6 — Listing hold mode with per-vendor auto-approve (owner directive, LLM-8)
 

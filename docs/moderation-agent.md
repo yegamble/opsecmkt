@@ -326,9 +326,10 @@ runtime binary. See [version-worker setup](install/service-topology.md#version-w
 
 The [validation evidence](evidence/moderation-agent-validation.md) distinguishes
 native grammar-parser checks, Go/database/browser tests, synthetic process
-isolation and unverified production operation. Both embedded grammars passed
-the pinned upstream parser with three valid inputs accepted and nine invalid
-inputs rejected; this does not establish correct model judgment.
+isolation and unverified production operation. Both current (moderation-v3)
+grammars passed the pinned upstream parser: 25 cases (6 accepted, 19 rejected)
+and an independent rebuild with 22 cases, all as expected; this does not
+establish correct model judgment.
 
 The [supplied proposal comparison](moderation-proposal-comparison.md) records
 which principles were retained, which integration/security examples were
