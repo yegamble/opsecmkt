@@ -98,6 +98,7 @@ Evidence tier as in `repo-map.md`.
 | 67 | 2026-10-19 | /war-room-loop A-547 (targeted scope; rotation skipped): automatic XMR vendor bond, design ruled iteration 66 Round D | implementer (1, plus one fix round); payments and qa-release verifiers (two rounds each) | Round 1 NOT VERIFIED: PE-1 (a full restore could re-issue an unpaid bond address to another applicant; REQUIRED), QA67-1 (intake-pause text; REQUIRED), PE-2, PE-3, PE-5, QA67-2–4. Fix round: restore.sh closes the in-use bond wallet; closed and orphan wallets are read and never issue. Verified: A-547 (PR #89 merged 70a03eed; CI 39312171811 all 24 checks). New P3: A-602–A-607. Remaining: A-570, A-569 and the other ledger rows; owner-blocked A-555, A-562, A-573 |
 | 68 | 2026-10-19 | /war-room-loop resume: implementation wave on ruled P1 items (no council sweep; enough ready items) | implementers A-569, A-570, A-572 (A-570 one fix round); qa-release verifier A-569; security verifiers A-572 and A-570 (two rounds) | Verified: A-569 (#93), A-572 (#92), A-570 (#94); main CI 39337244761 (b24ccd6f) and 39338966671 (2cb23939) all 23 jobs passed, 39340843585 (be8faf0f) all 23 jobs passed. Round 1 NOT VERIFIED A-570 (PGP-only admin lockout on saturated public table). New: P2 A-611 (admin password oracle on the public listener), P3 A-608–A-610, A-612 (escrow retention spec flake seen on the ledger PR). Host disk filled during the wave (Go build cache cleared). Usage rules (usage-budget.md, PR #91) applied: one verifier per item, resumed by SendMessage. Remaining: A-571 next, then the other open rows; owner-blocked A-555, A-562, A-573 |
 | 69 | 2026-10-19 | /war-room-loop resume: implementation wave on ruled P1/P2 items (no council sweep) | implementers A-560, A-571 (one fix round each), A-613; payments verifier A-560 (two rounds); security verifier A-571 (two rounds) | Verified: A-560 (#97), A-571 (#96); A-535 closed by A-571. Round 1 NOT VERIFIED A-571 (unbudgeted TOTP guessing on the rescue path, SEC-A571-1, owner decision: rescue-only budget) and A-560 (re-request text wrong after a refused or pending re-request). New: A-613 (P1, owner request). Main CI 39355890550 and 39355890693 (85247a17) passed. Remaining: A-613 in progress, then A-559 and A-611; owner-blocked A-555, A-562, A-573 |
+| 70 | 2026-10-20 UTC | Targeted moderation agent, coding-agent hardening and supplied Gemini proposal | security, privacy/Tor and infrastructure; isolated implementers; independent QA | MOD69-1/2/3/4 and MOD70-5 independently verified locally; no further required in-scope issue on fresh review. MOD70-6 storage policy remains a production gate; image understanding excluded by owner. [PR #99](https://github.com/yegamble/opsecmkt/pull/99) tracks the required final-source CI gate and final long-running suite results. No main merge or deployment delegated. |
 
 ## P0 — release blockers
 
@@ -1582,4 +1583,27 @@ OPERATOR IMPACT: Private ingress setup remains explicit; no new public route or 
 TECHNICAL COST/RISK: A server-owned view flag and conditional link; it does not grant authorization.
 ACCEPTANCE CRITERIA: Public/preview overview has its existing sections and no private queue link; authenticated private overview exposes the queue link; all public requests to the queue still return 404 before body/cookie/database work.
 TEST PLAN: Go DB authorization/render regression and unchanged overview browser check at all six configurations; existing early-denial tests.
-STATUS: fixed and independently VERIFIED locally (`066ac360`, integrated `cc9fd4f8`, PostgreSQL race); five runnable overview browser configurations passed; Firefox and PR/CI pending.
+STATUS: fixed and independently VERIFIED locally (`066ac360`, integrated `cc9fd4f8`, PostgreSQL race); all six overview browser configurations passed, including the full Firefox rerun (118 tests); PR #99/CI pending.
+
+### MOD70-5 — Bound offline signer token reads
+
+DECISION: ACCEPT (P2 SHOULD), `opsec-security-1`.
+WHY: The selected local token file is read in full before the 2048-byte limit. An oversized file can exhaust the offline workstation's memory before validation.
+DISSENTING VIEW: The operator selects the file, so this is resilience hardening rather than a remotely reachable release blocker.
+USER/OPERATOR IMPACT: Invalid oversized or nonregular input is refused before cryptographic work or output creation; valid signing stays interoperable.
+TECHNICAL COST/RISK: One bounded regular-file read, preserving signature bytes and exclusive output behavior.
+ACCEPTANCE CRITERIA: Reject oversized input with a bounded read, no OpenSSL call or output; preserve valid signing interoperability.
+TEST PLAN: Test-first oversized-input regression and existing Go/OpenSSL interoperability test.
+STATUS: fixed (`38cacd7e`) and independently VERIFIED at integrated `e1c29fc2`; four Python refusal tests (no skips) and existing OpenSSL-to-Go race interoperability passed (1.202 s); PR #99/final CI pending.
+
+### MOD70-6 — Production moderation storage high-water policy
+
+DECISION: DEFER (P2 SHOULD), `opsec-infrastructure-1`.
+WHY: Per-record and per-batch bounds do not cap total distinct revisions or immutable proposals. Capture is off by default and production enablement already requires a storage/retention review.
+DISSENTING VIEW: A new arbitrary overflow policy could drop evidence or silently penalize users. Choose its budget and non-punitive behavior with the operator before enforcement.
+ACCEPTANCE CRITERIA: Capacity rehearsal proves the selected bound, administrator-visible overflow, preserved review references and unchanged marketplace targets.
+STATUS: production gate; no capacity test or total-storage guarantee claimed.
+
+COUNCIL RESULT: Security and infrastructure seats found no further REQUIRED/BLOCKER; privacy REQUIRED findings MOD69-1/2 are independently verified. No disputed required finding remained, so Rounds B/C were skipped under the usage budget. The final security SHOULD bounded signer read is accepted as MOD70-5; storage high-water policy is deferred as MOD70-6. Owner explicitly excludes image understanding; only hashes/basic metadata are in scope.
+
+INTEGRATION: Current main `00346cd6` merged; both upgrade notices retained. PR #99 is the single handoff. CI status is external to this ledger commit and must be checked on its exact final head; no earlier run implies that gate passed. No open required item remains within this targeted scope; unrelated main backlog stays unchanged.

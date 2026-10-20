@@ -235,6 +235,8 @@ jobs:
           python3 -m unittest discover -s tests -p 'test_*.py' -v 2> "$RUNNER_TEMP/unittest.log" || { cat "$RUNNER_TEMP/unittest.log"; exit 1; }
           cat "$RUNNER_TEMP/unittest.log"
           if grep -E ' \.\.\. skipped' "$RUNNER_TEMP/unittest.log"; then echo 'Python tests were skipped' >&2; exit 1; fi
+      - name: Moderation inference boundary with a synthetic executable
+        run: bash scripts/test-moderation-isolation.sh
       - name: Encrypted backup and restore against PostgreSQL
         run: bash scripts/test-backup-restore.sh
         env:

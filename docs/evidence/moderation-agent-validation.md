@@ -117,7 +117,8 @@ digest alone does not prove a selected runtime is safe or correctly deployed.
 ## Application and broader verification
 
 Local checks below distinguish their source revision and evidence tier. The
-branch also incorporates main `00346cd6`; its full remote CI gate is pending.
+branch also incorporates main `00346cd6`; its full remote CI gate was pending when this evidence was prepared. Final
+check results are recorded on [PR #99](https://github.com/yegamble/opsecmkt/pull/99).
 Earlier local passes must not be relabeled final-source CI.
 
 | Check | Observed state when this evidence was prepared |
@@ -125,15 +126,16 @@ Earlier local passes must not be relabeled final-source CI.
 | Moderation and dependency package race tests | Passed, including strict output handling, canary/reference refusal, two-stage data separation, proxy/redirect denial and absent/interrupted runtime cases |
 | Public retained-copy regression | Failed first for missing notices, then passed against a disposable PostgreSQL database; distinctive plaintext remains in both job and proposal copies after ordinary listing expiry, and disclosure remains after capture is disabled |
 | Related records/deletion/hold race tests | Passed, 5.742 s on the isolated disclosure-fix branch |
-| Records disclosure browser check, JavaScript disabled | Four Chromium widths and WebKit mobile passed. Firefox remains environment-blocked: after repairing its profile location, content subprocesses encounter a managed-sandbox denial writing `/proc/self/uid_map`; browser security was not disabled. |
-| Full PostgreSQL-backed Go halves | Escrow half passed (market 578.333 s); final pre-main-merge general half is running against `cc9fd4f8`. The escrow half uses simulated RPC; environment-gated chain tests are not live-chain evidence. |
-| Ordinary browser suite and focused fixes | Initial run: 614 passed, 121 failed, one skipped. Failures were the Firefox launch environment plus five private-navigation assertions. After the fix, those five unchanged Chromium/WebKit overview checks and five records disclosure checks passed. Firefox rerun is pending. |
+| Records disclosure browser check, JavaScript disabled | Four Chromium widths and WebKit mobile passed. Firefox passed in the complete Firefox project rerun. |
+| Full PostgreSQL-backed Go halves | Escrow half passed (market 578.333 s); general half was still running against `cc9fd4f8` at evidence capture; its final outcome is recorded on PR #99. The escrow half uses simulated RPC; environment-gated chain tests are not live-chain evidence. |
+| Ordinary browser suite and focused fixes | Initial run: 614 passed, 121 failed, one skipped. Failures were the Firefox launch environment plus five private-navigation assertions. After the fix, those five unchanged Chromium/WebKit overview checks and five records disclosure checks passed. The complete Firefox rerun passed all 118 tests (114 preview, one setup, three real database upload/refusal journeys) in 2.2 minutes after the main merge. It required workspace XDG/temp directories and an approved outer-exec sandbox exception for `/proc/self/uid_map`; Firefox's own sandbox remained enabled and `HOME` was unchanged. |
 | Simulated Monero escrow browser suite | All nine journeys passed (3.4 minutes) with real PostgreSQL, simulated wallet RPC and JavaScript disabled. |
-| Full Python suite | 393 tests passed in 202.138 s. |
-| Synthetic isolation executable | `bash scripts/test-moderation-isolation.sh` passed with exit 0 against disposable synthetic artifacts; no selected model was run. |
-| Modules, vet, formatting, shell syntax, whitespace and strict MkDocs | Passed on the integrated branch; vet repeated after the main merge. |
+| Full Python suite | 393 tests passed in 202.138 s. The four subsequently added signer-input tests also passed without skips; their full-suite rerun was in progress at evidence capture. |
+| Synthetic isolation executable | `bash scripts/test-moderation-isolation.sh` passed with exit 0 against disposable synthetic artifacts, then passed again after the main merge. It is now required in CI operations; no selected model was run. |
+| Modules, vet, formatting, shell syntax, whitespace and strict MkDocs | Passed on the integrated branch; vet and pinned actionlint repeated after the main merge. |
 | Reachable vulnerability check | Pinned `govulncheck@v1.8.0` passed: zero vulnerabilities affecting called code; one module-level advisory does not affect called/imported packages. |
-| Independent review-fix verification | MOD69-1/2 passed four PostgreSQL race tests (3.389 s); MOD69-3/4 passed literal-SQL, navigation, early denial, freshness and image isolation checks (12.909 s). |
+| Main merge regression | Moderation, freshness, source guards, private navigation and paused sign-in rescue race checks passed after merging `00346cd6` (92.930 s). |
+| Independent review-fix verification | MOD69-1/2 passed four PostgreSQL race tests (3.389 s); MOD69-3/4 passed literal-SQL, navigation, early denial, freshness and image isolation checks (12.909 s). MOD70-5 passed four bounded signer-input regressions and real OpenSSL-to-Go race interoperability (1.202 s). |
 
 ## Production gates and limits
 
@@ -148,8 +150,9 @@ Earlier local passes must not be relabeled final-source CI.
   and proposal inputs currently have no automatic expiry; disabling capture and
   ordinary content/account expiry do not remove them.
 - Validate useful moderation quality with representative, independently reviewed
-  data. No faithful full-thread timeline, semantic photo/claim verification or
-  safe public reply publication has been established by coded findings or dHash.
+  data. Coded findings do not establish a faithful full-thread timeline or safe
+  public reply publication. Image understanding is outside scope by owner
+  decision; dHash and basic metadata support duplicate/similarity signals only.
 - Preserve existing human/transactional authority for funds, bans and target
   mutations. Review annotations and model confidence do not grant that authority.
 - Run final-source CI and deployment acceptance. No real funds were used and no

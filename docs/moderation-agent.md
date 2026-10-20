@@ -201,6 +201,8 @@ backfilled. Upgrade the app and apply migration 127 first, then update the
 separate gateway: an old app's strict upload envelope rejects the added field,
 while a new app accepts old gateways that omit it. Neither
 hash comparison nor the text-only model validates listing claims against photos.
+Image understanding and vision inference are outside the owner-approved scope;
+images contribute duplicate/similarity hashes and basic metadata only.
 Stage B receives validated finding codes and references, not a full dispute
 thread or its original prose. It cannot produce a faithful evidence-rich thread
 summary or timeline from that limited context. The core's advisory
@@ -220,7 +222,11 @@ access and review storage growth and preservation obligations. Do not assume
 that existing retention jobs erase moderation records: these new snapshots and
 immutable proposals are not included in the existing retention sweeps. Do not
 enable the feature where that conflicts with the selected evidence-retention
-policy until a reviewed retention path exists. Model prompts, raw
+policy until a reviewed retention path exists. Per-item and batch limits do not
+bound total revisions or retained storage. High-volume production capture also
+requires an approved storage budget, monitoring threshold and non-punitive
+overflow policy, verified by a capacity rehearsal. These controls are not yet
+implemented. Model prompts, raw
 transport errors and runtime endpoints do not belong in public logs or panels.
 
 ## Review and service inventory
