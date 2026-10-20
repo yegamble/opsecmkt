@@ -154,7 +154,7 @@ func (a *App) xmrSettlementStatus(s *XMRSettlementView, o *Order, outcome string
 		s.Title = "Return of coins that do not count for the order: sent after it closed, left out of its settlement, or not counted when it was cancelled (a stray refund to the buyer)"
 	}
 	threshold := strconv.FormatInt(v.Threshold, 10)
-	why := xmrSettleWaitText(s.wait, s.kind, v.Threshold)
+	why := xmrSettleWhy(s.wait, s.kind, s.Supersedes, v.Threshold)
 	sent := "Sent to the " + v.Net + " network: transaction " + s.TxHash + "."
 	switch s.state {
 	case "requested":

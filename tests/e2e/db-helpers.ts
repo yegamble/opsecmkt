@@ -30,6 +30,18 @@ export function pgpFixture(name: string): string {
   return readFileSync(join(__dirname, 'fixtures', 'pgp', name), 'utf8');
 }
 
+// Explicit prerequisite for journeys that create orders or send private messages.
+// Keep signedIn unchanged so missing-key refusals remain observable in tests.
+export async function saveEncryptionKey(page: Page, password: string, armored = pgpFixture('recipient.pub.asc')): Promise<void> {
+  await page.goto('/account');
+  const profile = page.locator('form', { has: page.getByRole('button', { name: 'Save profile', exact: true }) });
+  await profile.getByLabel('PGP public key', { exact: true }).fill(armored);
+  await profile.getByLabel('Current password', { exact: true }).fill(password);
+  await submitAndLoad(page, profile.getByRole('button', { name: 'Save profile', exact: true }));
+  await expect(page).toHaveURL(/\/account$/);
+  await expectNotice(page, 'Profile saved.');
+}
+
 // A fresh JavaScript-disabled browser context that registers (or signs in as) handle.
 export async function signedIn(browser: Browser, baseURL: string | undefined, handle: string, password: string, register: boolean, width = 390): Promise<Page> {
   const context = await browser.newContext({ baseURL, javaScriptEnabled: false, viewport: { width, height: 900 } });

@@ -40,6 +40,7 @@
 {{if .User}}
 <a href="/orders" {{if eq .Page "orders"}}aria-current="page"{{end}}>Orders</a>
 <a href="/messages" {{if eq .Page "messages"}}aria-current="page"{{end}}>Messages</a>
+<a href="/tickets" {{if or (eq .Page "tickets") (eq .Page "ticket")}}aria-current="page"{{end}}>Support tickets</a>
 <a href="/notifications" {{if eq .Page "notifications"}}aria-current="page"{{end}}>Notifications{{if .UnreadNotifications}} <span class="nav-count">({{.UnreadNotifications}} unread)</span>{{end}}</a>
 <a href="/disputes" {{if eq .Page "disputes"}}aria-current="page"{{end}}>Disputes</a>
 <a href="/account" {{if eq .Page "account"}}aria-current="page"{{end}}>Account</a>{{if or (eq .User.Role "vendor") (eq .User.Role "admin")}}<a href="/vendor-dashboard" {{if eq .Page "vendor-dashboard"}}aria-current="page"{{end}}>Vendor desk</a>{{end}}{{if or (eq .User.Role "moderator") (eq .User.Role "admin")}}<a href="/moderator" {{if eq .Page "moderator"}}aria-current="page"{{end}}>Moderation{{with .StaffAttention}} <span class="nav-count">({{.Disputes}} disputes · {{.PaymentReviews}} review orders · {{.EscrowAlerts}} alerts)</span>{{end}}</a>{{end}}{{if eq .User.Role "admin"}}<a href="/admin" {{if eq .Page "admin"}}aria-current="{{if .AdminSection}}true{{else}}page{{end}}"{{end}}>Admin</a>{{end}}{{end}}<a class="nav-end" href="/canary" {{if eq .Page "canary"}}aria-current="page"{{end}}><span class="action-icon" aria-hidden="true">◇</span> Transparency</a>

@@ -26,6 +26,7 @@ func newDisputeOrderWorld(t *testing.T) *disputeOrderWorld {
 
 func (w *disputeOrderWorld) fundedFor(buyerID, buyer, vendorID, vendor string) string {
 	w.e.t.Helper()
+	w.e.enableOrderPGP(buyerID, vendorID)
 	product := w.x.digital(vendorID)
 	order := w.e.order(buyerID, product, "XMR", stateDraft)
 	checkout := w.e.do("POST", "/orders/escrow-xmr", buyer, url.Values{"order_id": {order}, "refund_address": {testXMRAddr("dispute-refund-"+order, true)}})
@@ -48,6 +49,7 @@ func (w *disputeOrderWorld) fundedFor(buyerID, buyer, vendorID, vendor string) s
 // snapshot and a usable vendor PGP key for fulfillment and shipping tests.
 func (w *disputeOrderWorld) fundedPhysicalFor(buyerID, buyer, vendorID, vendor string) string {
 	w.e.t.Helper()
+	w.e.enableOrderPGP(buyerID, vendorID)
 	product := w.x.physical(vendorID)
 	order := w.e.order(buyerID, product, "XMR", stateDraft)
 	r := w.e.do("POST", "/orders/escrow-xmr", buyer, url.Values{"order_id": {order}, "refund_address": {testXMRAddr("physical-dispute-refund-"+order, true)}})

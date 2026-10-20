@@ -102,6 +102,7 @@ func TestXMREscrowStagenetTags(t *testing.T) {
 	}
 	// The standard form is accepted too.
 	buyer, sess := x.user("xb_"+randomToken()[:8], "buyer")
+	x.enableOrderPGP(buyer)
 	other := x.order(buyer, x.digital(x.vendor), "XMR", stateDraft)
 	if w := x.checkout(sess, other, testXMRAddrOn("stagenet", "tags refund standard", false)); w.Code != 303 {
 		t.Fatalf("stagenet standard refund: %d %s", w.Code, w.Body.String())
@@ -407,6 +408,7 @@ func TestXMREscrowSkipsWhileNotSynced(t *testing.T) {
 func (x *xmrEscrowEnv) freshCheckoutOn(nettype string) (string, string) {
 	x.t.Helper()
 	buyer, sess := x.user("xb_"+randomToken()[:8], "buyer")
+	x.enableOrderPGP(buyer)
 	order := x.order(buyer, x.digital(x.vendor), "XMR", stateDraft)
 	if w := x.checkout(sess, order, testXMRAddrOn(nettype, "refund "+order, true)); w.Code != 303 {
 		x.t.Fatalf("checkout: %d %s", w.Code, w.Body.String())

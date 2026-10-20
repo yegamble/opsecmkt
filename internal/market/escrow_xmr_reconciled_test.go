@@ -59,6 +59,7 @@ func TestXMREscrowRestoredCheckoutWaitsForReconcile(t *testing.T) {
 	x.mustPoll() // the top-up makes account 6 after the restore point
 	x.pitr(snap)
 	buyer, sess := x.user("xc_"+randomToken()[:8], "buyer")
+	x.enableOrderPGP(buyer)
 	oc := x.order(buyer, x.product, "XMR", stateDraft)
 	refund := testXMRAddrOn(x.refundNet(), "refund "+oc, true)
 	if p := x.page("/order?id="+oc, sess); !strings.Contains(p, "No Monero escrow account is free right now") || strings.Contains(p, `action="/orders/escrow-xmr"`) {

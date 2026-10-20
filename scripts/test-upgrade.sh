@@ -237,19 +237,47 @@ sql -c "UPDATE settings SET value='false' WHERE key='payment_intake_XMR'"
 export UPGRADE_XMR_ORDER
 UPGRADE_XMR_ORDER=$(sql -c "SELECT o.id FROM orders o JOIN users u ON u.id=o.buyer_id WHERE u.handle='alpha_buyer' AND o.currency='XMR'")
 python3 <<'PY'
-import http.cookiejar, os, re, subprocess, urllib.parse, urllib.request
+import html, http.cookiejar, os, pathlib, re, subprocess, urllib.parse, urllib.request
 base, order = os.environ['UPGRADE_BASE'], os.environ['UPGRADE_XMR_ORDER']
+password = 'upgrade-long-disposable-password'
 client = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
-def csrf(path):
-    match = re.search(r'name="csrf"\s+value="([^"]+)"', client.open(base + path).read().decode())
+def csrf(path, session=client):
+    match = re.search(r'name="csrf"\s+value="([^"]+)"', session.open(base + path).read().decode())
     assert match, f'{path} has no CSRF token'
-    return match[1]
-response = client.open(base + '/login', data=urllib.parse.urlencode({'csrf': csrf('/login'), 'handle': 'alpha_buyer', 'password': 'upgrade-long-disposable-password'}).encode())
+    return html.unescape(match[1])
+def sign_in(session, handle):
+    return session.open(base + '/login', data=urllib.parse.urlencode({
+        'csrf': csrf('/login', session), 'handle': handle, 'password': password}).encode())
+response = sign_in(client, 'alpha_buyer')
 assert response.status == 200 and '/login' not in response.url, f'alpha.1 credentials rejected ({response.url})'
 page = client.open(base + '/order?id=' + order).read().decode()
 assert 'Draft — unfunded' in page and 'Alpha era soldering kit' in page, 'migrated order is not shown as a draft'
 product = subprocess.run(['docker', 'exec', '-i', os.environ['UPGRADE_DB'], 'psql', '-X', '-q', '-A', '-t', '-U', 'upgrade', '-d', 'opsecmkt', '-c',
                           'SELECT product_id FROM orders WHERE id=' + "'" + order + "'"], check=True, capture_output=True, text=True).stdout.strip()
+# The preservation checks above run before these explicit account changes. Legacy
+# accounts still need usable encryption keys before creating or reusing an order;
+# the upgrade must not silently supply keys or bypass the current order policy.
+checkout_without_keys = client.open(base + '/checkout?' + urllib.parse.urlencode({'id': product})).read().decode()
+assert 'Add a usable PGP public key' in checkout_without_keys, 'legacy buyer must be told to save an encryption key'
+assert not re.findall(r'<form\b(?=[^>]*\baction="/orders")[^>]*>', checkout_without_keys), 'keyless legacy accounts must not receive an order form'
+public_key = pathlib.Path('tests/e2e/fixtures/pgp/recipient.pub.asc').read_text()
+def save_encryption_key(session, handle):
+    account = session.open(base + '/account').read().decode()
+    profiles = re.findall(r'<form\b(?=[^>]*\baction="/account")[^>]*>(.*?)</form>', account, re.S)
+    assert len(profiles) == 1, f'{handle} must have one matching profile form'
+    tokens = {}
+    for name in ('csrf', 'form_nonce'):
+        token = re.search(r'name="' + name + r'"\s+value="([^"]+)"', profiles[0])
+        assert token, f'{handle} profile form must supply {name}'
+        tokens[name] = html.unescape(token[1])
+    saved = session.open(base + '/account', data=urllib.parse.urlencode({
+        **tokens, 'pgp': public_key, 'password': password}).encode())
+    assert saved.status == 200 and urllib.parse.urlsplit(saved.url).path == '/account', f'{handle} encryption key was not saved'
+vendor = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+signed_vendor = sign_in(vendor, 'alpha_vendor')
+assert signed_vendor.status == 200 and '/login' not in signed_vendor.url, 'alpha.1 vendor credentials rejected'
+save_encryption_key(vendor, 'alpha_vendor')
+save_encryption_key(client, 'alpha_buyer')
 checkout = client.open(base + '/checkout?' + urllib.parse.urlencode({'id': product})).read().decode()
 orders_forms = re.findall(r'<form\b(?=[^>]*\baction="/orders")[^>]*>(.*?)</form>', checkout, re.S)
 assert len(orders_forms) == 1, 'checkout must render one matching /orders form'
