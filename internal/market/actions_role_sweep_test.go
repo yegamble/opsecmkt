@@ -100,6 +100,8 @@ var sweepScopes = map[string][2]string{
 	"/moderator/payment-review":     {scopeStaff, ""},
 	"/moderator/xmr-collision":      {scopeStaff, ""},
 	"/resolve":                      {scopeStaff, ""},
+
+	"/admin/escrow-xmr-settled-by-hand": {scopeStaff, "TestXMREscrowSettledByHand covers its party, moderator and state refusals"},
 }
 
 // sweepActors are sessions of accounts that are party to nothing the sweep creates.

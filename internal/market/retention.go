@@ -487,6 +487,7 @@ func retentionUnknownUserReferences(ctx context.Context, tx *sql.Tx) (bool, erro
  ('xmr_settlements'::regclass,'requested_by'),
  ('xmr_settlement_rerequests'::regclass,'requested_by'),
  ('xmr_escrow_collisions'::regclass,'disposed_by'),
+ ('xmr_settlement_hand_settled'::regclass,'settled_by'),
  ('provider_episode_deliveries'::regclass,'user_id'))))`).Scan(&unknown)
 	return unknown, err
 }
@@ -521,6 +522,7 @@ SELECT EXISTS(SELECT 1 FROM sessions WHERE user_id=$1)
  OR EXISTS(SELECT 1 FROM xmr_settlements WHERE requested_by=$1)
  OR EXISTS(SELECT 1 FROM xmr_settlement_rerequests WHERE requested_by=$1)
  OR EXISTS(SELECT 1 FROM xmr_escrow_collisions WHERE disposed_by=$1)
+ OR EXISTS(SELECT 1 FROM xmr_settlement_hand_settled WHERE settled_by=$1)
  OR EXISTS(SELECT 1 FROM provider_episode_deliveries WHERE user_id=$1)
  OR EXISTS(SELECT 1 FROM branding_upload_tickets WHERE user_id=$1)`, id).Scan(&referenced)
 	return referenced, err
