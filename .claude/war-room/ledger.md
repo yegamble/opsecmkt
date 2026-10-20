@@ -1565,3 +1565,16 @@ TECHNICAL COST/RISK: Narrow query dispatch change; all targets and positional pa
 ACCEPTANCE CRITERIA: TestSourceGuardNoTrustedCastsDynamicSQLOrForwardedHeaders passes unchanged; all supported target freshness checks, stale refusal and image-byte isolation regressions pass.
 TEST PLAN: Reproduce the unchanged source guard failure first, apply literal switch dispatch, rerun source and moderation/image guards with PostgreSQL and -race.
 STATUS: ruled, ready for isolated implementation by the chair acting as implementation seat.
+
+
+### MOD69-4 — Offer private moderation navigation only on private ingress
+
+DECISION: ACCEPT (P1 REQUIRED; interface coherence).
+WHY: The new unconditional overview link targets a private-only page even in public development/preview administration, where it always returns 404. It also changes the existing Sections list contract; five runnable browser projects reproduce the extra-link failure.
+DISSENTING VIEW: Updating the count assertion alone would leave the unusable link. Keep the current sections contract and show a separate private-review link only when the request actually arrived on configured private administrator ingress.
+USER IMPACT: Administrators see a usable queue link where authorized; public preview does not advertise an unreachable action.
+OPERATOR IMPACT: Private ingress setup remains explicit; no new public route or listener.
+TECHNICAL COST/RISK: A server-owned view flag and conditional link; it does not grant authorization.
+ACCEPTANCE CRITERIA: Public/preview overview has its existing sections and no private queue link; authenticated private overview exposes the queue link; all public requests to the queue still return 404 before body/cookie/database work.
+TEST PLAN: Go DB authorization/render regression and unchanged overview browser check at all six configurations; existing early-denial tests.
+STATUS: ruled, isolated implementation by the chair acting as implementation seat.
