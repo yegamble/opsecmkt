@@ -31,6 +31,10 @@ import (
 // xmrMineMargin: blocks mined beyond a confirmation threshold, for a transaction that missed the next block.
 const xmrMineMargin = 2
 
+// xmrReRequestPasses bounds the passes TestXMREscrowRegtestReRequest gives a re-request whose transfer the wallet may
+// refuse while its ring database holds a ring from before a reorganisation (see there).
+const xmrReRequestPasses = 10
+
 // xmrRPCProxy forwards JSON-RPC requests to the escrow wallet-rpc, counting each method; drop[method] makes the next
 // call of method lose its answer after the wallet-rpc answered it (a timeout after the call took effect), and
 // around[method] runs around the forwarding of each call of method (it must call forward once).
@@ -543,7 +547,9 @@ func (r *xmrRegtest) daemonStoppedAround(name string) func(forward func()) {
 // administrator re-requests it with the password step-up after a reorganisation took the funding deposit out of the
 // chain (A-614): the new settlement waits (deposit-missing), past A-554's bounded wait too, with no transfer. Once the
 // same deposit transaction is mined again, the new build spends exactly the stored key images (the stored row's, and
-// the inputs the daemon decodes) to the stored plan, is relayed and confirms.
+// the inputs the daemon decodes) to the stored plan, is relayed and confirms. The wallet may refuse that build (-4) on
+// some passes first, as its stored ring predates the reorganisation; each refusal is a wait that builds and relays
+// nothing, within xmrReRequestPasses passes.
 func TestXMREscrowRegtestReRequest(t *testing.T) {
 	container := os.Getenv("ESCROW_XMR_REGTEST_DAEMON_CONTAINER")
 	if container == "" {
@@ -648,12 +654,33 @@ func TestXMREscrowRegtestReRequest(t *testing.T) {
 		t.Fatalf("send_raw_transaction of funding deposit %s: %q", deposit, sent.Status)
 	}
 	r.mineTo(deposit, 10+xmrMineMargin)
-	r.synced()
-	r.mustPoll()
-	next := r.settlementOf(order, "release")
-	if next.Supersedes != id || next.State != "relayed" || r.settlement(id).State != "superseded" || p.count("transfer") != 2 ||
+	// The deposit is mined again at another global output index, while the escrow wallet's ring database still holds
+	// the ring the refused build used for its key image (wallet2::get_outs stores every build's rings, and reuses a
+	// known one). That ring no longer contains the real output, and monero-wallet-rpc 0.18.5.1 asks the daemon for it
+	// only when its decoy picker happens to draw its new index, so transfer may fail (-4, "Daemon response did not include
+	// the requested real output") on a pass and succeed on a later one. Each refusal must be a wait that builds and
+	// relays nothing; the new settlement is then built and relayed exactly once.
+	relays := p.count("relay_tx")
+	var next xmrSettlement
+	refused := 0
+	for pass := 1; ; pass++ {
+		r.synced()
+		r.mustPoll()
+		next = r.settlementOf(order, "release")
+		if next.State != "requested" || pass == xmrReRequestPasses {
+			break
+		}
+		class := r.waitClass(next.ID)
+		if (class != xmrWalletRefusing+" rpc:-4" && class != xmrWalletRefused+" rpc:-4") || next.TxHash != "" || len(next.KeyImages) != 0 ||
+			p.count("transfer") != 2+pass-1 || p.count("relay_tx") != relays {
+			t.Fatalf("re-requested, pass %d: new %+v %q, transfer %d, relay_tx %d (was %d)", pass, next, class, p.count("transfer"), p.count("relay_tx"), relays)
+		}
+		refused++
+		t.Logf("re-requested, pass %d: transfer refused (%s), nothing built or relayed; the market tries again", pass, class)
+	}
+	if next.Supersedes != id || next.State != "relayed" || r.settlement(id).State != "superseded" || p.count("transfer") != 2+refused || p.count("relay_tx") != relays+1 ||
 		!slices.Equal(slices.Sorted(slices.Values(next.KeyImages)), slices.Sorted(slices.Values(failed.KeyImages))) || next.InputTotal != failed.InputTotal {
-		t.Fatalf("re-requested: old %+v, new %+v, transfer %d", r.settlement(id), next, p.count("transfer"))
+		t.Fatalf("re-requested after %d refused pass(es): old %+v, new %+v, transfer %d, relay_tx %d (was %d)", refused, r.settlement(id), next, p.count("transfer"), p.count("relay_tx"), relays)
 	}
 	oldOuts, newOuts := r.outputsOf(id), r.outputsOf(next.ID)
 	claimant := func(s string, fee int64) (string, int64) {
