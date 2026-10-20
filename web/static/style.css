@@ -867,6 +867,11 @@ td a {
   color:var(--muted);
   font-size:0.875rem
 }
+/* Long empty-state actions keep their text and icon inside the padded panel at enlarged text sizes. */
+.empty .button {
+  max-width:100%;
+  flex-wrap:wrap
+}
 .key-values {
   margin:0
 }

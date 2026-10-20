@@ -12,6 +12,25 @@ test('draft cannot be paid without a wallet, cancellation is recorded, vendor se
   await page.getByRole('button', { name: 'Create account' }).click();
   await expect(page.locator('.account-name')).toHaveText(handle);
 
+  // An empty desk has a longer call to action than the populated preview. Its
+  // text and arrow must reflow inside the padded empty-state panel at 200% text.
+  await page.goto('/orders');
+  await expect(page.getByRole('heading', { name: 'No orders yet', exact: true })).toBeVisible();
+  const explore = page.getByRole('link', { name: /Explore the marketplace/ });
+  const initialViewport = page.viewportSize()!;
+  for (const width of [320, 390, 768, 1280]) {
+    await page.setViewportSize({ width, height: initialViewport.height });
+    for (const scale of ['100%', '200%']) {
+      await page.locator('html').evaluate((element, size) => { element.style.fontSize = size; }, scale);
+      await waitForStyles(page);
+      const box = (await explore.boundingBox())!;
+      expect(box.x).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width, `empty orders action at ${width}px/${scale}`).toBeLessThanOrEqual(width);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth), `empty orders at ${width}px/${scale}`).toBeLessThanOrEqual(width);
+    }
+  }
+  await page.setViewportSize(initialViewport);
+
   // The catalog shows 25 listings a page (A-181) and other specs publish more: search for the setup fixture.
   await page.goto(`/?q=${encodeURIComponent(FIXTURE_LISTING)}`);
   await page.getByRole('link', { name: FIXTURE_LISTING, exact: true }).click();
