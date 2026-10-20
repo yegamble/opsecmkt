@@ -22,7 +22,7 @@ func withCheckoutPrice(ctx context.Context) context.Context {
 	return context.WithValue(ctx, checkoutPriceCtx{}, true)
 }
 
-// stockHook reserves one unit when a buyer requests payment and returns it when a reserved order is
+// stockHook reserves the ordered quantity when a buyer requests payment and returns those units when a reserved order is
 // cancelled. Drafts never hold stock.
 func stockHook(ctx context.Context, a *App, tx *sql.Tx, o *Order, from, to string) error {
 	switch {
@@ -31,8 +31,8 @@ func stockHook(ctx context.Context, a *App, tx *sql.Tx, o *Order, from, to strin
 		// edit racing this checkout is either wholly before or wholly after the snapshot.
 		var title, description, kind string
 		var btc, xmr int64
-		err := tx.QueryRowContext(ctx, `UPDATE products SET stock=stock-1 WHERE id=$1 AND stock>0 AND NOT archived
-			RETURNING title,description,kind,btc,xmr`, o.ProductID).Scan(&title, &description, &kind, &btc, &xmr)
+		err := tx.QueryRowContext(ctx, `UPDATE products SET stock=stock-$2 WHERE id=$1 AND stock>=$2 AND NOT archived
+			RETURNING title,description,kind,btc,xmr`, o.ProductID, o.Units()).Scan(&title, &description, &kind, &btc, &xmr)
 		if err == sql.ErrNoRows {
 			return fail(409, "This listing is out of stock or no longer available")
 		}
@@ -51,7 +51,11 @@ func stockHook(ctx context.Context, a *App, tx *sql.Tx, o *Order, from, to strin
 			if err != nil {
 				return err
 			}
-			if recorded != price {
+			total, totalErr := checkedOrderTotal(price, o.Units())
+			if totalErr != nil {
+				return totalErr
+			}
+			if recorded != total {
 				return fail(409, "This listing price changed while payment was requested. Reload and try again; nothing was changed.")
 			}
 		}
@@ -69,7 +73,7 @@ func stockHook(ctx context.Context, a *App, tx *sql.Tx, o *Order, from, to strin
 		if err := waitForWalletLocks(ctx, tx); err != nil {
 			return err
 		}
-		_, err := tx.ExecContext(ctx, "UPDATE products SET stock=stock+1 WHERE id=$1", o.ProductID)
+		_, err := tx.ExecContext(ctx, "UPDATE products SET stock=stock+$2 WHERE id=$1", o.ProductID, o.Units())
 		return err
 	}
 	return nil

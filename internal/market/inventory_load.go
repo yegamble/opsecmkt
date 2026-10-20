@@ -125,7 +125,7 @@ func listingReservations(ctx context.Context, a *App, productIDs []string) (map[
 		return result, nil
 	}
 	rows, err := a.db.QueryContext(ctx, `SELECT o.product_id,
-		count(*) FILTER (WHERE o.state NOT IN ('draft','completed','resolved','cancelled')),
+		COALESCE(sum(o.quantity) FILTER (WHERE o.state NOT IN ('draft','completed','resolved','cancelled')),0),
 		COALESCE(to_char(min(CASE WHEN o.state='awaiting_payment' AND es.order_id IS NOT NULL THEN
 			GREATEST(es.created,COALESCE((SELECT max(pm.created) FROM payments pm WHERE pm.order_id=o.id
 				AND pm.confirmations>=0 AND NOT pm.locked AND (es.coin='XMR' OR NOT pm.escrow_left_out)),es.created))

@@ -69,6 +69,7 @@ type ProductPhoto struct {
 type Order struct {
 	ID, ProductID, Title, Buyer, Vendor, Currency, Amount, Status, Created string
 	State, Kind, BuyerID, VendorID, Updated                                string
+	Quantity                                                               int64
 	// Listing snapshot is captured only when the draft first requests payment. Kind remains
 	// operational (live for earlier orders with no snapshot); KindDisplay never invents
 	// historical terms for those orders. Description is rendered only on an authorized order.
@@ -920,6 +921,7 @@ type XMREscrowOrderView struct {
 // be used now; Net is Monero escrow's network and Prefixes the first characters of its addresses (A-449).
 type XMREscrowCheckoutView struct {
 	Reason, Custody string
+	Total           string // current unit price times the draft's saved quantity, in XMR
 	Physical        bool
 	Net, Prefixes   string
 	NetKnown        bool // the network was verified (App.xmrEscrowNetKnown): the copy names none before that (QA5W1-3)

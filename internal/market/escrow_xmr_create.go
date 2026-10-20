@@ -144,7 +144,7 @@ func xmrEscrowCheckoutAction(c *actionCtx) (actionResult, error) {
 	if err = checkXMRRefund(ctx, c.Tx, refund, x.feeAddress, c.User.ID); err != nil {
 		return actionResult{}, err
 	}
-	if _, err = c.Tx.ExecContext(ctx, "UPDATE orders o SET amount=p.xmr FROM products p WHERE o.id=$1 AND o.state='draft' AND p.id=o.product_id", o.ID); err != nil {
+	if _, err = c.Tx.ExecContext(ctx, "UPDATE orders SET amount=$2 WHERE id=$1 AND state='draft'", o.ID, price); err != nil {
 		return actionResult{}, err
 	}
 	if _, err = a.transition(withCheckoutPrice(context.WithValue(ctx, escrowCheckoutCtx{}, true)), c.Tx, o.ID, stateDraft, stateAwaitingPayment, c.User, "Monero escrow address requested"); err != nil {

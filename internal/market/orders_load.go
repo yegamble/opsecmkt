@@ -506,10 +506,14 @@ func subFloorOrderGate(ctx context.Context, a *App, d *PageData) error {
 	if err := a.db.QueryRowContext(ctx, "SELECT xmr FROM products WHERE id=$1", o.ProductID).Scan(&price); err != nil {
 		return err
 	}
-	if price >= payoutFloor(o.Currency, "release") {
+	total, totalErr := checkedOrderTotal(price, o.Units())
+	if totalErr == nil && total >= payoutFloor(o.Currency, "release") {
 		return nil
 	}
 	message := subFloorListing(o.Currency, 0)
+	if totalErr != nil {
+		message = totalErr.Error()
+	}
 	for i := range d.Transitions {
 		if d.Transitions[i].To != stateAwaitingPayment {
 			continue

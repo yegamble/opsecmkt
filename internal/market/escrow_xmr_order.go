@@ -235,12 +235,22 @@ func (a *App) xmrEscrowCheckoutOffer(ctx context.Context, d *PageData) error {
 	if a.escrowXMR == nil || o.State != stateDraft || d.OrderViewer != roleBuyer || o.Currency != "XMR" {
 		return nil
 	}
+	net := a.xmrEscrowNetwork()
+	v := &XMREscrowCheckoutView{Physical: o.Kind == "physical", Custody: xmrCustody, Net: net, Prefixes: xmrPrefixes(net), NetKnown: a.xmrEscrowNetKnown() != ""}
 	eligible, price, _, err := escrowEligible(ctx, a.db, o)
+	if refusal, ok := err.(*httpError); ok {
+		v.Reason = refusal.Msg
+		d.XMREscrowCheckout = v
+		return nil
+	}
 	if err != nil || !eligible {
 		return err
 	}
-	net := a.xmrEscrowNetwork()
-	v := &XMREscrowCheckoutView{Physical: o.Kind == "physical", Custody: xmrCustody, Net: net, Prefixes: xmrPrefixes(net), NetKnown: a.xmrEscrowNetKnown() != ""}
+	v.Total = amount(price, 12)
+	if v.Reason, err = quantityCheckoutReason(ctx, a.db, o); err != nil || v.Reason != "" {
+		d.XMREscrowCheckout = v
+		return err
+	}
 	if price < payoutFloor(o.Currency, "release") {
 		v.Reason, err = subFloorListingForProduct(ctx, a.db, o.ProductID, o.Currency)
 		if err != nil {

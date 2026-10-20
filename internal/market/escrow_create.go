@@ -369,7 +369,7 @@ func escrowCheckoutAction(c *actionCtx) (actionResult, error) {
 	if used {
 		return actionResult{}, errEscrowRefundUsed
 	}
-	if _, err = c.Tx.ExecContext(ctx, "UPDATE orders o SET amount=p.btc FROM products p WHERE o.id=$1 AND o.state='draft' AND p.id=o.product_id", o.ID); err != nil {
+	if _, err = c.Tx.ExecContext(ctx, "UPDATE orders SET amount=$2 WHERE id=$1 AND state='draft'", o.ID, price); err != nil {
 		return actionResult{}, err
 	}
 	moved, err := a.transition(withCheckoutPrice(context.WithValue(ctx, escrowCheckoutCtx{}, true)), c.Tx, o.ID, stateDraft, stateAwaitingPayment, c.User, "Escrow address requested")
@@ -564,7 +564,7 @@ func heldEscrowKeys(ctx context.Context, tx *sql.Tx, keys map[string][]byte) (ma
 	return held, nil
 }
 
-// escrowEligible reports whether o's listing takes escrow, its price in o's currency (BTC or XMR, in satoshi or
+// escrowEligible reports whether o's listing takes escrow, its total price for o.Units() in o's currency (BTC or XMR, in satoshi or
 // piconero) and its dispatch window in days (0 = none). A digital listing takes escrow when its content is delivered
 // automatically (as autoDeliveryHook would) and it is not taken down; a physical listing, when it has a dispatch window
 // and is not taken down.
@@ -579,7 +579,8 @@ func escrowEligible(ctx context.Context, q rowQuerier, o *Order) (bool, int64, i
 	}
 	ok := !takenDown && (o.Kind == "digital" && strings.TrimSpace(content) != "" && utf8.RuneCountInString(content) <= maxDeliveryChars ||
 		o.Kind == "physical" && dispatch.Valid)
-	return ok, price, int(dispatch.Int32), nil
+	total, err := checkedOrderTotal(price, o.Units())
+	return ok, total, int(dispatch.Int32), err
 }
 
 // builtEscrow is a checked escrow, not yet imported: its address, the bare-key descriptor with its checksum (what is
