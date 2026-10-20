@@ -221,7 +221,7 @@ func TestXMREscrowDisputePartyCopy(t *testing.T) {
 	mustContain(t, oldBuyer, historicPanel, adminHandle+" · admin</summary>", modHandle+" · moderator</summary>")
 	mustNotContain(t, oldBuyer, escrowPanel, "decides escrow disputes", "can pass evidence on")
 	oldVendor := w.page("/order?id="+historical, w.vendor, 200)
-	mustContain(t, oldVendor, moderatorReply, "message an independent moderator or administrator listed under Contact dispute staff")
+	mustContain(t, oldVendor, moderatorReply, "contact an independent moderator or administrator listed under Contact dispute staff")
 	mustNotContain(t, oldVendor, escrowReply)
 	agExec(e, "UPDATE disputes SET resolution='Imported decision.' WHERE order_id=$1", historical)
 	mustContain(t, w.page("/order?id="+historical, w.buyer, 200), "<h3>Moderator decision</h3>")
