@@ -84,7 +84,7 @@ test('administrator holds listings, a moderator approves one and only then buyer
 
     // Now the buyer finds and opens it.
     await buyer.goto(`/?q=${encodeURIComponent(title)}`);
-    await expect(buyer.getByRole('link', { name: title })).toBeVisible();
+    await expect(buyer.getByRole('link', { name: title, exact: true })).toBeVisible();
     expect((await buyer.goto(`/product?id=${id}`))?.status()).toBe(200);
     await expect(buyer.locator('main')).not.toContainText('Awaiting review');
 
