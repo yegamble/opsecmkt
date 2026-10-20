@@ -1,3 +1,12 @@
-{{/* A-470, A-480. escrow-alert-reasons: the open escrow staff alerts of an EscrowAlertView (escrowStaffAlert), joined
-with "; ". Used by the moderation desk's Escrow alerts list and the order page's staff help. */}}
-{{define "escrow-alert-reasons"}}{{if .Stall}}a settlement queued or stuck, not seen by the network{{end}}{{if and .Stall (or .TooFew .Refused .Requested)}}; {{end}}{{if .TooFew}}the release to the vendor could not be built, the coins are too few{{end}}{{if and .TooFew (or .Refused .Requested)}}; {{end}}{{if .Refused}}a Monero deposit was refused as another order's escrow account{{end}}{{if and .Refused .Requested}}; {{end}}{{if .Requested}}Monero escrow settlement has been requested for more than 24 hours{{end}}{{end}}
+{{/* A-470, A-480, A-560. escrow-alert-reasons: the open escrow staff alerts of an EscrowAlertView (escrowStaffAlert), joined
+with "; ". Used by the moderation desk's Escrow alerts list and the order page's staff help. A failed Monero settlement says
+whether it can be re-requested (its transaction is stored) and, when it cannot, what to do. */}}
+{{define "escrow-alert-reasons"}}{{$s := ""}}
+{{- if .Stall}}a settlement queued or stuck, not seen by the network{{$s = "; "}}{{end}}
+{{- if .TooFew}}{{$s}}the release to the vendor could not be built, the coins are too few{{$s = "; "}}{{end}}
+{{- if .Refused}}{{$s}}a Monero deposit was refused as another order's escrow account{{$s = "; "}}{{end}}
+{{- if .Requested}}{{$s}}Monero escrow settlement has been requested for more than 24 hours{{$s = "; "}}{{end}}
+{{- with .ReRequestable}}{{$s}}Monero escrow settlement {{.}} failed and nothing was sent, but its transaction is stored: an administrator who is not a party can re-request it on the order page (Re-request settlement {{.}}){{$s = "; "}}{{end}}
+{{- with .Unbuilt}}{{$s}}Monero escrow settlement {{.}} failed before any transaction was built, so it cannot be re-requested: read why under the settlement on the order page, and settle anything still owed by hand with the operator (a stray refund returns to the buyer any deposit it left out){{$s = "; "}}{{end}}
+{{- with .SetAside}}{{$s}}Monero escrow settlement {{.}} is set aside because building it made the escrow wallet stop responding: an administrator who is not a party can ask for it to be built again on the order page (Build settlement {{.}} again){{end}}
+{{- end}}

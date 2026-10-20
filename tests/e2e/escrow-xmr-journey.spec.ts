@@ -380,6 +380,16 @@ test('Monero escrow administrator actions: re-request a failed settlement (A-401
   await expect(rerequest).toContainText('The new transaction spends exactly the same coins to the same destinations and amounts');
   await shot(admin, info, 'a02-rerequest-form');
   const failedID = await rerequest.locator('input[name="settlement_id"]').inputValue();
+  // A-560: the failed claim is an escrow staff alert. The order page's staff help and the moderation desk say that it can
+  // be re-requested because its transaction is stored; the vendor sees neither.
+  const reRequestable = `Monero escrow settlement ${failedID} failed and nothing was sent, but its transaction is stored: an administrator who is not a party can re-request it on the order page (Re-request settlement ${failedID})`;
+  await expect(admin.locator('main')).toContainText(`because its escrow has an open staff alert: ${reRequestable}.`);
+  await expect(vendor.locator('main')).not.toContainText('open staff alert');
+  const deskAlert = () => admin.getByRole('region', { name: 'Escrow alerts' }).locator('li', { hasText: orderID(failedOrder.url) });
+  await admin.goto('/moderator');
+  await expect(deskAlert()).toContainText(reRequestable);
+  await shot(admin, info, 'a02-failed-desk-alert');
+  await admin.goto(failedOrder.url);
   await typeInto(admin, rerequest.getByLabel('Current password'), password);
   expect(await pressSubmit(admin, rerequest.getByRole('button', { name: `Re-request settlement ${failedID}` }))).toBe(303);
   await expect(admin.getByRole('status').filter({ hasText: 'Re-request recorded.' })).toBeVisible();
@@ -390,6 +400,8 @@ test('Monero escrow administrator actions: re-request a failed settlement (A-401
   await reloadUntil(admin, async () => { await expect(again.getByRole('status').first()).toContainText(`Sent to the fakechain network: transaction `, { timeout: 500 }); });
   await expect(again.getByRole('status').first()).toContainText(`It re-requests settlement ${failedID}: the same coins, to the same destinations.`);
   await shot(admin, info, 'a03-rerequest-sent');
+  await admin.goto('/moderator'); // superseded: the alert has cleared
+  await expect(deskAlert()).toHaveCount(0);
   await mine(request, 10);
   await vendor.goto(failedOrder.url);
   await reloadUntil(vendor, async () => { await expect(settlement(vendor, "The vendor's claim").first().getByRole('status').first()).toContainText('Confirmed on the fakechain network', { timeout: 500 }); });
@@ -403,6 +415,7 @@ test('Monero escrow administrator actions: re-request a failed settlement (A-401
   await admin.goto(asideOrder.url);
   const retry = admin.locator('form[action="/admin/escrow-xmr-retry-build"]');
   const asideID = await retry.locator('input[name="settlement_id"]').inputValue();
+  await expect(admin.locator('main')).toContainText(`because its escrow has an open staff alert: Monero escrow settlement ${asideID} is set aside because building it made the escrow wallet stop responding: an administrator who is not a party can ask for it to be built again on the order page (Build settlement ${asideID} again).`); // A-560
   await shot(admin, info, 'a05-retry-form');
   await typeInto(admin, retry.getByLabel('Current password'), password);
   expect(await pressSubmit(admin, retry.getByRole('button', { name: `Build settlement ${asideID} again` }))).toBe(303);
