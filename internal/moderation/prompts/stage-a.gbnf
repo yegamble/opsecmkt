@@ -1,0 +1,8 @@
+root ::= "{" ws "\"findings\"" ws ":" ws "[" ws (finding (ws "," ws finding)*)? ws "]" ws "," ws "\"injection_suspected\"" ws ":" ws boolean ws "," ws "\"canary\"" ws ":" ws {{CANARY}} ws "}" ws
+finding ::= "{" ws "\"reason_code\"" ws ":" ws reason ws "," ws "\"evidence_ids\"" ws ":" ws strings ws "}"
+reason ::= {{REASONS}}
+strings ::= "[" ws (string (ws "," ws string)*)? ws "]"
+string ::= "\"" char* "\""
+char ::= [^"\\\x00-\x1F] | "\\" (["\\/bfnrt] | "u" [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F])
+boolean ::= "true" | "false"
+ws ::= [ \t\n\r]*

@@ -1,0 +1,10 @@
+root ::= "{" ws "\"item_id\"" ws ":" ws {{ITEM_ID}} ws "," ws "\"action\"" ws ":" ws action ws "," ws "\"confidence\"" ws ":" ws confidence ws "," ws "\"reason_codes\"" ws ":" ws reasons ws "," ws "\"injection_suspected\"" ws ":" ws boolean ws "," ws "\"injection_evidence\"" ws ":" ws strings ws "," ws "\"evidence_ids\"" ws ":" ws strings ws "," ws "\"summary\"" ws ":" ws string ws "," ws "\"canary\"" ws ":" ws {{CANARY}} ws "}" ws
+action ::= {{ACTIONS}}
+reason ::= {{REASONS}}
+reasons ::= "[" ws reason (ws "," ws reason)* ws "]"
+strings ::= "[" ws (string (ws "," ws string)*)? ws "]"
+string ::= "\"" char* "\""
+char ::= [^"\\\x00-\x1F] | "\\" (["\\/bfnrt] | "u" [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F])
+confidence ::= "0" ("." [0-9]+)? | "1" ("." "0"+)?
+boolean ::= "true" | "false"
+ws ::= [ \t\n\r]*
