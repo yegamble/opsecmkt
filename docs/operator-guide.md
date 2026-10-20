@@ -1430,6 +1430,12 @@ refund also stands in for the order's one release or refund, which is all the da
   alert. A payment by hand would pay twice. Read why under the settlement on the order page; then an administrator who
   is not a party dismisses it there (*Dismiss settlement N (nothing owed now)*, under the settlement). Dismissing it
   changes nothing the market does with later deposits; it only closes this alert.
+- The exception: a failed settlement with no transaction built that still **claims deposits** (a re-request that failed
+  *nothing-to-settle* after taking over the deposits of the settlement it superseded, for example when a claimed
+  deposit was read as double-spent). Its alert and the deposit's *Payment review* row say so: the coins are in the
+  escrow wallet and may still be owed, and the market does not settle them on its own. It cannot be dismissed (the
+  order page offers no form and the action refuses it); settle with the operator, outside the market. Its alert stays
+  open. Making such a settlement wait instead of failing is a separate change (A-614).
 
 Either record (dismissed as nothing owed, or marked settled by hand) takes a note of 10–500 characters (why nothing is
 owed now; or what the wallet and the chain showed and what was done), confirmed with the password (and the

@@ -2,8 +2,9 @@
 with "; ". Used by the moderation desk's Escrow alerts list and the order page's staff help. A failed Monero settlement says
 whether it can be re-requested (its transaction is stored; StoredText says whether a re-request waits or was refused,
 or Monero escrow is off) and, when it cannot, what to do: one never built is dismissed as nothing owed, never paid by
-hand (PAY613-1); one whose re-request was refused for good is checked and marked settled by hand (a refund too few is
-no alert; xmrFailedClosedSQL). */}}
+hand (PAY613-1), unless it still claims deposits, whose coins are settled with the operator (Stranded, PAY613-4); one
+whose re-request was refused for good is checked and marked settled by hand (a refund too few is no alert;
+xmrFailedClosedSQL). */}}
 {{define "escrow-alert-reasons"}}{{$s := ""}}
 {{- if .Stall}}a settlement queued or stuck, not seen by the network{{$s = "; "}}{{end}}
 {{- if .TooFew}}{{$s}}the release to the vendor could not be built, the coins are too few{{$s = "; "}}{{end}}
@@ -11,5 +12,6 @@ no alert; xmrFailedClosedSQL). */}}
 {{- if .Requested}}{{$s}}Monero escrow settlement has been requested for more than 24 hours{{$s = "; "}}{{end}}
 {{- with .ReRequestable}}{{$s}}Monero escrow settlement {{.}} {{$.StoredText}}{{$s = "; "}}{{end}}
 {{- with .Unbuilt}}{{$s}}Monero escrow settlement {{.}} failed before any transaction was built because no deposit counted at that time, so nothing was sent and it cannot be re-requested: read why under the settlement on the order page. Do not pay anything by hand for it: if a deposit of this escrow is listed again, the market handles it automatically as usual (a stray refund returns it when the order's coins go back to the buyer) and it is flagged for review or raises its own alert. An administrator who is not a party dismisses it on the order page (Dismiss settlement {{.}} (nothing owed now)){{$s = "; "}}{{end}}
+{{- with .Stranded}}{{$s}}Monero escrow settlement {{.}} failed before any transaction was built while it still claims deposits of this escrow: their coins are in the escrow wallet and may still be owed, and the market does not settle them on its own. Settle them with the operator; it cannot be dismissed while it claims them{{$s = "; "}}{{end}}
 {{- with .SetAside}}{{$s}}Monero escrow settlement {{.}} is set aside because building it made the escrow wallet stop responding: an administrator who is not a party can ask for it to be built again on the order page (Build settlement {{.}} again){{end}}
 {{- end}}

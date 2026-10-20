@@ -17,8 +17,9 @@ existing documented operations workflow.
 
 ## Stuck failed Monero settlements can be cleared (A-613)
 
-Migration 128 runs at startup and adds the table `xmr_settlement_hand_settled` (and a trigger that refuses a
-re-request of a settlement recorded there); there is no new setting. Versions 125 to 127 are left free for another
+Migration 128 runs at startup and adds the table `xmr_settlement_hand_settled`, with triggers that refuse a
+re-request of a settlement recorded there and a deposit claim (`payments.xmr_settlement_id`) moved onto one; there is no
+new setting. Versions 125 to 127 are left free for another
 branch; the startup migration applies any version it has not recorded, so they apply whenever they arrive. It fixes the
 A-560 alerts below that could never clear: a Monero settlement that failed before any transaction was built is never
 re-requested, and one with a stored transaction whose re-request was refused because that transaction is in the chain
@@ -35,6 +36,11 @@ and kept the order's escrow records under retention's `escrow_alert` reason for 
   twice. An administrator who is not a party opens the order (from *Escrow alerts*) and uses *Dismiss settlement N
   (nothing owed now)* under the settlement, with a 10–500 character note and the password. That clears its alert; the
   note is staff-only and recorded once (kind `nothing-owed`), with an audit row. It works while `ESCROW_XMR` is off.
+- **Except while it still claims deposits.** A failed settlement with no transaction built that still claims deposits
+  (`payments.xmr_settlement_id`; a re-request that failed `nothing-to-settle`) is never dismissed: its coins are in the
+  escrow wallet and may be owed, and the market does not settle them on its own. Its alert stays, and says to settle
+  with the operator. To list them:
+  `SELECT xs.id, xs.order_id FROM xmr_settlements xs WHERE xs.state = 'failed' AND xs.tx_hash IS NULL AND EXISTS (SELECT 1 FROM payments p WHERE p.xmr_settlement_id = xs.id);`
 - **Final re-request refusals are marked settled by hand.** For a failed settlement with a stored transaction whose last
   re-request was refused `on-chain` or `key-image-spent`, the alert asks you to check the escrow wallet and the chain
   (that transaction, or another spending the same coins, may have been sent), settle anything still owed with the

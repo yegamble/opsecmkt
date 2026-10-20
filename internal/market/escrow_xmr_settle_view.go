@@ -30,6 +30,7 @@ type XMRSettlementView struct {
 	SettledByHand                    bool   // the administrator's form closing a failed one the market never sends (A-613)
 	HandSettled                      string // to staff only: who dismissed it or marked it settled by hand, when, and their note
 	reorgSafe, stored, handSettled   bool
+	claims                           bool   // it claims a deposit (payments.xmr_settlement_id; PAY613-4)
 	kind, state, wait, reRequestText string // reRequestText: the newest re-request's state and reason
 }
 
@@ -39,7 +40,8 @@ func (a *App) xmrSettlementViews(ctx context.Context, d *PageData, v *XMREscrowO
 	rows, err := a.db.QueryContext(ctx, `SELECT s.id,s.kind,s.state,COALESCE(s.tx_hash,''),COALESCE(s.fee,0),COALESCE(s.input_total,0),COALESCE(s.supersedes,0),
 		COALESCE((SELECT n.id FROM xmr_settlements n WHERE n.supersedes=s.id),0),s.reorg_safe_at IS NOT NULL,
 		s.send_error,COALESCE((SELECT r.state||' '||r.reason FROM xmr_settlement_rerequests r WHERE r.settlement_id=s.id ORDER BY r.id DESC LIMIT 1),''),
-		h.settlement_id IS NOT NULL,COALESCE(h.kind,''),COALESCE(to_char(h.settled_at,'YYYY-MM-DD HH24:MI "UTC"')||' by '||COALESCE(u.handle,'an administrator')||': '||h.note,'')
+		h.settlement_id IS NOT NULL,COALESCE(h.kind,''),COALESCE(to_char(h.settled_at,'YYYY-MM-DD HH24:MI "UTC"')||' by '||COALESCE(u.handle,'an administrator')||': '||h.note,''),
+		EXISTS(SELECT 1 FROM payments p WHERE p.xmr_settlement_id=s.id)
 		FROM xmr_settlements s LEFT JOIN xmr_settlement_hand_settled h ON h.settlement_id=s.id LEFT JOIN users u ON u.id=h.settled_by
 		WHERE s.order_id=$1 ORDER BY s.id DESC LIMIT 20`, o.ID)
 	if err != nil {
@@ -51,7 +53,7 @@ func (a *App) xmrSettlementViews(ctx context.Context, d *PageData, v *XMREscrowO
 		s := &XMRSettlementView{}
 		var fee, total int64
 		var recordKind, record string
-		if err = rows.Scan(&s.ID, &s.kind, &s.state, &s.TxHash, &fee, &total, &s.Supersedes, &s.SupersededBy, &s.reorgSafe, &s.wait, &s.reRequestText, &s.handSettled, &recordKind, &record); err != nil {
+		if err = rows.Scan(&s.ID, &s.kind, &s.state, &s.TxHash, &fee, &total, &s.Supersedes, &s.SupersededBy, &s.reorgSafe, &s.wait, &s.reRequestText, &s.handSettled, &recordKind, &record, &s.claims); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -77,6 +79,8 @@ func (a *App) xmrSettlementViews(ctx context.Context, d *PageData, v *XMREscrowO
 	}
 	staffAdmin := staff && d.User != nil && d.User.Role == "admin"
 	admin := staffAdmin && a.escrowXMR != nil
+	// offered: the kinds of administrator form on the page, in xmrSettlementActions' order, for the staff help.
+	var offered [4]bool
 	for _, s := range out {
 		a.xmrSettlementStatus(s, o, outcome, v)
 		if s.stored {
@@ -97,14 +101,18 @@ func (a *App) xmrSettlementViews(ctx context.Context, d *PageData, v *XMREscrowO
 			s.ReRequest = admin && !s.handSettled
 		}
 		s.RetryBuild = admin && s.state == "requested" && s.wait == xmrBuildSetAside
-		// A-613: as xmrSettledByHandAction accepts (never built, other than a refund too few, dismissed as nothing owed;
-		// or its stored transaction's last re-request refused for good, marked settled by hand); it needs no wallet, so
-		// it is offered while Monero escrow is off too.
+		// A-613: as xmrSettledByHandAction accepts (never built, other than a refund too few and one still claiming a
+		// deposit, dismissed as nothing owed; or its stored transaction's last re-request refused for good, marked settled
+		// by hand); it needs no wallet, so it is offered while Monero escrow is off too.
 		s.SettledByHand = staffAdmin && s.state == "failed" && !s.handSettled &&
-			(!s.stored && !(s.kind == "refund" && s.wait == xmrTooSmall) || s.stored && last == "refused" && xmrReRequestFinal(reason))
+			(!s.stored && !s.claims && !(s.kind == "refund" && s.wait == xmrTooSmall) || s.stored && last == "refused" && xmrReRequestFinal(reason))
 		if !s.ReRequest && !s.RetryBuild && !s.SettledByHand {
 			continue
 		}
+		offered[0] = offered[0] || s.RetryBuild
+		offered[1] = offered[1] || s.ReRequest
+		offered[2] = offered[2] || s.SettledByHand && !s.stored
+		offered[3] = offered[3] || s.SettledByHand && s.stored
 		if d.XMRSettlementForm == 0 {
 			d.XMRSettlementForm = s.ID
 		}
@@ -114,7 +122,23 @@ func (a *App) xmrSettlementViews(ctx context.Context, d *PageData, v *XMREscrowO
 			}
 		}
 	}
+	d.XMRSettlementActions = xmrSettlementActions(offered)
 	return out, nil
+}
+
+// xmrSettlementActions names, for the order page's staff help, only the administrator's settlement forms the page
+// offers (offered: build again, re-request, dismiss, mark settled by hand), as "a", "a or b" or "a, b or c".
+func xmrSettlementActions(offered [4]bool) string {
+	var names []string
+	for i, n := range []string{"build it again", "re-request it", "dismiss it as nothing owed", "mark it settled by hand"} {
+		if offered[i] {
+			names = append(names, n)
+		}
+	}
+	if len(names) < 2 {
+		return strings.Join(names, "")
+	}
+	return strings.Join(names[:len(names)-1], ", ") + " or " + names[len(names)-1]
 }
 
 // xmrSettlementStatus fills s's title, status and confirmations for order o (dispute outcome outcome) in panel v.

@@ -37,7 +37,7 @@ func (x *xmrEscrowEnv) settledByHandAudits(actor string) int {
 		OR action LIKE 'Dismissed the failed Monero escrow settlement %: nothing owed now%')`, actor)
 }
 
-// unbuiltAlert is the escrow alert text of settlement n that failed before any transaction was built (PAY613-1).
+// unbuiltAlert is the escrow alert text of settlement n that failed before any transaction was built and claims no deposit (PAY613-1).
 func unbuiltAlert(n string) string {
 	return "Monero escrow settlement " + n + " failed before any transaction was built because no deposit counted at that time, so nothing was sent and it cannot be re-requested: " +
 		"read why under the settlement on the order page. Do not pay anything by hand for it: if a deposit of this escrow is listed again, the market handles it automatically as usual " +
@@ -218,7 +218,7 @@ func TestXMREscrowSettledByHand(t *testing.T) {
 	mustContain(t, adminPage, formAction, `name="settlement_id" value="`+n+`"`, `name="note"`, `name="password"`, "Dismiss settlement "+n+" (nothing owed now)",
 		"so nothing was sent and nothing is owed for it now. Do not pay anything by hand for it.", "dismissing this settlement does not stop that", "Why nothing is owed now")
 	mustNotContain(t, adminPage, "settle anything still owed", "Settle anything it still owed", "Mark settlement "+n+" settled by hand")
-	mustContain(t, staffHelp(adminPage), `href="#xmr-settlement-`+n+`"`)
+	mustContain(t, staffHelp(adminPage), `href="#xmr-settlement-`+n+`"`, "As an administrator, act on a Monero escrow settlement (dismiss it as nothing owed) under")
 	modPage := html.UnescapeString(x.page("/order?id="+order, mod))
 	mustNotContain(t, modPage, formAction)
 	for _, sess := range parties {
@@ -466,7 +466,7 @@ func TestXMREscrowSettledByHandRefusedReRequest(t *testing.T) {
 	}
 	adminPage := html.UnescapeString(x.page("/order?id="+order, admin))
 	mustContain(t, staffHelp(adminPage), "because its escrow has an open staff alert: "+text+".", `href="#xmr-settlement-`+n+`"`,
-		"As an administrator, build a Monero escrow settlement again, re-request it, dismiss it or mark it settled by hand under")
+		"As an administrator, act on a Monero escrow settlement (re-request it or mark it settled by hand) under")
 	mustContain(t, adminPage, formAction, `name="settlement_id" value="`+n+`"`, "Mark settlement "+n+" settled by hand",
 		"may have been sent: check the escrow wallet and the chain first", `action="/admin/escrow-xmr-rerequest"`)
 	mustNotContain(t, html.UnescapeString(x.page("/order?id="+order, mod)), formAction)
@@ -482,8 +482,8 @@ func TestXMREscrowSettledByHandRefusedReRequest(t *testing.T) {
 	x.A.escrowXMR = nil
 	off := html.UnescapeString(x.page("/order?id="+order, admin))
 	x.A.escrowXMR = saved
-	mustContain(t, off, formAction, "This order is closed. An administrator can still dismiss a Monero escrow settlement or mark it settled by hand on this page.")
-	mustContain(t, staffHelp(off), "As an administrator, dismiss a Monero escrow settlement or mark it settled by hand under")
+	mustContain(t, off, formAction, "This order is closed. An administrator can still act on a Monero escrow settlement (mark it settled by hand) on this page.")
+	mustContain(t, staffHelp(off), "As an administrator, act on a Monero escrow settlement (mark it settled by hand) under")
 	mustNotContain(t, staffHelp(off), "re-request it or", "build a Monero escrow settlement again")
 	mustNotContain(t, off, `action="/admin/escrow-xmr-rerequest"`)
 
@@ -632,5 +632,168 @@ func TestXMREscrowSettledByHandFinalRefusalsOnly(t *testing.T) {
 	}
 	if x.alerting(order) || agStr(x.testEnv, "SELECT kind FROM xmr_settlement_hand_settled WHERE settlement_id=$1", id) != xmrSettledByHand {
 		t.Fatalf("after: alert %v", x.alerting(order))
+	}
+}
+
+// strandedAlert is the escrow alert text of settlement n that failed before any transaction was built while it still
+// claims deposits (PAY613-4).
+func strandedAlert(n string) string {
+	return "Monero escrow settlement " + n + " failed before any transaction was built while it still claims deposits of this escrow: their coins are in the escrow wallet and may still be owed, " +
+		"and the market does not settle them on its own. Settle them with the operator; it cannot be dismissed while it claims them"
+}
+
+// PAY613-4, the reviewer's probe: a re-request supersedes a release that failed relay-refused; the new settlement claims
+// the deposit, its first build is refused, the deposit is then read as double-spent and it fails nothing-to-settle with
+// no transaction built while it still claims the deposit (the root cause, a superseding settlement failing rather than
+// waiting, is A-614). No "nothing owed" dismissal is offered or accepted for it (the action's 409 and migration 128's
+// trigger): the alert stays, saying its coins are in the escrow wallet and to settle with the operator, and the
+// deposit's payment-review reason says the same rather than "transaction stored".
+func TestXMREscrowClaimingUnbuiltNotDismissed(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	modID, _ := x.user("sbhc4_mod_"+randomToken()[:6], "moderator")
+	adminID, admin := x.user("sbhc4_admin_"+randomToken()[:6], "admin")
+	order, first := x.failedRelease()
+	deposit := hex64("deposit " + order)
+	restore := x.refuseTransfer(-4, "transaction was rejected by daemon")
+	if code := x.reRequest(admin, order, first, testPassword); code != 303 {
+		t.Fatalf("re-request: %d", code)
+	}
+	x.mustPoll()
+	restore()
+	if x.settlement(first).State != "superseded" {
+		t.Fatalf("not superseded: %s", x.settlement(first).State)
+	}
+	second := agInt(x.testEnv, "SELECT id FROM xmr_settlements WHERE supersedes=$1", first)
+	x.fake.setTransfer(deposit, func(t *fakeXMRTransfer) { t.DoubleSpend = true })
+	x.mustPoll()
+	s := x.settlement(int64(second))
+	if s.State != "failed" || x.waitClass(s.ID) != xmrNothing || s.TxHash != "" ||
+		agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND xmr_settlement_id=$2", order, s.ID) != 1 {
+		t.Fatalf("fixture: settlement %d %+v %q; settlements %v", second, s, x.waitClass(s.ID), x.xmrSettlements(order))
+	}
+	n := strconv.FormatInt(s.ID, 10)
+	if code, body := x.settledByHand(admin, s.ID, "Nothing is owed now, the deposit was double-spent."); code != 409 || !strings.Contains(body, "still claimed by this settlement") {
+		t.Fatalf("dismissal of a settlement still claiming a deposit: %d %.300s", code, body)
+	}
+	if _, err := x.DB.Exec("INSERT INTO xmr_settlement_hand_settled(settlement_id,kind,note,settled_by) VALUES($1,'nothing-owed','Direct insert, long enough.',$2)", s.ID, adminID); err == nil {
+		t.Fatal("migration 128 accepted a dismissal of a settlement still claiming a deposit")
+	}
+	if n := agInt(x.testEnv, "SELECT count(*) FROM xmr_settlement_hand_settled"); n != 0 || x.settledByHandAudits("") != 0 {
+		t.Fatalf("%d records, %d audit rows", n, x.settledByHandAudits(""))
+	}
+	page := html.UnescapeString(x.page("/order?id="+order, admin))
+	mustNotContain(t, page, `action="/admin/escrow-xmr-settled-by-hand"`, "nothing owed now", "Dismiss settlement")
+	if !x.alerting(order) || x.retentionReason(order) != "escrow_alert" || x.escrowAlertBadge(modID) != 1 {
+		t.Fatalf("the alert: %v, retention %q, badge %d", x.alerting(order), x.retentionReason(order), x.escrowAlertBadge(modID))
+	}
+	desk := deskAlertIn(html.UnescapeString(x.page("/moderator", admin)), order)
+	if !strings.Contains(desk, strandedAlert(n)) || strings.Contains(desk, "nothing owed") || strings.Contains(desk, "Do not pay") {
+		t.Fatalf("desk alert:\n got %q\nwant %q", desk, strandedAlert(n))
+	}
+	if help := staffHelp(page); !strings.Contains(help, strandedAlert(n)) {
+		t.Fatalf("staff help: %q", help)
+	}
+	d := &PageData{User: &User{ID: modID, Role: "moderator"}}
+	r := httptest.NewRequest("GET", "/", nil)
+	if err := loadPaymentReviews(r.Context(), x.A, r, d); err != nil {
+		t.Fatal(err)
+	}
+	var reasons []string
+	for _, v := range d.PaymentReviews {
+		if v.OrderID == order {
+			reasons = append(reasons, v.Reason)
+		}
+	}
+	want := "Escrow deposit counted for the order; Monero escrow settlement " + n + ", which claims it, failed before any transaction was built, so its coins are still in the escrow wallet: settle with the operator, because the market does not settle them on its own"
+	if len(reasons) != 1 || !strings.Contains(reasons[0], want) || strings.Contains(reasons[0], "stored") || strings.Contains(reasons[0], "re-request") {
+		t.Fatalf("payment-review reason:\n got %q\nwant %q", reasons, want)
+	}
+}
+
+// NIT-B: migration 128 refuses a record whose kind does not match its settlement: "nothing-owed" for one with a stored
+// transaction refused for good, "settled-by-hand" for one never built.
+func TestXMREscrowHandSettledKindMatchesSettlement(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	adminID, admin := x.user("sbhk_admin_"+randomToken()[:6], "admin")
+	order, stored := x.failedRelease()
+	old := x.settlement(stored)
+	x.fake.edit(func(f *fakeXMREscrow) { f.relay(f.built[hexMeta(f, old.TxHash)]) })
+	x.fake.mine(1)
+	if code := x.reRequest(admin, order, stored, testPassword); code != 303 {
+		t.Fatalf("re-request: %d", code)
+	}
+	x.mustPoll()
+	if got := x.reRequests(stored); !slices.Equal(got, []string{"refused:" + xmrReRequestOnChain + ":0"}) {
+		t.Fatalf("re-requests: %v", got)
+	}
+	unbuiltOrder, _, _ := x.completed()
+	unbuilt, _ := x.release(unbuiltOrder)
+	agExec(x.testEnv, "UPDATE xmr_settlements SET state='failed',send_error=$2 WHERE id=$1", unbuilt, xmrNothing)
+	for _, c := range []struct {
+		id   int64
+		kind string
+	}{{stored, xmrNothingOwed}, {unbuilt, xmrSettledByHand}} {
+		if _, err := x.DB.Exec("INSERT INTO xmr_settlement_hand_settled(settlement_id,kind,note,settled_by) VALUES($1,$2,'Direct insert, long enough.',$3)", c.id, c.kind, adminID); err == nil || !strings.Contains(err.Error(), "is recorded") {
+			t.Fatalf("a %s record of settlement %d: %v", c.kind, c.id, err)
+		}
+	}
+	// The matching kinds are accepted.
+	for _, c := range []struct {
+		id   int64
+		kind string
+	}{{stored, xmrSettledByHand}, {unbuilt, xmrNothingOwed}} {
+		if _, err := x.DB.Exec("INSERT INTO xmr_settlement_hand_settled(settlement_id,kind,note,settled_by) VALUES($1,$2,'Direct insert, long enough.',$3)", c.id, c.kind, adminID); err != nil {
+			t.Fatalf("a %s record of settlement %d: %v", c.kind, c.id, err)
+		}
+	}
+}
+
+// NIT-A: the closing rule (xmrFailedClosedSQL) reads the record alone, so what keeps it right is that migration 128
+// accepts a record only for a settlement that qualifies (TestXMREscrowSettledByHandFinalRefusalsOnly,
+// TestXMREscrowClaimingUnbuiltNotDismissed, TestXMREscrowHandSettledKindMatchesSettlement) and then refuses the two
+// changes that would stop it qualifying: a new re-request of a recorded settlement (which could leave an in-pool refusal
+// newest, or supersede it), and a deposit claim moved onto one (which would make a dismissed one owe money). Both are
+// refused here with the triggers on, and the alerts stay closed. (Re-checking those conditions in the rule itself, as
+// correlated sub-queries, made the desk's queries cross PostgreSQL's JIT thresholds on tables without statistics.)
+func TestXMREscrowHandSettledClosingNeedsFinalRefusal(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	adminID, admin := x.user("sbhn_admin_"+randomToken()[:6], "admin")
+	order, id := x.failedRelease()
+	old := x.settlement(id)
+	x.fake.edit(func(f *fakeXMREscrow) { f.relay(f.built[hexMeta(f, old.TxHash)]) })
+	x.fake.mine(1)
+	if code := x.reRequest(admin, order, id, testPassword); code != 303 {
+		t.Fatalf("re-request: %d", code)
+	}
+	x.mustPoll()
+	if code, loc := x.settledByHand(admin, id, "Mined on chain: checked the wallet and the chain."); code != 303 {
+		t.Fatalf("settled by hand: %d %s", code, loc)
+	}
+	dismissedOrder, _, _ := x.completed()
+	dismissed, _ := x.release(dismissedOrder)
+	agExec(x.testEnv, "UPDATE xmr_settlements SET state='failed',send_error=$2 WHERE id=$1", dismissed, xmrNothing)
+	if code, loc := x.settledByHand(admin, dismissed, "No deposit counted; nothing is owed now."); code != 303 {
+		t.Fatalf("dismiss: %d %s", code, loc)
+	}
+	if x.alerting(order) || x.alerting(dismissedOrder) {
+		t.Fatalf("alerting after the records: %v %v", x.alerting(order), x.alerting(dismissedOrder))
+	}
+	if _, err := x.DB.Exec("INSERT INTO xmr_settlement_rerequests(settlement_id,requested_by) VALUES($1,$2)", id, adminID); err == nil || !strings.Contains(err.Error(), "never re-requested") {
+		t.Fatalf("a re-request of a recorded settlement: %v", err)
+	}
+	for _, c := range []struct {
+		order string
+		id    int64
+	}{{dismissedOrder, dismissed}, {order, id}} {
+		if _, err := x.DB.Exec("UPDATE payments SET xmr_settlement_id=$2 WHERE order_id=$1", c.order, c.id); err == nil || !strings.Contains(err.Error(), "claims no deposit") {
+			t.Fatalf("a deposit claim moved onto recorded settlement %d: %v", c.id, err)
+		}
+	}
+	if x.alerting(order) || x.alerting(dismissedOrder) || len(x.reRequests(id)) != 1 ||
+		agInt(x.testEnv, "SELECT count(*) FROM payments WHERE xmr_settlement_id=$1", dismissed) != 0 {
+		t.Fatal("a refused change took effect")
 	}
 }

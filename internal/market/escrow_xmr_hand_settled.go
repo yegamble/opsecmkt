@@ -15,7 +15,9 @@ import (
 //     (nothing-to-settle: no deposit counted when it was to be built), so nothing was sent and nothing is owed for it
 //     now. Dismissing it changes nothing the market does: a deposit of the escrow listed again is handled automatically
 //     as usual (on an order whose coins go back to the buyer a stray refund returns it) and flagged for review, so staff
-//     must not pay it by hand. A refund too few raises no alert (xmrFailedClosedSQL) and is refused here.
+//     must not pay it by hand. A refund too few raises no alert (xmrFailedClosedSQL) and is refused here, as is one
+//     that still claims a deposit (xmrClaimsSQL, PAY613-4: a re-request that failed so, A-614): its coins are in the
+//     escrow wallet and may be owed, so it keeps its alert and staff settle with the operator.
 //   - settled-by-hand (*Mark settlement N settled by hand*): it has a stored transaction whose last re-request was
 //     refused for good (xmrReRequestFinal: on-chain or key-image-spent), so it is never superseded; staff checked the
 //     escrow wallet and the chain and settled anything still owed with the operator. One with no re-request yet, one
@@ -51,6 +53,7 @@ var (
 	errSettledByHandParty    = fail(403, "You are a party to this order, so another administrator records this settlement. Nothing was changed.")
 	errSettledByHandState    = fail(409, "Only a failed Monero escrow settlement the market will never send can be recorded here: one that failed before any transaction was built (other than a refund too few), or one whose stored transaction's last re-request found it in the chain or its coins spent. Re-request a failed settlement with a stored transaction first. Reload the page. Nothing was changed.")
 	errSettledByHandInPool   = fail(409, "The last re-request of this settlement was refused because its stored transaction was in the Monero daemon's pool, so it may still be mined or dropped. Re-request it again later; it can be marked settled by hand only once a re-request finds that transaction in the chain or a coin it spends spent. Nothing was changed.")
+	errSettledByHandClaims   = fail(409, "Deposits of this escrow are still claimed by this settlement, so their coins are in the escrow wallet and money may still be owed: it cannot be dismissed as nothing owed. Settle them with the operator. Nothing was changed.")
 	errSettledByHandRecorded = fail(409, "This settlement was already recorded (dismissed, or marked settled by hand); see the order page. Nothing was changed.")
 )
 
@@ -116,12 +119,13 @@ func recordXMRSettledByHand(c *actionCtx, id int64, note string) (actionResult, 
 		return actionResult{}, errSettledByHandParty
 	}
 	var kind, last string
-	var failed, stored, tooFew, recorded bool
+	var failed, stored, tooFew, recorded, claims bool
 	// The re-request takes the same row lock, so none is recorded between this check and the record.
 	if err = tx.QueryRowContext(ctx, `SELECT xs.kind,xs.state='failed',xs.tx_hash IS NOT NULL,xs.kind='refund' AND xs.send_error=$3 AND xs.tx_hash IS NULL,
 		EXISTS(SELECT 1 FROM xmr_settlement_hand_settled h WHERE h.settlement_id=xs.id),
-		COALESCE((SELECT r.state||' '||r.reason FROM xmr_settlement_rerequests r WHERE r.settlement_id=xs.id ORDER BY r.id DESC LIMIT 1),'')
-		FROM xmr_settlements xs WHERE xs.id=$1 AND xs.order_id=$2 FOR UPDATE`, id, o.ID, xmrTooSmall).Scan(&kind, &failed, &stored, &tooFew, &recorded, &last); err != nil {
+		COALESCE((SELECT r.state||' '||r.reason FROM xmr_settlement_rerequests r WHERE r.settlement_id=xs.id ORDER BY r.id DESC LIMIT 1),''),
+		`+xmrClaimsSQL+`
+		FROM xmr_settlements xs WHERE xs.id=$1 AND xs.order_id=$2 FOR UPDATE`, id, o.ID, xmrTooSmall).Scan(&kind, &failed, &stored, &tooFew, &recorded, &last, &claims); err != nil {
 		return actionResult{}, err
 	}
 	state, reason, _ := strings.Cut(last, " ")
@@ -134,6 +138,8 @@ func recordXMRSettledByHand(c *actionCtx, id int64, note string) (actionResult, 
 		return actionResult{}, errSettledByHandInPool
 	case !failed || tooFew || stored && state != "refused":
 		return actionResult{}, errSettledByHandState
+	case !stored && claims:
+		return actionResult{}, errSettledByHandClaims
 	}
 	record, audit := xmrNothingOwed, "Dismissed the failed Monero escrow settlement "+strconv.FormatInt(id, 10)+" ("+settlementKind(kind)+") of order "+shortID(o.ID)+": nothing owed now"
 	if stored {

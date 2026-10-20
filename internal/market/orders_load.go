@@ -165,10 +165,20 @@ const xmrFailedAlertSQL = "(xs.state='failed' AND NOT (" + xmrFailedClosedSQL + 
 // few without a stored transaction, which payment review and its stray refund cover, or one an administrator recorded
 // in xmr_settlement_hand_settled (migration 128, which accepts no other): dismissed as nothing owed, never built; or
 // marked settled by hand, its stored transaction's last re-request refused for good (xmrReRequestFinal, PAY613-3).
+//
+// The record alone closes it: migration 128 accepts one only for a settlement that qualifies (never built and claiming
+// no deposit, as nothing-owed; its newest re-request refused for good, as settled-by-hand) and keeps it qualifying (a
+// recorded settlement takes no re-request and no deposit claim, and a failed one leaves failed only through a
+// re-request), so the rule repeats none of those checks. It is an uncorrelated IN (one hashed sub-plan per query), not
+// a correlated EXISTS per settlement: on tables without planner statistics (a fresh database) the correlated forms
+// pushed the desk's queries past jit_optimize_above_cost, and each then spent hundreds of milliseconds compiling.
 const xmrFailedClosedSQL = "(xs.tx_hash IS NULL AND xs.kind='refund' AND xs.send_error='" + xmrTooSmall +
-	"' OR EXISTS(SELECT 1 FROM xmr_settlement_hand_settled h WHERE h.settlement_id=xs.id AND (h.kind='" + xmrNothingOwed + "' AND xs.tx_hash IS NULL" +
-	" OR h.kind='" + xmrSettledByHand + "' AND xs.tx_hash IS NOT NULL AND (SELECT r.state||' '||r.reason FROM xmr_settlement_rerequests r WHERE r.settlement_id=xs.id ORDER BY r.id DESC LIMIT 1)" +
-	" IN ('refused " + xmrReRequestOnChain + "','refused " + xmrReRequestSpent + "'))))"
+	"' OR xs.id IN (SELECT h.settlement_id FROM xmr_settlement_hand_settled h))"
+
+// xmrClaimsSQL is true while the Monero settlement xs claims a deposit (PAY613-4): a re-request that failed
+// nothing-to-settle still holding the deposits of the settlement it superseded (A-614) is never "nothing owed". An
+// uncorrelated IN, as xmrFailedClosedSQL is, for the same reason (planning cost, not semantics).
+const xmrClaimsSQL = "xs.id IN (SELECT p.xmr_settlement_id FROM payments p WHERE p.xmr_settlement_id IS NOT NULL)"
 
 // escrowStaffAlertCandidates bounds desk and badge scans to orders with a possible alert source; the detailed helper
 // decides whether any candidate is actually alerting now.
@@ -225,7 +235,7 @@ func loadEscrowAlerts(ctx context.Context, a *App, _ *http.Request, d *PageData)
 	for rows.Next() {
 		var v EscrowAlertView
 		var last string
-		if err = rows.Scan(&v.ID, &v.State, &v.Stall, &v.TooFew, &v.Refused, &v.Requested, &v.ReRequestable, &v.Unbuilt, &v.SetAside, &last, &total); err != nil {
+		if err = rows.Scan(&v.ID, &v.State, &v.Stall, &v.TooFew, &v.Refused, &v.Requested, &v.ReRequestable, &v.Unbuilt, &v.SetAside, &last, &v.Stranded, &total); err != nil {
 			return err
 		}
 		v.storedText(last, a.escrowXMR == nil)
@@ -236,16 +246,18 @@ func loadEscrowAlerts(ctx context.Context, a *App, _ *http.Request, d *PageData)
 	return rows.Err()
 }
 
-// xmrFailedAlertIDs is SQL for four columns of the order whose id is the SQL expression order: its newest failed
-// Monero settlement with a stored transaction and its newest failed one without (never re-requested), each that still
-// alerts (xmrFailedClosedSQL, A-613), and its newest set-aside one, each 0 for none, and the newest re-request of the
-// first as "state reason" ("" for none; A-560, EscrowAlertView).
+// xmrFailedAlertIDs is SQL for five columns of the order whose id is the SQL expression order: its newest failed
+// Monero settlement with a stored transaction and its newest failed one without (never re-requested) that claims no
+// deposit, each that still alerts (xmrFailedClosedSQL, A-613), its newest set-aside one, the newest re-request of the
+// first as "state reason" ("" for none), and its newest failed one without a transaction that still claims a deposit
+// (PAY613-4), each id 0 for none (A-560, EscrowAlertView).
 func xmrFailedAlertIDs(order string) string {
 	stored := "(SELECT max(xs.id) FROM xmr_settlements xs WHERE xs.order_id=" + order + " AND xs.state='failed' AND xs.tx_hash IS NOT NULL AND NOT " + xmrFailedClosedSQL + ")"
 	return "COALESCE(" + stored + ",0)," +
-		"COALESCE((SELECT max(xs.id) FROM xmr_settlements xs WHERE xs.order_id=" + order + " AND xs.state='failed' AND xs.tx_hash IS NULL AND NOT " + xmrFailedClosedSQL + "),0)," +
+		"COALESCE((SELECT max(xs.id) FROM xmr_settlements xs WHERE xs.order_id=" + order + " AND xs.state='failed' AND xs.tx_hash IS NULL AND NOT " + xmrClaimsSQL + " AND NOT " + xmrFailedClosedSQL + "),0)," +
 		"COALESCE((SELECT max(xs.id) FROM xmr_settlements xs WHERE xs.order_id=" + order + " AND xs.state='requested' AND xs.send_error='" + xmrBuildSetAside + "'),0)," +
-		"COALESCE((SELECT r.state||' '||r.reason FROM xmr_settlement_rerequests r WHERE r.settlement_id=" + stored + " ORDER BY r.id DESC LIMIT 1),'')"
+		"COALESCE((SELECT r.state||' '||r.reason FROM xmr_settlement_rerequests r WHERE r.settlement_id=" + stored + " ORDER BY r.id DESC LIMIT 1),'')," +
+		"COALESCE((SELECT max(xs.id) FROM xmr_settlements xs WHERE xs.order_id=" + order + " AND xs.state='failed' AND xs.tx_hash IS NULL AND " + xmrClaimsSQL + " AND NOT " + xmrFailedClosedSQL + "),0)"
 }
 
 // storedText sets v.StoredText for its failed settlement with a stored transaction, whose newest re-request is last,
@@ -325,11 +337,11 @@ func loadOrderDetail(ctx context.Context, a *App, r *http.Request, d *PageData) 
 			EXISTS(SELECT 1 FROM settlements s WHERE s.order_id=$1 AND s.kind='release' AND s.state='failed' AND s.build_error='`+settleTooSmall+`'),
 			`+xmrCollisionOpen("$1")+`,
 			EXISTS(SELECT 1 FROM xmr_settlements xs WHERE xs.order_id=$1 AND xs.state='requested' AND xs.created<now()-interval '24 hours'),
-			`+xmrFailedAlertIDs("$1"), o.ID).Scan(&v.Flagged, &v.Stall, &v.TooFew, &v.Refused, &v.Requested, &v.ReRequestable, &v.Unbuilt, &v.SetAside, &last); err != nil {
+			`+xmrFailedAlertIDs("$1"), o.ID).Scan(&v.Flagged, &v.Stall, &v.TooFew, &v.Refused, &v.Requested, &v.ReRequestable, &v.Unbuilt, &v.SetAside, &last, &v.Stranded); err != nil {
 			return err
 		}
 		v.storedText(last, a.escrowXMR == nil)
-		if v.ReRequestable != 0 || v.Unbuilt != 0 || v.SetAside != 0 || !v.Flagged && (v.Stall || v.TooFew || v.Refused || v.Requested) {
+		if v.ReRequestable != 0 || v.Unbuilt != 0 || v.Stranded != 0 || v.SetAside != 0 || !v.Flagged && (v.Stall || v.TooFew || v.Refused || v.Requested) {
 			d.StaffAlert = &v
 		}
 	}
@@ -919,7 +931,8 @@ func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageDat
 			pm.disposition='escalated' AS escalated,COALESCE(to_char(pm.disposed_at,'YYYY-MM-DD'),'') AS disposed,(o.buyer_id=$2 OR pr.vendor_id=$2) AS party,
 			c.escrow,pm.spent_outside,COALESCE(pm.spent_by,'') AS spent_by,c.counted,pm.escrow_left_out AND NOT pm.after_close AS left_out,
 			COALESCE((SELECT xs.id FROM xmr_settlements xs WHERE xs.id=pm.xmr_settlement_id AND xs.state='failed'),0) AS failed_by,
-			COALESCE((SELECT 'settled ' FROM xmr_settlement_hand_settled h WHERE h.settlement_id=pm.xmr_settlement_id),
+			COALESCE((SELECT xs.tx_hash IS NOT NULL FROM xmr_settlements xs WHERE xs.id=pm.xmr_settlement_id),false) AS failed_stored,
+			COALESCE((SELECT CASE h.kind WHEN '`+xmrNothingOwed+`' THEN 'dismissed ' ELSE 'settled ' END FROM xmr_settlement_hand_settled h WHERE h.settlement_id=pm.xmr_settlement_id),
 				(SELECT r.state||' '||r.reason FROM xmr_settlement_rerequests r WHERE r.settlement_id=pm.xmr_settlement_id ORDER BY r.id DESC LIMIT 1),'') AS failed_rr
 		FROM payments pm JOIN orders o ON o.id=pm.order_id JOIN products pr ON pr.id=o.product_id
 		JOIN escrows esc ON esc.order_id=o.id
@@ -941,7 +954,7 @@ func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageDat
 					AND strpos(e.note, ' '||CASE WHEN length(pm.txid)<=20 THEN pm.txid ELSE left(pm.txid,20)||'…' END||' ')>0))) f ON true
 		WHERE pm.flagged AND pm.disposition IN ('','escalated'))
 		SELECT id,order_id,state,product_id,title,currency,amount,txid,idx,credited,locked,confirmations,regress_notice,below_floor,open,COALESCE(to_char(at,'YYYY-MM-DD HH24:MI "UTC"'),''),
-			escalated,disposed,party,escrow,spent_outside,spent_by,counted,left_out,failed_by,failed_rr,(SELECT count(*) FROM v WHERE NOT open)
+			escalated,disposed,party,escrow,spent_outside,spent_by,counted,left_out,failed_by,failed_stored,failed_rr,(SELECT count(*) FROM v WHERE NOT open)
 		FROM (SELECT * FROM v WHERE open UNION ALL (SELECT * FROM v WHERE NOT open ORDER BY at DESC NULLS LAST,id DESC LIMIT $1)) s
 		ORDER BY open DESC,CASE WHEN open THEN at END ASC NULLS FIRST,CASE WHEN open THEN id END,at DESC NULLS LAST,id DESC`, paymentReviewLimit, d.User.ID)
 	if err != nil {
@@ -951,10 +964,10 @@ func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageDat
 	for rows.Next() {
 		var v PaymentReview
 		var amt, confs, failedBy int64
-		var credited, locked, regressed, belowFloor, escrow, outside, counted, leftOut bool
+		var credited, locked, regressed, belowFloor, escrow, outside, counted, leftOut, failedStored bool
 		var disposed, spentBy, failedRR string
 		if err = rows.Scan(&v.ID, &v.OrderID, &v.OrderState, &v.ProductID, &v.Title, &v.Currency, &amt, &v.TxID, &v.Index, &credited, &locked, &confs, &regressed, &belowFloor, &v.Open, &v.Flagged,
-			&v.Escalated, &disposed, &v.Party, &escrow, &outside, &spentBy, &counted, &leftOut, &failedBy, &failedRR, &d.PaymentReviewOthers); err != nil {
+			&v.Escalated, &disposed, &v.Party, &escrow, &outside, &spentBy, &counted, &leftOut, &failedBy, &failedStored, &failedRR, &d.PaymentReviewOthers); err != nil {
 			return err
 		}
 		// The disposition form (paymentReviewAction): open flags of orders the viewer is not party to; an escalated
@@ -988,6 +1001,16 @@ func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageDat
 			}
 		case locked:
 			v.Reason = "Locked transfer (unlock time), not counted or paid out"
+		case failedBy != 0 && !failedStored:
+			// PAY613-4: a re-request that failed before its transaction was built while it still claims the deposit (A-614):
+			// nothing stored to re-request, and it is never dismissed while it claims the deposit.
+			v.Reason = fmt.Sprintf("Escrow deposit counted for the order; Monero escrow settlement %d, which claims it, failed before any transaction was built, so its coins are still in the escrow wallet: settle with the operator, because the market does not settle them on its own", failedBy)
+			if failedRR == "dismissed " {
+				v.Reason += " (an administrator dismissed it as nothing owed)"
+			}
+			if confs < 0 {
+				v.Reason += "; now conflicted or missing"
+			}
 		case failedBy != 0:
 			// A-560: the deposit is spent by a Monero settlement that failed after its transaction was stored (only a
 			// build claims a deposit); what staff can do depends on its newest re-request (xmrFailedStoredText). It
