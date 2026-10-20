@@ -1527,11 +1527,14 @@ OWNER FOLLOW-UP: Added complete Tor v3 identity import/generation, optional pref
 
 ## Iteration 70 — Moderation agent and coding-agent hardening
 
+The finding identifiers retain their original MOD69 prefix; iteration 69 was
+completed independently on main while this targeted review was running.
+
 SCOPE: The owner's tiered moderation request, supplied diagrams, and external Gemini proposal. The proposal explicitly states that its author could not inspect the repository; its code and claims are hypotheses. Security, privacy/Tor boundaries and infrastructure seats review independently; QA verifies ruled fixes. Existing unrelated backlog rows remain unchanged. The local session cannot select the Claude-specific models named by the role files, so it uses the available agents with the same read-only roles and protocol. No merging is delegated.
 
 EVIDENCE: Base `bc1463fd`; initial implementation commits `50166094`, `9c56ef94`, `4b245e01` on `war-room/moderation-agent`. Separate PostgreSQL-backed Go halves and no-JavaScript browser suites run locally. This entry does not claim deployment, actual model quality, live Tor circuits or new CI. Gemini text received as two formatting variants; latest SHA256 `92ebb9cb1852db72a5b9edb7101d8650323bd3827e0603de2c24fc61a2ad76b4`.
 
-### MOD70-1 — Preserve account erasure after moderation migration
+### MOD69-1 — Preserve account erasure after moderation migration
 
 DECISION: ACCEPT (P1 REQUIRED), `opsec-privacy-1`.
 WHY: Migration 125 adds a nullable reviewer foreign key to users, but the retention schema inventory treats every unlisted relationship as a global deletion blocker. This prevents otherwise eligible account erasure even while moderation is disabled.
@@ -1541,9 +1544,9 @@ OPERATOR IMPACT: No new policy, secrets or deployment step.
 TECHNICAL COST/RISK: Enumerate the reviewed ON DELETE SET NULL relationship, retain refusal for unknown foreign keys, prove the full deletion path.
 ACCEPTANCE CRITERIA: Fresh schema has no unknown user references; eligible accounts erase with moderation disabled; an eligible reviewer erases with the review retained and reviewer set NULL; unknown relationships still block erasure.
 TEST PLAN: Test-first PostgreSQL regressions plus affected retention/vendor-ban/host-reboot lifecycle cases with the race detector. A read-only reviewer or QA re-verifies integrated source.
-STATUS: ruled, ready for isolated implementation.
+STATUS: fixed and independently VERIFIED locally (`772c36ae`, integrated `b36c1b84`, PostgreSQL race); PR/CI pending.
 
-### MOD70-2 — Disclose the actual moderation-copy lifecycle
+### MOD69-2 — Disclose the actual moderation-copy lifecycle
 
 DECISION: ACCEPT (P1 REQUIRED), `opsec-privacy-2`.
 WHY: Moderation snapshots and inputs retain plaintext content beyond existing expiry sweeps; public records/account-deletion text must state this accurately. Operator-only warnings cannot correct an inconsistent public promise.
@@ -1553,10 +1556,10 @@ OPERATOR IMPACT: Retention duration/purge policy remains an explicit operator de
 TECHNICAL COST/RISK: Small server-rendered privacy-notice and policy-inventory change, using durable history evidence if conditional; never expose model names, endpoints, thresholds or secrets.
 ACCEPTANCE CRITERIA: Recorded content copies remain discoverably disclosed after original expiry and after capture is disabled; records and account-deletion notices agree with implemented behavior.
 TEST PLAN: Distinct-marker DB/template regression across capture, original expiry and disabled capture, plus relevant retention/public records/no-JavaScript layout checks.
-STATUS: ruled, ready for isolated implementation.
+STATUS: fixed and independently VERIFIED locally (`7ef02887`, integrated `b36c1b84`, PostgreSQL race and no-JavaScript disclosure checks); PR/CI pending.
 
 
-### MOD70-3 — Preserve literal SQL source guards in snapshot checks
+### MOD69-3 — Preserve literal SQL source guards in snapshot checks
 
 DECISION: ACCEPT (P1 REQUIRED; verification gate).
 WHY: The existing source guard rejects the new target-kind-to-SQL map at moderationTargetCurrent, even though its values are literals. Keep the established auditable literal-query convention by selecting fixed QueryRowContext statements in a switch, rather than weakening the guard.
@@ -1566,10 +1569,10 @@ OPERATOR IMPACT: None.
 TECHNICAL COST/RISK: Narrow query dispatch change; all targets and positional parameters remain fixed and bound.
 ACCEPTANCE CRITERIA: TestSourceGuardNoTrustedCastsDynamicSQLOrForwardedHeaders passes unchanged; all supported target freshness checks, stale refusal and image-byte isolation regressions pass.
 TEST PLAN: Reproduce the unchanged source guard failure first, apply literal switch dispatch, rerun source and moderation/image guards with PostgreSQL and -race.
-STATUS: ruled, ready for isolated implementation by the chair acting as implementation seat.
+STATUS: fixed and independently VERIFIED locally (`380c24da`, integrated `cc9fd4f8`, PostgreSQL race and unchanged source guard); PR/CI pending.
 
 
-### MOD70-4 — Offer private moderation navigation only on private ingress
+### MOD69-4 — Offer private moderation navigation only on private ingress
 
 DECISION: ACCEPT (P1 REQUIRED; interface coherence).
 WHY: The new unconditional overview link targets a private-only page even in public development/preview administration, where it always returns 404. It also changes the existing Sections list contract; five runnable browser projects reproduce the extra-link failure.
@@ -1579,4 +1582,4 @@ OPERATOR IMPACT: Private ingress setup remains explicit; no new public route or 
 TECHNICAL COST/RISK: A server-owned view flag and conditional link; it does not grant authorization.
 ACCEPTANCE CRITERIA: Public/preview overview has its existing sections and no private queue link; authenticated private overview exposes the queue link; all public requests to the queue still return 404 before body/cookie/database work.
 TEST PLAN: Go DB authorization/render regression and unchanged overview browser check at all six configurations; existing early-denial tests.
-STATUS: ruled, isolated implementation by the chair acting as implementation seat.
+STATUS: fixed and independently VERIFIED locally (`066ac360`, integrated `cc9fd4f8`, PostgreSQL race); five runnable overview browser configurations passed; Firefox and PR/CI pending.

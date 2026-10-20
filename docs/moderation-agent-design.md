@@ -85,8 +85,10 @@ authority. No dead-man punitive or money action is introduced.
    lengths, evidence references and exact reserved canary token. Grammar
    constraints limit sampling syntax; they do not establish correctness.
    Truncation, interruption or a runtime failure can still return incomplete
-   output, which Go must reject. The selected real runtime's grammar behavior
-   remains an operator acceptance check.
+   output, which Go must reject. Both current templates passed a pinned native
+   upstream parser check (three valid inputs accepted, nine invalid inputs
+   rejected); see the [validation evidence](evidence/moderation-agent-validation.md).
+   The selected deployed runtime's behavior remains an operator acceptance check.
 6. Recheck deterministic facts against the current database before recording or
    applying a result. Stale entity revisions must not mutate a newer entity.
    Model output cannot create a signer, an invariant or a trusted context field.

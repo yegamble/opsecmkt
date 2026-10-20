@@ -242,6 +242,18 @@ the signed report; opening an administrator page does not query inference or
 upstream releases. The reported version is operator inventory, not an observed
 runtime binary. See [version-worker setup](install/service-topology.md#version-worker-host).
 
+## Validation and proposal review
+
+The [validation evidence](evidence/moderation-agent-validation.md) distinguishes
+native grammar-parser checks, Go/database/browser tests, synthetic process
+isolation and unverified production operation. Both embedded grammars passed
+the pinned upstream parser with three valid inputs accepted and nine invalid
+inputs rejected; this does not establish correct model judgment.
+
+The [supplied proposal comparison](moderation-proposal-comparison.md) records
+which principles were retained, which integration/security examples were
+rejected, and which capabilities remain unimplemented.
+
 ## Production gates
 
 The operator must choose and review the model/runtime, immutable artifact pins,
