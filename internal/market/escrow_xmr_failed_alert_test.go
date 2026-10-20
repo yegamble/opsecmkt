@@ -176,8 +176,8 @@ func TestXMREscrowFailedSettlementStaffAlert(t *testing.T) {
 	if got := x.reRequests(storedID); len(got) != 1 || got[0] != "refused:"+xmrReRequestOnChain+":0" {
 		t.Fatalf("re-request of a mined transaction: %v", got)
 	}
-	storedSays("re-request refused on-chain", storedFailed+", and its last re-request was refused (its stored transaction is in the chain, so it was sent after all): "+
-		"check the escrow wallet and the chain, because that transaction, or another spending the same coins, may have been sent", "can re-request it", "(Re-request settlement")
+	storedSays("re-request refused on-chain", "failed with its transaction stored, and its last re-request was refused (its stored transaction is in the chain, so it was sent after all): "+
+		"check the escrow wallet and the chain, because that transaction, or another spending the same coins, may have been sent", "can re-request it", "(Re-request settlement", "not seen mined")
 	// A reorganisation and a flushed pool put it back to nowhere, as in TestXMREscrowReRequestGuards.
 	x.fake.popBlocks(1)
 	x.fake.flushPool(old.TxHash)

@@ -61,13 +61,13 @@ func xmrFailedStoredText(id int64, last string, off bool) string {
 	state, reason, _ := strings.Cut(last, " ")
 	const stored = "failed with its transaction stored, which the market has not seen mined"
 	switch {
-	case state == "refused":
-		return stored + ", and its last re-request was refused (" + strings.TrimSuffix(xmrReRequestRefusal(reason), ".") +
+	case state == "refused": // the refusal may say the transaction was found in the chain, so not "not seen mined" (NIT-3)
+		return "failed with its transaction stored, and its last re-request was refused (" + strings.TrimSuffix(xmrReRequestRefusal(reason), ".") +
 			"): check the escrow wallet and the chain, because that transaction, or another spending the same coins, may have been sent"
 	case state == "requested" && off:
 		return stored + ": an administrator's re-request waits for the escrow watcher, which runs only once the operator turns Monero escrow (ESCROW_XMR) back on"
 	case state == "requested":
-		return stored + ": an administrator's re-request waits for the market's next pass over the escrow wallet, which is held while the market restores its records from a backup"
+		return stored + ": an administrator's re-request waits for the market's next pass over the escrow wallet (or, while the market is restoring its records from a backup, the first pass once that restore is finished)"
 	case off:
 		return stored + ": Monero escrow (ESCROW_XMR) is off on this market, so it can be re-requested on the order page only once the operator turns it back on"
 	}
