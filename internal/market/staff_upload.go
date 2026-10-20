@@ -32,7 +32,7 @@ const (
 )
 
 // staffUploadKinds maps a capability's kind to its upload route.
-var staffUploadKinds = map[string]string{"avatar": "/account/avatar", "photo": "/listings/photo"}
+var staffUploadKinds = map[string]string{"avatar": "/account/avatar", "photo": "/listings/photo", "evidence": "/orders/evidence"}
 
 const staffUploadTicketGone = "Upload authorization expired or was already used. Authorize another upload on the private administrator connection; nothing was stored."
 
@@ -155,6 +155,13 @@ func authorizeStaffUpload(c *actionCtx) (actionResult, error) {
 			capability.listing = l.ID
 			audit = "Authorized one photo upload for listing " + shortID(l.ID) + " (expires in 10 minutes)"
 		}
+		if path == "/orders/evidence" {
+			if err := lockEvidenceOrder(c.Ctx(), c.Tx, c.A, c.User.ID, c.Form.Get("id")); err != nil {
+				return actionResult{}, err
+			}
+			capability.listing = c.Form.Get("id")
+			audit = "Authorized one dispute evidence upload for order " + shortID(capability.listing) + " (expires in 10 minutes)"
+		}
 		c.A.staffUploads.put(capability)
 		return actionResult{Redirect: "/admin/uploads/upload", Audit: audit}, nil
 	})
@@ -196,10 +203,13 @@ func staffUploadHandoff(a *App, w http.ResponseWriter, r *http.Request, u *User)
 		a.refuse(w, r, u, http.StatusConflict, "No unused upload authorization remains. Return to the upload form and authorize a new upload.")
 		return
 	}
-	photo := c.path == "/listings/photo"
+	photo := c.path == "/listings/photo" || c.path == "/orders/evidence"
 	title, back := "Upload avatar", "/account#avatar"
 	if photo {
 		title, back = "Upload listing photo", "/listing-edit?id="+c.listing+"#photos"
+	}
+	if c.path == "/orders/evidence" {
+		title, back = "Upload dispute evidence", "/order?id="+c.listing+"#dispute-evidence"
 	}
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'self'; img-src 'self'; font-src 'self'; form-action 'self' "+a.brandingUploadOrigin+"; base-uri 'none'; frame-ancestors 'none'")
 	w.Header().Set("Referrer-Policy", "no-referrer")
@@ -253,7 +263,7 @@ func (a *App) admitGatewayStaffUpload(w http.ResponseWriter, r *http.Request) {
 		refuse(http.StatusConflict, staffUploadTicketGone)
 		return
 	}
-	if actor.RetentionRestricted {
+	if actor.RetentionRestricted && route.kind != uploadEvidence {
 		refuse(http.StatusForbidden, retentionRestrictedMessage)
 		return
 	}
@@ -275,6 +285,8 @@ func (a *App) admitGatewayStaffUpload(w http.ResponseWriter, r *http.Request) {
 	kind := "avatar"
 	if route.kind == uploadListing {
 		kind = "photo"
+	} else if route.kind == uploadEvidence {
+		kind = "evidence"
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"ticket": ticket, "kind": kind})

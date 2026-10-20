@@ -587,6 +587,9 @@ func applyRetentionTombstone(ctx context.Context, tx *sql.Tx, t retentionTombsto
 		}
 		return retentionExecQuery(ctx, tx, `DELETE FROM orders WHERE id=$1`, t.ID)
 	case "order_private":
+		if err := retentionExecQuery(ctx, tx, `DELETE FROM images WHERE order_id=$1 AND created<=$2`, t.ID, t.At); err != nil {
+			return err
+		}
 		if err := retentionExecQuery(ctx, tx, `DELETE FROM deliveries WHERE order_id=$1 AND created<=$2`, t.ID, t.At); err != nil {
 			return err
 		}
@@ -602,7 +605,7 @@ func applyRetentionTombstone(ctx context.Context, tx *sql.Tx, t retentionTombsto
 			return err
 		}
 		return retentionExecQuery(ctx, tx, `UPDATE orders o SET listing_title=CASE WHEN listing_title IS NULL THEN NULL ELSE 'Listing content expired' END,listing_description=CASE WHEN listing_description IS NULL THEN NULL ELSE '' END,
-		 private_expired_at=CASE WHEN financial_closed_at IS NOT NULL AND financial_closed_at+interval '30 days'<=$2 AND NOT EXISTS(SELECT 1 FROM deliveries d WHERE d.order_id=o.id AND d.created>$2) AND NOT EXISTS(SELECT 1 FROM disputes d WHERE d.order_id=o.id AND COALESCE(d.resolution_updated_at,d.created)>$2) AND NOT EXISTS(SELECT 1 FROM order_events ev WHERE ev.order_id=o.id AND ev.actor_id IS NOT NULL AND ev.created>$2) THEN $2 ELSE NULL END WHERE id=$1`, t.ID, t.At)
+		 private_expired_at=CASE WHEN financial_closed_at IS NOT NULL AND financial_closed_at+interval '30 days'<=$2 AND NOT EXISTS(SELECT 1 FROM images i WHERE i.order_id=o.id AND i.created>$2) AND NOT EXISTS(SELECT 1 FROM deliveries d WHERE d.order_id=o.id AND d.created>$2) AND NOT EXISTS(SELECT 1 FROM disputes d WHERE d.order_id=o.id AND COALESCE(d.resolution_updated_at,d.created)>$2) AND NOT EXISTS(SELECT 1 FROM order_events ev WHERE ev.order_id=o.id AND ev.actor_id IS NOT NULL AND ev.created>$2) THEN $2 ELSE NULL END WHERE id=$1`, t.ID, t.At)
 	case "listing_private":
 		if err := retentionExecQuery(ctx, tx, `DELETE FROM images WHERE product_id=$1 AND created<=$2`, t.ID, t.At); err != nil {
 			return err

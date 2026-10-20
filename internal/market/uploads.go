@@ -90,8 +90,9 @@ type uploadRoute struct {
 }
 
 var uploadRoutes = map[string]uploadRoute{
-	"/listings/photo": {kind: uploadListing, roles: []string{"vendor", "admin"}},
-	"/account/avatar": {kind: uploadAvatar, roles: []string{"vendor", "admin", "moderator"}},
+	"/listings/photo":  {kind: uploadListing, roles: []string{"vendor", "admin"}},
+	"/account/avatar":  {kind: uploadAvatar, roles: []string{"vendor", "admin", "moderator"}},
+	"/orders/evidence": {kind: uploadEvidence, roles: []string{"buyer", "vendor", "admin", "moderator"}},
 }
 
 // isMultipart reports a multipart request body.
@@ -151,6 +152,8 @@ func (a *App) serveUpload(w http.ResponseWriter, r *http.Request, route uploadRo
 	u := &upload{a: a, w: w, r: r, route: route, token: token, back: "/account#avatar"}
 	if route.kind == uploadListing {
 		u.back = "/vendor-dashboard"
+	} else if route.kind == uploadEvidence {
+		u.back = "/orders"
 	}
 	if a.isolatedUploads {
 		// Do not drain: originals must never enter this process in isolated mode.
@@ -201,7 +204,7 @@ func (a *App) serveUpload(w http.ResponseWriter, r *http.Request, route uploadRo
 		u.refuse(errUploadSignedOut.Code, errUploadSignedOut.Msg)
 		return
 	}
-	if u.user.RetentionRestricted {
+	if u.user.RetentionRestricted && route.kind != uploadEvidence {
 		u.refuse(http.StatusForbidden, retentionRestrictedMessage)
 		return
 	}
@@ -312,6 +315,8 @@ func (a *App) serveUpload(w http.ResponseWriter, r *http.Request, route uploadRo
 		notice := "photo-saved" // a one-shot notice, as an action's (A-117, A-287); its section is the fragment
 		if route.kind == uploadAvatar {
 			notice = "avatar-saved"
+		} else if route.kind == uploadEvidence {
+			notice = "evidence-saved"
 		}
 		http.Redirect(w, r, a.setNotice(w, notice, redirect), http.StatusSeeOther)
 	case errors.As(err, &he):
@@ -420,6 +425,8 @@ func (u *upload) readForm() (uploadForm, error) {
 			}
 			if u.route.kind == uploadListing && f.id != "" {
 				u.back = "/listing-edit?id=" + url.QueryEscape(f.id) + "#photos"
+			} else if u.route.kind == uploadEvidence && f.id != "" {
+				u.back = "/order?id=" + url.QueryEscape(f.id) + "#dispute-evidence"
 			}
 		case name == "description" && (seen == "" || seen == "id"):
 			v, err := readSmallPart(p, 4*descriptionLimit)
@@ -499,6 +506,8 @@ func (u *upload) render(code int, msg string) {
 	switch {
 	case u.route.kind == uploadAvatar:
 		title, label = "Avatar not saved", "Back to your account"
+	case u.route.kind == uploadEvidence:
+		title, label = "Evidence not saved", "Back to the order"
 	case u.back == "/vendor-dashboard":
 		label = "Back to the vendor desk"
 	}
@@ -635,7 +644,7 @@ func (a *App) storeImage(ctx context.Context, r *http.Request, session string, a
 	if err != nil {
 		return "", err
 	}
-	if restricted {
+	if restricted && route.kind != uploadEvidence {
 		return "", fail(http.StatusForbidden, "Photo not saved: "+retentionRestrictedMessage)
 	}
 	// A staff avatar was admitted under the staff privacy rules (hidden unless listed); if the account is no
@@ -648,7 +657,7 @@ func (a *App) storeImage(ctx context.Context, r *http.Request, session string, a
 	current := *actor
 	current.Role = role
 	owner, audit, ownerAudit, notify, redirect := current.ID, "", "", "", "/account"
-	var product any
+	var product, order any
 	if route.kind == uploadListing {
 		// lockListing takes the listing's vendor's users row before the listing (the vendor never changes).
 		c := &actionCtx{A: a, R: r.WithContext(ctx), Tx: tx, User: &current}
@@ -674,6 +683,14 @@ func (a *App) storeImage(ctx context.Context, r *http.Request, session string, a
 			ownerAudit = "Photo added to listing " + shortID(l.ID) + " by an administrator"
 		}
 	}
+	if route.kind == uploadEvidence {
+		if err := lockEvidenceOrder(ctx, tx, a, current.ID, f.id); err != nil {
+			return "", err
+		}
+		order = f.id
+		audit = "Added dispute image evidence to order " + shortID(f.id)
+		redirect = "/order?id=" + url.QueryEscape(f.id)
+	}
 	if _, err = tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, imagesLock); err != nil {
 		return "", err
 	}
@@ -688,14 +705,17 @@ func (a *App) storeImage(ctx context.Context, r *http.Request, session string, a
 		}
 	}
 	size := int64(len(img.full) + len(img.thumb))
-	var photos, ownerBytes, allBytes int64
+	var photos, evidence, ownerBytes, allBytes int64
 	err = tx.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM images WHERE product_id=$1),
  (SELECT coalesce(sum(octet_length("full")+octet_length(thumb)),0) FROM images WHERE owner_user_id=$2),
- (SELECT coalesce(sum(octet_length("full")+octet_length(thumb)),0) FROM images)`, product, owner).Scan(&photos, &ownerBytes, &allBytes)
+ (SELECT coalesce(sum(octet_length("full")+octet_length(thumb)),0) FROM images),
+ (SELECT count(*) FROM images WHERE order_id=$3 AND owner_user_id=$2 AND kind='evidence')`, product, owner, order).Scan(&photos, &ownerBytes, &allBytes, &evidence)
 	if err != nil {
 		return "", err
 	}
 	switch {
+	case route.kind == uploadEvidence && evidence >= evidencePerParty:
+		return "", fail(http.StatusConflict, "Evidence not saved: each party may add at most 4 images to one dispute. Nothing was stored.")
 	case route.kind == uploadListing && photos >= photosPerListing:
 		return "", &httpError{Code: http.StatusConflict, Msg: "Photo not saved: this listing already has 4 photos, the most allowed. Remove one first. Nothing was stored."}
 	case ownerBytes+size > uploaderQuota:
@@ -703,8 +723,8 @@ func (a *App) storeImage(ctx context.Context, r *http.Request, session string, a
 	case allBytes+size > a.imageLimit():
 		return "", &httpError{Code: http.StatusConflict, Msg: "Photo storage on this market is full; contact the operator. Nothing was stored."}
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO images(id,owner_user_id,product_id,kind,"full",thumb,width,height,description) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-		randomToken()[:32], owner, product, map[uploadKind]string{uploadListing: "photo", uploadAvatar: "avatar"}[route.kind], img.full, img.thumb, img.width, img.height, imageDescription(route, f)); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO images(id,owner_user_id,product_id,kind,"full",thumb,width,height,description,order_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		randomToken()[:32], owner, product, map[uploadKind]string{uploadListing: "photo", uploadAvatar: "avatar", uploadEvidence: "evidence"}[route.kind], img.full, img.thumb, img.width, img.height, imageDescription(route, f), order); err != nil {
 		var pe *pgconn.PgError
 		if errors.As(err, &pe) && pe.Code == "23505" {
 			return "", &httpError{Code: http.StatusConflict, Msg: "Avatar not saved: another avatar upload finished first. Reload the page to see it. Nothing was stored."}
@@ -721,6 +741,11 @@ func (a *App) storeImage(ctx context.Context, r *http.Request, session string, a
 	}
 	if notify != "" {
 		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), owner, notify); err != nil {
+			return "", err
+		}
+	}
+	if route.kind == uploadEvidence {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO notifications(id,user_id,body,order_id) SELECT $1,CASE WHEN o.buyer_id=$2 THEN p.vendor_id ELSE o.buyer_id END,'New dispute image evidence on your order.',o.id FROM orders o JOIN products p ON p.id=o.product_id WHERE o.id=$3`, randomToken(), current.ID, f.id); err != nil {
 			return "", err
 		}
 	}

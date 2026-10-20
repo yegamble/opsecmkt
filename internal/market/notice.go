@@ -101,6 +101,7 @@ var notices = map[string]struct{ text, section, pages string }{
 	"review-hidden":      {"Review hidden.", "reviews-title", "product vendor"},
 	"review-shown":       {"Review restored.", "reviews-title", "product vendor"},
 	"photo-saved":        {"Photo saved as a re-encoded JPEG; location, camera and other metadata were removed. Check the picture itself for anything that identifies you.", "photos", "listing-edit"},
+	"evidence-saved":     {"Dispute evidence saved as a scanned, re-encoded JPEG with metadata removed.", "dispute-evidence", "order"},
 	"photo-removed":      {"Photo removed.", "photos", "listing-edit"},
 	// A staff takedown (image_takedown.go), back on /moderator's Recent photos or on the product or vendor page.
 	"image-removed":      {"Image removed. Its owner was notified with your reason.", "recent-photos", "moderator"},

@@ -104,7 +104,7 @@ func imageTakedownAction(c *actionCtx) (actionResult, error) {
 	ctx, tx, id := c.Ctx(), c.Tx, c.Form.Get("id")
 	var kind, owner, handle, ownerRole, listing, title string
 	err := tx.QueryRowContext(ctx, `SELECT i.kind,i.owner_user_id,o.handle,o.role,coalesce(p.id,''),coalesce(p.title,'') FROM `+imagePublicFrom+`
-		WHERE i.id=$1 AND i.owner_user_id<>$2 AND ($3='admin' OR (o.role='vendor' AND `+imagePublicWhere+`))`, id, c.User.ID, c.User.Role).Scan(&kind, &owner, &handle, &ownerRole, &listing, &title)
+		WHERE i.id=$1 AND i.kind IN ('photo','avatar') AND i.owner_user_id<>$2 AND ($3='admin' OR (o.role='vendor' AND `+imagePublicWhere+`))`, id, c.User.ID, c.User.Role).Scan(&kind, &owner, &handle, &ownerRole, &listing, &title)
 	if err == sql.ErrNoRows {
 		return actionResult{}, notFound
 	}

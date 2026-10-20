@@ -89,7 +89,7 @@
 <label>Your reply to the dispute<textarea name="reply" required minlength="20" maxlength="5000" aria-describedby="dispute-reply-help">
 </textarea>
 </label>
-<span class="help" id="dispute-reply-help">{{if $usable}}Send evidence encrypted first: message an independent {{if $.Order.Escrow}}administrator{{else}}moderator or administrator{{end}} listed under Contact dispute staff on this page. {{else}}No independent moderator or administrator has a usable PGP key yet, so evidence cannot be sent to staff encrypted. {{end}}The {{if $.Order.Escrow}}administrator who decides{{else}}moderator who resolves{{end}} this dispute reads your reply beside the {{.Opener}}’s reason. You can reply once, and a reply cannot be changed. <a class="text-link" href="/canary#records">Stored unencrypted.</a> The {{.Opener}} reads it on this order, as does every moderator and administrator, and the operator and anyone with a backup. Never include an address, real name or tracking number. Do not include passwords, private keys, or recovery phrases.</span>
+<span class="help" id="dispute-reply-help">{{if $usable}}Upload image evidence in the <a class="text-link" href="#dispute-evidence">dispute evidence panel</a>. For sensitive text, contact an independent {{if $.Order.Escrow}}administrator{{else}}moderator or administrator{{end}} listed under Contact dispute staff on this page. {{else}}No independent moderator or administrator has a usable PGP key yet, so evidence cannot be sent to staff encrypted. {{end}}The {{if $.Order.Escrow}}administrator who decides{{else}}moderator who resolves{{end}} this dispute reads your reply beside the {{.Opener}}’s reason. You can reply once, and a reply cannot be changed. <a class="text-link" href="/canary#records">Stored unencrypted.</a> The {{.Opener}} reads it on this order, as does every moderator and administrator, and the operator and anyone with a backup. Never include an address, real name or tracking number. Do not include passwords, private keys, or recovery phrases.</span>
 <button type="submit">Put reply on record</button>
 </form>{{else}}<p class="help">The {{.Responder}} may put one reply on record; it will be shown here.</p>{{end}}{{end}}{{if .Resolution}}<h3>{{if or (eq .Status "Withdrawn — conceded by buyer") (eq .Status "Withdrawn — conceded by vendor")}}Concession{{else if $.Order.Escrow}}Administrator decision{{else}}Moderator decision{{end}}</h3>
 <p class="dispute-text">{{.Resolution}}</p>{{end}}{{with $.Concession}}
@@ -200,4 +200,5 @@
 </div>{{else}}<div class="empty">
 <h1>Order unavailable</h1>
 </div>{{end}}
+{{template "dispute-evidence" .}}
 {{template "footer" .}}{{end}}

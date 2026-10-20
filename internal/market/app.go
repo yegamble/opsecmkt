@@ -613,6 +613,10 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		a.servePublicImage(w, r, rest)
 		return
 	}
+	if rest, ok := strings.CutPrefix(r.URL.Path, "/desk/evidence/"); ok {
+		a.serveEvidenceImage(w, r, rest)
+		return
+	}
 	if rest, ok := strings.CutPrefix(r.URL.Path, "/desk/img/"); ok {
 		a.serveDeskImage(w, r, rest)
 		return
@@ -825,6 +829,9 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if page == "order" && q.Get("id") == previewPaidID {
 			previewPaidOrder(&d)
+		}
+		if page == "order" && q.Get("id") == previewDisputedID {
+			previewDisputeImages(&d)
 		}
 		if page == "listing-edit" || page == "account" {
 			previewUploads(&d, q.Get("scanner"))
