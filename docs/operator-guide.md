@@ -1552,7 +1552,10 @@ default, and never pay from other funds while the market can still send it (it s
 listed again). It waits only after a deep reorganisation or a double spend, or a wallet restore or rescan that lost the
 deposit. A re-requested stray refund never holds back the stray refund of a later deposit to the same order (A-616,
 migration 135): that one is requested, built from deposits no settlement claims and sent beside it, and the order page's
-status says two stray refunds are in progress.
+status says two stray refunds are in progress. While a re-request is still requested, the *Payment review* reason of each
+deposit it claims keeps its usual text and adds which settlement re-requests which, and for a deposit no longer listed
+that it waits for it and is sent by the market on its own once the deposit is listed again, ending "Do not pay anything
+by hand for it, or it is paid twice"; the desk's 24-hour line for a re-request waiting so says the same in short (A-617).
 
 **Failed and set-aside settlements are escrow alerts (A-560).** Until it is superseded, a failed settlement is listed under
 *Escrow alerts* on the moderation desk, counted in the staff badge and named in the order page's staff help, and a

@@ -815,9 +815,10 @@ type EscrowStallView struct {
 // is flagged as well.
 type EscrowAlertView struct {
 	ID, State                                  string
-	Stall, TooFew, Refused, Requested          bool
+	Stall, TooFew, Refused                     bool
 	ReRequestable, Unbuilt, Stranded, SetAside int64
 	StoredText                                 string
+	Requested                                  string // the line of a settlement requested for more than 24 hours, "" for none (requestedText)
 	Flagged                                    bool
 }
 

@@ -128,7 +128,10 @@ market holds the wallet keys and builds, stores and sends every transaction itse
   migration 135: the slot is for a first-generation stray refund only), so while one waits, or is in progress at all, a
   later deposit's stray refund is still requested, built from deposits no settlement claims and sent. The two never
   spend the same coins: the re-request spends exactly its stored key images, and the market builds one transaction per
-  order at a time. The order page's status says when two stray refunds are in progress.
+  order at a time. The order page's status says when two stray refunds are in progress. While a re-request is still
+  requested, the payment-review reason of each deposit it claims names it and the settlement it re-requests, says when
+  it waits for that missing deposit, and says not to pay it by hand; so does the desk's 24-hour line for one waiting so
+  (A-617).
   A deposit that did not count when its order was cancelled (the wallet read it as a double spend, or
   no longer listed it) and has confirmed since is left out and returned by a stray refund too, when no refund spends it: it is flagged
   and the buyer told. The order page lists a left-out deposit on its own line, not counted as received, and a cancelled
