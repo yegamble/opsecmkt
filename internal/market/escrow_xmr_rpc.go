@@ -113,6 +113,27 @@ const (
 	xmrOpenPassword = "wrong-password" // "Invalid password.": the keys file is there and did not decrypt with the password
 )
 
+// xmrRingStale is the refusal class of a transfer that monero-wallet-rpc 0.18.5.1 refused because the ring its ring
+// database stored for a key image lacks that output's current global index (A-618): wallet2 stores the ring of every
+// build, a refused or unrelayed one too, and reuses it, so after a reorganisation moved a deposit to another index the
+// build fails until the operator clears that ring (docs/operator-guide.md, the stale-ring break-glass). It answers -4
+// with exactly xmrRingStaleText (seen on the real fakechain, TestXMREscrowRegtestStaleRing).
+const (
+	xmrRingStale     = "ring-stale"
+	xmrRingStaleText = "Daemon response did not include the requested real output"
+)
+
+// classifyXMRTransfer classifies transfer's error as classifyXMRRPC does, with xmrRingStale as its refusal when the
+// wallet-rpc's answer is -4 with exactly xmrRingStaleText. The wallet's text is read into that fixed class and never kept.
+func classifyXMRTransfer(err error) error {
+	out := classifyXMRRPC("wallet", "transfer", err)
+	var re *rpcError
+	if errors.As(err, &re) && re.Code == -4 && re.Message == xmrRingStaleText {
+		out.(*xmrRPCError).Refusal = xmrRingStale
+	}
+	return out
+}
+
 // classifyXMROpen classifies open_wallet's error as classifyXMRRPC does, with its refusal class.
 func classifyXMROpen(err error) error {
 	out := classifyXMRRPC("wallet", "open_wallet", err)
@@ -859,7 +880,9 @@ func (r *xmrEscrowRPC) buildTransfer(ctx context.Context, account int64, dests [
 			Amounts []json.Number `json:"amounts"`
 		} `json:"amounts_by_dest"`
 	}
-	if err := r.walletCallWithin(ctx, payoutSendTimeout, "transfer", params, &res); err != nil {
+	err := classifyXMRTransfer(r.wallet.callWithin(ctx, payoutSendTimeout, "/json_rpc", "transfer", params, &res))
+	r.note(ctx, "wallet", err)
+	if err != nil {
 		return xmrBuiltTx{}, err
 	}
 	tx := xmrBuiltTx{TxHash: res.TxHash, Metadata: res.Metadata, Blob: res.Blob, SpentKeyImages: res.SpentKeyImages.KeyImages}
