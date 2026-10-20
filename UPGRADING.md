@@ -17,12 +17,14 @@ existing documented operations workflow.
 
 ## Listing review (migration 136)
 
-Migration 136 adds `products.review_state` (every existing listing is `approved`), the per-vendor
-`users.listing_auto_approve` flag (off) and the `listing_review_mode` setting with the value `publish`. Nothing
+Migration 136 adds `products.review_state` (`approved`, `pending` or `rejected`; every existing listing is
+`approved`), `products.review_rejection_reason` (empty; a staff rejection's reason, shown to the vendor until their
+resubmitting edit), the per-vendor `users.listing_auto_approve` flag (off) and the `listing_review_mode` setting with
+the value `publish`. A rejection is not a takedown: it archives nothing and needs no administrator. Nothing
 changes until an administrator chooses **hold for review** under *Admin → Vendors → Listing review*: listings stay
 public and new ones publish at once, as before. Rolling the application back to a build without this migration
-leaves the columns unused; a listing still pending would then be public again, so approve or reject pending listings
-before downgrading.
+leaves the columns unused; a listing still pending or rejected would then be public again, so approve pending
+listings, and take down rejected ones you do not want public, before downgrading.
 
 ## Encrypted support tickets (migration 133)
 
@@ -201,6 +203,21 @@ an older controller runs no sweep, so markers simply wait.
 New gateway hashes omit weak/low-contrast similarity evidence. Useful legacy
 hashes and exact SHA256 matching remain; no extra wire field, decoding boundary,
 rotation/crop guarantee or image-understanding feature is introduced.
+
+Updated gateways compute dHash with an area-averaging filter, so recompressed,
+resized or slightly cropped copies match more reliably; comparison also tries
+each hash's horizontal mirror. Hashes made by an older gateway and by an updated
+one compare less reliably with each other. Nothing is backfilled or rewritten:
+the worker compares only recent uploads, so the mix ages out as new uploads
+arrive. Upgrade order is unchanged (app first, then gateway).
+
+Weak instruction-like words ("you are", "act as", "confidence", "decision" and
+similar) no longer mark an item `INJECTION_SUSPECTED` or escalate it; they add
+`HUMAN_REVIEW`, as does any recognised external contact or payment destination,
+so such items reach the human queue instead of automatic history. Strong
+markers, now also covering several languages, simple encodings, code names and
+adjacent-field splits, still escalate. Expect fewer administrator escalations
+and more ordinary review-queue items; stored decisions are unchanged.
 
 The worker never changes a listing, account, order or payment. Private
 administrator queue actions and optional signed offline actions annotate review

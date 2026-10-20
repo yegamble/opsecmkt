@@ -129,8 +129,9 @@ const (
 // buyer or vendor of an order on which that member moved the dispute to resolved, or a moderator (who may open
 // every resolved order, orders_load.go); or, for a photo of an archived listing, whoever may read an order placed
 // on that listing (orderReadable, the rule that opens the archived listing's product page, A-164 and A-264).
-// MOD72-6: a listing awaiting staff review is treated like an archived one for those order readers, and a
-// moderator also sees its photos while it is pending and not archived, to review it (listing_review.go).
+// MOD72-6: a listing not approved for buyers (pending or rejected) is treated like an archived one for those order
+// readers, and a moderator also sees its photos while it is pending and not archived, to review it
+// (listing_review.go).
 // Everyone else, moderators included for other vendors' images, is refused. Inside the last EXISTS, o and p are
 // the order and its listing (orderReadable's aliases), not the image's owner.
 var imageDeskWhere = `(i.owner_user_id=$2 OR $3='admin'
@@ -141,7 +142,7 @@ var imageDeskWhere = `(i.owner_user_id=$2 OR $3='admin'
  OR (i.kind='photo' AND $3='moderator' AND EXISTS(SELECT 1 FROM products pp
    WHERE pp.id=i.product_id AND pp.review_state='pending' AND NOT pp.archived AND pp.vendor_id=i.owner_user_id))
  OR (i.kind='photo' AND EXISTS(SELECT 1 FROM products p JOIN orders o ON o.product_id=p.id
-   WHERE p.id=i.product_id AND (p.archived OR (p.review_state='pending' AND o.state<>'draft')) AND p.vendor_id=i.owner_user_id AND ` + orderReadable("$2", "$3") + `)))`
+   WHERE p.id=i.product_id AND (p.archived OR (p.review_state<>'approved' AND o.state<>'draft')) AND p.vendor_id=i.owner_user_id AND ` + orderReadable("$2", "$3") + `)))`
 
 // imageSelect starts an image route's query: the length of one size of the image and, for a GET, its bytes (a
 // HEAD reads only the length). The only way a query reads image bytes; no other file may use it
