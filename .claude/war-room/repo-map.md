@@ -1,6 +1,6 @@
 # OPSEC Market repo map — binding context for every war-room seat
 
-Read this once, before you form any opinion. Then read `CLAUDE.md`,
+Read this once, before you form any opinion. Then read `AGENTS.md`, `CLAUDE.md`,
 `.claude/review-loop.md`, `.ralph/AGENT.md`, `.claude/war-room/finding-format.md`,
 `.claude/war-room/protocol.md` and the evidence pack the chair hands you.
 
