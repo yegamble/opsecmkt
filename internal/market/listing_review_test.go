@@ -82,7 +82,12 @@ func buyerCannotReach(e *testEnv, p, title, vendorID string, sessions ...string)
 	e.t.Helper()
 	for _, s := range sessions {
 		for _, path := range []string{"/", "/?q=" + url.QueryEscape(title), "/?category=Hardware", "/?region=Worldwide", "/vendor?id=" + vendorID} {
-			page := e.body("GET", path, s, nil, 200)
+			w := e.do("GET", path, s, nil)
+			if w.Code == 404 && strings.HasPrefix(path, "/vendor?") {
+				continue // a deactivated vendor's page is hidden altogether (PR #104)
+			}
+			e.check(w, 200)
+			page := w.Body.String()
 			mustNotContain(e.t, page, "id="+p)
 			if !strings.Contains(path, "q=") { // the search page echoes the term in its search box
 				mustNotContain(e.t, page, title)
@@ -374,9 +379,7 @@ func TestListingEditReholdsApprovedListing(t *testing.T) {
 	reviewer, _ := e.user("rehold_reviewer", "buyer")
 	done := e.order(reviewer, p, "XMR", stateCompleted)
 	agExec(e, "INSERT INTO reviews(id,order_id,product_id,buyer_id,rating,body) VALUES($1,$2,$3,$4,4,'Arrived as described')", randomToken(), done, p, reviewer)
-	draftBuyer, draftSess := e.user("rehold_draft", "buyer")
-	_, draftKey := testPGPKey(t, "reholddraft")
-	e.setKey(draftBuyer, draftKey) // a checkout needs a usable buyer key before it reaches the listing
+	draftBuyer, draftSess := e.user("rehold_draft", "buyer") // e.user seeds the key and session proof a checkout needs
 	draft := e.order(draftBuyer, p, "XMR", stateDraft)
 	setListingReviewMode(e, "hold")
 	edit := func(sess string, f url.Values) {
@@ -448,6 +451,37 @@ func TestListingPhotoOnApprovedListingReholds(t *testing.T) {
 	}
 	if n := agInt(e, "SELECT count(*) FROM "+imagePublicFrom+" WHERE i.product_id=$1 AND "+imagePublicWhere, p); n != 0 {
 		t.Fatal("the public image route serves a held listing's photo")
+	}
+}
+
+// A listing and its photos are public only while the listing is approved (MOD72-6) and its vendor is not deactivated
+// (PR #104): each rule hides it on its own.
+func TestListingPublicNeedsApprovalAndActiveVendor(t *testing.T) {
+	e, _ := uploadEnv(t)
+	vendorID, vendor := e.user("both_rules_vendor", "vendor")
+	p := e.postListing(vendor, "Both rules lamp")
+	if w := e.upload("/listings/photo", vendor, e.photoParts(vendor, p, smallJPEG(t))...); w.Code != 303 {
+		t.Fatalf("photo upload: %d %s", w.Code, w.Body.String())
+	}
+	publicPhotos := func() int {
+		return agInt(e, "SELECT count(*) FROM "+imagePublicFrom+" WHERE i.product_id=$1 AND "+imagePublicWhere, p)
+	}
+	if publicPhotos() != 1 {
+		t.Fatal("an approved listing of an active vendor has no public photo")
+	}
+	e.check(e.do("GET", "/product?id="+p, randomToken(), nil), 200)
+	for _, c := range []struct{ name, hide, show string }{
+		{"deactivated vendor", "UPDATE users SET vendor_deactivated=true WHERE id=$1", "UPDATE users SET vendor_deactivated=false WHERE id=$1"},
+		{"pending review", "UPDATE products SET review_state='pending' WHERE vendor_id=$1", "UPDATE products SET review_state='approved' WHERE vendor_id=$1"},
+		{"rejected in review", "UPDATE products SET review_state='rejected',review_rejection_reason='" + rejectReason + "' WHERE vendor_id=$1", "UPDATE products SET review_state='approved',review_rejection_reason=NULL WHERE vendor_id=$1"},
+	} {
+		agExec(e, c.hide, vendorID)
+		buyerCannotReach(e, p, "Both rules lamp", vendorID, randomToken())
+		if publicPhotos() != 0 {
+			t.Fatalf("%s: the public image route serves the listing's photo", c.name)
+		}
+		agExec(e, c.show, vendorID)
+		e.check(e.do("GET", "/product?id="+p, randomToken(), nil), 200)
 	}
 }
 
