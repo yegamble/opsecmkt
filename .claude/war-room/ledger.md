@@ -1820,6 +1820,12 @@ DECISION: ACCEPT (P2 SHOULD). llama.cpp 3bb63cbc `/completion` tokenizes with pa
 ACCEPTANCE: no raw `[`/`]` inside fenced data in either prompt; decoding unchanged; ctx drift test fails on mismatch.
 STATUS: implemented (71cfb32f, merged): modelJSON escapes brackets inside JSON strings for Stage A protocol, fenced data and Stage B view; moderation-v4, v3 pins refused; launcher ctx drift test (shown failing both ways). Implementer gate: gofmt/vet/mod verify, race moderation + cmd/server with DB, Moderation market tests, govulncheck exit 0. VERIFIED by opsec-llm at c7f46cf5 (mutation: removing the escape or changing ctx fails the tests; 19 special-token spellings across Llama 3, Qwen, Gemma, Mistral, DeepSeek, Command-R none raw; grammars unchanged so v3 native evidence applies). Remaining operator gate (documented): check a chosen model's special tokens all contain <, >, &, [ or ].
 
+### MOD72-8 — Slow escrow-alert query makes the moderator desk slow (pre-existing)
+
+DECISION: open (P2 SHOULD), found by the MOD72-6 implementer. `loadEscrowAlerts` takes ~5.5 s on an empty database (also on c53ec524 with the review loader disabled), so `/moderator` takes 4–5 s and exceeds the 8 s request timeout under -race plus parallel Playwright (500/503 "market is busy"). It is the common cause of desk-test flakes recorded throughout iteration 72. Not caused by PR #99.
+ACCEPTANCE: EXPLAIN-backed fix or index; /moderator under 1 s on an empty and a seeded test database; desk tests stable under -race.
+STATUS: open (outside PR #99's scope; candidate for its own PR).
+
 ### MOD72-6 — Listing hold mode with per-vendor auto-approve (owner directive, LLM-8)
 
 DECISION: ACCEPT (P1, owner directive 2026-10-20: "Add to PR #99").
