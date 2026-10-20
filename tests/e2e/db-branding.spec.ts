@@ -78,7 +78,10 @@ async function fixedBranding(page: Page, name: string, logoURL: string | null) {
         }
       }
     }
-    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+    const rootTextSize = await page.locator('html').evaluate(element => getComputedStyle(element).fontSize);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth),
+      `${new URL(page.url()).pathname}: ${width}px viewport, ${rootTextSize} root text, ${logoURL ? 'image logo' : 'text wordmark'}`,
+    ).toBeLessThanOrEqual(width);
   }
 }
 

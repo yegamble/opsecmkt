@@ -13,7 +13,11 @@ import { waitForStyles } from './styles';
 async function fitsAndNoScripts(page: Page, what: string) {
   await expect(page.locator('script')).toHaveCount(0);
   await waitForStyles(page);
-  expect(await page.evaluate(() => document.documentElement.scrollWidth), what).toBeLessThanOrEqual(page.viewportSize()!.width);
+  for (const scale of ['100%', '200%']) {
+    await page.locator('html').evaluate((element, size) => { element.style.fontSize = size; }, scale);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth), `${what}, ${scale} text`).toBeLessThanOrEqual(page.viewportSize()!.width);
+  }
+  await page.locator('html').evaluate(element => { element.style.fontSize = ''; });
 }
 
 test('the other party replies once and the desk names who holds encrypted evidence', async ({ browser, baseURL }) => {
