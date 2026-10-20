@@ -1,0 +1,69 @@
+name: Scheduled security scans
+on:
+  schedule:
+    - cron: '23 9 * * 1'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  dependencies:
+    # Keep dependency checks identical to PR/main/release CI, at this commit.
+    uses: ./.github/workflows/dependency-security.yaml # zizmor: ignore[self-repository] -- same-commit reusable workflow, supported by actionlint.
+  images:
+    name: Image vulnerabilities (${{ matrix.name }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: application
+            context: .
+            file: Dockerfile
+            image: opsecmkt:security
+          - name: tor
+            context: deploy
+            file: deploy/Dockerfile.tor
+            image: opsecmkt-tor:security
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Rebuild with current distro security packages
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          load: true
+          tags: ${{ matrix.image }}
+          pull: true
+          no-cache: true
+      - uses: ./.github/actions/scan-image # zizmor: ignore[self-repository] -- scan the image using this checkout's reviewed composite action.
+        with:
+          image-ref: ${{ matrix.image }}
+          artifact-name: scheduled-vulnerabilities-${{ matrix.name }}
+  image-fuzz:
+    name: Bounded image decoder fuzzing
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      # Run only this image target; no database, wallet, public network or historical BTC fuzz target is selected.
+      - run: go test -run '^$' -fuzz '^FuzzDecodeReencode$' -fuzztime=2m -parallel=2 ./internal/market
+      - name: Preserve reproducing fuzz inputs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: image-fuzz-reproducers
+          path: internal/market/testdata/fuzz/FuzzDecodeReencode/
+          if-no-files-found: ignore
+          retention-days: 14

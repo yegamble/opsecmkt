@@ -4,7 +4,7 @@ Every pull request and every push to `main` runs `.github/workflows/ci.yaml`; ot
 
 The current Monero-only suite is configured to cover:
 
-- Go formatting, module integrity, vet, vulnerability checks and race tests against PostgreSQL. Two complementary jobs select and skip `^(TestEscrow|TestXMR|FuzzEscrow)` so every top-level test runs once across the pair.
+- Independent required Go quality, workflow/shell safety and dependency vulnerability checks, alongside race tests against PostgreSQL. Two complementary test jobs select and skip `^(TestEscrow|TestXMR|FuzzEscrow)` so every top-level test runs once across the pair.
 - Monero escrow against real daemon and wallet-rpc binaries on a local fakechain (`escrow-xmr-regtest`). This uses test coins and establishes no public-network or deployment result.
 - Server-rendered preview and database browser journeys with JavaScript disabled. Monero escrow browser journeys use simulated RPC, not a live chain.
 - Installer, Compose network isolation, resource limits, Tor configuration, scanner, encrypted backup/restore, and upgrade smoke checks.
@@ -12,11 +12,48 @@ The current Monero-only suite is configured to cover:
 
 Each parallel test process needs its own disposable database. No development or CI job uses mainnet. Preserve a failed run's sanitized logs and browser traces; do not change expectations until the failure is understood. See [development commands](development.md), [operations checks](operations-tests.md) and the dated [verification records](verification.md).
 
+## Quality and security gates
+
+`make go-quality` checks Go formatting/imports, module consistency/integrity and
+the configured analyzers across all packages, including tests. It runs in its
+own required job so PostgreSQL or browser failures cannot prevent analysis.
+`make workflow-lint` runs actionlint; the workflow safety job also runs
+hash-locked zizmor and checksum-pinned ShellCheck across tracked shell scripts.
+The Go tools have an isolated `tools/go.mod` and `tools/go.sum`; they do not add
+development-only dependencies to the application module. See
+[contributing](../CONTRIBUTING.md) for the shared local commands and Lefthook
+installation. Hooks are bypassable, so CI enforces their quality checks too.
+
+The reusable [dependency security workflow](../.github/workflows/dependency-security.yaml)
+runs `make vuln` (`govulncheck -test ./...`), audits both npm lockfiles, and uses
+pip-audit on the complete hash-locked documentation and scanner requirements.
+These jobs are required on pull requests, pushes to `main`, manual CI and the
+release workflow. A vulnerability in test or documentation tooling is included
+even when it cannot affect the shipped server. GitGuardian remains the remote
+PR secret check; local Gitleaks hooks provide earlier feedback.
+
+The built application and Tor images are scanned with pinned Trivy. Full JSON
+reports retain all known vulnerabilities, including unfixed and lower-severity
+findings, for 14 days. Fixable HIGH or CRITICAL vulnerabilities fail the job;
+scanner/download errors also fail. The application scan reuses the internal
+database matrix entry's image, and the Tor scan reuses the offline-test image.
+Release packaging additionally scans the actual OCI archive before creating the
+draft. No registry push is required for these scans.
+
+The [scheduled security workflow](../.github/workflows/security.yaml) runs weekly
+(Monday at 09:23 UTC) and on manual request. It reuses the same dependency audits,
+rebuilds both images without cache to check current distro packages, and runs
+two minutes of `FuzzDecodeReencode` image fuzzing with two workers. Reproducing
+crash inputs are retained for 14 days. It does not run the full integration
+matrix or contact wallets, public chains or deployed hosts. Scheduled failures
+are actionable even when the source commit has not changed: vulnerability
+databases can disclose new problems after an earlier green CI run.
+
 ## Release a tested version
 
 Push a version tag, for example `v0.1.0`, on the intended reviewed commit. The release workflow reruns the entire CI workflow against that tag before building any release output. It requires the tag to use `vMAJOR.MINOR.PATCH` (an optional prerelease suffix is supported). A tag with a suffix (any `-` in the name, such as `v0.1.0-alpha.2`) is created with `gh release create --prerelease`; a plain tag is not. The image is built without any Actions cache.
 
-The pipeline creates a **draft GitHub release** with:
+After the OCI archive passes its vulnerability gate, the pipeline creates a **draft GitHub release** with:
 
 - `opsecmkt.oci.tar.gz`: Linux amd64 OCI image archive, with embedded BuildKit provenance and SBOM.
 - `build.json`: exact source commit, tag, platform and Actions run URL.
