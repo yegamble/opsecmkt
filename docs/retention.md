@@ -64,6 +64,7 @@ Legacy last-use dates are not invented from account creation dates.
 | Sessions, pending sign-ins, CAPTCHA receipts, PGP challenges and form receipts | Their existing validity deadline, followed by scheduled removal |
 | Unfunded drafts | 30 days after creation |
 | Private order text, encrypted order correspondence, digital originals/replacements and dispute images | 30 days after verified financial closure |
+| Reserved digital unit contents and deduplication fingerprints | The associated order's private-content deadline |
 | Ordinary closed-order records | 180 days after verified financial closure |
 | Withdrawn listing content, images and reviews | 30 days after withdrawal, unless necessary for an open transaction or preserved case |
 | Accounts | 12 months without observed authenticated use, then 30 days' notice; a verified deletion request has a 30-day deadline |
@@ -85,6 +86,7 @@ For a user who cannot sign in, use the published staff contact and independently
 Administrators register and review scoped account, message, order or activity-event holds in **Control room → Retention and preservation**.
 Record the actual authority, reason, authorized readers and release condition. Prefer individual record scopes to an entire account.
 An order hold covers the order-bound correspondence, delivery updates and dispute images. It cannot infer which earlier direct messages concerned that order; preserve those direct-message IDs separately.
+It also covers that order's reserved digital inventory. Unassigned unit contents follow listing withdrawal and preservation rules. Unit content and its fingerprint are erased together; a consumed unit remains unavailable until its record is retired. The application retains no permanent content-hash ledger after this erasure. Restored-backup deletion replay covers these records as well.
 The recorded reader restrictions govern case handling; holds do not replace existing application permissions or encrypt plaintext records.
 Privileged operators can still read retained plaintext. Order correspondence requires local recipient encryption. Image evidence is unencrypted and visible to both parties and authorized case staff; only upload evidence intended for those viewers. Private staff support remains a separate direct channel.
 Review within 30 days. An overdue legal hold stays protected until its duty ends.
