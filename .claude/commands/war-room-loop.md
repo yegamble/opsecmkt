@@ -29,7 +29,8 @@ usage limits. Save turns without downgrading any seat:
 
 A whole-product loop rotates its council sweeps so every face of the product is
 reviewed at least once: **payments → identity & account security → commerce &
-disputes → operations & recovery → privacy promise → UI & accessibility**.
+disputes → operations & recovery → privacy promise → UI & accessibility → AI
+moderation** (the last once `internal/moderation` is on the integration base).
 Seat choices per area are in `/war-room`. A targeted scope skips the rotation.
 
 ## One iteration
@@ -53,8 +54,10 @@ Seat choices per area are in `/war-room`. A targeted scope skips the rotation.
    **CI passed**; diagnose any red job from its log before acting.
 5. **Verify.** Dispatch `opsec-qa-release` (and, for disputed items, the seat
    that raised it) to check each item's acceptance criteria against the
-   integrated branch. For a fix round, resume the same verifier with
-   `SendMessage`. VERIFIED → ledger `verified (<PR>, <CI run>)`;
+   integrated branch. Model-path items (prompts, grammars, the inference
+   adapter or launcher, model choice, evaluation) go to `opsec-llm`, at the
+   evidence tier their criteria name. For a fix round, resume the same
+   verifier with `SendMessage`. VERIFIED → ledger `verified (<PR>, <CI run>)`;
    NOT VERIFIED → back to `open` with the failing criterion.
 6. **Record.** Add an iteration-log row: sweep, seats, items verified/reopened,
    CI run, what remains. Commit the ledger on the integration branch.

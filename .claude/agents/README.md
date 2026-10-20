@@ -1,6 +1,6 @@
 # The OPSEC Market war room
 
-Thirteen read-only review seats, one implementer and a five-agent bug-hunt
+Fourteen read-only review seats, one implementer and a five-agent bug-hunt
 group (below), checked into this repo, that scrutinise OPSEC Market from genuinely different positions and loop until
 it is a complete, releasable test-network product. Adapted from the Vidra
 council (`~/github/vidra/.claude/agents`) for a single Go/PostgreSQL repository
@@ -21,7 +21,7 @@ with no browser JavaScript and test-network-only payments.
 
 Run the chair as an **Opus session with `/advisor fable`** (see
 `.claude/war-room/protocol.md`). The chair picks **3–5** seats per session —
-never all thirteen.
+never all fourteen.
 
 ## Roster
 
@@ -34,6 +34,7 @@ never all thirteen.
 | `opsec-privacy` | privacy & anonymity | What does the system reveal about its users? |
 | `opsec-infrastructure` | self-hosting SRE | Can an operator install, run, upgrade and recover it from the docs? |
 | `opsec-frontend` | UI & accessibility | Can anyone finish every task with scripts off, on any device? |
+| `opsec-llm` | LLM & inference engineer | Is the AI moderator's model accurate, calibrated and robust to hostile text — measured, not assumed? Verifies model-path fixes. |
 | `opsec-qa-release` | QA / release lead | Does it work end to end, and what evidence tier proves it? Verifies fixes. |
 | `opsec-product-completeness` | principal PM | Is each claimed capability a complete vertical slice? |
 | `opsec-buyer` | buyer advocate | Would a careful buyer understand every step and every failure? |
@@ -74,8 +75,8 @@ than the last. Surviving findings enter the ledger as `open (bug-hunt, unruled)`
 
 ## Design decisions
 
-- **Review seats are read-only** (`Read, Grep, Glob, Bash`; security, privacy
-  and infrastructure also have web access). They may run tests against
+- **Review seats are read-only** (`Read, Grep, Glob, Bash`; security, privacy,
+  infrastructure and LLM also have web access). They may run tests against
   disposable databases they start, but never edit, commit or push. Only
   `opsec-implementer` has `Edit`/`Write`, and it never pushes or merges.
 - **All seats run on Opus with `effort: high`** in frontmatter, as in Vidra:
@@ -85,6 +86,12 @@ than the last. Surviving findings enter the ledger as `open (bug-hunt, unruled)`
 - **Security and privacy are separate seats.** Security asks what an attacker
   can do; privacy asks what a seized server, backup or network observer
   learns — the product's core promise deserves its own reviewer.
+- **The LLM seat measures model quality.** `opsec-llm` judges whether the AI
+  moderator's model path (prompts, grammars, runtime limits, calibration,
+  injection robustness) is any good, and proves it with offline runs on
+  synthetic labelled sets through a local runtime. It never downloads weights
+  or uses hosted models. Security still owns whether model output can reach
+  authority; privacy owns what moderation captures and keeps.
 - **Buyer, vendor and staff are separate** because they want different things
   (protection, control, oversight); the tension should surface.
 - **One implementer per ledger item, one worktree each, no overlapping files

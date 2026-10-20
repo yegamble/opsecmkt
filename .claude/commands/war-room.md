@@ -26,10 +26,10 @@ work.
 Pick **3–5** seats — the smallest team whose perspectives genuinely differ.
 
 Technical: `opsec-architect`, `opsec-backend`, `opsec-payments`,
-`opsec-security`, `opsec-privacy`, `opsec-infrastructure`, `opsec-frontend` ·
-Quality: `opsec-qa-release` · Product: `opsec-product-completeness`,
-`opsec-buyer`, `opsec-vendor`, `opsec-staff` · Challenge:
-`opsec-devils-advocate`.
+`opsec-security`, `opsec-privacy`, `opsec-infrastructure`, `opsec-frontend`,
+`opsec-llm` · Quality: `opsec-qa-release` · Product:
+`opsec-product-completeness`, `opsec-buyer`, `opsec-vendor`, `opsec-staff` ·
+Challenge: `opsec-devils-advocate`.
 
 Typical shapes:
 - **Payments** → payments + qa-release + staff + devils-advocate (+ backend).
@@ -38,6 +38,7 @@ Typical shapes:
 - **Operations / install / recovery** → infrastructure + staff + qa-release + devils-advocate.
 - **Privacy / anonymity promise** → privacy + security + frontend + buyer.
 - **UI / accessibility** → frontend + buyer + vendor + product-completeness.
+- **AI moderation / model path** → llm + security + staff (+ privacy when capture or retention changes, + devils-advocate for quality claims).
 - **Whole-product completeness sweep** → product-completeness + qa-release + devils-advocate + the two most affected personas.
 
 `opsec-security` (what an attacker can do) and `opsec-privacy` (what the system
