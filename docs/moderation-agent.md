@@ -202,7 +202,10 @@ and the prompt data also writes `[` and `]` inside string values as `\u005b` and
 `[INST]` or `<|im_start|>`, cannot be formed from listing text. The JSON meaning
 is unchanged; a bracket-heavy item costs more tokens. Special tokens spelled
 without these characters are not covered, and no selected model's vocabulary has
-been checked. This is a tokenization guard, not a trust boundary: the data stays
+been checked. Before enabling inference with a chosen model, list its special and
+user-defined tokens (llama.cpp's load log prints the special-token cache) and
+confirm each contains `<`, `>`, `&`, `[` or `]`; NFKC folds fullwidth forms first.
+This is a tokenization guard, not a trust boundary: the data stays
 untrusted.
 
 Go derives review summaries and injection-evidence descriptions from validated
