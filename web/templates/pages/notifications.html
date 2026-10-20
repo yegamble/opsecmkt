@@ -18,7 +18,7 @@
 <time>{{.Created}}</time>
 <span>{{if .Read}}Read{{else}}Unread{{end}}</span>
 </div>
-<p>{{.Body}}</p>{{if .OrderID}}<p><a class="text-link" href="/order?id={{.OrderID}}">Open this order</a></p>{{end}}{{if .AsksForStaff}}
+<p>{{.Body}}</p>{{if .OrderID}}<p><a class="text-link" href="/order?id={{.OrderID}}">Open this order</a></p>{{end}}{{if .TicketID}}<p><a class="text-link" href="/ticket?id={{.TicketID}}">Open this ticket</a></p>{{end}}{{if .AsksForStaff}}
 <p class="help staff-contact">{{template "staff-contact" $}}</p>{{end}}{{if not .Read}}<form method="post" action="/notifications">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="form_nonce" value="{{formNonce "/notifications"}}">

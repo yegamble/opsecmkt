@@ -100,6 +100,7 @@ Evidence tier as in `repo-map.md`.
 | 69 | 2026-10-19 | /war-room-loop resume: implementation wave on ruled P1/P2 items (no council sweep) | implementers A-560, A-571 (one fix round each), A-613; payments verifier A-560 (two rounds); security verifier A-571 (two rounds) | Verified: A-560 (#97), A-571 (#96); A-535 closed by A-571. Round 1 NOT VERIFIED A-571 (unbudgeted TOTP guessing on the rescue path, SEC-A571-1, owner decision: rescue-only budget) and A-560 (re-request text wrong after a refused or pending re-request). New: A-613 (P1, owner request). Main CI 39355890550 and 39355890693 (85247a17) passed. Remaining: A-613 in progress, then A-559 and A-611; owner-blocked A-555, A-562, A-573 |
 | 70 | 2026-10-20 | /war-room-loop resume (after host restart): A-613 fix rounds 1-2 | implementer A-613 (two fix rounds); payments verifier A-613 (three rounds) | Verified: A-613 (#100, cce33f6d). Round 2 NOT VERIFIED PAY613-4 (stranded claimed deposits dismissable); chair ruling: refuse dismissal while claiming, root cause filed as A-614. New: A-614 (P1), A-615 (P3). Remaining: A-614, then A-559 and A-611; owner-blocked A-555, A-562, A-573; owner PR #99 holds migrations 125-127 |
 | 71 | 2026-10-20 | /war-room-loop resume: A-614 | implementer A-614; payments verifier A-614 (one round) | Verified: A-614 (#103, 5a3b3a7e). New: A-616 (P3), A-617 (NIT). Verifier and implementer saw /moderator statement timeouts at load average 150-560 at both base and head (A-615); CI green. Remaining: A-559, A-611; owner-blocked A-555, A-562, A-573 |
+| WR-XMPP | 2026-10-20 | Owner-requested XMPP, encrypted contents/order delivery and separate support tickets; Rounds 0–D | independent application security, Tor/privacy INFOSEC, QA/release; Codex agents following repository roles | All required scoped findings fixed and independently verified, including retention/FK audience provenance and metadata-only escalation serialization. Local broad regression coverage and corrected-source focused gates complete; current-head CI required before merge. Migrations 131–133 reserve open PR #104's 129–130. Commit/push/merge explicitly delegated. |
 
 ## P0 — release blockers
 
@@ -1509,6 +1510,34 @@ UI/OPS EVIDENCE: Chromium with JavaScript disabled passed 172 preview checks, 40
 LIMITS: Local working-tree evidence only; no new CI run, commit, deployment, real-chain run, Tor circuit or encrypted backup rehearsal. Docker daemon and age binaries were unavailable. Monero's on-chain privacy does not remove the market's custody or host/network threat boundaries. No live cutover or transaction conversion work was needed.
 
 FINAL DOCUMENTATION GATE: Strict MkDocs build passed after pinning historical links to their pre-removal revision, preserving the old notes without restoring Bitcoin product sections. The current Monero restore reminder and backup-test assertions agree with the runbook heading; 46 documentation/recovery checks passed after that correction. The disposable PostgreSQL test server was stopped.
+
+## WR-XMPP — outgoing alerts and encrypted support tickets, 2026-10-20
+
+Round 0 enumerated routes, handlers, migrations, templates, privacy claims and test tiers. Fresh application-security, Tor/privacy INFOSEC and QA/release Codex seats then reviewed independently and exchanged Round B challenges and Round C responses. These are the available agents following repository roles, not a claim of native Claude/Opus execution. The owner explicitly delegated commit, push and merge after testing.
+
+| Priority / ID | Decision and verification |
+| --- | --- |
+| P0 XMPP-71-1 | ACCEPT: summary-only linked ticket XMPP sends must hold the ticket through submission and recheck access under that lock. Otherwise escalation can commit between the audience check and a metadata send. Fixed; actual PostgreSQL lock-wait and revocation-before-lock regressions independently verified by security, privacy and QA. |
+| P0 XMPP-71-2 (QA-XMPP-4) | ACCEPT: a missing ticket FK is not an historical-access grant. QA reproduced preserved administrator notices resurfacing after demotion and ticket retention. The default-false `ticket_history_only` flag is set only for intentional unlinked historical closure metadata; source-free constraints, frontend checks, enqueue and worker authorization preserve that distinction. Fixed; actual retention/hold/FK and worker regressions independently verified by QA and security. |
+| P1 XMPP-71-3 (SEC-1 / QA-XMPP-1) | ACCEPT: qualifying staff who close a ticket receive one closure alert, with opener deduplication and current role restrictions. Fixed and independently verified. Conventional actor-alert suppression loses to the owner's explicit all-prior-handlers recipient rule. |
+| P2 XMPP-71-4 (PRIV-XMPP-1) | ACCEPT: disclose initial moderator/administrator metadata visibility before submission, including when an administrator is selected as encryption recipient. Fixed and verified by privacy. |
+| P2 XMPP-71-5 (SEC-2) | MODIFY: disable composition for an ineligible assignee and give reassignment guidance. Reassignment restores UI eligibility only; stale ciphertext remains rejected and historical ciphertext is not re-encrypted. Fixed and independently verified by security. |
+| P2 XMPP-71-6 (QA-XMPP-2) | ACCEPT: private ticket summaries name the sender and ticket, using the same text in both channels. Fixed and independently verified by QA. |
+| P2 XMPP-71-7 (PRIV Round B) | DEFER: consider clearing obsolete destinations from terminal outbox rows. Current documented notification retention bounds exposure. Preserve pending retry state and delivery status; do not expand the current feature into a separate retention mechanism. |
+| P3 XMPP-71-8 (QA-XMPP-3) | DEFER: a repository-managed standard-server rehearsal remains an experiment, not a new release/CI gate. Keep the documented disposable-recipient check against the operator's actual configured provider. |
+
+DECISION: MODIFY the interoperability experiment; do not add a mandatory external-account test or new server infrastructure in this change.
+WHY: Local TLS protocol fixtures establish protocol/security behavior, while a separate standard server cannot establish every operator's provider. The existing provider-specific smoke is the narrower operational evidence.
+DISSENTING VIEW: QA proposed a disposable standard-server rehearsal as an experiment before operational reliance; privacy challenged its incremental value and security challenged any interpretation as a live-account release gate. QA clarified it was never a mandatory gate and accepted deferral of new infrastructure.
+USER IMPACT: Buyers, vendors and staff receive authorized notices; delivery acceptance is not a recipient-read guarantee.
+OPERATOR IMPACT: Configure the sender and verify disposable messages with the selected provider before relying on delivery.
+TECHNICAL COST/RISK: Avoid new external credentials and service dependencies; interoperability outside tested fixtures remains explicitly unclaimed.
+ACCEPTANCE CRITERIA: Verified TLS, role/ownership parity, explicit consent/key checks and truthful operational limits; no external-account CI prerequisite.
+TEST PLAN: PostgreSQL race tests, local verified-TLS protocol fixtures and no-JavaScript browser lifecycle; optional provider-specific rehearsal follows the operator guide.
+
+DECLINED: server-side private-key collection/decryption, automatic historical-message re-encryption after assignment, separate ticket preservation objects/UI, and a mandatory Tor proxy. Existing account holds cover ticket history; direct XMPP egress is an explicit default-off administrator choice with user/operator disclosure. None of these rejected ideas closes an established remaining authorization defect.
+
+Verification details and limits: [XMPP and ticket evidence](../../docs/evidence/xmpp-tickets-2026-10-20.md). Full regression and current-head CI outcomes will be recorded before this feature is marked merged; focused independent fixes are verified locally.
 
 ## Iteration 64 — Monero-only CI integration corrections
 

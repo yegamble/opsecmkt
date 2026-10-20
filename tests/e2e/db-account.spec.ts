@@ -1,10 +1,10 @@
 import { expect, test } from '@playwright/test';
 import { FIXTURE_LISTING, uniqueHandle } from './db-fixtures';
 import { waitForStyles } from './styles';
-import { expectNotice, signedIn, submitAndLoad } from './db-helpers';
+import { expectNotice, saveEncryptionKey, signedIn, submitAndLoad } from './db-helpers';
 
 // Uses the listing published by db-setup.spec.ts and registers its own buyer.
-test('register, draft, removed XMPP field and session boundaries', async ({ page, browser, baseURL }) => {
+test('register, draft, private XMPP opt-in and session boundaries', async ({ page, browser, baseURL }) => {
   const handle = uniqueHandle('buyer');
   const password = 'browser-buyer-password-123';
   await page.goto('/register');
@@ -12,6 +12,7 @@ test('register, draft, removed XMPP field and session boundaries', async ({ page
   await page.getByLabel('Password', { exact: true }).fill(password);
   await page.getByRole('button', { name: 'Create account' }).click();
   await expect(page.locator('.account-name')).toHaveText(handle);
+  await saveEncryptionKey(page, password);
   // The catalog shows 25 listings a page (A-181) and other specs publish more: search for the setup fixture.
   await page.goto(`/?q=${encodeURIComponent(FIXTURE_LISTING)}`);
   await page.getByRole('link', { name: FIXTURE_LISTING, exact: true }).click();
@@ -24,7 +25,15 @@ test('register, draft, removed XMPP field and session boundaries', async ({ page
   await expect(page.locator('.page-head .badge')).toHaveText('Draft — unfunded');
   expect((await page.goto('/admin'))?.status()).toBe(403);
   await page.goto('/account');
-  await expect(page.getByLabel('XMPP address')).toHaveCount(0);
+  const xmpp = page.locator('form[action="/account/xmpp"]');
+  await expect(xmpp.getByLabel('Private XMPP address')).toHaveValue('');
+  await expect(xmpp.getByLabel('Receive XMPP notifications')).not.toBeChecked();
+  const destination = `${handle}@example.test`;
+  await xmpp.getByLabel('Private XMPP address').fill(destination);
+  await xmpp.getByLabel('Receive XMPP notifications').check();
+  await xmpp.getByLabel('Current password').fill(password);
+  await submitAndLoad(page, xmpp.getByRole('button', { name: 'Save XMPP preferences' }));
+  await expect(page).toHaveURL(/\/account#xmpp-notifications$/);
   const signOutForm = page.getByRole('main').locator('form[action="/logout"]'); // the page's own; the header has one too (A-548)
   await expect(signOutForm).toBeVisible();
   await expect(signOutForm.locator('input[name="csrf"]')).toHaveValue(/.+/);
@@ -45,7 +54,8 @@ test('register, draft, removed XMPP field and session boundaries', async ({ page
   await page.getByLabel('Password', { exact: true }).fill(password);
   await submitAndLoad(page, page.getByRole('button', { name: 'Sign in' }));
   await expect(page).toHaveURL(/\/account$/);
-  await expect(page.getByLabel('XMPP address')).toHaveCount(0);
+  await expect(page.getByLabel('Private XMPP address')).toHaveValue(destination);
+  await expect(page.getByLabel('Receive XMPP notifications')).toBeChecked();
   const activity = page.getByRole('region', { name: 'Recent activity' });
   await expect(activity).toContainText('Signed in');
   await expect(activity).not.toContainText('Updated profile');

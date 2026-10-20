@@ -3,7 +3,10 @@ package market
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"slices"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -105,24 +108,82 @@ func autoDeliveryHook(ctx context.Context, a *App, tx *sql.Tx, o *Order, from, t
 		_, err := tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", o.ID, statePaid, note)
 		return err
 	}
+	if err := insertDelivery(ctx, tx, o, content); err != nil {
+		if !errors.Is(err, errDeliveryBuyerKey) && !errors.Is(err, errDeliveryCiphertext) && !errors.Is(err, errDeliveryEncryption) {
+			return err
+		}
+		// The buyer may have removed their key after checkout, or a listing may contain ciphertext for a
+		// different recipient. Count the confirmed payment and keep the order paid for a safe manual delivery.
+		note := "Not delivered automatically: digital content could not be encrypted to the buyer's current PGP key. The buyer must save a usable encryption key; the vendor can then deliver content from the order page or cancel and refund."
+		if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", o.ID, statePaid, note); err != nil {
+			return err
+		}
+		for _, uid := range []string{o.BuyerID, o.VendorID} {
+			if _, err = insertNotification(ctx, tx, uid, "Order "+shortID(o.ID)+": digital delivery is waiting for a usable buyer PGP key and content encrypted to that key. After the buyer updates their key, the vendor can deliver from the order page.", o.ID); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	next, err := a.transition(ctx, tx, o.ID, statePaid, stateDelivered, nil, "Automatic delivery after confirmed payment")
 	if err != nil {
-		return err
-	}
-	if err = insertDelivery(ctx, tx, o.ID, content); err != nil {
 		return err
 	}
 	o.State, o.Status = next.State, next.Status
 	return nil
 }
 
-func insertDelivery(ctx context.Context, tx *sql.Tx, orderID, content string) error {
-	res, err := tx.ExecContext(ctx, "INSERT INTO deliveries(order_id,content) VALUES($1,$2) ON CONFLICT (order_id) DO NOTHING", orderID, content)
+var (
+	errDeliveryBuyerKey   = fail(409, "Digital content was not delivered: the buyer must save a usable PGP encryption key on their account. Nothing was changed.")
+	errDeliveryCiphertext = fail(400, "Digital content was not delivered: the armored PGP message must be encrypted to the buyer's current public key with a visible recipient key ID. Nothing was changed.")
+	errDeliveryEncryption = fail(409, "Digital content could not be encrypted to the buyer's PGP key. Ask the buyer to update their encryption key and try again. Nothing was changed.")
+)
+
+// insertDelivery stores only recipient-specific ciphertext, then records a buyer-only notification pointing to
+// that delivery. Shared listing content stays in the inventory; it is encrypted separately for every paid order.
+func insertDelivery(ctx context.Context, tx *sql.Tx, o *Order, content string) error {
+	if strings.TrimSpace(content) == "" || utf8.RuneCountInString(content) > maxDeliveryChars {
+		return fail(400, "Delivery content must contain 1–32000 characters")
+	}
+	var one int
+	// The order is locked before this account. NOWAIT avoids a cycle with an account action that already holds
+	// the buyer's row, while keeping its key stable through encryption, the delivery and notification inserts.
+	if err := tx.QueryRowContext(ctx, "SELECT 1 FROM users WHERE id=$1 FOR SHARE NOWAIT", o.BuyerID).Scan(&one); err != nil {
+		return err
+	}
+	p, err := loadPGPAccount(ctx, tx, o.BuyerID, false)
+	if err != nil {
+		return err
+	}
+	if !canReceiveEncrypted(p.Key, time.Now()) {
+		return errDeliveryBuyerKey
+	}
+	var ciphertext string
+	if strings.HasPrefix(strings.TrimSpace(content), "-----BEGIN PGP MESSAGE-----") {
+		ciphertext, err = canonicalMessage(content)
+		if err != nil {
+			return errDeliveryCiphertext
+		}
+		ids, encrypted, err := inspectEncrypted(ciphertext)
+		selected, usable := p.Key.EncryptionKey(time.Now())
+		if err != nil || !encrypted || !usable || !slices.Contains(ids, selected.PublicKey.KeyId) || slices.Contains(ids, uint64(0)) {
+			return errDeliveryCiphertext
+		}
+	} else {
+		ciphertext, err = encryptTo(p.Key, content)
+		if err != nil {
+			return errDeliveryEncryption
+		}
+	}
+	res, err := tx.ExecContext(ctx, `INSERT INTO deliveries(order_id,content,encrypted,recipient_fingerprint)
+		VALUES($1,$2,true,$3) ON CONFLICT (order_id) DO NOTHING`, o.ID, ciphertext, p.Fingerprint)
 	if err != nil {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n != 1 {
 		return fail(409, "Content was already delivered for this order")
 	}
-	return nil
+	_, err = tx.ExecContext(ctx, `INSERT INTO notifications(id,user_id,body,order_id,delivery_order_id)
+		VALUES($1,$2,$3,$4,$4)`, randomToken(), o.BuyerID, "Order "+shortID(o.ID)+": encrypted digital delivery is available. Decrypt it with your PGP private key.", o.ID)
+	return err
 }

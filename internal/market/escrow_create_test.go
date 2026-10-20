@@ -32,6 +32,7 @@ func newEscrowEnv(t *testing.T, env ...string) *escrowEnv {
 	s := randomToken()[:6]
 	x.buyer, x.buyerSess = e.user("ebuyer_"+s, "buyer")
 	x.vendor, x.vendorSess = e.user("evendor_"+s, "vendor")
+	e.enableOrderPGP(x.buyer, x.vendor)
 	x.activeKey(x.buyer, x.buyerKey)
 	x.activeKey(x.vendor, x.vendorKey)
 	x.product = x.autoListing(x.vendor)

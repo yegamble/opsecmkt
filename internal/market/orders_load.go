@@ -390,7 +390,7 @@ func loadOrderDetail(ctx context.Context, a *App, r *http.Request, d *PageData) 
 	d.DeliveryWithheld = d.OrderViewer == roleModerator && !disputeVisible(o) && !staffDispute
 	var dv DeliveryView
 	if !d.DeliveryWithheld {
-		err = a.db.QueryRowContext(ctx, "SELECT content,to_char(created,'YYYY-MM-DD HH24:MI \"UTC\"') FROM deliveries WHERE order_id=$1", o.ID).Scan(&dv.Content, &dv.Created)
+		err = a.db.QueryRowContext(ctx, "SELECT content,to_char(created,'YYYY-MM-DD HH24:MI \"UTC\"'),encrypted FROM deliveries WHERE order_id=$1", o.ID).Scan(&dv.Content, &dv.Created, &dv.Encrypted)
 		if err == nil {
 			d.Delivery = &dv
 		} else if err != sql.ErrNoRows {

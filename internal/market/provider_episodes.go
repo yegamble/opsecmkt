@@ -75,7 +75,7 @@ func (a *App) observeProviderEpisode(ctx context.Context, provider string, bad b
 func deliverProviderEpisode(ctx context.Context, tx *sql.Tx, provider string, episode int64, event, body string) error {
 	// FOR SHARE keeps a suspension or role change from racing the recipient snapshot. The episode row
 	// serializes competing watchers; the unique receipt is a second line of defence for each account.
-	admins, err := collectStrings(ctx, tx, `SELECT id FROM users WHERE role='admin' AND suspended_at IS NULL ORDER BY id FOR SHARE`)
+	admins, err := collectStrings(ctx, tx, `SELECT id FROM users WHERE role='admin' AND suspended_at IS NULL AND closed_at IS NULL AND retention_restricted_at IS NULL ORDER BY id FOR SHARE`)
 	if err != nil {
 		return err
 	}
@@ -88,7 +88,7 @@ func deliverProviderEpisode(ctx context.Context, tx *sql.Tx, provider string, ep
 		if n, _ := res.RowsAffected(); n == 0 {
 			continue
 		}
-		if _, err = tx.ExecContext(ctx, `INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)`, randomToken(), uid, body); err != nil {
+		if _, err = insertScopedNotification(ctx, tx, uid, body, "", "admin"); err != nil {
 			return err
 		}
 	}
