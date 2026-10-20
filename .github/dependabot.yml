@@ -12,6 +12,13 @@ updates:
     groups:
       development-tools:
         patterns: ['*']
+  - package-ecosystem: gomod
+    directory: /tools/actionlint
+    schedule:
+      interval: weekly
+    groups:
+      workflow-tool:
+        patterns: ['*']
   - package-ecosystem: npm
     directory: /
     schedule:

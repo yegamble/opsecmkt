@@ -15,7 +15,36 @@ require_go() {
 
 tool() {
   require_go
-  "$go_command" tool -modfile=tools/go.mod "$@"
+  local manifest=tools/go.mod
+  if [ "$1" = actionlint ]; then
+    # actionlint needs YAML v4 rc.3; newer Go security analyzers need rc.6.
+    manifest=tools/actionlint/go.mod
+  fi
+  "$go_command" tool -modfile="$manifest" "$@"
+}
+
+tools_smoke() {
+  local help_output status=0
+  # goimports deliberately exits 2 for -h. Require its actual help text so a
+  # compilation failure cannot be mistaken for this expected usage status.
+  help_output=$(tool goimports -h 2>&1) || status=$?
+  if { [ "$status" -ne 0 ] && [ "$status" -ne 2 ]; } || [[ "$help_output" != *'usage: goimports [flags] [path ...]'* ]]; then
+    printf '%s\n' "$help_output" >&2
+    if [ "$status" -eq 0 ]; then status=1; fi
+    exit "$status"
+  fi
+  printf 'goimports help bootstrap passed\n'
+  tool golangci-lint version
+  tool lefthook version
+  tool gitleaks version
+  help_output=$(tool deadcode -help 2>&1) || {
+    status=$?
+    printf '%s\n' "$help_output" >&2
+    exit "$status"
+  }
+  printf 'deadcode help bootstrap passed\n'
+  tool govulncheck -version
+  tool actionlint -version
 }
 
 format_go() {
@@ -69,8 +98,13 @@ case "${1:-help}" in
     require_go
     "$go_command" mod verify
     "$go_command" mod tidy -diff
-    "$go_command" -C tools mod verify
-    "$go_command" -C tools mod tidy -diff
+    for module in tools tools/actionlint; do
+      "$go_command" -C "$module" mod verify
+      "$go_command" -C "$module" mod tidy -diff
+    done
+    ;;
+  tools-smoke)
+    tools_smoke
     ;;
   go-quality|check)
     format_go check
@@ -94,7 +128,7 @@ case "${1:-help}" in
     tool lefthook install
     ;;
   *)
-    echo 'Usage: scripts/quality.sh {fmt-check [files...]|fmt|lint|lint-audit|vet|mod-tidy|go-quality|check|vuln|workflow-lint|deadcode|secrets-staged|hooks-install}' >&2
+    echo 'Usage: scripts/quality.sh {fmt-check [files...]|fmt|lint|lint-audit|vet|mod-tidy|tools-smoke|go-quality|check|vuln|workflow-lint|deadcode|secrets-staged|hooks-install}' >&2
     exit 2
     ;;
 esac

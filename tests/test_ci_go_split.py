@@ -89,6 +89,7 @@ class GoSplitTest(unittest.TestCase):
         for fragment in ('gofmt -l cmd internal', 'go mod verify', 'go vet ./...', 'actionlint', 'govulncheck'):
             self.assertNotIn(fragment, go_block)
             self.assertNotIn(fragment, escrow_block)
+        self.assertIn('make tools-smoke', job_block(WORKFLOW, 'quality'))
         self.assertIn('make go-quality', job_block(WORKFLOW, 'quality'))
         self.assertIn('make workflow-lint', job_block(WORKFLOW, 'workflow-safety'))
         self.assertIn('uses: ./.github/workflows/dependency-security.yaml', job_block(WORKFLOW, 'security'))
