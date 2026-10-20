@@ -18,7 +18,7 @@ func init() {
 		if len(d.Users) == 0 {
 			return nil
 		}
-		k, err := contactKey(ctx, a.db, d.Users[0].ID, d.Users[0].Handle, "vendor")
+		k, err := publicVendorContactKey(ctx, a.db, d.Users[0].ID)
 		if err == nil {
 			d.Contacts = []ContactKey{k}
 		}
@@ -82,7 +82,10 @@ func disputeStaffLoader(ctx context.Context, a *App, _ *http.Request, d *PageDat
 		return err
 	}
 	for _, person := range staff {
-		key, err := contactKey(ctx, a.db, person[0], person[1], person[2])
+		key, err := disputeStaffContactKey(ctx, a.db, person[0], o.BuyerID, o.VendorID)
+		if err == sql.ErrNoRows {
+			continue // Staff eligibility may have changed since the directory query.
+		}
 		if err != nil {
 			return err
 		}
@@ -99,8 +102,8 @@ func previewContactKey(handle, relation string) ContactKey {
 // contactKey reads a user's saved key. Verified comes from loadPGPAccount: an ownership proof recorded for
 // exactly the saved key. An unparseable key, or one nothing can be encrypted to now (canReceiveEncrypted: expired,
 // revoked or signing-only, A-68), is reported, never shown as usable.
-func contactKey(ctx context.Context, db *sql.DB, userID, handle, relation string) (ContactKey, error) {
-	p, err := loadPGPAccount(ctx, db, userID, false)
+func contactKey(ctx context.Context, q rowQuerier, userID, handle, relation string) (ContactKey, error) {
+	p, err := loadPGPAccount(ctx, q, userID, false)
 	if err != nil {
 		return ContactKey{}, err
 	}
@@ -116,6 +119,76 @@ func contactKey(ctx context.Context, db *sql.DB, userID, handle, relation string
 		k.Unreadable = true
 	}
 	return k, nil
+}
+
+// publicVendorContactKey rechecks public visibility while holding the same row lock used to read the key.
+// A vendor demoted or deactivated after load.go's first read must not expose a newly private replacement key.
+// This is a lock-bearing read transaction: PostgreSQL forbids FOR SHARE in a ReadOnly transaction.
+func publicVendorContactKey(ctx context.Context, db *sql.DB, userID string) (ContactKey, error) {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return ContactKey{}, err
+	}
+	defer tx.Rollback()
+	var handle string
+	if err = tx.QueryRowContext(ctx, `SELECT handle FROM users WHERE id=$1 AND role IN ('vendor','admin')
+		AND NOT vendor_deactivated FOR SHARE NOWAIT`, userID).Scan(&handle); err != nil {
+		return ContactKey{}, err
+	}
+	key, err := contactKey(ctx, tx, userID, handle, "vendor")
+	if err != nil {
+		return ContactKey{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return ContactKey{}, err
+	}
+	return key, nil
+}
+
+// disputeStaffContactKey keeps the current staff role and public-key read together. A former staff member's
+// replacement key must not be disclosed after a directory query collected their old role.
+func disputeStaffContactKey(ctx context.Context, db *sql.DB, userID, buyerID, vendorID string) (ContactKey, error) {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return ContactKey{}, err
+	}
+	defer tx.Rollback()
+	var handle, role string
+	if err = tx.QueryRowContext(ctx, `SELECT handle,role FROM users WHERE id=$1 AND role IN ('moderator','admin')
+		AND suspended_at IS NULL AND closed_at IS NULL AND retention_restricted_at IS NULL
+		AND id<>$2 AND id<>$3 FOR SHARE NOWAIT`, userID, buyerID, vendorID).Scan(&handle, &role); err != nil {
+		return ContactKey{}, err
+	}
+	key, err := contactKey(ctx, tx, userID, handle, role)
+	if err != nil {
+		return ContactKey{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return ContactKey{}, err
+	}
+	return key, nil
+}
+
+// messageRecipientKey keeps authorization and the saved key read in one short transaction. Otherwise a role
+// change and key replacement between two database reads could expose a replacement public key for a now-private account.
+func messageRecipientKey(ctx context.Context, db *sql.DB, sender *User, handle string) (*ContactKey, error) {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	id, err := messageRecipient(ctx, tx, sender, handle)
+	if err != nil || id == "" {
+		return nil, err
+	}
+	key, err := contactKey(ctx, tx, id, handle, "")
+	if err != nil {
+		return nil, err
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	return &key, nil
 }
 
 // userCanReceiveEncrypted reports whether a user's saved key can receive encrypted messages now (canReceiveEncrypted);
@@ -239,13 +312,9 @@ func messageRecipientLoader(ctx context.Context, a *App, r *http.Request, d *Pag
 		d.MessageLookupPaused = true
 		return nil
 	}
-	id, err := messageRecipient(ctx, a.db, d.User, to)
-	if err != nil || id == "" || id == d.User.ID {
-		return err
-	}
-	k, err := contactKey(ctx, a.db, id, to, "")
-	if err == nil {
-		d.Contacts = []ContactKey{k}
+	key, err := messageRecipientKey(ctx, a.db, d.User, to)
+	if err == nil && key != nil {
+		d.Contacts = []ContactKey{*key}
 	}
 	return err
 }

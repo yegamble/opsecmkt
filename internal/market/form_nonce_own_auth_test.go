@@ -234,7 +234,7 @@ func TestA130AdminRoleReceiptStillRequiresOriginalPasswordMode(t *testing.T) {
 // finishFormSubmission whether or not the action audits.
 func TestA130UnchangedProfileSaveWritesNoAuditAndReplaysWithoutPassword(t *testing.T) {
 	e := newTestApp(t)
-	uid, session := e.user("own_profile_noop", "buyer")
+	uid, session := e.keylessUser("own_profile_noop", "buyer")
 	base := agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1", uid)
 	audits := func() int { // any audit row the account gained, whatever its text
 		return agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1", uid) - base
@@ -298,7 +298,7 @@ func TestA130OwnReceiptReconcilesStaleComputedModeAfterExactConflict(t *testing.
 
 func TestA130OwnReceiptReconcilesStaleTrueModeWithOriginalNoPassword(t *testing.T) {
 	e := newTestApp(t)
-	uid, session := e.user("own_mode_false", "buyer")
+	uid, session := e.keylessUser("own_mode_false", "buyer")
 	form := url.Values{"pgp": {""}, formNonceField: {randomToken()[:32]}}
 	e.check(e.do("POST", "/account", session, form), 303)
 	form.Set("csrf", e.A.csrf(session))

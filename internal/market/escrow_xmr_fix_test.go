@@ -245,13 +245,16 @@ func TestXMREscrowCancelRequestsRefund(t *testing.T) {
 func TestXMREscrowCheckoutRefusalsMore(t *testing.T) {
 	x := newXMREscrowEnv(t)
 	x.mustPoll()
+	x.setKey(x.vendor, "") // intentional legacy vendor missing the now-required public key
 	phys := x.testEnv.product(x.vendor, "physical")
 	agExec(x.testEnv, "UPDATE products SET dispatch_days=3 WHERE id=$1", phys)
 	order := x.draft(phys)
-	if w := x.checkout(x.buyerSess, order, testXMRAddr("phys refund", true)); w.Code != 409 || !strings.Contains(w.Body.String(), noVendorKeyReason) || x.state(order) != stateDraft {
+	if w := x.checkout(x.buyerSess, order, testXMRAddr("phys refund", true)); w.Code != 409 || !strings.Contains(w.Body.String(), "Vendors must keep a usable PGP public key") || x.state(order) != stateDraft {
 		t.Fatalf("a vendor with no encryption key: %d %s", w.Code, w.Body.String())
 	}
 
+	_, restoredPublic := testPGPKey(t, "restored-vendor-fixture")
+	x.pgpSession(x.vendorSess, restoredPublic)
 	first := x.draft(x.digital(x.vendor))
 	x.mustCheckout(first)
 	claim := testXMRAddr("a vendor's claim", true)

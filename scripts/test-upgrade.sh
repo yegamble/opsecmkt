@@ -257,6 +257,14 @@ assert 'href="/account"' in checkout and 'href="/pgp"' in checkout, 'checkout mu
 account = client.open(base + '/account').read().decode()
 assert 'name="pgp"' in account, 'a migrated buyer must be able to add its public key'
 assert 'PGP' in client.open(base + '/pgp').read().decode(), 'a migrated buyer must be able to reach PGP verification'
+# Supply only the legacy seller's missing public key as explicit fixture preparation.
+# The buyer remains keyless and receives no authentication proof, so the next refusal
+# isolates the buyer guard instead of stopping earlier at the seller prerequisite.
+with open('tests/e2e/fixtures/pgp/recipient.pub.asc', encoding='utf-8') as fixture:
+    vendor_public = fixture.read().strip().replace("'", "''")
+subprocess.run(['docker', 'exec', '-i', os.environ['UPGRADE_DB'], 'psql', '-X', '-q', '-A', '-t', '-v', 'ON_ERROR_STOP=1',
+                '-U', 'upgrade', '-d', 'opsecmkt', '-c',
+                "UPDATE users SET pgp='" + vendor_public + "' WHERE handle='alpha_vendor'"], check=True, capture_output=True, text=True)
 # A forged submission cannot reuse the old draft through the newly protected mutation.
 try:
     client.open(base + '/orders', data=urllib.parse.urlencode({'csrf': csrf('/account'), 'form_nonce': secrets.token_hex(16),

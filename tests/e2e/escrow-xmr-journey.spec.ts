@@ -172,9 +172,13 @@ test('Monero escrow: checkout with the custody copy, funding at 9 and 10 confirm
   await typeInto(admin, role.getByLabel('Current password'), password);
   await pressSubmit(admin, role.getByRole('button', { name: 'Update role' }));
   await expect(admin.getByRole('status').filter({ hasText: 'Account role saved.' })).toBeVisible();
-  await vendor.goto('/account');
-  const profile = vendor.locator('form', { has: vendor.getByRole('button', { name: 'Save profile' }) });
-  await typeInto(vendor, profile.getByLabel('PGP public key', { exact: true }), pgpFixture('recipient.pub.asc'));
+  const profileResponse = await vendor.goto('/account');
+  expect(profileResponse?.status(), (await vendor.getByRole('main').innerText()).slice(0, 1200)).toBe(200);
+  await expect(vendor.locator('.account-name')).toHaveText('xmr_vendor');
+  const profile = vendor.locator('form[action="/account"]');
+  await expect(profile).toHaveCount(1);
+  // The SSR textarea already contains the fixture key; its wrapping label text also includes that initial value.
+  await typeInto(vendor, profile.getByLabel('PGP public key'), pgpFixture('recipient.pub.asc'));
   await typeInto(vendor, profile.getByLabel('Current password', { exact: true }), vendorPassword);
   expect(await pressSubmit(vendor, profile.getByRole('button', { name: 'Save profile' }))).toBe(303);
   for (const [title, kind] of [[digitalTitle, 'digital'], [physicalTitle, 'physical']]) {

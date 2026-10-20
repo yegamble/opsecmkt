@@ -223,3 +223,48 @@ func TestPGPAccessIsRequiredForDisputeOpeningAndReplies(t *testing.T) {
 	proveAccess(e, vendorID, vendor, vendorKey)
 	e.check(e.do("POST", "/disputes/reply", vendor, url.Values{"order_id": {orderID}, "reply": {reply}}), 303)
 }
+
+func TestPGPAccessIsRequiredAtUnfundedDraftMutation(t *testing.T) {
+	e := newTestApp(t)
+	buyerID, buyer := e.keylessUser("access_purchase", "buyer")
+	vendorID, _ := e.user("access_purchase_vendor", "vendor")
+	productID := e.product(vendorID, "digital")
+	orderForm := url.Values{"product_id": {productID}, "currency": {"XMR"}}
+	agExpect(e, "/orders", buyer, orderForm, 403, "This browser has not completed PGP authentication")
+	if agInt(e, "SELECT count(*) FROM orders WHERE buyer_id=$1", buyerID) != 0 {
+		t.Fatal("a browse-only account created an order")
+	}
+	key, public := testPGPKey(t, "access-purchase")
+	e.check(e.do("POST", "/account", buyer, url.Values{"pgp": {public}, "password": {testPassword}}), 303)
+	agExpect(e, "/orders", buyer, orderForm, 403, "This browser has not completed PGP authentication")
+	proveAccess(e, buyerID, buyer, key)
+	e.check(e.do("POST", "/orders", buyer, orderForm), 303)
+	if agInt(e, "SELECT count(*) FROM orders WHERE buyer_id=$1 AND state='draft'", buyerID) != 1 {
+		t.Fatal("a PGP-authenticated buyer could not create its draft")
+	}
+}
+
+func TestPGPStrictPendingCodeDoesNotReviveWhenUnverifiedKeyIsRestored(t *testing.T) {
+	e := newTestApp(t)
+	userID, token := e.keylessUser("access_restore_pending", "buyer")
+	key, public := testPGPKey(t, "access-restore-pending")
+	_, replacement := testPGPKey(t, "access-restore-other")
+	e.check(e.do("POST", "/account", token, url.Values{"pgp": {public}, "password": {testPassword}}), 303)
+	agExec(e, "UPDATE settings SET value='false' WHERE key=$1", settingAllowLoginWithoutPGP)
+	anon := randomToken()
+	w := e.do("POST", "/login", anon, url.Values{"handle": {"access_restore_pending"}, "password": {testPassword}})
+	e.check(w, 303)
+	pending := &http.Cookie{Name: "pending", Value: e.cookie(w, "pending")}
+	e.check(e.do("POST", "/challenge/pgp", anon, nil, pending), 303)
+	oldCode := testSignInCode(t, key, agStr(e, "SELECT pgp_challenge FROM pending_logins WHERE token_hash=$1", digest(pending.Value)))
+	e.check(e.do("POST", "/account", token, url.Values{"pgp": {replacement}, "password": {testPassword}}), 303)
+	e.check(e.do("POST", "/account", token, url.Values{"pgp": {public}, "password": {testPassword}}), 303)
+	agExpect(e, "/challenge", anon, url.Values{"method": {"pgp"}, "pgp_code": {oldCode}}, 401, "does not match", pending)
+	assertPGPAccess(e, userID, token, false)
+
+	e.check(e.do("POST", "/challenge/pgp", anon, nil, pending), 303)
+	newCode := testSignInCode(t, key, agStr(e, "SELECT pgp_challenge FROM pending_logins WHERE token_hash=$1", digest(pending.Value)))
+	w = e.do("POST", "/challenge", anon, url.Values{"method": {"pgp"}, "pgp_code": {newCode}}, pending)
+	e.check(w, 303)
+	assertPGPAccess(e, userID, e.session(w), true)
+}

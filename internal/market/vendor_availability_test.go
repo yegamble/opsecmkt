@@ -82,7 +82,8 @@ func TestVendorPreferencesRecheckRoleAndPublicKey(t *testing.T) {
 	_, buyer := e.user("preferences_buyer", "buyer")
 	e.check(e.do("POST", "/account/vendor-availability", buyer, url.Values{"mode": {"deactivated"}}), 403)
 	vendorID, vendor := e.keylessUser("preferences_vendor", "vendor")
-	e.check(e.do("POST", "/account/vendor-availability", vendor, url.Values{"mode": {"vacation"}}), 409)
+	e.check(e.do("POST", "/account/vendor-availability", vendor, url.Values{"mode": {"vacation"}}), 303)
+	e.check(e.do("POST", "/account/vendor-availability", vendor, url.Values{"mode": {"active"}}), 409)
 	e.check(e.do("POST", "/account/vendor-availability", vendor, url.Values{"mode": {"deactivated"}}), 303)
 	if state := agStr(e, "SELECT vendor_deactivated::text FROM users WHERE id=$1", vendorID); state != "true" {
 		t.Fatalf("keyless legacy vendor could not hide their store: %s", state)
@@ -93,5 +94,79 @@ func TestVendorPreferencesRecheckRoleAndPublicKey(t *testing.T) {
 	e.check(e.do("POST", "/account/vendor-availability", vendor, url.Values{"mode": {"active"}}), 303)
 	if !strings.Contains(e.body("GET", "/account", vendor, nil, 200), "name=\"mode\"") {
 		t.Fatal("vendor preference form is absent")
+	}
+}
+
+func TestVendorPrivacyPreferencesRemainAvailableWithUnusableKeys(t *testing.T) {
+	for keyCase, publicKey := range testUnusableKeys(t, "privacy-preferences") {
+		for _, mode := range []string{"active", "vacation", "deactivated"} {
+			t.Run(keyCase+"/"+mode, func(t *testing.T) {
+				e := newTestApp(t)
+				vendorID, vendor := e.user("unusable_privacy_vendor", "vendor")
+				agExec(e, `UPDATE users SET pgp=$2,vendor_vacation=$3,vendor_deactivated=$4,
+					vendor_show_last_seen=true,vendor_last_seen='2001-02-03 04:00:00+00'
+					WHERE id=$1`, vendorID, publicKey, mode == "vacation", mode == "deactivated")
+				usable, err := userCanReceiveEncrypted(t.Context(), e.DB, vendorID)
+				if err != nil || usable {
+					t.Fatalf("test key must be unusable: usable=%t err=%v", usable, err)
+				}
+				// Withdrawing activity publication and enabling message privacy
+				// must not depend on renewing an expired or unusable public key.
+				e.check(e.do("POST", "/account/vendor-availability", vendor, url.Values{
+					"mode": {mode}, "messages_off_while_away": {"on"},
+				}), 303)
+				var private bool
+				if err := e.DB.QueryRow(`SELECT NOT vendor_show_last_seen AND vendor_last_seen IS NULL
+					AND vendor_messages_off_while_away FROM users WHERE id=$1`, vendorID).Scan(&private); err != nil {
+					t.Fatal(err)
+				}
+				if !private {
+					t.Fatal("privacy preferences were not applied or retained activity data")
+				}
+				d := PageData{Page: "vendor"}
+				r := httptest.NewRequest("GET", "/vendor?id="+vendorID, nil)
+				if err := vendorAvailabilityLoader(r.Context(), e.A, r, &d); err != nil {
+					t.Fatal(err)
+				}
+				if d.VendorAvailability.LastSeen != "" || d.VendorAvailability.ShowLastSeen {
+					t.Fatal("public vendor model retained hidden activity information")
+				}
+				code := 200
+				if mode == "deactivated" {
+					code = 404
+				}
+				mustNotContain(t, e.body("GET", "/vendor?id="+vendorID, "", nil, code), "Last seen:", "2001-02-03")
+			})
+		}
+	}
+}
+
+func TestVendorReopeningStillRequiresAUsablePublicKey(t *testing.T) {
+	expired := testUnusableKeys(t, "privacy-reopening")["expired key"]
+	for _, transition := range []struct {
+		from, to string
+	}{
+		{"vacation", "active"},
+		{"deactivated", "active"},
+		{"deactivated", "vacation"},
+	} {
+		t.Run(transition.from+"_to_"+transition.to, func(t *testing.T) {
+			e := newTestApp(t)
+			vendorID, vendor := e.user("reopening_privacy_vendor", "vendor")
+			agExec(e, "UPDATE users SET pgp=$2,vendor_vacation=$3,vendor_deactivated=$4 WHERE id=$1",
+				vendorID, expired, transition.from == "vacation", transition.from == "deactivated")
+			e.check(e.do("POST", "/account/vendor-availability", vendor, url.Values{"mode": {transition.to}}), 409)
+			var unchanged bool
+			if err := e.DB.QueryRow("SELECT vendor_vacation=$2 AND vendor_deactivated=$3 FROM users WHERE id=$1",
+				vendorID, transition.from == "vacation", transition.from == "deactivated").Scan(&unchanged); err != nil {
+				t.Fatal(err)
+			}
+			if !unchanged {
+				t.Fatal("unusable-key vendor reopened trading or a hidden storefront")
+			}
+			_, usable := testPGPKey(t, "privacy-reopening-current")
+			agExec(e, "UPDATE users SET pgp=$2 WHERE id=$1", vendorID, usable)
+			e.check(e.do("POST", "/account/vendor-availability", vendor, url.Values{"mode": {transition.to}}), 303)
+		})
 	}
 }

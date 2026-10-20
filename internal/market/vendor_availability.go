@@ -23,10 +23,6 @@ func init() {
 
 // A vendor can pause public trading without losing access to existing orders.
 // These helpers take only aliases chosen by application code, never request data.
-func availableForPurchaseSQL(alias string) string {
-	return "(" + activeVendorSQL(alias) + " AND NOT " + alias + ".vendor_vacation)"
-}
-
 // This is an additional restriction on otherwise permitted contacts. Deactivated
 // vendors are reached only through existing customer work, never public discovery.
 func vendorAcceptsBuyerMessagesSQL(alias string) string {
@@ -49,16 +45,20 @@ func vendorAvailabilityAction(c *actionCtx) (actionResult, error) {
 	if mode != "active" && mode != "vacation" && mode != "deactivated" {
 		return actionResult{}, fail(http.StatusBadRequest, "Choose active, on vacation, or deactivated.")
 	}
-	var eligible bool
-	if err := c.Tx.QueryRowContext(c.Ctx(), `SELECT role='vendor' AND suspended_at IS NULL AND closed_at IS NULL AND retention_restricted_at IS NULL
-		FROM users WHERE id=$1 FOR UPDATE`, c.User.ID).Scan(&eligible); err != nil {
+	var eligible, wasVacation, wasDeactivated bool
+	if err := c.Tx.QueryRowContext(c.Ctx(), `SELECT role='vendor' AND suspended_at IS NULL AND closed_at IS NULL AND retention_restricted_at IS NULL,
+		vendor_vacation,vendor_deactivated FROM users WHERE id=$1 FOR UPDATE`, c.User.ID).Scan(&eligible, &wasVacation, &wasDeactivated); err != nil {
 		return actionResult{}, err
 	}
 	if !eligible {
 		return actionResult{}, errAccountChanged
 	}
-	// A legacy vendor without a key can hide their store while fixing the key.
-	if mode != "deactivated" {
+	// Privacy preferences remain editable with an expired or unusable key.
+	// Require a usable key only to resume trading or publish a hidden storefront;
+	// new purchases independently enforce the current usable-key requirement.
+	resumingTrade := mode == "active" && (wasVacation || wasDeactivated)
+	publishingStorefront := wasDeactivated && mode != "deactivated"
+	if resumingTrade || publishingStorefront {
 		if err := requireVendorPublicKey(c.Ctx(), c.Tx, c.User.ID); err != nil {
 			return actionResult{}, err
 		}
@@ -78,6 +78,7 @@ func vendorActivityLoader(ctx context.Context, a *App, r *http.Request, d *PageD
 	}
 	_, err := a.db.ExecContext(ctx, `UPDATE users SET vendor_last_seen=date_trunc('hour',now())
 		WHERE id=$1 AND role='vendor' AND vendor_show_last_seen
+		AND suspended_at IS NULL AND closed_at IS NULL AND retention_restricted_at IS NULL
 		AND (vendor_last_seen IS NULL OR vendor_last_seen<date_trunc('hour',now()))`, d.User.ID)
 	return err
 }

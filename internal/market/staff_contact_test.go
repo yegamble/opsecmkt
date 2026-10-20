@@ -244,7 +244,7 @@ func TestStaffContactShownWherePromised(t *testing.T) {
 // encrypted messages (canReceiveEncrypted, A-83).
 func TestStaffContactMessageLink(t *testing.T) {
 	e := newTestApp(t)
-	modID, modSess := e.user("sc_link_mod", "moderator")
+	modID, modSess := e.keylessUser("sc_link_mod", "moderator")
 	buyerID, buyer := e.user("sc_link_buyer", "buyer")
 	_, key := testPGPKey(t, "sc_link_mod")
 	link := `href="/messages?to=sc_link_mod"`

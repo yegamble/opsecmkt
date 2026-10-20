@@ -86,6 +86,9 @@ func (x *xmrEscrowEnv) physical(vendor string) string {
 	agExec(x.testEnv, "UPDATE products SET dispatch_days=3 WHERE id=$1", p)
 	_, pub := testPGPKey(x.t, "xvendorkey"+randomToken()[:6])
 	x.setKey(vendor, pub)
+	if vendor == x.vendor {
+		x.pgpSessionKey(x.vendorSess) // explicit authentication of the physical-listing fixture key
+	}
 	return p
 }
 

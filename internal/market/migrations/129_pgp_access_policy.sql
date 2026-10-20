@@ -1,4 +1,5 @@
 -- PGP decryption authorizes only the current browser and current public key.
+ALTER TABLE users ADD COLUMN pgp_key_generation bigint NOT NULL DEFAULT 0;
 ALTER TABLE sessions ADD COLUMN pgp_access_key text NOT NULL DEFAULT '';
 ALTER TABLE pgp_challenges ADD COLUMN session_hash text NOT NULL DEFAULT '';
 ALTER TABLE pgp_challenges ADD COLUMN key_digest text NOT NULL DEFAULT '';

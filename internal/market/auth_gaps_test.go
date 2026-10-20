@@ -893,12 +893,12 @@ func TestPGPVerifyRejectsChangedKey(t *testing.T) {
 	challenge := agStr(e, "SELECT challenge FROM pgp_challenges WHERE user_id=$1", id)
 	proof := testClearsign(t, alice, challenge)
 
-	// The saved key changes underneath an open challenge (the /account path also purges challenges).
+	// A proof is bound to the exact saved key. Changing the key makes the old challenge unavailable.
 	agExec(e, "UPDATE users SET pgp=$2,pgp_fingerprint=$3 WHERE id=$1", id, bobPub, bobFP)
-	agExpect(e, "/pgp/verify", s, url.Values{"signature": {proof}}, 409, "changed since this challenge")
+	agExpect(e, "/pgp/verify", s, url.Values{"signature": {proof}}, 409, "No open challenge")
 	// A saved key that no longer parses is treated the same way.
 	agExec(e, "UPDATE users SET pgp='-----BEGIN PGP PUBLIC KEY BLOCK-----\nbroken\n-----END PGP PUBLIC KEY BLOCK-----' WHERE id=$1", id)
-	agExpect(e, "/pgp/verify", s, url.Values{"signature": {proof}}, 409, "changed since this challenge")
+	agExpect(e, "/pgp/verify", s, url.Values{"signature": {proof}}, 409, "No open challenge")
 	if agStr(e, "SELECT (pgp_verified_at IS NULL)::text FROM users WHERE id=$1", id) != "true" || e.auditHas(id, "Verified PGP key ownership") {
 		t.Fatal("proof for the old key verified the new one")
 	}
@@ -917,7 +917,7 @@ func TestPGPVerifyRejectsChangedKey(t *testing.T) {
 // their key completes sign-in after /revoke-sessions, although the victim's TOTP is still enrolled.
 func TestStolenSessionCannotAddPGPFactorToTOTPAccount(t *testing.T) {
 	e := newTestApp(t)
-	uid, stolen := e.user("victim_totp", "vendor")
+	uid, stolen := e.keylessUser("victim_totp", "buyer")
 	agEnableTOTP(e, uid)
 	mallory, malloryPub := testPGPKey(t, "mallory")
 

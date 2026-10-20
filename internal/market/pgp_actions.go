@@ -226,19 +226,20 @@ type pgpAccount struct {
 	Verified     bool   // proof recorded for exactly this key
 	VerifiedAt   string
 	ProofVersion string // exact ownership-proof timestamp used to bind pending sign-in codes
+	KeyVersion   string // monotonic generation; replacing and restoring a key cannot revive a login code
 	TwoFactor    bool   // PGP sign-in is on and usable: the setting is on and the proven key can be read
 	TwoFactorSet bool   // users.pgp_2fa as stored; on while TwoFactor is off means PGP sign-in is lost (A-272)
 }
 
 // loadPGPAccount reads the saved key; q is a *sql.Tx (lock with forUpdate) or *sql.DB.
 func loadPGPAccount(ctx context.Context, q rowQuerier, uid string, forUpdate bool) (*pgpAccount, error) {
-	query := `SELECT pgp,pgp_fingerprint,pgp_verified_at IS NOT NULL,COALESCE(to_char(pgp_verified_at AT TIME ZONE 'UTC','YYYY-MM-DD HH24:MI "UTC"'),''),pgp_2fa,COALESCE(extract(epoch FROM pgp_verified_at)::text,'') FROM users WHERE id=$1`
+	query := `SELECT pgp,pgp_fingerprint,pgp_verified_at IS NOT NULL,COALESCE(to_char(pgp_verified_at AT TIME ZONE 'UTC','YYYY-MM-DD HH24:MI "UTC"'),''),pgp_2fa,COALESCE(extract(epoch FROM pgp_verified_at)::text,''),pgp_key_generation::text FROM users WHERE id=$1`
 	if forUpdate {
 		query += " FOR UPDATE"
 	}
 	p := &pgpAccount{}
 	var verified bool
-	if err := q.QueryRowContext(ctx, query, uid).Scan(&p.Armored, &p.Stored, &verified, &p.VerifiedAt, &p.TwoFactor, &p.ProofVersion); err != nil {
+	if err := q.QueryRowContext(ctx, query, uid).Scan(&p.Armored, &p.Stored, &verified, &p.VerifiedAt, &p.TwoFactor, &p.ProofVersion, &p.KeyVersion); err != nil {
 		return nil, err
 	}
 	if p.Armored != "" {

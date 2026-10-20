@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { expect, test, type Page } from '@playwright/test';
 import { uniqueHandle } from './db-fixtures';
 import { seedPGPAccess, enrollTOTP, expectNotice, OTHER_FINGERPRINT, pgpFixture, RECIPIENT_FINGERPRINT, setRole, signedIn, submitStatus, totp } from './db-helpers';
@@ -150,6 +151,16 @@ test('only OpenPGP-encrypted messages are accepted; status badges and the unread
   // the three recipients sell; the stranger stays a buyer the sender may not write to.
   const database = process.env.E2E_DATABASE_URL!;
   execFileSync('psql', [database, '-v', 'ON_ERROR_STOP=1', '-qtAc', `UPDATE users SET role='vendor' WHERE handle IN ('${withKey}','${otherKey}','${noKey}')`]);
+  // A legacy vendor missing its key is not a public message destination. The sender's existing order permits
+  // contacting it, so the recipient-encryption check below can still prove that no unreadable message is stored.
+  const legacyProduct = randomBytes(32).toString('hex');
+  const legacyOrder = randomBytes(32).toString('hex');
+  execFileSync('psql', [database, '-v', 'ON_ERROR_STOP=1', '-qtAc',
+    `INSERT INTO products(id,vendor_id,title,description,category,region,kind,xmr,stock)
+      SELECT '${legacyProduct}',id,'Legacy keyless recipient','Existing customer fixture','Digital','Worldwide','digital',500000000000,1
+      FROM users WHERE handle='${noKey}';
+      INSERT INTO orders(id,buyer_id,product_id,currency,amount,state)
+      SELECT '${legacyOrder}',id,'${legacyProduct}','XMR',500000000000,'draft' FROM users WHERE handle='${sender}';`]);
   expect(await saveKey(r, pgpFixture('recipient.pub.asc'), 'browser-msg-recipient-123')).toBe(303);
   expect(await saveKey(o, pgpFixture('other.pub.asc'), 'browser-msg-other-123')).toBe(303);
   expect(await saveKey(x, pgpFixture('other.pub.asc'), 'browser-msg-stranger-123')).toBe(303);

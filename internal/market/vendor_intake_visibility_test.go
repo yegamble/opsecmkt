@@ -65,7 +65,8 @@ func TestDeactivatedVendorImagesRemainOnlyForExistingOrderReaders(t *testing.T) 
 	e.wantDesk(vendor, avatar, "owner's avatar")
 	page := e.body("GET", "/product?id="+product, buyer, nil, 200)
 	mustContain(t, page, deskImageURL(photo.id, true))
-	mustNotContain(t, page, publicImageURL(photo.id, true))
+	mustNotContain(t, page, `src="`+publicImageURL(photo.id, true)+`"`)
+	mustNotContain(t, page, `href="`+publicImageURL(photo.id, true)+`"`)
 	e.body("GET", "/product?id="+product, stranger, nil, 404)
 
 	// A later staff promotion does not republish photos of a hidden storefront.

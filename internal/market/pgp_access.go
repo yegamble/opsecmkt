@@ -97,6 +97,12 @@ func grantPGPAccess(ctx context.Context, tx *sql.Tx, userID, token string) error
 }
 
 func clearPGPAccess(ctx context.Context, tx *sql.Tx, userID string) error {
+	// A generation counter also invalidates pending login codes if an unverified
+	// key is replaced and later restored. Do not take pending-login locks here:
+	// verification locks its pending row before this account row.
+	if _, err := tx.ExecContext(ctx, "UPDATE users SET pgp_key_generation=pgp_key_generation+1 WHERE id=$1", userID); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, "UPDATE sessions SET pgp_access_key='' WHERE user_id=$1 AND pgp_access_key<>''", userID); err != nil {
 		return err
 	}

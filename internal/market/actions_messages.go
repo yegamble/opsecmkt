@@ -93,29 +93,35 @@ func messageAction(c *actionCtx) (actionResult, error) {
 // cannot contact answer alike, so neither route exposes a directory of private buyers.
 const messageNotPermitted = "No account you can message has this handle. Contact an available vendor, your existing vendor or customer, or listed market staff for support."
 
-// messageRecipient returns an authorized recipient ID, or an empty string. Staff can contact any unbanned account.
+// messageRecipient returns an authorized recipient ID, or an empty string. The sender's current database role,
+// never the request's User snapshot, decides staff and vendor contact privileges. Share locks keep both roles and
+// recipient preferences stable through a send transaction. NOWAIT avoids actor/target lock inversions with confirmed
+// role or availability changes; real contention is retried as a database-busy response.
 // Other accounts contact a public vendor or eligible staff; a vendor also answers known customers. An old inbound
 // message never grants buyer-to-buyer access. Hidden vendors remain reachable by existing buyers only when they
 // allow messages while away, and that preference applies even when an order or earlier message exists.
-// q is the send transaction or, for the /messages?to= key lookup, the database.
+// q is the send transaction or a short key-read transaction; display-only availability checks also use the database.
 func messageRecipient(ctx context.Context, q rowQuerier, sender *User, handle string) (string, error) {
 	var id string
-	err := q.QueryRowContext(ctx, `SELECT r.id FROM users r WHERE r.handle=$2 AND r.id<>$1 AND r.banned_at IS NULL AND ($3::boolean
-		OR (r.role='vendor' AND r.suspended_at IS NULL AND r.closed_at IS NULL AND r.retention_restricted_at IS NULL
+	err := q.QueryRowContext(ctx, `SELECT r.id FROM users s JOIN users r ON r.handle=$2
+		WHERE s.id=$1 AND s.suspended_at IS NULL AND s.closed_at IS NULL AND s.banned_at IS NULL
+		AND r.id<>s.id AND r.banned_at IS NULL AND (s.role IN ('moderator','admin')
+		OR (r.role='vendor' AND r.suspended_at IS NULL AND r.closed_at IS NULL
 			AND `+vendorAcceptsBuyerMessagesSQL("r")+`
 			AND (`+activeVendorSQL("r")+`
-				OR ($4='buyer' AND (
-					EXISTS(SELECT 1 FROM orders o JOIN products p ON p.id=o.product_id WHERE o.buyer_id=$1 AND p.vendor_id=r.id)
-					OR EXISTS(SELECT 1 FROM messages m WHERE m.recipient_id=$1 AND m.sender_id=r.id)))))
-		OR ($4='vendor' AND r.role='buyer' AND r.suspended_at IS NULL AND r.closed_at IS NULL AND (
-			EXISTS(SELECT 1 FROM orders o JOIN products p ON p.id=o.product_id WHERE o.buyer_id=r.id AND p.vendor_id=$1 AND `+vendorSeesOrder("o")+`)
-			OR EXISTS(SELECT 1 FROM messages m WHERE m.recipient_id=$1 AND m.sender_id=r.id)))
+				OR (s.role='buyer' AND (
+					EXISTS(SELECT 1 FROM orders o JOIN products p ON p.id=o.product_id WHERE o.buyer_id=s.id AND p.vendor_id=r.id
+						AND (r.retention_restricted_at IS NULL OR o.financial_closed_at IS NULL))
+					OR (r.retention_restricted_at IS NULL AND EXISTS(SELECT 1 FROM messages m WHERE m.recipient_id=s.id AND m.sender_id=r.id))))))
+		OR (s.role='vendor' AND r.role='buyer' AND r.suspended_at IS NULL AND r.closed_at IS NULL AND (
+			EXISTS(SELECT 1 FROM orders o JOIN products p ON p.id=o.product_id WHERE o.buyer_id=r.id AND p.vendor_id=s.id AND `+vendorSeesOrder("o")+`)
+			OR EXISTS(SELECT 1 FROM messages m WHERE m.recipient_id=s.id AND m.sender_id=r.id)))
 		OR (r.role IN ('moderator','admin') AND r.suspended_at IS NULL AND r.closed_at IS NULL AND r.retention_restricted_at IS NULL AND (
-			(NOT r.staff_hidden AND EXISTS(SELECT 1 FROM settings WHERE key=$5 AND value='true'))
-			OR EXISTS(SELECT 1 FROM settings WHERE key=$6 AND value=r.handle)
-			OR EXISTS(SELECT 1 FROM messages m WHERE m.recipient_id=$1 AND m.sender_id=r.id)
-			OR EXISTS(SELECT 1 FROM orders o JOIN products p ON p.id=o.product_id WHERE o.state IN ($7,$8) AND (o.buyer_id=$1 OR p.vendor_id=$1))))) FOR SHARE OF r`,
-		sender.ID, handle, sender.Role == "moderator" || sender.Role == "admin", sender.Role, settingStaffListPublic, settingStaffContact, stateDisputed, stateResolved).Scan(&id)
+			(NOT r.staff_hidden AND EXISTS(SELECT 1 FROM settings WHERE key=$3 AND value='true'))
+			OR EXISTS(SELECT 1 FROM settings WHERE key=$4 AND value=r.handle)
+			OR EXISTS(SELECT 1 FROM messages m WHERE m.recipient_id=s.id AND m.sender_id=r.id)
+			OR EXISTS(SELECT 1 FROM orders o JOIN products p ON p.id=o.product_id WHERE o.state IN ($5,$6) AND (o.buyer_id=s.id OR p.vendor_id=s.id))))) FOR SHARE OF s,r NOWAIT`,
+		sender.ID, handle, settingStaffListPublic, settingStaffContact, stateDisputed, stateResolved).Scan(&id)
 	if err == sql.ErrNoRows {
 		return "", nil
 	}

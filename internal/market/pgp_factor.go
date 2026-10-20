@@ -52,7 +52,7 @@ func (pgpFactor) Enrolled(ctx context.Context, q rowQuerier, userID string) (boo
 // Bind the code to the exact key ownership proof. Replacing and re-verifying a
 // key invalidates old codes, including when the same key is later restored.
 func pgpLoginDigest(code string, p *pgpAccount) string {
-	return digest(code + "\x00" + p.Fingerprint + "\x00" + p.ProofVersion + "\x00" + digest(p.Canonical))
+	return digest(code + "\x00" + p.Fingerprint + "\x00" + p.ProofVersion + "\x00" + digest(p.Canonical) + "\x00" + p.KeyVersion)
 }
 
 func (pgpFactor) Verify(c *actionCtx, userID string) error {
