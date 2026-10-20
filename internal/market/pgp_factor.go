@@ -194,6 +194,13 @@ func pgpKeyRefusal(ctx context.Context, q rowQuerier, userID, problem, keeps, fi
 	if err != nil {
 		return err
 	}
+	required, err := pgpLoginRequired(ctx, q)
+	if err != nil {
+		return err
+	}
+	if required {
+		return fail(409, problem+"This market requires PGP decryption at every sign-in. An authenticator, recovery code or second-factor reset cannot replace it. Ask market staff to help restore a usable public key, or to temporarily allow browse-only sign-in so you can repair your key. For a locked-out administrator, the server operator must restore browse-only sign-in before the usual host recovery. "+contact)
+	}
 	if totp {
 		return fail(409, problem+"Sign in with your authenticator code or a recovery code instead, then "+fix+". Lost your authenticator and recovery codes too? "+contact)
 	}

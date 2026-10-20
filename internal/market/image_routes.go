@@ -117,9 +117,9 @@ func imageSuffix(full bool) string {
 // predicate, so it never links an image that route would refuse.
 const (
 	imagePublicFrom  = `images i JOIN users o ON o.id=i.owner_user_id LEFT JOIN products p ON p.id=i.product_id`
-	imagePublicWhere = `o.suspended_at IS NULL AND (o.role<>'vendor' OR NOT o.vendor_deactivated) AND (
- (i.kind='photo' AND p.vendor_id=i.owner_user_id AND NOT p.archived AND p.admin_archive_reason IS NULL AND o.role IN ('vendor','admin'))
- OR (i.kind='avatar' AND (o.role='vendor' OR (o.role IN ('admin','moderator') AND NOT o.staff_hidden
+	imagePublicWhere = `o.suspended_at IS NULL AND (
+ (i.kind='photo' AND p.vendor_id=i.owner_user_id AND NOT p.archived AND NOT o.vendor_deactivated AND p.admin_archive_reason IS NULL AND o.role IN ('vendor','admin'))
+ OR (i.kind='avatar' AND ((o.role='vendor' AND NOT o.vendor_deactivated) OR (o.role IN ('admin','moderator') AND NOT o.staff_hidden
    AND EXISTS(SELECT 1 FROM settings WHERE key='staff_list_public' AND value='true')))))`
 )
 

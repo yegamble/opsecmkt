@@ -960,6 +960,8 @@ Administrators control **Allow login without PGP** under authentication settings
 
 Vendor signup, application approval, and assignment of the vendor role require a usable public key. Vendors cannot remove their key or replace it with one that cannot receive encryption. Keys can expire after they are saved; an expired key must be renewed before new purchases or messages can proceed. Existing vendor accounts are preserved during upgrade and must add a usable key before trading if they have none.
 
+If the last administrator loses the only usable private key while strict PGP login is required, TOTP or a factor reset alone cannot satisfy that policy. The host operator must temporarily restore browse-only login with `UPDATE settings SET value='true' WHERE key='allow_login_without_pgp';` through the installation's trusted database administration path, and use the documented host administrator factor reset if the account's optional PGP sign-in factor also blocks entry. Then sign in, repair the public key, prove decryption and restore the strict setting. This is operator recovery, not a public login bypass.
+
 ### Vendor availability and activity privacy
 
 Vendors manage availability from their account. **Vacation** keeps the profile and products public, displays **On vacation**, and refuses new purchases. **Deactivation** hides the profile and products from public catalog, search, direct product pages, and image routes. It preserves existing orders and disputes and does not archive or erase products; reactivation restores normal visibility.

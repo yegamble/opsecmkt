@@ -346,6 +346,11 @@ func pgpChallengeAction(c *actionCtx) (actionResult, error) {
 	if p.Key == nil {
 		return actionResult{}, fail(409, "Save a valid public key on your account page first")
 	}
+	// Session-specific challenges are bounded by the issue budget and their TTL.
+	// Retire this account's expired rows before creating another.
+	if _, err = tx.ExecContext(ctx, "DELETE FROM pgp_challenges WHERE user_id=$1 AND expires<=now()", u.ID); err != nil {
+		return actionResult{}, err
+	}
 	nonce := randomToken()[:32]
 	challenge, nonceHash := "OPSECMKT key ownership proof for "+u.Handle+": "+nonce, ""
 	if kind == "decrypt" {

@@ -45,7 +45,7 @@
 {{define "admin-accounts"}}<section class="panel admin-reset-factors" id="reset-factors" aria-labelledby="reset-factors-heading">
 <h2 id="reset-factors-heading">Reset a user's second factors</h2>{{with $.NoticeIn "reset-factors"}}
 <div class="alert" role="status">{{.}}</div>{{end}}
-<p>For a user who lost their authenticator and recovery codes, or their PGP private key. This turns off TOTP (deleting its secret and recovery codes) and PGP sign-in verification; their saved PGP key and its verification stay. They are signed out everywhere, notified, and sign in next with their password only.</p>
+<p>For a user who lost their authenticator and recovery codes, or their PGP private key. This turns off TOTP (deleting its secret and recovery codes) and PGP sign-in verification; their saved PGP key and its verification stay. They are signed out everywhere and notified.{{if eq (index .Settings "allow_login_without_pgp") "true"}} They sign in next with their password only.{{else}} This market still requires PGP decryption at sign-in. Resetting the optional second factors cannot replace it; restore a usable PGP key or temporarily allow browse-only sign-in before the account can recover.{{end}}</p>
 <p class="help">When the account holder can still use their verified PGP key, ask them to sign a fresh message and verify it against the key already saved on their account. Do not trust a replacement key supplied with the reset request. If they cannot use that key, follow the operator’s account-recovery procedure before resetting.</p>
 <form class="stack" method="post" action="/admin/reset-factors">
 <input type="hidden" name="csrf" value="{{.CSRF}}">
@@ -53,7 +53,7 @@
 <label>Account handle<input name="handle" value="{{.ResetHandle}}" required minlength="3" maxlength="32" pattern="[a-zA-Z0-9_]{3,32}" title="Use 3 to 32 letters, numbers, or underscores." autocomplete="off" autocapitalize="none" spellcheck="false"{{if .ResetHandle}} aria-invalid="true"{{end}}>
 </label>
 {{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
-<span class="help">Enter the handle exactly (it is case-sensitive). Confirm with your own password{{if and $.Security $.Security.TOTPEnabled}} and authenticator code{{end}}. Check the request really comes from the account holder first: anyone who knows their password can then sign in.</span>
+<span class="help">Enter the handle exactly (it is case-sensitive). Confirm with your own password{{if and $.Security $.Security.TOTPEnabled}} and authenticator code{{end}}. Check the request really comes from the account holder first: anyone who knows their password can then sign in.{{if ne (index .Settings "allow_login_without_pgp") "true"}} PGP decryption is still required while this market's strict policy is on.{{end}}</span>
 <button type="submit">Reset second factors</button>
 </form>{{if .FactorAccounts}}
 <details class="account-list">

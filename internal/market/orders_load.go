@@ -466,7 +466,8 @@ func loadOrderDetail(ctx context.Context, a *App, r *http.Request, d *PageData) 
 }
 
 // A suspended, vacationing or deactivated vendor keeps every existing order and its history, but the buyer's
-// stale draft can take no new payment. Replace all three intake forms with one reason; cancellation remains available.
+// stale draft can take no new payment. A buyer must also authenticate this browser with PGP before checkout.
+// Replace all three intake forms with one reason; cancellation and existing paid obligations remain available.
 func suspendedVendorOrderGate(ctx context.Context, a *App, d *PageData) error {
 	if d.Order == nil || d.Order.State != stateDraft || d.OrderViewer != roleBuyer {
 		return nil
@@ -476,6 +477,7 @@ func suspendedVendorOrderGate(ctx context.Context, a *App, d *PageData) error {
 		return err
 	}
 	reason := ""
+	vendorUnavailable := true
 	switch {
 	case suspended:
 		reason = sellerHeld(banned)
@@ -486,12 +488,18 @@ func suspendedVendorOrderGate(ctx context.Context, a *App, d *PageData) error {
 	default:
 		if ok, err := userCanReceiveEncrypted(ctx, a.db, d.Order.VendorID); err != nil {
 			return err
-		} else if ok {
+		} else if !ok {
+			reason = sellerPGPRequired
+		} else if !d.PGPAccessVerified {
+			reason = pgpAccessRequiredMessage
+			vendorUnavailable = false
+		} else {
 			return nil
 		}
-		reason = sellerPGPRequired
 	}
-	d.VendorSuspensionReason = "Unavailable. " + reason
+	if vendorUnavailable {
+		d.VendorSuspensionReason = "Unavailable. " + reason
+	}
 	for i := range d.Transitions {
 		if d.Transitions[i].To == stateAwaitingPayment {
 			d.Transitions[i].Action = ""

@@ -90,7 +90,6 @@ func TestMessageVendorAwayPreferences(t *testing.T) {
 	mustContain(t, lookup(customer, "away_staff"), "name=\"recipient\" value=\"away_staff\"")
 }
 
-
 // A legacy vendor without a public key is not a public messaging target for strangers.
 func TestMessageKeylessVendorIsNotEnumerable(t *testing.T) {
 	e := newTestApp(t)

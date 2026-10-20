@@ -62,7 +62,7 @@ var sweepScopes = map[string][2]string{
 	"/admin/retention/account-review": {scopeStaff, "reviews an account closure blocker"},
 	"/account/avatar/remove":          {scopeSelf, "deletes the caller's own avatar; the form carries no id"},
 	"/account/staff-list":             {scopeSelf, "the caller's own staff-list choice"},
-	"/account/vendor-availability":    {scopeSelf, "the caller\'s own storefront availability and privacy preferences"},
+	"/account/vendor-availability":    {scopeSelf, "the caller's own storefront availability and privacy preferences"},
 	"/account/vendor-application":     {scopeSelf, "applies for or withdraws the caller's own vendor application; the form carries no id"},
 	"/totp/enroll":                    {scopeSelf, "the caller's authenticator"},
 	"/totp/activate":                  {scopeSelf, "the caller's authenticator"},

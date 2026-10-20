@@ -68,7 +68,13 @@ func TestDeactivatedVendorImagesRemainOnlyForExistingOrderReaders(t *testing.T) 
 	mustNotContain(t, page, publicImageURL(photo.id, true))
 	e.body("GET", "/product?id="+product, stranger, nil, 404)
 
-	agExec(e, "UPDATE users SET vendor_deactivated=false,vendor_vacation=true WHERE id=$1", vendorID)
+	// A later staff promotion does not republish photos of a hidden storefront.
+	// Staff-avatar publication remains an independent opt-in.
+	agExec(e, "UPDATE users SET role='admin',staff_hidden=false WHERE id=$1", vendorID)
+	agExec(e, "INSERT INTO settings(key,value) VALUES('staff_list_public','true') ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+	e.wantHidden(photo, "deactivated storefront photo after staff promotion")
+	e.wantPublic(avatar, "publicly listed staff avatar after promotion")
+	agExec(e, "UPDATE users SET role='vendor',vendor_deactivated=false,vendor_vacation=true WHERE id=$1", vendorID)
 	e.wantPublic(photo, "vacation vendor photo")
 	e.wantPublic(avatar, "vacation vendor avatar")
 }
@@ -93,4 +99,20 @@ func TestLegacyVendorWithoutPGPRefusesEveryListingKind(t *testing.T) {
 			mustNotContain(t, page, `action="/orders"`)
 		})
 	}
+}
+
+func TestDraftCheckoutFormsRequireCurrentBrowserPGPAuthentication(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	order := x.testEnv.order(x.buyer, x.product, "XMR", stateDraft)
+	before := x.page("/order?id="+order, x.buyerSess)
+	mustContain(t, before, `action="/orders/escrow-xmr"`)
+
+	// A saved account key and an earlier login do not authorize a browser whose
+	// session no longer has proof for the current key.
+	agExec(x.testEnv, "UPDATE sessions SET pgp_access_key='' WHERE user_id=$1", x.buyer)
+	page := x.page("/order?id="+order, x.buyerSess)
+	mustContain(t, page, pgpAccessRequiredMessage)
+	mustNotContain(t, page, `action="/orders/escrow-xmr"`)
+	mustContain(t, page, `action="/orders/cancel"`)
 }

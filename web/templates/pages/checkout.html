@@ -31,7 +31,7 @@
 <section class="panel">
 <h2>Order summary</h2>{{if eq .Kind "service"}}<p class="order-unavailable" role="note">This legacy service listing is no longer available for new orders. Existing orders and their history remain readable; ask the vendor to offer a supported physical or digital listing instead.</p>{{else}}{{if $.VendorKeyUnusable}}
 <p class="order-unavailable" role="note">
-<strong>No usable key.</strong> {{.Vendor}} has no usable encryption key, so you could not send a shipping address. You can save a draft, but payment stays unavailable until they add one.</p>{{end}}{{with $.VendorSuspensionReason}}<p class="order-unavailable" role="note">{{.}}</p>{{end}}{{template "purchase-blocks" $}}{{if not $.NoPurchase}}
+<strong>No usable key.</strong> {{.Vendor}} has no usable encryption key, so you could not send a shipping address. You can save a draft, but payment stays unavailable until they add one.</p>{{end}}{{with $.VendorSuspensionReason}}<p class="order-unavailable" role="note">{{.}}</p>{{end}}{{template "purchase-blocks" $}}{{if not $.PGPAccessVerified}}<p class="order-unavailable" role="note">A usable public key and PGP decryption authentication are required before purchasing. <a class="text-link" href="/pgp">Authenticate this session with PGP decryption</a>. Add your public key in <a class="text-link" href="/account">your account</a> first if needed. Keep your private key on your own device.</p>{{else if not $.NoPurchase}}
 {{if .XMROrderUnavailable}}<p class="order-unavailable" role="note">{{.XMROrderUnavailable}}</p>{{end}}
 {{if and (not .XMROrderUnavailable) (not (index $.PurchaseBlocked "XMR"))}}
 <form class="stack" method="post" action="/orders">
