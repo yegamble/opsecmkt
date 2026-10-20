@@ -43,6 +43,7 @@ var errReplyTooLarge = errors.New("moderation: runtime reply exceeds its bound")
 // otherwise llama.cpp refuses the request, stops at the context limit, or with
 // context shift discards earlier tokens, including the fixed instructions.
 // The slack covers special tokens counted differently by older /tokenize builds.
+// TestLauncherContextSizeMatchesTokenBudget keeps --ctx-size and this budget equal.
 const (
 	modelContextTokens     = 4096
 	modelPredictTokens     = 1536
@@ -274,6 +275,39 @@ func stageBView(in NormalizedInput, canary string, aliases []string, findings []
 		Reversible: c.Reversible, AbuseCount: c.AbuseCount, Canary: canary, Actions: ModelActions(), ReasonCodes: ModelReasonCodes(), Findings: findings}
 }
 
+// modelJSON encodes a value for a prompt. llama.cpp's /completion tokenizes the
+// prompt with special-token parsing enabled, so control tokens spelled with
+// brackets, such as Mistral's [INST], would become real control tokens if data
+// carried them. encoding/json already escapes '<', '>' and '&'; this also writes
+// '[' and ']' inside string values as \u005b and \u005d. Array syntax and the
+// JSON value are unchanged.
+func modelJSON(v any) ([]byte, error) {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]byte, 0, len(raw))
+	inString, escaped := false, false
+	for _, b := range raw {
+		switch {
+		case escaped:
+			escaped = false
+		case inString && b == '\\':
+			escaped = true
+		case b == '"':
+			inString = !inString
+		case inString && b == '[':
+			out = append(out, `\u005b`...)
+			continue
+		case inString && b == ']':
+			out = append(out, `\u005d`...)
+			continue
+		}
+		out = append(out, b)
+	}
+	return out, nil
+}
+
 // Propose runs two independent completion requests with no shared chat history.
 // Stage B receives codes, aliases and derived context only: Stage A never
 // forwards free-form text, and validated Stage A findings stay in the result.
@@ -288,17 +322,18 @@ func (m *LocalModel) Propose(ctx context.Context, in NormalizedInput) (Proposal,
 	}
 	canary := CanaryFor(in.InputHash)
 	aliases := evidenceAliases(len(in.Context.EvidenceIDs))
-	protocol, _ := json.Marshal(struct {
+	protocol, _ := modelJSON(struct {
 		Canary      string   `json:"canary"`
 		EvidenceIDs []string `json:"evidence_ids"`
 		ReasonCodes []string `json:"reason_codes"`
 	}{canary, aliases, stageAReasons()})
-	data, err := json.Marshal(in.Fields)
+	data, err := modelJSON(in.Fields)
 	if err != nil || len(data) > 96<<10 || len(in.Fields) > 32 {
 		return Proposal{}, ErrInvalidOutput
 	}
-	// JSON escapes '<' and '>' in the data. The fence is chosen after encoding,
-	// so it cannot collide. Neither escaping nor a fence establishes trust.
+	// modelJSON escapes '<', '>', '[' and ']' in the data's strings. The fence is
+	// chosen after encoding, so it cannot collide. Neither escaping nor a fence
+	// establishes trust.
 	fence := "UNTRUSTED_" + in.InputHash[:min(16, len(in.InputHash))]
 	for strings.Contains(string(data), fence) {
 		fence += "_"
@@ -312,7 +347,7 @@ func (m *LocalModel) Propose(ctx context.Context, in NormalizedInput) (Proposal,
 	if err != nil {
 		return Proposal{}, err
 	}
-	trusted, err := json.Marshal(stageBView(in, canary, aliases, findings.Findings))
+	trusted, err := modelJSON(stageBView(in, canary, aliases, findings.Findings))
 	if err != nil || len(trusted) > 96<<10 {
 		return Proposal{}, ErrInvalidOutput
 	}

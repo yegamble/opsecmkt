@@ -71,7 +71,7 @@ func TestCustomModelCannotPersistFreeProse(t *testing.T) {
 }
 
 func TestOldPromptPinAndDraftReplyAreRefused(t *testing.T) {
-	for _, retired := range []string{"moderation-v1", "moderation-v2"} {
+	for _, retired := range []string{"moderation-v1", "moderation-v2", "moderation-v3"} {
 		cfg := DefaultConfig()
 		cfg.PromptVersion = retired
 		if _, err := (Engine{Config: cfg}).Evaluate(t.Context(), ordinaryInput()); err == nil {

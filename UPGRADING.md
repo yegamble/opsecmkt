@@ -198,8 +198,7 @@ v1 pins. Go derives review text from codes, including the current presentation o
 legacy decisions. Upgrade the app/migrations before the controller. Completed
 metadata-only jobs are skipped by `--replay`; its output reports the count.
 
-The current `moderation-v3` protocol refuses v1 and v2 pins: change the
-controller's `--prompt-version` to `moderation-v3` when upgrading it. Models may
+The `moderation-v3` protocol refuses v1 and v2 pins. Models may
 no longer assert Go-owned failure, protocol, routing, deadline or deterministic
 codes; Stage A findings stay in the final result; prompts carry evidence aliases
 instead of hashes. The runtime must also serve llama.cpp's `/tokenize` and
@@ -207,6 +206,15 @@ report `stop_type` (or the older `stopped_*` flags), `truncated` and
 `tokens_evaluated`. A prompt that cannot fit beside the output limit in the
 launcher's 4096-token context, or an unfinished generation, gets `MODEL_FAILURE`
 and human review. Stored v1/v2 decisions keep their bytes and still render.
+
+The current `moderation-v4` protocol refuses v1, v2 and v3 pins: change the
+controller's `--prompt-version` to `moderation-v4` when upgrading it. Prompt
+data now writes `[` and `]` inside JSON strings as `\u005b` and `\u005d` (same JSON
+meaning), because llama.cpp's `/completion` parses special tokens in the prompt
+and bracket-spelled control tokens such as `[INST]` in vendor text could
+otherwise become real ones. Instructions and grammars are unchanged. Text with
+many brackets costs more tokens and reaches human review sooner. Stored v1–v3
+decisions keep their bytes and still render.
 
 Capture now has atomic limits: three active jobs per actor, 256 pending globally,
 4096 lifetime allocation slots and 256 MiB reserved logical payload by default.
