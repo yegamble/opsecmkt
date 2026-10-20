@@ -797,7 +797,8 @@ type EscrowStallView struct {
 // which alerts are open (a settlement queued or stuck, a release too few, a Monero deposit refused as another order's
 // escrow account with no disposition recorded, A-480, or a requested Monero settlement older than 24 hours). A-560: the
 // newest failed Monero settlement with a stored transaction (ReRequestable), without one claiming no deposit (Unbuilt,
-// dismissed as nothing owed) and without one still claiming deposits (Stranded, PAY613-4: never dismissed), and the
+// dismissed as nothing owed) and without one still claiming deposits (Stranded, PAY613-4: never dismissed; only a
+// build before A-614 leaves one), and the
 // newest set-aside one (SetAside), by settlement ID, 0 for none; StoredText: what staff are told of the first
 // (xmrFailedStoredText: whether a re-request waits, was refused or can be asked). Flagged (order page only): a deposit
 // is flagged as well.

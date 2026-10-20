@@ -112,6 +112,14 @@ one older account-page expectation; its targeted PostgreSQL race check passed
 after aligning the expected disclosure. These follow-ups change test expectations
 and evidence only, without changing the reviewed production behavior.
 
+While CI was running, main integrated A-614 (`5a3b3a7e`). Both upgrade-note
+sections were preserved when merging it into this branch. The overlapping order
+loader/type/re-request changes were comments; the independent QA seat verified
+that the new missing-deposit alert still routes through active administrator-only
+notification helpers. Focused re-request, settlement, PGP-order and notification
+role regressions passed with PostgreSQL race detection, 34.996 s. The final CI
+gate applies to the integrated branch head.
+
 ## Limits and deferred ideas
 
 Verified TLS protocol fixtures do not prove interoperability with every XMPP
