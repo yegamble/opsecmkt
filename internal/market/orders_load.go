@@ -219,6 +219,7 @@ func loadEscrowAlerts(ctx context.Context, a *App, _ *http.Request, d *PageData)
 		EXISTS(SELECT 1 FROM settlements s WHERE s.order_id=o.id AND s.kind='release' AND s.state='failed' AND s.build_error='`+settleTooSmall+`'),
 		`+xmrCollisionOpen("o.id")+`,
 		EXISTS(SELECT 1 FROM xmr_settlements xs WHERE xs.order_id=o.id AND xs.state='requested' AND xs.created<now()-interval '24 hours'),
+		COALESCE((SELECT xs.id||' '||xs.supersedes FROM xmr_settlements xs WHERE xs.order_id=o.id AND xs.state='requested' AND xs.created<now()-interval '24 hours' AND xs.supersedes IS NOT NULL AND xs.send_error='`+xmrWaitMissing+`' ORDER BY xs.id DESC LIMIT 1),''),
 		`+xmrFailedAlertIDs("o.id")+`,
 		count(*) OVER ()
 		FROM orders o WHERE `+escrowStaffAlertCandidates("o.id")+` AND `+escrowStaffAlert("o.id")+`
@@ -235,10 +236,12 @@ func loadEscrowAlerts(ctx context.Context, a *App, _ *http.Request, d *PageData)
 	var total int
 	for rows.Next() {
 		var v EscrowAlertView
-		var last string
-		if err = rows.Scan(&v.ID, &v.State, &v.Stall, &v.TooFew, &v.Refused, &v.Requested, &v.ReRequestable, &v.Unbuilt, &v.SetAside, &last, &v.Stranded, &total); err != nil {
+		var last, waiting string
+		var requested bool
+		if err = rows.Scan(&v.ID, &v.State, &v.Stall, &v.TooFew, &v.Refused, &requested, &waiting, &v.ReRequestable, &v.Unbuilt, &v.SetAside, &last, &v.Stranded, &total); err != nil {
 			return err
 		}
+		v.requestedText(requested, waiting)
 		v.storedText(last, a.escrowXMR == nil)
 		v.State = stateLabel(v.State)
 		d.EscrowAlerts = append(d.EscrowAlerts, v)
@@ -259,6 +262,19 @@ func xmrFailedAlertIDs(order string) string {
 		"COALESCE((SELECT max(xs.id) FROM xmr_settlements xs WHERE xs.order_id=" + order + " AND xs.state='requested' AND xs.send_error='" + xmrBuildSetAside + "'),0)," +
 		"COALESCE((SELECT r.state||' '||r.reason FROM xmr_settlement_rerequests r WHERE r.settlement_id=" + stored + " ORDER BY r.id DESC LIMIT 1),'')," +
 		"COALESCE((SELECT max(xs.id) FROM xmr_settlements xs WHERE xs.order_id=" + order + " AND xs.state='failed' AND xs.tx_hash IS NULL AND " + xmrClaimsSQL + " AND NOT " + xmrFailedClosedSQL + "),0)"
+}
+
+// requestedText sets v.Requested, the line of a Monero settlement requested for more than 24 hours ("" for none). When
+// the newest such settlement is a re-request waiting for a missing deposit (waiting: its id and the id it supersedes,
+// A-614), the line names both and says the market sends it on its own, so it is never paid by hand (A-617).
+func (v *EscrowAlertView) requestedText(requested bool, waiting string) {
+	if !requested {
+		return
+	}
+	v.Requested = "Monero escrow settlement has been requested for more than 24 hours"
+	if n, m, ok := strings.Cut(waiting, " "); ok {
+		v.Requested += ": settlement " + n + ", which re-requests settlement " + m + ", waits because the escrow wallet no longer lists a deposit it spends, and the market sends it on its own once that deposit is listed again. Do not pay anything by hand for it, or it is paid twice"
+	}
 }
 
 // storedText sets v.StoredText for its failed settlement with a stored transaction, whose newest re-request is last,
@@ -332,17 +348,20 @@ func loadOrderDetail(ctx context.Context, a *App, r *http.Request, d *PageData) 
 		// failed or set-aside Monero settlement (A-560) is named even when deposits are flagged too (a refused
 		// transaction's are), and the help then links Payment review as well.
 		v := EscrowAlertView{ID: o.ID}
-		var last string
+		var last, waiting string
+		var requested bool
 		if err = a.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM payments WHERE order_id=$1 AND flagged),
 			EXISTS(SELECT 1 FROM settlements s WHERE s.order_id=$1 AND s.state='broadcast' AND `+escrowStalledSQL+`),
 			EXISTS(SELECT 1 FROM settlements s WHERE s.order_id=$1 AND s.kind='release' AND s.state='failed' AND s.build_error='`+settleTooSmall+`'),
 			`+xmrCollisionOpen("$1")+`,
 			EXISTS(SELECT 1 FROM xmr_settlements xs WHERE xs.order_id=$1 AND xs.state='requested' AND xs.created<now()-interval '24 hours'),
-			`+xmrFailedAlertIDs("$1"), o.ID).Scan(&v.Flagged, &v.Stall, &v.TooFew, &v.Refused, &v.Requested, &v.ReRequestable, &v.Unbuilt, &v.SetAside, &last, &v.Stranded); err != nil {
+			COALESCE((SELECT xs.id||' '||xs.supersedes FROM xmr_settlements xs WHERE xs.order_id=$1 AND xs.state='requested' AND xs.created<now()-interval '24 hours' AND xs.supersedes IS NOT NULL AND xs.send_error='`+xmrWaitMissing+`' ORDER BY xs.id DESC LIMIT 1),''),
+			`+xmrFailedAlertIDs("$1"), o.ID).Scan(&v.Flagged, &v.Stall, &v.TooFew, &v.Refused, &requested, &waiting, &v.ReRequestable, &v.Unbuilt, &v.SetAside, &last, &v.Stranded); err != nil {
 			return err
 		}
+		v.requestedText(requested, waiting)
 		v.storedText(last, a.escrowXMR == nil)
-		if v.ReRequestable != 0 || v.Unbuilt != 0 || v.Stranded != 0 || v.SetAside != 0 || !v.Flagged && (v.Stall || v.TooFew || v.Refused || v.Requested) {
+		if v.ReRequestable != 0 || v.Unbuilt != 0 || v.Stranded != 0 || v.SetAside != 0 || !v.Flagged && (v.Stall || v.TooFew || v.Refused || v.Requested != "") {
 			d.StaffAlert = &v
 		}
 	}
@@ -928,6 +947,16 @@ func previewDisputes(d *PageData) {
 	d.DisputePayouts = map[string]PayoutPreview{}
 }
 
+// xmrWaitingClaimText is the clause a payment-review reason of a deposit claimed by re-request n of settlement m, still
+// requested, ends with (A-617); missing: the deposit is missing and n waits for it (deposit-missing).
+func xmrWaitingClaimText(n, m int64, missing bool) string {
+	s := fmt.Sprintf("; Monero escrow settlement %d, which re-requests settlement %d, claims it", n, m)
+	if missing {
+		s += fmt.Sprintf(" and waits: the escrow wallet no longer lists this deposit, and the market sends settlement %d on its own once it is listed again", n)
+	}
+	return s + ". Do not pay anything by hand for it, or it is paid twice"
+}
+
 // paymentReviewLimit caps the other (not open) flags on the moderation desk's payment-review list.
 const paymentReviewLimit = 100
 
@@ -954,9 +983,11 @@ func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageDat
 			COALESCE((SELECT xs.id FROM xmr_settlements xs WHERE xs.id=pm.xmr_settlement_id AND xs.state='failed'),0) AS failed_by,
 			COALESCE((SELECT xs.tx_hash IS NOT NULL FROM xmr_settlements xs WHERE xs.id=pm.xmr_settlement_id),false) AS failed_stored,
 			COALESCE((SELECT CASE h.kind WHEN '`+xmrNothingOwed+`' THEN 'dismissed ' ELSE 'settled ' END FROM xmr_settlement_hand_settled h WHERE h.settlement_id=pm.xmr_settlement_id),
-				(SELECT r.state||' '||r.reason FROM xmr_settlement_rerequests r WHERE r.settlement_id=pm.xmr_settlement_id ORDER BY r.id DESC LIMIT 1),'') AS failed_rr
+				(SELECT r.state||' '||r.reason FROM xmr_settlement_rerequests r WHERE r.settlement_id=pm.xmr_settlement_id ORDER BY r.id DESC LIMIT 1),'') AS failed_rr,
+			COALESCE(wx.id,0) AS waiting_by,COALESCE(wx.supersedes,0) AS waiting_of,COALESCE(wx.send_error='`+xmrWaitMissing+`',false) AS waiting_missing
 		FROM payments pm JOIN orders o ON o.id=pm.order_id JOIN products pr ON pr.id=o.product_id
 		JOIN escrows esc ON esc.order_id=o.id
+		LEFT JOIN xmr_settlements wx ON wx.id=pm.xmr_settlement_id AND wx.state='requested' AND wx.supersedes IS NOT NULL
 		CROSS JOIN LATERAL (SELECT e.escrow,e.escrow AND NOT pm.after_close AND NOT pm.escrow_left_out AND NOT pm.spent_outside AS counted
 			FROM (SELECT EXISTS(SELECT 1 FROM escrows es WHERE es.order_id=pm.order_id) AS escrow) e) c
 		LEFT JOIN LATERAL (SELECT max(e.created) AS at FROM order_events e WHERE e.order_id=pm.order_id AND e.actor_id IS NULL
@@ -975,7 +1006,7 @@ func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageDat
 					AND strpos(e.note, ' '||CASE WHEN length(pm.txid)<=20 THEN pm.txid ELSE left(pm.txid,20)||'…' END||' ')>0))) f ON true
 		WHERE pm.flagged AND pm.disposition IN ('','escalated'))
 		SELECT id,order_id,state,product_id,title,currency,amount,txid,idx,credited,locked,confirmations,regress_notice,below_floor,open,COALESCE(to_char(at,'YYYY-MM-DD HH24:MI "UTC"'),''),
-			escalated,disposed,party,escrow,spent_outside,spent_by,counted,left_out,failed_by,failed_stored,failed_rr,(SELECT count(*) FROM v WHERE NOT open)
+			escalated,disposed,party,escrow,spent_outside,spent_by,counted,left_out,failed_by,failed_stored,failed_rr,waiting_by,waiting_of,waiting_missing,(SELECT count(*) FROM v WHERE NOT open)
 		FROM (SELECT * FROM v WHERE open UNION ALL (SELECT * FROM v WHERE NOT open ORDER BY at DESC NULLS LAST,id DESC LIMIT $1)) s
 		ORDER BY open DESC,CASE WHEN open THEN at END ASC NULLS FIRST,CASE WHEN open THEN id END,at DESC NULLS LAST,id DESC`, paymentReviewLimit, d.User.ID)
 	if err != nil {
@@ -984,11 +1015,11 @@ func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageDat
 	defer rows.Close()
 	for rows.Next() {
 		var v PaymentReview
-		var amt, confs, failedBy int64
-		var credited, locked, regressed, belowFloor, escrow, outside, counted, leftOut, failedStored bool
+		var amt, confs, failedBy, waitingBy, waitingOf int64
+		var credited, locked, regressed, belowFloor, escrow, outside, counted, leftOut, failedStored, waitingMissing bool
 		var disposed, spentBy, failedRR string
 		if err = rows.Scan(&v.ID, &v.OrderID, &v.OrderState, &v.ProductID, &v.Title, &v.Currency, &amt, &v.TxID, &v.Index, &credited, &locked, &confs, &regressed, &belowFloor, &v.Open, &v.Flagged,
-			&v.Escalated, &disposed, &v.Party, &escrow, &outside, &spentBy, &counted, &leftOut, &failedBy, &failedStored, &failedRR, &d.PaymentReviewOthers); err != nil {
+			&v.Escalated, &disposed, &v.Party, &escrow, &outside, &spentBy, &counted, &leftOut, &failedBy, &failedStored, &failedRR, &waitingBy, &waitingOf, &waitingMissing, &d.PaymentReviewOthers); err != nil {
 			return err
 		}
 		// The disposition form (paymentReviewAction): open flags of orders the viewer is not party to; an escalated
@@ -1095,6 +1126,13 @@ func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageDat
 			v.Reason = fmt.Sprintf("Credited deposit below threshold (%d confirmations)", confs)
 		default:
 			v.Reason = fmt.Sprintf("Credited deposit confirmed again (%d confirmations)", confs)
+		}
+		if waitingBy != 0 {
+			// A-617: the deposit is claimed by an administrator's re-request (A-401) that is still requested. Its base
+			// reason stays; the clause names the re-request and, while this deposit is missing and the re-request waits
+			// for it (A-614), says the market sends it on its own once the deposit is listed again, so it is never paid
+			// by hand.
+			v.Reason += xmrWaitingClaimText(waitingBy, waitingOf, confs < 0 && waitingMissing)
 		}
 		if v.Escalated {
 			v.Reason += "; escalated to an administrator on " + disposed

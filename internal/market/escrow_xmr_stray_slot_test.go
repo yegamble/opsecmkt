@@ -318,3 +318,26 @@ func TestMigration135StraySlotFirstGeneration(t *testing.T) {
 		t.Fatalf("migration 135 again: %v", err)
 	}
 }
+
+// A-617, the stray refund variant: a re-request of a stray refund waiting deposit-missing keeps each deposit's base
+// payment-review reason (left out, or after the close and now missing) and appends which re-request claims it; only
+// the missing deposit's reason says it waits for that deposit to be listed again.
+func TestXMREscrowStrayReRequestReviewReasons(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	_, admin := x.user("a617s_admin_"+randomToken()[:6], "admin")
+	order, _, _, d1, first := x.strayFailed()
+	again := x.waitingStrayReRequest(admin, order, first)
+	x.fake.setTransfer(d1, func(t *fakeXMRTransfer) { t.DoubleSpend = true })
+	x.mustPoll()
+	if x.waitClass(again) != xmrWaitMissing {
+		t.Fatalf("the re-request with d1 double-spent: %+v %q", x.settlement(again), x.waitClass(again))
+	}
+	want := []string{
+		"Deposit to an escrow after the order closed, not counted; a stray refund from the escrow returns it to the buyer; now conflicted or missing" + waitingClaim(again, first, true),
+		"Escrow deposit left out of its settlement, not counted; a stray refund from the escrow returns it to the buyer" + waitingClaim(again, first, false),
+	}
+	if got := x.reviewReasons(order); !slices.Equal(got, want) {
+		t.Fatalf("payment-review reasons:\n got %q\nwant %q", got, want)
+	}
+}
