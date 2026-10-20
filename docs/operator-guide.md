@@ -1409,12 +1409,24 @@ the market would record one: while one waits for the watcher's next pass (or for
 a refusal it names the reason (the transaction in the pool or the chain, or a coin already spent) and asks you to check
 the escrow wallet and the chain instead; with `ESCROW_XMR` off it says the re-request is available once it is back
 on. One that failed before any
-transaction was built (*nothing-to-settle*: no confirmed deposit was left to spend; or a refund whose coins were too few)
-cannot be re-requested, and the market never builds that settlement again; a failed release or refund also stands in
-for the order's one release or refund, which is all the database allows. Read why under the settlement on the order
-page. A stray refund returns to the buyer any deposit it left out (listed under *Payment review*); anything else still
-owed is an operator decision taken by hand, outside the market. Its alert stays open. A set-aside settlement (below) is
-an alert until an administrator asks for it to be built again.
+transaction was built cannot be re-requested, and the market never builds that settlement again; a failed release or
+refund also stands in for the order's one release or refund, which is all the database allows (A-613):
+
+- A refund whose coins were too few (*too-small*) is not an escrow alert, as a Bitcoin refund too few is not: its
+  deposits are left out and flagged under *Payment review* (staff read the order while a flag is open), and a stray
+  refund returns them, together with any later deposit, once together they can pay the network fee. A stray refund
+  that keeps waiting is an alert once it has been requested for 24 hours.
+- Any other (*nothing-to-settle*: no confirmed deposit was left to spend) stays an alert. Read why under the settlement
+  on the order page and settle anything still owed by hand with the operator, outside the market. Then an
+  administrator who is not a party marks it settled on the order page (*Mark settlement N settled by hand*, under the
+  settlement): a note of 10–500 characters saying what was done, confirmed with the password (and the authenticator
+  code when enrolled), with an audit row. That clears the alert: the desk entry, the badge count, the staff help and
+  retention's `escrow_alert` reason. The note is for staff only (shown under the settlement to staff who can read the
+  order); the parties get no order note or notice. It can be recorded once per settlement (a second record is refused);
+  it works with `ESCROW_XMR` off, as recording a refused deposit's disposition does, and the market sends nothing for
+  the settlement either way. Moderators cannot record it.
+
+A set-aside settlement (below) is an alert until an administrator asks for it to be built again.
 
 **A set-aside settlement.** A settlement whose build makes the escrow wallet-rpc stop responding twice (monero-wallet-rpc
 0.18.5.1 crashes on some destinations) is set aside and flagged, and the watcher skips it so that others are not held up. Find

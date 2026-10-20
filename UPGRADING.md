@@ -15,6 +15,36 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## Unbuilt failed Monero settlements can be cleared (A-613)
+
+Migration 125 runs at startup and adds the table `xmr_settlement_hand_settled`; there is no new setting. It fixes the
+A-560 alerts below that could never clear: a Monero settlement that failed before any transaction was built is never
+re-requested, so its alert kept the staff badge above zero, stayed on the desk and kept the order's escrow records under
+retention's `escrow_alert` reason for good.
+
+- **Refunds too few disappear at once.** A failed refund with `send_error = 'too-small'` is no longer an escrow alert,
+  as a Bitcoin refund too few never was: its deposits are already left out, flagged under *Payment review* and returned
+  by a stray refund. Their payment-review flags are unchanged.
+- **Other unbuilt failures stay until disposed.** For one that failed `nothing-to-settle`, settle anything still owed by
+  hand with the operator, then an administrator who is not a party opens the order (from *Escrow alerts*) and uses *Mark
+  settlement N settled by hand* under the settlement, with a 10–500 character note and the password. That clears its
+  alert; the note is staff-only and recorded once, with an audit row. It works while `ESCROW_XMR` is off.
+- **Retention resumes.** Once an order has no open alert, retention's next financial check no longer reports
+  `escrow_alert` for it: the exception resolves, or the next blocker is reported, and the order's escrow records close
+  and expire on the normal schedule. Nothing is deleted at upgrade. Account erasure treats the administrator who
+  recorded a disposition as referenced, as it does other staff records.
+
+To list the failed settlements that still alert after the upgrade:
+
+```sql
+SELECT xs.id, xs.order_id, xs.kind, xs.send_error FROM xmr_settlements xs
+ WHERE xs.state = 'failed' AND xs.tx_hash IS NULL AND NOT (xs.kind = 'refund' AND xs.send_error = 'too-small')
+   AND NOT EXISTS (SELECT 1 FROM xmr_settlement_hand_settled h WHERE h.settlement_id = xs.id) ORDER BY xs.id;
+```
+
+Rolling back to a build without migration 125 is refused at startup (the database records a migration it does not
+know); restore the pre-upgrade backup instead.
+
 ## Failed Monero settlements are escrow alerts (A-560)
 
 No migration and no new setting. A failed Monero escrow settlement that was not superseded, and one set aside because
@@ -26,7 +56,8 @@ escrow wallet and the chain, or that Monero escrow is off), built again (*Build 
 owed is settled by hand with the operator ([operator guide](docs/operator-guide.md), *Failed and set-aside settlements
 are escrow alerts*). A payment-review row of a deposit that a failed settlement spends now says that it failed instead
 of "the order's release or refund settles it". The parties see no change. Settlements that failed before the upgrade
-appear at once. One that failed without a stored transaction is never re-requested, so its alert does not clear; as for
+appear at once. One that failed without a stored transaction is never re-requested, so its alert did not clear (A-613,
+above, makes a refund too few no alert and lets an administrator mark any other settled by hand); as for
 every open escrow alert, data retention keeps that order's escrow records and lists it with the reason `escrow_alert`
 (reopening one whose financial records it had closed). To list them:
 

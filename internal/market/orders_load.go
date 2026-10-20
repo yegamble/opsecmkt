@@ -139,8 +139,10 @@ func staffReviewer(ctx context.Context, a *App, o *Order, u *User) (bool, error)
 //     settlement changes state. The threshold is for staff visibility, not a measured stagenet settlement bound.
 //   - a failed Monero escrow settlement (A-560, xmrFailedAlertSQL): state failed, which a superseded one has left. One
 //     with a stored transaction (relay-refused, bad-metadata) clears when an administrator's re-request supersedes it
-//     (escrow_xmr_rerequest.go); one that failed before a transaction was built (nothing-to-settle, a refund too few)
-//     is never re-requested, so its alert stays open: the market sends nothing more for it.
+//     (escrow_xmr_rerequest.go). One that failed before a transaction was built is never re-requested (A-613): a
+//     refund too few (too-small) raises none, as a Bitcoin refund too few does not, because its deposits are left out
+//     and flagged for payment review and a stray refund returns them (xmrRefundTooFew); any other (nothing-to-settle)
+//     clears when an administrator who is not a party marks it settled by hand (xmrSettledByHandAction).
 //   - a Monero escrow settlement set aside because building it made the escrow wallet stop responding (A-560,
 //     xmrBuildSetAside): it clears when an administrator asks for it to be built again (xmrRetryBuildAction).
 //
@@ -152,8 +154,15 @@ func escrowStaffAlert(order string) string {
 		" OR EXISTS(SELECT 1 FROM xmr_settlements xs WHERE xs.order_id=" + order + " AND (xs.state='requested' AND xs.created<now()-interval '24 hours' OR " + xmrFailedAlertSQL + ")))"
 }
 
-// xmrFailedAlertSQL is true for a Monero settlement xs that failed (unsuperseded) or is set aside (A-560).
-const xmrFailedAlertSQL = "(xs.state='failed' OR xs.state='requested' AND xs.send_error='" + xmrBuildSetAside + "')"
+// xmrFailedAlertSQL is true for a Monero settlement xs that failed (unsuperseded) or is set aside (A-560), except a
+// failed one without a stored transaction that raises no alert (xmrUnbuiltClosedSQL, A-613).
+const xmrFailedAlertSQL = "(xs.state='failed' AND NOT (" + xmrUnbuiltClosedSQL + ") OR xs.state='requested' AND xs.send_error='" + xmrBuildSetAside + "')"
+
+// xmrUnbuiltClosedSQL is true for a Monero settlement xs without a stored transaction whose failure raises no escrow
+// staff alert (A-613): a refund too few, which payment review and its stray refund cover, or one an administrator
+// marked settled by hand (xmr_settlement_hand_settled, migration 125, which accepts no other).
+const xmrUnbuiltClosedSQL = "xs.tx_hash IS NULL AND (xs.kind='refund' AND xs.send_error='" + xmrTooSmall +
+	"' OR EXISTS(SELECT 1 FROM xmr_settlement_hand_settled h WHERE h.settlement_id=xs.id))"
 
 // escrowStaffAlertCandidates bounds desk and badge scans to orders with a possible alert source; the detailed helper
 // decides whether any candidate is actually alerting now.
@@ -222,13 +231,13 @@ func loadEscrowAlerts(ctx context.Context, a *App, _ *http.Request, d *PageData)
 }
 
 // xmrFailedAlertIDs is SQL for four columns of the order whose id is the SQL expression order: its newest failed
-// Monero settlement with a stored transaction, its newest failed one without (never re-requested) and its newest
-// set-aside one, each 0 for none, and the newest re-request of the first as "state reason" ("" for none; A-560,
-// EscrowAlertView).
+// Monero settlement with a stored transaction, its newest failed one without (never re-requested) that still alerts
+// (xmrUnbuiltClosedSQL, A-613) and its newest set-aside one, each 0 for none, and the newest re-request of the first
+// as "state reason" ("" for none; A-560, EscrowAlertView).
 func xmrFailedAlertIDs(order string) string {
 	stored := "(SELECT max(xs.id) FROM xmr_settlements xs WHERE xs.order_id=" + order + " AND xs.state='failed' AND xs.tx_hash IS NOT NULL)"
 	return "COALESCE(" + stored + ",0)," +
-		"COALESCE((SELECT max(xs.id) FROM xmr_settlements xs WHERE xs.order_id=" + order + " AND xs.state='failed' AND xs.tx_hash IS NULL),0)," +
+		"COALESCE((SELECT max(xs.id) FROM xmr_settlements xs WHERE xs.order_id=" + order + " AND xs.state='failed' AND xs.tx_hash IS NULL AND NOT (" + xmrUnbuiltClosedSQL + ")),0)," +
 		"COALESCE((SELECT max(xs.id) FROM xmr_settlements xs WHERE xs.order_id=" + order + " AND xs.state='requested' AND xs.send_error='" + xmrBuildSetAside + "'),0)," +
 		"COALESCE((SELECT r.state||' '||r.reason FROM xmr_settlement_rerequests r WHERE r.settlement_id=" + stored + " ORDER BY r.id DESC LIMIT 1),'')"
 }

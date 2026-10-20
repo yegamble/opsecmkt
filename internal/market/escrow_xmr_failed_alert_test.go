@@ -49,7 +49,7 @@ func TestXMREscrowFailedSettlementStaffAlert(t *testing.T) {
 	want := map[string]string{
 		stored: "Monero escrow settlement " + id(storedID) + " " + storedOffer,
 		unbuilt: "Monero escrow settlement " + id(unbuiltID) + " failed before any transaction was built, so it cannot be re-requested: read why under the settlement on the order page, " +
-			"and settle anything still owed by hand with the operator (a stray refund returns to the buyer any deposit it left out)",
+			"settle anything still owed by hand with the operator, then an administrator who is not a party marks it settled on the order page (Mark settlement " + id(unbuiltID) + " settled by hand)",
 		aside: "Monero escrow settlement " + id(asideID) + " is set aside because building it made the escrow wallet stop responding: an administrator who is not a party can ask for it to be built again on the order page (Build settlement " + id(asideID) + " again)",
 	}
 	staffOnly := []string{"who is not a party", "cannot be re-requested", "settle anything still owed", "Escrow alerts", "open staff alert"}
