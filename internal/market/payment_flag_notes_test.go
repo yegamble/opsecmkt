@@ -14,6 +14,7 @@ func TestLateDepositFlagNotesAreBoundedAndIndexOutputs(t *testing.T) {
 			e := newTestApp(t)
 			buyer, _ := e.user("flagbuyer_"+randomToken()[:6], "buyer")
 			vendor, _ := e.user("flagvendor_"+randomToken()[:6], "vendor")
+			admin, _ := e.user("flagadmin_"+randomToken()[:6], "admin")
 			mod, _ := e.user("flagmod_"+randomToken()[:6], "moderator")
 			product := e.product(vendor, "digital")
 			order := e.order(buyer, product, currency, stateCompleted)
@@ -77,8 +78,11 @@ func TestLateDepositFlagNotesAreBoundedAndIndexOutputs(t *testing.T) {
 			if n := agInt(e, "SELECT count(*) FROM payments WHERE order_id=$1 AND flagged", order); n != outputs {
 				t.Fatalf("flagged %d of %d outputs", n, outputs)
 			}
-			if n := agInt(e, `SELECT count(*) FROM notifications WHERE user_id=$1 AND strpos(body,'Payment review needed for order '||left($2,8))=1`, mod, order); n != 1 {
+			if n := agInt(e, `SELECT count(*) FROM notifications WHERE user_id=$1 AND strpos(body,'Payment review needed for order '||left($2,8))=1`, admin, order); n != 1 {
 				t.Fatalf("staff notices were not episode-bounded: %d", n)
+			}
+			if n := agInt(e, `SELECT count(*) FROM notifications WHERE user_id=$1 AND strpos(body,'Payment review needed for order '||left($2,8))=1`, mod, order); n != 0 {
+				t.Fatalf("administrator-only payment review reached moderator: %d", n)
 			}
 			if n := agInt(e, "SELECT count(*) FROM audit_events"); n != auditBefore {
 				t.Fatalf("flagging changed audit history from %d to %d rows", auditBefore, n)

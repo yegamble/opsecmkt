@@ -67,8 +67,9 @@ func TestMoneroOnlyBitcoinRoutesAreUnregistered(t *testing.T) {
 
 func TestMoneroOnlyListingsOrdersAndIntake(t *testing.T) {
 	e := newTestApp(t)
-	_, vendorSession := e.user("monero_vendor", "vendor")
+	vendor, vendorSession := e.user("monero_vendor", "vendor")
 	buyer, buyerSession := e.user("monero_buyer", "buyer")
+	e.enableOrderPGP(vendor, buyer)
 	_, adminSession := e.user("monero_admin", "admin")
 	form := url.Values{"title": {"Monero listing"}, "description": {"Fixture"}, "category": {"Digital"}, "region": {"Worldwide"}, "kind": {"digital"}, "stock": {"5"}, "price_xmr": {"0.5"}, "delivery_content": {"Licence"}}
 	created := e.do("POST", "/listings", vendorSession, form)

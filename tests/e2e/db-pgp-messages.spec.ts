@@ -152,6 +152,7 @@ test('only OpenPGP-encrypted messages are accepted; status badges and the unread
   expect(await saveKey(r, pgpFixture('recipient.pub.asc'), 'browser-msg-recipient-123')).toBe(303);
   expect(await saveKey(o, pgpFixture('other.pub.asc'), 'browser-msg-other-123')).toBe(303);
   expect(await saveKey(x, pgpFixture('other.pub.asc'), 'browser-msg-stranger-123')).toBe(303);
+  expect(await saveKey(s, pgpFixture('other.pub.asc'), 'browser-msg-sender-123')).toBe(303);
 
   // Adding the key notified the recipient (A-152); once that is read the navigation shows no unread count.
   const rNav = r.getByRole('navigation', { name: 'Main navigation' });
@@ -296,6 +297,7 @@ test('hidden recipient IDs are sent only after the sender confirms, the cipherte
   const recipient = uniqueHandle('hidto');
   const s = await signedIn(browser, baseURL, sender, 'browser-hidden-sender-123', true);
   const r = await signedIn(browser, baseURL, recipient, 'browser-hidden-recipient-123', true);
+  expect(await saveKey(s, pgpFixture('other.pub.asc'), 'browser-hidden-sender-123')).toBe(303);
   // A buyer may start a message to a vendor (A-543); the vendor holds the recipient fixture key.
   execFileSync('psql', [process.env.E2E_DATABASE_URL!, '-v', 'ON_ERROR_STOP=1', '-qtAc', `UPDATE users SET role='vendor' WHERE handle='${recipient}'`]);
   expect(await saveKey(r, pgpFixture('recipient.pub.asc'), 'browser-hidden-recipient-123')).toBe(303);

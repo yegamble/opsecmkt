@@ -280,7 +280,7 @@ func (a *App) xmrReRequest(ctx context.Context, id int64, s *xmrSettleRow, admin
 	if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) SELECT id,state,state,NULL,$2 FROM orders WHERE id=$1", s.OrderID, note); err != nil {
 		return err
 	}
-	if _, err = insertNotification(ctx, tx, admin, "Order "+shortID(s.OrderID)+": "+note, s.OrderID); err != nil {
+	if _, err = insertScopedNotification(ctx, tx, admin, "Order "+shortID(s.OrderID)+": "+note, s.OrderID, "admin"); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -305,7 +305,7 @@ func (a *App) refuseXMRReRequest(ctx context.Context, id int64, s *xmrSettleRow,
 	if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) SELECT id,state,state,NULL,$2 FROM orders WHERE id=$1", s.OrderID, note); err != nil {
 		return err
 	}
-	if _, err = insertNotification(ctx, tx, admin, "Order "+shortID(s.OrderID)+": "+note, s.OrderID); err != nil {
+	if _, err = insertScopedNotification(ctx, tx, admin, "Order "+shortID(s.OrderID)+": "+note, s.OrderID, "admin"); err != nil {
 		return err
 	}
 	return tx.Commit()

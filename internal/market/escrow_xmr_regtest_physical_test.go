@@ -17,6 +17,7 @@ import (
 func (r *xmrRegtest) physicalReal(product string) (order, sess, refund, addr string) {
 	r.t.Helper()
 	buyer, sess := r.user("xr_pb_"+randomToken()[:8], "buyer")
+	r.enableOrderPGP(buyer)
 	order, refund = r.order(buyer, product, "XMR", stateDraft), r.funderAddress()
 	if w := r.checkout(sess, order, refund); w.Code != 303 {
 		r.t.Fatalf("checkout: %d %s", w.Code, w.Body.String())

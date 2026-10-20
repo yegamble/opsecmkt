@@ -149,6 +149,7 @@ func (r *xmrRegtest) daemonPost(path string, body, out any) {
 func (r *xmrRegtest) checkoutReal() (order, addr string) {
 	r.t.Helper()
 	buyer, sess := r.user("xr_b_"+randomToken()[:8], "buyer")
+	r.enableOrderPGP(buyer)
 	order = r.order(buyer, r.digital(r.vendor), "XMR", stateDraft)
 	if w := r.checkout(sess, order, r.funderAddress()); w.Code != 303 {
 		r.t.Fatalf("checkout: %d %s", w.Code, w.Body.String())

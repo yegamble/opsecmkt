@@ -263,6 +263,7 @@ func TestArchiveHidesListingAndRefusesDrafts(t *testing.T) {
 	e := newTestApp(t)
 	owner, s := e.user("inv_archive", "vendor")
 	buyer, buyerS := e.user("inv_archive_buyer", "buyer")
+	e.enableOrderPGP(owner, buyer)
 	_, adminS := e.user("inv_archive_admin", "admin")
 	p := e.product(owner, "physical")
 	keep := e.product(owner, "digital")
@@ -556,9 +557,8 @@ func TestAdminListingEditKeepsDeliveryContentHidden(t *testing.T) {
 	address := x.mustCheckout(o)
 	x.fake.payAddress(address, hex64("admin-delivery"), int64(agInt(e, "SELECT amount FROM orders WHERE id=$1", o)), 10)
 	x.mustPoll()
-	var got string
-	if err := e.DB.QueryRow("SELECT content FROM deliveries WHERE order_id=$1", o).Scan(&got); err != nil || got != secret {
-		t.Fatalf("next order delivered %q (%v), want the vendor's content", got, err)
+	if got := commerceDelivery(e, o); got != secret {
+		t.Fatalf("next order delivered %q, want the vendor's content", got)
 	}
 
 	// The vendor still reads and changes the content.

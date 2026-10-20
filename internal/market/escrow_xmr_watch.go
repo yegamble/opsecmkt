@@ -1077,14 +1077,19 @@ func (a *App) xmrTopUpSlots(ctx context.Context, w xmrWalletRow) error {
 	return nil
 }
 
-// notifyAdmins notifies every administrator who is not suspended.
+// notifyAdmins records an administrator-only notice for each currently active administrator.
 func notifyAdmins(ctx context.Context, tx *sql.Tx, body string) error {
-	admins, err := collectStrings(ctx, tx, "SELECT id FROM users WHERE role='admin' AND suspended_at IS NULL")
+	return notifyAdminsExcept(ctx, tx, body, "")
+}
+
+// notifyAdminsExcept avoids a duplicate broadcast when the owner already received a personal notice.
+func notifyAdminsExcept(ctx context.Context, tx *sql.Tx, body, exceptID string) error {
+	admins, err := collectStrings(ctx, tx, "SELECT id FROM users WHERE role='admin' AND suspended_at IS NULL AND closed_at IS NULL AND retention_restricted_at IS NULL AND id<>$1", exceptID)
 	if err != nil {
 		return err
 	}
 	for _, uid := range admins {
-		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), uid, body); err != nil {
+		if _, err = insertScopedNotification(ctx, tx, uid, body, "", "admin"); err != nil {
 			return err
 		}
 	}

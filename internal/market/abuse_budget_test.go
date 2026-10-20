@@ -23,9 +23,11 @@ func TestMessageBudgetSeparateFromWrites(t *testing.T) {
 	e := newTestApp(t)
 	senderID, sender := e.user("budget_sender", "buyer")
 	recipientID, _ := e.user("budget_recipient", "vendor")
-	_, other := e.user("budget_other_sender", "buyer")
+	otherID, other := e.user("budget_other_sender", "buyer")
 	key, keyPub := testPGPKey(t, "budget-recipient")
 	e.setKey(recipientID, keyPub) // a message is refused unless its recipient can read it (A-569)
+	e.setKey(senderID, keyPub)
+	e.setKey(otherID, keyPub)
 	body, err := encryptTo(key, "one encrypted message")
 	if err != nil {
 		t.Fatal(err)

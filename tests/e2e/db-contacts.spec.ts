@@ -1,6 +1,6 @@
 import { expect, test, type Browser, type Page } from '@playwright/test';
 import { ADMIN, uniqueHandle } from './db-fixtures';
-import { setRole } from './db-helpers';
+import { RECIPIENT_FINGERPRINT, saveEncryptionKey, setRole } from './db-helpers';
 import { waitForStyles } from './styles';
 
 // Contacts and vendor demotion against a real database: an administrator promotes a new account to
@@ -71,6 +71,25 @@ test('vendor contact, unread notifications and demotion archive', async ({ brows
   await expect(buyer.locator('.message-to')).toHaveText(`To: ${vendorHandle}`);
   await expect(buyer.locator('main')).toContainText('Ask them to add a public key, or obtain and confirm their key through a trusted channel before encrypting.');
 
+  // Neither side has a usable saved key yet, so the listing cannot take an order.
+  // Saving only the buyer's key does not bypass the vendor requirement.
+  await buyer.goto(productURL);
+  await expect(buyer.getByRole('link', { name: 'Review order draft' })).toHaveCount(0);
+  const checkoutURL = productURL.replace('/product?', '/checkout?');
+  await buyer.goto(checkoutURL);
+  await expect(buyer.locator('form[action="/orders"]')).toHaveCount(0);
+  await expect(buyer.locator('main')).toContainText('Add a usable PGP public key');
+  await expect(buyer.locator('main')).toContainText(`${vendorHandle} needs a usable PGP encryption key before accepting new orders.`);
+  await saveEncryptionKey(buyer, 'browser-contact-buyer-123');
+  await buyer.goto(checkoutURL);
+  await expect(buyer.locator('form[action="/orders"]')).toHaveCount(0);
+  await expect(buyer.locator('main')).toContainText(`${vendorHandle} needs a usable PGP encryption key before accepting new orders.`);
+  await saveEncryptionKey(vendor, 'browser-contact-vendor-123');
+  // Saving the vendor's key creates its own account-security notice. Read it now
+  // so the later unread-count checks isolate order and role-change notifications.
+  await vendor.goto('/notifications');
+  await vendor.getByRole('button', { name: 'Mark all as read', exact: true }).click();
+
   // Cancelling an unfunded draft does not create vendor noise; the buyer can still read its order history.
   await buyer.goto(productURL);
   await buyer.getByRole('link', { name: 'Review order draft' }).click();
@@ -78,8 +97,9 @@ test('vendor contact, unread notifications and demotion archive', async ({ brows
   await buyer.getByRole('button', { name: 'Create unfunded draft' }).click();
   await buyer.waitForURL(/\/order\?id=/);
   const orderURL = buyer.url();
-  await expect(buyer.getByRole('region', { name: 'Vendor’s PGP key' })).toContainText(`${vendorHandle} has not added a PGP public key`);
-  await expect(buyer.getByRole('link', { name: 'Message vendor' })).toHaveAttribute('href', `/messages?to=${vendorHandle}`);
+  await expect(buyer.getByRole('region', { name: 'Vendor’s PGP key' })).toContainText(RECIPIENT_FINGERPRINT);
+  const orderID = new URL(orderURL).searchParams.get('id');
+  await expect(buyer.getByRole('link', { name: 'Message vendor' })).toHaveAttribute('href', `/messages?to=${vendorHandle}&order_id=${orderID}`);
   await buyer.getByRole('button', { name: 'Cancel draft' }).click();
   await expect(buyer.locator('.page-head .badge')).toHaveText('Cancelled');
 
