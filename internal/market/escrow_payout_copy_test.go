@@ -17,27 +17,6 @@ func handleOf(e *testEnv, uid string) string {
 
 const escrowRefundSentence = "less the network fee, to the buyer's refund address given at checkout"
 
-// paidEscrow is a new escrow order of the buyer's whose content is not delivered automatically, funded with sats at 3
-// confirmations and left paid, and its refund address.
-func (x *escrowEnv) paidEscrow(label string, sats ...int64) (string, string) {
-	x.t.Helper()
-	order, refund := x.draft(), regtestAddr(label+"-refund")
-	x.mustCheckout(order, refund)
-	agExec(x.testEnv, "UPDATE products SET delivery_content='' WHERE id=(SELECT product_id FROM orders WHERE id=$1)", order)
-	x.fund(order, label, 3, sats...)
-	if x.state(order) != statePaid {
-		x.t.Fatalf("funded %s order is %s", label, x.state(order))
-	}
-	return order, refund
-}
-
-// outputs lists order's release or refund outputs as "role address sats".
-func (x *escrowEnv) outputs(order string) []string {
-	x.t.Helper()
-	id, _, _, _ := x.settlement(order)
-	return agStrings(x.t, x.testEnv, "SELECT role||' '||address||' '||sats FROM settlement_outputs WHERE settlement_id=$1 ORDER BY n", id)
-}
-
 // xmrPaidEscrow is a funded digital Monero escrow order left paid (its listing was taken down after checkout, so it is
 // not delivered automatically), funded with amount in one deposit at 10 confirmations: the order, its buyer's session
 // and its refund address.

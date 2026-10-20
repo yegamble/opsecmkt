@@ -4,7 +4,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -26,22 +25,6 @@ func resolveConfirmed(v url.Values, seen int64) url.Values {
 	v = payoutConfirmed(v, seen)
 	v.Set("password", testPassword)
 	return v
-}
-
-var amountSeenField = regexp.MustCompile(`name="amount_seen" value="(\d+)"`)
-
-// amountSeen returns the amount_seen values rendered on a page, in order.
-func amountSeen(t *testing.T, page string) []int64 {
-	t.Helper()
-	var out []int64
-	for _, m := range amountSeenField.FindAllStringSubmatch(page, -1) {
-		n, err := strconv.ParseInt(m[1], 10, 64)
-		if err != nil {
-			t.Fatal(err)
-		}
-		out = append(out, n)
-	}
-	return out
 }
 
 func TestNoTemplateSaysResolvingMovesNoFunds(t *testing.T) {

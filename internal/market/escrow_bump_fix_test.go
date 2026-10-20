@@ -1,61 +1,8 @@
 package market
 
 import (
-	"context"
-
-	"encoding/json"
-
-	"slices"
-	"strings"
 	"testing"
 )
-
-// bumpFinal is the final transaction of fee bump bid signed by these parties' keys (and "market" for the market's),
-// as the parties would finalize it themselves from their own wallets: the fake's finalizepsbt shape.
-func (x *escrowEnv) bumpFinal(order string, bid int64, signers ...string) string {
-	x.t.Helper()
-	keys, err := escrowKeys(context.Background(), x.DB, order)
-	if err != nil {
-		x.t.Fatal(err)
-	}
-	p, err := decodePSBT(x.bumpPSBT(bid))
-	if err != nil {
-		x.t.Fatal(err)
-	}
-	raw := p.Raw
-	for _, who := range signers {
-		pub := keys[who].PubKey
-		for i := range p.Inputs {
-			raw = addField(x.t, raw, i, append([]byte{0x02}, pub...), fakeSig(pub, p.TxID(), 1))
-		}
-	}
-	full, err := parsePSBT(raw)
-	if err != nil {
-		x.t.Fatal(err)
-	}
-	final, ok := fakeFinalTx(full)
-	if !ok {
-		x.t.Fatal("the fee bump does not finalize with these signatures")
-	}
-	return final
-}
-
-// sendRaw broadcasts raw through the fake node, as a party's own node would.
-func (x *escrowEnv) sendRaw(raw string) string {
-	x.t.Helper()
-	params, _ := json.Marshal([]string{raw})
-	got, code, msg := x.core.handle("", "sendrawtransaction", params)
-	if code != 0 {
-		x.t.Fatalf("the parties' broadcast was refused: %d %s", code, msg)
-	}
-	return got.(string)
-}
-
-// flaggedOrOutside reports whether the settlement was recorded as a spend outside the market in any way.
-func (x *escrowEnv) flaggedOrOutside(order string, id int64) bool {
-	return agInt(x.testEnv, "SELECT count(*) FROM payments WHERE settlement_id=$1 AND flagged", id) != 0 || x.settleByID(id).SpentBy != "" ||
-		slices.ContainsFunc(x.events(order), func(ev string) bool { return strings.Contains(ev, "did not make") })
-}
 
 // A-384: the claimant's output may be exactly the floor after a bump (planBump and checkBump); one satoshi less is
 // too small.

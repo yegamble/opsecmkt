@@ -14,8 +14,9 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/sys/unix"
 	"opsecmkt/internal/storageguard"
+
+	"golang.org/x/sys/unix"
 )
 
 func unixPeerUID(conn net.Conn) (uint32, error) {

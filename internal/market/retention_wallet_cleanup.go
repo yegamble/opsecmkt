@@ -36,15 +36,6 @@ func LoadRetentionWalletCleanup(ctx context.Context, db *sql.DB, now time.Time, 
 	return result, rows.Err()
 }
 
-// Verified destruction of an exact original watch wallet removes its labels
-// physically. This proof permits BTC-off startup after an old restore without
-// resurrecting the destroyed wallet. A configured wallet is still read/scrubbed
-// on every start; restoring an old copy cannot bypass that read.
-func reconcileRetentionWalletAttestations(ctx context.Context, db *sql.DB) error {
-	_, err := db.ExecContext(ctx, `UPDATE retention_escrow_retired_addresses r SET label_checked=true FROM retention_wallet_cleanup c WHERE r.coin='BTC' AND NOT r.label_checked AND c.coin='BTC' AND c.confirmed_at IS NOT NULL AND r.wallet_hash=encode(sha256(convert_to(c.wallet_name,'UTF8')),'hex')`)
-	return err
-}
-
 // Acquire before the fresh eligibility read, rather than only inside the final
 // UPDATE trigger: a hold committed between an older read and an erase must be
 // visible to that read under PostgreSQL's statement snapshots.

@@ -18,7 +18,6 @@ import (
 	"sync"
 	"testing"
 	"text/template"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -61,42 +60,6 @@ func captureLog(t *testing.T) *lockedBuffer {
 	http5xxLog.reset() // a previous test's burst of 5xx lines must not suppress this test's
 	t.Cleanup(func() { log.SetOutput(w); log.SetFlags(flags) })
 	return buf
-}
-
-// runBackground starts the registered background work (the escrow watchers, the sweeps) as the server does and returns
-// a function that stops it and waits for it to finish; calling it again does nothing.
-func runBackground(t *testing.T, a *App) (stop func()) {
-	t.Helper()
-	a.Start(context.Background())
-	var once sync.Once
-	return func() {
-		t.Helper()
-		once.Do(func() {
-			done := make(chan struct{})
-			go func() { a.stop(); a.background.Wait(); close(done) }()
-			select {
-			case <-done:
-			case <-time.After(10 * time.Second):
-				t.Fatal("background work did not stop")
-			}
-			a.stop = nil // allow another Start
-		})
-	}
-}
-
-// waitForLine waits until a captured line starts with prefix and returns the first such line.
-func waitForLine(t *testing.T, logs *lockedBuffer, prefix string) string {
-	t.Helper()
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
-		for _, l := range logs.lines(prefix) {
-			if strings.HasPrefix(l, prefix) {
-				return l
-			}
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("no log line starting with %q: %q", prefix, logs.String())
-		}
-	}
 }
 
 var http5xxLine = regexp.MustCompile(`^http 5xx kind=(page|action) name=(\S+) status=(5\d\d) ref=([0-9a-f]{8}) cause=(.+)$`)

@@ -186,7 +186,7 @@ func TestXMPPDeliveryCompetingWorkersAndMaximumRetries(t *testing.T) {
 	uid, _ := e.user("xmpp_workers", "buyer")
 	xmppOptIn(e, uid)
 	enableXMPPDelivery(e)
-	id := enqueueXMPPTestNotice(e, uid, "personal", "competing workers")
+	enqueueXMPPTestNotice(e, uid, "personal", "competing workers")
 	entered, release := make(chan struct{}), make(chan struct{})
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -217,7 +217,7 @@ func TestXMPPDeliveryCompetingWorkersAndMaximumRetries(t *testing.T) {
 	if err != nil || worked {
 		t.Fatalf("competing worker did not skip claimed row: %v %v", worked, err)
 	}
-	id = enqueueXMPPTestNotice(e, uid, "personal", "retry exhaustion")
+	id := enqueueXMPPTestNotice(e, uid, "personal", "retry exhaustion")
 	agExec(e, `UPDATE xmpp_outbox SET attempts=$2 WHERE notification_id=$1`, id, xmppMaxAttempts-1)
 	worked, err = e.A.deliverXMPPNotification(context.Background(), func(context.Context, xmppConfig, string, string, string) error {
 		return fmt.Errorf("do not persist this server's private error text")

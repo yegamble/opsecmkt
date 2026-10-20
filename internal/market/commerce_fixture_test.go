@@ -32,14 +32,7 @@ func newPayEnv(t *testing.T, supplied ...*testEnv) *payEnv {
 	p.order = e.order(b, p.productID, "XMR", stateDraft)
 	return p
 }
-func (p *payEnv) state(order string) string {
-	p.t.Helper()
-	var state string
-	if err := p.DB.QueryRow("SELECT state FROM orders WHERE id=$1", order).Scan(&state); err != nil {
-		p.t.Fatal(err)
-	}
-	return state
-}
+
 func (p *payEnv) count(query string, args ...any) int {
 	p.t.Helper()
 	var n int

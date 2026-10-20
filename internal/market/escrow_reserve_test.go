@@ -3,99 +3,14 @@ package market
 import (
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 
-	"os"
 	"slices"
 
 	"strings"
 	"testing"
 )
-
-const escrowSweepText = "Bitcoin escrow is paused until this market has checked its escrow wallet after restoring its records from a backup. Nothing was charged and your order is still a draft; try again later."
-
-// restoreMarginSQL is the escrow margin block of scripts/restore.sh (between its escrow-key-margin markers), run here as
-// the script runs it, so these tests exercise the script's own SQL.
-func restoreMarginSQL(t *testing.T) string {
-	t.Helper()
-	b, err := os.ReadFile("scripts/restore.sh")
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, block, ok := strings.Cut(string(b), "-- escrow-key-margin: begin\n")
-	block, _, ok2 := strings.Cut(block, "-- escrow-key-margin: end\n")
-	if !ok || !ok2 || strings.Contains(block, `\`) {
-		t.Fatal("scripts/restore.sh has no plain-SQL escrow-key-margin block")
-	}
-	return block
-}
-
-// lose simulates a database restored from a backup taken before orders' escrows were created: their rows are gone, the
-// orders are set aside, the market counter is back at (last, called), and the restore's sweep marker is set as
-// scripts/restore.sh sets it. The watch-only wallet keeps every escrow it imported.
-func (x *escrowEnv) lose(last int64, called bool, orders ...string) {
-	x.t.Helper()
-	for _, o := range orders {
-		forgetEscrow(x.t, x.DB, o)
-		agExec(x.testEnv, "UPDATE orders SET state='cancelled' WHERE id=$1", o)
-	}
-	if _, err := x.DB.Exec("SELECT setval('escrow_market_index',$1,$2)", last, called); err != nil {
-		x.t.Fatal(err)
-	}
-	agExec(x.testEnv, "INSERT INTO settings(key,value) VALUES('escrow_sweep_required','true') ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value")
-}
-
-// forgetEscrow deletes order's escrow row and its keys, as a database restored from a backup taken before the escrow was
-// created lacks them. The application never deletes an escrow (migration 084 refuses it), so the refusal is lifted only
-// inside this transaction.
-func forgetEscrow(t *testing.T, db *sql.DB, orderID string) {
-	t.Helper()
-	tx, err := db.Begin()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tx.Rollback()
-	for _, q := range []string{
-		"ALTER TABLE escrows DISABLE TRIGGER escrows_not_deleted",
-		"DELETE FROM escrow_pubkeys WHERE escrow_id IN (SELECT id FROM escrows WHERE order_id=$1)",
-		"DELETE FROM escrow_siblings WHERE escrow_id IN (SELECT id FROM escrows WHERE order_id=$1)", // shape (b), A-456a
-		"DELETE FROM escrows WHERE order_id=$1",
-		"ALTER TABLE escrows ENABLE TRIGGER escrows_not_deleted",
-	} {
-		var args []any
-		if strings.Contains(q, "$1") {
-			args = append(args, orderID)
-		}
-		if _, err = tx.Exec(q, args...); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err = tx.Commit(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// marketCounter is the escrow_market_index sequence's state.
-func (x *escrowEnv) marketCounter() (int64, bool) {
-	x.t.Helper()
-	var last int64
-	var called bool
-	if err := x.DB.QueryRow("SELECT last_value,is_called FROM escrow_market_index").Scan(&last, &called); err != nil {
-		x.t.Fatal(err)
-	}
-	return last, called
-}
-
-// escrowPubkeys is the three stored public keys of each order's escrow.
-func (x *escrowEnv) escrowPubkeys(orders ...string) []string {
-	return agStrings(x.t, x.testEnv, "SELECT pubkey FROM escrow_pubkeys p JOIN escrows e ON e.id=p.escrow_id WHERE e.order_id=ANY($1) ORDER BY pubkey", orders)
-}
-
-func (x *escrowEnv) sweepRequired() bool {
-	return agInt(x.testEnv, "SELECT count(*) FROM settings WHERE key='escrow_sweep_required'") != 0
-}
 
 var (
 	coreWatchPubkeys = []string{

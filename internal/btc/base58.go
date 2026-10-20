@@ -6,7 +6,7 @@ import (
 	"errors"
 	"strings"
 
-	"golang.org/x/crypto/ripemd160" // BIP32 fingerprints (HASH160); x/crypto is already a dependency
+	"golang.org/x/crypto/ripemd160" //nolint:staticcheck // SA1019: BIP32 HASH160 fingerprints require RIPEMD-160.
 )
 
 const base58Alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
@@ -106,7 +106,7 @@ func DoubleSHA256(b []byte) [32]byte {
 // Hash160 is RIPEMD-160 of SHA-256: a BIP32 key identifier, whose first 4 bytes are the key's fingerprint.
 func Hash160(b []byte) (out [20]byte) {
 	h := sha256.Sum256(b)
-	r := ripemd160.New()
+	r := ripemd160.New() // #nosec G406 -- BIP32 HASH160 fingerprints require RIPEMD-160.
 	r.Write(h[:])
 	copy(out[:], r.Sum(nil))
 	return out

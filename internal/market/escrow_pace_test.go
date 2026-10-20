@@ -1,22 +1,9 @@
 package market
 
 import (
-	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 )
-
-// paceClock replaces arbiterPaceNow with a clock that stands still until the test moves it (the returned func, safe
-// from any goroutine), so a read takes no time unless the fake Core moves the clock while it answers.
-func paceClock(t *testing.T) func(time.Duration) {
-	t.Helper()
-	var off atomic.Int64
-	base, saved := time.Now(), arbiterPaceNow
-	arbiterPaceNow = func() time.Time { return base.Add(time.Duration(off.Load())) }
-	t.Cleanup(func() { arbiterPaceNow = saved })
-	return func(d time.Duration) { off.Add(int64(d)) }
-}
 
 // The schedule alone (no database): from when the read ended, 1, 2, 4 … 32 minutes, then 1 hour at most, after slow
 // reads; a quick one (under escrowArbiterHeavy), pass or failure, clears it; a slow pass doubles it as a slow failure
@@ -62,14 +49,4 @@ func TestEscrowArbiterPaceSchedule(t *testing.T) {
 			t.Errorf("aboutMinutes(%v) = %q, want %q", d, got, want)
 		}
 	}
-}
-
-// escrowNodeAlert is the escrow node alert of an admin page, for a failure message ("" when there is none).
-func escrowNodeAlert(page string) string {
-	_, alert, ok := strings.Cut(page, `id="escrow-node">`)
-	if !ok {
-		return ""
-	}
-	alert, _, _ = strings.Cut(alert, "</div>")
-	return alert
 }
