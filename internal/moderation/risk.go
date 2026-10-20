@@ -10,6 +10,9 @@ import (
 func Route(in NormalizedInput, p Proposal, cfg Config) (Disposition, int, []string) {
 	reasons := append([]string{}, p.ReasonCodes...)
 	add := func(code string) { reasons = appendUnique(reasons, code) }
+	if reviewOnlySignal(in) {
+		add("HUMAN_REVIEW")
+	}
 	score := min(30, in.Context.BlastRadius)
 	if !in.Context.Reversible {
 		score += 15

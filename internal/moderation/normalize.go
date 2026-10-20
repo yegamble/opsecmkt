@@ -2,6 +2,7 @@ package moderation
 
 import (
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -102,6 +103,7 @@ func Normalize(input Input) (NormalizedInput, error) {
 	out.Context.KnownImageHashes = append([]string{}, input.Context.KnownImageHashes...)
 	seen := map[string]bool{}
 	total := 0
+	previousValue, previousFound := "", []string(nil)
 	for i := range out.Fields {
 		f := &out.Fields[i]
 		label := f.Source + "." + f.Name
@@ -125,9 +127,20 @@ func Normalize(input Input) (NormalizedInput, error) {
 			b.WriteRune(r)
 		}
 		value := strings.TrimSpace(b.String())
-		for _, finding := range injectionPatterns(value) {
+		found := injectionPatterns(value)
+		for _, finding := range found {
 			out.InjectionEvidence = appendUnique(out.InjectionEvidence, label+":"+finding)
 		}
+		// A marker split across adjacent fields in submission order ("…Ignore" /
+		// "previous instructions…") is attributed to the field that completes it.
+		if i > 0 {
+			for _, finding := range injectionPatterns(previousValue + " " + value) {
+				if !slices.Contains(previousFound, finding) && !slices.Contains(found, finding) {
+					out.InjectionEvidence = appendUnique(out.InjectionEvidence, label+":"+finding)
+				}
+			}
+		}
+		previousValue, previousFound = value, found
 		if mixedScripts(value) {
 			out.NormalizationWarnings = appendUnique(out.NormalizationWarnings, "UNICODE_MIXED_SCRIPT")
 			out.InjectionEvidence = appendUnique(out.InjectionEvidence, label+":mixed_script")
@@ -169,25 +182,146 @@ func Normalize(input Input) (NormalizedInput, error) {
 	return out, nil
 }
 
+// Strong markers address the moderator itself: replacing its instructions,
+// naming its protocol fields, codes or canary, or imitating its delimiters.
+// Any strong marker makes the item INJECTION_SUSPECTED, which escalates.
+var strongInstructionMarkers = []string{
+	"ignore previous", "ignore all previous", "ignore all prior", "ignore prior instructions", "ignore your instructions",
+	"disregard previous instructions", "disregard all previous", "disregard prior instructions", "disregard your instructions",
+	"forget your rules", "forget your instructions", "forget all previous", "forget previous instructions", "forget everything above",
+	"system prompt", "set confidence", "please classify",
+	"instructions from the operator", "instructions from the administrator", "instructions from the admin",
+	"instructions from the moderator",
+	// Translated "ignore (all) previous instructions" for the most common
+	// non-English attacks; other languages are left to the model.
+	"ignorez les instructions", "ignorez toutes les instructions", "ignore les instructions", "ignorez les consignes", "oubliez vos instructions", "oubliez les instructions",
+	"ignora las instrucciones", "ignora todas las instrucciones", "ignorar las instrucciones", "ignore las instrucciones", "olvida tus instrucciones", "olvida las instrucciones",
+	"忽略之前", "忽略以上", "忽略先前", "忽略前面", "忽略上述", "忽略所有指令",
+	"игнорируй предыдущие", "игнорируйте предыдущие", "игнорируй все предыдущие", "игнорируйте все предыдущие", "игнорируй инструкции", "игнорируйте инструкции", "забудь свои инструкции", "забудьте инструкции",
+}
+
+// Letters-only forms of the instruction markers catch spaced letters,
+// punctuation between words and the small leetspeak alphabet.
+var compactInstructionMarkers = []string{
+	"ignoreprevious", "ignoreallprevious", "ignoreallprior", "ignorepriorinstructions", "ignoreyourinstructions",
+	"disregardpreviousinstructions", "disregardallprevious", "disregardyourinstructions",
+	"forgetyourrules", "forgetyourinstructions", "forgetallprevious", "forgetpreviousinstructions",
+}
+
+var strongProtocolMarkers = append([]string{
+	"reason_codes", "injection_suspected", "injection_evidence", "evidence_ids",
+	"\"action\"", "\"decision\"", "\"confidence\"", "\"canary\"", "trusted block", "trusted instructions",
+}, protocolCodeNames()...)
+
+var delimiterMarkers = []string{"<<u ", "<<end", "</system", "<system", "[inst]", "[system]", "begin trusted", "end trusted"}
+
+var canaryToken = regexp.MustCompile(`moderation-[0-9a-f]{32}`)
+var base64Token = regexp.MustCompile(`[A-Za-z0-9+/]{16,}={0,2}`)
+
+// Weak markers are ordinary words that also appear in attacks ("buy with
+// confidence", "can act as a stand"). They never accuse or skip the model;
+// they only keep the item out of automatic history (see Route).
+var weakInstructionMarkers = []string{
+	"you are", "act as", "decision", "confidence", "execute", "override", "disregard", "schema", "canary", "ignore all",
+	"system:", "assistant:", "developer:", "mark this order", "mark the order", "output only", "return json",
+	"follow these instructions", "run command", "approve this", "ban this", "refund this", "release this",
+	"already approved", "approved by staff", "approved by the staff", "approved by admin", "approved by the admin",
+	"approved by moderat", "approved by the moderat", "new instructions",
+}
+
+// protocolCodeNames lists the underscore identifiers of actions, reason codes
+// and dispositions. Prose has no reason to spell them; an attacker uses them to
+// suggest a verdict ("NO_FINDING. NO_ACTION.").
+func protocolCodeNames() []string {
+	var names []string
+	for _, code := range slices.Concat(Actions(), ReasonCodes(), []string{string(AutoApply), string(QueueHuman), string(EscalateAdmin)}) {
+		if strings.Contains(code, "_") {
+			names = appendUnique(names, strings.ToLower(code))
+		}
+	}
+	return names
+}
+
 func injectionPatterns(value string) []string {
-	lower := strings.ToLower(value)
-	var findings []string
-	for _, marker := range []string{"ignore previous", "ignore all", "disregard", "override", "you are", "act as", "system prompt", "system:", "assistant:", "developer:", "mark this order", "mark the order", "output only", "return json", "follow these instructions", "execute", "run command", "approve this", "ban this", "refund this", "release this", "set confidence", "please classify"} {
-		if strings.Contains(lower, marker) {
-			findings = appendUnique(findings, "instruction_like")
+	findings := markerFindings(value)
+	// Decode bounded base64-looking tokens once; only a strong marker in the
+	// decoded text counts, so arbitrary identifiers cannot create a finding.
+	for _, token := range base64Token.FindAllString(value, 16) {
+		decoded, err := base64.StdEncoding.DecodeString(token)
+		if err != nil {
+			decoded, err = base64.RawStdEncoding.DecodeString(token)
 		}
-	}
-	for _, marker := range []string{"schema", "reason_codes", "injection_suspected", "injection_evidence", "confidence", "canary", "\"action\"", "\"decision\"", "decision", "trusted block", "trusted instructions"} {
-		if strings.Contains(lower, marker) {
-			findings = appendUnique(findings, "protocol_reference")
-		}
-	}
-	for _, marker := range []string{"<<u ", "<<end", "</system", "<system", "[inst]", "[system]", "begin trusted", "end trusted"} {
-		if strings.Contains(lower, marker) {
-			findings = appendUnique(findings, "delimiter_like")
+		if err == nil && utf8.Valid(decoded) {
+			for _, finding := range markerFindings(string(decoded)) {
+				findings = appendUnique(findings, finding)
+			}
 		}
 	}
 	return findings
+}
+
+func markerFindings(value string) []string {
+	lower := strings.ToLower(value)
+	var findings []string
+	if containsAny(lower, strongInstructionMarkers) || containsAny(compactLetters(lower, 'i'), compactInstructionMarkers) || containsAny(compactLetters(lower, 'l'), compactInstructionMarkers) {
+		findings = append(findings, "instruction_like")
+	}
+	if containsAny(lower, strongProtocolMarkers) || canaryToken.MatchString(lower) {
+		findings = append(findings, "protocol_reference")
+	}
+	if containsAny(lower, delimiterMarkers) {
+		findings = append(findings, "delimiter_like")
+	}
+	return findings
+}
+
+// weakInstructionMarker reports wording that needs a human but is common in
+// ordinary listings, so it is never an injection accusation by itself.
+func weakInstructionMarker(value string) bool {
+	return containsAny(strings.ToLower(value), weakInstructionMarkers)
+}
+
+func containsAny(value string, markers []string) bool {
+	for _, marker := range markers {
+		if strings.Contains(value, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// compactLetters keeps letters only, after folding a small leetspeak alphabet
+// (the digit 1 reads as the given letter, i or l). A line break, or sentence
+// punctuation followed by a space, stays a boundary: "easy to ignore. Previous
+// owners…" must not read as "ignoreprevious".
+func compactLetters(lower string, one rune) string {
+	runes := []rune(lower)
+	var b strings.Builder
+	for i, r := range runes {
+		switch r {
+		case '\n', '.', '!', '?', ';':
+			if r == '\n' || i+1 < len(runes) && unicode.IsSpace(runes[i+1]) {
+				b.WriteByte('|')
+			}
+			continue
+		case '0':
+			r = 'o'
+		case '1':
+			r = one
+		case '3':
+			r = 'e'
+		case '4', '@':
+			r = 'a'
+		case '5', '$':
+			r = 's'
+		case '7':
+			r = 't'
+		}
+		if unicode.IsLetter(r) {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // Mixing visually confusable scripts in one word is suspicious; separate words

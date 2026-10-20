@@ -8,9 +8,15 @@ import (
 	"encoding/json"
 	"image"
 	"image/color"
+	"image/jpeg"
 	"math"
+	"math/bits"
+	"math/rand"
+	"strconv"
 	"strings"
 	"testing"
+
+	"golang.org/x/image/draw"
 
 	"opsecmkt/internal/moderation"
 )
@@ -32,9 +38,15 @@ func perceptualFixture(w, h int, invert bool) *image.RGBA {
 func TestPerceptualHashRecognizesResizedPhotoSignal(t *testing.T) {
 	full := mustProcess(t, uploadListing, fixtureJPEG(t, perceptualFixture(640, 480, false), 90))
 	resized := mustProcess(t, uploadListing, fixtureJPEG(t, perceptualFixture(320, 240, false), 70))
-	unrelated := mustProcess(t, uploadListing, fixtureJPEG(t, perceptualFixture(320, 240, true), 90))
+	// Inverting this sinusoid gives the same horizontal gradients as mirroring
+	// it, so the mirror-aware comparison treats it as a mirrored copy.
+	inverted := mustProcess(t, uploadListing, fixtureJPEG(t, perceptualFixture(320, 240, true), 90))
+	unrelated := mustProcess(t, uploadListing, fixtureJPEG(t, texturedFixture(7, 320, 240), 90))
 	if !validPerceptualHash(full.perceptualHash) || full.perceptualHash == "" || !moderation.ImageHashesMatch(full.perceptualHash, resized.perceptualHash, 5) {
 		t.Fatalf("resized/recompressed photo did not retain its advisory signal: %s %s", full.perceptualHash, resized.perceptualHash)
+	}
+	if hashDistance(t, full.perceptualHash, inverted.perceptualHash) <= 5 || !moderation.ImageHashesMatch(full.perceptualHash, inverted.perceptualHash, 5) {
+		t.Fatalf("mirror-equivalent picture: %s %s", full.perceptualHash, inverted.perceptualHash)
 	}
 	if moderation.ImageHashesMatch(full.perceptualHash, unrelated.perceptualHash, 5) {
 		t.Fatalf("unrelated picture has the same difference signal: %s %s", full.perceptualHash, unrelated.perceptualHash)
@@ -153,5 +165,107 @@ func TestPerceptualHashMigrationPreservesPopulatedImages(t *testing.T) {
 	}
 	if !bytes.Equal(full, gotFull) || !bytes.Equal(thumb, gotThumb) || hash != "" {
 		t.Fatal("migration changed old picture bytes or invented perceptual metadata")
+	}
+}
+
+// texturedFixture is seeded coarse picture structure plus fine pixel-level
+// stripes and noise. The smooth sinusoid above hides point-sampling aliasing;
+// this texture exposes it, because a sampled pixel can land on a stripe or a
+// noise peak instead of representing its whole cell.
+func texturedFixture(seed int64, w, h int) *image.RGBA {
+	r := rand.New(rand.NewSource(seed))
+	const gx, gy = 12, 9
+	var grid [gy + 1][gx + 1]float64
+	for y := range grid {
+		for x := range grid[y] {
+			grid[y][x] = 48 + 160*r.Float64()
+		}
+	}
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := range h {
+		for x := range w {
+			fx, fy := float64(x)*gx/float64(w), float64(y)*gy/float64(h)
+			ix, iy := int(fx), int(fy)
+			tx, ty := fx-float64(ix), fy-float64(iy)
+			v := grid[iy][ix]*(1-tx)*(1-ty) + grid[iy][ix+1]*tx*(1-ty) + grid[iy+1][ix]*(1-tx)*ty + grid[iy+1][ix+1]*tx*ty
+			if (x/2)%2 == 0 {
+				v += 35
+			} else {
+				v -= 35
+			}
+			v += 14 * r.NormFloat64()
+			c := uint8(max(0, min(255, v)))
+			img.SetRGBA(x, y, color.RGBA{c, c, c, 255})
+		}
+	}
+	return img
+}
+
+func scaledFixture(src image.Image, w, h int) *image.RGBA {
+	dst := image.NewRGBA(image.Rect(0, 0, w, h))
+	draw.CatmullRom.Scale(dst, dst.Rect, src, src.Bounds(), draw.Src, nil)
+	return dst
+}
+
+func hashDistance(t *testing.T, a, b string) int {
+	t.Helper()
+	x, errX := strconv.ParseUint(a, 16, 64)
+	y, errY := strconv.ParseUint(b, 16, 64)
+	if errX != nil || errY != nil {
+		t.Fatalf("invalid perceptual hashes %q %q", a, b)
+	}
+	return bits.OnesCount64(x ^ y)
+}
+
+func TestPerceptualHashSurvivesRecompressResizeCrop(t *testing.T) {
+	base := texturedFixture(72, 1200, 900)
+	original := fixtureJPEG(t, base, 92)
+	want := mustProcess(t, uploadListing, original).perceptualHash
+	if want == "" || !moderation.InformativePerceptualHash(want) {
+		t.Fatalf("textured fixture produced no informative hash: %q", want)
+	}
+	decoded, err := jpeg.Decode(bytes.NewReader(original))
+	if err != nil {
+		t.Fatal(err)
+	}
+	crop := image.NewRGBA(image.Rect(0, 0, 1188, 891)) // 1% off the right and bottom edges
+	draw.Copy(crop, image.Point{}, decoded, crop.Rect, draw.Src, nil)
+	for name, data := range map[string][]byte{
+		"recompress q92 to q70": fixtureJPEG(t, decoded, 70),
+		"resize 1000x750":       fixtureJPEG(t, scaledFixture(decoded, 1000, 750), 85),
+		"resize 640x480":        fixtureJPEG(t, scaledFixture(decoded, 640, 480), 85),
+		"crop 1%":               fixtureJPEG(t, crop, 90),
+	} {
+		got := mustProcess(t, uploadListing, data).perceptualHash
+		if d := hashDistance(t, want, got); d > 5 || !moderation.ImageHashesMatch(want, got, 5) {
+			t.Errorf("%s: distance %d (%s vs %s)", name, d, want, got)
+		}
+	}
+	// A horizontal mirror reverses and complements each row's gradient bits.
+	// The stored hash is unchanged; only the comparison also tries the mirror.
+	mirror := image.NewRGBA(base.Rect)
+	for y := range 900 {
+		for x := range 1200 {
+			mirror.SetRGBA(x, y, base.RGBAAt(1199-x, y))
+		}
+	}
+	mirrored := mustProcess(t, uploadListing, fixtureJPEG(t, mirror, 92)).perceptualHash
+	if hashDistance(t, want, mirrored) <= 5 || !moderation.ImageHashesMatch(want, mirrored, 5) || !moderation.ImageHashesMatch(mirrored, want, 5) {
+		t.Errorf("mirrored picture: forward distance %d, mirror comparison missed (%s vs %s)", hashDistance(t, want, mirrored), want, mirrored)
+	}
+	hashes := []string{want}
+	for seed := int64(1); seed <= 40; seed++ {
+		h := mustProcess(t, uploadListing, fixtureJPEG(t, texturedFixture(1000+seed, 320, 240), 90)).perceptualHash
+		if !moderation.InformativePerceptualHash(h) {
+			t.Fatalf("unrelated fixture %d produced no informative hash", seed)
+		}
+		hashes = append(hashes, h)
+	}
+	for i := range hashes {
+		for j := i + 1; j < len(hashes); j++ {
+			if moderation.ImageHashesMatch(hashes[i], hashes[j], 5) {
+				t.Errorf("unrelated fixtures %d and %d matched: %s %s", i, j, hashes[i], hashes[j])
+			}
+		}
 	}
 }

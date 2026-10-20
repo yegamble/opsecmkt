@@ -149,6 +149,10 @@ var supportContextPhrases = compileReviewPhrases(
 // interpreted as endpoint configuration. A bare address/contact is insufficient.
 var externalContactDestination = regexp.MustCompile(`(?i)(?:[a-z2-7]{56}\.onion\b|[a-z2-7]{52}\.b32\.i2p\b|(?:https?://)?(?:t\.me|telegram\.me)/[a-z0-9_]{5,32}\b|\btelegram[ \t:]+@[a-z0-9_]{5,32}\b|\b05[0-9a-f]{64}\b|simplex:/[^\s]+|https://simplex\.chat/contact[^\s]*|\b(?:xmpp|jabber)[ \t:]+[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}\b)`)
 var paymentAddressDestination = regexp.MustCompile(`(?:^|[^A-Za-z0-9])[48][1-9A-HJ-NP-Za-km-z]{94}(?:$|[^A-Za-z0-9])`)
+
+// Bitcoin is not accepted here, so a Bitcoin-like address can only be an
+// off-platform destination. It only blocks automatic history (reviewOnlySignal).
+var bitcoinAddressDestination = regexp.MustCompile(`(?:^|[^A-Za-z0-9])(?:bc1[02-9ac-hj-np-z]{11,71}|BC1[02-9AC-HJ-NP-Z]{11,71}|[13][1-9A-HJ-NP-Za-km-z]{25,34})(?:$|[^A-Za-z0-9])`)
 var reviewClauseBoundary = regexp.MustCompile(`[\n;]+|[.!?]+(?:[ \t]+|$)`)
 var immediateReviewNegation = regexp.MustCompile(`(?i)(?:^|[^\p{L}\p{N}])(?:never|do[ \t-]+not|don['’]?t|must[ \t]+not|should[ \t]+not|avoid|refuse[ \t]+to|no[ \t]+one[ \t]+should)(?:[ \t]+ever)?[ \t:]*$`)
 
@@ -237,6 +241,20 @@ func contextualOffPlatformSolicitation(value string) bool {
 	return false
 }
 
+// reviewOnlySignal reports a recognised external destination (onion, I2P,
+// Telegram, Session, SimpleX, XMPP, Monero or Bitcoin-like address) or weak
+// instruction-like wording in any field. Solicitation may sit in another
+// sentence or field, so neither accuses nor skips the model, but either keeps
+// the item out of automatic history.
+func reviewOnlySignal(in NormalizedInput) bool {
+	for _, f := range in.Fields {
+		if externalContactDestination.MatchString(f.Value) || paymentAddressDestination.MatchString(f.Value) || bitcoinAddressDestination.MatchString(f.Value) || weakInstructionMarker(f.Value) {
+			return true
+		}
+	}
+	return false
+}
+
 func repeatedWord(value string) bool {
 	last, run := "", 0
 	for _, word := range strings.Fields(value) {
@@ -272,11 +290,15 @@ func ImageHashesMatch(a, b string, maxDistance int) bool {
 	if !InformativePerceptualHash(a) || !InformativePerceptualHash(b) {
 		return false
 	}
-	distance := 0
+	// Each byte is one row of dHash bits, g(x) > g(x+1), most significant bit
+	// first. A horizontal mirror reverses the row and complements each bit, so
+	// the comparison also tries that form; stored hashes are never rewritten.
+	distance, mirrored := 0, 0
 	for i := range x {
 		distance += bits.OnesCount8(x[i] ^ y[i])
+		mirrored += bits.OnesCount8(x[i] ^ ^bits.Reverse8(y[i]))
 	}
-	return distance <= maxDistance
+	return min(distance, mirrored) <= maxDistance
 }
 
 // InformativePerceptualHash excludes nearly uniform gradient fingerprints from

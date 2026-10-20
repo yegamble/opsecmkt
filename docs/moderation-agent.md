@@ -135,6 +135,26 @@ content, incomplete fields, unusual prices and invalid state proposals. A signal
 is not a binding accusation. Missing facts or a failed model call route to human
 review; they do not block a vendor or authorize punishment.
 
+Injection markers come in two strengths. Strong markers address the moderator
+itself: "ignore previous instructions" and its French, Spanish, Chinese and
+Russian forms, spaced-letter, punctuated or leetspeak spellings, "forget your
+rules", claimed operator instructions, "system prompt", protocol field names,
+underscore code names such as `NO_FINDING` or `AUTO_APPLY`, the canary format,
+imitation delimiters, and any of these inside a base64 token or split across two
+adjacent fields. A strong marker records `INJECTION_SUSPECTED`, skips the model
+and escalates. Weak markers are ordinary words that attacks also use ("you are",
+"act as", "decision", "confidence", "execute", "override", "disregard",
+"schema", "canary", role labels, claimed staff approval): they add
+`HUMAN_REVIEW` only, so the model still runs but the item cannot reach automatic
+history. Likewise, any recognised external destination (onion, I2P, Telegram,
+Session, SimpleX or XMPP contact, Monero or Bitcoin-like address) adds
+`HUMAN_REVIEW`, wherever the solicitation is. `OFF_PLATFORM_CONTACT` remains the
+narrower finding for a destination and solicitation in the same clause.
+`tests/fixtures/injection/corpus.json` labels each case `escalate`,
+`human_review` or `miss`; known misses (other languages, phrases split around an
+intervening field, other encodings, paraphrased intent) reach the model, whose
+recall is unmeasured.
+
 Local inference uses two stages. Stage A extracts bounded findings from the
 untrusted material. Go validates those findings before Stage B receives them
 with trusted context. Stage B does not receive the original material, and every
@@ -203,7 +223,7 @@ the operator's selected real runtime.
 
 | Disposition | Effect |
 | --- | --- |
-| `AUTO_APPLY` | Record only a benign `NO_ACTION`/`NO_FINDING` classification; no marketplace entity is changed |
+| `AUTO_APPLY` | Record only a benign `NO_ACTION`/`NO_FINDING` classification of text with no external destination or weak instruction marker; no marketplace entity is changed |
 | `QUEUE_HUMAN` | Preserve the proposal for authorized review with a deadline |
 | `ESCALATE_ADMIN` | Mark the item for administrator attention on the existing protected surface |
 | `HOLD` | Preserve current marketplace state and evidence; take no proposed action |
@@ -231,7 +251,12 @@ Encrypted messages, shipping addresses, delivery contents, keys and raw upload
 bytes are excluded. Migration 127 stores an optional 64-bit perceptual dHash
 computed on the upload gateway from the image it already decoded and normalized.
 The worker compares a bounded sample of trusted hashes; Hamming distance at
-most five is an advisory duplicate signal, not proof of copying. Old gateways
+most five, directly or against the hash's horizontal mirror (each row reversed
+and complemented; stored hashes are unchanged), is an advisory duplicate signal,
+not proof of copying. The gateway shrinks the image to 9×8 with an
+area-averaging bilinear filter, so on synthetic textured fixtures recompression,
+resizing and a 1% crop stay within five bits; real-photo rates are unmeasured,
+and rotation or larger crops are not claimed. Old gateways
 may omit dHash and retain exact SHA256 comparison; existing images are not
 backfilled. Upgrade the app and apply migration 127 first, then update the
 separate gateway: an old app's strict upload envelope rejects the added field,
