@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { expect, test, type APIRequestContext, type Browser, type Locator, type Page, type TestInfo } from '@playwright/test';
 import { check, context, password, pressSubmit, register, reloadUntil, settlementStatus, shot, tabTo, typeInto } from './escrow-helpers';
-import { pgpFixture } from './db-helpers';
+import { pgpFixture, seedPGPAccess } from './db-helpers';
 
 // WR-escrow Phase 3, slice X-g2 (A-248; P3-R3 to P3-R8, P3-R11): the Monero escrow journey with JavaScript disabled at
 // 320 px, every form driven by the keyboard alone, against the real server and PostgreSQL. The escrow wallet-rpc and its
@@ -63,15 +63,24 @@ async function signIn(browser: Browser, baseURL: string | undefined, handle: str
   await typeInto(page, page.getByLabel('Password', { exact: true }), pass);
   await pressSubmit(page, page.getByRole('button', { name: 'Sign in' }));
   await expect(page.locator('.account-name')).toHaveText(handle);
+  // Reauthenticate this session to its existing binding; a returning buyer may use the other fixture key.
+  const currentKey = sql(`SELECT pgp FROM users WHERE handle='${handle.replace(/'/g, "''")}'`);
+  await seedPGPAccess(page, currentKey || undefined, process.env.E2E_ESCROW_XMR_DATABASE_URL);
   return page;
 }
 
-// Successful order fixtures explicitly save encryption keys through the real
-// profile form; registration itself keeps the missing-key path available.
+// Successful order fixtures save keys with the keyboard through the real profile form, then explicitly
+// seed the current-session decryption prerequisite. Registration keeps the missing-key path available.
 async function saveEncryptionKey(page: Page, pass: string, fixture: 'recipient.pub.asc' | 'other.pub.asc') {
-  await page.goto('/account');
-  const profile = page.locator('form', { has: page.getByRole('button', { name: 'Save profile' }) });
-  await typeInto(page, profile.getByLabel('PGP public key', { exact: true }), pgpFixture(fixture));
+  const response = await page.goto('/account');
+  expect(response?.status(), (await page.getByRole('main').innerText()).slice(0, 1200)).toBe(200);
+  const profile = page.locator('form[action="/account"]');
+  await expect(profile).toHaveCount(1);
+  // SSR may prefill the required vendor key. Replace it instead of appending a second armored block.
+  const publicKey = profile.getByLabel('PGP public key');
+  await tabTo(page, publicKey);
+  await page.keyboard.press('ControlOrMeta+A');
+  await page.keyboard.insertText(pgpFixture(fixture));
   await typeInto(page, profile.getByLabel('Current password', { exact: true }), pass);
   expect(await pressSubmit(page, profile.getByRole('button', { name: 'Save profile' }))).toBe(303);
 }
@@ -157,8 +166,8 @@ async function paid(request: APIRequestContext, tx: string): Promise<string[]> {
 }
 
 test('Monero escrow: checkout with the custody copy, funding at 9 and 10 confirmations, the vendor\'s claim, and an underpaid order cancelled and refunded', async ({ page: admin, browser, baseURL, request }, info) => {
-  // The marketplace and both order parties with usable encryption keys. PGP
-  // sign-in stays off; saved encryption keys are the order requirement.
+  // The marketplace and both order parties with usable encryption keys and explicit browser decryption proofs.
+  // Optional PGP sign-in stays off; it is separate from the required commerce access proof.
   await admin.goto('/setup');
   await typeInto(admin, admin.getByLabel('Setup token'), 'e2e-escrow-xmr-local-setup-token-at-least-32-characters');
   await typeInto(admin, admin.getByLabel('Handle', { exact: true }), 'xmr_admin');
@@ -173,6 +182,8 @@ test('Monero escrow: checkout with the custody copy, funding at 9 and 10 confirm
   await register(buyer, 'xmr_buyer', buyerPassword);
   await register(vendor, 'xmr_vendor', vendorPassword);
   await saveEncryptionKey(buyer, buyerPassword, 'other.pub.asc');
+  await seedPGPAccess(buyer, pgpFixture('other.pub.asc'), process.env.E2E_ESCROW_XMR_DATABASE_URL);
+  await seedPGPAccess(vendor, undefined, process.env.E2E_ESCROW_XMR_DATABASE_URL);
   await admin.goto('/admin/users');
   const role = admin.locator('form', { has: admin.getByRole('button', { name: 'Update role' }) });
   await typeInto(admin, role.getByLabel('Account handle'), 'xmr_vendor');
@@ -183,6 +194,7 @@ test('Monero escrow: checkout with the custody copy, funding at 9 and 10 confirm
   await pressSubmit(admin, role.getByRole('button', { name: 'Update role' }));
   await expect(admin.getByRole('status').filter({ hasText: 'Account role saved.' })).toBeVisible();
   await saveEncryptionKey(vendor, vendorPassword, 'recipient.pub.asc');
+  await seedPGPAccess(vendor, pgpFixture('recipient.pub.asc'), process.env.E2E_ESCROW_XMR_DATABASE_URL);
   for (const [title, kind] of [[digitalTitle, 'digital'], [physicalTitle, 'physical']]) {
     await vendor.goto('/vendor-dashboard');
     await tabTo(vendor, vendor.getByText('+ Publish a new listing', { exact: true }));
@@ -587,6 +599,7 @@ test('Vendor bond in XMR (A-547): the non-refundable terms before the one-time a
   try {
     const applicant = await context(browser, baseURL);
     await register(applicant, 'xmr_bond_applicant', buyerPassword);
+    await seedPGPAccess(applicant, undefined, process.env.E2E_ESCROW_XMR_DATABASE_URL);
     await applicant.goto('/account');
     const section = applicant.getByRole('region', { name: 'Sell on this market' });
     expect(await pressSubmit(applicant, section.getByRole('button', { name: 'Apply to sell' }))).toBe(303);

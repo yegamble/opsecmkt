@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { expect, test, type Page } from '@playwright/test';
 import { ADMIN, uniqueHandle } from './db-fixtures';
-import { pgpFixture, saveEncryptionKey, setRole, signedIn, submitAndLoad } from './db-helpers';
+import { pgpFixture, saveEncryptionKey, seedPGPAccess, setRole, signedIn, submitAndLoad } from './db-helpers';
 import { waitForStyles } from './styles';
 
 test.use({ actionTimeout: 15_000 });
@@ -24,9 +24,12 @@ test('encrypted support tickets keep lifecycle notices private after administrat
     pages.push(admin, opener, moderator);
     await setRole(admin, modHandle, 'moderator');
     await saveEncryptionKey(moderator, password, pgpFixture('recipient.pub.asc'));
+    await seedPGPAccess(moderator);
+    await seedPGPAccess(admin);
     await opener.goto('/tickets');
     await expect(opener.getByRole('region', { name: 'Open an encrypted ticket' })).toContainText('Add a usable PGP encryption public key');
     await saveEncryptionKey(opener, password, pgpFixture('other.pub.asc'));
+    await seedPGPAccess(opener, pgpFixture('other.pub.asc'));
     const modID = sql(`SELECT id FROM users WHERE handle='${modHandle}'`);
     const adminID = sql(`SELECT id FROM users WHERE handle='${ADMIN.handle}'`);
     // Fixture visibility is explicit; the workflow still selects the visible

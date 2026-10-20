@@ -89,6 +89,9 @@ func TestModeratorViewsDisputedOrderReadOnly(t *testing.T) {
 
 func TestCounterpartyKeysAndMessagePrefill(t *testing.T) {
 	w := newOrderWorld(t)
+	// Legacy missing-key contacts are intentional in this display-only test.
+	w.e.setKey(w.vendorID, "")
+	w.e.setKey(w.buyerID, "")
 	_, vendorPub := testPGPKey(t, "vendor")
 	_, fp, err := parsePublicKey(vendorPub)
 	if err != nil {
@@ -129,7 +132,8 @@ func TestCounterpartyKeysAndMessagePrefill(t *testing.T) {
 	mustContain(t, body, formatFingerprint(fp), "Ownership verified", `href="/messages?to=`+vendorHandle)
 	mustNotContain(t, body, "shipping address")
 	body = w.page("/order?id="+draft, w.vendor, 200)
-	mustContain(t, body, buyerHandle+" has not added a PGP public key", `href="/messages?to=`+buyerHandle)
+	mustContain(t, body, buyerHandle+" has not added a PGP public key")
+	mustNotContain(t, body, `href="/messages?to=`+buyerHandle) // an unfunded draft does not expose a customer contact
 
 	// Paid physical order: the buyer is told to send shipping details encrypted to the vendor's key.
 	paid := w.e.order(w.buyerID, w.e.product(w.vendorID, "physical"), "XMR", statePaid)

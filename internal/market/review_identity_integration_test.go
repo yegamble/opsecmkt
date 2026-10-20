@@ -24,7 +24,7 @@ func TestPGPLoginCodeRejectedAfterKeyRotation(t *testing.T) {
 		if err := e.DB.QueryRow("SELECT challenge FROM pgp_challenges").Scan(&challenge); err != nil {
 			t.Fatal(err)
 		}
-		e.check(e.do("POST", "/pgp/verify", session, form("response", testDecrypt(t, key, challenge))), 303)
+		e.check(e.do("POST", "/pgp/verify", session, form("response", testSignInCode(t, key, challenge))), 303)
 		e.check(e.do("POST", "/pgp/2fa", session, form("enable", "1", "password", testPassword)), 303)
 	}
 	saveAndVerify(first, firstPub)

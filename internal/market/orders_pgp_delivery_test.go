@@ -16,9 +16,9 @@ func TestOrderPGPRequiredForEveryBuyerRoleAndRecheckedAtCheckout(t *testing.T) {
 	x.mustPoll()
 	product := x.digital(x.vendor)
 	for _, role := range []string{"buyer", "vendor", "moderator", "admin"} {
-		id, session := e.user("order_key_"+role, role)
+		id, session := e.keylessUser("order_key_"+role, role)
 		form := url.Values{"product_id": {product}, "currency": {"XMR"}}
-		e.check(e.do("POST", "/orders", session, cloneValues(form)), 409)
+		e.check(e.do("POST", "/orders", session, cloneValues(form)), 403)
 		if n := agInt(e, "SELECT count(*) FROM orders WHERE buyer_id=$1", id); n != 0 {
 			t.Fatalf("keyless %s created an order", role)
 		}
@@ -27,7 +27,13 @@ func TestOrderPGPRequiredForEveryBuyerRoleAndRecheckedAtCheckout(t *testing.T) {
 		mustNotContain(t, page, `action="/orders"`)
 		_, public := testPGPKey(t, "order-key-"+role)
 		e.setKey(id, public)
-		// Public-key encryption is sufficient: ownership proof and second-factor sign-in stay optional.
+		// A saved public key alone cannot authorize purchases: this session must prove decryption too.
+		e.check(e.do("POST", "/orders", session, cloneValues(form)), 403)
+		if n := agInt(e, "SELECT count(*) FROM orders WHERE buyer_id=$1", id); n != 0 {
+			t.Fatalf("unverified %s created an order", role)
+		}
+		e.pgpSessionKey(session)
+		// Session proof does not require enabling the optional global PGP sign-in factor.
 		if n := agInt(e, "SELECT count(*) FROM users WHERE id=$1 AND pgp_verified_at IS NULL AND NOT pgp_2fa", id); n != 1 {
 			t.Fatal("fixture unexpectedly enabled PGP ownership proof or sign-in")
 		}
@@ -36,14 +42,15 @@ func TestOrderPGPRequiredForEveryBuyerRoleAndRecheckedAtCheckout(t *testing.T) {
 		stock := agInt(e, "SELECT stock FROM products WHERE id=$1", product)
 		agExec(e, "UPDATE users SET pgp='',pgp_fingerprint='' WHERE id=$1", id)
 		checkout := url.Values{"order_id": {order}, "refund_address": {testXMRAddr("order-key-refund-"+role, true)}}
-		e.check(e.do("POST", "/orders/escrow-xmr", session, cloneValues(checkout)), 409)
+		e.check(e.do("POST", "/orders/escrow-xmr", session, cloneValues(checkout)), 403)
 		if x.state(order) != stateDraft || agInt(e, "SELECT stock FROM products WHERE id=$1", product) != stock || agInt(e, "SELECT count(*) FROM escrows WHERE order_id=$1", order) != 0 {
 			t.Fatalf("missing-key %s checkout changed payment or stock", role)
 		}
 		page = e.body("GET", orderPage(order), session, nil, 200)
-		mustContain(t, page, noBuyerOrderKeyReason)
+		mustContain(t, page, pgpAccessRequiredMessage)
 		mustNotContain(t, page, `action="/orders/escrow-xmr"`)
 		e.setKey(id, public)
+		e.pgpSessionKey(session)
 		e.check(e.do("POST", "/orders/escrow-xmr", session, checkout), 303)
 	}
 	// A digital vendor also needs an encryption key; a valid buyer key does not bypass it.
@@ -60,9 +67,9 @@ func TestOrderPGPRefusesUnusableKeysAtDraftAndCheckout(t *testing.T) {
 	for name, public := range testUnusableKeys(t, "order_unusable") {
 		id, session := e.user("unusable_"+randomToken()[:8], "buyer")
 		e.setKey(id, public)
-		e.check(e.do("POST", "/orders", session, url.Values{"product_id": {product}, "currency": {"XMR"}}), 409)
+		e.check(e.do("POST", "/orders", session, url.Values{"product_id": {product}, "currency": {"XMR"}}), 403)
 		order := e.order(id, product, "XMR", stateDraft)
-		e.check(x.checkout(session, order, testXMRAddr("unusable-order-"+name, true)), 409)
+		e.check(x.checkout(session, order, testXMRAddr("unusable-order-"+name, true)), 403)
 		if x.state(order) != stateDraft || agInt(e, "SELECT count(*) FROM escrows WHERE order_id=$1", order) != 0 {
 			t.Fatalf("%s opened payment despite an unusable buyer key", name)
 		}
@@ -70,7 +77,7 @@ func TestOrderPGPRefusesUnusableKeysAtDraftAndCheckout(t *testing.T) {
 	// An unreadable legacy value cannot act as a saved encryption key either.
 	id, session := e.user("unreadable_order_key", "buyer")
 	agExec(e, "UPDATE users SET pgp='not a public key' WHERE id=$1", id)
-	e.check(e.do("POST", "/orders", session, url.Values{"product_id": {product}, "currency": {"XMR"}}), 409)
+	e.check(e.do("POST", "/orders", session, url.Values{"product_id": {product}, "currency": {"XMR"}}), 403)
 }
 
 func deliveryDecryptsWith(key *openpgp.Entity, ciphertext string) bool {
@@ -92,8 +99,10 @@ func TestDigitalDeliveryEncryptsEachOrderOnlyForItsBuyer(t *testing.T) {
 	firstKey, firstPublic := testPGPKey(t, "delivery-first-buyer")
 	secondKey, secondPublic := testPGPKey(t, "delivery-second-buyer")
 	e.setKey(x.buyer, firstPublic)
+	e.pgpSessionKey(x.buyerSess)
 	secondBuyer, secondSession := e.user("delivery_second_buyer", "buyer")
 	e.setKey(secondBuyer, secondPublic)
+	e.pgpSessionKey(secondSession)
 	moderator, _ := e.user("delivery_observer_mod", "moderator")
 	enableXMPPContents(e, x.buyer)
 	xmppOptIn(e, secondBuyer)
@@ -176,6 +185,7 @@ func TestManualDigitalDeliveryValidatesCiphertextAndEncryptsMaximumContent(t *te
 	buyerKey, buyerPublic := testPGPKey(t, "manual-delivery-buyer")
 	otherKey, _ := testPGPKey(t, "manual-delivery-other")
 	e.setKey(w.buyerID, buyerPublic)
+	e.pgpSessionKey(w.buyer)
 	order := w.fundedFor(w.buyerID, w.buyer, w.vendorID, w.vendor)
 	good, err := encryptTo(buyerKey, "already encrypted digital content")
 	if err != nil {

@@ -23,7 +23,7 @@ type Product struct {
 	// P4, vendor-dashboard only: an administrator's takedown reason (A-163); never loaded for public pages.
 	TakedownReason string
 	// MOD72-6 (listing_review.go): Pending, the listing is not approved for buyers (review_state pending or rejected).
-	// Public pages never load one; its vendor, staff and the parties to an earlier order see it marked.
+	// Public pages never load one; its vendor and staff see it marked, and so do earlier order parties unless rejected.
 	// RejectionReason: staff rejected it with this reason; loaded only for its vendor and staff.
 	Pending         bool
 	RejectionReason string
@@ -31,6 +31,9 @@ type Product struct {
 	// and Thumb, the first one's thumbnail URL for its card ("" = the CSS illustration).
 	Photos []ProductPhoto
 	Thumb  string
+
+	// Vendor storefront controls apply to public listings and existing-order views alike.
+	VendorVacation, VendorDeactivated, VendorMessagesUnavailable bool
 }
 
 // ProductPhoto is one public photo of a listing on the product page (A-189): its URLs on the public image route,
@@ -66,6 +69,8 @@ type Message struct {
 	// unique visible recipient key IDs, excluding the recipient's saved IDs; hidden IDs are not included.
 	RecipientExtraKeys    int
 	RecipientExtraKeysSet bool
+
+	CanReply bool // current recipient policy permits replying to this incoming message
 }
 type Notification struct {
 	ID, Body, Created, OrderID, TicketID string
@@ -204,6 +209,10 @@ type PageData struct {
 	VendorPolicy  *VendorPolicyView
 	VendorAccount *VendorAccountView
 	VendorAdmin   *VendorAdminView
+	// VendorAvailability: own storefront settings on /account, public availability on /vendor.
+	VendorAvailability *VendorAvailabilityView
+	// PGPAccessVerified: this session proved decryption with the account's current public key.
+	PGPAccessVerified bool
 	// ImageStorage: admin page, stored photos and avatars against IMAGE_STORAGE_LIMIT_MB (uploads.go).
 	ImageStorage *ImageStorageView
 	// A-189 (image_pages.go). StaffListPublic: /canary, the administrator's "Show a public staff list" is on;
@@ -661,6 +670,8 @@ type ContactKey struct {
 	Unreadable           bool   // a key is saved but no longer parses (legacy or revoked)
 	NoEncryption         bool   // a key is saved and parses, but nothing can be encrypted to it now (A-68: expired, revoked or signing-only)
 	ChangedAfterOrder    string // A-158: UTC date the vendor's key was changed or re-verified after the paid physical order was placed (buyer's view)
+
+	CanMessage bool // the current viewer may send encrypted messages to this contact
 }
 
 // Usable reports whether the contact has a key that can receive encrypted messages (contactKey fills Fingerprint only then).
@@ -818,9 +829,10 @@ type EscrowStallView struct {
 // is flagged as well.
 type EscrowAlertView struct {
 	ID, State                                  string
-	Stall, TooFew, Refused, Requested          bool
+	Stall, TooFew, Refused                     bool
 	ReRequestable, Unbuilt, Stranded, SetAside int64
 	StoredText                                 string
+	Requested                                  string // the line of a settlement requested for more than 24 hours, "" for none (requestedText)
 	Flagged                                    bool
 }
 

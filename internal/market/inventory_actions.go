@@ -282,9 +282,9 @@ func adminListingAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, err
 		}
 		var title, current, handle string
-		var pending bool
-		err := tx.QueryRowContext(ctx, `SELECT p.title,coalesce(p.admin_archive_reason,''),u.handle,p.review_state<>'approved' FROM products p JOIN users u ON u.id=p.vendor_id
-			WHERE p.id=$1 FOR UPDATE OF p`, id).Scan(&title, &current, &handle, &pending)
+		var reviewState string
+		err := tx.QueryRowContext(ctx, `SELECT p.title,coalesce(p.admin_archive_reason,''),u.handle,p.review_state FROM products p JOIN users u ON u.id=p.vendor_id
+			WHERE p.id=$1 FOR UPDATE OF p`, id).Scan(&title, &current, &handle, &reviewState)
 		if err != nil {
 			return actionResult{}, err
 		}
@@ -316,9 +316,15 @@ func adminListingAction(c *actionCtx) (actionResult, error) {
 			audit = "Restored listing " + short + " of " + handle + " after a takedown"
 			vendorAudit = "Listing " + short + " restored by administrator " + c.User.Handle
 			note = "An administrator restored your listing “" + title + "” (" + short + "). It is visible in the marketplace again and accepts new orders."
-			if pending { // MOD72-6: a listing taken down while not approved stays hidden until staff approve it
+			// MOD72-6: a listing taken down while not approved stays hidden: a pending one until staff approve it, a
+			// rejected one until its vendor edits it to resubmit it.
+			switch reviewState {
+			case "pending":
 				audit += "; it is not approved for buyers"
 				note = "An administrator restored your listing “" + title + "” (" + short + "). Buyers still cannot see it until the market staff approve it in review."
+			case "rejected":
+				audit += "; it is not approved for buyers"
+				note = "An administrator restored your listing “" + title + "” (" + short + "). It is still rejected in review, so buyers cannot see it: edit it to fix the problem, and your next change to what buyers see sends it back for review."
 			}
 		}
 		if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", vendorID, vendorAudit); err != nil {

@@ -24,20 +24,43 @@
 </form>
 <p class="help">The CAPTCHA is an image only, with no audio or text alternative (it fails WCAG 3.3.8 for people who cannot read it); first-run setup never asks for it. Changes are recorded in the audit trail.</p>
 </section>
+<section class="panel" id="pgp-access" aria-labelledby="pgp-access-heading">
+<h2 id="pgp-access-heading">PGP and browse-only sign-in</h2>
+<p>Every account must save a usable PGP public key and decrypt a challenge in its current browser before purchasing or sending messages. A signature ownership proof alone does not authorize these actions. Private keys stay with their owners.</p>
+<p>{{if eq (index .Settings "allow_login_without_pgp") "true"}}Browse-only sign-in without PGP is allowed.{{else}}Every sign-in requires PGP decryption.{{end}} Existing sessions still need their own PGP authentication before purchasing or sending messages.</p>
+<form class="stack" method="post" action="/admin/pgp-access">
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/admin/pgp-access"}}">
+<fieldset><legend>Login without PGP</legend>
+<label class="check"><input type="radio" name="allow_login_without_pgp" value="true"{{if eq (index .Settings "allow_login_without_pgp") "true"}} checked{{end}}> Allow browse-only sign-in</label>
+<label class="check"><input type="radio" name="allow_login_without_pgp" value="false"{{if ne (index .Settings "allow_login_without_pgp") "true"}} checked{{end}}> Require PGP decryption at every sign-in</label>
+</fieldset>
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
+<span class="help">Before requiring PGP at every sign-in, decrypt a challenge on <a class="text-link" href="/pgp">PGP verification</a> in this browser. Accounts without a usable public key will then need staff recovery to sign in. New registrations must include a usable public key. Optional TOTP remains strongly encouraged to protect accounts while browse-only sign-in is allowed.</span>
+<button type="submit">Save PGP access policy</button>
+</form>
+</section>
 {{template "signin-protection" .}}{{end}}
 {{/* Users section (/admin/users): second-factor reset, suspension and ban (A-546), after the role form */}}
 {{define "admin-accounts"}}<section class="panel admin-reset-factors" id="reset-factors" aria-labelledby="reset-factors-heading">
 <h2 id="reset-factors-heading">Reset a user's second factors</h2>{{with $.NoticeIn "reset-factors"}}
 <div class="alert" role="status">{{.}}</div>{{end}}
-<p>For a user who lost their authenticator and recovery codes, or their PGP private key. This turns off TOTP (deleting its secret and recovery codes) and PGP sign-in verification; their saved PGP key and its verification stay. They are signed out everywhere, notified, and sign in next with their password only.</p>
-<p class="help">When the account holder can still use their verified PGP key, ask them to sign a fresh message and verify it against the key already saved on their account. Do not trust a replacement key supplied with the reset request. If they cannot use that key, follow the operator’s account-recovery procedure before resetting.</p>
+<p>For a user who lost their authenticator and recovery codes, or their PGP private key. This turns off TOTP (deleting its secret and recovery codes) and PGP sign-in verification; their saved PGP key and its verification stay. They are signed out everywhere and notified.{{if eq (index .Settings "allow_login_without_pgp") "true"}} They sign in next with their password only.{{else}} This market still requires PGP decryption at sign-in. Resetting the optional second factors cannot replace it; use identity-verified replacement-key recovery below. The replacement key must then be decrypted; the login policy stays in force.{{end}}</p>
+<p class="help">When the account holder can still use their verified PGP key, ask them to sign a fresh message and verify it against the key already saved on their account. Do not accept a replacement key merely because it was supplied with the reset request; verify identity out of band first. If they cannot use that key, follow the operator’s account-recovery procedure before resetting.</p>
 <form class="stack" method="post" action="/admin/reset-factors">
 <input type="hidden" name="csrf" value="{{.CSRF}}">
 <input type="hidden" name="form_nonce" value="{{formNonce "/admin/reset-factors"}}">
 <label>Account handle<input name="handle" value="{{.ResetHandle}}" required minlength="3" maxlength="32" pattern="[a-zA-Z0-9_]{3,32}" title="Use 3 to 32 letters, numbers, or underscores." autocomplete="off" autocapitalize="none" spellcheck="false"{{if .ResetHandle}} aria-invalid="true"{{end}}>
 </label>
+<details>
+<summary>Recover a lost PGP key</summary>
+<p class="help">Optional privileged recovery: first verify the account holder's identity out of band using the market's recovery procedure. This replaces their public-key binding even when no optional second factor is enrolled, resets optional factors, ends every session and pending sign-in, and leaves the new key unverified. The login policy stays in force; strict sign-in still requires decryption with the new key.</p>
+<label>Replacement PGP public key<textarea name="replacement_pgp" rows="6" maxlength="16384" spellcheck="false" autocomplete="off" placeholder="-----BEGIN PGP PUBLIC KEY BLOCK-----"></textarea></label>
+<label class="check"><input type="checkbox" name="recovery_identity_verified" value="yes"> I verified this account holder's identity out of band before accepting this replacement public key.</label>
+<p class="help">Supply a usable public encryption key only. Never paste or upload a private key. The new public fingerprint and your administrator identity are recorded in both accounts' audit trails.</p>
+</details>
 {{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
-<span class="help">Enter the handle exactly (it is case-sensitive). Confirm with your own password{{if and $.Security $.Security.TOTPEnabled}} and authenticator code{{end}}. Check the request really comes from the account holder first: anyone who knows their password can then sign in.</span>
+<span class="help">Enter the handle exactly (it is case-sensitive). Confirm with your own password{{if and $.Security $.Security.TOTPEnabled}} and authenticator code{{end}}. Check the request really comes from the account holder first: anyone who knows their password can then sign in.{{if ne (index .Settings "allow_login_without_pgp") "true"}} PGP decryption is still required while this market's strict policy is on.{{end}}</span>
 <button type="submit">Reset second factors</button>
 </form>{{if .FactorAccounts}}
 <details class="account-list">

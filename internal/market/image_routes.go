@@ -109,29 +109,29 @@ func imageSuffix(full bool) string {
 }
 
 // imagePublicFrom and imagePublicWhere are the public visibility predicate over images i, their owner o and a
-// photo's listing p. A photo: the listing is published (not archived, not taken down, not awaiting staff review:
-// MOD72-6, listing_review.go) and its vendor is still a
-// vendor (or an administrator, whose own listings are public too) and not suspended. An avatar: a vendor's
-// that is not suspended; a moderator's or administrator's only while the "public staff list" setting is on and
+// photo's listing p. A photo: the listing is published (not archived, not taken down, approved in listing review:
+// MOD72-6, listing_review.go) and its vendor is still a vendor (or an administrator, whose own listings are public
+// too) and not suspended or deactivated. An avatar: a vendor's that is not suspended or deactivated; a moderator's
+// or administrator's only while the "public staff list" setting is on and
 // that account has not hidden itself (owner decision 1(d); both are off/hidden by default, and any other value
 // or a missing setting counts as off). A page showing an image on the public route selects its id with this
 // predicate, so it never links an image that route would refuse.
 const (
 	imagePublicFrom  = `images i JOIN users o ON o.id=i.owner_user_id LEFT JOIN products p ON p.id=i.product_id`
 	imagePublicWhere = `o.suspended_at IS NULL AND (
- (i.kind='photo' AND p.vendor_id=i.owner_user_id AND NOT p.archived AND p.admin_archive_reason IS NULL AND p.review_state='approved' AND o.role IN ('vendor','admin'))
- OR (i.kind='avatar' AND (o.role='vendor' OR (o.role IN ('admin','moderator') AND NOT o.staff_hidden
+ (i.kind='photo' AND p.vendor_id=i.owner_user_id AND NOT p.archived AND NOT o.vendor_deactivated AND p.admin_archive_reason IS NULL AND p.review_state='approved' AND o.role IN ('vendor','admin'))
+ OR (i.kind='avatar' AND ((o.role='vendor' AND NOT o.vendor_deactivated) OR (o.role IN ('admin','moderator') AND NOT o.staff_hidden
    AND EXISTS(SELECT 1 FROM settings WHERE key='staff_list_public' AND value='true')))))`
 )
 
 // imageDeskWhere is the authenticated route's predicate over images i and owner o for viewer $2 with role $3:
 // the owner; an administrator; for the avatar of a moderator or administrator who is not suspended, the
 // buyer or vendor of an order on which that member moved the dispute to resolved, or a moderator (who may open
-// every resolved order, orders_load.go); or, for a photo of an archived listing, whoever may read an order placed
-// on that listing (orderReadable, the rule that opens the archived listing's product page, A-164 and A-264).
-// MOD72-6: a listing not approved for buyers (pending or rejected) is treated like an archived one for those order
-// readers, and a moderator also sees its photos while it is pending and not archived, to review it
-// (listing_review.go).
+// every resolved order, orders_load.go); or, for a photo of an archived or deactivated-vendor listing, whoever may
+// read an order placed on that listing (orderReadable, the rule that opens the archived listing's product page, A-164 and A-264).
+// MOD72-6: a listing awaiting review is treated like an archived one for those order readers (non-draft orders
+// only); a rejected listing's photos are never served through an order, archived or not (QA72-3), and a moderator
+// sees the photos of a pending or rejected listing, as the vendor and administrators do (listing_review.go).
 // Everyone else, moderators included for other vendors' images, is refused. Inside the last EXISTS, o and p are
 // the order and its listing (orderReadable's aliases), not the image's owner.
 var imageDeskWhere = `(i.owner_user_id=$2 OR $3='admin'
@@ -140,9 +140,9 @@ var imageDeskWhere = `(i.owner_user_id=$2 OR $3='admin'
    WHERE od.state='resolved' AND (od.buyer_id=$2 OR pr.vendor_id=$2 OR $3='moderator')
      AND EXISTS(SELECT 1 FROM order_events e WHERE e.order_id=od.id AND e.from_state='disputed' AND e.to_state='resolved' AND e.actor_id=i.owner_user_id)))
  OR (i.kind='photo' AND $3='moderator' AND EXISTS(SELECT 1 FROM products pp
-   WHERE pp.id=i.product_id AND pp.review_state='pending' AND NOT pp.archived AND pp.vendor_id=i.owner_user_id))
- OR (i.kind='photo' AND EXISTS(SELECT 1 FROM products p JOIN orders o ON o.product_id=p.id
-   WHERE p.id=i.product_id AND (p.archived OR (p.review_state<>'approved' AND o.state<>'draft')) AND p.vendor_id=i.owner_user_id AND ` + orderReadable("$2", "$3") + `)))`
+   WHERE pp.id=i.product_id AND pp.review_state IN ('pending','rejected') AND pp.vendor_id=i.owner_user_id))
+ OR (i.kind='photo' AND EXISTS(SELECT 1 FROM products p JOIN orders o ON o.product_id=p.id JOIN users v ON v.id=p.vendor_id
+   WHERE p.id=i.product_id AND p.review_state<>'rejected' AND (p.archived OR v.vendor_deactivated OR (p.review_state='pending' AND o.state<>'draft')) AND p.vendor_id=i.owner_user_id AND ` + orderReadable("$2", "$3") + `)))`
 
 // imageSelect starts an image route's query: the length of one size of the image and, for a GET, its bytes (a
 // HEAD reads only the length). The only way a query reads image bytes; no other file may use it

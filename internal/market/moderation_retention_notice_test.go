@@ -21,7 +21,7 @@ func TestModerationRetentionNoticePreservesLegacyCopiesAfterUpgradeExpiryAndDisa
 	// before the upgrade; no immutability guard is disabled and no historical
 	// snapshot or proposal is edited to manufacture legacy contents afterward.
 	legacy := newPooledHistoricalFixture(t, 127)
-	vendor, session := legacy.user("moderation_retention_notice_vendor", "vendor")
+	vendor, session := legacy.keylessUser("moderation_retention_notice_vendor", "vendor") // schema 127 predates sessions.pgp_access_key (129)
 	product := legacy.product(vendor, "digital")
 	const marker = "MOD69-retained-plaintext-marker-6a7d"
 	agExec(legacy, `UPDATE settings SET value='true' WHERE key='moderation_enabled'`)

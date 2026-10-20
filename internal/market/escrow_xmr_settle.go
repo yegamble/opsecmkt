@@ -54,7 +54,8 @@ import (
 //
 // Stray refunds (P3-R8, ES-8): every wallet that may hold coins is read on every pass, so each closed order of the
 // wallet with deposits after close or left out (with the threshold, unclaimed) gets a stray refund requested here, one
-// in progress at a time. A destroyed wallet (slice X-f, P3-R9) is never opened, so its orders get none.
+// first-generation stray refund in progress at a time (a re-request of a failed one never holds that slot, A-616). A
+// destroyed wallet (slice X-f, P3-R9) is never opened, so its orders get none.
 //
 // Why a settlement waits, why it failed, or that a restore holds it, is its send_error (migration 085, as Bitcoin
 // escrow's settlements.send_error; the order page says it); a class staff must see is flagged once, when it is first
@@ -1488,14 +1489,21 @@ func (a *App) failXMRSettlement(ctx context.Context, s *xmrSettleRow, class stri
 	return nil
 }
 
+// xmrStrayOpenSQL selects the settlements s that hold an order's one stray refund slot: a first-generation stray refund
+// in progress (migration 135's xmr_settlements_one_open_stray). A re-request of a failed stray refund (supersedes) never
+// holds it (A-616): it spends only the key images of the settlement it supersedes, so it neither collides with nor holds
+// back the stray refund of a later deposit, which claims only deposits no settlement claims (xmrStrayEligibleSQL).
+const xmrStrayOpenSQL = "s.kind='stray_refund' AND s.state IN ('requested','built','relayed') AND s.supersedes IS NULL"
+
 // xmrRequestStrays requests a stray refund (P3-R8) for each closed Monero escrow order of wallet w with deposits to
-// return and none in progress, as requestStray does for Bitcoin escrow: to the pinned refund address, in one
-// transaction under the escrow row's lock, with an order note and a notice to the buyer.
+// return and no first-generation stray refund in progress (xmrStrayOpenSQL), as requestStray does for Bitcoin escrow:
+// to the pinned refund address, in one transaction under the escrow row's lock, with an order note and a notice to the
+// buyer.
 func (a *App) xmrRequestStrays(ctx context.Context, w xmrWalletRow) error {
 	threshold := a.escrowXMR.confirmations
 	rows, err := a.db.QueryContext(ctx, `SELECT es.order_id FROM escrows es JOIN xmr_escrow_slots sl ON sl.id=es.xmr_slot_id JOIN orders o ON o.id=es.order_id
 		WHERE sl.wallet_id=$1 AND es.coin='XMR' AND o.state IN ('completed','cancelled','resolved') AND EXISTS (SELECT 1 FROM payments p WHERE p.order_id=es.order_id AND `+xmrStrayEligibleSQL+`)
-		AND NOT EXISTS (SELECT 1 FROM xmr_settlements s WHERE s.order_id=es.order_id AND s.kind='stray_refund' AND s.state IN ('requested','built','relayed')) ORDER BY es.id`, w.id, threshold)
+		AND NOT EXISTS (SELECT 1 FROM xmr_settlements s WHERE s.order_id=es.order_id AND `+xmrStrayOpenSQL+`) ORDER BY es.id`, w.id, threshold)
 	if err != nil {
 		return err
 	}
@@ -1530,7 +1538,7 @@ func (a *App) xmrRequestStray(ctx context.Context, orderID string) error {
 	var open bool
 	var sum, n int64
 	if err = tx.QueryRowContext(ctx, `SELECT o.buyer_id,o.state,
-			EXISTS(SELECT 1 FROM xmr_settlements s WHERE s.order_id=es.order_id AND s.kind='stray_refund' AND s.state IN ('requested','built','relayed')),
+			EXISTS(SELECT 1 FROM xmr_settlements s WHERE s.order_id=es.order_id AND `+xmrStrayOpenSQL+`),
 			(SELECT COALESCE(sum(p.amount),0) FROM payments p WHERE p.order_id=es.order_id AND `+xmrStrayEligibleSQL+`),
 			(SELECT count(*) FROM payments p WHERE p.order_id=es.order_id AND `+xmrStrayEligibleSQL+`)
 		FROM escrows es JOIN orders o ON o.id=es.order_id WHERE es.order_id=$1 AND es.coin='XMR' FOR UPDATE OF es`, orderID, a.escrowXMR.confirmations).Scan(&buyer, &state, &open, &sum, &n); err != nil {

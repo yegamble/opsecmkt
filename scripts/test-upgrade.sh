@@ -227,9 +227,9 @@ for pooled in "INSERT INTO payouts(order_id,kind,user_id,currency,amount) SELECT
   grep -q 'pooled payments are removed: .* takes no new rows' "$work/pooled-108.out"
 done
 [[ $(sql -c 'SELECT (SELECT count(*) FROM payouts) + (SELECT count(*) FROM payment_addresses)') == 0 ]]
-# Behaviour through the upgraded server: an alpha.1 password still signs in, the migrated draft is shown as
-# a draft, and ordering the same product and currency again with intake explicitly paused returns that
-# unfunded draft instead of a second one.
+# Behaviour through the upgraded server: an alpha.1 password still permits browse-only
+# sign-in and the migrated draft remains readable. The old keyless session must complete
+# PGP onboarding before creating or reusing a draft; upgrade never grants that proof.
 # (Migration 010 turns the CAPTCHA on; switch it off as an operator would, so this script can sign in.)
 [[ $(sql -c "SELECT value FROM settings WHERE key='payment_intake_XMR'") == escrow ]]
 sql -c "UPDATE settings SET value='false' WHERE key='captcha_required'"
@@ -237,10 +237,11 @@ sql -c "UPDATE settings SET value='false' WHERE key='payment_intake_XMR'"
 export UPGRADE_XMR_ORDER
 UPGRADE_XMR_ORDER=$(sql -c "SELECT o.id FROM orders o JOIN users u ON u.id=o.buyer_id WHERE u.handle='alpha_buyer' AND o.currency='XMR'")
 python3 <<'PY'
-import html, http.cookiejar, os, pathlib, re, subprocess, urllib.parse, urllib.request
+import hashlib, html, http.cookiejar, os, pathlib, re, secrets, subprocess, urllib.error, urllib.parse, urllib.request
 base, order = os.environ['UPGRADE_BASE'], os.environ['UPGRADE_XMR_ORDER']
 password = 'upgrade-long-disposable-password'
-client = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+jar = http.cookiejar.CookieJar()
+client = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
 def csrf(path, session=client):
     match = re.search(r'name="csrf"\s+value="([^"]+)"', session.open(base + path).read().decode())
     assert match, f'{path} has no CSRF token'
@@ -254,12 +255,30 @@ page = client.open(base + '/order?id=' + order).read().decode()
 assert 'Draft — unfunded' in page and 'Alpha era soldering kit' in page, 'migrated order is not shown as a draft'
 product = subprocess.run(['docker', 'exec', '-i', os.environ['UPGRADE_DB'], 'psql', '-X', '-q', '-A', '-t', '-U', 'upgrade', '-d', 'opsecmkt', '-c',
                           'SELECT product_id FROM orders WHERE id=' + "'" + order + "'"], check=True, capture_output=True, text=True).stdout.strip()
-# The preservation checks above run before these explicit account changes. Legacy
-# accounts still need usable encryption keys before creating or reusing an order;
-# the upgrade must not silently supply keys or bypass the current order policy.
-checkout_without_keys = client.open(base + '/checkout?' + urllib.parse.urlencode({'id': product})).read().decode()
-assert 'Add a usable PGP public key' in checkout_without_keys, 'legacy buyer must be told to save an encryption key'
-assert not re.findall(r'<form\b(?=[^>]*\baction="/orders")[^>]*>', checkout_without_keys), 'keyless legacy accounts must not receive an order form'
+checkout = client.open(base + '/checkout?' + urllib.parse.urlencode({'id': product})).read().decode()
+orders_forms = re.findall(r'<form\b(?=[^>]*\baction="/orders")[^>]*>(.*?)</form>', checkout, re.S)
+assert not orders_forms, 'a legacy keyless session must not receive a purchase form'
+assert 'href="/account"' in checkout and 'href="/pgp"' in checkout, 'checkout must link PGP setup and verification'
+account = client.open(base + '/account').read().decode()
+assert 'name="pgp"' in account, 'a migrated buyer must be able to add its public key'
+assert 'PGP' in client.open(base + '/pgp').read().decode(), 'a migrated buyer must be able to reach PGP verification'
+# Supply only the legacy seller's missing public key as explicit fixture preparation.
+# The buyer remains keyless and receives no authentication proof, so the next refusal
+# isolates the buyer guard instead of stopping earlier at the seller prerequisite.
+with open('tests/e2e/fixtures/pgp/recipient.pub.asc', encoding='utf-8') as fixture:
+    vendor_public = fixture.read().strip().replace("'", "''")
+subprocess.run(['docker', 'exec', '-i', os.environ['UPGRADE_DB'], 'psql', '-X', '-q', '-A', '-t', '-v', 'ON_ERROR_STOP=1',
+                '-U', 'upgrade', '-d', 'opsecmkt', '-c',
+                "UPDATE users SET pgp='" + vendor_public + "' WHERE handle='alpha_vendor'"], check=True, capture_output=True, text=True)
+# A forged submission cannot reuse the old draft through the newly protected mutation.
+try:
+    client.open(base + '/orders', data=urllib.parse.urlencode({'csrf': csrf('/account'), 'form_nonce': secrets.token_hex(16),
+                                                              'product_id': product, 'currency': 'XMR'}).encode())
+    raise AssertionError('a legacy keyless session was allowed to purchase')
+except urllib.error.HTTPError as error:
+    refusal = error.read().decode()
+    assert error.code == 403 and 'This browser has not completed PGP authentication.' in refusal, (
+        f'keyless purchase must require PGP authentication, got {error.code}')
 public_key = pathlib.Path('tests/e2e/fixtures/pgp/recipient.pub.asc').read_text()
 def save_encryption_key(session, handle):
     account = session.open(base + '/account').read().decode()
@@ -278,16 +297,33 @@ signed_vendor = sign_in(vendor, 'alpha_vendor')
 assert signed_vendor.status == 200 and '/login' not in signed_vendor.url, 'alpha.1 vendor credentials rejected'
 save_encryption_key(vendor, 'alpha_vendor')
 save_encryption_key(client, 'alpha_buyer')
+# Saving a public key alone still does not authenticate this browser.
+saved_without_proof = client.open(base + '/checkout?' + urllib.parse.urlencode({'id': product})).read().decode()
+assert not re.findall(r'<form\b(?=[^>]*\baction="/orders")[^>]*>', saved_without_proof), 'a saved key without session proof must not enable purchase'
+# Explicit fixture preparation for the remaining draft-reuse migration check.
+# Authentication regressions above retain the real keyless refusal; focused PGP
+# tests exercise challenge decryption instead of this test-only database setup.
+def database(statement):
+    return subprocess.run(['docker', 'exec', '-i', os.environ['UPGRADE_DB'], 'psql', '-X', '-q', '-A', '-t',
+                           '-v', 'ON_ERROR_STOP=1', '-U', 'upgrade', '-d', 'opsecmkt', '-c', statement],
+                          check=True, capture_output=True, text=True).stdout.strip()
+session_token = next(cookie.value for cookie in jar if cookie.name == 'session')
+session_hash = hashlib.sha256(session_token.encode()).hexdigest()
+saved_key_hex = database("SELECT encode(convert_to(pgp,'UTF8'),'hex') FROM users WHERE handle='alpha_buyer'")
+key_digest = hashlib.sha256(bytes.fromhex(saved_key_hex)).hexdigest()
+proof_row = database("UPDATE sessions SET pgp_access_key='" + key_digest + "' WHERE token_hash='" + session_hash +
+                     "' AND user_id=(SELECT id FROM users WHERE handle='alpha_buyer') RETURNING token_hash")
+assert proof_row == session_hash, 'explicit buyer session proof fixture was not bound'
 checkout = client.open(base + '/checkout?' + urllib.parse.urlencode({'id': product})).read().decode()
 orders_forms = re.findall(r'<form\b(?=[^>]*\baction="/orders")[^>]*>(.*?)</form>', checkout, re.S)
 assert len(orders_forms) == 1, 'checkout must render one matching /orders form'
 csrf_match = re.search(r'name="csrf"\s+value="([^"]+)"', orders_forms[0])
 nonce_match = re.search(r'name="form_nonce"\s+value="([^"]+)"', orders_forms[0])
 assert csrf_match and nonce_match, 'rendered /orders form must supply its CSRF token and nonce'
-again = client.open(base + '/orders', data=urllib.parse.urlencode({'csrf': csrf_match[1], 'form_nonce': nonce_match[1],
+again = client.open(base + '/orders', data=urllib.parse.urlencode({'csrf': html.unescape(csrf_match[1]), 'form_nonce': html.unescape(nonce_match[1]),
                                                                      'product_id': product, 'currency': 'XMR'}).encode())
 assert again.status == 200 and urllib.parse.parse_qs(urllib.parse.urlsplit(again.url).query).get('id') == [order], f'reorder did not return the migrated draft ({again.url})'
-print('Upgraded server: alpha.1 sign-in, migrated draft page and draft reuse passed')
+print('Upgraded server: alpha.1 browse-only sign-in, required PGP onboarding, encrypted-key setup and migrated draft reuse passed')
 PY
 [[ $(sql -c "SELECT count(*) FROM orders o JOIN users u ON u.id=o.buyer_id WHERE u.handle='alpha_buyer' AND o.currency='XMR'") == 1 ]]
 [[ $(sql -c 'SELECT count(*) FROM orders') == 2 ]]
@@ -348,4 +384,4 @@ INTERMEDIATE_TEST_DATABASE_URL="$database_url" scripts/test-intermediate-upgrade
 # directory. Its overlay binds the app only to loopback and puts Tor on an internal network; it makes no claim
 # that a Tor circuit or public onion service was established.
 bash scripts/test-tor-upgrade-rollback.sh "$from_ref"
-echo "Upgrade from $from_ref and intermediate $intermediate_ref passed: health, migration history, Monero drafts and encrypted messages preserved, password sign-in retained, draft reuse and uniqueness verified, Monero collision notes backfilled, a database from a newer release refused, and Tor rollback rehearsed."
+echo "Upgrade from $from_ref and intermediate $intermediate_ref passed: health, migration history, Monero drafts and encrypted messages preserved, browse-only password sign-in retained, PGP purchase authentication required, draft uniqueness verified, Monero collision notes backfilled, a database from a newer release refused, and Tor rollback rehearsed."
