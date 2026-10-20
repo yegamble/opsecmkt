@@ -675,7 +675,7 @@ the private administrator ingress when one is configured. Bookmarks to an old
 ### Moderation proposals
 
 The optional [moderation controller](moderation-agent.md) and local model are
-off by default. The Admin overview links to `/admin/moderation`, available only
+off by default. The Admin overview on private administrator ingress links to `/admin/moderation`, available only
 on the private administrator connection; it shows job/review/escalation counts,
 injection-suspicion counts, prompt/weights pins, last pass and bounded failure
 classes. These are worker observations, not proof of model or host integrity.

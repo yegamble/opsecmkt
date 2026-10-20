@@ -45,6 +45,10 @@ type ModerationSuggestionView struct {
 }
 
 func init() {
+	registerLoader("admin", func(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
+		d.PrivateModerationAccess = !a.preview && a.adminSocket != "" && privateAdminIngress(ctx) && d.User != nil && d.User.Role == "admin"
+		return nil
+	})
 	registerPage("admin/moderation", pageSpec{Protected: true, Roles: []string{"admin"}})
 	registerLoader("admin/moderation", loadModerationAdmin)
 	registerRaw("/admin/moderation/escalation", moderationEscalationDownload)
