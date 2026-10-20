@@ -236,7 +236,7 @@ func (p *pkgFacts) fixedIdent(id *ast.Ident, fd *ast.FuncDecl) bool {
 // localFixed reports whether every binding of the local variable obj in fd is fixed: its parameter position, its
 // assignments, its range clause, its declaration. A variable with no binding the analysis understands (a receiver,
 // a closure parameter, a multi-value call) is not fixed.
-func (p *pkgFacts) localFixed(obj *ast.Object, fd *ast.FuncDecl) bool {
+func (p *pkgFacts) localFixed(obj *ast.Object, fd *ast.FuncDecl) bool { //nolint:staticcheck // SA1019: this syntax-only guard intentionally follows parser-bound local identifiers.
 	bound, fixed := false, true
 	note := func(f bool) { bound = true; fixed = fixed && f }
 	is := func(e ast.Expr) bool { id, ok := e.(*ast.Ident); return ok && id.Obj == obj }

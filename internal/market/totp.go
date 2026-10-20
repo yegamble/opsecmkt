@@ -3,7 +3,7 @@ package market
 import (
 	"crypto/hmac"
 	"crypto/rand"
-	"crypto/sha1"
+	"crypto/sha1" // #nosec G505 -- RFC 4226/6238 authenticator interoperability requires HMAC-SHA-1.
 	"crypto/subtle"
 	"encoding/base32"
 	"encoding/binary"

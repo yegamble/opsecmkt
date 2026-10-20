@@ -12,9 +12,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/stdlib"
 	"html/template"
 	"io"
 	"log"
@@ -28,6 +25,12 @@ import (
 	"sync/atomic"
 	"time"
 	"unicode/utf8"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/stdlib"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
 
 	"opsecmkt/web"
 )
@@ -45,28 +48,28 @@ type App struct {
 	startedAt    time.Time       // this process instance, never a persisted heartbeat
 	recentErrors serverErrorRing // A-143: last 20 referenced HTTP errors, in memory only
 
-	db                   *sql.DB
-	health               *sql.DB // one connection for /healthz, apart from the application pool (A-178)
-	templates            *template.Template
-	preview, secure      bool
-	mode, setupToken     string               // setupToken authorizes /setup only, and only until installed
-	adminSocket          string               // when set, administrator HTTP requests require the separate private socket
-	hostControl          hostRebootController // immutable local app-host reboot capability; nil when unconfigured
-	keyRoot              string               // APP_SECRET_KEY, or SETUP_TOKEN (legacy): the root of key and the sealing keys
-	key                  []byte               // CSRF/CAPTCHA HMAC key, sha256("csrf:"+keyRoot)
-	captchaIDKey         []byte               // CAPTCHA challenge-id MAC key, sha256("captcha-id:"+keyRoot); empty = no challenges
-	mu                   sync.Mutex
-	limits               map[string]bucket         // authentication and factor budgets
-	adminLimits          map[string]bucket         // the same budgets for the private administrator ingress, "adm:" keys (A-570)
-	writeLimits          map[string]bucket         // independent per-account write budgets (A-75)
-	inFlight             map[string]int            // OneAtATime actions in progress, by path and account (enterOneAtATime)
-	signInLogAt          time.Time                 // last "sign-in limiter refusing" log line (guarded by mu)
-	rescueRefused        int                       // paused sign-in rescue refusals not yet logged (guarded by mu)
-	rescueLogAt          time.Time                 // last "paused sign-in rescue refused" log line (guarded by mu)
-	live                 bool                      // a mainnet market: BITCOIN_CHAIN=main or MONERO_NETWORK=mainnet (marketLiveFromEnv, A-460)
-	escrowConfigured     bool                      // ESCROW_BTC=on (escrow_rpc.go); escrow may still be disabled
-	escrowCfg            escrowConfig              // the ESCROW_BTC settings read at startup, for the escrow watcher's retries
-	escrowStartState     string                    // the escrow state line logged at startup (escrowRetry starts from it)
+	db               *sql.DB
+	health           *sql.DB // one connection for /healthz, apart from the application pool (A-178)
+	templates        *template.Template
+	preview, secure  bool
+	mode, setupToken string               // setupToken authorizes /setup only, and only until installed
+	adminSocket      string               // when set, administrator HTTP requests require the separate private socket
+	hostControl      hostRebootController // immutable local app-host reboot capability; nil when unconfigured
+	keyRoot          string               // APP_SECRET_KEY, or SETUP_TOKEN (legacy): the root of key and the sealing keys
+	key              []byte               // CSRF/CAPTCHA HMAC key, sha256("csrf:"+keyRoot)
+	captchaIDKey     []byte               // CAPTCHA challenge-id MAC key, sha256("captcha-id:"+keyRoot); empty = no challenges
+	mu               sync.Mutex
+	limits           map[string]bucket // authentication and factor budgets
+	adminLimits      map[string]bucket // the same budgets for the private administrator ingress, "adm:" keys (A-570)
+	writeLimits      map[string]bucket // independent per-account write budgets (A-75)
+	inFlight         map[string]int    // OneAtATime actions in progress, by path and account (enterOneAtATime)
+	signInLogAt      time.Time         // last "sign-in limiter refusing" log line (guarded by mu)
+	rescueRefused    int               // paused sign-in rescue refusals not yet logged (guarded by mu)
+	rescueLogAt      time.Time         // last "paused sign-in rescue refused" log line (guarded by mu)
+	live             bool              // a mainnet market: BITCOIN_CHAIN=main or MONERO_NETWORK=mainnet (marketLiveFromEnv, A-460)
+	escrowConfigured bool              // ESCROW_BTC=on (escrow_rpc.go); escrow may still be disabled
+	escrowCfg        escrowConfig      // the ESCROW_BTC settings read at startup, for the escrow watcher's retries
+
 	escrow               atomic.Pointer[escrowBTC] // the Bitcoin escrow adapter once ESCROW_BTC=on passed its checks, at startup or on a watcher retry (A-316); nil = no escrow; never cleared once set
 	escrowXMR            *escrowXMR                // Monero escrow while ESCROW_XMR=on (escrow_xmr_config.go), ready or not; nil = off; set once in New
 	scanner              *imageScanner             // clamd client for uploads (clamd.go); nil = Disabled
@@ -89,17 +92,12 @@ type App struct {
 	escrowScanMu      sync.Mutex             // guards escrowScan and escrowPace
 	escrowScan        *escrowArbiterScan     // the arbiter wallet read in progress, or finished and not yet taken (arbiterScan); nil = none
 	escrowPace        escrowArbiterPace      // when the next arbiter wallet read may start (A-479, paceArbiter); guarded by escrowScanMu
-	// Broadcast honesty (A-441, escrow_stall.go), in memory only.
-	escrowTip               atomic.Int64                            // the escrow node's tip height the last escrow watcher pass read (0 = none yet)
-	escrowHealthObservation atomic.Pointer[escrowHealthObservation] // allowlisted metadata from the last Bitcoin escrow startup check
-	escrowUnseen            escrowUnseen                            // per broadcast settlement not seen by the watch-only wallet, the height it went unseen from
-	escrowTorGate           atomic.Value                            // string: why the Tor-mode gate holds escrow broadcasts ("" = they may be sent; unset = not checked yet)
+
+	escrowTorGate atomic.Value // string: why the Tor-mode gate holds escrow broadcasts ("" = they may be sent; unset = not checked yet)
 	// The escrow signer (A-454, escrow_signer.go): nil without ESCROW_SIGNER_SOCKET; its state is in memory only.
 	escrowSigner       *escrowSignerClient
 	escrowSignerStatus atomic.Value // string: the state checkEscrowSigner last found (signerReady, signerWaiting, …)
-	// escrowSiblingsChecked: this process's escrow watcher has checked that the watch-only wallet holds every shape-(b)
-	// escrow's sibling addresses (ensureSiblingWatch, A-456a).
-	escrowSiblingsChecked atomic.Bool
+
 }
 
 // parseTemplates loads layout (web/templates/*.html), pages/<page>.html ("page:<page>") and partials/<hook>.html.
@@ -974,7 +972,12 @@ func pageTitle(page string) string {
 	if _, section := adminSectionPage(page); section != "" {
 		return "Admin: " + adminSectionName(section)
 	}
-	return strings.ReplaceAll(strings.Title(page), "-", " ")
+	return pageLabel(page)
+}
+
+// pageLabel title-cases route names while preserving embedded uppercase labels.
+func pageLabel(page string) string {
+	return strings.ReplaceAll(cases.Title(language.Und, cases.NoLower).String(page), "-", " ")
 }
 
 // objectTitle names the listing, order or vendor a page shows in its title (A-117), once the page has loaded.

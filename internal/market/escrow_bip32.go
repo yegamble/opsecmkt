@@ -26,15 +26,6 @@ type bip32Key = btc.ExtKey
 var (
 	parseBIP32Pub = btc.ParseExtPub
 	ckdPub        = btc.CKDPub
-
-	errBIP32Encoding = btc.ErrEncoding
-	errBIP32Version  = btc.ErrVersion
-	errBIP32Prefix   = btc.ErrPrefix
-	errBIP32Point    = btc.ErrPoint
-	errBIP32Root     = btc.ErrRoot
-	errBIP32Hardened = btc.ErrHardened
-	errBIP32NoIndex  = btc.ErrNoIndex
-	errBIP32Depth    = btc.ErrDepth
 )
 
 // deriveOrderKey is the per-order child <i> of a registered account key (escrowKey, parsed by parseEscrowKey), with

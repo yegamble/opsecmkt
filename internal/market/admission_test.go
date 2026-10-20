@@ -502,14 +502,12 @@ func TestLimitListenerCapsConnections(t *testing.T) {
 			accepted <- c
 		}
 	}()
-	var clients []net.Conn
 	for range 3 {
 		c, err := net.Dial("tcp", inner.Addr().String())
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer c.Close()
-		clients = append(clients, c)
 	}
 	var server []net.Conn
 	for range 2 {
@@ -558,7 +556,7 @@ func TestLimitListenerReclaimsIdleKeepAlive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("ok")) }), IdleTimeout: time.Minute}
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("ok")) }), ReadHeaderTimeout: time.Second, IdleTimeout: time.Minute}
 	states := make(chan bool, 16)
 	go srv.Serve(LimitListener(inner, 2, func(full bool) { srv.SetKeepAlivesEnabled(!full); states <- full }))
 	defer srv.Close()

@@ -15,10 +15,11 @@ import (
 	"strings"
 	"time"
 
+	"opsecmkt/internal/onionidentity"
+
 	"github.com/ProtonMail/go-crypto/openpgp"
 	"github.com/ProtonMail/go-crypto/openpgp/armor"
 	"github.com/ProtonMail/go-crypto/openpgp/packet"
-	"opsecmkt/internal/onionidentity"
 )
 
 const usage = `keys generate secret --out FILE

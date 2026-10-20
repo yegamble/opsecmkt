@@ -5,6 +5,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -112,6 +113,9 @@ func TestKeyRootPrefersAppSecretKey(t *testing.T) {
 	block, _ := aes.NewCipher(sealKey[:])
 	gcm, _ := cipher.NewGCM(block)
 	nonce := make([]byte, gcm.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		t.Fatal(err)
+	}
 	manual := base64.RawStdEncoding.EncodeToString(gcm.Seal(nonce, nonce, []byte("manual"), []byte("totp")))
 	if pt, err := both.open("totp", manual); err != nil || pt != "manual" {
 		t.Fatalf(`sealing key is not sha256("totp:"+APP_SECRET_KEY): %q %v`, pt, err)

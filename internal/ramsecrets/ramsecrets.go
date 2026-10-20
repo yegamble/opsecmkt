@@ -75,9 +75,6 @@ func run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 	if out == nil {
 		out = io.Discard
 	}
-	if errOut == nil {
-		errOut = io.Discard
-	}
 	if in == nil {
 		in = bytes.NewReader(nil)
 	}

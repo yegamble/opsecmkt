@@ -2,12 +2,7 @@ package market
 
 import (
 	"context"
-	"database/sql"
 	"errors"
-	"log"
-	"strconv"
-	"strings"
-	"sync"
 )
 
 // Broadcast honesty (A-441, P4-R7 (a)(b)).
@@ -59,83 +54,6 @@ const escrowStalledSQL = `COALESCE((SELECT strpos(e.note,'` + escrowStallMark + 
 const escrowStallOpenedSQL = `(SELECT e.created FROM order_events e WHERE e.order_id=s.order_id AND strpos(e.note,s.txid)>0
 	AND strpos(e.note,'` + escrowStallMark + `')=1 ORDER BY e.id DESC LIMIT 1)`
 
-// escrowUnseen is, per broadcast settlement whose transaction the watch-only wallet has not seen, the tip height from
-// which it went unseen (in memory only; see the file comment).
-type escrowUnseen struct {
-	mu    sync.Mutex
-	since map[int64]int64
-}
-
-// broadcastAt records that settlement id was sent at the tip the current pass read.
-func (a *App) broadcastAt(id int64) {
-	if tip := a.escrowTip.Load(); tip > 0 {
-		a.escrowUnseen.mu.Lock()
-		if a.escrowUnseen.since == nil {
-			a.escrowUnseen.since = map[int64]int64{}
-		}
-		a.escrowUnseen.since[id] = tip
-		a.escrowUnseen.mu.Unlock()
-	}
-}
-
-// noteBroadcastSeen applies what trackBroadcast found: seen is whether the watch-only wallet knows any of the
-// settlement's transactions. Unseen for escrowStallBlocks blocks opens the stall alert once; seen while it is open
-// closes it. Nothing else about the settlement changes.
-func (a *App) noteBroadcastSeen(ctx context.Context, id int64, seen bool) error {
-	tip := a.escrowTip.Load()
-	a.escrowUnseen.mu.Lock()
-	if a.escrowUnseen.since == nil {
-		a.escrowUnseen.since = map[int64]int64{}
-	}
-	if seen {
-		delete(a.escrowUnseen.since, id)
-	} else if _, ok := a.escrowUnseen.since[id]; !ok && tip > 0 {
-		a.escrowUnseen.since[id] = tip
-	}
-	since, ok := a.escrowUnseen.since[id]
-	a.escrowUnseen.mu.Unlock()
-	if !seen && (!ok || tip-since < escrowStallBlocks) {
-		return nil
-	}
-	// Only the escrow watcher writes these notes, under its advisory lock, so reading the alert's state needs no row lock.
-	var orderID, kind, txid string
-	var open bool
-	err := a.db.QueryRowContext(ctx, "SELECT s.order_id,s.kind,s.txid,"+escrowStalledSQL+" FROM settlements s WHERE s.id=$1 AND s.state='broadcast'", id).Scan(&orderID, &kind, &txid, &open)
-	// Seen with the alert open closes it; unseen with none open opens it; anything else changes nothing.
-	if err == sql.ErrNoRows || err == nil && seen != open {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	tx, err := a.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	what := settlementKind(kind)
-	if seen {
-		note := escrowSeenMark + " the market's watch-only wallet now has the transaction of the escrow settlement (" + what + ", transaction " + txid + "); the queued-or-stuck alert is cleared."
-		if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) SELECT id,state,state,NULL,$2 FROM orders WHERE id=$1", orderID, note); err != nil {
-			return err
-		}
-		log.Printf("escrow: settlement of order %s: its transaction is seen by the network; the queued-or-stuck alert is cleared", shortID(orderID))
-		return tx.Commit()
-	}
-	o, err := scanOrder(tx.QueryRowContext(ctx, orderQuery+" WHERE o.id=$1", orderID))
-	if err != nil {
-		return err
-	}
-	note := escrowStallMark + " The escrow settlement (" + what + ") was broadcast as transaction " + txid + ", but " + strconv.Itoa(escrowStallBlocks) +
-		" blocks later the market's watch-only wallet has not seen it (it is not in the escrow node's mempool or in a block): the node may have queued it" +
-		" behind a proxy that does not answer, or has no peers. The settlement stays broadcast and the market sends it again on each pass; staff check the escrow node."
-	if err = a.flagOrder(ctx, tx, &o, note, ""); err != nil {
-		return err
-	}
-	log.Printf("escrow: settlement of order %s: queued or stuck, not seen by the network after %d blocks; staff notified", shortID(orderID), escrowStallBlocks)
-	return tx.Commit()
-}
-
 // escrowStalls lists, for /admin, the broadcast settlements whose stall alert is open.
 func (a *App) escrowStalls(ctx context.Context) ([]EscrowStallView, error) {
 	rows, err := a.db.QueryContext(ctx, "SELECT s.order_id,s.kind,s.txid FROM settlements s WHERE s.state='broadcast' AND "+escrowStalledSQL+" ORDER BY s.id")
@@ -182,31 +100,6 @@ type escrowNetInfo struct {
 	} `json:"networks"`
 }
 
-// torGate is why the Tor-mode gate holds broadcasts for a getnetworkinfo answer (or its failure), "" when the node
-// sends through a proxy for both IPv4 and IPv6 on Bitcoin Core 31.1 or later.
-func torGate(info escrowNetInfo, err error) string {
-	if err != nil {
-		return torGateFailedAs + errorClassOf(err)
-	}
-	proxied := map[string]bool{}
-	for _, n := range info.Networks {
-		proxied[n.Name] = strings.TrimSpace(n.Proxy) != ""
-	}
-	var why []string
-	switch {
-	case !proxied["ipv4"] && !proxied["ipv6"]:
-		why = append(why, torGateNoProxy)
-	case !proxied["ipv4"]:
-		why = append(why, torGateNoIPv4)
-	case !proxied["ipv6"]:
-		why = append(why, torGateNoIPv6)
-	}
-	if info.Version < torGateMinCore {
-		why = append(why, torGateOldCore)
-	}
-	return strings.Join(why, "; ")
-}
-
 // broadcastHold is why escrow broadcasts wait ("" = they may be sent): in APP_MODE=tor, what the Tor-mode gate found in
 // this pass (torGateUnread before any pass checked it); in clearnet mode always "".
 func (a *App) broadcastHold() string {
@@ -218,17 +111,4 @@ func (a *App) broadcastHold() string {
 		return torGateUnread
 	}
 	return why
-}
-
-// noteTorGate records why (a torGate reason, "" = sends) as the Tor-mode gate's state for this pass and /admin, and logs
-// one fixed line when it changes. In memory only.
-func (a *App) noteTorGate(why string) {
-	prev, _ := a.escrowTorGate.Swap(why).(string)
-	switch {
-	case prev == why:
-	case why == "":
-		log.Print("escrow: APP_MODE=tor: the escrow node sends through a proxy for IPv4 and IPv6 on Bitcoin Core 31.1 or later; escrow broadcasts resumed")
-	default:
-		log.Printf("escrow: APP_MODE=tor: escrow broadcasts wait (%s); start the escrow node with -proxy=<Tor SOCKS address> on Bitcoin Core 31.1 or later, never -connect or -onlynet", why)
-	}
 }

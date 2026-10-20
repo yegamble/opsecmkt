@@ -944,16 +944,6 @@ func (f *fakeXMREscrow) countOf(method string) int {
 	return n
 }
 
-// openName is the name of the open wallet, or "".
-func (f *fakeXMREscrow) openName() string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.open == nil {
-		return ""
-	}
-	return f.open.name
-}
-
 // mine adds n blocks: each mines every transaction in the pool and moves the daemon (and the wallet) up one block.
 func (f *fakeXMREscrow) mine(n int) {
 	f.mu.Lock()

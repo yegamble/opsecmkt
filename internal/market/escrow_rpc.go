@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"log"
 	"net/url"
-	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -53,11 +52,6 @@ const escrowSighash = "ALL"
 
 // escrowKeypoolTimeout bounds keypoolrefill: deriving 20000 keys took 10-15 s on regtest.
 const escrowKeypoolTimeout = 2 * time.Minute
-
-// escrowRescanTimeout bounds the watch-only wallet repair's one importdescriptors call, which rescans the chain from
-// the earliest lost escrow's creation (ensureSiblingWatch, QA5W4A-3); Core goes on with an import whose call timed out,
-// and the next watcher pass waits for it (watchScanning). A variable only so tests can shorten it.
-var escrowRescanTimeout = 2 * time.Minute
 
 // escrowClassRescanning is the escrowRPCError class of Core's answer that the wallet is busy rescanning.
 const escrowClassRescanning = "rescanning"
@@ -164,10 +158,6 @@ func escrowConfigFromEnv(getenv func(string) string) (escrowConfig, error) {
 	return c, nil
 }
 
-// errEscrowChain is the fixed startup refusal for an escrow node on a chain that is not in the chain table (escrowChains):
-// mainnet, testnet3 or any other.
-var errEscrowChain = errors.New("refusing to start: ESCROW_BTC=on runs only on regtest, signet or testnet4, or on mainnet when the market is configured for it (BITCOIN_CHAIN=main), and the node at ESCROW_BTC_RPC_URL reports another chain (testnet3 is always refused, mainnet without BITCOIN_CHAIN=main, a test chain with it). Set ESCROW_BTC=off, or point ESCROW_BTC_RPC_URL at a node on the configured chain")
-
 // Fixed operator lines for an escrow that is switched on but not usable: nothing in them comes from the node.
 const (
 	escrowLogOn           = "escrow: Bitcoin escrow on"
@@ -218,160 +208,8 @@ func newEscrowBTC(c escrowConfig) (*escrowBTC, error) {
 		confirmations: c.confirmations, feeRate: c.feeRate}, nil
 }
 
-// initEscrow runs in New during escrow startup. ESCROW_BTC=off does nothing. On, a node that answers on a chain
-// escrow does not run on stops startup (errEscrowChain); an unreachable node, an unreadable arbiter wallet or a
-// fingerprint that differs from the pinned one leaves escrow disabled with one fixed line, and the market runs; the
-// escrow watcher then retries (retryEscrow).
-func (a *App) initEscrow(ctx context.Context) error {
-	if err := reconcileRetentionWalletAttestations(ctx, a.db); err != nil {
-		return err
-	}
-	cfg, err := escrowConfigFromEnv(os.Getenv)
-	if err != nil {
-		return err
-	}
-	if !cfg.on {
-		var pendingLabels bool
-		if err := a.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM retention_escrow_retired_addresses WHERE coin='BTC' AND NOT label_checked)`).Scan(&pendingLabels); err != nil {
-			return err
-		}
-		if pendingLabels {
-			return errors.New("retired Bitcoin wallet labels require a checked replacement watch-only wallet or exact-wallet host destruction attestation before traffic resumes")
-		}
-		healthCtx, cancelHealth := escrowHealthContext(ctx)
-		a.saveEscrowHealthAttempt(healthCtx, false, "off")
-		cancelHealth()
-		a.notePinnedNet(ctx) // escrow orders' pages are shown with ESCROW_BTC off too, naming their chain (A-443)
-		return nil
-	}
-	a.escrowConfigured = true
-	if _, err = newEscrowBTC(cfg); err != nil {
-		return err
-	}
-	a.escrowCfg = cfg
-	state, class, err := a.startEscrow(ctx)
-	var pendingLabels bool
-	// Optional arbiter verification may outlive the adapter startup budget and
-	// intentionally leave escrow waiting. The mandatory restore-label guard must
-	// still query with its own bounded context, like the health record below.
-	labelCtx, cancelLabels := escrowHealthContext(ctx)
-	queryErr := a.db.QueryRowContext(labelCtx, `SELECT EXISTS(SELECT 1 FROM retention_escrow_retired_addresses WHERE coin='BTC' AND NOT label_checked)`).Scan(&pendingLabels)
-	cancelLabels()
-	if queryErr != nil {
-		return queryErr
-	}
-	if pendingLabels {
-		return errors.New("retired Bitcoin wallet labels must be scrubbed before traffic resumes; check the configured replacement watch-only wallet and setlabel RPC permission, or attest verified destruction of the exact original wallet")
-	}
-	healthState := state
-	if errors.Is(err, errEscrowFeeAddress) {
-		healthState = errEscrowFeeAddress.Error()
-	}
-	healthCtx, cancelHealth := escrowHealthContext(ctx)
-	a.saveEscrowHealthAttempt(healthCtx, err == nil && state == escrowLogOn, healthState)
-	cancelHealth()
-	if err == nil {
-		logEscrowState(state, class)
-		a.escrowStartState = state
-		if cfg.signerSocket != "" {
-			a.escrowSigner = &escrowSignerClient{socket: cfg.signerSocket, main: a.live}
-			a.checkEscrowSigner(ctx) // a signer that does not answer is "waiting": startup goes on
-		}
-	}
-	return err
-}
-
 // errEscrowFeeAddress is the fixed startup refusal for a fee address the escrow node does not accept.
 var errEscrowFeeAddress = errors.New("refusing to start: ESCROW_BTC_FEE_ADDRESS is not a valid address on the escrow node's chain, nor a watch-only descriptor of its network (a mainnet market needs the descriptor), or it is the arbiter wallet's key")
-
-// startEscrow runs every escrow check once and, when all pass, enables escrow (a.escrow). It reports the state as
-// one of the fixed lines (escrowLogOn when enabled) with the error class that caused it (""), or an error: a refusal
-// (errEscrowChain, errEscrowFeeAddress) or a database failure. Nothing here comes from the node's text. The
-// guards are the same at startup and on a retry: the node must be on a chain of the chain table (regtest, signet or
-// testnet4) and on the chain pinned for the database's escrows (pinEscrowChain, before anything else is written), the
-// arbiter fingerprint must match the pinned one, and the watch-only wallet must hold no private keys. The configured fee
-// address is lowered by the node's chain (escrowAddressForm) before the node checks it.
-func (a *App) startEscrow(ctx context.Context) (state, class string, err error) {
-	a.escrowHealthObservation.Store(nil)
-	e, err := newEscrowBTC(a.escrowCfg)
-	if err != nil {
-		return "", "", err
-	}
-	a.escrowMismatch.Store(nil)    // shown on /admin only while the latest attempt found the node on another chain
-	a.escrowArbiterRead.Store(nil) // likewise, while the latest attempt could not finish reading the arbiter wallet (QA4W4A-1)
-	node, err := e.blockchainInfo(ctx)
-	if err != nil {
-		a.notePinnedNet(ctx)
-		return escrowLogUnchecked, errorClassOf(err), nil
-	}
-	a.observeEscrowNode(node, nil)
-	if !a.escrowChainAllowed(node.Chain) {
-		return "", "", errEscrowChain
-	}
-	e.network, e.chainID = node.Chain, escrowChainID(node.Chain, node.SignetChallenge)
-	pinned, ok, err := pinEscrowChain(ctx, a.db, e.chainID)
-	if err != nil {
-		return "", "", err
-	}
-	a.observeEscrowNode(node, &ok)
-	// The chain escrowNetwork names while escrow is not enabled: the node's, unless the database's escrows are on another,
-	// the pinned one (none pinned: escrows from before the pin, which ran on regtest only).
-	net := node.Chain
-	if !ok {
-		net = "regtest"
-		if p, _, _ := strings.Cut(pinned, ":"); escrowChains[p] != "" {
-			net = p
-		}
-	}
-	a.escrowNet.Store(&net)
-	if !ok {
-		a.escrowMismatch.Store(&EscrowChainMismatch{Pinned: pinned, Reported: e.chainID})
-		return escrowLogChain, "", nil
-	}
-	if err = e.readArbiter(ctx); err != nil {
-		return escrowLogArbiter, errorClassOf(err), nil
-	}
-	if ok, err = pinArbiterFingerprint(ctx, a.db, e.fingerprint); err != nil {
-		return "", "", err
-	}
-	if !ok {
-		return escrowLogFingerprint, "", nil
-	}
-	if ok, err = pinArbiterKeyHMAC(ctx, a.db, e.fingerprint, a.escrowXPubHMAC(e.arbiterKey.ChainCode, e.arbiterKey.PubKey)); err != nil {
-		return "", "", err
-	}
-	if !ok {
-		return escrowLogArbiterKey, "", nil
-	}
-	if state, class, err := a.checkArbiterWallet(ctx, e); state != "" || err != nil {
-		return state, class, err
-	}
-	if err = e.checkWatchWallet(ctx); err != nil {
-		return escrowLogWatch, errorClassOf(err), nil
-	}
-	if err = a.scrubRetiredEscrowLabels(ctx, a.db, e); err != nil {
-		return "", "", errors.New("retired Bitcoin wallet labels must be scrubbed before escrow starts; check the watch-only wallet and its setlabel RPC permission")
-	}
-	if e.feeAddress != "" {
-		dest, plain, err := a.feeDestinationForm(e.network, e.feeAddress, e.fingerprint)
-		if err != nil {
-			return "", "", errEscrowFeeAddress
-		}
-		e.feeAddress = dest
-		if plain {
-			valid, err := e.validAddress(ctx, e.feeAddress)
-			if err != nil {
-				return escrowLogUnchecked, errorClassOf(err), nil
-			}
-			if !valid {
-				return "", "", errEscrowFeeAddress
-			}
-			log.Print(escrowLogFixedFee)
-		}
-	}
-	a.escrow.Store(e)
-	return escrowLogOn, "", nil
-}
 
 // logEscrowState logs a startEscrow state line, with its error class when there is one.
 func logEscrowState(state, class string) {
@@ -389,66 +227,6 @@ type escrowRetry struct {
 	refused bool // the node answered on another chain, or refused the fee address: no retry until a restart
 }
 
-func (a *App) retryEscrow(ctx context.Context, r *escrowRetry) {
-	if r.refused {
-		return
-	}
-	if a.escrow.Load() != nil {
-		return
-	}
-	pass, cancel := context.WithTimeout(ctx, watcherPassTimeout)
-	state, class, err := a.startEscrow(pass)
-	cancel()
-	switch {
-	case ctx.Err() != nil:
-		return
-	case errors.Is(err, errEscrowChain), errors.Is(err, errEscrowFeeAddress):
-		r.refused, state = true, escrowLogRefused
-	case err != nil:
-		state, class = escrowLogUnrecorded, errorCause(err)
-	}
-	healthState := state
-	if errors.Is(err, errEscrowFeeAddress) {
-		healthState = errEscrowFeeAddress.Error()
-	}
-	healthCtx, cancelHealth := escrowHealthContext(ctx)
-	a.saveEscrowHealthAttempt(healthCtx, err == nil && state == escrowLogOn, healthState)
-	cancelHealth()
-	if state != r.last {
-		logEscrowState(state, class)
-		r.last = state
-	}
-}
-
-// pinArbiterFingerprint records fp as the arbiter fingerprint the first time and reports whether fp equals the
-// recorded one. Concurrent first startups agree on whichever row was written first.
-func pinArbiterFingerprint(ctx context.Context, db *sql.DB, fp string) (bool, error) {
-	if _, err := db.ExecContext(ctx, "INSERT INTO settings(key,value) VALUES($1,$2) ON CONFLICT (key) DO NOTHING", escrowFingerprintPin, fp); err != nil {
-		return false, err
-	}
-	var pinned string
-	if err := db.QueryRowContext(ctx, "SELECT value FROM settings WHERE key=$1", escrowFingerprintPin).Scan(&pinned); err != nil {
-		return false, err
-	}
-	return pinned == fp, nil
-}
-
-// pinArbiterKeyHMAC records the arbiter account key's chain code and public key the first time the already-pinned
-// fingerprint matches. It never changes either pin: on a legacy database, the current key is backfilled only when its
-// fingerprint agrees with the value recorded before this check was introduced.
-func pinArbiterKeyHMAC(ctx context.Context, db *sql.DB, fp, mac string) (bool, error) {
-	if _, err := db.ExecContext(ctx, `INSERT INTO settings(key,value)
-		SELECT $1,$2 WHERE EXISTS(SELECT 1 FROM settings WHERE key=$3 AND value=$4)
-		ON CONFLICT (key) DO NOTHING`, escrowArbiterKeyPin, mac, escrowFingerprintPin, fp); err != nil {
-		return false, err
-	}
-	var pinned string
-	if err := db.QueryRowContext(ctx, "SELECT COALESCE((SELECT value FROM settings WHERE key=$1),'')", escrowArbiterKeyPin).Scan(&pinned); err != nil {
-		return false, err
-	}
-	return pinned != "" && pinned == mac, nil
-}
-
 // escrowChainID is the identity escrow pins for a node (P4-R4): its chain name, plus its signet_challenge on signet, so
 // a private signet (which shares public signet's genesis block) is not taken for another signet.
 func escrowChainID(chain, signetChallenge string) string {
@@ -456,60 +234,6 @@ func escrowChainID(chain, signetChallenge string) string {
 		return chain + ":" + signetChallenge
 	}
 	return chain
-}
-
-// notePinnedNet sets the chain escrowNetwork names while escrow is not enabled (ESCROW_BTC off, or no escrow node has
-// answered yet in this process): the chain this database's escrows are pinned to (escrowChainPin), if any, else regtest
-// when it holds Bitcoin escrows (from before the pin, when escrow ran on regtest only). A database with neither leaves
-// it unset, so pages say the chain is not verified yet (escrowNetKnown, QA4W6-8). A failed read sets nothing.
-func (a *App) notePinnedNet(ctx context.Context) {
-	if a.db == nil || a.escrowNet.Load() != nil {
-		return
-	}
-	var pinned string
-	var held bool
-	if a.db.QueryRowContext(ctx, `SELECT COALESCE((SELECT value FROM settings WHERE key=$1),''),EXISTS (SELECT 1 FROM escrows WHERE coin='BTC')`,
-		escrowChainPin).Scan(&pinned, &held) != nil {
-		return
-	}
-	if pinned == "" && held {
-		pinned = "regtest"
-	}
-	if chain, _, _ := strings.Cut(pinned, ":"); escrowChains[chain] != "" {
-		a.escrowNet.Store(&chain)
-	}
-}
-
-// pinEscrowChain checks id (escrowChainID of the escrow node) against the chain pinned in settings (escrowChainPin)
-// and reports the pinned value and whether escrow may use the node. While the database holds no Bitcoin escrow the pin
-// is written, or rewritten, to id: a database may change chain until it holds an escrow, never after (a new chain
-// needs a new database). A database that holds escrows and no pin (one from before A-439) is pinned when the node
-// reports regtest, the only chain escrow ran on before; on any other chain it is refused. A refusal writes nothing. One
-// transaction under escrowChainPinLock, so concurrent startups agree.
-func pinEscrowChain(ctx context.Context, db *sql.DB, id string) (pinned string, ok bool, err error) {
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return "", false, err
-	}
-	defer tx.Rollback()
-	if _, err = tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock($1)", escrowChainPinLock); err != nil {
-		return "", false, err
-	}
-	var held bool
-	if err = tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT value FROM settings WHERE key=$1),''),EXISTS (SELECT 1 FROM escrows WHERE coin='BTC')`,
-		escrowChainPin).Scan(&pinned, &held); err != nil {
-		return "", false, err
-	}
-	switch {
-	case pinned == id:
-		return pinned, true, nil
-	case held && (pinned != "" || id != "regtest"):
-		return pinned, false, nil
-	}
-	if _, err = tx.ExecContext(ctx, "INSERT INTO settings(key,value) VALUES($1,$2) ON CONFLICT (key) DO UPDATE SET value=excluded.value", escrowChainPin, id); err != nil {
-		return "", false, err
-	}
-	return id, true, tx.Commit()
 }
 
 // escrowRPCError is a failed escrow RPC reduced to a fixed class: rpc:<code>, forbidden (HTTP 403: the method is
@@ -827,10 +551,6 @@ func (e *escrowBTC) importDescriptorsWithin(ctx context.Context, timeout time.Du
 	}
 	return nil, nil
 }
-
-// escrowTimestampWindow is Bitcoin Core's TIMESTAMP_WINDOW in seconds: an import rescans from the first block whose time
-// is within it before the descriptor's timestamp (A-527).
-const escrowTimestampWindow = 7200
 
 // pruneFloor reads whether the node is pruned (getblockchaininfo: pruned, pruneheight) and, when it has pruned any block,
 // the time of the block at pruneheight (getblockhash, getblockheader), the oldest whose data it keeps: an import whose

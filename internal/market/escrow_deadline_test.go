@@ -1,7 +1,6 @@
 package market
 
 import (
-	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -90,20 +89,6 @@ func (x *escrowEnv) waitForLockWaits(n int) {
 	}) {
 		x.t.Fatalf("fewer than %d requests waited for a lock", n)
 	}
-}
-
-// buyerCancel posts the buyer's cancellation of a paid order with the refund confirmation the form carries.
-func (x *escrowEnv) buyerCancel(order string) (int, string) {
-	w := x.do("POST", "/orders/cancel", x.buyerSess, url.Values{"order_id": {order}, "from": {statePaid}, "payout_confirmed": {"confirmed"}, "amount_seen": {"100000"}})
-	return w.Code, w.Body.String()
-}
-
-// restoreRecheck is what scripts/restore.sh (and UPGRADING.md section 6's manual protection) writes for the release
-// deadline recheck, with the restore gate.
-func (x *escrowEnv) restoreRecheck() {
-	x.t.Helper()
-	agExec(x.testEnv, "INSERT INTO settings(key,value) VALUES('escrow_release_recheck','true') ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value")
-	x.setGate(true)
 }
 
 // A-381: only the release recheck (escrow_deadline.go) writes release_recheck, and release_at is written only there and

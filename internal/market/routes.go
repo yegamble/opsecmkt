@@ -336,7 +336,7 @@ func dbConnectTransportFailure(err error) bool {
 		}
 	}
 	var ne net.Error
-	return errors.As(err, &ne) && (ne.Timeout() || ne.Temporary())
+	return errors.As(err, &ne) && (ne.Timeout() || ne.Temporary()) //nolint:staticcheck // SA1019: preserve classification of legacy network errors.
 }
 
 // dbConnLost reports a failed or lost database connection: errorCause's db-connection class.

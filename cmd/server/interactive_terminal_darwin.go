@@ -1,8 +1,9 @@
 package main
 
 import (
-	"golang.org/x/sys/unix"
 	"os"
+
+	"golang.org/x/sys/unix"
 )
 
 func isInteractiveTerminal(f *os.File) bool {

@@ -14,17 +14,6 @@ func concessionForm(id, outcome, nonce string, seen int64) url.Values {
 	}, seen)
 }
 
-// concessionEffects counts what a concession on an escrow order writes: its form receipt, the order's live release or
-// refund, the move out of disputed, its audit row and the staff notices.
-func concessionEffects(x *escrowEnv, order string) (receipt, settlement, event, audit, staffNotice int) {
-	x.t.Helper()
-	return agInt(x.testEnv, "SELECT count(*) FROM form_submissions WHERE action_path='/disputes/concede'"),
-		agInt(x.testEnv, "SELECT count(*) FROM settlements WHERE order_id=$1 AND kind IN ('release','refund') AND state<>'superseded'", order),
-		agInt(x.testEnv, "SELECT count(*) FROM order_events WHERE order_id=$1 AND from_state='disputed' AND to_state IN ('completed','cancelled')", order),
-		agInt(x.testEnv, "SELECT count(*) FROM audit_events WHERE action LIKE $1", "Conceded dispute on order "+shortID(order)+"%"),
-		agInt(x.testEnv, "SELECT count(*) FROM notifications WHERE body LIKE $1", "Dispute on order "+shortID(order)+" is now Withdrawn%")
-}
-
 func TestConcessionMoneroEscrowWatcherSettlement(t *testing.T) {
 	for _, outcome := range []string{"release", "refund"} {
 		t.Run(outcome, func(t *testing.T) {
