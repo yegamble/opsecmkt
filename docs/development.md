@@ -230,8 +230,9 @@ go test -race -count=1 -timeout 30m -run '^(TestEscrow|TestXMR|FuzzEscrow)' ./..
 go test -race -count=1 -timeout 30m -skip '^(TestEscrow|TestXMR|FuzzEscrow)' ./...
 ```
 
-The two commands are CI's two Go jobs (see [CI and release delivery](ci-cd.md)): with the same pattern, one as `-run`
-and one as `-skip`, they run every test exactly once between them. Run them one after the other against the same
+With the same pattern, one as `-run` and one as `-skip`, the two commands run every test exactly once between them.
+The first is CI's `go-escrow` job; CI splits the second further into its `go` and `go-desk` jobs (A-465, MOD72-9; see
+[Go test jobs](ci-cd.md#go-test-jobs)). Run them one after the other against the same
 database, or at the same time against two different databases (below). They replace the single
 `go test -race -count=1 -timeout 30m ./...`: `-timeout` is per package, and `internal/market` in one race process no
 longer finishes within 30 minutes on a loaded 4-CPU host (QA4W2-E1). Measured on 2026-10-06 on the shared 4-CPU

@@ -4,7 +4,7 @@ Every pull request and every push to `main` runs `.github/workflows/ci.yaml`; ot
 
 The current Monero-only suite is configured to cover:
 
-- Go formatting, module integrity, vet, vulnerability checks and race tests against PostgreSQL. Two complementary jobs select and skip `^(TestEscrow|TestXMR|FuzzEscrow)` so every top-level test runs once across the pair.
+- Go formatting, module integrity, vet, vulnerability checks and race tests against PostgreSQL. Three parallel jobs (`go`, `go-escrow` and `go-desk`) partition the top-level tests so each runs exactly once; see [Go test jobs](#go-test-jobs).
 - Monero escrow against real daemon and wallet-rpc binaries on a local fakechain (`escrow-xmr-regtest`). This uses test coins and establishes no public-network or deployment result.
 - Server-rendered preview and database browser journeys with JavaScript disabled. Monero escrow browser journeys use simulated RPC, not a live chain.
 - Installer, Compose network isolation, resource limits, Tor configuration, scanner, encrypted backup/restore, and upgrade smoke checks.
@@ -71,6 +71,26 @@ Do these in order for each release tag (the first is `v0.1.0-alpha.2` or whateve
 ## Workflow maintenance
 
 Actions are pinned to verified full commit SHAs, permissions default to read-only, and checkout does not persist credentials. Only the release packaging job receives `contents: write`. Pull requests never receive release permissions or production secrets. Dependabot proposes dependency/action updates for review.
+
+### Go test jobs
+
+The Go race tests are split by top-level test name across three jobs, each with its own runner, PostgreSQL service, coverage file and artifact, and each in **CI passed**. No test is skipped and no timeout is raised: every job keeps `go test -race -count=1 -timeout 17m` and a 20-minute job limit.
+
+| Job | Name in the checks list | Selection | Coverage artifact |
+| --- | --- | --- | --- |
+| `go-escrow` | Go escrow and Monero tests | `-run` with the prefixes `TestEscrow`, `TestXMR`, `FuzzEscrow` | `go-escrow-coverage` |
+| `go-desk` | Go staff desk, moderation and administration tests | `-run` with the prefixes `TestAction`, `TestAdmin`, `TestBan`, `TestDesk`, `TestDispute`, `TestLimiter`, `TestListing`, `TestMedia`, `TestModeration`, `TestModerator`, `TestPaused`, `TestPerceptual`, `TestResolve`, `TestRetention`, `TestSoleAdmin`, `TestStaff`, `TestTicket`, `TestVendor` | `go-desk-coverage` |
+| `go` | Go and PostgreSQL | `-skip` with both lists joined into one `^(...)` alternation | `go-coverage` |
+
+`go` also runs gofmt, `go mod verify`, `go vet`, actionlint and govulncheck once, and installs cjpeg for `TestDecodeAllocationWithinEstimate`, which stays in `go`. A-465 split the escrow tests out when the single job reached 14 min 42 s of its test step. MOD72-9 added `go-desk` when the moderation and listing hold tests pushed `go` to its 20-minute limit (run 39498912726 was cancelled with `internal/market` alone at 1018 s); in a local measurement of the old `go` selection (`go test -race -json` on a loaded host, so only relative), the `go-desk` prefixes took 47% of its `internal/market` test time. The real proof is the job durations of the first CI run.
+
+`tests/test_ci_go_split.py` proves the partition from the workflow text: each `-run` pattern must be `^(A|B|...)` of literal name prefixes; `go`'s `-skip` must equal `'^(' + go-escrow's prefixes + '|' + go-desk's prefixes + ')'`; no prefix of one job may be a prefix of the other's (with literal prefixes that is exactly the condition for no name matching both); every top-level test in the module's `*_test.go` files is selected by exactly one job; and every prefix selects at least one test (except `FuzzEscrow`, which A-465 reserved for a future escrow fuzz target), so a typo cannot silently leave its tests in `go`. To move tests between jobs, edit the `-run` pattern and the `-skip` pattern together in the same order, then check the names the toolchain lists:
+
+```sh
+go test -list . ./... | python3 tests/test_ci_go_split.py --list
+```
+
+It prints how many top-level tests each job runs and fails on any name run by no job or by two. Locally the split is optional: the two commands in [development](development.md#go-and-postgresql) (`-run` and `-skip` with the escrow pattern) still run every test exactly once, because `go` and `go-desk` together are the `-skip` half.
 
 CI uses disposable PostgreSQL credentials that are intentionally committed test fixtures. Never substitute production URLs or credentials in these jobs. Do not commit local environment files, backups, browser authentication state, or private test traces. Browser artifacts can contain the generated fixture records used in CI.
 
