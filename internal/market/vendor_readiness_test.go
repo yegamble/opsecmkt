@@ -37,13 +37,23 @@ func TestVendorReadinessTracksEscrowIntakeWithoutLeakingHistoricalAddress(t *tes
 func TestVendorReadinessIsVendorScoped(t *testing.T) {
 	p := newPayEnv(t)
 	admin := html.UnescapeString(p.page("/vendor-dashboard", p.adminSess))
-	mustContain(t, admin, `id="seller-readiness"`, "Add a usable encryption key on")
-	mustNotContain(t, admin, "can receive shipping details")
+	mustContain(t, admin, `id="seller-readiness"`, "can receive shipping details")
+	_, keylessAdmin := p.keylessUser("readiness_keyless_admin", "admin")
+	withoutEncryption := html.UnescapeString(p.page("/vendor-dashboard", keylessAdmin))
+	mustContain(t, withoutEncryption, `id="seller-readiness"`, "Add a usable encryption key on")
+	mustNotContain(t, withoutEncryption, "can receive shipping details")
+	modID, modSess := p.keylessUser("readiness_moderator", "moderator")
+	p.body("GET", "/vendor-dashboard", modSess, nil, 403)
+	agExec(p.testEnv, "UPDATE users SET vendor_approved=true WHERE id=$1", modID)
+	approvedModerator := html.UnescapeString(p.page("/vendor-dashboard", modSess))
+	mustContain(t, approvedModerator, `id="seller-readiness"`, "Add a usable encryption key on")
+	mustNotContain(t, approvedModerator, "can receive shipping details")
 	otherID, otherSess := p.user("readiness_other", "vendor")
 	if _, err := p.DB.Exec("UPDATE users SET payout_btc=$1 WHERE id=$2", "other-private-address", otherID); err != nil {
 		t.Fatal(err)
 	}
 	body := html.UnescapeString(p.page("/vendor-dashboard", otherSess))
+	mustContain(t, body, "can receive shipping details")
 	if !strings.Contains(body, `id="seller-readiness"`) || strings.Contains(body, "other-private-address") || strings.Contains(body, "sentinel-private-payout-address") {
 		t.Fatal("seller readiness was missing or exposed a saved destination")
 	}

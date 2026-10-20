@@ -17,7 +17,7 @@ import (
 // author decides who may post it.
 //
 //   - Role gate. Each registered action is posted with a valid CSRF token and form nonce by an anonymous visitor
-//     (401) and by every role not in its Roles (403); the refusal is made before the form is read, so an empty form
+//     (401) and by every role without the required capability (403); the refusal is made before the form is read, so an empty form
 //     is the strongest test of it. The sweep also checks that none of those posts wrote a row anywhere.
 //   - Ownership. An action on someone else's order, dispute, settlement or listing is posted with a complete, valid
 //     form for a real resource by accounts that hold an allowed role but are not a party to it (another buyer,
@@ -392,7 +392,10 @@ func TestActionRegistryRoleSweep(t *testing.T) {
 		}
 		ps := []probe{{"anonymous", randomToken(), http.StatusUnauthorized}}
 		for _, p := range []probe{{"buyer", a.buyer, 403}, {"vendor", a.vendor, 403}, {"moderator", a.mod, 403}, {"admin", a.admin, 403}} {
-			if len(spec.Roles) > 0 && !slices.Contains(spec.Roles, p.who) {
+			// Administrators always have selling authority, including for a
+			// vendor-only self-service action such as availability preferences.
+			automaticSeller := p.who == "admin" && slices.Contains(spec.Roles, "vendor")
+			if len(spec.Roles) > 0 && !slices.Contains(spec.Roles, p.who) && !automaticSeller {
 				ps = append(ps, p)
 			}
 		}
