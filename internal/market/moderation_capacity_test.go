@@ -533,7 +533,7 @@ func TestModerationLegacyPolicyReplayReservesBeforeInference(t *testing.T) {
 // same revision has been captured again; that would duplicate a revision.
 func TestModerationLegacyStaleReplaySkipsRecapturedRevision(t *testing.T) {
 	legacy := newPooledHistoricalFixture(t, 127)
-	vendor, _ := legacy.user("legacy_stale_replay_vendor", "vendor")
+	vendor, _ := legacy.keylessUser("legacy_stale_replay_vendor", "vendor") // schema 127 predates sessions.pgp_access_key (129)
 	agExec(legacy, `UPDATE settings SET value='true' WHERE key='moderation_enabled'`)
 	p := legacy.product(vendor, "digital")
 	agExec(legacy, `UPDATE moderation_jobs SET completed_at=now(),failure_class='stale_snapshot' WHERE target_id=$1`, p)
