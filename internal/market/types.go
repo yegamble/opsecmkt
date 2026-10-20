@@ -130,12 +130,13 @@ type SignInRefusal struct{ Handle, Until string }
 type PageData struct {
 	// AdminSection is the administration section page /admin/<slug> shown with Page "admin"; "" is the overview
 	// (admin_sections.go).
-	AdminSection     string
-	Access           *SiteAccessView
-	Branding         *BrandingView
-	DependencyStatus *DependencyStatusView // Administrator-only local version report and topology notices.
-	HostControl      *HostControlView      // Private administrator app-host reboot readiness and receipts.
-	Moderation       *ModerationAdminView  // Private administrator moderation proposals and bounded status.
+	AdminSection            string
+	Access                  *SiteAccessView
+	Branding                *BrandingView
+	DependencyStatus        *DependencyStatusView // Administrator-only local version report and topology notices.
+	HostControl             *HostControlView      // Private administrator app-host reboot readiness and receipts.
+	Moderation              *ModerationAdminView  // Private administrator moderation proposals and bounded status.
+	PrivateModerationAccess bool                  // Navigation only; authority still comes from the private listener and current role.
 
 	ServerStarted string
 	SchemaVersion int
