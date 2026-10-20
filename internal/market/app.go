@@ -791,6 +791,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		d.Query = q.Get("q")
 		d.Category = q.Get("category")
 		d.Region = q.Get("region")
+		d.Subcategory, d.KindFilter, d.Sort = q.Get("subcategory"), q.Get("kind"), q.Get("sort")
 		normaliseCatalogFilters(&d)
 		if q.Get("currency") == "XMR" {
 			d.Currency = "XMR"
@@ -801,7 +802,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			for _, p := range all {
 				match := true
 				if page == "catalog" {
-					match = (d.Category == "" || p.Category == d.Category) && (d.Region == "" || p.Region == d.Region || p.Region == "Worldwide") && strings.Contains(strings.ToLower(p.Title+" "+p.Description), strings.ToLower(d.Query))
+					match = (d.Category == "" || p.Category == d.Category) && p.shipsTo(d.Region) && (d.Subcategory == "" || p.Subcategory == d.Subcategory) && (d.KindFilter == "" || p.Kind == d.KindFilter) && strings.Contains(strings.ToLower(p.Title+" "+p.Description), strings.ToLower(d.Query))
 				}
 				if page == "vendor" {
 					match = p.VendorID == q.Get("id")
@@ -814,6 +815,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if page == "catalog" {
+				d.sortPreviewProducts()
 				d.Products = pageSlice(&d, d.Products, q.Get("page"))
 			}
 			if page == "product" || page == "checkout" {
@@ -993,6 +995,7 @@ func (a *App) pageData(r *http.Request, page, token string, user *User) PageData
 	title := pageTitle(page)
 	page, section := adminSectionPage(page)
 	d := PageData{Page: page, AdminSection: section, Title: title, CSRF: a.csrf(token), User: user, Mode: a.mode, Query: r.URL.Query().Get("q"), Category: r.URL.Query().Get("category"), Region: r.URL.Query().Get("region"), Currency: "XMR", Settings: map[string]string{}}
+	d.Subcategory, d.KindFilter, d.Sort = r.URL.Query().Get("subcategory"), r.URL.Query().Get("kind"), r.URL.Query().Get("sort")
 	if section == "users" {
 		d.AdminUserHandle = cleanParam(r.URL.Query().Get("handle"), 64) // A-545: an account's page in the directory
 	}

@@ -2,6 +2,7 @@ package market
 
 import (
 	"database/sql"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -97,9 +98,13 @@ func listingUpdateAction(c *actionCtx) (actionResult, error) {
 	if l.VendorID != c.User.ID {
 		// Automatic delivery content is what every buyer receives in the vendor's name. Other editors
 		// (administrators) never see it, so their saves keep the stored content whatever the form sends.
-		if err = c.Tx.QueryRowContext(ctx, `SELECT delivery_content,title,description,category,region,btc,xmr,coalesce(dispatch_days,0) FROM products WHERE id=$1`, l.ID).Scan(
-			&in.DeliveryContent, &was.Title, &was.Description, &was.Category, &was.Region, &was.BTC, &was.XMR, &was.DispatchDays); err != nil {
+		var regions string
+		if err = c.Tx.QueryRowContext(ctx, `SELECT delivery_content,title,description,category,region,btc,xmr,coalesce(dispatch_days,0),subcategory,array_to_string(shipping_regions,'|') FROM products WHERE id=$1`, l.ID).Scan(
+			&in.DeliveryContent, &was.Title, &was.Description, &was.Category, &was.Region, &was.BTC, &was.XMR, &was.DispatchDays, &was.Subcategory, &regions); err != nil {
 			return actionResult{}, err
+		}
+		if regions != "" {
+			was.ShippingRegions = strings.Split(regions, "|")
 		}
 		if in.DeliveryContent != "" && in.Kind != "digital" {
 			return actionResult{}, fail(400, "This listing has automatic delivery content that only its vendor can remove, so it must stay digital.")
@@ -130,9 +135,9 @@ func listingUpdateAction(c *actionCtx) (actionResult, error) {
 	saved := in
 	saved.Stock = stock
 	err = c.Tx.QueryRowContext(ctx, `UPDATE products SET title=$2,description=$3,category=$4,region=$5,kind=$6,btc=$7,xmr=$8,stock=$9,delivery_content=$10,
-		dispatch_days=CASE WHEN $6<>'physical' THEN NULL ELSE COALESCE(NULLIF($11,0),dispatch_days,$12) END,private_expired_at=NULL,updated=now() WHERE id=$1
+		dispatch_days=CASE WHEN $6<>'physical' THEN NULL ELSE COALESCE(NULLIF($11,0),dispatch_days,$12) END,private_expired_at=NULL,updated=now(),subcategory=$13,shipping_regions=coalesce($14::text[],'{}') WHERE id=$1
 		RETURNING coalesce(dispatch_days,0)`,
-		l.ID, in.Title, in.Description, in.Category, in.Region, in.Kind, in.BTC, in.XMR, stock, in.DeliveryContent, in.DispatchDays, defaultDispatchDays).Scan(&saved.DispatchDays)
+		l.ID, in.Title, in.Description, in.Category, in.Region, in.Kind, in.BTC, in.XMR, stock, in.DeliveryContent, in.DispatchDays, defaultDispatchDays, in.Subcategory, in.ShippingRegions).Scan(&saved.DispatchDays)
 	if err != nil {
 		return actionResult{}, err
 	}
@@ -163,7 +168,9 @@ func changedListingFields(was, now listingInput) []string {
 		{"title", was.Title != now.Title},
 		{"description", was.Description != now.Description},
 		{"category", was.Category != now.Category},
+		{"subcategory", was.Subcategory != now.Subcategory},
 		{"region", was.Region != now.Region},
+		{"additional shipping regions", !slices.Equal(was.ShippingRegions, now.ShippingRegions)},
 		{"fulfillment type", was.Kind != now.Kind},
 		{"Monero price", was.XMR != now.XMR},
 		{"stock", was.Stock != now.Stock},

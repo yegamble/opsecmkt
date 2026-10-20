@@ -92,6 +92,26 @@ func filterValue(s string) string { return cleanParam(s, filterMaxBytes) }
 // normaliseCatalogFilters applies the caps to the search and filter values every page echoes in its header.
 func normaliseCatalogFilters(d *PageData) {
 	d.Query, d.Category, d.Region = searchTerm(d.Query), filterValue(d.Category), filterValue(d.Region)
+	d.Subcategory = filterValue(d.Subcategory)
+	if d.Category == "" && d.Subcategory != "" {
+		for _, category := range catalogCategories {
+			if validSubcategory(category.Name, d.Subcategory) {
+				d.Category = category.Name
+				break
+			}
+		}
+	}
+	if !validSubcategory(d.Category, d.Subcategory) {
+		d.Subcategory = ""
+	}
+	if d.KindFilter != "physical" && d.KindFilter != "digital" {
+		d.KindFilter = ""
+	}
+	switch d.Sort {
+	case "rating", "price-low", "price-high":
+	default:
+		d.Sort = ""
+	}
 }
 
 // likePattern matches term literally anywhere in a column compared with ILIKE ... ESCAPE '\': the
@@ -144,12 +164,7 @@ func (p CatalogPaging) NextPage() int { return p.Page + 1 }
 // catalogPaging reads the requested page: anything but a positive decimal number is page 1, and a page past
 // the end (including one too large to parse) is the last page, so every link and typed URL lands somewhere.
 func catalogPaging(d *PageData, total int, raw string) CatalogPaging {
-	v := url.Values{}
-	for k, x := range map[string]string{"q": d.Query, "category": d.Category, "region": d.Region} {
-		if x != "" {
-			v.Set(k, x)
-		}
-	}
+	v := d.catalogValues()
 	return listPaging("/", v, d.Currency, total, raw)
 }
 
@@ -270,7 +285,8 @@ func (a *App) load(r *http.Request, d *PageData) error {
 		if d.Page == "catalog" || d.Page == "vendor" || d.Page == "vendor-dashboard" {
 			description = "left(p.description," + strconv.Itoa(excerptRunes+1) + ")"
 		}
-		query := `SELECT p.id,p.title,` + description + `,p.category,p.region,p.kind,u.handle,p.vendor_id,p.btc,p.xmr,p.stock,p.archived,` + takedown + `,(u.vendor_verified OR u.role='admin') FROM products p JOIN users u ON u.id=p.vendor_id WHERE true`
+		query := `SELECT p.id,p.title,` + description + `,p.category,p.region,p.kind,u.handle,p.vendor_id,p.btc,p.xmr,p.stock,p.archived,` + takedown + `,(u.vendor_verified OR u.role='admin'),p.subcategory,array_to_string(p.shipping_regions,'|'),ratings.average,ratings.count FROM products p JOIN users u ON u.id=p.vendor_id
+		 LEFT JOIN LATERAL (SELECT coalesce(avg(r.rating),0)::float8 AS average,count(*) AS count FROM reviews r JOIN orders ro ON ro.id=r.order_id WHERE r.product_id=p.id AND ro.state='completed' AND r.hidden_at IS NULL) ratings ON true WHERE true`
 		args := []any{}
 		limit := " LIMIT 100"
 		switch d.Page {
@@ -304,8 +320,12 @@ func (a *App) load(r *http.Request, d *PageData) error {
 		case "catalog":
 			// The term is matched literally (likePattern); the count and the page share one filter. E'\\' is one
 			// backslash whatever standard_conforming_strings an external database sets.
-			filter := ` AND NOT p.archived AND ($1='' OR p.title ILIKE $4 ESCAPE E'\\' OR p.description ILIKE $4 ESCAPE E'\\') AND ($2='' OR p.category=$2) AND ($3='' OR p.region=$3 OR p.region='Worldwide')`
-			args = append(args, d.Query, d.Category, d.Region, likePattern(d.Query))
+			filter := ` AND NOT p.archived AND ($1='' OR p.title ILIKE $4 ESCAPE E'\\' OR p.description ILIKE $4 ESCAPE E'\\') AND ($2='' OR p.category=$2)
+			 AND ($3='' OR p.region=$3 OR $3=ANY(p.shipping_regions) OR p.region='Worldwide' OR 'Worldwide'=ANY(p.shipping_regions)
+			 OR ($3='North America' AND (p.region='United States' OR 'United States'=ANY(p.shipping_regions)))
+			 OR ($3='United States' AND (p.region='North America' OR 'North America'=ANY(p.shipping_regions))))
+			 AND ($5='' OR p.subcategory=$5) AND ($6='' OR p.kind=$6)`
+			args = append(args, d.Query, d.Category, d.Region, likePattern(d.Query), d.Subcategory, d.KindFilter)
 			var total int
 			if err = a.db.QueryRowContext(ctx, `SELECT count(*) FROM products p WHERE true`+filter, args...).Scan(&total); err != nil {
 				return err
@@ -325,17 +345,32 @@ func (a *App) load(r *http.Request, d *PageData) error {
 			query += " AND NOT p.archived"
 		}
 		// p.id breaks ties between listings created in the same transaction, so pages never overlap.
-		query += " ORDER BY p.created DESC, p.id DESC" + limit
+		order := "p.created DESC, p.id DESC"
+		if d.Page == "catalog" {
+			switch d.Sort {
+			case "rating":
+				order = "ratings.average DESC, ratings.count DESC, " + order
+			case "price-low":
+				order = "p.xmr ASC, " + order
+			case "price-high":
+				order = "p.xmr DESC, " + order
+			}
+		}
+		query += " ORDER BY " + order + limit
 		rows, err = a.db.QueryContext(ctx, query, args...)
 		if err != nil {
 			return err
 		}
 		for rows.Next() {
 			var p Product
+			var regions string
 			var btc, xmr int64
-			if err = rows.Scan(&p.ID, &p.Title, &p.Description, &p.Category, &p.Region, &p.Kind, &p.Vendor, &p.VendorID, &btc, &xmr, &p.Stock, &p.Archived, &p.TakedownReason, &p.VendorVerified); err != nil {
+			if err = rows.Scan(&p.ID, &p.Title, &p.Description, &p.Category, &p.Region, &p.Kind, &p.Vendor, &p.VendorID, &btc, &xmr, &p.Stock, &p.Archived, &p.TakedownReason, &p.VendorVerified, &p.Subcategory, &regions, &p.RatingAverage, &p.RatingCount); err != nil {
 				rows.Close()
 				return err
+			}
+			if regions != "" {
+				p.ShippingRegions = strings.Split(regions, "|")
 			}
 			p.PriceBTC = amount(btc, 8)
 			p.PriceXMR = amount(xmr, 12)
@@ -528,10 +563,10 @@ func (a *App) load(r *http.Request, d *PageData) error {
 
 func previewData(page string) PageData {
 	p := []Product{
-		{ID: "encrypted-drive", Title: "Encrypted USB Drive — 256GB", Description: "Hardware-encrypted storage with a tamper-evident enclosure. A practical place for your offline backups and private documents.", Category: "Hardware", Region: "Europe", Kind: "physical", Vendor: "ghost_circuit", VendorID: "ghost", PriceXMR: "0.271", Stock: 7, VendorVerified: true},
-		{ID: "security-research", Title: "Security Research — Q3 Report", Description: "Defensive analysis of patched vulnerabilities, mitigation recommendations, and a clear guide to keeping your systems up to date.", Category: "Digital", Region: "Worldwide", Kind: "digital", Vendor: "null_ptr", VendorID: "null", PriceXMR: "0.058", Stock: 99},
-		{ID: "privacy-course", Title: "Practical Privacy — Field Guide", Description: "An independent guide to device hygiene, threat modeling, and safer everyday communication.", Category: "Digital", Region: "Worldwide", Kind: "digital", Vendor: "cipher_monk", VendorID: "cipher", PriceXMR: "0.020", Stock: 99},
-		{ID: "faraday-bag", Title: "Faraday Laptop Bag — 15 inch", Description: "A signal-shielding sleeve designed for storing your laptop and small devices. Check manufacturer specifications before purchase.", Category: "Hardware", Region: "Worldwide", Kind: "physical", Vendor: "iron_cage", VendorID: "iron", PriceXMR: "0.103", Stock: 23},
+		{ID: "encrypted-drive", Title: "Encrypted USB Drive — 256GB", Description: "Hardware-encrypted storage with a tamper-evident enclosure. A practical place for your offline backups and private documents.", Category: "Hardware", Subcategory: "USB / Storage", Region: "Europe", Kind: "physical", Vendor: "ghost_circuit", VendorID: "ghost", PriceXMR: "0.271", Stock: 7, VendorVerified: true},
+		{ID: "security-research", Title: "Security Research — Q3 Report", Description: "Defensive analysis of patched vulnerabilities, mitigation recommendations, and a clear guide to keeping your systems up to date.", Category: "Digital", Subcategory: "Research / Reports", Region: "Worldwide", Kind: "digital", Vendor: "null_ptr", VendorID: "null", PriceXMR: "0.058", Stock: 99},
+		{ID: "privacy-course", Title: "Practical Privacy — Field Guide", Description: "An independent guide to device hygiene, threat modeling, and safer everyday communication.", Category: "Digital", Subcategory: "Guides / Courses", Region: "Worldwide", Kind: "digital", Vendor: "cipher_monk", VendorID: "cipher", PriceXMR: "0.020", Stock: 99},
+		{ID: "faraday-bag", Title: "Faraday Laptop Bag — 15 inch", Description: "A signal-shielding sleeve designed for storing your laptop and small devices. Check manufacturer specifications before purchase.", Category: "Hardware", Subcategory: "Faraday / Shielding", Region: "Worldwide", Kind: "physical", Vendor: "iron_cage", VendorID: "iron", PriceXMR: "0.103", Stock: 23},
 		{ID: "node-guide", Title: "Self-hosting — Node Setup Guide", Description: "Documentation for maintaining your own infrastructure, with monitoring and backup planning.", Category: "Digital", Region: "Worldwide", Kind: "digital", Vendor: "null_ptr", VendorID: "null", PriceXMR: "0.028", Stock: 99},
 		{ID: "consulting", Title: "Personal Security Consultation", Description: "A one-hour review of your everyday privacy requirements and a practical plan for reducing unnecessary data exposure.", Category: "Services", Region: "Worldwide", Kind: "digital", Vendor: "cipher_monk", VendorID: "cipher", PriceXMR: "0.079", Stock: 4},
 	}

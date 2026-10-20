@@ -43,14 +43,8 @@
 <option {{if eq .Category "Services"}}selected{{end}}>Services</option>
 </select>
 </label>
-<label>Region<select name="region">
-<option {{if eq .Region "Worldwide"}}selected{{end}}>Worldwide</option>
-<option {{if eq .Region "United States"}}selected{{end}}>United States</option>
-<option {{if eq .Region "Europe"}}selected{{end}}>Europe</option>
-<option {{if eq .Region "Digital"}}selected{{end}}>Digital</option>{{if not (or (eq .Region "Worldwide") (eq .Region "United States") (eq .Region "Europe") (eq .Region "Digital"))}}
-<option selected>{{.Region}}</option>{{end}}
-</select>
-</label>
+<label>Subcategory<select name="subcategory" aria-describedby="subcategory-help">{{template "listing-subcategory-options" $}}</select></label>
+<label>Region<select name="region">{{range $.ShippingRegions}}<option {{if eq $.Product.Region .}}selected{{end}}>{{.}}</option>{{end}}<option {{if eq .Region "Digital"}}selected{{end}}>Digital</option>{{if not (.KnownRegion)}}<option selected>{{.Region}}</option>{{end}}</select></label>
 <label>Fulfillment type<select name="kind" required aria-describedby="kind-help">
 {{if eq .Kind "service"}}<option value="" selected disabled>Choose a supported fulfillment type</option>{{end}}
 <option value="physical" {{if eq .Kind "physical"}}selected{{end}}>Physical (shipped)</option>
@@ -68,6 +62,8 @@
 {{if $.DispatchOn}}<p class="help" id="dispatch-help">Physical listings only: the days you take to ship once an order is paid, 1 to 30; a digital listing ignores it. Saving a change does not alter orders already placed.</p>{{end -}}
 <p class="help" id="stock-help">Payment requests reserve stock. If stock changes while you edit, saving a new stock value is refused so no reservation is overwritten.</p>
 {{with $.Listing}}{{if .VendorEditor}}<p class="help">{{.Reservation.Units}} {{if eq .Reservation.Units 1}}unit is{{else}}units are{{end}} reserved by orders past draft; unfunded drafts do not reserve stock.{{if .Reservation.PaymentExpiry}} The earliest awaiting-payment payment window ends {{.Reservation.PaymentExpiry}}; deposits waiting for confirmations can keep an order open beyond this time.{{else}} No payment window is currently awaiting payment.{{end}}</p>{{end}}{{end}}
+<p class="help" id="subcategory-help">Choose a subcategory within the selected category, or leave it unspecified.</p>
+{{template "listing-shipping-options" $}}
 {{with $.Listing}}<p class="help" id="kind-help">{{if eq $.Product.Kind "service"}}This legacy service listing has no supported fulfillment type. Choose Physical or Digital explicitly to convert it; existing orders and their history remain readable. {{end}}{{if .OpenOrders}}{{.OpenOrders}} open order(s) depend on this listing, so the fulfillment type cannot change until they finish.{{else}}No open orders; the fulfillment type can change.{{end}} Orders that have requested payment keep their recorded amount; open drafts use the current price.</p>
 {{if .VendorEditor}}<label>Automatic delivery content<textarea name="delivery_content" maxlength="32000" rows="6" spellcheck="false" aria-describedby="delivery-help">{{.DeliveryContent}}</textarea>
 </label>

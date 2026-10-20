@@ -20,15 +20,16 @@
 <a class="skip-link" href="#main">Skip to main content</a>
 <header>
 <div class="topbar">
-<a class="brand" href="/" aria-label="{{or (index .Settings "site_name") "OPSEC Market"}} home">
+<a class="brand{{if not (and .Branding .Branding.LogoURL)}} text-brand{{end}}" href="/" aria-label="{{or (index .Settings "site_name") "OPSEC Market"}} home">
 {{template "market-wordmark" .}}
 </a>
 {{if not $membersGuest}}<form class="header-search" action="/" method="get" role="search">
+{{template "catalog-filter-state" .}}
 <label class="sr-only" for="header-search">Search listings</label>
 <input id="header-search" name="q" value="{{.Query}}" maxlength="64" autocomplete="off" placeholder="Search the marketplace…">
 <button type="submit" aria-label="Search marketplace"><span>Search</span></button>
 </form>{{end}}
-<div class="header-actions{{if .User}} signed-in{{end}}">{{if .User}}<a class="account-name" href="/account">{{.User.Handle}}</a>
+<div class="header-actions{{if .User}} signed-in{{end}}">{{if .User}}<a class="notification-bell" href="/notifications" aria-label="Notifications{{if .UnreadNotifications}}, {{.UnreadNotifications}} unread{{end}}"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true" focusable="false"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg>{{if .UnreadNotifications}}<span class="bell-count" aria-hidden="true">{{.UnreadNotifications}}</span>{{end}}</a><a class="account-name" href="/account">{{.User.Handle}}</a>
 <form class="header-signout" method="post" action="/logout">
 <input type="hidden" name="csrf" value="{{or .HeaderCSRF .CSRF}}">
 <button type="submit">Sign out</button>
@@ -58,7 +59,7 @@
 </div>
 <footer class="footer">
 <div class="footer-identity">
-<span class="footer-wordmark">{{template "market-wordmark" .}}</span>
+<span class="footer-wordmark{{if not (and .Branding .Branding.LogoURL)}} text-brand{{end}}">{{template "market-wordmark" .}}</span>
 <span>Secure by design</span>
 </div>
 {{if not $membersGuest}}<nav class="footer-links" aria-label="Footer">
@@ -74,14 +75,11 @@
 <section class="sidebar-section">
 <h2>CATEGORIES</h2>
 <div class="category-links">
-<a href="/" {{if not .Category}}class="active" aria-current="page"{{end}}>All listings <svg class="ui-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M6 18 18 6M6 6h12v12"/></svg>
-</a>
-<a href="/?category=Hardware" {{if eq .Category "Hardware"}}class="active" aria-current="page"{{end}}>Hardware <span aria-hidden="true">01</span>
-</a>
-<a href="/?category=Digital" {{if eq .Category "Digital"}}class="active" aria-current="page"{{end}}>Digital <span aria-hidden="true">02</span>
-</a>
-<a href="/?category=Services" {{if eq .Category "Services"}}class="active" aria-current="page"{{end}}>Services <span aria-hidden="true">03</span>
-</a>
+<a href="{{.CatalogCategoryURL "" ""}}" {{if not .Category}}class="active" aria-current="page"{{end}}>All listings <svg class="ui-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M6 18 18 6M6 6h12v12"/></svg></a>
+{{range .CatalogCategories}}{{$category := .Name}}<details class="category-tree" {{if eq $.Category .Name}}open{{end}}>
+<summary><a href="{{$.CatalogCategoryURL .Name ""}}" {{if and (eq $.Category .Name) (not $.Subcategory)}}class="active" aria-current="page"{{end}}>{{.Name}}</a></summary>
+<div class="subcategory-links">{{range .Subcategories}}<a href="{{$.CatalogCategoryURL $category .}}" {{if eq $.Subcategory .}}class="active" aria-current="page"{{end}}>{{.}}</a>{{end}}</div>
+</details>{{end}}
 </div>
 </section>
 <section class="sidebar-section">
@@ -95,14 +93,22 @@
 <option {{if eq .Category "Services"}}selected{{end}}>Services</option>
 </select>
 </label>
+<label>Subcategory<select name="subcategory">
+<option value="">All subcategories</option>
+{{range .CatalogCategories}}<optgroup label="{{.Name}}">{{range .Subcategories}}<option {{if eq $.Subcategory .}}selected{{end}}>{{.}}</option>{{end}}</optgroup>{{end}}
+</select></label>
 <label>Ships to / region<select name="region">
 <option value="">All regions</option>
-<option {{if eq .Region "Worldwide"}}selected{{end}}>Worldwide</option>
-<option {{if eq .Region "United States"}}selected{{end}}>United States</option>
-<option {{if eq .Region "Europe"}}selected{{end}}>Europe</option>
+{{range .ShippingRegions}}<option {{if eq $.Region .}}selected{{end}}>{{.}}</option>{{end}}
 <option {{if eq .Region "Digital"}}selected{{end}}>Digital</option>
-</select>
-</label>
+</select></label>
+<label>Listing type<select name="kind">
+<option value="">Physical &amp; digital</option>
+<option value="physical" {{if eq .KindFilter "physical"}}selected{{end}}>Physical only</option>
+<option value="digital" {{if eq .KindFilter "digital"}}selected{{end}}>Digital only</option>
+</select></label>
+<input type="hidden" name="sort" value="{{.Sort}}">
+
 <label>Display currency<select name="currency">
 <option value="XMR" selected>Monero · XMR</option>
 </select>
@@ -112,3 +118,8 @@
 </form>
 </section>
 </div>{{end}}
+
+{{/* Search and sort preserve all active catalog filters while starting again at page one. */}}
+{{define "catalog-filter-state"}}{{if .Category}}<input type="hidden" name="category" value="{{.Category}}">{{end}}{{if .Subcategory}}<input type="hidden" name="subcategory" value="{{.Subcategory}}">{{end}}{{if .Region}}<input type="hidden" name="region" value="{{.Region}}">{{end}}{{if .KindFilter}}<input type="hidden" name="kind" value="{{.KindFilter}}">{{end}}{{if .Sort}}<input type="hidden" name="sort" value="{{.Sort}}">{{end}}{{end}}
+{{define "listing-subcategory-options"}}<option value="">Not specified</option>{{range .CatalogCategories}}<optgroup label="{{.Name}}">{{range .Subcategories}}<option {{if and $.Product (eq $.Product.Subcategory .)}}selected{{end}}>{{.}}</option>{{end}}</optgroup>{{end}}{{end}}
+{{define "listing-shipping-options"}}<details class="additional-shipping"><summary>Additional shipping regions</summary><p class="help">Optional destinations in addition to Region. Worldwide includes every destination.</p><div class="shipping-checkboxes">{{range .ShippingRegions}}<label><input type="checkbox" name="shipping_regions" value="{{.}}" {{if and $.Product ($.Product.AdditionalShipping .)}}checked{{end}}> {{.}}</label>{{end}}</div></details>{{end}}

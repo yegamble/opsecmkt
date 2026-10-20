@@ -12,12 +12,7 @@ broken-image icon in Chromium and WebKit); otherwise the CSS illustration. Thumb
 <span class="art-badge">{{.Kind}}</span>
 </a>
 <div class="product-body">
-<div class="vendor-line">
-<span aria-hidden="true">◇</span>
-<a href="/vendor?id={{.VendorID}}">{{.Vendor}}</a>{{if .VendorVerified}}
-<span class="badge green verified-vendor">Verified vendor</span>{{end}}
-<span> / {{.Region}}</span>
-</div>
+<div class="product-badges"><span class="badge {{if eq .Kind "digital"}}digital{{else}}neutral{{end}}">{{.Kind}}</span><span class="badge neutral">{{.Category}}{{if .Subcategory}} / {{.Subcategory}}{{end}}</span><span class="badge neutral shipping-badge">{{if eq .Kind "physical"}}Ships to: {{else}}Available: {{end}}{{.ShippingLabel}}</span></div>
 <h2>
 <a href="{{if .Archived}}/listing-edit?id={{.ID}}{{else}}/product?id={{.ID}}{{end}}">{{.Title}}</a>
 </h2>{{if .Archived}}<p class="inventory-state">{{if .TakedownReason}}<span class="badge danger">Taken down</span> Hidden from the marketplace by an administrator; no new orders.{{else}}<span class="badge neutral">Archived</span> Hidden from the marketplace; no new orders.{{end}}</p>{{end}}{{if and .TakedownReason (eq $.Page "vendor-dashboard")}}
@@ -27,6 +22,9 @@ broken-image icon in Chromium and WebKit); otherwise the CSS illustration. Thumb
 <div class="product-bottom">
 <span class="price">{{.PriceXMR}}<small>XMR</small></span>
 <span class="stock">{{if lt .Stock 1}}OUT OF STOCK{{else}}{{.Stock}} AVAILABLE{{end}}</span>
+</div>
+<div class="product-reputation"><div class="vendor-line"><a href="/vendor?id={{.VendorID}}">{{.Vendor}}</a>{{if .VendorVerified}}<span class="badge green verified-vendor">Verified vendor</span>{{end}}</div>
+{{if .RatingCount}}<span class="product-rating" aria-label="Rated {{.Rating}} out of 5 from {{.RatingCount}} reviews"><span aria-hidden="true">★</span> {{.Rating}} <span class="rating-count">({{.RatingCount}})</span></span>{{else}}<span class="product-rating unrated">No reviews</span>{{end}}
 </div>{{if eq $.Page "vendor-dashboard"}}
 <div class="inventory-actions">
 <a class="button" href="/listing-edit?id={{.ID}}" aria-label="Edit {{.Title}}">Edit</a>

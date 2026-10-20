@@ -1948,3 +1948,78 @@ img.vendor-avatar {
   border-color:var(--amber);
   color:var(--amber)
 }
+
+/* Catalog comparisons stay readable when cards and text resize. All controls submit ordinary GET forms. */
+.notification-bell {
+  position:relative;
+  flex:0 0 auto;
+  justify-content:center;
+  min-width:44px;
+  border:1px solid var(--line);
+  color:var(--amber)
+}
+.notification-bell svg { flex:0 0 auto }
+.bell-count {
+  position:absolute;
+  right:-6px;
+  top:-6px;
+  padding:1px 5px;
+  border-radius:12px;
+  background:var(--amber);
+  color:var(--bg);
+  font:700 .75rem/1.4 var(--mono)
+}
+.category-tree>summary {
+  display:list-item;
+  cursor:pointer;
+  list-style-position:outside;
+  margin-left:1rem;
+  color:var(--amber)
+}
+.category-tree>summary>a { display:inline-flex; width:calc(100% - 1rem); color:var(--text) }
+.category-tree>summary>a.active {color:var(--amber)}
+.subcategory-links { padding:0 0 8px 1.1rem }
+.subcategory-links a {
+  display:flex;
+  justify-content:flex-start;
+  font:400 .875rem/1.5 var(--sans);
+  padding:8px 0;
+  min-height:44px;
+  overflow-wrap:anywhere
+}
+.subcategory-links a::before {content:'○'; margin-right:8px; flex:0 0 auto}
+.subcategory-links a.active::before {content:'●'}
+.catalog-tools {flex-wrap:wrap; gap:16px}
+.catalog-sort {display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap; min-width:0; max-width:100%}
+.catalog-sort label {display:flex; flex-direction:column; gap:4px; font-size:.875rem; min-width:0; max-width:100%}
+.catalog-sort select {max-width:100%}
+.product-badges {display:flex; flex-wrap:wrap; gap:6px; margin-bottom:12px}
+.listings-grid .product-card {display:flex; flex-direction:column}
+.listings-grid .product-body {display:flex; flex:1; flex-direction:column}
+.listings-grid .product-bottom {margin-top:auto}
+.product-badges .badge {max-width:100%; white-space:normal; overflow-wrap:anywhere; line-height:1.5}
+.badge.digital {color:#88b9ff; border-color:#335b92; background:#132033}
+.product-reputation {display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; margin-top:16px}
+.product-reputation .vendor-line {min-width:0; flex:1 1 9rem}
+.product-reputation .vendor-line a {color:var(--amber); min-height:44px; display:inline-flex; align-items:center; overflow-wrap:anywhere}
+.product-rating {font:500 .875rem/1.5 var(--mono); color:var(--amber); overflow-wrap:anywhere}
+.rating-count,.product-rating.unrated {color:var(--muted)}
+.shipping-checkboxes {display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,12rem),1fr)); gap:4px 16px}
+.shipping-checkboxes label {display:flex; align-items:center; gap:8px; min-height:44px}
+.shipping-checkboxes input {width:1.1rem; height:1.1rem; flex:0 0 auto}
+.additional-shipping {border:1px solid var(--line); padding:12px; min-width:0; margin-bottom:16px}
+.additional-shipping>summary {cursor:pointer; min-height:44px; padding:8px 0}
+
+/* Image logos keep their fixed letterbox. Text wordmarks grow with enlarged text and wrap long names. */
+.brand.text-brand,.footer-wordmark.text-brand,.branding-preview.text-brand {
+  width:max(192px,10ch);
+  height:auto;
+  min-height:48px;
+  overflow:visible;
+  flex:0 1 auto
+}
+.text-brand .market-wordmark {white-space:normal; flex-wrap:wrap}
+.text-brand .market-wordmark-name {white-space:normal; overflow:visible; overflow-wrap:anywhere; text-overflow:clip}
+@media(min-width:641px) {
+  .brand.text-brand,.branding-preview.text-brand {width:max(224px,10ch); min-height:56px}
+}

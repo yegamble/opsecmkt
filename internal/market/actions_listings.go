@@ -2,6 +2,7 @@ package market
 
 import (
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -17,6 +18,8 @@ const maxDeliveryContent = 32000
 // listingInput is a validated listing form shared by create (/listings) and edit (/listings/update).
 type listingInput struct {
 	Title, Description, Category, Region, Kind, DeliveryContent string
+	Subcategory                                                 string
+	ShippingRegions                                             []string
 	BTC, XMR                                                    int64
 	Stock                                                       int
 	// DispatchDays is the physical listing's dispatch window in days (1 to 30; WR-escrow P2-R5); 0 = the form sent
@@ -37,6 +40,18 @@ func validateListing(f url.Values) (listingInput, error) {
 	xmr, e2 := parseAmount(f.Get("price_xmr"), 12)
 	stock, e3 := strconv.Atoi(f.Get("stock"))
 	in := listingInput{Title: normalizedFormText(f.Get("title")), Description: normalizedFormText(f.Get("description")), Category: f.Get("category"), Region: f.Get("region"), Kind: f.Get("kind"), DeliveryContent: f.Get("delivery_content"), XMR: xmr, Stock: stock}
+	in.Subcategory = f.Get("subcategory")
+	for _, r := range f["shipping_regions"] {
+		if !slices.Contains(shippingRegions, r) {
+			return listingInput{}, fail(400, "Additional shipping regions: choose a listed region.")
+		}
+		if !slices.Contains(in.ShippingRegions, r) {
+			in.ShippingRegions = append(in.ShippingRegions, r)
+		}
+	}
+	if !validSubcategory(in.Category, in.Subcategory) {
+		return listingInput{}, fail(400, "Subcategory: choose an option within the selected category, or leave it unspecified.")
+	}
 	// A-514: each field in error is named, by its form label, in form order.
 	var problems []string
 	for _, p := range []struct {
@@ -104,7 +119,7 @@ func listingAction(c *actionCtx) (actionResult, error) {
 	if in.Kind == "physical" && in.DispatchDays == 0 {
 		in.DispatchDays = defaultDispatchDays
 	}
-	_, err = c.Tx.ExecContext(c.Ctx(), `INSERT INTO products(id,vendor_id,title,description,category,region,kind,btc,xmr,stock,delivery_content,dispatch_days) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NULLIF($12,0))`, id, c.User.ID, in.Title, in.Description, in.Category, in.Region, in.Kind, in.BTC, in.XMR, in.Stock, in.DeliveryContent, in.DispatchDays)
+	_, err = c.Tx.ExecContext(c.Ctx(), `INSERT INTO products(id,vendor_id,title,description,category,region,kind,btc,xmr,stock,delivery_content,dispatch_days,subcategory,shipping_regions) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NULLIF($12,0),$13,coalesce($14::text[],'{}'))`, id, c.User.ID, in.Title, in.Description, in.Category, in.Region, in.Kind, in.BTC, in.XMR, in.Stock, in.DeliveryContent, in.DispatchDays, in.Subcategory, in.ShippingRegions)
 	// A-188: a new listing lands on its edit page's Photos panel, where its photos are added.
 	return actionResult{Redirect: "/listing-edit?id=" + id, Notice: "listing-created", Audit: "Created listing"}, err
 }

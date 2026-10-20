@@ -43,6 +43,10 @@ type Product struct {
 	Stock                                                                                int
 	Archived                                                                             bool // Foundation; P4 uses
 	VendorVerified                                                                       bool // A-544: an administrator marked the vendor verified
+	Subcategory                                                                          string
+	ShippingRegions                                                                      []string
+	RatingAverage                                                                        float64
+	RatingCount                                                                          int
 	// P4, vendor-dashboard only: an administrator's takedown reason (A-163); never loaded for public pages.
 	TakedownReason string
 	// A-189, catalog, vendor and product pages only: the listing's public photos, oldest first (image_pages.go),
@@ -169,6 +173,7 @@ type PageData struct {
 	RecentServerErrors []ServerErrorEntry // administrator-only, volatile, no request contents
 
 	Page, Title, CSRF, Error, Notice, Query, Category, Region, Currency, Mode string
+	Subcategory, KindFilter, Sort                                             string
 	NoticeAt                                                                  string // the section a one-shot notice renders in, "" = the top (notice.go)
 	HeaderCSRF                                                                string // the header sign-out's token when User came from the session cookie on a refusal page (A-548)
 	User                                                                      *User

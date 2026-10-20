@@ -25,13 +25,8 @@
 <option>Services</option>
 </select>
 </label>
-<label>Region<select name="region">
-<option>Worldwide</option>
-<option>United States</option>
-<option>Europe</option>
-<option>Digital</option>
-</select>
-</label>
+<label>Subcategory<select name="subcategory" aria-describedby="subcategory-help">{{template "listing-subcategory-options" $}}</select></label>
+<label>Region<select name="region">{{range .ShippingRegions}}<option>{{.}}</option>{{end}}<option>Digital</option></select></label>
 <label>Fulfillment type<select name="kind">
 <option value="physical">Physical (shipped)</option>
 <option value="digital">Digital (delivered online)</option>
@@ -46,6 +41,8 @@
 </div>
 {{if .DispatchOn}}<p class="help" id="dispatch-help">Physical listings only: the days you take to ship once an order is paid, 1 to 30; a digital listing ignores it. Saving a change does not alter orders already placed.</p>{{end -}}
 <p class="help" id="price-floor-help">The Monero price must be at least 0.001 XMR. The network fee is deducted from each settlement; a smaller amount may lose too large a share to fees.</p>
+<p class="help" id="subcategory-help">Choose a subcategory within the selected category, or leave it unspecified.</p>
+{{template "listing-shipping-options" $}}
 <label>Automatic delivery content<textarea name="delivery_content" maxlength="32000" rows="4" spellcheck="false" aria-describedby="delivery-help"></textarea>
 </label>
 {{if .Inventory}}{{template "vendor-listings:delivery-help" .Inventory.AutoDelivery}}{{else}}{{template "vendor-listings:delivery-help" ""}}{{end}}
