@@ -15,6 +15,22 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## A re-requested Monero stray refund no longer holds the stray refund slot (migration 135, A-616)
+
+Migration 135 runs at startup; there is no new setting. It recreates the index `xmr_settlements_one_open_stray` so that
+it covers only first-generation stray refunds (`supersedes IS NULL`), and the watcher's "stray refund in progress"
+checks match it. An administrator's re-request (A-401) of a failed stray refund is a new stray refund that supersedes
+it; before, carrying it out while the stray refund of a later deposit to that order was in progress broke the index and
+failed on every pass (while staff were told it waits for the market's next pass), and a re-request waiting
+*deposit-missing* (A-614, below) held back the stray refund of every later deposit for as long as it waited. Now each
+is sent on its own: the re-request spends exactly the coins of the transaction it replaces, the later stray refund only
+deposits no settlement claims, and the market still builds one transaction per order at a time, so no coin is spent
+twice. A re-request that was failing so is carried out on the first pass after the upgrade, and a later deposit held
+back behind a waiting re-request gets its stray refund then. While two are in progress, the order page's status says
+so. Version 135 follows 133; versions 125 to 127 and 134 stay reserved for other branches and apply whenever
+they arrive. Rolling back to a build without migration 135 is refused at startup; restore the pre-upgrade backup
+instead.
+
 ## Required PGP access and vendor privacy
 
 Migrations 129 and 130 add session-bound PGP access proof, the administrator's browse-only login setting, and vendor availability/privacy preferences. They preserve existing accounts, orders and listings. Rebuild the embedded templates with the application and verify backups before upgrading.

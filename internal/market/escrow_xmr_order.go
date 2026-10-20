@@ -23,7 +23,7 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 		v.Threshold = a.escrowXMR.confirmations
 	}
 	var refund, strayState, strayWait string
-	var feeBps int64
+	var feeBps, openStrays int64
 	var shipByOpen, tooFew bool
 	var issued, windowFrom time.Time
 	var firstSeen sql.NullTime
@@ -33,10 +33,11 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 		es.created,GREATEST(es.created,(SELECT max(created) FROM payments WHERE order_id=es.order_id AND confirmations>=0 AND NOT locked AND NOT after_close AND NOT escrow_left_out AND NOT spent_outside)),
 		(SELECT min(created) FROM payments WHERE order_id=es.order_id AND NOT locked AND NOT after_close),
 		es.ship_by,COALESCE(es.ship_by<=now(),false),w.destroyed_at,COALESCE(x.state,''),COALESCE(x.send_error,''),
-		EXISTS(SELECT 1 FROM xmr_settlements r WHERE r.order_id=es.order_id AND r.kind='refund' AND r.state='failed' AND r.send_error=$2)
+		EXISTS(SELECT 1 FROM xmr_settlements r WHERE r.order_id=es.order_id AND r.kind='refund' AND r.state='failed' AND r.send_error=$2),
+		(SELECT count(*) FROM xmr_settlements r WHERE r.order_id=es.order_id AND r.kind='stray_refund' AND r.state IN ('requested','built','relayed'))
 		FROM escrows es JOIN xmr_escrow_slots s ON s.id=es.xmr_slot_id JOIN xmr_escrow_wallets w ON w.id=s.wallet_id
 		LEFT JOIN LATERAL (SELECT x.state,x.send_error FROM xmr_settlements x WHERE x.order_id=es.order_id AND x.kind='stray_refund' ORDER BY x.id DESC LIMIT 1) x ON true
-		WHERE es.order_id=$1 AND es.coin='XMR'`, o.ID, xmrTooSmall).Scan(&v.Address, &refund, &feeBps, &issued, &windowFrom, &firstSeen, &shipBy, &shipByOpen, &destroyed, &strayState, &strayWait, &tooFew); err != nil {
+		WHERE es.order_id=$1 AND es.coin='XMR'`, o.ID, xmrTooSmall).Scan(&v.Address, &refund, &feeBps, &issued, &windowFrom, &firstSeen, &shipBy, &shipByOpen, &destroyed, &strayState, &strayWait, &tooFew, &openStrays); err != nil {
 		return err
 	}
 	if destroyed.Valid {
@@ -149,7 +150,7 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 	case o.State == stateCancelled && tooFew && leftOutSeen > 0:
 		// A-437: the refund's coins were too few, so it ended and they were left out for a stray refund (xmrRefundTooFew).
 		v.Status = "Cancelled; the market could not send the refund because the coins were too few. The escrowed amount "
-		if tail := xmrStrayStatus(strayState, strayWait, unspent); tail != "" {
+		if tail := xmrStrayStatus(strayState, strayWait, unspent, openStrays); tail != "" {
 			v.Status += tail
 		} else {
 			v.Status += "stays in the escrow account until a stray refund returns it, less the network fee, to the buyer's refund address."
@@ -158,7 +159,7 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 		v.Status = "Cancelled; a deposit arrived after the order closed. It is not counted and is returned to the buyer's refund address."
 	case o.State == stateCancelled && leftOutSeen > 0:
 		v.Status = "Cancelled; a deposit to this escrow did not count for the order. It "
-		if tail := xmrStrayStatus(strayState, strayWait, unspent); tail != "" {
+		if tail := xmrStrayStatus(strayState, strayWait, unspent, openStrays); tail != "" {
 			v.Status += tail
 		} else {
 			v.Status += "stays in the escrow account until a stray refund returns it, less the network fee, to the buyer's refund address."
@@ -209,9 +210,14 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 // it), relayed (sent), confirmed. It is "" when there is none of these, or when a deposit that does not count is not
 // spent by it yet (unspent; a requested stray refund claims its deposits only once built), so the status says what it
 // said before: the deposit stays until a stray refund returns it. A requested one that waits because the coins are too
-// few (wait, xmrTooSmall) is one the market cannot send, as its panel says (QA435B-6).
-func xmrStrayStatus(state, wait string, unspent int64) string {
+// few (wait, xmrTooSmall) is one the market cannot send, as its panel says (QA435B-6). While more than one is in
+// progress (open: a re-request of a failed stray refund beside the first-generation stray refund of a later deposit,
+// A-616), the latest one's state is not the whole story, so it says that each returns its own deposits and is sent on
+// its own, as its panel below says.
+func xmrStrayStatus(state, wait string, unspent, open int64) string {
 	switch {
+	case open > 1:
+		return "is returned, less the network fee, to the buyer's refund address by the " + strconv.FormatInt(open, 10) + " stray refunds below, which are in progress at once: each returns its own deposits and is sent on its own, so one may be sent while another still waits, as each says under it."
 	case state == "requested" && wait == xmrTooSmall:
 		return "stays in the escrow account, because the coins there are too few to pay the network fee and an output of at least " + amount(minPayoutXMR, 12) + " XMR, so the market cannot send the stray refund below."
 	case state == "requested":

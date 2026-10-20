@@ -1547,7 +1547,12 @@ reorganisation or a double spend took it out of the chain), the new settlement s
 nothing until the wallet lists that deposit again, however long that takes; it then builds and sends as above (A-614). Unlike
 a first release or refund (A-554, below) it has no bounded wait, because it can be built from no other coins. Staff are
 notified each time it starts waiting (once per episode); past 24 hours it is an escrow alert as any settlement still requested is, and its
-monthly wallet is kept from destruction while it waits.
+monthly wallet is kept from destruction while it waits. Settling a waiting re-request by hand is **break-glass**: wait by
+default, and never pay from other funds while the market can still send it (it sends on its own once the deposit is
+listed again). It waits only after a deep reorganisation or a double spend, or a wallet restore or rescan that lost the
+deposit. A re-requested stray refund never holds back the stray refund of a later deposit to the same order (A-616,
+migration 135): that one is requested, built from deposits no settlement claims and sent beside it, and the order page's
+status says two stray refunds are in progress.
 
 **Failed and set-aside settlements are escrow alerts (A-560).** Until it is superseded, a failed settlement is listed under
 *Escrow alerts* on the moderation desk, counted in the staff badge and named in the order page's staff help, and a
@@ -1672,7 +1677,9 @@ the market (the order page says so); a destroyed wallet is never opened again.
   the desk. After a refund it is the buyer's: it is left out, noted as credited and listed again, and the stray refund
   returns it to the buyer's refund address (PAY66-6). A release or refund whose credited deposits are all gone for good
   stays requested (*deposit-missing*) and keeps its monthly wallet, with its sealed seed, from destruction past the 90
-  days until you resolve it by hand; there is no web action for it. You see it on the order page's wait line, as an
+  days; there is no web action for it. Resolving it by hand is **break-glass**: wait by default, and never pay from
+  other funds while the market can still send it; the wait needs a deep reorganisation or a double spend, or a wallet
+  restore or rescan that lost the deposit, and the market sends it on its own if the deposit is listed again. You see it on the order page's wait line, as an
   open "Credited deposit conflicted or missing" flag on the payment-review desk, in the desk's alert for a settlement
   requested for more than 24 hours, and, past the 90 days, in the notice that a retained wallet is kept (PAY66-7). The market
   notices such a regression only once the order's release or refund is being built, not while the order is paid or
