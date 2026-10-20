@@ -405,11 +405,28 @@ type commitOutcomeUnknown struct{ cause error }
 func (e commitOutcomeUnknown) Error() string { return e.cause.Error() }
 func (e commitOutcomeUnknown) Unwrap() error { return e.cause }
 
-// notifyOwner tells the account owner, inside tx, of a sign-in factor, key or recovery-code event (A-152). The text
-// is link-free and never carries a code, secret, key fingerprint or address.
+// notifyOwner tells the account owner, inside tx, of a sign-in factor, key or recovery-code event (A-152). Other
+// active administrators receive a separate, sanitized security alert. The owner text is link-free and never carries
+// a code, secret, key fingerprint or address; administrator alerts never repeat the event's account-private detail.
 func notifyOwner(ctx context.Context, tx *sql.Tx, userID, event string) error {
-	_, err := tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), userID, ownerNotice(event))
-	return err
+	return notifyAccountSecurity(ctx, tx, userID, event, false)
+}
+
+func notifyAccountSecurity(ctx context.Context, tx *sql.Tx, userID, event string, unusual bool) error {
+	if _, err := insertNotification(ctx, tx, userID, ownerNotice(event), ""); err != nil {
+		return err
+	}
+	var handle string
+	if err := tx.QueryRowContext(ctx, "SELECT handle FROM users WHERE id=$1", userID).Scan(&handle); err != nil {
+		return err
+	}
+	body := "Security alert for account " + handle + ": account security settings or sign-in credentials changed. Review account activity."
+	if unusual {
+		body = "Unusual activity alert for account " + handle + ": a correct password was followed by a failed second sign-in step. Review account activity."
+	}
+	// An administrator who owns the account already has the personal notice. Excluding that account avoids a
+	// duplicate while every other active administrator receives the administrator-only alert.
+	return notifyAdminsExcept(ctx, tx, body, userID)
 }
 
 // ownerNotice is the text notifyOwner stores for event.
@@ -651,6 +668,23 @@ func authAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, err
 	}
 	defer release()
+	var registrationKey, registrationFingerprint string
+	if path == "/register" {
+		armored := strings.TrimSpace(f.Get("pgp"))
+		if len(armored) > 16384 {
+			return actionResult{}, fail(400, "The PGP public key is too long (maximum 16 KB).")
+		}
+		if armored != "" {
+			if _, photos, other := keyExtraPackets(armored); photos > 0 || other > 0 {
+				return actionResult{}, fail(400, "Supply public key packets only, without photo IDs, private subkeys or unsupported packets.")
+			}
+			key, fp, canonical, err := parseCanonicalPublicKey(armored)
+			if err != nil || !canReceiveEncrypted(key, time.Now()) {
+				return actionResult{}, fail(400, "Save a valid PGP public key with a usable encryption subkey. Never submit a private key.")
+			}
+			registrationKey, registrationFingerprint = canonical, fp
+		}
+	}
 	var installed bool
 	if err := a.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM settings WHERE key='installed')").Scan(&installed); err != nil {
 		return actionResult{}, fail(503, "Service unavailable")
@@ -687,6 +721,16 @@ func authAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, fail(404, pageNotFound)
 		}
 		if rescueID != "" {
+			required, err := pgpLoginRequired(ctx, a.db)
+			if err != nil {
+				return actionResult{}, fail(503, "Service unavailable")
+			}
+			if required {
+				if account.suspended {
+					return actionResult{}, suspendedRefusal(ctx, a.db, account.banned)
+				}
+				return a.secondFactor(c, account.id, account.hash, "", a.signInNext(f.Get("next")))
+			}
 			res, err := a.rescueSignIn(c, account.id, account.hash, f.Get("rescue_code"), a.signInNext(f.Get("next")), heldPending)
 			if err == errRescueRefused {
 				a.logRescueRefusal()
@@ -729,8 +773,15 @@ func authAction(c *actionCtx) (actionResult, error) {
 		if err = refuseTakenHandle(ctx, tx, handle); err != nil {
 			return actionResult{}, err
 		}
+		required, err := pgpLoginRequiredLocked(ctx, tx)
+		if err != nil {
+			return actionResult{}, err
+		}
+		if registrationKey == "" && (required || vendor) {
+			return actionResult{}, fail(400, "A usable PGP public key is required for vendor registration and when this market requires PGP at sign-in. Add your public key to the registration form.")
+		}
 		id = randomToken()
-		if _, err = tx.ExecContext(ctx, "INSERT INTO users(id,handle,password_hash,role) VALUES($1,$2,$3,'buyer')", id, handle, string(hash)); err != nil {
+		if _, err = tx.ExecContext(ctx, "INSERT INTO users(id,handle,password_hash,role,pgp,pgp_fingerprint) VALUES($1,$2,$3,'buyer',$4,$5)", id, handle, string(hash), registrationKey, registrationFingerprint); err != nil {
 			return actionResult{}, accountInsertError(err)
 		}
 		if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", id, "Account created: buyer"); err != nil {
@@ -745,16 +796,17 @@ func authAction(c *actionCtx) (actionResult, error) {
 	if err = tx.Commit(); err != nil {
 		return actionResult{}, fail(500, "Unable to save account")
 	}
-	if err = a.login(ctx, w, id, rotationSession(c), string(hash)); err != nil {
-		return actionResult{}, fail(500, "Account created; sign in to continue")
-	}
 	if path == "/setup" {
+		if err = a.login(ctx, w, id, rotationSession(c), string(hash)); err != nil {
+			return actionResult{}, fail(500, "Account created; sign in to continue")
+		}
 		return actionResult{Redirect: "/admin?welcome=1"}, nil
 	}
+	next := a.signInNext(f.Get("next"))
 	if vendor {
-		return actionResult{Redirect: "/account#vendor-application"}, nil // where the application's status is shown
+		next = "/account#vendor-application"
 	}
-	return actionResult{Redirect: orHome(a.signInNext(f.Get("next")))}, nil
+	return a.secondFactor(c, id, string(hash), "", next)
 }
 
 // rescueSignIn finishes a paused /login whose authenticator code (rescueAccount) and password were right: the A-159(a)
@@ -909,6 +961,19 @@ func (a *App) enrolledFactors(ctx context.Context, userID string) ([]string, err
 // another factor enrolled it is ignored, so it never skips that factor.
 func (a *App) secondFactor(c *actionCtx, userID, passwordHash, code, next string) (actionResult, error) {
 	ctx := c.Ctx()
+	required, err := pgpLoginRequired(ctx, a.db)
+	if err != nil {
+		return actionResult{}, fail(503, "Service unavailable")
+	}
+	if required {
+		p, err := loadPGPAccount(ctx, a.db, userID, false)
+		if err != nil {
+			return actionResult{}, fail(503, "Service unavailable")
+		}
+		if p.Key == nil || !canReceiveEncrypted(p.Key, time.Now()) {
+			return actionResult{}, fail(409, "This market requires PGP authentication at sign-in. Your account needs a usable public key. If you cannot sign in to renew it, contact market staff for account recovery.")
+		}
+	}
 	names, err := a.enrolledFactors(ctx, userID)
 	if err != nil {
 		return actionResult{}, fail(503, "Service unavailable")
@@ -1053,6 +1118,13 @@ func challengeAction(c *actionCtx) (actionResult, error) {
 	} else if !ok {
 		return actionResult{}, fail(400, "Choose a verification method")
 	}
+	required, err := pgpLoginRequired(ctx, c.Tx)
+	if err != nil {
+		return actionResult{}, err
+	}
+	if required && p.Name() != "pgp" {
+		return actionResult{}, fail(403, "This market requires PGP authentication. Decrypt the encrypted sign-in code to continue.")
+	}
 	method := signInMethod(p.Name(), c.Form)
 	if err = p.Verify(c, userID); err != nil {
 		return actionResult{}, recordFactorFailure(c, pending, userID, method, err)
@@ -1129,7 +1201,7 @@ func recordFirstFactorFailure(ctx context.Context, tx *sql.Tx, userID, method st
 	if _, err := tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", userID, "Correct password but failed second sign-in step ("+method+")"); err != nil {
 		return err
 	}
-	return notifyOwner(ctx, tx, userID, "Someone entered your password correctly but failed the second sign-in step ("+method+").")
+	return notifyAccountSecurity(ctx, tx, userID, "Someone entered your password correctly but failed the second sign-in step ("+method+").", true)
 }
 
 func challengeLoader(ctx context.Context, a *App, r *http.Request, d *PageData) error {
@@ -1163,6 +1235,13 @@ func challengeLoader(ctx context.Context, a *App, r *http.Request, d *PageData) 
 		d.Auth.TOTPEnrolled = d.Auth.TOTPEnrolled || n == "totp"
 		d.Auth.PGPEnrolled = d.Auth.PGPEnrolled || n == "pgp"
 	}
+	required, err := pgpLoginRequired(ctx, a.db)
+	if err != nil {
+		return err
+	}
+	if required {
+		d.Auth.TOTPEnrolled = false
+	}
 	return nil
 }
 
@@ -1193,12 +1272,24 @@ func (a *App) startSession(ctx context.Context, tx *sql.Tx, id, old, method, pas
 	if method == "password" && (totp || pgp) {
 		return "", errFactorsChanged
 	}
+	required, err := pgpLoginRequiredLocked(ctx, tx)
+	if err != nil {
+		return "", err
+	}
+	if required && method != "password and PGP code" {
+		return "", fail(401, "This market now requires PGP authentication. Sign in again and decrypt the encrypted sign-in code.")
+	}
 	token := randomToken()
 	if _, err := tx.ExecContext(ctx, "DELETE FROM sessions WHERE token_hash=$1 OR expires<now()", digest(old)); err != nil {
 		return "", err
 	}
 	if _, err := tx.ExecContext(ctx, "INSERT INTO sessions(token_hash,user_id,expires) VALUES($1,$2,now()+interval '12 hours')", digest(token), id); err != nil {
 		return "", err
+	}
+	if method == "password and PGP code" {
+		if err := grantPGPAccess(ctx, tx, id, token); err != nil {
+			return "", err
+		}
 	}
 	if _, err := tx.ExecContext(ctx, "UPDATE users SET last_authenticated_at=now(),inactivity_notified_at=NULL WHERE id=$1 AND deletion_requested_at IS NULL", id); err != nil {
 		return "", err

@@ -107,8 +107,8 @@ func TestMigration108RefusesPooledHistoryUnchanged(t *testing.T) {
 	} {
 		t.Run(tc.table, func(t *testing.T) {
 			e := newPooledHistoricalFixture(t, 107)
-			buyer, _ := e.user("m108_"+tc.table+"_buyer", "buyer")
-			vendor, _ := e.user("m108_"+tc.table+"_vendor", "vendor")
+			buyer, _ := e.keylessUser("m108_"+tc.table+"_buyer", "buyer")
+			vendor, _ := e.keylessUser("m108_"+tc.table+"_vendor", "vendor")
 			// Closed long ago: no migration 107 drain blocker, so only 108 refuses it.
 			order := e.order(buyer, e.product(vendor, "digital"), "XMR", stateCompleted)
 			agExec(e, "UPDATE orders SET updated=now()-interval '40 days' WHERE id=$1", order)

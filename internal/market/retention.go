@@ -337,7 +337,10 @@ func retentionScanIDs(rows *sql.Rows) ([]string, error) {
 }
 
 func (a *App) retentionCandidates(ctx context.Context, tx *sql.Tx, now time.Time) ([]retentionTombstone, error) {
-	var out []retentionTombstone
+	out, err := retentionTicketCandidates(ctx, tx, now)
+	if err != nil {
+		return nil, err
+	}
 	kinds := []string{"message", "notification", "audit", "draft", "order_private", "listing_private", "account_close", "review", "order", "listing"}
 	queries := []string{
 		`SELECT m.id FROM messages m WHERE (m.created<=$1::timestamptz-interval '90 days' OR EXISTS(SELECT 1 FROM users u WHERE u.closed_at IS NOT NULL AND u.id IN(m.sender_id,m.recipient_id))) AND NOT EXISTS(SELECT 1 FROM retention_holds h WHERE h.released_at IS NULL AND ((h.scope='message' AND h.record_id=m.id) OR (h.scope='account' AND h.record_id IN(m.sender_id,m.recipient_id)))) ORDER BY m.created,m.id LIMIT 200 FOR UPDATE OF m`,
@@ -464,6 +467,12 @@ func retentionUnknownUserReferences(ctx context.Context, tx *sql.Tx) (bool, erro
  ('order_messages'::regclass,'sender_id'),
  ('order_messages'::regclass,'recipient_id'),
  ('order_delivery_updates'::regclass,'author_id'),
+ ('tickets'::regclass,'opener_id'),
+ ('tickets'::regclass,'assigned_to'),
+ ('ticket_participants'::regclass,'user_id'),
+ ('ticket_messages'::regclass,'sender_id'),
+ ('ticket_events'::regclass,'actor_id'),
+ ('ticket_events'::regclass,'staff_id'),
  ('notifications'::regclass,'user_id'),
  ('audit_events'::regclass,'user_id'),
  ('order_events'::regclass,'actor_id'),
@@ -558,6 +567,10 @@ func applyRetentionTombstone(ctx context.Context, tx *sql.Tx, t retentionTombsto
 	switch t.Kind {
 	case "message":
 		return retentionExecQuery(ctx, tx, `DELETE FROM messages WHERE id=$1`, t.ID)
+	case "ticket_message":
+		return retentionExecQuery(ctx, tx, `DELETE FROM ticket_messages WHERE id=$1`, t.ID)
+	case "ticket":
+		return retentionExecQuery(ctx, tx, `DELETE FROM tickets WHERE id=$1`, t.ID)
 	case "notification":
 		return retentionExecQuery(ctx, tx, `DELETE FROM notifications WHERE id=$1`, t.ID)
 	case "audit":
@@ -661,7 +674,7 @@ func applyRetentionTombstone(ctx context.Context, tx *sql.Tx, t retentionTombsto
 		}
 		// A-546: a ban's reason goes with the profile (the audit rows keep it for the audit trail's own period); the
 		// account stays suspended and closed, and banned_handles keeps its old handle reserved after this rename.
-		return retentionExecQuery(ctx, tx, `UPDATE users SET handle='closed_'||id,password_hash='',pgp='',pgp_fingerprint='',pgp_verified_at=NULL,pgp_2fa=false,pgp_changed_at=NULL,pgp_expiry_notice='',totp_secret='',totp_pending='',totp_enabled=false,totp_last_step=0,recovery_reveal='',recovery_reveal_until=NULL,staff_hidden=true,suspended_at=COALESCE(suspended_at,$2),closed_at=COALESCE(closed_at,$2),profile_scrubbed_at=COALESCE(profile_scrubbed_at,$2),retention_restricted_at=NULL,banned_at=NULL,banned_by=NULL,ban_reason=NULL,ban_prior_suspended_at=NULL WHERE id=$1`, t.ID, t.At)
+		return retentionExecQuery(ctx, tx, `UPDATE users SET handle='closed_'||id,password_hash='',pgp='',xmpp='',xmpp_enabled=false,xmpp_include_contents=false,xmpp_version=xmpp_version+1,pgp_fingerprint='',pgp_verified_at=NULL,pgp_2fa=false,pgp_changed_at=NULL,pgp_expiry_notice='',totp_secret='',totp_pending='',totp_enabled=false,totp_last_step=0,recovery_reveal='',recovery_reveal_until=NULL,staff_hidden=true,vendor_show_last_seen=false,vendor_last_seen=NULL,suspended_at=COALESCE(suspended_at,$2),closed_at=COALESCE(closed_at,$2),profile_scrubbed_at=COALESCE(profile_scrubbed_at,$2),retention_restricted_at=NULL,banned_at=NULL,banned_by=NULL,ban_reason=NULL,ban_prior_suspended_at=NULL WHERE id=$1`, t.ID, t.At)
 	case "account_restrict":
 		if err := retentionExecQuery(ctx, tx, `SELECT retention_erase_legacy_profile($1)`, t.ID); err != nil {
 			return err
@@ -672,7 +685,7 @@ func applyRetentionTombstone(ctx context.Context, tx *sql.Tx, t retentionTombsto
 		if err := retentionExecQuery(ctx, tx, `UPDATE products SET archived=true,archived_at=COALESCE(archived_at,$2) WHERE vendor_id=$1 AND updated<=$2`, t.ID, t.At); err != nil {
 			return err
 		}
-		if err := retentionExecQuery(ctx, tx, `UPDATE users SET totp_pending='',recovery_reveal='',recovery_reveal_until=NULL,staff_hidden=true,profile_scrubbed_at=COALESCE(profile_scrubbed_at,$2),retention_restricted_at=COALESCE(retention_restricted_at,$2) WHERE id=$1 AND closed_at IS NULL AND (deletion_requested_at<=$2 OR last_authenticated_at IS NULL OR last_authenticated_at<=$2)`, t.ID, t.At); err != nil {
+		if err := retentionExecQuery(ctx, tx, `UPDATE users SET totp_pending='',recovery_reveal='',recovery_reveal_until=NULL,staff_hidden=true,vendor_show_last_seen=false,vendor_last_seen=NULL,profile_scrubbed_at=COALESCE(profile_scrubbed_at,$2),retention_restricted_at=COALESCE(retention_restricted_at,$2) WHERE id=$1 AND closed_at IS NULL AND (deletion_requested_at<=$2 OR last_authenticated_at IS NULL OR last_authenticated_at<=$2)`, t.ID, t.At); err != nil {
 			return err
 		}
 		return nil

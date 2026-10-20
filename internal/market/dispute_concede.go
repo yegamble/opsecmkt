@@ -86,7 +86,7 @@ func concedeAction(c *actionCtx) (actionResult, error) {
 		if _, err = c.A.transition(withConcessionTransition(withPayoutSeen(ctx, orderID, seen), orderID, to, c.User.ID), c.Tx, orderID, stateDisputed, to, c.User, status); err != nil {
 			return actionResult{}, err
 		}
-		if err = notifyConcededStaff(ctx, c.Tx, orderID, status); err != nil {
+		if err = notifyConcededStaff(ctx, c.Tx, orderID, status, c.User.ID); err != nil {
 			return actionResult{}, err
 		}
 		return actionResult{Redirect: orderPage(orderID) + "#order-dispute", Notice: "dispute-conceded",
@@ -94,30 +94,10 @@ func concedeAction(c *actionCtx) (actionResult, error) {
 	})
 }
 
-// Opening a dispute stores no durable recipient relation, only short-ID
-// notification text. Tell staff who can act now, with the same eligible-resolver
-// rule (eligibleResolverSQL: administrators only on an escrow order) and
-// no-resolver admin fallback as its opening notice. A newly appointed staff
-// member may hear the closure; a former or suspended staff member does not.
-func notifyConcededStaff(ctx context.Context, tx *sql.Tx, orderID, status string) error {
-	staff, err := collectStrings(ctx, tx, `SELECT s.id FROM orders o JOIN products p ON p.id=o.product_id JOIN users s ON `+
-		eligibleResolverSQL("s", "o.id", "o.buyer_id", "p.vendor_id")+` WHERE o.id=$1`, orderID)
-	if err != nil {
-		return err
-	}
-	if len(staff) == 0 {
-		staff, err = collectStrings(ctx, tx, "SELECT id FROM users WHERE role='admin' AND suspended_at IS NULL AND closed_at IS NULL AND retention_restricted_at IS NULL")
-		if err != nil {
-			return err
-		}
-	}
-	for _, uid := range staff {
-		if _, err = insertNotification(ctx, tx, uid,
-			"Dispute on order "+shortID(orderID)+" is now "+status+". It no longer needs a resolution; review the order history.", orderID); err != nil {
-			return err
-		}
-	}
-	return nil
+// Tell current dispute observers, including moderators who follow an escrow dispute without deciding it.
+func notifyConcededStaff(ctx context.Context, tx *sql.Tx, orderID, status, actorID string) error {
+	return notifyDisputeObservers(ctx, tx, orderID, actorID,
+		"Dispute on order "+shortID(orderID)+" is now "+status+". It no longer needs a resolution; review the order history.")
 }
 
 // concessionPreview uses the same counted amount and outcome descriptions as

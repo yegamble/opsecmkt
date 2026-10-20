@@ -256,7 +256,7 @@ func recordPaymentReview(c *actionCtx, id int64, outcome, note string) (actionRe
 		if note != "" {
 			msg += " Moderator's note: " + note
 		}
-		if _, err = insertNotification(ctx, tx, uid, msg, o.ID); err != nil {
+		if _, err = insertScopedNotification(ctx, tx, uid, msg, o.ID, "admin"); err != nil {
 			return actionResult{}, err
 		}
 	}

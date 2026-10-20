@@ -152,8 +152,8 @@ func TestAccountListsActiveSessions(t *testing.T) {
 			t.Fatalf("sessions panel lacks %q", copy)
 		}
 	}
-	// The market keeps no client data on a session: the table holds only these columns.
-	if cols := agStr(e, "SELECT string_agg(column_name::text, ',' ORDER BY column_name) FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='sessions'"); cols != "created,expires,token_hash,user_id" {
+	// Session rows keep no client data. The PGP access field is only the public-key digest proven for that session.
+	if cols := agStr(e, "SELECT string_agg(column_name::text, ',' ORDER BY column_name) FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='sessions'"); cols != "created,expires,pgp_access_key,token_hash,user_id" {
 		t.Fatalf("sessions columns %s", cols)
 	}
 

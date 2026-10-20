@@ -19,6 +19,7 @@ func TestOrderDraftValidation(t *testing.T) {
 	e := newTestApp(t)
 	buyerID, buyer := e.user("val_buyer", "buyer")
 	vendorID, vendor := e.user("val_vendor", "vendor")
+	e.enableOrderPGP(buyerID, vendorID)
 	product := e.product(vendorID, "physical")
 	draft := func(p, cur string) url.Values { return url.Values{"product_id": {p}, "currency": {cur}} }
 
@@ -41,7 +42,7 @@ func TestOrderDraftValidation(t *testing.T) {
 
 func TestProfileKeyRejectsRevokedAndPrivateMaterial(t *testing.T) {
 	e := newTestApp(t)
-	id, s := e.user("val_keys", "buyer")
+	id, s := e.keylessUser("val_keys", "buyer")
 
 	revoked, err := openpgp.NewEntity("revoked", "", "revoked@example.test", &packet.Config{Algorithm: packet.PubKeyAlgoEdDSA})
 	if err != nil {
@@ -167,7 +168,7 @@ func TestDeliverTwiceKeepsFirstContent(t *testing.T) {
 	order := w.fundedFor(w.buyerID, w.buyer, w.vendorID, w.vendor)
 	w.expect("/orders/deliver", w.vendor, form("order_id", order, "content", "first licence key"), 303, "")
 	w.expect("/orders/deliver", w.vendor, form("order_id", order, "content", "second licence key"), 409, "")
-	content := agStr(w.e, "SELECT content FROM deliveries WHERE order_id=$1", order)
+	content := commerceDelivery(w.e, order)
 	deliveries := w.count("SELECT count(*) FROM deliveries WHERE order_id=$1", order)
 	events := w.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND to_state='delivered'", order)
 	state := w.state(order)

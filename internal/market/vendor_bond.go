@@ -877,6 +877,13 @@ func (a *App) xmrBondCredit(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
+	var handle string
+	if err = tx.QueryRowContext(ctx, "SELECT handle FROM users WHERE id=$1", uid).Scan(&handle); err != nil {
+		return err
+	}
+	if err = notifyAdmins(ctx, tx, "Vendor bond received from "+handle+": "+vendorBondText(bond)+"; "+strings.ToLower(vendorStateLabel(next))+". Review vendor applications under Admin → Vendors."); err != nil {
+		return err
+	}
 	if err = tx.Commit(); err != nil {
 		return err
 	}

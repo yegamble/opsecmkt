@@ -9,7 +9,7 @@ import (
 
 func TestA85RemovedXMPPProfileAndUpgradeClearsStoredValues(t *testing.T) {
 	e := newTestApp(t)
-	uid, session := e.user("a85_buyer", "buyer")
+	uid, session := e.keylessUser("a85_buyer", "buyer")
 	if _, err := e.DB.Exec("UPDATE users SET xmpp=$1 WHERE id=$2", "legacy@example.test", uid); err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +45,7 @@ func TestA85RemovedXMPPProfileAndUpgradeClearsStoredValues(t *testing.T) {
 	}
 	page := e.do("GET", "/account", session, nil)
 	e.check(page, 200)
-	if strings.Contains(strings.ToLower(page.Body.String()), "xmpp") {
-		t.Fatalf("account page still exposes XMPP profile UI: %s", page.Body.String())
+	if !strings.Contains(page.Body.String(), "XMPP notifications") || strings.Contains(page.Body.String(), "legacy@example.test") {
+		t.Fatal("private opt-in form missing or legacy destination exposed")
 	}
 }

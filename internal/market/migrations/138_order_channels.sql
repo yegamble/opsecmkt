@@ -18,7 +18,9 @@ CREATE TABLE order_delivery_updates (
  id text PRIMARY KEY,
  order_id text NOT NULL REFERENCES orders(id),
  author_id text NOT NULL REFERENCES users(id),
- content text NOT NULL CHECK (char_length(content) BETWEEN 1 AND 32000),
+ content text NOT NULL CHECK (char_length(content) BETWEEN 1 AND 262144),
+ encrypted boolean NOT NULL DEFAULT true,
+ recipient_fingerprint text NOT NULL DEFAULT '',
  created timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX order_delivery_updates_order ON order_delivery_updates(order_id,created,id);

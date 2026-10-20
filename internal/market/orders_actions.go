@@ -63,6 +63,9 @@ func sellerIsVendorLocked(c *actionCtx, productID string) (bool, error) {
 const sellerNotVendor = "The seller of this listing is no longer a vendor, so it accepts no new orders."
 const sellerSuspended = "The seller of this listing is suspended, so it accepts no new orders. Existing orders continue."
 const sellerClosed = "The seller's account is closed, so this listing accepts no new orders. Existing orders continue."
+const sellerVacation = "The vendor is on vacation and is not accepting purchases. Existing orders continue."
+const sellerDeactivated = "The vendor has deactivated their storefront and is not accepting purchases. Existing orders continue."
+const sellerPGPRequired = "The vendor needs a usable PGP public key before accepting purchases. Existing orders continue."
 
 // sellerHeld is the reason a suspended seller takes no new intake: sellerClosed for a banned one (A-546), whose
 // suspension is the ban's, else sellerSuspended.
@@ -85,9 +88,9 @@ func lockNewIntake(c *actionCtx, buyerID, vendorID string, draft bool) error {
 		return c.Tx.QueryRowContext(c.Ctx(), "SELECT 1 FROM users WHERE id=$1 FOR NO KEY UPDATE NOWAIT", buyerID).Scan(&one)
 	}
 	var role string
-	var suspended, banned, approved bool
+	var suspended, banned, approved, vacation, deactivated bool
 	lockVendor := func() error {
-		return c.Tx.QueryRowContext(c.Ctx(), "SELECT role,suspended_at IS NOT NULL,banned_at IS NOT NULL,vendor_approved FROM users WHERE id=$1 FOR SHARE NOWAIT", vendorID).Scan(&role, &suspended, &banned, &approved)
+		return c.Tx.QueryRowContext(c.Ctx(), "SELECT role,suspended_at IS NOT NULL,banned_at IS NOT NULL,vendor_approved,vendor_vacation,vendor_deactivated FROM users WHERE id=$1 FOR SHARE NOWAIT", vendorID).Scan(&role, &suspended, &banned, &approved, &vacation, &deactivated)
 	}
 	if buyerID != "" && buyerID < vendorID {
 		if err := lockBuyer(); err != nil {
@@ -113,6 +116,27 @@ func lockNewIntake(c *actionCtx, buyerID, vendorID string, draft bool) error {
 			return fail(409, "Unavailable. "+sellerHeld(banned)+" Nothing was changed.")
 		}
 		return fail(409, "Unavailable. "+sellerHeld(banned)+" Cancel this draft.")
+	}
+	if deactivated {
+		return fail(409, "Unavailable. "+sellerDeactivated+" Nothing was changed.")
+	}
+	if vacation {
+		return fail(409, "Unavailable. "+sellerVacation+" Nothing was changed.")
+	}
+	if ok, err := userCanReceiveEncrypted(c.Ctx(), c.Tx, vendorID); err != nil {
+		return err
+	} else if !ok {
+		return fail(409, "Unavailable. "+sellerPGPRequired+" Nothing was changed.")
+	}
+	if err := requirePGPAccess(c); err != nil {
+		return err
+	}
+	// Both account locks cover the current keys. New orders need an encryption
+	// key for each participant in addition to this browser's decryption proof.
+	if ok, err := userCanReceiveEncrypted(c.Ctx(), c.Tx, buyerID); err != nil {
+		return err
+	} else if !ok {
+		return fail(409, noBuyerOrderKeyReason+" Nothing was changed.")
 	}
 	return nil
 }
@@ -265,14 +289,20 @@ func deliverAction(c *actionCtx) (actionResult, error) {
 	if strings.TrimSpace(content) == "" || utf8.RuneCountInString(content) > maxDeliveryChars {
 		return actionResult{}, fail(400, "Delivery content must contain 1–32000 characters")
 	}
-	o, err := partyOrder(c, c.Form.Get("order_id"))
+	o, err := partyOrderLocked(c, c.Form.Get("order_id"))
 	if err != nil {
 		return actionResult{}, err
 	}
-	if _, err = c.A.transition(c.Ctx(), c.Tx, o.ID, statePaid, stateDelivered, c.User, "Digital content delivered by vendor"); err != nil {
+	if o.VendorID != c.User.ID {
+		return actionResult{}, errForbidden
+	}
+	if o.State != statePaid || o.Kind != "digital" {
+		return actionResult{}, errConflict
+	}
+	if err = insertDelivery(c.Ctx(), c.Tx, &o, content); err != nil {
 		return actionResult{}, err
 	}
-	if err = insertDelivery(c.Ctx(), c.Tx, o.ID, content); err != nil {
+	if _, err = c.A.transition(c.Ctx(), c.Tx, o.ID, statePaid, stateDelivered, c.User, "Digital content delivered by vendor"); err != nil {
 		return actionResult{}, err
 	}
 	return actionResult{Redirect: orderPage(o.ID), Notice: "order-delivered", Audit: "Delivered digital content for order " + shortID(o.ID)}, nil

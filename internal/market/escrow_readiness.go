@@ -116,6 +116,22 @@ func purchaseGateLoader(ctx context.Context, a *App, _ *http.Request, d *PageDat
 		d.NoPurchase = true
 		return nil
 	}
+	if d.Product.VendorDeactivated || d.Product.VendorVacation {
+		reason := sellerVacation
+		if d.Product.VendorDeactivated {
+			reason = sellerDeactivated
+		}
+		d.VendorSuspensionReason = "Unavailable. " + reason
+		d.NoPurchase = true
+		return nil
+	}
+	if ok, err := userCanReceiveEncrypted(ctx, a.db, d.Product.VendorID); err != nil {
+		return err
+	} else if !ok {
+		d.VendorSuspensionReason = "Unavailable. " + sellerPGPRequired
+		d.NoPurchase = true
+		return nil
+	}
 	if d.Product.Kind == "service" {
 		d.NoPurchase = true
 		return nil

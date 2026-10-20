@@ -109,8 +109,8 @@ func TestXMREscrowDisputeNoAdminResolver(t *testing.T) {
 	if n := w.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body=$2", adminID, want); n != 1 {
 		t.Fatalf("administrator no-resolver notices=%d, want 1 of %q", n, want)
 	}
-	if n := w.resolverNotices(w.modID); n != 0 {
-		t.Fatalf("independent moderator got %d dispute notices for an escrow dispute", n)
+	if n := w.resolverNotices(w.modID); n != 1 {
+		t.Fatalf("independent moderator got %d dispute notices for an escrow dispute, want 1", n)
 	}
 	for _, body := range agStrings(t, e, "SELECT body FROM notifications") {
 		if strings.Contains(body, "assign") || strings.Contains(body, "needs an unsuspended moderator") {
@@ -128,15 +128,15 @@ func TestXMREscrowDisputeNoAdminResolver(t *testing.T) {
 	mustContain(t, modDesk, "Order "+order+"<", errXMREscrowResolveAdmin.(*httpError).Msg[:len("Only an administrator decides a dispute on a Monero escrow order")])
 	mustNotContain(t, modDesk, `action="/resolve"`, deskNote)
 
-	// A concession on a second such dispute tells the administrators, not the moderator.
+	// A concession on a second such dispute tells administrators and read-only moderator observers.
 	second, secondDispute := w.disputedFor(buyerID, buyer, adminID, "", buyer, "The second licence key never arrived either.")
 	e.check(e.do("POST", "/disputes/concede", buyer, payoutConfirmed(url.Values{"id": {secondDispute}, "outcome": {"release"}, "password": {testPassword}}, xmrListingPrice)), 303)
 	conceded := "Dispute on order " + shortID(second) + " is now %"
-	if n := w.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE $2", adminID, conceded); n != 1 {
-		t.Fatalf("administrator concession notices=%d, want 1", n)
+	if n := w.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE $2", adminID, conceded); n != 0 {
+		t.Fatalf("party administrator received duplicate staff concession notices=%d, want 0", n)
 	}
-	if n := w.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE $2", w.modID, conceded); n != 0 {
-		t.Fatalf("moderator concession notices=%d, want 0", n)
+	if n := w.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE $2", w.modID, conceded); n != 1 {
+		t.Fatalf("moderator concession notices=%d, want 1", n)
 	}
 
 	// A historical order without escrow keeps today's rule: the independent moderator resolves it.
@@ -159,8 +159,8 @@ func TestXMREscrowDisputeNoAdminResolver(t *testing.T) {
 	if n := w.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body=$2", independentID, "Dispute opened on order "+shortID(third)+". Review it on the moderator desk."); n != 1 {
 		t.Fatalf("independent administrator dispute notices=%d, want 1", n)
 	}
-	if n := w.resolverNotices(w.modID); n != 0 {
-		t.Fatalf("moderator dispute notices=%d, want 0", n)
+	if n := w.resolverNotices(w.modID); n != 3 {
+		t.Fatalf("moderator dispute notices=%d, want 3", n)
 	}
 	if n := w.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE 'No independent resolver was available%'", third); n != 0 {
 		t.Fatal("no-resolver note written although an independent administrator exists")

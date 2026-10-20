@@ -23,15 +23,20 @@ import (
 func TestMessageRecipientEnforcement(t *testing.T) {
 	e := newTestApp(t)
 	alice, alicePub := testPGPKey(t, "enforce_alice")
-	bob, _ := testPGPKey(t, "enforce_bob")
+	bob, bobPub := testPGPKey(t, "enforce_bob")
 	_, alicePrint, err := parsePublicKey(alicePub)
 	if err != nil {
 		t.Fatal(err)
 	}
 	senderID, sender := e.user("enforce_sender", "buyer")
 	_, moderator := e.user("enforce_moderator", "moderator")
+	// Both senders can receive replies and have authenticated with their fixture key.
+	e.pgpSession(sender, bobPub)
+	e.pgpSession(moderator, bobPub)
 	keyedID, _ := e.user("enforce_keyed", "vendor")
-	_, _ = e.user("enforce_nokey", "vendor")
+	nokeyID, _ := e.keylessUser("enforce_nokey", "vendor")
+	// Existing customers retain the legacy vendor contact while recipient-key validation still refuses delivery.
+	e.order(senderID, e.product(nokeyID, "digital"), "XMR", stateAwaitingPayment)
 	unusableID, _ := e.user("enforce_unusable", "vendor")
 	e.setKey(keyedID, alicePub)
 	e.setKey(unusableID, testUnusableKeys(t, "enforce_unusable")["signing-only key"])

@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { expect, test } from '@playwright/test';
 import { ADMIN, FIXTURE_LISTING, SETUP_TOKEN } from './db-fixtures';
+import { saveEncryptionKey, seedPGPAccess } from './db-helpers';
 
 // Runs once against the fresh database before every other db-*.spec.ts. Never point E2E_DATABASE_URL at production.
 test('initialize the market and publish the fixture listing', async ({ page, browser, baseURL }) => {
@@ -12,6 +13,10 @@ test('initialize the market and publish the fixture listing', async ({ page, bro
   await expect(page).toHaveURL(/\/admin\?welcome=1$/);
   await expect(page.getByRole('heading', { name: 'Get your marketplace ready' })).toBeVisible();
   await expect(page.locator('.account-name')).toHaveText(ADMIN.handle);
+  // The setup administrator also sells the shared listing; every vendor needs a
+  // usable encryption key before accepting orders.
+  await saveEncryptionKey(page, ADMIN.password);
+  await seedPGPAccess(page);
   // The general browser suite exercises explicitly unfunded drafts with intake paused.
   // Fresh default escrow-only readiness is checked separately; no pooled checkout exists.
   execFileSync('psql', [process.env.E2E_DATABASE_URL!, '-v', 'ON_ERROR_STOP=1', '-qtAc',

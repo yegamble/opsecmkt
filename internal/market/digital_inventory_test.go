@@ -68,13 +68,14 @@ func TestDigitalManualWholeOrderRealEscrowCheckoutAndReplay(t *testing.T) {
 	f := url.Values{"order_id": {order}, "content": {content}, formNonceField: {renderedFormNonce(t, page, "/orders/deliver")}}
 	x.check(x.do("POST", "/orders/deliver", x.vendorSess, f), 303)
 	x.check(x.do("POST", "/orders/deliver", x.vendorSess, f), 303)
-	if x.state(order) != stateCompleted || agInt(x.testEnv, "SELECT count(*) FROM deliveries WHERE order_id=$1", order) != 1 || agStr(x.testEnv, "SELECT content FROM deliveries WHERE order_id=$1", order) != content {
+	if x.state(order) != stateCompleted || agInt(x.testEnv, "SELECT count(*) FROM deliveries WHERE order_id=$1", order) != 1 || testDecrypt(t, accountPGPFixture.key, agStr(x.testEnv, "SELECT content FROM deliveries WHERE order_id=$1", order)) != content {
 		t.Fatal("manual delivery was not one whole-order record")
 	}
 	if agInt(x.testEnv, "SELECT count(*) FROM escrows WHERE order_id=$1", order) != 1 || agInt(x.testEnv, "SELECT count(*) FROM messages") != 0 {
 		t.Fatal("batch duplicated escrow or leaked into direct inbox")
 	}
-	mustContain(t, x.page("/order?id="+order, x.buyerSess), "First purchased item", "Second purchased item")
+	mustContain(t, x.page("/order?id="+order, x.buyerSess), "Encrypted to the buyer", "BEGIN PGP MESSAGE")
+	mustNotContain(t, x.page("/order?id="+order, x.buyerSess), "First purchased item", "Second purchased item")
 }
 
 func TestDigitalInventoryAutomaticBatchReservationCancellationAndPrivacy(t *testing.T) {
@@ -114,7 +115,7 @@ func TestDigitalInventoryAutomaticBatchReservationCancellationAndPrivacy(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if x.state(next) != stateCompleted || agInt(x.testEnv, "SELECT count(*) FROM deliveries WHERE order_id=$1", next) != 1 || agStr(x.testEnv, "SELECT content FROM deliveries WHERE order_id=$1", next) != want {
+	if x.state(next) != stateCompleted || agInt(x.testEnv, "SELECT count(*) FROM deliveries WHERE order_id=$1", next) != 1 || testDecrypt(t, accountPGPFixture.key, agStr(x.testEnv, "SELECT content FROM deliveries WHERE order_id=$1", next)) != want {
 		t.Fatal("auto delivery lost distinct units or duplicated batch")
 	}
 	if agInt(x.testEnv, "SELECT count(*) FROM digital_units WHERE order_id=$1 AND delivered_at IS NOT NULL", next) != 2 {
@@ -302,5 +303,30 @@ func TestDigitalInventoryPaidCancellationCannotReviveExpiredListingStock(t *test
 	})
 	if agInt(x.testEnv, "SELECT count(*) FROM digital_units WHERE order_id=$1 AND content='' AND fingerprint IS NULL", order) != 2 || agInt(x.testEnv, "SELECT stock FROM products WHERE id=$1", p) != 0 {
 		t.Fatal("expired canceled-order claims retained secrets or became available")
+	}
+}
+
+func TestDigitalInventoryRejectsRecipientCiphertextBeforePayment(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	p := digitalInventoryFixture(t, x, "plain unit")
+	key, _ := testPGPKey(t, "inventory-cannot-know-future-buyer")
+	ciphertext := encryptToRecipients(t, "encrypted unit", key)
+	for _, format := range []string{"", "lines"} {
+		x.check(x.do("POST", "/listings/digital-units", x.vendorSess, url.Values{"id": {p}, "contents": {ciphertext}, "format": {format}}), 400)
+	}
+	if agInt(x.testEnv, "SELECT stock FROM products WHERE id=$1", p) != 1 {
+		t.Fatal("refused encrypted inventory changed stock")
+	}
+	// Older imported rows cannot bypass the same rule when composing a batch.
+	agExec(x.testEnv, "INSERT INTO digital_units(id,product_id,content,fingerprint,created) VALUES($1,$2,$3,$4,now()-interval '1 day')", randomToken(), p, ciphertext, digest(ciphertext))
+	agExec(x.testEnv, "UPDATE products SET stock=2 WHERE id=$1", p)
+	x.mustPoll()
+	before := x.fake.count()
+	x.check(x.do("POST", "/orders", x.buyerSess, url.Values{"product_id": {p}, "currency": {"XMR"}, "quantity": {"2"}}), 409)
+	order := x.draft(p)
+	agExec(x.testEnv, "UPDATE orders SET quantity=2 WHERE id=$1", order)
+	x.check(x.checkout(x.buyerSess, order, testXMRAddr("encryptedinventory-rejected", true)), 409)
+	if x.fake.count() != before || agInt(x.testEnv, "SELECT count(*) FROM escrows") != 0 || agInt(x.testEnv, "SELECT count(*) FROM digital_units WHERE order_id IS NOT NULL") != 0 {
+		t.Fatal("encrypted inventory rejection requested payment or claimed units")
 	}
 }

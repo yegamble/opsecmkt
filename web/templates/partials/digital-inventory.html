@@ -8,11 +8,11 @@
 <button type="submit">Save digital delivery method</button>
 </form>
 {{else}}<p>Delivery method: <strong>{{if eq .Mode "manual"}}Manual fulfillment{{else if eq .Mode "inventory"}}Distinct inventory{{else}}Reusable download{{end}}</strong>. Only the listing's vendor can view or change its digital stock.</p>{{end}}
-{{if eq .Mode "inventory"}}<p class="help"><strong>{{.Available}}</strong> available distinct units; <strong>{{.Reserved}}</strong> reserved and not yet delivered. Stock is derived from available units. Each item and the combined order delivery must fit within 32000 characters; oversized batches are refused before payment. Digital text is stored unencrypted and follows listing or order retention.</p>
+{{if eq .Mode "inventory"}}<p class="help"><strong>{{.Available}}</strong> available distinct units; <strong>{{.Reserved}}</strong> reserved and not yet delivered. Stock is derived from available units. Each item and the combined order delivery must fit within 32000 characters; oversized batches are refused before payment. Inventory text is stored unencrypted and follows listing or order retention. The combined delivery is encrypted separately to the buyer’s current PGP key.</p>
 {{if .Owner}}
 <form class="stack" method="post" action="/listings/digital-units">
 <input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="form_nonce" value="{{formNonce "/listings/digital-units"}}"><input type="hidden" name="id" value="{{$.Product.ID}}"><input type="hidden" name="format" value="entry">
-<label>Digital item text or link<textarea name="contents" rows="5" required maxlength="32000" spellcheck="false"></textarea></label><p class="help">One unit may contain multiple lines. Links are delivered as text and are not opened by the market.</p><button type="submit">Add digital unit</button>
+<label>Digital item text or link<textarea name="contents" rows="5" required maxlength="32000" spellcheck="false"></textarea></label><p class="help">One unit may contain multiple lines. Supply text or links; PGP-encrypted inventory entries are refused because the buyer is not known yet. Send content already encrypted to a buyer through manual delivery on their order page. Links are delivered as text and are not opened by the market.</p><button type="submit">Add digital unit</button>
 </form>
 <details><summary>Bulk import one unit per line</summary><form class="stack" method="post" action="/listings/digital-units">
 <input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="form_nonce" value="{{formNonce "/listings/digital-units"}}"><input type="hidden" name="id" value="{{$.Product.ID}}"><input type="hidden" name="format" value="lines">

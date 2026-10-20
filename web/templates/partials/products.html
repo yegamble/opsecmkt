@@ -12,7 +12,7 @@ broken-image icon in Chromium and WebKit); otherwise the CSS illustration. Thumb
 <span class="art-badge">{{.Kind}}</span>
 </a>
 <div class="product-body">
-<div class="product-badges"><span class="badge {{if eq .Kind "digital"}}digital{{else}}neutral{{end}}">{{.Kind}}</span><span class="badge neutral">{{.Category}}{{if .Subcategory}} / {{.Subcategory}}{{end}}</span><span class="badge neutral shipping-badge">{{if eq .Kind "physical"}}Ships to: {{else}}Available: {{end}}{{.ShippingLabel}}</span></div>
+<div class="product-badges"><span class="badge {{if eq .Kind "digital"}}digital{{else}}neutral{{end}}">{{.Kind}}</span><span class="badge neutral">{{.Category}}{{if .Subcategory}} / {{.Subcategory}}{{end}}</span><span class="badge neutral shipping-badge">{{if eq .Kind "physical"}}Ships to: {{else}}Available: {{end}}{{.ShippingLabel}}</span>{{if .VendorVacation}}<span class="badge neutral">On vacation</span>{{end}}{{if .VendorDeactivated}}<span class="badge neutral">Deactivated</span>{{end}}</div>
 <h2>
 <a href="{{if .Archived}}/listing-edit?id={{.ID}}{{else}}/product?id={{.ID}}{{end}}">{{.Title}}</a>
 </h2>{{if .Archived}}<p class="inventory-state">{{if .TakedownReason}}<span class="badge danger">Taken down</span> Hidden from the marketplace by an administrator; no new orders.{{else}}<span class="badge neutral">Archived</span> Hidden from the marketplace; no new orders.{{end}}</p>{{end}}{{if and .TakedownReason (eq $.Page "vendor-dashboard")}}

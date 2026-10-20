@@ -58,7 +58,8 @@ func TestAdminUserDirectory(t *testing.T) {
 	approvalID, _ := e.user("dir_approval", "buyer")
 	agExec(e, "INSERT INTO vendor_applications(id,user_id,state,approval,bond_piconero) VALUES('dir-app-approval',$1,'awaiting_approval','manual',0)", approvalID)
 	alphaID, _ := e.user("dir_alpha", "buyer")
-	statsID, _ := e.user("dir_stats", "vendor")
+	// Legacy account data is displayed as stored, including a missing key beside an enabled factor flag.
+	statsID, _ := e.keylessUser("dir_stats", "vendor")
 	// Creation order is the directory's order: the accounts above one second apart, oldest first, then 55 more.
 	agExec(e, `UPDATE users u SET created=now()-interval '1 hour'+o.n*interval '1 second' FROM (SELECT id,row_number() OVER (ORDER BY created,handle) n FROM users) o WHERE o.id=u.id`)
 	agExec(e, `INSERT INTO users(id,handle,password_hash,role,created)

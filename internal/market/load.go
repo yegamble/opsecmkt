@@ -247,7 +247,7 @@ func vendorSeesOrder(order string) string {
 // load fills generic page data, then runs registered loaders (routes.go).
 func (a *App) load(r *http.Request, d *PageData) error {
 	ctx := r.Context()
-	rows, err := a.db.QueryContext(ctx, "SELECT key,value FROM settings")
+	rows, err := a.db.QueryContext(ctx, "SELECT key,value FROM settings WHERE key NOT LIKE 'xmpp_%'")
 	if err != nil {
 		return err
 	}
@@ -285,7 +285,7 @@ func (a *App) load(r *http.Request, d *PageData) error {
 		if d.Page == "catalog" || d.Page == "vendor" || d.Page == "vendor-dashboard" {
 			description = "left(p.description," + strconv.Itoa(excerptRunes+1) + ")"
 		}
-		query := `SELECT p.id,p.title,` + description + `,p.category,p.region,p.kind,u.handle,p.vendor_id,p.btc,p.xmr,p.stock,p.archived,` + takedown + `,(u.vendor_verified OR u.role='admin'),p.subcategory,array_to_string(p.shipping_regions,'|'),ratings.average,ratings.count FROM products p JOIN users u ON u.id=p.vendor_id
+		query := `SELECT p.id,p.title,` + description + `,p.category,p.region,p.kind,u.handle,p.vendor_id,p.btc,p.xmr,p.stock,p.archived,` + takedown + `,(u.vendor_verified OR u.role='admin'),p.subcategory,array_to_string(p.shipping_regions,'|'),ratings.average,ratings.count,u.vendor_vacation,u.vendor_deactivated,NOT ` + vendorAcceptsBuyerMessagesSQL("u") + ` FROM products p JOIN users u ON u.id=p.vendor_id
 		 LEFT JOIN LATERAL (SELECT coalesce(avg(r.rating),0)::float8 AS average,count(*) AS count FROM reviews r JOIN orders ro ON ro.id=r.order_id WHERE r.product_id=p.id AND ro.state='completed' AND r.hidden_at IS NULL) ratings ON true WHERE true`
 		args := []any{}
 		limit := " LIMIT 100"
@@ -299,7 +299,7 @@ func (a *App) load(r *http.Request, d *PageData) error {
 			query += " AND p.vendor_id=$1"
 			args = append(args, vendorID)
 			var total int
-			if err = a.db.QueryRowContext(ctx, `SELECT count(*) FROM products p WHERE p.vendor_id=$1 AND NOT p.archived`, vendorID).Scan(&total); err != nil {
+			if err = a.db.QueryRowContext(ctx, `SELECT count(*) FROM products p JOIN users u ON u.id=p.vendor_id WHERE p.vendor_id=$1 AND NOT p.archived AND NOT u.vendor_deactivated`, vendorID).Scan(&total); err != nil {
 				return err
 			}
 			paging := vendorPaging(d, vendorID, total, r.URL.Query().Get("page"))
@@ -320,14 +320,14 @@ func (a *App) load(r *http.Request, d *PageData) error {
 		case "catalog":
 			// The term is matched literally (likePattern); the count and the page share one filter. E'\\' is one
 			// backslash whatever standard_conforming_strings an external database sets.
-			filter := ` AND NOT p.archived AND ($1='' OR p.title ILIKE $4 ESCAPE E'\\' OR p.description ILIKE $4 ESCAPE E'\\') AND ($2='' OR p.category=$2)
+			filter := ` AND NOT p.archived AND NOT u.vendor_deactivated AND ($1='' OR p.title ILIKE $4 ESCAPE E'\\' OR p.description ILIKE $4 ESCAPE E'\\') AND ($2='' OR p.category=$2)
 			 AND ($3='' OR p.region=$3 OR $3=ANY(p.shipping_regions) OR p.region='Worldwide' OR 'Worldwide'=ANY(p.shipping_regions)
 			 OR ($3='North America' AND (p.region='United States' OR 'United States'=ANY(p.shipping_regions)))
 			 OR ($3='United States' AND (p.region='North America' OR 'North America'=ANY(p.shipping_regions))))
 			 AND ($5='' OR p.subcategory=$5) AND ($6='' OR p.kind=$6) AND (NOT $7::boolean OR p.stock>0)`
 			args = append(args, d.Query, d.Category, d.Region, likePattern(d.Query), d.Subcategory, d.KindFilter, d.InStockOnly)
 			var total int
-			if err = a.db.QueryRowContext(ctx, `SELECT count(*) FROM products p WHERE true`+filter, args...).Scan(&total); err != nil {
+			if err = a.db.QueryRowContext(ctx, `SELECT count(*) FROM products p JOIN users u ON u.id=p.vendor_id WHERE true`+filter, args...).Scan(&total); err != nil {
 				return err
 			}
 			paging := catalogPaging(d, total, r.URL.Query().Get("page"))
@@ -339,10 +339,10 @@ func (a *App) load(r *http.Request, d *PageData) error {
 		case d.Page == "product" && d.User != nil:
 			// A-164: an archived listing's page stays readable to whoever may read an order placed on it (the
 			// order page's rule), so the parties and reviewing staff can see what was sold; everyone else gets 404.
-			query += " AND (NOT p.archived OR EXISTS(SELECT 1 FROM orders o WHERE o.product_id=p.id AND " + orderReadable("$2", "$3") + "))"
+			query += " AND ((NOT p.archived AND NOT u.vendor_deactivated) OR EXISTS(SELECT 1 FROM orders o WHERE o.product_id=p.id AND " + orderReadable("$2", "$3") + "))"
 			args = append(args, d.User.ID, d.User.Role)
 		case d.Page != "vendor-dashboard" && d.Page != "catalog":
-			query += " AND NOT p.archived"
+			query += " AND NOT p.archived AND NOT u.vendor_deactivated"
 		}
 		// p.id breaks ties between listings created in the same transaction, so pages never overlap.
 		order := "p.created DESC, p.id DESC"
@@ -365,7 +365,7 @@ func (a *App) load(r *http.Request, d *PageData) error {
 			var p Product
 			var regions string
 			var btc, xmr int64
-			if err = rows.Scan(&p.ID, &p.Title, &p.Description, &p.Category, &p.Region, &p.Kind, &p.Vendor, &p.VendorID, &btc, &xmr, &p.Stock, &p.Archived, &p.TakedownReason, &p.VendorVerified, &p.Subcategory, &regions, &p.RatingAverage, &p.RatingCount); err != nil {
+			if err = rows.Scan(&p.ID, &p.Title, &p.Description, &p.Category, &p.Region, &p.Kind, &p.Vendor, &p.VendorID, &btc, &xmr, &p.Stock, &p.Archived, &p.TakedownReason, &p.VendorVerified, &p.Subcategory, &regions, &p.RatingAverage, &p.RatingCount, &p.VendorVacation, &p.VendorDeactivated, &p.VendorMessagesUnavailable); err != nil {
 				rows.Close()
 				return err
 			}
@@ -393,7 +393,7 @@ func (a *App) load(r *http.Request, d *PageData) error {
 		}
 		if d.Page == "vendor" {
 			var u User
-			err = a.db.QueryRowContext(ctx, "SELECT id,handle,role,pgp,(vendor_verified OR role='admin'),banned_at IS NOT NULL FROM users WHERE id=$1 AND (role IN ('vendor','admin') OR vendor_approved)", r.URL.Query().Get("id")).Scan(&u.ID, &u.Handle, &u.Role, &u.PGP, &u.VendorVerified, &d.SellerClosed)
+			err = a.db.QueryRowContext(ctx, "SELECT id,handle,role,pgp,(vendor_verified OR role='admin'),banned_at IS NOT NULL FROM users WHERE id=$1 AND (role IN ('vendor','admin') OR vendor_approved) AND NOT vendor_deactivated", r.URL.Query().Get("id")).Scan(&u.ID, &u.Handle, &u.Role, &u.PGP, &u.VendorVerified, &d.SellerClosed)
 			if err != nil {
 				return err
 			}
@@ -471,13 +471,13 @@ func (a *App) load(r *http.Request, d *PageData) error {
 				return err
 			}
 			d.ActivityPaging = activityPaging("/messages", total, r.URL.Query().Get("page"), nil)
-			rows, err = a.db.QueryContext(ctx, `SELECT m.id,s.handle,t.handle,m.body,to_char(m.created,'YYYY-MM-DD HH24:MI "UTC"')`+inbox+` ORDER BY m.created DESC,m.id DESC LIMIT $3 OFFSET $4`, d.User.ID, to, activityPageSize, d.ActivityPaging.Offset())
+			rows, err = a.db.QueryContext(ctx, `SELECT m.id,s.handle,t.handle,m.body,to_char(m.created,'YYYY-MM-DD HH24:MI "UTC"'),COALESCE(m.order_id,''),COALESCE(m.dispute_id,'')`+inbox+` ORDER BY m.created DESC,m.id DESC LIMIT $3 OFFSET $4`, d.User.ID, to, activityPageSize, d.ActivityPaging.Offset())
 			if err != nil {
 				return err
 			}
 			for rows.Next() {
 				var m Message
-				if err = rows.Scan(&m.ID, &m.Sender, &m.Recipient, &m.Body, &m.Created); err != nil {
+				if err = rows.Scan(&m.ID, &m.Sender, &m.Recipient, &m.Body, &m.Created, &m.OrderID, &m.DisputeID); err != nil {
 					rows.Close()
 					return err
 				}
@@ -491,17 +491,17 @@ func (a *App) load(r *http.Request, d *PageData) error {
 		}
 		if d.Page == "notifications" {
 			var total int
-			if err = a.db.QueryRowContext(ctx, `SELECT count(*) FROM notifications WHERE user_id=$1`, d.User.ID).Scan(&total); err != nil {
+			if err = a.db.QueryRowContext(ctx, `SELECT count(*) FROM notifications n JOIN users u ON u.id=n.user_id AND n.user_id=$1 WHERE `+notificationAudienceSQL("n", "u"), d.User.ID).Scan(&total); err != nil {
 				return err
 			}
 			d.ActivityPaging = activityPaging("/notifications", total, r.URL.Query().Get("page"), nil)
-			rows, err = a.db.QueryContext(ctx, `SELECT id,body,to_char(created,'YYYY-MM-DD HH24:MI "UTC"'),is_read,COALESCE(order_id,'') FROM notifications WHERE user_id=$1 ORDER BY is_read ASC,created DESC,id DESC LIMIT $2 OFFSET $3`, d.User.ID, activityPageSize, d.ActivityPaging.Offset())
+			rows, err = a.db.QueryContext(ctx, `SELECT n.id,n.body,to_char(n.created,'YYYY-MM-DD HH24:MI "UTC"'),n.is_read,COALESCE(n.order_id,''),COALESCE(n.ticket_id,'') FROM notifications n JOIN users u ON u.id=n.user_id AND n.user_id=$1 WHERE `+notificationAudienceSQL("n", "u")+` ORDER BY n.is_read ASC,n.created DESC,n.id DESC LIMIT $2 OFFSET $3`, d.User.ID, activityPageSize, d.ActivityPaging.Offset())
 			if err != nil {
 				return err
 			}
 			for rows.Next() {
 				var n Notification
-				if err = rows.Scan(&n.ID, &n.Body, &n.Created, &n.Read, &n.OrderID); err != nil {
+				if err = rows.Scan(&n.ID, &n.Body, &n.Created, &n.Read, &n.OrderID, &n.TicketID); err != nil {
 					rows.Close()
 					return err
 				}
@@ -548,6 +548,9 @@ func (a *App) load(r *http.Request, d *PageData) error {
 		}
 	}
 	if err := runLoaders(ctx, a, r, d); err != nil {
+		return err
+	}
+	if err := contactMessageAvailability(ctx, a, d); err != nil {
 		return err
 	}
 	// Recipient prefill is validated by its page loader, so carry it into links only after that validation ran.

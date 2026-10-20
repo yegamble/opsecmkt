@@ -17,17 +17,159 @@ existing documented operations workflow.
 
 ## Marketplace browsing, selling capabilities and private case records
 
-Migrations 129–134 add listing taxonomy and additional shipping regions, independent vendor approval, order correspondence/replacement deliveries, order-bound dispute images, quantities and distinct digital inventory. Existing categories and primary shipping regions remain unchanged; new subcategories start blank. Existing vendors receive independent selling approval. Administrators derive verified selling access from their current role; moderator approval preserves moderation. Promoting an approved vendor to staff preserves selling; explicit Buyer assignment or selling revocation removes it and archives active listings.
+Migrations 136–141 add listing taxonomy and additional shipping regions, independent vendor approval, order correspondence/replacement deliveries, order-bound dispute images, quantities and distinct digital inventory. Existing categories and primary shipping regions remain unchanged; new subcategories start blank. Existing vendors receive independent selling approval. Administrators derive verified selling access from their current role; moderator approval preserves moderation. Promoting an approved vendor to staff preserves selling; explicit Buyer assignment or selling revocation removes it and archives active listings.
 
-Migration 133 gives existing orders quantity one, widens listing stock to bigint and prevents changing quantity after checkout. Draft totals and checkout use the current unit price multiplied by the saved quantity with overflow checks. Drafts do not reserve stock; checkout reserves the full quantity atomically. Published zero-stock listings remain visible unless the buyer selects **Hide out of stock**.
+Migration 140 gives existing orders quantity one, widens listing stock to bigint and prevents changing quantity after checkout. Draft totals and checkout use the current unit price multiplied by the saved quantity with overflow checks. Drafts do not reserve stock; checkout reserves the full quantity atomically. Published zero-stock listings remain visible unless the buyer selects **Hide out of stock**.
 
-Migration 134 adds manual, reusable and distinct-inventory digital delivery methods. Existing listings retain reusable delivery behavior. Vendors can select distinct inventory on the listing editor and import individual text/link entries; available stock then comes from that inventory. Checkout reserves separate entries and confirmed payment releases one combined order delivery. Manual fulfillment submits one delivery for the whole quantity. Finish or cancel open orders before changing a listing's delivery method. Save delivered text before its configured retention deadline.
+Migration 141 adds manual, reusable and distinct-inventory digital delivery methods. Existing listings retain reusable delivery behavior. Vendors can select distinct inventory on the listing editor and import individual text/link entries; available stock then comes from that inventory. Checkout reserves separate entries and confirmed payment releases one combined order delivery. Manual fulfillment submits one delivery for the whole quantity. Finish or cancel open orders before changing a listing's delivery method. Save delivered text before its configured retention deadline.
 
 Rebuild both the application and isolated upload gateway from this source before using dispute evidence. The new upload kind uses the existing JPEG/PNG scanner and normalization pipeline; originals remain on the gateway. It supports the password-confirmed private staff handoff and uses private, authorized image URLs. No new service or scanner setting is required.
 
-New order correspondence and replacement content remain on the order page and share order-private retention, preservation holds, deletion replay and final retirement. Existing direct messages remain direct messages; the upgrade cannot reliably infer which order an old message concerned. Automatic plaintext encryption is not added: messages must be encrypted in a trusted local PGP application, and valid pasted encrypted packets are preserved without a second encryption layer.
+New order correspondence and replacement content remain on the order page and share order-private retention, preservation holds, deletion replay and final retirement. Existing direct messages remain direct messages; the upgrade cannot reliably infer which order an old message concerned. Correspondence messages must be encrypted in a trusted local PGP application, and valid pasted encrypted packets are preserved without a second encryption layer. Initial and replacement digital fulfillment records follow the buyer-bound delivery encryption described below; combined inventory content is encrypted once as a single delivery.
 
 Retention remains opt-in. With it enabled, new case content cannot extend the original financial-closure deadline. Existing purge markers always block resurrection. Keep the retention state when restoring backups. A build lacking these migrations refuses the upgraded database; rollback requires restoring the pre-upgrade database and matching retention state according to the documented recovery procedure.
+
+## A re-requested Monero stray refund no longer holds the stray refund slot (migration 135, A-616)
+
+Migration 135 runs at startup; there is no new setting. It recreates the index `xmr_settlements_one_open_stray` so that
+it covers only first-generation stray refunds (`supersedes IS NULL`), and the watcher's "stray refund in progress"
+checks match it. An administrator's re-request (A-401) of a failed stray refund is a new stray refund that supersedes
+it; before, carrying it out while the stray refund of a later deposit to that order was in progress broke the index and
+failed on every pass (while staff were told it waits for the market's next pass), and a re-request waiting
+*deposit-missing* (A-614, below) held back the stray refund of every later deposit for as long as it waited. Now each
+is sent on its own: the re-request spends exactly the coins of the transaction it replaces, the later stray refund only
+deposits no settlement claims, and the market still builds one transaction per order at a time, so no coin is spent
+twice. A re-request that was failing so is carried out on the first pass after the upgrade, and a later deposit held
+back behind a waiting re-request gets its stray refund then. While two are in progress, the order page's status says
+so. Version 135 follows 133; versions 125 to 127 and 134 stay reserved for other branches and apply whenever
+they arrive. Rolling back to a build without migration 135 is refused at startup; restore the pre-upgrade backup
+instead.
+
+## Required PGP access and vendor privacy
+
+Migrations 129 and 130 add session-bound PGP access proof, the administrator's browse-only login setting, and vendor availability/privacy preferences. They preserve existing accounts, orders and listings. Rebuild the embedded templates with the application and verify backups before upgrading.
+
+All purchases and message sends now require a usable public key and successful challenge decryption in the current session. Existing sessions have no such proof and must complete the PGP decrypt flow before buying or messaging. Ownership verification by signature and TOTP login do not replace this requirement. Any saved-key change requires another decryption proof. No private PGP key is uploaded or stored.
+
+**Allow login without PGP** defaults to enabled for compatibility: users can sign in to browse or repair their key, but cannot purchase or message until they prove decryption. Administrators may disable it after proving decryption themselves; subsequent sign-ins then require PGP decryption. Keep an external recovery contact available. Vendors must retain a usable public key; existing keyless vendors need to add one before trading, and new vendor signup/approval/role assignment requires one.
+
+Vacation keeps profiles and products public but blocks new purchases. Deactivation hides profiles, products and photos from strangers while preserving authorized existing-order access. Vendors can refuse buyer messages while away, including replies through old conversations. Public last seen is off by default; opting out clears the stored activity timestamp. Buyer-to-buyer legacy conversations stay readable but cannot be continued.
+
+Existing nonempty PGP bindings, including expired or unreadable keys, require current-session old-key decryption or an already-enrolled authenticator before replacement or removal. First authenticator enrollment, activation and viewing pending authenticator/recovery material on a PGP-bound account also require that decryption proof. Inactive pending authenticator enrollments on already-keyed accounts are cleared during migration, because another existing browse session may have seen those secrets; active authenticators are preserved. First key enrollment and safe same-fingerprint renewal remain supported. For lost keys, use the existing administrator reset with an explicitly supplied replacement public key after verifying the owner. Last-administrator recovery uses `-reset-admin-factors HANDLE -reset-admin-pgp-key-file FILE`; it preserves the strict login setting and never accepts a private key.
+
+See [PGP access](docs/operator-guide.md#pgp-access-for-purchases-and-messages) and [vendor availability](docs/operator-guide.md#vendor-availability-and-activity-privacy) for the controls and recovery boundaries.
+
+## Encrypted support tickets (migration 133)
+
+Migration 133 adds the support-ticket workflow at `/tickets` and `/ticket?id=…`. Ticket IDs and procedural history
+are plaintext metadata; every initial body and reply is PGP-encrypted locally before submission, with no plaintext
+subject field. This is separate from the direct-message inbox. Users and staff handle routine support through
+the product pages; no SSH or manual database changes are needed for an ordinary ticket.
+
+Opening or replying to a ticket requires current-session PGP challenge decryption. Before opening one, the opener
+saves a usable public encryption key and selects an active staff recipient
+whose usable key is visible through the staff list or configured staff contact. The form must not expose hidden
+staff accounts. Encrypt each body to the opener and the current assigned staff member. An assignment or escalation
+does not re-encrypt historical bodies or give a new assignee the old recipient's private key; arrange the next
+reply for the current recipients. Already downloaded ciphertext or plaintext cannot be recalled.
+
+Tickets record Open, Closed or Ignored state, current assignment and administrator escalation. The opener stays
+a participant; moderators cannot access administrator-only or escalated tickets as staff, but retain their own
+personal participant view if they opened one. Active authorized staff can manage normal tickets, including
+assignment and escalation while Open. The opener can close their own Open ticket; ignoring or reopening needs
+staff permission. Administrator queue access does not imply the ability to decrypt a body that was encrypted to
+another staff member's key. Prior active staff participants can receive generic closure/ignore metadata after
+reassignment; former moderator handlers of an escalated ticket gain no access to its protected thread. Frontend and XMPP
+notifications retain current participant/role restrictions, and forwarding a ticket's encrypted armor needs the
+same separate global and recipient content consent as encrypted messages. See the
+[support instructions](docs/operator-guide.md#encrypted-support-tickets).
+
+With retention maintenance enabled, ticket bodies expire after 90 days or earlier if their opener or message
+sender is closed or erased, unless a relevant account hold applies. Holds cover current and historical ticket
+participants and workflow staff. Closed/Ignored metadata is removed only after 90 days without an update, once
+all bodies are gone and no hold applies; Open metadata remains for the workflow. Ticket and message deletions
+are journaled for restore replay. This does not remove independent XMPP/client copies.
+
+## PGP message forwarding and encrypted delivery (migration 132)
+
+Migration 132 adds separate default-off permissions for forwarding already PGP-encrypted message armor over
+XMPP. The administrator must enable **Allow PGP-encrypted message contents in XMPP** under
+`/admin/site#xmpp-outgoing`, and each recipient must choose **Include PGP-encrypted message contents** under
+`/account#xmpp-notifications`. A recipient also needs enabled XMPP and a usable PGP public encryption key;
+PGP sign-in and proof of key ownership are not required for this preference. Confirm both settings with the
+account's password and authenticator code when enrolled. Existing messages are not sent again.
+
+Default alerts remain metadata-only. With both permissions enabled, a new received-message alert can include
+the original encrypted armor, without decryption or a plaintext copy. Normal message/order authorization and
+staff audience restrictions continue to apply. Global permission changes advance its revision and suppress
+content from earlier queued alerts while retaining their summaries; changes to the recipient's preferences
+invalidate earlier queued deliveries too. A current visible recipient key match is required: hidden-recipient
+messages, replaced keys and unavailable content keep the summary alone. New stored buyer-encrypted digital
+deliveries are eligible only for that buyer's explicitly consented alert, never another party's staff notice. XMPP services can retain notification text, routing metadata and ciphertext even though the
+forwarded contents retain their PGP protection. Order-linked alerts include their order reference; direct
+messages keep message references, while support tickets use their own workflow and ticket IDs (migration 133).
+
+New drafts and checkout now require usable PGP public encryption keys on both buyer and vendor accounts,
+for physical and digital listings. Add or renew missing, expired or unusable keys under `/account`; usable keys
+and session-bound challenge decryption are required for the buyer before purchasing. Existing orders remain readable
+and cancellable if a key later becomes unusable; opening or replying to a dispute still requires PGP decryption.
+
+New manual and automatic per-order digital deliveries are stored encrypted to the buyer's PGP key. Buyers
+need their corresponding private key and PGP client to read the armor. Automatic-delivery listing templates
+remain server-readable, and manual delivery text reaches the running application before encryption. A delivery
+encryption failure refuses manual delivery or leaves automatic delivery pending without saving plaintext.
+Migration 132 does not rewrite historical plaintext deliveries or erase their backup copies; those records
+are never forwarded as XMPP contents. Review the updated order and delivery wording with vendors before
+relying on the new workflow.
+
+## Optional XMPP notifications (migration 131)
+
+Rebuild the application; startup applies append-only migration `131_xmpp_notifications.sql`. It adds private
+recipient opt-in/version state, notification audiences and a durable notification-delivery outbox. Existing
+accounts start unsubscribed, and existing notifications are not backfilled for XMPP. Migration 098's removal of
+old XMPP profile values remains unchanged: restoring an old backup does not constitute a new opt-in.
+
+Historical notices addressed to current administrators, and recognizable old administrator broadcasts even
+on former staff accounts, become administrator-only. Historical notices lack reliable audience metadata, so
+the conservative restriction also hides a current administrator's old personal notices if they are later
+demoted. New personal notices keep their normal owner access after a role change.
+
+An administrator must configure an existing outgoing XMPP sender account under `/admin/site#xmpp-outgoing`
+(server, port, verified STARTTLS or direct TLS, password and delivery switch). Each recipient, staff included,
+then opts in under `/account#xmpp-notifications`. These forms require password/TOTP confirmation. Preserve the
+application secret root so the encrypted outgoing password remains readable after a restart or restore.
+A blank password field retains the existing credential; saved credentials are never returned in page settings.
+See [XMPP setup](docs/operator-guide.md#xmpp-notifications) before enabling outbound access.
+
+XMPP uses the same newly created, authorized frontend notification text and recipients. Admin-only alerts
+remain administrator-only, and staff eligibility is checked again before frontend display and delivery after
+role changes. Independent moderators now receive dispute notices for Monero escrow as well, while resolution
+remains administrator-only. Payment-review escalation notices are administrator-only. Changing a recipient
+address or opting out invalidates queued deliveries for the earlier preference. Delivery failure leaves the
+frontend notification available; retries after ambiguous sends can duplicate alerts.
+
+Outgoing XMPP connections are direct, including in Tor mode; no automatic Tor egress or end-to-end encryption
+is added. The XMPP service can retain message bodies, sender/recipient addresses, timing and connection metadata.
+Use disposable accounts to check the actual server and recipient before relying on delivery. Turning outgoing
+XMPP off cancels pending sends when the worker processes them, while frontend notifications continue. Old backups can restore earlier recipient or
+sender settings and queued state: review them before re-enabling outgoing delivery on a restored installation.
+
+## A Monero re-request waits for a missing deposit (A-614)
+
+No migration and no new setting. An administrator's re-request of a failed Monero settlement spends exactly the coins of
+the transaction it replaces. If a deposit those coins came from is no longer listed by the escrow wallet (a
+reorganisation or a double spend since the re-request was carried out), the new settlement now stays requested
+(`send_error = 'deposit-missing'`), staff get one order note and notice each time it starts waiting, and it is built and sent once the wallet lists
+the deposit again. It has no bounded wait (a first release or refund waits twice the threshold in blocks, A-554),
+because it can be built from no other coins; past 24 hours it is an escrow alert like any settlement still requested,
+and its monthly wallet is kept from destruction while it waits. It can never pay twice: both transactions spend the
+same coins, and the database refuses any others.
+
+An earlier build failed such a re-request `nothing-to-settle` while it still claimed the deposits (A-613 below, *Except while it
+still claims deposits*). The upgrade does not revisit those rows: each keeps its alert, cannot be dismissed, is never built
+again even when the deposit is listed again, and its coins are settled with the operator outside the market. Nothing
+in the market clears that alert, so the order stays on the desk and under retention's `escrow_alert` reason. To list
+them, use the query in the *Except while it still claims deposits* item below.
 
 ## Stuck failed Monero settlements can be cleared (A-613)
 

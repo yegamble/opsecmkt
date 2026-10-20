@@ -51,6 +51,7 @@ var sweepScopes = map[string][2]string{
 	"/revoke-sessions":                {scopeSelf, "revokes the caller's other sessions"},
 	"/account":                        {scopeSelf, "the caller's profile"},
 	"/account/password":               {scopeSelf, "the caller's password"},
+	"/account/xmpp":                   {scopeSelf, "confirmed private notification destination and opt-in for the caller"},
 	"/account/delete":                 {scopeSelf, "confirmed deletion of the caller's account"},
 	"/admin/retention/hold":           {scopeStaff, "registers a scoped preservation duty"},
 	"/admin/access":                   {scopeStaff, "confirmed site visibility and registration policy"},
@@ -62,6 +63,7 @@ var sweepScopes = map[string][2]string{
 	"/admin/retention/account-review": {scopeStaff, "reviews an account closure blocker"},
 	"/account/avatar/remove":          {scopeSelf, "deletes the caller's own avatar; the form carries no id"},
 	"/account/staff-list":             {scopeSelf, "the caller's own staff-list choice"},
+	"/account/vendor-availability":    {scopeSelf, "the caller's own storefront availability and privacy preferences"},
 	"/account/vendor-application":     {scopeSelf, "applies for or withdraws the caller's own vendor application; the form carries no id"},
 	"/totp/enroll":                    {scopeSelf, "the caller's authenticator"},
 	"/totp/activate":                  {scopeSelf, "the caller's authenticator"},
@@ -72,11 +74,15 @@ var sweepScopes = map[string][2]string{
 	"/pgp/2fa":                        {scopeSelf, "the caller's own PGP sign-in setting"},
 	"/orders":                         {scopeSelf, "creates a draft for the caller from a public listing"},
 	"/messages":                       {scopeSelf, "the recipient rule is its own test (TestMessageContactPolicy, A-543); stored for the sender"},
+	"/tickets":                        {scopeSelf, "opens the caller's own support ticket with visible staff; ticket creation tests cover target and encryption checks"},
+	"/tickets/assign":                 {scopeStaff, "ticket assignment requires current staff access, covered by TestTickets"},
+	"/tickets/escalate":               {scopeStaff, "ticket escalation requires current staff access, covered by TestTickets"},
 	"/listings":                       {scopeSelf, "creates a listing owned by the caller"},
 
 	"/admin":                        {scopeStaff, ""},
 	"/admin/ban":                    {scopeStaff, "TestBanAccount covers its refusals (self, administrators, unknown handles, missing reasons)"},
 	"/admin/canary":                 {scopeStaff, ""},
+	"/admin/pgp-access":             {scopeStaff, "confirmed browse-only login policy; commerce always requires PGP proof"},
 	"/admin/captcha":                {scopeStaff, ""},
 	"/admin/escrow-release-days":    {scopeStaff, ""},
 	"/admin/escrow-xmr-destroyed":   {scopeStaff, ""},
@@ -97,10 +103,12 @@ var sweepScopes = map[string][2]string{
 	"/admin/vendor-policy":          {scopeStaff, ""},
 	"/admin/vendor-verify":          {scopeStaff, ""},
 	"/admin/vendor-revoke":          {scopeStaff, "confirmed removal of selling authority; moderator role preserved"},
-	"/images/remove":                {scopeStaff, ""},
-	"/moderator/payment-review":     {scopeStaff, ""},
-	"/moderator/xmr-collision":      {scopeStaff, ""},
-	"/resolve":                      {scopeStaff, ""},
+	"/admin/xmpp":                   {scopeStaff, "confirmed outgoing notification sender configuration"},
+
+	"/images/remove":            {scopeStaff, ""},
+	"/moderator/payment-review": {scopeStaff, ""},
+	"/moderator/xmr-collision":  {scopeStaff, ""},
+	"/resolve":                  {scopeStaff, ""},
 
 	"/admin/escrow-xmr-settled-by-hand": {scopeStaff, "TestXMREscrowSettledByHand covers its party, moderator and state refusals"},
 }
@@ -200,6 +208,20 @@ func (w *sweepWorld) sweepCases() map[string]func() sweepCase {
 		return order, agStr(x.testEnv, "SELECT id FROM disputes WHERE order_id=$1", order)
 	}
 	cases := map[string]func() sweepCase{
+		"/tickets/reply": func() sweepCase {
+			staff, _ := x.testEnv.user(label("ticket-staff"), "moderator")
+			x.testEnv.enableOrderPGP(staff)
+			id := randomToken()
+			agExec(x.testEnv, `INSERT INTO tickets(id,opener_id,assigned_to) VALUES($1,$2,$3)`, id, x.buyer, staff)
+			body := encryptToRecipients(w.t, "Encrypted support ticket reply.", x.testEnv.commercePGP)
+			return sweepCase{form: url.Values{"id": {id}, "body": {body}}, owner: x.buyerSess, ownerWant: 303, allow: []string{"moderator", "admin"}}
+		},
+		"/tickets/status": func() sweepCase {
+			staff, _ := x.testEnv.user(label("ticket-staff"), "moderator")
+			id := randomToken()
+			agExec(x.testEnv, `INSERT INTO tickets(id,opener_id,assigned_to) VALUES($1,$2,$3)`, id, x.buyer, staff)
+			return sweepCase{form: url.Values{"id": {id}, "status": {"closed"}}, owner: x.buyerSess, ownerWant: 303, allow: []string{"moderator", "admin"}}
+		},
 		"/orders/cancel": func() sweepCase {
 			return sweepCase{form: payoutConfirmed(url.Values{"order_id": {x.draft(x.digital(x.vendor))}, "from": {stateDraft}}, xmrListingPrice), owner: x.buyerSess, counter: x.vendorSess, ownerWant: 303}
 		},

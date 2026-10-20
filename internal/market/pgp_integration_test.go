@@ -61,7 +61,7 @@ func TestPGPKeyOwnershipAndSecondFactor(t *testing.T) {
 	bob, bobPub := testPGPKey(t, "bob")
 	_, aliceFP, _ := parsePublicKey(alicePub)
 	_, bobFP, _ := parsePublicKey(bobPub)
-	uid, s := e.user("alice_pgp", "buyer")
+	uid, s := e.keylessUser("alice_pgp", "buyer")
 	status := func() (fp string, verified, twoFA bool) {
 		t.Helper()
 		if err := e.DB.QueryRow("SELECT pgp_fingerprint,pgp_verified_at IS NOT NULL,pgp_2fa FROM users WHERE id=$1", uid).Scan(&fp, &verified, &twoFA); err != nil {
@@ -151,7 +151,7 @@ func TestPGPKeyOwnershipAndSecondFactor(t *testing.T) {
 	if err := e.DB.QueryRow("SELECT challenge,nonce_hash FROM pgp_challenges WHERE user_id=$1 AND kind='decrypt'", uid).Scan(&armored, &nonceHash); err != nil {
 		t.Fatal(err)
 	}
-	nonce := testDecrypt(t, alice, armored)
+	nonce := testSignInCode(t, alice, armored)
 	if nonceHash != digest(nonce) || strings.Contains(armored, nonce) {
 		t.Fatal("nonce stored in plaintext")
 	}
@@ -215,16 +215,18 @@ func TestPGPKeyOwnershipAndSecondFactor(t *testing.T) {
 	if w2.Header().Get("Location") != "/" {
 		t.Fatal("reset 2FA still challenged")
 	}
-	// A challenge issued for bob's key cannot be answered after the key changes back.
+	// The owner has authenticated with Bob's key; an additional outstanding challenge is invalidated by rotation.
+	e.pgpSessionKey(s)
 	e.check(e.do("POST", "/pgp/challenge", s, url.Values{"kind": {"decrypt"}}), 303)
 	if err := e.DB.QueryRow("SELECT challenge FROM pgp_challenges WHERE user_id=$1", uid).Scan(&armored); err != nil {
 		t.Fatal(err)
 	}
-	bobNonce := testDecrypt(t, bob, armored)
+	bobNonce := testSignInCode(t, bob, armored)
 	e.check(e.do("POST", "/account", s, url.Values{"pgp": {alicePub}, "password": {testPassword}}), 303)
 	e.check(e.do("POST", "/pgp/verify", s, url.Values{"response": {bobNonce}}), 409)
 
-	// Removing the key clears everything.
+	// Removing the key after decryption authentication clears everything.
+	e.pgpSessionKey(s)
 	e.check(e.do("POST", "/account", s, url.Values{"pgp": {""}, "password": {testPassword}}), 303)
 	if fp, verified, _ := status(); fp != "" || verified {
 		t.Fatal("removed key kept state")
@@ -269,8 +271,12 @@ func TestMessageEncryptionStatus(t *testing.T) {
 	alice, alicePub := testPGPKey(t, "alice")
 	bob, bobPub := testPGPKey(t, "bob")
 	senderID, sender := e.user("msg_sender", "buyer")
+	_, senderPub := testPGPKey(t, "msg_sender")
+	e.pgpSession(sender, senderPub)
 	aliceID, aliceSession := e.user("msg_alice", "vendor")
-	nokeyID, _ := e.user("msg_nokey", "vendor")
+	nokeyID, _ := e.keylessUser("msg_nokey", "vendor")
+	// A legacy customer relationship reaches the key-usability check without publishing a keyless vendor.
+	e.order(senderID, e.product(nokeyID, "digital"), "XMR", stateAwaitingPayment)
 	e.check(e.do("POST", "/account", aliceSession, url.Values{"pgp": {alicePub}, "password": {testPassword}}), 303)
 
 	toAlice, _ := encryptTo(alice, "for alice")
@@ -366,7 +372,8 @@ func TestMessageEncryptionStatus(t *testing.T) {
 	if !strings.Contains(page, `readonly aria-label="Encrypted message from msg_sender to msg_alice"`) {
 		t.Fatal("encrypted message was not rendered in a labeled readonly textarea")
 	}
-	// The extra-key count and match are historical send-time facts, not recomputed if the recipient changes keys.
+	// The extra-key count and match are historical facts even after an authenticated owner changes keys.
+	e.pgpSessionKey(aliceSession)
 	e.check(e.do("POST", "/account", aliceSession, url.Values{"pgp": {bobPub}, "password": {testPassword}}), 303)
 	page = e.body("GET", "/messages", sender, nil, 200)
 	if !strings.Contains(page, "+ 1 other visible key(s)") {
@@ -384,6 +391,8 @@ func TestMessagePlaintextInsideArmorRejected(t *testing.T) {
 	e := newTestApp(t)
 	alice, alicePub := testPGPKey(t, "alice")
 	senderID, sender := e.user("armor_buyer", "buyer")
+	_, senderPub := testPGPKey(t, "armor_buyer")
+	e.pgpSession(sender, senderPub)
 	_, aliceSession := e.user("armor_vendor", "vendor")
 	e.check(e.do("POST", "/account", aliceSession, url.Values{"pgp": {alicePub}, "password": {testPassword}}), 303)
 
@@ -527,6 +536,8 @@ func TestMessageArmorCanonicalised(t *testing.T) {
 	alice, alicePub := testPGPKey(t, "alice")
 	bob, _ := testPGPKey(t, "bob")
 	senderID, sender := e.user("canon_buyer", "buyer")
+	_, senderPub := testPGPKey(t, "canon_buyer")
+	e.pgpSession(sender, senderPub)
 	_, aliceSession := e.user("canon_alice", "vendor")
 	_, carolSession := e.user("canon_carol", "vendor")
 	e.check(e.do("POST", "/account", aliceSession, url.Values{"pgp": {alicePub}, "password": {testPassword}}), 303)
@@ -642,7 +653,7 @@ func TestProfileKeyStoredCanonically(t *testing.T) {
 			mustNotContain(t, page, append(leaks, "05:06")...)
 		}
 		page := e.body("GET", "/account", u.session, nil, 200)
-		mustContain(t, page, "canon_key &lt;canon_key@example.test&gt;", "Shown to market staff, to every vendor or buyer you trade with and anyone you have messaged, to every signed-in account if you sell, appear on the public staff list or are named as the staff contact, to both parties of every disputed or resolved order if you are a moderator or administrator,",
+		mustContain(t, page, "canon_key &lt;canon_key@example.test&gt;", "Shown to market staff, to every vendor or buyer you trade with and anyone you have messaged, to people who share an authorized support ticket with you, to every signed-in account if you sell, appear on the public staff list or are named as the staff contact, to both parties of every disputed or resolved order if you are a moderator or administrator,",
 			"Use a key made only for this market.", "Verified 2026-03-04 05:06 UTC")
 		mustNotContain(t, page, leaks...)
 		mustContain(t, e.body("GET", "/pgp", u.session, nil, 200), "Verified 2026-03-04 05:06 UTC")
@@ -692,7 +703,7 @@ func TestProfileKeyPhotoIDRefused(t *testing.T) {
 	e := newTestApp(t)
 	key, photo, plain := testPhotoIDKey(t, "photo_key")
 	_, fp, _ := parsePublicKey(plain)
-	uid, s := e.user("photo_owner", "vendor")
+	uid, s := e.keylessUser("photo_owner", "vendor")
 	type row struct {
 		pgp, fp       string
 		verified      bool
@@ -847,7 +858,7 @@ func TestStoredSplitKeyShownUnreadable(t *testing.T) {
 			mustContain(t, page, "No usable key.", "saved PGP key can no longer be read")
 			mustNotContain(t, page, "Ownership verified", formatFingerprint(fp))
 		}
-		mustContain(t, e.body("GET", "/account", vendor, nil, 200), "Unreadable — paste your key again")
+		mustContain(t, e.body("GET", "/account", vendor, nil, 200), "Unreadable — use verified key recovery")
 		mustContain(t, e.body("GET", "/pgp", vendor, nil, 200), "The saved key cannot be used: the public key could not be parsed.")
 	}
 }

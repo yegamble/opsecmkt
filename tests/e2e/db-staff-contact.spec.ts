@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { expect, test, type Page } from '@playwright/test';
 import { uniqueHandle } from './db-fixtures';
-import { expectNotice, pgpFixture, signedIn, submitAndLoad, submitStatus } from './db-helpers';
+import { expectNotice, pgpFixture, signedIn, submitAndLoad, submitStatus, seedPGPAccess } from './db-helpers';
 import { waitForStyles } from './styles';
 
 // A-119: an administrator saves the "Staff contact" on /admin/site (A-542) with their password; /canary, the suspended sign-in
@@ -42,6 +42,7 @@ test('administrator publishes a staff contact that every promised page shows as 
     return submitStatus(admin, () => panel.getByRole('button', { name: 'Save staff contact' }).click());
   };
   try {
+    await seedPGPAccess(buyer);
     sql(`UPDATE users SET role='admin' WHERE handle='${adminHandle}';
       UPDATE users SET role='moderator' WHERE handle='${modHandle}';
       UPDATE users SET suspended_at=now() WHERE handle='${suspectHandle}';

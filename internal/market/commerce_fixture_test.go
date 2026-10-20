@@ -26,6 +26,7 @@ func newPayEnv(t *testing.T, supplied ...*testEnv) *payEnv {
 	_, as := e.user("cadmin_"+suffix, "admin")
 	_, key := testPGPKey(t, "cvendor_"+suffix)
 	e.setKey(v, key)
+	e.pgpSessionKey(vs) // the commerce fixture starts with this replacement key already authenticated
 	p := &payEnv{testEnv: e, t: t, buyer: e.loadUser(b), vendor: e.loadUser(v), mod: e.loadUser(m), buyerSess: bs, vendorSess: vs, adminSess: as}
 	p.productID = e.product(v, "physical")
 	p.order = e.order(b, p.productID, "XMR", stateDraft)

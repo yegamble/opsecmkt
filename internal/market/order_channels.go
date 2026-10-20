@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -49,6 +50,13 @@ func orderChannelParty(c *actionCtx) (Order, error) {
 		}
 		return o, fail(409, "Order correspondence is available after checkout, while this order's private records remain available. Nothing was stored.")
 	}
+	var unnecessaryRestrictedWrite bool
+	if err = c.Tx.QueryRowContext(c.Ctx(), `SELECT u.retention_restricted_at IS NOT NULL AND o.financial_closed_at IS NOT NULL FROM users u JOIN orders o ON o.id=$2 WHERE u.id=$1 FOR SHARE OF u NOWAIT`, c.User.ID, o.ID).Scan(&unnecessaryRestrictedWrite); err != nil {
+		return o, err
+	}
+	if unnecessaryRestrictedWrite {
+		return o, fail(403, "While deletion waits for funds, order correspondence and replacement content may be added only to an order with unresolved financial work. Nothing was stored.")
+	}
 	open, err := orderPrivateWindow(c.Ctx(), c.Tx, c.A, o.ID)
 	if err != nil {
 		return o, err
@@ -60,6 +68,9 @@ func orderChannelParty(c *actionCtx) (Order, error) {
 }
 
 func orderMessageAction(c *actionCtx) (actionResult, error) {
+	if err := requirePGPAccess(c); err != nil {
+		return actionResult{}, err
+	}
 	o, err := orderChannelParty(c)
 	if err != nil {
 		return actionResult{}, err
@@ -77,12 +88,19 @@ func orderMessageAction(c *actionCtx) (actionResult, error) {
 	}
 	// Do not use messageRecipient: demotion may remove public vendor status but
 	// must not stop actual historical order partners corresponding on this order.
-	var banned bool
-	if err = c.Tx.QueryRowContext(c.Ctx(), `SELECT banned_at IS NOT NULL FROM users WHERE id=$1 FOR SHARE`, recipient).Scan(&banned); err != nil {
+	var unavailable bool
+	if err = c.Tx.QueryRowContext(c.Ctx(), `SELECT banned_at IS NOT NULL OR suspended_at IS NOT NULL OR closed_at IS NOT NULL FROM users WHERE id=$1 FOR SHARE`, recipient).Scan(&unavailable); err != nil {
 		return actionResult{}, err
 	}
-	if banned {
+	if unavailable {
 		return actionResult{}, fail(409, "This order partner's account is closed to new messages. Nothing was stored.")
+	}
+	senderPGP, err := loadPGPAccount(c.Ctx(), c.Tx, c.User.ID, false)
+	if err != nil {
+		return actionResult{}, err
+	}
+	if !canReceiveEncrypted(senderPGP.Key, time.Now()) {
+		return actionResult{}, fail(409, "Add a usable PGP public encryption key on your account before sending private messages.")
 	}
 	body, match, extra, known, err := inspectMessage(c, body, recipient, handle)
 	if err != nil {
@@ -134,7 +152,11 @@ func orderDeliveryUpdateAction(c *actionCtx) (actionResult, error) {
 	if !c.A.allowWriteBudget("delivery-update:"+c.User.ID, messageBudget) {
 		return actionResult{}, fail(429, "Too many delivery updates. Nothing was stored. Try again later.")
 	}
-	if _, err = c.Tx.ExecContext(c.Ctx(), `INSERT INTO order_delivery_updates(id,order_id,author_id,content) VALUES($1,$2,$3,$4)`, randomToken(), o.ID, c.User.ID, content); err != nil {
+	ciphertext, fingerprint, err := deliveryCiphertext(c.Ctx(), c.Tx, &o, content)
+	if err != nil {
+		return actionResult{}, err
+	}
+	if _, err = c.Tx.ExecContext(c.Ctx(), `INSERT INTO order_delivery_updates(id,order_id,author_id,content,encrypted,recipient_fingerprint) VALUES($1,$2,$3,$4,true,$5)`, randomToken(), o.ID, c.User.ID, ciphertext, fingerprint); err != nil {
 		return actionResult{}, err
 	}
 	if err = notifyOrderChannel(c, o.BuyerID, o.ID, "Delivery update on order "); err != nil {
@@ -209,13 +231,13 @@ func loadOrderChannels(ctx context.Context, a *App, r *http.Request, d *PageData
 		return err
 	}
 	d.DeliveryUpdatesPaging = activityPagingWithKey("/order", "delivery_page", total, r.URL.Query().Get("delivery_page"), url.Values{"id": {o.ID}})
-	rows, err := a.db.QueryContext(ctx, `SELECT d.content,to_char(d.created,'YYYY-MM-DD HH24:MI "UTC"'),u.handle FROM order_delivery_updates d JOIN users u ON u.id=d.author_id WHERE d.order_id=$1 ORDER BY d.created,d.id LIMIT $2 OFFSET $3`, o.ID, activityPageSize, (d.DeliveryUpdatesPaging.Page-1)*activityPageSize)
+	rows, err := a.db.QueryContext(ctx, `SELECT d.content,to_char(d.created,'YYYY-MM-DD HH24:MI "UTC"'),u.handle,d.encrypted,d.recipient_fingerprint FROM order_delivery_updates d JOIN users u ON u.id=d.author_id WHERE d.order_id=$1 ORDER BY d.created,d.id LIMIT $2 OFFSET $3`, o.ID, activityPageSize, (d.DeliveryUpdatesPaging.Page-1)*activityPageSize)
 	if err != nil {
 		return err
 	}
 	for rows.Next() {
 		var v DeliveryUpdateView
-		if err = rows.Scan(&v.Content, &v.Created, &v.Author); err != nil {
+		if err = rows.Scan(&v.Content, &v.Created, &v.Author, &v.Encrypted, &v.RecipientFingerprint); err != nil {
 			rows.Close()
 			return err
 		}

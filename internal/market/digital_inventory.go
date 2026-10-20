@@ -101,6 +101,9 @@ func digitalUnitImportAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, fail(409, "Restore this listing before adding digital inventory.")
 	}
 	content := strings.ReplaceAll(c.Form.Get("contents"), "\r\n", "\n")
+	if strings.Contains(content, "-----BEGIN PGP MESSAGE-----") {
+		return actionResult{}, fail(400, encryptedInventoryUnitReason)
+	}
 	if !utf8.ValidString(content) || utf8.RuneCountInString(content) > maxDeliveryChars {
 		return actionResult{}, fail(400, "Import at most 32000 characters of valid text; put one distinct item on each line.")
 	}
@@ -209,8 +212,13 @@ func loadDigitalInventory(ctx context.Context, a *App, _ *http.Request, d *PageD
 	return nil
 }
 
+const encryptedInventoryUnitReason = "Distinct inventory accepts text and links before the buyer is known. Use manual delivery from the order page for content already encrypted to that buyer's PGP key. Nothing was changed."
+
 // appendDigitalUnit checks the final rendered batch size before retaining each unit.
 func appendDigitalUnit(b *strings.Builder, count *int, content string, index, units int64) error {
+	if strings.Contains(content, "-----BEGIN PGP MESSAGE-----") {
+		return fail(409, encryptedInventoryUnitReason)
+	}
 	if content == "" {
 		return fail(409, "Reserved digital content is no longer available; contact the vendor.")
 	}

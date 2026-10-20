@@ -24,7 +24,8 @@ import (
 //     the deposits after close or left out; a re-request: exactly the stored key images of the settlement it
 //     supersedes); a release or refund waits while a deposit credited toward the order's funding is below the
 //     threshold again, and for a bounded time while one is missing (xmrCreditedHold, A-554), so it never builds from a
-//     confirmed subset after a reorganisation; every other output of the account is frozen and the claimed ones thawed; the claimed outputs must
+//     confirmed subset after a reorganisation; a re-request waits, with no bound, while a deposit it claims is
+//     missing (A-614), since it can build from nothing else; every other output of the account is frozen and the claimed ones thawed; the claimed outputs must
 //     all be unlocked and sum to the deposits claimed, or the build waits (and staff are told if it persists); the
 //     plan is planXMRSettlement's (Bitcoin's planSettlement for the same kind) or, for a re-request, the stored plan;
 //     transfer with do_not_relay takes the network fee from the claimant's output alone. The reply is checked
@@ -53,7 +54,8 @@ import (
 //
 // Stray refunds (P3-R8, ES-8): every wallet that may hold coins is read on every pass, so each closed order of the
 // wallet with deposits after close or left out (with the threshold, unclaimed) gets a stray refund requested here, one
-// in progress at a time. A destroyed wallet (slice X-f, P3-R9) is never opened, so its orders get none.
+// first-generation stray refund in progress at a time (a re-request of a failed one never holds that slot, A-616). A
+// destroyed wallet (slice X-f, P3-R9) is never opened, so its orders get none.
 //
 // Why a settlement waits, why it failed, or that a restore holds it, is its send_error (migration 085, as Bitcoin
 // escrow's settlements.send_error; the order page says it); a class staff must see is flagged once, when it is first
@@ -71,8 +73,8 @@ const (
 	xmrFeeCap          = "fee-cap"               // the network fee is above ESCROW_XMR_MAX_FEE: flagged
 	xmrTooSmall        = "too-small"             // the claimant's output would be below the Monero floor: flagged
 	xmrBadBuild        = "build-mismatch"        // the wallet's transaction failed the market's checks: flagged
-	xmrNothing         = "nothing-to-settle"     // no deposit is left to spend and none is credited: failed
-	xmrWaitMissing     = "deposit-missing"       // a credited deposit is no longer listed by the wallet (A-554)
+	xmrNothing         = "nothing-to-settle"     // no deposit is left to spend and none is credited (or claimed, A-614): failed
+	xmrWaitMissing     = "deposit-missing"       // a credited deposit (A-554), or one a re-request claims (A-614), is no longer listed by the wallet
 	xmrRelayRefused    = "relay-refused"         // the daemon refused the stored transaction xmrRelayAttempts times in a row: failed
 	xmrBadMetadata     = "bad-metadata"          // relay_tx cannot parse the stored metadata (-27; only a corrupted row): failed
 	// relay_tx refused the stored transaction (-4) while the daemon does not have it and no other transaction spent its
@@ -162,7 +164,20 @@ func (a *App) xmrFlaggedBefore(ctx context.Context, tx *sql.Tx, s *xmrSettleRow,
 
 // xmrFlagNotePrefix is how the order note xmrSettleWaits writes to flag class on settlement s begins.
 func xmrFlagNotePrefix(s *xmrSettleRow, class string, threshold int64) string {
-	return fmt.Sprintf("Monero escrow settlement %d (%s) not sent: %s", s.ID, settlementKind(s.Kind), xmrSettleWaitText(class, s.Kind, threshold))
+	return fmt.Sprintf("Monero escrow settlement %d (%s) not sent: %s", s.ID, settlementKind(s.Kind), xmrSettleWhy(class, s.Kind, s.Supersedes, threshold))
+}
+
+// xmrReRequestMissingText is what the order page says of a re-request waiting with xmrWaitMissing (A-614): unlike a
+// release or refund it has no bounded wait, because it never builds from other coins.
+const xmrReRequestMissingText = "A deposit this settlement spends is no longer listed by the escrow wallet (a reorganisation or a double spend took it out of the chain). " +
+	"This settlement pays the same destinations and amounts as the one it replaces, from exactly the same coins, so the market builds nothing until the wallet lists that deposit again, however long that takes; it then builds and sends it. Market staff were notified."
+
+// xmrSettleWhy is xmrSettleWaitText for a settlement of kind that supersedes settlement supersedes (0 for none).
+func xmrSettleWhy(class, kind string, supersedes, threshold int64) string {
+	if class == xmrWaitMissing && supersedes != 0 {
+		return xmrReRequestMissingText
+	}
+	return xmrSettleWaitText(class, kind, threshold)
 }
 
 // xmrSettleWaitText is what the order page says about the wait class of a settlement of kind.
@@ -645,7 +660,21 @@ func (a *App) buildXMRSettlement(ctx context.Context, s *xmrSettleRow) error {
 		}
 	}
 	var hold xmrHold
-	if s.Supersedes == 0 && (s.Kind == "release" || s.Kind == "refund") {
+	switch {
+	case s.Supersedes != 0:
+		// A-614 (PAY613-4): a re-request spends exactly the stored key images of the deposits it claims, so while one of
+		// them is no longer listed (a reorganisation or a double spend) there is nothing it may build from. It waits for
+		// as long as it takes, as a release or refund whose credited deposits are all missing past the bounded wait does,
+		// rather than fail nothing-to-settle while it claims them (a failed one without a transaction is never
+		// re-requested, so its coins would be stranded); it builds once the wallet lists them all again.
+		var missing bool
+		if err = a.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM payments WHERE order_id=$1 AND xmr_settlement_id=$2 AND confirmations<0)", s.OrderID, s.ID).Scan(&missing); err != nil {
+			return err
+		}
+		if missing {
+			hold.class = xmrWaitMissing
+		}
+	case s.Kind == "release" || s.Kind == "refund":
 		if hold, err = a.xmrCreditedHold(ctx, s); err != nil {
 			return err
 		}
@@ -660,6 +689,7 @@ func (a *App) buildXMRSettlement(ctx context.Context, s *xmrSettleRow) error {
 		// settlement for good (a failed one without a transaction is never re-requested); it builds if one returns.
 		return a.xmrSettleWaits(ctx, s, xmrWaitMissing)
 	case len(deposits) == 0:
+		// No deposit counts and none is credited, or a re-request claims none at all: nothing is owed for it.
 		return a.failXMRSettlement(ctx, s, xmrNothing)
 	}
 	addr, err := x.rpc.address(ctx, s.Account, 0)
@@ -977,7 +1007,9 @@ func (a *App) xmrSettleWaits(ctx context.Context, s *xmrSettleRow, class string)
 	if err != nil {
 		return err
 	}
-	if xmrWaitFlagged(class) && !told {
+	// A re-request waiting for a deposit it claims (A-614) has no regression flag of its own (xmrFlagRegressed covers
+	// unclaimed deposits only), so staff are told here, once each time it starts waiting so.
+	if (xmrWaitFlagged(class) || class == xmrWaitMissing && s.Supersedes != 0) && !told {
 		o, err := scanOrder(tx.QueryRowContext(ctx, orderQuery+" WHERE o.id=$1 FOR UPDATE OF o", s.OrderID))
 		if err != nil {
 			return err
@@ -1457,14 +1489,21 @@ func (a *App) failXMRSettlement(ctx context.Context, s *xmrSettleRow, class stri
 	return nil
 }
 
+// xmrStrayOpenSQL selects the settlements s that hold an order's one stray refund slot: a first-generation stray refund
+// in progress (migration 135's xmr_settlements_one_open_stray). A re-request of a failed stray refund (supersedes) never
+// holds it (A-616): it spends only the key images of the settlement it supersedes, so it neither collides with nor holds
+// back the stray refund of a later deposit, which claims only deposits no settlement claims (xmrStrayEligibleSQL).
+const xmrStrayOpenSQL = "s.kind='stray_refund' AND s.state IN ('requested','built','relayed') AND s.supersedes IS NULL"
+
 // xmrRequestStrays requests a stray refund (P3-R8) for each closed Monero escrow order of wallet w with deposits to
-// return and none in progress, as requestStray does for Bitcoin escrow: to the pinned refund address, in one
-// transaction under the escrow row's lock, with an order note and a notice to the buyer.
+// return and no first-generation stray refund in progress (xmrStrayOpenSQL), as requestStray does for Bitcoin escrow:
+// to the pinned refund address, in one transaction under the escrow row's lock, with an order note and a notice to the
+// buyer.
 func (a *App) xmrRequestStrays(ctx context.Context, w xmrWalletRow) error {
 	threshold := a.escrowXMR.confirmations
 	rows, err := a.db.QueryContext(ctx, `SELECT es.order_id FROM escrows es JOIN xmr_escrow_slots sl ON sl.id=es.xmr_slot_id JOIN orders o ON o.id=es.order_id
 		WHERE sl.wallet_id=$1 AND es.coin='XMR' AND o.state IN ('completed','cancelled','resolved') AND EXISTS (SELECT 1 FROM payments p WHERE p.order_id=es.order_id AND `+xmrStrayEligibleSQL+`)
-		AND NOT EXISTS (SELECT 1 FROM xmr_settlements s WHERE s.order_id=es.order_id AND s.kind='stray_refund' AND s.state IN ('requested','built','relayed')) ORDER BY es.id`, w.id, threshold)
+		AND NOT EXISTS (SELECT 1 FROM xmr_settlements s WHERE s.order_id=es.order_id AND `+xmrStrayOpenSQL+`) ORDER BY es.id`, w.id, threshold)
 	if err != nil {
 		return err
 	}
@@ -1499,7 +1538,7 @@ func (a *App) xmrRequestStray(ctx context.Context, orderID string) error {
 	var open bool
 	var sum, n int64
 	if err = tx.QueryRowContext(ctx, `SELECT o.buyer_id,o.state,
-			EXISTS(SELECT 1 FROM xmr_settlements s WHERE s.order_id=es.order_id AND s.kind='stray_refund' AND s.state IN ('requested','built','relayed')),
+			EXISTS(SELECT 1 FROM xmr_settlements s WHERE s.order_id=es.order_id AND `+xmrStrayOpenSQL+`),
 			(SELECT COALESCE(sum(p.amount),0) FROM payments p WHERE p.order_id=es.order_id AND `+xmrStrayEligibleSQL+`),
 			(SELECT count(*) FROM payments p WHERE p.order_id=es.order_id AND `+xmrStrayEligibleSQL+`)
 		FROM escrows es JOIN orders o ON o.id=es.order_id WHERE es.order_id=$1 AND es.coin='XMR' FOR UPDATE OF es`, orderID, a.escrowXMR.confirmations).Scan(&buyer, &state, &open, &sum, &n); err != nil {

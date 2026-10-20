@@ -26,6 +26,7 @@ func TestXMREscrowSlotClaimRace(t *testing.T) {
 	for i := range buyers {
 		_, sess := x.user("race_"+randomToken()[:10], "buyer")
 		uid := agStrings(t, x.testEnv, "SELECT user_id FROM sessions WHERE token_hash=$1", digest(sess))[0]
+		x.enableOrderPGP(uid)
 		buyers[i] = buyer{sess, x.order(uid, x.digital(x.vendor), "XMR", stateDraft)}
 	}
 	// Room for every request at once in both admission classes a post passes, or they refuse some as busy before the
@@ -390,7 +391,8 @@ func TestXMREscrowOrderFormsNeverConflict(t *testing.T) {
 // freshOrder takes a Monero escrow for a new buyer's draft on product and returns the order and the escrow address.
 func (x *xmrEscrowEnv) freshOrder(product string) (string, string) { return x.freshCheckout(product) }
 
-// sessOf is a live session of order's buyer or vendor.
+// sessOf is an already PGP-authenticated commerce fixture session of order's buyer or vendor.
+// Authentication-refusal tests create their own unverified sessions instead.
 func (x *xmrEscrowEnv) sessOf(order, viewer string) string {
 	x.t.Helper()
 	q := "SELECT o.buyer_id FROM orders o WHERE o.id=$1"
@@ -400,6 +402,7 @@ func (x *xmrEscrowEnv) sessOf(order, viewer string) string {
 	uid := agStrings(x.t, x.testEnv, q, order)[0]
 	sess := randomToken()
 	agExec(x.testEnv, "INSERT INTO sessions(token_hash,user_id,expires) VALUES($1,$2,now()+interval '1 hour')", digest(sess), uid)
+	x.pgpSessionKey(sess)
 	return sess
 }
 

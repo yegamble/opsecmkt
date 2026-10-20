@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { expect, test, type Page } from '@playwright/test';
 import { ADMIN, uniqueHandle } from './db-fixtures';
-import { seedRecordedMoneroEscrow, signedIn, submitAndLoad } from './db-helpers';
+import { seedPGPAccess, seedRecordedMoneroEscrow, signedIn, submitAndLoad } from './db-helpers';
 import { waitForStyles } from './styles';
 
 const sql = (query: string) => execFileSync('psql', [process.env.E2E_DATABASE_URL!, '-v', 'ON_ERROR_STOP=1', '-qtAc', query], { encoding: 'utf8' }).trim();
@@ -37,6 +37,8 @@ test('published empty stock is optional in discovery and drafts record a bounded
   const product = id(), empty = id(), search = uniqueHandle('stock_case');
   const title = `${search} available`, emptyTitle = `${search} empty`;
   try {
+    await seedPGPAccess(vendor);
+    await seedPGPAccess(buyer);
     sql(`UPDATE users SET role='vendor' WHERE handle='${vendorHandle}';
       INSERT INTO products(id,vendor_id,title,description,category,region,kind,btc,xmr,stock)
       SELECT '${product}',id,'${title}','Disposable quantity browser fixture','Hardware','Worldwide','physical',0,250000000000,3 FROM users WHERE handle='${vendorHandle}';
@@ -99,6 +101,8 @@ test('a vendor delivers all manual digital units once on a scrolling order page'
   const product = id(), order = id();
   const content = ['Unit 1: https://example.invalid/download/first', 'Unit 2: a distinct manual text key', ...Array.from({ length: 160 }, (_, index) => `Batch instructions ${index + 1}: retain this text with the order.`)].join('\n');
   try {
+    await seedPGPAccess(vendor);
+    await seedPGPAccess(buyer);
     sql(`UPDATE users SET role='vendor' WHERE handle='${vendorHandle}';
       INSERT INTO products(id,vendor_id,title,description,category,region,kind,btc,xmr,stock,digital_delivery_mode)
       SELECT '${product}',id,'Manual digital batch','Disposable manual delivery browser fixture','Digital','Worldwide','digital',0,250000000000,0,'manual' FROM users WHERE handle='${vendorHandle}';
@@ -116,7 +120,10 @@ test('a vendor delivers all manual digital units once on a scrolling order page'
     await buyer.goto(`/order?id=${order}`);
     const delivered = buyer.getByRole('textbox', { name: 'Digital delivery', exact: true });
     await expect(delivered).toHaveCount(1);
-    await expect(delivered).toHaveValue(content);
+    await expect(delivered).toHaveValue(/^-----BEGIN PGP MESSAGE-----/);
+    const encrypted = await delivered.inputValue();
+    expect(encrypted).not.toContain('distinct manual text key');
+    expect(sql(`SELECT encrypted::text FROM deliveries WHERE order_id='${order}'`)).toBe('true');
     await expect(delivered).toHaveAttribute('readonly', '');
     await waitForStyles(buyer);
     const box = await delivered.evaluate(node => ({ height: node.clientHeight, content: node.scrollHeight }));
@@ -124,7 +131,7 @@ test('a vendor delivers all manual digital units once on a scrolling order page'
     expect(box.content).toBeGreaterThan(box.height);
     await responsive(buyer);
     await vendor.reload();
-    await expect(vendor.getByRole('textbox', { name: 'Digital delivery', exact: true })).toHaveValue(content);
+    await expect(vendor.getByRole('textbox', { name: 'Digital delivery', exact: true })).toHaveValue(encrypted);
     expect(sql(`SELECT count(*) FROM messages WHERE body LIKE '%Unit 1: https://example.invalid/download/first%'`)).toBe('0');
     expect(sql(`SELECT count(*) FROM notifications WHERE order_id='${order}' AND body LIKE '%distinct manual text key%'`)).toBe('0');
     await buyer.goto('/messages');
@@ -145,6 +152,7 @@ test('automatic digital stock is imported as distinct private units through vend
   const second = `private-key-${uniqueHandle('second')}`;
   const third = `https://example.invalid/private-unit-${uniqueHandle('third')}`;
   try {
+    await seedPGPAccess(vendor);
     sql(`UPDATE users SET role='vendor' WHERE handle='${vendorHandle}';
       INSERT INTO products(id,vendor_id,title,description,category,region,kind,btc,xmr,stock,digital_delivery_mode)
       SELECT '${product}',id,'${title}','Disposable private unit inventory browser fixture','Digital','Worldwide','digital',0,250000000000,8,'manual' FROM users WHERE handle='${vendorHandle}';`);

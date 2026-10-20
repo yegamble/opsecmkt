@@ -24,6 +24,7 @@ func (w *orderWorld) replyEvents(order string) int {
 
 func TestDisputeCounterpartyResponse(t *testing.T) {
 	w := newDisputeOrderWorld(t)
+	w.e.setKey(w.modID, "") // this case intentionally starts with no usable independent staff key
 	reason := "The parcel arrived empty.\nThe seal on the box was broken."
 	order, _ := w.disputedFor(w.buyerID, w.buyer, w.vendorID, w.vendor, w.buyer, reason)
 	events := w.count("SELECT count(*) FROM order_events WHERE order_id=$1", order)
@@ -215,6 +216,8 @@ func TestDeskShowsWhoHoldsDisputeEvidence(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	w.e.pgpSessionKey(w.mod) // this staff member later buys as an authenticated customer
+	w.e.pgpSessionKey(modB)
 	send := func(session, to string, key *openpgp.Entity) string {
 		t.Helper()
 		body, err := encryptTo(key, "Evidence for the dispute: photos and the courier receipt.")

@@ -20,7 +20,7 @@ func TestOrderQuantityMigrationPreservesLegacyOrders(t *testing.T) {
 	}
 	var previous []migration
 	for _, m := range list {
-		if m.Version < 133 {
+		if m.Version < 140 {
 			previous = append(previous, m)
 		}
 	}

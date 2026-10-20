@@ -26,8 +26,9 @@ func a126Login(e *testEnv, handle, next string) (string, *http.Cookie, string) {
 
 func TestSignInReturnTargets(t *testing.T) {
 	e := newTestApp(t)
-	e.user("a126_pw", "buyer")
+	buyerID, _ := e.user("a126_pw", "buyer")
 	vendorID, _ := e.user("a126_vendor", "vendor")
+	e.enableOrderPGP(buyerID, vendorID)
 	product := e.product(vendorID, "digital")
 	checkout := "/checkout?id=" + product
 
@@ -104,10 +105,11 @@ func TestSignInReturnTargets(t *testing.T) {
 	if loc := w.Header().Get("Location"); loc != "/" {
 		t.Fatalf("register with a refused next landed on %q", loc)
 	}
-	// The signed-in checkout renders: the redirect was to a real page.
-	if body := e.body("GET", checkout, e.session(e.do("POST", "/login", randomToken(), url.Values{"handle": {"a126_pw"}, "password": {testPassword}})), nil, 200); !strings.Contains(body, `action="/orders"`) {
-		t.Fatal("checkout page did not render for the signed-in buyer")
-	}
+	// The return target remains a real checkout page. A new password-only session
+	// must complete PGP authentication before receiving a purchase form.
+	body := e.body("GET", checkout, e.session(e.do("POST", "/login", randomToken(), url.Values{"handle": {"a126_pw"}, "password": {testPassword}})), nil, 200)
+	mustContain(t, body, `href="/pgp"`, `href="/account"`, "PGP decryption authentication")
+	mustNotContain(t, body, `action="/orders"`)
 }
 
 // The pending sign-in keeps the target through /challenge (TOTP, recovery code, PGP code); a next sent to /challenge

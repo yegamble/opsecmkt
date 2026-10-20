@@ -28,11 +28,16 @@ Built for a visitor on Tor Browser with scripts off. Development can use one hos
 production separates the app, managed or self-hosted database, payment services and upload gateway.
 
 - **Nothing runs in the browser.** Plain HTML and CSS, a strict Content Security Policy, no third-party assets.
-- **Identity is PGP.** Sign in with a PGP challenge or TOTP. Messages are PGP ciphertext the server cannot read.
+- **Identity is PGP.** Purchases and messages require a usable public key and PGP challenge decryption in the current session. Administrators may allow browse-only login without PGP; MFA is encouraged. Messages are PGP ciphertext the server cannot read.
 - **Guided or automated deployment.** One Go binary provides setup, application and worker roles, key tools,
   and Docker Compose lifecycle commands. Keep dependency hosts and keys through application rebuilds.
 - **Administrator-only operations status.** Service-isolation notices and signed dependency-version reports,
   alongside signed audit exports and a canary.
+- **Encrypted support tickets.** Locally PGP-encrypted threads with staff assignment, status and administrator escalation, alongside the direct-message inbox.
+- **Optional XMPP alerts.** An administrator configures the outgoing account; each account opts in privately.
+  Alerts mirror authorized frontend notifications, including order, message and dispute updates.
+  A separate global and recipient opt-in can also forward PGP-encrypted messages and buyer delivery armor.
+  See [XMPP setup and privacy](docs/operator-guide.md#xmpp-notifications).
 
 Not yet tried in Tor Browser: the [manual pass](docs/verification.md#manual-tor-browser-pass-owner) is pending.
 
@@ -202,8 +207,10 @@ Upgrading never changes an existing install's network ([UPGRADING](UPGRADING.md#
 **What the server keeps.** Opt-in [retention maintenance](docs/retention.md) expires accounts, messages, orders and audit records, with scoped preservation and financial safeguards. It is off by default; operators must enable it and schedule expiry of recovery copies. The operator or anyone with a
 decrypted backup can read retained plaintext and metadata and obtain ciphertext; properly recipient-encrypted content
 requires a recipient's private key to decrypt. Shipping addresses are sent PGP-encrypted to the vendor, but an address typed into a plaintext field is not
-protected. Reviews, dispute reasons and order notes are plaintext. Manual digital delivery accepts plaintext or pasted
-ciphertext; automatic delivery content is server-readable. Photos are re-encoded JPEGs without metadata. Full list:
+protected. Reviews, dispute reasons and order notes are plaintext. Buyers and vendors need usable PGP encryption
+keys before a new draft or checkout. New manual and automatic per-order digital delivery records are PGP-encrypted
+to the buyer; the shared automatic-delivery listing template remains server-readable, as do any historical
+plaintext delivery records. Photos are re-encoded JPEGs without metadata. Full list:
 [what the server keeps](docs/implementation-status.md#what-the-server-keeps).
 The [data retention and private information policy](docs/data-retention-privacy-policy.md) defines expiry, preservation
 exceptions and recipient-encryption requirements. Database retention and backup/export expiry tools are implemented; recipient-encryption enforcement for remaining private fields is pending.

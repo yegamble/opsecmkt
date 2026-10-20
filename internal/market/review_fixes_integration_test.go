@@ -182,6 +182,7 @@ func TestPGPChangesNeedPassword(t *testing.T) {
 		t.Fatal("PGP sign-in still on")
 	}
 	p.DB.Exec("UPDATE users SET pgp_2fa=true WHERE id=$1", v)
+	p.pgpSessionKey(vs) // positive owner fixture has decrypted with the currently saved key
 	p.check(p.do("POST", "/account", vs, url.Values{"pgp": {bobPub}, "password": {testPassword}}), 303)
 	if twoFA() {
 		t.Fatal("key change kept PGP sign-in")

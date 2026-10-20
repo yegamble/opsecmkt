@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { createHmac } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { expect, type Browser, type Locator, type Page } from '@playwright/test';
@@ -30,6 +30,46 @@ export function pgpFixture(name: string): string {
   return readFileSync(join(__dirname, 'fixtures', 'pgp', name), 'utf8');
 }
 
+// Saves the public encryption key through the real profile form. Commerce and message fixtures also call
+// seedPGPAccess explicitly; saving alone does not prove decryption in this browser. Keep signedIn keyless.
+export async function saveEncryptionKey(page: Page, password: string, armored = pgpFixture('recipient.pub.asc')): Promise<void> {
+  await page.goto('/account');
+  const profile = page.locator('form', { has: page.getByRole('button', { name: 'Save profile', exact: true }) });
+  await profile.getByLabel('PGP public key').fill(armored);
+  await profile.getByLabel('Current password', { exact: true }).fill(password);
+  await submitAndLoad(page, profile.getByRole('button', { name: 'Save profile', exact: true }));
+  await expect(page).toHaveURL(/\/account$/);
+  await expectNotice(page, 'Profile saved.');
+}
+
+
+// Privileged fixture preparation for journeys whose subject is commerce or messaging, rather than authentication.
+// The committed public fixture was produced by the server's OpenPGP library and has no armor headers; trimming it
+// gives parseCanonicalPublicKey's exact stored representation. Its private half was discarded. These SQL updates
+// stand in for an already completed decryption, never for testing the PGP challenge itself; access-policy Go tests
+// exercise real decryption, unverified-session refusal, key replacement and replay.
+export async function seedPGPAccess(page: Page, armored = pgpFixture('recipient.pub.asc'), databaseURL = process.env.E2E_DATABASE_URL || process.env.E2E_ESCROW_XMR_DATABASE_URL): Promise<void> {
+  if (!databaseURL) throw new Error('PGP fixture requires an isolated browser test database');
+  const session = (await page.context().cookies()).find(cookie => cookie.name === 'session');
+  if (!session) throw new Error('PGP fixture requires an existing signed-in session');
+  const key = armored.trim();
+  const tokenHash = createHash('sha256').update(session.value).digest('hex');
+  const keyHash = createHash('sha256').update(key).digest('hex');
+  const literal = (value: string) => "'" + value.replace(/'/g, "''") + "'";
+  execFileSync('psql', [databaseURL, '-v', 'ON_ERROR_STOP=1', '-qtAc',
+    `UPDATE users u SET pgp=${literal(key)} FROM sessions s WHERE s.user_id=u.id AND s.token_hash='${tokenHash}';
+      UPDATE sessions SET pgp_access_key='${keyHash}' WHERE token_hash='${tokenHash}';`], { encoding: 'utf8' });
+}
+
+// A role-grant fixture must satisfy the same public-key prerequisite as a real prospective vendor.
+function seedVendorPublicKey(handle: string): void {
+  const databaseURL = process.env.E2E_DATABASE_URL || process.env.E2E_ESCROW_XMR_DATABASE_URL;
+  if (!databaseURL) throw new Error('Vendor fixture requires an isolated browser test database');
+  const literal = (value: string) => "'" + value.replace(/'/g, "''") + "'";
+  execFileSync('psql', [databaseURL, '-v', 'ON_ERROR_STOP=1', '-qtAc',
+    `UPDATE users SET pgp=${literal(pgpFixture('recipient.pub.asc').trim())} WHERE handle=${literal(handle)} AND pgp='';`], { encoding: 'utf8' });
+}
+
 // A fresh JavaScript-disabled browser context that registers (or signs in as) handle.
 export async function signedIn(browser: Browser, baseURL: string | undefined, handle: string, password: string, register: boolean, width = 390): Promise<Page> {
   const context = await browser.newContext({ baseURL, javaScriptEnabled: false, viewport: { width, height: 900 } });
@@ -44,6 +84,7 @@ export async function signedIn(browser: Browser, baseURL: string | undefined, ha
 
 // Submits the admin "Assign an account role" form for handle (a text input looked up on the server).
 export async function setRole(admin: Page, handle: string, role: string, adminPassword = ADMIN.password) {
+  if (role === 'vendor') seedVendorPublicKey(handle);
   await admin.goto('/admin/users');
   const form = admin.locator('form', { has: admin.getByRole('button', { name: 'Update role' }) });
   await form.getByLabel('Account handle').fill(handle);

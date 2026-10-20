@@ -39,13 +39,12 @@ const (
 	vendorOpenStates           = "('awaiting_bond','awaiting_approval')"
 )
 
-// activeVendorSQL is the SQL condition "alias may currently sell": a vendor, an administrator, or an account
-// with independent selling approval, which is not suspended, closed or restricted for closure. A
-// banned account is always suspended too (migration 123, A-546), so the suspension test excludes it. alias names a
-// users row in the caller's query.
+// activeVendorSQL is the condition "alias may currently sell": a vendor, an administrator, or an account
+// with independent selling approval, a saved public key, and no suspension, closure, storefront deactivation
+// or closure restriction. A banned account is always suspended too (migration 123). alias is selected by code.
 func activeVendorSQL(alias string) string {
 	return "((" + alias + ".role IN ('vendor','admin') OR " + alias + ".vendor_approved) AND " + alias + ".suspended_at IS NULL AND " + alias + ".closed_at IS NULL AND " +
-		alias + ".retention_restricted_at IS NULL)"
+		alias + ".retention_restricted_at IS NULL AND " + alias + ".pgp<>'' AND NOT " + alias + ".vendor_deactivated)"
 }
 
 // VendorPolicyView is the vendor policy for new applications. Bond is in XMR ("0" when none).
@@ -231,6 +230,13 @@ func submitVendorApplication(ctx context.Context, tx *sql.Tx, userID string) (st
 			return "", err
 		}
 	}
+	var handle string
+	if err = tx.QueryRowContext(ctx, "SELECT handle FROM users WHERE id=$1", userID).Scan(&handle); err != nil {
+		return "", err
+	}
+	if err = notifyAdmins(ctx, tx, "New vendor application from "+handle+": "+strings.ToLower(vendorStateLabel(state))+"; bond "+vendorBondText(p.Bond)+". Review vendor applications under Admin → Vendors."); err != nil {
+		return "", err
+	}
 	return state, nil
 }
 
@@ -240,6 +246,9 @@ func submitVendorApplication(ctx context.Context, tx *sql.Tx, userID string) (st
 // the host command) with note. A demotion leaves the approved application; /account then says the role was removed,
 // and the account may apply again (an approved application never counts as open).
 func vendorRoleAssigned(ctx context.Context, tx *sql.Tx, userID, adminID, note string) error {
+	if err := requireVendorPublicKey(ctx, tx, userID); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, "UPDATE users SET vendor_approved=true WHERE id=$1", userID); err != nil {
 		return err
 	}
@@ -259,6 +268,9 @@ var errVendorApplicationOpen = fail(http.StatusConflict, "You already have an op
 // <by>", which disputeEvidence also reads), roleChanged runs and the applicant is notified, after lead (the step that
 // approved it, or ""), with note.
 func approveVendor(ctx context.Context, tx *sql.Tx, userID, by, lead, note string) error {
+	if err := requireVendorPublicKey(ctx, tx, userID); err != nil {
+		return err
+	}
 	var role string
 	if err := tx.QueryRowContext(ctx, "SELECT role FROM users WHERE id=$1", userID).Scan(&role); err != nil {
 		return err
@@ -465,6 +477,9 @@ func vendorApplyForAction(c *actionCtx) (actionResult, error) {
 		if _, err = insertNotification(ctx, tx, target, body, ""); err != nil {
 			return actionResult{}, err
 		}
+		if err = notifyAdminsExcept(ctx, tx, "Vendor application opened for "+handle+": "+chosen+". Review vendor applications under Admin → Vendors.", c.User.ID); err != nil {
+			return actionResult{}, err
+		}
 		return actionResult{Redirect: adminUserURL(handle), Notice: "vendor-opened", Audit: "Opened a vendor application for " + handle + ": " + chosen}, nil
 	})
 }
@@ -612,6 +627,9 @@ func vendorDecisionAction(c *actionCtx) (actionResult, error) {
 				_, err = insertNotification(ctx, tx, target, withNote(body+" Your application now waits for administrator approval."), "")
 			}
 			if err != nil {
+				return actionResult{}, err
+			}
+			if err = notifyAdmins(ctx, tx, "Vendor application from "+handle+": bond "+vendorBondHowLabel(how)+"; "+strings.ToLower(vendorStateLabel(next))+". Review vendor applications under Admin → Vendors."); err != nil {
 				return actionResult{}, err
 			}
 		case "approve":

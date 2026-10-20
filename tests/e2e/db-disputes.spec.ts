@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { expect, test, type Page } from '@playwright/test';
 import { uniqueHandle } from './db-fixtures';
-import { expectNotice, pgpFixture, seedRecordedMoneroEscrow, signedIn, submitAndLoad, submitStatus } from './db-helpers';
+import { expectNotice, pgpFixture, saveEncryptionKey, seedRecordedMoneroEscrow, signedIn, submitAndLoad, submitStatus, seedPGPAccess } from './db-helpers';
 import { waitForStyles } from './styles';
 
 // A-124 and A-162 against a real database, JavaScript disabled, at 320 px, with fresh accounts: the party who did
@@ -32,9 +32,12 @@ test('the other party replies once and the desk names who holds encrypted eviden
     signedIn(browser, baseURL, resolverHandle, 'browser-dispute-resolver-123', true, 320),
   ]);
   const [buyer, vendor, , resolver] = pages;
+  await saveEncryptionKey(buyer, 'browser-dispute-buyer-123');
   const productID = randomBytes(16).toString('hex');
   const orderID = randomBytes(32).toString('hex');
   try {
+    await seedPGPAccess(buyer);
+    await seedPGPAccess(vendor);
     // A shipped escrow order: this suite seeds its funding and shipping, then exercises live dispute forms.
     sql(`UPDATE users SET role='vendor' WHERE handle='${vendorHandle}';
       UPDATE users SET role='moderator' WHERE handle='${holderHandle}';

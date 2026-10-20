@@ -664,7 +664,7 @@ current one is marked for screen readers). Where this guide says
 | Vendors | `/admin/vendors` | *Vendor applications*: vendor policy, open applications awaiting a bond or decision, verified-vendor mark |
 | Payments | `/admin/payments` | *Escrow status and payment intake*: Monero escrow alerts, *Monero escrow watcher health*, release deadline, *Monero escrow recovery and retention*, *New escrow checkouts*, *Escrow readiness* |
 | Security & access | `/admin/security` | *Site access and registration*, *Sign-in protection* (CAPTCHA), *Handles with paused sign-in* |
-| Site & branding | `/admin/site` | *Market name and logo*, *Staff contact* |
+| Site & branding | `/admin/site` | *Market name and logo*, *Staff contact*, *Outgoing XMPP* |
 | Transparency | `/admin/transparency` | *Operator PGP key*, *Warrant canary*, *Signed audit export*, *Public staff list* |
 | System & audit | `/admin/system` | Schema version and server start, *Service isolation and updates*, *Application host*, *Image scanner*, *Retention and preservation*, *Recent server errors*, *Audit trail* |
 
@@ -834,6 +834,122 @@ see, and confirm with your password (and authenticator code when enabled). A cha
 Vendors that existed before this release keep selling: the upgrade records an approved application for each, without
 a verified mark.
 
+### XMPP notifications
+
+XMPP is disabled until an administrator configures **Admin → Site & branding → Outgoing XMPP**
+(`/admin/site#xmpp-outgoing`). It also stays off for each recipient until that account opts in.
+The sender is an existing XMPP account operated by the market, much like an outgoing mail account;
+the application does not create accounts on an XMPP server.
+The server must support SASL PLAIN authentication over verified TLS and resource binding.
+
+1. Enter its bare sender address (`market@example.test`), server hostname, port and password.
+   Choose STARTTLS (normally port 5222) or direct TLS (normally port 5223), using the server's actual configuration.
+2. Enable outgoing delivery and confirm with your administrator password and, when enrolled, authenticator code.
+   The XMPP password is encrypted in the database using the application's existing secret root. It is never
+   filled back into the form; leave it blank to retain it. Preserve `APP_SECRET_KEY` (or the legacy root) on restart
+   and restore, as for TOTP secrets. An application host compromise can still read or use the configured credential.
+3. On **Your account → XMPP notifications** (`/account#xmpp-notifications`), enter a private bare recipient
+   address and opt in, confirming with your account password and authenticator code when enrolled.
+   Staff also opt in here; configuring the outgoing sender does not subscribe administrators or moderators.
+4. Use disposable recipients and a test order/message to check delivery before relying on it. Check the same
+   event in **Notifications**. A frontend notice remains available if XMPP fails.
+
+The server requires a valid TLS certificate and authenticates only after TLS succeeds. Configure outbound network
+access from the application host to the chosen XMPP server. This connection is direct: Tor mode does not route
+XMPP through Tor automatically. The XMPP service can see the application host's connection, sender, recipients,
+message bodies and timing, and recipients' services can retain copies. TLS protects transport to the server;
+notification text and routing metadata remain visible to those services. Choose a separate sender account and
+recipients appropriate for this disclosure. The private destination is not published on vendor or public profile pages.
+
+By default, alerts carry only the same notification text and recipient authorization as the frontend: payment
+confirmation, shipping, new-message metadata and dispute changes. Encrypted message armor is omitted unless
+both of the following are enabled:
+
+- An administrator selects **Allow PGP-encrypted message contents in XMPP** under *Outgoing XMPP*.
+- The recipient selects **Include PGP-encrypted message contents** under their account's *XMPP notifications*.
+  Their XMPP notifications must be enabled and their account must have a usable PGP public encryption key.
+  Enabling PGP sign-in or proving key ownership is not required for this preference.
+
+These choices are off by default and require the same password/authenticator confirmation as the other XMPP
+settings. When both allow it, a new received-message alert can append the already encrypted PGP armor; the
+market does not decrypt or forward a plaintext message body. The same consent can include a new stored
+buyer-encrypted digital delivery in that buyer's order alert; vendors and staff do not receive the buyer's
+delivery contents through their own alerts. The original ciphertext must match the recipient's current usable
+key with a visible recipient key ID. Hidden-recipient messages, mismatches, changed keys or unavailable content
+keep the summary alone, even when the market accepted the original message after sender confirmation.
+Its PGP protection is retained, while the sender, recipient, notification text, timing and armored ciphertext,
+including visible encryption key IDs, remain visible to the XMPP services. A recipient uses their PGP client and private key to decrypt the armor.
+The market checks encrypted packet structure and visible recipient key IDs; without the private key it cannot
+prove ciphertext integrity or successful decryption. Configure the XMPP service to accept message bodies up to
+256 KiB plus the XML stanza overhead, so a long encrypted digital delivery fits. A server refusal uses the same
+bounded retries and leaves the market notice and delivery available.
+Existing messages and deliveries are not resent when either choice is enabled. Changing the global forwarding permission invalidates queued content from its earlier
+revision while leaving the notification summary eligible; changing the recipient choice also invalidates earlier queued deliveries.
+
+Order-linked alerts include the order reference so the recipient can find the corresponding market record;
+opening it still requires the normal order permission. Direct messages keep their message references.
+[Support tickets](#encrypted-support-tickets) use a ticket ID and their own assignment, status and escalation
+workflow; their notifications obey the same current recipient and content-consent checks.
+Administrators
+also receive vendor applications and bond-review states, security events and unusual activity notices.
+Moderators receive dispute alerts and their own account/order activity. Administrator-only notices never go to
+moderators, buyers or vendors. A role change is checked again before staff notices are displayed or delivered;
+being told of a dispute does not grant a moderator permission to resolve Monero escrow.
+
+Only new notifications are queued, in the transaction that creates the frontend notice; enabling XMPP does not
+resend existing notices. Opting out or changing the destination invalidates pending deliveries for the old
+preference. Delivery retries use a stable message identifier, with at most 12 attempts, exponential delays from 30 seconds
+to one hour, and no send after the notice is 24 hours old. Delivery is at least once: a lost connection after
+server acceptance can produce a duplicate. Acceptance by the outgoing server does not prove that the destination
+received or read the alert. Disabling outgoing delivery cancels pending sends when the worker next processes them; check frontend notifications during an outage.
+
+### Encrypted support tickets
+
+Use **Support tickets** (`/tickets`) for routine support. Your account lists its own tickets; staff see the
+queue their current role permits. Open a ticket at `/ticket?id=…` from that list or its notification. A ticket
+uses an ID rather than a plaintext subject, and records Open, Closed or Ignored status, the current assignee
+and procedural history.
+
+1. Save a usable PGP public encryption key under **Your account → Public profile**. Keep its private key in your
+   own PGP client. Complete PGP challenge decryption for this session before opening or replying to a ticket.
+   Opening a ticket also needs an active staff recipient with a usable key, available through
+   the public staff list or configured staff contact; a hidden staff roster is not published for ticket creation.
+2. Choose that staff member in the ticket form, obtain the displayed public keys, and encrypt your initial body
+   locally to both your own key and the selected staff member's key. Paste the armored encrypted message into
+   the form. Do not put a plaintext support narrative in a status or reference field.
+3. Read replies by decrypting their armor in your PGP client. Before each reply, check the current assignee and
+   recipient keys again, especially after a reassignment or escalation. Encrypt the next body to the opener
+   and the current assignee. The application does not hold private keys or decrypt the body.
+4. The opener can close their own Open ticket. Current authorized staff can manage normal tickets, including
+   assigning another staff member or escalating to an administrator while the ticket is Open. Staff can close,
+   ignore or reopen a ticket; ordinary users cannot ignore or reopen one. Closed and Ignored threads do not
+   accept replies until permitted staff reopen them.
+
+Escalated or administrator-only tickets remain available to their opener and permitted administrators;
+moderators cannot access them through the staff queue. A moderator who opened one keeps their own personal
+participant view, which grants no administrator staff-management powers. An administrator seeing a ticket
+in the queue still needs a matching private key to decrypt it.
+
+Assignment identifies the next reply's recipient; it does not grant retroactive decryption. A new assignee cannot decrypt old bodies
+unless those bodies were already encrypted to their key. A former recipient may retain copies they already
+obtained. Ticket IDs, status/history, sender/recipient relationships and timing remain visible to the market;
+PGP protects message contents, not that metadata.
+
+Ticket notifications use the same current participant and role restrictions in the frontend and XMPP.
+After reassignment, active staff who previously handled or sent a message in the ticket can receive a generic
+closure or ignore notice. After escalation, a former moderator handler may still receive that minimal metadata;
+it gives no access to the protected thread. Optional XMPP contents require both the administrator's permission
+and the recipient's separate opt-in, plus a current usable key and visible recipient-key match. Assignment or
+escalation must not send protected content to a recipient who no longer qualifies. Keep XMPP provider retention
+and visible key IDs in mind when choosing content forwarding.
+
+When [retention maintenance](retention.md) is enabled, save needed ticket ciphertext locally: bodies expire
+after 90 days, or earlier if the opener or message sender is closed or erased. A related account preservation
+hold delays cleanup, including holds tied to previous participants or staff in the history. Closed and Ignored
+ticket metadata expires 90 days after its last update only once its bodies are gone and holds are released;
+Open metadata remains for staff workflow. Deletion uses the restore journal. Provider/client copies survive
+independently of market cleanup.
+
 ### Changing the market name and logo
 
 An administrator manages the site's identity under **Admin → Site & branding → Market name and logo** (`/admin/site`).
@@ -906,8 +1022,8 @@ Second-factor secrets are encrypted with a key derived from `APP_SECRET_KEY` (on
 - **Password-confirmation pauses**: every action confirmed with the account password (resolving disputes, payment reviews, admin settings, key, TOTP and password changes) shares one per-account limit of 10 failed confirmations per ten minutes: a **wrong** password, or a wrong authenticator or recovery code after the right one. After that the account's confirmations are refused (HTTP 429, "Too many failed password confirmations. Try again in ten minutes.") until that window ends, even with the right password. Correct confirmations do not count, so staff can resolve any number of disputes in a row. Only someone signed in to the account can spend it; restarting the app clears it, as for sign-in pauses.
 - **Message and recipient-lookup budgets** (A-516): each account may send 20 messages in ten minutes, counted apart from its budget of 100 changes (an attempt counts once its armor is well formed, including one to an unknown handle or one the sender may not write to); the 21st is refused with HTTP 429 "Message not sent: an account can send at most 20 messages in 10 minutes" and nothing is stored. Loading a recipient's key on *Messages* (`/messages?to=`) is limited to 60 different handles per account in ten minutes; loading one again in that window costs nothing. Below it, an unknown handle and one the account may not write to show the same words and no key (A-543). Past it the page loads no key and says nothing about whether the handle exists, only that the account can look up at most 60 different handles in 10 minutes. Both budgets bound spam and handle enumeration from one account; they do not stop someone with many accounts. They are held in memory per app process, so restarting the app clears them, and they are fixed in the code.
 - **Password change**: users change their own password on *Account → Change password* with the current password (plus an authenticator code or an unused recovery code when TOTP is on). Every other session and pending sign-in of that account ends. There is no email or administrator password reset: a user who forgets their password cannot be recovered through the application.
-- **Second-factor reset**: an administrator can turn off TOTP (deleting its secret and recovery codes) and PGP sign-in for a non-administrator account under *Admin → Reset a user's second factors* by entering its handle (exact, case-sensitive; any account, not only those in the list of up to 100 shown there), confirmed with the administrator's own password (and authenticator code when enrolled). The account's PGP key and verification stay; its sessions and pending sign-ins end, both accounts get an audit row and the user is notified. Anyone who knows that account's password can then sign in, so confirm the request really comes from its owner (for example with a message signed by their verified PGP key) before resetting.
-- **Unreadable PGP key**: an account with PGP sign-in on whose saved key can no longer be read (for example one saved before this market refused keys like it) is never signed in with the password alone. With TOTP on it is asked for its authenticator code or a recovery code; otherwise the sign-in is refused, after the correct password, with a message that names the problem, the second-factor reset and the staff contact, and the owner is notified once. Such a user needs the *Second-factor reset* above (an administrator, *Administrator lockout* below); confirm who is asking first, since the key that would prove it is the one that cannot be read. After the reset they sign in with the password, paste a current export of their public key and prove ownership again.
+- **Second-factor reset**: an administrator can turn off TOTP (deleting its secret and recovery codes) and PGP sign-in for a non-administrator account under *Admin → Reset a user's second factors* by entering its handle (exact, case-sensitive; any account, not only those in the list of up to 100 shown there), confirmed with the administrator's own password (and authenticator code when enrolled). Without a replacement public key, the account's PGP key and verification stay; its sessions and pending sign-ins end, both accounts get an audit row and the user is notified. Browse-only login may then accept the password, but strict login still requires PGP decryption. Confirm the request really comes from its owner before resetting. For a lost private key, explicitly provide the verified owner's replacement public key as described under [PGP access](#pgp-access-for-purchases-and-messages).
+- **Unreadable PGP key**: an account with PGP sign-in on whose saved key can no longer be read (for example one saved before this market refused keys like it) is never signed in with the password alone. When browse-only login is allowed, TOTP can still satisfy optional sign-in verification; strict login always requires a usable PGP key and decryption. Without an available permitted factor, the sign-in is refused after the correct password, with a message that names the problem, the second-factor reset and the staff contact, and the owner is notified once. Such a user needs the *Second-factor reset* above (an administrator, *Administrator lockout* below); confirm who is asking first, since the key that would prove it is the one that cannot be read. For lost or unreadable key recovery, supply the owner's replacement public key in the privileged reset, then have them sign in and decrypt with it. A reset without replacement does not authorize password-only removal or replacement of the existing binding.
 - **Account suspension**: to contain a compromised or abusive account, an administrator enters its handle under *Admin → Suspend or restore an account*, chooses *Suspend* and confirms with their own password (and authenticator code when enrolled). Its sessions and pending sign-ins end at once and it cannot sign in until restored: after a correct password it is told "This account is suspended." followed by the staff contact (below) Its role, listings and orders are unchanged (change the role to buyer as well if a vendor's listings should be archived), but orders waiting on this account stop until it is restored; the other party can still complete, cancel where allowed, or open a dispute. A suspended moderator is not notified of payment reviews and is not offered as a dispute contact. (Moderators never decide a Monero escrow dispute; on a historical order without escrow, a suspended moderator does not count as its resolver.) Suspension and restore touch only the account, its sessions and its notices. The panel lists suspended accounts; *Restore* with the same form allows sign-in again. Both changes are audited on both accounts and the user is notified. Administrator accounts, including your own, cannot be suspended there: to contain one, remove its administrator role from the host first ([Administrators](#administrators)).
 - **Account ban** (A-546): a ban is **permanent closure**, for an account that must not use the market again; use suspension for a hold you may lift. Under *Admin → Users → Ban or unban an account* (`/admin/users#ban`) enter the handle, choose *Ban*, give a reason of 10–500 characters on one line and confirm with your own password (and authenticator code when enrolled). In one step the account is signed out everywhere and cannot sign in (order partners see that the account is closed, not suspended) (after a correct password it is told only "This account is closed and cannot sign in." and the staff contact, not your reason), its active listings are archived, an open vendor application is withdrawn, a verified-vendor mark is removed, and nobody can start a new order or message with it. Its handle stays reserved for good: nobody can register it again, in any letter case, even after retention has closed and erased the account (the lower-case handle is the one thing kept). Open orders keep going: the buyer or vendor on the other side can still complete, concede or dispute them; decide disputes as an administrator who is not a party, and releases and refunds are paid as usual. A release that still needs the vendor's claim address (a completed digital order, or a dispute decided for the vendor before they gave one) is held for a banned vendor until the ban is lifted and they claim it (owner decision 2026-10-19); the market never pays it elsewhere. The reason is stored with the ban, shown to administrators in the panel's list and written to both accounts' audit rows, so it appears in the signed audit export: write a factual reason, not personal details you would not otherwise keep. *Unban* with the same form needs a reason too; it puts back the suspension the account had before the ban, if any (it then stays suspended until you restore it), and otherwise lets it sign in again, but does not bring back its listings (the vendor publishes them again) or the verified mark (verify again under *Vendors* if you decide to). Banning a moderator also makes them a buyer, in the same step and audited on both accounts; lifting the ban does not return the staff role (assign it again if you decide to). A vendor keeps the vendor role. *Suspend or restore* refuses a banned account, and while it is banned neither *Assign an account role* nor `-set-role` gives it any role but buyer. Its vendor page says the account is closed, with no *Message vendor*. Administrator accounts, including your own, cannot be banned, so neither can the last administrator; to ban a former administrator, change their role on the host first ([Administrators](#administrators)).
 - **Staff contact**: set *Admin → Staff contact* to how people reach the staff — a handle, onion address or XMPP address, at most 200 characters on one line — confirmed with your own password (and authenticator code when enrolled); the old and new values are audited. Anyone can read it, signed in or not: it is shown on the Transparency page (`/canary`), to a suspended account after its correct password, on `/challenge` for someone who lost their second factors, beside the CAPTCHA, in the expired- and unreadable-PGP-key sign-in refusals, to a vendor whose listing an administrator took down, with a photo the malware scanner refused, on the two-factor page after a sign-in with the last recovery code, and under notifications that tell people to contact the market staff (such as the sign-in and security notices). It is always plain text; if it is exactly the handle of a moderator or administrator who is not suspended and whose PGP key can receive encrypted messages, signed-in users also get a link to message that handle. While it is empty those places say "Ask the operator of this market." — so set it soon after installation. With the CAPTCHA on, make it an address that works without an account (see *Release step: decide the CAPTCHA* above); *Admin* warns when it is empty or a bare handle. Save it empty to remove it.
@@ -955,17 +1071,47 @@ It connects with `DATABASE_URL`, starts no web server and reads nothing from sta
 
 **Official addresses in sign-in codes** (A-572). A reverse-proxy phishing site can relay the market page by page, including the encrypted PGP sign-in code, but cannot change what is inside it. After decryption the code names the account's handle, the market name (*Admin → Site & branding*), the UTC time it was requested, until when it is valid (the pending sign-in's expiry, at most 10 minutes after the password) and the market's official addresses, with an instruction to enter the code only when the browser's address bar shows one of them (a code requested on the [private administrator onion](install/tor.md#private-administrator-onion) instead says it was requested on that private connection, without naming it); the code itself is on the last line and is all the market accepts. The addresses come only from `OFFICIAL_ADDRESSES`, a comma-separated list of at most 8 HTTPS or HTTP v3 onion origins read at startup (`.env` for Compose, `--set OFFICIAL_ADDRESSES=…` for native `init`, `--official-addresses` or the environment for native `serve`), never from the request's `Host` or forwarding headers. List the public onion, the [mirror](#optional-onion-mirror) and the clearnet origin you publish, for example `OFFICIAL_ADDRESSES=http://<56 characters>.onion,https://market.example`, and recreate the app (`docker compose up -d`). **Never list the private administrator onion**: every user receives this text; a native configuration that records the administrator onion's address refuses it, but a Compose install, a native install whose administrator onion came from an older identity volume, an edited env file and `serve --official-addresses` are not checked, so check the list yourself. Unset, the code says "no official address configured" and asks users to check the address another way; an invalid value stops startup with a message that names the variable but not the value. Publish the same addresses where users can verify them independently, such as your signed canary.
 
-Users paste an ASCII-armored public key on `/account`; it is stored without armor headers or surrounding text (only public key, subkey, user ID and signature packets are accepted: a key with a GnuPG photo ID is refused, with the `gpg --edit-key` … `deluid` steps to remove it), and the fingerprint and user IDs are shown and ownership is proven on `/pgp` by signing a server text or decrypting a message encrypted to the key (for example `gpg --clearsign`, `gpg --decrypt`). A verified key can be used as a sign-in second factor. Changing the key clears verification and PGP sign-in; renewing the same key (same fingerprint, for example `gpg --quick-set-expire`) keeps them unless it drops a revocation or rolls back the encryption subkey. `/account` and `/pgp` show when the key and its encryption subkey expire, and each process checks all saved keys daily and notifies owners once 30 days before and once after encryption to their key stops. `/messages` accepts only OpenPGP-encrypted messages and labels each by whether its recipient key IDs match the recipient's saved key; the server never decrypts or holds private keys. Losing the private key locks PGP sign-in unless another second factor is enrolled or an administrator resets the account's second factors (see Authentication). Vendor pages and order pages show the other party's armored public key, fingerprint and whether ownership is verified, and "Message vendor" links on vendor and listing pages open `/messages?to=<handle>` with the recipient filled in; order correspondence stays on its order page; without a saved key, the page says messages cannot be sent until one is added. Users cannot search for or write to arbitrary accounts (A-543): an account other than a moderator or administrator starts a message only to an active vendor, someone it shares an order with (for a vendor, an order on its order list: never a buyer's draft or a draft cancelled before checkout), someone who wrote to it first (the *Reply* link), a moderator or administrator on the public staff list or named as the *Staff contact*, or, while it is a party to a disputed or resolved order, any current staff member. Moderators and administrators may write to anyone and keep a handle field on *Messages*. An unknown handle and one the sender may not write to get the same answer, "No account you can message has this handle", so the page does not tell which handles exist. To be reachable by every user, a staff member turns off *Hide me from the public staff list* while the list is shown, or is named as the staff contact.
+Users paste an ASCII-armored public key on `/account`; it is stored without armor headers or surrounding text (only public key, subkey, user ID and signature packets are accepted: a key with a GnuPG photo ID is refused, with the `gpg --edit-key` … `deluid` steps to remove it), and the fingerprint and user IDs are shown and ownership is proven on `/pgp` by signing a server text or decrypting a message encrypted to the key (for example `gpg --clearsign`, `gpg --decrypt`). A verified key can be used as a sign-in second factor. Changing the key clears verification and PGP sign-in; renewing the same key (same fingerprint, for example `gpg --quick-set-expire`) keeps them unless it drops a revocation or rolls back the encryption subkey. `/account` and `/pgp` show when the key and its encryption subkey expire, and each process checks all saved keys daily and notifies owners once 30 days before and once after encryption to their key stops. `/messages` accepts only OpenPGP-encrypted messages and labels each by whether its recipient key IDs match the recipient's saved key; the server never decrypts or holds private keys. Losing the private key locks PGP sign-in unless another second factor is enrolled or an administrator resets the account's second factors (see Authentication). Vendor pages and order pages show the other party's armored public key, fingerprint and whether ownership is verified, and "Message vendor" links on vendor and listing pages open `/messages?to=<handle>` with the recipient filled in; transaction-specific correspondence stays on its order page. Without a saved key, the page says messages cannot be sent until one is added. Users cannot search for or write to arbitrary private accounts. Ordinary accounts contact public vendors, listed or configured staff, and staff available through their own dispute. A vendor can reply to an existing customer through a visible order or a prior buyer/vendor exchange. A historical buyer-to-buyer message does not authorize another message. Unavailable and unknown recipients receive the same response and expose no key. Staff retain their support compose field. Staff support uses encrypted messages; disputes remain tied to an order, rather than becoming private buyer lookup.
+
+### PGP access for purchases and messages
+
+Every purchase and message send requires a usable PGP public key and successful decryption of a challenge in the current browser session. Saving a key, signing an ownership challenge, or using TOTP alone does not establish this access. Open **Account → PGP**, request a decrypt challenge, decrypt it locally, and return its code. The server accepts public keys only and stores a challenge hash; keep the private key in your own PGP application. A new session or any change to the saved public key requires another decryption proof. Enroll an authenticator under account security as additional protection against account takeover.
+
+Administrators control **Allow login without PGP** under authentication settings. It defaults to enabled so existing keyless accounts can sign in, browse, and add their public key. This never permits purchases or messages without the session proof. When disabled, new sign-ins must complete PGP decryption, including accounts with TOTP. The administrator must first prove PGP decryption in the current session before disabling the option. Publish an external recovery contact before enforcing this policy: keyless accounts cannot send support messages.
+
+Vendor signup, application approval, and assignment of the vendor role require a usable public key. Vendors cannot remove their key or replace it with one that cannot receive encryption. Keys can expire after they are saved; an expired key must be renewed before new purchases or messages can proceed. Existing vendor accounts are preserved during upgrade and must add a usable key before trading if they have none.
+
+An existing PGP identity cannot be replaced or removed with a password alone: the current session must have decrypted with the saved key, or the account must confirm with an already-enrolled authenticator. This protects expired and unreadable saved keys too. Enrolling or activating a first authenticator on an account that already has a PGP key, and viewing pending authenticator or recovery material, requires the saved-key decryption proof, so a password thief cannot enroll or copy an authenticator to replace that key. Adding a first PGP key clears any inactive authenticator enrollment that could have been exposed before the key was bound. First key enrollment and a safe same-fingerprint renewal remain available; purchases and messages still require a fresh decrypt proof after the saved key changes.
+
+For a lost private key, verify the owner through a trusted recovery channel before rebinding their identity. The existing non-administrator factor-reset form accepts an optional replacement **public** key; the administrator must confirm that they verified the owner's identity through the trusted recovery channel, then confirm with their own password and enrolled authenticator. The replacement must be a currently usable public key. Recovery ends the target's sessions and pending sign-ins, invalidates old proofs and challenges, records the reset, and leaves the new key unverified until its owner proves it.
+
+For the last administrator, supply the replacement public key through the existing host reset command:
+
+```sh
+opsecmkt -reset-admin-factors ADMIN_HANDLE -reset-admin-pgp-key-file /secure/replacement-public.asc
+```
+
+With Compose, bind-mount that public file read-only into the one-off app container and use its container path. The file is limited to 16 KiB; private keys are refused. Sign in with the account password and decrypt with the replacement key, then enroll MFA again. The command preserves the site's strict PGP login setting. Omitting the file preserves reset-only behavior and the existing PGP key; a factor reset alone cannot satisfy strict PGP login when the private key is lost.
+
+### Vendor availability and activity privacy
+
+Vendors manage availability from their account. **Vacation** keeps the profile and products public, displays **On vacation**, and refuses new purchases. **Deactivation** hides the profile and products from public catalog, search, direct product pages, and image routes. It preserves existing orders and disputes and does not archive or erase products; reactivation restores normal visibility.
+
+A vendor may stop buyer messages while away. This hides message buttons and blocks direct sends, including direct sends through an old conversation. The separate order correspondence form remains available to the actual buyer and vendor for existing order work. When messages remain enabled, existing customers may still contact a deactivated vendor through their established order or exchange. Staff support and dispute workflows remain available.
+
+Last-seen sharing is off by default. When enabled, the public profile shows coarse activity at hour precision. Activity is recorded only while sharing is enabled. Turning it off clears the stored timestamp and removes it from public data, rather than merely hiding a label.
 
 ### Orders
 
 Migration 105 copies a listing’s title, full description and fulfillment kind to the order in the same transaction that first reserves stock and requests payment (Monero escrow checkout). A draft keeps showing the live listing until then. Later edits, archive and takedown leave the purchased copy unchanged; the order and dispute pages show the saved terms while their product link opens the **current** listing. An order without a copy has no trustworthy recorded terms and shows “Not recorded” rather than using today’s title or description as purchase history. The saved description is visible only through an order page its buyer, vendor or eligible reviewing staff may open. It remains in the database and encrypted backups with that order; editing or archiving the listing does not erase it. Delivery content is still governed by its existing delivery record and is not copied into this snapshot.
 
-No configuration. Requesting payment on an order requires that coin's escrow to be on and ready, on a supported test network (see Payments); without it the step is shown as unavailable. Migration 030 adds `deliveries`, `reviews` and `disputes.outcome`. Digital delivery content is stored unencrypted in the database and shown only to the order's buyer and vendor, and read-only to moderators and administrators once the order is disputed; vendors should encrypt sensitive content to the buyer's PGP key before delivering it.
+Both the buyer and vendor must have usable PGP public encryption keys before creating a draft or checking out, for physical and digital orders. They can add them under **Your account → Public profile**. The buyer must also complete PGP challenge decryption in the current session before purchasing. Requesting payment also requires Monero escrow to be on and ready on the configured network (use test networks for development; see Payments). Existing orders remain readable and cancellable when a key becomes unusable; opening or replying to a dispute still requires session PGP decryption.
 
-**There is no shipping address field, by design.** For a paid physical order the order page asks the buyer to encrypt their address to the vendor's PGP key in their own PGP application and send it through the order page's **Order correspondence** form, which accepts only OpenPGP-encrypted messages; the server keeps that encrypted message (and who sent it to whom and when) but cannot read it. A vendor without a key that can receive encrypted messages (none saved, or one that has expired or can only sign) cannot receive addresses, so buyers cannot request payment for that vendor's physical listings until the vendor adds one; digital listings are unaffected. If the vendor's key was changed or its ownership proved again after the order was placed, the buyer's order page says so and asks them to confirm the key with the vendor before sending the address. The market cannot stop an address being typed into a plaintext field: the vendor's note to the buyer, cancellation reasons, dispute reasons, dispute replies and review text are stored unencrypted in the database and every backup. Each of those fields warns that it is unencrypted, says who can read it and asks users never to include an address, real name or tracking number but to send them encrypted from the order page (the dispute forms point to the "Contact dispute staff" keys). `/canary#records` lists what is kept.
+Migration 132 makes new automatic and manual per-order digital delivery records PGP-encrypted to the buyer before storage. The buyer decrypts the displayed armor in their own PGP client. The vendor and eligible dispute staff can see the stored armor, but that alone does not let them decrypt it. The shared listing template for automatic delivery remains server-readable, and manual input is available to the running server while it encrypts it. Encryption failure refuses manual delivery or leaves automatic delivery pending without a plaintext fallback. Older plaintext delivery records are retained as they were and are never eligible for XMPP content forwarding.
 
-Every disputable order is a Monero escrow order, and only an administrator decides a dispute on one (the decision moves coins from the escrow); moderators can read it on the moderation desk but not resolve it. Opening a dispute therefore notifies every administrator who is not the order's buyer or vendor and is not suspended. An administrator who is a party cannot resolve it, and a suspended account cannot sign in, so keep at least one administrator who does not trade: if every unsuspended administrator is a party (for example the only administrator is the vendor), the dispute is still accepted even when an independent moderator exists, the order history records that no independent resolver was available, every administrator is notified that it needs an administrator who is not a party, added on the host with the role command (`-set-role HANDLE admin`, [Administrators](#administrators)), moderators are not notified, and the moderation desk marks it "No eligible resolver" for administrators until such an administrator exists. A concession that closes the dispute is reported to the same administrators. Historical orders without escrow (read-only) keep the earlier rule, under which an independent moderator also counts as a resolver. On an escrow order the parties' order page says an administrator decides: its "Contact dispute staff" panel advises sending evidence to an independent administrator first and labels moderators as able to pass evidence on to an administrator; a historical order keeps the moderator wording.
+**There is no shipping address field, by design.** For a paid physical order the order page asks the buyer to encrypt their address to the vendor's PGP key in their own PGP application and send it through the order page’s **Order correspondence** form, which accepts only OpenPGP-encrypted messages; the server keeps that encrypted message (and who sent it to whom and when) but cannot read it. A vendor without a key that can receive encrypted messages (none saved, or one that has expired or can only sign) cannot receive addresses; every physical or digital draft and checkout now requires usable buyer and vendor encryption keys. If the vendor's key was changed or its ownership proved again after the order was placed, the buyer's order page says so and asks them to confirm the key with the vendor before sending the address. The market cannot stop an address being typed into a plaintext field: the vendor's note to the buyer, cancellation reasons, dispute reasons, dispute replies and review text are stored unencrypted in the database and every backup. Each of those fields warns that it is unencrypted, says who can read it and asks users never to include an address, real name or tracking number but to send them encrypted from the order page (the dispute forms point to the "Contact dispute staff" keys). `/canary#records` lists what is kept.
+
+Every disputable order is a Monero escrow order, and only an administrator decides a dispute on one (the decision moves coins from the escrow); moderators can read it on the moderation desk but not resolve it. Opening a dispute therefore notifies every administrator who is not the order's buyer or vendor and is not suspended. An administrator who is a party cannot resolve it, and a suspended account cannot sign in, so keep at least one administrator who does not trade: if every unsuspended administrator is a party (for example the only administrator is the vendor), the dispute is still accepted even when an independent moderator exists, the order history records that no independent resolver was available, every administrator is notified that it needs an administrator who is not a party, added on the host with the role command (`-set-role HANDLE admin`, [Administrators](#administrators)), independent moderators receive review notices but cannot resolve Monero escrow, and the moderation desk marks it "No eligible resolver" for administrators until such an administrator exists. A concession that closes the dispute is reported to the same administrators. Historical orders without escrow (read-only) keep the earlier rule, under which an independent moderator also counts as a resolver. On an escrow order the parties' order page says an administrator decides: its "Contact dispute staff" panel advises sending evidence to an independent administrator first and labels moderators as able to pass evidence on to an administrator; a historical order keeps the moderator wording.
 
 The party who did not open a dispute can put one reply on record from the order page while it is open (plain text in the order history, shown to both parties and staff); the resolve form says whether it did. New image evidence is uploaded and read on the order page; vendors append replacement digital delivery there too. Private records use the order's original retention deadline and never extend it. For each open dispute the moderation desk also lists which moderators and administrators each party messaged since it opened, with the count and the latest time, from message metadata only: ask those holders what the encrypted evidence shows before deciding, since nobody else can read it.
 
@@ -976,6 +1122,8 @@ Independent moderators and administrators read authorized dispute and payment-re
 Reviews are published as soon as the buyer writes them. To take one down (for example text that names or locates a vendor), sign in as an administrator, open the listing or the vendor's page, open *Hide this review* under it and confirm with your password (and authenticator code when enrolled). The review is kept but leaves both public pages and their rating; the buyer and vendor still see it on the order, and administrators see it labelled with *Restore this review*. Both actions are audited without the review text and the reviewer is notified. Migration 031 adds `reviews.hidden_at`.
 
 ### Inventory
+
+Distinct digital inventory accepts plain text and links, refusing armored PGP MESSAGE entries at import and checkout; the combined batch is encrypted once to the eventual buyer. Use manual per-order delivery for ciphertext already encrypted to that buyer.
 
 Only approved vendors (see [Vendor applications](#vendor-applications)) can list. Vendors manage listings from the vendor desk (Edit / Archive / Restore). The vendor desk's readiness panel lists the current encryption-key and escrow-key setup needed for new orders; a vendor can also open it from the setup link on `/account`. Check the panel after changing a key or the market's escrow configuration. Automatic delivery content for digital listings is stored unencrypted in the database — include it in your threat model and backups — and is only released after an escrow is funded; with escrow off it is never released automatically. Administrators can edit other vendors' listings but cannot view or change their automatic delivery content: the editor shows only whether it is set, and only the vendor can change or remove it. A save that changes another vendor's listing notifies that vendor, naming the fields changed, and is recorded in the vendor's audit trail as well as yours (A-516).
 
@@ -1401,7 +1549,20 @@ checks that the stored transaction is in neither the daemon's pool nor its chain
 is, the request is refused with the reason on the order page and in a notice to you, and may be asked again later. If none is,
 the failed settlement becomes *superseded* and a new one is built from exactly the same coins to exactly the same destinations
 (only the network fee, and so the claimant's output, may differ) and sent; the database refuses any other coins, so at most one
-of the two transactions can ever be mined.
+of the two transactions can ever be mined. If a deposit those coins came from is no longer listed by the escrow wallet (a
+reorganisation or a double spend took it out of the chain), the new settlement stays requested (*deposit-missing*) and builds
+nothing until the wallet lists that deposit again, however long that takes; it then builds and sends as above (A-614). Unlike
+a first release or refund (A-554, below) it has no bounded wait, because it can be built from no other coins. Staff are
+notified each time it starts waiting (once per episode); past 24 hours it is an escrow alert as any settlement still requested is, and its
+monthly wallet is kept from destruction while it waits. Settling a waiting re-request by hand is **break-glass**: wait by
+default, and never pay from other funds while the market can still send it (it sends on its own once the deposit is
+listed again). It waits only after a deep reorganisation or a double spend, or a wallet restore or rescan that lost the
+deposit. A re-requested stray refund never holds back the stray refund of a later deposit to the same order (A-616,
+migration 135): that one is requested, built from deposits no settlement claims and sent beside it, and the order page's
+status says two stray refunds are in progress. While a re-request is still requested, the *Payment review* reason of each
+deposit it claims keeps its usual text and adds which settlement re-requests which, and for a deposit no longer listed
+that it waits for it and is sent by the market on its own once the deposit is listed again, ending "Do not pay anything
+by hand for it, or it is paid twice"; the desk's 24-hour line for a re-request waiting so says the same in short (A-617).
 
 **Failed and set-aside settlements are escrow alerts (A-560).** Until it is superseded, a failed settlement is listed under
 *Escrow alerts* on the moderation desk, counted in the staff badge and named in the order page's staff help, and a
@@ -1437,10 +1598,13 @@ refund also stands in for the order's one release or refund, which is all the da
   changes nothing the market does with later deposits; it only closes this alert.
 - The exception: a failed settlement with no transaction built that still **claims deposits** (a re-request that failed
   *nothing-to-settle* after taking over the deposits of the settlement it superseded, for example when a claimed
-  deposit was read as double-spent). Its alert and the deposit's *Payment review* row say so: the coins are in the
-  escrow wallet and may still be owed, and the market does not settle them on its own. It cannot be dismissed (the
-  order page offers no form and the action refuses it); settle with the operator, outside the market. Its alert stays
-  open. Making such a settlement wait instead of failing is a separate change (A-614).
+  deposit was read as double-spent). The market no longer leaves one: since A-614 such a re-request waits for the
+  deposit (*deposit-missing*, above) instead of failing. A database whose market ran an earlier build may still hold
+  one. Its alert and the deposit's *Payment review* row say so: the coins are in the escrow wallet and may still be
+  owed, and the market does not settle them on its own, not even when that deposit is listed again (a failed
+  settlement is never built again). It cannot be dismissed (the order page offers no form and the action refuses it);
+  settle with the operator, outside the market. Nothing in the market clears its alert, so the order stays on the desk
+  and under retention's `escrow_alert` reason; UPGRADING.md lists such settlements.
 
 Either record (dismissed as nothing owed, or marked settled by hand) takes a note of 10–500 characters (why nothing is
 owed now; or what the wallet and the chain showed and what was done), confirmed with the password (and the
@@ -1523,12 +1687,17 @@ the market (the order page says so); a destroyed wallet is never opened again.
   the desk. After a refund it is the buyer's: it is left out, noted as credited and listed again, and the stray refund
   returns it to the buyer's refund address (PAY66-6). A release or refund whose credited deposits are all gone for good
   stays requested (*deposit-missing*) and keeps its monthly wallet, with its sealed seed, from destruction past the 90
-  days until you resolve it by hand; there is no web action for it. You see it on the order page's wait line, as an
+  days; there is no web action for it. Resolving it by hand is **break-glass**: wait by default, and never pay from
+  other funds while the market can still send it; the wait needs a deep reorganisation or a double spend, or a wallet
+  restore or rescan that lost the deposit, and the market sends it on its own if the deposit is listed again. You see it on the order page's wait line, as an
   open "Credited deposit conflicted or missing" flag on the payment-review desk, in the desk's alert for a settlement
   requested for more than 24 hours, and, past the 90 days, in the notice that a retained wallet is kept (PAY66-7). The market
   notices such a regression only once the order's release or refund is being built, not while the order is paid or
   shipped; and after you record *no action* on the flag, a later regression of the same deposit sends a new note and
-  notice but does not reopen the flag on the desk.
+  notice but does not reopen the flag on the desk. A re-request (A-401) one of whose claimed deposits is no longer
+  listed waits the same way (*deposit-missing*), with no bounded wait, since it spends only the coins of the
+  transaction it replaces: staff get one order note and notice each time it starts waiting (A-614), and it builds
+  once the wallet lists that deposit again.
   A refund whose claimant output would be below 0.001 XMR (on a cancelled order or one decided for the buyer, with no
   deposit it would spend still confirming) does not wait: it ends (failed, too-small) and its deposits are left out for
   the stray refund, which returns them with any later deposit once together they pay the fee; the parties and staff

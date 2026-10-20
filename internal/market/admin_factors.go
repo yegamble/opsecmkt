@@ -18,7 +18,17 @@ import (
 // reset by host command: …" and notifies the account. It refuses an account that is not an administrator, an
 // unknown handle, an administrator with no second factor enrolled and, like the other host tools, a database
 // recording migrations this binary does not include. It returns a summary of the change.
+// Mandatory PGP sign-in remains enforced; lost keys need ResetAdminFactorsWithPublicKey.
 func ResetAdminFactors(ctx context.Context, db *sql.DB, handle string) (string, error) {
+	return ResetAdminFactorsWithPublicKey(ctx, db, handle, "")
+}
+
+// ResetAdminFactorsWithPublicKey also replaces a lost administrator key when public
+// is nonempty. Only usable public key material is accepted. Replacement invalidates
+// prior ownership, challenges and session proof; strict PGP login policy is unchanged.
+// The administrator must decrypt a fresh sign-in code with their replacement private
+// key, which is never sent to or stored on the server.
+func ResetAdminFactorsWithPublicKey(ctx context.Context, db *sql.DB, handle, public string) (string, error) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return "", err
@@ -57,8 +67,17 @@ func ResetAdminFactors(ctx context.Context, db *sql.DB, handle string) (string, 
 	if pgp {
 		what = append(what, "PGP sign-in")
 	}
-	if len(what) == 0 {
-		return "", fmt.Errorf("administrator %q has no second factor enrolled; nothing was changed (it signs in with its password alone)", handle)
+	if len(what) == 0 && public == "" {
+		return "", fmt.Errorf("administrator %q has no second factor enrolled; nothing was changed. To recover a lost PGP key, include -reset-admin-pgp-key-file FILE", handle)
+	}
+	var replacementFingerprint string
+	if public != "" {
+		if err = replaceRecoveryPublicKey(ctx, tx, id, public); err != nil {
+			return "", err
+		}
+		if err = tx.QueryRowContext(ctx, "SELECT pgp_fingerprint FROM users WHERE id=$1", id).Scan(&replacementFingerprint); err != nil {
+			return "", err
+		}
 	}
 	if _, err = tx.ExecContext(ctx, "UPDATE users SET totp_enabled=false,totp_secret='',totp_pending='',totp_last_step=0,recovery_reveal='',recovery_reveal_until=NULL,pgp_2fa=false WHERE id=$1", id); err != nil {
 		return "", err
@@ -69,13 +88,24 @@ func ResetAdminFactors(ctx context.Context, db *sql.DB, handle string) (string, 
 	}
 	n, _ := ended.RowsAffected()
 	off := strings.Join(what, " and ")
+	var changes []string
+	if off != "" {
+		changes = append(changes, off+" turned off")
+	}
+	if replacementFingerprint != "" {
+		changes = append(changes, "PGP public key replaced (fingerprint "+replacementFingerprint+"; ownership unverified)")
+	}
+	change := strings.Join(changes, "; ")
 	sessions := "ended " + strconv.FormatInt(n, 10) + " session(s) and any pending sign-ins"
-	if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", id, "Second factors reset by host command: "+off+" turned off; "+sessions); err != nil {
+	if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", id, "Second factors reset by host command: "+change+"; "+sessions); err != nil {
 		return "", err
 	}
 	note := "The operator reset your two-factor sign-in on the host (" + off + " turned off) and signed you out everywhere. Set up TOTP or PGP sign-in again from your account."
+	if replacementFingerprint != "" {
+		note = "The operator replaced your PGP public key and reset your optional sign-in factors on the host, then signed you out everywhere. Sign in with your password and decrypt the challenge using your replacement private key. Set up TOTP again from your account."
+	}
 	if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), id, note); err != nil {
 		return "", err
 	}
-	return "Second factors of administrator " + handle + " reset: " + off + " turned off; " + sessions, tx.Commit()
+	return "Second factors of administrator " + handle + " reset: " + change + "; " + sessions, tx.Commit()
 }

@@ -4,6 +4,6 @@
 <p>{{if .Order.Escrow}}Only an independent administrator decides a dispute on this escrow order.{{else}}An independent moderator or administrator decides this dispute.{{end}} Add evidence in <a class="text-link" href="#dispute-evidence">Dispute image evidence</a> on this order so both parties and the reviewing staff can see it. Use the contacts below for private support. Direct support messages are separate from this order's evidence and follow the message retention policy; only their sender and recipient can read them. Other staff can see whom you contacted and when.</p>
 {{range .StaffContacts}}<details><summary>{{.Handle}} · {{if not $.Order.Escrow}}{{.Relation}}{{else if eq .Relation "admin"}}administrator: decides escrow disputes{{else}}moderator: dispute support{{end}}</summary>
 {{template "contact-key" .}}
-{{if .Fingerprint}}<a class="button" href="/messages?to={{.Handle}}">Message {{.Handle}}</a>{{end}}
+{{if and .Fingerprint .CanMessage}}<a class="button" href="/messages?to={{.Handle}}{{range $.Disputes}}&amp;dispute_id={{.ID}}{{end}}">Message {{.Handle}}</a>{{end}}
 </details>{{else}}<p class="help">No independent moderator or administrator is available to contact.</p>{{end}}
 </section>{{end}}{{end}}

@@ -1,6 +1,7 @@
 package market
 
 import (
+	"database/sql"
 	"net/http/httptest"
 	"net/url"
 	"testing"
@@ -47,6 +48,7 @@ func TestAdministratorIsAutomaticallyVerifiedVendor(t *testing.T) {
 	e := newTestApp(t)
 	admin := e.setup()
 	id := agStr(e, "SELECT id FROM users WHERE handle='admin_user'")
+	e.enableOrderPGP(id)
 	product := e.product(id, "digital")
 	for _, path := range []string{"/", "/product?id=" + product, "/vendor?id=" + id} {
 		mustContain(t, e.body("GET", path, admin, nil, 200), "Verified vendor")
@@ -54,6 +56,63 @@ func TestAdministratorIsAutomaticallyVerifiedVendor(t *testing.T) {
 	var active bool
 	if err := e.DB.QueryRow("SELECT "+activeVendorSQL("u")+" FROM users u WHERE u.id=$1", id).Scan(&active); err != nil || !active {
 		t.Fatalf("administrator is not an active vendor: %v %v", active, err)
+	}
+}
+
+func TestSellingCapabilitiesKeepAvailabilityAndImagePrivacy(t *testing.T) {
+	for _, role := range []string{"admin", "moderator"} {
+		t.Run(role, func(t *testing.T) {
+			e := newTestApp(t)
+			id, session := e.user("availability_cap_"+role, role)
+			if role == "moderator" {
+				agExec(e, "UPDATE users SET vendor_approved=true WHERE id=$1", id)
+			}
+			buyerID, buyer := e.user("availability_cap_buyer", "buyer")
+			product := e.product(id, "digital")
+			photo, avatar := e.image(id, product, "photo"), e.image(id, "", "avatar")
+			e.order(buyerID, product, "XMR", statePaid)
+			e.wantPublic(photo, "published staff seller photo")
+			e.wantHidden(avatar, "selling approval must not publish a hidden staff avatar")
+			key, err := publicVendorContactKey(t.Context(), e.DB, id)
+			if err != nil || !key.Usable() {
+				t.Fatalf("staff seller's public contact key: usable=%v error=%v", key.Usable(), err)
+			}
+			e.check(e.do("POST", "/account/vendor-availability", session, url.Values{
+				"mode": {"vacation"}, "show_last_seen": {"on"}, "messages_off_while_away": {"on"},
+			}), 303)
+			e.check(e.do("GET", "/account", session, nil), 200)
+			if agInt(e, "SELECT count(*) FROM users WHERE id=$1 AND vendor_last_seen IS NOT NULL", id) != 1 {
+				t.Fatal("approved staff seller's opted-in activity was not recorded")
+			}
+			mustContain(t, e.body("GET", "/vendor?id="+id, "", nil, 200), "On vacation", "Last seen:")
+			e.check(e.do("POST", "/account/vendor-availability", session, url.Values{"mode": {"deactivated"}}), 303)
+			e.body("GET", "/vendor?id="+id, "", nil, 404)
+			e.wantHidden(photo, "deactivated staff seller photo")
+			e.wantDesk(buyer, photo, "existing buyer's deactivated listing photo")
+			if _, err := publicVendorContactKey(t.Context(), e.DB, id); err != sql.ErrNoRows {
+				t.Fatalf("deactivated staff seller's key remained public: %v", err)
+			}
+			if agInt(e, "SELECT count(*) FROM users WHERE id=$1 AND NOT vendor_show_last_seen AND vendor_last_seen IS NULL", id) != 1 {
+				t.Fatal("staff seller's activity opt-out retained activity")
+			}
+		})
+	}
+}
+
+func TestSellingCapabilitiesRequireUsableProfileKey(t *testing.T) {
+	for _, role := range []string{"admin", "moderator"} {
+		t.Run(role, func(t *testing.T) {
+			e := newTestApp(t)
+			id, session := e.user("key_cap_"+role, role)
+			if role == "moderator" {
+				agExec(e, "UPDATE users SET vendor_approved=true WHERE id=$1", id)
+			}
+			before := agStr(e, "SELECT pgp FROM users WHERE id=$1", id)
+			e.check(e.do("POST", "/account", session, url.Values{"pgp": {""}, "password": {testPassword}}), 409)
+			if agStr(e, "SELECT pgp FROM users WHERE id=$1", id) != before {
+				t.Fatal("an approved seller removed its required encryption key")
+			}
+		})
 	}
 }
 

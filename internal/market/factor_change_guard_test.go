@@ -47,7 +47,7 @@ func a152Once(e *testEnv, userID string, notesBefore int, auditPrefix, noteFragm
 
 func TestFactorlessAccountNeedsPasswordToAddTOTP(t *testing.T) {
 	e := newTestApp(t)
-	uid, stolen := e.user("a152_totp", "buyer")
+	uid, stolen := e.keylessUser("a152_totp", "buyer")
 	e.check(e.do("POST", "/totp/enroll", stolen, nil), 303)
 	if !strings.Contains(e.body("GET", "/totp", stolen, nil, 200), `name="password"`) {
 		t.Fatal("/totp activation form does not ask for the password on a factor-less account")
@@ -109,7 +109,7 @@ func TestRecoveryCodeReplacementNeedsPassword(t *testing.T) {
 
 func TestFactorlessAccountNeedsPasswordForKeyAndPGPSignIn(t *testing.T) {
 	e := newTestApp(t)
-	uid, stolen := e.user("a152_vendor", "vendor")
+	uid, stolen := e.keylessUser("a152_vendor", "buyer")
 	alice, alicePub := testPGPKey(t, "alice")
 	_, malloryPub := testPGPKey(t, "mallory")
 	_, aliceFP, _ := parsePublicKey(alicePub)
@@ -155,12 +155,14 @@ func TestFactorlessAccountNeedsPasswordForKeyAndPGPSignIn(t *testing.T) {
 	e.check(e.do("POST", "/pgp/2fa", stolen, url.Values{"enable": {"0"}, "password": {testPassword}}), 303)
 	a152Once(e, uid, 3, "Turned off PGP sign-in verification", "PGP sign-in verification was turned off")
 
-	// Replacing the key, then removing it, notifies once each.
+	// The owner authenticates the existing binding before replacing or removing a key.
+	e.pgpSessionKey(stolen)
 	_, malloryFP, _ := parsePublicKey(malloryPub)
 	e.check(e.do("POST", "/account", stolen, url.Values{"pgp": {malloryPub}, "password": {testPassword}}), 303)
 	if a152Notes(e, uid, "") != 5 || a152Notes(e, uid, "public key on your account was changed") != 1 || a152Notes(e, uid, malloryFP) != 0 {
 		t.Fatal("key replacement not notified once, or the notification names the fingerprint")
 	}
+	e.pgpSessionKey(stolen)
 	e.check(e.do("POST", "/account", stolen, url.Values{"pgp": {""}, "password": {testPassword}}), 303)
 	a152Once(e, uid, 5, "Removed PGP key", "public key on your account was removed")
 }

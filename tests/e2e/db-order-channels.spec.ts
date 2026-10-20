@@ -2,7 +2,7 @@ import {execFileSync} from 'node:child_process';
 import {randomBytes} from 'node:crypto';
 import {expect,test} from '@playwright/test';
 import {uniqueHandle} from './db-fixtures';
-import {pgpFixture,signedIn,submitAndLoad} from './db-helpers';
+import {pgpFixture,seedPGPAccess,signedIn,submitAndLoad} from './db-helpers';
 import {waitForStyles} from './styles';
 
 // Seeded financial state is a browser fixture, not proof of payment settlement.
@@ -16,6 +16,8 @@ test('order messages and replacement delivery remain on the correct order',async
  const vendor=await signedIn(browser,baseURL,vendorHandle,'browser-order-mail-vendor-123',true,320);
  const product=randomBytes(16).toString('hex'),order=randomBytes(32).toString('hex'),other=randomBytes(32).toString('hex');
  try {
+  await seedPGPAccess(buyer);
+  await seedPGPAccess(vendor);
   sql(`UPDATE users SET role='vendor',pgp='${pgpFixture('recipient.pub.asc').trim()}' WHERE handle='${vendorHandle}';
    INSERT INTO products(id,vendor_id,title,description,category,region,kind,btc,xmr,stock)
    SELECT '${product}',id,'Order correspondence fixture','Browser fixture only','Digital','Worldwide','digital',0,500000000000,1 FROM users WHERE handle='${vendorHandle}';
@@ -41,7 +43,9 @@ test('order messages and replacement delivery remain on the correct order',async
   await submitAndLoad(vendor,vendor.getByRole('button',{name:'Add delivery update',exact:true}));
   await buyer.goto(`/order?id=${order}`);
   await expect(buyer.getByRole('textbox',{name:'Digital delivery',exact:true})).toHaveValue('Original delivery content');
-  await expect(buyer.getByLabel('Replacement delivery content',{exact:true})).toHaveValue('Replacement download for this order only');
+  await expect(buyer.getByLabel('Replacement delivery content',{exact:true})).toHaveValue(/^-----BEGIN PGP MESSAGE-----/);
+  await expect(buyer.getByLabel('Replacement delivery content',{exact:true})).not.toHaveValue(/Replacement download/);
+  expect(sql(`SELECT encrypted::text FROM order_delivery_updates WHERE order_id='${order}'`)).toBe('true');
   for(const width of [320,390,768,1280]) {
    await buyer.setViewportSize({width,height:900});await waitForStyles(buyer);
    expect(await buyer.evaluate(()=>document.documentElement.scrollWidth),`order content at ${width}px`).toBeLessThanOrEqual(width);

@@ -89,6 +89,9 @@ func TestModeratorViewsDisputedOrderReadOnly(t *testing.T) {
 
 func TestCounterpartyKeysAndMessagePrefill(t *testing.T) {
 	w := newOrderWorld(t)
+	// Legacy missing-key contacts are intentional in this display-only test.
+	w.e.setKey(w.vendorID, "")
+	w.e.setKey(w.buyerID, "")
 	_, vendorPub := testPGPKey(t, "vendor")
 	_, fp, err := parsePublicKey(vendorPub)
 	if err != nil {
@@ -101,7 +104,7 @@ func TestCounterpartyKeysAndMessagePrefill(t *testing.T) {
 
 	// No key yet: say so plainly on the vendor page.
 	body := w.page("/vendor?id="+w.vendorID, w.buyer, 200)
-	mustContain(t, body, vendorHandle+" has not added a PGP public key", "obtain and confirm their key through a trusted channel before encrypting", `href="/messages?to=`+vendorHandle+`"`)
+	mustContain(t, body, vendorHandle+" has not added a PGP public key", "obtain and confirm their key through a trusted channel before encrypting", `href="/messages?to=`+vendorHandle)
 
 	// Unverified key: armored key and grouped fingerprint shown, marked not verified.
 	if _, err = w.e.DB.Exec("UPDATE users SET pgp=$1,pgp_fingerprint=$2 WHERE id=$3", vendorPub, fp, w.vendorID); err != nil {
@@ -121,7 +124,7 @@ func TestCounterpartyKeysAndMessagePrefill(t *testing.T) {
 	w.e.DB.Exec("UPDATE users SET pgp_fingerprint=$1 WHERE id=$2", fp, w.vendorID)
 
 	// Product page contact link prefills the vendor.
-	mustContain(t, w.page("/product?id="+physical, w.buyer, 200), `href="/messages?to=`+vendorHandle+`"`)
+	mustContain(t, w.page("/product?id="+physical, w.buyer, 200), `href="/messages?to=`+vendorHandle)
 
 	// Order page: each party sees the other's key status; the buyer of a draft gets no shipping prompt.
 	draft := w.e.order(w.buyerID, physical, "XMR", stateDraft)
@@ -138,6 +141,7 @@ func TestCounterpartyKeysAndMessagePrefill(t *testing.T) {
 	body = w.page("/order?id="+paid, w.buyer, 200)
 	// A-81: the market has no address field but keeps the encrypted message and who sent it to whom and when.
 	mustContain(t, body, "Send your shipping address", "encrypted to "+vendorHandle, "no address field", "keeps the encrypted message and who sent it to whom and when", `href="#order-messages"`)
+
 	mustNotContain(t, body, "never stores")
 	body = w.page("/order?id="+paid, w.vendor, 200)
 	mustContain(t, body, "shipping address", "encrypted message", "keeps the encrypted message and who sent it to whom and when")

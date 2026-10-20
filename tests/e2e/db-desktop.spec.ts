@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { FIXTURE_LISTING, uniqueHandle } from './db-fixtures';
-import { submitAndLoad } from './db-helpers';
+import { saveEncryptionKey, submitAndLoad, seedPGPAccess } from './db-helpers';
 import { waitForStyles } from './styles';
 
 // The db-account journey (register, unfunded draft, profile persistence, sign-out) at desktop width. The
@@ -21,6 +21,9 @@ test('desktop: register, draft, profile persistence and sign-out', async ({ page
   await page.getByLabel('Password', { exact: true }).fill(password);
   await page.getByRole('button', { name: 'Create account' }).click();
   await expect(page.locator('.account-name')).toHaveText(handle);
+  await saveEncryptionKey(page, password);
+  await page.goto('/');
+  await seedPGPAccess(page);
 
   // At desktop width the catalog shows the filter sidebar instead of the collapsible filter panel.
   await expect(page.locator('.desktop-filters')).toBeVisible();
@@ -45,7 +48,8 @@ test('desktop: register, draft, profile persistence and sign-out', async ({ page
   await fits(page);
 
   await page.goto('/account');
-  await expect(page.getByLabel('XMPP address')).toHaveCount(0);
+  await expect(page.getByLabel('Private XMPP address')).toHaveValue('');
+  await expect(page.getByLabel('Receive XMPP notifications')).not.toBeChecked();
   await fits(page);
   await submitAndLoad(page, page.getByRole('main').getByRole('button', { name: 'Sign out', exact: true }));
   await page.goto('/account');
@@ -54,5 +58,6 @@ test('desktop: register, draft, profile persistence and sign-out', async ({ page
   await page.getByLabel('Password', { exact: true }).fill(password);
   await submitAndLoad(page, page.getByRole('button', { name: 'Sign in' }));
   await page.goto('/account');
-  await expect(page.getByLabel('XMPP address')).toHaveCount(0);
+  await expect(page.getByLabel('Private XMPP address')).toHaveValue('');
+  await expect(page.getByLabel('Receive XMPP notifications')).not.toBeChecked();
 });
