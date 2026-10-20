@@ -1750,12 +1750,12 @@ STATUS: in-progress (war-room/mod72-1-lossless-capture).
 ### MOD72-2 — Disclose new abuse-review records and photo fingerprints (privacy-1)
 
 DECISION: ACCEPT (P1 REQUIRED). Public records/retention text covers only legacy copies; v2 references, exact and perceptual image fingerprints have no expiry, and the photos item ("only … deletes it at once") is now untrue (uploads store perceptual_hash on every upload). Wording only; no purge.
-STATUS: in-progress (war-room/mod72-2-disclosure).
+STATUS: verified locally (privacy seat at c53ec524; implementer d705cd76; three pinning tests passed on PostgreSQL); privacy-n1 caveats added d5d5dcc3; CI pending. The waiting-list sentence must be reconciled with MOD72-1's final marker columns.
 
 ### MOD72-3 — Refuse migration name mismatches (SEC72-4)
 
 DECISION: ACCEPT (P2 SHOULD). Migration identity by number only: a DB that ran the unmerged branch's 128 fails with a misleading error. Fail closed before DDL with a clear message; permanent main-at-128 upgrade test.
-STATUS: in-progress (war-room/mod72-2-disclosure).
+STATUS: implemented (d705cd76: name-mismatch refusal before DDL, TestMigrationNameMismatchRefused, TestModerationMigrationsAfterMain128); security re-check pending. Chair: worker readiness now requires 129 (8ea80b6a).
 
 ### MOD72-4 — Model-path fail-closed and closed code ownership (LLM-1, LLM-2, LLM-3, LLM-5)
 
