@@ -101,6 +101,17 @@ Twenty related Python checks and all embedded upgrade Python blocks passed.
 The browser's exact public-key visibility expectation also now names ticket
 correspondents, matching the final privacy disclosure.
 
+The subsequent CI browser run passed 733 checks and found one outdated preview
+expectation repeated across six browser configurations: the order's message link
+now deliberately includes its explicit `order_id`. The expectation now verifies
+that exact association. All 20 contact-preview checks passed across the four
+Chromium viewport configurations after the correction, 7.6 s. The six-browser
+suite remains part of the required current-head CI gate.
+The Go run also found the same ticket-correspondent privacy wording missing from
+one older account-page expectation; its targeted PostgreSQL race check passed
+after aligning the expected disclosure. These follow-ups change test expectations
+and evidence only, without changing the reviewed production behavior.
+
 ## Limits and deferred ideas
 
 Verified TLS protocol fixtures do not prove interoperability with every XMPP
