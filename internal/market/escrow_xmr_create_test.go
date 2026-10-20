@@ -263,6 +263,33 @@ func TestXMREscrowOrderFormsNeverConflict(t *testing.T) {
 			return order
 		},
 	}
+	// Real recipient keys make the correspondence forms successful workflows,
+	// rather than accepting a 400 from the generic textarea sampler. Each new
+	// order has a fresh buyer, so install its fixture key in the scenario wrapper.
+	buyerKey, buyerPub := testPGPKey(t, "order-form-buyer")
+	vendorKey, vendorPub := testPGPKey(t, "order-form-vendor")
+	x.setKey(x.vendor, vendorPub)
+	for name, build := range scenarios {
+		scenarios[name] = func() string {
+			order := build()
+			buyer := agStr(x.testEnv, "SELECT buyer_id FROM orders WHERE id=$1", order)
+			x.setKey(buyer, buyerPub)
+			return order
+		}
+	}
+	formsFor := func(order, viewer string) []pageForm {
+		forms := x.orderForms(order, x.sessOf(order, viewer))
+		for i := range forms {
+			if forms[i].action == "/orders/message" {
+				key := vendorKey
+				if viewer == roleVendor {
+					key = buyerKey
+				}
+				forms[i].values.Set("body", encryptToRecipients(t, "Order-specific encrypted correspondence.", key))
+			}
+		}
+		return forms
+	}
 	want := map[string]string{"awaiting payment with a deposit": stateAwaitingPayment, "paid digital": statePaid, "paid physical": statePaid, "completed": stateCompleted,
 		"shipped": stateShipped, "resolved for the vendor before shipping": stateResolved}
 	// The Monero escrow forms of slice X-e, by scenario and viewer: each is offered there, and succeeds.
@@ -274,19 +301,20 @@ func TestXMREscrowOrderFormsNeverConflict(t *testing.T) {
 			if x.state(order) != want[name] {
 				t.Fatalf("%s: the order is %s", name, x.state(order))
 			}
-			forms := x.orderForms(order, x.sessOf(order, viewer))
+			forms := formsFor(order, viewer)
 			for i := range forms {
 				fresh := order
 				if i > 0 {
 					fresh = build()
 				}
-				f := x.orderForms(fresh, x.sessOf(fresh, viewer))[i]
+				f := formsFor(fresh, viewer)[i]
 				if f.action == "/logout" {
 					continue
 				}
 				w := x.do("POST", f.action, x.sessOf(fresh, viewer), f.values)
 				t.Logf("%s, %s: %s -> %d", name, viewer, f.action, w.Code)
-				if w.Code == 409 || w.Code >= 500 || strings.HasPrefix(f.action, "/escrow-xmr/") && w.Code != 303 {
+				mustSucceed := strings.HasPrefix(f.action, "/escrow-xmr/") || f.action == "/orders/message" || f.action == "/orders/delivery-update"
+				if w.Code == 409 || w.Code >= 500 || mustSucceed && w.Code != 303 {
 					t.Errorf("%s, %s: %s answered %d %s", name, viewer, f.action, w.Code, w.Body.String())
 				}
 			}
@@ -313,7 +341,14 @@ func TestXMREscrowOrderFormsNeverConflict(t *testing.T) {
 	offStates := []string{"paid physical", "shipped", "completed"}
 	pool := map[string][]string{}
 	for _, name := range offStates {
-		for range 6 {
+		order := scenarios[name]()
+		pool[name] = []string{order}
+		// The enabled page is an upper bound: switching escrow off removes its
+		// payment forms, while order correspondence and replacement forms stay.
+		// Size both personas together; every form, including skipped logout,
+		// consumes a fresh order below. Added forms cannot exhaust a magic cap.
+		needed := len(formsFor(order, roleBuyer)) + len(formsFor(order, roleVendor))
+		for len(pool[name]) < needed {
 			pool[name] = append(pool[name], scenarios[name]())
 		}
 	}
@@ -328,10 +363,13 @@ func TestXMREscrowOrderFormsNeverConflict(t *testing.T) {
 			if panel := x.panel(order, x.sessOf(order, viewer)); !strings.Contains(panel, "Monero escrow is switched off on this market") {
 				t.Errorf("ESCROW_XMR off, %s, %s: the panel does not say so:\n%s", name, viewer, panel)
 			}
-			for i := range x.orderForms(order, x.sessOf(order, viewer)) {
+			for i := range formsFor(order, viewer) {
+				if len(pool[name]) == 0 {
+					t.Fatalf("ESCROW_XMR off, %s, %s: form %d exceeds rendered form fixture pool", name, viewer, i)
+				}
 				fresh := pool[name][0]
 				pool[name] = pool[name][1:]
-				f := x.orderForms(fresh, x.sessOf(fresh, viewer))[i]
+				f := formsFor(fresh, viewer)[i]
 				if f.action == "/logout" {
 					continue
 				}
@@ -340,7 +378,8 @@ func TestXMREscrowOrderFormsNeverConflict(t *testing.T) {
 				}
 				w := x.do("POST", f.action, x.sessOf(fresh, viewer), f.values)
 				t.Logf("ESCROW_XMR off, %s, %s: %s -> %d", name, viewer, f.action, w.Code)
-				if w.Code == 404 || w.Code == 409 || w.Code >= 500 {
+				mustSucceed := f.action == "/orders/message" || f.action == "/orders/delivery-update"
+				if w.Code == 404 || w.Code == 409 || w.Code >= 500 || mustSucceed && w.Code != 303 {
 					t.Errorf("ESCROW_XMR off, %s, %s: %s answered %d %s", name, viewer, f.action, w.Code, w.Body.String())
 				}
 			}
