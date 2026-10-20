@@ -27,8 +27,9 @@ Remove `--once` to keep running. The default is at most 20 jobs per pass, with a
 one-minute interval. Enablement persists in the database: subsequent supported
 content changes enqueue hashes and bounded metadata in their transaction. New
 jobs do not copy listing, dispute, description or review prose. The worker reads
-current source text into memory only when its digest matches the captured
-revision; changed or deleted sources receive HOLD without inference. Existing content is not
+bounded current source text transiently, checks its digest, and sends only a
+matching captured revision to inference; changed or deleted sources receive HOLD
+without inference. Existing content is not
 automatically backfilled. Stopping a worker preserves enqueueing and durable
 jobs; it does not disable the feature. To stop future enqueueing:
 

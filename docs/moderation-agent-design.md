@@ -207,8 +207,9 @@ unimplemented mission items explicitly in the final implementation status.
 ## Metadata-only capture and bounded overload
 
 New jobs retain digests and allowlisted metadata rather than copying submitted
-prose. The worker reads a live source only when its canonical digest still
-matches the queued revision. Changed or missing content is held without
+prose. The worker reads bounded live source text transiently and accepts it for
+evaluation only when its canonical digest matches the queued revision.
+Changed or missing content is held without
 inference. New archived inputs are coded metadata; the active raw actor link is
 removed on completion. Order links and image hashes needed for current review
 remain. Target references remain linkable; this is minimization, not anonymity.

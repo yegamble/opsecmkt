@@ -1655,7 +1655,8 @@ DECISION: ACCEPT (P1 REQUIRED for the strengthened minimization contract).
 WHY: The current implementation creates additional durable plaintext copies of
 source text. Public disclosure is necessary but does not minimize that dataset.
 ACCEPTANCE: New jobs retain hashes and allowlisted metadata, not source prose.
-The worker reads source text into memory only for the exact captured revision;
+The worker reads bounded current source text transiently and accepts it for
+evaluation only when its digest matches the captured revision;
 a changed/missing source receives coded HOLD without inference. New archived
 inputs and rendered decisions contain no copied prose or raw actor identity;
 completion atomically minimizes no-longer-needed actor links. Keep bounded

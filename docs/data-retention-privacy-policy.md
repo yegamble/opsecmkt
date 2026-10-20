@@ -26,7 +26,7 @@ Any required longer period belongs in a scoped exception with its authority and 
 Shorter periods and earlier erasure apply when the purpose ends sooner or applicable rights require them.
 
 **Current abuse-review minimization:** new capture keeps digests and limited metadata rather than submitted prose.
-The worker reads the exact current source revision into memory; new archived inputs contain coded metadata only.
+The worker reads bounded current source text transiently and checks its digest before evaluation; new archived inputs contain coded metadata only.
 New completed jobs remove their active raw actor link, while record references remain linkable metadata.
 No historical audit record or timestamp is rewritten by this change.
 
