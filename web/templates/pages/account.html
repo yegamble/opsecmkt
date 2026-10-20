@@ -19,7 +19,7 @@
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <label>Handle<input value="{{.Handle}}" readonly>
 </label>
-<p class="help" id="pgp-visibility">Shown to market staff, to every vendor or buyer you trade with and anyone you have messaged, to every signed-in account if you sell, appear on the public staff list or are named as the staff contact, to both parties of every disputed or resolved order if you are a moderator or administrator, and {{if and $.Access $.Access.MembersOnly}}to signed-in viewers on your vendor page{{else}}publicly on your vendor page{{end}} if you sell — with its user IDs and creation date.{{if and $.Access $.Access.MembersOnly}} An administrator can later make the site public, exposing your vendor-page key to visitors who are not signed in.{{end}} Use a key made only for this market.</p>
+<p class="help" id="pgp-visibility">Shown to market staff, to every vendor or buyer you trade with and anyone you have messaged, to people who share an authorized support ticket with you, to every signed-in account if you sell, appear on the public staff list or are named as the staff contact, to both parties of every disputed or resolved order if you are a moderator or administrator, and {{if and $.Access $.Access.MembersOnly}}to signed-in viewers on your vendor page{{else}}publicly on your vendor page{{end}} if you sell — with its user IDs and creation date.{{if and $.Access $.Access.MembersOnly}} An administrator can later make the site public, exposing your vendor-page key to visitors who are not signed in.{{end}} Use a key made only for this market.</p>
 <label>PGP public key<textarea name="pgp" maxlength="16384" rows="8" spellcheck="false" placeholder="-----BEGIN PGP PUBLIC KEY BLOCK-----" aria-describedby="pgp-visibility">{{with $.PGP}}{{.Armored}}{{end}}</textarea>
 </label>
 {{if eq .Role "vendor"}}<p class="help">Vendors must keep a usable PGP public key. The server never accepts your private key.</p>{{end}}
@@ -52,7 +52,7 @@
 <button class="primary" type="submit">Save profile</button>
 </form>
 </section>
-{{template "vendor-availability:account" $}}{{template "account-vendor" $}}{{template "uploads:avatar" $}}{{template "uploads:staff-list" $}}
+{{template "account-xmpp" $}}{{template "vendor-availability:account" $}}{{template "account-vendor" $}}{{template "uploads:avatar" $}}{{template "uploads:staff-list" $}}
 </div>
 <section>
 <div class="panel">

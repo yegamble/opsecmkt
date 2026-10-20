@@ -232,6 +232,13 @@ func submitVendorApplication(ctx context.Context, tx *sql.Tx, userID string) (st
 			return "", err
 		}
 	}
+	var handle string
+	if err = tx.QueryRowContext(ctx, "SELECT handle FROM users WHERE id=$1", userID).Scan(&handle); err != nil {
+		return "", err
+	}
+	if err = notifyAdmins(ctx, tx, "New vendor application from "+handle+": "+strings.ToLower(vendorStateLabel(state))+"; bond "+vendorBondText(p.Bond)+". Review vendor applications under Admin → Vendors."); err != nil {
+		return "", err
+	}
 	return state, nil
 }
 
@@ -461,6 +468,9 @@ func vendorApplyForAction(c *actionCtx) (actionResult, error) {
 		if _, err = insertNotification(ctx, tx, target, body, ""); err != nil {
 			return actionResult{}, err
 		}
+		if err = notifyAdminsExcept(ctx, tx, "Vendor application opened for "+handle+": "+chosen+". Review vendor applications under Admin → Vendors.", c.User.ID); err != nil {
+			return actionResult{}, err
+		}
 		return actionResult{Redirect: adminUserURL(handle), Notice: "vendor-opened", Audit: "Opened a vendor application for " + handle + ": " + chosen}, nil
 	})
 }
@@ -608,6 +618,9 @@ func vendorDecisionAction(c *actionCtx) (actionResult, error) {
 				_, err = insertNotification(ctx, tx, target, withNote(body+" Your application now waits for administrator approval."), "")
 			}
 			if err != nil {
+				return actionResult{}, err
+			}
+			if err = notifyAdmins(ctx, tx, "Vendor application from "+handle+": bond "+vendorBondHowLabel(how)+"; "+strings.ToLower(vendorStateLabel(next))+". Review vendor applications under Admin → Vendors."); err != nil {
 				return actionResult{}, err
 			}
 		case "approve":

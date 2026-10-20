@@ -26,8 +26,9 @@ func a126Login(e *testEnv, handle, next string) (string, *http.Cookie, string) {
 
 func TestSignInReturnTargets(t *testing.T) {
 	e := newTestApp(t)
-	e.user("a126_pw", "buyer")
+	buyerID, _ := e.user("a126_pw", "buyer")
 	vendorID, _ := e.user("a126_vendor", "vendor")
+	e.enableOrderPGP(buyerID, vendorID)
 	product := e.product(vendorID, "digital")
 	checkout := "/checkout?id=" + product
 

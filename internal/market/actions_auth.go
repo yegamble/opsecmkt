@@ -405,11 +405,28 @@ type commitOutcomeUnknown struct{ cause error }
 func (e commitOutcomeUnknown) Error() string { return e.cause.Error() }
 func (e commitOutcomeUnknown) Unwrap() error { return e.cause }
 
-// notifyOwner tells the account owner, inside tx, of a sign-in factor, key or recovery-code event (A-152). The text
-// is link-free and never carries a code, secret, key fingerprint or address.
+// notifyOwner tells the account owner, inside tx, of a sign-in factor, key or recovery-code event (A-152). Other
+// active administrators receive a separate, sanitized security alert. The owner text is link-free and never carries
+// a code, secret, key fingerprint or address; administrator alerts never repeat the event's account-private detail.
 func notifyOwner(ctx context.Context, tx *sql.Tx, userID, event string) error {
-	_, err := tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), userID, ownerNotice(event))
-	return err
+	return notifyAccountSecurity(ctx, tx, userID, event, false)
+}
+
+func notifyAccountSecurity(ctx context.Context, tx *sql.Tx, userID, event string, unusual bool) error {
+	if _, err := insertNotification(ctx, tx, userID, ownerNotice(event), ""); err != nil {
+		return err
+	}
+	var handle string
+	if err := tx.QueryRowContext(ctx, "SELECT handle FROM users WHERE id=$1", userID).Scan(&handle); err != nil {
+		return err
+	}
+	body := "Security alert for account " + handle + ": account security settings or sign-in credentials changed. Review account activity."
+	if unusual {
+		body = "Unusual activity alert for account " + handle + ": a correct password was followed by a failed second sign-in step. Review account activity."
+	}
+	// An administrator who owns the account already has the personal notice. Excluding that account avoids a
+	// duplicate while every other active administrator receives the administrator-only alert.
+	return notifyAdminsExcept(ctx, tx, body, userID)
 }
 
 // ownerNotice is the text notifyOwner stores for event.
@@ -1184,7 +1201,7 @@ func recordFirstFactorFailure(ctx context.Context, tx *sql.Tx, userID, method st
 	if _, err := tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", userID, "Correct password but failed second sign-in step ("+method+")"); err != nil {
 		return err
 	}
-	return notifyOwner(ctx, tx, userID, "Someone entered your password correctly but failed the second sign-in step ("+method+").")
+	return notifyAccountSecurity(ctx, tx, userID, "Someone entered your password correctly but failed the second sign-in step ("+method+").", true)
 }
 
 func challengeLoader(ctx context.Context, a *App, r *http.Request, d *PageData) error {

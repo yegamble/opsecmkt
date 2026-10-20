@@ -13,6 +13,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/ProtonMail/go-crypto/openpgp"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -39,6 +40,37 @@ type testEnv struct {
 	t  *testing.T
 	A  *App
 	DB *sql.DB // A.db, scoped to the test schema
+	// Used by explicit order fixtures to decrypt their saved delivery ciphertext.
+	commercePGP       *openpgp.Entity
+	commercePGPPublic string
+}
+
+// enableOrderPGP gives the named accounts a usable key for an order fixture. Existing keys are retained so fixtures
+// with a particular recipient or an unusable key still exercise that key. Missing-key tests use keylessUser.
+// The default authenticated account fixture and encrypted-delivery fixtures share one throwaway key.
+func (e *testEnv) enableOrderPGP(ids ...string) {
+	e.t.Helper()
+	if e.commercePGP == nil {
+		accountPGPFixture.once.Do(func() {
+			accountPGPFixture.key, accountPGPFixture.public = testPGPKey(e.t, "commerce-fixture")
+		})
+		e.commercePGP, e.commercePGPPublic = accountPGPFixture.key, accountPGPFixture.public
+	}
+	for _, id := range ids {
+		if agStr(e, "SELECT pgp FROM users WHERE id=$1", id) == "" {
+			e.setKey(id, e.commercePGPPublic)
+		}
+	}
+}
+
+// commerceDelivery checks the buyer's side of the per-order encrypted delivery boundary. Callers compare the
+// decrypted plaintext while the database and order page retain the OpenPGP ciphertext.
+func commerceDelivery(e *testEnv, orderID string) string {
+	e.t.Helper()
+	if e.commercePGP == nil {
+		e.t.Fatal("order fixture has no delivery decryption key")
+	}
+	return testDecrypt(e.t, e.commercePGP, agStr(e, "SELECT content FROM deliveries WHERE order_id=$1", orderID))
 }
 
 // testSchemaDSN creates an isolated schema and returns a DSN whose search_path points at it (dropped on cleanup).
@@ -348,11 +380,12 @@ func (e *testEnv) loadUser(id string) *User {
 	return u
 }
 
-// accountPGPFixture is a throwaway public key shared by ordinary account fixtures. Its
-// private half never leaves testPGPKey and is not needed for fixture insertion. Tests
-// of decryption use their own private key and the real challenge endpoints.
+// accountPGPFixture is a throwaway key shared by ordinary authenticated account and
+// encrypted-delivery fixtures. Its private half exists only in tests to check delivery
+// ciphertext; authentication tests use their own key and the real challenge endpoints.
 var accountPGPFixture struct {
 	once   sync.Once
+	key    *openpgp.Entity
 	public string
 }
 
@@ -363,7 +396,7 @@ func (e *testEnv) user(handle, role string) (id, session string) {
 	e.t.Helper()
 	id, session = e.keylessUser(handle, role)
 	accountPGPFixture.once.Do(func() {
-		_, accountPGPFixture.public = testPGPKey(e.t, "commerce-fixture")
+		accountPGPFixture.key, accountPGPFixture.public = testPGPKey(e.t, "commerce-fixture")
 	})
 	e.pgpSession(session, accountPGPFixture.public)
 	return id, session

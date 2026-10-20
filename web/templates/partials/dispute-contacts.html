@@ -4,6 +4,6 @@
 <p>{{if .Order.Escrow}}Only an administrator decides a dispute on this escrow order. Send sensitive evidence as an encrypted message to an independent administrator first; a moderator can keep it and pass it on to an administrator.{{else}}Send sensitive evidence as an encrypted message to an independent moderator or administrator.{{end}} Include order {{.Order.ID}} inside the encrypted message. Messages are private to their sender and recipient; other staff cannot read them. Other moderators and administrators can see which staff member you messaged and when, never what.</p>
 {{range .StaffContacts}}<details><summary>{{.Handle}} · {{if not $.Order.Escrow}}{{.Relation}}{{else if eq .Relation "admin"}}administrator: decides escrow disputes{{else}}moderator: can pass evidence on to an administrator{{end}}</summary>
 {{template "contact-key" .}}
-{{if and .Fingerprint .CanMessage}}<a class="button" href="/messages?to={{.Handle}}">Message {{.Handle}}</a>{{end}}
+{{if and .Fingerprint .CanMessage}}<a class="button" href="/messages?to={{.Handle}}{{range $.Disputes}}&amp;dispute_id={{.ID}}{{end}}">Message {{.Handle}}</a>{{end}}
 </details>{{else}}<p class="help">No independent moderator or administrator is available to contact.</p>{{end}}
 </section>{{end}}{{end}}

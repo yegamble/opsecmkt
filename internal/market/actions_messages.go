@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"strings"
+	"time"
 )
 
 // messageBudget is how many messages an account may send in ten minutes (msg:<user>), apart from its general write
@@ -70,6 +71,19 @@ func messageAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, fail(403, "While deletion waits for funds, messages may go only to an existing order partner or current staff.")
 		}
 	}
+	// Both participants must be able to receive encrypted correspondence. A
+	// sender without a public encryption key cannot receive a safe reply.
+	senderPGP, err := loadPGPAccount(ctx, tx, u.ID, false)
+	if err != nil {
+		return actionResult{}, err
+	}
+	if !canReceiveEncrypted(senderPGP.Key, time.Now()) {
+		return actionResult{}, fail(409, "Add a usable PGP public encryption key on your account before sending private messages. Staff and dispute correspondence must also be encrypted.")
+	}
+	messageContext, err := resolveMessageContext(ctx, tx, u.ID, recipient, c.Form.Get("order_id"), c.Form.Get("dispute_id"))
+	if err != nil {
+		return actionResult{}, err
+	}
 	// P2: packet inspection rejects anything that is not OpenPGP-encrypted and records the recipient-key
 	// match; only the canonical re-armor of the packets is stored (A-67). A-569: a recipient without a usable key,
 	// passphrase-only ciphertext and ciphertext naming only other keys are refused; hidden recipients need the
@@ -82,9 +96,12 @@ func messageAction(c *actionCtx) (actionResult, error) {
 	if extraKeysKnown {
 		extraKeysValue = extraKeys
 	}
-	_, err = tx.ExecContext(ctx, "INSERT INTO messages(id,sender_id,recipient_id,body,encrypted,recipient_match,recipient_extra_keys) VALUES($1,$2,$3,$4,true,$5,$6)", randomToken(), u.ID, recipient, body, match, extraKeysValue)
+	messageID := randomToken()
+	_, err = tx.ExecContext(ctx, `INSERT INTO messages(id,sender_id,recipient_id,body,encrypted,recipient_match,recipient_extra_keys,order_id,dispute_id)
+		VALUES($1,$2,$3,$4,true,$5,$6,NULLIF($7,''),NULLIF($8,''))`, messageID, u.ID, recipient, body, match, extraKeysValue, messageContext.OrderID, messageContext.DisputeID)
 	if err == nil {
-		_, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), recipient, "New message from "+u.Handle)
+		_, err = tx.ExecContext(ctx, `INSERT INTO notifications(id,user_id,body,order_id,message_id) VALUES($1,$2,$3,NULLIF($4,''),$5)`,
+			randomToken(), recipient, "New message from "+u.Handle+messageContext.Suffix(), messageContext.LinkedOrderID, messageID)
 	}
 	return actionResult{Redirect: "/messages", Notice: "message-sent", Audit: "Sent OpenPGP-encrypted message (recipient key match: " + match + ")"}, err
 }

@@ -25,6 +25,7 @@ func TestPostgresMarketplaceFlow(t *testing.T) {
 	w = do("POST", "/register", anon, url.Values{"handle": {"buyer_two"}, "password": {"another-long-password"}})
 	check(w, 303)
 	other := session(w)
+	e.enableOrderPGP(agStr(e, "SELECT id FROM users WHERE handle='admin_user'"), agStr(e, "SELECT id FROM users WHERE handle='buyer_one'"))
 	check(do("GET", "/admin", buyer, nil), 403)
 	_, commercePublic := testPGPKey(t, "marketplace-flow")
 	e.pgpSession(admin, commercePublic)

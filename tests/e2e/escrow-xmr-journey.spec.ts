@@ -63,9 +63,28 @@ async function signIn(browser: Browser, baseURL: string | undefined, handle: str
   await typeInto(page, page.getByLabel('Password', { exact: true }), pass);
   await pressSubmit(page, page.getByRole('button', { name: 'Sign in' }));
   await expect(page.locator('.account-name')).toHaveText(handle);
-  await seedPGPAccess(page, undefined, process.env.E2E_ESCROW_XMR_DATABASE_URL);
+  // Reauthenticate this session to its existing binding; a returning buyer may use the other fixture key.
+  const currentKey = sql(`SELECT pgp FROM users WHERE handle='${handle.replace(/'/g, "''")}'`);
+  await seedPGPAccess(page, currentKey || undefined, process.env.E2E_ESCROW_XMR_DATABASE_URL);
   return page;
 }
+
+// Successful order fixtures save keys with the keyboard through the real profile form, then explicitly
+// seed the current-session decryption prerequisite. Registration keeps the missing-key path available.
+async function saveEncryptionKey(page: Page, pass: string, fixture: 'recipient.pub.asc' | 'other.pub.asc') {
+  const response = await page.goto('/account');
+  expect(response?.status(), (await page.getByRole('main').innerText()).slice(0, 1200)).toBe(200);
+  const profile = page.locator('form[action="/account"]');
+  await expect(profile).toHaveCount(1);
+  // SSR may prefill the required vendor key. Replace it instead of appending a second armored block.
+  const publicKey = profile.getByLabel('PGP public key');
+  await tabTo(page, publicKey);
+  await page.keyboard.press('ControlOrMeta+A');
+  await page.keyboard.insertText(pgpFixture(fixture));
+  await typeInto(page, profile.getByLabel('Current password', { exact: true }), pass);
+  expect(await pressSubmit(page, profile.getByRole('button', { name: 'Save profile' }))).toBe(303);
+}
+
 const badge = (page: Page) => page.locator('.page-head .badge');
 const figure = (page: Page, label: string) => page.locator('.payment-figures div').filter({ has: page.getByText(label, { exact: true }) });
 // The settlement section titled title (newest first, so .first() is the newest of that title).
@@ -147,7 +166,8 @@ async function paid(request: APIRequestContext, tx: string): Promise<string[]> {
 }
 
 test('Monero escrow: checkout with the custody copy, funding at 9 and 10 confirmations, the vendor\'s claim, and an underpaid order cancelled and refunded', async ({ page: admin, browser, baseURL, request }, info) => {
-  // The marketplace, an administrator, a buyer and a vendor (with a PGP key, so a physical listing takes escrow, A-83).
+  // The marketplace and both order parties with usable encryption keys and explicit browser decryption proofs.
+  // Optional PGP sign-in stays off; it is separate from the required commerce access proof.
   await admin.goto('/setup');
   await typeInto(admin, admin.getByLabel('Setup token'), 'e2e-escrow-xmr-local-setup-token-at-least-32-characters');
   await typeInto(admin, admin.getByLabel('Handle', { exact: true }), 'xmr_admin');
@@ -161,7 +181,8 @@ test('Monero escrow: checkout with the custody copy, funding at 9 and 10 confirm
   const vendor = await context(browser, baseURL);
   await register(buyer, 'xmr_buyer', buyerPassword);
   await register(vendor, 'xmr_vendor', vendorPassword);
-  await seedPGPAccess(buyer, undefined, process.env.E2E_ESCROW_XMR_DATABASE_URL);
+  await saveEncryptionKey(buyer, buyerPassword, 'other.pub.asc');
+  await seedPGPAccess(buyer, pgpFixture('other.pub.asc'), process.env.E2E_ESCROW_XMR_DATABASE_URL);
   await seedPGPAccess(vendor, undefined, process.env.E2E_ESCROW_XMR_DATABASE_URL);
   await admin.goto('/admin/users');
   const role = admin.locator('form', { has: admin.getByRole('button', { name: 'Update role' }) });
@@ -172,20 +193,8 @@ test('Monero escrow: checkout with the custody copy, funding at 9 and 10 confirm
   await typeInto(admin, role.getByLabel('Current password'), password);
   await pressSubmit(admin, role.getByRole('button', { name: 'Update role' }));
   await expect(admin.getByRole('status').filter({ hasText: 'Account role saved.' })).toBeVisible();
-  const profileResponse = await vendor.goto('/account');
-  expect(profileResponse?.status(), (await vendor.getByRole('main').innerText()).slice(0, 1200)).toBe(200);
-  await expect(vendor.locator('.account-name')).toHaveText('xmr_vendor');
-  const profile = vendor.locator('form[action="/account"]');
-  await expect(profile).toHaveCount(1);
-  // The seeded key is already in the SSR textarea. Replace it with the keyboard instead of appending a second key.
-  // Its wrapping label text also includes that initial value, so the label match is not exact.
-  const publicKey = profile.getByLabel('PGP public key');
-  await expect(publicKey).toHaveValue(/-----BEGIN PGP PUBLIC KEY BLOCK-----/);
-  await tabTo(vendor, publicKey);
-  await vendor.keyboard.press('ControlOrMeta+A');
-  await vendor.keyboard.insertText(pgpFixture('recipient.pub.asc'));
-  await typeInto(vendor, profile.getByLabel('Current password', { exact: true }), vendorPassword);
-  expect(await pressSubmit(vendor, profile.getByRole('button', { name: 'Save profile' }))).toBe(303);
+  await saveEncryptionKey(vendor, vendorPassword, 'recipient.pub.asc');
+  await seedPGPAccess(vendor, pgpFixture('recipient.pub.asc'), process.env.E2E_ESCROW_XMR_DATABASE_URL);
   for (const [title, kind] of [[digitalTitle, 'digital'], [physicalTitle, 'physical']]) {
     await vendor.goto('/vendor-dashboard');
     await tabTo(vendor, vendor.getByText('+ Publish a new listing', { exact: true }));
@@ -231,7 +240,14 @@ test('Monero escrow: checkout with the custody copy, funding at 9 and 10 confirm
   await shot(buyer, info, '03-nine-confirmations');
   await mine(request, 1);
   await reloadUntil(buyer, async () => { await expect(badge(buyer)).toHaveText('Completed', { timeout: 500 }); });
-  await expect(buyer.getByText('LICENCE-XMR-ESCROW-0001')).toBeVisible();
+  const delivery = buyer.getByRole('textbox', { name: 'Digital delivery', exact: true });
+  await expect(delivery).toHaveValue(/^-----BEGIN PGP MESSAGE-----[\s\S]+-----END PGP MESSAGE-----\s*$/);
+  await expect(buyer.locator('main')).toContainText("Encrypted to the buyer's PGP public key.");
+  await expect(buyer.locator('main')).not.toContainText('LICENCE-XMR-ESCROW-0001');
+  expect(sql(`SELECT d.encrypted AND d.recipient_fingerprint=u.pgp_fingerprint
+    AND d.content LIKE '-----BEGIN PGP MESSAGE-----%' AND strpos(d.content,'LICENCE-XMR-ESCROW-0001')=0
+    FROM deliveries d JOIN orders o ON o.id=d.order_id JOIN users u ON u.id=o.buyer_id
+    WHERE d.order_id='${orderID(first.url)}'`)).toBe('t');
   await expect(figure(buyer, 'Escrow status')).toContainText('Funded and completed');
   await expect(row.locator('td').nth(3)).toHaveText('Confirmed');
   await shot(buyer, info, '04-completed-on-funding');

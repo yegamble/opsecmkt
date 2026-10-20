@@ -26,6 +26,7 @@ func TestXMREscrowSlotClaimRace(t *testing.T) {
 	for i := range buyers {
 		_, sess := x.user("race_"+randomToken()[:10], "buyer")
 		uid := agStrings(t, x.testEnv, "SELECT user_id FROM sessions WHERE token_hash=$1", digest(sess))[0]
+		x.enableOrderPGP(uid)
 		buyers[i] = buyer{sess, x.order(uid, x.digital(x.vendor), "XMR", stateDraft)}
 	}
 	// Room for every request at once in both admission classes a post passes, or they refuse some as busy before the

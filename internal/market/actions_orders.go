@@ -50,7 +50,7 @@ func orderDraftAction(c *actionCtx) (actionResult, error) {
 	if err = waitForWalletLocks(ctx, tx); err != nil {
 		return actionResult{}, err
 	}
-	if err = lockNewIntake(c, "", vendor, true); err != nil {
+	if err = lockNewIntake(c, c.User.ID, vendor, true); err != nil {
 		return actionResult{}, err
 	}
 	// A-444: while the currency is escrow only, a listing that cannot use its escrow takes no draft in it.
@@ -181,6 +181,17 @@ func disputeReplyAction(c *actionCtx) (actionResult, error) {
 	if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,$3,$4)", o.ID, stateDisputed, c.User.ID, disputeReplyPrefix+reply); err != nil {
 		return actionResult{}, err
 	}
+	body := "Dispute on order " + shortID(o.ID) + " has a new reply from the " + role + ". Review it on the order page."
+	for _, uid := range []string{o.BuyerID, o.VendorID} {
+		if uid != c.User.ID {
+			if _, err = insertNotification(ctx, tx, uid, body, o.ID); err != nil {
+				return actionResult{}, err
+			}
+		}
+	}
+	if err = notifyDisputeObservers(ctx, tx, o.ID, c.User.ID, body); err != nil {
+		return actionResult{}, err
+	}
 	return actionResult{Redirect: orderPage(o.ID), Notice: "dispute-reply", Audit: "Replied to the dispute on order " + shortID(o.ID)}, nil
 }
 
@@ -210,8 +221,8 @@ func disputeResolverRefusal(u *User, coin string) error {
 	return errForbidden
 }
 
-// notifyDisputeStaff tells every eligible resolver (eligibleResolverSQL) that a dispute opened: for an escrow order
-// only administrators who are not a party, for a historical order without escrow moderators too. If there is none,
+// notifyDisputeStaff tells every eligible resolver (eligibleResolverSQL) that a dispute opened. Moderators also
+// receive an escrow dispute notice for their read-only desk; this grants no permission to decide it. If there is no resolver,
 // the dispute still stands: the order history records that no independent resolver was available and unsuspended
 // administrators are told what it needs. A suspended account cannot sign in, so it is neither a resolver nor a
 // recipient (A-118).
@@ -222,7 +233,9 @@ func notifyDisputeStaff(c *actionCtx, o *Order) error {
 		return err
 	}
 	body := "Dispute opened on order " + shortID(o.ID) + ". Review it on the moderator desk."
+	audience := "dispute"
 	if len(staff) == 0 {
+		audience = "admin"
 		note := noResolverNote
 		body = "Dispute opened on order " + shortID(o.ID) + " needs an unsuspended moderator who is not a party to resolve it; no independent resolver was available when it opened."
 		if o.Escrow {
@@ -237,7 +250,35 @@ func notifyDisputeStaff(c *actionCtx, o *Order) error {
 		}
 	}
 	for _, uid := range staff {
-		if _, err = insertNotification(ctx, tx, uid, body, o.ID); err != nil {
+		if _, err = insertScopedNotification(ctx, tx, uid, body, o.ID, audience); err != nil {
+			return err
+		}
+	}
+	if o.Escrow {
+		mods, err := collectStrings(ctx, tx, "SELECT id FROM users WHERE role='moderator' AND suspended_at IS NULL AND closed_at IS NULL AND retention_restricted_at IS NULL AND id<>$1 AND id<>$2", o.BuyerID, o.VendorID)
+		if err != nil {
+			return err
+		}
+		for _, uid := range mods {
+			if _, err = insertScopedNotification(ctx, tx, uid, "Dispute opened on order "+shortID(o.ID)+". Review updates on the moderator desk; only an administrator can decide this escrow dispute.", o.ID, "dispute"); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// notifyDisputeObservers shares updates with active dispute staff, excluding the actor and the parties who
+// receive their own personal order notices. Escrow resolution remains administrator-only.
+func notifyDisputeObservers(ctx context.Context, tx *sql.Tx, orderID, actorID, body string) error {
+	staff, err := collectStrings(ctx, tx, `SELECT s.id FROM orders o JOIN products p ON p.id=o.product_id
+		JOIN users s ON s.role IN ('moderator','admin') AND s.suspended_at IS NULL AND s.closed_at IS NULL AND s.retention_restricted_at IS NULL
+		WHERE o.id=$1 AND s.id<>$2 AND s.id<>o.buyer_id AND s.id<>p.vendor_id`, orderID, actorID)
+	if err != nil {
+		return err
+	}
+	for _, uid := range staff {
+		if _, err = insertScopedNotification(ctx, tx, uid, body, orderID, "dispute"); err != nil {
 			return err
 		}
 	}
@@ -331,6 +372,9 @@ func resolveAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, errXMRReleaseFinal // escrowSettleTerminal: the release requested at shipment has its transaction
 		}
 		if err != nil {
+			return actionResult{}, err
+		}
+		if err = notifyDisputeObservers(c.Ctx(), c.Tx, orderID, c.User.ID, "Dispute on order "+shortID(orderID)+" is now "+status+". Review the order history."); err != nil {
 			return actionResult{}, err
 		}
 		return actionResult{Redirect: "/moderator", Notice: "dispute-resolved", Audit: "Resolved dispute on order " + shortID(orderID) + " (outcome: " + outcome + ")"}, nil

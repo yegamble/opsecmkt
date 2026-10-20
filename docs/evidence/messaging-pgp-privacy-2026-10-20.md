@@ -52,3 +52,20 @@ The first CI runs found fixture assumptions that predated mandatory PGP access. 
 The initial checkpoint CI run [39458740871](https://github.com/yegamble/opsecmkt/actions/runs/39458740871) tests commit `a630ba410aa944fb5d709f65c50313d5ea0440af`; that was an intermediate integration checkpoint. WR-MPGP-3 and all named regressions are integrated in `6e8ef976c5d70a6aaf9f12615e6d6fa3ab98cc7a`. Independent QA verified all three findings against that source; Tor independently verified the recovery and MFA protections. Final runtime closure is tracked in [PR #104](https://github.com/yegamble/opsecmkt/pull/104). The final exact-head CI result and reviewer verification must be recorded in the PR before merge. This record makes no deployment or live Tor claim.
 
 A-577 is amended to the owner's manual vacation/deactivation design; no automatic expiry or public note was requested. A-582's older ownership-verification proposal remains separate. A-608 closes only with integrated passing forbidden-keyless-recipient coverage. Unrelated A-575, A-578, A-609, A-615 and operator/mainnet prerequisites A-555/A-562 remain open.
+
+## Integration Round D: WR-MPGP-4 — ticket recipients becoming private buyers
+
+DECISION: ACCEPT both renewed security/Tor findings.
+WHY: A stale staff assignment displayed the assignee's newly replaced public key after demotion to a private buyer. Ticket target selection also authorized a staff snapshot and then independently reloaded the key, permitting the same role/key race.
+DISSENTING VIEW: An old ticket could be treated as an enduring counterparty relation. The chair rejected that interpretation because staff demotion already removes reply eligibility; history does not authorize discovery of the former staff member's future private identity.
+USER IMPACT: Existing ticket history and ciphertext remain readable to permitted participants, but an ineligible former assignee's current private key is withheld. Permitted staff can reassign the ticket.
+OPERATOR IMPACT: No new configuration or recovery process.
+TECHNICAL COST/RISK: Thread loading locks the peer account through eligibility and key retrieval, refusing contention; selected staff keys recheck current eligibility under the same target lock as key retrieval.
+ACCEPTANCE CRITERIA: Demotion followed by key replacement cannot disclose that new key through either ticket composition or thread loading. Active eligible staff keys remain usable; hidden staff are not exposed as a selectable roster. Creation/reply retains current-session decryption guards.
+TEST PLAN: Ticket UI demotion/replacement regressions, independent corrected-source security/Tor verification and required current-commit Go/PostgreSQL/browser CI. Final outcomes are recorded in PR #104.
+
+## Concurrent main integration
+
+Main's A-614 settlement re-request fix and XMPP/support-ticket changes were integrated before final verification. Migrations 131–133 remain intact alongside PGP/access migrations 129–130. New support-ticket create/reply mutations now take the same live session/account decryption guard as direct messages; unverified browsers retain permitted read/status actions and receive PGP authentication guidance. Order-context, encrypted delivery and notification audience protections are preserved. Operator documentation distinguishes saved encryption keys, current-session decryption and optional outbound forwarding preferences.
+
+The renewed security and Tor/privacy seats review the combined source, and final independent QA checks the current commit and required CI in PR #104. A real-fakechain re-request/reorg refusal introduced by the concurrent A-614 integration is being investigated through test-only RPC-error/output-index diagnostics; settlement state, exact-input, input-total, transaction and plan assertions are retained. Current-commit runtime success is required before merge; earlier green runs are not substituted for it.

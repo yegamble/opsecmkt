@@ -232,7 +232,7 @@ func vendorSeesOrder(order string) string {
 // load fills generic page data, then runs registered loaders (routes.go).
 func (a *App) load(r *http.Request, d *PageData) error {
 	ctx := r.Context()
-	rows, err := a.db.QueryContext(ctx, "SELECT key,value FROM settings")
+	rows, err := a.db.QueryContext(ctx, "SELECT key,value FROM settings WHERE key NOT LIKE 'xmpp_%'")
 	if err != nil {
 		return err
 	}
@@ -436,13 +436,13 @@ func (a *App) load(r *http.Request, d *PageData) error {
 				return err
 			}
 			d.ActivityPaging = activityPaging("/messages", total, r.URL.Query().Get("page"), nil)
-			rows, err = a.db.QueryContext(ctx, `SELECT m.id,s.handle,t.handle,m.body,to_char(m.created,'YYYY-MM-DD HH24:MI "UTC"')`+inbox+` ORDER BY m.created DESC,m.id DESC LIMIT $3 OFFSET $4`, d.User.ID, to, activityPageSize, d.ActivityPaging.Offset())
+			rows, err = a.db.QueryContext(ctx, `SELECT m.id,s.handle,t.handle,m.body,to_char(m.created,'YYYY-MM-DD HH24:MI "UTC"'),COALESCE(m.order_id,''),COALESCE(m.dispute_id,'')`+inbox+` ORDER BY m.created DESC,m.id DESC LIMIT $3 OFFSET $4`, d.User.ID, to, activityPageSize, d.ActivityPaging.Offset())
 			if err != nil {
 				return err
 			}
 			for rows.Next() {
 				var m Message
-				if err = rows.Scan(&m.ID, &m.Sender, &m.Recipient, &m.Body, &m.Created); err != nil {
+				if err = rows.Scan(&m.ID, &m.Sender, &m.Recipient, &m.Body, &m.Created, &m.OrderID, &m.DisputeID); err != nil {
 					rows.Close()
 					return err
 				}
@@ -456,17 +456,17 @@ func (a *App) load(r *http.Request, d *PageData) error {
 		}
 		if d.Page == "notifications" {
 			var total int
-			if err = a.db.QueryRowContext(ctx, `SELECT count(*) FROM notifications WHERE user_id=$1`, d.User.ID).Scan(&total); err != nil {
+			if err = a.db.QueryRowContext(ctx, `SELECT count(*) FROM notifications n JOIN users u ON u.id=n.user_id AND n.user_id=$1 WHERE `+notificationAudienceSQL("n", "u"), d.User.ID).Scan(&total); err != nil {
 				return err
 			}
 			d.ActivityPaging = activityPaging("/notifications", total, r.URL.Query().Get("page"), nil)
-			rows, err = a.db.QueryContext(ctx, `SELECT id,body,to_char(created,'YYYY-MM-DD HH24:MI "UTC"'),is_read,COALESCE(order_id,'') FROM notifications WHERE user_id=$1 ORDER BY is_read ASC,created DESC,id DESC LIMIT $2 OFFSET $3`, d.User.ID, activityPageSize, d.ActivityPaging.Offset())
+			rows, err = a.db.QueryContext(ctx, `SELECT n.id,n.body,to_char(n.created,'YYYY-MM-DD HH24:MI "UTC"'),n.is_read,COALESCE(n.order_id,''),COALESCE(n.ticket_id,'') FROM notifications n JOIN users u ON u.id=n.user_id AND n.user_id=$1 WHERE `+notificationAudienceSQL("n", "u")+` ORDER BY n.is_read ASC,n.created DESC,n.id DESC LIMIT $2 OFFSET $3`, d.User.ID, activityPageSize, d.ActivityPaging.Offset())
 			if err != nil {
 				return err
 			}
 			for rows.Next() {
 				var n Notification
-				if err = rows.Scan(&n.ID, &n.Body, &n.Created, &n.Read, &n.OrderID); err != nil {
+				if err = rows.Scan(&n.ID, &n.Body, &n.Created, &n.Read, &n.OrderID, &n.TicketID); err != nil {
 					rows.Close()
 					return err
 				}

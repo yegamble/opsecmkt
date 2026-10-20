@@ -126,6 +126,7 @@ func newXMRRegtest(t *testing.T) *xmrRegtest {
 	r.buyer, r.buyerSess = r.user("xr_buyer_"+randomToken()[:6], "buyer")
 	r.vendor, r.vendorSess = r.user("xr_vendor_"+randomToken()[:6], "vendor")
 	r.admin, _ = r.user("xr_admin_"+randomToken()[:6], "admin")
+	r.enableOrderPGP(r.buyer, r.vendor, r.admin)
 	r.product = r.digital(r.vendor)
 	return r
 }

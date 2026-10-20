@@ -659,7 +659,7 @@ current one is marked for screen readers). Where this guide says
 | Vendors | `/admin/vendors` | *Vendor applications*: vendor policy, open applications awaiting a bond or decision, verified-vendor mark |
 | Payments | `/admin/payments` | *Escrow status and payment intake*: Monero escrow alerts, *Monero escrow watcher health*, release deadline, *Monero escrow recovery and retention*, *New escrow checkouts*, *Escrow readiness* |
 | Security & access | `/admin/security` | *Site access and registration*, *Sign-in protection* (CAPTCHA), *Handles with paused sign-in* |
-| Site & branding | `/admin/site` | *Market name and logo*, *Staff contact* |
+| Site & branding | `/admin/site` | *Market name and logo*, *Staff contact*, *Outgoing XMPP* |
 | Transparency | `/admin/transparency` | *Operator PGP key*, *Warrant canary*, *Signed audit export*, *Public staff list* |
 | System & audit | `/admin/system` | Schema version and server start, *Service isolation and updates*, *Application host*, *Image scanner*, *Retention and preservation*, *Recent server errors*, *Audit trail* |
 
@@ -829,6 +829,122 @@ see, and confirm with your password (and authenticator code when enabled). A cha
 Vendors that existed before this release keep selling: the upgrade records an approved application for each, without
 a verified mark.
 
+### XMPP notifications
+
+XMPP is disabled until an administrator configures **Admin → Site & branding → Outgoing XMPP**
+(`/admin/site#xmpp-outgoing`). It also stays off for each recipient until that account opts in.
+The sender is an existing XMPP account operated by the market, much like an outgoing mail account;
+the application does not create accounts on an XMPP server.
+The server must support SASL PLAIN authentication over verified TLS and resource binding.
+
+1. Enter its bare sender address (`market@example.test`), server hostname, port and password.
+   Choose STARTTLS (normally port 5222) or direct TLS (normally port 5223), using the server's actual configuration.
+2. Enable outgoing delivery and confirm with your administrator password and, when enrolled, authenticator code.
+   The XMPP password is encrypted in the database using the application's existing secret root. It is never
+   filled back into the form; leave it blank to retain it. Preserve `APP_SECRET_KEY` (or the legacy root) on restart
+   and restore, as for TOTP secrets. An application host compromise can still read or use the configured credential.
+3. On **Your account → XMPP notifications** (`/account#xmpp-notifications`), enter a private bare recipient
+   address and opt in, confirming with your account password and authenticator code when enrolled.
+   Staff also opt in here; configuring the outgoing sender does not subscribe administrators or moderators.
+4. Use disposable recipients and a test order/message to check delivery before relying on it. Check the same
+   event in **Notifications**. A frontend notice remains available if XMPP fails.
+
+The server requires a valid TLS certificate and authenticates only after TLS succeeds. Configure outbound network
+access from the application host to the chosen XMPP server. This connection is direct: Tor mode does not route
+XMPP through Tor automatically. The XMPP service can see the application host's connection, sender, recipients,
+message bodies and timing, and recipients' services can retain copies. TLS protects transport to the server;
+notification text and routing metadata remain visible to those services. Choose a separate sender account and
+recipients appropriate for this disclosure. The private destination is not published on vendor or public profile pages.
+
+By default, alerts carry only the same notification text and recipient authorization as the frontend: payment
+confirmation, shipping, new-message metadata and dispute changes. Encrypted message armor is omitted unless
+both of the following are enabled:
+
+- An administrator selects **Allow PGP-encrypted message contents in XMPP** under *Outgoing XMPP*.
+- The recipient selects **Include PGP-encrypted message contents** under their account's *XMPP notifications*.
+  Their XMPP notifications must be enabled and their account must have a usable PGP public encryption key.
+  Enabling PGP sign-in or proving key ownership is not required for this preference.
+
+These choices are off by default and require the same password/authenticator confirmation as the other XMPP
+settings. When both allow it, a new received-message alert can append the already encrypted PGP armor; the
+market does not decrypt or forward a plaintext message body. The same consent can include a new stored
+buyer-encrypted digital delivery in that buyer's order alert; vendors and staff do not receive the buyer's
+delivery contents through their own alerts. The original ciphertext must match the recipient's current usable
+key with a visible recipient key ID. Hidden-recipient messages, mismatches, changed keys or unavailable content
+keep the summary alone, even when the market accepted the original message after sender confirmation.
+Its PGP protection is retained, while the sender, recipient, notification text, timing and armored ciphertext,
+including visible encryption key IDs, remain visible to the XMPP services. A recipient uses their PGP client and private key to decrypt the armor.
+The market checks encrypted packet structure and visible recipient key IDs; without the private key it cannot
+prove ciphertext integrity or successful decryption. Configure the XMPP service to accept message bodies up to
+256 KiB plus the XML stanza overhead, so a long encrypted digital delivery fits. A server refusal uses the same
+bounded retries and leaves the market notice and delivery available.
+Existing messages and deliveries are not resent when either choice is enabled. Changing the global forwarding permission invalidates queued content from its earlier
+revision while leaving the notification summary eligible; changing the recipient choice also invalidates earlier queued deliveries.
+
+Order-linked alerts include the order reference so the recipient can find the corresponding market record;
+opening it still requires the normal order permission. Direct messages keep their message references.
+[Support tickets](#encrypted-support-tickets) use a ticket ID and their own assignment, status and escalation
+workflow; their notifications obey the same current recipient and content-consent checks.
+Administrators
+also receive vendor applications and bond-review states, security events and unusual activity notices.
+Moderators receive dispute alerts and their own account/order activity. Administrator-only notices never go to
+moderators, buyers or vendors. A role change is checked again before staff notices are displayed or delivered;
+being told of a dispute does not grant a moderator permission to resolve Monero escrow.
+
+Only new notifications are queued, in the transaction that creates the frontend notice; enabling XMPP does not
+resend existing notices. Opting out or changing the destination invalidates pending deliveries for the old
+preference. Delivery retries use a stable message identifier, with at most 12 attempts, exponential delays from 30 seconds
+to one hour, and no send after the notice is 24 hours old. Delivery is at least once: a lost connection after
+server acceptance can produce a duplicate. Acceptance by the outgoing server does not prove that the destination
+received or read the alert. Disabling outgoing delivery cancels pending sends when the worker next processes them; check frontend notifications during an outage.
+
+### Encrypted support tickets
+
+Use **Support tickets** (`/tickets`) for routine support. Your account lists its own tickets; staff see the
+queue their current role permits. Open a ticket at `/ticket?id=…` from that list or its notification. A ticket
+uses an ID rather than a plaintext subject, and records Open, Closed or Ignored status, the current assignee
+and procedural history.
+
+1. Save a usable PGP public encryption key under **Your account → Public profile**. Keep its private key in your
+   own PGP client. Complete PGP challenge decryption for this session before opening or replying to a ticket.
+   Opening a ticket also needs an active staff recipient with a usable key, available through
+   the public staff list or configured staff contact; a hidden staff roster is not published for ticket creation.
+2. Choose that staff member in the ticket form, obtain the displayed public keys, and encrypt your initial body
+   locally to both your own key and the selected staff member's key. Paste the armored encrypted message into
+   the form. Do not put a plaintext support narrative in a status or reference field.
+3. Read replies by decrypting their armor in your PGP client. Before each reply, check the current assignee and
+   recipient keys again, especially after a reassignment or escalation. Encrypt the next body to the opener
+   and the current assignee. The application does not hold private keys or decrypt the body.
+4. The opener can close their own Open ticket. Current authorized staff can manage normal tickets, including
+   assigning another staff member or escalating to an administrator while the ticket is Open. Staff can close,
+   ignore or reopen a ticket; ordinary users cannot ignore or reopen one. Closed and Ignored threads do not
+   accept replies until permitted staff reopen them.
+
+Escalated or administrator-only tickets remain available to their opener and permitted administrators;
+moderators cannot access them through the staff queue. A moderator who opened one keeps their own personal
+participant view, which grants no administrator staff-management powers. An administrator seeing a ticket
+in the queue still needs a matching private key to decrypt it.
+
+Assignment identifies the next reply's recipient; it does not grant retroactive decryption. A new assignee cannot decrypt old bodies
+unless those bodies were already encrypted to their key. A former recipient may retain copies they already
+obtained. Ticket IDs, status/history, sender/recipient relationships and timing remain visible to the market;
+PGP protects message contents, not that metadata.
+
+Ticket notifications use the same current participant and role restrictions in the frontend and XMPP.
+After reassignment, active staff who previously handled or sent a message in the ticket can receive a generic
+closure or ignore notice. After escalation, a former moderator handler may still receive that minimal metadata;
+it gives no access to the protected thread. Optional XMPP contents require both the administrator's permission
+and the recipient's separate opt-in, plus a current usable key and visible recipient-key match. Assignment or
+escalation must not send protected content to a recipient who no longer qualifies. Keep XMPP provider retention
+and visible key IDs in mind when choosing content forwarding.
+
+When [retention maintenance](retention.md) is enabled, save needed ticket ciphertext locally: bodies expire
+after 90 days, or earlier if the opener or message sender is closed or erased. A related account preservation
+hold delays cleanup, including holds tied to previous participants or staff in the history. Closed and Ignored
+ticket metadata expires 90 days after its last update only once its bodies are gone and holds are released;
+Open metadata remains for staff workflow. Deletion uses the restore journal. Provider/client copies survive
+independently of market cleanup.
+
 ### Changing the market name and logo
 
 An administrator manages the site's identity under **Admin → Site & branding → Market name and logo** (`/admin/site`).
@@ -984,11 +1100,13 @@ Last-seen sharing is off by default. When enabled, the public profile shows coar
 
 Migration 105 copies a listing’s title, full description and fulfillment kind to the order in the same transaction that first reserves stock and requests payment (Monero escrow checkout). A draft keeps showing the live listing until then. Later edits, archive and takedown leave the purchased copy unchanged; the order and dispute pages show the saved terms while their product link opens the **current** listing. An order without a copy has no trustworthy recorded terms and shows “Not recorded” rather than using today’s title or description as purchase history. The saved description is visible only through an order page its buyer, vendor or eligible reviewing staff may open. It remains in the database and encrypted backups with that order; editing or archiving the listing does not erase it. Delivery content is still governed by its existing delivery record and is not copied into this snapshot.
 
-No configuration. Requesting payment on an order requires that coin's escrow to be on and ready, on a supported test network (see Payments); without it the step is shown as unavailable. Migration 030 adds `deliveries`, `reviews` and `disputes.outcome`. Digital delivery content is stored unencrypted in the database and shown only to the order's buyer and vendor, and read-only to moderators and administrators once the order is disputed; vendors should encrypt sensitive content to the buyer's PGP key before delivering it.
+Both the buyer and vendor must have usable PGP public encryption keys before creating a draft or checking out, for physical and digital orders. They can add them under **Your account → Public profile**. The buyer must also complete PGP challenge decryption in the current session before purchasing. Requesting payment also requires Monero escrow to be on and ready on the configured network (use test networks for development; see Payments). Existing orders remain readable and cancellable when a key becomes unusable; opening or replying to a dispute still requires session PGP decryption.
 
-**There is no shipping address field, by design.** For a paid physical order the order page asks the buyer to encrypt their address to the vendor's PGP key in their own PGP application and send it through `/messages`, which accepts only OpenPGP-encrypted messages; the server keeps that encrypted message (and who sent it to whom and when) but cannot read it. A vendor without a key that can receive encrypted messages (none saved, or one that has expired or can only sign) cannot receive addresses, so buyers cannot request payment for that vendor's physical listings until the vendor adds one. A usable vendor key is required for new purchases of every listing kind. If the vendor's key was changed or its ownership proved again after the order was placed, the buyer's order page says so and asks them to confirm the key with the vendor before sending the address. The market cannot stop an address being typed into a plaintext field: the vendor's note to the buyer, cancellation reasons, dispute reasons, dispute replies and review text are stored unencrypted in the database and every backup. Each of those fields warns that it is unencrypted, says who can read it and asks users never to include an address, real name or tracking number but to send them encrypted from the order page (the dispute forms point to the "Contact dispute staff" keys). `/canary#records` lists what is kept.
+Migration 132 makes new automatic and manual per-order digital delivery records PGP-encrypted to the buyer before storage. The buyer decrypts the displayed armor in their own PGP client. The vendor and eligible dispute staff can see the stored armor, but that alone does not let them decrypt it. The shared listing template for automatic delivery remains server-readable, and manual input is available to the running server while it encrypts it. Encryption failure refuses manual delivery or leaves automatic delivery pending without a plaintext fallback. Older plaintext delivery records are retained as they were and are never eligible for XMPP content forwarding.
 
-Every disputable order is a Monero escrow order, and only an administrator decides a dispute on one (the decision moves coins from the escrow); moderators can read it on the moderation desk but not resolve it. Opening a dispute therefore notifies every administrator who is not the order's buyer or vendor and is not suspended. An administrator who is a party cannot resolve it, and a suspended account cannot sign in, so keep at least one administrator who does not trade: if every unsuspended administrator is a party (for example the only administrator is the vendor), the dispute is still accepted even when an independent moderator exists, the order history records that no independent resolver was available, every administrator is notified that it needs an administrator who is not a party, added on the host with the role command (`-set-role HANDLE admin`, [Administrators](#administrators)), moderators are not notified, and the moderation desk marks it "No eligible resolver" for administrators until such an administrator exists. A concession that closes the dispute is reported to the same administrators. Historical orders without escrow (read-only) keep the earlier rule, under which an independent moderator also counts as a resolver. On an escrow order the parties' order page says an administrator decides: its "Contact dispute staff" panel advises sending evidence to an independent administrator first and labels moderators as able to pass evidence on to an administrator; a historical order keeps the moderator wording.
+**There is no shipping address field, by design.** For a paid physical order the order page asks the buyer to encrypt their address to the vendor's PGP key in their own PGP application and send it through `/messages`, which accepts only OpenPGP-encrypted messages; the server keeps that encrypted message (and who sent it to whom and when) but cannot read it. A vendor without a key that can receive encrypted messages (none saved, or one that has expired or can only sign) cannot receive addresses; every physical or digital draft and checkout now requires usable buyer and vendor encryption keys. If the vendor's key was changed or its ownership proved again after the order was placed, the buyer's order page says so and asks them to confirm the key with the vendor before sending the address. The market cannot stop an address being typed into a plaintext field: the vendor's note to the buyer, cancellation reasons, dispute reasons, dispute replies and review text are stored unencrypted in the database and every backup. Each of those fields warns that it is unencrypted, says who can read it and asks users never to include an address, real name or tracking number but to send them encrypted from the order page (the dispute forms point to the "Contact dispute staff" keys). `/canary#records` lists what is kept.
+
+Every disputable order is a Monero escrow order, and only an administrator decides a dispute on one (the decision moves coins from the escrow); moderators can read it on the moderation desk but not resolve it. Opening a dispute therefore notifies every administrator who is not the order's buyer or vendor and is not suspended. An administrator who is a party cannot resolve it, and a suspended account cannot sign in, so keep at least one administrator who does not trade: if every unsuspended administrator is a party (for example the only administrator is the vendor), the dispute is still accepted even when an independent moderator exists, the order history records that no independent resolver was available, every administrator is notified that it needs an administrator who is not a party, added on the host with the role command (`-set-role HANDLE admin`, [Administrators](#administrators)), independent moderators receive review notices but cannot resolve Monero escrow, and the moderation desk marks it "No eligible resolver" for administrators until such an administrator exists. A concession that closes the dispute is reported to the same administrators. Historical orders without escrow (read-only) keep the earlier rule, under which an independent moderator also counts as a resolver. On an escrow order the parties' order page says an administrator decides: its "Contact dispute staff" panel advises sending evidence to an independent administrator first and labels moderators as able to pass evidence on to an administrator; a historical order keeps the moderator wording.
 
 The party who did not open a dispute can put one reply on record from the order page while it is open (plain text in the order history, shown to both parties and staff); the resolve form says whether it did. For each open dispute the moderation desk also lists which moderators and administrators each party messaged since it opened, with the count and the latest time, from message metadata only: ask those holders what the encrypted evidence shows before deciding, since nobody else can read it.
 

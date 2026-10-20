@@ -190,6 +190,7 @@ func TestAdminSuspendsAccount(t *testing.T) {
 	other := agSession(e, vendorID)
 	agPending(e, vendorID)
 	buyerID, buyer := e.user("susp_buyer", "buyer")
+	e.enableOrderPGP(vendorID, buyerID)
 	funded := func() string {
 		order := e.order(buyerID, x.physical(vendorID), "XMR", stateDraft)
 		w := x.checkout(buyer, order, testXMRAddr("suspend refund "+order, true))

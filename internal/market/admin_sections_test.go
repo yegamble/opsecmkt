@@ -227,6 +227,7 @@ func TestAdminActionRedirectsToSection(t *testing.T) {
 		{"/admin/pgp-access", url.Values{"allow_login_without_pgp": {"true"}}, "/admin/security#pgp-access"},
 		{"/admin/captcha", url.Values{"captcha_required": {"true"}}, "/admin/security"},
 		{"/admin/staff-contact", url.Values{"staff_contact": {"security@example.test"}}, "/admin/site#staff-contact"},
+		{"/admin/xmpp", url.Values{"xmpp_sender": {"market@example.test"}, "xmpp_host": {"xmpp.example.test"}, "xmpp_port": {"5222"}, "xmpp_tls_mode": {"starttls"}}, "/admin/site#xmpp-outgoing"},
 		{"/admin/branding/reset", url.Values{}, "/admin/site#branding"},
 		{"/admin/staff-list", url.Values{"staff_list_public": {"true"}}, "/admin/transparency#staff-list"},
 		{"/admin/operator-key", url.Values{"operator_key": {operatorPub}}, "/admin/transparency#transparency"},

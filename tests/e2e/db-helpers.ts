@@ -30,6 +30,18 @@ export function pgpFixture(name: string): string {
   return readFileSync(join(__dirname, 'fixtures', 'pgp', name), 'utf8');
 }
 
+// Saves the public encryption key through the real profile form. Commerce and message fixtures also call
+// seedPGPAccess explicitly; saving alone does not prove decryption in this browser. Keep signedIn keyless.
+export async function saveEncryptionKey(page: Page, password: string, armored = pgpFixture('recipient.pub.asc')): Promise<void> {
+  await page.goto('/account');
+  const profile = page.locator('form', { has: page.getByRole('button', { name: 'Save profile', exact: true }) });
+  await profile.getByLabel('PGP public key').fill(armored);
+  await profile.getByLabel('Current password', { exact: true }).fill(password);
+  await submitAndLoad(page, profile.getByRole('button', { name: 'Save profile', exact: true }));
+  await expect(page).toHaveURL(/\/account$/);
+  await expectNotice(page, 'Profile saved.');
+}
+
 
 // Privileged fixture preparation for journeys whose subject is commerce or messaging, rather than authentication.
 // The committed public fixture was produced by the server's OpenPGP library and has no armor headers; trimming it

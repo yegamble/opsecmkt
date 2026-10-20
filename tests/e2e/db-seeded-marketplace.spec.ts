@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { ADMIN, uniqueHandle } from './db-fixtures';
-import { expectNotice, setRole, signedIn, seedPGPAccess } from './db-helpers';
+import { expectNotice, saveEncryptionKey, setRole, signedIn, seedPGPAccess } from './db-helpers';
 
 // Marketplace records below use real forms; PGP access is an explicit privileged fixture prerequisite.
 // Intake is paused here; funded journeys live in the separate escrow browser suites.
@@ -21,6 +21,8 @@ test('seeded catalog discovery, role boundaries and persistent unfunded orders',
     await seedPGPAccess(buyer);
     await setRole(admin, vendorHandle, 'vendor');
     await setRole(admin, moderatorHandle, 'moderator');
+    await saveEncryptionKey(vendor, password);
+    await saveEncryptionKey(buyer, password);
     const publish = async (suffix: string, kind: string, region: string, stock: string) => {
       const title = `${seed} ${suffix}`;
       await vendor.goto('/vendor-dashboard');

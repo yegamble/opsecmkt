@@ -29,6 +29,101 @@ Existing nonempty PGP bindings, including expired or unreadable keys, require cu
 
 See [PGP access](docs/operator-guide.md#pgp-access-for-purchases-and-messages) and [vendor availability](docs/operator-guide.md#vendor-availability-and-activity-privacy) for the controls and recovery boundaries.
 
+## Encrypted support tickets (migration 133)
+
+Migration 133 adds the support-ticket workflow at `/tickets` and `/ticket?id=…`. Ticket IDs and procedural history
+are plaintext metadata; every initial body and reply is PGP-encrypted locally before submission, with no plaintext
+subject field. This is separate from the direct-message inbox. Users and staff handle routine support through
+the product pages; no SSH or manual database changes are needed for an ordinary ticket.
+
+Opening or replying to a ticket requires current-session PGP challenge decryption. Before opening one, the opener
+saves a usable public encryption key and selects an active staff recipient
+whose usable key is visible through the staff list or configured staff contact. The form must not expose hidden
+staff accounts. Encrypt each body to the opener and the current assigned staff member. An assignment or escalation
+does not re-encrypt historical bodies or give a new assignee the old recipient's private key; arrange the next
+reply for the current recipients. Already downloaded ciphertext or plaintext cannot be recalled.
+
+Tickets record Open, Closed or Ignored state, current assignment and administrator escalation. The opener stays
+a participant; moderators cannot access administrator-only or escalated tickets as staff, but retain their own
+personal participant view if they opened one. Active authorized staff can manage normal tickets, including
+assignment and escalation while Open. The opener can close their own Open ticket; ignoring or reopening needs
+staff permission. Administrator queue access does not imply the ability to decrypt a body that was encrypted to
+another staff member's key. Prior active staff participants can receive generic closure/ignore metadata after
+reassignment; former moderator handlers of an escalated ticket gain no access to its protected thread. Frontend and XMPP
+notifications retain current participant/role restrictions, and forwarding a ticket's encrypted armor needs the
+same separate global and recipient content consent as encrypted messages. See the
+[support instructions](docs/operator-guide.md#encrypted-support-tickets).
+
+With retention maintenance enabled, ticket bodies expire after 90 days or earlier if their opener or message
+sender is closed or erased, unless a relevant account hold applies. Holds cover current and historical ticket
+participants and workflow staff. Closed/Ignored metadata is removed only after 90 days without an update, once
+all bodies are gone and no hold applies; Open metadata remains for the workflow. Ticket and message deletions
+are journaled for restore replay. This does not remove independent XMPP/client copies.
+
+## PGP message forwarding and encrypted delivery (migration 132)
+
+Migration 132 adds separate default-off permissions for forwarding already PGP-encrypted message armor over
+XMPP. The administrator must enable **Allow PGP-encrypted message contents in XMPP** under
+`/admin/site#xmpp-outgoing`, and each recipient must choose **Include PGP-encrypted message contents** under
+`/account#xmpp-notifications`. A recipient also needs enabled XMPP and a usable PGP public encryption key;
+PGP sign-in and proof of key ownership are not required for this preference. Confirm both settings with the
+account's password and authenticator code when enrolled. Existing messages are not sent again.
+
+Default alerts remain metadata-only. With both permissions enabled, a new received-message alert can include
+the original encrypted armor, without decryption or a plaintext copy. Normal message/order authorization and
+staff audience restrictions continue to apply. Global permission changes advance its revision and suppress
+content from earlier queued alerts while retaining their summaries; changes to the recipient's preferences
+invalidate earlier queued deliveries too. A current visible recipient key match is required: hidden-recipient
+messages, replaced keys and unavailable content keep the summary alone. New stored buyer-encrypted digital
+deliveries are eligible only for that buyer's explicitly consented alert, never another party's staff notice. XMPP services can retain notification text, routing metadata and ciphertext even though the
+forwarded contents retain their PGP protection. Order-linked alerts include their order reference; direct
+messages keep message references, while support tickets use their own workflow and ticket IDs (migration 133).
+
+New drafts and checkout now require usable PGP public encryption keys on both buyer and vendor accounts,
+for physical and digital listings. Add or renew missing, expired or unusable keys under `/account`; usable keys
+and session-bound challenge decryption are required for the buyer before purchasing. Existing orders remain readable
+and cancellable if a key later becomes unusable; opening or replying to a dispute still requires PGP decryption.
+
+New manual and automatic per-order digital deliveries are stored encrypted to the buyer's PGP key. Buyers
+need their corresponding private key and PGP client to read the armor. Automatic-delivery listing templates
+remain server-readable, and manual delivery text reaches the running application before encryption. A delivery
+encryption failure refuses manual delivery or leaves automatic delivery pending without saving plaintext.
+Migration 132 does not rewrite historical plaintext deliveries or erase their backup copies; those records
+are never forwarded as XMPP contents. Review the updated order and delivery wording with vendors before
+relying on the new workflow.
+
+## Optional XMPP notifications (migration 131)
+
+Rebuild the application; startup applies append-only migration `131_xmpp_notifications.sql`. It adds private
+recipient opt-in/version state, notification audiences and a durable notification-delivery outbox. Existing
+accounts start unsubscribed, and existing notifications are not backfilled for XMPP. Migration 098's removal of
+old XMPP profile values remains unchanged: restoring an old backup does not constitute a new opt-in.
+
+Historical notices addressed to current administrators, and recognizable old administrator broadcasts even
+on former staff accounts, become administrator-only. Historical notices lack reliable audience metadata, so
+the conservative restriction also hides a current administrator's old personal notices if they are later
+demoted. New personal notices keep their normal owner access after a role change.
+
+An administrator must configure an existing outgoing XMPP sender account under `/admin/site#xmpp-outgoing`
+(server, port, verified STARTTLS or direct TLS, password and delivery switch). Each recipient, staff included,
+then opts in under `/account#xmpp-notifications`. These forms require password/TOTP confirmation. Preserve the
+application secret root so the encrypted outgoing password remains readable after a restart or restore.
+A blank password field retains the existing credential; saved credentials are never returned in page settings.
+See [XMPP setup](docs/operator-guide.md#xmpp-notifications) before enabling outbound access.
+
+XMPP uses the same newly created, authorized frontend notification text and recipients. Admin-only alerts
+remain administrator-only, and staff eligibility is checked again before frontend display and delivery after
+role changes. Independent moderators now receive dispute notices for Monero escrow as well, while resolution
+remains administrator-only. Payment-review escalation notices are administrator-only. Changing a recipient
+address or opting out invalidates queued deliveries for the earlier preference. Delivery failure leaves the
+frontend notification available; retries after ambiguous sends can duplicate alerts.
+
+Outgoing XMPP connections are direct, including in Tor mode; no automatic Tor egress or end-to-end encryption
+is added. The XMPP service can retain message bodies, sender/recipient addresses, timing and connection metadata.
+Use disposable accounts to check the actual server and recipient before relying on delivery. Turning outgoing
+XMPP off cancels pending sends when the worker processes them, while frontend notifications continue. Old backups can restore earlier recipient or
+sender settings and queued state: review them before re-enabling outgoing delivery on a restored installation.
+
 ## A Monero re-request waits for a missing deposit (A-614)
 
 No migration and no new setting. An administrator's re-request of a failed Monero settlement spends exactly the coins of

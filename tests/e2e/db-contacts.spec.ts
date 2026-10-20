@@ -1,6 +1,7 @@
+import { execFileSync } from 'node:child_process';
 import { expect, test, type Browser, type Page } from '@playwright/test';
 import { ADMIN, uniqueHandle } from './db-fixtures';
-import { setRole, seedPGPAccess, RECIPIENT_FINGERPRINT } from './db-helpers';
+import { RECIPIENT_FINGERPRINT, saveEncryptionKey, setRole, seedPGPAccess } from './db-helpers';
 import { waitForStyles } from './styles';
 
 // Contacts and vendor demotion against a real database: an administrator promotes a new account to
@@ -72,6 +73,31 @@ test('vendor contact, unread notifications and demotion archive', async ({ brows
   await expect(buyer.locator('.message-to')).toHaveText(`To: ${vendorHandle}`);
   await expect(buyer.locator('.contact-key .pgp-fingerprint')).toHaveText(RECIPIENT_FINGERPRINT);
 
+  // Model legacy keyless accounts after checking contact visibility with today's required vendor key.
+  // Explicitly clear their fixture proofs as well, so re-adding the same public key cannot revive old access.
+  execFileSync('psql', [process.env.E2E_DATABASE_URL!, '-v', 'ON_ERROR_STOP=1', '-qtAc',
+    `UPDATE sessions SET pgp_access_key='' WHERE user_id IN (SELECT id FROM users WHERE handle IN ('${buyerHandle}','${vendorHandle}'));
+      UPDATE users SET pgp='',pgp_fingerprint='',pgp_verified_at=NULL WHERE handle IN ('${buyerHandle}','${vendorHandle}');`]);
+  // Neither side has a usable saved key now, so the listing cannot take an order.
+  // Saving and authenticating only the buyer's key does not bypass the vendor requirement.
+  await buyer.goto(productURL);
+  await expect(buyer.getByRole('link', { name: 'Review order draft' })).toHaveCount(0);
+  const checkoutURL = productURL.replace('/product?', '/checkout?');
+  await buyer.goto(checkoutURL);
+  await expect(buyer.locator('form[action="/orders"]')).toHaveCount(0);
+  await expect(buyer.locator('main')).toContainText('Add a usable PGP public key');
+  await expect(buyer.locator('main')).toContainText(`${vendorHandle} needs a usable PGP encryption key before accepting new orders.`);
+  await saveEncryptionKey(buyer, 'browser-contact-buyer-123');
+  await seedPGPAccess(buyer);
+  await buyer.goto(checkoutURL);
+  await expect(buyer.locator('form[action="/orders"]')).toHaveCount(0);
+  await expect(buyer.locator('main')).toContainText(`${vendorHandle} needs a usable PGP encryption key before accepting new orders.`);
+  await saveEncryptionKey(vendor, 'browser-contact-vendor-123');
+  // Saving the vendor's key creates its own account-security notice. Read it now
+  // so the later unread-count checks isolate order and role-change notifications.
+  await vendor.goto('/notifications');
+  await vendor.getByRole('button', { name: 'Mark all as read', exact: true }).click();
+
   // Cancelling an unfunded draft does not create vendor noise; the buyer can still read its order history.
   await buyer.goto(productURL);
   await buyer.getByRole('link', { name: 'Review order draft' }).click();
@@ -82,7 +108,8 @@ test('vendor contact, unread notifications and demotion archive', async ({ brows
   const orderKey = buyer.getByRole('region', { name: 'Vendor’s PGP key' });
   await expect(orderKey.locator('.pgp-fingerprint')).toHaveText(RECIPIENT_FINGERPRINT);
   await expect(orderKey).toContainText('Ownership not verified');
-  await expect(buyer.getByRole('link', { name: 'Message vendor' })).toHaveAttribute('href', `/messages?to=${vendorHandle}`);
+  const orderID = new URL(orderURL).searchParams.get('id');
+  await expect(buyer.getByRole('link', { name: 'Message vendor' })).toHaveAttribute('href', `/messages?to=${vendorHandle}&order_id=${orderID}`);
   await buyer.getByRole('button', { name: 'Cancel draft' }).click();
   await expect(buyer.locator('.page-head .badge')).toHaveText('Cancelled');
 

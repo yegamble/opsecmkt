@@ -237,6 +237,7 @@ func TestMessageVendorToBuyerNeedsAVisibleOrder(t *testing.T) {
 
 	// A cancelled order that had a recorded payment is customer work too.
 	lateVendorID, otherVendor := e.user("vis_late_vendor", "vendor")
+	e.setKey(lateVendorID, pub)
 	third := e.order(buyerID, e.product(lateVendorID, "digital"), "XMR", stateCancelled)
 	if r := send(otherVendor, "vis_buyer"); r.code != 403 {
 		t.Fatalf("late vendor through a cancelled order with no escrow or payment: %d", r.code)

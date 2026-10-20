@@ -19,6 +19,7 @@ func TestLegacyServiceCannotBeOrdered(t *testing.T) {
 
 func TestLegacySubFloorMoneroListing(t *testing.T) {
 	p := newPayEnv(t)
+	p.enableOrderPGP(p.buyer.ID, p.vendor.ID)
 	agExec(p.testEnv, "UPDATE products SET xmr=$1 WHERE id=$2", minPayoutXMR-1, p.productID)
 	w := p.do("POST", "/orders", p.buyerSess, url.Values{"product_id": {p.productID}, "currency": {"XMR"}})
 	p.check(w, 400)
