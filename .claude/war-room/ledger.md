@@ -1552,3 +1552,16 @@ TECHNICAL COST/RISK: Small server-rendered privacy-notice and policy-inventory c
 ACCEPTANCE CRITERIA: Recorded content copies remain discoverably disclosed after original expiry and after capture is disabled; records and account-deletion notices agree with implemented behavior.
 TEST PLAN: Distinct-marker DB/template regression across capture, original expiry and disabled capture, plus relevant retention/public records/no-JavaScript layout checks.
 STATUS: ruled, ready for isolated implementation.
+
+
+### MOD69-3 — Preserve literal SQL source guards in snapshot checks
+
+DECISION: ACCEPT (P1 REQUIRED; verification gate).
+WHY: The existing source guard rejects the new target-kind-to-SQL map at moderationTargetCurrent, even though its values are literals. Keep the established auditable literal-query convention by selecting fixed QueryRowContext statements in a switch, rather than weakening the guard.
+DISSENTING VIEW: The enum-keyed map has no demonstrated SQL injection path; this ruling enforces the existing source invariant and reviewability, not an unproven exploit claim.
+USER IMPACT: Freshness and private review behavior stay the same.
+OPERATOR IMPACT: None.
+TECHNICAL COST/RISK: Narrow query dispatch change; all targets and positional parameters remain fixed and bound.
+ACCEPTANCE CRITERIA: TestSourceGuardNoTrustedCastsDynamicSQLOrForwardedHeaders passes unchanged; all supported target freshness checks, stale refusal and image-byte isolation regressions pass.
+TEST PLAN: Reproduce the unchanged source guard failure first, apply literal switch dispatch, rerun source and moderation/image guards with PostgreSQL and -race.
+STATUS: ruled, ready for isolated implementation by the chair acting as implementation seat.
