@@ -4,7 +4,7 @@
 <div class="eyebrow">Private correspondence</div>
 <h1>Messages<span class="accent">.</span>
 </h1>
-<p>Exchange text encrypted in your own trusted PGP application.</p>
+<p>Direct correspondence, separate from your <a class="text-link" href="/orders">order conversations and digital deliveries</a>. Exchange text encrypted in your own trusted PGP application.</p>
 </div>
 <span class="badge neutral">Client encryption required</span>
 </div>
@@ -19,7 +19,7 @@
 <form class="stack" method="get" action="/messages" aria-label="Find recipient key">
 <label>Find a recipient<input name="to" value="{{.MessageTo}}" required minlength="3" maxlength="32" pattern="[a-zA-Z0-9_]{3,32}" title="Use the recipient's handle: 3 to 32 letters, numbers, or underscores." autocomplete="off" placeholder="any_handle"></label>
 <button type="submit">Load recipient’s public key</button>
-</form>{{else}}<p class="help" id="who-can-be-messaged">You can write to active vendors, people you share an order with, people who have messaged you, and market staff on the <a class="text-link" href="/canary#staff">public staff list</a> or named as the staff contact. There is no search: start from “Message vendor” on a vendor’s page or listing, from the message links on an order, or from “Reply” on a message you received.</p>{{end}}
+</form>{{else}}<p class="help" id="who-can-be-messaged">You can write to active vendors, people you share an order with, people who have messaged you, and market staff on the <a class="text-link" href="/canary#staff">public staff list</a> or named as the staff contact. There is no search: start from “Message vendor” on a vendor’s page or listing, or from “Reply” on a message you received.</p>{{end}}
 {{if .MessageLookupPaused}}<p role="status">Key not loaded: an account can look up at most 60 different handles in 10 minutes. Handles you looked up in that time still load; try others later.</p>{{else if and .MessageTo (not .Contacts)}}<p role="status">No account you can message has this handle. You can write to active vendors, people you share an order with, people who have messaged you, and listed market staff.</p>{{end}}
 {{if or $staff (and .MessageTo (or .Contacts .MessageLookupPaused))}}<p class="help">Confirm the recipient’s key fingerprint through a trusted channel. To encrypt a text file with GnuPG, run <code>gpg --armor --encrypt --recipient &lt;fingerprint&gt; message.txt</code>, replacing <code>&lt;fingerprint&gt;</code> with the confirmed fingerprint. Paste the armored output below.{{if $staff}} Loading a key reloads this page; do it before composing.{{end}}</p>
 <form class="stack" method="post" action="/messages">

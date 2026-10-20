@@ -211,6 +211,16 @@ func (w *sweepWorld) sweepCases() map[string]func() sweepCase {
 			order := x.testEnv.order(x.buyer, x.testEnv.product(x.vendor, "digital"), "XMR", statePaid)
 			return sweepCase{form: url.Values{"order_id": {order}, "content": {"Delivered by the vendor."}}, owner: x.vendorSess, counter: x.buyerSess, ownerWant: 409}
 		},
+		"/orders/message": func() sweepCase {
+			order := paid()
+			key, pub := testPGPKey(w.t, "sweep_order_recipient")
+			x.setKey(x.vendor, pub)
+			return sweepCase{form: url.Values{"order_id": {order}, "body": {encryptToRecipients(w.t, "Order-only correspondence.", key)}}, owner: x.buyerSess, ownerWant: 303}
+		},
+		"/orders/delivery-update": func() sweepCase {
+			order := completed()
+			return sweepCase{form: url.Values{"order_id": {order}, "content": {"Replacement content on the order only."}}, owner: x.vendorSess, counter: x.buyerSess, ownerWant: 303}
+		},
 		"/orders/complete": func() sweepCase {
 			return sweepCase{form: payoutConfirmed(url.Values{"order_id": {paid()}}, xmrListingPrice), owner: x.buyerSess, counter: x.vendorSess}
 		},

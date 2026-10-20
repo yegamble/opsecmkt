@@ -248,6 +248,14 @@ type PageData struct {
 	// P2 PGP
 	PGP *PGPView
 
+	// Order-only correspondence and append-only replacement deliveries.
+	OrderCorrespondence, CanOrderMessage, CanDeliveryUpdate, OrderPrivateExpired bool
+	OrderMessageRecipient                                                        string
+	OrderMessages                                                                []Message
+	OrderMessagesPaging                                                          *ActivityPaging
+	DeliveryUpdates                                                              []DeliveryUpdateView
+	DeliveryUpdatesPaging                                                        *ActivityPaging
+
 	// P3 Orders
 	OrderEvents   []OrderEvent
 	Transitions   []Transition
@@ -912,3 +920,6 @@ type EscrowKeyView struct {
 	RangeAdvice        bool  // NextChild passed escrowRangeAdvice: the page advises keypoolrefill (P2-R10)
 	KeypoolSize        int64 // the keypoolrefill size it advises: 1000 keys past NextChild
 }
+
+// DeliveryUpdateView is an append-only replacement shown on its order.
+type DeliveryUpdateView struct{ Content, Created, Author string }

@@ -461,6 +461,9 @@ func retentionUnknownUserReferences(ctx context.Context, tx *sql.Tx) (bool, erro
  ('orders'::regclass,'buyer_id'),
  ('messages'::regclass,'sender_id'),
  ('messages'::regclass,'recipient_id'),
+ ('order_messages'::regclass,'sender_id'),
+ ('order_messages'::regclass,'recipient_id'),
+ ('order_delivery_updates'::regclass,'author_id'),
  ('notifications'::regclass,'user_id'),
  ('audit_events'::regclass,'user_id'),
  ('order_events'::regclass,'actor_id'),
@@ -504,6 +507,8 @@ SELECT EXISTS(SELECT 1 FROM sessions WHERE user_id=$1)
  OR EXISTS(SELECT 1 FROM orders WHERE buyer_id=$1)
  OR EXISTS(SELECT 1 FROM messages WHERE sender_id=$1)
  OR EXISTS(SELECT 1 FROM messages WHERE recipient_id=$1)
+ OR EXISTS(SELECT 1 FROM order_messages WHERE sender_id=$1 OR recipient_id=$1)
+ OR EXISTS(SELECT 1 FROM order_delivery_updates WHERE author_id=$1)
  OR EXISTS(SELECT 1 FROM notifications WHERE user_id=$1)
  OR EXISTS(SELECT 1 FROM audit_events WHERE user_id=$1)
  OR EXISTS(SELECT 1 FROM order_events WHERE actor_id=$1)
@@ -566,7 +571,7 @@ func applyRetentionTombstone(ctx context.Context, tx *sql.Tx, t retentionTombsto
 	case "review":
 		return retentionExecQuery(ctx, tx, `DELETE FROM reviews WHERE id=$1`, t.ID)
 	case "order":
-		for _, table := range []string{"deliveries", "reviews", "disputes"} {
+		for _, table := range []string{"order_messages", "order_delivery_updates", "deliveries", "reviews", "disputes"} {
 			if err := retentionExecQuery(ctx, tx, `DELETE FROM `+table+` WHERE order_id=$1`, t.ID); err != nil {
 				return err
 			}
@@ -579,6 +584,11 @@ func applyRetentionTombstone(ctx context.Context, tx *sql.Tx, t retentionTombsto
 		}
 		return retentionExecQuery(ctx, tx, `DELETE FROM orders WHERE id=$1`, t.ID)
 	case "draft":
+		for _, table := range []string{"order_messages", "order_delivery_updates"} {
+			if err := retentionExecQuery(ctx, tx, `DELETE FROM `+table+` WHERE order_id=$1`, t.ID); err != nil {
+				return err
+			}
+		}
 		if err := retentionExecQuery(ctx, tx, `UPDATE notifications SET order_id=NULL WHERE order_id=$1`, t.ID); err != nil {
 			return err
 		}
@@ -587,8 +597,10 @@ func applyRetentionTombstone(ctx context.Context, tx *sql.Tx, t retentionTombsto
 		}
 		return retentionExecQuery(ctx, tx, `DELETE FROM orders WHERE id=$1`, t.ID)
 	case "order_private":
-		if err := retentionExecQuery(ctx, tx, `DELETE FROM images WHERE order_id=$1 AND created<=$2`, t.ID, t.At); err != nil {
-			return err
+		for _, table := range []string{"images", "order_messages", "order_delivery_updates"} {
+			if err := retentionExecQuery(ctx, tx, `DELETE FROM `+table+` WHERE order_id=$1 AND created<=$2`, t.ID, t.At); err != nil {
+				return err
+			}
 		}
 		if err := retentionExecQuery(ctx, tx, `DELETE FROM deliveries WHERE order_id=$1 AND created<=$2`, t.ID, t.At); err != nil {
 			return err
@@ -605,7 +617,7 @@ func applyRetentionTombstone(ctx context.Context, tx *sql.Tx, t retentionTombsto
 			return err
 		}
 		return retentionExecQuery(ctx, tx, `UPDATE orders o SET listing_title=CASE WHEN listing_title IS NULL THEN NULL ELSE 'Listing content expired' END,listing_description=CASE WHEN listing_description IS NULL THEN NULL ELSE '' END,
-		 private_expired_at=CASE WHEN financial_closed_at IS NOT NULL AND financial_closed_at+interval '30 days'<=$2 AND NOT EXISTS(SELECT 1 FROM images i WHERE i.order_id=o.id AND i.created>$2) AND NOT EXISTS(SELECT 1 FROM deliveries d WHERE d.order_id=o.id AND d.created>$2) AND NOT EXISTS(SELECT 1 FROM disputes d WHERE d.order_id=o.id AND COALESCE(d.resolution_updated_at,d.created)>$2) AND NOT EXISTS(SELECT 1 FROM order_events ev WHERE ev.order_id=o.id AND ev.actor_id IS NOT NULL AND ev.created>$2) THEN $2 ELSE NULL END WHERE id=$1`, t.ID, t.At)
+		 private_expired_at=CASE WHEN financial_closed_at IS NOT NULL AND financial_closed_at+interval '30 days'<=$2 AND NOT EXISTS(SELECT 1 FROM images i WHERE i.order_id=o.id AND i.created>$2) AND NOT EXISTS(SELECT 1 FROM deliveries d WHERE d.order_id=o.id AND d.created>$2) AND NOT EXISTS(SELECT 1 FROM order_messages m WHERE m.order_id=o.id AND m.created>$2) AND NOT EXISTS(SELECT 1 FROM order_delivery_updates d WHERE d.order_id=o.id AND d.created>$2) AND NOT EXISTS(SELECT 1 FROM disputes d WHERE d.order_id=o.id AND COALESCE(d.resolution_updated_at,d.created)>$2) AND NOT EXISTS(SELECT 1 FROM order_events ev WHERE ev.order_id=o.id AND ev.actor_id IS NOT NULL AND ev.created>$2) THEN $2 ELSE NULL END WHERE id=$1`, t.ID, t.At)
 	case "listing_private":
 		if err := retentionExecQuery(ctx, tx, `DELETE FROM images WHERE product_id=$1 AND created<=$2`, t.ID, t.At); err != nil {
 			return err

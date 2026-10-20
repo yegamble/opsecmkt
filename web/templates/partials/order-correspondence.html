@@ -1,0 +1,35 @@
+{{define "order-correspondence"}}{{if .OrderCorrespondence}}<section class="panel" aria-labelledby="order-messages">
+<h2 id="order-messages">Order correspondence</h2>
+<p class="help">Only the buyer and vendor see this conversation. It stays with this order and is separate from <a class="text-link" href="/messages">direct messages</a>. Encrypt private details in your trusted PGP application before sending. The server checks the encrypted packets and does not encrypt them again.{{if and .Retention .Retention.Enabled}} These messages are scheduled for deletion with the order’s private content, 30 days after financial closure, unless a scoped preservation duty applies.{{else}} Automatic retention is off; the server keeps these records until the operator removes them.{{end}}</p>
+{{range .OrderMessages}}<article class="message">
+<div class="message-meta"><span>{{.Sender}} → {{.Recipient}}</span><time>{{.Created}}</time></div>
+<p>{{if eq .RecipientMatch "yes"}}<span class="badge green">Encrypted (to recipient’s key)</span>{{else}}<span class="badge neutral">Encrypted (recipient unknown)</span>{{end}}{{if and .RecipientExtraKeysSet (gt .RecipientExtraKeys 0)}} <span class="badge pgp-danger">+ {{.RecipientExtraKeys}} other visible key(s)</span>{{end}}</p>
+<label class="help">Encrypted order message<textarea class="code-block" rows="7" readonly aria-label="Order message from {{.Sender}} to {{.Recipient}}">{{.Body}}</textarea></label>
+</article>{{else}}<p class="muted">No order messages yet.</p>{{end}}
+{{with .OrderMessagesPaging}}{{if gt .Pages 1}}<nav class="pagination" aria-label="Order message pages">{{if .PrevURL}}<a href="{{.PrevURL}}#order-messages" rel="prev">← Previous</a>{{end}}<span class="current" aria-current="page">Page {{.Page}} of {{.Pages}}</span>{{if .NextURL}}<a href="{{.NextURL}}#order-messages" rel="next">Next →</a>{{end}}</nav>{{end}}{{end}}
+{{if .CanOrderMessage}}<form class="stack" method="post" action="/orders/message">
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/orders/message"}}">
+<input type="hidden" name="order_id" value="{{.Order.ID}}">
+<p>To: <strong>{{.OrderMessageRecipient}}</strong> · Use their public key shown on this page.</p>
+<label>Encrypted order message<textarea name="body" required maxlength="20000" rows="8" spellcheck="false" placeholder="-----BEGIN PGP MESSAGE-----">{{.MessageBody}}</textarea></label>
+{{if .MessageHiddenRecipients}}<label class="check"><input type="checkbox" name="hidden_recipients" value="confirmed" required> I encrypted this order message to {{.OrderMessageRecipient}}’s saved key with its recipient key IDs hidden. The server cannot check the recipient; it will be marked “recipient unknown”.</label>{{end}}
+<button class="primary" type="submit">Send order message</button>
+</form>{{else}}<p role="status">This order’s private retention window has ended. New correspondence cannot be added.</p>{{end}}
+</section>{{end}}{{end}}
+
+{{define "order-delivery-updates"}}{{range .DeliveryUpdates}}<article class="message">
+<div class="message-meta"><strong>Replacement / delivery update</strong><time>{{.Created}}</time><span>From {{.Author}}</span></div>
+<label class="help">Delivery update<textarea class="code-block order-delivery" rows="7" readonly aria-label="Replacement delivery content">
+{{.Content}}</textarea></label>
+</article>{{end}}
+{{with .DeliveryUpdatesPaging}}{{if gt .Pages 1}}<nav class="pagination" aria-label="Delivery update pages">{{if .PrevURL}}<a href="{{.PrevURL}}#order-delivery" rel="prev">← Previous</a>{{end}}<span class="current" aria-current="page">Page {{.Page}} of {{.Pages}}</span>{{if .NextURL}}<a href="{{.NextURL}}#order-delivery" rel="next">Next →</a>{{end}}</nav>{{end}}{{end}}
+{{if .CanDeliveryUpdate}}<details><summary>Add replacement delivery content</summary>
+<form class="stack" method="post" action="/orders/delivery-update">
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/orders/delivery-update"}}">
+<input type="hidden" name="order_id" value="{{.Order.ID}}">
+<label>Replacement content<textarea name="content" required maxlength="32000" rows="7" placeholder="Replacement download link, licence key, or a PGP message to the buyer"></textarea></label>
+<p class="help">Adds a new entry here and keeps the original delivery. It does not go to direct messages or change the order’s state or retention deadline. Stored unencrypted unless you encrypt it first; visible to the buyer and vendor, and to staff if the order is disputed.</p>
+<button class="primary" type="submit">Add delivery update</button>
+</form></details>{{else if .OrderPrivateExpired}}<p class="help">This order’s private retention window has ended. Replacement content cannot be added.</p>{{end}}{{end}}

@@ -7,7 +7,7 @@ const retentionRestrictedMessage = "Account closure is waiting for unresolved fu
 func retentionActionAllowed(path string) bool {
 	switch path {
 	case "/logout", "/revoke-sessions", "/account", "/account/password", "/account/delete", "/login", "/challenge", "/messages", "/notifications",
-		"/disputes", "/disputes/reply", "/disputes/concede", "/orders/cancel", "/orders/ship", "/orders/deliver", "/orders/complete",
+		"/disputes", "/disputes/reply", "/disputes/concede", "/orders/cancel", "/orders/ship", "/orders/deliver", "/orders/complete", "/orders/message", "/orders/delivery-update",
 		"/totp/enroll", "/totp/activate", "/totp/recovery", "/totp/disable", "/pgp/challenge", "/pgp/verify", "/pgp/2fa":
 		return true
 	}
