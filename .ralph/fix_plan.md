@@ -15,7 +15,11 @@ earlier publication exclusions below describe earlier work only.
 - [x] Serialize summary-only XMPP sends with ticket escalation and independently verify actual database lock behavior.
 - [x] Correct and independently reverify notification audience provenance after retention removes a ticket reference.
 - [x] Complete full regression coverage with corrected-source reruns, record final war-room ruling and fresh completion scrutiny; current-head CI remains required before merge.
-- [ ] Commit, push, attach the feature PR, wait for the current head's CI passed gate and merge.
+- [x] Commit, push and attach [PR #105](https://github.com/yegamble/opsecmkt/pull/105).
+
+Publication status is tracked on that PR: its current-head **CI passed** gate is
+required before the owner-delegated merge. This source snapshot does not claim
+that the remote gate or merge has already completed.
 
 Evidence: `docs/evidence/xmpp-tickets-2026-10-20.md` and the WR-XMPP ledger entry.
 

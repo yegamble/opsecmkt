@@ -69,6 +69,7 @@ deliberately check those operating-system properties.
 | Updated order, key, private-message and dispute browser journeys | Seventeen checks passed. |
 | Simulated escrow browser journeys | Eight passed, then the corrected selector case passed separately. |
 | Encrypted ticket browser lifecycle | Passed at 320 px with JavaScript disabled: creation, reply, assignment, escalation, moderator denial and closure alert boundaries. |
+| Complete database Chromium browser suite after final fixture corrections | 52 passed in 4.3 minutes; the preservation-mode case retained its explicit environment skip and runs separately in CI. |
 | Python regression tests | All 378 passed, 312.784 s. |
 | Module verification, vet and strict documentation build | Passed. |
 
@@ -88,6 +89,17 @@ existing guard can verify it without an exception. All five escrow groups passed
 their corrected-source race rerun, 13.784 s. Final general/static and ticket
 retention correction checks passed with PostgreSQL and race detection, 6.845 s.
 The strengthened old-held-notice/sender-key regression rerun also passed, 3.736 s.
+
+The first PR CI run found that the alpha-upgrade rehearsal still tried checkout
+with keyless legacy accounts. Preservation assertions now run first, then the
+rehearsal verifies keyless refusal and saves committed fixture public keys through
+the actual vendor/buyer account forms before testing draft reuse. The corrected
+alpha and intermediate database upgrade legs passed locally on PostgreSQL 17.
+The subsequent Tor Compose leg met the managed environment's read-only Docker
+configuration directory; the complete rehearsal remains a required CI gate.
+Twenty related Python checks and all embedded upgrade Python blocks passed.
+The browser's exact public-key visibility expectation also now names ticket
+correspondents, matching the final privacy disclosure.
 
 ## Limits and deferred ideas
 
