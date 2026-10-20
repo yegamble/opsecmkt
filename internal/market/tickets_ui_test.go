@@ -3,6 +3,7 @@ package market
 import (
 	"database/sql"
 	"errors"
+	"html"
 	"net/http/httptest"
 	"net/url"
 	"strings"
@@ -153,7 +154,7 @@ func TestTicketUIDemotedAssigneeCannotExposeTheirNewBuyerKey(t *testing.T) {
 	for _, reader := range []string{"opener", "otheradmin"} {
 		page := w.e.body("GET", "/ticket?id="+id, w.sessions[reader], nil, 200)
 		mustContain(t, page, "ticket_mod", "Encrypted conversation", "Ticket history", "the current assignee is no longer eligible")
-		mustNotContain(t, page, canonical, formatFingerprint(fingerprint))
+		mustNotContain(t, html.UnescapeString(page), canonical, formatFingerprint(fingerprint))
 	}
 	w.e.check(w.e.do("GET", "/tickets?staff="+w.ids["mod"], w.sessions["opener"], nil), 404)
 }
@@ -168,7 +169,17 @@ func TestTicketUIHiddenActiveAssigneeStillSharesTheirTicketKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	page := w.e.body("GET", "/ticket?id="+id, w.sessions["opener"], nil, 200)
-	mustContain(t, page, canonical, formatFingerprint(fingerprint), "Send encrypted ticket reply")
+	// The ticket displays exactly its two participants' canonical keys. Decode
+	// HTML entities before comparing full armor, including base64 plus signs.
+	shown := armoredKeyPattern.FindAllString(html.UnescapeString(page), -1)
+	_, _, openerCanonical, err := parseCanonicalPublicKey(w.public["opener"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(shown) != 2 || shown[0] != openerCanonical || shown[1] != canonical {
+		t.Fatal("the ticket did not display exactly its opener and hidden active assignee keys")
+	}
+	mustContain(t, page, `<dd class="pgp-fingerprint">`+formatFingerprint(fingerprint)+`</dd>`, "Send encrypted ticket reply")
 	mustNotContain(t, page, "the current assignee is no longer eligible")
 }
 

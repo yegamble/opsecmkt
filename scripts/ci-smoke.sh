@@ -81,7 +81,9 @@ scanner_prepare() {
       cd /build
       cat > daily.ndb
       echo "OPSEC Market CI test signature; not for scanning anything else." > COPYING
-      sigtool --build=daily.cud --unsigned --cvd-version=1 --datadir=/build <<< ci >&2
+      # ClamAV 1.5.4 retries a 00-prefixed MD5 once, reading the builder again with scanf.
+      # Two whitespace-separated answers cover both attempts without a producer process.
+      sigtool --build=daily.cud --unsigned --cvd-version=1 --datadir=/build <<< "ci ci" >&2
       sigtool --info daily.cud >&2
       cat daily.cud' < deploy/testdata/clamav-test.ndb > "$work/clamav/daily.cud"
   chmod 0755 "$work/clamav"

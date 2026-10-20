@@ -408,6 +408,118 @@ func (r *xmrRegtest) popPast(tx string) {
 	r.daemonPost("/pop_blocks", map[string]any{"nblocks": txs[0].Confirmations}, &popped)
 }
 
+// xmrRegtestBranch keeps the complete original main-chain branch, including normal transaction bodies:
+// get_block's blob carries their hashes only. Replaying it preserves the wallet's saved ring indices.
+type xmrRegtestBranch struct {
+	first  int64
+	parent string
+	blocks []xmrRegtestBlock
+}
+
+type xmrRegtestBlock struct {
+	blob, hash   string
+	transactions []string
+}
+
+func (r *xmrRegtest) saveBranch(first int64) xmrRegtestBranch {
+	r.t.Helper()
+	end := r.height()
+	if first <= 0 || first >= end {
+		r.t.Fatalf("cannot save branch at height %d with daemon height %d", first, end)
+	}
+	branch := xmrRegtestBranch{first: first}
+	for height := first; height < end; height++ {
+		var block struct {
+			Status string `json:"status"`
+			Blob   string `json:"blob"`
+
+			Header struct {
+				Height   int64  `json:"height"`
+				Hash     string `json:"hash"`
+				Previous string `json:"prev_hash"`
+			} `json:"block_header"`
+
+			Transactions []string `json:"tx_hashes"`
+		}
+		r.call(r.daemon, "get_block", map[string]any{"height": height}, &block)
+		if block.Status != "OK" || block.Blob == "" || block.Header.Hash == "" || block.Header.Height != height {
+			r.t.Fatalf("cannot save block at height %d: status %q, returned height %d", height, block.Status, block.Header.Height)
+		}
+		if len(branch.blocks) == 0 {
+			branch.parent = block.Header.Previous
+		} else if block.Header.Previous != branch.blocks[len(branch.blocks)-1].hash {
+			r.t.Fatalf("the chain changed while saving block at height %d", height)
+		}
+		saved := xmrRegtestBlock{blob: block.Blob, hash: block.Header.Hash}
+		if len(block.Transactions) != 0 {
+			var txs struct {
+				Transactions []struct {
+					Hash string `json:"tx_hash"`
+					Hex  string `json:"as_hex"`
+				} `json:"txs"`
+			}
+			r.daemonPost("/get_transactions", map[string]any{"txs_hashes": block.Transactions}, &txs)
+			byHash := map[string]string{}
+			for _, tx := range txs.Transactions {
+				byHash[tx.Hash] = tx.Hex
+			}
+			for _, hash := range block.Transactions {
+				if byHash[hash] == "" {
+					r.t.Fatalf("cannot save transaction %s in block at height %d", hash, height)
+				}
+				saved.transactions = append(saved.transactions, byHash[hash])
+			}
+		}
+		branch.blocks = append(branch.blocks, saved)
+	}
+	return branch
+}
+
+func (r *xmrRegtest) replayBranch(branch xmrRegtestBranch) {
+	r.t.Helper()
+	current := r.height()
+	if len(branch.blocks) == 0 || current <= branch.first {
+		r.t.Fatalf("cannot replay branch at height %d with %d blocks and daemon height %d", branch.first, len(branch.blocks), current)
+	}
+	var popped map[string]any
+	r.daemonPost("/pop_blocks", map[string]any{"nblocks": current - branch.first}, &popped)
+	var tip struct {
+		Status string `json:"status"`
+		Header struct {
+			Height int64  `json:"height"`
+			Hash   string `json:"hash"`
+		} `json:"block_header"`
+	}
+	r.call(r.daemon, "get_last_block_header", nil, &tip)
+	if tip.Status != "OK" || tip.Header.Height+1 != branch.first || tip.Header.Hash != branch.parent {
+		r.t.Fatalf("branch common parent: height %d, hash %s, status %q", tip.Header.Height, tip.Header.Hash, tip.Status)
+	}
+	for _, block := range branch.blocks {
+		for _, tx := range block.transactions {
+			var sent struct {
+				Status string `json:"status"`
+			}
+			r.daemonPost("/send_raw_transaction", map[string]any{"tx_as_hex": tx, "do_not_relay": true}, &sent)
+			if sent.Status != "OK" {
+				r.t.Fatalf("replay transaction for block %s: %q", block.hash, sent.Status)
+			}
+		}
+		var submitted struct {
+			Status string `json:"status"`
+			Hash   string `json:"block_id"`
+		}
+		r.call(r.daemon, "submit_block", []string{block.blob}, &submitted)
+		if submitted.Status != "OK" || submitted.Hash != block.hash {
+			r.t.Fatalf("submit original block %s: status %q, hash %s", block.hash, submitted.Status, submitted.Hash)
+		}
+	}
+	r.call(r.daemon, "get_last_block_header", nil, &tip)
+	last := branch.blocks[len(branch.blocks)-1]
+	if tip.Status != "OK" || tip.Header.Height != branch.first+int64(len(branch.blocks))-1 || tip.Header.Hash != last.hash {
+		r.t.Fatalf("restored branch tip: height %d, hash %s, status %q", tip.Header.Height, tip.Header.Hash, tip.Status)
+	}
+}
+
 // TestXMREscrowRegtestFundingReorg (A-554): a reorganisation takes a credited funding deposit back below the threshold
 // after the vendor's release was requested. Kept in the pool, the deposit is mined again: the release is not built
 // while it confirms (no transfer call, no stray refund), then spends both funding deposits, the price. Flushed from the
@@ -564,8 +676,11 @@ func (r *xmrRegtest) daemonStoppedAround(name string) func(forward func()) {
 // release failed on the third refusal in a row. incoming_transfers available still lists the stored key images. An
 // administrator re-requests it with the password step-up after a reorganisation took the funding deposit out of the
 // chain (A-614): the new settlement waits (deposit-missing), past A-554's bounded wait too, with no transfer. Once the
-// same deposit transaction is mined again, the new build spends exactly the stored key images (the stored row's, and
-// the inputs the daemon decodes) to the stored plan, is relayed and confirms.
+// original funding branch is restored, the new build spends exactly the stored key images (the stored row's, and
+// the inputs the daemon decodes) to the stored plan, is relayed and confirms. This leg restores the original output
+// indices to isolate the App's deposit-claim handling from Monero 0.18.5.1's saved-ring error after an index moves:
+// "Daemon response did not include the requested real output". This synthetic restoration does not verify wallet
+// recovery at moved indices or a real network's heavier-chain fork choice.
 func TestXMREscrowRegtestReRequest(t *testing.T) {
 	container := os.Getenv("ESCROW_XMR_REGTEST_DAEMON_CONTAINER")
 	if container == "" {
@@ -629,19 +744,20 @@ func TestXMREscrowRegtestReRequest(t *testing.T) {
 
 	// A-614: a reorganisation takes the funding deposit out of the chain (every block since it was mined popped, the
 	// pool flushed) before the re-request is carried out. The new settlement takes over the deposit's claim, builds
-	// nothing and waits (deposit-missing) rather than failing nothing-to-settle; once the same deposit transaction is
-	// mined again it is built from the stored key images as below.
+	// nothing and waits (deposit-missing) rather than failing nothing-to-settle. Preserve the complete original branch
+	// so returning the deposit restores its original global indices without clearing the wallet's ring history.
 	deposit := agStrings(t, r.testEnv, "SELECT txid FROM payments WHERE order_id=$1", order)[0]
 	var raw struct {
 		Txs []struct {
-			AsHex         string   `json:"as_hex"`
+			BlockHeight   int64    `json:"block_height"`
 			OutputIndices []uint64 `json:"output_indices"`
 		} `json:"txs"`
 	}
 	r.daemonPost("/get_transactions", map[string]any{"txs_hashes": []string{deposit}}, &raw)
-	if len(raw.Txs) != 1 || raw.Txs[0].AsHex == "" {
+	if len(raw.Txs) != 1 || len(raw.Txs[0].OutputIndices) == 0 {
 		t.Fatalf("the daemon does not give funding deposit %s", deposit)
 	}
+	branch := r.saveBranch(raw.Txs[0].BlockHeight)
 	r.popPast(deposit)
 	var flushed map[string]any
 	r.call(r.daemon, "flush_txpool", map[string]any{"txids": []string{deposit}}, &flushed)
@@ -663,13 +779,8 @@ func TestXMREscrowRegtestReRequest(t *testing.T) {
 		t.Fatalf("re-requested while its deposit is missing: old %+v, new %+v %q, transfer %d (deposits %v)", r.settlement(id), waiting, r.waitClass(waiting.ID), p.count("transfer"), r.depositConfs(order))
 	}
 	t.Logf("funding deposit %s popped and flushed: re-request %d waits (%s) past %d blocks, no transfer", deposit, waiting.ID, xmrWaitMissing, 3*r.A.escrowXMR.confirmations)
-	var sent struct {
-		Status string `json:"status"`
-	}
-	r.daemonPost("/send_raw_transaction", map[string]any{"tx_as_hex": raw.Txs[0].AsHex, "do_not_relay": false}, &sent)
-	if sent.Status != "OK" {
-		t.Fatalf("send_raw_transaction of funding deposit %s: %q", deposit, sent.Status)
-	}
+	// Synthetic branch restoration: the prior >30-block absence was asserted above, before this chain is replaced.
+	r.replayBranch(branch)
 	r.mineTo(deposit, 10+xmrMineMargin)
 	var restored struct {
 		Txs []struct {
@@ -677,8 +788,8 @@ func TestXMREscrowRegtestReRequest(t *testing.T) {
 		} `json:"txs"`
 	}
 	r.daemonPost("/get_transactions", map[string]any{"txs_hashes": []string{deposit}}, &restored)
-	if len(restored.Txs) != 1 {
-		t.Fatalf("the daemon does not give restored funding deposit %s", deposit)
+	if len(restored.Txs) != 1 || !slices.Equal(raw.Txs[0].OutputIndices, restored.Txs[0].OutputIndices) {
+		t.Fatalf("funding deposit %s was not restored at its original output indices %v", deposit, raw.Txs[0].OutputIndices)
 	}
 	t.Logf("funding deposit output indices before reorg %v, restored %v", raw.Txs[0].OutputIndices, restored.Txs[0].OutputIndices)
 	r.synced()
