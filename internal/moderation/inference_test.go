@@ -212,7 +212,7 @@ func TestLocalModelRejectsRemoteAndUnpinnedConfiguration(t *testing.T) {
 	changed = cfg
 	changed.PromptVersion = "unreviewed-v2"
 	cases = append(cases, changed)
-	for _, retired := range []string{"moderation-v1", "moderation-v2"} {
+	for _, retired := range []string{"moderation-v1", "moderation-v2", "moderation-v3"} {
 		changed = cfg
 		changed.PromptVersion = retired
 		cases = append(cases, changed)

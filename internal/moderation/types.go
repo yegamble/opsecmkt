@@ -11,8 +11,8 @@ import (
 )
 
 // PromptVersion names the prompts, grammars, allowlists and request limits.
-// v1 and v2 pins are refused; their stored decisions remain readable.
-const PromptVersion = "moderation-v3"
+// v1, v2 and v3 pins are refused; their stored decisions remain readable.
+const PromptVersion = "moderation-v4"
 
 const (
 	ActionNoAction       = "NO_ACTION"

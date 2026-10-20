@@ -58,7 +58,7 @@ store retains the first validated result for its stable identity.
 | `--model-socket` | `MODERATION_MODEL_SOCKET`; absolute `.sock` path |
 | `--weights` | `MODERATION_WEIGHTS_PATH`; reviewed local weights file |
 | `--weights-sha256`, `--model-id` | `MODERATION_WEIGHTS_SHA256`, `MODERATION_MODEL_ID`; weights pin and bounded operator inventory label |
-| `--prompt-version`, `--model-timeout` | `moderation-v3`, `20s`; prompt must match this build, timeout 1 through 30 seconds |
+| `--prompt-version`, `--model-timeout` | `moderation-v4`, `20s`; prompt must match this build, timeout 1 through 30 seconds |
 | `--sla`, `--confidence-floor` | `24h`, `0.9`; deadline is based on enqueue time, expiry means `HOLD` |
 | `--new-actor-days`, `--abuse-threshold` | `14`, `5`; development policy values, not production measurements |
 | `--escalation-recipient`, `--signing-key` | Optional OpenPGP public recipient and separate Ed25519 worker seed; both or neither, as described in the [runbook](moderation-escalation-runbook.md#encrypted-offline-packets) |
@@ -113,7 +113,7 @@ env -i PATH=/usr/bin:/bin ./opsecmkt moderation-worker \
   --enabled --database-url-file /secure/moderation/database-url \
   --model --model-socket /run/moderation/inference.sock \
   --weights /models/model.gguf --weights-sha256 REVIEWED_LOWERCASE_SHA256 \
-  --model-id REVIEWED_MODEL_LABEL --prompt-version moderation-v3
+  --model-id REVIEWED_MODEL_LABEL --prompt-version moderation-v4
 ```
 
 Replace example paths and pins with the controller's actual read-only mounts
@@ -174,7 +174,7 @@ listing published in publish mode is not held by a proposal.
 
 ## Proposal protocol
 
-The `moderation-v3` model response has exactly these seven JSON fields. Additional fields, missing fields,
+The `moderation-v4` model response has exactly these seven JSON fields. Additional fields, missing fields,
 unknown enums, invalid bounds and unrelated evidence references are refused.
 
 | Field | Meaning |
@@ -195,11 +195,21 @@ validation refuse them from a model. Go maps the aliases back to trusted
 references, so no item, content or actor hash reaches either prompt. Stage B sees
 duplicate checks as counts and match outcomes, not hashes.
 
+The pinned llama.cpp `/completion` tokenizes the prompt with special-token
+parsing enabled. Go's JSON encoding already writes `<`, `>` and `&` as escapes,
+and the prompt data also writes `[` and `]` inside string values as `\u005b` and
+`\u005d`, so control tokens spelled with angle or square brackets, such as
+`[INST]` or `<|im_start|>`, cannot be formed from listing text. The JSON meaning
+is unchanged; a bracket-heavy item costs more tokens. Special tokens spelled
+without these characters are not covered, and no selected model's vocabulary has
+been checked. This is a tokenization guard, not a trust boundary: the data stays
+untrusted.
+
 Go derives review summaries and injection-evidence descriptions from validated
 codes and references. Model-written prose is rejected. Historical records keep
 their immutable bytes, while the current queue also renders their presentation
-from codes. Reply drafting is excluded from model actions; v1 and v2 protocol
-pins are refused.
+from codes. Reply drafting is excluded from model actions; v1, v2 and v3
+protocol pins are refused.
 
 The action names include suggestions for sensitive actions so those proposals
 can be identified and escalated. Their presence in the schema grants no right
@@ -360,9 +370,9 @@ runtime binary. See [version-worker setup](install/service-topology.md#version-w
 
 The [validation evidence](evidence/moderation-agent-validation.md) distinguishes
 native grammar-parser checks, Go/database/browser tests, synthetic process
-isolation and unverified production operation. Both current (moderation-v3)
-grammars passed the pinned upstream parser: 25 cases (6 accepted, 19 rejected)
-and an independent rebuild with 22 cases, all as expected; this does not
+isolation and unverified production operation. Both current grammars
+(unchanged from moderation-v3 in moderation-v4) passed the pinned upstream
+parser: 25 cases (6 accepted, 19 rejected) and an independent rebuild with 22 cases, all as expected; this does not
 establish correct model judgment.
 
 The [supplied proposal comparison](moderation-proposal-comparison.md) records

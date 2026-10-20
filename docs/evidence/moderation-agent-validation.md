@@ -203,6 +203,12 @@ These are grammar-parser results only; no model or deployed runtime was run.
 | Proposal template (`internal/moderation/prompts/proposal.gbnf`) | `9b164c6432b9cbee4263501ef4e7ed3cecc2c5a6e41092dbe06a9824b3044a37` |
 | Twenty-five-case result JSON | `94f52da5dde4a3de8f249ef667cd53abc24833638c3183ec7762b3eebe4ab73e` |
 
+Moderation-v4 (MOD72-7) changes only how prompt data is encoded: `[` and `]`
+inside JSON strings become `\u005b` and `\u005d`. Both grammar templates keep the
+v3 hashes above, so the v3 native grammar check applies to v4 unchanged; no
+new parser run was needed. The escaping is covered by Go unit tests with a
+fake runtime (`internal/moderation/special_tokens_test.go`); no model was run.
+
 Focused local verification completed before the final-source CI run:
 
 - Closed protocol, custom-adapter prose removal, routing and coded provenance
