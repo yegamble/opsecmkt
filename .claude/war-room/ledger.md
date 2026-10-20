@@ -1765,7 +1765,7 @@ ITERATION 71 VERIFICATION: Independent security/release and privacy seats verifi
 
 ## Iteration 72 — PR #99 second external rating (Gemini 9.2/10) follow-up
 
-SCOPE: Owner request: war-room loop on PR #99, especially the LLM seat. The pasted Gemini review is a hypothesis source. Seats: opsec-llm, opsec-privacy, opsec-security (Round A; B/C skipped — no inter-seat dispute on a REQUIRED item). Base: PR head `826ff6a9` with current main merged (`216ea0da`); main's A-613 took migration 128, so the unmerged moderation capacity migration was renumbered **129** (chair; seat-verified functionally correct incl. the main-at-128 upgrade path). No merge to main is delegated.
+SCOPE: Owner request: war-room loop on PR #99, especially the LLM seat. The pasted Gemini review is a hypothesis source. Seats: opsec-llm, opsec-privacy, opsec-security (Round A; B/C skipped — no inter-seat dispute on a REQUIRED item). Base: PR head `826ff6a9` with current main merged (`216ea0da`, then `417c21d8` for main's 131–133); main's A-613 took 128 and open PR #104 claims 129/130, so the unmerged moderation capacity migration was renumbered **134** (backfill 135, hold mode 136) (chair; seat-verified functionally correct incl. the main-at-128 upgrade path). No merge to main is delegated.
 
 CHAIR FIXES: renumbering (`216ea0da`), stale "128" references (`d2284ff9`, SEC72-N1), records inventory "Checked against … (001–129)" (`c54f1582`; CI 39440637131 failed only TestRecordsListPhotosAndAvatars on this).
 
@@ -1793,7 +1793,7 @@ STATUS: implemented (d705cd76: name-mismatch refusal before DDL, TestMigrationNa
 
 DECISION: ACCEPT (P1 REQUIRED; LLM-5 P2 folded in for the shared moderation-v3 bump). Fake-adapter evidence: runtime truncation/stop metadata is ignored, so a truncated completion can AUTO_APPLY on a truncating llama.cpp build (runtime unpinned; CJK/emoji/punctuation-heavy 4096-rune listings exceed ctx 4096) (LLM-1); Stage B can drop a validated Stage A finding and AUTO_APPLY (LLM-2); model allowlists let a model assert Go-owned/ungroundable codes (MODEL_ABSENT, CANARY_MISMATCH, SLA_EXPIRED…), producing false audit records (LLM-3); hashes/64-hex evidence IDs dominate Stage B tokens (LLM-5). Must be fixed before inference is enabled anywhere.
 ACCEPTANCE: truncated/limit/missing stop metadata and oversized prompts → MODEL_FAILURE, never AUTO_APPLY; Stage A findings survive into reason codes; grammar + Go reject system codes, v2 pins refused, historical rows byte-stable; no 64-hex in prompts, evidence aliases round-trip.
-STATUS: in-progress (war-room/mod72-4-model-path).
+STATUS: implemented (4b25d311, merged on war-room/moderation-agent): moderation-v3; truncation/stop metadata and /tokenize pre-flight fail closed (field names per pinned llama.cpp 3bb63cbc server-task.cpp:341-346); Stage A findings merged; ModelReasonCodes allowlists (chair: Stage B may assert DETERMINISTIC_CONFLICT — review-only); E-aliases, no 64-hex in prompts. Evidence: internal/moderation race 92.4% coverage, 8/8 mutants killed; native upstream GBNF validator 25/25 (6 accepted, 19 rejected; Stage A template sha256 89ee792d…, proposal 9b164c64…). Full internal/market DB halves failed only with load timeouts (A/B overlay showed order-dependence, not code). opsec-llm verification pending.
 
 ### MOD72-5 — Detection and image-hash precision (LLM-4, LLM-6, LLM-7, LLM-E6)
 
