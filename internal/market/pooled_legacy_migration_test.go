@@ -295,16 +295,16 @@ func embeddedMigrationsByVersion(t *testing.T) ([]migration, map[int]migration) 
 	return list, byVersion
 }
 
-// MOD72-3: main gained A-613's migration 128 before the moderation migrations merged. A database at
-// 001–124 plus 128 must take 125, 126, 127 and 129 on upgrade, keeping 128's original record.
+// MOD72-3: main gained migrations 128 and 131–133 before the moderation migrations merged. A database
+// with every migration except 125, 126, 127 and 134 must take those four on upgrade, keeping the others' records.
 func TestModerationMigrationsAfterMain128(t *testing.T) {
 	list, byVersion := embeddedMigrationsByVersion(t)
-	if byVersion[128].Name != "xmr_settlement_hand_settled" || byVersion[129].Name != "moderation_capacity" {
-		t.Fatalf("embedded 128/129 are %q/%q", byVersion[128].Name, byVersion[129].Name)
+	if byVersion[128].Name != "xmr_settlement_hand_settled" || byVersion[134].Name != "moderation_capacity" {
+		t.Fatalf("embedded 128/134 are %q/%q", byVersion[128].Name, byVersion[134].Name)
 	}
 	var mainAfter613 []migration
 	for _, m := range list {
-		if m.Version <= 124 || m.Version == 128 {
+		if m.Version != 125 && m.Version != 126 && m.Version != 127 && m.Version != 134 {
 			mainAfter613 = append(mainAfter613, m)
 		}
 	}
@@ -340,7 +340,7 @@ func TestModerationMigrationsAfterMain128(t *testing.T) {
 }
 
 // MOD72-3: a database that an unmerged build recorded as 128_moderation_capacity is refused before any DDL,
-// naming both migrations, instead of skipping this build's 128 and failing inside 129.
+// naming both migrations, instead of skipping this build's 128 and failing inside 134.
 func TestMigrationNameMismatchRefused(t *testing.T) {
 	list, byVersion := embeddedMigrationsByVersion(t)
 	var divergent []migration
@@ -349,7 +349,7 @@ func TestMigrationNameMismatchRefused(t *testing.T) {
 			divergent = append(divergent, m)
 		}
 	}
-	divergent = append(divergent, migration{128, "moderation_capacity", byVersion[129].SQL})
+	divergent = append(divergent, migration{128, "moderation_capacity", byVersion[134].SQL})
 	e := newSelectedMigrationFixture(t, divergent)
 	const recorded = "SELECT string_agg(version || ':' || name || '@' || applied, ',' ORDER BY version) FROM schema_migrations"
 	before := agStr(e, recorded)

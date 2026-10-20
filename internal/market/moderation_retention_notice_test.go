@@ -17,7 +17,7 @@ import (
 )
 
 func TestModerationRetentionNoticePreservesLegacyCopiesAfterUpgradeExpiryAndDisable(t *testing.T) {
-	// Exercise the actual pre-129 trigger and tables. The old artifact is inserted
+	// Exercise the actual pre-134 trigger and tables. The old artifact is inserted
 	// before the upgrade; no immutability guard is disabled and no historical
 	// snapshot or proposal is edited to manufacture legacy contents afterward.
 	legacy := newPooledHistoricalFixture(t, 127)

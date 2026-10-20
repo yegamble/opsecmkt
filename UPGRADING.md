@@ -135,7 +135,7 @@ again even when the deposit is listed again, and its coins are settled with the 
 in the market clears that alert, so the order stays on the desk and under retention's `escrow_alert` reason. To list
 them, use the query in the *Except while it still claims deposits* item below.
 
-## Optional moderation proposals (migrations 125 through 127 and 129)
+## Optional moderation proposals (migrations 125 through 127 and 134)
 
 Application startup applies the append-only moderation tables/triggers and
 offline review receipts. Enqueueing and inference remain off, so existing
@@ -153,7 +153,7 @@ Old gateways may omit dHash, preserving exact SHA256 duplicate comparison.
 Existing images are not decoded again or backfilled. Perceptual similarity
 is advisory and cannot establish whether a listing's claims match a photo.
 
-Migration 129 changes new capture to digests and limited metadata. The worker
+Migration 134 changes new capture to digests and limited metadata. The worker
 reads source prose into memory only for the unchanged captured revision; stale
 or removed sources receive HOLD. New archived inputs retain coded metadata only;
 completed new jobs remove their active raw actor link. Legacy snapshots and
@@ -165,6 +165,16 @@ The `moderation-v2` protocol rejects model-written summaries/evidence and retire
 v1 pins. Go derives review text from codes, including the current presentation of
 legacy decisions. Upgrade the app/migrations before the controller. Completed
 metadata-only jobs are skipped by `--replay`; its output reports the count.
+
+The current `moderation-v3` protocol refuses v1 and v2 pins: change the
+controller's `--prompt-version` to `moderation-v3` when upgrading it. Models may
+no longer assert Go-owned failure, protocol, routing, deadline or deterministic
+codes; Stage A findings stay in the final result; prompts carry evidence aliases
+instead of hashes. The runtime must also serve llama.cpp's `/tokenize` and
+report `stop_type` (or the older `stopped_*` flags), `truncated` and
+`tokens_evaluated`. A prompt that cannot fit beside the output limit in the
+launcher's 4096-token context, or an unfinished generation, gets `MODEL_FAILURE`
+and human review. Stored v1/v2 decisions keep their bytes and still render.
 
 Capture now has atomic limits: three active jobs per actor, 256 pending globally,
 4096 lifetime allocation slots and 256 MiB reserved logical payload by default.

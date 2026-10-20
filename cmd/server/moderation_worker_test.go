@@ -35,8 +35,10 @@ func TestModerationWorkerRejectsInvalidConfiguration(t *testing.T) {
 
 func TestModerationWorkerRejectsRetiredPromptProtocol(t *testing.T) {
 	t.Setenv("MODERATION_ENABLED", "")
-	if err := runModerationWorker(context.Background(), []string{"--prompt-version", "moderation-v1"}, &bytes.Buffer{}); err == nil {
-		t.Fatal("retired model protocol was accepted")
+	for _, retired := range []string{"moderation-v1", "moderation-v2"} {
+		if err := runModerationWorker(context.Background(), []string{"--prompt-version", retired}, &bytes.Buffer{}); err == nil {
+			t.Fatalf("retired model protocol %s was accepted", retired)
+		}
 	}
 }
 
