@@ -194,6 +194,11 @@ Leave intake paused when payments are not enabled or a required check is pending
   `monerod` that `ESCROW_XMR_DAEMON_URL` reaches. The application only checks that
   the wallet is within 10 blocks of that daemon; it cannot tell two daemons apart
   ([payment flows](service-topology.md#allowing-only-required-service-flows)).
+- [ ] The escrow `monero-wallet-rpc` runs with
+  `--shared-ringdb-dir=WALLET_DIR/.shared-ringdb`, so its ring database is in its
+  wallet directory, backed up with the wallet files, where the
+  [stale-ring break-glass](../operator-guide.md#stale-ring-break-glass-a-618)
+  expects it.
 - [ ] Tor mode: payment-host Tor egress and blocked direct fallback have been
   checked at the actual daemon network boundary. Only after those checks is
   `ESCROW_XMR_TOR_RELAY=remote-tor` declared. The application cannot verify the

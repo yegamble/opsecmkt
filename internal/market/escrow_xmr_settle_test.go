@@ -979,6 +979,33 @@ func TestXMREscrowBuildRefusals(t *testing.T) {
 		t.Fatalf("after -4: %s", x.settlement(id4).State)
 	}
 
+	// A stale ring (A-618): -4 with monero-wallet-rpc 0.18.5.1's fixed text for it is recorded ring-stale (never the
+	// wallet's text), flagged on the second pass with the operator guide's break-glass; then built. -4 with any other
+	// text stays rpc:-4 (above).
+	o6, _, _ := x.completed()
+	id6, _ := x.release(o6)
+	x.fake.fault("transfer", fakeXMRStaleRing)
+	x.mustPoll()
+	if x.waitClass(id6) != xmrWalletRefusing+" "+xmrRingStale || x.staffFlags(o6) != 0 || x.settlement(id6).State != "requested" {
+		t.Fatalf("stale ring once: %s %q, staff %d", x.settlement(id6).State, x.waitClass(id6), x.staffFlags(o6))
+	}
+	x.fake.fault("transfer", fakeXMRStaleRing)
+	x.mustPoll()
+	if x.waitClass(id6) != xmrWalletRefused+" "+xmrRingStale || x.staffFlags(o6) != 1 || x.settlement(id6).State != "requested" {
+		t.Fatalf("stale ring persisting: %s %q, staff %d", x.settlement(id6).State, x.waitClass(id6), x.staffFlags(o6))
+	}
+	const breakGlass, noHand = "stale-ring break-glass", "Do not pay anything by hand for it, or it is paid twice."
+	if p := x.panel(o6, x.sessOf(o6, roleVendor)); !strings.Contains(p, breakGlass) || !strings.Contains(p, noHand) || strings.Contains(p, "real output") {
+		t.Fatalf("the order page does not say what to do about a stale ring:\n%s", p)
+	}
+	if agInt(x.testEnv, "SELECT count(*) FROM order_events WHERE order_id=$1 AND actor_id IS NULL AND strpos(note,$2)>0 AND strpos(note,$3)>0 AND strpos(note,'real output')=0", o6, breakGlass, noHand) != 1 {
+		t.Fatalf("staff's note does not name the break-glass: %q", x.events(o6))
+	}
+	x.mustPoll()
+	if x.settlement(id6).State != "relayed" || x.waitClass(id6) != "" {
+		t.Fatalf("after the stale ring: %s %q", x.settlement(id6).State, x.waitClass(id6))
+	}
+
 	// The connection dropped once after the request was sent: recorded, not flagged; the next pass builds, sends and
 	// clears it (TestXMREscrowBuildSetAside: twice in a row).
 	o5, _, _ := x.completed()

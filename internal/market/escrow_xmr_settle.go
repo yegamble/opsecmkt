@@ -172,6 +172,9 @@ func xmrFlagNotePrefix(s *xmrSettleRow, class string, threshold int64) string {
 const xmrReRequestMissingText = "A deposit this settlement spends is no longer listed by the escrow wallet (a reorganisation or a double spend took it out of the chain). " +
 	"This settlement pays the same destinations and amounts as the one it replaces, from exactly the same coins, so the market builds nothing until the wallet lists that deposit again, however long that takes; it then builds and sends it. Market staff were notified."
 
+// xmrNoHandPay ends the text of a wait the market resolves itself once the operator has acted (A-618).
+const xmrNoHandPay = "Do not pay anything by hand for it, or it is paid twice."
+
 // xmrSettleWhy is xmrSettleWaitText for a settlement of kind that supersedes settlement supersedes (0 for none).
 func xmrSettleWhy(class, kind string, supersedes, threshold int64) string {
 	if class == xmrWaitMissing && supersedes != 0 {
@@ -221,6 +224,10 @@ func xmrSettleWaitText(class, kind string, threshold int64) string {
 		return "The escrow wallet refuses the market fee address as invalid, so the market cannot send this settlement. Market staff were notified; it is built again once the operator has corrected ESCROW_XMR_FEE_ADDRESS."
 	case class == xmrDestRefused:
 		return "The escrow wallet refuses one of this settlement's destination addresses as invalid, so the market cannot send it. Market staff were notified."
+	case class == xmrWalletRefusing+" "+xmrRingStale:
+		return "The escrow wallet refused to build this transaction (" + xmrRingStale + "): the ring it stored for these coins when it built them before predates a reorganisation that moved them, so nothing was built or sent. The market tries again on its next pass. " + xmrNoHandPay
+	case class == xmrWalletRefused+" "+xmrRingStale:
+		return "The escrow wallet keeps refusing to build this transaction (" + xmrRingStale + "): the ring it stored for these coins when it built them before predates a reorganisation that moved them, and it may never build it on its own. Nothing was built or sent; the market tries again on each pass. Market staff were notified: the operator clears that stored ring as the operator guide's stale-ring break-glass says. " + xmrNoHandPay
 	case strings.HasPrefix(class, xmrWalletRefusing+" "):
 		return "The escrow wallet refused to build this transaction (" + strings.TrimPrefix(class, xmrWalletRefusing+" ") + "); the market tries again on its next pass."
 	case strings.HasPrefix(class, xmrWalletRefused+" "):
@@ -968,6 +975,9 @@ func (a *App) xmrBuildRefused(ctx context.Context, s *xmrSettleRow, plan settleP
 		return a.xmrSettleWaits(ctx, s, class)
 	}
 	code := re.Class
+	if re.Refusal == xmrRingStale { // A-618: a ring stored before a reorganisation; recorded by its fixed class only
+		code = xmrRingStale
+	}
 	if s.Wait == xmrWalletRefusing+" "+code || s.Wait == xmrWalletRefused+" "+code || xmrFeeEstimateWait(s.Wait) {
 		return a.xmrSettleWaits(ctx, s, xmrWalletRefused+" "+code)
 	}
