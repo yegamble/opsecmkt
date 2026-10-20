@@ -1876,7 +1876,7 @@ STATUS: open (outside PR #99's scope; candidate for its own PR).
 ### MOD72-9 — Split the Go CI job again (owner decision: split, don't raise timeouts)
 
 DECISION: ACCEPT (P1 for PR #99's merge gate). Main's `go` job takes ~17 of its 20 minutes; PR #99's added tests pushed run 39498912726 to exactly 20 minutes (cancelled). Follow A-465: a third job with an exact, test-checked partition of top-level tests; nothing skipped, no timeout raised.
-STATUS: in-progress (war-room/mod72-9-ci-split). Also: CI 39498912726's one real failure (pre-129 fixture seeding pgp_access_key) fixed by the chair in b6a43b4d.
+STATUS: implemented (8e7e3f97, merged): new `go-desk` job (desk, moderation, listing, admin, dispute, retention, vendor prefixes); `go` skips the union; tests/test_ci_go_split.py checks union, disjointness and exactly-once over source (11/11 deliberate breakages caught); listing check 1737 tests = 1068 + 299 + 370, 0 overlaps/gaps; actionlint OK. CI timing pending. Also: CI 39498912726's one real failure (pre-129 fixture seeding pgp_access_key) fixed by the chair in b6a43b4d.
 
 ### MOD72-6 — Listing hold mode with per-vendor auto-approve (owner directive, LLM-8)
 
