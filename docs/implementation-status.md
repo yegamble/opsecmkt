@@ -61,6 +61,51 @@ app-only replacement, RAM unlock and offline Tor startup have
 authorization, remote hosts and production policy still require operator rehearsal.
 
 
+## Moderation proposals
+
+Append-only migrations 125 through 127 add opt-in moderation snapshots, jobs,
+decisions, risk/injection records, coalesced escalations, worker status and
+one-use offline review receipts. Enqueueing and inference are disabled by
+default. A separate `moderation-worker` handles bounded jobs; the web process
+does not call inference. The deterministic Go core normalizes hostile text,
+checks advisory signals and routes uncertainty to human review. The optional
+local Unix-socket adapter separates extraction and proposal stages, supplies
+GBNF and independently validates output, bounds, references and canaries.
+
+The private `/admin/moderation` queue shows bounded status and accepts confirmed
+review annotations. Optional PGP-encrypted, Ed25519-signed packets can be
+downloaded there; a separate offline action key can sign a one-use review token
+for the private `/admin/moderation/offline` page without an application login.
+All three review choices annotate a proposal only. There is no moderation
+executor for money, bans, takedowns, order transitions or generated replies.
+Expiry means `HOLD`; stale content cannot be accepted as current.
+
+The initial sources are listing edits, normalized-upload metadata, disputes,
+reviews and newly flagged payments. Inference receives no encrypted messages,
+shipping/delivery content, image pixels, keys, wallet identifiers or transaction
+details. New gateway uploads can supply a validated 64-bit dHash computed during
+existing normalization, enabling bounded advisory perceptual-duplicate checks
+alongside exact SHA256. Old gateways may omit it and old images are not
+backfilled. No image decoding moves into the application or worker.
+Photo-claim verification and a full dispute-thread timeline remain
+unimplemented. Existing payment timers/state
+machines retain their complete authorization and financial checks.
+
+Regression coverage includes `TestInjectionCorpus`,
+`TestLocalModelTwoStageContainment`, `TestLocalModelNoProxyOrRedirectEgress`,
+`TestModerationWorkerInjectionReplayAndNoTargetMutation`,
+`TestModerationLeaseRecoveryAndConcurrentClaim`,
+`TestModerationDeadModelCompletesHumanProposal`,
+`TestModerationAdminPublicRefusedBeforeReading` and
+`TestModerationOfflineReviewNoLoginReplayOrStaleAcceptance`. Database tests
+require a disposable `TEST_DATABASE_URL`; a skipped suite is not evidence.
+The standalone inference sandbox has a synthetic container boundary probe;
+real selected-runtime grammar behavior, workload sizing, live private Tor access
+and deployed host isolation still require operator rehearsal. No model/runtime
+is selected or downloaded automatically. See the
+[moderation guide](moderation-agent.md), [design](moderation-agent-design.md)
+and [acceptance plan](acceptance.md#moderation-agent).
+
 ## Site access and registration
 
 Administrators can independently select public or members-only site access and

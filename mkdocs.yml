@@ -95,6 +95,9 @@ nav:
       - Troubleshooting: install/troubleshooting.md
   - Operate:
       - Operator guide: operator-guide.md
+      - Moderation agent: moderation-agent.md
+      - Moderation review runbook: moderation-escalation-runbook.md
+      - Moderation operational hygiene: signature-hygiene.md
       - Security and OPSEC: security-operations.md
       - Data retention and privacy policy: data-retention-privacy-policy.md
       - Retention operations: retention.md
@@ -103,6 +106,7 @@ nav:
       - Per-order escrow: escrow.md
   - Reference:
       - Native CLI reference: install/cli-reference.md
+      - Moderation design and threat model: moderation-agent-design.md
       - Installer reference: install/installer-reference.md
       - Implementation status: implementation-status.md
       - Acceptance checks: acceptance.md

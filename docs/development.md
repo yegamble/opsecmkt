@@ -196,6 +196,19 @@ to publish and Cloudflare still sees each request; the docs onion stays the addr
 
 ## Run tests
 
+Moderation package tests exercise deterministic decisions, hostile input/output
+and local-transport failure behavior. Its database tests need the same disposable
+`TEST_DATABASE_URL` as other integration tests. See the
+[moderation acceptance plan](acceptance.md#moderation-agent) before interpreting
+a unit pass as deployed isolation or private-ingress evidence. Never supply a
+production inference endpoint, database or wallet to tests.
+
+`tests/test_moderation_escalation_verifier.py` uses disposable Ed25519 keys and
+OpenSSL to check the offline verifier's exact-byte signature compatibility,
+external public-key pin, hostile JSON and output-file safeguards. It needs no
+database or network and skips its cryptographic interoperability cases when
+OpenSSL is unavailable; report that skip explicitly.
+
 ### Go and PostgreSQL
 
 Fast checks run without a database, but database integration tests will **skip**:

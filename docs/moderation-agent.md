@@ -1,0 +1,256 @@
+# Moderation agent
+
+The moderation service records abuse-review proposals. It does not change
+listings, orders, accounts, roles or funds. Marketplace forms do not wait for a
+model response. Existing staff and escrow workflows remain authoritative.
+
+Read the [design and threat model](moderation-agent-design.md), the
+[review runbook](moderation-escalation-runbook.md) and the
+[operational checklist](signature-hygiene.md) before enabling it.
+
+## Enable the controller without a model
+
+Start the application once to apply migrations 125 through 127. The migration keeps
+moderation enqueueing disabled. No model, runtime download or worker is required
+for ordinary application startup.
+
+Prepare a private, one-line database URL file owned by the controller service
+account with mode `0600`. Keep it out of prompts, shell history and inference
+mounts. Run the separately supervised controller from a clean environment:
+
+```sh
+env -i PATH=/usr/bin:/bin ./opsecmkt moderation-worker \
+  --enabled --database-url-file /secure/moderation/database-url --once
+```
+
+Remove `--once` to keep running. The default is at most 20 jobs per pass, with a
+one-minute interval. Enablement persists in the database: subsequent supported
+content changes enqueue snapshots in their transaction. Existing content is not
+automatically backfilled. Stopping a worker preserves enqueueing and durable
+jobs; it does not disable the feature. To stop future enqueueing:
+
+```sh
+env -i PATH=/usr/bin:/bin ./opsecmkt moderation-worker \
+  --disable --database-url-file /secure/moderation/database-url
+```
+
+This preserves existing jobs, proposals and evidence. Do not delete tables or
+rerun setup to clear a queue. `--replay` explicitly revisits completed snapshots
+under the selected policy; an existing decision for the same snapshot and policy
+is reused. Model output is not guaranteed bit-for-bit reproducible: the durable
+store retains the first validated result for its stable identity.
+
+| Controller option | Default or meaning |
+| --- | --- |
+| `--enabled` | Off; `MODERATION_ENABLED=on` also enables it |
+| `--database-url-file` | Private one-line DSN; defaults to `DATABASE_URL_FILE`; `DATABASE_URL` is accepted only when no file is selected |
+| `--once`, `--replay` | Off; one bounded pass, or explicit completed-job replay |
+| `--interval`, `--batch` | `1m`, `20`; intervals 10 seconds through 1 hour, batches 1 through 100 |
+| `--model` | Off; inference requires explicit opt-in |
+| `--model-socket` | `MODERATION_MODEL_SOCKET`; absolute `.sock` path |
+| `--weights` | `MODERATION_WEIGHTS_PATH`; reviewed local weights file |
+| `--weights-sha256`, `--model-id` | `MODERATION_WEIGHTS_SHA256`, `MODERATION_MODEL_ID`; weights pin and bounded operator inventory label |
+| `--prompt-version`, `--model-timeout` | `moderation-v1`, `20s`; prompt must match this build, timeout 1 through 30 seconds |
+| `--sla`, `--confidence-floor` | `24h`, `0.9`; deadline is based on enqueue time, expiry means `HOLD` |
+| `--new-actor-days`, `--abuse-threshold` | `14`, `5`; development policy values, not production measurements |
+| `--escalation-recipient`, `--signing-key` | Optional OpenPGP public recipient and separate Ed25519 worker seed; both or neither, as described in the [runbook](moderation-escalation-runbook.md#encrypted-offline-packets) |
+
+The worker reads only its selected database and optional escalation-signing
+files. It does not import the application's other `_FILE` secrets. The trusted
+controller still has database authority; process/file permissions must prevent
+the model from obtaining it.
+
+## Optional local inference
+
+Select a reviewed runtime image supporting native Unix-socket HTTP and the
+required llama.cpp completion/grammar API. There is no selected or downloaded
+default image/model. The standalone configuration is
+[`deploy/moderation/compose.yaml`](../deploy/moderation/compose.yaml), separate
+from application deployment and never started by application redeployment.
+
+Set these non-secret artifact selections in the maintenance shell:
+
+| Variable | Required selection |
+| --- | --- |
+| `MODERATION_RUNTIME_IMAGE` | Reviewed, already-present image pinned as `IMAGE@sha256:DIGEST` |
+| `MODERATION_WEIGHTS_FILE` | Absolute path to reviewed local GGUF, readable by UID `65532` |
+| `MODERATION_WEIGHTS_SHA256` | Exact lowercase 64-character SHA256 digest |
+| `MODERATION_SOCKET_DIR` | Dedicated empty absolute directory, owned by `65532:65532`, mode `0770` or `02770` |
+
+The controller needs UID or supplementary group access to `65532` for the socket,
+plus read-only access to the same weights bytes for its pin check. Do not give
+the model the controller's database file, escalation signer or installation
+directory. After reviewing the effective configuration:
+
+```sh
+python3 deploy/moderation/preflight.py
+docker compose --env-file /dev/null -f deploy/moderation/compose.yaml \
+  --profile moderation-inference up -d --no-build --pull never
+```
+
+The launcher verifies weights, clears the inherited model environment and runs
+`/app/llama-server` on `/run/moderation/inference.sock`. The reviewed image must
+supply `/bin/sh`, `env`, `sha256sum` and that executable with native `.sock` host
+support, `--no-webui` and `--log-disable`. No TCP port is published. The container
+has no network, a read-only root and weights mount, a dedicated socket directory,
+bounded temporary storage and resource limits. These declarations need a real
+selected-runtime rehearsal; they do not attest image contents or a shared host
+kernel. A stale socket is not removed automatically: verify the old runtime
+stopped before an operator removes its dedicated socket file.
+
+Then add the local adapter options to the controller command:
+
+```sh
+env -i PATH=/usr/bin:/bin ./opsecmkt moderation-worker \
+  --enabled --database-url-file /secure/moderation/database-url \
+  --model --model-socket /run/moderation/inference.sock \
+  --weights /models/model.gguf --weights-sha256 REVIEWED_LOWERCASE_SHA256 \
+  --model-id REVIEWED_MODEL_LABEL --prompt-version moderation-v1
+```
+
+Replace example paths and pins with the controller's actual read-only mounts
+and reviewed values. The adapter follows no redirects, DNS, ambient proxy,
+remote API or download path. A local weights hash verifies bytes available to
+the controller; it cannot attest which bytes a compromised server loaded.
+
+## Trust boundary
+
+The application constructs deterministic context from its database. User text
+cannot establish an order's state, a payment invariant, an actor's age or a
+signer's authority. Every submitted field is untrusted data, even when it looks
+like a system prompt, claims to be an administrator, names the output schema or
+imitates a delimiter.
+
+The Go package normalizes and bounds submitted text, tags provenance and records
+injection signals. Deterministic checks provide review signals such as duplicate
+content, incomplete fields, unusual prices and invalid state proposals. A signal
+is not a binding accusation. Missing facts or a failed model call route to human
+review; they do not block a vendor or authorize punishment.
+
+Local inference uses two stages. Stage A extracts bounded findings from the
+untrusted material. Go validates those findings before Stage B receives them
+with trusted context. Stage B does not receive the original material. Both
+outputs are constrained and validated; neither stage receives tools or execution
+authority. Structurally valid output can still be wrong or malicious, so an
+independent deterministic and authorization boundary remains necessary.
+
+## Proposal protocol
+
+Each proposal has all of these JSON fields. Additional fields, missing fields,
+unknown enums, invalid bounds and unrelated evidence references are refused.
+
+| Field | Meaning |
+| --- | --- |
+| `item_id` | Exact identity supplied by the controller |
+| `action` | An allowlisted suggestion, such as `NO_ACTION` or `FLAG_REVIEW` |
+| `confidence` | Finite value from 0 through 1; uncertainty must reduce confidence |
+| `reason_codes` | Codes from the Go allowlist |
+| `injection_suspected` | Whether hostile instructions or protocol manipulation were detected |
+| `injection_evidence` | Bounded evidence when suspicion is true |
+| `evidence_ids` | References from the supplied item only |
+| `summary` | Bounded review text, rendered as escaped text |
+| `canary` | Exact reserved response-integrity token supplied for this request |
+
+The action names include suggestions for sensitive actions so those proposals
+can be identified and escalated. Their presence in the schema grants no right
+to execute them. A release or refund suggestion cannot satisfy a payment
+invariant, and an arbitrary model assertion cannot become a human signature.
+
+The canary is not secret and does not establish prompt-injection resistance by
+itself. Go schema and reference validation supplement grammar-constrained
+decoding; syntax alone cannot establish factual accuracy. A stopped runtime or
+truncated generation can still produce incomplete JSON. Go rejects it and
+preserves the human-review path. The embedded grammar still needs validation
+against the operator's selected real runtime.
+
+## Dispositions and failure behavior
+
+| Disposition | Effect |
+| --- | --- |
+| `AUTO_APPLY` | Record a validated benign classification; no marketplace entity is changed |
+| `QUEUE_HUMAN` | Preserve the proposal for authorized review with a deadline |
+| `ESCALATE_ADMIN` | Mark the item for administrator attention on the existing protected surface |
+| `HOLD` | Preserve current marketplace state and evidence; take no proposed action |
+
+Injection suspicion and high-impact cases escalate. Money, punitive actions,
+new actors, novel cases, conflicting facts and low confidence cannot become
+automatic punishment. An absent, slow or dead model leaves deterministic checks
+available and uncertain cases reviewable. The default when a review deadline
+expires is `HOLD`.
+
+No new public listener, browser script, external inference API, model download,
+automatic reply publication, money executor or ban executor is provided.
+
+## Input coverage and remaining limits
+
+| Source | Queued content and limits |
+| --- | --- |
+| Listing create/update | Title, description, category, region, kind and atomic price; bounded category-price sample and previous text fingerprints supply advisory baselines |
+| New normalized upload | Description, image metadata, SHA256 of normalized bytes and optional gateway-computed dHash; no pixels or original image reaches inference |
+| Dispute create/update | Reason, status/resolution and current order state; money-related cases escalate |
+| Review create/update | Body and rating |
+| Newly flagged payment | Flag/disposition and current order state; no transaction ID, deposit address or wallet details |
+
+Encrypted messages, shipping addresses, delivery contents, keys and raw upload
+bytes are excluded. Migration 127 stores an optional 64-bit perceptual dHash
+computed on the upload gateway from the image it already decoded and normalized.
+The worker compares a bounded sample of trusted hashes; Hamming distance at
+most five is an advisory duplicate signal, not proof of copying. Old gateways
+may omit dHash and retain exact SHA256 comparison; existing images are not
+backfilled. Upgrade the app and apply migration 127 first, then update the
+separate gateway: an old app's strict upload envelope rejects the added field,
+while a new app accepts old gateways that omit it. Neither
+hash comparison nor the text-only model validates listing claims against photos.
+Stage B receives validated finding codes and references, not a full dispute
+thread or its original prose. It cannot produce a faithful evidence-rich thread
+summary or timeline from that limited context. The core's advisory
+order/timer observations do not replace the market's full transactional state
+machine or schedule new release/refund actions.
+
+## Records and recovery
+
+Audit identity includes input and output digests, policy/prompt revision, model
+identity and weights digest, decision, reason codes and actor. Repeated work must
+reuse the same decision identity instead of creating conflicting outcomes.
+Current entity revisions must be checked before a result can be recorded against
+them. A review record is not proof that its underlying allegation is true.
+
+The database and its backups contain additional moderation context. Restrict
+access and review storage growth and preservation obligations. Do not assume
+that existing retention jobs erase moderation records: these new snapshots and
+immutable proposals are not included in the existing retention sweeps. Do not
+enable the feature where that conflicts with the selected evidence-retention
+policy until a reviewed retention path exists. Model prompts, raw
+transport errors and runtime endpoints do not belong in public logs or panels.
+
+## Review and service inventory
+
+On the private administrator connection, open `/admin/moderation`. Ordinary
+moderators and public ingress cannot reach this queue. It shows bounded health
+classes, prompt and weights pins, last pass, job/proposal/escalation counts and
+injection-suspicion counts. Endpoint identities and raw transport errors are
+omitted. Current status is the last worker observation, not live runtime
+attestation. **Accept**, **Dismiss** and **Hold** annotate a proposal only; the
+existing marketplace entity is unchanged.
+
+To include a selected llama.cpp runtime in the existing signed dependency
+inventory, explicitly pass `--current llama.cpp=bNNNN` to the separate
+`versions-worker`, using its reviewed installed build number. This opts that
+worker into the fixed official release source. Existing installations without
+that inventory entry make no additional runtime-release request. The app reads
+the signed report; opening an administrator page does not query inference or
+upstream releases. The reported version is operator inventory, not an observed
+runtime binary. See [version-worker setup](install/service-topology.md#version-worker-host).
+
+## Production gates
+
+The operator must choose and review the model/runtime, immutable artifact pins,
+CPU or GPU budget, real service isolation, review staffing, SLA and evidence
+retention. Default values are conservative development policy, not measured
+production tuning. There is no remote-inference or dead-man action path.
+
+Run the package and database tests, the strict documentation build, and an
+actual deployed isolation/failure rehearsal before production enablement. Unit
+tests can establish adapter behavior; they cannot establish a host's mounts,
+network namespace or root administrator trust. See the
+[acceptance plan](acceptance.md#moderation-agent) for the required distinctions.

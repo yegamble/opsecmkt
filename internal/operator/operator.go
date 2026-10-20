@@ -2,6 +2,7 @@ package operator
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -275,6 +276,7 @@ func initialize(ctx context.Context, args []string, out, errOut io.Writer) error
 	moneroTLSKey := f.String("monero-rpc-key", "", "optional Monero HTTPS client key PEM; 0600")
 	dependencyDir := f.String("dependency-report-dir", "", "read-only public report directory; keep worker signing keys elsewhere")
 	dependencyKey := f.String("dependency-report-public-key", "", "independently pinned 64-hex Ed25519 worker public key file")
+	moderationActionKey := f.String("moderation-action-public-key", "", "optional offline moderation review Ed25519 public key file (64 hex); requires MODERATION_ACTION_AUDIENCE and private administrator onion")
 	var settings settingsFlags
 	f.Var(&settings, "set", "additional non-secret runtime setting KEY=VALUE; repeatable")
 	if err := f.Parse(args); err != nil {
@@ -457,16 +459,22 @@ func initialize(ctx context.Context, args []string, out, errOut io.Writer) error
 			}
 		}
 	}
-	for _, entry := range []struct{ key, source string }{{"ESCROW_XMR_SEED_KEY", *seedKey}, {"AUDIT_EXPORT_RECIPIENT", *auditRecipient}, {"DEPENDENCY_REPORT_PUBLIC_KEY", *dependencyKey}} {
+	for _, entry := range []struct{ key, source string }{{"ESCROW_XMR_SEED_KEY", *seedKey}, {"AUDIT_EXPORT_RECIPIENT", *auditRecipient}, {"DEPENDENCY_REPORT_PUBLIC_KEY", *dependencyKey}, {"MODERATION_ACTION_PUBLIC_KEY", *moderationActionKey}} {
 		if entry.source == "" {
 			continue
 		}
 		var b []byte
 		var err error
-		if entry.key == "DEPENDENCY_REPORT_PUBLIC_KEY" {
+		if entry.key == "DEPENDENCY_REPORT_PUBLIC_KEY" || entry.key == "MODERATION_ACTION_PUBLIC_KEY" {
 			b, err = readImport(entry.source, false)
 			if err == nil {
 				err = validateWorkerPublicKey(b)
+			}
+			if err == nil && entry.key == "MODERATION_ACTION_PUBLIC_KEY" {
+				// The runtime verifier accepts canonical lowercase hex and one LF.
+				// Normalize harmless source formatting without changing key bytes.
+				raw, _ := hex.DecodeString(strings.TrimSpace(string(b)))
+				b = []byte(hex.EncodeToString(raw) + "\n")
 			}
 		} else {
 			b, err = readPublicKey(entry.source)

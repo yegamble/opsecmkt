@@ -235,6 +235,7 @@ func (g *uploadGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				img, err = decodeInSlot(ctx, clean, info, u.route.kind)
 				if err == nil {
 					result.Full, result.Thumb, result.Width, result.Height = img.full, img.thumb, img.width, img.height
+					result.PerceptualHash = img.perceptualHash
 				}
 			}
 		}
@@ -318,6 +319,7 @@ func gatewayRefusal(w http.ResponseWriter, status int, message string) {
 type uploadAdmission struct{ Path, Session, CSRF, Host, Origin, FetchSite string }
 type uploadFinish struct {
 	Ticket, ID, Description string
+	PerceptualHash          string `json:"perceptual_hash,omitempty"`
 	Full, Thumb             []byte
 	Width, Height           int
 	Status                  int
@@ -573,7 +575,7 @@ func (a *App) finishGatewayUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer release()
-	img := encodedImage{full: v.Full, thumb: v.Thumb, width: v.Width, height: v.Height}
+	img := encodedImage{full: v.Full, thumb: v.Thumb, width: v.Width, height: v.Height, perceptualHash: v.PerceptualHash}
 	redirect, err := a.storeImage(r.Context(), browser, ticket.admission.Session, ticket.actor, route, uploadForm{id: v.ID, description: v.Description}, img)
 	var he *httpError
 	switch {
@@ -604,7 +606,7 @@ func (a *App) finishGatewayUpload(w http.ResponseWriter, r *http.Request) {
 // app process. The trusted gateway's encoder emits baseline JPEG with one scan,
 // no APP/COM metadata, no embedded image and exactly one final EOI marker.
 func validGatewayJPEGs(v uploadFinish, kind uploadKind) bool {
-	if len(v.Full) == 0 || len(v.Full) > maxFullBytes || len(v.Thumb) == 0 || len(v.Thumb) > maxThumbBytes {
+	if !validPerceptualHash(v.PerceptualHash) || len(v.Full) == 0 || len(v.Full) > maxFullBytes || len(v.Thumb) == 0 || len(v.Thumb) > maxThumbBytes {
 		return false
 	}
 	fw, fh, ok := normalizedJPEGDimensions(v.Full)

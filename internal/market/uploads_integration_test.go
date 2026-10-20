@@ -147,8 +147,8 @@ func TestRefusedUploadLeavesNoRow(t *testing.T) {
 	}
 }
 
-// The images table has exactly the ruled columns: nothing for a file name, source, original size, hash, scan
-// or hidden flag.
+// The images table keeps the normalized picture and optional perceptual dHash.
+// It stores no file name, source, original size/hash, scan result or hidden flag.
 func TestImageSchemaColumnsAllowList(t *testing.T) {
 	e := newTestApp(t)
 	rows, err := e.DB.Query(`SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='images' ORDER BY column_name`)
@@ -162,7 +162,7 @@ func TestImageSchemaColumnsAllowList(t *testing.T) {
 		cols = append(cols, c)
 	}
 	rows.Close()
-	want := []string{"created", "description", "full", "height", "id", "kind", "owner_user_id", "product_id", "thumb", "width"}
+	want := []string{"created", "description", "full", "height", "id", "kind", "owner_user_id", "perceptual_hash", "product_id", "thumb", "width"}
 	if !slices.Equal(cols, want) {
 		t.Fatalf("images columns %q, want %q", cols, want)
 	}
@@ -170,13 +170,14 @@ func TestImageSchemaColumnsAllowList(t *testing.T) {
 	uid, _ := e.user("schema_vendor", "vendor")
 	pid := e.product(uid, "physical")
 	for name, q := range map[string]string{
-		"photo without listing":  `INSERT INTO images(id,owner_user_id,kind,"full",thumb,width,height) VALUES('0123456789abcdef0123456789abcdef',$1,'photo','\x00','\x00',1,1)`,
-		"avatar with listing":    `INSERT INTO images(id,owner_user_id,product_id,kind,"full",thumb,width,height) VALUES('0123456789abcdef0123456789abcdef',$1,'` + pid + `','avatar','\x00','\x00',1,1)`,
-		"full over 2 MiB":        `INSERT INTO images(id,owner_user_id,kind,"full",thumb,width,height) VALUES('0123456789abcdef0123456789abcdef',$1,'avatar',decode(repeat('00',2097153),'hex'),'\x00',1,1)`,
-		"thumb over 256 KiB":     `INSERT INTO images(id,owner_user_id,kind,"full",thumb,width,height) VALUES('0123456789abcdef0123456789abcdef',$1,'avatar','\x00',decode(repeat('00',262145),'hex'),1,1)`,
-		"guessable id":           `INSERT INTO images(id,owner_user_id,kind,"full",thumb,width,height) VALUES('1',$1,'avatar','\x00','\x00',1,1)`,
-		"long description":       `INSERT INTO images(id,owner_user_id,kind,"full",thumb,width,height,description) VALUES('0123456789abcdef0123456789abcdef',$1,'avatar','\x00','\x00',1,1,repeat('a',251))`,
-		"width over 1200 pixels": `INSERT INTO images(id,owner_user_id,kind,"full",thumb,width,height) VALUES('0123456789abcdef0123456789abcdef',$1,'avatar','\x00','\x00',1201,1)`,
+		"photo without listing":     `INSERT INTO images(id,owner_user_id,kind,"full",thumb,width,height) VALUES('0123456789abcdef0123456789abcdef',$1,'photo','\x00','\x00',1,1)`,
+		"avatar with listing":       `INSERT INTO images(id,owner_user_id,product_id,kind,"full",thumb,width,height) VALUES('0123456789abcdef0123456789abcdef',$1,'` + pid + `','avatar','\x00','\x00',1,1)`,
+		"full over 2 MiB":           `INSERT INTO images(id,owner_user_id,kind,"full",thumb,width,height) VALUES('0123456789abcdef0123456789abcdef',$1,'avatar',decode(repeat('00',2097153),'hex'),'\x00',1,1)`,
+		"thumb over 256 KiB":        `INSERT INTO images(id,owner_user_id,kind,"full",thumb,width,height) VALUES('0123456789abcdef0123456789abcdef',$1,'avatar','\x00',decode(repeat('00',262145),'hex'),1,1)`,
+		"guessable id":              `INSERT INTO images(id,owner_user_id,kind,"full",thumb,width,height) VALUES('1',$1,'avatar','\x00','\x00',1,1)`,
+		"long description":          `INSERT INTO images(id,owner_user_id,kind,"full",thumb,width,height,description) VALUES('0123456789abcdef0123456789abcdef',$1,'avatar','\x00','\x00',1,1,repeat('a',251))`,
+		"width over 1200 pixels":    `INSERT INTO images(id,owner_user_id,kind,"full",thumb,width,height) VALUES('0123456789abcdef0123456789abcdef',$1,'avatar','\x00','\x00',1201,1)`,
+		"malformed perceptual hash": `INSERT INTO images(id,owner_user_id,kind,"full",thumb,width,height,perceptual_hash) VALUES('0123456789abcdef0123456789abcdef',$1,'avatar','\x00','\x00',1,1,'not-a-hash')`,
 	} {
 		if _, err := e.DB.Exec(q, uid); err == nil {
 			t.Errorf("%s: accepted", name)

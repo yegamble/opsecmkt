@@ -43,6 +43,7 @@ admin panel renders on exactly one section, and every page carries the section n
 </section>
 <section class="panel" aria-labelledby="admin-sections">
 <h2 id="admin-sections">Sections</h2>
+<p><a class="text-link" href="/admin/moderation">Private moderation review and worker status</a> (private administrator connection required).</p>
 <ul class="admin-section-list">{{range .AdminSections}}
 <li><a class="text-link" href="{{.URL}}">{{.Name}}</a>: {{.Summary}}{{with $.AdminSectionAlert .Slug}} <strong>{{.}}</strong>{{end}}</li>{{end}}
 </ul>

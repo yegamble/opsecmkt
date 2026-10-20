@@ -30,6 +30,50 @@ This is a verification plan, not a declaration that every check has passed. Reco
 
 Per-order escrow is the only payment path (A-448, A-492). Checks of payment code removed before it are deleted rather than kept as history. A database from an older release with payment history this build does not support is refused at startup by migrations 107 and 108: see [Legacy database refusal](#legacy-database-refusal-a-448-a-492) and [UPGRADING sections 58](../UPGRADING.md#58-pooled-wallet-removal-for-fresh-installs-a-448) and [59](../UPGRADING.md#59-pooled-history-refused-migration-108-a-492).
 
+## Moderation agent
+
+Use the [moderation design](moderation-agent-design.md) and
+[operator guide](moderation-agent.md) when reviewing this service. These are
+acceptance requirements, not a declaration of deployed verification:
+
+- Deterministic normalization and replay remain stable for the same input and
+  policy. Injection fixtures include instruction overrides, delimiter imitation,
+  Unicode controls and mixed scripts, oversized inputs, nested JSON and an
+  instruction to mark an order delivered.
+- Missing, timed-out, stopped and invalid local model responses leave the market
+  usable and preserve a human-review path. No vendor request waits for inference.
+- Grammar constraints are followed by Go schema, allowlist, bounds, canary and
+  evidence-reference validation. Stage B receives validated findings rather than
+  raw submitted text. No model response gains a tool, signer or database authority.
+- Durable claims recover after interruption. Reprocessing one input/revision and
+  policy reuses its decision identity. Stale entity revisions do not change
+  marketplace state. Deadline expiry preserves state (`HOLD`).
+- Proposal queues/status require an authenticated current administrator on the
+  existing private ingress. The separate offline page accepts only a valid,
+  revision-bound signed review token with CSRF/origin checks; it exposes no queue
+  data without an application login. Public ingress, spoofed
+  `Host`/forwarding headers and ordinary marketplace accounts cannot reach
+  protected moderation data.
+- Optional offline packets are encrypted before export and their signatures
+  verify against an independently pinned worker key. Action-token signatures
+  use a separate offline key and installation audience; replay, expiry, changed
+  content and already-reviewed items are refused transactionally. Token review
+  still changes no marketplace entity or payment.
+- Moderation cannot move money, change an order, ban an account or hide a listing.
+  Any later binding action uses the existing independently authorized workflow.
+- The adapter accepts only its configured local Unix socket, with bounded calls
+  and no external inference, redirects, model downloads or ambient proxy egress.
+  Deployed runtime secret/mount/network isolation needs an actual host rehearsal;
+  package tests alone cannot establish it.
+- Administrator diagnostics expose only bounded review metadata and health
+  classes, not runtime endpoints, credentials or raw transport errors. Verify
+  no-JavaScript rendering and sensitive-data access on the deployed private path.
+- Build documentation in strict mode and record actual test results. A skipped
+  database, browser, runtime/container or live Tor check remains unverified.
+
+Model selection, resource budget, SLA, evidence retention and deployed isolation
+remain [operator decisions](moderation-agent-design.md#decide-operator-gates).
+
 ## Installation and deployment
 
 - The native CLI embeds templates and assets and supports protected key generation

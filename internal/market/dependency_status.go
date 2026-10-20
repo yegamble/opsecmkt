@@ -163,7 +163,12 @@ func loadDependencyStatus(ctx context.Context, a *App, _ *http.Request, d *PageD
 		health["monero-wallet-rpc"], attention["monero-wallet-rpc"] = h.nodeHealth(false)
 	}
 	view.Rows = append(view.Rows, marketBuildRow())
-	for _, service := range []string{"postgresql", "monerod", "monero-wallet-rpc", "tor", "clamav", "go"} {
+	services := []string{"postgresql", "monerod", "monero-wallet-rpc", "tor", "clamav", "go"}
+	if _, inventoried := entries[dependencies.InferenceRuntimeService]; inventoried {
+		services = append(services, dependencies.InferenceRuntimeService)
+		health[dependencies.InferenceRuntimeService] = []string{"Not observed by this app: inference runs in a separate worker"}
+	}
+	for _, service := range services {
 		entry := entries[service]
 		row := DependencyStatusRow{Service: dependencyLabel(service), Current: entry.Current, Latest: entry.Latest, Evidence: "Reported by operator inventory", Status: "Unknown",
 			Health: health[service], HealthAttention: attention[service]}
@@ -189,10 +194,10 @@ func loadDependencyStatus(ctx context.Context, a *App, _ *http.Request, d *PageD
 			row.Status = "Release check unavailable"
 		} else if row.Current == "Unknown" {
 			row.Status = "Installed version unknown"
-		} else if dependencies.Newer(row.Latest, row.Current) {
+		} else if dependencies.NewerFor(service, row.Latest, row.Current) {
 			row.Update = true
 			row.Status = "Newer upstream release available"
-		} else if dependencies.Newer(row.Current, row.Latest) {
+		} else if dependencies.NewerFor(service, row.Current, row.Latest) {
 			row.Status = "Installed version is newer than report"
 		} else {
 			row.Status = "Matches reported upstream release"
@@ -309,6 +314,8 @@ func dependencyLabel(service string) string {
 		return "ClamAV"
 	case "go":
 		return "Go application runtime"
+	case dependencies.InferenceRuntimeService:
+		return "llama.cpp inference runtime"
 	}
 	return "Unknown service"
 }

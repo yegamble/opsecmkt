@@ -3,6 +3,7 @@ package market
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"image"
 	"image/color"
@@ -352,8 +353,9 @@ func exifOrientation(tiff []byte) int {
 
 // encodedImage is a re-encoded upload: the full JPEG, its thumbnail JPEG and the full one's size.
 type encodedImage struct {
-	full, thumb   []byte
-	width, height int
+	full, thumb    []byte
+	width, height  int
+	perceptualHash string // dHash of the normalized pixels; never of the original file
 }
 
 // The decoders, replaceable only so a test can make one panic (TestDecodePanicRecovered).
@@ -395,11 +397,40 @@ func reencode(data []byte, info imageInfo, kind uploadKind) (out encodedImage, e
 	} else {
 		full, thumb = photoImages(img, info.orientation)
 	}
-	out = encodedImage{full: encodeJPEG(full, photoQuality), thumb: encodeJPEG(thumb, thumbQuality), width: full.Rect.Dx(), height: full.Rect.Dy()}
+	out = encodedImage{full: encodeJPEG(full, photoQuality), thumb: encodeJPEG(thumb, thumbQuality), width: full.Rect.Dx(), height: full.Rect.Dy(), perceptualHash: normalizedDifferenceHash(full)}
 	if len(out.full) > maxFullBytes || len(out.thumb) > maxThumbBytes {
 		return encodedImage{}, errImageDetailed
 	}
 	return out, nil
+}
+
+// normalizedDifferenceHash is a 64-bit perceptual difference hash (dHash). It
+// operates on the bounded, oriented pixels already produced by the isolated
+// decoder; the application never decodes an image to verify this advisory value.
+// Similar hashes are a review signal, not proof of duplication or ownership.
+func normalizedDifferenceHash(full *image.RGBA) string {
+	small := image.NewGray(image.Rect(0, 0, 9, 8))
+	draw.ApproxBiLinear.Scale(small, small.Rect, full, full.Rect, draw.Src, nil)
+	var hash uint64
+	for y := 0; y < 8; y++ {
+		for x := 0; x < 8; x++ {
+			hash <<= 1
+			if small.GrayAt(x, y).Y > small.GrayAt(x+1, y).Y {
+				hash |= 1
+			}
+		}
+	}
+	var encoded [8]byte
+	binary.BigEndian.PutUint64(encoded[:], hash)
+	return hex.EncodeToString(encoded[:])
+}
+
+func validPerceptualHash(value string) bool {
+	if value == "" { // An older gateway's envelope has no perceptual metadata.
+		return true
+	}
+	decoded, err := hex.DecodeString(value)
+	return err == nil && len(decoded) == 8 && hex.EncodeToString(decoded) == value
 }
 
 // photoImages returns the full photo (fitting 1200×1200, oriented) and its thumbnail (fitting 320×240,

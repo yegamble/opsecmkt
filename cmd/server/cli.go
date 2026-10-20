@@ -36,6 +36,7 @@ const cliHelp = `usage: opsecmkt COMMAND [flags]
   upload-gateway    Receive, scan and normalize uploads on a separate host
   keys              Generate or import independent application/recovery keys
   versions-worker   Write a signed dependency update report outside the app
+  moderation-worker Classify queued content outside the app; never apply target changes
   secrets           Pack offline configuration, mount tmpfs and unlock from stdin
   emergency         Plan or explicitly target incident shutdown/LUKS erasure
   admin-tor-prepare Prepare public client authorization in the private Tor volume
@@ -126,6 +127,10 @@ func command(args []string, in io.Reader, out, errOut io.Writer) (bool, error) {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		return true, dependencies.Run(ctx, args[1:], out)
+	case "moderation-worker":
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		return true, runModerationWorker(ctx, args[1:], out)
 	case "serve":
 		return false, configureServe(args[1:], errOut)
 	default:
@@ -183,6 +188,7 @@ func configureServe(args []string, errOut io.Writer) error {
 		"monero-rpc-ca": "MONERO_RPC_CA", "monero-rpc-cert": "MONERO_RPC_CERT", "monero-rpc-key": "MONERO_RPC_KEY",
 		"profile": "OPSECMKT_PROFILE", "app-host": "OPSECMKT_APP_HOST", "gateway-url": "OPSECMKT_GATEWAY_URL",
 		"dependency-report": "DEPENDENCY_REPORT_FILE", "dependency-report-public-key": "DEPENDENCY_REPORT_PUBLIC_KEY",
+		"moderation-action-public-key": "MODERATION_ACTION_PUBLIC_KEY", "moderation-action-audience": "MODERATION_ACTION_AUDIENCE",
 	}
 	values := make(map[string]*string)
 	for name, env := range options {

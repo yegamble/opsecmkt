@@ -129,13 +129,17 @@ func TestIsolatedUploadGatewayRoundTrip(t *testing.T) {
 	}
 	var full, thumb []byte
 	var width, height int
-	if err := e.DB.QueryRow(`SELECT "full",thumb,width,height FROM images`).Scan(&full, &thumb, &width, &height); err != nil {
+	var perceptualHash string
+	if err := e.DB.QueryRow(`SELECT "full",thumb,width,height,perceptual_hash FROM images`).Scan(&full, &thumb, &width, &height, &perceptualHash); err != nil {
 		t.Fatal(err)
 	}
 	assertCleanJPEG(t, "gateway full", full)
 	assertCleanJPEG(t, "gateway thumb", thumb)
 	if width != 400 || height != 300 || !bytes.Equal(f.Scans()[0], original) || scansOf(f) != 1 {
 		t.Fatalf("dimensions/scans: %dx%d scans=%d", width, height, scansOf(f))
+	}
+	if perceptualHash == "" || !validPerceptualHash(perceptualHash) {
+		t.Fatal("the isolated gateway did not persist its normalized pixel hash")
 	}
 	if e.A.scanner != nil && e.A.scanner.State().Name != scannerDisabled {
 		t.Fatal("main app scanner must remain unused")

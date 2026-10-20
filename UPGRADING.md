@@ -15,6 +15,47 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## Optional moderation proposals (migrations 125 through 127)
+
+Application startup applies the append-only moderation tables/triggers and
+offline review receipts. Enqueueing and inference remain off, so existing
+installations need no model, worker, inference mount, network request or new
+listener. Review backup capacity and sensitive-record access before enabling
+the separate `opsecmkt moderation-worker`; it enqueues subsequent supported
+changes, not a backfill of the current catalog.
+
+Migration 127 adds optional normalized-image dHash metadata. Upgrade the app and
+apply its migrations **before** upgrading the separate gateway: the old app's
+strict upload envelope rejects the new field. Then upgrade the gateway to
+compute dHash during its existing decode/normalization step;
+the application still receives bounded metadata and normalized bytes only.
+Old gateways may omit dHash, preserving exact SHA256 duplicate comparison.
+Existing images are not decoded again or backfilled. Perceptual similarity
+is advisory and cannot establish whether a listing's claims match a photo.
+
+Moderation snapshots and immutable proposals are not part of the existing
+retention sweeps. Keep the feature off if that conflicts with the deployment's
+selected evidence-retention policy; storage/access review does not substitute
+for an implemented, reviewed erasure path.
+
+The worker never changes a listing, account, order or payment. Private
+administrator queue actions and optional signed offline actions annotate review
+metadata only. Deadline expiry holds current marketplace state. Keep existing
+payment authorization/recovery gates and all ordinary staff action checks.
+
+Existing application-only redeployment does not provision/restart a model or
+controller. Preserve their reviewed configuration, weights, durable database
+jobs and report/action verification pins independently. Do not delete immutable
+moderation records to roll back a worker; disable future enqueueing with its
+`--disable` flag while preserving evidence and existing jobs.
+
+Optional signed offline review requires a separately pinned public action key
+and a stable installation audience on the app, with its private key kept on the
+offline workstation. It is distinct from the controller's online packet signer
+and OpenPGP export recipient. See the [moderation guide](docs/moderation-agent.md)
+and [review runbook](docs/moderation-escalation-runbook.md) for setup, defaults,
+capability gaps and deployed-runtime acceptance gates.
+
 ## Official addresses in PGP sign-in codes (A-572)
 
 The encrypted PGP sign-in code now reads, after decryption, "Sign-in code for HANDLE at MARKET NAME", the UTC time

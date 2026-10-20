@@ -110,11 +110,16 @@ func TestRegistriesHaveTemplatesAndHooks(t *testing.T) {
 			t.Errorf("registered page %q has no web/templates/pages/%s.html", name, name)
 		}
 	}
-	files, _ := filepath.Glob("web/templates/pages/*.html")
-	for _, f := range files {
-		name := strings.TrimSuffix(filepath.Base(f), ".html")
-		if _, ok := pages[name]; !ok {
-			t.Errorf("template %s has no registerPage(%q)", f, name)
+	// A nested private page can live in one embedded pages/*.html file. Check
+	// its declared page template, rather than inventing a public basename route.
+	for _, declared := range tmpl.Templates() {
+		if name, page := strings.CutPrefix(declared.Name(), "page:"); page {
+			if name == "refusal" || name == "upload-error" {
+				continue // Existing internal error layouts are rendered directly, never routed.
+			}
+			if _, ok := pages[name]; !ok {
+				t.Errorf("template %s has no registerPage(%q)", declared.Name(), name)
+			}
 		}
 	}
 	all, _ := filepath.Glob("web/templates/*/*.html")
@@ -176,6 +181,14 @@ func TestPreviewRendersEveryPage(t *testing.T) {
 		}
 		w := httptest.NewRecorder()
 		a.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
+		if moderationPrivateRoute("/" + name) {
+			// These routes never expose queue data or token forms on a public
+			// listener, including read-only preview and missing-socket installs.
+			if w.Code != 404 || w.Body.String() != "404 page not found\n" || w.Header().Get("Set-Cookie") != "" {
+				t.Errorf("private moderation preview %s: %d %q", path, w.Code, w.Body)
+			}
+			continue
+		}
 		if !a.pageOn(name) { // switched off in the preview (ESCROW_BTC is never on there): an unknown page
 			if w.Code != 404 || unknown.Code != 404 || w.Body.String() != unknown.Body.String() {
 				t.Errorf("preview %s (off): %d", path, w.Code)

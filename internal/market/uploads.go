@@ -703,8 +703,8 @@ func (a *App) storeImage(ctx context.Context, r *http.Request, session string, a
 	case allBytes+size > a.imageLimit():
 		return "", &httpError{Code: http.StatusConflict, Msg: "Photo storage on this market is full; contact the operator. Nothing was stored."}
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO images(id,owner_user_id,product_id,kind,"full",thumb,width,height,description) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-		randomToken()[:32], owner, product, map[uploadKind]string{uploadListing: "photo", uploadAvatar: "avatar"}[route.kind], img.full, img.thumb, img.width, img.height, imageDescription(route, f)); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO images(id,owner_user_id,product_id,kind,"full",thumb,width,height,description,perceptual_hash) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		randomToken()[:32], owner, product, map[uploadKind]string{uploadListing: "photo", uploadAvatar: "avatar"}[route.kind], img.full, img.thumb, img.width, img.height, imageDescription(route, f), img.perceptualHash); err != nil {
 		var pe *pgconn.PgError
 		if errors.As(err, &pe) && pe.Code == "23505" {
 			return "", &httpError{Code: http.StatusConflict, Msg: "Avatar not saved: another avatar upload finished first. Reload the page to see it. Nothing was stored."}

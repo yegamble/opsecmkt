@@ -662,6 +662,7 @@ current one is marked for screen readers). Where this guide says
 | Site & branding | `/admin/site` | *Market name and logo*, *Staff contact* |
 | Transparency | `/admin/transparency` | *Operator PGP key*, *Warrant canary*, *Signed audit export*, *Public staff list* |
 | System & audit | `/admin/system` | Schema version and server start, *Service isolation and updates*, *Application host*, *Image scanner*, *Retention and preservation*, *Recent server errors*, *Audit trail* |
+| Optional moderation | `/admin/moderation` | Private-ingress-only proposal queue, bounded worker status, confirmed review annotations and encrypted escalation downloads |
 
 Every form keeps its address (`POST /admin`, `/admin/suspend`, `/admin/access`
 and so on); a successful change returns to the section holding its form, at the
@@ -670,6 +671,28 @@ unknown handle shows the Users section again. Each section page refuses buyers,
 vendors and moderators exactly as `/admin` does, and is reachable only through
 the private administrator ingress when one is configured. Bookmarks to an old
 `/admin#panel` fragment open the overview; follow its section link.
+
+### Moderation proposals
+
+The optional [moderation controller](moderation-agent.md) and local model are
+off by default. The Admin overview links to `/admin/moderation`, available only
+on the private administrator connection; it shows job/review/escalation counts,
+injection-suspicion counts, prompt/weights pins, last pass and bounded failure
+classes. These are worker observations, not proof of model or host integrity.
+Model endpoints, raw model JSON and transport errors are omitted.
+
+**Accept**, **Dismiss** and **Hold** record review annotations only. They do not
+hide a listing, change an account/order, publish a reply or move funds. Confirmed
+forms retain password/TOTP, CSRF and nonce checks. Accepting changed or expired
+content is refused. Review deadlines default to `HOLD`, preserving marketplace
+state. Binding decisions still use the existing independently authorized staff
+and payment workflows.
+
+The [escalation runbook](moderation-escalation-runbook.md) explains optional
+encrypted packets and separately signed one-use review tokens. A token can be
+submitted without an application login at `/admin/moderation/offline`, through
+the same protected private ingress. Keep its action-signing private key offline
+and distinct from the controller's online packet-signing seed.
 
 ### Service status and health
 
