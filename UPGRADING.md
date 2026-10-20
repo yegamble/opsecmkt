@@ -135,7 +135,7 @@ again even when the deposit is listed again, and its coins are settled with the 
 in the market clears that alert, so the order stays on the desk and under retention's `escrow_alert` reason. To list
 them, use the query in the *Except while it still claims deposits* item below.
 
-## Optional moderation proposals (migrations 125 through 127, 134 and 135)
+## Optional moderation proposals (migrations 125 through 127, 134 and 137)
 
 Application startup applies the append-only moderation tables/triggers and
 offline review receipts. Enqueueing and inference remain off, so existing
@@ -186,7 +186,7 @@ clean result. Raise an approved budget using the controller's bounded capacity
 flags; lowering below allocated usage is refused. Database/index/WAL/backup disk
 size is not bounded by the logical payload reservation.
 
-Migration 135 makes refused captures recoverable. Each refusal leaves one
+Migration 137 makes refused captures recoverable. Each refusal leaves one
 content-free marker per target, and the worker later captures the target's
 current revision once the queue is below half full and budget remains. The panel
 shows how many targets are awaiting capture (at most 65536; beyond that a

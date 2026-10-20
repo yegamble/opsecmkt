@@ -304,7 +304,7 @@ func TestModerationMigrationsAfterMain128(t *testing.T) {
 	}
 	var mainAfter613 []migration
 	for _, m := range list {
-		if m.Version != 125 && m.Version != 126 && m.Version != 127 && m.Version != 134 && m.Version != 135 {
+		if m.Version != 125 && m.Version != 126 && m.Version != 127 && m.Version != 134 && m.Version != 137 {
 			mainAfter613 = append(mainAfter613, m)
 		}
 	}
