@@ -316,15 +316,23 @@ func releaseDigitalUnits(ctx context.Context, tx *sql.Tx, o *Order) error {
 		return nil
 	}
 	var mode string
-	if err := tx.QueryRowContext(ctx, "SELECT digital_delivery_mode FROM products WHERE id=$1", o.ProductID).Scan(&mode); err != nil {
+	var privateExpired bool
+	// Checkout/cancellation already owns this product lock. Keep the helper's
+	// marker read serialized with listing expiry and restore as well.
+	if err := tx.QueryRowContext(ctx, "SELECT digital_delivery_mode,private_expired_at IS NOT NULL FROM products WHERE id=$1 FOR UPDATE", o.ProductID).Scan(&mode, &privateExpired); err != nil {
 		return err
 	}
 	if mode != "inventory" {
 		return nil
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE digital_units SET order_id=NULL,reserved_at=NULL WHERE order_id=$1 AND delivered_at IS NULL AND content<>''`, o.ID); err != nil {
-		return err
+	if !privateExpired {
+		if _, err := tx.ExecContext(ctx, `UPDATE digital_units SET order_id=NULL,reserved_at=NULL WHERE order_id=$1 AND delivered_at IS NULL AND content<>''`, o.ID); err != nil {
+			return err
+		}
 	}
+	// An expired listing must not acquire private stock again through cancellation.
+	// Keep its undisclosed claims assigned and unavailable: the canceled order's
+	// own retention deadline and preservation duties still govern those payloads.
 	_, err := tx.ExecContext(ctx, `UPDATE products SET stock=(SELECT count(*) FROM digital_units WHERE product_id=$1 AND order_id IS NULL) WHERE id=$1`, o.ProductID)
 	return err
 }

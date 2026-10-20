@@ -260,3 +260,47 @@ func TestDigitalInventoryNewListingExplicitModeAndPhysicalSafety(t *testing.T) {
 		t.Fatal("migration default broke old listing compatibility")
 	}
 }
+
+func TestDigitalInventoryPaidCancellationCannotReviveExpiredListingStock(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	now := time.Now().UTC()
+	if err := x.A.initRetention(t.Context(), retentionConfig{Enabled: true, StateDir: retentionPrivateTestDir(t)}); err != nil {
+		t.Fatal(err)
+	}
+	ageRetentionEnrollment(t, x.A, now.Add(-31*24*time.Hour))
+	p := digitalInventoryFixture(t, x, "expired reserved key one", "expired reserved key two")
+	x.mustPoll()
+	order := digitalQuantityDraft(t, x, p, "2")
+	address := x.mustCheckout(order)
+	agExec(x.testEnv, "UPDATE products SET archived=true,admin_archive_reason='Listing taken down for review',archived_at=$2,updated=$2 WHERE id=$1", p, now.Add(-31*24*time.Hour))
+	x.fake.payAddress(address, hex64("expired inventory paid cancellation"), 2*xmrListingPrice, 10)
+	x.mustPoll()
+	if x.state(order) != statePaid {
+		t.Fatal("taken-down digital inventory was automatically delivered")
+	}
+	runInTx(t, x.DB, func(tx *sql.Tx) error {
+		return applyRetentionTombstone(t.Context(), tx, retentionTombstone{Kind: "listing_private", ID: p, At: now.Add(time.Second)})
+	})
+	if agInt(x.testEnv, "SELECT count(*) FROM products WHERE id=$1 AND private_expired_at IS NOT NULL", p) != 1 || agInt(x.testEnv, "SELECT count(*) FROM digital_units WHERE order_id=$1 AND content<>''", order) != 2 {
+		t.Fatal("listing expiry did not preserve claimed paid content")
+	}
+	x.check(x.do("POST", "/orders/cancel", x.vendorSess, payoutConfirmed(form("order_id", order, "from", statePaid), 2*xmrListingPrice)), 303)
+	runRetentionAt(t, x.A, now.Add(2*time.Second))
+	if x.state(order) != stateCancelled || agInt(x.testEnv, "SELECT count(*) FROM digital_units WHERE product_id=$1 AND order_id IS NULL AND (content<>'' OR fingerprint IS NOT NULL)", p) != 0 || agInt(x.testEnv, "SELECT stock FROM products WHERE id=$1", p) != 0 {
+		t.Fatal("cancellation revived expired available stock or its plaintext/digest")
+	}
+	if agInt(x.testEnv, "SELECT count(*) FROM products WHERE id=$1 AND private_expired_at IS NOT NULL", p) != 1 {
+		t.Fatal("cancellation reset the listing's established private expiry")
+	}
+	if agInt(x.testEnv, "SELECT count(*) FROM digital_units WHERE order_id=$1 AND content<>'' AND fingerprint IS NOT NULL", order) != 2 {
+		t.Fatal("cancellation prematurely erased the order's retained private claims")
+	}
+	// Once that order's own private lifecycle expires, the retained claims lose
+	// both their text and digest while remaining unavailable for reuse.
+	runInTx(t, x.DB, func(tx *sql.Tx) error {
+		return applyRetentionTombstone(t.Context(), tx, retentionTombstone{Kind: "order_private", ID: order, At: now.Add(31 * 24 * time.Hour)})
+	})
+	if agInt(x.testEnv, "SELECT count(*) FROM digital_units WHERE order_id=$1 AND content='' AND fingerprint IS NULL", order) != 2 || agInt(x.testEnv, "SELECT stock FROM products WHERE id=$1", p) != 0 {
+		t.Fatal("expired canceled-order claims retained secrets or became available")
+	}
+}
