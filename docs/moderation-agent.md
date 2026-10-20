@@ -10,7 +10,7 @@ Read the [design and threat model](moderation-agent-design.md), the
 
 ## Enable the controller without a model
 
-Start the application once to apply migrations 125 through 127 and 129. The migration keeps
+Start the application once to apply migrations 125 through 127 and 134. The migration keeps
 moderation enqueueing disabled. No model, runtime download or worker is required
 for ordinary application startup.
 
@@ -58,7 +58,7 @@ store retains the first validated result for its stable identity.
 | `--model-socket` | `MODERATION_MODEL_SOCKET`; absolute `.sock` path |
 | `--weights` | `MODERATION_WEIGHTS_PATH`; reviewed local weights file |
 | `--weights-sha256`, `--model-id` | `MODERATION_WEIGHTS_SHA256`, `MODERATION_MODEL_ID`; weights pin and bounded operator inventory label |
-| `--prompt-version`, `--model-timeout` | `moderation-v2`, `20s`; prompt must match this build, timeout 1 through 30 seconds |
+| `--prompt-version`, `--model-timeout` | `moderation-v3`, `20s`; prompt must match this build, timeout 1 through 30 seconds |
 | `--sla`, `--confidence-floor` | `24h`, `0.9`; deadline is based on enqueue time, expiry means `HOLD` |
 | `--new-actor-days`, `--abuse-threshold` | `14`, `5`; development policy values, not production measurements |
 | `--escalation-recipient`, `--signing-key` | Optional OpenPGP public recipient and separate Ed25519 worker seed; both or neither, as described in the [runbook](moderation-escalation-runbook.md#encrypted-offline-packets) |
@@ -71,7 +71,7 @@ the model from obtaining it.
 ## Optional local inference
 
 Select a reviewed runtime image supporting native Unix-socket HTTP and the
-required llama.cpp completion/grammar API. There is no selected or downloaded
+required llama.cpp completion, tokenize and grammar API. There is no selected or downloaded
 default image/model. The standalone configuration is
 [`deploy/moderation/compose.yaml`](../deploy/moderation/compose.yaml), separate
 from application deployment and never started by application redeployment.
@@ -113,7 +113,7 @@ env -i PATH=/usr/bin:/bin ./opsecmkt moderation-worker \
   --enabled --database-url-file /secure/moderation/database-url \
   --model --model-socket /run/moderation/inference.sock \
   --weights /models/model.gguf --weights-sha256 REVIEWED_LOWERCASE_SHA256 \
-  --model-id REVIEWED_MODEL_LABEL --prompt-version moderation-v2
+  --model-id REVIEWED_MODEL_LABEL --prompt-version moderation-v3
 ```
 
 Replace example paths and pins with the controller's actual read-only mounts
@@ -137,31 +137,40 @@ review; they do not block a vendor or authorize punishment.
 
 Local inference uses two stages. Stage A extracts bounded findings from the
 untrusted material. Go validates those findings before Stage B receives them
-with trusted context. Stage B does not receive the original material. Both
+with trusted context. Stage B does not receive the original material, and every
+validated Stage A finding stays in the final result whatever Stage B returns. Both
 outputs are constrained and validated; neither stage receives tools or execution
 authority. Structurally valid output can still be wrong or malicious, so an
 independent deterministic and authorization boundary remains necessary.
 
 ## Proposal protocol
 
-The `moderation-v2` model response has exactly these seven JSON fields. Additional fields, missing fields,
+The `moderation-v3` model response has exactly these seven JSON fields. Additional fields, missing fields,
 unknown enums, invalid bounds and unrelated evidence references are refused.
 
 | Field | Meaning |
 | --- | --- |
-| `item_id` | Exact identity supplied by the controller |
+| `item_id` | The fixed item alias `ITEM` supplied in the request |
 | `action` | An allowlisted suggestion, such as `NO_ACTION` or `FLAG_REVIEW` |
 | `confidence` | Finite value from 0 through 1; uncertainty must reduce confidence |
-| `reason_codes` | Codes from the Go allowlist |
+| `reason_codes` | Codes a model may assert: `SPAM_TEMPLATE`, `SCAM_TEMPLATE`, `OFF_PLATFORM_CONTACT`, `INJECTION_SUSPECTED`, `DETERMINISTIC_CONFLICT`, `HUMAN_REVIEW`, or `NO_FINDING` alone |
 | `injection_suspected` | Whether hostile instructions or protocol manipulation were detected |
-| `evidence_ids` | References from the supplied item only |
+| `evidence_ids` | Aliases `E1`, `E2`, … for this item's references |
 | `canary` | Exact reserved response-integrity token supplied for this request |
+
+Stage A may report only `SPAM_TEMPLATE`, `SCAM_TEMPLATE`, `OFF_PLATFORM_CONTACT`,
+`INJECTION_SUSPECTED`, `HUMAN_REVIEW` or `NO_FINDING` alone. Duplicate, price,
+completeness, normalization, novelty, actor, money, confidence, model-failure,
+protocol, policy and deadline codes are added by Go alone; both grammars and Go
+validation refuse them from a model. Go maps the aliases back to trusted
+references, so no item, content or actor hash reaches either prompt. Stage B sees
+duplicate checks as counts and match outcomes, not hashes.
 
 Go derives review summaries and injection-evidence descriptions from validated
 codes and references. Model-written prose is rejected. Historical records keep
 their immutable bytes, while the current queue also renders their presentation
-from codes. Reply drafting is excluded from model actions; v1 protocol pins
-are refused.
+from codes. Reply drafting is excluded from model actions; v1 and v2 protocol
+pins are refused.
 
 The action names include suggestions for sensitive actions so those proposals
 can be identified and escalated. Their presence in the schema grants no right
@@ -170,10 +179,16 @@ invariant, and an arbitrary model assertion cannot become a human signature.
 
 The canary is not secret and does not establish prompt-injection resistance by
 itself. Go schema and reference validation supplement grammar-constrained
-decoding; syntax alone cannot establish factual accuracy. A stopped runtime or
-truncated generation can still produce incomplete JSON. Go rejects it and
-preserves the human-review path. The embedded grammar still needs validation
-against the operator's selected real runtime.
+decoding; syntax alone cannot establish factual accuracy. Before each stage the
+adapter counts the prompt with the runtime's `/tokenize` endpoint and refuses
+one that cannot fit beside the 1536-token output limit in the launcher's
+4096-token context. It accepts a completion only when the runtime reports an
+end-of-sequence or stop-word finish (`stop_type`, or the older `stopped_*`
+flags), `truncated` false and a matching `tokens_evaluated`. A runtime without
+those fields or that endpoint gets `MODEL_FAILURE` and human review. Longer or
+token-dense items, such as long non-Latin listings, therefore reach human review
+without a model proposal. The embedded grammar still needs validation against
+the operator's selected real runtime.
 
 ## Dispositions and failure behavior
 
@@ -215,7 +230,7 @@ while a new app accepts old gateways that omit it. Neither
 hash comparison nor the text-only model validates listing claims against photos.
 Image understanding and vision inference are outside the owner-approved scope;
 images contribute duplicate/similarity hashes and basic metadata only.
-Stage B receives validated finding codes and references, not a full dispute
+Stage B receives validated finding codes and evidence aliases, not a full dispute
 thread or its original prose. It cannot produce a faithful evidence-rich thread
 summary or timeline from that limited context. The core's advisory
 order/timer observations do not replace the market's full transactional state
@@ -234,9 +249,13 @@ them. A review record is not proof that its underlying allegation is true.
 
 New capture records retain source digests and allowlisted order/image metadata,
 not source prose. New proposal inputs retain coded metadata only. Completing a
-new job atomically records its decision and removes its active raw actor link;
+new job atomically records its decision and removes its active raw actor link
+from the live row; earlier backups, WAL and dead row versions can still hold
+the actor id until they are removed or overwritten. Pending jobs keep the raw
+link until a worker completes them; enqueueing continues while the worker is
+stopped, bounded by the global pending cap (256 by default);
 per-job opaque references do not make the remaining target references anonymous.
-From this release (with migration 130), new proposal inputs no longer store
+From this release (with migration 135), new proposal inputs no longer store
 per-field digests, which were reversible for small value sets such as a 1-5
 rating, and a normalized text fingerprint is stored only for listings, where
 duplicate-text detection reads it. The whole-revision source digest remains; like any unkeyed
@@ -254,7 +273,7 @@ legacy retention path exists. Restrict database and backup access.
 
 ## Capacity and overload
 
-Migration 129 serializes admission against a singleton capacity ledger. Each
+Migration 134 serializes admission against a singleton capacity ledger. Each
 actor has at most three active jobs; global pending, lifetime allocation and
 reserved logical-byte limits also apply. Each allocation prepays 512 KiB for its
 bounded lifecycle. With the default 256 MiB byte budget, bytes bind at 512
@@ -270,7 +289,7 @@ only its named limits. A no-flag restart can drain prepaid legacy work even when
 legacy inventory exceeds the admission limits. This changes collection capacity, never retention or marketplace
 state. Application-only redeployment does not enlarge the budget.
 
-Migration 130 also limits each actor to `max(8, 2% of --max-records)` new
+Migration 135 also limits each actor to `max(8, 2% of --max-records)` new
 allocations in any 24 hours (81 with the default 4096 slots), so one account's
 edit stream cannot exhaust the lifetime budget for everyone. The counter row
 holds only the account, its window start and a count; it names no target. An
@@ -285,7 +304,7 @@ records the affected kind and reason without copying content. The private queue
 shows usage, configured limits, overflow and the number of targets awaiting
 capture even when the worker is absent.
 
-Refused captures are not lost (migration 130). Every refusal (actor's three
+Refused captures are not lost (migration 135). Every refusal (actor's three
 active jobs, pending limit, lifetime budget or actor share) leaves one marker per
 target: its kind, target reference and first/last refusal times, with no content,
 digest or actor. Later edits of the same target update that one marker. At the
@@ -345,9 +364,10 @@ runtime binary. See [version-worker setup](install/service-topology.md#version-w
 
 The [validation evidence](evidence/moderation-agent-validation.md) distinguishes
 native grammar-parser checks, Go/database/browser tests, synthetic process
-isolation and unverified production operation. Both embedded grammars passed
-the pinned upstream parser with three valid inputs accepted and nine invalid
-inputs rejected; this does not establish correct model judgment.
+isolation and unverified production operation. Both current (moderation-v3)
+grammars passed the pinned upstream parser: 25 cases (6 accepted, 19 rejected)
+and an independent rebuild with 22 cases, all as expected; this does not
+establish correct model judgment.
 
 The [supplied proposal comparison](moderation-proposal-comparison.md) records
 which principles were retained, which integration/security examples were

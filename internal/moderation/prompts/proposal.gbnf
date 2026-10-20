@@ -1,7 +1,7 @@
 root ::= "{" ws "\"item_id\"" ws ":" ws {{ITEM_ID}} ws "," ws "\"action\"" ws ":" ws action ws "," ws "\"confidence\"" ws ":" ws confidence ws "," ws "\"reason_codes\"" ws ":" ws reasons ws "," ws "\"injection_suspected\"" ws ":" ws boolean ws "," ws "\"evidence_ids\"" ws ":" ws evidence-ids ws "," ws "\"canary\"" ws ":" ws {{CANARY}} ws "}" ws
 action ::= {{ACTIONS}}
 reason ::= {{REASONS}}
-reasons ::= "[" ws reason (ws "," ws reason){0,31} ws "]"
+reasons ::= "[" ws {{NO_FINDING}} ws "]" | "[" ws reason (ws "," ws reason){0,{{MORE}}} ws "]"
 evidence-ids ::= {{EVIDENCE_ARRAY}}
 confidence ::= "0" ("." [0-9]{1,4})? | "1" ("." "0"{1,4})?
 boolean ::= "true" | "false"

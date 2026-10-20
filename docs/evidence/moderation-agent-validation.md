@@ -183,6 +183,26 @@ V1 artifacts remain untouched. V2 artifacts are in
 | Proposal template | `a73f123e37effc915f025295c879ff71543b7fa4d6cee7adbe82b222de5d0021` |
 | Seventeen-case result JSON | `bbf2a0d6426cea16a5fba190cfee407833ccaf62c3d13ff7c3ee28800223dd14` |
 
+### Moderation-v3 native grammar check (iteration 72, 2026-10-20)
+
+The v3 templates (closed model-owned codes, NO_FINDING only alone, evidence
+aliases E1..En and ITEM) passed the same pinned upstream validator
+(`tests/test-gbnf-validator.cpp` at llama.cpp `3bb63cbc`, archive hash as
+above, rebuilt locally with Apple clang 21). The MOD72-4 implementer ran 25
+cases: 6 accepted, 19 rejected, all as expected. Rejected inputs include
+model-emitted MODEL_ABSENT, CANARY_MISMATCH and SLA_EXPIRED, NO_FINDING mixed
+with a finding, DETERMINISTIC_CONFLICT at Stage A, a raw item id or
+`content:<hex>` reference, an unknown alias, an alias with empty-evidence
+context and a legacy `summary` field. The opsec-llm seat rebuilt the validator
+independently, reproduced the 25 cases and ran 22 of its own, all as expected.
+These are grammar-parser results only; no model or deployed runtime was run.
+
+| V3 artifact | SHA256 |
+| --- | --- |
+| Stage A template (`internal/moderation/prompts/stage-a.gbnf`) | `89ee792d5774a1004ee9e0e5b6b5393f6259f0c9177b3360d4f5a8d54dfa2137` |
+| Proposal template (`internal/moderation/prompts/proposal.gbnf`) | `9b164c6432b9cbee4263501ef4e7ed3cecc2c5a6e41092dbe06a9824b3044a37` |
+| Twenty-five-case result JSON | `94f52da5dde4a3de8f249ef667cd53abc24833638c3183ec7762b3eebe4ab73e` |
+
 Focused local verification completed before the final-source CI run:
 
 - Closed protocol, custom-adapter prose removal, routing and coded provenance
@@ -200,7 +220,7 @@ Focused local verification completed before the final-source CI run:
   and malicious model-prose markers, verified actor removal/output hashes/replay,
   and checked coded private presentation. The overlay cases were then adopted
   as permanent regression tests.
-- Authentic pre-128 upgrade (the capacity migration, since renumbered 129), original-source expiry and collection disablement
+- Authentic pre-128 upgrade (the capacity migration, since renumbered 134), original-source expiry and collection disablement
   preserved historical snapshot/input/decision bytes (3.648 s with token checks).
 - Gateway weak-hash fixtures passed pure races (1.902 s) and legacy omission,
   upgrade and image-decoding/source guards (5.740 s). These are advisory hash

@@ -159,7 +159,14 @@ func hiddenRecipientsForm(c *actionCtx, handle, fingerprint, body string) error 
 	return &httpError{Code: 400, Msg: msg, Render: func(w http.ResponseWriter) {
 		a := c.A
 		r := c.R.Clone(c.R.Context())
-		r.URL.RawQuery = url.Values{"to": {handle}}.Encode()
+		query := url.Values{"to": {handle}}
+		if id := c.Form.Get("order_id"); id != "" {
+			query.Set("order_id", id)
+		}
+		if id := c.Form.Get("dispute_id"); id != "" {
+			query.Set("dispute_id", id)
+		}
+		r.URL.RawQuery = query.Encode()
 		d := a.pageData(r, "messages", c.Token, c.User)
 		if err := a.load(r, &d); err != nil {
 			a.refuse(w, c.R, c.User, 400, "Message not sent: its recipient key IDs are hidden, so the server cannot check its recipient. Nothing was stored. Go back, reload the page and send it again to be asked for confirmation.")

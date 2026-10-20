@@ -64,16 +64,33 @@ Legacy last-use dates are not invented from account creation dates.
 
 | Data | Live-system deadline |
 | --- | --- |
-| Legacy copied abuse-review content and associated review records | No automatic expiry; separate from the ordinary content/account deadlines below, including after collection stops |
+| Abuse-review records, legacy and new: legacy copied content; new record and order references, capture times, text digests, exact and perceptual image fingerprints; findings, decisions and staff reviews | No automatic expiry; separate from the ordinary content/account deadlines below, including after the original content or image is removed, after account deletion and after collection stops. A digest or fingerprint can confirm a guessed text or a matching image |
 | Individual messages, ciphertext and routing metadata | 90 days after creation |
-| Notifications and closed outage-delivery receipts | 30 days |
+| Support-ticket bodies | 90 days after creation, or earlier when the opener/message sender is closed or erased, unless preserved |
+| Closed or Ignored support-ticket metadata | 90 days after the last update, once all bodies are gone and no related hold applies |
+| Notifications, their XMPP outbox receipts and closed outage-delivery receipts | 30 days |
 | Activity events | 180 days after creation |
 | Sessions, pending sign-ins, CAPTCHA receipts, PGP challenges and form receipts | Their existing validity deadline, followed by scheduled removal |
 | Unfunded drafts | 30 days after creation |
 | Private order text and delivered content | 30 days after verified financial closure |
 | Ordinary closed-order records | 180 days after verified financial closure |
-| Withdrawn listing content, images and reviews | 30 days after withdrawal, unless necessary for an open transaction or preserved case |
+| Withdrawn listing content, images and reviews | 30 days after withdrawal, unless necessary for an open transaction or preserved case; abuse-review records of them (first row) are separate |
 | Accounts | 12 months without observed authenticated use, then 30 days' notice; a verified deletion request has a 30-day deadline |
+
+New per-order manual and automatic digital deliveries are stored as PGP armor encrypted to the buyer. Their
+content deadline remains 30 days after verified financial closure; encryption does not extend retention.
+Reusable automatic-delivery templates remain server-readable, and older plaintext delivery records retain their
+existing deadline and reader permissions. The upgrade does not rewrite or erase those historical copies.
+XMPP forwards only eligible encrypted contents after separate global permission and recipient consent; deleting
+a notification also removes its delivery receipt, but cannot recall copies retained by an XMPP provider or client.
+
+With retention enabled, support-ticket bodies expire 90 days after creation, or earlier when their opener or
+message sender is closed or erased. A relevant account preservation hold retains the related ticket and bodies:
+this includes the opener, current or historical participants, message senders and staff in the workflow history.
+An overdue hold review does not release it. Closed or Ignored ticket metadata is removed only when its last
+update is at least 90 days old and no bodies remain; Open ticket metadata stays for the staff workflow.
+Ticket and ticket-message deletion uses the existing journal and restore replay so an older backup does not
+resurrect expired records. XMPP providers and clients may retain independent copies after market cleanup.
 
 Closure removes sign-in capability, credentials and unrelated profile data. Open funded escrows or the last usable administrator defer credential erasure
 under a visible operational exception with a 30-day review. Unrelated profile data is scrubbed on schedule; a restricted account can settle existing orders
@@ -262,13 +279,14 @@ E2E_DATABASE_URL=DISPOSABLE_DATABASE_URL E2E_RETENTION_STATE_DIR=PRIVATE_ABSOLUT
 
 The browser setup initializes that database; never point it at an existing market. Retention form checks run with JavaScript disabled at 320 px.
 
-New moderation capture (migration 129) stores digests and limited metadata, not
-source prose. Completed jobs remove the active raw actor link. This prospective
+New moderation capture (migration 134) stores digests and limited metadata, not
+source prose. Completed jobs remove the active raw actor link from the live row (backups, WAL and dead row versions can keep it until removed or overwritten); pending jobs keep it until a worker completes them, bounded by the pending cap. This prospective
 minimization does not erase legacy copies, immutable audit records or backups,
-and does not make retained target references anonymous. See the
+and does not make retained target references anonymous. New records also have
+no automatic expiry. See the
 [moderation records and capacity rules](moderation-agent.md#records-and-recovery).
 
-Migration 130 adds two small moderation tables. `moderation_backfill` holds one
+Migration 135 adds two small moderation tables. `moderation_backfill` holds one
 row per target whose capture was refused: kind, target reference and first/last
 refusal times, with no content, digest or actor. A row is deleted when the
 target's current revision is queued, or when the worker finds the source gone,

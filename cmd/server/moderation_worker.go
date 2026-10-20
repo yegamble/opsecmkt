@@ -47,7 +47,7 @@ func runModerationWorker(ctx context.Context, args []string, out io.Writer) erro
 	signingPath := f.String("signing-key", os.Getenv("MODERATION_SIGNING_KEY_FILE"), "private separate Ed25519 seed file for encrypted escalation bundles")
 	if err := f.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprintln(out, "usage: opsecmkt moderation-worker [--enabled | --disable] [--once] [--replay] [--database-url-file FILE] [--interval 1m] [--batch 20]\nOptional local inference: --model --model-socket PATH --weights FILE --weights-sha256 HEX --model-id ID --prompt-version moderation-v2\nReview policy: --confidence-floor 0.9 --new-actor-days 14 --abuse-threshold 5 --sla 24h\nCapacity: --max-pending 256 --max-records 4096 --max-reserved-bytes 268435456; three active jobs per actor\nEncrypted private queue export: --escalation-recipient PUBLIC_KEY_FILE --signing-key PRIVATE_SEED_FILE\nReplay skips completed metadata-only jobs. Disabled by default. No target, account or payment mutation. Inference never runs in the web process.")
+			fmt.Fprintln(out, "usage: opsecmkt moderation-worker [--enabled | --disable] [--once] [--replay] [--database-url-file FILE] [--interval 1m] [--batch 20]\nOptional local inference: --model --model-socket PATH --weights FILE --weights-sha256 HEX --model-id ID --prompt-version moderation-v3\nReview policy: --confidence-floor 0.9 --new-actor-days 14 --abuse-threshold 5 --sla 24h\nCapacity: --max-pending 256 --max-records 4096 --max-reserved-bytes 268435456; three active jobs per actor\nEncrypted private queue export: --escalation-recipient PUBLIC_KEY_FILE --signing-key PRIVATE_SEED_FILE\nReplay skips completed metadata-only jobs. Disabled by default. No target, account or payment mutation. Inference never runs in the web process.")
 			return nil
 		}
 		return errors.New("moderation-worker: invalid flags")
@@ -124,9 +124,9 @@ func runModerationWorker(ctx context.Context, args []string, out io.Writer) erro
 		fmt.Fprintln(out, "moderation-worker: enqueueing disabled; durable jobs preserved")
 		return nil
 	}
-	// Migration 130 provides the backfill sweep every pass runs.
+	// Migration 135 provides the backfill sweep every pass runs.
 	var migrated bool
-	if err = db.QueryRowContext(checkCtx, `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=130)`).Scan(&migrated); err != nil || !migrated {
+	if err = db.QueryRowContext(checkCtx, `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=135)`).Scan(&migrated); err != nil || !migrated {
 		return errors.New("moderation-worker: application migrations required before enabling queue")
 	}
 	cfg := moderation.DefaultConfig()

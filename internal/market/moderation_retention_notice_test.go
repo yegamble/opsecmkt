@@ -4,9 +4,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"html"
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -15,7 +17,7 @@ import (
 )
 
 func TestModerationRetentionNoticePreservesLegacyCopiesAfterUpgradeExpiryAndDisable(t *testing.T) {
-	// Exercise the actual pre-129 trigger and tables. The old artifact is inserted
+	// Exercise the actual pre-134 trigger and tables. The old artifact is inserted
 	// before the upgrade; no immutability guard is disabled and no historical
 	// snapshot or proposal is edited to manufacture legacy contents afterward.
 	legacy := newPooledHistoricalFixture(t, 127)
@@ -100,6 +102,8 @@ func TestModerationRetentionNoticePreservesLegacyCopiesAfterUpgradeExpiryAndDisa
 		if !strings.Contains(page, "<strong>Abuse-review records.</strong>") || !strings.Contains(page, "after collection stops") {
 			t.Errorf("%s public records inventory omitted the review-copy lifecycle", stage)
 		}
+		records, partial := abuseReviewNotices(t, page, e.body("GET", "/account", session, nil, 200))
+		assertNewAbuseReviewRecordNotice(t, stage, records, partial)
 		account := e.body("GET", "/account", session, nil, 200)
 		if !strings.Contains(account, "Account deletion does not erase retained abuse-review copies") {
 			t.Errorf("%s deletion confirmation omitted retained abuse-review copies", stage)
@@ -122,4 +126,74 @@ func TestModerationRetentionNoticePreservesLegacyCopiesAfterUpgradeExpiryAndDisa
 	}
 	assertCopies()
 	assertNotice("capture disabled with historical copies")
+}
+
+// abuseReviewNotices returns the /canary#records abuse-review item and the retention partial's
+// abuse-review paragraph (rendered on /account), each as one HTML fragment.
+func abuseReviewNotices(t *testing.T, canary, account string) (records, partial string) {
+	t.Helper()
+	cut := func(where, page, from, to string) string {
+		t.Helper()
+		i := strings.Index(page, from)
+		if i < 0 {
+			t.Fatalf("%s has no %q", where, from)
+		}
+		fragment, _, _ := strings.Cut(page[i:], to)
+		return fragment
+	}
+	return cut("/canary", canary, "<li><strong>Abuse-review records.</strong>", "</li>"),
+		cut("/account", account, `<p class="help">New abuse-review records`, "</p>")
+}
+
+// MOD72-2: new (v2) abuse-review records, not only legacy copies, are disclosed as having no automatic
+// expiry, outliving the source, and as fingerprints that can confirm a guess.
+func assertNewAbuseReviewRecordNotice(t *testing.T, stage, records, partial string) {
+	t.Helper()
+	shared := []string{
+		"New abuse-review records also have no automatic expiry: their references and fingerprints remain after the original text or image is removed",
+		"a digest or fingerprint can confirm a guessed text or a matching image",
+		"Routine expiry and account deletion do not erase copies retained for abuse review",
+	}
+	for _, want := range append([]string{
+		"record and order references, the capture time, digests of the checked text, an image&rsquo;s exact and perceptual fingerprints",
+		"findings, decisions and staff reviews",
+		"A list of records waiting to be checked holds only each record&rsquo;s type and id",
+		"after account deletion and after collection stops",
+	}, shared...) {
+		if !strings.Contains(html.UnescapeString(records), html.UnescapeString(want)) {
+			t.Errorf("%s /canary#records abuse-review item lacks %q", stage, html.UnescapeString(want))
+		}
+	}
+	for _, want := range append([]string{"including exact and perceptual image fingerprints"}, shared...) {
+		if !strings.Contains(partial, want) {
+			t.Errorf("%s retention partial lacks %q", stage, want)
+		}
+	}
+	for _, text := range []string{records, partial} {
+		if regexp.MustCompile(`(?i)model|inference|threshold|endpoint`).MatchString(text) {
+			t.Errorf("%s abuse-review notice names review internals: %s", stage, text)
+		}
+	}
+}
+
+// MOD72-2: on the current schema, the records item and the retention partial carry the new-record
+// disclosure, word for word the same whether collection is on or off.
+func TestNewAbuseReviewRecordNoticeIdenticalWithCaptureOnAndOff(t *testing.T) {
+	e := newTestApp(t)
+	_, session := e.user("mod72_notice_buyer", "buyer")
+	render := func(enabled bool) (string, string) {
+		t.Helper()
+		if err := SetModerationEnabled(t.Context(), e.DB, enabled); err != nil {
+			t.Fatal(err)
+		}
+		stage := map[bool]string{true: "capture on", false: "capture off"}[enabled]
+		records, partial := abuseReviewNotices(t, e.body("GET", "/canary", "", nil, 200), e.body("GET", "/account", session, nil, 200))
+		assertNewAbuseReviewRecordNotice(t, stage, records, partial)
+		return records, partial
+	}
+	onRecords, onPartial := render(true)
+	offRecords, offPartial := render(false)
+	if onRecords != offRecords || onPartial != offPartial {
+		t.Errorf("abuse-review notice differs with capture on and off:\non  %s\n    %s\noff %s\n    %s", onRecords, onPartial, offRecords, offPartial)
+	}
 }

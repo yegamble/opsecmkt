@@ -114,6 +114,18 @@ func lockNewIntake(c *actionCtx, buyerID, vendorID string, draft bool) error {
 		}
 		return fail(409, "Unavailable. "+sellerHeld(banned)+" Cancel this draft.")
 	}
+	// Both account locks cover this fresh key check. A key removal, replacement or revocation saved while
+	// checkout was open must be seen before the draft/payment request commits.
+	if ok, err := userCanReceiveEncrypted(c.Ctx(), c.Tx, buyerID); err != nil {
+		return err
+	} else if !ok {
+		return fail(409, noBuyerOrderKeyReason+" Nothing was changed.")
+	}
+	if ok, err := userCanReceiveEncrypted(c.Ctx(), c.Tx, vendorID); err != nil {
+		return err
+	} else if !ok {
+		return fail(409, "Unavailable. "+noVendorKeyReason+" Nothing was changed.")
+	}
 	return nil
 }
 
@@ -265,14 +277,20 @@ func deliverAction(c *actionCtx) (actionResult, error) {
 	if strings.TrimSpace(content) == "" || utf8.RuneCountInString(content) > maxDeliveryChars {
 		return actionResult{}, fail(400, "Delivery content must contain 1–32000 characters")
 	}
-	o, err := partyOrder(c, c.Form.Get("order_id"))
+	o, err := partyOrderLocked(c, c.Form.Get("order_id"))
 	if err != nil {
 		return actionResult{}, err
 	}
-	if _, err = c.A.transition(c.Ctx(), c.Tx, o.ID, statePaid, stateDelivered, c.User, "Digital content delivered by vendor"); err != nil {
+	if o.VendorID != c.User.ID {
+		return actionResult{}, errForbidden
+	}
+	if o.State != statePaid || o.Kind != "digital" {
+		return actionResult{}, errConflict
+	}
+	if err = insertDelivery(c.Ctx(), c.Tx, &o, content); err != nil {
 		return actionResult{}, err
 	}
-	if err = insertDelivery(c.Ctx(), c.Tx, o.ID, content); err != nil {
+	if _, err = c.A.transition(c.Ctx(), c.Tx, o.ID, statePaid, stateDelivered, c.User, "Digital content delivered by vendor"); err != nil {
 		return actionResult{}, err
 	}
 	return actionResult{Redirect: orderPage(o.ID), Notice: "order-delivered", Audit: "Delivered digital content for order " + shortID(o.ID)}, nil

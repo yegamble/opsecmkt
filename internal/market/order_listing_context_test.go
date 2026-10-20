@@ -17,10 +17,11 @@ func TestArchivedListingVisibleThroughOrder(t *testing.T) {
 	vendorID, vendor := e.user("a164_vendor", "vendor")
 	buyerID, buyer := e.user("a164_buyer", "buyer")
 	otherBuyerID, otherBuyer := e.user("a164_buyer2", "buyer")
-	_, stranger := e.user("a164_stranger", "buyer")
+	strangerID, stranger := e.user("a164_stranger", "buyer")
 	_, otherVendor := e.user("a164_vendor2", "vendor")
-	_, moderator := e.user("a164_mod", "moderator")
+	moderatorID, moderator := e.user("a164_mod", "moderator")
 	_, admin := e.user("a164_admin", "admin")
+	e.enableOrderPGP(vendorID, buyerID, otherBuyerID, strangerID, moderatorID)
 
 	// disputed: a digital listing with delivery content and a disputed order (staff may read the order).
 	// paid: a listing with an ordinary paid order (staff may not read it) and, later, a flagged payment.

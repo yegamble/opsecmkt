@@ -20,7 +20,9 @@ import (
 // superseded (keeping its stored transaction), a new requested settlement names it in supersedes (the same order, kind
 // and destination; migration 084), and the deposits it claimed move to the new one. The new settlement is then built
 // like any other, but it spends exactly the stored key images (every other output of the account frozen) to the stored
-// plan: the same destinations and amounts, only the network fee and so the claimant's output may differ. Migration
+// plan: the same destinations and amounts, only the network fee and so the claimant's output may differ. While a
+// deposit it claims is no longer listed (a reorganisation or a double spend since it was carried out) it waits
+// (deposit-missing, A-614), however long that takes, and builds once the wallet lists it again. Migration
 // 084 refuses any other key images when its transaction is stored, so at most one of the two transactions can ever be
 // mined; the plan is checked in Go (checkXMRBuild).
 
@@ -280,7 +282,7 @@ func (a *App) xmrReRequest(ctx context.Context, id int64, s *xmrSettleRow, admin
 	if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) SELECT id,state,state,NULL,$2 FROM orders WHERE id=$1", s.OrderID, note); err != nil {
 		return err
 	}
-	if _, err = insertNotification(ctx, tx, admin, "Order "+shortID(s.OrderID)+": "+note, s.OrderID); err != nil {
+	if _, err = insertScopedNotification(ctx, tx, admin, "Order "+shortID(s.OrderID)+": "+note, s.OrderID, "admin"); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -305,7 +307,7 @@ func (a *App) refuseXMRReRequest(ctx context.Context, id int64, s *xmrSettleRow,
 	if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) SELECT id,state,state,NULL,$2 FROM orders WHERE id=$1", s.OrderID, note); err != nil {
 		return err
 	}
-	if _, err = insertNotification(ctx, tx, admin, "Order "+shortID(s.OrderID)+": "+note, s.OrderID); err != nil {
+	if _, err = insertScopedNotification(ctx, tx, admin, "Order "+shortID(s.OrderID)+": "+note, s.OrderID, "admin"); err != nil {
 		return err
 	}
 	return tx.Commit()

@@ -13,6 +13,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/ProtonMail/go-crypto/openpgp"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -39,6 +40,34 @@ type testEnv struct {
 	t  *testing.T
 	A  *App
 	DB *sql.DB // A.db, scoped to the test schema
+	// Explicitly requested by successful order fixtures, never a default on e.user or e.order.
+	commercePGP       *openpgp.Entity
+	commercePGPPublic string
+}
+
+// enableOrderPGP gives the named accounts a usable key for an order fixture. Existing keys are retained so fixtures
+// with a particular recipient or an unusable key still exercise that key. Account and missing-key tests stay keyless
+// unless they explicitly request this helper.
+func (e *testEnv) enableOrderPGP(ids ...string) {
+	e.t.Helper()
+	if e.commercePGP == nil {
+		e.commercePGP, e.commercePGPPublic = testPGPKey(e.t, "commerce-fixture")
+	}
+	for _, id := range ids {
+		if agStr(e, "SELECT pgp FROM users WHERE id=$1", id) == "" {
+			e.setKey(id, e.commercePGPPublic)
+		}
+	}
+}
+
+// commerceDelivery checks the buyer's side of the per-order encrypted delivery boundary. Callers compare the
+// decrypted plaintext while the database and order page retain the OpenPGP ciphertext.
+func commerceDelivery(e *testEnv, orderID string) string {
+	e.t.Helper()
+	if e.commercePGP == nil {
+		e.t.Fatal("order fixture has no delivery decryption key")
+	}
+	return testDecrypt(e.t, e.commercePGP, agStr(e, "SELECT content FROM deliveries WHERE order_id=$1", orderID))
 }
 
 // testSchemaDSN creates an isolated schema and returns a DSN whose search_path points at it (dropped on cleanup).

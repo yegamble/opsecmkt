@@ -16,8 +16,10 @@ import (
 //     now. Dismissing it changes nothing the market does: a deposit of the escrow listed again is handled automatically
 //     as usual (on an order whose coins go back to the buyer a stray refund returns it) and flagged for review, so staff
 //     must not pay it by hand. A refund too few raises no alert (xmrFailedClosedSQL) and is refused here, as is one
-//     that still claims a deposit (xmrClaimsSQL, PAY613-4: a re-request that failed so, A-614): its coins are in the
-//     escrow wallet and may be owed, so it keeps its alert and staff settle with the operator.
+//     that still claims a deposit (xmrClaimsSQL, PAY613-4: a re-request that failed so): its coins are in the escrow
+//     wallet and may be owed, so it keeps its alert and staff settle with the operator. Since A-614 such a re-request
+//     waits for its missing deposit instead of failing (buildXMRSettlement), so only a database that ran an earlier
+//     build holds one; nothing in the market clears its alert.
 //   - settled-by-hand (*Mark settlement N settled by hand*): it has a stored transaction whose last re-request was
 //     refused for good (xmrReRequestFinal: on-chain or key-image-spent), so it is never superseded; staff checked the
 //     escrow wallet and the chain and settled anything still owed with the operator. One with no re-request yet, one
