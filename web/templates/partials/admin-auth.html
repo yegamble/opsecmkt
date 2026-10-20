@@ -24,6 +24,22 @@
 </form>
 <p class="help">The CAPTCHA is an image only, with no audio or text alternative (it fails WCAG 3.3.8 for people who cannot read it); first-run setup never asks for it. Changes are recorded in the audit trail.</p>
 </section>
+<section class="panel" id="pgp-access" aria-labelledby="pgp-access-heading">
+<h2 id="pgp-access-heading">PGP and browse-only sign-in</h2>
+<p>Every account must save a usable PGP public key and decrypt a challenge in its current browser before purchasing or sending messages. A signature ownership proof alone does not authorize these actions. Private keys stay with their owners.</p>
+<p>{{if eq (index .Settings "allow_login_without_pgp") "true"}}Browse-only sign-in without PGP is allowed.{{else}}Every sign-in requires PGP decryption.{{end}} Existing sessions still need their own PGP authentication before purchasing or sending messages.</p>
+<form class="stack" method="post" action="/admin/pgp-access">
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/admin/pgp-access"}}">
+<fieldset><legend>Login without PGP</legend>
+<label class="check"><input type="radio" name="allow_login_without_pgp" value="true"{{if eq (index .Settings "allow_login_without_pgp") "true"}} checked{{end}}> Allow browse-only sign-in</label>
+<label class="check"><input type="radio" name="allow_login_without_pgp" value="false"{{if ne (index .Settings "allow_login_without_pgp") "true"}} checked{{end}}> Require PGP decryption at every sign-in</label>
+</fieldset>
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
+<span class="help">Before requiring PGP at every sign-in, decrypt a challenge on <a class="text-link" href="/pgp">PGP verification</a> in this browser. Accounts without a usable public key will then need staff recovery to sign in. New registrations must include a usable public key. Optional TOTP remains strongly encouraged to protect accounts while browse-only sign-in is allowed.</span>
+<button type="submit">Save PGP access policy</button>
+</form>
+</section>
 {{template "signin-protection" .}}{{end}}
 {{/* Users section (/admin/users): second-factor reset, suspension and ban (A-546), after the role form */}}
 {{define "admin-accounts"}}<section class="panel admin-reset-factors" id="reset-factors" aria-labelledby="reset-factors-heading">

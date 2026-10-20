@@ -89,6 +89,9 @@ func TestModeratorViewsDisputedOrderReadOnly(t *testing.T) {
 
 func TestCounterpartyKeysAndMessagePrefill(t *testing.T) {
 	w := newOrderWorld(t)
+	// Legacy missing-key contacts are intentional in this display-only test.
+	w.e.setKey(w.vendorID, "")
+	w.e.setKey(w.buyerID, "")
 	_, vendorPub := testPGPKey(t, "vendor")
 	_, fp, err := parsePublicKey(vendorPub)
 	if err != nil {

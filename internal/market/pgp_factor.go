@@ -32,7 +32,8 @@ func init() {
 
 func (pgpFactor) Name() string { return "pgp" }
 
-// Enrolled requires PGP sign-in to be on and ownership of the currently saved key to be proven.
+// PGP is offered for an enrolled account, or required by the market login policy.
+// Strict login can prove a newly saved key for the first time by decryption.
 func (pgpFactor) Enrolled(ctx context.Context, q rowQuerier, userID string) (bool, error) {
 	p, err := loadPGPAccount(ctx, q, userID, false)
 	if err == sql.ErrNoRows {
@@ -41,13 +42,17 @@ func (pgpFactor) Enrolled(ctx context.Context, q rowQuerier, userID string) (boo
 	if err != nil {
 		return false, err
 	}
-	return p.TwoFactor, nil
+	required, err := pgpLoginRequired(ctx, q)
+	if err != nil {
+		return false, err
+	}
+	return p.TwoFactor || required && p.Key != nil && canReceiveEncrypted(p.Key, time.Now()), nil
 }
 
 // Bind the code to the exact key ownership proof. Replacing and re-verifying a
 // key invalidates old codes, including when the same key is later restored.
 func pgpLoginDigest(code string, p *pgpAccount) string {
-	return digest(code + "\x00" + p.Fingerprint + "\x00" + p.ProofVersion)
+	return digest(code + "\x00" + p.Fingerprint + "\x00" + p.ProofVersion + "\x00" + digest(p.Canonical))
 }
 
 func (pgpFactor) Verify(c *actionCtx, userID string) error {
@@ -55,8 +60,15 @@ func (pgpFactor) Verify(c *actionCtx, userID string) error {
 	if err != nil {
 		return err
 	}
-	if !p.TwoFactor {
+	required, err := pgpLoginRequired(c.Ctx(), c.Tx)
+	if err != nil {
+		return err
+	}
+	if !p.TwoFactor && !required {
 		return fail(401, "PGP sign-in verification is no longer enabled. Sign in again.")
+	}
+	if p.Key == nil || !canReceiveEncrypted(p.Key, time.Now()) {
+		return fail(401, "Your saved key cannot receive an encrypted sign-in code. Renew your public key or contact staff for recovery.")
 	}
 	var hash sql.NullString
 	err = c.Tx.QueryRowContext(c.Ctx(), "SELECT pgp_nonce FROM pending_logins WHERE token_hash=$1 AND user_id=$2", digest(pendingCookie(c.R)), userID).Scan(&hash)
@@ -96,8 +108,15 @@ func pgpLoginCodeAction(c *actionCtx) (actionResult, error) {
 	if err != nil {
 		return actionResult{}, err
 	}
-	if !p.TwoFactor {
+	required, err := pgpLoginRequired(ctx, tx)
+	if err != nil {
+		return actionResult{}, err
+	}
+	if !p.TwoFactor && !required {
 		return actionResult{}, fail(400, "PGP sign-in verification is not enabled for this account")
+	}
+	if p.Key == nil || !canReceiveEncrypted(p.Key, time.Now()) {
+		return actionResult{}, expiredKeyRefusal(c, userID)
 	}
 	var handle, market string
 	if err = tx.QueryRowContext(ctx, "SELECT handle,COALESCE((SELECT value FROM settings WHERE key='site_name'),'') FROM users WHERE id=$1", userID).Scan(&handle, &market); err != nil {

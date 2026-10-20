@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { seedPGPAccess } from './db-helpers';
 import { expect, test } from '@playwright/test';
 import { ADMIN, FIXTURE_LISTING, SETUP_TOKEN } from './db-fixtures';
 
@@ -12,6 +13,7 @@ test('initialize the market and publish the fixture listing', async ({ page, bro
   await expect(page).toHaveURL(/\/admin\?welcome=1$/);
   await expect(page.getByRole('heading', { name: 'Get your marketplace ready' })).toBeVisible();
   await expect(page.locator('.account-name')).toHaveText(ADMIN.handle);
+  await seedPGPAccess(page);
   // The general browser suite exercises explicitly unfunded drafts with intake paused.
   // Fresh default escrow-only readiness is checked separately; no pooled checkout exists.
   execFileSync('psql', [process.env.E2E_DATABASE_URL!, '-v', 'ON_ERROR_STOP=1', '-qtAc',

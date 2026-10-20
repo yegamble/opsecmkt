@@ -41,12 +41,13 @@ const (
 
 // activeVendorSQL is the SQL condition "alias is an approved, active vendor": the vendor role (given only by an
 // approved application, the admin role form or the -set-role host command; migration 121 grandfathered earlier
-// vendors with an approved application) on an account that is not suspended, closed or restricted for closure. A
+// vendors with an approved application), a saved public key and an account that is not suspended, closed, deactivated
+// or restricted for closure. A
 // banned account is always suspended too (migration 123, A-546), so the suspension test excludes it. alias names a
 // users row in the caller's query.
 func activeVendorSQL(alias string) string {
 	return "(" + alias + ".role='vendor' AND " + alias + ".suspended_at IS NULL AND " + alias + ".closed_at IS NULL AND " +
-		alias + ".retention_restricted_at IS NULL)"
+		alias + ".retention_restricted_at IS NULL AND " + alias + ".pgp<>'' AND NOT " + alias + ".vendor_deactivated)"
 }
 
 // VendorPolicyView is the vendor policy for new applications. Bond is in XMR ("0" when none).
@@ -240,6 +241,9 @@ func submitVendorApplication(ctx context.Context, tx *sql.Tx, userID string) (st
 // the host command) with note. A demotion leaves the approved application; /account then says the role was removed,
 // and the account may apply again (an approved application never counts as open).
 func vendorRoleAssigned(ctx context.Context, tx *sql.Tx, userID, adminID, note string) error {
+	if err := requireVendorPublicKey(ctx, tx, userID); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `UPDATE vendor_applications SET state='withdrawn',decided_by=NULLIF($2,''),decided_at=now(),note=$3
 		WHERE user_id=$1 AND state IN `+vendorOpenStates, userID, adminID, note); err != nil {
 		return err
@@ -256,6 +260,9 @@ var errVendorApplicationOpen = fail(http.StatusConflict, "You already have an op
 // <by>", which disputeEvidence also reads), roleChanged runs and the applicant is notified, after lead (the step that
 // approved it, or ""), with note.
 func approveVendor(ctx context.Context, tx *sql.Tx, userID, by, lead, note string) error {
+	if err := requireVendorPublicKey(ctx, tx, userID); err != nil {
+		return err
+	}
 	var role string
 	if err := tx.QueryRowContext(ctx, "SELECT role FROM users WHERE id=$1", userID).Scan(&role); err != nil {
 		return err

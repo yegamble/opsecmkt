@@ -15,6 +15,18 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## Required PGP access and vendor privacy
+
+Migrations 129 and 130 add session-bound PGP access proof, the administrator's browse-only login setting, and vendor availability/privacy preferences. They preserve existing accounts, orders and listings. Rebuild the embedded templates with the application and verify backups before upgrading.
+
+All purchases and message sends now require a usable public key and successful challenge decryption in the current session. Existing sessions have no such proof and must complete the PGP decrypt flow before buying or messaging. Ownership verification by signature and TOTP login do not replace this requirement. Any saved-key change requires another decryption proof. No private PGP key is uploaded or stored.
+
+**Allow login without PGP** defaults to enabled for compatibility: users can sign in to browse or repair their key, but cannot purchase or message until they prove decryption. Administrators may disable it after proving decryption themselves; subsequent sign-ins then require PGP decryption. Keep an external recovery contact available. Vendors must retain a usable public key; existing keyless vendors need to add one before trading, and new vendor signup/approval/role assignment requires one.
+
+Vacation keeps profiles and products public but blocks new purchases. Deactivation hides profiles, products and photos from strangers while preserving authorized existing-order access. Vendors can refuse buyer messages while away, including replies through old conversations. Public last seen is off by default; opting out clears the stored activity timestamp. Buyer-to-buyer legacy conversations stay readable but cannot be continued.
+
+See [PGP access](docs/operator-guide.md#pgp-access-for-purchases-and-messages) and [vendor availability](docs/operator-guide.md#vendor-availability-and-activity-privacy) for the controls and recovery boundaries.
+
 ## Stuck failed Monero settlements can be cleared (A-613)
 
 Migration 128 runs at startup and adds the table `xmr_settlement_hand_settled`, with triggers that refuse a

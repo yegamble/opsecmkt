@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { expect, test, type Page } from '@playwright/test';
 import { uniqueHandle } from './db-fixtures';
-import { enrollTOTP, expectNotice, OTHER_FINGERPRINT, pgpFixture, RECIPIENT_FINGERPRINT, setRole, signedIn, submitStatus, totp } from './db-helpers';
+import { seedPGPAccess, enrollTOTP, expectNotice, OTHER_FINGERPRINT, pgpFixture, RECIPIENT_FINGERPRINT, setRole, signedIn, submitStatus, totp } from './db-helpers';
 
 // PGP identity, encrypted messages and message notifications against a real database, JavaScript disabled.
 // Each test registers its own accounts; keys and messages come from committed fixtures (see db-helpers.ts).
@@ -16,7 +16,7 @@ async function saveKey(page: Page, armored: string, password?: string): Promise<
 }
 
 // The words /messages shows for an unknown handle and for one the viewer may not write to (messageNotPermitted).
-const NOT_PERMITTED = 'No account you can message has this handle. You can write to active vendors, people you share an order with, people who have messaged you, and listed market staff.';
+const NOT_PERMITTED = 'No account you can message has this handle. Contact an available vendor, your existing vendor or customer, or listed market staff for support.';
 
 const pgpRow = (page: Page) => page.locator('.key-values div', { hasText: 'PGP sign-in verification' }).locator('dd');
 
@@ -141,11 +141,12 @@ test('only OpenPGP-encrypted messages are accepted; status badges and the unread
   const stranger = uniqueHandle('msgstranger');
   test.setTimeout(90_000); // five registrations and three saved keys before the message legs
   const s = await signedIn(browser, baseURL, sender, 'browser-msg-sender-123', true);
+  await seedPGPAccess(s);
   const r = await signedIn(browser, baseURL, withKey, 'browser-msg-recipient-123', true);
   const o = await signedIn(browser, baseURL, otherKey, 'browser-msg-other-123', true);
   const n = await signedIn(browser, baseURL, noKey, 'browser-msg-nokey-123', true);
   const x = await signedIn(browser, baseURL, stranger, 'browser-msg-stranger-123', true);
-  // A buyer starts a message only to a vendor, an order partner, someone who wrote first or listed staff (A-543):
+  // A buyer starts a message only to an available vendor or eligible staff:
   // the three recipients sell; the stranger stays a buyer the sender may not write to.
   const database = process.env.E2E_DATABASE_URL!;
   execFileSync('psql', [database, '-v', 'ON_ERROR_STOP=1', '-qtAc', `UPDATE users SET role='vendor' WHERE handle IN ('${withKey}','${otherKey}','${noKey}')`]);
@@ -256,6 +257,8 @@ test('staff find any account by handle; a buyer replies with encrypted evidence 
   // Messages go only to an account with a usable key (A-569): the buyer saves the same fixture key.
   expect(await saveKey(buyer, pgpFixture('recipient.pub.asc'), 'browser-evidence-password-123')).toBe(303);
   await setRole(admin, handle, 'moderator');
+  await seedPGPAccess(staff);
+  await seedPGPAccess(buyer);
 
   // A buyer has no handle search, and an unlisted moderator is not someone it may start a message to (A-543).
   await buyer.goto('/messages');
@@ -295,6 +298,7 @@ test('hidden recipient IDs are sent only after the sender confirms, the cipherte
   const sender = uniqueHandle('hidfrom');
   const recipient = uniqueHandle('hidto');
   const s = await signedIn(browser, baseURL, sender, 'browser-hidden-sender-123', true);
+  await seedPGPAccess(s);
   const r = await signedIn(browser, baseURL, recipient, 'browser-hidden-recipient-123', true);
   // A buyer may start a message to a vendor (A-543); the vendor holds the recipient fixture key.
   execFileSync('psql', [process.env.E2E_DATABASE_URL!, '-v', 'ON_ERROR_STOP=1', '-qtAc', `UPDATE users SET role='vendor' WHERE handle='${recipient}'`]);

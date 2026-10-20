@@ -26,6 +26,10 @@ func TestPostgresMarketplaceFlow(t *testing.T) {
 	check(w, 303)
 	other := session(w)
 	check(do("GET", "/admin", buyer, nil), 403)
+	_, commercePublic := testPGPKey(t, "marketplace-flow")
+	e.pgpSession(admin, commercePublic)
+	e.pgpSession(buyer, commercePublic)
+	agExec(e, "INSERT INTO settings(key,value) VALUES($1,'admin_user') ON CONFLICT(key) DO UPDATE SET value=excluded.value", settingStaffContact)
 	listing := url.Values{"title": {"Encrypted <script>alert(1)</script> storage"}, "description": {"A test storage device"}, "category": {"Hardware"}, "region": {"Worldwide"}, "kind": {"physical"}, "price_btc": {"0.0001"}, "price_xmr": {"0.001"}, "stock": {"2"}}
 	check(do("POST", "/listings", buyer, listing), 403)
 	check(do("POST", "/listings", admin, listing), 303)

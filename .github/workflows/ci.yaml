@@ -43,6 +43,7 @@ jobs:
       # (tests/test_ci_go_split.py checks that). Never edit one without the other.
       - name: Formatting, modules, vet and races (including real PostgreSQL), without the escrow and Monero tests
         run: |
+          gofmt -d cmd internal
           test -z "$(gofmt -l cmd internal)"
           go mod verify
           go vet ./...

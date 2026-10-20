@@ -7,9 +7,10 @@
 <dd>{{.RecoveryRemaining}}</dd>
 </div>{{end}}{{end}}{{end}}
 {{define "account-security:panel"}}<div class="panel">
-<h2>Two-factor authentication</h2>{{with .Security}}{{if .TOTPEnabled}}
-<p>Every sign-in requires a code from your authenticator app or a one-time recovery code.{{if lt .RecoveryRemaining 3}} <strong>Few recovery codes remain; replace them.</strong>{{end}}</p>{{else}}
-<p>Sign-in uses your password only. Add time-based one-time codes (TOTP) from an authenticator app you control.</p>{{end}}{{end}}
+<h2>Two-factor authentication</h2>
+<p>Purchasing and messages require <a class="text-link" href="/pgp">PGP decryption in this browser</a>{{if .PGPAccessVerified}} (completed for your current public key){{end}}. The market can also require PGP at every sign-in.</p>{{with .Security}}{{if .TOTPEnabled}}
+<p>Your authenticator app or a one-time recovery code can verify sign-in when the market allows browse-only sign-in.{{if lt .RecoveryRemaining 3}} <strong>Few recovery codes remain; replace them.</strong>{{end}}</p>{{else}}
+<p>We strongly encourage adding time-based one-time codes (TOTP) from an authenticator app you control to help prevent account takeover. Keep its recovery codes offline.</p>{{end}}{{end}}
 <a class="button" href="/totp">Manage TOTP <span class="action-icon">↗</span></a>
 </div>{{$totp := and .Security .Security.TOTPEnabled}}
 <section class="panel" id="password" aria-labelledby="password-heading">

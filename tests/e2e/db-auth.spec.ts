@@ -130,7 +130,8 @@ test('anonymous checkout returns to the checkout after registering and after the
   await page.getByLabel('Password', { exact: true }).fill(passphrase);
   await page.getByRole('button', { name: 'Create account' }).click();
   await expect(page).toHaveURL(checkout);
-  await expect(page.getByRole('button', { name: 'Create unfunded draft' })).toBeVisible();
+  // Returning to checkout does not authenticate PGP for this browser, even after TOTP.
+  await expect(page.getByRole('button', { name: 'Create unfunded draft' })).toHaveCount(0);
 
   const secret = await enrollTOTP(page, passphrase);
   await page.context().close();
@@ -148,7 +149,8 @@ test('anonymous checkout returns to the checkout after registering and after the
   await page.getByRole('button', { name: 'Verify code' }).click();
   await expect(page).toHaveURL(checkout);
   await expect(page.locator('.account-name')).toHaveText(handle);
-  await expect(page.getByRole('button', { name: 'Create unfunded draft' })).toBeVisible();
+  // Returning to checkout does not authenticate PGP for this browser, even after TOTP.
+  await expect(page.getByRole('button', { name: 'Create unfunded draft' })).toHaveCount(0);
   await page.context().close();
 });
 

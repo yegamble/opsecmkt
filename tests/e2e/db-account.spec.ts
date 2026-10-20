@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { FIXTURE_LISTING, uniqueHandle } from './db-fixtures';
 import { waitForStyles } from './styles';
-import { expectNotice, signedIn, submitAndLoad } from './db-helpers';
+import { expectNotice, signedIn, submitAndLoad, seedPGPAccess } from './db-helpers';
 
 // Uses the listing published by db-setup.spec.ts and registers its own buyer.
 test('register, draft, removed XMPP field and session boundaries', async ({ page, browser, baseURL }) => {
@@ -12,6 +12,7 @@ test('register, draft, removed XMPP field and session boundaries', async ({ page
   await page.getByLabel('Password', { exact: true }).fill(password);
   await page.getByRole('button', { name: 'Create account' }).click();
   await expect(page.locator('.account-name')).toHaveText(handle);
+  await seedPGPAccess(page);
   // The catalog shows 25 listings a page (A-181) and other specs publish more: search for the setup fixture.
   await page.goto(`/?q=${encodeURIComponent(FIXTURE_LISTING)}`);
   await page.getByRole('link', { name: FIXTURE_LISTING, exact: true }).click();

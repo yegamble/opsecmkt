@@ -290,8 +290,9 @@ var testHash = sync.OnceValue(func() string {
 	return string(h)
 })
 
-// user inserts an account (password testPassword) with a live session, marking the market installed.
-func (e *testEnv) user(handle, role string) (id, session string) {
+// keylessUser inserts an account without a PGP key or authentication proof. Use it for
+// enrollment, browse-only login and access-refusal tests.
+func (e *testEnv) keylessUser(handle, role string) (id, session string) {
 	e.t.Helper()
 	id, session = randomToken(), randomToken()
 	for _, q := range []struct {
@@ -345,4 +346,67 @@ func (e *testEnv) loadUser(id string) *User {
 		e.t.Fatal(err)
 	}
 	return u
+}
+
+// accountPGPFixture is a throwaway public key shared by ordinary account fixtures. Its
+// private half never leaves testPGPKey and is not needed for fixture insertion. Tests
+// of decryption use their own private key and the real challenge endpoints.
+var accountPGPFixture struct {
+	once   sync.Once
+	public string
+}
+
+// user represents an account that already completed PGP authentication in this
+// session. Requests still run the production authorization checks. Tests of missing
+// keys or proof use keylessUser, and changing a key requires explicit reauthentication.
+func (e *testEnv) user(handle, role string) (id, session string) {
+	e.t.Helper()
+	id, session = e.keylessUser(handle, role)
+	accountPGPFixture.once.Do(func() {
+		_, accountPGPFixture.public = testPGPKey(e.t, "commerce-fixture")
+	})
+	e.pgpSession(session, accountPGPFixture.public)
+	return id, session
+}
+
+// pgpSession explicitly seeds a saved public key and this session's access proof.
+// It is fixture setup, not a request helper; tests of authentication must submit the
+// actual challenge rather than use this method.
+func (e *testEnv) pgpSession(token, public string) {
+	e.t.Helper()
+	_, fingerprint, canonical, err := parseCanonicalPublicKey(public)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	res, err := e.DB.Exec(`UPDATE users SET pgp=$2,pgp_fingerprint=$3
+		WHERE id=(SELECT user_id FROM sessions WHERE token_hash=$1)`, digest(token), canonical, fingerprint)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	if n, err := res.RowsAffected(); err != nil || n != 1 {
+		e.t.Fatalf("seed PGP account: %d rows: %v", n, err)
+	}
+	e.pgpSessionKey(token)
+}
+
+// pgpSessionKey explicitly reauthenticates a fixture session after a test changed
+// the saved key directly. It never changes that key or account-level ownership state.
+func (e *testEnv) pgpSessionKey(token string) {
+	e.t.Helper()
+	var public string
+	if err := e.DB.QueryRow(`SELECT u.pgp FROM users u JOIN sessions s ON s.user_id=u.id
+		WHERE s.token_hash=$1`, digest(token)).Scan(&public); err != nil {
+		e.t.Fatal(err)
+	}
+	_, _, canonical, err := parseCanonicalPublicKey(public)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	res, err := e.DB.Exec("UPDATE sessions SET pgp_access_key=$2 WHERE token_hash=$1", digest(token), digest(canonical))
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	if n, err := res.RowsAffected(); err != nil || n != 1 {
+		e.t.Fatalf("seed PGP session: %d rows: %v", n, err)
+	}
 }

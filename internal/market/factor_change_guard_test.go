@@ -109,7 +109,7 @@ func TestRecoveryCodeReplacementNeedsPassword(t *testing.T) {
 
 func TestFactorlessAccountNeedsPasswordForKeyAndPGPSignIn(t *testing.T) {
 	e := newTestApp(t)
-	uid, stolen := e.user("a152_vendor", "vendor")
+	uid, stolen := e.keylessUser("a152_vendor", "buyer")
 	alice, alicePub := testPGPKey(t, "alice")
 	_, malloryPub := testPGPKey(t, "mallory")
 	_, aliceFP, _ := parsePublicKey(alicePub)

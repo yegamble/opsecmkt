@@ -75,6 +75,12 @@ func saveProfileKey(c *actionCtx, armored string, confirmed bool) (string, strin
 	if err != nil {
 		return "", "", err
 	}
+	if c.User.Role == "vendor" {
+		key, _, _, err := parseCanonicalPublicKey(armored)
+		if err != nil || !canReceiveEncrypted(key, time.Now()) {
+			return "", "", fail(409, "Vendors must keep a usable PGP public key. Save a public key with an active encryption subkey; never submit your private key.")
+		}
+	}
 	old := p.Armored
 	if old == armored { // nothing changed: no write and no audit row (A-159(h)); the form's receipt and notice still apply
 		return "", "", nil
@@ -97,6 +103,9 @@ func saveProfileKey(c *actionCtx, armored string, confirmed bool) (string, strin
 			return renewProfileKey(c, p, text)
 		}
 		fp, canonical = parsed, text
+	}
+	if err := clearPGPAccess(ctx, tx, uid); err != nil {
+		return "", "", err
 	}
 	if _, err := tx.ExecContext(ctx, "UPDATE users SET pgp=$1,pgp_fingerprint=$2,pgp_verified_at=NULL,pgp_2fa=false,pgp_changed_at=now() WHERE id=$3", canonical, fp, uid); err != nil {
 		return "", "", err
@@ -141,6 +150,9 @@ func keyChangedAlert(why string) string {
 // older subkey). Otherwise it is saved as a changed key: proof, PGP sign-in and any open challenge are cleared, the
 // change time is recorded (A-158) and the outcome names why. Either way the owner is notified.
 func renewProfileKey(c *actionCtx, p *pgpAccount, canonical string) (string, string, error) {
+	if err := clearPGPAccess(c.Ctx(), c.Tx, c.User.ID); err != nil {
+		return "", "", err
+	}
 	ctx, tx, uid := c.Ctx(), c.Tx, c.User.ID
 	why := renewalRefusal(p, canonical, time.Now())
 	if why == "" {
@@ -243,7 +255,7 @@ func loadPGPAccount(ctx context.Context, q rowQuerier, uid string, forUpdate boo
 	return p, nil
 }
 
-func pgpLoader(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
+func pgpLoader(ctx context.Context, a *App, r *http.Request, d *PageData) error {
 	if d.Page == "pgp" {
 		d.Title = "PGP verification"
 	}
@@ -273,7 +285,7 @@ func pgpLoader(ctx context.Context, a *App, _ *http.Request, d *PageData) error 
 		return nil
 	}
 	var kind, fp, challenge, expires string
-	err = a.db.QueryRowContext(ctx, `SELECT kind,fingerprint,challenge,to_char(expires AT TIME ZONE 'UTC','YYYY-MM-DD HH24:MI "UTC"') FROM pgp_challenges WHERE user_id=$1 AND expires>now()`, d.User.ID).Scan(&kind, &fp, &challenge, &expires)
+	err = a.db.QueryRowContext(ctx, `SELECT kind,fingerprint,challenge,to_char(expires AT TIME ZONE 'UTC','YYYY-MM-DD HH24:MI "UTC"') FROM pgp_challenges WHERE user_id=$1 AND session_hash=$2 AND key_digest=$3 AND expires>now()`, d.User.ID, digest(sessionToken(r)), digest(p.Canonical)).Scan(&kind, &fp, &challenge, &expires)
 	if err == sql.ErrNoRows || err == nil && fp != p.Fingerprint {
 		return nil
 	}
@@ -337,13 +349,19 @@ func pgpChallengeAction(c *actionCtx) (actionResult, error) {
 	nonce := randomToken()[:32]
 	challenge, nonceHash := "OPSECMKT key ownership proof for "+u.Handle+": "+nonce, ""
 	if kind == "decrypt" {
-		if challenge, err = encryptTo(p.Key, nonce); err != nil {
+		var requested, expires time.Time
+		var market string
+		if err = tx.QueryRowContext(ctx, "SELECT now(),now()+interval '"+pgpChallengeTTL+"',COALESCE((SELECT value FROM settings WHERE key='site_name'),'')").Scan(&requested, &expires, &market); err != nil {
+			return actionResult{}, err
+		}
+		text := pgpAccessChallengeText(u.Handle, market, c.A.officialAddresses, privateAdminIngress(ctx), requested, expires, nonce)
+		if challenge, err = encryptTo(p.Key, text); err != nil {
 			return actionResult{}, fail(409, "Your key has no usable encryption subkey (expired or sign-only). Use the signing challenge instead.")
 		}
 		nonceHash = digest(nonce)
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO pgp_challenges(user_id,kind,fingerprint,challenge,nonce_hash,expires) VALUES($1,$2,$3,$4,$5,now()+interval '`+pgpChallengeTTL+`')
-ON CONFLICT(user_id) DO UPDATE SET kind=excluded.kind,fingerprint=excluded.fingerprint,challenge=excluded.challenge,nonce_hash=excluded.nonce_hash,expires=excluded.expires,created=now()`, u.ID, kind, p.Fingerprint, challenge, nonceHash)
+	_, err = tx.ExecContext(ctx, `INSERT INTO pgp_challenges(user_id,kind,fingerprint,challenge,nonce_hash,expires,session_hash,key_digest) VALUES($1,$2,$3,$4,$5,now()+interval '`+pgpChallengeTTL+`',$6,$7)
+ON CONFLICT(user_id,session_hash) DO UPDATE SET kind=excluded.kind,fingerprint=excluded.fingerprint,challenge=excluded.challenge,nonce_hash=excluded.nonce_hash,expires=excluded.expires,session_hash=excluded.session_hash,key_digest=excluded.key_digest,created=now()`, u.ID, kind, p.Fingerprint, challenge, nonceHash, digest(c.Token), digest(p.Canonical))
 	return actionResult{Redirect: "/pgp"}, err
 }
 
@@ -382,7 +400,7 @@ func pgpVerifyAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, err
 	}
 	var kind, fp, challenge, nonceHash string
-	err = tx.QueryRowContext(ctx, "SELECT kind,fingerprint,challenge,nonce_hash FROM pgp_challenges WHERE user_id=$1 AND expires>now() FOR UPDATE", u.ID).Scan(&kind, &fp, &challenge, &nonceHash)
+	err = tx.QueryRowContext(ctx, "SELECT kind,fingerprint,challenge,nonce_hash FROM pgp_challenges WHERE user_id=$1 AND session_hash=$2 AND key_digest=$3 AND expires>now() FOR UPDATE", u.ID, digest(c.Token), digest(p.Canonical)).Scan(&kind, &fp, &challenge, &nonceHash)
 	if err == sql.ErrNoRows {
 		return actionResult{}, fail(409, "No open challenge. Start a new one; challenges expire after 30 minutes.")
 	}
@@ -405,7 +423,12 @@ func pgpVerifyAction(c *actionCtx) (actionResult, error) {
 	if _, err = tx.ExecContext(ctx, "UPDATE users SET pgp_verified_at=now(),pgp_fingerprint=$1 WHERE id=$2 AND pgp=$3", p.Fingerprint, u.ID, p.Armored); err != nil {
 		return actionResult{}, err
 	}
-	if _, err = tx.ExecContext(ctx, "DELETE FROM pgp_challenges WHERE user_id=$1", u.ID); err != nil {
+	if kind == "decrypt" {
+		if err = grantPGPAccess(ctx, tx, u.ID, c.Token); err != nil {
+			return actionResult{}, err
+		}
+	}
+	if _, err = tx.ExecContext(ctx, "DELETE FROM pgp_challenges WHERE user_id=$1 AND session_hash=$2", u.ID, digest(c.Token)); err != nil {
 		return actionResult{}, err
 	}
 	if err = notifyOwner(ctx, tx, u.ID, "Ownership of the PGP key on your account was proved."); err != nil {

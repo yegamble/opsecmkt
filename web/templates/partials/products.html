@@ -15,7 +15,7 @@ broken-image icon in Chromium and WebKit); otherwise the CSS illustration. Thumb
 <div class="vendor-line">
 <span aria-hidden="true">◇</span>
 <a href="/vendor?id={{.VendorID}}">{{.Vendor}}</a>{{if .VendorVerified}}
-<span class="badge green verified-vendor">Verified vendor</span>{{end}}
+<span class="badge green verified-vendor">Verified vendor</span>{{end}}{{if .VendorVacation}} <span class="badge neutral">On vacation</span>{{end}}{{if .VendorDeactivated}} <span class="badge neutral">Deactivated</span>{{end}}
 <span> / {{.Region}}</span>
 </div>
 <h2>

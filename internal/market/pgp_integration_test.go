@@ -61,7 +61,7 @@ func TestPGPKeyOwnershipAndSecondFactor(t *testing.T) {
 	bob, bobPub := testPGPKey(t, "bob")
 	_, aliceFP, _ := parsePublicKey(alicePub)
 	_, bobFP, _ := parsePublicKey(bobPub)
-	uid, s := e.user("alice_pgp", "buyer")
+	uid, s := e.keylessUser("alice_pgp", "buyer")
 	status := func() (fp string, verified, twoFA bool) {
 		t.Helper()
 		if err := e.DB.QueryRow("SELECT pgp_fingerprint,pgp_verified_at IS NOT NULL,pgp_2fa FROM users WHERE id=$1", uid).Scan(&fp, &verified, &twoFA); err != nil {
@@ -151,7 +151,7 @@ func TestPGPKeyOwnershipAndSecondFactor(t *testing.T) {
 	if err := e.DB.QueryRow("SELECT challenge,nonce_hash FROM pgp_challenges WHERE user_id=$1 AND kind='decrypt'", uid).Scan(&armored, &nonceHash); err != nil {
 		t.Fatal(err)
 	}
-	nonce := testDecrypt(t, alice, armored)
+	nonce := testSignInCode(t, alice, armored)
 	if nonceHash != digest(nonce) || strings.Contains(armored, nonce) {
 		t.Fatal("nonce stored in plaintext")
 	}
@@ -220,7 +220,7 @@ func TestPGPKeyOwnershipAndSecondFactor(t *testing.T) {
 	if err := e.DB.QueryRow("SELECT challenge FROM pgp_challenges WHERE user_id=$1", uid).Scan(&armored); err != nil {
 		t.Fatal(err)
 	}
-	bobNonce := testDecrypt(t, bob, armored)
+	bobNonce := testSignInCode(t, bob, armored)
 	e.check(e.do("POST", "/account", s, url.Values{"pgp": {alicePub}, "password": {testPassword}}), 303)
 	e.check(e.do("POST", "/pgp/verify", s, url.Values{"response": {bobNonce}}), 409)
 
@@ -270,7 +270,9 @@ func TestMessageEncryptionStatus(t *testing.T) {
 	bob, bobPub := testPGPKey(t, "bob")
 	senderID, sender := e.user("msg_sender", "buyer")
 	aliceID, aliceSession := e.user("msg_alice", "vendor")
-	nokeyID, _ := e.user("msg_nokey", "vendor")
+	nokeyID, _ := e.keylessUser("msg_nokey", "vendor")
+	// A legacy customer relationship reaches the key-usability check without publishing a keyless vendor.
+	e.order(senderID, e.product(nokeyID, "digital"), "XMR", stateAwaitingPayment)
 	e.check(e.do("POST", "/account", aliceSession, url.Values{"pgp": {alicePub}, "password": {testPassword}}), 303)
 
 	toAlice, _ := encryptTo(alice, "for alice")
@@ -692,7 +694,7 @@ func TestProfileKeyPhotoIDRefused(t *testing.T) {
 	e := newTestApp(t)
 	key, photo, plain := testPhotoIDKey(t, "photo_key")
 	_, fp, _ := parsePublicKey(plain)
-	uid, s := e.user("photo_owner", "vendor")
+	uid, s := e.keylessUser("photo_owner", "vendor")
 	type row struct {
 		pgp, fp       string
 		verified      bool

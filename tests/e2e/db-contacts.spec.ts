@@ -1,6 +1,6 @@
 import { expect, test, type Browser, type Page } from '@playwright/test';
 import { ADMIN, uniqueHandle } from './db-fixtures';
-import { setRole } from './db-helpers';
+import { setRole, seedPGPAccess, RECIPIENT_FINGERPRINT } from './db-helpers';
 import { waitForStyles } from './styles';
 
 // Contacts and vendor demotion against a real database: an administrator promotes a new account to
@@ -37,6 +37,7 @@ test('vendor contact, unread notifications and demotion archive', async ({ brows
   const vendorNav = vendor.getByRole('navigation', { name: 'Main navigation' });
   await expect(vendorNav.getByRole('link', { name: 'Notifications', exact: true })).toBeVisible();
 
+  await seedPGPAccess(buyer);
   await setRole(admin, vendorHandle, 'vendor');
   await vendor.goto('/notifications');
   await expect(vendor.locator('main')).toContainText('Your account role changed from buyer to vendor.');
@@ -50,13 +51,13 @@ test('vendor contact, unread notifications and demotion archive', async ({ brows
   await vendor.getByRole('button', { name: 'Publish listing' }).click();
   await expect(vendor.getByLabel('Listing title')).toHaveValue(title); // A-188: publishing lands on its edit page
 
-  // The buyer contacts the vendor: the recipient is prefilled and the missing key is stated plainly.
+  // The buyer contacts the vendor: the recipient is prefilled and the required public key is shown.
   await buyer.goto(`/?q=${encodeURIComponent(title)}`);
   await buyer.getByRole('link', { name: title, exact: true }).click();
   await buyer.waitForURL(/\/product\?id=/);
   const productURL = buyer.url();
   await buyer.getByRole('link', { name: vendorHandle, exact: true }).click();
-  await expect(buyer.getByRole('region', { name: 'PGP public key' })).toContainText(`${vendorHandle} has not added a PGP public key`);
+  await expect(buyer.getByRole('region', { name: 'PGP public key' })).toContainText(RECIPIENT_FINGERPRINT);
   const vendorURL = buyer.url();
   for (const [page, url] of [[buyer, vendorURL], [vendor, vendorURL], [vendor, '/vendor-dashboard']] as const) {
     await page.goto(url);
@@ -69,7 +70,7 @@ test('vendor contact, unread notifications and demotion archive', async ({ brows
   await expect(buyer).toHaveURL(new RegExp(`/messages\\?to=${vendorHandle}$`));
   await expect(buyer.locator('input[name="recipient"]')).toHaveValue(vendorHandle);
   await expect(buyer.locator('.message-to')).toHaveText(`To: ${vendorHandle}`);
-  await expect(buyer.locator('main')).toContainText('Ask them to add a public key, or obtain and confirm their key through a trusted channel before encrypting.');
+  await expect(buyer.locator('.contact-key .pgp-fingerprint')).toHaveText(RECIPIENT_FINGERPRINT);
 
   // Cancelling an unfunded draft does not create vendor noise; the buyer can still read its order history.
   await buyer.goto(productURL);

@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { expect, test, type APIRequestContext, type Browser, type Locator, type Page, type TestInfo } from '@playwright/test';
 import { check, context, password, pressSubmit, register, reloadUntil, settlementStatus, shot, tabTo, typeInto } from './escrow-helpers';
-import { pgpFixture } from './db-helpers';
+import { pgpFixture, seedPGPAccess } from './db-helpers';
 
 // WR-escrow Phase 3, slice X-g2 (A-248; P3-R3 to P3-R8, P3-R11): the Monero escrow journey with JavaScript disabled at
 // 320 px, every form driven by the keyboard alone, against the real server and PostgreSQL. The escrow wallet-rpc and its
@@ -63,6 +63,7 @@ async function signIn(browser: Browser, baseURL: string | undefined, handle: str
   await typeInto(page, page.getByLabel('Password', { exact: true }), pass);
   await pressSubmit(page, page.getByRole('button', { name: 'Sign in' }));
   await expect(page.locator('.account-name')).toHaveText(handle);
+  await seedPGPAccess(page, undefined, process.env.E2E_ESCROW_XMR_DATABASE_URL);
   return page;
 }
 const badge = (page: Page) => page.locator('.page-head .badge');
@@ -160,6 +161,8 @@ test('Monero escrow: checkout with the custody copy, funding at 9 and 10 confirm
   const vendor = await context(browser, baseURL);
   await register(buyer, 'xmr_buyer', buyerPassword);
   await register(vendor, 'xmr_vendor', vendorPassword);
+  await seedPGPAccess(buyer, undefined, process.env.E2E_ESCROW_XMR_DATABASE_URL);
+  await seedPGPAccess(vendor, undefined, process.env.E2E_ESCROW_XMR_DATABASE_URL);
   await admin.goto('/admin/users');
   const role = admin.locator('form', { has: admin.getByRole('button', { name: 'Update role' }) });
   await typeInto(admin, role.getByLabel('Account handle'), 'xmr_vendor');
@@ -571,6 +574,7 @@ test('Vendor bond in XMR (A-547): the non-refundable terms before the one-time a
   try {
     const applicant = await context(browser, baseURL);
     await register(applicant, 'xmr_bond_applicant', buyerPassword);
+    await seedPGPAccess(applicant, undefined, process.env.E2E_ESCROW_XMR_DATABASE_URL);
     await applicant.goto('/account');
     const section = applicant.getByRole('region', { name: 'Sell on this market' });
     expect(await pressSubmit(applicant, section.getByRole('button', { name: 'Apply to sell' }))).toBe(303);

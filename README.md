@@ -28,7 +28,7 @@ Built for a visitor on Tor Browser with scripts off. Development can use one hos
 production separates the app, managed or self-hosted database, payment services and upload gateway.
 
 - **Nothing runs in the browser.** Plain HTML and CSS, a strict Content Security Policy, no third-party assets.
-- **Identity is PGP.** Sign in with a PGP challenge or TOTP. Messages are PGP ciphertext the server cannot read.
+- **Identity is PGP.** Purchases and messages require a usable public key and PGP challenge decryption in the current session. Administrators may allow browse-only login without PGP; MFA is encouraged. Messages are PGP ciphertext the server cannot read.
 - **Guided or automated deployment.** One Go binary provides setup, application and worker roles, key tools,
   and Docker Compose lifecycle commands. Keep dependency hosts and keys through application rebuilds.
 - **Administrator-only operations status.** Service-isolation notices and signed dependency-version reports,

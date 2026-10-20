@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { FIXTURE_LISTING, uniqueHandle } from './db-fixtures';
-import { submitAndLoad } from './db-helpers';
+import { submitAndLoad, seedPGPAccess } from './db-helpers';
 import { waitForStyles } from './styles';
 
 // The db-account journey (register, unfunded draft, profile persistence, sign-out) at desktop width. The
@@ -21,6 +21,7 @@ test('desktop: register, draft, profile persistence and sign-out', async ({ page
   await page.getByLabel('Password', { exact: true }).fill(password);
   await page.getByRole('button', { name: 'Create account' }).click();
   await expect(page.locator('.account-name')).toHaveText(handle);
+  await seedPGPAccess(page);
 
   // At desktop width the catalog shows the filter sidebar instead of the collapsible filter panel.
   await expect(page.locator('.desktop-filters')).toBeVisible();

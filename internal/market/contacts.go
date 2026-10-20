@@ -45,7 +45,7 @@ func init() {
 	registerPreview("order", func(d *PageData) {
 		if d.Order != nil {
 			d.OrderViewer = roleBuyer
-			d.Contacts = []ContactKey{{Handle: d.Order.Vendor, Relation: "vendor"}}
+			d.Contacts = []ContactKey{{Handle: d.Order.Vendor, Relation: "vendor", CanMessage: true}}
 		}
 	})
 	registerPreview("messages", func(d *PageData) {
@@ -92,7 +92,7 @@ func disputeStaffLoader(ctx context.Context, a *App, _ *http.Request, d *PageDat
 }
 
 func previewContactKey(handle, relation string) ContactKey {
-	return ContactKey{Handle: handle, Relation: relation, Fingerprint: formatFingerprint("0000000000000000000000000000000000000000"),
+	return ContactKey{Handle: handle, Relation: relation, CanMessage: true, Fingerprint: formatFingerprint("0000000000000000000000000000000000000000"),
 		Armored: "-----BEGIN PGP PUBLIC KEY BLOCK-----\n(sample preview — not a real key)\n-----END PGP PUBLIC KEY BLOCK-----"}
 }
 
@@ -207,6 +207,29 @@ const lookupBudget = 60
 // (A-543). Past the account's lookup budget it shows neither a key nor whether the handle exists, only that lookups
 // are paused (A-516, A-92).
 func messageRecipientLoader(ctx context.Context, a *App, r *http.Request, d *PageData) error {
+	if d.User == nil {
+		return nil
+	}
+	// A legacy inbound message is not permission to contact a private buyer. Hide reply links for every sender
+	// this account cannot currently message, including vendors that have stopped receiving buyer messages.
+	// Inbox pages are bounded; cache repeated senders so a conversation needs only one policy lookup.
+	replyAllowed := make(map[string]bool)
+	for i := range d.Messages {
+		m := &d.Messages[i]
+		if m.Recipient != d.User.Handle || m.Sender == d.User.Handle {
+			continue
+		}
+		allowed, seen := replyAllowed[m.Sender]
+		if !seen {
+			id, err := messageRecipient(ctx, a.db, d.User, m.Sender)
+			if err != nil {
+				return err
+			}
+			allowed = id != ""
+			replyAllowed[m.Sender] = allowed
+		}
+		m.CanReply = allowed
+	}
 	to := r.URL.Query().Get("to")
 	if !handlePattern.MatchString(to) || d.User == nil {
 		return nil
@@ -233,4 +256,30 @@ func unreadNotificationsLoader(ctx context.Context, a *App, _ *http.Request, d *
 		return nil
 	}
 	return a.db.QueryRowContext(ctx, "SELECT count(*) FROM notifications WHERE user_id=$1 AND NOT is_read", d.User.ID).Scan(&d.UnreadNotifications)
+}
+
+// contactMessageAvailability runs after all page loaders. Keep counterparty keys visible for existing orders,
+// but show a message action only when the same recipient policy used by POST /messages permits it now.
+func contactMessageAvailability(ctx context.Context, a *App, d *PageData) error {
+	allowed := make(map[string]bool)
+	for _, contacts := range [][]ContactKey{d.Contacts, d.StaffContacts} {
+		for i := range contacts {
+			k := &contacts[i]
+			k.CanMessage = false
+			if d.User == nil {
+				continue
+			}
+			canMessage, seen := allowed[k.Handle]
+			if !seen {
+				id, err := messageRecipient(ctx, a.db, d.User, k.Handle)
+				if err != nil {
+					return err
+				}
+				canMessage = id != ""
+				allowed[k.Handle] = canMessage
+			}
+			k.CanMessage = canMessage
+		}
+	}
+	return nil
 }

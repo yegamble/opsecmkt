@@ -270,7 +270,7 @@ func (a *App) load(r *http.Request, d *PageData) error {
 		if d.Page == "catalog" || d.Page == "vendor" || d.Page == "vendor-dashboard" {
 			description = "left(p.description," + strconv.Itoa(excerptRunes+1) + ")"
 		}
-		query := `SELECT p.id,p.title,` + description + `,p.category,p.region,p.kind,u.handle,p.vendor_id,p.btc,p.xmr,p.stock,p.archived,` + takedown + `,u.vendor_verified FROM products p JOIN users u ON u.id=p.vendor_id WHERE true`
+		query := `SELECT p.id,p.title,` + description + `,p.category,p.region,p.kind,u.handle,p.vendor_id,p.btc,p.xmr,p.stock,p.archived,` + takedown + `,u.vendor_verified,u.vendor_vacation,u.vendor_deactivated,NOT ` + vendorAcceptsBuyerMessagesSQL("u") + ` FROM products p JOIN users u ON u.id=p.vendor_id WHERE true`
 		args := []any{}
 		limit := " LIMIT 100"
 		switch d.Page {
@@ -283,7 +283,7 @@ func (a *App) load(r *http.Request, d *PageData) error {
 			query += " AND p.vendor_id=$1"
 			args = append(args, vendorID)
 			var total int
-			if err = a.db.QueryRowContext(ctx, `SELECT count(*) FROM products p WHERE p.vendor_id=$1 AND NOT p.archived`, vendorID).Scan(&total); err != nil {
+			if err = a.db.QueryRowContext(ctx, `SELECT count(*) FROM products p JOIN users u ON u.id=p.vendor_id WHERE p.vendor_id=$1 AND NOT p.archived AND NOT u.vendor_deactivated`, vendorID).Scan(&total); err != nil {
 				return err
 			}
 			paging := vendorPaging(d, vendorID, total, r.URL.Query().Get("page"))
@@ -304,10 +304,10 @@ func (a *App) load(r *http.Request, d *PageData) error {
 		case "catalog":
 			// The term is matched literally (likePattern); the count and the page share one filter. E'\\' is one
 			// backslash whatever standard_conforming_strings an external database sets.
-			filter := ` AND NOT p.archived AND ($1='' OR p.title ILIKE $4 ESCAPE E'\\' OR p.description ILIKE $4 ESCAPE E'\\') AND ($2='' OR p.category=$2) AND ($3='' OR p.region=$3 OR p.region='Worldwide')`
+			filter := ` AND NOT p.archived AND NOT u.vendor_deactivated AND ($1='' OR p.title ILIKE $4 ESCAPE E'\\' OR p.description ILIKE $4 ESCAPE E'\\') AND ($2='' OR p.category=$2) AND ($3='' OR p.region=$3 OR p.region='Worldwide')`
 			args = append(args, d.Query, d.Category, d.Region, likePattern(d.Query))
 			var total int
-			if err = a.db.QueryRowContext(ctx, `SELECT count(*) FROM products p WHERE true`+filter, args...).Scan(&total); err != nil {
+			if err = a.db.QueryRowContext(ctx, `SELECT count(*) FROM products p JOIN users u ON u.id=p.vendor_id WHERE true`+filter, args...).Scan(&total); err != nil {
 				return err
 			}
 			paging := catalogPaging(d, total, r.URL.Query().Get("page"))
@@ -319,10 +319,10 @@ func (a *App) load(r *http.Request, d *PageData) error {
 		case d.Page == "product" && d.User != nil:
 			// A-164: an archived listing's page stays readable to whoever may read an order placed on it (the
 			// order page's rule), so the parties and reviewing staff can see what was sold; everyone else gets 404.
-			query += " AND (NOT p.archived OR EXISTS(SELECT 1 FROM orders o WHERE o.product_id=p.id AND " + orderReadable("$2", "$3") + "))"
+			query += " AND ((NOT p.archived AND NOT u.vendor_deactivated) OR EXISTS(SELECT 1 FROM orders o WHERE o.product_id=p.id AND " + orderReadable("$2", "$3") + "))"
 			args = append(args, d.User.ID, d.User.Role)
 		case d.Page != "vendor-dashboard" && d.Page != "catalog":
-			query += " AND NOT p.archived"
+			query += " AND NOT p.archived AND NOT u.vendor_deactivated"
 		}
 		// p.id breaks ties between listings created in the same transaction, so pages never overlap.
 		query += " ORDER BY p.created DESC, p.id DESC" + limit
@@ -333,7 +333,7 @@ func (a *App) load(r *http.Request, d *PageData) error {
 		for rows.Next() {
 			var p Product
 			var btc, xmr int64
-			if err = rows.Scan(&p.ID, &p.Title, &p.Description, &p.Category, &p.Region, &p.Kind, &p.Vendor, &p.VendorID, &btc, &xmr, &p.Stock, &p.Archived, &p.TakedownReason, &p.VendorVerified); err != nil {
+			if err = rows.Scan(&p.ID, &p.Title, &p.Description, &p.Category, &p.Region, &p.Kind, &p.Vendor, &p.VendorID, &btc, &xmr, &p.Stock, &p.Archived, &p.TakedownReason, &p.VendorVerified, &p.VendorVacation, &p.VendorDeactivated, &p.VendorMessagesUnavailable); err != nil {
 				rows.Close()
 				return err
 			}
@@ -358,7 +358,7 @@ func (a *App) load(r *http.Request, d *PageData) error {
 		}
 		if d.Page == "vendor" {
 			var u User
-			err = a.db.QueryRowContext(ctx, "SELECT id,handle,role,pgp,vendor_verified,banned_at IS NOT NULL FROM users WHERE id=$1 AND role IN ('vendor','admin')", r.URL.Query().Get("id")).Scan(&u.ID, &u.Handle, &u.Role, &u.PGP, &u.VendorVerified, &d.SellerClosed)
+			err = a.db.QueryRowContext(ctx, "SELECT id,handle,role,pgp,vendor_verified,banned_at IS NOT NULL FROM users WHERE id=$1 AND role IN ('vendor','admin') AND NOT vendor_deactivated", r.URL.Query().Get("id")).Scan(&u.ID, &u.Handle, &u.Role, &u.PGP, &u.VendorVerified, &d.SellerClosed)
 			if err != nil {
 				return err
 			}
@@ -513,6 +513,9 @@ func (a *App) load(r *http.Request, d *PageData) error {
 		}
 	}
 	if err := runLoaders(ctx, a, r, d); err != nil {
+		return err
+	}
+	if err := contactMessageAvailability(ctx, a, d); err != nil {
 		return err
 	}
 	// Recipient prefill is validated by its page loader, so carry it into links only after that validation ran.

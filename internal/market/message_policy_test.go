@@ -7,10 +7,9 @@ import (
 	"testing"
 )
 
-// A-543 (owner directive 2026-10-18): a non-staff account starts a message only to an active vendor, an order
-// partner, someone who has messaged it, or staff it can see (the public staff list, the staff contact, or a dispute
-// it is a party to). Moderators and administrators message anyone. An unknown handle and a handle the sender may not
-// message answer alike and write nothing.
+// Non-staff accounts contact available vendors, eligible current staff, or (as vendors) their known customers.
+// A historical inbound message does not authorize buyer-to-buyer contact. Staff may contact any unbanned account.
+// Unknown handles and private recipients answer alike and write nothing.
 
 func TestMessageContactPolicy(t *testing.T) {
 	e := newTestApp(t)
@@ -33,7 +32,7 @@ func TestMessageContactPolicy(t *testing.T) {
 	agExec(e, "INSERT INTO settings(key,value) VALUES('staff_contact','policy_contact_admin') ON CONFLICT(key) DO UPDATE SET value=excluded.value")
 	// An order on the partner vendor's listing makes policy_buyer and policy_partner_vendor order partners.
 	e.order(buyerID, e.product(partnerVendorID, "physical"), "XMR", stateAwaitingPayment)
-	// A message stored before the policy: policy_other_buyer wrote to policy_buyer, who may now reply.
+	// A message stored before the policy: policy_other_buyer wrote to policy_buyer. This must not authorize a reply.
 	agExec(e, `INSERT INTO messages(id,sender_id,recipient_id,body,encrypted) VALUES($1,$2,$3,'legacy inbound',true)`, randomToken(), otherBuyerID, buyerID)
 
 	key, pub := testPGPKey(t, "policy-recipient")
@@ -51,6 +50,7 @@ func TestMessageContactPolicy(t *testing.T) {
 	}
 	send := func(session, recipient string) *bytesResult {
 		t.Helper()
+		e.pgpSessionKey(session)
 		w := e.do("POST", "/messages", session, url.Values{"recipient": {recipient}, "body": {body}})
 		return &bytesResult{code: w.Code, body: w.Body.Bytes()}
 	}
@@ -65,8 +65,8 @@ func TestMessageContactPolicy(t *testing.T) {
 		{"other buyer to buyer before any reply", otherBuyer, "policy_buyer", false},
 		{"vendor to buyer with an order", partnerVendor, "policy_buyer", true},
 		{"buyer to vendor with an order", buyer, "policy_partner_vendor", true},
-		{"reply after an inbound message", buyer, "policy_other_buyer", true},
-		{"other buyer to buyer after the reply", otherBuyer, "policy_buyer", true},
+		{"buyer reply after a legacy inbound message", buyer, "policy_other_buyer", false},
+		{"other buyer to buyer despite legacy correspondence", otherBuyer, "policy_buyer", false},
 		{"moderator to a buyer", moderator, "policy_other_buyer", true},
 		{"administrator to a buyer", admin, "policy_buyer", true},
 		{"buyer to listed staff", otherBuyer, "policy_listed_mod", true},
@@ -184,6 +184,7 @@ func TestMessageVendorToBuyerNeedsAVisibleOrder(t *testing.T) {
 	}
 	send := func(session, recipient string) *bytesResult {
 		t.Helper()
+		e.pgpSessionKey(session)
 		w := e.do("POST", "/messages", session, url.Values{"recipient": {recipient}, "body": {body}})
 		return &bytesResult{code: w.Code, body: w.Body.Bytes()}
 	}
@@ -259,6 +260,7 @@ func TestMessageRecipientKeyFollowsContactPolicy(t *testing.T) {
 		sessions[handle], ids[handle] = session, id
 		_, pub := testPGPKey(t, handle)
 		e.check(e.do("POST", "/account", session, url.Values{"pgp": {pub}, "password": {testPassword}}), 303)
+		e.pgpSessionKey(session)
 	}
 	const keyShown, armor = `class="contact-key"`, "-----BEGIN PGP PUBLIC KEY BLOCK-----"
 	lookup := func(session, handle string) string {
@@ -302,15 +304,18 @@ func TestMessageRecipientKeyFollowsContactPolicy(t *testing.T) {
 	mustContain(t, staffPage, "Find a recipient", `name="to"`, keyShown, armor, `name="recipient"`)
 }
 
-// Each received message links a reply prefilled with its sender; a sent one does not.
+// Only an eligible received message links a reply. Legacy buyer-to-buyer messages never grant contact access.
 func TestMessageReplyLink(t *testing.T) {
 	e := newTestApp(t)
 	viewerID, viewer := e.user("reply_viewer", "buyer")
 	senderID, _ := e.user("reply_sender", "vendor")
+	privateID, _ := e.user("reply_private_buyer", "buyer")
 	agExec(e, `INSERT INTO messages(id,sender_id,recipient_id,body,encrypted) VALUES($1,$2,$3,'inbound',true),($4,$3,$2,'outbound',true)`,
 		randomToken(), senderID, viewerID, randomToken())
+	agExec(e, `INSERT INTO messages(id,sender_id,recipient_id,body,encrypted) VALUES($1,$2,$3,'legacy private inbound',true)`, randomToken(), privateID, viewerID)
 	page := e.body("GET", "/messages", viewer, nil, 200)
 	mustContain(t, page, `href="/messages?to=reply_sender">Reply to reply_sender`)
+	mustNotContain(t, page, `href="/messages?to=reply_private_buyer"`)
 	if strings.Count(page, ">Reply to ") != 1 {
 		t.Fatal("want exactly one reply link, on the received message")
 	}
