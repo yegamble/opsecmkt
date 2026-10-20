@@ -36,6 +36,7 @@ type ModerationAdminView struct {
 
 type ModerationCapacityView struct {
 	Pending, MaxPending, AllocatedRecords, MaxRecords, AllocatedBytes, MaxBytes, LegacyJobs, LegacyBytes, CompletedMinimal int64
+	Backfill, MaxBackfill, ActorShare                                                                                      int64
 	Overflow                                                                                                               []ModerationOverflowView
 }
 type ModerationOverflowView struct {
@@ -116,7 +117,7 @@ func loadModerationAdmin(ctx context.Context, a *App, r *http.Request, d *PageDa
 	}
 	v.Capacity = &ModerationCapacityView{}
 	cap := v.Capacity
-	if err = a.db.QueryRowContext(ctx, `SELECT pending,max_pending,allocated_records,max_records,allocated_bytes,max_bytes,legacy_jobs,legacy_bytes,completed_v2 FROM moderation_capacity WHERE singleton`).Scan(&cap.Pending, &cap.MaxPending, &cap.AllocatedRecords, &cap.MaxRecords, &cap.AllocatedBytes, &cap.MaxBytes, &cap.LegacyJobs, &cap.LegacyBytes, &cap.CompletedMinimal); err != nil {
+	if err = a.db.QueryRowContext(ctx, `SELECT pending,max_pending,allocated_records,max_records,allocated_bytes,max_bytes,legacy_jobs,legacy_bytes,completed_v2,backfill,max_backfill,GREATEST(8,max_records*2/100) FROM moderation_capacity WHERE singleton`).Scan(&cap.Pending, &cap.MaxPending, &cap.AllocatedRecords, &cap.MaxRecords, &cap.AllocatedBytes, &cap.MaxBytes, &cap.LegacyJobs, &cap.LegacyBytes, &cap.CompletedMinimal, &cap.Backfill, &cap.MaxBackfill, &cap.ActorShare); err != nil {
 		return err
 	}
 	overflows, err := a.db.QueryContext(ctx, `SELECT kind,reason,occurrences,last_seen FROM moderation_overflow WHERE occurrences>0 ORDER BY kind,reason`)

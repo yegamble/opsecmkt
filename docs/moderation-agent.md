@@ -51,7 +51,7 @@ store retains the first validated result for its stable identity.
 | `--database-url-file` | Private one-line DSN; defaults to `DATABASE_URL_FILE`; `DATABASE_URL` is accepted only when no file is selected |
 | `--once`, `--replay` | Off; one bounded pass, or explicit eligible legacy-job replay; completed metadata-only jobs are skipped |
 | `--max-pending` | `256`; global active jobs, allowed 1 through 10000; each actor has at most three active jobs |
-| `--max-records` | `4096`; lifetime allocation slots, allowed 1 through 1000000; extra legacy-policy evaluation also requires a slot |
+| `--max-records` | `4096`; lifetime allocation slots, allowed 1 through 1000000; extra legacy-policy evaluation also requires a slot; each actor gets at most `max(8, 2%)` of this in 24 hours |
 | `--max-reserved-bytes` | `268435456` (256 MiB); conservative logical payload allocation, allowed 512 KiB through 1 TiB |
 | `--interval`, `--batch` | `1m`, `20`; intervals 10 seconds through 1 hour, batches 1 through 100 |
 | `--model` | Off; inference requires explicit opt-in |
@@ -236,7 +236,12 @@ New capture records retain source digests and allowlisted order/image metadata,
 not source prose. New proposal inputs retain coded metadata only. Completing a
 new job atomically records its decision and removes its active raw actor link;
 per-job opaque references do not make the remaining target references anonymous.
-Unkeyed digests can confirm guesses about predictable source values.
+From this release (with migration 130), new proposal inputs no longer store
+per-field digests, which were reversible for small value sets such as a 1-5
+rating, and a normalized text fingerprint is stored only for listings, where
+duplicate-text detection reads it. The whole-revision source digest remains; like any unkeyed
+digest, it can confirm a guess of the complete source revision. Proposals recorded
+before this change keep their per-field digests unchanged.
 Source prose exists in memory during evaluation and remains governed by the
 original source's access and retention rules.
 
@@ -265,10 +270,42 @@ only its named limits. A no-flag restart can drain prepaid legacy work even when
 legacy inventory exceeds the admission limits. This changes collection capacity, never retention or marketplace
 state. Application-only redeployment does not enlarge the budget.
 
+Migration 130 also limits each actor to `max(8, 2% of --max-records)` new
+allocations in any 24 hours (81 with the default 4096 slots), so one account's
+edit stream cannot exhaust the lifetime budget for everyone. The counter row
+holds only the account, its window start and a count; it names no target and is
+deleted when its window expires or the account is erased. With the default byte
+budget the shared pool is 512 allocations, so one actor can still use about a
+sixth of it per day; size `--max-reserved-bytes` with that in mind.
+
 At saturation, the listing, dispute or other source transaction still commits.
 No clean classification is invented. A fixed, coalesced private overflow warning
 records the affected kind and reason without copying content. The private queue
-shows usage, configured limits and overflow even when the worker is absent.
+shows usage, configured limits, overflow and the number of targets awaiting
+capture even when the worker is absent.
+
+Refused captures are not lost (migration 130). Every refusal (actor's three
+active jobs, pending limit, lifetime budget or actor share) leaves one marker per
+target: its kind, target reference and first/last refusal times, with no content,
+digest or actor. Later edits of the same target update that one marker. At the
+start of each pass, while capture is enabled, the pending queue is below half
+its limit and lifetime budget remains, the worker takes the oldest markers in one
+short transaction, reads the target's current source and queues that current
+revision through the same admission checks; a refused attempt moves the marker
+behind the others. A missed intermediate revision is never stored or evaluated.
+Deleted or archived listings, hidden reviews, unflagged payments and other
+removed sources lose their marker without a job or allocation. The marker table
+holds at most 65536 targets (`moderation_capacity.max_backfill`); beyond that a
+`backfill_capacity` warning is counted and those targets are not captured
+automatically. Disabling capture stops the sweep; markers wait until it is
+enabled again.
+
+A revision whose job completed stale (`stale_snapshot`, never evaluated) no
+longer suppresses a later capture of the same content: if a listing changes to a
+scam text and back before the worker reads it, the reverted text is captured and
+evaluated. If a stale job's source is still live and its current revision has no
+job, a marker is left for it. An exact repeat of an evaluated revision is still
+not queued again, and two pending jobs never share a revision.
 Disputes/payment flags receive a five-minute age preference; older ordinary jobs
 still overtake new priority work. Existing payment/state timers remain separate.
 

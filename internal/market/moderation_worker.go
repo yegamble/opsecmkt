@@ -61,30 +61,22 @@ func moderationMinimalInput(j moderationJob) moderation.Input {
 	return moderation.Input{ItemID: j.Kind + ":" + j.TargetID, Kind: j.Kind, Actor: moderation.Actor{ID: moderationActorReference(j), AgeDays: max(0, int(j.QueuedAt.Sub(meta.ActorCreated)/(24*time.Hour)))}, Fields: []moderation.Field{}, Context: moderation.DeterministicContext{Complete: false, Reversible: true, MoneyInvolved: j.Kind == "dispute" || j.Kind == "payment_flag", OrderState: meta.OrderState, EvidenceIDs: []string{j.Kind + ":" + j.TargetID, "content:" + j.ContentHash}, BlastRadius: 1}}
 }
 
+// No per-field digests: unkeyed hashes of small value sets (a rating, a
+// category) are trivially reversible and nothing reads them. The whole-revision
+// source digest binds the record to its captured revision.
 func moderationStoredMetadata(j moderationJob, in moderation.Input) any {
-	type fieldDigest struct {
-		Source string `json:"source"`
-		Name   string `json:"name"`
-		Digest string `json:"sha256"`
-	}
-	fields := make([]fieldDigest, 0, len(in.Fields))
-	for _, f := range in.Fields {
-		h := sha256.Sum256([]byte(f.Value))
-		fields = append(fields, fieldDigest{f.Source, f.Name, hex.EncodeToString(h[:])})
-	}
 	return struct {
-		Version string        `json:"metadata_version"`
-		ItemID  string        `json:"item_id"`
-		Kind    string        `json:"kind"`
-		Digest  string        `json:"source_digest"`
-		Context any           `json:"context"`
-		Fields  []fieldDigest `json:"field_digests"`
+		Version string `json:"metadata_version"`
+		ItemID  string `json:"item_id"`
+		Kind    string `json:"kind"`
+		Digest  string `json:"source_digest"`
+		Context any    `json:"context"`
 	}{"2", in.ItemID, in.Kind, j.ContentHash, struct {
 		OrderState  string   `json:"order_state"`
 		EvidenceIDs []string `json:"evidence_ids"`
 		Complete    bool     `json:"complete"`
 		Money       bool     `json:"money_involved"`
-	}{in.Context.OrderState, in.Context.EvidenceIDs, in.Context.Complete, in.Context.MoneyInvolved}, fields}
+	}{in.Context.OrderState, in.Context.EvidenceIDs, in.Context.Complete, in.Context.MoneyInvolved}}
 }
 
 // SetModerationEnabled controls future transactional enqueueing. Stopping the
@@ -133,6 +125,14 @@ func (w *ModerationWorker) Pass(ctx context.Context, limit int) (int, error) {
 		}
 		w.WorkerID = hex.EncodeToString(b[:])
 	}
+	// Capture the current revision of targets whose capture was refused, before
+	// claiming work, in its own short transaction.
+	sweepCtx, sweepCancel := context.WithTimeout(ctx, 5*time.Second)
+	_, err := moderationBackfillSweep(sweepCtx, w.DB, limit)
+	sweepCancel()
+	if err != nil {
+		return 0, errors.New("moderation backfill unavailable")
+	}
 	count := 0
 	for count < limit {
 		claimCtx, claimCancel := context.WithTimeout(ctx, 5*time.Second)
@@ -169,7 +169,7 @@ func (w *ModerationWorker) Pass(ctx context.Context, limit int) (int, error) {
 	}
 	statusCtx, statusCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer statusCancel()
-	_, err := w.DB.ExecContext(statusCtx, `UPDATE moderation_worker_status SET present=true,model_state=$1,prompt_version=$2,model_id=$3,weights_hash=$4,last_pass=now(),failure_class=$5 WHERE singleton`, state, w.Engine.Config.PromptVersion, w.Engine.Config.ModelID, w.Engine.Config.WeightsHash, failure)
+	_, err = w.DB.ExecContext(statusCtx, `UPDATE moderation_worker_status SET present=true,model_state=$1,prompt_version=$2,model_id=$3,weights_hash=$4,last_pass=now(),failure_class=$5 WHERE singleton`, state, w.Engine.Config.PromptVersion, w.Engine.Config.ModelID, w.Engine.Config.WeightsHash, failure)
 	if err != nil {
 		return count, errors.New("moderation status unavailable")
 	}
@@ -429,9 +429,12 @@ func (w *ModerationWorker) persist(ctx context.Context, j moderationJob, policy 
 	inBytes, _ := json.Marshal(moderationStoredMetadata(j, in))
 	outBytes, _ := json.Marshal(d)
 	reasons, _ := json.Marshal(d.ReasonCodes)
+	// Only listing duplicate-text detection reads this fingerprint.
 	var textHash string
-	if normalized, normErr := moderation.Normalize(in); normErr == nil {
-		textHash = normalized.TextHash
+	if j.Kind == "listing" {
+		if normalized, normErr := moderation.Normalize(in); normErr == nil {
+			textHash = normalized.TextHash
+		}
 	}
 	expires := j.QueuedAt.Add(d.SLA)
 	if d.SLA <= 0 {

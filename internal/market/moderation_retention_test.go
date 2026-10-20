@@ -92,3 +92,20 @@ func TestModerationRetentionReviewerErasureUnlinksRetainedReview(t *testing.T) {
 		t.Fatal("reviewer erasure removed the moderation proposal")
 	}
 }
+
+func TestModerationRetentionActorCounterErasedWithAccount(t *testing.T) {
+	e, _ := uiRetentionEnv(t)
+	account, _ := e.user("moderation_retention_counted_actor", "buyer")
+	agExec(e, `INSERT INTO moderation_actor_allocations(actor_id,window_start,allocations) VALUES($1,now(),3)`, account)
+	agExec(e, `DELETE FROM sessions WHERE user_id=$1`, account)
+	agExec(e, `UPDATE users SET closed_at=now(),profile_scrubbed_at=now() WHERE id=$1`, account)
+	now := time.Now().UTC()
+	ageRetentionEnrollment(t, e.A, now.Add(-31*24*time.Hour))
+	runRetentionAt(t, e.A, now)
+	if agInt(e, `SELECT count(*) FROM users WHERE id=$1`, account) != 0 {
+		t.Fatal("a moderation actor counter blocked eligible account erasure")
+	}
+	if agInt(e, `SELECT count(*) FROM moderation_actor_allocations WHERE actor_id=$1`, account) != 0 {
+		t.Fatal("account erasure left the moderation actor counter")
+	}
+}

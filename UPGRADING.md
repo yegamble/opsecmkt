@@ -15,7 +15,7 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
-## Optional moderation proposals (migrations 125 through 127 and 129)
+## Optional moderation proposals (migrations 125 through 127, 129 and 130)
 
 Application startup applies the append-only moderation tables/triggers and
 offline review receipts. Enqueueing and inference remain off, so existing
@@ -55,6 +55,18 @@ At saturation the original marketplace write still commits without a fabricated
 clean result. Raise an approved budget using the controller's bounded capacity
 flags; lowering below allocated usage is refused. Database/index/WAL/backup disk
 size is not bounded by the logical payload reservation.
+
+Migration 130 makes refused captures recoverable. Each refusal leaves one
+content-free marker per target, and the worker later captures the target's
+current revision once the queue is below half full and budget remains. The panel
+shows how many targets are awaiting capture (at most 65536; beyond that a
+`backfill_capacity` warning is counted). Each actor may receive at most
+`max(8, 2% of --max-records)` new allocations per 24 hours (81 by default). A
+revision whose job completed stale no longer blocks capturing the same content
+later. New proposals omit per-field digests and, except for listings, the text
+fingerprint. The migration adds tables only; existing jobs and proposals are not
+rewritten. Upgrade the app (and its migrations) before restarting the controller:
+an older controller runs no sweep, so markers simply wait.
 
 New gateway hashes omit weak/low-contrast similarity evidence. Useful legacy
 hashes and exact SHA256 matching remain; no extra wire field, decoding boundary,

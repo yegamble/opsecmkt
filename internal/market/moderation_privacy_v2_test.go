@@ -36,6 +36,8 @@ func privacyReviewAssertNoMarkers(t *testing.T, e *testEnv, markers ...string) {
 		{"moderation_worker_status", `SELECT coalesce(jsonb_agg(to_jsonb(r))::text,'[]') FROM moderation_worker_status r`},
 		{"moderation_capacity", `SELECT coalesce(jsonb_agg(to_jsonb(r))::text,'[]') FROM moderation_capacity r`},
 		{"moderation_overflow", `SELECT coalesce(jsonb_agg(to_jsonb(r))::text,'[]') FROM moderation_overflow r`},
+		{"moderation_backfill", `SELECT coalesce(jsonb_agg(to_jsonb(r))::text,'[]') FROM moderation_backfill r`},
+		{"moderation_actor_allocations", `SELECT coalesce(jsonb_agg(to_jsonb(r))::text,'[]') FROM moderation_actor_allocations r`},
 	} {
 		raw := agStr(e, table.query)
 		for _, marker := range markers {
@@ -215,4 +217,44 @@ func TestModerationPrivacyV2CodedEvidenceAndNeutralLegacy(t *testing.T) {
 	if !slices.Contains(legacy.InjectionEvidence, "signal:INJECTION_SUSPECTED") || strings.Contains(legacy.Summary, marker) {
 		t.Fatal("legacy fallback is not neutral trusted display")
 	}
+}
+
+// privacy-2: unkeyed per-field digests are reversible for small domains (a
+// rating of 1-5, a category) and confirm guesses for text; nothing reads them.
+func TestModerationPrivacyV2NoFieldDigestsOrUnusedTextHash(t *testing.T) {
+	e := newTestApp(t)
+	vendor, _ := e.user("field_digest_vendor", "vendor")
+	buyer, _ := e.user("field_digest_buyer", "buyer")
+	product := e.product(vendor, "digital")
+	order := e.order(buyer, product, "XMR", stateCompleted)
+	if err := SetModerationEnabled(t.Context(), e.DB, true); err != nil {
+		t.Fatal(err)
+	}
+	const body = "Arrived quickly and exactly as described"
+	agExec(e, `UPDATE products SET description='A distinct listing description for digest checks' WHERE id=$1`, product)
+	agExec(e, `INSERT INTO images(id,owner_user_id,product_id,kind,"full",thumb,width,height,description) VALUES($1,$2,$3,'photo',$4,$5,1200,900,'Photo caption')`, randomToken()[:32], vendor, product, []byte("undecodable-synthetic-pixels"), []byte("synthetic-thumb"))
+	agExec(e, `INSERT INTO reviews(id,order_id,product_id,buyer_id,rating,body) VALUES($1,$2,$3,$4,5,$5)`, randomToken(), order, product, buyer, body)
+	agExec(e, `INSERT INTO disputes(id,order_id,reason) VALUES($1,$2,'The parcel never arrived')`, randomToken(), order)
+	agExec(e, `INSERT INTO payments(order_id,currency,txid,idx,address,amount,flagged) VALUES($1,'XMR',$2,0,'fixture-only',1,true)`, order, randomToken())
+	if got := agInt(e, `SELECT count(*) FROM moderation_jobs`); got != 5 {
+		t.Fatalf("precondition: jobs=%d want 5", got)
+	}
+	moderationDrain(t, e, moderationTestWorker(e))
+	if got := agInt(e, `SELECT count(*) FROM moderation_suggestions WHERE storage_version=2`); got != 5 {
+		t.Fatalf("v2 suggestions=%d want 5", got)
+	}
+	if agInt(e, `SELECT count(*) FROM moderation_suggestions WHERE input ? 'field_digests'`) != 0 {
+		t.Fatal("new v2 rows still store per-field digests")
+	}
+	if agInt(e, `SELECT count(*) FROM moderation_suggestions WHERE input->>'source_digest'=content_hash`) != 5 {
+		t.Fatal("source digest no longer bound to the captured revision")
+	}
+	if agInt(e, `SELECT count(*) FROM moderation_suggestions WHERE kind<>'listing' AND text_hash<>''`) != 0 {
+		t.Fatal("text_hash stored for a kind that never reads it")
+	}
+	if agInt(e, `SELECT count(*) FROM moderation_suggestions WHERE kind='listing' AND text_hash<>''`) != 1 {
+		t.Fatal("listing duplicate-detection fingerprint was lost")
+	}
+	digest := func(s string) string { h := sha256.Sum256([]byte(s)); return hex.EncodeToString(h[:]) }
+	privacyReviewAssertNoMarkers(t, e, digest("5"), digest(body), digest("The parcel never arrived"), digest("Photo caption"))
 }

@@ -267,3 +267,15 @@ source prose. Completed jobs remove the active raw actor link. This prospective
 minimization does not erase legacy copies, immutable audit records or backups,
 and does not make retained target references anonymous. See the
 [moderation records and capacity rules](moderation-agent.md#records-and-recovery).
+
+Migration 130 adds two small moderation tables. `moderation_backfill` holds one
+row per target whose capture was refused: kind, target reference and first/last
+refusal times, with no content, digest or actor. A row is deleted when the
+target's current revision is queued, or when the worker finds the source gone,
+archived, hidden or unflagged; while capture is disabled, rows wait until it is
+enabled again. At most 65536 rows exist. `moderation_actor_allocations` holds an
+account's 24-hour allocation window (account, window start, count) with no
+target; the worker deletes rows once their window expires, and account erasure
+deletes the account's row (`ON DELETE CASCADE`, an enumerated relationship in the
+account-erasure inventory). New proposal inputs no longer contain per-field
+digests, and non-listing proposals no longer store a text fingerprint.
