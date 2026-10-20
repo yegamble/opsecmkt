@@ -13,7 +13,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"time"
 )
 
 // Escrow settlements (WR-escrow Phase 1, slice P1-c1; ES-1, ES-2, ES-4, ES-5). A settlement is the one transaction
@@ -53,14 +52,6 @@ const (
 	escrowMaxFeeRate     = 100     // sat/vB: ESCROW_BTC_FEE_RATE's ceiling and every build's rate cap
 	escrowMaxFee         = 100_000 // sats (0.001 BTC): the absolute network fee cap of one settlement
 	escrowMaxInputs      = 50      // outputs one settlement spends at most, so a signed copy fits a form post
-	// A-342: how long a claim or refund build waits, from its request, for an escrow output recorded before the order
-	// closed to confirm, or while the escrow holds more than escrowMaxInputs outputs, before it is built without them
-	// (they go to a stray refund). 24 hours is about 144 blocks: an output unconfirmed that long is stuck (a fee too
-	// low to be mined, or a transaction that will be replaced), and a buyer pushing many small outputs cannot hold the
-	// vendor's claim longer. It matches the watch horizon after an order closes (escrowClosedWatch); the plan sets no
-	// setting for it, so it is not configurable.
-	_ = 24 * time.Hour
-	_ = "24 hours"
 	// Upper bounds of a settlement's virtual size, so the fee is never below the rate: 11 vB of fixed fields, 105 vB
 	// per 2-of-3 P2WSH input (41 bytes outside the witness; a witness of at most 256 bytes: two 73-byte signatures,
 	// the 105-byte script, their length bytes and the empty CHECKMULTISIG item) and 43 vB per output (a script of up

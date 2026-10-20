@@ -37,11 +37,6 @@ const (
 	signerWaiting  = "waiting"      // the signer did not answer
 	signerMismatch = "pin-mismatch" // the signer's account key differs from the pinned one: shape (b) unavailable
 	signerBadReply = "bad-reply"    // the signer's reply was not understood (another protocol version?): shape (b) unavailable
-
-	_ = "escrow: escrow signer ready (shape (b); its account key matches the pins in this database)"
-	_ = "escrow: escrow signer not reachable at ESCROW_SIGNER_SOCKET; anything that needs it waits (nothing is rebuilt)"
-	_ = "escrow: shape (b) unavailable: the escrow signer's account key differs from the one pinned in this database (escrow_signer_fingerprint, escrow_signer_xpub_hmac); see docs/operator-guide.md, \"Escrow signer\""
-	_ = "escrow: shape (b) unavailable: the escrow signer's reply was not understood (another protocol version? upgrade the signer first); see docs/operator-guide.md, \"Escrow signer\""
 )
 
 // errSignerUnreachable is a signer that did not answer: nothing listens on the socket, or it timed out or hung up.
