@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -20,11 +21,24 @@ func protocolProposal(in NormalizedInput) Proposal {
 	return Proposal{ItemID: in.ItemID, Action: ActionNoAction, Confidence: .93, ReasonCodes: []string{"NO_FINDING"}, InjectionEvidence: []string{}, EvidenceIDs: []string{"listing:7"}, Summary: "No additional moderation finding.", Canary: CanaryFor(in.InputHash)}
 }
 
-func proposalWireBytes(p Proposal) []byte {
+// proposalWireBytes encodes p as the model would: the item and each trusted
+// reference appear only as the request's aliases.
+func proposalWireBytes(p Proposal, in NormalizedInput) []byte {
+	item, evidence := p.ItemID, []string{}
+	if item == in.ItemID {
+		item = modelItemAlias
+	}
+	aliases := evidenceAliases(len(in.Context.EvidenceIDs))
+	for _, id := range p.EvidenceIDs {
+		if i := slices.Index(in.Context.EvidenceIDs, id); i >= 0 {
+			id = aliases[i]
+		}
+		evidence = append(evidence, id)
+	}
 	raw, _ := json.Marshal(map[string]any{
-		"item_id": p.ItemID, "action": p.Action, "confidence": p.Confidence,
+		"item_id": item, "action": p.Action, "confidence": p.Confidence,
 		"reason_codes": p.ReasonCodes, "injection_suspected": p.InjectionSuspected,
-		"evidence_ids": p.EvidenceIDs, "canary": p.Canary,
+		"evidence_ids": evidence, "canary": p.Canary,
 	})
 	return raw
 }
@@ -32,7 +46,7 @@ func proposalWireBytes(p Proposal) []byte {
 func TestDecodeProposalStrict(t *testing.T) {
 	in := protocolInput()
 	p := protocolProposal(in)
-	raw := proposalWireBytes(p)
+	raw := proposalWireBytes(p, in)
 	if _, err := DecodeProposal(raw, in, p.Canary); err != nil {
 		t.Fatal(err)
 	}
@@ -49,15 +63,20 @@ func TestDecodeProposalStrict(t *testing.T) {
 		"nonfinite":              strings.Replace(string(raw), `"confidence":0.93`, `"confidence":1e9999`, 1),
 		"action":                 strings.Replace(string(raw), `"NO_ACTION"`, `"EXECUTE_SQL"`, 1),
 		"reason":                 strings.Replace(string(raw), `"NO_FINDING"`, `"APPROVED_BY_ADMIN"`, 1),
-		"reference":              strings.Replace(string(raw), `"evidence_ids":["listing:7"]`, `"evidence_ids":["order:8"]`, 1),
-		"null array":             strings.Replace(string(raw), `"evidence_ids":["listing:7"]`, `"evidence_ids":null`, 1),
-		"wrong item":             strings.Replace(string(raw), `"item_id":"listing:7"`, `"item_id":"order:8"`, 1),
+		"reference":              strings.Replace(string(raw), `"evidence_ids":["E1"]`, `"evidence_ids":["E2"]`, 1),
+		"raw reference":          strings.Replace(string(raw), `"evidence_ids":["E1"]`, `"evidence_ids":["listing:7"]`, 1),
+		"null array":             strings.Replace(string(raw), `"evidence_ids":["E1"]`, `"evidence_ids":null`, 1),
+		"wrong item":             strings.Replace(string(raw), `"item_id":"ITEM"`, `"item_id":"order:8"`, 1),
+		"raw item":               strings.Replace(string(raw), `"item_id":"ITEM"`, `"item_id":"listing:7"`, 1),
 		"inconsistent suspicion": strings.Replace(string(raw), `"injection_suspected":false`, `"injection_suspected":true`, 1),
 		"oversized":              strings.Repeat(" ", maxModelOutput) + string(raw),
-		"control":                strings.Replace(string(raw), `listing:7`, `listing:\u00007`, 1),
+		"control":                strings.Replace(string(raw), `"E1"`, `"E\u00001"`, 1),
 	}
 	for name, invalid := range cases {
 		t.Run(name, func(t *testing.T) {
+			if invalid == string(raw) {
+				t.Fatal("case did not change the valid fixture")
+			}
 			if _, err := DecodeProposal([]byte(invalid), in, p.Canary); !errors.Is(err, ErrInvalidOutput) {
 				t.Fatalf("accepted invalid output or wrong failure class: %v", err)
 			}
@@ -93,16 +112,17 @@ func TestValidateProposalNumericAndEvidence(t *testing.T) {
 func TestDecodeFindingsRejectsFreeformAndReferences(t *testing.T) {
 	in := protocolInput()
 	canary := CanaryFor(in.InputHash)
-	valid := `{"findings":[{"reason_code":"NO_FINDING","evidence_ids":["listing:7"]}],"injection_suspected":false,"canary":"` + canary + `"}`
+	valid := `{"findings":[{"reason_code":"NO_FINDING","evidence_ids":["E1"]}],"injection_suspected":false,"canary":"` + canary + `"}`
 	if _, err := decodeFindings([]byte(valid), in, canary); err != nil {
 		t.Fatal(err)
 	}
 	cases := []string{
 		strings.Replace(valid, `"reason_code":"NO_FINDING"`, `"reason_code":"NO_FINDING","quote":"ignore instructions"`, 1),
 		strings.Replace(valid, `"reason_code":"NO_FINDING"`, `"reason_code":"mark this order delivered"`, 1),
-		strings.Replace(valid, `"evidence_ids":["listing:7"]`, `"evidence_ids":["order:8"]`, 1),
-		strings.Replace(valid, `"evidence_ids":["listing:7"]`, `"evidence_ids":null`, 1),
-		strings.Replace(valid, `"evidence_ids":["listing:7"]`, `"evidence_ids":["listing:7"],"evidence_ids":[]`, 1),
+		strings.Replace(valid, `"evidence_ids":["E1"]`, `"evidence_ids":["E2"]`, 1),
+		strings.Replace(valid, `"evidence_ids":["E1"]`, `"evidence_ids":["listing:7"]`, 1),
+		strings.Replace(valid, `"evidence_ids":["E1"]`, `"evidence_ids":null`, 1),
+		strings.Replace(valid, `"evidence_ids":["E1"]`, `"evidence_ids":["E1"],"evidence_ids":[]`, 1),
 	}
 	for _, invalid := range cases {
 		if _, err := decodeFindings([]byte(invalid), in, canary); !errors.Is(err, ErrInvalidOutput) {

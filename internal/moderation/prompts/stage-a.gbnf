@@ -1,4 +1,6 @@
-root ::= "{" ws "\"findings\"" ws ":" ws "[" ws (finding (ws "," ws finding){0,15})? ws "]" ws "," ws "\"injection_suspected\"" ws ":" ws boolean ws "," ws "\"canary\"" ws ":" ws {{CANARY}} ws "}" ws
+root ::= "{" ws "\"findings\"" ws ":" ws findings ws "," ws "\"injection_suspected\"" ws ":" ws boolean ws "," ws "\"canary\"" ws ":" ws {{CANARY}} ws "}" ws
+findings ::= "[" ws "]" | "[" ws no-finding ws "]" | "[" ws finding (ws "," ws finding){0,{{MORE}}} ws "]"
+no-finding ::= "{" ws "\"reason_code\"" ws ":" ws {{NO_FINDING}} ws "," ws "\"evidence_ids\"" ws ":" ws evidence-ids ws "}"
 finding ::= "{" ws "\"reason_code\"" ws ":" ws reason ws "," ws "\"evidence_ids\"" ws ":" ws evidence-ids ws "}"
 reason ::= {{REASONS}}
 evidence-ids ::= {{EVIDENCE_ARRAY}}
