@@ -19,11 +19,13 @@ The header exposes the existing notification inbox through an accessible bell an
 
 ## Stock, quantities and digital batches
 
-Published listings remain visible when stock reaches zero. Buyers can select **Hide out of stock**; the choice combines with the other catalog filters. Empty listings offer no purchase form. Vendor discovery follows published listings, while historical vendor profiles, orders and conversations remain accessible.
+Published listings remain visible when stock reaches zero. Buyers can select **Hide out of stock**; the choice combines with the other catalog filters. Empty listings offer no purchase form. Vendor discovery follows published listings. Current vendors without published listings retain direct profile links; historical orders and conversations remain accessible after selling access is revoked.
 
 A draft can contain several units of one listing. Its saved total uses integer currency units and checked multiplication. Drafts do not reserve inventory. Checkout rechecks the saved quantity, current unit price and available stock under the listing lock, then reserves exactly that quantity. Cancelling a reserved order returns its eligible units once. One order has one escrow and one settlement outcome for the whole quantity.
 
 For manual digital fulfillment, the vendor submits one delivery covering the entire order. For automatic fulfillment from distinct inventory, vendors add one text or link per unit; a single entry may contain multiple lines, and a separate bulk form imports one entry per line. Checkout reserves distinct entries, and confirmed payment releases them together as one delivery on the order page. Undisclosed entries can return to stock after cancellation; disclosed entries never return automatically. The combined delivery must fit the 32000-character limit before checkout accepts it. Long delivery text scrolls within a bounded field.
+
+If the listing's private content has already expired, cancellation keeps undisclosed entries attached to the cancelled order and unavailable for resale. Its own order deadline and preservation duties continue to govern those entries; later purge removes their text and fingerprints without restoring stock.
 
 Existing reusable downloads retain their previous behavior. Vendors explicitly choose a delivery method; reusable content is suitable for a shared download, while distinct inventory supplies separate keys, links or text. Inventory contents are private to their vendor until delivery. Content and its deduplication fingerprint expire together; the application does not keep a permanent hash ledger of erased payloads. A vendor could deliberately reimport a value after its earlier record has expired.
 
