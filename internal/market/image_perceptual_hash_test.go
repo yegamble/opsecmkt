@@ -151,7 +151,7 @@ func TestGatewayPerceptualMetadataValidationAndLegacyOmission(t *testing.T) {
 
 func TestPerceptualHashMigrationPreservesPopulatedImages(t *testing.T) {
 	e := newPooledHistoricalFixture(t, 126)
-	owner, _ := e.user("perceptual_migration", "vendor")
+	owner, _ := e.keylessUser("perceptual_migration", "vendor")
 	id := strings.Repeat("a", 32)
 	full, thumb := []byte{1, 2, 3}, []byte{4, 5}
 	agExec(e, `INSERT INTO images(id,owner_user_id,kind,"full",thumb,width,height) VALUES($1,$2,'avatar',$3,$4,1,1)`, id, owner, full, thumb)
