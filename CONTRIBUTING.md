@@ -67,6 +67,50 @@ of the concrete action and its data-loss consequences.
 
 ## Gates
 
+Run `make go-quality` for the shared Go formatting/import, module consistency, vet and
+lint checks. Tools are pinned in the isolated `tools/go.mod` and `tools/go.sum`;
+Go builds and caches them on first use, without adding development dependencies
+to the application module. Use the toolchain pinned by `go.mod`.
+
+Install the repository's [Lefthook](https://lefthook.dev/) Git hooks once per clone:
+
+```sh
+make hooks-install
+```
+
+Pre-commit checks Go formatting/imports and scans the staged diff with Gitleaks.
+Pre-push runs `make go-quality` across all packages, including test files. These
+checks preserve both the working tree and index, including partially staged
+files; `make fmt` is the explicit formatting/import fix command. Review and stage
+its changes yourself. GitHub Actions enforces the shared checks independently
+of local hook installation. The full database, browser and container suites
+remain required CI checks.
+
+Useful individual commands:
+
+```sh
+make fmt-check       # Go formatting and imports; exits nonzero on differences
+make mod-tidy        # verify modules and require tidy application/tool manifests
+make lint            # configured analyzers on all packages and test files
+make lint-audit      # advisory full errcheck/gosec audit; returns nonzero on findings
+make workflow-lint   # actionlint; CI also runs workflow security and shell checks
+make vuln            # reachable Go vulnerabilities, including test dependencies
+make deadcode        # advisory production-root reachability report
+```
+
+`make deadcode` roots analysis at `cmd/server` and `cmd/verify-audit`. Its output
+is a review aid, not an automatic deletion or pass/fail gate. Compare with
+`go tool -modfile=tools/go.mod deadcode -test ./...` when checking test-only
+reachability. Review templates/reflection and platform-specific implementations
+before deleting a symbol, and preserve migration history and compatibility
+refusals. The enforced `unused` analyzer complements this report. `make lint-audit` runs
+the complete errcheck/gosec rules separately from the enforced, reviewed linter
+set. It currently reports existing findings and exits nonzero; review those
+findings before changing error handling, protocol cryptography or test fixtures.
+It is an explicit audit command, outside the hook and required CI gates.
+
+The integration gates remain:
+
 ```sh
 go mod verify
 "$(go env GOROOT)/bin/gofmt" -l cmd internal   # must print nothing
