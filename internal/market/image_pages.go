@@ -53,7 +53,9 @@ func productPhotosLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 		ids[i] = p.ID
 	}
 	from, where, args, url := imagePublicFrom, imagePublicWhere, []any{ids}, publicImageURL
-	desk := d.Page == "product" && d.Product != nil && d.Product.Archived && d.User != nil
+	// MOD72-6: a listing awaiting staff review has no public photos either; its vendor, staff and earlier order
+	// parties see them on the desk route.
+	desk := d.Page == "product" && d.Product != nil && (d.Product.Archived || d.Product.Pending) && d.User != nil
 	if desk {
 		from, where, args, url = `images i JOIN users o ON o.id=i.owner_user_id`, `i.kind='photo' AND `+imageDeskWhere, append(args, d.User.ID, d.User.Role), deskImageURL
 	}

@@ -711,6 +711,13 @@ func (a *App) storeImage(ctx context.Context, r *http.Request, session string, a
 		}
 		return "", err
 	}
+	// MOD72-6: in hold mode a vendor's new photo is an edit of what buyers see, so it sends an approved listing back
+	// to staff review (listing_review.go); an administrator's does not.
+	if route.kind == uploadListing && owner == current.ID {
+		if _, err = holdListing(ctx, tx, f.id, owner); err != nil {
+			return "", err
+		}
+	}
 	if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", current.ID, audit); err != nil {
 		return "", err
 	}

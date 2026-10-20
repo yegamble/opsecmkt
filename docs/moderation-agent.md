@@ -163,6 +163,15 @@ outputs are constrained and validated; neither stage receives tools or execution
 authority. Structurally valid output can still be wrong or malicious, so an
 independent deterministic and authorization boundary remains necessary.
 
+The model never publishes a listing. Listing hold mode (*Admin → Vendors →
+Listing review*, `products.review_state`, migration 136) is independent of
+capture: in hold mode a vendor's new or edited listing stays hidden until a
+moderator or administrator approves it on the moderation desk, whatever the
+proposal says. Capture, its overflow, `AUTO_APPLY`, confidence and the model
+path never read or write the review state (`TestModerationNeverWritesReviewState`),
+so a listing whose capture overflowed or was never inferred stays held, and a
+listing published in publish mode is not held by a proposal.
+
 ## Proposal protocol
 
 The `moderation-v3` model response has exactly these seven JSON fields. Additional fields, missing fields,
@@ -351,9 +360,10 @@ runtime binary. See [version-worker setup](install/service-topology.md#version-w
 
 The [validation evidence](evidence/moderation-agent-validation.md) distinguishes
 native grammar-parser checks, Go/database/browser tests, synthetic process
-isolation and unverified production operation. Both embedded grammars passed
-the pinned upstream parser with three valid inputs accepted and nine invalid
-inputs rejected; this does not establish correct model judgment.
+isolation and unverified production operation. Both current (moderation-v3)
+grammars passed the pinned upstream parser: 25 cases (6 accepted, 19 rejected)
+and an independent rebuild with 22 cases, all as expected; this does not
+establish correct model judgment.
 
 The [supplied proposal comparison](moderation-proposal-comparison.md) records
 which principles were retained, which integration/security examples were

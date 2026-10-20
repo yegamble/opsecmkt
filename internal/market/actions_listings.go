@@ -103,7 +103,18 @@ func listingAction(c *actionCtx) (actionResult, error) {
 	if in.Kind == "physical" && in.DispatchDays == 0 {
 		in.DispatchDays = defaultDispatchDays
 	}
-	_, err = c.Tx.ExecContext(c.Ctx(), `INSERT INTO products(id,vendor_id,title,description,category,region,kind,btc,xmr,stock,delivery_content,dispatch_days) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NULLIF($12,0))`, id, c.User.ID, in.Title, in.Description, in.Category, in.Region, in.Kind, in.BTC, in.XMR, in.Stock, in.DeliveryContent, in.DispatchDays)
+	// MOD72-6: in hold mode a vendor's new listing waits for staff review (listing_review.go).
+	held, err := listingHeld(c.Ctx(), c.Tx, c.User.ID)
+	if err != nil {
+		return actionResult{}, err
+	}
+	state := "approved"
+	notice := "listing-created"
+	if held {
+		state = "pending"
+		notice = "listing-created-held"
+	}
+	_, err = c.Tx.ExecContext(c.Ctx(), `INSERT INTO products(id,vendor_id,title,description,category,region,kind,btc,xmr,stock,delivery_content,dispatch_days,review_state) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NULLIF($12,0),$13)`, id, c.User.ID, in.Title, in.Description, in.Category, in.Region, in.Kind, in.BTC, in.XMR, in.Stock, in.DeliveryContent, in.DispatchDays, state)
 	// A-188: a new listing lands on its edit page's Photos panel, where its photos are added.
-	return actionResult{Redirect: "/listing-edit?id=" + id, Notice: "listing-created", Audit: "Created listing"}, err
+	return actionResult{Redirect: "/listing-edit?id=" + id, Notice: notice, Audit: "Created listing"}, err
 }
