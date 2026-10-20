@@ -64,7 +64,7 @@ Legacy last-use dates are not invented from account creation dates.
 
 | Data | Live-system deadline |
 | --- | --- |
-| Legacy copied abuse-review content and associated review records | No automatic expiry; separate from the ordinary content/account deadlines below, including after collection stops |
+| Abuse-review records, legacy and new: legacy copied content; new record and order references, capture times, text digests, exact and perceptual image fingerprints; findings, decisions and staff reviews | No automatic expiry; separate from the ordinary content/account deadlines below, including after the original content or image is removed, after account deletion and after collection stops. A digest or fingerprint can confirm a guessed text or a matching image |
 | Individual messages, ciphertext and routing metadata | 90 days after creation |
 | Notifications and closed outage-delivery receipts | 30 days |
 | Activity events | 180 days after creation |
@@ -72,7 +72,7 @@ Legacy last-use dates are not invented from account creation dates.
 | Unfunded drafts | 30 days after creation |
 | Private order text and delivered content | 30 days after verified financial closure |
 | Ordinary closed-order records | 180 days after verified financial closure |
-| Withdrawn listing content, images and reviews | 30 days after withdrawal, unless necessary for an open transaction or preserved case |
+| Withdrawn listing content, images and reviews | 30 days after withdrawal, unless necessary for an open transaction or preserved case; abuse-review records of them (first row) are separate |
 | Accounts | 12 months without observed authenticated use, then 30 days' notice; a verified deletion request has a 30-day deadline |
 
 Closure removes sign-in capability, credentials and unrelated profile data. Open funded escrows or the last usable administrator defer credential erasure
@@ -265,5 +265,6 @@ The browser setup initializes that database; never point it at an existing marke
 New moderation capture (migration 129) stores digests and limited metadata, not
 source prose. Completed jobs remove the active raw actor link. This prospective
 minimization does not erase legacy copies, immutable audit records or backups,
-and does not make retained target references anonymous. See the
+and does not make retained target references anonymous. New records also have
+no automatic expiry. See the
 [moderation records and capacity rules](moderation-agent.md#records-and-recovery).

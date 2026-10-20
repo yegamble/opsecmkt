@@ -770,7 +770,10 @@ Rolling back is **not** an image swap. Migrations are one-way, so older code mus
 upgraded database. From this release on, the server checks at startup: when `schema_migrations` records a
 migration it does not include, it exits with an error that names that migration and points to this section,
 before it changes or serves anything (`the database was upgraded by a newer release: it records migration(s)
-NNN_name, which this server does not include. Nothing was changed. ...`). alpha.1 predates that check and
+NNN_name, which this server does not include. Nothing was changed. ...`). It also exits, changing nothing,
+when a recorded migration number carries a different name from this server's migration of that number
+(`the database was migrated by a different build: ...`), for example a database a development branch
+migrated; start that build again or restore a backup taken before it ran. alpha.1 predates that check and
 does not refuse, so never point it at the upgraded database: it expects the pre-upgrade tables (for example
 `orders.status`, which migration 001 removes). Compose rebuilds the app from whatever revision is checked
 out. Everything written after the upgrade is lost from the rolled-back site. Run the first two steps from

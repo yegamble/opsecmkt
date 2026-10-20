@@ -33,6 +33,10 @@ test('/canary#records lists what the server keeps, who reads it and that nothing
   await expect(abuseReview).toContainText('Routine expiry and account deletion do not erase copies retained for abuse review');
   await expect(abuseReview).toContainText('These copies currently have no automatic expiry');
   await expect(abuseReview).toContainText('after collection stops');
+  // MOD72-2: new records' references and fingerprints are disclosed as outliving the source.
+  await expect(abuseReview).toContainText('an image’s exact and perceptual fingerprints');
+  await expect(abuseReview).toContainText('New abuse-review records also have no automatic expiry: their references and fingerprints remain after the original text or image is removed');
+  await expect(abuseReview).toContainText('a digest or fingerprint can confirm a guessed text or a matching image');
   await expect(abuseReview).not.toContainText(/model|inference|threshold|endpoint|AI-powered/i);
   // A-546 (SEC-546-1): lifting a ban does not erase the audit rows that carry its reason.
   const bans = records.locator('li', { has: page.locator('strong', { hasText: /^Account bans\./ }) });
@@ -64,7 +68,8 @@ test('records list photos and avatars', async ({ page }) => {
     'otherwise it is shown only beside that staff member’s dispute decisions',
     'Demoting a staff member removes their staff avatar and resets their staff list choice to hidden.',
     'A normal browser may keep viewed images in its disk cache: it reuses them for a day without asking the server, and the files can stay until its cache is cleared. Tor Browser keeps them in memory only, until it closes (not yet tried in Tor Browser, A-199).',
-    'deletes it from the database at once',
+    'deletes it from the database at once, except the image fingerprints that abuse-review records keep (above)',
+    'a perceptual fingerprint (a short hash of how it looks)',
     'copies remain in backups made before that and, until PostgreSQL reuses the space, in its data files and write-ahead log',
     'If the operator restores a backup made before a removal, the image returns until it is removed again.',
     'ClamAV checks uploads for known malware; it does not review picture content',
