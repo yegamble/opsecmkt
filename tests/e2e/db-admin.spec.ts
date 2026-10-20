@@ -125,7 +125,7 @@ test('promoting a buyer to vendor opens the vendor desk; the listing form shows 
     await vendor.getByLabel('Description', { exact: true }).fill('Listing validation regression.');
     await vendor.getByLabel('Fulfillment type').selectOption(fields.kind ?? 'physical');
     await vendor.getByLabel('Price (XMR)').fill(fields.xmr);
-    if (fields.delivery) await vendor.getByLabel('Automatic delivery content').fill(fields.delivery);
+    if (fields.delivery) await vendor.getByLabel('Reusable download content').fill(fields.delivery);
     return submitStatus(vendor, () => vendor.getByRole('button', { name: 'Publish listing ↗' }).click());
   };
   // Thirteen decimal places exceed Monero precision. The refusal names the field and keeps the typed text (A-514).
