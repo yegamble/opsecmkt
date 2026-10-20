@@ -260,9 +260,10 @@ func (a *App) load(r *http.Request, d *PageData) error {
 	normaliseCatalogFilters(d)
 	if d.Page == "catalog" || d.Page == "product" || d.Page == "vendor" || d.Page == "checkout" || d.Page == "vendor-dashboard" {
 		// An administrator's takedown reason (A-163) is read only for the owner's vendor desk.
-		takedown := "''"
+		takedown, rejection := "''", "''"
 		if d.Page == "vendor-dashboard" {
 			takedown = "coalesce(p.admin_archive_reason,'')"
+			rejection = "coalesce(p.review_rejection_reason,'')" // MOD72-6: the owner's own listings only
 		}
 		// Listing grids (catalog, vendor, vendor desk) render Product.Excerpt, so they load only its prefix;
 		// product and checkout pages load and show the full description.
@@ -270,7 +271,7 @@ func (a *App) load(r *http.Request, d *PageData) error {
 		if d.Page == "catalog" || d.Page == "vendor" || d.Page == "vendor-dashboard" {
 			description = "left(p.description," + strconv.Itoa(excerptRunes+1) + ")"
 		}
-		query := `SELECT p.id,p.title,` + description + `,p.category,p.region,p.kind,u.handle,p.vendor_id,p.btc,p.xmr,p.stock,p.archived,` + takedown + `,u.vendor_verified,p.review_state='pending' FROM products p JOIN users u ON u.id=p.vendor_id WHERE true`
+		query := `SELECT p.id,p.title,` + description + `,p.category,p.region,p.kind,u.handle,p.vendor_id,p.btc,p.xmr,p.stock,p.archived,` + takedown + `,u.vendor_verified,p.review_state<>'approved',` + rejection + ` FROM products p JOIN users u ON u.id=p.vendor_id WHERE true`
 		args := []any{}
 		limit := " LIMIT 100"
 		switch d.Page {
@@ -339,7 +340,7 @@ func (a *App) load(r *http.Request, d *PageData) error {
 		for rows.Next() {
 			var p Product
 			var btc, xmr int64
-			if err = rows.Scan(&p.ID, &p.Title, &p.Description, &p.Category, &p.Region, &p.Kind, &p.Vendor, &p.VendorID, &btc, &xmr, &p.Stock, &p.Archived, &p.TakedownReason, &p.VendorVerified, &p.Pending); err != nil {
+			if err = rows.Scan(&p.ID, &p.Title, &p.Description, &p.Category, &p.Region, &p.Kind, &p.Vendor, &p.VendorID, &btc, &xmr, &p.Stock, &p.Archived, &p.TakedownReason, &p.VendorVerified, &p.Pending, &p.RejectionReason); err != nil {
 				rows.Close()
 				return err
 			}
@@ -361,6 +362,13 @@ func (a *App) load(r *http.Request, d *PageData) error {
 				return sql.ErrNoRows
 			}
 			d.Product = &d.Products[0]
+			// MOD72-6: a rejection reason is shown on the product page to the listing's vendor and staff only, never
+			// to the parties of an earlier order who may also open it.
+			if p := d.Product; p.Pending && d.User != nil && (p.VendorID == d.User.ID || staffViewer(d.User)) {
+				if err = a.db.QueryRowContext(ctx, `SELECT coalesce(review_rejection_reason,'') FROM products WHERE id=$1`, p.ID).Scan(&p.RejectionReason); err != nil {
+					return err
+				}
+			}
 		}
 		if d.Page == "vendor" {
 			var u User

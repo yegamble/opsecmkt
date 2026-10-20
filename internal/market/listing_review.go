@@ -14,20 +14,22 @@ import (
 //   - settings listing_review_mode: "publish" (the default; a new or edited listing is public at once, as before) or
 //     "hold". A missing or unknown value holds (fail closed). Only an administrator changes it (/admin/listing-review,
 //     password-confirmed and audited).
-//   - products.review_state: "approved" or "pending". In hold mode a vendor's new listing, and its own edit of an
+//   - products.review_state: "approved", "pending" or "rejected". In hold mode a vendor's new listing, and its own edit of an
 //     approved listing that changes what buyers see (title, description, category, region, fulfillment type, price,
 //     dispatch window) or adds a photo, is saved "pending". Stock and automatic delivery content (which staff never
 //     see) do not re-hold it, nor does an administrator's edit. An administrator's own listings and the listings of a
 //     vendor an administrator marked users.listing_auto_approve (/admin/vendor-auto-approve) are never held.
-//   - A pending listing is on no buyer or guest path (catalog, search, categories, vendor page, product page, checkout
+//   - A listing that is not approved is on no buyer or guest path (catalog, search, categories, vendor page, product page, checkout
 //     page, draft and payment request: load.go, actions_orders.go, orders_hooks.go) and its photos are not on the
 //     public image route (image_routes.go). Its vendor sees it marked "Awaiting review"; moderators and administrators
 //     see it on its product page and on the moderation desk. Orders placed before an edit re-held it continue.
 //   - A moderator or administrator approves it, or rejects it with a reason (/moderator/listing-review,
-//     password-confirmed). Rejection follows the takedown model (A-163): the listing is archived with the reason in
-//     products.admin_archive_reason and stays pending; the vendor sees the reason and can still edit it, and only an
-//     administrator's restore (adminListingAction) brings it back, into the review queue again. Both accounts are
-//     audited and the vendor is notified.
+//     password-confirmed, refused when the vendor changed it after the desk was rendered). Rejection is not a
+//     takedown (owner decision 2026-10-20): the listing becomes "rejected" with the reason in
+//     products.review_rejection_reason, stays hidden and is not archived. Its vendor sees "Rejected — <reason>" and
+//     can edit it; the vendor's next change to what buyers see, or a new photo, resubmits it ("pending", reason
+//     cleared, audited) whatever the mode, while a stock-only change or an administrator's edit does not. Both
+//     accounts are audited and the vendor is notified. A takedown (adminListingAction) stays a separate staff action.
 //   - Switching back to publish approves nothing: listings already pending wait for staff. Moderation capture, its
 //     overflow and the model path never read or write review_state (TestModerationNeverWritesReviewState).
 
@@ -60,8 +62,8 @@ type ListingReview struct {
 }
 
 // listingVersionSQL identifies the reviewed revision of listing p: its last change, to the microsecond. A vendor's
-// edit sets products.updated and a held save (holdListing, a new photo included) sets it too, so a moderator never
-// approves or rejects content they have not seen.
+// edit sets products.updated, a held save (holdListing) sets it too, and so does any new photo on a pending listing,
+// held or not (storeImage, QA72-1), so a moderator never approves or rejects content they have not seen.
 const listingVersionSQL = `(extract(epoch from p.updated)*1000000)::bigint::text`
 
 // ListingReviewAdminView is the administrator's listing review panel: the mode, how many listings wait and the
@@ -95,9 +97,23 @@ func listingHeldNow(ctx context.Context, q rowQuerier, vendorID string) (bool, e
 	return held, err
 }
 
-// holdListing sends approved listing id of vendorID back to review when the vendor's save is held. It changes no
-// column the moderation capture trigger reads, so it queues no capture.
+// holdListing applies the review rule to the vendor's own save of listing id (row-locked by the caller) that changed
+// what buyers see: a rejected listing is resubmitted (pending, reason cleared, audited on the vendor) whatever the
+// mode, since only staff approve it; otherwise the listing waits for review when the save is held (listingHeld). It
+// reports whether the listing now waits for review. It changes no column the moderation capture trigger reads, so
+// it queues no capture.
 func holdListing(ctx context.Context, tx *sql.Tx, id, vendorID string) (bool, error) {
+	var state string
+	if err := tx.QueryRowContext(ctx, `SELECT review_state FROM products WHERE id=$1`, id).Scan(&state); err != nil {
+		return false, err
+	}
+	if state == "rejected" {
+		if _, err := tx.ExecContext(ctx, `UPDATE products SET review_state='pending',review_rejection_reason=NULL,updated=now() WHERE id=$1`, id); err != nil {
+			return false, err
+		}
+		_, err := tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", vendorID, "Resubmitted listing "+shortID(id)+" for review")
+		return err == nil, err
+	}
 	held, err := listingHeld(ctx, tx, vendorID)
 	if err != nil || !held {
 		return false, err
@@ -171,12 +187,14 @@ func listingReviewAction(c *actionCtx) (actionResult, error) {
 			note = "The market staff approved your listing “" + title + "” (" + short + "). It is now visible in the marketplace and accepts orders."
 			notice = "listing-approved"
 		} else {
-			if _, err := tx.ExecContext(ctx, `UPDATE products SET archived=true,archived_at=now(),admin_archive_reason=$2,private_expired_at=NULL,updated=now() WHERE id=$1`, id, reason); err != nil {
+			// Not a takedown: the listing is not archived and needs no administrator; the vendor's next change to
+			// what buyers see resubmits it (holdListing).
+			if _, err := tx.ExecContext(ctx, `UPDATE products SET review_state='rejected',review_rejection_reason=$2 WHERE id=$1`, id, reason); err != nil {
 				return actionResult{}, err
 			}
 			audit = "Rejected listing " + short + " of " + handle + ": " + reason
 			vendorAudit = "Listing " + short + " rejected in review by " + staff + " " + c.User.Handle + ": " + reason
-			note = "The market staff rejected your listing “" + title + "” (" + short + ") with the reason “" + reason + "”. It stays hidden from the marketplace and accepts no orders. You can still edit it; only an administrator can restore it, and it then waits for review again. If you think this is wrong, contact the market staff."
+			note = "The market staff rejected your listing “" + title + "” (" + short + ") with the reason “" + reason + "”. It stays hidden from the marketplace and accepts no orders. Edit it to fix the problem: your next change to what buyers see sends it back for review. If you think this is wrong, contact the market staff."
 			notice = "listing-rejected"
 		}
 		if _, err := tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", vendorID, vendorAudit); err != nil {

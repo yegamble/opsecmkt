@@ -621,7 +621,7 @@ func applyRetentionTombstone(ctx context.Context, tx *sql.Tx, t retentionTombsto
 		if err := retentionExecQuery(ctx, tx, `DELETE FROM images WHERE product_id=$1 AND created<=$2`, t.ID, t.At); err != nil {
 			return err
 		}
-		return retentionExecQuery(ctx, tx, `UPDATE products SET title='Withdrawn listing',description='',delivery_content='',admin_archive_reason=NULL,private_expired_at=$2 WHERE id=$1 AND updated<=$2`, t.ID, t.At)
+		return retentionExecQuery(ctx, tx, `UPDATE products SET title='Withdrawn listing',description='',delivery_content='',admin_archive_reason=NULL,review_rejection_reason=NULL,private_expired_at=$2 WHERE id=$1 AND updated<=$2`, t.ID, t.At)
 	case "listing":
 		return retentionExecQuery(ctx, tx, `DELETE FROM products WHERE id=$1`, t.ID)
 	case "account_close":

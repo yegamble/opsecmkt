@@ -173,9 +173,9 @@ func loadListingEdit(ctx context.Context, a *App, r *http.Request, d *PageData) 
 	err := a.db.QueryRowContext(ctx, `SELECT p.id,p.title,p.description,p.category,p.region,p.kind,u.handle,p.vendor_id,p.btc,p.xmr,p.stock,p.archived,
  CASE WHEN p.vendor_id=$2 THEN p.delivery_content ELSE '' END,p.delivery_content<>'',
  to_char(p.updated,'YYYY-MM-DD HH24:MI "UTC"'),coalesce(to_char(p.archived_at,'YYYY-MM-DD HH24:MI "UTC"'),''),
- (`+openOrdersSQL+`),coalesce(p.admin_archive_reason,''),coalesce(p.dispatch_days,$4),p.review_state='pending'
+ (`+openOrdersSQL+`),coalesce(p.admin_archive_reason,''),coalesce(p.dispatch_days,$4),p.review_state<>'approved',coalesce(p.review_rejection_reason,'')
  FROM products p JOIN users u ON u.id=p.vendor_id WHERE p.id=$1 AND (p.vendor_id=$2 OR $3='admin')`,
-		r.URL.Query().Get("id"), d.User.ID, d.User.Role, defaultDispatchDays).Scan(&p.ID, &p.Title, &p.Description, &p.Category, &p.Region, &p.Kind, &p.Vendor, &p.VendorID, &btc, &xmr, &p.Stock, &p.Archived, &v.DeliveryContent, &v.HasDeliveryContent, &v.Updated, &v.ArchivedAt, &v.OpenOrders, &v.TakedownReason, &v.DispatchDays, &p.Pending)
+		r.URL.Query().Get("id"), d.User.ID, d.User.Role, defaultDispatchDays).Scan(&p.ID, &p.Title, &p.Description, &p.Category, &p.Region, &p.Kind, &p.Vendor, &p.VendorID, &btc, &xmr, &p.Stock, &p.Archived, &v.DeliveryContent, &v.HasDeliveryContent, &v.Updated, &v.ArchivedAt, &v.OpenOrders, &v.TakedownReason, &v.DispatchDays, &p.Pending, &p.RejectionReason)
 	if err != nil {
 		return err // sql.ErrNoRows -> 404
 	}

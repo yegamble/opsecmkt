@@ -22,9 +22,11 @@ type Product struct {
 	VendorVerified                                                                       bool // A-544: an administrator marked the vendor verified
 	// P4, vendor-dashboard only: an administrator's takedown reason (A-163); never loaded for public pages.
 	TakedownReason string
-	// MOD72-6: the listing awaits staff review (products.review_state='pending', listing_review.go). Public pages
-	// never load one; its vendor, staff and the parties to an earlier order see it marked.
-	Pending bool
+	// MOD72-6 (listing_review.go): Pending, the listing is not approved for buyers (review_state pending or rejected).
+	// Public pages never load one; its vendor, staff and the parties to an earlier order see it marked.
+	// RejectionReason: staff rejected it with this reason; loaded only for its vendor and staff.
+	Pending         bool
+	RejectionReason string
 	// A-189, catalog, vendor and product pages only: the listing's public photos, oldest first (image_pages.go),
 	// and Thumb, the first one's thumbnail URL for its card ("" = the CSS illustration).
 	Photos []ProductPhoto
