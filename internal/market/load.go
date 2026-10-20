@@ -349,11 +349,11 @@ func (a *App) load(r *http.Request, d *PageData) error {
 		if d.Page == "catalog" {
 			switch d.Sort {
 			case "rating":
-				order = "ratings.average DESC, ratings.count DESC, " + order
+				order = "ratings.average DESC, ratings.count DESC, p.created DESC, p.id DESC"
 			case "price-low":
-				order = "p.xmr ASC, " + order
+				order = "p.xmr ASC, p.created DESC, p.id DESC"
 			case "price-high":
-				order = "p.xmr DESC, " + order
+				order = "p.xmr DESC, p.created DESC, p.id DESC"
 			}
 		}
 		query += " ORDER BY " + order + limit
