@@ -119,7 +119,14 @@ func TestIsolatedUploadGatewayRoundTrip(t *testing.T) {
 	g := uploadTestGateway(t, e, f)
 	owner, session := e.user("isolated_vendor", "vendor")
 	listing := e.product(owner, "physical")
-	original := metadataJPEG(t, 400, 300)
+	// Keep every planted metadata type while using non-monotone pixels that
+	// retain an informative difference hash after the weak-signal guard.
+	original := withJPEGSegments(fixtureJPEG(t, perceptualFixture(400, 300, false), 90),
+		exifSegment(t, 1),
+		jpegSegment(0xE1, []byte("http://ns.adobe.com/xap/1.0/\x00<x:xmpmeta><rdf:Description exif:GPSLatitude=\"FIXTURE-XMP-GPS\"/></x:xmpmeta>")),
+		jpegSegment(0xE2, append([]byte("ICC_PROFILE\x00\x01\x01"), []byte("FIXTURE-ICC-PROFILE")...)),
+		jpegSegment(0xED, []byte("Photoshop 3.0\x008BIM\x04\x04\x00\x00\x00\x00\x00\x14FIXTURE-IPTC-BYLINE")),
+		jpegSegment(0xFE, []byte("FIXTURE-JPEG-COMMENT")))
 	w := uploadThroughGateway(g, "/listings/photo", session, e.photoParts(session, listing, original)...)
 	if w.Code != 303 || w.Header().Get("Location") != "/listing-edit?id="+listing+"#photos" {
 		t.Fatalf("upload: %d %s", w.Code, w.Body.String())
@@ -149,6 +156,36 @@ func TestIsolatedUploadGatewayRoundTrip(t *testing.T) {
 		t.Fatalf("avatar: %d %s", w.Code, w.Body.String())
 	}
 }
+
+func TestIsolatedUploadGatewayOmitsWeakPixelHash(t *testing.T) {
+	e := newTestApp(t)
+	f := newFakeClamd(t)
+	g := uploadTestGateway(t, e, f)
+	owner, session := e.user("isolated_weak_hash", "vendor")
+	listing := e.product(owner, "physical")
+	// This smooth, monotone fixture has valid upload pixels but a degenerate
+	// difference hash. Omitting that optional signal must not refuse the image.
+	original := metadataJPEG(t, 400, 300)
+	w := uploadThroughGateway(g, "/listings/photo", session, e.photoParts(session, listing, original)...)
+	if w.Code != 303 || w.Header().Get("Location") != "/listing-edit?id="+listing+"#photos" {
+		t.Fatalf("upload: %d %s", w.Code, w.Body.String())
+	}
+	var full, thumb []byte
+	var width, height int
+	var perceptualHash string
+	if err := e.DB.QueryRow(`SELECT "full",thumb,width,height,perceptual_hash FROM images`).Scan(&full, &thumb, &width, &height, &perceptualHash); err != nil {
+		t.Fatal(err)
+	}
+	assertCleanJPEG(t, "weak gateway full", full)
+	assertCleanJPEG(t, "weak gateway thumb", thumb)
+	if width != 400 || height != 300 || scansOf(f) != 1 || !bytes.Equal(f.Scans()[0], original) {
+		t.Fatalf("dimensions/scans: %dx%d scans=%d", width, height, scansOf(f))
+	}
+	if perceptualHash != "" {
+		t.Fatalf("gateway persisted a weak perceptual signal: %s", perceptualHash)
+	}
+}
+
 func TestIsolatedUploadGatewayAuthorizationAndFailures(t *testing.T) {
 	e := newTestApp(t)
 	f := newFakeClamd(t)
