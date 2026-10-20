@@ -29,6 +29,23 @@ Existing nonempty PGP bindings, including expired or unreadable keys, require cu
 
 See [PGP access](docs/operator-guide.md#pgp-access-for-purchases-and-messages) and [vendor availability](docs/operator-guide.md#vendor-availability-and-activity-privacy) for the controls and recovery boundaries.
 
+## A Monero re-request waits for a missing deposit (A-614)
+
+No migration and no new setting. An administrator's re-request of a failed Monero settlement spends exactly the coins of
+the transaction it replaces. If a deposit those coins came from is no longer listed by the escrow wallet (a
+reorganisation or a double spend since the re-request was carried out), the new settlement now stays requested
+(`send_error = 'deposit-missing'`), staff get one order note and notice each time it starts waiting, and it is built and sent once the wallet lists
+the deposit again. It has no bounded wait (a first release or refund waits twice the threshold in blocks, A-554),
+because it can be built from no other coins; past 24 hours it is an escrow alert like any settlement still requested,
+and its monthly wallet is kept from destruction while it waits. It can never pay twice: both transactions spend the
+same coins, and the database refuses any others.
+
+An earlier build failed such a re-request `nothing-to-settle` while it still claimed the deposits (A-613 below, *Except while it
+still claims deposits*). The upgrade does not revisit those rows: each keeps its alert, cannot be dismissed, is never built
+again even when the deposit is listed again, and its coins are settled with the operator outside the market. Nothing
+in the market clears that alert, so the order stays on the desk and under retention's `escrow_alert` reason. To list
+them, use the query in the *Except while it still claims deposits* item below.
+
 ## Stuck failed Monero settlements can be cleared (A-613)
 
 Migration 128 runs at startup and adds the table `xmr_settlement_hand_settled`, with triggers that refuse a

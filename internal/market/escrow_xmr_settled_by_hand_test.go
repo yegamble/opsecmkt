@@ -642,32 +642,112 @@ func strandedAlert(n string) string {
 		"and the market does not settle them on its own. Settle them with the operator; it cannot be dismissed while it claims them"
 }
 
-// PAY613-4, the reviewer's probe: a re-request supersedes a release that failed relay-refused; the new settlement claims
-// the deposit, its first build is refused, the deposit is then read as double-spent and it fails nothing-to-settle with
-// no transaction built while it still claims the deposit (the root cause, a superseding settlement failing rather than
-// waiting, is A-614). No "nothing owed" dismissal is offered or accepted for it (the action's 409 and migration 128's
-// trigger): the alert stays, saying its coins are in the escrow wallet and to settle with the operator, and the
-// deposit's payment-review reason says the same rather than "transaction stored".
+// supersededWaiting is the PAY613-4 probe up to its double spend: a release that failed relay-refused is re-requested,
+// the new settlement's first build is refused so it stays requested while it claims the deposit, and the wallet then
+// reads that deposit as double-spent. It returns the order, the deposit, and the failed and new settlements.
+func (x *xmrEscrowEnv) supersededWaiting(admin string) (order, deposit string, first, second int64) {
+	x.t.Helper()
+	order, first = x.failedRelease()
+	deposit = hex64("deposit " + order)
+	restore := x.refuseTransfer(-4, "transaction was rejected by daemon")
+	if code := x.reRequest(admin, order, first, testPassword); code != 303 {
+		x.t.Fatalf("re-request: %d", code)
+	}
+	x.mustPoll()
+	restore()
+	if x.settlement(first).State != "superseded" {
+		x.t.Fatalf("not superseded: %s", x.settlement(first).State)
+	}
+	second = int64(agInt(x.testEnv, "SELECT id FROM xmr_settlements WHERE supersedes=$1", first))
+	x.fake.setTransfer(deposit, func(t *fakeXMRTransfer) { t.DoubleSpend = true })
+	x.mustPoll()
+	return order, deposit, first, second
+}
+
+// A-614 (PAY613-4/-5), the reviewer's probe: a re-request supersedes a release that failed relay-refused; the new
+// settlement claims the deposit, its first build is refused, and the deposit is then read as double-spent. The new
+// settlement no longer fails nothing-to-settle while it claims that deposit (which left an alert nothing could clear):
+// it stays requested and waits (deposit-missing), builds nothing, staff are told once, and no "nothing owed" dismissal
+// or stranded alert appears. It never builds from other coins, however long it waits (a re-request spends exactly the
+// stored key images, so A-554's bounded wait has nothing to build from: it waits as a release whose credited deposits
+// are all missing does). Once the wallet lists the deposit again it is built from exactly the stored key images to the
+// stored plan, and relayed.
+func TestXMREscrowReRequestWaitsForMissingDeposit(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	_, admin := x.user("a614_admin_"+randomToken()[:6], "admin")
+	transfers := x.fake.countOf("transfer")
+	order, deposit, first, second := x.supersededWaiting(admin)
+	transfers = x.fake.countOf("transfer") - transfers // the refused first build of the re-request
+	claimed := func() int {
+		return agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND xmr_settlement_id=$2", order, second)
+	}
+	s := x.settlement(second)
+	if s.State != "requested" || x.waitClass(second) != xmrWaitMissing || s.TxHash != "" || claimed() != 1 {
+		t.Fatalf("after the double spend: settlement %d %+v %q, %d claimed; settlements %v", second, s, x.waitClass(second), claimed(), x.xmrSettlements(order))
+	}
+	n := strconv.FormatInt(second, 10)
+	notes := strings.Join(x.events(order), "\n")
+	if !strings.Contains(notes, "Monero escrow settlement "+n+" ("+settlementKind("release")+") not sent: A deposit this settlement spends is no longer listed by the escrow wallet") ||
+		strings.Count(notes, "A deposit this settlement spends is no longer listed") != 1 || strings.Contains(notes, "Monero escrow settlement "+n+" ("+settlementKind("release")+") failed") {
+		t.Fatalf("order notes:\n%s", notes)
+	}
+	flags := x.staffFlags(order)
+	panel := x.panel(order, x.sessOf(order, roleVendor))
+	if !strings.Contains(panel, "Not built yet. A deposit this settlement spends is no longer listed by the escrow wallet") ||
+		strings.Contains(panel, "from the deposits that remain") || strings.Contains(panel, "nothing to settle") {
+		t.Fatalf("vendor's panel:\n%s", panel)
+	}
+	page := html.UnescapeString(x.page("/order?id="+order, admin))
+	mustNotContain(t, page, `action="/admin/escrow-xmr-settled-by-hand"`, "Dismiss settlement", "still claims deposits of this escrow")
+	// No failure alert: like any settlement waiting, it is an escrow alert once requested for more than 24 hours.
+	if x.alerting(order) {
+		t.Fatal("a waiting re-request alerts before 24 hours")
+	}
+	agExec(x.testEnv, "UPDATE xmr_settlements SET created=now()-interval '25 hours' WHERE id=$1", second)
+	if desk := deskAlertIn(html.UnescapeString(x.page("/moderator", admin)), order); !x.alerting(order) ||
+		!strings.Contains(desk, "requested for more than 24 hours") || strings.Contains(desk, "failed before any transaction was built") {
+		t.Fatalf("desk alert after 24 hours: %v %q", x.alerting(order), desk)
+	}
+	// Past twice the threshold in blocks it still waits: no other coins, no new notice, nothing built.
+	x.fake.mine(int(3 * x.A.escrowXMR.confirmations))
+	x.mustPoll()
+	x.mustPoll()
+	if s := x.settlement(second); s.State != "requested" || x.waitClass(second) != xmrWaitMissing || x.fake.countOf("transfer") != transfers || x.staffFlags(order) != flags {
+		t.Fatalf("past the bounded wait: %+v %q, transfer %d (want %d), staff flags %d (want %d)", s, x.waitClass(second), x.fake.countOf("transfer"), transfers, x.staffFlags(order), flags)
+	}
+	// Listed again: built from exactly the stored key images to the stored plan, and relayed.
+	x.fake.setTransfer(deposit, func(t *fakeXMRTransfer) { t.DoubleSpend = false })
+	x.mustPoll()
+	x.mustPoll()
+	old, s := x.settlement(first), x.settlement(second)
+	if s.State != "relayed" || s.TxHash == "" || s.TxHash == old.TxHash || !slices.Equal(slices.Sorted(slices.Values(s.KeyImages)), slices.Sorted(slices.Values(old.KeyImages))) ||
+		s.InputTotal != old.InputTotal || claimed() != 1 || old.State != "superseded" {
+		t.Fatalf("once the deposit is listed again: %+v (superseded %+v); settlements %v", s, old, x.xmrSettlements(order))
+	}
+	if got, want := x.outputsOf(second), x.outputsOf(first); len(got) != len(want) || strings.SplitN(got[0], ":", 3)[1] != strings.SplitN(want[0], ":", 3)[1] {
+		t.Fatalf("outputs %v, stored plan %v", got, want)
+	}
+	if x.alerting(order) {
+		t.Fatal("still alerting once the re-request is relayed")
+	}
+}
+
+// PAY613-4: a failed settlement with no transaction built that still claims deposits. The market no longer leaves one
+// (A-614: TestXMREscrowReRequestWaitsForMissingDeposit), but a database that ran a build from A-613 up to A-614 may hold
+// one; the fixture writes that row as such a build did (the probe's re-request failed nothing-to-settle). No "nothing
+// owed" dismissal is offered or accepted for it (the action's 409 and migration 128's trigger): the alert stays, saying
+// its coins are in the escrow wallet and to settle with the operator, and the deposit's payment-review reason says the
+// same rather than "transaction stored". The watcher leaves a failed settlement alone, so nothing in the market clears it.
 func TestXMREscrowClaimingUnbuiltNotDismissed(t *testing.T) {
 	x := newXMREscrowEnv(t)
 	x.mustPoll()
 	modID, _ := x.user("sbhc4_mod_"+randomToken()[:6], "moderator")
 	adminID, admin := x.user("sbhc4_admin_"+randomToken()[:6], "admin")
-	order, first := x.failedRelease()
-	deposit := hex64("deposit " + order)
-	restore := x.refuseTransfer(-4, "transaction was rejected by daemon")
-	if code := x.reRequest(admin, order, first, testPassword); code != 303 {
-		t.Fatalf("re-request: %d", code)
-	}
+	order, _, _, second := x.supersededWaiting(admin)
+	agExec(x.testEnv, "UPDATE xmr_settlements SET state='failed',send_error=$2,updated=now() WHERE id=$1 AND state='requested'", second, xmrNothing)
 	x.mustPoll()
-	restore()
-	if x.settlement(first).State != "superseded" {
-		t.Fatalf("not superseded: %s", x.settlement(first).State)
-	}
-	second := agInt(x.testEnv, "SELECT id FROM xmr_settlements WHERE supersedes=$1", first)
-	x.fake.setTransfer(deposit, func(t *fakeXMRTransfer) { t.DoubleSpend = true })
-	x.mustPoll()
-	s := x.settlement(int64(second))
+	s := x.settlement(second)
 	if s.State != "failed" || x.waitClass(s.ID) != xmrNothing || s.TxHash != "" ||
 		agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND xmr_settlement_id=$2", order, s.ID) != 1 {
 		t.Fatalf("fixture: settlement %d %+v %q; settlements %v", second, s, x.waitClass(s.ID), x.xmrSettlements(order))
