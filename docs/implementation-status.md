@@ -93,8 +93,11 @@ backfilled. Weak or low-contrast new perceptual hashes are omitted without
 rejecting the image; legacy skewed hashes are ignored, and exact SHA256 remains
 valid. Historical hashes have no recoverable pixel-variance measurement. No
 image decoding moves into the application or worker.
-Image understanding is outside scope; rotation/crop resistance and a full
-dispute-thread timeline are not claimed. Existing payment timers/state
+Image understanding is outside scope. New hashes use an anti-aliased downscale
+and comparison also checks the horizontal mirror; on synthetic fixtures this
+survives recompression, resizing and a 1% crop, but rotation or larger-crop
+resistance and a full dispute-thread timeline are not claimed. Hashes made
+before and after the downscale change compare less reliably; none are backfilled. Existing payment timers/state
 machines retain their complete authorization and financial checks.
 
 Regression coverage includes `TestInjectionCorpus`,

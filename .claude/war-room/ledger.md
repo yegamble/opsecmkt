@@ -1798,7 +1798,7 @@ STATUS: implemented (4b25d311, merged on war-room/moderation-agent): moderation-
 ### MOD72-5 — Detection and image-hash precision (LLM-4, LLM-6, LLM-7, LLM-E6)
 
 DECISION: ACCEPT (P2 SHOULD), next wave. Gemini cross-clause evasion is real but only loses the Tier-0 shortcut (the item still reaches the model or a human); its 2-clause window adds 4/11 positives with 3/8 constructed false positives. Instead: any recognised external destination adds HUMAN_REVIEW so it can never auto-clear (LLM-7). Gemini min(forward, mirror) storage is mathematically wrong (mirror = row-reverse AND complement) and breaks Hamming locality (12/60 near-duplicate pairs up to 38 bits); the measured gap is `draw.ApproxBiLinear` point-sampling (recompress/resize miss 30–60%) → `draw.BiLinear` (LLM-4); optional comparison-time mirror check (LLM-E6). Weak injection markers ("buy with confidence", "act as") escalate 16/20 benign sentences → split strong/weak, weak → HUMAN_REVIEW (LLM-6).
-STATUS: open (ready; next wave after MOD72-4 because LLM-7 touches engine routing).
+STATUS: implemented (4c58155d, merged): destination/weak-marker → HUMAN_REVIEW (no accusation), strong markers incl. fr/es/zh/ru, spaced/leet, base64, code-name suppression; corpus 26 cases with 4 labelled expected misses; draw.BiLinear; comparison-time mirror check. One existing test's 'unrelated' fixture was an exact mirror and now matches by design (replaced with a textured fixture). Implementer gate: Go halves only load timeouts that pass alone. opsec-llm verification pending.
 
 ### MOD72 — LLM experiments and owner decisions
 

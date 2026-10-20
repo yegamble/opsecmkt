@@ -106,6 +106,14 @@ The strengthened v2 contract additionally requires:
 - Uniform, monotone and low-contrast new image hashes do not create perceptual
   matches. Exact SHA256 and useful informative/legacy hashes remain supported;
   no orientation/crop/semantic-image guarantee is implied.
+- New gateway hashes use an anti-aliased downscale, so a recompressed or resized
+  copy of a textured fixture, a 1% crop and a horizontal mirror (compared at match
+  time; stored hashes are not rewritten) match within the perceptual threshold,
+  and unrelated fixtures do not (synthetic fixtures only).
+- A recognised external destination or a weak instruction phrase blocks automatic
+  history (human review) without an injection accusation; strong injection markers,
+  including reason-code suppression, still escalate. The labelled injection corpus
+  records expected misses explicitly.
 
 ## Installation and deployment
 
