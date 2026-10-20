@@ -92,32 +92,53 @@ func TestInjectionCorpus(t *testing.T) {
 	}
 	var cases []struct {
 		Name        string      `json:"name"`
+		Title       string      `json:"title"`
 		Text        string      `json:"text"`
+		Category    string      `json:"category"`
 		Repeat      int         `json:"repeat"`
 		Injection   bool        `json:"injection"`
 		Disposition Disposition `json:"disposition"`
+		Expected    string      `json:"expected"`
+		MissReason  string      `json:"miss_reason"`
 	}
 	if err := json.Unmarshal(raw, &cases); err != nil {
 		t.Fatal(err)
 	}
 	for _, tc := range cases {
 		t.Run(tc.Name, func(t *testing.T) {
+			// Labels must agree with the asserted outcome; a miss names its reason.
+			want := map[string]Disposition{"escalate": EscalateAdmin, "human_review": QueueHuman, "miss": AutoApply}[tc.Expected]
+			if want == "" || want != tc.Disposition || tc.Injection != (tc.Expected == "escalate") || (tc.Expected == "miss") != (tc.MissReason != "") {
+				t.Fatalf("inconsistent corpus label: %+v", tc)
+			}
 			input := ordinaryInput()
+			if tc.Title != "" {
+				input.Fields[0].Value = tc.Title
+			}
 			input.Fields[1].Value = tc.Text
 			if tc.Repeat > 0 {
 				input.Fields[1].Value = strings.Repeat(tc.Text, tc.Repeat)
 			}
+			if tc.Category != "" {
+				input.Fields = append(input.Fields, Field{Source: "listing", Name: "category", Trust: "DATA", Value: tc.Category})
+			}
 			cfg := DefaultConfig()
 			cfg.Enabled = true
-			engine := Engine{Config: cfg, Model: modelFunc(func(context.Context, NormalizedInput) (Proposal, error) {
-				t.Fatal("quarantined deterministic findings must not reach inference")
-				return Proposal{}, nil
+			// A clean, confident model shows what deterministic detection alone
+			// guarantees: quarantined cases must never reach it.
+			engine := Engine{Config: cfg, Model: modelFunc(func(_ context.Context, n NormalizedInput) (Proposal, error) {
+				if tc.Injection {
+					t.Fatal("quarantined deterministic findings must not reach inference")
+				}
+				p := baseProposal(n)
+				p.ReasonCodes = []string{"NO_FINDING"}
+				return p, nil
 			})}
 			d, err := engine.Evaluate(context.Background(), input)
 			if err != nil || d.Proposal.InjectionSuspected != tc.Injection || d.Disposition != tc.Disposition {
 				t.Fatalf("decision %+v, err %v", d, err)
 			}
-			if d.Proposal.Action != ActionFlagReview || d.DefaultAction != Hold || d.Proposal.Canary != CanaryFor(d.InputHash) {
+			if (d.Proposal.Action != ActionFlagReview && d.Proposal.Action != ActionNoAction) || tc.Injection && d.Proposal.Action != ActionFlagReview || d.DefaultAction != Hold || d.Proposal.Canary != CanaryFor(d.InputHash) {
 				t.Fatalf("trap acquired execution authority: %+v", d)
 			}
 		})

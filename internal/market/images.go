@@ -412,7 +412,10 @@ func reencode(data []byte, info imageInfo, kind uploadKind) (out encodedImage, e
 // Similar hashes are a review signal, not proof of duplication or ownership.
 func normalizedDifferenceHash(full *image.RGBA) string {
 	small := image.NewGray(image.Rect(0, 0, 9, 8))
-	draw.ApproxBiLinear.Scale(small, small.Rect, full, full.Rect, draw.Src, nil)
+	// BiLinear widens its kernel when shrinking, so each cell averages its whole
+	// area. ApproxBiLinear samples a few pixels per cell, letting recompression,
+	// resizing or a small crop flip bits on fine texture.
+	draw.BiLinear.Scale(small, small.Rect, full, full.Rect, draw.Src, nil)
 	// Low-contrast noise can produce balanced gradient bits without useful
 	// picture information. Require population variance >= 16 (standard deviation
 	// >= 4 on the 0..255 luminance scale), using exact integer arithmetic.
