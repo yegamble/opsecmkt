@@ -87,13 +87,14 @@ func renewPrimary(t *testing.T, e *openpgp.Entity, at time.Time, life uint32) {
 	}
 }
 
-// provePGP saves armored with the password, proves ownership with a signing challenge and turns PGP sign-in on.
+// provePGP saves armored with the password, proves possession by decrypting in this
+// session, and turns PGP sign-in on. Positive owner-rotation fixtures retain that proof.
 func provePGP(e *testEnv, uid, sess string, key *openpgp.Entity, armored string) {
 	e.t.Helper()
 	e.check(e.do("POST", "/account", sess, url.Values{"pgp": {armored}, "password": {testPassword}}), 303)
-	e.check(e.do("POST", "/pgp/challenge", sess, url.Values{"kind": {"sign"}}), 303)
-	challenge := agStr(e, "SELECT challenge FROM pgp_challenges WHERE user_id=$1", uid)
-	e.check(e.do("POST", "/pgp/verify", sess, url.Values{"signature": {testClearsign(e.t, key, challenge)}}), 303)
+	e.check(e.do("POST", "/pgp/challenge", sess, url.Values{"kind": {"decrypt"}}), 303)
+	challenge := agStr(e, "SELECT challenge FROM pgp_challenges WHERE user_id=$1 AND session_hash=$2", uid, digest(sess))
+	e.check(e.do("POST", "/pgp/verify", sess, url.Values{"response": {testSignInCode(e.t, key, challenge)}}), 303)
 	e.check(e.do("POST", "/pgp/2fa", sess, url.Values{"enable": {"1"}, "password": {testPassword}}), 303)
 	if keyProof(e, uid) != "verified 2fa" {
 		e.t.Fatal("PGP sign-in not set up")

@@ -61,7 +61,7 @@ func storeKeyBySQL(e *testEnv, userID, armored, fp string) {
 // minimal export with a revoked user ID (real gpg output) is still saved and usable.
 func TestKeyWithUnreadableUserIDsRefused(t *testing.T) {
 	e := newTestApp(t)
-	uid, sess := e.user("a266_save", "vendor")
+	uid, sess := e.keylessUser("a266_save", "buyer")
 	armored, _ := mixedRevokedUserIDsKey(t, "a266_save")
 	agExpect(e, "/account", sess, url.Values{"pgp": {armored}, "password": {testPassword}}, 400, keyUserIDsRefusal)
 	if agStr(e, "SELECT pgp||'/'||pgp_fingerprint FROM users WHERE id=$1", uid) != "/" {
@@ -128,7 +128,7 @@ func TestUnreadableStoredKeyPagesRender(t *testing.T) {
 		mustContain(t, page, "No usable key.", "can no longer be read")
 		mustNotContain(t, page, formatFingerprint(fp))
 	}
-	mustContain(t, html.UnescapeString(e.body("GET", "/account", vendor, nil, 200)), "Unreadable — paste your key again")
+	mustContain(t, html.UnescapeString(e.body("GET", "/account", vendor, nil, 200)), "Unreadable — use verified key recovery")
 	mustContain(t, html.UnescapeString(e.body("GET", "/pgp", vendor, nil, 200)), "The saved key cannot be used: "+keyUserIDsRefusal)
 }
 
@@ -137,7 +137,7 @@ func TestUnreadableStoredKeyPagesRender(t *testing.T) {
 // dereference a nil primary self-signature; it is answered as a signature that does not verify.
 func TestProofSignedBySubkeyOfKeyWithoutUserIDSelfSignatureRefused(t *testing.T) {
 	e := newTestApp(t)
-	uid, sess := e.user("a266_proof", "vendor")
+	uid, sess := e.keylessUser("a266_proof", "buyer")
 	k, _ := testPGPKey(t, "a266_proof")
 	if err := k.AddSigningSubkey(nil); err != nil {
 		t.Fatal(err)

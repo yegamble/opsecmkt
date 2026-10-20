@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { ADMIN, FIXTURE_LISTING, uniqueHandle } from './db-fixtures';
-import { saveEncryptionKey, submitAndLoad } from './db-helpers';
+import { saveEncryptionKey, submitAndLoad, seedPGPAccess } from './db-helpers';
 import { waitForStyles } from './styles';
 
 // P3 order lifecycle against a real database with no payment provider configured.
@@ -12,6 +12,7 @@ test('draft cannot be paid without a wallet, cancellation is recorded, vendor se
   await page.getByRole('button', { name: 'Create account' }).click();
   await expect(page.locator('.account-name')).toHaveText(handle);
   await saveEncryptionKey(page, 'browser-orders-password-123');
+  await seedPGPAccess(page);
 
   // The catalog shows 25 listings a page (A-181) and other specs publish more: search for the setup fixture.
   await page.goto(`/?q=${encodeURIComponent(FIXTURE_LISTING)}`);

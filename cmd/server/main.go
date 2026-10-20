@@ -72,12 +72,17 @@ func main() {
 	bootstrap := flag.String("bootstrap-admin", "", "host-only first-run setup: create the first administrator with this handle, reading its password from stdin, mark the market installed and exit (starts no server; no setup token needed)")
 	siteName := flag.String("site-name", "", "with -bootstrap-admin: the marketplace name (default OPSMKT, at most 80 characters)")
 	setRoleFlag := flag.String("set-role", "", "host-only: -set-role HANDLE ROLE changes that account's role to buyer, vendor, moderator or admin (the only way to add or remove an administrator; removing one ends its sessions) and exits (starts no server)")
-	resetFactors := flag.String("reset-admin-factors", "", "host-only break-glass: turn off this administrator's TOTP, recovery codes and PGP sign-in, end its sessions and exit (reads no stdin; starts no server)")
+	resetFactors := flag.String("reset-admin-factors", "", "host-only break-glass: turn off this administrator's optional sign-in factors and end its sessions (reads no stdin; starts no server; mandatory PGP login remains enforced)")
+	resetAdminPGPKey := flag.String("reset-admin-pgp-key-file", "", "with -reset-admin-factors: replace a lost PGP key from this public-key file (maximum 16 KiB); never provide a private key")
 	exportAuditFlag := flag.Int64("export-audit", 0, "host-only: export settled audit events up to this ID and their detached signature, then exit; starts no server or wallets")
 	exportAuditFrom := flag.Int64("export-audit-from", 0, "with -export-audit: exclude event IDs at or below this lower bound (default 0)")
 	exportAuditDir := flag.String("export-audit-dir", ".", "with -export-audit: existing directory for private export/signature files; refuses overwrite")
 	enrollRetentionFlag := flag.Bool("enroll-retention", false, "host-only: enroll the current original database and external retention state before backup or encoding migration; starts no server, replay, expiry or wallets")
 	flag.Parse()
+	if flagGiven("reset-admin-pgp-key-file") && !flagGiven("reset-admin-factors") {
+		fmt.Fprintln(os.Stderr, "-reset-admin-pgp-key-file requires -reset-admin-factors HANDLE")
+		os.Exit(2)
+	}
 	if flagGiven("enroll-retention") {
 		if !*enrollRetentionFlag {
 			fmt.Fprintln(os.Stderr, "enroll-retention: use -enroll-retention without =false")
@@ -116,7 +121,7 @@ func main() {
 		return
 	}
 	if flagGiven("reset-admin-factors") {
-		if err := resetAdminFactors(context.Background(), *resetFactors, flagGiven, flag.Args(), os.Stdout); err != nil {
+		if err := resetAdminFactorsWithPublicKeyFile(context.Background(), *resetFactors, *resetAdminPGPKey, flagGiven, flag.Args(), os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, "reset-admin-factors:", err)
 			os.Exit(1)
 		}

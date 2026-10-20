@@ -1,8 +1,8 @@
 import { expect, test } from '@playwright/test';
 import { ADMIN, uniqueHandle } from './db-fixtures';
-import { expectNotice, saveEncryptionKey, setRole, signedIn } from './db-helpers';
+import { expectNotice, saveEncryptionKey, setRole, signedIn, seedPGPAccess } from './db-helpers';
 
-// All seed records below are created through public forms against PostgreSQL.
+// Marketplace records below use real forms; PGP access is an explicit privileged fixture prerequisite.
 // Intake is paused here; funded journeys live in the separate escrow browser suites.
 test('seeded catalog discovery, role boundaries and persistent unfunded orders', async ({ browser, baseURL }) => {
   test.setTimeout(90_000);
@@ -18,6 +18,7 @@ test('seeded catalog discovery, role boundaries and persistent unfunded orders',
   const visitorContext = await browser.newContext({ baseURL, javaScriptEnabled: false, viewport: { width: 390, height: 844 } });
   const visitor = await visitorContext.newPage();
   try {
+    await seedPGPAccess(buyer);
     await setRole(admin, vendorHandle, 'vendor');
     await setRole(admin, moderatorHandle, 'moderator');
     await saveEncryptionKey(vendor, password);

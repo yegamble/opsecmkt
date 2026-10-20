@@ -47,7 +47,8 @@ func userRole(e *testEnv, id string) string {
 // vendorSignUp registers handle as a vendor account and returns its id and session.
 func vendorSignUp(e *testEnv, handle string) (string, string) {
 	e.t.Helper()
-	w := e.do("POST", "/register", randomToken(), url.Values{"handle": {handle}, "password": {testPassword}, "account_type": {"vendor"}})
+	_, public := testPGPKey(e.t, "vendor-signup-fixture")
+	w := e.do("POST", "/register", randomToken(), url.Values{"handle": {handle}, "password": {testPassword}, "account_type": {"vendor"}, "pgp": {public}})
 	e.check(w, 303)
 	if loc := w.Header().Get("Location"); loc != "/account#vendor-application" {
 		e.t.Fatalf("vendor sign-up landed on %q", loc)

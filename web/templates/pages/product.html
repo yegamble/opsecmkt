@@ -20,7 +20,7 @@
 </div>{{end}}
 <div class="detail-copy">
 <div class="eyebrow">{{.Category}} / {{.Region}}</div>
-<h1>{{.Title}}</h1>{{if .Archived}}{{/* A-164: shown only to those who may read an order on it (load.go) */}}
+<h1>{{.Title}}</h1>{{if .VendorVacation}}<p class="alert" role="note"><strong>On vacation.</strong> This vendor is not accepting purchases right now.</p>{{end}}{{if .VendorDeactivated}}<p class="alert" role="note">This vendor has deactivated their storefront. This listing remains visible to you through an existing order.</p>{{end}}{{if .Archived}}{{/* A-164: shown only to those who may read an order on it (load.go) */}}
 <p role="note"><span class="badge neutral">Archived</span> This listing is hidden from the marketplace and accepts no new orders. You can see it because you can read an order placed on it. It shows the listing as it is now, which may differ from what was bought.</p>{{end}}
 <p class="muted product-detail-description">{{.Description}}</p>
 <h2 class="section-title">Listing details</h2>
@@ -28,7 +28,7 @@
 <div>
 <dt>Vendor</dt>
 <dd>
-<a class="text-link" href="/vendor?id={{.VendorID}}">{{.Vendor}}</a>{{if .VendorVerified}}
+{{if .VendorDeactivated}}{{.Vendor}}{{else}}<a class="text-link" href="/vendor?id={{.VendorID}}">{{.Vendor}}</a>{{end}}{{if .VendorVerified}}
 <span class="badge green verified-vendor">Verified vendor</span>{{end}}
 </dd>
 </div>
@@ -53,9 +53,9 @@
 <p class="price">{{.PriceXMR}} <small>XMR</small></p>
 {{if .XMROrderUnavailable}}<p class="order-unavailable" role="note">{{.XMROrderUnavailable}}</p>{{end}}
 <hr class="divider">
-{{if .Archived}}<p><strong>Archived.</strong> {{if $.SellerClosed}}The seller's account is closed, so this listing accepts no new orders.{{else}}This listing accepts no new orders.{{end}}</p>{{else if eq .Kind "service"}}<p class="order-unavailable" role="note">This legacy service listing is no longer available for new orders. Existing orders and their history remain readable; ask the vendor to offer a supported physical or digital listing instead.</p>{{else}}{{if $.VendorKeyUnusable}}<p class="order-unavailable" role="note">
+{{if .Archived}}<p><strong>Archived.</strong> {{if $.SellerClosed}}The seller's account is closed, so this listing accepts no new orders.{{else}}This listing accepts no new orders.{{end}}</p>{{else if .VendorDeactivated}}<p>This storefront is deactivated and accepts no new orders.</p>{{else if .VendorVacation}}<p>This vendor is on vacation and accepts no new orders.</p>{{else if eq .Kind "service"}}<p class="order-unavailable" role="note">This legacy service listing is no longer available for new orders. Existing orders and their history remain readable; ask the vendor to offer a supported physical or digital listing instead.</p>{{else}}{{if $.VendorKeyUnusable}}<p class="order-unavailable" role="note">
 <strong>No usable key.</strong> {{.Vendor}} needs a usable PGP encryption key before accepting new orders.</p>
-{{end}}{{if $.BuyerKeyUnusable}}<p class="order-unavailable" role="note">Add a usable PGP public key on your <a class="text-link" href="/account">account page</a> before creating an order. Order messages and digital deliveries use encrypted content.</p>{{end}}{{with $.VendorSuspensionReason}}<p class="order-unavailable" role="note">{{.}}</p>{{end}}{{template "purchase-blocks" $}}{{if lt .Stock 1}}<p><strong>Out of stock.</strong> New orders are refused until the vendor adds stock.</p>{{else if and (not $.NoPurchase) (and (not .XMROrderUnavailable) (not (index $.PurchaseBlocked "XMR")))}}<p>Review the listing and create an unfunded order draft. A draft requests no payment; any payment step happens later on the order page.</p>
+{{end}}{{if $.BuyerKeyUnusable}}<p class="order-unavailable" role="note">Add a usable PGP public key on your <a class="text-link" href="/account">account page</a> before creating an order. Order messages and digital deliveries use encrypted content.</p>{{end}}{{with $.VendorSuspensionReason}}<p class="order-unavailable" role="note">{{.}}</p>{{end}}{{template "purchase-blocks" $}}{{if and $.User (not $.PGPAccessVerified)}}<p><a class="text-link" href="/pgp">Authenticate this session with PGP decryption</a> before purchasing. Add a usable public key in your account first if needed.</p>{{else if lt .Stock 1}}<p><strong>Out of stock.</strong> New orders are refused until the vendor adds stock.</p>{{else if and (not $.NoPurchase) (and (not .XMROrderUnavailable) (not (index $.PurchaseBlocked "XMR")))}}<p>Review the listing and create an unfunded order draft. A draft requests no payment; any payment step happens later on the order page.</p>
 {{if or (not $.User) (ne $.User.ID .VendorID)}}<a class="button primary full" href="/checkout?id={{.ID}}">Review order draft <span class="action-icon">↗</span></a>{{end}}{{end}}{{end}}{{if $.User}}{{if or (eq $.User.ID .VendorID) (eq $.User.Role "admin")}}
 <a class="text-link" href="/listing-edit?id={{.ID}}">Edit this listing <span class="action-icon">→</span></a>{{end}}{{end}}
 </section>
@@ -63,7 +63,7 @@
 <h2>Know before you order</h2>
 <p>{{if .Photos}}Photos are supplied by the vendor; the market does not verify them.{{else}}Product illustrations are decorative.{{end}} Confirm specifications and availability with the vendor.</p>
 {{template "payment-status:product" $}}
-<a class="text-link" href="/messages?to={{.Vendor}}">Message vendor <span class="action-icon">→</span></a>
+{{if .VendorMessagesUnavailable}}<p class="help">Buyer messages are paused while this vendor is away.</p>{{else}}<a class="text-link" href="/messages?to={{.Vendor}}">Message vendor <span class="action-icon">→</span></a>{{end}}
 </section>
 </aside>
 </div>{{template "product-reviews" $}}{{else}}<div class="empty">

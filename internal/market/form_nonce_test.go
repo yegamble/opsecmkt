@@ -172,8 +172,8 @@ func TestFormNonceMessageAndOrderTransition(t *testing.T) {
 	vendor, vendorSession := e.user("nonce_message_vendor", "vendor")
 	buyer, buyerSession := e.user("nonce_message_buyer", "buyer")
 	key, keyPub := testPGPKey(t, "nonce-recipient")
-	e.setKey(buyer, keyPub)  // a message is refused unless its recipient can read it (A-569)
-	e.setKey(vendor, keyPub) // private senders also need a key for encrypted replies
+	e.setKey(buyer, keyPub)             // a message is refused unless its recipient can read it (A-569)
+	e.pgpSession(vendorSession, keyPub) // private senders need a reply key and current-session proof
 	body, err := encryptTo(key, "one encrypted message")
 	if err != nil {
 		t.Fatal(err)

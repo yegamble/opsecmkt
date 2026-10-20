@@ -15,6 +15,20 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## Required PGP access and vendor privacy
+
+Migrations 129 and 130 add session-bound PGP access proof, the administrator's browse-only login setting, and vendor availability/privacy preferences. They preserve existing accounts, orders and listings. Rebuild the embedded templates with the application and verify backups before upgrading.
+
+All purchases and message sends now require a usable public key and successful challenge decryption in the current session. Existing sessions have no such proof and must complete the PGP decrypt flow before buying or messaging. Ownership verification by signature and TOTP login do not replace this requirement. Any saved-key change requires another decryption proof. No private PGP key is uploaded or stored.
+
+**Allow login without PGP** defaults to enabled for compatibility: users can sign in to browse or repair their key, but cannot purchase or message until they prove decryption. Administrators may disable it after proving decryption themselves; subsequent sign-ins then require PGP decryption. Keep an external recovery contact available. Vendors must retain a usable public key; existing keyless vendors need to add one before trading, and new vendor signup/approval/role assignment requires one.
+
+Vacation keeps profiles and products public but blocks new purchases. Deactivation hides profiles, products and photos from strangers while preserving authorized existing-order access. Vendors can refuse buyer messages while away, including replies through old conversations. Public last seen is off by default; opting out clears the stored activity timestamp. Buyer-to-buyer legacy conversations stay readable but cannot be continued.
+
+Existing nonempty PGP bindings, including expired or unreadable keys, require current-session old-key decryption or an already-enrolled authenticator before replacement or removal. First authenticator enrollment, activation and viewing pending authenticator/recovery material on a PGP-bound account also require that decryption proof. Inactive pending authenticator enrollments on already-keyed accounts are cleared during migration, because another existing browse session may have seen those secrets; active authenticators are preserved. First key enrollment and safe same-fingerprint renewal remain supported. For lost keys, use the existing administrator reset with an explicitly supplied replacement public key after verifying the owner. Last-administrator recovery uses `-reset-admin-factors HANDLE -reset-admin-pgp-key-file FILE`; it preserves the strict login setting and never accepts a private key.
+
+See [PGP access](docs/operator-guide.md#pgp-access-for-purchases-and-messages) and [vendor availability](docs/operator-guide.md#vendor-availability-and-activity-privacy) for the controls and recovery boundaries.
+
 ## Encrypted support tickets (migration 133)
 
 Migration 133 adds the support-ticket workflow at `/tickets` and `/ticket?id=…`. Ticket IDs and procedural history
@@ -22,7 +36,8 @@ are plaintext metadata; every initial body and reply is PGP-encrypted locally be
 subject field. This is separate from the direct-message inbox. Users and staff handle routine support through
 the product pages; no SSH or manual database changes are needed for an ordinary ticket.
 
-Before opening a ticket, the opener saves a usable public encryption key and selects an active staff recipient
+Opening or replying to a ticket requires current-session PGP challenge decryption. Before opening one, the opener
+saves a usable public encryption key and selects an active staff recipient
 whose usable key is visible through the staff list or configured staff contact. The form must not expose hidden
 staff accounts. Encrypt each body to the opener and the current assigned staff member. An assignment or escalation
 does not re-encrypt historical bodies or give a new assignee the old recipient's private key; arrange the next
@@ -65,9 +80,9 @@ forwarded contents retain their PGP protection. Order-linked alerts include thei
 messages keep message references, while support tickets use their own workflow and ticket IDs (migration 133).
 
 New drafts and checkout now require usable PGP public encryption keys on both buyer and vendor accounts,
-for physical and digital listings. Add or renew missing, expired or unusable keys under `/account`; PGP sign-in
-and key-ownership proof are optional. Existing orders remain accessible for their normal read, cancellation and
-dispute actions if a key later becomes unusable.
+for physical and digital listings. Add or renew missing, expired or unusable keys under `/account`; usable keys
+and session-bound challenge decryption are required for the buyer before purchasing. Existing orders remain readable
+and cancellable if a key later becomes unusable; opening or replying to a dispute still requires PGP decryption.
 
 New manual and automatic per-order digital deliveries are stored encrypted to the buyer's PGP key. Buyers
 need their corresponding private key and PGP client to read the armor. Automatic-delivery listing templates

@@ -6,6 +6,11 @@
 <h1>PGP verification<span class="accent">.</span></h1>
 <p>Prove that you hold the private key for the public key on your profile. The server only ever receives your public key, signatures and decrypted challenge text.</p>
 </div>{{with .PGP}}{{if .Verified}}<span class="badge green">Verified</span>{{else}}<span class="badge neutral">Not verified</span>{{end}}{{end}}</div>
+<section class="panel" aria-labelledby="pgp-browser-heading">
+<h2 id="pgp-browser-heading">PGP authentication for this browser</h2>
+{{if .PGPAccessVerified}}<p>This browser has completed PGP authentication for your current public key. You can purchase and send messages.</p>{{else}}<p>Before purchasing or sending messages, save a usable public key and complete a decryption challenge below in this browser. Signing a challenge proves key ownership but does not authorize purchases or messages.</p>{{end}}
+<p class="help">Your private key stays on your device. New browsers, changed keys and rotated sessions need a new decryption challenge. We strongly encourage <a class="text-link" href="/totp">an authenticator and offline recovery codes</a> to help prevent account takeover.</p>
+</section>
 {{with .PGP}}{{if not .HasKey}}<div class="panel">
 <h2>No public key saved</h2>
 <p>Add your ASCII-armored public key on the account page, then return here to prove you own it.</p>
@@ -29,7 +34,7 @@
 </div>
 {{template "pgp-expiry:rows" .}}
 </dl>{{template "pgp-expiry:warning" .}}
-<p class="help">Compare this fingerprint with the one your own PGP software shows before relying on it. Saving a different key on the account page clears verification and turns PGP sign-in off; that needs your current password (and an authenticator code when TOTP is on). The same key renewed there (same fingerprint, for example a new expiry) keeps both, unless it lacks a revocation the saved key has or would have others encrypt to an older subkey.</p>
+<p class="help">Compare this fingerprint with the one your own PGP software shows before relying on it. Saving a different key on the account page clears verification and turns PGP sign-in off. It requires your current password and either decryption with the existing key in this browser or a fresh code from your previously enrolled authenticator. This protection also applies when the old key expires, is revoked or becomes unreadable; staff provide identity-verified replacement-key recovery if both methods are lost. The same key renewed there (same fingerprint, for example a new expiry) keeps both, unless it lacks a revocation the saved key has or would have others encrypt to an older subkey.</p>
 </section>
 <section class="panel">
 <h2>{{if .Verified}}Prove ownership again{{else}}Prove ownership{{end}}</h2>
@@ -43,7 +48,7 @@
 </fieldset>
 <button class="primary" type="submit">Start challenge</button>
 </form>
-<p class="help">A new challenge replaces any open one. Challenges expire after 30 minutes.</p>
+<p class="help">For this browser: A new challenge replaces any open one. Challenges expire after 30 minutes. Other browsers have separate challenges.</p>
 </section>
 </div>{{if .Challenge}}<section class="panel pgp-challenge">
 <h2>Sign exactly this text</h2>
@@ -64,6 +69,7 @@
 <form class="stack" method="post" action="/pgp/verify">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="form_nonce" value="{{formNonce "/pgp/verify"}}">
+<p class="help">Check the account, purpose, expiry and official addresses in the decrypted message. Paste only the code after <code>Code:</code> on its last line.</p>
 <label>Decrypted text<input name="response" required maxlength="128" autocomplete="off" spellcheck="false" autocapitalize="off"></label>
 <button class="primary" type="submit">Verify decryption</button>
 </form>

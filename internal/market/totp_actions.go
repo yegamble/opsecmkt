@@ -52,6 +52,9 @@ func totpEnroll(c *actionCtx) (actionResult, error) {
 	if enabled {
 		return actionResult{}, fail(409, "TOTP is already enabled. Turn it off before enrolling a new authenticator.")
 	}
+	if err := requirePGPForFirstTOTP(c); err != nil {
+		return actionResult{}, err
+	}
 	sealed, err := c.A.seal("totp", newTOTPSecret())
 	if err != nil {
 		return actionResult{}, err
@@ -107,6 +110,9 @@ func activateTOTP(c *actionCtx) (actionResult, error) {
 	}
 	if pending == "" {
 		return actionResult{}, fail(409, "Start TOTP enrollment first")
+	}
+	if err := requirePGPForFirstTOTP(c); err != nil {
+		return actionResult{}, err
 	}
 	secret, err := c.A.open("totp", pending)
 	if err != nil {
@@ -322,6 +328,35 @@ func totpLoader(ctx context.Context, a *App, r *http.Request, d *PageData) error
 			d.NextTitle = nextTitle(d.Next)
 		}
 	}
+	if !s.Pending && reveal == "" {
+		return nil
+	}
+	// Enrollment/recovery material is account-wide. Read and consume it only
+	// while this browser's existing-key proof and the current binding are locked.
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	p, err := loadPGPAccount(ctx, tx, d.User.ID, true)
+	if err != nil {
+		return err
+	}
+	if p.Armored != "" {
+		c := &actionCtx{A: a, R: r, Tx: tx, User: d.User, Token: sessionToken(r)}
+		proved, err := pgpBindingProven(c, p)
+		if err != nil {
+			return err
+		}
+		if !proved {
+			s.Error = "Decrypt a challenge with your existing PGP key in this browser before viewing authenticator setup or recovery codes. If the key is lost, request identity-verified key recovery."
+			return nil
+		}
+	}
+	if err := tx.QueryRowContext(ctx, "SELECT totp_enabled,totp_pending,CASE WHEN recovery_reveal_until>clock_timestamp() THEN recovery_reveal ELSE '' END FROM users WHERE id=$1", d.User.ID).Scan(&s.TOTPEnabled, &pending, &reveal); err != nil {
+		return err
+	}
+	s.Pending = !s.TOTPEnabled && pending != ""
 	if s.Pending {
 		if secret, err := a.open("totp", pending); err != nil {
 			s.Error = "The pending secret can no longer be read (the server key changed). Start enrollment again."
@@ -335,7 +370,7 @@ func totpLoader(ctx context.Context, a *App, r *http.Request, d *PageData) error
 	}
 	if reveal != "" {
 		// Clear first; only the request that clears the value may display it.
-		res, err := a.db.ExecContext(ctx, "UPDATE users SET recovery_reveal='',recovery_reveal_until=NULL WHERE id=$1 AND recovery_reveal=$2", d.User.ID, reveal)
+		res, err := tx.ExecContext(ctx, "UPDATE users SET recovery_reveal='',recovery_reveal_until=NULL WHERE id=$1 AND recovery_reveal=$2", d.User.ID, reveal)
 		if err != nil {
 			return err
 		}
@@ -345,5 +380,5 @@ func totpLoader(ctx context.Context, a *App, r *http.Request, d *PageData) error
 			}
 		}
 	}
-	return nil
+	return tx.Commit()
 }

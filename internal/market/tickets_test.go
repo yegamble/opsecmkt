@@ -29,6 +29,7 @@ func newTicketTestWorld(t *testing.T) *ticketTestWorld {
 		w.ids[account.name], w.sessions[account.name] = w.e.user("ticket_"+account.name, account.role)
 		w.keys[account.name], w.public[account.name] = testPGPKey(t, "ticket-"+account.name)
 		w.e.setKey(w.ids[account.name], w.public[account.name])
+		w.e.pgpSessionKey(w.sessions[account.name])
 	}
 	agExec(w.e, "UPDATE users SET staff_hidden=false WHERE role IN ('moderator','admin')")
 	agExec(w.e, `INSERT INTO settings(key,value) VALUES('staff_list_public','true') ON CONFLICT(key) DO UPDATE SET value=excluded.value`)
@@ -177,17 +178,20 @@ func TestTicketsOpeningKeepsEncryptedContentsPrivateAndMatchesNotifications(t *t
 	}
 }
 
-func TestTicketsEveryOpenerRoleRequiresUsablePGPWithoutRequiringProofOrTwoFactor(t *testing.T) {
+func TestTicketsEveryOpenerRoleRequiresCurrentSessionDecryptionWithoutMandatoryTwoFactor(t *testing.T) {
 	for _, role := range []string{"buyer", "vendor", "moderator", "admin"} {
 		t.Run(role, func(t *testing.T) {
 			w := newTicketTestWorld(t)
 			agExec(w.e, "UPDATE users SET role=$2 WHERE id=$1", w.ids["opener"], role)
+			agExec(w.e, "UPDATE sessions SET pgp_access_key='' WHERE user_id=$1", w.ids["opener"])
 			body := w.ciphertext("mod", "Private ticket message for two explicit encryption recipients.")
 			w.e.setKey(w.ids["opener"], "")
 			w.refused("/tickets", "opener", url.Values{"staff_id": {w.ids["mod"]}, "body": {body}})
 			w.e.setKey(w.ids["opener"], w.public["opener"])
-			if agInt(w.e, "SELECT count(*) FROM users WHERE id=$1 AND pgp_verified_at IS NULL AND NOT pgp_2fa AND NOT totp_enabled", w.ids["opener"]) != 1 {
-				t.Fatal("ticket fixture unexpectedly required proof or second-factor enrollment")
+			w.refused("/tickets", "opener", url.Values{"staff_id": {w.ids["mod"]}, "body": {body}})
+			proveAccess(w.e, w.ids["opener"], w.sessions["opener"], w.keys["opener"])
+			if agInt(w.e, "SELECT count(*) FROM users WHERE id=$1 AND NOT pgp_2fa AND NOT totp_enabled", w.ids["opener"]) != 1 {
+				t.Fatal("ticket access unexpectedly required optional sign-in factor enrollment")
 			}
 			w.e.check(w.e.do("POST", "/tickets", w.sessions["opener"], url.Values{"staff_id": {w.ids["mod"]}, "body": {body}}), 303)
 		})

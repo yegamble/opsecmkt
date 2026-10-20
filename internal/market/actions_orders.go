@@ -95,6 +95,9 @@ func disputeAction(c *actionCtx) (actionResult, error) {
 	if err != nil {
 		return actionResult{}, err
 	}
+	if err := requirePGPAccess(c); err != nil {
+		return actionResult{}, err
+	}
 	if o.State != statePaid && o.State != stateShipped && o.State != stateDelivered {
 		return actionResult{}, fail(409, "This order cannot be disputed from its current state. Disputes can be opened only for paid, shipped, or delivered orders.")
 	}
@@ -153,6 +156,9 @@ func disputeReplyAction(c *actionCtx) (actionResult, error) {
 	}
 	if status != "Open" {
 		return actionResult{}, fail(409, "This dispute is resolved, so no reply can be added. Nothing was changed.")
+	}
+	if err := requirePGPAccess(c); err != nil {
+		return actionResult{}, err
 	}
 	// A new statement after the lock: it sees a reply committed by a request that held the lock before this one.
 	var d Dispute

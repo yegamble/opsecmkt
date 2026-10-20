@@ -19,7 +19,7 @@ func TestResetAdminFactors(t *testing.T) {
 	other := agSession(e, id)
 	pending := agPending(e, id)
 	agEnableTOTP(e, id)
-	_, pub := testPGPKey(t, "root")
+	keyOwner, pub := testPGPKey(t, "root")
 	agEnablePGP(e, id, pub)
 	// The TOTP secret was sealed under the key in use before a rotation, so it can no longer be opened.
 	agExec(e, "UPDATE users SET totp_secret='sealed-under-the-old-key',totp_last_step=99,totp_pending='sealed-pending',recovery_reveal='sealed-codes',recovery_reveal_until=now()+interval '10 minutes' WHERE id=$1", id)
@@ -134,6 +134,9 @@ func TestResetAdminFactors(t *testing.T) {
 	s := e.session(w)
 	mustContain(t, e.body("GET", "/notifications", s, nil, 200), "The operator reset your two-factor sign-in on the host")
 	e.check(e.do("GET", "/admin", s, nil), 200)
+	// A reset keeps the public key; its owner must decrypt before enrolling a
+	// first authenticator again, so password possession alone cannot replace it.
+	proveAccess(e, id, s, keyOwner)
 	e.check(e.do("POST", "/totp/enroll", s, nil), 303)
 	code, _ := e.totpCodeFor(id, 0)
 	e.check(e.do("POST", "/totp/activate", s, url.Values{"code": {code}, "password": {testPassword}}), 303)

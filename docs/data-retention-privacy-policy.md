@@ -164,7 +164,8 @@ plaintext, passphrase-only messages and messages whose visible recipient key IDs
 A message whose recipient key IDs are all hidden is stored only after the sender ticks a confirmation that the server
 could not check the recipient, and is marked "recipient unknown". Messages stored before these checks keep their
 recorded status. Both buyer and vendor now need usable public encryption keys before creating a draft or checking out,
-without requiring PGP sign-in or key-ownership proof. New manual and automatic per-order delivery records are stored
+and the buyer must prove PGP challenge decryption in the current session before purchasing. Opening or replying
+to support tickets, direct messages and disputes also requires current-session decryption proof. New manual and automatic per-order delivery records are stored
 as PGP armor encrypted to the buyer; unavailable encryption refuses manual delivery or leaves automatic delivery
 pending without storing plaintext. The running server sees manual text or the reusable listing template before that
 encryption, and historical plaintext delivery records are preserved. This does not satisfy a requirement that private

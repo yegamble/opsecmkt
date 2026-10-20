@@ -141,7 +141,7 @@ func TestFormNoncePGPDecryptedResponseReplayKeepsAnswerPrivate(t *testing.T) {
 	if err := e.DB.QueryRow("SELECT challenge FROM pgp_challenges WHERE user_id=$1 AND kind='decrypt'", uid).Scan(&encrypted); err != nil {
 		t.Fatal(err)
 	}
-	answer := testDecrypt(t, signer, encrypted)
+	answer := testSignInCode(t, signer, encrypted)
 	verify := url.Values{"response": {answer}, formNonceField: {renderedFormNonce(t, page.Body.String(), "/pgp/verify")}}
 	first := e.do("POST", "/pgp/verify", session, verify)
 	e.check(first, 303)

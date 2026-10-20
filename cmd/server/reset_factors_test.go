@@ -106,7 +106,7 @@ func TestResetAdminFactorsCLI(t *testing.T) {
 	}
 
 	stdout, stderr, code = runServer(t, nil, "-reset-admin-factors", "root_admin")
-	if code != 0 || stderr != "" || stdout != "Second factors of administrator root_admin reset: TOTP and recovery codes and PGP sign-in turned off; ended 1 session(s) and any pending sign-ins. Sign in with the password alone, then set up TOTP or PGP sign-in again.\n" {
+	if code != 0 || stderr != "" || stdout != "Second factors of administrator root_admin reset: TOTP and recovery codes and PGP sign-in turned off; ended 1 session(s) and any pending sign-ins. Sign in again, then set up TOTP or PGP sign-in again. Mandatory PGP authentication still applies.\n" {
 		t.Fatalf("reset: %d %q %q", code, stdout, stderr)
 	}
 	if count("SELECT count(*) FROM users WHERE id='a1' AND NOT totp_enabled AND totp_secret='' AND NOT pgp_2fa") != 1 ||

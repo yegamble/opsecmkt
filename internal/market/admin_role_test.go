@@ -303,7 +303,7 @@ func TestConfirmedActionRefusedAfterCallerDemotedOrSuspended(t *testing.T) {
 	}
 
 	// Without a password confirmation too: a profile save by an account suspended meanwhile.
-	buyerID, buyer := e.user("racing_buyer", "buyer")
+	buyerID, buyer := e.keylessUser("racing_buyer", "buyer")
 	w = besideAccountChange(t, e, buyerID, []string{"UPDATE users SET suspended_at=now() WHERE id=$1", "DELETE FROM sessions WHERE user_id=$1"}, func() *httptest.ResponseRecorder {
 		return e.do("POST", "/account", buyer, form("pgp", "", "xmpp", "racer@example.test"))
 	})
