@@ -88,6 +88,7 @@ const (
 	uploadListing  uploadKind = "listing"
 	uploadAvatar   uploadKind = "avatar"
 	uploadBranding uploadKind = "branding"
+	uploadEvidence uploadKind = "evidence"
 )
 
 // scannedUpload holds bytes clamd answered exactly "stream: OK" for. Only Scan builds one; read the bytes

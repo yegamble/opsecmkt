@@ -488,11 +488,11 @@ func (a *App) admitGatewayUpload(w http.ResponseWriter, r *http.Request) {
 		u.render(errUploadSignedOut.Code, errUploadSignedOut.Msg)
 		return
 	}
-	if actor.RetentionRestricted {
+	if actor.RetentionRestricted && route.kind != uploadEvidence {
 		u.render(403, retentionRestrictedMessage)
 		return
 	}
-	if !slices.Contains(route.roles, actor.Role) {
+	if !permitsRole(route.roles, actor) {
 		u.render(403, "Photo not saved: your account cannot upload this picture. Nothing was stored.")
 		return
 	}
@@ -539,6 +539,8 @@ func (a *App) finishGatewayUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	if route.kind == uploadListing {
 		u.back = "/listing-edit?id=" + url.QueryEscape(v.ID) + "#photos"
+	} else if route.kind == uploadEvidence {
+		u.back = "/order?id=" + url.QueryEscape(v.ID) + "#dispute-evidence"
 	}
 	if v.Status != 0 {
 		if !slices.Contains([]int{400, 403, 408, 413, 415, 422, 503}, v.Status) || len(v.Message) > 2048 || !utf8.ValidString(v.Message) {
@@ -583,12 +585,16 @@ func (a *App) finishGatewayUpload(w http.ResponseWriter, r *http.Request) {
 		title, msg := "Photo saved", "The photo is added to the listing. Reload the listing on the private administrator connection to see it."
 		if route.kind == uploadAvatar {
 			title, msg = "Avatar saved", "Your new avatar is saved. Reload your account on the private administrator connection to see it."
+		} else if route.kind == uploadEvidence {
+			title, msg = "Evidence saved", "Dispute image evidence is saved. Reload the order on the private administrator connection to see it."
 		}
 		brandingResultPage(w, http.StatusOK, title, msg)
 	case err == nil:
 		notice := "photo-saved"
 		if route.kind == uploadAvatar {
 			notice = "avatar-saved"
+		} else if route.kind == uploadEvidence {
+			notice = "evidence-saved"
 		}
 		http.Redirect(w, browser, a.setNotice(w, notice, redirect), http.StatusSeeOther)
 	case errors.As(err, &he):

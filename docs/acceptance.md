@@ -1,5 +1,18 @@
 # Acceptance checklist and capability boundaries
 
+## Marketplace design and private order communication
+
+- [x] Real subcategories and additional shipping regions persist through listing creation/editing; category/type/destination/search filters combine and survive sorting and pagination. Ratings count only eligible public reviews. Vendor links remain separate from listing links (`TestCatalogDesign*`, `preview-catalog-design.spec.ts`).
+- [x] Administrators have derived verified selling access, moderators need independent approval, revocation preserves historical orders, and private ingress remains protected. Hidden staff with no published listing are not exposed by generic vendor-contact lookup (`TestVendorCapability*`, `TestSellingCapabilityDoesNotExposeHiddenStaffContacts`, `db-vendor-capabilities.spec.ts`).
+- [x] Order correspondence and append-only digital replacements remain order-bound, exclude the direct inbox, enforce actual-party permissions and use the order-private retention clock without extending it (`TestOrderMessages*`, `TestOrderChannel*`, `db-order-channels.spec.ts`). Existing direct messages are not assigned to inferred orders.
+- [x] Valid pasted PGP ciphertext retains identical decoded packets and decrypts once to the original text; replay sends once. Plaintext and invalid/wrong-recipient ciphertext remain rejected. Automatic server-side plaintext encryption is not implemented (`TestPastedCiphertextIsNeverEncryptedAgain`, `TestMessageRecipientEnforcement`).
+- [x] Dispute JPEG/PNG evidence uses ClamAV on every accepted upload, strips metadata through normalization, refuses documents/SVG, enforces private case access and quotas, and participates in preservation, purge and restore replay (`TestDisputeEvidence*`). Private approved-moderator photo handoff and retention-restricted staff evidence complete without enabling their listing/avatar uploads (`TestApprovedModeratorPrivatePhotoCapability`, `TestRestrictedPrivatePartyCanUploadOnlyDisputeEvidence`).
+- [x] Published sold-out listings remain visible by default and an optional stock filter hides them. Multi-unit drafts use checked totals; checkout atomically reserves the saved quantity and cancellation returns it once, with no payment mutation on stale-stock or overflow refusal (`order_quantity_test.go`, `catalog_stock_test.go`).
+- [x] Manual digital fulfillment submits one batch for the whole order; distinct automatic inventory allocates separate entries into one bounded, scrolling delivery. Private inventory, consumed-state protection and listing/order purge replay pass the final local PostgreSQL race and browser checks. Cancellation cannot return entries to an expired listing; they remain subject to their order's private lifecycle (`digital_inventory_test.go`, `db-batched-orders.spec.ts`).
+
+These are implementation and local test claims. Browser preview, browser database, simulated wallet RPC and deployment evidence remain separate; the war-room ledger records the integrated run and its limits.
+
+
 ## Optional security hardening
 
 Use the [focused security checks](operations-tests.md#optional-security-controls)

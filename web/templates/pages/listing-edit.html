@@ -43,21 +43,15 @@
 <option {{if eq .Category "Services"}}selected{{end}}>Services</option>
 </select>
 </label>
-<label>Region<select name="region">
-<option {{if eq .Region "Worldwide"}}selected{{end}}>Worldwide</option>
-<option {{if eq .Region "United States"}}selected{{end}}>United States</option>
-<option {{if eq .Region "Europe"}}selected{{end}}>Europe</option>
-<option {{if eq .Region "Digital"}}selected{{end}}>Digital</option>{{if not (or (eq .Region "Worldwide") (eq .Region "United States") (eq .Region "Europe") (eq .Region "Digital"))}}
-<option selected>{{.Region}}</option>{{end}}
-</select>
-</label>
+<label>Subcategory<select name="subcategory" aria-describedby="subcategory-help">{{template "listing-subcategory-options" $}}</select></label>
+<label>Region<select name="region">{{range $.ShippingRegions}}<option {{if eq $.Product.Region .}}selected{{end}}>{{.}}</option>{{end}}<option {{if eq .Region "Digital"}}selected{{end}}>Digital</option>{{if not (.KnownRegion)}}<option selected>{{.Region}}</option>{{end}}</select></label>
 <label>Fulfillment type<select name="kind" required aria-describedby="kind-help">
 {{if eq .Kind "service"}}<option value="" selected disabled>Choose a supported fulfillment type</option>{{end}}
 <option value="physical" {{if eq .Kind "physical"}}selected{{end}}>Physical (shipped)</option>
 <option value="digital" {{if eq .Kind "digital"}}selected{{end}}>Digital (delivered online)</option>
 </select>
 </label>
-<label>Stock<input type="number" name="stock" required min="0" max="1000000" value="{{.Stock}}" aria-describedby="stock-help">
+<label>Stock<input type="number" name="stock" required min="0" max="1000000" value="{{.Stock}}" {{with $.DigitalInventory}}{{if eq .Mode "inventory"}}readonly{{end}}{{end}} aria-describedby="stock-help">
 </label>
 {{if $.DispatchOn}}{{with $.Listing}}<label>Dispatch within (days)<input type="number" name="dispatch_days" min="1" max="30" inputmode="numeric" value="{{.DispatchDays}}" aria-describedby="dispatch-help">
 </label>{{end}}{{end -}}
@@ -66,16 +60,19 @@
 </div>
 <p class="help" id="price-floor-help">The Monero price must be at least 0.001 XMR. The network fee is deducted from each settlement; a smaller amount may lose too large a share to fees.</p>
 {{if $.DispatchOn}}<p class="help" id="dispatch-help">Physical listings only: the days you take to ship once an order is paid, 1 to 30; a digital listing ignores it. Saving a change does not alter orders already placed.</p>{{end -}}
-<p class="help" id="stock-help">Payment requests reserve stock. If stock changes while you edit, saving a new stock value is refused so no reservation is overwritten.</p>
+<p class="help" id="stock-help">Distinct digital inventory derives its stock from the available units below. Payment requests reserve stock. If stock changes while you edit, saving a new stock value is refused so no reservation is overwritten.</p>
 {{with $.Listing}}{{if .VendorEditor}}<p class="help">{{.Reservation.Units}} {{if eq .Reservation.Units 1}}unit is{{else}}units are{{end}} reserved by orders past draft; unfunded drafts do not reserve stock.{{if .Reservation.PaymentExpiry}} The earliest awaiting-payment payment window ends {{.Reservation.PaymentExpiry}}; deposits waiting for confirmations can keep an order open beyond this time.{{else}} No payment window is currently awaiting payment.{{end}}</p>{{end}}{{end}}
+<p class="help" id="subcategory-help">Choose a subcategory within the selected category, or leave it unspecified.</p>
+{{template "listing-shipping-options" $}}
 {{with $.Listing}}<p class="help" id="kind-help">{{if eq $.Product.Kind "service"}}This legacy service listing has no supported fulfillment type. Choose Physical or Digital explicitly to convert it; existing orders and their history remain readable. {{end}}{{if .OpenOrders}}{{.OpenOrders}} open order(s) depend on this listing, so the fulfillment type cannot change until they finish.{{else}}No open orders; the fulfillment type can change.{{end}} Orders that have requested payment keep their recorded amount; open drafts use the current price.</p>
-{{if .VendorEditor}}<label>Automatic delivery content<textarea name="delivery_content" maxlength="32000" rows="6" spellcheck="false" aria-describedby="delivery-help">{{.DeliveryContent}}</textarea>
+{{if .VendorEditor}}<label>Reusable download content<textarea name="delivery_content" maxlength="32000" rows="6" spellcheck="false" aria-describedby="delivery-help">{{.DeliveryContent}}</textarea>
 </label>
 {{template "vendor-listings:delivery-help" .AutoDelivery}}{{else}}<p class="help">{{if .HasDeliveryContent}}Automatic delivery content is set; only the vendor can view or change it.{{else}}Automatic delivery content is not set; only the vendor can add it.{{end}}</p>{{end}}{{end}}
 {{if $.ListingHeld}}<p class="help listing-held">The market holds listings for review: saving a change to the title, description, category, region, fulfillment type, price or dispatch window, or adding a photo, hides this listing from buyers until a moderator or administrator approves it. A stock change does not.</p>{{end}}
 <button class="primary" type="submit">Save changes</button>
 </form>
 </section>
+{{template "digital-inventory" $}}
 {{template "uploads:photos" $}}
 </div>
 <aside>

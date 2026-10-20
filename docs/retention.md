@@ -65,21 +65,22 @@ Legacy last-use dates are not invented from account creation dates.
 | Data | Live-system deadline |
 | --- | --- |
 | Abuse-review records, legacy and new: legacy copied content; new record and order references, capture times, text digests, exact and perceptual image fingerprints; findings, decisions and staff reviews | No automatic expiry; separate from the ordinary content/account deadlines below, including after the original content or image is removed, after account deletion and after collection stops. A digest or fingerprint can confirm a guessed text or a matching image |
-| Individual messages, ciphertext and routing metadata | 90 days after creation |
+| Individual direct messages, ciphertext and routing metadata | 90 days after creation |
 | Support-ticket bodies | 90 days after creation, or earlier when the opener/message sender is closed or erased, unless preserved |
 | Closed or Ignored support-ticket metadata | 90 days after the last update, once all bodies are gone and no related hold applies |
 | Notifications, their XMPP outbox receipts and closed outage-delivery receipts | 30 days |
 | Activity events | 180 days after creation |
 | Sessions, pending sign-ins, CAPTCHA receipts, PGP challenges and form receipts | Their existing validity deadline, followed by scheduled removal |
 | Unfunded drafts | 30 days after creation |
-| Private order text and delivered content | 30 days after verified financial closure |
+| Private order text, encrypted order correspondence, digital originals/replacements and dispute images | 30 days after verified financial closure |
+| Reserved digital unit contents and deduplication fingerprints | The associated order's private-content deadline |
 | Ordinary closed-order records | 180 days after verified financial closure |
 | Withdrawn listing content, images and reviews | 30 days after withdrawal, unless necessary for an open transaction or preserved case; abuse-review records of them (first row) are separate |
 | Accounts | 12 months without observed authenticated use, then 30 days' notice; a verified deletion request has a 30-day deadline |
 
-New per-order manual and automatic digital deliveries are stored as PGP armor encrypted to the buyer. Their
+New initial and replacement per-order manual and automatic digital deliveries are stored as PGP armor encrypted to the buyer. Their
 content deadline remains 30 days after verified financial closure; encryption does not extend retention.
-Reusable automatic-delivery templates remain server-readable, and older plaintext delivery records retain their
+Reusable automatic-delivery templates and distinct-unit inventory remain server-readable, and older plaintext delivery records retain their
 existing deadline and reader permissions. The upgrade does not rewrite or erase those historical copies.
 XMPP forwards only eligible encrypted contents after separate global permission and recipient consent; deleting
 a notification also removes its delivery receipt, but cannot recall copies retained by an XMPP provider or client.
@@ -93,8 +94,8 @@ Ticket and ticket-message deletion uses the existing journal and restore replay 
 resurrect expired records. XMPP providers and clients may retain independent copies after market cleanup.
 
 Closure removes sign-in capability, credentials and unrelated profile data. Open funded escrows or the last usable administrator defer credential erasure
-under a visible operational exception with a 30-day review. Unrelated profile data is scrubbed on schedule; a restricted account can settle existing orders
-and update sign-in or PGP security, while new obligations, unrelated messages and media uploads are blocked. Once the obligation ends, credentials are removed.
+under a visible operational exception with a 30-day review. Unrelated profile data is scrubbed on schedule; a restricted account can settle existing orders,
+add image evidence to an existing open dispute, and update sign-in or PGP security, while new obligations, unrelated direct messages and listing/avatar uploads are blocked. Once the obligation ends, credentials are removed.
 Necessary financial dependencies may retain a minimal account reference until the associated records can be safely retired.
 A preservation hold can retain its specified records.
 The jobs run bounded batches at startup and every 30 minutes, draining eligible backlogs. Failures retry after one minute.
@@ -108,9 +109,11 @@ For a user who cannot sign in, use the published staff contact and independently
 
 Administrators register and review scoped account, message, order or activity-event holds in **Control room → Retention and preservation**.
 Record the actual authority, reason, authorized readers and release condition. Prefer individual record scopes to an entire account.
-An order hold does not automatically identify encrypted messages about that order; preserve the relevant message IDs separately.
+An order hold covers the order-bound correspondence, delivery updates and dispute images. It cannot infer which earlier direct messages concerned that order; preserve those direct-message IDs separately.
+It also covers that order's reserved digital inventory. Unassigned unit contents follow listing withdrawal and preservation rules. Unit content and its fingerprint are erased together; a consumed unit remains unavailable until its record is retired. The application retains no permanent content-hash ledger after this erasure. Restored-backup deletion replay covers these records as well.
 The recorded reader restrictions govern case handling; holds do not replace existing application permissions or encrypt plaintext records.
-Privileged operators can still read retained plaintext. Keep sensitive evidence in recipient-encrypted messages.
+These holds protect lifecycle deletion, not an immutable archive. Explicit owner cleanup of undisclosed listing content follows its existing controls; preserve required evidence separately before permitting that cleanup.
+Privileged operators can still read retained plaintext. Order correspondence requires local recipient encryption. Image evidence is unencrypted and visible to both parties and authorized case staff; only upload evidence intended for those viewers. Private staff support remains a separate direct channel.
 Review within 30 days. An overdue legal hold stays protected until its duty ends.
 Release requires password confirmation; the original deletion deadlines then apply. Released identifying register entries expire after 180 days.
 

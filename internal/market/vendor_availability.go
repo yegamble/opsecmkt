@@ -46,7 +46,7 @@ func vendorAvailabilityAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, fail(http.StatusBadRequest, "Choose active, on vacation, or deactivated.")
 	}
 	var eligible, wasVacation, wasDeactivated bool
-	if err := c.Tx.QueryRowContext(c.Ctx(), `SELECT role='vendor' AND suspended_at IS NULL AND closed_at IS NULL AND retention_restricted_at IS NULL,
+	if err := c.Tx.QueryRowContext(c.Ctx(), `SELECT (role IN ('vendor','admin') OR vendor_approved) AND suspended_at IS NULL AND closed_at IS NULL AND retention_restricted_at IS NULL,
 		vendor_vacation,vendor_deactivated FROM users WHERE id=$1 FOR UPDATE`, c.User.ID).Scan(&eligible, &wasVacation, &wasDeactivated); err != nil {
 		return actionResult{}, err
 	}
@@ -73,11 +73,11 @@ func vendorAvailabilityAction(c *actionCtx) (actionResult, error) {
 // Activity is recorded only after opting in. Keep at most the current hour, with
 // at most one write per hour; opting out also erases the saved activity timestamp.
 func vendorActivityLoader(ctx context.Context, a *App, r *http.Request, d *PageData) error {
-	if r.Method != http.MethodGet || d.User == nil || d.User.Role != "vendor" {
+	if r.Method != http.MethodGet || d.User == nil || !d.User.CanSell() {
 		return nil
 	}
 	_, err := a.db.ExecContext(ctx, `UPDATE users SET vendor_last_seen=date_trunc('hour',now())
-		WHERE id=$1 AND role='vendor' AND vendor_show_last_seen
+		WHERE id=$1 AND (role IN ('vendor','admin') OR vendor_approved) AND vendor_show_last_seen
 		AND suspended_at IS NULL AND closed_at IS NULL AND retention_restricted_at IS NULL
 		AND (vendor_last_seen IS NULL OR vendor_last_seen<date_trunc('hour',now()))`, d.User.ID)
 	return err
@@ -87,7 +87,7 @@ func vendorAvailabilityLoader(ctx context.Context, a *App, r *http.Request, d *P
 	var userID string
 	switch d.Page {
 	case "account":
-		if d.User == nil || d.User.Role != "vendor" {
+		if d.User == nil || !d.User.CanSell() {
 			return nil
 		}
 		userID = d.User.ID

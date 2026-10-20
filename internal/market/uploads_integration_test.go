@@ -162,7 +162,7 @@ func TestImageSchemaColumnsAllowList(t *testing.T) {
 		cols = append(cols, c)
 	}
 	rows.Close()
-	want := []string{"created", "description", "full", "height", "id", "kind", "owner_user_id", "perceptual_hash", "product_id", "thumb", "width"}
+	want := []string{"created", "description", "full", "height", "id", "kind", "order_id", "owner_user_id", "perceptual_hash", "product_id", "thumb", "width"}
 	if !slices.Equal(cols, want) {
 		t.Fatalf("images columns %q, want %q", cols, want)
 	}

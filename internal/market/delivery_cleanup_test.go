@@ -57,6 +57,11 @@ func TestDemotedOwnerCanClearOnlyArchivedDeliveryText(t *testing.T) {
 	}
 	account := e.body("GET", "/account", session, nil, 200)
 	mustContain(t, account, `href="/delivery-cleanup"`)
+	// Keeping the owner's erasure path does not restore selling authority or
+	// permit edits, archive changes, or publication of the archived listing.
+	for _, path := range []string{"/listings/update", "/listings/archive", "/listings/restore"} {
+		e.check(e.do("POST", path, session, inventoryForm(id, nil)), 403)
+	}
 
 	bad := e.do("POST", "/delivery-cleanup", session, url.Values{"id": {id}, "password": {"wrong password"}})
 	e.check(bad, 401)

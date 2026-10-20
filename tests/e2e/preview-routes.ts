@@ -15,6 +15,7 @@ export const previewRoutes: [path: string, heading: string][] = [
   [`/order?id=${PREVIEW_DRAFT_ID}`, 'Encrypted USB Drive — 256GB'],
   [`/order?id=${PREVIEW_PAID_ID}`, 'Encrypted USB Drive — 256GB'],
   ['/messages', 'Messages.'], ['/notifications', 'Notifications.'], ['/disputes', 'Disputes.'],
+  ['/tickets', 'Support tickets.'], ['/ticket?id=sample-ticket', 'Ticket.'],
   ['/account', 'Your account.'], ['/vendor-dashboard', 'Vendor desk.'],
   ['/listing-edit?id=encrypted-drive', 'Edit listing.'],
   ['/moderator', 'Moderation desk.'], ['/admin', 'Control room.'],

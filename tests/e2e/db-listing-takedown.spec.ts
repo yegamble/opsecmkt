@@ -61,7 +61,7 @@ test('administrator takes down a listing with a reason and only an administrator
     // The vendor sees the reason on the desk card and the edit page, with no restore control, and is notified.
     await vendor.goto('/vendor-dashboard');
     const card = vendor.locator('.product-card', { hasText: title });
-    await expect(card.locator('.badge')).toHaveText('Taken down');
+  await expect(card.locator('.inventory-state .badge')).toHaveText('Taken down');
     await expect(card).toContainText(reason);
     // A-279: the staff-contact line (unset here: db-staff-contact clears it again).
     await expect(card.locator('.staff-contact')).toHaveText('Only an administrator can restore it. If you think this is wrong, ask an administrator to review it. Ask the operator of this market.');
@@ -84,7 +84,7 @@ test('administrator takes down a listing with a reason and only an administrator
     const restored = await visitor.goto(`/product?id=${productID}`);
     expect(restored?.status()).toBe(200);
     await vendor.goto('/vendor-dashboard');
-    await expect(vendor.locator('.product-card', { hasText: title }).locator('.badge')).toHaveCount(0);
+    await expect(vendor.locator('.product-card', { hasText: title }).locator('.inventory-state .badge')).toHaveCount(0);
 
     expect(sql(`SELECT count(*) FROM notifications n JOIN users u ON u.id=n.user_id WHERE u.handle='${vendorHandle}' AND n.body NOT LIKE '%http%'`)).toBe('2');
     expect(sql(`SELECT count(*) FROM audit_events a JOIN users u ON u.id=a.user_id WHERE u.handle='${adminHandle}' AND a.action LIKE '% listing ${productID.slice(0, 8)} of ${vendorHandle}%(confirmed with password)'`)).toBe('2');
