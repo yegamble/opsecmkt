@@ -18,6 +18,7 @@ async function fits(page: Page, label: string) {
 }
 
 test('administrator holds listings, a moderator approves one and only then buyers see it', async ({ browser, baseURL }) => {
+  test.setTimeout(120_000); // four sign-ups, three confirmed forms and the moderation desk
   const database = process.env.E2E_DATABASE_URL!;
   const sql = (query: string) => execFileSync('psql', [database, '-v', 'ON_ERROR_STOP=1', '-qtAc', query], { encoding: 'utf8' }).trim();
   const adminPassword = 'browser-review-admin-password-123';
