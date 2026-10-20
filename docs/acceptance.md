@@ -83,7 +83,7 @@ The strengthened v2 contract additionally requires:
 - New pending/completed captures and archived inputs contain no copied prose.
   All five kinds bind hydration to the captured digest, changed/deleted sources
   skip inference, and completed raw actor links are removed. Historical copies
-  survive an authentic pre-128 upgrade without rewritten bytes or timestamps.
+  survive an authentic pre-129 upgrade without rewritten bytes or timestamps.
 - Barrier-concurrent actor/global/slot/byte admissions remain within their
   bounds. Duplicates, rollback, leases, retries and legacy policy replay charge
   and release exactly once. Saturation keeps actual listing/dispute workflows

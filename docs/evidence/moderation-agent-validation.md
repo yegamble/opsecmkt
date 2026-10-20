@@ -200,7 +200,7 @@ Focused local verification completed before the final-source CI run:
   and malicious model-prose markers, verified actor removal/output hashes/replay,
   and checked coded private presentation. The overlay cases were then adopted
   as permanent regression tests.
-- Authentic pre-128 upgrade, original-source expiry and collection disablement
+- Authentic pre-128 upgrade (the capacity migration, since renumbered 129), original-source expiry and collection disablement
   preserved historical snapshot/input/decision bytes (3.648 s with token checks).
 - Gateway weak-hash fixtures passed pure races (1.902 s) and legacy omission,
   upgrade and image-decoding/source guards (5.740 s). These are advisory hash
