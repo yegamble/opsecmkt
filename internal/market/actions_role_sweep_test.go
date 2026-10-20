@@ -256,6 +256,27 @@ func (w *sweepWorld) sweepCases() map[string]func() sweepCase {
 			order, buyer, _ := xe.shippedXMR(xe.physical(x.vendor))
 			return sweepCase{form: url.Values{"order_id": {order}, "password": {testPassword}}, owner: buyer, counter: x.vendorSess, ownerWant: 303}
 		},
+
+		"/listings/digital-mode": func() sweepCase {
+			return sweepCase{form: url.Values{"id": {x.testEnv.product(x.vendor, "digital")}, "mode": {"inventory"}}, owner: x.vendorSess, ownerWant: 303}
+		},
+		"/listings/digital-units": func() sweepCase {
+			p := x.testEnv.product(x.vendor, "digital")
+			agExec(x.testEnv, "UPDATE products SET digital_delivery_mode='inventory',stock=0 WHERE id=$1", p)
+			return sweepCase{form: url.Values{"id": {p}, "contents": {"distinct-unit"}}, owner: x.vendorSess, ownerWant: 303}
+		},
+		"/listings/digital-units/remove": func() sweepCase {
+			p := x.testEnv.product(x.vendor, "digital")
+			agExec(x.testEnv, "UPDATE products SET digital_delivery_mode='inventory',stock=1 WHERE id=$1", p)
+			id := randomToken()
+			agExec(x.testEnv, "INSERT INTO digital_units(id,product_id,content,fingerprint) VALUES($1,$2,'distinct-unit',$3)", id, p, digest("distinct-unit"))
+			return sweepCase{form: url.Values{"id": {p}, "unit_id": {id}}, owner: x.vendorSess, ownerWant: 303}
+		},
+		"/listings/digital-units/clear": func() sweepCase {
+			p := x.testEnv.product(x.vendor, "digital")
+			agExec(x.testEnv, "UPDATE products SET digital_delivery_mode='inventory',stock=0 WHERE id=$1", p)
+			return sweepCase{form: url.Values{"id": {p}, "confirm_clear": {"yes"}}, owner: x.vendorSess, ownerWant: 303}
+		},
 		"/listings/update": func() sweepCase {
 			return sweepCase{form: inventoryForm(x.testEnv.product(x.vendor, "physical"), nil), owner: x.vendorSess, ownerWant: 303, allow: []string{"admin"}}
 		},

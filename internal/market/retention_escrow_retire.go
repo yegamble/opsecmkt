@@ -281,6 +281,7 @@ func (a *App) applyRetentionEscrowRetirement(ctx context.Context, tx *sql.Tx, r 
 		`DELETE FROM order_messages WHERE order_id=$1`,
 		`DELETE FROM order_delivery_updates WHERE order_id=$1`,
 		`DELETE FROM deliveries WHERE order_id=$1`,
+		`DELETE FROM digital_units WHERE order_id=$1`,
 		`DELETE FROM images WHERE order_id=$1`,
 		`DELETE FROM reviews WHERE order_id=$1`,
 		`DELETE FROM disputes WHERE order_id=$1`,

@@ -34,7 +34,7 @@
 </div>
 <div>
 <dt>Fulfillment</dt>
-<dd>{{.Kind}}</dd>
+<dd>{{.Kind}}{{if eq .Kind "digital"}} — {{if eq .DigitalDeliveryMode "manual"}}delivered by the vendor after payment{{else}}automatically delivered after payment confirmation{{end}}{{end}}</dd>
 </div>
 <div>
 <dt>Available stock</dt>

@@ -46,18 +46,18 @@ var goSpaces = func() string {
 
 // escrowEligibleSQL is escrowEligible's listing rule for products p ($1 = goSpaces), for listings that are not
 // archived (a taken-down listing is archived).
-var escrowEligibleSQL = `(p.kind='digital' AND btrim(p.delivery_content,$1)<>'' AND char_length(p.delivery_content)<=` + strconv.Itoa(maxDeliveryChars) + `
+var escrowEligibleSQL = `(p.kind='digital' AND (p.digital_delivery_mode='manual' OR p.digital_delivery_mode='inventory' AND EXISTS(SELECT 1 FROM digital_units du WHERE du.product_id=p.id AND du.order_id IS NULL) OR p.digital_delivery_mode='reusable' AND btrim(p.delivery_content,$1)<>'' AND char_length(p.delivery_content)<=` + strconv.Itoa(maxDeliveryChars) + `)
 	OR p.kind='physical' AND p.dispatch_days IS NOT NULL)`
 
 // escrowIneligibleReason is why a listing of kind cannot use escrow, and what its vendor can do.
 func escrowIneligibleReason(kind string) (reason, fix string) {
 	switch kind {
 	case "digital":
-		return "This digital listing has no automatic delivery content, which escrow needs.", "Edit listing to add delivery content, sent automatically once an order is paid."
+		return "This digital listing has no deliverable automatic content or available inventory.", "Edit the digital delivery method: use manual fulfillment, add distinct inventory, or configure a reusable download."
 	case "physical":
 		return "This physical listing has no dispatch window, which escrow needs.", "Edit listing to set a dispatch window."
 	}
-	return "Escrow does not take service listings.", "Offer it as a digital listing with automatic delivery or a physical listing with a dispatch window."
+	return "Escrow does not take service listings.", "Offer it as a digital listing or a physical listing with a dispatch window."
 }
 
 // listingEscrowBlock says why listing productID cannot be bought through coin's escrow ("" when it can), and what its

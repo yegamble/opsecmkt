@@ -565,22 +565,40 @@ func heldEscrowKeys(ctx context.Context, tx *sql.Tx, keys map[string][]byte) (ma
 }
 
 // escrowEligible reports whether o's listing takes escrow, its total price for o.Units() in o's currency (BTC or XMR, in satoshi or
-// piconero) and its dispatch window in days (0 = none). A digital listing takes escrow when its content is delivered
-// automatically (as autoDeliveryHook would) and it is not taken down; a physical listing, when it has a dispatch window
-// and is not taken down.
+// piconero) and its dispatch window in days (0 = none). Digital content is fulfilled
+// manually, from distinct inventory, or as a configured reusable download; taken-down listings are excluded.
+// Physical listings require a dispatch window.
 func escrowEligible(ctx context.Context, q rowQuerier, o *Order) (bool, int64, int, error) {
-	var content string
+	var content, mode string
 	var takenDown bool
 	var price int64
 	var dispatch sql.NullInt32
-	if err := q.QueryRowContext(ctx, "SELECT delivery_content,admin_archive_reason IS NOT NULL,CASE WHEN $2='XMR' THEN xmr ELSE btc END,dispatch_days FROM products WHERE id=$1",
-		o.ProductID, o.Currency).Scan(&content, &takenDown, &price, &dispatch); err != nil {
+	if err := q.QueryRowContext(ctx, "SELECT delivery_content,digital_delivery_mode,admin_archive_reason IS NOT NULL,CASE WHEN $2='XMR' THEN xmr ELSE btc END,dispatch_days FROM products WHERE id=$1", o.ProductID, o.Currency).Scan(&content, &mode, &takenDown, &price, &dispatch); err != nil {
 		return false, 0, 0, err
 	}
-	ok := !takenDown && (o.Kind == "digital" && strings.TrimSpace(content) != "" && utf8.RuneCountInString(content) <= maxDeliveryChars ||
-		o.Kind == "physical" && dispatch.Valid)
+	digital := false
+	if o.Kind == "digital" {
+		switch mode {
+		case "manual":
+			digital = true
+		case "reusable":
+			digital = strings.TrimSpace(content) != "" && utf8.RuneCountInString(content) <= maxDeliveryChars
+		case "inventory":
+			_, err := availableDigitalBatch(ctx, q, o.ProductID, o.Units())
+			if err != nil {
+				if _, ok := err.(*httpError); !ok {
+					return false, 0, 0, err
+				}
+			} else {
+				digital = true
+			}
+		}
+	}
 	total, err := checkedOrderTotal(price, o.Units())
-	return ok, total, int(dispatch.Int32), err
+	if err != nil {
+		return false, 0, 0, err
+	}
+	return !takenDown && (digital || o.Kind == "physical" && dispatch.Valid), total, int(dispatch.Int32), nil
 }
 
 // builtEscrow is a checked escrow, not yet imported: its address, the bare-key descriptor with its checksum (what is

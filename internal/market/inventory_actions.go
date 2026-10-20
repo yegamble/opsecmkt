@@ -93,6 +93,21 @@ func listingUpdateAction(c *actionCtx) (actionResult, error) {
 	if err != nil {
 		return actionResult{}, err
 	}
+	var mode string
+	if err = c.Tx.QueryRowContext(ctx, "SELECT digital_delivery_mode FROM products WHERE id=$1", l.ID).Scan(&mode); err != nil {
+		return actionResult{}, err
+	}
+	if mode == "inventory" {
+		if in.Kind != "digital" {
+			return actionResult{}, fail(409, "Clear the available digital inventory and change its delivery method before changing fulfillment type.")
+		}
+		if in.Stock != seen {
+			return actionResult{}, fail(409, "Distinct digital stock is derived from available inventory. Add or remove digital units below.")
+		}
+		if err = c.Tx.QueryRowContext(ctx, "SELECT count(*) FROM digital_units WHERE product_id=$1 AND order_id IS NULL", l.ID).Scan(&l.Stock); err != nil {
+			return actionResult{}, err
+		}
+	}
 	// was is the listing before an administrator's edit of another vendor's listing, for the vendor's notice (A-516).
 	was := listingInput{Kind: l.Kind, Stock: l.Stock}
 	if l.VendorID != c.User.ID {

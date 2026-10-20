@@ -8,7 +8,8 @@
 </h1>
 <p>No funds are collected at this step.</p>
 </div>
-</div>{{with .Product}}<div class="detail-layout">
+</div>{{with .Product}}
+{{if eq .Kind "digital"}}<p class="help">{{if eq .DigitalDeliveryMode "manual"}}The vendor delivers all purchased digital items together on the order status page after payment.{{else}}Digital items are delivered together on the order status page after payment confirmation.{{end}}</p>{{end}}<div class="detail-layout">
 <section class="panel">
 <h2>{{.Title}}</h2>
 <p>{{.Description}}</p>

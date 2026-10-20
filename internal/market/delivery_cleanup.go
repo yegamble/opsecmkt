@@ -37,13 +37,13 @@ func deliveryCleanupReceiptAuthorize(c *actionCtx) error {
 
 func deliveryCleanupAccountLoader(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
 	return a.db.QueryRowContext(ctx, `SELECT count(*) FROM products
-		WHERE vendor_id=$1 AND archived AND delivery_content<>''`, d.User.ID).Scan(&d.DeliveryCleanupCount)
+		WHERE vendor_id=$1 AND archived AND (delivery_content<>'' OR EXISTS(SELECT 1 FROM digital_units du WHERE du.product_id=products.id AND du.order_id IS NULL))`, d.User.ID).Scan(&d.DeliveryCleanupCount)
 }
 
 func deliveryCleanupLoader(ctx context.Context, a *App, r *http.Request, d *PageData) error {
 	var total int
 	if err := a.db.QueryRowContext(ctx, `SELECT count(*) FROM products
-		WHERE vendor_id=$1 AND archived AND delivery_content<>''`, d.User.ID).Scan(&total); err != nil {
+		WHERE vendor_id=$1 AND archived AND (delivery_content<>'' OR EXISTS(SELECT 1 FROM digital_units du WHERE du.product_id=products.id AND du.order_id IS NULL))`, d.User.ID).Scan(&total); err != nil {
 		return err
 	}
 	d.DeliveryCleanupCount = total
@@ -52,7 +52,7 @@ func deliveryCleanupLoader(ctx context.Context, a *App, r *http.Request, d *Page
 	d.DeliveryCleanup = make([]DeliveryCleanupListing, 0, deliveryCleanupPageSize)
 	rows, err := a.db.QueryContext(ctx, `SELECT p.id,p.title,EXISTS (
 		SELECT 1 FROM orders o WHERE o.product_id=p.id AND o.state='awaiting_payment'
-		) FROM products p WHERE p.vendor_id=$1 AND p.archived AND p.delivery_content<>''
+		) FROM products p WHERE p.vendor_id=$1 AND p.archived AND (p.delivery_content<>'' OR EXISTS(SELECT 1 FROM digital_units du WHERE du.product_id=p.id AND du.order_id IS NULL))
 		ORDER BY p.created,p.id LIMIT $2 OFFSET $3`, d.User.ID, deliveryCleanupPageSize, p.Offset())
 	if err != nil {
 		return err
@@ -91,7 +91,7 @@ func deliveryCleanupAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, err
 		}
 		var hasContent bool
-		if err = c.Tx.QueryRowContext(c.Ctx(), "SELECT delivery_content<>'' FROM products WHERE id=$1", id).Scan(&hasContent); err != nil {
+		if err = c.Tx.QueryRowContext(c.Ctx(), "SELECT delivery_content<>'' OR EXISTS(SELECT 1 FROM digital_units WHERE product_id=$1 AND order_id IS NULL) FROM products WHERE id=$1", id).Scan(&hasContent); err != nil {
 			return actionResult{}, err
 		}
 		if !hasContent {
@@ -104,13 +104,16 @@ func deliveryCleanupAction(c *actionCtx) (actionResult, error) {
 		if awaiting {
 			return actionResult{}, fail(409, "This archived listing has an order awaiting payment. The stored delivery text is kept until that order no longer needs it.")
 		}
-		res, err := c.Tx.ExecContext(c.Ctx(), `UPDATE products SET delivery_content=''
-			WHERE id=$1 AND vendor_id=$2 AND archived AND delivery_content<>''`, id, c.User.ID)
+		res, err := c.Tx.ExecContext(c.Ctx(), `UPDATE products SET delivery_content='',stock=CASE WHEN digital_delivery_mode='inventory' THEN 0 ELSE stock END
+			WHERE id=$1 AND vendor_id=$2 AND archived AND (delivery_content<>'' OR EXISTS(SELECT 1 FROM digital_units du WHERE du.product_id=products.id AND du.order_id IS NULL))`, id, c.User.ID)
 		if err != nil {
 			return actionResult{}, err
 		}
 		if n, _ := res.RowsAffected(); n != 1 {
 			return actionResult{}, fail(409, "This listing's delivery text changed. Reload and try again.")
+		}
+		if _, err = c.Tx.ExecContext(c.Ctx(), "DELETE FROM digital_units WHERE product_id=$1 AND order_id IS NULL", id); err != nil {
+			return actionResult{}, err
 		}
 		short := id[:min(len(id), 8)]
 		if _, err = c.Tx.ExecContext(c.Ctx(), "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), c.User.ID,

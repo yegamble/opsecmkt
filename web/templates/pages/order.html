@@ -138,7 +138,7 @@
 <label>Delivery content<textarea name="content" required maxlength="32000" placeholder="Download link, licence key, or an armored PGP message to the buyer">
 </textarea>
 </label>
-<span class="help">Stored unencrypted on this server and shown to the buyer and you, and to moderators if the order is disputed. Encrypt sensitive content to the buyer's PGP key before pasting it. The delivered step is final; replacement content can be appended here later.</span>
+<span class="help">Include every purchased item in this one delivery for {{$o.Units}} unit(s). Text and links stay on this order status page. Stored unencrypted on this server and shown to the buyer and you, and to moderators if the order is disputed. Encrypt sensitive content to the buyer's PGP key before pasting it. The delivered step is final; replacement content can be appended here later.</span>
 <button class="primary" type="submit">{{.Label}}</button>
 </form>{{else if eq .To "disputed"}}<details class="order-action">
 <summary class="accent mono">{{.Label}}</summary>

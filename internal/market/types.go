@@ -48,7 +48,8 @@ type Product struct {
 	RatingAverage                                                                        float64
 	RatingCount                                                                          int
 	// P4, vendor-dashboard only: an administrator's takedown reason (A-163); never loaded for public pages.
-	TakedownReason string
+	TakedownReason      string
+	DigitalDeliveryMode string
 	// A-189, catalog, vendor and product pages only: the listing's public photos, oldest first (image_pages.go),
 	// and Thumb, the first one's thumbnail URL for its card ("" = the CSS illustration).
 	Photos []ProductPhoto
@@ -412,6 +413,7 @@ type PageData struct {
 	// the buyer's XMR draft on a listing that takes escrow, while ESCROW_XMR is on. Both nil otherwise.
 	XMREscrow         *XMREscrowOrderView
 	XMREscrowCheckout *XMREscrowCheckoutView
+	DigitalInventory  *DigitalInventoryView
 
 	// P6 Transparency
 	Canary      *CanaryView
@@ -923,6 +925,7 @@ type XMREscrowCheckoutView struct {
 	Reason, Custody string
 	Total           string // current unit price times the draft's saved quantity, in XMR
 	Physical        bool
+	ManualDigital   bool
 	Net, Prefixes   string
 	NetKnown        bool // the network was verified (App.xmrEscrowNetKnown): the copy names none before that (QA5W1-3)
 }

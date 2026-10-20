@@ -185,5 +185,5 @@ func loadListingEdit(ctx context.Context, a *App, r *http.Request, d *PageData) 
 	v.Reservation = reservations[p.ID]
 	p.PriceBTC, p.PriceXMR = amount(btc, 8), amount(xmr, 12)
 	d.Product, d.Listing, d.Title = &p, v, "Edit listing"
-	return nil
+	return loadDigitalInventory(ctx, a, r, d)
 }

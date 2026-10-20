@@ -4,10 +4,7 @@
 <strong>{{with .Inventory}}{{.Active}}{{else}}{{len .Products}}{{end}}</strong>
 <span>{{with .Inventory}}Active{{if .Archived}} · {{.Archived}} archived{{end}}{{else}}Your inventory{{end}}</span>
 </div>{{end}}
-{{define "vendor-listings:delivery-help"}}<p class="help" id="delivery-help">Optional, digital listings only. When a payment provider is configured for the order's currency, every buyer whose payment is confirmed receives exactly the text saved here. <strong>Stored unencrypted on the server</strong>: operators and anyone with database access can read it. Leave empty to deliver manually.</p>
-{{if .}}<p class="help">Payment confirmation is configured for {{.}}; orders in other currencies are not delivered automatically.</p>{{else}}<div class="notice inventory-unavailable">
-<p><strong>Automatic delivery requires a payment provider.</strong> None is configured, so saved content is not released to anyone until payments are enabled.</p>
-</div>{{end}}{{end}}
+{{define "vendor-listings:delivery-help"}}<p class="help" id="delivery-help">Reusable download mode only: each paid order receives this content once, regardless of quantity. Use distinct inventory for individual keys or links. Manual delivery is submitted once for the whole order on its status page. <strong>Stored unencrypted on the server</strong>: operators and anyone with database access can read it.</p>{{if .}}<p class="help">Payment confirmation is configured for {{.}}; automatic delivery waits for confirmed payment.</p>{{else}}<p class="help"><strong>Automatic delivery requires a payment provider.</strong> None is configured, so content is not delivered automatically until payments are enabled.</p>{{end}}{{end}}
 {{define "vendor-listings"}}<details class="panel">
 <summary class="accent mono">+ Publish a new listing</summary>
 <form class="stack" method="post" action="/listings">
@@ -43,7 +40,9 @@
 <p class="help" id="price-floor-help">The Monero price must be at least 0.001 XMR. The network fee is deducted from each settlement; a smaller amount may lose too large a share to fees.</p>
 <p class="help" id="subcategory-help">Choose a subcategory within the selected category, or leave it unspecified.</p>
 {{template "listing-shipping-options" $}}
-<label>Automatic delivery content<textarea name="delivery_content" maxlength="32000" rows="4" spellcheck="false" aria-describedby="delivery-help"></textarea>
+<label>Digital delivery method<select name="digital_delivery_mode"><option value="manual">Manual — one delivery for the whole order</option><option value="inventory">Automatic — distinct inventory units</option><option value="reusable">Reusable download — same content per order</option></select></label>
+<p class="help">Digital listings default to manual delivery. Distinct inventory starts at zero stock; add text or links on the edit page after publishing. Physical listings ignore this setting.</p>
+<label>Reusable download content<textarea name="delivery_content" maxlength="32000" rows="4" spellcheck="false" aria-describedby="delivery-help"></textarea>
 </label>
 {{if .Inventory}}{{template "vendor-listings:delivery-help" .Inventory.AutoDelivery}}{{else}}{{template "vendor-listings:delivery-help" ""}}{{end}}
 <button class="primary" type="submit">Publish listing <span class="action-icon">↗</span></button>

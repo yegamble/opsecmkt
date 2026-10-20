@@ -68,13 +68,19 @@ func stockHook(ctx context.Context, a *App, tx *sql.Tx, o *Order, from, to strin
 			return errConflict
 		}
 		o.Title, o.Description, o.Kind, o.KindDisplay, o.ListingRecorded = title, description, kind, kind, true
+		if err := reserveDigitalUnits(ctx, tx, o); err != nil {
+			return err
+		}
 	case to == stateCancelled && (from == stateAwaitingPayment || from == statePaid):
 		// A checkout of the same listing may hold its row while it waits on the escrow node (escrowCheckoutAction).
 		if err := waitForWalletLocks(ctx, tx); err != nil {
 			return err
 		}
 		_, err := tx.ExecContext(ctx, "UPDATE products SET stock=stock+$2 WHERE id=$1", o.ProductID, o.Units())
-		return err
+		if err != nil {
+			return err
+		}
+		return releaseDigitalUnits(ctx, tx, o)
 	}
 	return nil
 }
@@ -88,14 +94,17 @@ func autoDeliveryHook(ctx context.Context, a *App, tx *sql.Tx, o *Order, from, t
 	if to != statePaid || o.Kind != "digital" {
 		return nil
 	}
-	var content string
+	var content, mode string
 	var takenDown bool
 	// FOR KEY SHARE waits for a takedown in progress (it holds the listing row FOR UPDATE) and then reads its result,
 	// without blocking stock reservations on the same listing.
-	if err := tx.QueryRowContext(ctx, "SELECT delivery_content,admin_archive_reason IS NOT NULL FROM products WHERE id=$1 FOR KEY SHARE", o.ProductID).Scan(&content, &takenDown); err != nil {
+	if err := tx.QueryRowContext(ctx, "SELECT delivery_content,digital_delivery_mode,admin_archive_reason IS NOT NULL FROM products WHERE id=$1 FOR KEY SHARE", o.ProductID).Scan(&content, &mode, &takenDown); err != nil {
 		return err
 	}
-	if strings.TrimSpace(content) == "" || utf8.RuneCountInString(content) > maxDeliveryChars {
+	if mode == "manual" {
+		return nil
+	}
+	if mode == "reusable" && (strings.TrimSpace(content) == "" || utf8.RuneCountInString(content) > maxDeliveryChars) {
 		return nil
 	}
 	if takenDown {
@@ -108,6 +117,18 @@ func autoDeliveryHook(ctx context.Context, a *App, tx *sql.Tx, o *Order, from, t
 		}
 		_, err := tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", o.ID, statePaid, note)
 		return err
+	}
+	if mode == "inventory" {
+		var err error
+		content, err = reservedDigitalBatch(ctx, tx, o)
+		if err != nil {
+			// Invalid or expired stock must not prevent recording an observed payment.
+			if _, ok := err.(*httpError); !ok {
+				return err
+			}
+			_, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", o.ID, statePaid, "Automatic digital batch unavailable; the vendor must deliver or cancel this order.")
+			return err
+		}
 	}
 	next, err := a.transition(ctx, tx, o.ID, statePaid, stateDelivered, nil, "Automatic delivery after confirmed payment")
 	if err != nil {
@@ -128,5 +149,6 @@ func insertDelivery(ctx context.Context, tx *sql.Tx, orderID, content string) er
 	if n, _ := res.RowsAffected(); n != 1 {
 		return fail(409, "Content was already delivered for this order")
 	}
-	return nil
+	_, err = tx.ExecContext(ctx, "UPDATE digital_units SET delivered_at=now() WHERE order_id=$1 AND delivered_at IS NULL", orderID)
+	return err
 }

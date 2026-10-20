@@ -452,6 +452,7 @@ func registerTransitionHook(f transitionHook) { transitionHooks = append(transit
 // transaction: a second pool connection there can wait on the pool while holding one (A-150).
 type rowQuerier interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }
 
 type factorProvider interface {

@@ -64,6 +64,17 @@ func orderDraftAction(c *actionCtx) (actionResult, error) {
 	if quantity > stock {
 		return actionResult{}, fail(400, "The requested quantity exceeds the available stock. Nothing was changed.")
 	}
+	if kind == "digital" {
+		var mode string
+		if err = tx.QueryRowContext(ctx, "SELECT digital_delivery_mode FROM products WHERE id=$1", f.Get("product_id")).Scan(&mode); err != nil {
+			return actionResult{}, err
+		}
+		if mode == "inventory" {
+			if _, err = availableDigitalBatch(ctx, tx, f.Get("product_id"), quantity); err != nil {
+				return actionResult{}, err
+			}
+		}
+	}
 	total, err := checkedOrderTotal(xmr, quantity)
 	if err != nil {
 		return actionResult{}, err
