@@ -193,3 +193,47 @@ test('sign in with the authenticator code on the sign-in page in one step', asyn
   await expect(page.locator('.account-name')).toHaveCount(0);
   await context.close();
 });
+
+// A-571: after ten failed passwords pause the handle, an account with TOTP still signs in with its password and the
+// current authenticator code typed together on /login; a wrong code gets the same refusal as a wrong password, and a
+// blank code shows why sign-in is paused. No JavaScript.
+test('a paused handle signs in with the password and authenticator code together', async ({ browser, baseURL }) => {
+  const handle = uniqueHandle('rescue');
+  const password = `${handle}-long-enough`;
+  const context = await browser.newContext({ baseURL, javaScriptEnabled: false });
+  const page = await context.newPage();
+  await page.goto('/register');
+  await page.getByLabel('Handle', { exact: true }).fill(handle);
+  await page.getByLabel('Password', { exact: true }).fill(password);
+  await page.getByRole('button', { name: 'Create account' }).click();
+  await expect(page.locator('.account-name')).toHaveText(handle);
+  const secret = await enrollTOTP(page, password);
+  await page.goto('/account');
+  await submitAndLoad(page, page.getByRole('main').getByRole('button', { name: 'Sign out', exact: true }));
+
+  const signIn = async (pass: string, code: string) => {
+    await page.goto(`/login?next=${encodeURIComponent('/orders')}`);
+    await page.getByLabel('Handle', { exact: true }).fill(handle);
+    await page.getByLabel('Password', { exact: true }).fill(pass);
+    await page.getByLabel('Authenticator code (if you use one)').fill(code);
+    await submitAndLoad(page, page.getByRole('button', { name: 'Sign in' }));
+  };
+  for (let i = 0; i < 10; i++) {
+    await signIn(`wrong-password-${i}-long`, '');
+    await expect(page.getByRole('alert')).toHaveText('Invalid handle or password');
+  }
+  await signIn(password, '');
+  await expect(page.getByRole('alert')).toContainText('Sign-in for this handle is paused for up to 10 minutes');
+  const step = currentStep();
+  const wrong = ['000000', '111111', '222222', '333333'].find(c => ![-2, -1, 0, 1, 2].some(d => totp(secret, step + d) === c))!;
+  await signIn(password, wrong);
+  await expect(page.getByRole('alert')).toHaveText('Invalid handle or password');
+  await expect(page.locator('.account-name')).toHaveCount(0);
+  // The enrollment's step is spent (replay guard); the next step's code signs in despite the pause.
+  await signIn(password, totp(secret, currentStep() + 1));
+  await expect(page).toHaveURL('/orders');
+  await expect(page.locator('.account-name')).toHaveText(handle);
+  await page.goto('/account');
+  await expect(page.locator('main')).toContainText('Signed in with password and TOTP');
+  await context.close();
+});

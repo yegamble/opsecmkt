@@ -49,6 +49,33 @@ func xmrReRequestRefusal(class string) string {
 	return ""
 }
 
+// xmrFailedStoredText is what staff are told about failed settlement id with a stored transaction (A-560), after
+// "Monero escrow settlement N " on the moderation desk's Escrow alerts and the order page's staff help, and after "…,
+// which spends it, " in a payment-review reason. last is its newest re-request as "state reason" ("" for none), off
+// that Monero escrow is off (the re-request action and its form are disabled and the watcher does not run). It never
+// says nothing was sent: relay_tx's -4 may follow a lost connection after the daemon took the transaction, and a
+// relayed settlement can fail bad-metadata. It offers the re-request only when the action would record one: not while
+// one waits (409), not after a refusal (the transaction or its coins were found in the pool or the chain), not while
+// escrow is off.
+func xmrFailedStoredText(id int64, last string, off bool) string {
+	state, reason, _ := strings.Cut(last, " ")
+	const stored = "failed with its transaction stored, which the market has not seen mined"
+	switch {
+	case state == "refused": // the refusal may say the transaction was found in the chain, so not "not seen mined" (NIT-3)
+		return "failed with its transaction stored, and its last re-request was refused (" + strings.TrimSuffix(xmrReRequestRefusal(reason), ".") +
+			"): check the escrow wallet and the chain, because that transaction, or another spending the same coins, may have been sent"
+	case state == "requested" && off:
+		return stored + ": an administrator's re-request waits for the escrow watcher, which runs only once the operator turns Monero escrow (ESCROW_XMR) back on"
+	case state == "requested":
+		return stored + ": an administrator's re-request waits for the market's next pass over the escrow wallet (or, while the market is restoring its records from a backup, the first pass once that restore is finished)"
+	case off:
+		return stored + ": Monero escrow (ESCROW_XMR) is off on this market, so it can be re-requested on the order page only once the operator turns it back on"
+	}
+	n := strconv.FormatInt(id, 10)
+	return stored + ": an administrator who is not a party can re-request it on the order page (Re-request settlement " + n +
+		"), and the market rebuilds it only if that transaction is in neither the daemon's pool nor the chain and none of its coins is spent"
+}
+
 var (
 	errReRequestNone    = fail(404, "Settlement not found")
 	errReRequestParty   = fail(403, "You are a party to this order, so you cannot re-request its settlement.")

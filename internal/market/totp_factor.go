@@ -83,23 +83,33 @@ func (a *App) checkTOTP(ctx context.Context, tx *sql.Tx, userID, code string) er
 	if err != nil {
 		return err
 	}
-	if !enabled || sealed == "" {
-		return fail(409, "TOTP is not enabled for this account")
-	}
-	secret, err := a.open("totp", sealed)
-	if err != nil {
-		return fail(500, "TOTP secret cannot be read on this server; the server key may have changed. Use a recovery code.")
-	}
-	key, err := decodeTOTPSecret(secret)
+	step, err := a.matchTOTP(sealed, enabled, last, code)
 	if err != nil {
 		return err
 	}
-	step, ok := totpMatch(key, code, time.Now(), last)
-	if !ok {
-		return errTOTPWrong
-	}
 	_, err = tx.ExecContext(ctx, "UPDATE users SET totp_last_step=$2 WHERE id=$1", userID, step)
 	return err
+}
+
+// matchTOTP returns the step at which code is valid for the sealed secret, accepting only steps after last (the
+// replay guard). It writes nothing: checkTOTP records the step, and rescueAccount only reads it (A-571).
+func (a *App) matchTOTP(sealed string, enabled bool, last int64, code string) (int64, error) {
+	if !enabled || sealed == "" {
+		return 0, fail(409, "TOTP is not enabled for this account")
+	}
+	secret, err := a.open("totp", sealed)
+	if err != nil {
+		return 0, fail(500, "TOTP secret cannot be read on this server; the server key may have changed. Use a recovery code.")
+	}
+	key, err := decodeTOTPSecret(secret)
+	if err != nil {
+		return 0, err
+	}
+	step, ok := totpMatch(key, code, time.Now(), last)
+	if !ok {
+		return 0, errTOTPWrong
+	}
+	return step, nil
 }
 
 // useRecoveryCode marks one unused recovery code as used inside tx and returns how many remain.
