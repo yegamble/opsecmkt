@@ -389,3 +389,122 @@ func TestXMREscrowSettledByHandReplay(t *testing.T) {
 		t.Fatal("the changed replay wrote an audit row")
 	}
 }
+
+// A failed settlement with a stored transaction is re-requested, not marked settled by hand: refused (409) before any
+// re-request and while one waits. Its transaction relayed after all and mined, the re-request is refused (on-chain) and
+// the settlement can never be superseded: the alert tells staff to check the wallet and the chain and then mark it
+// settled by hand, which only a non-party administrator can. Recorded, the alert, the badge, the staff help and
+// retention's escrow_alert clear, its payment-review reason says so, and it is never re-requested again. With Monero
+// escrow off the staff help names only the action that works then.
+func TestXMREscrowSettledByHandRefusedReRequest(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	modID, mod := x.user("sbhrr_mod_"+randomToken()[:6], "moderator")
+	adminID, admin := x.user("sbhrr_admin_"+randomToken()[:6], "admin")
+	order, id := x.failedRelease()
+	n := strconv.FormatInt(id, 10)
+	formAction := `action="/admin/escrow-xmr-settled-by-hand"`
+	note := "Checked the wallet and the chain: the release was mined, nothing more is owed."
+	reviewReason := func() string {
+		t.Helper()
+		d := &PageData{User: &User{ID: modID, Role: "moderator"}}
+		r := httptest.NewRequest("GET", "/", nil)
+		if err := loadPaymentReviews(r.Context(), x.A, r, d); err != nil {
+			t.Fatal(err)
+		}
+		for _, v := range d.PaymentReviews {
+			if v.OrderID == order {
+				return v.Reason
+			}
+		}
+		return ""
+	}
+
+	// No re-request yet: it is re-requested first, and no form offers otherwise.
+	if code, body := x.settledByHand(admin, id, note); code != 409 || !strings.Contains(body, "Re-request a failed settlement with a stored transaction first") {
+		t.Fatalf("no re-request yet: %d %.300s", code, body)
+	}
+	mustNotContain(t, html.UnescapeString(x.page("/order?id="+order, admin)), formAction)
+	old := x.settlement(id)
+	x.fake.edit(func(f *fakeXMREscrow) { f.relay(f.built[hexMeta(f, old.TxHash)]) })
+	x.fake.mine(1)
+	if code := x.reRequest(admin, order, id, testPassword); code != 303 {
+		t.Fatalf("re-request: %d", code)
+	}
+	if code, body := x.settledByHand(admin, id, note); code != 409 || !strings.Contains(body, "already waiting") {
+		t.Fatalf("a re-request waiting: %d %.300s", code, body)
+	}
+	mustNotContain(t, html.UnescapeString(x.page("/order?id="+order, admin)), formAction)
+	x.mustPoll()
+	if got := x.reRequests(id); len(got) != 1 || got[0] != "refused:"+xmrReRequestOnChain+":0" {
+		t.Fatalf("re-request of a mined transaction: %v", got)
+	}
+	if n := agInt(x.testEnv, "SELECT count(*) FROM xmr_settlement_hand_settled"); n != 0 || x.settledByHandAudits("") != 0 {
+		t.Fatalf("refusals wrote %d records, %d audit rows", n, x.settledByHandAudits(""))
+	}
+
+	text := "Monero escrow settlement " + n + " failed with its transaction stored, and its last re-request was refused (its stored transaction is in the chain, so it was sent after all): " +
+		"check the escrow wallet and the chain, because that transaction, or another spending the same coins, may have been sent; once checked, mark it settled by hand (Mark settlement " + n + " settled by hand)"
+	if got := deskAlertIn(html.UnescapeString(x.page("/moderator", mod)), order); !strings.Contains(got, text) {
+		t.Fatalf("desk alert:\n got %q\nwant %q", got, text)
+	}
+	if !x.alerting(order) || x.escrowAlertBadge(modID) != 1 || x.retentionReason(order) != "escrow_alert" {
+		t.Fatalf("before: alert %v, badge %d, retention %q", x.alerting(order), x.escrowAlertBadge(modID), x.retentionReason(order))
+	}
+	adminPage := html.UnescapeString(x.page("/order?id="+order, admin))
+	mustContain(t, staffHelp(adminPage), "because its escrow has an open staff alert: "+text+".", `href="#xmr-settlement-`+n+`"`,
+		"As an administrator, build a Monero escrow settlement again, re-request it or mark it settled by hand under")
+	mustContain(t, adminPage, formAction, `name="settlement_id" value="`+n+`"`, "Mark settlement "+n+" settled by hand",
+		"may have been sent: check the escrow wallet and the chain first", `action="/admin/escrow-xmr-rerequest"`)
+	mustNotContain(t, html.UnescapeString(x.page("/order?id="+order, mod)), formAction)
+	for _, sess := range []string{x.sessOf(order, roleBuyer), x.sessOf(order, roleVendor)} {
+		mustNotContain(t, withoutSiteHeader(html.UnescapeString(x.page("/order?id="+order, sess))), formAction, "settled by hand", "open staff alert")
+	}
+	if got := reviewReason(); !strings.Contains(got, "once checked, mark it settled by hand (Mark settlement "+n+" settled by hand)") {
+		t.Fatalf("payment-review reason: %q", got)
+	}
+	// With Monero escrow off the re-request is unavailable: the staff help and the closed-order line name only what
+	// works, and the form is still offered.
+	saved := x.A.escrowXMR
+	x.A.escrowXMR = nil
+	off := html.UnescapeString(x.page("/order?id="+order, admin))
+	x.A.escrowXMR = saved
+	mustContain(t, off, formAction, "This order is closed. An administrator can still mark a Monero escrow settlement settled by hand on this page.")
+	mustContain(t, staffHelp(off), "As an administrator, mark a Monero escrow settlement settled by hand under")
+	mustNotContain(t, staffHelp(off), "re-request it or", "build a Monero escrow settlement again")
+	mustNotContain(t, off, `action="/admin/escrow-xmr-rerequest"`)
+
+	if code, _ := x.settledByHand(mod, id, note); code != 403 {
+		t.Fatalf("a moderator: %d", code)
+	}
+	if code, loc := x.settledByHand(admin, id, note); code != 303 || !strings.HasPrefix(loc, "/moderator") {
+		t.Fatalf("settled by hand: %d %s", code, loc)
+	}
+	if got := agStrings(t, x.testEnv, "SELECT note||'|'||settled_by FROM xmr_settlement_hand_settled WHERE settlement_id=$1", id); !slices.Equal(got, []string{note + "|" + adminID}) || x.settledByHandAudits(adminID) != 1 {
+		t.Fatalf("the record %q, %d audit rows", got, x.settledByHandAudits(adminID))
+	}
+	if x.alerting(order) || x.escrowAlertBadge(modID) != 0 || x.retentionReason(order) == "escrow_alert" {
+		t.Fatalf("after: alert %v, badge %d, retention %q", x.alerting(order), x.escrowAlertBadge(modID), x.retentionReason(order))
+	}
+	if e := deskAlertIn(html.UnescapeString(x.page("/moderator", mod)), order); e != "" {
+		t.Fatalf("the desk still lists it: %q", e)
+	}
+	// Its deposit stays flagged, so staff still read the order: no alert help, the record, and neither form.
+	adminPage = html.UnescapeString(x.page("/order?id="+order, admin))
+	mustNotContain(t, staffHelp(adminPage), "open staff alert")
+	mustContain(t, adminPage, "Marked settled by hand", note)
+	mustNotContain(t, adminPage, formAction, `action="/admin/escrow-xmr-rerequest"`)
+	if got := reviewReason(); !strings.Contains(got, "an administrator marked it settled by hand after its re-request was refused") || strings.Contains(got, "once checked") {
+		t.Fatalf("payment-review reason after: %q", got)
+	}
+	// Never re-requested again: the action refuses it, and so does migration 125.
+	if code := x.reRequest(admin, order, id, testPassword); code != 409 {
+		t.Fatalf("re-request after settled by hand: %d", code)
+	}
+	if _, err := x.DB.Exec("INSERT INTO xmr_settlement_rerequests(settlement_id,requested_by) VALUES($1,$2)", id, adminID); err == nil || !strings.Contains(err.Error(), "settled by hand") {
+		t.Fatalf("a direct re-request row: %v", err)
+	}
+	if got := x.reRequests(id); len(got) != 1 {
+		t.Fatalf("re-requests: %v", got)
+	}
+}

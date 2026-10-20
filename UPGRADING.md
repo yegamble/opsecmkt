@@ -15,12 +15,14 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
-## Unbuilt failed Monero settlements can be cleared (A-613)
+## Stuck failed Monero settlements can be cleared (A-613)
 
-Migration 125 runs at startup and adds the table `xmr_settlement_hand_settled`; there is no new setting. It fixes the
-A-560 alerts below that could never clear: a Monero settlement that failed before any transaction was built is never
-re-requested, so its alert kept the staff badge above zero, stayed on the desk and kept the order's escrow records under
-retention's `escrow_alert` reason for good.
+Migration 125 runs at startup and adds the table `xmr_settlement_hand_settled` (and a trigger that refuses a
+re-request of a settlement recorded there); there is no new setting. It fixes the A-560 alerts below that could never
+clear: a Monero settlement that failed before any transaction was built is never re-requested, and one with a stored
+transaction whose last re-request was refused is never superseded while that transaction or its coins are in the pool
+or the chain, so their alerts kept the staff badge above zero, stayed on the desk and kept the order's escrow records
+under retention's `escrow_alert` reason for good.
 
 - **Refunds too few disappear at once.** A failed refund with `send_error = 'too-small'` is no longer an escrow alert,
   as a Bitcoin refund too few never was: its deposits are already left out, flagged under *Payment review* and returned
@@ -29,6 +31,10 @@ retention's `escrow_alert` reason for good.
   hand with the operator, then an administrator who is not a party opens the order (from *Escrow alerts*) and uses *Mark
   settlement N settled by hand* under the settlement, with a 10–500 character note and the password. That clears its
   alert; the note is staff-only and recorded once, with an audit row. It works while `ESCROW_XMR` is off.
+- **Refused re-requests too.** For a failed settlement with a stored transaction whose last re-request was refused, the
+  alert now asks you to check the escrow wallet and the chain (that transaction, or another spending the same coins, may
+  have been sent) and then mark it settled by hand the same way. A settlement marked settled by hand is never
+  re-requested again. One with a stored transaction and no refused re-request is still re-requested instead.
 - **Retention resumes.** Once an order has no open alert, retention's next financial check no longer reports
   `escrow_alert` for it: the exception resolves, or the next blocker is reported, and the order's escrow records close
   and expire on the normal schedule. Nothing is deleted at upgrade. Account erasure treats the administrator who
@@ -37,8 +43,8 @@ retention's `escrow_alert` reason for good.
 To list the failed settlements that still alert after the upgrade:
 
 ```sql
-SELECT xs.id, xs.order_id, xs.kind, xs.send_error FROM xmr_settlements xs
- WHERE xs.state = 'failed' AND xs.tx_hash IS NULL AND NOT (xs.kind = 'refund' AND xs.send_error = 'too-small')
+SELECT xs.id, xs.order_id, xs.kind, xs.send_error, xs.tx_hash IS NOT NULL AS stored FROM xmr_settlements xs
+ WHERE xs.state = 'failed' AND NOT (xs.tx_hash IS NULL AND xs.kind = 'refund' AND xs.send_error = 'too-small')
    AND NOT EXISTS (SELECT 1 FROM xmr_settlement_hand_settled h WHERE h.settlement_id = xs.id) ORDER BY xs.id;
 ```
 

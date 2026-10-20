@@ -56,14 +56,19 @@ func xmrReRequestRefusal(class string) string {
 // says nothing was sent: relay_tx's -4 may follow a lost connection after the daemon took the transaction, and a
 // relayed settlement can fail bad-metadata. It offers the re-request only when the action would record one: not while
 // one waits (409), not after a refusal (the transaction or its coins were found in the pool or the chain), not while
-// escrow is off.
+// escrow is off. After a refusal it offers marking it settled by hand once staff have checked (A-613); last is
+// "settled " once an administrator did (only a payment-review reason reads it then: the alert has cleared).
 func xmrFailedStoredText(id int64, last string, off bool) string {
 	state, reason, _ := strings.Cut(last, " ")
 	const stored = "failed with its transaction stored, which the market has not seen mined"
+	n := strconv.FormatInt(id, 10)
 	switch {
+	case state == "settled":
+		return "failed with its transaction stored, and an administrator marked it settled by hand after its re-request was refused"
 	case state == "refused": // the refusal may say the transaction was found in the chain, so not "not seen mined" (NIT-3)
 		return "failed with its transaction stored, and its last re-request was refused (" + strings.TrimSuffix(xmrReRequestRefusal(reason), ".") +
-			"): check the escrow wallet and the chain, because that transaction, or another spending the same coins, may have been sent"
+			"): check the escrow wallet and the chain, because that transaction, or another spending the same coins, may have been sent; " +
+			"once checked, mark it settled by hand (Mark settlement " + n + " settled by hand)"
 	case state == "requested" && off:
 		return stored + ": an administrator's re-request waits for the escrow watcher, which runs only once the operator turns Monero escrow (ESCROW_XMR) back on"
 	case state == "requested":
@@ -71,7 +76,6 @@ func xmrFailedStoredText(id int64, last string, off bool) string {
 	case off:
 		return stored + ": Monero escrow (ESCROW_XMR) is off on this market, so it can be re-requested on the order page only once the operator turns it back on"
 	}
-	n := strconv.FormatInt(id, 10)
 	return stored + ": an administrator who is not a party can re-request it on the order page (Re-request settlement " + n +
 		"), and the market rebuilds it only if that transaction is in neither the daemon's pool nor the chain and none of its coins is spent"
 }
@@ -81,6 +85,7 @@ var (
 	errReRequestParty   = fail(403, "You are a party to this order, so you cannot re-request its settlement.")
 	errReRequestState   = fail(409, "Only a Monero escrow settlement that failed after its transaction was built can be re-requested. Reload the page. Nothing was changed.")
 	errReRequestPending = fail(409, "A re-request of this settlement is already waiting for the market's next pass. Reload the page in a minute. Nothing was changed.")
+	errReRequestSettled = fail(409, "This settlement was marked settled by hand, so the market never sends it again. Nothing was changed.")
 	errRetryBuildState  = fail(409, "Only a Monero escrow settlement set aside because building it made the escrow wallet stop responding can be built again this way. Reload the page. Nothing was changed.")
 )
 
@@ -114,12 +119,16 @@ func xmrReRequestAction(c *actionCtx) (actionResult, error) {
 		case state != "failed" || !stored:
 			return actionResult{}, errReRequestState
 		}
-		// The settlement row is locked: of two requests one inserts, and the other finds it open.
-		var open bool
-		if err = c.Tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM xmr_settlement_rerequests WHERE settlement_id=$1 AND state='requested')", id).Scan(&open); err != nil {
+		// The settlement row is locked: of two requests one inserts, and the other finds it open. Settled by hand (A-613,
+		// which takes the same lock), what it owed was paid outside the market, so it is never sent again.
+		var open, settled bool
+		if err = c.Tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM xmr_settlement_rerequests WHERE settlement_id=$1 AND state='requested'),EXISTS(SELECT 1 FROM xmr_settlement_hand_settled WHERE settlement_id=$1)", id).Scan(&open, &settled); err != nil {
 			return actionResult{}, err
 		}
-		if open {
+		switch {
+		case settled:
+			return actionResult{}, errReRequestSettled
+		case open:
 			return actionResult{}, errReRequestPending
 		}
 		if _, err = c.Tx.ExecContext(ctx, "INSERT INTO xmr_settlement_rerequests(settlement_id,requested_by) VALUES($1,$2)", id, c.User.ID); err != nil {

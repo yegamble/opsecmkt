@@ -82,18 +82,21 @@ func (a *App) xmrSettlementViews(ctx context.Context, d *PageData, v *XMREscrowO
 		}
 		// The newest re-request of a failed settlement: waiting, or refused (it may be asked again), or none yet.
 		last, reason, _ := strings.Cut(s.reRequestText, " ")
+		// One marked settled by hand is never re-requested again (A-613).
 		switch {
 		case s.state != "failed" || !s.stored:
 		case last == "requested":
 			s.ReRequestPending = true
 		case last == "refused":
-			s.ReRequestRefused, s.ReRequest = xmrReRequestRefusal(reason), admin
+			s.ReRequestRefused, s.ReRequest = xmrReRequestRefusal(reason), admin && !s.handSettled
 		default:
-			s.ReRequest = admin
+			s.ReRequest = admin && !s.handSettled
 		}
 		s.RetryBuild = admin && s.state == "requested" && s.wait == xmrBuildSetAside
-		// A-613: as xmrSettledByHandAction accepts; it needs no wallet, so it is offered while Monero escrow is off too.
-		s.SettledByHand = staffAdmin && s.state == "failed" && !s.stored && !s.handSettled && !(s.kind == "refund" && s.wait == xmrTooSmall)
+		// A-613: as xmrSettledByHandAction accepts (never built, other than a refund too few; or its stored transaction's
+		// last re-request refused); it needs no wallet, so it is offered while Monero escrow is off too.
+		s.SettledByHand = staffAdmin && s.state == "failed" && !s.handSettled &&
+			(!s.stored && !(s.kind == "refund" && s.wait == xmrTooSmall) || s.stored && last == "refused")
 		if !s.ReRequest && !s.RetryBuild && !s.SettledByHand {
 			continue
 		}

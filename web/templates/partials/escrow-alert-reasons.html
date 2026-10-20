@@ -2,7 +2,7 @@
 with "; ". Used by the moderation desk's Escrow alerts list and the order page's staff help. A failed Monero settlement says
 whether it can be re-requested (its transaction is stored; StoredText says whether a re-request waits or was refused,
 or Monero escrow is off) and, when it cannot, what to do: settle by hand, then mark it settled (a refund too few is no
-alert; xmrUnbuiltClosedSQL). */}}
+alert; xmrFailedClosedSQL). */}}
 {{define "escrow-alert-reasons"}}{{$s := ""}}
 {{- if .Stall}}a settlement queued or stuck, not seen by the network{{$s = "; "}}{{end}}
 {{- if .TooFew}}{{$s}}the release to the vendor could not be built, the coins are too few{{$s = "; "}}{{end}}

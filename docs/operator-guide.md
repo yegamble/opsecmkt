@@ -1408,7 +1408,11 @@ transaction, and a relayed settlement can fail on unreadable metadata), so the e
 the market would record one: while one waits for the watcher's next pass (or for a restore to finish) it says so; after
 a refusal it names the reason (the transaction in the pool or the chain, or a coin already spent) and asks you to check
 the escrow wallet and the chain instead; with `ESCROW_XMR` off it says the re-request is available once it is back
-on. One that failed before any
+on. A refused re-request may be asked again later, but while the transaction or its coins are in the pool or the chain
+it is refused again, so such a settlement may never be superseded (A-613): check the escrow wallet and the chain for
+what was actually sent, settle anything still owed by hand with the operator, and then an administrator who is not a
+party marks it settled by hand on the order page, as below. After that it is never re-requested again. Marking is
+refused before any re-request (re-request it first) and while one waits. One that failed before any
 transaction was built cannot be re-requested, and the market never builds that settlement again; a failed release or
 refund also stands in for the order's one release or refund, which is all the database allows (A-613):
 
@@ -1424,7 +1428,9 @@ refund also stands in for the order's one release or refund, which is all the da
   retention's `escrow_alert` reason. The note is for staff only (shown under the settlement to staff who can read the
   order); the parties get no order note or notice. It can be recorded once per settlement (a second record is refused);
   it works with `ESCROW_XMR` off, as recording a refused deposit's disposition does, and the market sends nothing for
-  the settlement either way. Moderators cannot record it.
+  the settlement either way. Moderators cannot record it. The same record, with the same rules, closes a failed
+  settlement with a stored transaction whose last re-request was refused (above); its note should say what the wallet
+  and the chain showed. With `ESCROW_XMR` off the order page offers only this action, and its staff help says so.
 
 A set-aside settlement (below) is an alert until an administrator asks for it to be built again.
 
