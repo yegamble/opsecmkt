@@ -18,8 +18,8 @@ import (
 const (
 	MaxFields        = 16
 	MaxFieldRunes    = 4096
-	MaxTotalRunes    = 32768
-	MaxRawInputBytes = 256 * 1024
+	MaxTotalRunes    = 8192
+	MaxRawInputBytes = 64 * 1024
 	MaxEvidenceIDs   = 32
 )
 

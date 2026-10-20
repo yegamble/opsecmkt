@@ -74,6 +74,29 @@ acceptance requirements, not a declaration of deployed verification:
 Model selection, resource budget, SLA, evidence retention and deployed isolation
 remain [operator decisions](moderation-agent-design.md#decide-operator-gates).
 
+The strengthened v2 contract additionally requires:
+
+- Model summaries/free evidence are refused; trusted Go presentation remains
+  marker-free for custom model implementations and historical queue rows.
+  Deterministic field-code evidence keeps its provenance without claiming model
+  involvement. Actual native GBNF checks cover both finite-reference grammars.
+- New pending/completed captures and archived inputs contain no copied prose.
+  All five kinds bind hydration to the captured digest, changed/deleted sources
+  skip inference, and completed raw actor links are removed. Historical copies
+  survive an authentic pre-128 upgrade without rewritten bytes or timestamps.
+- Barrier-concurrent actor/global/slot/byte admissions remain within their
+  bounds. Duplicates, rollback, leases, retries and legacy policy replay charge
+  and release exactly once. Saturation keeps actual listing/dispute workflows
+  functional and shows bounded private warnings without a fabricated verdict.
+- Every review signal is visible for human review, even with high confidence or
+  a model's contradictory `NO_ACTION`. Stale financial evidence still escalates.
+- Aging priority lets old ordinary work overtake new urgent work. Live ownership
+  rate checks still work after completed actor-link removal. Restarted controllers
+  preserve configured policy; explicit partial limit updates preserve other limits.
+- Uniform, monotone and low-contrast new image hashes do not create perceptual
+  matches. Exact SHA256 and useful informative/legacy hashes remain supported;
+  no orientation/crop/semantic-image guarantee is implied.
+
 ## Installation and deployment
 
 - The native CLI embeds templates and assets and supports protected key generation

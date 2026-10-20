@@ -101,8 +101,10 @@ encrypted packet.
 Follow the queue's **Download encrypted escalation for offline review** link.
 An authenticated administrator can download available ciphertext through
 `/admin/moderation/escalation?id=NN`. No packet is sent automatically to a public
-onion, email, webhook or external host. Actor/pattern coalescing replaces the
+onion, email, webhook or external host. V2 source/pattern coalescing replaces the
 latest encrypted packet for that escalation; individual proposal records remain.
+Repeated findings on one source coalesce; unrelated targets are not grouped by a
+stable actor identifier. Legacy actor/pattern groups are preserved.
 
 On the offline workstation, decrypt with the matching OpenPGP private key and
 verify the Ed25519 signature against the separately pinned worker public key.

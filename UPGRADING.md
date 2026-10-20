@@ -15,7 +15,7 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
-## Optional moderation proposals (migrations 125 through 127)
+## Optional moderation proposals (migrations 125 through 128)
 
 Application startup applies the append-only moderation tables/triggers and
 offline review receipts. Enqueueing and inference remain off, so existing
@@ -33,10 +33,32 @@ Old gateways may omit dHash, preserving exact SHA256 duplicate comparison.
 Existing images are not decoded again or backfilled. Perceptual similarity
 is advisory and cannot establish whether a listing's claims match a photo.
 
-Moderation snapshots and immutable proposals are not part of the existing
-retention sweeps. Keep the feature off if that conflicts with the deployment's
-selected evidence-retention policy; storage/access review does not substitute
-for an implemented, reviewed erasure path.
+Migration 128 changes new capture to digests and limited metadata. The worker
+reads source prose into memory only for the unchanged captured revision; stale
+or removed sources receive HOLD. New archived inputs retain coded metadata only;
+completed new jobs remove their active raw actor link. Legacy snapshots and
+immutable proposals remain byte-stable and outside existing retention sweeps.
+This is prospective minimization, not historical erasure or anonymization. Keep
+the feature off where remaining legacy retention conflicts with policy.
+
+The `moderation-v2` protocol rejects model-written summaries/evidence and retired
+v1 pins. Go derives review text from codes, including the current presentation of
+legacy decisions. Upgrade the app/migrations before the controller. Completed
+metadata-only jobs are skipped by `--replay`; its output reports the count.
+
+Capture now has atomic limits: three active jobs per actor, 256 pending globally,
+4096 lifetime allocation slots and 256 MiB reserved logical payload by default.
+Each allocation prepays 512 KiB, so the default bytes bind at 512 allocations.
+Legacy usage is inventoried once; no historical data is removed to fit a limit.
+Private queue status shows usage, limits and bounded coalesced overflow warnings.
+At saturation the original marketplace write still commits without a fabricated
+clean result. Raise an approved budget using the controller's bounded capacity
+flags; lowering below allocated usage is refused. Database/index/WAL/backup disk
+size is not bounded by the logical payload reservation.
+
+New gateway hashes omit weak/low-contrast similarity evidence. Useful legacy
+hashes and exact SHA256 matching remain; no extra wire field, decoding boundary,
+rotation/crop guarantee or image-understanding feature is introduced.
 
 The worker never changes a listing, account, order or payment. Private
 administrator queue actions and optional signed offline actions annotate review

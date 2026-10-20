@@ -28,7 +28,8 @@ conceal or identify a law-enforcement takeover, are outside this implementation.
 
 ## Tiers and authority
 
-**Tier 0: deterministic Go.** Normalize and bound inputs, detect suspicious
+**Tier 0: deterministic Go.** Normalize and bound inputs to 8192 total runes
+and 64 KiB raw text, detect suspicious
 instruction text, evaluate explicit listing and order facts, and derive risk.
 Template, duplicate, completeness, outlier, rate and state checks are signals.
 An inexpensive signal is not proof of wrongdoing. Existing payment timers and
@@ -75,7 +76,7 @@ authority. No dead-man punitive or money action is introduced.
    concerns. Reject or queue data whose identity or required facts cannot be
    established. Do not silently turn missing content into a clean verdict.
 3. Stage A receives only untrusted fields under fixed extraction instructions.
-   It returns bounded findings with references. It receives no application
+   It returns bounded findings with finite per-request references. It receives no application
    secrets and no execution authority.
 4. Go validates Stage A schema, allowlisted codes, bounds and references. Stage B
    receives only validated findings and trusted context, never the original
@@ -92,6 +93,9 @@ authority. No dead-man punitive or money action is introduced.
 6. Recheck deterministic facts against the current database before recording or
    applying a result. Stale entity revisions must not mutate a newer entity.
    Model output cannot create a signer, an invariant or a trusted context field.
+7. The v2 model protocol contains no prose channel. Summaries and injection
+   descriptions come from trusted Go code; the same presentation rule applies
+   to historical rows without rewriting their immutable contents.
 
 Prompt injection detection is heuristic. A missed injection remains possible;
 the execution boundary must be safe even when a malicious answer passes every
@@ -198,3 +202,22 @@ mutation; no external adapter egress; and strict documentation build. Full
 database/browser and deployed isolation claims require their actual services and
 rehearsals, not merely a passing unit suite. Record unavailable prerequisites and
 unimplemented mission items explicitly in the final implementation status.
+
+
+## Metadata-only capture and bounded overload
+
+New jobs retain digests and allowlisted metadata rather than copying submitted
+prose. The worker reads a live source only when its canonical digest still
+matches the queued revision. Changed or missing content is held without
+inference. New archived inputs are coded metadata; the active raw actor link is
+removed on completion. Order links and image hashes needed for current review
+remain. Target references remain linkable; this is minimization, not anonymity.
+Legacy copies and original audit timestamps are unchanged.
+
+Admission locks one capacity ledger before checking active actor/global limits
+and reserving a bounded lifecycle slot/byte allowance. Duplicates and rollbacks
+cannot leak capacity. Overload records only bounded coalesced private metadata
+and leaves the original marketplace transaction functional. A five-minute age
+preference for disputes/payment flags prioritizes urgent work while allowing
+older ordinary work to overtake it. These controls bound logical reservations
+and row allocations, not total database/WAL/backup storage or Sybil resistance.

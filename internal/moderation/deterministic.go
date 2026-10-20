@@ -3,8 +3,11 @@ package moderation
 import (
 	"encoding/hex"
 	"math/bits"
+	"regexp"
 	"slices"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 func baseProposal(in NormalizedInput) Proposal {
@@ -34,6 +37,11 @@ func EvaluateDeterministic(in NormalizedInput, cfg Config) (Proposal, bool) {
 		add("INVALID_FIELDS")
 		p.Confidence = min(p.Confidence, .5)
 	}
+	if slices.Contains(in.NormalizationWarnings, "INVISIBLE_CHARACTERS_REMOVED") {
+		// Format characters can be ordinary orthography. Record their removal
+		// without claiming that it proves injection or authorizes punishment.
+		add("ZERO_WIDTH_OBFUSCATION")
+	}
 	var all strings.Builder
 	for _, f := range in.Fields {
 		all.WriteString(strings.ToLower(f.Value))
@@ -50,9 +58,12 @@ func EvaluateDeterministic(in NormalizedInput, cfg Config) (Proposal, bool) {
 			}
 		}
 	}
-	for _, template := range []string{"guaranteed profit", "send your seed", "send your recovery phrase", "pay outside", "pay me directly", "send your private key"} {
-		if strings.Contains(text, template) {
+	for _, f := range in.Fields {
+		if matchesReviewPhrase(f.Value, scamReviewPhrases) {
 			add("SCAM_TEMPLATE")
+		}
+		if contextualOffPlatformSolicitation(f.Value) {
+			add("OFF_PLATFORM_CONTACT")
 		}
 	}
 	if strings.Count(text, "http://")+strings.Count(text, "https://") >= 4 || strings.Contains(text, "buy now buy now buy now") || repeatedWord(text) {
@@ -107,6 +118,125 @@ func EvaluateDeterministic(in NormalizedInput, cfg Config) (Proposal, bool) {
 	return p, true
 }
 
+var scamReviewPhrases = compileReviewPhrases(
+	"guaranteed profit", "send your seed", "send your recovery phrase",
+	"pay outside", "pay me directly", "send your private key",
+)
+
+var outsidePaymentPhrases = compileReviewPhrases(
+	"pay outside escrow", "pay off platform", "pay offsite", "bypass escrow",
+	"avoid escrow", "instead of escrow", "off escrow", "direct payment",
+)
+
+var contactSolicitationPhrases = compileReviewPhrases(
+	"contact me", "message me", "reach me", "contact us", "message us",
+	"buy directly", "pay me", "send payment",
+)
+
+var transactionSolicitationPhrases = compileReviewPhrases(
+	"before payment", "before paying", "to pay", "to arrange payment", "to buy",
+	"to purchase", "place an order", "avoid fees", "skip escrow", "discount",
+	"direct payment",
+)
+
+var supportContextPhrases = compileReviewPhrases(
+	"payment questions", "checkout questions", "technical support",
+	"customer support", "support documentation", "through the market checkout",
+	"through escrow", "using escrow",
+)
+
+// Destinations are inert review signals. They are never resolved, fetched or
+// interpreted as endpoint configuration. A bare address/contact is insufficient.
+var externalContactDestination = regexp.MustCompile(`(?i)(?:[a-z2-7]{56}\.onion\b|[a-z2-7]{52}\.b32\.i2p\b|(?:https?://)?(?:t\.me|telegram\.me)/[a-z0-9_]{5,32}\b|\btelegram[ \t:]+@[a-z0-9_]{5,32}\b|\b05[0-9a-f]{64}\b|simplex:/[^\s]+|https://simplex\.chat/contact[^\s]*|\b(?:xmpp|jabber)[ \t:]+[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}\b)`)
+var paymentAddressDestination = regexp.MustCompile(`(?:^|[^A-Za-z0-9])[48][1-9A-HJ-NP-Za-km-z]{94}(?:$|[^A-Za-z0-9])`)
+var reviewClauseBoundary = regexp.MustCompile(`[\n;]+|[.!?]+(?:[ \t]+|$)`)
+var immediateReviewNegation = regexp.MustCompile(`(?i)(?:^|[^\p{L}\p{N}])(?:never|do[ \t-]+not|don['’]?t|must[ \t]+not|should[ \t]+not|avoid|refuse[ \t]+to|no[ \t]+one[ \t]+should)(?:[ \t]+ever)?[ \t:]*$`)
+
+// compileReviewPhrases tolerates punctuation and a small fixed ASCII leetspeak
+// alphabet while retaining Unicode word boundaries. It does not transliterate,
+// discard non-Latin text, or rewrite the evidence. RE2 and the input cap bound
+// matching work even when punctuation is repeated.
+func compileReviewPhrases(phrases ...string) []*regexp.Regexp {
+	patterns := make([]*regexp.Regexp, 0, len(phrases))
+	for _, phrase := range phrases {
+		var pattern strings.Builder
+		pattern.WriteString(`(?i)`)
+		first := true
+		for _, r := range phrase {
+			if r == ' ' {
+				continue
+			}
+			if !first {
+				pattern.WriteString(`[\p{P}\p{S}\p{Z}\s]*`)
+			}
+			first = false
+			switch r {
+			case 'a':
+				pattern.WriteString(`[a4@]`)
+			case 'e':
+				pattern.WriteString(`[e3]`)
+			case 'i':
+				pattern.WriteString(`[i1!]`)
+			case 'l':
+				pattern.WriteString(`[l1|]`)
+			case 'o':
+				pattern.WriteString(`[o0]`)
+			case 's':
+				pattern.WriteString(`[s5$]`)
+			case 't':
+				pattern.WriteString(`[t7+]`)
+			default:
+				pattern.WriteString(regexp.QuoteMeta(string(r)))
+			}
+		}
+		patterns = append(patterns, regexp.MustCompile(pattern.String()))
+	}
+	return patterns
+}
+
+func matchesReviewPhrase(value string, patterns []*regexp.Regexp) bool {
+	for _, pattern := range patterns {
+		for _, match := range pattern.FindAllStringIndex(value, -1) {
+			// Check boundaries without consuming them: adjacent matches must both
+			// remain visible when the first one belongs to a negative instruction.
+			if match[0] > 0 {
+				previous, _ := utf8.DecodeLastRuneInString(value[:match[0]])
+				if unicode.IsLetter(previous) || unicode.IsNumber(previous) {
+					continue
+				}
+			}
+			if match[1] < len(value) {
+				next, _ := utf8.DecodeRuneInString(value[match[1]:])
+				if unicode.IsLetter(next) || unicode.IsNumber(next) {
+					continue
+				}
+			}
+			// An immediate negative instruction is common in safety guidance.
+			// Broader quotation/intent remains a human judgment, not a regex claim.
+			prefix := value[max(0, match[0]-160):match[0]]
+			if !immediateReviewNegation.MatchString(prefix) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func contextualOffPlatformSolicitation(value string) bool {
+	for _, clause := range reviewClauseBoundary.Split(value, -1) {
+		if !externalContactDestination.MatchString(clause) && !paymentAddressDestination.MatchString(clause) {
+			continue
+		}
+		if matchesReviewPhrase(clause, outsidePaymentPhrases) {
+			return true
+		}
+		if !matchesReviewPhrase(clause, supportContextPhrases) && matchesReviewPhrase(clause, contactSolicitationPhrases) && matchesReviewPhrase(clause, transactionSolicitationPhrases) {
+			return true
+		}
+	}
+	return false
+}
+
 func repeatedWord(value string) bool {
 	last, run := "", 0
 	for _, word := range strings.Fields(value) {
@@ -139,11 +269,33 @@ func ImageHashesMatch(a, b string, maxDistance int) bool {
 	if len(a) == 64 {
 		return slices.Equal(x, y)
 	}
+	if !InformativePerceptualHash(a) || !InformativePerceptualHash(b) {
+		return false
+	}
 	distance := 0
 	for i := range x {
 		distance += bits.OnesCount8(x[i] ^ y[i])
 	}
 	return distance <= maxDistance
+}
+
+// InformativePerceptualHash excludes nearly uniform gradient fingerprints from
+// similarity comparison. This inexpensive signal also handles older weak hashes
+// without decoding stored images. An informative hash still does not prove a
+// duplicate, and exact SHA256 comparison remains available independently.
+func InformativePerceptualHash(value string) bool {
+	if len(value) != 16 || value != strings.ToLower(value) {
+		return false
+	}
+	decoded, err := hex.DecodeString(value)
+	if err != nil {
+		return false
+	}
+	population := 0
+	for _, b := range decoded {
+		population += bits.OnesCount8(b)
+	}
+	return population >= 8 && population <= 56
 }
 
 // This advisory edge check catches impossible observations. It cannot replace

@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const PromptVersion = "moderation-v1"
+const PromptVersion = "moderation-v2"
 
 const (
 	ActionNoAction       = "NO_ACTION"
@@ -28,8 +28,14 @@ func Actions() []string {
 	return []string{ActionNoAction, ActionFlagReview, ActionSuggestHide, ActionSuggestBan, ActionSuggestRelease, ActionSuggestRefund, ActionDraftReply}
 }
 
+// ModelActions excludes historical actions that required generated prose.
+// Actions retains those identifiers for reading old persisted proposals.
+func ModelActions() []string {
+	return []string{ActionNoAction, ActionFlagReview, ActionSuggestHide, ActionSuggestBan, ActionSuggestRelease, ActionSuggestRefund}
+}
+
 func ReasonCodes() []string {
-	return []string{"SPAM_TEMPLATE", "SCAM_TEMPLATE", "DUPLICATE_TEXT", "DUPLICATE_IMAGE", "PRICE_OUTLIER", "INCOMPLETE_LISTING", "INVALID_FIELDS", "ORDER_STATE_VIOLATION", "TIMER_DUE", "ABUSE_RATE", "INJECTION_SUSPECTED", "UNICODE_MIXED_SCRIPT", "INPUT_TRUNCATED", "DETERMINISTIC_CONFLICT", "LOW_CONFIDENCE", "NEW_ACTOR", "MONEY_INVOLVED", "NOVEL_CASE", "MODEL_ABSENT", "MODEL_FAILURE", "INVALID_OUTPUT", "CANARY_MISMATCH", "NO_FINDING", "HUMAN_REVIEW", "POLICY_BOUNDARY", "SLA_EXPIRED"}
+	return []string{"SPAM_TEMPLATE", "SCAM_TEMPLATE", "DUPLICATE_TEXT", "DUPLICATE_IMAGE", "PRICE_OUTLIER", "INCOMPLETE_LISTING", "INVALID_FIELDS", "ORDER_STATE_VIOLATION", "TIMER_DUE", "ABUSE_RATE", "INJECTION_SUSPECTED", "UNICODE_MIXED_SCRIPT", "ZERO_WIDTH_OBFUSCATION", "OFF_PLATFORM_CONTACT", "INPUT_TRUNCATED", "DETERMINISTIC_CONFLICT", "LOW_CONFIDENCE", "NEW_ACTOR", "MONEY_INVOLVED", "NOVEL_CASE", "MODEL_ABSENT", "MODEL_FAILURE", "INVALID_OUTPUT", "CANARY_MISMATCH", "NO_FINDING", "HUMAN_REVIEW", "POLICY_BOUNDARY", "SLA_EXPIRED"}
 }
 
 type Disposition string
@@ -112,8 +118,10 @@ type NormalizedInput struct {
 	NormalizationWarnings []string `json:"normalization_warnings"`
 }
 
-// Every Proposal field is required, including empty arrays. Neither this object
-// nor the model interface grants an execution or database capability.
+// Proposal is the persisted DTO, including historical display fields. Current
+// inference responses contain only closed identifiers/codes, numeric confidence,
+// a boolean and the canary; Summary and InjectionEvidence are rendered by Go.
+// Neither this object nor the model interface grants execution authority.
 type Proposal struct {
 	ItemID             string   `json:"item_id"`
 	Action             string   `json:"action"`
@@ -150,6 +158,6 @@ type Decision struct {
 // CanaryFor detects protocol mismatches; it is not a secret, authentication
 // token, or proof that a prompt injection was contained.
 func CanaryFor(inputHash string) string {
-	h := sha256.Sum256([]byte("moderation-canary-v1:" + inputHash))
+	h := sha256.Sum256([]byte("moderation-canary-v2:" + inputHash))
 	return "moderation-" + hex.EncodeToString(h[:16])
 }

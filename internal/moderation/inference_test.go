@@ -89,7 +89,9 @@ func TestLocalModelTwoStageContainment(t *testing.T) {
 			if strings.Contains(req.Prompt, "vendor-marker-9cb8") || !strings.Contains(req.Prompt, "price_atomic") {
 				t.Error("Stage B received raw marketplace data or lacked trusted context")
 			}
-			contentReply(w, protocolProposal(in))
+			var wire any
+			json.Unmarshal(proposalWireBytes(protocolProposal(in)), &wire)
+			contentReply(w, wire)
 		}
 	}))
 	p, err := model.Propose(context.Background(), in)
@@ -170,6 +172,9 @@ func TestLocalModelRejectsRemoteAndUnpinnedConfiguration(t *testing.T) {
 	cases = append(cases, changed)
 	changed = cfg
 	changed.PromptVersion = "unreviewed-v2"
+	cases = append(cases, changed)
+	changed = cfg
+	changed.PromptVersion = "moderation-v1"
 	cases = append(cases, changed)
 	changed = cfg
 	changed.ModelID = "model\nignore instructions"

@@ -37,6 +37,54 @@ type moderationJob struct {
 	Kind, TargetID, ActorID, ContentHash string
 	Snapshot                             []byte
 	QueuedAt                             time.Time
+	CaptureVersion                       int
+	Metadata                             []byte
+	ActorRef                             string
+}
+
+var errModerationStaleSource = errors.New("moderation source changed")
+
+func moderationActorReference(j moderationJob) string {
+	if j.ActorRef != "" {
+		return j.ActorRef
+	}
+	h := sha256.Sum256([]byte("moderation-actor-reference:" + strconv.FormatInt(j.ID, 10) + ":" + j.ContentHash))
+	return hex.EncodeToString(h[:])
+}
+
+func moderationMinimalInput(j moderationJob) moderation.Input {
+	var meta struct {
+		ActorCreated time.Time `json:"actor_created"`
+		OrderState   string    `json:"order_state"`
+	}
+	_ = json.Unmarshal(j.Metadata, &meta)
+	return moderation.Input{ItemID: j.Kind + ":" + j.TargetID, Kind: j.Kind, Actor: moderation.Actor{ID: moderationActorReference(j), AgeDays: max(0, int(j.QueuedAt.Sub(meta.ActorCreated)/(24*time.Hour)))}, Fields: []moderation.Field{}, Context: moderation.DeterministicContext{Complete: false, Reversible: true, MoneyInvolved: j.Kind == "dispute" || j.Kind == "payment_flag", OrderState: meta.OrderState, EvidenceIDs: []string{j.Kind + ":" + j.TargetID, "content:" + j.ContentHash}, BlastRadius: 1}}
+}
+
+func moderationStoredMetadata(j moderationJob, in moderation.Input) any {
+	type fieldDigest struct {
+		Source string `json:"source"`
+		Name   string `json:"name"`
+		Digest string `json:"sha256"`
+	}
+	fields := make([]fieldDigest, 0, len(in.Fields))
+	for _, f := range in.Fields {
+		h := sha256.Sum256([]byte(f.Value))
+		fields = append(fields, fieldDigest{f.Source, f.Name, hex.EncodeToString(h[:])})
+	}
+	return struct {
+		Version string        `json:"metadata_version"`
+		ItemID  string        `json:"item_id"`
+		Kind    string        `json:"kind"`
+		Digest  string        `json:"source_digest"`
+		Context any           `json:"context"`
+		Fields  []fieldDigest `json:"field_digests"`
+	}{"2", in.ItemID, in.Kind, j.ContentHash, struct {
+		OrderState  string   `json:"order_state"`
+		EvidenceIDs []string `json:"evidence_ids"`
+		Complete    bool     `json:"complete"`
+		Money       bool     `json:"money_involved"`
+	}{in.Context.OrderState, in.Context.EvidenceIDs, in.Context.Complete, in.Context.MoneyInvolved}, fields}
 }
 
 // SetModerationEnabled controls future transactional enqueueing. Stopping the
@@ -130,11 +178,7 @@ func (w *ModerationWorker) Pass(ctx context.Context, limit int) (int, error) {
 
 func (w *ModerationWorker) claim(ctx context.Context) (moderationJob, error) {
 	var j moderationJob
-	err := w.DB.QueryRowContext(ctx, `WITH picked AS (
-	 SELECT id FROM moderation_jobs WHERE completed_at IS NULL AND (lease_until IS NULL OR lease_until<now())
-	 ORDER BY queued_at,id FOR UPDATE SKIP LOCKED LIMIT 1
-	) UPDATE moderation_jobs j SET lease_until=now()+$1::bigint*interval '1 millisecond',claimed_by=$2,attempts=attempts+1
-	 FROM picked WHERE j.id=picked.id RETURNING j.id,j.kind,j.target_id,j.actor_id,j.content_hash,j.snapshot,j.queued_at`, w.Lease.Milliseconds(), w.WorkerID).Scan(&j.ID, &j.Kind, &j.TargetID, &j.ActorID, &j.ContentHash, &j.Snapshot, &j.QueuedAt)
+	err := w.DB.QueryRowContext(ctx, `SELECT id,kind,target_id,actor_id,content_hash,snapshot,queued_at,capture_version,metadata,actor_ref FROM moderation_claim($1,$2,$3)`, w.WorkerID, w.Lease.Milliseconds(), moderationPolicyHash(w.Engine.Config)).Scan(&j.ID, &j.Kind, &j.TargetID, &j.ActorID, &j.ContentHash, &j.Snapshot, &j.QueuedAt, &j.CaptureVersion, &j.Metadata, &j.ActorRef)
 	return j, err
 }
 
@@ -149,11 +193,15 @@ func (w *ModerationWorker) process(ctx context.Context, j moderationJob) error {
 		return err
 	}
 	in, err := w.input(ctx, j)
-	if err != nil {
+	stale := errors.Is(err, errModerationStaleSource)
+	if err != nil && !stale {
 		return errors.New("moderation context unavailable")
 	}
 	callCtx, cancel := context.WithTimeout(ctx, w.Lease/2)
 	engine := w.Engine
+	if stale {
+		engine.Model = nil
+	}
 	observed := &moderationObservedModel{model: engine.Model}
 	if engine.Model != nil {
 		engine.Model = observed
@@ -162,6 +210,23 @@ func (w *ModerationWorker) process(ctx context.Context, j moderationJob) error {
 	cancel()
 	if err != nil {
 		return errors.New("moderation evaluation unavailable")
+	}
+	if stale {
+		if decision.Disposition != moderation.EscalateAdmin {
+			decision.Disposition = moderation.Hold
+		}
+		decision.DefaultAction = moderation.Hold
+		decision.FailureClass = "stale_snapshot"
+		decision.ReasonCodes = []string{"DETERMINISTIC_CONFLICT", "HUMAN_REVIEW"}
+		if in.Context.MoneyInvolved {
+			decision.ReasonCodes = append(decision.ReasonCodes, "MONEY_INVOLVED")
+		}
+		decision.Proposal.ReasonCodes = decision.ReasonCodes
+		decision.Proposal.Confidence = 0
+		decision.Proposal = moderation.RenderProposalDisplay(decision.Proposal)
+		encoded, _ := json.Marshal(decision.Proposal)
+		h := sha256.Sum256(encoded)
+		decision.OutputHash = hex.EncodeToString(h[:])
 	}
 	if observed.called {
 		if decision.FailureClass == "" {
@@ -188,6 +253,17 @@ func (m *moderationObservedModel) Propose(ctx context.Context, in moderation.Nor
 }
 
 func (w *ModerationWorker) input(ctx context.Context, j moderationJob) (moderation.Input, error) {
+	snapshot := j.Snapshot
+	if j.CaptureVersion == 2 {
+		var hash string
+		err := w.DB.QueryRowContext(ctx, `SELECT digest,source FROM moderation_live_source($1,$2)`, j.Kind, j.TargetID).Scan(&hash, &snapshot)
+		if errors.Is(err, sql.ErrNoRows) || err == nil && hash != j.ContentHash {
+			return moderationMinimalInput(j), errModerationStaleSource
+		}
+		if err != nil {
+			return moderation.Input{}, err
+		}
+	}
 	var raw struct {
 		ActorCreated   time.Time `json:"actor_created"`
 		Title          string    `json:"title"`
@@ -207,14 +283,14 @@ func (w *ModerationWorker) input(ctx context.Context, j moderationJob) (moderati
 		PerceptualHash string    `json:"perceptual_hash"`
 		Disposition    string    `json:"disposition"`
 	}
-	if err := json.Unmarshal(j.Snapshot, &raw); err != nil {
+	if err := json.Unmarshal(snapshot, &raw); err != nil {
 		return moderation.Input{}, err
 	}
 	age := max(0, int(j.QueuedAt.Sub(raw.ActorCreated)/(24*time.Hour)))
 	// Bind the full-content digest even when the snapshot text is an excerpt.
 	// Two distinct oversized revisions must not share an audit identity merely
 	// because their bounded excerpts are equal.
-	in := moderation.Input{ItemID: j.Kind + ":" + j.TargetID, Kind: j.Kind, Actor: moderation.Actor{ID: j.ActorID, AgeDays: age}, Fields: []moderation.Field{}, Context: moderation.DeterministicContext{Complete: true, Reversible: true, EvidenceIDs: []string{j.Kind + ":" + j.TargetID, "content:" + j.ContentHash}, BlastRadius: 1}}
+	in := moderation.Input{ItemID: j.Kind + ":" + j.TargetID, Kind: j.Kind, Actor: moderation.Actor{ID: moderationActorReference(j), AgeDays: age}, Fields: []moderation.Field{}, Context: moderation.DeterministicContext{Complete: true, Reversible: true, EvidenceIDs: []string{j.Kind + ":" + j.TargetID, "content:" + j.ContentHash}, BlastRadius: 1}}
 	add := func(name, value string) {
 		in.Fields = append(in.Fields, moderation.Field{Source: j.Kind, Name: name, Trust: "DATA", Value: value})
 	}
@@ -255,7 +331,7 @@ func (w *ModerationWorker) input(ctx context.Context, j moderationJob) (moderati
 		if raw.PerceptualHash != "" {
 			in.Context.ImageHashes = append(in.Context.ImageHashes, raw.PerceptualHash)
 		}
-		rows, err := w.DB.QueryContext(ctx, `SELECT snapshot->>'image_hash',coalesce(snapshot->>'perceptual_hash','') FROM moderation_jobs WHERE kind='upload' AND target_id<>$1 AND snapshot->>'image_hash' IS NOT NULL ORDER BY queued_at DESC LIMIT 16`, j.TargetID)
+		rows, err := w.DB.QueryContext(ctx, `SELECT coalesce(metadata->>'image_hash',snapshot->>'image_hash'),coalesce(metadata->>'perceptual_hash',snapshot->>'perceptual_hash','') FROM moderation_jobs WHERE kind='upload' AND target_id<>$1 AND coalesce(metadata->>'image_hash',snapshot->>'image_hash') IS NOT NULL ORDER BY queued_at DESC LIMIT 16`, j.TargetID)
 		if err != nil {
 			return in, err
 		}
@@ -289,7 +365,9 @@ func (w *ModerationWorker) input(ctx context.Context, j moderationJob) (moderati
 		in.Context.MoneyInvolved = true
 	}
 	in.Context.OrderState = raw.OrderState
-	if err := w.DB.QueryRowContext(ctx, `SELECT LEAST(count(*),1000) FROM moderation_jobs WHERE actor_id=$1 AND queued_at BETWEEN $2::timestamptz-interval '1 hour' AND $2::timestamptz`, j.ActorID, j.QueuedAt).Scan(&in.Context.AbuseCount); err != nil {
+	// Inspect at most 1000 recent captures, resolving ownership from current
+	// source rows. This signal survives completion without archiving actor IDs.
+	if err := w.DB.QueryRowContext(ctx, `SELECT count(*) FROM(SELECT kind,target_id FROM moderation_jobs WHERE queued_at BETWEEN $2::timestamptz-interval '1 hour' AND $2::timestamptz ORDER BY queued_at DESC,id DESC LIMIT 1000) a WHERE moderation_live_actor(kind,target_id)=$1`, j.ActorID, j.QueuedAt).Scan(&in.Context.AbuseCount); err != nil {
 		return in, err
 	}
 	return in, nil
@@ -344,7 +422,11 @@ func (w *ModerationWorker) persist(ctx context.Context, j moderationJob, policy 
 		h := sha256.Sum256(output)
 		d.OutputHash = hex.EncodeToString(h[:])
 	}
-	inBytes, _ := json.Marshal(in)
+	d.Proposal = moderation.RenderProposalForInput(d.Proposal, in)
+	finalProposal, _ := json.Marshal(d.Proposal)
+	finalHash := sha256.Sum256(finalProposal)
+	d.OutputHash = hex.EncodeToString(finalHash[:])
+	inBytes, _ := json.Marshal(moderationStoredMetadata(j, in))
 	outBytes, _ := json.Marshal(d)
 	reasons, _ := json.Marshal(d.ReasonCodes)
 	var textHash string
@@ -356,7 +438,7 @@ func (w *ModerationWorker) persist(ctx context.Context, j moderationJob, policy 
 		expires = j.QueuedAt.Add(24 * time.Hour)
 	}
 	res, err := tx.ExecContext(ctx, `INSERT INTO moderation_suggestions(id,job_id,kind,target_id,actor_id,content_hash,policy_hash,input,decision,disposition,risk_score,confidence,reason_codes,input_hash,output_hash,prompt_version,model_id,weights_hash,expires_at,failure_class,text_hash)
-	VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) ON CONFLICT DO NOTHING`, d.ID, j.ID, j.Kind, j.TargetID, j.ActorID, j.ContentHash, policy, string(inBytes), string(outBytes), d.Disposition, d.RiskScore, d.Proposal.Confidence, string(reasons), d.InputHash, d.OutputHash, d.PromptVersion, d.ModelID, d.WeightsHash, expires, d.FailureClass, textHash)
+	VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) ON CONFLICT DO NOTHING`, d.ID, j.ID, j.Kind, j.TargetID, "", j.ContentHash, policy, string(inBytes), string(outBytes), d.Disposition, d.RiskScore, d.Proposal.Confidence, string(reasons), d.InputHash, d.OutputHash, d.PromptVersion, d.ModelID, d.WeightsHash, expires, d.FailureClass, textHash)
 	if err != nil {
 		return fmt.Errorf("moderation record unavailable: %w", err)
 	}
@@ -422,8 +504,15 @@ func (w *ModerationWorker) escalate(ctx context.Context, tx *sql.Tx, j moderatio
 	}
 	patternBytes, _ := json.Marshal(d.ReasonCodes)
 	pattern := sha256.Sum256(patternBytes)
+	actorKey := j.ActorID
+	if j.CaptureVersion == 2 {
+		// A source is already referenced by this queue. Coalescing within that
+		// source adds no stable identity across an actor's unrelated targets.
+		source := sha256.Sum256([]byte(j.Kind + ":" + j.TargetID))
+		actorKey = "source:" + hex.EncodeToString(source[:])
+	}
 	_, err := tx.ExecContext(ctx, `INSERT INTO moderation_escalations(actor_key,pattern_hash,latest_suggestion_id,encrypted_payload,signature,payload_hash,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7)
-	ON CONFLICT(actor_key,pattern_hash) DO UPDATE SET latest_suggestion_id=EXCLUDED.latest_suggestion_id,occurrences=moderation_escalations.occurrences+1,encrypted_payload=EXCLUDED.encrypted_payload,signature=EXCLUDED.signature,payload_hash=EXCLUDED.payload_hash,last_created=now(),expires_at=EXCLUDED.expires_at`, j.ActorID, hex.EncodeToString(pattern[:]), d.ID, encrypted, signature, payloadHash, expires)
+	ON CONFLICT(actor_key,pattern_hash) DO UPDATE SET latest_suggestion_id=EXCLUDED.latest_suggestion_id,occurrences=LEAST(2147483647,moderation_escalations.occurrences+1),encrypted_payload=EXCLUDED.encrypted_payload,signature=EXCLUDED.signature,payload_hash=EXCLUDED.payload_hash,last_created=now(),expires_at=EXCLUDED.expires_at`, actorKey, hex.EncodeToString(pattern[:]), d.ID, encrypted, signature, payloadHash, expires)
 	return err
 }
 

@@ -3,6 +3,8 @@ package market
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"image"
 	"image/color"
@@ -42,6 +44,61 @@ func TestPerceptualHashRecognizesResizedPhotoSignal(t *testing.T) {
 	}
 	if normalizedDifferenceHash(perceptualFixture(640, 480, false)) != normalizedDifferenceHash(perceptualFixture(640, 480, false)) {
 		t.Fatal("perceptual metadata is nondeterministic")
+	}
+}
+
+func TestPerceptualHashSkipsWeakPixelSignals(t *testing.T) {
+	cases := map[string]func(int, int) uint8{
+		"uniform dark":          func(_, _ int) uint8 { return 0 },
+		"uniform bright":        func(_, _ int) uint8 { return 255 },
+		"horizontal ramp":       func(x, _ int) uint8 { return uint8(x * 31) },
+		"vertical ramp":         func(_, y int) uint8 { return uint8(y * 35) },
+		"decreasing ramp":       func(x, _ int) uint8 { return uint8(248 - x*31) },
+		"low contrast balanced": func(x, _ int) uint8 { return uint8(100 + x%2) },
+	}
+	for name, pixel := range cases {
+		t.Run(name, func(t *testing.T) {
+			img := image.NewRGBA(image.Rect(0, 0, 9, 8))
+			for y := range 8 {
+				for x := range 9 {
+					value := pixel(x, y)
+					img.SetRGBA(x, y, color.RGBA{value, value, value, 255})
+				}
+			}
+			if hash := normalizedDifferenceHash(img); hash != "" {
+				t.Fatalf("weak pixels produced a misleading perceptual signal: %s", hash)
+			}
+		})
+	}
+}
+
+func TestPerceptualWeakImagesRetainExactDuplicateSignal(t *testing.T) {
+	flat := func(value uint8) *image.RGBA {
+		img := image.NewRGBA(image.Rect(0, 0, 80, 80))
+		for y := range 80 {
+			for x := range 80 {
+				img.SetRGBA(x, y, color.RGBA{value, value, value, 255})
+			}
+		}
+		return img
+	}
+	dark := mustProcess(t, uploadListing, fixturePNG(t, flat(0)))
+	same := mustProcess(t, uploadListing, fixturePNG(t, flat(0)))
+	bright := mustProcess(t, uploadListing, fixturePNG(t, flat(255)))
+	for _, img := range []encodedImage{dark, same, bright} {
+		if img.perceptualHash != "" || len(img.full) == 0 || img.width != 80 || img.height != 80 {
+			t.Fatal("weak-hash suppression must preserve a valid normalized upload")
+		}
+	}
+	sha := func(data []byte) string {
+		digest := sha256.Sum256(data)
+		return hex.EncodeToString(digest[:])
+	}
+	if !moderation.ImageHashesMatch(sha(dark.full), sha(same.full), 5) {
+		t.Fatal("weak pixels lost the exact normalized SHA256 duplicate signal")
+	}
+	if moderation.ImageHashesMatch(sha(dark.full), sha(bright.full), 5) {
+		t.Fatal("different weak images were reported as exact duplicates")
 	}
 }
 

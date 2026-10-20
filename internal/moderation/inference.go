@@ -121,7 +121,7 @@ type extractedFindings struct {
 }
 
 func stageAReasons() []string {
-	return []string{"SPAM_TEMPLATE", "SCAM_TEMPLATE", "DUPLICATE_TEXT", "DUPLICATE_IMAGE", "PRICE_OUTLIER", "INCOMPLETE_LISTING", "INVALID_FIELDS", "INJECTION_SUSPECTED", "UNICODE_MIXED_SCRIPT", "DETERMINISTIC_CONFLICT", "NOVEL_CASE", "NO_FINDING", "HUMAN_REVIEW"}
+	return []string{"SPAM_TEMPLATE", "SCAM_TEMPLATE", "DUPLICATE_TEXT", "DUPLICATE_IMAGE", "PRICE_OUTLIER", "INCOMPLETE_LISTING", "INVALID_FIELDS", "INJECTION_SUSPECTED", "UNICODE_MIXED_SCRIPT", "ZERO_WIDTH_OBFUSCATION", "OFF_PLATFORM_CONTACT", "DETERMINISTIC_CONFLICT", "NOVEL_CASE", "NO_FINDING", "HUMAN_REVIEW"}
 }
 
 func decodeFindings(raw []byte, in NormalizedInput, canary string) (extractedFindings, error) {
@@ -179,7 +179,7 @@ func (m *LocalModel) Propose(ctx context.Context, in NormalizedInput) (Proposal,
 		fence += "_"
 	}
 	promptA := stageAPrompt + "\nTRUSTED_PROTOCOL\n" + string(protocol) + "\n" + fence + "\n" + string(data) + "\nEND_" + fence
-	grammarA := strings.NewReplacer("{{CANARY}}", grammarLiteral(canary), "{{REASONS}}", grammarEnums(stageAReasons())).Replace(stageAGrammar)
+	grammarA := strings.NewReplacer("{{CANARY}}", grammarLiteral(canary), "{{REASONS}}", grammarEnums(stageAReasons()), "{{EVIDENCE_ARRAY}}", grammarEvidenceArray(in.Context.EvidenceIDs)).Replace(stageAGrammar)
 	raw, err := m.complete(ctx, promptA, grammarA)
 	if err != nil {
 		return Proposal{}, err
@@ -197,11 +197,11 @@ func (m *LocalModel) Propose(ctx context.Context, in NormalizedInput) (Proposal,
 		Actions     []string             `json:"actions"`
 		ReasonCodes []string             `json:"reason_codes"`
 		Findings    []codedFinding       `json:"findings"`
-	}{in.ItemID, in.Kind, in.Actor, in.Context, canary, Actions(), ReasonCodes(), findings.Findings})
+	}{in.ItemID, in.Kind, in.Actor, in.Context, canary, ModelActions(), ReasonCodes(), findings.Findings})
 	if err != nil || len(trusted) > 96<<10 {
 		return Proposal{}, ErrInvalidOutput
 	}
-	grammarB := strings.NewReplacer("{{CANARY}}", grammarLiteral(canary), "{{ITEM_ID}}", grammarLiteral(in.ItemID), "{{ACTIONS}}", grammarEnums(Actions()), "{{REASONS}}", grammarEnums(ReasonCodes())).Replace(proposalGrammar)
+	grammarB := strings.NewReplacer("{{CANARY}}", grammarLiteral(canary), "{{ITEM_ID}}", grammarLiteral(in.ItemID), "{{ACTIONS}}", grammarEnums(ModelActions()), "{{REASONS}}", grammarEnums(ReasonCodes()), "{{EVIDENCE_ARRAY}}", grammarEvidenceArray(in.Context.EvidenceIDs)).Replace(proposalGrammar)
 	raw, err = m.complete(ctx, stageBPrompt+"\nTRUSTED_PROTOCOL\n"+string(trusted), grammarB)
 	if err != nil {
 		return Proposal{}, err
@@ -217,6 +217,16 @@ func grammarEnums(values []string) string {
 		quoted[i] = grammarLiteral(value)
 	}
 	return strings.Join(quoted, " | ")
+}
+
+// Both stages may emit only this request's finite evidence identifiers. Empty
+// contexts permit only []; arrays are bounded at decoding and again in Go.
+func grammarEvidenceArray(values []string) string {
+	if len(values) == 0 {
+		return `"[" ws "]"`
+	}
+	identifiers := grammarEnums(values)
+	return `"[" ws ((` + identifiers + `) (ws "," ws (` + identifiers + `)){0,31})? ws "]"`
 }
 
 func (m *LocalModel) complete(ctx context.Context, prompt, grammar string) ([]byte, error) {

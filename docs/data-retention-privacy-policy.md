@@ -25,7 +25,12 @@ Before adoption, the preservation owner must record the instance's applicable ac
 Any required longer period belongs in a scoped exception with its authority and end condition; it does not extend every account, message or backup.
 Shorter periods and earlier erasure apply when the purpose ends sooner or applicable rights require them.
 
-**Current abuse-review exception:** copied abuse-review content does not follow the ordinary account and content expiry sweeps.
+**Current abuse-review minimization:** new capture keeps digests and limited metadata rather than submitted prose.
+The worker reads the exact current source revision into memory; new archived inputs contain coded metadata only.
+New completed jobs remove their active raw actor link, while record references remain linkable metadata.
+No historical audit record or timestamp is rewritten by this change.
+
+**Legacy abuse-review exception:** copied abuse-review content does not follow the ordinary account and content expiry sweeps.
 Captured listing text, image descriptions, dispute text and reviews, their account/record identifiers, findings and staff review records
 can remain after the original content expires or the account is erased. Disabling future collection does not erase historical copies.
 These copies currently have no automatic expiry. The instance operator must decide and implement their minimization, retention and purge

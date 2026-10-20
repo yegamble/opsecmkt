@@ -51,8 +51,23 @@ func Route(in NormalizedInput, p Proposal, cfg Config) (Disposition, int, []stri
 		slices.Sort(reasons)
 		return QueueHuman, score, reasons
 	}
+	// FLAG_REVIEW is a request for human attention, including a high-confidence
+	// deterministic signal. Automatic history is reserved for a benign NO_ACTION.
+	if p.Action == ActionFlagReview {
+		return QueueHuman, score, reasons
+	}
 	if p.Confidence < cfg.ConfidenceFloor || math.IsNaN(p.Confidence) || math.IsInf(p.Confidence, 0) || in.Context.Novel || score >= 30 || slices.Contains(reasons, "INPUT_TRUNCATED") || slices.Contains(reasons, "DETERMINISTIC_CONFLICT") || slices.Contains(reasons, "ORDER_STATE_VIOLATION") || slices.Contains(reasons, "INVALID_FIELDS") || slices.Contains(reasons, "MODEL_ABSENT") || slices.Contains(reasons, "MODEL_FAILURE") || slices.Contains(reasons, "INVALID_OUTPUT") {
 		return QueueHuman, score, reasons
+	}
+	// A model cannot conceal a finding by pairing its reason with NO_ACTION.
+	// Only an explicit clean result and age metadata belong in automatic history.
+	if !slices.Contains(reasons, "NO_FINDING") {
+		return QueueHuman, score, reasons
+	}
+	for _, code := range reasons {
+		if code != "NO_FINDING" && code != "NEW_ACTOR" {
+			return QueueHuman, score, reasons
+		}
 	}
 	return AutoApply, score, reasons
 }

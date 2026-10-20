@@ -53,6 +53,7 @@ func configDefaults(cfg Config) (Config, error) {
 func decisionFrom(in NormalizedInput, p Proposal, cfg Config, failure string) Decision {
 	disposition, score, reasons := Route(in, p, cfg)
 	p.ReasonCodes = reasons
+	p = renderTrustedProposal(p, in)
 	encoded, _ := json.Marshal(p)
 	// Identity excludes inference output: repeated evaluation cannot create a
 	// second audit identity for the same snapshot and policy/model pins. The

@@ -10,7 +10,7 @@ Later review fixes were integrated through `cc9fd4f839d76e2e038fee3f64d0aa05a560
 Results below identify narrower checks where appropriate; they do not certify a
 later merge or a new CI run.
 
-## Native GBNF parser check
+## Historical moderation-v1 GBNF parser check
 
 The actual upstream llama.cpp grammar parser and validator were built from
 [commit 3bb63cbcbfb62056c84fe9e521b0f3d756d29c32](https://github.com/ggml-org/llama.cpp/tree/3bb63cbcbfb62056c84fe9e521b0f3d756d29c32).
@@ -21,7 +21,7 @@ dependency was downloaded or installed. GCC/G++ 14.2.0 compiled the upstream
 `tests/test-gbnf-validator.cpp`, grammar, vocabulary, Unicode and logging sources,
 with unused inference code removed by linker section collection.
 
-The repository's two grammar templates were substituted with the current
+The initial moderation-v1 grammar templates were substituted with the current
 allowlists, item `listing:7`, and the canary derived from an input hash of 64
 lowercase `a` characters. The canary was
 `moderation-0ea8f6c5a914382e930188af72d6aeb1`. Both grammars parsed successfully.
@@ -114,9 +114,10 @@ mounts, host placement and resource budgets still require their own acceptance
 rehearsal. An environment allowlist, container recipe, synthetic probe or weights
 digest alone does not prove a selected runtime is safe or correctly deployed.
 
-## Application and broader verification
+## Initial PR #99 verification
 
-Local checks below distinguish their source revision and evidence tier. The
+The following table predates moderation-v2 and remains historical initial-PR
+evidence. Local checks distinguish their source revision and evidence tier. The
 branch also incorporates main `00346cd6`; its full remote CI gate was pending when this evidence was prepared. Final
 check results are recorded on [PR #99](https://github.com/yegamble/opsecmkt/pull/99).
 Earlier local passes must not be relabeled final-source CI.
@@ -157,3 +158,56 @@ Earlier local passes must not be relabeled final-source CI.
   mutations. Review annotations and model confidence do not grant that authority.
 - Run final-source CI and deployment acceptance. No real funds were used and no
   deployment, merge or green CI result follows from this document alone.
+
+
+## Moderation-v2 hardening follow-up
+
+The subsequent rating/review was checked against source; the accepted changes
+are recorded in war-room iteration 71 and the proposal comparison. A score is
+not a test result. The new work removes the model prose channel, minimizes new
+capture to metadata, enforces atomic collection budgets and preserves real
+human-review visibility. Existing immutable history remains unchanged.
+
+Both v2 templates passed the same pinned native upstream grammar validator:
+17 cases, four accepted and thirteen rejected. Accepted inputs were coded Stage
+A, a normal closed proposal, a coded injection proposal and an empty-reference
+context. Rejected cases covered foreign Stage A/B references, nonempty references
+with empty context, legacy summary/evidence fields, wrong item/action/reason/
+confidence/canary, extra fields, truncation and a Stage A free quotation.
+V1 artifacts remain untouched. V2 artifacts are in
+`/workspace/toolchains/llama-validation/v2/` in the development workspace.
+
+| V2 artifact | SHA256 |
+| --- | --- |
+| Stage A template | `916c91b831a7e03bff40c44f45bd3ba38086dd7bb057d3c28915b98dd01bb23e` |
+| Proposal template | `a73f123e37effc915f025295c879ff71543b7fa4d6cee7adbe82b222de5d0021` |
+| Seventeen-case result JSON | `bbf2a0d6426cea16a5fba190cfee407833ccaf62c3d13ff7c3ee28800223dd14` |
+
+Focused local verification completed before the final-source CI run:
+
+- Closed protocol, custom-adapter prose removal, routing and coded provenance
+  passed package race tests; CLI retired-protocol/capacity refusals passed.
+- New admission/privacy concurrency and full moderation/source/image/registry
+  checks passed with real PostgreSQL (19.093 s); final lease/replay allocation
+  regressions passed (5.921 s).
+- Independent release review passed the full moderation race suite (34.866 s).
+  Two independent actual HTTP workflows passed (5.952 s): deterministic scams
+  appear in private review; saturated capture leaves listing creation and a valid
+  funded simulated-wallet dispute, order transition and staff notice working.
+- Independent privacy review passed tracked storage/retention/source checks
+  (9.950 s), core checks (1.172 s) and ten unchanged/changed source cases across
+  all five kinds (10.082 s). It scanned every moderation table for unique source
+  and malicious model-prose markers, verified actor removal/output hashes/replay,
+  and checked coded private presentation. The overlay cases were then adopted
+  as permanent regression tests.
+- Authentic pre-128 upgrade, original-source expiry and collection disablement
+  preserved historical snapshot/input/decision bytes (3.648 s with token checks).
+- Gateway weak-hash fixtures passed pure races (1.902 s) and legacy omission,
+  upgrade and image-decoding/source guards (5.740 s). These are advisory hash
+  tests, not semantic image or rotation/crop guarantees.
+
+The complete local Go halves, browser and Python runs were in progress when this
+evidence was prepared. PR #99 records their final outcomes and the exact final
+commit's CI run; earlier green results above do not certify a later source state.
+Real model quality, deployed confinement/private Tor, legacy retention policy,
+and actual physical database/WAL/backup storage remain separate operator gates.

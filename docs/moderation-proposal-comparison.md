@@ -31,3 +31,27 @@ API, new public status listener, third-party browser asset or autonomous target
 executor was added. Queue retention, real-model usefulness and actual deployment
 isolation are [explicit gates](moderation-agent.md#production-gates), not inferred
 from the proposal's checklists or sample tests.
+
+
+## PR #99 rating follow-up
+
+The subsequent rating/review is source-checked input, SHA256
+`873c30a879b9e3270988806c2b0768f1bf033304420a3d3824b426bd9627191b`.
+The work addresses verifiable failure conditions rather than assigning itself
+a higher score.
+
+| Finding | Decision |
+| --- | --- |
+| Free Stage B summary/evidence strings | Closed seven-field v2 model protocol; deterministic Go presentation, including legacy queue rows. |
+| Unbounded pending/retained collection | Atomic per-actor/global limits and prepaid lifetime/byte allocations; bounded private overflow warnings preserve source writes. |
+| Duplicate retained plaintext | New capture and archived inputs are metadata-only. Live source is read only for a matching digest; no historical purge is introduced. |
+| Zero-width stripping absent | False: `Cf` stripping already existed. Added explicit observations, obfuscation regressions and benign multilingual tests. |
+| Deterministic findings always invoke inference | False: existing deterministic decisions already bypassed the model; spy tests verify this. |
+| Fragile phrases and low-information image hashes | Bounded punctuation/leetspeak/context checks, 8192-rune/64-KiB budgets, and weak-hash guards with exact SHA256 fallback. |
+| Four plain rotations solve reflection/crop evasion | Not established. Transformation tests show possible misses, not frequency. No new invariant or semantic-image claim. |
+| Timestamp masking, mandatory hardware keys, automatic old-data rewriting | Not adopted. Preserve authentic chronology and immutable history; offline key custody remains an operator responsibility. |
+
+New collection is minimized; legacy copies and backups still require a reviewed
+retention policy. Logical capacity bounds do not promise physical disk bounds or
+protection from a running-host compromise. Real runtime quality and deployed
+Tor/isolation rehearsal remain separate evidence tiers.

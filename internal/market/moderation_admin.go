@@ -31,6 +31,16 @@ type ModerationAdminView struct {
 	Page                                                      int
 	PreviousURL, NextURL                                      string
 	Reviewed                                                  bool
+	Capacity                                                  *ModerationCapacityView
+}
+
+type ModerationCapacityView struct {
+	Pending, MaxPending, AllocatedRecords, MaxRecords, AllocatedBytes, MaxBytes, LegacyJobs, LegacyBytes, CompletedMinimal int64
+	Overflow                                                                                                               []ModerationOverflowView
+}
+type ModerationOverflowView struct {
+	Kind, Reason, Last string
+	Count              int64
 }
 
 type ModerationSuggestionView struct {
@@ -101,16 +111,36 @@ func loadModerationAdmin(ctx context.Context, a *App, r *http.Request, d *PageDa
 	if last.Valid {
 		v.LastPass = last.Time.UTC().Format(time.RFC3339)
 	}
-	if err = a.db.QueryRowContext(ctx, `SELECT
-	 (SELECT count(*) FROM moderation_suggestions s WHERE s.disposition<>'AUTO_APPLY' AND NOT EXISTS(SELECT 1 FROM moderation_reviews r WHERE r.suggestion_id=s.id)),
-	 (SELECT count(*) FROM moderation_suggestions s WHERE s.disposition='ESCALATE_ADMIN' AND NOT EXISTS(SELECT 1 FROM moderation_reviews r WHERE r.suggestion_id=s.id)),
-	 (SELECT count(*) FROM moderation_injection_events),
-	 (SELECT count(*) FROM moderation_jobs WHERE completed_at IS NULL)`).Scan(&v.Pending, &v.Escalations, &v.InjectionCount, &v.Jobs); err != nil {
+	if err = a.db.QueryRowContext(ctx, `SELECT unreviewed,admin_pending,injections,pending FROM moderation_capacity WHERE singleton`).Scan(&v.Pending, &v.Escalations, &v.InjectionCount, &v.Jobs); err != nil {
+		return err
+	}
+	v.Capacity = &ModerationCapacityView{}
+	cap := v.Capacity
+	if err = a.db.QueryRowContext(ctx, `SELECT pending,max_pending,allocated_records,max_records,allocated_bytes,max_bytes,legacy_jobs,legacy_bytes,completed_v2 FROM moderation_capacity WHERE singleton`).Scan(&cap.Pending, &cap.MaxPending, &cap.AllocatedRecords, &cap.MaxRecords, &cap.AllocatedBytes, &cap.MaxBytes, &cap.LegacyJobs, &cap.LegacyBytes, &cap.CompletedMinimal); err != nil {
+		return err
+	}
+	overflows, err := a.db.QueryContext(ctx, `SELECT kind,reason,occurrences,last_seen FROM moderation_overflow WHERE occurrences>0 ORDER BY kind,reason`)
+	if err != nil {
+		return err
+	}
+	for overflows.Next() {
+		var x ModerationOverflowView
+		var at time.Time
+		if err = overflows.Scan(&x.Kind, &x.Reason, &x.Count, &at); err != nil {
+			overflows.Close()
+			return err
+		}
+		x.Last = at.UTC().Format(time.RFC3339)
+		cap.Overflow = append(cap.Overflow, x)
+	}
+	err = overflows.Err()
+	overflows.Close()
+	if err != nil {
 		return err
 	}
 	rows, err := a.db.QueryContext(ctx, `SELECT s.id,s.kind,s.target_id,s.disposition,s.risk_score,s.confidence,
-	 s.input_hash,s.output_hash,s.created_at,s.expires_at,s.decision,coalesce(r.action,''),coalesce(j.snapshot->>'order_id',''),
-	 coalesce(e.id,0),coalesce(octet_length(e.encrypted_payload),0)
+	 s.input_hash,s.output_hash,s.created_at,s.expires_at,s.decision,coalesce(r.action,''),coalesce(j.metadata->>'order_id',j.snapshot->>'order_id',''),
+	 coalesce(e.id,0),coalesce(octet_length(e.encrypted_payload),0),s.storage_version
 	 FROM moderation_suggestions s JOIN moderation_jobs j ON j.id=s.job_id
 	 LEFT JOIN moderation_reviews r ON r.suggestion_id=s.id
 	 LEFT JOIN moderation_escalations e ON e.latest_suggestion_id=s.id
@@ -127,8 +157,9 @@ func loadModerationAdmin(ctx context.Context, a *App, r *http.Request, d *PageDa
 		var decision []byte
 		var review, orderID string
 		var escalationID, encryptedBytes int64
+		var storageVersion int
 		if err = rows.Scan(&item.ID, &item.Kind, &item.TargetID, &item.Disposition, &item.Risk, &confidence,
-			&item.InputHash, &item.OutputHash, &created, &expires, &decision, &review, &orderID, &escalationID, &encryptedBytes); err != nil {
+			&item.InputHash, &item.OutputHash, &created, &expires, &decision, &review, &orderID, &escalationID, &encryptedBytes, &storageVersion); err != nil {
 			return err
 		}
 		if len(v.Items) == 50 {
@@ -159,6 +190,11 @@ func loadModerationAdmin(ctx context.Context, a *App, r *http.Request, d *PageDa
 		if len(decision) > 131072 || json.Unmarshal(decision, &decoded) != nil {
 			item.Summary, item.CanAccept = "Stored proposal is unavailable. Review the source evidence.", false
 		} else {
+			if storageVersion == 2 {
+				decoded.Proposal = moderation.RenderStoredProposalDisplay(decoded.Proposal)
+			} else {
+				decoded.Proposal = moderation.RenderProposalDisplay(decoded.Proposal)
+			}
 			item.Summary = moderationDisplayText(decoded.Proposal.Summary, 2000)
 			var codes []string
 			for _, code := range decoded.ReasonCodes {

@@ -20,13 +20,19 @@ func protocolProposal(in NormalizedInput) Proposal {
 	return Proposal{ItemID: in.ItemID, Action: ActionNoAction, Confidence: .93, ReasonCodes: []string{"NO_FINDING"}, InjectionEvidence: []string{}, EvidenceIDs: []string{"listing:7"}, Summary: "No additional moderation finding.", Canary: CanaryFor(in.InputHash)}
 }
 
+func proposalWireBytes(p Proposal) []byte {
+	raw, _ := json.Marshal(map[string]any{
+		"item_id": p.ItemID, "action": p.Action, "confidence": p.Confidence,
+		"reason_codes": p.ReasonCodes, "injection_suspected": p.InjectionSuspected,
+		"evidence_ids": p.EvidenceIDs, "canary": p.Canary,
+	})
+	return raw
+}
+
 func TestDecodeProposalStrict(t *testing.T) {
 	in := protocolInput()
 	p := protocolProposal(in)
-	raw, err := json.Marshal(p)
-	if err != nil {
-		t.Fatal(err)
-	}
+	raw := proposalWireBytes(p)
 	if _, err := DecodeProposal(raw, in, p.Canary); err != nil {
 		t.Fatal(err)
 	}
@@ -44,11 +50,11 @@ func TestDecodeProposalStrict(t *testing.T) {
 		"action":                 strings.Replace(string(raw), `"NO_ACTION"`, `"EXECUTE_SQL"`, 1),
 		"reason":                 strings.Replace(string(raw), `"NO_FINDING"`, `"APPROVED_BY_ADMIN"`, 1),
 		"reference":              strings.Replace(string(raw), `"evidence_ids":["listing:7"]`, `"evidence_ids":["order:8"]`, 1),
-		"null array":             strings.Replace(string(raw), `"injection_evidence":[]`, `"injection_evidence":null`, 1),
+		"null array":             strings.Replace(string(raw), `"evidence_ids":["listing:7"]`, `"evidence_ids":null`, 1),
 		"wrong item":             strings.Replace(string(raw), `"item_id":"listing:7"`, `"item_id":"order:8"`, 1),
 		"inconsistent suspicion": strings.Replace(string(raw), `"injection_suspected":false`, `"injection_suspected":true`, 1),
-		"oversized":              strings.Replace(string(raw), p.Summary, strings.Repeat("x", 2049), 1),
-		"control":                strings.Replace(string(raw), p.Summary, `a\u0000b`, 1),
+		"oversized":              strings.Repeat(" ", maxModelOutput) + string(raw),
+		"control":                strings.Replace(string(raw), `listing:7`, `listing:\u00007`, 1),
 	}
 	for name, invalid := range cases {
 		t.Run(name, func(t *testing.T) {

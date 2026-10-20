@@ -39,11 +39,15 @@ func runModerationWorker(ctx context.Context, args []string, out io.Writer) erro
 	confidence := f.Float64("confidence-floor", .9, "minimum model confidence")
 	newActorDays := f.Int("new-actor-days", 14, "actor age threshold for punitive proposals")
 	abuseThreshold := f.Int("abuse-threshold", 5, "per actor one hour review threshold")
+	limits := market.DefaultModerationLimits()
+	maxPending := f.Int64("max-pending", limits.MaxPending, "maximum active moderation jobs")
+	maxRecords := f.Int64("max-records", limits.MaxRecords, "maximum lifetime moderation allocation slots")
+	maxBytes := f.Int64("max-reserved-bytes", limits.MaxBytes, "maximum reserved moderation payload bytes; excludes database/WAL overhead")
 	recipientPath := f.String("escalation-recipient", os.Getenv("MODERATION_ESCALATION_RECIPIENT"), "offline OpenPGP public recipient")
 	signingPath := f.String("signing-key", os.Getenv("MODERATION_SIGNING_KEY_FILE"), "private separate Ed25519 seed file for encrypted escalation bundles")
 	if err := f.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprintln(out, "usage: opsecmkt moderation-worker [--enabled | --disable] [--once] [--replay] [--database-url-file FILE] [--interval 1m] [--batch 20]\nOptional local inference: --model --model-socket PATH --weights FILE --weights-sha256 HEX --model-id ID --prompt-version moderation-v1\nReview policy: --confidence-floor 0.9 --new-actor-days 14 --abuse-threshold 5 --sla 24h\nEncrypted private queue export: --escalation-recipient PUBLIC_KEY_FILE --signing-key PRIVATE_SEED_FILE\nDisabled by default. No target, account or payment mutation. Inference never runs in the web process.")
+			fmt.Fprintln(out, "usage: opsecmkt moderation-worker [--enabled | --disable] [--once] [--replay] [--database-url-file FILE] [--interval 1m] [--batch 20]\nOptional local inference: --model --model-socket PATH --weights FILE --weights-sha256 HEX --model-id ID --prompt-version moderation-v2\nReview policy: --confidence-floor 0.9 --new-actor-days 14 --abuse-threshold 5 --sla 24h\nCapacity: --max-pending 256 --max-records 4096 --max-reserved-bytes 268435456; three active jobs per actor\nEncrypted private queue export: --escalation-recipient PUBLIC_KEY_FILE --signing-key PRIVATE_SEED_FILE\nReplay skips completed metadata-only jobs. Disabled by default. No target, account or payment mutation. Inference never runs in the web process.")
 			return nil
 		}
 		return errors.New("moderation-worker: invalid flags")
@@ -65,6 +69,16 @@ func runModerationWorker(ctx context.Context, args []string, out io.Writer) erro
 	if value := os.Getenv("MODERATION_ENABLED"); value != "" && value != "on" && value != "off" {
 		return errors.New("moderation-worker: MODERATION_ENABLED must be on or off")
 	}
+	if *maxPending < 1 || *maxPending > 10000 || *maxRecords < 1 || *maxRecords > 1000000 || *maxBytes < 512<<10 || *maxBytes > 1<<40 {
+		return errors.New("moderation-worker: invalid capacity limits")
+	}
+	limits = market.ModerationLimits{MaxPending: *maxPending, MaxRecords: *maxRecords, MaxBytes: *maxBytes}
+	capacityFlags := make(map[string]bool)
+	f.Visit(func(value *flag.Flag) {
+		if value.Name == "max-pending" || value.Name == "max-records" || value.Name == "max-reserved-bytes" {
+			capacityFlags[value.Name] = true
+		}
+	})
 	if !*enabled && !*disable {
 		fmt.Fprintln(out, "moderation-worker: disabled")
 		return nil
@@ -111,7 +125,7 @@ func runModerationWorker(ctx context.Context, args []string, out io.Writer) erro
 		return nil
 	}
 	var migrated bool
-	if err = db.QueryRowContext(checkCtx, `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=127)`).Scan(&migrated); err != nil || !migrated {
+	if err = db.QueryRowContext(checkCtx, `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=128)`).Scan(&migrated); err != nil || !migrated {
 		return errors.New("moderation-worker: application migrations required before enabling queue")
 	}
 	cfg := moderation.DefaultConfig()
@@ -150,13 +164,35 @@ func runModerationWorker(ctx context.Context, args []string, out io.Writer) erro
 			w.Engine.Model = local
 		}
 	}
+	if len(capacityFlags) > 0 {
+		// Restarting a controller preserves the stored policy. A partial explicit
+		// update changes only the named limits, never resets other approved values.
+		var current market.ModerationLimits
+		if err = db.QueryRowContext(ctx, `SELECT max_pending,max_records,max_bytes FROM moderation_capacity WHERE singleton`).Scan(&current.MaxPending, &current.MaxRecords, &current.MaxBytes); err != nil {
+			return errors.New("moderation-worker: capacity configuration unavailable")
+		}
+		if capacityFlags["max-pending"] {
+			current.MaxPending = limits.MaxPending
+		}
+		if capacityFlags["max-records"] {
+			current.MaxRecords = limits.MaxRecords
+		}
+		if capacityFlags["max-reserved-bytes"] {
+			current.MaxBytes = limits.MaxBytes
+		}
+		if err = market.ConfigureModerationLimits(ctx, db, current); err != nil {
+			return errors.New("moderation-worker: capacity configuration unavailable or below existing allocations")
+		}
+	}
 	if err = market.SetModerationEnabled(ctx, db, true); err != nil {
 		return errors.New("moderation-worker: queue configuration unavailable; run application migrations first")
 	}
 	if *replay {
-		if _, err = db.ExecContext(ctx, `UPDATE moderation_jobs SET completed_at=NULL WHERE completed_at IS NOT NULL`); err != nil {
+		queued, skipped, replayErr := market.ReplayModerationJobs(ctx, db)
+		if replayErr != nil {
 			return errors.New("moderation-worker: replay unavailable")
 		}
+		fmt.Fprintf(out, "moderation-worker: replay queued=%d skipped_metadata_only=%d\n", queued, skipped)
 	}
 	for {
 		processed, passErr := w.Pass(ctx, *batch)

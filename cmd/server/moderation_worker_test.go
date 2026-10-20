@@ -33,6 +33,23 @@ func TestModerationWorkerRejectsInvalidConfiguration(t *testing.T) {
 	}
 }
 
+func TestModerationWorkerRejectsRetiredPromptProtocol(t *testing.T) {
+	t.Setenv("MODERATION_ENABLED", "")
+	if err := runModerationWorker(context.Background(), []string{"--prompt-version", "moderation-v1"}, &bytes.Buffer{}); err == nil {
+		t.Fatal("retired model protocol was accepted")
+	}
+}
+
+func TestModerationWorkerRejectsUnsafeCapacityBeforeDatabaseAccess(t *testing.T) {
+	t.Setenv("MODERATION_ENABLED", "")
+	for _, args := range [][]string{{"--max-pending", "0"}, {"--max-pending", "10001"}, {"--max-records", "0"}, {"--max-records", "1000001"}, {"--max-reserved-bytes", "524287"}, {"--max-reserved-bytes", "1099511627777"}} {
+		err := runModerationWorker(context.Background(), args, &bytes.Buffer{})
+		if err == nil || !strings.Contains(err.Error(), "invalid capacity limits") {
+			t.Fatalf("unsafe capacity was not refused before database access: %v: %v", args, err)
+		}
+	}
+}
+
 func TestModerationWorkerDisableOverridesInheritedEnabledSetting(t *testing.T) {
 	t.Setenv("MODERATION_ENABLED", "on")
 	t.Setenv("DATABASE_URL", "")

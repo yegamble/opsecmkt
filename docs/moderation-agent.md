@@ -10,7 +10,7 @@ Read the [design and threat model](moderation-agent-design.md), the
 
 ## Enable the controller without a model
 
-Start the application once to apply migrations 125 through 127. The migration keeps
+Start the application once to apply migrations 125 through 128. The migration keeps
 moderation enqueueing disabled. No model, runtime download or worker is required
 for ordinary application startup.
 
@@ -25,7 +25,10 @@ env -i PATH=/usr/bin:/bin ./opsecmkt moderation-worker \
 
 Remove `--once` to keep running. The default is at most 20 jobs per pass, with a
 one-minute interval. Enablement persists in the database: subsequent supported
-content changes enqueue snapshots in their transaction. Existing content is not
+content changes enqueue hashes and bounded metadata in their transaction. New
+jobs do not copy listing, dispute, description or review prose. The worker reads
+current source text into memory only when its digest matches the captured
+revision; changed or deleted sources receive HOLD without inference. Existing content is not
 automatically backfilled. Stopping a worker preserves enqueueing and durable
 jobs; it does not disable the feature. To stop future enqueueing:
 
@@ -35,22 +38,26 @@ env -i PATH=/usr/bin:/bin ./opsecmkt moderation-worker \
 ```
 
 This preserves existing jobs, proposals and evidence. Do not delete tables or
-rerun setup to clear a queue. `--replay` explicitly revisits completed snapshots
-under the selected policy; an existing decision for the same snapshot and policy
-is reused. Model output is not guaranteed bit-for-bit reproducible: the durable
+rerun setup to clear a queue. `--replay` revisits eligible legacy snapshots;
+completed metadata-only jobs are skipped and their count is reported. They
+cannot be reinterpreted as empty content or as a newer source revision. An
+existing decision for the same snapshot and policy is reused. Model output is not guaranteed bit-for-bit reproducible: the durable
 store retains the first validated result for its stable identity.
 
 | Controller option | Default or meaning |
 | --- | --- |
 | `--enabled` | Off; `MODERATION_ENABLED=on` also enables it |
 | `--database-url-file` | Private one-line DSN; defaults to `DATABASE_URL_FILE`; `DATABASE_URL` is accepted only when no file is selected |
-| `--once`, `--replay` | Off; one bounded pass, or explicit completed-job replay |
+| `--once`, `--replay` | Off; one bounded pass, or explicit eligible legacy-job replay; completed metadata-only jobs are skipped |
+| `--max-pending` | `256`; global active jobs, allowed 1 through 10000; each actor has at most three active jobs |
+| `--max-records` | `4096`; lifetime allocation slots, allowed 1 through 1000000; extra legacy-policy evaluation also requires a slot |
+| `--max-reserved-bytes` | `268435456` (256 MiB); conservative logical payload allocation, allowed 512 KiB through 1 TiB |
 | `--interval`, `--batch` | `1m`, `20`; intervals 10 seconds through 1 hour, batches 1 through 100 |
 | `--model` | Off; inference requires explicit opt-in |
 | `--model-socket` | `MODERATION_MODEL_SOCKET`; absolute `.sock` path |
 | `--weights` | `MODERATION_WEIGHTS_PATH`; reviewed local weights file |
 | `--weights-sha256`, `--model-id` | `MODERATION_WEIGHTS_SHA256`, `MODERATION_MODEL_ID`; weights pin and bounded operator inventory label |
-| `--prompt-version`, `--model-timeout` | `moderation-v1`, `20s`; prompt must match this build, timeout 1 through 30 seconds |
+| `--prompt-version`, `--model-timeout` | `moderation-v2`, `20s`; prompt must match this build, timeout 1 through 30 seconds |
 | `--sla`, `--confidence-floor` | `24h`, `0.9`; deadline is based on enqueue time, expiry means `HOLD` |
 | `--new-actor-days`, `--abuse-threshold` | `14`, `5`; development policy values, not production measurements |
 | `--escalation-recipient`, `--signing-key` | Optional OpenPGP public recipient and separate Ed25519 worker seed; both or neither, as described in the [runbook](moderation-escalation-runbook.md#encrypted-offline-packets) |
@@ -105,7 +112,7 @@ env -i PATH=/usr/bin:/bin ./opsecmkt moderation-worker \
   --enabled --database-url-file /secure/moderation/database-url \
   --model --model-socket /run/moderation/inference.sock \
   --weights /models/model.gguf --weights-sha256 REVIEWED_LOWERCASE_SHA256 \
-  --model-id REVIEWED_MODEL_LABEL --prompt-version moderation-v1
+  --model-id REVIEWED_MODEL_LABEL --prompt-version moderation-v2
 ```
 
 Replace example paths and pins with the controller's actual read-only mounts
@@ -136,7 +143,7 @@ independent deterministic and authorization boundary remains necessary.
 
 ## Proposal protocol
 
-Each proposal has all of these JSON fields. Additional fields, missing fields,
+The `moderation-v2` model response has exactly these seven JSON fields. Additional fields, missing fields,
 unknown enums, invalid bounds and unrelated evidence references are refused.
 
 | Field | Meaning |
@@ -146,10 +153,14 @@ unknown enums, invalid bounds and unrelated evidence references are refused.
 | `confidence` | Finite value from 0 through 1; uncertainty must reduce confidence |
 | `reason_codes` | Codes from the Go allowlist |
 | `injection_suspected` | Whether hostile instructions or protocol manipulation were detected |
-| `injection_evidence` | Bounded evidence when suspicion is true |
 | `evidence_ids` | References from the supplied item only |
-| `summary` | Bounded review text, rendered as escaped text |
 | `canary` | Exact reserved response-integrity token supplied for this request |
+
+Go derives review summaries and injection-evidence descriptions from validated
+codes and references. Model-written prose is rejected. Historical records keep
+their immutable bytes, while the current queue also renders their presentation
+from codes. Reply drafting is excluded from model actions; v1 protocol pins
+are refused.
 
 The action names include suggestions for sensitive actions so those proposals
 can be identified and escalated. Their presence in the schema grants no right
@@ -167,7 +178,7 @@ against the operator's selected real runtime.
 
 | Disposition | Effect |
 | --- | --- |
-| `AUTO_APPLY` | Record a validated benign classification; no marketplace entity is changed |
+| `AUTO_APPLY` | Record only a benign `NO_ACTION`/`NO_FINDING` classification; no marketplace entity is changed |
 | `QUEUE_HUMAN` | Preserve the proposal for authorized review with a deadline |
 | `ESCALATE_ADMIN` | Mark the item for administrator attention on the existing protected surface |
 | `HOLD` | Preserve current marketplace state and evidence; take no proposed action |
@@ -209,6 +220,9 @@ summary or timeline from that limited context. The core's advisory
 order/timer observations do not replace the market's full transactional state
 machine or schedule new release/refund actions.
 
+Every `FLAG_REVIEW` reaches the human queue or the higher-priority administrator
+queue. A `NO_ACTION` label cannot hide review findings in automatic history.
+
 ## Records and recovery
 
 Audit identity includes input and output digests, policy/prompt revision, model
@@ -217,17 +231,57 @@ reuse the same decision identity instead of creating conflicting outcomes.
 Current entity revisions must be checked before a result can be recorded against
 them. A review record is not proof that its underlying allegation is true.
 
-The database and its backups contain additional moderation context. Restrict
-access and review storage growth and preservation obligations. Do not assume
-that existing retention jobs erase moderation records: these new snapshots and
-immutable proposals are not included in the existing retention sweeps. Do not
-enable the feature where that conflicts with the selected evidence-retention
-policy until a reviewed retention path exists. Per-item and batch limits do not
-bound total revisions or retained storage. High-volume production capture also
-requires an approved storage budget, monitoring threshold and non-punitive
-overflow policy, verified by a capacity rehearsal. These controls are not yet
-implemented. Model prompts, raw
-transport errors and runtime endpoints do not belong in public logs or panels.
+New capture records retain source digests and allowlisted order/image metadata,
+not source prose. New proposal inputs retain coded metadata only. Completing a
+new job atomically records its decision and removes its active raw actor link;
+per-job opaque references do not make the remaining target references anonymous.
+Unkeyed digests can confirm guesses about predictable source values.
+Source prose exists in memory during evaluation and remains governed by the
+original source's access and retention rules.
+
+Legacy snapshots and immutable proposal inputs remain historical records. This
+upgrade does not rewrite them, delete evidence, erase backups or change authentic
+audit timestamps. They can still contain plaintext and actor links after source
+expiry or account erasure. They remain outside ordinary retention sweeps. Keep
+the feature off where that conflicts with the selected policy until a reviewed
+legacy retention path exists. Restrict database and backup access.
+
+## Capacity and overload
+
+Migration 128 serializes admission against a singleton capacity ledger. Each
+actor has at most three active jobs; global pending, lifetime allocation and
+reserved logical-byte limits also apply. Each allocation prepays 512 KiB for its
+bounded lifecycle. With the default 256 MiB byte budget, bytes bind at 512
+allocations, before the 4096-slot ceiling. Initial legacy inventory is accounted
+once at migration; runtime admission does not scan the full history.
+
+Duplicates, rollbacks and same-policy cache reuse do not consume another slot.
+Completion releases active capacity once; it does not erase historical allocation
+or reclaim its reservation. Lowering limits below allocated usage is refused.
+Use the bounded controller flags to raise an approved budget, then restart the
+controller. Unspecified flags preserve the stored policy; a partial update changes
+only its named limits. A no-flag restart can drain prepaid legacy work even when
+legacy inventory exceeds the admission limits. This changes collection capacity, never retention or marketplace
+state. Application-only redeployment does not enlarge the budget.
+
+At saturation, the listing, dispute or other source transaction still commits.
+No clean classification is invented. A fixed, coalesced private overflow warning
+records the affected kind and reason without copying content. The private queue
+shows usage, configured limits and overflow even when the worker is absent.
+Disputes/payment flags receive a five-minute age preference; older ordinary jobs
+still overtake new priority work. Existing payment/state timers remain separate.
+
+These are logical payload reservations and bounded row/allocation counts, not a
+physical disk, index, WAL, MVCC or backup-size guarantee. Monitor actual database
+storage and rehearse the chosen limits and recovery procedure before production.
+Model prompts, raw transport errors and runtime endpoints do not belong in public
+logs or panels.
+
+Activity-rate signals count at most the newest 1000 captures in the preceding
+hour, resolving current target ownership without retaining completed raw actor
+links. Deleted targets stop contributing. V2 encrypted escalations coalesce by
+source and pattern; unrelated targets are not grouped by actor. Legacy actor/pattern
+rows remain unchanged.
 
 ## Review and service inventory
 

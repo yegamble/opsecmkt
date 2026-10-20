@@ -29,6 +29,7 @@ test('/canary#records lists what the server keeps, who reads it and that nothing
   }
   await expect(records).toContainText('never to be published');
   const abuseReview = records.locator('li', { has: page.locator('strong', { hasText: /^Abuse-review records\./ }) });
+  await expect(abuseReview).toContainText('New review records keep references, digests and limited metadata rather than copies of submitted text');
   await expect(abuseReview).toContainText('Routine expiry and account deletion do not erase copies retained for abuse review');
   await expect(abuseReview).toContainText('These copies currently have no automatic expiry');
   await expect(abuseReview).toContainText('after collection stops');

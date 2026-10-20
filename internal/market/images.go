@@ -12,6 +12,8 @@ import (
 	"net/http"
 
 	"golang.org/x/image/draw"
+
+	"opsecmkt/internal/moderation"
 )
 
 // A-186 (war room 2026-09-27, rulings C6 and D10): what happens to the bytes of a photo or avatar upload.
@@ -411,6 +413,19 @@ func reencode(data []byte, info imageInfo, kind uploadKind) (out encodedImage, e
 func normalizedDifferenceHash(full *image.RGBA) string {
 	small := image.NewGray(image.Rect(0, 0, 9, 8))
 	draw.ApproxBiLinear.Scale(small, small.Rect, full, full.Rect, draw.Src, nil)
+	// Low-contrast noise can produce balanced gradient bits without useful
+	// picture information. Require population variance >= 16 (standard deviation
+	// >= 4 on the 0..255 luminance scale), using exact integer arithmetic.
+	var sum, squares int64
+	for _, sample := range small.Pix {
+		value := int64(sample)
+		sum += value
+		squares += value * value
+	}
+	const samples int64 = 9 * 8
+	if samples*squares-sum*sum < 16*samples*samples {
+		return ""
+	}
 	var hash uint64
 	for y := 0; y < 8; y++ {
 		for x := 0; x < 8; x++ {
@@ -422,7 +437,13 @@ func normalizedDifferenceHash(full *image.RGBA) string {
 	}
 	var encoded [8]byte
 	binary.BigEndian.PutUint64(encoded[:], hash)
-	return hex.EncodeToString(encoded[:])
+	value := hex.EncodeToString(encoded[:])
+	if !moderation.InformativePerceptualHash(value) {
+		// A high-variance monotone ramp can still have zero gradient-bit entropy.
+		// This omits advisory metadata; it never rejects the upload or its exact hash.
+		return ""
+	}
+	return value
 }
 
 func validPerceptualHash(value string) bool {

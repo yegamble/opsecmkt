@@ -99,6 +99,7 @@ Evidence tier as in `repo-map.md`.
 | 68 | 2026-10-19 | /war-room-loop resume: implementation wave on ruled P1 items (no council sweep; enough ready items) | implementers A-569, A-570, A-572 (A-570 one fix round); qa-release verifier A-569; security verifiers A-572 and A-570 (two rounds) | Verified: A-569 (#93), A-572 (#92), A-570 (#94); main CI 39337244761 (b24ccd6f) and 39338966671 (2cb23939) all 23 jobs passed, 39340843585 (be8faf0f) all 23 jobs passed. Round 1 NOT VERIFIED A-570 (PGP-only admin lockout on saturated public table). New: P2 A-611 (admin password oracle on the public listener), P3 A-608–A-610, A-612 (escrow retention spec flake seen on the ledger PR). Host disk filled during the wave (Go build cache cleared). Usage rules (usage-budget.md, PR #91) applied: one verifier per item, resumed by SendMessage. Remaining: A-571 next, then the other open rows; owner-blocked A-555, A-562, A-573 |
 | 69 | 2026-10-19 | /war-room-loop resume: implementation wave on ruled P1/P2 items (no council sweep) | implementers A-560, A-571 (one fix round each), A-613; payments verifier A-560 (two rounds); security verifier A-571 (two rounds) | Verified: A-560 (#97), A-571 (#96); A-535 closed by A-571. Round 1 NOT VERIFIED A-571 (unbudgeted TOTP guessing on the rescue path, SEC-A571-1, owner decision: rescue-only budget) and A-560 (re-request text wrong after a refused or pending re-request). New: A-613 (P1, owner request). Main CI 39355890550 and 39355890693 (85247a17) passed. Remaining: A-613 in progress, then A-559 and A-611; owner-blocked A-555, A-562, A-573 |
 | 70 | 2026-10-20 UTC | Targeted moderation agent, coding-agent hardening and supplied Gemini proposal | security, privacy/Tor and infrastructure; isolated implementers; independent QA | MOD69-1/2/3/4 and MOD70-5 independently verified locally; no further required in-scope issue on fresh review. MOD70-6 storage policy remains a production gate; image understanding excluded by owner. [PR #99](https://github.com/yegamble/opsecmkt/pull/99) tracks the required final-source CI gate and final long-running suite results. No main merge or deployment delegated. |
+| 71 | 2026-10-20 | Source-checked PR #99 rating follow-up | closed protocol, pipeline, persistence and image implementers; independent privacy and release seats | MOD71-1 through MOD71-6 fixed and independently verified locally: closed output, atomic budgets, metadata-only capture, bounded signals, weak-hash guards and visible human review. Legacy bytes/timestamps preserved; no open required in-scope issue. PR #99 tracks final-source CI and full-suite results. |
 
 ## P0 — release blockers
 
@@ -1602,8 +1603,126 @@ DECISION: DEFER (P2 SHOULD), `opsec-infrastructure-1`.
 WHY: Per-record and per-batch bounds do not cap total distinct revisions or immutable proposals. Capture is off by default and production enablement already requires a storage/retention review.
 DISSENTING VIEW: A new arbitrary overflow policy could drop evidence or silently penalize users. Choose its budget and non-punitive behavior with the operator before enforcement.
 ACCEPTANCE CRITERIA: Capacity rehearsal proves the selected bound, administrator-visible overflow, preserved review references and unchanged marketplace targets.
-STATUS: production gate; no capacity test or total-storage guarantee claimed.
+STATUS: subsequently implemented prospectively by MOD71-2 with concurrency and capacity tests. Physical-disk/WAL/backup bounds and a legacy retention policy are still not claimed.
 
 COUNCIL RESULT: Security and infrastructure seats found no further REQUIRED/BLOCKER; privacy REQUIRED findings MOD69-1/2 are independently verified. No disputed required finding remained, so Rounds B/C were skipped under the usage budget. The final security SHOULD bounded signer read is accepted as MOD70-5; storage high-water policy is deferred as MOD70-6. Owner explicitly excludes image understanding; only hashes/basic metadata are in scope.
 
 INTEGRATION: Current main `00346cd6` merged; both upgrade notices retained. PR #99 is the single handoff. CI status is external to this ledger commit and must be checked on its exact final head; no earlier run implies that gate passed. No open required item remains within this targeted scope; unrelated main backlog stays unchanged.
+
+
+## Iteration 71 — Source-checked moderation hardening follow-up
+
+SCOPE: Owner requests improvements from the new PR #99 rating/review. Review
+SHA256 `873c30a879b9e3270988806c2b0768f1bf033304420a3d3824b426bd9627191b`.
+The rating is an opinion, not a security measurement. Security/privacy,
+queue/release and image-hash seats check the claims against source. No merge to
+main or production deployment is delegated.
+
+### MOD71-1 — Closed model protocol and deterministic presentation
+
+DECISION: ACCEPT (P1 REQUIRED for the strengthened containment contract).
+WHY: Stage B can currently produce summary and injection-evidence prose despite
+receiving only coded findings. A custom Model implementation can also forward
+arbitrary prose into a decision. Neither grants execution, but both can bias a
+reviewer and consume unnecessary output tokens.
+ACCEPTANCE: The v2 model response has only closed actions/codes, bounded reference
+arrays, confidence, suspicion flag and canary. Reject legacy/extra prose fields.
+Go generates presentation before output hashing; current and historical admin
+rows do not display model-written prose. Historical immutable records remain
+byte-stable. v1 pins fail closed.
+TEST PLAN: Network and custom-model marker regressions, duplicate/missing/null
+JSON and reference checks, engine/routing races, actual upstream GBNF validation.
+STATUS: fixed locally; closed protocol, native grammar and independent privacy checks passed; final CI tracked on PR #99.
+
+### MOD71-2 — Atomic bounded capture and non-punitive overload
+
+DECISION: ACCEPT (P1 REQUIRED; implements the previously deferred MOD70-6).
+WHY: Per-item/batch limits do not bound total queued or retained moderation data.
+ACCEPTANCE: Atomic per-actor active cap, global pending cap, lifetime allocation
+slots and conservative logical byte reservations; duplicates/rollbacks/retries
+do not leak capacity. Saturation commits the original marketplace write and
+records a bounded private warning. Aging priority prevents strict-class
+starvation. Limits and usage have a private read-only display and bounded CLI
+configuration. Physical database, index, WAL and backup size are not represented
+as a guaranteed bound on disk usage.
+TEST PLAN: Barrier-concurrent admissions, rollback/duplicate/retry cases,
+priority/age/lease tests, real listing/dispute behavior and private status view.
+STATUS: fixed locally; barrier-concurrent limits, lifecycle accounting, aging and independent actual HTTP overflow checks passed; final CI tracked on PR #99.
+
+### MOD71-3 — Prospective metadata-only capture and audit inputs
+
+DECISION: ACCEPT (P1 REQUIRED for the strengthened minimization contract).
+WHY: The current implementation creates additional durable plaintext copies of
+source text. Public disclosure is necessary but does not minimize that dataset.
+ACCEPTANCE: New jobs retain hashes and allowlisted metadata, not source prose.
+The worker reads source text into memory only for the exact captured revision;
+a changed/missing source receives coded HOLD without inference. New archived
+inputs and rendered decisions contain no copied prose or raw actor identity;
+completion atomically minimizes no-longer-needed actor links. Keep bounded
+order/image metadata needed for navigation and duplicate signals. Completed
+metadata-only jobs cannot be replayed as empty/new content. Existing immutable
+records and timestamps are preserved; no historical purge is introduced.
+TEST PLAN: Unique-marker absence in pending/completed v2 rows, source-change and
+delete refusal, original digest and encrypted export integrity, historical
+compatibility, rollback, links, duplicate baselines and replay tests.
+STATUS: fixed locally; independent five-kind marker/hash/replay/UI checks and authentic legacy upgrade preservation passed; final CI tracked on PR #99.
+
+### MOD71-4 — Bounded normalization and robust contextual signals
+
+DECISION: ACCEPT (P2 SHOULD).
+WHY: Punctuation/common leetspeak can evade exact scam phrases. The audit's
+claim that Cf stripping is absent is false: it already exists. Deterministic
+findings also already bypass inference. Preserve those controls and prove them.
+ACCEPTANCE: 8192 normalized runes/64 KiB raw budget; complete original digest
+and immutable caller input; coded invisible-character observation; high-precision
+obfuscated scam/contextual contact signals with benign multilingual, educational,
+support and ordinary Tor/Monero/address cases. No endpoint fetch or decryption.
+TEST PLAN: Table-driven attacks/benign cases, truncation/identity tests and a
+model spy proving deterministic cases make no inference call.
+STATUS: fixed locally; adversarial/benign normalization and no-inference spy races passed; final CI tracked on PR #99.
+
+### MOD71-5 — Reject weak perceptual hashes as similarity evidence
+
+DECISION: ACCEPT (P2 SHOULD), limited to advisory hash quality.
+WHY: Uniform images and distinct monotone ramps can share a zero hash. Variance
+alone does not exclude the ramps. The review's universal flip/rotation claims
+are false; a fixture proves possible transformations, not their frequency.
+ACCEPTANCE: Weak/low-information hashes do not trigger perceptual matches; exact
+SHA256 remains valid. Preserve useful legacy hashes, omitted metadata, gateway
+image decoding and no new wire/schema surface. No rotation/crop/semantic-image
+capability is claimed.
+TEST PLAN: Uniform/ramp/low-contrast fixtures, informative resize/recompression,
+legacy matching and exact-hash fallback tests.
+STATUS: fixed locally; gateway variance, core weak-hash, legacy, exact-SHA and decoding-boundary races passed; final CI tracked on PR #99.
+
+### MOD71-6 — Keep review findings visible
+
+DECISION: ACCEPT (P1 REQUIRED), chair source review.
+WHY: High-confidence FLAG_REVIEW results could receive AUTO_APPLY and disappear
+from the default private review queue. A model could also pair NO_ACTION with a
+review reason. No entity changed, but the reported abuse needed human attention.
+ACCEPTANCE: FLAG_REVIEW always reaches a human or administrator queue. Automatic
+history is limited to explicit clean NO_ACTION/NO_FINDING with age metadata.
+TEST PLAN: Fail-first established-vendor scam regression, contradictory-reason
+routing cases and an independent actual private HTTP queue visibility test.
+STATUS: fixed locally; independent QA and final-source CI tracked on PR #99.
+
+### Review recommendations not adopted
+
+- Rewriting old immutable rows, automatic historical evidence deletion or
+  pseudonym rotation without a key/data lifecycle is not authorized. Prospective
+  minimization does not make retained references anonymous.
+- Coarsening authentic review/audit timestamps would destroy chronology; UTC
+  storage does not encode the administrator's local timezone.
+- Mandatory hardware-token support is not a substitute for the offline authority
+  boundary. Offline key custody remains an operator responsibility.
+- Image understanding remains explicitly outside scope. Eight-transform hash
+  metadata and crop resistance are deferred; four plain rotation hashes do not
+  establish reflection invariance.
+- The audit names nonexistent files/columns, overstates snapshot size, gives the
+  runtime limit as 4 GiB rather than 8 GiB, and misattributes the existing nullable
+  reviewer foreign key. Tests and current source govern the changes.
+
+PRIVACY REVIEW FIX: New persisted/rendered injection evidence retains only fixed field/code vocabulary. Historical fallback is source-neutral, not a fabricated model attribution. Current source/pattern escalation coalescing avoids a new cross-target actor binding.
+
+ITERATION 71 VERIFICATION: Independent security/release and privacy seats verified the strengthened boundaries against the current worktree. No additional required finding remained. Overlay privacy/HTTP cases were adopted as permanent tests. Full local suites and exact-head CI outcomes are recorded on PR #99 so this preparation-time ledger does not infer them from older runs. No model/production deployment, historical purge or merge to main is delegated.

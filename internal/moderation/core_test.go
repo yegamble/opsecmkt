@@ -170,7 +170,7 @@ func TestRiskHardBoundaries(t *testing.T) {
 		confidence                         float64
 		want                               Disposition
 	}{
-		{"benign metadata", ActionFlagReview, false, false, false, false, 90, 1, AutoApply},
+		{"review metadata", ActionFlagReview, false, false, false, false, 90, 1, QueueHuman},
 		{"money without invariant", ActionSuggestRelease, true, false, false, false, 90, 1, EscalateAdmin},
 		{"money with invariant", ActionSuggestRefund, true, true, false, false, 90, 1, EscalateAdmin},
 		{"established actor ban", ActionSuggestBan, false, true, false, false, 90, 1, EscalateAdmin},
@@ -271,7 +271,7 @@ func TestDeterministicIdentityAndPolicyVersion(t *testing.T) {
 }
 
 func TestImageHashTypes(t *testing.T) {
-	if !ImageHashesMatch(strings.Repeat("a", 64), strings.Repeat("a", 64), 5) || ImageHashesMatch(strings.Repeat("a", 64), strings.Repeat("a", 63)+"b", 5) || ImageHashesMatch("not-an-imagehash", "not-an-imagehash", 5) || !ImageHashesMatch("0000000000000000", "0000000000000001", 5) || ImageHashesMatch("0000000000000000", "ffffffffffffffff", 5) {
+	if !ImageHashesMatch(strings.Repeat("a", 64), strings.Repeat("a", 64), 5) || ImageHashesMatch(strings.Repeat("a", 64), strings.Repeat("a", 63)+"b", 5) || ImageHashesMatch("not-an-imagehash", "not-an-imagehash", 5) || !ImageHashesMatch("0123456789abcdef", "0123456789abcdee", 5) || ImageHashesMatch("0000000000000000", "ffffffffffffffff", 5) {
 		t.Fatal("image hash classes or distance bounds were confused")
 	}
 }

@@ -139,6 +139,12 @@ func TestModerationOfflineReviewNoLoginReplayOrStaleAcceptance(t *testing.T) {
 	}
 	vendor, _ := e.user("token_vendor", "vendor")
 	product := e.product(vendor, "physical")
+	// Moderation jobs can retain only metadata. The authorized source record is
+	// the reference for restoring this unchanged-content replay fixture.
+	var original string
+	if err := e.DB.QueryRow("SELECT description FROM products WHERE id=$1", product).Scan(&original); err != nil {
+		t.Fatal(err)
+	}
 	w := ModerationWorker{DB: e.DB, Engine: moderation.Engine{Config: moderation.DefaultConfig()}}
 	if _, err := w.Pass(context.Background(), 10); err != nil {
 		t.Fatal(err)
@@ -163,10 +169,6 @@ func TestModerationOfflineReviewNoLoginReplayOrStaleAcceptance(t *testing.T) {
 	}
 	agExec(e, "UPDATE products SET description='content changed with capture disabled' WHERE id=$1", product)
 	e.check(ingressDo(e, true, "POST", path, anon, form), 409)
-	var original string
-	if err := e.DB.QueryRow("SELECT snapshot->>'description' FROM moderation_jobs WHERE target_id=$1", product).Scan(&original); err != nil {
-		t.Fatal(err)
-	}
 	agExec(e, "UPDATE products SET description=$2 WHERE id=$1", product, original)
 	wrec := ingressDo(e, true, "POST", path, anon, form)
 	e.check(wrec, 303)
