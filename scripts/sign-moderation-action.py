@@ -8,6 +8,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import stat
 import subprocess
 import sys
 import tempfile
@@ -25,15 +26,28 @@ def unique(pairs):
     return result
 
 
+def read_token(path):
+    # Refuse nonregular paths before opening them. O_NONBLOCK also prevents a
+    # replacement FIFO from blocking between this check and the descriptor check.
+    if not stat.S_ISREG(os.stat(path).st_mode):
+        raise ValueError("regular token file required")
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+    with os.fdopen(descriptor, "rb") as source:
+        if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+            raise ValueError("regular token file required")
+        raw = source.read(2049)
+    if len(raw) > 2048:
+        raise ValueError("token too large")
+    return raw
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--token", required=True, help="review JSON object to inspect and sign")
     parser.add_argument("--key", required=True, help="offline Ed25519 PEM private key")
     parser.add_argument("--out", required=True, help="new private signed-envelope file")
     args = parser.parse_args()
-    raw = Path(args.token).read_bytes()
-    if len(raw) > 2048:
-        raise ValueError("token too large")
+    raw = read_token(args.token)
     token = json.loads(raw, object_pairs_hook=unique)
     if not isinstance(token, dict) or set(token) != FIELDS or token["version"] != 1 or token["action"] not in ("accept", "dismiss", "hold"):
         raise ValueError("invalid review token fields")
