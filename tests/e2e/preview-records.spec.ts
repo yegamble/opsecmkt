@@ -23,11 +23,16 @@ test('/canary#records lists what the server keeps, who reads it and that nothing
   await expect(records).toContainText('records no IP address or browser details');
   await expect(records).toContainText('reverse proxy');
   for (const item of ['Handle', 'Password', 'Second factors', 'PGP public key', 'Messages', 'Notifications',
-    'Orders and drafts', 'Disputes', 'Reviews', 'Digital deliveries', 'Payments', 'External escrow address reservations',
+    'Orders and drafts', 'Disputes', 'Abuse-review records', 'Reviews', 'Digital deliveries', 'Payments', 'External escrow address reservations',
     'Payout addresses', 'Activity log']) {
     await expect(records.locator('li > strong', { hasText: new RegExp(`^${item}`) }), item).toHaveCount(1);
   }
   await expect(records).toContainText('never to be published');
+  const abuseReview = records.locator('li', { has: page.locator('strong', { hasText: /^Abuse-review records\./ }) });
+  await expect(abuseReview).toContainText('Routine expiry and account deletion do not erase copies retained for abuse review');
+  await expect(abuseReview).toContainText('These copies currently have no automatic expiry');
+  await expect(abuseReview).toContainText('after collection stops');
+  await expect(abuseReview).not.toContainText(/model|inference|threshold|endpoint|AI-powered/i);
   // A-546 (SEC-546-1): lifting a ban does not erase the audit rows that carry its reason.
   const bans = records.locator('li', { has: page.locator('strong', { hasText: /^Account bans\./ }) });
   await expect(bans).toContainText('Lifting the ban clears the ban record and the handle reservation');

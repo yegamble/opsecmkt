@@ -4,6 +4,12 @@ Retention maintenance applies the [data retention and private information policy
 It is opt-in so an upgrade cannot silently purge an existing market before users receive notice and preservation duties are recorded.
 Recipient-encryption enforcement remains a separate implementation gap.
 
+Abuse-review copies are a separate lifecycle gap. The ordinary sweeps do not erase captured plaintext or its review records when
+the original listing, image description, dispute text or review expires, or when an account is erased. Disabling future collection
+does not remove historical copies. These records currently have no automatic expiry. The operator must decide their minimization,
+retention and purge policy before relying on ordinary expiry as a complete data-removal policy. The public records inventory and
+account-deletion notice disclose this exception; they remain visible regardless of whether collection is currently enabled.
+
 ## Before enabling
 
 Inventory database replicas, backups, audit exports, wallet files, snapshots, log stores and every off-host copy.
@@ -58,6 +64,7 @@ Legacy last-use dates are not invented from account creation dates.
 
 | Data | Live-system deadline |
 | --- | --- |
+| Copied abuse-review content and associated review records | No automatic expiry; separate from the ordinary content/account deadlines below, including after collection stops |
 | Individual messages, ciphertext and routing metadata | 90 days after creation |
 | Notifications and closed outage-delivery receipts | 30 days |
 | Activity events | 180 days after creation |

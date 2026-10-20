@@ -25,6 +25,13 @@ Before adoption, the preservation owner must record the instance's applicable ac
 Any required longer period belongs in a scoped exception with its authority and end condition; it does not extend every account, message or backup.
 Shorter periods and earlier erasure apply when the purpose ends sooner or applicable rights require them.
 
+**Current abuse-review exception:** copied abuse-review content does not follow the ordinary account and content expiry sweeps.
+Captured listing text, image descriptions, dispute text and reviews, their account/record identifiers, findings and staff review records
+can remain after the original content expires or the account is erased. Disabling future collection does not erase historical copies.
+These copies currently have no automatic expiry. The instance operator must decide and implement their minimization, retention and purge
+policy; the ordinary schedule below must not be presented as erasing these records. The public records disclosure and account-deletion
+notice state this exception without disclosing internal service configuration.
+
 ## Retention schedule
 
 Deadlines use UTC and elapsed days. A scheduled job must remove eligible live records within 24 hours of their deadline.
@@ -39,8 +46,9 @@ failure prevents closure, register a scoped operational exception covering only 
 
 | Record | Maximum retention and trigger | Purpose and required disposition |
 | --- | --- | --- |
+| Copied abuse-review content and associated review records | No automatic expiry is currently implemented; routine content expiry and account deletion do not erase these copies, including after collection stops. | Review abuse while restricting access to administrators and responsible operators. The operator must define and implement a minimization, retention and purge policy; this is an unresolved lifecycle gap, not a scoped preservation hold. |
 | Accounts, profile, PGP public key and authentication material | While actively used; close after 12 months without successful authenticated use, following 30 days' notice. Remove profile and credentials within 30 days of closure or a verified deletion request. | Maintain access to the service. Track last successful authenticated use explicitly. Unresolved obligations permit only the access and identity fields needed to complete them; remove unrelated profile data on schedule. |
-| Account bans (A-546): when, by which administrator, the reason and any earlier suspension time; the banned handle | Ban details: until the ban is lifted or the account is closed (then removed with the profile; the audit rows that also carry the reason follow the audit retention). Banned handle (lower case only, with the time it was reserved): kept indefinitely, also after the account is erased; only lifting the ban while the account still exists removes it. | Keep a permanently closed account's handle from being registered again, for example to impersonate it. Store nothing else about the erased account. |
+| Account bans (A-546): when, by which administrator, the reason and any earlier suspension time; the banned handle | Ban details: until the ban is lifted or the account is closed (then removed with the profile; the audit rows that also carry the reason follow the audit retention). Banned handle (lower case only, with the time it was reserved): kept indefinitely, also after the account is erased; only lifting the ban while the account still exists removes it. | Keep a permanently closed account's handle from being registered again, for example to impersonate it. The handle-reservation record stores no other account fields. Other retained categories, including abuse-review copies, have their separately stated lifecycles. |
 | Messages, including ciphertext, sender, recipient, time and recipient-status fields | 90 days from each message's creation, or earlier on an accepted deletion request. | Allow correspondence and a bounded opportunity to save a local copy. Expire individual messages, not entire conversations based on their latest activity. Dispute evidence requires a scoped exception. |
 | Unsubmitted order drafts | 30 days after creation. | Allow checkout to resume. Remove the draft and its private fields; funded or submitted orders follow financial closure rules. |
 | Orders, order events, disputes and payment records | 180 days after financial closure. | Support reconciliation and post-transaction complaints. Then delete personal records and links, including participant mappings, addresses and transaction associations, except narrowly preserved records. |
