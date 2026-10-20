@@ -61,8 +61,8 @@ type App struct {
 	writeLimits          map[string]bucket         // independent per-account write budgets (A-75)
 	inFlight             map[string]int            // OneAtATime actions in progress, by path and account (enterOneAtATime)
 	signInLogAt          time.Time                 // last "sign-in limiter refusing" log line (guarded by mu)
-	rescueRefused        int                       // sole-admin rescue refusals not yet logged (guarded by mu)
-	rescueLogAt          time.Time                 // last "sole-admin rescue refused" log line (guarded by mu)
+	rescueRefused        int                       // paused sign-in rescue refusals not yet logged (guarded by mu)
+	rescueLogAt          time.Time                 // last "paused sign-in rescue refused" log line (guarded by mu)
 	live                 bool                      // a mainnet market: BITCOIN_CHAIN=main or MONERO_NETWORK=mainnet (marketLiveFromEnv, A-460)
 	escrowConfigured     bool                      // ESCROW_BTC=on (escrow_rpc.go); escrow may still be disabled
 	escrowCfg            escrowConfig              // the ESCROW_BTC settings read at startup, for the escrow watcher's retries
@@ -345,9 +345,9 @@ func (a *App) cookie(w http.ResponseWriter, name, value string, age int) {
 }
 
 // allow counts one request against key's budget of n per ten minutes. When the table is full it evicts
-// the non-blocking entry with the lowest count (earliest expiry breaks ties). Active TOTP verification
-// entries are protected even before exhaustion, so fresh handles cannot reset a recovery allowance.
-// If every entry is blocking or protected it refuses the new key instead.
+// the non-blocking entry with the lowest count (earliest expiry breaks ties). Active TOTP verification and
+// paused-sign-in rescue-code entries (A-571) are protected even before exhaustion, so fresh handles cannot reset a
+// recovery allowance. If every entry is blocking or protected it refuses the new key instead.
 func (a *App) allow(key string, n int) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -429,7 +429,7 @@ func allowIn(limits map[string]bucket, key string, n int, now time.Time) bool {
 		if len(limits) >= 4096 {
 			victim, found := "", false
 			for k, v := range limits {
-				if v.Count >= v.Limit || strings.HasPrefix(strings.TrimPrefix(k, adminIngressPrefix), "totp-verify:") {
+				if base := strings.TrimPrefix(k, adminIngressPrefix); v.Count >= v.Limit || strings.HasPrefix(base, "totp-verify:") || strings.HasPrefix(base, "rescue-code:") {
 					continue
 				}
 				if w := limits[victim]; !found || v.Count < w.Count || (v.Count == w.Count && v.Until.Before(w.Until)) {
@@ -493,11 +493,12 @@ func (a *App) logSignInRefusals() {
 	}
 }
 
-// logRescueRefusal counts one refused sole-admin rescue (a wrong password, or the right password with a code
-// soleAdminRecovery refused) and writes "sole-admin rescue refused attempts=N", at most once a minute, where N is
-// the refusals since the previous line. Like logSignInRefusals it names no handle, account or client. It is the
-// operator's signal of guessing on this path. authGate separately charges the account's factor budget before
-// password verification; this count-only logging helper touches no limiter (A-534, A-159(a)).
+// logRescueRefusal counts one refused paused sign-in rescue (A-571: a /login with an authenticator code while the
+// handle is paused, refused for any reason: unknown handle, no TOTP, a wrong or used code, a spent code budget or a
+// wrong password) and writes "paused sign-in rescue refused attempts=N", at most once a minute, where N is the
+// refusals since the previous line. Like logSignInRefusals it names no handle, account or client. It is the
+// operator's signal of guessing on this path, including the code guesses that spend no budget; this count-only
+// logging helper touches no limiter (A-534, A-159(a)).
 func (a *App) logRescueRefusal() {
 	a.mu.Lock()
 	now, n := time.Now(), 0
@@ -507,7 +508,7 @@ func (a *App) logRescueRefusal() {
 	}
 	a.mu.Unlock()
 	if n > 0 {
-		log.Printf("sole-admin rescue refused attempts=%d", n)
+		log.Printf("paused sign-in rescue refused attempts=%d", n)
 	}
 }
 
