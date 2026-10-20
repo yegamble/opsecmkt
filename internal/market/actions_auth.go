@@ -119,6 +119,9 @@ var dummyHash = sync.OnceValue(func() []byte {
 	return h
 })
 
+// compareSignInPassword is /login's bcrypt comparison; tests count its calls to prove a refusal ran none.
+var compareSignInPassword = bcrypt.CompareHashAndPassword
+
 var handlePattern = regexp.MustCompile(`^[a-zA-Z0-9_]{3,32}$`)
 
 // errAccountChanged refuses a change whose signed-in account was given another role or suspended while the request
@@ -434,8 +437,9 @@ func authPrecheck(a *App, r *http.Request, token string) error {
 }
 
 // authGate admits one password-bearing request: input bounds, CAPTCHA, a free handle for /register and the
-// per-handle rate limit (or a sole administrator's factor budget during recovery), then bounded bcrypt
-// concurrency, all before any expensive work. On success the caller must defer release().
+// per-handle rate limit (or, for a paused sign-in rescued with an authenticator code, that code and the account's
+// code budget), then bounded bcrypt concurrency, all before any expensive work. On success the caller must defer
+// release().
 func authGate(c *actionCtx) (handle, password, rescueID string, release func(), err error) {
 	a, path := c.A, c.R.URL.Path
 	handle, password = strings.TrimSpace(c.Form.Get("handle")), c.Form.Get("password")
@@ -465,44 +469,25 @@ func authGate(c *actionCtx) (handle, password, rescueID string, release func(), 
 		key, refused = ingressKey(c.Ctx(), strings.TrimPrefix(path, "/")+":"+strings.ToLower(handle)), fail(429, "Too many attempts. Try again in ten minutes.")
 	}
 	if err == nil && a.limited(key, 10) {
+		err = refused
 		if path == "/login" && c.Form.Get("rescue_code") != "" {
-			if sixDigitTOTP(c.Form.Get("rescue_code")) {
-				// Reject ineligible accounts before bcrypt. Recovery uses the existing per-account
-				// factor budget, including wrong passwords, so arbitrary six-digit codes cannot
-				// bypass the paused password budget. Bind the allowance to this account identity.
-				var account signInAccount
-				account, err = lookupSignInAccount(c.Ctx(), a.db, handle)
-				if errors.Is(err, sql.ErrNoRows) {
-					err = errSoleAdminRecovery
-				} else if err != nil {
-					err = fail(503, "Service unavailable")
-				} else if account.role != "admin" || account.suspended || !account.totpEnabled {
-					err = errSoleAdminRecovery
-				} else {
-					var admins int
-					if err = a.db.QueryRowContext(c.Ctx(), "SELECT count(*) FROM users WHERE role='admin'").Scan(&admins); err != nil {
-						err = fail(503, "Service unavailable")
-					} else if admins != 1 {
-						err = errSoleAdminRecovery
-					} else {
-						rescueID = account.id
-						key, refused = ingressKey(c.Ctx(), "totp-verify:"+account.id), errSoleAdminRecovery
-						if a.limited(key, 10) {
-							err = refused
-						}
-					}
+			// A-571: a paused handle's account with TOTP may still sign in with its current code and its password.
+			// The code is checked first, so a wrong or used code, an unknown handle or an account without TOTP is
+			// refused here, before bcrypt and without spending any budget, and only a right code spends an attempt of
+			// the account's code budget, the one /challenge uses (bound to this account identity).
+			rescueID, err = a.rescueAccount(c.Ctx(), handle, c.Form.Get("rescue_code"))
+			if err == nil {
+				key, refused = ingressKey(c.Ctx(), "totp-verify:"+rescueID), errRescueRefused
+				if a.limited(key, 10) {
+					err = refused
 				}
-			} else {
-				err = errSoleAdminRecovery
 			}
-		} else {
-			err = refused
+			if err == errRescueRefused {
+				a.logRescueRefusal()
+			}
 		}
 	}
 	if err != nil {
-		if err == errSoleAdminRecovery && rescueID != "" {
-			a.logRescueRefusal()
-		}
 		return "", "", "", nil, err
 	}
 	// A password-check slot is taken only now, so requests refused above never hold one while real
@@ -538,7 +523,41 @@ func sixDigitTOTP(code string) bool {
 	return true
 }
 
-var errSoleAdminRecovery = fail(401, "Invalid handle or password")
+// errRescueRefused is every refusal of a paused sign-in rescued with an authenticator code (A-571): the same 401 as a
+// wrong password, so the rescue path never tells which of the handle, code or password was wrong.
+var errRescueRefused = fail(401, "Invalid handle or password")
+
+// rescueAccount returns the account a paused /login's authenticator code may sign in (A-571): the handle's active
+// account with TOTP on, for which code is a current, unused code. It reads without locking and writes nothing (no
+// bcrypt, no budget, no TOTP step): rescueSignIn checks the code again under the account lock, with its replay guard.
+// Every refusal is errRescueRefused.
+func (a *App) rescueAccount(ctx context.Context, handle, code string) (string, error) {
+	if !sixDigitTOTP(code) {
+		return "", errRescueRefused
+	}
+	account, err := lookupSignInAccount(ctx, a.db, handle)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", errRescueRefused
+	} else if err != nil {
+		return "", fail(503, "Service unavailable")
+	}
+	if account.suspended || account.banned || !account.totpEnabled {
+		return "", errRescueRefused
+	}
+	var sealed string
+	var enabled bool
+	var last int64
+	err = a.db.QueryRowContext(ctx, "SELECT totp_secret,totp_enabled,totp_last_step FROM users WHERE id=$1", account.id).Scan(&sealed, &enabled, &last)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", errRescueRefused
+	} else if err != nil {
+		return "", fail(503, "Service unavailable")
+	}
+	if _, err = a.matchTOTP(sealed, enabled, last, code); err != nil {
+		return "", errRescueRefused
+	}
+	return account.id, nil
+}
 
 type signInAccount struct {
 	id, hash, role                 string
@@ -625,11 +644,21 @@ func authAction(c *actionCtx) (actionResult, error) {
 		if err != nil {
 			hash = dummyHash()
 		}
-		if rescueID != "" && account.id != rescueID {
-			a.logRescueRefusal()
-			return actionResult{}, errSoleAdminRecovery
+		var heldPending bool
+		if rescueID != "" {
+			if account.id != rescueID { // the handle now resolves to another account
+				a.logRescueRefusal()
+				return actionResult{}, errRescueRefused
+			}
+			// Whether this browser's pending sign-in is live now, before bcrypt: rescueSignIn refuses if it is gone by
+			// then, as a /challenge from this browser completed it meanwhile.
+			if pending := pendingCookie(c.R); pending != "" {
+				if err := a.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM pending_logins WHERE token_hash=$1 AND expires>now())", digest(pending)).Scan(&heldPending); err != nil {
+					return actionResult{}, fail(503, "Service unavailable")
+				}
+			}
 		}
-		check := bcrypt.CompareHashAndPassword(hash, []byte(password))
+		check := compareSignInPassword(hash, []byte(password))
 		if err != nil || check != nil {
 			a.logSignInRefusals()
 			if rescueID != "" {
@@ -641,8 +670,8 @@ func authAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, fail(404, pageNotFound)
 		}
 		if rescueID != "" {
-			res, err := a.soleAdminRecovery(c, account.id, account.hash, f.Get("rescue_code"), a.signInNext(f.Get("next")))
-			if err == errSoleAdminRecovery {
+			res, err := a.rescueSignIn(c, account.id, account.hash, f.Get("rescue_code"), a.signInNext(f.Get("next")), heldPending)
+			if err == errRescueRefused {
 				a.logRescueRefusal()
 			}
 			return res, err
@@ -711,56 +740,43 @@ func authAction(c *actionCtx) (actionResult, error) {
 	return actionResult{Redirect: orHome(a.signInNext(f.Get("next")))}, nil
 }
 
-// soleAdminRecovery is the narrow A-159(a) escape from a per-handle password-guess lockout. Count ALL admin
-// accounts, including suspended ones: suspension must not silently turn a multi-admin market into sole-admin
-// recovery. The account lock serializes this check with current admin-initiated role/suspension changes. The
-// TOTP replay guard and the session are committed together; no recovery-code branch is reachable here.
-// authGate has already charged this account's factor budget before checking the password.
-func (a *App) soleAdminRecovery(c *actionCtx, id, checkedHash, code, next string) (actionResult, error) {
+// rescueSignIn finishes a paused /login whose authenticator code (rescueAccount) and password were right: the A-159(a)
+// escape from a per-handle password lockout, open to every account with TOTP since A-571 (before, only to a sole
+// administrator). authGate has already charged the account's code budget. One transaction ends this browser's live
+// pending sign-in, then checks the code again under the account lock with its replay guard (checkTOTP) and starts the
+// session (startSession: suspension, closure, password change and public-administrator refusals), so the used step and
+// the session commit together. The pending sign-in is taken before the account row, the order /challenge takes them
+// in (S-1), so the two never deadlock; an expired one is left to /challenge's cleanup, as in passwordAndCodeSignIn.
+// heldPending says it was live before bcrypt: if it is gone now, a /challenge from this browser completed it meanwhile
+// and this request is refused rather than making a second session. Recovery codes are not accepted here, and another
+// enrolled factor is not asked for: /challenge also accepts the authenticator code alone. Every refusal is
+// errRescueRefused.
+func (a *App) rescueSignIn(c *actionCtx, id, checkedHash, code, next string, heldPending bool) (actionResult, error) {
 	ctx := c.Ctx()
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
 		return actionResult{}, fail(503, "Service unavailable")
 	}
 	defer tx.Rollback()
-	var role, currentHash string
-	var suspended, totpEnabled bool
-	err = tx.QueryRowContext(ctx, `SELECT role,password_hash,suspended_at IS NOT NULL,totp_enabled
-		FROM users WHERE id=$1 FOR NO KEY UPDATE`, id).Scan(&role, &currentHash, &suspended, &totpEnabled)
-	if err == sql.ErrNoRows {
-		return actionResult{}, errSoleAdminRecovery
-	}
-	if err != nil {
-		return actionResult{}, fail(503, "Service unavailable")
-	}
-	if role != "admin" || suspended || !totpEnabled || subtle.ConstantTimeCompare([]byte(currentHash), []byte(checkedHash)) != 1 {
-		return actionResult{}, errSoleAdminRecovery
-	}
-	var admins int
-	if err = tx.QueryRowContext(ctx, "SELECT count(*) FROM users WHERE role='admin'").Scan(&admins); err != nil {
-		return actionResult{}, fail(503, "Service unavailable")
-	}
-	if admins != 1 {
-		return actionResult{}, errSoleAdminRecovery
-	}
-	// The gate already reserved the factor attempt. A wrong or reused code does not commit
-	// a TOTP step or a session; current account eligibility remains authoritative here.
-	if a.checkTOTP(ctx, tx, id, code) != nil {
-		return actionResult{}, errSoleAdminRecovery
-	}
 	if pending := pendingCookie(c.R); pending != "" {
-		// This browser may have opened a normal two-step sign-in before the lockout. Consume only
-		// its pending token; other browsers' pending sign-ins remain untouched.
-		if _, err = tx.ExecContext(ctx, "DELETE FROM pending_logins WHERE token_hash=$1", digest(pending)); err != nil {
+		res, err := tx.ExecContext(ctx, "DELETE FROM pending_logins WHERE token_hash=$1 AND expires>now()", digest(pending))
+		if err != nil {
 			return actionResult{}, fail(500, "Unable to sign in")
 		}
+		if n, _ := res.RowsAffected(); heldPending && n == 0 {
+			return actionResult{}, errRescueRefused
+		}
+	}
+	var he *httpError
+	if err = a.checkTOTP(ctx, tx, id, code); errors.As(err, &he) || errors.Is(err, sql.ErrNoRows) {
+		return actionResult{}, errRescueRefused // used meanwhile, TOTP turned off, or the account is gone
+	} else if err != nil {
+		return actionResult{}, fail(503, "Service unavailable")
 	}
 	token, err := a.startSession(ctx, tx, id, rotationSession(c), "password and TOTP", digest(checkedHash))
-	if err != nil {
-		var he *httpError
-		if errors.As(err, &he) {
-			return actionResult{}, errSoleAdminRecovery
-		}
+	if errors.As(err, &he) {
+		return actionResult{}, errRescueRefused
+	} else if err != nil {
 		return actionResult{}, fail(500, "Unable to sign in")
 	}
 	if err = tx.Commit(); err != nil {

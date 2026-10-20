@@ -35,6 +35,18 @@ SELECT id, order_id, kind, send_error, tx_hash IS NOT NULL AS stored FROM xmr_se
  WHERE state = 'failed' OR state = 'requested' AND send_error = 'build-set-aside' ORDER BY id;
 ```
 
+## Paused sign-in rescue for every TOTP account (A-571)
+
+No migration and no new setting. While a handle's sign-in is paused after failed passwords, any account with TOTP
+on, not only a sole administrator, now signs in with its password and current authenticator code typed together on
+`/login`. The code is checked before the password: a wrong or used code, an unknown handle or an account without TOTP
+gets "Invalid handle or password" with no password check and no budget spent, so guessing on this path can no longer
+spend an account's code budget without a current code (the behaviour since 2026-10-13 charged every attempt). A right
+code spends one of the account's ten code attempts per ten minutes whether the password is right or wrong. The refusal
+log line is renamed from `sole-admin rescue refused attempts=N` to `paused sign-in rescue refused attempts=N` and now
+also counts wrong codes, unknown handles and accounts without TOTP; update any log alert that matches the old text
+(for example `grep 'sign-in rescue'`). The sign-in page's help under the authenticator field says so.
+
 ## Official addresses in PGP sign-in codes (A-572)
 
 The encrypted PGP sign-in code now reads, after decryption, "Sign-in code for HANDLE at MARKET NAME", the UTC time

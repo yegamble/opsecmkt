@@ -27,6 +27,9 @@ func rescueForm(handle, password, code string) url.Values {
 	return url.Values{"handle": {handle}, "password": {password}, "rescue_code": {code}}
 }
 
+// rescueHelpText is the sign-in page's explanation of the paused-handle rescue (A-571).
+const rescueHelpText = "your password with your current six-digit authenticator code still signs you in"
+
 func TestSixDigitTOTPSyntax(t *testing.T) {
 	for _, tc := range []struct {
 		code string
@@ -44,8 +47,8 @@ func TestSoleAdminPausedSignInNeedsCurrentPasswordAndTOTP(t *testing.T) {
 	key, _ := agEnableTOTP(e, id)
 	pauseSignIn(t, e, "sole_admin")
 	page := e.do("GET", "/login", randomToken(), nil)
-	if page.Code != 200 || !strings.Contains(page.Body.String(), `name="rescue_code"`) || !strings.Contains(page.Body.String(), "only administrator") {
-		t.Fatal("optional paused-admin authenticator field or explanation missing")
+	if page.Code != 200 || !strings.Contains(page.Body.String(), `name="rescue_code"`) || !strings.Contains(page.Body.String(), rescueHelpText) {
+		t.Fatal("optional paused-sign-in authenticator field or explanation missing")
 	}
 	agExpect(e, "/login", randomToken(), rescueForm("sole_admin", testPassword, ""), 429, signInPausedText)
 	agExpect(e, "/login", randomToken(), rescueForm("sole_admin", testPassword, "not-six-digits"), 401, "Invalid handle or password")
@@ -58,8 +61,8 @@ func TestSoleAdminPausedSignInNeedsCurrentPasswordAndTOTP(t *testing.T) {
 		t.Fatal("wrong recovery password escaped its budget or spent a TOTP step")
 	}
 	agExpect(e, "/login", randomToken(), rescueForm("sole_admin", testPassword, e.wrongTOTP(id)), 401, "Invalid handle or password")
-	if !agLimited(e, "totp-verify:"+id) || agUserSessions(e, id) != 1 {
-		t.Fatal("wrong code did not charge factor budget or created a session")
+	if factorBudgetCount(e, id) != 1 || agUserSessions(e, id) != 1 {
+		t.Fatal("wrong code charged the factor budget (A-571: it is refused before bcrypt) or created a session")
 	}
 	pending, unrelated := agPending(e, id), agPending(e, id)
 	w := e.do("POST", "/login", randomToken(), rescueForm("SOLE_ADMIN", testPassword, correct), pending)
@@ -95,12 +98,13 @@ func TestSoleAdminPausedSignInWrongPasswordsExhaustRecoveryBeforeBcrypt(t *testi
 	pauseSignIn(t, e, "sole_admin")
 	budget := "totp-verify:" + id
 	for i := range 10 {
-		// Varying the case, code and browser cannot create a fresh recovery allowance.
+		// Varying the case, the (right) code and the browser cannot create a fresh recovery allowance. Only a right
+		// code reaches the password check and spends an attempt (A-571).
 		handle := "sole_admin"
 		if i%2 == 1 {
 			handle = "SOLE_ADMIN"
 		}
-		code := strings.Repeat(string(rune('0'+i)), totpDigits)
+		code, _ := e.totpCodeFor(id, int64(i%2))
 		agExpect(e, "/login", randomToken(), rescueForm(handle, "wrong-long-password", code), 401, "Invalid handle or password")
 		e.A.mu.Lock()
 		count := e.A.limits[budget].Count
@@ -137,13 +141,14 @@ func TestSoleAdminPausedSignInWrongPasswordsExhaustRecoveryBeforeBcrypt(t *testi
 func TestSoleAdminPausedSignInConcurrentRecoveryAllowance(t *testing.T) {
 	e := newTestApp(t)
 	id, _ := e.user("sole_admin", "admin")
-	agEnableTOTP(e, id)
+	key, _ := agEnableTOTP(e, id)
 	pauseSignIn(t, e, "sole_admin")
 	for range 9 {
 		if !e.A.allow("totp-verify:"+id, 10) {
 			t.Fatal("could not reserve nine factor attempts")
 		}
 	}
+	code := agTOTPNow(key)
 	// Exercise admission directly: only one concurrent request may reach the password-check stage.
 	results := agRace(2, func(i int) (int, string) {
 		handle := "sole_admin"
@@ -151,9 +156,9 @@ func TestSoleAdminPausedSignInConcurrentRecoveryAllowance(t *testing.T) {
 			handle = "SOLE_ADMIN"
 		}
 		c := &actionCtx{A: e.A, W: httptest.NewRecorder(), R: httptest.NewRequest(http.MethodPost, "/login", nil),
-			Form: rescueForm(handle, "wrong-long-password", "123456"), Token: randomToken()}
+			Form: rescueForm(handle, "wrong-long-password", code), Token: randomToken()}
 		_, _, rescueID, release, err := authGate(c)
-		if err == errSoleAdminRecovery {
+		if err == errRescueRefused {
 			return 401, "refused"
 		}
 		if err != nil {
@@ -178,7 +183,7 @@ func TestSoleAdminRecoveryBudgetSurvivesBogusHandleChurn(t *testing.T) {
 	id, _ := e.user("sole_admin", "admin")
 	key, _ := agEnableTOTP(e, id)
 	pauseSignIn(t, e, "sole_admin")
-	agExpect(e, "/login", randomToken(), rescueForm("sole_admin", "wrong-long-password", "123456"), 401, "Invalid handle or password")
+	agExpect(e, "/login", randomToken(), rescueForm("sole_admin", "wrong-long-password", agTOTPNow(key)), 401, "Invalid handle or password")
 	budget := "totp-verify:" + id
 	e.A.mu.Lock()
 	started := e.A.limits[budget]
@@ -196,7 +201,7 @@ func TestSoleAdminRecoveryBudgetSurvivesBogusHandleChurn(t *testing.T) {
 		t.Fatalf("bogus handles reset recovery allowance or grew table: before=%+v after=%+v size=%d", started, retained, size)
 	}
 	for range 9 {
-		agExpect(e, "/login", randomToken(), rescueForm("sole_admin", "wrong-long-password", "123456"), 401, "Invalid handle or password")
+		agExpect(e, "/login", randomToken(), rescueForm("sole_admin", "wrong-long-password", agTOTPNow(key)), 401, "Invalid handle or password")
 	}
 	if !e.A.limited(budget, 10) {
 		t.Fatal("churn restored spent recovery attempts")
@@ -209,8 +214,11 @@ func TestSoleAdminRecoveryBudgetSurvivesBogusHandleChurn(t *testing.T) {
 	}
 }
 
+// Since A-571 any account with TOTP may rescue a paused sign-in (TestPausedRescueSignsInEveryTOTPAccount): other
+// administrators and the role no longer matter, but an account without TOTP, a suspended one and an ambiguous handle
+// are still refused before any factor or password check.
 func TestSoleAdminPausedSignInRefusesIneligibleAccountsBeforeFactor(t *testing.T) {
-	for _, tc := range []string{"second admin", "suspended second admin", "disabled TOTP", "suspended owner", "nonadmin", "ambiguous handle"} {
+	for _, tc := range []string{"disabled TOTP", "suspended owner", "ambiguous handle"} {
 		t.Run(tc, func(t *testing.T) {
 			e := newTestApp(t)
 			id, _ := e.user("SoleAdmin", "admin")
@@ -218,17 +226,10 @@ func TestSoleAdminPausedSignInRefusesIneligibleAccountsBeforeFactor(t *testing.T
 			pauseSignIn(t, e, "SoleAdmin")
 			handle := "SOLEADMIN"
 			switch tc {
-			case "second admin", "suspended second admin":
-				otherID, _ := e.user("other_admin", "admin")
-				if tc == "suspended second admin" {
-					agExec(e, "UPDATE users SET suspended_at=now() WHERE id=$1", otherID)
-				}
 			case "disabled TOTP":
 				agExec(e, "UPDATE users SET totp_enabled=false WHERE id=$1", id)
 			case "suspended owner":
 				agExec(e, "UPDATE users SET suspended_at=now() WHERE id=$1", id)
-			case "nonadmin":
-				agExec(e, "UPDATE users SET role='buyer' WHERE id=$1", id)
 			case "ambiguous handle":
 				e.user("soleadmin", "buyer") // a legacy casefold twin; no exact uppercase handle
 			}
@@ -310,7 +311,7 @@ func TestSoleAdminPausedSignInNormalLoginRemainsChallenge(t *testing.T) {
 }
 
 func TestSoleAdminRecoveryRechecksLockedCurrentAccount(t *testing.T) {
-	for _, changed := range []string{"password", "role", "suspension", "TOTP"} {
+	for _, changed := range []string{"password", "closure", "suspension", "TOTP"} {
 		t.Run(changed, func(t *testing.T) {
 			e := newTestApp(t)
 			id, _ := e.user("sole_admin", "admin")
@@ -319,15 +320,15 @@ func TestSoleAdminRecoveryRechecksLockedCurrentAccount(t *testing.T) {
 			switch changed {
 			case "password":
 				agExec(e, "UPDATE users SET password_hash='replacement-hash' WHERE id=$1", id)
-			case "role":
-				agExec(e, "UPDATE users SET role='buyer' WHERE id=$1", id)
+			case "closure":
+				agExec(e, "UPDATE users SET closed_at=now() WHERE id=$1", id)
 			case "suspension":
 				agExec(e, "UPDATE users SET suspended_at=now() WHERE id=$1", id)
 			case "TOTP":
 				agExec(e, "UPDATE users SET totp_enabled=false WHERE id=$1", id)
 			}
 			c := &actionCtx{A: e.A, W: httptest.NewRecorder(), R: httptest.NewRequest(http.MethodPost, "/login", nil), Token: randomToken()}
-			if _, err := e.A.soleAdminRecovery(c, id, checkedHash, agTOTPNow(key), ""); err != errSoleAdminRecovery {
+			if _, err := e.A.rescueSignIn(c, id, checkedHash, agTOTPNow(key), "", false); err != errRescueRefused {
 				t.Fatalf("stale %s passed locked recovery check: %v", changed, err)
 			}
 			if agLimited(e, "totp-verify:"+id) || agUserSessions(e, id) != 1 || agInt(e, "SELECT totp_last_step FROM users WHERE id=$1", id) != 0 {
@@ -400,7 +401,7 @@ func TestSoleAdminRescueRefusalsIndistinguishable(t *testing.T) {
 	if agUserSessions(e, id) != 1 {
 		t.Fatal("a refusal signed in")
 	}
-	for range 8 {
+	for range 9 { // with the wrong password above, ten; the wrong code spent nothing (A-571)
 		agExpect(e, "/login", browser, rescueForm("sole_admin", "wrong-long-password", agTOTPNow(key)), 401, "Invalid handle or password")
 	}
 	exhausted := e.do("POST", "/login", browser, rescueForm("sole_admin", testPassword, agTOTPNow(key)))
@@ -417,7 +418,7 @@ func TestSoleAdminRescueRefusalsLogged(t *testing.T) {
 	id, _ := e.user("sole_admin", "admin")
 	key, _ := agEnableTOTP(e, id)
 	logs := captureLog(t)
-	const line = "sole-admin rescue refused attempts="
+	const line = "paused sign-in rescue refused attempts="
 	pauseSignIn(t, e, "sole_admin")
 	agExpect(e, "/login", randomToken(), rescueForm("sole_admin", testPassword, ""), 429, signInPausedText)
 	if got := logs.lines(line); len(got) != 0 {
@@ -440,15 +441,16 @@ func TestSoleAdminRescueRefusalsLogged(t *testing.T) {
 	if got := logs.lines(line); len(got) != 2 || got[1] != line+"3" {
 		t.Fatalf("after a minute: %q", got)
 	}
-	// Pre-bcrypt exhaustion remains a count-only operator signal and is charged only once.
-	for range 6 {
+	// Pre-bcrypt exhaustion remains a count-only operator signal and is charged only once. Two wrong passwords above
+	// spent two attempts and the wrong codes none (A-571), so eight more spend the allowance.
+	for range 8 {
 		agExpect(e, "/login", randomToken(), rescueForm("sole_admin", "wrong-long-password", agTOTPNow(key)), 401, "Invalid handle or password")
 	}
 	e.A.mu.Lock()
 	e.A.rescueLogAt = time.Now().Add(-61 * time.Second)
 	e.A.mu.Unlock()
 	agExpect(e, "/login", randomToken(), rescueForm("sole_admin", testPassword, agTOTPNow(key)), 401, "Invalid handle or password")
-	if got := logs.lines(line); len(got) != 3 || got[2] != line+"7" {
+	if got := logs.lines(line); len(got) != 3 || got[2] != line+"9" {
 		t.Fatalf("exhausted recovery refusal was missing or double counted: %q", got)
 	}
 	all := strings.ToLower(logs.String())

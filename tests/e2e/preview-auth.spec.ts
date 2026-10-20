@@ -37,12 +37,12 @@ for (const path of ['/login', '/register']) {
     // A-517: with no staff contact the fallback says honestly that there is no way in without the image.
     await expect(page.locator('.captcha .captcha-fallback')).toHaveText('This market lists no contact that works without an account, so there is no way to get one without the image. Only the operator of this market can turn the CAPTCHA off.');
     if (path === '/login') {
-      // A-549: the code typed with the password completes the second step; the paused sole-administrator rescue stays.
+      // A-549: the code typed with the password completes the second step. A-571: it also signs any account with TOTP
+      // in while its handle is paused; without TOTP, the pause explanation is shown only with this field blank (S-2).
       await expect(page.getByLabel('Authenticator code (if you use one)')).toHaveAttribute('autocomplete', 'one-time-code');
       await expect(page.locator('#signin-code-help')).toContainText('Enter it now to skip the verification step.');
-      // Until A-571, a paused handle's pause explanation is shown only with this field blank (S-2).
-      await expect(page.locator('#signin-code-help')).toContainText('If sign-in for your handle is paused, leave this blank to see why.');
-      await expect(page.locator('#signin-code-help')).toContainText("If the only administrator's handle is temporarily paused");
+      await expect(page.locator('#signin-code-help')).toContainText('If sign-in for your handle is paused after failed passwords, your password with your current six-digit authenticator code still signs you in.');
+      await expect(page.locator('#signin-code-help')).toContainText('Without an authenticator app, leave this blank to see why sign-in is refused.');
     }
     if (path === '/register') {
       // A-512, A-544: selling needs an approved vendor application.

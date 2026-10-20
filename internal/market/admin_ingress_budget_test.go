@@ -96,10 +96,18 @@ func TestPublicListenerCannotPauseAdminIngressSignIn(t *testing.T) {
 		expect(login(false, "wrong-password-"+string(rune('a'+i)), ""), 401, "Invalid handle or password", "public wrong password")
 	}
 	expect(login(false, testPassword, ""), 429, signInPausedText, "public right password once paused")
-	// ...and, through the sole administrator's rescue path, the account's code budget, both in the public namespace.
+	// ...and, through the paused sign-in's rescue, the account's code budget, both in the public namespace. Wrong
+	// codes are refused before the password check and spend nothing (A-571); the right code with wrong passwords does.
 	wrong := e.wrongTOTP(id)
 	for range 10 {
-		expect(login(false, "wrong-password-z", wrong), 401, "Invalid handle or password", "public rescue guess")
+		expect(login(false, testPassword, wrong), 401, "Invalid handle or password", "public rescue code guess")
+	}
+	if e.A.limited("totp-verify:"+id, 1) || e.A.limited("adm:totp-verify:"+id, 1) {
+		t.Fatal("wrong rescue codes spent a code budget")
+	}
+	publicCode, _ := e.totpCodeFor(id, 0)
+	for range 10 {
+		expect(login(false, "wrong-password-z", publicCode), 401, "Invalid handle or password", "public rescue password guess")
 	}
 	if !e.A.limited(signInKey("onion_admin"), 10) || !e.A.limited("totp-verify:"+id, 10) {
 		t.Fatal("the public listener did not spend the public budgets")
@@ -459,13 +467,15 @@ func TestFullPublicLimiterTableRefusesNoAdminIngressPGPStep(t *testing.T) {
 	}
 }
 
-// A-159(a) through the private ingress: the public listener has spent the handle's sign-in budget and the
-// account's code budget, and the private ingress's sign-in budget is spent too; the sole administrator's rescue on
-// the private onion charges only the private code budget and signs in.
-func TestSoleAdminRescueThroughAdminIngress(t *testing.T) {
+// A-159(a) and A-571 through the private ingress, for an administrator of a market with more than one: the public
+// listener has spent the handle's sign-in budget and, with the right code and wrong passwords, the account's code
+// budget (wrong codes spend nothing there), and the private ingress's sign-in budget is spent too; the paused
+// sign-in's rescue on the private onion charges only the private code budget and signs in.
+func TestPausedRescueThroughAdminIngress(t *testing.T) {
 	e := newTestApp(t)
 	e.A.adminSocket = "/run/market-admin/http.sock"
 	id, _ := e.user("rescue_onion", "admin")
+	e.user("rescue_other_admin", "admin")
 	agEnableTOTP(e, id)
 	login := func(private bool, password, code string) *httptest.ResponseRecorder {
 		return ingressDo(e, private, "POST", "/login", randomToken(), url.Values{"handle": {"rescue_onion"}, "password": {password}, "rescue_code": {code}})
@@ -477,8 +487,17 @@ func TestSoleAdminRescueThroughAdminIngress(t *testing.T) {
 		}
 	}
 	for range 10 {
-		if w := login(false, "wrong-password-z", wrong); w.Code != 401 {
-			t.Fatalf("public rescue guess: %d", w.Code)
+		if w := login(false, testPassword, wrong); w.Code != 401 {
+			t.Fatalf("public rescue code guess: %d", w.Code)
+		}
+	}
+	if e.A.limited("totp-verify:"+id, 1) || e.A.limited("adm:totp-verify:"+id, 1) {
+		t.Fatal("wrong rescue codes on the public listener spent a code budget")
+	}
+	publicCode, _ := e.totpCodeFor(id, 0)
+	for range 10 {
+		if w := login(false, "wrong-password-z", publicCode); w.Code != 401 {
+			t.Fatalf("public rescue password guess: %d", w.Code)
 		}
 	}
 	for i := range 10 {
@@ -489,10 +508,14 @@ func TestSoleAdminRescueThroughAdminIngress(t *testing.T) {
 	if !e.A.limited("totp-verify:"+id, 10) || !e.A.limited("adm:"+signInKey("rescue_onion"), 10) || e.A.limited("adm:totp-verify:"+id, 1) {
 		t.Fatal("budgets not in the expected state before the rescue")
 	}
+	// A wrong code on the private onion is refused without spending the private code budget either.
+	if w := login(true, testPassword, wrong); w.Code != 401 || e.A.limited("adm:totp-verify:"+id, 1) {
+		t.Fatalf("private rescue code guess: %d", w.Code)
+	}
 	code, _ := e.totpCodeFor(id, 0)
 	w := login(true, testPassword, code)
 	if w.Code != 303 || e.cookie(w, "session") == "" {
-		t.Fatalf("private sole-administrator rescue: %d %q", w.Code, refusalText(w.Body.String()))
+		t.Fatalf("private paused sign-in rescue: %d %q", w.Code, refusalText(w.Body.String()))
 	}
 	if !e.A.limited("adm:totp-verify:"+id, 1) || e.A.limited("adm:totp-verify:"+id, 2) || e.A.limited("totp-verify:"+id, 11) {
 		t.Fatal("the private rescue did not charge exactly one private code attempt")
