@@ -1,5 +1,28 @@
 # OPSEC Market — thorough project review
 
+## Current owner scope — XMPP and encrypted support tickets (2026-10-20)
+
+This follow-up explicitly authorizes committing, pushing and merging after tests;
+earlier publication exclusions below describe earlier work only.
+
+- [x] Administrator outgoing XMPP configuration, recipient opt-in and frontend audience parity.
+- [x] Separate administrator/user encrypted-content consent, current-key checks and encrypted digital delivery.
+- [x] PGP requirements for new orders and private staff correspondence.
+- [x] Separate encrypted tickets, assignment, escalation and Open/Closed/Ignored transitions.
+- [x] Heavy role/ownership, consent/key and retention regression coverage; mobile no-JavaScript ticket journey.
+- [x] Independent application-security, Tor/privacy INFOSEC and release-QA blind reviews and cross-examination.
+- [x] Correct closure alerts for staff performing closure, sender identity, initial visibility and inactive assignee UI.
+- [x] Serialize summary-only XMPP sends with ticket escalation and independently verify actual database lock behavior.
+- [x] Correct and independently reverify notification audience provenance after retention removes a ticket reference.
+- [x] Complete full regression coverage with corrected-source reruns, record final war-room ruling and fresh completion scrutiny; current-head CI remains required before merge.
+- [x] Commit, push and attach [PR #105](https://github.com/yegamble/opsecmkt/pull/105).
+
+Publication status is tracked on that PR: its current-head **CI passed** gate is
+required before the owner-delegated merge. This source snapshot does not claim
+that the remote gate or merge has already completed.
+
+Evidence: `docs/evidence/xmpp-tickets-2026-10-20.md` and the WR-XMPP ledger entry.
+
 Scope: user requested loops and agents to thoroughly go through this project.
 Review existing behavior across marketplace, identity, operations and browser UI;
 fix confirmed defects, validate changes, and perform fresh completion scrutiny.

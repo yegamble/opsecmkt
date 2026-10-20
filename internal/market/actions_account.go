@@ -166,6 +166,9 @@ func passwordChangeAction(c *actionCtx) (actionResult, error) {
 		if _, err = tx.ExecContext(ctx, "INSERT INTO sessions(token_hash,user_id,expires) VALUES($1,$2,now()+interval '12 hours')", digest(token), uid); err != nil {
 			return actionResult{}, err
 		}
+		if err = notifyOwner(ctx, tx, uid, "Your account password was changed; other sessions and pending sign-ins were ended."); err != nil {
+			return actionResult{}, err
+		}
 		return actionResult{Redirect: "/account", Notice: "password", Audit: "Changed password; ended " + strconv.FormatInt(n, 10) + " other session(s) and any pending sign-ins"}, nil
 	})
 	if err != nil {

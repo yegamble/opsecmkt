@@ -8,7 +8,7 @@ It covers PostgreSQL, application records, audit exports, logs, wallet files, re
 **Implementation status: retention is opt-in.** [Retention maintenance](retention.md) implements database expiry, authenticated deletion requests,
 scoped preservation, guarded escrow retirement and restore replay. Backup and host audit-export tools record original deadlines and validate expiry.
 Operators must enable the service, schedule copy expiry and track external wallet, log, snapshot and media cleanup before claiming instance-wide enforcement.
-Disputes, order notes and automatic digital delivery remain plaintext; recipient-encryption enforcement for these fields is pending.
+Disputes, order notes and reusable automatic-delivery listing templates remain plaintext. New per-order manual and automatic delivery records are PGP-encrypted to the buyer, but the running server still sees the template or submitted manual text before encryption. Historical plaintext delivery records remain retained. These changes do not establish local recipient encryption for every private field.
 See [current storage and access](implementation-status.md#what-the-server-keeps) and [current backup behavior](operator-guide.md#backups-and-recovery).
 
 ## Ownership and rules
@@ -62,6 +62,7 @@ failure prevents closure, register a scoped operational exception covering only 
 | Private notes, shipping ciphertext, dispute evidence and delivered digital content | 30 days after financial closure; earlier when no longer needed. | Complete delivery and resolve the transaction. Remove bodies and sensitive attachments separately from minimal order state. Warn buyers to save deliveries before expiry. A recorded dispute or legal need may preserve only relevant evidence. |
 | Reusable digital listing content | While offered for sale; remove within 30 days after withdrawal or replacement. | Fulfil the listing. Sensitive reusable secrets must not enter server-readable automatic delivery under this policy. Delivered copies have their own deadline above. |
 | Listings, images and reviews | While published and needed; remove within 30 days of withdrawal or account closure. Retain an order-specific copy only while necessary for an open dispute, then for at most 30 days after financial closure. | Present the catalog and resolve actual disputes. Hiding a listing or review does not satisfy deletion. Keep only necessary excerpts; do not preserve an entire catalog as order evidence. |
+| Support-ticket bodies and workflow metadata | Bodies: 90 days after creation, or earlier when the opener or sender is closed/erased. Closed/Ignored metadata: 90 days after last update and only when bodies are gone. Open metadata remains for workflow. Related account holds can delay both. | Resolve support requests while bounding private ciphertext retention; journal deletion for restore replay. Prior recipients and XMPP services may retain separate copies. |
 | Notifications and closed provider-outage receipts | 30 days from notification creation or outage closure. | Give users and operators time to act. Keep notification bodies free of private evidence and delivery secrets. |
 | Audit events and signed exports | 180 days from the event's creation. An export expires no later than its earliest included event. | Investigate access, administrative changes and incidents over a bounded six-month window. Remove identity-linked events and every operator-controlled export copy at expiry. |
 | Operational, proxy, database and backup-job logs | 14 days from the event's creation, with both age and size limits. | Diagnose faults and recent abuse. Do not log request bodies, credentials, private text, full addresses or ciphertext. A specific incident may justify preserving a restricted excerpt. |
@@ -158,11 +159,12 @@ Encryption under an application or backup key protects storage but remains reada
 | Manual digital deliveries | Encrypt the payload for that buyer before uploading or send it through the encrypted message channel. Enforce ciphertext validation for a private-delivery field. Provide an optional sender-encrypted copy only when explicitly selected and disclosed. |
 | Automatic digital deliveries | Use server-readable delivery only for content deliberately classified as non-sensitive and clearly disclosed to the vendor. Private goods, credentials, access links or individualized secrets require a supported manual per-buyer encrypted fulfilment route or a reviewed workflow that prepares ciphertext without exposing plaintext or private keys to the server. |
 | Public listings, profiles and reviews | Allow only material intended for public disclosure. Warn at entry that plaintext and visible image content can be copied by anyone. |
-| Notifications, audit actions and logs | Use fixed status text and minimal identifiers. Do not copy private bodies, ciphertext or sensitive notes into secondary records. |
+| Notifications, audit actions and logs | Use fixed status text and minimal identifiers. Do not copy private bodies or sensitive notes into these records. Optional XMPP message forwarding may send existing recipient-encrypted armor only with separate administrator permission and recipient consent, preserving normal recipient authorization; the outbox references the original body instead of making another database copy. Providers and clients can retain separate external copies. |
 
-Current digital escrow checkout requires automatic listing delivery content. Implement manual encrypted fulfilment
-through checkout before offering private digital goods; suspend those listings until that route exists.
-Do not use placeholder automatic content to bypass the requirement.
+Current digital escrow checkout still requires automatic listing delivery content. New per-order delivery encryption
+does not protect the reusable template or incoming manual text from the running application. Private goods that must
+never be server-readable still require locally prepared recipient ciphertext or a reviewed fulfilment workflow that
+keeps plaintext outside the server. Do not use placeholder automatic content to bypass checkout requirements.
 
 Require a usable recipient encryption key and show its fingerprint before sending private content.
 Encourage users to verify that fingerprint independently, and clearly warn when the key changes.
@@ -176,9 +178,24 @@ Messages enforce these rules (A-569): a message to an account without a usable e
 plaintext, passphrase-only messages and messages whose visible recipient key IDs are all other keys; nothing is stored.
 A message whose recipient key IDs are all hidden is stored only after the sender ticks a confirmation that the server
 could not check the recipient, and is marked "recipient unknown". Messages stored before these checks keep their
-recorded status. Current manual delivery accepts arbitrary text, and automatic delivery copies server-readable listing
-content. These delivery gaps require implementation before the instance can claim all of the policy's private channels
-are enforced.
+recorded status. Both buyer and vendor now need usable public encryption keys before creating a draft or checking out,
+without requiring PGP sign-in or key-ownership proof. New manual and automatic per-order delivery records are stored
+as PGP armor encrypted to the buyer; unavailable encryption refuses manual delivery or leaves automatic delivery
+pending without storing plaintext. The running server sees manual text or the reusable listing template before that
+encryption, and historical plaintext delivery records are preserved. This does not satisfy a requirement that private
+plaintext never reach the server. Only encrypted new deliveries are eligible for explicitly consented XMPP forwarding;
+historical plaintext deliveries and reusable templates are never forwarded.
+
+Support ticket bodies are locally encrypted to both the opener and current assigned staff member, with no
+plaintext subject. Assignment and administrator escalation change workflow permissions, not prior ciphertext.
+The ticket's metadata history remains server-readable, and generic closure/ignore metadata can reach prior
+active staff handlers without disclosing the body or granting access to an escalated thread. Tickets and their
+external notification copies have separate retention boundaries. With retention enabled, ticket bodies expire
+90 days after creation or earlier when their opener or sender is closed or erased, except while a related account
+hold preserves the ticket. Holds cover current and historical participants, message senders and staff in workflow
+history as well as the opener/current assignee. Closed or Ignored metadata expires 90 days after its last update
+only after all bodies are gone and holds are released; Open metadata remains for staff workflow. Journaled deletion
+and restore replay apply to tickets and bodies, while external provider/client copies cannot be recalled.
 
 PGP does not conceal sender, recipient, time, message length or visible encryption-key identifiers.
 The server also stores recipient-match status and a count of additional visible recipient keys.
@@ -195,10 +212,11 @@ The following describes **current access**, including the difference between app
 
 | Information | Access through the application | Access with host/database control or a decrypted backup |
 | --- | --- | --- |
+| Support tickets | The opener and authorized current staff obtain ciphertext; administrator-only/escalated tickets exclude moderator staff access while preserving the opener’s own participant view. Status, assignment and history are procedural metadata. A new assignee cannot decrypt earlier bodies unless they already held a matching private key. | Ticket bodies remain ciphertext; participant links, IDs, states, assignment history and timing are readable. Prior recipients can retain copies. Optional XMPP copies require the separate consent and key checks and may survive outside the market. |
 | PGP message bodies | Sender and recipient obtain ciphertext; anyone holding a matching private key can decrypt. Staff have no general inbox reader, but can receive messages as recipients. | Ciphertext and metadata are available. Proper recipient-encrypted content cannot be decrypted without a recipient private key. |
 | Message relationships and timing | Parties see their messages. Independent staff see counts and latest times of messages from each disputing party to staff during an open dispute. Those counts do not prove which order a message concerned. | All retained sender/recipient links, times, lengths and stored recipient-status fields are available. Visible key IDs remain in ciphertext. |
 | Orders, notes and dispute text | Buyer and vendor; nonparty moderators and administrators when a dispute record, flagged payment or open escrow alert grants order access. Dispute access can persist after resolution. | All retained plaintext, participant links, status history and payment associations are readable. |
-| Digital deliveries and reusable listing delivery content | Delivered content: buyer and vendor, and independent staff when a dispute record exists. Reusable listing content: the vendor through listing management. | Retained plaintext delivery and listing content are readable. A correctly encrypted manual payload remains ciphertext without the recipient key. |
+| Digital deliveries and reusable listing delivery content | New per-order delivery armor: buyer and vendor, and independent staff when a dispute record exists; decrypting it needs the buyer's private key. Historical plaintext deliveries keep their existing reader permissions. Reusable listing content: the vendor through listing management. | New stored delivery ciphertext requires the buyer's private key. Historical plaintext delivery and reusable listing content remain readable; a running compromised application can capture incoming manual text and templates before encryption. |
 | Accounts and authentication | Administrators see handles, roles, suspension and factor status. A public key is shown to staff, to the owner's trading partners and accounts the owner has messaged, to every signed-in account when the owner is an active vendor, a listed staff member or the staff contact, and, for a moderator or administrator, to both parties of every disputed or resolved order (see "Who can be messaged" in implementation-status.md); vendor-profile keys follow the site's public or members-only access policy. Passwords and TOTP secrets are not exposed in ordinary views. | Password hashes can be attacked offline; they are not plaintext passwords. TOTP and temporary recovery reveals can be opened with their application secrets. Public keys and retained profile data are readable. |
 | Audit, notifications and public content | Users see their own activity and notifications; administrators can inspect/export audit events, subject to any configured private ingress. With `AUDIT_EXPORT_RECIPIENT` set, downloaded and host-written exports require the offline recipient's private key to decrypt. Published catalog, reviews and eligible images follow the site's public or members-only access policy. Staff visibility rules still apply to hidden material. | Live audit events and other retained database records are available. Optional offline-key encryption protects export files, not the live database. Public copies may survive elsewhere after removal. |
 | Escrow and wallet recovery material | Parties see permitted escrow/payment details; independent staff see authorized cases. | Payment mappings and retained sealed keys/seeds are available. Application-sealed material needs its application secret; sealed Monero seeds need the offline recipient's private key. Wallet files live outside database backups and need access to their separate store. The market controls custodial Monero funds. |

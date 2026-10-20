@@ -19,7 +19,7 @@ admin panel renders on exactly one section, and every page carries the section n
 {{else if eq .AdminSection "vendors"}}{{template "admin-vendors" .}}
 {{else if eq .AdminSection "payments"}}{{template "admin-payments" .}}
 {{else if eq .AdminSection "security"}}{{template "admin-auth" .}}
-{{else if eq .AdminSection "site"}}{{template "admin-branding" .}}{{template "admin-staff-contact" .}}
+{{else if eq .AdminSection "site"}}{{template "admin-branding" .}}{{template "admin-staff-contact" .}}{{template "admin-xmpp" .}}
 {{else if eq .AdminSection "transparency"}}{{template "admin-transparency" .}}{{template "admin-staff-list" .}}
 {{else if eq .AdminSection "system"}}{{template "admin-system" .}}{{end}}
 {{template "footer" .}}{{end}}

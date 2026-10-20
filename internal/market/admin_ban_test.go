@@ -36,6 +36,7 @@ func TestBanAccount(t *testing.T) {
 	other := agSession(e, vendorID)
 	agPending(e, vendorID)
 	buyerID, buyer := e.user("ban_buyer", "buyer")
+	e.enableOrderPGP(vendorID, buyerID)
 	agExec(e, "UPDATE users SET vendor_verified=true,vendor_verified_set_by=$2,vendor_verified_set_at=now() WHERE id=$1", vendorID, admin2ID)
 
 	// Two shipped, funded escrow orders with the vendor, each disputed by the buyer, and a draft not yet checked out.

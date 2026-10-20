@@ -10,6 +10,7 @@ func TestA60OwnListingAndInvalidDisputeCopy(t *testing.T) {
 	e := newTestApp(t)
 	vendorID, vendor := e.user("a60_vendor", "vendor")
 	buyerID, buyer := e.user("a60_buyer", "buyer")
+	e.enableOrderPGP(vendorID, buyerID)
 	product := e.product(vendorID, "physical")
 
 	ownerPage := e.body("GET", "/product?id="+product, vendor, nil, 200)

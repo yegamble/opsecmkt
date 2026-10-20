@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { ADMIN, uniqueHandle } from './db-fixtures';
-import { expectNotice, setRole, signedIn } from './db-helpers';
+import { expectNotice, saveEncryptionKey, setRole, signedIn } from './db-helpers';
 
 // All seed records below are created through public forms against PostgreSQL.
 // Intake is paused here; funded journeys live in the separate escrow browser suites.
@@ -20,6 +20,8 @@ test('seeded catalog discovery, role boundaries and persistent unfunded orders',
   try {
     await setRole(admin, vendorHandle, 'vendor');
     await setRole(admin, moderatorHandle, 'moderator');
+    await saveEncryptionKey(vendor, password);
+    await saveEncryptionKey(buyer, password);
     const publish = async (suffix: string, kind: string, region: string, stock: string) => {
       const title = `${seed} ${suffix}`;
       await vendor.goto('/vendor-dashboard');

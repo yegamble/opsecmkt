@@ -119,6 +119,9 @@ func escrowDecisionAction(c *actionCtx) (actionResult, error) {
 				return actionResult{}, err
 			}
 		}
+		if err = notifyDisputeObservers(ctx, c.Tx, o.ID, c.User.ID, "Dispute on order "+shortID(o.ID)+" has an updated administrator decision. Review the order history."); err != nil {
+			return actionResult{}, err
+		}
 		return actionResult{Redirect: orderPage(o.ID) + "#escrow-decision", Notice: "escrow-decision",
 			Audit: "Changed the escrow dispute decision of order " + shortID(o.ID) + " (" + current + " to " + outcome + ") (" + c.A.escrowNetwork() + ")"}, nil
 	})

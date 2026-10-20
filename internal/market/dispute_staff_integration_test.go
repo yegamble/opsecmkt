@@ -34,11 +34,14 @@ func TestDisputeNotifiesIndependentStaff(t *testing.T) {
 	if n := w.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body=$2", adminID, want); n != 1 {
 		t.Fatalf("independent administrator got %d resolver notices, want 1", n)
 	}
-	// The independent moderator cannot decide an escrow dispute, so it is not told to review it (A-558).
-	for _, uid := range []string{w.buyerID, w.vendorID, w.otherID, w.modID} {
+	// Parties use personal notices; the independent moderator receives a read-only dispute update.
+	for _, uid := range []string{w.buyerID, w.vendorID, w.otherID} {
 		if n := w.resolverNotices(uid); n != 0 {
 			t.Fatalf("non-resolver %s got %d resolver notices", uid, n)
 		}
+	}
+	if n := w.resolverNotices(w.modID); n != 1 {
+		t.Fatalf("moderator dispute notices=%d, want 1", n)
 	}
 	// Checkout and funding have their own notices; the buyer opener gets no dispute transition notice.
 	if n := w.count("SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE 'Order % is now Disputed.%'", w.buyerID); n != 0 {
@@ -252,8 +255,8 @@ func TestDisputeIgnoresSuspendedStaff(t *testing.T) {
 	mustContain(t, body, modHandle+" · moderator")
 	mustNotContain(t, body, "No independent moderator or administrator is available to contact.", lockedHandle)
 	second, _ := w.disputedFor(buyerID, buyer, adminID, "", buyer, "The second parcel never arrived either.")
-	if n := w.resolverNotices(modID); n != 0 {
-		t.Fatalf("restored moderator escrow dispute notices=%d, want 0", n)
+	if n := w.resolverNotices(modID); n != 1 {
+		t.Fatalf("restored moderator escrow dispute notices=%d, want 1", n)
 	}
 	if n := w.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND note LIKE 'No independent resolver was available%'", second); n != 1 {
 		t.Fatal("no-resolver note missing although only a moderator is independent of the escrow dispute")

@@ -269,6 +269,8 @@ func TestMessageEncryptionStatus(t *testing.T) {
 	alice, alicePub := testPGPKey(t, "alice")
 	bob, bobPub := testPGPKey(t, "bob")
 	senderID, sender := e.user("msg_sender", "buyer")
+	_, senderPub := testPGPKey(t, "msg_sender")
+	e.setKey(senderID, senderPub)
 	aliceID, aliceSession := e.user("msg_alice", "vendor")
 	nokeyID, _ := e.user("msg_nokey", "vendor")
 	e.check(e.do("POST", "/account", aliceSession, url.Values{"pgp": {alicePub}, "password": {testPassword}}), 303)
@@ -384,6 +386,8 @@ func TestMessagePlaintextInsideArmorRejected(t *testing.T) {
 	e := newTestApp(t)
 	alice, alicePub := testPGPKey(t, "alice")
 	senderID, sender := e.user("armor_buyer", "buyer")
+	_, senderPub := testPGPKey(t, "armor_buyer")
+	e.setKey(senderID, senderPub)
 	_, aliceSession := e.user("armor_vendor", "vendor")
 	e.check(e.do("POST", "/account", aliceSession, url.Values{"pgp": {alicePub}, "password": {testPassword}}), 303)
 
@@ -527,6 +531,8 @@ func TestMessageArmorCanonicalised(t *testing.T) {
 	alice, alicePub := testPGPKey(t, "alice")
 	bob, _ := testPGPKey(t, "bob")
 	senderID, sender := e.user("canon_buyer", "buyer")
+	_, senderPub := testPGPKey(t, "canon_buyer")
+	e.setKey(senderID, senderPub)
 	_, aliceSession := e.user("canon_alice", "vendor")
 	_, carolSession := e.user("canon_carol", "vendor")
 	e.check(e.do("POST", "/account", aliceSession, url.Values{"pgp": {alicePub}, "password": {testPassword}}), 303)
@@ -642,7 +648,7 @@ func TestProfileKeyStoredCanonically(t *testing.T) {
 			mustNotContain(t, page, append(leaks, "05:06")...)
 		}
 		page := e.body("GET", "/account", u.session, nil, 200)
-		mustContain(t, page, "canon_key &lt;canon_key@example.test&gt;", "Shown to market staff, to every vendor or buyer you trade with and anyone you have messaged, to every signed-in account if you sell, appear on the public staff list or are named as the staff contact, to both parties of every disputed or resolved order if you are a moderator or administrator,",
+		mustContain(t, page, "canon_key &lt;canon_key@example.test&gt;", "Shown to market staff, to every vendor or buyer you trade with and anyone you have messaged, to people who share an authorized support ticket with you, to every signed-in account if you sell, appear on the public staff list or are named as the staff contact, to both parties of every disputed or resolved order if you are a moderator or administrator,",
 			"Use a key made only for this market.", "Verified 2026-03-04 05:06 UTC")
 		mustNotContain(t, page, leaks...)
 		mustContain(t, e.body("GET", "/pgp", u.session, nil, 200), "Verified 2026-03-04 05:06 UTC")

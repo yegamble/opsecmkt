@@ -25,6 +25,7 @@ func TestPostgresMarketplaceFlow(t *testing.T) {
 	w = do("POST", "/register", anon, url.Values{"handle": {"buyer_two"}, "password": {"another-long-password"}})
 	check(w, 303)
 	other := session(w)
+	e.enableOrderPGP(agStr(e, "SELECT id FROM users WHERE handle='admin_user'"), agStr(e, "SELECT id FROM users WHERE handle='buyer_one'"))
 	check(do("GET", "/admin", buyer, nil), 403)
 	listing := url.Values{"title": {"Encrypted <script>alert(1)</script> storage"}, "description": {"A test storage device"}, "category": {"Hardware"}, "region": {"Worldwide"}, "kind": {"physical"}, "price_btc": {"0.0001"}, "price_xmr": {"0.001"}, "stock": {"2"}}
 	check(do("POST", "/listings", buyer, listing), 403)

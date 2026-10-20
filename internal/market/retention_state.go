@@ -356,7 +356,7 @@ func validateRetentionState(s retentionState) error {
 
 func validateRetentionTombstone(t retentionTombstone) error {
 	switch t.Kind {
-	case "message", "notification", "audit", "draft", "order", "order_private", "listing_private", "listing", "review", "image", "account_close", "account_restrict", "account", "escrow_order", "xmr_wallet_destroy":
+	case "message", "ticket_message", "ticket", "notification", "audit", "draft", "order", "order_private", "listing_private", "listing", "review", "image", "account_close", "account_restrict", "account", "escrow_order", "xmr_wallet_destroy":
 	default:
 		return errors.New("unknown retention tombstone scope")
 	}

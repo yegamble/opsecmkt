@@ -1,0 +1,36 @@
+{{define "account-xmpp"}}<section class="panel" id="xmpp-notifications" aria-labelledby="xmpp-notifications-heading">
+<h2 id="xmpp-notifications-heading">XMPP notifications</h2>
+<p>Receive the same alerts as your market notifications at your private XMPP address: orders, messages and dispute updates. Staff receive only alerts their current role permits.</p>
+<p class="help" id="xmpp-privacy">XMPP sends notification text outside the market. Your XMPP provider can see it and associate the destination with market activity. Notification summaries are not end-to-end encrypted. Message contents are excluded unless you separately choose to include already PGP-encrypted messages below. The market never decrypts them. Delivery depends on the operator enabling outgoing XMPP; your market notifications stay available if delivery fails.</p>
+<form class="stack" method="post" action="/account/xmpp">
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/account/xmpp"}}">
+<label>Private XMPP address<input name="xmpp" type="text" maxlength="254" value="{{with .XMPPAccount}}{{.Destination}}{{end}}" placeholder="account@example.org" autocomplete="off" autocapitalize="none" spellcheck="false" aria-describedby="xmpp-privacy"></label>
+<label><input type="checkbox" name="xmpp_enabled" value="1"{{with .XMPPAccount}}{{if .Enabled}} checked{{end}}{{end}}> Receive XMPP notifications</label>
+<p class="help">Use an address without a /resource. This destination is shown only in your account preferences. Changing it or disabling delivery cancels queued alerts for the previous preference; earlier notifications are not sent when you opt in.</p>
+<label><input type="checkbox" name="xmpp_include_contents" value="1" aria-describedby="xmpp-contents-help"{{with .XMPPAccount}}{{if .IncludeContents}} checked{{end}}{{if or (not .AllowContents) (not .KeyUsable)}} disabled{{end}}{{else}} disabled{{end}}> Include PGP-encrypted message contents</label>
+<p class="help" id="xmpp-contents-help">{{with .XMPPAccount}}{{if .ContentsUnavailable}}{{.ContentsUnavailable}} {{end}}{{end}}This separate choice requires XMPP notifications to be enabled and a usable PGP encryption key. Clear both choices to turn off XMPP. When the administrator allows it, new encrypted messages addressed to you can include their PGP message block in XMPP, with the order reference when one exists. Plaintext messages are never forwarded. Keep the corresponding private key in your own PGP client to decrypt the block. XMPP services can retain the ciphertext and notification metadata.</p>
+{{template "confirm-fields" (and .Security .Security.TOTPEnabled)}}
+<button type="submit">Save XMPP preferences</button>
+</form></section>{{end}}
+
+{{define "admin-xmpp"}}<section class="panel" id="xmpp-outgoing" aria-labelledby="xmpp-outgoing-heading">
+<h2 id="xmpp-outgoing-heading">Outgoing XMPP</h2>
+<p>Configure the XMPP account the market sends alerts from. Each recipient separately opts in under their account preferences.</p>
+{{with .XMPPAdmin}}{{if .Error}}<p class="alert" role="alert">{{.Error}}</p>{{end}}{{end}}
+<p class="help">The application connects directly to this server. Tor mode does not route XMPP through Tor automatically; the server can see the application host's network address. Use a dedicated sender account and arrange the required network route before enabling delivery. TLS certificate verification is always required.</p>
+<form class="stack" method="post" action="/admin/xmpp">
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/admin/xmpp"}}">
+<label>Sender XMPP address<input name="xmpp_sender" required maxlength="254" value="{{with .XMPPAdmin}}{{.Sender}}{{end}}" placeholder="market@example.org" autocomplete="off" autocapitalize="none" spellcheck="false"></label>
+<label>Server hostname<input name="xmpp_host" required maxlength="253" value="{{with .XMPPAdmin}}{{.Host}}{{end}}" placeholder="xmpp.example.org" autocomplete="off" autocapitalize="none" spellcheck="false"></label>
+<label>Server port<input name="xmpp_port" type="number" required min="1" max="65535" value="{{with .XMPPAdmin}}{{.Port}}{{else}}5222{{end}}"></label>
+<label>Connection security<select name="xmpp_tls_mode"><option value="starttls">STARTTLS (usually port 5222)</option><option value="direct"{{with .XMPPAdmin}}{{if eq .TLSMode "direct"}} selected{{end}}{{end}}>Direct TLS (usually port 5223)</option></select></label>
+<label>Sender account password<input type="password" name="xmpp_password" maxlength="1024" autocomplete="new-password" aria-describedby="xmpp-password-help"></label>
+<p class="help" id="xmpp-password-help">{{with .XMPPAdmin}}{{if .PasswordConfigured}}A sender password is saved. Leave this field empty to retain it.{{else}}Enter the outgoing XMPP account's password before enabling delivery.{{end}}{{else}}Enter the outgoing XMPP account's password before enabling delivery.{{end}} The stored password is encrypted with the application secret key and is never displayed.</p>
+<label><input type="checkbox" name="xmpp_enabled" value="1"{{with .XMPPAdmin}}{{if .Enabled}} checked{{end}}{{end}}> Enable outgoing XMPP delivery</label>
+<label><input type="checkbox" name="xmpp_allow_contents" value="1" aria-describedby="xmpp-allow-contents-help"{{with .XMPPAdmin}}{{if .AllowContents}} checked{{end}}{{end}}> Allow PGP-encrypted message contents in XMPP</label>
+<p class="help" id="xmpp-allow-contents-help">Off by default. Allow recipients with a usable PGP encryption key to separately choose forwarding of already encrypted messages addressed to them. This never enables a user's content preference for them, forwards plaintext, or grants access to another account's messages. Revoking permission prevents queued message contents from being sent, including if permission is later granted again. Notification summaries keep their existing recipient rules.</p>
+{{template "confirm-fields" (and .Security .Security.TOTPEnabled)}}
+<button type="submit">Save outgoing XMPP settings</button>
+</form></section>{{end}}

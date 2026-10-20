@@ -140,9 +140,9 @@ func vendorKeyLoader(ctx context.Context, a *App, _ *http.Request, d *PageData) 
 	return err
 }
 
-// noVendorKeyReason is the order page's "Unavailable." reason for requesting payment on a physical order whose
-// vendor has no key that can receive encrypted messages (A-83); the escrow checkouts refuse with the same words.
-const noVendorKeyReason = "This vendor has no usable encryption key, so you could not send your shipping address. Ask them to add one."
+// Every new order needs usable encryption keys on both accounts, including digital orders whose content is
+// encrypted separately for the buyer. Existing physical-order shipping prompts use the same vendor reason.
+const noVendorKeyReason = "This vendor has no usable PGP encryption key, so you cannot exchange encrypted order messages. Ask them to add one."
 
 // vendorKeyGate (A-83) runs once the order page's transitions and contacts are loaded. On a physical order whose
 // vendor has no key that can receive encrypted messages, its buyer's payment request is replaced by
@@ -232,5 +232,5 @@ func unreadNotificationsLoader(ctx context.Context, a *App, _ *http.Request, d *
 	if d.User == nil {
 		return nil
 	}
-	return a.db.QueryRowContext(ctx, "SELECT count(*) FROM notifications WHERE user_id=$1 AND NOT is_read", d.User.ID).Scan(&d.UnreadNotifications)
+	return a.db.QueryRowContext(ctx, `SELECT count(*) FROM notifications n JOIN users u ON u.id=n.user_id WHERE n.user_id=$1 AND NOT n.is_read AND `+notificationAudienceSQL("n", "u"), d.User.ID).Scan(&d.UnreadNotifications)
 }

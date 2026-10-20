@@ -247,10 +247,13 @@ func TestXMREscrowCheckoutRefusalsMore(t *testing.T) {
 	x.mustPoll()
 	phys := x.testEnv.product(x.vendor, "physical")
 	agExec(x.testEnv, "UPDATE products SET dispatch_days=3 WHERE id=$1", phys)
+	// The normal checkout fixture has usable buyer/vendor keys. Remove only the vendor's key for this refusal.
+	agExec(x.testEnv, "UPDATE users SET pgp='',pgp_fingerprint='' WHERE id=$1", x.vendor)
 	order := x.draft(phys)
 	if w := x.checkout(x.buyerSess, order, testXMRAddr("phys refund", true)); w.Code != 409 || !strings.Contains(w.Body.String(), noVendorKeyReason) || x.state(order) != stateDraft {
 		t.Fatalf("a vendor with no encryption key: %d %s", w.Code, w.Body.String())
 	}
+	x.enableOrderPGP(x.vendor)
 
 	first := x.draft(x.digital(x.vendor))
 	x.mustCheckout(first)

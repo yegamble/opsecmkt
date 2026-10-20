@@ -103,6 +103,8 @@ func (a *App) refusalBack(r *http.Request) string {
 	}
 	refPage, _, _ := strings.Cut(strings.TrimPrefix(ref, "/"), "?")
 	switch {
+	case refPage == "ticket" && strings.HasPrefix(r.URL.Path, "/tickets/"):
+		return ref
 	// An admin action's form is on an administration section (A-542): /admin/suspend refused from /admin/users
 	// links back to that section.
 	case ref != "" && (page == "" || refPage == page || page == "admin" && strings.HasPrefix(refPage, "admin/")):

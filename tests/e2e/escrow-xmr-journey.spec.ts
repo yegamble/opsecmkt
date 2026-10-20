@@ -65,6 +65,17 @@ async function signIn(browser: Browser, baseURL: string | undefined, handle: str
   await expect(page.locator('.account-name')).toHaveText(handle);
   return page;
 }
+
+// Successful order fixtures explicitly save encryption keys through the real
+// profile form; registration itself keeps the missing-key path available.
+async function saveEncryptionKey(page: Page, pass: string, fixture: 'recipient.pub.asc' | 'other.pub.asc') {
+  await page.goto('/account');
+  const profile = page.locator('form', { has: page.getByRole('button', { name: 'Save profile' }) });
+  await typeInto(page, profile.getByLabel('PGP public key', { exact: true }), pgpFixture(fixture));
+  await typeInto(page, profile.getByLabel('Current password', { exact: true }), pass);
+  expect(await pressSubmit(page, profile.getByRole('button', { name: 'Save profile' }))).toBe(303);
+}
+
 const badge = (page: Page) => page.locator('.page-head .badge');
 const figure = (page: Page, label: string) => page.locator('.payment-figures div').filter({ has: page.getByText(label, { exact: true }) });
 // The settlement section titled title (newest first, so .first() is the newest of that title).
@@ -146,7 +157,8 @@ async function paid(request: APIRequestContext, tx: string): Promise<string[]> {
 }
 
 test('Monero escrow: checkout with the custody copy, funding at 9 and 10 confirmations, the vendor\'s claim, and an underpaid order cancelled and refunded', async ({ page: admin, browser, baseURL, request }, info) => {
-  // The marketplace, an administrator, a buyer and a vendor (with a PGP key, so a physical listing takes escrow, A-83).
+  // The marketplace and both order parties with usable encryption keys. PGP
+  // sign-in stays off; saved encryption keys are the order requirement.
   await admin.goto('/setup');
   await typeInto(admin, admin.getByLabel('Setup token'), 'e2e-escrow-xmr-local-setup-token-at-least-32-characters');
   await typeInto(admin, admin.getByLabel('Handle', { exact: true }), 'xmr_admin');
@@ -160,6 +172,7 @@ test('Monero escrow: checkout with the custody copy, funding at 9 and 10 confirm
   const vendor = await context(browser, baseURL);
   await register(buyer, 'xmr_buyer', buyerPassword);
   await register(vendor, 'xmr_vendor', vendorPassword);
+  await saveEncryptionKey(buyer, buyerPassword, 'other.pub.asc');
   await admin.goto('/admin/users');
   const role = admin.locator('form', { has: admin.getByRole('button', { name: 'Update role' }) });
   await typeInto(admin, role.getByLabel('Account handle'), 'xmr_vendor');
@@ -169,11 +182,7 @@ test('Monero escrow: checkout with the custody copy, funding at 9 and 10 confirm
   await typeInto(admin, role.getByLabel('Current password'), password);
   await pressSubmit(admin, role.getByRole('button', { name: 'Update role' }));
   await expect(admin.getByRole('status').filter({ hasText: 'Account role saved.' })).toBeVisible();
-  await vendor.goto('/account');
-  const profile = vendor.locator('form', { has: vendor.getByRole('button', { name: 'Save profile' }) });
-  await typeInto(vendor, profile.getByLabel('PGP public key', { exact: true }), pgpFixture('recipient.pub.asc'));
-  await typeInto(vendor, profile.getByLabel('Current password', { exact: true }), vendorPassword);
-  expect(await pressSubmit(vendor, profile.getByRole('button', { name: 'Save profile' }))).toBe(303);
+  await saveEncryptionKey(vendor, vendorPassword, 'recipient.pub.asc');
   for (const [title, kind] of [[digitalTitle, 'digital'], [physicalTitle, 'physical']]) {
     await vendor.goto('/vendor-dashboard');
     await tabTo(vendor, vendor.getByText('+ Publish a new listing', { exact: true }));
@@ -219,7 +228,14 @@ test('Monero escrow: checkout with the custody copy, funding at 9 and 10 confirm
   await shot(buyer, info, '03-nine-confirmations');
   await mine(request, 1);
   await reloadUntil(buyer, async () => { await expect(badge(buyer)).toHaveText('Completed', { timeout: 500 }); });
-  await expect(buyer.getByText('LICENCE-XMR-ESCROW-0001')).toBeVisible();
+  const delivery = buyer.getByRole('textbox', { name: 'Digital delivery', exact: true });
+  await expect(delivery).toHaveValue(/^-----BEGIN PGP MESSAGE-----[\s\S]+-----END PGP MESSAGE-----\s*$/);
+  await expect(buyer.locator('main')).toContainText("Encrypted to the buyer's PGP public key.");
+  await expect(buyer.locator('main')).not.toContainText('LICENCE-XMR-ESCROW-0001');
+  expect(sql(`SELECT d.encrypted AND d.recipient_fingerprint=u.pgp_fingerprint
+    AND d.content LIKE '-----BEGIN PGP MESSAGE-----%' AND strpos(d.content,'LICENCE-XMR-ESCROW-0001')=0
+    FROM deliveries d JOIN orders o ON o.id=d.order_id JOIN users u ON u.id=o.buyer_id
+    WHERE d.order_id='${orderID(first.url)}'`)).toBe('t');
   await expect(figure(buyer, 'Escrow status')).toContainText('Funded and completed');
   await expect(row.locator('td').nth(3)).toHaveText('Confirmed');
   await shot(buyer, info, '04-completed-on-funding');

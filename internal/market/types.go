@@ -56,6 +56,7 @@ type Order struct {
 }
 type Message struct {
 	ID, Sender, Recipient, Body, Created string
+	OrderID, DisputeID                   string // explicit, authorized correspondence context
 	// P2 PGP
 	Encrypted      bool
 	RecipientMatch string
@@ -65,8 +66,8 @@ type Message struct {
 	RecipientExtraKeysSet bool
 }
 type Notification struct {
-	ID, Body, Created, OrderID string
-	Read                       bool
+	ID, Body, Created, OrderID, TicketID string
+	Read                                 bool
 }
 
 // StaffContactView is the administrator's staff contact (A-119, staff_contact.go): Text as saved, shown escaped;
@@ -166,8 +167,14 @@ type PageData struct {
 	Users                                                                     []User
 	Events                                                                    []Event
 	Settings                                                                  map[string]string
-	Preview                                                                   bool
-	AuditHandle                                                               string // /admin audit trail's exact-handle filter.
+	// Private notification preferences and outgoing settings are loaded only on
+	// the account page and administrator site settings page respectively.
+	XMPPAccount *XMPPAccountView
+	XMPPAdmin   *XMPPAdminView
+	TicketList  *TicketListView
+	Ticket      *TicketView
+	Preview     bool
+	AuditHandle string // /admin audit trail's exact-handle filter.
 	// Paging: catalog and public vendor page of the matching listings (A-181, A-189, load.go).
 	Paging *CatalogPaging
 	// ActivityPaging: signed-in user's orders, messages or notifications (A-16, load.go).
@@ -400,16 +407,20 @@ type PageData struct {
 	Contacts                []ContactKey // vendor page: the vendor; order page: the other party (both for a reviewer); messages: the ?to recipient
 	StaffContacts           []ContactKey // disputed order: independent moderators and administrators
 	MessageTo               string       // messages page: validated ?to handle for the recipient field
-	MessageLookupPaused     bool         // messages page: the account's recipient lookup budget is spent (A-516); no key, no existence text
-	MessageBody             string       // messages page: the ciphertext kept in the compose form after a hidden-recipient send (A-569)
-	MessageHiddenRecipients bool         // messages page: ask the sender to confirm a message whose recipient key IDs are all hidden (A-569)
-	OrderViewer             string       // order page: "buyer", "vendor" or "moderator" (read-only dispute review)
-	OrderSuspendedParties   []string     // current buyer/vendor suspension status; never the administrator's reason
-	UnreadNotifications     int          // signed-in users, every page
+	MessageOrderID          string       // explicit context revalidated for both correspondents
+	MessageDisputeID        string
+	MessageOwnKeyUnusable   bool     // private correspondence requires a usable sender key for encrypted replies
+	MessageLookupPaused     bool     // messages page: the account's recipient lookup budget is spent (A-516); no key, no existence text
+	MessageBody             string   // messages page: the ciphertext kept in the compose form after a hidden-recipient send (A-569)
+	MessageHiddenRecipients bool     // messages page: ask the sender to confirm a message whose recipient key IDs are all hidden (A-569)
+	OrderViewer             string   // order page: "buyer", "vendor" or "moderator" (read-only dispute review)
+	OrderSuspendedParties   []string // current buyer/vendor suspension status; never the administrator's reason
+	UnreadNotifications     int      // signed-in users, every page
 	// VendorKeyUnusable (A-83/A-225): a physical listing's product and checkout pages, and its buyer's order page, when
 	// the vendor has no key that can receive encrypted messages (canReceiveEncrypted); on a paid physical order it
 	// also tells the vendor to update their key before buyers send shipping addresses.
 	VendorKeyUnusable bool
+	BuyerKeyUnusable  bool // current buyer has no usable encryption key for a new draft/payment request
 	// PurchaseBlocks (A-444): a listing's product and checkout pages, each coin whose intake is escrow only while the
 	// listing cannot use its escrow (escrow_readiness.go), PurchaseBlocked the same by coin, and NoPurchase when every
 	// coin is blocked: the listing is not available for purchase.
@@ -501,7 +512,10 @@ type ConcessionPreview struct {
 
 type DisputePartyCounts struct{ Open, Closed, Withdrawn int }
 
-type DeliveryView struct{ Content, Created string }
+type DeliveryView struct {
+	Content, Created string
+	Encrypted        bool
+}
 type Review struct {
 	ID, OrderID, Buyer string
 	Rating             int
@@ -795,7 +809,8 @@ type EscrowStallView struct {
 // which alerts are open (a settlement queued or stuck, a release too few, a Monero deposit refused as another order's
 // escrow account with no disposition recorded, A-480, or a requested Monero settlement older than 24 hours). A-560: the
 // newest failed Monero settlement with a stored transaction (ReRequestable), without one claiming no deposit (Unbuilt,
-// dismissed as nothing owed) and without one still claiming deposits (Stranded, PAY613-4: never dismissed), and the
+// dismissed as nothing owed) and without one still claiming deposits (Stranded, PAY613-4: never dismissed; only a
+// build before A-614 leaves one), and the
 // newest set-aside one (SetAside), by settlement ID, 0 for none; StoredText: what staff are told of the first
 // (xmrFailedStoredText: whether a re-request waits, was refused or can be asked). Flagged (order page only): a deposit
 // is flagged as well.

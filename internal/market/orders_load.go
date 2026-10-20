@@ -176,8 +176,9 @@ const xmrFailedClosedSQL = "(xs.tx_hash IS NULL AND xs.kind='refund' AND xs.send
 	"' OR xs.id IN (SELECT h.settlement_id FROM xmr_settlement_hand_settled h))"
 
 // xmrClaimsSQL is true while the Monero settlement xs claims a deposit (PAY613-4): a re-request that failed
-// nothing-to-settle still holding the deposits of the settlement it superseded (A-614) is never "nothing owed". An
-// uncorrelated IN, as xmrFailedClosedSQL is, for the same reason (planning cost, not semantics).
+// nothing-to-settle still holding the deposits of the settlement it superseded is never "nothing owed". Since A-614
+// such a re-request waits instead (deposit-missing), so only an earlier build left one. An uncorrelated IN, as
+// xmrFailedClosedSQL is, for the same reason (planning cost, not semantics).
 const xmrClaimsSQL = "xs.id IN (SELECT p.xmr_settlement_id FROM payments p WHERE p.xmr_settlement_id IS NOT NULL)"
 
 // escrowStaffAlertCandidates bounds desk and badge scans to orders with a possible alert source; the detailed helper
@@ -389,7 +390,7 @@ func loadOrderDetail(ctx context.Context, a *App, r *http.Request, d *PageData) 
 	d.DeliveryWithheld = d.OrderViewer == roleModerator && !disputeVisible(o) && !staffDispute
 	var dv DeliveryView
 	if !d.DeliveryWithheld {
-		err = a.db.QueryRowContext(ctx, "SELECT content,to_char(created,'YYYY-MM-DD HH24:MI \"UTC\"') FROM deliveries WHERE order_id=$1", o.ID).Scan(&dv.Content, &dv.Created)
+		err = a.db.QueryRowContext(ctx, "SELECT content,to_char(created,'YYYY-MM-DD HH24:MI \"UTC\"'),encrypted FROM deliveries WHERE order_id=$1", o.ID).Scan(&dv.Content, &dv.Created, &dv.Encrypted)
 		if err == nil {
 			d.Delivery = &dv
 		} else if err != sql.ErrNoRows {
@@ -1003,8 +1004,9 @@ func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageDat
 		case locked:
 			v.Reason = "Locked transfer (unlock time), not counted or paid out"
 		case failedBy != 0 && !failedStored:
-			// PAY613-4: a re-request that failed before its transaction was built while it still claims the deposit (A-614):
-			// nothing stored to re-request, and it is never dismissed while it claims the deposit.
+			// PAY613-4: a re-request that failed before its transaction was built while it still claims the deposit (left by
+			// a build before A-614, which makes it wait instead): nothing stored to re-request, and it is never dismissed
+			// while it claims the deposit.
 			v.Reason = fmt.Sprintf("Escrow deposit counted for the order; Monero escrow settlement %d, which claims it, failed before any transaction was built, so its coins are still in the escrow wallet: settle with the operator, because the market does not settle them on its own", failedBy)
 			if failedRR == "dismissed " {
 				v.Reason += " (an administrator dismissed it as nothing owed)"
