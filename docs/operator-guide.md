@@ -1398,6 +1398,24 @@ the failed settlement becomes *superseded* and a new one is built from exactly t
 (only the network fee, and so the claimant's output, may differ) and sent; the database refuses any other coins, so at most one
 of the two transactions can ever be mined.
 
+**Failed and set-aside settlements are escrow alerts (A-560).** Until it is superseded, a failed settlement is listed under
+*Escrow alerts* on the moderation desk, counted in the staff badge and named in the order page's staff help, and a
+payment-review row of a deposit it spends says that it failed. The entry says which case it is. One with a stored
+transaction (the daemon refused it, or its stored metadata cannot be read) can be re-requested as above (*Re-request
+settlement N* on the order page); the alert clears when the re-request supersedes it. Such a failure does not prove that
+nothing reached the network (the wallet-rpc's refusal can follow a lost connection after the daemon took the
+transaction, and a relayed settlement can fail on unreadable metadata), so the entry offers the re-request only when
+the market would record one: while one waits for the watcher's next pass (or for a restore to finish) it says so; after
+a refusal it names the reason (the transaction in the pool or the chain, or a coin already spent) and asks you to check
+the escrow wallet and the chain instead; with `ESCROW_XMR` off it says the re-request is available once it is back
+on. One that failed before any
+transaction was built (*nothing-to-settle*: no confirmed deposit was left to spend; or a refund whose coins were too few)
+cannot be re-requested, and the market never builds that settlement again; a failed release or refund also stands in
+for the order's one release or refund, which is all the database allows. Read why under the settlement on the order
+page. A stray refund returns to the buyer any deposit it left out (listed under *Payment review*); anything else still
+owed is an operator decision taken by hand, outside the market. Its alert stays open. A set-aside settlement (below) is
+an alert until an administrator asks for it to be built again.
+
 **A set-aside settlement.** A settlement whose build makes the escrow wallet-rpc stop responding twice (monero-wallet-rpc
 0.18.5.1 crashes on some destinations) is set aside and flagged, and the watcher skips it so that others are not held up. Find
 out why the wallet-rpc stops (its container logs), then an administrator who is not a party asks on the order page, with a

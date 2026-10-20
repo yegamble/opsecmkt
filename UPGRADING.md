@@ -15,6 +15,26 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## Failed Monero settlements are escrow alerts (A-560)
+
+No migration and no new setting. A failed Monero escrow settlement that was not superseded, and one set aside because
+building it stopped the escrow wallet-rpc, are now escrow staff alerts: listed under *Escrow alerts* on the moderation
+desk, counted in the staff badge, readable by staff and named in the order page's staff help (also when its deposits are
+flagged, with a link to *Payment review*). The entry says whether the settlement can be re-requested (its transaction is
+stored: *Re-request settlement N*; or that a re-request is waiting, that the last one was refused and why, so check the
+escrow wallet and the chain, or that Monero escrow is off), built again (*Build settlement N again*), or neither, in which case anything still
+owed is settled by hand with the operator ([operator guide](docs/operator-guide.md), *Failed and set-aside settlements
+are escrow alerts*). A payment-review row of a deposit that a failed settlement spends now says that it failed instead
+of "the order's release or refund settles it". The parties see no change. Settlements that failed before the upgrade
+appear at once. One that failed without a stored transaction is never re-requested, so its alert does not clear; as for
+every open escrow alert, data retention keeps that order's escrow records and lists it with the reason `escrow_alert`
+(reopening one whose financial records it had closed). To list them:
+
+```sql
+SELECT id, order_id, kind, send_error, tx_hash IS NOT NULL AS stored FROM xmr_settlements
+ WHERE state = 'failed' OR state = 'requested' AND send_error = 'build-set-aside' ORDER BY id;
+```
+
 ## Official addresses in PGP sign-in codes (A-572)
 
 The encrypted PGP sign-in code now reads, after decryption, "Sign-in code for HANDLE at MARKET NAME", the UTC time
