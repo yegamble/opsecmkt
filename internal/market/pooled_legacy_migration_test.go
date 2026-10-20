@@ -117,8 +117,8 @@ func TestFreshEscrowOnlyInstallCannotFallBackToPooledPayments(t *testing.T) {
 func TestMigration107RefusesUndrainedLegacyWithoutChangesThenRestoredRerunPasses(t *testing.T) {
 	clearObsoletePooledEnv(t)
 	e := newPooledHistoricalFixture(t, 106)
-	buyer, _ := e.user("migration107_buyer", "buyer")
-	vendor, _ := e.user("migration107_vendor", "vendor")
+	buyer, _ := e.keylessUser("migration107_buyer", "buyer")
+	vendor, _ := e.keylessUser("migration107_vendor", "vendor")
 	product := e.product(vendor, "digital")
 	order := e.order(buyer, product, "XMR", stateAwaitingPayment)
 	closed := e.order(buyer, e.product(vendor, "physical"), "XMR", stateCompleted)
@@ -215,8 +215,8 @@ func TestMigration107RefusesUndrainedLegacyWithoutChangesThenRestoredRerunPasses
 func TestMigration107RefusesMainnetAddressHistory(t *testing.T) {
 	clearObsoletePooledEnv(t)
 	e := newPooledHistoricalFixture(t, 106)
-	buyer, _ := e.user("migration107_mainnet_buyer", "buyer")
-	vendor, _ := e.user("migration107_mainnet_vendor", "vendor")
+	buyer, _ := e.keylessUser("migration107_mainnet_buyer", "buyer")
+	vendor, _ := e.keylessUser("migration107_mainnet_vendor", "vendor")
 	order := e.order(buyer, e.product(vendor, "digital"), "XMR", "draft")
 	if _, err := e.DB.Exec(`INSERT INTO payment_addresses(order_id,currency,address,provider)
 		VALUES($1,'XMR','bc1qlegacy107mainnet000000000000000000000','btc-main')`, order); err != nil {

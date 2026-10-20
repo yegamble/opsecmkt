@@ -265,6 +265,9 @@ func ticketInsertMessage(c *actionCtx, t *TicketRecord, body string) error {
 }
 
 func ticketCreateAction(c *actionCtx) (actionResult, error) {
+	if err := requirePGPAccess(c); err != nil {
+		return actionResult{}, err
+	}
 	role, err := ticketActorRole(c)
 	if err != nil {
 		return actionResult{}, err
@@ -300,6 +303,9 @@ func ticketCreateAction(c *actionCtx) (actionResult, error) {
 }
 
 func ticketReplyAction(c *actionCtx) (actionResult, error) {
+	if err := requirePGPAccess(c); err != nil {
+		return actionResult{}, err
+	}
 	t, role, err := ticketForAction(c)
 	if err != nil {
 		return actionResult{}, err

@@ -3,10 +3,13 @@ package market
 import (
 	"database/sql"
 	"errors"
+	"html"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func TestTicketUIRecipientVisibilityAndPrivateThread(t *testing.T) {
@@ -121,10 +124,12 @@ func TestTicketUIMissingKeysAndStatusControls(t *testing.T) {
 	id, _ := w.open("mod")
 	e.setKey(w.ids["othermod"], "")
 	staffPage := e.body("GET", "/ticket?id="+id, w.sessions["othermod"], nil, 200)
-	mustContain(t, staffPage, `type="submit" disabled>Send encrypted ticket reply`)
+	mustContain(t, staffPage, "Before replying", "decrypt a PGP authentication challenge")
+	mustNotContain(t, staffPage, `action="/tickets/reply"`)
 	e.setKey(w.ids["opener"], "")
 	page := e.body("GET", "/ticket?id="+id, w.sessions["opener"], nil, 200)
-	mustContain(t, page, "Replies are unavailable until the opener, current assignee and sender all have usable PGP encryption keys.", `type="submit" disabled>Send encrypted ticket reply`)
+	mustContain(t, page, "Replies are unavailable until the opener, current assignee and sender all have usable PGP encryption keys.", "Before replying")
+	mustNotContain(t, page, `action="/tickets/reply"`)
 	e.check(e.do("POST", "/tickets/status", w.sessions["opener"], url.Values{"id": {id}, "status": {"closed"}}), 303)
 	page = e.body("GET", "/ticket?id="+id, w.sessions["opener"], nil, 200)
 	mustContain(t, page, "This ticket is Closed", "Replies are unavailable until authorized staff reopen it.")
@@ -133,5 +138,81 @@ func TestTicketUIMissingKeysAndStatusControls(t *testing.T) {
 	mustContain(t, page, "Open (reopen)", "Update ticket status")
 	if strings.Contains(page, `action="/tickets/assign"`) || strings.Contains(page, `action="/tickets/escalate"`) {
 		t.Fatal("closed ticket exposed assignment or escalation forms")
+	}
+}
+
+func TestTicketUIDemotedAssigneeCannotExposeTheirNewBuyerKey(t *testing.T) {
+	w := newTicketTestWorld(t)
+	id, _ := w.open("mod")
+	_, privateBuyerPublic := testPGPKey(t, "ticket-former-staff-private-buyer")
+	_, fingerprint, canonical, err := parseCanonicalPublicKey(privateBuyerPublic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agExec(w.e, "UPDATE users SET role='buyer' WHERE id=$1", w.ids["mod"])
+	w.e.setKey(w.ids["mod"], privateBuyerPublic)
+	for _, reader := range []string{"opener", "otheradmin"} {
+		page := w.e.body("GET", "/ticket?id="+id, w.sessions[reader], nil, 200)
+		mustContain(t, page, "ticket_mod", "Encrypted conversation", "Ticket history", "the current assignee is no longer eligible")
+		mustNotContain(t, html.UnescapeString(page), canonical, formatFingerprint(fingerprint))
+	}
+	w.e.check(w.e.do("GET", "/tickets?staff="+w.ids["mod"], w.sessions["opener"], nil), 404)
+}
+
+func TestTicketUIHiddenActiveAssigneeStillSharesTheirTicketKey(t *testing.T) {
+	w := newTicketTestWorld(t)
+	id, _ := w.open("mod")
+	agExec(w.e, "UPDATE users SET staff_hidden=true WHERE id=$1", w.ids["mod"])
+	agExec(w.e, "UPDATE settings SET value='false' WHERE key='staff_list_public'")
+	_, fingerprint, canonical, err := parseCanonicalPublicKey(w.public["mod"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := w.e.body("GET", "/ticket?id="+id, w.sessions["opener"], nil, 200)
+	// The ticket displays exactly its two participants' canonical keys. Decode
+	// HTML entities before comparing full armor, including base64 plus signs.
+	shown := armoredKeyPattern.FindAllString(html.UnescapeString(page), -1)
+	_, _, openerCanonical, err := parseCanonicalPublicKey(w.public["opener"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(shown) != 2 || shown[0] != openerCanonical || shown[1] != canonical {
+		t.Fatal("the ticket did not display exactly its opener and hidden active assignee keys")
+	}
+	mustContain(t, page, `<dd class="pgp-fingerprint">`+formatFingerprint(fingerprint)+`</dd>`, "Send encrypted ticket reply")
+	mustNotContain(t, page, "the current assignee is no longer eligible")
+}
+
+func TestTicketUISelectedAndAssignedKeyReadsFailClosedDuringRoleChange(t *testing.T) {
+	for _, kind := range []string{"selected recipient", "assigned staff"} {
+		t.Run(kind, func(t *testing.T) {
+			w := newTicketTestWorld(t)
+			id, _ := w.open("mod")
+			_, privateBuyerPublic := testPGPKey(t, "ticket-concurrent-private-buyer")
+			change, err := w.e.DB.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer change.Rollback()
+			if _, err = change.ExecContext(t.Context(), "UPDATE users SET role='buyer',pgp=$2 WHERE id=$1", w.ids["mod"], privateBuyerPublic); err != nil {
+				t.Fatal(err)
+			}
+			d := &PageData{User: w.e.loadUser(w.ids["opener"])}
+			path := "/ticket?id=" + id
+			loader := ticketThreadLoader
+			if kind == "selected recipient" {
+				path = "/tickets?staff=" + w.ids["mod"]
+				loader = ticketListLoader
+			}
+			r := httptest.NewRequest("GET", path, nil)
+			err = loader(r.Context(), w.e.A, r, d)
+			var pgErr *pgconn.PgError
+			if !errors.As(err, &pgErr) || pgErr.Code != "55P03" {
+				t.Fatalf("role/key change did not defer the %s read safely: %v", kind, err)
+			}
+			if d.Ticket != nil || d.TicketList != nil {
+				t.Fatal("a deferred role/key read exposed ticket recipient keys")
+			}
+		})
 	}
 }

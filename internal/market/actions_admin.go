@@ -277,6 +277,18 @@ func factorAccountsLoader(ctx context.Context, a *App, r *http.Request, d *PageD
 // available for the administrator's own account or another administrator; administrator lockout is an
 // operator procedure (docs/operator-guide.md).
 func adminResetFactorsAction(c *actionCtx) (actionResult, error) {
+	replacement := strings.TrimSpace(c.Form.Get("replacement_pgp"))
+	var replacementFingerprint string
+	if replacement != "" {
+		if c.Form.Get("recovery_identity_verified") != "yes" {
+			return actionResult{}, fail(400, "Confirm that the account holder's identity was verified out of band before replacing their public key.")
+		}
+		canonical, fingerprint, err := validateRecoveryPublicKey(replacement)
+		if err != nil {
+			return actionResult{}, err
+		}
+		replacement, replacementFingerprint = canonical, fingerprint
+	}
 	handle := strings.TrimSpace(c.Form.Get("handle"))
 	if handle == "" {
 		return actionResult{}, fail(400, "Enter an account handle")
@@ -325,8 +337,13 @@ func adminResetFactorsAction(c *actionCtx) (actionResult, error) {
 		if pgp {
 			what = append(what, "PGP sign-in")
 		}
-		if len(what) == 0 {
+		if len(what) == 0 && replacement == "" {
 			return actionResult{}, fail(409, handle+" has no second factor enrolled; nothing was changed.")
+		}
+		if replacement != "" {
+			if err = replaceRecoveryPublicKey(ctx, tx, target, replacement); err != nil {
+				return actionResult{}, err
+			}
 		}
 		if _, err = tx.ExecContext(ctx, "UPDATE users SET totp_enabled=false,totp_secret='',totp_pending='',totp_last_step=0,recovery_reveal='',recovery_reveal_until=NULL,pgp_2fa=false WHERE id=$1", target); err != nil {
 			return actionResult{}, err
@@ -338,14 +355,28 @@ func adminResetFactorsAction(c *actionCtx) (actionResult, error) {
 		n, _ := ended.RowsAffected()
 		sessions := strconv.FormatInt(n, 10) + " session(s)"
 		off := strings.Join(what, " and ")
-		if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", target, "Second factors reset by administrator "+c.User.Handle+": "+off+" turned off; ended "+sessions); err != nil {
+		changes := off + " turned off"
+		if replacement != "" {
+			changes = "PGP public key replaced (fingerprint " + replacementFingerprint + "; identity verified out of band)"
+			if off != "" {
+				changes += "; " + off + " turned off"
+			}
+		}
+		if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", target, "Second factors reset by administrator "+c.User.Handle+": "+changes+"; ended "+sessions); err != nil {
 			return actionResult{}, err
 		}
 		note := "An administrator reset your two-factor sign-in (" + off + " turned off) and signed you out everywhere. Sign in with your password, then set up TOTP or PGP sign-in again from your account."
+		if replacement != "" {
+			note = "An administrator performed identity-verified recovery and replaced your PGP public key (fingerprint " + replacementFingerprint + "). All sessions and pending sign-ins ended; optional second factors were reset. Your password is unchanged. Ownership of the new key remains unverified until you prove it. A market requiring PGP at sign-in still requires decryption with your new key."
+		} else if required, err := pgpLoginRequired(ctx, tx); err != nil {
+			return actionResult{}, err
+		} else if required {
+			note = "An administrator reset your optional second factors and signed you out everywhere. This market still requires PGP decryption at sign-in. If your bound key is lost, identity-verified replacement-key recovery is required."
+		}
 		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), target, note); err != nil {
 			return actionResult{}, err
 		}
-		return actionResult{Redirect: adminUserBack(c, handle, "/admin/users"), Notice: "factors-reset", Audit: "Reset second factors of " + handle + ": " + off + " turned off; ended " + sessions}, nil
+		return actionResult{Redirect: adminUserBack(c, handle, "/admin/users"), Notice: "factors-reset", Audit: "Reset second factors of " + handle + ": " + changes + "; ended " + sessions}, nil
 	})
 }
 

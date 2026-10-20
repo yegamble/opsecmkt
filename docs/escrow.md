@@ -115,14 +115,23 @@ market holds the wallet keys and builds, stores and sends every transaction itse
   90 days. There is no web action that ends it; staff see it as the order's wait line, an open flag of the missing
   deposit on the payment-review desk ("Credited deposit conflicted or missing"), the moderator desk's alert for a
   settlement requested for more than 24 hours, and, past the 90 days, the administrators' notice that a retained
-  wallet is kept. Resolving it is an operator decision taken by hand (PAY66-7; a code change is a separate ledger item).
+  wallet is kept. Resolving it by hand is **break-glass** (PAY66-7): wait by default, and never pay from other funds
+  while the market can still send it. The wait lasts only after a deep reorganisation or a double spend, or a wallet
+  restore or rescan that lost the deposit; if the deposit is listed again, the market builds and sends it on its own.
   An administrator's re-request of a failed settlement spends exactly the coins of the transaction it replaces, so
   while a deposit those coins came from is no longer listed it waits the same way (*deposit-missing*), with no bounded
   wait (it has no other coins to build from), rather than failing *nothing-to-settle* while it still claims that
   deposit (A-614). Staff get one order note and notice each time it starts waiting; it builds and sends once the
-  wallet lists the deposit again, and it can never pay twice, because both transactions spend the same coins. A
-  re-requested stray refund that waits so also holds back the stray refund of any later deposit to that order, since
-  one stray refund is in progress at a time.
+  wallet lists the deposit again, and it can never pay twice, because both transactions spend the same coins. Settling
+  a waiting re-request by hand is **break-glass** in the same way: wait by default, and never pay from other funds while
+  the market can still send it. A re-requested stray refund never holds the order's one stray refund slot (A-616,
+  migration 135: the slot is for a first-generation stray refund only), so while one waits, or is in progress at all, a
+  later deposit's stray refund is still requested, built from deposits no settlement claims and sent. The two never
+  spend the same coins: the re-request spends exactly its stored key images, and the market builds one transaction per
+  order at a time. The order page's status says when two stray refunds are in progress. While a re-request is still
+  requested, the payment-review reason of each deposit it claims names it and the settlement it re-requests, says when
+  it waits for that missing deposit, and says not to pay it by hand; so does the desk's 24-hour line for one waiting so
+  (A-617).
   A deposit that did not count when its order was cancelled (the wallet read it as a double spend, or
   no longer listed it) and has confirmed since is left out and returned by a stray refund too, when no refund spends it: it is flagged
   and the buyer told. The order page lists a left-out deposit on its own line, not counted as received, and a cancelled

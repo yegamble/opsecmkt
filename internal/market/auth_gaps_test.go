@@ -889,21 +889,23 @@ func TestPGPVerifyRejectsChangedKey(t *testing.T) {
 	_, bobFP, _ := parsePublicKey(bobPub)
 	id, s := e.user("pgp_swap", "buyer")
 	e.check(e.do("POST", "/account", s, url.Values{"pgp": {alicePub}, "password": {testPassword}}), 303)
+	// The owner retains a preexisting authenticator for recovery after a legacy key becomes unreadable.
+	recoveryFactor, _ := agEnableTOTP(e, id)
 	e.check(e.do("POST", "/pgp/challenge", s, url.Values{"kind": {"sign"}}), 303)
 	challenge := agStr(e, "SELECT challenge FROM pgp_challenges WHERE user_id=$1", id)
 	proof := testClearsign(t, alice, challenge)
 
-	// The saved key changes underneath an open challenge (the /account path also purges challenges).
+	// A proof is bound to the exact saved key. Changing the key makes the old challenge unavailable.
 	agExec(e, "UPDATE users SET pgp=$2,pgp_fingerprint=$3 WHERE id=$1", id, bobPub, bobFP)
-	agExpect(e, "/pgp/verify", s, url.Values{"signature": {proof}}, 409, "changed since this challenge")
+	agExpect(e, "/pgp/verify", s, url.Values{"signature": {proof}}, 409, "No open challenge")
 	// A saved key that no longer parses is treated the same way.
 	agExec(e, "UPDATE users SET pgp='-----BEGIN PGP PUBLIC KEY BLOCK-----\nbroken\n-----END PGP PUBLIC KEY BLOCK-----' WHERE id=$1", id)
-	agExpect(e, "/pgp/verify", s, url.Values{"signature": {proof}}, 409, "changed since this challenge")
+	agExpect(e, "/pgp/verify", s, url.Values{"signature": {proof}}, 409, "No open challenge")
 	if agStr(e, "SELECT (pgp_verified_at IS NULL)::text FROM users WHERE id=$1", id) != "true" || e.auditHas(id, "Verified PGP key ownership") {
 		t.Fatal("proof for the old key verified the new one")
 	}
-	// Saving through /account purges the stale challenge, so the old proof has nothing to answer.
-	e.check(e.do("POST", "/account", s, url.Values{"pgp": {alicePub}, "password": {testPassword}}), 303)
+	// Saving through /account with the preexisting authenticator purges the stale challenge.
+	e.check(e.do("POST", "/account", s, url.Values{"pgp": {alicePub}, "password": {testPassword}, "code": {agTOTPNow(recoveryFactor)}}), 303)
 	if agInt(e, "SELECT count(*) FROM pgp_challenges WHERE user_id=$1", id) != 0 {
 		t.Fatal("key change kept the open challenge")
 	}
@@ -917,7 +919,7 @@ func TestPGPVerifyRejectsChangedKey(t *testing.T) {
 // their key completes sign-in after /revoke-sessions, although the victim's TOTP is still enrolled.
 func TestStolenSessionCannotAddPGPFactorToTOTPAccount(t *testing.T) {
 	e := newTestApp(t)
-	uid, stolen := e.user("victim_totp", "vendor")
+	uid, stolen := e.keylessUser("victim_totp", "buyer")
 	agEnableTOTP(e, uid)
 	mallory, malloryPub := testPGPKey(t, "mallory")
 
@@ -975,33 +977,45 @@ func TestStolenSessionCannotEnrollTOTPOnPGPAccount(t *testing.T) {
 	e := newTestApp(t)
 	uid, stolen := e.user("victim_pgp", "vendor")
 	_, pub := testPGPKey(t, "victim")
-	agEnablePGP(e, uid, pub)
+	agEnablePGP(e, uid, pub) // the stolen session has not proved this existing binding
 
-	// Starting enrollment only stores an inactive secret; activation is the gate.
-	e.check(e.do("POST", "/totp/enroll", stolen, nil), 303)
-	if !strings.Contains(e.body("GET", "/totp", stolen, nil, 200), `name="password"`) {
-		t.Fatal("/totp does not ask for the password before activation on a PGP-sign-in account")
+	// A session, even with the password, cannot start or activate a first authenticator.
+	agExpect(e, "/totp/enroll", stolen, nil, 403, "Decrypt a challenge")
+	if agStr(e, "SELECT totp_pending FROM users WHERE id=$1", uid) != "" {
+		t.Fatal("an unproved session started TOTP enrollment")
 	}
-	code, _ := e.totpCodeFor(uid, 0)
-	agExpect(e, "/totp/activate", stolen, url.Values{"code": {code}}, 400, "Enter your current password")
-	agExpect(e, "/totp/activate", stolen, url.Values{"code": {code}, "password": {"wrong password!"}}, 401, "Password incorrect")
-	if agStr(e, "SELECT totp_enabled::text FROM users WHERE id=$1", uid) != "false" || agInt(e, "SELECT count(*) FROM recovery_codes WHERE user_id=$1", uid) != 0 {
-		t.Fatal("TOTP activated on a PGP-sign-in account without the password")
+	// Even a pending setup left by the owner before this session was stolen stays inaccessible.
+	pendingSecret := newTOTPSecret()
+	sealed, err := e.A.seal("totp", pendingSecret)
+	if err != nil {
+		t.Fatal(err)
 	}
+	agExec(e, "UPDATE users SET totp_pending=$2 WHERE id=$1", uid, sealed)
+	pendingCode, _ := e.totpCodeFor(uid, 0)
+	agExpect(e, "/totp/activate", stolen, url.Values{"code": {pendingCode}, "password": {testPassword}}, 403, "Decrypt a challenge")
+	if agStr(e, "SELECT totp_pending FROM users WHERE id=$1", uid) != sealed ||
+		agStr(e, "SELECT totp_enabled::text FROM users WHERE id=$1", uid) != "false" ||
+		agInt(e, "SELECT count(*) FROM recovery_codes WHERE user_id=$1", uid) != 0 {
+		t.Fatal("an unproved session changed pending enrollment or obtained recovery codes")
+	}
+	mustNotContain(t, e.body("GET", "/totp", stolen, nil, 200), `class="totp-secret"`, groupSecret(pendingSecret))
 
 	e.check(e.do("POST", "/revoke-sessions", stolen, nil), 303)
 	anon, pc := e.pendingSignIn("victim_pgp")
-	next, _ := e.totpCodeFor(uid, 1)
-	w := e.do("POST", "/challenge", anon, url.Values{"method": {"totp"}, "code": {next}}, pc)
+	w := e.do("POST", "/challenge", anon, url.Values{"method": {"totp"}, "code": {"123456"}}, pc)
 	if w.Code == 303 && e.cookie(w, "session") != "" {
 		t.Fatal("signed in to a PGP-sign-in account with an authenticator added from a session")
 	}
 
-	// The owner activates with the password; the audit records it.
+	// The owner proves the existing PGP binding before enrollment and activation.
 	owner := agSession(e, uid)
+	e.pgpSessionKey(owner)
+	e.check(e.do("POST", "/totp/enroll", owner, nil), 303)
+	code, _ := e.totpCodeFor(uid, 0)
 	e.check(e.do("POST", "/totp/activate", owner, url.Values{"code": {code}, "password": {testPassword}}), 303)
-	if agStr(e, "SELECT totp_enabled::text FROM users WHERE id=$1", uid) != "true" || !e.auditHas(uid, "Enabled TOTP two-factor authentication; issued 10 recovery codes (confirmed with password)") {
-		t.Fatal("confirmed TOTP activation not applied or not audited with its confirmation")
+	if agStr(e, "SELECT totp_enabled::text FROM users WHERE id=$1", uid) != "true" ||
+		!e.auditHas(uid, "Enabled TOTP two-factor authentication; issued 10 recovery codes (confirmed with password)") {
+		t.Fatal("confirmed owner TOTP activation not applied or not audited")
 	}
 }
 

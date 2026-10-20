@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { expect, test, type Page } from '@playwright/test';
 import { uniqueHandle } from './db-fixtures';
-import { expectNotice, signedIn, submitStatus } from './db-helpers';
+import { expectNotice, pgpFixture, signedIn, submitStatus } from './db-helpers';
 import { waitForStyles } from './styles';
 
 // A-544: under a bond + manual approval policy, a new account signs up as a vendor, sees its bond and the
@@ -48,6 +48,7 @@ test('vendor sign-up under bond and approval, bond recorded, approved, then publ
     await vendor.getByLabel('Handle', { exact: true }).fill(vendorHandle);
     await vendor.getByLabel('Password', { exact: true }).fill(password);
     await vendor.getByLabel('Vendor account').check();
+    await vendor.getByLabel('PGP public key', { exact: true }).fill(pgpFixture('recipient.pub.asc'));
     await vendor.getByRole('button', { name: 'Create account' }).click();
     await expect(vendor).toHaveURL(/\/account#vendor-application$/);
     const section = vendor.getByRole('region', { name: 'Sell on this market' });

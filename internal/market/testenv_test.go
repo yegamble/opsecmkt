@@ -40,18 +40,21 @@ type testEnv struct {
 	t  *testing.T
 	A  *App
 	DB *sql.DB // A.db, scoped to the test schema
-	// Explicitly requested by successful order fixtures, never a default on e.user or e.order.
+	// Used by explicit order fixtures to decrypt their saved delivery ciphertext.
 	commercePGP       *openpgp.Entity
 	commercePGPPublic string
 }
 
 // enableOrderPGP gives the named accounts a usable key for an order fixture. Existing keys are retained so fixtures
-// with a particular recipient or an unusable key still exercise that key. Account and missing-key tests stay keyless
-// unless they explicitly request this helper.
+// with a particular recipient or an unusable key still exercise that key. Missing-key tests use keylessUser.
+// The default authenticated account fixture and encrypted-delivery fixtures share one throwaway key.
 func (e *testEnv) enableOrderPGP(ids ...string) {
 	e.t.Helper()
 	if e.commercePGP == nil {
-		e.commercePGP, e.commercePGPPublic = testPGPKey(e.t, "commerce-fixture")
+		accountPGPFixture.once.Do(func() {
+			accountPGPFixture.key, accountPGPFixture.public = testPGPKey(e.t, "commerce-fixture")
+		})
+		e.commercePGP, e.commercePGPPublic = accountPGPFixture.key, accountPGPFixture.public
 	}
 	for _, id := range ids {
 		if agStr(e, "SELECT pgp FROM users WHERE id=$1", id) == "" {
@@ -319,8 +322,9 @@ var testHash = sync.OnceValue(func() string {
 	return string(h)
 })
 
-// user inserts an account (password testPassword) with a live session, marking the market installed.
-func (e *testEnv) user(handle, role string) (id, session string) {
+// keylessUser inserts an account without a PGP key or authentication proof. Use it for
+// enrollment, browse-only login and access-refusal tests.
+func (e *testEnv) keylessUser(handle, role string) (id, session string) {
 	e.t.Helper()
 	id, session = randomToken(), randomToken()
 	for _, q := range []struct {
@@ -374,4 +378,68 @@ func (e *testEnv) loadUser(id string) *User {
 		e.t.Fatal(err)
 	}
 	return u
+}
+
+// accountPGPFixture is a throwaway key shared by ordinary authenticated account and
+// encrypted-delivery fixtures. Its private half exists only in tests to check delivery
+// ciphertext; authentication tests use their own key and the real challenge endpoints.
+var accountPGPFixture struct {
+	once   sync.Once
+	key    *openpgp.Entity
+	public string
+}
+
+// user represents an account that already completed PGP authentication in this
+// session. Requests still run the production authorization checks. Tests of missing
+// keys or proof use keylessUser, and changing a key requires explicit reauthentication.
+func (e *testEnv) user(handle, role string) (id, session string) {
+	e.t.Helper()
+	id, session = e.keylessUser(handle, role)
+	accountPGPFixture.once.Do(func() {
+		accountPGPFixture.key, accountPGPFixture.public = testPGPKey(e.t, "commerce-fixture")
+	})
+	e.pgpSession(session, accountPGPFixture.public)
+	return id, session
+}
+
+// pgpSession explicitly seeds a saved public key and this session's access proof.
+// It is fixture setup, not a request helper; tests of authentication must submit the
+// actual challenge rather than use this method.
+func (e *testEnv) pgpSession(token, public string) {
+	e.t.Helper()
+	_, fingerprint, canonical, err := parseCanonicalPublicKey(public)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	res, err := e.DB.Exec(`UPDATE users SET pgp=$2,pgp_fingerprint=$3
+		WHERE id=(SELECT user_id FROM sessions WHERE token_hash=$1)`, digest(token), canonical, fingerprint)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	if n, err := res.RowsAffected(); err != nil || n != 1 {
+		e.t.Fatalf("seed PGP account: %d rows: %v", n, err)
+	}
+	e.pgpSessionKey(token)
+}
+
+// pgpSessionKey explicitly reauthenticates a fixture session after a test changed
+// the saved key directly. It never changes that key or account-level ownership state.
+func (e *testEnv) pgpSessionKey(token string) {
+	e.t.Helper()
+	var public string
+	if err := e.DB.QueryRow(`SELECT u.pgp FROM users u JOIN sessions s ON s.user_id=u.id
+		WHERE s.token_hash=$1`, digest(token)).Scan(&public); err != nil {
+		e.t.Fatal(err)
+	}
+	_, _, canonical, err := parseCanonicalPublicKey(public)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	res, err := e.DB.Exec("UPDATE sessions SET pgp_access_key=$2 WHERE token_hash=$1", digest(token), digest(canonical))
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	if n, err := res.RowsAffected(); err != nil || n != 1 {
+		e.t.Fatalf("seed PGP session: %d rows: %v", n, err)
+	}
 }

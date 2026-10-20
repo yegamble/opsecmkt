@@ -27,6 +27,9 @@ func TestMessageOrderContextIsExplicitAuthorizedAndForwardedAsCiphertext(t *test
 	setMessageTestKey(e, buyerID, buyerPub)
 	setMessageTestKey(e, vendorID, vendorPub)
 	setMessageTestKey(e, otherID, otherPub)
+	e.pgpSessionKey(buyer)
+	e.pgpSessionKey(vendor)
+	e.pgpSessionKey(other)
 	order := e.order(buyerID, e.product(vendorID, "physical"), "XMR", statePaid)
 	enableXMPPDelivery(e)
 	agExec(e, `UPDATE settings SET value=(value::jsonb || '{"allow_contents":true,"content_policy_version":1}')::text WHERE key='xmpp_config'`)
@@ -85,11 +88,12 @@ func TestStaffDisputeMessagesRequirePGPAndKeepPrivateContext(t *testing.T) {
 			e := newTestApp(t)
 			buyerID, buyer := e.user("context_party", "buyer")
 			vendorID, _ := e.user("context_seller", "vendor")
-			staffID, staff := e.user("context_staff", role)
+			staffID, staff := e.keylessUser("context_staff", role)
 			_, watcher := e.user("context_observer", "admin")
 			buyerKey, buyerPub := testPGPKey(t, "context_party")
 			_, staffPub := testPGPKey(t, "context_staff")
 			setMessageTestKey(e, buyerID, buyerPub)
+			e.pgpSessionKey(buyer)
 			order := e.order(buyerID, e.product(vendorID, "physical"), "XMR", stateDisputed)
 			dispute := randomToken()
 			agExec(e, `INSERT INTO disputes(id,order_id,reason) VALUES($1,$2,'Private original dispute evidence')`, dispute, order)
@@ -100,8 +104,9 @@ func TestStaffDisputeMessagesRequirePGPAndKeepPrivateContext(t *testing.T) {
 			f := url.Values{"recipient": {"context_party"}, "body": {ciphertext}, "dispute_id": {dispute}}
 			// Staff status never permits sending without a public key or sending
 			// plaintext to a party as a purported dispute/ticket message.
-			e.check(e.do("POST", "/messages", staff, f), 409)
+			e.check(e.do("POST", "/messages", staff, f), 403)
 			setMessageTestKey(e, staffID, staffPub)
+			e.pgpSessionKey(staff)
 			plain := cloneValues(f)
 			plain.Set("body", "An unencrypted private staff update must never be stored or sent.")
 			e.check(e.do("POST", "/messages", staff, plain), 400)
@@ -126,6 +131,7 @@ func TestHiddenRecipientConfirmationPreservesMessageContext(t *testing.T) {
 	vendorKey, vendorPub := testPGPKey(t, "context_hidden_vendor")
 	setMessageTestKey(e, buyerID, buyerPub)
 	setMessageTestKey(e, vendorID, vendorPub)
+	e.pgpSessionKey(buyer)
 	order := e.order(buyerID, e.product(vendorID, "physical"), "XMR", statePaid)
 	ciphertext, err := encryptTo(vendorKey, "Hidden recipient order correspondence")
 	if err != nil {
@@ -163,7 +169,7 @@ func TestPrivateMessagesRequireUsableSenderKeyForEveryRole(t *testing.T) {
 				} else {
 					e.setKey(uid, public)
 				}
-				e.check(e.do("POST", "/messages", session, url.Values{"recipient": {"sender_key_target"}, "body": {body}}), 409)
+				e.check(e.do("POST", "/messages", session, url.Values{"recipient": {"sender_key_target"}, "body": {body}}), 403)
 				if agInt(e, `SELECT count(*) FROM messages`) != 0 || agInt(e, `SELECT count(*) FROM notifications`) != 0 {
 					t.Fatal("a sender without a usable encryption key created private correspondence or alerts")
 				}

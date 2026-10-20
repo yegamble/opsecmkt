@@ -9,7 +9,7 @@ import (
 func TestDisputeStaffContacts(t *testing.T) {
 	w := newOrderWorld(t)
 	e := w.e
-	adminID, _ := e.user("contact_admin", "admin")
+	adminID, _ := e.keylessUser("contact_admin", "admin")
 	key, public := testPGPKey(t, "staff")
 	if _, err := e.DB.Exec("UPDATE users SET pgp=$1 WHERE id=$2", public, w.modID); err != nil {
 		t.Fatal(err)
@@ -42,7 +42,7 @@ func TestDisputeStaffContacts(t *testing.T) {
 	if err := e.DB.QueryRow("SELECT challenge FROM pgp_challenges WHERE user_id=$1", w.modID).Scan(&challenge); err != nil {
 		t.Fatal(err)
 	}
-	e.check(e.do("POST", "/pgp/verify", w.mod, form("response", testDecrypt(t, key, challenge))), 303)
+	e.check(e.do("POST", "/pgp/verify", w.mod, form("response", testSignInCode(t, key, challenge))), 303)
 	if body := w.page("/order?id="+order, w.vendor, 200); !strings.Contains(body, "Ownership verified") {
 		t.Fatal("verified staff key proof missing for vendor")
 	}
