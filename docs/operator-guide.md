@@ -862,8 +862,7 @@ a verified mark.
 **Admin → Vendors → Listing review** (`/admin/vendors#listing-review`) chooses whether new and edited listings are
 public at once (**publish at once**, the default and the value after upgrading) or wait for staff (**hold for
 review**). Confirm with your password (and authenticator code when enabled); the change is audited. In hold mode a
-vendor's new listing, its change to an approved listing's title, description, category, region, fulfillment type,
-price or dispatch window, and a new photo on it, hide the listing from buyers until a moderator or administrator
+vendor's new listing, its change to an approved listing's title, description, category, subcategory, region, additional shipping regions, fulfillment type, price, dispatch window or vendor-or-automatic digital delivery, and a new photo on it, hide the listing from buyers until a moderator or administrator
 approves it. Stock changes, automatic delivery content and your own edits do not hold a listing; your own listings
 are never held. Orders placed before an edit continue.
 

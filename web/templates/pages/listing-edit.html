@@ -68,7 +68,7 @@
 {{if .VendorEditor}}<label>Reusable download content<textarea name="delivery_content" maxlength="32000" rows="6" spellcheck="false" aria-describedby="delivery-help">{{.DeliveryContent}}</textarea>
 </label>
 {{template "vendor-listings:delivery-help" .AutoDelivery}}{{else}}<p class="help">{{if .HasDeliveryContent}}Automatic delivery content is set; only the vendor can view or change it.{{else}}Automatic delivery content is not set; only the vendor can add it.{{end}}</p>{{end}}{{end}}
-{{if $.ListingHeld}}<p class="help listing-held">The market holds listings for review: saving a change to the title, description, category, region, fulfillment type, price or dispatch window, or adding a photo, hides this listing from buyers until a moderator or administrator approves it. A stock change does not.</p>{{end}}
+{{if $.ListingHeld}}<p class="help listing-held">The market holds listings for review: saving a change to the title, description, category, subcategory, region, additional shipping regions, fulfillment type, price, dispatch window or vendor-or-automatic digital delivery, or adding a photo, hides this listing from buyers until a moderator or administrator approves it. A stock change does not.</p>{{end}}
 <button class="primary" type="submit">Save changes</button>
 </form>
 </section>
@@ -94,7 +94,7 @@
 <input type="hidden" name="form_nonce" value="{{formNonce "/listings/restore"}}">
 <input type="hidden" name="id" value="{{$.Product.ID}}">
 <button type="submit">Restore listing</button>
-</form>{{if not .VendorEditor}}{{template "listing-edit:takedown" $}}{{end}}{{else}}<p>{{if $.Product.RejectionReason}}<span class="badge danger">Rejected</span> Hidden from buyers, the vendor page and search, and closed to new orders. {{if .VendorEditor}}Edit the listing to fix the problem: your next change to its title, description, category, region, fulfillment type, price or dispatch window, or a new photo, sends it back for review. A stock change does not. {{end}}</p>
+</form>{{if not .VendorEditor}}{{template "listing-edit:takedown" $}}{{end}}{{else}}<p>{{if $.Product.RejectionReason}}<span class="badge danger">Rejected</span> Hidden from buyers, the vendor page and search, and closed to new orders. {{if .VendorEditor}}Edit the listing to fix the problem: your next change to its title, description, category, subcategory, region, additional shipping regions, fulfillment type, price, dispatch window or vendor-or-automatic digital delivery, or a new photo, sends it back for review. A stock change does not. {{end}}</p>
 <p class="takedown-reason rejection-reason">Rejected — {{$.Product.RejectionReason}}</p>
 <p>{{else if $.Product.Pending}}<span class="badge neutral">Awaiting review</span> Hidden from buyers, the vendor page and search, and closed to new orders, until a moderator or administrator approves it; existing orders continue. {{else}}Visible in the marketplace. {{end}}{{if .VendorEditor}}Archiving hides it and refuses new orders; existing orders continue unchanged, and their buyers, and staff reviewing them, can still open this page from the order.{{else}}To remove another vendor's listing, take it down with a reason for the vendor.{{end}}</p>
 <a class="text-link" href="/product?id={{$.Product.ID}}">{{if $.Product.Pending}}View listing page{{else}}View public listing{{end}} <span class="action-icon">→</span></a>{{if .VendorEditor}}

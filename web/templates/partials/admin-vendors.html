@@ -65,7 +65,7 @@ vendor mark. Every form posts to its own /admin/vendor-* path and confirms with 
 </form>{{with $.ListingReviewAdmin}}
 <h3 id="listing-review">Listing review</h3>{{with $.NoticeIn "listing-review"}}
 <div class="alert" role="status">{{.}}</div>{{end}}
-<p>Now: {{if .Hold}}<strong>hold for review</strong>. A vendor's new listing, and its own change to an approved listing's title, description, category, region, fulfillment type, price or dispatch window or a new photo, stays hidden from buyers until a moderator or administrator approves it on the moderation desk{{else}}<strong>publish at once</strong>. New and edited listings are visible to buyers as soon as they are saved{{end}}. {{if eq .Pending 1}}1 listing waits{{else}}{{.Pending}} listings wait{{end}} for review. Your own listings and those of vendors listed below are never held.</p>
+<p>Now: {{if .Hold}}<strong>hold for review</strong>. A vendor's new listing, and its own change to an approved listing's title, description, category, subcategory, region, additional shipping regions, fulfillment type, price, dispatch window or vendor-or-automatic digital delivery or a new photo, stays hidden from buyers until a moderator or administrator approves it on the moderation desk{{else}}<strong>publish at once</strong>. New and edited listings are visible to buyers as soon as they are saved{{end}}. {{if eq .Pending 1}}1 listing waits{{else}}{{.Pending}} listings wait{{end}} for review. Your own listings and those of vendors listed below are never held.</p>
 <form class="stack" method="post" action="/admin/listing-review">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="form_nonce" value="{{formNonce "/admin/listing-review"}}">

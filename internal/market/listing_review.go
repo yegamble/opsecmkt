@@ -9,15 +9,16 @@ import (
 	"unicode/utf8"
 )
 
-// MOD72-6 (owner directive 2026-10-20): listing hold mode with per-vendor auto-approve (migration 136).
+// MOD72-6 (owner directive 2026-10-20): listing hold mode with per-vendor auto-approve (migration 142).
 //
 //   - settings listing_review_mode: "publish" (the default; a new or edited listing is public at once, as before) or
 //     "hold". A missing or unknown value holds (fail closed). Only an administrator changes it (/admin/listing-review,
 //     password-confirmed and audited).
 //   - products.review_state: "approved", "pending" or "rejected". In hold mode a vendor's new listing, and its own edit of an
-//     approved listing that changes what buyers see (title, description, category, region, fulfillment type, price,
-//     dispatch window) or adds a photo, is saved "pending". Stock and automatic delivery content (which staff never
-//     see) do not re-hold it, nor does an administrator's edit. An administrator's own listings and the listings of a
+//     approved listing that changes what buyers see (title, description, category, subcategory, region, additional
+//     shipping regions, fulfillment type, price, dispatch window, or a digital listing's switch between vendor and
+//     automatic delivery) or adds a photo, is saved "pending". Stock, digital units and automatic delivery content
+//     (which staff never see) do not re-hold it, nor does an administrator's edit. An administrator's own listings and the listings of a
 //     vendor an administrator marked users.listing_auto_approve (/admin/vendor-auto-approve) are never held.
 //   - A listing that is not approved is on no buyer or guest path (catalog, search, categories, vendor page, product page, checkout
 //     page, draft and payment request: load.go, actions_orders.go, orders_hooks.go) and its photos are not on the
@@ -279,9 +280,9 @@ func vendorAutoApproveAction(c *actionCtx) (actionResult, error) {
 	}
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
 		ctx, tx, admin := c.Ctx(), c.Tx, c.User
-		var role string
+		var seller User // CanSell: the vendor role, or a buyer or moderator with selling approval (PR #111)
 		var auto, banned bool
-		err := tx.QueryRowContext(ctx, "SELECT role,listing_auto_approve,banned_at IS NOT NULL FROM users WHERE id=$1 FOR NO KEY UPDATE", target).Scan(&role, &auto, &banned)
+		err := tx.QueryRowContext(ctx, "SELECT role,vendor_approved,listing_auto_approve,banned_at IS NOT NULL FROM users WHERE id=$1 FOR NO KEY UPDATE", target).Scan(&seller.Role, &seller.VendorApproved, &auto, &banned)
 		if err == sql.ErrNoRows {
 			return actionResult{}, notFound
 		}
@@ -291,7 +292,8 @@ func vendorAutoApproveAction(c *actionCtx) (actionResult, error) {
 		switch {
 		case on && banned:
 			return actionResult{}, fail(409, handle+" is banned; nothing was changed.")
-		case on && role != "vendor":
+		case on && (seller.Role == "admin" || !seller.CanSell()):
+			// An administrator's own listings are never held, so the flag means nothing for one.
 			return actionResult{}, fail(409, handle+" is not a vendor account; nothing was changed.")
 		case on && auto:
 			return actionResult{}, fail(409, handle+" already publishes listings without review; nothing was changed.")

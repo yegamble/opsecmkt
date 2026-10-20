@@ -127,7 +127,7 @@ func messageRecipient(ctx context.Context, q rowQuerier, sender *User, handle st
 		OR ((r.role IN ('vendor','admin') OR r.vendor_approved) AND r.suspended_at IS NULL AND r.closed_at IS NULL
 			AND `+vendorAcceptsBuyerMessagesSQL("r")+`
 			AND ((`+activeVendorSQL("r")+` AND (r.role NOT IN ('moderator','admin') OR EXISTS(
-				SELECT 1 FROM products contact_listing WHERE contact_listing.vendor_id=r.id AND NOT contact_listing.archived AND contact_listing.admin_archive_reason IS NULL)))
+				SELECT 1 FROM products contact_listing WHERE contact_listing.vendor_id=r.id AND NOT contact_listing.archived AND contact_listing.admin_archive_reason IS NULL AND contact_listing.review_state='approved')))
 				OR (s.role IN ('buyer','vendor') AND EXISTS(SELECT 1 FROM orders o JOIN products p ON p.id=o.product_id
 					WHERE o.buyer_id=s.id AND p.vendor_id=r.id
 						AND (r.retention_restricted_at IS NULL OR o.financial_closed_at IS NULL)))
