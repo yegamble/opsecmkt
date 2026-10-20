@@ -852,7 +852,7 @@ func TestStoredSplitKeyShownUnreadable(t *testing.T) {
 			mustContain(t, page, "No usable key.", "saved PGP key can no longer be read")
 			mustNotContain(t, page, "Ownership verified", formatFingerprint(fp))
 		}
-		mustContain(t, e.body("GET", "/account", vendor, nil, 200), "Unreadable — paste your key again")
+		mustContain(t, e.body("GET", "/account", vendor, nil, 200), "Unreadable — use verified key recovery")
 		mustContain(t, e.body("GET", "/pgp", vendor, nil, 200), "The saved key cannot be used: the public key could not be parsed.")
 	}
 }

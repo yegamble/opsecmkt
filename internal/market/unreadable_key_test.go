@@ -128,7 +128,7 @@ func TestUnreadableStoredKeyPagesRender(t *testing.T) {
 		mustContain(t, page, "No usable key.", "can no longer be read")
 		mustNotContain(t, page, formatFingerprint(fp))
 	}
-	mustContain(t, html.UnescapeString(e.body("GET", "/account", vendor, nil, 200)), "Unreadable — paste your key again")
+	mustContain(t, html.UnescapeString(e.body("GET", "/account", vendor, nil, 200)), "Unreadable — use verified key recovery")
 	mustContain(t, html.UnescapeString(e.body("GET", "/pgp", vendor, nil, 200)), "The saved key cannot be used: "+keyUserIDsRefusal)
 }
 

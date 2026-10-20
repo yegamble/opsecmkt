@@ -174,6 +174,9 @@ func TestMessageVendorToBuyerNeedsAVisibleOrder(t *testing.T) {
 	vendorID, vendor := e.user("vis_vendor", "vendor")
 	key, pub := testPGPKey(t, "vis-recipient")
 	agExec(e, "UPDATE users SET pgp=$1", pub) // both can receive it (A-569), so only the contact policy decides
+	// Replacing the buyer's fixture key invalidates its original session proof.
+	// The draft must be created by a buyer who has decrypted with the new key.
+	proveAccess(e, buyerID, buyer, key)
 	body, err := encryptTo(key, "visibility message")
 	if err != nil {
 		t.Fatal(err)

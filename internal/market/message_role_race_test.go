@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"html"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -149,19 +150,31 @@ func TestPublicVendorContactKeyRechecksVisibility(t *testing.T) {
 	}
 	_, privatePublic := testPGPKey(t, "public-role-now-private")
 	agExec(e, "UPDATE users SET role='buyer',pgp=$2 WHERE id=$1", id, privatePublic)
-	if key, err = publicVendorContactKey(context.Background(), e.DB, id); !errors.Is(err, sql.ErrNoRows) || key.Armored != "" {
+	if key, err = publicVendorContactKey(context.Background(), e.DB, id); !errors.Is(err, sql.ErrNoRows) || key.Armored != "" || key.Fingerprint != "" {
 		t.Fatalf("private account key became public after demotion: %v", err)
 	}
-	_, _, canonical, err := parseCanonicalPublicKey(privatePublic)
+	_, fingerprint, canonical, err := parseCanonicalPublicKey(privatePublic)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The existing buyer still needs the order partner's key even after a role change.
-	mustContain(t, e.body(http.MethodGet, "/order?id="+orderID, buyer, nil, http.StatusOK), canonical)
+	// Public discovery exposes neither the replacement key nor its fingerprint.
+	publicPage := e.body(http.MethodGet, "/vendor?id="+id, buyer, nil, http.StatusNotFound)
+	mustNotContain(t, html.UnescapeString(publicPage), "-----BEGIN PGP PUBLIC KEY BLOCK-----", formatFingerprint(fingerprint))
+	// The existing buyer still needs exactly this order partner's canonical key
+	// and fingerprint. HTML escapes armor characters such as '+', so decode the
+	// rendered block before comparing its entire contents.
+	orderPage := e.body(http.MethodGet, "/order?id="+orderID, buyer, nil, http.StatusOK)
+	shown := armoredKeyPattern.FindAllString(orderPage, -1)
+	if len(shown) != 1 || html.UnescapeString(shown[0]) != canonical {
+		t.Fatal("the order buyer did not receive exactly its counterparty's canonical key")
+	}
+	mustContain(t, orderPage, `<dd class="pgp-fingerprint">`+formatFingerprint(fingerprint)+`</dd>`)
 	agExec(e, "UPDATE users SET role='vendor',vendor_deactivated=true WHERE id=$1", id)
-	if key, err = publicVendorContactKey(context.Background(), e.DB, id); !errors.Is(err, sql.ErrNoRows) || key.Armored != "" {
+	if key, err = publicVendorContactKey(context.Background(), e.DB, id); !errors.Is(err, sql.ErrNoRows) || key.Armored != "" || key.Fingerprint != "" {
 		t.Fatalf("deactivated vendor key became public: %v", err)
 	}
+	publicPage = e.body(http.MethodGet, "/vendor?id="+id, buyer, nil, http.StatusNotFound)
+	mustNotContain(t, html.UnescapeString(publicPage), "-----BEGIN PGP PUBLIC KEY BLOCK-----", formatFingerprint(fingerprint))
 }
 
 // A vendor restricted for closure still has to resolve paid orders. Restriction

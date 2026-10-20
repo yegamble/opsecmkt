@@ -312,7 +312,7 @@ func TestExpiredKeyRefusalNamesStaffContact(t *testing.T) {
 		b := e.body("POST", "/challenge/pgp", anon, nil, 409, pc)
 		mustContain(t, b, keyExpiredRefusal, askOperatorLine)
 		if withTOTP {
-			mustContain(t, b, "Lost your authenticator and recovery codes too? "+askOperatorLine)
+			mustContain(t, b, "Sign in with your authenticator code or a recovery code instead, then renew the key (gpg --quick-set-expire) and paste it on your account page. Replacing the existing public-key binding also needs a fresh code from your previously enrolled authenticator or old-key decryption proof. If neither is available, ask for identity-verified replacement-key recovery. "+askOperatorLine)
 		}
 		agExec(e, "INSERT INTO settings(key,value) VALUES('staff_contact',$1)", staffContactValue)
 		b = e.body("POST", "/challenge/pgp", anon, nil, 409, pc)
