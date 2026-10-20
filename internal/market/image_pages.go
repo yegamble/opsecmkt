@@ -54,7 +54,7 @@ func productPhotosLoader(ctx context.Context, a *App, _ *http.Request, d *PageDa
 	}
 	from, where, args, url := imagePublicFrom, imagePublicWhere, []any{ids}, publicImageURL
 	// MOD72-6: a listing awaiting staff review, like an archived or deactivated-vendor one, has no public photos; its
-	// vendor, staff and earlier order parties see them on the desk route.
+	// vendor and staff see them on the desk route, and so do earlier order parties while it is not rejected (QA72-3).
 	desk := d.Page == "product" && d.Product != nil && (d.Product.Archived || d.Product.VendorDeactivated || d.Product.Pending) && d.User != nil
 	if desk {
 		from, where, args, url = `images i JOIN users o ON o.id=i.owner_user_id`, `i.kind='photo' AND `+imageDeskWhere, append(args, d.User.ID, d.User.Role), deskImageURL

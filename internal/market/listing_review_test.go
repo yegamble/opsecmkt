@@ -77,6 +77,18 @@ func formOn(t *testing.T, page, action string, markers ...string) url.Values {
 	return nil
 }
 
+// listingReviewPost is the desk's approve or reject form for listing id as rendered now (its version read with the desk's
+// own listingVersionSQL), for legs that are not about the desk page itself; e.do adds a fresh receipt nonce.
+func listingReviewPost(e *testEnv, id, action string) url.Values {
+	e.t.Helper()
+	f := url.Values{"id": {id}, "action": {action}, "password": {testPassword},
+		"version": {agStr(e, "SELECT "+listingVersionSQL+" FROM products p WHERE p.id=$1", id)}}
+	if action == "reject" {
+		f.Set("reason", rejectReason)
+	}
+	return f
+}
+
 // buyerCannotReach checks every buyer and guest path to listing p, titled title, of vendorID, for each session.
 func buyerCannotReach(e *testEnv, p, title, vendorID string, sessions ...string) {
 	e.t.Helper()
@@ -435,6 +447,58 @@ func TestListingEditReholdsApprovedListing(t *testing.T) {
 	edit(admin, f)
 	if reviewState(e, p) != "pending" {
 		t.Fatal("an administrator's edit approved a pending listing")
+	}
+
+	// QA72-3: the earlier-order exception covers a listing awaiting review, not a rejected one. While pending, the paid
+	// buyer reads the listing and its photo; once rejected, neither, though the order and its snapshot stay readable and
+	// the vendor and staff still see the listing and the reason.
+	photo := randomToken()[:32]
+	agExec(e, `INSERT INTO images(id,owner_user_id,product_id,kind,"full",thumb,width,height) VALUES($1,$2,$3,'photo','\xffd8'::bytea,'\xffd8'::bytea,1,1)`, photo, x.vendor, p)
+	deskPhoto := func(viewer, role string) int {
+		return agInt(e, `SELECT count(*) FROM images i JOIN users o ON o.id=i.owner_user_id WHERE i.id=$1 AND `+imageDeskWhere, photo, viewer, role)
+	}
+	if deskPhoto(x.buyer, "buyer") != 1 {
+		t.Fatal("the paid buyer cannot see a pending listing's photo")
+	}
+	_, moderator := e.user("rehold_mod", "moderator")
+	modID := agStr(e, "SELECT user_id FROM sessions WHERE token_hash=$1", digest(moderator))
+	e.check(e.do("POST", "/moderator/listing-review", moderator, listingReviewPost(e, p, "reject")), 303)
+	assertRejected(e, p, rejectReason)
+	e.check(e.do("GET", "/product?id="+p, x.buyerSess, nil), 404)
+	if deskPhoto(x.buyer, "buyer") != 0 {
+		t.Fatal("the paid buyer's desk route serves a rejected listing's photo")
+	}
+	order := e.body("GET", "/order?id="+paid, x.buyerSess, nil, 200)
+	mustContain(t, order, "Test listing")
+	mustNotContain(t, order, "Re-held lantern", rejectReason)
+	for _, s := range []string{x.vendorSess, moderator, admin} {
+		mustContain(t, e.body("GET", "/product?id="+p, s, nil, 200), "Re-held lantern", "Rejected — "+rejectReason)
+	}
+	if deskPhoto(x.vendor, "vendor") != 1 || deskPhoto(modID, "moderator") != 1 || deskPhoto(x.admin, "admin") != 1 {
+		t.Fatal("the vendor or staff lost the rejected listing's photo")
+	}
+}
+
+// A vendor's new photo resubmits a rejected listing, as an edit does.
+func TestListingPhotoResubmitsRejectedListing(t *testing.T) {
+	e, _ := uploadEnv(t)
+	vendorID, vendor := e.user("photo_resub_vendor", "vendor")
+	_, moderator := e.user("photo_resub_mod", "moderator")
+	setListingReviewMode(e, "hold")
+	p := e.postListing(vendor, "Photo resubmit lamp")
+	e.check(e.do("POST", "/moderator/listing-review", moderator, listingReviewPost(e, p, "reject")), 303)
+	assertRejected(e, p, rejectReason)
+	if w := e.upload("/listings/photo", vendor, e.photoParts(vendor, p, smallJPEG(t))...); w.Code != 303 {
+		t.Fatalf("photo upload: %d %s", w.Code, w.Body.String())
+	}
+	if reviewState(e, p) != "pending" || agStr(e, "SELECT coalesce(review_rejection_reason,'') FROM products WHERE id=$1", p) != "" {
+		t.Fatal("a new photo did not resubmit the rejected listing")
+	}
+	if !e.auditExact(vendorID, "Resubmitted listing "+shortID(p)+" for review") {
+		t.Fatal("resubmission by photo was not audited")
+	}
+	if agInt(e, "SELECT count(*) FROM products WHERE id=$1 AND review_state='pending' AND NOT archived", p) != 1 {
+		t.Fatal("the resubmitted listing is not in the review queue")
 	}
 }
 

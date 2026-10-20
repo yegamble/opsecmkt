@@ -23,7 +23,7 @@ type Product struct {
 	// P4, vendor-dashboard only: an administrator's takedown reason (A-163); never loaded for public pages.
 	TakedownReason string
 	// MOD72-6 (listing_review.go): Pending, the listing is not approved for buyers (review_state pending or rejected).
-	// Public pages never load one; its vendor, staff and the parties to an earlier order see it marked.
+	// Public pages never load one; its vendor and staff see it marked, and so do earlier order parties unless rejected.
 	// RejectionReason: staff rejected it with this reason; loaded only for its vendor and staff.
 	Pending         bool
 	RejectionReason string

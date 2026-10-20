@@ -323,9 +323,10 @@ func (a *App) load(r *http.Request, d *PageData) error {
 			query += " AND ((NOT p.archived AND NOT u.vendor_deactivated) OR EXISTS(SELECT 1 FROM orders o WHERE o.product_id=p.id AND " + orderReadable("$2", "$3") + "))"
 			// MOD72-6: a listing awaiting review (listing_review.go) is shown to its vendor, to active moderators and
 			// administrators, and, like an archived one, to whoever may read an order placed on it before it was held
-			// (a draft is not an order: a buyer cannot see an unreviewed edit by saving a draft first).
+			// (a draft is not an order: a buyer cannot see an unreviewed edit by saving a draft first). A rejected
+			// listing is shown to its vendor and staff only, never through an earlier order (QA72-3).
 			query += " AND (p.review_state='approved' OR p.vendor_id=$2 OR ($3 IN ('moderator','admin') AND EXISTS(SELECT 1 FROM users staff WHERE staff.id=$2 AND staff.suspended_at IS NULL AND staff.closed_at IS NULL AND staff.retention_restricted_at IS NULL))" +
-				" OR EXISTS(SELECT 1 FROM orders o WHERE o.product_id=p.id AND o.state<>'draft' AND " + orderReadable("$2", "$3") + "))"
+				" OR (p.review_state<>'rejected' AND EXISTS(SELECT 1 FROM orders o WHERE o.product_id=p.id AND o.state<>'draft' AND " + orderReadable("$2", "$3") + ")))"
 			args = append(args, d.User.ID, d.User.Role)
 		case d.Page != "vendor-dashboard" && d.Page != "catalog":
 			// The vendor page, the checkout page and a signed-out product page: published listings of active vendors only.

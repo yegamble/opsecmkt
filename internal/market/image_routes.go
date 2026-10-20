@@ -129,9 +129,9 @@ const (
 // buyer or vendor of an order on which that member moved the dispute to resolved, or a moderator (who may open
 // every resolved order, orders_load.go); or, for a photo of an archived or deactivated-vendor listing, whoever may
 // read an order placed on that listing (orderReadable, the rule that opens the archived listing's product page, A-164 and A-264).
-// MOD72-6: a listing not approved for buyers (pending or rejected) is treated like an archived one for those order
-// readers (non-draft orders only), and a moderator also sees its photos while it is pending and not archived, to
-// review it (listing_review.go).
+// MOD72-6: a listing awaiting review is treated like an archived one for those order readers (non-draft orders
+// only); a rejected listing's photos are never served through an order, archived or not (QA72-3), and a moderator
+// sees the photos of a pending or rejected listing, as the vendor and administrators do (listing_review.go).
 // Everyone else, moderators included for other vendors' images, is refused. Inside the last EXISTS, o and p are
 // the order and its listing (orderReadable's aliases), not the image's owner.
 var imageDeskWhere = `(i.owner_user_id=$2 OR $3='admin'
@@ -140,9 +140,9 @@ var imageDeskWhere = `(i.owner_user_id=$2 OR $3='admin'
    WHERE od.state='resolved' AND (od.buyer_id=$2 OR pr.vendor_id=$2 OR $3='moderator')
      AND EXISTS(SELECT 1 FROM order_events e WHERE e.order_id=od.id AND e.from_state='disputed' AND e.to_state='resolved' AND e.actor_id=i.owner_user_id)))
  OR (i.kind='photo' AND $3='moderator' AND EXISTS(SELECT 1 FROM products pp
-   WHERE pp.id=i.product_id AND pp.review_state='pending' AND NOT pp.archived AND pp.vendor_id=i.owner_user_id))
+   WHERE pp.id=i.product_id AND pp.review_state IN ('pending','rejected') AND pp.vendor_id=i.owner_user_id))
  OR (i.kind='photo' AND EXISTS(SELECT 1 FROM products p JOIN orders o ON o.product_id=p.id JOIN users v ON v.id=p.vendor_id
-   WHERE p.id=i.product_id AND (p.archived OR v.vendor_deactivated OR (p.review_state<>'approved' AND o.state<>'draft')) AND p.vendor_id=i.owner_user_id AND ` + orderReadable("$2", "$3") + `)))`
+   WHERE p.id=i.product_id AND p.review_state<>'rejected' AND (p.archived OR v.vendor_deactivated OR (p.review_state='pending' AND o.state<>'draft')) AND p.vendor_id=i.owner_user_id AND ` + orderReadable("$2", "$3") + `)))`
 
 // imageSelect starts an image route's query: the length of one size of the image and, for a GET, its bytes (a
 // HEAD reads only the length). The only way a query reads image bytes; no other file may use it
