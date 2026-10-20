@@ -539,8 +539,10 @@ func (r *xmrRegtest) daemonStoppedAround(name string) func(forward func()) {
 // wallet-rpc cannot commit it (-4) while the transaction is stored, the daemon never saw it and its key images are
 // unspent. The watcher relays the same stored metadata again on the next passes, never calls transfer, and records the
 // release failed on the third refusal in a row. incoming_transfers available still lists the stored key images. An
-// administrator re-requests it with the password step-up: the new build spends exactly the stored key images (the
-// stored row's, and the inputs the daemon decodes) to the stored plan, is relayed and confirms.
+// administrator re-requests it with the password step-up after a reorganisation took the funding deposit out of the
+// chain (A-614): the new settlement waits (deposit-missing), past A-554's bounded wait too, with no transfer. Once the
+// same deposit transaction is mined again, the new build spends exactly the stored key images (the stored row's, and
+// the inputs the daemon decodes) to the stored plan, is relayed and confirms.
 func TestXMREscrowRegtestReRequest(t *testing.T) {
 	container := os.Getenv("ESCROW_XMR_REGTEST_DAEMON_CONTAINER")
 	if container == "" {
@@ -602,10 +604,49 @@ func TestXMREscrowRegtestReRequest(t *testing.T) {
 	}
 	t.Logf("incoming_transfers available lists the refused transaction's %d output(s) unspent: %v", len(failed.KeyImages), failed.KeyImages)
 
+	// A-614: a reorganisation takes the funding deposit out of the chain (every block since it was mined popped, the
+	// pool flushed) before the re-request is carried out. The new settlement takes over the deposit's claim, builds
+	// nothing and waits (deposit-missing) rather than failing nothing-to-settle; once the same deposit transaction is
+	// mined again it is built from the stored key images as below.
+	deposit := agStrings(t, r.testEnv, "SELECT txid FROM payments WHERE order_id=$1", order)[0]
+	var raw struct {
+		Txs []struct {
+			AsHex string `json:"as_hex"`
+		} `json:"txs"`
+	}
+	r.daemonPost("/get_transactions", map[string]any{"txs_hashes": []string{deposit}}, &raw)
+	if len(raw.Txs) != 1 || raw.Txs[0].AsHex == "" {
+		t.Fatalf("the daemon does not give funding deposit %s", deposit)
+	}
+	r.popPast(deposit)
+	var flushed map[string]any
+	r.call(r.daemon, "flush_txpool", map[string]any{"txids": []string{deposit}}, &flushed)
+	r.mine(xmrMineMargin)
+	r.synced()
+	r.mustPoll()
 	_, adminSess := r.user("xr_admin_"+randomToken()[:6], "admin")
 	if code := r.reRequest(adminSess, order, id, testPassword); code != 303 {
 		t.Fatalf("re-request: %d", code)
 	}
+	r.synced()
+	r.mustPoll()
+	r.mine(int(3 * r.A.escrowXMR.confirmations)) // past A-554's bounded wait, which a re-request does not have
+	r.synced()
+	r.mustPoll()
+	waiting := r.settlementOf(order, "release")
+	if waiting.Supersedes != id || waiting.State != "requested" || r.waitClass(waiting.ID) != xmrWaitMissing || r.settlement(id).State != "superseded" || p.count("transfer") != 1 ||
+		agInt(r.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND xmr_settlement_id=$2 AND confirmations<0", order, waiting.ID) != 1 {
+		t.Fatalf("re-requested while its deposit is missing: old %+v, new %+v %q, transfer %d (deposits %v)", r.settlement(id), waiting, r.waitClass(waiting.ID), p.count("transfer"), r.depositConfs(order))
+	}
+	t.Logf("funding deposit %s popped and flushed: re-request %d waits (%s) past %d blocks, no transfer", deposit, waiting.ID, xmrWaitMissing, 3*r.A.escrowXMR.confirmations)
+	var sent struct {
+		Status string `json:"status"`
+	}
+	r.daemonPost("/send_raw_transaction", map[string]any{"tx_as_hex": raw.Txs[0].AsHex, "do_not_relay": false}, &sent)
+	if sent.Status != "OK" {
+		t.Fatalf("send_raw_transaction of funding deposit %s: %q", deposit, sent.Status)
+	}
+	r.mineTo(deposit, 10+xmrMineMargin)
 	r.synced()
 	r.mustPoll()
 	next := r.settlementOf(order, "release")

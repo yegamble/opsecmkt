@@ -2,7 +2,8 @@
 with "; ". Used by the moderation desk's Escrow alerts list and the order page's staff help. A failed Monero settlement says
 whether it can be re-requested (its transaction is stored; StoredText says whether a re-request waits or was refused,
 or Monero escrow is off) and, when it cannot, what to do: one never built is dismissed as nothing owed, never paid by
-hand (PAY613-1), unless it still claims deposits, whose coins are settled with the operator (Stranded, PAY613-4); one
+hand (PAY613-1), unless it still claims deposits, whose coins are settled with the operator (Stranded, PAY613-4; only a
+build before A-614 leaves one, as a re-request now waits for a missing deposit); one
 whose re-request was refused for good is checked and marked settled by hand (a refund too few is no alert;
 xmrFailedClosedSQL). */}}
 {{define "escrow-alert-reasons"}}{{$s := ""}}

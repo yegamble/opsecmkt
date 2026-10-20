@@ -116,6 +116,13 @@ market holds the wallet keys and builds, stores and sends every transaction itse
   deposit on the payment-review desk ("Credited deposit conflicted or missing"), the moderator desk's alert for a
   settlement requested for more than 24 hours, and, past the 90 days, the administrators' notice that a retained
   wallet is kept. Resolving it is an operator decision taken by hand (PAY66-7; a code change is a separate ledger item).
+  An administrator's re-request of a failed settlement spends exactly the coins of the transaction it replaces, so
+  while a deposit those coins came from is no longer listed it waits the same way (*deposit-missing*), with no bounded
+  wait (it has no other coins to build from), rather than failing *nothing-to-settle* while it still claims that
+  deposit (A-614). Staff get one order note and notice each time it starts waiting; it builds and sends once the
+  wallet lists the deposit again, and it can never pay twice, because both transactions spend the same coins. A
+  re-requested stray refund that waits so also holds back the stray refund of any later deposit to that order, since
+  one stray refund is in progress at a time.
   A deposit that did not count when its order was cancelled (the wallet read it as a double spend, or
   no longer listed it) and has confirmed since is left out and returned by a stray refund too, when no refund spends it: it is flagged
   and the buyer told. The order page lists a left-out deposit on its own line, not counted as received, and a cancelled
@@ -342,8 +349,10 @@ wallet takes an order again and no settlement is relayed until an administrator 
   10. `TestXMREscrowRegtestReRequest`: monerod is stopped around each relay of a release, so the wallet-rpc cannot commit
       it (-4) while it is stored and its coins unspent; the same stored transaction is relayed again on the next passes
       with no second `transfer`, and the third refusal records it failed; the wallet still lists its outputs as
-      available; an administrator's re-request spends exactly the stored key images (the daemon's decoded inputs) to the
-      stored plan, and it confirms.
+      available; the funding deposit is then taken out of the chain (`pop_blocks`, `flush_txpool`) and an
+      administrator's re-request is carried out: the new settlement waits (*deposit-missing*), past twice the threshold
+      in blocks too, with no `transfer` (A-614); once the same deposit transaction is mined again it spends exactly the
+      stored key images (the daemon's decoded inputs) to the stored plan, and it confirms.
   11. `TestXMREscrowRegtestRestore`: a restore (with `scripts/restore.sh`'s own Monero SQL) holds a built release, retires
       the free accounts and closes the wallet; the sweep finds a wallet created after the backup and seals it as an
       orphan; after an administrator's confirmation the held release is relayed once and confirms; the next checkout gets
