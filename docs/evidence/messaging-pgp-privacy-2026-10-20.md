@@ -4,13 +4,15 @@ Scope: [PR #104](https://github.com/yegamble/opsecmkt/pull/104). The owner autho
 
 ## Evidence and review method
 
+The scoped findings use unique `WR-MPGP-*` identifiers so they can coexist with concurrent payments reviews in the shared ledger. Their priorities and acceptance criteria are recorded below; final runtime closure is recorded in PR #104.
+
 The chair assembled source, test, documentation and ledger evidence before independent security, privacy and Tor/operations review. Seats completed blind review, cross-examination and rebuttal. A separate QA/release seat checks the integrated result. Reviewers used the available Codex agents; the repository's Claude-specific model bindings were unavailable. The managed execution environment failed provisioning, so source edits used immutable GitHub blobs, with only the chair updating the isolated branch. Local execution is unverified. Runtime evidence comes from GitHub Actions.
 
 Authentication sources: `internal/market/pgp_access.go`, `pgp_actions.go`, `pgp_factor.go`, `totp_actions.go`, `actions_auth.go`, `admin_factors.go`, `cmd/server`, migrations 129–130. Messaging: `actions_messages.go`, `contacts.go`, `load.go`, `types.go`. Commerce and obligations: `actions_orders.go`, `orders_actions.go`, `orders_load.go`, `escrow_readiness.go`. Vendor privacy: `vendor_availability.go`, `vendor_applications.go`, `image_routes.go`, `image_pages.go`, `retention.go`. Account, registration, PGP, vendor, product, checkout, message and order templates provide server-rendered flows.
 
 The existing private-administrator ingress stays in force. Challenges name the configured official addresses and account; private administration addresses are not published. Database, simulated-wallet, browser and fakechain tests do not establish public-Tor, deployed-host or real-funds behavior.
 
-## Round D: A-616 — live contact authorization and necessary order replies
+## Round D: WR-MPGP-1 — live contact authorization and necessary order replies
 
 DECISION: ACCEPT security findings SEC1–SEC3.
 WHY: A stale sender role could retain access to private customers after demotion. Separate eligibility and key reads could expose a key after the recipient became private. Conversely, a blanket retention restriction denied necessary communication on financially open orders.
@@ -21,7 +23,7 @@ TECHNICAL COST/RISK: Short transactions share-lock current sender and recipient 
 ACCEPTANCE CRITERIA: Current database role governs access; key retrieval shares its authorization transaction; public vendor and dispute staff loaders recheck eligibility; restricted vendors are reachable only by actual buyers of financially open orders, and only when their away-message preference allows it.
 TEST PLAN: `message_role_race_test.go` covers stale role snapshots, denied sends without writes, sender/recipient lock contention, public-profile key checks, existing-order keys, restricted-vendor replies and staff demotion.
 
-## Round D: A-617 — withdrawing activity sharing without a usable key
+## Round D: WR-MPGP-2 — withdrawing activity sharing without a usable key
 
 DECISION: ACCEPT.
 WHY: An expired key prevented a vendor from turning off last-seen sharing while keeping the same availability mode.
@@ -32,7 +34,7 @@ TECHNICAL COST/RISK: Require a usable key only when resuming active business or 
 ACCEPTANCE CRITERIA: Same-mode privacy changes and availability reductions work without a usable key; reopening business requires one. Opt-out erases the saved last-seen time; restricted, closed and suspended accounts do not refresh it.
 TEST PLAN: `vendor_availability_test.go` and `vendor_retention_activity_test.go`.
 
-## Round D: A-618 — protect established PGP identity and recover explicitly
+## Round D: WR-MPGP-3 — protect established PGP identity and recover explicitly
 
 DECISION: MODIFY and ACCEPT Tor/security finding; block merge until implemented and tested.
 WHY: A stolen password could replace the saved public key and then decrypt with the attacker's key. Allowing the same password to enroll a first authenticator would bypass a TOTP exception.
@@ -47,6 +49,6 @@ TEST PLAN: Auth key-binding/TOTP regressions, privileged-reset tests and integra
 
 The first CI runs found fixture assumptions that predated mandatory PGP access. Corrections explicitly enroll/prove commerce fixtures, preserve keyless negative cases and keep refusal, side-effect and authorization assertions. No global request-helper bypass, test timeout increase or skipped required job is accepted. Source guards remain unchanged.
 
-The initial checkpoint CI run [39458740871](https://github.com/yegamble/opsecmkt/actions/runs/39458740871) tests commit `a630ba410aa944fb5d709f65c50313d5ea0440af`; that was an intermediate integration checkpoint. A-618 and all named regressions are integrated in `6e8ef976c5d70a6aaf9f12615e6d6fa3ab98cc7a`. Independent QA verified all three findings against that source; Tor independently verified the recovery and MFA protections. Final runtime closure is tracked in [PR #104](https://github.com/yegamble/opsecmkt/pull/104). The final exact-head CI result and reviewer verification must be recorded in the PR before merge. This record makes no deployment or live Tor claim.
+The initial checkpoint CI run [39458740871](https://github.com/yegamble/opsecmkt/actions/runs/39458740871) tests commit `a630ba410aa944fb5d709f65c50313d5ea0440af`; that was an intermediate integration checkpoint. WR-MPGP-3 and all named regressions are integrated in `6e8ef976c5d70a6aaf9f12615e6d6fa3ab98cc7a`. Independent QA verified all three findings against that source; Tor independently verified the recovery and MFA protections. Final runtime closure is tracked in [PR #104](https://github.com/yegamble/opsecmkt/pull/104). The final exact-head CI result and reviewer verification must be recorded in the PR before merge. This record makes no deployment or live Tor claim.
 
 A-577 is amended to the owner's manual vacation/deactivation design; no automatic expiry or public note was requested. A-582's older ownership-verification proposal remains separate. A-608 closes only with integrated passing forbidden-keyless-recipient coverage. Unrelated A-575, A-578, A-609, A-615 and operator/mainnet prerequisites A-555/A-562 remain open.
