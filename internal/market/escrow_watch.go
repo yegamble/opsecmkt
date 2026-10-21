@@ -2,7 +2,6 @@ package market
 
 import (
 	"context"
-	"database/sql"
 	"net/http"
 )
 
@@ -57,7 +56,6 @@ func (a *App) escrowNetKnown() bool {
 }
 
 func init() {
-	registerTransitionHook(escrowTransitionHook)
 	registerLoader("admin", escrowNodeLoader)
 }
 
@@ -100,33 +98,6 @@ func escrowNodeLoader(ctx context.Context, a *App, _ *http.Request, d *PageData)
 	}
 	if v.Health != nil || v.NotSynced != "" || v.Mismatch != nil || v.ArbiterRead != "" || v.TorHold != "" || len(v.Stalled) > 0 {
 		d.EscrowNode = v
-	}
-	return nil
-}
-
-// escrowTransitionHook keeps escrow orders on the moves Phase 1 supports. Cancelling an escrow order that holds coins
-// requests its refund, and resolving its dispute requests the settlement of the decision (settleTerminal); only an
-// administrator resolves it (resolveAction). A delivered escrow order completes at once, by the system (the
-// escrow-only edge; ES-4: digital orders complete on funding). A paid physical escrow order gets its ship-by time.
-func escrowTransitionHook(ctx context.Context, a *App, tx *sql.Tx, o *Order, from, to string) error {
-	if !o.Escrow {
-		return nil
-	}
-	switch {
-	case to == statePaid && o.Kind == "physical":
-		// P2-R5: the buyer may cancel from the paid time plus the escrow's dispatch window plus 48 hours (escrow_deadline.go).
-		_, err := tx.ExecContext(ctx, "UPDATE escrows SET ship_by=now()+make_interval(days => dispatch_days)+interval '48 hours' WHERE order_id=$1 AND dispatch_days IS NOT NULL AND ship_by IS NULL", o.ID)
-		return err
-	case to == stateDelivered:
-		note := escrowCompletedNote
-		if o.Currency == "XMR" {
-			note = xmrEscrowCompletedNote
-		}
-		next, err := a.transition(ctx, tx, o.ID, stateDelivered, stateCompleted, nil, note)
-		if err != nil {
-			return err
-		}
-		o.State, o.Status = next.State, next.Status
 	}
 	return nil
 }
