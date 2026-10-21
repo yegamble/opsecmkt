@@ -430,4 +430,47 @@ stop_app
 [[ $(pg "$app_target_db" -Atq -c "$gate_value") == false ]]
 [[ $(pg "$app_target_db" -Atq -c "$pooled_rows") == 0:0 ]]
 [[ $(pg "$app_target_db" -Atq -c "$xmr_state") == "$xmr_restored" ]]
-echo 'Encrypted backup/restore regressions passed (Unicode, overwrite refusal, wrong key, transaction rollback, Monero escrow held, its free accounts retired, its wallets closed and its sweep asked for, restore audit row, pooled rows refused by migration 108, application schema restore and restart, manual UPGRADING.md protection after a plain pg_dump/pg_restore copy, audited gate clear refusing unknown handles).'
+
+# A-561: the physical wallet cleanup register's review and confirmation SQL (docs/retention.md) runs verbatim. Each
+# statement changes the exact open row and adds its audit row by the named administrator, or changes nothing and adds
+# no row (unknown or non-administrator handle, inexact wallet name, an entry already confirmed).
+runbook_sql wallet-cleanup-review docs/retention.md > "$work/wallet-cleanup-review.sql"
+runbook_sql wallet-cleanup-confirm docs/retention.md > "$work/wallet-cleanup-confirm.sql"
+pg "$app_target_db" -q -c "SELECT retention_wallet_cleanup_register('XMR', w, now() - interval '1 day', now() - interval '40 days') FROM unnest(ARRAY['escrow-202601-07', 'escrow-202601-08']) AS w"
+cleanup_row="SELECT due_at || '|' || review_due || '|' || coalesce(confirmed_at::text, '-') || '|' || coalesce(confirmed_by, '-') FROM retention_wallet_cleanup WHERE coin='XMR' AND wallet_name="
+cleanup_other=$(pg "$app_target_db" -Atq -c "${cleanup_row}'escrow-202601-08'")
+cleanup_before=$(pg "$app_target_db" -Atq -c "${cleanup_row}'escrow-202601-07'")
+audit_total=$(pg "$app_target_db" -Atq -c "$audit_count")
+last_audit="SELECT coalesce(user_id, '-') || ':' || action FROM audit_events ORDER BY id DESC LIMIT 1"
+wallet_cleanup() { pg "$app_target_db" -At -v handle="$2" -v wallet="$3" -v operator='host operator' -f "$work/wallet-cleanup-$1.sql"; }
+unchanged_cleanup() {
+  [[ $(pg "$app_target_db" -Atq -c "${cleanup_row}'escrow-202601-07'") == "$1" ]]
+  [[ $(pg "$app_target_db" -Atq -c "${cleanup_row}'escrow-202601-08'") == "$cleanup_other" ]]
+  [[ $(pg "$app_target_db" -Atq -c "$audit_count") == "$2" ]]
+}
+for step in review confirm; do
+  for refused in 'ops_nobody escrow-202601-07' 'ops_vendor escrow-202601-07' 'ops_admin escrow-202601-0' 'ops_admin ESCROW-202601-07'; do
+    read -r handle wallet <<< "$refused"
+    [[ $(wallet_cleanup "$step" "$handle" "$wallet") == 'INSERT 0 0' ]]
+    unchanged_cleanup "$cleanup_before" "$audit_total"
+  done
+done
+[[ $(wallet_cleanup review ops_admin escrow-202601-07) == 'INSERT 0 1' ]]
+# The review moves only the next review 30 days ahead; the original cleanup deadline is kept.
+[[ $(pg "$app_target_db" -Atq -c "SELECT review_due > now() + interval '29 days', confirmed_at IS NULL FROM retention_wallet_cleanup WHERE wallet_name='escrow-202601-07'") == 't|t' ]]
+[[ $(pg "$app_target_db" -Atq -c "SELECT due_at::text FROM retention_wallet_cleanup WHERE wallet_name='escrow-202601-07'") == "${cleanup_before%%|*}" ]]
+[[ $(pg "$app_target_db" -Atq -c "$last_audit") == 'ops-admin:Physical wallet cleanup of Monero wallet escrow-202601-07 reviewed by ops_admin; next review in 30 days' ]]
+[[ $(pg "$app_target_db" -Atq -c "$audit_count") == $((audit_total + 1)) ]]
+cleanup_reviewed=$(pg "$app_target_db" -Atq -c "${cleanup_row}'escrow-202601-07'")
+[[ $(wallet_cleanup confirm ops_admin escrow-202601-07) == 'INSERT 0 1' ]]
+[[ $(pg "$app_target_db" -Atq -c "SELECT confirmed_at IS NOT NULL AND confirmed_by = 'host operator' FROM retention_wallet_cleanup WHERE wallet_name='escrow-202601-07'") == t ]]
+[[ $(pg "$app_target_db" -Atq -c "$last_audit") == 'ops-admin:Physical wallet cleanup of Monero wallet escrow-202601-07 confirmed by ops_admin (attested by host operator)' ]]
+[[ $(pg "$app_target_db" -Atq -c "$audit_count") == $((audit_total + 2)) ]]
+[[ $(pg "$app_target_db" -Atq -c "${cleanup_row}'escrow-202601-07'") != "$cleanup_reviewed" ]]
+# A confirmed entry is closed: neither statement changes it again or adds an audit row.
+cleanup_confirmed=$(pg "$app_target_db" -Atq -c "${cleanup_row}'escrow-202601-07'")
+for step in review confirm; do
+  [[ $(wallet_cleanup "$step" ops_admin escrow-202601-07) == 'INSERT 0 0' ]]
+  unchanged_cleanup "$cleanup_confirmed" $((audit_total + 2))
+done
+echo 'Encrypted backup/restore regressions passed (Unicode, overwrite refusal, wrong key, transaction rollback, Monero escrow held, its free accounts retired, its wallets closed and its sweep asked for, restore audit row, pooled rows refused by migration 108, application schema restore and restart, manual UPGRADING.md protection after a plain pg_dump/pg_restore copy, audited gate clear refusing unknown handles, audited wallet cleanup review and confirmation).'
