@@ -50,7 +50,9 @@ type App struct {
 	pausedCount  atomic.Int64    // A-559: requests refused by a restore pause (httpError.Paused), in memory only
 
 	db               *sql.DB
-	health           *sql.DB // one connection for /healthz, apart from the application pool (A-178)
+	health           *sql.DB   // one connection for /healthz, apart from the application pool (A-178)
+	servingDB        *sql.DB   // one connection holding servingLock while this App serves (restore_gate.go, A-505)
+	serving          *sql.Conn // that connection; replaced by keepServingLock if its session ends
 	templates        *template.Template
 	preview, secure  bool
 	mode, setupToken string               // setupToken authorizes /setup only, and only until installed
@@ -176,12 +178,19 @@ func New(ctx context.Context, preview bool) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The serving lock is held from before the migrations, so a restore gate host command never runs beside a
+	// starting or running application (restore_gate.go, A-505).
+	if err = a.holdServingLock(ctx, dsn, timeouts.lock); err != nil {
+		db.Close()
+		return nil, err
+	}
 	// Migrations run on their own connection without the application pool's session timeouts (A-177): a
 	// large migration, or the wait for another instance's migration lock, is bounded by MIGRATION_TIMEOUT
 	// and MIGRATION_LOCK_TIMEOUT instead.
 	mdb, err := OpenDB(dsn)
 	if err != nil {
 		db.Close()
+		a.closeDB()
 		return nil, err
 	}
 	mdb.SetMaxOpenConns(2) // the migration transaction, plus pg_terminate_backend when a phase times out
@@ -189,12 +198,13 @@ func New(ctx context.Context, preview bool) (*App, error) {
 	mdb.Close()
 	if err != nil {
 		db.Close()
+		a.closeDB()
 		return nil, err
 	}
 	a.db = db
 	// /healthz pings on its own connection, so a saturated application pool does not make the probe wait.
 	if a.health, err = OpenDB(dsn, WithAppTimeouts()); err != nil {
-		db.Close()
+		a.closeDB()
 		return nil, err
 	}
 	a.health.SetMaxOpenConns(1)
@@ -313,10 +323,16 @@ func OpenDB(dsn string, opts ...DBOption) (*sql.DB, error) {
 	return stdlib.OpenDB(*cfg), nil
 }
 
-// closeDB closes the application pool and the health probe connection.
+// closeDB closes the application pool, the health probe connection and the serving lock's connection.
 func (a *App) closeDB() {
 	if a.health != nil {
 		a.health.Close()
+	}
+	if a.serving != nil {
+		a.serving.Close()
+	}
+	if a.servingDB != nil {
+		a.servingDB.Close()
 	}
 	if a.db != nil {
 		a.db.Close()

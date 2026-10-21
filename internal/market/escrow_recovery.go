@@ -12,9 +12,9 @@ import (
 //
 // The restore gate. A restored database knows nothing that happened after its backup: a settlement built, co-signed or
 // broadcast since then is missing or in an earlier state, and a dispute decided since then can be decided again. While
-// the restore gate is set (settings payments_recovery_required, written by scripts/restore.sh or the manual
-// protection SQL in UPGRADING.md section 6, cleared only by the operator's SQL), the escrow watcher therefore builds no
-// settlement, co-signs none and broadcasts no stored transaction; it still reads deposits and follows broadcast
+// the restore gate is set (settings payments_recovery_required, written by scripts/restore.sh or the host command
+// -set-restore-gate of UPGRADING.md section 6, cleared only by the operator's -clear-restore-gate; restore_gate.go),
+// the escrow watcher therefore builds no settlement, co-signs none and broadcasts no stored transaction; it still reads deposits and follows broadcast
 // settlements to their confirmations (watching continues). The restore also holds every restored settlement that has a
 // final transaction (restoredSettlementHold): its transaction is broadcast again only after an administrator checked on
 // /admin that it was not already sent or replaced (escrowRebroadcastAction: password step-up, audited), which allows

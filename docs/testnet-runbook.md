@@ -23,45 +23,43 @@ Run Compose commands from the deployment directory with its restored `.env`. Pre
 5. Wait for the Monero wallet sweep. Admin shows wallets missing from disk and settlements held for review. An unresolved wallet or balance remains a recovery blocker.
 6. For every held settlement, check its transaction and key images in the daemon and its transfer history in the wallet. Admin's password-confirmed relay check sends the stored transaction unchanged; it never builds a replacement after an ambiguous send.
 7. Check orders funded or settled after the backup, compare balances and transaction history, and make another encrypted backup of the reconciled state. Re-check the Admin settings against your operator record: the restore rolls back every setting saved after the backup or recovery point, such as **New escrow checkouts**, site access, registrations and the vendor bond amount and approval mode in **Admin → Vendor applications**, and undoes bonds recorded as received after that point. The fee address and rate (`ESCROW_XMR_FEE_ADDRESS`, `ESCROW_XMR_FEE_BPS`) are host configuration, so a database restore does not roll them back; confirm the host values instead.
-8. Stop the app before clearing the recovery gate below, then start only the app again and verify Admin readiness. Clearing the gate asserts that reconciliation is complete; it does not discover missing obligations or release individual holds.
+8. Stop the app, then [clear the gate](#clear-the-gate) with the host command below, which refuses while the app runs. Start only the app again and verify Admin readiness. Clearing the gate asserts that reconciliation is complete; it does not discover missing obligations or release individual holds.
 9. Once reconciliation and readiness checks pass, run `docker compose up -d` with the preserved profiles to restart public Tor ingress and the enabled mirror. On mirror deployments, check `docker compose ps tor-mirror` and confirm its saved onion address answers. On clearnet deployments, reopen the reverse proxy after these checks.
 
-### Clear the gate
-
-Use the operator's protected database connection. For the bundled database, define `db_sql` as below. An external database needs its protected `psql` connection instead. The SQL needs an administrator handle and records its audit row in the same transaction.
+For the SQL checks in these guides, use the operator's protected database connection. For the bundled database, define
+`db_sql` as below; an external database needs its protected `psql` connection instead.
 
 ```sh
 db_sql() { docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U opsecmkt -d opsecmkt "$@"; }
 ```
 
-<!-- runbook-sql: clear-gate -->
+### Clear the gate
+
+Clear the gate with the host command (A-505), in a terminal, with the application stopped, naming the administrator in
+whose name the reconciliation is asserted. On a Compose deployment:
+
+<!-- runbook-command: clear-gate -->
 ```sh
-db_sql -v handle=YOUR_ADMIN_HANDLE <<'SQL'
-BEGIN;
-SELECT c.problem, c.problem = 'none' AS ready FROM (SELECT CASE
-  WHEN NOT EXISTS (SELECT 1 FROM users WHERE handle=:'handle' AND role='admin') THEN 'no administrator with that handle'
-  WHEN NOT EXISTS (SELECT 1 FROM settings WHERE key='payments_recovery_required' AND value='true') THEN 'the recovery gate is not set'
-  ELSE 'none' END AS problem) AS c
-\gset c_
-\if :c_ready
-WITH cleared AS (
-  UPDATE settings SET value='false' FROM users u
-  WHERE settings.key='payments_recovery_required' AND settings.value='true' AND u.handle=:'handle' AND u.role='admin'
-  RETURNING u.id, u.handle)
-INSERT INTO audit_events(user_id,action)
-SELECT id, 'Payout recovery gate cleared by ' || handle || ' after reconciling the restored database with the wallets' FROM cleared;
-COMMIT;
-\echo 'Cleared the payout recovery gate; committed.'
-\else
-ROLLBACK;
-\echo 'Refused; nothing was changed:' :c_problem
-\endif
-SQL
+docker compose run --rm app -clear-restore-gate YOUR_ADMIN_HANDLE
 ```
 
-It must print `INSERT 0 1` and end "Cleared the payout recovery gate; committed."; then restart the app and verify readiness.
-"Refused; nothing was changed:" gives the reason (a mistyped or non-administrator handle, or a gate already
-cleared) and rolls back.
+On a native deployment run `opsecmkt -clear-restore-gate YOUR_ADMIN_HANDLE` with the deployment's `DATABASE_URL_FILE`, as
+for the other [host commands](install/cli-reference.md#legacy-host-commands). The command connects with `DATABASE_URL` and
+starts no web server, payment provider or background work. It refuses, and changes nothing, when:
+
+- the application is running against the database, or starting (every serving application holds a database lock the
+  command needs: stop it first);
+- stdin is not a terminal: no flag or pipe answers for the operator;
+- the handle is not an administrator's (handles are exact and case-sensitive);
+- the gate is not set (it was already cleared);
+- the database records migrations this binary does not include.
+
+Otherwise it asks you to confirm, one statement at a time, that steps 1 to 7 above are done (five statements); type `yes`
+to each. Any other answer refuses at that step. Then, in one transaction that makes the checks again, it sets
+`payments_recovery_required` to `false` and adds the audit row "Payout recovery gate cleared by HANDLE by host command after reconciling the restored database
+with the wallets" on that administrator. It ends with `Restore gate cleared by administrator HANDLE; audited.` and prints
+no database URL, key or wallet value. The other restore settings and the settlement holds are unchanged. Then start the
+app and verify readiness.
 
 
 ## Handle a payment-review flag

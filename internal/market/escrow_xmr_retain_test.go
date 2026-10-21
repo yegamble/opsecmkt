@@ -169,16 +169,22 @@ func TestXMREscrowRestoreRetiresSlots(t *testing.T) {
 	if w := x.walletOf(order); w != "escrow-202610-02" {
 		t.Fatalf("checkout after the restore claimed from %s", w)
 	}
-	// The manual protection in UPGRADING.md section 6 runs the same statements (scripts/test-backup-restore.sh compares
-	// the two restored databases).
-	for _, f := range []string{"scripts/restore.sh", "UPGRADING.md"} {
+	// The protection of UPGRADING.md section 6, the host command -set-restore-gate (restore_gate.go, A-505), runs the
+	// same statements (scripts/test-backup-restore.sh compares the two restored databases).
+	for f, hold := range map[string]string{
+		"scripts/restore.sh":              "UPDATE xmr_settlements SET send_error='" + strings.ReplaceAll(restoredSettlementHold, "'", "''") + "', updated=now()",
+		"internal/market/restore_gate.go": "UPDATE xmr_settlements SET send_error=$1, updated=now()",
+	} {
 		b, err := os.ReadFile(f)
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, want := range []string{"UPDATE xmr_settlements SET send_error='" + strings.ReplaceAll(restoredSettlementHold, "'", "''") + "', updated=now()",
-			"WHERE state IN ('built','relayed')", "UPDATE xmr_escrow_slots SET state='retired', updated=now() WHERE state='free'",
-			"UPDATE xmr_escrow_wallets SET state='closing', updated=now() WHERE state IN ('active','sealed')", "('xmr_escrow_sweep_required','true')"} {
+		sweep := "('xmr_escrow_sweep_required','true')"
+		if f != "scripts/restore.sh" {
+			sweep = `"escrow_xmr_release_recheck", xmrEscrowSweepKey}`
+		}
+		for _, want := range []string{hold, "WHERE state IN ('built','relayed')", "UPDATE xmr_escrow_slots SET state='retired', updated=now() WHERE state='free'",
+			"UPDATE xmr_escrow_wallets SET state='closing', updated=now() WHERE state IN ('active','sealed')", sweep} {
 			if !strings.Contains(string(b), want) {
 				t.Errorf("%s lacks %q", f, want)
 			}

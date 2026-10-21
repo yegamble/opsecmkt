@@ -21,7 +21,7 @@ func exportAudit(ctx context.Context, from, upto int64, dir string, given func(s
 	if !given("export-audit") {
 		return errors.New("-export-audit-from and -export-audit-dir require -export-audit N")
 	}
-	for _, other := range []string{"preview", "healthcheck", "status", "reset-admin-password", "reset-admin-factors", "set-role", "bootstrap-admin", "site-name"} {
+	for _, other := range []string{"preview", "healthcheck", "status", "reset-admin-password", "reset-admin-factors", "set-role", "set-restore-gate", "clear-restore-gate", "bootstrap-admin", "site-name"} {
 		if given(other) {
 			return errors.New("cannot be combined with -" + other)
 		}
