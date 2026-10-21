@@ -286,10 +286,19 @@ func TestXMREscrowSupersededMinedConcurrent(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+	// A call that reads the chain after another committed the adoption finds no superseded row left and reports false
+	// (PAY566-2); at least one adopts, none errs, and x.adopted checks the rows moved once with one note.
+	adopters := 0
 	for i, err := range errs {
-		if err != nil || !results[i] {
-			t.Fatalf("call %d: %v %v", i, results[i], err)
+		if err != nil {
+			t.Fatalf("call %d: %v", i, err)
 		}
+		if results[i] {
+			adopters++
+		}
+	}
+	if adopters == 0 {
+		t.Fatalf("no call adopted the superseded transaction: %v", results)
 	}
 	x.adopted(order, old, next, "relayed")
 	x.mustPoll()
