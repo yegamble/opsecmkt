@@ -70,11 +70,14 @@ Review flagged deposits from the moderation desk. Check their transaction, amoun
 
 ## 9. Manual Monero escrow fakechain check
 
-`scripts/test-escrow-xmr-regtest.sh` runs the eighteen legs of Monero escrow ([per-order escrow](escrow.md#phase-3-monero-escrow-on-a-local-fakechain))
+`scripts/test-escrow-xmr-regtest.sh` runs the nineteen legs of Monero escrow ([per-order escrow](escrow.md#phase-3-monero-escrow-on-a-local-fakechain))
 against a real `monerod --regtest` and real `monero-wallet-rpc` 0.18.5.1. CI runs it too (the `escrow-xmr-regtest` job, A-498). **It is for a local
 fakechain only**: it refuses any daemon that does not report nettype `fakechain` with hard fork version 16 or later before any
-wallet call, and each Go leg checks the same again. It needs Docker for the nodes, Go, `curl` and a disposable PostgreSQL
-database (never a real deployment's). The legs run the app inside the Go test: this is not a deployment check.
+wallet call, and each Go leg checks the same again. It needs Docker for the nodes, Go, `curl`, `tar` with bzip2 and a disposable PostgreSQL
+database (never a real deployment's). The `StaleRingRemedyB` leg runs the official `monero-wallet-cli` 0.18.5.1 for Linux
+x86-64 (on an ARM host, through Docker's amd64 emulation); the script downloads its archive from getmonero.org into
+`artifacts/cache/` once (or takes `ESCROW_XMR_REGTEST_CLI_ARCHIVE`) and refuses it unless its SHA-256 is the pinned one of
+the release's signed `hashes.txt`. The legs run the app inside the Go test: this is not a deployment check.
 
 Start a fakechain daemon and three wallet-rpc instances on one Docker network (the app's escrow wallet-rpc, a funder
 standing in for the buyer's wallet, and one used only to restore a sealed seed). The wallet-rpcs listen without RPC login on
@@ -108,7 +111,8 @@ docker network rm xmr-escrow-regtest
 ```
 
 `ESCROW_XMR_REGTEST_WALLET_CONTAINER` is needed by `StaleRing`, which stops it, moves the ring database aside on its volume
-and starts it (the operator guide's [stale-ring break-glass](operator-guide.md#stale-ring-break-glass-a-618)), and fails as skipped without it; with it,
+and starts it (the operator guide's [stale-ring break-glass](operator-guide.md#stale-ring-break-glass-a-618), remedy A), and by
+`StaleRingRemedyB`, which stops it and clears the stuck rings with `monero-wallet-cli` (remedy B); both fail as skipped without it; with it,
 `RestartMidSend` also restarts that container.
 `ESCROW_XMR_REGTEST_DAEMON_CONTAINER` is required: `ReRequest` stops and starts that monerod container around each relay,
 which is why monerod runs with `--keep-fakechain` (without it, monerod deletes the fakechain when it starts). The legs run
@@ -117,8 +121,8 @@ run again against the same nodes, since each puts the watcher's clock in a month
 `ESCROW_XMR_REGTEST_LOG` (default `artifacts/real-chain/test-escrow-xmr-regtest-<UTC time>.log`, gitignored); no seed,
 password or URL is printed. The script reports each leg from its own result line, so a failed, skipped or missing leg is
 named and the run fails; it ends with one `PASS:` line listing what was shown. The legs are: `Wallets`, `Funding`,
-`TwoAccountsOneTx`, `Physical`, `RestartMidSend`, `RelayDropped`, `TopUp`, `Reorg`, `External`, `ReRequest`, `StaleRing`, `Restore`, `Lookahead`,
-`WrongSecret` and `Destroy`, each `TestXMREscrowRegtest<Leg>` in `internal/market/`; what each proves is listed in
+`TwoAccountsOneTx`, `Physical`, `RestartMidSend`, `RelayDropped`, `TopUp`, `Reorg`, `FundingReorg`, `External`, `ReRequest`, `StaleRing`, `StaleRingRemedyB`, `Restore`, `Lookahead`,
+`WrongSecret`, `Destroy`, `RefundBelowFee` and `Bond`, each `TestXMREscrowRegtest<Leg>` in `internal/market/`; what each proves is listed in
 [per-order escrow](escrow.md#phase-3-monero-escrow-on-a-local-fakechain). A pass is evidence for the code and the 0.18.5.1
 nodes on a local fakechain, not for stagenet, testnet or mainnet.
 
@@ -135,7 +139,7 @@ can run: stagenet daemons built from the genesis block with the local monerod 0.
 on a Docker network with no route out, mining locally at fixed difficulty, plus one `--offline` daemon and a stagenet
 wallet-rpc. It refuses any daemon that is not stagenet below height 10,000 (the public stagenet is past 1,900,000). Such a
 chain is at hard fork version 1 (version 2 starts at height 32,000, 16 at 1,151,720), so Monero escrow refuses to start on
-it, as it must; the eighteen fakechain legs of section 9 need escrow to start and cannot run on it. The script's legs show
+it, as it must; the nineteen fakechain legs of section 9 need escrow to start and cannot run on it. The script's legs show
 that refusal names the hard fork rather than the network, that a real stagenet wallet's addresses are accepted under the
 stagenet tags and refused under the fakechain's, and that the Monero escrow sync guard reads a restricted stagenet
 daemon (as the bundled `monero` service serves) as synced with a peer and a fresh tip and an `--offline` one as having no
