@@ -234,10 +234,11 @@ docker build -t opsecmkt-tor:ci -f deploy/Dockerfile.tor deploy   # once; or set
 
 Requires Docker with Compose v2, the Tor image, `age`, `age-keygen` and OpenSSL; nothing is built or pulled,
 and every container runs with `--network none`. In a temporary copy of the Compose files with a Tor `.env`
-under a unique project name, the script tags the Tor image as the project's `<project>-tor` and runs the
+under a unique project name (with a copy of `scripts/install.sh`, which the restore block runs), the script
+tags the Tor image as the project's `<project>-tor` and runs the
 [operator guide's](operator-guide.md#secrets-env-and-onion-identities) `env-backup`, `env-restore`,
 `tor-identity-backup` and `tor-identity-restore` blocks (after their `<!-- ops-cmd: NAME -->` markers)
-verbatim with bash, with a test-only age identity:
+verbatim with bash, with a test-only age identity and only identities Tor generates offline during the run:
 
 - `.env` is backed up encrypted with mode `0600` and restored byte for byte into a checkout without one; a
   wrong identity creates no `.env`, and an existing `.env` is refused and left unchanged.
@@ -246,6 +247,17 @@ verbatim with bash, with a test-only age identity:
   `docker volume rm` the restore prints the same hostname, and Tor, started as `compose.tor.yaml` runs it (no
   capabilities, no new privileges), bootstraps without an error and keeps the same hostname and secret key
   (compared by digest; the key is never printed).
+- `./scripts/install.sh restore-onion` (war room A-531) refuses, each time leaving no volume and nothing in its
+  temporary directory, archives made from the mirror's backup with: the main onion's address (or a non-address)
+  in `hostname`; an extra file inside or outside `marketplace/`, or a file in `authorized_clients/`; a `../` or
+  absolute path; `hostname` as a symbolic or hard link; an entry twice; the `admin/` layout; no secret key; a
+  95-byte secret key; the main onion's public key beside the mirror's secret key (Tor refuses the pair in the
+  dry run); no `hostname` and no recorded address. It also refuses a recorded `address` the key does not derive,
+  a non-tar stream, an empty stream (the wrong age identity), the main onion's backup restored as the mirror
+  (its address is in `tor_identity`), `tor_admin_identity` as a target, and the mirror's backup while an
+  administrator-onion volume holds the mirror's address. A backup without `hostname` restores with its recorded
+  address: the volume then holds only the two key files (`debian-tor`, `0700`/`0600`), no `hostname`, and Tor
+  starts with the mirror's address.
 - A root-owned archive (all entries `root/root`, as a copy taken by hand as root would be) restored into a
   volume created and chowned to root beforehand: Tor starts with the same identity. Without the restore's
   `chown`, Tor exits with `Directory /var/lib/tor/marketplace cannot be read: Permission denied`. (Docker 29

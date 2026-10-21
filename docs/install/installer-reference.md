@@ -135,6 +135,25 @@ Add a second onion address for the same market. Tor installs only.
 
 See [Optional onion mirror](../operator-guide.md#optional-onion-mirror).
 
+## restore-onion
+
+Restore an onion identity backup, decrypted on stdin, into its empty volume before that Tor first starts. Tor installs
+only; the private administrator onion (`tor_admin_identity`) is refused.
+
+**Command:** `age -d -i "$AGE_IDENTITY" BACKUP | ./scripts/install.sh restore-onion tor_identity|tor_mirror_identity [--onion-address ADDR.onion]`
+
+It refuses a backup with any entry other than the key files and `hostname` (links, other names or paths,
+duplicates), keys that fail the import's checks or Tor's offline dry run, a `hostname` that is not the address the key
+derives, a key already in another onion's volume, a running Tor service and a volume that is not empty. Nothing is
+written until every check passes; `hostname` is never written. The last line is the derived address.
+
+### Flags
+
+- `--onion-address ADDR.onion`<br>
+  The address recorded with the backup; the key must derive it. Required when the backup has no `hostname`.
+
+See [Secrets, .env and onion identities](../operator-guide.md#secrets-env-and-onion-identities).
+
 ## add-scanner
 
 Add the ClamAV malware scanner so photo and avatar uploads work. Needs 3 GiB of Docker host memory.

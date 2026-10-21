@@ -15,6 +15,18 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## The onion identity restore checks the backup first (A-531)
+
+No migration or setting. The operator guide's [onion identity restore](docs/operator-guide.md#secrets-env-and-onion-identities)
+now pipes the decrypted backup into `./scripts/install.sh restore-onion IDENTITY` instead of unpacking it with `tar -x`
+in a container, so run it from a checkout of this release. Backups taken with the guide's commands restore unchanged.
+The restore now refuses a backup holding anything but `marketplace/` with its key files, `hostname` and an empty
+`authorized_clients/` (for example a link or an extra file), keys that fail the import's checks or Tor's offline dry
+run, a `hostname` that is not the address the key derives, a key already in the other public onion's or the
+administrator onion's volume, and `tor_admin_identity`. It no longer copies `hostname` into the volume (Tor writes it
+from the key) and prints the derived address. A backup without `hostname` needs the recorded address: set
+`address=ADDR.onion` before the block.
+
 ## The upload backend accepts only a clientAuth gateway certificate (A-589)
 
 No migration or setting. The private upload backend now answers 404 on every `/v1/uploads/*` route to a client

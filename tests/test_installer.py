@@ -2195,6 +2195,28 @@ time.sleep(60)
         self.assertEqual(list(self.temporary_dir.iterdir()), [])
         self.assertEqual(list(self.root.rglob('hs_ed25519_*')), [])
 
+    def test_restore_onion_refuses_before_any_container(self):
+        # A-531: argument errors, the administrator onion and an empty stdin (age failed to decrypt) are refused
+        # before any container runs; scripts/test-tor-identity-restore.sh checks the archive refusals against the
+        # real Tor image.
+        self.write_env(installed_env())
+        for arguments in ((), ('tor_identity', 'tor_mirror_identity'), ('opsecmkt_tor_identity',),
+                          ('tor_identity', '--onion-address', 'example.onion')):
+            with self.subTest(arguments=arguments):
+                result = self.command('restore-onion', *arguments)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertFalse([call for call in self.calls() if call.startswith(('run ', 'volume '))], self.calls())
+        result = self.command('restore-onion', 'tor_admin_identity')
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn('The private administrator', result.stderr)
+        self.temporary_dir = self.outside()
+        result = self.command('restore-onion', 'tor_identity', extra_env={'TMPDIR': str(self.temporary_dir)})
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn('nothing arrived on stdin', result.stderr)
+        self.assertEqual(list(self.temporary_dir.iterdir()), [])
+        self.assertFalse([call for call in self.calls() if call.startswith(('run ', 'volume '))], self.calls())
+        self.assertIn('restore-onion tor_identity|tor_mirror_identity', self.run_installer(None, arguments=['--help']).stdout)
+
     def test_onion_oracle(self):
         # The address of a key Tor 0.4.9.14 generated offline (deploy/Dockerfile.tor; public data only): the
         # oracle's checksum and encoding give it back from its public key.
