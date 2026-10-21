@@ -1635,8 +1635,9 @@ the settlement itself, and a payment by hand would pay twice.
    db_sql -X -At -c "SELECT count(*) FROM xmr_settlements WHERE id <> SETTLEMENT_ID AND (state IN ('built','relayed') OR (state = 'failed' AND tx_hash IS NOT NULL) OR (state = 'requested' AND supersedes IS NOT NULL))"
    ```
 
-   When it is not 0 you may also wait: the stuck settlement pays nothing twice while it waits, and the settlements in
-   flight confirm within the confirmation threshold. On a busy market it may never reach 0, so remedy B (rehearsed too, below) is then the path.
+   When it is not 0 you may also wait: the stuck settlement pays nothing twice while it waits, and built and relayed
+   settlements confirm within the confirmation threshold (a failed one with a transaction, or a waiting re-request, does
+   not clear by waiting). On a busy market it may never reach 0, so remedy B (rehearsed too, below) is then the path.
    Stop the wallet-rpc, then move its `.shared-ringdb` to a dated
    directory with the pinned image as uid 1000 and no network; never delete it, and never touch the wallet files (with
    another `COMPOSE_PROJECT_NAME`, the volume is `<COMPOSE_PROJECT_NAME>_monero_escrow_wallet`; use the

@@ -141,8 +141,8 @@ done
 cd "$(dirname "$0")/.."
 
 # A-625: the StaleRingRemedyB leg runs the official monero-wallet-cli 0.18.5.1 for Linux x86-64. Its archive is checked
-# against this SHA-256, taken from getmonero.org's hashes.txt for the release (signed by binaryFate,
-# 81AC591FE9C4B65C5806AFC3F0AF4D462A0BDF92), on every run; a mismatch is refused and nothing runs. The archive is
+# against this SHA-256, taken from the release's hashes.txt as monero-site commit 76f3846d holds it (getmonero.org now
+# lists only the latest release), signed by binaryFate (81AC591FE9C4B65C5806AFC3F0AF4D462A0BDF92), on every run; a mismatch is refused and nothing runs. The archive is
 # ESCROW_XMR_REGTEST_CLI_ARCHIVE when set, else the cached artifacts/cache/ copy, downloaded once from getmonero.org.
 monero_cli_archive_name=monero-linux-x64-v0.18.5.1.tar.bz2
 monero_cli_sha256=22a7dda7b0cb699fdd6b7674c3b4a4465b337cc98a54983523b759e1e7cc9958

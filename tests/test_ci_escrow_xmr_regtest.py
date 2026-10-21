@@ -82,7 +82,7 @@ class EscrowXMRRegtestJobTest(unittest.TestCase):
 
     def test_wallet_cli_archive_is_pinned_to_the_signed_hash(self):
         # A-625: the StaleRingRemedyB leg runs the official monero-wallet-cli 0.18.5.1 (Linux x86-64). The SHA-256 is the
-        # line of getmonero.org's hashes.txt for the release, whose signature verified against binaryFate's key.
+        # line of the release's hashes.txt at monero-site commit 76f3846d, whose signature verified against binaryFate's key.
         self.assertIn('monero_cli_archive_name=monero-linux-x64-v0.18.5.1.tar.bz2\n', SCRIPT)
         self.assertIn('monero_cli_sha256=22a7dda7b0cb699fdd6b7674c3b4a4465b337cc98a54983523b759e1e7cc9958\n', SCRIPT)
         self.assertIn('https://downloads.getmonero.org/cli/$monero_cli_archive_name', SCRIPT)

@@ -1163,8 +1163,10 @@ func TestXMREscrowRegtestStaleRingRemedyB(t *testing.T) {
 		}
 		// With ask-password 2 (decrypt, the default) the CLI derives its ring database key from its in-memory-encrypted
 		// spend key and sees none of the rings the unattended wallet-rpc stored: unset_ring would remove nothing.
-		if rings := printedRings(run(printRings(both...))); len(rings) != 0 {
-			t.Fatalf("with ask-password 2 monero-wallet-cli shows stored rings %q: the guide's set ask-password 0 step is then unneeded", rings)
+		// The wallet must open and every key image must get the no-ring answer, so a session that failed or lost its stdin
+		// cannot pass this check (INFRA127-1).
+		if out := run(printRings(both...)); !strings.Contains(out, "Opened wallet") || strings.Count(out, xmrRingUnset) != len(both) || len(printedRings(out)) != 0 {
+			t.Fatalf("with ask-password 2 monero-wallet-cli did not open the wallet and answer %q once per key image (%d): the guide's set ask-password 0 step would then be unproven; rings %q", xmrRingUnset, len(both), printedRings(out))
 		}
 		run("set ask-password 0\n" + pw + "\nexit\n")
 		before := printedRings(run(printRings(both...)))
