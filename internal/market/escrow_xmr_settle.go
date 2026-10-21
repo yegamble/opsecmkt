@@ -175,6 +175,19 @@ const xmrReRequestMissingText = "A deposit this settlement spends is no longer l
 // xmrNoHandPay ends the text of a wait the market resolves itself once the operator has acted (A-618).
 const xmrNoHandPay = "Do not pay anything by hand for it, or it is paid twice."
 
+// xmrRelayRefusedText and xmrBadMetadataText are what the order page says of a settlement that failed with its
+// transaction stored. Neither claims that nothing was sent (A-566): monero-wallet-rpc's refusal (-4) can follow a relay
+// the daemon took before the wallet lost its connection, and a relayed settlement can fail on unreadable metadata. The
+// parties read them too, so the staff-only guidance on paying by hand (A-560, A-613) stays in the staff alert and the
+// operator guide.
+var (
+	xmrRelayRefusedText = "The Monero daemon refused the stored transaction " + strconv.Itoa(xmrRelayAttempts) + " times in a row, and the market has not seen it in the daemon's pool or chain, nor its coins spent by another transaction. " +
+		"A refusal does not prove that it never reached the network (the escrow wallet answers the same when it lost its connection to the daemon), so it may still be mined. " +
+		"Market staff were notified; an administrator may ask the market to build it again, which the market does only while that transaction is in neither the pool nor the chain and none of its coins is spent, from the same coins, so at most one of the two can be mined."
+	xmrBadMetadataText = "The escrow wallet cannot read the stored transaction (its record is damaged), so the market cannot send it again; if it was sent before, it may still be mined. " +
+		"Market staff were notified; an administrator may ask the market to build it again, which the market does only while that transaction is in neither the pool nor the chain and none of its coins is spent."
+)
+
 // xmrSettleWhy is xmrSettleWaitText for a settlement of kind that supersedes settlement supersedes (0 for none).
 func xmrSettleWhy(class, kind string, supersedes, threshold int64) string {
 	if class == xmrWaitMissing && supersedes != 0 {
@@ -206,12 +219,12 @@ func xmrSettleWaitText(class, kind string, threshold int64) string {
 	case class == xmrNothing:
 		return "No confirmed deposit of this escrow is left to spend, so there is nothing to settle."
 	case class == xmrRelayRefused:
-		return "The Monero daemon refused the stored transaction and no other transaction spent its coins, so nothing was sent. Market staff were notified; an administrator may ask the market to build it again."
+		return xmrRelayRefusedText
 	case class == xmrBadMetadata:
-		return "The escrow wallet cannot read the stored transaction (its record is damaged), so nothing was sent. Market staff were notified; an administrator may ask the market to build it again."
+		return xmrBadMetadataText
 	case strings.HasPrefix(class, xmrRelayRefusing+" "):
 		refusals, confirmed := xmrRelayRefusals(class)
-		text := "The Monero daemon refused this transaction (" + strconv.Itoa(refusals) + " time(s) in a row); no other transaction spent its coins. The market sends the same stored transaction again on its next pass, and records it as not sent if it is refused " + strconv.Itoa(xmrRelayAttempts) + " times in a row."
+		text := "The Monero daemon refused this transaction (" + strconv.Itoa(refusals) + " time(s) in a row); no other transaction spent its coins. The market sends the same stored transaction again on its next pass, and records it as failed if it is refused " + strconv.Itoa(xmrRelayAttempts) + " times in a row."
 		if confirmed {
 			text += " An administrator confirmed its relay after the market restored its records from a backup, so it is sent while the market reconciles them too."
 		}
@@ -751,6 +764,11 @@ func (a *App) buildXMRSettlement(ctx context.Context, s *xmrSettleRow) error {
 	if plan.Outputs[0].Sats < floor {
 		return a.xmrSettleTooSmall(ctx, s, deposits, pending)
 	}
+	// A re-request is never built once a transaction it supersedes is on the network (A-566): a wallet behind the chain
+	// may still list the coins that transaction spent.
+	if sent, err := a.xmrSupersededSent(ctx, s); err != nil || sent {
+		return err
+	}
 	dests := make([]xmrDestination, len(plan.Outputs))
 	for i, o := range plan.Outputs {
 		dests[i] = xmrDestination{Address: o.Address, Amount: o.Sats}
@@ -986,8 +1004,12 @@ func (a *App) xmrBuildRefused(ctx context.Context, s *xmrSettleRow, plan settleP
 
 // xmrOutputsWait records that the wallet's outputs do not match the deposits claimed: the first time it waits
 // (xmrWaitOutputs; the wallet may not have caught up), and from the next pass it is flagged (xmrOutputsMismatch), as
-// it is at once after a pass whose fee estimate failed (QA5W2-1).
+// it is at once after a pass whose fee estimate failed (QA5W2-1). A re-request whose coins the wallet no longer lists
+// because a transaction it supersedes spent them is closed instead (xmrSupersededSent, A-566).
 func (a *App) xmrOutputsWait(ctx context.Context, s *xmrSettleRow) error {
+	if sent, err := a.xmrSupersededSent(ctx, s); err != nil || sent {
+		return err
+	}
 	if s.Wait == xmrWaitOutputs || s.Wait == xmrOutputsMismatch || xmrFeeEstimateWait(s.Wait) {
 		return a.xmrSettleWaits(ctx, s, xmrOutputsMismatch)
 	}
@@ -1255,6 +1277,10 @@ func (a *App) sendXMRBuilt(ctx context.Context, s *xmrSettleRow, gate bool) erro
 	if found {
 		return a.markXMRRelayed(ctx, s, true)
 	}
+	// A built re-request is never relayed once a transaction it supersedes is on the network (A-566).
+	if sent, err := a.xmrSupersededSent(ctx, s); err != nil || sent {
+		return err
+	}
 	if !xmrMaySend(gate, s.Wait) || a.xmrRelayHold() != "" {
 		return nil
 	}
@@ -1416,8 +1442,12 @@ func (a *App) trackXMRConfirmed(ctx context.Context, s *xmrSettleRow) error {
 
 // markXMRExternal records that another transaction spent the coins of s's stored transaction (built, relayed or
 // confirmed -> external): its deposits are flagged so staff can open the order, with a note and a notice to the
-// parties and to the staff.
+// parties and to the staff. When s is a re-request and that transaction is the stored one of a settlement it
+// supersedes, the market's own earlier transaction pays instead (xmrSupersededSent, A-566): never external.
 func (a *App) markXMRExternal(ctx context.Context, s *xmrSettleRow) error {
+	if sent, err := a.xmrSupersededSent(ctx, s); err != nil || sent {
+		return err
+	}
 	tx, err := a.beginEscrowOrderTx(ctx, s.OrderID)
 	if err != nil {
 		return err
@@ -1488,8 +1518,11 @@ func (a *App) failXMRSettlement(ctx context.Context, s *xmrSettleRow, class stri
 	}
 	what := settlementKind(s.Kind)
 	text := xmrSettleWaitText(class, s.Kind, a.escrowXMR.confirmations)
-	if err = a.flagOrder(ctx, tx, &o, "Monero escrow settlement "+strconv.FormatInt(s.ID, 10)+" ("+what+") failed: "+text+namedSentence(named)+" Moderator review required.",
-		"Order "+shortID(s.OrderID)+": its Monero escrow settlement ("+what+") was not sent. "+text); err != nil {
+	party := "Order " + shortID(s.OrderID) + ": its Monero escrow settlement (" + what + ") was not sent. " + text
+	if s.TxHash != "" { // its transaction is stored and may have reached the network (xmrRelayRefusedText)
+		party = "Order " + shortID(s.OrderID) + ": its Monero escrow settlement (" + what + ") failed. " + text
+	}
+	if err = a.flagOrder(ctx, tx, &o, "Monero escrow settlement "+strconv.FormatInt(s.ID, 10)+" ("+what+") failed: "+text+namedSentence(named)+" Moderator review required.", party); err != nil {
 		return err
 	}
 	if err = tx.Commit(); err != nil {
@@ -1500,7 +1533,9 @@ func (a *App) failXMRSettlement(ctx context.Context, s *xmrSettleRow, class stri
 }
 
 // xmrStrayOpenSQL selects the settlements s that hold an order's one stray refund slot: a first-generation stray refund
-// in progress (migration 135's xmr_settlements_one_open_stray). A re-request of a failed stray refund (supersedes) never
+// in progress, relayed included: the request gate. The database's xmr_settlements_one_open_stray (135, narrowed by 144
+// for PAY566-1) covers requested and built ones only, so a revived superseded stray refund (A-566) may be relayed beside
+// a later one; a relayed one's claims are fixed. A re-request of a failed stray refund (supersedes) never
 // holds it (A-616): it spends only the key images of the settlement it supersedes, so it neither collides with nor holds
 // back the stray refund of a later deposit, which claims only deposits no settlement claims (xmrStrayEligibleSQL).
 const xmrStrayOpenSQL = "s.kind='stray_refund' AND s.state IN ('requested','built','relayed') AND s.supersedes IS NULL"

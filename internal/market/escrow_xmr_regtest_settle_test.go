@@ -647,6 +647,75 @@ func TestXMREscrowRegtestReRequest(t *testing.T) {
 		shortID(order), failed.TxHash, xmrRelayAttempts, next.TxHash, inputs, next.Fee, failed.Fee)
 }
 
+// TestXMREscrowRegtestSupersededMined (A-566, PAY66-3): a release's relay is refused until it fails, as in
+// TestXMREscrowRegtestReRequest, and an administrator re-requests it. While the watcher builds the re-request (around
+// its incoming_transfers call), the refused transaction's stored blob reaches the daemon after all
+// (send_raw_transaction, as a peer that kept it would send it back) and is mined. The re-request is never built
+// (no second transfer) or relayed: it is closed, and the old release is recorded sent (relayed, then confirmed),
+// with its deposit claim back, one order note saying so and none saying a transaction the market did not make spent
+// the coins. The daemon has the old transaction, and its inputs are the stored key images.
+func TestXMREscrowRegtestSupersededMined(t *testing.T) {
+	container := os.Getenv("ESCROW_XMR_REGTEST_DAEMON_CONTAINER")
+	if container == "" {
+		t.Skip("set ESCROW_XMR_REGTEST_DAEMON_CONTAINER to the monerod container's name (scripts/test-escrow-xmr-regtest.sh): this leg stops and starts it")
+	}
+	r, p := newXMRSettleRegtest(t)
+	order, _ := r.completedReal()
+	id, failed := r.relayFailedReal(p, container, order)
+	blob := agStr(r.testEnv, "SELECT tx_blob FROM xmr_settlements WHERE id=$1", id)
+	ctx := context.Background()
+	sent := false
+	p.wrap("incoming_transfers", func(forward func()) {
+		if !sent {
+			sent = true
+			var res struct {
+				Status string `json:"status"`
+				Reason string `json:"reason"`
+			}
+			// The proxy's goroutine: report with Errorf (daemonPost fails the leg with Fatalf).
+			b, _ := json.Marshal(map[string]any{"tx_as_hex": blob, "do_not_relay": false})
+			resp, err := http.Post(strings.TrimRight(os.Getenv("ESCROW_XMR_REGTEST_DAEMON_URL"), "/")+"/send_raw_transaction", "application/json", bytes.NewReader(b))
+			if err == nil {
+				err = json.NewDecoder(resp.Body).Decode(&res)
+				resp.Body.Close()
+			}
+			if err != nil || res.Status != "OK" {
+				t.Errorf("send_raw_transaction of the refused release %s: %v %q %q", failed.TxHash, err, res.Status, res.Reason)
+			}
+			if err := r.daemon.callWithin(ctx, 2*time.Minute, "/json_rpc", "generateblocks", map[string]any{"amount_of_blocks": 1, "wallet_address": r.funderAddr}, nil); err != nil {
+				t.Errorf("generateblocks: %v", err)
+			}
+		}
+		forward()
+	})
+	_, adminSess := r.user("xr566_admin_"+randomToken()[:6], "admin")
+	if code := r.reRequest(adminSess, order, id, testPassword); code != 303 {
+		t.Fatalf("re-request: %d", code)
+	}
+	transfers, relays := p.count("transfer"), p.count("relay_tx")
+	r.synced()
+	r.mustPoll()
+	p.wrap("incoming_transfers", nil)
+	if !sent || t.Failed() {
+		t.Fatal("the refused release was not sent back to the daemon while the re-request was built")
+	}
+	next := r.settlementOf(order, "release")
+	old := r.settlement(id)
+	if next.Supersedes != id || next.State != "superseded" || next.TxHash != "" || old.State != "relayed" || old.TxHash != failed.TxHash ||
+		p.count("transfer") != transfers || p.count("relay_tx") != relays {
+		t.Fatalf("after the superseded release was mined: old %+v, new %+v, transfer %d, relay_tx %d", old, next, p.count("transfer")-transfers, p.count("relay_tx")-relays)
+	}
+	if agInt(r.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND xmr_settlement_id=$2", order, id) != 1 ||
+		agInt(r.testEnv, "SELECT count(*) FROM order_events WHERE order_id=$1 AND strpos(note,$2)>0", order, supersededSentPhrase) != 1 ||
+		agInt(r.testEnv, "SELECT count(*) FROM order_events WHERE order_id=$1 AND strpos(note,'did not make')>0", order) != 0 {
+		t.Fatalf("claims or notes wrong: claims on old %d", agInt(r.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND xmr_settlement_id=$2", order, id))
+	}
+	r.xmrShape(old)
+	r.confirmReal(id)
+	t.Logf("order %s: release %s refused %d times and failed, re-requested as settlement %d; the refused transaction was mined after all: the re-request was closed unbuilt and the release confirmed",
+		shortID(order), failed.TxHash, xmrRelayAttempts, next.ID)
+}
+
 // relayFailedReal requests order's release and stops the monerod container (run with --keep-fakechain) right before
 // each relay of its stored transaction and starts it again once the escrow wallet-rpc has answered, so the wallet-rpc
 // cannot commit it (-4) while the transaction is stored, the daemon never saw it and its key images are unspent. The

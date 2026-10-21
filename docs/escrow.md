@@ -69,7 +69,9 @@ market holds the wallet keys and builds, stores and sends every transaction itse
   wallet, and relays the same stored metadata again if neither has it: that spends the same key images, so it cannot pay
   twice. Nothing builds a replacement automatically. A relayed settlement is *confirmed* at the confirmation threshold and
   followed to 100 confirmations; one a reorganisation removes goes back to *relayed* and is relayed again. If another
-  transaction spent its key images it is recorded *external* and staff are told, at once. Otherwise a refusal is
+  transaction spent its key images it is recorded *external* and staff are told, at once, unless that transaction is
+  the market's own: the stored transaction of a failed settlement that an administrator's re-request superseded (below,
+  A-566). Otherwise a refusal is
   relayed again, as the same stored metadata, on the next pass (`monero-wallet-rpc` gives the same answer when it lost its
   connection to the daemon), and only after 3 refusals in a row is the settlement *failed*; staff are then told, and an
   administrator may re-request it (below). A held settlement whose relay an administrator confirmed after a restore keeps
@@ -122,7 +124,18 @@ market holds the wallet keys and builds, stores and sends every transaction itse
   while a deposit those coins came from is no longer listed it waits the same way (*deposit-missing*), with no bounded
   wait (it has no other coins to build from), rather than failing *nothing-to-settle* while it still claims that
   deposit (A-614). Staff get one order note and notice each time it starts waiting; it builds and sends once the
-  wallet lists the deposit again, and it can never pay twice, because both transactions spend the same coins. Settling
+  wallet lists the deposit again, and it can never pay twice, because both transactions spend the same coins. A failed
+  settlement's refusal does not prove its stored transaction never reached the network (the wallet-rpc answers -4 for a
+  lost connection to its daemon too), so it may be mined after its re-request was carried out (A-566, PAY66-3). Before
+  a re-request is built, before its stored transaction is relayed, when the wallet's coins no longer match it, and
+  before it would be recorded *external*, the watcher looks up the stored transactions it supersedes; if the daemon has
+  one (pool or chain), that settlement is the outcome: in one database transaction the re-request is closed
+  (*superseded*, never built or relayed again) and the earlier settlement moves back to *relayed* with its deposit
+  claims, and is then followed to *confirmed* and 100 confirmations like any other (migration 144 allows exactly these
+  two moves, the second only once every re-request after it is closed, the first only if by commit a settlement it
+  re-requests is relayed or confirmed; the order's one stray refund slot, `xmr_settlements_one_open_stray`, now covers requested and built first-generation stray refunds only, so a revived stray refund never collides with a later deposit's, while the watcher still requests none beside a relayed one, PAY566-1). One order note, a notice to each party and one to the administrator who asked
+  say what it pays (by recipient, without addresses) and that nothing is paid twice; nothing is flagged. A spend by any
+  other transaction is still *external*. Settling
   a waiting re-request by hand is **break-glass** in the same way: wait by default, and never pay from other funds while
   the market can still send it. A re-requested stray refund never holds the order's one stray refund slot (A-616,
   migration 135: the slot is for a first-generation stray refund only), so while one waits, or is in progress at all, a
@@ -415,6 +428,12 @@ wallet takes an order again and no settlement is relayed until an administrator 
       `set ask-password 2` restores the default, which `set` then reads; no file in the volume belongs to another user;
       the wallet-rpc started again. The next pass builds the stored key
       images to the stored plan and relays it once; both releases confirm.
+  20. `TestXMREscrowRegtestSupersededMined` (A-566): a release refused at relay until it fails, as in leg 10, is
+      re-requested; while the watcher builds the re-request, the refused transaction's stored blob reaches the daemon
+      after all (`send_raw_transaction`) and is mined. The re-request is closed with no `transfer` or `relay_tx`, the old
+      release is recorded sent with its deposit claim and one order note (none saying a transaction the market did not
+      make spent the coins), and it confirms. Added with A-566; run locally on wr-a566 fakechain nodes set up as CI's job,
+      its CI evidence is the `escrow-xmr-regtest` job once merged.
 
   Every settlement the daemon holds is decoded (RingCT type 6, 16 ring members per input, a fee above zero, the stored one,
   within `ESCROW_XMR_MAX_FEE`). Each leg puts the watcher's clock in a month of its own, so the legs may run again against
