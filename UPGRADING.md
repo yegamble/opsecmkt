@@ -260,7 +260,8 @@ pass's budget. An archived listing or hidden review keeps a parked marker, and
 restoring or unhiding it captures its current revision. One account holds at
 most 16 markers; past that, or when the 65536-marker table is full (a counted
 `backfill_capacity` warning), the account is flagged for a rescan of its live
-records instead. The panel shows targets awaiting capture, parked markers and
+records instead, read in order of last change. While an account has a backlog,
+its new captures queue behind it. The panel shows targets awaiting capture, parked markers and
 accounts awaiting a rescan. A job made stale only by changed context (such as a
 moved category median) stays a HOLD and is not captured again. Each actor may receive at most
 `max(8, 2% of --max-records)` new allocations per 24 hours (81 by default). A

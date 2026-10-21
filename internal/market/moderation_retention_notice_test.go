@@ -158,8 +158,9 @@ func assertNewAbuseReviewRecordNotice(t *testing.T, stage, records, partial stri
 		"record and order references, the capture time, digests of the checked text, an image&rsquo;s exact and perceptual fingerprints",
 		"findings, decisions and staff reviews",
 		"A list of records waiting to be checked holds only each record&rsquo;s type and id, when it was first and last left waiting, and whether it is waiting for a withdrawn or hidden record to return",
-		"For each account it holds a count of its checks in the past day, cleared after that day at the next check or worker pass or when collection stops; how many of its records are waiting; and whether its records are being re-read, with the position (one of 256 groups) of that re-read",
-		"The account&rsquo;s entry is removed once its day has passed with nothing waiting, or when the account is deleted",
+		"For each account it holds a count of its checks in the past day, cleared after that day at the next check or worker pass or when collection stops; how many of its records are waiting and how many of those wait for a withdrawn or hidden record; and whether its records are being re-read, with a reference to the last record re-read while that re-read runs",
+		"The account&rsquo;s entry is removed once its day has passed with no record waiting and no re-read in progress, or when the account is deleted",
+		"Until then it can remain indefinitely: while a withdrawn, hidden or unflagged record of the account is waiting to return, while collection is off, and for a day or more after its last waiting record is removed",
 		"after account deletion and after collection stops",
 	}, shared...) {
 		if !strings.Contains(html.UnescapeString(records), html.UnescapeString(want)) {

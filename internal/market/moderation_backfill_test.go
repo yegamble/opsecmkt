@@ -217,7 +217,7 @@ func TestModerationActorRescanRepeatsAfterRefusalDuringScan(t *testing.T) {
 	if agInt(e, `SELECT count(*) FROM moderation_actor_allocations WHERE actor_id=$1 AND rescan AND NOT rescan_more`, vendor) != 1 {
 		t.Fatal("precondition: one fresh rescan expected")
 	}
-	agExec(e, `UPDATE moderation_actor_allocations SET rescan_bucket=(hashtext('listing:'||$2::text)&255)+1 WHERE actor_id=$1`, vendor, target)
+	agExec(e, `UPDATE moderation_actor_allocations a SET rescan_ts=p.updated,rescan_kind='listing',rescan_id=p.id FROM products p WHERE a.actor_id=$1 AND p.id=$2`, vendor, target)
 	agExec(e, `UPDATE products SET description=$2 WHERE id=$1`, target, moderationScamText)
 	if agInt(e, `SELECT count(*) FROM moderation_actor_allocations WHERE actor_id=$1 AND rescan_more`, vendor) != 1 {
 		t.Fatal("a refusal during the rescan did not request another cycle")
