@@ -157,7 +157,7 @@ func assertNewAbuseReviewRecordNotice(t *testing.T, stage, records, partial stri
 	for _, want := range append([]string{
 		"record and order references, the capture time, digests of the checked text, an image&rsquo;s exact and perceptual fingerprints",
 		"findings, decisions and staff reviews",
-		"A list of records waiting to be checked holds only each record&rsquo;s type and id",
+		"A list of records waiting to be checked holds only each record&rsquo;s type and id and when it was first and last left waiting, and a count of each account&rsquo;s checks in the past day is kept until a later check after that day, or the account&rsquo;s deletion, removes it",
 		"after account deletion and after collection stops",
 	}, shared...) {
 		if !strings.Contains(html.UnescapeString(records), html.UnescapeString(want)) {
