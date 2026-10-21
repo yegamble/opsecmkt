@@ -35,13 +35,16 @@ func orderDraftAction(c *actionCtx) (actionResult, error) {
 	var stock int64
 	var archived bool
 	err := tx.QueryRowContext(ctx, "SELECT xmr,vendor_id,kind,stock,archived FROM products WHERE id=$1", f.Get("product_id")).Scan(&xmr, &vendor, &kind, &stock, &archived)
-	if err != nil || stock < 1 {
+	if err != nil {
 		return actionResult{}, fail(400, "Product unavailable")
 	}
-	if archived {
-		return actionResult{}, fail(400, "This listing is archived and accepts no new orders.")
-	}
-	if kind == "service" {
+	// The listing side of the purchasability rule (purchasable.go, A-575); lockNewIntake applies the seller side.
+	switch listingRefusal(stock, archived, kind) {
+	case refusedNoStock:
+		return actionResult{}, fail(400, "Product unavailable")
+	case refusedArchived:
+		return actionResult{}, fail(400, unavailableArchived)
+	case refusedService:
 		return actionResult{}, fail(409, "This legacy service listing cannot accept new orders. Existing orders and their history remain readable; ask the vendor to offer a supported physical or digital listing instead. Nothing was changed.")
 	}
 	if vendor == c.User.ID {

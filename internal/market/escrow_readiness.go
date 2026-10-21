@@ -103,32 +103,17 @@ func purchaseGateLoader(ctx context.Context, a *App, _ *http.Request, d *PageDat
 	if d.Product == nil {
 		return nil
 	}
-	var suspended, banned bool
-	if err := a.db.QueryRowContext(ctx, "SELECT suspended_at IS NOT NULL,banned_at IS NOT NULL FROM users WHERE id=$1", d.Product.VendorID).Scan(&suspended, &banned); err != nil {
+	seller, err := loadSellerState(ctx, a.db, d.Product.VendorID)
+	if err != nil {
 		return err
 	}
-	d.SellerClosed = banned
+	d.SellerClosed = seller.Banned
 	if d.Product.Archived {
 		return nil
 	}
-	if suspended {
-		d.VendorSuspensionReason = "Unavailable. " + sellerHeld(banned)
-		d.NoPurchase = true
-		return nil
-	}
-	if d.Product.VendorDeactivated || d.Product.VendorVacation {
-		reason := sellerVacation
-		if d.Product.VendorDeactivated {
-			reason = sellerDeactivated
-		}
+	// The seller side of the purchasability rule (purchasable.go, A-575), as lockNewIntake refuses it.
+	if reason := seller.reason(); reason != "" {
 		d.VendorSuspensionReason = "Unavailable. " + reason
-		d.NoPurchase = true
-		return nil
-	}
-	if ok, err := userCanReceiveEncrypted(ctx, a.db, d.Product.VendorID); err != nil {
-		return err
-	} else if !ok {
-		d.VendorSuspensionReason = "Unavailable. " + sellerPGPRequired
 		d.NoPurchase = true
 		return nil
 	}

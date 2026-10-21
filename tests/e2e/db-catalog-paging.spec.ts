@@ -77,6 +77,24 @@ test('catalog pages through search results with plain links at 320 px', async ({
     await visitor.goto(`/?q=${encodeURIComponent(seed)}&page=50`);
     await expect(pager.locator('[aria-current="page"]')).toHaveText('Page 2 of 2');
     await expect(visitor.locator('.listings-grid .product-card')).toHaveCount(1);
+
+    // A-575: once the vendor goes on vacation no buyer can order these listings. They stay listed, so the count and
+    // pages still agree with the cards, but every card says "Not available for purchase" instead of its stock, and the
+    // vendor's desk says why.
+    await vendor.goto('/account');
+    const availability = vendor.locator('#vendor-availability form');
+    await availability.getByLabel('Storefront status').selectOption('vacation');
+    await availability.getByRole('button', { name: 'Save storefront preferences' }).click();
+    await visitor.goto(`/?q=${encodeURIComponent(seed)}&currency=XMR`);
+    await expect(visitor.locator('.catalog-tools')).toContainText('26 listings');
+    await expect(visitor.locator('.listings-grid .product-card')).toHaveCount(25);
+    await expect(visitor.locator('.product-card .stock').filter({ hasText: 'Not available for purchase' })).toHaveCount(25);
+    await expect(visitor.locator('.product-card .stock').filter({ hasText: /^\d+ AVAILABLE$/ })).toHaveCount(0);
+    expect(await visitor.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
+    await pager.getByRole('link', { name: 'Next page, page 2 of 2' }).click();
+    await expect(visitor.locator('.product-card .stock')).toHaveText(['Not available for purchase']);
+    await vendor.goto('/vendor-dashboard');
+    await expect(vendor.locator('.purchase-state').first()).toContainText('The vendor is on vacation and is not accepting purchases.');
   } finally {
     for (const p of [vendor, admin, visitor]) await p.context().close();
   }

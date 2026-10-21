@@ -285,7 +285,7 @@ func (a *App) load(r *http.Request, d *PageData) error {
 		if d.Page == "catalog" || d.Page == "vendor" || d.Page == "vendor-dashboard" {
 			description = "left(p.description," + strconv.Itoa(excerptRunes+1) + ")"
 		}
-		query := `SELECT p.id,p.title,` + description + `,p.category,p.region,p.kind,u.handle,p.vendor_id,p.btc,p.xmr,p.stock,p.archived,` + takedown + `,(u.vendor_verified OR u.role='admin'),p.subcategory,array_to_string(p.shipping_regions,'|'),ratings.average,ratings.count,u.vendor_vacation,u.vendor_deactivated,NOT ` + vendorAcceptsBuyerMessagesSQL("u") + ` FROM products p JOIN users u ON u.id=p.vendor_id
+		query := `SELECT p.id,p.title,` + description + `,p.category,p.region,p.kind,u.handle,p.vendor_id,p.btc,p.xmr,p.stock,p.archived,` + takedown + `,(u.vendor_verified OR u.role='admin'),p.subcategory,array_to_string(p.shipping_regions,'|'),ratings.average,ratings.count,u.vendor_vacation,u.vendor_deactivated,NOT ` + vendorAcceptsBuyerMessagesSQL("u") + `,p.digital_delivery_mode FROM products p JOIN users u ON u.id=p.vendor_id
 		 LEFT JOIN LATERAL (SELECT coalesce(avg(r.rating),0)::float8 AS average,count(*) AS count FROM reviews r JOIN orders ro ON ro.id=r.order_id WHERE r.product_id=p.id AND ro.state='completed' AND r.hidden_at IS NULL) ratings ON true WHERE true`
 		args := []any{}
 		limit := " LIMIT 100"
@@ -365,7 +365,7 @@ func (a *App) load(r *http.Request, d *PageData) error {
 			var p Product
 			var regions string
 			var btc, xmr int64
-			if err = rows.Scan(&p.ID, &p.Title, &p.Description, &p.Category, &p.Region, &p.Kind, &p.Vendor, &p.VendorID, &btc, &xmr, &p.Stock, &p.Archived, &p.TakedownReason, &p.VendorVerified, &p.Subcategory, &regions, &p.RatingAverage, &p.RatingCount, &p.VendorVacation, &p.VendorDeactivated, &p.VendorMessagesUnavailable); err != nil {
+			if err = rows.Scan(&p.ID, &p.Title, &p.Description, &p.Category, &p.Region, &p.Kind, &p.Vendor, &p.VendorID, &btc, &xmr, &p.Stock, &p.Archived, &p.TakedownReason, &p.VendorVerified, &p.Subcategory, &regions, &p.RatingAverage, &p.RatingCount, &p.VendorVacation, &p.VendorDeactivated, &p.VendorMessagesUnavailable, &p.DigitalDeliveryMode); err != nil {
 				rows.Close()
 				return err
 			}

@@ -57,6 +57,9 @@ type Product struct {
 
 	// Vendor storefront controls apply to public listings and existing-order views alike.
 	VendorVacation, VendorDeactivated, VendorMessagesUnavailable bool
+	// A-575, catalog, vendor and vendor-dashboard pages: why no buyer can order the listing now ("" when one can)
+	// and what its vendor can do (purchasable.go); the card says "Not available for purchase" instead of its stock.
+	Unavailable, UnavailableFix string
 }
 
 // ProductPhoto is one public photo of a listing on the product page (A-189): its URLs on the public image route,

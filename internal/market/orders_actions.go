@@ -87,10 +87,9 @@ func lockNewIntake(c *actionCtx, buyerID, vendorID string, draft bool) error {
 		var one int
 		return c.Tx.QueryRowContext(c.Ctx(), "SELECT 1 FROM users WHERE id=$1 FOR NO KEY UPDATE NOWAIT", buyerID).Scan(&one)
 	}
-	var role string
-	var suspended, banned, approved, vacation, deactivated bool
+	var seller sellerState
 	lockVendor := func() error {
-		return c.Tx.QueryRowContext(c.Ctx(), "SELECT role,suspended_at IS NOT NULL,banned_at IS NOT NULL,vendor_approved,vendor_vacation,vendor_deactivated FROM users WHERE id=$1 FOR SHARE NOWAIT", vendorID).Scan(&role, &suspended, &banned, &approved, &vacation, &deactivated)
+		return seller.scanSellerAccount(c.Tx.QueryRowContext(c.Ctx(), sellerAccountSQL+" FOR SHARE NOWAIT", vendorID))
 	}
 	if buyerID != "" && buyerID < vendorID {
 		if err := lockBuyer(); err != nil {
@@ -105,28 +104,28 @@ func lockNewIntake(c *actionCtx, buyerID, vendorID string, draft bool) error {
 			return err
 		}
 	}
-	if !(&User{Role: role, VendorApproved: approved}).CanSell() {
+	// The seller side of the purchasability rule (purchasable.go, A-575), in this action's wording.
+	// KeyUsable is still false, so refusedVendorKey here means the account checks passed: only then is the key read.
+	if seller.refusal() == refusedVendorKey {
+		ok, err := userCanReceiveEncrypted(c.Ctx(), c.Tx, vendorID)
+		if err != nil {
+			return err
+		}
+		seller.KeyUsable = ok
+	}
+	switch seller.refusal() {
+	case refusedNotVendor:
 		if draft {
 			return fail(400, sellerNotVendor)
 		}
 		return fail(409, sellerNotVendor+" Cancel this draft.")
-	}
-	if suspended {
+	case refusedHeld:
 		if draft {
-			return fail(409, "Unavailable. "+sellerHeld(banned)+" Nothing was changed.")
+			return fail(409, "Unavailable. "+seller.reason()+" Nothing was changed.")
 		}
-		return fail(409, "Unavailable. "+sellerHeld(banned)+" Cancel this draft.")
-	}
-	if deactivated {
-		return fail(409, "Unavailable. "+sellerDeactivated+" Nothing was changed.")
-	}
-	if vacation {
-		return fail(409, "Unavailable. "+sellerVacation+" Nothing was changed.")
-	}
-	if ok, err := userCanReceiveEncrypted(c.Ctx(), c.Tx, vendorID); err != nil {
-		return err
-	} else if !ok {
-		return fail(409, "Unavailable. "+sellerPGPRequired+" Nothing was changed.")
+		return fail(409, "Unavailable. "+seller.reason()+" Cancel this draft.")
+	case refusedDeactivated, refusedVacation, refusedVendorKey:
+		return fail(409, "Unavailable. "+seller.reason()+" Nothing was changed.")
 	}
 	if err := requirePGPAccess(c); err != nil {
 		return err

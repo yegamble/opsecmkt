@@ -3,7 +3,8 @@ archived listings (load.go); on vendor-dashboard each card carries edit and arch
 administrator took down shows the reason and no restore control (A-163). A-189: a listing with a public photo shows
 its first photo's thumbnail (decorative: the link is named by the title) over the art background, without the
 illustration label (a thumbnail that fails to load shows that background in Firefox and Tor Browser, and a
-broken-image icon in Chromium and WebKit); otherwise the CSS illustration. Thumb is set only on the catalog and vendor page. */}}
+broken-image icon in Chromium and WebKit); otherwise the CSS illustration. Thumb is set only on the catalog and vendor page. A-575: a listing no buyer can order now (Unavailable, purchasable.go)
+says "Not available for purchase" instead of its stock, and on vendor-dashboard why and what the vendor can do. */}}
 {{define "products"}}<div class="listings-grid">{{range $i,$p := .Products}}<article class="product-card{{if .Archived}} is-archived{{end}}">
 <a class="product-art{{if .Thumb}} has-photo{{end}}" href="{{if .Archived}}/listing-edit?id={{.ID}}{{else}}/product?id={{.ID}}{{end}}" aria-label="{{if .Archived}}Edit{{else}}View{{end}} {{.Title}}">
 {{if .Thumb}}<img src="{{.Thumb}}" alt="" width="320" height="240">{{else}}<div class="device" aria-hidden="true">
@@ -18,10 +19,11 @@ broken-image icon in Chromium and WebKit); otherwise the CSS illustration. Thumb
 </h2>{{if .Archived}}<p class="inventory-state">{{if .TakedownReason}}<span class="badge danger">Taken down</span> Hidden from the marketplace by an administrator; no new orders.{{else}}<span class="badge neutral">Archived</span> Hidden from the marketplace; no new orders.{{end}}</p>{{end}}{{if and .TakedownReason (eq $.Page "vendor-dashboard")}}
 <p class="takedown-reason"><strong>Reason:</strong> {{.TakedownReason}}</p>
 <p class="help staff-contact">Only an administrator can restore it. If you think this is wrong, ask an administrator to review it. {{template "staff-contact" $}}</p>{{end}}
+{{if and .Unavailable (not .Archived) (eq $.Page "vendor-dashboard")}}<p class="purchase-state"><span class="badge neutral">Not available for purchase</span> {{.Unavailable}}{{with .UnavailableFix}} {{.}}{{end}}</p>{{end}}
 <p class="product-description">{{.Excerpt}}</p>{{if eq $.Page "vendor-dashboard"}}{{with index $.Inventory.Reservations .ID}}<p class="help inventory-reservation">{{.Units}} {{if eq .Units 1}}unit is{{else}}units are{{end}} reserved by orders past draft; drafts do not reserve stock.{{if .PaymentExpiry}} Earliest payment window ends {{.PaymentExpiry}}; deposits waiting for confirmations can keep an order open beyond this time.{{end}}</p>{{else}}<p class="help inventory-reservation">0 units are reserved; drafts do not reserve stock.</p>{{end}}{{end}}
 <div class="product-bottom">
 <span class="price">{{.PriceXMR}}<small>XMR</small></span>
-<span class="stock">{{if lt .Stock 1}}OUT OF STOCK{{else}}{{.Stock}} AVAILABLE{{end}}</span>
+<span class="stock">{{if lt .Stock 1}}OUT OF STOCK{{else if .Unavailable}}Not available for purchase{{else}}{{.Stock}} AVAILABLE{{end}}</span>
 </div>
 <div class="product-reputation"><div class="vendor-line"><a href="/vendor?id={{.VendorID}}">{{.Vendor}}</a>{{if .VendorVerified}}<span class="badge green verified-vendor">Verified vendor</span>{{end}}</div>
 {{if .RatingCount}}<span class="product-rating" aria-label="Rated {{.Rating}} out of 5 from {{.RatingCount}} reviews"><span aria-hidden="true">★</span> {{.Rating}} <span class="rating-count">({{.RatingCount}})</span></span>{{else}}<span class="product-rating unrated">No reviews</span>{{end}}
