@@ -272,8 +272,9 @@ Migration 143 makes refused captures recoverable. Each refusal leaves one
 content-free marker per target, and the worker later captures the target's
 current revision, in first-refusal order, once the queue is below half full and
 budget remains; markers of accounts that would still be refused do not use a
-pass's budget. An archived listing or hidden review keeps a parked marker, and
-restoring or unhiding it captures its current revision. One account holds at
+pass's budget. Archived listings and hidden reviews are captured like live
+ones. Deleting a marked record flags its marker; the next worker pass (enabled
+or not) or disabling capture removes it and releases its owner's counts. One account holds at
 most 16 markers; past that, or when the 65536-marker table is full (a counted
 `backfill_capacity` warning), the account is flagged for a rescan of its live
 records instead, read in order of creation time, which the account cannot change. While an account has a backlog,

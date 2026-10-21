@@ -65,8 +65,8 @@ acceptance requirements, not a declaration of deployed verification:
   content-free marker per target remains, and the worker later captures that
   target's current revision once capacity frees, in first-refusal order and
   without a refused backlog spending the budget; deleted sources are dropped
-  without an allocation, while an archived listing or hidden review keeps a
-  parked marker and is captured on restore or unhide. One account holds a
+  without an allocation at the next worker pass, and archiving a listing or
+  hiding a review never withdraws it from capture. One account holds a
   bounded number of markers, past which (or past a full table, with a counted
   `backfill_capacity` warning) a lossless rescan of its live records takes over;
   a job made stale only by changed context is not captured again. An account
@@ -97,6 +97,8 @@ acceptance requirements, not a declaration of deployed verification:
   `TestModerationRescanOrderNotSteerableByChangeTime`,
   `TestModerationDeletedSourceReleasesMarkerCount`,
   `TestModerationDisableClearsRescanPosition`,
+  `TestModerationArchiveDuringWindowStillCaptured`,
+  `TestModerationDeleteTriggerNoDeadlock`,
   `TestModerationPrivacyV2NoFieldDigestsOrUnusedTextHash`; database integration,
   fake model).
 - Proposal queues/status require an authenticated current administrator on the

@@ -38,6 +38,7 @@ func privacyReviewAssertNoMarkers(t *testing.T, e *testEnv, markers ...string) {
 		{"moderation_overflow", `SELECT coalesce(jsonb_agg(to_jsonb(r))::text,'[]') FROM moderation_overflow r`},
 		{"moderation_backfill", `SELECT coalesce(jsonb_agg(to_jsonb(r))::text,'[]') FROM moderation_backfill r`},
 		{"moderation_actor_allocations", `SELECT coalesce(jsonb_agg(to_jsonb(r))::text,'[]') FROM moderation_actor_allocations r`},
+		{"moderation_marker_releases", `SELECT coalesce(jsonb_agg(to_jsonb(r))::text,'[]') FROM moderation_marker_releases r`},
 	} {
 		raw := agStr(e, table.query)
 		for _, marker := range markers {

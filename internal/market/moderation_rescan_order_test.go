@@ -58,8 +58,9 @@ func TestModerationRescanOrderNotSteerableByChangeTime(t *testing.T) {
 	t.Fatalf("scam listing not captured within ceil(k/share)=%d windows (k=%d)", windows, k)
 }
 
-// Deleting a marked record releases the account's marker count (and parked
-// count) in the same transaction, so no phantom backlog defers its writes.
+// Deleting a marked record only flags its marker (taking no global lock); the
+// next worker pass, enabled or not, deletes it, releases the owner's marker and
+// parked counts and clears a rescan position that names it.
 func TestModerationDeletedSourceReleasesMarkerCount(t *testing.T) {
 	e := newTestApp(t)
 	vendor, _ := e.user("release_vendor", "vendor")
@@ -69,32 +70,45 @@ func TestModerationDeletedSourceReleasesMarkerCount(t *testing.T) {
 	}
 	active := e.product(vendor, "digital")
 	parked := e.product(vendor, "digital")
-	agExec(e, `UPDATE products SET archived=true,archived_at=now() WHERE id=$1`, parked)
-	agExec(e, `UPDATE moderation_backfill SET parked=true WHERE target_id=$1`, parked)
-	agExec(e, `UPDATE moderation_actor_allocations SET parked=1 WHERE actor_id=$1`, vendor)
+	agExec(e, `UPDATE moderation_actor_allocations a SET rescan=true,rescan_ts=p.created,rescan_kind='listing',rescan_id=p.id FROM products p WHERE a.actor_id=$1 AND p.id=$2`, vendor, active)
 	counts := func() string {
 		return agStr(e, `SELECT markers||'/'||parked FROM moderation_actor_allocations WHERE actor_id=$1`, vendor)
 	}
-	if got := counts(); got != "2/1" {
-		t.Fatalf("precondition: counts=%s want 2/1", got)
+	if got := counts(); got != "2/0" {
+		t.Fatalf("precondition: counts=%s want 2/0", got)
 	}
 	agExec(e, `DELETE FROM products WHERE id=$1`, active)
-	if got := counts(); got != "1/1" {
-		t.Fatalf("deleting an actively marked listing left counts=%s, want 1/1", got)
+	if got := counts(); got != "2/0" {
+		t.Fatalf("the deleting transaction touched the account row: counts=%s", got)
 	}
+	if _, err := moderationBackfillSweep(t.Context(), e.DB, 5); err != nil {
+		t.Fatal(err)
+	}
+	if got := counts(); got != "1/0" {
+		t.Fatalf("one pass after deleting an actively marked listing counts=%s, want 1/0", got)
+	}
+	if agInt(e, `SELECT count(*) FROM moderation_backfill WHERE target_id=$1`, active) != 0 {
+		t.Fatal("the pass kept the deleted record's marker")
+	}
+	if agInt(e, `SELECT count(*) FROM moderation_actor_allocations WHERE actor_id=$1 AND rescan AND rescan_id IS NULL AND rescan_ts IS NULL AND rescan_kind IS NULL`, vendor) != 1 {
+		t.Fatal("the pass kept a rescan position naming a deleted record, or dropped the rescan")
+	}
+	// While capture is off, the worker's pass still releases deleted markers,
+	// including a parked one (as an unflagged payment's would be).
+	if err := SetModerationEnabled(t.Context(), e.DB, false); err != nil {
+		t.Fatal(err)
+	}
+	agExec(e, `UPDATE moderation_backfill SET parked=true WHERE target_id=$1`, parked)
+	agExec(e, `UPDATE moderation_actor_allocations SET parked=1 WHERE actor_id=$1`, vendor)
 	agExec(e, `DELETE FROM products WHERE id=$1`, parked)
+	if _, err := moderationBackfillSweep(t.Context(), e.DB, 5); err != nil {
+		t.Fatal(err)
+	}
 	if got := counts(); got != "0/0" {
-		t.Fatalf("deleting a parked listing left counts=%s, want 0/0", got)
+		t.Fatalf("a disabled pass after deleting a parked record left counts=%s, want 0/0", got)
 	}
 	if agInt(e, `SELECT count(*) FROM moderation_backfill`) != 0 || agInt(e, `SELECT backfill FROM moderation_capacity`) != 0 {
 		t.Fatal("deleted sources kept their markers")
-	}
-	// With no phantom backlog, the account's next write is admitted directly
-	// once it has an active slot.
-	agExec(e, `UPDATE moderation_jobs SET completed_at=now() WHERE completed_at IS NULL`)
-	next := e.product(vendor, "digital")
-	if agInt(e, `SELECT count(*) FROM moderation_jobs WHERE target_id=$1`, next) != 1 {
-		t.Fatal("a released account's write was still deferred")
 	}
 }
 
