@@ -367,6 +367,23 @@ func TestVendorVerifiedBadgeFollowsActiveVendor(t *testing.T) {
 		t.Fatal(err)
 	}
 	badge(false, "demoted from administrator")
+	// An administrator marked before A-583 (the mark was kept on promotion, and the verify form refuses administrators)
+	// loses it when leaving the role, even back to vendor, so the demotion does not bring the badge back (QA583 SHOULD-1).
+	if _, err := SetRole(t.Context(), e.DB, "vb_vendor", "admin"); err != nil {
+		t.Fatal(err)
+	}
+	agExec(e, "UPDATE users SET vendor_verified=true WHERE id=$1", vendorID)
+	if _, err := SetRole(t.Context(), e.DB, "vb_vendor", "vendor"); err != nil {
+		t.Fatal(err)
+	}
+	if verified() || !hasAudit(e, vendorID, "Verified vendor mark removed: role changed to vendor by host command") {
+		t.Fatalf("a legacy administrator's mark survived the demotion to vendor: %v %v", verified(), e.audits(vendorID))
+	}
+	agExec(e, "UPDATE products SET archived=false,archived_at=NULL WHERE id=$1", product)
+	badge(false, "legacy administrator demoted to vendor")
+	if n := agInt(e, "SELECT count(*) FROM notifications WHERE user_id=$1 AND strpos(body,'Your verified vendor mark was removed.')>0", vendorID); n < 1 {
+		t.Fatalf("the vendor was never told the mark was removed (%d notices)", n)
+	}
 	// An unchanged role removes nothing.
 	verify()
 	setRole("vendor")
@@ -454,6 +471,9 @@ func TestVendorRoleFormKeepsApplicationsConsistent(t *testing.T) {
 		t.Helper()
 		if got := agStr(e, "SELECT state FROM vendor_applications WHERE id=$1", appID); got != "withdrawn" {
 			t.Fatalf("promotion to %s left the application %s", role, got)
+		}
+		if got := agStr(e, "SELECT note FROM vendor_applications WHERE id=$1", appID); got != "Role changed to "+role {
+			t.Fatalf("the withdrawn application's note (shown to the applicant) is %q", got)
 		}
 		if agInt(e, "SELECT count(*) FROM vendor_applications WHERE user_id=$1 AND state IN "+vendorOpenStates, staffID) != 0 {
 			t.Fatalf("promotion to %s left an open application", role)

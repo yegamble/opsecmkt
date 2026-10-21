@@ -532,8 +532,9 @@ func roleChanged(ctx context.Context, tx *sql.Tx, target, old, role, by string) 
 	archivedListings := "0"
 	// A-583: the verified vendor mark belongs to the vendor role. Leaving it (for any role, staff included) removes the
 	// mark, audited on the account, so a later promotion back to vendor does not bring it back. A suspension only hides
-	// the badge (verifiedVendorSQL).
-	if old != role && role != "vendor" {
+	// the badge (verifiedVendorSQL). An administrator holds no mark (verified by role; the verify form refuses them), so
+	// leaving that role clears one kept from before A-583 too, even back to vendor.
+	if old != role && (role != "vendor" || old == "admin") {
 		res, err := tx.ExecContext(ctx, "UPDATE users SET vendor_verified=false WHERE id=$1 AND vendor_verified", target)
 		if err != nil {
 			return "", err
@@ -550,7 +551,7 @@ func roleChanged(ctx context.Context, tx *sql.Tx, target, old, role, by string) 
 	// already sell), so a promotion to moderator or administrator withdraws an open one, audited; a moderator may apply
 	// again. A promotion to vendor closes it as an approved assignment instead (vendorRoleAssigned).
 	if old != role && (role == "moderator" || role == "admin") {
-		res, err := tx.ExecContext(ctx, "UPDATE vendor_applications SET state='withdrawn',decided_at=now() WHERE user_id=$1 AND state IN "+vendorOpenStates, target)
+		res, err := tx.ExecContext(ctx, "UPDATE vendor_applications SET state='withdrawn',decided_at=now(),note=$2 WHERE user_id=$1 AND state IN "+vendorOpenStates, target, "Role changed to "+role)
 		if err != nil {
 			return "", err
 		}

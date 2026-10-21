@@ -215,7 +215,8 @@ the host command) with the note "Role assigned by an administrator". A demotion 
 `/account` then shows "Vendor role removed by an administrator" and "Your vendor role was removed by an
 administrator", and the account may apply again (an approved application never counts as open). A promotion to
 moderator or administrator, by the form or `-set-role`, withdraws an open application (audited "Vendor application
-withdrawn: role changed to R by …", and the role-change notification says so), since that role cannot be decided as
+withdrawn: role changed to R by …", with the note "Role changed to R" on the application, and the role-change
+notification says so), since that role cannot be decided as
 an application; a moderator may apply again. A demotion to buyer leaves an open application open (A-583,
 `TestVendorRoleFormKeepsApplicationsConsistent`).
 
@@ -226,7 +227,9 @@ administrator, and `activeVendorSQL`); the vendor page says it is the staff's ju
 check. A suspension hides the badge and keeps the mark, so a restore shows it again; a role change away from vendor
 (to buyer, moderator or administrator, by the form or `-set-role`) removes the mark, audited on the account
 ("Verified vendor mark removed: role changed to R by …") and in its role-change notification, so a later promotion
-back to vendor shows no badge until an administrator marks it again (A-583,
+back to vendor shows no badge until an administrator marks it again. Any role change away from administrator also
+removes a mark kept from before A-583 (an administrator is verified by its role and the form refuses to mark one), even
+back to vendor (A-583,
 `TestVendorVerifiedBadgeFollowsActiveVendor`). Existing vendors were grandfathered by migration 121 with an approved application (no bond) and are not
 verified. `activeVendorSQL(alias)` is the shared SQL condition for an approved, active vendor (vendor role, administrator role or independent selling approval, not
 suspended, closed or restricted for closure).
