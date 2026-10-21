@@ -535,8 +535,8 @@ func TestXMREscrowRegtestExternal(t *testing.T) {
 // the height it had: it must run with --keep-fakechain, or its start deletes the fakechain. Idle connections to it are
 // dropped, since it may come back on another address. It runs on the proxy's goroutine, so it reports with Errorf.
 //
-// A-631: the escrow wallet-rpc's own auto-refresh (every 20 s) is switched off, directly rather than through p, for as
-// long as monerod is down. An auto-refresh that starts in that window retries the missing daemon (pull_blocks, up to
+// A-631: the escrow wallet-rpc's own auto-refresh (every 20 s) is switched off, directly rather than through p, before
+// monerod is stopped. An auto-refresh that starts in that window retries the missing daemon (pull_blocks, up to
 // three retries) and the wallet-rpc answers no RPC until it gives up; on a CI runner the retries and the forwarded
 // call's own attempt were 10 s apart, so the call was refused only about 40 s after the stop, past the market's
 // deadline (payoutSendTimeout for relay_tx), and the leg saw "relay_tx: timeout" instead of the refusal. The forwarded
@@ -552,8 +552,9 @@ func (r *xmrRegtest) daemonStoppedAround(p *xmrRPCProxy, name string) func(forwa
 				r.t.Errorf("escrow wallet-rpc auto_refresh %v: %v", on, err)
 			}
 		}
+		// A-641: the market itself turns it off after every open_wallet, so it is not switched back on afterwards; this
+		// call still covers a wallet-rpc restarted since its last open_wallet.
 		autoRefresh(false)
-		defer autoRefresh(true)
 		err := r.daemon.call(ctx, "/json_rpc", "get_info", nil, &before)
 		began := time.Now()
 		if out, stop := exec.Command("docker", "stop", "-t", "30", name).CombinedOutput(); err != nil || stop != nil {

@@ -1324,6 +1324,14 @@ in mind: the default 0.01 XMR cap was sized for a fakechain and is not measured 
 **The dedicated escrow wallet-rpc.** Run a dedicated `monero-wallet-rpc` for escrow wallets, attached to the escrow
 daemon, with its own authenticated RPC boundary and volume. A non-blank `MONERO_WALLET_RPC_URL` is refused.
 
+*Background refresh is off (A-641).* Right after each `open_wallet`, the market sends `auto_refresh` with
+`{"enable": false}` to the escrow wallet-rpc. It then refreshes every wallet it opens itself. monero-wallet-rpc 0.18.5.1
+has no command-line flag for this. The setting applies to the whole wallet-rpc and lasts until it restarts, so the
+market sends it after every open. With the background refresh on, an unreachable daemon can block the wallet-rpc for
+about 40 seconds, and a settlement relay can then time out instead of being refused. If you use the escrow wallet-rpc
+by hand, do not turn `auto_refresh` back on. If the call fails, the market logs `background refresh not turned off`
+once while the failure lasts, and carries on.
+
 Production can authenticate at a private mutual-TLS front proxy using
 `MONERO_RPC_CERT` and `MONERO_RPC_KEY`. With this arrangement, a wallet listener
 using `--disable-rpc-login` must stay on an unpublished, isolated network behind
