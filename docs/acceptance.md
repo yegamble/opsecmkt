@@ -63,9 +63,13 @@ acceptance requirements, not a declaration of deployed verification:
   marketplace state. Deadline expiry preserves state (`HOLD`).
 - A capture refused by capacity is not lost: the marketplace write commits, one
   content-free marker per target remains, and the worker later captures that
-  target's current revision once capacity frees; deleted or archived sources are
-  dropped without an allocation, and the marker table stays within its bound
-  with a counted `backfill_capacity` warning beyond it. A revision that completed
+  target's current revision once capacity frees, in first-refusal order and
+  without a refused backlog spending the budget; deleted sources are dropped
+  without an allocation, while an archived listing or hidden review keeps a
+  parked marker and is captured on restore or unhide. One account holds a
+  bounded number of markers, past which (or past a full table, with a counted
+  `backfill_capacity` warning) a lossless rescan of its live records takes over;
+  a job made stale only by changed context is not captured again. A revision that completed
   stale does not suppress a later capture of the same content, while an evaluated
   revision is still not queued twice. One actor cannot take more than its 24-hour
   share of lifetime allocations. New proposals hold no per-field digests
@@ -76,6 +80,13 @@ acceptance requirements, not a declaration of deployed verification:
   `TestModerationBackfillTableBounded`, `TestModerationConcurrentBackfillSweep`,
   `TestModerationStaleRevisionRecapturedOnRevert`,
   `TestModerationActorShareOfLifetimeBudget`,
+  `TestModerationArchivedRestoreRecaptured`,
+  `TestModerationHiddenReviewUnhideRecaptured`,
+  `TestModerationEditDoesNotDeferOwnMarker`,
+  `TestModerationActorMarkerQuotaRescan`,
+  `TestModerationActorRescanRepeatsAfterRefusalDuringScan`,
+  `TestModerationRefusedBacklogDoesNotStarveSweep`,
+  `TestModerationContextStaleDoesNotRecapture`,
   `TestModerationPrivacyV2NoFieldDigestsOrUnusedTextHash`; database integration,
   fake model).
 - Proposal queues/status require an authenticated current administrator on the

@@ -341,10 +341,14 @@ state. Application-only redeployment does not enlarge the budget.
 
 Migration 143 also limits each actor to `max(8, 2% of --max-records)` new
 allocations in any 24 hours (81 with the default 4096 slots), so one account's
-edit stream cannot exhaust the lifetime budget for everyone. The counter row
-holds only the account, its window start and a count; it names no target. An
-expired row is deleted by the next capture admission or worker pass, every row
-is deleted when capture is disabled, and an account's row goes with the account. If capture stays enabled while no worker runs and no capture is admitted, expired rows remain until the next worker pass or until capture is disabled. With the default byte
+edit stream cannot exhaust the lifetime budget for everyone. The per-account row
+names no target: it holds the window start and count, the account's number of
+waiting markers, and the rescan state described below. An expired daily count is
+zeroed by the next capture admission or worker pass and when capture is
+disabled; the row is deleted once its window has passed with no waiting marker
+and no rescan, and with the account. If capture stays enabled while no worker
+runs and no capture is admitted, an expired row remains until the next worker
+pass or until capture is disabled. With the default byte
 budget the shared pool is 512 allocations, so one actor can still use about a
 sixth of it per day; size `--max-reserved-bytes` with that in mind.
 
@@ -356,25 +360,38 @@ capture even when the worker is absent.
 
 Refused captures are not lost (migration 143). Every refusal (actor's three
 active jobs, pending limit, lifetime budget or actor share) leaves one marker per
-target: its kind, target reference and first/last refusal times, with no content,
-digest or actor. Later edits of the same target update that one marker. At the
-start of each pass, while capture is enabled, the pending queue is below half
-its limit and lifetime budget remains, the worker takes the oldest markers in one
-short transaction, reads the target's current source and queues that current
-revision through the same admission checks; a refused attempt moves the marker
-behind the others. A missed intermediate revision is never stored or evaluated.
-Deleted or archived listings, hidden reviews, unflagged payments and other
-removed sources lose their marker without a job or allocation. The marker table
-holds at most 65536 targets (`moderation_capacity.max_backfill`); beyond that a
-`backfill_capacity` warning is counted and those targets are not captured
-automatically. Disabling capture stops the sweep; markers wait until it is
-enabled again.
+target: its kind, target reference, first/last refusal times and a parked flag,
+with no content, digest or actor. Later edits of the same target update that one
+marker without moving it. At the start of each pass, while capture is enabled,
+the pending queue is below half its limit and lifetime budget remains, the worker
+takes markers in order of their first refusal in one short transaction, skipping
+(within a window of 4096 markers) those whose account would still be refused, so
+a refused backlog never uses the pass's budget. It reads the target's current
+source and queues that current revision through the same admission checks. A
+missed intermediate revision is never stored or evaluated. A deleted source loses
+its marker without a job or allocation. An archived listing, hidden review or
+unflagged payment keeps its marker, parked: restoring the listing, unhiding the
+review or flagging the payment again captures its current revision (the worker
+also re-checks a few parked markers each pass, for a return while capture was
+off, or a deletion).
+
+One account can hold at most 16 markers (`moderation_capacity.max_actor_markers`,
+and always fewer than the 65536-marker table, `max_backfill`). Past that bound,
+or when the table is full (a counted `backfill_capacity` warning), the account
+is flagged for a rescan instead of adding markers. Once the account can be
+admitted again, each pass re-reads about 64 of its live records (always finishing the
+hash group it started), one of 256 hash groups after another, and queues every current revision that has no job; a
+refusal during the rescan repeats it. Archived listings, hidden reviews and
+unflagged payments are re-read when they return, as above. Disabling capture
+stops the sweep; markers and rescans wait until it is enabled again.
 
 A revision whose job completed stale (`stale_snapshot`, never evaluated) no
 longer suppresses a later capture of the same content: if a listing changes to a
 scam text and back before the worker reads it, the reverted text is captured and
-evaluated. If a stale job's source is still live and its current revision has no
-job, a marker is left for it. An exact repeat of an evaluated revision is still
+evaluated. If a stale job's source itself changed and its current revision has
+no job, a marker is left for it. A job made stale only by changed context (for
+example the category's median price moved while it was evaluated, with the
+listing unchanged) stays a HOLD for human review and is not captured again. An exact repeat of an evaluated revision is still
 not queued again, and two pending jobs never share a revision.
 Disputes/payment flags receive a five-minute age preference; older ordinary jobs
 still overtake new priority work. Existing payment/state timers remain separate.

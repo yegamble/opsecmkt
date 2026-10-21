@@ -254,9 +254,15 @@ size is not bounded by the logical payload reservation.
 
 Migration 143 makes refused captures recoverable. Each refusal leaves one
 content-free marker per target, and the worker later captures the target's
-current revision once the queue is below half full and budget remains. The panel
-shows how many targets are awaiting capture (at most 65536; beyond that a
-`backfill_capacity` warning is counted). Each actor may receive at most
+current revision, in first-refusal order, once the queue is below half full and
+budget remains; markers of accounts that would still be refused do not use a
+pass's budget. An archived listing or hidden review keeps a parked marker, and
+restoring or unhiding it captures its current revision. One account holds at
+most 16 markers; past that, or when the 65536-marker table is full (a counted
+`backfill_capacity` warning), the account is flagged for a rescan of its live
+records instead. The panel shows targets awaiting capture, parked markers and
+accounts awaiting a rescan. A job made stale only by changed context (such as a
+moved category median) stays a HOLD and is not captured again. Each actor may receive at most
 `max(8, 2% of --max-records)` new allocations per 24 hours (81 by default). A
 revision whose job completed stale no longer blocks capturing the same content
 later. New proposals omit per-field digests and, except for listings, the text
