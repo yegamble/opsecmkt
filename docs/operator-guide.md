@@ -1584,18 +1584,22 @@ again with its deposits and followed to confirmed, and one order note, a notice 
 (by recipient) and that nothing is paid twice. Nothing is flagged and you have nothing to do; it is never recorded as spent
 outside the market. A spend by any other transaction still is. If a deposit those coins came from is no longer listed by the escrow wallet (a
 reorganisation or a double spend took it out of the chain), the new settlement stays requested (*deposit-missing*) and builds
-nothing until the wallet lists that deposit again, however long that takes; it then builds and sends as above (A-614). Unlike
+nothing until the wallet lists that deposit again, however long that takes; it then builds and sends as above (A-614).
+The deposit usually comes back at a new global output index, and the escrow wallet reuses the ring it stored when it built
+these coins before, so that build is then refused *ring-stale*: staff are alerted and you follow the
+[stale-ring break-glass](#stale-ring-break-glass-a-618) below, after which it builds and sends (A-640). Unlike
 a first release or refund (A-554, below) it has no bounded wait, because it can be built from no other coins. Staff are
 notified each time it starts waiting (once per episode); past 24 hours it is an escrow alert as any settlement still requested is, and its
 monthly wallet is kept from destruction while it waits. Settling a waiting re-request by hand is **break-glass**: wait by
-default, and never pay from other funds while the market can still send it (it sends on its own once the deposit is
-listed again). It waits only after a deep reorganisation or a double spend, or a wallet restore or rescan that lost the
+default, and never pay from other funds while the market can still send it (it builds and sends it once the deposit is
+listed again, after the stale-ring break-glass if the wallet refuses that build). It waits only after a deep reorganisation or a double spend, or a wallet restore or rescan that lost the
 deposit. A re-requested stray refund never holds back the stray refund of a later deposit to the same order (A-616,
 migration 135): that one is requested, built from deposits no settlement claims and sent beside it, and the order page's
 status says two stray refunds are in progress. While a re-request is still requested, the *Payment review* reason of each
 deposit it claims keeps its usual text and adds which settlement re-requests which, and for a deposit no longer listed
-that it waits for it and is sent by the market on its own once the deposit is listed again, ending "Do not pay anything
-by hand for it, or it is paid twice"; the desk's 24-hour line for a re-request waiting so says the same in short (A-617).
+that it waits for it, that the market builds and sends it once the deposit is listed again, and that if the escrow wallet
+then refuses the build because its stored ring predates the reorganisation, staff are alerted and the operator follows the
+stale-ring break-glass, ending "Do not pay anything by hand for it, or it is paid twice"; the desk's 24-hour line for a re-request waiting so says the same in short (A-617).
 
 <a id="stale-ring-break-glass-a-618"></a>
 **A settlement refused for a stale ring: break-glass (A-618).** monero-wallet-rpc 0.18.5.1 stores the ring (the decoys and
@@ -1894,7 +1898,9 @@ the market (the order page says so); a destroyed wallet is never opened again.
   stays requested (*deposit-missing*) and keeps its monthly wallet, with its sealed seed, from destruction past the 90
   days; there is no web action for it. Resolving it by hand is **break-glass**: wait by default, and never pay from
   other funds while the market can still send it; the wait needs a deep reorganisation or a double spend, or a wallet
-  restore or rescan that lost the deposit, and the market sends it on its own if the deposit is listed again. You see it on the order page's wait line, as an
+  restore or rescan that lost the deposit. If the deposit is listed again the market builds and sends it; if the escrow
+  wallet then refuses that build because a ring it stored for those coins predates the reorganisation, staff are alerted
+  and you follow the [stale-ring break-glass](#stale-ring-break-glass-a-618) (A-618). You see it on the order page's wait line, as an
   open "Credited deposit conflicted or missing" flag on the payment-review desk, in the desk's alert for a settlement
   requested for more than 24 hours, and, past the 90 days, in the notice that a retained wallet is kept (PAY66-7). The market
   notices such a regression only once the order's release or refund is being built, not while the order is paid or
@@ -1902,7 +1908,8 @@ the market (the order page says so); a destroyed wallet is never opened again.
   notice but does not reopen the flag on the desk. A re-request (A-401) one of whose claimed deposits is no longer
   listed waits the same way (*deposit-missing*), with no bounded wait, since it spends only the coins of the
   transaction it replaces: staff get one order note and notice each time it starts waiting (A-614), and it builds
-  once the wallet lists that deposit again.
+  once the wallet lists that deposit again, after the [stale-ring break-glass](#stale-ring-break-glass-a-618) if the
+  wallet refuses that build *ring-stale* (A-640).
   A refund whose claimant output would be below 0.001 XMR (on a cancelled order or one decided for the buyer, with no
   deposit it would spend still confirming) does not wait: it ends (failed, too-small) and its deposits are left out for
   the stray refund, which returns them with any later deposit once together they pay the fee; the parties and staff

@@ -266,14 +266,15 @@ func xmrFailedAlertIDs(order string) string {
 
 // requestedText sets v.Requested, the line of a Monero settlement requested for more than 24 hours ("" for none). When
 // the newest such settlement is a re-request waiting for a missing deposit (waiting: its id and the id it supersedes,
-// A-614), the line names both and says the market sends it on its own, so it is never paid by hand (A-617).
+// A-614), the line names both and says the market builds and sends it once the deposit is listed again, or after the operator's
+// stale-ring break-glass if the wallet refuses that build (A-618, A-640), so it is never paid by hand (A-617).
 func (v *EscrowAlertView) requestedText(requested bool, waiting string) {
 	if !requested {
 		return
 	}
 	v.Requested = "Monero escrow settlement has been requested for more than 24 hours"
 	if n, m, ok := strings.Cut(waiting, " "); ok {
-		v.Requested += ": settlement " + n + ", which re-requests settlement " + m + ", waits because the escrow wallet no longer lists a deposit it spends, and the market sends it on its own once that deposit is listed again. Do not pay anything by hand for it, or it is paid twice"
+		v.Requested += ": settlement " + n + ", which re-requests settlement " + m + ", waits because the escrow wallet no longer lists a deposit it spends; once that deposit is listed again the market builds and sends it, and if the escrow wallet then refuses the build because its stored ring predates the reorganisation, staff are alerted and the operator follows the stale-ring break-glass. Do not pay anything by hand for it, or it is paid twice"
 	}
 }
 
@@ -956,7 +957,7 @@ func previewDisputes(d *PageData) {
 func xmrWaitingClaimText(n, m int64, missing bool) string {
 	s := fmt.Sprintf("; Monero escrow settlement %d, which re-requests settlement %d, claims it", n, m)
 	if missing {
-		s += fmt.Sprintf(" and waits: the escrow wallet no longer lists this deposit, and the market sends settlement %d on its own once it is listed again", n)
+		s += fmt.Sprintf(" and waits: the escrow wallet no longer lists this deposit; once it is listed again the market builds and sends settlement %d, and if the escrow wallet then refuses the build because its stored ring predates the reorganisation, staff are alerted and the operator follows the stale-ring break-glass", n)
 	}
 	return s + ". Do not pay anything by hand for it, or it is paid twice"
 }
@@ -1134,8 +1135,8 @@ func loadPaymentReviews(ctx context.Context, a *App, _ *http.Request, d *PageDat
 		if waitingBy != 0 {
 			// A-617: the deposit is claimed by an administrator's re-request (A-401) that is still requested. Its base
 			// reason stays; the clause names the re-request and, while this deposit is missing and the re-request waits
-			// for it (A-614), says the market sends it on its own once the deposit is listed again, so it is never paid
-			// by hand.
+			// for it (A-614), says the market builds and sends it once the deposit is listed again, or after the operator's
+			// stale-ring break-glass if the wallet refuses that build (A-640), so it is never paid by hand.
 			v.Reason += xmrWaitingClaimText(waitingBy, waitingOf, confs < 0 && waitingMissing)
 		}
 		if v.Escalated {

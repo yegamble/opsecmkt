@@ -200,7 +200,9 @@ No migration and no new setting. An administrator's re-request of a failed Moner
 the transaction it replaces. If a deposit those coins came from is no longer listed by the escrow wallet (a
 reorganisation or a double spend since the re-request was carried out), the new settlement now stays requested
 (`send_error = 'deposit-missing'`), staff get one order note and notice each time it starts waiting, and it is built and sent once the wallet lists
-the deposit again. It has no bounded wait (a first release or refund waits twice the threshold in blocks, A-554),
+the deposit again. After a reorganisation the deposit usually returns at a new global output index and the wallet then
+refuses that build *ring-stale* (A-618): staff are alerted, and the operator follows the operator guide's stale-ring
+break-glass before it is sent (A-640). It has no bounded wait (a first release or refund waits twice the threshold in blocks, A-554),
 because it can be built from no other coins; past 24 hours it is an escrow alert like any settlement still requested,
 and its monthly wallet is kept from destruction while it waits. It can never pay twice: both transactions spend the
 same coins, and the database refuses any others.
