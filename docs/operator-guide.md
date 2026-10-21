@@ -530,8 +530,26 @@ The database and bundled Monero services have read-only root filesystems and `no
 Their data volumes and temporary directories remain writable. PostgreSQL and both Monero services start as
 their service users with all capabilities dropped. The application, Tor and scanner also drop all capabilities. Alternative node images may require different
 temporary paths; review their entrypoints before overriding the defaults. Wallet-RPC's shared ring database
-stays in its wallet volume. Its temporary file log under `/tmp` rotates at 1 MiB with two archived files;
-Docker still captures its console output.
+stays in its wallet volume. Its temporary file log under `/tmp` rotates at 1 MiB, keeping two files (the current
+one and one rotated); Docker still captures its console output.
+
+monerod also writes its own log file, which Docker's rotation does not reach: `bitmonero.log` in the `monero_data`
+volume (`stagenet/bitmonero.log` on stagenet). Its defaults keep 50 files of 100 MB. The bundled `monero` service
+(`compose.nodes.yaml`, `compose.nodes-tor.yaml` and the native `deploy` development render) starts it with
+`--max-log-file-size=10485760 --max-log-files=3`: at most three files of about 10 MiB, the current one and two rotated
+(`bitmonero.log-<UTC time>`), deleted oldest first whenever the current file rotates (A-538). Its console output still
+goes to Docker's rotated log as well; the file stays for when that log has rotated past a fault or `LOG_DRIVER` keeps no
+copy. Both node logs run at the default log level 0. Even so they can name peer IP addresses, transaction IDs and
+(the wallet's) addresses and key images: keep copies private, and do not raise `--log-level` except briefly while
+diagnosing. The caps limit size, not age. On a quiet node a file can hold lines older than the 14 days that the
+[data retention policy](data-retention-privacy-policy.md) sets for operational logs; to enforce the age as well,
+delete rotated files older than that, for example from a daily job:
+
+```sh
+docker compose exec -T monero find /home/monero/.bitmonero -maxdepth 2 -name 'bitmonero.log-*' -mtime +14 -delete
+```
+
+A node you run yourself on another host needs the same flags, or that host's own rotation, for its log files.
 
 The application build/runtime base images and internal PostgreSQL image are pinned to registry digests.
 Refresh those pins after reviewing upstream updates, then run the build, container and database checks.

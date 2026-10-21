@@ -1,4 +1,4 @@
-# The local nodes' own Tor client (tor-socks in compose.nodes-tor.yaml, A-442): one SOCKS port for bitcoind and monerod,
+# The local nodes' own Tor client (tor-socks in compose.nodes-tor.yaml, A-442): one SOCKS port for monerod,
 # nothing else. It is not the onion service's deploy/torrc: that container keeps SocksPort 0 and this one runs no onion
 # service. docs/operator-guide.md#local-nodes-over-tor says what goes through it and what does not.
 DataDirectory /var/lib/tor
