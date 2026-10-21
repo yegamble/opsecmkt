@@ -293,6 +293,96 @@ func TestVendorApplicationWithdrawAndVerify(t *testing.T) {
 	}
 }
 
+// A-583 (QA544-1): the verified badge shows only while its vendor is active. A suspension hides it and a restore shows
+// it again (the mark is held until then); a role change away from vendor removes the mark, audited on the account, so
+// a later promotion back to vendor does not bring it back.
+func TestVendorVerifiedBadgeFollowsActiveVendor(t *testing.T) {
+	e := newTestApp(t)
+	admin := e.setup()
+	_, viewer := e.user("vb_viewer", "buyer")
+	vendorID, _ := e.user("vb_vendor", "vendor")
+	product := e.product(vendorID, "digital")
+	badge := func(want bool, when string) {
+		t.Helper()
+		for _, path := range []string{"/vendor?id=" + vendorID, "/product?id=" + product, "/"} {
+			if got := strings.Contains(e.body("GET", path, viewer, nil, 200), "Verified vendor"); got != want {
+				t.Errorf("%s: %s shows the badge = %v, want %v", when, path, got, want)
+			}
+		}
+	}
+	verified := func() bool {
+		t.Helper()
+		return agStr(e, "SELECT vendor_verified::text FROM users WHERE id=$1", vendorID) == "true"
+	}
+	post := func(path string, form url.Values) {
+		t.Helper()
+		form.Set("password", testPassword)
+		e.check(e.do("POST", path, admin, form), 303)
+	}
+	verify := func() {
+		t.Helper()
+		post("/admin/vendor-verify", url.Values{"handle": {"vb_vendor"}, "action": {"verify"}})
+	}
+	setRole := func(role string) {
+		t.Helper()
+		post("/admin", url.Values{"action": {"role"}, "role": {role}, "handle": {"vb_vendor"}})
+	}
+	verify()
+	badge(true, "verified")
+	// A suspension hides the badge but keeps the mark; the restore shows it again.
+	post("/admin/suspend", url.Values{"action": {"suspend"}, "handle": {"vb_vendor"}})
+	badge(false, "suspended")
+	if !verified() {
+		t.Fatal("the suspension cleared the verified mark")
+	}
+	post("/admin/suspend", url.Values{"action": {"restore"}, "handle": {"vb_vendor"}})
+	badge(true, "restored")
+	// Vendor → moderator keeps selling approval but removes the mark, audited; the way back to vendor does not restore it.
+	setRole("moderator")
+	if verified() || !hasAudit(e, vendorID, "Verified vendor mark removed: role changed to moderator by administrator admin_user") {
+		t.Fatalf("vendor → moderator kept the mark or did not audit it: %v %v", verified(), e.audits(vendorID))
+	}
+	badge(false, "moderator")
+	setRole("vendor")
+	badge(false, "re-promoted from moderator")
+	// Vendor → buyer: audited too.
+	verify()
+	setRole("buyer")
+	if verified() || !hasAudit(e, vendorID, "Verified vendor mark removed: role changed to buyer by administrator admin_user") {
+		t.Fatalf("vendor → buyer kept the mark or did not audit it: %v %v", verified(), e.audits(vendorID))
+	}
+	// Vendor → administrator (host command): an administrator is verified by its role; the stored mark goes, so the
+	// demotion back to vendor shows no badge.
+	setRole("vendor")
+	agExec(e, "UPDATE products SET archived=false,archived_at=NULL WHERE id=$1", product) // the vendor re-lists what the demotion archived
+	verify()
+	badge(true, "verified again")
+	if _, err := SetRole(t.Context(), e.DB, "vb_vendor", "admin"); err != nil {
+		t.Fatal(err)
+	}
+	if verified() || !hasAudit(e, vendorID, "Verified vendor mark removed: role changed to admin by host command") {
+		t.Fatalf("vendor → admin kept the mark or did not audit it: %v %v", verified(), e.audits(vendorID))
+	}
+	if _, err := SetRole(t.Context(), e.DB, "vb_vendor", "vendor"); err != nil {
+		t.Fatal(err)
+	}
+	badge(false, "demoted from administrator")
+	// An unchanged role removes nothing.
+	verify()
+	setRole("vendor")
+	if !verified() {
+		t.Fatal("an unchanged vendor role removed the mark")
+	}
+	// Nor for a moderator with selling approval, who may be marked too.
+	setRole("moderator")
+	verify()
+	setRole("moderator")
+	if !verified() {
+		t.Fatal("an unchanged moderator role removed the mark")
+	}
+	badge(true, "verified moderator with selling approval")
+}
+
 // The admin role form and the -set-role host command keep vendor applications consistent: a direct promotion records
 // an approved application (closing an open one); a demotion keeps it, /account says the role was removed, and the
 // account can apply again.
@@ -347,6 +437,53 @@ func TestVendorRoleFormKeepsApplicationsConsistent(t *testing.T) {
 	}
 	removed()
 	mustContain(t, html.UnescapeString(e.body("GET", "/account", session, nil, 200)), "Selling approval removed by an administrator")
+
+	// A-583 (QA544-2): a promotion to moderator or administrator withdraws an open application, audited and noted, so it
+	// leaves the queue instead of waiting there for a decision nobody can take. A demotion to buyer leaves it open.
+	staffID, staff := e.user("va_rolestaff", "buyer")
+	apply := func() string {
+		t.Helper()
+		e.check(e.do("POST", "/account/vendor-application", staff, url.Values{"action": {"apply"}}), 303)
+		app := latestVendorApp(e, staffID)
+		if app.State != "awaiting_approval" {
+			t.Fatalf("application not open: %+v", app)
+		}
+		return app.ID
+	}
+	withdrawn := func(appID, by, role string) {
+		t.Helper()
+		if got := agStr(e, "SELECT state FROM vendor_applications WHERE id=$1", appID); got != "withdrawn" {
+			t.Fatalf("promotion to %s left the application %s", role, got)
+		}
+		if agInt(e, "SELECT count(*) FROM vendor_applications WHERE user_id=$1 AND state IN "+vendorOpenStates, staffID) != 0 {
+			t.Fatalf("promotion to %s left an open application", role)
+		}
+		if !hasAudit(e, staffID, "Vendor application withdrawn: role changed to "+role+" by "+by) {
+			t.Errorf("withdrawal on promotion to %s not audited: %v", role, e.audits(staffID))
+		}
+		if !hasNote(e, staffID, "Your open vendor application was withdrawn") {
+			t.Errorf("withdrawal on promotion to %s not notified: %v", role, e.notes(staffID))
+		}
+	}
+	first := apply()
+	e.check(e.do("POST", "/admin", admin, url.Values{"action": {"role"}, "role": {"moderator"}, "handle": {"va_rolestaff"}, "password": {testPassword}}), 303)
+	withdrawn(first, "administrator admin_user", "moderator")
+	mustNotContain(t, e.body("GET", "/admin/vendors", admin, nil, 200), "va_rolestaff")
+	// A moderator may apply again; a promotion to administrator withdraws that one too.
+	second := apply()
+	if _, err := SetRole(t.Context(), e.DB, "va_rolestaff", "admin"); err != nil {
+		t.Fatal(err)
+	}
+	withdrawn(second, "host command", "admin")
+	// An unchanged moderator role and moderator → buyer keep an open application: buyers and moderators may apply.
+	modID, mod := e.user("va_rolemod", "moderator")
+	e.check(e.do("POST", "/account/vendor-application", mod, url.Values{"action": {"apply"}}), 303)
+	for _, role := range []string{"moderator", "buyer"} {
+		e.check(e.do("POST", "/admin", admin, url.Values{"action": {"role"}, "role": {role}, "handle": {"va_rolemod"}, "password": {testPassword}}), 303)
+		if latestVendorApp(e, modID).State != "awaiting_approval" {
+			t.Fatalf("role %s withdrew the open application", role)
+		}
+	}
 }
 
 func TestVendorApplicationAuthz(t *testing.T) {
@@ -408,6 +545,46 @@ func TestVendorApplicationAuthz(t *testing.T) {
 	e.check(e.do("POST", "/account/vendor-application", withdrawn, url.Values{"action": {"withdraw"}}), 303)
 	if w := e.do("POST", "/listings", withdrawn, url.Values{}); w.Code != 403 || userRole(e, withdrawnID) != "buyer" {
 		t.Fatalf("withdrawn applicant reached /listings: %d", w.Code)
+	}
+	// A-583 (QA544-3): a suspended applicant is held until restored. Approval is refused, and so is a bond step that
+	// would approve automatically; both write nothing. After the restore the approval goes through. (QA544-4) A
+	// decision without a note keeps the bond step's note.
+	suspendedID, suspended := e.user("va_authz_suspended", "buyer")
+	e.check(e.do("POST", "/account/vendor-application", suspended, url.Values{"action": {"apply"}}), 303)
+	held := latestVendorApp(e, suspendedID)
+	adminVendorPost(e, admin, "/admin/vendor-applications", url.Values{"id": {held.ID}, "action": {"bond"}, "note": {"Bond seen on the forum"}}, 303)
+	autoID, _ := e.user("va_authz_suspended_auto", "buyer")
+	agExec(e, "INSERT INTO vendor_applications(id,user_id,state,approval,bond_piconero) VALUES('va_auto_held',$1,'awaiting_bond','automatic',$2)", autoID, halfXMR)
+	suspend := func(handle, choice string) {
+		t.Helper()
+		e.check(e.do("POST", "/admin/suspend", admin, url.Values{"action": {choice}, "handle": {handle}, "password": {testPassword}}), 303)
+	}
+	suspend("va_authz_suspended", "suspend")
+	suspend("va_authz_suspended_auto", "suspend")
+	audits := len(e.audits(suspendedID))
+	for appID, action := range map[string]string{held.ID: "approve", "va_auto_held": "bond"} {
+		w := e.do("POST", "/admin/vendor-applications", admin, url.Values{"id": {appID}, "action": {action}, "password": {testPassword}})
+		if w.Code != 409 || !strings.Contains(html.UnescapeString(w.Body.String()), "is suspended: restore the account before approving it. Nothing was changed.") {
+			t.Fatalf("%s for a suspended applicant: %d %s", action, w.Code, w.Body.String())
+		}
+	}
+	if latestVendorApp(e, suspendedID).State != "awaiting_approval" || userRole(e, suspendedID) != "buyer" || len(e.audits(suspendedID)) != audits ||
+		latestVendorApp(e, autoID).State != "awaiting_bond" || userRole(e, autoID) != "buyer" {
+		t.Fatal("a refused decision for a suspended applicant changed state")
+	}
+	suspend("va_authz_suspended", "restore")
+	adminVendorPost(e, admin, "/admin/vendor-applications", url.Values{"id": {held.ID}, "action": {"approve"}}, 303)
+	if latestVendorApp(e, suspendedID).State != "approved" || userRole(e, suspendedID) != "vendor" {
+		t.Fatal("the restored applicant was not approved")
+	}
+	if got := agStr(e, "SELECT note FROM vendor_applications WHERE id=$1", held.ID); got != "Bond seen on the forum" {
+		t.Fatalf("a decision without a note replaced the bond step's note with %q", got)
+	}
+	// A suspended applicant can still be rejected; a rejection without a note keeps the earlier one too.
+	agExec(e, "UPDATE vendor_applications SET note='Asked for references' WHERE id='va_auto_held'")
+	adminVendorPost(e, admin, "/admin/vendor-applications", url.Values{"id": {"va_auto_held"}, "action": {"reject"}}, 303)
+	if got := agStr(e, "SELECT state||'|'||note FROM vendor_applications WHERE id='va_auto_held'"); got != "rejected|Asked for references" {
+		t.Fatalf("rejection of a suspended applicant without a note: %q", got)
 	}
 	// An invalid account type at sign-up creates nothing.
 	w := e.do("POST", "/register", randomToken(), url.Values{"handle": {"va_badtype"}, "password": {testPassword}, "account_type": {"admin"}})

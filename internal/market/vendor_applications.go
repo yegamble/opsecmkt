@@ -47,6 +47,13 @@ func activeVendorSQL(alias string) string {
 		alias + ".retention_restricted_at IS NULL AND " + alias + ".pgp<>'' AND NOT " + alias + ".vendor_deactivated)"
 }
 
+// verifiedVendorSQL is the condition "alias shows the Verified vendor badge" (A-583): marked verified, or an
+// administrator, and an active vendor (activeVendorSQL). A suspension hides the badge and keeps the mark, so a restore
+// shows it again; a role change away from vendor clears the mark (roleChanged). alias is selected by code.
+func verifiedVendorSQL(alias string) string {
+	return "((" + alias + ".vendor_verified OR " + alias + ".role='admin') AND " + activeVendorSQL(alias) + ")"
+}
+
 // VendorPolicyView is the vendor policy for new applications. Bond is in XMR ("0" when none).
 type VendorPolicyView struct {
 	Bond               string
@@ -262,6 +269,17 @@ func vendorRoleAssigned(ctx context.Context, tx *sql.Tx, userID, adminID, note s
 }
 
 var errVendorApplicationOpen = fail(http.StatusConflict, "You already have an open vendor application. Withdraw it first to apply again.")
+
+// errSuspendedApplicant refuses to approve a suspended applicant, by hand or by a bond step under automatic approval
+// (A-583): the application is held until the account is restored. A banned account is suspended too.
+func errSuspendedApplicant(handle string) error {
+	return fail(http.StatusConflict, handle+" is suspended: restore the account before approving it. Nothing was changed.")
+}
+
+// vendorDecisionNoteSQL sets an application's note ($3) on approval or rejection (A-583). The column holds the latest
+// non-empty administrator note: a decision without a note keeps the bond step's, and a decision with one replaces it
+// (the bond step's note stays in the applicant's notification of that step).
+const vendorDecisionNoteSQL = "note=CASE WHEN $3='' THEN note ELSE $3 END"
 
 // approveVendor makes an approved applicant a vendor (the application row is already approved), in tx after the
 // account row is locked: the role change is audited as the admin role form's is ("Role changed from buyer to vendor by
@@ -537,7 +555,7 @@ func vendorPolicyAction(c *actionCtx) (actionResult, error) {
 // vendorDecisionAction records an administrator's step on one application: bond received or waived (awaiting_bond),
 // approve (awaiting_approval) or reject (either open state), with an optional note shown to the applicant. The
 // administrator confirms with their password (and authenticator code when enrolled). Both accounts are audited and
-// the applicant is notified.
+// the applicant is notified. A suspended applicant is not approved, by hand or automatically, until restored (A-583).
 func vendorDecisionAction(c *actionCtx) (actionResult, error) {
 	id, choice := c.Form.Get("id"), c.Form.Get("action")
 	if choice != "bond" && choice != "waive" && choice != "approve" && choice != "reject" {
@@ -560,9 +578,9 @@ func vendorDecisionAction(c *actionCtx) (actionResult, error) {
 		ctx, tx, admin := c.Ctx(), c.Tx, c.User
 		// Applicant row, then application row: the order the applicant's own form locks them in.
 		var target, handle, role string
-		var closed bool
-		err := tx.QueryRowContext(ctx, `SELECT u.id,u.handle,u.role,u.closed_at IS NOT NULL OR u.deletion_requested_at IS NOT NULL OR u.retention_restricted_at IS NOT NULL
-			FROM users u JOIN vendor_applications a ON a.user_id=u.id WHERE a.id=$1 FOR NO KEY UPDATE OF u`, id).Scan(&target, &handle, &role, &closed)
+		var closed, suspended bool
+		err := tx.QueryRowContext(ctx, `SELECT u.id,u.handle,u.role,u.closed_at IS NOT NULL OR u.deletion_requested_at IS NOT NULL OR u.retention_restricted_at IS NOT NULL,
+			u.suspended_at IS NOT NULL FROM users u JOIN vendor_applications a ON a.user_id=u.id WHERE a.id=$1 FOR NO KEY UPDATE OF u`, id).Scan(&target, &handle, &role, &closed, &suspended)
 		if err == sql.ErrNoRows {
 			return actionResult{}, notFound
 		}
@@ -607,6 +625,9 @@ func vendorDecisionAction(c *actionCtx) (actionResult, error) {
 				if role != "buyer" && role != "vendor" && role != "moderator" || closed {
 					return actionResult{}, fail(409, handle+" is no longer an eligible active account; reject the application instead.")
 				}
+				if suspended {
+					return actionResult{}, errSuspendedApplicant(handle)
+				}
 			}
 			if _, err = tx.ExecContext(ctx, `UPDATE vendor_applications SET bond_received_at=now(),bond_received_by=$2,bond_received_how=$3,state=$4,
 				decided_at=CASE WHEN $4='approved' THEN now() END,note=$5 WHERE id=$1`, id, admin.ID, how, next, note); err != nil {
@@ -639,7 +660,10 @@ func vendorDecisionAction(c *actionCtx) (actionResult, error) {
 			if role != "buyer" && role != "vendor" && role != "moderator" || closed {
 				return actionResult{}, fail(409, handle+" is no longer an eligible active account; reject the application instead.")
 			}
-			if _, err = tx.ExecContext(ctx, "UPDATE vendor_applications SET state='approved',decided_by=$2,decided_at=now(),note=$3 WHERE id=$1", id, admin.ID, note); err != nil {
+			if suspended {
+				return actionResult{}, errSuspendedApplicant(handle)
+			}
+			if _, err = tx.ExecContext(ctx, "UPDATE vendor_applications SET state='approved',decided_by=$2,decided_at=now(),"+vendorDecisionNoteSQL+" WHERE id=$1", id, admin.ID, note); err != nil {
 				return actionResult{}, err
 			}
 			if err = audit("Vendor application approved by "+by, "Approved vendor application of "+handle); err != nil {
@@ -649,7 +673,7 @@ func vendorDecisionAction(c *actionCtx) (actionResult, error) {
 				return actionResult{}, err
 			}
 		case "reject":
-			if _, err = tx.ExecContext(ctx, "UPDATE vendor_applications SET state='rejected',decided_by=$2,decided_at=now(),note=$3 WHERE id=$1", id, admin.ID, note); err != nil {
+			if _, err = tx.ExecContext(ctx, "UPDATE vendor_applications SET state='rejected',decided_by=$2,decided_at=now(),"+vendorDecisionNoteSQL+" WHERE id=$1", id, admin.ID, note); err != nil {
 				return actionResult{}, err
 			}
 			if err = audit("Vendor application rejected by "+by, "Rejected vendor application of "+handle); err != nil {
@@ -812,7 +836,7 @@ func vendorAdminLoader(ctx context.Context, a *App, _ *http.Request, d *PageData
 			return err
 		}
 	}
-	verified, err := a.db.QueryContext(ctx, "SELECT u.handle FROM users u WHERE (u.vendor_verified OR u.role='admin') AND "+activeVendorSQL("u")+" ORDER BY u.handle LIMIT 100")
+	verified, err := a.db.QueryContext(ctx, "SELECT u.handle FROM users u WHERE "+verifiedVendorSQL("u")+" ORDER BY u.handle LIMIT 100")
 	if err != nil {
 		return err
 	}
