@@ -286,7 +286,7 @@ func (a *App) load(r *http.Request, d *PageData) error {
 		if d.Page == "catalog" || d.Page == "vendor" || d.Page == "vendor-dashboard" {
 			description = "left(p.description," + strconv.Itoa(excerptRunes+1) + ")"
 		}
-		query := `SELECT p.id,p.title,` + description + `,p.category,p.region,p.kind,u.handle,p.vendor_id,p.btc,p.xmr,p.stock,p.archived,` + takedown + `,(u.vendor_verified OR u.role='admin'),p.subcategory,array_to_string(p.shipping_regions,'|'),ratings.average,ratings.count,u.vendor_vacation,u.vendor_deactivated,NOT ` + vendorAcceptsBuyerMessagesSQL("u") + `,p.review_state<>'approved',` + rejection + `,p.digital_delivery_mode FROM products p JOIN users u ON u.id=p.vendor_id
+		query := `SELECT p.id,p.title,` + description + `,p.category,p.region,p.kind,u.handle,p.vendor_id,p.btc,p.xmr,p.stock,p.archived,` + takedown + `,` + verifiedVendorSQL("u") + `,p.subcategory,array_to_string(p.shipping_regions,'|'),ratings.average,ratings.count,u.vendor_vacation,u.vendor_deactivated,NOT ` + vendorAcceptsBuyerMessagesSQL("u") + `,p.review_state<>'approved',` + rejection + `,p.digital_delivery_mode FROM products p JOIN users u ON u.id=p.vendor_id
 		 LEFT JOIN LATERAL (SELECT coalesce(avg(r.rating),0)::float8 AS average,count(*) AS count FROM reviews r JOIN orders ro ON ro.id=r.order_id WHERE r.product_id=p.id AND ro.state='completed' AND r.hidden_at IS NULL) ratings ON true WHERE true`
 		args := []any{}
 		limit := " LIMIT 100"
@@ -408,7 +408,7 @@ func (a *App) load(r *http.Request, d *PageData) error {
 		}
 		if d.Page == "vendor" {
 			var u User
-			err = a.db.QueryRowContext(ctx, "SELECT id,handle,role,pgp,(vendor_verified OR role='admin'),banned_at IS NOT NULL FROM users WHERE id=$1 AND (role IN ('vendor','admin') OR vendor_approved) AND NOT vendor_deactivated", r.URL.Query().Get("id")).Scan(&u.ID, &u.Handle, &u.Role, &u.PGP, &u.VendorVerified, &d.SellerClosed)
+			err = a.db.QueryRowContext(ctx, "SELECT u.id,u.handle,u.role,u.pgp,"+verifiedVendorSQL("u")+",u.banned_at IS NOT NULL FROM users u WHERE u.id=$1 AND (u.role IN ('vendor','admin') OR u.vendor_approved) AND NOT u.vendor_deactivated", r.URL.Query().Get("id")).Scan(&u.ID, &u.Handle, &u.Role, &u.PGP, &u.VendorVerified, &d.SellerClosed)
 			if err != nil {
 				return err
 			}

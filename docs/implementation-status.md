@@ -257,7 +257,12 @@ The administrator's vendor policy (*Admin → Vendors → Vendor applications*, 
 received*, `how='manual'`) or waive it (`how='waived'`) on POST `/admin/vendor-applications`. Each application captures the bond and approval mode in force
 when it is created, so a policy change applies to new applications only; the payment instructions shown are the
 current ones. Administrators approve or reject an application with an optional note of at most 500 characters on one
-line, which the applicant sees; an application waiting for its bond can be rejected but not approved (409). Approval grants selling authority: buyers become vendors through an audited role change, while moderators retain their staff role and gain independent selling approval. Rejected and withdrawn applicants stay buyers and
+line, which the applicant sees; an application waiting for its bond can be rejected but not approved (409). The
+application's `note` column holds the latest non-empty administrator note: a decision without a note keeps the bond
+step's note, and a decision with one replaces it (the bond step's note stays in the applicant's notification of that
+step) (A-583). A suspended applicant is held until restored: approval, and a bond step that would approve
+automatically, are refused (409 "H is suspended: restore the account before approving it. Nothing was changed."),
+while rejection still works (A-583, `TestVendorApplicationAuthz`). Approval grants selling authority: buyers become vendors through an audited role change, while moderators retain their staff role and gain independent selling approval. Rejected and withdrawn applicants stay buyers and
 cannot reach the listing actions (403). At most one open application per account (partial unique index; a second →
 409). Every admin vendor form needs the administrator's password (and authenticator code when enrolled), records a
 submission receipt and is audited on both accounts; every decision notifies the applicant. *Admin → Assign an
@@ -265,19 +270,31 @@ account role* and the `-set-role` host command can still set the vendor role dir
 any open application (withdrawn) and records an approved one without a bond, decided by that administrator (none for
 the host command) with the note "Role assigned by an administrator". A demotion keeps the approved application:
 `/account` then shows "Vendor role removed by an administrator" and "Your vendor role was removed by an
-administrator", and the account may apply again (an approved application never counts as open)
-(`TestVendorRoleFormKeepsApplicationsConsistent`).
+administrator", and the account may apply again (an approved application never counts as open). A promotion to
+moderator or administrator, by the form or `-set-role`, withdraws an open application (audited "Vendor application
+withdrawn: role changed to R by …", with the note "Role changed to R" on the application, and the role-change
+notification says so), since that role cannot be decided as
+an application; a moderator may apply again. A demotion to buyer leaves an open application open (A-583,
+`TestVendorRoleFormKeepsApplicationsConsistent`).
 
 *Verified vendor* (POST `/admin/vendor-verify`; `users.vendor_verified`, with `vendor_verified_set_by`/`_set_at` for
 the latest change): an administrator marks a vendor account verified, or removes the mark. The badge shows on the
-vendor page, the product page and listing cards; the vendor page says it is the staff's judgment, not an identity
-check. Existing vendors were grandfathered by migration 121 with an approved application (no bond) and are not
+vendor page, the product page and listing cards, only while the vendor is active (`verifiedVendorSQL`: marked or an
+administrator, and `activeVendorSQL`); the vendor page says it is the staff's judgment, not an identity
+check. A suspension hides the badge and keeps the mark, so a restore shows it again; a role change away from vendor
+(to buyer, moderator or administrator, by the form or `-set-role`) removes the mark, audited on the account
+("Verified vendor mark removed: role changed to R by …") and in its role-change notification, so a later promotion
+back to vendor shows no badge until an administrator marks it again. Any role change away from administrator also
+removes a mark kept from before A-583 (an administrator is verified by its role and the form refuses to mark one), even
+back to vendor (A-583,
+`TestVendorVerifiedBadgeFollowsActiveVendor`). Existing vendors were grandfathered by migration 121 with an approved application (no bond) and are not
 verified. `activeVendorSQL(alias)` is the shared SQL condition for an approved, active vendor (vendor role, administrator role or independent selling approval, not
 suspended, closed or restricted for closure).
 
 Tests: `vendor_applications_test.go` (`TestVendorApplicationModes`: the four policies × sign-up and `/account`;
-`TestVendorApplicationAuthz`; `TestVendorMigrationGrandfathers`; policy, waiver, rejection, withdrawal, verification
-and retention), `actions_role_sweep_test.go`, `tests/e2e/db-vendor-onboarding.spec.ts` (bond + approval sign-up,
+`TestVendorApplicationAuthz`, with its suspended applicant; `TestVendorMigrationGrandfathers`;
+`TestVendorVerifiedBadgeFollowsActiveVendor`; `TestVendorRoleFormKeepsApplicationsConsistent`; policy, waiver,
+rejection, withdrawal, verification and retention), `actions_role_sweep_test.go`, `tests/e2e/db-vendor-onboarding.spec.ts` (bond + approval sign-up,
 bond recorded, approved, listing published, verified badge) and `preview-vendors.spec.ts`. No wallet or payment
 provider is involved in any of them.
 

@@ -528,8 +528,41 @@ func adminChange(c *actionCtx) (actionResult, error) {
 // summary.
 func roleChanged(ctx context.Context, tx *sql.Tx, target, old, role, by string) (string, error) {
 	summary := ""
-	avatarRemoved := false
+	avatarRemoved, markRemoved, applicationWithdrawn := false, false, false
 	archivedListings := "0"
+	// A-583: the verified vendor mark belongs to the vendor role. Leaving it (for any role, staff included) removes the
+	// mark, audited on the account, so a later promotion back to vendor does not bring it back. A suspension only hides
+	// the badge (verifiedVendorSQL). An administrator holds no mark (verified by role; the verify form refuses them), so
+	// leaving that role clears one kept from before A-583 too, even back to vendor.
+	if old != role && (role != "vendor" || old == "admin") {
+		res, err := tx.ExecContext(ctx, "UPDATE users SET vendor_verified=false WHERE id=$1 AND vendor_verified", target)
+		if err != nil {
+			return "", err
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			markRemoved = true
+			summary += "; removed their verified vendor mark"
+			if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", target, "Verified vendor mark removed: role changed to "+role+" by "+by); err != nil {
+				return "", err
+			}
+		}
+	}
+	// A-583: a staff role cannot be decided as an application (approval takes buyers and moderators; administrators
+	// already sell), so a promotion to moderator or administrator withdraws an open one, audited; a moderator may apply
+	// again. A promotion to vendor closes it as an approved assignment instead (vendorRoleAssigned).
+	if old != role && (role == "moderator" || role == "admin") {
+		res, err := tx.ExecContext(ctx, "UPDATE vendor_applications SET state='withdrawn',decided_at=now(),note=$2 WHERE user_id=$1 AND state IN "+vendorOpenStates, target, "Role changed to "+role)
+		if err != nil {
+			return "", err
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			applicationWithdrawn = true
+			summary += "; withdrew their open vendor application"
+			if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", target, "Vendor application withdrawn: role changed to "+role+" by "+by); err != nil {
+				return "", err
+			}
+		}
+	}
 	// A move into staff retains an existing vendor approval. Administrator
 	// access itself is derived from the current role and never creates approval.
 	if role == "vendor" || old == "vendor" && (role == "moderator" || role == "admin") {
@@ -585,6 +618,12 @@ func roleChanged(ctx context.Context, tx *sql.Tx, target, old, role, by string) 
 		}
 		if avatarRemoved {
 			note += " Your staff avatar was removed."
+		}
+		if markRemoved {
+			note += " Your verified vendor mark was removed."
+		}
+		if applicationWithdrawn {
+			note += " Your open vendor application was withdrawn."
 		}
 		if old == "admin" && role != "admin" {
 			note += " Your existing sessions and pending sign-ins were ended."
