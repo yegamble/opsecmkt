@@ -107,10 +107,16 @@ func SetModerationEnabled(ctx context.Context, db *sql.DB, enabled bool) error {
 			return err
 		}
 		if counters {
-			if _, err = tx.ExecContext(ctx, `DELETE FROM moderation_actor_allocations WHERE markers=0 AND NOT rescan`); err != nil {
+			// Lock order matches admission and the sweep: the capacity row
+			// first, then allocation rows, so the switch cannot deadlock them.
+			if _, err = tx.ExecContext(ctx, `SELECT 1 FROM moderation_capacity WHERE singleton FOR UPDATE`); err != nil {
 				return err
 			}
-			if _, err = tx.ExecContext(ctx, `UPDATE moderation_actor_allocations SET allocations=0`); err != nil {
+			// Rows an account erasure is deleting are skipped, not waited for.
+			if _, err = tx.ExecContext(ctx, `DELETE FROM moderation_actor_allocations WHERE actor_id IN (SELECT actor_id FROM moderation_actor_allocations WHERE markers=0 AND NOT rescan FOR UPDATE SKIP LOCKED)`); err != nil {
+				return err
+			}
+			if _, err = tx.ExecContext(ctx, `UPDATE moderation_actor_allocations SET allocations=0 WHERE actor_id IN (SELECT actor_id FROM moderation_actor_allocations WHERE allocations>0 FOR UPDATE SKIP LOCKED)`); err != nil {
 				return err
 			}
 		}

@@ -183,7 +183,7 @@ func TestModerationBudgetRollbackAndLifetimeReservation(t *testing.T) {
 	if agInt(e, `SELECT pending FROM moderation_capacity`) != 0 || agInt(e, `SELECT allocated_records FROM moderation_capacity`) != 1 {
 		t.Fatal("completion did not release active once while preserving lifetime reservation")
 	}
-	e.product(vendor, "digital")
+	refused := e.product(vendor, "digital")
 	if agInt(e, `SELECT count(*) FROM moderation_jobs`) != 1 {
 		t.Fatal("completed records evaded lifetime budget")
 	}
@@ -192,9 +192,14 @@ func TestModerationBudgetRollbackAndLifetimeReservation(t *testing.T) {
 	if err = ConfigureModerationLimits(t.Context(), e.DB, limits); err != nil {
 		t.Fatal(err)
 	}
+	// The vendor's earlier refused listing is first in its queue: a new write
+	// waits behind it, and the raised budget admits the refused one.
 	e.product(vendor, "digital")
-	if agInt(e, `SELECT count(*) FROM moderation_jobs`) != 2 {
-		t.Fatal("explicit capacity raise did not permit admission")
+	if _, err = moderationBackfillSweep(t.Context(), e.DB, 5); err != nil {
+		t.Fatal(err)
+	}
+	if agInt(e, `SELECT count(*) FROM moderation_jobs`) != 2 || agInt(e, `SELECT count(*) FROM moderation_jobs WHERE target_id=$1`, refused) != 1 {
+		t.Fatal("explicit capacity raise did not admit the earliest refused capture")
 	}
 }
 
@@ -972,7 +977,7 @@ func TestModerationActorShareOfLifetimeBudget(t *testing.T) {
 	if got := agInt(e, `SELECT count(*) FROM moderation_actor_allocations`); got != 0 {
 		t.Fatalf("disabled capture kept %d actor windows", got)
 	}
-	if agInt(e, `SELECT count(*) FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='moderation_actor_allocations' AND column_name NOT IN ('actor_id','window_start','allocations','markers','rescan','rescan_more','rescan_bucket')`) != 0 {
-		t.Fatal("actor counter gained a target or content column")
+	if agInt(e, `SELECT count(*) FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='moderation_actor_allocations' AND column_name NOT IN ('actor_id','window_start','allocations','markers','parked','rescan','rescan_more','rescan_ts','rescan_kind','rescan_id')`) != 0 {
+		t.Fatal("actor counter gained an unreviewed column (only the rescan position references a record)")
 	}
 }

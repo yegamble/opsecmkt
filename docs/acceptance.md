@@ -69,7 +69,10 @@ acceptance requirements, not a declaration of deployed verification:
   parked marker and is captured on restore or unhide. One account holds a
   bounded number of markers, past which (or past a full table, with a counted
   `backfill_capacity` warning) a lossless rescan of its live records takes over;
-  a job made stale only by changed context is not captured again. A revision that completed
+  a job made stale only by changed context is not captured again. An account
+  with a backlog cannot jump it with fresh writes, a vanished source never stops
+  the worker, and disabling capture, the sweep and account erasure do not
+  deadlock. A revision that completed
   stale does not suppress a later capture of the same content, while an evaluated
   revision is still not queued twice. One actor cannot take more than its 24-hour
   share of lifetime allocations. New proposals hold no per-field digests
@@ -87,6 +90,10 @@ acceptance requirements, not a declaration of deployed verification:
   `TestModerationActorRescanRepeatsAfterRefusalDuringScan`,
   `TestModerationRefusedBacklogDoesNotStarveSweep`,
   `TestModerationContextStaleDoesNotRecapture`,
+  `TestModerationBacklogActorCannotJumpOwnQueue`,
+  `TestModerationAdmissionSkipsUnknownActor`,
+  `TestModerationSweepSurvivesConcurrentSourceRemoval`,
+  `TestModerationDisableSweepNoDeadlock`,
   `TestModerationPrivacyV2NoFieldDigestsOrUnusedTextHash`; database integration,
   fake model).
 - Proposal queues/status require an authenticated current administrator on the
