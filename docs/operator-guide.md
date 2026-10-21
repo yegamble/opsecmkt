@@ -1477,7 +1477,7 @@ seed can be recovered. It uses only the database, the private key and a scratch 
   umask 077
   mkdir -p backups
   docker stop opsecmkt-escrow-wallet
-  docker run --rm --network none -v opsecmkt_escrow_wallets:/wallets:ro --entrypoint tar \
+  docker run --rm --log-driver none --network none -v opsecmkt_escrow_wallets:/wallets:ro --entrypoint tar \
     ghcr.io/sethforprivacy/simple-monero-wallet-rpc:v0.18.5.1 -C /wallets -cf - . | age -r "$AGE_RECIPIENT" -o "backups/escrow-wallets-$(date -u +%Y%m%dT%H%M%SZ).tar.age"
   docker start opsecmkt-escrow-wallet
   ```
@@ -2213,7 +2213,7 @@ Back up an onion identity (set `identity=tor_identity`, or `identity=tor_mirror_
   test ! -e "$backup"
   mkdir -p backups
   umask 077
-  docker run --rm --pull never --network none --cap-drop ALL --security-opt no-new-privileges:true -v "$volume:/var/lib/tor:ro" \
+  docker run --rm --log-driver none --pull never --network none --cap-drop ALL --security-opt no-new-privileges:true -v "$volume:/var/lib/tor:ro" \
     --entrypoint tar "$project-tor" -C /var/lib/tor -cf - marketplace |
     age -r "$AGE_RECIPIENT" -o "$backup" || { rm -f "$backup"; exit 1; }
   docker run --rm --pull never --network none --cap-drop ALL -v "$volume:/var/lib/tor:ro" --entrypoint cat "$project-tor" \
