@@ -176,6 +176,51 @@ func TestAppPoolSessionTimeouts(t *testing.T) {
 	}
 }
 
+// MOD72-8: the application pool turns PostgreSQL's JIT compiler off. The staff escrow-alert query's planner cost
+// passes jit_above_cost even on empty tables, so with JIT on (postgres:17-alpine's default) every /moderator and
+// /admin request spent 3-6 s compiling it, close to the 8 s statement timeout. Host commands keep the server's
+// setting.
+func TestAppPoolDisablesJIT(t *testing.T) {
+	e := newTestApp(t)
+	for name, db := range map[string]*sql.DB{"app": e.A.db, "health": e.A.health} {
+		var got string
+		if err := db.QueryRow("SHOW jit").Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != "off" {
+			t.Errorf("%s pool: jit=%q, want off", name, got)
+		}
+	}
+	// Force the cost thresholds to zero in this session: had the pool left JIT on, the plan would now be compiled.
+	conn, err := e.A.db.Conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	for _, q := range []string{"SET jit_above_cost=0", "SET jit_inline_above_cost=0", "SET jit_optimize_above_cost=0"} {
+		if _, err = conn.ExecContext(t.Context(), q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows, err := conn.QueryContext(t.Context(), `EXPLAIN (ANALYZE, SUMMARY) SELECT o.id FROM orders o WHERE `+escrowStaffAlertCandidates("o.id")+` AND `+escrowStaffAlert("o.id"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var line string
+		if err = rows.Scan(&line); err != nil {
+			t.Fatal(err)
+		}
+		if strings.HasPrefix(strings.TrimSpace(line), "JIT:") {
+			t.Fatal("the escrow-alert query was JIT-compiled on the application pool")
+		}
+	}
+	if err = rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestAppPoolStatementTimeout(t *testing.T) {
 	e := newTestApp(t)
 	start := time.Now()
