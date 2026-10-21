@@ -119,12 +119,16 @@ market holds the wallet keys and builds, stores and sends every transaction itse
   settlement requested for more than 24 hours, and, past the 90 days, the administrators' notice that a retained
   wallet is kept. Resolving it by hand is **break-glass** (PAY66-7): wait by default, and never pay from other funds
   while the market can still send it. The wait lasts only after a deep reorganisation or a double spend, or a wallet
-  restore or rescan that lost the deposit; if the deposit is listed again, the market builds and sends it on its own.
+  restore or rescan that lost the deposit; if the deposit is listed again, the market builds and sends it, and if the
+  escrow wallet then refuses that build because a ring it stored for those coins predates the reorganisation, staff
+  are alerted and the operator follows the stale-ring break-glass (A-618).
   An administrator's re-request of a failed settlement spends exactly the coins of the transaction it replaces, so
   while a deposit those coins came from is no longer listed it waits the same way (*deposit-missing*), with no bounded
   wait (it has no other coins to build from), rather than failing *nothing-to-settle* while it still claims that
   deposit (A-614). Staff get one order note and notice each time it starts waiting; it builds and sends once the
-  wallet lists the deposit again, and it can never pay twice, because both transactions spend the same coins. A failed
+  wallet lists the deposit again, after the operator's stale-ring break-glass if the wallet refuses that build (the
+  deposit usually returns at a new global output index, and the wallet reuses the ring it stored, A-640), and it can
+  never pay twice, because both transactions spend the same coins. A failed
   settlement's refusal does not prove its stored transaction never reached the network (the wallet-rpc answers -4 for a
   lost connection to its daemon too), so it may be mined after its re-request was carried out (A-566, PAY66-3). Before
   a re-request is built, before its stored transaction is relayed, when the wallet's coins no longer match it, and

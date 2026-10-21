@@ -168,9 +168,11 @@ func xmrFlagNotePrefix(s *xmrSettleRow, class string, threshold int64) string {
 }
 
 // xmrReRequestMissingText is what the order page says of a re-request waiting with xmrWaitMissing (A-614): unlike a
-// release or refund it has no bounded wait, because it never builds from other coins.
+// release or refund it has no bounded wait, because it never builds from other coins. It promises no send without the
+// operator: after a reorganisation the deposit usually returns at a new global output index, and the wallet then refuses
+// every build ring-stale until the operator's stale-ring break-glass (A-618, A-640).
 const xmrReRequestMissingText = "A deposit this settlement spends is no longer listed by the escrow wallet (a reorganisation or a double spend took it out of the chain). " +
-	"This settlement pays the same destinations and amounts as the one it replaces, from exactly the same coins, so the market builds nothing until the wallet lists that deposit again, however long that takes; it then builds and sends it. Market staff were notified."
+	"This settlement pays the same destinations and amounts as the one it replaces, from exactly the same coins, so the market builds nothing until the wallet lists that deposit again, however long that takes; it then builds and sends it, after the operator's fix if the escrow wallet needs one. Market staff were notified."
 
 // xmrNoHandPay ends the text of a wait the market resolves itself once the operator has acted (A-618).
 const xmrNoHandPay = "Do not pay anything by hand for it, or it is paid twice."
