@@ -375,9 +375,13 @@ wallet takes an order again and no settlement is relayed until an administrator 
       available; the funding deposit is then taken out of the chain (`pop_blocks`, `flush_txpool`) and an
       administrator's re-request is carried out: the new settlement waits (*deposit-missing*), past twice the threshold
       in blocks too, with no `transfer` (A-614); once the same deposit transaction is mined again it spends exactly the
-      stored key images (the daemon's decoded inputs) to the stored plan, and it confirms. The wallet may first refuse
-      that build on a few passes (*wallet-refusing ring-stale*, A-618; leg 18), each refusal building and relaying
-      nothing.
+      stored key images (the daemon's decoded inputs) to the stored plan, relayed once, and it confirms. The deposit
+      comes back at another global output index, so the wallet builds it only when its decoy picker happens to draw
+      that index (A-639): on each of the first two passes the leg accepts that build, or a refusal that builds and
+      relays nothing (*wallet-refusing ring-stale*, then *wallet-refused ring-stale* flagged to staff, A-618; leg 18).
+      Still refused, it follows the operator guide's
+      [stale-ring break-glass](operator-guide.md#stale-ring-break-glass-a-618) (the guide's key image query, each key
+      image unspent, remedy A's precondition query 0, remedy A) and the next pass builds and relays it once.
   11. `TestXMREscrowRegtestRestore`: a restore (with `scripts/restore.sh`'s own Monero SQL) holds a built release, retires
       the free accounts and closes the wallet; the sweep finds a wallet created after the backup and seals it as an
       orphan; after an administrator's confirmation the held release is relayed once and confirms; the next checkout gets
