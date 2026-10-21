@@ -15,6 +15,17 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## A restore pause is shown to staff (A-559)
+
+No migration or setting. While a restore pauses Monero escrow (`ESCROW_XMR` on, and the restore gate
+`payments_recovery_required` or the restore sweep `xmr_escrow_sweep_required` set), `/admin` and `/moderator` show an alert naming what is paused,
+*Admin → Payments* flags it on the Monero escrow recovery view and *Escrow readiness* reads `intake: paused (restore)`.
+A Monero escrow checkout refused by the pause still answers 503, now on the refusal page with `Retry-After: 5` and no
+error reference; it is logged as `http paused kind=action name=/orders/escrow-xmr status=503 cause=restore-gate` (or
+`restore-sweep`) instead of an `http 5xx … cause=*market.httpError` line, so a log alert on `http 5xx` no longer fires on
+it, and it is no longer listed under *Recent server errors*. When the sweep completes while the gate is still set, each
+administrator is notified once. Clearing the gate is unchanged ([runbook](docs/testnet-runbook.md#clear-the-gate)).
+
 ## Marketplace browsing, selling capabilities and private case records
 
 Migrations 136–141 add listing taxonomy and additional shipping regions, independent vendor approval, order correspondence/replacement deliveries, order-bound dispute images, quantities and distinct digital inventory. Existing categories and primary shipping regions remain unchanged; new subcategories start blank. Existing vendors receive independent selling approval. Administrators derive verified selling access from their current role; moderator approval preserves moderation. Promoting an approved vendor to staff preserves selling; explicit Buyer assignment or selling revocation removes it and archives active listings.
@@ -2663,3 +2674,18 @@ Restore stays isolated and needs that current external retention state to reappl
 It retains all payout and reconciliation gates. If an old snapshot predates a replacement administrator, use the documented fresh-account/host-role recovery;
 do not revive erased credentials. An older binary refuses these migrations. Rolling back application code does not authorize restoring deleted data:
 follow section 5 together with the current retention manifest and preservation duties.
+
+## Native application-host bootstrap and portable configuration recovery
+
+Existing deployments change no host policy merely by upgrading the binary.
+Explicit `host` commands support the narrow Ubuntu profile described in
+[server bootstrap](docs/install/server-bootstrap.md); review existing SSH, firewall
+manager and boot/update configuration before use. Recovery export is an encrypted
+configuration copy, not a data backup. Restore preserves established keys and
+identities, starts nothing and clears old host storage proof for explicit
+rebinding; follow [configuration recovery](docs/install/recovery.md).
+
+The build toolchain is Go 1.27.3 (minimum supported Go 1.26.10), including the
+pinned container build image and development-tool modules. This includes the
+GO-2026-6809 crypto/x509 trust fix; rebuild binaries/images to receive the
+standard-library correction.

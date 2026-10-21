@@ -160,8 +160,14 @@ func purchaseGateLoader(ctx context.Context, a *App, _ *http.Request, d *PageDat
 // escrowReadinessLoader fills /admin's readiness panel for an escrow-only cutover.
 func escrowReadinessLoader(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
 	v := &EscrowReadinessView{Limit: readinessListLimit}
+	var restore bool // A-559: the restore gate or sweep refuses Monero escrow checkout (escrow_xmr_create.go) while it is on
+	if a.escrowXMR != nil {
+		if err := a.db.QueryRowContext(ctx, "SELECT "+restoreGateSQL+" OR EXISTS(SELECT 1 FROM settings WHERE key=$1 AND value='true')", xmrEscrowSweepKey).Scan(&restore); err != nil {
+			return err
+		}
+	}
 	for _, coin := range []string{"XMR"} {
-		c := ReadinessCoin{Currency: coin, Intake: d.Settings[paymentIntakeKey(coin)], EscrowOn: a.escrowOn(coin)}
+		c := ReadinessCoin{Currency: coin, Intake: d.Settings[paymentIntakeKey(coin)], EscrowOn: a.escrowOn(coin), Restore: restore}
 		switch {
 		case !c.EscrowOn || a.escrowReady(coin):
 		case coin == "XMR":

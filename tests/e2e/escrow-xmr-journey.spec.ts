@@ -458,11 +458,20 @@ test('Monero escrow administrator actions: re-request a failed settlement (A-401
 });
 
 test('Monero escrow paused after a restore: no checkout and no settlement until the operator finishes, then the sweep', async ({ browser, baseURL, request }, info) => {
+  const admin = await signIn(browser, baseURL, 'xmr_admin', password);
   const buyer = await signIn(browser, baseURL, 'xmr_buyer', buyerPassword);
   const vendor = await signIn(browser, baseURL, 'xmr_vendor', vendorPassword);
   const order = await funded(buyer, request, digitalTitle);
   setting('payments_recovery_required', true);
   try {
+    // A-559: staff see the pause, what it holds and what still runs.
+    await admin.goto('/admin');
+    await expect(admin.locator('#restore-paused')).toContainText('Monero escrow is paused after a restore from backup (the restore gate is set)');
+    await expect(admin.locator('#restore-paused')).toContainText('It still watches deposits and follows relayed settlements to their confirmations.');
+    await admin.goto('/admin/payments');
+    await expect(admin.locator('#xmr-restore-gate')).toContainText('Restore gate: set. Restore sweep: not pending.');
+    await expect(admin.locator('#escrow-readiness + ul')).toContainText('XMR escrow: on; intake: paused (restore).');
+    await shot(admin, info, 'g00-paused-admin');
     await draft(buyer, digitalTitle);
     await expect(buyer.locator('section.escrow-checkout .order-unavailable')).toContainText('Monero escrow is paused while this market restores its records from a backup');
     await expect(buyer.getByRole('button', { name: 'Pay into a Monero escrow' })).toHaveCount(0);
@@ -481,12 +490,17 @@ test('Monero escrow paused after a restore: no checkout and no settlement until 
     await buyer.reload();
     await expect(buyer.locator('section.escrow-checkout .order-unavailable')).toContainText('Monero escrow is paused until this market has checked its escrow wallets');
     await shot(buyer, info, 'g03-sweep-checkout');
+    await admin.goto('/admin');
+    await expect(admin.locator('#restore-paused')).toContainText('Monero escrow checkout is paused after a restore from backup until the market has checked its escrow wallets');
     await sentAndConfirmed(vendor, request, "The vendor's claim", info, 'g04-after-restore'); // settlements are not held by the sweep
   } finally {
     setting('xmr_escrow_sweep_required', false);
   }
   await buyer.reload();
   await expect(buyer.getByRole('button', { name: 'Pay into a Monero escrow' })).toBeVisible();
+  await admin.goto('/admin/payments');
+  await expect(admin.locator('#xmr-restore-gate')).toHaveCount(0);
+  await expect(admin.locator('#escrow-readiness + ul')).toContainText('XMR escrow: on; intake: escrow.');
 });
 
 test('Monero escrow switched off: the order page says so and offers no Monero escrow form', async ({ browser, baseURL, request }, info) => {
