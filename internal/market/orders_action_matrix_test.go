@@ -28,17 +28,47 @@ func TestHistoricalOrderActionMatrix(t *testing.T) {
 			t.Errorf("draft cancel as %q: %d want %d: %s", tc.session, w.Code, tc.want, w.Body)
 		}
 	}
+	// A paid Monero order without an escrow is historical and read-only. Each form is complete (confirmation, amount,
+	// delivery text, reason), so the status is the rule under test rather than form validation: a party is refused 409
+	// (read-only, or a step that does not start from paid) or 403 (the buyer delivering), an account that is not party
+	// gets the 404 the order page gives it, the role gate refuses /resolve to non-staff with 403, and the retired
+	// /orders/pay is an unknown action.
 	paid := e.order(buyer, product, "XMR", statePaid)
-	for _, route := range []string{"/orders/pay", "/orders/ship", "/orders/deliver", "/orders/complete", "/orders/cancel", "/disputes", "/resolve"} {
-		for _, session := range []string{bs, vs, other} {
-			f := url.Values{"order_id": {paid}, "from": {statePaid}, "reason": {"Historical dispute requires operator review."}}
-			if w := e.do("POST", route, session, f); w.Code == 303 {
-				t.Errorf("retired %s accepted historical paid order for %q", route, session)
+	const readOnly, stale = "Historical pooled orders are read-only", "This order changed or is no longer in that state."
+	type want struct {
+		code int
+		msg  string
+	}
+	notFound, staffOnly, unknown := want{404, "Order not found"}, want{403, "Moderator access required"}, want{404, "Unknown action"}
+	for _, tc := range []struct {
+		route                string
+		buyer, vendor, other want
+	}{
+		{"/orders/pay", unknown, unknown, unknown},
+		{"/orders/ship", want{409, readOnly}, want{409, readOnly}, notFound},
+		{"/orders/deliver", want{403, "You cannot make that change to this order."}, want{409, stale}, notFound},
+		{"/orders/complete", want{409, stale}, want{409, stale}, notFound},
+		{"/orders/cancel", want{409, readOnly}, want{409, readOnly}, notFound},
+		{"/disputes", want{409, readOnly}, want{409, readOnly}, notFound},
+		{"/resolve", staffOnly, staffOnly, staffOnly},
+	} {
+		for _, actor := range []struct {
+			name, session string
+			want          want
+		}{{"buyer", bs, tc.buyer}, {"vendor", vs, tc.vendor}, {"other", other, tc.other}} {
+			f := url.Values{"order_id": {paid}, "id": {paid}, "from": {statePaid}, "reason": {"Historical dispute requires operator review."},
+				"content": {"Historical delivery text."}, "payout_confirmed": {"confirmed"}, "amount_seen": {"100000"}}
+			w := e.do("POST", tc.route, actor.session, f)
+			if body := refusalText(w.Body.String()); w.Code != actor.want.code || !strings.Contains(body, actor.want.msg) {
+				t.Errorf("%s as %s on a historical paid order: %d %q, want %d %q", tc.route, actor.name, w.Code, body, actor.want.code, actor.want.msg)
 			}
 		}
 		if got := agStr(e, "SELECT state FROM orders WHERE id=$1", paid); got != statePaid {
-			t.Fatalf("%s changed historical order to %s", route, got)
+			t.Fatalf("%s changed historical order to %s", tc.route, got)
 		}
+	}
+	if n := agInt(e, "SELECT count(*) FROM order_events WHERE order_id=$1", paid); n != 0 {
+		t.Fatalf("refused actions wrote %d order events", n)
 	}
 }
 
