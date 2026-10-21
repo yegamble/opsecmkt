@@ -163,6 +163,8 @@ install -d -m 700 ./service-tls
   --key-out ./service-tls/gateway-client.key
 ```
 
+The upload transport CA must be dedicated: issue only the backend server certificate and the gateway client certificate under it. The backend accepts any client certificate from that CA that carries the clientAuth extended key usage, and refuses one without clientAuth or one that is itself a CA. Setup and server startup refuse an `UPLOAD_CA` that shares a certificate with `MONERO_RPC_CA` or `DATABASE_CA`.
+
 Transfer files over an authenticated encrypted connection:
 
 | Destination | Files |

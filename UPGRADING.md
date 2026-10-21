@@ -15,6 +15,17 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## The upload backend accepts only a clientAuth gateway certificate (A-589)
+
+No migration or setting. The private upload backend now answers 404 on every `/v1/uploads/*` route to a client
+certificate that lacks the clientAuth extended key usage or is a CA, even when it verifies against `UPLOAD_CA`. A gateway
+certificate issued with `opsecmkt keys generate tls-client` (as the [production guide](docs/install/production.md#3-prepare-application-and-gateway-identities)
+does) is unaffected. A gateway client certificate issued by another tool without clientAuth must be reissued with
+`keys generate tls-client` under the upload CA before upgrading the application; until then every upload fails.
+`opsecmkt deploy init`, `plan`, `install`, `up`, `doctor` and `redeploy`, and server startup, also refuse an `UPLOAD_CA` that shares a certificate with `MONERO_RPC_CA` or
+`DATABASE_CA` ("UPLOAD_CA must be a dedicated upload transport CA …"). Such an installation must issue a dedicated upload
+CA with new backend and gateway certificates; the guides already use a separate "Upload transport CA".
+
 ## A restore pause is shown to staff (A-559)
 
 No migration or setting. While a restore pauses Monero escrow (`ESCROW_XMR` on, and the restore gate

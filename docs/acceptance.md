@@ -64,6 +64,16 @@ Per-order escrow is the only payment path (A-448, A-492). Checks of payment code
   (`TestGatewayScannerReport`, `TestUploadGatewayScannerReportSender`,
   `TestIntegratedModeIgnoresGatewayScannerReport`; layout in `preview-scanner.spec.ts`
   at 320 and 1280 px). Simulated clamd and test PKI only; not a deployed gateway.
+- A-589: the upload backend answers 404 on every `/v1/uploads/*` route to a
+  client certificate that verifies against `UPLOAD_CA` but has no explicit
+  clientAuth extended key usage or is itself a CA, and still accepts the
+  `keys generate tls-client` gateway certificate
+  (`TestUploadBackendRefusesSameCAClientCertsWithoutGatewayRole`, real TLS).
+  Operator setup and server startup refuse an `UPLOAD_CA` sharing a certificate
+  with `MONERO_RPC_CA` or `DATABASE_CA`, naming only the keys
+  (`TestProductionRefusesUploadCASharedWithDatabaseOrMoneroCA`,
+  `TestUploadBackendRefusesSharedUploadCAAtStartup`). A same-CA clientAuth leaf
+  is still accepted: the CA must issue only the backend and gateway certificates.
 - `/admin/system` shows the market's own build version and commit, the monerod
   release from `get_info` (the RPC interface version from `get_version` on a
   restricted RPC) and monero-wallet-rpc's RPC interface version, labelled

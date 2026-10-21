@@ -591,20 +591,65 @@ func TestRedeployFailureRetainsDesiredImageWithoutRollback(t *testing.T) {
 
 func initProduction(t *testing.T) string {
 	t.Helper()
+	dir, args := productionInitArgs(t, "database-ca.pem")
+	if out, err := invoke(t, args...); err != nil {
+		t.Fatalf("init %v (%s)", err, out)
+	}
+	return dir
+}
+
+// productionInitArgs prepares production inputs. The database CA is its own
+// certificate ("database-ca.pem"); passing "ca.pem" reuses the upload CA.
+func productionInitArgs(t *testing.T, databaseCA string) (string, []string) {
+	t.Helper()
 	fakeEncryptedProductionHost(t)
 	inputs := t.TempDir()
 	cert, key := testTLSMaterial(t, false)
-	for name, body := range map[string][]byte{"database.url": []byte("postgres://market:dedicated-password@db.internal/market?sslmode=verify-full"), "ca.pem": cert, "server.pem": cert, "server.key": key} {
+	dbCA, _ := testTLSMaterial(t, false)
+	for name, body := range map[string][]byte{"database.url": []byte("postgres://market:dedicated-password@db.internal/market?sslmode=verify-full"), "ca.pem": cert, "database-ca.pem": dbCA, "server.pem": cert, "server.key": key} {
 		if err := os.WriteFile(filepath.Join(inputs, name), body, 0600); err != nil {
 			t.Fatal(err)
 		}
 	}
 	dir := filepath.Join(t.TempDir(), "production")
-	args := []string{"init", "--dir", dir, "--mode", "prod", "--app-image", testImage, "--app-host", "app.internal", "--gateway-url", "https://gateway.internal", "--database-url-file", filepath.Join(inputs, "database.url"), "--database-ca", filepath.Join(inputs, "ca.pem"), "--tls-cert", filepath.Join(inputs, "server.pem"), "--tls-key", filepath.Join(inputs, "server.key"), "--upload-ca", filepath.Join(inputs, "ca.pem"), "--upload-cert", filepath.Join(inputs, "server.pem"), "--upload-key", filepath.Join(inputs, "server.key")}
-	if out, err := invoke(t, args...); err != nil {
-		t.Fatalf("init %v (%s)", err, out)
+	return dir, []string{"init", "--dir", dir, "--mode", "prod", "--app-image", testImage, "--app-host", "app.internal", "--gateway-url", "https://gateway.internal", "--database-url-file", filepath.Join(inputs, "database.url"), "--database-ca", filepath.Join(inputs, databaseCA), "--tls-cert", filepath.Join(inputs, "server.pem"), "--tls-key", filepath.Join(inputs, "server.key"), "--upload-ca", filepath.Join(inputs, "ca.pem"), "--upload-cert", filepath.Join(inputs, "server.pem"), "--upload-key", filepath.Join(inputs, "server.key")}
+}
+
+// A-589: UPLOAD_CA must be dedicated to the upload backend and gateway. Setup
+// refuses one that shares a certificate with the database CA, and validation
+// refuses a share with MONERO_RPC_CA too (including inside a bundle), naming
+// the keys and never the file contents.
+func TestProductionRefusesUploadCASharedWithDatabaseOrMoneroCA(t *testing.T) {
+	dir, args := productionInitArgs(t, "ca.pem")
+	out, err := invoke(t, args...)
+	if err == nil || err.Error() != errSharedUploadCA.Error() || strings.Contains(out+err.Error(), "BEGIN CERTIFICATE") {
+		t.Fatalf("shared upload/database CA: %v (%s)", err, out)
 	}
-	return dir
+	if _, statErr := os.Stat(dir); !os.IsNotExist(statErr) {
+		t.Fatal("refused setup left an installation behind")
+	}
+
+	upload, _ := testTLSMaterial(t, false)
+	other, _ := testTLSMaterial(t, false)
+	unrelated, _ := testTLSMaterial(t, false)
+	bundle := append(append([]byte{}, other...), upload...)
+	for _, tc := range []struct {
+		name            string
+		upload, monero  []byte
+		database        []byte
+		wantSharedError bool
+	}{
+		{"monero shares a bundle member", bundle, upload, nil, true},
+		{"database shares a bundle member", bundle, nil, other, true},
+		{"database bundle shares one member", upload, nil, append(append([]byte{}, unrelated...), upload...), true},
+		{"dedicated upload CA", bundle, unrelated, unrelated, false},
+		{"no upload CA", nil, upload, upload, false},
+	} {
+		err := RefuseSharedUploadCA(tc.upload, tc.monero, tc.database)
+		if tc.wantSharedError != (err == errSharedUploadCA) || !tc.wantSharedError && err != nil {
+			t.Errorf("%s: %v", tc.name, err)
+		}
+	}
 }
 
 func TestProductionInitializationAndPlanPreserveRemoteTLSAndPins(t *testing.T) {
