@@ -303,6 +303,7 @@ docker volume rm "${project}_tor_admin_identity" >/dev/null
 # No log driver keeps the key bytes: the archive member and key-comparison containers, rerun here without --rm,
 # are configured with --log-driver none and docker logs has nothing from them.
 age -d -i "$work/identity.txt" "$deployment/$mirror_file" > "$work/plain.tar"
+logged=0
 (
   # shellcheck source=scripts/install.sh
   source scripts/install.sh
@@ -325,12 +326,16 @@ age -d -i "$work/identity.txt" "$deployment/$mirror_file" > "$work/plain.tar"
   status=0
   onion_key_in_volume "$project-tor" "${project}_tor_identity" || status=$?
   [[ $status == 1 ]] || fail "the key comparison returned $status, expected 1 (a different key)"
-)
+) || logged=$?
+# Every container it created goes to the exit trap first, whatever failed.
+for cid in "$work"/cid-*; do
+  if [[ -s $cid ]]; then containers+=("$(cat "$cid")"); fi
+done
+((logged == 0)) || fail 'the log-driver check failed (the message above says why)'
 inspected=0
 for cid in "$work"/cid-*; do
   inspected=$((inspected + 1))
   container=$(cat "$cid")
-  containers+=("$container")
   [[ $(docker inspect -f '{{.HostConfig.LogConfig.Type}}' "$container") == none ]] || fail "container $container keeps logs"
   [[ -z $(docker logs "$container" 2>/dev/null) ]] || fail "docker logs shows output of $container"
   docker rm -f "$container" >/dev/null  # no -v: the Tor image declares no VOLUME; named volumes go in the trap
