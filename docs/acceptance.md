@@ -632,3 +632,14 @@ A database from an older release with payment history this build does not suppor
 ## Release evidence
 
 Record `go test ./...`, relevant race tests, fresh-install and persistence results, internal/external database checks, setup lockout/CSRF/authorization negative tests, backup-restore results, and browser checks. Mark deployment or payment checks unverified when they were not exercised. A passing build alone is not evidence of secure deployment or payment functionality.
+
+## Native host bootstrap and configuration recovery
+
+- [ ] Supported-host apply/confirm/rollback and pending boot are rehearsed with fresh
+  allowed/denied SSH, gateway mTLS and actual Docker forwarding on every public
+  address; independent public/private Tor clients pass. Automated inventory,
+  rendering and refusal tests do not complete this deployment gate.
+- [ ] A replacement production app host restores retained configuration, identities
+  and current external retention state on verified encrypted storage, rebinds
+  explicitly, installs against retained services, and passes isolated restore and
+  locked-boot checks. Configuration-bundle roundtrip tests are partial evidence.

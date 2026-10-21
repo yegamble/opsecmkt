@@ -2674,3 +2674,18 @@ Restore stays isolated and needs that current external retention state to reappl
 It retains all payout and reconciliation gates. If an old snapshot predates a replacement administrator, use the documented fresh-account/host-role recovery;
 do not revive erased credentials. An older binary refuses these migrations. Rolling back application code does not authorize restoring deleted data:
 follow section 5 together with the current retention manifest and preservation duties.
+
+## Native application-host bootstrap and portable configuration recovery
+
+Existing deployments change no host policy merely by upgrading the binary.
+Explicit `host` commands support the narrow Ubuntu profile described in
+[server bootstrap](docs/install/server-bootstrap.md); review existing SSH, firewall
+manager and boot/update configuration before use. Recovery export is an encrypted
+configuration copy, not a data backup. Restore preserves established keys and
+identities, starts nothing and clears old host storage proof for explicit
+rebinding; follow [configuration recovery](docs/install/recovery.md).
+
+The build toolchain is Go 1.27.3 (minimum supported Go 1.26.10), including the
+pinned container build image and development-tool modules. This includes the
+GO-2026-6809 crypto/x509 trust fix; rebuild binaries/images to receive the
+standard-library correction.

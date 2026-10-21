@@ -1767,3 +1767,45 @@ DECISION A-618: ACCEPT, P2.
 ```
 
 Outcome: R1–R5 implemented in #112. R4 reproduced the refusal on its first pass in all 4 runs (6 deposits, so a self-rescue needs every input to draw its new index; simulated about 1 in 130,000). R5's condition held: the wire answer is -4 with exactly "Daemon response did not include the requested real output", so `ring-stale` was implemented. Verification (infrastructure seat) found two SHOULDs fixed in the PR: remedy B names the uid-1000 user, and remedy A names the native deploy layout. #114 adds remedy A's privacy cost (a coin re-spent with a different ring than one already seen lets an observer intersect them) and a precondition query: use remedy A only when no other settlement may be built again, otherwise remedy B.
+
+## 2026-10-20 native application-host bootstrap and configuration recovery
+
+Owner-authorized scope: reusable native app-host firewall/security setup, encrypted
+configuration/key recovery, review, merge and push to main. Three read-only seats:
+infrastructure, application security, Tor/privacy. One recovery implementer plus
+the integrating chair; existing seats reused for fix verification.
+
+| ID | Ruling | Acceptance criteria | Status |
+|---|---|---|---|
+| BOOT-20261020-1 | ACCEPT narrow Ubuntu 24.04 static-network application-host bootstrap | Versioned recipe; exact IPv4/IPv6 operator sources; gateway-only private app flows; Docker DNAT/original-destination guard; owned table only; bounded snapshots; timed/pending-boot rollback and fresh SSH confirmation; fail closed before Docker and SSH activation | implemented; infrastructure/security/Tor source rechecks closed; 11 real isolated IPv4/IPv6 INPUT/DNAT/direct-route cases passed; full hosted CI pending |
+| BOOT-20261020-2 | ACCEPT encrypted native configuration recovery | Bounded authenticated-encryption archive; strict hashes/paths/JSON; private atomic fresh publication; byte-preserved keys/TLS/public/admin onion identities; explicit production fencing/encrypted storage/rebinding; no service start | implemented; independent security/Tor required findings closed; full data/host recovery is separate |
+
+Required findings reproduced or established against the source and fixed:
+missing-parent snapshot handling; unreadable oversized rollback snapshots;
+name-only Docker interface exemptions; skipped mandatory boot policy; confirmation
+of changed rules/files; SSH service/socket exposure on firewall boot failure;
+expired TLS/public PGP keys preventing long-lived archive recovery. Regression
+coverage accompanies these changes. Normal service-start validity checks remain.
+
+DECLINED: global ruleset flushes, automatic SSH rewriting, provider provisioning,
+remote worker rebuilding, visitor-IP allowlists for onion users, public-web
+fallback, identity regeneration and online private recovery keys. These enlarge
+privileged scope or break the existing recovery/security boundaries.
+
+Evidence remains explicitly tiered: unit/race and isolated packet-policy tests
+cannot establish actual systemd timer execution, fresh SSH authentication, failed-
+policy/locked reboot, independent onion reachability or whole-service/wallet
+recovery. Those deployment acceptance gates remain unchecked in the guides.
+
+Bootstrap local verification: `make go-quality` passed (zero lint issues);
+402 Python tests passed; affected operator/ramsecrets/CLI race tests passed;
+all hostbootstrap tests passed inside Ubuntu 24.04 (including actual root-owned
+path checks), and the isolated packet fixture passed all 11 cases. The larger
+PostgreSQL race matrix and hosted CI are tracked separately; an initial local
+hostcontrol Unix-socket path exceeded Linux's pathname limit under a long TMPDIR
+and passed when rerun with short persistent TMPDIR `/workspace/t`.
+
+Hosted CI initially blocked on newly reported GO-2026-6809 in Go 1.27.2
+(`crypto/x509`, including existing keymaterial tests). Updated the pinned
+toolchain/build image to Go 1.27.3 and supported minimum to Go 1.26.10 rather
+than weakening the vulnerability gate. Final CI supersedes that initial run.

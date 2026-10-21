@@ -78,6 +78,8 @@ nav:
       - Requirements: install/requirements.md
       - Production deployment: install/production.md
       - Server hardening: install/server-hardening.md
+      - Native app-host bootstrap: install/server-bootstrap.md
+      - Application configuration recovery: install/recovery.md
       - Native binary and separated services: install/binary.md
       - Service topology and sizing: install/service-topology.md
       - RAM secrets and emergency response: install/ram-secrets-and-emergency.md
