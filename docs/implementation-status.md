@@ -35,7 +35,9 @@ retains existing service references for application-only redeployment; see
 
 Optional Tor administrator ingress uses a separate Unix HTTP socket and a
 client-authorized admin onion; when enabled, the public listener refuses setup,
-administrative endpoints and administrator sessions, and the private ingress
+administrative endpoints and administrator sessions (an administrator's sign-in
+there gets the wrong-password refusal and budget spend whether the password is
+right or not, A-611), and the private ingress
 keeps its own sign-in, code, PGP and confirmation budgets and admission
 classes, so public traffic cannot pause or refuse an administrator's sign-in
 there, by password, TOTP or PGP (A-570). Uploads still share their limits. `AUDIT_EXPORT_RECIPIENT`

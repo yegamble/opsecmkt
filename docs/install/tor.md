@@ -300,8 +300,11 @@ client authorization. It forwards to a Unix HTTP socket shared only by `app`
 and `tor-admin`. The storefront and public mirrors continue to use `app:8080`;
 that listener refuses `/setup`, `/admin*`, other administrator-only actions,
 administrator sign-in and authenticated administrator requests on shared staff
-routes. Moderator accounts retain their public staff routes. Headers and host
-names cannot select the private listener. Sign-in through the private onion has
+routes. An administrator's sign-in on the public listener gets the same "Invalid
+handle or password" refusal as a wrong password, whether the password is right
+or not, and spends the same sign-in budget, so the storefront never confirms an
+administrator's password (A-611). Moderator accounts retain their public staff
+routes. Headers and host names cannot select the private listener. Sign-in through the private onion has
 its own failed-password, authenticator-code and PGP-code budgets and admission
 limits, so failures and floods on the public onion cannot pause or refuse it
 (A-570; uploads still share their limits; see the

@@ -68,6 +68,8 @@ Before inviting operators, verify both cases with separate Tor clients:
    onion in `Host` or send `X-Tor-Onion-Role: admin`.
 4. An administrator session presented to the public listener receives 404 on
    shared staff routes; a moderator's ordinary dispute workflow still works.
+   An administrator signing in on the public onion gets "Invalid handle or
+   password" with the right password, exactly as with a wrong one (A-611).
 
 The Tor service must refuse startup with an empty or malformed allowlist,
 including a file named only `.auth`. It reads a validated snapshot in its own
