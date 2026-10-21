@@ -81,8 +81,21 @@ func (a *App) xmrSettlementViews(ctx context.Context, d *PageData, v *XMREscrowO
 	admin := staffAdmin && a.escrowXMR != nil
 	// offered: the kinds of administrator form on the page, in xmrSettlementActions' order, for the staff help.
 	var offered [4]bool
+	byID := map[int64]*XMRSettlementView{}
+	for _, s := range out {
+		byID[s.ID] = s
+	}
 	for _, s := range out {
 		a.xmrSettlementStatus(s, o, outcome, v)
+		if s.state == "superseded" && s.SupersededBy == 0 && s.Supersedes != 0 {
+			// A re-request closed because a transaction it supersedes reached the network after all (A-566).
+			for e := byID[s.Supersedes]; e != nil; e = byID[e.Supersedes] {
+				if e.state != "superseded" {
+					s.Status = xmrClosedBy(e.ID, s.stored)
+					break
+				}
+			}
+		}
 		if s.stored {
 			if err = a.xmrSettlementOutputs(ctx, s, d.OrderViewer); err != nil {
 				return nil, err
@@ -203,18 +216,22 @@ func (a *App) xmrSettlementStatus(s *XMRSettlementView, o *Order, outcome string
 	case "failed":
 		s.Status = "Not sent. " + why
 		if s.stored {
-			s.Status = "Not sent: transaction " + s.TxHash + " was built and stored but never mined. " + why
+			s.Status = "Failed: transaction " + s.TxHash + " was built and stored, and the market has not seen it mined. " + why
 		}
 	case "superseded":
 		s.Status = "Superseded: a changed dispute decision replaced it before it was built."
 		if s.stored {
-			s.Status = "Superseded by settlement " + strconv.FormatInt(s.SupersededBy, 10) + " after an administrator's re-request: its stored transaction " + s.TxHash + " was never mined, and spends the same coins as the one that replaced it, so at most one of them can be."
+			s.Status = "Superseded by settlement " + strconv.FormatInt(s.SupersededBy, 10) + " after an administrator's re-request: its stored transaction " + s.TxHash + " had not been seen mined, and spends the same coins as the one that replaced it, so at most one of them can be."
 		}
 	default:
 		s.Status = s.state
 	}
 	if s.Supersedes != 0 {
 		s.Status += " It re-requests settlement " + strconv.FormatInt(s.Supersedes, 10) + ": the same coins, to the same destinations."
+	}
+	if s.SupersededBy != 0 && (s.state == "relayed" || s.state == "confirmed") {
+		s.Status += " An administrator's re-request (settlement " + strconv.FormatInt(s.SupersededBy, 10) + ") had replaced it, but this transaction " +
+			supersededSentPhrase + ", so that re-request was closed and this one pays."
 	}
 	if s.state != "relayed" && s.state != "confirmed" && s.state != "external" && s.state != "failed" && s.state != "superseded" {
 		s.TxHash = "" // not sent yet
