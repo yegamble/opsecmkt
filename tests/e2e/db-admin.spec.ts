@@ -128,17 +128,21 @@ test('promoting a buyer to vendor opens the vendor desk; the listing form shows 
     if (fields.delivery) await vendor.getByLabel('Reusable download content').fill(fields.delivery);
     return submitStatus(vendor, () => vendor.getByRole('button', { name: 'Publish listing ↗' }).click());
   };
-  // Thirteen decimal places exceed Monero precision. The refusal names the field and keeps the typed text (A-514).
+  // Thirteen decimal places exceed Monero precision. The refused form comes back with the typed text and the
+  // problem next to its field (A-514, A-59).
   expect(await publish({ title, xmr: '0.1234567890123' })).toBe(400);
-  await expect(vendor.getByRole('alert')).toHaveText('Monero price: use a positive amount with at most 12 decimal places.');
+  await expect(vendor.getByRole('alert')).toHaveText('The listing was not published; nothing was saved. Monero price: use a positive amount with at most 12 decimal places.');
   await expect(vendor.getByLabel('Description', { exact: true })).toHaveValue('Listing validation regression.');
   await expect(vendor.getByLabel('Listing title', { exact: true })).toHaveValue(title);
-  await expect(vendor.getByRole('link', { name: 'Back to Vendor Dashboard' })).toHaveAttribute('href', '/vendor-dashboard');
+  await expect(vendor.locator('#lf-price_xmr-error')).toHaveText('Monero price: use a positive amount with at most 12 decimal places.');
   // Whitespace passes the browser's minlength but not the server's trimmed title check.
   expect(await publish({ title: '     ', xmr: '0.5' })).toBe(400);
-  await expect(vendor.getByRole('alert')).toHaveText('Listing title: use 3 to 140 characters.');
+  await expect(vendor.locator('#lf-title-error')).toHaveText('Listing title: enter at least 3 characters.');
+  // The reusable download content is a delivery secret: named, but never filled in again.
   expect(await publish({ title, xmr: '0.5', delivery: 'secret-download-link' })).toBe(400);
-  await expect(vendor.getByRole('alert')).toHaveText('Automatic delivery content is only available for digital listings.');
+  await expect(vendor.locator('#lf-delivery_content-error')).toHaveText('Reusable download content: only a digital listing can have it. Clear it, or choose Digital as the fulfillment type.');
+  await expect(vendor.getByLabel('Reusable download content')).toHaveValue('');
+  await expect(vendor.locator('main')).not.toContainText('secret-download-link');
   await vendor.goto('/vendor-dashboard');
   await expect(vendor.getByText('You have not published any listings yet.')).toBeVisible();
 
@@ -163,7 +167,8 @@ test('promoting a buyer to vendor opens the vendor desk; the listing form shows 
   await expect(vendor.getByLabel('Stock')).toHaveValue('5');
   await vendor.getByLabel('Price (XMR)').fill('0.1234567890123');
   expect(await submitStatus(vendor, () => vendor.getByRole('button', { name: 'Save changes' }).click())).toBe(400);
-  await expect(vendor.getByRole('alert')).toHaveText('Monero price: use a positive amount with at most 12 decimal places.');
+  await expect(vendor.getByRole('alert')).toHaveText('The changes were not saved. Monero price: use a positive amount with at most 12 decimal places.');
+  await expect(vendor.getByLabel('Price (XMR)')).toHaveValue('0.1234567890123');
   await vendor.goto(editURL);
   await expect(vendor.getByLabel('Price (XMR)')).toHaveValue(/^0\.5/);
   await vendor.context().close();

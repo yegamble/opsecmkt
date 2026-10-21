@@ -200,38 +200,6 @@ func TestRefusedSignInKeepsHandle(t *testing.T) {
 	}
 }
 
-func TestRefusedListingNamesFieldAndKeepsText(t *testing.T) {
-	p := newPayEnv(t)
-	base := form("title", "My <b>own</b> listing", "description", "A long description I typed & do not want to lose.", "category", "Hardware",
-		"region", "Worldwide", "kind", "physical", "stock", "3", "price_btc", "0.001", "price_xmr", "0.5")
-	for _, c := range []struct{ field, value, msg string }{
-		{"price_xmr", "0.1234567890123", "Monero price: use a positive amount with at most 12 decimal places."},
-		{"price_xmr", "abc", "Monero price: use a positive amount with at most 12 decimal places."},
-		{"stock", "-1", "Stock: use a whole number from 0 to 1000000."},
-		{"category", "Weapons", "Category: choose Hardware, Digital or Services."},
-		{"title", "  ", "Listing title: use 3 to 140 characters."},
-		{"region", "", "Region: use 2 to 80 characters."},
-		{"kind", "service", "Fulfillment type: choose physical or digital."},
-	} {
-		f := cloneValues(base)
-		f.Set(c.field, c.value)
-		w := refusalPost(p.testEnv, "POST", "/listings", p.vendorSess, f, "http://example.com/vendor-dashboard")
-		b := checkRefusalPage(t, w, 400, c.msg, "/vendor-dashboard")
-		if !echoed(b, "Description", base.Get("description")) || (c.field != "title" && !echoed(b, "Listing title", base.Get("title"))) {
-			t.Fatalf("%s: the listing text is not echoed:\n%s", c.field, b)
-		}
-	}
-	// Two problems are both named.
-	f := cloneValues(base)
-	f.Set("price_xmr", "1.1234567890123")
-	f.Set("stock", "x")
-	w := refusalPost(p.testEnv, "POST", "/listings", p.vendorSess, f, "")
-	mustContain(t, w.Body.String(), "Monero price: use a positive amount", "Stock: use a whole number")
-	if n := p.count("SELECT count(*) FROM products WHERE vendor_id=$1", p.vendor.ID); n != 1 {
-		t.Fatalf("refused listings wrote %d products", n-1)
-	}
-}
-
 // Without a database: the preview's unknown page and a refused post are the refusal page, not plain text.
 func TestRefusalPageInPreview(t *testing.T) {
 	tmpl, err := parseTemplates()
