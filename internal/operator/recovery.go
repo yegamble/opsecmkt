@@ -17,6 +17,8 @@ import (
 	"strings"
 
 	"opsecmkt/internal/ramsecrets"
+
+	"github.com/ProtonMail/go-crypto/openpgp"
 )
 
 var recoveryCheckPersistent = checkRecoveryPersistent
@@ -450,9 +452,28 @@ func recoveryUniqueJSON(data []byte) error {
 	return nil
 }
 
-// Recovery preserves certificates across their expiry date. Deployment's normal
-// material gate still refuses to start with expired or not-yet-valid leaves.
+// Recovery preserves configured public keys and certificates across expiry.
+// Deployment retains its current encryption-usability and TLS validity gates.
 func validateRecoveryMaterial(dir string, c Config) error {
+	originalPublic := c.PublicFiles
+	c.PublicFiles = map[string]string{}
+	for key, path := range originalPublic {
+		if key == "DEPENDENCY_REPORT_PUBLIC_KEY" {
+			c.PublicFiles[key] = path
+			continue
+		}
+		full, err := managedPath(dir, path)
+		if err != nil {
+			return err
+		}
+		data, err := privateFile(full, 64<<10)
+		if err != nil {
+			return err
+		}
+		if err := validateRecoveryPublicKey(data); err != nil {
+			return err
+		}
+	}
 	original := c.TLSFiles
 	c.TLSFiles = map[string]string{}
 	for _, key := range []string{"UPLOAD_CA", "MONERO_RPC_CA", "DATABASE_CA"} {
@@ -501,4 +522,27 @@ func validateRecoveryConfig(dir string, c Config) error {
 		c.DependencyReportDir = dir
 	}
 	return validate(dir, c)
+}
+
+// Check packet structure and private-key absence without selecting a currently
+// usable encryption key: archived configured keys may have expired since export.
+func validateRecoveryPublicKey(data []byte) error {
+	text := strings.TrimSpace(string(data))
+	if strings.Contains(text, "PRIVATE KEY") || strings.Count(text, "-----BEGIN PGP PUBLIC KEY BLOCK-----") != 1 || !strings.HasPrefix(text, "-----BEGIN PGP PUBLIC KEY BLOCK-----") || !strings.HasSuffix(text, "-----END PGP PUBLIC KEY BLOCK-----") {
+		return errors.New("recovery: configured PGP material must contain exactly one armored public key")
+	}
+	entities, err := openpgp.ReadArmoredKeyRing(strings.NewReader(text))
+	if err != nil || len(entities) != 1 {
+		return errors.New("recovery: configured OpenPGP public key is malformed")
+	}
+	entity := entities[0]
+	if entity.PrivateKey != nil {
+		return errors.New("recovery: configured PGP private key packets are refused")
+	}
+	for _, sub := range entity.Subkeys {
+		if sub.PrivateKey != nil {
+			return errors.New("recovery: configured PGP private subkey packets are refused")
+		}
+	}
+	return nil
 }

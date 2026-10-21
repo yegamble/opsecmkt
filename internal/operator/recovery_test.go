@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"opsecmkt/internal/ramsecrets"
 
@@ -422,5 +423,117 @@ func TestRecoveryPreservesExcludedWorkerReferenceBeforeWorkerIsRestored(t *testi
 	}
 	if _, err := loadConfig(target); err == nil {
 		t.Fatal("normal install validation ignored missing worker reference")
+	}
+}
+
+func TestRecoveryPreservesExpiredConfiguredPublicPGPWithoutWeakeningDeploy(t *testing.T) {
+	allowRecoveryFilesystem(t)
+	key, err := openpgp.NewEntity("expired configured recipient", "", "", &packet.Config{Algorithm: packet.PubKeyAlgoEdDSA, Time: func() time.Time { return time.Now().Add(-2 * time.Hour) }, KeyLifetimeSecs: 3600})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var public bytes.Buffer
+	w, err := armor.Encode(&public, openpgp.PublicKeyType, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := key.Serialize(w); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := key.EncryptionKey(time.Now()); ok {
+		t.Fatal("fixture encryption key did not expire")
+	}
+	source := initDev(t)
+	c, err := loadConfig(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.PublicFiles = map[string]string{"AUDIT_EXPORT_RECIPIENT": "secrets/expired-recipient.asc", "ESCROW_XMR_SEED_KEY": "secrets/expired-recipient.asc"}
+	if err := os.WriteFile(filepath.Join(source, "secrets/expired-recipient.asc"), public.Bytes(), 0600); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := json.Marshal(c)
+	if err := os.WriteFile(filepath.Join(source, "operator.json"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	plain, _ := recoveryExport(t, source)
+	target := filepath.Join(t.TempDir(), "restored")
+	if _, err := recoveryInvoke(plain, "restore", "--dir", target); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(target, "secrets/expired-recipient.asc"))
+	if err != nil || !bytes.Equal(got, public.Bytes()) {
+		t.Fatal("configured expired public key changed during recovery")
+	}
+	restored, err := loadConfig(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateMaterial(target, restored); err == nil || !strings.Contains(err.Error(), "currently usable") {
+		t.Fatalf("normal deployment accepted expired recipient: %v", err)
+	}
+}
+
+func TestRecoveryRefusesMalformedAndConcealedPrivateConfiguredPGP(t *testing.T) {
+	allowRecoveryFilesystem(t)
+	key, publicPath := recoveryKey(t)
+	public, err := os.ReadFile(publicPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var concealed bytes.Buffer
+	w, err := armor.Encode(&concealed, openpgp.PublicKeyType, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := key.SerializePrivate(w, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	source := initDev(t)
+	c, err := loadConfig(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.PublicFiles = map[string]string{"AUDIT_EXPORT_RECIPIENT": "secrets/recipient.asc"}
+	if err := os.WriteFile(filepath.Join(source, "secrets/recipient.asc"), public, 0600); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := json.Marshal(c)
+	if err := os.WriteFile(filepath.Join(source, "operator.json"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	plain, _ := recoveryExport(t, source)
+	for name, invalid := range map[string][]byte{"malformed": []byte("not a PGP key"), "private packets in public armor": concealed.Bytes(), "multiple keys": append(append([]byte{}, public...), public...)} {
+		t.Run(name, func(t *testing.T) {
+			var d recoveryDocument
+			if err := json.Unmarshal(plain, &d); err != nil {
+				t.Fatal(err)
+			}
+			mutateRecoveryBundle(t, &d, func(b *ramsecrets.Bundle) {
+				for i := range b.Files {
+					if b.Files[i].Path == "secrets/recipient.asc" {
+						b.Files[i].Data = invalid
+					}
+				}
+			})
+			encoded, _ := json.Marshal(d)
+			assertRecoveryRefusal(t, encoded)
+			if err := os.WriteFile(filepath.Join(source, "secrets/recipient.asc"), invalid, 0600); err != nil {
+				t.Fatal(err)
+			}
+			target := filepath.Join(t.TempDir(), "refused-export")
+			if _, err := recoveryInvoke(nil, "export", "--dir", source, "--recipient-public-key", publicPath, "--out", target); err == nil {
+				t.Fatal("export accepted invalid configured PGP")
+			}
+			if _, err := os.Lstat(target); !os.IsNotExist(err) {
+				t.Fatal("failed export created archive")
+			}
+		})
 	}
 }
