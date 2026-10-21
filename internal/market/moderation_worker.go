@@ -99,13 +99,18 @@ func SetModerationEnabled(ctx context.Context, db *sql.DB, enabled bool) error {
 			return err
 		}
 		// No worker pass will expire per-actor share windows while capture is
-		// off; they are meaningless then, so none outlives the switch.
+		// off; they are meaningless then, so no daily count outlives the switch.
+		// Rows that still track waiting markers or a pending rescan keep only
+		// that state, so re-enabling capture loses no refused target.
 		var counters bool
 		if err = tx.QueryRowContext(ctx, `SELECT to_regclass('moderation_actor_allocations') IS NOT NULL`).Scan(&counters); err != nil {
 			return err
 		}
 		if counters {
-			if _, err = tx.ExecContext(ctx, `DELETE FROM moderation_actor_allocations`); err != nil {
+			if _, err = tx.ExecContext(ctx, `DELETE FROM moderation_actor_allocations WHERE markers=0 AND NOT rescan`); err != nil {
+				return err
+			}
+			if _, err = tx.ExecContext(ctx, `UPDATE moderation_actor_allocations SET allocations=0`); err != nil {
 				return err
 			}
 		}

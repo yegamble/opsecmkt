@@ -563,20 +563,22 @@ func TestModerationLegacyStaleReplaySkipsRecapturedRevision(t *testing.T) {
 	}
 }
 
-// moderationDrain runs worker passes until the queue and the backfill markers
-// are both empty, failing if they never are.
+// moderationDrain runs worker passes until the queue, the active backfill
+// markers and every actor rescan are empty, failing if they never are. Markers
+// parked behind an archived or hidden source are not active work.
 func moderationDrain(t *testing.T, e *testEnv, w *ModerationWorker) {
 	t.Helper()
-	for range 20 {
+	const active = `SELECT (SELECT count(*) FROM moderation_backfill WHERE NOT parked)+(SELECT count(*) FROM moderation_actor_allocations WHERE rescan)+(SELECT count(*) FROM moderation_jobs WHERE completed_at IS NULL)`
+	for range 40 {
 		n, err := w.Pass(t.Context(), 20)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if n == 0 && agInt(e, `SELECT count(*) FROM moderation_backfill`) == 0 && agInt(e, `SELECT count(*) FROM moderation_jobs WHERE completed_at IS NULL`) == 0 {
+		if n == 0 && agInt(e, active) == 0 {
 			return
 		}
 	}
-	t.Fatalf("moderation did not drain: pending=%d markers=%d", agInt(e, `SELECT count(*) FROM moderation_jobs WHERE completed_at IS NULL`), agInt(e, `SELECT count(*) FROM moderation_backfill`))
+	t.Fatalf("moderation did not drain: pending=%d markers=%d rescans=%d", agInt(e, `SELECT count(*) FROM moderation_jobs WHERE completed_at IS NULL`), agInt(e, `SELECT count(*) FROM moderation_backfill WHERE NOT parked`), agInt(e, `SELECT count(*) FROM moderation_actor_allocations WHERE rescan`))
 }
 
 const moderationScamText = "pay me directly for guaranteed profit"
@@ -754,8 +756,13 @@ func TestModerationBackfillCoalescesAndDropsDeletedSource(t *testing.T) {
 	if got := agInt(e, `SELECT allocated_records FROM moderation_capacity`); got != 2 {
 		t.Fatalf("allocations=%d want 2 (no allocation for dropped sources)", got)
 	}
-	if agInt(e, `SELECT count(*) FROM moderation_backfill`) != 0 || agInt(e, `SELECT backfill FROM moderation_capacity`) != 0 {
-		t.Fatal("dropped markers or counter remained")
+	// A deleted source loses its marker; an archived one keeps it, parked, so a
+	// restore is still captured.
+	if agInt(e, `SELECT count(*) FROM moderation_backfill WHERE target_id=$1`, removed) != 0 {
+		t.Fatal("deleted source kept its marker")
+	}
+	if agInt(e, `SELECT count(*) FROM moderation_backfill WHERE target_id=$1 AND parked`, archived) != 1 || agInt(e, `SELECT backfill FROM moderation_capacity`) != 1 {
+		t.Fatal("archived source did not keep exactly one parked marker")
 	}
 }
 
@@ -965,7 +972,7 @@ func TestModerationActorShareOfLifetimeBudget(t *testing.T) {
 	if got := agInt(e, `SELECT count(*) FROM moderation_actor_allocations`); got != 0 {
 		t.Fatalf("disabled capture kept %d actor windows", got)
 	}
-	if agInt(e, `SELECT count(*) FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='moderation_actor_allocations' AND column_name NOT IN ('actor_id','window_start','allocations')`) != 0 {
+	if agInt(e, `SELECT count(*) FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='moderation_actor_allocations' AND column_name NOT IN ('actor_id','window_start','allocations','markers','rescan','rescan_more','rescan_bucket')`) != 0 {
 		t.Fatal("actor counter gained a target or content column")
 	}
 }
