@@ -54,7 +54,8 @@ func TestPerceptualHashRecognizesResizedPhotoSignal(t *testing.T) {
 	if bytes.Equal(full.full, resized.full) {
 		t.Fatal("resized fixture accidentally tested exact byte matching")
 	}
-	if normalizedDifferenceHash(perceptualFixture(640, 480, false)) != normalizedDifferenceHash(perceptualFixture(640, 480, false)) {
+	first, second := normalizedDifferenceHash(perceptualFixture(640, 480, false)), normalizedDifferenceHash(perceptualFixture(640, 480, false))
+	if first != second {
 		t.Fatal("perceptual metadata is nondeterministic")
 	}
 }

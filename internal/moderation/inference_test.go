@@ -170,7 +170,7 @@ func TestLocalModelNoProxyOrRedirectEgress(t *testing.T) {
 }
 
 func TestLocalModelFailureAndCancellation(t *testing.T) {
-	cfg, model := localModelFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	cfg, _ := localModelFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		<-r.Context().Done()
 	}))
 	cfg.Timeout = 100 * time.Millisecond
