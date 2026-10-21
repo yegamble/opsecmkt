@@ -235,7 +235,7 @@ the feature as an explicit operator decision.
 | --- | --- |
 | `init` (default) | Refuses an existing `.env` or project volumes, asks for exposure/database/Monero settings, writes configuration and starts services. `--local` selects loopback HTTP, internal PostgreSQL and no node. |
 | `init --admin HANDLE [--site-name NAME]` | The same, but creates the first administrator in the terminal ([First administrator from the host](#authentication)): it asks for the password twice without showing it, refuses one that does not match, is not 12-72 bytes or is not valid UTF-8 before it writes or starts anything, and pipes it to `-bootstrap-admin` on standard input, never in a command line, the environment or `.env`. Then it removes `SETUP_TOKEN` from `.env`, recreates the app and prints no token. |
-| `check` | Validates `.env` and the Compose configuration and starts nothing: the app's startup refusals (placeholder or weak secrets, `COOKIE_SECURE`, a placeholder `DATABASE_URL`, `APP_MODE` against `COMPOSE_FILE`), [`compose.nodes-tor.yaml`](#local-nodes-over-tor) only with `APP_MODE=tor` and `compose.tor.yaml` and after `compose.nodes.yaml`, `ESCROW_XMR_TOR_RELAY` blank or `clearnet-accepted` with Monero escrow on (and a warning when `APP_MODE=tor` and `ESCROW_XMR=on` would hold Monero relays: neither that value nor `compose.nodes-tor.yaml`, A-515), `POSTGRES_PASSWORD` against the password in `DATABASE_URL`, `COMPOSE_PROFILES` against the database and node settings, node images on `latest`, the mirror outside Tor, the [malware scanner](#photo-uploads-and-the-malware-scanner) (its profile, `CLAMD_ADDRESS` and `compose.scanner.yaml` only together, a readable `deploy/clamd.conf`, `CLAMAV_IMAGE` pinned to a release with signatures and, from `docker compose config`, `clamd` alone with the app on the internal `scanner` network with no port or volume), the project's containers created from another checkout (or this checkout's containers under another project name), and `docker compose config`. When the directory those containers were created from no longer exists, the checkout was probably moved: `check` says so, and `docker compose up -d --force-recreate` run in the moved checkout recreates them with its directory, keeping the volumes (a plain `up -d` leaves them as they are). Do not change `COMPOSE_PROJECT_NAME` for this. Messages name keys, never values. |
+| `check` | Validates `.env` and the Compose configuration and starts nothing: the app's startup refusals (placeholder or weak secrets, `COOKIE_SECURE`, a placeholder `DATABASE_URL`, `APP_MODE` against `COMPOSE_FILE`), [`compose.nodes-tor.yaml`](#local-nodes-over-tor) only with `APP_MODE=tor` and `compose.tor.yaml` and after `compose.nodes.yaml`, `ESCROW_XMR_TOR_RELAY` blank or `clearnet-accepted` with Monero escrow on (and a warning when `APP_MODE=tor` and `ESCROW_XMR=on` would hold Monero relays: neither that value nor `compose.nodes-tor.yaml`, A-515), a warning when `APP_MODE=tor` runs the local Monero node (`monero` profile) without `compose.nodes-tor.yaml` (A-530), `POSTGRES_PASSWORD` against the password in `DATABASE_URL`, `COMPOSE_PROFILES` against the database and node settings, node images on `latest`, the mirror outside Tor, the [malware scanner](#photo-uploads-and-the-malware-scanner) (its profile, `CLAMD_ADDRESS` and `compose.scanner.yaml` only together, a readable `deploy/clamd.conf`, `CLAMAV_IMAGE` pinned to a release with signatures and, from `docker compose config`, `clamd` alone with the app on the internal `scanner` network with no port or volume), the project's containers created from another checkout (or this checkout's containers under another project name), and `docker compose config`. When the directory those containers were created from no longer exists, the checkout was probably moved: `check` says so, and `docker compose up -d --force-recreate` run in the moved checkout recreates them with its directory, keeping the volumes (a plain `up -d` leaves them as they are). Do not change `COMPOSE_PROJECT_NAME` for this. Messages name keys, never values. |
 | `status` | Mode, each service's health, whether setup is pending or complete, the schema version, every onion address and the malware scanner's state with the version and date of its signatures. |
 | `setup-token [--new]` | While setup is pending: shows the token and setup link, or with `--new` issues a new token and recreates the app. After setup it exits 1: the token grants nothing then. It never shows a token that is also the key root (an install without its own `APP_SECRET_KEY`); `--new` issues a separate one and keeps the keys. |
 | `add-mirror` | See [Optional onion mirror](#optional-onion-mirror). |
@@ -530,8 +530,26 @@ The database and bundled Monero services have read-only root filesystems and `no
 Their data volumes and temporary directories remain writable. PostgreSQL and both Monero services start as
 their service users with all capabilities dropped. The application, Tor and scanner also drop all capabilities. Alternative node images may require different
 temporary paths; review their entrypoints before overriding the defaults. Wallet-RPC's shared ring database
-stays in its wallet volume. Its temporary file log under `/tmp` rotates at 1 MiB with two archived files;
-Docker still captures its console output.
+stays in its wallet volume. Its temporary file log under `/tmp` rotates at 1 MiB, keeping two files (the current
+one and one rotated); Docker still captures its console output.
+
+monerod also writes its own log file, which Docker's rotation does not reach: `bitmonero.log` in the `monero_data`
+volume (`stagenet/bitmonero.log` on stagenet). Its defaults keep 50 files of 100 MB. The bundled `monero` service
+(`compose.nodes.yaml`, `compose.nodes-tor.yaml` and the native `deploy` development render) starts it with
+`--max-log-file-size=10485760 --max-log-files=3`: at most three files of about 10 MiB, the current one and two rotated
+(`bitmonero.log-<UTC time>`), deleted oldest first whenever the current file rotates (A-538). Its console output still
+goes to Docker's rotated log as well; the file stays for when that log has rotated past a fault or `LOG_DRIVER` keeps no
+copy. Both node logs run at the default log level 0. Even so they can name peer IP addresses, transaction IDs and
+(the wallet's) addresses and key images: keep copies private, and do not raise `--log-level` except briefly while
+diagnosing. The caps limit size, not age. On a quiet node a file can hold lines older than the 14 days that the
+[data retention policy](data-retention-privacy-policy.md) sets for operational logs; to enforce the age as well,
+delete rotated files older than that, for example from a daily job:
+
+```sh
+docker compose exec -T monero find /home/monero/.bitmonero -maxdepth 2 -name 'bitmonero.log-*' -mtime +14 -delete
+```
+
+A node you run yourself on another host needs the same flags, or that host's own rotation, for its log files.
 
 The application build/runtime base images and internal PostgreSQL image are pinned to registry digests.
 Refresh those pins after reviewing upstream updates, then run the build, container and database checks.
@@ -595,7 +613,7 @@ The bundled Monero daemon and dedicated wallet-rpc use pinned community-maintain
 
 ### Local nodes over Tor
 
-In Tor mode, explicitly append `compose.nodes-tor.yaml` after `compose.nodes.yaml` in `COMPOSE_FILE`, run `./scripts/install.sh check`, then `docker compose up -d --build`. The installer does not add it automatically. It sends the bundled Monero daemon's peer traffic through a separate Tor SOCKS client on the internal node network. It does not cover an external daemon or operator image pulls and package downloads.
+A new Tor install with the local Monero node (`./scripts/install.sh --tor` with `--nodes local`, or a local node chosen at the questions) lists `compose.nodes-tor.yaml` after `compose.nodes.yaml` (and the database overlay) in `COMPOSE_FILE` by default (A-530). `--nodes-tor no` opts out: the installer then says the node's peer-to-peer traffic is not routed through Tor, and every later `check` (which `upgrade` runs) warns while `APP_MODE=tor`, the `monero` profile and no `compose.nodes-tor.yaml` remain. `--nodes-tor yes` is refused without Tor and a local node. `upgrade` never adds or removes the overlay: an install from before A-530, or one that opted out, keeps its recorded `COMPOSE_FILE` ([upgrade notes](../UPGRADING.md#a-tor-installs-local-monero-node-defaults-to-tor-a-530)). To add it to such an install, append `compose.nodes-tor.yaml` after `compose.nodes.yaml` in `COMPOSE_FILE`, run `./scripts/install.sh check`, then `docker compose up -d --build`; to remove it, delete it from `COMPOSE_FILE` and run the same two commands. The native `opsecmkt deploy` controller has no counterpart: its development-only local daemon reaches peers directly, and `deploy plan` says so. The overlay sends the bundled Monero daemon's peer traffic through a separate Tor SOCKS client on the internal node network. It does not cover an external daemon or operator image pulls and package downloads.
 
 The `tor-socks` listener at `10.199.42.2:9050` accepts the internal node subnet and refuses its host gateway and other sources. SOCKS isolation reduces circuit sharing; it does not defeat timing correlation. The node loses its direct egress route; the app and wallet-rpc cannot reach the SOCKS listener. If that subnet conflicts with another project, edit `compose.nodes-tor.yaml` and `deploy/torrc-socks` together. Rebuild `tor-socks` whenever rebuilding the Tor image.
 
@@ -1372,6 +1390,14 @@ in mind: the default 0.01 XMR cap was sized for a fakechain and is not measured 
 **The dedicated escrow wallet-rpc.** Run a dedicated `monero-wallet-rpc` for escrow wallets, attached to the escrow
 daemon, with its own authenticated RPC boundary and volume. A non-blank `MONERO_WALLET_RPC_URL` is refused.
 
+*Background refresh is off (A-641).* Right after each `open_wallet`, the market sends `auto_refresh` with
+`{"enable": false}` to the escrow wallet-rpc. It then refreshes every wallet it opens itself. monero-wallet-rpc 0.18.5.1
+has no command-line flag for this. The setting applies to the whole wallet-rpc and lasts until it restarts, so the
+market sends it after every open. With the background refresh on, an unreachable daemon can block the wallet-rpc for
+about 40 seconds, and a settlement relay can then time out instead of being refused. If you use the escrow wallet-rpc
+by hand, do not turn `auto_refresh` back on. If the call fails, the market logs `background refresh not turned off`
+once while the failure lasts, and carries on.
+
 Production can authenticate at a private mutual-TLS front proxy using
 `MONERO_RPC_CERT` and `MONERO_RPC_KEY`. With this arrangement, a wallet listener
 using `--disable-rpc-login` must stay on an unpublished, isolated network behind
@@ -1525,7 +1551,7 @@ seed can be recovered. It uses only the database, the private key and a scratch 
   umask 077
   mkdir -p backups
   docker stop opsecmkt-escrow-wallet
-  docker run --rm --network none -v opsecmkt_escrow_wallets:/wallets:ro --entrypoint tar \
+  docker run --rm --log-driver none --network none -v opsecmkt_escrow_wallets:/wallets:ro --entrypoint tar \
     ghcr.io/sethforprivacy/simple-monero-wallet-rpc:v0.18.5.1 -C /wallets -cf - . | age -r "$AGE_RECIPIENT" -o "backups/escrow-wallets-$(date -u +%Y%m%dT%H%M%SZ).tar.age"
   docker start opsecmkt-escrow-wallet
   ```
@@ -1632,18 +1658,22 @@ again with its deposits and followed to confirmed, and one order note, a notice 
 (by recipient) and that nothing is paid twice. Nothing is flagged and you have nothing to do; it is never recorded as spent
 outside the market. A spend by any other transaction still is. If a deposit those coins came from is no longer listed by the escrow wallet (a
 reorganisation or a double spend took it out of the chain), the new settlement stays requested (*deposit-missing*) and builds
-nothing until the wallet lists that deposit again, however long that takes; it then builds and sends as above (A-614). Unlike
+nothing until the wallet lists that deposit again, however long that takes; it then builds and sends as above (A-614).
+The deposit usually comes back at a new global output index, and the escrow wallet reuses the ring it stored when it built
+these coins before, so that build is then refused *ring-stale*: staff are alerted and you follow the
+[stale-ring break-glass](#stale-ring-break-glass-a-618) below, after which it builds and sends (A-640). Unlike
 a first release or refund (A-554, below) it has no bounded wait, because it can be built from no other coins. Staff are
 notified each time it starts waiting (once per episode); past 24 hours it is an escrow alert as any settlement still requested is, and its
 monthly wallet is kept from destruction while it waits. Settling a waiting re-request by hand is **break-glass**: wait by
-default, and never pay from other funds while the market can still send it (it sends on its own once the deposit is
-listed again). It waits only after a deep reorganisation or a double spend, or a wallet restore or rescan that lost the
+default, and never pay from other funds while the market can still send it (it builds and sends it once the deposit is
+listed again, after the stale-ring break-glass if the wallet refuses that build). It waits only after a deep reorganisation or a double spend, or a wallet restore or rescan that lost the
 deposit. A re-requested stray refund never holds back the stray refund of a later deposit to the same order (A-616,
 migration 135): that one is requested, built from deposits no settlement claims and sent beside it, and the order page's
 status says two stray refunds are in progress. While a re-request is still requested, the *Payment review* reason of each
 deposit it claims keeps its usual text and adds which settlement re-requests which, and for a deposit no longer listed
-that it waits for it and is sent by the market on its own once the deposit is listed again, ending "Do not pay anything
-by hand for it, or it is paid twice"; the desk's 24-hour line for a re-request waiting so says the same in short (A-617).
+that it waits for it, that the market builds and sends it once the deposit is listed again, and that if the escrow wallet
+then refuses the build because its stored ring predates the reorganisation, staff are alerted and the operator follows the
+stale-ring break-glass, ending "Do not pay anything by hand for it, or it is paid twice"; the desk's 24-hour line for a re-request waiting so says the same in short (A-617).
 
 <a id="stale-ring-break-glass-a-618"></a>
 **A settlement refused for a stale ring: break-glass (A-618).** monero-wallet-rpc 0.18.5.1 stores the ring (the decoys and
@@ -1942,7 +1972,9 @@ the market (the order page says so); a destroyed wallet is never opened again.
   stays requested (*deposit-missing*) and keeps its monthly wallet, with its sealed seed, from destruction past the 90
   days; there is no web action for it. Resolving it by hand is **break-glass**: wait by default, and never pay from
   other funds while the market can still send it; the wait needs a deep reorganisation or a double spend, or a wallet
-  restore or rescan that lost the deposit, and the market sends it on its own if the deposit is listed again. You see it on the order page's wait line, as an
+  restore or rescan that lost the deposit. If the deposit is listed again the market builds and sends it; if the escrow
+  wallet then refuses that build because a ring it stored for those coins predates the reorganisation, staff are alerted
+  and you follow the [stale-ring break-glass](#stale-ring-break-glass-a-618) (A-618). You see it on the order page's wait line, as an
   open "Credited deposit conflicted or missing" flag on the payment-review desk, in the desk's alert for a settlement
   requested for more than 24 hours, and, past the 90 days, in the notice that a retained wallet is kept (PAY66-7). The market
   notices such a regression only once the order's release or refund is being built, not while the order is paid or
@@ -1950,7 +1982,8 @@ the market (the order page says so); a destroyed wallet is never opened again.
   notice but does not reopen the flag on the desk. A re-request (A-401) one of whose claimed deposits is no longer
   listed waits the same way (*deposit-missing*), with no bounded wait, since it spends only the coins of the
   transaction it replaces: staff get one order note and notice each time it starts waiting (A-614), and it builds
-  once the wallet lists that deposit again.
+  once the wallet lists that deposit again, after the [stale-ring break-glass](#stale-ring-break-glass-a-618) if the
+  wallet refuses that build *ring-stale* (A-640).
   A refund whose claimant output would be below 0.001 XMR (on a cancelled order or one decided for the buyer, with no
   deposit it would spend still confirming) does not wait: it ends (failed, too-small) and its deposits are left out for
   the stray refund, which returns them with any later deposit once together they pay the fee; the parties and staff
@@ -2164,7 +2197,7 @@ After verifying the inventory and current preservation register, schedule the sa
 The helper uses original creation timestamps and digests, rather than filesystem modification age.
 See [copy expiry and legacy enrollment](retention.md#expiring-backups-and-signed-exports) for held copies, signed audit pairs and provider storage.
 
-Rehearse recovery on another host, or in a second checkout with its **own Compose project name**. Compose names containers, volumes and networks after the project (`opsecmkt` unless `.env` sets `COMPOSE_PROJECT_NAME`), not the directory: a second checkout under the same name recreates the live containers with its own secrets, and its `docker compose down --volumes` deletes the live volumes. Install the rehearsal copy with, for example, `COMPOSE_PROJECT_NAME=opsecmkt-rehearsal APP_PORT=8081 ./scripts/install.sh` (add `--local` for a quick local copy); the installer saves the name in that checkout's `.env`, so its later `docker compose`, `backup.sh` and `restore.sh` commands stay on the rehearsal project, and it refuses to install when containers of the chosen project were created from another directory, or when any of that project's volumes exist. If you copy a `.env` into the rehearsal checkout instead, change `COMPOSE_PROJECT_NAME` (add the line if it is missing) and `APP_PORT` in the copy before running any `docker compose` command there. On the same host, also drop `compose.nodes-tor.yaml` from the copy's `COMPOSE_FILE` (or the `monero` profile from its `COMPOSE_PROFILES`): its pinned node network `10.199.42.0/28` already exists for the live project, and Docker refuses a second one as overlapping ([Local nodes over Tor](#local-nodes-over-tor); a different subnet means editing `compose.nodes-tor.yaml` and `deploy/torrc-socks` together). Never change `COMPOSE_PROJECT_NAME` on an existing install: it would start on new, empty volumes (`<project>_postgres_data` and the others).
+Rehearse recovery on another host, or in a second checkout with its **own Compose project name**. Compose names containers, volumes and networks after the project (`opsecmkt` unless `.env` sets `COMPOSE_PROJECT_NAME`), not the directory: a second checkout under the same name recreates the live containers with its own secrets, and its `docker compose down --volumes` deletes the live volumes. Install the rehearsal copy with, for example, `COMPOSE_PROJECT_NAME=opsecmkt-rehearsal APP_PORT=8081 ./scripts/install.sh` (add `--local` for a quick local copy; a Tor rehearsal with a local node on the same host as a live install that has [`compose.nodes-tor.yaml`](#local-nodes-over-tor) needs `--nodes-tor no`, for the subnet reason below); the installer saves the name in that checkout's `.env`, so its later `docker compose`, `backup.sh` and `restore.sh` commands stay on the rehearsal project, and it refuses to install when containers of the chosen project were created from another directory, or when any of that project's volumes exist. If you copy a `.env` into the rehearsal checkout instead, change `COMPOSE_PROJECT_NAME` (add the line if it is missing) and `APP_PORT` in the copy before running any `docker compose` command there. On the same host, also drop `compose.nodes-tor.yaml` from the copy's `COMPOSE_FILE` (or the `monero` profile from its `COMPOSE_PROFILES`): its pinned node network `10.199.42.0/28` already exists for the live project, and Docker refuses a second one as overlapping ([Local nodes over Tor](#local-nodes-over-tor); a different subnet means editing `compose.nodes-tor.yaml` and `deploy/torrc-socks` together). Never change `COMPOSE_PROJECT_NAME` on an existing install: it would start on new, empty volumes (`<project>_postgres_data` and the others).
 
 Without `BACKUP_DATABASE_URL`, the script dumps the internal database through `docker compose exec -T db`, so it needs no published database port or host PostgreSQL tools. It dumps the database named in `DATABASE_URL` in `.env` (the name after the port), so after a side-by-side restore or rollback that switches `DATABASE_URL`, backups follow the database the application uses. The success line names the database dumped (never the URL or password). If the script cannot read a plain lower-case name there (for example the name comes from Compose variable interpolation), set `BACKUP_INTERNAL_DATABASE` to it; a `BACKUP_INTERNAL_DATABASE` that differs from the name in `DATABASE_URL` is refused, and so is setting it together with `BACKUP_DATABASE_URL`.
 
@@ -2261,7 +2294,7 @@ Back up an onion identity (set `identity=tor_identity`, or `identity=tor_mirror_
   test ! -e "$backup"
   mkdir -p backups
   umask 077
-  docker run --rm --pull never --network none --cap-drop ALL --security-opt no-new-privileges:true -v "$volume:/var/lib/tor:ro" \
+  docker run --rm --log-driver none --pull never --network none --cap-drop ALL --security-opt no-new-privileges:true -v "$volume:/var/lib/tor:ro" \
     --entrypoint tar "$project-tor" -C /var/lib/tor -cf - marketplace |
     age -r "$AGE_RECIPIENT" -o "$backup" || { rm -f "$backup"; exit 1; }
   docker run --rm --pull never --network none --cap-drop ALL -v "$volume:/var/lib/tor:ro" --entrypoint cat "$project-tor" \
@@ -2281,27 +2314,26 @@ To recover on a new host (or after losing the volumes): check out the same revis
   echo 'Restored .env' )
 ```
 
-Restore an onion identity (set `identity`, `backup` to its backup file and `AGE_IDENTITY`). The archive is decrypted straight into a container; it runs as root (`--user 0`) so it can write into the volume whatever its current owner, then gives the files to `debian-tor` with mode 700, because Tor refuses keys it does not own. It prints the restored address:
+Restore an onion identity (set `identity`, `backup` to its backup file, `AGE_IDENTITY`, and `address` to the onion address you published for that identity, for example in your signed verification document; never take it from the backup alone). The archive is decrypted straight into `./scripts/install.sh restore-onion`, which treats it as untrusted input and writes nothing until every check has passed (war room A-531):
+
+- it refuses a volume that is not empty (or cannot be read), a running `tor` (or `tor-mirror`) service, and `tor_admin_identity`: the private administrator onion keeps an identity of its own;
+- it never runs `tar -x` on the archive. A container with no network and no capabilities checks that it is an uncompressed tar archive (a compressed one is refused, never unpacked), lists it and refuses anything a backup never holds: any name other than `marketplace/`, `marketplace/hs_ed25519_secret_key`, `marketplace/hs_ed25519_public_key`, `marketplace/hostname` and an empty `marketplace/authorized_clients/`, so no `../` or absolute path and no other file; any symbolic or hard link, device or other type in their place; any entry twice; anything over 1 MiB. Only the key files and `hostname` are copied out, each by its exact name and bounded in size (96, 64 and 64 bytes);
+- the keys then pass the same checks and offline Tor dry run as an [imported identity](install/tor.md#use-your-own-vanity-onion-address): exact sizes and headers, a public key that matches the secret key, and the address Tor derives from the key;
+- that derived address must be `address`; run by hand without `--onion-address`, `restore-onion` asks you to confirm it on the terminal instead, and with neither it refuses. The archive's `hostname`, when present, must name the same address: Tor does not check `hostname` and overwrites a forged one only after it starts. The file itself is never restored; Tor writes it from the key;
+- it refuses a secret key that the other public onion's volume or the administrator onion's already holds, compared byte for byte (a volume restored or prepared but not yet started has no `hostname` to compare), and refuses when it cannot read one to compare.
+
+The containers that carry key bytes run with `--log-driver none`, so Docker's log driver keeps none of them. Only after every check does it create the volume (labelled as Compose labels its own) and stream the key files into it as root, giving them to `debian-tor` (directories 700, files 600), because Tor refuses keys it does not own. Its last line is the address derived from the key:
 
 <!-- ops-cmd: tor-identity-restore -->
 ```sh
 ( set -eu -o pipefail
   : "${identity:?set identity=tor_identity or identity=tor_mirror_identity}" "${backup:?set backup to the identity backup file}" "${AGE_IDENTITY:?set AGE_IDENTITY}"
-  project=$(docker compose config | sed -n 's/^name: //p')
-  volume="${project}_$identity"
+  : "${address:?set address to the onion address you published for this identity}"
   test -f "$backup"
-  docker image inspect "$project-tor" >/dev/null
-  age -d -i "$AGE_IDENTITY" "$backup" |
-    docker run --rm -i --pull never --network none --user 0 --security-opt no-new-privileges:true -v "$volume:/var/lib/tor" \
-      --entrypoint sh "$project-tor" -euc '
-        if [ -n "$(ls -A /var/lib/tor)" ]; then echo "Refusing: volume $0 is not empty" >&2; exit 1; fi
-        tar -C /var/lib/tor -xf - marketplace
-        chown -R debian-tor:debian-tor /var/lib/tor
-        chmod 700 /var/lib/tor /var/lib/tor/marketplace
-        cat /var/lib/tor/marketplace/hostname' "$volume" )
+  age -d -i "$AGE_IDENTITY" "$backup" | ./scripts/install.sh restore-onion "$identity" --onion-address "$address" )
 ```
 
-After `docker compose up -d`, compare the printed address with `docker compose exec tor cat /var/lib/tor/marketplace/hostname` (`tor-mirror` for the mirror); a different address means Tor did not use the restored keys. The restore refuses a volume that is not empty: Tor has already run on this host and created another address. If that address was never published, remove it and restore again: `docker compose rm -sf tor` (or `tor-mirror`), then `docker volume rm opsecmkt_tor_identity` (your project's volume name). `scripts/test-tor-identity-restore.sh` runs these four blocks verbatim ([operations tests](operations-tests.md#documented-env-and-onion-identity-backup-and-restore)).
+After `docker compose up -d`, `./scripts/install.sh status` must show the printed address for `tor` (or `tor-mirror`); a different address means Tor did not use the restored keys. The restore refuses a volume that is not empty: Tor has already run on this host and created another address. If that address was never published, remove it and restore again: `docker compose rm -sf tor` (or `tor-mirror`), then `docker volume rm opsecmkt_tor_identity` (your project's volume name). `scripts/test-tor-identity-restore.sh` runs these four blocks verbatim, and feeds the restore forged, extended, linked, compressed, oversized and mismatched archives ([operations tests](operations-tests.md#documented-env-and-onion-identity-backup-and-restore)).
 
 ## Verification and maintenance
 

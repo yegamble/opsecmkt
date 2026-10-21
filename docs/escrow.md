@@ -67,7 +67,9 @@ market holds the wallet keys and builds, stores and sends every transaction itse
   stray refund never silences that notice (QA462C-4). A checked transaction is **stored first** (its hash, metadata, blob, fee and key images) and only then relayed,
   with the stored metadata. After a restart or a lost answer the watcher looks the transaction up in the daemon and the
   wallet, and relays the same stored metadata again if neither has it: that spends the same key images, so it cannot pay
-  twice. Nothing builds a replacement automatically. A relayed settlement is *confirmed* at the confirmation threshold and
+  twice. Nothing builds a replacement automatically. A relay that times out or loses its answer is recorded
+  `relay-unknown` (A-641). Until the next pass finds the transaction or relays it again, the order page says that the
+  transaction may already be on the network. "Nothing has been sent yet" is shown only while no relay was tried. A relayed settlement is *confirmed* at the confirmation threshold and
   followed to 100 confirmations; one a reorganisation removes goes back to *relayed* and is relayed again. If another
   transaction spent its key images it is recorded *external* and staff are told, at once, unless that transaction is
   the market's own: the stored transaction of a failed settlement that an administrator's re-request superseded (below,
@@ -119,12 +121,16 @@ market holds the wallet keys and builds, stores and sends every transaction itse
   settlement requested for more than 24 hours, and, past the 90 days, the administrators' notice that a retained
   wallet is kept. Resolving it by hand is **break-glass** (PAY66-7): wait by default, and never pay from other funds
   while the market can still send it. The wait lasts only after a deep reorganisation or a double spend, or a wallet
-  restore or rescan that lost the deposit; if the deposit is listed again, the market builds and sends it on its own.
+  restore or rescan that lost the deposit; if the deposit is listed again, the market builds and sends it, and if the
+  escrow wallet then refuses that build because a ring it stored for those coins predates the reorganisation, staff
+  are alerted and the operator follows the stale-ring break-glass (A-618).
   An administrator's re-request of a failed settlement spends exactly the coins of the transaction it replaces, so
   while a deposit those coins came from is no longer listed it waits the same way (*deposit-missing*), with no bounded
   wait (it has no other coins to build from), rather than failing *nothing-to-settle* while it still claims that
   deposit (A-614). Staff get one order note and notice each time it starts waiting; it builds and sends once the
-  wallet lists the deposit again, and it can never pay twice, because both transactions spend the same coins. A failed
+  wallet lists the deposit again, after the operator's stale-ring break-glass if the wallet refuses that build (the
+  deposit usually returns at a new global output index, and the wallet reuses the ring it stored, A-640), and it can
+  never pay twice, because both transactions spend the same coins. A failed
   settlement's refusal does not prove its stored transaction never reached the network (the wallet-rpc answers -4 for a
   lost connection to its daemon too), so it may be mined after its re-request was carried out (A-566, PAY66-3). Before
   a re-request is built, before its stored transaction is relayed, when the wallet's coins no longer match it, and
@@ -293,7 +299,8 @@ wallet takes an order again and no settlement is relayed until an administrator 
   changed from the last values it recorded writes one audit row and notifies every administrator once
   ([operator guide](operator-guide.md#monero-escrow), *Market fee*).
 - **One wallet is open at a time, and every wallet that may hold coins is opened on every pass**, until the wallet is
-  destroyed. PAYE-E2 measured this on one host, on a local fakechain only ([verification](verification.md#monero-escrow-wallet-scale-paye-e2-war-room-a-429-p3-r12--2026-10-04)):
+  destroyed. After each open the market turns off the escrow wallet-rpc's own background refresh (`auto_refresh`,
+  A-641), then refreshes the wallet itself ([operator guide](operator-guide.md#monero-escrow)). PAYE-E2 measured this on one host, on a local fakechain only ([verification](verification.md#monero-escrow-wallet-scale-paye-e2-war-room-a-429-p3-r12--2026-10-04)):
   a pass over 5 wallets of 10,000 accounts each took 27.6 s against the 10-minute pass timeout, but a catch-up refresh
   over 110 blocks holding 200 deposits took 2.5 minutes, past the 2-minute bound it then had. Refresh now has its own
   8-minute bound, a refresh that times out is finished by the wallet-rpc and stored by the next `open_wallet`, and each
@@ -335,6 +342,7 @@ wallet takes an order again and no settlement is relayed until an administrator 
   `TestXMREscrowDoubleSpentDepositBoundedWait`, `TestXMREscrowRefundWithoutMissingDepositReturnsIt`,
   `TestXMREscrowMissingDepositWaitRestartsWhenListed`. Releases, deadlines and
   disputes: `TestXMREscrowNoBuildBeforeOutcome`, `TestXMREscrowConfirmReceiptStepUp`, `TestXMREscrowShipStepUp`,
+  `TestXMREscrowShipNoShipCancelRaceOneOutcome`, `TestXMRConcessionResolveRaceOneOutcome`,
   `TestXMREscrowDeadlineWithBTCOff`, `TestXMREscrowDisputeSupersedes`, `TestXMREscrowNoShipCancel`,
   `TestXMREscrowRestoreExtendsDeadline`. Retention and restore: `TestXMREscrowDestroyPreconditions`,
   `TestXMREscrowRestoredPastDestroy`, `TestXMREscrowUnopenableKeepsSeal`, `TestXMREscrowConfirmDestroyed`,
@@ -374,9 +382,13 @@ wallet takes an order again and no settlement is relayed until an administrator 
       available; the funding deposit is then taken out of the chain (`pop_blocks`, `flush_txpool`) and an
       administrator's re-request is carried out: the new settlement waits (*deposit-missing*), past twice the threshold
       in blocks too, with no `transfer` (A-614); once the same deposit transaction is mined again it spends exactly the
-      stored key images (the daemon's decoded inputs) to the stored plan, and it confirms. The wallet may first refuse
-      that build on a few passes (*wallet-refusing ring-stale*, A-618; leg 18), each refusal building and relaying
-      nothing.
+      stored key images (the daemon's decoded inputs) to the stored plan, relayed once, and it confirms. The deposit
+      comes back at another global output index, so the wallet builds it only when its decoy picker happens to draw
+      that index (A-639): on each of the first two passes the leg accepts that build, or a refusal that builds and
+      relays nothing (*wallet-refusing ring-stale*, then *wallet-refused ring-stale* flagged to staff, A-618; leg 18).
+      Still refused, it follows the operator guide's
+      [stale-ring break-glass](operator-guide.md#stale-ring-break-glass-a-618) (the guide's key image query, each key
+      image unspent, remedy A's precondition query 0, remedy A) and the next pass builds and relays it once.
   11. `TestXMREscrowRegtestRestore`: a restore (with `scripts/restore.sh`'s own Monero SQL) holds a built release, retires
       the free accounts and closes the wallet; the sweep finds a wallet created after the backup and seals it as an
       orphan; after an administrator's confirmation the held release is relayed once and confirms; the next checkout gets

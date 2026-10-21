@@ -112,7 +112,8 @@ docker network rm xmr-escrow-regtest
 
 `ESCROW_XMR_REGTEST_WALLET_CONTAINER` is needed by `StaleRing`, which stops it, moves the ring database aside on its volume
 and starts it (the operator guide's [stale-ring break-glass](operator-guide.md#stale-ring-break-glass-a-618), remedy A), and by
-`StaleRingRemedyB`, which stops it and clears the stuck rings with `monero-wallet-cli` (remedy B); both fail as skipped without it; with it,
+`StaleRingRemedyB`, which stops it and clears the stuck rings with `monero-wallet-cli` (remedy B), and by `ReRequest`, which
+applies remedy A when its re-request's build stays refused for a stale ring (A-639); all three fail as skipped without it; with it,
 `RestartMidSend` also restarts that container.
 `ESCROW_XMR_REGTEST_DAEMON_CONTAINER` is required: `ReRequest` stops and starts that monerod container around each relay,
 which is why monerod runs with `--keep-fakechain` (without it, monerod deletes the fakechain when it starts). The legs run

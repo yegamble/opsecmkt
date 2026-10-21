@@ -857,3 +857,38 @@ func TestXMREscrowGatePausesCreation(t *testing.T) {
 		t.Fatalf("funding under the gate: %s", x.state(order))
 	}
 }
+
+// A-641: the watcher turns the escrow wallet-rpc's own background refresh off right after each open_wallet, before
+// its explicit refresh; a failure of that call is logged once while it lasts and the pass goes on.
+func TestXMREscrowAutoRefreshOff(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	logs := captureLog(t)
+	x.mustPoll()
+	x.mustPoll()
+	calls := x.fake.callLog()
+	opens := 0
+	for i, c := range calls {
+		if c.Method != "open_wallet" {
+			continue
+		}
+		opens++
+		if i+1 >= len(calls) || calls[i+1].Method != "auto_refresh" || calls[i+1].Params != `{"enable":false}` {
+			next := "nothing"
+			if i+1 < len(calls) {
+				next = calls[i+1].Method // not its params: open_wallet's carry a wallet password
+			}
+			t.Fatalf("open_wallet %d is followed by %s, not auto_refresh off", opens, next)
+		}
+	}
+	if opens == 0 || x.fake.countOf("auto_refresh") != opens {
+		t.Fatalf("open_wallet %d, auto_refresh %d", opens, x.fake.countOf("auto_refresh"))
+	}
+
+	x.fake.fault("auto_refresh", fakeXMRDrop)
+	x.fake.fault("auto_refresh", fakeXMRNotOpen)
+	x.mustPoll()
+	x.mustPoll()
+	if got := logs.lines("background refresh not turned off"); len(got) != 1 || !strings.Contains(got[0], "auto_refresh unreachable") {
+		t.Fatalf("want one fixed line for the failing auto_refresh: %q", got)
+	}
+}

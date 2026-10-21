@@ -9,6 +9,8 @@
 #   ./scripts/install.sh add-mirror         add the second onion address (Tor installs)
 #   ./scripts/install.sh init --tor --onion-key-dir DIR, add-mirror --mirror-onion-key-dir DIR
 #                                           use an existing onion identity (a vanity address) instead of a new one
+#   ./scripts/install.sh restore-onion tor_identity|tor_mirror_identity [--onion-address ADDR.onion] < ARCHIVE
+#                                           restore an onion identity backup (decrypted, on stdin) into its empty volume
 #   ./scripts/install.sh add-scanner        add the ClamAV malware scanner that photo uploads need
 #   ./scripts/install.sh refresh-scanner    have Docker fetch the scanner's newer signatures and restart it
 #   ./scripts/install.sh upgrade [--no-backup]  after pulling new code: back up, update .env, rebuild, restart
@@ -107,6 +109,8 @@ temporaries=''
 # A private temporary directory holding the copy of an imported onion key that is checked and streamed (A-526).
 onion_stage=''
 onion_files=()
+# The private temporary directory holding a restored identity backup and the key files taken from it (A-531).
+restore_stage=''
 env_locked=false
 # The file env_get reads and env_edit rewrites: .env, or a staged copy that a command moves into place whole
 # (add-scanner changes three keys together).
@@ -117,6 +121,7 @@ cleanup() {
   # shellcheck disable=SC2086
   if [[ -n $temporaries ]]; then rm -f $temporaries; fi
   if [[ -n $onion_stage ]]; then rm -rf -- "$onion_stage"; fi
+  if [[ -n $restore_stage ]]; then rm -rf -- "$restore_stage"; fi
   if [[ $env_locked == true ]]; then rmdir .env.lock 2>/dev/null || true; fi
 }
 trap cleanup EXIT
@@ -133,6 +138,7 @@ Usage: scripts/install.sh [init] [options]   first install (the default)
        scripts/install.sh check | status | add-mirror | add-scanner | refresh-scanner
        scripts/install.sh add-mirror [--mirror-onion-key-dir DIR [--mirror-onion-address ADDR.onion]]
        scripts/install.sh setup-token [--new]
+       scripts/install.sh restore-onion tor_identity|tor_mirror_identity [--onion-address ADDR.onion] < ARCHIVE
        scripts/install.sh upgrade [--no-backup]
 init options (each answers one question; a question without its option is asked):
   --tor | --clearnet               exposure
@@ -142,6 +148,8 @@ init options (each answers one question; a question without its option is asked)
   --nodes local|none|custom        pruned local Monero escrow-support node, none, or custom
   --monero local|disabled           --monero-image IMAGE   --monero-network mainnet|stagenet
   --monero-prune yes|no
+  --nodes-tor yes|no               Tor: the local Monero node reaches its peers through its own Tor client
+                                   (compose.nodes-tor.yaml; default yes with --tor; no sends its traffic from this host's IP)
   --monero-escrow yes|no           Monero escrow on the local Monero node (custodial; default no)
   --monero-escrow-seed-key FILE    with it: the armored OpenPGP public key its wallet seeds are sealed to
   --admin HANDLE [--site-name NAME]  create the first administrator here (password asked twice, never shown)
@@ -151,6 +159,8 @@ init options (each answers one question; a question without its option is asked)
                                    hs_ed25519_secret_key and optionally hs_ed25519_public_key, outside this checkout
   --onion-address ADDR.onion       with it: the address the key must have (otherwise it is shown for you to confirm)
 add-mirror's two options do the same for the mirror, before it first starts.
+restore-onion restores an onion identity backup, decrypted on stdin, into its empty volume before Tor first starts
+  (docs/operator-guide.md#secrets-env-and-onion-identities).
 Local Monero nodes run MAINNET (real funds) unless --monero-network stagenet is chosen.
 No mainnet run of this software is recorded (docs/operator-guide.md#mainnet).
 Values given as options (URLs with passwords) are visible to other local users while the installer runs.
@@ -577,10 +587,11 @@ onion_key_check() {
 }
 
 # onion_dry_run IMAGE: the address Tor derives from the checked key, started offline in a throwaway container of the
-# project's Tor image: no network, no capabilities, a tmpfs, the key files streamed on stdin. Exits on a refusal.
+# project's Tor image: no network, no capabilities, a tmpfs, the key files streamed on stdin (and no log driver to
+# keep anything). Exits on a refusal.
 onion_dry_run() {
   local address status=0
-  address=$(cat -- "${onion_files[@]}" | docker run --rm -i --pull never --network none --cap-drop ALL \
+  address=$(cat -- "${onion_files[@]}" | docker run --rm -i --log-driver none --pull never --network none --cap-drop ALL \
     --security-opt no-new-privileges:true --tmpfs /dry --entrypoint sh "$1" -euc "$onion_dry_run_script") || status=$?
   case $status in
     0) ;;
@@ -613,7 +624,7 @@ onion_volume_create() {
 
 # onion_import IMAGE VOLUME: stream the checked key files into the empty VOLUME (onion_import_script).
 onion_import() {
-  cat -- "${onion_files[@]}" | docker run --rm -i --pull never --network none --user 0 --cap-drop ALL --cap-add CHOWN \
+  cat -- "${onion_files[@]}" | docker run --rm -i --log-driver none --pull never --network none --user 0 --cap-drop ALL --cap-add CHOWN \
     --cap-add DAC_OVERRIDE --cap-add FOWNER --security-opt no-new-privileges:true --tmpfs /in -v "$2:/var/lib/tor" \
     --entrypoint sh "$1" -euc "$onion_import_script" "$2"
 }
@@ -622,6 +633,202 @@ onion_import() {
 onion_import_notes() {
   echo 'Warning: a key generated by anyone else, including a vanity service, is held by them: generate vanity keys yourself (e.g. mkp224o, offline).'
   printf 'Once that encrypted backup is stored, securely delete the plaintext keys in %s.\n' "$1"
+}
+
+# ---- onion identity restore (A-531) -----------------------------------------------------------------------
+#
+# restore-onion puts an onion identity backup (the operator guide's tor-identity-backup archive, decrypted, on stdin)
+# into its volume, which must be empty, before that Tor first starts there. The archive is operator input like an
+# imported key, so it is never unpacked with tar -x: a container with no network and no capabilities checks that it is
+# an uncompressed tar archive, lists it, refuses anything but the entries a backup holds (marketplace/, its
+# hs_ed25519_secret_key, hs_ed25519_public_key and hostname files and an empty authorized_clients/; no links, no other
+# names or paths, nothing twice) and copies out only those files, each by its exact name and bounded in size, to
+# stdout. The keys then go through the import's checks and dry run (A-526): the address is the one Tor derives from the
+# key, and it must be the published address the operator gives (--onion-address) or confirms on the terminal. Tor does
+# not check hostname (it overwrites a forged one only once it starts), so the archive's hostname must equal the derived
+# address or the restore refuses, and it is never written: Tor writes it from the key. The other public onion's volume
+# and the administrator onion's must not hold the same secret key (compared byte for byte: a volume restored or
+# prepared but not yet started has no hostname). Every container that carries key bytes on stdin or stdout runs with
+# --log-driver none, so no log driver keeps them. scripts/test-tor-identity-restore.sh runs this against the real Tor
+# image.
+
+# The archive check, as Tor's user in the Tor image: read the archive from stdin (at most 1 MiB; a backup is about
+# 10 KiB) into a size-limited tmpfs, require the tar magic at offset 257 (an uncompressed archive), list it with GNU
+# tar reading stdin (which refuses a compressed stream instead of decompressing it; -P: names exactly as stored; C
+# quoting: one line per entry, quotes and control characters escaped), compare each entry's type and name with the
+# allowed list, then write the regular file marketplace/$0, at most $1 bytes, to stdout. Status 4: the archive is
+# refused (the reason on stderr); 5: it holds no such file. (Single quotes: the container expands the script.)
+# shellcheck disable=SC2016
+onion_archive_script='umask 077
+head -c 1048577 > /x/archive
+if [ "$(wc -c < /x/archive)" -gt 1048576 ]; then echo "The backup is larger than 1 MiB; an onion identity backup is about 10 KiB." >&2; exit 4; fi
+if [ "$(head -c 262 /x/archive | tail -c 5)" != ustar ]; then echo "The backup is not an uncompressed tar archive." >&2; exit 4; fi
+if ! tar -P --quoting-style=c -tf - < /x/archive > /x/names 2> /x/error; then
+  echo "The backup is not a readable tar archive:" >&2; head -n 3 /x/error >&2; exit 4
+fi
+tar -P --numeric-owner --quoting-style=c -tvf - < /x/archive > /x/long 2> /dev/null || { echo "The backup is not a readable tar archive." >&2; exit 4; }
+if [ "$(wc -l < /x/names)" != "$(wc -l < /x/long)" ]; then echo "The backup could not be listed one entry per line." >&2; exit 4; fi
+cut -c 1 /x/long | paste -d " " - /x/names > /x/entries
+printf "%s\n" "d \"marketplace/\"" "- \"marketplace/hs_ed25519_secret_key\"" "- \"marketplace/hs_ed25519_public_key\"" \
+  "- \"marketplace/hostname\"" "d \"marketplace/authorized_clients/\"" > /x/allowed
+if grep -vxF -f /x/allowed /x/entries > /x/unexpected; then
+  echo "The backup holds entries an onion identity backup never has (type, then name: - a file, d a directory, l or h a link):" >&2
+  head -n 5 /x/unexpected >&2; exit 4
+fi
+if [ -n "$(sort /x/entries | uniq -d)" ]; then echo "The backup holds an entry twice." >&2; exit 4; fi
+grep -qxF -e "- \"marketplace/hs_ed25519_secret_key\"" /x/entries || { echo "The backup holds no marketplace/hs_ed25519_secret_key." >&2; exit 4; }
+grep -qxF -e "- \"marketplace/$0\"" /x/entries || exit 5
+{ tar -P -xOf - "marketplace/$0" < /x/archive || :; } | head -c "$(($1 + 1))" > /x/member
+if [ "$(wc -c < /x/member)" -gt "$1" ]; then echo "marketplace/$0 is larger than $1 bytes." >&2; exit 4; fi
+cat /x/member'
+
+# The key comparison, as root with only DAC_OVERRIDE (to read whatever owns the files) on a read-only volume: compare the
+# secret key on stdin with the volume's marketplace/ and admin/ secret keys. Status 0: neither is that key (or there is
+# none), 10: one is; any other status: it could not tell.
+# shellcheck disable=SC2016
+onion_key_compare_script='umask 077
+head -c 97 > /x/key
+ls -A /var/lib/tor > /dev/null
+for dir in marketplace admin; do
+  file=/var/lib/tor/$dir/hs_ed25519_secret_key
+  if [ ! -e "$file" ] && [ ! -L "$file" ]; then continue; fi
+  status=0
+  cmp -s /x/key "$file" || status=$?
+  case $status in 0) exit 10 ;; 1) ;; *) exit 11 ;; esac
+done'
+
+# onion_archive_member IMAGE NAME MAX: the file marketplace/NAME of the staged archive, at most MAX bytes, after
+# onion_archive_script checked the whole archive, on stdout (status 5: there is none).
+onion_archive_member() {
+  docker run --rm -i --log-driver none --pull never --network none --cap-drop ALL --security-opt no-new-privileges:true \
+    --tmpfs /x:size=4m --entrypoint sh "$1" -euc "$onion_archive_script" "$2" "$3" < "$restore_stage/archive"
+}
+
+# onion_key_in_volume IMAGE VOLUME: status 0 when VOLUME holds the staged secret key (onion_files[0]), 1 when it does
+# not; anything else when that cannot be told.
+onion_key_in_volume() {
+  local status=0
+  docker run --rm -i --log-driver none --pull never --network none --user 0 --cap-drop ALL --cap-add DAC_OVERRIDE \
+    --security-opt no-new-privileges:true --tmpfs /x:size=1m -v "$2:/var/lib/tor:ro" --entrypoint sh "$1" \
+    -euc "$onion_key_compare_script" < "${onion_files[0]}" || status=$?
+  case $status in
+    0) return 1 ;;
+    10) return 0 ;;
+    *) return 2 ;;
+  esac
+}
+
+cmd_restore_onion() {
+  local identity='' given='' service project volume image size status name max derived recorded other entries confirmed
+  while (($#)); do
+    case $1 in
+      --onion-address) (($# >= 2)) || usage; given=$(onion_address_option "$1" "$2"); shift 2 ;;
+      tor_identity|tor_mirror_identity) [[ -z $identity ]] || usage; identity=$1; shift ;;
+      tor_admin_identity)
+        die 'Refusing: restore-onion restores the public onions (tor_identity, tor_mirror_identity). The private administrator' \
+          'onion keeps an identity of its own (docs/install/tor.md#private-administrator-onion): never put a public onion key' \
+          'in its volume, or its key in a public one. Nothing was restored.' ;;
+      *) usage ;;
+    esac
+  done
+  [[ -n $identity ]] || usage
+  service=tor
+  if [[ $identity == tor_mirror_identity ]]; then service=tor-mirror; fi
+  # shellcheck disable=SC2016  # the operator's command, printed as written
+  [[ ! -t 0 ]] || die 'restore-onion reads the decrypted backup on stdin:' \
+    '  age -d -i "$AGE_IDENTITY" BACKUP | ./scripts/install.sh restore-onion IDENTITY --onion-address ADDR.onion' 'Nothing was restored.'
+  # The address is the operator's, never only the backup's own: given, or confirmed on the terminal (stdin is the backup).
+  if [[ -z $given ]] && ! { : < /dev/tty; } 2>/dev/null; then
+    die 'Refusing: give the onion address you published for this identity as --onion-address ADDR.onion (there is no terminal' \
+      'to confirm it on). Nothing was restored.'
+  fi
+  require_env
+  project=$(project_name)
+  volume=${project}_$identity
+  image=$project-tor
+  # The backup's bytes only move between files and stdin, as an imported key's do (A-526).
+  restore_stage=$(mktemp -d "${TMPDIR:-/tmp}/opsecmkt-restore.XXXXXX") || die 'Could not create a temporary directory. Nothing was restored.'
+  head -c 1048577 > "$restore_stage/archive" || die 'Could not read the backup from stdin. Nothing was restored.'
+  size=$(wc -c < "$restore_stage/archive")
+  size=$((size))
+  ((size > 0)) || die 'Refusing: nothing arrived on stdin (did age fail to decrypt the backup?). Nothing was restored.'
+  ((size <= 1048576)) || die 'Refusing: the backup is larger than 1 MiB; an onion identity backup is about 10 KiB. Nothing was restored.'
+  docker image inspect "$image" >/dev/null ||
+    die "Refusing: the Tor image $image is missing. Build it first (docker compose build tor); the restore never pulls one. Nothing was restored."
+  [[ -z $(docker ps -q --filter "label=com.docker.compose.project=$project" --filter "label=com.docker.compose.service=$service") ]] ||
+    die "Refusing: $service is running, so its volume $volume is in use and holds an identity. Nothing was restored."
+  if docker volume inspect "$volume" >/dev/null 2>&1; then
+    entries=$(docker run --rm --pull never --network none --user 0 --cap-drop ALL --cap-add DAC_OVERRIDE \
+      --security-opt no-new-privileges:true -v "$volume:/var/lib/tor:ro" --entrypoint ls "$image" -A /var/lib/tor) ||
+      die "Refusing: could not read the volume $volume to check that it is empty (the message above says why). Nothing was restored."
+    [[ -z $entries ]] ||
+      die "Refusing: volume $volume is not empty: Tor has run on it and created an address, or an identity was restored into it." \
+        "An identity is restored only into an empty volume. If that address was never published, remove it and restore again:" \
+        "docker compose rm -sf $service, then docker volume rm $volume. Nothing was restored."
+  fi
+  # Validate first: the archive, then the keys and Tor's dry run, before any volume is created or written. Each file is
+  # bounded: the keys' exact sizes (checked again below) and an address with its newline.
+  mkdir "$restore_stage/keys"
+  for name in hs_ed25519_secret_key hs_ed25519_public_key hostname; do
+    status=0
+    case $name in
+      hs_ed25519_secret_key) max=96 ;;
+      hs_ed25519_public_key) max=64 ;;
+      hostname) max=64 ;;
+    esac
+    if [[ $name == hostname ]]; then
+      onion_archive_member "$image" "$name" "$max" > "$restore_stage/hostname" || status=$?
+    else
+      onion_archive_member "$image" "$name" "$max" > "$restore_stage/keys/$name" || status=$?
+    fi
+    case $status in
+      0) ;;
+      5) rm -f -- "$restore_stage/keys/$name" "$restore_stage/$name" ;;
+      4) die 'Refusing: this is not an onion identity backup as the tor-identity-backup commands write one (the message above says why). Nothing was restored.' ;;
+      *) die 'Could not check the backup in the Tor image (the message above says why). Nothing was restored.' ;;
+    esac
+  done
+  onion_key_check "$restore_stage/keys"
+  derived=$(onion_dry_run "$image") || exit 1
+  if [[ -e $restore_stage/hostname ]]; then
+    printf '%s\n' "$derived" > "$restore_stage/derived"
+    printf '%s' "$derived" > "$restore_stage/derived-bare"
+    if ! cmp -s "$restore_stage/derived" "$restore_stage/hostname" && ! cmp -s "$restore_stage/derived-bare" "$restore_stage/hostname"; then
+      recorded=$(tr -d '\n' < "$restore_stage/hostname")
+      [[ $recorded =~ $onion_pattern ]] || recorded=''
+      die "Refusing: the backup's hostname file names ${recorded:-no valid onion address}, but its key is the identity of $derived." \
+        "Tor would serve $derived (it rewrites hostname from the key), so the backup was altered or mixes two identities. Nothing was restored."
+    fi
+  fi
+  if [[ -n $given ]]; then
+    onion_confirm "$derived" "$given"
+  else
+    printf 'The key is for %s.\nType yes if this is the onion address you published for %s: ' "$derived" "$identity" > /dev/tty
+    IFS= read -r confirmed < /dev/tty || die 'No answer. Nothing was restored.'
+    [[ $confirmed == yes ]] || die 'Not confirmed. Nothing was restored.'
+  fi
+  # Never one identity in two onions: not the other public onion's, and not the administrator onion's. The secret keys
+  # are compared, since a volume restored or prepared but not yet started has no hostname.
+  for other in tor_identity tor_mirror_identity tor_admin_identity; do
+    [[ $other != "$identity" ]] || continue
+    docker volume inspect "${project}_$other" >/dev/null 2>&1 || continue
+    status=0
+    onion_key_in_volume "$image" "${project}_$other" || status=$?
+    case $status in
+      0) die "Refusing: that key is the identity already in ${project}_$other ($derived); every onion needs its own." \
+           "Restore each backup into the volume it was taken from (its file name names it). Nothing was restored." ;;
+      1) ;;
+      *) die "Refusing: could not compare the key with the one in ${project}_$other (the message above says why). Nothing was restored." ;;
+    esac
+  done
+  if ! docker volume inspect "$volume" >/dev/null 2>&1; then
+    onion_volume_create "$project" "$identity" || die "Could not create the volume $volume. Nothing was restored."
+  fi
+  onion_import "$image" "$volume" ||
+    die "Could not restore the onion key into the volume $volume (the message above says why)." \
+      "If Tor never ran on it, remove it (docker volume rm $volume) and restore again."
+  printf 'Restored the onion identity into %s. Tor derives this address from its key; after docker compose up -d,\n' "$volume"
+  printf './scripts/install.sh status must show the same one for %s:\n%s\n' "$service" "$derived"
 }
 
 # retire_setup_token STATUS: once setup is complete SETUP_TOKEN grants nothing (the app refuses it), so remove
@@ -791,6 +998,11 @@ run_check() {
         fi ;;
       *) problems="$problems  - MONERO_NETWORK must be stagenet or mainnet (real funds) for the local escrow-support daemon"$'\n' ;;
     esac
+  fi
+  # A-530: new Tor installs list compose.nodes-tor.yaml; one without it (--nodes-tor no, or installed before A-530 and
+  # kept as recorded by upgrade) is told on every check what that means. A warning: the operator chose it.
+  if [[ $mode == tor ]] && has_item "$profiles" monero && ! compose_has compose.nodes-tor.yaml; then
+    warnings="${warnings}warning: APP_MODE=tor with the local Monero node, but COMPOSE_FILE lacks compose.nodes-tor.yaml: the node's peer-to-peer traffic is not routed through Tor, so its peers see this host's IP address. New installs add it (after compose.nodes.yaml); upgrade never does. See docs/operator-guide.md#local-nodes-over-tor"$'\n'
   fi
   if has_item "$profiles" monero-escrow-wallet && [[ -z $(env_value ESCROW_XMR_WALLET_RPC_PASSWORD) ]]; then
     problems="$problems  - the Monero escrow wallet (monero-escrow-wallet profile) needs ESCROW_XMR_WALLET_RPC_PASSWORD"$'\n'
@@ -980,7 +1192,7 @@ cmd_init() {
   local bare=true local_mode=false mode='' database='' proxy='' nodes='' admin='' site_name='' site_given=false
   local xmr='' xmr_image='' xmr_network='' xmr_prune=''
   local detail=false local_http='' password1='' password2='' uploads=''
-  local xmr_escrow='' xmr_seed_key='' onion_dir='' onion_given='' onion_expected=''
+  local xmr_escrow='' xmr_seed_key='' onion_dir='' onion_given='' onion_expected='' nodes_tor=''
   (($# == 0)) || bare=false
   while (($#)); do
     case $1 in
@@ -988,7 +1200,7 @@ cmd_init() {
       --tor|--clearnet) [[ -z $mode ]] || usage; mode=${1#--} ;;
       --bitcoin|--bitcoin-*) die 'Bitcoin support was removed. This build is Monero-only; no configuration was written.' ;;
       --external-db|--behind-proxy|--nodes|--monero|--monero-image|--monero-network|--monero-prune|\
-      --monero-escrow|--monero-escrow-seed-key|--admin|--site-name|--uploads|--onion-key-dir|--onion-address)
+      --monero-escrow|--monero-escrow-seed-key|--admin|--site-name|--uploads|--onion-key-dir|--onion-address|--nodes-tor)
         (($# >= 2)) || usage
         case $1 in
           --external-db) database=$2; [[ -n $database ]] || usage ;;
@@ -998,6 +1210,7 @@ cmd_init() {
           --monero-image) xmr_image=$2 ;;
           --monero-network) refuse_network_name MONERO "$2" "$1 "; xmr_network=$(one_of "$1" "$2" mainnet stagenet) ;;
           --monero-prune) xmr_prune=$(one_of "$1" "$2" yes no) ;;
+          --nodes-tor) nodes_tor=$(one_of "$1" "$2" yes no) ;;
           --monero-escrow) xmr_escrow=$(one_of "$1" "$2" yes no) ;;
           --monero-escrow-seed-key) xmr_seed_key=$2; [[ -n $xmr_seed_key ]] || usage ;;
           --admin) admin=$2 ;;
@@ -1025,7 +1238,7 @@ cmd_init() {
       exit 2
     fi
   fi
-  if [[ $local_mode == true && -n $mode$database$proxy$nodes$xmr$xmr_image$xmr_network$xmr_prune$uploads$xmr_escrow ]]; then
+  if [[ $local_mode == true && -n $mode$database$proxy$nodes$xmr$xmr_image$xmr_network$xmr_prune$uploads$xmr_escrow$nodes_tor ]]; then
     echo '--local answers every question itself; combine it only with --admin and --site-name.' >&2
     exit 2
   fi
@@ -1162,6 +1375,17 @@ cmd_init() {
     *) die 'Invalid node choice' ;;
   esac
   xmr_choice=$choice xmr_image=$image
+  # A-530: a Tor install's local Monero node reaches its peers, and relays transactions, through its own Tor client
+  # (compose.nodes-tor.yaml) unless --nodes-tor no. Not asked: the default is the private choice, and the option or
+  # COMPOSE_FILE (docs/operator-guide.md#local-nodes-over-tor) changes it.
+  if [[ $mode == tor && $xmr_choice == local ]]; then
+    nodes_tor=${nodes_tor:-yes}
+  elif [[ $nodes_tor == yes ]]; then
+    echo '--nodes-tor yes needs a Tor install (--tor) with the local Monero node. Nothing was written.' >&2
+    exit 2
+  else
+    nodes_tor=no
+  fi
   # Monero escrow (A-449): only beside the local Monero node, on stagenet or (A-523) mainnet, whose daemon its own
   # wallet-RPC service (monero-escrow-wallet) shares. Off unless chosen; asked where the Monero questions are asked.
   # Its secret and its wallet-RPC password are generated below; the seed key (a public key whose private half the
@@ -1237,6 +1461,9 @@ cmd_init() {
     external_egress=true
     external_database=true
   fi
+  # After compose.nodes.yaml and the database overlay, as compose.nodes-tor.yaml's header lists it (check refuses it
+  # before compose.nodes.yaml).
+  if [[ $nodes_tor == yes ]]; then compose_files="${compose_files}:compose.nodes-tor.yaml"; fi
   if [[ $mode == tor || $local_http == yes ]]; then secure=false; fi
   # A-523: before .env is written, a mainnet install says what that means, per coin.
   if [[ $monero_network == mainnet ]]; then
@@ -1253,8 +1480,12 @@ cmd_init() {
         echo "Monero escrow stays off. On mainnet it is custodial with real funds: the market would hold every escrow wallet's keys (docs/operator-guide.md#monero-escrow)."
       fi
     fi
-    if [[ $mode == tor ]]; then
-      echo "Tor: the local nodes' peer-to-peer traffic is not routed through Tor unless compose.nodes-tor.yaml is added to COMPOSE_FILE (docs/operator-guide.md#local-nodes-over-tor); without it, their peers see this host's IP address."
+  fi
+  if [[ $mode == tor && $xmr_choice == local ]]; then
+    if [[ $nodes_tor == yes ]]; then
+      echo "Tor: the local Monero node reaches its peers, and relays transactions, through a Tor client of its own (compose.nodes-tor.yaml; docs/operator-guide.md#local-nodes-over-tor). Monero over Tor is unverified here. --nodes-tor no opts out."
+    else
+      echo "Tor: the local nodes' peer-to-peer traffic is not routed through Tor (--nodes-tor no) unless compose.nodes-tor.yaml is added to COMPOSE_FILE (docs/operator-guide.md#local-nodes-over-tor); without it, their peers see this host's IP address."
     fi
   fi
   # The local nodes' size on disk, per chain (estimates; docs/operator-guide.md#local-node-pruning), checked against
@@ -2049,6 +2280,7 @@ case ${1-} in
   status) shift; [[ $# -eq 0 ]] || usage; require_docker; cmd_status ;;
   setup-token) shift; require_docker; cmd_setup_token "$@" ;;
   add-mirror) shift; require_docker; cmd_add_mirror "$@" ;;
+  restore-onion) shift; require_docker; cmd_restore_onion "$@" ;;
   add-scanner) shift; require_docker; cmd_add_scanner "$@" ;;
   refresh-scanner) shift; require_docker; cmd_refresh_scanner "$@" ;;
   upgrade) shift; require_docker; cmd_upgrade "$@" ;;

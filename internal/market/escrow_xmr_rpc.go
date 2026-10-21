@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log"
 	"math"
 	"net/http"
 	"strconv"
@@ -210,6 +211,10 @@ type xmrEscrowRPC struct {
 	seenMu              sync.Mutex
 	daemonSeen, walSeen xmrSeen
 	versionsAt          time.Time
+
+	// autoRefreshFailing: the last auto_refresh after an open_wallet failed (A-641), so its log line is written once
+	// while that lasts.
+	autoRefreshFailing atomic.Bool
 }
 
 // xmrSeen is what one escrow node's calls in this process last showed (A-553): when it last answered (a result, or a
@@ -426,7 +431,26 @@ func (r *xmrEscrowRPC) openWallet(ctx context.Context, name, password string) er
 	}
 	err := classifyXMROpen(r.wallet.callWithin(ctx, xmrWalletSlowTimeout, "/json_rpc", "open_wallet", map[string]any{"filename": name, "password": password}, nil))
 	r.note(ctx, "wallet", err)
+	if err == nil {
+		r.autoRefreshOff(ctx)
+	}
 	return err
+}
+
+// autoRefreshOff turns the wallet-rpc's own background refresh off after an open_wallet (A-641). The watcher refreshes
+// each wallet it opens explicitly (checkWallet). The background refresh runs every 20 s by default, and the wallet-rpc
+// answers no other call while it runs; with the daemon unreachable it retries for about 40 s (seen on the fakechain,
+// A-631), so a relay_tx behind it could outlast payoutSendTimeout. monero-wallet-rpc 0.18.5.1 has no command-line flag
+// for this, only the auto_refresh method, which is server-wide and lasts until the wallet-rpc restarts, so it is sent
+// after every open. A failure is not fatal: one fixed line is logged while it lasts, and the pass goes on.
+func (r *xmrEscrowRPC) autoRefreshOff(ctx context.Context) {
+	if err := r.walletCall(ctx, "auto_refresh", map[string]any{"enable": false}, nil); err != nil {
+		if !r.autoRefreshFailing.Swap(true) {
+			log.Printf("escrow: Monero escrow wallet-rpc background refresh not turned off: %s; the market goes on", xmrErrorClass(err))
+		}
+		return
+	}
+	r.autoRefreshFailing.Store(false)
 }
 
 // closeWallet stores and closes the open wallet.
@@ -490,6 +514,9 @@ func (r *xmrEscrowRPC) probeWallet(ctx context.Context, name, password string) (
 	r.note(ctx, "wallet", err)
 	if xmrOpenRefusal(err) == xmrOpenNoFile {
 		return false, nil
+	}
+	if err == nil {
+		r.autoRefreshOff(ctx)
 	}
 	return err == nil, err
 }

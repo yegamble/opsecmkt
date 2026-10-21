@@ -60,7 +60,8 @@ func TestXMREscrowTorModeWithoutNodeProxyHoldsRelay(t *testing.T) {
 				t.Fatalf("admin page lacks %q:\n%s", want, page)
 			}
 		}
-		if p := x.panel(order, x.sessOf(order, roleBuyer)); !strings.Contains(p, "Built, checked and stored. The market holds its Monero relays") || strings.Contains(p, "sends it on its next pass") {
+		if p := x.panel(order, x.sessOf(order, roleBuyer)); !strings.Contains(p, "Built, checked and stored. The market holds its Monero relays") || strings.Contains(p, "sends it on its next pass") ||
+			!strings.Contains(p, "Nothing has been sent yet.") || strings.Contains(p, "answer was lost") { // no relay_tx yet (A-641)
 			t.Fatalf("the order page while relays are held:\n%s", p)
 		}
 		return x, logs, order, id, stored

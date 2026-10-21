@@ -49,8 +49,12 @@
 #     waits (deposit-missing), past twice the threshold in blocks too, with no transfer (A-614); once the same deposit
 #     transaction is mined again (send_raw_transaction) it builds a transaction spending exactly the stored key images
 #     (the stored row's and the daemon's decoded inputs) to the stored plan, which is relayed and confirms; the wallet
-#     may first refuse that build (-4, recorded wallet-refusing ring-stale, A-618) on a few passes, as the ring it stored for those key images predates the
-#     reorganisation, and each refusal must build and relay nothing.
+#     builds it only when its decoy picker draws the deposit's new output index, as the ring it stored for those key
+#     images predates the reorganisation (A-639): on each of the first two passes the leg accepts that build or a
+#     refusal that builds and relays nothing (-4, wallet-refusing ring-stale, then wallet-refused ring-stale flagged to
+#     staff, A-618); still refused, the operator guide's stale-ring remedy A is applied to
+#     ESCROW_XMR_REGTEST_WALLET_CONTAINER (required here too) after its key image and precondition queries, and the
+#     next pass builds and relays it once.
 #   SupersededMined (A-566): a release refused at relay until it fails, as in ReRequest, is re-requested; while the
 #     watcher builds the re-request, the refused transaction's stored blob reaches the daemon after all
 #     (send_raw_transaction) and is mined: the re-request is closed with no transfer or relay_tx, the old release is
@@ -106,9 +110,9 @@
 # The wallet-rpcs listen without RPC login on 127.0.0.1 only. The ReRequest leg stops and starts the monerod container
 # named by ESCROW_XMR_REGTEST_DAEMON_CONTAINER (required), so it needs the docker command, and monerod must run with
 # --keep-fakechain: without it, monerod deletes the fakechain when it starts (the leg checks the height it comes back
-# at). The StaleRing legs also stop and start the escrow wallet-rpc container named by ESCROW_XMR_REGTEST_WALLET_CONTAINER
-# (required there), which must keep its wallet directory, /home/monero/wallet, on a volume with its ring database inside
-# it (--shared-ringdb-dir), as compose.nodes.yaml runs it. StaleRingRemedyB needs tar with bzip2, and on an ARM host
+# at). The StaleRing legs, and ReRequest when its build stays refused, also stop and start the escrow wallet-rpc
+# container named by ESCROW_XMR_REGTEST_WALLET_CONTAINER (required there), which must keep its wallet directory,
+# /home/monero/wallet, on a volume with its ring database inside it (--shared-ringdb-dir), as compose.nodes.yaml runs it. StaleRingRemedyB needs tar with bzip2, and on an ARM host
 # Docker's amd64 emulation; the script fetches the CLI archive itself (see below) and the leg fails without it. For
 # example:
 #

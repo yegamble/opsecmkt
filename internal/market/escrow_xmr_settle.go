@@ -83,6 +83,12 @@ const (
 	// the next pass, and the xmrRelayAttempts-th refusal in a row is xmrRelayRefused. A relay that takes effect, or the
 	// daemon found to have the transaction, ends the count; an error that is not recorded (a timeout) leaves it.
 	xmrRelayRefusing = "relay-refusing"
+	// relay_tx of a built settlement with no other class ended with no answer the market can read (a timeout, a
+	// connection dropped after the whole request was sent, or a garbled answer, A-641): the wallet-rpc may have relayed
+	// it all the same, so the order page no longer says that nothing was sent. Nothing else changes: the next pass looks
+	// the stored transaction up and relays the same stored metadata again only if the daemon does not have it; a
+	// recorded outcome (relayed, a counted refusal, failed) replaces the class.
+	xmrRelayUnknown = "relay-unknown"
 	// transfer refused a destination (-2, WRONG_ADDRESS), with the role of the output validate_address names
 	// (destination-refused-claimant, -market_fee or -buyer_return; no suffix when none is named): flagged, and not built
 	// again for this settlement, except a refused fee address once ESCROW_XMR_FEE_ADDRESS names another one.
@@ -168,9 +174,11 @@ func xmrFlagNotePrefix(s *xmrSettleRow, class string, threshold int64) string {
 }
 
 // xmrReRequestMissingText is what the order page says of a re-request waiting with xmrWaitMissing (A-614): unlike a
-// release or refund it has no bounded wait, because it never builds from other coins.
+// release or refund it has no bounded wait, because it never builds from other coins. It promises no send without the
+// operator: after a reorganisation the deposit usually returns at a new global output index, and the wallet then refuses
+// every build ring-stale until the operator's stale-ring break-glass (A-618, A-640).
 const xmrReRequestMissingText = "A deposit this settlement spends is no longer listed by the escrow wallet (a reorganisation or a double spend took it out of the chain). " +
-	"This settlement pays the same destinations and amounts as the one it replaces, from exactly the same coins, so the market builds nothing until the wallet lists that deposit again, however long that takes; it then builds and sends it. Market staff were notified."
+	"This settlement pays the same destinations and amounts as the one it replaces, from exactly the same coins, so the market builds nothing until the wallet lists that deposit again, however long that takes; it then builds and sends it, after the operator's fix if the escrow wallet needs one. Market staff were notified."
 
 // xmrNoHandPay ends the text of a wait the market resolves itself once the operator has acted (A-618).
 const xmrNoHandPay = "Do not pay anything by hand for it, or it is paid twice."
@@ -222,6 +230,8 @@ func xmrSettleWaitText(class, kind string, threshold int64) string {
 		return xmrRelayRefusedText
 	case class == xmrBadMetadata:
 		return xmrBadMetadataText
+	case class == xmrRelayUnknown:
+		return "The market tried to send this transaction, but the answer was lost, so it may already be on the network. The market looks it up before it sends the same transaction again; it never builds another one in its place."
 	case strings.HasPrefix(class, xmrRelayRefusing+" "):
 		refusals, confirmed := xmrRelayRefusals(class)
 		text := "The Monero daemon refused this transaction (" + strconv.Itoa(refusals) + " time(s) in a row); no other transaction spent its coins. The market sends the same stored transaction again on its next pass, and records it as failed if it is refused " + strconv.Itoa(xmrRelayAttempts) + " times in a row."
@@ -1137,7 +1147,8 @@ func (a *App) storeXMRBuilt(ctx context.Context, s *xmrSettleRow, built xmrBuilt
 // is relayed; a definite refusal is resolved by xmrRelayRefused; metadata the wallet cannot parse (-27, which only a
 // corrupted row explains, since the wallet made it) fails the settlement at once rather than being relayed again on
 // every pass; any other error (a timeout, say) leaves it as it is, and the next pass looks it up before it relays the
-// same metadata again. While xmrRelayHold holds, nothing is relayed and s stays built.
+// same metadata again. A built settlement with no other class whose relay got no readable answer is recorded
+// xmrRelayUnknown (A-641). While xmrRelayHold holds, nothing is relayed and s stays built.
 func (a *App) relayXMRStored(ctx context.Context, s *xmrSettleRow) error {
 	if a.xmrRelayHold() != "" {
 		return nil
@@ -1154,7 +1165,23 @@ func (a *App) relayXMRStored(ctx context.Context, s *xmrSettleRow) error {
 	case errors.As(err, &re) && re.Service == "wallet" && re.Code == -27:
 		return a.failXMRSettlement(ctx, s, xmrBadMetadata)
 	}
+	if xmrRelayAnswerLost(err) && s.State == "built" && s.Wait == "" {
+		// Compare-and-set: a class recorded meanwhile (a restore's hold, say) is kept.
+		if _, werr := a.execEscrowOrder(ctx, s.OrderID, "UPDATE xmr_settlements SET send_error=$2,updated=now() WHERE id=$1 AND state='built' AND send_error=''", s.ID, xmrRelayUnknown); werr != nil {
+			return errors.Join(err, werr)
+		}
+		s.Wait = xmrRelayUnknown
+	}
 	return err
+}
+
+// xmrRelayAnswerLost reports whether relay_tx's error leaves its outcome unknown: the request may have reached the
+// wallet-rpc, which may have relayed it, but no answer the market can read came back (a timeout, a connection dropped
+// after the whole request was sent, or a bad reply). A refused connection, rejected credentials or a JSON-RPC error
+// are answers in which nothing was relayed.
+func xmrRelayAnswerLost(err error) bool {
+	var re *xmrRPCError
+	return errors.As(err, &re) && re.Service == "wallet" && (re.Class == "timeout" || re.Class == "bad-reply" || re.Dropped)
 }
 
 // xmrOnNetwork looks settlement s's transaction up in the escrow daemon: found (in its pool or its chain) with its

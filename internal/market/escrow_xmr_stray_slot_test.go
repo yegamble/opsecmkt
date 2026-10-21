@@ -351,7 +351,15 @@ func TestXMREscrowStrayReRequestReviewReasons(t *testing.T) {
 		"Deposit to an escrow after the order closed, not counted; a stray refund from the escrow returns it to the buyer; now conflicted or missing" + waitingClaim(again, first, true),
 		"Escrow deposit left out of its settlement, not counted; a stray refund from the escrow returns it to the buyer" + waitingClaim(again, first, false),
 	}
-	if got := x.reviewReasons(order); !slices.Equal(got, want) {
+	got := x.reviewReasons(order)
+	if !slices.Equal(got, want) {
 		t.Fatalf("payment-review reasons:\n got %q\nwant %q", got, want)
+	}
+	// A-640: only the missing deposit's reason carries the stale-ring caveat, and neither promises a send on its own.
+	if !strings.Contains(got[0], staleRingClause) || strings.Contains(got[1], staleRingClause) {
+		t.Fatalf("stale-ring caveat: %q", got)
+	}
+	for _, r := range got {
+		mustNotContain(t, r, oldReRequestPromise...)
 	}
 }

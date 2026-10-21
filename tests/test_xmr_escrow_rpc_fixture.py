@@ -160,6 +160,8 @@ class EscrowBehaviourTest(unittest.TestCase):
         self.assertEqual(self.n.wallet('open_wallet', {'filename': 'escrow-209901-01', 'password': 'two'})['error']['code'], -1)
         self.assertEqual(self.n.ok('get_address', {'account_index': 0, 'address_index': [0]})['address'], b)  # still the open one
         self.n.ok('open_wallet', {'filename': 'escrow-209901-01', 'password': 'one'})
+        self.assertEqual(self.n.ok('auto_refresh', {'enable': False}), {})  # sent after each open (A-641)
+        self.assertEqual(self.n.wallet('auto_refresh', {'enable': 'no'})['error']['code'], -32602)
         self.assertEqual(self.n.ok('get_address', {'account_index': 0, 'address_index': [0]})['address'], a)
         self.assertEqual(len(self.n.ok('query_key', {'key_type': 'mnemonic'})['key'].split()), 25)
         self.n.ok('refresh')

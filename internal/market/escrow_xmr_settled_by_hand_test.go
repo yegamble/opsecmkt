@@ -665,16 +665,23 @@ func (x *xmrEscrowEnv) reviewReasons(order string) []string {
 func waitingClaim(n, m int64, missing bool) string {
 	s := "; Monero escrow settlement " + strconv.FormatInt(n, 10) + ", which re-requests settlement " + strconv.FormatInt(m, 10) + ", claims it"
 	if missing {
-		s += " and waits: the escrow wallet no longer lists this deposit, and the market sends settlement " + strconv.FormatInt(n, 10) + " on its own once it is listed again"
+		s += " and waits: the escrow wallet no longer lists this deposit; once it is listed again the market builds and sends settlement " + strconv.FormatInt(n, 10) + ", and " + staleRingClause
 	}
 	return s + ". Do not pay anything by hand for it, or it is paid twice"
 }
+
+// staleRingClause is the caveat every staff text of a re-request waiting for a missing deposit carries (A-640): the
+// deposit usually returns at a new global output index, so the wallet refuses the build ring-stale (A-618).
+const staleRingClause = "if the escrow wallet then refuses the build because its stored ring predates the reorganisation, staff are alerted and the operator follows the stale-ring break-glass"
+
+// oldReRequestPromise is the A-614 wording A-640 retired: an unconditional automatic send.
+var oldReRequestPromise = []string{"on its own once", "it then builds and sends it. Market"}
 
 // waitingAlert is the desk's line for a re-request n of settlement m requested for more than 24 hours while it waits
 // for a missing deposit (A-617).
 func waitingAlert(n, m int64) string {
 	return "Monero escrow settlement has been requested for more than 24 hours: settlement " + strconv.FormatInt(n, 10) + ", which re-requests settlement " + strconv.FormatInt(m, 10) +
-		", waits because the escrow wallet no longer lists a deposit it spends, and the market sends it on its own once that deposit is listed again. Do not pay anything by hand for it, or it is paid twice"
+		", waits because the escrow wallet no longer lists a deposit it spends; once that deposit is listed again the market builds and sends it, and " + staleRingClause + ". Do not pay anything by hand for it, or it is paid twice"
 }
 
 // supersededWaiting is the PAY613-4 probe up to its double spend: a release that failed relay-refused is re-requested,
@@ -733,6 +740,13 @@ func TestXMREscrowReRequestWaitsForMissingDeposit(t *testing.T) {
 		strings.Contains(panel, "from the deposits that remain") || strings.Contains(panel, "nothing to settle") {
 		t.Fatalf("vendor's panel:\n%s", panel)
 	}
+	// A-640: the party's text promises the send only after the operator's fix if the wallet needs one (the deposit
+	// usually returns at a new global index, and the stored ring then makes every build ring-stale, A-618), and names
+	// no wallet or node internals.
+	if !strings.Contains(panel, "it then builds and sends it, after the operator's fix if the escrow wallet needs one. Market staff were notified.") {
+		t.Fatalf("vendor's panel lacks the A-640 caveat:\n%s", panel)
+	}
+	mustNotContain(t, panel, append(oldReRequestPromise, "ring", "break-glass", "rpc:", "monerod", "wallet-rpc", "global")...)
 	page := html.UnescapeString(x.page("/order?id="+order, admin))
 	mustNotContain(t, page, `action="/admin/escrow-xmr-settled-by-hand"`, "Dismiss settlement", "still claims deposits of this escrow")
 	// No failure alert: like any settlement waiting, it is an escrow alert once requested for more than 24 hours.
@@ -743,11 +757,15 @@ func TestXMREscrowReRequestWaitsForMissingDeposit(t *testing.T) {
 	// waits for this deposit to be listed again, and not to pay it by hand.
 	if got := x.reviewReasons(order); len(got) != 1 || !strings.HasSuffix(got[0], waitingClaim(second, first, true)) || strings.Count(got[0], "re-requests") != 1 {
 		t.Fatalf("payment-review reason while it waits:\n got %q\nwant suffix %q", got, waitingClaim(second, first, true))
+	} else {
+		mustNotContain(t, got[0], oldReRequestPromise...)
 	}
 	agExec(x.testEnv, "UPDATE xmr_settlements SET created=now()-interval '25 hours' WHERE id=$1", second)
 	if desk := deskAlertIn(html.UnescapeString(x.page("/moderator", admin)), order); !x.alerting(order) ||
 		!strings.Contains(desk, waitingAlert(second, first)) || strings.Contains(desk, "failed before any transaction was built") {
 		t.Fatalf("desk alert after 24 hours:\n got %v %q\nwant %q", x.alerting(order), desk, waitingAlert(second, first))
+	} else {
+		mustNotContain(t, desk, oldReRequestPromise...)
 	}
 	// Past twice the threshold in blocks it still waits: no other coins, no new notice, nothing built.
 	x.fake.mine(int(3 * x.A.escrowXMR.confirmations))

@@ -35,6 +35,7 @@ Refuses when `.env` or the project's volumes already exist. Any question your op
 - `--monero-network mainnet|stagenet`: mainnet by default, with real funds. Use stagenet for a test market.
 - `--monero-image IMAGE`: pinned release tag or immutable digest, never `latest`.
 - `--monero-prune yes|no`: prune by default.
+- `--nodes-tor yes|no`: Tor only. `yes` (default with `--tor` and a local node) adds `compose.nodes-tor.yaml`, so the daemon reaches peers and relays transactions through a Tor client of its own; Monero over Tor is unverified. `no` sends its peer traffic from this host's IP address, with a warning on every `check`. `upgrade` never changes it. See [Local nodes over Tor](../operator-guide.md#local-nodes-over-tor).
 - `--monero-escrow yes|no`: enable custodial escrow with the local daemon; default `no`.
 - `--monero-escrow-seed-key FILE`: armored OpenPGP public key used to encrypt wallet seeds. Keep its private half offline.
 
@@ -134,6 +135,29 @@ Add a second onion address for the same market. Tor installs only.
   With `--mirror-onion-key-dir`: the address the key must have.
 
 See [Optional onion mirror](../operator-guide.md#optional-onion-mirror).
+
+## restore-onion
+
+Restore an onion identity backup, decrypted on stdin, into its empty volume before that Tor first starts. Tor installs
+only; the private administrator onion (`tor_admin_identity`) is refused.
+
+**Command:** `age -d -i "$AGE_IDENTITY" BACKUP | ./scripts/install.sh restore-onion tor_identity|tor_mirror_identity --onion-address ADDR.onion`
+
+It refuses a compressed archive, any entry other than the key files and `hostname` (links, other names or paths,
+duplicates), oversized files, keys that fail the import's checks or Tor's offline dry run, an address other than the
+one you give or confirm, a `hostname` that is not the address the key derives, a secret key already in another onion's
+volume (compared byte for byte), a running Tor service and a volume that is not empty or cannot be read. Nothing is
+written until every check passes; `hostname` is never written. Containers that carry key bytes run with
+`--log-driver none`. The last line is the derived address.
+
+### Flags
+
+- `--onion-address ADDR.onion`<br>
+  The onion address you published for this identity; the key must derive it. Without it, the derived address is shown
+  on the terminal (`/dev/tty`, as stdin holds the backup) for you to confirm with `yes`; with no terminal the restore
+  refuses.
+
+See [Secrets, .env and onion identities](../operator-guide.md#secrets-env-and-onion-identities).
 
 ## add-scanner
 

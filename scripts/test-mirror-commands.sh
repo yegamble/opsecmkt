@@ -51,11 +51,15 @@ inline_commands=(
   'docs/testnet-runbook.md|run `docker compose up -d`'
   'docs/testnet-runbook.md|`docker compose ps tor-mirror`'
 )
-# database|COMPOSE_FILE|COMPOSE_PROFILES as scripts/install.sh writes them for Tor, with and without local nodes.
-# tests/test_installer.py runs the installer and fails if its values drift from these lines.
+# database|COMPOSE_FILE|COMPOSE_PROFILES as scripts/install.sh writes them for Tor, with and without local nodes:
+# new installs with the local node list compose.nodes-tor.yaml (A-530); those without it are --nodes-tor no or
+# installs from before A-530, which upgrade keeps. tests/test_installer.py runs the installer and fails if its values
+# drift from these lines.
 installs=(
+  'internal|compose.yaml:compose.tor.yaml:compose.nodes.yaml:compose.internal-db.yaml:compose.nodes-tor.yaml|internal-db,monero'
   'internal|compose.yaml:compose.tor.yaml:compose.nodes.yaml:compose.internal-db.yaml|internal-db,monero'
   'internal|compose.yaml:compose.tor.yaml:compose.nodes.yaml:compose.internal-db.yaml|internal-db'
+  'external|compose.yaml:compose.tor.yaml:compose.nodes.yaml:compose.nodes-tor.yaml:compose.external-egress.yaml|monero'
   'external|compose.yaml:compose.tor.yaml:compose.nodes.yaml:compose.external-egress.yaml|monero'
   'external|compose.yaml:compose.tor.yaml:compose.nodes.yaml:compose.external-egress.yaml|'
 )

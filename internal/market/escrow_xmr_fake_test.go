@@ -467,6 +467,17 @@ var fakeXMRWalletMethods = map[string]func(f *fakeXMREscrow, params json.RawMess
 		return map[string]any{}, 0, ""
 	},
 	"store": func(*fakeXMREscrow, json.RawMessage) (any, int64, string) { return map[string]any{}, 0, "" },
+	// auto_refresh: the call is recorded (calls); the fake has no background refresh to turn on or off (A-641).
+	"auto_refresh": func(_ *fakeXMREscrow, p json.RawMessage) (any, int64, string) {
+		var q map[string]any
+		if json.Unmarshal(p, &q) != nil {
+			return nil, -32602, "Invalid params"
+		}
+		if _, ok := q["enable"].(bool); !ok {
+			return nil, -32602, "Invalid params"
+		}
+		return map[string]any{}, 0, ""
+	},
 	"refresh": func(f *fakeXMREscrow, _ json.RawMessage) (any, int64, string) {
 		f.open.scan(false)
 		return map[string]any{"blocks_fetched": 0}, 0, ""

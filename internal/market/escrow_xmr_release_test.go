@@ -238,8 +238,7 @@ func TestXMREscrowDigitalClaim(t *testing.T) {
 // P3-R7 (P2-R1 for Monero): a paid physical Monero escrow order is marked shipped only through the Monero escrow form,
 // with a fresh claim address and the vendor's password; in one transaction the order is shipped, the release requested
 // to that address, and release_at set from the escrow's release_days snapshot (a later change of the setting does not
-// reach it). The vendor's ship and the buyer's no-ship cancel race on the order row: exactly one wins and the other is
-// told which, with no Bitcoin wording.
+// reach it). The race with the buyer's no-ship cancel is TestXMREscrowShipNoShipCancelRaceOneOutcome.
 func TestXMREscrowShipStepUp(t *testing.T) {
 	x := newXMREscrowEnv(t)
 	x.mustPoll()
@@ -300,55 +299,6 @@ func TestXMREscrowShipStepUp(t *testing.T) {
 	noBitcoinWords(t, "the order history", ev)
 	if code, _ := x.xmrShip(order, x.vendorSess, testXMRAddr("claim again "+order, true), testPassword); code != 409 {
 		t.Fatalf("a second ship: %d", code)
-	}
-
-	// The race with the buyer's no-ship cancel, from the ship-by time on.
-	shippedAt := func(order string) string {
-		return physString(t, x.testEnv, `SELECT to_char(max(created) AT TIME ZONE 'UTC','YYYY-MM-DD HH24:MI "UTC"') FROM order_events WHERE order_id=$1 AND to_state='shipped' AND from_state='paid'`, order)
-	}
-	cancelledAt := func(order string) string {
-		return physString(t, x.testEnv, `SELECT to_char(max(created) AT TIME ZONE 'UTC','YYYY-MM-DD HH24:MI "UTC"') FROM order_events WHERE order_id=$1 AND to_state='cancelled'`, order)
-	}
-	count := func(order, kind string) int {
-		return agInt(x.testEnv, "SELECT count(*) FROM xmr_settlements WHERE order_id=$1 AND kind=$2", order, kind)
-	}
-	for i := range 3 {
-		order, buyerSess := x.paidXMRPhysical(physical)
-		x.forceDeadline(order, "ship_by=now()-interval '1 minute'")
-		tx, err := x.DB.Begin()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err = tx.Exec("SELECT 1 FROM orders WHERE id=$1 FOR UPDATE", order); err != nil {
-			t.Fatal(err)
-		}
-		var shipCode, cancelCode int
-		var shipBody, cancelBody string
-		var wg sync.WaitGroup
-		wg.Add(2)
-		go func() {
-			defer wg.Done()
-			shipCode, shipBody = x.xmrShip(order, x.vendorSess, testXMRAddr("race claim "+strconv.Itoa(i)+order, true), testPassword)
-		}()
-		go func() { defer wg.Done(); cancelCode, cancelBody = x.xmrBuyerCancel(order, buyerSess) }()
-		x.waitForLockWaits(2)
-		tx.Commit()
-		wg.Wait()
-		switch {
-		case shipCode == 303 && cancelCode == 409:
-			if x.state(order) != stateShipped || count(order, "release") != 1 || count(order, "refund") != 0 ||
-				!containsAll(cancelBody, "marked this order shipped at "+shippedAt(order), "Confirm receipt") {
-				t.Fatalf("ship won: order %s, cancel said %s", x.state(order), cancelBody)
-			}
-			noBitcoinWords(t, "the refused cancel", cancelBody)
-		case cancelCode == 303 && shipCode == 409:
-			if x.state(order) != stateCancelled || count(order, "release") != 0 || count(order, "refund") != 1 ||
-				!strings.Contains(shipBody, "buyer cancelled this order at "+cancelledAt(order)) {
-				t.Fatalf("cancel won: order %s, ship said %s", x.state(order), shipBody)
-			}
-		default:
-			t.Fatalf("ship %d %s; cancel %d %s", shipCode, shipBody, cancelCode, cancelBody)
-		}
 	}
 }
 

@@ -26,6 +26,69 @@ public and new ones publish at once, as before. Rolling the application back to 
 leaves the columns unused; a listing still pending or rejected would then be public again, so approve pending
 listings, and take down rejected ones you do not want public, before downgrading.
 
+## A Tor install's local Monero node defaults to Tor (A-530)
+
+No migration, no new key. A **new** `./scripts/install.sh` Tor install with the local Monero node now lists
+`compose.nodes-tor.yaml` in `COMPOSE_FILE`, so the daemon reaches its peers, and relays Monero escrow settlements,
+through a Tor client of its own ([Local nodes over Tor](docs/operator-guide.md#local-nodes-over-tor); Monero over Tor
+is unverified). `--nodes-tor no` keeps the old layout, with the old warning.
+
+**Existing installs keep their recorded choice.** `upgrade` (and a plain `git pull` with `docker compose up -d`) never
+adds or removes the overlay: a recorded `COMPOSE_FILE` is kept as it is, and the one `upgrade` derives for an `.env`
+without `COMPOSE_FILE` is the layout that install already ran. Adopting the overlay changes the node's networking (its
+direct egress network becomes internal, the pinned subnet `10.199.42.0/28` must be free on the host, a new `tor-socks`
+container and volume appear, and Monero escrow relays held in Tor mode start going out), so it is the operator's step,
+not a side effect of a redeploy. What changes for you: while `APP_MODE=tor`, the `monero` profile and no
+`compose.nodes-tor.yaml` remain, `./scripts/install.sh check` (which `upgrade` runs) now prints a warning that the
+node's peers see this host's IP address. To adopt it, append `compose.nodes-tor.yaml` after `compose.nodes.yaml` in
+`COMPOSE_FILE`, run `./scripts/install.sh check`, then `docker compose up -d --build`. To keep direct node traffic,
+ignore the warning. The native `opsecmkt deploy` controller is unchanged; its `deploy plan` now says that its
+development-only local daemon is not routed through Tor.
+
+## monerod's own log file is capped (A-538)
+
+No migration or setting. The bundled `monero` service (`compose.nodes.yaml`, `compose.nodes-tor.yaml` and the native
+`deploy` development render) now starts monerod with `--max-log-file-size=10485760 --max-log-files=3`. monerod writes
+`bitmonero.log` (`stagenet/bitmonero.log` on stagenet) in the `monero_data` volume, outside Docker's log rotation, and by
+default kept up to 50 files of 100 MB there; it now keeps at most three files of about 10 MiB. The escrow wallet-rpc's
+log was already capped on its tmpfs and is unchanged. The log level stays at the default; see
+[Resource limits and log rotation](docs/operator-guide.md#resource-limits-and-log-rotation) for what the logs can hold
+and how to also enforce the retention policy's 14-day age.
+
+- **Compose:** for this change, `docker compose up -d` recreates only the `monero` container with the new command. Its volume, chain,
+  wallets, `.env`, onion identities and every other container are kept; nothing is reprovisioned. If you replaced the
+  `monero` command in a file of your own, add the two flags there.
+- **Native `deploy` (development nodes):** `deploy redeploy` writes the new configuration but starts only the app;
+  `deploy up --dir DIR` then recreates the `monero` container with it, keeping every key, volume and the retention state.
+- **Existing oversized logs** are not deleted at startup. On its first log line monerod rotates a `bitmonero.log` over the
+  new size whole (it is not truncated) and deletes the oldest rotated files until two remain; the remaining old large
+  files go at the next two rotations, after about 20 MiB of new log. Checked against monerod 0.18.5.1 with a 15 MB log
+  and six rotated files. To free the space at once, or if you are not keeping logs from before the upgrade, list them after
+  the restart, then delete the rotated files (`bitmonero.log-<UTC time>`) last written more than an hour ago; copy any
+  you still need privately first:
+
+  ```sh
+  docker compose exec -T monero find /home/monero/.bitmonero -maxdepth 2 -name 'bitmonero.log*' -exec ls -l {} +
+  docker compose exec -T monero find /home/monero/.bitmonero -maxdepth 2 -name 'bitmonero.log-*' -mmin +60 -delete
+  ```
+
+  A log left from another network (for example `stagenet/bitmonero.log` after a switch to mainnet) is no longer written
+  or rotated, and the second command removes only its rotated files: remove that `bitmonero.log` itself by its path
+  (`docker compose exec -T monero rm /home/monero/.bitmonero/stagenet/bitmonero.log`).
+
+## The onion identity restore checks the backup first (A-531)
+
+No migration or setting. The operator guide's [onion identity restore](docs/operator-guide.md#secrets-env-and-onion-identities)
+now pipes the decrypted backup into `./scripts/install.sh restore-onion IDENTITY` instead of unpacking it with `tar -x`
+in a container, so run it from a checkout of this release. Backups taken with the guide's commands restore unchanged,
+but the block now also needs `address` set to the onion address you published for that identity: the key must derive
+it. The restore now refuses a compressed archive, a backup holding anything but `marketplace/` with its key files,
+`hostname` and an empty `authorized_clients/` (for example a link or an extra file), oversized files, keys that fail the
+import's checks or Tor's offline dry run, a `hostname` that is not the address the key derives, a secret key already
+in the other public onion's or the administrator onion's volume (compared byte for byte, so also before that Tor first
+started), and `tor_admin_identity`. It no longer copies `hostname` into the volume (Tor writes it from the key), runs
+its key-carrying containers with `--log-driver none`, and prints the derived address.
+
 ## The upload backend accepts only a clientAuth gateway certificate (A-589)
 
 No migration or setting. The private upload backend now answers 404 on every `/v1/uploads/*` route to a client
@@ -198,7 +261,9 @@ No migration and no new setting. An administrator's re-request of a failed Moner
 the transaction it replaces. If a deposit those coins came from is no longer listed by the escrow wallet (a
 reorganisation or a double spend since the re-request was carried out), the new settlement now stays requested
 (`send_error = 'deposit-missing'`), staff get one order note and notice each time it starts waiting, and it is built and sent once the wallet lists
-the deposit again. It has no bounded wait (a first release or refund waits twice the threshold in blocks, A-554),
+the deposit again. After a reorganisation the deposit usually returns at a new global output index and the wallet then
+refuses that build *ring-stale* (A-618): staff are alerted, and the operator follows the operator guide's stale-ring
+break-glass before it is sent (A-640). It has no bounded wait (a first release or refund waits twice the threshold in blocks, A-554),
 because it can be built from no other coins; past 24 hours it is an escrow alert like any settlement still requested,
 and its monthly wallet is kept from destruction while it waits. It can never pay twice: both transactions spend the
 same coins, and the database refuses any others.

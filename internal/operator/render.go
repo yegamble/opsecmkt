@@ -107,7 +107,9 @@ func render(dir string, c Config) ([]byte, map[string]string, error) {
 		daemon := hardened(c.MoneroImage, []string{"backend", "node_egress"}, "2g")
 		daemon["user"] = "1000:1000"
 		daemon["pids_limit"] = 512
-		daemon["command"] = []string{"--stagenet", "--data-dir=/home/monero/.bitmonero", "--restricted-rpc", "--rpc-bind-ip=127.0.0.1", "--rpc-bind-port=18089", "--rpc-restricted-bind-ip=0.0.0.0", "--rpc-restricted-bind-port=18081", "--confirm-external-bind", "--no-igd", "--no-zmq", "--prune-blockchain", "--sync-pruned-blocks"}
+		// monerod also writes stagenet/bitmonero.log in its volume, outside Docker's rotation; its defaults keep 50
+		// files of 100 MB. Cap it at three 10 MiB files, as compose.nodes.yaml does (A-538).
+		daemon["command"] = []string{"--stagenet", "--data-dir=/home/monero/.bitmonero", "--restricted-rpc", "--rpc-bind-ip=127.0.0.1", "--rpc-bind-port=18089", "--rpc-restricted-bind-ip=0.0.0.0", "--rpc-restricted-bind-port=18081", "--confirm-external-bind", "--no-igd", "--no-zmq", "--max-log-file-size=10485760", "--max-log-files=3", "--prune-blockchain", "--sync-pruned-blocks"}
 		daemon["volumes"] = []string{"monero_data:/home/monero/.bitmonero"}
 		services["monero"] = daemon
 		volumes["monero_data"] = map[string]any{}

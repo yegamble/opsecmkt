@@ -32,10 +32,6 @@ import (
 // xmrMineMargin: blocks mined beyond a confirmation threshold, for a transaction that missed the next block.
 const xmrMineMargin = 2
 
-// xmrReRequestPasses bounds the passes TestXMREscrowRegtestReRequest gives a re-request whose transfer the wallet may
-// refuse while its ring database holds a ring from before a reorganisation (see there).
-const xmrReRequestPasses = 10
-
 // xmrRPCProxy forwards JSON-RPC requests to the escrow wallet-rpc, counting each method; drop[method] makes the next
 // call of method lose its answer after the wallet-rpc answered it (a timeout after the call took effect), and
 // around[method] runs around the forwarding of each call of method (it must call forward once).
@@ -45,6 +41,7 @@ type xmrRPCProxy struct {
 	counts map[string]int
 	drop   map[string]bool
 	around map[string]func(forward func())
+	wallet *rpcClient // the escrow wallet-rpc itself, for calls the proxy must not count
 
 	// transferError is a fakechain-only diagnostic; never retain requests or successful wallet results.
 	transferError *rpcError
@@ -53,6 +50,10 @@ type xmrRPCProxy struct {
 func newXMRRPCProxy(t *testing.T, target string) *xmrRPCProxy {
 	t.Helper()
 	p := &xmrRPCProxy{counts: map[string]int{}, drop: map[string]bool{}, around: map[string]func(func()){}}
+	var err error
+	if p.wallet, err = newRPCClient("monero escrow wallet", target, "2.0", true); err != nil {
+		t.Fatal(err)
+	}
 	p.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		var req struct {
@@ -533,17 +534,36 @@ func TestXMREscrowRegtestExternal(t *testing.T) {
 // forwarded and starts it again once the wallet-rpc has answered, then waits up to two minutes until monerod answers at
 // the height it had: it must run with --keep-fakechain, or its start deletes the fakechain. Idle connections to it are
 // dropped, since it may come back on another address. It runs on the proxy's goroutine, so it reports with Errorf.
-func (r *xmrRegtest) daemonStoppedAround(name string) func(forward func()) {
+//
+// A-631: the escrow wallet-rpc's own auto-refresh (every 20 s) is switched off, directly rather than through p, before
+// monerod is stopped. An auto-refresh that starts in that window retries the missing daemon (pull_blocks, up to
+// three retries) and the wallet-rpc answers no RPC until it gives up; on a CI runner the retries and the forwarded
+// call's own attempt were 10 s apart, so the call was refused only about 40 s after the stop, past the market's
+// deadline (payoutSendTimeout for relay_tx), and the leg saw "relay_tx: timeout" instead of the refusal. The forwarded
+// call alone now meets the stopped daemon. The transcript gives the stop's and the forwarded call's durations.
+func (r *xmrRegtest) daemonStoppedAround(p *xmrRPCProxy, name string) func(forward func()) {
 	return func(forward func()) {
 		ctx := context.Background()
 		var before, after struct {
 			Height int64 `json:"height"`
 		}
+		autoRefresh := func(on bool) {
+			if err := p.wallet.callWithin(ctx, 2*time.Minute, "/json_rpc", "auto_refresh", map[string]any{"enable": on}, nil); err != nil {
+				r.t.Errorf("escrow wallet-rpc auto_refresh %v: %v", on, err)
+			}
+		}
+		// A-641: the market itself turns it off after every open_wallet, so it is not switched back on afterwards; this
+		// call still covers a wallet-rpc restarted since its last open_wallet.
+		autoRefresh(false)
 		err := r.daemon.call(ctx, "/json_rpc", "get_info", nil, &before)
+		began := time.Now()
 		if out, stop := exec.Command("docker", "stop", "-t", "30", name).CombinedOutput(); err != nil || stop != nil {
 			r.t.Errorf("stopping monerod (container %s): %v, %v %s", name, err, stop, out)
 		}
+		sent := time.Now()
 		forward()
+		r.t.Logf("monerod (container %s) stopped in %s; the escrow wallet-rpc answered the forwarded call in %s", name,
+			sent.Sub(began).Round(time.Millisecond), time.Since(sent).Round(time.Millisecond))
 		if out, err := exec.Command("docker", "start", name).CombinedOutput(); err != nil {
 			r.t.Errorf("docker start %s: %v %s", name, err, out)
 			return
@@ -570,14 +590,24 @@ func (r *xmrRegtest) daemonStoppedAround(name string) func(forward func()) {
 // administrator re-requests it with the password step-up after a reorganisation took the funding deposit out of the
 // chain (A-614): the new settlement waits (deposit-missing), past A-554's bounded wait too, with no transfer. Once the
 // same deposit transaction is mined again, the new build spends exactly the stored key images (the stored row's, and
-// the inputs the daemon decodes) to the stored plan, is relayed and confirms. The wallet may refuse that build (-4) on
-// some passes first, as its stored ring predates the reorganisation; each refusal is a wait that builds and relays
-// nothing, within xmrReRequestPasses passes.
+// the inputs the daemon decodes) to the stored plan, is relayed once and confirms.
+//
+// A-639: the deposit is mined again at another global output index, and the refused build stored a ring for its key
+// image that lacks it, so the wallet refuses the build (ring-stale, A-618) unless its decoy picker happens to draw the
+// new index on that pass (CI run 39610521956 was refused on 9 passes in a row; its rerun built on the second). Both
+// outcomes are asserted, so the leg no longer depends on that draw: on each of the first two passes it is built and
+// relayed once, or refused with nothing built or relayed (wallet-refusing ring-stale, then wallet-refused ring-stale,
+// flagged to staff). Still refused, the operator guide's stale-ring break-glass is followed: its step-1 query gives the
+// stored key images, all unspent, remedy A's precondition query answers 0, remedy A is applied
+// (ESCROW_XMR_REGTEST_WALLET_CONTAINER), and the next pass builds and relays it once.
 func TestXMREscrowRegtestReRequest(t *testing.T) {
-	container := os.Getenv("ESCROW_XMR_REGTEST_DAEMON_CONTAINER")
-	if container == "" {
-		t.Skip("set ESCROW_XMR_REGTEST_DAEMON_CONTAINER to the monerod container's name (scripts/test-escrow-xmr-regtest.sh): this leg stops and starts it")
+	container, walletC := os.Getenv("ESCROW_XMR_REGTEST_DAEMON_CONTAINER"), os.Getenv("ESCROW_XMR_REGTEST_WALLET_CONTAINER")
+	if container == "" || walletC == "" {
+		t.Skip("set ESCROW_XMR_REGTEST_DAEMON_CONTAINER and ESCROW_XMR_REGTEST_WALLET_CONTAINER (scripts/test-escrow-xmr-regtest.sh): this leg stops and starts monerod, and applies the stale-ring remedy A to the escrow wallet-rpc when its build is refused")
 	}
+	// The guide's queries: the stuck key images, remedy A's precondition.
+	keyImagesSQL := breakGlassSQL(t, "array_to_string(o.key_images")
+	inFlightSQL := breakGlassSQL(t, "SELECT count(*) FROM xmr_settlements")
 	r, p := newXMRSettleRegtest(t)
 	order, addr := r.completedReal()
 	id, failed := r.relayFailedReal(p, container, order)
@@ -614,32 +644,63 @@ func TestXMREscrowRegtestReRequest(t *testing.T) {
 	// reRequestMissingReal); once the same deposit transaction is mined again it is built from the stored key images.
 	r.reRequestMissingReal(p, order, id)
 	// The deposit is mined again at another global output index, while the escrow wallet's ring database still holds
-	// the ring the refused build used for its key image (wallet2::get_outs stores every build's rings, and reuses a
-	// known one). That ring no longer contains the real output, and monero-wallet-rpc 0.18.5.1 asks the daemon for it
-	// only when its decoy picker happens to draw its new index, so transfer may fail (-4, "Daemon response did not include
-	// the requested real output", recorded ring-stale, A-618) on a pass and succeed on a later one. Each refusal must be a
-	// wait that builds and relays nothing; the new settlement is then built and relayed exactly once.
-	// TestXMREscrowRegtestStaleRing makes that refusal certain and rehearses the operator's remedy.
+	// the ring the refused build used for its key image (wallet2::get_outs stores every build's rings and reuses a known
+	// one). That ring no longer contains the real output: monero-wallet-rpc 0.18.5.1 logs "Known ring does not include
+	// the spent output" and asks the daemon for the new index only when one of the decoys it draws beside the stored
+	// ring is that index, so on each pass transfer is either refused (-4, "Daemon response did not include the requested
+	// real output", recorded ring-stale, A-618) or built, by chance. TestXMREscrowRegtestStaleRing makes the refusal
+	// certain.
 	relays := p.count("relay_tx")
 	var next xmrSettlement
 	refused := 0
-	for pass := 1; ; pass++ {
+	for pass := 1; pass <= 2; pass++ {
+		flags := r.staffFlags(order)
 		r.synced()
 		r.mustPoll()
-		next = r.settlementOf(order, "release")
-		if next.State != "requested" || pass == xmrReRequestPasses {
+		if next = r.settlementOf(order, "release"); next.State != "requested" {
 			break
 		}
-		class := r.waitClass(next.ID)
-		if (class != xmrWalletRefusing+" "+xmrRingStale && class != xmrWalletRefused+" "+xmrRingStale) || next.TxHash != "" || len(next.KeyImages) != 0 ||
-			p.count("transfer") != 2+pass-1 || p.count("relay_tx") != relays {
-			t.Fatalf("re-requested, pass %d: new %+v %q, transfer %d, relay_tx %d (was %d), wallet transfer error %+v", pass, next, class, p.count("transfer"), p.count("relay_tx"), relays, p.transferFailure())
+		want := xmrWalletRefusing + " " + xmrRingStale
+		if pass == 2 {
+			want = xmrWalletRefused + " " + xmrRingStale // flagged to staff
+		}
+		werr := p.transferFailure()
+		if r.waitClass(next.ID) != want || next.TxHash != "" || len(next.KeyImages) != 0 || p.count("transfer") != 1+pass || p.count("relay_tx") != relays ||
+			werr == nil || werr.Code != -4 || werr.Message != xmrRingStaleText || (r.staffFlags(order) > flags) != (pass == 2) {
+			t.Fatalf("re-requested, pass %d: new %+v %q (want %q), transfer %d, relay_tx %d (was %d), staff notices %d (were %d), wallet transfer error %+v",
+				pass, next, r.waitClass(next.ID), want, p.count("transfer"), p.count("relay_tx"), relays, r.staffFlags(order), flags, werr)
 		}
 		refused++
-		t.Logf("re-requested, pass %d: transfer refused (%s), nothing built or relayed; the market tries again (wallet transfer error %+v)", pass, class, p.transferFailure())
+		t.Logf("re-requested, pass %d: transfer refused (%s; wallet transfer error %d %q), nothing built or relayed", pass, want, werr.Code, werr.Message)
+	}
+	if next.State == "requested" {
+		// The operator guide's stale-ring break-glass: step 1 (the superseded settlement's key images, each unspent),
+		// remedy A's precondition (no other settlement may be built again) and remedy A.
+		var stuck string
+		if err := r.DB.QueryRow(keyImagesSQL, next.ID).Scan(&stuck); err != nil ||
+			!slices.Equal(slices.Sorted(slices.Values(strings.Fields(stuck))), slices.Sorted(slices.Values(failed.KeyImages))) {
+			t.Fatalf("the guide's key image query: %q %v, want the failed release's %v", stuck, err, failed.KeyImages)
+		}
+		spent, err := x.rpc.keyImagesSpent(ctx, strings.Fields(stuck))
+		if err != nil || len(spent) != len(failed.KeyImages) || slices.ContainsFunc(spent, func(s int) bool { return s != 0 }) {
+			t.Fatalf("is_key_image_spent of the stuck key images %v: %v %v, want all 0", failed.KeyImages, spent, err)
+		}
+		var inFlight int
+		if err := r.DB.QueryRow(inFlightSQL, next.ID).Scan(&inFlight); err != nil || inFlight != 0 {
+			t.Fatalf("remedy A's precondition query: %d %v, want 0", inFlight, err)
+		}
+		r.moveRingDBAside(walletC)
+		r.mustPoll()
+		next = r.settlementOf(order, "release")
 	}
 	if next.Supersedes != id || next.State != "relayed" || r.settlement(id).State != "superseded" || p.count("transfer") != 2+refused || p.count("relay_tx") != relays+1 {
-		t.Fatalf("re-requested after %d refused pass(es): old %+v, new %+v, transfer %d, relay_tx %d (was %d), wallet transfer error %+v", refused, r.settlement(id), next, p.count("transfer"), p.count("relay_tx"), relays, p.transferFailure())
+		t.Fatalf("re-requested after %d refused pass(es): old %+v, new %+v %q, transfer %d, relay_tx %d (was %d), wallet transfer error %+v",
+			refused, r.settlement(id), next, r.waitClass(next.ID), p.count("transfer"), p.count("relay_tx"), relays, p.transferFailure())
+	}
+	if refused == 2 {
+		t.Logf("re-request %d: refused twice (ring-stale), built and relayed once after the stale-ring remedy A", next.ID)
+	} else {
+		t.Logf("re-request %d: built and relayed once after %d ring-stale refusal(s): the wallet drew the deposit's new output index", next.ID, refused)
 	}
 	inputs := r.sameSpend(id, failed, next)
 	r.confirmReal(next.ID)
@@ -726,7 +787,7 @@ func (r *xmrRegtest) relayFailedReal(p *xmrRPCProxy, container, order string) (i
 	t.Helper()
 	id := r.releaseReal(order)
 	// The relay call waits for the daemon's stop and start through the proxy.
-	p.wrap("relay_tx", r.daemonStoppedAround(container))
+	p.wrap("relay_tx", r.daemonStoppedAround(p, container))
 	for n := 1; n <= xmrRelayAttempts; n++ {
 		heights := r.synced()
 		if err := r.poll(); err != nil || t.Failed() {
