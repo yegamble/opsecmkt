@@ -399,8 +399,22 @@ wallet takes an order again and no settlement is relayed until an administrator 
       wallet-rpc container stopped, `/home/monero/wallet/.shared-ringdb` moved aside on its volume by its own image as
       uid 1000, started again), and the next pass builds the stored key images to the stored plan, relays it once, and it
       confirms. Six deposits 50 blocks deep make the refusal certain in practice: the wallet rescues a stale ring only
-      when its decoy picker draws the real output's new index, for every input. Remedy B (`monero-wallet-cli`
-      `unset_ring`) is not rehearsed.
+      when its decoy picker draws the real output's new index, for every input.
+  19. `TestXMREscrowRegtestStaleRingRemedyB` (A-625): the same stale ring as leg 18, and then another order's release
+      built and relayed beside it, so remedy A's precondition query answers 1 and the ring database holds that coin's
+      ring too. The operator guide's [stale-ring remedy B](operator-guide.md#stale-ring-break-glass-a-618) is applied
+      exactly as documented, with the guide's own queries for the stuck key images and the order's wallet: the
+      wallet-rpc container stopped; the official `monero-wallet-cli` 0.18.5.1 for Linux x86-64 (its archive checked by
+      the script against the SHA-256 of the release's signed `hashes.txt`) run offline in the Dockerfile's pinned Debian
+      image as uid 1000 with no network, the wallet volume, the same `--shared-ringdb-dir` and the derived password in a
+      read-only file, one piped session per step. Its first open answers the background-mining question; with the
+      default `ask-password` 2 `print_ring` shows no ring (the CLI's ring database key then differs from the
+      wallet-rpc's); after `set ask-password 0` (the password on its prompt) it shows a stored ring of 16 for each stuck
+      key image and for the other release's; `unset_ring` clears the stuck ones; `print_ring` then answers "Key image
+      either not spent, or spent with ring size 1" for each of them and shows the other release's ring unchanged;
+      `set ask-password 2` restores the default, which `set` then reads; no file in the volume belongs to another user;
+      the wallet-rpc started again. The next pass builds the stored key
+      images to the stored plan and relays it once; both releases confirm.
 
   Every settlement the daemon holds is decoded (RingCT type 6, 16 ring members per input, a fee above zero, the stored one,
   within `ESCROW_XMR_MAX_FEE`). Each leg puts the watcher's clock in a month of its own, so the legs may run again against
@@ -485,7 +499,7 @@ again on a fakechain (`scripts/test-escrow-xmr-regtest.sh`), and on an **offline
 (`scripts/test-escrow-xmr-stagenet.sh`: stagenet daemons built from the genesis block with the local monerod 0.18.5.1
 image, peered only with each other on a Docker network with no route out, local mining at fixed difficulty) the legs such
 a chain can run. Built from genesis it is at hard fork version 1 (version 16 starts at height 1,151,720), so Monero escrow
-refuses to start on it, as it must, and none of the eighteen legs can run there; the stagenet legs show that refusal names
+refuses to start on it, as it must, and none of the nineteen legs can run there; the stagenet legs show that refusal names
 the hard fork, not the network; that a real stagenet wallet's primary address, subaddress and integrated address are read
 under the stagenet tags (the integrated one refused) and refused under the fakechain's, by the parser and by the adapter;
 and that the escrow sync guard reads a restricted stagenet daemon with a peer and a fresh tip as synced and an

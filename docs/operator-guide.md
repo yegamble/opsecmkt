@@ -1635,6 +1635,8 @@ the settlement itself, and a payment by hand would pay twice.
    db_sql -X -At -c "SELECT count(*) FROM xmr_settlements WHERE id <> SETTLEMENT_ID AND (state IN ('built','relayed') OR (state = 'failed' AND tx_hash IS NOT NULL) OR (state = 'requested' AND supersedes IS NOT NULL))"
    ```
 
+   When it is not 0 you may also wait: the stuck settlement pays nothing twice while it waits, and the settlements in
+   flight confirm within the confirmation threshold. On a busy market it may never reach 0, so remedy B (rehearsed too, below) is then the path.
    Stop the wallet-rpc, then move its `.shared-ringdb` to a dated
    directory with the pinned image as uid 1000 and no network; never delete it, and never touch the wallet files (with
    another `COMPOSE_PROJECT_NAME`, the volume is `<COMPOSE_PROJECT_NAME>_monero_escrow_wallet`; use the
@@ -1659,36 +1661,100 @@ the settlement itself, and a payment by hand would pay twice.
    market opens the wallet and builds the settlement from the same coins to the same plan with a fresh ring, and sends
    it; the order page then shows it relayed. The fakechain leg `TestXMREscrowRegtestStaleRing` rehearses exactly these
    steps.
-3. *Remedy B (targeted): unset the rings of these coins only.* Use the official `monero-wallet-cli` 0.18.5.1 from
-   getmonero.org, its archive checked against the signed `hashes.txt` (the images ship no `monero-wallet-cli`). With the
-   wallet-rpc stopped, as in remedy A, write the wallet's derived password to a mode-0600 file on tmpfs, never on a
-   command line (it prompts for `MONERO_WALLET_SECRET` without echo; on a separate payment host, make the file on the app
-   host and copy only the file), then open the order's wallet offline with the **same** `--shared-ringdb-dir` the
-   wallet-rpc uses (add `--stagenet` on stagenet). Run the CLI, and make the password file, as the user the wallet-rpc
-   runs as (uid 1000 on Compose and the native deploy), never as root: the CLI saves the wallet file on exit and opens the
-   ring database's lock file, and a root-owned file there breaks the wallet-rpc, which then runs with no ring database at
-   all. On Compose, run it in a container like remedy A's (`--user 1000:1000`, `--network none`, the wallet volume at
-   `/home/monero/wallet` as `WALLET_DIR`, the checked CLI and the password file mounted read-only):
+3. *Remedy B (targeted): unset the rings of these coins only.* Use the official `monero-wallet-cli` 0.18.5.1 (the
+   release the wallet-rpc runs; the images ship no `monero-wallet-cli`). getmonero.org's current `hashes.txt` lists only
+   the latest release, so check the archive against the release's signed `hashes.txt` kept in the monero-site
+   repository, verified with binaryFate's key from the monero repository (fingerprint
+   `81AC591F E9C4B65C 5806AFC3 F0AF4D46 2A0BDF92`); its line for the Linux x86-64 archive is the SHA-256 that
+   `scripts/test-escrow-xmr-regtest.sh` pins:
+
+   ```sh
+   umask 022
+   curl -sSfLO https://downloads.getmonero.org/cli/monero-linux-x64-v0.18.5.1.tar.bz2
+   curl -sSfL -o hashes-v0.18.5.1.txt https://raw.githubusercontent.com/monero-project/monero-site/76f3846db3442be40676fd2e5432dd809d44ea3f/downloads/hashes.txt
+   curl -sSfL -o binaryfate.asc https://raw.githubusercontent.com/monero-project/monero/v0.18.5.1/utils/gpg_keys/binaryfate.asc
+   gpg --import binaryfate.asc && gpg --verify hashes-v0.18.5.1.txt   # Good signature from binaryFate, primary key 81AC 591F E9C4 B65C 5806 AFC3 F0AF 4D46 2A0B DF92
+   grep -F ' monero-linux-x64-v0.18.5.1.tar.bz2' hashes-v0.18.5.1.txt   # 22a7dda7b0cb699fdd6b7674c3b4a4465b337cc98a54983523b759e1e7cc9958
+   echo '22a7dda7b0cb699fdd6b7674c3b4a4465b337cc98a54983523b759e1e7cc9958  monero-linux-x64-v0.18.5.1.tar.bz2' | sha256sum -c
+   tar -xjf monero-linux-x64-v0.18.5.1.tar.bz2 monero-x86_64-linux-gnu-v0.18.5.1/monero-wallet-cli
+   cli=$PWD/monero-x86_64-linux-gnu-v0.18.5.1/monero-wallet-cli
+   ```
+
+   Find the order's wallet and the stuck key images (step 1's query: the key images of the settlement the re-request
+   supersedes), then write the wallet's derived password to a file on tmpfs,
+   never on a command line (it prompts for `MONERO_WALLET_SECRET` without echo; on a separate payment host, make the
+   file on the app host and copy only the file). The file is mode 0640 inside a mode-0700 directory, so that the CLI,
+   which runs as uid 1000 with your group added, can read it and no other user can reach it:
 
    ```sh
    db_sql -X -At -F ' ' -c "SELECT w.name, s.account_index FROM escrows e JOIN xmr_escrow_slots s ON s.address = e.address JOIN xmr_escrow_wallets w ON w.id = s.wallet_id WHERE e.order_id = 'ORDER_ID'"
-   umask 077
-   pw=$(mktemp /dev/shm/escrow-wallet-pass.XXXXXX)
-   python3 -I - escrow-YYYYMM-NN > "$pw" <<'PY'
+   umask 027
+   pwdir=$(mktemp -d /dev/shm/escrow-wallet-pass.XXXXXX)
+   python3 -I - escrow-YYYYMM-NN > "$pwdir/pass" <<'PY'
    import getpass, hashlib, hmac, sys
    secret = getpass.getpass('MONERO_WALLET_SECRET: ').encode()
    sys.stdout.write(hmac.new(secret, b'opsecmkt xmr escrow wallet\0' + sys.argv[1].encode(), hashlib.sha256).hexdigest())
    PY
-   monero-wallet-cli --offline --wallet-file WALLET_DIR/escrow-YYYYMM-NN --password-file "$pw" \
-     --shared-ringdb-dir WALLET_DIR/.shared-ringdb --log-file /dev/null
    ```
 
-   At its prompt, for each key image (not the transaction hash) run `print_ring KEY_IMAGE`, which must print the stored
-   ring (`KEY_IMAGE absolute …`); then `unset_ring KEY_IMAGE [KEY_IMAGE …]`; then `print_ring KEY_IMAGE` again, which must
-   now answer "Key image either not spent, or spent with ring size 1". The check before and after is mandatory: with a
-   wrong `--shared-ringdb-dir` the CLI opens an empty ring database and `unset_ring` "succeeds" without changing anything.
-   Then `exit`, `shred -u "$pw"`, and start the wallet-rpc again. Remedy B keeps every other coin's ring; it is not
-   rehearsed by any test.
+   Then open the order's wallet offline with the **same** `--shared-ringdb-dir` the wallet-rpc uses (no network flag on
+   mainnet, as the wallet-rpc runs; add `--stagenet` on stagenet; never `--regtest`, which the CLI refuses). Run the CLI
+   as the user the wallet-rpc runs as (uid 1000 on Compose and the native deploy), never as root: the CLI rewrites the
+   wallet files on exit and opens the ring database's lock file, and a root-owned file there breaks the wallet-rpc, which
+   then runs with no ring database at all. The official CLI is a glibc build and does not run in the wallet-rpc image
+   (Alpine); on Compose run it in the Debian image the market's Dockerfile pins, with no network, the wallet volume at
+   `/home/monero/wallet`, and the CLI and the password file mounted read-only (on an ARM host add
+   `--platform linux/amd64`, which needs amd64 emulation). Each step below is one session with its commands piped in:
+
+   ```sh
+   docker compose stop monero-escrow-wallet
+   wallet=escrow-YYYYMM-NN
+   kis='KEY_IMAGE …'   # step 1's key images, separated by spaces
+   wallet_cli() {
+     docker run --rm -i --network none --user 1000:1000 --group-add "$(id -g)" \
+       -v opsecmkt_monero_escrow_wallet:/home/monero/wallet -v "$cli:/usr/local/bin/monero-wallet-cli:ro" \
+       -v "$pwdir/pass:/run/escrow-wallet-pass:ro" --entrypoint /usr/local/bin/monero-wallet-cli \
+       debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587 \
+       --offline --wallet-file "/home/monero/wallet/$wallet" --password-file /run/escrow-wallet-pass \
+       --shared-ringdb-dir /home/monero/wallet/.shared-ringdb --log-file /dev/null
+   }
+   printf 'N\n' | wallet_cli
+   { printf 'set ask-password 0\n'; cat "$pwdir/pass"; printf '\nexit\n'; } | wallet_cli
+   { printf 'print_ring %s\n' $kis; echo exit; } | wallet_cli
+   printf 'unset_ring %s\nexit\n' "$kis" | wallet_cli
+   { printf 'print_ring %s\n' $kis; echo exit; } | wallet_cli
+   { printf 'set ask-password 2\n'; cat "$pwdir/pass"; printf '\nexit\n'; } | wallet_cli
+   printf 'set\n' | wallet_cli | grep -a 'ask-password ='
+   shred -u "$pwdir/pass" && rmdir "$pwdir"
+   docker compose start monero-escrow-wallet
+   ```
+
+   (With another `COMPOSE_PROJECT_NAME` or a native deploy, use the service and volume names of remedy A. On a separate
+   payment host run the same `monero-wallet-cli` arguments directly, as the wallet-rpc's user, with `WALLET_DIR` in
+   place of `/home/monero/wallet`.) What each session shows, and why:
+
+   - Each says `Opened wallet: …`, that it is in offline mode, and the prompt `[wallet … (no daemon)]:`.
+   - `N`: the first time the CLI opens a wallet it asks "Do you want to do it now? (Y/Yes/N/No)" about background
+     mining, and that question reads its answer from stdin and loses the rest of piped input; answered once, the wallet
+     file keeps the answer ("Background mining not enabled"). On a later open the `N` is only an unknown command.
+   - `set ask-password 0`: the CLI asks for the wallet password, and gets it from the file on its stdin, never on a
+     command line. This step is required: with the default `ask-password = 2 (decrypt)` the CLI keeps the spend key
+     encrypted in memory and derives its ring database key from it, which is not the key the wallet-rpc uses, so it sees
+     no stored ring at all and `unset_ring` silently removes nothing. The cost: while the CLI runs, offline, the spend key
+     is unencrypted in its memory, as it always is in the running wallet-rpc's.
+   - The first `print_ring` must print each stored ring, `KEY_IMAGE absolute` and 16 global output indices. If it
+     still answers "Key image either not spent, or spent with ring size 1", stop: run the `ask-password 2` and `set`
+     sessions, start the wallet-rpc, and use remedy A or wait. The same answer also comes from a wrong
+     `--shared-ringdb-dir`, where the CLI opens an empty ring database and `unset_ring` "succeeds" without changing
+     anything.
+   - The second `print_ring` must answer "Error: Key image either not spent, or spent with ring size 1" for each.
+   - `set ask-password 2` restores the default, and `set` must then show `ask-password = 2 (decrypt)`, so the keys file
+     ends with the setting it began with.
+
+   On its next pass the market builds the settlement from the same coins to the same plan with a fresh ring for the
+   stuck coins and sends it once. Remedy B keeps every other coin's ring: the fakechain leg
+   `TestXMREscrowRegtestStaleRingRemedyB` rehearses exactly these steps, with another order's release in flight (so
+   remedy A's query answers 1) whose ring `print_ring` shows unchanged after the `unset_ring`.
 
 A restore from seed does **not** clear a stale ring: the ring database is not part of the wallet files, and a wallet
 restored into the same wallet-rpc reuses it. Restoring the wallet volume from a copy restores its `.shared-ringdb` too.
@@ -1853,7 +1919,7 @@ escrow stays off; it adds no escrow wallet-rpc, no fakechain daemon and no mount
 checked with `docker compose config` only.
 
 **What was checked.** [Per-order escrow, Phase 3](escrow.md#phase-3-monero-escrow-on-a-local-fakechain) lists each tier: unit and `httptest` tests, Go
-tests with PostgreSQL against a fake wallet-rpc, eighteen legs against a real fakechain `monerod` and `monero-wallet-rpc`
+tests with PostgreSQL against a fake wallet-rpc, nineteen legs against a real fakechain `monerod` and `monero-wallet-rpc`
 0.18.5.1 (`scripts/test-escrow-xmr-regtest.sh`, run by the `escrow-xmr-regtest` CI job;
 [runbook](testnet-runbook.md#9-manual-monero-escrow-fakechain-check)), and a simulated-RPC browser journey added in this
 phase. Nothing has run on stagenet, testnet or mainnet, with Monero multisig, or as a deployment.

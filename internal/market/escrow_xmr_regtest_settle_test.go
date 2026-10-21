@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -866,35 +867,42 @@ const (
 // compose.nodes.yaml, the native installer (internal/operator/render.go) and CI run it.
 const xmrRingDBDir = "/home/monero/wallet/.shared-ringdb"
 
-// moveRingDBAside applies the operator guide's stale-ring remedy A to the escrow wallet-rpc container (A-618): stop
-// it, move its ring database aside to a dated directory with its own image as uid 1000 and no network (the wallet
-// files are not touched), and start it again. The container must mount its wallet directory, /home/monero/wallet,
-// from a volume and run with --shared-ringdb-dir=/home/monero/wallet/.shared-ringdb.
-func (r *xmrRegtest) moveRingDBAside(container string) {
+// regtestDocker runs the docker command with args and returns its trimmed output, failing the leg if it fails.
+func regtestDocker(t *testing.T, args ...string) string {
+	t.Helper()
+	out, err := exec.Command("docker", args...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("docker %s: %v %s", args[0], err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// walletStopped is the stale-ring break-glass's frame around either remedy (A-618, A-625): it stops the escrow
+// wallet-rpc container, runs offline with the container's image and the volume it mounts at /home/monero/wallet, starts
+// it again and waits until it answers. The container must mount its wallet directory from a volume and run with
+// --shared-ringdb-dir=/home/monero/wallet/.shared-ringdb.
+func (r *xmrRegtest) walletStopped(container string, offline func(image, volume string)) {
 	t := r.t
 	t.Helper()
-	docker := func(args ...string) string {
-		t.Helper()
-		out, err := exec.Command("docker", args...).CombinedOutput()
-		if err != nil {
-			t.Fatalf("docker %s: %v %s", args[0], err, out)
-		}
-		return strings.TrimSpace(string(out))
-	}
-	image := docker("inspect", "-f", "{{.Config.Image}}", container)
-	volume := docker("inspect", "-f", `{{range .Mounts}}{{if eq .Destination "/home/monero/wallet"}}{{.Name}}{{end}}{{end}}`, container)
+	image := regtestDocker(t, "inspect", "-f", "{{.Config.Image}}", container)
+	volume := regtestDocker(t, "inspect", "-f", `{{range .Mounts}}{{if eq .Destination "/home/monero/wallet"}}{{.Name}}{{end}}{{end}}`, container)
 	if volume == "" {
 		t.Fatalf("container %s mounts no volume at /home/monero/wallet: run the escrow wallet-rpc as scripts/test-escrow-xmr-regtest.sh says", container)
 	}
-	docker("stop", container)
-	aside := xmrRingDBDir + ".stale-" + time.Now().UTC().Format("20060102T150405Z")
-	docker("run", "--rm", "--network", "none", "--user", "1000:1000", "-v", volume+":/home/monero/wallet", "--entrypoint", "mv", image, xmrRingDBDir, aside)
-	docker("start", container)
+	regtestDocker(t, "stop", container)
+	started := false
+	defer func() { // a failure in offline must not leave the wallet-rpc stopped for the next leg
+		if !started {
+			exec.Command("docker", "start", container).Run()
+		}
+	}()
+	offline(image, volume)
+	started = true
+	regtestDocker(t, "start", container)
 	http.DefaultTransport.(*http.Transport).CloseIdleConnections() // the proxy's connections to the stopped wallet-rpc
 	ctx := context.Background()
 	for range 120 {
 		if r.A.escrowXMR.rpc.wallet.call(ctx, "/json_rpc", "get_version", nil, nil) == nil {
-			t.Logf("escrow wallet-rpc container %s stopped, its ring database moved aside to %s (image %s as uid 1000), started again", container, aside, image)
 			return
 		}
 		time.Sleep(time.Second)
@@ -902,20 +910,29 @@ func (r *xmrRegtest) moveRingDBAside(container string) {
 	t.Fatalf("the escrow wallet-rpc container %s did not answer within 120 seconds of its start", container)
 }
 
-// TestXMREscrowRegtestStaleRing (A-618): the operator guide's stale-ring break-glass, rehearsed. A release funded by
+// moveRingDBAside applies the operator guide's stale-ring remedy A to the escrow wallet-rpc container (A-618): stop
+// it, move its ring database aside to a dated directory with its own image as uid 1000 and no network (the wallet
+// files are not touched), and start it again.
+func (r *xmrRegtest) moveRingDBAside(container string) {
+	t := r.t
+	t.Helper()
+	aside := xmrRingDBDir + ".stale-" + time.Now().UTC().Format("20060102T150405Z")
+	r.walletStopped(container, func(image, volume string) {
+		regtestDocker(t, "run", "--rm", "--network", "none", "--user", "1000:1000", "-v", volume+":/home/monero/wallet", "--entrypoint", "mv", image, xmrRingDBDir, aside)
+		t.Logf("escrow wallet-rpc container %s stopped, its ring database moved aside to %s (image %s as uid 1000), started again", container, aside, image)
+	})
+}
+
+// staleRingReal reproduces the stale ring of the break-glass (A-618): a release of a new order funded by
 // xmrStaleRingDeposits deposits is built once (its rings stored in the escrow wallet-rpc's ring database), refused at
-// relay until it fails (relayFailedReal), and re-requested while a reorganisation has taken its deposits out of the
-// chain; mined again, each deposit is at another global output index, and xmrStaleRingAge blocks later the re-request's
-// build is refused: transfer -4, "Daemon response did not include the requested real output", recorded
-// wallet-refusing ring-stale, nothing built or relayed. Remedy A as documented (stop the escrow wallet-rpc, move its
-// .shared-ringdb aside as uid 1000, start it) and the next pass builds the stored key images to the stored plan and
-// relays it exactly once; it confirms.
-func TestXMREscrowRegtestStaleRing(t *testing.T) {
-	daemonC, walletC := os.Getenv("ESCROW_XMR_REGTEST_DAEMON_CONTAINER"), os.Getenv("ESCROW_XMR_REGTEST_WALLET_CONTAINER")
-	if daemonC == "" || walletC == "" {
-		t.Skip("set ESCROW_XMR_REGTEST_DAEMON_CONTAINER and ESCROW_XMR_REGTEST_WALLET_CONTAINER (scripts/test-escrow-xmr-regtest.sh): this leg stops and starts both")
-	}
-	r, p := newXMRSettleRegtest(t)
+// relay until it fails (relayFailedReal; monerod container daemonC is stopped for each relay), and re-requested while a
+// reorganisation has taken its deposits out of the chain (reRequestMissingReal); mined again, each deposit is at another
+// global output index, and xmrStaleRingAge blocks later the re-request's build is refused: transfer -4, "Daemon response
+// did not include the requested real output", recorded wallet-refusing ring-stale, nothing built or relayed. It returns
+// the order, the failed release and the waiting re-request.
+func (r *xmrRegtest) staleRingReal(p *xmrRPCProxy, daemonC string) (order string, id int64, failed, next xmrSettlement) {
+	t := r.t
+	t.Helper()
 	order, addr := r.checkoutReal()
 	var deposits []string
 	for i := range xmrStaleRingDeposits {
@@ -931,7 +948,7 @@ func TestXMREscrowRegtestStaleRing(t *testing.T) {
 	if r.state(order) != stateCompleted || agInt(r.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND credited", order) != xmrStaleRingDeposits {
 		t.Fatalf("funded by %d deposits: %s (deposits %v)", xmrStaleRingDeposits, r.state(order), r.depositConfs(order))
 	}
-	id, failed := r.relayFailedReal(p, daemonC, order)
+	id, failed = r.relayFailedReal(p, daemonC, order)
 	if len(failed.KeyImages) != xmrStaleRingDeposits {
 		t.Fatalf("the release spends %d key images, want %d: %+v", len(failed.KeyImages), xmrStaleRingDeposits, failed)
 	}
@@ -942,7 +959,7 @@ func TestXMREscrowRegtestStaleRing(t *testing.T) {
 	// The stale ring: refused, nothing built or relayed.
 	r.synced()
 	r.mustPoll()
-	next := r.settlementOf(order, "release")
+	next = r.settlementOf(order, "release")
 	werr := p.transferFailure()
 	if next.Supersedes != id || next.State != "requested" || r.waitClass(next.ID) != xmrWalletRefusing+" "+xmrRingStale || next.TxHash != "" || len(next.KeyImages) != 0 ||
 		p.count("transfer") != 2 || p.count("relay_tx") != relays ||
@@ -950,11 +967,26 @@ func TestXMREscrowRegtestStaleRing(t *testing.T) {
 		t.Fatalf("re-requested with a stale ring: new %+v %q, transfer %d, relay_tx %d (was %d), wallet transfer error %+v", next, r.waitClass(next.ID), p.count("transfer"), p.count("relay_tx"), relays, werr)
 	}
 	t.Logf("re-request %d after the reorganisation: transfer refused (%s; wallet transfer error %d %q), nothing built or relayed", next.ID, r.waitClass(next.ID), werr.Code, werr.Message)
+	return order, id, failed, next
+}
+
+// TestXMREscrowRegtestStaleRing (A-618): the operator guide's stale-ring break-glass, rehearsed with remedy A. The stale
+// ring is reproduced (staleRingReal); remedy A as documented (stop the escrow wallet-rpc, move its .shared-ringdb aside
+// as uid 1000, start it) and the next pass builds the stored key images to the stored plan and relays it exactly once;
+// it confirms.
+func TestXMREscrowRegtestStaleRing(t *testing.T) {
+	daemonC, walletC := os.Getenv("ESCROW_XMR_REGTEST_DAEMON_CONTAINER"), os.Getenv("ESCROW_XMR_REGTEST_WALLET_CONTAINER")
+	if daemonC == "" || walletC == "" {
+		t.Skip("set ESCROW_XMR_REGTEST_DAEMON_CONTAINER and ESCROW_XMR_REGTEST_WALLET_CONTAINER (scripts/test-escrow-xmr-regtest.sh): this leg stops and starts both")
+	}
+	r, p := newXMRSettleRegtest(t)
+	order, id, failed, _ := r.staleRingReal(p, daemonC)
+	relays := p.count("relay_tx")
 
 	// Remedy A, as docs/operator-guide.md documents it; the next pass builds and relays it once.
 	r.moveRingDBAside(walletC)
 	r.mustPoll()
-	next = r.settlementOf(order, "release")
+	next := r.settlementOf(order, "release")
 	if next.Supersedes != id || next.State != "relayed" || r.settlement(id).State != "superseded" || p.count("transfer") != 3 || p.count("relay_tx") != relays+1 {
 		t.Fatalf("after the ring database was moved aside: old %+v, new %+v %q, transfer %d, relay_tx %d (was %d), wallet transfer error %+v",
 			r.settlement(id), next, r.waitClass(next.ID), p.count("transfer"), p.count("relay_tx"), relays, p.transferFailure())
@@ -963,4 +995,224 @@ func TestXMREscrowRegtestStaleRing(t *testing.T) {
 	r.confirmReal(next.ID)
 	t.Logf("order %s: re-request %d refused with a stale ring for %d key images; after remedy A it spent the same key images %v to the same plan in %s, relayed once, confirmed",
 		shortID(order), next.ID, len(inputs), inputs, next.TxHash)
+}
+
+// xmrWalletCLIImage runs the official monero-wallet-cli for remedy B (A-625): a glibc build, which the Alpine (musl)
+// wallet-rpc image cannot run. It is the base image the Dockerfile pins (tests/test_ci_escrow_xmr_regtest.py checks).
+const xmrWalletCLIImage = "debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587"
+
+// xmrRingUnset is monero-wallet-cli 0.18.5.1's print_ring answer for a key image with no stored ring.
+const xmrRingUnset = "Key image either not spent, or spent with ring size 1"
+
+// xmrPrintedRing matches a ring print_ring shows: the key image, "absolute" and the ring's global output indices.
+var xmrPrintedRing = regexp.MustCompile(`([0-9a-f]{64}) absolute((?: [0-9]+)+)`)
+
+// walletCLI runs the official monero-wallet-cli (cli, Linux x86-64) offline on escrow wallet name, as the operator guide's
+// remedy B does: in xmrWalletCLIImage as uid 1000 with no network, the wallet volume at /home/monero/wallet, the same
+// --shared-ringdb-dir as the wallet-rpc, and the wallet's derived password in a file mounted read-only (mode 0640 in a
+// mode-0700 directory, readable through --group-add; never on a command line). stdin is its commands; it returns its
+// output, which is logged only on a failure (it names the wallet's address; the password is never in it).
+func (r *xmrRegtest) walletCLI(cli, volume, name, stdin string) string {
+	t := r.t
+	t.Helper()
+	dir := t.TempDir()
+	pw := dir + "/escrow-wallet-pass"
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pw, []byte(xmrWalletPassword(r.A.escrowXMR.secret, name)), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(pw, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(pw)
+	cmd := exec.Command("docker", "run", "--rm", "-i", "--platform", "linux/amd64", "--network", "none", "--user", "1000:1000",
+		"--group-add", strconv.Itoa(os.Getgid()), "-v", volume+":/home/monero/wallet", "-v", cli+":/usr/local/bin/monero-wallet-cli:ro",
+		"-v", pw+":/run/escrow-wallet-pass:ro", "--entrypoint", "/usr/local/bin/monero-wallet-cli", xmrWalletCLIImage,
+		"--offline", "--wallet-file", "/home/monero/wallet/"+name, "--password-file", "/run/escrow-wallet-pass",
+		"--shared-ringdb-dir", xmrRingDBDir, "--log-file", "/dev/null")
+	cmd.Stdin = strings.NewReader(stdin)
+	b, err := cmd.CombinedOutput()
+	password := xmrWalletPassword(r.A.escrowXMR.secret, name)
+	if strings.Contains(string(b), password) { // the guide pipes it to the CLI's prompt: it must not be echoed
+		t.Fatalf("monero-wallet-cli on %s echoed the wallet password", name)
+	}
+	out := string(b)
+	if err != nil {
+		t.Fatalf("monero-wallet-cli on %s: %v\n%s", name, err, out)
+	}
+	return out
+}
+
+// printedRings maps each key image print_ring showed a ring for to the rings shown, in order.
+func printedRings(out string) map[string][]string {
+	rings := map[string][]string{}
+	for _, m := range xmrPrintedRing.FindAllStringSubmatch(out, -1) {
+		rings[m[1]] = append(rings[m[1]], strings.TrimSpace(m[2]))
+	}
+	return rings
+}
+
+// breakGlassSQL is the query of the operator guide's stale-ring break-glass (docs/operator-guide.md) that its
+// `db_sql -X -At … -c "…"` line containing marker runs, with SETTLEMENT_ID and 'ORDER_ID' as $1: the leg runs the
+// guide's own queries.
+func breakGlassSQL(t *testing.T, marker string) string {
+	t.Helper()
+	guide, err := os.ReadFile("docs/operator-guide.md") // the tests run from the repository root (TestMain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, section, _ := strings.Cut(string(guide), `<a id="stale-ring-break-glass-a-618"></a>`)
+	section, _, _ = strings.Cut(section, "\n**Failed and set-aside settlements")
+	for line := range strings.Lines(section) {
+		line = strings.TrimSpace(line)
+		if _, q, ok := strings.Cut(line, ` -c "`); ok && strings.HasPrefix(line, "db_sql -X -At ") && strings.Contains(q, marker) {
+			return strings.NewReplacer("SETTLEMENT_ID", "$1", "'ORDER_ID'", "$1").Replace(strings.TrimSuffix(q, `"`))
+		}
+	}
+	t.Fatalf("the operator guide's stale-ring break-glass has no db_sql query with %q", marker)
+	return ""
+}
+
+// TestXMREscrowRegtestStaleRingRemedyB (A-625): the operator guide's stale-ring break-glass, rehearsed with remedy B, the
+// usual path on a market where some other settlement is always in flight. The stale ring is reproduced
+// (staleRingReal); another order's release is then built and relayed, so the guide's remedy A precondition query answers
+// 1 and the escrow wallet's ring database holds that coin's ring too. Remedy B as documented: the guide's queries give
+// the stuck key images and the order's wallet; the escrow wallet-rpc is stopped; the official monero-wallet-cli 0.18.5.1
+// (ESCROW_XMR_REGTEST_WALLET_CLI, checked against the signed hashes.txt by scripts/test-escrow-xmr-regtest.sh) opens the
+// wallet offline (walletCLI), one piped session per step: the first open answers the background-mining question;
+// print_ring shows no ring (with the default ask-password 2 the CLI's ring database key differs from the wallet-rpc's);
+// set ask-password 0 (the password on its prompt); print_ring shows a stored ring of 16 for each stuck key image and the
+// other coin's; unset_ring for the stuck ones; print_ring answers xmrRingUnset for each and shows the other coin's ring
+// unchanged; set ask-password 2, which then reads 2; no file in the volume belongs to another user; the wallet-rpc is
+// started. The next pass builds the stored key images to the stored plan and relays it exactly
+// once; both settlements confirm.
+func TestXMREscrowRegtestStaleRingRemedyB(t *testing.T) {
+	daemonC, walletC := os.Getenv("ESCROW_XMR_REGTEST_DAEMON_CONTAINER"), os.Getenv("ESCROW_XMR_REGTEST_WALLET_CONTAINER")
+	if daemonC == "" || walletC == "" {
+		t.Skip("set ESCROW_XMR_REGTEST_DAEMON_CONTAINER and ESCROW_XMR_REGTEST_WALLET_CONTAINER (scripts/test-escrow-xmr-regtest.sh): this leg stops and starts both")
+	}
+	cli := os.Getenv("ESCROW_XMR_REGTEST_WALLET_CLI")
+	if cli == "" {
+		t.Fatal("set ESCROW_XMR_REGTEST_WALLET_CLI to the official monero-wallet-cli 0.18.5.1 for Linux x86-64, as scripts/test-escrow-xmr-regtest.sh does after checking its archive: this leg runs it")
+	}
+	if out := regtestDocker(t, "run", "--rm", "--platform", "linux/amd64", "--network", "none", "--user", "1000:1000", "-v", cli+":/usr/local/bin/monero-wallet-cli:ro",
+		"--entrypoint", "/usr/local/bin/monero-wallet-cli", xmrWalletCLIImage, "--version"); !strings.Contains(out, "(v0.18.5.1-release)") {
+		t.Fatalf("ESCROW_XMR_REGTEST_WALLET_CLI is not monero-wallet-cli 0.18.5.1: %q", out)
+	}
+	// The guide's queries: remedy A's precondition, the stuck key images, the order's wallet.
+	inFlightSQL := breakGlassSQL(t, "SELECT count(*) FROM xmr_settlements")
+	keyImagesSQL := breakGlassSQL(t, "array_to_string(o.key_images")
+	walletSQL := breakGlassSQL(t, "SELECT w.name, s.account_index")
+	r, p := newXMRSettleRegtest(t)
+	order, id, failed, next := r.staleRingReal(p, daemonC)
+
+	// Another order's release in flight: built (its ring stored) and relayed, not yet confirmed.
+	other, _ := r.completedReal()
+	otherID := r.releaseReal(other)
+	r.synced()
+	r.mustPoll()
+	inFlight := r.settlement(otherID)
+	if next = r.settlement(next.ID); inFlight.State != "relayed" || len(inFlight.KeyImages) == 0 || next.State != "requested" || !strings.HasSuffix(r.waitClass(next.ID), " "+xmrRingStale) {
+		t.Fatalf("another release in flight beside the stale re-request: other %+v, re-request %+v %q, wallet transfer error %+v", inFlight, next, r.waitClass(next.ID), p.transferFailure())
+	}
+
+	// Remedy A's precondition is not met; the stuck key images; the order's wallet.
+	var inFlightN int
+	if err := r.DB.QueryRow(inFlightSQL, next.ID).Scan(&inFlightN); err != nil || inFlightN != 1 {
+		t.Fatalf("remedy A's precondition query: %d %v, want 1 (release %d in flight)", inFlightN, err, otherID)
+	}
+	var stuck string
+	if err := r.DB.QueryRow(keyImagesSQL, next.ID).Scan(&stuck); err != nil ||
+		!slices.Equal(slices.Sorted(slices.Values(strings.Fields(stuck))), slices.Sorted(slices.Values(failed.KeyImages))) {
+		t.Fatalf("the guide's key image query: %q %v, want the failed release's %v", stuck, err, failed.KeyImages)
+	}
+	walletOf := func(order string) string {
+		t.Helper()
+		var name string
+		var account int64
+		if err := r.DB.QueryRow(walletSQL, order).Scan(&name, &account); err != nil || account < 1 {
+			t.Fatalf("the guide's wallet query for order %s: %q %d %v", shortID(order), name, account, err)
+		}
+		return name
+	}
+	name := walletOf(order)
+	if walletOf(other) != name {
+		t.Fatalf("the in-flight release is in another wallet than %s: the rehearsal needs both coins in one wallet", name)
+	}
+
+	// Remedy B, as docs/operator-guide.md documents it: one piped session per step, the password only on the CLI's
+	// prompt (stdin) or in the read-only file.
+	relays, transfers := p.count("relay_tx"), p.count("transfer")
+	printRings := func(kis ...string) string {
+		var b strings.Builder
+		for _, ki := range kis {
+			b.WriteString("print_ring " + ki + "\n")
+		}
+		return b.String() + "exit\n"
+	}
+	both := append(slices.Clone(failed.KeyImages), inFlight.KeyImages...)
+	pw := xmrWalletPassword(r.A.escrowXMR.secret, name)
+	r.walletStopped(walletC, func(image, volume string) {
+		run := func(stdin string) string { return r.walletCLI(cli, volume, name, stdin) }
+		// The first time monero-wallet-cli opens a wallet it asks whether to set up background mining and reads the
+		// answer from stdin, losing the rest of a piped stdin; answered once, the wallet file keeps the answer.
+		if out := run("N\n"); !strings.Contains(out, "Background mining not enabled") {
+			t.Fatalf("monero-wallet-cli's first open of %s did not settle the background-mining question", name)
+		}
+		// With ask-password 2 (decrypt, the default) the CLI derives its ring database key from its in-memory-encrypted
+		// spend key and sees none of the rings the unattended wallet-rpc stored: unset_ring would remove nothing.
+		if rings := printedRings(run(printRings(both...))); len(rings) != 0 {
+			t.Fatalf("with ask-password 2 monero-wallet-cli shows stored rings %q: the guide's set ask-password 0 step is then unneeded", rings)
+		}
+		run("set ask-password 0\n" + pw + "\nexit\n")
+		before := printedRings(run(printRings(both...)))
+		for _, ki := range both {
+			if len(before[ki]) != 1 || len(strings.Fields(before[ki][0])) != 16 {
+				t.Fatalf("print_ring of key image %s after set ask-password 0: rings %q, want one stored ring of 16", ki, before[ki])
+			}
+		}
+		run("unset_ring " + strings.Join(failed.KeyImages, " ") + "\nexit\n")
+		out := run(printRings(both...))
+		after := printedRings(out)
+		if n := strings.Count(out, xmrRingUnset); n != len(failed.KeyImages) {
+			t.Fatalf("print_ring after unset_ring answered %q %d times, want %d (once per stuck key image); rings %q", xmrRingUnset, n, len(failed.KeyImages), after)
+		}
+		for _, ki := range failed.KeyImages {
+			if len(after[ki]) != 0 {
+				t.Fatalf("print_ring after unset_ring of stuck key image %s: %q, want no ring", ki, after[ki])
+			}
+		}
+		for _, ki := range inFlight.KeyImages {
+			if len(after[ki]) != 1 || after[ki][0] != before[ki][0] {
+				t.Fatalf("print_ring of the in-flight release's key image %s after unset_ring: %q, want its stored ring %q", ki, after[ki], before[ki])
+			}
+		}
+		run("set ask-password 2\n" + pw + "\nexit\n")
+		if out := run("set\nexit\n"); !strings.Contains(out, "ask-password = 2 (decrypt)") {
+			t.Fatalf("after set ask-password 2 the wallet's settings do not read ask-password = 2 (decrypt)")
+		}
+		if others := regtestDocker(t, "run", "--rm", "--network", "none", "--user", "1000:1000", "-v", volume+":/home/monero/wallet", "--entrypoint", "find", image,
+			"/home/monero/wallet", "!", "-user", "1000"); others != "" {
+			t.Fatalf("files in the wallet volume not owned by uid 1000 after monero-wallet-cli: %s", others)
+		}
+		t.Logf("escrow wallet-rpc container %s stopped; monero-wallet-cli 0.18.5.1 offline on %s as uid 1000: with ask-password 2 print_ring showed no stored ring; after set ask-password 0 it showed the stored rings of the %d stuck key images and of the in-flight release's %d; unset_ring cleared the stuck ones (%q), the in-flight release's ring is unchanged; ask-password restored to 2; started again",
+			walletC, name, len(failed.KeyImages), len(inFlight.KeyImages), xmrRingUnset)
+	})
+
+	// The next pass builds and relays the re-request once; both settlements confirm.
+	r.mustPoll()
+	next = r.settlementOf(order, "release")
+	if next.Supersedes != id || next.State != "relayed" || r.settlement(id).State != "superseded" || p.count("transfer") != transfers+1 || p.count("relay_tx") != relays+1 {
+		t.Fatalf("after unset_ring: old %+v, new %+v %q, transfer %d (was %d), relay_tx %d (was %d), wallet transfer error %+v",
+			r.settlement(id), next, r.waitClass(next.ID), p.count("transfer"), transfers, p.count("relay_tx"), relays, p.transferFailure())
+	}
+	inputs := r.sameSpend(id, failed, next)
+	r.confirmReal(next.ID)
+	if s := r.settlement(otherID); s.State != "confirmed" || s.TxHash != inFlight.TxHash {
+		t.Fatalf("the in-flight release after remedy B: %+v, was %+v", s, inFlight)
+	}
+	t.Logf("order %s: re-request %d refused with a stale ring for %d key images while release %d of order %s was in flight; after remedy B it spent the same key images %v to the same plan in %s, relayed once, confirmed; release %d confirmed as %s",
+		shortID(order), next.ID, len(inputs), otherID, shortID(other), inputs, next.TxHash, otherID, inFlight.TxHash)
 }

@@ -58,6 +58,18 @@
 #     operator guide's stale-ring remedy A is then applied to ESCROW_XMR_REGTEST_WALLET_CONTAINER (required here): docker
 #     stop, its /home/monero/wallet/.shared-ringdb moved aside on its volume by its own image as uid 1000, docker start; the
 #     next pass builds the stored key images to the stored plan, relays it once, and it confirms.
+#   StaleRingRemedyB (A-625): the same stale ring, and another order's release built and relayed beside it (remedy A's
+#     precondition query answers 1; the ring database holds that coin's ring too). The operator guide's remedy B, with
+#     the guide's own queries: the escrow wallet-rpc container stopped; the official monero-wallet-cli 0.18.5.1
+#     (ESCROW_XMR_REGTEST_WALLET_CLI, which this script extracts from the checked archive below) run offline in the
+#     Dockerfile's pinned Debian image as linux/amd64, uid 1000, --network none, the wallet volume at /home/monero/wallet,
+#     the same --shared-ringdb-dir and the derived password in a read-only file, one piped session per step: its first
+#     open answers the background-mining question; with the default ask-password 2 print_ring shows no ring; after set
+#     ask-password 0 (the password on its prompt) print_ring shows a stored ring of 16 for each stuck key image and the
+#     other release's, unset_ring clears the stuck ones, print_ring answers "Key image either not spent, or spent with
+#     ring size 1" for each and shows the other release's ring unchanged; set ask-password 2, which set then reads; the
+#     container started; the next pass builds the stored key images to the stored plan, relays it once; both releases
+#     confirm.
 # Slice X-f legs (internal/market/escrow_xmr_regtest_restore_test.go), a restore simulated with scripts/restore.sh's own
 # Monero SQL:
 #   Restore: the restore holds a built release whose relay the daemon lost, retires the free slots and closes the wallet;
@@ -90,9 +102,11 @@
 # The wallet-rpcs listen without RPC login on 127.0.0.1 only. The ReRequest leg stops and starts the monerod container
 # named by ESCROW_XMR_REGTEST_DAEMON_CONTAINER (required), so it needs the docker command, and monerod must run with
 # --keep-fakechain: without it, monerod deletes the fakechain when it starts (the leg checks the height it comes back
-# at). The StaleRing leg also stops and starts the escrow wallet-rpc container named by ESCROW_XMR_REGTEST_WALLET_CONTAINER
+# at). The StaleRing legs also stop and start the escrow wallet-rpc container named by ESCROW_XMR_REGTEST_WALLET_CONTAINER
 # (required there), which must keep its wallet directory, /home/monero/wallet, on a volume with its ring database inside
-# it (--shared-ringdb-dir), as compose.nodes.yaml runs it. For example:
+# it (--shared-ringdb-dir), as compose.nodes.yaml runs it. StaleRingRemedyB needs tar with bzip2, and on an ARM host
+# Docker's amd64 emulation; the script fetches the CLI archive itself (see below) and the leg fails without it. For
+# example:
 #
 #   docker network create xmr-escrow-regtest
 #   docker run -d --name xmr-escrow-monerod --network xmr-escrow-regtest -p 127.0.0.1:28381:18081 \
@@ -124,6 +138,39 @@ for v in ESCROW_XMR_REGTEST_DAEMON_URL ESCROW_XMR_REGTEST_WALLET_URL ESCROW_XMR_
     exit 2
   fi
 done
+cd "$(dirname "$0")/.."
+
+# A-625: the StaleRingRemedyB leg runs the official monero-wallet-cli 0.18.5.1 for Linux x86-64. Its archive is checked
+# against this SHA-256, taken from getmonero.org's hashes.txt for the release (signed by binaryFate,
+# 81AC591FE9C4B65C5806AFC3F0AF4D462A0BDF92), on every run; a mismatch is refused and nothing runs. The archive is
+# ESCROW_XMR_REGTEST_CLI_ARCHIVE when set, else the cached artifacts/cache/ copy, downloaded once from getmonero.org.
+monero_cli_archive_name=monero-linux-x64-v0.18.5.1.tar.bz2
+monero_cli_sha256=22a7dda7b0cb699fdd6b7674c3b4a4465b337cc98a54983523b759e1e7cc9958
+sha256_of() {
+  if command -v sha256sum >/dev/null; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d ' ' -f 1
+}
+cli_archive="${ESCROW_XMR_REGTEST_CLI_ARCHIVE:-artifacts/cache/$monero_cli_archive_name}"
+if [[ ! -f "$cli_archive" ]]; then
+  if [[ -n "${ESCROW_XMR_REGTEST_CLI_ARCHIVE:-}" ]]; then
+    echo "ESCROW_XMR_REGTEST_CLI_ARCHIVE names no file." >&2
+    exit 2
+  fi
+  command -v curl >/dev/null || { echo "curl is required" >&2; exit 2; }
+  mkdir -p "$(dirname "$cli_archive")"
+  echo "Downloading $monero_cli_archive_name from downloads.getmonero.org"
+  curl -sSfL --proto '=https' --tlsv1.2 --retry 3 -o "$cli_archive.part" "https://downloads.getmonero.org/cli/$monero_cli_archive_name"
+  mv "$cli_archive.part" "$cli_archive"
+fi
+cli_sha256="$(sha256_of "$cli_archive")"
+if [[ "$cli_sha256" != "$monero_cli_sha256" ]]; then
+  echo "Refusing: $cli_archive has SHA-256 $cli_sha256, not the pinned $monero_cli_sha256 of the signed hashes.txt; nothing was run. Delete it to download it again." >&2
+  exit 1
+fi
+cli_dir="$(mktemp -d)"
+trap 'rm -rf "$cli_dir"' EXIT
+tar -xjf "$cli_archive" -C "$cli_dir" monero-x86_64-linux-gnu-v0.18.5.1/monero-wallet-cli
+export ESCROW_XMR_REGTEST_WALLET_CLI="$cli_dir/monero-x86_64-linux-gnu-v0.18.5.1/monero-wallet-cli"
+
 command -v curl >/dev/null || { echo "curl is required" >&2; exit 2; }
 command -v go >/dev/null || { echo "Go is required" >&2; exit 2; }
 
@@ -144,18 +191,17 @@ if ! [[ "$version" =~ ^[0-9]+$ ]] || (( version < 16 )); then
   exit 1
 fi
 
-cd "$(dirname "$0")/.."
 log="${ESCROW_XMR_REGTEST_LOG:-artifacts/real-chain/test-escrow-xmr-regtest-$(date -u +%Y%m%dT%H%M%SZ).log}"
 mkdir -p "$(dirname "$log")"
 echo "Monero escrow fakechain check (hard fork $version); transcript: $log"
 set +e
-go test -count=1 -timeout 45m -run '^TestXMREscrowRegtest(Wallets|Funding|TwoAccountsOneTx|Physical|RestartMidSend|RelayDropped|TopUp|Reorg|FundingReorg|External|ReRequest|StaleRing|Restore|Lookahead|WrongSecret|Destroy|RefundBelowFee|Bond)$' -v ./internal/market/ 2>&1 | tee "$log"
+go test -count=1 -timeout 45m -run '^TestXMREscrowRegtest(Wallets|Funding|TwoAccountsOneTx|Physical|RestartMidSend|RelayDropped|TopUp|Reorg|FundingReorg|External|ReRequest|StaleRing|StaleRingRemedyB|Restore|Lookahead|WrongSecret|Destroy|RefundBelowFee|Bond)$' -v ./internal/market/ 2>&1 | tee "$log"
 status=${PIPESTATUS[0]}
 set -e
 # Each leg is reported from its own go test result line, so one failing leg never makes another read as failed.
 failed=0
 for leg in TestXMREscrowRegtestWallets TestXMREscrowRegtestFunding TestXMREscrowRegtestTwoAccountsOneTx TestXMREscrowRegtestPhysical \
-  TestXMREscrowRegtestRestartMidSend TestXMREscrowRegtestRelayDropped TestXMREscrowRegtestTopUp TestXMREscrowRegtestReorg TestXMREscrowRegtestFundingReorg TestXMREscrowRegtestExternal TestXMREscrowRegtestReRequest TestXMREscrowRegtestStaleRing \
+  TestXMREscrowRegtestRestartMidSend TestXMREscrowRegtestRelayDropped TestXMREscrowRegtestTopUp TestXMREscrowRegtestReorg TestXMREscrowRegtestFundingReorg TestXMREscrowRegtestExternal TestXMREscrowRegtestReRequest TestXMREscrowRegtestStaleRing TestXMREscrowRegtestStaleRingRemedyB \
   TestXMREscrowRegtestRestore TestXMREscrowRegtestLookahead TestXMREscrowRegtestWrongSecret TestXMREscrowRegtestDestroy TestXMREscrowRegtestRefundBelowFee TestXMREscrowRegtestBond; do
   if grep -q -- "--- PASS: $leg " "$log"; then
     echo "PASS: $leg"
@@ -174,4 +220,4 @@ if [[ $status -ne 0 || $failed -ne 0 ]]; then
   echo "FAILED: go test exited $status; see $log" >&2
   exit 1
 fi
-echo "PASS: Monero escrow wallets (creation, sealed seed restored to its primary address, slots, account 0 empty, monthly rotation), funding at 10 confirmations and not at 9, one transaction paying two escrow accounts, physical orders (no spending call before the outcome; after Confirm receipt, the deadline, a dispute for the buyer and a no-ship cancel, each settlement relayed and confirmed), and settlements (stored before relay, never rebuilt across a lost relay answer and restarts, a top-up left out and stray-refunded, relayed again after a reorganisation, a release held while a reorganisation took a credited funding deposit below the threshold and then spending both funding deposits, and built without a funding deposit flushed from the pool only after 20 blocks and never stray-refunded, an outside spend recorded external, a relay refused three times while monerod was stopped then failed, and its administrator's re-request spending the same key images to the same plan and confirmed; a re-request refused with a stale ring after its six deposits were reorganised to new indices, then built and confirmed once the ring database was moved aside as the operator guide says; ring 16, rct type 6, fee within the cap), a restore (held release relayed once after confirmation, an orphan wallet found and sealed, free slots retired, a fresh wallet after it), the lookahead of a wallet missing an account, a changed secret refused, and a wallet destroyed after its retention with a day-89 deposit refunded first, and refunds of 0.001, 0.0015 and 0.0018 XMR the wallet refused as below the network fee ended too few and returned by one stray refund each with a later deposit, and a vendor bond recorded at the threshold and not one short, then flagged and not revoked when pop_blocks took its deposit below it, on a local fakechain; transcript in $log"
+echo "PASS: Monero escrow wallets (creation, sealed seed restored to its primary address, slots, account 0 empty, monthly rotation), funding at 10 confirmations and not at 9, one transaction paying two escrow accounts, physical orders (no spending call before the outcome; after Confirm receipt, the deadline, a dispute for the buyer and a no-ship cancel, each settlement relayed and confirmed), and settlements (stored before relay, never rebuilt across a lost relay answer and restarts, a top-up left out and stray-refunded, relayed again after a reorganisation, a release held while a reorganisation took a credited funding deposit below the threshold and then spending both funding deposits, and built without a funding deposit flushed from the pool only after 20 blocks and never stray-refunded, an outside spend recorded external, a relay refused three times while monerod was stopped then failed, and its administrator's re-request spending the same key images to the same plan and confirmed; a re-request refused with a stale ring after its six deposits were reorganised to new indices, then built and confirmed once the ring database was moved aside as the operator guide says, and again once monero-wallet-cli 0.18.5.1 unset the stuck rings offline with another release in flight, whose ring it kept; ring 16, rct type 6, fee within the cap), a restore (held release relayed once after confirmation, an orphan wallet found and sealed, free slots retired, a fresh wallet after it), the lookahead of a wallet missing an account, a changed secret refused, and a wallet destroyed after its retention with a day-89 deposit refunded first, and refunds of 0.001, 0.0015 and 0.0018 XMR the wallet refused as below the network fee ended too few and returned by one stray refund each with a later deposit, and a vendor bond recorded at the threshold and not one short, then flagged and not revoked when pop_blocks took its deposit below it, on a local fakechain; transcript in $log"

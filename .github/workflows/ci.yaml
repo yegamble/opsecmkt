@@ -141,7 +141,10 @@ jobs:
   # real monerod and three real monero-wallet-rpc (all v0.18.5.1) on a local fakechain (--regtest, offline, difficulty 1:
   # a chain nobody else can reach) and a disposable PostgreSQL. The nodes are started with docker run, exactly as the
   # script's header documents, because a service container cannot take command arguments and three legs stop and restart
-  # containers. Measured locally at 569 s for all 15 legs (go test 525 s), so the 25-minute limit leaves headroom.
+  # containers. The script step took 10 min 8 s for 18 legs in run 39525548377 (StaleRing 52 s); A-625's
+  # StaleRingRemedyB leg adds about one StaleRing more, and the script downloads the official monero-wallet-cli
+  # 0.18.5.1 archive (85 MB) from getmonero.org and refuses it unless its SHA-256 is the pinned one of the release's
+  # signed hashes.txt, so the 25-minute limit still leaves headroom.
   # Digests measured when the tags were checked (the repository pins these images by tag, as the installer does):
   # simple-monerod@sha256:0329465ffc599048efd57712d91d3b4b7d66380bd7205d5d0992cd9faf668e38 and
   # simple-monero-wallet-rpc@sha256:09ff81f470d6d37811e3fde808c5cd1158a8cd2c42abbfb935b33f26f91e879d.
