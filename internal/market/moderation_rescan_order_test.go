@@ -81,6 +81,20 @@ func TestModerationDeletedSourceReleasesMarkerCount(t *testing.T) {
 	if got := counts(); got != "2/0" {
 		t.Fatalf("the deleting transaction touched the account row: counts=%s", got)
 	}
+	// No row may hold both the deleted record's id and its account: the
+	// marker is gone at once and only a record-free release remains.
+	if agInt(e, `SELECT count(*) FROM moderation_backfill WHERE target_id=$1`, active) != 0 {
+		t.Fatal("the deleted record's marker (its id) outlived the deleting transaction")
+	}
+	if agInt(e, `SELECT count(*) FROM moderation_marker_releases`) != 1 {
+		t.Fatal("deleting a marked record did not queue exactly one release")
+	}
+	if agInt(e, `SELECT count(*) FROM moderation_backfill m JOIN moderation_marker_releases r ON r.xmin=m.xmin`) != 0 {
+		t.Fatal("a marker row shares a transaction id with a release row")
+	}
+	if agInt(e, `SELECT backfill FROM moderation_capacity`) != agInt(e, `SELECT (SELECT count(*) FROM moderation_backfill)+(SELECT count(*) FROM moderation_marker_releases)`) {
+		t.Fatal("the marker counter is not markers plus pending releases")
+	}
 	if _, err := moderationBackfillSweep(t.Context(), e.DB, 5); err != nil {
 		t.Fatal(err)
 	}
