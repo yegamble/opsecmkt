@@ -87,7 +87,8 @@ func TestPrivateAdminIngressSessionsAndSharedStaffRoutes(t *testing.T) {
 		if private && (w.Code != 303 || e.cookie(w, "session") == "") {
 			t.Fatalf("private sign-in failed: status=%d body=%s", w.Code, w.Body)
 		}
-		if !private && (w.Code != 404 || e.cookie(w, "session") != "" || e.cookie(w, "pending") != "") {
+		// A-611: refused as a wrong password is, so the answer does not confirm the administrator's password.
+		if !private && (w.Code != 401 || !strings.Contains(refusalText(w.Body.String()), "Invalid handle or password") || e.cookie(w, "session") != "" || e.cookie(w, "pending") != "") {
 			t.Fatalf("public administrator sign-in was accepted: status=%d headers=%v", w.Code, w.Header())
 		}
 	}

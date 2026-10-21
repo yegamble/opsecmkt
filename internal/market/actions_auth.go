@@ -710,15 +710,14 @@ func authAction(c *actionCtx) (actionResult, error) {
 			}
 		}
 		check := compareSignInPassword(hash, []byte(password))
-		if err != nil || check != nil {
+		// An administrator on the public listener is refused exactly as a wrong password is (A-611): the same 401,
+		// logging and spent budget (no refund), so the answer never tells whether the password was right.
+		if err != nil || check != nil || a.publicAdministrator(ctx, &User{Role: account.role}) {
 			a.logSignInRefusals()
 			if rescueID != "" {
 				a.logRescueRefusal()
 			}
 			return actionResult{}, fail(401, "Invalid handle or password")
-		}
-		if a.publicAdministrator(ctx, &User{Role: account.role}) {
-			return actionResult{}, fail(404, pageNotFound)
 		}
 		if rescueID != "" {
 			required, err := pgpLoginRequired(ctx, a.db)
