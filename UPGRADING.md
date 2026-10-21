@@ -15,6 +15,37 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## monerod's own log file is capped (A-538)
+
+No migration or setting. The bundled `monero` service (`compose.nodes.yaml`, `compose.nodes-tor.yaml` and the native
+`deploy` development render) now starts monerod with `--max-log-file-size=10485760 --max-log-files=3`. monerod writes
+`bitmonero.log` (`stagenet/bitmonero.log` on stagenet) in the `monero_data` volume, outside Docker's log rotation, and by
+default kept up to 50 files of 100 MB there; it now keeps at most three files of about 10 MiB. The escrow wallet-rpc's
+log was already capped on its tmpfs and is unchanged. The log level stays at the default; see
+[Resource limits and log rotation](docs/operator-guide.md#resource-limits-and-log-rotation) for what the logs can hold
+and how to also enforce the retention policy's 14-day age.
+
+- **Compose:** for this change, `docker compose up -d` recreates only the `monero` container with the new command. Its volume, chain,
+  wallets, `.env`, onion identities and every other container are kept; nothing is reprovisioned. If you replaced the
+  `monero` command in a file of your own, add the two flags there.
+- **Native `deploy` (development nodes):** `deploy redeploy` writes the new configuration but starts only the app;
+  `deploy up --dir DIR` then recreates the `monero` container with it, keeping every key, volume and the retention state.
+- **Existing oversized logs** are not deleted at startup. On its first log line monerod rotates a `bitmonero.log` over the
+  new size whole (it is not truncated) and deletes the oldest rotated files until two remain; the remaining old large
+  files go at the next two rotations, after about 20 MiB of new log. Checked against monerod 0.18.5.1 with a 15 MB log
+  and six rotated files. To free the space at once, or if you are not keeping logs from before the upgrade, list them after
+  the restart, then delete the rotated files (`bitmonero.log-<UTC time>`) last written more than an hour ago; copy any
+  you still need privately first:
+
+  ```sh
+  docker compose exec -T monero find /home/monero/.bitmonero -maxdepth 2 -name 'bitmonero.log*' -exec ls -l {} +
+  docker compose exec -T monero find /home/monero/.bitmonero -maxdepth 2 -name 'bitmonero.log-*' -mmin +60 -delete
+  ```
+
+  A log left from another network (for example `stagenet/bitmonero.log` after a switch to mainnet) is no longer written
+  or rotated, and the second command removes only its rotated files: remove that `bitmonero.log` itself by its path
+  (`docker compose exec -T monero rm /home/monero/.bitmonero/stagenet/bitmonero.log`).
+
 ## The onion identity restore checks the backup first (A-531)
 
 No migration or setting. The operator guide's [onion identity restore](docs/operator-guide.md#secrets-env-and-onion-identities)

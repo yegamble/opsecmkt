@@ -23,11 +23,15 @@ services:
     # monero-escrow-wallet use the restricted 18081. --no-igd and --no-zmq are image defaults this command replaces:
     # no UPnP port mapping on the host's router, no ZMQ server (A-536). The image's --enable-dns-blocklist stays off:
     # its lookups would leave outside Tor with compose.nodes-tor.yaml.
+    # monerod logs to stdout (Docker's rotation above) and to its own file in the data volume (bitmonero.log, under
+    # stagenet/ on stagenet), which Docker does not rotate. monerod's defaults would keep 50 files of 100 MB; these flags
+    # keep at most three files of 10 MiB (the current one and two rotated), as Docker keeps (A-538). They may hold peer
+    # IP addresses and transaction IDs: docs/operator-guide.md#resource-limits-and-log-rotation.
     command: >-
       ${MONERO_NETWORK_FLAG---stagenet} --data-dir=/home/monero/.bitmonero --restricted-rpc
       --rpc-bind-ip=127.0.0.1 --rpc-bind-port=18089
       --rpc-restricted-bind-ip=0.0.0.0 --rpc-restricted-bind-port=18081 --confirm-external-bind --no-igd --no-zmq
-      ${MONERO_PRUNE_FLAGS---prune-blockchain --sync-pruned-blocks}
+      --max-log-file-size=10485760 --max-log-files=3 ${MONERO_PRUNE_FLAGS---prune-blockchain --sync-pruned-blocks}
     volumes: [monero_data:/home/monero/.bitmonero]
     # The image's own user from the start, with a read-only root: no root entrypoint step, so the volume must already
     # belong to 1000:1000 (a new volume does; after restoring one as root, see docs/operator-guide.md#troubleshooting).

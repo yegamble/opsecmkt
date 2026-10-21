@@ -840,3 +840,77 @@ func TestBrandingUploadOriginInitRejectsInvalidFlagsAndSetWithoutWriting(t *test
 		}
 	}
 }
+
+// A-538: monerod and monero-wallet-rpc keep their own log files besides stdout, and Docker's json-file rotation does
+// not reach them. The development nodes cap both: monerod's in its data volume at three 10 MiB files (its defaults
+// keep 50 of 100 MB), the wallet's on its tmpfs at two 1 MiB files.
+func TestDevMoneroNodeLogFilesAreCapped(t *testing.T) {
+	dir := initDev(t)
+	c, err := loadConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.MoneroImage, c.MoneroWalletImage = testImage, testImage
+	c.Settings["ESCROW_XMR"] = "on"
+	for key, value := range map[string]string{"MONERO_WALLET_SECRET": strings.Repeat("0123456789abcdef", 4), "ESCROW_XMR_WALLET_RPC_URL": "http://escrow:password@monero-wallet:18083/json_rpc", "ESCROW_XMR_DAEMON_URL": "http://monero:18081/json_rpc", "ESCROW_XMR_WALLET_RPC_PASSWORD": "wallet-password"} {
+		name := "secrets/" + strings.ToLower(strings.ReplaceAll(key, "_", "-"))
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(value), 0600); err != nil {
+			t.Fatal(err)
+		}
+		c.SecretFiles[key] = name
+	}
+	_, public := recoveryKey(t)
+	seed, err := os.ReadFile(public)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "secrets/escrow-xmr-seed-key.asc"), seed, 0600); err != nil {
+		t.Fatal(err)
+	}
+	c.PublicFiles = map[string]string{"ESCROW_XMR_SEED_KEY": "secrets/escrow-xmr-seed-key.asc"}
+	if err := materialize(dir, c); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "compose.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var compose struct {
+		Services map[string]struct {
+			Command []string       `json:"command"`
+			Logging map[string]any `json:"logging"`
+		} `json:"services"`
+	}
+	if err := json.Unmarshal(data, &compose); err != nil {
+		t.Fatal(err)
+	}
+	daemon := compose.Services["monero"]
+	counts := map[string]int{}
+	for _, argument := range daemon.Command {
+		name, _, _ := strings.Cut(argument, "=")
+		counts[name]++
+	}
+	for _, flag := range []string{"--max-log-file-size=10485760", "--max-log-files=3"} {
+		name, _, _ := strings.Cut(flag, "=")
+		if !strings.Contains(" "+strings.Join(daemon.Command, " ")+" ", " "+flag+" ") || counts[name] != 1 {
+			t.Fatalf("monerod command lacks exactly one %s: %q", flag, daemon.Command)
+		}
+	}
+	if counts["--log-file"] != 0 || counts["--log-level"] != 0 {
+		t.Fatalf("monerod log file or level moved from its capped default: %q", daemon.Command)
+	}
+	for _, name := range []string{"monero", "monero-wallet"} {
+		if options, _ := compose.Services[name].Logging["options"].(map[string]any); options["max-size"] != "10m" || options["max-file"] != "3" {
+			t.Fatalf("%s lost Docker log rotation: %v", name, compose.Services[name].Logging)
+		}
+	}
+	wallet, err := os.ReadFile(filepath.Join(dir, "monero-wallet.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range []string{"log-file=/tmp/monero-wallet-rpc.log", "max-log-file-size=1048576", "max-log-files=2"} {
+		if !strings.Contains("\n"+string(wallet), "\n"+line+"\n") {
+			t.Fatalf("wallet config lacks %s", line)
+		}
+	}
+}

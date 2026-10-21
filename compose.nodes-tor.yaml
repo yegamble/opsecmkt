@@ -58,7 +58,7 @@ services:
       ${MONERO_NETWORK_FLAG---stagenet} --data-dir=/home/monero/.bitmonero --restricted-rpc
       --rpc-bind-ip=127.0.0.1 --rpc-bind-port=18089
       --rpc-restricted-bind-ip=0.0.0.0 --rpc-restricted-bind-port=18081 --confirm-external-bind --no-igd --no-zmq
-      ${MONERO_PRUNE_FLAGS---prune-blockchain --sync-pruned-blocks} --proxy=10.199.42.2:9050
+      --max-log-file-size=10485760 --max-log-files=3 ${MONERO_PRUNE_FLAGS---prune-blockchain --sync-pruned-blocks} --proxy=10.199.42.2:9050
 volumes:
   tor_socks_data:
 
