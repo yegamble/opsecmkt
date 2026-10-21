@@ -4,6 +4,12 @@ Retention maintenance applies the [data retention and private information policy
 It is opt-in so an upgrade cannot silently purge an existing market before users receive notice and preservation duties are recorded.
 Recipient-encryption enforcement remains a separate implementation gap.
 
+Abuse-review copies are a separate lifecycle gap. The ordinary sweeps do not erase captured plaintext or its review records when
+the original listing, image description, dispute text or review expires, or when an account is erased. Disabling future collection
+does not remove historical copies. These records currently have no automatic expiry. The operator must decide their minimization,
+retention and purge policy before relying on ordinary expiry as a complete data-removal policy. The public records inventory and
+account-deletion notice disclose this exception; they remain visible regardless of whether collection is currently enabled.
+
 ## Before enabling
 
 Inventory database replicas, backups, audit exports, wallet files, snapshots, log stores and every off-host copy.
@@ -58,6 +64,7 @@ Legacy last-use dates are not invented from account creation dates.
 
 | Data | Live-system deadline |
 | --- | --- |
+| Abuse-review records, legacy and new: legacy copied content; new record and order references, capture times, text digests, exact and perceptual image fingerprints; findings, decisions and staff reviews; markers for records waiting to be checked (type, id, first/last wait time, whether it waits for an unflagged payment), per-account state (count of checks in the past day, number of waiting and parked markers, rescan flags and, while a rescan runs with collection on, the type, id and creation time of the last record re-read) and pending count releases (account, parked flag; no record) | No automatic expiry; separate from the ordinary content/account deadlines below, including after the original content or image is removed, after account deletion and after collection stops. A digest or fingerprint can confirm a guessed text or a matching image. A waiting marker is removed once its record is checked or deleted; a deleted record's pending count release (account and parked flag, no record) and a rescan position naming it are removed at the next worker pass or when collection is disabled (while collection is off this can last indefinitely, until collection is enabled again); a marker for an unflagged payment stays until it is flagged again or gone; while collection is off, other markers wait indefinitely, including for records of erased accounts that remain. A daily count is zeroed after its day at the next check or worker pass or when collection stops; the account's entry is removed once its day has passed with no waiting marker and no rescan, or with the account; the entry can therefore remain indefinitely while an unflagged payment is waiting or collection is off |
 | Individual direct messages, ciphertext and routing metadata | 90 days after creation |
 | Support-ticket bodies | 90 days after creation, or earlier when the opener/message sender is closed or erased, unless preserved |
 | Closed or Ignored support-ticket metadata | 90 days after the last update, once all bodies are gone and no related hold applies |
@@ -68,7 +75,7 @@ Legacy last-use dates are not invented from account creation dates.
 | Private order text, encrypted order correspondence, digital originals/replacements and dispute images | 30 days after verified financial closure |
 | Reserved digital unit contents and deduplication fingerprints | The associated order's private-content deadline |
 | Ordinary closed-order records | 180 days after verified financial closure |
-| Withdrawn listing content, images and reviews | 30 days after withdrawal, unless necessary for an open transaction or preserved case |
+| Withdrawn listing content, images and reviews | 30 days after withdrawal, unless necessary for an open transaction or preserved case; abuse-review records of them (first row) are separate |
 | Accounts | 12 months without observed authenticated use, then 30 days' notice; a verified deletion request has a 30-day deadline |
 
 New initial and replacement per-order manual and automatic digital deliveries are stored as PGP armor encrypted to the buyer. Their
@@ -295,3 +302,46 @@ E2E_DATABASE_URL=DISPOSABLE_DATABASE_URL E2E_RETENTION_STATE_DIR=PRIVATE_ABSOLUT
 ```
 
 The browser setup initializes that database; never point it at an existing market. Retention form checks run with JavaScript disabled at 320 px.
+
+New moderation capture (migration 134) stores digests and limited metadata, not
+source prose. Completed jobs remove the active raw actor link from the live row (backups, WAL and dead row versions can keep it until removed or overwritten); pending jobs keep it until a worker completes them, bounded by the pending cap. This prospective
+minimization does not erase legacy copies, immutable audit records or backups,
+and does not make retained target references anonymous. New records also have
+no automatic expiry. See the
+[moderation records and capacity rules](moderation-agent.md#records-and-recovery).
+
+Migration 146 adds two small moderation tables. `moderation_backfill` holds one
+row per target whose capture was refused: kind, target reference, first/last
+refusal times and a `parked` flag, with no content, digest or actor. A row is
+deleted when the target's current revision is queued, and in the same
+transaction that deletes the target (that transaction takes no global lock). A row
+for an unflagged payment is parked until the payment is flagged again or gone;
+archived listings and hidden reviews are captured like live ones. While capture
+is disabled, rows for records that still exist wait until it is enabled again.
+At most 65536 rows exist. `moderation_marker_releases` holds one row per
+deleted marked record: the owner's account id and whether the marker was parked
+(never the record), so no row holds both a record id and its account. The next worker pass (normally only while capture is enabled; a worker started before capture was disabled keeps passing), or disabling capture, subtracts these from the owner's counts
+and the marker counter and deletes them (while collection is off this can last indefinitely, until collection is enabled again); account erasure clears their account id (`ON DELETE SET NULL`) and keeps each row until that pass, so the counter is still lowered.
+`moderation_actor_allocations` holds per-account state: the 24-hour allocation
+window (window start, count), the number of the account's waiting markers (at
+most 16 by default) and of those parked, and, once that bound or the marker table
+is reached, a rescan flag, a repeat flag and, while the rescan runs, the
+position it has reached: the creation time, kind and id of the last record
+re-read (a reference to that one record). The position is kept while the rescan
+runs and capture is on, including while the account cannot be admitted; it is
+cleared when the rescan ends, when capture is disabled, or at the next worker
+pass after that record is deleted. The
+daily count is zeroed after its window at the next capture admission or worker
+pass, or when capture is disabled. The row is deleted once its window has
+passed with no waiting marker and no rescan, and account erasure deletes it
+(`ON DELETE CASCADE`, an enumerated relationship in the account-erasure
+inventory). If capture stays enabled while no worker runs and no capture is
+admitted, an expired daily count remains until the next worker pass or until
+capture is disabled. Disabling capture zeroes daily counts but keeps every row
+that has waiting markers or a rescan, indefinitely while capture is off. A
+parked marker (an unflagged payment's) keeps its account's row for as long as
+it is parked. A deleted record's count release is applied at the next worker
+pass; safety recounts run within a pass while fewer than 4096 markers are
+waiting and otherwise about once a day per idle account. New proposal inputs no
+longer contain per-field digests, and non-listing proposals no longer store a
+text fingerprint.

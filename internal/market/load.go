@@ -275,9 +275,10 @@ func (a *App) load(r *http.Request, d *PageData) error {
 	normaliseCatalogFilters(d)
 	if d.Page == "catalog" || d.Page == "product" || d.Page == "vendor" || d.Page == "checkout" || d.Page == "vendor-dashboard" {
 		// An administrator's takedown reason (A-163) is read only for the owner's vendor desk.
-		takedown := "''"
+		takedown, rejection := "''", "''"
 		if d.Page == "vendor-dashboard" {
 			takedown = "coalesce(p.admin_archive_reason,'')"
+			rejection = "coalesce(p.review_rejection_reason,'')" // MOD72-6: the owner's own listings only
 		}
 		// Listing grids (catalog, vendor, vendor desk) render Product.Excerpt, so they load only its prefix;
 		// product and checkout pages load and show the full description.
@@ -285,7 +286,7 @@ func (a *App) load(r *http.Request, d *PageData) error {
 		if d.Page == "catalog" || d.Page == "vendor" || d.Page == "vendor-dashboard" {
 			description = "left(p.description," + strconv.Itoa(excerptRunes+1) + ")"
 		}
-		query := `SELECT p.id,p.title,` + description + `,p.category,p.region,p.kind,u.handle,p.vendor_id,p.btc,p.xmr,p.stock,p.archived,` + takedown + `,` + verifiedVendorSQL("u") + `,p.subcategory,array_to_string(p.shipping_regions,'|'),ratings.average,ratings.count,u.vendor_vacation,u.vendor_deactivated,NOT ` + vendorAcceptsBuyerMessagesSQL("u") + `,p.digital_delivery_mode FROM products p JOIN users u ON u.id=p.vendor_id
+		query := `SELECT p.id,p.title,` + description + `,p.category,p.region,p.kind,u.handle,p.vendor_id,p.btc,p.xmr,p.stock,p.archived,` + takedown + `,` + verifiedVendorSQL("u") + `,p.subcategory,array_to_string(p.shipping_regions,'|'),ratings.average,ratings.count,u.vendor_vacation,u.vendor_deactivated,NOT ` + vendorAcceptsBuyerMessagesSQL("u") + `,p.review_state<>'approved',` + rejection + `,p.digital_delivery_mode FROM products p JOIN users u ON u.id=p.vendor_id
 		 LEFT JOIN LATERAL (SELECT coalesce(avg(r.rating),0)::float8 AS average,count(*) AS count FROM reviews r JOIN orders ro ON ro.id=r.order_id WHERE r.product_id=p.id AND ro.state='completed' AND r.hidden_at IS NULL) ratings ON true WHERE true`
 		args := []any{}
 		limit := " LIMIT 100"
@@ -299,7 +300,7 @@ func (a *App) load(r *http.Request, d *PageData) error {
 			query += " AND p.vendor_id=$1"
 			args = append(args, vendorID)
 			var total int
-			if err = a.db.QueryRowContext(ctx, `SELECT count(*) FROM products p JOIN users u ON u.id=p.vendor_id WHERE p.vendor_id=$1 AND NOT p.archived AND NOT u.vendor_deactivated`, vendorID).Scan(&total); err != nil {
+			if err = a.db.QueryRowContext(ctx, `SELECT count(*) FROM products p JOIN users u ON u.id=p.vendor_id WHERE p.vendor_id=$1 AND NOT p.archived AND NOT u.vendor_deactivated AND p.review_state='approved'`, vendorID).Scan(&total); err != nil {
 				return err
 			}
 			paging := vendorPaging(d, vendorID, total, r.URL.Query().Get("page"))
@@ -320,7 +321,7 @@ func (a *App) load(r *http.Request, d *PageData) error {
 		case "catalog":
 			// The term is matched literally (likePattern); the count and the page share one filter. E'\\' is one
 			// backslash whatever standard_conforming_strings an external database sets.
-			filter := ` AND NOT p.archived AND NOT u.vendor_deactivated AND ($1='' OR p.title ILIKE $4 ESCAPE E'\\' OR p.description ILIKE $4 ESCAPE E'\\') AND ($2='' OR p.category=$2)
+			filter := ` AND NOT p.archived AND NOT u.vendor_deactivated AND p.review_state='approved' AND ($1='' OR p.title ILIKE $4 ESCAPE E'\\' OR p.description ILIKE $4 ESCAPE E'\\') AND ($2='' OR p.category=$2)
 			 AND ($3='' OR p.region=$3 OR $3=ANY(p.shipping_regions) OR p.region='Worldwide' OR 'Worldwide'=ANY(p.shipping_regions)
 			 OR ($3='North America' AND (p.region='United States' OR 'United States'=ANY(p.shipping_regions)))
 			 OR ($3='United States' AND (p.region='North America' OR 'North America'=ANY(p.shipping_regions))))
@@ -340,9 +341,16 @@ func (a *App) load(r *http.Request, d *PageData) error {
 			// A-164: an archived listing's page stays readable to whoever may read an order placed on it (the
 			// order page's rule), so the parties and reviewing staff can see what was sold; everyone else gets 404.
 			query += " AND ((NOT p.archived AND NOT u.vendor_deactivated) OR EXISTS(SELECT 1 FROM orders o WHERE o.product_id=p.id AND " + orderReadable("$2", "$3") + "))"
+			// MOD72-6: a listing awaiting review (listing_review.go) is shown to its vendor, to active moderators and
+			// administrators, and, like an archived one, to whoever may read an order placed on it before it was held
+			// (a draft is not an order: a buyer cannot see an unreviewed edit by saving a draft first). A rejected
+			// listing is shown to its vendor and staff only, never through an earlier order (QA72-3).
+			query += " AND (p.review_state='approved' OR p.vendor_id=$2 OR ($3 IN ('moderator','admin') AND EXISTS(SELECT 1 FROM users staff WHERE staff.id=$2 AND staff.suspended_at IS NULL AND staff.closed_at IS NULL AND staff.retention_restricted_at IS NULL))" +
+				" OR (p.review_state<>'rejected' AND EXISTS(SELECT 1 FROM orders o WHERE o.product_id=p.id AND o.state<>'draft' AND " + orderReadable("$2", "$3") + ")))"
 			args = append(args, d.User.ID, d.User.Role)
 		case d.Page != "vendor-dashboard" && d.Page != "catalog":
-			query += " AND NOT p.archived AND NOT u.vendor_deactivated"
+			// The vendor page, the checkout page and a signed-out product page: published listings of active vendors only.
+			query += " AND NOT p.archived AND NOT u.vendor_deactivated AND p.review_state='approved'"
 		}
 		// p.id breaks ties between listings created in the same transaction, so pages never overlap.
 		order := "p.created DESC, p.id DESC"
@@ -365,7 +373,7 @@ func (a *App) load(r *http.Request, d *PageData) error {
 			var p Product
 			var regions string
 			var btc, xmr int64
-			if err = rows.Scan(&p.ID, &p.Title, &p.Description, &p.Category, &p.Region, &p.Kind, &p.Vendor, &p.VendorID, &btc, &xmr, &p.Stock, &p.Archived, &p.TakedownReason, &p.VendorVerified, &p.Subcategory, &regions, &p.RatingAverage, &p.RatingCount, &p.VendorVacation, &p.VendorDeactivated, &p.VendorMessagesUnavailable, &p.DigitalDeliveryMode); err != nil {
+			if err = rows.Scan(&p.ID, &p.Title, &p.Description, &p.Category, &p.Region, &p.Kind, &p.Vendor, &p.VendorID, &btc, &xmr, &p.Stock, &p.Archived, &p.TakedownReason, &p.VendorVerified, &p.Subcategory, &regions, &p.RatingAverage, &p.RatingCount, &p.VendorVacation, &p.VendorDeactivated, &p.VendorMessagesUnavailable, &p.Pending, &p.RejectionReason, &p.DigitalDeliveryMode); err != nil {
 				rows.Close()
 				return err
 			}
@@ -390,6 +398,13 @@ func (a *App) load(r *http.Request, d *PageData) error {
 				return sql.ErrNoRows
 			}
 			d.Product = &d.Products[0]
+			// MOD72-6: a rejection reason is shown on the product page to the listing's vendor and staff only, never
+			// to the parties of an earlier order who may also open it.
+			if p := d.Product; p.Pending && d.User != nil && (p.VendorID == d.User.ID || staffViewer(d.User)) {
+				if err = a.db.QueryRowContext(ctx, `SELECT coalesce(review_rejection_reason,'') FROM products WHERE id=$1`, p.ID).Scan(&p.RejectionReason); err != nil {
+					return err
+				}
+			}
 		}
 		if d.Page == "vendor" {
 			var u User

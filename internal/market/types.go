@@ -50,6 +50,11 @@ type Product struct {
 	// P4, vendor-dashboard only: an administrator's takedown reason (A-163); never loaded for public pages.
 	TakedownReason      string
 	DigitalDeliveryMode string
+	// MOD72-6 (listing_review.go): Pending, the listing is not approved for buyers (review_state pending or rejected).
+	// Public pages never load one; its vendor and staff see it marked, and so do earlier order parties unless rejected.
+	// RejectionReason: staff rejected it with this reason; loaded only for its vendor and staff.
+	Pending         bool
+	RejectionReason string
 	// A-189, catalog, vendor and product pages only: the listing's public photos, oldest first (image_pages.go),
 	// and Thumb, the first one's thumbnail URL for its card ("" = the CSS illustration).
 	Photos []ProductPhoto
@@ -169,11 +174,13 @@ type SignInRefusal struct{ Handle, Until string }
 type PageData struct {
 	// AdminSection is the administration section page /admin/<slug> shown with Page "admin"; "" is the overview
 	// (admin_sections.go).
-	AdminSection     string
-	Access           *SiteAccessView
-	Branding         *BrandingView
-	DependencyStatus *DependencyStatusView // Administrator-only local version report and topology notices.
-	HostControl      *HostControlView      // Private administrator app-host reboot readiness and receipts.
+	AdminSection            string
+	Access                  *SiteAccessView
+	Branding                *BrandingView
+	DependencyStatus        *DependencyStatusView // Administrator-only local version report and topology notices.
+	HostControl             *HostControlView      // Private administrator app-host reboot readiness and receipts.
+	Moderation              *ModerationAdminView  // Private administrator moderation proposals and bounded status.
+	PrivateModerationAccess bool                  // Navigation only; authority still comes from the private listener and current role.
 
 	ServerStarted string
 	SchemaVersion int
@@ -258,6 +265,13 @@ type PageData struct {
 	// vendor page, the staff remove form for the vendor's avatar.
 	RecentImages   []RecentImage
 	AvatarTakedown *ImageTakedown
+	// MOD72-6 (listing_review.go). ListingReviews: /moderator, the listings awaiting review, the longest waiting first
+	// (at most listingReviewLimit of ListingReviewsTotal); ListingReviewAdmin: admin Vendors section, the review mode
+	// panel; ListingHeld: vendor-dashboard and listing-edit, the vendor's next new listing or edit waits for review.
+	ListingReviews      []ListingReview
+	ListingReviewsTotal int
+	ListingReviewAdmin  *ListingReviewAdminView
+	ListingHeld         bool
 
 	// Foundation
 	Auth *AuthView

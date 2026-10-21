@@ -149,6 +149,8 @@ Evidence tier as in `repo-map.md`.
 | 71 | 2026-10-20 | /war-room-loop resume: A-614 | implementer A-614; payments verifier A-614 (one round) | Verified: A-614 (#103, 5a3b3a7e). New: A-616 (P3), A-617 (NIT). Verifier and implementer saw /moderator statement timeouts at load average 150-560 at both base and head (A-615); CI green. Remaining: A-559, A-611; owner-blocked A-555, A-562, A-573 |
 | 72 | 2026-10-20 | /war-room A-616, A-617 (owner: "finish off"); main red after A-614 | seats payments (resumed), staff, devils-advocate (both general agents following their repo role files: the opsec seat types were not loaded this session); implementers A-614 flake, A-616/A-617; payments verifier | Round B held: DA72-N1 DECLINE revised to ACCEPT (d) after the no-reorg carry-out collision (PAY72-3) and disjoint claims were confirmed; STAFF72-3 timer conceded; A-617 ruled as a suffix (DA72-2), not a new arm. Main CI red at 5a3b3a7e and bda222f0 (TestXMREscrowRegtestReRequest, stale ring, A-618); fixed by #107 (05bd8203, main CI green). Verified: A-616 (#108), A-617 (#109). Migration renumbered 129 to 134 to 135 for open PRs #99 and #104. New: A-618 (P2, unruled), A-619 (NIT). Remaining: A-618 ruling, A-559, A-611; owner-blocked A-555, A-562, A-573 |
 | WR-XMPP | 2026-10-20 | Owner-requested XMPP, encrypted contents/order delivery and separate support tickets; Rounds 0–D | independent application security, Tor/privacy INFOSEC, QA/release; Codex agents following repository roles | All required scoped findings fixed and independently verified, including retention/FK audience provenance and metadata-only escalation serialization. Local broad regression coverage and corrected-source focused gates complete; current-head CI required before merge. Migrations 131–133 reserve open PR #104's 129–130. Commit/push/merge explicitly delegated. |
+| 70 | 2026-10-20 UTC | Targeted moderation agent, coding-agent hardening and supplied Gemini proposal | security, privacy/Tor and infrastructure; isolated implementers; independent QA | MOD69-1/2/3/4 and MOD70-5 independently verified locally; no further required in-scope issue on fresh review. MOD70-6 storage policy remains a production gate; image understanding excluded by owner. [PR #99](https://github.com/yegamble/opsecmkt/pull/99) tracks the required final-source CI gate and final long-running suite results. No main merge or deployment delegated. |
+| 71 | 2026-10-20 | Source-checked PR #99 rating follow-up | closed protocol, pipeline, persistence and image implementers; independent privacy and release seats | MOD71-1 through MOD71-6 fixed and independently verified locally: closed output, atomic budgets, metadata-only capture, bounded signals, weak-hash guards and visible human review. Legacy bytes/timestamps preserved; no open required in-scope issue. PR #99 tracks final-source CI and full-suite results. |
 
 | 73 | 2026-10-20 | Focused quality/dead-code and CI tooling loop (owner delegated push and merge) | backend, infrastructure, QA/release; Codex agents following repository role profiles (Opus unavailable); three isolated implementers planned and reused seats for verification | Round A accepted independent required quality/security gates, shared pinned tools and Lefthook, analyzer-proven cleanup. No disputed REQUIRED finding, so B/C skipped per protocol. A-620–A-622 implemented and independently accepted at 5aaa5027; about 10k dead lines/61 empty files removed without dropping test roots, admin settings write-error regression added, certifi CA advisory fixed. PR #115 carries the required integration/CI merge gate. Unrelated backlog remains outside scope. |
 | 74 | 2026-10-20 | /war-room-loop resume: A-618 ruling (seats payments, infrastructure, devils-advocate), A-618 and A-559 implementation | implementers A-618, A-559; infrastructure seat (A-618), staff seat (A-559) verifiers | Ruled A-618 (PAY73-1, DA73-1 retracted by source). Verified: A-618 (#112 c5b1e9d7, guide fixes INFRA73V-1/2 in-PR; privacy follow-up #114 3a2178e1 after a side-agent note), A-559 (#121 cab4b5f8). New: A-623 (NIT), A-624, A-625 (EXPERIMENT) |
@@ -161,6 +163,7 @@ Evidence tier as in `repo-map.md`.
 | 81 | 2026-10-21 | /war-room-loop resume: A-639, A-640 | implementers A-639, A-640; payments seat (A-639); chair-verified A-640 | Verified: A-639 (#145), A-640 (#146). Correction recorded: the payments seat withdrew PAY73-1's "the trigger needs a mined settlement" and "A-554 first builds are unaffected" (wallet2 get_outs stores every build's rings, wallet2.cpp:9886); A-618's row already states the trigger correctly |
 | 82 | 2026-10-21 | /war-room-loop resume: A-634, A-636, A-641 | payments seat (A-634 answer, A-641 verification); implementers A-636, A-641; chair-verified A-636 | Answered A-634 (no change needed). Verified: A-636 (#148, Monero evidence for all 8 gaps), A-641 (#149, relay-unknown class and auto-refresh off). New: A-642 (NIT) |
 | 83 | 2026-10-21 | /war-room-loop resume: A-530, A-538 | implementers A-530, A-538; chair-verified both | Verified: A-530 (#151, nodes over Tor by default for new Tor installs; mirror-command cross-check fixed in-PR by the chair after CI caught it), A-538 (#152, monerod log file capped). Owner informed that A-530 defaults to a path whose Monero sync over Tor is not yet proven |
+| 72-PR99 | 2026-10-20 → 2026-10-21 | /war-room-loop on PR #99 (moderation agent; LLM seat emphasis; Gemini review as hypotheses) | opsec-llm, opsec-privacy, opsec-security; implementers MOD72-1 to MOD72-7 and MOD72-9; QA seat (MOD72-6) | Verified: MOD72-1 (lossless capture, five fix rounds: SEC72-1/2/3, SEC72V-1..3, SEC72W-1..4, SEC72Y-1, SEC72Z-1/2, SEC72AB-1, privacy-2 and its disclosure rounds), MOD72-2, MOD72-3, MOD72-4, MOD72-5, MOD72-6 (hold mode, owner directive), MOD72-7, MOD72-9 (CI split). Declined: Gemini HMAC for actor_ref/actor_key, timestamp coarsening, the 2-clause window, min(forward, mirror) storage; privacy-3 (owner: disclose only). MOD72-8 re-measured: host saturation and a full disk, not the query (P3). Deferred to the follow-up PR by the owner: SEC72AA-1, the moderation budget /admin alert, behaviour-based moderation and reputation. Migrations 125–127, 134, 145, 146 |
 
 ## P0 — release blockers
 
@@ -1646,6 +1649,306 @@ VERIFICATION: Monero/payment race suite passed (market 828.301 s); the fresh com
 
 OWNER FOLLOW-UP: Added complete Tor v3 identity import/generation, optional prefixes capped at six, selected-volume identity matching/preservation, and managed identity inclusion in encrypted RAM bundles. Added researched guided setup for real-terminal no-argument use plus explicit setup, with path-only inputs, edit/clear/help/cancel, default-no save/start and concrete generated/imported material guidance. Existing headless serving and flags remain compatible. Native/crypto/operator/wizard race tests, actual offline Tor selected-identity proof for both roles, real PTY/pipe setup checks, 22 help interfaces/110 flags and pinned reachable-vulnerability scan passed. Independent review closed the optional-start context cancellation gap before PR creation. Runtime Tor key copies remain persistent and documented; no six-character search or actual device destruction ran. The owner requested a feature PR for the whole scope.
 
+
+## Iteration 70 — Moderation agent and coding-agent hardening
+
+The finding identifiers retain their original MOD69 prefix; iteration 69 was
+completed independently on main while this targeted review was running.
+
+SCOPE: The owner's tiered moderation request, supplied diagrams, and external Gemini proposal. The proposal explicitly states that its author could not inspect the repository; its code and claims are hypotheses. Security, privacy/Tor boundaries and infrastructure seats review independently; QA verifies ruled fixes. Existing unrelated backlog rows remain unchanged. The local session cannot select the Claude-specific models named by the role files, so it uses the available agents with the same read-only roles and protocol. No merging is delegated.
+
+EVIDENCE: Base `bc1463fd`; initial implementation commits `50166094`, `9c56ef94`, `4b245e01` on `war-room/moderation-agent`. Separate PostgreSQL-backed Go halves and no-JavaScript browser suites run locally. This entry does not claim deployment, actual model quality, live Tor circuits or new CI. Gemini text received as two formatting variants; latest SHA256 `92ebb9cb1852db72a5b9edb7101d8650323bd3827e0603de2c24fc61a2ad76b4`.
+
+### MOD69-1 — Preserve account erasure after moderation migration
+
+DECISION: ACCEPT (P1 REQUIRED), `opsec-privacy-1`.
+WHY: Migration 125 adds a nullable reviewer foreign key to users, but the retention schema inventory treats every unlisted relationship as a global deletion blocker. This prevents otherwise eligible account erasure even while moderation is disabled.
+DISSENTING VIEW: None so far; scrubbing sign-in material does not establish full account erasure.
+USER IMPACT: Existing account-erasure behavior must continue; retained moderation reviews may unlink their erased reviewer.
+OPERATOR IMPACT: No new policy, secrets or deployment step.
+TECHNICAL COST/RISK: Enumerate the reviewed ON DELETE SET NULL relationship, retain refusal for unknown foreign keys, prove the full deletion path.
+ACCEPTANCE CRITERIA: Fresh schema has no unknown user references; eligible accounts erase with moderation disabled; an eligible reviewer erases with the review retained and reviewer set NULL; unknown relationships still block erasure.
+TEST PLAN: Test-first PostgreSQL regressions plus affected retention/vendor-ban/host-reboot lifecycle cases with the race detector. A read-only reviewer or QA re-verifies integrated source.
+STATUS: fixed and independently VERIFIED locally (`772c36ae`, integrated `b36c1b84`, PostgreSQL race); PR/CI pending.
+
+### MOD69-2 — Disclose the actual moderation-copy lifecycle
+
+DECISION: ACCEPT (P1 REQUIRED), `opsec-privacy-2`.
+WHY: Moderation snapshots and inputs retain plaintext content beyond existing expiry sweeps; public records/account-deletion text must state this accurately. Operator-only warnings cannot correct an inconsistent public promise.
+DISSENTING VIEW: Moderation is disabled by default and the guide gates production enablement, but these do not inform users after capture starts or after it stops.
+USER IMPACT: Users can discover that routine expiry/account closure does not erase retained abuse-review copies, including historical copies after capture is disabled.
+OPERATOR IMPACT: Retention duration/purge policy remains an explicit operator decision. No arbitrary evidence deletion or new retention promises.
+TECHNICAL COST/RISK: Small server-rendered privacy-notice and policy-inventory change, using durable history evidence if conditional; never expose model names, endpoints, thresholds or secrets.
+ACCEPTANCE CRITERIA: Recorded content copies remain discoverably disclosed after original expiry and after capture is disabled; records and account-deletion notices agree with implemented behavior.
+TEST PLAN: Distinct-marker DB/template regression across capture, original expiry and disabled capture, plus relevant retention/public records/no-JavaScript layout checks.
+STATUS: fixed and independently VERIFIED locally (`7ef02887`, integrated `b36c1b84`, PostgreSQL race and no-JavaScript disclosure checks); PR/CI pending.
+
+
+### MOD69-3 — Preserve literal SQL source guards in snapshot checks
+
+DECISION: ACCEPT (P1 REQUIRED; verification gate).
+WHY: The existing source guard rejects the new target-kind-to-SQL map at moderationTargetCurrent, even though its values are literals. Keep the established auditable literal-query convention by selecting fixed QueryRowContext statements in a switch, rather than weakening the guard.
+DISSENTING VIEW: The enum-keyed map has no demonstrated SQL injection path; this ruling enforces the existing source invariant and reviewability, not an unproven exploit claim.
+USER IMPACT: Freshness and private review behavior stay the same.
+OPERATOR IMPACT: None.
+TECHNICAL COST/RISK: Narrow query dispatch change; all targets and positional parameters remain fixed and bound.
+ACCEPTANCE CRITERIA: TestSourceGuardNoTrustedCastsDynamicSQLOrForwardedHeaders passes unchanged; all supported target freshness checks, stale refusal and image-byte isolation regressions pass.
+TEST PLAN: Reproduce the unchanged source guard failure first, apply literal switch dispatch, rerun source and moderation/image guards with PostgreSQL and -race.
+STATUS: fixed and independently VERIFIED locally (`380c24da`, integrated `cc9fd4f8`, PostgreSQL race and unchanged source guard); PR/CI pending.
+
+
+### MOD69-4 — Offer private moderation navigation only on private ingress
+
+DECISION: ACCEPT (P1 REQUIRED; interface coherence).
+WHY: The new unconditional overview link targets a private-only page even in public development/preview administration, where it always returns 404. It also changes the existing Sections list contract; five runnable browser projects reproduce the extra-link failure.
+DISSENTING VIEW: Updating the count assertion alone would leave the unusable link. Keep the current sections contract and show a separate private-review link only when the request actually arrived on configured private administrator ingress.
+USER IMPACT: Administrators see a usable queue link where authorized; public preview does not advertise an unreachable action.
+OPERATOR IMPACT: Private ingress setup remains explicit; no new public route or listener.
+TECHNICAL COST/RISK: A server-owned view flag and conditional link; it does not grant authorization.
+ACCEPTANCE CRITERIA: Public/preview overview has its existing sections and no private queue link; authenticated private overview exposes the queue link; all public requests to the queue still return 404 before body/cookie/database work.
+TEST PLAN: Go DB authorization/render regression and unchanged overview browser check at all six configurations; existing early-denial tests.
+STATUS: fixed and independently VERIFIED locally (`066ac360`, integrated `cc9fd4f8`, PostgreSQL race); all six overview browser configurations passed, including the full Firefox rerun (118 tests); PR #99/CI pending.
+
+### MOD70-5 — Bound offline signer token reads
+
+DECISION: ACCEPT (P2 SHOULD), `opsec-security-1`.
+WHY: The selected local token file is read in full before the 2048-byte limit. An oversized file can exhaust the offline workstation's memory before validation.
+DISSENTING VIEW: The operator selects the file, so this is resilience hardening rather than a remotely reachable release blocker.
+USER/OPERATOR IMPACT: Invalid oversized or nonregular input is refused before cryptographic work or output creation; valid signing stays interoperable.
+TECHNICAL COST/RISK: One bounded regular-file read, preserving signature bytes and exclusive output behavior.
+ACCEPTANCE CRITERIA: Reject oversized input with a bounded read, no OpenSSL call or output; preserve valid signing interoperability.
+TEST PLAN: Test-first oversized-input regression and existing Go/OpenSSL interoperability test.
+STATUS: fixed (`38cacd7e`) and independently VERIFIED at integrated `e1c29fc2`; four Python refusal tests (no skips) and existing OpenSSL-to-Go race interoperability passed (1.202 s); PR #99/final CI pending.
+
+### MOD70-6 — Production moderation storage high-water policy
+
+DECISION: DEFER (P2 SHOULD), `opsec-infrastructure-1`.
+WHY: Per-record and per-batch bounds do not cap total distinct revisions or immutable proposals. Capture is off by default and production enablement already requires a storage/retention review.
+DISSENTING VIEW: A new arbitrary overflow policy could drop evidence or silently penalize users. Choose its budget and non-punitive behavior with the operator before enforcement.
+ACCEPTANCE CRITERIA: Capacity rehearsal proves the selected bound, administrator-visible overflow, preserved review references and unchanged marketplace targets.
+STATUS: subsequently implemented prospectively by MOD71-2 with concurrency and capacity tests. Physical-disk/WAL/backup bounds and a legacy retention policy are still not claimed.
+
+COUNCIL RESULT: Security and infrastructure seats found no further REQUIRED/BLOCKER; privacy REQUIRED findings MOD69-1/2 are independently verified. No disputed required finding remained, so Rounds B/C were skipped under the usage budget. The final security SHOULD bounded signer read is accepted as MOD70-5; storage high-water policy is deferred as MOD70-6. Owner explicitly excludes image understanding; only hashes/basic metadata are in scope.
+
+INTEGRATION: Current main `00346cd6` merged; both upgrade notices retained. PR #99 is the single handoff. CI status is external to this ledger commit and must be checked on its exact final head; no earlier run implies that gate passed. No open required item remains within this targeted scope; unrelated main backlog stays unchanged.
+
+
+## Iteration 71 — Source-checked moderation hardening follow-up
+
+SCOPE: Owner requests improvements from the new PR #99 rating/review. Review
+SHA256 `873c30a879b9e3270988806c2b0768f1bf033304420a3d3824b426bd9627191b`.
+The rating is an opinion, not a security measurement. Security/privacy,
+queue/release and image-hash seats check the claims against source. No merge to
+main or production deployment is delegated.
+
+### MOD71-1 — Closed model protocol and deterministic presentation
+
+DECISION: ACCEPT (P1 REQUIRED for the strengthened containment contract).
+WHY: Stage B can currently produce summary and injection-evidence prose despite
+receiving only coded findings. A custom Model implementation can also forward
+arbitrary prose into a decision. Neither grants execution, but both can bias a
+reviewer and consume unnecessary output tokens.
+ACCEPTANCE: The v2 model response has only closed actions/codes, bounded reference
+arrays, confidence, suspicion flag and canary. Reject legacy/extra prose fields.
+Go generates presentation before output hashing; current and historical admin
+rows do not display model-written prose. Historical immutable records remain
+byte-stable. v1 pins fail closed.
+TEST PLAN: Network and custom-model marker regressions, duplicate/missing/null
+JSON and reference checks, engine/routing races, actual upstream GBNF validation.
+STATUS: fixed locally; closed protocol, native grammar and independent privacy checks passed; final CI tracked on PR #99.
+
+### MOD71-2 — Atomic bounded capture and non-punitive overload
+
+DECISION: ACCEPT (P1 REQUIRED; implements the previously deferred MOD70-6).
+WHY: Per-item/batch limits do not bound total queued or retained moderation data.
+ACCEPTANCE: Atomic per-actor active cap, global pending cap, lifetime allocation
+slots and conservative logical byte reservations; duplicates/rollbacks/retries
+do not leak capacity. Saturation commits the original marketplace write and
+records a bounded private warning. Aging priority prevents strict-class
+starvation. Limits and usage have a private read-only display and bounded CLI
+configuration. Physical database, index, WAL and backup size are not represented
+as a guaranteed bound on disk usage.
+TEST PLAN: Barrier-concurrent admissions, rollback/duplicate/retry cases,
+priority/age/lease tests, real listing/dispute behavior and private status view.
+STATUS: fixed locally; barrier-concurrent limits, lifecycle accounting, aging and independent actual HTTP overflow checks passed; final CI tracked on PR #99.
+
+### MOD71-3 — Prospective metadata-only capture and audit inputs
+
+DECISION: ACCEPT (P1 REQUIRED for the strengthened minimization contract).
+WHY: The current implementation creates additional durable plaintext copies of
+source text. Public disclosure is necessary but does not minimize that dataset.
+ACCEPTANCE: New jobs retain hashes and allowlisted metadata, not source prose.
+The worker reads bounded current source text transiently and accepts it for
+evaluation only when its digest matches the captured revision;
+a changed/missing source receives coded HOLD without inference. New archived
+inputs and rendered decisions contain no copied prose or raw actor identity;
+completion atomically minimizes no-longer-needed actor links. Keep bounded
+order/image metadata needed for navigation and duplicate signals. Completed
+metadata-only jobs cannot be replayed as empty/new content. Existing immutable
+records and timestamps are preserved; no historical purge is introduced.
+TEST PLAN: Unique-marker absence in pending/completed v2 rows, source-change and
+delete refusal, original digest and encrypted export integrity, historical
+compatibility, rollback, links, duplicate baselines and replay tests.
+STATUS: fixed locally; independent five-kind marker/hash/replay/UI checks and authentic legacy upgrade preservation passed; final CI tracked on PR #99.
+
+### MOD71-4 — Bounded normalization and robust contextual signals
+
+DECISION: ACCEPT (P2 SHOULD).
+WHY: Punctuation/common leetspeak can evade exact scam phrases. The audit's
+claim that Cf stripping is absent is false: it already exists. Deterministic
+findings also already bypass inference. Preserve those controls and prove them.
+ACCEPTANCE: 8192 normalized runes/64 KiB raw budget; complete original digest
+and immutable caller input; coded invisible-character observation; high-precision
+obfuscated scam/contextual contact signals with benign multilingual, educational,
+support and ordinary Tor/Monero/address cases. No endpoint fetch or decryption.
+TEST PLAN: Table-driven attacks/benign cases, truncation/identity tests and a
+model spy proving deterministic cases make no inference call.
+STATUS: fixed locally; adversarial/benign normalization and no-inference spy races passed; final CI tracked on PR #99.
+
+### MOD71-5 — Reject weak perceptual hashes as similarity evidence
+
+DECISION: ACCEPT (P2 SHOULD), limited to advisory hash quality.
+WHY: Uniform images and distinct monotone ramps can share a zero hash. Variance
+alone does not exclude the ramps. The review's universal flip/rotation claims
+are false; a fixture proves possible transformations, not their frequency.
+ACCEPTANCE: Weak/low-information hashes do not trigger perceptual matches; exact
+SHA256 remains valid. Preserve useful legacy hashes, omitted metadata, gateway
+image decoding and no new wire/schema surface. No rotation/crop/semantic-image
+capability is claimed.
+TEST PLAN: Uniform/ramp/low-contrast fixtures, informative resize/recompression,
+legacy matching and exact-hash fallback tests.
+STATUS: fixed locally; gateway variance, core weak-hash, legacy, exact-SHA and decoding-boundary races passed; final CI tracked on PR #99.
+
+### MOD71-6 — Keep review findings visible
+
+DECISION: ACCEPT (P1 REQUIRED), chair source review.
+WHY: High-confidence FLAG_REVIEW results could receive AUTO_APPLY and disappear
+from the default private review queue. A model could also pair NO_ACTION with a
+review reason. No entity changed, but the reported abuse needed human attention.
+ACCEPTANCE: FLAG_REVIEW always reaches a human or administrator queue. Automatic
+history is limited to explicit clean NO_ACTION/NO_FINDING with age metadata.
+TEST PLAN: Fail-first established-vendor scam regression, contradictory-reason
+routing cases and an independent actual private HTTP queue visibility test.
+STATUS: fixed locally; independent QA and final-source CI tracked on PR #99.
+
+### Review recommendations not adopted
+
+- Rewriting old immutable rows, automatic historical evidence deletion or
+  pseudonym rotation without a key/data lifecycle is not authorized. Prospective
+  minimization does not make retained references anonymous.
+- Coarsening authentic review/audit timestamps would destroy chronology; UTC
+  storage does not encode the administrator's local timezone.
+- Mandatory hardware-token support is not a substitute for the offline authority
+  boundary. Offline key custody remains an operator responsibility.
+- Image understanding remains explicitly outside scope. Eight-transform hash
+  metadata and crop resistance are deferred; four plain rotation hashes do not
+  establish reflection invariance.
+- The audit names nonexistent files/columns, overstates snapshot size, gives the
+  runtime limit as 4 GiB rather than 8 GiB, and misattributes the existing nullable
+  reviewer foreign key. Tests and current source govern the changes.
+
+PRIVACY REVIEW FIX: New persisted/rendered injection evidence retains only fixed field/code vocabulary. Historical fallback is source-neutral, not a fabricated model attribution. Current source/pattern escalation coalescing avoids a new cross-target actor binding.
+
+ITERATION 71 VERIFICATION: Independent security/release and privacy seats verified the strengthened boundaries against the current worktree. No additional required finding remained. Overlay privacy/HTTP cases were adopted as permanent tests. Full local suites and exact-head CI outcomes are recorded on PR #99 so this preparation-time ledger does not infer them from older runs. No model/production deployment, historical purge or merge to main is delegated.
+
+## Iteration 72 — PR #99 second external rating (Gemini 9.2/10) follow-up
+
+SCOPE: Owner request: war-room loop on PR #99, especially the LLM seat. The pasted Gemini review is a hypothesis source. Seats: opsec-llm, opsec-privacy, opsec-security (Round A; B/C skipped — no inter-seat dispute on a REQUIRED item). Base: PR head `826ff6a9` with current main merged (`216ea0da`, then `417c21d8` for main's 131–133); main's A-613 took 128 and open PR #104 claims 129/130, so the unmerged moderation capacity migration was renumbered **134** (backfill moved to 137 because main's 135 is A-616's stray-slot migration, then to 143 and hold mode to 142 after main's PR #111 took 136–141) (chair; seat-verified functionally correct incl. the main-at-128 upgrade path). No merge to main is delegated.
+
+CHAIR FIXES: renumbering (`216ea0da`), stale "128" references (`d2284ff9`, SEC72-N1), records inventory "Checked against … (001–129)" (`c54f1582`; CI 39440637131 failed only TestRecordsListPhotosAndAvatars on this).
+
+### MOD72-1 — Lossless, non-punitive moderation capture (SEC72-1, SEC72-2, SEC72-3, privacy-2)
+
+DECISION: MODIFY → ACCEPT (P1 REQUIRED).
+WHY: Gemini's 86-sybil saturation is real in mechanism but expensive (buyers cannot cheaply create jobs; 86 vendor approvals). The security seat reproduced cheaper evasions against PostgreSQL: one vendor drops its own capture via the 3-active cap (SEC72-1), a revert dance permanently suppresses a stale-held revision through UNIQUE(kind,target_id,content_hash) (SEC72-2, introduced by MOD71-3's metadata-only capture), and one actor can exhaust the never-reclaimed lifetime allocation pool for everyone (SEC72-3). Overflow targets are never re-captured. privacy-2: unused unkeyed per-field digests (rating 1–5 etc. reversible) go into permanent rows.
+DISSENTING VIEW: Security seat would accept SHOULD if the owner explicitly accepted lossy capture and the panel/docs said one actor controls it; chair rejects — a moderation layer one vendor can sidestep on demand does not do its job.
+USER IMPACT: none on marketplace writes (still always commit). OPERATOR: panel shows targets awaiting capture.
+DESIGN: migration 130 bounded content-free backfill markers (kind,target_id) upserted on every overflow; worker sweep captures the CURRENT live revision through the admission trigger at <50% pending; stale-aware partial unique index; per-actor 24 h share of lifetime allocations; no field_digests; text_hash only for listings.
+ACCEPTANCE/TEST PLAN: as dispatched (actor-cap backfill, saturation, retained exhaustion + raise, coalescing, deleted source, bounded markers, concurrent sweeps, revert dance, per-actor share, digest absence).
+STATUS: implemented (cbdd2e41, merged with origin/main cab4b5f8 at 4abc0036; migration 143; worker requires 143). Privacy-2 VERIFIED by opsec-privacy at 6f6a952d (no field_digests; counter erased with account); its disclosure gaps (linger case, retention/policy table rows, /canary sentence naming marker times and the per-account daily count) fixed by chair (4f89d6ee, d1865148). NOT VERIFIED by opsec-security at 6f6a952d (criteria 1–10 pass; probes found new holes): SEC72V-1 REQUIRED — archive/hide → sweep deletes marker → restore/unhide re-enters nothing (S live, 0 jobs); SEC72V-2 REQUIRED — last_missed ordering lets an over-share vendor defer its own marker forever, no per-actor marker bound lets one vendor fill max_backfill (~4.6 days), refused markers starve the sweep budget; SEC72V-3 SHOULD — median-only staleness re-captures an unchanged victim listing (share/slots burn, false ABUSE_RATE). Chair ruling: all three in scope; amend unmerged 143 (skip-not-delete for archived/hidden + enqueue on restore/unhide; first_missed ordering; skip refused actors with bounded scan; per-actor marker bound with content-free rescan flag; mark only when digest differs). Fix round dispatched to the same implementer.
+Fix round 1 (90252b9f, merged at 15037a21): parked markers + enqueue on restore/unhide; first_missed order; refused actors skipped; per-actor marker bound (16) with rescan; marks only on digest change. opsec-security at 90252b9f: SEC72V-1 VERIFIED, SEC72V-3 VERIFIED, SEC72V-2 NOT VERIFIED — SEC72W-1 REQUIRED (direct writes timed after the window reset spend the share, so the actor's own marker/rescan never runs; 0 jobs over 4 cycles). New SHOULDs folded in: SEC72W-2 (source vanishing mid-sweep → NULL actor_id → worker exits), SEC72W-3 (disable vs sweep deadlock on allocation rows, 40P01 in 2/4 runs), SEC72W-4 (rescan scans all of an actor's records under the capacity lock). opsec-privacy at 15037a21: content-free VERIFIED; per-account row lifetime wording NOT VERIFIED in /canary, retention.md, moderation-agent.md, implementation-status.md and policy row 56 (parked markers and disable keep rows indefinitely; lazy marker count). Chair ruling: per-actor FIFO while backlog exists, cursor-ordered rescan, NOT FOUND guard, lock ordering, decrement on drop, wording per privacy. Fix round 2 dispatched. Side-agent note (chair-verified arithmetic): at defaults one account's 81/day share drains the 512-allocation lifetime pool in ~6 days; lossless (markers/rescan) but capture stops until an administrator raises the budget, visible only on the private moderation panel. Ruled: accepted SEC72-3 residual; disclosure folded into round 2 (docs NIT). Follow-up: an /admin dashboard alert when retained_capacity overflow is recorded or the lifetime pool falls low — owner placed it in the behaviour/reputation follow-up PR (not in PR #99).
+Fix round 2 (a044dd1b, ec1e6f6e; merged with origin/main f6b3097e at 004c3835; CI 39545009805 PASSED): per-account FIFO while backlog exists, keyset rescan with a cursor, NULL-actor and vanished-source guards, disable takes the capacity lock first. opsec-security at 004c3835: SEC72W-1..4 VERIFIED; SEC72V-2 goal still NOT VERIFIED — SEC72Y-1 REQUIRED (rescan ordered by products.updated, which stock/photo/archive actions bump without enqueue, so S stays behind decoys; 0 jobs over 4 windows); NIT phantom marker count after an active source deletion. opsec-privacy at 004c3835: NOT VERIFIED — the rescan cursor (first record reference beside an account) survives disable indefinitely and can name a removed record; gone-source drops do not decrement counts (143:369, 143:393, chair-confirmed); timing wording overstated. Chair ruling: stable forward-only rescan key (created, id) with one wraparound; accepted residual bound ceil(k/share) windows, documented; clear the cursor on disable; decrement on drop; wording per privacy. Fix round 3 dispatched.
+Fix round 3 (f6d3c306, merged at b5334d3a): creation-time rescan key, delete triggers releasing markers and decrementing counts, disable clears the cursor. opsec-security at b5334d3a: SEC72Y-1 VERIFIED (all bump kinds; S captured within ceil(k/share)); phantom-count NIT VERIFIED; SEC72V-2 goal NOT VERIFIED — SEC72Z-1 REQUIRED (archiving S during the share window skips it on rescan and marker paths: 0 jobs over 4–5 windows); SEC72Z-2 REQUIRED regression (delete triggers take the capacity lock mid-transaction: 10–15 deadlocks under stress against 0 at round 2, aborting vendor writes and worker passes). opsec-privacy at b5334d3a: A and B VERIFIED; C NOT VERIFIED (five texts say markers linger for removed sources; cursor can name a deleted record while a rescan stalls). Chair ruling: capture archived/hidden like live (park only unflagged payments); delete trigger only flags the marker gone, the sweep deletes and decrements under its own lock at the start of every pass and also clears cursors naming deleted records; texts per privacy adapted to the one-pass lag. Fix round 4 dispatched.
+Fix round 4 (ab582f66; merged with origin/main 54152319 at 35df3510; CI 39561842576 PASSED): archived/hidden captured like live; delete triggers flag gone and queue a release, no capacity lock. opsec-security at 35df3510: SEC72Z-1 VERIFIED, SEC72Z-2 VERIFIED (0 deadlocks in 5 stress runs, exact counts), SEC72V-2 goal VERIFIED end to end; SEC72AA-1 SHOULD (with capture enabled, a transaction that admits one moderated change and then locks another moderated row can deadlock a concurrent vendor edit; introduced by PR #99's capacity lock, enabled-only). opsec-privacy at 35df3510: C1/C2 and release-table disclosure VERIFIED; NOT VERIFIED (REQUIRED) — the gone-flagged marker (kind, target_id) and the release row (actor_id) share xmin, so a seized DB joins an account to the record it deleted until the next pass, indefinitely while capture is off. Owner decision (2026-10-21): round 5 privacy only; SEC72AA-1 deferred to the follow-up PR. Fix round 5 dispatched (trigger deletes the marker, sweep reconciles the counter from releases).
+Fix round 5 (76eb9f29; merged with origin/main 26eb3d66 at 6a5fb03f, which also renumbered this PR's unmerged migrations 142→145 and 143→146 after main's 144; CI 39578088780 PASSED): the delete trigger deletes the marker and queues an owner-only release; the counter trigger skips this path via a transaction-local setting; the sweep reconciles. opsec-privacy at 6a5fb03f: VERIFIED (no row holds a deleted record's id and its account, no live xmin join, wording (a)–(c), erasure test, renumber clean); optional residue sentence adopted on /canary (52c5a0a0). opsec-security at 6a5fb03f: SEC72Z-2 still VERIFIED (0 deadlocks in 5 stress runs, counter = markers + releases), renumber VERIFIED; SEC72AB-1 REQUIRED (account erasure cascaded unapplied releases, inflating the counter permanently) fixed by the chair (a55308c8: releases ON DELETE SET NULL, test fails with CASCADE) and VERIFIED by opsec-security at a55308c8.
+STATUS: VERIFIED (opsec-security and opsec-privacy at a55308c8). Deferred by owner to the follow-up PR: SEC72AA-1 (enabled-only admission deadlock, documented as a known limit). NITs: PostgreSQL 16 replay difference (unsupported version); dead marker tuples until VACUUM (covered by the residue disclosure).
+
+### MOD72-2 — Disclose new abuse-review records and photo fingerprints (privacy-1)
+
+DECISION: ACCEPT (P1 REQUIRED). Public records/retention text covers only legacy copies; v2 references, exact and perceptual image fingerprints have no expiry, and the photos item ("only … deletes it at once") is now untrue (uploads store perceptual_hash on every upload). Wording only; no purge.
+STATUS: verified locally (privacy seat at c53ec524; implementer d705cd76; three pinning tests passed on PostgreSQL); privacy-n1 caveats added d5d5dcc3; CI pending. The waiting-list sentence must be reconciled with MOD72-1's final marker columns.
+
+### MOD72-3 — Refuse migration name mismatches (SEC72-4)
+
+DECISION: ACCEPT (P2 SHOULD). Migration identity by number only: a DB that ran the unmerged branch's 128 fails with a misleading error. Fail closed before DDL with a clear message; permanent main-at-128 upgrade test.
+STATUS: VERIFIED by opsec-security at 6f6a952d (refusal before DDL at migrate.go:97-136; both tests pass on PostgreSQL; no migration name ever changed on main's first-parent history, so no main-built DB is refused). Worker readiness now requires 143.
+
+### MOD72-4 — Model-path fail-closed and closed code ownership (LLM-1, LLM-2, LLM-3, LLM-5)
+
+DECISION: ACCEPT (P1 REQUIRED; LLM-5 P2 folded in for the shared moderation-v3 bump). Fake-adapter evidence: runtime truncation/stop metadata is ignored, so a truncated completion can AUTO_APPLY on a truncating llama.cpp build (runtime unpinned; CJK/emoji/punctuation-heavy 4096-rune listings exceed ctx 4096) (LLM-1); Stage B can drop a validated Stage A finding and AUTO_APPLY (LLM-2); model allowlists let a model assert Go-owned/ungroundable codes (MODEL_ABSENT, CANARY_MISMATCH, SLA_EXPIRED…), producing false audit records (LLM-3); hashes/64-hex evidence IDs dominate Stage B tokens (LLM-5). Must be fixed before inference is enabled anywhere.
+ACCEPTANCE: truncated/limit/missing stop metadata and oversized prompts → MODEL_FAILURE, never AUTO_APPLY; Stage A findings survive into reason codes; grammar + Go reject system codes, v2 pins refused, historical rows byte-stable; no 64-hex in prompts, evidence aliases round-trip.
+STATUS: implemented (4b25d311, merged on war-room/moderation-agent): moderation-v3; truncation/stop metadata and /tokenize pre-flight fail closed (field names per pinned llama.cpp 3bb63cbc server-task.cpp:341-346); Stage A findings merged; ModelReasonCodes allowlists (chair: Stage B may assert DETERMINISTIC_CONFLICT — review-only); E-aliases, no 64-hex in prompts. Evidence: internal/moderation race 92.4% coverage, 8/8 mutants killed; native upstream GBNF validator 25/25 (6 accepted, 19 rejected; Stage A template sha256 89ee792d…, proposal 9b164c64…). Full internal/market DB halves failed only with load timeouts (A/B overlay showed order-dependence, not code). VERIFIED by opsec-llm at 4bb9c1f5 (fake adapter + independent native GBNF rebuild 22/22 and 25/25 reproduced; field names checked against 3bb63cbc); docs/evidence synced by chair.
+
+### MOD72-5 — Detection and image-hash precision (LLM-4, LLM-6, LLM-7, LLM-E6)
+
+DECISION: ACCEPT (P2 SHOULD), next wave. Gemini cross-clause evasion is real but only loses the Tier-0 shortcut (the item still reaches the model or a human); its 2-clause window adds 4/11 positives with 3/8 constructed false positives. Instead: any recognised external destination adds HUMAN_REVIEW so it can never auto-clear (LLM-7). Gemini min(forward, mirror) storage is mathematically wrong (mirror = row-reverse AND complement) and breaks Hamming locality (12/60 near-duplicate pairs up to 38 bits); the measured gap is `draw.ApproxBiLinear` point-sampling (recompress/resize miss 30–60%) → `draw.BiLinear` (LLM-4); optional comparison-time mirror check (LLM-E6). Weak injection markers ("buy with confidence", "act as") escalate 16/20 benign sentences → split strong/weak, weak → HUMAN_REVIEW (LLM-6).
+STATUS: implemented (4c58155d, merged): destination/weak-marker → HUMAN_REVIEW (no accusation), strong markers incl. fr/es/zh/ru, spaced/leet, base64, code-name suppression; corpus 26 cases with 4 labelled expected misses; draw.BiLinear; comparison-time mirror check. One existing test's 'unrelated' fixture was an exact mirror and now matches by design (replaced with a textured fixture). Implementer gate: Go halves only load timeouts that pass alone. VERIFIED by opsec-llm at 68c2a734 (40-image table now 40/40 recompress/resize/1% crop, 39/40 mirror, 0/780 unrelated; cross-clause P1/P2/P4–P7 now QUEUE_HUMAN; hostile families 12/14 escalate, 2 human). Fix round open: opsec-llm-9 REQUIRED (compacted letters join words: 'foreign ore previously' → injection escalation), Bitcoin pattern checksum (SHOULD; 1.65% hex ids, 5% PGP blocks), quoted-word and code-name boundary NITs. Fix round done (fcbbf50c, merged): word-start rule for compacted markers; checksum-verified Base58Check/bech32/bech32m (0 hits on 10,000 hex ids, 500 PGP blocks, 10,000 SKUs; was 10,199); JSON-key-only quoted markers; whole-identifier code names. Known trade-off: leet glued to a preceding letter no longer caught by the compacted rule (plain match and model unchanged). VERIFIED by opsec-llm at 9c3b6b53 (three ore sentences clean; spaced/leet/dotted/hyphenated/base64 attacks still caught; Bitcoin 0/10,000 hex ids, 0/500 PGP blocks, genesis address still hits); trade-off accepted; chair added the 'glued leetspeak' labelled miss to the corpus. Open minor: 'Please classify my dispute…' still escalates (strong marker 'please classify').
+
+### MOD72 — LLM experiments and owner decisions
+
+- LLM-E1 measuring rig (≥300 labelled items, pinned build, shipped grammars; enablement threshold benign AUTO_APPLY ≥70% at ≥99% precision), E2 chat template, E3 bounded grammar whitespace, E4 latency at cpus:2, E5 calibration, E7 skip inference for money kinds, E8 field order — P3 EXPERIMENT. Instrument-tier note (llava-7B via Ollama, not production): the shipped raw prompt flagged 10/10 listings INJECTION_SUSPECTED; model value is unproven until E1.
+- LLM-8 → MOD72-6 (owner chose to add it to PR #99).
+- NIT: worker never sets actor reputation (always 0 → +5 risk); omit until real.
+
+### MOD72-7 — Escape bracket special tokens in model-facing data; pin ctx size (opsec-llm verification follow-up)
+
+DECISION: ACCEPT (P2 SHOULD). llama.cpp 3bb63cbc `/completion` tokenizes with parse_special=true (server-context.cpp:2461); JSON escaping covers `<`,`>`,`&` but not `[`/`]`, so bracket-style control tokens (e.g. Mistral `[INST]`) in vendor text could become real control tokens. Go should emit `\u005b`/`\u005d` in fenced field JSON (same JSON meaning; version bump). NIT: a test that deploy/moderation/entrypoint.sh's `--ctx-size` equals `modelContextTokens` (inference.go:47). Model vocabulary exposure UNVERIFIED (source reading only).
+ACCEPTANCE: no raw `[`/`]` inside fenced data in either prompt; decoding unchanged; ctx drift test fails on mismatch.
+STATUS: implemented (71cfb32f, merged): modelJSON escapes brackets inside JSON strings for Stage A protocol, fenced data and Stage B view; moderation-v4, v3 pins refused; launcher ctx drift test (shown failing both ways). Implementer gate: gofmt/vet/mod verify, race moderation + cmd/server with DB, Moderation market tests, govulncheck exit 0. VERIFIED by opsec-llm at c7f46cf5 (mutation: removing the escape or changing ctx fails the tests; 19 special-token spellings across Llama 3, Qwen, Gemma, Mistral, DeepSeek, Command-R none raw; grammars unchanged so v3 native evidence applies). Remaining operator gate (documented): check a chosen model's special tokens all contain <, >, &, [ or ].
+
+### MOD72-8 — Slow escrow-alert query makes the moderator desk slow (pre-existing)
+
+DECISION: open (P2 SHOULD), found by the MOD72-6 implementer. `loadEscrowAlerts` takes ~5.5 s on an empty database (also on c53ec524 with the review loader disabled), so `/moderator` takes 4–5 s and exceeds the 8 s request timeout under -race plus parallel Playwright (500/503 "market is busy"). It is the common cause of desk-test flakes recorded throughout iteration 72. Not caused by PR #99.
+ACCEPTANCE: EXPLAIN-backed fix or index; /moderator under 1 s on an empty and a seeded test database; desk tests stable under -race.
+STATUS: ROOT-CAUSED 2026-10-21 by the chair (corrects an earlier downgrade that was measured on PostgreSQL 16 without JIT). On postgres:17-alpine (CI's and the installer's default image; jit=on) the escrow-alert query's planner cost (~342k, inflated by correlated subplans even on empty tables) exceeds jit_above_cost, so every /moderator request JIT-compiles ~106 functions: GET /moderator 3.3–6.6 s with jit=on against 40–150 ms with jit=off, same database and code (SELECT 1 round trip 2.7 ms). Pre-existing on main, not caused by PR #99; production staff on the default image would see a 3–6 s desk that can hit the 8 s statement timeout under load. Proposed fix (owner to place): send jit=off with the application's session settings (internal/market/app.go, next to statement_timeout), or SET LOCAL jit=off for the desk loaders; regression: /moderator under 1 s on postgres:17-alpine. Raised back to P2. PostgreSQL 16 replay NIT unchanged: TestModerationLegacyStaleReplaySkipsRecapturedRevision fails deterministically on PostgreSQL 16 and passes on 17; only 17 is supported.
+
+### MOD72-9 — Split the Go CI job again (owner decision: split, don't raise timeouts)
+
+DECISION: ACCEPT (P1 for PR #99's merge gate). Main's `go` job takes ~17 of its 20 minutes; PR #99's added tests pushed run 39498912726 to exactly 20 minutes (cancelled). Follow A-465: a third job with an exact, test-checked partition of top-level tests; nothing skipped, no timeout raised.
+STATUS: implemented (8e7e3f97, merged): new `go-desk` job (desk, moderation, listing, admin, dispute, retention, vendor prefixes); `go` skips the union; tests/test_ci_go_split.py checks union, disjointness and exactly-once over source (11/11 deliberate breakages caught); listing check 1737 tests = 1068 + 299 + 370, 0 overlaps/gaps; actionlint OK. VERIFIED on CI 39510416838 at 1c0a5805: all jobs green, CI passed; go 12m00s, go-desk 6m36s, go-escrow 6m54s. Also: CI 39498912726's one real failure (pre-129 fixture seeding pgp_access_key) fixed by the chair in b6a43b4d.
+
+### MOD72-6 — Listing hold mode with per-vendor auto-approve (owner directive, LLM-8)
+
+DECISION: ACCEPT (P1, owner directive 2026-10-20: "Add to PR #99").
+DESIGN: settings `listing_review_mode` = `publish` (default; today's behaviour) | `hold`. Migration 136 adds `products.review_state` (`approved` | `pending`; existing rows `approved`) and a per-vendor auto-approve flag. In hold mode a new listing, or an edit to an approved one, by a vendor without auto-approve becomes `pending`: excluded from every buyer/guest path (browse, search, product page, vendor shop, order draft/checkout refuse it), shown to its vendor as "Awaiting review", existing orders unaffected. Moderators/administrators approve or reject from the staff desk (CSRF, confirmed, audited); only administrators change the mode and the per-vendor flag (password-confirmed, audited). Switching back to `publish` does not approve pending listings (fail closed). Moderation capture, overflow, AUTO_APPLY, confidence and the model never change `review_state`. No browser JavaScript.
+ACCEPTANCE: hold mode hides a new listing from buyers until staff approval, including after capture overflow; edits re-hold; auto-approved vendor publishes at once; publish mode unchanged; no model path writes review_state; no-JS forms work; retention/erasure inventories pass.
+TEST PLAN: Go DB tests via newTestApp (hold, approve, reject, edit re-hold, overflow stays held, trusted vendor, mode switch, authorization denials) and a db-*.spec.ts admin toggle + approval journey; preview layout at 320 px.
+OWNER DECISION (2026-10-20): rejection is resubmittable — hidden with a reason the vendor sees; the vendor's next buyer-visible edit returns it to pending; takedown stays separate. Fix round done (4ee9e75b, merged 337df290): 'rejected' state with review_rejection_reason, vendor edit resubmits, takedown separate; QA re-verification at 86869f21: QA72-1 and QA72-2 VERIFIED (mutants M1/M4/M4b caught); reject NOT VERIFIED on QA72-3 (REQUIRED: earlier-order buyers still see a rejected listing's page/photos) — fix added to the main-sync task. Main sync done (93fa8974, merged 62d6901a): public listing/photo needs approved AND active vendor (#104); earlier-order exception covers archived, deactivated-vendor or pending, never rejected (QA72-3 fixed: paid buyer gets 404 on a rejected listing; order page keeps snapshot). QA re-check at 9c3b6b53: QA72-3, the #104 visibility merge and the restore note VERIFIED (165 PASS, DB E2E 2/2, preview 12/12); MOD72-6 now VERIFIED in full. Second main sync (PR #111; hold mode → 142; 82652f5a..99b1943b, merged 8d67074f) VERIFIED by QA: 241 PASS; #111 buyer paths approved-only; subcategory/shipping-region/delivery-method edits re-hold; digital units and stock don't; auto-approve for selling-approved accounts coherent; QA72-3 and #104 intact. Pre-existing: loadEscrowAlerts ~5.5 s on an empty DB makes /moderator slow — separate item. (Also QA72-1 stale-desk photo approval and QA72-2 review_state guard gaps, both SHOULD).
+QA (opsec-qa-release at 6a3daea5): all criteria VERIFIED except reject (deferred to the fix round); full no-JS journey passed; DB E2E 2/2, preview 12/12.
+STATUS: implemented (war-room/mod72-6-hold-mode 3974f389, migration 136; merged): reject = takedown-style archive kept pending (superseded by owner decision); re-hold on vendor buyer-visible edits/new photos; unknown mode fails closed to hold; users.listing_auto_approve; desk version stamp (stale approve 409). Implementer gate: preview 695 passed, DB E2E 55 passed; Go race halves only load 503/timeouts that pass alone. Chair: targeted DB tests passed after merge. QA verification pending.
+- privacy-3: owner chose disclosure only (MOD72-2); no fingerprint clearing.
+
+### Declined / deferred
+
+- Gemini: HMAC for `actor_ref` — REJECT (privacy). v2 `actor_ref` is sha256 of a random UUID; the legacy fallback hashes job id + content_hash from the same row; nothing is learned.
+- Gemini: HMAC for escalation `actor_key` — REJECT (privacy). `target_id` is plaintext in the joined jobs/suggestions rows; a key on the same host (SETUP_TOKEN-derived) adds nothing at rest or under live-host compromise and SETUP_TOKEN rotation would split coalescing.
+- Gemini: coarsen `moderation_reviews.created_at` / `moderation_jobs.completed_at` — REJECT, held from iteration 71 with new evidence: the same instant is recorded in byte-stable `audit_events` (invariant 8) and immutable receipts/suggestions; coarsening protects nothing.
+- privacy-3 (forward-only clearing of unused fingerprints) — DECLINED by owner (disclosure only, MOD72-2).
+- SEC72-E1 (singleton capacity lock contention with watcher flagging) — EXPERIMENT, unmeasured.
+- Gemini: 2-clause window and min(forward, mirror) dHash — REJECT as specified (opsec-llm measurements above); superseded by MOD72-5.
+- Sybil-specific registration hardening — NOT WORTH DOING (single-actor path supersedes; MOD72-1 closes both).
+
+## Owner directive (2026-10-20) — behaviour-based moderation and reputation (next PR after #99)
+
+Ruled scope for a follow-up PR; it needs its own war-room design round (LLM, privacy, security, payments, staff seats) before implementation. PR #99 keeps its current scope.
+- The model must not judge listings by text. It should flag likely low-quality or scam vendors from behaviour patterns: repeated listing removals, signs of a previously banned vendor returning (ban evasion), and self-purchase reputation inflation.
+- Staff responses on a flag (a person decides; the model only proposes): suspend the account; put its listings under review; or ban, forfeiting its listings, bond (bond goes to the administrator) and pending vendor funds, with pending payments refunded to buyers. This touches escrow settlement, so the payment invariants hold: one outcome per escrow, test networks only in development.
+- Reputation: Go computes figures deterministically (non-delivery refunds, dispute outcomes, completion rate, ratings). The model proposes a closed label (e.g. HIGH_REPUTATION / AT_RISK) with coded reasons. An admin confirms it, which can turn on hold-mode auto-approve. Model output never acts by itself.
+- Bad-faith buyers (groundless disputes, double-product claims): staff ban with that reason; dispute outcomes can flag candidates. Once a buyer is banned, none of their reviews (past or future) count toward vendor ratings.
+- SEC72AA-1 (owner, 2026-10-21): admission must never wait on the global capacity row (e.g. SKIP LOCKED with a reference-only fallback reconciled by the sweep), so a vendor edit never fails with a deadlock while capture is enabled.
+- Moderation budget alert (owner, 2026-10-21; from the MOD72-1 lifetime-pool note): an /admin dashboard alert when a retained_capacity overflow is recorded or the lifetime moderation pool runs low (at defaults one account's daily share drains the 512-allocation pool in about 6 days, after which capture waits until an administrator raises the budget). Today this shows only on the private moderation panel. The alert names counts and the setting to raise, never accounts or targets.
+- Open design questions for the round: which linking signals are acceptable for ban-evasion detection (PGP key/fingerprint, payout address, photo hashes, handle similarity) and what they reveal on a seized server; how forfeiture interacts with escrow states and disputes in flight; appeal paths; how reviews leave the rating; whether MOD72-5's advisory text checks remain.
+STATUS: open (blocked until PR #99 merges, per owner).
 ## Iteration 72 — A-616 and A-617 ruling
 
 

@@ -4,7 +4,7 @@
 <div class="eyebrow">Marketplace operations</div>
 <h1>Moderation desk<span class="accent">.</span>
 </h1>
-<p>Review escrow disputes and recorded payment flags. Every open dispute is listed, oldest first.</p>
+<p>Review escrow disputes, recorded payment flags and <a class="text-link" href="#listing-review">listings awaiting review</a>. Every open dispute is listed, oldest first.</p>
 {{template "staff-attention-summary" .}}
 </div>
 </div>
@@ -87,6 +87,44 @@
 <ul>{{range .EscrowAlerts}}<li><a class="text-link mono" href="/order?id={{.ID}}">{{.ID}}</a> ({{.State}}): {{template "escrow-alert-reasons" .}}</li>{{end}}</ul>{{if .EscrowAlertsMore}}
 <p class="help" role="note">{{.EscrowAlertsMore}} more {{if eq .EscrowAlertsMore 1}}order has{{else}}orders have{{end}} an open alert and {{if eq .EscrowAlertsMore 1}}is{{else}}are{{end}} not listed: this list shows the {{len .EscrowAlerts}} newest. An older one is listed once newer alerts clear.</p>{{end}}
 </section>{{end}}
+<section id="listing-review" aria-labelledby="listing-review-title">{{/* MOD72-6: listing_review.go */}}
+<h2 class="section-title" id="listing-review-title">Listings awaiting review</h2>{{with $.NoticeIn "listing-review"}}
+<div class="alert" role="status">{{.}}</div>{{end}}
+<p class="help">While an administrator holds listings for review, a vendor's new listing, and its change to an approved one, is hidden from buyers until a moderator or administrator approves it here. Open the listing to see it as buyers would, with its photos. Approving publishes it at once. Rejecting keeps it hidden with your reason, which the vendor reads (never include an address, real name or tracking number); it is not a takedown and is not archived: the vendor's next change to what buyers see, or a new photo, sends it back to this list. To remove a listing for good, an administrator takes it down from its edit page. Automated moderation never approves or rejects a listing. Longest waiting first.</p>{{if .ListingReviews}}{{if gt .ListingReviewsTotal (len .ListingReviews)}}
+<p class="help" role="note">Showing the {{len .ListingReviews}} longest waiting of {{.ListingReviewsTotal}} listings awaiting review.</p>{{end}}
+<ol class="listing-reviews">{{range .ListingReviews}}
+<li class="listing-review">
+<h3><a class="text-link" href="/product?id={{.ID}}">{{.Title}}</a></h3>
+<p class="muted">{{.Vendor}} · {{.Category}} · {{.Kind}} · {{.Region}} · {{.PriceXMR}} XMR · waiting since {{.Since}}</p>
+<p class="product-description">{{.Excerpt}}</p>{{if eq .VendorID $.User.ID}}
+<p class="help">Your own listing: another moderator or administrator reviews it.</p>{{else}}
+<form class="stack" method="post" action="/moderator/listing-review">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/moderator/listing-review"}}">
+<input type="hidden" name="id" value="{{.ID}}">
+<input type="hidden" name="version" value="{{.Version}}">
+<input type="hidden" name="action" value="approve">
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
+<button type="submit" aria-label="Approve {{.Title}}">Approve</button>
+</form>
+<details class="listing-reject">
+<summary>Reject {{.Title}}</summary>
+<form class="stack" method="post" action="/moderator/listing-review">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/moderator/listing-review"}}">
+<input type="hidden" name="id" value="{{.ID}}">
+<input type="hidden" name="version" value="{{.Version}}">
+<input type="hidden" name="action" value="reject">
+<label>Reason for the vendor<textarea name="reason" required minlength="10" maxlength="500" rows="3"></textarea>
+</label>
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
+<button type="submit" aria-label="Reject {{.Title}}">Reject</button>
+</form>
+</details>{{end}}
+</li>{{end}}
+</ol>{{else}}
+<p class="muted">No listings are waiting for review.</p>{{end}}
+</section>
 <section id="recent-photos" aria-labelledby="recent-photos-title">{{/* A-190: image_takedown.go */}}
 <h2 class="section-title" id="recent-photos-title">Recent photos</h2>{{with $.NoticeIn "recent-photos"}}
 <div class="alert" role="status">{{.}}</div>{{end}}

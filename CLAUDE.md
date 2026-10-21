@@ -1,5 +1,7 @@
 # OPSEC Market
 
+@AGENTS.md
+
 Go + PostgreSQL, server-rendered HTML/CSS, no browser JavaScript required.
 Read README.md for development and testing, docs/implementation-status.md for
 capability boundaries, and docs/acceptance.md for applicable acceptance checks.

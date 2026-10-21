@@ -3,6 +3,7 @@ package market
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"image"
 	"image/color"
@@ -11,6 +12,8 @@ import (
 	"net/http"
 
 	"golang.org/x/image/draw"
+
+	"opsecmkt/internal/moderation"
 )
 
 // A-186 (war room 2026-09-27, rulings C6 and D10): what happens to the bytes of a photo or avatar upload.
@@ -352,8 +355,9 @@ func exifOrientation(tiff []byte) int {
 
 // encodedImage is a re-encoded upload: the full JPEG, its thumbnail JPEG and the full one's size.
 type encodedImage struct {
-	full, thumb   []byte
-	width, height int
+	full, thumb    []byte
+	width, height  int
+	perceptualHash string // dHash of the normalized pixels; never of the original file
 }
 
 // The decoders, replaceable only so a test can make one panic (TestDecodePanicRecovered).
@@ -395,11 +399,62 @@ func reencode(data []byte, info imageInfo, kind uploadKind) (out encodedImage, e
 	} else {
 		full, thumb = photoImages(img, info.orientation)
 	}
-	out = encodedImage{full: encodeJPEG(full, photoQuality), thumb: encodeJPEG(thumb, thumbQuality), width: full.Rect.Dx(), height: full.Rect.Dy()}
+	out = encodedImage{full: encodeJPEG(full, photoQuality), thumb: encodeJPEG(thumb, thumbQuality), width: full.Rect.Dx(), height: full.Rect.Dy(), perceptualHash: normalizedDifferenceHash(full)}
 	if len(out.full) > maxFullBytes || len(out.thumb) > maxThumbBytes {
 		return encodedImage{}, errImageDetailed
 	}
 	return out, nil
+}
+
+// normalizedDifferenceHash is a 64-bit perceptual difference hash (dHash). It
+// operates on the bounded, oriented pixels already produced by the isolated
+// decoder; the application never decodes an image to verify this advisory value.
+// Similar hashes are a review signal, not proof of duplication or ownership.
+func normalizedDifferenceHash(full *image.RGBA) string {
+	small := image.NewGray(image.Rect(0, 0, 9, 8))
+	// BiLinear widens its kernel when shrinking, so each cell averages its whole
+	// area. ApproxBiLinear samples a few pixels per cell, letting recompression,
+	// resizing or a small crop flip bits on fine texture.
+	draw.BiLinear.Scale(small, small.Rect, full, full.Rect, draw.Src, nil)
+	// Low-contrast noise can produce balanced gradient bits without useful
+	// picture information. Require population variance >= 16 (standard deviation
+	// >= 4 on the 0..255 luminance scale), using exact integer arithmetic.
+	var sum, squares int64
+	for _, sample := range small.Pix {
+		value := int64(sample)
+		sum += value
+		squares += value * value
+	}
+	const samples int64 = 9 * 8
+	if samples*squares-sum*sum < 16*samples*samples {
+		return ""
+	}
+	var hash uint64
+	for y := 0; y < 8; y++ {
+		for x := 0; x < 8; x++ {
+			hash <<= 1
+			if small.GrayAt(x, y).Y > small.GrayAt(x+1, y).Y {
+				hash |= 1
+			}
+		}
+	}
+	var encoded [8]byte
+	binary.BigEndian.PutUint64(encoded[:], hash)
+	value := hex.EncodeToString(encoded[:])
+	if !moderation.InformativePerceptualHash(value) {
+		// A high-variance monotone ramp can still have zero gradient-bit entropy.
+		// This omits advisory metadata; it never rejects the upload or its exact hash.
+		return ""
+	}
+	return value
+}
+
+func validPerceptualHash(value string) bool {
+	if value == "" { // An older gateway's envelope has no perceptual metadata.
+		return true
+	}
+	decoded, err := hex.DecodeString(value)
+	return err == nil && len(decoded) == 8 && hex.EncodeToString(decoded) == value
 }
 
 // photoImages returns the full photo (fitting 1200×1200, oriented) and its thumbnail (fitting 320×240,

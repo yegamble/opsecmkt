@@ -47,7 +47,8 @@ func checkedOrderTotal(unitPrice, quantity int64) (int64, error) {
 func quantityCheckoutReason(ctx context.Context, q rowQuerier, o *Order) (string, error) {
 	var stock int64
 	var archived bool
-	if err := q.QueryRowContext(ctx, "SELECT stock,archived FROM products WHERE id=$1", o.ProductID).Scan(&stock, &archived); err != nil {
+	// MOD72-6: a listing awaiting or failing staff review is unavailable too (listing_review.go); stockHook refuses it.
+	if err := q.QueryRowContext(ctx, "SELECT stock,archived OR review_state<>'approved' FROM products WHERE id=$1", o.ProductID).Scan(&stock, &archived); err != nil {
 		return "", err
 	}
 	if archived {

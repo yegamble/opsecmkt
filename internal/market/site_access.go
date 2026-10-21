@@ -86,7 +86,10 @@ func (a *App) readSiteAccess(ctx context.Context) (*SiteAccessView, error) {
 
 func authenticationPage(page string) bool {
 	switch page {
-	case "login", "register", "setup", "challenge":
+	case "login", "register", "setup", "challenge", "admin/moderation/offline":
+		// Offline review authenticates one annotation with an independently
+		// pinned signature. Its route still requires private ingress before
+		// any policy, cookie or database work.
 		return true
 	}
 	return false

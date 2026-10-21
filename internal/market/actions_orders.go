@@ -33,9 +33,10 @@ func orderDraftAction(c *actionCtx) (actionResult, error) {
 	var xmr int64
 	var vendor, kind string
 	var stock int64
-	var archived bool
-	err := tx.QueryRowContext(ctx, "SELECT xmr,vendor_id,kind,stock,archived FROM products WHERE id=$1", f.Get("product_id")).Scan(&xmr, &vendor, &kind, &stock, &archived)
-	if err != nil {
+	var archived, pending bool
+	err := tx.QueryRowContext(ctx, "SELECT xmr,vendor_id,kind,stock,archived,review_state<>'approved' FROM products WHERE id=$1", f.Get("product_id")).Scan(&xmr, &vendor, &kind, &stock, &archived, &pending)
+	// MOD72-6: a listing awaiting staff review is refused as an unknown one is, so a buyer learns nothing about it.
+	if err != nil || pending {
 		return actionResult{}, fail(400, "Product unavailable")
 	}
 	// The listing side of the purchasability rule (purchasable.go, A-575); lockNewIntake applies the seller side.

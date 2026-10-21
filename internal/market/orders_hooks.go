@@ -34,7 +34,9 @@ func stockHook(ctx context.Context, a *App, tx *sql.Tx, o *Order, from, to strin
 		// edit racing this checkout is either wholly before or wholly after the snapshot.
 		var title, description, kind string
 		var btc, xmr int64
-		err := tx.QueryRowContext(ctx, `UPDATE products SET stock=stock-$2 WHERE id=$1 AND stock>=$2 AND NOT archived
+		// A listing awaiting staff review (MOD72-6, listing_review.go) takes no payment request, even from a draft saved
+		// before an edit sent it back to review.
+		err := tx.QueryRowContext(ctx, `UPDATE products SET stock=stock-$2 WHERE id=$1 AND stock>=$2 AND NOT archived AND review_state='approved'
 			RETURNING title,description,kind,btc,xmr`, o.ProductID, o.Units()).Scan(&title, &description, &kind, &btc, &xmr)
 		if err == sql.ErrNoRows {
 			return fail(409, "This listing is out of stock or no longer available")
