@@ -140,17 +140,21 @@ See [Optional onion mirror](../operator-guide.md#optional-onion-mirror).
 Restore an onion identity backup, decrypted on stdin, into its empty volume before that Tor first starts. Tor installs
 only; the private administrator onion (`tor_admin_identity`) is refused.
 
-**Command:** `age -d -i "$AGE_IDENTITY" BACKUP | ./scripts/install.sh restore-onion tor_identity|tor_mirror_identity [--onion-address ADDR.onion]`
+**Command:** `age -d -i "$AGE_IDENTITY" BACKUP | ./scripts/install.sh restore-onion tor_identity|tor_mirror_identity --onion-address ADDR.onion`
 
-It refuses a backup with any entry other than the key files and `hostname` (links, other names or paths,
-duplicates), keys that fail the import's checks or Tor's offline dry run, a `hostname` that is not the address the key
-derives, a key already in another onion's volume, a running Tor service and a volume that is not empty. Nothing is
-written until every check passes; `hostname` is never written. The last line is the derived address.
+It refuses a compressed archive, any entry other than the key files and `hostname` (links, other names or paths,
+duplicates), oversized files, keys that fail the import's checks or Tor's offline dry run, an address other than the
+one you give or confirm, a `hostname` that is not the address the key derives, a secret key already in another onion's
+volume (compared byte for byte), a running Tor service and a volume that is not empty or cannot be read. Nothing is
+written until every check passes; `hostname` is never written. Containers that carry key bytes run with
+`--log-driver none`. The last line is the derived address.
 
 ### Flags
 
 - `--onion-address ADDR.onion`<br>
-  The address recorded with the backup; the key must derive it. Required when the backup has no `hostname`.
+  The onion address you published for this identity; the key must derive it. Without it, the derived address is shown
+  on the terminal (`/dev/tty`, as stdin holds the backup) for you to confirm with `yes`; with no terminal the restore
+  refuses.
 
 See [Secrets, .env and onion identities](../operator-guide.md#secrets-env-and-onion-identities).
 

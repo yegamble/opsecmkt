@@ -585,10 +585,11 @@ onion_key_check() {
 }
 
 # onion_dry_run IMAGE: the address Tor derives from the checked key, started offline in a throwaway container of the
-# project's Tor image: no network, no capabilities, a tmpfs, the key files streamed on stdin. Exits on a refusal.
+# project's Tor image: no network, no capabilities, a tmpfs, the key files streamed on stdin (and no log driver to
+# keep anything). Exits on a refusal.
 onion_dry_run() {
   local address status=0
-  address=$(cat -- "${onion_files[@]}" | docker run --rm -i --pull never --network none --cap-drop ALL \
+  address=$(cat -- "${onion_files[@]}" | docker run --rm -i --log-driver none --pull never --network none --cap-drop ALL \
     --security-opt no-new-privileges:true --tmpfs /dry --entrypoint sh "$1" -euc "$onion_dry_run_script") || status=$?
   case $status in
     0) ;;
@@ -621,7 +622,7 @@ onion_volume_create() {
 
 # onion_import IMAGE VOLUME: stream the checked key files into the empty VOLUME (onion_import_script).
 onion_import() {
-  cat -- "${onion_files[@]}" | docker run --rm -i --pull never --network none --user 0 --cap-drop ALL --cap-add CHOWN \
+  cat -- "${onion_files[@]}" | docker run --rm -i --log-driver none --pull never --network none --user 0 --cap-drop ALL --cap-add CHOWN \
     --cap-add DAC_OVERRIDE --cap-add FOWNER --security-opt no-new-privileges:true --tmpfs /in -v "$2:/var/lib/tor" \
     --entrypoint sh "$1" -euc "$onion_import_script" "$2"
 }
@@ -636,28 +637,34 @@ onion_import_notes() {
 #
 # restore-onion puts an onion identity backup (the operator guide's tor-identity-backup archive, decrypted, on stdin)
 # into its volume, which must be empty, before that Tor first starts there. The archive is operator input like an
-# imported key, so it is never unpacked with tar -x: a container with no network and no capabilities lists it, refuses
-# anything but the entries a backup holds (marketplace/, its hs_ed25519_secret_key, hs_ed25519_public_key and hostname
-# files and an empty authorized_clients/; no links, no other names or paths, nothing twice) and copies out only those
-# files, each by its exact name, to stdout. The keys then go through the import's checks and dry run (A-526): the
-# address is the one Tor derives from the key. Tor does not check hostname (it overwrites a forged one only once it
-# starts), so the archive's hostname must equal the derived address or the restore refuses, and it is never written:
-# Tor writes it from the key. The other public onion's volume and the administrator onion's must not hold that key.
-# scripts/test-tor-identity-restore.sh runs this against the real Tor image.
+# imported key, so it is never unpacked with tar -x: a container with no network and no capabilities checks that it is
+# an uncompressed tar archive, lists it, refuses anything but the entries a backup holds (marketplace/, its
+# hs_ed25519_secret_key, hs_ed25519_public_key and hostname files and an empty authorized_clients/; no links, no other
+# names or paths, nothing twice) and copies out only those files, each by its exact name and bounded in size, to
+# stdout. The keys then go through the import's checks and dry run (A-526): the address is the one Tor derives from the
+# key, and it must be the published address the operator gives (--onion-address) or confirms on the terminal. Tor does
+# not check hostname (it overwrites a forged one only once it starts), so the archive's hostname must equal the derived
+# address or the restore refuses, and it is never written: Tor writes it from the key. The other public onion's volume
+# and the administrator onion's must not hold the same secret key (compared byte for byte: a volume restored or
+# prepared but not yet started has no hostname). Every container that carries key bytes on stdin or stdout runs with
+# --log-driver none, so no log driver keeps them. scripts/test-tor-identity-restore.sh runs this against the real Tor
+# image.
 
 # The archive check, as Tor's user in the Tor image: read the archive from stdin (at most 1 MiB; a backup is about
-# 10 KiB) into a tmpfs, list it with GNU tar (-P: names exactly as stored; C quoting: one line per entry, quotes and
-# control characters escaped), compare each entry's type and name with the allowed list, then write the regular file
-# marketplace/$0 to stdout. Status 4: the archive is refused (the reason on stderr); 5: it holds no such file. (Single
-# quotes: the container expands the script.)
+# 10 KiB) into a size-limited tmpfs, require the tar magic at offset 257 (an uncompressed archive), list it with GNU
+# tar reading stdin (which refuses a compressed stream instead of decompressing it; -P: names exactly as stored; C
+# quoting: one line per entry, quotes and control characters escaped), compare each entry's type and name with the
+# allowed list, then write the regular file marketplace/$0, at most $1 bytes, to stdout. Status 4: the archive is
+# refused (the reason on stderr); 5: it holds no such file. (Single quotes: the container expands the script.)
 # shellcheck disable=SC2016
 onion_archive_script='umask 077
 head -c 1048577 > /x/archive
 if [ "$(wc -c < /x/archive)" -gt 1048576 ]; then echo "The backup is larger than 1 MiB; an onion identity backup is about 10 KiB." >&2; exit 4; fi
-if ! tar -P --quoting-style=c -tf /x/archive > /x/names 2> /x/error; then
+if [ "$(head -c 262 /x/archive | tail -c 5)" != ustar ]; then echo "The backup is not an uncompressed tar archive." >&2; exit 4; fi
+if ! tar -P --quoting-style=c -tf - < /x/archive > /x/names 2> /x/error; then
   echo "The backup is not a readable tar archive:" >&2; head -n 3 /x/error >&2; exit 4
 fi
-tar -P --numeric-owner --quoting-style=c -tvf /x/archive > /x/long 2> /dev/null || { echo "The backup is not a readable tar archive." >&2; exit 4; }
+tar -P --numeric-owner --quoting-style=c -tvf - < /x/archive > /x/long 2> /dev/null || { echo "The backup is not a readable tar archive." >&2; exit 4; }
 if [ "$(wc -l < /x/names)" != "$(wc -l < /x/long)" ]; then echo "The backup could not be listed one entry per line." >&2; exit 4; fi
 cut -c 1 /x/long | paste -d " " - /x/names > /x/entries
 printf "%s\n" "d \"marketplace/\"" "- \"marketplace/hs_ed25519_secret_key\"" "- \"marketplace/hs_ed25519_public_key\"" \
@@ -669,24 +676,48 @@ fi
 if [ -n "$(sort /x/entries | uniq -d)" ]; then echo "The backup holds an entry twice." >&2; exit 4; fi
 grep -qxF -e "- \"marketplace/hs_ed25519_secret_key\"" /x/entries || { echo "The backup holds no marketplace/hs_ed25519_secret_key." >&2; exit 4; }
 grep -qxF -e "- \"marketplace/$0\"" /x/entries || exit 5
-tar -P -xOf /x/archive "marketplace/$0"'
+{ tar -P -xOf - "marketplace/$0" < /x/archive || :; } | head -c "$(($1 + 1))" > /x/member
+if [ "$(wc -c < /x/member)" -gt "$1" ]; then echo "marketplace/$0 is larger than $1 bytes." >&2; exit 4; fi
+cat /x/member'
 
-# onion_archive_member IMAGE NAME: the file marketplace/NAME of the staged archive, after onion_archive_script checked
-# the whole archive, on stdout (status 5: there is none).
+# The key comparison, as root with only DAC_OVERRIDE (to read whatever owns the files) on a read-only volume: compare the
+# secret key on stdin with the volume's marketplace/ and admin/ secret keys. Status 0: neither is that key (or there is
+# none), 10: one is; any other status: it could not tell.
+# shellcheck disable=SC2016
+onion_key_compare_script='umask 077
+head -c 97 > /x/key
+ls -A /var/lib/tor > /dev/null
+for dir in marketplace admin; do
+  file=/var/lib/tor/$dir/hs_ed25519_secret_key
+  if [ ! -e "$file" ] && [ ! -L "$file" ]; then continue; fi
+  status=0
+  cmp -s /x/key "$file" || status=$?
+  case $status in 0) exit 10 ;; 1) ;; *) exit 11 ;; esac
+done'
+
+# onion_archive_member IMAGE NAME MAX: the file marketplace/NAME of the staged archive, at most MAX bytes, after
+# onion_archive_script checked the whole archive, on stdout (status 5: there is none).
 onion_archive_member() {
-  docker run --rm -i --pull never --network none --cap-drop ALL --security-opt no-new-privileges:true --tmpfs /x \
-    --entrypoint sh "$1" -euc "$onion_archive_script" "$2" < "$restore_stage/archive"
+  docker run --rm -i --log-driver none --pull never --network none --cap-drop ALL --security-opt no-new-privileges:true \
+    --tmpfs /x:size=4m --entrypoint sh "$1" -euc "$onion_archive_script" "$2" "$3" < "$restore_stage/archive"
 }
 
-# onion_volume_addresses IMAGE VOLUME: the onion address Tor wrote in VOLUME (a public or the administrator onion), if
-# it can be read.
-onion_volume_addresses() {
-  docker run --rm --pull never --network none --cap-drop ALL --security-opt no-new-privileges:true -v "$2:/var/lib/tor:ro" \
-    --entrypoint cat "$1" /var/lib/tor/marketplace/hostname /var/lib/tor/admin/hostname 2>/dev/null || true
+# onion_key_in_volume IMAGE VOLUME: status 0 when VOLUME holds the staged secret key (onion_files[0]), 1 when it does
+# not; anything else when that cannot be told.
+onion_key_in_volume() {
+  local status=0
+  docker run --rm -i --log-driver none --pull never --network none --user 0 --cap-drop ALL --cap-add DAC_OVERRIDE \
+    --security-opt no-new-privileges:true --tmpfs /x:size=1m -v "$2:/var/lib/tor:ro" --entrypoint sh "$1" \
+    -euc "$onion_key_compare_script" < "${onion_files[0]}" || status=$?
+  case $status in
+    0) return 1 ;;
+    10) return 0 ;;
+    *) return 2 ;;
+  esac
 }
 
 cmd_restore_onion() {
-  local identity='' given='' service project volume image size status name derived recorded other entries
+  local identity='' given='' service project volume image size status name max derived recorded other entries confirmed
   while (($#)); do
     case $1 in
       --onion-address) (($# >= 2)) || usage; given=$(onion_address_option "$1" "$2"); shift 2 ;;
@@ -703,7 +734,12 @@ cmd_restore_onion() {
   if [[ $identity == tor_mirror_identity ]]; then service=tor-mirror; fi
   # shellcheck disable=SC2016  # the operator's command, printed as written
   [[ ! -t 0 ]] || die 'restore-onion reads the decrypted backup on stdin:' \
-    '  age -d -i "$AGE_IDENTITY" BACKUP | ./scripts/install.sh restore-onion IDENTITY' 'Nothing was restored.'
+    '  age -d -i "$AGE_IDENTITY" BACKUP | ./scripts/install.sh restore-onion IDENTITY --onion-address ADDR.onion' 'Nothing was restored.'
+  # The address is the operator's, never only the backup's own: given, or confirmed on the terminal (stdin is the backup).
+  if [[ -z $given ]] && ! { : < /dev/tty; } 2>/dev/null; then
+    die 'Refusing: give the onion address you published for this identity as --onion-address ADDR.onion (there is no terminal' \
+      'to confirm it on). Nothing was restored.'
+  fi
   require_env
   project=$(project_name)
   volume=${project}_$identity
@@ -720,21 +756,28 @@ cmd_restore_onion() {
   [[ -z $(docker ps -q --filter "label=com.docker.compose.project=$project" --filter "label=com.docker.compose.service=$service") ]] ||
     die "Refusing: $service is running, so its volume $volume is in use and holds an identity. Nothing was restored."
   if docker volume inspect "$volume" >/dev/null 2>&1; then
-    entries=$(docker run --rm --pull never --network none --cap-drop ALL --security-opt no-new-privileges:true \
-      -v "$volume:/var/lib/tor:ro" --entrypoint ls "$image" -A /var/lib/tor 2>/dev/null) || entries=''
+    entries=$(docker run --rm --pull never --network none --user 0 --cap-drop ALL --cap-add DAC_OVERRIDE \
+      --security-opt no-new-privileges:true -v "$volume:/var/lib/tor:ro" --entrypoint ls "$image" -A /var/lib/tor) ||
+      die "Refusing: could not read the volume $volume to check that it is empty (the message above says why). Nothing was restored."
     [[ -z $entries ]] ||
       die "Refusing: volume $volume is not empty: Tor has run on it and created an address, or an identity was restored into it." \
         "An identity is restored only into an empty volume. If that address was never published, remove it and restore again:" \
         "docker compose rm -sf $service, then docker volume rm $volume. Nothing was restored."
   fi
-  # Validate first: the archive, then the keys and Tor's dry run, before any volume is created or written.
+  # Validate first: the archive, then the keys and Tor's dry run, before any volume is created or written. Each file is
+  # bounded: the keys' exact sizes (checked again below) and an address with its newline.
   mkdir "$restore_stage/keys"
   for name in hs_ed25519_secret_key hs_ed25519_public_key hostname; do
     status=0
+    case $name in
+      hs_ed25519_secret_key) max=96 ;;
+      hs_ed25519_public_key) max=64 ;;
+      hostname) max=64 ;;
+    esac
     if [[ $name == hostname ]]; then
-      onion_archive_member "$image" "$name" > "$restore_stage/hostname" || status=$?
+      onion_archive_member "$image" "$name" "$max" > "$restore_stage/hostname" || status=$?
     else
-      onion_archive_member "$image" "$name" > "$restore_stage/keys/$name" || status=$?
+      onion_archive_member "$image" "$name" "$max" > "$restore_stage/keys/$name" || status=$?
     fi
     case $status in
       0) ;;
@@ -749,30 +792,32 @@ cmd_restore_onion() {
     printf '%s\n' "$derived" > "$restore_stage/derived"
     printf '%s' "$derived" > "$restore_stage/derived-bare"
     if ! cmp -s "$restore_stage/derived" "$restore_stage/hostname" && ! cmp -s "$restore_stage/derived-bare" "$restore_stage/hostname"; then
-      recorded=''
-      size=$(wc -c < "$restore_stage/hostname")
-      if ((size <= 63)); then
-        recorded=$(tr -d '\n' < "$restore_stage/hostname")
-        [[ $recorded =~ $onion_pattern ]] || recorded=''
-      fi
+      recorded=$(tr -d '\n' < "$restore_stage/hostname")
+      [[ $recorded =~ $onion_pattern ]] || recorded=''
       die "Refusing: the backup's hostname file names ${recorded:-no valid onion address}, but its key is the identity of $derived." \
         "Tor would serve $derived (it rewrites hostname from the key), so the backup was altered or mixes two identities. Nothing was restored."
     fi
   fi
   if [[ -n $given ]]; then
     onion_confirm "$derived" "$given"
-  elif [[ ! -e $restore_stage/hostname ]]; then
-    die "Refusing: the backup has no hostname file to check the key's address ($derived) against." \
-      'Give the address recorded with the backup as --onion-address ADDR.onion. Nothing was restored.'
+  else
+    printf 'The key is for %s.\nType yes if this is the onion address you published for %s: ' "$derived" "$identity" > /dev/tty
+    IFS= read -r confirmed < /dev/tty || die 'No answer. Nothing was restored.'
+    [[ $confirmed == yes ]] || die 'Not confirmed. Nothing was restored.'
   fi
-  # Never one identity in two onions: not the other public onion's, and not the administrator onion's.
+  # Never one identity in two onions: not the other public onion's, and not the administrator onion's. The secret keys
+  # are compared, since a volume restored or prepared but not yet started has no hostname.
   for other in tor_identity tor_mirror_identity tor_admin_identity; do
     [[ $other != "$identity" ]] || continue
     docker volume inspect "${project}_$other" >/dev/null 2>&1 || continue
-    if grep -qxF -- "$derived" <<< "$(onion_volume_addresses "$image" "${project}_$other")"; then
-      die "Refusing: that key is the identity already in ${project}_$other ($derived); every onion needs its own." \
-        "Restore each backup into the volume it was taken from (its file name names it). Nothing was restored."
-    fi
+    status=0
+    onion_key_in_volume "$image" "${project}_$other" || status=$?
+    case $status in
+      0) die "Refusing: that key is the identity already in ${project}_$other ($derived); every onion needs its own." \
+           "Restore each backup into the volume it was taken from (its file name names it). Nothing was restored." ;;
+      1) ;;
+      *) die "Refusing: could not compare the key with the one in ${project}_$other (the message above says why). Nothing was restored." ;;
+    esac
   done
   if ! docker volume inspect "$volume" >/dev/null 2>&1; then
     onion_volume_create "$project" "$identity" || die "Could not create the volume $volume. Nothing was restored."

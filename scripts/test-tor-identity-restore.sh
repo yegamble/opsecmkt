@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2031  # only the log-driver check's subshell sources the installer, whose functions set project
 # Run the operator guide's onion-identity and .env backup/restore commands verbatim (war-room A-136): the
 # fenced blocks after <!-- ops-cmd: env-backup -->, env-restore, tor-identity-backup and tor-identity-restore
 # in docs/operator-guide.md, whose restore block runs ./scripts/install.sh restore-onion. It also feeds that restore
 # archives it must refuse (war-room A-531): a forged hostname, an extra file, a path outside marketplace/, a symbolic
-# or hard link, a mismatched key pair or recorded address, another onion's key, the administrator onion, and a
-# populated volume; none leaves a volume behind. Every container runs with --network none. Requires Docker with Compose v2, the
+# or hard link, a duplicate, a compressed archive, oversized files, a mismatched key pair or recorded address, a missing
+# address, a running mirror, another onion's key (compared by key, before any Tor started), the administrator onion, and
+# a populated volume; none leaves a volume behind. It also checks that the containers carrying key bytes keep no logs. Every container runs with --network none. Requires Docker with Compose v2, the
 # Tor image (TOR_IMAGE, default opsecmkt-tor:ci: docker build -t opsecmkt-tor:ci -f deploy/Dockerfile.tor deploy),
 # age, age-keygen and OpenSSL. Works in a temporary copy of the Compose files under a unique project name, so
 # the checkout's .env and volumes are never used; the exit trap removes every container, volume and image tag
@@ -169,12 +171,14 @@ for identity in tor_identity tor_mirror_identity; do
 
   # Restoring over the live identity is refused and changes nothing.
   if run "$deployment" "$tor_restore" TMPDIR="$stage" identity="$identity" backup="$file" AGE_IDENTITY="$work/identity.txt" \
-    > "$work/refused.log" 2>&1; then fail "$identity restore accepted a non-empty volume"; fi
-  grep -q 'Refusing' "$work/refused.log" || fail "$identity restore did not say why it refused: $(cat "$work/refused.log")"
+    address="$hostname" > "$work/refused.log" 2>&1; then fail "$identity restore accepted a non-empty volume"; fi
+  grep -qF "Refusing: volume $volume is not empty" "$work/refused.log" ||
+    fail "$identity restore did not say why it refused: $(cat "$work/refused.log")"
 
   # Lose the volume, restore it, and Tor serves the same address with the same key.
   docker volume rm "$volume" >/dev/null
-  output=$(run "$deployment" "$tor_restore" TMPDIR="$stage" identity="$identity" backup="$file" AGE_IDENTITY="$work/identity.txt")
+  output=$(run "$deployment" "$tor_restore" TMPDIR="$stage" identity="$identity" backup="$file" AGE_IDENTITY="$work/identity.txt" \
+    address="$hostname")
   [[ $(tail -n 1 <<< "$output") == "$hostname" ]] || fail "$identity restore printed '$output', expected $hostname"
   start_tor "$volume"
   [[ $(identity_of "$started") == "$original" ]] || fail "$identity: Tor did not keep the restored identity"
@@ -214,7 +218,9 @@ refused() {
   local name=$1 file=$2 message=$3
   shift 3
   if run "$deployment" "$tor_restore" TMPDIR="$stage" identity=tor_mirror_identity backup="$file" \
-    AGE_IDENTITY="$work/identity.txt" "$@" > "$work/$name.log" 2>&1; then fail "the restore accepted $name"; fi
+    AGE_IDENTITY="$work/identity.txt" address="$mirror_onion" "$@" > "$work/$name.log" 2>&1; then
+    fail "the restore accepted $name"
+  fi
   grep -qF -- "$message" "$work/$name.log" || fail "$name: expected '$message' in: $(cat "$work/$name.log")"
   if docker volume inspect "$mirror_volume" >/dev/null 2>&1; then fail "$name: the refused restore created $mirror_volume"; fi
   [[ -z $(ls -A "$stage") ]] || fail "$name: the restore left $(ls -A "$stage") in its temporary directory"
@@ -252,22 +258,86 @@ craft mismatched-pair 'printf %s "$main_public" | base64 -d > marketplace/hs_ed2
 refused mismatched-pair "$work/mismatched-pair.tar.age" 'hs_ed25519_public_key does not match hs_ed25519_secret_key'
 refused mismatched-address "$deployment/$mirror_file" "the key derives $mirror_onion, not $main_onion" address="$main_onion"
 craft no-hostname 'rm marketplace/hostname; tar -cf - marketplace'
-refused no-hostname "$work/no-hostname.tar.age" 'Give the address recorded with the backup as --onion-address'
+refused no-address "$deployment/$mirror_file" 'set address to the onion address you published' address=
+craft long-hostname 'head -c 2000 /dev/zero | tr "\0" a > marketplace/hostname; tar -cf - marketplace'
+refused long-hostname "$work/long-hostname.tar.age" 'marketplace/hostname is larger than 64 bytes.'
+craft long-key 'head -c 5000 /dev/zero > marketplace/hs_ed25519_secret_key; tar -cf - marketplace'
+refused long-key "$work/long-key.tar.age" 'marketplace/hs_ed25519_secret_key is larger than 96 bytes.'
+craft gzip 'tar -czf - marketplace'
+refused gzip "$work/gzip.tar.age" 'The backup is not an uncompressed tar archive.'
 printf 'not a tar archive\n' | age -r "$recipient" -o "$work/not-tar.tar.age"
 refused not-tar "$work/not-tar.tar.age" 'not an onion identity backup'
 refused wrong-age-identity "$deployment/$mirror_file" 'nothing arrived on stdin' AGE_IDENTITY="$work/wrong-identity.txt"
-# Public/admin mix-ups: the main onion's key into the mirror's volume, the administrator onion's volume as a target,
-# and an administrator volume that holds the mirror's address.
-refused main-key-as-mirror "$deployment/$main_file" "that key is the identity already in ${project}_tor_identity ($main_onion)"
+# A running mirror (a container with the Compose labels of this project's tor-mirror) is refused.
+running=$(docker run -d --network none --label "com.docker.compose.project=$project" \
+  --label com.docker.compose.service=tor-mirror --entrypoint sleep "$project-tor" 300)
+containers+=("$running")
+refused running-mirror "$deployment/$mirror_file" 'Refusing: tor-mirror is running'
+docker rm -f "$running" >/dev/null  # no -v: the Tor image declares no VOLUME
+# Public/admin mix-ups, compared by key, not hostname: the main backup restored into tor_identity and, before any Tor
+# starts (so no hostname exists yet), into the mirror's volume; the administrator onion's volume as a target; an
+# administrator volume prepared with the mirror's key but never started; and one whose key cannot be read as a file.
+docker volume rm "${project}_tor_identity" >/dev/null
+run "$deployment" "$tor_restore" TMPDIR="$stage" identity=tor_identity backup="$deployment/$main_file" \
+  AGE_IDENTITY="$work/identity.txt" address="$main_onion" > /dev/null
+refused main-key-as-mirror "$deployment/$main_file" "that key is the identity already in ${project}_tor_identity ($main_onion)" \
+  address="$main_onion"
 if run "$deployment" "$tor_restore" TMPDIR="$stage" identity=tor_admin_identity backup="$deployment/$mirror_file" \
-  AGE_IDENTITY="$work/identity.txt" > "$work/admin.log" 2>&1; then fail 'the restore accepted tor_admin_identity'; fi
+  AGE_IDENTITY="$work/identity.txt" address="$mirror_onion" > "$work/admin.log" 2>&1; then
+  fail 'the restore accepted tor_admin_identity'
+fi
 grep -q 'The private administrator' "$work/admin.log" || fail "tor_admin_identity: $(cat "$work/admin.log")"
 if docker volume inspect "${project}_tor_admin_identity" >/dev/null 2>&1; then fail 'a tor_admin_identity volume was created'; fi
 echo 'ok: refused tor_admin_identity'
-docker run --rm --network none --user 0 -v "${project}_tor_admin_identity:/var/lib/tor" --entrypoint sh "$project-tor" -euc \
-  "mkdir /var/lib/tor/admin && printf '%s\n' $mirror_onion > /var/lib/tor/admin/hostname"
+age -d -i "$work/identity.txt" "$deployment/$mirror_file" |
+  docker run --rm -i --log-driver none --network none --user 0 -v "${project}_tor_admin_identity:/var/lib/tor" \
+    --entrypoint sh "$project-tor" -euc \
+    'mkdir -m 700 /var/lib/tor/admin && tar -xOf - marketplace/hs_ed25519_secret_key > /var/lib/tor/admin/hs_ed25519_secret_key
+     chown -R debian-tor:debian-tor /var/lib/tor; chmod 600 /var/lib/tor/admin/hs_ed25519_secret_key'
 refused mirror-key-in-admin "$deployment/$mirror_file" "that key is the identity already in ${project}_tor_admin_identity"
+docker run --rm --network none --user 0 -v "${project}_tor_admin_identity:/var/lib/tor" --entrypoint sh "$project-tor" -euc \
+  'rm /var/lib/tor/admin/hs_ed25519_secret_key; mkdir /var/lib/tor/admin/hs_ed25519_secret_key'
+refused unreadable-admin-key "$deployment/$mirror_file" "could not compare the key with the one in ${project}_tor_admin_identity"
 docker volume rm "${project}_tor_admin_identity" >/dev/null
+
+# No log driver keeps the key bytes: the archive member and key-comparison containers, rerun here without --rm,
+# are configured with --log-driver none and docker logs has nothing from them.
+age -d -i "$work/identity.txt" "$deployment/$mirror_file" > "$work/plain.tar"
+(
+  # shellcheck source=scripts/install.sh
+  source scripts/install.sh
+  # shellcheck disable=SC2329  # called by the installer's functions below
+  docker() {
+    local argument arguments=()
+    if [[ $1 != run ]]; then command docker "$@"; return; fi
+    shift
+    for argument in "$@"; do [[ $argument == --rm ]] || arguments+=("$argument"); done
+    command docker run --cidfile "$work/cid-$((++runs))" "${arguments[@]}"
+  }
+  runs=0
+  restore_stage=$work/log-stage
+  mkdir "$restore_stage"
+  cp "$work/plain.tar" "$restore_stage/archive"
+  onion_archive_member "$project-tor" hs_ed25519_secret_key 96 > "$restore_stage/secret"
+  [[ $(wc -c < "$restore_stage/secret") -eq 96 ]] || fail 'the archive member is not the 96-byte key'
+  # shellcheck disable=SC2034  # onion_key_in_volume streams onion_files[0]
+  onion_files=("$restore_stage/secret")
+  status=0
+  onion_key_in_volume "$project-tor" "${project}_tor_identity" || status=$?
+  [[ $status == 1 ]] || fail "the key comparison returned $status, expected 1 (a different key)"
+)
+inspected=0
+for cid in "$work"/cid-*; do
+  inspected=$((inspected + 1))
+  container=$(cat "$cid")
+  containers+=("$container")
+  [[ $(docker inspect -f '{{.HostConfig.LogConfig.Type}}' "$container") == none ]] || fail "container $container keeps logs"
+  [[ -z $(docker logs "$container" 2>/dev/null) ]] || fail "docker logs shows output of $container"
+  docker rm -f "$container" >/dev/null  # no -v: the Tor image declares no VOLUME; named volumes go in the trap
+done
+((inspected == 2)) || fail 'expected two containers to inspect'
+rm -rf "$work"/cid-* "$work/log-stage" "$work/plain.tar"
+echo 'ok: the containers that carry key bytes run with --log-driver none, and docker logs holds nothing of them'
 
 # A backup without hostname restores with the recorded address. The restore writes no hostname (Tor writes it from the
 # key), only the two key files, owned by debian-tor; Tor then starts with the mirror's identity.
@@ -310,7 +380,7 @@ docker volume create "$volume" >/dev/null
 docker run --rm --network none --user 0 -v "$volume:/mnt" --entrypoint sh "$project-tor" -euc \
   'chown root:root /mnt; chmod 755 /mnt'
 output=$(run "$deployment" "$tor_restore" TMPDIR="$stage" identity="$identity" backup="$work/root-owned.tar.age" \
-  AGE_IDENTITY="$work/identity.txt")
+  AGE_IDENTITY="$work/identity.txt" address="$hostname")
 [[ $(tail -n 1 <<< "$output") == "$hostname" ]] || fail "root-owned restore printed '$output', expected $hostname"
 start_tor "$volume"
 [[ $(identity_of "$started") == "$original" ]] || fail 'Tor did not keep the identity restored from a root-owned archive'
@@ -327,7 +397,7 @@ grep -qi 'no such image' "$work/no-image.log" || fail "backup without the image:
 [[ $(cd "$deployment" && ls backups) == "$before" ]] || fail 'the failed backup left a file'
 docker volume rm "$volume" >/dev/null
 if run "$deployment" "$tor_restore" TMPDIR="$stage" identity="$identity" backup="$file" AGE_IDENTITY="$work/identity.txt" \
-  > "$work/no-image-restore.log" 2>&1; then fail 'the restore ran without the Tor image'; fi
+  address="$hostname" > "$work/no-image-restore.log" 2>&1; then fail 'the restore ran without the Tor image'; fi
 grep -qi 'no such image' "$work/no-image-restore.log" || fail "restore without the image: $(cat "$work/no-image-restore.log")"
 echo 'ok: without the Tor image, backup and restore fail and pull nothing'
 echo 'PASS: documented .env and onion identity backup and restore'

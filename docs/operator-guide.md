@@ -2233,25 +2233,26 @@ To recover on a new host (or after losing the volumes): check out the same revis
   echo 'Restored .env' )
 ```
 
-Restore an onion identity (set `identity`, `backup` to its backup file and `AGE_IDENTITY`; optionally `address` to the address recorded with the backup). The archive is decrypted straight into `./scripts/install.sh restore-onion`, which treats it as untrusted input and writes nothing until every check has passed (war room A-531):
+Restore an onion identity (set `identity`, `backup` to its backup file, `AGE_IDENTITY`, and `address` to the onion address you published for that identity, for example in your signed verification document; never take it from the backup alone). The archive is decrypted straight into `./scripts/install.sh restore-onion`, which treats it as untrusted input and writes nothing until every check has passed (war room A-531):
 
-- it refuses a volume that is not empty, a running `tor` (or `tor-mirror`) service, and `tor_admin_identity`: the private administrator onion keeps an identity of its own;
-- it never runs `tar -x` on the archive. A container with no network and no capabilities lists it and refuses anything a backup never holds: any name other than `marketplace/`, `marketplace/hs_ed25519_secret_key`, `marketplace/hs_ed25519_public_key`, `marketplace/hostname` and an empty `marketplace/authorized_clients/`, so no `../` or absolute path and no other file; any symbolic or hard link, device or other type in their place; any entry twice; anything over 1 MiB. Only the key files and `hostname` are copied out, each by its exact name;
+- it refuses a volume that is not empty (or cannot be read), a running `tor` (or `tor-mirror`) service, and `tor_admin_identity`: the private administrator onion keeps an identity of its own;
+- it never runs `tar -x` on the archive. A container with no network and no capabilities checks that it is an uncompressed tar archive (a compressed one is refused, never unpacked), lists it and refuses anything a backup never holds: any name other than `marketplace/`, `marketplace/hs_ed25519_secret_key`, `marketplace/hs_ed25519_public_key`, `marketplace/hostname` and an empty `marketplace/authorized_clients/`, so no `../` or absolute path and no other file; any symbolic or hard link, device or other type in their place; any entry twice; anything over 1 MiB. Only the key files and `hostname` are copied out, each by its exact name and bounded in size (96, 64 and 64 bytes);
 - the keys then pass the same checks and offline Tor dry run as an [imported identity](install/tor.md#use-your-own-vanity-onion-address): exact sizes and headers, a public key that matches the secret key, and the address Tor derives from the key;
-- the archive's `hostname` must name that derived address (and so must `address`, when set), otherwise it refuses: Tor does not check `hostname` and overwrites a forged one only after it starts. A backup without `hostname` needs `address`. The file itself is never restored; Tor writes it from the key;
-- it refuses a key whose address is already in the other public onion's volume or the administrator onion's.
+- that derived address must be `address`; run by hand without `--onion-address`, `restore-onion` asks you to confirm it on the terminal instead, and with neither it refuses. The archive's `hostname`, when present, must name the same address: Tor does not check `hostname` and overwrites a forged one only after it starts. The file itself is never restored; Tor writes it from the key;
+- it refuses a secret key that the other public onion's volume or the administrator onion's already holds, compared byte for byte (a volume restored or prepared but not yet started has no `hostname` to compare), and refuses when it cannot read one to compare.
 
-Only then does it create the volume (labelled as Compose labels its own) and stream the key files into it as root, giving them to `debian-tor` (directories 700, files 600), because Tor refuses keys it does not own. Its last line is the address derived from the key:
+The containers that carry key bytes run with `--log-driver none`, so Docker's log driver keeps none of them. Only after every check does it create the volume (labelled as Compose labels its own) and stream the key files into it as root, giving them to `debian-tor` (directories 700, files 600), because Tor refuses keys it does not own. Its last line is the address derived from the key:
 
 <!-- ops-cmd: tor-identity-restore -->
 ```sh
 ( set -eu -o pipefail
   : "${identity:?set identity=tor_identity or identity=tor_mirror_identity}" "${backup:?set backup to the identity backup file}" "${AGE_IDENTITY:?set AGE_IDENTITY}"
+  : "${address:?set address to the onion address you published for this identity}"
   test -f "$backup"
-  age -d -i "$AGE_IDENTITY" "$backup" | ./scripts/install.sh restore-onion "$identity" ${address:+--onion-address "$address"} )
+  age -d -i "$AGE_IDENTITY" "$backup" | ./scripts/install.sh restore-onion "$identity" --onion-address "$address" )
 ```
 
-After `docker compose up -d`, `./scripts/install.sh status` must show the printed address for `tor` (or `tor-mirror`); a different address means Tor did not use the restored keys. The restore refuses a volume that is not empty: Tor has already run on this host and created another address. If that address was never published, remove it and restore again: `docker compose rm -sf tor` (or `tor-mirror`), then `docker volume rm opsecmkt_tor_identity` (your project's volume name). `scripts/test-tor-identity-restore.sh` runs these four blocks verbatim, and feeds the restore forged, extended, linked and mismatched archives ([operations tests](operations-tests.md#documented-env-and-onion-identity-backup-and-restore)).
+After `docker compose up -d`, `./scripts/install.sh status` must show the printed address for `tor` (or `tor-mirror`); a different address means Tor did not use the restored keys. The restore refuses a volume that is not empty: Tor has already run on this host and created another address. If that address was never published, remove it and restore again: `docker compose rm -sf tor` (or `tor-mirror`), then `docker volume rm opsecmkt_tor_identity` (your project's volume name). `scripts/test-tor-identity-restore.sh` runs these four blocks verbatim, and feeds the restore forged, extended, linked, compressed, oversized and mismatched archives ([operations tests](operations-tests.md#documented-env-and-onion-identity-backup-and-restore)).
 
 ## Verification and maintenance
 

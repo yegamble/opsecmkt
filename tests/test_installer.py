@@ -2209,13 +2209,31 @@ time.sleep(60)
         result = self.command('restore-onion', 'tor_admin_identity')
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn('The private administrator', result.stderr)
+        # The address is the operator's: without --onion-address and with no terminal to confirm it on, refused.
+        result = self.command('restore-onion', 'tor_identity')
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn('give the onion address you published for this identity as --onion-address', result.stderr)
+        self.assertFalse([call for call in self.calls() if call.startswith(('run ', 'volume '))], self.calls())
         self.temporary_dir = self.outside()
-        result = self.command('restore-onion', 'tor_identity', extra_env={'TMPDIR': str(self.temporary_dir)})
+        result = self.command('restore-onion', 'tor_identity', '--onion-address', MAIN_ONION,
+                              extra_env={'TMPDIR': str(self.temporary_dir)})
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn('nothing arrived on stdin', result.stderr)
         self.assertEqual(list(self.temporary_dir.iterdir()), [])
         self.assertFalse([call for call in self.calls() if call.startswith(('run ', 'volume '))], self.calls())
         self.assertIn('restore-onion tor_identity|tor_mirror_identity', self.run_installer(None, arguments=['--help']).stdout)
+
+    def test_onion_key_containers_keep_no_logs(self):
+        # A-531: every container that carries onion key bytes on stdin or stdout runs with --log-driver none, so no
+        # log driver (json-file by default) keeps them; scripts/test-tor-identity-restore.sh checks docker logs.
+        installer = (REPOSITORY / 'scripts' / 'install.sh').read_text()
+        for function in ('onion_dry_run', 'onion_import', 'onion_archive_member', 'onion_key_in_volume'):
+            with self.subTest(function):
+                body = re.search(rf'^{function}\(\) \{{\n(.*?)^\}}', installer, re.M | re.S).group(1)
+                runs = re.findall(r'docker run [^\n]*', body)
+                self.assertTrue(runs, body)
+                for run in runs:
+                    self.assertIn('docker run --rm -i --log-driver none ', run)
 
     def test_onion_oracle(self):
         # The address of a key Tor 0.4.9.14 generated offline (deploy/Dockerfile.tor; public data only): the
