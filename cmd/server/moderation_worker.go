@@ -124,9 +124,9 @@ func runModerationWorker(ctx context.Context, args []string, out io.Writer) erro
 		fmt.Fprintln(out, "moderation-worker: enqueueing disabled; durable jobs preserved")
 		return nil
 	}
-	// Migration 143 provides the backfill sweep every pass runs.
+	// Migration 146 provides the backfill sweep every pass runs.
 	var migrated bool
-	if err = db.QueryRowContext(checkCtx, `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=143)`).Scan(&migrated); err != nil || !migrated {
+	if err = db.QueryRowContext(checkCtx, `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=146)`).Scan(&migrated); err != nil || !migrated {
 		return errors.New("moderation-worker: application migrations required before enabling queue")
 	}
 	cfg := moderation.DefaultConfig()

@@ -146,11 +146,25 @@ func TestXMREscrowStrayReRequestBesideLaterStray(t *testing.T) {
 	if got := x.reRequests(first); !slices.Equal(got, []string{"done::" + strconv.FormatInt(again.ID, 10)}) {
 		t.Fatalf("re-requests: %v", got)
 	}
-	// Test 4: a second first-generation stray refund in progress is still refused.
-	if _, err := x.DB.Exec("INSERT INTO xmr_settlements(order_id,kind,destination) SELECT order_id,'stray_refund',refund_address FROM escrows WHERE order_id=$1", order); err == nil ||
-		!strings.Contains(err.Error(), "xmr_settlements_one_open_stray") {
-		t.Fatalf("a second first-generation stray refund: %v", err)
+	// Test 4: a second first-generation stray refund in progress is still refused. The watcher requests none beside the
+	// relayed one (xmrStrayOpenSQL); the database refuses a second one requested or built (since migration 144 its index
+	// no longer counts a relayed one, PAY566-1), checked in a transaction rolled back.
+	x.mustPoll()
+	if x.strays(order) != 3 {
+		t.Fatalf("a stray refund requested beside a relayed one: settlements %v", x.xmrSettlements(order))
 	}
+	tx, err := x.DB.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const insertStray = "INSERT INTO xmr_settlements(order_id,kind,destination) SELECT order_id,'stray_refund',refund_address FROM escrows WHERE order_id=$1"
+	if _, err = tx.Exec(insertStray, order); err != nil {
+		t.Fatalf("one first-generation stray refund beside a relayed one: %v", err)
+	}
+	if _, err = tx.Exec(insertStray, order); err == nil || !strings.Contains(err.Error(), "xmr_settlements_one_open_stray") {
+		t.Fatalf("a second first-generation stray refund requested: %v", err)
+	}
+	tx.Rollback()
 	if panel := x.panel(order, bsess); !strings.Contains(panel, strayTwoOpen) {
 		t.Fatalf("buyer's panel with two stray refunds in progress:\n%s", panel)
 	}

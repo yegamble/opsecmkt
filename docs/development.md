@@ -309,7 +309,8 @@ with Monero escrow off, read on a second server that runs with `ESCROW_XMR` off 
 database. The retained and destroyed wallet states come with escrow Phase 3's retention slice.
 
 The escrow wallet-rpc and its daemon are **simulated**: `tests/e2e/fixtures/xmr_escrow_rpc.py`,
-served by `escrow-simulators.py --xmr-wallet-port --xmr-daemon-port`. Its keys and addresses are real
+served by `escrow-simulators.py --xmr-wallet-port --xmr-daemon-port` (a port of 0 lets the kernel choose
+and the first stdout line reports the bound ports). Its keys and addresses are real
 Monero keys and addresses (prime-order ed25519 points, derived as Monero derives them), and its
 replies have monero-wallet-rpc 0.18.5.1's shapes and error codes: `xmr_record_shapes.py` recorded
 them from the real nodes into `xmr_rpc_shapes_0.18.5.1.json`, and

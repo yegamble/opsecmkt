@@ -9,7 +9,7 @@ import (
 	"unicode/utf8"
 )
 
-// MOD72-6 (owner directive 2026-10-20): listing hold mode with per-vendor auto-approve (migration 142).
+// MOD72-6 (owner directive 2026-10-20): listing hold mode with per-vendor auto-approve (migration 145).
 //
 //   - settings listing_review_mode: "publish" (the default; a new or edited listing is public at once, as before) or
 //     "hold". A missing or unknown value holds (fail closed). Only an administrator changes it (/admin/listing-review,

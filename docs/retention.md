@@ -289,7 +289,7 @@ and does not make retained target references anonymous. New records also have
 no automatic expiry. See the
 [moderation records and capacity rules](moderation-agent.md#records-and-recovery).
 
-Migration 143 adds two small moderation tables. `moderation_backfill` holds one
+Migration 146 adds two small moderation tables. `moderation_backfill` holds one
 row per target whose capture was refused: kind, target reference, first/last
 refusal times and a `parked` flag, with no content, digest or actor. A row is
 deleted when the target's current revision is queued, and in the same

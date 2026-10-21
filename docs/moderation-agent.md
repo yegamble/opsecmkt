@@ -167,7 +167,7 @@ authority. Structurally valid output can still be wrong or malicious, so an
 independent deterministic and authorization boundary remains necessary.
 
 The model never publishes a listing. Listing hold mode (*Admin → Vendors →
-Listing review*, `products.review_state`, migration 142) is independent of
+Listing review*, `products.review_state`, migration 145) is independent of
 capture: in hold mode a vendor's new or edited listing stays hidden until a
 moderator or administrator approves it on the moderation desk, whatever the
 proposal says. Capture, its overflow, `AUTO_APPLY`, confidence and the model
@@ -309,7 +309,7 @@ the actor id until they are removed or overwritten. Pending jobs keep the raw
 link until a worker completes them; enqueueing continues while the worker is
 stopped, bounded by the global pending cap (256 by default);
 per-job opaque references do not make the remaining target references anonymous.
-From this release (with migration 143), new proposal inputs no longer store
+From this release (with migration 146), new proposal inputs no longer store
 per-field digests, which were reversible for small value sets such as a 1-5
 rating, and a normalized text fingerprint is stored only for listings, where
 duplicate-text detection reads it. The whole-revision source digest remains; like any unkeyed
@@ -343,7 +343,7 @@ only its named limits. A no-flag restart can drain prepaid legacy work even when
 legacy inventory exceeds the admission limits. This changes collection capacity, never retention or marketplace
 state. Application-only redeployment does not enlarge the budget.
 
-Migration 143 also limits each actor to `max(8, 2% of --max-records)` new
+Migration 146 also limits each actor to `max(8, 2% of --max-records)` new
 allocations in any 24 hours (81 with the default 4096 slots), so one account's
 edit stream cannot exhaust the lifetime budget for everyone. The per-account row
 holds the window start and count, the account's numbers of waiting and parked
@@ -378,7 +378,7 @@ records the affected kind and reason without copying content. The private queue
 shows usage, configured limits, overflow and the number of targets awaiting
 capture even when the worker is absent.
 
-Refused captures are not lost (migration 143). Every refusal (actor's three
+Refused captures are not lost (migration 146). Every refusal (actor's three
 active jobs, pending limit, lifetime budget or actor share) leaves one marker per
 target: its kind, target reference, first/last refusal times and a parked flag,
 with no content, digest or actor. Later edits of the same target update that one

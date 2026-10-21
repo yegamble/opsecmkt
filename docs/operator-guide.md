@@ -1624,7 +1624,13 @@ checks that the stored transaction is in neither the daemon's pool nor its chain
 is, the request is refused with the reason on the order page and in a notice to you, and may be asked again later. If none is,
 the failed settlement becomes *superseded* and a new one is built from exactly the same coins to exactly the same destinations
 (only the network fee, and so the claimant's output, may differ) and sent; the database refuses any other coins, so at most one
-of the two transactions can ever be mined. If a deposit those coins came from is no longer listed by the escrow wallet (a
+of the two transactions can ever be mined. The old transaction may still be the one that is: a refusal does not prove it never
+reached the network (A-560, below), and a peer that kept it can send it back. If the daemon has it (pool or chain) before the
+new settlement is built or relayed, or when the new one's coins turn out spent, the market records its own earlier transaction
+as the outcome (A-566): the new settlement is closed (*superseded*, never built or relayed again), the old one is *relayed*
+again with its deposits and followed to confirmed, and one order note, a notice to each party and one to you say what it paid
+(by recipient) and that nothing is paid twice. Nothing is flagged and you have nothing to do; it is never recorded as spent
+outside the market. A spend by any other transaction still is. If a deposit those coins came from is no longer listed by the escrow wallet (a
 reorganisation or a double spend took it out of the chain), the new settlement stays requested (*deposit-missing*) and builds
 nothing until the wallet lists that deposit again, however long that takes; it then builds and sends as above (A-614). Unlike
 a first release or refund (A-554, below) it has no bounded wait, because it can be built from no other coins. Staff are
@@ -1814,7 +1820,10 @@ payment-review row of a deposit it spends says that it failed. The entry says wh
 transaction (the daemon refused it, or its stored metadata cannot be read) can be re-requested as above (*Re-request
 settlement N* on the order page); the alert clears when the re-request supersedes it. Such a failure does not prove that
 nothing reached the network (the wallet-rpc's refusal can follow a lost connection after the daemon took the
-transaction, and a relayed settlement can fail on unreadable metadata), so the entry offers the re-request only when
+transaction, and a relayed settlement can fail on unreadable metadata), and the order page says so too: it says the
+transaction was built and stored and has not been seen mined, and that it may still be mined (A-566). Do not pay
+such a settlement by hand while its transaction may still be mined or re-requested: settle by hand only after a re-request
+was refused for good, as below. The entry offers the re-request only when
 the market would record one: while one waits for the watcher's next pass (or for a restore to finish) it says so; after
 a refusal it names the reason (the transaction in the pool or the chain, or a coin already spent) and asks you to check
 the escrow wallet and the chain instead; with `ESCROW_XMR` off it says the re-request is available once it is back

@@ -407,7 +407,7 @@ test('Monero escrow administrator actions: re-request a failed settlement (A-401
   await simPost(request, '/test/xmr/refuse-relay', {});
   await claim(vendor, request, failedOrder.url);
   const failed = () => settlement(vendor, "The vendor's claim").last();
-  await reloadUntil(vendor, async () => { await expect(failed().getByRole('status').first()).toContainText('was built and stored but never mined. The Monero daemon refused the stored transaction', { timeout: 500 }); });
+  await reloadUntil(vendor, async () => { await expect(failed().getByRole('status').first()).toContainText('was built and stored, and the market has not seen it mined. The Monero daemon refused the stored transaction', { timeout: 500 }); });
   await shot(vendor, info, 'a01-failed-vendor');
   await admin.goto(failedOrder.url);
   const rerequest = admin.locator('form[action="/admin/escrow-xmr-rerequest"]');

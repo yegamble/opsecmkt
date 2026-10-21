@@ -66,7 +66,7 @@ func TestModerationWorkerDisableOverridesInheritedEnabledSetting(t *testing.T) {
 	}
 }
 
-// Every pass calls migration 143's backfill sweep, so the controller must not
+// Every pass calls migration 146's backfill sweep, so the controller must not
 // enable capture against a database that lacks it.
 func TestModerationWorkerRequiresBackfillMigration(t *testing.T) {
 	base := os.Getenv("TEST_DATABASE_URL")
@@ -86,7 +86,7 @@ func TestModerationWorkerRequiresBackfillMigration(t *testing.T) {
 	}
 	defer db.Exec(`DROP SCHEMA ` + schema + ` CASCADE`)
 	if _, err = db.Exec(`CREATE TABLE ` + schema + `.schema_migrations(version integer PRIMARY KEY, name text NOT NULL, applied timestamptz NOT NULL DEFAULT now());
-	 INSERT INTO ` + schema + `.schema_migrations(version,name) SELECT v,'m'||v FROM generate_series(1,142) v`); err != nil {
+	 INSERT INTO ` + schema + `.schema_migrations(version,name) SELECT v,'m'||v FROM generate_series(1,145) v`); err != nil {
 		t.Fatal(err)
 	}
 	u, err := url.Parse(base)
@@ -101,14 +101,14 @@ func TestModerationWorkerRequiresBackfillMigration(t *testing.T) {
 	t.Setenv("DATABASE_URL", u.String())
 	err = runModerationWorker(context.Background(), []string{"--enabled", "--once"}, &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "application migrations required") {
-		t.Fatalf("worker enabled without migration 143: %v", err)
+		t.Fatalf("worker enabled without migration 146: %v", err)
 	}
-	if _, err = db.Exec(`INSERT INTO ` + schema + `.schema_migrations(version,name) VALUES(143,'143_moderation_backfill.sql')`); err != nil {
+	if _, err = db.Exec(`INSERT INTO ` + schema + `.schema_migrations(version,name) VALUES(146,'146_moderation_backfill.sql')`); err != nil {
 		t.Fatal(err)
 	}
 	err = runModerationWorker(context.Background(), []string{"--enabled", "--once"}, &bytes.Buffer{})
 	if err == nil || strings.Contains(err.Error(), "application migrations required") {
-		t.Fatalf("migration 143 check did not pass once recorded: %v", err)
+		t.Fatalf("migration 146 check did not pass once recorded: %v", err)
 	}
 }
 

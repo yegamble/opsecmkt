@@ -15,9 +15,9 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
-## Listing review (migration 142)
+## Listing review (migration 145)
 
-Migration 142 adds `products.review_state` (`approved`, `pending` or `rejected`; every existing listing is
+Migration 145 adds `products.review_state` (`approved`, `pending` or `rejected`; every existing listing is
 `approved`), `products.review_rejection_reason` (empty; a staff rejection's reason, shown to the vendor until their
 resubmitting edit), the per-vendor `users.listing_auto_approve` flag (off) and the `listing_review_mode` setting with
 the value `publish`. A rejection is not a takedown: it archives nothing and needs no administrator. Nothing
@@ -209,7 +209,7 @@ again even when the deposit is listed again, and its coins are settled with the 
 in the market clears that alert, so the order stays on the desk and under retention's `escrow_alert` reason. To list
 them, use the query in the *Except while it still claims deposits* item below.
 
-## Optional moderation proposals (migrations 125 through 127, 134 and 143)
+## Optional moderation proposals (migrations 125 through 127, 134 and 146)
 
 Application startup applies the append-only moderation tables/triggers and
 offline review receipts. Enqueueing and inference remain off, so existing
@@ -268,7 +268,7 @@ clean result. Raise an approved budget using the controller's bounded capacity
 flags; lowering below allocated usage is refused. Database/index/WAL/backup disk
 size is not bounded by the logical payload reservation.
 
-Migration 143 makes refused captures recoverable. Each refusal leaves one
+Migration 146 makes refused captures recoverable. Each refusal leaves one
 content-free marker per target, and the worker later captures the target's
 current revision, in first-refusal order, once the queue is below half full and
 budget remains; markers of accounts that would still be refused do not use a

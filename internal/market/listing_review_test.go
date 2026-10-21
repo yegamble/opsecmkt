@@ -17,7 +17,7 @@ import (
 	"opsecmkt/internal/moderation"
 )
 
-// MOD72-6: listing hold mode with per-vendor auto-approve (listing_review.go, migration 142).
+// MOD72-6: listing hold mode with per-vendor auto-approve (listing_review.go, migration 145).
 
 const rejectReason = "Prohibited item: the description offers a weapon part."
 
@@ -863,7 +863,7 @@ func TestModerationNeverWritesReviewState(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if strings.Contains(string(b), "review_state") && filepath.Base(m) != "142_listing_review.sql" {
+		if strings.Contains(string(b), "review_state") && filepath.Base(m) != "145_listing_review.sql" {
 			found = append(found, m)
 		}
 	}
