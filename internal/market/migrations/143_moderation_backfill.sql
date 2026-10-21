@@ -10,15 +10,11 @@ CREATE TABLE moderation_backfill (
  last_missed timestamptz NOT NULL DEFAULT now(),
  -- An unflagged payment: kept until it is flagged again or gone.
  parked boolean NOT NULL DEFAULT false,
- -- The record was deleted; the next worker pass removes the marker and
- -- releases its owner's counts (the deleting transaction takes no global lock).
- gone boolean NOT NULL DEFAULT false,
  PRIMARY KEY (kind,target_id)
 );
 -- Active markers are taken in first-refusal order; a later refusal never moves one.
-CREATE INDEX moderation_backfill_due ON moderation_backfill(first_missed,kind,target_id) WHERE NOT parked AND NOT gone;
-CREATE INDEX moderation_backfill_parked ON moderation_backfill(last_missed,kind,target_id) WHERE parked AND NOT gone;
-CREATE INDEX moderation_backfill_gone ON moderation_backfill(kind,target_id) WHERE gone;
+CREATE INDEX moderation_backfill_due ON moderation_backfill(first_missed,kind,target_id) WHERE NOT parked;
+CREATE INDEX moderation_backfill_parked ON moderation_backfill(last_missed,kind,target_id) WHERE parked;
 
 -- Per-actor state. allocations is the 24-hour share of new lifetime
 -- allocations (zeroed when its window expires or capture is disabled). markers
@@ -54,11 +50,14 @@ CREATE INDEX moderation_rescan_products ON products(vendor_id,created,id);
 CREATE INDEX moderation_rescan_images ON images(owner_user_id,created,id);
 CREATE INDEX moderation_rescan_reviews ON reviews(buyer_id,created,id);
 
--- Counts a deleting transaction releases, applied by the next worker pass under
--- its capacity lock: the owner and whether the marker was parked, never the
--- record. Removed by that pass, or with the account.
+-- One row per marker a deleting transaction removed: the owner (when known)
+-- and whether the marker was parked, never the record. No row anywhere holds
+-- both a record id and its account. The next worker pass applies these to the
+-- owner's counts and to moderation_capacity.backfill under its capacity lock and
+-- deletes them; account erasure deletes them too. Until then backfill equals
+-- the marker rows plus these rows.
 CREATE TABLE moderation_marker_releases (
- actor_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+ actor_id text REFERENCES users(id) ON DELETE CASCADE,
  parked boolean NOT NULL
 );
 CREATE INDEX moderation_marker_releases_actor ON moderation_marker_releases(actor_id);
@@ -86,8 +85,12 @@ CREATE OR REPLACE FUNCTION moderation_note_overflow(k text,r text) RETURNS void 
  WHERE kind=k AND reason=r AND current_setting('opsecmkt.moderation_sweep',true) IS DISTINCT FROM 'on'
 $$;
 
+-- A marker removed by a deleting source transaction is not counted here: that
+-- path must not lock moderation_capacity. Its release row carries the
+-- decrement to the next worker pass.
 CREATE FUNCTION moderation_backfill_count() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
+ IF TG_OP='DELETE' AND current_setting('opsecmkt.moderation_source_delete',true)='on' THEN RETURN NULL; END IF;
  UPDATE moderation_capacity SET backfill=GREATEST(0,backfill+CASE WHEN TG_OP='INSERT' THEN 1 ELSE -1 END) WHERE singleton;
  RETURN NULL;
 END $$;
@@ -105,7 +108,7 @@ BEGIN
  IF length(tid) NOT BETWEEN 1 AND 128 THEN RETURN; END IF;
  -- A marker another transaction holds (its source is being deleted) is left
  -- to that transaction, never waited for while the capacity lock is held.
- SELECT parked INTO wasp FROM moderation_backfill WHERE kind=k AND target_id=tid AND NOT gone FOR UPDATE SKIP LOCKED;
+ SELECT parked INTO wasp FROM moderation_backfill WHERE kind=k AND target_id=tid FOR UPDATE SKIP LOCKED;
  IF NOT FOUND AND EXISTS(SELECT 1 FROM moderation_backfill WHERE kind=k AND target_id=tid) THEN RETURN; END IF;
  IF FOUND THEN
   UPDATE moderation_backfill SET last_missed=now(),parked=false WHERE kind=k AND target_id=tid;
@@ -169,11 +172,11 @@ END $$;
 -- belongs to an actor, used to correct the stored counts after markers of
 -- deleted sources were dropped without knowing their actor.
 CREATE FUNCTION moderation_actor_marker_count(aid text,only_parked boolean) RETURNS integer LANGUAGE sql STABLE AS $$
- SELECT ((SELECT count(*) FROM moderation_backfill b JOIN products p ON p.id=b.target_id WHERE b.kind='listing' AND p.vendor_id=aid AND NOT b.gone AND (b.parked OR NOT only_parked))
-  +(SELECT count(*) FROM moderation_backfill b JOIN images p ON p.id=b.target_id WHERE b.kind='upload' AND p.owner_user_id=aid AND NOT b.gone AND (b.parked OR NOT only_parked))
-  +(SELECT count(*) FROM moderation_backfill b JOIN reviews p ON p.id=b.target_id WHERE b.kind='review' AND p.buyer_id=aid AND NOT b.gone AND (b.parked OR NOT only_parked))
-  +(SELECT count(*) FROM moderation_backfill b JOIN disputes p ON p.id=b.target_id JOIN orders o ON o.id=p.order_id WHERE b.kind='dispute' AND o.buyer_id=aid AND NOT b.gone AND (b.parked OR NOT only_parked))
-  +(SELECT count(*) FROM moderation_backfill b JOIN payments p ON p.id::text=b.target_id JOIN orders o ON o.id=p.order_id WHERE b.kind='payment_flag' AND o.buyer_id=aid AND NOT b.gone AND (b.parked OR NOT only_parked)))::integer
+ SELECT ((SELECT count(*) FROM moderation_backfill b JOIN products p ON p.id=b.target_id WHERE b.kind='listing' AND p.vendor_id=aid AND (b.parked OR NOT only_parked))
+  +(SELECT count(*) FROM moderation_backfill b JOIN images p ON p.id=b.target_id WHERE b.kind='upload' AND p.owner_user_id=aid AND (b.parked OR NOT only_parked))
+  +(SELECT count(*) FROM moderation_backfill b JOIN reviews p ON p.id=b.target_id WHERE b.kind='review' AND p.buyer_id=aid AND (b.parked OR NOT only_parked))
+  +(SELECT count(*) FROM moderation_backfill b JOIN disputes p ON p.id=b.target_id JOIN orders o ON o.id=p.order_id WHERE b.kind='dispute' AND o.buyer_id=aid AND (b.parked OR NOT only_parked))
+  +(SELECT count(*) FROM moderation_backfill b JOIN payments p ON p.id::text=b.target_id JOIN orders o ON o.id=p.order_id WHERE b.kind='payment_flag' AND o.buyer_id=aid AND (b.parked OR NOT only_parked)))::integer
 $$;
 
 CREATE OR REPLACE FUNCTION moderation_admit_job() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -187,7 +190,7 @@ BEGIN
  IF EXISTS(SELECT 1 FROM moderation_jobs WHERE kind=NEW.kind AND target_id=NEW.target_id AND content_hash=NEW.content_hash
    AND (completed_at IS NULL OR failure_class<>'stale_snapshot')) THEN
   DELETE FROM moderation_backfill WHERE (kind,target_id) IN (SELECT kind,target_id FROM moderation_backfill
-   WHERE kind=NEW.kind AND target_id=NEW.target_id AND NOT gone FOR UPDATE SKIP LOCKED) RETURNING parked INTO wasp;
+   WHERE kind=NEW.kind AND target_id=NEW.target_id FOR UPDATE SKIP LOCKED) RETURNING parked INTO wasp;
   IF FOUND THEN UPDATE moderation_actor_allocations SET markers=GREATEST(0,markers-1),parked=GREATEST(0,parked-CASE WHEN wasp THEN 1 ELSE 0 END) WHERE actor_id=NEW.actor_id; END IF;
   RETURN NULL;
  END IF;
@@ -220,7 +223,7 @@ BEGIN
   window_start=CASE WHEN moderation_actor_allocations.window_start>now()-interval '24 hours' THEN moderation_actor_allocations.window_start ELSE now() END;
  UPDATE moderation_capacity SET pending=pending+1,allocated_records=allocated_records+1,allocated_bytes=allocated_bytes+524288 WHERE singleton;
  DELETE FROM moderation_backfill WHERE (kind,target_id) IN (SELECT kind,target_id FROM moderation_backfill
-  WHERE kind=NEW.kind AND target_id=NEW.target_id AND NOT gone FOR UPDATE SKIP LOCKED) RETURNING parked INTO wasp;
+  WHERE kind=NEW.kind AND target_id=NEW.target_id FOR UPDATE SKIP LOCKED) RETURNING parked INTO wasp;
  IF FOUND THEN UPDATE moderation_actor_allocations SET markers=GREATEST(0,markers-1),parked=GREATEST(0,parked-CASE WHEN wasp THEN 1 ELSE 0 END) WHERE actor_id=NEW.actor_id; END IF;
  NEW.snapshot:='{}'::jsonb; NEW.reserved_results:=1; NEW.results_count:=0;
  NEW.priority_at:=NEW.queued_at-CASE WHEN NEW.kind IN ('dispute','payment_flag') THEN interval '5 minutes' ELSE interval '0' END;
@@ -269,11 +272,12 @@ BEGIN
  RETURN 'refused';
 END $$;
 
--- Deleting a marked record only flags its marker and queues its owner's count
--- release. It takes no capacity lock and touches no account row, so it keeps
--- the lock order of admission, completion and the sweep (source rows first,
--- capacity last). The next worker pass, enabled or not, removes the marker and
--- applies the release under its own capacity lock.
+-- Deleting a marked record deletes its marker and queues a record-free release
+-- (owner, parked flag) in the same transaction. It takes no capacity lock (the
+-- counter trigger skips this path) and touches no account row, so it keeps the
+-- lock order of admission, completion and the sweep: source rows first, the
+-- marker row, capacity last; the sweep and admission take markers with SKIP
+-- LOCKED. The next worker pass applies the release under its capacity lock.
 CREATE FUNCTION moderation_source_deleted() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE k text; tid text; aid text; wasp boolean;
 BEGIN
@@ -283,31 +287,38 @@ BEGIN
  ELSIF TG_TABLE_NAME='disputes' THEN k:='dispute'; tid:=OLD.id; SELECT buyer_id INTO aid FROM orders WHERE id=OLD.order_id;
  ELSE k:='payment_flag'; tid:=OLD.id::text; SELECT buyer_id INTO aid FROM orders WHERE id=OLD.order_id;
  END IF;
- UPDATE moderation_backfill SET gone=true WHERE kind=k AND target_id=tid AND NOT gone RETURNING parked INTO wasp;
- IF FOUND AND aid IS NOT NULL THEN
+ PERFORM set_config('opsecmkt.moderation_source_delete','on',true);
+ DELETE FROM moderation_backfill WHERE kind=k AND target_id=tid RETURNING parked INTO wasp;
+ PERFORM set_config('opsecmkt.moderation_source_delete','off',true);
+ -- parked is NOT NULL, so wasp is set exactly when a marker was deleted.
+ IF wasp IS NOT NULL THEN
   INSERT INTO moderation_marker_releases(actor_id,parked) VALUES(aid,wasp);
  END IF;
  RETURN NULL;
 END $$;
 
 -- Start of every worker pass (and of disabling capture), under the capacity
--- lock: remove markers of deleted records, apply queued count releases, and
--- clear rescan positions that name a record no longer present (the rescan
--- restarts; dedup prevents duplicate jobs). Account rows held by another
--- transaction (an erasure) are left for the next pass.
+-- lock: apply queued releases to the owners' counts and to the table-wide
+-- marker counter, and clear rescan positions that name a record no longer
+-- present (the rescan restarts; dedup prevents duplicate jobs). Account rows
+-- held by another transaction (an erasure) are left for the next pass.
 CREATE FUNCTION moderation_backfill_cleanup() RETURNS void LANGUAGE plpgsql AS $$
-DECLARE r record; n integer; pk integer;
+DECLARE r record; n integer; pk integer; total integer:=0;
 BEGIN
  PERFORM 1 FROM moderation_capacity WHERE singleton FOR UPDATE;
- DELETE FROM moderation_backfill WHERE gone;
  FOR r IN SELECT a.actor_id FROM moderation_actor_allocations a JOIN users u ON u.id=a.actor_id
   WHERE EXISTS(SELECT 1 FROM moderation_marker_releases x WHERE x.actor_id=a.actor_id)
   FOR UPDATE OF a SKIP LOCKED FOR KEY SHARE OF u SKIP LOCKED LOOP
   WITH d AS (DELETE FROM moderation_marker_releases WHERE actor_id=r.actor_id RETURNING parked)
    SELECT count(*),count(*) FILTER (WHERE parked) INTO n,pk FROM d;
   UPDATE moderation_actor_allocations SET markers=GREATEST(0,markers-n),parked=GREATEST(0,parked-pk) WHERE actor_id=r.actor_id;
+  total:=total+n;
  END LOOP;
- DELETE FROM moderation_marker_releases x WHERE NOT EXISTS(SELECT 1 FROM moderation_actor_allocations a WHERE a.actor_id=x.actor_id);
+ -- Releases without an owner or an account row only adjust the counter.
+ WITH d AS (DELETE FROM moderation_marker_releases x WHERE x.actor_id IS NULL
+   OR NOT EXISTS(SELECT 1 FROM moderation_actor_allocations a WHERE a.actor_id=x.actor_id) RETURNING 1)
+  SELECT total+count(*) INTO total FROM d;
+ IF total>0 THEN UPDATE moderation_capacity SET backfill=GREATEST(0,backfill-total) WHERE singleton; END IF;
  UPDATE moderation_actor_allocations SET rescan_ts=NULL,rescan_kind=NULL,rescan_id=NULL WHERE actor_id IN (
   SELECT a.actor_id FROM moderation_actor_allocations a JOIN users u ON u.id=a.actor_id WHERE a.rescan_id IS NOT NULL AND NOT (
    a.rescan_kind='listing' AND EXISTS(SELECT 1 FROM products WHERE id=a.rescan_id)
@@ -400,7 +411,7 @@ BEGIN
   UNION SELECT actor_id FROM moderation_actor_allocations WHERE window_start>now()-interval '24 hours' AND allocations>=share);
  -- Parked markers: a few per pass, oldest check first. A returned source
  -- becomes active again; a gone one loses its marker.
- FOR m IN SELECT kind,target_id FROM moderation_backfill WHERE parked AND NOT gone ORDER BY last_missed,kind,target_id LIMIT 8 FOR UPDATE SKIP LOCKED LOOP
+ FOR m IN SELECT kind,target_id FROM moderation_backfill WHERE parked ORDER BY last_missed,kind,target_id LIMIT 8 FOR UPDATE SKIP LOCKED LOOP
   state:=moderation_source_state(m.kind,m.target_id);
   IF state='gone' THEN DELETE FROM moderation_backfill WHERE kind=m.kind AND target_id=m.target_id;
   ELSIF state='held' THEN UPDATE moderation_backfill SET last_missed=now() WHERE kind=m.kind AND target_id=m.target_id;
@@ -411,12 +422,12 @@ BEGIN
  END LOOP;
  -- Active markers in first-refusal order within a window of 4096, skipping
  -- refused actors, and noting which actors still have active markers.
- FOR m IN SELECT kind,target_id FROM moderation_backfill WHERE NOT parked AND NOT gone ORDER BY first_missed,kind,target_id LIMIT 4096 LOOP
+ FOR m IN SELECT kind,target_id FROM moderation_backfill WHERE NOT parked ORDER BY first_missed,kind,target_id LIMIT 4096 LOOP
   scanned:=scanned+1;
   act:=moderation_live_actor(m.kind,m.target_id);
   IF act IS NOT NULL THEN seen:=seen||act; END IF;
   IF taken>=budget OR COALESCE(act,'')=ANY(refused) THEN CONTINUE; END IF;
-  PERFORM 1 FROM moderation_backfill WHERE kind=m.kind AND target_id=m.target_id AND NOT parked AND NOT gone FOR UPDATE SKIP LOCKED;
+  PERFORM 1 FROM moderation_backfill WHERE kind=m.kind AND target_id=m.target_id AND NOT parked FOR UPDATE SKIP LOCKED;
   IF NOT FOUND THEN CONTINUE; END IF;
   taken:=taken+1;
   SELECT * INTO c FROM moderation_capture_source(m.kind,m.target_id);

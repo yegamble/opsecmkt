@@ -745,9 +745,10 @@ func TestModerationBackfillCoalescesAndDropsDeletedSource(t *testing.T) {
 	archived := e.product(editor, "digital")
 	agExec(e, `DELETE FROM products WHERE id=$1`, removed)
 	agExec(e, `UPDATE products SET archived=true,archived_at=now() WHERE id=$1`, archived)
-	// Deleting a marked listing flags its marker for the next pass to remove.
-	if agInt(e, `SELECT count(*) FROM moderation_backfill WHERE NOT gone`) != 2 || agInt(e, `SELECT count(*) FROM moderation_backfill WHERE target_id=$1 AND gone`, removed) != 1 {
-		t.Fatal("deleting a marked source did not flag its marker")
+	// Deleting a marked listing removes its marker at once (only a record-free
+	// release waits for the next pass).
+	if agInt(e, `SELECT count(*) FROM moderation_backfill`) != 2 || agInt(e, `SELECT count(*) FROM moderation_backfill WHERE target_id=$1`, removed) != 0 {
+		t.Fatal("deleting a marked source kept its marker")
 	}
 	moderationDrain(t, e, moderationTestWorker(e))
 	if got := agInt(e, `SELECT count(*) FROM moderation_jobs WHERE target_id=$1`, target); got != 1 {

@@ -289,6 +289,10 @@ machine or schedule new release/refund actions.
 Every `FLAG_REVIEW` reaches the human queue or the higher-priority administrator
 queue. A `NO_ACTION` label cannot hide review findings in automatic history.
 
+While capture is enabled, a vendor's edit can fail with a retryable deadlock
+error when another transaction admits a moderated change and then locks that
+same listing; retrying the edit succeeds.
+
 ## Records and recovery
 
 Audit identity includes input and output digests, policy/prompt revision, model
@@ -351,13 +355,13 @@ capture is admitted, an expired daily count remains until the next worker pass o
 until capture is disabled. Disabling capture zeroes daily counts but keeps every
 row that has waiting markers or a rescan, indefinitely while capture is off. A
 parked marker (an unflagged payment's) keeps its account's row for as long as
-it is parked. Deleting a marked record only flags its marker and queues a count
-release (the owner's account and whether the marker was parked, not the
-record); the deleting transaction takes no global lock and touches no account
-row. The next worker pass, enabled or not, or disabling capture removes such
-markers and applies the releases, so counts are exact one pass later (while
-capture is off and no worker runs, at the next pass or when it is enabled
-again); safety recounts run within a pass while fewer than 4096 markers are
+it is parked. Deleting a marked record deletes its marker in the same
+transaction and queues a count release (the owner's account and whether the
+marker was parked, never the record), so no row holds both a record id and its
+account; the deleting transaction takes no global lock and touches no account
+row. The next worker pass (normally only while capture is enabled; a worker started before capture was disabled keeps passing), or disabling capture, applies the releases to the
+owner's counts and the table-wide marker counter, so counts are exact one pass
+later (while collection is off this can last indefinitely, until collection is enabled again); safety recounts run within a pass while fewer than 4096 markers are
 waiting, and otherwise about once
 a day per idle account. With the default byte
 budget the shared pool is 512 allocations, so one actor can still use about a
@@ -388,7 +392,8 @@ of being admitted directly, so its daily share is spent in first-refusal order
 and fresh writes cannot jump ahead of an older refused target. It reads the target's current
 source and queues that current revision through the same admission checks. A
 missed intermediate revision is never stored or evaluated. A deleted marked
-record's marker is removed at the next worker pass, without a job or allocation.
+record's marker is removed in the deleting transaction, without a job or
+allocation.
 Archived listings and hidden reviews are captured like live ones: withdrawing a
 record does not withdraw it from review, and its marker or rescan proceeds as
 usual. Only an unflagged payment's marker is parked until the payment is flagged
@@ -417,8 +422,7 @@ then restarts from the beginning, skipping revisions that already have a job).
 The rescan walks archived listings and hidden reviews too; unflagged payments
 are re-read when flagged again, as above. Disabling capture stops the sweep;
 markers for records that still exist, and rescans, wait until it is enabled
-again; deleting a marked record still removes its marker at the next worker
-pass or when capture is disabled.
+again; deleting a marked record still removes its marker at once.
 
 A revision whose job completed stale (`stale_snapshot`, never evaluated) no
 longer suppresses a later capture of the same content: if a listing changes to a

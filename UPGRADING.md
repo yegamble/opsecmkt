@@ -273,8 +273,9 @@ content-free marker per target, and the worker later captures the target's
 current revision, in first-refusal order, once the queue is below half full and
 budget remains; markers of accounts that would still be refused do not use a
 pass's budget. Archived listings and hidden reviews are captured like live
-ones. Deleting a marked record flags its marker; the next worker pass (enabled
-or not) or disabling capture removes it and releases its owner's counts. One account holds at
+ones. Deleting a marked record removes its marker at once and queues a
+record-free count release, which the next worker pass or disabling capture
+applies. One account holds at
 most 16 markers; past that, or when the 65536-marker table is full (a counted
 `backfill_capacity` warning), the account is flagged for a rescan of its live
 records instead, read in order of creation time, which the account cannot change. While an account has a backlog,

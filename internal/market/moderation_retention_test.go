@@ -109,3 +109,20 @@ func TestModerationRetentionActorCounterErasedWithAccount(t *testing.T) {
 		t.Fatal("account erasure left the moderation actor counter")
 	}
 }
+
+func TestModerationRetentionMarkerReleasesErasedWithAccount(t *testing.T) {
+	e, _ := uiRetentionEnv(t)
+	account, _ := e.user("moderation_retention_released_actor", "buyer")
+	agExec(e, `INSERT INTO moderation_marker_releases(actor_id,parked) VALUES($1,false),($1,true)`, account)
+	agExec(e, `DELETE FROM sessions WHERE user_id=$1`, account)
+	agExec(e, `UPDATE users SET closed_at=now(),profile_scrubbed_at=now() WHERE id=$1`, account)
+	now := time.Now().UTC()
+	ageRetentionEnrollment(t, e.A, now.Add(-31*24*time.Hour))
+	runRetentionAt(t, e.A, now)
+	if agInt(e, `SELECT count(*) FROM users WHERE id=$1`, account) != 0 {
+		t.Fatal("a pending moderation release blocked eligible account erasure")
+	}
+	if agInt(e, `SELECT count(*) FROM moderation_marker_releases WHERE actor_id=$1`, account) != 0 {
+		t.Fatal("account erasure left pending moderation releases")
+	}
+}
