@@ -18,6 +18,18 @@
 -- (xmr_settlements_superseded), since a stray refund's re-request may be closed before it was built. Nothing else
 -- changes, and no row is written here.
 --
+-- The order's one stray refund slot (xmr_settlements_one_open_stray, migration 135) no longer counts relayed rows
+-- (PAY566-1). A revived first-generation stray refund moves back to relayed while a later deposit's first-generation
+-- stray refund may already be requested beside its re-request (A-616 allows that), so the 135 predicate refused the
+-- revival on every pass. The slot exists so that two first-generation stray refunds never claim the same deposits: a
+-- relayed one's claims are fixed (payments.xmr_settlement_id, stored when it was built), a requested or built one's are
+-- what the race is about, and xmr_settlements_one_built still lets one transaction per order be built at a time. The
+-- watcher's own request gate (xmrStrayOpenSQL) still counts relayed, so it never requests a second one beside it.
+--
+-- One fragility: once a superseded settlement is revived, the re-request closed for it names a parent that is no
+-- longer superseded, so xmr_settlements_supersedes (084) would refuse any later UPDATE of that closed row. No code
+-- updates a superseded row today; a change that does must allow for it.
+--
 -- The constraint trigger is deferred to COMMIT: a later migration that moves xmr_settlements rows out of built or
 -- relayed and then alters or indexes xmr_settlements in the same startup transaction must first run
 -- SET CONSTRAINTS xmr_settlements_superseded_sent IMMEDIATE (as migration 073's trigger requires for payouts).
@@ -69,3 +81,7 @@ END $$;
 CREATE CONSTRAINT TRIGGER xmr_settlements_superseded_sent AFTER UPDATE OF state ON xmr_settlements DEFERRABLE INITIALLY DEFERRED
   FOR EACH ROW WHEN (OLD.state IN ('built','relayed') AND NEW.state = 'superseded')
   EXECUTE FUNCTION xmr_settlements_superseded_sent();
+
+DROP INDEX xmr_settlements_one_open_stray;
+CREATE UNIQUE INDEX xmr_settlements_one_open_stray ON xmr_settlements (order_id)
+  WHERE kind = 'stray_refund' AND state IN ('requested','built') AND supersedes IS NULL;

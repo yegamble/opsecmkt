@@ -1533,7 +1533,9 @@ func (a *App) failXMRSettlement(ctx context.Context, s *xmrSettleRow, class stri
 }
 
 // xmrStrayOpenSQL selects the settlements s that hold an order's one stray refund slot: a first-generation stray refund
-// in progress (migration 135's xmr_settlements_one_open_stray). A re-request of a failed stray refund (supersedes) never
+// in progress, relayed included: the request gate. The database's xmr_settlements_one_open_stray (135, narrowed by 144
+// for PAY566-1) covers requested and built ones only, so a revived superseded stray refund (A-566) may be relayed beside
+// a later one; a relayed one's claims are fixed. A re-request of a failed stray refund (supersedes) never
 // holds it (A-616): it spends only the key images of the settlement it supersedes, so it neither collides with nor holds
 // back the stray refund of a later deposit, which claims only deposits no settlement claims (xmrStrayEligibleSQL).
 const xmrStrayOpenSQL = "s.kind='stray_refund' AND s.state IN ('requested','built','relayed') AND s.supersedes IS NULL"

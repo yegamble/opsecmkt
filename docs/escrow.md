@@ -133,7 +133,7 @@ market holds the wallet keys and builds, stores and sends every transaction itse
   (*superseded*, never built or relayed again) and the earlier settlement moves back to *relayed* with its deposit
   claims, and is then followed to *confirmed* and 100 confirmations like any other (migration 144 allows exactly these
   two moves, the second only once every re-request after it is closed, the first only if by commit a settlement it
-  re-requests is relayed or confirmed). One order note, a notice to each party and one to the administrator who asked
+  re-requests is relayed or confirmed; the order's one stray refund slot, `xmr_settlements_one_open_stray`, now covers requested and built first-generation stray refunds only, so a revived stray refund never collides with a later deposit's, while the watcher still requests none beside a relayed one, PAY566-1). One order note, a notice to each party and one to the administrator who asked
   say what it pays (by recipient, without addresses) and that nothing is paid twice; nothing is flagged. A spend by any
   other transaction is still *external*. Settling
   a waiting re-request by hand is **break-glass** in the same way: wait by default, and never pay from other funds while

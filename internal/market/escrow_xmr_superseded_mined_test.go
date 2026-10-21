@@ -202,6 +202,37 @@ func TestXMREscrowSupersededMinedStrayReRequest(t *testing.T) {
 	}
 }
 
+// PAY566-1: the superseded stray refund is revived while a later deposit's first-generation stray refund waits
+// requested (A-616 allows the two side by side). Migration 144's one_open_stray covers requested and built only, so the
+// revival to relayed is recorded on the first pass with no error; the later stray refund is untouched.
+func TestXMREscrowSupersededMinedStrayBesideLaterStray(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	_, admin := x.user("a566l_admin_"+randomToken()[:6], "admin")
+	order, addr, _, _, first := x.strayFailed()
+	restore := x.refuseTransfer(-4, "transaction was rejected by daemon") // the later stray refund keeps waiting
+	d2, later := x.laterStray(order, addr, false)
+	restore()
+	again := x.waitingStrayReRequest(admin, order, first)
+	restore = x.refuseTransfer(-4, "transaction was rejected by daemon")
+	defer restore()
+	x.sendStored(x.settlement(first), true)
+	if err := x.poll(); err != nil {
+		t.Fatalf("the pass that finds the superseded stray refund mined: %v", err)
+	}
+	if s, n, l := x.settlement(first), x.settlement(again), x.settlement(later); s.State != "relayed" || n.State != "superseded" || l.State != "requested" ||
+		x.claimsOf(first) != 2 || x.claimsOf(again) != 0 || x.claimsOf(later) != 0 ||
+		agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND txid=$2 AND xmr_settlement_id IS NULL", order, d2) != 1 {
+		t.Fatalf("old %+v, re-request %+v, later %+v, claims %d/%d/%d; settlements %v", s, n, l, x.claimsOf(first), x.claimsOf(again), x.claimsOf(later), x.xmrSettlements(order))
+	}
+	if err := x.poll(); err != nil {
+		t.Fatalf("a later pass: %v", err)
+	}
+	if n := agInt(x.testEnv, "SELECT count(*) FROM order_events WHERE order_id=$1 AND strpos(note,$2)>0", order, supersededSentNote); n != 1 {
+		t.Fatalf("%d notes", n)
+	}
+}
+
 // A-566 acceptance 4: after a re-request, a spend by a transaction the market did not make (not the superseded one's)
 // is still recorded external on the re-request, as before; the superseded row stays superseded.
 func TestXMREscrowReRequestGenuinelyExternal(t *testing.T) {
