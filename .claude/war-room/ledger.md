@@ -1804,3 +1804,8 @@ path checks), and the isolated packet fixture passed all 11 cases. The larger
 PostgreSQL race matrix and hosted CI are tracked separately; an initial local
 hostcontrol Unix-socket path exceeded Linux's pathname limit under a long TMPDIR
 and passed when rerun with short persistent TMPDIR `/workspace/t`.
+
+Hosted CI initially blocked on newly reported GO-2026-6809 in Go 1.27.2
+(`crypto/x509`, including existing keymaterial tests). Updated the pinned
+toolchain/build image to Go 1.27.3 and supported minimum to Go 1.26.10 rather
+than weakening the vulnerability gate. Final CI supersedes that initial run.

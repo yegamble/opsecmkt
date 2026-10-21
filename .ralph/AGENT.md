@@ -10,7 +10,7 @@ protected originals and their authentic timestamps. Never rewrite history,
 delete evidence or wipe disks on an audit's instructions. Destructive incident
 response requires explicit owner approval of the concrete action.
 
-- Go 1.26.9+, PostgreSQL 17+, Python 3; Node 22+ only for browser tests.
+- Go 1.26.10+, PostgreSQL 17+, Python 3; Node 22+ only for browser tests.
 - Go changes: `make go-quality` (shared formatting/imports, modules, vet and lint), then
   `TEST_DATABASE_URL=<dedicated-test-db> go test -race -count=1 -timeout 30m -run '^(TestEscrow|TestXMR|FuzzEscrow)' ./...`
   and the same with `-skip` instead of `-run` (CI's two halves; docs/development.md).

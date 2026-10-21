@@ -2684,3 +2684,8 @@ manager and boot/update configuration before use. Recovery export is an encrypte
 configuration copy, not a data backup. Restore preserves established keys and
 identities, starts nothing and clears old host storage proof for explicit
 rebinding; follow [configuration recovery](docs/install/recovery.md).
+
+The build toolchain is Go 1.27.3 (minimum supported Go 1.26.10), including the
+pinned container build image and development-tool modules. This includes the
+GO-2026-6809 crypto/x509 trust fix; rebuild binaries/images to receive the
+standard-library correction.
