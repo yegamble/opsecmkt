@@ -5,7 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"net"
+	"fmt"
 	"net/http"
 	"os/exec"
 	"slices"
@@ -28,23 +28,29 @@ func TestXMREscrowFixtureAdapter(t *testing.T) {
 	if err != nil {
 		t.Skip("python3 is needed to run the simulated Monero escrow nodes")
 	}
-	ports := make([]string, 2)
-	for i := range ports {
-		l, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatal(err)
-		}
-		ports[i] = strconv.Itoa(l.Addr().(*net.TCPAddr).Port)
-		l.Close()
-	}
-	cmd := exec.Command(py, "tests/e2e/fixtures/escrow-simulators.py", "--xmr-wallet-port", ports[0], "--xmr-daemon-port", ports[1])
-	var stderr lockedBuffer
-	cmd.Stderr = &stderr
+	// The simulator binds port 0 itself and reports the ports it bound: picking a free port here and releasing it
+	// would let a parallel test take it before the simulator binds it (A-585).
+	cmd := exec.Command(py, "tests/e2e/fixtures/escrow-simulators.py", "--xmr-wallet-port", "0", "--xmr-daemon-port", "0")
+	var stdout, stderr lockedBuffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err = cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { cmd.Process.Kill(); cmd.Wait() })
-	walletURL, daemonURL := "http://127.0.0.1:"+ports[0], "http://127.0.0.1:"+ports[1]
+	var walletPort, daemonPort int
+	for i := 0; ; i++ {
+		if line, _, ok := strings.Cut(stdout.String(), "\n"); ok {
+			if n, err := fmt.Sscanf(line, "xmr-wallet-port=%d xmr-daemon-port=%d", &walletPort, &daemonPort); err != nil || n != 2 || walletPort <= 0 || daemonPort <= 0 {
+				t.Fatalf("the simulated Monero escrow nodes reported %q: %v", line, err)
+			}
+			break
+		}
+		if i == 100 {
+			t.Fatalf("the simulated Monero escrow nodes did not report their ports: %s", stderr.String())
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	walletURL, daemonURL := "http://127.0.0.1:"+strconv.Itoa(walletPort), "http://127.0.0.1:"+strconv.Itoa(daemonPort)
 	sim := func(path string, body any) map[string]any {
 		t.Helper()
 		raw, _ := json.Marshal(body)
