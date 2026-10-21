@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -115,16 +116,6 @@ func (f *fakeXMRNode) count() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.calls)
-}
-
-func (f *fakeXMRNode) last(t *testing.T) fakeXMRCall {
-	t.Helper()
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if len(f.calls) == 0 {
-		t.Fatal("no request was made")
-	}
-	return f.calls[len(f.calls)-1]
 }
 
 func hex64(label string) string { s := sha256.Sum256([]byte(label)); return hex.EncodeToString(s[:]) }
@@ -290,9 +281,16 @@ func TestXMREscrowRPCPinsParams(t *testing.T) {
 		if err := s.call(); err != nil {
 			t.Fatalf("%s%s: %v", s.method, s.path, err)
 		}
-		got := s.node.last(t)
-		if s.node.count() != before+1 || got != (fakeXMRCall{s.path, s.method, s.params}) {
-			t.Errorf("%s%s: %d requests, last %+v\nwant %s", s.method, s.path, s.node.count()-before, got, s.params)
+		// A successful open_wallet is followed by auto_refresh off (A-641).
+		want := []fakeXMRCall{{s.path, s.method, s.params}}
+		if s.method == "open_wallet" {
+			want = append(want, fakeXMRCall{"/json_rpc", "auto_refresh", `{"enable":false}`})
+		}
+		s.node.mu.Lock()
+		got := slices.Clone(s.node.calls[before:])
+		s.node.mu.Unlock()
+		if !slices.Equal(got, want) {
+			t.Errorf("%s%s: requests %+v\nwant %+v", s.method, s.path, got, want)
 		}
 	}
 }

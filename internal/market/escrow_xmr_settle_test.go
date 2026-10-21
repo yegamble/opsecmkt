@@ -217,9 +217,22 @@ func TestXMREscrowAmbiguousRelay(t *testing.T) {
 	if _, ok := x.fake.tx(s.TxHash); s.State != "built" || !ok {
 		t.Fatalf("after the lost answer: %s, in the daemon %v", s.State, ok)
 	}
+	// A-641: the relay may have taken effect, so neither party reads that nothing was sent.
+	if x.waitClass(id) != xmrRelayUnknown {
+		t.Fatalf("after the lost answer the wait class is %q", x.waitClass(id))
+	}
+	for _, sess := range []string{x.sessOf(order, roleBuyer), x.sessOf(order, roleVendor)} {
+		if p := x.panel(order, sess); strings.Contains(p, "Nothing has been sent yet") ||
+			!strings.Contains(p, "Built, checked and stored. The market tried to send this transaction, but the answer was lost, so it may already be on the network. The market looks it up before it sends the same transaction again") {
+			t.Fatalf("the built status after a lost relay answer:\n%s", p)
+		}
+	}
 	x.mustPoll()
-	if x.settlement(id).State != "relayed" || x.fake.countOf("relay_tx") != 1 {
-		t.Fatalf("found in the pool: %s, relay_tx %d", x.settlement(id).State, x.fake.countOf("relay_tx"))
+	if x.settlement(id).State != "relayed" || x.fake.countOf("relay_tx") != 1 || x.waitClass(id) != "" {
+		t.Fatalf("found in the pool: %s, relay_tx %d, wait class %q", x.settlement(id).State, x.fake.countOf("relay_tx"), x.waitClass(id))
+	}
+	if p := x.panel(order, x.sessOf(order, roleBuyer)); strings.Contains(p, "answer was lost") {
+		t.Fatalf("the relayed status still says the answer was lost:\n%s", p)
 	}
 
 	order2, _, _ := x.completed()
@@ -228,9 +241,12 @@ func TestXMREscrowAmbiguousRelay(t *testing.T) {
 	x.fake.fault("relay_tx", fakeXMRDrop)
 	x.poll()
 	s2 := x.settlement(id2)
+	if x.waitClass(id2) != xmrRelayUnknown {
+		t.Fatalf("after the second lost answer the wait class is %q", x.waitClass(id2))
+	}
 	x.fake.flushPool(s2.TxHash)
 	x.mustPoll()
-	if got := x.settlement(id2); got.State != "relayed" || got.TxHash != s2.TxHash || x.fake.countOf("relay_tx") != relays+2 {
+	if got := x.settlement(id2); got.State != "relayed" || got.TxHash != s2.TxHash || x.fake.countOf("relay_tx") != relays+2 || x.waitClass(id2) != "" {
 		t.Fatalf("relayed again: %+v, relay_tx %d", got, x.fake.countOf("relay_tx")-relays)
 	}
 	if _, ok := x.fake.tx(s2.TxHash); !ok {
@@ -1327,4 +1343,26 @@ func TestXMREscrowStaffHelpBesideAdminForm(t *testing.T) {
 	mustContain(t, staffHelp(mod), `href="#refused-deposits"`, "nothing else can be changed from this page")
 	mustNotContain(t, staffHelp(mod), "#xmr-settlement-", "As an administrator", "as an administrator")
 	closedLines("refused deposit and settlement", admin, mod, closedBoth, closedRefused)
+}
+
+// A-641: only a relay_tx that may have reached the wallet-rpc with no readable answer leaves its outcome unknown.
+func TestXMRRelayAnswerLost(t *testing.T) {
+	for _, c := range []struct {
+		err  error
+		lost bool
+	}{
+		{&xmrRPCError{Service: "wallet", Method: "relay_tx", Class: "timeout"}, true},
+		{&xmrRPCError{Service: "wallet", Method: "relay_tx", Class: "unreachable", Dropped: true}, true},
+		{&xmrRPCError{Service: "wallet", Method: "relay_tx", Class: "bad-reply"}, true},
+		{&xmrRPCError{Service: "wallet", Method: "relay_tx", Class: "unreachable"}, false}, // refused: never sent
+		{&xmrRPCError{Service: "wallet", Method: "relay_tx", Class: "credentials"}, false},
+		{&xmrRPCError{Service: "wallet", Method: "relay_tx", Class: "rpc:-4", Code: -4}, false},
+		{&xmrRPCError{Service: "daemon", Method: "/get_transactions", Class: "timeout"}, false},
+		{errXMRHex, false},
+		{nil, false},
+	} {
+		if got := xmrRelayAnswerLost(c.err); got != c.lost {
+			t.Errorf("%v: lost %v, want %v", c.err, got, c.lost)
+		}
+	}
 }

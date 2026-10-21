@@ -67,7 +67,9 @@ market holds the wallet keys and builds, stores and sends every transaction itse
   stray refund never silences that notice (QA462C-4). A checked transaction is **stored first** (its hash, metadata, blob, fee and key images) and only then relayed,
   with the stored metadata. After a restart or a lost answer the watcher looks the transaction up in the daemon and the
   wallet, and relays the same stored metadata again if neither has it: that spends the same key images, so it cannot pay
-  twice. Nothing builds a replacement automatically. A relayed settlement is *confirmed* at the confirmation threshold and
+  twice. Nothing builds a replacement automatically. A relay that times out or loses its answer is recorded
+  `relay-unknown` (A-641). Until the next pass finds the transaction or relays it again, the order page says that the
+  transaction may already be on the network. "Nothing has been sent yet" is shown only while no relay was tried. A relayed settlement is *confirmed* at the confirmation threshold and
   followed to 100 confirmations; one a reorganisation removes goes back to *relayed* and is relayed again. If another
   transaction spent its key images it is recorded *external* and staff are told, at once, unless that transaction is
   the market's own: the stored transaction of a failed settlement that an administrator's re-request superseded (below,
@@ -297,7 +299,8 @@ wallet takes an order again and no settlement is relayed until an administrator 
   changed from the last values it recorded writes one audit row and notifies every administrator once
   ([operator guide](operator-guide.md#monero-escrow), *Market fee*).
 - **One wallet is open at a time, and every wallet that may hold coins is opened on every pass**, until the wallet is
-  destroyed. PAYE-E2 measured this on one host, on a local fakechain only ([verification](verification.md#monero-escrow-wallet-scale-paye-e2-war-room-a-429-p3-r12--2026-10-04)):
+  destroyed. After each open the market turns off the escrow wallet-rpc's own background refresh (`auto_refresh`,
+  A-641), then refreshes the wallet itself ([operator guide](operator-guide.md#monero-escrow)). PAYE-E2 measured this on one host, on a local fakechain only ([verification](verification.md#monero-escrow-wallet-scale-paye-e2-war-room-a-429-p3-r12--2026-10-04)):
   a pass over 5 wallets of 10,000 accounts each took 27.6 s against the 10-minute pass timeout, but a catch-up refresh
   over 110 blocks holding 200 deposits took 2.5 minutes, past the 2-minute bound it then had. Refresh now has its own
   8-minute bound, a refresh that times out is finished by the wallet-rpc and stored by the next `open_wallet`, and each

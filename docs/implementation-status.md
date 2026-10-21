@@ -558,7 +558,7 @@ Limits: service listings have no ship/deliver step, so a paid service order can 
 
 ### P5 Payments
 
-Monero per-order custodial escrow is the only payment path. Checkout claims an account in a monthly wallet, pins the buyer's refund address and waits for the configured confirmations. The market builds and checks each settlement, stores it before relay and never automatically rebuilds an ambiguous send. Network pins, a wallet-secret pin, the offline seed recipient and a dedicated wallet-rpc protect configuration consistency.
+Monero per-order custodial escrow is the only payment path. Checkout claims an account in a monthly wallet, pins the buyer's refund address and waits for the configured confirmations. The market builds and checks each settlement, stores it before relay and never automatically rebuilds an ambiguous send. After a relay whose answer was lost, the order page says the transaction may already be on the network (A-641). The market turns off the escrow wallet-rpc's background refresh after each wallet open and refreshes each wallet itself. Network pins, a wallet-secret pin, the offline seed recipient and a dedicated wallet-rpc protect configuration consistency.
 
 Digital orders can be claimed by the vendor. Physical orders release after buyer confirmation or the recorded release deadline; administrator dispute decisions determine release or refund. Wallet retention, late-deposit handling, guarded retries and restore reconciliation are described in [Monero escrow](escrow.md) and the [operator guide](operator-guide.md#monero-escrow).
 

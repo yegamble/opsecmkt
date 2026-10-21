@@ -678,6 +678,12 @@ class WalletRPC:
     def m_store(self, p):
         return {}
 
+    def m_auto_refresh(self, p):
+        # The market turns the background refresh off after each open (A-641); this wallet-rpc has none to turn off.
+        if not isinstance(p.get('enable', True), bool):
+            raise RPCError(-32602, 'Invalid params')
+        return {}
+
     def m_refresh(self, p):
         w = self.open
         before = w.height
