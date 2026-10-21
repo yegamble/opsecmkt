@@ -45,6 +45,7 @@ type xmrRPCProxy struct {
 	counts map[string]int
 	drop   map[string]bool
 	around map[string]func(forward func())
+	wallet *rpcClient // the escrow wallet-rpc itself, for calls the proxy must not count
 
 	// transferError is a fakechain-only diagnostic; never retain requests or successful wallet results.
 	transferError *rpcError
@@ -53,6 +54,10 @@ type xmrRPCProxy struct {
 func newXMRRPCProxy(t *testing.T, target string) *xmrRPCProxy {
 	t.Helper()
 	p := &xmrRPCProxy{counts: map[string]int{}, drop: map[string]bool{}, around: map[string]func(func()){}}
+	var err error
+	if p.wallet, err = newRPCClient("monero escrow wallet", target, "2.0", true); err != nil {
+		t.Fatal(err)
+	}
 	p.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		var req struct {
@@ -533,17 +538,35 @@ func TestXMREscrowRegtestExternal(t *testing.T) {
 // forwarded and starts it again once the wallet-rpc has answered, then waits up to two minutes until monerod answers at
 // the height it had: it must run with --keep-fakechain, or its start deletes the fakechain. Idle connections to it are
 // dropped, since it may come back on another address. It runs on the proxy's goroutine, so it reports with Errorf.
-func (r *xmrRegtest) daemonStoppedAround(name string) func(forward func()) {
+//
+// A-631: the escrow wallet-rpc's own auto-refresh (every 20 s) is switched off, directly rather than through p, for as
+// long as monerod is down. An auto-refresh that starts in that window retries the missing daemon (pull_blocks, up to
+// three retries) and the wallet-rpc answers no RPC until it gives up; on a CI runner the retries and the forwarded
+// call's own attempt were 10 s apart, so the call was refused only about 40 s after the stop, past the market's
+// deadline (payoutSendTimeout for relay_tx), and the leg saw "relay_tx: timeout" instead of the refusal. The forwarded
+// call alone now meets the stopped daemon. The transcript gives the stop's and the forwarded call's durations.
+func (r *xmrRegtest) daemonStoppedAround(p *xmrRPCProxy, name string) func(forward func()) {
 	return func(forward func()) {
 		ctx := context.Background()
 		var before, after struct {
 			Height int64 `json:"height"`
 		}
+		autoRefresh := func(on bool) {
+			if err := p.wallet.callWithin(ctx, 2*time.Minute, "/json_rpc", "auto_refresh", map[string]any{"enable": on}, nil); err != nil {
+				r.t.Errorf("escrow wallet-rpc auto_refresh %v: %v", on, err)
+			}
+		}
+		autoRefresh(false)
+		defer autoRefresh(true)
 		err := r.daemon.call(ctx, "/json_rpc", "get_info", nil, &before)
+		began := time.Now()
 		if out, stop := exec.Command("docker", "stop", "-t", "30", name).CombinedOutput(); err != nil || stop != nil {
 			r.t.Errorf("stopping monerod (container %s): %v, %v %s", name, err, stop, out)
 		}
+		sent := time.Now()
 		forward()
+		r.t.Logf("monerod (container %s) stopped in %s; the escrow wallet-rpc answered the forwarded call in %s", name,
+			sent.Sub(began).Round(time.Millisecond), time.Since(sent).Round(time.Millisecond))
 		if out, err := exec.Command("docker", "start", name).CombinedOutput(); err != nil {
 			r.t.Errorf("docker start %s: %v %s", name, err, out)
 			return
@@ -726,7 +749,7 @@ func (r *xmrRegtest) relayFailedReal(p *xmrRPCProxy, container, order string) (i
 	t.Helper()
 	id := r.releaseReal(order)
 	// The relay call waits for the daemon's stop and start through the proxy.
-	p.wrap("relay_tx", r.daemonStoppedAround(container))
+	p.wrap("relay_tx", r.daemonStoppedAround(p, container))
 	for n := 1; n <= xmrRelayAttempts; n++ {
 		heights := r.synced()
 		if err := r.poll(); err != nil || t.Failed() {
