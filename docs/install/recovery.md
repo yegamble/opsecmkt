@@ -18,7 +18,7 @@ Export to an absent directory outside the installation:
 opsecmkt deploy recovery export \
   --dir /srv/opsecmkt/app \
   --recipient-public-key /srv/operator/offline-recovery-public.asc \
-  --out /srv/operator/app-recovery-2026-10-21
+  --out /srv/operator/app-recovery-YYYY-MM-DD
 ```
 
 Use exactly one currently usable armored OpenPGP encryption public key. Private
@@ -35,6 +35,9 @@ Hashes detect corruption; they do not independently authenticate a maliciously
 replaced archive. The offline decryption tool must verify the complete encrypted
 message, including its integrity protection. Test recovery using disposable
 stagenet configuration, without copying operational private keys into test logs.
+
+Retain each administrator browser's private `.auth_private` credential separately
+on the trusted client; this archive contains public authorization records only.
 
 A legacy Tor identity held only in a Docker volume cannot be recovered by this
 export. Export refuses that configuration. First adopt and verify the existing

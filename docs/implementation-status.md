@@ -562,3 +562,18 @@ The A-144 operator guidance documents dated backups, encrypted off-host copies, 
 Tor deployment isolates inbound exposure. The optional `compose.nodes-tor.yaml` routes the bundled Monero daemon through a separate Tor client; it is not automatic and does not cover an external daemon. Monero Tor delivery remains unverified.
 
 This is a functional marketplace, with escrow off until the operator sets it up. Native `opsecmkt deploy init` defaults to stagenet; the legacy `scripts/install.sh` local nodes default to mainnet (real funds, A-523). No real-funds mainnet transaction is recorded: mainnet is covered by unit, database and simulated-RPC tests only ([verification](verification.md#not-verified)). It is not a production cryptocurrency exchange or escrow service.
+
+## Native application-host bootstrap and configuration recovery
+
+`host plan/packages/apply/confirm/rollback` provide a versioned Ubuntu 24.04
+static-network application-host ingress recipe, optional distribution dependency
+installation, owned nftables table, pending-change rollback and boot dependencies
+for Docker/containerd. SSH is verified against preconfigured key-only access; it
+is not rewritten. Persistent sysctl/coredump/update defaults apply subsequently.
+See [supported profile and verification boundaries](install/server-bootstrap.md).
+
+`deploy recovery export/restore` preserves encrypted operator configuration,
+application secrets, TLS materials and managed Tor identities. Restore starts no
+services and requires explicit production storage rebinding. It excludes database,
+wallets, volumes and current external retention state; see [recovery](install/recovery.md).
+No production host, locked reboot or live Tor recovery is established by unit tests.

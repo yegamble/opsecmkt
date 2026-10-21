@@ -235,6 +235,24 @@ jobs:
           docker rm -f -v xmr-escrow-monerod xmr-escrow-wallet-escrow xmr-escrow-wallet-funder xmr-escrow-wallet-restore || true
           docker volume rm xmr-escrow-wallet-escrow xmr-escrow-wallet-funder xmr-escrow-wallet-restore || true
           docker network rm xmr-escrow-regtest || true
+  host-bootstrap:
+    name: Native host firewall packet policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Exercise real INPUT, IPv6 and DNAT policy in isolated namespaces
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends nftables iproute2
+          go build -o "$RUNNER_TEMP/opsecmkt-host-test" ./cmd/server
+          sudo python3 scripts/test-host-bootstrap.py "$RUNNER_TEMP/opsecmkt-host-test"
   operations:
     name: Operations and encrypted restore
     runs-on: ubuntu-24.04
@@ -857,7 +875,7 @@ jobs:
   required:
     name: CI passed
     if: always()
-    needs: [quality, workflow-safety, security, go, go-escrow, escrow-xmr-regtest, operations, installer, upgrade, compose, container, tor-image, browser, browser-escrow, docs]
+    needs: [quality, workflow-safety, security, host-bootstrap, go, go-escrow, escrow-xmr-regtest, operations, installer, upgrade, compose, container, tor-image, browser, browser-escrow, docs]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:

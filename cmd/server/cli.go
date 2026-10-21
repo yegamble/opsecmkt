@@ -21,6 +21,7 @@ import (
 	"opsecmkt/internal/brandingconfig"
 	"opsecmkt/internal/dependencies"
 	"opsecmkt/internal/emergency"
+	"opsecmkt/internal/hostbootstrap"
 	"opsecmkt/internal/hostcontrol"
 	"opsecmkt/internal/interactive"
 	"opsecmkt/internal/keymaterial"
@@ -40,6 +41,7 @@ const cliHelp = `usage: opsecmkt COMMAND [flags]
   emergency         Plan or explicitly target incident shutdown/LUKS erasure
   admin-tor-prepare Prepare public client authorization in the private Tor volume
   tor-identity-prepare Prepare a selected public onion identity in its Tor volume
+  host              Plan/apply a restricted Ubuntu application-host security policy
   deploy            Manage a Docker Compose installation; deploy --help for commands
   host-control-agent Serve the private, fixed app-host reboot capability (Linux root)
   init|plan|install|redeploy|status|up|down|logs|doctor|storage
@@ -106,6 +108,16 @@ func command(args []string, in io.Reader, out, errOut io.Writer) (bool, error) {
 			return true, ramsecrets.Run(ctx, args[1:], in, out, errOut)
 		}
 		return true, emergency.Run(ctx, args[1:], out, errOut)
+	case "host", "host-load-firewall":
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		if args[0] == "host-load-firewall" {
+			if len(args) != 1 {
+				return true, errors.New("host-load-firewall takes no arguments")
+			}
+			return true, hostbootstrap.LoadFirewall(ctx)
+		}
+		return true, hostbootstrap.Run(ctx, args[1:], out, errOut)
 	case "host-control-agent":
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()

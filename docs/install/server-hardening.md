@@ -128,7 +128,7 @@ A host `INPUT` policy alone does not protect bridge-network published ports. Doc
 - With Docker's **native nftables backend**, there is no `DOCKER-USER` chain. Use a separate table/base chain with the documented hook and priority. Do not modify Docker-owned tables. See [Docker with nftables](https://docs.docker.com/engine/network/firewall-nftables/).
 - `iptables-nft` compatibility tools do not, by themselves, mean Docker uses its native nftables backend. Inspect daemon configuration and actual rules. Host-network containers use the host listener policy instead.
 
-Do not disable Docker's firewall management as a shortcut. Review the installed Docker version, backend and forwarding policy, and repeat checks after container recreation or a planned Docker restart. This guide deliberately avoids a universal firewall script: interface names, NAT, IPv6, boot persistence and management routes must match the host.
+Do not disable Docker's firewall management as a shortcut. Review the installed Docker version, backend and forwarding policy, and repeat checks after container recreation or a planned Docker restart. The [native bootstrap](server-bootstrap.md) automates a restricted static-address Ubuntu application-host profile. Other roles and network configurations need their own policy: interface names, NAT, IPv6, boot persistence and management routes must match the host.
 
 ### Stage an explicit nftables ingress policy
 
