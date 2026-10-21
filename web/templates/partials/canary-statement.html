@@ -30,7 +30,7 @@
 </section>{{else if .Error}}<section class="panel canary canary-invalid" aria-labelledby="canary-title">
 <h2 id="canary-title">Warrant canary</h2>
 <p><span class="badge danger">INVALID — signature not verified</span></p>
-<p>The posted canary does not verify against the configured operator key, so it must not be relied upon.</p>
+<p>The posted canary is not a current, valid signature by the configured operator key, so it must not be relied upon.</p>
 <p class="canary-reason"><strong>Reason:</strong> {{.Error}}</p>
 <dl class="key-values transparency-facts">
 {{if .Fingerprint}}<div>

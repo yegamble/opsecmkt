@@ -2049,6 +2049,15 @@ go run ./cmd/server -export-audit 900 -export-audit-from 800 -export-audit-dir /
 
 **Warrant canary.** In the admin page, paste the operator's OpenPGP public key, then paste a statement the operator wrote and signed offline (`gpg --clearsign canary.txt`). The application stores it as pasted only if it verifies, re-verifies it on every view of `/canary`, and shows INVALID with the reason if the key changes or the stored text is altered. Keep the operator's private key off the server; the application never writes or signs canary text.
 
+A genuine canary also shows INVALID once it is no longer current, and the reason says which case applies and what to do:
+
+- *the configured key expired on …*: the operator key's expiry date has passed (the admin page shows the key as **Expired**, not Configured). Extend it offline (`gpg --quick-set-expire <fingerprint> 1y`) and save the updated public key; a canary it signed before then verifies again. Or save a new key and publish a canary signed with it.
+- *the signature expired on …*: the canary was signed with its own expiry (`gpg --default-sig-expire` or `--ask-sig-expire`). Sign a new statement.
+- *it is dated …, after this server's clock*: the signing computer's clock is ahead of the server's. There is no tolerance for this, so a canary can never claim a time that has not yet come on the server. Check both clocks, then sign again, or submit the same text again after the stated time.
+- *the key … is revoked*: configure a new key and sign a new statement with it.
+
+"Signature does not verify with the configured key" is kept for a signature that does not check out against the key at all: the text was altered, or a different key signed it.
+
 #### Encrypted audit exports
 
 `AUDIT_EXPORT_RECIPIENT` is optional: set it to the path, inside the application
