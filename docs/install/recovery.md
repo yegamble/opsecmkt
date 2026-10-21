@@ -12,7 +12,9 @@ host bootstrap configuration, systemd units, storage proofs and reboot readiness
 Recover those layers with their service-specific procedures. The original
 `SETUP_TOKEN` and application keys remain essential for existing database state.
 
-Export to an absent directory outside the installation:
+Export to an absent directory outside the installation. Export and restore refuse an `UPLOAD_CA` that shares a
+certificate with `MONERO_RPC_CA` or `DATABASE_CA` (A-589); see [UPGRADING](../../UPGRADING.md) for a bundle exported
+before that check.
 
 ```sh
 opsecmkt deploy recovery export \

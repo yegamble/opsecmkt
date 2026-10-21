@@ -22,9 +22,14 @@ certificate that lacks the clientAuth extended key usage or is a CA, even when i
 certificate issued with `opsecmkt keys generate tls-client` (as the [production guide](docs/install/production.md#3-prepare-application-and-gateway-identities)
 does) is unaffected. A gateway client certificate issued by another tool without clientAuth must be reissued with
 `keys generate tls-client` under the upload CA before upgrading the application; until then every upload fails.
-`opsecmkt deploy init`, `plan`, `install`, `up`, `doctor` and `redeploy`, and server startup, also refuse an `UPLOAD_CA` that shares a certificate with `MONERO_RPC_CA` or
-`DATABASE_CA` ("UPLOAD_CA must be a dedicated upload transport CA …"). Such an installation must issue a dedicated upload
-CA with new backend and gateway certificates; the guides already use a separate "Upload transport CA".
+`opsecmkt deploy init`, `plan`, `install`, `up`, `doctor`, `redeploy`, `recovery export` and `recovery restore`, and
+server startup, also refuse an `UPLOAD_CA` that shares a certificate with `MONERO_RPC_CA` or `DATABASE_CA` ("UPLOAD_CA
+must be a dedicated upload transport CA …"; at startup only the CA files whose variables are set are compared, so a
+headless `serve` with the database CA only in `DATABASE_URL`'s `sslrootcert` compares against `MONERO_RPC_CA` alone).
+Such an installation must issue a dedicated upload CA with new backend and gateway certificates before upgrading; the
+guides already use a separate "Upload transport CA". A recovery bundle exported before the upgrade from a shared-CA
+installation cannot be restored with this release: restore it with the previous release, give it a dedicated upload CA,
+then upgrade.
 
 ## A restore pause is shown to staff (A-559)
 
