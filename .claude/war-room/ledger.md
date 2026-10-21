@@ -1834,7 +1834,7 @@ DISSENTING VIEW: Security seat would accept SHOULD if the owner explicitly accep
 USER IMPACT: none on marketplace writes (still always commit). OPERATOR: panel shows targets awaiting capture.
 DESIGN: migration 130 bounded content-free backfill markers (kind,target_id) upserted on every overflow; worker sweep captures the CURRENT live revision through the admission trigger at <50% pending; stale-aware partial unique index; per-actor 24 h share of lifetime allocations; no field_digests; text_hash only for listings.
 ACCEPTANCE/TEST PLAN: as dispatched (actor-cap backfill, saturation, retained exhaustion + raise, coalescing, deleted source, bounded markers, concurrent sweeps, revert dance, per-actor share, digest absence).
-STATUS: in-progress (war-room/mod72-1-lossless-capture).
+STATUS: implemented (cbdd2e41, merged with origin/main cab4b5f8 at 4abc0036; migration 143; worker requires 143). Privacy-2 VERIFIED by opsec-privacy at 6f6a952d (no field_digests; counter erased with account); its disclosure gaps (linger case, retention/policy table rows, /canary sentence naming marker times and the per-account daily count) fixed by chair (4f89d6ee, d1865148). NOT VERIFIED by opsec-security at 6f6a952d (criteria 1–10 pass; probes found new holes): SEC72V-1 REQUIRED — archive/hide → sweep deletes marker → restore/unhide re-enters nothing (S live, 0 jobs); SEC72V-2 REQUIRED — last_missed ordering lets an over-share vendor defer its own marker forever, no per-actor marker bound lets one vendor fill max_backfill (~4.6 days), refused markers starve the sweep budget; SEC72V-3 SHOULD — median-only staleness re-captures an unchanged victim listing (share/slots burn, false ABUSE_RATE). Chair ruling: all three in scope; amend unmerged 143 (skip-not-delete for archived/hidden + enqueue on restore/unhide; first_missed ordering; skip refused actors with bounded scan; per-actor marker bound with content-free rescan flag; mark only when digest differs). Fix round dispatched to the same implementer.
 
 ### MOD72-2 — Disclose new abuse-review records and photo fingerprints (privacy-1)
 
@@ -1844,7 +1844,7 @@ STATUS: verified locally (privacy seat at c53ec524; implementer d705cd76; three 
 ### MOD72-3 — Refuse migration name mismatches (SEC72-4)
 
 DECISION: ACCEPT (P2 SHOULD). Migration identity by number only: a DB that ran the unmerged branch's 128 fails with a misleading error. Fail closed before DDL with a clear message; permanent main-at-128 upgrade test.
-STATUS: implemented (d705cd76: name-mismatch refusal before DDL, TestMigrationNameMismatchRefused, TestModerationMigrationsAfterMain128); security re-check pending. Chair: worker readiness now requires 129 (8ea80b6a).
+STATUS: VERIFIED by opsec-security at 6f6a952d (refusal before DDL at migrate.go:97-136; both tests pass on PostgreSQL; no migration name ever changed on main's first-parent history, so no main-built DB is refused). Worker readiness now requires 143.
 
 ### MOD72-4 — Model-path fail-closed and closed code ownership (LLM-1, LLM-2, LLM-3, LLM-5)
 
