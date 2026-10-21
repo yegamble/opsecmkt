@@ -21,8 +21,6 @@ type DigitalInventoryView struct {
 }
 
 func init() {
-	registerLoader("product", loadDigitalMethod)
-	registerLoader("checkout", loadDigitalMethod)
 	roles := []string{"vendor", "admin"}
 	registerAction("/listings/digital-mode", actionSpec{Roles: roles, FormNonce: true, Run: digitalModeAction})
 	registerAction("/listings/digital-units", actionSpec{Roles: roles, FormNonce: true, Run: digitalUnitImportAction})
@@ -352,12 +350,4 @@ func reservedDigitalBatch(ctx context.Context, tx *sql.Tx, o *Order) (string, er
 		return "", err
 	}
 	return scanDigitalBatch(rows, units)
-}
-
-// Only delivery method metadata is public; inventory bodies stay owner-only.
-func loadDigitalMethod(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
-	if d.Product == nil || d.Product.Kind != "digital" {
-		return nil
-	}
-	return a.db.QueryRowContext(ctx, "SELECT digital_delivery_mode FROM products WHERE id=$1", d.Product.ID).Scan(&d.Product.DigitalDeliveryMode)
 }
