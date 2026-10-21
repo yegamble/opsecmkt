@@ -370,6 +370,9 @@ type PageData struct {
 	// P4 Inventory (uses Product.Archived)
 	Listing   *ListingView
 	Inventory *InventoryView
+	// ListingForm: a refused listing create or edit, re-rendered with what was sent and its problems (A-59); the
+	// forms read it through ListingFields.
+	ListingForm *ListingFormView
 	// VendorReadiness: the seller's current listing, payment and settlement prerequisites, without wallet details.
 	VendorReadiness *VendorReadinessView
 
