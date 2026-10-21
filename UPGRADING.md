@@ -264,7 +264,12 @@ records instead, read in order of last change. While an account has a backlog,
 its new captures queue behind it. The panel shows targets awaiting capture, parked markers and
 accounts awaiting a rescan. A job made stale only by changed context (such as a
 moved category median) stays a HOLD and is not captured again. Each actor may receive at most
-`max(8, 2% of --max-records)` new allocations per 24 hours (81 by default). A
+`max(8, 2% of --max-records)` new allocations per 24 hours (81 by default). At
+the default 256 MiB byte budget (512 lifetime allocations) one constantly editing
+account can use up the pool in about six days; refused targets then wait as
+markers or rescans and nothing new is captured until you raise
+`--max-reserved-bytes` or `--max-records`. Watch for `retained_capacity` under
+"Capture requires attention" on the private moderation panel. A
 revision whose job completed stale no longer blocks capturing the same content
 later. New proposals omit per-field digests and, except for listings, the text
 fingerprint. The migration adds tables only; existing jobs and proposals are not

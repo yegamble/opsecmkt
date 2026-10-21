@@ -355,7 +355,12 @@ waiting-marker count is corrected from live sources (within a pass for active
 markers, lazily for parked ones), so a row can outlast its last marker by a day
 or more. With the default byte
 budget the shared pool is 512 allocations, so one actor can still use about a
-sixth of it per day; size `--max-reserved-bytes` with that in mind.
+sixth of it per day; size `--max-reserved-bytes` with that in mind. At these
+defaults one account that edits constantly can use up the whole pool in about
+six days (512 / 81). After that every refused target is kept as a marker or
+rescan, but nothing new is captured until an administrator raises
+`--max-reserved-bytes` or `--max-records`; the private moderation panel shows
+this as `retained_capacity` under "Capture requires attention".
 
 At saturation, the listing, dispute or other source transaction still commits.
 No clean classification is invented. A fixed, coalesced private overflow warning
