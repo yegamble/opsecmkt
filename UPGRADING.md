@@ -15,6 +15,17 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## Saved payout addresses cleared; public stock shown in bands (migration 147, A-520)
+
+Migration 147 clears every account's saved pooled-payout addresses (`users.payout_btc`, `payout_xmr`) and the times
+they changed. Nothing has read them since escrow replaced pooled payouts (A-508); the columns stay, empty. No operator
+action is needed. Backups taken before the upgrade still hold the old values until they are restored and upgraded or
+removed; remove old backups under your retention schedule if that history matters.
+
+Listing stock is now exact only for the listing's vendor, moderators and administrators. Buyers and signed-out
+visitors see a band (1–5, 6–20 or 21+) on cards, the listing page and checkout. Ordering is unchanged: a buyer asks for
+any quantity and one above the stock is refused, without naming the count.
+
 ## A Tor install's local Monero node defaults to Tor (A-530)
 
 No migration, no new key. A **new** `./scripts/install.sh` Tor install with the local Monero node now lists
