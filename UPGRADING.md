@@ -25,7 +25,7 @@ log was already capped on its tmpfs and is unchanged. The log level stays at the
 [Resource limits and log rotation](docs/operator-guide.md#resource-limits-and-log-rotation) for what the logs can hold
 and how to also enforce the retention policy's 14-day age.
 
-- **Compose:** `docker compose up -d` recreates only the `monero` container with the new command. Its volume, chain,
+- **Compose:** for this change, `docker compose up -d` recreates only the `monero` container with the new command. Its volume, chain,
   wallets, `.env`, onion identities and every other container are kept; nothing is reprovisioned. If you replaced the
   `monero` command in a file of your own, add the two flags there.
 - **Native `deploy` (development nodes):** `deploy redeploy` writes the new configuration but starts only the app;
@@ -42,8 +42,9 @@ and how to also enforce the retention policy's 14-day age.
   docker compose exec -T monero find /home/monero/.bitmonero -maxdepth 2 -name 'bitmonero.log-*' -mmin +60 -delete
   ```
 
-  A log left from another network (for example `stagenet/` after a switch to mainnet) is no longer written or rotated;
-  delete it the same way.
+  A log left from another network (for example `stagenet/bitmonero.log` after a switch to mainnet) is no longer written
+  or rotated, and the second command removes only its rotated files: remove that `bitmonero.log` itself by its path
+  (`docker compose exec -T monero rm /home/monero/.bitmonero/stagenet/bitmonero.log`).
 
 ## The onion identity restore checks the backup first (A-531)
 
