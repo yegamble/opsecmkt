@@ -70,7 +70,7 @@ acceptance requirements, not a declaration of deployed verification:
   bounded number of markers, past which (or past a full table, with a counted
   `backfill_capacity` warning) a lossless rescan of its live records takes over;
   a job made stale only by changed context is not captured again. An account
-  with a backlog cannot jump it with fresh writes, a vanished source never stops
+  with a backlog cannot jump it with fresh writes or change-time bumps, a vanished source never stops
   the worker, and disabling capture, the sweep and account erasure do not
   deadlock. A revision that completed
   stale does not suppress a later capture of the same content, while an evaluated
@@ -94,6 +94,9 @@ acceptance requirements, not a declaration of deployed verification:
   `TestModerationAdmissionSkipsUnknownActor`,
   `TestModerationSweepSurvivesConcurrentSourceRemoval`,
   `TestModerationDisableSweepNoDeadlock`,
+  `TestModerationRescanOrderNotSteerableByChangeTime`,
+  `TestModerationDeletedSourceReleasesMarkerCount`,
+  `TestModerationDisableClearsRescanPosition`,
   `TestModerationPrivacyV2NoFieldDigestsOrUnusedTextHash`; database integration,
   fake model).
 - Proposal queues/status require an authenticated current administrator on the

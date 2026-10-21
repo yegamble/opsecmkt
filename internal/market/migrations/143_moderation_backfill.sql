@@ -22,9 +22,10 @@ CREATE INDEX moderation_backfill_parked ON moderation_backfill(last_missed,kind,
 -- them are parked. While an actor has an active backlog (markers>parked, or a
 -- rescan), its new captures queue behind it instead of being admitted, so its
 -- share is spent in first-refusal order. Past the marker bound, rescan replaces
--- further markers: the worker re-reads the actor's live records in (last change,
--- kind, id) order from a stored position (rescan_ts, rescan_kind, rescan_id, a
--- reference to the last record read, kept only while the rescan runs) and
+-- further markers: the worker re-reads the actor's live records in (creation
+-- time, kind, id) order from a stored position (rescan_ts, rescan_kind,
+-- rescan_id: the last record read, kept only while the rescan runs and capture
+-- is on) and
 -- captures every current revision that has no job; rescan_more repeats the
 -- re-read after refusals during it. A row is deleted once its window expired
 -- with no markers and no rescan, and with the account.
@@ -45,7 +46,7 @@ CREATE TABLE moderation_actor_allocations (
 CREATE INDEX moderation_actor_allocations_expiry ON moderation_actor_allocations(window_start);
 CREATE INDEX moderation_actor_allocations_rescan ON moderation_actor_allocations(window_start,actor_id) WHERE rescan;
 -- Index-backed rescan walks: each step reads at most its budget per kind.
-CREATE INDEX moderation_rescan_products ON products(vendor_id,updated,id) WHERE NOT archived;
+CREATE INDEX moderation_rescan_products ON products(vendor_id,created,id) WHERE NOT archived;
 CREATE INDEX moderation_rescan_images ON images(owner_user_id,created,id);
 CREATE INDEX moderation_rescan_reviews ON reviews(buyer_id,created,id) WHERE hidden_at IS NULL;
 CREATE INDEX moderation_rescan_orders ON orders(buyer_id);
@@ -89,7 +90,10 @@ DECLARE b moderation_capacity; held integer; wasp boolean;
 BEGIN
  IF r IS NOT NULL THEN PERFORM moderation_note_overflow(k,r); END IF;
  IF length(tid) NOT BETWEEN 1 AND 128 THEN RETURN; END IF;
- SELECT parked INTO wasp FROM moderation_backfill WHERE kind=k AND target_id=tid FOR UPDATE;
+ -- A marker another transaction holds (its source is being deleted) is left
+ -- to that transaction, never waited for while the capacity lock is held.
+ SELECT parked INTO wasp FROM moderation_backfill WHERE kind=k AND target_id=tid FOR UPDATE SKIP LOCKED;
+ IF NOT FOUND AND EXISTS(SELECT 1 FROM moderation_backfill WHERE kind=k AND target_id=tid) THEN RETURN; END IF;
  IF FOUND THEN
   UPDATE moderation_backfill SET last_missed=now(),parked=false WHERE kind=k AND target_id=tid;
   IF wasp AND aid IS NOT NULL AND aid<>'' THEN
@@ -169,7 +173,8 @@ BEGIN
  -- A pending or evaluated job already covers this revision.
  IF EXISTS(SELECT 1 FROM moderation_jobs WHERE kind=NEW.kind AND target_id=NEW.target_id AND content_hash=NEW.content_hash
    AND (completed_at IS NULL OR failure_class<>'stale_snapshot')) THEN
-  DELETE FROM moderation_backfill WHERE kind=NEW.kind AND target_id=NEW.target_id RETURNING parked INTO wasp;
+  DELETE FROM moderation_backfill WHERE (kind,target_id) IN (SELECT kind,target_id FROM moderation_backfill
+   WHERE kind=NEW.kind AND target_id=NEW.target_id FOR UPDATE SKIP LOCKED) RETURNING parked INTO wasp;
   IF FOUND THEN UPDATE moderation_actor_allocations SET markers=GREATEST(0,markers-1),parked=GREATEST(0,parked-CASE WHEN wasp THEN 1 ELSE 0 END) WHERE actor_id=NEW.actor_id; END IF;
   RETURN NULL;
  END IF;
@@ -201,7 +206,8 @@ BEGIN
   allocations=CASE WHEN moderation_actor_allocations.window_start>now()-interval '24 hours' THEN moderation_actor_allocations.allocations+1 ELSE 1 END,
   window_start=CASE WHEN moderation_actor_allocations.window_start>now()-interval '24 hours' THEN moderation_actor_allocations.window_start ELSE now() END;
  UPDATE moderation_capacity SET pending=pending+1,allocated_records=allocated_records+1,allocated_bytes=allocated_bytes+524288 WHERE singleton;
- DELETE FROM moderation_backfill WHERE kind=NEW.kind AND target_id=NEW.target_id RETURNING parked INTO wasp;
+ DELETE FROM moderation_backfill WHERE (kind,target_id) IN (SELECT kind,target_id FROM moderation_backfill
+  WHERE kind=NEW.kind AND target_id=NEW.target_id FOR UPDATE SKIP LOCKED) RETURNING parked INTO wasp;
  IF FOUND THEN UPDATE moderation_actor_allocations SET markers=GREATEST(0,markers-1),parked=GREATEST(0,parked-CASE WHEN wasp THEN 1 ELSE 0 END) WHERE actor_id=NEW.actor_id; END IF;
  NEW.snapshot:='{}'::jsonb; NEW.reserved_results:=1; NEW.results_count:=0;
  NEW.priority_at:=NEW.queued_at-CASE WHEN NEW.kind IN ('dispute','payment_flag') THEN interval '5 minutes' ELSE interval '0' END;
@@ -291,28 +297,56 @@ BEGIN
  RETURN 'refused';
 END $$;
 
+-- Deleting a marked record releases its marker in the same transaction and
+-- decrements the owner's counts while the owner is still known, so a deleted
+-- source never leaves a phantom backlog. The sweep's own drop of a marker whose
+-- source is gone stays as a safety net (its owner is unknown there); the
+-- recounts below correct any count it leaves.
+CREATE FUNCTION moderation_source_deleted() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE k text; tid text; aid text; wasp boolean;
+BEGIN
+ IF TG_TABLE_NAME='products' THEN k:='listing'; tid:=OLD.id; aid:=OLD.vendor_id;
+ ELSIF TG_TABLE_NAME='images' THEN k:='upload'; tid:=OLD.id; aid:=OLD.owner_user_id;
+ ELSIF TG_TABLE_NAME='reviews' THEN k:='review'; tid:=OLD.id; aid:=OLD.buyer_id;
+ ELSIF TG_TABLE_NAME='disputes' THEN k:='dispute'; tid:=OLD.id; SELECT buyer_id INTO aid FROM orders WHERE id=OLD.order_id;
+ ELSE k:='payment_flag'; tid:=OLD.id::text; SELECT buyer_id INTO aid FROM orders WHERE id=OLD.order_id;
+ END IF;
+ DELETE FROM moderation_backfill WHERE kind=k AND target_id=tid RETURNING parked INTO wasp;
+ IF FOUND AND aid IS NOT NULL THEN
+  UPDATE moderation_actor_allocations SET markers=GREATEST(0,markers-1),parked=GREATEST(0,parked-CASE WHEN wasp THEN 1 ELSE 0 END) WHERE actor_id=aid;
+ END IF;
+ RETURN NULL;
+END $$;
+CREATE TRIGGER moderation_product_deleted AFTER DELETE ON products FOR EACH ROW EXECUTE FUNCTION moderation_source_deleted();
+CREATE TRIGGER moderation_image_deleted AFTER DELETE ON images FOR EACH ROW EXECUTE FUNCTION moderation_source_deleted();
+CREATE TRIGGER moderation_review_deleted AFTER DELETE ON reviews FOR EACH ROW EXECUTE FUNCTION moderation_source_deleted();
+CREATE TRIGGER moderation_dispute_deleted AFTER DELETE ON disputes FOR EACH ROW EXECUTE FUNCTION moderation_source_deleted();
+CREATE TRIGGER moderation_payment_deleted AFTER DELETE ON payments FOR EACH ROW EXECUTE FUNCTION moderation_source_deleted();
+
 -- One rescan step for an actor: walk its live records after the stored
--- position in (last change, kind, id) order, at most budget rows, and queue each
--- current revision that has no job. A record edited later moves behind
--- untouched ones. Stops early when the actor or market lacks capacity, keeping
--- the position before that record. Uploads are captured once, like their insert
--- trigger.
+-- position in (creation time, kind, id) order, at most budget rows, and queue
+-- each current revision that has no job. The account cannot move a record in
+-- this order: edits, price changes, stock, photos and archive/restore leave its
+-- creation time alone. A record already passed and edited later is re-read by
+-- the repeat that rescan_more requests. Stops early when the actor or market
+-- lacks capacity, keeping the position before that record. Uploads are captured
+-- once, like their insert trigger.
 CREATE FUNCTION moderation_rescan_actor(aid text,cts timestamptz,ck text,cid text,share bigint,budget integer)
  RETURNS TABLE(done boolean,ts timestamptz,k text,tid text) LANGUAGE plpgsql AS $$
 DECLARE t record; c record; seen integer:=0; b moderation_capacity; active integer; a moderation_actor_allocations;
 BEGIN
  done:=false; ts:=cts; k:=ck; tid:=cid;
  FOR t IN SELECT x.k,x.tid,x.ts FROM (
-   (SELECT 'listing'::text k,p.id tid,p.updated ts FROM products p WHERE p.vendor_id=aid AND NOT p.archived
-     AND (cts IS NULL OR p.updated>=cts AND (p.updated>cts OR 'listing'>ck OR 'listing'=ck AND p.id>cid)) ORDER BY p.updated,p.id LIMIT budget)
+   (SELECT 'listing'::text k,p.id tid,p.created ts FROM products p WHERE p.vendor_id=aid AND NOT p.archived
+     AND (cts IS NULL OR p.created>=cts AND (p.created>cts OR 'listing'>ck OR 'listing'=ck AND p.id>cid)) ORDER BY p.created,p.id LIMIT budget)
    UNION ALL (SELECT 'upload',i.id,i.created FROM images i WHERE i.owner_user_id=aid
      AND (cts IS NULL OR i.created>=cts AND (i.created>cts OR 'upload'>ck OR 'upload'=ck AND i.id>cid)) ORDER BY i.created,i.id LIMIT budget)
    UNION ALL (SELECT 'review',r.id,r.created FROM reviews r WHERE r.buyer_id=aid AND r.hidden_at IS NULL
      AND (cts IS NULL OR r.created>=cts AND (r.created>cts OR 'review'>ck OR 'review'=ck AND r.id>cid)) ORDER BY r.created,r.id LIMIT budget)
    UNION ALL (SELECT 'dispute',d.id,d.created FROM orders o JOIN disputes d ON d.order_id=o.id WHERE o.buyer_id=aid
      AND (cts IS NULL OR d.created>=cts AND (d.created>cts OR 'dispute'>ck OR 'dispute'=ck AND d.id>cid)) ORDER BY d.created,d.id LIMIT budget)
-   UNION ALL (SELECT 'payment_flag',pm.id::text,pm.updated FROM orders o JOIN payments pm ON pm.order_id=o.id WHERE o.buyer_id=aid AND pm.flagged
-     AND (cts IS NULL OR pm.updated>=cts AND (pm.updated>cts OR 'payment_flag'>ck OR 'payment_flag'=ck AND pm.id::text>cid)) ORDER BY pm.updated,pm.id::text LIMIT budget)
+   UNION ALL (SELECT 'payment_flag',pm.id::text,pm.created FROM orders o JOIN payments pm ON pm.order_id=o.id WHERE o.buyer_id=aid AND pm.flagged
+     AND (cts IS NULL OR pm.created>=cts AND (pm.created>cts OR 'payment_flag'>ck OR 'payment_flag'=ck AND pm.id::text>cid)) ORDER BY pm.created,pm.id::text LIMIT budget)
   ) x ORDER BY x.ts,x.k,x.tid LIMIT budget LOOP
   seen:=seen+1;
   IF NOT (t.k='upload' AND EXISTS(SELECT 1 FROM moderation_jobs WHERE kind='upload' AND target_id=t.tid AND (completed_at IS NULL OR failure_class<>'stale_snapshot'))) THEN

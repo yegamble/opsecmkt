@@ -207,6 +207,10 @@ func TestModerationDisableSweepNoDeadlock(t *testing.T) {
 				_, err = tx.ExecContext(ctx, `UPDATE products SET title='Withdrawn listing',description='' WHERE id=(SELECT id FROM products WHERE vendor_id=$1 ORDER BY id LIMIT 1)`, vendors[i])
 			}
 			if err == nil {
+				// A deleted, possibly marked listing releases its marker here.
+				_, err = tx.ExecContext(ctx, `DELETE FROM products WHERE id=(SELECT id FROM products WHERE vendor_id=$1 ORDER BY id DESC LIMIT 1)`, vendors[i])
+			}
+			if err == nil {
 				if err = tx.Commit(); err == nil {
 					erased.Add(1)
 				}
