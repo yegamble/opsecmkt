@@ -5,7 +5,7 @@
 .product-card.is-archived .product-art {
   opacity:.45
 }
-.inventory-state {
+.inventory-state, .purchase-state {
   display:flex;
   flex-wrap:wrap;
   align-items:center;
