@@ -300,7 +300,7 @@ is disabled, rows for records that still exist wait until it is enabled again.
 At most 65536 rows exist. `moderation_marker_releases` holds one row per
 deleted marked record: the owner's account id and whether the marker was parked
 (never the record), so no row holds both a record id and its account. The next worker pass (normally only while capture is enabled; a worker started before capture was disabled keeps passing), or disabling capture, subtracts these from the owner's counts
-and the marker counter and deletes them (while collection is off this can last indefinitely, until collection is enabled again); account erasure deletes these rows too.
+and the marker counter and deletes them (while collection is off this can last indefinitely, until collection is enabled again); account erasure clears their account id (`ON DELETE SET NULL`) and keeps each row until that pass, so the counter is still lowered.
 `moderation_actor_allocations` holds per-account state: the 24-hour allocation
 window (window start, count), the number of the account's waiting markers (at
 most 16 by default) and of those parked, and, once that bound or the marker table

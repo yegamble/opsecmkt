@@ -114,6 +114,8 @@ func TestModerationRetentionMarkerReleasesErasedWithAccount(t *testing.T) {
 	e, _ := uiRetentionEnv(t)
 	account, _ := e.user("moderation_retention_released_actor", "buyer")
 	agExec(e, `INSERT INTO moderation_marker_releases(actor_id,parked) VALUES($1,false),($1,true)`, account)
+	agExec(e, `UPDATE moderation_capacity SET backfill=backfill+2 WHERE singleton`) // the two markers these releases stand for
+	backfill := agInt(e, `SELECT backfill FROM moderation_capacity WHERE singleton`)
 	agExec(e, `DELETE FROM sessions WHERE user_id=$1`, account)
 	agExec(e, `UPDATE users SET closed_at=now(),profile_scrubbed_at=now() WHERE id=$1`, account)
 	now := time.Now().UTC()
@@ -124,5 +126,16 @@ func TestModerationRetentionMarkerReleasesErasedWithAccount(t *testing.T) {
 	}
 	if agInt(e, `SELECT count(*) FROM moderation_marker_releases WHERE actor_id=$1`, account) != 0 {
 		t.Fatal("account erasure left pending moderation releases")
+	}
+	// SEC72AB-1: erasure keeps each release, without its owner, so the counter is still lowered.
+	if agInt(e, `SELECT count(*) FROM moderation_marker_releases WHERE actor_id IS NULL`) != 2 {
+		t.Fatal("account erasure dropped pending releases instead of clearing their owner")
+	}
+	agExec(e, `SELECT moderation_backfill_cleanup()`)
+	if got := agInt(e, `SELECT backfill FROM moderation_capacity WHERE singleton`); got != backfill-2 {
+		t.Fatalf("backfill=%d after cleanup, want %d: erased releases must still lower the counter", got, backfill-2)
+	}
+	if agInt(e, `SELECT count(*) FROM moderation_marker_releases`) != 0 {
+		t.Fatal("cleanup left releases")
 	}
 }

@@ -54,10 +54,11 @@ CREATE INDEX moderation_rescan_reviews ON reviews(buyer_id,created,id);
 -- and whether the marker was parked, never the record. No row anywhere holds
 -- both a record id and its account. The next worker pass applies these to the
 -- owner's counts and to moderation_capacity.backfill under its capacity lock and
--- deletes them; account erasure deletes them too. Until then backfill equals
--- the marker rows plus these rows.
+-- deletes them. Account erasure clears the owner (SET NULL), so the release
+-- still lowers the counter but names no one. Until then backfill equals the
+-- marker rows plus these rows.
 CREATE TABLE moderation_marker_releases (
- actor_id text REFERENCES users(id) ON DELETE CASCADE,
+ actor_id text REFERENCES users(id) ON DELETE SET NULL,
  parked boolean NOT NULL
 );
 CREATE INDEX moderation_marker_releases_actor ON moderation_marker_releases(actor_id);
