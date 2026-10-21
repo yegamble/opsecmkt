@@ -570,7 +570,7 @@ func TestModerationLegacyStaleReplaySkipsRecapturedRevision(t *testing.T) {
 
 // moderationDrain runs worker passes until the queue, the active backfill
 // markers and every actor rescan are empty, failing if they never are. Markers
-// parked behind an archived or hidden source are not active work.
+// parked behind an unflagged payment are not active work.
 func moderationDrain(t *testing.T, e *testEnv, w *ModerationWorker) {
 	t.Helper()
 	const active = `SELECT (SELECT count(*) FROM moderation_backfill WHERE NOT parked)+(SELECT count(*) FROM moderation_actor_allocations WHERE rescan)+(SELECT count(*) FROM moderation_jobs WHERE completed_at IS NULL)`
@@ -745,9 +745,9 @@ func TestModerationBackfillCoalescesAndDropsDeletedSource(t *testing.T) {
 	archived := e.product(editor, "digital")
 	agExec(e, `DELETE FROM products WHERE id=$1`, removed)
 	agExec(e, `UPDATE products SET archived=true,archived_at=now() WHERE id=$1`, archived)
-	// Deleting a marked listing releases its marker at once.
-	if agInt(e, `SELECT count(*) FROM moderation_backfill`) != 2 || agInt(e, `SELECT count(*) FROM moderation_backfill WHERE target_id=$1`, removed) != 0 {
-		t.Fatal("deleting a marked source did not release its marker")
+	// Deleting a marked listing flags its marker for the next pass to remove.
+	if agInt(e, `SELECT count(*) FROM moderation_backfill WHERE NOT gone`) != 2 || agInt(e, `SELECT count(*) FROM moderation_backfill WHERE target_id=$1 AND gone`, removed) != 1 {
+		t.Fatal("deleting a marked source did not flag its marker")
 	}
 	moderationDrain(t, e, moderationTestWorker(e))
 	if got := agInt(e, `SELECT count(*) FROM moderation_jobs WHERE target_id=$1`, target); got != 1 {
@@ -756,19 +756,17 @@ func TestModerationBackfillCoalescesAndDropsDeletedSource(t *testing.T) {
 	if agInt(e, `SELECT count(*) FROM moderation_jobs WHERE target_id=$1 AND content_hash=$2`, target, moderationLiveDigest(e, "listing", target)) != 1 {
 		t.Fatal("coalesced capture was not the current revision")
 	}
-	if agInt(e, `SELECT count(*) FROM moderation_jobs WHERE target_id IN ($1,$2)`, removed, archived) != 0 {
-		t.Fatal("deleted or archived source was captured")
+	if agInt(e, `SELECT count(*) FROM moderation_jobs WHERE target_id=$1`, removed) != 0 {
+		t.Fatal("deleted source was captured")
 	}
-	if got := agInt(e, `SELECT allocated_records FROM moderation_capacity`); got != 2 {
-		t.Fatalf("allocations=%d want 2 (no allocation for dropped sources)", got)
+	if agInt(e, `SELECT count(*) FROM moderation_jobs WHERE target_id=$1 AND content_hash=$2`, archived, moderationLiveDigest(e, "listing", archived)) != 1 {
+		t.Fatal("archived source was not captured")
 	}
-	// A deleted source loses its marker; an archived one keeps it, parked, so a
-	// restore is still captured.
-	if agInt(e, `SELECT count(*) FROM moderation_backfill WHERE target_id=$1`, removed) != 0 {
-		t.Fatal("deleted source kept its marker")
+	if got := agInt(e, `SELECT allocated_records FROM moderation_capacity`); got != 3 {
+		t.Fatalf("allocations=%d want 3 (none for the deleted source)", got)
 	}
-	if agInt(e, `SELECT count(*) FROM moderation_backfill WHERE target_id=$1 AND parked`, archived) != 1 || agInt(e, `SELECT backfill FROM moderation_capacity`) != 1 {
-		t.Fatal("archived source did not keep exactly one parked marker")
+	if agInt(e, `SELECT count(*) FROM moderation_backfill`) != 0 || agInt(e, `SELECT backfill FROM moderation_capacity`) != 0 {
+		t.Fatal("markers remained after the archived source was captured")
 	}
 }
 

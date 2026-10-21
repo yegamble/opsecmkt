@@ -157,10 +157,11 @@ func assertNewAbuseReviewRecordNotice(t *testing.T, stage, records, partial stri
 	for _, want := range append([]string{
 		"record and order references, the capture time, digests of the checked text, an image&rsquo;s exact and perceptual fingerprints",
 		"findings, decisions and staff reviews",
-		"A list of records waiting to be checked holds only each record&rsquo;s type and id, when it was first and last left waiting, and whether it is waiting for a withdrawn or hidden record to return",
-		"For each account it holds a count of its checks in the past day, cleared after that day at the next check or worker pass or when collection stops; how many of its records are waiting and how many of those wait for a withdrawn or hidden record; and whether its records are being re-read, with the type, id and creation time of the last record re-read, kept while that re-read runs and collection is on",
+		"A list of records waiting to be checked holds only each record&rsquo;s type and id, when it was first and last left waiting, whether it waits for an unflagged payment to be flagged again, and whether the record was deleted; withdrawn listings and hidden reviews are checked like any others",
+		"A deleted record&rsquo;s entry is removed at the next worker pass (while collection is off and no worker runs, at the next pass or when collection is enabled again)",
+		"For each account it holds a count of its checks in the past day, cleared after that day at the next check or worker pass or when collection stops; how many of its records are waiting and how many of those wait for a payment; until the next worker pass, which records&rsquo; deletion still has to be subtracted from those counts (the account and whether the record was waiting for a payment, not the record); and whether its records are being re-read, with the type, id and creation time of the last record re-read, kept while that re-read runs and collection is on and cleared at the next worker pass if that record is deleted",
 		"The account&rsquo;s entry is removed once its day has passed with no record waiting and no re-read in progress, or when the account is deleted",
-		"Until then it can remain indefinitely: while a withdrawn, hidden or unflagged record of the account is waiting to return, or while collection is off",
+		"Until then it can remain indefinitely: while an unflagged payment of the account is waiting, or while collection is off",
 		"after account deletion and after collection stops",
 	}, shared...) {
 		if !strings.Contains(html.UnescapeString(records), html.UnescapeString(want)) {

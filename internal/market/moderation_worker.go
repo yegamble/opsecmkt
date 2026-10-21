@@ -112,6 +112,11 @@ func SetModerationEnabled(ctx context.Context, db *sql.DB, enabled bool) error {
 			if _, err = tx.ExecContext(ctx, `SELECT 1 FROM moderation_capacity WHERE singleton FOR UPDATE`); err != nil {
 				return err
 			}
+			// Markers of deleted records and their queued count releases are
+			// applied now; while capture stays off, each worker pass does so.
+			if _, err = tx.ExecContext(ctx, `SELECT moderation_backfill_cleanup()`); err != nil {
+				return err
+			}
 			// Rows an account erasure is deleting are skipped, not waited for.
 			if _, err = tx.ExecContext(ctx, `DELETE FROM moderation_actor_allocations WHERE actor_id IN (SELECT actor_id FROM moderation_actor_allocations WHERE markers=0 AND NOT rescan FOR UPDATE SKIP LOCKED)`); err != nil {
 				return err

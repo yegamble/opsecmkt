@@ -64,7 +64,7 @@ Legacy last-use dates are not invented from account creation dates.
 
 | Data | Live-system deadline |
 | --- | --- |
-| Abuse-review records, legacy and new: legacy copied content; new record and order references, capture times, text digests, exact and perceptual image fingerprints; findings, decisions and staff reviews; markers for records waiting to be checked (type, id, first/last wait time, whether the record is withdrawn or hidden) and per-account state (count of checks in the past day, number of waiting and parked markers, rescan flags and, while a rescan runs with collection on, the type, id and creation time of the last record re-read) | No automatic expiry; separate from the ordinary content/account deadlines below, including after the original content or image is removed, after account deletion and after collection stops. A digest or fingerprint can confirm a guessed text or a matching image. A waiting marker is removed once its record is checked or found gone; a marker for a withdrawn listing, hidden review or unflagged payment stays until the record returns or is gone; while collection is off markers wait indefinitely, including for removed sources and erased accounts. A daily count is zeroed after its day at the next check or worker pass or when collection stops; the account's entry is removed once its day has passed with no waiting marker and no rescan, or with the account; the entry can therefore remain indefinitely while a withdrawn or hidden record is waiting or collection is off |
+| Abuse-review records, legacy and new: legacy copied content; new record and order references, capture times, text digests, exact and perceptual image fingerprints; findings, decisions and staff reviews; markers for records waiting to be checked (type, id, first/last wait time, whether it waits for an unflagged payment, whether the record was deleted), per-account state (count of checks in the past day, number of waiting and parked markers, rescan flags and, while a rescan runs with collection on, the type, id and creation time of the last record re-read) and pending count releases (account, parked flag; no record) | No automatic expiry; separate from the ordinary content/account deadlines below, including after the original content or image is removed, after account deletion and after collection stops. A digest or fingerprint can confirm a guessed text or a matching image. A waiting marker is removed once its record is checked; a deleted record's marker, its pending count release and a rescan position naming it are removed at the next worker pass (or when collection is disabled), and while collection is off and no worker runs they wait until then; a marker for an unflagged payment stays until it is flagged again or gone; while collection is off, other markers wait indefinitely, including for records of erased accounts that remain. A daily count is zeroed after its day at the next check or worker pass or when collection stops; the account's entry is removed once its day has passed with no waiting marker and no rescan, or with the account; the entry can therefore remain indefinitely while an unflagged payment is waiting or collection is off |
 | Individual direct messages, ciphertext and routing metadata | 90 days after creation |
 | Support-ticket bodies | 90 days after creation, or earlier when the opener/message sender is closed or erased, unless preserved |
 | Closed or Ignored support-ticket metadata | 90 days after the last update, once all bodies are gone and no related hold applies |
@@ -291,20 +291,27 @@ no automatic expiry. See the
 
 Migration 143 adds two small moderation tables. `moderation_backfill` holds one
 row per target whose capture was refused: kind, target reference, first/last
-refusal times and a `parked` flag, with no content, digest or actor. A row is
-deleted when the target's current revision is queued or when the worker finds
-the source gone. A row whose listing is archived, review hidden or payment
-unflagged is parked until that record returns or is gone. While capture is
-disabled, rows wait until it is enabled again. At most 65536 rows exist.
+refusal times, a `parked` flag and a `gone` flag, with no content, digest or
+actor. A row is deleted when the target's current revision is queued. Deleting
+the target only flags its row `gone` (that transaction takes no global lock);
+the next worker pass, enabled or not, or disabling capture deletes the row,
+and while capture is off and no worker runs it waits until one of those. A row
+for an unflagged payment is parked until the payment is flagged again or gone;
+archived listings and hidden reviews are captured like live ones. While capture
+is disabled, rows for records that still exist wait until it is enabled again.
+At most 65536 rows exist. `moderation_marker_releases` holds, until that same
+next pass, one row per deleted marked record: the owner's account id and whether
+the marker was parked (never the record), so the pass can subtract it from the
+owner's counts; account erasure deletes these rows too.
 `moderation_actor_allocations` holds per-account state: the 24-hour allocation
 window (window start, count), the number of the account's waiting markers (at
 most 16 by default) and of those parked, and, once that bound or the marker table
 is reached, a rescan flag, a repeat flag and, while the rescan runs, the
 position it has reached: the creation time, kind and id of the last record
 re-read (a reference to that one record). The position is kept while the rescan
-runs and capture is on, including while the account cannot be admitted, and can
-name a record removed since until the account's next rescan step; it is cleared
-when the rescan ends or capture is disabled. The
+runs and capture is on, including while the account cannot be admitted; it is
+cleared when the rescan ends, when capture is disabled, or at the next worker
+pass after that record is deleted. The
 daily count is zeroed after its window at the next capture admission or worker
 pass, or when capture is disabled. The row is deleted once its window has
 passed with no waiting marker and no rescan, and account erasure deletes it
@@ -313,9 +320,9 @@ inventory). If capture stays enabled while no worker runs and no capture is
 admitted, an expired daily count remains until the next worker pass or until
 capture is disabled. Disabling capture zeroes daily counts but keeps every row
 that has waiting markers or a rescan, indefinitely while capture is off. A
-parked marker keeps its account's row for as long as it is parked. Marker
-counts are decremented in the same transaction that deletes a marked record;
-safety recounts run within a pass while fewer than 4096 markers are waiting and
-otherwise about once a day per idle account. New proposal inputs no
+parked marker (an unflagged payment's) keeps its account's row for as long as
+it is parked. A deleted record's count release is applied at the next worker
+pass; safety recounts run within a pass while fewer than 4096 markers are
+waiting and otherwise about once a day per idle account. New proposal inputs no
 longer contain per-field digests, and non-listing proposals no longer store a
 text fingerprint.

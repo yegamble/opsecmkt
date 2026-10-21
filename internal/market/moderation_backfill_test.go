@@ -50,8 +50,9 @@ func TestModerationArchivedRestoreRecaptured(t *testing.T) {
 			agExec(e, `UPDATE products SET archived=true,archived_at=now() WHERE id=$1`, scam)
 			w := moderationTestWorker(e)
 			moderationPasses(t, w, 3)
-			if agInt(e, `SELECT count(*) FROM moderation_backfill WHERE target_id=$1`, scam) != 1 {
-				t.Fatal("archived source lost its marker")
+			// Archiving does not withdraw a record from capture.
+			if !moderationScamCaptured(e, "listing", scam) {
+				t.Fatal("archived scam listing was not captured")
 			}
 			if disabledRestore {
 				if err := SetModerationEnabled(t.Context(), e.DB, false); err != nil {
@@ -94,8 +95,9 @@ func TestModerationHiddenReviewUnhideRecaptured(t *testing.T) {
 	agExec(e, `UPDATE reviews SET hidden_at=now() WHERE id=$1`, review)
 	w := moderationTestWorker(e)
 	moderationPasses(t, w, 3)
-	if agInt(e, `SELECT count(*) FROM moderation_backfill WHERE kind='review' AND target_id=$1`, review) != 1 {
-		t.Fatal("hidden review lost its marker")
+	// Hiding does not withdraw a review from capture.
+	if !moderationScamCaptured(e, "review", review) {
+		t.Fatal("hidden scam review was not captured")
 	}
 	agExec(e, `UPDATE reviews SET hidden_at=NULL WHERE id=$1`, review)
 	moderationDrain(t, e, w)
