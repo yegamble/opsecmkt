@@ -109,6 +109,10 @@ func (a *App) Start(ctx context.Context) {
 	}
 	ctx, a.stop = context.WithCancel(ctx)
 	a.startRetention(ctx)
+	if a.servingDB != nil {
+		a.background.Add(1)
+		go func() { defer a.background.Done(); a.keepServingLock(ctx) }()
+	}
 	for _, f := range backgroundTasks {
 		a.background.Add(1)
 		go func() { defer a.background.Done(); f(ctx, a) }()
