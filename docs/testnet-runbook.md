@@ -43,18 +43,41 @@ whose name the reconciliation is asserted. On a Compose deployment:
 docker compose run --rm app -clear-restore-gate YOUR_ADMIN_HANDLE
 ```
 
-On a native deployment run `opsecmkt -clear-restore-gate YOUR_ADMIN_HANDLE` with the deployment's `DATABASE_URL_FILE`, as
-for the other [host commands](install/cli-reference.md#legacy-host-commands). The command connects with `DATABASE_URL` and
-starts no web server, payment provider or background work. It refuses, and changes nothing, when:
+On a native deployment with an external database run `./opsecmkt -clear-restore-gate YOUR_ADMIN_HANDLE` with
+`DATABASE_URL_FILE=/srv/opsecmkt-inputs/database.url`, the host-readable URL file of the [production layout](install/production.md) whose `sslrootcert` names a CA path on this host. Do not use `DIR/secrets/database-url`: it names the CA by its path inside the container, and in local-database mode its host `db` resolves only on the Compose network (see the other [host commands](install/cli-reference.md#legacy-host-commands)). A native development
+installation's local database is reachable only on its generated Compose network, and running that generated Compose file
+by hand is not supported (it is an implementation artifact of `opsecmkt deploy`), so these commands are not supported
+there: rehearse restores on a Compose installation (`scripts/install.sh`) or on a native installation with an external
+database. The command connects with `DATABASE_URL` and starts no web server, payment provider or background work. It
+refuses, and changes nothing, when:
 
-- the application is running against the database, or starting (every serving application holds a database lock the
-  command needs: stop it first);
+- the application is running against the database, or starting: every serving application of this release or later holds
+  a database lock the command needs (stop it first; an application of an earlier release holds no such lock and is not
+  detected);
 - stdin is not a terminal: no flag or pipe answers for the operator;
 - the handle is not an administrator's (handles are exact and case-sensitive);
 - the gate is not set (it was already cleared);
+- no application has started on the restored database yet (`retention_restore_required` is still set: steps 3 and 4
+  come first);
 - the database records migrations this binary does not include.
 
-Otherwise it asks you to confirm, one statement at a time, that steps 1 to 7 above are done (five statements); type `yes`
+The lock check is a guard against forgetting to stop the app, not a guarantee: a serving application whose database
+session ended (a database restart, a terminated session) holds no lock until it takes it again, within about 10 seconds.
+The refusal says how many sessions hold the lock and when each started, never their address. If no application runs and
+the command still refuses, find the holders over the protected database connection:
+
+```sh
+db_sql -c "SELECT a.pid, a.application_name, a.backend_start FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid WHERE l.locktype = 'advisory' AND l.classid = 0 AND l.objid = 782499 AND l.objsubid = 1 AND l.database = (SELECT oid FROM pg_database WHERE datname = current_database())"
+```
+
+A serving application's session is named `opsecmkt-serving`. Find and stop that application first (an older container,
+a second host, a service manager restarting it); only a holder left by an application that is gone may be ended, with
+`db_sql -c "SELECT pg_terminate_backend(PID)"`. Ending the session of an application that still runs only removes the
+lock until it takes it again.
+
+If the Monero escrow restore sweep has not completed (`xmr_escrow_sweep_required` is still set) it says so first; that
+is not a refusal, but Monero escrow checkout stays paused until the sweep completes. Then it asks you to confirm, one
+statement at a time, that steps 1 to 7 above are done (five statements); type `yes`
 to each. Any other answer refuses at that step. Then, in one transaction that makes the checks again, it sets
 `payments_recovery_required` to `false` and adds the audit row "Payout recovery gate cleared by HANDLE by host command after reconciling the restored database
 with the wallets" on that administrator. It ends with `Restore gate cleared by administrator HANDLE; audited.` and prints

@@ -75,12 +75,16 @@ func clearRestoreGate(ctx context.Context, handle string, given func(string) boo
 		return errors.New("the reconciliation steps are confirmed in a terminal, and stdin is not one; run it in a terminal " +
 			"(docker compose run --rm app -clear-restore-gate HANDLE allocates one); nothing was changed")
 	}
-	check := func(ctx context.Context, db *sql.DB) error {
-		_, err := market.ClearRestoreGate(ctx, db, handle, false)
+	var note string
+	check := func(ctx context.Context, db *sql.DB) (err error) {
+		note, err = market.ClearRestoreGate(ctx, db, handle, false)
 		return err
 	}
 	if err := withHostDB(ctx, dsn, check); err != nil {
 		return err
+	}
+	if note != "" {
+		fmt.Fprintln(prompt, note)
 	}
 	fmt.Fprintln(prompt, "Clearing the restore gate asserts that reconciliation is complete (docs/testnet-runbook.md). Confirm each step:")
 	lines := bufio.NewReader(io.LimitReader(in, 4096))

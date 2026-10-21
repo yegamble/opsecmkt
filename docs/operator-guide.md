@@ -655,7 +655,7 @@ An external database reached through a connection pooler such as PgBouncer, or a
 
   The migration transaction lifts these itself, and `pg_dump` and the restore script set their own. `-bootstrap-admin`, `-reset-admin-password`, `-reset-admin-factors`, `-set-role`, `-set-restore-gate` and `-clear-restore-gate` then run under them too, which their short transactions do not notice. Without the role settings the app runs with no statement or lock limit, as before A-177.
 
-A serving app also holds a session advisory lock on one database connection of its own for as long as it runs (A-505), so that the restore gate host commands can refuse while it runs; the escrow watchers take session advisory locks too. A pooler in transaction mode does not keep a session's locks: use session pooling or a direct connection.
+A serving app also holds a session advisory lock on one database connection of its own for as long as it runs (A-505), so that the restore gate host commands can refuse while it runs; the escrow watchers take session advisory locks too. That session is named `opsecmkt-serving` and turns off the role's or database's statement, lock and idle-session limits for itself. A pooler in transaction mode does not keep a session's locks, and shows two symptoms: startup refuses with `the database connection does not keep one session (a connection pooler in transaction mode?)` (the app reads its session's process ID before and after taking the lock and finds them different), or, if the pooler happens to keep the session, the restore gate commands may still not see the app once the pooler moves it. Use session pooling or a direct connection.
 
 The pool also sets `TimeZone` to UTC as a startup parameter; PgBouncer passes `TimeZone` through by itself.
 

@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"strconv"
 	"time"
 )
 
@@ -26,13 +25,20 @@ import (
 const servingLock = 782499
 
 // servingLockHeld asks whether this session holds servingLock (a single bigint key is classid 0, objid the key,
-// objsubid 1 in pg_locks).
-var servingLockHeld = "SELECT EXISTS(SELECT 1 FROM pg_locks WHERE locktype='advisory' AND pid=pg_backend_pid() AND classid=0 AND objid=" +
-	strconv.Itoa(servingLock) + " AND objsubid=1 AND granted)"
+// objsubid 1 in pg_locks; 782499 is servingLock, written out so the query is fixed text).
+const servingLockHeld = "SELECT EXISTS(SELECT 1 FROM pg_locks WHERE locktype='advisory' AND pid=pg_backend_pid() AND classid=0 AND objid=782499 AND objsubid=1 AND granted)"
 
-// errAppServing is the refusal while an application serves (or is starting against) the database.
-var errAppServing = errors.New("the application is running against this database (or is starting); stop it first " +
-	"(docker compose stop app, or opsecmkt deploy down --dir DIR, or stop opsecmkt serve in its service manager) and run this again; nothing was changed")
+// errAppServing is the refusal while an application serves (or is starting against) the database; lockRestoreGate
+// wraps it with how many sessions hold the serving lock and when each started.
+var errAppServing = errors.New("the application is running against this database (or is starting)")
+
+// errServingPooled refuses a start whose serving connection does not keep one database session: a connection pooler
+// in transaction mode hands each statement to any server session, which keeps neither the lock nor its settings.
+var errServingPooled = errors.New("the database connection does not keep one session (a connection pooler in transaction mode?), " +
+	"so the serving lock cannot be held; connect DATABASE_URL to PostgreSQL directly or to a session-mode endpoint (docs/operator-guide.md, Connection poolers); nothing was changed")
+
+// servingKeepEvery is how often keepServingLock checks the serving connection.
+const servingKeepEvery = 10 * time.Second
 
 // holdServingLock opens one connection of its own and takes servingLock shared on it, waiting at most wait for a
 // restore gate host command to finish. The connection stays open, holding the lock, until closeDB.
@@ -49,7 +55,10 @@ func (a *App) holdServingLock(ctx context.Context, dsn string, wait time.Duratio
 	conn, err := takeServingLock(ctx, db)
 	if err != nil {
 		db.Close()
-		if ctx.Err() != nil {
+		switch {
+		case errors.Is(err, errServingPooled):
+			return err
+		case ctx.Err() != nil:
 			return fmt.Errorf("waiting for a restore gate host command to finish timed out after %s; nothing was changed. Wait for it, or raise MIGRATION_LOCK_TIMEOUT", wait)
 		}
 		return errors.New("database connection failed: " + connectErrorClass(err))
@@ -58,24 +67,49 @@ func (a *App) holdServingLock(ctx context.Context, dsn string, wait time.Duratio
 	return nil
 }
 
-// takeServingLock takes servingLock shared on a new connection from db.
+// takeServingLock takes servingLock shared on a new connection from db. The session first turns off the statement,
+// lock, idle-in-transaction and (PostgreSQL 14 and later) idle-session limits a role or database may set, as the
+// migration connection does, so it waits for a host command as long as ctx allows and is never ended for being idle,
+// and names itself opsecmkt-serving in pg_stat_activity. The session's process ID is read before and after taking the
+// lock: a difference means a pooler is handing statements to different sessions (errServingPooled).
 func takeServingLock(ctx context.Context, db *sql.DB) (*sql.Conn, error) {
 	conn, err := db.Conn(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if _, err = conn.ExecContext(ctx, "SELECT pg_advisory_lock_shared($1)", servingLock); err != nil {
+	discard := func(err error) (*sql.Conn, error) {
 		conn.Raw(func(any) error { return driver.ErrBadConn }) // a cancelled wait may leave the session holding it
 		conn.Close()
 		return nil, err
 	}
+	var version, before, after int
+	if err = conn.QueryRowContext(ctx, `SELECT set_config('statement_timeout','0',false), set_config('lock_timeout','0',false),
+		set_config('idle_in_transaction_session_timeout','0',false), set_config('application_name','opsecmkt-serving',false),
+		current_setting('server_version_num')::int, pg_backend_pid()`).Scan(new(string), new(string), new(string), new(string), &version, &before); err != nil {
+		return discard(err)
+	}
+	if version >= 140000 {
+		if _, err = conn.ExecContext(ctx, "SELECT set_config('idle_session_timeout','0',false)"); err != nil {
+			return discard(err)
+		}
+	}
+	if _, err = conn.ExecContext(ctx, "SELECT pg_advisory_lock_shared($1)", servingLock); err != nil {
+		return discard(err)
+	}
+	if err = conn.QueryRowContext(ctx, "SELECT pg_backend_pid()").Scan(&after); err != nil {
+		return discard(err)
+	}
+	if after != before {
+		return discard(errServingPooled)
+	}
 	return conn, nil
 }
 
-// keepServingLock checks once a minute that the serving connection still holds servingLock (a database restart or
-// an idle-session limit ends the session and with it the lock) and takes it again on a new connection if not.
+// keepServingLock checks every servingKeepEvery that the serving connection still holds servingLock (a database
+// restart or a terminated session ends the session and with it the lock) and takes it again on a new connection if
+// not. It narrows, but cannot close, the window in which a host command could run beside this application.
 func (a *App) keepServingLock(ctx context.Context) {
-	t := time.NewTicker(time.Minute)
+	t := time.NewTicker(servingKeepEvery)
 	defer t.Stop()
 	for {
 		select {
@@ -116,17 +150,34 @@ func (a *App) refreshServingLock(ctx context.Context) {
 }
 
 // lockRestoreGate starts a restore gate host command's transaction: it refuses while an application holds
-// servingLock, then takes the startup lock and refuses a database this binary does not know (lockKnownSchema).
+// servingLock, naming how many sessions hold it and when each started (never an address), then takes the startup
+// lock and refuses a database this binary does not know (lockKnownSchema).
 func lockRestoreGate(ctx context.Context, tx *sql.Tx) error {
 	var free bool
 	if err := tx.QueryRowContext(ctx, "SELECT pg_try_advisory_xact_lock($1)", servingLock).Scan(&free); err != nil {
 		return err
 	}
 	if !free {
-		return errAppServing
+		var n int
+		var started sql.NullString
+		if err := tx.QueryRowContext(ctx, servingHolders).Scan(&n, &started); err != nil {
+			return err
+		}
+		if !started.Valid {
+			started.String = "unknown"
+		}
+		return fmt.Errorf("%w: %d database session(s) hold the serving lock (session start, UTC: %s); stop the application first "+
+			"(docker compose stop app, or opsecmkt deploy down --dir DIR, or stop opsecmkt serve in its service manager) and run this again; "+
+			"if no application runs, see \"Clear the gate\" in docs/testnet-runbook.md for finding a stale holder; nothing was changed", errAppServing, n, started.String)
 	}
 	return lockKnownSchema(ctx, tx)
 }
+
+// servingHolders counts the sessions holding servingLock in this database and lists their start times (pg_locks
+// joined to pg_stat_activity; the same lookup docs/testnet-runbook.md gives the operator).
+const servingHolders = "SELECT count(*), string_agg(to_char(a.backend_start AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'), ', ' ORDER BY a.backend_start) " +
+	"FROM pg_locks l LEFT JOIN pg_stat_activity a ON a.pid = l.pid WHERE l.locktype='advisory' AND l.classid=0 AND l.objid=782499 " +
+	"AND l.objsubid=1 AND l.granted AND l.database=(SELECT oid FROM pg_database WHERE datname=current_database())"
 
 // SetRestoreGate is the host command -set-restore-gate: the protection of UPGRADING.md section 6, for a database
 // restored any way other than scripts/restore.sh, applied as scripts/restore.sh applies it. In one transaction it sets
@@ -197,9 +248,11 @@ func SetRestoreGate(ctx context.Context, db *sql.DB) (string, error) {
 // ClearRestoreGate is the host command -clear-restore-gate HANDLE: the operator's assertion, in the name of the
 // administrator handle, that the restored database was reconciled with the wallets (docs/testnet-runbook.md). In one
 // transaction it refuses while an application serves the database, a database this binary does not know, a handle
-// that is not an administrator's (exact and case-sensitive) and a gate that is not set; otherwise it sets
-// payments_recovery_required to false and audits the clear on that administrator. With apply false it makes the same
-// checks and changes nothing (the command's check before it asks for the confirmations). It returns a summary.
+// that is not an administrator's (exact and case-sensitive), a gate that is not set and a restored database no
+// application has started on yet (retention_restore_required still set); otherwise it sets payments_recovery_required
+// to false and audits the clear on that administrator. With apply false it makes the same checks and changes nothing
+// (the command's check before it asks for the confirmations), returning a note when the restore sweep has not
+// completed (never a refusal). With apply true it returns a summary.
 func ClearRestoreGate(ctx context.Context, db *sql.DB, handle string, apply bool) (string, error) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -224,7 +277,20 @@ func ClearRestoreGate(ctx context.Context, db *sql.DB, handle string, apply bool
 	if !set {
 		return "", errors.New("the restore gate is not set; nothing was changed")
 	}
+	// The restored database must have been served once, so startup replayed the current retention state (it clears
+	// retention_restore_required) and the watcher could run its sweep: reconciliation happens on that running app.
+	var replayPending, sweepPending bool
+	if err = tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM settings WHERE key='retention_restore_required' AND value='true'), "+
+		"EXISTS(SELECT 1 FROM settings WHERE key='xmr_escrow_sweep_required' AND value='true')").Scan(&replayPending, &sweepPending); err != nil {
+		return "", err
+	}
+	if replayPending {
+		return "", errors.New("the application has not started on this restored database yet (runbook steps 3 to 4: start it with the current retention state and reconcile first); nothing was changed")
+	}
 	if !apply {
+		if sweepPending {
+			return "Note: the Monero escrow restore sweep has not completed (xmr_escrow_sweep_required is set); Monero escrow checkout stays paused until it does, even with the gate cleared.", nil
+		}
 		return "", nil
 	}
 	if _, err = tx.ExecContext(ctx, "UPDATE settings SET value='false' WHERE key='payments_recovery_required'"); err != nil {

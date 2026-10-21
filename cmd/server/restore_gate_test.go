@@ -129,7 +129,7 @@ func TestRestoreGateCLI(t *testing.T) {
 	}
 	out, prompt, err := clear("root_admin", all)
 	app.Close()
-	if err == nil || !strings.Contains(err.Error(), "the application is running") || out != "" || prompt != "" {
+	if err == nil || !strings.Contains(err.Error(), "the application is running against this database (or is starting): 1 database session(s) hold the serving lock (session start, UTC: 20") || out != "" || prompt != "" {
 		t.Fatalf("clear while serving: err %v out %q prompt %q", err, out, prompt)
 	}
 	unchanged("set and clear while serving", gate0, others0, xmr0, nil)
@@ -163,6 +163,16 @@ func TestRestoreGateCLI(t *testing.T) {
 		t.Fatalf("clear without a terminal: code %d stdout %q stderr %q", code, stdout, stderr)
 	}
 	unchanged("clear without a terminal", gate, others, xmr, audits)
+	// Right after the set no application has started on the database (its startup replays the retention state and
+	// clears retention_restore_required): the clear is refused before any question is asked.
+	if out, prompt, err := clear("root_admin", all); err == nil || !strings.Contains(err.Error(), "the application has not started on this restored database yet") || out != "" || prompt != "" {
+		t.Fatalf("clear before the first start: err %v out %q prompt %q", err, out, prompt)
+	}
+	unchanged("clear before the first start", gate, others, xmr, audits)
+	if _, err = db.Exec("UPDATE settings SET value='false' WHERE key='retention_restore_required'"); err != nil {
+		t.Fatal(err)
+	}
+	others = strings.Replace(others, "retention_restore_required=true", "retention_restore_required=false", 1)
 
 	// An unknown, a differently cased or a non-administrator handle is refused before any question is asked.
 	for _, handle := range []string{"nobody_here", "Root_admin", "some_vendor"} {
@@ -189,7 +199,7 @@ func TestRestoreGateCLI(t *testing.T) {
 	// All confirmed: the gate is cleared, audited on the administrator; the other settings and holds stay.
 	out, prompt, err = clear("root_admin", all)
 	if err != nil || out != "Restore gate cleared by administrator root_admin; audited. Start the application and verify Admin readiness before reopening public access.\n" ||
-		strings.Count(prompt, "Type yes if this is done: ") != len(reconciliationSteps) {
+		strings.Count(prompt, "Type yes if this is done: ") != len(reconciliationSteps) || !strings.HasPrefix(prompt, "Note: the Monero escrow restore sweep has not completed") {
 		t.Fatalf("clear: err %v out %q prompt %q", err, out, prompt)
 	}
 	audits = append(audits, "a1:Payout recovery gate cleared by root_admin by host command after reconciling the restored database with the wallets")

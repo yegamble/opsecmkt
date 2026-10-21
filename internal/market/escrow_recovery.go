@@ -56,7 +56,7 @@ func escrowRebroadcastReceiptAuthorize(c *actionCtx) error {
 // restoredHoldPrefix starts the send_error scripts/restore.sh writes on every restored settlement or fee bump it holds.
 const restoredHoldPrefix = "Restored from backup:"
 
-// restoredSettlementHold is the send_error scripts/restore.sh (and the manual protection SQL in UPGRADING.md section
+// restoredSettlementHold is the send_error scripts/restore.sh (and the host command -set-restore-gate, UPGRADING.md section
 // 6) writes on every restored escrow settlement that has a final transaction (signed or broadcast): the restored
 // database may predate its broadcast, or something that replaced it, so it is not broadcast again until an
 // administrator checks it (escrowRebroadcastAction). It starts with restoredHoldPrefix.
@@ -81,8 +81,8 @@ func restoreGateSet(ctx context.Context, q rowQuerier) (bool, error) {
 	return on, err
 }
 
-// escrowSweepKey is the setting scripts/restore.sh (and the manual protection SQL in UPGRADING.md section 6) writes
-// after a restore: escrow checkout waits (errEscrowSweep) until the escrow watcher's orphan sweep has read and reserved
+// escrowSweepKey is the Bitcoin escrow's restore sweep setting (neither scripts/restore.sh nor -set-restore-gate writes it now):
+// while it is set, escrow checkout waits (errEscrowSweep) until the escrow watcher's orphan sweep has read and reserved
 // the keys of every escrow the restored database lost (reconcileOrphans), which clears it (P2-R10, A-366).
 const escrowSweepKey = "escrow_sweep_required"
 

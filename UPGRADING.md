@@ -120,10 +120,15 @@ which start no web server:
   there is still no web action.
 
 Both refuse, changing nothing, while an application serves the database: a serving app now holds a session advisory lock
-(782499) on one more database connection of its own, from before its migrations until it stops, and re-takes it if that
-session ends. Allow one more connection per app instance; a connection pooler must keep session state (see
+(782499) on one more database connection of its own (`application_name` `opsecmkt-serving`, with the statement, lock and
+idle-session limits of the role or database turned off for that session), from before its migrations until it stops,
+and checks every 10 seconds that it still holds it, taking it again if that session ended. This is a guard against
+forgetting to stop the app, not a guarantee. **Only applications of this release or later hold the lock**: stop every
+older application process using the database before you run either command. Allow one more connection per app instance.
+A connection pooler must keep session state: a start whose connection does not keep one session is refused (see
 [Connection poolers](docs/operator-guide.md#connection-poolers)). If such a command is running when the app starts, the
-start waits for it, up to `MIGRATION_LOCK_TIMEOUT`. `scripts/restore.sh` is unchanged and still sets the gate itself.
+start waits for it, up to `MIGRATION_LOCK_TIMEOUT`. The clear also refuses a restored database no application has started
+on yet (`retention_restore_required` still set). `scripts/restore.sh` is unchanged and still sets the gate itself.
 
 ## A restore pause is shown to staff (A-559)
 
@@ -624,8 +629,8 @@ have the escrow confirmations. Applications opened before the upgrade get an add
 manual *Record bond received* and *Waive the bond* stay. The market never sends from the bond wallet: sweep it offline
 from its sealed seed ([vendor bond wallet](docs/operator-guide.md#vendor-bond-wallet)). Back up the escrow wallet volume
 as before (it now holds the bond wallet too). A database holding a bond wallet is pinned to its network like one
-holding escrow wallets. `scripts/restore.sh` and the manual protection SQL of [section 6](#6-backups-now-need-the-wallets-too)
-now also close the bond wallet in use (`closed`: still read and still crediting the applications recorded on it, but
+holding escrow wallets. `scripts/restore.sh` and the protection of [section 6](#6-backups-now-need-the-wallets-too) (now the
+`-set-restore-gate` host command) now also close the bond wallet in use (`closed`: still read and still crediting the applications recorded on it, but
 never issuing again), so an address it gave after the backup is never given to another applicant; a fresh `bond-NN`
 issues from then on. Applications opened before this upgrade (`vendor_applications.before_bond_addresses`) are told on
 `/account` not to pay again at their new address if they already paid as your instructions said; record those bonds by
@@ -1134,9 +1139,14 @@ docker compose run --rm app -set-restore-gate
 ```
 
 Point `DATABASE_URL` at the restored database: for a side-by-side restore into `opsecmkt_restored`, change the database
-name in `DATABASE_URL` first. On a native deployment, or for a managed database, run
-`DATABASE_URL_FILE=./private/database.url ./opsecmkt -set-restore-gate` with the protected, certificate-verified URL of
-the restored database ([host commands](docs/install/cli-reference.md#legacy-host-commands)). It reads no stdin and prints
+name in `DATABASE_URL` first. On a native deployment with an external or managed database, run
+`DATABASE_URL_FILE=/srv/opsecmkt-inputs/database.url ./opsecmkt -set-restore-gate` with the host-readable,
+certificate-verified URL of the restored database (the [production layout](docs/install/production.md)'s file, whose
+`sslrootcert` names a CA path on this host; not `DIR/secrets/database-url`, which names the CA by its path inside the
+container). A native development installation's local database is not reachable this way and running its generated
+Compose file by hand is not supported (see the [runbook](docs/testnet-runbook.md#clear-the-gate)). Stop every application
+process first, including any of an earlier release, which holds no serving lock and is not detected; the lock check is a
+guard against forgetting to stop the app, not a guarantee ([host commands](docs/install/cli-reference.md#legacy-host-commands)). It reads no stdin and prints
 counts only, ending `audited. Reconcile the restored database (docs/testnet-runbook.md), then clear the gate with
 -clear-restore-gate HANDLE.`; on an error nothing is changed. Running it again applies the protection again and adds
 another audit row. It refuses a database recording migrations the binary does not include: use the binary of the release
@@ -1665,7 +1675,7 @@ with no settlement covering it, flagged for staff) and the table `escrow_orphans
 wallet holds with no escrow row, listed on `/admin`). Like migrations 074–076 it changes nothing unless `ESCROW_BTC=on`
 (regtest only, off by default); pooled payments are unchanged. With escrow on, this release also pauses escrow
 co-signing, settlement builds and every broadcast of a stored settlement transaction while the restore gate
-(`payments_recovery_required`) is set, and `scripts/restore.sh` and the manual protection SQL in section 6 now also hold
+(`payments_recovery_required`) is set, and `scripts/restore.sh` and the section 6 protection (now `-set-restore-gate`) now also hold
 every restored escrow settlement that has a stored transaction, which an administrator confirms on `/admin` before the
 market broadcasts it again. While the gate is set, escrow checkout is also refused with a fixed 503 and the order stays
 a draft. The escrow RPC user's `rpcwhitelist` needs one more method, `listtransactions` (it reads the
@@ -2303,8 +2313,9 @@ Bitcoin escrow key is for a per-order wallet and yours is for Bitcoin Core" (or 
 available on this market yet" refusal; two per-order wallet keys are still refused with that refusal. Per-order escrows
 are built in this release but switched off in the code until the market can co-sign them through the escrow signer
 (A-456b); see [per-order escrow](https://github.com/yegamble/opsecmkt/blob/e1c082db8eff76e25516e23362a5b9a101751a68/docs/escrow.md#per-order-escrow-creation-and-watching-a-456a-shape-b). The restore floor
-of `scripts/restore.sh` and of the restore-protection SQL in section 6 now reads an account's highest escrow index in both
-shapes (`/0/<i>` and `/<i>/0/0`), one counter: if you keep a copy of that SQL, take the new one. The escrow RPC user's
+of `scripts/restore.sh` and of the section 6 protection read an account's highest escrow index in both
+shapes (`/0/<i>` and `/<i>/0/0`), one counter. Section 6 is now the `-set-restore-gate` host command: discard any saved
+copy of the old SQL. The escrow RPC user's
 `rpcwhitelist` needs no new method (per-order escrows use `deriveaddresses` with a range, `getdescriptorinfo`,
 `importdescriptors`, `getaddressinfo` and `getwalletinfo`, all on it already), and there is no new key. With an escrow
 signer pinned, the escrow key page now refuses a key that is the signer's own ("This key cannot be used here"). After
