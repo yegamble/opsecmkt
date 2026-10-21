@@ -40,5 +40,26 @@ class ComposeLoggingTests(unittest.TestCase):
         self.assertIn('!override', guide)
 
 
+class BackupStdoutLoggingTests(unittest.TestCase):
+    """A container whose stdout carries a backup (wallet files, onion keys) into age runs with --log-driver none:
+    Docker's log driver records a container's stdout, so the secret would otherwise be kept in the daemon's logs."""
+
+    def test_docker_run_piped_into_age_disables_logging(self):
+        checked = 0
+        for path in [REPOSITORY / 'UPGRADING.md', *sorted((REPOSITORY / 'docs').rglob('*.md')), *sorted((REPOSITORY / 'scripts').glob('*.sh'))]:
+            text = path.read_text()
+            # Join backslash-continued lines and a pipe ending a line, then split commands at ";", "&&" and newlines.
+            joined = re.sub(r'(\\|\|)\n\s*', lambda m: ' ' if m.group(1) == '\\' else '| ', text)
+            for line in joined.splitlines():
+                for command in re.split(r'&&|;', line):
+                    match = re.search(r'docker run\b(.*?)\|\s*age\b', command)
+                    if not match:
+                        continue
+                    checked += 1
+                    with self.subTest(file=str(path.relative_to(REPOSITORY)), command=command.strip()[:120]):
+                        self.assertIn('--log-driver none', match.group(1))
+        self.assertGreaterEqual(checked, 2)
+
+
 if __name__ == '__main__':
     unittest.main()
