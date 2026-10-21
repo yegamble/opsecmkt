@@ -1883,7 +1883,7 @@ STATUS: implemented (71cfb32f, merged): modelJSON escapes brackets inside JSON s
 
 DECISION: open (P2 SHOULD), found by the MOD72-6 implementer. `loadEscrowAlerts` takes ~5.5 s on an empty database (also on c53ec524 with the review loader disabled), so `/moderator` takes 4–5 s and exceeds the 8 s request timeout under -race plus parallel Playwright (500/503 "market is busy"). It is the common cause of desk-test flakes recorded throughout iteration 72. Not caused by PR #99.
 ACCEPTANCE: EXPLAIN-backed fix or index; /moderator under 1 s on an empty and a seeded test database; desk tests stable under -race.
-STATUS: open (outside PR #99's scope; candidate for its own PR).
+STATUS: re-measured 2026-10-21 by the chair on a quiet host (load ~12, disk no longer full): loadEscrowAlerts 1.6–4.8 ms, planning 0.27 ms, execution 0.03 ms, GET /moderator 13 ms (empty schema, PostgreSQL 16, no -race); all 23 TestListing* pass in 0.4–1.5 s each. The ~5.5 s figure was host saturation (load 100–440) plus a full data volume (3.9 GB free; Docker Desktop crashed), not the query. Under -race with PostgreSQL in Docker the desk tests take 9–10 s each and can still hit the 8 s statement timeout when the host is busy. Downgraded to P3: optional EXPLAIN review on a seeded database; no evidence of a slow query. Chair note: TestModerationLegacyStaleReplaySkipsRecapturedRevision fails deterministically on PostgreSQL 16 (replay queued 2, want 1) at b5334d3a and later and passes on PostgreSQL 17; only 17 is supported (docs/install/*), recorded as a NIT for the follow-up.
 
 ### MOD72-9 — Split the Go CI job again (owner decision: split, don't raise timeouts)
 
