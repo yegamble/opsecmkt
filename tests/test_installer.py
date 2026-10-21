@@ -1083,13 +1083,119 @@ time.sleep(60)
 
 
     def test_mainnet_init_warns_real_funds_unrun(self):
-        result = self.run_installer(None, arguments=['--tor', '--nodes', 'local'])
+        result = self.run_installer(None, arguments=['--tor', '--nodes', 'local', '--nodes-tor', 'no'])
         self.assert_started(result)
         for text in ('MAINNET', 'real funds', 'No mainnet run of this software is recorded', 'Monero mainnet',
                      'takes days', 'estimate', 'not routed through Tor', 'compose.nodes-tor.yaml', 'custodial'):
             self.assertIn(text, result.stdout)
         self.assertNotIn('Bitcoin', result.stdout)
         self.assertLess(result.stdout.index('MAINNET'), result.stdout.index('Docker data directory'))
+
+    # ---- A-530: a Tor install's local node goes through its own Tor client by default ----------------------
+
+    NODES_TOR_FILES = 'compose.yaml:compose.tor.yaml:compose.nodes.yaml:compose.internal-db.yaml:compose.nodes-tor.yaml'
+    TOR_OPT_OUT = "the local nodes' peer-to-peer traffic is not routed through Tor"
+    TOR_CHECK_WARNING = 'warning: APP_MODE=tor with the local Monero node, but COMPOSE_FILE lacks compose.nodes-tor.yaml'
+
+    def test_tor_local_node_defaults_to_node_tor_overlay(self):
+        cases = ((None, ['--tor', '--nodes', 'local'], self.NODES_TOR_FILES),
+                 (None, ['--tor', '--nodes', 'local', '--monero-network', 'stagenet', '--nodes-tor', 'yes'],
+                  self.NODES_TOR_FILES),
+                 # The bare interactive path asks no new question: Tor with a local node takes the default.
+                 (['tor', '', 'local', '', '', '', ''], [], self.NODES_TOR_FILES),
+                 # External database: the overlay follows compose.nodes.yaml, before the egress overlay.
+                 (None, ['--tor', '--external-db', 'postgres://market@database.example/market', '--monero', 'local',
+                         '--monero-image', 'reviewed:test', '--monero-network', 'stagenet', '--monero-prune', 'yes',
+                         '--monero-escrow', 'no'],
+                  'compose.yaml:compose.tor.yaml:compose.nodes.yaml:compose.nodes-tor.yaml:compose.external-egress.yaml'))
+        for answers, arguments, files in cases:
+            with self.subTest(arguments=arguments, answers=answers):
+                (self.root / '.env').unlink(missing_ok=True)
+                self.log.unlink(missing_ok=True)
+                result = self.run_installer(answers, arguments=arguments)
+                self.assert_started(result)
+                self.assertEqual(self.config()['COMPOSE_FILE'], files)
+                self.assertIn('through a Tor client of its own (compose.nodes-tor.yaml', result.stdout)
+                self.assertIn('--nodes-tor no opts out', result.stdout)
+                self.assertNotIn(self.TOR_OPT_OUT, result.stdout)
+                self.assertNotIn(self.TOR_CHECK_WARNING, result.stderr)
+
+    def test_tor_local_node_opt_out_keeps_the_warning(self):
+        for network in ('mainnet', 'stagenet'):
+            with self.subTest(network=network):
+                (self.root / '.env').unlink(missing_ok=True)
+                self.log.unlink(missing_ok=True)
+                result = self.run_installer(None, arguments=['--tor', '--nodes', 'local', '--monero-network', network,
+                                                             '--nodes-tor', 'no'])
+                self.assert_started(result)
+                self.assertEqual(self.config()['COMPOSE_FILE'],
+                                 'compose.yaml:compose.tor.yaml:compose.nodes.yaml:compose.internal-db.yaml')
+                self.assertIn(self.TOR_OPT_OUT, result.stdout)
+                self.assertIn("their peers see this host's IP address", result.stdout)
+                # The check init runs repeats it, as every later check and upgrade will.
+                self.assertIn(self.TOR_CHECK_WARNING, result.stderr)
+
+    def test_node_tor_overlay_only_for_tor_with_a_local_node(self):
+        # Clearnet, or Tor without a local node: no overlay, no Tor sentence; --nodes-tor no is accepted there.
+        for arguments in (['--clearnet', '--behind-proxy', 'no', '--nodes', 'local'],
+                          ['--clearnet', '--behind-proxy', 'no', '--nodes', 'local', '--nodes-tor', 'no'],
+                          ['--tor', '--nodes', 'none'], ['--tor', '--nodes', 'none', '--nodes-tor', 'no']):
+            with self.subTest(arguments=arguments):
+                (self.root / '.env').unlink(missing_ok=True)
+                self.log.unlink(missing_ok=True)
+                result = self.run_installer(None, arguments=arguments)
+                self.assert_started(result)
+                self.assertNotIn('compose.nodes-tor.yaml', self.config()['COMPOSE_FILE'])
+                self.assertNotIn('Tor client of its own', result.stdout)
+        # --nodes-tor yes where it cannot apply is refused before .env is written.
+        for arguments in (['--clearnet', '--behind-proxy', 'no', '--nodes', 'local', '--nodes-tor', 'yes'],
+                          ['--tor', '--nodes', 'none', '--nodes-tor', 'yes']):
+            with self.subTest(arguments=arguments):
+                (self.root / '.env').unlink(missing_ok=True)
+                self.log.unlink(missing_ok=True)
+                result = self.run_installer(None, arguments=arguments)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn('--nodes-tor yes needs a Tor install', result.stderr)
+                self.assertFalse((self.root / '.env').exists())
+                self.assertNotIn(UP, self.calls())
+        # Malformed or combined with --local: a usage error before Docker.
+        for arguments in (['--tor', '--nodes-tor', 'maybe'], ['--local', '--nodes-tor', 'no'], ['--tor', '--nodes-tor']):
+            with self.subTest(arguments=arguments):
+                self.log.unlink(missing_ok=True)
+                result = self.run_installer(None, arguments=arguments)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertEqual(self.calls(), [])
+                self.assertFalse((self.root / '.env').exists())
+
+    def test_check_warns_tor_local_node_without_node_tor_overlay(self):
+        local = 'internal-db,monero'
+        base = 'compose.yaml:compose.tor.yaml:compose.nodes.yaml:compose.internal-db.yaml'
+        result = self.check_env(installed_env(COMPOSE_PROFILES=local, MONERO_NETWORK='stagenet'))
+        self.assertEqual(result.stderr.count(self.TOR_CHECK_WARNING), 1)
+        for values in (installed_env(COMPOSE_PROFILES=local, MONERO_NETWORK='stagenet',
+                                     COMPOSE_FILE=base + ':compose.nodes-tor.yaml'),
+                       installed_env(COMPOSE_PROFILES=local, MONERO_NETWORK='stagenet',
+                                     COMPOSE_FILE=base.replace(':', ';') + ';./compose.nodes-tor.yaml'),
+                       clearnet_env(COMPOSE_PROFILES=local, MONERO_NETWORK='stagenet'),
+                       installed_env()):
+            with self.subTest(values={k: values.get(k) for k in ('APP_MODE', 'COMPOSE_PROFILES', 'COMPOSE_FILE')}):
+                self.assertNotIn(self.TOR_CHECK_WARNING, self.check_env(values).stderr)
+
+    def test_upgrade_keeps_recorded_node_networking(self):
+        # A-530 upgrade decision: upgrade never adds (or removes) compose.nodes-tor.yaml. A recorded COMPOSE_FILE is
+        # kept as it is, and one derived for an old .env without COMPOSE_FILE is what that install already ran. An
+        # install without the overlay is told so by the check upgrade runs.
+        images = installer_image_defaults()
+        recorded = 'compose.yaml:compose.tor.yaml:compose.nodes.yaml:compose.internal-db.yaml'
+        for files, warned in ((recorded, True), (recorded + ':compose.nodes-tor.yaml', False), (None, True)):
+            with self.subTest(files=files):
+                self.write_env(alpha_env(COMPOSE_FILE=files, **images))
+                result = self.upgrade()
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.config()['COMPOSE_FILE'], files or recorded)
+                self.assertEqual(self.TOR_CHECK_WARNING in result.stderr, warned)
+                for copy in self.pre_upgrade_copies():
+                    copy.unlink()
 
     def test_local_node_disk_check_warns_and_never_refuses(self):
         for flags, extra, message in (([], {'INSTALLER_TEST_DF_KB': str(20 * 2**20)}, 'WARNING'),

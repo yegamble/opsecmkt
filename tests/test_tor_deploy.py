@@ -326,6 +326,20 @@ class NodesTorComposeTests(unittest.TestCase):
                     members = sorted(n for n, s in config['services'].items() if 'node_egress' in (s.get('networks') or {}))
                     self.assertEqual(members, ['monero', 'tor-socks'])
 
+    def test_installer_default_file_orders_keep_the_node_inside_tor(self):
+        # A-530: scripts/install.sh writes the overlay by default for Tor with a local node, after the database
+        # overlay and before escrow, egress and scanner overlays. Each order it can write resolves with the proxy flag.
+        for extra_before, extra_after, profiles in (
+                (('compose.internal-db.yaml',), ('compose.escrow-xmr.yaml', 'compose.scanner.yaml'), ('internal-db', 'scanner')),
+                ((), ('compose.escrow-xmr.yaml', 'compose.external-egress.yaml', 'compose.scanner.yaml'), ('scanner',))):
+            files = (*BASE_FILES, *extra_before, NODES_TOR, *extra_after)
+            with self.subTest(files=files):
+                config = compose_config(*files, profiles=('monero', *profiles))
+                self.assertTrue(config['services']['monero']['command'][-1].startswith('--proxy='))
+                for network in config['services']['monero']['networks']:
+                    self.assertIs(config['networks'][network].get('internal'), True, network)
+                self.assertIn('tor-socks', config['services'])
+
     def test_overlay_changes_nothing_else(self):
         self.assertEqual(set(self.services), set(self.base['services']) | {'tor-socks'})
         for name, service in self.base['services'].items():
