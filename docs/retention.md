@@ -135,21 +135,42 @@ A shared wallet uses its earliest outstanding deadline; reviewing it does not re
 
 For Monero, remove the already-destroyed wallet's `NAME`, `NAME.keys` and all corresponding copies only after the existing destruction checks and preservation review.
 
-Using the operator's protected database administration connection, record a review of the exact row:
+Use the operator's protected database administration connection through the `db_sql` helper of the
+[runbook](testnet-runbook.md#clear-the-gate) (`docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U opsecmkt -d opsecmkt "$@"`
+for the bundled database; an external database needs its protected `psql` connection instead). Each statement below needs
+your administrator handle and the exact wallet name, and adds its audit row by that administrator in the same statement:
+both happen, or neither. Record a review of the exact row:
 
-```sql
-UPDATE retention_wallet_cleanup
-SET review_due=clock_timestamp()+interval '30 days'
-WHERE coin='XMR' AND wallet_name='EXACT_OLD_WALLET_NAME' AND confirmed_at IS NULL;
+<!-- runbook-sql: wallet-cleanup-review -->
+```sh
+db_sql -v handle=YOUR_ADMIN_HANDLE -v wallet=EXACT_OLD_WALLET_NAME <<'SQL'
+WITH reviewed AS (
+  UPDATE retention_wallet_cleanup c SET review_due=clock_timestamp()+interval '30 days' FROM users u
+  WHERE c.coin='XMR' AND c.wallet_name=:'wallet' AND c.confirmed_at IS NULL AND u.handle=:'handle' AND u.role='admin'
+  RETURNING u.id, u.handle, c.wallet_name)
+INSERT INTO audit_events(user_id,action)
+SELECT id, 'Physical wallet cleanup of Monero wallet ' || wallet_name || ' reviewed by ' || handle || '; next review in 30 days' FROM reviewed;
+SQL
 ```
 
-After verifying actual cleanup in every location, record completion on that same row:
+After verifying actual cleanup in every location, record completion on that same row, naming the responsible operator
+who attests the cleanup (stored as `confirmed_by`, at most 128 characters; quote a value containing spaces):
 
-```sql
-UPDATE retention_wallet_cleanup
-SET confirmed_at=clock_timestamp(), confirmed_by='RESPONSIBLE_OPERATOR'
-WHERE coin='XMR' AND wallet_name='EXACT_OLD_WALLET_NAME' AND confirmed_at IS NULL;
+<!-- runbook-sql: wallet-cleanup-confirm -->
+```sh
+db_sql -v handle=YOUR_ADMIN_HANDLE -v wallet=EXACT_OLD_WALLET_NAME -v operator=RESPONSIBLE_OPERATOR <<'SQL'
+WITH confirmed AS (
+  UPDATE retention_wallet_cleanup c SET confirmed_at=clock_timestamp(), confirmed_by=:'operator' FROM users u
+  WHERE c.coin='XMR' AND c.wallet_name=:'wallet' AND c.confirmed_at IS NULL AND u.handle=:'handle' AND u.role='admin'
+  RETURNING u.id, u.handle, c.wallet_name, c.confirmed_by)
+INSERT INTO audit_events(user_id,action)
+SELECT id, 'Physical wallet cleanup of Monero wallet ' || wallet_name || ' confirmed by ' || handle || ' (attested by ' || confirmed_by || ')' FROM confirmed;
+SQL
 ```
+
+Each must print `INSERT 0 1`. `INSERT 0 0` changed nothing and added no audit row: the handle is not an administrator's,
+the wallet name does not match an open entry exactly, or the entry was already confirmed.
+The audit row names the wallet; audit rows and their signed exports are private operator records.
 
 An acknowledgement records an operator attestation; it does not delete or inspect files. Completed register entries expire after 180 days.
 Any still-required older copy needs a scoped preservation record and restricted recovery use. Keep wallet inventory and acknowledgements private.
