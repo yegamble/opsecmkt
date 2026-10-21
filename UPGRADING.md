@@ -15,6 +15,17 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## Staff pages no longer wait for PostgreSQL's JIT compiler (MOD72-8)
+
+No migration or setting. The application's database pool now starts each connection with `jit` off, beside its
+existing `statement_timeout`, `lock_timeout` and `idle_in_transaction_session_timeout`. On PostgreSQL 17 with the
+server default `jit = on` (the bundled database and the `postgres:17-alpine` image), the staff escrow-alert query was
+JIT-compiled on every moderator and administrator page load, which took 3–6 s and could reach the 8 s statement
+timeout ("The market is busy") on a busy host; it now takes well under a second. Migrations, host commands, backups
+and `psql` keep the server's setting. If the app reaches the database through a pooler that drops startup
+parameters, add `jit` to PgBouncer's `ignore_startup_parameters` and run `ALTER ROLE <app user> SET jit = off;`, as
+[Connection poolers](docs/operator-guide.md#connection-poolers) describes.
+
 ## A Tor install's local Monero node defaults to Tor (A-530)
 
 No migration, no new key. A **new** `./scripts/install.sh` Tor install with the local Monero node now lists
