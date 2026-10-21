@@ -35,6 +35,7 @@ Refuses when `.env` or the project's volumes already exist. Any question your op
 - `--monero-network mainnet|stagenet`: mainnet by default, with real funds. Use stagenet for a test market.
 - `--monero-image IMAGE`: pinned release tag or immutable digest, never `latest`.
 - `--monero-prune yes|no`: prune by default.
+- `--nodes-tor yes|no`: Tor only. `yes` (default with `--tor` and a local node) adds `compose.nodes-tor.yaml`, so the daemon reaches peers and relays transactions through a Tor client of its own; Monero over Tor is unverified. `no` sends its peer traffic from this host's IP address, with a warning on every `check`. `upgrade` never changes it. See [Local nodes over Tor](../operator-guide.md#local-nodes-over-tor).
 - `--monero-escrow yes|no`: enable custodial escrow with the local daemon; default `no`.
 - `--monero-escrow-seed-key FILE`: armored OpenPGP public key used to encrypt wallet seeds. Keep its private half offline.
 

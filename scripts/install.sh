@@ -148,6 +148,8 @@ init options (each answers one question; a question without its option is asked)
   --nodes local|none|custom        pruned local Monero escrow-support node, none, or custom
   --monero local|disabled           --monero-image IMAGE   --monero-network mainnet|stagenet
   --monero-prune yes|no
+  --nodes-tor yes|no               Tor: the local Monero node reaches its peers through its own Tor client
+                                   (compose.nodes-tor.yaml; default yes with --tor; no sends its traffic from this host's IP)
   --monero-escrow yes|no           Monero escrow on the local Monero node (custodial; default no)
   --monero-escrow-seed-key FILE    with it: the armored OpenPGP public key its wallet seeds are sealed to
   --admin HANDLE [--site-name NAME]  create the first administrator here (password asked twice, never shown)
@@ -997,6 +999,11 @@ run_check() {
       *) problems="$problems  - MONERO_NETWORK must be stagenet or mainnet (real funds) for the local escrow-support daemon"$'\n' ;;
     esac
   fi
+  # A-530: new Tor installs list compose.nodes-tor.yaml; one without it (--nodes-tor no, or installed before A-530 and
+  # kept as recorded by upgrade) is told on every check what that means. A warning: the operator chose it.
+  if [[ $mode == tor ]] && has_item "$profiles" monero && ! compose_has compose.nodes-tor.yaml; then
+    warnings="${warnings}warning: APP_MODE=tor with the local Monero node, but COMPOSE_FILE lacks compose.nodes-tor.yaml: the node's peer-to-peer traffic is not routed through Tor, so its peers see this host's IP address. New installs add it (after compose.nodes.yaml); upgrade never does. See docs/operator-guide.md#local-nodes-over-tor"$'\n'
+  fi
   if has_item "$profiles" monero-escrow-wallet && [[ -z $(env_value ESCROW_XMR_WALLET_RPC_PASSWORD) ]]; then
     problems="$problems  - the Monero escrow wallet (monero-escrow-wallet profile) needs ESCROW_XMR_WALLET_RPC_PASSWORD"$'\n'
   fi
@@ -1185,7 +1192,7 @@ cmd_init() {
   local bare=true local_mode=false mode='' database='' proxy='' nodes='' admin='' site_name='' site_given=false
   local xmr='' xmr_image='' xmr_network='' xmr_prune=''
   local detail=false local_http='' password1='' password2='' uploads=''
-  local xmr_escrow='' xmr_seed_key='' onion_dir='' onion_given='' onion_expected=''
+  local xmr_escrow='' xmr_seed_key='' onion_dir='' onion_given='' onion_expected='' nodes_tor=''
   (($# == 0)) || bare=false
   while (($#)); do
     case $1 in
@@ -1193,7 +1200,7 @@ cmd_init() {
       --tor|--clearnet) [[ -z $mode ]] || usage; mode=${1#--} ;;
       --bitcoin|--bitcoin-*) die 'Bitcoin support was removed. This build is Monero-only; no configuration was written.' ;;
       --external-db|--behind-proxy|--nodes|--monero|--monero-image|--monero-network|--monero-prune|\
-      --monero-escrow|--monero-escrow-seed-key|--admin|--site-name|--uploads|--onion-key-dir|--onion-address)
+      --monero-escrow|--monero-escrow-seed-key|--admin|--site-name|--uploads|--onion-key-dir|--onion-address|--nodes-tor)
         (($# >= 2)) || usage
         case $1 in
           --external-db) database=$2; [[ -n $database ]] || usage ;;
@@ -1203,6 +1210,7 @@ cmd_init() {
           --monero-image) xmr_image=$2 ;;
           --monero-network) refuse_network_name MONERO "$2" "$1 "; xmr_network=$(one_of "$1" "$2" mainnet stagenet) ;;
           --monero-prune) xmr_prune=$(one_of "$1" "$2" yes no) ;;
+          --nodes-tor) nodes_tor=$(one_of "$1" "$2" yes no) ;;
           --monero-escrow) xmr_escrow=$(one_of "$1" "$2" yes no) ;;
           --monero-escrow-seed-key) xmr_seed_key=$2; [[ -n $xmr_seed_key ]] || usage ;;
           --admin) admin=$2 ;;
@@ -1230,7 +1238,7 @@ cmd_init() {
       exit 2
     fi
   fi
-  if [[ $local_mode == true && -n $mode$database$proxy$nodes$xmr$xmr_image$xmr_network$xmr_prune$uploads$xmr_escrow ]]; then
+  if [[ $local_mode == true && -n $mode$database$proxy$nodes$xmr$xmr_image$xmr_network$xmr_prune$uploads$xmr_escrow$nodes_tor ]]; then
     echo '--local answers every question itself; combine it only with --admin and --site-name.' >&2
     exit 2
   fi
@@ -1367,6 +1375,17 @@ cmd_init() {
     *) die 'Invalid node choice' ;;
   esac
   xmr_choice=$choice xmr_image=$image
+  # A-530: a Tor install's local Monero node reaches its peers, and relays transactions, through its own Tor client
+  # (compose.nodes-tor.yaml) unless --nodes-tor no. Not asked: the default is the private choice, and the option or
+  # COMPOSE_FILE (docs/operator-guide.md#local-nodes-over-tor) changes it.
+  if [[ $mode == tor && $xmr_choice == local ]]; then
+    nodes_tor=${nodes_tor:-yes}
+  elif [[ $nodes_tor == yes ]]; then
+    echo '--nodes-tor yes needs a Tor install (--tor) with the local Monero node. Nothing was written.' >&2
+    exit 2
+  else
+    nodes_tor=no
+  fi
   # Monero escrow (A-449): only beside the local Monero node, on stagenet or (A-523) mainnet, whose daemon its own
   # wallet-RPC service (monero-escrow-wallet) shares. Off unless chosen; asked where the Monero questions are asked.
   # Its secret and its wallet-RPC password are generated below; the seed key (a public key whose private half the
@@ -1442,6 +1461,9 @@ cmd_init() {
     external_egress=true
     external_database=true
   fi
+  # After compose.nodes.yaml and the database overlay, as compose.nodes-tor.yaml's header lists it (check refuses it
+  # before compose.nodes.yaml).
+  if [[ $nodes_tor == yes ]]; then compose_files="${compose_files}:compose.nodes-tor.yaml"; fi
   if [[ $mode == tor || $local_http == yes ]]; then secure=false; fi
   # A-523: before .env is written, a mainnet install says what that means, per coin.
   if [[ $monero_network == mainnet ]]; then
@@ -1458,8 +1480,12 @@ cmd_init() {
         echo "Monero escrow stays off. On mainnet it is custodial with real funds: the market would hold every escrow wallet's keys (docs/operator-guide.md#monero-escrow)."
       fi
     fi
-    if [[ $mode == tor ]]; then
-      echo "Tor: the local nodes' peer-to-peer traffic is not routed through Tor unless compose.nodes-tor.yaml is added to COMPOSE_FILE (docs/operator-guide.md#local-nodes-over-tor); without it, their peers see this host's IP address."
+  fi
+  if [[ $mode == tor && $xmr_choice == local ]]; then
+    if [[ $nodes_tor == yes ]]; then
+      echo "Tor: the local Monero node reaches its peers, and relays transactions, through a Tor client of its own (compose.nodes-tor.yaml; docs/operator-guide.md#local-nodes-over-tor). Monero over Tor is unverified here. --nodes-tor no opts out."
+    else
+      echo "Tor: the local nodes' peer-to-peer traffic is not routed through Tor (--nodes-tor no) unless compose.nodes-tor.yaml is added to COMPOSE_FILE (docs/operator-guide.md#local-nodes-over-tor); without it, their peers see this host's IP address."
     fi
   fi
   # The local nodes' size on disk, per chain (estimates; docs/operator-guide.md#local-node-pruning), checked against

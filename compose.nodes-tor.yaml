@@ -1,6 +1,8 @@
 # Local nodes over Tor (A-442; docs/operator-guide.md#local-nodes-over-tor). Only with APP_MODE=tor, after
 # compose.tor.yaml and compose.nodes.yaml in COMPOSE_FILE (`./scripts/install.sh check` refuses it otherwise):
 #   COMPOSE_FILE=compose.yaml:compose.tor.yaml:compose.nodes.yaml:<database overlay>:compose.nodes-tor.yaml
+# A new Tor install with the local node lists it there by default (A-530; `--nodes-tor no` opts out); upgrade never
+# adds or removes it.
 # It adds tor-socks, a Tor client of the nodes' own (deploy/torrc-socks: one SOCKS port, no onion service, no control
 # port; the onion container keeps SocksPort 0), and turns node_egress internal: monerod lose their direct
 # route out and reach peers only through tor-socks, which alone has an egress network (tor_socks_egress). The app is not

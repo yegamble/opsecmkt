@@ -661,6 +661,12 @@ func printPlan(out io.Writer, c Config) error {
 	if _, err := fmt.Fprintln(out, "official addresses (named in PGP sign-in codes):", list); err != nil {
 		return err
 	}
+	// A-530: the installer's compose.nodes-tor.yaml has no counterpart here; say so rather than imply Tor egress.
+	if c.Exposure == "tor" && c.MoneroImage != "" {
+		if _, err := fmt.Fprintln(out, "local Monero daemon: peer-to-peer traffic is not routed through Tor; its peers see this host's IP address (development only). Monero escrow relays stay held unless ESCROW_XMR_TOR_RELAY=clearnet-accepted"); err != nil {
+			return err
+		}
+	}
 	if strings.TrimSpace(c.Settings["ESCROW_XMR_TOR_RELAY"]) == "remote-tor" {
 		if _, err := fmt.Fprintln(out, "Monero relay: operator declares remote Tor egress; proxy and firewall behavior require verification on the payment host"); err != nil {
 			return err

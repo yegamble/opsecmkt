@@ -180,7 +180,7 @@ Optional development services require explicit digest-pinned images:
 | `--escrow-xmr --monero-image IMAGE@sha256:DIGEST --monero-wallet-image IMAGE@sha256:DIGEST --monero-seed-key PUBLIC.asc` | Runs pruned stagenet Monero and a dedicated authenticated escrow wallet RPC. The image contracts match the existing `compose.nodes.yaml`. |
 | `--database-url-file FILE` | Uses an existing PostgreSQL database instead of starting the local one. |
 
-The development scanner runs in a separate container on an internal scanner network. This is a development convenience; it does not provide production host separation. Tor inbound exposure does not by itself route outbound Monero traffic over Tor. The existing relay hold remains active until the operator configures the documented Tor routing or explicitly accepts direct exposure.
+The development scanner runs in a separate container on an internal scanner network. This is a development convenience; it does not provide production host separation. Tor inbound exposure does not by itself route outbound Monero traffic over Tor; the development local daemon reaches its peers directly, and `deploy plan` says so (the shell installer's `compose.nodes-tor.yaml` has no counterpart here). The existing relay hold remains active until the operator configures the documented Tor routing or explicitly accepts direct exposure.
 
 ## Importing and generating keys
 

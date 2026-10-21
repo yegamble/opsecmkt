@@ -15,6 +15,25 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## A Tor install's local Monero node defaults to Tor (A-530)
+
+No migration, no new key. A **new** `./scripts/install.sh` Tor install with the local Monero node now lists
+`compose.nodes-tor.yaml` in `COMPOSE_FILE`, so the daemon reaches its peers, and relays Monero escrow settlements,
+through a Tor client of its own ([Local nodes over Tor](docs/operator-guide.md#local-nodes-over-tor); Monero over Tor
+is unverified). `--nodes-tor no` keeps the old layout, with the old warning.
+
+**Existing installs keep their recorded choice.** `upgrade` (and a plain `git pull` with `docker compose up -d`) never
+adds or removes the overlay: a recorded `COMPOSE_FILE` is kept as it is, and the one `upgrade` derives for an `.env`
+without `COMPOSE_FILE` is the layout that install already ran. Adopting the overlay changes the node's networking (its
+direct egress network becomes internal, the pinned subnet `10.199.42.0/28` must be free on the host, a new `tor-socks`
+container and volume appear, and Monero escrow relays held in Tor mode start going out), so it is the operator's step,
+not a side effect of a redeploy. What changes for you: while `APP_MODE=tor`, the `monero` profile and no
+`compose.nodes-tor.yaml` remain, `./scripts/install.sh check` (which `upgrade` runs) now prints a warning that the
+node's peers see this host's IP address. To adopt it, append `compose.nodes-tor.yaml` after `compose.nodes.yaml` in
+`COMPOSE_FILE`, run `./scripts/install.sh check`, then `docker compose up -d --build`. To keep direct node traffic,
+ignore the warning. The native `opsecmkt deploy` controller is unchanged; its `deploy plan` now says that its
+development-only local daemon is not routed through Tor.
+
 ## monerod's own log file is capped (A-538)
 
 No migration or setting. The bundled `monero` service (`compose.nodes.yaml`, `compose.nodes-tor.yaml` and the native

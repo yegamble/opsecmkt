@@ -72,3 +72,27 @@ func TestRemoteTorRelayConfigurationFailsClosed(t *testing.T) {
 		}
 	}
 }
+
+// A-530: this controller renders its own development Monero daemon without the installer's node Tor client
+// (compose.nodes-tor.yaml), so a Tor plan with that daemon says its peer-to-peer traffic leaves from the host
+// and that Monero escrow relays stay held; a clearnet plan or one without a local daemon says nothing about it.
+func TestTorPlanDisclosesLocalMoneroOutsideTor(t *testing.T) {
+	const notice = "local Monero daemon: peer-to-peer traffic is not routed through Tor"
+	settings := map[string]string{"MONERO_NETWORK": "stagenet", "ESCROW_XMR": "on"}
+	for _, tc := range []struct {
+		exposure, monero string
+		want             bool
+	}{{"tor", testImage, true}, {"clearnet", testImage, false}, {"tor", "", false}} {
+		var plan bytes.Buffer
+		c := Config{Mode: "dev", Exposure: tc.exposure, MoneroImage: tc.monero, Settings: settings}
+		if err := printPlan(&plan, c); err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Contains(plan.String(), notice); got != tc.want {
+			t.Fatalf("exposure %s, monero %q: notice shown %v, want %v:\n%s", tc.exposure, tc.monero, got, tc.want, plan.String())
+		}
+		if tc.want && !strings.Contains(plan.String(), "ESCROW_XMR_TOR_RELAY=clearnet-accepted") {
+			t.Fatal("plan omitted the relay hold and its explicit opt-in")
+		}
+	}
+}
