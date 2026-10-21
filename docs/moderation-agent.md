@@ -344,7 +344,7 @@ allocations in any 24 hours (81 with the default 4096 slots), so one account's
 edit stream cannot exhaust the lifetime budget for everyone. The counter row
 holds only the account, its window start and a count; it names no target. An
 expired row is deleted by the next capture admission or worker pass, every row
-is deleted when capture is disabled, and an account's row goes with the account. With the default byte
+is deleted when capture is disabled, and an account's row goes with the account. If capture stays enabled while no worker runs and no capture is admitted, expired rows remain until the next worker pass or until capture is disabled. With the default byte
 budget the shared pool is 512 allocations, so one actor can still use about a
 sixth of it per day; size `--max-reserved-bytes` with that in mind.
 

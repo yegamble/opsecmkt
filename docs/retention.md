@@ -64,7 +64,7 @@ Legacy last-use dates are not invented from account creation dates.
 
 | Data | Live-system deadline |
 | --- | --- |
-| Abuse-review records, legacy and new: legacy copied content; new record and order references, capture times, text digests, exact and perceptual image fingerprints; findings, decisions and staff reviews | No automatic expiry; separate from the ordinary content/account deadlines below, including after the original content or image is removed, after account deletion and after collection stops. A digest or fingerprint can confirm a guessed text or a matching image |
+| Abuse-review records, legacy and new: legacy copied content; new record and order references, capture times, text digests, exact and perceptual image fingerprints; findings, decisions and staff reviews; markers for records waiting to be checked (type, id, first/last wait time) and per-account counts of checks in the past day | No automatic expiry; separate from the ordinary content/account deadlines below, including after the original content or image is removed, after account deletion and after collection stops. A digest or fingerprint can confirm a guessed text or a matching image. A waiting marker is removed once its record is checked or found gone; while collection is off it waits indefinitely, including for removed sources and erased accounts. A daily count is removed after its day at the next check or worker pass, when collection stops, or with the account |
 | Individual direct messages, ciphertext and routing metadata | 90 days after creation |
 | Support-ticket bodies | 90 days after creation, or earlier when the opener/message sender is closed or erased, unless preserved |
 | Closed or Ignored support-ticket metadata | 90 days after the last update, once all bodies are gone and no related hold applies |
@@ -299,5 +299,5 @@ account's 24-hour allocation window (account, window start, count) with no
 target; an expired row is deleted by the next capture admission or worker pass,
 disabling capture deletes every row, and account erasure
 deletes the account's row (`ON DELETE CASCADE`, an enumerated relationship in the
-account-erasure inventory). New proposal inputs no longer contain per-field
+account-erasure inventory). If capture stays enabled while no worker runs and no capture is admitted, expired rows remain until the next worker pass or until capture is disabled. New proposal inputs no longer contain per-field
 digests, and non-listing proposals no longer store a text fingerprint.
