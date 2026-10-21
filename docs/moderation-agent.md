@@ -351,9 +351,10 @@ capture is admitted, an expired daily count remains until the next worker pass o
 until capture is disabled. Disabling capture zeroes daily counts but keeps every
 row that has waiting markers or a rescan, indefinitely while capture is off. A
 parked marker keeps its account's row for as long as it is parked. The
-waiting-marker count is corrected from live sources (within a pass for active
-markers, lazily for parked ones), so a row can outlast its last marker by a day
-or more. With the default byte
+waiting-marker counts are decremented in the same transaction that deletes a
+marked record, so a deleted source leaves no stale count; safety recounts run
+within a pass while fewer than 4096 markers are waiting, and otherwise about once
+a day per idle account. With the default byte
 budget the shared pool is 512 allocations, so one actor can still use about a
 sixth of it per day; size `--max-reserved-bytes` with that in mind. At these
 defaults one account that edits constantly can use up the whole pool in about
@@ -381,8 +382,8 @@ backlog (an active marker or a rescan), its new captures queue behind it instead
 of being admitted directly, so its daily share is spent in first-refusal order
 and fresh writes cannot jump ahead of an older refused target. It reads the target's current
 source and queues that current revision through the same admission checks. A
-missed intermediate revision is never stored or evaluated. A deleted source loses
-its marker without a job or allocation. An archived listing, hidden review or
+missed intermediate revision is never stored or evaluated. Deleting a marked
+record removes its marker in the same transaction, without a job or allocation. An archived listing, hidden review or
 unflagged payment keeps its marker, parked: restoring the listing, unhiding the
 review or flagging the payment again captures its current revision (the worker
 also re-checks a few parked markers each pass, for a return while capture was
@@ -392,12 +393,22 @@ One account can hold at most 16 markers (`moderation_capacity.max_actor_markers`
 and always fewer than the 65536-marker table, `max_backfill`). Past that bound,
 or when the table is full (a counted `backfill_capacity` warning), the account
 is flagged for a rescan instead of adding markers. Once the account can be
-admitted again, each pass re-reads up to 64 of its live records in order of last
-change (listing updates, upload/review/dispute creation, payment updates), then
-kind and id, from the stored position, through indexes, and queues every current
-revision that has no job. An edited record moves behind untouched ones, never
-ahead of them. A refusal during the rescan repeats it. The position is the last
-record re-read, kept only while the rescan runs. Archived listings, hidden reviews and
+admitted again, each pass re-reads up to 64 of its live records in order of
+creation time (listings, uploads, reviews, disputes and payments all have one),
+then kind and id, from the stored position, through indexes, and queues every
+current revision that has no job. The account cannot reorder this walk: edits,
+price or stock changes, photos and archive/restore leave a record's creation
+time alone. A record passed and edited later, and any refusal during the rescan,
+make the walk repeat from the start once it reaches the end. A refused record S
+is therefore captured within ceil(k / share) daily windows, where k is the number
+of the account's records created before S that have no job when the rescan starts
+and share is its daily allocation share (81 by default); re-editing S does not
+delay it. The position (the type, id and creation time of the last record
+re-read) is kept while the rescan runs and capture is on, including while the
+account cannot be admitted; it can name a record removed since until the
+account's next rescan step, and it is cleared when the rescan ends or capture is
+disabled (a rescan then restarts from the beginning, skipping revisions that
+already have a job). Archived listings, hidden reviews and
 unflagged payments are re-read when they return, as above. Disabling capture
 stops the sweep; markers and rescans wait until it is enabled again.
 

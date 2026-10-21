@@ -745,8 +745,9 @@ func TestModerationBackfillCoalescesAndDropsDeletedSource(t *testing.T) {
 	archived := e.product(editor, "digital")
 	agExec(e, `DELETE FROM products WHERE id=$1`, removed)
 	agExec(e, `UPDATE products SET archived=true,archived_at=now() WHERE id=$1`, archived)
-	if agInt(e, `SELECT count(*) FROM moderation_backfill`) != 3 {
-		t.Fatal("precondition: three markers expected")
+	// Deleting a marked listing releases its marker at once.
+	if agInt(e, `SELECT count(*) FROM moderation_backfill`) != 2 || agInt(e, `SELECT count(*) FROM moderation_backfill WHERE target_id=$1`, removed) != 0 {
+		t.Fatal("deleting a marked source did not release its marker")
 	}
 	moderationDrain(t, e, moderationTestWorker(e))
 	if got := agInt(e, `SELECT count(*) FROM moderation_jobs WHERE target_id=$1`, target); got != 1 {

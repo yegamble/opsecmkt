@@ -116,6 +116,11 @@ func SetModerationEnabled(ctx context.Context, db *sql.DB, enabled bool) error {
 			if _, err = tx.ExecContext(ctx, `DELETE FROM moderation_actor_allocations WHERE actor_id IN (SELECT actor_id FROM moderation_actor_allocations WHERE markers=0 AND NOT rescan FOR UPDATE SKIP LOCKED)`); err != nil {
 				return err
 			}
+			// A rescan restarts from the beginning when capture is enabled again;
+			// its position (a record reference) is not kept while capture is off.
+			if _, err = tx.ExecContext(ctx, `UPDATE moderation_actor_allocations SET rescan_ts=NULL,rescan_kind=NULL,rescan_id=NULL WHERE actor_id IN (SELECT actor_id FROM moderation_actor_allocations WHERE rescan_ts IS NOT NULL FOR UPDATE SKIP LOCKED)`); err != nil {
+				return err
+			}
 			if _, err = tx.ExecContext(ctx, `UPDATE moderation_actor_allocations SET allocations=0 WHERE actor_id IN (SELECT actor_id FROM moderation_actor_allocations WHERE allocations>0 FOR UPDATE SKIP LOCKED)`); err != nil {
 				return err
 			}
