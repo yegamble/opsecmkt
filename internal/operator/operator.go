@@ -23,6 +23,7 @@ import (
 
 const usage = `Usage: opsecmkt deploy COMMAND [options]
 Commands:
+  recovery  export encrypted application configuration or restore it from offline-decrypted stdin
   host-reboot configure the private app-host reboot service; mark rehearsed unlock readiness explicitly
   storage   prepare/unlock an additional encrypted disk, verify storage or bind a migrated installation
   init      create private configuration and keys; starts nothing; never overwrites
@@ -45,6 +46,9 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 		return err
 	}
 	command := args[0]
+	if command == "recovery" {
+		return runRecovery(ctx, args[1:], in, out, errOut)
+	}
 	if command == "host-reboot" {
 		return runHostReboot(ctx, args[1:], out, errOut)
 	}

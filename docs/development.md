@@ -7,8 +7,8 @@ test suite locally. For deploying a marketplace, use the
 
 ## Run from source with a local database
 
-Requirements: **Go 1.26.9+** (with the default `GOTOOLCHAIN=auto`, Go downloads the
-1.27.2 toolchain pinned in `go.mod`; set `GOTOOLCHAIN=local` to refuse the download),
+Requirements: **Go 1.26.10+** (with the default `GOTOOLCHAIN=auto`, Go downloads the
+1.27.3 toolchain pinned in `go.mod`; set `GOTOOLCHAIN=local` to refuse the download),
 **PostgreSQL 17+**, and OpenSSL. The example below
 uses Docker for PostgreSQL only; an existing local PostgreSQL server works too, if its databases are UTF8
 (`SHOW server_encoding`; startup and the tests refuse any other encoding, so create them with
@@ -335,11 +335,14 @@ For actual local Monero transactions, use the fakechain procedure below. Browser
 ### Monero escrow on a local fakechain (real monerod and monero-wallet-rpc)
 
 Monero escrow (WR-escrow Phase 3, `ESCROW_XMR=on`, custodial, off by default; see [escrow](escrow.md#phase-3-monero-escrow-on-a-local-fakechain))
-has eighteen legs that run the real server code (a Go test per leg, with its own App and Monero escrow watcher) against a real
+has nineteen legs that run the real server code (a Go test per leg, with its own App and Monero escrow watcher) against a real
 `monerod --regtest` and three real `monero-wallet-rpc` 0.18.5.1 instances: `scripts/test-escrow-xmr-regtest.sh`. It runs in
 CI (the `escrow-xmr-regtest` job, A-498), refuses any daemon that is not a fakechain with hard fork 16 or later before any wallet call, and needs a
 disposable PostgreSQL database in `TEST_DATABASE_URL` (the legs create their own databases from it, as the other database
-tests do). The header of the script has the exact `docker` commands; the
+tests do). The `StaleRingRemedyB` leg also runs the official `monero-wallet-cli` 0.18.5.1 for Linux x86-64: the script
+downloads its archive from getmonero.org once into `artifacts/cache/` (gitignored; or takes `ESCROW_XMR_REGTEST_CLI_ARCHIVE`),
+checks it against the pinned SHA-256 of the release's signed `hashes.txt` on every run and refuses any other, and runs
+it in Docker as `linux/amd64` (an ARM host needs amd64 emulation). The header of the script has the exact `docker` commands; the
 [runbook](testnet-runbook.md#9-manual-monero-escrow-fakechain-check) repeats them. The loopback ports it uses by default:
 
 | Port | What |

@@ -2,7 +2,7 @@
 
 The `opsecmkt` binary runs the application, upload gateway and dependency-version worker, generates/imports keys, and manages an explicit Docker Compose installation. This reference describes commands present in the current source. For a guided deployment, use [Running the standalone binary](binary.md); for separate hosts and sizing, use [Separating services](service-topology.md).
 
-Examples use `./opsecmkt`. Rename the release file for your platform or substitute its actual path. Native commands do not require a source checkout or a Go compiler. `serve` requires PostgreSQL; `deploy` requires Docker Engine and Compose 2.17 or newer. The binary does not embed PostgreSQL, Monero, ClamAV or Tor, install packages or provision remote hosts. Production lifecycle commands install storage-check drop-ins; optional `deploy host-reboot configure` installs its narrow systemd agent. Operators supervise the other native services separately.
+Examples use `./opsecmkt`. Rename the release file for your platform or substitute its actual path. Native commands do not require a source checkout or a Go compiler. `serve` requires PostgreSQL; `deploy` requires Docker Engine and Compose 2.17 or newer. The binary does not embed PostgreSQL, Monero, ClamAV or Tor or provision remote hosts. Separate [host commands](server-bootstrap.md) prepare a supported Ubuntu app host and optionally install distribution packages; [recovery commands](recovery.md) export/restore encrypted application configuration. Production lifecycle commands install storage-check drop-ins; optional `deploy host-reboot configure` installs its narrow systemd agent. Operators supervise the other native services separately.
 
 ## Command map and argument rules
 
@@ -122,7 +122,7 @@ Every flag in this table takes a string unless marked boolean. Defaults describe
 | `--clamd-address` | `CLAMD_ADDRESS` | Unset; disables integrated uploads. Development integrated scanning uses `HOST:PORT`; production app must leave it blank. |
 | `--upload-mode` | `UPLOAD_MODE` | `integrated`; `isolated` refuses direct raw uploads and requires the private backend listener. Production requires `isolated`. |
 | `--upload-backend-addr` | `UPLOAD_BACKEND_ADDR` | Unset; private mutual-TLS upload backend address, required with isolated mode. Never publish it. |
-| `--upload-ca` | `UPLOAD_CA` | Unset; public CA authenticating upload-gateway client certificates. Required for the backend. |
+| `--upload-ca` | `UPLOAD_CA` | Unset; public CA authenticating upload-gateway client certificates. Required for the backend. Must be a dedicated CA that issues only the backend server certificate and the gateway client certificate; startup refuses one sharing a certificate with `MONERO_RPC_CA` or `DATABASE_CA`, and the backend refuses a client certificate without the clientAuth extended key usage or that is a CA. |
 | `--upload-cert` | `UPLOAD_CERT` | Unset; upload backend server certificate. Required for the backend. |
 | `--upload-key` | `UPLOAD_KEY` | Unset; upload backend server private key. Required for the backend. |
 | `--tls-cert` | `TLS_CERT` | Unset; application HTTPS leaf certificate. Required with `--tls-key`, and required in production. |
@@ -493,7 +493,7 @@ Only `init` accepts these flags. Unless a default is shown, a flag is unset/opti
 | `--monero-rpc-key` | Unset | Import Monero mutual-TLS client private key. |
 | `--tls-cert` | Unset | Import app HTTPS server certificate; required in production with key. |
 | `--tls-key` | Unset | Import app HTTPS server private key. |
-| `--upload-ca` | Unset | Import upload client-auth CA; required in production. |
+| `--upload-ca` | Unset | Import upload client-auth CA; required in production. Must be dedicated to the backend and gateway certificates; refused when it shares a certificate with `--monero-rpc-ca` or `--database-ca`. |
 | `--upload-cert` | Unset | Import upload backend server certificate; required in production. |
 | `--upload-key` | Unset | Import upload backend server private key; required in production. |
 | `--dependency-report-dir` | Unset | Existing public signed-report directory, mounted read-only into the app. Keep worker seed elsewhere. |
@@ -760,7 +760,7 @@ The native commands below execute Go code and direct Docker invocations. They do
 | `install.sh add-scanner` | Fresh development can use `init --clamav-image DIGEST`. Production gateway/ClamAV lives on its separate prepared host. There is no native `add-scanner` command for automatically modifying an existing worker. |
 | `install.sh refresh-scanner` | No native signature-refresh command. Maintain the separate scanner and review updated image/signature inputs explicitly; old signatures fail closed. App redeployment does not refresh it. |
 | `install.sh upgrade` | Review compatibility/migrations, take documented backups, then `redeploy --app-image DIGEST --dir EXISTING_DIR` for the app only. Native redeploy does not check out source, back up data, update workers, or perform automatic rollback. |
-| `scripts/backup.sh`, `scripts/restore.sh` | Remain separate scripts with their documented tools, encryption, retention metadata and payment/restore gates. No native backup/restore command exists; `down` and copying the operator directory are not substitutes. |
+| `scripts/backup.sh`, `scripts/restore.sh` | Remain separate scripts with their documented tools, encryption, retention metadata and payment/restore gates. Native `deploy recovery` covers configuration/keys only; `down`, that bundle and copying the operator directory do not back up database, wallet or current retention state. |
 | Tor backup/restore, UTF8 maintenance and packaging helpers | Remain documented maintenance tools until native equivalents exist. Preserve onion identities, wallet files, external retention state and authenticated evidence. |
 | `scripts/test-*.sh`, `scripts/ci-smoke.sh`, Python/SQL/CI checks | Remain development/release verification tooling. They are not deployment-time dependencies of native `serve` or CLI wrappers to remove blindly. |
 

@@ -26,6 +26,22 @@ public and new ones publish at once, as before. Rolling the application back to 
 leaves the columns unused; a listing still pending or rejected would then be public again, so approve pending
 listings, and take down rejected ones you do not want public, before downgrading.
 
+## The upload backend accepts only a clientAuth gateway certificate (A-589)
+
+No migration or setting. The private upload backend now answers 404 on every `/v1/uploads/*` route to a client
+certificate that lacks the clientAuth extended key usage or is a CA, even when it verifies against `UPLOAD_CA`. A gateway
+certificate issued with `opsecmkt keys generate tls-client` (as the [production guide](docs/install/production.md#3-prepare-application-and-gateway-identities)
+does) is unaffected. A gateway client certificate issued by another tool without clientAuth must be reissued with
+`keys generate tls-client` under the upload CA before upgrading the application; until then every upload fails.
+`opsecmkt deploy init`, `plan`, `install`, `up`, `doctor`, `redeploy`, `recovery export` and `recovery restore`, and
+server startup, also refuse an `UPLOAD_CA` that shares a certificate with `MONERO_RPC_CA` or `DATABASE_CA` ("UPLOAD_CA
+must be a dedicated upload transport CA …"; at startup only the CA files whose variables are set are compared, so a
+headless `serve` with the database CA only in `DATABASE_URL`'s `sslrootcert` compares against `MONERO_RPC_CA` alone).
+Such an installation must issue a dedicated upload CA with new backend and gateway certificates before upgrading; the
+guides already use a separate "Upload transport CA". A recovery bundle exported before the upgrade from a shared-CA
+installation cannot be restored with this release: restore it with the previous release, give it a dedicated upload CA,
+then upgrade.
+
 ## A restore pause is shown to staff (A-559)
 
 No migration or setting. While a restore pauses Monero escrow (`ESCROW_XMR` on, and the restore gate
@@ -2808,3 +2824,18 @@ Restore stays isolated and needs that current external retention state to reappl
 It retains all payout and reconciliation gates. If an old snapshot predates a replacement administrator, use the documented fresh-account/host-role recovery;
 do not revive erased credentials. An older binary refuses these migrations. Rolling back application code does not authorize restoring deleted data:
 follow section 5 together with the current retention manifest and preservation duties.
+
+## Native application-host bootstrap and portable configuration recovery
+
+Existing deployments change no host policy merely by upgrading the binary.
+Explicit `host` commands support the narrow Ubuntu profile described in
+[server bootstrap](docs/install/server-bootstrap.md); review existing SSH, firewall
+manager and boot/update configuration before use. Recovery export is an encrypted
+configuration copy, not a data backup. Restore preserves established keys and
+identities, starts nothing and clears old host storage proof for explicit
+rebinding; follow [configuration recovery](docs/install/recovery.md).
+
+The build toolchain is Go 1.27.3 (minimum supported Go 1.26.10), including the
+pinned container build image and development-tool modules. This includes the
+GO-2026-6809 crypto/x509 trust fix; rebuild binaries/images to receive the
+standard-library correction.

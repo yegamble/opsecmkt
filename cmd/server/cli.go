@@ -21,6 +21,7 @@ import (
 	"opsecmkt/internal/brandingconfig"
 	"opsecmkt/internal/dependencies"
 	"opsecmkt/internal/emergency"
+	"opsecmkt/internal/hostbootstrap"
 	"opsecmkt/internal/hostcontrol"
 	"opsecmkt/internal/interactive"
 	"opsecmkt/internal/keymaterial"
@@ -41,6 +42,7 @@ const cliHelp = `usage: opsecmkt COMMAND [flags]
   emergency         Plan or explicitly target incident shutdown/LUKS erasure
   admin-tor-prepare Prepare public client authorization in the private Tor volume
   tor-identity-prepare Prepare a selected public onion identity in its Tor volume
+  host              Plan/apply a restricted Ubuntu application-host security policy
   deploy            Manage a Docker Compose installation; deploy --help for commands
   host-control-agent Serve the private, fixed app-host reboot capability (Linux root)
   init|plan|install|redeploy|status|up|down|logs|doctor|storage
@@ -107,6 +109,16 @@ func command(args []string, in io.Reader, out, errOut io.Writer) (bool, error) {
 			return true, ramsecrets.Run(ctx, args[1:], in, out, errOut)
 		}
 		return true, emergency.Run(ctx, args[1:], out, errOut)
+	case "host", "host-load-firewall":
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		if args[0] == "host-load-firewall" {
+			if len(args) != 1 {
+				return true, errors.New("host-load-firewall takes no arguments")
+			}
+			return true, hostbootstrap.LoadFirewall(ctx)
+		}
+		return true, hostbootstrap.Run(ctx, args[1:], out, errOut)
 	case "host-control-agent":
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
@@ -288,7 +300,7 @@ func loadTLS(caFile, certFile, keyFile string, server bool) (*tls.Config, error)
 	return c, nil
 }
 
-func readCAPool(path string) (*x509.CertPool, error) {
+func readCAPEM(path string) ([]byte, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, errors.New("cannot read TLS CA file")
@@ -297,6 +309,14 @@ func readCAPool(path string) (*x509.CertPool, error) {
 	data, err := io.ReadAll(io.LimitReader(f, (1<<20)+1))
 	if err != nil || len(data) > 1<<20 {
 		return nil, errors.New("cannot read TLS CA file (maximum 1 MiB)")
+	}
+	return data, nil
+}
+
+func readCAPool(path string) (*x509.CertPool, error) {
+	data, err := readCAPEM(path)
+	if err != nil {
+		return nil, err
 	}
 	pool := x509.NewCertPool()
 	if !pool.AppendCertsFromPEM(data) {
@@ -371,7 +391,7 @@ func privateUploadListener(app *market.App) (*http.Server, net.Listener, error) 
 	if os.Getenv("UPLOAD_MODE") != "isolated" {
 		return nil, nil, errors.New("UPLOAD_BACKEND_ADDR requires UPLOAD_MODE=isolated")
 	}
-	c, err := loadTLS(os.Getenv("UPLOAD_CA"), os.Getenv("UPLOAD_CERT"), os.Getenv("UPLOAD_KEY"), true)
+	c, err := uploadBackendTLS()
 	if err != nil {
 		return nil, nil, err
 	}
@@ -383,6 +403,28 @@ func privateUploadListener(app *market.App) (*http.Server, net.Listener, error) 
 	return srv, tls.NewListener(ln, c), nil
 }
 
+// uploadBackendTLS loads the private upload listener's mutual TLS and refuses an
+// UPLOAD_CA shared with MONERO_RPC_CA or DATABASE_CA (A-589), using the same
+// rule as operator setup. Errors name keys only, never file contents.
+func uploadBackendTLS() (*tls.Config, error) {
+	c, err := loadTLS(os.Getenv("UPLOAD_CA"), os.Getenv("UPLOAD_CERT"), os.Getenv("UPLOAD_KEY"), true)
+	if err != nil {
+		return nil, err
+	}
+	pems := map[string][]byte{}
+	for _, key := range []string{"UPLOAD_CA", "MONERO_RPC_CA", "DATABASE_CA"} {
+		if path := os.Getenv(key); path != "" {
+			if pems[key], err = readCAPEM(path); err != nil {
+				return nil, fmt.Errorf("%s: %w", key, err)
+			}
+		}
+	}
+	if err := operator.RefuseSharedUploadCA(pems["UPLOAD_CA"], pems["MONERO_RPC_CA"], pems["DATABASE_CA"]); err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
 func checkListenerSettings() error {
 	isolated := os.Getenv("UPLOAD_MODE") == "isolated"
 	addr := os.Getenv("UPLOAD_BACKEND_ADDR")
@@ -390,7 +432,7 @@ func checkListenerSettings() error {
 		return errors.New("isolated uploads require UPLOAD_MODE=isolated and UPLOAD_BACKEND_ADDR together")
 	}
 	if addr != "" {
-		if _, err := loadTLS(os.Getenv("UPLOAD_CA"), os.Getenv("UPLOAD_CERT"), os.Getenv("UPLOAD_KEY"), true); err != nil {
+		if _, err := uploadBackendTLS(); err != nil {
 			return err
 		}
 	} else if os.Getenv("UPLOAD_CA") != "" || os.Getenv("UPLOAD_CERT") != "" || os.Getenv("UPLOAD_KEY") != "" {

@@ -23,13 +23,14 @@ func TestProductionAdminInstallWithPrivateUmask(t *testing.T) {
 	fakeEncryptedProductionHost(t)
 	inputs := t.TempDir()
 	cert, key := testTLSMaterial(t, false)
-	for name, body := range map[string][]byte{"database.url": []byte("postgres://market:dedicated-password@db.internal/market?sslmode=verify-full"), "ca.pem": cert, "server.pem": cert, "server.key": key} {
+	dbCA, _ := testTLSMaterial(t, false) // A-589: the database CA is not the upload CA
+	for name, body := range map[string][]byte{"database.url": []byte("postgres://market:dedicated-password@db.internal/market?sslmode=verify-full"), "ca.pem": cert, "database-ca.pem": dbCA, "server.pem": cert, "server.key": key} {
 		if err := os.WriteFile(filepath.Join(inputs, name), body, 0600); err != nil {
 			t.Fatal(err)
 		}
 	}
 	dir := filepath.Join(t.TempDir(), "production")
-	args := []string{"init", "--dir", dir, "--mode", "prod", "--app-image", testImage, "--app-host", "app.internal", "--gateway-url", "http://gateway.example.onion", "--database-url-file", filepath.Join(inputs, "database.url"), "--database-ca", filepath.Join(inputs, "ca.pem"), "--tls-cert", filepath.Join(inputs, "server.pem"), "--tls-key", filepath.Join(inputs, "server.key"), "--upload-ca", filepath.Join(inputs, "ca.pem"), "--upload-cert", filepath.Join(inputs, "server.pem"), "--upload-key", filepath.Join(inputs, "server.key"), "--exposure", "tor", "--admin-tor-image", testImage, "--admin-client-auth-dir", adminAuthInput(t)}
+	args := []string{"init", "--dir", dir, "--mode", "prod", "--app-image", testImage, "--app-host", "app.internal", "--gateway-url", "http://gateway.example.onion", "--database-url-file", filepath.Join(inputs, "database.url"), "--database-ca", filepath.Join(inputs, "database-ca.pem"), "--tls-cert", filepath.Join(inputs, "server.pem"), "--tls-key", filepath.Join(inputs, "server.key"), "--upload-ca", filepath.Join(inputs, "ca.pem"), "--upload-cert", filepath.Join(inputs, "server.pem"), "--upload-key", filepath.Join(inputs, "server.key"), "--exposure", "tor", "--admin-tor-image", testImage, "--admin-client-auth-dir", adminAuthInput(t)}
 	if out, err := invoke(t, args...); err != nil {
 		t.Fatalf("init: %v (%s)", err, out)
 	}

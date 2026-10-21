@@ -1064,7 +1064,7 @@ Second-factor secrets are encrypted with a key derived from `APP_SECRET_KEY` (on
 - **CAPTCHA** on sign-in and registration is on by default for new and upgraded installations. Administrators turn it off or on under *Admin → Sign-in protection*; the change is audited. It is an image only, with no audio or text alternative, so turning it off may be needed for users who cannot read it; the form's "Can’t read the image?" help shows the staff contact (below). First-run setup never shows it. Showing a challenge writes nothing to the database; the id of each answered challenge is kept in `captcha_spent` until it expires (at most 10 minutes) so it cannot be reused. A challenge shown before an upgrade to this version is refused after it; the user reloads the page.
 - **Release step: decide the CAPTCHA.** Decide the CAPTCHA: keep it on with an account-free staff contact, or turn it off. Do this before you tell anyone the address, and again whenever you change the staff contact. The default image CAPTCHA has no audio or text alternative, so it does not meet WCAG 2.2 success criterion 3.3.8 (Accessible Authentication, Minimum) for a person who cannot read the image, and it stands in front of the only way to register or sign in. The market does not offer a second path. Two choices are honest. (1) Keep it on and set *Admin → Staff contact* to an address that works without an account, such as an onion or XMPP address: `/login` and `/register` then tell the reader to write to it and ask for the CAPTCHA to be turned off, which an administrator does under *Admin → Sign-in protection*. A bare handle does not count, because a handle can be messaged only from an account. (2) Turn it off, accepting that registration and sign-in then have no image check (the per-handle sign-in pause still applies). With the CAPTCHA on and no such contact, *Admin* shows a warning that names the problem, and `/login` and `/register` say there is no way in without the image instead of pointing at a contact that does not exist. `./scripts/install.sh check` cannot give the same warning: the CAPTCHA and staff-contact settings live only in the database, `check` starts nothing and runs before the first start, so it has nothing to read. The release notes repeat the limit in one line.
 - **Sign-in pauses**: after 10 failed passwords for one handle within ten minutes, sign-in for that handle is refused (HTTP 429) until that window ends, at most 10 minutes, **even with the right password**; the page says sign-in for this handle is paused, that someone else may have caused it and that the password may be fine. Correct sign-ins, registrations and setup attempts do not count. The limit is per handle because there is no per-client signal over Tor, so **anyone who knows a handle can trigger it, including for your administrator account**, and keep it paused by repeating 10 wrong guesses every ten minutes: each guess needs a solved CAPTCHA while CAPTCHA is on, and costs nothing when it is off. While any handle is paused, the app logs `sign-in limiter refusing handles=N` (a count, never a handle) at most once a minute, when a sign-in fails or is refused; watch for it with `docker compose logs app | grep 'sign-in limiter'`. Break-glass: the limits are held in memory, so restarting the app (`docker compose restart app`) clears every pause; sign in immediately afterwards, before an attacker can spend the budget again. Other users' pauses are cleared too, and a restart does not stop the attacker from repeating it.
-  With a [private administrator onion](install/tor.md#private-administrator-onion) (`ADMIN_SOCKET`), sign-in through it has budgets of its own (A-570): failed passwords and rescue codes on the public storefront never pause sign-in, authenticator or PGP code checks, or password confirmations on the private onion, even when the storefront's limiter table is full, and failures there never spend the public budgets, so a public attacker who knows your administrator handle cannot lock you out of the private onion; sign in there instead of restarting. The private budgets are the same sizes (10 failed passwords per handle and 10 codes per account each ten minutes) and are enforced, so a client holding the onion's authorization key is still limited, to those budgets. Host, forwarding headers and cookies cannot select them; only a request arriving on the private socket does. The private onion also has its own small admission limits (8 pages, 4 public and 4 signed-in form posts, 2 password checks and 2 CAPTCHA images at a time, among others), so a public flood that fills the storefront's limits does not refuse it, though both still share the database pool and CPU. Upload limits are shared too, so a flood of public uploads can still make an administrator's upload answer busy.
+  With a [private administrator onion](install/tor.md#private-administrator-onion) (`ADMIN_SOCKET`), sign-in through it has budgets of its own (A-570): failed passwords and rescue codes on the public storefront never pause sign-in, authenticator or PGP code checks, or password confirmations on the private onion, even when the storefront's limiter table is full, and failures there never spend the public budgets, so a public attacker who knows your administrator handle cannot lock you out of the private onion; sign in there instead of restarting. The storefront refuses an administrator's sign-in with the same "Invalid handle or password" (401) as a wrong password, whether the password is right or not, also on the paused sign-in's authenticator-code rescue, and a right password spends the same sign-in (and code) budget as a wrong one, so guessing there never confirms an administrator's password (A-611; before, a right one was answered "Page not found"). The private budgets are the same sizes (10 failed passwords per handle and 10 codes per account each ten minutes) and are enforced, so a client holding the onion's authorization key is still limited, to those budgets. Host, forwarding headers and cookies cannot select them; only a request arriving on the private socket does. The private onion also has its own small admission limits (8 pages, 4 public and 4 signed-in form posts, 2 password checks and 2 CAPTCHA images at a time, among others), so a public flood that fills the storefront's limits does not refuse it, though both still share the database pool and CPU. Upload limits are shared too, so a flood of public uploads can still make an administrator's upload answer busy.
   The administrator panel lists currently paused handles for this application instance only, with pauses on the private administrator onion listed separately; the list is in memory and can include handles with no account. During a pause, any account with TOTP enabled, administrators included, can still sign in by entering its current password and six-digit authenticator code together on `/login` (A-571; before this release only a sole administrator could). CAPTCHA and the bounded password-check slot still apply. The code is checked first: a wrong or already-used code, an unknown handle or an account without TOTP is refused with "Invalid handle or password" before any password check and never spends the account's sign-in code budget, so an attacker who knows only the handle cannot spend the codes `/challenge` needs. Wrong codes spend only the rescue path's own budget of ten per account per ten minutes; when it is spent, the rescue is closed for that account until its window ends, a right code included, while `/challenge` and normal sign-in after the pause still work. A right code spends one of the account's ten code attempts per ten minutes, the budget `/challenge` uses, whether the password is right or wrong; after ten, rescue and `/challenge` wait for that window to expire. Spending them therefore needs a current code: three of the million possible codes are accepted at any time, and the rescue path checks at most ten codes per account per ten minutes. The residual risk: anyone who knows the handle can spend the password budget and the rescue budget (ten wrong passwords and ten wrong codes), and for as long as they keep repeating that every ten minutes, the account cannot sign in with its password at all. On a market with a [private administrator onion](install/tor.md#private-administrator-onion), administrators sign in there instead, since its budgets are separate; otherwise restart the app as described above. Use the existing host recovery commands if an attack keeps exhausting it. The code's replay guard and session commit together. Every refused rescue, wrong codes included, is counted without handles in `paused sign-in rescue refused attempts=N` (refusals since the previous line) at most once a minute; watch with `docker compose logs app | grep 'sign-in rescue'`. A steady count with no paused account of yours signing in is someone guessing codes. Accounts without TOTP use the existing sign-in and operator recovery paths during a pause. Outside a pause, the same *Authenticator code (if you use one)* field lets any account whose only second factor is TOTP sign in in one step (A-549): the code is checked like one entered on `/challenge`, against the same per-account budget and replay guard, and a wrong, expired or reused code moves the sign-in on to `/challenge`, which says the code was not accepted. An account with PGP sign-in on still completes `/challenge`; recovery codes are entered only there. During a pause, an account without TOTP that fills in the field gets "Invalid handle or password" rather than the pause explanation, as does a wrong code, so the field's help says to leave it blank to see why. New registrations, setup and CLI bootstrap refuse case-insensitive handle collisions; a non-unique index lets legacy case variants coexist. Sign-in resolves an exact handle first, then a case-insensitive match only when unique. Staff lookup and host role/reset commands still require the exact handle.
 
 - **Password-confirmation pauses**: every action confirmed with the account password (resolving disputes, payment reviews, admin settings, key, TOTP and password changes) shares one per-account limit of 10 failed confirmations per ten minutes: a **wrong** password, or a wrong authenticator or recovery code after the right one. After that the account's confirmations are refused (HTTP 429, "Too many failed password confirmations. Try again in ten minutes.") until that window ends, even with the right password. Correct confirmations do not count, so staff can resolve any number of disputes in a row. Only someone signed in to the account can spend it; restarting the app clears it, as for sign-in pauses.
@@ -1683,6 +1683,9 @@ the settlement itself, and a payment by hand would pay twice.
    db_sql -X -At -c "SELECT count(*) FROM xmr_settlements WHERE id <> SETTLEMENT_ID AND (state IN ('built','relayed') OR (state = 'failed' AND tx_hash IS NOT NULL) OR (state = 'requested' AND supersedes IS NOT NULL))"
    ```
 
+   When it is not 0 you may also wait: the stuck settlement pays nothing twice while it waits, and built and relayed
+   settlements confirm within the confirmation threshold (a failed one with a transaction, or a waiting re-request, does
+   not clear by waiting). On a busy market it may never reach 0, so remedy B (rehearsed too, below) is then the path.
    Stop the wallet-rpc, then move its `.shared-ringdb` to a dated
    directory with the pinned image as uid 1000 and no network; never delete it, and never touch the wallet files (with
    another `COMPOSE_PROJECT_NAME`, the volume is `<COMPOSE_PROJECT_NAME>_monero_escrow_wallet`; use the
@@ -1707,36 +1710,100 @@ the settlement itself, and a payment by hand would pay twice.
    market opens the wallet and builds the settlement from the same coins to the same plan with a fresh ring, and sends
    it; the order page then shows it relayed. The fakechain leg `TestXMREscrowRegtestStaleRing` rehearses exactly these
    steps.
-3. *Remedy B (targeted): unset the rings of these coins only.* Use the official `monero-wallet-cli` 0.18.5.1 from
-   getmonero.org, its archive checked against the signed `hashes.txt` (the images ship no `monero-wallet-cli`). With the
-   wallet-rpc stopped, as in remedy A, write the wallet's derived password to a mode-0600 file on tmpfs, never on a
-   command line (it prompts for `MONERO_WALLET_SECRET` without echo; on a separate payment host, make the file on the app
-   host and copy only the file), then open the order's wallet offline with the **same** `--shared-ringdb-dir` the
-   wallet-rpc uses (add `--stagenet` on stagenet). Run the CLI, and make the password file, as the user the wallet-rpc
-   runs as (uid 1000 on Compose and the native deploy), never as root: the CLI saves the wallet file on exit and opens the
-   ring database's lock file, and a root-owned file there breaks the wallet-rpc, which then runs with no ring database at
-   all. On Compose, run it in a container like remedy A's (`--user 1000:1000`, `--network none`, the wallet volume at
-   `/home/monero/wallet` as `WALLET_DIR`, the checked CLI and the password file mounted read-only):
+3. *Remedy B (targeted): unset the rings of these coins only.* Use the official `monero-wallet-cli` 0.18.5.1 (the
+   release the wallet-rpc runs; the images ship no `monero-wallet-cli`). getmonero.org's current `hashes.txt` lists only
+   the latest release, so check the archive against the release's signed `hashes.txt` kept in the monero-site
+   repository, verified with binaryFate's key from the monero repository (fingerprint
+   `81AC591F E9C4B65C 5806AFC3 F0AF4D46 2A0BDF92`); its line for the Linux x86-64 archive is the SHA-256 that
+   `scripts/test-escrow-xmr-regtest.sh` pins:
+
+   ```sh
+   umask 022
+   curl -sSfLO https://downloads.getmonero.org/cli/monero-linux-x64-v0.18.5.1.tar.bz2
+   curl -sSfL -o hashes-v0.18.5.1.txt https://raw.githubusercontent.com/monero-project/monero-site/76f3846db3442be40676fd2e5432dd809d44ea3f/downloads/hashes.txt
+   curl -sSfL -o binaryfate.asc https://raw.githubusercontent.com/monero-project/monero/v0.18.5.1/utils/gpg_keys/binaryfate.asc
+   gpg --import binaryfate.asc && gpg --verify hashes-v0.18.5.1.txt   # Good signature from binaryFate, primary key 81AC 591F E9C4 B65C 5806 AFC3 F0AF 4D46 2A0B DF92
+   grep -F ' monero-linux-x64-v0.18.5.1.tar.bz2' hashes-v0.18.5.1.txt   # 22a7dda7b0cb699fdd6b7674c3b4a4465b337cc98a54983523b759e1e7cc9958
+   echo '22a7dda7b0cb699fdd6b7674c3b4a4465b337cc98a54983523b759e1e7cc9958  monero-linux-x64-v0.18.5.1.tar.bz2' | sha256sum -c
+   tar -xjf monero-linux-x64-v0.18.5.1.tar.bz2 monero-x86_64-linux-gnu-v0.18.5.1/monero-wallet-cli
+   cli=$PWD/monero-x86_64-linux-gnu-v0.18.5.1/monero-wallet-cli
+   ```
+
+   Find the order's wallet and the stuck key images (step 1's query: the key images of the settlement the re-request
+   supersedes), then write the wallet's derived password to a file on tmpfs,
+   never on a command line (it prompts for `MONERO_WALLET_SECRET` without echo; on a separate payment host, make the
+   file on the app host and copy only the file). The file is mode 0640 inside a mode-0700 directory, so that the CLI,
+   which runs as uid 1000 with your group added, can read it and no other user can reach it:
 
    ```sh
    db_sql -X -At -F ' ' -c "SELECT w.name, s.account_index FROM escrows e JOIN xmr_escrow_slots s ON s.address = e.address JOIN xmr_escrow_wallets w ON w.id = s.wallet_id WHERE e.order_id = 'ORDER_ID'"
-   umask 077
-   pw=$(mktemp /dev/shm/escrow-wallet-pass.XXXXXX)
-   python3 -I - escrow-YYYYMM-NN > "$pw" <<'PY'
+   umask 027
+   pwdir=$(mktemp -d /dev/shm/escrow-wallet-pass.XXXXXX)
+   python3 -I - escrow-YYYYMM-NN > "$pwdir/pass" <<'PY'
    import getpass, hashlib, hmac, sys
    secret = getpass.getpass('MONERO_WALLET_SECRET: ').encode()
    sys.stdout.write(hmac.new(secret, b'opsecmkt xmr escrow wallet\0' + sys.argv[1].encode(), hashlib.sha256).hexdigest())
    PY
-   monero-wallet-cli --offline --wallet-file WALLET_DIR/escrow-YYYYMM-NN --password-file "$pw" \
-     --shared-ringdb-dir WALLET_DIR/.shared-ringdb --log-file /dev/null
    ```
 
-   At its prompt, for each key image (not the transaction hash) run `print_ring KEY_IMAGE`, which must print the stored
-   ring (`KEY_IMAGE absolute …`); then `unset_ring KEY_IMAGE [KEY_IMAGE …]`; then `print_ring KEY_IMAGE` again, which must
-   now answer "Key image either not spent, or spent with ring size 1". The check before and after is mandatory: with a
-   wrong `--shared-ringdb-dir` the CLI opens an empty ring database and `unset_ring` "succeeds" without changing anything.
-   Then `exit`, `shred -u "$pw"`, and start the wallet-rpc again. Remedy B keeps every other coin's ring; it is not
-   rehearsed by any test.
+   Then open the order's wallet offline with the **same** `--shared-ringdb-dir` the wallet-rpc uses (no network flag on
+   mainnet, as the wallet-rpc runs; add `--stagenet` on stagenet; never `--regtest`, which the CLI refuses). Run the CLI
+   as the user the wallet-rpc runs as (uid 1000 on Compose and the native deploy), never as root: the CLI rewrites the
+   wallet files on exit and opens the ring database's lock file, and a root-owned file there breaks the wallet-rpc, which
+   then runs with no ring database at all. The official CLI is a glibc build and does not run in the wallet-rpc image
+   (Alpine); on Compose run it in the Debian image the market's Dockerfile pins, with no network, the wallet volume at
+   `/home/monero/wallet`, and the CLI and the password file mounted read-only (on an ARM host add
+   `--platform linux/amd64`, which needs amd64 emulation). Each step below is one session with its commands piped in:
+
+   ```sh
+   docker compose stop monero-escrow-wallet
+   wallet=escrow-YYYYMM-NN
+   kis='KEY_IMAGE …'   # step 1's key images, separated by spaces
+   wallet_cli() {
+     docker run --rm -i --network none --user 1000:1000 --group-add "$(id -g)" \
+       -v opsecmkt_monero_escrow_wallet:/home/monero/wallet -v "$cli:/usr/local/bin/monero-wallet-cli:ro" \
+       -v "$pwdir/pass:/run/escrow-wallet-pass:ro" --entrypoint /usr/local/bin/monero-wallet-cli \
+       debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587 \
+       --offline --wallet-file "/home/monero/wallet/$wallet" --password-file /run/escrow-wallet-pass \
+       --shared-ringdb-dir /home/monero/wallet/.shared-ringdb --log-file /dev/null
+   }
+   printf 'N\n' | wallet_cli
+   { printf 'set ask-password 0\n'; cat "$pwdir/pass"; printf '\nexit\n'; } | wallet_cli
+   { printf 'print_ring %s\n' $kis; echo exit; } | wallet_cli
+   printf 'unset_ring %s\nexit\n' "$kis" | wallet_cli
+   { printf 'print_ring %s\n' $kis; echo exit; } | wallet_cli
+   { printf 'set ask-password 2\n'; cat "$pwdir/pass"; printf '\nexit\n'; } | wallet_cli
+   printf 'set\n' | wallet_cli | grep -a 'ask-password ='
+   shred -u "$pwdir/pass" && rmdir "$pwdir"
+   docker compose start monero-escrow-wallet
+   ```
+
+   (With another `COMPOSE_PROJECT_NAME` or a native deploy, use the service and volume names of remedy A. On a separate
+   payment host run the same `monero-wallet-cli` arguments directly, as the wallet-rpc's user, with `WALLET_DIR` in
+   place of `/home/monero/wallet`.) What each session shows, and why:
+
+   - Each says `Opened wallet: …`, that it is in offline mode, and the prompt `[wallet … (no daemon)]:`.
+   - `N`: the first time the CLI opens a wallet it asks "Do you want to do it now? (Y/Yes/N/No)" about background
+     mining, and that question reads its answer from stdin and loses the rest of piped input; answered once, the wallet
+     file keeps the answer ("Background mining not enabled"). On a later open the `N` is only an unknown command.
+   - `set ask-password 0`: the CLI asks for the wallet password, and gets it from the file on its stdin, never on a
+     command line. This step is required: with the default `ask-password = 2 (decrypt)` the CLI keeps the spend key
+     encrypted in memory and derives its ring database key from it, which is not the key the wallet-rpc uses, so it sees
+     no stored ring at all and `unset_ring` silently removes nothing. The cost: while the CLI runs, offline, the spend key
+     is unencrypted in its memory, as it always is in the running wallet-rpc's.
+   - The first `print_ring` must print each stored ring, `KEY_IMAGE absolute` and 16 global output indices. If it
+     still answers "Key image either not spent, or spent with ring size 1", stop: run the `ask-password 2` and `set`
+     sessions, start the wallet-rpc, and use remedy A or wait. The same answer also comes from a wrong
+     `--shared-ringdb-dir`, where the CLI opens an empty ring database and `unset_ring` "succeeds" without changing
+     anything.
+   - The second `print_ring` must answer "Error: Key image either not spent, or spent with ring size 1" for each.
+   - `set ask-password 2` restores the default, and `set` must then show `ask-password = 2 (decrypt)`, so the keys file
+     ends with the setting it began with.
+
+   On its next pass the market builds the settlement from the same coins to the same plan with a fresh ring for the
+   stuck coins and sends it once. Remedy B keeps every other coin's ring: the fakechain leg
+   `TestXMREscrowRegtestStaleRingRemedyB` rehearses exactly these steps, with another order's release in flight (so
+   remedy A's query answers 1) whose ring `print_ring` shows unchanged after the `unset_ring`.
 
 A restore from seed does **not** clear a stale ring: the ring database is not part of the wallet files, and a wallet
 restored into the same wallet-rpc reuses it. Restoring the wallet volume from a copy restores its `.shared-ringdb` too.
@@ -1901,7 +1968,7 @@ escrow stays off; it adds no escrow wallet-rpc, no fakechain daemon and no mount
 checked with `docker compose config` only.
 
 **What was checked.** [Per-order escrow, Phase 3](escrow.md#phase-3-monero-escrow-on-a-local-fakechain) lists each tier: unit and `httptest` tests, Go
-tests with PostgreSQL against a fake wallet-rpc, eighteen legs against a real fakechain `monerod` and `monero-wallet-rpc`
+tests with PostgreSQL against a fake wallet-rpc, nineteen legs against a real fakechain `monerod` and `monero-wallet-rpc`
 0.18.5.1 (`scripts/test-escrow-xmr-regtest.sh`, run by the `escrow-xmr-regtest` CI job;
 [runbook](testnet-runbook.md#9-manual-monero-escrow-fakechain-check)), and a simulated-RPC browser journey added in this
 phase. Nothing has run on stagenet, testnet or mainnet, with Monero multisig, or as a deployment.

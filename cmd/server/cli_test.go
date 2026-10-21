@@ -97,6 +97,60 @@ func TestUploadTLSRequiresVerifiedClientAndServer(t *testing.T) {
 	}
 }
 
+// A-589: the server refuses, before listening, an UPLOAD_CA that shares a
+// certificate with MONERO_RPC_CA or DATABASE_CA; a dedicated CA still starts.
+func TestUploadBackendRefusesSharedUploadCAAtStartup(t *testing.T) {
+	ca, cert, key, _, _ := cliTestKeys(t)
+	otherCA, _, _, _, _ := cliTestKeys(t)
+	bundle := filepath.Join(t.TempDir(), "bundle.pem")
+	a, err := os.ReadFile(otherCA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(ca)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bundle, append(a, b...), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("UPLOAD_MODE", "isolated")
+	t.Setenv("UPLOAD_BACKEND_ADDR", "127.0.0.1:0")
+	t.Setenv("UPLOAD_CA", ca)
+	t.Setenv("UPLOAD_CERT", cert)
+	t.Setenv("UPLOAD_KEY", key)
+	const want = "UPLOAD_CA must be a dedicated upload transport CA: it shares a certificate with MONERO_RPC_CA or DATABASE_CA"
+	for _, tc := range []struct{ name, monero, database, want string }{
+		{"monero", ca, "", want},
+		{"database", "", ca, want},
+		{"database bundle", "", bundle, want},
+		{"dedicated", otherCA, otherCA, ""},
+		{"unset", "", "", ""},
+		{"unreadable monero", filepath.Join(t.TempDir(), "missing.pem"), "", "MONERO_RPC_CA: cannot read TLS CA file"},
+	} {
+		t.Setenv("MONERO_RPC_CA", tc.monero)
+		t.Setenv("DATABASE_CA", tc.database)
+		got := ""
+		if err := checkListenerSettings(); err != nil {
+			got = err.Error()
+		}
+		if got != tc.want {
+			t.Errorf("%s: startup check %q, want %q", tc.name, got, tc.want)
+		}
+		// The nil app is never served: the listener is closed unused.
+		_, ln, err := privateUploadListener(nil)
+		if err == nil {
+			ln.Close()
+		}
+		if got = ""; err != nil {
+			got = err.Error()
+		}
+		if got != tc.want {
+			t.Errorf("%s: listener %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
 func TestHealthcheckUsesVerifiedApplicationTLS(t *testing.T) {
 	_, cert, key, _, _ := cliTestKeys(t)
 	pair, err := tls.LoadX509KeyPair(cert, key)

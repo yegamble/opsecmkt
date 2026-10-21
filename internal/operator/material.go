@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -150,6 +151,7 @@ func validateMaterial(dir string, c Config) error {
 			return errors.New("CA signing keys must stay offline; import a leaf TLS certificate and key")
 		}
 	}
+	cas := map[string][]byte{}
 	for _, key := range []string{"UPLOAD_CA", "MONERO_RPC_CA", "DATABASE_CA"} {
 		if path := c.TLSFiles[key]; path != "" {
 			file, err := managedPath(dir, path)
@@ -163,9 +165,46 @@ func validateMaterial(dir string, c Config) error {
 			if strings.Contains(string(b), "PRIVATE KEY") || !x509.NewCertPool().AppendCertsFromPEM(b) {
 				return errors.New("CA imports require public PEM certificates without private keys")
 			}
+			cas[key] = b
+		}
+	}
+	return RefuseSharedUploadCA(cas["UPLOAD_CA"], cas["MONERO_RPC_CA"], cas["DATABASE_CA"])
+}
+
+var errSharedUploadCA = errors.New("UPLOAD_CA must be a dedicated upload transport CA: it shares a certificate with MONERO_RPC_CA or DATABASE_CA")
+
+// RefuseSharedUploadCA refuses an UPLOAD_CA PEM that contains any certificate
+// (compared by DER) also present in another service's CA PEM (A-589). The upload
+// backend trusts every clientAuth leaf that chains to UPLOAD_CA, so a CA that
+// also issues database or Monero RPC certificates would let those identities
+// reach the upload backend. Setup and the server's startup both call this.
+func RefuseSharedUploadCA(upload []byte, others ...[]byte) error {
+	trusted := map[string]bool{}
+	for _, der := range pemCertificates(upload) {
+		trusted[string(der)] = true
+	}
+	for _, other := range others {
+		for _, der := range pemCertificates(other) {
+			if trusted[string(der)] {
+				return errSharedUploadCA
+			}
 		}
 	}
 	return nil
+}
+
+func pemCertificates(b []byte) [][]byte {
+	var out [][]byte
+	for {
+		block, rest := pem.Decode(b)
+		if block == nil {
+			return out
+		}
+		if block.Type == "CERTIFICATE" {
+			out = append(out, block.Bytes)
+		}
+		b = rest
+	}
 }
 
 func validateWorkerPublicKey(b []byte) error {

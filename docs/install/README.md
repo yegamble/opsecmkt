@@ -12,6 +12,7 @@ then follow the printed administrator setup instructions. The shell installer re
 
 | Method | Use it to | Start |
 | --- | --- | --- |
+| [Native app-host bootstrap](server-bootstrap.md) | Prepare a supported Ubuntu host and export a reusable firewall recipe | Run `./opsecmkt host --help` |
 | [Production with managed PostgreSQL](production.md) | Deploy prepared separate services with verified TLS, encrypted storage, backups and recovery | Follow the production procedure |
 | [Guided native setup](cli-reference.md#guided-interactive-setup) | Create a development or prepared production deployment, import/generate keys, or manage an installation | Run `./opsecmkt` in a terminal |
 | [Native flags](binary.md) | Automate deployment or run directly against existing services | Run `./opsecmkt --help` |
@@ -29,7 +30,7 @@ it does not embed dependency servers or provision remote hosts. See [binary requ
 Native setup defaults to stagenet and disabled escrow. Select mainnet explicitly only when you intend real funds;
 development and verification use test networks. Preserve the selected network when reusing wallets or upgrading.
 
-For production, [harden the servers](server-hardening.md) and prepare remote service endpoints before initialization.
+For production, use [native app-host bootstrap](server-bootstrap.md) where supported and [harden the servers](server-hardening.md) and prepare remote service endpoints before initialization.
 If escrow is needed, include the payment flags in that single initialization; configuring escrow and enabling intake are separate steps.
 
 ### Legacy shell installer defaults
