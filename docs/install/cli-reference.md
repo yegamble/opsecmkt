@@ -122,7 +122,7 @@ Every flag in this table takes a string unless marked boolean. Defaults describe
 | `--clamd-address` | `CLAMD_ADDRESS` | Unset; disables integrated uploads. Development integrated scanning uses `HOST:PORT`; production app must leave it blank. |
 | `--upload-mode` | `UPLOAD_MODE` | `integrated`; `isolated` refuses direct raw uploads and requires the private backend listener. Production requires `isolated`. |
 | `--upload-backend-addr` | `UPLOAD_BACKEND_ADDR` | Unset; private mutual-TLS upload backend address, required with isolated mode. Never publish it. |
-| `--upload-ca` | `UPLOAD_CA` | Unset; public CA authenticating upload-gateway client certificates. Required for the backend. |
+| `--upload-ca` | `UPLOAD_CA` | Unset; public CA authenticating upload-gateway client certificates. Required for the backend. Must be a dedicated CA that issues only the backend server certificate and the gateway client certificate; startup refuses one sharing a certificate with `MONERO_RPC_CA` or `DATABASE_CA`, and the backend refuses a client certificate without the clientAuth extended key usage or that is a CA. |
 | `--upload-cert` | `UPLOAD_CERT` | Unset; upload backend server certificate. Required for the backend. |
 | `--upload-key` | `UPLOAD_KEY` | Unset; upload backend server private key. Required for the backend. |
 | `--tls-cert` | `TLS_CERT` | Unset; application HTTPS leaf certificate. Required with `--tls-key`, and required in production. |
@@ -493,7 +493,7 @@ Only `init` accepts these flags. Unless a default is shown, a flag is unset/opti
 | `--monero-rpc-key` | Unset | Import Monero mutual-TLS client private key. |
 | `--tls-cert` | Unset | Import app HTTPS server certificate; required in production with key. |
 | `--tls-key` | Unset | Import app HTTPS server private key. |
-| `--upload-ca` | Unset | Import upload client-auth CA; required in production. |
+| `--upload-ca` | Unset | Import upload client-auth CA; required in production. Must be dedicated to the backend and gateway certificates; refused when it shares a certificate with `--monero-rpc-ca` or `--database-ca`. |
 | `--upload-cert` | Unset | Import upload backend server certificate; required in production. |
 | `--upload-key` | Unset | Import upload backend server private key; required in production. |
 | `--dependency-report-dir` | Unset | Existing public signed-report directory, mounted read-only into the app. Keep worker seed elsewhere. |

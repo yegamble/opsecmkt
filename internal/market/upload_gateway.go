@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -383,11 +384,14 @@ func (s *uploadTicketStore) take(key string) (uploadTicket, bool) {
 
 // UploadBackendHandler must be bound on a separate tls.RequireAndVerifyClientCert
 // listener. Its own certificate check remains mandatory: public Host/headers can
-// never select this handler or impersonate the gateway.
+// never select this handler or impersonate the gateway. A verified chain is not
+// enough (A-589): the leaf must be a non-CA certificate carrying the clientAuth
+// EKU explicitly, as `keys generate tls-client` issues it. Go's chain check
+// treats a certificate without EKUs as valid for any purpose.
 func (a *App) UploadBackendHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		a.responseSecurityHeaders(w)
-		if !a.isolatedUploads || r.TLS == nil || len(r.TLS.VerifiedChains) == 0 || len(r.TLS.PeerCertificates) == 0 {
+		if !a.isolatedUploads || r.TLS == nil || len(r.TLS.VerifiedChains) == 0 || len(r.TLS.PeerCertificates) == 0 || r.TLS.PeerCertificates[0].IsCA || !slices.Contains(r.TLS.PeerCertificates[0].ExtKeyUsage, x509.ExtKeyUsageClientAuth) {
 			http.NotFound(w, r)
 			return
 		}
