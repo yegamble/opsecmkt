@@ -1,6 +1,6 @@
 # OPSEC Market repo map — binding context for every war-room seat
 
-Read this once, before you form any opinion. Then read `CLAUDE.md`,
+Read this once, before you form any opinion. Then read `AGENTS.md`, `CLAUDE.md`,
 `.claude/review-loop.md`, `.ralph/AGENT.md`, `.claude/war-room/finding-format.md`,
 `.claude/war-room/protocol.md` and the evidence pack the chair hands you.
 
@@ -59,7 +59,7 @@ Read this once, before you form any opinion. Then read `CLAUDE.md`,
 
 | Change | Gate |
 |---|---|
-| Go | `make go-quality` (format/imports, module integrity/tidiness, vet, reviewed lint including unused code and tests) · `"$(go env GOROOT)/bin/gofmt" -l cmd internal` empty · `go mod verify` · `go vet ./...` · `TEST_DATABASE_URL=<dedicated db> go test -race -count=1 -timeout 30m -run '^(TestEscrow|TestXMR|FuzzEscrow)' ./...` and the same with `-skip` in place of `-run` (CI's two halves; one race process for all of `internal/market` no longer fits 30 minutes on a loaded host) · `go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...` |
+| Go | `make go-quality` (format/imports, module integrity/tidiness, vet, reviewed lint including unused code and tests) · `"$(go env GOROOT)/bin/gofmt" -l cmd internal` empty · `go mod verify` · `go vet ./...` · `TEST_DATABASE_URL=<dedicated db> go test -race -count=1 -timeout 30m -run '^(TestEscrow|TestXMR|FuzzEscrow)' ./...` and the same with `-skip` in place of `-run` (every test once between them; CI runs the `-skip` half as two jobs, `go` and `go-desk`, per docs/ci-cd.md; `go test -list . ./... | python3 tests/test_ci_go_split.py --list` checks the partition; one race process for all of `internal/market` no longer fits 30 minutes on a loaded host) · `go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...` |
 | Templates/CSS/journeys | `npx playwright test` (preview projects) and `E2E_DATABASE_URL=<fresh db> npm run test:e2e` |
 | Escrow UI journeys | `E2E_ESCROW_XMR_DATABASE_URL=<fresh db> npm run test:e2e:escrow-xmr` |
 | Shell/installer/ops | `for f in scripts/*.sh; do bash -n "$f"; done` (a single `bash -n a b` checks only `a`), `python3 -m unittest discover -s tests -p 'test_*.py'`, the matching `scripts/test-*.sh` |

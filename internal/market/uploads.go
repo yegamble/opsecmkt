@@ -722,13 +722,27 @@ func (a *App) storeImage(ctx context.Context, r *http.Request, session string, a
 	case allBytes+size > a.imageLimit():
 		return "", &httpError{Code: http.StatusConflict, Msg: "Photo storage on this market is full; contact the operator. Nothing was stored."}
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO images(id,owner_user_id,product_id,kind,"full",thumb,width,height,description,order_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-		randomToken()[:32], owner, product, map[uploadKind]string{uploadListing: "photo", uploadAvatar: "avatar", uploadEvidence: "evidence"}[route.kind], img.full, img.thumb, img.width, img.height, imageDescription(route, f), order); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO images(id,owner_user_id,product_id,kind,"full",thumb,width,height,description,perceptual_hash,order_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+		randomToken()[:32], owner, product, map[uploadKind]string{uploadListing: "photo", uploadAvatar: "avatar", uploadEvidence: "evidence"}[route.kind], img.full, img.thumb, img.width, img.height, imageDescription(route, f), img.perceptualHash, order); err != nil {
 		var pe *pgconn.PgError
 		if errors.As(err, &pe) && pe.Code == "23505" {
 			return "", &httpError{Code: http.StatusConflict, Msg: "Avatar not saved: another avatar upload finished first. Reload the page to see it. Nothing was stored."}
 		}
 		return "", err
+	}
+	// MOD72-6: in hold mode a vendor's new photo is an edit of what buyers see, so it sends an approved listing back
+	// to staff review (listing_review.go); an administrator's does not.
+	if route.kind == uploadListing {
+		if owner == current.ID {
+			if _, err = holdListing(ctx, tx, f.id, owner); err != nil {
+				return "", err
+			}
+		}
+		// QA72-1: any new photo on a listing still awaiting review, held save or not (publish mode, an auto-approved
+		// vendor, an administrator's photo), moves its review version, so a desk form rendered before it is stale.
+		if _, err = tx.ExecContext(ctx, `UPDATE products SET updated=now() WHERE id=$1 AND review_state='pending'`, f.id); err != nil {
+			return "", err
+		}
 	}
 	if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", current.ID, audit); err != nil {
 		return "", err

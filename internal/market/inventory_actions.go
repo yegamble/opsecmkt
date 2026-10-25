@@ -109,18 +109,20 @@ func listingUpdateAction(c *actionCtx) (actionResult, error) {
 		}
 	}
 	// was is the listing before an administrator's edit of another vendor's listing, for the vendor's notice (A-516).
+	// It also tells whether the vendor's own edit changed what buyers see, which re-holds it for review (MOD72-6).
 	was := listingInput{Kind: l.Kind, Stock: l.Stock}
+	var storedDelivery, regions string
+	if err = c.Tx.QueryRowContext(ctx, `SELECT delivery_content,title,description,category,region,btc,xmr,coalesce(dispatch_days,0),subcategory,array_to_string(shipping_regions,'|') FROM products WHERE id=$1`, l.ID).Scan(
+		&storedDelivery, &was.Title, &was.Description, &was.Category, &was.Region, &was.BTC, &was.XMR, &was.DispatchDays, &was.Subcategory, &regions); err != nil {
+		return actionResult{}, err
+	}
+	if regions != "" {
+		was.ShippingRegions = strings.Split(regions, "|")
+	}
 	if l.VendorID != c.User.ID {
 		// Automatic delivery content is what every buyer receives in the vendor's name. Other editors
 		// (administrators) never see it, so their saves keep the stored content whatever the form sends.
-		var regions string
-		if err = c.Tx.QueryRowContext(ctx, `SELECT delivery_content,title,description,category,region,btc,xmr,coalesce(dispatch_days,0),subcategory,array_to_string(shipping_regions,'|') FROM products WHERE id=$1`, l.ID).Scan(
-			&in.DeliveryContent, &was.Title, &was.Description, &was.Category, &was.Region, &was.BTC, &was.XMR, &was.DispatchDays, &was.Subcategory, &regions); err != nil {
-			return actionResult{}, err
-		}
-		if regions != "" {
-			was.ShippingRegions = strings.Split(regions, "|")
-		}
+		in.DeliveryContent = storedDelivery
 		if in.DeliveryContent != "" && in.Kind != "digital" {
 			return actionResult{}, listingFormRefusal(c, listingProblems{{"kind", "Fulfillment type: this listing has automatic delivery content that only its vendor can remove, so it must stay digital."}})
 		}
@@ -156,10 +158,24 @@ func listingUpdateAction(c *actionCtx) (actionResult, error) {
 	if err != nil {
 		return actionResult{}, err
 	}
+	changed := changedListingFields(was, saved)
+	notice := "listing-saved"
+	// MOD72-6: in hold mode the vendor's own change to what buyers see sends an approved listing back to staff review
+	// (listing_review.go); a stock-only change, automatic delivery content (staff never see it) and an
+	// administrator's edit do not.
+	if l.VendorID == c.User.ID && slices.ContainsFunc(changed, func(f string) bool { return f != "stock" }) {
+		held, err := holdListing(ctx, c.Tx, l.ID, l.VendorID)
+		if err != nil {
+			return actionResult{}, err
+		}
+		if held {
+			notice = "listing-saved-held"
+		}
+	}
 	// An administrator's change to another vendor's listing is told to the vendor, naming what changed, and kept in
 	// the vendor's audit trail too (A-516), as an administrator's photo change is (A-190). A save that changed
 	// nothing tells them nothing.
-	if changed := changedListingFields(was, saved); l.VendorID != c.User.ID && len(changed) > 0 {
+	if l.VendorID != c.User.ID && len(changed) > 0 {
 		short, fields := shortID(l.ID), strings.Join(changed, ", ")
 		if _, err = c.Tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", l.VendorID, "Listing "+short+" edited by administrator "+c.User.Handle+": changed "+fields); err != nil {
 			return actionResult{}, err
@@ -169,7 +185,7 @@ func listingUpdateAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, err
 		}
 	}
-	return actionResult{Redirect: "/listing-edit?id=" + l.ID, Notice: "listing-saved", Audit: listingAudit("Updated", c, l)}, nil
+	return actionResult{Redirect: "/listing-edit?id=" + l.ID, Notice: notice, Audit: listingAudit("Updated", c, l)}, nil
 }
 
 // changedListingFields names, in form order, the fields an edit changed (automatic delivery content excepted: an
@@ -297,8 +313,9 @@ func adminListingAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, err
 		}
 		var title, current, handle string
-		err := tx.QueryRowContext(ctx, `SELECT p.title,coalesce(p.admin_archive_reason,''),u.handle FROM products p JOIN users u ON u.id=p.vendor_id
-			WHERE p.id=$1 FOR UPDATE OF p`, id).Scan(&title, &current, &handle)
+		var reviewState string
+		err := tx.QueryRowContext(ctx, `SELECT p.title,coalesce(p.admin_archive_reason,''),u.handle,p.review_state FROM products p JOIN users u ON u.id=p.vendor_id
+			WHERE p.id=$1 FOR UPDATE OF p`, id).Scan(&title, &current, &handle, &reviewState)
 		if err != nil {
 			return actionResult{}, err
 		}
@@ -330,6 +347,16 @@ func adminListingAction(c *actionCtx) (actionResult, error) {
 			audit = "Restored listing " + short + " of " + handle + " after a takedown"
 			vendorAudit = "Listing " + short + " restored by administrator " + c.User.Handle
 			note = "An administrator restored your listing “" + title + "” (" + short + "). It is visible in the marketplace again and accepts new orders."
+			// MOD72-6: a listing taken down while not approved stays hidden: a pending one until staff approve it, a
+			// rejected one until its vendor edits it to resubmit it.
+			switch reviewState {
+			case "pending":
+				audit += "; it is not approved for buyers"
+				note = "An administrator restored your listing “" + title + "” (" + short + "). Buyers still cannot see it until the market staff approve it in review."
+			case "rejected":
+				audit += "; it is not approved for buyers"
+				note = "An administrator restored your listing “" + title + "” (" + short + "). It is still rejected in review, so buyers cannot see it: edit it to fix the problem, and your next change to what buyers see sends it back for review."
+			}
 		}
 		if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", vendorID, vendorAudit); err != nil {
 			return actionResult{}, err

@@ -26,6 +26,7 @@ func TestOfficialReleaseParsers(t *testing.T) {
 		{"clamav", `{"tag_name":"clamav-1.5.4","draft":false,"prerelease":false}`, "1.5.4"},
 		{"go", `[{"version":"go1.28rc1","stable":false},{"version":"go1.27.2","stable":true}]`, "1.27.2"},
 		{"tor", `<a href="tor-0.4.9.12.tar.gz">release</a><a href="tor-0.4.10.1-alpha.tar.gz">alpha</a>`, "0.4.9.12"},
+		{InferenceRuntimeService, `{"tag_name":"b10000","draft":false,"prerelease":false}`, "b10000"},
 	} {
 		got, err := parseLatest(tc.service, []byte(tc.body))
 		if err != nil || got != tc.want {
@@ -34,6 +35,111 @@ func TestOfficialReleaseParsers(t *testing.T) {
 	}
 	if _, err := parseLatest("monerod", []byte(`{"tag_name":"v99.0.0","prerelease":true}`)); err == nil {
 		t.Fatal("accepted prerelease")
+	}
+}
+
+func TestInferenceRuntimeInventoryIsOptInAndBuildsCompareNumerically(t *testing.T) {
+	if Normalize("b10000") != "" || NormalizeFor("go", "b10000") != "" || !NewerFor(InferenceRuntimeService, "b10000", "b9999") || NewerFor(InferenceRuntimeService, "b9999", "b10000") || NewerFor(InferenceRuntimeService, "b10000", "unknown") {
+		t.Fatal("inference build policy broadened numeric versions or compared lexically")
+	}
+	for _, invalid := range []string{"10000", "b01", "b0", "v10000", "b10000-rc1", "b10000@secret-host", "http://runtime.example", "b1000000000"} {
+		if NormalizeFor(InferenceRuntimeService, invalid) != "" {
+			t.Fatalf("accepted invalid build %q", invalid)
+		}
+	}
+	current := currents{}
+	if err := current.Set("llama.cpp=b9999"); err != nil {
+		t.Fatal(err)
+	}
+	if err := current.Set("llama.cpp=b10000"); err == nil {
+		t.Fatal("duplicate inference inventory accepted")
+	}
+	const official = "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"
+	if sourceFor(InferenceRuntimeService) != official {
+		t.Fatal("inference release source is not fixed to official repository")
+	}
+	calls := map[string]int{}
+	client := &http.Client{Transport: roundTripper(func(r *http.Request) (*http.Response, error) {
+		calls[r.URL.String()]++
+		body := `malformed`
+		if r.URL.String() == official {
+			body = `{"tag_name":"b10000","draft":false,"prerelease":false}`
+		}
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+	})}
+	without := poll(context.Background(), client, nil, time.Now())
+	if len(without.Entries) != 6 || calls[official] != 0 {
+		t.Fatal("legacy worker added unrequested inference polling")
+	}
+	with := poll(context.Background(), client, current, time.Now())
+	if len(with.Entries) != 7 || calls[official] != 1 {
+		t.Fatal("explicit inference inventory did not add one bounded release check")
+	}
+	entry := with.Entries[len(with.Entries)-1]
+	if entry.Service != InferenceRuntimeService || entry.Current != "b9999" || entry.Latest != "b10000" || entry.Error != "" {
+		t.Fatalf("wrong runtime report: %+v", entry)
+	}
+	for _, body := range []string{`{"tag_name":"b10000","prerelease":true}`, `{"tag_name":"b10000","draft":true}`, `{"tag_name":"v1.2.3"}`} {
+		if _, err := parseLatest(InferenceRuntimeService, []byte(body)); err == nil {
+			t.Fatal("accepted nonstable inference release")
+		}
+	}
+}
+
+func TestSignedInferenceReportPreservesLegacyAndRejectsSubstitution(t *testing.T) {
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	base := Report{Version: 1, GeneratedAt: now}
+	for _, service := range serviceNames {
+		base.Entries = append(base.Entries, Entry{Service: service, Current: "1.0", Latest: "2.0", Source: sourceFor(service), CheckedAt: now})
+	}
+	runtime := Entry{Service: InferenceRuntimeService, Current: "b9999", Latest: "b10000", Source: sourceFor(InferenceRuntimeService), CheckedAt: now}
+	for _, tc := range []struct {
+		name   string
+		mutate func(*Report)
+		valid  bool
+	}{
+		{"legacy", func(*Report) {}, true},
+		{"with runtime", func(r *Report) { r.Entries = append(r.Entries, runtime) }, true},
+		{"runtime replacing required", func(r *Report) { r.Entries[0] = runtime }, false},
+		{"wrong source", func(r *Report) {
+			e := runtime
+			e.Source = "https://private-host/releases"
+			r.Entries = append(r.Entries, e)
+		}, false},
+		{"missing inventory", func(r *Report) { e := runtime; e.Current = ""; r.Entries = append(r.Entries, e) }, false},
+		{"endpoint in version", func(r *Report) { e := runtime; e.Current = "http://private-host"; r.Entries = append(r.Entries, e) }, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			report := base
+			report.Entries = append([]Entry{}, base.Entries...)
+			tc.mutate(&report)
+			dir := t.TempDir()
+			reportPath, publicPath := filepath.Join(dir, "report"), filepath.Join(dir, "pub")
+			if err := os.WriteFile(publicPath, []byte(hex.EncodeToString(public)), 0644); err != nil {
+				t.Fatal(err)
+			}
+			if err := writeReport(reportPath, report, private); err != nil {
+				t.Fatal(err)
+			}
+			_, err := ReadVerified(reportPath, publicPath, now)
+			if (err == nil) != tc.valid {
+				t.Fatalf("unexpected verification result: %v", err)
+			}
+			if tc.name == "with runtime" {
+				raw, _ := os.ReadFile(reportPath)
+				raw = bytes.Replace(raw, []byte("b10000"), []byte("b10001"), 1)
+				if err := os.WriteFile(reportPath, raw, 0644); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := ReadVerified(reportPath, publicPath, now); err == nil {
+					t.Fatal("tampered inference report verified")
+				}
+			}
+		})
 	}
 }
 

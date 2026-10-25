@@ -15,6 +15,17 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## Listing review (migration 145)
+
+Migration 145 adds `products.review_state` (`approved`, `pending` or `rejected`; every existing listing is
+`approved`), `products.review_rejection_reason` (empty; a staff rejection's reason, shown to the vendor until their
+resubmitting edit), the per-vendor `users.listing_auto_approve` flag (off) and the `listing_review_mode` setting with
+the value `publish`. A rejection is not a takedown: it archives nothing and needs no administrator. Nothing
+changes until an administrator chooses **hold for review** under *Admin → Vendors → Listing review*: listings stay
+public and new ones publish at once, as before. Rolling the application back to a build without this migration
+leaves the columns unused; a listing still pending or rejected would then be public again, so approve pending
+listings, and take down rejected ones you do not want public, before downgrading.
+
 ## Saved payout addresses cleared; public stock shown in bands (migration 147, A-520)
 
 Migration 147 clears every account's saved pooled-payout addresses (`users.payout_btc`, `payout_xmr`) and the times
@@ -298,6 +309,128 @@ still claims deposits*). The upgrade does not revisit those rows: each keeps its
 again even when the deposit is listed again, and its coins are settled with the operator outside the market. Nothing
 in the market clears that alert, so the order stays on the desk and under retention's `escrow_alert` reason. To list
 them, use the query in the *Except while it still claims deposits* item below.
+
+## Optional moderation proposals (migrations 125 through 127, 134 and 146)
+
+Application startup applies the append-only moderation tables/triggers and
+offline review receipts. Enqueueing and inference remain off, so existing
+installations need no model, worker, inference mount, network request or new
+listener. Review backup capacity and sensitive-record access before enabling
+the separate `opsecmkt moderation-worker`; it enqueues subsequent supported
+changes, not a backfill of the current catalog.
+
+Migration 127 adds optional normalized-image dHash metadata. Upgrade the app and
+apply its migrations **before** upgrading the separate gateway: the old app's
+strict upload envelope rejects the new field. Then upgrade the gateway to
+compute dHash during its existing decode/normalization step;
+the application still receives bounded metadata and normalized bytes only.
+Old gateways may omit dHash, preserving exact SHA256 duplicate comparison.
+Existing images are not decoded again or backfilled. Perceptual similarity
+is advisory and cannot establish whether a listing's claims match a photo.
+
+Migration 134 changes new capture to digests and limited metadata. The worker
+reads source prose into memory only for the unchanged captured revision; stale
+or removed sources receive HOLD. New archived inputs retain coded metadata only;
+completed new jobs remove their active raw actor link. Legacy snapshots and
+immutable proposals remain byte-stable and outside existing retention sweeps.
+This is prospective minimization, not historical erasure or anonymization. Keep
+the feature off where remaining legacy retention conflicts with policy.
+
+The `moderation-v2` protocol rejects model-written summaries/evidence and retired
+v1 pins. Go derives review text from codes, including the current presentation of
+legacy decisions. Upgrade the app/migrations before the controller. Completed
+metadata-only jobs are skipped by `--replay`; its output reports the count.
+
+The `moderation-v3` protocol refuses v1 and v2 pins. Models may
+no longer assert Go-owned failure, protocol, routing, deadline or deterministic
+codes; Stage A findings stay in the final result; prompts carry evidence aliases
+instead of hashes. The runtime must also serve llama.cpp's `/tokenize` and
+report `stop_type` (or the older `stopped_*` flags), `truncated` and
+`tokens_evaluated`. A prompt that cannot fit beside the output limit in the
+launcher's 4096-token context, or an unfinished generation, gets `MODEL_FAILURE`
+and human review. Stored v1/v2 decisions keep their bytes and still render.
+
+The current `moderation-v4` protocol refuses v1, v2 and v3 pins: change the
+controller's `--prompt-version` to `moderation-v4` when upgrading it. Prompt
+data now writes `[` and `]` inside JSON strings as `\u005b` and `\u005d` (same JSON
+meaning), because llama.cpp's `/completion` parses special tokens in the prompt
+and bracket-spelled control tokens such as `[INST]` in vendor text could
+otherwise become real ones. Instructions and grammars are unchanged. Text with
+many brackets costs more tokens and reaches human review sooner. Stored v1–v3
+decisions keep their bytes and still render.
+
+Capture now has atomic limits: three active jobs per actor, 256 pending globally,
+4096 lifetime allocation slots and 256 MiB reserved logical payload by default.
+Each allocation prepays 512 KiB, so the default bytes bind at 512 allocations.
+Legacy usage is inventoried once; no historical data is removed to fit a limit.
+Private queue status shows usage, limits and bounded coalesced overflow warnings.
+At saturation the original marketplace write still commits without a fabricated
+clean result. Raise an approved budget using the controller's bounded capacity
+flags; lowering below allocated usage is refused. Database/index/WAL/backup disk
+size is not bounded by the logical payload reservation.
+
+Migration 146 makes refused captures recoverable. Each refusal leaves one
+content-free marker per target, and the worker later captures the target's
+current revision, in first-refusal order, once the queue is below half full and
+budget remains; markers of accounts that would still be refused do not use a
+pass's budget. Archived listings and hidden reviews are captured like live
+ones. Deleting a marked record removes its marker at once and queues a
+record-free count release, which the next worker pass or disabling capture
+applies. One account holds at
+most 16 markers; past that, or when the 65536-marker table is full (a counted
+`backfill_capacity` warning), the account is flagged for a rescan of its live
+records instead, read in order of creation time, which the account cannot change. While an account has a backlog,
+its new captures queue behind it. The panel shows targets awaiting capture, parked markers and
+accounts awaiting a rescan. A job made stale only by changed context (such as a
+moved category median) stays a HOLD and is not captured again. Each actor may receive at most
+`max(8, 2% of --max-records)` new allocations per 24 hours (81 by default). At
+the default 256 MiB byte budget (512 lifetime allocations) one constantly editing
+account can use up the pool in about six days; refused targets then wait as
+markers or rescans and nothing new is captured until you raise
+`--max-reserved-bytes` or `--max-records`. Watch for `retained_capacity` under
+"Capture requires attention" on the private moderation panel. A
+revision whose job completed stale no longer blocks capturing the same content
+later. New proposals omit per-field digests and, except for listings, the text
+fingerprint. The migration adds tables only; existing jobs and proposals are not
+rewritten. Upgrade the app (and its migrations) before restarting the controller:
+an older controller runs no sweep, so markers simply wait.
+
+New gateway hashes omit weak/low-contrast similarity evidence. Useful legacy
+hashes and exact SHA256 matching remain; no extra wire field, decoding boundary,
+rotation/crop guarantee or image-understanding feature is introduced.
+
+Updated gateways compute dHash with an area-averaging filter, so recompressed,
+resized or slightly cropped copies match more reliably; comparison also tries
+each hash's horizontal mirror. Hashes made by an older gateway and by an updated
+one compare less reliably with each other. Nothing is backfilled or rewritten:
+the worker compares only recent uploads, so the mix ages out as new uploads
+arrive. Upgrade order is unchanged (app first, then gateway).
+
+Weak instruction-like words ("you are", "act as", "confidence", "decision" and
+similar) no longer mark an item `INJECTION_SUSPECTED` or escalate it; they add
+`HUMAN_REVIEW`, as does any recognised external contact or payment destination,
+so such items reach the human queue instead of automatic history. Strong
+markers, now also covering several languages, simple encodings, code names and
+adjacent-field splits, still escalate. Expect fewer administrator escalations
+and more ordinary review-queue items; stored decisions are unchanged.
+
+The worker never changes a listing, account, order or payment. Private
+administrator queue actions and optional signed offline actions annotate review
+metadata only. Deadline expiry holds current marketplace state. Keep existing
+payment authorization/recovery gates and all ordinary staff action checks.
+
+Existing application-only redeployment does not provision/restart a model or
+controller. Preserve their reviewed configuration, weights, durable database
+jobs and report/action verification pins independently. Do not delete immutable
+moderation records to roll back a worker; disable future enqueueing with its
+`--disable` flag while preserving evidence and existing jobs.
+
+Optional signed offline review requires a separately pinned public action key
+and a stable installation audience on the app, with its private key kept on the
+offline workstation. It is distinct from the controller's online packet signer
+and OpenPGP export recipient. See the [moderation guide](docs/moderation-agent.md)
+and [review runbook](docs/moderation-escalation-runbook.md) for setup, defaults,
+capability gaps and deployed-runtime acceptance gates.
 
 ## Stuck failed Monero settlements can be cleared (A-613)
 
@@ -991,7 +1124,10 @@ Rolling back is **not** an image swap. Migrations are one-way, so older code mus
 upgraded database. From this release on, the server checks at startup: when `schema_migrations` records a
 migration it does not include, it exits with an error that names that migration and points to this section,
 before it changes or serves anything (`the database was upgraded by a newer release: it records migration(s)
-NNN_name, which this server does not include. Nothing was changed. ...`). alpha.1 predates that check and
+NNN_name, which this server does not include. Nothing was changed. ...`). It also exits, changing nothing,
+when a recorded migration number carries a different name from this server's migration of that number
+(`the database was migrated by a different build: ...`), for example a database a development branch
+migrated; start that build again or restore a backup taken before it ran. alpha.1 predates that check and
 does not refuse, so never point it at the upgraded database: it expects the pre-upgrade tables (for example
 `orders.status`, which migration 001 removes). Compose rebuilds the app from whatever revision is checked
 out. Everything written after the upgrade is lost from the rolled-back site. Run the first two steps from

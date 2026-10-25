@@ -46,6 +46,131 @@ This is a verification plan, not a declaration that every check has passed. Reco
 
 Per-order escrow is the only payment path (A-448, A-492). Checks of payment code removed before it are deleted rather than kept as history. A database from an older release with payment history this build does not support is refused at startup by migrations 107 and 108: see [Legacy database refusal](#legacy-database-refusal-a-448-a-492) and [UPGRADING sections 58](../UPGRADING.md#58-pooled-wallet-removal-for-fresh-installs-a-448) and [59](../UPGRADING.md#59-pooled-history-refused-migration-108-a-492).
 
+## Moderation agent
+
+Use the [moderation design](moderation-agent-design.md) and
+[operator guide](moderation-agent.md) when reviewing this service. These are
+acceptance requirements, not a declaration of deployed verification:
+
+- Deterministic normalization and replay remain stable for the same input and
+  policy. Injection fixtures include instruction overrides, delimiter imitation,
+  Unicode controls and mixed scripts, oversized inputs, nested JSON and an
+  instruction to mark an order delivered.
+- Missing, timed-out, stopped and invalid local model responses leave the market
+  usable and preserve a human-review path. No vendor request waits for inference.
+- Grammar constraints are followed by Go schema, allowlist, bounds, canary and
+  evidence-reference validation. Stage B receives validated findings rather than
+  raw submitted text. No model response gains a tool, signer or database authority.
+- Durable claims recover after interruption. Reprocessing one input/revision and
+  policy reuses its decision identity. Stale entity revisions do not change
+  marketplace state. Deadline expiry preserves state (`HOLD`).
+- A capture refused by capacity is not lost: the marketplace write commits, one
+  content-free marker per target remains, and the worker later captures that
+  target's current revision once capacity frees, in first-refusal order and
+  without a refused backlog spending the budget; deleted sources are dropped
+  without an allocation at the next worker pass, and archiving a listing or
+  hiding a review never withdraws it from capture. One account holds a
+  bounded number of markers, past which (or past a full table, with a counted
+  `backfill_capacity` warning) a lossless rescan of its live records takes over;
+  a job made stale only by changed context is not captured again. An account
+  with a backlog cannot jump it with fresh writes or change-time bumps, a vanished source never stops
+  the worker, and disabling capture, the sweep and account erasure do not
+  deadlock. A revision that completed
+  stale does not suppress a later capture of the same content, while an evaluated
+  revision is still not queued twice. One actor cannot take more than its 24-hour
+  share of lifetime allocations. New proposals hold no per-field digests
+  (`TestModerationActorCapOverflowBackfilledAfterDrain`,
+  `TestModerationPendingSaturationBackfill`,
+  `TestModerationRetainedExhaustionBackfillAfterRaise`,
+  `TestModerationBackfillCoalescesAndDropsDeletedSource`,
+  `TestModerationBackfillTableBounded`, `TestModerationConcurrentBackfillSweep`,
+  `TestModerationStaleRevisionRecapturedOnRevert`,
+  `TestModerationActorShareOfLifetimeBudget`,
+  `TestModerationArchivedRestoreRecaptured`,
+  `TestModerationHiddenReviewUnhideRecaptured`,
+  `TestModerationEditDoesNotDeferOwnMarker`,
+  `TestModerationActorMarkerQuotaRescan`,
+  `TestModerationActorRescanRepeatsAfterRefusalDuringScan`,
+  `TestModerationRefusedBacklogDoesNotStarveSweep`,
+  `TestModerationContextStaleDoesNotRecapture`,
+  `TestModerationBacklogActorCannotJumpOwnQueue`,
+  `TestModerationAdmissionSkipsUnknownActor`,
+  `TestModerationSweepSurvivesConcurrentSourceRemoval`,
+  `TestModerationDisableSweepNoDeadlock`,
+  `TestModerationRescanOrderNotSteerableByChangeTime`,
+  `TestModerationDeletedSourceReleasesMarkerCount`,
+  `TestModerationDisableClearsRescanPosition`,
+  `TestModerationArchiveDuringWindowStillCaptured`,
+  `TestModerationDeleteTriggerNoDeadlock`,
+  `TestModerationPrivacyV2NoFieldDigestsOrUnusedTextHash`; database integration,
+  fake model).
+- Proposal queues/status require an authenticated current administrator on the
+  existing private ingress. The separate offline page accepts only a valid,
+  revision-bound signed review token with CSRF/origin checks; it exposes no queue
+  data without an application login. Public ingress, spoofed
+  `Host`/forwarding headers and ordinary marketplace accounts cannot reach
+  protected moderation data.
+- Optional offline packets are encrypted before export and their signatures
+  verify against an independently pinned worker key. Action-token signatures
+  use a separate offline key and installation audience; replay, expiry, changed
+  content and already-reviewed items are refused transactionally. Token review
+  still changes no marketplace entity or payment.
+- Moderation cannot move money, change an order, ban an account or hide a listing.
+  Any later binding action uses the existing independently authorized workflow.
+- `/canary#records` and the retention summary say, in the same words whether
+  collection is on or off, that legacy copies and new abuse-review references,
+  digests and image fingerprints have no automatic expiry and remain after the
+  source is removed; the photos item names the perceptual fingerprint
+  (`TestNewAbuseReviewRecordNoticeIdenticalWithCaptureOnAndOff`,
+  `TestRecordsListPhotosAndAvatars`, `preview-records.spec.ts`).
+- A database at 001–124 plus 128 takes 125–127 and 134 on upgrade; a recorded
+  migration whose name differs from this build's migration of that number is
+  refused before any change (`TestModerationMigrationsAfterMain128`,
+  `TestMigrationNameMismatchRefused`).
+- The adapter accepts only its configured local Unix socket, with bounded calls
+  and no external inference, redirects, model downloads or ambient proxy egress.
+  Deployed runtime secret/mount/network isolation needs an actual host rehearsal;
+  package tests alone cannot establish it.
+- Administrator diagnostics expose only bounded review metadata and health
+  classes, not runtime endpoints, credentials or raw transport errors. Verify
+  no-JavaScript rendering and sensitive-data access on the deployed private path.
+- Build documentation in strict mode and record actual test results. A skipped
+  database, browser, runtime/container or live Tor check remains unverified.
+
+Model selection, resource budget, SLA, evidence retention and deployed isolation
+remain [operator decisions](moderation-agent-design.md#decide-operator-gates).
+
+The strengthened v2 contract additionally requires:
+
+- Model summaries/free evidence are refused; trusted Go presentation remains
+  marker-free for custom model implementations and historical queue rows.
+  Deterministic field-code evidence keeps its provenance without claiming model
+  involvement. Actual native GBNF checks cover both finite-reference grammars.
+- New pending/completed captures and archived inputs contain no copied prose.
+  All five kinds bind hydration to the captured digest, changed/deleted sources
+  skip inference, and completed raw actor links are removed. Historical copies
+  survive an authentic pre-134 upgrade without rewritten bytes or timestamps.
+- Barrier-concurrent actor/global/slot/byte admissions remain within their
+  bounds. Duplicates, rollback, leases, retries and legacy policy replay charge
+  and release exactly once. Saturation keeps actual listing/dispute workflows
+  functional and shows bounded private warnings without a fabricated verdict.
+- Every review signal is visible for human review, even with high confidence or
+  a model's contradictory `NO_ACTION`. Stale financial evidence still escalates.
+- Aging priority lets old ordinary work overtake new urgent work. Live ownership
+  rate checks still work after completed actor-link removal. Restarted controllers
+  preserve configured policy; explicit partial limit updates preserve other limits.
+- Uniform, monotone and low-contrast new image hashes do not create perceptual
+  matches. Exact SHA256 and useful informative/legacy hashes remain supported;
+  no orientation/crop/semantic-image guarantee is implied.
+- New gateway hashes use an anti-aliased downscale, so a recompressed or resized
+  copy of a textured fixture, a 1% crop and a horizontal mirror (compared at match
+  time; stored hashes are not rewritten) match within the perceptual threshold,
+  and unrelated fixtures do not (synthetic fixtures only).
+- A recognised external destination or a weak instruction phrase blocks automatic
+  history (human review) without an injection accusation; strong injection markers,
+  including reason-code suppression, still escalate. The labelled injection corpus
+  records expected misses explicitly.
+
 ## Installation and deployment
 
 - The native CLI embeds templates and assets and supports protected key generation
@@ -385,6 +510,20 @@ These checks require recorded implementation and workflow verification before ma
 - [x] An administrator takes down another vendor's listing only with a reason of 10–500 characters and their password (9 or 501 characters → 400; the plain archive → 400; other roles → 403; nothing changes on refusal); the takedown is audited on both accounts and notified to the vendor once, link-free; the vendor sees the reason on `/listing-edit` and the vendor desk card and never on public pages, can still edit, and gets 409 quoting the reason and the staff-contact line on restore (A-279); only the administrator's confirmed restore clears it, and it still requires the owner to be a vendor; a role-change archive never sets a reason (`TestAdminTakedownSurvivesVendorRestore`, `TestDemotionArchiveIsNotATakedown`, `db-listing-takedown.spec.ts`).
 - [x] A paid order on a taken-down digital listing is not delivered automatically: it stays paid with a history note and the vendor delivers by hand or cancels; after restore, automatic delivery resumes (`TestAdminTakedownStopsAutoDelivery`).
 
+### Listing review (MOD72-6, hold mode)
+
+- [x] `listing_review_mode` defaults to publish (also after upgrading through migration 145): new and edited listings are public at once and the existing listing, order and takedown suites pass unchanged (`TestListingHoldHidesNewListingFromEveryBuyerPath`).
+- [x] In hold mode a vendor's new listing is pending and absent from the catalog, search, category and region filters and the vendor page for guests, buyers and other vendors; its product page is 404, its checkout page 404 (guests are sent to sign in), a direct POST of a draft 400 with no order created, and another vendor's edit page 404; its vendor sees "Awaiting review" on the desk, product and edit pages, and moderators and administrators see it on its product page and the moderation desk (`TestListingHoldHidesNewListingFromEveryBuyerPath`).
+- [x] The vendor's change to what buyers see, or a new photo, re-holds an approved listing; a stock-only change and an administrator's edit do not; a paid order continues and its buyer still reads the listing, while an earlier draft's payment request is refused (409) and new drafts 400; the photo leaves the public image route (`TestListingEditReholdsApprovedListing`, `TestListingPhotoOnApprovedListingReholds`).
+- [x] Moderators and administrators approve (public at once) or reject with a 10–500 character reason (rejected, not archived and no takedown reason, hidden on every buyer path, "Rejected — <reason>" to the vendor on the desk, edit and product pages, never to buyers); both need the password and a receipt nonce, are audited on both accounts and notified link-free; buyers and vendors get 403, a stale or repeated review 409, and refusals change nothing; the empty desk says "No listings are waiting for review" (`TestListingReviewApproveAndReject`).
+- [x] Only administrators change the mode and a vendor's "publish without review" flag (moderators, vendors and buyers 403), both password-confirmed and audited; an auto-approved vendor publishes at once and removing the flag restores the hold without re-holding approved listings; switching back to publish approves nothing; a missing or unknown mode holds (`TestListingAutoApproveVendorPublishesAtOnce`, `TestListingReviewModeIsAdminOnlyAndFailsClosed`).
+- [x] A listing whose moderation capture overflowed stays held, a moderation worker pass changes no review state, and an `AUTO_APPLY` proposal leaves a pending listing pending; no moderation file (`internal/moderation`, `internal/market/moderation*`, `cmd/server/moderation*`) names the review columns or settings, writes products or refers to any `listing_review.go` declaration, and no trigger function or other migration names `review_state`; a literal in the launcher and an `AUTO_APPLY` approve through a new helper were both shown to fail these tests (`TestListingHoldSurvivesModerationOverflowAndWorker`, `TestListingHoldSurvivesAutoApply`, `TestModerationNeverWritesReviewState`).
+- [x] Any new photo on a pending listing, held save or not, makes earlier approve and reject forms stale (409) (`TestListingPhotoOnPendingListingStalesDeskForms`).
+- [x] The earlier-order exception covers a listing awaiting review only: once rejected, the paid buyer's product page is 404 and the authenticated image route refuses its photos, while the order page still shows the order's snapshot and the vendor, moderators and administrators still see the listing, its photos and the reason; an administrator's restore of a rejected listing tells the vendor to edit it to resubmit (`TestListingEditReholdsApprovedListing`). A vendor's new photo resubmits a rejected listing (`TestListingPhotoResubmitsRejectedListing`). A listing and its photos are public only while approved and its vendor is not deactivated (`TestListingPublicNeedsApprovalAndActiveVendor`).
+- [x] PR #111's listing writes follow the same rule: a vendor's change to the subcategory or additional shipping regions re-holds an approved listing through the edit form, and a switch between vendor-delivered and automatic digital delivery re-holds it, while switching between the two automatic methods, digital units and stock do not; the vendor-contact rule counts only approved listings (`TestListingShippingRegionChangeReholds`, `TestListingDigitalDeliveryModeChangeReholds`).
+- [x] A rejected listing needs no administrator: its vendor's change to what buyers see, or a new photo, resubmits it (pending, reason cleared, "Resubmitted listing … for review" audited) whatever the mode, and approval then publishes it; a stock-only change, switching to publish or an administrator's edit leaves it rejected with its reason; a reject form rendered before the vendor's change is refused (409); retention's withdrawn-listing purge clears the reason (`TestListingRejectedVendorEditsAndResubmits`, `TestListingRejectionReasonFollowsListingRetention`).
+- [x] Browser journey with JavaScript off: the administrator sets hold, a vendor lists, a buyer cannot find or open it, a moderator rejects it with a reason, the vendor reads "Rejected — <reason>" and edits it, the moderator approves the resubmitted listing and the buyer then sees it; the desk, the vendor desk and the admin panel fit 320 px (`db-listing-review.spec.ts`, `preview-listing-review.spec.ts`).
+
 ### Vendor onboarding (A-544)
 
 - [x] `/register` offers a buyer or a vendor account as radios without scripts (buyer by default); a vendor sign-up creates a buyer account plus an application under the current policy and lands on `/account#vendor-application`; an unknown account type is refused (400) and creates nothing (`TestVendorApplicationModes`, `TestVendorApplicationAuthz`, `preview-vendors.spec.ts`).
@@ -490,7 +629,7 @@ Covered separately: the [2026-10-10 public stagenet digital-claim record](eviden
 
 ### Escrow intake and readiness (A-444)
 
-[Intake and readiness](operator-guide.md#payments). A fresh database takes new payments through escrow only; the only choices are escrow and paused. Tiers: DB integration with simulated escrow nodes (the `go` and `go-escrow` jobs) and the browser DB spec (the `browser` job of [38145160678](https://github.com/yegamble/opsecmkt/actions/runs/38145160678)).
+[Intake and readiness](operator-guide.md#payments). A fresh database takes new payments through escrow only; the only choices are escrow and paused. Tiers: DB integration with simulated escrow nodes (the `go`, `go-escrow` and, for `TestVendor…`, `go-desk` jobs) and the browser DB spec (the `browser` job of [38145160678](https://github.com/yegamble/opsecmkt/actions/runs/38145160678)).
 
 - [x] The only intake choices are escrow and paused: a fresh database starts escrow only, an administrator sets either, a legacy `true` value is refused 400 and a buyer 403, a lost acknowledgement replays the saved response and an invalid choice rolls the form's nonce back for correction (`TestEscrowIntakeOnlyAllowsEscrowOrPaused`, `TestFreshEscrowOnlyInstallCannotFallBackToPooledPayments`, `TestPaymentIntakeConfirmedReceiptAndLostAcknowledgement`, `TestPaymentIntakeInvalidChoiceRollsBackNonceForCorrection`).
 - [x] While a coin's escrow is not ready, Monero escrow's state is named in words with what to do and goes once it is ready, and a market with `ESCROW_XMR=on` beside a daemon that is still syncing starts with Monero escrow disabled and turns it on when the daemon is synced (`TestXMREscrowNotReadyNamesEachState`, `TestXMREscrowStartsBesideSyncingDaemon`); a vendor's readiness follows the escrow intake without leaking a historical address (`TestVendorReadinessTracksEscrowIntakeWithoutLeakingHistoricalAddress`).
@@ -609,7 +748,7 @@ A database from an older release with payment history this build does not suppor
 
 ### Photo and avatar disclosures (A-191)
 
-- [x] `/canary#records` and [What the server keeps](implementation-status.md#what-the-server-keeps) list photos and avatars, each needle matched inside that entry only: only the re-encoded JPEG, its thumbnail, dimensions, an optional description, the owner and the time added, never the uploaded file, its name or metadata; who sees them (public while the listing or vendor page is live; a staff avatar publicly, on `/canary` and an administrator's vendor page, only while the public staff list is on and that member is listed, otherwise beside that member's dispute decisions to the orders' buyers and vendors, moderators and administrators); that demoting a staff member removes their staff avatar, and demotion to buyer, archiving and suspension hide the rest; that a normal browser may keep viewed images in its disk cache: it reuses them for a day without asking the server, and the files can stay until its cache is cleared. Tor Browser keeps them in memory only, until it closes (not yet tried in Tor Browser, A-199); that removing, replacing or taking one down deletes it at once while copies remain in older backups and, until PostgreSQL reuses the space, in its data files and write-ahead log, and a restored older backup brings it back until it is removed again; what the scanner's log line keeps and for how long; both introductions except photos and avatars from "nothing is deleted"; and "What the server keeps" is stated as checked against migrations up to the newest one (`TestRecordsListPhotosAndAvatars`, which fails when the staff-avatar sentence is deleted from either place; `preview-records.spec.ts` "records list photos and avatars").
+- [x] `/canary#records` and [What the server keeps](implementation-status.md#what-the-server-keeps) list photos and avatars, each needle matched inside that entry only: only the re-encoded JPEG, its thumbnail, dimensions, an optional description, a perceptual fingerprint, the owner and the time added, never the uploaded file, its name or metadata; who sees them (public while the listing or vendor page is live; a staff avatar publicly, on `/canary` and an administrator's vendor page, only while the public staff list is on and that member is listed, otherwise beside that member's dispute decisions to the orders' buyers and vendors, moderators and administrators); that demoting a staff member removes their staff avatar, and demotion to buyer, archiving and suspension hide the rest; that a normal browser may keep viewed images in its disk cache: it reuses them for a day without asking the server, and the files can stay until its cache is cleared. Tor Browser keeps them in memory only, until it closes (not yet tried in Tor Browser, A-199); that removing, replacing or taking one down deletes it at once, except the image fingerprints abuse-review records keep, while copies remain in older backups and, until PostgreSQL reuses the space, in its data files and write-ahead log, and a restored older backup brings it back until it is removed again; what the scanner's log line keeps and for how long; both introductions except photos and avatars from "nothing is deleted"; and "What the server keeps" is stated as checked against migrations up to the newest one (`TestRecordsListPhotosAndAvatars`, which fails when the staff-avatar sentence is deleted from either place; `preview-records.spec.ts` "records list photos and avatars").
 - [x] An administrator changing a moderator to vendor or buyer deletes the moderator's avatar in the same transaction: the row is gone, `/img` answers as for an unknown id, the vendor page links nothing, and the owner gets the fixed notification and activity-log row; a moderator without an avatar gets neither; an administrator's role cannot be changed there, so their hidden avatar stays hidden; a vendor promoted to moderator keeps their avatar, hidden by default (`TestStaffDemotionDeletesAvatar`).
 - [x] The upload forms, the admin scanner panel, `/canary`, the README, UPGRADING, the operator guide and the implementation status say "ClamAV checks uploads for known malware; it does not review picture content", and no template, user-facing document (`web/templates`, `README.md`, `UPGRADING.md`, `CONTRIBUTING.md`, `docs/*.md`) or string literal in the non-test Go files of `internal/market` uses any of the six words banned for uploads (listed in the test) in a sentence about uploads, photos, avatars, pictures, the scanner or malware, `alt`, `title` and `aria-label` text included (`TestNoUploadCalledSafeOrClean`; `TestUploadClaimsCatchesEvasions` proves a changed Go notice, an attribute and the added words are caught, and that a claim split over two sentences is out of scope; `preview-inventory.spec.ts` "limits and warning precede the input").
 - [x] The owner's remove help, the staff takedown form and the takedown notification say the removal cannot be undone rather than that the image cannot be restored (`TestTakedownNotifiesOwnerWithReason`), and the operator guide's takedown section says a deleted image stays in older backups and, until PostgreSQL reuses the space, in its data files and write-ahead log (documentation only; no test reads it).

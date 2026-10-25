@@ -107,12 +107,16 @@ func validateMaterial(dir string, c Config) error {
 		if err != nil {
 			return err
 		}
-		if key == "DEPENDENCY_REPORT_PUBLIC_KEY" {
+		if key == "DEPENDENCY_REPORT_PUBLIC_KEY" || key == "MODERATION_ACTION_PUBLIC_KEY" {
 			b, err := privateFile(full, 1024)
 			if err != nil {
 				return err
 			}
-			if err := validateWorkerPublicKey(b); err != nil {
+			validateKey := validateWorkerPublicKey
+			if key == "MODERATION_ACTION_PUBLIC_KEY" {
+				validateKey = validateModerationActionPublicKey
+			}
+			if err := validateKey(b); err != nil {
 				return err
 			}
 		} else if _, err := readPublicKey(full); err != nil {
@@ -206,7 +210,19 @@ func pemCertificates(b []byte) [][]byte {
 func validateWorkerPublicKey(b []byte) error {
 	raw, err := hex.DecodeString(strings.TrimSpace(string(b)))
 	if err != nil || len(raw) != 32 {
-		return errors.New("dependency worker public key must hold 64 hexadecimal characters")
+		return errors.New("Ed25519 public key must hold 64 hexadecimal characters")
+	}
+	return nil
+}
+
+// Match the application's offline-token verifier exactly. Imported keys are
+// canonicalized once; a later edited pin must not pass deployment checks only
+// to be refused by the running application.
+func validateModerationActionPublicKey(b []byte) error {
+	value := strings.TrimSuffix(string(b), "\n")
+	raw, err := hex.DecodeString(value)
+	if err != nil || len(raw) != 32 || hex.EncodeToString(raw) != value {
+		return errors.New("offline moderation public key requires 64 lowercase hexadecimal characters and at most one trailing newline")
 	}
 	return nil
 }

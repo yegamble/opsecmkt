@@ -63,6 +63,8 @@ than the last. Surviving findings enter the ledger as `open (bug-hunt, unruled)`
 
 ## Shared contracts
 
+- `AGENTS.md` — instruction/data boundaries, secret handling and moderation
+  authorization rules. Read before reviewing untrusted content or model output.
 - `.claude/war-room/repo-map.md` — layout, invariants, verification gates,
   evidence tiers and traps. Binding for every seat.
 - `.claude/war-room/finding-format.md` — the one finding schema and severities.

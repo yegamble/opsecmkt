@@ -195,6 +195,15 @@
 <input type="hidden" name="action" value="{{if .Verified}}unverify{{else}}verify{{end}}">
 {{template "confirm-fields" $totp}}
 <button type="submit">{{if .Verified}}Remove the verified mark{{else}}Mark as a verified vendor{{end}}</button>
+</form>{{end}}{{if or .AutoApprove (and (or (eq .Role "vendor") .VendorApproved) (not .IsBanned))}}
+<p class="help">Listing review: {{if .AutoApprove}}this vendor's new and edited listings publish at once, even while the market holds listings for review{{else}}while the market holds listings for review, this vendor's new and edited listings wait for a moderator or administrator{{end}}. See <a class="text-link" href="/admin/vendors#listing-review">Listing review</a>; the vendor is notified.</p>
+<form class="stack" method="post" action="/admin/vendor-auto-approve">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/admin/vendor-auto-approve"}}">
+{{template "admin-user-target" .Handle}}
+<input type="hidden" name="action" value="{{if .AutoApprove}}off{{else}}on{{end}}">
+{{template "confirm-fields" $totp}}
+<button type="submit">{{if .AutoApprove}}Hold this vendor's listings for review{{else}}Publish this vendor's listings without review{{end}}</button>
 </form>{{end}}{{if and (not .CanApply) (ne .Role "vendor") (not .VendorApproved) (not .Verified) (not (and .Application .Application.Open))}}
 <p class="help">Only an active buyer or moderator without selling approval can apply. Restore suspended accounts first.</p>{{end}}
 {{if or (eq .Role "vendor") .VendorApproved}}

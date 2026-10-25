@@ -106,6 +106,15 @@ var notices = map[string]struct{ text, section, pages string }{
 	// A staff takedown (image_takedown.go), back on /moderator's Recent photos or on the product or vendor page.
 	"image-removed":      {"Image removed. Its owner was notified with your reason.", "recent-photos", "moderator"},
 	"image-removed-page": {"Image removed. Its owner was notified with your reason.", "", ""},
+
+	// MOD72-6 hold mode (listing_review.go): the vendor's listing waits for staff review; staff review it on /moderator.
+	"listing-created-held": {"Listing created. It waits for staff review: buyers cannot see it until a moderator or administrator approves it. Add photos here.", "photos", "listing-edit"},
+	"listing-saved-held":   {"Listing saved. It waits for staff review again: buyers cannot see it until a moderator or administrator approves it. Existing orders are not changed.", "", ""},
+	"listing-approved":     {"Listing approved. It is visible in the marketplace; the vendor was notified.", "listing-review", "moderator"},
+	"listing-rejected":     {"Listing rejected. It stays hidden until the vendor edits it and it is reviewed again; the vendor was notified with your reason.", "listing-review", "moderator"},
+	"listing-review-mode":  {"Listing review saved. Changing it approves nothing: listings already waiting for review still need a moderator or administrator.", "listing-review", "admin/vendors"},
+	"vendor-auto-approve":  {"Listing review for this vendor saved. The vendor was notified.", "vendors", "admin/vendors admin/user"},
+
 	// Administration
 	"settings":      {"Marketplace settings saved.", "", ""},
 	"access":        {"Site access and registration settings saved.", "access", "admin/security"},

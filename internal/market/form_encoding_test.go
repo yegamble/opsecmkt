@@ -62,6 +62,12 @@ func TestGetRefusesInvalidQueryText(t *testing.T) {
 					for _, method := range []string{"GET", "HEAD"} {
 						w := send(method, path+"?"+q, session)
 						switch {
+						case moderationPrivateRoute(path):
+							// Private moderation refuses public ingress before parsing
+							// any query/body or looking up a session, even without ADMIN_SOCKET.
+							if w.Code != 404 || w.Header().Get("Set-Cookie") != "" {
+								t.Errorf("public private-only route %s %s: %d", method, path, w.Code)
+							}
 						case w.Code >= 500:
 							fivexx++
 							t.Errorf("%s %s?%s as %s: %d %q", method, path, q, role, w.Code, w.Body.String())

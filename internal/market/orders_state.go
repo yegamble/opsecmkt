@@ -122,15 +122,16 @@ func actorRoles(o *Order, u *User) []string {
 	return roles
 }
 
-// orderQuery selects the columns scanOrder reads; append WHERE/ORDER clauses.
+// orderQuery selects the columns scanOrder reads; append WHERE/ORDER clauses. A draft reads the listing as it is
+// now, except a listing whose edit awaits staff review (MOD72-6): its unreviewed title and description are not shown.
 const orderQuery = `SELECT o.id,p.id,
-	CASE WHEN o.state='draft' THEN p.title ELSE COALESCE(o.listing_title,'Listing terms were not recorded for this order') END,
+	CASE WHEN o.state='draft' AND p.review_state<>'approved' THEN 'Listing awaiting review' WHEN o.state='draft' THEN p.title ELSE COALESCE(o.listing_title,'Listing terms were not recorded for this order') END,
 	b.handle,v.handle,o.currency,o.amount,o.quantity,o.state,to_char(o.created,'YYYY-MM-DD HH24:MI "UTC"'),
 	CASE WHEN o.state='draft' THEN p.kind ELSE COALESCE(o.listing_kind,p.kind) END,
 	o.buyer_id,p.vendor_id,to_char(o.updated,'YYYY-MM-DD HH24:MI "UTC"'),
 	EXISTS(SELECT 1 FROM escrows es WHERE es.order_id=o.id),
 	CASE WHEN o.state='draft' THEN p.kind ELSE COALESCE(o.listing_kind,'Not recorded') END,
-	CASE WHEN o.state='draft' THEN p.description ELSE COALESCE(o.listing_description,'') END,
+	CASE WHEN o.state='draft' AND p.review_state<>'approved' THEN '' WHEN o.state='draft' THEN p.description ELSE COALESCE(o.listing_description,'') END,
 	o.listing_title IS NOT NULL
 	FROM orders o JOIN products p ON p.id=o.product_id JOIN users b ON b.id=o.buyer_id JOIN users v ON v.id=p.vendor_id`
 

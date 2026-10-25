@@ -622,7 +622,8 @@ func loadPublicReviews(ctx context.Context, a *App, d *PageData, where, id strin
 		sum.Hidden = 0
 	}
 	d.ReviewSummary = &sum
-	rows, err := a.db.QueryContext(ctx, "SELECT r.id,r.rating,r.body,to_char(r.created,'YYYY-MM'),p.title,r.hidden_at IS NOT NULL"+base+listed+" ORDER BY r.created DESC LIMIT 50", id)
+	// MOD72-6: a listing whose edit awaits staff review is named by the title its buyer ordered, never the unreviewed one.
+	rows, err := a.db.QueryContext(ctx, "SELECT r.id,r.rating,r.body,to_char(r.created,'YYYY-MM'),CASE WHEN p.review_state='approved' THEN p.title ELSE coalesce(o.listing_title,'') END,r.hidden_at IS NOT NULL"+base+listed+" ORDER BY r.created DESC LIMIT 50", id)
 	if err != nil {
 		return err
 	}

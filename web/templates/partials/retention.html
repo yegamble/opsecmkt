@@ -4,7 +4,8 @@
 <p>Accounts close after 12 months without authenticated use and 30 days' notice, or within 30 days of a verified deletion request. Necessary access for unresolved funds or administrator replacement can remain. Unfunded drafts expire after 30 days, closed order records 180 days after verified financial closure, and withdrawn listing content after 30 days unless needed for an open transaction.</p>
 <p class="help">Ordinary backups have a 30-day deadline; operator-controlled copies need separate expiry jobs. Initial enrollment gives historical records 30 days' grace and accounts without known activity a bounded 90-day reconfirmation period.</p>
 <p class="help">{{if .LastRun}}Last completed retention pass: {{.LastRun}}.{{else}}No retention pass has completed yet.{{end}} Initial enrollment includes notice periods. Escrow recovery records can remain while safe retirement is blocked. Backup expiry requires the operator's separate scheduled job.</p>
-{{else}}<p>Retention maintenance is not enabled. Accounts, messages and orders currently have no automatic deletion lifecycle on this instance.</p>{{end}}{{end}}{{end}}
+{{else}}<p>Retention maintenance is not enabled. Accounts, messages and orders currently have no automatic deletion lifecycle on this instance.</p>{{end}}
+<p class="help">New abuse-review records keep references, digests and limited metadata rather than copies of submitted text, including exact and perceptual image fingerprints. Routine expiry and account deletion do not erase copies retained for abuse review. These copies currently have no automatic expiry, including after collection stops. New abuse-review records also have no automatic expiry: their references and fingerprints remain after the original text or image is removed, and a digest or fingerprint can confirm a guessed text or a matching image. See <a href="/canary#records">what this server keeps</a>.</p>{{end}}{{end}}
 
 {{define "retention:order"}}{{with .Retention}}{{if .Enabled}}<p class="help" role="note">Save deliveries you need: private order content expires 30 days after verified financial closure and ordinary order records after 180 days, subject to preservation duties. Ordinary late-payment monitoring ends 90 days after the order closes. After financial retirement or wallet destruction, old addresses lose application recovery support; do not send further funds to them.</p>{{end}}{{end}}{{end}}
 
@@ -17,7 +18,7 @@
 {{if .Enabled}}{{if .DeletionRequested}}<p>Your deletion request was accepted {{.DeletionRequested}}. Save any messages or deliveries you need. Signing in does not cancel this request.</p>
 {{else}}<form class="stack" method="post" action="/account/delete">
 <input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="form_nonce" value="{{formNonce "/account/delete"}}">
-<p>Request deletion of your profile and sign-in material within 30 days. Necessary records for unresolved transactions and preservation duties can remain. Deleting an account does not delete recipients' saved copies or blockchain records.</p>
+<p>Request deletion of your profile and sign-in material within 30 days. Necessary records for unresolved transactions and preservation duties can remain. Account deletion does not erase retained abuse-review copies. Deleting an account does not delete recipients' saved copies or blockchain records.</p>
 <label><input type="checkbox" name="confirm_delete" value="yes" required> I have saved the records I need and want to request account deletion.</label>
 {{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}<button type="submit">Request account deletion</button>
 </form>{{end}}{{end}}</section>{{end}}{{end}}

@@ -1,0 +1,60 @@
+# Standalone, opt-in inference sandbox. Do not merge it into the application's
+# service configuration or give it application/database/wallet secret mounts.
+# Run preflight.py before starting; reviewed artifacts must already be present.
+services:
+  moderation-inference:
+    profiles: [moderation-inference]
+    image: ${MODERATION_RUNTIME_IMAGE:?Set a reviewed image pinned by sha256 digest}
+    pull_policy: never
+    user: '65532:65532'
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    cpus: 2
+    mem_limit: 8g
+    memswap_limit: 8g
+    ulimits:
+      core: 0
+      nofile: 128
+    restart: 'no'
+    entrypoint: [/bin/sh, /opt/moderation/entrypoint.sh]
+    environment:
+      MODERATION_WEIGHTS_SHA256: ${MODERATION_WEIGHTS_SHA256:?Set the reviewed weights sha256}
+      HF_HUB_OFFLINE: '1'
+      TRANSFORMERS_OFFLINE: '1'
+      HF_HUB_DISABLE_TELEMETRY: '1'
+      DO_NOT_TRACK: '1'
+      # Clear Docker client proxy defaults as well as image defaults. The
+      # launcher additionally replaces the runtime's entire environment.
+      HTTP_PROXY: ''
+      HTTPS_PROXY: ''
+      ALL_PROXY: ''
+      NO_PROXY: ''
+      http_proxy: ''
+      https_proxy: ''
+      all_proxy: ''
+      no_proxy: ''
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=67108864,mode=1777
+    volumes:
+      - type: bind
+        source: ${MODERATION_WEIGHTS_FILE:?Set an absolute local GGUF file path}
+        target: /models/model.gguf
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${MODERATION_SOCKET_DIR:?Set the dedicated private socket directory}
+        target: /run/moderation
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./entrypoint.sh
+        target: /opt/moderation/entrypoint.sh
+        read_only: true
+        bind:
+          create_host_path: false
+    logging:
+      driver: none

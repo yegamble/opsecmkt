@@ -59,6 +59,7 @@
 {{with $f.Err "delivery_content"}}<p class="field-error" id="lf-delivery_content-error">{{.}}</p>
 {{end}}{{with $f.DeliveryNote}}<p class="field-error" id="lf-delivery-note">{{.}}</p>
 {{end}}{{if .Inventory}}{{template "vendor-listings:delivery-help" .Inventory.AutoDelivery}}{{else}}{{template "vendor-listings:delivery-help" ""}}{{end}}
+{{if .ListingHeld}}<p class="help listing-held">The market holds listings for review: a new listing stays hidden from buyers until a moderator or administrator approves it.</p>{{end}}
 <button class="primary" type="submit">Publish listing <span class="action-icon">↗</span></button>
 </form>
 </details>

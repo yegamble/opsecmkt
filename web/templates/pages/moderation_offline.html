@@ -1,0 +1,7 @@
+{{define "page:admin/moderation/offline"}}{{template "header" .}}
+<div class="page-head"><div><div class="eyebrow">Private administration</div><h1>Signed review<span class="accent">.</span></h1><p>Record an offline-signed moderation review.</p></div></div>
+<section class="panel"><h2>Submit a review token</h2>
+<p>Submit the token signed on your offline workstation. A valid token records acceptance, dismissal or a hold of one suggestion. Listing changes, account restrictions and payments require their existing authenticated workflows.</p>
+<form method="post" action="/admin/moderation/offline" class="stack"><input type="hidden" name="csrf" value="{{.CSRF}}"><label>Signed JSON token<textarea name="signed_token" rows="12" maxlength="4096" required spellcheck="false" autocomplete="off"></textarea></label><button type="submit">Record signed review</button></form>
+<p><a class="text-link" href="/admin/moderation">Open the review queue (sign-in required)</a></p></section>
+{{template "footer" .}}{{end}}

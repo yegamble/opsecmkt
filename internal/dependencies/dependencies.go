@@ -26,9 +26,14 @@ import (
 
 var serviceNames = []string{"postgresql", "monerod", "monero-wallet-rpc", "tor", "clamav", "go"}
 var numericVersion = regexp.MustCompile(`^[0-9]{1,6}(?:\.[0-9]{1,6}){1,3}$`)
+var llamaBuild = regexp.MustCompile(`^b[1-9][0-9]{0,8}$`)
 var torRelease = regexp.MustCompile(`href="tor-([0-9]+(?:\.[0-9]+){3})\.tar\.gz"`)
 
 const reportLimit = 64 << 10
+
+// InferenceRuntimeService is optional inventory. Merely updating the worker or
+// configuring moderation never adds a release request for it.
+const InferenceRuntimeService = "llama.cpp"
 
 // Entry contains version strings only; never RPC addresses, credentials or hosts.
 // Current is operator-reported inventory, not live service telemetry.
@@ -62,6 +67,8 @@ func sourceFor(service string) string {
 		return "https://api.github.com/repos/Cisco-Talos/clamav/releases/latest"
 	case "go":
 		return "https://go.dev/dl/?mode=json"
+	case InferenceRuntimeService:
+		return "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"
 	}
 	return ""
 }
@@ -77,6 +84,32 @@ func Normalize(s string) string {
 		return ""
 	}
 	return s
+}
+
+// NormalizeFor preserves the existing numeric policy for the six original
+// services. llama.cpp uses stable bNNN build tags, accepted only for that service.
+func NormalizeFor(service, version string) string {
+	if service != InferenceRuntimeService {
+		return Normalize(version)
+	}
+	version = strings.TrimSpace(version)
+	if !llamaBuild.MatchString(version) {
+		return ""
+	}
+	return version
+}
+
+func NewerFor(service, latest, current string) bool {
+	if service != InferenceRuntimeService {
+		return Newer(latest, current)
+	}
+	latest, current = NormalizeFor(service, latest), NormalizeFor(service, current)
+	if latest == "" || current == "" {
+		return false
+	}
+	newBuild, _ := strconv.Atoi(latest[1:])
+	oldBuild, _ := strconv.Atoi(current[1:])
+	return newBuild > oldBuild
 }
 
 // Newer compares numeric release components without treating unknowns as old.
@@ -106,9 +139,9 @@ type currents map[string]string
 func (c currents) String() string { return "" }
 func (c currents) Set(value string) error {
 	service, version, ok := strings.Cut(value, "=")
-	normalized := Normalize(version)
+	normalized := NormalizeFor(service, version)
 	if !ok || sourceFor(service) == "" || normalized == "" {
-		return errors.New("current must be a supported SERVICE=numeric.VERSION")
+		return errors.New("current must be a supported SERVICE=VERSION (numeric release, or llama.cpp=bNNN)")
 	}
 	if _, exists := c[service]; exists {
 		return errors.New("current service may be supplied only once")
@@ -217,7 +250,11 @@ func newClient(socks string) (*http.Client, error) {
 func poll(ctx context.Context, client *http.Client, current map[string]string, now time.Time) Report {
 	report := Report{Version: 1, GeneratedAt: now}
 	cache := map[string]string{}
-	for _, service := range serviceNames {
+	services := append([]string{}, serviceNames...)
+	if NormalizeFor(InferenceRuntimeService, current[InferenceRuntimeService]) != "" {
+		services = append(services, InferenceRuntimeService)
+	}
+	for _, service := range services {
 		source := sourceFor(service)
 		latest, known := cache[source]
 		if !known {
@@ -246,8 +283,8 @@ func poll(ctx context.Context, client *http.Client, current map[string]string, n
 func parseLatest(service string, body []byte) (string, error) {
 	latest := ""
 	selectVersion := func(candidate string) {
-		candidate = Normalize(candidate)
-		if candidate != "" && (latest == "" || Newer(candidate, latest)) {
+		candidate = NormalizeFor(service, candidate)
+		if candidate != "" && (latest == "" || NewerFor(service, candidate, latest)) {
 			latest = candidate
 		}
 	}
@@ -278,7 +315,7 @@ func parseLatest(service string, body []byte) (string, error) {
 				selectVersion(version.Version)
 			}
 		}
-	case "monerod", "monero-wallet-rpc", "clamav":
+	case "monerod", "monero-wallet-rpc", "clamav", InferenceRuntimeService:
 		var version struct {
 			Tag               string `json:"tag_name"`
 			Draft, Prerelease bool
@@ -328,15 +365,20 @@ func ReadVerified(path, publicPath string, now time.Time) (Report, error) {
 	}
 	d = json.NewDecoder(bytes.NewReader(env.Report))
 	d.DisallowUnknownFields()
-	if d.Decode(&report) != nil || d.Decode(new(any)) != io.EOF || report.Version != 1 || report.GeneratedAt.IsZero() || report.GeneratedAt.After(now.Add(5*time.Minute)) || len(report.Entries) != len(serviceNames) {
+	if d.Decode(&report) != nil || d.Decode(new(any)) != io.EOF || report.Version != 1 || report.GeneratedAt.IsZero() || report.GeneratedAt.After(now.Add(5*time.Minute)) || len(report.Entries) < len(serviceNames) || len(report.Entries) > len(serviceNames)+1 {
 		return Report{}, errors.New("dependency report contents invalid")
 	}
 	seen := map[string]bool{}
 	for _, entry := range report.Entries {
-		if sourceFor(entry.Service) == "" || seen[entry.Service] || entry.Source != sourceFor(entry.Service) || (entry.Current != "" && Normalize(entry.Current) != entry.Current) || (entry.Latest != "" && Normalize(entry.Latest) != entry.Latest) || (entry.Error != "" && entry.Error != "unavailable") || entry.CheckedAt.IsZero() || entry.CheckedAt.After(report.GeneratedAt) || entry.CheckedAt.Before(report.GeneratedAt.Add(-time.Minute)) || (entry.Latest == "") != (entry.Error == "unavailable") {
+		if sourceFor(entry.Service) == "" || seen[entry.Service] || entry.Source != sourceFor(entry.Service) || (entry.Current != "" && NormalizeFor(entry.Service, entry.Current) != entry.Current) || (entry.Latest != "" && NormalizeFor(entry.Service, entry.Latest) != entry.Latest) || (entry.Service == InferenceRuntimeService && entry.Current == "") || (entry.Error != "" && entry.Error != "unavailable") || entry.CheckedAt.IsZero() || entry.CheckedAt.After(report.GeneratedAt) || entry.CheckedAt.Before(report.GeneratedAt.Add(-time.Minute)) || (entry.Latest == "") != (entry.Error == "unavailable") {
 			return Report{}, errors.New("dependency report entry invalid")
 		}
 		seen[entry.Service] = true
+	}
+	for _, service := range serviceNames {
+		if !seen[service] {
+			return Report{}, errors.New("dependency report required service missing")
+		}
 	}
 	return report, nil
 }
