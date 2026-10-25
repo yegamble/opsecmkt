@@ -34,8 +34,8 @@ item still needs.
 - `archive/codex-vendor-bonds-fiat-rates` (base `312dd8ed`, 13 Oct): 12 new files are not on main, among them
   `vendor_bond_rpc.go`, `fiat_rates.go`, a rate proxy and a different `111_vendor_bonds.sql`. 8 edits still apply
   cleanly to main, 22 have diverged. The fiat peg was declined (iteration 66, P5).
-- `archive/codex-host-reboot-storage` (base `47f2384c`, 16 Oct): every new file is on main unchanged, and 12 edited
-  files match main. 21 edits (CLI, operator config, install docs, admin payments) have diverged and are unchecked.
+- `archive/codex-host-reboot-storage` (base `47f2384c`, 16 Oct): every new file exists on main, 9 of them changed since (main's copies are
+  longer), and 12 edited files match main. 21 edits (CLI, operator config, install docs, admin payments) have diverged and are unchecked.
 
 **Blocked on the owner. Do not start these.**
 - A-555: mainnet confirmation count.
