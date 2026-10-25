@@ -217,6 +217,7 @@ Evidence tier as in `repo-map.md`.
 | 84 | 2026-10-21 | /war-room-loop resume: A-69, A-59 | implementers A-69, A-59; chair-verified both | Verified: A-69 (#155, canary reasons for expiry, skew and revocation), A-59 (#156, listing form re-renders filled in). New: A-643 (P3), A-644 (ruling), A-645 (P3). Noted: another session's #154 (MOD72-8, PostgreSQL JIT off) likely explains the A-615 /moderator timeouts |
 | 85 | 2026-10-21 | /war-room-loop resume: A-520, A-505 | implementers A-520, A-505; infrastructure seat (A-505, two rounds); chair-verified A-520 and the A-505 lock mutation | Verified: A-520 (#158), A-505 (#159; round-1 REQUIRED SRE-1 and SRE-2 fixed). A-645 cause found (collation). New: A-646 (NIT). Correction: the chair had told the owner every unblocked high-priority item was done; about ten unruled-priority items remained (A-132, A-175, A-503, A-505, A-506, A-519, A-520, A-521, A-522, A-541, A-226) and the loop resumed |
 | 86 | 2026-10-25 | Branch consolidation (owner request: one coherent main for the cloud agent) | chair only | Merged #160 (iteration 85 ledger), #161 (undici advisory that failed CI on every branch), #99 (moderation agent, main merged in, 5 conflicts resolved; CI 32/32) and #154 (MOD72-8, after #99). Unfinished A-519 and A-521 worktrees opened as drafts #162 and #163. Codex snapshots kept as `archive/codex-*` branches: a later content check (below "Start here") found edits not on main. Added the "Start here" section |
+| 87 | 2026-10-25 | /war-room-loop resume: AI moderation sweep, the behaviour-based moderation design round (owner directive 2026-10-20) | opsec-llm, opsec-privacy, opsec-security, opsec-payments, opsec-staff (Round A; B/C skipped); implementers A-647, A-648, A-649 | Ruled A-647–A-661 (see "Iteration 87" below). A-652 (ban and open orders, forfeiture) and A-653 (Go rule or model label) wait on the owner. Implementation wave: A-647, A-648, A-649 (in progress) |
 
 ## P0 — release blockers
 
@@ -368,6 +369,14 @@ Evidence tier as in `repo-map.md`.
 | A-562 | Production wallet topology write path never exercised (QA66-6, narrowed by DA66 Round B: deployed mTLS read-only RPC already succeeded, deployment-notes.md:96/:174): rehearse on stagenet with the native `--mode prod` topology wallet creation, transfer do_not_relay, relay_tx and Digest under concurrent polling through the TLS proxy — one digital claim, one physical refund, one deadline release — and record in verification.md. GATE: before unpausing mainnet intake | payments/ops | QA66-6, DA66-3, DA66-E1, QA66-11 | blocked (operator rehearsal on owner hosts) |
 | A-569 | /messages stores ciphertext that cannot reach the recipient (external audit S1, security seat CONFIRMED; policy docs/data-retention-privacy-policy.md:153-161 requires refusal): wrong visible key (`matchNo`) and passphrase-only (no PKESK) messages are stored and notified (messages_status.go:35-51, :97-112; actions_messages.go:64-74); no `canReceiveEncrypted` check. Refuse no-usable-key (409), passphrase-only (400) and visible mismatch (400) with nothing stored; hidden recipient IDs (`--throw-keyids`) need an explicit no-JS acknowledgement and are stored as `unknown`. Tests `TestMessageRecipientEnforcement`, db-pgp-messages hidden-recipient journey | messaging/privacy | external audit S1 + security seat | verified (PR #93 merged b24ccd6f; CI run 39335566097 all 24 checks on 3c6b8901; main CI 39337244761 all 23 jobs; qa-release verified iteration 68; follow-ups A-608–A-610) |
 | A-570 | Public listener can lock administrators out of the private admin onion (security seat MISSED S-M1): AdminHandler serves the same App (admin_ingress.go:43-51), limiter keys `auth:<handle>` / `totp-verify:<id>` and the pageWork/anonPostWork/passwordWork semaphores are process-wide (actions_auth.go:451-506, admission.go:40-41); ~20 anonymous public requests per 10 min pause the admin's sign-in on the client-authorized onion. Namespace limiter keys for private-ingress requests (`adm:`) and give the private ingress its own small semaphores; public budgets unchanged. Tests `TestPublicListenerCannotPauseAdminIngressSignIn`, `TestAdminIngressAdmissionReserved` | identity/ops | security seat S-M1 | verified (PR #94 merged be8faf0f; CI run 39339093305 all checks on a2f0f75d; security seat round 1 NOT VERIFIED: PGP-only admin refused on a saturated public table (429) and two untested keys; fix round namespaced pgp-login/pgp-challenge/pgp-verify, added TestFullPublicLimiterTableRefusesNoAdminIngressPGPStep and TestSoleAdminRescueThroughAdminIngress; round 2 verified, probe 303, five mutations fail. Residual documented: uploads share uploadWork/userPostWork; follow-up A-611) |
+| A-647 | SEC72AA-1: moderation admission never waits on the global capacity row, and worker/staff moderation transactions take it first (SEC87-1, SEC87-2, PAY87-8 test, PRIV87-6 constraint); migration 148. Criteria under "Iteration 87 ruling" | moderation | security seat reproduced 40P01 on a scratch PG16 copy of a2a514c8 (tx1 admits listing A then locks B; tx2 editing B waits on the capacity row) | in-progress (war-room/A-647-admission-nowait) |
+| A-648 | /admin overview moderation-budget alert (owner 2026-10-21; STAFF87-1, SEC87-7, PRIV87-5): counts and the flag names on private ingress, one fixed sentence on public ingress, plain read, no ids or times | ops | code read: AdminSectionAlert has no moderation case (admin_sections.go:79) | in-progress (war-room/A-648-budget-alert) |
+| A-649 | Banned buyers' reviews leave ratings and review lists by a live join; vendors see the same neutral text as an administrator hide; unban restores (owner directive; PRIV87-3, STAFF87-3, SEC87-5 part) | commerce | code read: load.go:290 and orders_load.go:609-626 have no users join | in-progress (war-room/A-649-banned-buyer-reviews) |
+| A-650 | A ban clears `listing_auto_approve` and audits it; unban does not restore it (SEC87-8, LLM87-N1) | moderation | code read: admin_ban.go:185 | open (next wave; shares admin_ban.go with A-649) |
+| A-651 | The model stops reading listing and upload text (directive: "must not judge listings by text"): those kinds are evaluated deterministically with a Go-only code; `actor_reputation` leaves Stage B; source guard that nothing sets Actor.Reputation; prompt identity guard; PromptVersion moderation-v5 refuses v4 pins (LLM87-1) | moderation | code read: moderation_worker.go:330-334,361; inference.go:269 | open (next wave; shares moderation_worker.go with A-647) |
+| A-652 | Ban and open orders: what a ban does to a banned vendor's awaiting/paid/shipped/claimable escrow orders and what "forfeit" means (PAY87-1..5, SEC87-3, STAFF87-7) | payments | owner decision 2026-10-19 (implementation-status.md:593, "no other address is ever paid") conflicts with directive 2026-10-20 ("forfeiting … pending vendor funds") | blocked (owner decision) |
+| A-653 | Deterministic reputation figures computed on read and a closed label (Go rule vs model-proposed: LLM seat measured a model 45/100 agreement, 25/61 HIGH_REPUTATION precision, 20/20 handle hijack, instrument tier) (LLM87-2/3, PAY87-6, SEC87-5/6, STAFF87-6, PRIV87-1) | moderation | instrument run (llava:7b Q4_0 on Ollama, synthetic n=100) | blocked (owner decision) |
+| A-654 | Raise the moderation budget from the private panel: confirmed, increase-only, audited; a worker flag below the stored value is ignored with a fixed log line instead of lowering it or exiting (STAFF87-2) | ops | code read: cmd/server/moderation_worker.go:175-187 | open (after A-647; shares moderation_admin.go) |
 
 ### Iteration 3 rulings (chair) — acceptance criteria
 
@@ -1275,6 +1284,13 @@ URLs and 2 TLS listeners — all false positives for the Tor surface (namespaces
 | A-536 | Harden db, bitcoin, monero, monero-escrow-wallet per the iteration-62 profiles; tests/test_compose_hardening.py; scripts/test-service-hardening.sh in CI; monerod `--no-igd --no-zmq` (audit F4; SRE-1–4) | ops | infrastructure seat offline image starts | verified (PR #50, CI run 38481755669; opsec-qa-release iteration 62; war-room/A-536-container-hardening cc3db23, merged f467d17; bitcoin also gets tmpfs /tmp for the runbook wallet backups) |
 | A-537 | escrow-signer: non-blocking cap of 32 connections, extra ones closed without reply (audit F1, modified; BE-1) | payments | Round A | verified (PR #50, CI run 38481755669; opsec-qa-release iteration 62; war-room/A-537-signer-conn-cap c11b3db, merged into war-room/integration) |
 | A-538 | Node file logs (bitcoind debug.log, monerod, wallet-rpc) outside Docker's log rotation: cap or document (SRE-5) | ops | Round A iteration 62 | VERIFIED (#152 4fcbaa95, chair-verified: monerod --max-log-file-size=10485760 --max-log-files=3 in both compose files and the native render; flags checked against 0.18.5.1 --help and started in test-monerod-ports.sh; retention job documented) |
+| A-655 | Ban-evasion candidates on an admin-only view computed on request, nothing stored: PGP match only when both keys are verified and the banned account's verification predates the suspect's; photo and handle similarity are hints, never sufficient; a closed account produces no match; /canary sentence (PRIV87-2, SEC87-4, STAFF87-12). Ship after A-660's measurement | moderation | design round 87 | open (iteration 87) |
+| A-656 | Per-vendor "always hold for review" (`users.listing_force_review`, CHECK not with auto-approve, admin only, optional requeue of approved listings, model never writes it; next free migration) plus the listing_review.go:299 message NIT (STAFF87-4) | moderation | code read: listingHeldSQL listing_review.go:80 | open (iteration 87) |
+| A-657 | Structured ban reason code beside the free text (`users.ban_reason_code`, CHECK list incl. bad_faith_buyer; required select; audited; directory filter; cleared by unban and by the account_close scrub, PRIV87-4) (STAFF87-5) | identity | code read: admin_ban.go:39-52 | open (iteration 87) |
+| A-658 | Staff follow-ups: suspension requires a reason in both audit rows (STAFF87-8); Security alert when bans or suspensions exist and the staff contact needs an account, plus an operator-guide Appeals paragraph, no new password route (STAFF87-9, SEC87-11); per-handle audit trail paging past 100 rows (STAFF87-10) | identity | code read | open (iteration 87) |
+| A-659 | Dispute and payment_flag jobs skip inference (money already routes to ESCALATE_ADMIN), with the A-651 v5 bump if in the same wave; /admin alert when at least half of the last 50 v2 jobs failed with --model on (LLM87-4, LLM87-5) | moderation | code read: risk.go:35,47 | open (iteration 87) |
+| A-660 | Measure false-match rates of photo dHash and handle similarity on synthetic stock-photo and handle sets; show a signal only at ≥0.95 precision (LLM87-E2, PRIV87-9) | moderation | dHash 0/780 on synthetic textured fixtures only | open (EXPERIMENT, gates A-655) |
+| A-661 | Restore runbook step 7 and UPGRADING section 6 list bans, suspensions and ban order actions made after the backup (PAY87-9); /admin payments alert with the count and total of releases held for closed vendors (PAY87-10) | ops | code read | open (iteration 87) |
 
 ## P3 — experiments
 
@@ -2005,7 +2021,105 @@ Ruled scope for a follow-up PR; it needs its own war-room design round (LLM, pri
 - SEC72AA-1 (owner, 2026-10-21): admission must never wait on the global capacity row (e.g. SKIP LOCKED with a reference-only fallback reconciled by the sweep), so a vendor edit never fails with a deadlock while capture is enabled.
 - Moderation budget alert (owner, 2026-10-21; from the MOD72-1 lifetime-pool note): an /admin dashboard alert when a retained_capacity overflow is recorded or the lifetime moderation pool runs low (at defaults one account's daily share drains the 512-allocation pool in about 6 days, after which capture waits until an administrator raises the budget). Today this shows only on the private moderation panel. The alert names counts and the setting to raise, never accounts or targets.
 - Open design questions for the round: which linking signals are acceptable for ban-evasion detection (PGP key/fingerprint, payout address, photo hashes, handle similarity) and what they reveal on a seized server; how forfeiture interacts with escrow states and disputes in flight; appeal paths; how reviews leave the rating; whether MOD72-5's advisory text checks remain.
-STATUS: open (PR #99 merged 2026-10-25; next step is the design round).
+STATUS: design round held (iteration 87, 2026-10-25); rows A-647–A-661, ruling below. A-652 and A-653 wait on the owner.
+
+## Iteration 87 — behaviour-based moderation design round (ruling, 2026-10-25)
+
+Seats: opsec-llm, opsec-privacy, opsec-security, opsec-payments, opsec-staff (the owner directive named these five). Round 0: one Sonnet Explore pack. Rounds B/C skipped: the only disputed BLOCKER (forfeiture) needs an owner decision rather than more argument, and the other disagreements are decided below on evidence. Rows A-647–A-661.
+
+Agreed by every seat (binding for later items):
+- Figures and signals are computed by Go on read from existing rows and are not stored. No stored reputation history, account-link table or public reputation or "banned" marker.
+- No payee other than the order's pinned refund address or the vendor's own claim address. No new settlement kind or output role, and no send from the bond wallet. The bond is already the operator's (non-refundable, swept offline), so "bond goes to the administrator" needs wording only.
+- Payment addresses, IP, timing and stylometry are never linking signals (147, 111, canary:51).
+- MOD72-5's deterministic text checks stay. They are Go, not model, and route to HUMAN_REVIEW only.
+- Admins decide; moderators review. Vendor-wide hold, suspend and ban stay admin-only.
+
+DECISION A-647 (SEC72AA-1): ACCEPT, MODIFY on the fallback store.
+WHY: The security seat reproduced 40P01 on a scratch PostgreSQL 16 copy of a2a514c8:
+- tx1 admits listing A and then locks B.
+- tx2 editing B waits on the capacity row.
+- tx1 touching B then deadlocks.
+A stock-only second statement is enough. With a prototype of SKIP LOCKED alone, the worker-persist pair still deadlocked.
+DISSENTING VIEW: The privacy seat (PRIV87-6) asked for the existing moderation_backfill marker. Ruled against: moderation_mark_missed takes the capacity row again (146:122), which reopens the wait. A separate reference row of the same content-free shape satisfies its actual constraint, which is that no row names both an account and a target.
+ACCEPTANCE CRITERIA:
+1. Migration 148 adds `moderation_deferred(kind, target_id, noted)`:
+   - no actor, digest or user FK;
+   - kind is CHECKed against the five kinds, and target_id is 1–128 characters;
+   - PRIMARY KEY (kind, target_id).
+2. `moderation_admit_job` takes the capacity row with FOR UPDATE SKIP LOCKED. When the row is busy it only inserts the deferred row (ON CONFLICT DO NOTHING) and returns NULL: no overflow note, marker, allocation row or counter.
+3. `moderation_deferred_drain(lim)` runs under the capacity lock. It re-admits each record's current revision through normal admission (sweep flag off), so per-actor FIFO, caps, markers and rescan all apply. A gone or unflagged source is dropped. It is called from moderation_backfill_sweep before the 50%-pending early return.
+4. Source deletion removes the deferred row without taking the capacity lock.
+5. Lock order: persist(), the private-panel review action and SetModerationEnabled take the capacity row first, before any job or marketplace row. The migration header states the rule that foreground transactions never wait on the capacity row.
+6. Caps never exceed their limit. After a drain, counters match exactly and every changed record is covered by a job, a marker, a deferred row or its actor's rescan flag.
+7. /canary and retention text disclose the deferred reference row, with pinned wording. implementation-status, acceptance and UPGRADING are updated.
+TEST PLAN:
+- internal/market/moderation_nowait_test.go:
+  - TestModerationAdmissionNeverWaitsOnCapacity, with legs held capacity / moderated edit / stock only. It fails on main.
+  - TestModerationDeferredDrainIsLossless: archive, delete or unflag a deferred source before the drain.
+  - TestModerationPersistLockOrder and the review-action equivalent.
+  - TestModerationAdmissionResolveVsWatcherFlagNoDeadlock (PAY87-8).
+- Amend TestModerationConcurrentAdmissionHasAtomicCaps: `<=` before the drain, exact equality and full coverage after it.
+- Stress-harness leg: admit, then lock a second listing (5 runs, 0 deadlocks).
+- Source guard: the capacity lock is the first statement of persist and of the review action.
+
+DECISION A-648 (budget alert): ACCEPT, MODIFY on ingress.
+WHY: The owner asked for an /admin alert, and AGENTS.md keeps moderation status on the private administrator ingress.
+DISSENTING VIEW: The staff seat would show counts on any ingress because they name nothing. Held in part: the counts are harmless, but the rule is explicit.
+ACCEPTANCE CRITERIA:
+1. A plain read of the capacity row and overflow occurrences (never FOR UPDATE). The alert shows when either holds:
+   - remaining = min(max_records − allocated_records, (max_bytes − allocated_bytes)/524288) is at most 2 × the daily actor share;
+   - a retained_capacity or backfill_capacity overflow is recorded while markers or rescans wait.
+2. On private admin ingress the overview shows fixed text with N of M allocations used, the K targets waiting, and the setting to raise (`--max-records` / `--max-reserved-bytes` on the moderation worker), with the link to the private panel.
+3. On public ingress it shows one fixed sentence with no numbers: capture needs attention; open the private moderation panel on the private administrator connection.
+4. It never shows a handle, id, kind, timestamp or 64-hex/UUID. It is absent when healthy, in preview and for non-admins, and clears after a raise.
+TEST PLAN: TestAdminOverviewModerationBudgetAlert (private, with counts), TestAdminOverviewModerationBudgetAlertPublicIngressNoCounts, TestAdminOverviewModerationBudgetAlertClears, and a no-lock source guard. preview-admin-sections.spec.ts shows no alert in preview.
+
+DECISION A-649 (banned buyers' reviews): ACCEPT, MODIFY.
+WHY: This is the owner rule. A live join is reversible and writes nothing.
+DISSENTING VIEW: The staff seat would also exclude closed accounts. Rejected as broader than the owner rule; retention already deletes those reviews except on held orders (a known edge case).
+ACCEPTANCE CRITERIA:
+1. The product rating (load.go:290), vendor and product review summaries and lists (orders_load.go) exclude reviews whose buyer has banned_at set. Nothing is written to reviews, and unban restores them.
+2. The vendor's and buyer's order page shows the same neutral sentence for a hidden review and a banned buyer's review. Only administrators see the cause, labelled "Not counted: reviewer's account is banned", with a separate count.
+3. The ban and unban audit rows state how many reviews stop or start counting.
+4. A public policy line on the reviews partial says reviews by banned accounts are not shown or counted. No public count of excluded reviews.
+TEST PLAN: TestBannedBuyerReviewsExcludedFromRating, TestUnbanRestoresReviews, TestBannedBuyerReviewVendorTextMatchesHide and TestBanAuditCountsReviews in review_hide_test.go or admin_ban_test.go; a ban leg in db-review-hide.spec.ts.
+
+DECISIONS needing the owner (asked 2026-10-25):
+- A-652: what a ban does to open orders and what forfeiture means.
+  - The payments seat (PAY87-1, BLOCKER if built otherwise) recommends:
+    - no new payee;
+    - a separate confirmed /admin action refunds a banned vendor's awaiting and unshipped orders through escrowSettleTerminal;
+    - requested releases are held at build (migration backstop);
+    - shipped deadlines are extended to at least 72 h with per-order buyer notice;
+    - the ban ends selling authority.
+  - The security seat (SEC87-3) proposes a terminal `forfeit_hold` outcome swept offline. That is UNVERIFIED as feasible, and the payments seat lists a new kind as NOT WORTH DOING.
+- A-653: the label is a Go rule (LLM, staff and privacy seats; measured model 45/100) or model-proposed as the directive says. The LLM87-E1 shadow rig is the route back to a model. Either way, confirmation is the existing password-confirmed auto-approve action, with the label recomputed inside it and a stale label refused (SEC87-6, LLM87-3).
+
+NOT WORTH DOING (declined, iteration 87):
+- A forfeit settlement kind or any admin-chosen payee (PAY87-1).
+- Bulk refunds inside the ban transaction.
+- Deciding disputes automatically on a ban.
+- Address linking (refund, claim or payout).
+- On-chain self-purchase detection.
+- HMAC of fingerprints or handles. The privacy seat rejects it. SEC87-10's keyed digest is only for a post-erasure banned-key list, which no owner has asked for.
+- IP, user-agent or timing signals; stylometry.
+- Stored reputation aggregates or history.
+- Public labels or badges.
+- A label confidence field or free-text rationale.
+- Feeding moderation capture into reputation.
+- An advisory lock, NOWAIT that errors, sharded counters, or fully asynchronous admission (A-647).
+- An in-app appeal form or a new password-checking route.
+- Moderators suspending, banning or forcing review.
+- Raising the budget from public ingress.
+- Deleting the inference adapter.
+
+EXPERIMENTS (P3, not ledger rows unless scheduled):
+- LLM87-E1: a stage-R shadow rig.
+- LLM87-E3: strong-marker false positives on listings.
+- SEC87-E2: deferral rate on PostgreSQL 17.
+- PAY87-E1: sockpuppet cost table.
+- STAFF87-11: a signal filter on the directory, with p95 under 200 ms on PostgreSQL 17.
+A-660 is scheduled because A-655 depends on it.
 ## Iteration 72 — A-616 and A-617 ruling
 
 
