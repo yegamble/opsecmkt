@@ -71,8 +71,18 @@ func digitalModeAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, fail(409, "Clear or remove the remaining distinct inventory before changing delivery method.")
 		}
 	}
-	_, err = c.Tx.ExecContext(c.Ctx(), `UPDATE products SET digital_delivery_mode=$2,stock=CASE WHEN $2='inventory' THEN (SELECT count(*) FROM digital_units WHERE product_id=$1 AND order_id IS NULL) ELSE stock END,updated=now() WHERE id=$1`, l.ID, mode)
-	return actionResult{Redirect: "/listing-edit?id=" + l.ID + "#digital-inventory", Audit: "Changed digital delivery method for listing " + shortID(l.ID) + " to " + mode}, err
+	if _, err = c.Tx.ExecContext(c.Ctx(), `UPDATE products SET digital_delivery_mode=$2,stock=CASE WHEN $2='inventory' THEN (SELECT count(*) FROM digital_units WHERE product_id=$1 AND order_id IS NULL) ELSE stock END,updated=now() WHERE id=$1`, l.ID, mode); err != nil {
+		return actionResult{}, err
+	}
+	// MOD72-6: the product page tells buyers whether a digital listing is delivered by the vendor or automatically, so
+	// the vendor's change between the two re-holds an approved listing, or resubmits a rejected one
+	// (listing_review.go). Switching between the two automatic methods changes nothing buyers see.
+	if l.VendorID == c.User.ID && (existing == "manual") != (mode == "manual") {
+		if _, err = holdListing(c.Ctx(), c.Tx, l.ID, l.VendorID); err != nil {
+			return actionResult{}, err
+		}
+	}
+	return actionResult{Redirect: "/listing-edit?id=" + l.ID + "#digital-inventory", Audit: "Changed digital delivery method for listing " + shortID(l.ID) + " to " + mode}, nil
 }
 
 func digitalInventoryListing(c *actionCtx) (managedListing, error) {

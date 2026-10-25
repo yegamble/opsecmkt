@@ -196,6 +196,19 @@ to publish and Cloudflare still sees each request; the docs onion stays the addr
 
 ## Run tests
 
+Moderation package tests exercise deterministic decisions, hostile input/output
+and local-transport failure behavior. Its database tests need the same disposable
+`TEST_DATABASE_URL` as other integration tests. See the
+[moderation acceptance plan](acceptance.md#moderation-agent) before interpreting
+a unit pass as deployed isolation or private-ingress evidence. Never supply a
+production inference endpoint, database or wallet to tests.
+
+`tests/test_moderation_escalation_verifier.py` uses disposable Ed25519 keys and
+OpenSSL to check the offline verifier's exact-byte signature compatibility,
+external public-key pin, hostile JSON and output-file safeguards. It needs no
+database or network and skips its cryptographic interoperability cases when
+OpenSSL is unavailable; report that skip explicitly.
+
 ### Go and PostgreSQL
 
 Run `make go-quality` for the shared formatting/import, module, vet and lint gate; `make hooks-install` installs the optional local commit/push checks described in [Contributing](../CONTRIBUTING.md#gates).
@@ -219,8 +232,9 @@ go test -race -count=1 -timeout 30m -run '^(TestEscrow|TestXMR|FuzzEscrow)' ./..
 go test -race -count=1 -timeout 30m -skip '^(TestEscrow|TestXMR|FuzzEscrow)' ./...
 ```
 
-The two commands are CI's two Go jobs (see [CI and release delivery](ci-cd.md)): with the same pattern, one as `-run`
-and one as `-skip`, they run every test exactly once between them. Run them one after the other against the same
+With the same pattern, one as `-run` and one as `-skip`, the two commands run every test exactly once between them.
+The first is CI's `go-escrow` job; CI splits the second further into its `go` and `go-desk` jobs (A-465, MOD72-9; see
+[Go test jobs](ci-cd.md#go-test-jobs)). Run them one after the other against the same
 database, or at the same time against two different databases (below). They replace the single
 `go test -race -count=1 -timeout 30m ./...`: `-timeout` is per package, and `internal/market` in one race process no
 longer finishes within 30 minutes on a loaded 4-CPU host (QA4W2-E1). Measured on 2026-10-06 on the shared 4-CPU

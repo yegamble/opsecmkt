@@ -551,7 +551,7 @@ func (a *App) responseSecurityHeaders(w http.ResponseWriter) {
 
 func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	a.responseSecurityHeaders(w)
-	if !privateAdminIngress(r.Context()) && (a.adminSocket != "" && privateAdminRoute(r.URL.Path) || r.URL.Path == "/admin/reboot") {
+	if !privateAdminIngress(r.Context()) && (a.adminSocket != "" && privateAdminRoute(r.URL.Path) || r.URL.Path == "/admin/reboot" || moderationPrivateRoute(r.URL.Path)) {
 		http.NotFound(w, r) // before reading a body, setting cookies, admission or any database work
 		return
 	}

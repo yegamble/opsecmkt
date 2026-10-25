@@ -54,6 +54,7 @@ type AdminUserView struct {
 	Verified                                   bool
 	VendorApproved                             bool
 	VerifiedBy, VerifiedAt                     string
+	AutoApprove                                bool                   // MOD72-6: listings publish without staff review (listing_review.go)
 	Application                                *VendorApplicationView // the latest vendor application
 	Policy                                     VendorPolicyView       // what a new application would follow
 	Orders                                     []UserStateCount       // states with any order, in state order
@@ -200,11 +201,11 @@ func adminUserLoader(ctx context.Context, a *App, d *PageData) error {
 		coalesce(to_char(u.suspended_at,`+userTimeSQL+`),''),coalesce(to_char(u.banned_at,`+userTimeSQL+`),''),coalesce(b.handle,''),coalesce(u.ban_reason,''),
 		coalesce(to_char(u.deletion_requested_at,`+userTimeSQL+`),''),coalesce(to_char(u.retention_restricted_at,`+userTimeSQL+`),''),coalesce(to_char(u.closed_at,`+userTimeSQL+`),''),
 		u.totp_enabled,u.pgp_2fa,u.pgp<>'',u.pgp_fingerprint,coalesce(to_char(u.pgp_verified_at,`+userTimeSQL+`),''),
-		(u.vendor_verified OR u.role='admin'),u.vendor_approved,coalesce(vb.handle,''),coalesce(to_char(u.vendor_verified_set_at,`+userTimeSQL+`),''),
+		(u.vendor_verified OR u.role='admin'),u.vendor_approved,coalesce(vb.handle,''),coalesce(to_char(u.vendor_verified_set_at,`+userTimeSQL+`),''),u.listing_auto_approve,
 		(SELECT count(*) FROM products p WHERE p.vendor_id=u.id AND NOT p.archived),(SELECT count(*) FROM products p WHERE p.vendor_id=u.id AND p.archived)
 		FROM users u LEFT JOIN users b ON b.id=u.banned_by LEFT JOIN users vb ON vb.id=u.vendor_verified_set_by WHERE u.handle=$1`, d.AdminUserHandle).Scan(
 		&v.ID, &v.Handle, &v.Role, &v.Created, &v.Suspended, &v.Banned, &v.BannedBy, &v.BanReason, &v.DeletionRequested, &v.Restricted, &v.Closed,
-		&v.TOTP, &v.PGPSignIn, &v.HasPGP, &v.PGPFingerprint, &v.PGPVerified, &v.Verified, &v.VendorApproved, &v.VerifiedBy, &v.VerifiedAt, &v.ActiveListings, &v.ArchivedListings)
+		&v.TOTP, &v.PGPSignIn, &v.HasPGP, &v.PGPFingerprint, &v.PGPVerified, &v.Verified, &v.VendorApproved, &v.VerifiedBy, &v.VerifiedAt, &v.AutoApprove, &v.ActiveListings, &v.ArchivedListings)
 	if err == sql.ErrNoRows {
 		return fail(http.StatusNotFound, "No account has the handle \""+d.AdminUserHandle+"\". Check the spelling: handles are case-sensitive.")
 	}

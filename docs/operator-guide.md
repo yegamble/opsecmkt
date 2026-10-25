@@ -621,7 +621,7 @@ Monero delivery through Tor remains unverified. With `APP_MODE=tor`, Monero sett
 
 ## Migrations
 
-`internal/market/schema.sql` is the frozen baseline. Startup applies it, then every `internal/market/migrations/NNN_name.sql` not yet listed in `schema_migrations`, in numeric order, inside one transaction under an advisory lock, so concurrent app starts are safe and a failed migration changes nothing. A version missing from the table is applied even when higher versions already are. A version in the table that the running server does not include means a newer release migrated the database: the server then exits with an error naming it, before changing or serving anything (see [Rolling back](../UPGRADING.md#5-rolling-back)). Never edit a merged migration; add a new file. Reserved blocks: 001–009 Foundation, 010–019 authentication, 020–029 PGP, 030–039 orders, 040–049 inventory, 050–059 payments, 060–069 transparency; 070–106 contain later payments, privacy, escrow, operations and receipt migrations. Migration 106 records whether a dynamic receipt originally required password confirmation; existing receipts default to false and retain their fixed-route checks. Migration 099 adds indexes for account-filtered and global audit-event ordering; migration 100 adds short-lived form-submission receipts; migration 101 persists provider-alert episode state and delivery deduplication receipts. Take an encrypted backup before upgrading; there are no automatic down-migrations.
+`internal/market/schema.sql` is the frozen baseline. Startup applies it, then every `internal/market/migrations/NNN_name.sql` not yet listed in `schema_migrations`, in numeric order, inside one transaction under an advisory lock, so concurrent app starts are safe and a failed migration changes nothing. A version missing from the table is applied even when higher versions already are. A version in the table that the running server does not include means a newer release migrated the database: the server then exits with an error naming it, before changing or serving anything (see [Rolling back](../UPGRADING.md#5-rolling-back)). It does the same when a recorded version has a different name from the server's migration of that number: a different build, such as a development branch, used the number, so the server's own migration was never applied. Never edit a merged migration; add a new file. Reserved blocks: 001–009 Foundation, 010–019 authentication, 020–029 PGP, 030–039 orders, 040–049 inventory, 050–059 payments, 060–069 transparency; 070–106 contain later payments, privacy, escrow, operations and receipt migrations. Migration 106 records whether a dynamic receipt originally required password confirmation; existing receipts default to false and retain their fixed-route checks. Migration 099 adds indexes for account-filtered and global audit-event ordering; migration 100 adds short-lived form-submission receipts; migration 101 persists provider-alert episode state and delivery deduplication receipts. Take an encrypted backup before upgrading; there are no automatic down-migrations.
 
 Startup runs in separately bounded phases, each set by an optional Go duration in `.env` (blank uses the default):
 
@@ -688,6 +688,7 @@ current one is marked for screen readers). Where this guide says
 | Site & branding | `/admin/site` | *Market name and logo*, *Staff contact*, *Outgoing XMPP* |
 | Transparency | `/admin/transparency` | *Operator PGP key*, *Warrant canary*, *Signed audit export*, *Public staff list* |
 | System & audit | `/admin/system` | Schema version and server start, *Service isolation and updates*, *Application host*, *Image scanner*, *Retention and preservation*, *Recent server errors*, *Audit trail* |
+| Optional moderation | `/admin/moderation` | Private-ingress-only proposal queue, bounded worker status, confirmed review annotations and encrypted escalation downloads |
 
 Every form keeps its address (`POST /admin`, `/admin/suspend`, `/admin/access`
 and so on); a successful change returns to the section holding its form, at the
@@ -696,6 +697,28 @@ unknown handle shows the Users section again. Each section page refuses buyers,
 vendors and moderators exactly as `/admin` does, and is reachable only through
 the private administrator ingress when one is configured. Bookmarks to an old
 `/admin#panel` fragment open the overview; follow its section link.
+
+### Moderation proposals
+
+The optional [moderation controller](moderation-agent.md) and local model are
+off by default. The Admin overview on private administrator ingress links to `/admin/moderation`, available only
+on the private administrator connection; it shows job/review/escalation counts,
+injection-suspicion counts, prompt/weights pins, last pass and bounded failure
+classes. These are worker observations, not proof of model or host integrity.
+Model endpoints, raw model JSON and transport errors are omitted.
+
+**Accept**, **Dismiss** and **Hold** record review annotations only. They do not
+hide a listing, change an account/order, publish a reply or move funds. Confirmed
+forms retain password/TOTP, CSRF and nonce checks. Accepting changed or expired
+content is refused. Review deadlines default to `HOLD`, preserving marketplace
+state. Binding decisions still use the existing independently authorized staff
+and payment workflows.
+
+The [escalation runbook](moderation-escalation-runbook.md) explains optional
+encrypted packets and separately signed one-use review tokens. A token can be
+submitted without an application login at `/admin/moderation/offline`, through
+the same protected private ingress. Keep its action-signing private key offline
+and distinct from the controller's online packet-signing seed.
 
 ### Service status and health
 
@@ -854,6 +877,31 @@ see, and confirm with your password (and authenticator code when enabled). A cha
 
 Vendors that existed before this release keep selling: the upgrade records an approved application for each, without
 a verified mark.
+
+### Listing review
+
+**Admin → Vendors → Listing review** (`/admin/vendors#listing-review`) chooses whether new and edited listings are
+public at once (**publish at once**, the default and the value after upgrading) or wait for staff (**hold for
+review**). Confirm with your password (and authenticator code when enabled); the change is audited. In hold mode a
+vendor's new listing, its change to an approved listing's title, description, category, subcategory, region, additional shipping regions, fulfillment type, price, dispatch window or vendor-or-automatic digital delivery, and a new photo on it, hide the listing from buyers until a moderator or administrator
+approves it. Stock changes, automatic delivery content and your own edits do not hold a listing; your own listings
+are never held. Orders placed before an edit continue.
+
+- Review listings in **Listings awaiting review** on the moderation desk (`/moderator#listing-review`), the longest
+  waiting first. Open each to see it with its photos. **Approve** publishes it; **Reject** needs a reason of 10–500
+  characters that the vendor reads (never an address, real name or tracking number). A rejection is not a takedown:
+  the listing stays hidden but is not archived, the vendor sees "Rejected — <reason>" and edits it, and that edit (or
+  a new photo) puts it back in the queue; no administrator is needed. To remove a listing for good, take it down from
+  its edit page instead (administrators). Both need the reviewer's password and are audited on both accounts; the
+  vendor is notified. A form opened before the vendor changed the listing is refused: reload the desk.
+  Moderators review; only administrators change the mode or a vendor's flag.
+- **Vendors who publish without review**: enter a vendor's handle (or use the account's page in the user directory) to
+  let its new and edited listings publish at once, or to hold them again. It applies to the vendor's next save;
+  approved listings stay visible and listings already waiting still need staff.
+- Switching back to publish at once approves nothing: listings already waiting stay hidden until staff approve them.
+  The audit row says how many still wait.
+- Automated moderation (the optional moderation worker and model) never approves, holds or rejects a listing, and a
+  capture that overflowed leaves a held listing held.
 
 ### XMPP notifications
 

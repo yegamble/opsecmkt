@@ -24,6 +24,7 @@ const postgresImage = "postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7
 
 var imagePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._:/-]*@sha256:[a-f0-9]{64}$`)
 var projectPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,48}$`)
+var moderationAudiencePattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // Config contains topology and paths only. Secret values live in private files.
 type Config struct {
@@ -70,13 +71,14 @@ var settingKeys = map[string]bool{
 	"ESCROW_XMR_MAX_FEE": true, "ESCROW_XMR_TOR_RELAY": true, "IMAGE_STORAGE_LIMIT_MB": true,
 	"SCANNER_MAX_SIGNATURE_AGE_DAYS": true, "DATABASE_CONNECT_TIMEOUT": true,
 	"MIGRATION_LOCK_TIMEOUT": true, "MIGRATION_TIMEOUT": true, "RETENTION_ENABLED": true,
+	"MODERATION_ACTION_AUDIENCE": true,
 }
 var secretKeys = map[string]bool{
 	"DATABASE_URL": true, "APP_SECRET_KEY": true, "SETUP_TOKEN": true, "AUDIT_SIGNING_KEY": true,
 	"MONERO_WALLET_SECRET": true, "ESCROW_XMR_WALLET_RPC_URL": true, "ESCROW_XMR_DAEMON_URL": true,
 	"POSTGRES_PASSWORD": true, "ESCROW_XMR_WALLET_RPC_PASSWORD": true,
 }
-var publicKeys = map[string]bool{"ESCROW_XMR_SEED_KEY": true, "AUDIT_EXPORT_RECIPIENT": true, "DEPENDENCY_REPORT_PUBLIC_KEY": true}
+var publicKeys = map[string]bool{"ESCROW_XMR_SEED_KEY": true, "AUDIT_EXPORT_RECIPIENT": true, "DEPENDENCY_REPORT_PUBLIC_KEY": true, "MODERATION_ACTION_PUBLIC_KEY": true}
 var tlsKeys = map[string]bool{"DATABASE_CA": true, "UPLOAD_CA": true, "UPLOAD_CERT": true, "UPLOAD_KEY": true, "TLS_CERT": true, "TLS_KEY": true, "MONERO_RPC_CA": true, "MONERO_RPC_CERT": true, "MONERO_RPC_KEY": true}
 
 func privateFile(path string, max int64) ([]byte, error) {
@@ -258,6 +260,19 @@ func validate(dir string, c Config) error {
 	}
 	if value, ok := c.Settings["INITIAL_REGISTRATIONS"]; ok && value != "open" && value != "closed" {
 		return errors.New("INITIAL_REGISTRATIONS must be open or closed")
+	}
+	moderationPublicKey := c.PublicFiles["MODERATION_ACTION_PUBLIC_KEY"] != ""
+	moderationAudience := c.Settings["MODERATION_ACTION_AUDIENCE"]
+	if moderationPublicKey != (moderationAudience != "") {
+		return errors.New("offline moderation review requires both an imported MODERATION_ACTION_PUBLIC_KEY and MODERATION_ACTION_AUDIENCE")
+	}
+	if moderationPublicKey {
+		if !moderationAudiencePattern.MatchString(moderationAudience) {
+			return errors.New("MODERATION_ACTION_AUDIENCE must hold 64 lowercase hexadecimal characters")
+		}
+		if c.AdminTorImage == "" || c.AdminSocketDir == "" || c.Exposure != "tor" {
+			return errors.New("offline moderation review requires protected private administrator onion ingress")
+		}
 	}
 	switch strings.TrimSpace(c.Settings["ESCROW_XMR_TOR_RELAY"]) {
 	case "", "clearnet-accepted":

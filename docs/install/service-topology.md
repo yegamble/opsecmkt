@@ -22,6 +22,15 @@ Use separate operating-system hosts for these five roles:
 
 These are independent processes. The binary has an application role, an upload-gateway role and a versions-worker role; it does not embed PostgreSQL, Monero or the ClamAV engine.
 
+Optional [moderation](../moderation-agent.md) adds a trusted controller worker
+and a separate, untrusted inference process. The controller needs a database
+connection for bounded snapshots, durable work and proposal records. The model
+must receive none of that controller's credentials or environment. Keep the
+model behind a local Unix socket with no network, application secret mounts or
+wallet access. This is a separate process boundary, not proof that a shared
+kernel or host administrator cannot cross it. The market requires no model to
+start or serve requests.
+
 For development, those processes may share one host and use separate containers. Containers on one Docker engine still share a host kernel and daemon authority. Separate container networks, users and resource limits reduce access and resource contention; they do not provide separate host compromise boundaries. Docker describes the [kernel and daemon security boundaries](https://docs.docker.com/engine/security/).
 
 A separate VM provides a separate guest kernel and daemon, but its hypervisor and infrastructure administrators remain a shared trust boundary. Decide whether separate physical machines or infrastructure providers are needed for your threat model. Different DNS names, IP addresses or containers cannot attest physical separation or guarantee anonymity.
@@ -70,6 +79,7 @@ The following matrix is the intended production policy. Ports are examples from 
 | Monero daemon | Monero peers | Deliberately configured peer transport and egress policy | Treating the storefront's Tor mode as proof that Monero peer traffic uses Tor. |
 | Version worker | Official release sources | HTTPS to the fixed PostgreSQL, Go, Tor and official GitHub release endpoints; optional explicit Tor SOCKS5 | Application/database/payment RPC credentials or access, and arbitrary configured release URLs. |
 | Reviewed report-transfer job | App report directory | Transfer only signed `report.json`; stage and atomically replace it with a narrowly authorized identity | Access to app secrets, the Docker socket, the worker seed or the separately pinned verification key. |
+| Moderation controller, when enabled | PostgreSQL and dedicated local inference Unix socket | Database authentication plus narrowly permissioned socket directory; no model TCP listener | Model access to database, wallet, application environment, administrator keys or external network. |
 
 The escrow wallet RPC relays settlements through the daemon named by its `--daemon-address`, while the application reads transaction locations and key-image spends from `ESCROW_XMR_DAEMON_URL`. They must be the same `monerod`. The application refuses a wallet more than 10 blocks from that daemon but cannot prove that both use one daemon, and a payment-host Tor egress check made for one daemon says nothing about another.
 
@@ -109,6 +119,14 @@ The last command checks immediately, then remains running. Supervise it with the
 
 Supply each known installed version with a repeated `--current SERVICE=VERSION` flag. Supported service names are `postgresql`, `monerod`, `monero-wallet-rpc`, `tor`, `clamav` and `go`; versions must be numeric stable versions. These values are **operator-supplied inventory**, not remote measurements. The admin panel substitutes observed app Go and connected PostgreSQL versions, and the ClamAV engine version from the app's cached scanner state (integrated scanning) or the upload gateway's latest scanner report (isolated uploads). With Monero escrow on, it also substitutes the monerod release the escrow watcher read from `get_info`; a restricted daemon RPC hides it, and monero-wallet-rpc reports only its RPC interface version, so those releases stay reported or unknown. Tor is never observed. Without this worker's report the panel still shows installed versions and health, and names this setup step in place of the upstream comparison ([Service status and health](../operator-guide.md#service-status-and-health)).
 
+For a separately selected moderation runtime, `--current llama.cpp=bNNNN`
+explicitly adds operator-reported llama.cpp inventory and its fixed official
+GitHub release source. Without that explicit entry, the worker makes no extra
+runtime-release request and old signed reports remain accepted. The
+administrator-only panel shows this row only from the authenticated report;
+it does not contact inference or attest the installed runtime. Keep this
+maintenance worker separate from networkless inference.
+
 Transfer only the signed report to the directory selected by `--dependency-report-dir` during app initialization. Import `versions.pub` separately with `--dependency-report-public-key`; it becomes a trust pin outside the replaceable report directory. Keep `versions.seed` outside report delivery and off every application, database, payment and upload host. A missing, invalid or older-than-72-hour report produces an administrator warning.
 
 The worker refreshes reports, not software. It never upgrades the app, dependencies or signatures. Periodic writes replace only a report authenticated by the same signing key. Intentional signer rotation requires a new report path, independently changing the app's trusted public key and reviewing delivery permissions.
@@ -123,6 +141,7 @@ Keep dependency service lifecycles separate from application releases:
 | Monero | Chain data, network selection, escrow wallet files, dedicated RPC services and credentials | Planned Monero upgrade, wallet recovery, RPC identity rotation or storage work. |
 | Upload/scanner/Tor | Gateway process, clamd process/signatures, ingress identities and routing | Reviewed gateway/protocol upgrade, signature refresh, TLS renewal or ingress maintenance. |
 | Version worker | Worker process, report-signing identity, inventory inputs and report delivery | Worker upgrade, inventory change, signing-key rotation or release-feed maintenance. |
+| Optional moderation | Durable database jobs/proposals, separately supervised controller/model, reviewed weights and private socket configuration | Explicit worker/runtime upgrade, policy or model-pin change, review-key rotation or resource-budget maintenance. Do not start or reprovision it as an app redeploy side effect. |
 | Private app installation | Endpoints, keys, project/context identity, settings and report verification pin; current retention state remains separately persistent | Explicit configuration change or tested recovery; retain this state through app rebuilds. RAM instances must be unlocked again after restart. |
 | Private administrator Tor | Separate managed service identity, authorized client snapshot, Unix ingress contract and persistent `tor_admin_identity` volume | Deliberate authorization/identity maintenance. Networkless initialization verifies the selected identity and prepares records/ownership; app-only redeploy does not run missing dependencies or move the named volume. |
 

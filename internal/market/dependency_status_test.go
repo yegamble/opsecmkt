@@ -103,7 +103,7 @@ func TestDependencyStatusAdminOnlyAndNoEndpointDisclosure(t *testing.T) {
 	}
 }
 
-func installDependencyReportFixture(t *testing.T) {
+func installDependencyReportFixture(t *testing.T, optional ...dependencies.Entry) {
 	t.Helper()
 	public, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -119,6 +119,10 @@ func installDependencyReportFixture(t *testing.T) {
 		"go": "https://go.dev/dl/?mode=json",
 	} {
 		report.Entries = append(report.Entries, dependencies.Entry{Service: service, Source: source, Current: "1.0", Latest: "999.0", CheckedAt: at})
+	}
+	for _, entry := range optional {
+		entry.CheckedAt = at
+		report.Entries = append(report.Entries, entry)
 	}
 	payload, err := json.Marshal(report)
 	if err != nil {
@@ -141,4 +145,40 @@ func installDependencyReportFixture(t *testing.T) {
 	}
 	t.Setenv("DEPENDENCY_REPORT_FILE", reportPath)
 	t.Setenv("DEPENDENCY_REPORT_PUBLIC_KEY", publicPath)
+}
+
+func TestDependencyStatusInferenceRequiresAuthenticatedInventory(t *testing.T) {
+	e := newTestApp(t)
+	_, admin := e.user("runtime_inventory_admin", "admin")
+	installDependencyReportFixture(t)
+	page := e.do("GET", "/admin/system", admin, nil)
+	e.check(page, 200)
+	const label = "llama.cpp inference runtime"
+	if strings.Contains(page.Body.String(), label) {
+		t.Fatal("legacy report added an inference runtime row")
+	}
+	installDependencyReportFixture(t, dependencies.Entry{Service: dependencies.InferenceRuntimeService, Current: "b9999", Latest: "b10000", Source: "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"})
+	page = e.do("GET", "/admin/system", admin, nil)
+	e.check(page, 200)
+	for _, text := range []string{label, "b9999", "b10000", "Not observed by this app: inference runs in a separate worker"} {
+		if !strings.Contains(page.Body.String(), text) {
+			t.Fatalf("authenticated inference inventory missing %q", text)
+		}
+	}
+	if strings.Contains(page.Body.String(), "ggml-org") {
+		t.Fatal("runtime inventory displayed a source endpoint")
+	}
+	path := os.Getenv("DEPENDENCY_REPORT_FILE")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(strings.Replace(string(raw), "b10000", "b10001", 1)), 0644); err != nil {
+		t.Fatal(err)
+	}
+	page = e.do("GET", "/admin/system", admin, nil)
+	e.check(page, 200)
+	if strings.Contains(page.Body.String(), label) || strings.Contains(page.Body.String(), "b10001") {
+		t.Fatal("unauthenticated inference inventory was shown")
+	}
 }

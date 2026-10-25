@@ -21,6 +21,7 @@ explicit flags, key tools and application/worker roles. Development may use one 
 | Use the legacy shell installer | [Local marketplace](install/local.md) or [public domain](install/clearnet.md) |
 | Deploy a production market | [Production deployment with managed PostgreSQL](install/production.md) |
 | Restrict server access and protect stored data | [Server hardening](install/server-hardening.md) |
+| Configure defensive moderation and review proposals | [Moderation agent](moderation-agent.md) and [review runbook](moderation-escalation-runbook.md) |
 | Take payments | [Enabling payments](install/enable-payments.md) |
 | Check launch readiness | [Production checklist](install/production-checklist.md) |
 | Upgrade | [Upgrading](../UPGRADING.md) |

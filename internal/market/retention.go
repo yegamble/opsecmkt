@@ -485,6 +485,9 @@ func retentionUnknownUserReferences(ctx context.Context, tx *sql.Tx) (bool, erro
  ('market_branding'::regclass,'updated_by'),
  ('branding_upload_tickets'::regclass,'user_id'),
  ('host_reboot_requests'::regclass,'user_id'),
+ ('moderation_reviews'::regclass,'reviewer_user_id'),
+ ('moderation_actor_allocations'::regclass,'actor_id'),
+ ('moderation_marker_releases'::regclass,'actor_id'),
  ('vendor_applications'::regclass,'user_id'),
  ('vendor_applications'::regclass,'bond_received_by'),
  ('vendor_applications'::regclass,'decided_by'),
@@ -649,7 +652,7 @@ func applyRetentionTombstone(ctx context.Context, tx *sql.Tx, t retentionTombsto
 		if err := retentionExecQuery(ctx, tx, `UPDATE products SET stock=(SELECT count(*) FROM digital_units WHERE product_id=$1 AND order_id IS NULL) WHERE id=$1 AND digital_delivery_mode='inventory'`, t.ID); err != nil {
 			return err
 		}
-		return retentionExecQuery(ctx, tx, `UPDATE products SET title='Withdrawn listing',description='',delivery_content='',admin_archive_reason=NULL,private_expired_at=$2 WHERE id=$1 AND updated<=$2`, t.ID, t.At)
+		return retentionExecQuery(ctx, tx, `UPDATE products SET title='Withdrawn listing',description='',delivery_content='',admin_archive_reason=NULL,review_rejection_reason=NULL,private_expired_at=$2 WHERE id=$1 AND updated<=$2`, t.ID, t.At)
 	case "listing":
 		return retentionExecQuery(ctx, tx, `DELETE FROM products WHERE id=$1`, t.ID)
 	case "account_close":

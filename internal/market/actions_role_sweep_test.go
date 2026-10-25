@@ -41,11 +41,13 @@ const (
 )
 
 var sweepScopes = map[string][2]string{
-	"/challenge":     {scopePublic, "second step of sign-in, before a session exists"},
-	"/challenge/pgp": {scopePublic, "PGP code step of sign-in, before a session exists"},
-	"/login":         {scopePublic, "sign-in"},
-	"/register":      {scopePublic, "registration"},
-	"/setup":         {scopePublic, "first-run setup, gated by the installation secret"},
+	"/admin/moderation/offline": {scopePublic, "private-ingress offline signature authorizes only one review annotation"},
+	"/admin/moderation/review":  {scopeStaff, "private administrator confirms proposal metadata only"},
+	"/challenge":                {scopePublic, "second step of sign-in, before a session exists"},
+	"/challenge/pgp":            {scopePublic, "PGP code step of sign-in, before a session exists"},
+	"/login":                    {scopePublic, "sign-in"},
+	"/register":                 {scopePublic, "registration"},
+	"/setup":                    {scopePublic, "first-run setup, gated by the installation secret"},
 
 	"/logout":                         {scopeSelf, "ends the caller's own session"},
 	"/revoke-sessions":                {scopeSelf, "revokes the caller's other sessions"},
@@ -102,10 +104,13 @@ var sweepScopes = map[string][2]string{
 	"/admin/vendor-apply":           {scopeStaff, ""},
 	"/admin/vendor-policy":          {scopeStaff, ""},
 	"/admin/vendor-verify":          {scopeStaff, ""},
+	"/admin/listing-review":         {scopeStaff, ""},
+	"/admin/vendor-auto-approve":    {scopeStaff, ""},
 	"/admin/vendor-revoke":          {scopeStaff, "confirmed removal of selling authority; moderator role preserved"},
 	"/admin/xmpp":                   {scopeStaff, "confirmed outgoing notification sender configuration"},
 
 	"/images/remove":            {scopeStaff, ""},
+	"/moderator/listing-review": {scopeStaff, ""},
 	"/moderator/payment-review": {scopeStaff, ""},
 	"/moderator/xmr-collision":  {scopeStaff, ""},
 	"/resolve":                  {scopeStaff, ""},
@@ -401,7 +406,7 @@ func TestActionRegistryRoleSweep(t *testing.T) {
 		}
 		for _, p := range ps {
 			probes++
-			if path == "/admin/reboot" {
+			if path == "/admin/reboot" || moderationPrivateRoute(path) {
 				p.want = http.StatusNotFound // This capability is hidden on every public listener.
 			}
 			// An empty form: the gate refuses before the form is read, so nothing a valid form could add matters.

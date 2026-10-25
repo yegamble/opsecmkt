@@ -116,6 +116,12 @@ func loadInventory(ctx context.Context, a *App, _ *http.Request, d *PageData) er
 	}
 	d.Inventory.Reservations = reservations
 	setInventoryURLs(d)
+	// MOD72-6: tell the vendor when a new listing or an edit will wait for staff review (listing_review.go).
+	if d.User != nil {
+		if d.ListingHeld, err = listingHeldNow(ctx, a.db, d.User.ID); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -168,15 +174,20 @@ func loadListingEdit(ctx context.Context, a *App, r *http.Request, d *PageData) 
 	err := a.db.QueryRowContext(ctx, `SELECT p.id,p.title,p.description,p.category,p.region,p.kind,u.handle,p.vendor_id,p.btc,p.xmr,p.stock,p.archived,p.subcategory,array_to_string(p.shipping_regions,'|'),
  CASE WHEN p.vendor_id=$2 THEN p.delivery_content ELSE '' END,p.delivery_content<>'',
  to_char(p.updated,'YYYY-MM-DD HH24:MI "UTC"'),coalesce(to_char(p.archived_at,'YYYY-MM-DD HH24:MI "UTC"'),''),
- (`+openOrdersSQL+`),coalesce(p.admin_archive_reason,''),coalesce(p.dispatch_days,$4)
+ (`+openOrdersSQL+`),coalesce(p.admin_archive_reason,''),coalesce(p.dispatch_days,$4),p.review_state<>'approved',coalesce(p.review_rejection_reason,'')
  FROM products p JOIN users u ON u.id=p.vendor_id WHERE p.id=$1 AND (p.vendor_id=$2 OR $3='admin')`,
-		r.URL.Query().Get("id"), d.User.ID, d.User.Role, defaultDispatchDays).Scan(&p.ID, &p.Title, &p.Description, &p.Category, &p.Region, &p.Kind, &p.Vendor, &p.VendorID, &btc, &xmr, &p.Stock, &p.Archived, &p.Subcategory, &regions, &v.DeliveryContent, &v.HasDeliveryContent, &v.Updated, &v.ArchivedAt, &v.OpenOrders, &v.TakedownReason, &v.DispatchDays)
+		r.URL.Query().Get("id"), d.User.ID, d.User.Role, defaultDispatchDays).Scan(&p.ID, &p.Title, &p.Description, &p.Category, &p.Region, &p.Kind, &p.Vendor, &p.VendorID, &btc, &xmr, &p.Stock, &p.Archived, &p.Subcategory, &regions, &v.DeliveryContent, &v.HasDeliveryContent, &v.Updated, &v.ArchivedAt, &v.OpenOrders, &v.TakedownReason, &v.DispatchDays, &p.Pending, &p.RejectionReason)
 	if err != nil {
 		return err // sql.ErrNoRows -> 404
 	}
 	v.VendorEditor = p.VendorID == d.User.ID
 	if regions != "" {
 		p.ShippingRegions = strings.Split(regions, "|")
+	}
+	if v.VendorEditor { // MOD72-6: whether this vendor's change to what buyers see waits for staff review
+		if d.ListingHeld, err = listingHeldNow(ctx, a.db, p.VendorID); err != nil {
+			return err
+		}
 	}
 	reservations, err := listingReservations(ctx, a, []string{p.ID})
 	if err != nil {
