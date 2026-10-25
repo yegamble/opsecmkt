@@ -83,7 +83,7 @@ func listingUpdateAction(c *actionCtx) (actionResult, error) {
 	ctx := c.Ctx()
 	in, err := validateListing(c.Form)
 	if err != nil {
-		return actionResult{}, err
+		return actionResult{}, listingFormRefusal(c, err)
 	}
 	seen, err := strconv.Atoi(c.Form.Get("stock_seen"))
 	if err != nil {
@@ -122,7 +122,7 @@ func listingUpdateAction(c *actionCtx) (actionResult, error) {
 			was.ShippingRegions = strings.Split(regions, "|")
 		}
 		if in.DeliveryContent != "" && in.Kind != "digital" {
-			return actionResult{}, fail(400, "This listing has automatic delivery content that only its vendor can remove, so it must stay digital.")
+			return actionResult{}, listingFormRefusal(c, listingProblems{{"kind", "Fulfillment type: this listing has automatic delivery content that only its vendor can remove, so it must stay digital."}})
 		}
 	}
 	if in.Kind != l.Kind {

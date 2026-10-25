@@ -394,16 +394,48 @@ func verifyDetached(signed, armoredSig string, key *openpgp.Entity) (time.Time, 
 // verifySignature checks a detached signature over signed with key. go-crypto v1.4.1 dereferences a nil primary
 // self-signature when a subkey made the signature and no user ID of the key has a self-signature (every one revoked
 // and exported with only its revocation, A-266); that panic is answered as a signature that does not verify.
+//
+// A signature that does not verify cryptographically gets errBadSignature. One that does, but is not current
+// (A-69) - the key expired or is revoked, the signature expired, or it is dated after this server's clock - is
+// still refused, with a reason naming that state and what to do instead. There is no clock-skew tolerance: a
+// statement may not claim a time that has not yet come on this server.
 func verifySignature(key *openpgp.Entity, signed, signature io.Reader) (sig *packet.Signature, err error) {
 	defer func() {
 		if recover() != nil {
 			sig, err = nil, errBadSignature
 		}
 	}()
-	if sig, _, err = openpgp.VerifyDetachedSignature(openpgp.EntityList{key}, signed, signature, nil); err != nil {
+	now := time.Now()
+	var signer *openpgp.Entity
+	sig, signer, err = openpgp.VerifyDetachedSignature(openpgp.EntityList{key}, signed, signature, &packet.Config{Time: func() time.Time { return now }})
+	if err == nil {
+		return sig, nil
+	}
+	if sig == nil || signer == nil { // go-crypto returns the signature only when it verified cryptographically
 		return nil, errBadSignature
 	}
-	return sig, nil
+	const genuine = "the signature matches the configured key but is not current: "
+	switch {
+	case errors.Is(err, pgperrors.ErrKeyRevoked):
+		return nil, errors.New(genuine + "the key (or its signing subkey or user ID) is revoked; configure a new key and sign a new statement with it")
+	case errors.Is(err, pgperrors.ErrKeyExpired):
+		if signer.PrimaryKey.CreationTime.Unix() > now.Unix() {
+			return nil, errors.New(genuine + "the key was created " + formatUTC(signer.PrimaryKey.CreationTime) + ", after this server's clock (" + formatUTC(now) + "); check the clock of the computer that made it and of this server")
+		}
+		if at := primaryKeyExpiry(signer); !at.IsZero() && !at.After(now) {
+			return nil, errors.New(genuine + "the configured key expired on " + formatUTC(at) + "; extend its expiry (gpg --quick-set-expire) and save the updated public key, or configure a new key and sign a new statement")
+		}
+		return nil, errors.New(genuine + "the signing subkey of the configured key has expired; extend its expiry (gpg --quick-set-expire) and save the updated public key, or configure a new key and sign a new statement")
+	case errors.Is(err, pgperrors.ErrSignatureExpired):
+		if sig.CreationTime.Unix() > now.Unix() {
+			return nil, errors.New(genuine + "it is dated " + formatUTC(sig.CreationTime) + ", " + sig.CreationTime.Sub(now).Round(time.Second).String() + " after this server's clock (" + formatUTC(now) + "); check the clock of the computer that signed it and of this server, then sign again, or submit it again after that time")
+		}
+		if sig.SigExpired(now) {
+			return nil, errors.New(genuine + "the signature expired on " + formatUTC(sig.CreationTime.Add(time.Duration(*sig.SigLifetimeSecs)*time.Second)) + "; sign a new statement")
+		}
+		return nil, errors.New(genuine + "a self-signature on the configured key has expired; extend the key's expiry (gpg --quick-set-expire) and save the updated public key")
+	}
+	return nil, errBadSignature
 }
 
 var errBadSignature = errors.New("signature does not verify with the configured key")

@@ -80,7 +80,8 @@ func TestOrderQuantityDraftValidationAndTotal(t *testing.T) {
 		t.Fatal("existing draft quantity did not update")
 	}
 	page := p.page("/checkout?id="+p.productID, p.buyerSess)
-	mustContain(t, page, `name="quantity"`, `max="5"`)
+	mustContain(t, page, `name="quantity"`, `max="1000000"`) // A-520: a buyer sees the band, not the exact stock as a maximum
+	mustNotContain(t, page, `max="5"`)
 	agExec(p.testEnv, "UPDATE products SET stock=0 WHERE id=$1", p.productID)
 	page = p.page("/checkout?id="+p.productID, p.buyerSess)
 	mustContain(t, page, "Out of stock")

@@ -328,7 +328,6 @@ BACKUP_DATABASE_URL=$(connection_url "$app_target_db") scripts/backup.sh "$work/
 [[ $(pg "$app_target_db" -Atq -c "$pooled_rows") == 0:0 ]]
 [[ $(pg "$app_target_db" -Atq -c "$xmr_state") == "$xmr_restored" ]]
 
-# The runbook's SQL (docs/testnet-runbook.md, "Reconcile a restored database before enabling payouts") runs verbatim:
 # runbook_sql NAME [FILE] prints the psql here-document (or the sql block) that follows the marker
 # <!-- runbook-sql: NAME --> in FILE (the runbook by default).
 runbook_sql() {
@@ -352,15 +351,36 @@ else:
     raise SystemExit('%s: the block after %s has no SQL' % (path, marker))
 PY
 }
-runbook_sql clear-gate > "$work/clear-gate.sql"
-runbook_sql restore-protection UPGRADING.md > "$work/restore-protection.sql"
+# A-505: the restore gate is set and cleared with the server's host commands. runbook_command NAME FILE prints the code
+# block that follows the marker <!-- runbook-command: NAME --> in FILE, which must appear exactly once.
+runbook_command() {
+  python3 - "$1" "$2" <<'PY'
+import re
+import sys
+name, path = sys.argv[1], sys.argv[2]
+text = open(path, encoding='utf-8').read()
+marker = '<!-- runbook-command: %s -->' % name
+if text.count(marker) != 1:
+    raise SystemExit('%s must contain %s exactly once' % (path, marker))
+fence = re.match(r'\s*```\w*\n(.*?)\n```', text.split(marker, 1)[1], re.S)
+if not fence:
+    raise SystemExit('%s: no code block after %s' % (path, marker))
+print(fence.group(1))
+PY
+}
+[[ $(runbook_command clear-gate docs/testnet-runbook.md) == 'docker compose run --rm app -clear-restore-gate YOUR_ADMIN_HANDLE' ]]
+[[ $(runbook_command restore-protection UPGRADING.md) == 'docker compose run --rm app -set-restore-gate' ]]
+# No hand-typed SQL sets or clears the gate any more.
+if grep -q -e 'runbook-sql: clear-gate' -e 'runbook-sql: restore-protection' docs/testnet-runbook.md UPGRADING.md; then
+  echo 'the hand-typed restore gate SQL is still documented' >&2; exit 1
+fi
 
-# A-497: the clear-gate SQL belongs to the current-build reading path. A Markdown heading whose text says "prior build"
+# A-497: the clear-gate command belongs to the current-build reading path. A Markdown heading whose text says "prior build"
 # or "never run" (headings inside code fences are ignored) marks the text after it as prior-build. The marker NAME in
 # FILE must exist and no such heading may precede it: that puts it outside every prior-build range and means a reader
 # going from the top never crosses a "never run" warning on the way to it.
 marker_outside_prior_build() {
-  awk -v marker="<!-- runbook-sql: $1 -->" '
+  awk -v marker="<!-- runbook-command: $1 -->" '
     /^```/ { fence = !fence }
     !fence && /^#+ / && tolower($0) ~ /prior[ -]build|never run/ { warned = 1 }
     index($0, marker) { found = 1; if (warned) bad = 1 }
@@ -370,56 +390,88 @@ marker_outside_prior_build() {
 marker_outside_prior_build clear-gate docs/testnet-runbook.md
 # The check itself (`! cmd` would not stop under set -e): a warning heading before the marker, at any level, is
 # refused; one after it and a "#" comment inside a code fence are not; a missing marker is refused.
-printf '## Prior build only (never run with this build)\n\ntext\n\n<!-- runbook-sql: clear-gate -->\n' > "$work/prior-before.md"
-printf '# Title\n\n### Prior-build detail\n\nx\n\n## Next\n\n<!-- runbook-sql: clear-gate -->\n' > "$work/prior-nested.md"
+printf '## Prior build only (never run with this build)\n\ntext\n\n<!-- runbook-command: clear-gate -->\n' > "$work/prior-before.md"
+printf '# Title\n\n### Prior-build detail\n\nx\n\n## Next\n\n<!-- runbook-command: clear-gate -->\n' > "$work/prior-nested.md"
 # The Markdown code fence is literal fixture content.
 # shellcheck disable=SC2016
-printf '# Title\n\n## Current\n\n```sh\n# prior build comment, not a heading\n```\n\n<!-- runbook-sql: clear-gate -->\n\n## Old (never run)\n' > "$work/prior-after.md"
+printf '# Title\n\n## Current\n\n```sh\n# prior build comment, not a heading\n```\n\n<!-- runbook-command: clear-gate -->\n\n## Old (never run)\n' > "$work/prior-after.md"
 if marker_outside_prior_build clear-gate "$work/prior-before.md"; then echo 'prior-build check accepted a marker below a warning heading' >&2; exit 1; fi
 if marker_outside_prior_build clear-gate "$work/prior-nested.md"; then echo 'prior-build check accepted a marker below a nested warning heading' >&2; exit 1; fi
 marker_outside_prior_build clear-gate "$work/prior-after.md"
 if marker_outside_prior_build no-such-block "$work/prior-after.md"; then echo 'prior-build check accepted a missing marker' >&2; exit 1; fi
 
 # A restore not done by restore.sh (plain pg_dump/pg_restore here; a volume snapshot or point-in-time recovery is
-# the same) brings a built Monero settlement back unheld with no gate. The manual
-# protection in UPGRADING.md section 6, run verbatim, must leave the copy exactly as restore.sh leaves it, with
-# its own audit row.
+# the same) brings a built Monero settlement back unheld with no gate. The protection of UPGRADING.md section 6, the
+# server's -set-restore-gate (A-505), must leave the copy exactly as restore.sh leaves it, with its own audit row.
 (export MANUAL_SOURCE_URL MANUAL_TARGET_URL
  MANUAL_SOURCE_URL=$(connection_url "$app_source_db")
  MANUAL_TARGET_URL=$(connection_url "$app_manual_db")
  python3 scripts/postgres-tool.py MANUAL_SOURCE_URL pg_dump --format=custom --no-owner --no-acl > "$work/manual.dump"
  python3 scripts/postgres-tool.py MANUAL_TARGET_URL pg_restore --dbname='' --single-transaction --exit-on-error --no-owner --no-acl < "$work/manual.dump")
 [[ $(pg "$app_manual_db" -Atq -c "SELECT count(*) FROM settings WHERE key='payments_recovery_required'") == 0 ]]
-pg "$app_manual_db" -q -f "$work/restore-protection.sql"
+set_gate_out=$(env -i PATH="$PATH" DATABASE_URL="$(connection_url "$app_manual_db")" "$work/server" -set-restore-gate </dev/null)
+[[ $set_gate_out == 'Restore gate set: '*'held 1 restored Monero escrow settlement(s), retired 1 free escrow account(s), moved 1 escrow wallet(s) to closing and closed 1 vendor bond wallet(s); audited. '* ]]
 [[ $(pg "$app_manual_db" -Atq -c "SELECT value FROM settings WHERE key='escrow_xmr_release_recheck'") == true ]]
 [[ $(pg "$app_manual_db" -Atq -c "SELECT value FROM settings WHERE key='xmr_escrow_sweep_required'") == true ]]
 [[ $(pg "$app_manual_db" -Atq -c "$xmr_state") == "$xmr_restored" ]]
 [[ $(pg "$app_manual_db" -Atq -c "SELECT value FROM settings WHERE key='payments_recovery_required'") == true ]]
 [[ $(pg "$app_manual_db" -Atq -c "SELECT value FROM settings WHERE key='retention_restore_required'") == true ]]
-[[ $(pg "$app_manual_db" -Atq -c "$audit_all") == "$source_audit|-:Payout recovery gate set manually (UPGRADING.md section 6); all outbound payouts paused until an administrator clears the gate" ]]
+[[ $(pg "$app_manual_db" -Atq -c "$audit_all") == "$source_audit|-:Payout recovery gate set by host command (-set-restore-gate); held 1 restored Monero escrow settlement(s) with a stored transaction until an administrator confirms each relay; all outbound payouts paused until an administrator clears the gate" ]]
 
 audit_rows="SELECT md5(string_agg(id || ':' || coalesce(user_id,'') || ':' || action || ':' || created, ',' ORDER BY id)) FROM audit_events"
 audit_before=$(pg "$app_target_db" -Atq -c "$audit_rows")
 audit_max=$(pg "$app_target_db" -Atq -c 'SELECT max(id) FROM audit_events')
-# Clear the gate with the runbook's SQL and restart the server. An unknown or non-administrator handle is refused and
-# rolls back: the gate stays set and no audit row is added.
+# Clear the gate with the server's -clear-restore-gate (A-505) and restart the server. clear_gate HANDLE ANSWERS runs
+# it in a pseudo-terminal with ANSWERS typed ahead, and prints its exit status, then everything the terminal showed.
+clear_gate() {
+  GATE_DATABASE_URL=$(connection_url "$app_target_db") python3 - "$work/server" "$1" "$2" <<'PY'
+import os
+import pty
+import sys
+server, handle, answers = sys.argv[1:4]
+pid, fd = pty.fork()
+if pid == 0:
+    os.execve(server, [server, '-clear-restore-gate', handle], {'PATH': os.environ['PATH'], 'DATABASE_URL': os.environ['GATE_DATABASE_URL']})
+os.write(fd, answers.encode())
+out = b''
+while True:
+    try:
+        chunk = os.read(fd, 4096)
+    except OSError:
+        break
+    if not chunk:
+        break
+    out += chunk
+_, status = os.waitpid(pid, 0)
+print(os.waitstatus_to_exitcode(status))
+sys.stdout.write(out.decode('utf-8', 'replace').replace('\r\n', '\n'))
+PY
+}
 gate_value="SELECT value FROM settings WHERE key='payments_recovery_required'"
 audit_count='SELECT count(*) FROM audit_events'
 audit_total=$(pg "$app_target_db" -Atq -c "$audit_count")
-clear_gate() { pg "$app_target_db" -At -v handle="$1" -f "$work/clear-gate.sql"; }
+all_yes=$'yes\nyes\nyes\nyes\nyes\n'
+# Refused, changing nothing: stdin not a terminal; an unknown or non-administrator handle; a step not confirmed.
+if gate_out=$(env -i PATH="$PATH" DATABASE_URL="$(connection_url "$app_target_db")" "$work/server" -clear-restore-gate ops_admin 2>&1 <<< "$all_yes"); then
+  echo 'the clear-gate command accepted stdin that is not a terminal' >&2; exit 1
+fi
+[[ $gate_out == *'stdin is not one'* ]]
 for handle in ops_nobody ops_vendor; do
-  [[ $(clear_gate "$handle") == $'BEGIN\nROLLBACK\nRefused; nothing was changed: no administrator with that handle' ]]
-  [[ $(pg "$app_target_db" -Atq -c "$gate_value") == true ]]
-  [[ $(pg "$app_target_db" -Atq -c "$audit_count") == "$audit_total" ]]
+  gate_out=$(clear_gate "$handle" "$all_yes")
+  [[ ${gate_out%%$'\n'*} == 1 && $gate_out == *"no administrator has the handle \"$handle\""* && $gate_out != *'Type yes'* ]]
 done
-# A-492: the clear-gate SQL no longer reads the pooled drain function.
-if grep -q 'pooled_drain_blockers' "$work/clear-gate.sql"; then echo 'the clear-gate SQL still reads pooled drain blockers' >&2; exit 1; fi
-[[ $(clear_gate ops_admin) == $'BEGIN\nINSERT 0 1\nCOMMIT\nCleared the payout recovery gate; committed.' ]]
+gate_out=$(clear_gate ops_admin $'yes\nyes\nno\n')
+[[ ${gate_out%%$'\n'*} == 1 && $gate_out == *'reconciliation step 3 not confirmed; finish it and run this again; nothing was changed'* ]]
+[[ $(pg "$app_target_db" -Atq -c "$gate_value") == true ]]
+[[ $(pg "$app_target_db" -Atq -c "$audit_count") == "$audit_total" ]]
+gate_out=$(clear_gate ops_admin "$all_yes")
+[[ ${gate_out%%$'\n'*} == 0 && $gate_out == *'Restore gate cleared by administrator ops_admin; audited.'* ]]
 [[ $(pg "$app_target_db" -Atq -c "$gate_value") == false ]]
-[[ $(pg "$app_target_db" -Atq -c "SELECT user_id || ':' || action FROM audit_events WHERE id > (SELECT max(id) - 1 FROM audit_events)") == 'ops-admin:Payout recovery gate cleared by ops_admin after reconciling the restored database with the wallets' ]]
+[[ $(pg "$app_target_db" -Atq -c "SELECT user_id || ':' || action FROM audit_events WHERE id > (SELECT max(id) - 1 FROM audit_events)") == 'ops-admin:Payout recovery gate cleared by ops_admin by host command after reconciling the restored database with the wallets' ]]
 [[ $(pg "$app_target_db" -Atq -c "$audit_count") == $((audit_total + 1)) ]]
 # Clearing again is refused: the gate is not set.
-[[ $(clear_gate ops_admin) == $'BEGIN\nROLLBACK\nRefused; nothing was changed: the recovery gate is not set' ]]
+gate_out=$(clear_gate ops_admin "$all_yes")
+[[ ${gate_out%%$'\n'*} == 1 && $gate_out == *'the restore gate is not set; nothing was changed'* ]]
 [[ $(pg "$app_target_db" -Atq -c "$audit_count") == $((audit_total + 1)) ]]
 # Every audit row from before the clear is unchanged.
 [[ $(pg "$app_target_db" -Atq -c "SELECT md5(string_agg(id || ':' || coalesce(user_id,'') || ':' || action || ':' || created, ',' ORDER BY id)) FROM audit_events WHERE id <= $audit_max") == "$audit_before" ]]

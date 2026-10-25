@@ -14,7 +14,7 @@ import (
 
 // Monero escrow after a restore from backup (WR-escrow Phase 3, slice X-f; P3-R10), as Bitcoin escrow's recovery
 // (escrow_recovery.go). A restored database knows nothing that happened after its backup: escrow wallets and accounts
-// created since, settlements built or relayed since. scripts/restore.sh (and the manual protection SQL in UPGRADING.md
+// created since, settlements built or relayed since. scripts/restore.sh (and the host command -set-restore-gate, UPGRADING.md
 // section 6) therefore sets the restore gate, holds every built or relayed Monero settlement with
 // restoredSettlementHold in xmr_settlements.send_error, retires every free slot, moves every active or sealed wallet to
 // closing (no restored wallet ever offers an account to a new order again; the reconcile adds an account the records

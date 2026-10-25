@@ -25,10 +25,11 @@ design it records changes.
 
 - **Payout sends are single-attempt.** A failed or ambiguous send stays failed
   until an administrator acts; the watcher never retries (invariant 4).
-- **The restore gate (`payments_recovery_required`) is cleared only with SQL
-  by the operator**; clearing it is an operator assertion that reconciliation
-  is complete (`docs/testnet-runbook.md`, reconcile section), so no web unlock
-  exists by design.
+- **The restore gate (`payments_recovery_required`) is cleared only on the
+  host, by the operator's `-clear-restore-gate HANDLE` command** (A-505);
+  clearing it is an operator assertion that reconciliation is complete
+  (`docs/testnet-runbook.md`, reconcile section), so no web unlock exists by
+  design.
 - **No password reset for users, and no in-app administrator lockout
   recovery.** With no email channel, a reset path is a takeover path; the
   operator break-glass in `docs/operator-guide.md` (second-factor SQL and the

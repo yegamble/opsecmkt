@@ -77,6 +77,8 @@ func main() {
 	exportAuditFlag := flag.Int64("export-audit", 0, "host-only: export settled audit events up to this ID and their detached signature, then exit; starts no server or wallets")
 	exportAuditFrom := flag.Int64("export-audit-from", 0, "with -export-audit: exclude event IDs at or below this lower bound (default 0)")
 	exportAuditDir := flag.String("export-audit-dir", ".", "with -export-audit: existing directory for private export/signature files; refuses overwrite")
+	setRestoreGateFlag := flag.Bool("set-restore-gate", false, "host-only: apply the restore protection of UPGRADING.md section 6 (set the restore gate, hold restored Monero settlements, retire free escrow accounts) to a database restored without scripts/restore.sh, audit it and exit (reads no stdin; starts no server; refused while the app runs)")
+	clearRestoreGateFlag := flag.String("clear-restore-gate", "", "host-only: after reconciling a restored database, confirm each runbook step in a terminal and clear the restore gate in this administrator's name, audited, then exit (starts no server; refused while the app runs)")
 	enrollRetentionFlag := flag.Bool("enroll-retention", false, "host-only: enroll the current original database and external retention state before backup or encoding migration; starts no server, replay, expiry or wallets")
 	flag.Parse()
 	if flagGiven("reset-admin-pgp-key-file") && !flagGiven("reset-admin-factors") {
@@ -102,6 +104,7 @@ func main() {
 		return
 	}
 	if (*healthcheckFlag || *statusFlag) && (flagGiven("reset-admin-factors") || flagGiven("set-role") ||
+		flagGiven("set-restore-gate") || flagGiven("clear-restore-gate") ||
 		flagGiven("bootstrap-admin") || flagGiven("site-name") || flagGiven("reset-admin-password")) {
 		fmt.Fprintln(os.Stderr, "-status and -healthcheck cannot be combined with host commands")
 		os.Exit(2)
@@ -116,6 +119,24 @@ func main() {
 	if *statusFlag {
 		if err := status(context.Background(), os.Getenv("DATABASE_URL"), os.Getenv, os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, "status:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if flagGiven("set-restore-gate") {
+		if !*setRestoreGateFlag {
+			fmt.Fprintln(os.Stderr, "set-restore-gate: use -set-restore-gate without =false")
+			os.Exit(2)
+		}
+		if err := setRestoreGate(context.Background(), flagGiven, flag.Args(), os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "set-restore-gate:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if flagGiven("clear-restore-gate") {
+		if err := clearRestoreGate(context.Background(), *clearRestoreGateFlag, flagGiven, flag.Args(), os.Stdin, isInteractiveTerminal(os.Stdin), os.Stdout, os.Stderr); err != nil {
+			fmt.Fprintln(os.Stderr, "clear-restore-gate:", err)
 			os.Exit(1)
 		}
 		return

@@ -11,7 +11,7 @@ import (
 )
 
 func enrollRetention(ctx context.Context, given func(string) bool, args []string, out io.Writer) error {
-	for _, other := range []string{"preview", "healthcheck", "status", "reset-admin-password", "reset-admin-factors", "set-role", "bootstrap-admin", "site-name", "export-audit", "export-audit-from", "export-audit-dir"} {
+	for _, other := range []string{"preview", "healthcheck", "status", "reset-admin-password", "reset-admin-factors", "set-role", "set-restore-gate", "clear-restore-gate", "bootstrap-admin", "site-name", "export-audit", "export-audit-from", "export-audit-dir"} {
 		if given(other) {
 			return errors.New("cannot be combined with -" + other)
 		}

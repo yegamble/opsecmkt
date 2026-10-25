@@ -370,6 +370,9 @@ type PageData struct {
 	// P4 Inventory (uses Product.Archived)
 	Listing   *ListingView
 	Inventory *InventoryView
+	// ListingForm: a refused listing create or edit, re-rendered with what was sent and its problems (A-59); the
+	// forms read it through ListingFields.
+	ListingForm *ListingFormView
 	// VendorReadiness: the seller's current listing, payment and settlement prerequisites, without wallet details.
 	VendorReadiness *VendorReadinessView
 
@@ -679,8 +682,9 @@ type CanaryView struct {
 	Statement, Fingerprint, SignedAt, Posted, Error string
 	Verified                                        bool
 	// Clearsigned is the stored submission exactly as posted; OperatorKey is the configured armored public key
-	// (both published so readers can verify independently). KeyError explains an unusable configured key.
-	Clearsigned, OperatorKey, KeyError string
+	// (both published so readers can verify independently). KeyError explains an unusable configured key;
+	// KeyExpired is when a configured key expired (A-69).
+	Clearsigned, OperatorKey, KeyError, KeyExpired string
 }
 type AuditExportView struct {
 	Available bool

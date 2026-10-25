@@ -136,7 +136,7 @@ A shared wallet uses its earliest outstanding deadline; reviewing it does not re
 For Monero, remove the already-destroyed wallet's `NAME`, `NAME.keys` and all corresponding copies only after the existing destruction checks and preservation review.
 
 Use the operator's protected database administration connection through the `db_sql` helper of the
-[runbook](testnet-runbook.md#clear-the-gate) (`docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U opsecmkt -d opsecmkt "$@"`
+[runbook](testnet-runbook.md#reconcile-a-restored-database-before-enabling-payouts) (`docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U opsecmkt -d opsecmkt "$@"`
 for the bundled database; an external database needs its protected `psql` connection instead). Each statement below needs
 your administrator handle and the exact wallet name, and adds its audit row by that administrator in the same statement:
 both happen, or neither. Record a review of the exact row:

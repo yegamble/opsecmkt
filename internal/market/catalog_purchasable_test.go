@@ -26,7 +26,7 @@ func cardCount(body string) int { return strings.Count(body, `<article class="pr
 const unbuyableMark = "Not available for purchase"
 
 // TestCatalogMarksUnbuyableListings (A-575): every listing a new order is refused on is marked "Not available for
-// purchase" instead of "N AVAILABLE" on the catalog (with search, category, region and paging), on its vendor's
+// purchase" instead of its stock band ("1–5 AVAILABLE", A-520) on the catalog (with search, category, region and paging), on its vendor's
 // public page and, with the reason, on the vendor's own desk; the draft action refuses each one and accepts the
 // control. Both sides read the one rule (purchasable.go), so a condition dropped from it fails here twice.
 func TestCatalogMarksUnbuyableListings(t *testing.T) {
@@ -105,7 +105,7 @@ func TestCatalogMarksUnbuyableListings(t *testing.T) {
 	for _, id := range []string{control, manual} {
 		for _, body := range []string{pages, filtered} {
 			card := productCard(body, id)
-			if !strings.Contains(card, "5 AVAILABLE") || strings.Contains(card, unbuyableMark) {
+			if !strings.Contains(card, "1–5 AVAILABLE") || strings.Contains(card, unbuyableMark) { // A-520: a buyer sees the band
 				t.Fatalf("a purchasable listing is not offered with its stock: %q", card)
 			}
 		}
