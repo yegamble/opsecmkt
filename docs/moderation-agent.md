@@ -370,7 +370,10 @@ defaults one account that edits constantly can use up the whole pool in about
 six days (512 / 81). After that every refused target is kept as a marker or
 rescan, but nothing new is captured until an administrator raises
 `--max-reserved-bytes` or `--max-records`; the private moderation panel shows
-this as `retained_capacity` under "Capture requires attention".
+this as `retained_capacity` under "Capture requires attention", and the Admin
+overview shows a count-only "Moderation capture needs attention" alert from two
+daily shares before the pool is used up (counts only on private administrator
+ingress; see the [operator guide](operator-guide.md#moderation-proposals)).
 
 At saturation, the listing, dispute or other source transaction still commits.
 No clean classification is invented. A fixed, coalesced private overflow warning

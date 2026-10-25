@@ -87,6 +87,14 @@ for the private `/admin/moderation/offline` page without an application login.
 All three review choices annotate a proposal only. There is no moderation
 executor for money, bans, takedowns, order transitions or generated replies.
 Expiry means `HOLD`; stale content cannot be accepted as current.
+While capture is on, the `/admin` overview also warns when the lifetime pool has
+at most two daily actor shares of allocations left, or when targets or rescans
+wait after a recorded `retained_capacity` or `backfill_capacity` overflow (A-648).
+On private administrator ingress it shows allocations used of the limit, the
+waiting targets and rescans, and the worker flags to raise; elsewhere it is one
+sentence without numbers. It never names an account, target, kind or time, and
+it is one plain read with no row lock
+(`TestAdminOverviewModerationBudgetAlert*`).
 
 The initial sources are listing edits, normalized-upload metadata, disputes,
 reviews and newly flagged payments. Inference receives no encrypted messages,
