@@ -78,6 +78,17 @@ func bannedAccountsLoader(ctx context.Context, a *App, _ *http.Request, d *PageD
 	return rows.Err()
 }
 
+// withCountedReviews appends to a ban or unban audit summary how many reviews by account id the change takes out of
+// or puts back into the ratings (A-649): those on completed orders an administrator has not hidden, which count
+// whenever the account is not banned (reviewCountedSQL). Nothing is appended when there are none.
+func withCountedReviews(ctx context.Context, tx *sql.Tx, id, summary, effect string) (string, error) {
+	var n int64
+	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM reviews r JOIN orders o ON o.id=r.order_id WHERE r.buyer_id=$1 AND o.state='completed' AND r.hidden_at IS NULL", id).Scan(&n); err != nil || n == 0 {
+		return summary, err
+	}
+	return summary + "; " + strconv.FormatInt(n, 10) + " review(s) by the account " + effect, nil
+}
+
 // adminBanAction bans or lifts the ban on a non-administrator account, looked up by handle (see the A-546 comment
 // above). It takes the locks in the suspension's order (adminSuspendAction): wallet lock wait, pending sign-ins, then
 // the account row.
@@ -161,6 +172,9 @@ func adminBanAction(c *actionCtx) (actionResult, error) {
 				summary = "; it stays suspended, as it was before the ban"
 				note = "An administrator lifted the ban on your account. It stays suspended, as it was before the ban, so it cannot sign in until an administrator restores it. Your listings stay archived."
 			}
+			if summary, err = withCountedReviews(ctx, tx, target, summary, "count toward ratings again"); err != nil {
+				return actionResult{}, err
+			}
 			if err = audit("Ban lifted by " + by + ": " + said + summary); err != nil {
 				return actionResult{}, err
 			}
@@ -193,6 +207,9 @@ func adminBanAction(c *actionCtx) (actionResult, error) {
 		}
 		n, _ := ended.RowsAffected()
 		summary := "; ended " + strconv.FormatInt(n, 10) + " session(s) and any pending sign-ins"
+		if summary, err = withCountedReviews(ctx, tx, target, summary, "stopped counting toward ratings"); err != nil {
+			return actionResult{}, err
+		}
 		if err = audit("Account banned by " + by + ": " + said + summary); err != nil {
 			return actionResult{}, err
 		}

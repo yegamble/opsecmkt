@@ -418,8 +418,14 @@ func loadOrderDetail(ctx context.Context, a *App, r *http.Request, d *PageData) 
 		}
 	}
 	var rv Review
-	err = a.db.QueryRowContext(ctx, "SELECT r.id,r.order_id,b.handle,r.rating,r.body,to_char(r.created,'YYYY-MM-DD'),r.hidden_at IS NOT NULL FROM reviews r JOIN users b ON b.id=r.buyer_id WHERE r.order_id=$1", o.ID).Scan(&rv.ID, &rv.OrderID, &rv.Buyer, &rv.Rating, &rv.Body, &rv.Created, &rv.Hidden)
+	err = a.db.QueryRowContext(ctx, "SELECT r.id,r.order_id,b.handle,r.rating,r.body,to_char(r.created,'YYYY-MM-DD'),r.hidden_at IS NOT NULL,"+reviewBuyerBannedSQL("r")+" FROM reviews r JOIN users b ON b.id=r.buyer_id WHERE r.order_id=$1", o.ID).Scan(&rv.ID, &rv.OrderID, &rv.Buyer, &rv.Rating, &rv.Body, &rv.Created, &rv.Hidden, &rv.Banned)
 	if err == nil {
+		// A-649: the parties and moderators read one neutral sentence whether an administrator hid the review or its
+		// buyer is banned; only an administrator sees which.
+		rv.Excluded = rv.Hidden || rv.Banned
+		if !viewerIsAdmin(u) {
+			rv.Hidden, rv.Banned = false, false
+		}
 		d.Reviews = []Review{rv}
 	} else if err != sql.ErrNoRows {
 		return err
@@ -602,35 +608,61 @@ func reviewModerationLoader(ctx context.Context, a *App, r *http.Request, d *Pag
 	return adminConfirmLoader(ctx, a, r, d)
 }
 
+// reviewCountedSQL is SQL that is true while the review aliased alias is listed publicly and counts in the product
+// rating and the product and vendor review summaries: an administrator has not hidden it (A-125) and its buyer is not
+// banned (A-649, owner directive: none of a banned buyer's reviews, past or future, count). The ban is read live from
+// users.banned_at, so nothing is written to the review and lifting the ban restores it. Closed accounts are not
+// excluded here: retention deletes their reviews (retention.go). Callers also require a completed order.
+func reviewCountedSQL(alias string) string {
+	return alias + ".hidden_at IS NULL AND NOT " + reviewBuyerBannedSQL(alias)
+}
+
+// reviewBuyerBannedSQL is SQL that is true while the buyer of the review aliased alias is banned (A-649).
+func reviewBuyerBannedSQL(alias string) string {
+	return "EXISTS(SELECT 1 FROM users rb WHERE rb.id=" + alias + ".buyer_id AND rb.banned_at IS NOT NULL)"
+}
+
+// viewerIsAdmin: the viewer is an administrator who is not retention-restricted, so is told why a review is not
+// counted (A-125, A-649).
+func viewerIsAdmin(u *User) bool {
+	return u != nil && !u.RetentionRestricted && u.Role == "admin"
+}
+
 // loadPublicReviews fills public reviews. Only reviews keyed to completed orders count; reviewer handles
 // and order ids are never shown publicly and dates are coarsened to the month. A review an administrator hid
-// (A-125) is left out of the list and the rating; administrators see it listed, labelled, with a restore form.
+// (A-125), or one by a banned account (A-649), is left out of the list and the rating (reviewCountedSQL).
+// Administrators see it listed and labelled (a hidden one with a restore form) and each kind counted apart; nobody
+// else is told how many reviews are left out.
 func loadPublicReviews(ctx context.Context, a *App, d *PageData, where, id string) error {
 	base := " FROM reviews r JOIN orders o ON o.id=r.order_id JOIN products p ON p.id=r.product_id WHERE o.state='completed' AND " + where
-	admin := d.User != nil && !d.User.RetentionRestricted && d.User.Role == "admin"
+	admin := viewerIsAdmin(d.User)
+	counted := reviewCountedSQL("r")
 	var sum ReviewSummary
 	var avg float64
-	if err := a.db.QueryRowContext(ctx, `SELECT count(*) FILTER (WHERE r.hidden_at IS NULL),
-		COALESCE(avg(r.rating) FILTER (WHERE r.hidden_at IS NULL),0)::float8,count(*) FILTER (WHERE r.hidden_at IS NOT NULL)`+base, id).Scan(&sum.Count, &avg, &sum.Hidden); err != nil {
+	var excluded int
+	if err := a.db.QueryRowContext(ctx, `SELECT count(*) FILTER (WHERE `+counted+`),
+		COALESCE(avg(r.rating) FILTER (WHERE `+counted+`),0)::float8,count(*) FILTER (WHERE r.hidden_at IS NOT NULL),
+		count(*) FILTER (WHERE NOT (`+counted+`))`+base, id).Scan(&sum.Count, &avg, &sum.Hidden, &excluded); err != nil {
 		return err
 	}
 	sum.Average = fmt.Sprintf("%.1f", avg)
-	listed := " AND r.hidden_at IS NULL"
+	sum.Banned = excluded - sum.Hidden // by a banned account and not hidden: a review that is both is counted as hidden
+	listed := " AND " + counted
 	if admin {
 		listed = ""
 	} else {
-		sum.Hidden = 0
+		sum.Hidden, sum.Banned = 0, 0
 	}
 	d.ReviewSummary = &sum
 	// MOD72-6: a listing whose edit awaits staff review is named by the title its buyer ordered, never the unreviewed one.
-	rows, err := a.db.QueryContext(ctx, "SELECT r.id,r.rating,r.body,to_char(r.created,'YYYY-MM'),CASE WHEN p.review_state='approved' THEN p.title ELSE coalesce(o.listing_title,'') END,r.hidden_at IS NOT NULL"+base+listed+" ORDER BY r.created DESC LIMIT 50", id)
+	rows, err := a.db.QueryContext(ctx, "SELECT r.id,r.rating,r.body,to_char(r.created,'YYYY-MM'),CASE WHEN p.review_state='approved' THEN p.title ELSE coalesce(o.listing_title,'') END,r.hidden_at IS NOT NULL,"+reviewBuyerBannedSQL("r")+base+listed+" ORDER BY r.created DESC LIMIT 50", id)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var rv Review
-		if err = rows.Scan(&rv.ID, &rv.Rating, &rv.Body, &rv.Created, &rv.Product, &rv.Hidden); err != nil {
+		if err = rows.Scan(&rv.ID, &rv.Rating, &rv.Body, &rv.Created, &rv.Product, &rv.Hidden, &rv.Banned); err != nil {
 			return err
 		}
 		if d.Page != "vendor" {

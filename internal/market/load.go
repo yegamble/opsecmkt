@@ -287,7 +287,7 @@ func (a *App) load(r *http.Request, d *PageData) error {
 			description = "left(p.description," + strconv.Itoa(excerptRunes+1) + ")"
 		}
 		query := `SELECT p.id,p.title,` + description + `,p.category,p.region,p.kind,u.handle,p.vendor_id,p.btc,p.xmr,p.stock,p.archived,` + takedown + `,` + verifiedVendorSQL("u") + `,p.subcategory,array_to_string(p.shipping_regions,'|'),ratings.average,ratings.count,u.vendor_vacation,u.vendor_deactivated,NOT ` + vendorAcceptsBuyerMessagesSQL("u") + `,p.review_state<>'approved',` + rejection + `,p.digital_delivery_mode FROM products p JOIN users u ON u.id=p.vendor_id
-		 LEFT JOIN LATERAL (SELECT coalesce(avg(r.rating),0)::float8 AS average,count(*) AS count FROM reviews r JOIN orders ro ON ro.id=r.order_id WHERE r.product_id=p.id AND ro.state='completed' AND r.hidden_at IS NULL) ratings ON true WHERE true`
+		 LEFT JOIN LATERAL (SELECT coalesce(avg(r.rating),0)::float8 AS average,count(*) AS count FROM reviews r JOIN orders ro ON ro.id=r.order_id WHERE r.product_id=p.id AND ro.state='completed' AND ` + reviewCountedSQL("r") + `) ratings ON true WHERE true`
 		args := []any{}
 		limit := " LIMIT 100"
 		switch d.Page {
