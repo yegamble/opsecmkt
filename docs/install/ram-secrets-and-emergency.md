@@ -2,9 +2,16 @@
 
 The native controller can load a bounded, administrator-decrypted installation
 bundle into Linux tmpfs. The offline workstation keeps the private OpenPGP
-decryption key. Production servers receive only the runtime secrets they need.
+decryption key.
 Use this with the [separated service topology](service-topology.md) and
 [native CLI reference](cli-reference.md).
+
+**Production compatibility:** new native production start commands require a
+persistent LUKS2-backed operator installation and reject the older RAM-unlocked
+production layout. Their boot checks need the retained configuration after root
+unlock. The tmpfs procedure below remains available for development and
+inspection; a RAM-only production boot/unlock design is not implemented. For
+production, follow [encrypted-root setup and migration](server-hardening.md#prepare-encryption-before-running-setup).
 
 This controls where runtime files are stored. A running application, root or a
 Docker administrator can still read online secrets and memory. tmpfs can use
@@ -13,9 +20,23 @@ Power loss is not a guarantee of secret destruction. Review encrypted swap or
 disabled swap, crash-dump and snapshot policy with the host administrator. See
 the [Linux tmpfs documentation](https://docs.kernel.org/filesystems/tmpfs.html).
 
+Before sending plaintext secrets, verify both soft and hard core limits in a
+fresh non-multiplexed SSH session and in the actual privileged/service processes.
+Require `(0, 0)` for the reviewed no-core policy. Linux-PAM wildcard limits do
+not cover root: configure explicit root entries, effective `UsePAM yes` and the
+`pam_limits.so` session stack. Explicit service-unit limits can override global
+systemd defaults; container defaults and actual container processes need their
+own checks. Privileged pre-start helpers must establish their own limits before
+reading inputs; review command prefixes that bypass unit restrictions. The
+global dump handler and initramfs/preboot limits need separate
+verification. Follow the
+[fresh-session core-limit procedure](server-hardening.md#verify-core-limits-in-fresh-sessions);
+also verify [service and container limits](server-hardening.md#verify-service-and-container-core-limits).
+A normal-OS pass does not establish preboot protection or RAM erasure.
+
 ## Prepare the installation offline
 
-Use `deploy init` on a trusted workstation to generate or import the stable
+For development, use `deploy init --mode dev` on a trusted workstation to generate or import the stable
 application and wallet secrets. Configure the intended server endpoints, image
 digests, Docker context, runtime UID/GID and TLS identities. Keep the offline
 source installation protected; it contains plaintext runtime secrets.
@@ -26,10 +47,9 @@ outside this RAM tree too. Absolute paths in the saved configuration refer to
 the server. Only the controller's default derived admin socket directory moves
 with the unlocked installation; explicit external paths keep their meaning.
 
-For a production Tor installation, import the operators' public `.auth` files
-using `--admin-client-auth-dir` and pin `--admin-tor-image`. The matching private
-client keys stay on the authorized workstations. Follow the
-[private administrator onion guide](tor.md#native-production-with-separate-onions).
+Private administrator client keys stay on the authorized workstations. A
+production Tor installation must instead follow the persistent encrypted-host
+and [private administrator onion procedure](tor.md#native-production-with-separate-onions).
 
 Encrypt the installation to an existing public OpenPGP encryption key:
 
@@ -92,7 +112,7 @@ with files 0600. The `secrets/` subtree is assigned to the configured runtime
 UID/GID so Docker can bind the private files. Validated public Tor client records
 become readable by the Tor service when the controller materializes its inputs.
 
-Review and start the selected installation explicitly:
+Review and start the selected **development** installation explicitly:
 
 ```sh
 sudo opsecmkt deploy plan --dir /run/opsecmkt-secrets/market

@@ -2,7 +2,7 @@
 
 The `opsecmkt` binary runs the application, upload gateway and dependency-version worker, generates/imports keys, and manages an explicit Docker Compose installation. This reference describes commands present in the current source. For a guided deployment, use [Running the standalone binary](binary.md); for separate hosts and sizing, use [Separating services](service-topology.md).
 
-Examples use `./opsecmkt`. Rename the release file for your platform or substitute its actual path. Native commands do not require a source checkout or a Go compiler. `serve` requires PostgreSQL; `deploy` requires Docker Engine and Compose 2.17 or newer. The binary does not embed PostgreSQL, Monero, ClamAV or Tor, install packages, provision remote hosts, or install a system service.
+Examples use `./opsecmkt`. Rename the release file for your platform or substitute its actual path. Native commands do not require a source checkout or a Go compiler. `serve` requires PostgreSQL; `deploy` requires Docker Engine and Compose 2.17 or newer. The binary does not embed PostgreSQL, Monero, ClamAV or Tor, install packages or provision remote hosts. Production lifecycle commands install storage-check drop-ins; optional `deploy host-reboot configure` installs its narrow systemd agent. Operators supervise the other native services separately.
 
 ## Command map and argument rules
 
@@ -14,16 +14,17 @@ Examples use `./opsecmkt`. Rename the release file for your platform or substitu
 | `serve` | Run the application in the foreground, with embedded UI assets and migrations. |
 | `upload-gateway` | Run the separate upload/scanner front door in the foreground. |
 | `versions-worker` | Refresh signed dependency reports once or periodically. |
+| `host-control-agent` | Serve the root-only, fixed application-host reboot capability through a private Unix socket. Installed through `deploy host-reboot configure`; never a public HTTP service. |
 | `keys` | Generate/import independent secrets, OpenPGP recovery keys and TLS identities. |
 | `secrets` | Pack configuration offline, mount protected tmpfs, and unlock runtime material from stdin. |
 | `emergency` | Inspect or explicitly target a manual project shutdown/LUKS incident action. |
 | `admin-tor-prepare` | Prepare public client authorization and ownership in the dedicated private Tor identity volume. Normally invoked by the generated init service. |
 | `tor-identity-prepare` | Initialize or verify a selected public onion identity in its dedicated volume. Normally invoked by development's generated init service. |
-| `deploy` | Manage a private installation directory and its Compose project. |
-| `init`, `plan`, `install`, `redeploy`, `status`, `up`, `down`, `logs`, `doctor` | Exact shortcuts for the corresponding `deploy` command. |
+| `deploy` | Manage a private installation directory, encrypted-storage checks and its Compose project. |
+| `init`, `plan`, `install`, `redeploy`, `status`, `up`, `down`, `logs`, `doctor`, `storage`, `host-reboot` | Exact shortcuts for the corresponding `deploy` command. |
 | Legacy top-level flags, such as `-bootstrap-admin` | Run host administration or probe commands; see [Host commands](#legacy-host-commands). |
 
-Run `serve --help`, `upload-gateway --help`, `versions-worker --help`, `keys help`, `deploy --help`, or `deploy init --help`. `secrets --help` and `emergency --help` describe their separate roles. Key operations are listed by `keys help`; onion generation/import also provide nested `--help`. Other nested key invocations, such as `keys generate secret --help`, are not separate help interfaces.
+Run `serve --help`, `upload-gateway --help`, `versions-worker --help`, `keys help`, `deploy --help`, `deploy init --help`, or `deploy storage help`. `secrets --help` and `emergency --help` describe their separate roles. Key operations are listed by `keys help`; onion generation/import also provide nested `--help`. Other nested key invocations, such as `keys generate secret --help`, are not separate help interfaces.
 
 Flags accept one or two leading hyphens. Examples use `--flag VALUE` for new commands. Put flags before positional arguments. Go boolean flags use `--flag` or `--flag=false`; `--flag false` leaves `false` as a positional argument. All new commands reject unexpected positional arguments. `serve --escrow-xmr on` is a string setting; `deploy init --escrow-xmr` is a boolean switch.
 
@@ -53,6 +54,11 @@ Enter accepts the displayed default. `?` explains the current question; `quit`, 
 Before saving, inspect the equivalent quoted command and the generated/imported key choices. `edit` reopens the deployment questions with cached defaults. Use `:clear` to remove an optional cached import or prefix; required answers cannot be cleared. Creating configuration defaults to **no**. Refusing or cancelling before confirmation writes no configuration. Accepted creation runs native `init` and `plan`, prints exact private key/token locations and encrypted-backup guidance, then asks separately whether to start. Startup also defaults to **no** and calls `install` only after that second confirmation. Cancelling after saving retains the saved installation and starts nothing further.
 
 Safe defaults are development profile, loopback clearnet binding, stagenet and disabled escrow. Blank key imports generate new independent secrets for new state; retaining existing wallets/data requires their established keys. Mainnet must be selected explicitly. Production still requires independently prepared dependency hosts and verified transports. The guide does not install packages, provision those hosts, create a service unit, or run emergency erasure actions. Advanced settings, local development Monero containers, report-feed pins and explicit runtime IDs remain available through the complete flag reference below.
+
+Production's encrypted-root requirement also applies to guided creation. Prepare
+and verify Linux LUKS2 storage before importing private inputs or confirming
+creation. The guide does not format a root disk or establish a preboot unlock
+route; see [encryption-first setup](server-hardening.md#prepare-encryption-before-running-setup).
 
 ## Serving the application
 
@@ -310,13 +316,13 @@ Use new output paths because existing files are refused. The import accepts a ra
 opsecmkt deploy COMMAND [flags]
 ```
 
-Each command has an equivalent root alias, such as `opsecmkt redeploy`. Every command accepts `--dir DIR`, default `./opsecmkt-deployment`. The private directory stores strict `operator.json`, managed key files, generated Compose/runtime inputs and an installation identity receipt. Retention state uses its separately configured persistent directory. Reuse this directory for the same market.
+Each lifecycle command has an equivalent root alias, such as `opsecmkt redeploy`, and accepts `--dir DIR`, default `./opsecmkt-deployment`. Storage subcommands use the flags in their separate reference below. The private directory stores strict `operator.json`, managed key files, generated Compose/runtime inputs and an installation identity receipt. Retention state uses its separately configured persistent directory. Reuse this directory for the same market.
 
 ### Deployment commands
 
 | Command | Effect and limits |
 | --- | --- |
-| `init` | Validate inputs, create fresh private state and import/generate independent keys. Starts nothing. Refuses any existing target directory. See all flags below. |
+| `init` | Validate inputs, then create fresh private state and import/generate independent keys. Production verifies local encrypted storage before staging or keys and records storage identities. Starts nothing. Refuses any existing target directory. See all flags below. |
 | `plan` | Validate configuration/material and print topology with secret values omitted. Starts nothing and writes no runtime inputs. |
 | `install` | Claim an unused project, generate runtime files, and start configured services with a readiness wait. Refuses unrelated existing project containers/volumes. |
 | `up` | Resume the recorded installation, retaining keys and volumes. Rewrites generated runtime inputs and starts its configured services. Use `redeploy` for app-only updates. |
@@ -324,9 +330,107 @@ Each command has an equivalent root alias, such as `opsecmkt redeploy`. Every co
 | `status` | Show all project containers and health. Does not report the database setup/schema status; use legacy `-status` for that. |
 | `down` | Stop/remove project containers/networks with a 60-second stop timeout. Retains all persistent volumes and private files; not a backup or erase command. |
 | `logs` | Development: at most 100 lines per service, no follow, bounded output with known secret/URL-credential redaction. Inspect before sharing. Production: explain that app Docker logging is disabled; use administrator diagnostics/status. |
-| `doctor` | Validate startup material and check Docker Compose availability. Does not prove remote readiness, firewall correctness or physical host separation. |
+| `doctor` | Validate startup material, recheck production storage bindings and check Docker Compose availability. Does not prove remote readiness, firewall correctness or physical host separation. |
+| `host-reboot configure --dir DIR` | Root on the encrypted production app host: install its private fixed-action reboot agent and attach its configuration to the retained installation. New unlock-readiness policies are disabled. Run `up` afterwards to attach the app-only socket. |
+| `host-reboot ready --dir DIR --confirm-unlock-rehearsed` | Record root's real OS reboot/manual-unlock acknowledgement for the current kernel boot identity. Repeat after each later host reboot. Requires a configured agent and verified storage; does not request a reboot. |
 
-There are no additional `--app-image` flags on `up`/`install`: use `redeploy` to change it. Deployment mutations use a process lock on Linux/macOS; concurrent changes refuse and process exit releases the lock. Nonroot operators must use their own runtime UID/GID. Existing expired certificates do not prevent `status`, `logs` or `down`; startup/plan/doctor/redeployment still reject expired material.
+There are no additional `--app-image` flags on `up`/`install`: use `redeploy` to change it. Deployment mutations use a process lock on Linux/macOS; concurrent changes refuse and process exit releases the lock. Nonroot development operators must use their own runtime UID/GID. Production start commands require Linux root, systemd and a persistent root-owned operator binary. Existing expired certificates do not prevent `status`, `logs` or `down`; startup/plan/doctor/redeployment still reject expired material.
+
+Production `install`, `up`, `redeploy` and `doctor` require the recorded storage
+bindings to match this Linux host's actual encrypted paths. Bindings include
+mount point/root, filesystem UUID and protecting LUKS UUIDs; they contain no
+unlock key. Run the CLI on the service host against its local Docker Engine;
+a remote context cannot establish
+remote storage proof. `plan`, `status`, `logs` and `down` do not require a passing
+storage gate. A storage failure starts nothing; retain the installation and
+investigate instead of reinitializing it or selecting development mode.
+
+Production starts refuse active swap and require the operator installation on
+persistent encrypted storage. Before application startup, `install`, `up` and
+`redeploy` install per-project Docker and containerd storage-check drop-ins and
+reload systemd. They do not restart those daemons. The checks affect their whole
+host services, including other projects; use the intended dedicated host. Missing
+mounts or changed identities stop startup without formatting or erasing storage.
+
+### Preparing and checking production storage
+
+```text
+opsecmkt deploy storage COMMAND [flags]
+```
+
+| Command | Effect and limits |
+| --- | --- |
+| `prepare` | Explicitly prepare one new, blank **whole data device** as LUKS2/ext4 and mount it. Linux root and an interactive terminal are required. Refuses root, existing signatures, partitions, mounts and holders. Does not convert an OS root. |
+| `unlock` | Verify an existing LUKS2 UUID, prompt through native `cryptsetup`, and mount its existing ext4 filesystem. Does not format it. |
+| `verify` | Read-only proof that each path is backed entirely by active LUKS2 storage. Supports Linux ext4/XFS. Unknown, remote, volatile, overlay and unsupported filesystems fail closed. |
+| `bind --dir DIR` | After a reviewed production migration, verify current storage and record its identities in the retained installation. Preserves keys, configuration and installation receipt; no data copy or force bypass. |
+| `boot-unit --dir DIR --binary /ABSOLUTE/PATH/opsecmkt` | Print an equivalent daemon pre-start drop-in candidate using the retained installation's storage bindings. Print-only; does not install it or unlock a disk. Production lifecycle starts install their Docker/containerd checks separately. |
+| `check-bound --dir DIR` | Verify saved path/UUID bindings without querying the Docker daemon. Intended for a reviewed pre-start check. |
+
+`prepare` and `unlock` accept these flags:
+
+| Flag | Requirement |
+| --- | --- |
+| `--device` | Absolute block-device path; prefer its stable `/dev/disk/by-id/` identifier. |
+| `--name` | Mapper name for this operation. |
+| `--mount` | Clean absolute empty private destination. Its existing parents must be root-owned and not writable by other users. |
+| `--confirm-device` | **Prepare only:** exact canonical resolved device path, independently checked as the new empty data disk. Formatting is destructive to that selected device. |
+| `--expected-luks-uuid` | **Unlock only:** required canonical lowercase UUID of the existing LUKS2 volume; checked before passphrase entry. |
+
+`verify` requires repeatable `--path PATH` arguments. An optional
+`--expected-luks-uuid UUID` requires each path to have exactly that single LUKS
+identity. Inspect separate volumes in separate invocations when using a UUID pin:
+
+```sh
+./opsecmkt deploy storage verify --path /srv/opsecmkt-encrypted \
+  --expected-luks-uuid YOUR_RECORDED_LUKS_UUID
+```
+
+Passphrases go directly to native `cryptsetup`, never flags, environment
+variables, configuration receipts or key files. These commands do not install
+packages, configure automatic unlock, edit `/etc/fstab`, start services, migrate
+an operating-system root, export recovery keys or invoke emergency erasure.
+Inspect the [safe data-device procedure](server-hardening.md#prepare-an-additional-blank-data-device)
+before preparing a disk, and the
+[boot/migration procedure](server-hardening.md#keep-services-stopped-until-storage-is-ready)
+before resuming an existing installation.
+
+### Configuring private application-host reboot control
+
+`deploy host-reboot configure` requires the retained production installation,
+private administrator ingress, verified encrypted storage and a persistent
+root-owned binary. It installs `opsecmkt-host-control-PROJECT.service`, a root
+agent with a single fixed application-host reboot operation. It starts a new
+policy with `unlock_rehearsed=false`. `deploy up` mounts only its dedicated Unix
+socket directory into the app and sets `HOST_CONTROL_SOCKET`; it grants no
+Docker/systemd socket or root credential.
+
+After the real OS reboot/unlock rehearsal, root may run `host-reboot ready` with
+the acknowledgement flag. It binds the statement to the current kernel boot
+identity; a copied policy or later host boot cannot enable the button. Root must
+acknowledge each new boot after manual unlock and verification. This remains a
+statement by the operator, not proof of recovery. The web form additionally requires private ingress, administrator
+role, current password, enrolled TOTP, CSRF, a form nonce and explicit manual-unlock
+acknowledgement. A committed database audit precedes its one immediate host
+request. Acceptance has a minimum 30-second response grace and 10-minute cooldown;
+uncertain responses and form/agent restarts never schedule a retry automatically.
+See the [activation, receipt and recovery runbook](../operator-guide.md#enabling-the-private-application-host-reboot-control).
+
+For service-definition inspection, the root entry point is:
+
+```text
+opsecmkt host-control-agent --deployment-dir DIR \
+  --socket /run/opsecmkt-host-control-PROJECT/control.sock \
+  --state-dir /var/lib/opsecmkt-host-control/PROJECT \
+  --app-uid UID --app-gid GID \
+  --unlock-ready-file /etc/opsecmkt-host-control/PROJECT.json
+```
+
+Use the saved project and positive numeric app UID/GID. The root peer checks
+and encrypted receipt/policy checks are mandatory. The app cannot select a host,
+command, argument or unlock secret in a request. Starting this service requests
+no reboot. Use `deploy host-reboot help` and `host-control-agent --help` for the
+implemented options.
 
 Docker commands use the explicitly saved context name, not ambient `DOCKER_HOST`, `DOCKER_CONTEXT` or Compose controls. Inspect the selected context: a context name can itself point to a remote engine. Normal Docker client authentication/configuration still applies. The tool does not invoke Bash wrappers or install Docker.
 
@@ -340,7 +444,7 @@ Only `init` accepts these flags. Unless a default is shown, a flag is unset/opti
 | `--mode` | `dev` | `dev` or `prod`. Production manages only the app host; it cannot start dependency containers there. |
 | `--docker-context` | `default` | Explicit saved Docker context name. |
 | `--project` | Generated `opsecmkt-` plus random suffix | Stable project identity. Cannot be changed after installation. |
-| `--app-image` | Required | Reviewed app `IMAGE@sha256:DIGEST`. Must follow the repository image contract, including `/app/server`. |
+| `--app-image` | Required | The packaged Opsecmkt application to run. Follow [build, publish and get the image reference](binary.md#building-and-publishing-the-application-image), then pass the resulting value as `--app-image "$APP_IMAGE"`. |
 | `--postgres-image` | Pinned PostgreSQL 17 Alpine image | Development local DB image; ignored when using an external DB. Exact current reference is printed by `init --help`. |
 | `--tor-image` | Unset | Development public Tor image matching the repository Tor image contract; required for development `--exposure tor`. |
 | `--admin-tor-image` | Unset | Private administrator Tor image including digest; required for production Tor exposure. |
@@ -354,6 +458,7 @@ Only `init` accepts these flags. Unless a default is shown, a flag is unset/opti
 | `--admin-onion-secret-key` | Generate with admin identity | Private `0600` administrator Tor `hs_ed25519_secret_key` file matching that address and public key. |
 | `--admin-onion-prefix` | Empty/random | Optional lowercase `a-z2-7` prefix, at most six characters, for a new private administrator identity. Cannot be combined with imports. |
 | `--retention-dir` | Installation directory plus `/retention` | Clean absolute persistent retention ledger directory. Use a path outside runtime tmpfs for RAM-unlocked installations. |
+| `--host-control-dir` | Unset | Optional app-only host-control socket directory. Production private admin only; must exactly match `/run/opsecmkt-host-control-PROJECT` for the saved project. Prefer `deploy host-reboot configure` to install the disabled agent after setup. |
 | `--clamav-image` | Unset | Development ClamAV image with signatures; enables integrated uploads. |
 | `--monero-image` | Unset | Development pruned stagenet daemon image. Requires wallet image and escrow. |
 | `--monero-wallet-image` | Unset | Development dedicated escrow wallet-RPC image. Requires daemon image and escrow. |
@@ -444,7 +549,7 @@ For managed deployments, use repeated `init --set KEY=VALUE`, or deliberately ed
 | `ESCROW_XMR_FEE_ADDRESS` | Unset | Monero fee address on the configured network. |
 | `ESCROW_XMR_SLOTS` | `20` | Integer `5`–`200`; ready escrow accounts. |
 | `ESCROW_XMR_MAX_FEE` | `10000000000` | Piconero, `1`–`100000000000`; default is `0.01 XMR`, maximum `0.1 XMR`. |
-| `ESCROW_XMR_TOR_RELAY` | Blank | Blank or `clearnet-accepted`; explicit direct-relay acceptance does not configure Tor routing. Preserve the documented relay hold. |
+| `ESCROW_XMR_TOR_RELAY` | Blank | Blank keeps Tor relay held unless the legacy local node overlay is present. `remote-tor` declares operator-configured Tor egress on a separate production payment host; requires `prod`, Tor exposure, escrow enabled and authenticated HTTPS RPC endpoints. `clearnet-accepted` accepts direct relay exposure. Neither value configures Tor. |
 | `IMAGE_STORAGE_LIMIT_MB` | `2048` | Whole number `1`–`1048576`; aggregate stored-photo/avatar cap in MB, using 1024×1024 bytes per MB. |
 | `SCANNER_MAX_SIGNATURE_AGE_DAYS` | `30` | Whole number `7`–`90`. Gateway scanning uses its own `--max-signature-age-days`. |
 | `DATABASE_CONNECT_TIMEOUT` | `15s` | Go duration `1s`–`10m`. |
@@ -454,7 +559,30 @@ For managed deployments, use repeated `init --set KEY=VALUE`, or deliberately ed
 
 This table is the complete managed `--set` allowlist. Direct native environments additionally use paths such as `RETENTION_STATE_DIR` and `AUDIT_EXPORT_RECIPIENT`; they have no corresponding `serve` flag. Retention requires a clean absolute persistent state path. Audit export's recipient is a public armored key. See [operator configuration](../operator-guide.md#feature-configuration) for operational consequences.
 
+`HOST_CONTROL_SOCKET` is an optional fixed local socket path for native app-host
+reboot control. It has no `serve` flag or managed `--set` entry. The generated
+production environment supplies it only when `HostControlDir` is configured;
+web input cannot change its destination. Readiness and explicit operator
+activation remain required even when that path is set.
+
+For a production payment host whose daemon is already restricted to Tor egress,
+add `--set ESCROW_XMR_TOR_RELAY=remote-tor` to `deploy init`. For an existing
+installation, set `settings.ESCROW_XMR_TOR_RELAY` to `remote-tor` in its private
+`operator.json`, then run `deploy plan --dir DIR` and `deploy up --dir DIR`.
+The plan and administrator panel identify this as an operator declaration.
+The application cannot inspect the remote proxy or firewall. Verify the
+[payment-host routing checks](../operator-guide.md#declaring-separate-payment-host-tor-egress)
+before enabling relay and after network maintenance. Stored transactions resume
+unchanged after restart. Keep the value blank while that routing is unverified.
+
 ## Offline bundles and RAM unlock
+
+The tmpfs workflow below remains available for development and inspection. New
+production start commands require a persistent LUKS2-backed operator directory
+and reject the former RAM-unlocked production layout. Production boot checks
+need the retained configuration after encrypted root unlock; a RAM-only
+production boot/unlock design is not implemented. Offline `pack` still creates a
+bounded encrypted configuration copy, not a whole-system backup or migration.
 
 ```text
 opsecmkt secrets pack --dir OFFLINE_INSTALL_DIR --recipient-public-key PUBLIC.asc --out BUNDLE.pgp
@@ -499,7 +627,7 @@ gpg --decrypt ./encrypted/market.pgp | \
   ssh -T admin@APP_HOST 'sudo -n /usr/local/bin/opsecmkt secrets unlock --dir /run/opsecmkt-secrets/market'
 ```
 
-Keep the recovery private key and decrypted bundle off the application host's persistent storage. Do not redirect plaintext into a server file or mix a sudo password into the bundle stream. After successful unlock, inspect the retained configuration with `deploy plan --dir /run/opsecmkt-secrets/market`, then run the appropriate `install`/`up` or existing-service `redeploy` flow explicitly. Controller metadata stays root-owned; only the mounted secret subtree is assigned to the configured runtime UID/GID. Public administrator records are prepared for the separate Tor reader during installation.
+Keep the recovery private key and decrypted bundle off the host's persistent storage. Do not redirect plaintext into a server file or mix a sudo password into the bundle stream. After successful unlock, inspect the retained configuration with `deploy plan --dir /run/opsecmkt-secrets/market`. Only a development installation can use the shown RAM instance for `install`/`up` or existing-service `redeploy`; production starts require persistent encrypted configuration. Controller metadata stays root-owned; only the mounted secret subtree is assigned to the configured runtime UID/GID. Public administrator records are prepared for the separate Tor reader during installation.
 
 The retention ledger must remain outside the RAM instance on verified persistent storage; unlock refuses a retention path inside the instance or on known tmpfs. Preserve that ledger independently across restarts and database restoration. `pack` can retain configured managed onion identity triples, but does not back up databases, wallets or whole Docker volumes. Re-unlocking an old configuration bundle cannot replace current retention state or erase an incident's external recovery requirements. Tor runtime identity volumes remain persistent outside this RAM instance.
 

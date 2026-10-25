@@ -9,6 +9,224 @@ deployment packages, read [Security and OPSEC operations](security-operations.md
 
 **Current build:** Monero (XMR) per-order custodial escrow is the only payment path. It is off by default. The installer chooses mainnet for local nodes unless stagenet is selected; mainnet has real funds and no recorded run. Monero testnet is unsupported. Start with [Enabling Monero payments](install/enable-payments.md).
 
+## Native production storage and restarts
+
+New native production deployments require a verified LUKS2-encrypted Linux root
+before initialization creates keys. The controller checks local Docker/containerd,
+installation, private inputs and retention storage, then records expected mount
+and filesystem identities with their LUKS UUIDs. `install`, `up`, `redeploy` and
+`doctor` recheck those bindings. Run the
+CLI on the service host against its local Docker Engine. Follow the
+[encryption-first setup](install/server-hardening.md#prepare-encryption-before-running-setup)
+before transferring credentials. The legacy shell installer below does not
+implement this native storage gate.
+
+Production starts require Linux root, systemd, no active swap and a persistent
+root-owned binary. They install Docker/containerd pre-start drop-ins and reload
+systemd without restarting either daemon. Keep the operator installation on
+persistent encrypted storage; the new starts reject the former tmpfs/RAM-unlocked
+production layout. Development RAM workflows remain available. Native gateway,
+payment and backup units need separately reviewed storage dependencies.
+
+Existing unencrypted hosts need a planned migration to fresh encrypted roots;
+installing the new executable does not encrypt them. After restoring the retained
+state on verified replacement storage, run `deploy storage bind --dir DIR`,
+install reviewed startup checks and complete the recovery tests. Preserve keys,
+onion identities, wallet state and the current external retention ledger. See the
+[migration procedure](install/server-hardening.md#migrate-an-existing-unencrypted-installation).
+
+### Restarting services while disks remain unlocked
+
+A service-only restart does not need another disk passphrase while its encrypted
+storage remains mounted. For a controlled restart of the native application-host
+installation:
+
+1. Record the current payment-intake and recovery gates. Pause intake for planned
+   maintenance when required, and allow in-flight application work to stop
+   gracefully. Keep a verified backup and the current retention ledger.
+2. Check the saved installation and storage:
+
+   ```sh
+   sudo /usr/local/bin/opsecmkt deploy plan --dir /srv/opsecmkt/market-prod
+   sudo /usr/local/bin/opsecmkt deploy doctor --dir /srv/opsecmkt/market-prod
+   ```
+
+3. Stop its configured services, retaining keys and persistent volumes:
+
+   ```sh
+   sudo /usr/local/bin/opsecmkt deploy down --dir /srv/opsecmkt/market-prod
+   ```
+
+4. Resume the same installation:
+
+   ```sh
+   sudo /usr/local/bin/opsecmkt deploy up --dir /srv/opsecmkt/market-prod
+   sudo /usr/local/bin/opsecmkt deploy status --dir /srv/opsecmkt/market-prod
+   ```
+
+   `up` rechecks storage before writing runtime files or starting services. It
+   does not provision the gateway, managed database, payment host or worker.
+5. Verify application health through the intended gateway, private administrator
+   access, required RPC/database connections and current payment readiness. Keep
+   intake paused until the required checks pass; a restart must not automatically
+   reopen intake or clear a recovery gate.
+
+If a start fails, retain the directory and inspect `plan`, `status` and bounded
+diagnostics. Correct the identified storage or service error and retry `up`.
+An unexpected storage UUID requires investigation; `storage bind` is a reviewed
+migration step, not a response to every startup failure.
+
+### Recovering after a full host reboot
+
+This is the target runbook for an encrypted host whose operating-system unlock
+and service dependencies have passed rehearsal. Preboot SSH or console unlocking
+must be configured and tested through the operating system/provider; the Go
+controller does not install that transport or supply its passphrase.
+
+1. For planned maintenance, record the host, expected LUKS identities, current
+   health, intake/recovery gates and rollback. Confirm off-host unlock material
+   and authenticated recovery access before approving the reboot. Quiesce the
+   affected application/wallet role consistently and allow a graceful shutdown.
+2. Reboot through the host's supported service manager or provider procedure.
+   With the encrypted root locked, application services remain unavailable until
+   an authorized operator unlocks it.
+3. Authenticate the recorded preboot SSH identity or recovery console, then
+   unlock the expected root through the OS procedure. If additional state
+   volumes require manual unlocking, use their recorded device and UUID with
+   `deploy storage unlock`; do not run `prepare` on an existing volume.
+
+   Prefer the interactive SSH or console unlock prompt. For a separately tested
+   scripted unlock, send the protected key file's exact bytes: do not add an
+   `echo` newline, carriage return or other delimiter. Debian's
+   [`cryptroot-unlock` implementation](https://sources.debian.org/src/cryptsetup/2%3A2.7.5-2/debian/initramfs/cryptroot-unlock/#L186)
+   copies noninteractive standard input verbatim. Keep unlock material out of
+   command arguments and logs. Failed attempts can exhaust the current boot's
+   retry budget and leave root locked. Stop and inspect the failure; an approved
+   restart may be needed to repeat the planned rehearsal. Exhausted retries are
+   not an automatic data-erasure action. Do not claim unlock success until the
+   running OS and its expected storage have been verified.
+
+   A scripted wrapper must keep unrelated child processes from consuming the
+   unlock stream. In Python, give those children `stdin=subprocess.DEVNULL`;
+   pass the protected bytes only to the designated unlock connection. If a
+   wrapper fails before that submission, inspect the existing locked boot and
+   use a separately reviewed recovery without automatically rebooting again.
+4. Verify the expected mounts and saved bindings **without needing Docker**:
+
+   ```sh
+   sudo /usr/local/bin/opsecmkt deploy storage check-bound --dir /srv/opsecmkt/market-prod
+   ```
+
+   Expect `expected LUKS2 storage available`. Missing, locked or changed volumes
+   must refuse startup without creating fallback state.
+5. Let the reviewed supervisors resume services. If Docker/containerd previously
+   failed while waiting for manual state-volume unlock, clear those failed unit
+   states and start them **after** step 4 succeeds:
+
+   ```sh
+   sudo systemctl reset-failed containerd.service docker.service
+   sudo systemctl start containerd.service docker.service
+   sudo /usr/local/bin/opsecmkt deploy doctor --dir /srv/opsecmkt/market-prod
+   sudo /usr/local/bin/opsecmkt deploy up --dir /srv/opsecmkt/market-prod
+   sudo /usr/local/bin/opsecmkt deploy status --dir /srv/opsecmkt/market-prod
+   ```
+
+   The installed pre-start checks run again. Confirm gateway health, unchanged
+   onion identities, authorized admin access, database TLS, retention state and
+   payment readiness before restoring the approved intake policy. Check backup
+   scheduling and scanner readiness separately.
+
+   If private app-host reboot control is configured, root must acknowledge this
+   new boot after those checks succeed. Run `deploy host-reboot ready --dir DIR
+   --confirm-unlock-rehearsed` with the retained installation path. An earlier
+   boot's acknowledgement cannot enable another web reboot automatically.
+
+A failed unlock or check leaves services stopped and produces an error for the
+operator. Ordinary restart/recovery does not format disks, erase keyslots or
+invoke emergency self-destruction. `down` retains persistent data. Use the
+[backup and recovery procedure](#backups-and-recovery) when storage is damaged;
+do not regenerate keys or erase a volume to make a boot pass.
+
+### Enabling the private application-host reboot control
+
+This optional control reboots the **application host's operating system**. The
+storefront and private administrator connection disconnect. Disk unlocking still
+requires the operator's separate trusted console or preboot SSH procedure. Plan
+an attended maintenance window and keep payment intake at its approved setting.
+
+You need Linux root on the encrypted application host, a persistent installed
+binary and the retained Tor production installation with its client-authorized
+private administrator onion.
+The administrator must enroll TOTP. Keep verified backups, current retention
+state and off-host unlock material available. The existing unencrypted production
+hosts do not meet these prerequisites.
+
+1. Configure the narrow host service on the application host:
+
+   ```sh
+   sudo /usr/local/bin/opsecmkt deploy host-reboot configure \
+     --dir /srv/opsecmkt/market-prod
+   ```
+
+   Expect a configured agent with a new **disabled** unlock-readiness policy.
+   Its root-owned policy and receipt ledger stay on verified encrypted storage.
+   It accepts only the saved application's numeric UID through a dedicated
+   Unix socket. The app receives no Docker/systemd socket, root credential or
+   unlock key.
+2. Attach that socket to the retained application installation:
+
+   ```sh
+   sudo /usr/local/bin/opsecmkt deploy up \
+     --dir /srv/opsecmkt/market-prod
+   ```
+
+   Open **Admin > Application host** through the client-authorized private
+   administrator onion. Expect an unavailable reboot button until the host
+   policy and the administrator's authenticator are ready.
+3. Complete the [full host reboot and manual-unlock rehearsal](#recovering-after-a-full-host-reboot)
+   through the separate operator procedure. Verify the expected mounts, storage
+   bindings, unchanged onion identities, services and recovery/payment gates
+   after unlock. A synthetic test or a service-only restart does not establish
+   this readiness.
+4. Record that completed rehearsal on the application host:
+
+   ```sh
+   sudo /usr/local/bin/opsecmkt deploy host-reboot ready \
+     --dir /srv/opsecmkt/market-prod --confirm-unlock-rehearsed
+   ```
+
+   This stores the operator's acknowledgement for the **current OS boot**;
+   the flag cannot prove that a reboot, unlock or recovery test happened. Each
+   later OS reboot or replacement host needs a new acknowledgement after manual
+   unlock and verification. The agent checks storage, boot identity and policy
+   again before accepting a request and before executing it.
+5. Reload **Admin > Application host**. Expect the enabled form only when the
+   local agent reports readiness and the administrator has TOTP enrolled.
+   Review and retain the displayed request ID before submitting.
+
+To request a planned reboot, select the downtime/manual-unlock acknowledgement,
+enter the current password and a fresh authenticator code, then select **Reboot
+application host OS**. The application commits the request and its audit record
+before contacting the host agent. The agent saves an acceptance receipt before
+replying, provides at least 30 seconds after that response, and enforces a
+10-minute cooldown. The action has one fixed application-host target. Gateway,
+payment and managed database maintenance use their own procedures.
+
+An acceptance receipt means a reboot was scheduled. It does not prove shutdown,
+unlock or service recovery. If a response is lost, retain the **same request ID**
+and inspect the admin status or ask the operator to check the root-owned agent
+ledger. Do not submit a fresh request as a retry. Form replay never sends another
+reboot; uncertain dispatch and agent restarts do not replay it automatically.
+After shutdown, use the [full host recovery procedure](#recovering-after-a-full-host-reboot)
+to unlock storage and verify services before restoring the approved intake policy.
+Re-acknowledge that new boot from the host before expecting the reboot button to
+be enabled again. Preserve the existing agent receipt history during recovery.
+
+The root agent delegates human authorization to the application UID. A compromised
+application can misuse this limited reboot capability; it gains no general
+command execution or disk-unlock authority through the socket. Treat enabling
+the feature as an explicit operator decision.
+
 ## Installer
 
 `scripts/install.sh` installs a checkout and maintains it afterwards. It fetches nothing itself (Docker builds and pulls the images). After `init` it changes `.env` only by rewriting the lines it names through a temporary file moved into place (mode `0600`; every other line stays byte for byte). It prints one secret, the setup token, and only at the end of `init` and from `setup-token`.
@@ -602,8 +820,8 @@ database: there is no supported way to move a database's Monero escrows to anoth
 that holds Monero escrow state and no pin is pinned `fakechain` at the first start against a fakechain daemon (the only
 network Monero escrow ran on before); against a stagenet daemon it is refused as above, and nothing is written.
 
-**When the daemon is not synced (A-449).** Each watcher pass first reads the escrow daemon (`get_info`, and on stagenet
-`get_last_block_header`). While it reports `synchronized` false or a `target_height` above its height, or, on stagenet, has
+**When the daemon is not synced (A-449).** Each watcher pass first reads the escrow daemon (`get_info`, and on mainnet or stagenet
+`get_last_block_header`). While it reports `synchronized` false or a `target_height` above its height, or, on either public network, has
 no peers (`offline`, or no connections on an unrestricted RPC; a restricted RPC hides the counts) or a top block older than
 `MONERO_MAX_TIP_AGE` (default 1h; [Payments](#payments)), the pass opens no wallet, creates or destroys none, reads no
 deposit, funds or expires no order and builds, relays or follows no settlement; release deadlines still apply. One line is
@@ -617,17 +835,56 @@ deadlines and logs `monero escrow watcher: monero escrow: daemon check failed: <
 can be cancelled as unpaid, and the deposit then goes back to the buyer's refund address by a stray refund once the daemon
 sees it and it confirms. A lower `MONERO_MAX_TIP_AGE` narrows the window ([Payments](#payments)).
 
-**Tor mode (A-515): relays wait without the node Tor overlay.** The escrow wallet-rpc relays a settlement (`relay_tx`)
-through its daemon, and a daemon not behind Tor sends it to its peers from this host's IP address, which links the market's
-host to its escrow transactions. So with `APP_MODE=tor` and `ESCROW_XMR=on`, the watcher still builds, checks and stores each
-settlement but relays nothing unless either (a) `COMPOSE_FILE` includes `compose.nodes-tor.yaml`, which runs the local
-`monero` daemon through its own Tor client ([Local nodes over Tor](#local-nodes-over-tor); Monero over Tor is
-**unverified** there, A-95; the overlay covers only that bundled daemon, so point `ESCROW_XMR_DAEMON_URL` at it: an external escrow daemon is not covered and the app cannot tell), or (b) `ESCROW_XMR_TOR_RELAY=clearnet-accepted`, which
-accepts the exposure and relays without Tor. One line is logged at startup (`escrow: APP_MODE=tor: Monero escrow relays held
-(Tor mode without the node Tor overlay): …`), `/admin` shows "Monero relays held: Tor mode without the node Tor overlay — see
-operator guide" under *Escrow status and payment intake*, the order page says the settlement is built and not sent yet, and
-`./scripts/install.sh check` warns. Both conditions are read at startup: after adding either, restart the app, and the next
-pass relays each stored transaction unchanged (it is never built again, and one settlement per escrow still holds).
+**Tor mode: relay waits for an explicit routing choice.** The escrow wallet RPC
+relays a settlement through its daemon. A daemon with direct peer access can
+expose the payment host's IP address. With `APP_MODE=tor` and `ESCROW_XMR=on`,
+the watcher builds, checks and stores settlements but holds relay until one of
+these configurations is selected:
+
+| Configuration | Meaning |
+| --- | --- |
+| Blank `ESCROW_XMR_TOR_RELAY`, with `compose.nodes-tor.yaml` in `COMPOSE_FILE` | Compatibility path for the bundled local daemon and its Tor client. The overlay does not cover an external daemon. [Monero over Tor remains unverified](#local-nodes-over-tor). |
+| `ESCROW_XMR_TOR_RELAY=remote-tor` | Production declaration that the operator configured and checked Tor egress on the separate payment host. Requires the complete production contract, Tor exposure, enabled escrow and separate authenticated HTTPS Monero endpoints. |
+| `ESCROW_XMR_TOR_RELAY=clearnet-accepted` | Explicitly accepts direct relay exposure. This setting does not configure Tor. |
+
+A native production deployment with a blank setting keeps relay held because
+its application-host configuration contains no local node overlay. The
+administrator panel and order pages show the hold. Restart after changing the
+saved routing choice; the next eligible pass relays each stored transaction
+unchanged, without building a replacement.
+
+### Declaring separate payment-host Tor egress
+
+You need administrative access to the payment host and its network controls.
+The application validates endpoint declarations but cannot inspect remote Tor,
+firewall behavior or physical placement. `remote-tor` is an operator declaration,
+not proof of anonymous delivery.
+
+1. Run the daemon and dedicated wallet RPC on the separate payment host. Keep
+   raw RPC listeners private. Expose authenticated HTTPS only to the app's
+   private route; mutual TLS at a dedicated front proxy is supported.
+2. Give the daemon a Tor SOCKS proxy with `--proxy=PROXY_IP:9050` and block its
+   direct internet route. In Docker, attach the daemon only to internal
+   networks and let a separate Tor container alone join an egress network.
+   Keep the wallet connected to that same daemon. Preserve the Tor client's
+   guard state across restarts.
+3. Verify Tor bootstrap, daemon peer connections and synchronization. From the
+   daemon's network boundary, confirm direct external connections fail. During
+   a controlled maintenance window, stop the proxy and confirm peer traffic
+   cannot fall back to direct access. Restore the proxy and recheck sync.
+4. Initialize with `--set ESCROW_XMR_TOR_RELAY=remote-tor`. For an existing native
+   installation, update that setting in its private `operator.json`, inspect
+   `deploy plan --dir DIR`, then run `deploy up --dir DIR`. The plan and
+   administrator panel retain the routing limitation notice.
+5. Confirm the relay hold cleared and the payment readiness panel is healthy.
+   Recheck network enforcement after host, Docker, proxy or firewall changes.
+   Keep intake paused until readiness and recovery checks are complete.
+
+Monero documents the distinction between the general `--proxy` route and the
+optional `--tx-proxy` anonymity-network route in its
+[proxy reference](https://docs.getmonero.org/interacting/monerod-reference/#tori2p-and-proxies).
+Keep the proxy's failure behavior enforced by network policy. A successful RPC
+response or `remote-tor` declaration alone does not establish that behavior.
 
 **Stagenet.** Point `ESCROW_XMR_DAEMON_URL` at a synced stagenet `monerod` (the bundled `monero` service with
 `MONERO_NETWORK=stagenet`, `http://monero:18081`, is one; its restricted RPC answers every call escrow makes) and run the
@@ -637,12 +894,21 @@ on stagenet. Stagenet coins come from the public faucet or your own mining; they
 in mind: the default 0.01 XMR cap was sized for a fakechain and is not measured on stagenet.
 
 **The dedicated escrow wallet-rpc.** Run a dedicated `monero-wallet-rpc` for escrow wallets, attached to the escrow
-daemon, with its own login and volume. A non-blank `MONERO_WALLET_RPC_URL` is refused.
+daemon, with its own authenticated RPC boundary and volume. A non-blank `MONERO_WALLET_RPC_URL` is refused.
+
+Production can authenticate at a private mutual-TLS front proxy using
+`MONERO_RPC_CERT` and `MONERO_RPC_KEY`. With this arrangement, a wallet listener
+using `--disable-rpc-login` must stay on an unpublished, isolated network behind
+that proxy. Permit the app's private route to reach only the authenticated HTTPS
+listener. Do not expose the raw wallet port. Keep the proxy's read timeout above
+the application's eight-minute wallet-refresh deadline. The stable
+`MONERO_WALLET_SECRET` belongs to the app's protected configuration; the app uses
+it to derive wallet passwords. Back it up with the database and wallet files.
 
 *On stagenet, with the bundled nodes (A-449).* `compose.nodes.yaml` has a `monero-escrow-wallet` service for it, in its
 own profile (`monero-escrow-wallet`) and volume (`monero_escrow_wallet`), with its own login (`escrow`,
 `ESCROW_XMR_WALLET_RPC_PASSWORD`), run with `--stagenet` against the bundled `monero` daemon, which must then run stagenet
-(`MONERO_NETWORK=stagenet`, the installer's default). Its memory limit is 1 GiB (PAYE-E2 measured 574 MB at peak over five
+(`MONERO_NETWORK=stagenet`, selected explicitly). Its memory limit is 1 GiB (PAYE-E2 measured 574 MB at peak over five
 10,000-account wallets). With a blank `ESCROW_XMR_WALLET_RPC_PASSWORD` Compose refuses every command with the profile active
 (`env file …/ESCROW_XMR_WALLET_RPC_PASSWORD-is-blank not found`, A-466; with the limits named under
 [Payments](#payments): a project directory more than about 31 levels deep, a host without `/dev/null`, a password of only
@@ -1057,7 +1323,17 @@ AGE_RECIPIENT=age1YOUR_PUBLIC_RECIPIENT ./scripts/backup.sh backups/market.dump.
 
 For external databases also set `BACKUP_DATABASE_URL` and install PostgreSQL client tools matching or newer than the server. `./scripts/install.sh upgrade` backs up through this script too, so on an external database give it both: `BACKUP_DATABASE_URL=YOUR_EXTERNAL_DATABASE_URL AGE_RECIPIENT=age1YOUR_PUBLIC_RECIPIENT ./scripts/install.sh upgrade` (the value of `DATABASE_URL` in `.env` serves when this host can reach that server; quote it in single quotes); without `BACKUP_DATABASE_URL` it refuses before changing anything. Before it creates a temporary archive or streams dump data, the script checks free space on the output filesystem against 125% of the source database size plus a fixed reserve. The default reserve is 256 MiB; set `BACKUP_SPACE_HEADROOM_BYTES` to a non-negative byte count to change it, or explicitly set it to `0`. The estimate is deliberately conservative, but concurrent filesystem writers can still consume space after the check. The script streams a custom-format dump directly into encryption, uses restrictive file permissions, refuses overwrite and fails if either command fails. Its success line reports the `pg_dump` client version actually selected for that backup. Restore reads the producing version from the archive and refuses a selected `pg_restore` older than that version before confirmation or database writes. Back up `.env`, deployment settings and the Tor identity separately in encrypted storage ([commands below](#secrets-env-and-onion-identities)). Database dumps do not include onion keys or blockchain volumes, and in particular **not the custodial payment wallets** (the `monero_escrow_wallet` volume, or your external wallets): back those up on their own (the escrow wallets: see the [runbook](testnet-runbook.md#back-up-and-restore-monero-escrow-wallets)). Maintain offline copies and rehearse recovery.
 
-Run database backups on a schedule that matches your recovery-point needs. For example, this cron entry runs daily at 02:15 in the cron daemon's local time and creates a dated archive whose filename uses UTC (replace the recipient and checkout path):
+Coordinate payment-wallet backups separately. The [wallet backup procedure](testnet-runbook.md#back-up-and-restore-monero-escrow-wallets)
+requires stopping both the application and its dedicated wallet RPC before
+copying wallet files. An independent timer that copies active files or stops
+only the wallet can interrupt settlement work and does not establish a
+consistent recovery point. An initial backup made while the wallet directory
+is empty protects deployment keys and configuration; it does not protect wallets
+created later. Keep the large, rebuildable blockchain outside recovery archives.
+Verify encrypted copies off the host, and retain the matching application
+secret, database, wallet files and current external retention state.
+
+Run database backups on a schedule that matches your recovery-point needs. This database-only cron example runs daily at 02:15 in the cron daemon's local time and creates a dated archive whose filename uses UTC (replace the recipient and checkout path):
 
 ```cron
 15 2 * * * cd /srv/opsecmkt && AGE_RECIPIENT=age1YOUR_PUBLIC_RECIPIENT ./scripts/backup.sh "backups/market-$(date -u +\%Y\%m\%dT\%H\%M\%SZ).dump.age" >> backups/backup.log 2>&1

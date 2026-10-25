@@ -2,7 +2,68 @@
 
 Do these right after installing: create the administrator, verify, back up.
 
-## Step 1: Create the administrator
+## Native production deployment
+
+Use this section after the [production deployment procedure](production.md).
+The native controller keeps private configuration and key files in the chosen
+installation directory; the legacy `.env` commands below do not manage it.
+
+For production Tor, first authorize **desktop Tor Browser**:
+
+1. Open the separate administrator onion and select its gray key icon or
+   authentication prompt.
+2. Read the saved `.auth_private` file locally. Enter only its final
+   **52-character Base32 private-key field**, after `:descriptor:x25519:`.
+   The prompt does not take the whole file record or an OpenPGP recovery key.
+3. Continue to `/login` if host bootstrap already created the administrator, or
+   `/setup` for a new market. Tor authorization and application sign-in are
+   separate steps.
+
+Use the [complete browser and persistent-client instructions](tor.md#bind-the-client-key-and-verify-ingress)
+for credential recovery, error codes and the file-based alternative. Then complete
+the setup below.
+
+1. Open the intended administrator setup page. For HTTPS, use the public HTTPS
+   `/setup` URL. For production Tor, configure the administrator's authorization
+   key and open `/setup` on the **separate administrator onion**; the public
+   onion must return `404`. Follow the
+   [native separate-onion procedure](tor.md#native-production-with-separate-onions).
+   Read the token locally from `INSTALL_DIR/secrets/setup-token` and keep it out
+   of chat, logs and reports. Create a marketplace name of at most 80 characters,
+   a permanent 3–32 character handle using letters, digits or underscores, and
+   a password of 12–72 bytes. Select **Initialize marketplace**. If the host
+   bootstrap command already completed setup, sign in instead.
+2. Enroll an authenticator app and store the recovery codes offline. Optionally
+   add a PGP key for PGP sign-in and encrypted messages. Host-side account
+   recovery is covered in [Authentication](../operator-guide.md#authentication).
+3. Run `./opsecmkt deploy status --dir INSTALL_DIR`. Confirm application health,
+   then exercise account, listing and upload journeys through the real gateway
+   and verify private administrator access and public denials. Follow the
+   [production journey checks](production.md#6-complete-first-run-setup-and-verify-journeys).
+   Inspect `settings.MONERO_NETWORK` in the private `operator.json`; native
+   initialization defaults to stagenet and leaves escrow off unless explicitly
+   enabled. Mainnet uses real funds. Keep payment intake paused until the
+   separate payment and recovery checks pass.
+4. Encrypt and retain the private installation, current external retention
+   ledger, gateway configuration and identities. Preserve separate public and
+   administrator onion keys and administrator client authorization. Add remote
+   wallet state when payments are used. Schedule encrypted database backups and
+   rehearse an isolated restore using the
+   [production backup procedure](production.md#7-establish-backups-and-recovery).
+   A managed database backup alone does not preserve these keys and state.
+5. Configure roles, users, CAPTCHA, staff visibility, canary and audit exports
+   through the intended administrator ingress. Complete the
+   [production checklist](production-checklist.md) before inviting users, and
+   use the [native app upgrade procedure](production.md#upgrade-the-application)
+   for later application releases.
+
+## Legacy shell installation
+
+The following steps apply to `scripts/install.sh`, the checkout's `.env` and
+its Compose services. Use the native production section above for an installation
+created with `opsecmkt deploy init --mode prod`.
+
+### Step 1: Create the administrator
 
 Open the setup link the installer printed:
 
@@ -23,7 +84,7 @@ Select **Initialize marketplace**. The token then stops working.
 
 Installed with `--admin`? Skip this and sign in at `/login`.
 
-## Step 2: Secure the account
+### Step 2: Secure the account
 
 - Enrol an authenticator app. Store the recovery codes offline.
 - Optional: add a PGP key for PGP sign-in and encrypted messages.
@@ -31,7 +92,7 @@ Installed with `--admin`? Skip this and sign in at `/login`.
 Locked out? Reset from the host with `-reset-admin-password` or `-reset-admin-factors`
 ([Authentication](../operator-guide.md#authentication)).
 
-## Step 3: Verify
+### Step 3: Verify
 
 ```sh
 ./scripts/install.sh status
@@ -51,22 +112,23 @@ grep -E '^MONERO_NETWORK=' .env
 escrow has pinned a network it does not change: start over on a new database
 ([Choose a network](enable-payments.md#choose-a-network)).
 
-## Step 4: Back up
+### Step 4: Back up
 
-`.env` holds every secret. Without it, a database backup cannot be fully restored. On Tor, the onion address
-exists only as keys in the `tor_identity` volume.
+The legacy `.env` holds application secrets needed for a complete database
+recovery. Its Tor service uses the active keys in the `tor_identity` volume;
+retain any imported source identity too. A database dump does not include them.
 
 1. Create an age key offline: `age-keygen -o backup-key.txt`. Keep it apart from backups.
 2. Back up `.env` and onion keys:
    [Secrets, .env and onion identities](../operator-guide.md#secrets-env-and-onion-identities).
 3. Schedule database backups: [Backups and recovery](../operator-guide.md#backups-and-recovery).
 
-## Step 5: Configure
+### Step 5: Configure
 
 Open `/admin` for roles, users, CAPTCHA, the staff list, the canary and audit exports.
 Details: [Feature configuration](../operator-guide.md#feature-configuration).
 
-## What now?
+### What now?
 
 - [Enabling payments](enable-payments.md)
 - [Production checklist](production-checklist.md)

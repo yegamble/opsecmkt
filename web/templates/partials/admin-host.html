@@ -1,0 +1,23 @@
+{{define "admin-host"}}{{with .HostControl}}
+<section class="panel" id="host-control" aria-labelledby="host-control-heading">
+<h2 id="host-control-heading">Application host</h2>
+<p>Reboot the application host's operating system. The storefront and administrator connection will disconnect. The payment and gateway hosts are outside this action's scope.</p>
+<p class="help">Encrypted disks may need manual unlock through the operator's separate trusted console before services return. This button cannot unlock disks or supply a recovery key.</p>
+<p>{{.Reason}}</p>
+{{if .MFARequired}}<p><a class="text-link" href="/totp">Enable an authenticator</a> before requesting a reboot.</p>{{end}}
+{{if .Ready}}
+{{$rebootNonce := formNonce "/admin/reboot"}}
+<form class="stack" method="post" action="/admin/reboot">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{$rebootNonce}}">
+<p class="help">This form's request ID is <code>{{$rebootNonce}}</code>. Keep it before submitting in case the connection drops.</p>
+<label><input type="checkbox" name="confirm_reboot" value="app-host-manual-unlock" required> I confirm application-host downtime and have the separate access and off-host recovery material needed for manual disk unlock.</label>
+{{template "confirm-fields" true}}
+<button type="submit">Reboot application host OS</button>
+</form>
+{{else}}<button type="button" disabled>Reboot application host OS unavailable</button>{{end}}
+{{with .Latest}}<div class="callout"><p>Recorded request <code>{{.ID}}</code> · {{.State}}</p><p class="help">Recorded {{.RequestedAt}}{{if .AcceptedAt}} · Accepted {{.AcceptedAt}}{{end}}{{if .RebootAt}} · Scheduled no earlier than {{.RebootAt}}{{end}} (UTC). Acceptance does not prove reboot completion. A missing response is never retried automatically.</p></div>{{end}}
+{{with .AgentReceipt}}<p class="help">Host agent receipt <code>{{.ID}}</code> · {{.State}}{{if .RebootAt}} · Scheduled no earlier than {{.RebootAt}} (UTC){{end}}.</p>{{end}}
+<p class="help">If the connection drops, retain the existing request ID and check with the operator before making a new request. Reload this page to check status; it does not schedule a reboot.</p>
+</section>
+{{end}}{{end}}

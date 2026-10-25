@@ -134,7 +134,39 @@ opsecmkt keys import tor-client --in ./admin-private/operator.key \
   --onion YOUR_ACTUAL_ADMINISTRATOR_V3_ONION.onion
 ```
 
-The command validates the v3 onion checksum. Install only the `.auth_private` file in the administrator Tor client's authorization configuration. Keep that file private and preserve it with the administrator's recovery material. A client without a valid authorization key must fail to connect. An authorized client must still sign in as the correct application account. Storefront and administrator onions have distinct browser cookie scopes.
+The command validates the v3 onion checksum. Keep the resulting `.auth_private`
+file private and preserve it with the administrator's recovery material. For an
+existing installation, recover its saved client credential rather than generating
+a replacement that the service has not authorized.
+
+To authorize **desktop Tor Browser** on the trusted administrator machine:
+
+1. Open `http://YOUR_ACTUAL_ADMINISTRATOR_V3_ONION.onion/login`. Tor Browser
+   requests a private key; select the gray key icon beside the address if needed
+   to open the authentication prompt.
+2. Read the saved `.auth_private` record locally. Its format is
+   `ONION_ADDRESS:descriptor:x25519:PRIVATE_KEY`. Enter **only the final
+   52-character Base32 private key** in the browser prompt. Do not enter the whole
+   record, the public `.auth` file, an onion service identity, or an OpenPGP
+   recovery key. Keep the key out of chat and logs.
+3. After Tor connects, sign in with the application administrator account. For a
+   new market whose setup has not completed, open `/setup` instead and follow
+   [First steps](first-steps.md#native-production-deployment).
+
+Tor's `0xF4` error means no authorization key was provided; `0xF5` means the key
+was incorrect or revoked. See the
+[Tor Browser authentication instructions and error codes](https://support.torproject.org/tor-browser/features/onion-services/#onion-service-authentication).
+Tor Browser for Android currently lists client authorization as unsupported in
+its [known limitations](https://support.torproject.org/tor-browser/encountering-issues/known-issues/).
+
+For a standalone Tor client using persistent configuration, install the **whole
+`.auth_private` file** in the private directory configured by `ClientOnionAuthDir`,
+then restart that Tor client. This file-based method differs from entering only
+the key in Tor Browser's prompt; see
+[Tor's client authorization reference](https://community.torproject.org/onion-services/advanced/client-auth/).
+A client without a valid authorization key must fail to connect. An authorized
+client must still sign in as the correct application account. Storefront and
+administrator onions have distinct browser cookie scopes.
 
 Preserve the selected `onion-admin/` files and protect the matching `tor_admin_identity` volume. An app-only `deploy redeploy` leaves the running Tor service unchanged. On a replacement app host, restore/unlock the retained managed identity or migrate its matching volume, retain external retention state, and run `install`/`up` before app-only redeployment. The helper can initialize a fresh volume from the same selected identity; it never replaces a populated volume with different keys. Legacy configurations without managed files require preservation/export/adoption of their already-valid identity through an explicitly reviewed recovery procedure; an empty legacy volume refuses startup.
 

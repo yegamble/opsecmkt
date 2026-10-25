@@ -14,12 +14,13 @@ import (
 // startupConfig is what New checks in the environment before it opens the database (D8, I8). Every refusal
 // names the variable and how to fix it, never its value.
 type startupConfig struct {
-	appSecretKey string // APP_SECRET_KEY: the root of every derived key when set
-	setupToken   string // SETUP_TOKEN: authorizes /setup until installed; the legacy key root without APP_SECRET_KEY
-	secure       bool   // COOKIE_SECURE (unset = true)
-	adminSocket  string // ADMIN_SOCKET: separate private administrator Unix listener; blank preserves one-listener installs
-	retention    retentionConfig
-	notes        []string // startup log lines (warnings and the legacy key-root notice); never a secret
+	appSecretKey      string // APP_SECRET_KEY: the root of every derived key when set
+	setupToken        string // SETUP_TOKEN: authorizes /setup until installed; the legacy key root without APP_SECRET_KEY
+	secure            bool   // COOKIE_SECURE (unset = true)
+	adminSocket       string // ADMIN_SOCKET: separate private administrator Unix listener; blank preserves one-listener installs
+	hostControlSocket string // HOST_CONTROL_SOCKET: fixed local host-agent socket; never selected by a web request
+	retention         retentionConfig
+	notes             []string // startup log lines (warnings and the legacy key-root notice); never a secret
 }
 
 // keyRoot is the secret the CSRF/CAPTCHA HMAC key and the sealing keys derive from: APP_SECRET_KEY when set,
@@ -103,6 +104,9 @@ func loadStartupConfig(getenv func(string) string, mode string) (startupConfig, 
 	}
 	var err error
 	if c.adminSocket, err = adminSocketConfig(getenv, mode); err != nil {
+		return c, err
+	}
+	if c.hostControlSocket, err = hostControlSocketConfig(getenv); err != nil {
 		return c, err
 	}
 	if c.retention, err = retentionConfigFromEnv(getenv); err != nil {

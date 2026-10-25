@@ -137,6 +137,16 @@ func render(dir string, c Config) ([]byte, map[string]string, error) {
 	if c.AdminTorImage != "" {
 		renderAdminTor(dir, c, app, services, volumes, networks)
 	}
+	if c.HostControlDir != "" {
+		env["HOST_CONTROL_SOCKET"] = "/run/opsecmkt-host-control/control.sock"
+		var mounts []any
+		for _, mount := range app["volumes"].([]string) {
+			mounts = append(mounts, mount)
+		}
+		// Never let Docker create an incorrectly owned directory if the host
+		// agent/socket disappears between preflight and container creation.
+		app["volumes"] = append(mounts, map[string]any{"type": "bind", "source": c.HostControlDir, "target": "/run/opsecmkt-host-control", "bind": map[string]any{"create_host_path": false}})
+	}
 	data, err := json.MarshalIndent(map[string]any{"name": c.Project, "services": services, "volumes": volumes, "networks": networks}, "", "  ")
 	if err != nil {
 		return nil, nil, err

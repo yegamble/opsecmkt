@@ -20,6 +20,7 @@ import (
 
 	"opsecmkt/internal/dependencies"
 	"opsecmkt/internal/emergency"
+	"opsecmkt/internal/hostcontrol"
 	"opsecmkt/internal/interactive"
 	"opsecmkt/internal/keymaterial"
 	"opsecmkt/internal/market"
@@ -39,7 +40,8 @@ const cliHelp = `usage: opsecmkt COMMAND [flags]
   admin-tor-prepare Prepare public client authorization in the private Tor volume
   tor-identity-prepare Prepare a selected public onion identity in its Tor volume
   deploy            Manage a Docker Compose installation; deploy --help for commands
-  init|plan|install|redeploy|status|up|down|logs|doctor
+  host-control-agent Serve the private, fixed app-host reboot capability (Linux root)
+  init|plan|install|redeploy|status|up|down|logs|doctor|storage
                    Short forms of deploy commands
   version           Print build information
 
@@ -101,7 +103,13 @@ func command(args []string, in io.Reader, out, errOut io.Writer) (bool, error) {
 			return true, ramsecrets.Run(ctx, args[1:], in, out, errOut)
 		}
 		return true, emergency.Run(ctx, args[1:], out, errOut)
-	case "deploy", "init", "plan", "install", "redeploy", "status", "up", "down", "logs", "doctor":
+	case "host-control-agent":
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		return true, hostcontrol.Run(ctx, args[1:], out, errOut, func(ctx context.Context, dir string) error {
+			return operator.Run(ctx, []string{"storage", "check-bound", "--dir", dir}, nil, io.Discard, io.Discard)
+		})
+	case "deploy", "init", "plan", "install", "redeploy", "status", "up", "down", "logs", "doctor", "storage", "host-reboot":
 		a := args
 		if args[0] == "deploy" {
 			a = args[1:]

@@ -15,10 +15,14 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"opsecmkt/internal/storageinit"
 )
 
 const usage = `Usage: opsecmkt deploy COMMAND [options]
 Commands:
+  host-reboot configure the private app-host reboot service; mark rehearsed unlock readiness explicitly
+  storage   prepare/unlock an additional encrypted disk, verify storage or bind a migrated installation
   init      create private configuration and keys; starts nothing; never overwrites
   plan      validate and print a topology summary without secrets; starts nothing
   install   generate private Compose inputs and start the configured services
@@ -34,12 +38,20 @@ Run deploy init --help for image, endpoint, key import and listener flags.
 
 // Run executes a deployment command. The caller owns process exit codes.
 func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer) error {
-	_ = in // Administrative passwords remain in the server's stdin-based commands.
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" {
 		_, err := io.WriteString(out, usage)
 		return err
 	}
 	command := args[0]
+	if command == "host-reboot" {
+		return runHostReboot(ctx, args[1:], out, errOut)
+	}
+	if command == "storage" {
+		if len(args) > 1 && (args[1] == "bind" || args[1] == "check-bound" || args[1] == "boot-unit") {
+			return runBoundStorage(ctx, args[1:], out, errOut)
+		}
+		return storageinit.Run(ctx, args[1:], in, out, errOut)
+	}
 	if command == "init" {
 		return initialize(ctx, args[1:], out, errOut)
 	}
@@ -96,12 +108,25 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 			}
 		}
 		if command != "down" {
+			if err := checkProductionStorage(ctx, dir, cfg); err != nil {
+				return err
+			}
 			if err := checkRetentionStorage(dir, cfg); err != nil {
 				return err
 			}
 		}
 	}
 	if command == "redeploy" {
+		if cfg.Mode == "prod" {
+			if err := installProductionBootGuard(ctx, dir, cfg); err != nil {
+				return err
+			}
+			if cfg.HostControlDir != "" {
+				if err := installHostRebootService(ctx, dir, cfg); err != nil {
+					return err
+				}
+			}
+		}
 		if _, err := privateFile(filepath.Join(dir, "installation.json"), 4096); err != nil {
 			return errors.New("redeploy requires an existing installation; run install first")
 		}
@@ -136,6 +161,9 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 		return printPlan(out, cfg)
 	}
 	if command == "doctor" {
+		if err := checkProductionStorage(ctx, dir, cfg); err != nil {
+			return err
+		}
 		if err := dockerCall(ctx, dir, cfg, out, errOut, "version"); err != nil {
 			return err
 		}
@@ -143,6 +171,16 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 		return err
 	}
 	if command == "install" || command == "up" {
+		if cfg.Mode == "prod" {
+			if err := installProductionBootGuard(ctx, dir, cfg); err != nil {
+				return err
+			}
+			if cfg.HostControlDir != "" {
+				if err := installHostRebootService(ctx, dir, cfg); err != nil {
+					return err
+				}
+			}
+		}
 		if err := claimInstallation(ctx, dir, cfg); err != nil {
 			return err
 		}
@@ -190,6 +228,7 @@ func initialize(ctx context.Context, args []string, out, errOut io.Writer) error
 	torImage := f.String("tor-image", "", "development Tor image including digest (same contract as deploy/Dockerfile.tor)")
 	adminTorImage := f.String("admin-tor-image", "", "private administrator Tor image including digest; required for production Tor")
 	adminAuthSource := f.String("admin-client-auth-dir", "", "directory of public descriptor:x25519 .auth records; validated and copied into a managed snapshot")
+	hostControlDir := f.String("host-control-dir", "", "optional /run/opsecmkt-host-control-PROJECT socket directory for private admin app-host reboot control")
 	onion := addOnionFlags(f, "")
 	adminOnion := addOnionFlags(f, "admin-")
 	retentionDir := f.String("retention-dir", "", "persistent absolute retention ledger directory; default INSTALL_DIR/retention, must be external when installation is on tmpfs")
@@ -243,6 +282,9 @@ func initialize(ctx context.Context, args []string, out, errOut io.Writer) error
 	if f.NArg() != 0 {
 		return errors.New("unexpected positional arguments")
 	}
+	if *mode != "dev" && *mode != "prod" {
+		return errors.New("mode must be dev or prod; no configuration or keys were created")
+	}
 	dir, err := installationPath(*dirFlag)
 	if err != nil {
 		return err
@@ -262,6 +304,7 @@ func initialize(ctx context.Context, args []string, out, errOut io.Writer) error
 	}
 	cfg := Config{DockerContext: *dockerContext, Version: configVersion, Mode: *mode, Project: *project, AppImage: *appImage, Exposure: *exposure, AppBind: *bind, AppHost: *appHost, GatewayURL: *gateway, RuntimeUID: *runtimeUID, RuntimeGID: *runtimeGID, RetentionDir: filepath.Join(dir, "retention"),
 		Settings: map[string]string{"MONERO_NETWORK": *network, "ESCROW_XMR": "off", "RETENTION_ENABLED": "off"}, SecretFiles: map[string]string{}, PublicFiles: map[string]string{}, TLSFiles: map[string]string{}}
+	cfg.HostControlDir = *hostControlDir
 	if *retentionDir != "" {
 		cfg.RetentionDir = *retentionDir
 	}
@@ -304,6 +347,16 @@ func initialize(ctx context.Context, args []string, out, errOut io.Writer) error
 	}
 	if os.Geteuid() != 0 && (*runtimeUID != os.Getuid() || *runtimeGID != os.Getgid()) {
 		return errors.New("a nonroot operator must use its own runtime UID and GID so private mounted files remain readable")
+	}
+	if cfg.Mode == "prod" {
+		// Verify the host before staging or importing the first private byte.
+		// A sibling staging directory otherwise writes keys onto a plain root.
+		imports := []string{*dbFile, *walletFile, *daemonFile, *appKey, *setupKey, *auditKey, *moneroKey,
+			*uploadKey, *appTLSKey, *moneroTLSKey, *onion.secretKey, *adminOnion.secretKey}
+		cfg.StorageBindings, err = productionStorageProbe(ctx, dir, cfg, imports)
+		if err != nil {
+			return err
+		}
 	}
 	stage, err := os.MkdirTemp(filepath.Dir(dir), ".opsecmkt-init-")
 	if err != nil {
@@ -569,6 +622,11 @@ func printPlan(out io.Writer, c Config) error {
 	_, err := fmt.Fprintf(out, "mode: %s\nproject: %s\nDocker context: %s\nservices: %s\napp listener: %s\nMonero network: %s; escrow: %s\nsecret values: private files, omitted\n", mode, c.Project, c.DockerContext, strings.Join(services, ", "), c.AppBind, c.Settings["MONERO_NETWORK"], c.Settings["ESCROW_XMR"])
 	if err != nil {
 		return err
+	}
+	if strings.TrimSpace(c.Settings["ESCROW_XMR_TOR_RELAY"]) == "remote-tor" {
+		if _, err := fmt.Fprintln(out, "Monero relay: operator declares remote Tor egress; proxy and firewall behavior require verification on the payment host"); err != nil {
+			return err
+		}
 	}
 	return printOnionPlan(out, c)
 }

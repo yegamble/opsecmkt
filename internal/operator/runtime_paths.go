@@ -30,15 +30,34 @@ func checkRetentionStorage(dir string, c Config) error {
 	return nil
 }
 func prepareAdminSocket(c Config) error {
-	if err := os.Mkdir(c.AdminSocketDir, 0750); err != nil && !os.IsExist(err) {
+	err := os.Mkdir(c.AdminSocketDir, 0750)
+	created := err == nil
+	if err != nil && !os.IsExist(err) {
 		return err
 	}
-	info, err := os.Lstat(c.AdminSocketDir)
-	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0750 {
+	before, err := os.Lstat(c.AdminSocketDir)
+	if err != nil || !before.IsDir() || before.Mode()&os.ModeSymlink != 0 || !created && before.Mode().Perm() != 0750 {
 		return errors.New("administrator socket directory must be a real private mode-0750 directory")
 	}
+	dir, err := os.Open(c.AdminSocketDir)
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	after, err := dir.Stat()
+	if err != nil || !os.SameFile(before, after) {
+		return errors.New("administrator socket directory changed")
+	}
+	if created {
+		// Mkdir's mode is reduced by the operator's umask. Set the exact
+		// contract only on a directory this invocation just created; never
+		// repair a pre-existing directory with unexpected permissions.
+		if err := dir.Chmod(0750); err != nil {
+			return err
+		}
+	}
 	if os.Geteuid() == 0 {
-		if err := os.Chown(c.AdminSocketDir, c.RuntimeUID, c.RuntimeGID); err != nil {
+		if err := dir.Chown(c.RuntimeUID, c.RuntimeGID); err != nil {
 			return errors.New("cannot assign private administrator socket ownership")
 		}
 	}

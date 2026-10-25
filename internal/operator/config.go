@@ -25,6 +25,8 @@ var projectPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,48}$`)
 
 // Config contains topology and paths only. Secret values live in private files.
 type Config struct {
+	HostControlDir      string            `json:"host_control_dir,omitempty"`
+	StorageBindings     []StorageBinding  `json:"storage_bindings,omitempty"`
 	DockerContext       string            `json:"docker_context"`
 	DependencyReportDir string            `json:"dependency_report_dir,omitempty"`
 	RetentionDir        string            `json:"retention_dir"`
@@ -171,6 +173,11 @@ func secretValue(dir string, c Config, key string) (string, error) {
 }
 
 func validate(dir string, c Config) error {
+	if c.HostControlDir != "" {
+		if c.Mode != "prod" || c.AdminTorImage == "" || c.HostControlDir != hostControlSocketDir(c.Project) {
+			return errors.New("host reboot control requires production private administrator ingress and its project-specific /run/opsecmkt-host-control-PROJECT directory")
+		}
+	}
 	if !projectPattern.MatchString(c.DockerContext) {
 		return errors.New("Docker context must be an explicit context name (default: default)")
 	}
@@ -235,6 +242,15 @@ func validate(dir string, c Config) error {
 		if !settingKeys[key] || strings.ContainsAny(value, "\x00\r\n'") {
 			return fmt.Errorf("unsupported or invalid setting %s", key)
 		}
+	}
+	switch strings.TrimSpace(c.Settings["ESCROW_XMR_TOR_RELAY"]) {
+	case "", "clearnet-accepted":
+	case "remote-tor":
+		if c.Mode != "prod" || c.Exposure != "tor" || c.Settings["ESCROW_XMR"] != "on" {
+			return errors.New("ESCROW_XMR_TOR_RELAY=remote-tor requires the production Tor profile with Monero escrow enabled")
+		}
+	default:
+		return errors.New("ESCROW_XMR_TOR_RELAY must be blank, remote-tor or clearnet-accepted")
 	}
 	if c.Settings["MONERO_NETWORK"] != "stagenet" && c.Settings["MONERO_NETWORK"] != "mainnet" {
 		return errors.New("MONERO_NETWORK must be stagenet or mainnet")

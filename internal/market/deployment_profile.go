@@ -12,6 +12,10 @@ import (
 // host placement still require operator verification and network policy.
 func CheckDeploymentProfile(getenv func(string) string) error {
 	profile := getenv("OPSECMKT_PROFILE")
+	if strings.TrimSpace(getenv("ESCROW_XMR_TOR_RELAY")) == xmrTorRelayRemote &&
+		(profile != "prod" || getenv("APP_MODE") != "tor" || getenv("ESCROW_XMR") != "on") {
+		return errors.New("ESCROW_XMR_TOR_RELAY=remote-tor requires the production Tor profile with Monero escrow enabled")
+	}
 	if profile == "" || profile == "dev" {
 		return nil
 	}

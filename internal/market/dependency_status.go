@@ -207,6 +207,9 @@ func dependencyTopology(getenv func(string) string) []string {
 	}
 	if getenv("APP_MODE") == "tor" {
 		warnings = append(warnings, "Tor: verify public ingress placement and egress rules on the gateway host; endpoint declarations cannot prove anonymity or resist traffic correlation.")
+		if strings.TrimSpace(getenv("ESCROW_XMR_TOR_RELAY")) == xmrTorRelayRemote {
+			warnings = append(warnings, "Monero relay: remote Tor egress is declared by the operator. The application cannot verify the payment host's proxy or firewall; verify that direct daemon egress is blocked after every network change.")
+		}
 	}
 	return warnings
 }
