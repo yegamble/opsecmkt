@@ -263,7 +263,7 @@ func openAppPool(ctx context.Context, dsn string, connectTimeout time.Duration) 
 			perr = plain.PingContext(connectCtx)
 			plain.Close()
 			if perr == nil {
-				return nil, fmt.Errorf("database refused the application's session settings (SQLSTATE %s): statement_timeout, lock_timeout and idle_in_transaction_session_timeout are sent when each connection starts, and a connection pooler such as PgBouncer refuses parameters it does not know; see \"Connection poolers\" in docs/operator-guide.md. Nothing was changed", pe.Code)
+				return nil, fmt.Errorf("database refused the application's session settings (SQLSTATE %s): statement_timeout, lock_timeout, idle_in_transaction_session_timeout and jit are sent when each connection starts, and a connection pooler such as PgBouncer refuses parameters it does not know; see \"Connection poolers\" in docs/operator-guide.md. Nothing was changed", pe.Code)
 			}
 		}
 	}
@@ -276,10 +276,13 @@ type DBOption func(runtimeParams map[string]string)
 // appSessionTimeouts are the per-connection limits of the application pool (A-177): no statement runs longer
 // than 8 s, no lock is waited for longer than 3 s and no transaction sits idle longer than 15 s. A longer
 // operation on that pool needs a scoped SET LOCAL. Migrations and the host commands never get them.
+// jit is off (MOD72-8): the staff escrow-alert query's planner cost passes jit_above_cost even on empty
+// tables, and compiling it took 3-6 s of every /moderator request on postgres:17-alpine, where JIT is on.
 var appSessionTimeouts = map[string]string{
 	"statement_timeout":                   "8s",
 	"lock_timeout":                        "3s",
 	"idle_in_transaction_session_timeout": "15s",
+	"jit":                                 "off",
 }
 
 // WithAppTimeouts sets appSessionTimeouts on every connection (startup parameters, beside timezone). Only the

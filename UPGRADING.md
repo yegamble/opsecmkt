@@ -15,6 +15,22 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## Staff pages no longer wait for PostgreSQL's JIT compiler (MOD72-8)
+
+No migration or setting. The application's database pool now starts each connection with `jit` off, beside its
+existing `statement_timeout`, `lock_timeout` and `idle_in_transaction_session_timeout`. On PostgreSQL 17 with the
+server default `jit = on` (the bundled database and the `postgres:17-alpine` image), the staff escrow-alert query was
+JIT-compiled on every moderator and administrator page load, which took 3–6 s and could reach the 8 s statement
+timeout ("The market is busy") on a busy host; it now takes well under a second. Migrations, host commands, backups
+and `psql` keep the server's setting.
+
+**Before upgrading, if the app reaches the database through PgBouncer or another pooler** that lists the app's
+startup parameters in `ignore_startup_parameters`, add `jit` to that list
+(`statement_timeout,lock_timeout,idle_in_transaction_session_timeout,jit`) and run
+`ALTER ROLE <app user> SET jit = off;`. Otherwise the pooler refuses the new parameter and startup stops with
+"database refused the application's session settings", before any migration and with nothing changed; see
+[Connection poolers](docs/operator-guide.md#connection-poolers). A direct connection needs nothing.
+
 ## Listing review (migration 145)
 
 Migration 145 adds `products.review_state` (`approved`, `pending` or `rejected`; every existing listing is
