@@ -104,6 +104,30 @@ acceptance requirements, not a declaration of deployed verification:
   `TestModerationDeleteTriggerNoDeadlock`,
   `TestModerationPrivacyV2NoFieldDigestsOrUnusedTextHash`; database integration,
   fake model).
+- A marketplace write never waits on the capacity ledger (SEC72AA-1, migration
+  148): while another session holds it, an edit or a new listing commits within
+  2 seconds and leaves only a reference (kind, target id, time noted; no
+  account, and no counter, overflow note, marker or account row touched). A
+  transaction that admits one change and then locks a second listing (a
+  moderated edit or a stock-only update) does not deadlock with a concurrent
+  edit of that listing, nor with a worker result or a private-panel review that
+  locks it, nor does a dispute resolution with a watcher flagging a locked
+  deposit on the same order. The next pass (before its half-full queue check)
+  admits each reference's current revision through normal admission and drops
+  a deleted or unflagged source; deleting a record removes its reference without
+  the ledger lock; capture disabled keeps the references. Concurrent admissions
+  never exceed a cap, and after the drain the counters equal their rows and
+  every listing is covered by a job, marker or rescan. The worker result, both
+  reviews and the capture switch take the ledger row first
+  (`TestModerationAdmissionNeverWaitsOnCapacity`,
+  `TestModerationDeferredDrainIsLossless`, `TestModerationPersistLockOrder`,
+  `TestModerationReviewActionLockOrder`,
+  `TestModerationAdmissionResolveVsWatcherFlagNoDeadlock`,
+  `TestModerationCapacityLockIsFirstStatement`,
+  `TestModerationConcurrentAdmissionHasAtomicCaps`, and the admit-then-lock leg
+  of `TestModerationDeleteTriggerNoDeadlock`, five runs, no deadlock; each
+  deadlock test failed with SQLSTATE 40P01, or the held-ledger edit timed out,
+  before migration 148; database integration, fake model).
 - Proposal queues/status require an authenticated current administrator on the
   existing private ingress. The separate offline page accepts only a valid,
   revision-bound signed review token with CSRF/origin checks; it exposes no queue

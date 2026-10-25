@@ -247,6 +247,11 @@ func moderationReviewAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, fail(400, "Choose an existing proposal and a review action.")
 	}
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
+		// The capacity row first, before the proposal and source rows
+		// (SEC72AA-1): recording the review updates its counters.
+		if _, err := c.Tx.ExecContext(c.Ctx(), `SELECT 1 FROM moderation_capacity WHERE singleton FOR UPDATE`); err != nil {
+			return actionResult{}, err
+		}
 		var expires time.Time
 		var disposition string
 		err := c.Tx.QueryRowContext(c.Ctx(), `SELECT expires_at,disposition FROM moderation_suggestions WHERE id=$1 FOR UPDATE`, id).Scan(&expires, &disposition)

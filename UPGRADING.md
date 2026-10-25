@@ -326,7 +326,7 @@ again even when the deposit is listed again, and its coins are settled with the 
 in the market clears that alert, so the order stays on the desk and under retention's `escrow_alert` reason. To list
 them, use the query in the *Except while it still claims deposits* item below.
 
-## Optional moderation proposals (migrations 125 through 127, 134 and 146)
+## Optional moderation proposals (migrations 125 through 127, 134, 146 and 148)
 
 Application startup applies the append-only moderation tables/triggers and
 offline review receipts. Enqueueing and inference remain off, so existing
@@ -410,6 +410,21 @@ later. New proposals omit per-field digests and, except for listings, the text
 fingerprint. The migration adds tables only; existing jobs and proposals are not
 rewritten. Upgrade the app (and its migrations) before restarting the controller:
 an older controller runs no sweep, so markers simply wait.
+
+Migration 148 (SEC72AA-1) stops marketplace writes from waiting on the capacity
+ledger while capture is enabled. Before it, an edit could fail with a deadlock
+error when another transaction had admitted a moderated change and then locked
+the same record. A write whose admission finds the ledger row held now leaves a
+reference row (kind, target id, time noted; no account or content) in the new
+`moderation_deferred` table and commits; the next worker pass admits the
+record's current revision through the usual admission checks. Worker results,
+staff reviews and the capture switch take the ledger row first. The migration
+adds one table and replaces three functions (admission, source deletion and the
+sweep) and adds the drain; no existing row is rewritten. The sweep is a database
+function, so even an older controller's pass drains the new table. Restart the
+controller on the new build after the app: until then its result transaction
+still takes the ledger row last, so an edit racing a worker result can still
+fail with a retryable deadlock error.
 
 New gateway hashes omit weak/low-contrast similarity evidence. Useful legacy
 hashes and exact SHA256 matching remain; no extra wire field, decoding boundary,
