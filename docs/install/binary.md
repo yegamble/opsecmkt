@@ -6,7 +6,7 @@ Check both `docker version` and `docker compose version` before deployment;
 installing the engine alone does not establish that the Compose v2 plugin is
 available. See the [production prerequisites](production.md#before-starting).
 
-The release workflow builds these binaries after CI and attaches them to a draft release. This source change does not publish or deploy a release. Verify the matching entry in `SHA256SUMS`, make the binary executable, and rename it to `opsecmkt` if convenient. `./opsecmkt --help` lists commands, and `./opsecmkt serve --help` lists runtime flags. Existing host commands, including `-bootstrap-admin`, `-status`, `-reset-admin-password` and `-export-audit`, remain available.
+The release workflow builds these binaries after CI and attaches them to a draft release. This source change does not publish or deploy a release. Verify the matching entry in `SHA256SUMS` and its build provenance with `gh attestation verify opsecmkt-linux-amd64 --repo OWNER/opsecmkt` (see [release verification](../ci-cd.md#release-a-tested-version)), make the binary executable, and rename it to `opsecmkt` if convenient. `./opsecmkt --help` lists commands, and `./opsecmkt serve --help` lists runtime flags. Existing host commands, including `-bootstrap-admin`, `-status`, `-reset-admin-password` and `-export-audit`, remain available.
 
 See the [complete CLI reference and Bash migration matrix](cli-reference.md) for every command, flag, default, key operation and remaining script dependency.
 

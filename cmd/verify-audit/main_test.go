@@ -75,3 +75,18 @@ func TestRun(t *testing.T) {
 		t.Fatalf("missing file: %d", code)
 	}
 }
+
+// TestCommittedReleaseFixture checks testdata/export.{jsonl,sig,pub}, an export signed with the market's own
+// encoder and signature format by a throwaway key (its private half was never stored). The release workflow runs
+// the built linux verifier on the same files (A-519), so a fixture that stops verifying fails here first.
+func TestCommittedReleaseFixture(t *testing.T) {
+	pub, err := os.ReadFile(filepath.Join("testdata", "export.pub"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, s := filepath.Join("testdata", "export.jsonl"), filepath.Join("testdata", "export.sig")
+	var out, errb bytes.Buffer
+	if code := run([]string{"-pub", strings.TrimSpace(string(pub)), e, s}, &out, &errb); code != 0 || !strings.HasPrefix(out.String(), "OK: 4 events (last id 9), sha256 ") {
+		t.Fatalf("fixture: code=%d out=%q err=%q", code, out.String(), errb.String())
+	}
+}

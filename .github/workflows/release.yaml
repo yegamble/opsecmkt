@@ -13,15 +13,29 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     permissions:
-      contents: write
+      contents: write # create the draft release and upload its assets
+      id-token: write # OIDC token for the attestation's short-lived Sigstore certificate
+      attestations: write # store the build provenance attestations
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # Full history and every branch, so the tag's commit can be compared with origin/main.
+          fetch-depth: 0
       - name: Require a version tag
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: '[[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]'
+      # A-519: only reviewed code is released. The checked-out commit (what is built below) must be main's tip or one
+      # of its ancestors; a tag on a branch, or a missing origin/main, is refused before anything is built.
+      - name: Refuse a tag that is not on main
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if ! git merge-base --is-ancestor refs/remotes/origin/main HEAD; then
+            echo "Refusing: tag $RELEASE_TAG ($(git rev-parse HEAD)) is not on main. Tag a reviewed commit on main." >&2
+            exit 1
+          fi
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: Build OCI archive with provenance and SBOM
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -58,6 +72,21 @@ jobs:
           if ./verify-audit-linux-amd64 2> usage.txt; then exit 1; fi
           grep -q 'usage: verify-audit -pub' usage.txt
           rm usage.txt
+      # A-519: the shipped linux verifier must accept a committed export signed in the market's format (four events,
+      # last id 9) and refuse the same export with one character changed, for the right reason.
+      - name: Verify the committed signed export with the release verifier
+        run: |
+          fixture=cmd/verify-audit/testdata
+          pub=$(cat "$fixture/export.pub")
+          ./verify-audit-linux-amd64 -pub "$pub" "$fixture/export.jsonl" "$fixture/export.sig" > "$RUNNER_TEMP/verified.txt"
+          sum=$(sha256sum "$fixture/export.jsonl" | cut -d ' ' -f 1)
+          grep -qx "OK: 4 events (last id 9), sha256 $sum, signed by the pinned key" "$RUNNER_TEMP/verified.txt"
+          sed '1s/"admin"/"admim"/' "$fixture/export.jsonl" > "$RUNNER_TEMP/tampered.jsonl"
+          if ./verify-audit-linux-amd64 -pub "$pub" "$RUNNER_TEMP/tampered.jsonl" "$fixture/export.sig" 2> "$RUNNER_TEMP/tampered.txt"; then
+            echo 'Refusing: the release verifier accepted a tampered export.' >&2
+            exit 1
+          fi
+          grep -qx 'FAIL: export sha256 does not match the signature file' "$RUNNER_TEMP/tampered.txt"
       - name: Build standalone application and deployment CLI
         env:
           RELEASE_TAG: ${{ github.ref_name }}
@@ -76,12 +105,27 @@ jobs:
         run: |
           gzip -n opsecmkt.oci.tar
           python3 - <<'PY'
-          import json, os
+          import json, os, re, subprocess
+          # The runner's Go built the binaries; the Dockerfile's digest-pinned bases built the OCI archive.
+          go_version = subprocess.run(['go', 'env', 'GOVERSION'], check=True, capture_output=True, text=True).stdout.strip()
+          with open('Dockerfile') as dockerfile:
+              base_images = re.findall(r'^FROM\s+(\S+)', dockerfile.read(), re.M)
+          if not base_images or not all(re.fullmatch(r'[^@\s]+:[^@\s]+@sha256:[0-9a-f]{64}', image) for image in base_images):
+              raise SystemExit('Refusing: every Dockerfile FROM must name a tag and a sha256 digest: %r' % base_images)
           with open('build.json', 'w') as output:
-              json.dump({'repository': os.environ['GITHUB_REPOSITORY'], 'commit': os.environ['GITHUB_SHA'], 'tag': os.environ['RELEASE_TAG'], 'run': os.environ['GITHUB_SERVER_URL'] + '/' + os.environ['GITHUB_REPOSITORY'] + '/actions/runs/' + os.environ['GITHUB_RUN_ID'], 'platform': 'linux/amd64', 'format': 'OCI image archive; embedded BuildKit SBOM and provenance', 'application_binaries': sorted(name for name in os.listdir('.') if name.startswith('opsecmkt-linux-')), 'verify_audit': sorted(name for name in os.listdir('.') if name.startswith('verify-audit-'))}, output, indent=2)
+              json.dump({'repository': os.environ['GITHUB_REPOSITORY'], 'commit': os.environ['GITHUB_SHA'], 'tag': os.environ['RELEASE_TAG'], 'run': os.environ['GITHUB_SERVER_URL'] + '/' + os.environ['GITHUB_REPOSITORY'] + '/actions/runs/' + os.environ['GITHUB_RUN_ID'], 'platform': 'linux/amd64', 'format': 'OCI image archive; embedded BuildKit SBOM and provenance', 'go_version': go_version, 'base_images': base_images, 'application_binaries': sorted(name for name in os.listdir('.') if name.startswith('opsecmkt-linux-')), 'verify_audit': sorted(name for name in os.listdir('.') if name.startswith('verify-audit-'))}, output, indent=2)
               output.write('\n')
           PY
           sha256sum opsecmkt.oci.tar.gz build.json opsecmkt-linux-* verify-audit-* > SHA256SUMS
+      # A-519: Sigstore-signed SLSA provenance for every shipped archive and binary, recorded before the draft exists
+      # (a failure here creates no release). The repository is public, so the public-good Sigstore log is used.
+      - name: Attest build provenance for the archive and binaries
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            opsecmkt.oci.tar.gz
+            opsecmkt-linux-*
+            verify-audit-*
       - name: Create private draft release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -99,7 +143,10 @@ jobs:
 
           verify-audit-OS-ARCH are standalone builds of cmd/verify-audit for checking a signed audit export offline: verify-audit -pub <key from /canary> export.jsonl export.sig (exit 0 = valid). They are listed in SHA256SUMS. Each is built on the runner with: CGO_ENABLED=0 GOOS=OS GOARCH=ARCH go build -trimpath -buildvcs=false -ldflags='-s -w -buildid=' -o verify-audit-OS-ARCH ./cmd/verify-audit
           NOTES
-          echo "Go version: $(go version)" >> release-notes.md
+          {
+            printf '\nEach archive and binary has a GitHub artifact attestation (Sigstore-signed SLSA build provenance naming this repository, workflow and commit). Check one with: gh attestation verify FILE --repo %s\n' "$GITHUB_REPOSITORY"
+            echo "Go version: $(go version)"
+          } >> release-notes.md
           flags=()
           if [[ "$RELEASE_TAG" == *-* ]]; then flags=(--prerelease); fi
           gh release create "$RELEASE_TAG" opsecmkt.oci.tar.gz SHA256SUMS build.json opsecmkt-linux-* verify-audit-* \
