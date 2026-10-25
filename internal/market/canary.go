@@ -75,11 +75,14 @@ func formatUTC(t time.Time) string { return t.UTC().Format("2006-01-02 15:04 UTC
 func canaryView(operatorKey, clearsigned string, posted time.Time) *CanaryView {
 	v := &CanaryView{}
 	if strings.TrimSpace(operatorKey) != "" {
-		if _, fp, canonical, err := parseCanonicalPublicKey(operatorKey); err != nil {
+		if key, fp, canonical, err := parseCanonicalPublicKey(operatorKey); err != nil {
 			v.KeyError = "The configured operator key is unusable: " + err.Error()
 		} else {
 			v.OperatorKey = canonical
 			v.Fingerprint = groupFingerprint(fp)
+			if at := primaryKeyExpiry(key); !at.IsZero() && !at.After(time.Now()) {
+				v.KeyExpired = formatUTC(at)
+			}
 		}
 	}
 	if strings.TrimSpace(operatorKey) == "" || clearsigned == "" {

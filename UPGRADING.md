@@ -26,6 +26,17 @@ public and new ones publish at once, as before. Rolling the application back to 
 leaves the columns unused; a listing still pending or rejected would then be public again, so approve pending
 listings, and take down rejected ones you do not want public, before downgrading.
 
+## Saved payout addresses cleared; public stock shown in bands (migration 147, A-520)
+
+Migration 147 clears every account's saved pooled-payout addresses (`users.payout_btc`, `payout_xmr`) and the times
+they changed. Nothing has read them since escrow replaced pooled payouts (A-508); the columns stay, empty. No operator
+action is needed. Backups taken before the upgrade still hold the old values until they are restored and upgraded or
+removed; remove old backups under your retention schedule if that history matters.
+
+Listing stock is now exact only for the listing's vendor, moderators and administrators. Buyers and signed-out
+visitors see a band (1–5, 6–20 or 21+) on cards, the listing page and checkout. Ordering is unchanged: a buyer asks for
+any quantity and one above the stock is refused, without naming the count.
+
 ## A Tor install's local Monero node defaults to Tor (A-530)
 
 No migration, no new key. A **new** `./scripts/install.sh` Tor install with the local Monero node now lists
@@ -105,6 +116,31 @@ guides already use a separate "Upload transport CA". A recovery bundle exported 
 installation cannot be restored with this release: restore it with the previous release, give it a dedicated upload CA,
 then upgrade.
 
+## The restore gate is set and cleared with host commands (A-505)
+
+No migration or setting. The hand-typed SQL that set the restore gate after a restore not done by `scripts/restore.sh`
+(section 6) and the SQL that cleared it after reconciliation are replaced by two host commands of the server binary,
+which start no web server:
+
+- `-set-restore-gate` applies the same protection as before (section 6), with the audit row "Payout recovery gate set
+  by host command (-set-restore-gate)" instead of "set manually". Any operator who can run the binary against the
+  database may run it.
+- `-clear-restore-gate HANDLE` clears the gate in that administrator's name with the audit row "Payout recovery gate
+  cleared by HANDLE by host command after reconciling the restored database with the wallets". It needs a terminal on
+  stdin and asks for each reconciliation step to be confirmed with `yes` ([runbook](docs/testnet-runbook.md#clear-the-gate));
+  there is still no web action.
+
+Both refuse, changing nothing, while an application serves the database: a serving app now holds a session advisory lock
+(782499) on one more database connection of its own (`application_name` `opsecmkt-serving`, with the statement, lock and
+idle-session limits of the role or database turned off for that session), from before its migrations until it stops,
+and checks every 10 seconds that it still holds it, taking it again if that session ended. This is a guard against
+forgetting to stop the app, not a guarantee. **Only applications of this release or later hold the lock**: stop every
+older application process using the database before you run either command. Allow one more connection per app instance.
+A connection pooler must keep session state: a start whose connection does not keep one session is refused (see
+[Connection poolers](docs/operator-guide.md#connection-poolers)). If such a command is running when the app starts, the
+start waits for it, up to `MIGRATION_LOCK_TIMEOUT`. The clear also refuses a restored database no application has started
+on yet (`retention_restore_required` still set). `scripts/restore.sh` is unchanged and still sets the gate itself.
+
 ## A restore pause is shown to staff (A-559)
 
 No migration or setting. While a restore pauses Monero escrow (`ESCROW_XMR` on, and the restore gate
@@ -114,7 +150,7 @@ A Monero escrow checkout refused by the pause still answers 503, now on the refu
 error reference; it is logged as `http paused kind=action name=/orders/escrow-xmr status=503 cause=restore-gate` (or
 `restore-sweep`) instead of an `http 5xx … cause=*market.httpError` line, so a log alert on `http 5xx` no longer fires on
 it, and it is no longer listed under *Recent server errors*. When the sweep completes while the gate is still set, each
-administrator is notified once. Clearing the gate is unchanged ([runbook](docs/testnet-runbook.md#clear-the-gate)).
+administrator is notified once. The gate is cleared with `-clear-restore-gate HANDLE` ([runbook](docs/testnet-runbook.md#clear-the-gate), A-505).
 
 ## Marketplace browsing, selling capabilities and private case records
 
@@ -726,8 +762,8 @@ have the escrow confirmations. Applications opened before the upgrade get an add
 manual *Record bond received* and *Waive the bond* stay. The market never sends from the bond wallet: sweep it offline
 from its sealed seed ([vendor bond wallet](docs/operator-guide.md#vendor-bond-wallet)). Back up the escrow wallet volume
 as before (it now holds the bond wallet too). A database holding a bond wallet is pinned to its network like one
-holding escrow wallets. `scripts/restore.sh` and the manual protection SQL of [section 6](#6-backups-now-need-the-wallets-too)
-now also close the bond wallet in use (`closed`: still read and still crediting the applications recorded on it, but
+holding escrow wallets. `scripts/restore.sh` and the protection of [section 6](#6-backups-now-need-the-wallets-too) (now the
+`-set-restore-gate` host command) now also close the bond wallet in use (`closed`: still read and still crediting the applications recorded on it, but
 never issuing again), so an address it gave after the backup is never given to another applicant; a fresh `bond-NN`
 issues from then on. Applications opened before this upgrade (`vendor_applications.before_bond_addresses`) are told on
 `/account` not to pay again at their new address if they already paid as your instructions said; record those bonds by
@@ -1200,11 +1236,12 @@ were sent after that point in time. Free escrow accounts that the live wallet ha
 also be offered again: the escrow watcher retires a wallet's free accounts itself only when the wallet holds an
 account the restored records lack, which misses a claim made after that point with no account created after it
 (checkout opens only after the watcher's first full pass after each start, so its check covers checkouts from then on). After such a restore, and whenever the script reports that recovery protection failed, keep the
-application stopped and apply the protection below to the restored application database **before starting the
-application**, then follow the same reconciliation procedure. On a Compose deployment run `docker compose stop app`
+application stopped and apply the protection below to the restored application database with the `-set-restore-gate`
+host command (A-505) **before starting the application**, then follow the same reconciliation procedure. On a Compose deployment run `docker compose stop app`
 (for a volume snapshot start only the database with `docker compose up -d --wait db`). On a native deployment run
 `./opsecmkt deploy down --dir DIR`, or stop a directly supervised `opsecmkt serve` through its service manager, and do
-not run `deploy up` until the protection has committed. The block runs in one transaction; each line does the following:
+not run `deploy up` until the protection has committed. The command refuses while the application runs (or starts)
+against the database. It runs in one transaction and does the following:
 
 - `payments_recovery_required` sets the persistent recovery gate, which pauses Monero escrow checkout, settlement
   building and relay until an administrator clears it after reconciliation.
@@ -1215,44 +1252,41 @@ not run `deploy up` until the protection has committed. The block runs in one tr
   each buyer.
 - `xmr_escrow_sweep_required` makes Monero escrow checkout wait until the Monero escrow watcher has found the escrow
   wallets created after the backup (each is sealed to the seed key and kept, never offered to a new order) and checked
-  every escrow wallet. After restoring only the escrow wallet volume from an older backup, run that settings line alone:
-  the watcher then also raises the subaddress lookahead of each escrow wallet older than the database and rescans it, so
+  every escrow wallet. After restoring only the escrow wallet volume from an older backup, set that setting alone with
+  `db_sql -c "INSERT INTO settings(key,value) VALUES ('xmr_escrow_sweep_required','true') ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value"`
+  ([`db_sql`](docs/testnet-runbook.md#reconcile-a-restored-database-before-enabling-payouts)): the watcher then also raises the subaddress lookahead of each escrow wallet older than the database and rescans it, so
   deposits to the accounts it does not know are seen.
-- The `xmr_settlements` line holds every restored Monero escrow settlement with a stored transaction (built or relayed)
+- It holds every restored Monero escrow settlement with a stored transaction (built or relayed)
   with the `Restored from backup:` marker until an administrator confirms its relay on `/admin`.
-- The `xmr_escrow_slots` line retires every free Monero escrow account, and the `xmr_escrow_wallets` line moves every
-  active or sealed Monero escrow wallet to closing, so no restored account or wallet takes an order again. Omit these
-  three table lines if the database has no `xmr_settlements.send_error` column (before migration 085).
-- The `xmr_bond_wallets` line closes the vendor bond wallet in use (A-547): it may have given bond addresses after the
-  backup that the restored records lack, so it gives no new address; it is still read, and its recorded addresses still
-  credit their applications. Omit it if the database has no `xmr_bond_wallets` table (before migration 124).
-- The final line adds one audit row ("set manually"); existing audit rows are not changed.
+- It retires every free Monero escrow account and moves every active or sealed Monero escrow wallet to closing, so no
+  restored account or wallet takes an order again. It skips the settlement, account and wallet changes when the
+  database has no `xmr_settlements.send_error` column (before migration 085).
+- It closes the vendor bond wallet in use (A-547): it may have given bond addresses after the backup that the restored
+  records lack, so it gives no new address; it is still read, and its recorded addresses still credit their
+  applications. It skips this when the database has no `xmr_bond_wallets` table (before migration 124).
+- It adds one audit row with no user ("Payout recovery gate set by host command (-set-restore-gate)", with the number of
+  held settlements when there are any); existing audit rows are not changed.
 
-<!-- runbook-sql: restore-protection -->
-```sql
-BEGIN;
-INSERT INTO settings(key,value) VALUES ('payments_recovery_required','true')
-ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
-INSERT INTO settings(key,value) VALUES ('retention_restore_required','true')
-ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
-INSERT INTO settings(key,value) VALUES ('escrow_xmr_release_recheck','true')
-ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
-INSERT INTO settings(key,value) VALUES ('xmr_escrow_sweep_required','true')
-ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
-UPDATE xmr_settlements SET send_error='Restored from backup: check that this escrow settlement''s transaction was not already sent or replaced, then confirm its rebroadcast on the admin page.', updated=now()
-WHERE state IN ('built','relayed');
-UPDATE xmr_escrow_slots SET state='retired', updated=now() WHERE state='free';
-UPDATE xmr_escrow_wallets SET state='closing', updated=now() WHERE state IN ('active','sealed');
-UPDATE xmr_bond_wallets SET state='closed', updated=now() WHERE state='sealed';
-INSERT INTO audit_events(user_id,action) VALUES (NULL, 'Payout recovery gate set manually (UPGRADING.md section 6); all outbound payouts paused until an administrator clears the gate');
-COMMIT;
+For the internal database, with the application stopped (the command starts the database if it is not running):
+
+<!-- runbook-command: restore-protection -->
+```sh
+docker compose run --rm app -set-restore-gate
 ```
 
-Save it as `restore-protection.sql` and run it with `psql` against the restored database, for the internal
-database `docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U opsecmkt -d opsecmkt_restored < restore-protection.sql`
-(the database name in `DATABASE_URL`). For a managed database, run the same file with `psql -X -v ON_ERROR_STOP=1`
-over the operator's protected, certificate-verified connection to the restored database. It must end with `INSERT 0 1`
-and `COMMIT`; on an error nothing is changed.
+Point `DATABASE_URL` at the restored database: for a side-by-side restore into `opsecmkt_restored`, change the database
+name in `DATABASE_URL` first. On a native deployment with an external or managed database, run
+`DATABASE_URL_FILE=/srv/opsecmkt-inputs/database.url ./opsecmkt -set-restore-gate` with the host-readable,
+certificate-verified URL of the restored database (the [production layout](docs/install/production.md)'s file, whose
+`sslrootcert` names a CA path on this host; not `DIR/secrets/database-url`, which names the CA by its path inside the
+container). A native development installation's local database is not reachable this way and running its generated
+Compose file by hand is not supported (see the [runbook](docs/testnet-runbook.md#clear-the-gate)). Stop every application
+process first, including any of an earlier release, which holds no serving lock and is not detected; the lock check is a
+guard against forgetting to stop the app, not a guarantee ([host commands](docs/install/cli-reference.md#legacy-host-commands)). It reads no stdin and prints
+counts only, ending `audited. Reconcile the restored database (docs/testnet-runbook.md), then clear the gate with
+-clear-restore-gate HANDLE.`; on an error nothing is changed. Running it again applies the protection again and adds
+another audit row. It refuses a database recording migrations the binary does not include: use the binary of the release
+that wrote it.
 
 The restore also rolls back every setting an administrator saved after the backup or recovery point, such as **New escrow
 checkouts**, site access, registrations and the vendor application policy (the bond amount `vendor_bond_xmr` and the
@@ -1777,7 +1811,7 @@ with no settlement covering it, flagged for staff) and the table `escrow_orphans
 wallet holds with no escrow row, listed on `/admin`). Like migrations 074–076 it changes nothing unless `ESCROW_BTC=on`
 (regtest only, off by default); pooled payments are unchanged. With escrow on, this release also pauses escrow
 co-signing, settlement builds and every broadcast of a stored settlement transaction while the restore gate
-(`payments_recovery_required`) is set, and `scripts/restore.sh` and the manual protection SQL in section 6 now also hold
+(`payments_recovery_required`) is set, and `scripts/restore.sh` and the section 6 protection (now `-set-restore-gate`) now also hold
 every restored escrow settlement that has a stored transaction, which an administrator confirms on `/admin` before the
 market broadcasts it again. While the gate is set, escrow checkout is also refused with a fixed 503 and the order stays
 a draft. The escrow RPC user's `rpcwhitelist` needs one more method, `listtransactions` (it reads the
@@ -2415,8 +2449,9 @@ Bitcoin escrow key is for a per-order wallet and yours is for Bitcoin Core" (or 
 available on this market yet" refusal; two per-order wallet keys are still refused with that refusal. Per-order escrows
 are built in this release but switched off in the code until the market can co-sign them through the escrow signer
 (A-456b); see [per-order escrow](https://github.com/yegamble/opsecmkt/blob/e1c082db8eff76e25516e23362a5b9a101751a68/docs/escrow.md#per-order-escrow-creation-and-watching-a-456a-shape-b). The restore floor
-of `scripts/restore.sh` and of the restore-protection SQL in section 6 now reads an account's highest escrow index in both
-shapes (`/0/<i>` and `/<i>/0/0`), one counter: if you keep a copy of that SQL, take the new one. The escrow RPC user's
+of `scripts/restore.sh` and of the section 6 protection read an account's highest escrow index in both
+shapes (`/0/<i>` and `/<i>/0/0`), one counter. Section 6 is now the `-set-restore-gate` host command: discard any saved
+copy of the old SQL. The escrow RPC user's
 `rpcwhitelist` needs no new method (per-order escrows use `deriveaddresses` with a range, `getdescriptorinfo`,
 `importdescriptors`, `getaddressinfo` and `getwalletinfo`, all on it already), and there is no new key. With an escrow
 signer pinned, the escrow key page now refuses a key that is the signer's own ("This key cannot be used here"). After

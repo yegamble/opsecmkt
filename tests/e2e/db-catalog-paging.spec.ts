@@ -89,7 +89,7 @@ test('catalog pages through search results with plain links at 320 px', async ({
     await expect(visitor.locator('.catalog-tools')).toContainText('26 listings');
     await expect(visitor.locator('.listings-grid .product-card')).toHaveCount(25);
     await expect(visitor.locator('.product-card .stock').filter({ hasText: 'Not available for purchase' })).toHaveCount(25);
-    await expect(visitor.locator('.product-card .stock').filter({ hasText: /^\d+ AVAILABLE$/ })).toHaveCount(0);
+    await expect(visitor.locator('.product-card .stock').filter({ hasText: / AVAILABLE$/ })).toHaveCount(0);
     expect(await visitor.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
     await pager.getByRole('link', { name: 'Next page, page 2 of 2' }).click();
     await expect(visitor.locator('.product-card .stock')).toHaveText(['Not available for purchase']);

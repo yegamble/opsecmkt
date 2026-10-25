@@ -287,7 +287,8 @@ npm run test:e2e:report
 ```
 
 The `db-setup` project seeds once before `database-chromium` and `database-firefox`
-(the upload cases of `db-listing-photos.spec.ts` in Firefox; alone, on a fresh
+(the upload cases of `db-listing-photos.spec.ts` and the refused listing form of
+`db-listing-form.spec.ts` in Firefox; alone, on a fresh
 database: `npx playwright test --project=database-firefox`); each subsequent test
 creates its own accounts and listings. Recreate the E2E database before every full
 run, including after a setup-only seed. Playwright starts its own servers on

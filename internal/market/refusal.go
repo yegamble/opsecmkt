@@ -52,11 +52,7 @@ func refusalEcho(form url.Values) []EchoField {
 		if strings.TrimSpace(v) == "" {
 			continue
 		}
-		v = strings.ReplaceAll(strings.ToValidUTF8(v, "\uFFFD"), "\x00", "")
-		if utf8.RuneCountInString(v) > f.max {
-			v = string([]rune(v)[:f.max])
-		}
-		echo = append(echo, EchoField{Label: f.label, Text: v})
+		echo = append(echo, EchoField{Label: f.label, Text: typedText(v, f.max)})
 	}
 	return echo
 }

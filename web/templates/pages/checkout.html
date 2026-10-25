@@ -24,7 +24,7 @@
 </div>
 <div>
 <dt>Available units</dt>
-<dd>{{.Stock}}</dd>
+<dd>{{$.StockLabel .VendorID .Stock}}</dd>
 </div>
 </dl>
 {{template "payment-status:checkout" $}}
@@ -39,8 +39,8 @@
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="form_nonce" value="{{formNonce "/orders"}}">
 <input type="hidden" name="product_id" value="{{.ID}}">
-<label>Quantity<input type="number" name="quantity" min="1" max="{{.Stock}}" value="1" step="1" required inputmode="numeric" aria-describedby="quantity-help"></label>
-<p class="help" id="quantity-help">Order up to {{.Stock}} available units of this listing. The server calculates the total from the unit price; review it on the draft before requesting payment.</p>
+<label>Quantity<input type="number" name="quantity" min="1" max="{{if $.SeesExactStock .VendorID}}{{.Stock}}{{else}}1000000{{end}}" value="1" step="1" required inputmode="numeric" aria-describedby="quantity-help"></label>
+<p class="help" id="quantity-help">{{if $.SeesExactStock .VendorID}}Order up to {{.Stock}} available units of this listing.{{else}}This listing has {{$.StockLabel .VendorID .Stock}} units available; the exact number is shown only to its vendor and market staff. A quantity above what it has is refused and nothing is changed.{{end}} The server calculates the total from the unit price; review it on the draft before requesting payment.</p>
 <label>Pay with<select name="currency">
 <option value="XMR">{{.PriceXMR}} XMR per unit{{if eq (index $.Settings "payment_intake_XMR") "false"}} — new payments paused{{else if eq (index $.Settings "payment_intake_XMR") "escrow"}} — escrow only{{end}}</option>
 </select>

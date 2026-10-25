@@ -5,7 +5,9 @@
 <section class="panel" aria-labelledby="operator-key-title">
 <h2 id="operator-key-title">Operator PGP key</h2>
 {{with .Canary}}{{if .KeyError}}<p><span class="badge danger">Key unusable</span></p>
-<p>{{.KeyError}}</p>{{else if .Fingerprint}}<p><span class="badge green">Configured</span></p>
+<p>{{.KeyError}}</p>{{else if .KeyExpired}}<p><span class="badge danger">Expired</span></p>
+<p>The operator key expired on {{.KeyExpired}}, so no canary verifies with it. Extend its expiry offline (<span class="mono">gpg --quick-set-expire</span>) and save the updated public key below, or save a new key and publish a canary signed with it.</p>
+<p>Fingerprint <span class="fingerprint mono">{{.Fingerprint}}</span></p>{{else if .Fingerprint}}<p><span class="badge green">Configured</span></p>
 <p>Fingerprint <span class="fingerprint mono">{{.Fingerprint}}</span></p>{{else}}<p><span class="badge neutral">Not configured</span></p>{{end}}{{else}}<p><span class="badge neutral">Not configured</span></p>{{end}}
 <form class="stack" method="post" action="/admin/operator-key">
 <input type="hidden" name="csrf" value="{{.CSRF}}">

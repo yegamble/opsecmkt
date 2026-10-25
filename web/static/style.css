@@ -795,6 +795,27 @@ textarea {
   color:#ffc6b7;
   background:#271512
 }
+/* A-59: a refused form's problem, under the field it names; in a two-column grid it takes a whole row. */
+.field-error {
+  margin:0;
+  border-left:3px solid #935749;
+  padding:2px 0 2px 10px;
+  color:#ffc6b7;
+  font-size:0.875rem;
+  overflow-wrap:anywhere
+}
+/* A label outside its textarea, so the label's text is only its own (A-59); spaced as a wrapping .stack label. */
+.field {
+  display:grid;
+  gap:7px;
+  font-size:0.875rem
+}
+.grid-two > .field-error {
+  grid-column:1 / -1
+}
+[aria-invalid="true"] {
+  border-color:#c4705d
+}
 .stats {
   display:grid;
   grid-template-columns:repeat(4,minmax(0,1fr));

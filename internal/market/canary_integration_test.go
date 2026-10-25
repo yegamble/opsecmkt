@@ -1,6 +1,7 @@
 package market
 
 import (
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -184,5 +185,71 @@ func TestOperatorKeyPacketPrivacy(t *testing.T) {
 			}
 		}
 		mustContain(t, page, "Signature verified", groupFingerprint(fp))
+	}
+}
+
+// A-69 (HUNT2-C-3, formerly TestHuntCanaryExpiryReportedAsForgery): an expired operator key, an expired canary
+// signature and a canary dated two minutes after the server clock are refused with their own reasons, not the
+// forgery reason "does not verify with the configured key"; an expired operator key is shown as Expired, not
+// Configured; a forged statement is still reported as a forgery.
+func TestCanaryExpiryReportedWithReason(t *testing.T) {
+	e := newTestApp(t)
+	_, admin := e.user("expiry_canary_admin", "admin")
+	now := time.Now()
+	const forgery = "does not verify with the configured key"
+	post := func(path string, form url.Values) *httptest.ResponseRecorder {
+		form.Set("password", testPassword)
+		return e.do("POST", path, admin, form)
+	}
+	keyPanel := func() string {
+		page := e.body("GET", "/admin/transparency", admin, nil, 200)
+		i := strings.Index(page, `id="operator-key-title"`)
+		j := strings.Index(page, `id="canary-admin-title"`)
+		if i < 0 || j < i {
+			t.Fatal("operator key panel not found")
+		}
+		return page[i:j]
+	}
+
+	// 1. An operator key that expired a day after canaryKeyTime, with a canary it signed while it was valid.
+	expired, expiredPub := expiringCanaryKey(t)
+	e.check(post("/admin/operator-key", url.Values{"operator_key": {expiredPub}}), 303)
+	if panel := keyPanel(); strings.Contains(panel, "Configured") || !strings.Contains(panel, `badge danger">Expired`) || !strings.Contains(panel, "expired on 2026-01-03 03:04 UTC") {
+		t.Fatalf("expired operator key status: %s", panel)
+	}
+	w := post("/admin/canary", url.Values{"canary": {canarySign(t, expired, "No warrants.", canaryKeyTime.Add(time.Hour))}})
+	if w.Code != 400 || strings.Contains(w.Body.String(), forgery) || !strings.Contains(w.Body.String(), "the configured key expired on 2026-01-03 03:04 UTC; extend its expiry") {
+		t.Fatalf("canary from an expired key: %d %s", w.Code, w.Body)
+	}
+
+	// 2. A current key; a stored canary whose signature was valid for one day and was made two days ago.
+	op, opPub := canaryTestKey(t, "operator")
+	e.check(post("/admin/operator-key", url.Values{"operator_key": {opPub}}), 303)
+	if panel := keyPanel(); !strings.Contains(panel, `badge green">Configured`) || strings.Contains(panel, "Expired") {
+		t.Fatalf("current operator key status: %s", panel)
+	}
+	stale := canarySignExpiring(t, op, "No warrants as of two days ago. Valid for one day.", now.Add(-48*time.Hour), 24*time.Hour)
+	if _, err := e.DB.Exec("INSERT INTO canary(id,clearsigned,posted) VALUES(1,$1,now()-interval '47 hours')", stale); err != nil {
+		t.Fatal(err)
+	}
+	page := e.body("GET", "/canary", randomToken(), nil, 200)
+	if !strings.Contains(page, "INVALID") || strings.Contains(page, "Signature verified") || strings.Contains(page, forgery) || !strings.Contains(page, "the signature expired on") {
+		t.Fatalf("genuine expired canary on /canary: %s", page)
+	}
+
+	// 3. The operator's offline clock two minutes ahead of the server: refused as skew, nothing replaced.
+	w = post("/admin/canary", url.Values{"canary": {canarySign(t, op, "No warrants.", now.Add(2*time.Minute))}})
+	if w.Code != 400 || strings.Contains(w.Body.String(), forgery) || !strings.Contains(w.Body.String(), "after this server&#39;s clock") {
+		t.Fatalf("canary dated two minutes ahead: %d %s", w.Code, w.Body)
+	}
+	var stored string
+	if err := e.DB.QueryRow("SELECT clearsigned FROM canary WHERE id=1").Scan(&stored); err != nil || stored != stale {
+		t.Fatalf("refused canary replaced the stored one: %v", err)
+	}
+
+	// 4. A forged statement is still a forgery.
+	forged := strings.Replace(canarySign(t, op, "No warrants.", now.Add(-time.Hour)), "No warrants", "No subpoenas", 1)
+	if w = post("/admin/canary", url.Values{"canary": {forged}}); w.Code != 400 || !strings.Contains(w.Body.String(), forgery) {
+		t.Fatalf("forged canary: %d %s", w.Code, w.Body)
 	}
 }

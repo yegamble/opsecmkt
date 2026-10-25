@@ -674,6 +674,8 @@ DATABASE_URL_FILE=./private/database.url ./opsecmkt -bootstrap-admin ADMIN_HANDL
 | `-set-role HANDLE ROLE` | Existing account role: `buyer`, `vendor`, `moderator` or `admin`. Reads no stdin. Host-only way to add/remove administrators; refuses removal of the last active admin. Role changes have documented listing/session effects. |
 | `-reset-admin-password HANDLE` | Administrator break-glass password change; ends its sessions/pending sign-ins. Reads a new password from stdin or a hidden terminal prompt; does not reset second factors. |
 | `-reset-admin-factors HANDLE` | Administrator break-glass: disable TOTP, recovery codes and PGP sign-in; end sessions/pending sign-ins. Reads no stdin. Password and saved PGP public key remain. |
+| `-set-restore-gate` | Restore protection of UPGRADING.md section 6 for a database restored without `scripts/restore.sh`: sets the restore gate and the other restore settings, holds restored Monero settlements, retires free escrow accounts, closes escrow and bond wallets, audits it. Reads no stdin; prints counts only. Refused while the app runs (or starts) against the database. |
+| `-clear-restore-gate HANDLE` | After [restore reconciliation](../testnet-runbook.md#clear-the-gate), clear the restore gate in that administrator's name with an audit row. Needs a terminal on stdin: asks for each reconciliation step to be confirmed with `yes` (no flag answers for you). Refused while the app runs (apps of earlier releases are not detected), for a handle that is not an administrator's, when the gate is not set, or before an application has started on the restored database; refusals change nothing. |
 | `-export-audit N` | Export retained settled audit events through positive ID `N`, with detached signature. Requires database and `AUDIT_SIGNING_KEY`/its `_FILE`. Refuses existing output files. |
 | `-export-audit-from N` | With export: exclude IDs at or below this nonnegative bound; default `0`, cannot exceed upper bound. |
 | `-export-audit-dir DIR` | With export: existing output directory, default `.`. Private `.jsonl`/`.sig` and retention metadata are written; configured recipient adds encryption suffixes. Empty retained range creates no files. |
@@ -691,6 +693,8 @@ DATABASE_URL_FILE=./private/database.url ./opsecmkt -status
 DATABASE_URL_FILE=./private/database.url ./opsecmkt -set-role ACCOUNT_HANDLE moderator
 DATABASE_URL_FILE=./private/database.url ./opsecmkt -reset-admin-password ADMIN_HANDLE
 DATABASE_URL_FILE=./private/database.url ./opsecmkt -reset-admin-factors ADMIN_HANDLE
+DATABASE_URL_FILE=./private/database.url ./opsecmkt -set-restore-gate
+DATABASE_URL_FILE=./private/database.url ./opsecmkt -clear-restore-gate ADMIN_HANDLE
 DATABASE_URL_FILE=./private/database.url AUDIT_SIGNING_KEY_FILE=./private/audit.seed \
   AUDIT_EXPORT_RECIPIENT=./public/audit-recipient.asc \
   ./opsecmkt -export-audit 1000 -export-audit-from 500 -export-audit-dir ./exports

@@ -53,6 +53,8 @@ test('published empty stock is optional in discovery and drafts record a bounded
     await expect(buyer.locator('.listings-grid .product-card')).toHaveCount(1);
     await expect(buyer.locator('.listings-grid')).toContainText(title);
     await expect(buyer.locator('.listings-grid')).not.toContainText(emptyTitle);
+    // A-520: a buyer sees the stock band, not the exact count.
+    await expect(buyer.locator('.product-card .stock')).toHaveText('1–5 AVAILABLE');
     await expect(buyer).toHaveURL(/in_stock=1/);
     expect(sql(`SELECT count(*) FROM products WHERE id='${empty}' AND stock=0 AND NOT archived`)).toBe('1');
     await buyer.goto(`/product?id=${empty}`);
@@ -64,7 +66,15 @@ test('published empty stock is optional in discovery and drafts record a bounded
     await buyer.goto(`/checkout?id=${product}`);
     const quantity = buyer.getByRole('spinbutton', { name: 'Quantity', exact: true });
     await expect(quantity).toHaveAttribute('min', '1');
-    await expect(quantity).toHaveAttribute('max', '3');
+    await expect(quantity).toHaveAttribute('max', '1000000');
+    await expect(buyer.locator('.key-values > div', { has: buyer.getByText('Available units', { exact: true }) })).toContainText('1–5');
+    await expect(buyer.locator('#quantity-help')).toContainText('This listing has 1–5 units available');
+    await quantity.fill('4');
+    await submitAndLoad(buyer, buyer.getByRole('button', { name: 'Create unfunded draft' }));
+    await expect(buyer.getByText('The requested quantity exceeds the available stock. Nothing was changed.')).toBeVisible();
+    await expect(buyer.locator('body')).not.toContainText(/\b3 (units|available)/i);
+    expect(sql(`SELECT count(*) FROM orders WHERE product_id='${product}'`)).toBe('0');
+    await buyer.goto(`/checkout?id=${product}`);
     await quantity.fill('3');
     await submitAndLoad(buyer, buyer.getByRole('button', { name: 'Create unfunded draft' }));
     const orderURL = buyer.url();
@@ -81,6 +91,8 @@ test('published empty stock is optional in discovery and drafts record a bounded
     expect(sql(`SELECT quantity||':'||amount FROM orders WHERE id='${order}'`)).toBe('2:500000000000');
     expect(sql(`SELECT count(*) FROM orders WHERE buyer_id=(SELECT id FROM users WHERE handle='${buyerHandle}') AND product_id='${product}'`)).toBe('1');
     await responsive(buyer);
+    await vendor.goto(`/product?id=${product}`);
+    await expect(vendor.locator('.key-values > div', { has: vendor.getByText('Available stock', { exact: true }) })).toContainText('3');
     await vendor.goto(orderURL);
     await expect(vendor.locator('.key-values > div', { has: vendor.getByText('Quantity', { exact: true }) })).toContainText('2 units');
     await responsive(vendor);

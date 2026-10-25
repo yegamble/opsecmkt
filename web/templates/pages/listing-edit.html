@@ -27,37 +27,49 @@
 <div class="listing-edit-main">
 <section class="panel">
 <h2>Listing details</h2>
-<form class="stack" method="post" action="/listings/update">
+<form class="stack" method="post" action="/listings/update">{{$f := $.ListingFields}}
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="form_nonce" value="{{formNonce "/listings/update"}}">
 <input type="hidden" name="id" value="{{.ID}}">
-<input type="hidden" name="stock_seen" value="{{.Stock}}">
-<label>Listing title<input name="title" required minlength="3" maxlength="140" value="{{.Title}}">
+<input type="hidden" name="stock_seen" value="{{$f.StockSeen}}">
+<label>Listing title<input name="title" required minlength="3" maxlength="140" value="{{$f.Title}}"{{if $f.Err "title"}} aria-invalid="true" aria-describedby="lf-title-error"{{end}}>
 </label>
-<label>Description<textarea name="description" required maxlength="10000" rows="6">{{.Description}}</textarea>
-</label>
-<div class="grid-two">
-<label>Category<select name="category">
-<option {{if eq .Category "Hardware"}}selected{{end}}>Hardware</option>
-<option {{if eq .Category "Digital"}}selected{{end}}>Digital</option>
-<option {{if eq .Category "Services"}}selected{{end}}>Services</option>
-</select>
-</label>
-<label>Subcategory<select name="subcategory" aria-describedby="subcategory-help">{{template "listing-subcategory-options" $}}</select></label>
-<label>Region<select name="region">{{range $.ShippingRegions}}<option {{if eq $.Product.Region .}}selected{{end}}>{{.}}</option>{{end}}<option {{if eq .Region "Digital"}}selected{{end}}>Digital</option>{{if not (.KnownRegion)}}<option selected>{{.Region}}</option>{{end}}</select></label>
-<label>Fulfillment type<select name="kind" required aria-describedby="kind-help">
-{{if eq .Kind "service"}}<option value="" selected disabled>Choose a supported fulfillment type</option>{{end}}
-<option value="physical" {{if eq .Kind "physical"}}selected{{end}}>Physical (shipped)</option>
-<option value="digital" {{if eq .Kind "digital"}}selected{{end}}>Digital (delivered online)</option>
-</select>
-</label>
-<label>Stock<input type="number" name="stock" required min="0" max="1000000" value="{{.Stock}}" {{with $.DigitalInventory}}{{if eq .Mode "inventory"}}readonly{{end}}{{end}} aria-describedby="stock-help">
-</label>
-{{if $.DispatchOn}}{{with $.Listing}}<label>Dispatch within (days)<input type="number" name="dispatch_days" min="1" max="30" inputmode="numeric" value="{{.DispatchDays}}" aria-describedby="dispatch-help">
-</label>{{end}}{{end -}}
-<label>Price (XMR)<input name="price_xmr" required inputmode="decimal" value="{{.PriceXMR}}" aria-describedby="price-floor-help">
-</label>
+{{with $f.Err "title"}}<p class="field-error" id="lf-title-error">{{.}}</p>
+{{end}}<div class="field"><label for="lf-description">Description</label>
+<textarea id="lf-description" name="description" required maxlength="10000" rows="6"{{if $f.Err "description"}} aria-invalid="true" aria-describedby="lf-description-error"{{end}}>
+{{$f.Description}}</textarea>
 </div>
+{{with $f.Err "description"}}<p class="field-error" id="lf-description-error">{{.}}</p>
+{{end}}<div class="grid-two">
+<label>Category<select name="category"{{if $f.Err "category"}} aria-invalid="true" aria-describedby="lf-category-error"{{end}}>
+<option {{if eq $f.Category "Hardware"}}selected{{end}}>Hardware</option>
+<option {{if eq $f.Category "Digital"}}selected{{end}}>Digital</option>
+<option {{if eq $f.Category "Services"}}selected{{end}}>Services</option>
+</select>
+</label>
+{{with $f.Err "category"}}<p class="field-error" id="lf-category-error">{{.}}</p>
+{{end}}<label>Subcategory<select name="subcategory" aria-describedby="subcategory-help{{if $f.Err "subcategory"}} lf-subcategory-error{{end}}"{{if $f.Err "subcategory"}} aria-invalid="true"{{end}}>{{template "listing-subcategory-options" $}}</select></label>
+{{with $f.Err "subcategory"}}<p class="field-error" id="lf-subcategory-error">{{.}}</p>
+{{end}}<label>Region<select name="region"{{if $f.Err "region"}} aria-invalid="true" aria-describedby="lf-region-error"{{end}}>{{range $.ShippingRegions}}<option {{if eq $f.Region .}}selected{{end}}>{{.}}</option>{{end}}<option {{if eq $f.Region "Digital"}}selected{{end}}>Digital</option>{{if not $f.KnownRegion}}<option selected>{{$f.Region}}</option>{{end}}</select></label>
+{{with $f.Err "region"}}<p class="field-error" id="lf-region-error">{{.}}</p>
+{{end}}<label>Fulfillment type<select name="kind" required aria-describedby="kind-help{{if $f.Err "kind"}} lf-kind-error{{end}}"{{if $f.Err "kind"}} aria-invalid="true"{{end}}>
+{{if and (ne $f.Kind "physical") (ne $f.Kind "digital")}}<option value="" selected disabled>Choose a supported fulfillment type</option>{{end}}
+<option value="physical" {{if eq $f.Kind "physical"}}selected{{end}}>Physical (shipped)</option>
+<option value="digital" {{if eq $f.Kind "digital"}}selected{{end}}>Digital (delivered online)</option>
+</select>
+</label>
+{{with $f.Err "kind"}}<p class="field-error" id="lf-kind-error">{{.}}</p>
+{{end}}<label>Stock<input type="number" name="stock" required min="0" max="1000000" value="{{$f.Stock}}" {{with $.DigitalInventory}}{{if eq .Mode "inventory"}}readonly{{end}}{{end}} aria-describedby="stock-help{{if $f.Err "stock"}} lf-stock-error{{end}}"{{if $f.Err "stock"}} aria-invalid="true"{{end}}>
+</label>
+{{with $f.Err "stock"}}<p class="field-error" id="lf-stock-error">{{.}}</p>
+{{end}}{{if $.DispatchOn}}{{with $.Listing}}<label>Dispatch within (days)<input type="number" name="dispatch_days" min="1" max="30" inputmode="numeric" value="{{$f.DispatchDays}}" aria-describedby="dispatch-help{{if $f.Err "dispatch_days"}} lf-dispatch_days-error{{end}}"{{if $f.Err "dispatch_days"}} aria-invalid="true"{{end}}>
+</label>
+{{with $f.Err "dispatch_days"}}<p class="field-error" id="lf-dispatch_days-error">{{.}}</p>
+{{end}}{{end}}{{end -}}
+<label>Price (XMR)<input name="price_xmr" required inputmode="decimal" value="{{$f.PriceXMR}}" aria-describedby="price-floor-help{{if $f.Err "price_xmr"}} lf-price_xmr-error{{end}}"{{if $f.Err "price_xmr"}} aria-invalid="true"{{end}}>
+</label>
+{{with $f.Err "price_xmr"}}<p class="field-error" id="lf-price_xmr-error">{{.}}</p>
+{{end}}</div>
 <p class="help" id="price-floor-help">The Monero price must be at least 0.001 XMR. The network fee is deducted from each settlement; a smaller amount may lose too large a share to fees.</p>
 {{if $.DispatchOn}}<p class="help" id="dispatch-help">Physical listings only: the days you take to ship once an order is paid, 1 to 30; a digital listing ignores it. Saving a change does not alter orders already placed.</p>{{end -}}
 <p class="help" id="stock-help">Distinct digital inventory derives its stock from the available units below. Payment requests reserve stock. If stock changes while you edit, saving a new stock value is refused so no reservation is overwritten.</p>
@@ -65,9 +77,12 @@
 <p class="help" id="subcategory-help">Choose a subcategory within the selected category, or leave it unspecified.</p>
 {{template "listing-shipping-options" $}}
 {{with $.Listing}}<p class="help" id="kind-help">{{if eq $.Product.Kind "service"}}This legacy service listing has no supported fulfillment type. Choose Physical or Digital explicitly to convert it; existing orders and their history remain readable. {{end}}{{if .OpenOrders}}{{.OpenOrders}} open order(s) depend on this listing, so the fulfillment type cannot change until they finish.{{else}}No open orders; the fulfillment type can change.{{end}} Orders that have requested payment keep their recorded amount; open drafts use the current price.</p>
-{{if .VendorEditor}}<label>Reusable download content<textarea name="delivery_content" maxlength="32000" rows="6" spellcheck="false" aria-describedby="delivery-help">{{.DeliveryContent}}</textarea>
+{{if .VendorEditor}}<label>Reusable download content<textarea name="delivery_content" maxlength="32000" rows="6" spellcheck="false" aria-describedby="delivery-help{{if $f.Err "delivery_content"}} lf-delivery_content-error{{end}}{{if $f.DeliveryNote}} lf-delivery-note{{end}}"{{if $f.Err "delivery_content"}} aria-invalid="true"{{end}}>
+{{.DeliveryContent}}</textarea>
 </label>
-{{template "vendor-listings:delivery-help" .AutoDelivery}}{{else}}<p class="help">{{if .HasDeliveryContent}}Automatic delivery content is set; only the vendor can view or change it.{{else}}Automatic delivery content is not set; only the vendor can add it.{{end}}</p>{{end}}{{end}}
+{{with $f.Err "delivery_content"}}<p class="field-error" id="lf-delivery_content-error">{{.}}</p>
+{{end}}{{with $f.DeliveryNote}}<p class="field-error" id="lf-delivery-note">{{.}}</p>
+{{end}}{{template "vendor-listings:delivery-help" .AutoDelivery}}{{else}}<p class="help">{{if .HasDeliveryContent}}Automatic delivery content is set; only the vendor can view or change it.{{else}}Automatic delivery content is not set; only the vendor can add it.{{end}}</p>{{end}}{{end}}
 {{if $.ListingHeld}}<p class="help listing-held">The market holds listings for review: saving a change to the title, description, category, subcategory, region, additional shipping regions, fulfillment type, price, dispatch window or vendor-or-automatic digital delivery, or adding a photo, hides this listing from buyers until a moderator or administrator approves it. A stock change does not.</p>{{end}}
 <button class="primary" type="submit">Save changes</button>
 </form>
