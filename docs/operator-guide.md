@@ -707,6 +707,18 @@ injection-suspicion counts, prompt/weights pins, last pass and bounded failure
 classes. These are worker observations, not proof of model or host integrity.
 Model endpoints, raw model JSON and transport errors are omitted.
 
+While capture is on, the Admin overview (`/admin`) shows a **Moderation capture
+needs attention** alert when the lifetime pool has at most two daily actor shares
+left (162 allocations at `--max-records 4096`) or when refused targets or account
+rescans wait after a `retained_capacity` or `backfill_capacity` overflow. On the
+private administrator connection it reads, for example, "2 of 512 lifetime
+allocations used; 1 target(s) waiting for capture" and names the settings to
+raise: `--max-records` and `--max-reserved-bytes` on the moderation worker (each
+allocation reserves 524288 bytes; at the defaults the byte budget binds first, so
+raise both). Elsewhere it is one sentence without numbers pointing to the private
+panel. It names no account, target or time. It clears on the next load once the
+pool has room again and the worker has captured the waiting targets.
+
 **Accept**, **Dismiss** and **Hold** record review annotations only. They do not
 hide a listing, change an account/order, publish a reply or move funds. Confirmed
 forms retain password/TOTP, CSRF and nonce checks. Accepting changed or expired

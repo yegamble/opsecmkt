@@ -47,6 +47,15 @@ test('the overview links every section and holds no form', async ({ page }) => {
   await expect(page.locator('main a[href="/admin/payments#payment-providers"]')).toHaveCount(1);
 });
 
+// A-648: the moderation capture budget alert reads the database; the read-only preview has none, so never shows it.
+test('the preview overview shows no moderation budget alert', async ({ page }) => {
+  for (const [path] of sections) {
+    await page.goto(path);
+    await expect(page.locator('#moderation-budget'), path).toHaveCount(0);
+    await expect(page.getByText('Moderation capture needs attention'), path).toHaveCount(0);
+  }
+});
+
 test('the keyboard reaches each section from the navigation', async ({ page, browserName }) => {
   const tab = browserName === 'webkit' && process.platform === 'darwin' ? 'Alt+Tab' : 'Tab';
   await page.goto('/admin');

@@ -404,7 +404,9 @@ the default 256 MiB byte budget (512 lifetime allocations) one constantly editin
 account can use up the pool in about six days; refused targets then wait as
 markers or rescans and nothing new is captured until you raise
 `--max-reserved-bytes` or `--max-records`. Watch for `retained_capacity` under
-"Capture requires attention" on the private moderation panel. A
+"Capture requires attention" on the private moderation panel; the Admin overview
+also shows a "Moderation capture needs attention" alert while the pool runs low
+or refused targets wait (A-648). A
 revision whose job completed stale no longer blocks capturing the same content
 later. New proposals omit per-field digests and, except for listings, the text
 fingerprint. The migration adds tables only; existing jobs and proposals are not
