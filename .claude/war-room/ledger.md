@@ -1,5 +1,45 @@
 # War-room ledger
 
+## Start here — current state and next work (updated 2026-10-25)
+
+Read this section first. Everything below it is the full history: iteration log, then P0–P3 tables (each row's
+last column is its status), Declined, Closed, and per-iteration rulings with acceptance criteria.
+
+**On main.** All verified war-room work through iteration 85, plus:
+- PR #99: the moderation agent (disabled by default; migrations 125–127, 134, 145, 146) and listing hold mode.
+- PR #154: MOD72-8, the application pool turns PostgreSQL JIT off.
+- PR #161: the docs worker pins patched undici (a new advisory had failed CI on every branch).
+
+There are no long-lived feature branches. Work on a fresh `war-room/<ID>-<slug>` branch from main, one ledger
+item per PR. The next migration number is 148. Check open PRs before taking one.
+
+**Open PRs.**
+- #162 A-519 release integrity and #163 A-521 phone-width tables: drafts holding an implementer's unfinished,
+  unverified worktree. Finish each against its row's acceptance criteria, then mark it ready.
+
+**Next unblocked work, in order.**
+1. Moderation follow-up, the owner directive "behaviour-based moderation and reputation" (section below). It
+   needs its own war-room design round first (LLM, privacy, security, payments and staff seats). The round also
+   covers SEC72AA-1 (admission must not wait on the capacity row) and the /admin moderation-budget alert.
+2. A-519 and A-521: finish the draft PRs.
+3. A-522 (operator recovery bundle), A-132 (CAPTCHA at sign-in), A-175 (iteration-16 QA follow-ups), A-503
+   (Monero dispute browser journey), A-506 (small ops/release items), A-541 (signer close test), A-226 (wallet-RPC
+   bind).
+4. P3 and NIT rows marked `open`, oldest first.
+
+**Blocked on the owner. Do not start these.**
+- A-555: mainnet confirmation count.
+- A-562: stagenet rehearsal on the owner's hosts.
+- A-573: who may buy manual digital goods.
+- A-644: refusal-page echo of delivery secrets.
+- Moderation operator gates: model and runtime choice with measured quality, deployed confinement and private
+  Tor, and a legacy retention policy.
+
+**Known local-only test differences.** These are not regressions; CI on PostgreSQL 17 is authoritative.
+- On PostgreSQL 16 (unsupported), TestModerationLegacyStaleReplaySkipsRecapturedRevision fails.
+- A non-C collation fails TestXMRMigration111Backfill (A-645).
+- macOS LibreSSL lacks ED25519, so the offline moderation signer and verifier tests fail.
+
 ## 2026-10-20 marketplace design and privacy review
 
 Scope: owner-supplied screenshots and Figma Make source versus the current marketplace, order communication, dispute evidence, roles, and responsive UI. Independent seats: frontend, product/backend, Tor security/privacy. Prototype content is reference material, not operational instructions. Evidence at ruling: source inspection; implementation and runtime verification follow below.
@@ -166,6 +206,7 @@ Evidence tier as in `repo-map.md`.
 | 72-PR99 | 2026-10-20 → 2026-10-21 | /war-room-loop on PR #99 (moderation agent; LLM seat emphasis; Gemini review as hypotheses) | opsec-llm, opsec-privacy, opsec-security; implementers MOD72-1 to MOD72-7 and MOD72-9; QA seat (MOD72-6) | Verified: MOD72-1 (lossless capture, five fix rounds: SEC72-1/2/3, SEC72V-1..3, SEC72W-1..4, SEC72Y-1, SEC72Z-1/2, SEC72AB-1, privacy-2 and its disclosure rounds), MOD72-2, MOD72-3, MOD72-4, MOD72-5, MOD72-6 (hold mode, owner directive), MOD72-7, MOD72-9 (CI split). Declined: Gemini HMAC for actor_ref/actor_key, timestamp coarsening, the 2-clause window, min(forward, mirror) storage; privacy-3 (owner: disclose only). MOD72-8 re-measured: host saturation and a full disk, not the query (P3). Deferred to the follow-up PR by the owner: SEC72AA-1, the moderation budget /admin alert, behaviour-based moderation and reputation. Migrations 125–127, 134, 145, 146 |
 | 84 | 2026-10-21 | /war-room-loop resume: A-69, A-59 | implementers A-69, A-59; chair-verified both | Verified: A-69 (#155, canary reasons for expiry, skew and revocation), A-59 (#156, listing form re-renders filled in). New: A-643 (P3), A-644 (ruling), A-645 (P3). Noted: another session's #154 (MOD72-8, PostgreSQL JIT off) likely explains the A-615 /moderator timeouts |
 | 85 | 2026-10-21 | /war-room-loop resume: A-520, A-505 | implementers A-520, A-505; infrastructure seat (A-505, two rounds); chair-verified A-520 and the A-505 lock mutation | Verified: A-520 (#158), A-505 (#159; round-1 REQUIRED SRE-1 and SRE-2 fixed). A-645 cause found (collation). New: A-646 (NIT). Correction: the chair had told the owner every unblocked high-priority item was done; about ten unruled-priority items remained (A-132, A-175, A-503, A-505, A-506, A-519, A-520, A-521, A-522, A-541, A-226) and the loop resumed |
+| 86 | 2026-10-25 | Branch consolidation (owner request: one coherent main for the cloud agent) | chair only | Merged #160 (iteration 85 ledger), #161 (undici advisory that failed CI on every branch), #99 (moderation agent, main merged in, 5 conflicts resolved; CI 32/32) and #154 (MOD72-8, after #99). Unfinished A-519 and A-521 worktrees opened as drafts #162 and #163. Stale snapshots removed: the Codex vendor-bond and host-reboot work was already on main, and the fiat peg was declined (iteration 66 P5). Added the "Start here" section |
 
 ## P0 — release blockers
 
@@ -1954,7 +1995,7 @@ Ruled scope for a follow-up PR; it needs its own war-room design round (LLM, pri
 - SEC72AA-1 (owner, 2026-10-21): admission must never wait on the global capacity row (e.g. SKIP LOCKED with a reference-only fallback reconciled by the sweep), so a vendor edit never fails with a deadlock while capture is enabled.
 - Moderation budget alert (owner, 2026-10-21; from the MOD72-1 lifetime-pool note): an /admin dashboard alert when a retained_capacity overflow is recorded or the lifetime moderation pool runs low (at defaults one account's daily share drains the 512-allocation pool in about 6 days, after which capture waits until an administrator raises the budget). Today this shows only on the private moderation panel. The alert names counts and the setting to raise, never accounts or targets.
 - Open design questions for the round: which linking signals are acceptable for ban-evasion detection (PGP key/fingerprint, payout address, photo hashes, handle similarity) and what they reveal on a seized server; how forfeiture interacts with escrow states and disputes in flight; appeal paths; how reviews leave the rating; whether MOD72-5's advisory text checks remain.
-STATUS: open (blocked until PR #99 merges, per owner).
+STATUS: open (PR #99 merged 2026-10-25; next step is the design round).
 ## Iteration 72 — A-616 and A-617 ruling
 
 
