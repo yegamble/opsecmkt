@@ -581,13 +581,17 @@ type Review struct {
 	Body, Created      string
 	Product            string // listing title, vendor page only
 	Hidden             bool   // hidden by an administrator (A-125): listed only for administrators and on the order
+	Banned             bool   // A-649: the reviewer's account is banned, so it is not counted; set for administrators only
+	Excluded           bool   // order page: not shown or counted publicly (hidden or banned); the cause is not told
 }
 
-// ReviewSummary counts and averages the public (not hidden) reviews; Hidden counts the others, for administrators only.
+// ReviewSummary counts and averages the public reviews (reviewCountedSQL); Hidden counts those an administrator hid
+// and Banned the other ones by banned accounts (A-649), both for administrators only.
 type ReviewSummary struct {
 	Count   int
 	Average string
 	Hidden  int
+	Banned  int
 }
 
 // P4 Inventory
