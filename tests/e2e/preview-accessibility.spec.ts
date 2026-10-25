@@ -378,3 +378,54 @@ test('skip link stays out of sight until focused, at doubled text', async ({ pag
   await expect(skip).toBeFocused();
   await expect(skip).toBeInViewport({ ratio: 1 });
 });
+
+// A-521 (UI60-7): below 641 px the main navigation collapses behind a native "Menu" disclosure under the header's
+// brand and account row, so a phone page starts with its content rather than five rows of links; it opens and
+// closes from the keyboard without JavaScript. From 641 px the navigation is shown in full and the menu is gone.
+test('the phone header collapses the main navigation behind a Menu disclosure below 641 px', async ({ page, browserName }) => {
+  await page.goto('/orders');
+  await waitForStyles(page);
+  const width = page.viewportSize()!.width;
+  const header = page.getByRole('banner');
+  const menu = header.locator('details.nav-menu');
+  const summary = menu.locator(':scope > summary');
+  const navigation = page.getByRole('navigation', { name: 'Main navigation' });
+  if (width >= 641) {
+    await expect(menu).toBeHidden();
+    await expect(navigation).toBeVisible();
+    await expect(navigation.getByRole('link', { name: 'Orders', exact: true })).toHaveAttribute('aria-current', 'page');
+    await fits(page);
+    return;
+  }
+  await expect(summary).toBeVisible();
+  await expect(summary).toHaveAccessibleName('Menu');
+  await expect(navigation).toHaveCount(0);
+  const collapsed = (await header.boundingBox())!.height;
+  expect(collapsed, `collapsed header height at ${width}px`).toBeLessThanOrEqual(200);
+  expect((await summary.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+  expect(await contrast(summary)).toBeGreaterThanOrEqual(4.5);
+  await fits(page);
+
+  // Keyboard: Sign out, then the Menu summary; Enter opens it and Tab reaches the first link.
+  const allControls = browserName === 'webkit' && process.platform === 'darwin';
+  await header.getByRole('button', { name: 'Sign out', exact: true }).focus();
+  await page.keyboard.press(allControls ? 'Alt+Tab' : 'Tab');
+  await expect(summary).toBeFocused();
+  await expect(summary).toHaveCSS('outline-style', 'solid');
+  await page.keyboard.press('Enter');
+  await expect(navigation).toBeVisible();
+  await expect(navigation.getByRole('link', { name: 'Orders', exact: true })).toHaveAttribute('aria-current', 'page');
+  await page.keyboard.press(allControls ? 'Alt+Tab' : 'Tab');
+  await expect(navigation.getByRole('link').first()).toBeFocused();
+  for (const link of await navigation.getByRole('link').all()) {
+    const box = (await link.boundingBox())!;
+    expect(box.height).toBeGreaterThanOrEqual(43.9);
+    expect(box.x + box.width).toBeLessThanOrEqual(width);
+  }
+  expect((await header.boundingBox())!.height).toBeGreaterThan(collapsed);
+  await fits(page);
+  await summary.focus();
+  await page.keyboard.press('Enter');
+  await expect(navigation).toHaveCount(0);
+  await expect(page.locator('script')).toHaveCount(0);
+});

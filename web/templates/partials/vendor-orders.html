@@ -9,8 +9,8 @@
 <strong>{{.VendorOpenDisputes}}</strong>
 <span>Orders needing a dispute decision</span>
 </div>{{end}}
-{{define "vendor-orders"}}<h2 class="section-title">Incoming orders</h2>{{if .IncomingOrders}}<p class="help">All current work is listed by most recent change.{{if .HistoryLimit}} Showing the {{.HistoryLimit}} most recent completed, resolved or funded-cancelled orders as history.{{end}}</p>
-<div class="table-wrap">
+{{define "vendor-orders"}}<h2 class="section-title" id="incoming-orders">Incoming orders</h2>{{if .IncomingOrders}}<p class="help">All current work is listed by most recent change.{{if .HistoryLimit}} Showing the {{.HistoryLimit}} most recent completed, resolved or funded-cancelled orders as history.{{end}}</p>
+<div class="table-wrap" tabindex="0" role="region" aria-labelledby="incoming-orders">
 <table>
 <thead>
 <tr>
@@ -25,7 +25,7 @@
 <td>
 <a href="/order?id={{.ID}}">{{.Title}}</a>
 <br>
-<small class="muted mono">{{.ID}}</small>
+<small class="muted mono long-id">{{.ID}}</small>
 <br><small>{{.Units}} {{if eq .Units 1}}unit{{else}}units{{end}}</small>
 <br>{{/* A-265: the vendor opens their own listing through the order even once it is archived (A-164) */}}
 <a class="text-link" href="/product?id={{.ProductID}}">Listing<span class="sr-only">: {{.Title}}</span></a>
