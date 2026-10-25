@@ -164,6 +164,11 @@ func moderationOfflineAction(c *actionCtx) (actionResult, error) {
 	if err != nil {
 		return actionResult{}, fail(400, "The signed review token is invalid or expired.")
 	}
+	// The capacity row first, before the proposal and source rows (SEC72AA-1):
+	// recording the review updates its counters.
+	if _, err = c.Tx.ExecContext(c.Ctx(), `SELECT 1 FROM moderation_capacity WHERE singleton FOR UPDATE`); err != nil {
+		return actionResult{}, err
+	}
 	var contentHash, disposition string
 	var expires time.Time
 	err = c.Tx.QueryRowContext(c.Ctx(), `SELECT content_hash,disposition,expires_at FROM moderation_suggestions WHERE id=$1 FOR UPDATE`, token.SuggestionID).Scan(&contentHash, &disposition, &expires)

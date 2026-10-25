@@ -289,10 +289,6 @@ machine or schedule new release/refund actions.
 Every `FLAG_REVIEW` reaches the human queue or the higher-priority administrator
 queue. A `NO_ACTION` label cannot hide review findings in automatic history.
 
-While capture is enabled, a vendor's edit can fail with a retryable deadlock
-error when another transaction admits a moderated change and then locks that
-same listing; retrying the edit succeeds.
-
 ## Records and recovery
 
 Audit identity includes input and output digests, policy/prompt revision, model
@@ -423,6 +419,23 @@ The rescan walks archived listings and hidden reviews too; unflagged payments
 are re-read when flagged again, as above. Disabling capture stops the sweep;
 markers for records that still exist, and rescans, wait until it is enabled
 again; deleting a marked record still removes its marker at once.
+
+A marketplace write never waits for the capacity ledger (migration 148, SEC72AA-1).
+Admission takes the ledger row only if no other transaction holds it. When a
+worker pass, a result, a staff review or another write's admission holds it, the
+write leaves one reference in `moderation_deferred` (kind, target id and when it
+was noted; no account, digest or content), touches no counter, marker, overflow
+note or account row, and commits. At the start of the next pass while capture is
+enabled, before the half-full queue check, the worker admits up to its pass limit
+of these references, oldest first, at each record's current revision through the
+same admission as a write (so the account's queue order, caps, markers and
+rescans apply) and drops those whose record is gone or no longer capturable (an
+unflagged payment is captured again when flagged again). Deleting the record
+removes its reference at once without the ledger lock. Worker results, the
+private-panel and offline reviews and the capture switch take the ledger row
+before any job, proposal or marketplace row, so a transaction that admitted one
+change and then locks another record cannot deadlock over the ledger with them
+or with a concurrent edit of that record.
 
 A revision whose job completed stale (`stale_snapshot`, never evaluated) no
 longer suppresses a later capture of the same content: if a listing changes to a

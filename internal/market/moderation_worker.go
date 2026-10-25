@@ -87,6 +87,17 @@ func SetModerationEnabled(ctx context.Context, db *sql.DB, enabled bool) error {
 		return err
 	}
 	defer tx.Rollback()
+	var capacity, counters bool
+	if err = tx.QueryRowContext(ctx, `SELECT to_regclass('moderation_capacity') IS NOT NULL,to_regclass('moderation_actor_allocations') IS NOT NULL`).Scan(&capacity, &counters); err != nil {
+		return err
+	}
+	// The capacity row first, as the worker pass and staff reviews take it
+	// (SEC72AA-1), then the settings and allocation rows.
+	if capacity {
+		if _, err = tx.ExecContext(ctx, `SELECT 1 FROM moderation_capacity WHERE singleton FOR UPDATE`); err != nil {
+			return err
+		}
+	}
 	res, err := tx.ExecContext(ctx, `UPDATE settings SET value=$1 WHERE key='moderation_enabled'`, strconv.FormatBool(enabled))
 	if err != nil {
 		return err
@@ -102,16 +113,7 @@ func SetModerationEnabled(ctx context.Context, db *sql.DB, enabled bool) error {
 		// off; they are meaningless then, so no daily count outlives the switch.
 		// Rows that still track waiting markers or a pending rescan keep only
 		// that state, so re-enabling capture loses no refused target.
-		var counters bool
-		if err = tx.QueryRowContext(ctx, `SELECT to_regclass('moderation_actor_allocations') IS NOT NULL`).Scan(&counters); err != nil {
-			return err
-		}
 		if counters {
-			// Lock order matches admission and the sweep: the capacity row
-			// first, then allocation rows, so the switch cannot deadlock them.
-			if _, err = tx.ExecContext(ctx, `SELECT 1 FROM moderation_capacity WHERE singleton FOR UPDATE`); err != nil {
-				return err
-			}
 			// Markers of deleted records and their queued count releases are
 			// applied now; while capture stays off, each worker pass does so.
 			if _, err = tx.ExecContext(ctx, `SELECT moderation_backfill_cleanup()`); err != nil {
@@ -221,8 +223,20 @@ func (w *ModerationWorker) process(ctx context.Context, j moderationJob) error {
 		return errors.New("moderation cache unavailable")
 	}
 	if cached {
-		_, err := w.DB.ExecContext(ctx, `UPDATE moderation_jobs SET completed_at=now(),lease_until=NULL,claimed_by='' WHERE id=$1 AND claimed_by=$2`, j.ID, w.WorkerID)
-		return err
+		// Completion updates the capacity counters: take that row first, as
+		// persist does, so a stale lease's persist of this job cannot deadlock it.
+		tx, err := w.DB.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		if _, err = tx.ExecContext(ctx, `SELECT 1 FROM moderation_capacity WHERE singleton FOR UPDATE`); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE moderation_jobs SET completed_at=now(),lease_until=NULL,claimed_by='' WHERE id=$1 AND claimed_by=$2`, j.ID, w.WorkerID); err != nil {
+			return err
+		}
+		return tx.Commit()
 	}
 	in, err := w.input(ctx, j)
 	stale := errors.Is(err, errModerationStaleSource)
@@ -411,6 +425,12 @@ func (w *ModerationWorker) persist(ctx context.Context, j moderationJob, policy 
 		return errors.New("moderation transaction unavailable")
 	}
 	defer tx.Rollback()
+	// The capacity row first, before the job and source rows (SEC72AA-1): the
+	// result and completion counters update it, and a marketplace transaction
+	// that admitted a change holds it and may then lock this job's source row.
+	if _, err = tx.ExecContext(ctx, `SELECT 1 FROM moderation_capacity WHERE singleton FOR UPDATE`); err != nil {
+		return err
+	}
 	// The lease owner must still hold the job. A late response from an old
 	// process never overwrites a replacement worker's completed decision.
 	var owner string
