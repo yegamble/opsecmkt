@@ -1,0 +1,31 @@
+{{define "vendor-bond"}}{{with .VendorBond}}<section class="panel" id="vendor-bond" aria-labelledby="vendor-bond-heading">
+<h2 id="vendor-bond-heading">{{if .Admin}}Vendor bond requirement{{else}}Required vendor bond{{end}}</h2>
+{{with $.NoticeIn "vendor-bond"}}<div class="alert" role="status">{{.}}</div>{{end}}
+{{if .Admin}}
+<p>All sellers, including administrator-owned shops, must hold this bond before publishing, restoring listings or accepting new orders. Existing orders continue. Set 0 to disable the requirement.</p>
+<form class="stack" method="post" action="/admin/vendor-bond">
+<input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="form_nonce" value="{{formNonce "/admin/vendor-bond"}}">
+<label>Required bond amount<input name="amount" value="{{.Amount}}" required inputmode="decimal" maxlength="32" autocomplete="off"></label>
+<label>Bond reference currency<select name="currency">{{$currency := .Currency}}{{range .Currencies}}<option value="{{.}}"{{if eq . $currency}} selected{{end}}>{{.}}</option>{{end}}</select></label>
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}<button type="submit">Save vendor bond requirement</button>
+</form>
+<p class="help">USD, GBP and EUR use the shared BTC/XMR rate service. Coin-denominated bonds are paid in that coin. An increase requires a top-up; changing the reference currency requires a new bond. Existing deposits stay recorded and must be returned by the operator if no longer needed.</p>
+<h3>Shared exchange rates</h3>
+<p>Rates are checked on a fixed five-minute schedule through an operator-configured proxy or local relay, independently of visitors. New quotes require fresh source consensus; suspicious jumps pause quoting. Funded bonds keep their quoted coin obligation.</p>
+{{if .Rates}}<div class="table-wrap" tabindex="0" role="region" aria-label="Exchange rate status"><table><thead><tr><th scope="col">Pair</th><th scope="col">Fiat per coin</th><th scope="col">Sources</th><th scope="col">Source time (UTC)</th><th scope="col">Status</th></tr></thead><tbody>{{range .Rates}}<tr><td>{{.Coin}} / {{.Fiat}}</td><td>{{.Rate}}</td><td>{{.Sources}}</td><td>{{.AsOf}}</td><td>{{if .Available}}Available{{else}}Paused or stale{{end}}</td></tr>{{end}}</tbody></table></div>{{else}}<p>No accepted rate snapshot yet. The operator must configure the rate proxy or a local relay; the first scheduled check needs all three sources to agree.</p>{{end}}
+<h3>Automatic bond deposit wallets</h3><p>{{if .Coins}}Configured for {{range .Coins}}{{.}} {{end}}{{else}}No bond deposit wallet configured. Ask the operator to configure dedicated bond wallets before enabling a required bond.{{end}}</p>
+{{else}}
+{{if .Required}}<p>Required: <strong>{{.Amount}} {{.Currency}}</strong>. {{if .Satisfied}}Your bond is confirmed and held.{{else}}New listings and orders are paused until the required bond is confirmed. You can continue fulfilling existing orders.{{end}}</p>
+{{if not .Satisfied}}{{if .Coins}}<form class="stack" method="post" action="/vendor/bond">
+<input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="form_nonce" value="{{formNonce "/vendor/bond"}}">
+<label>Fund bond with<select name="currency">{{range .Coins}}<option value="{{.}}">{{.}}</option>{{end}}</select></label>
+<button type="submit">Get or renew a bond deposit quote</button>
+</form><p class="help">A quote holds its coin amount for 30 minutes. Send only after this page shows the saved address and amount. Bitcoin quotes have a minimum deposit of 0.00001 BTC, even for a smaller policy top-up. The full deposit must be observed before the deadline; confirmations may finish later. Renew an expired unpaid quote to use current pricing at the same address, keeping any late deposits.</p>{{else}}<p class="order-unavailable">Automatic bond deposits are unavailable. Contact the administrator.</p>{{end}}{{end}}
+{{else}}<p>No vendor bond is currently required.</p>{{end}}
+{{end}}
+<p class="help">Bond balances are checked every 30 seconds and must have a successful check within two minutes. Withdrawals, reorgs or stale checks pause new selling access. These deposits are held by the market operator separately from buyer escrow: Bitcoin spending keys stay outside the app; Monero bonds use a dedicated custodial wallet. Returns and forfeitures are handled by the operator; this app does not send bond withdrawals. Ask staff for the bond terms before paying.</p>
+{{if .Quotes}}<h3>{{if .Admin}}Recent vendor bond deposits (up to 100){{else}}Your bond deposits (up to 100){{end}}</h3>{{range .Quotes}}<article class="order-action">
+{{if $.VendorBond.Admin}}<h4>{{.Handle}} · {{.Coin}} bond {{.ID}}</h4>{{else}}<h4>{{.Coin}} bond {{.ID}}</h4>{{end}}
+<p>{{.Status}}.</p><dl class="key-values"><div><dt>Reference amount</dt><dd>{{.Face}} {{.Currency}}</dd></div><div><dt>Coin amount required</dt><dd>{{.Target}} {{.Coin}}</dd></div><div><dt>Deposit address</dt><dd class="mono">{{.Address}}</dd></div><div><dt>Confirmed and held</dt><dd>{{.Confirmed}} {{.Coin}}</dd></div><div><dt>Pending</dt><dd>{{.Pending}} {{.Coin}}</dd></div><div><dt>Send-by deadline (UTC)</dt><dd>{{.Expires}}</dd></div><div><dt>Last balance check (UTC)</dt><dd>{{if .Checked}}{{.Checked}}{{else}}None yet{{end}}</dd></div>{{if .Rate}}<div><dt>Quoted fiat per coin</dt><dd>{{.Rate}} {{.Currency}} · {{.RateAsOf}}</dd></div>{{end}}</dl>
+</article>{{end}}{{end}}
+</section>{{end}}{{end}}

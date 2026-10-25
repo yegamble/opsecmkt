@@ -1,0 +1,10 @@
+# Dedicated public-rate-feed Tor client; no onion service or control port.
+DataDirectory /var/lib/tor
+Log notice stdout
+MaxMemInQueues 128 MB
+ControlPort 0
+# Bind only to the internal rate_proxy network, never its egress interface.
+SocksPort 10.199.43.2:9050
+SocksPolicy reject 10.199.43.1
+SocksPolicy accept 10.199.43.0/28
+SocksPolicy reject *

@@ -1,0 +1,54 @@
+# Optional fiat-feed Tor client. Append to COMPOSE_FILE and set
+# FIAT_RATE_PROXY_URL=socks5h://rate-tor:9050; keep FIAT_RATE_RELAY_URL blank.
+# The app gains only an internal proxy network. rate-tor alone joins rate_proxy_egress.
+# No SOCKS port is published. The onion gateway and node Tor clients stay separate.
+# If 10.199.43.0/28 overlaps an existing network, change this file and deploy/tor/rates/torrc together.
+x-logging: &logging
+  driver: ${LOG_DRIVER:-json-file}
+  options:
+    max-size: 10m
+    max-file: '3'
+services:
+  app:
+    networks: [backend, rate_proxy]
+  rate-tor:
+    build:
+      context: deploy
+      dockerfile: Dockerfile.tor
+      args: [TOR_VERSION]
+    restart: unless-stopped
+    user: debian-tor
+    entrypoint: [tor, -f, /etc/tor/rates/torrc]
+    networks:
+      rate_proxy:
+        ipv4_address: 10.199.43.2
+      rate_proxy_egress:
+    volumes:
+      - ./deploy/tor/rates/torrc:/etc/tor/rates/torrc:ro
+      - rate_tor_data:/var/lib/tor
+    # An accepting SOCKS port is not proof of a circuit. Check for "Bootstrapped 100%" in the service log.
+    healthcheck:
+      test: [CMD, bash, -c, 'exec 3<>/dev/tcp/10.199.43.2/9050']
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 256m
+    cpu_period: 100000
+    cpu_quota: 100000
+    pids_limit: 64
+    logging: *logging
+volumes:
+  rate_tor_data:
+networks:
+  rate_proxy:
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.199.43.0/28
+          gateway: 10.199.43.1
+          ip_range: 10.199.43.8/29
+  rate_proxy_egress:

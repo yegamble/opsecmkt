@@ -149,7 +149,8 @@ func escrowFeeAction(c *actionCtx) (actionResult, error) {
 			var used bool
 			if err = c.Tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM escrows WHERE address=$1 OR refund_address=$1)
 				OR EXISTS(SELECT 1 FROM escrow_siblings WHERE address=$1)
-				OR EXISTS(SELECT 1 FROM settlements WHERE destination=$1)`, addr).Scan(&used); err != nil {
+				OR EXISTS(SELECT 1 FROM settlements WHERE destination=$1)
+				OR EXISTS(SELECT 1 FROM vendor_bond_quotes WHERE address=$1)`, addr).Scan(&used); err != nil {
 				return actionResult{}, err
 			}
 			if used {

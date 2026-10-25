@@ -58,6 +58,8 @@ var notices = map[string]struct{ text, section, pages string }{
 	"escrow-decision":      {"Dispute decision changed. The order page shows the settlement that pays it.", "", ""},
 	"escrow-fee":           {"Market fee saved. It applies to escrows created from now on; existing escrows keep the fee they started with.", "escrow-fee", "admin"},
 	"escrow-release-days":  {"Release deadline saved. It applies to escrow orders placed from now on; existing orders keep theirs.", "escrow-release-days", "admin"},
+	"vendor-bond-policy":   {"Vendor bond requirement saved. It applies to all sellers taking new business; existing orders continue.", "vendor-bond", "admin"},
+	"vendor-bond-quote":    {"Vendor bond quote saved. Review its amount, address and deadline before sending funds.", "vendor-bond", "vendor-dashboard"},
 	"escrow-rebroadcast":   {"Rebroadcast confirmed. The market broadcasts the settlement's stored transaction once on its next pass.", "escrow-recovery", "admin"},
 	"escrow-xmr-gone":      {"Destruction confirmed. The wallet's sealed seed was wiped; delete its files from the escrow wallet volume if any are left.", "xmr-escrow-recovery", "admin"},
 	"escrow-xmr-relay":     {"Relay confirmed. The market relays the settlement's stored transaction once on its next pass.", "xmr-escrow-recovery", "admin"},

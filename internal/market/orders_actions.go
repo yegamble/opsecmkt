@@ -57,6 +57,13 @@ const sellerIsVendorSQL = "SELECT u.role IN ('vendor','admin') FROM products p J
 func sellerIsVendorLocked(c *actionCtx, productID string) (bool, error) {
 	var ok bool
 	err := c.Tx.QueryRowContext(c.Ctx(), sellerIsVendorSQL+" FOR SHARE OF u", productID).Scan(&ok)
+	if err == nil && ok {
+		var id string
+		err = c.Tx.QueryRowContext(c.Ctx(), "SELECT vendor_id FROM products WHERE id=$1", productID).Scan(&id)
+		if err == nil {
+			err = lockVendorBond(c, id)
+		}
+	}
 	return ok, err
 }
 
@@ -104,7 +111,7 @@ func lockNewIntake(c *actionCtx, buyerID, vendorID string, draft bool) error {
 		}
 		return fail(409, "Unavailable. "+sellerSuspended+" Cancel this draft.")
 	}
-	return nil
+	return lockVendorBond(c, vendorID)
 }
 
 func shortID(id string) string { return id[:min(8, len(id))] }

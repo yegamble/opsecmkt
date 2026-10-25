@@ -32,6 +32,12 @@ PROBE = 'compose run --rm -T --no-deps app -status'
 # Keys whose values are secrets: upgrade never invents them and no command prints them.
 SECRET_KEYS = ('DATABASE_URL', 'POSTGRES_PASSWORD', 'APP_SECRET_KEY', 'SETUP_TOKEN', 'AUDIT_SIGNING_KEY',
                'BITCOIN_RPC_PASSWORD', 'BITCOIN_RPC_AUTH', 'MONERO_WALLET_SECRET', 'ESCROW_XMR_WALLET_RPC_PASSWORD')
+BOND_RATE_KEYS = ('VENDOR_BOND_BTC_RPC_URL', 'VENDOR_BOND_BTC_WALLET', 'VENDOR_BOND_BTC_CONFIRMATIONS',
+                  'VENDOR_BOND_XMR_WALLET_RPC_URL', 'VENDOR_BOND_XMR_DAEMON_URL', 'VENDOR_BOND_XMR_CONFIRMATIONS',
+                  'FIAT_RATE_PROXY_URL', 'FIAT_RATE_RELAY_URL')
+SENSITIVE_URL_KEYS = ('BITCOIN_RPC_URL', 'MONERO_WALLET_RPC_URL', 'VENDOR_BOND_BTC_RPC_URL',
+                      'VENDOR_BOND_XMR_WALLET_RPC_URL', 'VENDOR_BOND_XMR_DAEMON_URL',
+                      'FIAT_RATE_PROXY_URL', 'FIAT_RATE_RELAY_URL')
 PASSWORD = 'correct horse battery staple'
 # The malware scanner (A-184): what clamdscan --version prints once clamd answers, and the calls it takes.
 CLAMD_VERSION = 'ClamAV 1.5.4/28130/Mon Sep 21 06:24:29 2026'
@@ -651,7 +657,7 @@ echo "/dev/test 4000000000 1000 ${INSTALLER_TEST_DF_KB:-3000000000} 1% /"
 
     def assert_no_secret_printed(self, result, config, allow_token=False):
         output = result.stdout + result.stderr
-        for key in SECRET_KEYS + ('BITCOIN_RPC_URL', 'MONERO_WALLET_RPC_URL'):
+        for key in SECRET_KEYS + SENSITIVE_URL_KEYS:
             value = config.get(key, '')
             if not value or (allow_token and key == 'SETUP_TOKEN'):
                 continue
@@ -3057,6 +3063,67 @@ time.sleep(60)
                 self.assertEqual(config[key], value, key)
         # CLAMAV_IMAGE_DEFAULT is installer bookkeeping, not a Compose setting shown in .env.example.
         self.assertEqual(sorted(set(config) - set(example)), ['CLAMAV_IMAGE_DEFAULT'])
+
+    def test_init_keeps_bond_wallets_and_rate_fetching_disabled(self):
+        inherited = {key: 'unrequested-shell-value' for key in BOND_RATE_KEYS}
+        credential = hex_value(32, 'inherited-bond-credential')
+        inherited['VENDOR_BOND_BTC_RPC_URL'] = f'http://review:{credential}@bond-bitcoin:8332'
+        inherited['FIAT_RATE_PROXY_URL'] = f'socks5h://review:{credential}@rate-tor:9050'
+        result = self.run_installer([], arguments=['--local'], extra_env=inherited)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        config = self.config()
+        for key in BOND_RATE_KEYS:
+            self.assertEqual(config[key], '', key)
+        for line in Path(str(self.log) + '.env').read_text().splitlines():
+            self.assertFalse(set(BOND_RATE_KEYS) & set(json.loads(line)))
+        self.assertNotIn(credential, result.stdout + result.stderr)
+        self.assertNotIn('compose.rate-proxy.yaml', config['COMPOSE_FILE'])
+
+    def test_upgrade_preserves_explicit_bond_wallets_and_rate_transport(self):
+        wallets = {'VENDOR_BOND_BTC_RPC_URL': 'http://bond-bitcoin:8332',
+                   'VENDOR_BOND_BTC_WALLET': 'bond-watch', 'VENDOR_BOND_BTC_CONFIRMATIONS': '6',
+                   'VENDOR_BOND_XMR_WALLET_RPC_URL': 'http://bond-monero-wallet:18083',
+                   'VENDOR_BOND_XMR_DAEMON_URL': 'http://monero:18081',
+                   'VENDOR_BOND_XMR_CONFIRMATIONS': '20'}
+        transports = ({'FIAT_RATE_PROXY_URL': 'socks5h://rate-tor:9050', 'FIAT_RATE_RELAY_URL': ''},
+                      {'FIAT_RATE_PROXY_URL': '', 'FIAT_RATE_RELAY_URL': 'http://127.0.0.1:18084/rates'})
+        for transport in transports:
+            with self.subTest(transport=transport):
+                wanted = {**wallets, **transport}
+                files = installed_env()['COMPOSE_FILE']
+                if transport['FIAT_RATE_PROXY_URL']:
+                    files += ':compose.rate-proxy.yaml'
+                self.write_env(installed_env(**wanted, COMPOSE_FILE=files))
+                result = self.upgrade(extra_env={key: 'ignored-shell-value' for key in BOND_RATE_KEYS})
+                self.assertEqual(result.returncode, 0, result.stderr)
+                config = self.config()
+                for key, value in wanted.items():
+                    self.assertEqual(config[key], value, key)
+                self.assertEqual(config['COMPOSE_FILE'], files)
+                for line in Path(str(self.log) + '.env').read_text().splitlines():
+                    self.assertFalse(set(BOND_RATE_KEYS) & set(json.loads(line)))
+                for copy in self.pre_upgrade_copies():
+                    copy.unlink()
+
+    def test_bond_and_rate_url_credentials_are_not_printed(self):
+        credential = hex_value(32, 'configured-bond-credential')
+        files = installed_env()['COMPOSE_FILE'] + ':compose.rate-proxy.yaml'
+        values = installed_env(
+            COMPOSE_FILE=files, VENDOR_BOND_BTC_RPC_URL=f'http://review:{credential}@bond-bitcoin:8332',
+            VENDOR_BOND_BTC_WALLET='bond-watch', VENDOR_BOND_BTC_CONFIRMATIONS='6',
+            VENDOR_BOND_XMR_WALLET_RPC_URL=f'http://review:{credential}@bond-monero-wallet:18083',
+            VENDOR_BOND_XMR_DAEMON_URL=f'http://review:{credential}@monero:18081',
+            VENDOR_BOND_XMR_CONFIRMATIONS='20',
+            FIAT_RATE_PROXY_URL=f'socks5h://review:{credential}@rate-tor:9050', FIAT_RATE_RELAY_URL='')
+        for command in ('status', 'check', 'upgrade'):
+            with self.subTest(command=command):
+                self.write_env(values)
+                arguments = ('--no-backup',) if command == 'upgrade' else ()
+                result = self.command(command, *arguments)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assert_no_secret_printed(result, values)
+                self.assertNotIn(credential, result.stdout + result.stderr)
+                self.assertEqual(self.config()['COMPOSE_FILE'], files)
 
     def test_upgrade_advances_recorded_clamav_default_and_preserves_custom_images(self):
         previous = 'clamav/clamav:1.5.4-debian'

@@ -127,6 +127,13 @@ func purchaseGateLoader(ctx context.Context, a *App, _ *http.Request, d *PageDat
 		d.NoPurchase = true
 		return nil
 	}
+	if ok, err := vendorBondSatisfied(ctx, a.db, d.Product.VendorID, false); err != nil {
+		return err
+	} else if !ok {
+		d.VendorBondReason = sellerBondRequired
+		d.NoPurchase = true
+		return nil
+	}
 	if d.Product.Kind == "service" {
 		d.NoPurchase = true
 		return nil

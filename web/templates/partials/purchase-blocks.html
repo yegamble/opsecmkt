@@ -1,5 +1,5 @@
 {{/* A-444: a listing that cannot use the escrow of a coin whose intake is escrow only (escrow_readiness.go): the reason
 per coin on its product and checkout pages; its vendor also reads the fix. */}}
-{{define "purchase-blocks"}}{{range .PurchaseBlocks}}<p class="order-unavailable" role="note">
+{{define "purchase-blocks"}}{{with .VendorBondReason}}<p class="order-unavailable" role="note">{{.}}</p>{{end}}{{range .PurchaseBlocks}}<p class="order-unavailable" role="note">
 <strong>Not available for purchase in {{.Currency}}.</strong> This market takes new {{.Currency}} payments through escrow only. {{.Reason}}{{if and $.User $.Product}}{{if eq $.User.ID $.Product.VendorID}} {{.Fix}}{{end}}{{end}}</p>
 {{end}}{{end}}

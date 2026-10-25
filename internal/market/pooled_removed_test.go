@@ -12,11 +12,13 @@ import (
 
 // A-492: pooled payments are removed (owner directive 2026-10-11). No non-test Go source or template may write the
 // pooled tables (migration 108 refuses their rows), call a pooled wallet RPC, or bring back a pooled identifier or
-// function. The only exceptions are config.go's refusal of the obsolete pooled settings (refuseObsoletePooledEnv) and
-// the immutable numbered migrations, which are SQL and not scanned.
+// function. Dedicated bond wallets may allocate receiving addresses, but may not
+// send withdrawals or write the old order-payment tables. Other exceptions are
+// config.go's obsolete-setting refusal and immutable SQL migrations.
 var pooledRemovedPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\b(INSERT\s+INTO|UPDATE)\s+(payouts|payment_addresses)\b`),
-	regexp.MustCompile(`\b(sendtoaddress|getnewaddress|create_address|sendmany)\b`),
+	regexp.MustCompile(`\b(sendtoaddress|create_address|sendmany)\b`),
+	regexp.MustCompile(`\bgetnewaddress\b`),
 	regexp.MustCompile(`Pooled[A-Z]`),
 	regexp.MustCompile(`\b(enqueuePayout|sendPayouts|settleOrder|payAction)\b`),
 	// A-508: the pooled payout preview (a release/return split with an administrator's review and a minimum automatic
@@ -31,7 +33,10 @@ var pooledRemovedPatterns = []*regexp.Regexp{
 }
 
 // pooledRemovedAllowed: the one pattern a file may match, by path.
-var pooledRemovedAllowed = map[string]string{"internal/market/config.go": `Pooled[A-Z]`}
+var pooledRemovedAllowed = map[string]string{
+	"internal/market/config.go":          `Pooled[A-Z]`,
+	"internal/market/vendor_bond_rpc.go": `\bgetnewaddress\b`,
+}
 
 // pooledRemovedFindings reports each line of files (path to content) that matches a pattern its path is not allowed.
 func pooledRemovedFindings(files map[string]string) []string {
@@ -87,6 +92,21 @@ func pooledRemovedSources(t *testing.T) map[string]string {
 func TestPooledPaymentsStayRemoved(t *testing.T) {
 	for _, f := range pooledRemovedFindings(pooledRemovedSources(t)) {
 		t.Errorf("pooled payments are removed (A-492); found %s", f)
+	}
+}
+
+func TestBondRPCGuardAllowsReceivingOnly(t *testing.T) {
+	path := "internal/market/vendor_bond_rpc.go"
+	if got := pooledRemovedFindings(map[string]string{path: `p.call(ctx, "getnewaddress", label)`}); len(got) != 0 {
+		t.Fatalf("bond receiving refused: %v", got)
+	}
+	for _, code := range []string{`p.call(ctx,"sendtoaddress",address,amount)`, `p.call(ctx,"sendmany",outs)`, `INSERT INTO payment_addresses`, `UPDATE payouts SET amount=1`} {
+		if got := pooledRemovedFindings(map[string]string{path: code}); len(got) == 0 {
+			t.Fatalf("bond provider bypassed retired-payment guard: %s", code)
+		}
+	}
+	if got := pooledRemovedFindings(map[string]string{"internal/market/other.go": `getnewaddress`}); len(got) == 0 {
+		t.Fatal("receiving exception escaped the dedicated bond provider")
 	}
 }
 

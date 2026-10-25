@@ -40,8 +40,10 @@ type bucket struct {
 	Seen  []string // allowLookup: the distinct handles this window admitted (A-516)
 }
 type App struct {
-	startedAt    time.Time       // this process instance, never a persisted heartbeat
-	recentErrors serverErrorRing // A-143: last 20 referenced HTTP errors, in memory only
+	fiatRates     *fiatRateService
+	bondProviders map[string]bondProvider
+	startedAt     time.Time       // this process instance, never a persisted heartbeat
+	recentErrors  serverErrorRing // A-143: last 20 referenced HTTP errors, in memory only
 
 	db               *sql.DB
 	health           *sql.DB // one connection for /healthz, apart from the application pool (A-178)
@@ -130,6 +132,9 @@ func New(ctx context.Context, preview bool) (*App, error) {
 	}
 	root, legacy := cfg.keyRoot()
 	a.useKeyRoot(root)
+	if err = a.configureFiatRates(); err != nil {
+		return nil, err
+	}
 	for _, note := range cfg.notes {
 		log.Print(note)
 	}
@@ -184,6 +189,10 @@ func New(ctx context.Context, preview bool) (*App, error) {
 		a.closeDB()
 		return nil, err
 	}
+	if err = a.checkBondNetworkClass(ctx); err != nil {
+		a.closeDB()
+		return nil, err
+	}
 	escrowCtx, cancelEscrow := context.WithTimeout(ctx, paymentStartupTimeout)
 	defer cancelEscrow()
 	if err = a.initEscrow(escrowCtx); err != nil {
@@ -193,6 +202,12 @@ func New(ctx context.Context, preview bool) (*App, error) {
 	xmrCtx, cancelXMR := context.WithTimeout(ctx, paymentStartupTimeout)
 	defer cancelXMR()
 	if err = a.initEscrowXMR(xmrCtx); err != nil {
+		a.closeDB()
+		return nil, err
+	}
+	bondCtx, cancelBond := context.WithTimeout(ctx, paymentStartupTimeout)
+	defer cancelBond()
+	if err = a.configureVendorBondProviders(bondCtx); err != nil {
 		a.closeDB()
 		return nil, err
 	}

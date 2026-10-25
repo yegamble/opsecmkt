@@ -23,7 +23,7 @@ Read this once, before you form any opinion. Then read `CLAUDE.md`,
 
 1. **No browser JavaScript.** Every workflow is an HTML form + server response.
    A design that needs client script is a BLOCKER, not a preference.
-2. **Per-order escrow is the only payment path; one network class per market.** Bitcoin is
+2. **Per-order escrow is the only order-payment path; one network class per market.** Bitcoin is
    2-of-3 multisig (buyer, vendor, market arbitrator keys; the server can never
    spend alone); Monero is a per-order account, custodial until multisig is
    validated. Escrow is off by default (`ESCROW_BTC`, `ESCROW_XMR`). A market is
@@ -58,6 +58,20 @@ Read this once, before you form any opinion. Then read `CLAUDE.md`,
 7. **Migrations are append-only and numbered.** A merged migration is immutable.
 8. **Signed audit export must stay byte-stable**: existing `audit_events` rows
    are never rewritten.
+
+9. **Vendor collateral is separate from order escrow.** Migration 111 starts its
+   requirement at 0 USD. A positive admin policy applies to every seller,
+   administrator-owned shops included, for new publication/restoration and order
+   intake; existing orders continue. Dedicated BTC watch-only and XMR custodial
+   wallets allocate and observe only: the app never sends bond withdrawals.
+   A full deposit observed within its 30-minute quote commits the coin target;
+   selling still needs confirmed/unspent funds checked within two minutes.
+   Restore reconciliation blocks new quotes and required-bond selling while
+   observations continue. The 100-quote, 25-second serial pass has bounded capacity.
+   Shared fiat quotes require fresh corroborated server-side rates through an
+   explicit proxy or loopback relay. The optional rate Tor client alone gains
+   egress; visitor requests never fetch rates. Operator spending tools, bond
+   wallet backups/restores and live-feed evidence are separate prerequisites.
 
 ## Verification gates (quote these; do not invent others)
 

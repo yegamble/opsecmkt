@@ -121,8 +121,10 @@ type Event struct{ Handle, Action, Created string } // Handle: account the audit
 type SignInRefusal struct{ Handle, Until string }
 
 type PageData struct {
-	ServerStarted string
-	SchemaVersion int
+	VendorBond       *VendorBondView
+	VendorBondReason string
+	ServerStarted    string
+	SchemaVersion    int
 
 	StaffRoster       []StaffRosterEntry
 	StaffRosterPaging *ActivityPaging

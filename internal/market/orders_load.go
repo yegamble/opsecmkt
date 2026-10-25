@@ -397,6 +397,9 @@ func loadOrderDetail(ctx context.Context, a *App, r *http.Request, d *PageData) 
 	if err := suspendedVendorOrderGate(ctx, a, d); err != nil {
 		return err
 	}
+	if err := vendorBondOrderGate(ctx, a, d); err != nil {
+		return err
+	}
 	return subFloorOrderGate(ctx, a, d)
 }
 

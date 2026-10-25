@@ -104,6 +104,9 @@ func listingAction(c *actionCtx) (actionResult, error) {
 	if role != "vendor" && role != "admin" {
 		return actionResult{}, fail(403, "Vendor access required")
 	}
+	if err = lockVendorBond(c, c.User.ID); err != nil {
+		return actionResult{}, err
+	}
 	id := randomToken()
 	if in.Kind == "physical" && in.DispatchDays == 0 {
 		in.DispatchDays = defaultDispatchDays

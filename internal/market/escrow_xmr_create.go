@@ -203,6 +203,7 @@ func checkXMRRefund(ctx context.Context, q rowQuerier, refund, feeAddress string
 func xmrAddressUse(ctx context.Context, q rowQuerier, addr, feeAddress, order string) (string, error) {
 	var use string
 	err := q.QueryRowContext(ctx, `SELECT CASE
+		WHEN EXISTS(SELECT 1 FROM vendor_bond_quotes WHERE address=$1) THEN 'used'
 		WHEN EXISTS(SELECT 1 FROM xmr_escrow_slots WHERE address=$1) OR EXISTS(SELECT 1 FROM escrows WHERE address=$1) THEN 'escrow'
 		WHEN EXISTS(SELECT 1 FROM xmr_escrow_wallets WHERE primary_address=$1) THEN 'wallet'
 		WHEN $1=$2 OR EXISTS(SELECT 1 FROM escrows WHERE fee_destination=$1) THEN 'fee'

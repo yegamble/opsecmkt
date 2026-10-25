@@ -633,6 +633,8 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 				msg = "Escrow release deadline setting outcome unknown: it may have been saved. Reload the admin page and check the current deadline and audit trail before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
 			case "/admin/payment-intake":
 				msg = "Payment intake setting outcome unknown: it may have been saved. Reload the admin page and check the currency's current intake and audit trail before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
+			case "/admin/vendor-bond", "/vendor/bond":
+				msg = "Vendor bond outcome unknown: it may have been saved. Reload the admin page or vendor desk and check the requirement or deposit instructions before sending funds. If the original form is still open, resubmit it unchanged to retrieve the saved response."
 			case "/moderator/payment-review", "/moderator/xmr-collision":
 				msg = "Staff disposition outcome unknown: it may have been saved. Check the moderation desk and order record before taking further action. If the original form is still open, resubmit it unchanged to retrieve the saved response."
 			case "/pgp/2fa":

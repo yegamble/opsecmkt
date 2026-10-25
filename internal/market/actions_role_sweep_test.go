@@ -42,11 +42,13 @@ const (
 )
 
 var sweepScopes = map[string][2]string{
-	"/challenge":     {scopePublic, "second step of sign-in, before a session exists"},
-	"/challenge/pgp": {scopePublic, "PGP code step of sign-in, before a session exists"},
-	"/login":         {scopePublic, "sign-in"},
-	"/register":      {scopePublic, "registration"},
-	"/setup":         {scopePublic, "first-run setup, gated by the installation secret"},
+	"/vendor/bond":       {scopeSelf, "funds the caller's own vendor bond; no target user identifier"},
+	"/admin/vendor-bond": {scopeStaff, ""},
+	"/challenge":         {scopePublic, "second step of sign-in, before a session exists"},
+	"/challenge/pgp":     {scopePublic, "PGP code step of sign-in, before a session exists"},
+	"/login":             {scopePublic, "sign-in"},
+	"/register":          {scopePublic, "registration"},
+	"/setup":             {scopePublic, "first-run setup, gated by the installation secret"},
 
 	"/logout":                {scopeSelf, "ends the caller's own session"},
 	"/revoke-sessions":       {scopeSelf, "revokes the caller's other sessions"},

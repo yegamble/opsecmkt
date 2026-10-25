@@ -163,7 +163,8 @@ func (a *App) escrowFeeAddress(ctx context.Context, e *escrowBTC, orderID string
 		}
 		var used bool
 		if err = a.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM escrows WHERE address=$1 OR refund_address=$1 OR fee_destination=$1)
-			OR EXISTS(SELECT 1 FROM escrow_siblings WHERE address=$1) OR EXISTS(SELECT 1 FROM settlements WHERE destination=$1)`, addr).Scan(&used); err != nil {
+			OR EXISTS(SELECT 1 FROM escrow_siblings WHERE address=$1) OR EXISTS(SELECT 1 FROM settlements WHERE destination=$1)
+			OR EXISTS(SELECT 1 FROM vendor_bond_quotes WHERE address=$1)`, addr).Scan(&used); err != nil {
 			return "", err
 		}
 		if used { // never pay a fee to an address the market used: move this escrow to the next index

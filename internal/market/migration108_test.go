@@ -15,9 +15,23 @@ const (
 	pooledAddressInsert = "INSERT INTO payment_addresses(order_id,currency,address,provider) VALUES($1,'BTC','bcrt1qlegacy108address0000000000000000000','btc-regtest')"
 )
 
+// restoreSchema110 removes migration 111's bond/rate tables, policy, runtime wallet
+// pins and stamp, so older fixtures can replay the complete migration chain.
+func restoreSchema110(t *testing.T, e *testEnv) {
+	t.Helper()
+	if _, err := e.DB.Exec(`DROP TABLE vendor_bond_quotes;
+		DROP TABLE fiat_rates;
+		DELETE FROM settings WHERE key IN ('vendor_bond','vendor_bond_BTC_wallet_identity','vendor_bond_XMR_wallet_identity',
+			'vendor_bond_btc_network','vendor_bond_xmr_network');
+		DELETE FROM schema_migrations WHERE version=111`); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // restoreSchema109 puts the database back as migration 109 left it: 110's stamp and table removed.
 func restoreSchema109(t *testing.T, e *testEnv) {
 	t.Helper()
+	restoreSchema110(t, e)
 	if _, err := e.DB.Exec(`DELETE FROM schema_migrations WHERE version=110; DROP TABLE escrow_watch_unrepaired`); err != nil {
 		t.Fatal(err)
 	}

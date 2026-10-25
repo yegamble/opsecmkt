@@ -8,7 +8,7 @@
 {{if .}}<p class="help">Payment confirmation is configured for {{.}}; orders in other currencies are not delivered automatically.</p>{{else}}<div class="notice inventory-unavailable">
 <p><strong>Automatic delivery requires a payment provider.</strong> None is configured, so saved content is not released to anyone until payments are enabled.</p>
 </div>{{end}}{{end}}
-{{define "vendor-listings"}}<details class="panel">
+{{define "vendor-listings"}}{{if or (not .VendorBond) .VendorBond.Satisfied}}<details class="panel">
 <summary class="accent mono">+ Publish a new listing</summary>
 <form class="stack" method="post" action="/listings">
 <input type="hidden" name="csrf" value="{{.CSRF}}">
@@ -53,7 +53,7 @@
 {{if .Inventory}}{{template "vendor-listings:delivery-help" .Inventory.AutoDelivery}}{{else}}{{template "vendor-listings:delivery-help" ""}}{{end}}
 <button class="primary" type="submit">Publish listing <span class="action-icon">↗</span></button>
 </form>
-</details>
+</details>{{end}}
 <h2 class="section-title">Your listings</h2>
 <p class="help">Archived listings stay here, hidden from the marketplace and closed to new orders. Existing orders are not changed.</p>
 {{if .Inventory}}<nav class="pagination inventory-filters" aria-label="Filter your listings">

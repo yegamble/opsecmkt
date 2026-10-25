@@ -43,6 +43,13 @@ func loadVendorReadiness(ctx context.Context, a *App, _ *http.Request, d *PageDa
 		vendorCurrencyReadiness(a, d, "BTC", a.escrowConfigured, btcEscrowAvailable, a.escrowConfigured, btcKeyActive, btcPerOrder, a.escrowSignerState()),
 		vendorCurrencyReadiness(a, d, "XMR", a.escrowXMR != nil, a.xmrEscrowReady(), false, false, false, ""),
 	}
+	if ok, err := vendorBondSatisfied(ctx, a.db, d.User.ID, false); err != nil {
+		return err
+	} else if !ok {
+		for i := range v.Currencies {
+			v.Currencies[i].Checkout = "No current checkout: the required vendor bond is not confirmed"
+		}
+	}
 	d.VendorReadiness = v
 	return nil
 }
