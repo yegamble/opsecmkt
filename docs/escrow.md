@@ -55,7 +55,9 @@ market holds the wallet keys and builds, stores and sends every transaction itse
   window) is cancelled too, which requests its refund.
 - **Settlements: built, stored and relayed by the watcher, never rebuilt.** Only the watcher builds a settlement, and
   only once the order has its outcome (a release on a completed order or one decided for the vendor, a refund on a
-  cancelled order or one decided for the buyer, a stray refund on any closed order). It checks that the open wallet's
+  cancelled order or one decided for the buyer, a stray refund on any closed order), and never a release while the
+  vendor is banned: it is held, unbuilt, until the ban is lifted (A-652c, owner decision 2026-10-25). It checks that
+  the open wallet's
   primary address is the one on record and that the order's account has the escrow address, freezes every output of that
   account the settlement does not claim, and asks for one transfer from that account (`account_index` is never 0 and never
   absent) with `do_not_relay`, taking the network fee from the claimant's output alone. It then checks the wallet's
@@ -253,7 +255,8 @@ market holds the wallet keys and builds, stores and sends every transaction itse
 transaction the wallet builds is checked to spend exactly the outputs claimed to exactly the planned destinations, so one
 order's coins are not paid out in another's settlement. The database refuses a second outcome per order, a stored
 transaction that changes, a transaction stored before the order's state fits the settlement (migration 081's rule, carried
-into 084), and any deleted escrow record. A settlement is stored before it is relayed and is relayed again only as the
+into 084; since migration 149 also a release's while its vendor is banned), and any deleted escrow record. A
+settlement is stored before it is relayed and is relayed again only as the
 same stored transaction; it is never rebuilt by the market on its own, and the administrator's re-request is allowed only
 when the stored transaction is in neither the daemon's pool nor the chain and none of its coins is spent, builds exactly
 the stored coins to the stored plan, and supersedes the old row in the same database transaction, so at most one of the two

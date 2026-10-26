@@ -17,7 +17,8 @@ import (
 // runs in a form post. In a custodial wallet the market signs alone, so these steps are the whole of a settlement:
 //
 //  1. Build (requested -> built), never while the restore gate is set, only when the order's state fits the kind
-//     (settlementFits, the rule escrow_market_may_sign, migration 081, enforces at store), and only while no other
+//     (settlementFits, the rule escrow_market_may_sign, migration 081, enforces at store), never for a release while
+//     the vendor is banned (xmrReleaseHeld; migration 149 enforces it at store, A-652c), and only while no other
 //     settlement of the order is built and not relayed: get_address of the account's address 0 must be the escrow
 //     address; incoming_transfers of the account; the outputs the settlement claims are those of its deposits (a
 //     release or refund: every deposit that counts with the confirmation threshold and no settlement; a stray refund:
@@ -113,6 +114,9 @@ const (
 	// (xmrFeeEpisode, QA5W2-1).
 	xmrFeeEstimateWaiting     = "fee-estimate-waiting"
 	xmrFeeEstimateUnavailable = "fee-estimate-unavailable"
+	// A-652c (owner decision 2026-10-25, "refund + hold"): the vendor of a release's order is banned, so it is held,
+	// requested and unbuilt, until the ban is lifted (xmrReleaseHeld): flagged.
+	xmrVendorClosed = "vendor-closed"
 )
 
 // xmrRelayAttempts is the number of passes in a row on which relay_tx may refuse a stored transaction before it is
@@ -122,7 +126,7 @@ const xmrRelayAttempts = 3
 // xmrWaitFlagged reports whether staff are told of class.
 func xmrWaitFlagged(class string) bool {
 	switch class {
-	case xmrOutputsMismatch, xmrAddressMismatch, xmrFeeCap, xmrTooSmall, xmrBadBuild, xmrBuildSetAside, xmrFeeEstimateUnavailable:
+	case xmrOutputsMismatch, xmrAddressMismatch, xmrFeeCap, xmrTooSmall, xmrBadBuild, xmrBuildSetAside, xmrFeeEstimateUnavailable, xmrVendorClosed:
 		return true
 	}
 	return strings.HasPrefix(class, xmrDestRefused) || strings.HasPrefix(class, xmrWalletRefused+" ")
@@ -263,11 +267,16 @@ func xmrSettleWaitText(class, kind string, threshold int64) string {
 		return "The escrow wallet refused to build this transaction, and the market could not get the network fee estimate it needs to tell whether the coins are too few for the fee; the market tries again on its next pass."
 	case class == xmrFeeEstimateUnavailable:
 		return "The escrow wallet keeps refusing to build this transaction, and the market still cannot get the network fee estimate it needs to tell whether the coins are too few for the fee. The market tries again on each pass; market staff were notified."
+	case class == xmrVendorClosed:
+		return xmrVendorClosedText
 	case restoreHeld(class):
 		return restoreHeldText
 	}
 	return ""
 }
+
+// xmrVendorClosedText is what the order page, and the staff alert, say of a release held for a banned vendor (A-652c).
+const xmrVendorClosedText = "The vendor's account is closed, so the market holds this release: it builds and sends nothing while the account is banned, and the coins stay in this order's escrow account. No other address is ever paid. If the ban is lifted, the market builds and sends it on its next pass. Market staff were notified."
 
 // xmrStrayEligibleSQL selects the payments rows p a Monero stray refund returns (strayEligibleSQL's rule), for a query
 // with the threshold as $2.
@@ -662,6 +671,9 @@ func (a *App) buildXMRSettlement(ctx context.Context, s *xmrSettleRow) error {
 	if s.Wait == xmrBuildSetAside {
 		return nil // until an administrator asks for it again (xmrRetryBuildAction)
 	}
+	if held, err := a.xmrReleaseHeld(ctx, s); err != nil || held {
+		return err
+	}
 	feeReplaced := false
 	if strings.HasPrefix(s.Wait, xmrDestRefused) {
 		// A refused destination is never tried again as if the refusal were transient: the claimant's and the buyer's
@@ -815,6 +827,39 @@ func (a *App) buildXMRSettlement(ctx context.Context, s *xmrSettleRow) error {
 	x.belowFee.Delete(s.ID) // built at last (a later deposit): its too-few refusal is not kept
 	s.State, s.TxHash, s.Metadata, s.KeyImages, s.Wait = "built", tx.TxHash, tx.Metadata, keyImages, ""
 	return a.relayXMRStored(ctx, s)
+}
+
+// xmrReleaseHeld holds release s, a first request or a re-request, while the vendor of its order's listing is banned
+// (A-652c, owner decision 2026-10-25 "refund + hold"): it stays requested with send_error xmrVendorClosed, flagged to
+// staff once (xmrSettleWaits), and nothing is asked of the wallet for it. Migration 149's escrow_market_may_sign refuses
+// to store its transaction too, should a ban commit while it is built. Refunds and stray refunds are never held, nor is
+// a settlement already built or relayed (this runs only for requested ones). A refused destination keeps its flagged
+// class, so that, once the ban is lifted, a refused claim address is still never tried again and a refused fee address
+// only once the operator has replaced it (validating the new one is a wallet call too, so it waits for the lifted ban).
+// Lifting the ban ends the hold: the next pass clears the class and builds it as before. It reports whether s is held.
+func (a *App) xmrReleaseHeld(ctx context.Context, s *xmrSettleRow) (bool, error) {
+	if s.Kind != "release" {
+		return false, nil
+	}
+	var banned bool
+	if err := a.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM orders o JOIN products p ON p.id=o.product_id JOIN users v ON v.id=p.vendor_id
+		WHERE o.id=$1 AND v.banned_at IS NOT NULL)`, s.OrderID).Scan(&banned); err != nil {
+		return false, err
+	}
+	if !banned {
+		if s.Wait == xmrVendorClosed {
+			// The ban was lifted: the page no longer says the release is held, even if this pass builds nothing.
+			if _, err := a.execEscrowOrder(ctx, s.OrderID, "UPDATE xmr_settlements SET send_error='',updated=now() WHERE id=$1 AND state='requested' AND send_error=$2", s.ID, xmrVendorClosed); err != nil {
+				return false, err
+			}
+			s.Wait = ""
+		}
+		return false, nil
+	}
+	if strings.HasPrefix(s.Wait, xmrDestRefused) {
+		return true, nil
+	}
+	return true, a.xmrSettleWaits(ctx, s, xmrVendorClosed)
 }
 
 // xmrSettleTooSmall handles settlement s, which claims deposits, whose coins are too few to pay the network fee and

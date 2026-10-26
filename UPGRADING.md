@@ -25,6 +25,26 @@ refund address its buyer gave at checkout. Nothing changes until an administrato
 leaves its open orders alone, and no new payee or address is involved. The overview now flags *Users* while a banned
 account has open escrow orders. See *Account ban* under [authentication](docs/operator-guide.md#authentication).
 
+## Releases to a banned vendor are held until the ban is lifted (migration 149, A-652c)
+
+**Behaviour change** (owner decision 2026-10-25, "refund + hold"). Until now a banned vendor's open escrow orders were
+paid as usual: a shipped order completed by the buyer's confirmation or its release deadline sent its release to the
+address the vendor gave at shipment. Now a release to a banned vendor stays requested, with the class `vendor-closed`,
+until the ban is lifted: the escrow watcher asks the wallet nothing for it, administrators get one *Payment review
+needed* notice for the order, and the order page says the release is held. Refunds and stray refunds are paid as usual,
+a release already built or sent before the ban is sent and followed as before, and no other address is ever paid.
+Lifting the ban is the only step: the next pass builds and sends the release. A release already requested for a vendor
+banned before the upgrade is held from the first pass on the new build. A later administrator action, one order at a
+time, is to refund a release held for a long time to the order's buyer refund address instead (A-652f); it is not
+available yet.
+
+Migration 149 replaces the body of the database function `escrow_market_may_sign` (migration 081), which the triggers
+that store a settlement's transaction read, so that for a release it also requires the order's vendor not to be
+banned. It changes no table, column, index, row or other function, and no operator action is needed. Rolling the
+application back to a build without the watcher's check leaves the function in place: that build would try to build
+such a release on each pass, and the database refuses to store it (logged as a refused store, the transaction
+discarded unsent), so it is still not paid until the ban is lifted.
+
 ## The moderation model no longer reads listings or uploads (moderation-v5, A-651)
 
 No migration. The moderation protocol is now `moderation-v5`, and the controller refuses v1–v4 pins. **If you start
