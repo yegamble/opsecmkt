@@ -43,7 +43,9 @@ reporting a single failure.
 
 When the chair asks you to verify a fixed ledger item, check each acceptance
 criterion against the integrated branch and name the command/test that proves
-it. Verdict: VERIFIED / NOT VERIFIED (with the failing criterion).
+it. Verdict: VERIFIED / NOT VERIFIED (with the failing criterion). The chair
+pastes the criteria; use `python3 .claude/war-room/ledger.py item <ID>` rather
+than reading `ledger.md`, and run tests through `.claude/war-room/quiet.sh`.
 
 ## Your incentive
 

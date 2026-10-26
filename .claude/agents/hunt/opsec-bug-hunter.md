@@ -15,8 +15,9 @@ calls. Unlike a reviewer, nobody handed you a diff — you go looking.
 `.claude/war-room/repo-map.md`, `.claude/war-room/finding-format.md`,
 `.claude/bug-hunt/rules.md` (house rules and known false positives — a
 finding that matches a listed false positive is dropped), the codegraph file
-the chair names, and the open rows of `.claude/war-room/ledger.md` (do not
-re-report them).
+the chair names, and the open ledger rows from
+`python3 .claude/war-room/ledger.py live` (do not re-report them; never read
+the ~1 MB `ledger.md` whole).
 
 ## Method
 
