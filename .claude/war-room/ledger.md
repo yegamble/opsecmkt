@@ -1,32 +1,38 @@
 # War-room ledger
 
-## Start here — current state and next work (updated 2026-10-25)
+## Start here — current state and next work (updated 2026-10-26, iteration 91)
 
 Read this section first. Everything below it is the full history: iteration log, then P0–P3 tables (each row's
 last column is its status), Declined, Closed, and per-iteration rulings with acceptance criteria.
 
-**On main.** All verified war-room work through iteration 85, plus:
+**On main.** All verified war-room work through iteration 91, plus:
 - PR #99: the moderation agent (disabled by default; migrations 125–127, 134, 145, 146) and listing hold mode.
 - PR #154: MOD72-8, the application pool turns PostgreSQL JIT off.
 - PR #161: the docs worker pins patched undici (a new advisory had failed CI on every branch).
+- PR #166 (iterations 87–91): A-647–A-651, A-652a–d, A-653, A-654, A-662–A-664; migrations 148–150.
+- PR #168: CI rebuilds the image security-upgrade layer daily (SECURITY_REFRESH), so a fixed Debian package reaches the scan.
 
 There are no long-lived feature branches. Work on a fresh `war-room/<ID>-<slug>` branch from main, one ledger
-item per PR. The next migration number is 151 (148 is A-647; 149 is A-652c; 150 is A-652a). Check open PRs before taking one.
+item per PR. Migrations 151 (A-666), 152 (A-667, if needed) and 153 (A-652f, if needed) are reserved by
+implementers running in iteration 91. Check open PRs before taking one.
 
 **Open PRs.**
 - #162 A-519 release integrity and #163 A-521 phone-width tables: drafts holding an implementer's unfinished,
   unverified worktree. Finish each against its row's acceptance criteria, then mark it ready.
 
 **Next unblocked work, in order.**
-1. Behaviour-based moderation (design round held in iteration 87; see "Iteration 87" below). A-647 (SEC72AA-1),
-   A-648 (budget alert), A-649 (banned buyers' reviews), A-650, A-651 (model no longer reads listings, v5) and
-   A-654 (budget raise form) are verified on integration PR #166. Next: A-652a–e (ban and open orders, owner
-   ruled refund + hold) and A-653 (Go reputation rule), then the P2 rows A-655–A-662.
+1. Iteration 91 in flight: A-652f (refund a banned vendor's held release after N days; owner included unclaimed
+   digital orders), A-666 (migration 151: orders.amount frozen once escrowed, refund destination pinned), A-667
+   (intermittent deadlock between moderation disable, sweep and erasure, seen in CI 40395996684). Then A-668
+   (deadlock → busy 503) and A-652e (ban ends selling authority: needs payments-seat criteria; a ban already
+   archives listings, withdraws the vendor application and clears the verified mark, admin_ban.go).
 2. A-519 and A-521: finish the draft PRs.
 3. A-522 (operator recovery bundle), A-132 (CAPTCHA at sign-in), A-175 (iteration-16 QA follow-ups), A-503
    (Monero dispute browser journey), A-506 (small ops/release items), A-541 (signer close test), A-226 (wallet-RPC
-   bind).
+   bind), and the moderation P2 rows A-655–A-661.
 4. P3 and NIT rows marked `open`, oldest first.
+5. Sweep rotation: payments, identity, commerce, operations, privacy, UI and AI moderation have each been swept;
+   areas touched by fix waves since their sweep (payments and AI moderation) need delta sweeps before COMPLETE.
 
 **Unreconciled Codex work (archived, not on main).** These are two snapshots of uncommitted Codex worktrees from
 before the war-room loop. A file-by-file check on 2026-10-25 found that main does not contain them; some of the work may
@@ -222,6 +228,7 @@ Evidence tier as in `repo-map.md`.
 | 88 | 2026-10-25 | /war-room-loop resume: A-650, A-651, A-654 (no council: ruled items ready) | implementers A-650, A-651, A-654; verifiers opsec-llm (A-651), opsec-qa-release (A-650, A-654) | Verified: A-650, A-651, A-654 on #166 (CI 40261322672). Chair fixed the moderation-worker usage text (v5). New: LLM87-V1 folded into A-659; NITs QA88-1, QA88-2. Next: A-652a–e, A-653 |
 | 89 | 2026-10-26 | /war-room-loop resume: A-652b, A-652c, A-653 (no council: ruled items ready); owner ruled A-652f (refund held releases after N days) | implementers A-652b, A-652c, A-653; verifiers opsec-payments (A-652b, A-652c, plus the A-652f draft), opsec-qa-release (A-653) | Verified: A-652b, A-652c, A-653 on #166 (CI 40272003507). Chair resolved a template conflict, four doc conflicts and a duplicate test helper at integration. New: A-652f, A-663, A-664. PAY89-1 REQUIRED: #166 must not merge before A-652d. Next: A-652d, A-652a, A-663 |
 | 90 | 2026-10-26 | /war-room-loop resume: A-652d, A-652a, A-663 (no council: ruled items ready) | implementers A-652d, A-652a, A-663; verifiers opsec-payments (A-652a, A-652d), opsec-qa-release (A-663) | In progress: A-652a merged then NOT VERIFIED (PAY89-6, PAY89-8 REQUIRED; PAY89-7/9/10 SHOULD), fix round with migration 150 running; A-652d and A-663 integrated @6a5cac3c, verification pending. New: A-665 (needs ruling). Chair incident: an agent switched the main checkout to main and the A-663 merge landed on local main (never pushed); local main reset to origin/main a2a514c8 and the merge redone on integration | CI 40286526471 (A-652a merge, green); CI for 6a5cac3c pending | #166 stays do-not-merge until A-652d and the A-652a fix round verify |
+| 91 | 2026-10-26 | /war-room-loop resume merge=delegated (no council: ruled items ready) | implementers A-652a (fix round 2, from the previous session's uncommitted WIP preserved as 5e429be2), A-664, A-662, then A-666, A-667, A-652f; verifiers opsec-payments (A-652a, A-664), opsec-qa-release (A-662); chair fixed QA91-1/2 and CI cache (#168) | Verified: A-652a, A-662, A-664 (CI 40404881726, 40408503214). Merged #168 (CVE-2026-84782: CI restored a stale apt layer) and #166 (iterations 87–91) to main. Ruled: A-665 → P3; A-652f owner answer (unclaimed digital included). New: A-666 (PAY92-1/2), A-667 (CI deadlock), A-668 (PAY93-1). In progress: A-652f, A-666, A-667 | CI 40408503214 green @56d99bd2 | next: integrate A-652f/A-666/A-667, then A-668, A-652e |
 
 ## P0 — release blockers
 
