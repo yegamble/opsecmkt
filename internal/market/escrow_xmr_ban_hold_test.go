@@ -21,11 +21,7 @@ import (
 // heldReleaseText is how the order page and the staff alert begin to explain a release held for a banned vendor.
 const heldReleaseText = "The vendor's account is closed, so the market holds this release"
 
-// banVendor bans the escrow environment's vendor through the administrator's form.
-func (x *xmrEscrowEnv) banVendor(adminSess string) {
-	x.t.Helper()
-	agExpect(x.testEnv, "/admin/ban", adminSess, banForm("ban", agStr(x.testEnv, "SELECT handle FROM users WHERE id=$1", x.vendor), testBanReason), 303, "")
-}
+// banVendor (admin_ban_orders_test.go) bans the escrow environment's vendor through the administrator's form.
 
 // unbanVendor lifts that ban through the same form.
 func (x *xmrEscrowEnv) unbanVendor(adminSess string) {
