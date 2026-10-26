@@ -48,7 +48,7 @@ The database does not check:
 - the network fee (`ESCROW_XMR_MAX_FEE` is applied by the watcher);
 - that the spent total matches the deposits the settlement claims;
 - a build stored with no output rows;
-- the order amount, which the fee and the return follow (the application sets it only before checkout);
+- the order amount, which the fee and the return follow (the application sets it only while the order is a draft, at checkout);
 - rows written before the upgrade.
 
 If a build ever planned another output, the database would refuse to store it. The watcher logs the refused store and
