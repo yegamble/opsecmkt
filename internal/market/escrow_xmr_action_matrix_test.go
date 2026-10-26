@@ -49,8 +49,7 @@ func TestXMREscrowOrderActionMatrix(t *testing.T) {
 		}},
 		{"awaiting payment", stateAwaitingPayment, func() string { order, _ := x.freshCheckout(physical); return order }},
 		{"awaiting payment with a deposit", stateAwaitingPayment, func() string {
-			order, addr := x.freshCheckout(physical)
-			agExec(x.testEnv, "UPDATE orders SET amount=amount*2 WHERE id=$1", order)
+			order, addr := x.freshCheckoutOf(physical, 2) // one unit's price paid: an underpayment
 			x.fake.payAddress(addr, hex64("part "+order), xmrListingPrice, 10)
 			x.mustPoll()
 			return order

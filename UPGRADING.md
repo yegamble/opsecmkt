@@ -15,7 +15,20 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
-## Settlement payees are pinned in the database (migration 150, A-652a)
+## An escrow order's amount and a refund's destination are fixed in the database (migration 151, A-666)
+
+No operator action and no behaviour change for any shipped path. Migration 151 adds two triggers, from the upgrade on:
+- an order's amount can no longer be changed once the order has an escrow. The market fee and any overpayment return
+  that migration 150 checks follow the order amount, so changing it could have paid the vendor's share as the fee or
+  returned it to the buyer. Checkout sets the amount while the order is still a draft, before its escrow exists, and
+  nothing changes it afterwards;
+- a new refund or stray refund settlement must pay the escrow's refund address, the one the buyer gave at checkout.
+  Every code path already does; a re-request of a failed refund keeps that destination.
+
+Rows written before the upgrade are not checked again. Restoring a backup is unaffected: pg_restore creates triggers
+only after it has loaded the data, and `scripts/restore.sh` changes neither the amount nor a settlement's destination.
+
+## Monero settlement plans are checked in the database (migration 150, A-652a)
 
 No operator action and no behaviour change for any shipped path. Migration 150 adds three triggers. They check the
 plan the market records for each Monero settlement (its output rows), from the upgrade on.
@@ -48,8 +61,9 @@ The database does not check:
 - the network fee (`ESCROW_XMR_MAX_FEE` is applied by the watcher);
 - that the spent total matches the deposits the settlement claims;
 - a build stored with no output rows;
-- the order amount, which the fee and the return follow (the application sets it only while the order is a draft, at checkout);
 - rows written before the upgrade.
+
+Migration 151 (above) also fixes the order amount the fee and the return follow, and a refund's destination.
 
 If a build ever planned another output, the database would refuse to store it. The watcher logs the refused store and
 the settlement stays requested, unpaid. Do not work around such a refusal by hand; report it.

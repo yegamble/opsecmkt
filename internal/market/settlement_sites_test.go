@@ -59,7 +59,8 @@ var xmrSettlementSites = map[string]struct {
 // xmr_settlements_supersedes keeps a re-request's; the *_market_fits triggers read escrow_market_may_sign (081, 149:
 // a release only on a completed order or one decided for the vendor, never to a banned vendor);
 // xmr_settlement_outputs_frozen writes outputs only while requested; migration 150's three pin the outputs' addresses
-// and amounts, the plan's shape when it is built, and the escrow's refund address, fee destination and fee rate.
+// and amounts, the plan's shape when it is built, and the escrow's refund address, fee destination and fee rate;
+// migration 151's two the order's amount once it has an escrow and a refund's or stray refund's destination.
 var payeeTriggers = [][2]string{
 	{"xmr_settlements", "xmr_settlements_frozen"},
 	{"xmr_settlements", "xmr_settlements_supersedes"},
@@ -70,6 +71,8 @@ var payeeTriggers = [][2]string{
 	{"xmr_settlement_outputs", "xmr_settlement_outputs_payee"},
 	{"xmr_settlements", "xmr_settlements_plan_fits"},
 	{"escrows", "escrows_payees_frozen"},
+	{"orders", "orders_amount_frozen"},
+	{"xmr_settlements", "xmr_settlements_refund_destination"},
 }
 
 var (
