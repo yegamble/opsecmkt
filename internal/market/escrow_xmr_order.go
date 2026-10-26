@@ -183,6 +183,9 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 	if err = a.xmrReleaseView(ctx, d, v); err != nil {
 		return err
 	}
+	if err = a.holdRefundView(ctx, d); err != nil { // A-652f
+		return err
+	}
 	// Only the actions a Monero escrow order can take (escrowOrder's rules): no pooled "Mark shipped" (the panel has the
 	// Monero ship form, with the claim address and a password step-up); the buyer of a paid order cancels only a
 	// physical one, from its ship-by time; a cancel that refunds coins states and carries their amount.
@@ -329,6 +332,11 @@ func (a *App) xmrReleaseView(ctx context.Context, d *PageData, v *XMREscrowOrder
 		v.Deadline = &EscrowDeadlineView{At: utcUntil(releaseAt.Time), Left: timeLeft(remaining), Due: remaining <= 0, Rechecked: rechecked}
 		if v.Deadline.VendorClosed, err = orderVendorBanned(ctx, a.db, o.ID); err != nil {
 			return err
+		}
+		if v.Deadline.VendorClosed { // PAY90-3: the buyer may still be refunded once the hold has lasted (A-652f)
+			if v.Deadline.HoldRefundDays, err = holdRefundDaysShown(ctx, a.db); err != nil {
+				return err
+			}
 		}
 		v.NextStep = xmrDeadlineNextStep(d.OrderViewer, v.Deadline, v.RestorePaused)
 	case o.State == stateDisputed && releaseAt.Valid:

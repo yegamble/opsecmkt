@@ -77,6 +77,11 @@ func (a *App) xmrSettlementViews(ctx context.Context, d *PageData, v *XMREscrowO
 	if err != nil {
 		return nil, err
 	}
+	if o.State == stateCancelled {
+		if err = a.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM order_events WHERE order_id=$1 AND from_state IN ('completed','resolved') AND to_state='cancelled')", o.ID).Scan(&v.holdRefunded); err != nil {
+			return nil, err
+		}
+	}
 	staffAdmin := staff && d.User != nil && d.User.Role == "admin"
 	admin := staffAdmin && a.escrowXMR != nil
 	// offered: the kinds of administrator form on the page, in xmrSettlementActions' order, for the staff help.
@@ -222,6 +227,9 @@ func (a *App) xmrSettlementStatus(s *XMRSettlementView, o *Order, outcome string
 		}
 	case "superseded":
 		s.Status = "Superseded: a changed dispute decision replaced it before it was built."
+		if v.holdRefunded && s.kind == "release" && !s.stored {
+			s.Status = "Superseded: the vendor's account stayed closed while this release was held, so an administrator refunded the buyer instead. It was never built or sent."
+		}
 		if s.stored {
 			s.Status = "Superseded by settlement " + strconv.FormatInt(s.SupersededBy, 10) + " after an administrator's re-request: its stored transaction " + s.TxHash + " had not been seen mined, and spends the same coins as the one that replaced it, so at most one of them can be."
 		}

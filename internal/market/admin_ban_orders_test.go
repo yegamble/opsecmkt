@@ -495,10 +495,9 @@ func TestBannedAccountOpenOrdersListed(t *testing.T) {
 	page := x.banOrdersPage(admin, handle)
 	price := x.xmrText(xmrListingPrice)
 	for order, parts := range map[string][]string{
-		unpaid:    {"Awaiting payment", "Nothing received"},
-		paid:      {"Paid", price + " counted; no settlement yet"},
-		shipped:   {"Shipped", "release requested"},
-		completed: {"Completed", price + " counted; no settlement yet"},
+		unpaid:  {"Awaiting payment", "Nothing received"},
+		paid:    {"Paid", price + " counted; no settlement yet"},
+		shipped: {"Shipped", "release requested"},
 	} {
 		row := banOrdersRow(t, page, order)
 		mustContain(t, row, append(parts, "<td>"+price+"</td>")...)
@@ -506,8 +505,11 @@ func TestBannedAccountOpenOrdersListed(t *testing.T) {
 			t.Fatalf("order %s links to a page the administrator cannot read: %s", shortID(order), row)
 		}
 	}
-	// An order the administrator can read (here: disputed) links to its page.
+	// An order the administrator can read (here: disputed, and the completed order the banned vendor never claimed,
+	// whose page offers the held-release refund, A-652f) links to its page.
 	mustContain(t, banOrdersRow(t, page, disputed), `href="/order?id=`+disputed+`"`, "Disputed")
+	mustContain(t, banOrdersRow(t, page, completed), `href="/order?id=`+completed+`"`, "Completed", price+" counted; no settlement yet")
+	x.page("/order?id="+completed, admin)
 }
 
 // banOrdersRow is the table row of the ban orders list for order (its short id).

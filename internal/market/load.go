@@ -427,8 +427,9 @@ func (a *App) load(r *http.Request, d *PageData) error {
 			args := []any{d.User.ID}
 			if d.Page == "order" {
 				// Moderators and administrators may also open disputed or resolved orders, orders with a payment
-				// flagged for review and escrow orders with an open staff alert, read-only (orders_load.go).
-				query = orderQuery + " WHERE " + orderReadable("$1", "$3") + " AND o.id=$2"
+				// flagged for review and escrow orders with an open staff alert, read-only (orders_load.go), and
+				// administrators a banned vendor's order whose release is held (holdRefundReadSQL, A-652f).
+				query = orderQuery + " WHERE (" + orderReadable("$1", "$3") + " OR " + holdRefundReadSQL("$1", "$3") + ") AND o.id=$2"
 				args = append(args, r.URL.Query().Get("id"), d.User.Role)
 			}
 			if d.Page == "disputes" {

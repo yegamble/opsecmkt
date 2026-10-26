@@ -249,7 +249,7 @@ func banOrdersAction(c *actionCtx) (actionResult, error) {
 // banListSQL lists a vendor's Monero escrow orders that are open or whose escrow may still hold coins (no release or
 // refund sent), oldest first: id, state, amount, whether $2 (the viewer, role admin) can read the order page and
 // whether it is the buyer, and the live release or refund's kind and state ("" for none).
-var banListSQL = `SELECT o.id,o.state,o.amount,` + orderReadable("$2", "'admin'") + `,o.buyer_id=$2,
+var banListSQL = `SELECT o.id,o.state,o.amount,(` + orderReadable("$2", "'admin'") + ` OR ` + holdRefundReadSQL("$2", "'admin'") + `),o.buyer_id=$2,
 	coalesce((SELECT s.kind||' '||s.state FROM xmr_settlements s WHERE s.order_id=o.id AND s.kind IN ('release','refund') AND s.state<>'superseded'),'')
 	FROM orders o JOIN products p ON p.id=o.product_id
 	WHERE p.vendor_id=$1 AND EXISTS(SELECT 1 FROM escrows es WHERE es.order_id=o.id AND es.coin='XMR')

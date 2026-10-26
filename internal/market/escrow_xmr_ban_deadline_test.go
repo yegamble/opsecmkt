@@ -255,6 +255,9 @@ func TestBanCompletionNotesSayHeld(t *testing.T) {
 	x.banVendor(admin)
 	x.forceDeadline(byDeadline, "release_at=now()-interval '1 minute'")
 	x.forceDeadline(reminded, "release_at=now()+interval '5 hours'")
+	if p := x.panel(byConfirm, confirmSess); !strings.Contains(p, "If the account is still closed 90 days later, an administrator may refund the coins to your refund address instead.") {
+		t.Fatalf("the buyer's Confirm receipt help does not say the buyer may be refunded:\n%s", p)
+	}
 	if code, body := x.xmrConfirm(byConfirm, confirmSess, testPassword); code != 303 {
 		t.Fatalf("confirm receipt: %d %s", code, body)
 	}
@@ -264,6 +267,10 @@ func TestBanCompletionNotesSayHeld(t *testing.T) {
 		notes := agStrings(t, x.testEnv, "SELECT note FROM order_events WHERE order_id=$1 AND from_state='shipped' AND to_state='completed'", c.order)
 		if len(notes) != 1 || !containsAll(notes[0], c.part, "the market holds the release", "No other address is ever paid") || strings.Contains(notes[0], sends) {
 			t.Fatalf("completion note of %s: %q", shortID(c.order), notes)
+		}
+		// PAY90-3 (A-652f): the hold can end in a refund to the buyer, so the note says so and never that it is final.
+		if !strings.Contains(notes[0], "still closed 90 days from now, an administrator may refund the coins to the buyer's refund address") || strings.Contains(notes[0], "cannot be undone") {
+			t.Fatalf("completion note of %s does not say the buyer may be refunded: %q", shortID(c.order), notes[0])
 		}
 	}
 	vendorNotice := x.noticesOf(x.vendor, byConfirm)

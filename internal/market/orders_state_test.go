@@ -19,9 +19,13 @@ func TestTransitionTableShape(t *testing.T) {
 			t.Errorf("state %s has no label", s)
 		}
 	}
+	// Terminal states have no exits, except the marked staff edge of a held-release refund (A-652f): completed and
+	// resolved to cancelled, for roleHoldRefund alone, which actorRoles never returns.
 	for _, s := range []string{stateCompleted, stateResolved, stateCancelled} {
-		if len(transitions[s]) != 0 {
-			t.Errorf("terminal state %s has exits", s)
+		for to, roles := range transitions[s] {
+			if s == stateCancelled || to != stateCancelled || !slices.Equal(roles, []string{roleHoldRefund}) {
+				t.Errorf("terminal state %s has exit to %s for %v", s, to, roles)
+			}
 		}
 	}
 	reached := map[string]bool{stateDraft: true}

@@ -56,6 +56,26 @@
 </form>{{end}}
 </section>{{end}}{{end}}{{end}}
 {{/* QA5W3B-6, QA5W4B-7: what staff can change from the order page, for its staff help: the open refused-deposit record's form (escrow_xmr_collision.go) and an administrator's settlement form above (XMRSettlementForm); without either, nothing. Called with the page data; the caller ends the sentence. */}}
-{{define "staff-order-changes"}}{{if .XMRCollisionForm}}Record what was done about each refused deposit under <a class="text-link" href="#refused-deposits">Refused Monero deposits</a>{{if .XMRSettlementForm}}; as an administrator, also {{template "xmr-settlement-actions" .}} under <a class="text-link" href="#xmr-settlement-{{.XMRSettlementForm}}">Settlement {{.XMRSettlementForm}}</a>{{end}}; nothing else can be changed from this page{{else if .XMRSettlementForm}}As an administrator, {{template "xmr-settlement-actions" .}} under <a class="text-link" href="#xmr-settlement-{{.XMRSettlementForm}}">Settlement {{.XMRSettlementForm}}</a>; nothing else can be changed from this page{{else}}Nothing can be changed from this page{{end}}{{end}}
+{{define "staff-order-changes"}}{{if .XMRCollisionForm}}Record what was done about each refused deposit under <a class="text-link" href="#refused-deposits">Refused Monero deposits</a>{{if .XMRSettlementForm}}; as an administrator, also {{template "xmr-settlement-actions" .}} under <a class="text-link" href="#xmr-settlement-{{.XMRSettlementForm}}">Settlement {{.XMRSettlementForm}}</a>{{end}}{{template "hold-refund-change" .}}; nothing else can be changed from this page{{else if .XMRSettlementForm}}As an administrator, {{template "xmr-settlement-actions" .}} under <a class="text-link" href="#xmr-settlement-{{.XMRSettlementForm}}">Settlement {{.XMRSettlementForm}}</a>{{template "hold-refund-change" .}}; nothing else can be changed from this page{{else if and .HoldRefund .HoldRefund.Eligible}}As an administrator, refund the held release to the buyer under <a class="text-link" href="#hold-refund">Refund the held release to the buyer</a>; nothing else can be changed from this page{{else}}Nothing can be changed from this page{{end}}{{end}}
+{{/* A-652f: the held-release refund, when another staff form is on the page too. Called with the page data. */}}
+{{define "hold-refund-change"}}{{if and .HoldRefund .HoldRefund.Eligible}}; also refund the held release to the buyer under <a class="text-link" href="#hold-refund">Refund the held release to the buyer</a>{{end}}{{end}}
+{{/* A-652f (escrow_xmr_hold_refund.go): for an administrator who is not a party, a banned vendor's held release (or
+unclaimed completed digital order): when the hold began, from when it can be refunded, and the confirmed refund form
+once it can. Called with the page data. No JavaScript. */}}
+{{define "order-xmr-hold-refund"}}{{with .HoldRefund}}<section class="order-action" id="hold-refund" aria-labelledby="hold-refund-heading">
+<h3 id="hold-refund-heading">Refund the held release to the buyer</h3>
+<p class="help" id="hold-refund-help">The vendor's account is closed, so {{if .Unclaimed}}the vendor cannot claim the coins in this escrow and nothing is paid to the vendor{{else}}the market holds the release to the vendor and builds and sends nothing for it{{end}}. Held since {{.HeldSince}} (the ban, or when this order {{if eq $.Order.State "resolved"}}was decided for the vendor{{else}}completed{{end}}, whichever is later). Once it has been held {{.Days}} days with the ban in place, from {{.DueAt}}, an administrator who is not a party may refund the {{.Sum}} counted in this escrow, less the network fee, to the buyer's refund address given at checkout instead{{if eq $.Order.State "completed"}}, even though the order completed{{end}}. The order is then cancelled{{if not .Unclaimed}}, the held release is cancelled{{end}} and nobody else is ever paid. The buyer and the vendor are told, and your reason is written to your audit trail and the vendor's. This cannot be undone. If the ban is lifted instead, the market pays the vendor as usual.</p>{{if .Why}}
+<p role="status">{{.Why}}</p>{{else}}
+<form class="stack" method="post" action="/admin/escrow-xmr-hold-refund">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/admin/escrow-xmr-hold-refund"}}">
+<input type="hidden" name="order_id" value="{{$.Order.ID}}">
+<input type="hidden" name="digest" value="{{.Digest}}">
+<label>Reason (20–5000 characters; written to your audit trail and the vendor's)<textarea name="reason" required minlength="20" maxlength="5000" rows="3" autocomplete="off" aria-describedby="hold-refund-help"></textarea>
+</label>
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
+<button type="submit" aria-describedby="hold-refund-help">Refund {{.Sum}} to the buyer</button>
+</form>{{end}}
+</section>{{end}}{{end}}
 {{/* A-613: the administrator's settlement forms the page offers, and only those (XMRSettlementActions; with Monero escrow off only dismissing or marking settled by hand can be). Called with the page data. */}}
 {{define "xmr-settlement-actions"}}act on a Monero escrow settlement ({{.XMRSettlementActions}}){{end}}

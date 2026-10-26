@@ -276,7 +276,7 @@ func xmrSettleWaitText(class, kind string, threshold int64) string {
 }
 
 // xmrVendorClosedText is what the order page, and the staff alert, say of a release held for a banned vendor (A-652c).
-const xmrVendorClosedText = "The vendor's account is closed, so the market holds this release: it builds and sends nothing while the account is banned, and the coins stay in this order's escrow account. No other address is ever paid. If the ban is lifted, the market builds and sends it on its next pass. Market staff were notified."
+const xmrVendorClosedText = "The vendor's account is closed, so the market holds this release: it builds and sends nothing while the account is banned, and the coins stay in this order's escrow account. No other address is ever paid. If the ban is lifted, the market builds and sends it on its next pass; if the ban stays for the period an administrator sets (90 days unless changed), an administrator may refund the coins to the buyer's refund address instead. Market staff were notified."
 
 // xmrStrayEligibleSQL selects the payments rows p a Monero stray refund returns (strayEligibleSQL's rule), for a query
 // with the threshold as $2.

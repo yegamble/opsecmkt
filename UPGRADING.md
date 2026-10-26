@@ -15,6 +15,23 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## A release held for a banned vendor can be refunded to the buyer (A-652f)
+
+**Behaviour change** (owner decisions 2026-10-26). No migration. A release held because the vendor is banned (A-652c)
+used to stay held until the ban was lifted. Now, once it has been held for a period with the ban in place, an
+administrator who is not a party to the order can refund the order to the refund address the buyer gave at checkout
+instead, one order at a time, from its order page (*Refund the held release to the buyer*: a 20–5000 character reason,
+password and authenticator code). This applies even to orders the buyer confirmed, to orders decided for the vendor, and
+to completed digital orders the vendor never claimed. The period is the new setting **Held releases of banned vendors**
+under *Admin → Payments* (`ban_hold_refund_days`: 30 to 3650 days, default 90 when never saved, audited), counted from
+the ban or from when the order completed or its dispute was decided, whichever is later; a new ban starts it again.
+Nothing is refunded until an administrator submits the form; no other address is ever paid, and a release that was
+built or may be on the network is never replaced. Completed and resolved stop being strictly terminal: this action's
+marked staff edge is their one move, to cancelled. The confirmation notes of a banned vendor's orders no longer say "This
+cannot be undone"; they say an administrator may refund the buyer after the period. After a restore from backup,
+re-check the setting (section 6) and any held release refunded after the backup. See *Account ban* under
+[authentication](docs/operator-guide.md#authentication).
+
 ## Settlement payees are pinned in the database (migration 150, A-652a)
 
 No operator action and no behaviour change for any shipped path. Migration 150 adds three triggers. They check the
@@ -1438,8 +1455,11 @@ that wrote it.
 
 The restore also rolls back every setting an administrator saved after the backup or recovery point, such as **New escrow
 checkouts**, site access, registrations and the vendor application policy (the bond amount `vendor_bond_xmr` and the
-approval mode in **Admin → Vendor applications**), and undoes bonds recorded as received after that point. Before
-clearing the gate, re-check them on `/admin` against your operator record. The market fee address and rate (`ESCROW_XMR_FEE_ADDRESS`, `ESCROW_XMR_FEE_BPS`) are host configuration, not
+approval mode in **Admin → Vendor applications**) and the held-release refund period for banned vendors
+(`ban_hold_refund_days`, **Admin → Payments**, A-652f), and undoes bonds recorded as received after that point, bans and
+unbans, and held releases refunded to buyers after that point (a refund of a held release made after the backup is not in
+the restored records: check the order pages of banned vendors' orders against your operator record before refunding
+again). Before clearing the gate, re-check them on `/admin` against your operator record. The market fee address and rate (`ESCROW_XMR_FEE_ADDRESS`, `ESCROW_XMR_FEE_BPS`) are host configuration, not
 database rows, so a database restore does not roll them back; confirm the host values are the ones you intend. The restore can
 roll back the record of the last fee seen, so the next start may announce the current fee to administrators once more.
 

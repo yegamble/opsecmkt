@@ -129,7 +129,11 @@ func (a *App) xmrReleaseIfDue(ctx context.Context, tx *sql.Tx, orderID string) (
 	if banned, err := orderVendorBanned(ctx, tx, orderID); err != nil {
 		return false, err
 	} else if banned {
-		note += xmrHeldNote
+		days, err := holdRefundDaysShown(ctx, tx)
+		if err != nil {
+			return false, err
+		}
+		note += xmrHeldNote + " " + holdRefundLater(days) // PAY90-3, A-652f
 	} else {
 		note += "The market builds the release of the escrowed coins to the address the vendor gave when marking the order shipped, and sends it."
 	}
