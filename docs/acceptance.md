@@ -66,7 +66,8 @@ acceptance requirements, not a declaration of deployed verification:
   and the adapter refuses them; with no deterministic finding they record the
   Go-only `MODEL_NOT_USED` and route exactly as an absent model does
   (`QUEUE_HUMAN`, never `AUTO_APPLY`), while reviews still reach the model.
-  Stage B has no `actor_reputation`, no market code sets a reputation figure, and
+  Stage B has no `actor_reputation`, no market code sets a model's reputation figure
+  (A-653's Go rule is for administrators only and never reaches the worker), and
   neither prompt carries a handle, PGP fingerprint, image hash, payment address,
   ban/takedown/listing-rejection reason or reputation figure; a stored v4
   decision keeps its bytes and still renders
@@ -580,6 +581,16 @@ These checks require recorded implementation and workflow verification before ma
 - [x] PR #111's listing writes follow the same rule: a vendor's change to the subcategory or additional shipping regions re-holds an approved listing through the edit form, and a switch between vendor-delivered and automatic digital delivery re-holds it, while switching between the two automatic methods, digital units and stock do not; the vendor-contact rule counts only approved listings (`TestListingShippingRegionChangeReholds`, `TestListingDigitalDeliveryModeChangeReholds`).
 - [x] A rejected listing needs no administrator: its vendor's change to what buyers see, or a new photo, resubmits it (pending, reason cleared, "Resubmitted listing … for review" audited) whatever the mode, and approval then publishes it; a stock-only change, switching to publish or an administrator's edit leaves it rejected with its reason; a reject form rendered before the vendor's change is refused (409); retention's withdrawn-listing purge clears the reason (`TestListingRejectedVendorEditsAndResubmits`, `TestListingRejectionReasonFollowsListingRetention`).
 - [x] Browser journey with JavaScript off: the administrator sets hold, a vendor lists, a buyer cannot find or open it, a moderator rejects it with a reason, the vendor reads "Rejected — <reason>" and edits it, the moderator approves the resubmitted listing and the buyer then sees it; the desk, the vendor desk and the admin panel fit 320 px (`db-listing-review.spec.ts`, `preview-listing-review.spec.ts`).
+
+### Vendor reputation rule (A-653)
+
+- [x] Figures are counted on read, over funded orders only, from orders, order events, disputes, reviews and listings: completions by route (buyer confirmed, release deadline, digital on funding), no-ship cancels by the buyer and the vendor's cancellations of paid orders, disputes decided refund or release and conceded by either party (an open dispute counts nowhere), distinct buyers, counted reviews (hidden and banned buyers' reviews excluded) and low ratings, and current takedowns and rejections; stray refunds, failed and superseded settlements, same-state notes and payment-window expiries change no figure, and the figure query names no settlement, payment or escrow table (`TestReputationIgnoresSettlementMechanics`).
+- [x] A fixed table of Go predicates proposes HIGH_REPUTATION, STANDARD, INSUFFICIENT_HISTORY (default) or AT_RISK with reason codes, each row shown with its figure and thresholds (`TestReputationLabelTable`); over 20,000 generated figure sets, one more adverse outcome (with or without its funded order) or one fewer distinct buyer never improves the label, and no record below the volume, distinct-buyer or spread floors is HIGH_REPUTATION (`TestReputationMonotonic`); 30 five-star completions by one account are AT_RISK and a ring of nine buyers is never HIGH_REPUTATION (`TestReputationSelfPurchaseConcentration`).
+- [x] The figures are computed with every `moderation_*` table locked against reads by another transaction, unchanged, and `reputation.go` neither imports package moderation nor names it in code (`TestReputationIndependentOfModerationCapture`).
+- [x] Only an administrator sees the panel, labelled "over retained history" and "nothing is stored", on a vendor's account page; the vendor, a buyer, a moderator and a guest see no label or panel on that URL, the vendors page, the vendor page, the catalog, their account, notifications or the moderation desk (`TestReputationAdminOnly`).
+- [x] *Confirm HIGH_REPUTATION and publish without review* recomputes the label under the account's row lock: figures changed since the page loaded (409) and a label other than HIGH_REPUTATION (409, "Nothing was changed.") are refused without change; the choice is refused (400) for turning the flag off or without a digest; the administrator's audit row names the label only and the vendor's audit, notification and account page never do; the page offers no confirmation once the flag is on or the label is not HIGH_REPUTATION; turning the flag on without the choice still works whatever the label, and the vendors page offers no bulk confirmation (`TestAutoApproveConfirmRecomputesLabel`).
+- [x] `vendorAutoApproveAction` and the ban action are the only Go writers of `users.listing_auto_approve`; no migration after 145 and no database function names it (`TestAutoApproveOnlyWriters`).
+- [x] Preview: the panel and its rule table fit 320 px with JavaScript off (`preview-admin-users.spec.ts`).
 
 ### Vendor onboarding (A-544)
 

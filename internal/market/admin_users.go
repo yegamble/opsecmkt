@@ -62,6 +62,7 @@ type AdminUserView struct {
 	DisputesOpened, DisputesAgainst            UserDisputeCounts
 	ActiveListings, ArchivedListings           int
 	IsBanned, IsSuspended, IsClosing, IsClosed bool
+	VendorReputation                           *ReputationView // A-653: a vendor's figures and proposed label (reputation.go); nil for other accounts
 }
 
 // Actionable reports whether the account forms apply: never on the viewer's own account or an administrator's.
@@ -281,6 +282,11 @@ func adminUserLoader(ctx context.Context, a *App, d *PageData) error {
 	if err != nil {
 		return err
 	}
+	if v.Role == "vendor" || v.VendorApproved {
+		if v.VendorReputation, err = vendorReputation(ctx, a.db, v.ID); err != nil {
+			return err
+		}
+	}
 	d.AdminUser = v
 	return nil
 }
@@ -297,7 +303,9 @@ func previewAdminUser(d *PageData, handle string) bool {
 		Policy:      VendorPolicyView{Bond: "0.5", HasBond: true},
 		Orders: []UserStateCount{{Label: stateLabel(stateShipped), Vendor: 2}, {Label: stateLabel(stateCompleted), Buyer: 1, Vendor: 14},
 			{Label: stateLabel(stateResolved), Vendor: 1}},
-		BuyerOrders: 1, VendorOrders: 17, DisputesAgainst: UserDisputeCounts{Total: 1, Release: 1}, ActiveListings: 3, ArchivedListings: 1}
+		BuyerOrders: 1, VendorOrders: 17, DisputesAgainst: UserDisputeCounts{Total: 1, Release: 1}, ActiveListings: 3, ArchivedListings: 1,
+		VendorReputation: assessReputation("ghost", ReputationFigures{Funded: 17, FundedBuyers: 9, CompletedConfirmed: 10, CompletedDeadline: 3, CompletedDigital: 1,
+			CompletedBuyers: 9, DecidedRelease: 1, Reviews: 11, LowReviews: 1})}
 	d.AdminUserHandle = handle
 	return true
 }
