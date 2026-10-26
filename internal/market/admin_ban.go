@@ -19,10 +19,12 @@ import (
 // archives its active listings, withdraws an open vendor application, removes a verified vendor mark and turns off
 // listing auto-approval (A-650: the vendor's listings wait for review again in hold mode); a banned moderator becomes
 // a buyer. Its handle, in lower case, is kept in banned_handles, so registration and setup refuse it
-// (refuseTakenHandle) even after retention closes and erases the account. Open orders are left alone (an administrator
-// refunds a banned vendor's unpaid and unshipped ones separately, admin_ban_orders.go, A-652b):
-// the other party can still complete, concede or dispute them, an independent administrator decides disputes, and
-// settlements proceed. Lifting a ban (unban) restores the suspension the account had before it (ban_prior_suspended_at)
+// (refuseTakenHandle) even after retention closes and erases the account. Open orders are otherwise left alone (an
+// administrator refunds a banned vendor's unpaid and unshipped ones separately, admin_ban_orders.go, A-652b): the ban
+// only moves the release deadline of a banned vendor's shipped Monero escrow orders with no dispute to at least 72 hours
+// after the ban and tells each buyer (xmrBanDeadlines, A-652d), since their release is then held (A-652c). The other
+// party can still complete, concede or dispute them, an independent administrator decides disputes, and settlements
+// proceed. Lifting a ban (unban) restores the suspension the account had before it (ban_prior_suspended_at)
 // or, with none, allows sign-in again; listings stay archived, the verified mark and auto-approval stay off (an account
 // banned before A-650 that still has auto-approval loses it here) and no staff role returns.
 // Both need a reason and the administrator's password (and authenticator code when enrolled); both accounts are
@@ -221,6 +223,14 @@ func adminBanAction(c *actionCtx) (actionResult, error) {
 		summary := "; ended " + strconv.FormatInt(n, 10) + " session(s) and any pending sign-ins"
 		if summary, err = withCountedReviews(ctx, tx, target, summary, "stopped counting toward ratings"); err != nil {
 			return actionResult{}, err
+		}
+		// A-652d: each buyer of the account's shipped orders gets at least 72 hours from now to dispute, and is told.
+		moved, told, err := xmrBanDeadlines(ctx, tx, target)
+		if err != nil {
+			return actionResult{}, err
+		}
+		if told > 0 {
+			summary += "; told the buyers of " + strconv.Itoa(told) + " shipped order(s) they may dispute until at least 72 hours from now (" + strconv.Itoa(moved) + " release deadline(s) moved)"
 		}
 		if auto {
 			summary += autoApproveOff

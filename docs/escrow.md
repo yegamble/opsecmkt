@@ -204,7 +204,8 @@ market holds the wallet keys and builds, stores and sends every transaction itse
   completes the order, after which it can no longer be disputed. If the buyer does neither before the deadline (14 days
   by default; the shared release-deadline setting applies, see the limits) and no dispute is open, the order
   completes by the system and the release is built. The buyer is reminded 72 hours before, in the market only, and
-  `/orders` shows a banner. The deadlines run in the Monero watcher, so they apply whenever Monero escrow is configured, even while the
+  `/orders` shows a banner. Banning the vendor moves a deadline less than 72 hours away to 72 hours after the ban,
+  never earlier, and tells the buyer that the payment is then held (A-652d, with A-652c's hold). The deadlines run in the Monero watcher, so they apply whenever Monero escrow is configured, even while the
   escrow wallet-rpc is down. The no-ship cancel of Phase 2 is shared: a buyer may cancel a paid physical order that was not
   shipped once the dispatch window plus 48 hours has passed, and the escrow is refunded.
 - **Disputes: decisions are final.** An administrator decides a dispute on a Monero escrow order with their password; a

@@ -22,8 +22,20 @@ account*: its open Monero escrow orders and those whose escrow may still hold co
 (`POST /admin/ban-orders`, administrators only, password and authenticator code) that cancels its orders awaiting
 payment and paid ones not shipped, at most 100 at a time, and has the market send each one's escrowed coins back to the
 refund address its buyer gave at checkout. Nothing changes until an administrator submits it: banning an account still
-leaves its open orders alone, and no new payee or address is involved. The overview now flags *Users* while a banned
+cancels none of its open orders, and no new payee or address is involved. The overview now flags *Users* while a banned
 account has open escrow orders. See *Account ban* under [authentication](docs/operator-guide.md#authentication).
+
+## A ban gives buyers of shipped orders at least 72 hours to dispute (A-652d)
+
+**Behaviour change** (owner decision 2026-10-25, "refund + hold"). No migration. Until now banning a vendor left its
+shipped orders' release deadlines alone, so a shipped order with no dispute completed at its deadline (its release then
+held, A-652c) and its buyer could no longer dispute it. Now the ban, in the same step, moves every release deadline of
+the banned vendor's shipped Monero escrow orders with no dispute that is less than 72 hours away (or already passed) to
+72 hours after the ban, never earlier, and tells each buyer, for their order, until when a dispute can be opened and
+that otherwise the order completes and its payment is held. A later deadline stays, the buyer is still told, lifting the
+ban never shortens a deadline, and banning a buyer changes none. No money moves. While the vendor is banned the order
+page, the reminders and the completion notes say the payment is held instead of sent. A vendor banned before the
+upgrade is not revisited: its shipped orders keep the deadlines they have.
 
 ## Releases to a banned vendor are held until the ban is lifted (migration 149, A-652c)
 

@@ -255,11 +255,22 @@ func xmrConfirmReceiptAction(c *actionCtx) (actionResult, error) {
 		case !shipped:
 			return actionResult{}, errConfirmNotShipped
 		}
-		ctx = withNoticeDetail(withConfirmReceipt(ctx), o.ID, stateCompleted, "The buyer confirmed receipt (Monero escrow): the market builds the release of the escrowed coins to the address you gave when marking the order shipped, and sends it.")
-		if _, err = c.A.transition(ctx, c.Tx, o.ID, stateShipped, stateCompleted, c.User, xmrConfirmedNote); err != nil {
+		notice := "escrow-xmr-confirmed"
+		detail, note := "The buyer confirmed receipt (Monero escrow): the market builds the release of the escrowed coins to the address you gave when marking the order shipped, and sends it.", xmrConfirmedNote
+		// A-652d: while the vendor is banned the release is held (xmrReleaseHeld), so the notes say so. A ban committed
+		// after this read leaves the usual wording; the order page then shows the hold.
+		if banned, err := orderVendorBanned(ctx, c.Tx, o.ID); err != nil {
+			return actionResult{}, err
+		} else if banned {
+			notice = "escrow-xmr-held"
+			detail = "The buyer confirmed receipt (Monero escrow). Your account is closed, so the market holds the release of the escrowed coins: it builds and sends nothing while the account is banned."
+			note = "Receipt confirmed by the buyer (Monero escrow): the order is completed. " + xmrHeldNote + " This cannot be undone."
+		}
+		ctx = withNoticeDetail(withConfirmReceipt(ctx), o.ID, stateCompleted, detail)
+		if _, err = c.A.transition(ctx, c.Tx, o.ID, stateShipped, stateCompleted, c.User, note); err != nil {
 			return actionResult{}, err
 		}
-		return actionResult{Redirect: orderPage(o.ID), Notice: "escrow-xmr-confirmed",
+		return actionResult{Redirect: orderPage(o.ID), Notice: notice,
 			Audit: "Confirmed receipt of order " + shortID(o.ID) + " (Monero escrow, " + c.A.xmrEscrowNetwork() + ")"}, nil
 	})
 }

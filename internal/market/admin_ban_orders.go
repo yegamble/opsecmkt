@@ -11,7 +11,7 @@ import (
 	"strings"
 )
 
-// A-652b (owner decision 2026-10-25, "Refund + hold"; PAY87-2, STAFF87-7): a ban leaves open orders alone (admin_ban.go),
+// A-652b (owner decision 2026-10-25, "Refund + hold"; PAY87-2, STAFF87-7): a ban cancels no open order (admin_ban.go),
 // so an administrator refunds a banned vendor's unpaid and unshipped Monero escrow orders to the buyers with a separate
 // form on the account's page in the user directory, never part of the ban form. Nobody new is paid: each order is
 // cancelled through the state machine on the staff edge roleBanRefund, which only this action marks (withBanRefund),
