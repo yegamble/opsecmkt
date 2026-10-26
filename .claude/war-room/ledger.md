@@ -11,10 +11,11 @@ last column is its status), Declined, Closed, and per-iteration rulings with acc
 - PR #161: the docs worker pins patched undici (a new advisory had failed CI on every branch).
 - PR #166 (iterations 87–91): A-647–A-651, A-652a–d, A-653, A-654, A-662–A-664; migrations 148–150.
 - PR #168: CI rebuilds the image security-upgrade layer daily (SECURITY_REFRESH), so a fixed Debian package reaches the scan.
+- PR #169: A-666, migration 151 (an escrow order's amount and a refund's destination are fixed in the database).
 
 There are no long-lived feature branches. Work on a fresh `war-room/<ID>-<slug>` branch from main, one ledger
-item per PR. Migrations 151 (A-666), 152 (A-667, if needed) and 153 (A-652f, if needed) are reserved by
-implementers running in iteration 91. Check open PRs before taking one.
+item per PR. Migration 151 (A-666) is on main (#169). 152 (A-667, if needed) and 153 (A-652f, if needed) are
+reserved by implementers running in iteration 91. Check open PRs before taking one.
 
 **Open PRs.**
 - #162 A-519 release integrity and #163 A-521 phone-width tables: drafts holding an implementer's unfinished,
