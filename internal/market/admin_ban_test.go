@@ -215,6 +215,8 @@ func TestBanAccount(t *testing.T) {
 	agExpect(e, "/admin/vendor-verify", admin, form("action", "verify", "handle", "ban_vendor", "password", testPassword), 409, "ban_vendor is banned")
 
 	// Open escrow orders keep settling: an independent administrator decides one dispute, the buyer concedes the other.
+	// The refund is paid; the release to the banned vendor is held until the ban is lifted (owner decision 2026-10-25,
+	// A-652c).
 	if r := e.do("POST", "/resolve", admin2, resolverForm(resolvedDispute, "refund", xmrListingPrice)); r.Code != 303 {
 		t.Fatalf("independent administrator's decision: %d %s", r.Code, refusalText(r.Body.String()))
 	}
@@ -236,7 +238,7 @@ func TestBanAccount(t *testing.T) {
 	if got := live(resolvedOrder); len(got) != 1 || got[0] != "refund relayed" {
 		t.Fatalf("refund settlement after the ban: %v", x.xmrSettlements(resolvedOrder))
 	}
-	if got := live(concededOrder); len(got) != 1 || got[0] != "release relayed" {
+	if got := live(concededOrder); len(got) != 1 || got[0] != "release requested" || x.waitClass(x.settlementOf(concededOrder, "release").ID) != xmrVendorClosed {
 		t.Fatalf("release settlement after the ban: %v", x.xmrSettlements(concededOrder))
 	}
 
@@ -279,6 +281,10 @@ func TestBanAccount(t *testing.T) {
 	e.check(e.do("GET", "/account", e.session(w), nil), 200)
 	if agInt(e, "SELECT count(*) FROM products WHERE vendor_id=$1 AND NOT archived", vendorID) != 0 || agStr(e, "SELECT vendor_verified::text FROM users WHERE id=$1", vendorID) != "false" {
 		t.Fatal("lifting the ban restored listings or the verified mark")
+	}
+	x.mustPoll()
+	if got := live(concededOrder); len(got) != 1 || got[0] != "release relayed" {
+		t.Fatalf("held release after the ban was lifted: %v", x.xmrSettlements(concededOrder))
 	}
 	page = e.body("GET", "/admin/users", admin, nil, 200)
 	mustContain(t, page, "ban_applicant · buyer · banned ")
@@ -486,9 +492,10 @@ func TestBanModeratorAndPriorSuspension(t *testing.T) {
 	e.check(e.do("POST", "/login", randomToken(), form("handle", "banmod_vendor", "password", testPassword)), 303)
 }
 
-// SEC-546-3, owner decision 2026-10-19: a release that still waits for the vendor's claim address is held while the
-// vendor is banned, never paid elsewhere, and claimed once the ban is lifted. Here the buyer concedes a dispute on an
-// undelivered digital Monero escrow order (completed for the vendor with no claim yet), then the vendor is banned.
+// SEC-546-3, owner decisions 2026-10-19 and 2026-10-25 ("refund + hold", A-652c): a release that still waits for the
+// vendor's claim address is held while the vendor is banned, never paid elsewhere, and claimed once the ban is lifted;
+// the next pass then builds and relays it. Here the buyer concedes a dispute on an undelivered digital Monero escrow
+// order (completed for the vendor with no claim yet), then the vendor is banned.
 func TestBanHoldsUnclaimedRelease(t *testing.T) {
 	x := newXMREscrowEnv(t)
 	x.mustPoll()
@@ -534,6 +541,10 @@ func TestBanHoldsUnclaimedRelease(t *testing.T) {
 	}
 	if got := x.xmrSettlements(order); len(got) != 1 || got[0] != "release requested "+claim {
 		t.Fatalf("release after the claim: %v", got)
+	}
+	x.mustPoll()
+	if got := x.xmrSettlements(order); len(got) != 1 || got[0] != "release relayed "+claim {
+		t.Fatalf("release after the ban was lifted and the vendor claimed: %v", got)
 	}
 }
 
