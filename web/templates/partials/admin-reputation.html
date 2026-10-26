@@ -1,0 +1,23 @@
+{{/* A-653: a vendor's reputation figures and the label the fixed Go rule proposes (reputation.go), on an administrator's
+account page only. Included once by "admin-user"; . is the page data. */}}
+{{define "admin-user-reputation"}}{{$totp := and .Security .Security.TOTPEnabled}}{{with .AdminUser}}{{with $rep := .VendorReputation}}
+<section class="panel" id="user-reputation" aria-labelledby="user-reputation-heading">
+<h2 id="user-reputation-heading">Reputation figures</h2>
+<p class="help">Counted over retained history from this vendor's funded orders (orders that were paid), their disputes and counted reviews, and its listings now, each time this page loads: nothing is stored and no model is involved. Only administrators see these figures and the label; vendors and buyers never do. A dispute counts once decided or conceded, never while open.</p>
+<p>Proposed label: <strong>{{.Label}}</strong> (reasons: {{range $i, $r := .Reasons}}{{if $i}}, {{end}}{{$r}}{{end}})</p>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Reputation rules"><table><caption>Reputation rules and figures</caption><thead><tr><th scope="col">Reason</th><th scope="col">Figure</th><th scope="col">For HIGH_REPUTATION</th><th scope="col">Lower label</th><th scope="col">Holds the label at</th></tr></thead><tbody>
+{{range .Rules}}<tr><th scope="row">{{.Code}}</th><td>{{.Figure}}</td><td>{{.High}}</td><td>{{if .Lower}}{{.Lower}}{{else}}None{{end}}</td><td>{{if .Effect}}{{.Effect}}{{else}}Nothing{{end}}</td></tr>
+{{end}}</tbody></table></div>
+<p class="help">AT_RISK from any row comes first, then INSUFFICIENT_HISTORY, then STANDARD from any row; with none, the label is HIGH_REPUTATION (STRONG_RECORD). The label is advice for staff: it changes nothing by itself.</p>{{with $.AdminUser}}{{if and .Actionable (not .AutoApprove) (not .IsBanned) (eq $rep.Label "HIGH_REPUTATION")}}
+<p class="help">Confirming the label lets this vendor's new and edited listings publish without review, as under Vendor below. The label is computed again when you submit; if it is no longer HIGH_REPUTATION, or the figures changed since this page loaded, nothing is changed.</p>
+<form class="stack" method="post" action="/admin/vendor-auto-approve">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/admin/vendor-auto-approve"}}">
+{{template "admin-user-target" .Handle}}
+<input type="hidden" name="action" value="on">
+<input type="hidden" name="confirm_reputation" value="1">
+<input type="hidden" name="reputation_digest" value="{{$rep.Digest}}">
+{{template "confirm-fields" $totp}}
+<button type="submit">Confirm HIGH_REPUTATION and publish without review</button>
+</form>{{end}}{{end}}
+</section>{{end}}{{end}}{{end}}

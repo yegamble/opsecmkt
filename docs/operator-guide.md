@@ -827,6 +827,18 @@ against the account, still open, released to the vendor or refunded to the buyer
 It shows no sign-in times, network addresses or page visits, and the market does not
 collect them for it.
 
+For a vendor the page also shows **Reputation figures** (A-653): counts of its funded
+orders by how they ended, disputes decided or conceded either way, distinct buyers,
+counted reviews and low ratings, and listings now taken down or rejected, all over
+retained history, worked out when the page loads and never stored, with the fixed rule
+table and the label it proposes: HIGH_REPUTATION, STANDARD, INSUFFICIENT_HISTORY (too
+few completed orders) or AT_RISK, with the reason codes. No model is involved, and only
+administrators see it. Read the label as a pointer to the figures, not a verdict: a
+small or concentrated record (few distinct buyers, which is how bought reviews and
+sockpuppet orders show) is never HIGH_REPUTATION. When the label is HIGH_REPUTATION
+the panel offers *Confirm HIGH_REPUTATION and publish without review* (see *Vendors who
+publish without review*).
+
 The page carries the account's actions, each the same form as elsewhere with the
 same password confirmation, audit rows and notices, returning to the account's
 page: suspend or restore, ban or lift the ban (with a reason), reset second factors,
@@ -930,7 +942,10 @@ are never held. Orders placed before an edit continue.
 - **Vendors who publish without review**: enter a vendor's handle (or use the account's page in the user directory) to
   let its new and edited listings publish at once, or to hold them again. It applies to the vendor's next save;
   approved listings stay visible and listings already waiting still need staff. Banning the account turns it off,
-  and lifting the ban does not turn it back on.
+  and lifting the ban does not turn it back on. On the account's page you may instead confirm a HIGH_REPUTATION
+  label (A-653) with the same password step: the market computes the label again when you submit and refuses, with
+  nothing changed, if it is no longer HIGH_REPUTATION or the figures changed since the page loaded (reload and read
+  them again). Your audit row records the label name; the vendor is told only that it may publish without review.
 - Switching back to publish at once approves nothing: listings already waiting stay hidden until staff approve them.
   The audit row says how many still wait.
 - Automated moderation (the optional moderation worker and model) never approves, holds or rejects a listing, and a

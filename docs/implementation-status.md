@@ -94,8 +94,9 @@ model, even with `--model` on: they get the deterministic checks only and, when
 those find nothing, the Go-only `MODEL_NOT_USED` with the same `QUEUE_HUMAN`
 routing and score as an absent model, so they are never `AUTO_APPLY`. Reviews,
 disputes and payment flags still use inference. Stage B no longer receives
-`actor_reputation`; the market never sets a reputation figure (source guard
-`TestNoMarketCodeSetsActorReputation`), so the router's fixed unrated-actor weight
+`actor_reputation`; the market never sets a model's reputation figure (source guard
+`TestNoMarketCodeSetsActorReputation`; A-653's Go rule below is for administrators
+only and never reaches the worker), so the router's fixed unrated-actor weight
 applies to every job as before, and the canonical input hash keeps its form.
 Prompt capture shows neither stage carrying a handle, PGP fingerprint, image hash,
 payment address, ban/takedown/listing-rejection reason or reputation figure; a
@@ -452,6 +453,48 @@ switch back, authorization denials, audit rows, retention purge of the reason, s
 hold, vendor lists, buyer cannot see it, moderator rejects, vendor reads the reason and edits, moderator approves,
 buyer sees it, with JavaScript off at 390 and 320 px) and
 `preview-listing-review.spec.ts` (desk and admin panel layout at every preview width).
+
+## Vendor reputation rule (A-653)
+
+Owner ruling 2026-10-25 ("Go rule"; `reputation.go`, no migration). A vendor's account page in the user directory
+(`/admin/users?handle=`, administrators only) shows **Reputation figures**, counted over retained history each time the
+page loads from the market's own rows; nothing is stored and no model is involved. The figures cover funded orders
+(orders with a move into paid): completed orders by route (the buyer confirmed receipt, the system completed it at the
+release deadline, or a digital order completed on funding), paid orders cancelled by the buyer because they were not
+shipped in time and by the vendor, disputes decided for a refund or a release and disputes the buyer or the vendor
+conceded (an open dispute counts nowhere), distinct buyers of funded and of completed orders, counted reviews (A-649's
+`reviewCountedSQL`: not hidden and not by a banned buyer) and those of one or two stars, and the vendor's listings now
+taken down or rejected. Settlement mechanics are not read: stray refunds, buyer returns, failed, external or
+superseded settlements, same-state settlement and decision notes and payment-window expiries change no figure. A
+fixed table of Go predicates, each shown with its figure and thresholds, proposes one closed label with reason codes:
+**AT_RISK** when any row gives it (`NONDELIVERY_REFUND_RATE` or `DISPUTES_LOST` at 3 or more and 20% or 10% of the
+completed orders plus that count, `LOW_RATINGS` at 3 or more and 30% of counted reviews, `LISTING_REMOVALS` at 3,
+`BUYER_CONCENTRATION` with distinct buyers below 25% of 5 or more completed orders), else
+**INSUFFICIENT_HISTORY** (the default: `FEW_COMPLETED_ORDERS`, fewer than 5 completed), else **STANDARD** when any row
+keeps the vendor below the high thresholds (fewer than 25 completed, fewer than 10 distinct buyers, distinct buyers
+below 50% of completed orders, non-delivery refunds 5% or more, disputes lost 2% or more, low ratings 10% or more, or
+any current removal), else **HIGH_REPUTATION** (`STRONG_RECORD`). There is no confidence or free text, and worsening any
+adverse figure never improves the label. The codes are defined in `internal/market`, not in package moderation, and
+the code reads no `moderation_*` table (capture is optional and budget-limited) and does not import package
+moderation; the model's `Actor.Reputation` stays unset (`TestNoMarketCodeSetsActorReputation`).
+
+The label changes nothing by itself. When it is HIGH_REPUTATION and the vendor does not yet publish without review,
+the panel offers **Confirm HIGH_REPUTATION and publish without review**: the existing password-confirmed POST
+`/admin/vendor-auto-approve` with `confirm_reputation` and a digest of the figures shown. Inside the action's
+transaction, after the account's row lock, the label is computed again; a label other than HIGH_REPUTATION or a digest
+that no longer matches is refused (409, "Nothing was changed."). The administrator's audit row adds "; reputation
+confirmed as HIGH_REPUTATION" (the label name only); the vendor's audit row and notification are the usual ones and
+never name a label. Turning the flag on without the choice (from the Vendors section or the account page) works as
+before, whatever the label; there is no bulk confirmation. Vendors, buyers, moderators and guests never see the
+figures or a label, and no public page carries one. `vendorAutoApproveAction` stays the only writer of
+`users.listing_auto_approve` apart from the ban action clearing it (A-650) (`TestAutoApproveOnlyWriters`).
+
+Tests: `reputation_test.go` (`TestReputationLabelTable`, `TestReputationMonotonic` over 20,000 generated figure sets,
+`TestReputationSelfPurchaseConcentration`, `TestReputationIgnoresSettlementMechanics`,
+`TestReputationIndependentOfModerationCapture` with every `moderation_*` table locked against reads,
+`TestReputationAdminOnly`, `TestAutoApproveConfirmRecomputesLabel`, `TestAutoApproveOnlyWriters`) and
+`preview-admin-users.spec.ts` (the panel at 320 and 1280 px). Not covered: thresholds are fixed in code, not tuned on
+market data, and the label is advice for staff, not a fraud finding.
 
 ## Market name and logo
 
