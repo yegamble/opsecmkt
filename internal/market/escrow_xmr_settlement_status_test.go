@@ -66,7 +66,7 @@ func TestXMREscrowMigration085(t *testing.T) {
 	s2 := strconv.FormatInt(second, 10)
 	var other int64
 	o2, _, _ := xmrEscrow(t, e, w, 2, buyer, e.product(vendor, "digital"), stateCancelled)
-	if err := e.DB.QueryRow("INSERT INTO xmr_settlements(order_id,kind,destination) VALUES($1,'refund',$2) RETURNING id", o2, xmrAddr("refund-85")).Scan(&other); err != nil {
+	if err := e.DB.QueryRow("INSERT INTO xmr_settlements(order_id,kind,destination) SELECT order_id,'refund',refund_address FROM escrows WHERE order_id=$1 RETURNING id", o2).Scan(&other); err != nil {
 		t.Fatal(err)
 	}
 	xmrRefused(t, e, "done by an unrelated settlement", "only by the settlement that supersedes", "UPDATE xmr_settlement_rerequests SET state='done',new_settlement_id=$1,decided_at=now() WHERE id="+s2, other)

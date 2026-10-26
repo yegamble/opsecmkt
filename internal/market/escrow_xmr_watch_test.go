@@ -115,9 +115,19 @@ func (x *xmrEscrowEnv) checkout(sess, order, refund string) *httptest.ResponseRe
 // and returns the order and the escrow address.
 func (x *xmrEscrowEnv) freshCheckout(product string) (string, string) {
 	x.t.Helper()
+	return x.freshCheckoutOf(product, 1)
+}
+
+// freshCheckoutOf is freshCheckout of quantity units, so that the order's amount, fixed once its escrow exists
+// (migration 151), is quantity times the listing's price.
+func (x *xmrEscrowEnv) freshCheckoutOf(product string, quantity int) (string, string) {
+	x.t.Helper()
 	buyer, sess := x.user("xb_"+randomToken()[:8], "buyer")
 	x.enableOrderPGP(buyer)
 	order := x.order(buyer, product, "XMR", stateDraft)
+	if quantity != 1 {
+		agExec(x.testEnv, "UPDATE orders SET quantity=$2 WHERE id=$1", order, quantity)
+	}
 	if w := x.checkout(sess, order, testXMRAddrOn(x.refundNet(), "refund "+order, true)); w.Code != 303 {
 		x.t.Fatalf("checkout: %d %s", w.Code, w.Body.String())
 	}
