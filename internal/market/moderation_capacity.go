@@ -15,7 +15,14 @@ type ModerationLimits struct{ MaxPending, MaxRecords, MaxBytes int64 }
 
 func DefaultModerationLimits() ModerationLimits { return ModerationLimits{256, 4096, 256 << 20} }
 
-func ConfigureModerationLimits(ctx context.Context, db *sql.DB, v ModerationLimits) error {
+// ErrModerationLimitsBelowUse is ConfigureModerationLimits refusing limits below the stored usage.
+var ErrModerationLimitsBelowUse = errors.New("moderation capacity limits below existing allocations")
+
+// ConfigureModerationLimits stores the limits, within their bounds and never below current usage. db is the pool or
+// a transaction that already holds the capacity row (staff transactions take it first: migration 148).
+func ConfigureModerationLimits(ctx context.Context, db interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}, v ModerationLimits) error {
 	if v.MaxPending < 1 || v.MaxPending > 10000 || v.MaxRecords < 1 || v.MaxRecords > 1000000 || v.MaxBytes < moderationAllocationBytes || v.MaxBytes > 1<<40 {
 		return errors.New("moderation capacity limits invalid")
 	}
@@ -24,8 +31,11 @@ func ConfigureModerationLimits(ctx context.Context, db *sql.DB, v ModerationLimi
 		return errors.New("moderation capacity configuration unavailable")
 	}
 	n, err := res.RowsAffected()
-	if err != nil || n != 1 {
-		return errors.New("moderation capacity limits below existing allocations")
+	if err != nil {
+		return errors.New("moderation capacity configuration unavailable")
+	}
+	if n != 1 {
+		return ErrModerationLimitsBelowUse
 	}
 	return nil
 }

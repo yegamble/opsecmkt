@@ -445,6 +445,7 @@ func TestModerationCapacityLockIsFirstStatement(t *testing.T) {
 		{"internal/market/moderation_worker.go", "persist"},
 		{"internal/market/moderation_admin.go", "moderationReviewAction"},
 		{"internal/market/moderation_token.go", "moderationOfflineAction"},
+		{"internal/market/moderation_budget.go", "moderationBudgetAction"},
 	} {
 		if got := moderationFirstSQL(t, c.file, c.function); got != lock {
 			t.Errorf("%s: the first statement of %s is %q, not the capacity lock", c.file, c.function, got)

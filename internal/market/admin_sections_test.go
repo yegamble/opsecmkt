@@ -174,6 +174,7 @@ func TestAdminSections(t *testing.T) {
 // adminRedirectsCoveredElsewhere are the admin actions whose success needs a fixture of its own (a host agent, Monero
 // escrow, an uploadable logo, a signed canary, an order or listing); the named test asserts each one's Location.
 var adminRedirectsCoveredElsewhere = map[string]string{
+	"/admin/moderation/budget":      "TestModerationBudgetRaiseConfirmedAudited: /admin/moderation",
 	"/admin/moderation/review":      "TestModerationAdminQueueAuthorizationAndReview: /admin/moderation",
 	"/admin/moderation/offline":     "TestModerationOfflineReviewNoLoginReplayOrStaleAcceptance: /admin/moderation/offline",
 	"/admin/reboot":                 "TestHostRebootCommitsAuditBeforeOneDispatchAndNeverReplays: /admin/system#host-control",

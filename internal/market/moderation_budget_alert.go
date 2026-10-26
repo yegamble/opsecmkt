@@ -10,7 +10,7 @@ import (
 
 // A-648: the /admin overview warns while moderation capture needs the operator, so an exhausted lifetime pool is
 // not visible only on the private moderation panel. The pool only grows: once it is spent, nothing new is captured
-// until the worker's --max-records / --max-reserved-bytes are raised.
+// until the budget is raised on that panel (A-654) or with the worker's --max-records / --max-reserved-bytes.
 //
 // One plain read of counters: no row lock, so the overview never waits on (or delays) admission and the worker,
 // which serialise on the capacity row. It returns no row while capture is off.
@@ -75,6 +75,7 @@ func (v ModerationBudgetView) Text() string {
 	if v.Rescans > 0 {
 		s += "; " + strconv.FormatInt(v.Rescans, 10) + " account(s) awaiting a rescan"
 	}
-	return s + ". Raise --max-records and --max-reserved-bytes on the moderation worker (each allocation reserves " +
+	return s + ". Raise the limits under Moderation budget on the private moderation panel, or --max-records and " +
+		"--max-reserved-bytes on the moderation worker (each allocation reserves " +
 		strconv.FormatInt(moderationAllocationBytes, 10) + " bytes)."
 }
