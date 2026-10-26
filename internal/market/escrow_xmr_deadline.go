@@ -256,8 +256,9 @@ func (a *App) xmrRecheckReleaseDeadlines(ctx context.Context) error {
 // xmrBanDeadlines is step 5 of the file comment (A-652d; owner decision 2026-10-25 "refund + hold": shipped orders get at
 // least 72 hours from the ban for the buyer to dispute, with a notice to each buyer for their order; PAY87-4, PAY89-1).
 // In the ban's transaction tx, after the vendor's account row lock (adminBanAction), it locks each shipped Monero escrow
-// order of vendorID in id order, without waiting (an order held by another transaction refuses the whole ban with the
-// retryable database-busy 503, nothing changed), and checks it again after the lock (the recheck's rule). One still
+// order of vendorID in id order, without waiting, and checks it again after the lock (the recheck's rule): the ban
+// already holds those listed before that lock (lockBanShippedOrders), so only an order shipped in between can be held
+// by another transaction, which refuses the whole ban with the retryable database-busy 503, nothing changed. One still
 // shipped with no dispute gets release_at = GREATEST(release_at, releaseGraceSQL), never earlier, and its buyer an order
 // note and a notice for that order: the vendor's account is closed, a dispute can be opened until the deadline, and
 // otherwise the order completes and its payment is held (xmrReleaseHeld). Nothing else changes and no money moves;
@@ -267,14 +268,14 @@ func (a *App) xmrRecheckReleaseDeadlines(ctx context.Context) error {
 // true: the flag is reset first, as the recheck does, and then put back as it was, so the order page does not say that
 // a restore from backup moved the deadline. It returns how many deadlines moved and how many buyers were told.
 func xmrBanDeadlines(ctx context.Context, tx *sql.Tx, vendorID string) (moved, told int, err error) {
-	ids, err := orderIDs(ctx, tx, `SELECT o.id FROM orders o JOIN products p ON p.id=o.product_id JOIN escrows es ON es.order_id=o.id
-		WHERE p.vendor_id=$1 AND es.coin='XMR' AND o.state='shipped' ORDER BY o.id`, vendorID)
+	ids, err := orderIDs(ctx, tx, banShippedSQL, vendorID)
 	if err != nil {
 		return 0, 0, err
 	}
 	for _, id := range ids {
 		// NOWAIT: an order message locks its order and then share-locks the partner's account (orderMessageAction), so
-		// waiting here while the ban holds the vendor's account row could deadlock; contention is the retryable 503.
+		// waiting here while the ban holds the vendor's account row could deadlock. Those the ban locked before that row
+		// are its own already; contention on one shipped since is the retryable 503.
 		if _, err = tx.ExecContext(ctx, "SELECT 1 FROM orders WHERE id=$1 FOR NO KEY UPDATE NOWAIT", id); err != nil {
 			return 0, 0, err
 		}
@@ -316,4 +317,26 @@ func xmrBanDeadlines(ctx context.Context, tx *sql.Tx, vendorID string) (moved, t
 		told++
 	}
 	return moved, told, nil
+}
+
+// banShippedSQL lists vendor $1's shipped Monero escrow orders in id order: those a ban may move (xmrBanDeadlines).
+const banShippedSQL = `SELECT o.id FROM orders o JOIN products p ON p.id=o.product_id JOIN escrows es ON es.order_id=o.id
+	WHERE p.vendor_id=$1 AND es.coin='XMR' AND o.state='shipped' ORDER BY o.id`
+
+// lockBanShippedOrders locks, in the ban's transaction tx and before the vendor's account row (adminBanAction,
+// PAY90-2), each shipped Monero escrow order of vendorID in id order, waiting for one another transaction holds (the
+// escrow watcher locks each order whose deposits it records on every pass). That is an order message's order too (its
+// order, then the partner's account, orderMessageAction), so the wait cannot close a cycle with it, and the ban no
+// longer refuses with the busy 503 while the watcher runs. The ban's lock wait bounds it (waitForWalletLocks).
+func lockBanShippedOrders(ctx context.Context, tx *sql.Tx, vendorID string) error {
+	ids, err := orderIDs(ctx, tx, banShippedSQL, vendorID)
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if _, err = tx.ExecContext(ctx, "SELECT 1 FROM orders WHERE id=$1 FOR NO KEY UPDATE", id); err != nil {
+			return err
+		}
+	}
+	return nil
 }

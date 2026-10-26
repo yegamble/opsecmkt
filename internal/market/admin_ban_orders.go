@@ -23,8 +23,10 @@ import (
 // administrator (another administrator refunds those, as a dispute's party never decides it). Shipped, delivered,
 // disputed and finished orders are never touched. The form states a digest of the orders it takes (order id, state,
 // counted sum); a different set refuses the whole submission (409, nothing changed). Under the ban's row lock the
-// account must still be banned, and the restore gate must be clear. Each order is then locked and checked again; one
-// that moved meanwhile (a ship, a dispute or a payment that committed first) is left out and the others go ahead.
+// account must still be banned, the restore gate must be clear and a restore's sweep of the escrow wallets complete
+// (xmrEscrowSweepKey, PAY89-4: until then the restored records may not yet know every deposit). Each order is then
+// locked and checked again; one that moved meanwhile (a ship, a dispute or a payment that committed first) is left out
+// and the others go ahead.
 // The buyers are notified and the order history records the move; both accounts are audited with the counts.
 
 func init() {
@@ -40,10 +42,20 @@ const maxBanRefunds = 100
 // banRefundNote is the order event and, after "Order X is now Cancelled", the buyer's notification.
 const banRefundNote = "Cancelled — the vendor's account is closed, so an administrator cancelled this order; any coins in its escrow go back to the refund address given at checkout"
 
+// banSweepWhy says why refunds wait while a restore's sweep of the escrow wallets has not completed (PAY89-4).
+const banSweepWhy = "the market is still checking its escrow wallets after restoring its records from a backup (the restore sweep); it continues by itself once that completes"
+
 var (
 	errBanOrdersStale  = fail(409, "These orders changed since the page was shown. Reload the account's page and review them again. Nothing was changed.")
 	errBanOrdersPaused = fail(409, "Nothing is refunded while "+restoreWhy+": the operator clears the restore gate first. Nothing was changed.")
+	errBanOrdersSweep  = fail(409, "Nothing is refunded while "+banSweepWhy+". Nothing was changed.")
 )
+
+// banRefundsPaused reads whether the restore gate is set and whether a restore's sweep has not completed.
+func banRefundsPaused(ctx context.Context, q rowQuerier) (gate, sweep bool, err error) {
+	err = q.QueryRowContext(ctx, "SELECT "+restoreGateSQL+",EXISTS(SELECT 1 FROM settings WHERE key=$1 AND value='true')", xmrEscrowSweepKey).Scan(&gate, &sweep)
+	return gate, sweep, err
+}
 
 // BanOrdersView is a banned account's orders section on its page in the user directory (A-652b): its open Monero
 // escrow orders as vendor and those whose escrow still holds coins (Rows), and what the refund form takes now.
@@ -167,10 +179,13 @@ func banOrdersAction(c *actionCtx) (actionResult, error) {
 		case !banned:
 			return actionResult{}, fail(409, handle+" is not banned; nothing was changed.")
 		}
-		if gate, err := restoreGateSet(ctx, tx); err != nil {
+		switch gate, sweep, err := banRefundsPaused(ctx, tx); {
+		case err != nil:
 			return actionResult{}, err
-		} else if gate {
+		case gate:
 			return actionResult{}, errBanOrdersPaused
+		case sweep:
+			return actionResult{}, errBanOrdersSweep
 		}
 		orders, total, mine, err := banRefundable(ctx, tx, target, c.User.ID)
 		if err != nil {
@@ -325,10 +340,13 @@ func banOrdersLoader(ctx context.Context, a *App, _ *http.Request, d *PageData) 
 		classes[i].Sum = xmr(sums[i])
 	}
 	v.Classes = classes
-	if gate, err := restoreGateSet(ctx, a.db); err != nil {
+	switch gate, sweep, err := banRefundsPaused(ctx, a.db); {
+	case err != nil:
 		return err
-	} else if gate {
+	case gate:
 		v.Paused = "Refunds are paused: " + restoreWhy + ". The operator clears the restore gate first."
+	case sweep:
+		v.Paused = "Refunds are paused: " + banSweepWhy + "."
 	}
 	d.BanOrders = v
 	return nil

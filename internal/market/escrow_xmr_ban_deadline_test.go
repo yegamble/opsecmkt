@@ -1,9 +1,12 @@
 package market
 
 import (
+	"context"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -275,38 +278,110 @@ func TestBanCompletionNotesSayHeld(t *testing.T) {
 	}
 }
 
-// The ban never waits for a shipped order's row while it holds the vendor's account row (an order message takes them
-// in the other order): an order held by another transaction refuses the whole ban with the retryable 503, nothing
-// changed, and the ban goes through once the order is free.
-func TestBanShippedOrderBusyRetries(t *testing.T) {
+// PAY90-2: the ban locks the vendor's shipped orders, in id order, before the vendor's account row, as an order message
+// does (its order, then the partner's account). A shipped order held by another transaction makes the ban wait for it
+// instead of refusing; meanwhile that transaction can still take the vendor's account row, as an order message does,
+// with no deadlock, and the ban then goes through.
+func TestBanWaitsForHeldShippedOrder(t *testing.T) {
 	x := newXMREscrowEnv(t)
 	x.mustPoll()
 	_, admin := x.user("banbusy_admin", "admin")
 	order, _, _ := x.shippedXMR(x.physical(x.vendor))
 	x.forceDeadline(order, "release_at=now()-interval '1 minute'")
-	at := x.releaseAt(order)
 	handle := agStr(x.testEnv, "SELECT handle FROM users WHERE id=$1", x.vendor)
 	tx, err := x.DB.Begin()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
+	if _, err = tx.Exec("SET LOCAL lock_timeout='5s'"); err != nil {
+		t.Fatal(err)
+	}
 	if _, err = tx.Exec("SELECT 1 FROM orders WHERE id=$1 FOR NO KEY UPDATE", order); err != nil {
 		t.Fatal(err)
 	}
-	start := time.Now()
-	agExpect(x.testEnv, "/admin/ban", admin, banForm("ban", handle, testBanReason), 503, "")
-	// Not after the ban's 11 s lock wait (walletLockWait): it did not queue for the order holding the vendor's row.
-	if took := time.Since(start); took >= 8*time.Second {
-		t.Fatalf("the ban waited %s for the held order", took)
+	done := make(chan int, 1)
+	go func() { done <- x.do("POST", "/admin/ban", admin, banForm("ban", handle, testBanReason)).Code }()
+	x.waitForLockWaits(1)
+	// An order message's second lock: the ban does not hold the vendor's account row while it waits for the order.
+	if _, err = tx.Exec("SELECT 1 FROM users WHERE id=$1 FOR SHARE", x.vendor); err != nil {
+		t.Fatalf("the vendor's account row while the ban waits for the order: %v", err)
 	}
-	banned := agStr(x.testEnv, "SELECT (banned_at IS NOT NULL)::text FROM users WHERE id=$1", x.vendor)
-	if banned != "false" || !x.releaseAt(order).Equal(at) || len(x.banNotices(order)) != 0 {
-		t.Fatalf("a refused ban changed something: banned %s, deadline %s (was %s), notices %q", banned, x.releaseAt(order), at, x.banNotices(order))
-	}
-	if err = tx.Rollback(); err != nil {
+	if err = tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	x.banVendor(admin)
+	if code := <-done; code != 303 {
+		t.Fatalf("the ban that waited for the held order: %d", code)
+	}
 	x.checkBanNotice(order, x.releaseAt(order))
+}
+
+// PAY90-2: a busy watcher (passes back to back; each locks every escrow order whose deposits it records) beside 20 bans
+// and unbans of a vendor with 30 shipped orders: every ban and unban goes through (no busy 503, no deadlock), and after
+// each ban every order is still shipped, its release deadline at least 72 hours after the ban, and its buyer has exactly
+// one notice of each ban so far.
+func TestBanUnderWatcherNoBusy(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	_, admin := x.user("banwatch_admin", "admin")
+	phys := x.physical(x.vendor)
+	agExec(x.testEnv, "UPDATE products SET stock=100 WHERE id=$1", phys)
+	orders, addrs := make([]string, 30), make([]string, 30)
+	for i := range orders {
+		orders[i], addrs[i] = x.freshCheckout(phys)
+		x.fake.payAddress(addrs[i], hex64("fund "+orders[i]), xmrListingPrice, 10)
+		if i%5 == 4 { // the pass funds these and refills ESCROW_XMR_SLOTS (5 in the fake)
+			x.mustPoll()
+		}
+	}
+	for _, o := range orders {
+		if code, body := x.xmrShip(o, x.vendorSess, testXMRAddr("claim "+o, true), testPassword); code != 303 {
+			t.Fatalf("ship %s (%s): %d %s", shortID(o), x.state(o), code, body)
+		}
+		x.forceDeadline(o, "release_at=now()+interval '5 hours'")
+	}
+	handle := agStr(x.testEnv, "SELECT handle FROM users WHERE id=$1", x.vendor)
+	ctx, stop := context.WithCancel(context.Background())
+	var passes atomic.Int64
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for ctx.Err() == nil {
+			_ = x.A.xmrEscrowPollOnce(ctx) // a pass cut short when the test ends is not a finding
+			passes.Add(1)
+		}
+	}()
+	defer wg.Wait()
+	defer stop()
+	refused := map[string]int{}
+	bans := 0
+	for i := 1; i <= 20; i++ {
+		before := x.dbNow()
+		if w := x.do("POST", "/admin/ban", admin, banForm("ban", handle, testBanReason)); w.Code != 303 {
+			refused["ban "+strconv.Itoa(w.Code)]++
+			continue
+		}
+		bans++
+		if n := agInt(x.testEnv, `SELECT count(*) FROM orders o JOIN escrows es ON es.order_id=o.id WHERE o.id=ANY($1)
+			AND (o.state<>'shipped' OR es.release_at<$2::timestamptz+interval '72 hours')`, orders, before); n != 0 {
+			t.Fatalf("ban %d: %d order(s) not shipped or with a release deadline sooner than 72 hours after the ban", i, n)
+		}
+		if n := agInt(x.testEnv, `SELECT count(*) FROM orders o WHERE o.id=ANY($1) AND (SELECT count(*) FROM notifications n
+			WHERE n.user_id=o.buyer_id AND n.order_id=o.id AND strpos(n.body,$2)>0)<>$3`, orders, banDeadlineText, bans); n != 0 {
+			t.Fatalf("ban %d: the buyers of %d order(s) do not have exactly %d ban notice(s)", i, n, bans)
+		}
+		if w := x.do("POST", "/admin/ban", admin, banForm("unban", handle, testLiftReason)); w.Code != 303 {
+			refused["unban "+strconv.Itoa(w.Code)]++
+			break
+		}
+	}
+	stop()
+	wg.Wait()
+	if len(refused) != 0 {
+		t.Fatalf("refused beside a busy watcher (%d passes): %v", passes.Load(), refused)
+	}
+	if passes.Load() < 2 {
+		t.Fatalf("the watcher ran %d passes beside 20 bans: it was not busy", passes.Load())
+	}
 }
