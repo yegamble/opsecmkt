@@ -144,6 +144,22 @@ acceptance requirements, not a declaration of deployed verification:
   of `TestModerationDeleteTriggerNoDeadlock`, five runs, no deadlock; each
   deadlock test failed with SQLSTATE 40P01, or the held-ledger edit timed out,
   before migration 148; database integration, fake model).
+- An administrator raises the lifetime moderation budget under Moderation
+  budget on the private panel (A-654): password and enrolled TOTP, CSRF and a
+  single-use form receipt; one audit row "Moderation budget raised from R1
+  allocations / B1 MiB to R2 / B2 MiB by administrator X" with no target data; a
+  replayed form raises nothing twice and concurrent raises serialise on the
+  capacity row. A wrong password, a lower or unchanged value, a value out of
+  bounds or below the allocations already made is refused with "Nothing was
+  changed". Public ingress answers 404 before reading the body or a cookie. A
+  target waiting under `retained_capacity` is captured on the next pass of the
+  same worker and the Admin overview alert clears. A worker restarted with a
+  lower `--max-records` or `--max-reserved-bytes` keeps the stored value and logs
+  "stored moderation budget is higher; flag ignored"; a higher flag still raises
+  it (`TestModerationBudgetRaiseConfirmedAudited`,
+  `TestModerationBudgetRefusesLower`, `TestModerationBudgetPublicIngress404`,
+  `TestModerationBudgetRaiseCapturesWaiting`,
+  `TestWorkerFlagNeverLowersStoredBudget`; database integration, fake model).
 - Proposal queues/status require an authenticated current administrator on the
   existing private ingress. The separate offline page accepts only a valid,
   revision-bound signed review token with CSRF/origin checks; it exposes no queue

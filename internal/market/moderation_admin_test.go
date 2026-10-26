@@ -269,3 +269,259 @@ func TestModerationAdminTemplateEscapesUntrustedSummary(t *testing.T) {
 	mustContain(t, body.String(), "&lt;script&gt;alert", "HOLD", "UTC", "Existing marketplace state stays unchanged")
 	mustNotContain(t, body.String(), `<script>`, "http://", "https://")
 }
+
+// A-654: the lifetime moderation budget is raised from the private panel, confirmed and audited, increase only.
+
+func moderationBudgetForm(records, mib string) url.Values {
+	return url.Values{"max_records": {records}, "max_reserved_mib": {mib}, "password": {testPassword}, formNonceField: {randomToken()[:32]}}
+}
+
+// moderationBudgetLimits is the stored (max_pending, max_records, max_bytes).
+func moderationBudgetLimits(e *testEnv) [3]int {
+	e.t.Helper()
+	var v [3]int
+	if err := e.DB.QueryRow(`SELECT max_pending,max_records,max_bytes FROM moderation_capacity WHERE singleton`).Scan(&v[0], &v[1], &v[2]); err != nil {
+		e.t.Fatal(err)
+	}
+	return v
+}
+
+func moderationBudgetAudits(e *testEnv) []string {
+	e.t.Helper()
+	rows, err := e.DB.Query(`SELECT action FROM audit_events WHERE action LIKE 'Moderation budget%' ORDER BY id`)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var s string
+		if err = rows.Scan(&s); err != nil {
+			e.t.Fatal(err)
+		}
+		got = append(got, s)
+	}
+	if err = rows.Err(); err != nil {
+		e.t.Fatal(err)
+	}
+	return got
+}
+
+func TestModerationBudgetRaiseConfirmedAudited(t *testing.T) {
+	e := newTestApp(t)
+	adminID, admin := e.user("moderation_budget_admin", "admin")
+	_, mod := e.user("moderation_budget_mod", "moderator")
+	_, buyer := e.user("moderation_budget_buyer", "buyer")
+	e.A.adminSocket = "/run/test-private-admin/http.sock"
+	defaults := [3]int{256, 4096, 256 << 20}
+	if got := moderationBudgetLimits(e); got != defaults {
+		t.Fatalf("precondition: stored limits %v", got)
+	}
+	page := privateHostRequest(e, "GET", "/admin/moderation", admin, nil, true)
+	e.check(page, 200)
+	mustContain(t, page.Body.String(), "Moderation budget", `action="/admin/moderation/budget"`, `name="max_records"`, `value="4096"`,
+		`name="max_reserved_mib"`, `value="256"`, "256 MiB", "512 KiB", `name="password"`)
+	mustNotContain(t, page.Body.String(), `name="code"`)
+	for _, session := range []string{mod, buyer} {
+		e.check(privateHostRequest(e, "POST", "/admin/moderation/budget", session, moderationBudgetForm("8192", "512"), true), 403)
+	}
+	e.check(privateHostRequest(e, "POST", "/admin/moderation/budget", admin, moderationBudgetForm("8192", "512"), false), 403)
+	if got := moderationBudgetLimits(e); got != defaults {
+		t.Fatalf("refused request changed the limits: %v", got)
+	}
+
+	form := moderationBudgetForm("8192", "512")
+	first := privateHostRequest(e, "POST", "/admin/moderation/budget", admin, form, true)
+	e.check(first, 303)
+	if loc := first.Header().Get("Location"); loc != "/admin/moderation" {
+		t.Fatalf("redirect %q", loc)
+	}
+	if got := moderationBudgetLimits(e); got != [3]int{256, 8192, 512 << 20} {
+		t.Fatalf("raised limits %v", got)
+	}
+	// The same rendered form replays its stored result: it raises nothing twice and writes one audit row, which
+	// names the administrator and the limits only.
+	e.check(privateHostRequest(e, "POST", "/admin/moderation/budget", admin, form, true), 303)
+	want := "Moderation budget raised from 4096 allocations / 256 MiB to 8192 / 512 MiB by administrator moderation_budget_admin (confirmed with password)"
+	if got := moderationBudgetAudits(e); len(got) != 1 || got[0] != want {
+		t.Fatalf("audit rows %q", got)
+	}
+	if n := agInt(e, `SELECT count(*) FROM audit_events WHERE user_id=$1 AND action LIKE 'Moderation budget%'`, adminID); n != 1 {
+		t.Fatalf("audit actor rows %d", n)
+	}
+	reloaded := privateHostRequest(e, "GET", "/admin/moderation", admin, nil, true)
+	e.check(reloaded, 200)
+	mustContain(t, reloaded.Body.String(), `value="8192"`, `value="512"`, "512 MiB")
+
+	// Raising one budget keeps the other.
+	e.check(privateHostRequest(e, "POST", "/admin/moderation/budget", admin, moderationBudgetForm("8192", "1024"), true), 303)
+	if got := moderationBudgetLimits(e); got != [3]int{256, 8192, 1024 << 20} {
+		t.Fatalf("byte-only raise %v", got)
+	}
+
+	// Two administrators submitting the same raise at once: the capacity row serialises them, and the second finds
+	// it already in place and is refused.
+	_, other := e.user("moderation_budget_other", "admin")
+	start := make(chan struct{})
+	results := make(chan *httptest.ResponseRecorder, 2)
+	for _, session := range []string{admin, other} {
+		go func(session string) {
+			<-start
+			results <- privateHostRequest(e, "POST", "/admin/moderation/budget", session, moderationBudgetForm("16384", "2048"), true)
+		}(session)
+	}
+	close(start)
+	statuses := map[int]int{}
+	for range 2 {
+		statuses[(<-results).Code]++
+	}
+	if got := moderationBudgetLimits(e); statuses[303] != 1 || statuses[409] != 1 || got != [3]int{256, 16384, 2048 << 20} {
+		t.Fatalf("concurrent raise: %v, limits %v", statuses, got)
+	}
+
+	// An enrolled authenticator is required as well as the password.
+	key, _ := agEnableTOTP(e, adminID)
+	page = privateHostRequest(e, "GET", "/admin/moderation", admin, nil, true)
+	e.check(page, 200)
+	mustContain(t, page.Body.String(), `name="code"`)
+	totp := moderationBudgetForm("20000", "4096")
+	missing := privateHostRequest(e, "POST", "/admin/moderation/budget", admin, totp, true)
+	e.check(missing, 401)
+	mustContain(t, missing.Body.String(), "Nothing was changed")
+	if got := moderationBudgetLimits(e); got != [3]int{256, 16384, 2048 << 20} {
+		t.Fatalf("raise without authenticator code changed %v", got)
+	}
+	totp.Set("code", agTOTPNow(key))
+	e.check(privateHostRequest(e, "POST", "/admin/moderation/budget", admin, totp, true), 303)
+	if got := moderationBudgetLimits(e); got != [3]int{256, 20000, 4096 << 20} {
+		t.Fatalf("raise with authenticator %v", got)
+	}
+	audits := moderationBudgetAudits(e)
+	if want := "Moderation budget raised from 16384 allocations / 2048 MiB to 20000 / 4096 MiB by administrator moderation_budget_admin (confirmed with password and authenticator code)"; len(audits) != 4 || audits[3] != want {
+		t.Fatalf("audit rows %q", audits)
+	}
+}
+
+func TestModerationBudgetRefusesLower(t *testing.T) {
+	e := newTestApp(t)
+	_, admin := e.user("moderation_lower_admin", "admin")
+	_, wrongPassword := e.user("moderation_lower_wrong", "admin")
+	e.A.adminSocket = "/run/test-private-admin/http.sock"
+	defaults := [3]int{256, 4096, 256 << 20}
+	refuse := func(session string, form url.Values, code int) {
+		t.Helper()
+		w := privateHostRequest(e, "POST", "/admin/moderation/budget", session, form, true)
+		e.check(w, code)
+		mustContain(t, w.Body.String(), "Nothing was changed")
+		if got := moderationBudgetLimits(e); got != defaults {
+			t.Fatalf("refused %v changed the limits: %v", form, got)
+		}
+	}
+	// Lower or equal values: never lowered from the panel, and a submission that raises nothing is refused.
+	for _, v := range [][2]string{{"4095", "256"}, {"4096", "255"}, {"8192", "128"}, {"1", "1"}, {"4096", "256"}} {
+		refuse(admin, moderationBudgetForm(v[0], v[1]), 409)
+	}
+	// Outside the bounds ConfigureModerationLimits enforces, or not a plain whole number.
+	for _, v := range [][2]string{{"1000001", "512"}, {"8192", "1048577"}, {"0", "512"}, {"8192", "0"}, {"-1", "512"}, {"8192", "abc"},
+		{"8192.5", "512"}, {"8192", "512.5"}, {"", "512"}, {"8192", ""}, {"0x2000", "512"}, {"+8192", "512"}, {"99999999999999999999", "512"}} {
+		refuse(admin, moderationBudgetForm(v[0], v[1]), 400)
+	}
+	extra := moderationBudgetForm("8192", "512")
+	extra.Set("max_pending", "1")
+	refuse(admin, extra, 400)
+	twice := moderationBudgetForm("8192", "512")
+	twice.Add("max_records", "16384")
+	refuse(admin, twice, 400)
+	missing := moderationBudgetForm("8192", "512")
+	missing.Del("max_reserved_mib")
+	refuse(admin, missing, 400)
+	// A wrong password (a fresh account: failures spend the account's confirmation budget).
+	bad := moderationBudgetForm("8192", "512")
+	bad.Set("password", "incorrect password")
+	refuse(wrongPassword, bad, 401)
+	if got := moderationBudgetAudits(e); len(got) != 0 {
+		t.Fatalf("refusals wrote audit rows %q", got)
+	}
+	// Allocations above a stored limit (legacy inventory can exceed it): a raise still below them is refused.
+	agExec(e, `UPDATE moderation_capacity SET allocated_records=9000`)
+	w := privateHostRequest(e, "POST", "/admin/moderation/budget", admin, moderationBudgetForm("8192", "512"), true)
+	e.check(w, 409)
+	mustContain(t, w.Body.String(), "Nothing was changed")
+	if got := moderationBudgetLimits(e); got != defaults {
+		t.Fatalf("raise below allocations changed %v", got)
+	}
+}
+
+func TestModerationBudgetPublicIngress404(t *testing.T) {
+	// No database, cookie or body work on the public listener, private socket configured or not, spoofed headers or not.
+	for _, socket := range []string{"", "/run/private/admin.sock"} {
+		body := &moderationUnreadBody{}
+		r := httptest.NewRequest(http.MethodPost, "/admin/moderation/budget", body)
+		r.Host = "private-admin.invalid"
+		r.Header.Set("X-Tor-Onion-Role", "admin")
+		r.Header.Set("X-Forwarded-Host", "private-admin.invalid")
+		r.Header.Set("X-Forwarded-For", "127.0.0.1")
+		r.AddCookie(&http.Cookie{Name: "session", Value: "anything"})
+		w := httptest.NewRecorder()
+		(&App{adminSocket: socket}).ServeHTTP(w, r)
+		if w.Code != http.StatusNotFound || body.read || w.Header().Get("Set-Cookie") != "" {
+			t.Fatalf("socket=%q: code=%d body read=%v", socket, w.Code, body.read)
+		}
+	}
+	e := newTestApp(t)
+	_, admin := e.user("moderation_public_admin", "admin")
+	for _, socket := range []string{"", "/run/test-private-admin/http.sock"} {
+		e.A.adminSocket = socket
+		e.check(e.do("POST", "/admin/moderation/budget", admin, moderationBudgetForm("8192", "512")), 404)
+		e.check(e.do("GET", "/admin/moderation", admin, nil), 404)
+	}
+	// Without a configured private socket even a private-ingress context gets no form or action.
+	e.A.adminSocket = ""
+	e.check(privateHostRequest(e, "POST", "/admin/moderation/budget", admin, moderationBudgetForm("8192", "512"), true), 404)
+	if got := moderationBudgetLimits(e); got != [3]int{256, 4096, 256 << 20} {
+		t.Fatalf("public request changed %v", got)
+	}
+	if got := moderationBudgetAudits(e); len(got) != 0 {
+		t.Fatalf("public request wrote audit rows %q", got)
+	}
+}
+
+func TestModerationBudgetRaiseCapturesWaiting(t *testing.T) {
+	e := newTestApp(t)
+	vendor, _ := e.user("moderation_waiting_vendor", "vendor")
+	_, admin := e.user("moderation_waiting_admin", "admin")
+	e.A.adminSocket = "/run/test-private-admin/http.sock"
+	ids := moderationBudgetExhaust(t, e, vendor)
+	overview := func() string {
+		t.Helper()
+		w := ingressDo(e, true, "GET", "/admin", admin, nil)
+		e.check(w, 200)
+		return moderationBudgetAlertText(t, w.Body.String())
+	}
+	mustContain(t, overview(), "2 of 2 lifetime allocations used; 1 target(s) waiting for capture", "Moderation budget")
+	// With the pool spent, a worker pass captures nothing.
+	worker := &ModerationWorker{DB: e.DB, Engine: moderation.Engine{Config: moderation.DefaultConfig()}}
+	if _, err := worker.Pass(t.Context(), 20); err != nil {
+		t.Fatal(err)
+	}
+	if agInt(e, `SELECT count(*) FROM moderation_backfill WHERE target_id=$1`, ids[2]) != 1 {
+		t.Fatal("precondition: the waiting marker was captured without budget")
+	}
+	e.check(privateHostRequest(e, "POST", "/admin/moderation/budget", admin, moderationBudgetForm("4096", "256"), true), 303)
+	// The same worker, neither restarted nor reconfigured, captures the waiting target on its next pass.
+	if _, err := worker.Pass(t.Context(), 20); err != nil {
+		t.Fatal(err)
+	}
+	if n := agInt(e, `SELECT count(*) FROM moderation_backfill`); n != 0 {
+		t.Fatalf("%d markers still wait after the raise", n)
+	}
+	if n := agInt(e, `SELECT count(*) FROM moderation_jobs WHERE target_id=$1`, ids[2]); n != 1 {
+		t.Fatalf("waiting target has %d jobs", n)
+	}
+	if n := agInt(e, `SELECT allocated_records FROM moderation_capacity`); n != 3 {
+		t.Fatalf("allocated_records=%d", n)
+	}
+	if got := overview(); got != "" {
+		t.Fatalf("A-648 alert still shown after the raise and capture: %s", got)
+	}
+}

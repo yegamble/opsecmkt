@@ -116,10 +116,23 @@ at most two daily actor shares of allocations left, or when active (not parked)
 markers wait and a `retained_capacity` or `backfill_capacity` overflow was
 recorded at or after the oldest one's first refusal (A-648).
 On private administrator ingress it shows allocations used of the limit, the
-active waiting targets, accounts awaiting a rescan, and the worker flags to raise; elsewhere it is one
+active waiting targets, accounts awaiting a rescan, and where to raise the limits (the panel's Moderation
+budget form or the worker flags); elsewhere it is one
 sentence without numbers. It never names an account, target, kind or time, and
 it is one plain read with no row lock
 (`TestAdminOverviewModerationBudgetAlert*`).
+The panel's **Moderation budget** form raises the lifetime allocation and
+reserved-byte limits (whole MiB) through `ConfigureModerationLimits`, confirmed
+with password and enrolled TOTP under a single-use form receipt, taking the
+capacity row first; it never lowers them, refuses unchanged, out-of-bounds and
+below-allocation values with "Nothing was changed", and audits the old and new
+limits with the administrator's handle only. Waiting targets are captured on the
+worker's next pass without a restart. A worker `--max-records` or
+`--max-reserved-bytes` below the stored value is ignored with a fixed log line;
+lowering is a documented host-only SQL step (A-654;
+`TestModerationBudgetRaiseConfirmedAudited`, `TestModerationBudgetRefusesLower`,
+`TestModerationBudgetPublicIngress404`, `TestModerationBudgetRaiseCapturesWaiting`,
+`TestWorkerFlagNeverLowersStoredBudget`; database integration, fake model).
 
 The initial sources are listing edits, normalized-upload metadata, disputes,
 reviews and newly flagged payments. Inference receives no encrypted messages,

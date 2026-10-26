@@ -92,7 +92,7 @@ func TestAdminOverviewModerationBudgetAlert(t *testing.T) {
 	body := overview()
 	got := moderationBudgetAlertText(t, body)
 	want := "Moderation capture needs attention: 2 of 2 lifetime allocations used; 1 target(s) waiting for capture. " +
-		"Raise --max-records and --max-reserved-bytes on the moderation worker (each allocation reserves 524288 bytes). " +
+		"Raise the limits under Moderation budget on the private moderation panel, or --max-records and --max-reserved-bytes on the moderation worker (each allocation reserves 524288 bytes). " +
 		"Open the private moderation panel."
 	if got != want {
 		t.Fatalf("private alert\n got: %s\nwant: %s", got, want)
@@ -133,7 +133,7 @@ func TestAdminOverviewModerationBudgetAlertByteThreshold(t *testing.T) {
 	}{
 		{163, ""},
 		{162, "Moderation capture needs attention: 0 of 162 lifetime allocations used; 0 target(s) waiting for capture. " +
-			"Raise --max-records and --max-reserved-bytes on the moderation worker (each allocation reserves 524288 bytes). " +
+			"Raise the limits under Moderation budget on the private moderation panel, or --max-records and --max-reserved-bytes on the moderation worker (each allocation reserves 524288 bytes). " +
 			"Open the private moderation panel."},
 	} {
 		limits := DefaultModerationLimits()

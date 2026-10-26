@@ -52,8 +52,8 @@ store retains the first validated result for its stable identity.
 | `--database-url-file` | Private one-line DSN; defaults to `DATABASE_URL_FILE`; `DATABASE_URL` is accepted only when no file is selected |
 | `--once`, `--replay` | Off; one bounded pass, or explicit eligible legacy-job replay; completed metadata-only jobs are skipped |
 | `--max-pending` | `256`; global active jobs, allowed 1 through 10000; each actor has at most three active jobs |
-| `--max-records` | `4096`; lifetime allocation slots, allowed 1 through 1000000; extra legacy-policy evaluation also requires a slot; each actor gets at most `max(8, 2%)` of this in 24 hours |
-| `--max-reserved-bytes` | `268435456` (256 MiB); conservative logical payload allocation, allowed 512 KiB through 1 TiB |
+| `--max-records` | `4096`; lifetime allocation slots, allowed 1 through 1000000; extra legacy-policy evaluation also requires a slot; each actor gets at most `max(8, 2%)` of this in 24 hours; a value below the stored limit is ignored ([capacity](#capacity-and-overload)) |
+| `--max-reserved-bytes` | `268435456` (256 MiB); conservative logical payload allocation, allowed 512 KiB through 1 TiB; a value below the stored limit is ignored |
 | `--interval`, `--batch` | `1m`, `20`; intervals 10 seconds through 1 hour, batches 1 through 100 |
 | `--model` | Off; inference requires explicit opt-in |
 | `--model-socket` | `MODERATION_MODEL_SOCKET`; absolute `.sock` path |
@@ -359,11 +359,53 @@ once at migration; runtime admission does not scan the full history.
 Duplicates, rollbacks and same-policy cache reuse do not consume another slot.
 Completion releases active capacity once; it does not erase historical allocation
 or reclaim its reservation. Lowering limits below allocated usage is refused.
-Use the bounded controller flags to raise an approved budget, then restart the
-controller. Unspecified flags preserve the stored policy; a partial update changes
-only its named limits. A no-flag restart can drain prepaid legacy work even when
+
+To raise an approved lifetime budget, an administrator uses **Moderation budget**
+on the private moderation panel (`/admin/moderation`, private administrator
+ingress only). It shows the allocations and reserved MiB used of each limit and
+takes a new maximum of lifetime allocations (1 through 1000000) and of reserved
+bytes in whole MiB (1 through 1048576, that is 1 TiB), confirmed with the
+administrator's password and, when enrolled, authenticator code. Each allocation
+reserves 512 KiB, so 1 MiB holds two; capture stops when either limit runs out,
+and at the defaults the byte limit binds first. Raising the allocations also
+raises each account's daily share (below). The form only raises: a value below
+the current limit, a submission that raises neither, a value outside those bounds,
+or limits still below the allocations already made are refused with "Nothing was
+changed", as is a wrong password or code. A raise is recorded in the audit log as
+"Moderation budget raised from 4096 allocations / 256 MiB to 8192 / 512 MiB by
+administrator <handle>", with no target data. Admission reads the stored limits,
+so the raise applies at once: targets waiting for capture are captured on the
+worker's next pass, without a restart, and the Admin overview alert clears once
+they are.
+
+The bounded controller flags can also raise it; restart the controller to apply
+them. Unspecified flags preserve the stored policy; a partial update changes only
+its named limits. A `--max-records` or `--max-reserved-bytes` below the stored
+value (for example an older flag after a raise on the panel) is ignored, and the
+controller logs `moderation-worker: stored moderation budget is higher; flag
+ignored (--max-records)` (or `--max-reserved-bytes`) and starts with the stored
+value, instead of lowering it or exiting below the allocations made since. A
+higher flag still raises it. `--max-pending` is applied as given, never below the
+active jobs. A no-flag restart can drain prepaid legacy work even when
 legacy inventory exceeds the admission limits. This changes collection capacity, never retention or marketplace
 state. Application-only redeployment does not enlarge the budget.
+
+Lowering the lifetime budget is a host-only procedure in the maintenance shell,
+with the worker's database URL. It is one statement that leaves the row unchanged
+when a new limit is below the allocations already made:
+
+```sh
+DATABASE_URL="$(cat /secure/moderation/database-url)" \
+  python3 scripts/postgres-tool.py DATABASE_URL psql -X -v ON_ERROR_STOP=1 -c \
+  "UPDATE moderation_capacity SET max_records=4096, max_bytes=268435456
+   WHERE singleton AND allocated_records<=4096 AND allocated_bytes<=268435456"
+```
+
+`UPDATE 1` means it was lowered; `UPDATE 0` means a limit was below the
+allocations already made, and nothing was changed. It applies at once, without a
+restart, and is not written to the application's audit log, so record it in your
+operations log. Afterwards start the controller without `--max-records` and
+`--max-reserved-bytes`, or with the new values (a higher flag would raise it again).
 
 Migration 146 also limits each actor to `max(8, 2% of --max-records)` new
 allocations in any 24 hours (81 with the default 4096 slots), so one account's
@@ -390,8 +432,9 @@ budget the shared pool is 512 allocations, so one actor can still use about a
 sixth of it per day; size `--max-reserved-bytes` with that in mind. At these
 defaults one account that edits constantly can use up the whole pool in about
 six days (512 / 81). After that every refused target is kept as a marker or
-rescan, but nothing new is captured until an administrator raises
-`--max-reserved-bytes` or `--max-records`; the private moderation panel shows
+rescan, but nothing new is captured until an administrator raises the budget
+under **Moderation budget** on the private moderation panel (or with
+`--max-reserved-bytes` or `--max-records`); the panel shows
 this as `retained_capacity` under "Capture requires attention", and the Admin
 overview shows a count-only "Moderation capture needs attention" alert from two
 daily shares before the pool is used up (counts only on private administrator

@@ -42,6 +42,7 @@ const (
 
 var sweepScopes = map[string][2]string{
 	"/admin/moderation/offline": {scopePublic, "private-ingress offline signature authorizes only one review annotation"},
+	"/admin/moderation/budget":  {scopeStaff, "private administrator raises the moderation budget only"},
 	"/admin/moderation/review":  {scopeStaff, "private administrator confirms proposal metadata only"},
 	"/challenge":                {scopePublic, "second step of sign-in, before a session exists"},
 	"/challenge/pgp":            {scopePublic, "PGP code step of sign-in, before a session exists"},

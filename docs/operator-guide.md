@@ -719,12 +719,25 @@ and an older overflow does not make later per-account throttle markers (an accou
 editing faster than its share) an alert; accounts awaiting a rescan are counted
 but do not trigger it on their own. On the
 private administrator connection it reads, for example, "2 of 512 lifetime
-allocations used; 1 target(s) waiting for capture" and names the settings to
-raise: `--max-records` and `--max-reserved-bytes` on the moderation worker (each
+allocations used; 1 target(s) waiting for capture" and names where to raise
+the limits: **Moderation budget** on the private moderation panel, or
+`--max-records` and `--max-reserved-bytes` on the moderation worker (each
 allocation reserves 524288 bytes; at the defaults the byte budget binds first, so
 raise both). Elsewhere it is one sentence without numbers pointing to the private
 panel. It names no account, target or time. It clears on the next load once the
 pool has room again and the worker has captured the waiting targets.
+
+**Moderation budget** on `/admin/moderation` raises the lifetime limits without
+host access or a restart: enter the new maximum lifetime allocations and maximum
+reserved bytes in whole MiB (the form starts at the current values) and confirm
+with your password and, when enrolled, authenticator code. It only raises; a
+lower or unchanged submission, a value out of bounds or a wrong password is
+refused with "Nothing was changed". Each raise is audited ("Moderation budget
+raised from … to … by administrator …"). The worker's next pass captures the
+waiting targets. A worker restarted with a lower `--max-records` or
+`--max-reserved-bytes` keeps the stored value and logs "stored moderation budget
+is higher; flag ignored". Lowering the budget is a host-only procedure; see
+[Capacity and overload](moderation-agent.md#capacity-and-overload).
 
 **Accept**, **Dismiss** and **Hold** record review annotations only. They do not
 hide a listing, change an account/order, publish a reply or move funds. Confirmed

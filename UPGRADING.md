@@ -31,6 +31,19 @@ markers still escalate). Reviews, disputes and payment flags still use the model
 `actor_reputation` value (it was always 0). Stored v1–v4 decisions keep their bytes and still render, and a controller
 change of prompt version gives new work new decision identities as before.
 
+## The moderation budget is raised on the private panel; lower worker flags are ignored (A-654)
+
+No migration. An administrator can now raise the lifetime moderation budget under **Moderation budget** on the
+private moderation panel (`/admin/moderation`), confirmed with password and authenticator code and audited; it
+applies without restarting the controller. **Flag behaviour change:** a moderation worker started with
+`--max-records` or `--max-reserved-bytes` below the stored value no longer lowers the budget, or exits when that value
+is below the allocations already made; it keeps the stored value and logs
+`moderation-worker: stored moderation budget is higher; flag ignored (--max-records)` (or `--max-reserved-bytes`). A
+higher flag still raises it, and `--max-pending` is unchanged. If your service unit or script passed a lower value on
+purpose to shrink the budget, that no longer works: use the host-only procedure in
+[Capacity and overload](docs/moderation-agent.md#capacity-and-overload). Restart the controller on the new build after
+the app; an older controller still applies a lower flag.
+
 ## Staff pages no longer wait for PostgreSQL's JIT compiler (MOD72-8)
 
 No migration or setting. The application's database pool now starts each connection with `jit` off, beside its
@@ -397,8 +410,9 @@ Each allocation prepays 512 KiB, so the default bytes bind at 512 allocations.
 Legacy usage is inventoried once; no historical data is removed to fit a limit.
 Private queue status shows usage, limits and bounded coalesced overflow warnings.
 At saturation the original marketplace write still commits without a fabricated
-clean result. Raise an approved budget using the controller's bounded capacity
-flags; lowering below allocated usage is refused. Database/index/WAL/backup disk
+clean result. Raise an approved budget under Moderation budget on the private
+moderation panel or with the controller's bounded capacity flags; lowering below
+allocated usage is refused, and a lower lifetime flag is ignored (A-654, above). Database/index/WAL/backup disk
 size is not bounded by the logical payload reservation.
 
 Migration 146 makes refused captures recoverable. Each refusal leaves one
@@ -418,8 +432,8 @@ moved category median) stays a HOLD and is not captured again. Each actor may re
 `max(8, 2% of --max-records)` new allocations per 24 hours (81 by default). At
 the default 256 MiB byte budget (512 lifetime allocations) one constantly editing
 account can use up the pool in about six days; refused targets then wait as
-markers or rescans and nothing new is captured until you raise
-`--max-reserved-bytes` or `--max-records`. Watch for `retained_capacity` under
+markers or rescans and nothing new is captured until you raise the budget on
+the private panel or with `--max-reserved-bytes` or `--max-records`. Watch for `retained_capacity` under
 "Capture requires attention" on the private moderation panel; the Admin overview
 also shows a "Moderation capture needs attention" alert while the pool runs low
 or refused targets wait (A-648). A
