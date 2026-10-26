@@ -54,7 +54,9 @@ the banned vendor's shipped Monero escrow orders with no dispute that is less th
 that otherwise the order completes and its payment is held. A later deadline stays, the buyer is still told, lifting the
 ban never shortens a deadline, and banning a buyer changes none. No money moves. While the vendor is banned the order
 page, the reminders and the completion notes say the payment is held instead of sent. A vendor banned before the
-upgrade is not revisited: its shipped orders keep the deadlines they have.
+upgrade is not revisited: its shipped orders keep the deadlines they have. Do not lift and reimpose a ban to apply
+this: lifting it releases held payments at the next escrow pass. An order the watcher completes at its already-passed
+deadline at the same moment as the ban is not extended either; its release is held (A-652c) and A-652f applies.
 
 ## Releases to a banned vendor are held until the ban is lifted (migration 149, A-652c)
 
