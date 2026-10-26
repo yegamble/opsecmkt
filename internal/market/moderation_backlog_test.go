@@ -141,8 +141,8 @@ func TestModerationSweepSurvivesConcurrentSourceRemoval(t *testing.T) {
 	}
 }
 
-// Disabling capture, the sweep and real account erasure order their row locks
-// alike: a bounded stress run sees no deadlock.
+// Disabling capture, the sweep, job completion and real account erasure order
+// their row locks alike: a bounded stress run sees no deadlock.
 func TestModerationDisableSweepNoDeadlock(t *testing.T) {
 	e := newTestApp(t)
 	moderationEnable(t, e)
@@ -167,6 +167,24 @@ func TestModerationDisableSweepNoDeadlock(t *testing.T) {
 			t.Log(err)
 		}
 	}
+	// Completes up to five jobs as the worker's result and cached completion
+	// do: the capacity row first, then the job rows, whose completion trigger
+	// updates it. A bare multi-row UPDATE locks job rows before the
+	// capacity row, and two of them deadlock over crossing rows (A-667).
+	complete := func() error {
+		tx, err := e.DB.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		if _, err = tx.ExecContext(ctx, `SELECT 1 FROM moderation_capacity WHERE singleton FOR UPDATE`); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE moderation_jobs SET completed_at=now() WHERE id IN (SELECT id FROM moderation_jobs WHERE completed_at IS NULL LIMIT 5)`); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
 	var wg sync.WaitGroup
 	for range 3 {
 		wg.Add(1)
@@ -175,8 +193,7 @@ func TestModerationDisableSweepNoDeadlock(t *testing.T) {
 			for ctx.Err() == nil {
 				_, err := moderationBackfillSweep(ctx, e.DB, 20)
 				note(err)
-				_, err = e.DB.ExecContext(ctx, `UPDATE moderation_jobs SET completed_at=now() WHERE id IN (SELECT id FROM moderation_jobs WHERE completed_at IS NULL LIMIT 5)`)
-				note(err)
+				note(complete())
 			}
 		}()
 	}
