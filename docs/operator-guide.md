@@ -837,7 +837,9 @@ administrators see it. Read the label as a pointer to the figures, not a verdict
 small or concentrated record (few distinct buyers, which is how bought reviews and
 sockpuppet orders show) is never HIGH_REPUTATION. When the label is HIGH_REPUTATION
 the panel offers *Confirm HIGH_REPUTATION and publish without review* (see *Vendors who
-publish without review*).
+publish without review*). If the database is too busy to count the figures in time, the
+panel reads *Figures unavailable* and offers no confirmation; the rest of the page and
+its account actions still work, and reloading tries the count again.
 
 The page carries the account's actions, each the same form as elsewhere with the
 same password confirmation, audit rows and notices, returning to the account's
