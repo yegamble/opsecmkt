@@ -66,10 +66,14 @@ than the last. Surviving findings enter the ledger as `open (bug-hunt, unruled)`
 - `.claude/war-room/repo-map.md` — layout, invariants, verification gates,
   evidence tiers and traps. Binding for every seat.
 - `.claude/war-room/finding-format.md` — the one finding schema and severities.
-- `.claude/war-room/protocol.md` — Round 0 evidence → A blind → B
-  cross-examination → C rebuttal → D ruling; implementation rules.
+- `.claude/war-room/protocol.md` — Round 0 evidence → A blind → B+C
+  cross-examination and rebuttal (disputing seats, one turn) → D ruling;
+  implementation rules.
 - `.claude/war-room/ledger.md` — the persistent backlog and iteration log; the
-  loop's source of truth. Seeded with the 2026-09-23 audit.
+  loop's source of truth. Seeded with the 2026-09-23 audit. It is ~1 MB: read
+  it through `ledger.py` (`start`, `live`, `item`, `log`, `grep`).
+- `.claude/war-room/quiet.sh` — runs a gate step with its output in a log file;
+  prints PASS or the failure lines and keeps the exit status.
 - `CLAUDE.md`, `.claude/review-loop.md`, `.ralph/AGENT.md` — binding on the
   implementer.
 

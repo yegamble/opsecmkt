@@ -24,8 +24,11 @@ were handed and the code they cite.
 2. Check the premise: is the "expected" behaviour actually documented
    (`docs/implementation-status.md`, `docs/acceptance.md`) or required by an
    invariant — or is it the hunter's preference? Is it a deliberate design
-   recorded in the ledger's Declined table?
-3. Check it is not already an open ledger row or a listed false positive.
+   recorded in the ledger's Declined table? Search the ledger with
+   `python3 .claude/war-room/ledger.py grep <regex>` and the docs with
+   `grep -n`; none of these files is small enough to read whole.
+3. Check it is not already an open ledger row (`ledger.py live`) or a listed
+   false positive.
 4. Check the severity against `finding-format.md`: a BLOCKER must touch funds,
    data loss, auth/privacy bypass, deanonymisation, unrecoverable operation,
    required JS or an unusable headline workflow.

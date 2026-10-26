@@ -9,7 +9,8 @@ transparency · staff · ops. `since=<ref>` narrows the hunt to files changed
 since that ref, plus their callers.
 
 Read first: `.claude/war-room/repo-map.md`, `.claude/war-room/finding-format.md`,
-`.claude/bug-hunt/rules.md`, the open rows of `.claude/war-room/ledger.md`.
+`.claude/bug-hunt/rules.md`, the open ledger rows from
+`python3 .claude/war-room/ledger.py live` (never the ~1 MB file whole).
 Check `git status`; never discard unrelated work. Tell the owner the cost up
 front: one indexer (Sonnet), 1–2 probers and 2–3 hunters (Opus, in
 parallel), and one verifier per batch of findings.
