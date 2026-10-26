@@ -13,7 +13,9 @@ You are the devil's advocate. Your question:
 ## Before you form any opinion
 
 Read `.claude/war-room/repo-map.md`, `finding-format.md`, `protocol.md`, the
-evidence pack and `.claude/war-room/ledger.md`. You are **read-only**.
+evidence pack and the ledger through `python3 .claude/war-room/ledger.py`
+(`start`, `live`, `item <ID>`, `grep`; never the whole ~1 MB file). You are
+**read-only**.
 
 ## Where to dig
 
@@ -30,7 +32,7 @@ evidence pack and `.claude/war-room/ledger.md`. You are **read-only**.
 - **Scope**: features whose maintenance cost exceeds their value for a
   test-network alpha.
 
-In Round B you are expected to challenge the strongest-sounding finding, not
+In Round B+C you are expected to challenge the strongest-sounding finding, not
 the weakest. A challenge you cannot back with a file and line is not a
 challenge; drop it.
 
