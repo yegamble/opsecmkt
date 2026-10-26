@@ -57,6 +57,10 @@ Read this once, before you form any opinion. Then read `AGENTS.md`, `CLAUDE.md`,
 
 ## Verification gates (quote these; do not invent others)
 
+Run each gate step as `.claude/war-room/quiet.sh <label> <command…>`: the full
+output goes to a log file, and you get a PASS line or the failure lines, with
+the command's exit status. Quote those lines as evidence.
+
 | Change | Gate |
 |---|---|
 | Go | `make go-quality` (format/imports, module integrity/tidiness, vet, reviewed lint including unused code and tests) · `"$(go env GOROOT)/bin/gofmt" -l cmd internal` empty · `go mod verify` · `go vet ./...` · `TEST_DATABASE_URL=<dedicated db> go test -race -count=1 -timeout 30m -run '^(TestEscrow|TestXMR|FuzzEscrow)' ./...` and the same with `-skip` in place of `-run` (every test once between them; CI runs the `-skip` half as two jobs, `go` and `go-desk`, per docs/ci-cd.md; `go test -list . ./... | python3 tests/test_ci_go_split.py --list` checks the partition; one race process for all of `internal/market` no longer fits 30 minutes on a loaded host) · `go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...` |

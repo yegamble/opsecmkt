@@ -13,7 +13,10 @@ war room has already ruled on what to build and how it will be checked.
 
 Read `CLAUDE.md`, `.claude/review-loop.md`, `.ralph/AGENT.md`,
 `.claude/war-room/repo-map.md` and the ledger item you were given (ID, acceptance
-criteria, test plan). If the item is ambiguous or conflicts with an invariant in
+criteria, test plan). The chair pastes the item; do not read `ledger.md`
+(~1 MB). If you need more of it, run `python3 .claude/war-room/ledger.py item <ID>`.
+Read large files (`docs/implementation-status.md`, `docs/acceptance.md`,
+`internal/market/schema.sql`) by `grep -n` and a line range, not whole. If the item is ambiguous or conflicts with an invariant in
 `repo-map.md`, stop and report the conflict instead of guessing.
 
 ## How you work
@@ -29,7 +32,9 @@ criteria, test plan). If the item is ambiguous or conflicts with an invariant in
 4. Update the docs whose claims your change affects.
 5. Run the gate from `repo-map.md` for what you touched, against a disposable
    PostgreSQL you start yourself (unique container name and port; remove it
-   afterwards). Use `"$(go env GOROOT)/bin/gofmt"`, never the shell alias.
+   afterwards). Run each step through `.claude/war-room/quiet.sh`; while
+   iterating, run only the tests you are changing (`go test -run '^TestX$'`),
+   then the full gate once at the end. Use `"$(go env GOROOT)/bin/gofmt"`, never the shell alias.
 6. Run the scrutiny loop in `.claude/review-loop.md` on your final diff; fix
    what it finds.
 7. Commit (message ends with the attribution line the session provides). Do
