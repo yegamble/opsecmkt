@@ -11,7 +11,7 @@ last column is its status), Declined, Closed, and per-iteration rulings with acc
 - PR #161: the docs worker pins patched undici (a new advisory had failed CI on every branch).
 
 There are no long-lived feature branches. Work on a fresh `war-room/<ID>-<slug>` branch from main, one ledger
-item per PR. The next migration number is 150 (148 is A-647; 149 is A-652c). Check open PRs before taking one.
+item per PR. The next migration number is 151 (148 is A-647; 149 is A-652c; 150 is A-652a). Check open PRs before taking one.
 
 **Open PRs.**
 - #162 A-519 release integrity and #163 A-521 phone-width tables: drafts holding an implementer's unfinished,

@@ -188,10 +188,18 @@ proposal says. Capture, its overflow, `AUTO_APPLY`, confidence and the model
 path never read or write the review state (`TestModerationNeverWritesReviewState`),
 so a listing whose capture overflowed or was never inferred stays held, and a
 listing published in publish mode is not held by a proposal.
-Moderation moves no money either: the moderation code, the panel's templates and
-the `moderation*` database functions name no money or ban route, settlement,
-refund address, state transition or wallet send, and write only moderation's own
-tables, the audit log and the worker's switch (`TestModerationNeverMovesMoney`).
+Moderation moves no money either. The guard's scope is:
+- the moderation code and its launcher;
+- the Go reputation rule (`reputation*.go`) and every other file that imports
+  `internal/moderation`;
+- the panel's templates and the reputation partial;
+- the `moderation*` database functions.
+
+None of it names a money or ban route, a settlement, a refund address, a state
+transition or a wallet send. It writes only `moderation_*` tables, appends to the
+audit log, and sets only literal `moderation_` settings keys
+(`TestModerationNeverMovesMoney`; comments are not read, and SQL assembled from
+fragments at run time is not seen).
 
 ## Proposal protocol
 

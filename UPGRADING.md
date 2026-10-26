@@ -15,6 +15,25 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## Settlement payees are pinned in the database (migration 150, A-652a)
+
+No operator action and no behaviour change for any shipped path. Migration 150 adds two triggers. From now on, each
+output of a Monero settlement must pay its role's recorded address:
+- the claimant pays the settlement's destination;
+- a release's overpayment return pays the escrow's refund address;
+- the market fee pays the escrow's fee destination.
+
+The one existing exception is kept. When the wallet refused the recorded fee address (the order page names
+`ESCROW_XMR_FEE_ADDRESS`), the fee may go to the new fee address you configure, while the settlement still carries
+that refusal. A re-request also keeps the fee address of the settlement it replaces.
+
+An escrow's refund address and fee destination can no longer be changed after checkout. No code path, script or earlier
+migration changes them; retention still deletes a retired escrow whole. Rows written before the upgrade are not checked
+again.
+
+If a build ever planned an output to another address, the database would refuse to store it. The watcher logs the
+refused store and the settlement stays requested, unpaid. Do not work around such a refusal by hand; report it.
+
 ## A banned vendor's unpaid and unshipped orders can be refunded (A-652b)
 
 No migration. A banned account's page under *Admin → Users* (`/admin/users?handle=`) gains *Orders of this banned

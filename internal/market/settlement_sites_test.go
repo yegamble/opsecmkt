@@ -16,9 +16,11 @@ import (
 
 // A-652a (PAY87-1, PAY87-7; owner decision 2026-10-25 "refund + hold, no new payee"): a ban pays only the order's
 // pinned refund address or the vendor's own claim address. There is no forfeit kind and no administrator-chosen payee.
-// TestNoForfeitSettlementKind turns that rule into a guard on the three places a new payee could come from: a
-// migration widening the settlement kinds or output roles, a database function creating a settlement, and a Go
-// statement creating a settlement somewhere other than the reviewed sites below.
+// TestNoForfeitSettlementKind turns that rule into a guard on the places a new payee could come from: a migration
+// widening the settlement kinds or output roles, a database function creating a settlement, a Go statement creating a
+// settlement somewhere other than the reviewed sites below or redirecting an escrow's refund address or fee
+// destination, and a migration disabling or emptying the triggers that pin payees (PAY89-6, -7, -9). Whom each output
+// pays is pinned by migration 150 (TestSettlementOutputsMatchPayees).
 
 // The Monero settlement kinds (migration 084) and output roles (084) as the owner ruled them: any other value is a new
 // payee, whatever it is called.
@@ -31,21 +33,42 @@ var (
 // were reviewed when merged; the database half below covers their combined result).
 const firstGuardedMigration = 148
 
-// xmrSettlementSites lists every non-test Go function (file and name) that creates an xmr_settlements row, with the
-// statement text it must still contain, which names where that row's destination comes from. A new site, or a reviewed
-// site paying anything else, fails the guard: review it against PAY87-1 before adding it here.
-var xmrSettlementSites = map[string]string{
+// xmrSettlementSites lists every non-test Go function (file and name) that creates an xmr_settlements row: the
+// statement text it must still contain, which names where that row's destination comes from, and how many
+// settlement-creating statements it holds (one each: a second statement in a reviewed site is a new site, PAY89-7). A
+// new site, or a reviewed site paying anything else, fails the guard: review it against PAY87-1 before adding it here.
+var xmrSettlementSites = map[string]struct {
+	pinned  string
+	inserts int
+}{
 	// The refund of a cancelled order or a dispute decided for the buyer, by the state machine (transition), the A-652b
 	// ban refund included: it pays the refund address the buyer pinned at checkout. The table is a variable (Bitcoin
 	// history uses settlements), so the guard cannot see its name and pins the rest of the statement.
-	"internal/market/escrow_settle.go escrowSettleTerminal": "(order_id,kind,destination) SELECT order_id,'refund',refund_address FROM escrows WHERE order_id=$1",
+	"internal/market/escrow_settle.go escrowSettleTerminal": {"(order_id,kind,destination) SELECT order_id,'refund',refund_address FROM escrows WHERE order_id=$1", 1},
 	// The vendor's claim of a completed order (and the release requested at shipment): the vendor's own claim address,
 	// from its form, refused if this market knows it (xmrClaimAddress).
-	"internal/market/escrow_xmr_release.go insertXMRRelease": "INSERT INTO xmr_settlements(order_id,kind,destination,requested_by) VALUES($1,'release',$2,$3)",
+	"internal/market/escrow_xmr_release.go insertXMRRelease": {"INSERT INTO xmr_settlements(order_id,kind,destination,requested_by) VALUES($1,'release',$2,$3)", 1},
 	// An administrator's re-request of a failed settlement: the same order, kind and destination as the one it supersedes.
-	"internal/market/escrow_xmr_rerequest.go xmrReRequest": "INSERT INTO xmr_settlements(order_id,kind,destination,requested_by,supersedes) SELECT order_id,kind,destination,$2,id FROM xmr_settlements WHERE id=$1",
+	"internal/market/escrow_xmr_rerequest.go xmrReRequest": {"INSERT INTO xmr_settlements(order_id,kind,destination,requested_by,supersedes) SELECT order_id,kind,destination,$2,id FROM xmr_settlements WHERE id=$1", 1},
 	// The stray refund of a deposit to a closed order: the pinned refund address.
-	"internal/market/escrow_xmr_settle.go xmrRequestStray": "INSERT INTO xmr_settlements(order_id,kind,destination) SELECT order_id,'stray_refund',refund_address FROM escrows WHERE order_id=$1",
+	"internal/market/escrow_xmr_settle.go xmrRequestStray": {"INSERT INTO xmr_settlements(order_id,kind,destination) SELECT order_id,'stray_refund',refund_address FROM escrows WHERE order_id=$1", 1},
+}
+
+// payeeTriggers are the triggers that keep whom a Monero settlement pays (table, trigger): each must exist, be enabled
+// (tgenabled 'O') and still raise (PAY89-9). xmr_settlements_frozen keeps a settlement's order, kind and destination;
+// xmr_settlements_supersedes keeps a re-request's; the *_market_fits triggers read escrow_market_may_sign (081, 149:
+// a release only on a completed order or one decided for the vendor, never to a banned vendor);
+// xmr_settlement_outputs_frozen writes outputs only while requested; migration 150's two pin the outputs' addresses and
+// the escrow's refund address and fee destination.
+var payeeTriggers = [][2]string{
+	{"xmr_settlements", "xmr_settlements_frozen"},
+	{"xmr_settlements", "xmr_settlements_supersedes"},
+	{"xmr_settlements", "xmr_settlements_market_fits"},
+	{"settlements", "settlements_market_fits"},
+	{"settlement_bumps", "settlement_bumps_market_fits"},
+	{"xmr_settlement_outputs", "xmr_settlement_outputs_frozen"},
+	{"xmr_settlement_outputs", "xmr_settlement_outputs_payee"},
+	{"escrows", "escrows_payees_frozen"},
 }
 
 var (
@@ -53,6 +76,8 @@ var (
 	xmrSettlementInsert = regexp.MustCompile(`(?i)\b(?:insert\s+into|copy)\s+(?:\w+\.)?"?xmr_settlements\b`)
 	// A statement whose table is not a literal: an INSERT INTO followed by a concatenation or a format verb.
 	dynamicInsert = regexp.MustCompile(`(?i)\binsert\s+into\s*(?:%|$)`)
+	// A statement that changes an escrow's refund address or fee destination (migration 150 refuses it as well).
+	escrowPayeeUpdate = regexp.MustCompile(`(?is)\bupdate\s+(?:only\s+)?(?:\w+\.)?"?escrows"?(?:\s+\w+)?\s+set\b.*\b(?:refund_address|fee_destination)\s*=`)
 )
 
 func TestNoForfeitSettlementKind(t *testing.T) {
@@ -63,7 +88,8 @@ func TestNoForfeitSettlementKind(t *testing.T) {
 		t.Fatalf("a new settlement kind, output role, payee or settlement site (PAY87-1: review it, then update this guard only if the owner ruled it):\n%s", strings.Join(found, "\n"))
 	}
 
-	e := newTestApp(t) // skips without TEST_DATABASE_URL, after the source checks above
+	x := newXMREscrowEnv(t) // skips without TEST_DATABASE_URL, after the source checks above
+	e := x.testEnv
 	for _, c := range []struct{ table, column string }{{"xmr_settlements", "kind"}, {"xmr_settlement_outputs", "role"}} {
 		defs := agStrings(t, e, `SELECT pg_get_constraintdef(c.oid) FROM pg_constraint c JOIN pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=ANY(c.conkey)
 			WHERE c.conrelid=$1::regclass AND c.contype='c' AND cardinality(c.conkey)=1 AND a.attname=$2`, c.table, c.column)
@@ -77,6 +103,36 @@ func TestNoForfeitSettlementKind(t *testing.T) {
 	}
 	if fns := agStrings(t, e, `SELECT proname::text FROM pg_proc WHERE prosrc ~* '(insert\s+into|copy)\s+("?\w+"?\.)?"?xmr_settlements\M'`); len(fns) > 0 {
 		t.Fatalf("database functions create settlements: %v", fns)
+	}
+	// The payee triggers are present, enabled and not emptied out (PAY89-9).
+	for _, tr := range payeeTriggers {
+		n := agInt(e, `SELECT count(*) FROM pg_trigger t JOIN pg_proc p ON p.oid=t.tgfoid WHERE t.tgrelid=$1::regclass AND t.tgname=$2
+			AND NOT t.tgisinternal AND t.tgenabled='O' AND p.prosrc ~* 'raise\s+exception'`, tr[0], tr[1])
+		if n != 1 {
+			t.Errorf("trigger %s on %s is missing, disabled or no longer raises", tr[1], tr[0])
+		}
+	}
+	// And they refuse, in rolled-back transactions: a requested release's destination or kind never changes.
+	x.mustPoll()
+	order, _, _ := x.completed()
+	id, _ := x.release(order)
+	refund := agStr(e, "SELECT refund_address FROM escrows WHERE order_id=$1", order)
+	for _, c := range []struct {
+		what, q string
+		arg     any
+	}{
+		{"a release redirected to the refund address", "UPDATE xmr_settlements SET destination=$2 WHERE id=$1", refund},
+		{"a release turned into a refund", "UPDATE xmr_settlements SET kind=$2 WHERE id=$1", "refund"},
+	} {
+		tx, err := e.DB.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = tx.Exec(c.q, id, c.arg)
+		tx.Rollback()
+		if pgCode(err) != "23514" {
+			t.Errorf("%s: %v, want check_violation", c.what, err)
+		}
 	}
 }
 
@@ -162,6 +218,8 @@ func settlementSiteFindings(t *testing.T) []string {
 	t.Helper()
 	fset := token.NewFileSet()
 	sites := map[string][]string{} // file and function -> every string literal in it, when it creates settlements
+	inserts := map[string]int{}    // file and function -> its settlement-creating statements
+	var found []string
 	for _, dir := range []string{"internal", "cmd"} {
 		err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 			if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
@@ -201,6 +259,10 @@ func settlementSiteFindings(t *testing.T) []string {
 					lits = append(lits, s)
 					if xmrSettlementInsert.MatchString(s) || dynamicInsert.MatchString(s) {
 						creates = true
+						inserts[rel+" "+name]++
+					}
+					if escrowPayeeUpdate.MatchString(s) {
+						found = append(found, rel+" "+name+": changes an escrow's refund address or fee destination")
 					}
 					return true
 				})
@@ -215,14 +277,15 @@ func settlementSiteFindings(t *testing.T) []string {
 			t.Fatal(err)
 		}
 	}
-	var found []string
 	for key, lits := range sites {
 		want, ok := xmrSettlementSites[key]
 		switch {
 		case !ok:
 			found = append(found, key+": a new statement creating settlements (or an INSERT whose table the guard cannot read)")
-		case !slices.ContainsFunc(lits, func(s string) bool { return strings.Contains(s, want) }):
-			found = append(found, key+": no longer contains "+want+": its destination changed")
+		case !slices.ContainsFunc(lits, func(s string) bool { return strings.Contains(s, want.pinned) }):
+			found = append(found, key+": no longer contains "+want.pinned+": its destination changed")
+		case inserts[key] != want.inserts:
+			found = append(found, key+": "+strconv.Itoa(inserts[key])+" settlement-creating statements, reviewed "+strconv.Itoa(want.inserts))
 		}
 	}
 	for key := range xmrSettlementSites {
