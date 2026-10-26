@@ -71,12 +71,14 @@ banned before the upgrade is held from the first pass on the new build. A later 
 time, is to refund a release held for a long time to the order's buyer refund address instead (A-652f); it is not
 available yet.
 
-Migration 149 replaces the body of the database function `escrow_market_may_sign` (migration 081), which the triggers
-that store a settlement's transaction read, so that for a release it also requires the order's vendor not to be
-banned. It changes no table, column, index, row or other function, and no operator action is needed. Rolling the
-application back to a build without the watcher's check leaves the function in place: that build would try to build
-such a release on each pass, and the database refuses to store it (logged as a refused store, the transaction
-discarded unsent), so it is still not paid until the ban is lifted.
+Migration 149 replaces the body of the database function `escrow_market_may_sign` (migration 081), which the trigger
+`xmr_settlements_market_fits` (migration 084) reads before a Monero settlement's transaction is stored, so that for a
+release it also requires the order's vendor not to be banned. (The triggers on the historical Bitcoin escrow tables
+read it too; no active code writes those tables, since Monero is the only payment currency.) It changes no table,
+column, index, row or other function, and no operator action is needed. Rolling the application back to a build
+without the watcher's check leaves the function in place: that build would try to build such a release on each pass,
+and the database refuses to store it (logged as a refused store, the transaction discarded unsent), so it is still not
+paid until the ban is lifted.
 
 ## The moderation model no longer reads listings or uploads (moderation-v5, A-651)
 

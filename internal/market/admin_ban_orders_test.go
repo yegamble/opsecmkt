@@ -138,6 +138,17 @@ func TestBanOrdersRefundsUnpaidAndUnshipped(t *testing.T) {
 			t.Fatalf("replay: order %s has %d live outcomes", shortID(order), n)
 		}
 	}
+	// PAY89-2: each cancelled order, after the passes and the replay, has exactly one buyer notification and one order
+	// history row of the refund's cancellation.
+	for _, order := range []string{unpaid, under, physical, digital} {
+		buyer := x.partyOf(order, roleBuyer)
+		if n := agInt(e, "SELECT count(*) FROM notifications WHERE user_id=$1 AND order_id=$2 AND strpos(body,$3)>0", buyer, order, "Order "+shortID(order)+" is now "+banRefundNote); n != 1 {
+			t.Fatalf("order %s: %d buyer notifications of the refund, want 1: %q", shortID(order), n, x.noticesOf(buyer, order))
+		}
+		if n := agInt(e, "SELECT count(*) FROM order_events WHERE order_id=$1 AND to_state='cancelled' AND actor_id=$2 AND note=$3", order, adminID, banRefundNote); n != 1 {
+			t.Fatalf("order %s: %d order history rows of the refund, want 1: %q", shortID(order), n, x.events(order))
+		}
+	}
 }
 
 // An order cancelled with nothing received closes; a deposit that arrives later is flagged and goes back by the
@@ -337,6 +348,36 @@ func TestBanOrdersRefusedUnderRestoreGate(t *testing.T) {
 	x.check(x.do("POST", "/admin/ban-orders", admin, x.banOrdersForm(admin, handle)), 303)
 	if x.state(order) != stateCancelled {
 		t.Fatal("the refund after the gate was cleared did not happen")
+	}
+}
+
+// PAY89-4: while a restore's sweep has not checked the escrow wallets (xmr_escrow_sweep_required), with the restore gate
+// clear, nothing is refunded either (409, nothing changed) and the page says why; once the sweep completes it goes ahead.
+func TestBanOrdersRefusedUnderRestoreSweep(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	_, admin := x.user("bo_sweep_"+randomToken()[:6], "admin")
+	order, _ := x.paidXMRPhysical(x.physical(x.vendor))
+	handle := x.banVendor(admin)
+	f := x.banOrdersForm(admin, handle)
+	agExec(x.testEnv, "INSERT INTO settings(key,value) VALUES($1,'true') ON CONFLICT (key) DO UPDATE SET value='true'", xmrEscrowSweepKey)
+	agExpect(x.testEnv, "/admin/ban-orders", admin, f, 409, "Nothing was changed")
+	agExpect(x.testEnv, "/admin/ban-orders", admin, f, 409, banSweepWhy)
+	if x.state(order) != statePaid || len(x.xmrSettlements(order)) != 0 {
+		t.Fatal("a refund during the restore sweep changed the order")
+	}
+	if agInt(x.testEnv, "SELECT count(*) FROM audit_events WHERE user_id=$1 AND strpos(action,'Open orders refunded')>0", x.vendor) != 0 {
+		t.Fatal("a refused submission was audited")
+	}
+	page := x.banOrdersPage(admin, handle)
+	mustContain(t, page, banSweepWhy)
+	if strings.Contains(page, `action="/admin/ban-orders"`) {
+		t.Fatal("the refund form is offered during the restore sweep")
+	}
+	agExec(x.testEnv, "DELETE FROM settings WHERE key=$1", xmrEscrowSweepKey)
+	x.check(x.do("POST", "/admin/ban-orders", admin, x.banOrdersForm(admin, handle)), 303)
+	if x.state(order) != stateCancelled {
+		t.Fatal("the refund after the sweep completed did not happen")
 	}
 }
 

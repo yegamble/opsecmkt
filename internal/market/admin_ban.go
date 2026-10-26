@@ -99,7 +99,7 @@ const autoApproveOff = "; listing auto-approval turned off"
 
 // adminBanAction bans or lifts the ban on a non-administrator account, looked up by handle (see the A-546 comment
 // above). It takes the locks in the suspension's order (adminSuspendAction): wallet lock wait, pending sign-ins, then
-// the account row.
+// the account row; a ban of an account not yet banned first locks its shipped orders as vendor (lockBanShippedOrders).
 func adminBanAction(c *actionCtx) (actionResult, error) {
 	choice := c.Form.Get("action")
 	ban := choice == "ban"
@@ -125,7 +125,8 @@ func adminBanAction(c *actionCtx) (actionResult, error) {
 		d.BanHandle, d.BanChoice, d.BanReason = handle, choice, reason
 	})
 	var target string
-	err = c.A.db.QueryRowContext(c.Ctx(), "SELECT id FROM users WHERE handle=$1", handle).Scan(&target)
+	var wasBanned bool
+	err = c.A.db.QueryRowContext(c.Ctx(), "SELECT id,banned_at IS NOT NULL FROM users WHERE handle=$1", handle).Scan(&target, &wasBanned)
 	if err == sql.ErrNoRows {
 		return actionResult{}, notFound
 	}
@@ -136,6 +137,11 @@ func adminBanAction(c *actionCtx) (actionResult, error) {
 		ctx, tx, by := c.Ctx(), c.Tx, "administrator "+c.User.Handle
 		if err := waitForWalletLocks(ctx, tx); err != nil { // a checkout by the account holds its row (escrowCheckoutAction)
 			return actionResult{}, err
+		}
+		if ban && !wasBanned { // before the account row (PAY90-2); a repeated ban is refused below and changes no order
+			if err := lockBanShippedOrders(ctx, tx, target); err != nil {
+				return actionResult{}, err
+			}
 		}
 		if _, err := tx.ExecContext(ctx, "DELETE FROM pending_logins WHERE user_id=$1", target); err != nil {
 			return actionResult{}, err

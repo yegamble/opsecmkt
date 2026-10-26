@@ -208,6 +208,58 @@ func TestBanHoldBackstopRefusesStore(t *testing.T) {
 	}
 }
 
+// PAY89-3: the same backstop under the watcher. A ban committed after the pass found the vendor not banned and while
+// the wallet builds the release (transfer with do_not_relay, before storeXMRBuilt) makes the store refuse: nothing is
+// stored or relayed, the settlement stays requested and claims no deposit, and the next pass holds it (vendor-closed)
+// without asking the wallet to build it again.
+func TestBanHoldBackstopWatcherRace(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	_, admin := x.user("banrace_admin", "admin")
+	order, _, _ := x.completed()
+	id, _ := x.release(order) // no pass builds it before the hook below
+	handle := agStr(x.testEnv, "SELECT handle FROM users WHERE id=$1", x.vendor)
+	banned := make(chan int, 1)
+	x.fake.hook("transfer", func() {
+		x.fake.hook("transfer", nil)
+		banned <- x.do("POST", "/admin/ban", admin, banForm("ban", handle, testBanReason)).Code
+	})
+	transfers, relays := x.fake.countOf("transfer"), x.fake.countOf("relay_tx")
+	err := x.poll()
+	select {
+	case code := <-banned:
+		if code != 303 {
+			t.Fatalf("the ban during the build: %d", code)
+		}
+	default:
+		t.Fatal("the pass asked the wallet for no transfer: the race was not exercised")
+	}
+	if err == nil || !strings.Contains(err.Error(), "only once its order's state fits") {
+		t.Fatalf("the pass whose store the ban refused: %v", err)
+	}
+	check := func(when string) {
+		t.Helper()
+		if s := x.settlement(id); s.State != "requested" || s.TxHash != "" || len(x.outputsOf(id)) != 0 {
+			t.Fatalf("%s: %+v outputs %v", when, s, x.outputsOf(id))
+		}
+		if n := agInt(x.testEnv, "SELECT count(*) FROM payments WHERE xmr_settlement_id=$1", id); n != 0 {
+			t.Fatalf("%s: the release claims %d deposit(s)", when, n)
+		}
+		if n := agInt(x.testEnv, "SELECT count(*) FROM order_events WHERE order_id=$1 AND strpos(note,'settlement built')>0", order); n != 0 {
+			t.Fatalf("%s: %d build notes", when, n)
+		}
+		if got := x.fake.countOf("transfer"); got != transfers+1 || x.fake.countOf("relay_tx") != relays {
+			t.Fatalf("%s: transfer %d (was %d), relay_tx %d (was %d)", when, got, transfers, x.fake.countOf("relay_tx"), relays)
+		}
+	}
+	check("after the refused store")
+	x.mustPoll()
+	check("the next pass")
+	if c := x.waitClass(id); c != xmrVendorClosed {
+		t.Fatalf("the next pass recorded class %q, want %q", c, xmrVendorClosed)
+	}
+}
+
 // Lifting the ban is the only step: the next pass builds the held release to the vendor's claim address and relays it.
 func TestUnbanLiftsReleaseHold(t *testing.T) {
 	x := newXMREscrowEnv(t)
