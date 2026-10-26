@@ -783,10 +783,11 @@ type EscrowSetupView struct {
 type EscrowCosignerView struct{ Who, Key string }
 
 // EscrowDeadlineView is a shipped escrow order's release deadline on its page (escrow_deadline.go, P2-R9): At in UTC,
-// Left the time left when the page loaded; Due once it has passed; Rechecked when a restore from backup moved it.
+// Left the time left when the page loaded; Due once it has passed; Rechecked when a restore from backup moved it;
+// VendorClosed when the vendor is banned, so the release is held at completion (Monero escrow, A-652c, A-652d).
 type EscrowDeadlineView struct {
-	At, Left       string
-	Due, Rechecked bool
+	At, Left                     string
+	Due, Rechecked, VendorClosed bool
 }
 
 // DeadlineBanner is one /orders banner (escrow_deadline.go): an escrow order of the viewer's whose release deadline At

@@ -841,15 +841,14 @@ func (a *App) xmrReleaseHeld(ctx context.Context, s *xmrSettleRow) (bool, error)
 	if s.Kind != "release" {
 		return false, nil
 	}
-	var banned bool
-	if err := a.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM orders o JOIN products p ON p.id=o.product_id JOIN users v ON v.id=p.vendor_id
-		WHERE o.id=$1 AND v.banned_at IS NOT NULL)`, s.OrderID).Scan(&banned); err != nil {
+	banned, err := orderVendorBanned(ctx, a.db, s.OrderID)
+	if err != nil {
 		return false, err
 	}
 	if !banned {
 		if s.Wait == xmrVendorClosed {
 			// The ban was lifted: the page no longer says the release is held, even if this pass builds nothing.
-			if _, err := a.execEscrowOrder(ctx, s.OrderID, "UPDATE xmr_settlements SET send_error='',updated=now() WHERE id=$1 AND state='requested' AND send_error=$2", s.ID, xmrVendorClosed); err != nil {
+			if _, err = a.execEscrowOrder(ctx, s.OrderID, "UPDATE xmr_settlements SET send_error='',updated=now() WHERE id=$1 AND state='requested' AND send_error=$2", s.ID, xmrVendorClosed); err != nil {
 				return false, err
 			}
 			s.Wait = ""

@@ -327,6 +327,9 @@ func (a *App) xmrReleaseView(ctx context.Context, d *PageData, v *XMREscrowOrder
 	case o.State == stateShipped && releaseAt.Valid:
 		remaining := time.Duration(left.Float64 * float64(time.Second))
 		v.Deadline = &EscrowDeadlineView{At: utcUntil(releaseAt.Time), Left: timeLeft(remaining), Due: remaining <= 0, Rechecked: rechecked}
+		if v.Deadline.VendorClosed, err = orderVendorBanned(ctx, a.db, o.ID); err != nil {
+			return err
+		}
 		v.NextStep = xmrDeadlineNextStep(d.OrderViewer, v.Deadline, v.RestorePaused)
 	case o.State == stateDisputed && releaseAt.Valid:
 		v.NextStep += " The release deadline of " + utcUntil(releaseAt.Time) + " no longer applies: opening the dispute cancelled it for good."
@@ -358,6 +361,17 @@ func (a *App) xmrReleaseView(ctx context.Context, d *PageData, v *XMREscrowOrder
 
 // xmrDeadlineNextStep is the "who acts next" line of a shipped Monero escrow order with its release deadline, for viewer.
 func xmrDeadlineNextStep(viewer string, dl *EscrowDeadlineView, paused bool) string {
+	if dl.VendorClosed { // A-652d: the release is held while the vendor is banned (xmrReleaseHeld)
+		switch {
+		case dl.Due:
+			return xmrDeadlineNextStep(viewer, &EscrowDeadlineView{At: dl.At, Due: true}, paused) + " The vendor's account is closed, so the market then holds its payment: it sends nothing to the vendor while the account is closed, and no other address is ever paid."
+		case viewer == roleBuyer:
+			return "Who acts next: you. The vendor's account is closed: open a dispute before " + dl.At + " if the goods have not arrived, or use Confirm receipt below if they have. If you do neither by then, the order completes at that time and the market holds its payment: it sends nothing to the vendor while the account is closed, and no other address is ever paid."
+		case viewer == roleVendor:
+			return "Who acts next: the buyer, who confirms receipt or opens a dispute before " + dl.At + ". If the buyer does neither, the order completes at that time, and its release is held while your account is closed."
+		}
+		return "Who acts next: the buyer, who confirms receipt or opens a dispute before " + dl.At + ". The vendor's account is closed: if the buyer does neither, the order completes at that time and the market holds its payment; no other address is ever paid."
+	}
 	switch {
 	case dl.Due && paused:
 		return "The release deadline (" + dl.At + ") has passed: the release is due, and the order completes once the market has finished reconciling its restore from backup."

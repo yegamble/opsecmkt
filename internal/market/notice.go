@@ -72,6 +72,8 @@ var notices = map[string]struct{ text, section, pages string }{
 	"escrow-xmr-created":   {"Monero escrow created. Send the amount shown below to its escrow address.", "", ""},
 	"escrow-xmr-claim":     {"Claim requested. The market builds the release from this order's escrow account and sends it; nothing is sent yet.", "", ""},
 	"escrow-xmr-confirmed": {"Receipt confirmed. The order is completed; the market builds the release of the coins in this escrow to the vendor and sends it.", "", ""},
+	// A-652d: the vendor is banned, so the release is held (xmrReleaseHeld).
+	"escrow-xmr-held":      {"Receipt confirmed. The order is completed. The vendor's account is closed, so the market holds the release of the coins in this escrow and sends nothing while the account is banned; no other address is ever paid.", "", ""},
 	"escrow-xmr-retry":     {"Recorded. The market builds this settlement on its next pass; reload this page in a minute.", "", ""},
 	"escrow-xmr-rerequest": {"Re-request recorded. On its next pass the market checks that the stored transaction can no longer be mined, then builds the settlement again; reload this page in a minute.", "", ""},
 	"escrow-recover":       {"Asked. On its next pass the market reads this escrow and requests a stray refund of what it finds to your refund address; coins too few to pay the network fee stay held, and this page then says so. Reload this page in a minute.", "", ""},
