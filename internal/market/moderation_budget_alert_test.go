@@ -3,6 +3,7 @@ package market
 import (
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -255,4 +256,93 @@ func TestAdminOverviewModerationBudgetAlertPlainRead(t *testing.T) {
 		strings.Contains(string(src), "ExecContext(") || strings.Contains(string(src), "BeginTx(") {
 		t.Fatal("budget alert loader must be one plain read")
 	}
+}
+
+// QA87-1: a parked marker (an unflagged payment, kept until it is flagged again) is not waiting for capture budget.
+// It is not counted, and with a past overflow it never keeps the alert up once the limits are raised.
+func TestAdminOverviewModerationBudgetAlertIgnoresParkedMarkers(t *testing.T) {
+	e := newTestApp(t)
+	vendor, _ := e.user("budget_parked_vendor", "vendor")
+	buyer, _ := e.user("budget_parked_buyer", "buyer")
+	_, admin := e.user("budget_parked_admin", "admin")
+	e.A.adminSocket = "/run/test-private-admin/http.sock"
+	overview := func() string {
+		w := ingressDo(e, true, "GET", "/admin", admin, nil)
+		e.check(w, 200)
+		return moderationBudgetAlertText(t, w.Body.String())
+	}
+	order := e.order(buyer, e.product(vendor, "physical"), "XMR", statePaid)
+	moderationBudgetExhaust(t, e, vendor)
+	payment := agStr(e, `INSERT INTO payments(order_id,currency,txid,idx,address,amount,flagged) VALUES($1,'XMR',$2,0,'fixture-only',1,true) RETURNING id::text`, order, randomToken())
+	if agInt(e, `SELECT count(*) FROM moderation_backfill WHERE kind='payment_flag' AND target_id=$1 AND NOT parked`, payment) != 1 {
+		t.Fatal("precondition: the refused payment flag left no active marker")
+	}
+	mustContain(t, overview(), "2 of 2 lifetime allocations used; 2 target(s) waiting for capture.")
+	agExec(e, `UPDATE payments SET flagged=false WHERE id::text=$1`, payment)
+	if err := ConfigureModerationLimits(t.Context(), e.DB, DefaultModerationLimits()); err != nil {
+		t.Fatal(err)
+	}
+	moderationPasses(t, moderationTestWorker(e), 4)
+	if agInt(e, `SELECT count(*) FROM moderation_backfill WHERE parked`) != 1 || agInt(e, `SELECT count(*) FROM moderation_backfill WHERE NOT parked`) != 0 {
+		t.Fatal("precondition: expected only the unflagged payment's parked marker")
+	}
+	if got := overview(); got != "" {
+		t.Fatalf("alert with only a parked marker after the limits were raised: %s", got)
+	}
+	// While the pool is low, the count still leaves the parked marker out.
+	used := int64(agInt(e, `SELECT allocated_records FROM moderation_capacity`))
+	limits := DefaultModerationLimits()
+	limits.MaxRecords = used
+	if err := ConfigureModerationLimits(t.Context(), e.DB, limits); err != nil {
+		t.Fatal(err)
+	}
+	mustContain(t, overview(), strconv.FormatInt(used, 10)+" of "+strconv.FormatInt(used, 10)+" lifetime allocations used; 0 target(s) waiting for capture.")
+}
+
+// A-662(1): an old capacity overflow does not turn later per-account throttle markers into a "raise the limits"
+// alert. Only an overflow recorded at or after the oldest active marker's first refusal counts.
+func TestAdminOverviewModerationBudgetAlertStaleOverflow(t *testing.T) {
+	e := newTestApp(t)
+	vendor, _ := e.user("budget_stale_vendor", "vendor")
+	other, _ := e.user("budget_stale_other", "vendor")
+	_, admin := e.user("budget_stale_admin", "admin")
+	e.A.adminSocket = "/run/test-private-admin/http.sock"
+	overview := func() string {
+		w := ingressDo(e, true, "GET", "/admin", admin, nil)
+		e.check(w, 200)
+		return moderationBudgetAlertText(t, w.Body.String())
+	}
+	moderationBudgetExhaust(t, e, vendor)
+	if err := ConfigureModerationLimits(t.Context(), e.DB, DefaultModerationLimits()); err != nil {
+		t.Fatal(err)
+	}
+	moderationPasses(t, moderationTestWorker(e), 3)
+	if agInt(e, `SELECT backfill FROM moderation_capacity`) != 0 {
+		t.Fatal("precondition: the refused target was not captured")
+	}
+	// The overflow is history; the account then edits faster than its three active jobs allow.
+	agExec(e, `UPDATE moderation_overflow SET last_seen=last_seen-interval '1 hour' WHERE occurrences>0`)
+	// An even older overflow of another kind: the latest overflow is the one compared.
+	agExec(e, `UPDATE moderation_overflow SET occurrences=1,last_seen=now()-interval '2 days' WHERE kind='upload' AND reason='retained_capacity'`)
+	for range 4 {
+		e.product(vendor, "digital")
+	}
+	if agInt(e, `SELECT count(*) FROM moderation_backfill WHERE NOT parked`) != 1 || agInt(e, `SELECT occurrences FROM moderation_overflow WHERE kind='listing' AND reason='actor_capacity'`) == 0 {
+		t.Fatal("precondition: expected one throttle marker")
+	}
+	if got := overview(); got != "" {
+		t.Fatalf("stale overflow turned a throttle marker into an alert: %s", got)
+	}
+	// A fresh retained_capacity refusal while markers wait alerts again, even after the limits are raised.
+	used := int64(agInt(e, `SELECT allocated_records FROM moderation_capacity`))
+	limits := DefaultModerationLimits()
+	limits.MaxRecords = used
+	if err := ConfigureModerationLimits(t.Context(), e.DB, limits); err != nil {
+		t.Fatal(err)
+	}
+	e.product(other, "digital")
+	if err := ConfigureModerationLimits(t.Context(), e.DB, DefaultModerationLimits()); err != nil {
+		t.Fatal(err)
+	}
+	mustContain(t, overview(), strconv.FormatInt(used, 10)+" of 512 lifetime allocations used; 2 target(s) waiting for capture.")
 }
