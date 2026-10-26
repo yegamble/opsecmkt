@@ -38,7 +38,10 @@ reports retain all known vulnerabilities, including unfixed and lower-severity
 findings, for 14 days. Fixable HIGH or CRITICAL vulnerabilities fail the job;
 scanner/download errors also fail. The application scan reuses the internal
 database matrix entry's image, and the Tor scan reuses the offline-test image.
-Release packaging additionally scans the actual OCI archive before creating the
+CI's image builds reuse the Actions layer cache, but pass the build day as
+`SECURITY_REFRESH`, so the layer that runs `apt-get upgrade` is rebuilt at least
+daily and a Debian security fix published since the last cached build reaches
+the scan. Release packaging additionally scans the actual OCI archive before creating the
 draft. No registry push is required for these scans.
 
 The [scheduled security workflow](../.github/workflows/security.yaml) runs weekly
