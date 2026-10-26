@@ -17,22 +17,42 @@ existing documented operations workflow.
 
 ## Settlement payees are pinned in the database (migration 150, A-652a)
 
-No operator action and no behaviour change for any shipped path. Migration 150 adds two triggers. From now on, each
-output of a Monero settlement must pay its role's recorded address:
-- the claimant pays the settlement's destination;
-- a release's overpayment return pays the escrow's refund address;
-- the market fee pays the escrow's fee destination.
+No operator action and no behaviour change for any shipped path. Migration 150 adds three triggers. They check the
+plan the market records for each Monero settlement (its output rows), from the upgrade on.
+
+A new output row is refused when:
+- a refund or stray refund has a market fee or overpayment return output;
+- the claimant does not pay the settlement's destination;
+- a re-request's market fee or return differs, in address or amount, from the settlement it re-requests;
+- otherwise, an overpayment return does not pay the escrow's refund address;
+- otherwise, the market fee is not exactly the escrow's fee rate applied to the order amount, or does not pay the
+  escrow's fee destination.
+
+When a settlement with output rows is built, the build is refused unless:
+- it has a claimant output, and the outputs plus the network fee equal the coins it spends;
+- a re-request spends the same total as the settlement it re-requests, with as many outputs;
+- a release that is not a re-request has a market fee output exactly when the fee reaches the 0.001 XMR output floor,
+  and a return output exactly when it spends at least 0.001 XMR more than the order amount, returning exactly that
+  excess. Smaller amounts are added to the vendor's output, as before.
 
 The one existing exception is kept. When the wallet refused the recorded fee address (the order page names
-`ESCROW_XMR_FEE_ADDRESS`), the fee may go to the new fee address you configure, while the settlement still carries
-that refusal. A re-request also keeps the fee address of the settlement it replaces.
+`ESCROW_XMR_FEE_ADDRESS`), the fee may go to the new fee address you configure while the settlement still carries
+that refusal. The database cannot check that address, because it is read from your configuration and recorded nowhere
+first; the fee amount is still checked.
 
-An escrow's refund address and fee destination can no longer be changed after checkout. No code path, script or earlier
-migration changes them; retention still deletes a retired escrow whole. Rows written before the upgrade are not checked
-again.
+An escrow's refund address, fee destination and fee rate can no longer be changed after checkout. No code path, script
+or earlier migration changes them; retention still deletes a retired escrow whole.
 
-If a build ever planned an output to another address, the database would refuse to store it. The watcher logs the
-refused store and the settlement stays requested, unpaid. Do not work around such a refusal by hand; report it.
+The database does not check:
+- the signed transaction itself (the watcher compares the wallet's transaction with the plan before storing it);
+- the network fee (`ESCROW_XMR_MAX_FEE` is applied by the watcher);
+- that the spent total matches the deposits the settlement claims;
+- a build stored with no output rows;
+- the order amount, which the fee and the return follow (the application sets it only before checkout);
+- rows written before the upgrade.
+
+If a build ever planned another output, the database would refuse to store it. The watcher logs the refused store and
+the settlement stays requested, unpaid. Do not work around such a refusal by hand; report it.
 
 ## A banned vendor's unpaid and unshipped orders can be refunded (A-652b)
 

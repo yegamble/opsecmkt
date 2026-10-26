@@ -197,9 +197,12 @@ Moderation moves no money either. The guard's scope is:
 
 None of it names a money or ban route, a settlement, a refund address, a state
 transition or a wallet send. It writes only `moderation_*` tables, appends to the
-audit log, and sets only literal `moderation_` settings keys
-(`TestModerationNeverMovesMoney`; comments are not read, and SQL assembled from
-fragments at run time is not seen).
+audit log, and writes settings only with the one reviewed statement that turns the
+worker on or off (`UPDATE settings SET value=$1 WHERE key='moderation_enabled'`),
+matched exactly as the literal query of one `ExecContext` call in
+`moderation_worker.go`. Each of these fails `TestModerationNeverMovesMoney`.
+Comments are not read, and SQL assembled at run time from fragments that hold no
+write verb is not seen.
 
 ## Proposal protocol
 
