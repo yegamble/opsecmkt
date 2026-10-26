@@ -3,6 +3,7 @@ package market
 import (
 	"context"
 	"database/sql"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -63,6 +64,7 @@ type AdminUserView struct {
 	ActiveListings, ArchivedListings           int
 	IsBanned, IsSuspended, IsClosing, IsClosed bool
 	VendorReputation                           *ReputationView // A-653: a vendor's figures and proposed label (reputation.go); nil for other accounts
+	ReputationUnavailable                      bool            // QA89-2: a vendor's figures could not be counted for this page
 }
 
 // Actionable reports whether the account forms apply: never on the viewer's own account or an administrator's.
@@ -283,9 +285,13 @@ func adminUserLoader(ctx context.Context, a *App, d *PageData) error {
 		return err
 	}
 	if v.Role == "vendor" || v.VendorApproved {
-		if v.VendorReputation, err = vendorReputation(ctx, a.db, v.ID); err != nil {
-			return err
+		// QA89-2: the figures are advice; when they cannot be counted (a statement or lock timeout, a lost connection)
+		// the page still serves its account actions with a "Figures unavailable" panel and no confirmation form.
+		rep, rerr := vendorReputation(ctx, a.db, v.ID)
+		if rerr != nil {
+			log.Printf("admin users: reputation figures unavailable: %s", errorCause(rerr)) // a class, never the driver's text
 		}
+		v.VendorReputation, v.ReputationUnavailable = rep, rerr != nil
 	}
 	d.AdminUser = v
 	return nil

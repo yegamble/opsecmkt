@@ -165,6 +165,15 @@ func TestReputationLabelTable(t *testing.T) {
 		{"a listing taken down", with(func(f *ReputationFigures) { f.Takedowns = 1 }), repStandard, []string{repRemovals}},
 		{"listings removed", with(func(f *ReputationFigures) { f.Takedowns, f.Rejections = 1, 2 }), repAtRisk, []string{repRemovals}},
 		{"several reasons", with(func(f *ReputationFigures) { f.Takedowns, f.DecidedRefund, f.CompletedBuyers = 3, 4, 5 }), repAtRisk, []string{repConcentration, repDisputesLost, repRemovals}},
+		// QA89-1: distinct buyers are measured against the orders the rates count (completed plus non-delivery refunds
+		// plus disputes lost), so a repeat buyer's completion ending adversely instead never lifts the label.
+		{"26 completed by 13 buyers", ReputationFigures{Funded: 26, FundedBuyers: 13, CompletedConfirmed: 26, CompletedBuyers: 13}, repHigh, []string{repStrongRecord}},
+		{"27 completed by 13 buyers", ReputationFigures{Funded: 27, FundedBuyers: 13, CompletedConfirmed: 27, CompletedBuyers: 13}, repStandard, []string{repConcentration}},
+		{"26 completed by 13 buyers and a no-ship cancel", ReputationFigures{Funded: 27, FundedBuyers: 13, CompletedConfirmed: 26, CompletedBuyers: 13, NoShipCancels: 1}, repStandard, []string{repConcentration}},
+		{"26 completed by 13 buyers and a vendor cancellation", ReputationFigures{Funded: 27, FundedBuyers: 13, CompletedConfirmed: 26, CompletedBuyers: 13, VendorCancels: 1}, repStandard, []string{repConcentration}},
+		{"26 completed by 13 buyers and a dispute lost", ReputationFigures{Funded: 27, FundedBuyers: 13, CompletedConfirmed: 26, CompletedBuyers: 13, DecidedRefund: 1}, repStandard, []string{repConcentration, repDisputesLost}},
+		{"five completed by one buyer", ReputationFigures{Funded: 5, FundedBuyers: 1, CompletedConfirmed: 5, CompletedBuyers: 1}, repAtRisk, []string{repConcentration}},
+		{"four completed by one buyer and a no-ship cancel", ReputationFigures{Funded: 5, FundedBuyers: 1, CompletedConfirmed: 4, CompletedBuyers: 1, NoShipCancels: 1}, repAtRisk, []string{repConcentration}},
 	} {
 		v := assessReputation("vendor-id", c.f)
 		if v.Label != c.label || !slices.Equal(v.Reasons, c.reasons) {
@@ -186,7 +195,7 @@ func TestReputationLabelTable(t *testing.T) {
 		t.Fatalf("rule rows %v, want %v", got, codes)
 	}
 	for i, want := range []string{"30 completed (buyer confirmed 20, release deadline 6, digital on funding 4) of 30 funded", "20 distinct buyers of completed orders (20 of funded orders)",
-		"20 distinct buyers for 30 completed: 66%", "2 non-delivery refunds (buyer no-ship cancels 2, vendor cancellations of paid orders 0) against 30 completed: 6% of 32",
+		"20 distinct buyers for 30 completed and 2 non-delivery refunds or disputes lost: 62% of 32", "2 non-delivery refunds (buyer no-ship cancels 2, vendor cancellations of paid orders 0) against 30 completed: 6% of 32",
 		"0 disputes lost (decided refund 0, vendor conceded 0; won: decided release 0, buyer conceded 0) against 30 completed: 0% of 30",
 		"0 of 20 counted reviews at 2 stars or fewer: 0%", "1 listings now (taken down 1, rejected 0)"} {
 		if v.Rules[i].Figure != want {
@@ -218,19 +227,47 @@ func figureField(f *ReputationFigures, i int) *int {
 
 // TestReputationMonotonic: over generated consistent figures, worsening any adverse figure (one more non-delivery
 // refund, lost dispute, low rating or removed listing, with or without the order that carries it, or one fewer distinct
-// buyer) never improves the label, and a low-volume or concentrated record is never HIGH_REPUTATION.
+// buyer), or an unreviewed completion ending instead as a non-delivery refund or a lost dispute (QA89-1), never
+// improves the label, and a low-volume or concentrated record is never HIGH_REPUTATION.
 func TestReputationMonotonic(t *testing.T) {
 	r := rand.New(rand.NewPCG(653, 87))
-	worsen := map[string]func(f *ReputationFigures){
-		"no-ship cancel":           func(f *ReputationFigures) { f.NoShipCancels++ },
-		"vendor cancellation":      func(f *ReputationFigures) { f.VendorCancels++ },
-		"decided refund":           func(f *ReputationFigures) { f.DecidedRefund++ },
-		"vendor concession":        func(f *ReputationFigures) { f.VendorConceded++ },
-		"new low review":           func(f *ReputationFigures) { f.LowReviews++; f.Reviews++ },
-		"review edited low":        func(f *ReputationFigures) { f.LowReviews = min(f.LowReviews+1, f.Reviews) },
-		"takedown":                 func(f *ReputationFigures) { f.Takedowns++ },
-		"rejection":                func(f *ReputationFigures) { f.Rejections++ },
-		"one fewer distinct buyer": func(f *ReputationFigures) { f.CompletedBuyers = max(f.CompletedBuyers-1, min(f.Completed(), 1)) },
+	// becomes turns one unreviewed completion into the adverse outcome adverse adds; its buyer stays a buyer of another
+	// completion while the figures allow it. It reports false when no completion is unreviewed.
+	becomes := func(adverse func(*ReputationFigures)) func(*ReputationFigures) bool {
+		return func(f *ReputationFigures) bool {
+			if f.Completed() == 0 || f.Reviews > f.Completed()-1 {
+				return false
+			}
+			switch {
+			case f.CompletedConfirmed > 0:
+				f.CompletedConfirmed--
+			case f.CompletedDeadline > 0:
+				f.CompletedDeadline--
+			default:
+				f.CompletedDigital--
+			}
+			f.CompletedBuyers = min(f.CompletedBuyers, f.Completed())
+			adverse(f)
+			return true
+		}
+	}
+	always := func(change func(*ReputationFigures)) func(*ReputationFigures) bool {
+		return func(f *ReputationFigures) bool { change(f); return true }
+	}
+	worsen := map[string]func(f *ReputationFigures) bool{
+		"no-ship cancel":                       always(func(f *ReputationFigures) { f.NoShipCancels++ }),
+		"vendor cancellation":                  always(func(f *ReputationFigures) { f.VendorCancels++ }),
+		"decided refund":                       always(func(f *ReputationFigures) { f.DecidedRefund++ }),
+		"vendor concession":                    always(func(f *ReputationFigures) { f.VendorConceded++ }),
+		"new low review":                       always(func(f *ReputationFigures) { f.LowReviews++; f.Reviews++ }),
+		"review edited low":                    always(func(f *ReputationFigures) { f.LowReviews = min(f.LowReviews+1, f.Reviews) }),
+		"takedown":                             always(func(f *ReputationFigures) { f.Takedowns++ }),
+		"rejection":                            always(func(f *ReputationFigures) { f.Rejections++ }),
+		"one fewer distinct buyer":             always(func(f *ReputationFigures) { f.CompletedBuyers = max(f.CompletedBuyers-1, min(f.Completed(), 1)) }),
+		"completion becomes no-ship cancel":    becomes(func(f *ReputationFigures) { f.NoShipCancels++ }),
+		"completion becomes vendor cancel":     becomes(func(f *ReputationFigures) { f.VendorCancels++ }),
+		"completion becomes decided refund":    becomes(func(f *ReputationFigures) { f.DecidedRefund++ }),
+		"completion becomes vendor concession": becomes(func(f *ReputationFigures) { f.VendorConceded++ }),
 	}
 	names := slices.Sorted(func(yield func(string) bool) {
 		for k := range worsen {
@@ -254,13 +291,16 @@ func TestReputationMonotonic(t *testing.T) {
 		f.Funded = f.Completed() + f.Nondelivery() + f.DisputesLost() + f.DecidedRelease + n(5)
 		f.FundedBuyers = f.CompletedBuyers + n(5)
 		base := assessReputation("v", f)
-		if base.Label == repHigh && (f.Completed() < repHighCompleted || f.CompletedBuyers < repHighBuyers || f.CompletedBuyers*100 < f.Completed()*repHighSpreadPct) {
+		if base.Label == repHigh && (f.Completed() < repHighCompleted || f.CompletedBuyers < repHighBuyers ||
+			f.CompletedBuyers*100 < (f.Completed()+f.Nondelivery()+f.DisputesLost())*repHighSpreadPct) {
 			t.Fatalf("HIGH_REPUTATION below a floor: %+v", f)
 		}
 		for _, name := range names {
 			for _, carried := range []bool{false, true} {
 				g := f
-				worsen[name](&g)
+				if !worsen[name](&g) {
+					continue
+				}
 				if carried { // with the funded order, by a new buyer, that carries the outcome
 					g.Funded++
 					g.FundedBuyers++
@@ -454,6 +494,54 @@ func TestReputationAdminOnly(t *testing.T) {
 	}
 }
 
+// TestReputationPanelDegradesOnQueryFailure (QA89-2): when the figures cannot be counted (here the reviews table is held
+// by another transaction until the application pool's lock_timeout cancels the statement), the account page still
+// answers 200 with its account actions and a "Figures unavailable" panel that offers no confirmation; the
+// confirmation POST is refused without change. With the table free again the figures and the form return.
+func TestReputationPanelDegradesOnQueryFailure(t *testing.T) {
+	e := newTestApp(t)
+	_, admin := e.user("rep_fail_admin", "admin")
+	f := newRepFixture(e, "rep_fail_vendor")
+	f.seedStrong("rep_fail_")
+	userPage := func() string { return e.body("GET", "/admin/users?handle=rep_fail_vendor", admin, nil, 200) }
+	form := formOn(t, userPage(), "/admin/vendor-auto-approve", `name="confirm_reputation"`)
+	form.Set("password", testPassword)
+	form.Del(formNonceField)
+	hold := func() func() {
+		t.Helper()
+		tx, err := e.DB.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = tx.Exec("LOCK TABLE reviews IN ACCESS EXCLUSIVE MODE"); err != nil {
+			tx.Rollback()
+			t.Fatal(err)
+		}
+		return func() { tx.Rollback() }
+	}
+	release := hold()
+	if _, err := vendorReputation(context.Background(), e.DB, f.vendorID); !dbBusy(err) {
+		release()
+		t.Fatalf("the figures with reviews held: %v, want a lock or statement timeout", err)
+	}
+	page := userPage()
+	mustContain(t, page, `id="user-reputation"`, "Figures unavailable", `action="/admin/suspend"`, `action="/admin/ban"`, `action="/admin/vendor-auto-approve"`)
+	mustNotContain(t, page, `name="confirm_reputation"`, repHigh, repStrongRecord)
+	w := e.do("POST", "/admin/vendor-auto-approve", admin, form)
+	release()
+	if w.Code < 400 || agStr(e, "SELECT listing_auto_approve::text FROM users WHERE id=$1", f.vendorID) != "false" {
+		t.Fatalf("a confirmation without figures: %d, flag %s", w.Code, agStr(e, "SELECT listing_auto_approve::text FROM users WHERE id=$1", f.vendorID))
+	}
+	mustContain(t, userPage(), repHigh, `name="confirm_reputation"`)
+	mustNotContain(t, userPage(), "Figures unavailable")
+	// A banned vendor's page keeps its orders section when the figures fail.
+	agExec(e, "UPDATE users SET banned_at=now(),suspended_at=now(),ban_reason='Groundless disputes on many orders' WHERE id=$1", f.vendorID)
+	release = hold()
+	page = userPage()
+	release()
+	mustContain(t, page, "Figures unavailable", `id="ban-orders"`)
+}
+
 // TestAutoApproveConfirmRecomputesLabel: confirming the reputation when turning on auto-approval recomputes the label
 // inside the action's transaction; a label that is not HIGH_REPUTATION or figures that changed since the page was
 // shown are refused (409) and nothing changes. The administrator's audit row names the label only; the vendor's audit
@@ -476,8 +564,9 @@ func TestAutoApproveConfirmRecomputesLabel(t *testing.T) {
 	if form.Get("action") != "on" || form.Get("reputation_digest") != f.assess().Digest {
 		t.Fatalf("confirmation form %v", form)
 	}
-	// Stale: one more vendor cancellation leaves the label HIGH_REPUTATION but changes the figures.
-	f.seed(buyers[0], "vendorcancel")
+	// Stale: a dispute decided for the vendor leaves the label HIGH_REPUTATION but changes the figures. (A vendor
+	// cancellation would now count against the 13 buyers' spread too and give STANDARD, QA89-1.)
+	f.seed(buyers[0], "release")
 	if v := f.assess(); v.Label != repHigh {
 		t.Fatalf("label %s", v.Label)
 	}

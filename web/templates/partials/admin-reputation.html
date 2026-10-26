@@ -1,5 +1,6 @@
 {{/* A-653: a vendor's reputation figures and the label the fixed Go rule proposes (reputation.go), on an administrator's
-account page only. Included once by "admin-user"; . is the page data. */}}
+account page only. Included once by "admin-user"; . is the page data. When the figures could not be counted
+(ReputationUnavailable, QA89-2) the panel says so and offers no confirmation. */}}
 {{define "admin-user-reputation"}}{{$totp := and .Security .Security.TOTPEnabled}}{{with .AdminUser}}{{with $rep := .VendorReputation}}
 <section class="panel" id="user-reputation" aria-labelledby="user-reputation-heading">
 <h2 id="user-reputation-heading">Reputation figures</h2>
@@ -20,4 +21,8 @@ account page only. Included once by "admin-user"; . is the page data. */}}
 {{template "confirm-fields" $totp}}
 <button type="submit">Confirm HIGH_REPUTATION and publish without review</button>
 </form>{{end}}{{end}}
-</section>{{end}}{{end}}{{end}}
+</section>{{else}}{{if .ReputationUnavailable}}
+<section class="panel" id="user-reputation" aria-labelledby="user-reputation-heading">
+<h2 id="user-reputation-heading">Reputation figures</h2>
+<p><strong>Figures unavailable.</strong> This vendor's figures could not be counted for this page (the database was busy or the count timed out). No label is proposed and none can be confirmed here; reload the page to try again. The account's other actions on this page are unaffected.</p>
+</section>{{end}}{{end}}{{end}}{{end}}

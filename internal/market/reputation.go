@@ -18,7 +18,8 @@ import (
 // without review (vendorAutoApproveAction recomputes it inside that transaction).
 
 // The closed labels. INSUFFICIENT_HISTORY is the default for a vendor with few completed orders. reputationRank orders
-// them; worsening any adverse figure never raises the rank (TestReputationMonotonic).
+// them; worsening any adverse figure, or an unreviewed completion ending adversely instead, never raises the rank
+// (TestReputationMonotonic).
 const (
 	repHigh         = "HIGH_REPUTATION"
 	repStandard     = "STANDARD"
@@ -44,8 +45,8 @@ const (
 	repMinCompleted        = 5  // fewer completed orders: INSUFFICIENT_HISTORY
 	repHighCompleted       = 25 // HIGH_REPUTATION needs at least this many completed orders
 	repHighBuyers          = 10 // and this many distinct buyers of them
-	repHighSpreadPct       = 50 // distinct buyers at least this share of completed orders for HIGH_REPUTATION
-	repRiskSpreadPct       = 25 // below this share, from repMinCompleted completed orders: AT_RISK
+	repHighSpreadPct       = 50 // distinct buyers at least this share of completed, non-delivery and lost orders for HIGH_REPUTATION
+	repRiskSpreadPct       = 25 // below this share, from repMinCompleted such orders with one completed: AT_RISK
 	repRiskMin             = 3
 	repHighNondeliveryPct  = 5
 	repRiskNondeliveryPct  = 20
@@ -117,8 +118,8 @@ func repPct(n, of int) string {
 	return strconv.Itoa(n*100/of) + "%"
 }
 
-// reputationRules evaluates the rule table for f. Every predicate is monotonic: a larger adverse count or fewer distinct
-// buyers never lifts a row's effect.
+// reputationRules evaluates the rule table for f. Every predicate is monotonic: a larger adverse count, fewer distinct
+// buyers or an unreviewed completion counted instead as an adverse outcome never lifts the label.
 func reputationRules(f ReputationFigures) []ReputationRule {
 	c, b := f.Completed(), f.CompletedBuyers
 	rate := func(code, what string, n, highPct, riskPct int) ReputationRule {
@@ -146,12 +147,17 @@ func reputationRules(f ReputationFigures) []ReputationRule {
 	if b < repHighBuyers {
 		buyers.Effect = repStandard
 	}
-	spread := ReputationRule{Code: repConcentration, Figure: fmt.Sprintf("%d distinct buyers for %d completed: %s", b, c, repPct(b, c)),
-		High: fmt.Sprintf("%d%% or more", repHighSpreadPct), Lower: fmt.Sprintf("%s below %d%% from %d completed", repAtRisk, repRiskSpreadPct, repMinCompleted)}
+	// QA89-1: the spread is measured against the orders the rates count (completed, non-delivery refunds and disputes
+	// lost), so a repeat buyer's completion ending adversely instead keeps its share and never lifts the label.
+	adverse := f.Nondelivery() + f.DisputesLost()
+	s := c + adverse
+	spread := ReputationRule{Code: repConcentration, Figure: fmt.Sprintf("%d distinct buyers for %d completed and %d non-delivery refunds or disputes lost: %s of %d",
+		b, c, adverse, repPct(b, s), s),
+		High: fmt.Sprintf("%d%% or more", repHighSpreadPct), Lower: fmt.Sprintf("%s below %d%% from %d such orders", repAtRisk, repRiskSpreadPct, repMinCompleted)}
 	switch {
-	case c >= repMinCompleted && b*100 < c*repRiskSpreadPct:
+	case c > 0 && s >= repMinCompleted && b*100 < s*repRiskSpreadPct:
 		spread.Effect = repAtRisk
-	case c > 0 && b*100 < c*repHighSpreadPct:
+	case c > 0 && b*100 < s*repHighSpreadPct:
 		spread.Effect = repStandard
 	}
 	nondelivery := rate(repNondelivery, fmt.Sprintf("%d non-delivery refunds (buyer no-ship cancels %d, vendor cancellations of paid orders %d)",

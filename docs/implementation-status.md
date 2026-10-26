@@ -469,13 +469,18 @@ superseded settlements, same-state settlement and decision notes and payment-win
 fixed table of Go predicates, each shown with its figure and thresholds, proposes one closed label with reason codes:
 **AT_RISK** when any row gives it (`NONDELIVERY_REFUND_RATE` or `DISPUTES_LOST` at 3 or more and 20% or 10% of the
 completed orders plus that count, `LOW_RATINGS` at 3 or more and 30% of counted reviews, `LISTING_REMOVALS` at 3,
-`BUYER_CONCENTRATION` with distinct buyers below 25% of 5 or more completed orders), else
+`BUYER_CONCENTRATION` with distinct buyers of completed orders below 25% of 5 or more completed orders, non-delivery
+refunds and disputes lost, at least one of them completed), else
 **INSUFFICIENT_HISTORY** (the default: `FEW_COMPLETED_ORDERS`, fewer than 5 completed), else **STANDARD** when any row
 keeps the vendor below the high thresholds (fewer than 25 completed, fewer than 10 distinct buyers, distinct buyers
-below 50% of completed orders, non-delivery refunds 5% or more, disputes lost 2% or more, low ratings 10% or more, or
-any current removal), else **HIGH_REPUTATION** (`STRONG_RECORD`). There is no confidence or free text, and worsening any
-adverse figure never improves the label. The codes are defined in `internal/market`, not in package moderation, and
-the code reads no `moderation_*` table (capture is optional and budget-limited) and does not import package
+below 50% of those orders, non-delivery refunds 5% or more, disputes lost 2% or more, low ratings 10% or more, or
+any current removal), else **HIGH_REPUTATION** (`STRONG_RECORD`). There is no confidence or free text. Worsening any
+adverse figure never improves the label, and neither does an unreviewed completion ending instead as a no-ship cancel,
+a vendor cancellation, a refund decision or a vendor concession: the distinct-buyer share is measured against the same
+completed-plus-adverse orders the rates use (QA89-1), so 27 completions by 13 buyers and 26 completions by 13 buyers
+with one no-ship cancel are both STANDARD. A completion whose low review disappears with it is not covered by that
+claim (the low-rating row counts reviews of completed orders only). The codes are defined in `internal/market`, not
+in package moderation, and the code reads no `moderation_*` table (capture is optional and budget-limited) and does not import package
 moderation; the model's `Actor.Reputation` stays unset (`TestNoMarketCodeSetsActorReputation`).
 
 The label changes nothing by itself. When it is HIGH_REPUTATION and the vendor does not yet publish without review,
@@ -484,16 +489,18 @@ the panel offers **Confirm HIGH_REPUTATION and publish without review**: the exi
 transaction, after the account's row lock, the label is computed again; a label other than HIGH_REPUTATION or a digest
 that no longer matches is refused (409, "Nothing was changed."). The administrator's audit row adds "; reputation
 confirmed as HIGH_REPUTATION" (the label name only); the vendor's audit row and notification are the usual ones and
-never name a label. Turning the flag on without the choice (from the Vendors section or the account page) works as
-before, whatever the label; there is no bulk confirmation. Vendors, buyers, moderators and guests never see the
+never name a label. When the figures cannot be counted (a statement or lock timeout or a lost connection), the
+account page still answers 200 with its account actions and a **Figures unavailable** panel without the confirmation
+form, and a confirmation POST is refused without change (QA89-2). Turning the flag on without the choice (from the
+Vendors section or the account page) works as before, whatever the label; there is no bulk confirmation. Vendors, buyers, moderators and guests never see the
 figures or a label, and no public page carries one. `vendorAutoApproveAction` stays the only writer of
 `users.listing_auto_approve` apart from the ban action clearing it (A-650) (`TestAutoApproveOnlyWriters`).
 
 Tests: `reputation_test.go` (`TestReputationLabelTable`, `TestReputationMonotonic` over 20,000 generated figure sets,
 `TestReputationSelfPurchaseConcentration`, `TestReputationIgnoresSettlementMechanics`,
 `TestReputationIndependentOfModerationCapture` with every `moderation_*` table locked against reads,
-`TestReputationAdminOnly`, `TestAutoApproveConfirmRecomputesLabel`, `TestAutoApproveOnlyWriters`) and
-`preview-admin-users.spec.ts` (the panel at 320 and 1280 px). Not covered: thresholds are fixed in code, not tuned on
+`TestReputationAdminOnly`, `TestReputationPanelDegradesOnQueryFailure`, `TestAutoApproveConfirmRecomputesLabel`,
+`TestAutoApproveOnlyWriters`) and `preview-admin-users.spec.ts` (the panel at 320 and 1280 px). Not covered: thresholds are fixed in code, not tuned on
 market data, and the label is advice for staff, not a fraud finding.
 
 ## Market name and logo
