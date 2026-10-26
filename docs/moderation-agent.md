@@ -536,7 +536,11 @@ or with a concurrent edit of that record. The private-panel review and the
 budget raise are confirmed forms that lock the administrator's own account and
 session rows before the ledger row (the shared confirmation path has no earlier
 hook); no transaction holding the ledger row waits on those rows, because the
-worker and the offline review reach account rows only through key-share locks
+worker and the offline review reach account rows only through key-share locks,
+and an admitting marketplace transaction, which holds the ledger row until it
+commits, is not known to lock another administrator's account, session or
+receipt row afterwards (if one ever did, PostgreSQL's deadlock detection would
+abort one transaction rather than hang)
 (`TestModerationReviewAccountRowBeforeCapacityNoWait`,
 `TestModerationOfflineReviewLockOrder`; the cached-completion path is checked by
 code reading only). Deferred references count as targets awaiting capture: the

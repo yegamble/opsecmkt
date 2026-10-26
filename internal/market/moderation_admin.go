@@ -260,7 +260,12 @@ func moderationReviewAction(c *actionCtx) (actionResult, error) {
 		// (confirmedTxWith refuses Before for ConfirmedFormNonce), so the capacity
 		// row cannot come first without changing that shared contract. It cannot
 		// deadlock: no transaction holding the capacity row waits on those rows.
-		// Admission takes the capacity row with SKIP LOCKED; the worker's sweep,
+		// Admission takes the capacity row with SKIP LOCKED, and an admitting
+		// marketplace transaction then holds it until commit: no application path
+		// known (QA91-2) then locks an administrator's account, session or receipt
+		// row other than its own actor row, which confirmedTx takes first; if one
+		// ever did, PostgreSQL's deadlock detection aborts one transaction rather
+		// than hanging. The worker's sweep,
 		// results and cached completion, the offline review and the capture
 		// switch reach an account row only through a foreign-key check or FOR KEY
 		// SHARE (SKIP LOCKED in the sweep), which does not conflict with FOR NO
