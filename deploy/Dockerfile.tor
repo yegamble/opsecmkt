@@ -10,6 +10,9 @@ FROM debian:bookworm-20261005-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c7
 ARG TOR_VERSION=0.4.9.13-1~d12.bookworm+1
 # The Tor Project archive signing key; the download is refused unless it carries this fingerprint.
 ARG TOR_ARCHIVE_FINGERPRINT=A3C4F0F979CAA22CDBA8F512EE8CBC9E886DDD89
+# CI passes the build day as SECURITY_REFRESH so the cached apt upgrade below is never older than a day; an unset
+# value changes nothing.
+ARG SECURITY_REFRESH=
 RUN set -eu; \
     apt-get update; \
     apt-get upgrade -y --no-install-recommends; \
