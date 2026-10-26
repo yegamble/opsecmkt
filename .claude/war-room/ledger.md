@@ -31,8 +31,9 @@ implementers running in iteration 91. Check open PRs before taking one.
    (Monero dispute browser journey), A-506 (small ops/release items), A-541 (signer close test), A-226 (wallet-RPC
    bind), and the moderation P2 rows A-655–A-661.
 4. P3 and NIT rows marked `open`, oldest first.
-5. Sweep rotation: payments, identity, commerce, operations, privacy, UI and AI moderation have each been swept;
-   areas touched by fix waves since their sweep (payments and AI moderation) need delta sweeps before COMPLETE.
+5. Sweep rotation: the ledger holds no `swept <area> @<sha>` entry yet (checked with `ledger.py grep`, iteration 91).
+   COMPLETE needs one recorded sweep per area since its last fix wave: payments, identity and account security,
+   commerce and disputes, operations and recovery, privacy, UI and accessibility, AI moderation.
 
 **Unreconciled Codex work (archived, not on main).** These are two snapshots of uncommitted Codex worktrees from
 before the war-room loop. A file-by-file check on 2026-10-25 found that main does not contain them; some of the work may
