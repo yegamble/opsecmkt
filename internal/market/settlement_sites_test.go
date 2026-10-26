@@ -58,8 +58,8 @@ var xmrSettlementSites = map[string]struct {
 // (tgenabled 'O') and still raise (PAY89-9). xmr_settlements_frozen keeps a settlement's order, kind and destination;
 // xmr_settlements_supersedes keeps a re-request's; the *_market_fits triggers read escrow_market_may_sign (081, 149:
 // a release only on a completed order or one decided for the vendor, never to a banned vendor);
-// xmr_settlement_outputs_frozen writes outputs only while requested; migration 150's two pin the outputs' addresses and
-// the escrow's refund address and fee destination.
+// xmr_settlement_outputs_frozen writes outputs only while requested; migration 150's three pin the outputs' addresses
+// and amounts, the plan's shape when it is built, and the escrow's refund address, fee destination and fee rate.
 var payeeTriggers = [][2]string{
 	{"xmr_settlements", "xmr_settlements_frozen"},
 	{"xmr_settlements", "xmr_settlements_supersedes"},
@@ -68,6 +68,7 @@ var payeeTriggers = [][2]string{
 	{"settlement_bumps", "settlement_bumps_market_fits"},
 	{"xmr_settlement_outputs", "xmr_settlement_outputs_frozen"},
 	{"xmr_settlement_outputs", "xmr_settlement_outputs_payee"},
+	{"xmr_settlements", "xmr_settlements_plan_fits"},
 	{"escrows", "escrows_payees_frozen"},
 }
 
@@ -76,8 +77,8 @@ var (
 	xmrSettlementInsert = regexp.MustCompile(`(?i)\b(?:insert\s+into|copy)\s+(?:\w+\.)?"?xmr_settlements\b`)
 	// A statement whose table is not a literal: an INSERT INTO followed by a concatenation or a format verb.
 	dynamicInsert = regexp.MustCompile(`(?i)\binsert\s+into\s*(?:%|$)`)
-	// A statement that changes an escrow's refund address or fee destination (migration 150 refuses it as well).
-	escrowPayeeUpdate = regexp.MustCompile(`(?is)\bupdate\s+(?:only\s+)?(?:\w+\.)?"?escrows"?(?:\s+\w+)?\s+set\b.*\b(?:refund_address|fee_destination)\s*=`)
+	// A statement that changes an escrow's refund address, fee destination or fee rate (migration 150 refuses it as well).
+	escrowPayeeUpdate = regexp.MustCompile(`(?is)\bupdate\s+(?:only\s+)?(?:\w+\.)?"?escrows"?(?:\s+\w+)?\s+set\b.*\b(?:refund_address|fee_destination|fee_bps)\s*=`)
 )
 
 func TestNoForfeitSettlementKind(t *testing.T) {
@@ -150,7 +151,7 @@ func forfeitMigrationFindings(t *testing.T) []string {
 		alterKind = regexp.MustCompile(`(?is)\bcreate\s+table\s+(?:if\s+not\s+exists\s+)?` + settlementTable + `|\balter\s+table\s+(?:if\s+exists\s+)?(?:only\s+)?` + settlementTable +
 			`.*?\b(?:(?:add|drop|alter)\s+(?:column\s+)?(?:if\s+(?:not\s+)?exists\s+)?"?(?:kind|role)"?\b|drop\s+constraint\s+(?:if\s+exists\s+)?"?\w*(?:kind|role)_check\b)`)
 		// Creating a settlement in the database, or changing whom one or an escrow pays.
-		payeeWrite = regexp.MustCompile(`(?is)\binsert\s+into\s+` + settlementTable + `|\bupdate\s+(?:only\s+)?(?:\w+\.)?"?(?:xmr_settlements|settlements)"?\s+set\b.*\b(?:kind|destination)\s*=|\bupdate\s+(?:only\s+)?(?:\w+\.)?"?(?:xmr_settlement_outputs|settlement_outputs)"?\s+set\b|\bupdate\s+(?:only\s+)?(?:\w+\.)?"?escrows"?\s+set\b.*\brefund_address\s*=`)
+		payeeWrite = regexp.MustCompile(`(?is)\binsert\s+into\s+` + settlementTable + `|\bupdate\s+(?:only\s+)?(?:\w+\.)?"?(?:xmr_settlements|settlements)"?\s+set\b.*\b(?:kind|destination)\s*=|\bupdate\s+(?:only\s+)?(?:\w+\.)?"?(?:xmr_settlement_outputs|settlement_outputs)"?\s+set\b|\bupdate\s+(?:only\s+)?(?:\w+\.)?"?escrows"?\s+set\b.*\b(?:refund_address|fee_destination|fee_bps)\s*=`)
 		// A statement that reads or decides on settlements: its kind and role values are checked.
 		settlementStmt = regexp.MustCompile(`(?i)\b(?:xmr_settlements|xmr_settlement_outputs|settlements|settlement_outputs|escrow_market_may_sign|settlement_claimant)\b`)
 		// The places a kind or role value appears: compared, listed, matched in a CASE or in an array.
@@ -262,7 +263,7 @@ func settlementSiteFindings(t *testing.T) []string {
 						inserts[rel+" "+name]++
 					}
 					if escrowPayeeUpdate.MatchString(s) {
-						found = append(found, rel+" "+name+": changes an escrow's refund address or fee destination")
+						found = append(found, rel+" "+name+": changes an escrow's refund address, fee destination or fee rate")
 					}
 					return true
 				})
