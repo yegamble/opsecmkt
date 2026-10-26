@@ -2,10 +2,15 @@ package market
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/hex"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -331,6 +336,113 @@ func TestModerationReviewActionLockOrder(t *testing.T) {
 	}
 	if agInt(e, `SELECT count(*) FROM moderation_reviews WHERE suggestion_id=$1 AND action='accept'`, id) != 1 {
 		t.Fatal("the review was not recorded")
+	}
+}
+
+// SEC87-V1 (A-662(4)): the private-panel review's confirmed receipt locks the administrator's own account row
+// (FOR NO KEY UPDATE) and session row before the capacity row. A transaction holding the capacity row reaches that
+// account row only as a foreign-key check or FOR KEY SHARE (SKIP LOCKED in the worker's sweep), which does not
+// conflict with the review's lock, so the capacity holder never waits on the review.
+func TestModerationReviewAccountRowBeforeCapacityNoWait(t *testing.T) {
+	e, adminID, admin, _, id := moderationAdminFixture(t, 0, false)
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	holder, err := e.DB.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Rollback()
+	if _, err = holder.ExecContext(ctx, `SELECT 1 FROM moderation_capacity WHERE singleton FOR UPDATE`); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	var code int
+	go func() {
+		defer close(done)
+		code = privateHostRequest(e, "POST", moderationReviewPath, admin, moderationReviewForm(id, "hold"), true).Code
+	}()
+	moderationAwaitLockWait(t, e, done) // the review waits for the capacity row
+	// It holds its administrator's account row while it waits.
+	probe, err := e.DB.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = probe.ExecContext(ctx, `SELECT 1 FROM users WHERE id=$1 FOR NO KEY UPDATE NOWAIT`, adminID)
+	_ = probe.Rollback()
+	if err == nil || !strings.Contains(err.Error(), "55P03") && !strings.Contains(err.Error(), "could not obtain lock") {
+		t.Fatalf("precondition: the waiting review does not hold its account row: %v", err)
+	}
+	if _, err = holder.ExecContext(ctx, `SET LOCAL lock_timeout='2s'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = holder.ExecContext(ctx, `SELECT 1 FROM users WHERE id=$1 FOR KEY SHARE`, adminID); err != nil {
+		t.Fatal("a capacity holder's key-share lock on the reviewing administrator waited:", err)
+	}
+	if _, err = holder.ExecContext(ctx, `SELECT moderation_backfill_sweep(10)`); err != nil {
+		t.Fatal("a worker sweep under the capacity lock waited on the review:", err)
+	}
+	if err = holder.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	<-done
+	if code != 303 || agInt(e, `SELECT count(*) FROM moderation_reviews WHERE suggestion_id=$1 AND action='hold'`, id) != 1 {
+		t.Fatalf("review status %d; the review was not recorded", code)
+	}
+}
+
+// The offline signed review takes the capacity row before the proposal and source rows, and no account row: a
+// marketplace transaction that admitted a change (holding the capacity row) and then locks the proposal's source row
+// completes while the review waits.
+func TestModerationOfflineReviewLockOrder(t *testing.T) {
+	e, _, _, product, id := moderationAdminFixture(t, 0, false)
+	public, key, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyFile := filepath.Join(t.TempDir(), "review.pub")
+	if err = os.WriteFile(keyFile, []byte(hex.EncodeToString(public)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	audience := strings.Repeat("b", 64)
+	t.Setenv("MODERATION_ACTION_PUBLIC_KEY", keyFile)
+	t.Setenv("MODERATION_ACTION_AUDIENCE", audience)
+	var contentHash string
+	var expiry time.Time
+	if err = e.DB.QueryRow(`SELECT content_hash,expires_at FROM moderation_suggestions WHERE id=$1`, id).Scan(&contentHash, &expiry); err != nil {
+		t.Fatal(err)
+	}
+	signed := ModerationActionToken{Version: 1, Audience: audience, SuggestionID: id, ContentHash: contentHash, Action: "hold",
+		ExpiresAt: expiry.Add(-time.Second).UTC().Format(time.RFC3339), Nonce: strings.Repeat("e", 64)}
+	form := url.Values{"signed_token": {string(signedModerationToken(t, key, signed))}}
+	other, _ := e.user("offline_order_other_vendor", "vendor")
+	a := e.product(other, "digital")
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	tx1, err := e.DB.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx1.Rollback()
+	if _, err = tx1.ExecContext(ctx, `UPDATE products SET description='Admitted while an offline review is recorded' WHERE id=$1`, a); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	var code int
+	go func() {
+		defer close(done)
+		code = ingressDo(e, true, "POST", "/admin/moderation/offline", randomToken(), form).Code
+	}()
+	moderationAwaitLockWait(t, e, done)
+	_, err1 := tx1.ExecContext(ctx, `UPDATE products SET stock=stock+1 WHERE id=$1`, product)
+	if err1 == nil {
+		err1 = tx1.Commit()
+	}
+	<-done
+	if err1 != nil || code != 303 {
+		t.Fatalf("marketplace transaction: %v; offline review status %d", err1, code)
+	}
+	if agInt(e, `SELECT count(*) FROM moderation_reviews WHERE suggestion_id=$1 AND reviewer_user_id IS NULL AND action='hold'`, id) != 1 {
+		t.Fatal("the offline review was not recorded")
 	}
 }
 

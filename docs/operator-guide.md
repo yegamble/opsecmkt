@@ -723,8 +723,12 @@ allocations used; 1 target(s) waiting for capture" and names where to raise
 the limits: **Moderation budget** on the private moderation panel, or
 `--max-records` and `--max-reserved-bytes` on the moderation worker (each
 allocation reserves 524288 bytes; at the defaults the byte budget binds first, so
-raise both). Elsewhere it is one sentence without numbers pointing to the private
-panel. It names no account, target or time. It clears on the next load once the
+raise both). Waiting targets include records noted while the capacity row was
+busy (`moderation_deferred`), each target once. With `ADMIN_SOCKET` set the
+public listener refuses `/admin`; without it there is no private moderation
+panel, and the alert is one sentence without numbers telling you to restart the
+moderation worker with higher `--max-records` and `--max-reserved-bytes`, or, on
+a Tor deployment, to set up the private administrator connection. It names no account, target or time. It clears on the next load once the
 pool has room again and the worker has captured the waiting targets.
 
 **Moderation budget** on `/admin/moderation` raises the lifetime limits without
