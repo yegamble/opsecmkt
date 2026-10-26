@@ -16,12 +16,14 @@ import (
 // banned one: sign-in (refused with a neutral message once the password is correct), sessions, new drafts and payment
 // requests (lockNewIntake), messages (activeVendorSQL; messageRecipient also refuses every other route to it), dispute
 // resolvers and staff notices, and public images. A ban also ends the account's sessions and pending sign-ins,
-// archives its active listings, withdraws an open vendor application and removes a verified vendor mark; a banned
-// moderator becomes a buyer. Its handle, in lower case, is kept in banned_handles, so registration and setup refuse it
+// archives its active listings, withdraws an open vendor application, removes a verified vendor mark and turns off
+// listing auto-approval (A-650: the vendor's listings wait for review again in hold mode); a banned moderator becomes
+// a buyer. Its handle, in lower case, is kept in banned_handles, so registration and setup refuse it
 // (refuseTakenHandle) even after retention closes and erases the account. Open orders are left alone:
 // the other party can still complete, concede or dispute them, an independent administrator decides disputes, and
 // settlements proceed. Lifting a ban (unban) restores the suspension the account had before it (ban_prior_suspended_at)
-// or, with none, allows sign-in again; listings stay archived, the verified mark stays off and no staff role returns.
+// or, with none, allows sign-in again; listings stay archived, the verified mark and auto-approval stay off (an account
+// banned before A-650 that still has auto-approval loses it here) and no staff role returns.
 // Both need a reason and the administrator's password (and authenticator code when enrolled); both accounts are
 // audited, with the reason. Administrator accounts, the caller's own included, cannot be banned, so neither can the
 // last administrator.
@@ -89,6 +91,9 @@ func withCountedReviews(ctx context.Context, tx *sql.Tx, id, summary, effect str
 	return summary + "; " + strconv.FormatInt(n, 10) + " review(s) by the account " + effect, nil
 }
 
+// autoApproveOff ends a ban or unban audit summary that turned off the account's listing auto-approval (A-650).
+const autoApproveOff = "; listing auto-approval turned off"
+
 // adminBanAction bans or lifts the ban on a non-administrator account, looked up by handle (see the A-546 comment
 // above). It takes the locks in the suspension's order (adminSuspendAction): wallet lock wait, pending sign-ins, then
 // the account row.
@@ -133,9 +138,9 @@ func adminBanAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, err
 		}
 		var role string
-		var banned, closed, verified bool
-		err := tx.QueryRowContext(ctx, "SELECT role,banned_at IS NOT NULL,closed_at IS NOT NULL,vendor_verified FROM users WHERE id=$1 FOR NO KEY UPDATE", target).
-			Scan(&role, &banned, &closed, &verified)
+		var banned, closed, verified, auto bool
+		err := tx.QueryRowContext(ctx, "SELECT role,banned_at IS NOT NULL,closed_at IS NOT NULL,vendor_verified,listing_auto_approve FROM users WHERE id=$1 FOR NO KEY UPDATE", target).
+			Scan(&role, &banned, &closed, &verified, &auto)
 		if err == sql.ErrNoRows {
 			return actionResult{}, notFound
 		}
@@ -175,6 +180,12 @@ func adminBanAction(c *actionCtx) (actionResult, error) {
 			if summary, err = withCountedReviews(ctx, tx, target, summary, "count toward ratings again"); err != nil {
 				return actionResult{}, err
 			}
+			if auto { // only an account banned before A-650 can still have it: lifting the ban never leaves it on
+				if _, err = tx.ExecContext(ctx, "UPDATE users SET listing_auto_approve=false WHERE id=$1", target); err != nil {
+					return actionResult{}, err
+				}
+				summary += autoApproveOff
+			}
 			if err = audit("Ban lifted by " + by + ": " + said + summary); err != nil {
 				return actionResult{}, err
 			}
@@ -197,7 +208,7 @@ func adminBanAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, fail(409, handle+" is already closed; nothing was changed.")
 		}
 		if _, err = tx.ExecContext(ctx, `UPDATE users SET banned_at=now(),banned_by=$2,ban_reason=$3,ban_prior_suspended_at=suspended_at,suspended_at=COALESCE(suspended_at,now()),
-			vendor_verified=false,vendor_verified_set_by=CASE WHEN vendor_verified THEN $2 ELSE vendor_verified_set_by END,
+			listing_auto_approve=false,vendor_verified=false,vendor_verified_set_by=CASE WHEN vendor_verified THEN $2 ELSE vendor_verified_set_by END,
 			vendor_verified_set_at=CASE WHEN vendor_verified THEN now() ELSE vendor_verified_set_at END WHERE id=$1`, target, c.User.ID, reason); err != nil {
 			return actionResult{}, err
 		}
@@ -209,6 +220,9 @@ func adminBanAction(c *actionCtx) (actionResult, error) {
 		summary := "; ended " + strconv.FormatInt(n, 10) + " session(s) and any pending sign-ins"
 		if summary, err = withCountedReviews(ctx, tx, target, summary, "stopped counting toward ratings"); err != nil {
 			return actionResult{}, err
+		}
+		if auto {
+			summary += autoApproveOff
 		}
 		if err = audit("Account banned by " + by + ": " + said + summary); err != nil {
 			return actionResult{}, err
