@@ -120,9 +120,8 @@ func TestXMRSettlingFormsNeedTickAndAmount(t *testing.T) {
 			return order, sess, url.Values{"order_id": {order}, "from": {statePaid}}
 		}, stateCancelled},
 		{"cancel of an unpaid escrow with a deposit", func() (string, string, url.Values) {
-			order, addr := x.freshCheckout(physical)
-			x.fake.payAddress(addr, hex64("part "+order), xmrListingPrice, 10)
-			agExec(x.testEnv, "UPDATE orders SET amount=amount*2 WHERE id=$1", order) // an underpayment: it stays awaiting payment
+			order, addr := x.freshCheckoutOf(physical, 2)
+			x.fake.payAddress(addr, hex64("part "+order), xmrListingPrice, 10) // one unit's price: an underpayment, it stays awaiting payment
 			x.mustPoll()
 			if x.state(order) != stateAwaitingPayment {
 				t.Fatalf("underpaid order is %s", x.state(order))

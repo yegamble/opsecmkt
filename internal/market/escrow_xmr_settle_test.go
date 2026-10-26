@@ -610,7 +610,24 @@ func TestXMREscrowReRequestGuards(t *testing.T) {
 	t.Setenv("ESCROW_XMR_FEE_ADDRESS", fee)
 	x.restart()
 	x.mustPoll()
-	order, id := x.failedRelease()
+	// The wallet refuses the recorded fee address and the release is built to the operator's replacement, so its stored
+	// plan pays an address the escrow does not record: a fresh plan would pay the recorded one, which the wallet still
+	// refuses (the order's amount, the escrow's fee rate and addresses never change once it exists: 150, 151). Its relay
+	// then fails, as failedRelease's does.
+	order, _, _ := x.completed()
+	id, _ := x.release(order)
+	x.fake.edit(func(f *fakeXMREscrow) { f.invalid[fee] = true })
+	x.mustPoll()
+	replacement := testXMRAddr("replacement fee", false)
+	t.Setenv("ESCROW_XMR_FEE_ADDRESS", replacement)
+	x.restart()
+	for range xmrRelayAttempts {
+		x.fake.fault("relay_tx", fakeXMRRejected)
+		x.mustPoll()
+	}
+	if out := x.outputsOf(id); x.settlement(id).State != "failed" || len(out) != 2 || !strings.HasPrefix(out[1], "market_fee:"+replacement+":") {
+		t.Fatalf("the release to the replacement fee address: %s %v", x.settlement(id).State, out)
+	}
 	old := x.settlement(id)
 	oldOutputs := x.outputsOf(id)
 	_, adminSess := x.user("xd_admin_"+randomToken()[:6], "admin")
@@ -668,8 +685,7 @@ func TestXMREscrowReRequestGuards(t *testing.T) {
 	refused(xmrReRequestSpent)
 	x.fake.flushPool(outside)
 
-	// Carried out, with the stored plan although a fresh plan would now differ (the order's price changed).
-	agExec(x.testEnv, "UPDATE orders SET amount=amount/2 WHERE id=$1", order)
+	// Carried out, with the stored plan although a fresh plan would differ (the replacement fee address above).
 	if code := x.reRequest(adminSess, order, id, testPassword); code != 303 {
 		t.Fatalf("re-request: %d", code)
 	}
@@ -1322,8 +1338,8 @@ func TestXMREscrowStaffHelpBesideAdminForm(t *testing.T) {
 	// A second settlement offering a form, newer than the first (here a stray refund set aside too): the panel lists it
 	// first, and the help links it, not the oldest.
 	var b int64
-	if err := x.DB.QueryRow("INSERT INTO xmr_settlements(order_id,kind,destination) VALUES($1,'stray_refund',$2) RETURNING id",
-		crasher, testXMRAddr("stray "+crasher, false)).Scan(&b); err != nil {
+	if err := x.DB.QueryRow("INSERT INTO xmr_settlements(order_id,kind,destination) SELECT order_id,'stray_refund',refund_address FROM escrows WHERE order_id=$1 RETURNING id",
+		crasher).Scan(&b); err != nil {
 		t.Fatal(err)
 	}
 	agExec(x.testEnv, "UPDATE xmr_settlements SET send_error=$2 WHERE id=$1", b, xmrBuildSetAside)
