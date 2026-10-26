@@ -117,9 +117,11 @@ at most two daily actor shares of allocations left, or when active (not parked)
 markers wait and a `retained_capacity` or `backfill_capacity` overflow was
 recorded at or after the oldest one's first refusal (A-648).
 On private administrator ingress it shows allocations used of the limit, the
-active waiting targets, accounts awaiting a rescan, and where to raise the limits (the panel's Moderation
-budget form or the worker flags); elsewhere it is one
-sentence without numbers. It never names an account, target, kind or time, and
+waiting targets (active markers and records deferred while the capacity row was busy, each once; A-662),
+accounts awaiting a rescan, and where to raise the limits (the panel's Moderation
+budget form or the worker flags); elsewhere, which is a deployment without
+`ADMIN_SOCKET` and so without the panel, it is one sentence without numbers naming
+the worker flags and the private administrator connection instead. It never names an account, target, kind or time, and
 it is one plain read with no row lock
 (`TestAdminOverviewModerationBudgetAlert*`).
 The panel's **Moderation budget** form raises the lifetime allocation and

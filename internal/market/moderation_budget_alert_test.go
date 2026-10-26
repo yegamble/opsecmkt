@@ -12,7 +12,11 @@ import (
 // capacity overflow. Counts appear only on private administrator ingress; the alert never names an account, a
 // target, a kind or a time.
 
-const moderationBudgetPublicText = "Moderation capture needs attention: open the private moderation panel on the private administrator connection."
+// moderationBudgetPublicText is the alert without a private administrator connection: a deployment without
+// ADMIN_SOCKET has no moderation panel, and with ADMIN_SOCKET set the public listener refuses /admin (A-662(5)).
+const moderationBudgetPublicText = "Moderation capture needs attention. This deployment has no private administrator connection, so it has no " +
+	"moderation panel: restart the moderation worker with higher --max-records and --max-reserved-bytes, or, on a Tor " +
+	"deployment, set up the private administrator connection (ADMIN_SOCKET) to use the panel."
 
 var moderationBudgetBlock = regexp.MustCompile(`(?s)<div class="alert" role="status" id="moderation-budget">(.*?)</div>`)
 
@@ -149,6 +153,10 @@ func TestAdminOverviewModerationBudgetAlertByteThreshold(t *testing.T) {
 	}
 }
 
+// Without ADMIN_SOCKET the overview is served on the public listener and there is no moderation panel: the alert is
+// fixed text without numbers that tells the operator what to do instead (A-662(5)). Moderation capture is enabled by
+// the separate worker process, which does not know whether the web process has ADMIN_SOCKET, so this configuration
+// is reachable. With ADMIN_SOCKET set the public listener refuses /admin, so the counted alert is the only one shown.
 func TestAdminOverviewModerationBudgetAlertPublicIngressNoCounts(t *testing.T) {
 	e := newTestApp(t)
 	vendor, _ := e.user("budget_public_vendor", "vendor")
@@ -163,12 +171,78 @@ func TestAdminOverviewModerationBudgetAlertPublicIngressNoCounts(t *testing.T) {
 	if got != moderationBudgetPublicText {
 		t.Fatalf("public alert\n got: %s\nwant: %s", got, moderationBudgetPublicText)
 	}
-	if regexp.MustCompile(`[0-9]`).MatchString(got) || strings.Contains(got, "--max") {
-		t.Fatalf("public alert carries counts or settings: %s", got)
+	if regexp.MustCompile(`[0-9]`).MatchString(got) {
+		t.Fatalf("public alert carries counts: %s", got)
 	}
+	mustNotContain(t, got, "open the private moderation panel", "under Moderation budget")
 	mustNotContain(t, moderationBudgetBlock.FindString(body), "/admin/moderation")
 	mustNotContain(t, body, `href="/admin/moderation"`)
 	moderationBudgetRefuseIdentifiers(t, got, append(ids, vendor, "budget_public_vendor")...)
+	// The panel the sentence does not name is absent here.
+	e.check(ingressDo(e, false, "GET", "/admin/moderation", admin, nil), 404)
+
+	// With ADMIN_SOCKET: the public listener refuses /admin, spoofed headers or not, and the private connection shows
+	// the counts and the panel.
+	e.A.adminSocket = "/run/test-private-admin/http.sock"
+	e.check(ingressDo(e, false, "GET", "/admin", admin, nil), 404)
+	w = ingressDo(e, true, "GET", "/admin", admin, nil)
+	e.check(w, 200)
+	mustContain(t, moderationBudgetAlertText(t, w.Body.String()), "2 of 2 lifetime allocations used; 1 target(s) waiting for capture.",
+		"under Moderation budget on the private moderation panel", "Open the private moderation panel.")
+}
+
+// A-662(2): a record whose capture found the capacity row busy (moderation_deferred, migration 148) waits for capture
+// too. The overview count and the panel's "Targets awaiting capture" include it, once, even when the same record also
+// has a marker; the alert without the private connection still carries no number.
+func TestAdminOverviewModerationBudgetAlertCountsDeferred(t *testing.T) {
+	e := newTestApp(t)
+	vendor, _ := e.user("budget_deferred_vendor", "vendor")
+	other, _ := e.user("budget_deferred_other", "vendor")
+	_, admin := e.user("budget_deferred_admin", "admin")
+	ids := moderationBudgetExhaust(t, e, vendor)
+	release := moderationHoldCapacity(t, e)
+	deferred := e.product(other, "digital")                                                         // a deferred-only target
+	agExec(e, `UPDATE products SET description='Edited while capture is busy' WHERE id=$1`, ids[2]) // deferred and marked
+	release()
+	if agInt(e, `SELECT count(*) FROM moderation_deferred`) != 2 || agInt(e, `SELECT count(*) FROM moderation_backfill`) != 1 ||
+		agInt(e, `SELECT count(*) FROM moderation_deferred d JOIN moderation_backfill b USING (kind,target_id)`) != 1 {
+		t.Fatal("precondition: expected one deferred-only target and one target both deferred and marked")
+	}
+	e.A.adminSocket = "/run/test-private-admin/http.sock"
+	w := ingressDo(e, true, "GET", "/admin", admin, nil)
+	e.check(w, 200)
+	got := moderationBudgetAlertText(t, w.Body.String())
+	mustContain(t, got, "2 of 2 lifetime allocations used; 2 target(s) waiting for capture.")
+	moderationBudgetRefuseIdentifiers(t, got, append(ids, deferred, vendor, other, "budget_deferred_vendor", "budget_deferred_other")...)
+	w = privateHostRequest(e, "GET", "/admin/moderation", admin, nil, true)
+	e.check(w, 200)
+	mustContain(t, strings.Join(strings.Fields(w.Body.String()), " "),
+		"<dt>Targets awaiting capture</dt><dd>2: 1 / 65536 refused and kept as markers (0 waiting for an unflagged payment",
+		"and 1 noted while the capacity row was busy")
+	mustNotContain(t, w.Body.String(), deferred)
+
+	// Without the private connection the sentence stays fixed, without a number.
+	e.A.adminSocket = ""
+	w = ingressDo(e, false, "GET", "/admin", admin, nil)
+	e.check(w, 200)
+	if got = moderationBudgetAlertText(t, w.Body.String()); got != moderationBudgetPublicText {
+		t.Fatalf("public alert with deferred targets\n got: %s\nwant: %s", got, moderationBudgetPublicText)
+	}
+
+	// The worker's next pass, with room in the pool, captures both and the alert clears.
+	if err := ConfigureModerationLimits(t.Context(), e.DB, DefaultModerationLimits()); err != nil {
+		t.Fatal(err)
+	}
+	moderationPasses(t, moderationTestWorker(e), 3)
+	if agInt(e, `SELECT count(*) FROM moderation_deferred`)+agInt(e, `SELECT count(*) FROM moderation_backfill`) != 0 {
+		t.Fatal("precondition: the worker did not capture the waiting targets")
+	}
+	e.A.adminSocket = "/run/test-private-admin/http.sock"
+	w = ingressDo(e, true, "GET", "/admin", admin, nil)
+	e.check(w, 200)
+	if got = moderationBudgetAlertText(t, w.Body.String()); got != "" {
+		t.Fatalf("alert after the waiting targets were captured: %s", got)
+	}
 }
 
 func TestAdminOverviewModerationBudgetAlertClears(t *testing.T) {

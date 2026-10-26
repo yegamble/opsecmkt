@@ -109,7 +109,17 @@ func TestUnbanRestoresReviews(t *testing.T) {
 	if agInt(e, "SELECT count(*) FROM reviews WHERE hidden_at IS NOT NULL") != 1 {
 		t.Fatal("the ban or unban changed an administrator's hide")
 	}
+	// /canary#records tells users, in the Reviews entry, that a ban leaves reviews out and lifting it restores them
+	// (A-662(3)).
+	page := e.body("GET", "/canary", randomToken(), nil, 200)
+	_, entry, _ := strings.Cut(page, "<li><strong>Reviews.</strong>")
+	entry, _, _ = strings.Cut(entry, "</li>")
+	mustContain(t, entry, reviewCanaryBanned)
 }
+
+// reviewCanaryBanned is the /canary#records sentence on banned accounts' reviews (A-662(3)).
+const reviewCanaryBanned = "While an account is banned, none of its reviews are shown on the public pages or counted in ratings; " +
+	"the reviews are kept unchanged, still shown on the order, and lifting the ban restores them."
 
 // reviewSection returns the order page's Review panel.
 func reviewSection(t *testing.T, page string) string {

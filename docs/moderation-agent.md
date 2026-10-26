@@ -451,6 +451,10 @@ this as `retained_capacity` under "Capture requires attention", and the Admin
 overview shows a count-only "Moderation capture needs attention" alert from two
 daily shares before the pool is used up (counts only on private administrator
 ingress; see the [operator guide](operator-guide.md#moderation-proposals)).
+Without `ADMIN_SOCKET` there is no private panel, but the worker can still enable
+capture; the alert then says, without numbers, to restart the worker with higher
+`--max-records` and `--max-reserved-bytes` or, on a Tor deployment, to set up
+the private administrator connection.
 
 At saturation, the listing, dispute or other source transaction still commits.
 No clean classification is invented. A fixed, coalesced private overflow warning
@@ -483,7 +487,13 @@ markers each pass, for a re-flag while capture was off, or a deletion.
 One account can hold at most 16 markers (`moderation_capacity.max_actor_markers`,
 and always fewer than the 65536-marker table, `max_backfill`). Past that bound,
 or when the table is full (a counted `backfill_capacity` warning), the account
-is flagged for a rescan instead of adding markers. Once the account can be
+is flagged for a rescan instead of adding markers. Known limit: if the full table
+holds no active marker (for example 65536 parked payment markers), a throttle
+refusal's `backfill_capacity` warning has no waiting marker to tie it to, so the
+Admin overview alert does not appear until the lifetime pool runs low; the
+rescans still capture the accounts' records, raising the budget does not empty
+the table, and the private panel shows the full table, the warning and the
+accounts awaiting a rescan. Once the account can be
 admitted again, each pass re-reads up to 64 of its live records in order of
 creation time (listings, uploads, reviews, disputes and payments all have one),
 then kind and id, from the stored position, through indexes, and queues every
@@ -519,7 +529,18 @@ removes its reference at once without the ledger lock. Worker results, the
 private-panel and offline reviews and the capture switch take the ledger row
 before any job, proposal or marketplace row, so a transaction that admitted one
 change and then locks another record cannot deadlock over the ledger with them
-or with a concurrent edit of that record.
+or with a concurrent edit of that record. The private-panel review and the
+budget raise are confirmed forms that lock the administrator's own account and
+session rows before the ledger row (the shared confirmation path has no earlier
+hook); no transaction holding the ledger row waits on those rows, because the
+worker and the offline review reach account rows only through key-share locks
+(`TestModerationReviewAccountRowBeforeCapacityNoWait`,
+`TestModerationOfflineReviewLockOrder`; the cached-completion path is checked by
+code reading only). Deferred references count as targets awaiting capture: the
+private panel's "Targets awaiting capture" is the markers plus the deferred
+references that have no marker, and the Admin overview alert's waiting count is
+the active markers plus the deferred references, each target once
+(`TestAdminOverviewModerationBudgetAlertCountsDeferred`).
 
 A revision whose job completed stale (`stale_snapshot`, never evaluated) no
 longer suppresses a later capture of the same content: if a listing changes to a
